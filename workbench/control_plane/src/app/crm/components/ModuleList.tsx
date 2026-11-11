@@ -127,6 +127,7 @@ export default function ModuleList({
   label,
   view,
   onChange,
+  selectedId = null,
   onOpen,
   reloadToken = 0,
   actions,
@@ -140,6 +141,8 @@ export default function ModuleList({
   label: string;
   view: CrmView;
   onChange: (next: CrmView) => void;
+  /** The record that the card shows. Its row is marked (ORC-1, D181). */
+  selectedId?: string | null;
   onOpen: (id: string) => void;
   /** The Refresh button counts it up, and the list reads page 1 again. */
   reloadToken?: number;
@@ -201,6 +204,7 @@ export default function ModuleList({
         sort={view.sort}
         direction={view.dir}
         onSort={(key) => onChange(applySort(view, key))}
+        selectedId={selectedId}
         onOpen={onOpen}
         onLoadMore={() => void list.loadMore()}
         loadingMore={list.loadingMore}

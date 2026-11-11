@@ -1,0 +1,548 @@
+/**
+ * UNDO-1 — a task edit undoes through one helper.
+ *
+ * Pinned: each field's inverse restores the BEFORE value (an absent value
+ * becomes null), the inverse carries If-Match on the task's version NOW, a
+ * 412 shows one message and changes nothing else, and a stale undo leaves the
+ * stack sane (redo is then inert). Fix round 1 adds the version chain, the
+ * custom field merge, the move plan and the doors' wiring.
+ */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+import { describe, expect, it, vi } from "vitest";
+
+import {
+  EMPTY_UNDO,
+  createUndoRunner,
+  record,
+  stepBack,
+  stepForward,
+  type UndoEntry,
+} from "@/lib/undo";
+
+import {
+  STALE_MESSAGE,
+  MOVE_NO_UNDO,
+  type MovedRow,
+  createVersionLedger,
+  moveUndoPlan,
+  recordAssigneesEdit,
+  recordTaskEdit,
+  taskInverse,
+  type EditHooks,
+  type EditIo,
+} from "./taskUndo";
+
+type Row = Record<string, unknown>;
+
+/**
+ * A task store that keeps the server's version rule
+ * (`core.precondition_holds`). A token passes when it equals `updated_at`, or
+ * lies from `fields_at` up to `updated_at`. A field write moves both stamps
+ * (trigger 304). A comment or an assignee moves `updated_at` alone.
+ * `custom_fields` MERGES, and a null clears a key (`apply_values`).
+ */
+function fakeServer(rows: Record<string, Row>) {
+  let clock = 0;
+  const stamp = () => new Date(Date.UTC(2026, 10, 4) + ++clock * 1000).toISOString();
+  const state = new Map<string, { row: Row; updated_at: string; fields_at: string }>();
+  for (const [id, row] of Object.entries(rows)) {
+    const at = stamp();
+    state.set(id, { row: structuredClone(row), updated_at: at, fields_at: at });
+  }
+  const holds = (id: string, token: string | null) => {
+    if (!token) return true;
+    const t = state.get(id)!;
+    const at = Date.parse(token);
+    return (
+      token === t.updated_at ||
+      (Date.parse(t.fields_at) <= at && at <= Date.parse(t.updated_at))
+    );
+  };
+  const stale = () => Object.assign(new Error("precondition"), { status: 412 });
+  const fieldWrite = (id: string, payload: Row) => {
+    const t = state.get(id)!;
+    for (const [key, value] of Object.entries(payload)) {
+      if (key !== "custom_fields") {
+        t.row[key] = value;
+        continue;
+      }
+      const merged = { ...((t.row.custom_fields as Row | undefined) ?? {}) };
+      for (const [k, v] of Object.entries(value as Row)) {
+        if (v === null) delete merged[k];
+        else merged[k] = v;
+      }
+      t.row.custom_fields = merged;
+    }
+    t.updated_at = t.fields_at = stamp();
+    return { ...structuredClone(t.row), updated_at: t.updated_at };
+  };
+  const io: EditIo = {
+    patch: vi.fn(async (id: string, payload: Row, ifMatch: string | null) => {
+      if (!holds(id, ifMatch)) throw stale();
+      return fieldWrite(id, payload);
+    }),
+    setAssignees: vi.fn(async () => ({})),
+    read: vi.fn(async (id: string) => ({
+      ...structuredClone(state.get(id)!.row),
+      updated_at: state.get(id)!.updated_at,
+    })),
+    versions: createVersionLedger(),
+  };
+  return {
+    io,
+    row: (id: string) => state.get(id)!.row,
+    /** Somebody else changes a field of the task. */
+    otherEdit: (id: string, payload: Row) => void fieldWrite(id, payload),
+    /** A comment lands: the stamp moves, and no field changes. */
+    bump: (id: string) => {
+      state.get(id)!.updated_at = stamp();
+    },
+  };
+}
+
+const before = {
+  id: "t1",
+  title: "Old",
+  status_id: "s-done",
+  due_at: "2026-11-05T00:00:00Z",
+  start_date: null,
+  estimate_mins: 60,
+  assignees: ["a@x.io"],
+  project_id: "p1",
+};
+
+function rig(over: Partial<EditIo> = {}) {
+  const calls: { id: string; payload: unknown; ifMatch: string | null }[] = [];
+  const io: EditIo = {
+    patch: vi.fn(async (id, payload, ifMatch) => {
+      calls.push({ id, payload, ifMatch });
+      return { updated_at: `v${calls.length + 1}` };
+    }),
+    setAssignees: vi.fn(async () => ({})),
+    read: vi.fn(async () => ({ assignees: ["b@x.io"], updated_at: "r" })),
+    versions: createVersionLedger(),
+    ...over,
+  };
+  let stack = EMPTY_UNDO;
+  const notify = vi.fn();
+  const hooks: EditHooks = {
+    record: (e: UndoEntry) => {
+      stack = record(stack, e);
+    },
+    notify,
+    after: vi.fn(),
+  };
+  return { io, hooks, calls, notify, get stack() { return stack; } };
+}
+
+/** A door's forward write on `srv`, then its record, as `useTaskUndo` does. */
+async function forward(
+  srv: ReturnType<typeof fakeServer>,
+  r: ReturnType<typeof rig>,
+  id: string,
+  patch: Row,
+) {
+  const before = structuredClone(srv.row(id));
+  const fresh = (await srv.io.patch(id, patch, null)) as { updated_at: string };
+  return recordTaskEdit(srv.io, r.hooks, {
+    before: { id, ...before },
+    patch,
+    version: fresh.updated_at,
+    label: "x",
+  });
+}
+
+describe("the version chain (fix round 1, finding 1)", () => {
+  it("two steps on ONE task undo twice and redo twice", async () => {
+    const srv = fakeServer({ t1: { status_id: "A" } });
+    const r = rig(srv.io);
+    await forward(srv, r, "t1", { status_id: "B" });
+    await forward(srv, r, "t1", { status_id: "C" });
+
+    let step = stepBack(r.stack)!;
+    await step.entry.undo();
+    expect(srv.row("t1").status_id).toBe("B");
+    step = stepBack(step.stack)!;
+    await step.entry.undo();
+    expect(srv.row("t1").status_id).toBe("A");
+    step = stepForward(step.stack)!;
+    await step.entry.redo();
+    expect(srv.row("t1").status_id).toBe("B");
+    step = stepForward(step.stack)!;
+    await step.entry.redo();
+    expect(srv.row("t1").status_id).toBe("C");
+    expect(r.notify).not.toHaveBeenCalled();
+  });
+
+  it("an edit by somebody else in between still answers 412", async () => {
+    const srv = fakeServer({ t1: { status_id: "A", title: "Old" } });
+    const r = rig(srv.io);
+    await forward(srv, r, "t1", { status_id: "B" });
+    srv.otherEdit("t1", { title: "Theirs" });
+    await stepBack(r.stack)!.entry.undo();
+    expect(r.notify).toHaveBeenCalledWith(STALE_MESSAGE);
+    expect(srv.row("t1")).toEqual({ status_id: "B", title: "Theirs" });
+  });
+
+  it("a comment in between is not a change: undo still runs", async () => {
+    const srv = fakeServer({ t1: { status_id: "A" } });
+    const r = rig(srv.io);
+    await forward(srv, r, "t1", { status_id: "B" });
+    srv.bump("t1");
+    await stepBack(r.stack)!.entry.undo();
+    expect(srv.row("t1").status_id).toBe("A");
+    expect(r.notify).not.toHaveBeenCalled();
+  });
+
+  it("the ledger keeps the later stamp, to the microsecond", () => {
+    const v = createVersionLedger();
+    v.note("t", "2026-11-04T10:00:00.000002+00:00");
+    v.note("t", "2026-11-04T10:00:00.000001+00:00");
+    expect(v.get("t")).toBe("2026-11-04T10:00:00.000002+00:00");
+    // The server omits a zero fraction. That stamp is still the later one.
+    v.note("t", "2026-11-04T10:00:01+00:00");
+    expect(v.get("t")).toBe("2026-11-04T10:00:01+00:00");
+    v.note("t", null);
+    expect(v.get("t")).toBe("2026-11-04T10:00:01+00:00");
+  });
+});
+
+describe("custom fields merge on the server (fix round 1, finding 2)", () => {
+  it("a custom field filled from empty clears again on undo", async () => {
+    const srv = fakeServer({ t1: { custom_fields: { size: "M" } } });
+    const r = rig(srv.io);
+    await forward(srv, r, "t1", { custom_fields: { owner: "Ana" } });
+    await forward(srv, r, "t1", { custom_fields: { size: "L" } });
+    expect(srv.row("t1").custom_fields).toEqual({ size: "L", owner: "Ana" });
+
+    let step = stepBack(r.stack)!;
+    await step.entry.undo();
+    expect(srv.row("t1").custom_fields).toEqual({ size: "M", owner: "Ana" });
+    step = stepBack(step.stack)!;
+    await step.entry.undo();
+    expect(srv.row("t1").custom_fields).toEqual({ size: "M" });
+    step = stepForward(step.stack)!;
+    await step.entry.redo();
+    expect(srv.row("t1").custom_fields).toEqual({ size: "M", owner: "Ana" });
+  });
+
+  it("the custom field inverse names only the keys the edit sent", () => {
+    const row = { id: "t1", title: "T", custom_fields: { a: 1, b: false } };
+    expect(taskInverse(row, { custom_fields: { b: true, c: "x" } })).toEqual({
+      custom_fields: { b: false, c: null },
+    });
+    expect(taskInverse({ id: "t2" }, { custom_fields: { a: 2 }, title: "N" })).toEqual({
+      custom_fields: { a: null },
+      title: null,
+    });
+  });
+});
+
+describe("the done date comes back with a Reopen (round 2, fix B)", () => {
+  const DONE_AT = "2026-11-01T08:00:00+00:00";
+
+  it("the inverse of a Reopen carries the done date the task held", () => {
+    const done = { id: "t1", status_id: "s-done", completed_at: DONE_AT };
+    expect(taskInverse(done, { status_id: "s-open" })).toEqual({
+      status_id: "s-done",
+      completed_at: DONE_AT,
+    });
+  });
+
+  it("the inverse of a done tick sends no date: the server clears it", () => {
+    const open = { id: "t1", status_id: "s-open", completed_at: null };
+    expect(taskInverse(open, { status_id: "s-done" })).toEqual({ status_id: "s-open" });
+  });
+
+  it("a patch that moves no status sends no date", () => {
+    const done = { id: "t1", status_id: "s-done", completed_at: DONE_AT };
+    expect(taskInverse(done, { title: "N" })).toEqual({ title: null });
+  });
+
+  it("Undo of a Reopen writes the held date, and redo writes the plain patch", async () => {
+    const r = rig();
+    recordTaskEdit(r.io, r.hooks, {
+      before: { id: "t1", status_id: "s-done", completed_at: DONE_AT },
+      patch: { status_id: "s-open" },
+      version: "v0",
+      label: "moved T",
+    });
+    const step = stepBack(r.stack)!;
+    await step.entry.undo();
+    expect(r.calls.at(-1)?.payload).toEqual({ status_id: "s-done", completed_at: DONE_AT });
+    await stepForward(step.stack)!.entry.redo();
+    expect(r.calls.at(-1)?.payload).toEqual({ status_id: "s-open" });
+  });
+});
+
+describe("recordTaskEdit", () => {
+  it.each([
+    ["status_id", { status_id: "s-open" }, { status_id: "s-done" }],
+    ["title", { title: "New" }, { title: "Old" }],
+    ["due_at", { due_at: null }, { due_at: "2026-11-05T00:00:00Z" }],
+    ["start_date", { start_date: "2026-11-01" }, { start_date: null }],
+    ["estimate_mins", { estimate_mins: 5 }, { estimate_mins: 60 }],
+    ["project_id", { project_id: "p2" }, { project_id: "p1" }],
+  ])("%s inverse restores the before value", async (_k, patch, inverse) => {
+    const r = rig();
+    recordTaskEdit(r.io, r.hooks, { before, patch, version: "v1", label: "edited Old" });
+    const step = stepBack(r.stack)!;
+    await step.entry.undo();
+    expect(r.calls[0].payload).toEqual(inverse);
+  });
+
+  it("carries If-Match on the forward version, then on the version undo returned", async () => {
+    const r = rig();
+    recordTaskEdit(r.io, r.hooks, { before, patch: { title: "New" }, version: "v1", label: "x" });
+    const back = stepBack(r.stack)!;
+    await back.entry.undo();
+    expect(r.calls[0].ifMatch).toBe("v1");
+    const fwd = stepForward(back.stack)!;
+    await fwd.entry.redo();
+    expect(r.calls[1]).toMatchObject({ payload: { title: "New" }, ifMatch: "v2" });
+  });
+
+  it("a 412 on undo shows the message, writes nothing more, and makes redo inert", async () => {
+    const stale = Object.assign(new Error("precondition"), { status: 412 });
+    const r = rig({ patch: vi.fn(async () => { throw stale; }) });
+    recordTaskEdit(r.io, r.hooks, { before, patch: { title: "New" }, version: "v1", label: "x" });
+    const back = stepBack(r.stack)!;
+    await expect(back.entry.undo()).resolves.toBeUndefined();
+    expect(r.notify).toHaveBeenCalledWith(STALE_MESSAGE);
+    expect(r.io.patch).toHaveBeenCalledTimes(1);
+    await back.entry.redo();
+    expect(r.io.patch).toHaveBeenCalledTimes(1);
+  });
+
+  it("any other failure is thrown so the stack keeps the step", async () => {
+    const r = rig({ patch: vi.fn(async () => { throw new Error("boom"); }) });
+    recordTaskEdit(r.io, r.hooks, { before, patch: { title: "New" }, version: null, label: "x" });
+    await expect(stepBack(r.stack)!.entry.undo()).rejects.toThrow("boom");
+    expect(r.notify).not.toHaveBeenCalled();
+  });
+
+  it("returns the entry it recorded, so the toast and Ctrl+Z share one", async () => {
+    const r = rig();
+    const entry = recordTaskEdit(r.io, r.hooks, { before, patch: { title: "New" }, version: "v1", label: "x" });
+    expect(r.stack.past.at(-1)).toBe(entry);
+    await entry.undo();
+    await stepBack(r.stack)!.entry.undo();
+    expect(r.io.patch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the toast's Undo and Ctrl+Z in one round trip (fix round 1, finding 6)", () => {
+  /** A PATCH that answers only when the test lets it. */
+  const slowPatch = () => {
+    const pending: (() => void)[] = [];
+    const patch = vi.fn(
+      (_id: string, _payload: Row, _ifMatch: string | null) =>
+        new Promise<{ updated_at: string }>((done) => {
+          pending.push(() => done({ updated_at: "v9" }));
+        }),
+    );
+    return { patch, answer: () => pending.splice(0).forEach((go) => go()) };
+  };
+
+  it("through the provider's gate they write ONCE, and the stack moves once", async () => {
+    const slow = slowPatch();
+    const r = rig({ patch: slow.patch });
+    let stack = EMPTY_UNDO;
+    const hooks: EditHooks = { ...r.hooks, record: (e) => (stack = record(stack, e)) };
+    const runner = createUndoRunner({
+      read: () => stack,
+      write: (next) => (stack = next),
+      busy: () => {},
+    });
+    const entry = recordTaskEdit(r.io, hooks, { before, patch: { title: "New" }, version: "v1", label: "x" });
+    const toastClick = runner.undoEntry(entry);
+    const ctrlZ = runner.undo();
+    slow.answer();
+    await Promise.all([toastClick, ctrlZ]);
+    expect(slow.patch).toHaveBeenCalledTimes(1);
+    expect(stack).toEqual({ past: [], future: [entry] });
+  });
+
+  it("the entry also guards itself: two calls in flight send one write", async () => {
+    const slow = slowPatch();
+    const r = rig({ patch: slow.patch });
+    const entry = recordTaskEdit(r.io, r.hooks, { before, patch: { title: "New" }, version: "v1", label: "x" });
+    const first = entry.undo();
+    const second = entry.undo();
+    slow.answer();
+    await Promise.all([first, second]);
+    expect(slow.patch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("recordAssigneesEdit", () => {
+  it("puts the prior list back while the list is still what undo set", async () => {
+    const r = rig({ read: vi.fn(async () => ({ assignees: ["c@x.io"] })) });
+    recordAssigneesEdit(r.io, r.hooks, { id: "t1", before: ["a@x.io"], next: ["c@x.io"], label: "x" });
+    await stepBack(r.stack)!.entry.undo();
+    expect(r.io.setAssignees).toHaveBeenCalledWith("t1", ["a@x.io"], null);
+  });
+
+  it("refuses with the stale message when somebody changed the list since", async () => {
+    const r = rig();
+    recordAssigneesEdit(r.io, r.hooks, { id: "t1", before: ["a@x.io"], next: ["c@x.io"], label: "x" });
+    await stepBack(r.stack)!.entry.undo();
+    expect(r.io.setAssignees).not.toHaveBeenCalled();
+    expect(r.notify).toHaveBeenCalledWith(STALE_MESSAGE);
+  });
+
+  it("compares the list the way the server keeps it: trimmed, lower case (finding 7)", async () => {
+    // The member typed "Ana@X.io ". The server stored "ana@x.io".
+    const r = rig({ read: vi.fn(async () => ({ assignees: ["ana@x.io"], updated_at: "r1" })) });
+    recordAssigneesEdit(r.io, r.hooks, { id: "t1", before: ["a@x.io"], next: ["Ana@X.io "], label: "x" });
+    await stepBack(r.stack)!.entry.undo();
+    expect(r.notify).not.toHaveBeenCalled();
+    expect(r.io.setAssignees).toHaveBeenCalledWith("t1", ["a@x.io"], "r1");
+  });
+
+  it("the PUT carries the read's version, and its 412 shows the stale message (finding 7)", async () => {
+    const stale = Object.assign(new Error("precondition"), { status: 412 });
+    const r = rig({
+      read: vi.fn(async () => ({ assignees: ["c@x.io"], updated_at: "r1" })),
+      setAssignees: vi.fn(async () => {
+        throw stale;
+      }),
+    });
+    recordAssigneesEdit(r.io, r.hooks, { id: "t1", before: ["a@x.io"], next: ["c@x.io"], label: "x" });
+    const back = stepBack(r.stack)!;
+    await expect(back.entry.undo()).resolves.toBeUndefined();
+    expect(r.io.setAssignees).toHaveBeenCalledWith("t1", ["a@x.io"], "r1");
+    expect(r.notify).toHaveBeenCalledWith(STALE_MESSAGE);
+    // The step is dead: redo does not write on top of the change.
+    await back.entry.redo();
+    expect(r.io.setAssignees).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("moveUndoPlan (fix round 1, finding 3)", () => {
+  const row = (id: string, project_id: string, status_id: string, over: Partial<MovedRow> = {}): MovedRow => ({
+    id,
+    project_id,
+    root_project_id: "space",
+    status_id,
+    type_id: "bug",
+    task_number: Number(id.charCodeAt(0)),
+    completed_at: null,
+    ...over,
+  });
+  const clean = { dropped_fields: [] as string[] };
+
+  it("each task goes home to its OWN prior status, even from one shared lane", () => {
+    // A bulk move from To do and In progress into one destination lane.
+    const before = [row("a", "p1", "todo"), row("b", "p1", "doing"), row("c", "p9", "todo")];
+    const after = { a: row("a", "p2", "lane"), b: row("b", "p2", "lane"), c: row("c", "p2", "lane") };
+    const plan = moveUndoPlan(["a", "b", "c"], before, after, clean);
+    expect(plan).toEqual({
+      ok: true,
+      calls: [
+        { projectId: "p1", taskIds: ["a"], statusMap: { lane: "todo" } },
+        { projectId: "p1", taskIds: ["b"], statusMap: { lane: "doing" } },
+        { projectId: "p9", taskIds: ["c"], statusMap: { lane: "todo" } },
+      ],
+    });
+  });
+
+  it("tasks from one project share a call while their maps agree", () => {
+    const before = [row("a", "p1", "s1"), row("b", "p1", "s2"), row("c", "p1", "s1")];
+    const after = { a: row("a", "p2", "n1"), b: row("b", "p2", "n2"), c: row("c", "p2", "n1") };
+    expect(moveUndoPlan(["a", "b", "c"], before, after, clean)).toEqual({
+      ok: true,
+      calls: [{ projectId: "p1", taskIds: ["a", "b", "c"], statusMap: { n1: "s1", n2: "s2" } }],
+    });
+  });
+
+  it.each([
+    ["carried subtasks", { subtask_ids: ["k"] }, {}, MOVE_NO_UNDO.subtasks],
+    ["a dropped field", { dropped_fields: ["Size"] }, {}, MOVE_NO_UNDO.drops(["Size"])],
+    ["another space", {}, { root_project_id: "other" }, MOVE_NO_UNDO.space],
+    ["a new task number", {}, { task_number: 999 }, MOVE_NO_UNDO.space],
+    ["a cleared type", {}, { type_id: null }, MOVE_NO_UNDO.space],
+    ["a new done date", {}, { completed_at: "2026-11-04T00:00:00Z" }, MOVE_NO_UNDO.done],
+  ])("offers no Undo after %s, and says why", (_case, answer, landed, reason) => {
+    const plan = moveUndoPlan(
+      ["a"],
+      [row("a", "p1", "s1")],
+      { a: row("a", "p2", "s1", landed) },
+      { ...clean, ...answer },
+    );
+    expect(plan).toEqual({ ok: false, reason });
+  });
+
+  it("offers no Undo when a task could not be read", () => {
+    const plan = moveUndoPlan(["a", "b"], [row("a", "p1", "s1")], { a: row("a", "p2", "s1") }, clean);
+    expect(plan).toEqual({ ok: false, reason: MOVE_NO_UNDO.unread });
+  });
+
+  it("every reason says what happened and what to do next", () => {
+    for (const line of [
+      MOVE_NO_UNDO.subtasks,
+      MOVE_NO_UNDO.drops(["Size"]),
+      MOVE_NO_UNDO.space,
+      MOVE_NO_UNDO.done,
+      MOVE_NO_UNDO.unread,
+    ]) {
+      expect(line).toMatch(/^Undo is off for this move: /);
+      expect(line).toMatch(/Use Move to project to send/);
+    }
+  });
+});
+
+describe("the doors wire the helper (source)", () => {
+  const SRC = fileURLToPath(new URL("..", import.meta.url));
+  const read = (rel: string) => readFileSync(`${SRC}/${rel}`, "utf8");
+
+  it("a move offers Undo through moveUndoPlan, and shows its reason otherwise", () => {
+    const page = read("page.tsx");
+    expect(page).toMatch(/moveUndoPlan\(/);
+    expect(page).toMatch(/description: way\.reason/);
+  });
+
+  it("the My tasks board write records Undo, as the project board does (finding 4)", () => {
+    const src = read("components/MyTasksSpace.tsx");
+    const drop = src.slice(src.indexOf("async function drop("), src.indexOf("async function exportCsv("));
+    expect(drop).toMatch(/const fresh = await projectsApi\.patchTask\(task\.id, plan\.patch\)/);
+    expect(drop).toMatch(/taskUndo\.edited\(task, plan\.patch, fresh,/);
+  });
+
+  it.each([
+    ["the table cell", "components/TableView.tsx", "async function saveCell(", "async function saveAssignees("],
+    ["the panel status", "components/TaskBody.tsx", "async function changeStatus(", "async function patch("],
+  ])("%s raises ONE toast: Undo takes the save toast's key (finding 5)", (_door, file, from, to) => {
+    const src = read(file);
+    const body = src.slice(src.indexOf(from), src.indexOf(to));
+    expect(body).toMatch(/toast\.promise\([\s\S]*key: toastKey,/);
+    expect(body).toMatch(/taskUndo\.edited\([\s\S]*toastKey,\s*\}\);/);
+  });
+
+  it("each Undo toast of this slice runs through the provider's gate (finding 6)", () => {
+    const hook = read("components/useTaskUndo.tsx");
+    expect(hook).toMatch(/undoApi\s*\.undoEntry\(entry\)/);
+    const page = read("page.tsx");
+    // The unarchive toast and the move toast.
+    expect(page).toMatch(/undoApi\s*\.undoEntry\(refiled\)/);
+    expect(page).toMatch(/undoApi\s*\.undoEntry\(entry\)/);
+    expect(page).not.toMatch(/onClick: \(\) => void (refile|undoMove!?)\(\)/);
+  });
+
+  it("the archive toast and the subtask-complete toast use the gate too (round 2, fix A)", () => {
+    const page = read("page.tsx");
+    expect(page).toMatch(/undoApi\s*\.undoEntry\(archivedEntry\)/);
+    expect(page).not.toMatch(/onClick: \(\) => void restore\(\)/);
+    const hook = read("components/useSubtaskComplete.tsx");
+    expect(hook).toMatch(/undoApi\s*\.undoEntry\(entry\)/);
+    expect(hook).not.toMatch(/onClick: \(\) => void revert\(\)/);
+  });
+
+  it("the board drag and the card Reopen toasts name the lane (round 2, fix C)", () => {
+    const page = read("page.tsx");
+    expect(page).not.toMatch(/receipt: "Task moved"/);
+    expect(page).toMatch(/Moved to \$\{statuses\.find/);
+  });
+});

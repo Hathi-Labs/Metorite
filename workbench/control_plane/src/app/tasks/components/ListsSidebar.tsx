@@ -90,13 +90,12 @@ export function ListsSidebar({
   // with them. ⚠️ NOT the Inbox: a capture lands in the personal ROOT, before
   // any Area, so an Area scope would empty the Inbox and hide the badge.
   // S6g — the Inbox badge is `inboxCount`, the same number the Inbox header
-  // says: my captures and the untriaged board rows, one rule (`inbox.ts`).
-  const fromProjectIds = useTaskStore((s) => s.fromProjectIds);
+  // says: my captures only, one rule (`inbox.ts`, D170).
   const counts = useMemo(() => {
     const scoped = viewCounts(itemsInArea(items, selectedAreaId));
-    scoped.inbox = inboxCount(items, fromProjectIds);
+    scoped.inbox = inboxCount(items);
     return scoped;
-  }, [items, selectedAreaId, fromProjectIds]);
+  }, [items, selectedAreaId]);
 
   return (
     <nav className="flex h-full flex-col gap-1 overflow-y-auto p-3 text-sm">

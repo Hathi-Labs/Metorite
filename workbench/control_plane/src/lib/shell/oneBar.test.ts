@@ -48,7 +48,8 @@ describe("Enter asks, unless the member chose a result", () => {
 
   it("any other Enter submits the form, which asks the assistant", () => {
     expect(field).toMatch(/onSubmit=\{\(e\) => \{\s*e\.preventDefault\(\);\s*ask\(\);/);
-    expect(field).toContain("openAssistant({ text: words });");
+    // The member typed the words, so they carry the typed mark (D-PZ-37).
+    expect(field).toContain("openAssistant({ text: words, typed: true });");
   });
 
   it("Enter on an empty field opens the assistant", () => {

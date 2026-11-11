@@ -35,6 +35,10 @@ f. Two moves at once give one 200 and one 409, and the skill ends in a state
 g. A slug, a name or a description that Postgres refuses (a final newline,
    a NUL, a lone surrogate) is 422, never 500. It writes no row, and the
    text does not echo the value.
+h. (WS-STU F1b) A hidden character in the body or the name is 422 with the
+   sentence of the store, and it writes no row. A publish of a version that
+   an older store kept with a hidden character is 422, and the skill stays
+   a draft.
 
 **The mutations (R7).**
 
@@ -46,12 +50,22 @@ g. A slug, a name or a description that Postgres refuses (a final newline,
   read. ``test_r8_two_moves_at_once_give_one_200_and_one_409`` goes red, and
   so does ``test_a_move_reads_the_skill_with_its_row_lock`` of the hermetic
   suite.
+* M3. In ``skills.set_skill_state``, drop the ``body_hidden_problem`` term.
+  ``test_r8_a_publish_of_a_stored_hidden_character_is_422`` goes red, and so
+  does ``test_a_publish_or_a_resume_of_a_stored_hidden_character_is_422`` of
+  the hermetic suite.
+* M4. In ``skills.set_skill_state``, drop the ``hidden_problem`` terms of
+  the name and the description. The hidden-name step of
+  ``test_r8_a_publish_of_a_stored_hidden_character_is_422`` goes red, and so
+  does ``test_a_publish_of_a_stored_hidden_name_or_description_is_422`` of the
+  hermetic suite.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -99,7 +113,7 @@ def world(promoted, monkeypatch):  # noqa: F811
 
 def _user(org: str, email: str) -> UserContext:
     return UserContext(email=email, role=UserRole.EMPLOYEE,
-                       access=build_access(["feature:workflows"]), organization_id=org)
+                       access=build_access(["feature:studio"]), organization_id=org)
 
 
 def _run(world: Any, fn: Callable[[], Awaitable[Any]]) -> Any:
@@ -455,3 +469,87 @@ def test_r8_text_that_postgres_refuses_is_422_and_writes_nothing(world, field, v
     assert TAG not in detail
     assert not any(ch in detail for ch in ("\x00", "\ud83d", "\n"))
     assert _count(world) == 0
+
+
+# ── h. Hidden characters (WS-STU F1b) ──────────────────────────────────────
+
+_ZWSP, _TAG_A = chr(0x200B), chr(0xE0041)
+
+
+def _hidden(path: str, at: int, ch: str) -> str:
+    return (f"{path}: This text holds a hidden character at position {at} "
+            f"(U+{ord(ch):04X}). Remove it.")
+
+
+def test_r8_a_hidden_character_is_422_on_create_and_writes_nothing(world) -> None:
+    """The store refuses a hidden character in the body and in the name. The
+    route answers 422 with the sentence of the store, never 500, and the
+    detail does not echo the text."""
+    a = world.org_a
+
+    async def go() -> list[tuple[int, Any]]:
+        return [
+            await _call(a, ANA, skills.create_skill, payload={
+                "name": "Quotes", "slug": f"hidden-{TAG}",
+                "body": {**_body(), "instructions": f"Read {TAG}" + _ZWSP}}),
+            await _call(a, ANA, skills.create_skill, payload={
+                "name": f"Quotes {TAG}" + _TAG_A, "slug": f"hidden-{TAG}"}),
+        ]
+
+    body_answer, name_answer = _run(world, go)
+    assert body_answer == (422, _hidden("body.instructions", 14, _ZWSP))
+    assert name_answer == (422, _hidden("name", 16, _TAG_A))
+    assert TAG not in body_answer[1] and TAG not in name_answer[1]
+    assert _count(world) == 0
+
+
+def test_r8_a_publish_of_a_stored_hidden_character_is_422(world) -> None:
+    """A store before F1b could keep a hidden character. The superuser writes
+    such a version, because a version cannot be updated. Then a publish
+    answers 422 and the skill stays a draft. A clean version still stops at a
+    hidden name, and a clean name publishes."""
+    a = world.org_a
+    bad = {**_body(), "instructions": "Read" + _TAG_A + " the list."}
+
+    async def make() -> str:
+        return str((await _create(a))["skill"]["id"])
+
+    sid = _run(world, make)
+    with world.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO studio_skill_versions "
+            "(organization_id, skill_id, version, body, content_hash, created_by) "
+            "VALUES (CAST(:org AS uuid), CAST(:sid AS uuid), 1, CAST(:body AS jsonb), "
+            ":hash, :by)"),
+            {"org": a, "sid": sid, "body": json.dumps(bad, ensure_ascii=False),
+             "hash": store.content_hash(bad), "by": ANA})
+        c.execute(text("UPDATE studio_skills SET current_version = 1 "
+                       "WHERE id = CAST(:sid AS uuid)"), {"sid": sid})
+
+    async def first() -> tuple[tuple[int, Any], tuple[int, Any]]:
+        refused = await _call(a, ANA, skills.set_skill_state, sid,
+                              payload={"state": "published"})
+        added = await _call(a, ANA, skills.add_skill_version, sid, payload={"body": _body()})
+        return refused, added
+
+    async def move() -> tuple[int, Any]:
+        return await _call(a, ANA, skills.set_skill_state, sid,
+                           payload={"state": "published"})
+
+    def set_name(name: str) -> None:
+        with world.admin_engine.begin() as c:
+            c.execute(text("UPDATE studio_skills SET name = :n WHERE id = CAST(:sid AS uuid)"),
+                      {"n": name, "sid": sid})
+
+    refused, added = _run(world, first)
+    assert refused == (422, _hidden("body.instructions", 5, _TAG_A))
+    assert added[0] == 200
+    # The body is clean now. A name that an older store kept stops the publish
+    # too (review round 1, P3-4).
+    set_name("Quotes" + _ZWSP)
+    assert _run(world, move) == (422, _hidden("name", 7, _ZWSP))
+    assert _row(world, sid)[2] == "draft"
+    set_name("Quotes")
+    moved = _run(world, move)
+    assert moved[0] == 200 and moved[1]["skill"]["state"] == "published"
+    assert _row(world, sid) == (world.org_a, ANA, "published", "private", 2, 2)

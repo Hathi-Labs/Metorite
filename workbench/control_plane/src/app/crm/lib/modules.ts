@@ -17,6 +17,7 @@
 // locked. The gateway is the boundary: it refuses a Mirror write with 409.
 
 import { fieldRows, type FieldDef, type FieldRow, type FieldValue } from "./fields";
+import { humanizeKey } from "./connect";
 import { formValue, isLookupTarget } from "./fieldLayout";
 import { sameValue } from "./recordForm";
 import type { CrmOwner } from "./filterBar";
@@ -118,18 +119,18 @@ export function moduleRailRows(modules: readonly CrmModule[] | null | undefined)
     .filter((m) => isModuleName(m.api_name))
     .map((m) => ({
       module: m.api_name,
-      label: m.label || m.api_name,
+      label: m.label || humanizeKey(m.api_name),
       icon: moduleIcon(m.api_name),
       count: m.count,
     }));
 }
 
-/** The label of one module, for the title bar. */
+/** The label of one module, for the title bar. A module with no label reads as a name (CRM-U17a). */
 export function moduleLabel(
   modules: readonly CrmModule[] | null | undefined,
   apiName: string | null | undefined,
 ): string {
-  return modules?.find((m) => m.api_name === apiName)?.label || apiName || "Module";
+  return modules?.find((m) => m.api_name === apiName)?.label || (apiName ? humanizeKey(apiName) : "Module");
 }
 
 // ── The list ───────────────────────────────────────────────────────────────

@@ -239,6 +239,33 @@ async def test_the_custom_apps_root_is_for_app_builder_only(
         await broker.acquire()
 
 
+async def test_app_builder_refuses_the_app_dir_of_another_org(
+    broker: sb.SandboxBroker, docker: FakeDocker, env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task 2462: org A deleted app ``foo``, and org B took the slug. A run of
+    org A that still names ``custom_apps/foo`` starts no container. The check
+    gets the org of the run binding, never an org from input."""
+    app = env["apps"] / "foo"
+    app.mkdir()
+    asked: list[tuple[Path, str]] = []
+
+    def owner_is_b(path: Path, org: str) -> bool:
+        asked.append((path, org))
+        return org == ORG_B
+
+    monkeypatch.setattr(sb, "_app_dir_of_org", owner_is_b)
+    with bound_run(ORG_A, agent="app-builder", workspace=str(app), instance=""), (
+        pytest.raises(sb.SandboxRefused, match="not an app of its organization")
+    ):
+        await broker.acquire()
+    assert docker.runs() == []
+    assert asked and all(a == (app.resolve(), ORG_A) for a in asked), asked
+    with bound_run(ORG_B, agent="app-builder", workspace=str(app), instance=""):
+        handle = await broker.acquire()
+    assert handle.workspace == app.resolve()
+
+
 @pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
 async def test_a_dir_with_a_link_part_is_refused(
     broker: sb.SandboxBroker, docker: FakeDocker, env: dict[str, Any],

@@ -31,6 +31,11 @@
  *   answer to the question that the server refuses STAYS for this page
  *   (`keep`), so a fault never traps the member in the question. The browser
  *   copy keeps only what the server confirmed.
+ * - **The org default does not flash** (PKG-17b). It has its own browser
+ *   copy per account (`orgLayout.ts`), and that copy draws the first frame.
+ *   With no copy yet, `loading` stays true for a member with null pins until
+ *   the org default answers, for `ORG_LAYOUT_WAIT_MS` at most
+ *   (`orgLayoutSettled`). A member with their own pins never waits.
  */
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useSession } from "next-auth/react";
@@ -41,6 +46,8 @@ import { invalidate, onClear, peek, put } from "@/lib/dataCache";
 import { chatScope, type ChatSession } from "@/lib/sessions";
 import { useCachedResource } from "@/lib/useCachedResource";
 
+import { setGuideAllowed, setGuideHold } from "./guide";
+import { ORG_LAYOUT_WAIT_MS, orgDefaultFor, orgLayoutSettled, useOrgLayout } from "./orgLayout";
 import { EMPTY_SHELL, shellLayout, type ShellLayout, type StoredShell } from "./presets";
 import { asLayout, readCachedLayout, writeCachedLayout, writeNudgeRetired } from "./shellCache";
 import { shellNavOn } from "./shellNav";
@@ -68,12 +75,18 @@ let saveSeq = 0;
 let confirmedSeq = 0;
 /** The number of the newest save when it settled, success or failure. */
 let settledSeq = 0;
+/** This page already sent the tour mark, or holds a layout that has it (GD-5a). */
+let tourSeenHere = false;
 
 onClear(() => {
   confirmed = undefined;
   unsaved = undefined;
   askedHere = false;
   confirmedSeq = saveSeq;
+  tourSeenHere = false;
+  helloPendingHere = false;
+  // A new member: the guide waits for their own read (GD-5a).
+  setGuideAllowed(null);
 });
 
 /** Tests only: start a new page. */
@@ -82,6 +95,7 @@ export function __newShellPageForTests(): void {
   unsaved = undefined;
   askedHere = false;
   confirmedSeq = saveSeq;
+  tourSeenHere = false;
 }
 
 export function markAsked(): void {
@@ -107,12 +121,27 @@ export function latestShell(): StoredShell | undefined {
   return peek<StoredShell>(SHELL_PREFS_PATH)?.data;
 }
 
+/**
+ * The guide's switch in an answer (GD-5a): `guide` is true only when the
+ * gateway says so. A missing field, as from an older gateway, reads as off.
+ */
+export function guideOn(body: unknown): boolean {
+  return !!body && typeof body === "object" && (body as { guide?: unknown }).guide === true;
+}
+
 export async function readShellPrefs(): Promise<StoredShell> {
   const res = await fetch(SHELL_PREFS_PATH, { cache: "no-store" });
   if (!res.ok) throw new Error(`shell layout ${res.status}`);
-  const layout = asLayout(await res.json());
+  const body: unknown = await res.json();
+  const layout = asLayout(body);
   if (!layout) throw new Error("shell layout: not a layout");
   confirmed = layout;
+  // A member the server never asked sees the welcome picker next. The guide
+  // holds a start for it BEFORE the switch answers, or the tour would begin
+  // under the dialog. The dialog's close lets it go (`welcomeSteps.ts`).
+  if (layout.answered === null && shellNavOn() && !askedHere) setGuideHold(true);
+  // The one read tells the guide whether its entries may show (GD-5a).
+  setGuideAllowed(guideOn(body));
   return layout;
 }
 
@@ -122,10 +151,21 @@ export async function readShellPrefs(): Promise<StoredShell> {
  * keeps the stored value for a key the body omits. A layout built from
  * `EMPTY_SHELL`, as the welcome dialog's is, would name it null otherwise,
  * and bring the nudge back on every device.
+ *
+ * The tour mark (`tour_seen_at`, GD-5a) is never sent: `markTourSeen` alone
+ * writes it, and the server keeps it for a body that omits it. The body names
+ * the layout's keys and no other, so a fact of the server such as `guide`
+ * never goes back (the gateway refuses an unknown key with a 422).
+ *
+ * The hello mark (`buddy_hello_at`, BUD-1) is never sent either: the hello
+ * route alone writes it, first write wins, and the server keeps it.
  */
-export function bodyFor(next: StoredShell | null): Omit<StoredShell, "chat_first_message_at"> & { chat_first_message_at?: string } | null {
+export function bodyFor(
+  next: StoredShell | null,
+): (Omit<StoredShell, "chat_first_message_at" | "tour_seen_at" | "buddy_hello_at"> & { chat_first_message_at?: string }) | null {
   if (!next) return null;
-  const { chat_first_message_at, ...rest } = next;
+  const { preset, answered, pins, known, cardOrder, newOrder, chat_first_message_at } = next;
+  const rest = { preset, answered, pins, known, cardOrder, newOrder };
   return chat_first_message_at ? { ...rest, chat_first_message_at } : rest;
 }
 
@@ -265,8 +305,14 @@ export function nudgeShows(a: {
    * #1206): their chats are the fact that they wrote (§4.7).
    */
   hasChats: boolean | null;
+  /**
+   * The hello (BUD-1) is on its way in this page, or the server holds its
+   * stamp. The hello takes the nudge's place, so the bubble stays away.
+   */
+  helloPending?: boolean;
 }): boolean {
   if (!a.chatFirst || a.welcomeOpen || a.assistantOpen) return false;
+  if (a.helloPending || (a.fresh?.buddy_hello_at ?? null) !== null) return false;
   if (a.retiredHere || a.retiredInBrowser) return false;
   if (a.hasChats !== false) return false;
   return a.fresh !== undefined && a.fresh.chat_first_message_at === null;
@@ -310,6 +356,89 @@ export async function markChatFirstMessage(scope: string | null | undefined): Pr
   }
 }
 
+// ── The tour mark (WS-OB GD-5a, `assistant_guide.md` §5.3) ─────────────────
+//
+// `tour_seen_at` is one field of the layout, on the path of the nudge mark.
+// It is a record for GD-14, never a gate: the account menu keeps "Take the
+// tour", so a member may take it again. It hides nothing, so it needs no
+// browser copy.
+
+/**
+ * The member started the tour. The server takes it once, as a KEY-ONLY
+ * write, as `markChatFirstMessage` does, and stores its own time in place of
+ * this device's. A layout that already holds the mark is left alone, so the
+ * record keeps the FIRST start. A second call in one page does nothing.
+ */
+export async function markTourSeen(): Promise<void> {
+  if (tourSeenHere) return;
+  tourSeenHere = true;
+  const latest = latestShell() ?? confirmed;
+  if (latest?.tour_seen_at) return;
+  try {
+    const res = await fetch(SHELL_PREFS_PATH, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tour_seen_at: new Date().toISOString() }),
+    });
+    if (!res.ok) return;
+    const saved = asLayout(await res.json());
+    if (!saved) return;
+    confirmed = saved;
+    // A layout save that is still out owns the screen. Its answer carries the
+    // mark too, because the server keeps it.
+    if (settledSeq === saveSeq) put(SHELL_PREFS_PATH, saved);
+  } catch {
+    /* a lost record: the tour itself is not affected */
+  }
+}
+
+// ── The hello mark (WS-BUD BUD-1, D177) ────────────────────────────────────
+//
+// `buddy_hello_at` is one field of the layout. The HELLO ROUTE writes it, on
+// the server, first write wins, and posts the row only when it won. So this
+// file never PUTs it: `markBuddyHello` only tells the screen, so the nudge
+// stays away while the answer is out. The next read carries the server's time.
+
+let helloPendingHere = false;
+const helloListeners = new Set<() => void>();
+
+/** The hello is on its way in this page (set by the landing, see `useChatFirstLanding`). */
+export function helloIsPending(): boolean {
+  return helloPendingHere;
+}
+
+/** The hello is asked for, or answered. */
+export function setHelloPending(on: boolean): void {
+  if (helloPendingHere === on) return;
+  helloPendingHere = on;
+  helloListeners.forEach((l) => l());
+}
+
+/** Live: whether the hello is pending in this page. */
+export function useHelloPending(): boolean {
+  return useSyncExternalStore(
+    (l) => {
+      helloListeners.add(l);
+      return () => {
+        helloListeners.delete(l);
+      };
+    },
+    () => helloPendingHere,
+    () => false,
+  );
+}
+
+/**
+ * The hello was posted. The screen takes the mark at once with the time of
+ * this device (it gates only the nudge), and the server's own time replaces
+ * it at the next read. The write itself happened in the hello route.
+ */
+export function markBuddyHello(): void {
+  const latest = latestShell() ?? confirmed;
+  if (!latest || latest.buddy_hello_at) return;
+  put(SHELL_PREFS_PATH, { ...latest, buddy_hello_at: new Date().toISOString() });
+}
+
 /**
  * How long the sidebar waits for the layout before it draws every app. Short
  * on purpose: Home and Add apps wait with it, and a late narrowing costs less
@@ -345,7 +474,11 @@ export interface ShellPrefsState {
   fresh: StoredShell | undefined;
   /** What to draw. The role's preset when nothing is known. */
   layout: ShellLayout;
-  /** True while nothing is known: no read answered, and no copy. */
+  /**
+   * True while nothing is known: no read answered, and no copy. Also true
+   * while the org default holds the shell (`orgLayoutSettled`): null pins,
+   * no copy and no answer of the org default, for `ORG_LAYOUT_WAIT_MS` at most.
+   */
   loading: boolean;
   /** True when the last read failed and nothing else is known. */
   failed: boolean;
@@ -406,13 +539,29 @@ export function useShellPrefs(): ShellPrefsState {
     if (scope && layout) writeCachedLayout(scope, layout);
   }, [scope, res.data]);
 
+  // The org default (PKG-17b): a fallback for a member with no stored choice.
+  // Its browser copy draws the first frame. With no copy, the hold below
+  // waits for the read, for `ORG_LAYOUT_WAIT_MS` at most.
+  const org = useOrgLayout(enabled, scope);
+  const [orgWaited, setOrgWaited] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setOrgWaited(true), ORG_LAYOUT_WAIT_MS);
+    return () => clearTimeout(t);
+  }, []);
   const fresh = enabled ? (unsaved ?? res.data) : undefined;
   const stored = enabled ? (fresh ?? cached) : undefined;
+  const orgHold =
+    stored !== undefined &&
+    !orgLayoutSettled({
+      storedPins: stored.pins,
+      orgState: org.state,
+      elapsedMs: orgWaited ? ORG_LAYOUT_WAIT_MS : 0,
+    });
   return {
     stored,
     fresh,
-    layout: shellLayout(stored, access.roles ?? []),
-    loading: enabled && stored === undefined && res.loading,
+    layout: shellLayout(stored, access.roles ?? [], orgDefaultFor(org.layout, access.roles ?? [])),
+    loading: enabled && ((stored === undefined && res.loading) || orgHold),
     failed: enabled && stored === undefined && !res.loading && res.error !== null,
     enabled,
     answered: enabled && !res.loading && (res.data !== undefined || res.error !== null),

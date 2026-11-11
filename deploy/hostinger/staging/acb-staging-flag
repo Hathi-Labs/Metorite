@@ -169,6 +169,8 @@ readonly NAME_RE='^[A-Z][A-Z0-9_]{1,63}$'
 # ASSISTANT_CHAT_SUMMARY_ORGS (WS-63 PZ-33) opens a job that spends tier-fast
 # credits of each listed org, with no request of the member. A flip here is
 # gate enforcement-flip. Its production flip is owner-only (D-PZ-35).
+# ASSISTANT_BRIEFING_ORGS (WS-63 PZ-34) opens the briefing block of a chat. It
+# reads the database and Redis only, and calls no model.
 # Left out on purpose: DECIDE_ENABLED (owner-only, it sends content to a third
 # party), DECIDE_FEATURE_MODES (owner gate H-166 on a box) and
 # NARROWING_AGENTS (each agent added spends Router credits).
@@ -189,6 +191,7 @@ readonly ALLOWED_KEYS=(
   ASSISTANT_PROFILE_ORGS
   ASSISTANT_PROFILE_CARD_WRITES_ORGS
   ASSISTANT_CHAT_SUMMARY_ORGS
+  ASSISTANT_BRIEFING_ORGS
   ATTACHMENT_OCR
   JOB_QUEUE
   UNATTENDED_LEDGER

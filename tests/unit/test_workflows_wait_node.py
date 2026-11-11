@@ -11,10 +11,11 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 
-from gateway.routes.workflows import scheduler, service
+from gateway.routes.workflows import scheduler, service, unattended
 from gateway.routes.workflows.engine.graph import compile_graph, validate_graph
 from gateway.routes.workflows.engine.handlers import (
     MAX_WAIT_SECONDS,
@@ -254,7 +255,8 @@ def test_approval_pause_still_files_a_proposal(monkeypatch) -> None:
 
 def _pause_row(run_id: str, resume_at: float) -> SimpleNamespace:
     return SimpleNamespace(
-        id=f"p-{run_id}", run_id=run_id, snapshot={"resume_at": resume_at}
+        id=f"p-{run_id}", run_id=run_id, snapshot={"resume_at": resume_at},
+        organization_id="org-1",
     )
 
 
@@ -276,16 +278,31 @@ def _install_wait_rows(monkeypatch, rows: list[SimpleNamespace]) -> list[str]:
         async def close(self) -> None:
             return None
 
-    async def fake_get_db() -> Any:
-        return _Db()
+    async def fake_orgs() -> list[str]:
+        return ["org-1"]
+
+    @asynccontextmanager
+    async def fake_tenant_session(org: str | None = None) -> Any:
+        yield _Db()
 
     resumed: list[str] = []
 
-    async def fake_resume(run_id: str, *, resumed_by: str = "") -> dict:
+    async def fake_resume(
+        run_id: str, *, resumed_by: str = "", organization_id: str | None = None,
+        pause_id: str | None = None,
+    ) -> dict:
+        assert organization_id == "org-1"  # the org of the run row
+        assert pause_id == f"p-{run_id}"  # AUTO-7b: the pause that the scan read
         resumed.append(run_id)
         return {"ok": True, "run_id": run_id}
 
-    monkeypatch.setattr(scheduler, "_get_db", fake_get_db)
+    # H-328 part (b): "org-1" is the one listed org.
+    monkeypatch.setattr(scheduler, "_organization_ids", fake_orgs)
+    monkeypatch.setattr(scheduler, "_tenant_session", fake_tenant_session)
+    monkeypatch.setattr(
+        unattended, "get_settings",
+        lambda: SimpleNamespace(workflow_unattended_orgs="org-1"),
+    )
     monkeypatch.setattr(scheduler, "resume_run", fake_resume)
     return resumed
 
@@ -302,7 +319,9 @@ def test_scan_due_waits_resumes_only_matured_pauses(monkeypatch) -> None:
 
 def test_scan_due_waits_survives_a_bad_snapshot(monkeypatch) -> None:
     now = time.time()
-    bad = SimpleNamespace(id="p-x", run_id="broken", snapshot={"resume_at": "soon"})
+    bad = SimpleNamespace(
+        id="p-x", run_id="broken", snapshot={"resume_at": "soon"}, organization_id="org-1",
+    )
     resumed = _install_wait_rows(monkeypatch, [bad, _pause_row("due", now - 1)])
     assert asyncio.run(scheduler.scan_due_waits(now)) == 1
     assert resumed == ["due"]

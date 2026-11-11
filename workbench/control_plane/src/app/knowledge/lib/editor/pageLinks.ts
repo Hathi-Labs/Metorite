@@ -6,6 +6,7 @@
 // (KB-2h). The picker writes nothing to `kb_links`.
 
 import { pageHref, pageIdOf } from "../links";
+import { isPendingMe } from "../labels";
 import type { PageSummary, Space } from "../types";
 
 /** One page the picker can offer. */
@@ -26,7 +27,8 @@ export async function loadPageChoices(
   spaces: readonly Pick<Space, "id" | "name" | "archived_at">[],
   listPages: (spaceId: string) => Promise<PageSummary[]>,
 ): Promise<PageChoice[]> {
-  const open = spaces.filter((s) => !s.archived_at);
+  // KB-2s: the stand-in "My notes" has no row, so no page list to read.
+  const open = spaces.filter((s) => !s.archived_at && !isPendingMe(s.id));
   const results = await Promise.allSettled(open.map((s) => listPages(s.id)));
   const out: PageChoice[] = [];
   results.forEach((r, i) => {

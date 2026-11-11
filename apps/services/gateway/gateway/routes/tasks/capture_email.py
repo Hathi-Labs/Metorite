@@ -348,12 +348,30 @@ def _resolve_assignee(name: str, people: list[dict]) -> dict[str, Any] | None:
     if not who:
         return None
     toks = who.split()
+    prefix = None
     for p in people:
         ptoks = (p.get("name") or "").strip().lower().split()
-        if ptoks and (ptoks == toks or ptoks[:len(toks)] == toks):
-            return {"name": p["name"], "email": p.get("email"),
-                    "provider_user_id": p.get("provider_user_id")}
-    return None
+        if ptoks == toks:  # a full-name match wins over an earlier prefix match
+            prefix = p
+            break
+        if prefix is None and ptoks and ptoks[:len(toks)] == toks:
+            prefix = p
+    if prefix is None:
+        return None
+    return {"name": prefix["name"], "email": prefix.get("email"),
+            "provider_user_id": prefix.get("provider_user_id")}
+
+
+async def _draft_capture(**kw: Any) -> dict[str, Any] | None:
+    """``_llm_capture`` with DEC-2b's ``projects.delegate_pick`` beside it.
+    ``off`` calls ``_llm_capture`` as before. The draft stays an LLM call."""
+    from gateway.routes.tasks import projects_decide
+
+    return await projects_decide.delegate_pick(
+        subject=kw["subject"], from_name=kw["from_name"], from_email=kw["from_email"],
+        owner_addrs=kw["owner_addrs"], body=kw["body"], thread=kw["thread"],
+        people=kw["people"], resolve=_resolve_assignee,
+        old=lambda: _llm_capture(**kw))
 
 
 async def _find_pm_account_for_person(
@@ -412,6 +430,17 @@ def _parse_dt(val: str) -> datetime | None:
         return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
     except Exception:
         return None
+
+
+async def _draft_due(db: Any, uid: str, raw: str) -> datetime | None:
+    """The instant that a draft's due value stores (RX-5). A date with no time
+    is noon of that date in the member's zone (``personal.stored_due``). A bare
+    parse gives midnight UTC, which is the day before in a zone west of UTC.
+    Any other value parses as it always did."""
+    from gateway.routes.projects.personal import stored_due
+
+    stored = await stored_due(db, uid, raw)
+    return stored if isinstance(stored, datetime) else _parse_dt(stored)
 
 
 # ── Shared machinery (used by the one-click endpoint AND the popup steps) ─────
@@ -542,7 +571,7 @@ async def _route_and_persist(
             assignee, disposition = None, "INBOX"
 
     is_mine = disposition != "WAITING"
-    due_at = _parse_dt(draft.get("due_at", ""))
+    due_at = await _draft_due(db, uid, draft.get("due_at", ""))
     defer_until = _parse_dt(draft.get("defer_until", ""))
     is_hard = bool(due_at) and disposition in ("NEXT", "CALENDAR")
     clarified = disposition != "INBOX"
@@ -643,7 +672,7 @@ async def capture_from_email(
         people = await fetch_people_for_clarify(db)
         models = await task_models(db, uid)
 
-        draft = await _llm_capture(
+        draft = await _draft_capture(
             subject=email.subject or "", from_name=from_name,
             from_email=from_email_, to_line=_fmt_addrs(to_list),
             cc_line=_fmt_addrs(cc_list), owner_addrs=owner_addrs,
@@ -680,7 +709,7 @@ async def capture_from_email(
                 assignee, disposition = None, "INBOX"
 
         is_mine = disposition != "WAITING"
-        due_at = _parse_dt(draft.get("due_at", ""))
+        due_at = await _draft_due(db, uid, draft.get("due_at", ""))
         defer_until = _parse_dt(draft.get("defer_until", ""))
         # A due date the owner must hit (NEXT/CALENDAR) is a HARD date — it
         # belongs on the Calendar / deadline view. A WAITING item's due date is
@@ -817,7 +846,7 @@ async def enhance_capture_from_email(
         people = await fetch_people_for_clarify(db)
         models = await task_models(db, uid)
 
-        drafted = await _llm_capture(
+        drafted = await _draft_capture(
             subject=email.subject or "", from_name=from_name,
             from_email=from_email_, to_line=_fmt_addrs(to_list),
             cc_line=_fmt_addrs(cc_list), owner_addrs=owner_addrs,
@@ -1212,11 +1241,19 @@ async def detect_commitment_from_reply(
         people = await fetch_people_for_clarify(db)
         models = await task_models(db, uid)
 
-        detected = await _llm_detect_commitment(
+        async def _old() -> dict[str, Any] | None:
+            # The contexts are read here, so a decide "no" in `on` skips the read.
+            return await _llm_detect_commitment(
+                subject=req.subject, owner_name=owner_name,
+                owner_addrs=owner_addrs, body=req.body, thread=thread,
+                people=people, model=models["email_capture"],
+                contexts=await _user_contexts(db, uid))
+
+        # DEC-2a: `projects.commitment`. `off` calls `_llm_detect_commitment` as before.
+        from gateway.routes.tasks import projects_decide
+        detected = await projects_decide.commitment(
             subject=req.subject, owner_name=owner_name, owner_addrs=owner_addrs,
-            body=req.body, thread=thread, people=people,
-            model=models["email_capture"],
-            contexts=await _user_contexts(db, uid))
+            body=req.body, thread=thread, old=_old)
         if not detected or not detected.get("is_commitment"):
             return DetectCommitmentResponse(is_commitment=False, used_llm=bool(detected))
 

@@ -39,7 +39,8 @@ only along :data:`TRANSITIONS`: ``planned`` to ``gathered`` to ``ready``,
 no brief, with the reason). BR-2c-1 adds ``ready`` to ``delivered``. The
 run makes that move when the in-app surface is on, and the move stamps
 ``delivered_at``. So a second gather of a run that moved on changes
-nothing. :func:`set_lead` writes the lead, and :func:`link_run` the
+nothing. BR-2a-2 adds ``gathered`` to ``phrasing`` (:func:`mark_phrasing`,
+the intent mark of the one model call) and ``phrasing`` to ``ready``. :func:`set_lead` writes the lead, and :func:`link_run` the
 ledger row of AUTO-2 of the current try.
 
 **A moved slot (BR-2a-1, repair round 2).** :func:`discard_planned` deletes
@@ -70,11 +71,13 @@ MAX_SOURCE_IDS = 50
 #: The moves that :func:`set_state` makes with a ``from_state`` guard
 #: (``core_brief.md`` §4.2). Each is ``(from, to)``. ``ready`` to
 #: ``delivered`` is BR-2c-1: the run itself makes it, when the in-app
-#: surface is on (``brief.run``). ``phrasing`` (BR-2a-2) adds its own rows
-#: when it ships.
+#: surface is on (``brief.run``). BR-2a-2 adds ``gathered`` to
+#: ``phrasing`` (:func:`mark_phrasing` makes it, with the request id) and
+#: ``phrasing`` to ``ready``.
 TRANSITIONS: frozenset[tuple[str, str]] = frozenset({
     ("planned", "gathered"), ("gathered", "ready"), ("planned", "empty"),
-    ("planned", "failed"), ("ready", "delivered")})
+    ("planned", "failed"), ("ready", "delivered"), ("gathered", "phrasing"),
+    ("phrasing", "ready")})
 #: The two sources of a lead, as the CHECK ``brief_runs_lead_source`` holds them.
 LEAD_SOURCES: tuple[str, ...] = ("template", "model")
 
@@ -127,6 +130,15 @@ _SET_LEAD_SQL = (
     "lead_claim_ids = CAST(:ids AS uuid[]) "
     f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
     "AND id = CAST(:id AS uuid)"
+)
+
+#: The intent mark of the phrase step (BR-2a-2): ``gathered`` to
+#: ``phrasing`` and the request id, in ONE guarded statement. A row that is
+#: not ``gathered`` does not change, so of two tries only one wins.
+_MARK_PHRASING_SQL = (
+    "UPDATE brief_runs SET state = 'phrasing', model_request_id = :ref "
+    f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
+    "AND id = CAST(:id AS uuid) AND state = 'gathered'"
 )
 
 #: The link to the ledger row of the current try. A retry after a release
@@ -348,6 +360,20 @@ async def set_lead(db: Any, member: str, run_id: str, lead: str, *, source: str,
     result: Any = await db.execute(text(_SET_LEAD_SQL), {
         "lead": lead, "src": source, "ids": list(claim_ids), "m": _member(member),
         "id": run_id})
+    return bool(getattr(result, "rowcount", 0))
+
+
+async def mark_phrasing(db: Any, member: str, run_id: str, *, ref: str) -> bool:
+    """Move the run *run_id* of *member* from ``gathered`` to ``phrasing``,
+    and write ``model_request_id`` = *ref*, in one guarded UPDATE. *ref*
+    is the ``client_ref`` of the phrase call, so it joins
+    ``usage_event.client_ref``. Answers False when the run is not
+    ``gathered``, or when no run of the member has the id. So a second try
+    never makes a second call."""
+    if not isinstance(ref, str) or not ref.strip():
+        raise BriefStoreError("ref must be a non-empty string")
+    result: Any = await db.execute(text(_MARK_PHRASING_SQL), {
+        "ref": ref, "m": _member(member), "id": run_id})
     return bool(getattr(result, "rowcount", 0))
 
 

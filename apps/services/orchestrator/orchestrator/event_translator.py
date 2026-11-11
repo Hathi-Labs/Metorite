@@ -45,6 +45,7 @@ from uuid import uuid4
 
 from acb_common import get_logger
 from acb_common.tool_refusals import is_refusal
+from acb_llm.message_hygiene import PlaceholderStreamFilter, strip_placeholder_lines
 
 _log = get_logger("orchestrator.event_translator")
 
@@ -90,8 +91,13 @@ class TranslationState:
     # mint the same one), we must force a FRESH id — AG-UI requires distinct
     # message ids for distinct logical streams, and the client dedups by id.
     used_message_ids: set[str] = None  # type: ignore[assignment]
+    # Holds back a line that may be litellm's empty-text placeholder, so the
+    # member never sees it (task 1787). One per open text message.
+    placeholder_filter: PlaceholderStreamFilter = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
+        if self.placeholder_filter is None:
+            self.placeholder_filter = PlaceholderStreamFilter()
         if self.fc is None:
             self.fc = ToolCallStreamState(self.run_id)
         if self.used_message_ids is None:
@@ -259,14 +265,18 @@ def translate_update(
             # Message-id-native segmentation (Phase 3a): runtimes mint a new
             # message id per assistant segment (text between tool rounds).
             # A changed id is a REAL message boundary — close the open
-            # segment and start the next, so downstream never has to infer
-            # narration-vs-answer from tool positions.
+            # segment (and flush the placeholder filter) BEFORE this delta is
+            # filtered, so the start of the next segment is not held back
+            # behind the end of the last one.
             if (
                 state.text_started
                 and update_msg_id
                 and update_msg_id != state.message_id
             ):
                 events.extend(close_text_message(state))
+            delta = state.placeholder_filter.feed(delta)
+            if not delta:
+                continue
             if not state.text_started:
                 state.text_started = True
                 # Pick the segment id: prefer the runtime's, but if it's absent
@@ -358,7 +368,21 @@ def close_text_message(state: TranslationState) -> list[dict[str, Any]]:
     """TEXT_MESSAGE_END for the open message, if any (idempotent)."""
     if state.text_started and state.message_id:
         state.text_started = False
-        return [{"type": "TEXT_MESSAGE_END", "messageId": state.message_id}]
+        events: list[dict[str, Any]] = []
+        held = state.placeholder_filter.flush()
+        if held:
+            events.append({
+                "type": "TEXT_MESSAGE_CONTENT",
+                "messageId": state.message_id,
+                "delta": held,
+            })
+        events.append({"type": "TEXT_MESSAGE_END", "messageId": state.message_id})
+        return events
+    held = state.placeholder_filter.flush()
+    if held:
+        # Text the filter kept back (for example a lone "[") before any
+        # message opened. It is real text, so it gets a message of its own.
+        return text_message_events(held, words_per_chunk=10**6)
     return []
 
 
@@ -371,6 +395,7 @@ def text_message_events(
     fallback tier speaks the message-id-native protocol.
     """
     msg_id = message_id or str(uuid4())
+    text = strip_placeholder_lines(text)
     events: list[dict[str, Any]] = [{
         "type": "TEXT_MESSAGE_START", "messageId": msg_id, "role": "assistant",
     }]

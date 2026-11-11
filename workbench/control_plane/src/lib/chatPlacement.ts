@@ -47,8 +47,17 @@ import { bareToolName } from "@/lib/toolSteps";
 export type Placement = "ask" | "evidence" | "write" | "answer";
 
 /** Tools whose result the member must answer. The chat draws them itself
- *  (`AgentChat`'s confirmation queue and question cards). */
-const ASK: readonly string[] = ["request_confirmation", "ask_questions", "ask_user"];
+ *  (`AgentChat`'s confirmation queue and question cards). The record writes
+ *  of AI Studio first ask, and their result is a request that waits: its
+ *  card is `components/studio/StudioToolCards.tsx` (STU-B2c-2c). */
+const ASK: readonly string[] = [
+  "request_confirmation",
+  "ask_questions",
+  "ask_user",
+  "studio_record_create",
+  "studio_record_update",
+  "studio_record_delete",
+];
 
 /**
  * Tools that draw a card the model chose. `emit_generative_ui` is here, and
@@ -92,12 +101,19 @@ const EVIDENCE: readonly string[] = [
   "notifications",
   "watchers",
   "project_access",
+  "project_authorities",
+  // WS-39 LP-1a: the updates of a project.
+  "list_project_updates",
+  // WS-39 TPL-1a: the templates of the organization.
+  "list_templates",
+  "my_decisions",
   "project_views",
   "recurrence",
   "team_capacity",
   "fit_for_task",
   "rebalance",
   "find_conflicts",
+  "get_plan",
   "analytics_stuck",
   "analytics_load",
   "analytics_throughput",
@@ -172,6 +188,8 @@ const WRITE: readonly string[] = [
   "update_task",
   "assign",
   "comment",
+  // WS-39 LP-1a: one update of a project, with its health.
+  "post_project_update",
   "add_subtasks",
   "link_tasks",
   "unlink_tasks",
@@ -183,6 +201,10 @@ const WRITE: readonly string[] = [
   "file_tasks",
   // Several links between tasks, one card with rows (2026-10-19).
   "link_tasks_batch",
+  // Several edits, a different change for each task, one card with rows.
+  "update_tasks",
+  // SP-8a: the contract of an epic, one card.
+  "set_epic_contract",
   "watch",
   "complete",
   "defer",
@@ -237,6 +259,14 @@ const WRITE: readonly string[] = [
   "attach_to_task",
   "grant_access",
   "revoke_access",
+  "pin_authority",
+  "unpin_authority",
+  // WS-39 LP-1a: the delete of a project update, class C.
+  "delete_project_update",
+  // WS-39 TPL-1a: an org-wide template, and a project made from one.
+  "save_as_template",
+  "create_project_from_template",
+  "answer_decision",
   "add_report_recipient",
   "remove_report_recipient",
   "set_report_schedule",
@@ -320,6 +350,11 @@ const WRITE: readonly string[] = [
   "update_deal_status",
   "log_activity",
   "convert_lead",
+  // WS-CRM CRM-M2b: a field of a record, and a task done or due.
+  "crm_update_record",
+  "crm_update_task",
+  // WS-CRM CRM-M3a: a new deal pipeline, on one card.
+  "crm_create_pipeline",
   // ── The assistant profile (WS-63 PZ-6a): each acts at once, with Undo ──
   "profile_remember",
   "profile_forget",

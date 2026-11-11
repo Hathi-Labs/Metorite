@@ -456,7 +456,7 @@ class TestTheTenantUnderTheOwnerRole:
             # Org A's stored wait is 1 day. Org B reads no row: the default.
             await digest._awaiting_cutoff(db, box_a)
             assert asked == [digest.NO_ANSWER_DEFAULT_DAYS]
-            _at, picked, latest = await digest._commitments_core(
+            _zone, _at, picked, latest = await digest._commitments_core(
                 db, box_a, horizon_days=3, limit=16, commitment=True, this_tenant=True,
                 now=NOW)
             assert (picked, latest) == ([], {})

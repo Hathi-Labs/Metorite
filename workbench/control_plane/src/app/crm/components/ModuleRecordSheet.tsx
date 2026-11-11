@@ -35,7 +35,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 import { useState } from "react";
 import * as api from "../lib/api";
 import { CrmError } from "../lib/api";
-import { isLocked, zohoCreatedLine, zohoLink } from "../lib/connect";
+import { humanizeKey, isLocked, zohoCreatedLine, zohoLink } from "../lib/connect";
 import { useCrmModeValue } from "../lib/modeContext";
 import { useOwners } from "../lib/useCrmMode";
 import type { CrmOwner } from "../lib/filterBar";
@@ -68,7 +68,7 @@ import type { TimelineEntry } from "../lib/types";
 import FieldValue from "./FieldValue";
 import { FoldedFields } from "./FieldsPanel";
 import ModuleEditRow from "./ModuleEditRow";
-import { RecordFacts, RecordModal, RecordTabBar } from "./RecordShell";
+import { RecordCard, RecordFacts, RecordLoadFailed, RecordTabBar } from "./RecordShell";
 import Timeline from "./Timeline";
 
 /** The write path of the sheet (CRM-Z10d). `onPatch` gives `false` on a refusal. */
@@ -143,9 +143,9 @@ export default function ModuleRecordSheet({
     () => api.getModuleTimeline(module, id),
   );
   const timeline = moduleTimelineState(stream.data, stream.error);
-  const noun = page?.module.singular_label || page?.module.label || module;
+  const noun = page?.module.singular_label || page?.module.label || humanizeKey(module);
   return (
-    <RecordModal
+    <RecordCard
       title={
         state.kind === "page"
           ? moduleTitle(state.page.record, state.page.module.singular_label)
@@ -166,18 +166,13 @@ export default function ModuleRecordSheet({
           edit={{ saving, refusal, owners, onPatch: patch }}
         />
       ) : state.kind === "failed" ? (
-        <div className="flex flex-col items-center gap-3 p-8 text-center">
-          <p className="text-xs text-muted-foreground">This record did not load. Try again.</p>
-          <Button variant="secondary" size="sm" icon="RefreshCw" onClick={res.refresh}>
-            Retry
-          </Button>
-        </div>
+        <RecordLoadFailed onRetry={res.refresh} />
       ) : (
         <p className="p-8 text-center text-xs text-muted-foreground">
           {state.kind === "missing" ? "This record has not synced yet." : "Loading…"}
         </p>
       )}
-    </RecordModal>
+    </RecordCard>
   );
 }
 
@@ -218,14 +213,14 @@ export function ModuleRecordBody({
     : rows;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-3">
+      <div className="@container flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-3">
         <RecordFacts facts={moduleFacts(page.record)} />
         {imported && <span className="text-[11px] text-muted-foreground">{imported}</span>}
       </div>
 
       <RecordTabBar tabs={moduleTabs(page)} active={shown} onTab={onTab} />
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="pb-askbar min-h-0 flex-1 overflow-y-auto">
         {shown === "timeline" ? (
           <ModuleTimeline state={timeline} onRetry={onRetryTimeline} />
         ) : shown === "related" ? (

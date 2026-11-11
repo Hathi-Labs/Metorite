@@ -142,6 +142,12 @@ _INTEGRITY_READS: dict[tuple[str, str], str] = {
         "carries a stored position: each gives the rank among the siblings "
         "the caller sees (pages._rank, page_dict)."
     ),
+    ("core.py", "pin_currency"): (
+        "A project pin (ALN-4) shows stale to a member who cannot read the "
+        "page, so the state of the page and whether its words moved since the "
+        "pin are read with no member's clause. It returns a bool, a state word "
+        "and a bool. It carries no title, no text and no space."
+    ),
     ("backlinks.py", "backfill_org_links"): (
         "The operator backfill of kb_links (K-2) reads the source pages of ONE "
         "org to run the write path's sync_page_links. It returns counts only. "

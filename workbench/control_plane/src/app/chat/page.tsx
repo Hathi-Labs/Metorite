@@ -39,6 +39,7 @@ import { mergeFileEntry } from "@/lib/shell/chatHistory";
 import FileUploadButton from "@/components/FileUploadButton";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
+import { usePhoneBar, useSheetTab } from "@/lib/shell/phoneBarEvent";
 import { useActiveSessions, useUnreadIds } from "@/hooks/useActiveSessions";
 import SessionRunDot from "@/components/SessionRunDot";
 import { useChatMemories } from "@/hooks/useChatMemories";
@@ -579,8 +580,13 @@ function ChatPageInner() {
 
   const { isMobile } = useViewMode();
   const {
-    open: openDrawer, close: closeDrawer, isOpen: drawerIsOpen,
+    open: openDrawer, close: closeDrawer, isOpen: drawerIsOpen, shows: drawerShows,
   } = useMobileDrawer();
+  // The place tab whose sheet shows is selected in the bar (MOB-12).
+  const [sheetTab, markSheetTab] = useSheetTab(drawerIsOpen, drawerShows);
+  usePhoneBar({ active: sheetTab });
+  // The bar's "New chat" tab starts a chat as the page's own button does.
+  const newChatRef = useRef<() => void>(() => {});
   const activeRunIds = useActiveSessions();
   // WS-51 S5: a chat whose run ended while the member looked away.
   const unreadIds = useUnreadIds();
@@ -599,15 +605,19 @@ function ChatPageInner() {
       const tab = (e as CustomEvent<string>).detail;
       if (tab === "chats" && conversationsRef.current) {
         drawerTabRef.current = "chats";
+        markSheetTab("chats");
         openDrawer(conversationsRef.current);
       } else if (tab === "files" && filesRef.current) {
         drawerTabRef.current = "files";
+        markSheetTab("files");
         openDrawer(filesRef.current);
+      } else if (tab === "chat-new") {
+        newChatRef.current();
       }
     };
     window.addEventListener("cc-mobile-nav", handler);
     return () => window.removeEventListener("cc-mobile-nav", handler);
-  }, [openDrawer]);
+  }, [openDrawer, markSheetTab]);
 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>("");
@@ -619,13 +629,15 @@ function ChatPageInner() {
   const [recoveredInput, setRecoveredInput] = useState<string | undefined>();
   // NS-1: the command bar's "Ask the assistant" arrives as `?q=`. The words
   // land in the message box for the member to check and send. Nothing sends
-  // by itself (§6.4 rule 2). `q` then leaves the address, so a reload does
-  // not type it again.
+  // by itself (§6.4 rule 2). WS-63 D-PZ-37: a link carries no typed mark,
+  // because anybody can write one, so `askInput` waits in the box unmarked.
+  // `q` then leaves the address, so a reload does not type it again.
   //
   // ⚠️ Its own state, never `recoveredInput`. The session effect below clears
   // `recoveredInput` on mount, in the same flush, and the question vanished
-  // (review, 2026-10-08). Gated on the flag, so a flag-off build reads no `q`.
-  const askParam = shellBarOn() ? searchParams?.get("q") ?? null : null;
+  // (review, 2026-10-08). It reads `q` with the bar off too (BETA-1): the Studio
+  // fallback link `/chat?q=` is the only way in when the shell chat is off.
+  const askParam = searchParams?.get("q") ?? null;
   const [askInput, setAskInput] = useState<string | undefined>();
   useEffect(() => {
     if (!askParam?.trim()) return;
@@ -916,6 +928,7 @@ function ChatPageInner() {
     newChatWaitingRef.current = action === "wait";
     setShowPicker(true);
   }, [agentChoice, startOrchestratorChat]);
+  newChatRef.current = handleNewSession;
 
   // The list answered: a waiting press starts the orchestrator chat, or the
   // picker that it asked for now draws (`agentPickerShows`).
@@ -1384,6 +1397,9 @@ function ChatFullView() {
     openAssistant({
       mode: "full",
       sessionId: job === OPEN_CHAT_JOB && fields.session && !reminder ? fields.session : undefined,
+      // WS-63 D-PZ-37: `q` comes from a link, and anybody can write a link,
+      // a reply of Mira included. So its words wait in the box with no typed
+      // mark, and a send of them counts for nothing (`lib/typedMark.ts`).
       draft: params.get("q") ?? undefined,
       fresh: job === "new-chat" || Boolean(reminder),
       reminder,

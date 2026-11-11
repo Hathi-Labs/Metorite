@@ -530,6 +530,33 @@ export function layoutBlocks(
   return out;
 }
 
+/**
+ * The blocks that clash with another OPEN block in a part of the day that is
+ * still ahead. `layoutBlocks` splits every overlap into lanes, so the clash
+ * shows in the layout. Only these blocks also carry the "Overlaps" mark.
+ *
+ * A done block clashes with nothing: the time is spent, and a mark on it
+ * asks the member to fix a past that cannot change. So does an overlap that
+ * ended before `now`. The banner of unfinished tasks owns those.
+ */
+export function openConflicts(blocks: readonly Block[], now: Date): Set<string> {
+  const open = blocks.filter((b) => b.item.disposition !== "DONE");
+  const out = new Set<string>();
+  for (let i = 0; i < open.length; i++) {
+    for (let j = i + 1; j < open.length; j++) {
+      const a = open[i];
+      const b = open[j];
+      const from = Math.max(a.start.getTime(), b.start.getTime());
+      const to = Math.min(a.end.getTime(), b.end.getTime());
+      if (from < to && to > now.getTime()) {
+        out.add(a.item.id);
+        out.add(b.item.id);
+      }
+    }
+  }
+  return out;
+}
+
 /** A live clock that ticks so the calendar reflects the passage of time — the
  *  now-line, the current-block highlight, and the Now/Next countdowns all read
  *  from this instead of calling Date.now() in render (which the purity lint

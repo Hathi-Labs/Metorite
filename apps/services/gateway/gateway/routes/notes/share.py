@@ -89,6 +89,7 @@ async def _draft(title: str, summary_md: str) -> tuple[str, str]:
             temperature=0.3,
             max_tokens=900,
             response_format={"type": "json_object"},
+            job="writing",
         )
         raw = resp.choices[0].message.content or ""
         start, end = raw.find("{"), raw.rfind("}")

@@ -43,7 +43,10 @@ import { useOverflowTip } from "@/components/ui/OverflowTip";
 import { LEGEND, parseTaskRows, taskRowFacts, type ProjectTaskRow } from "@/lib/projectToolRows";
 import { statusAccent } from "@/lib/statusAccent";
 import { noteReminderReceipt } from "@/lib/shell/reminderOpen";
+import { ALREADY_HEAD, readReminderReceipt } from "@/lib/reminderReceipt";
+import ReminderReceiptCard from "./ReminderReceiptCard";
 import { glassToneFrame } from "@/components/glassCard";
+import { PROJECTS_CHANGED_EVENT } from "@/lib/projectsEvents";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -92,6 +95,12 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   status_report: { icon: "Flag", label: "Status report" },
   // S5 — the rest of the reads
   project_access: { icon: "Users", label: "Access" },
+  project_authorities: { icon: "Users", label: "Authority pages" },
+  // WS-39 LP-1a: the updates of a project, newest first.
+  list_project_updates: { icon: "Megaphone", label: "Project updates" },
+  // WS-39 TPL-1a: the templates of the organization.
+  list_templates: { icon: "LayoutList", label: "Templates" },
+  my_decisions: { icon: "Users", label: "Decisions" },
   project_views: { icon: "LayoutList", label: "Views" },
   my_contexts: { icon: "AtSign", label: "Contexts" },
   watchers: { icon: "Eye", label: "Watchers" },
@@ -134,10 +143,13 @@ export const OPENS_APP: Record<string, { app: "reports"; label: string }> = {
  * This card is the receipt: what changed, and a jump to the row.
  */
 const ACTION_META: Record<string, { icon: string; label: string }> = {
-  create_task: { icon: "Plus", label: "Task created" },
+  // RX-2: a task receipt wears a checked clipboard, and a reminder receipt wears a Bell.
+  create_task: { icon: "ClipboardCheck", label: "Task created" },
   update_task: { icon: "PenLine", label: "Task updated" },
   assign: { icon: "UserPlus", label: "Assignees changed" },
   comment: { icon: "MessageSquare", label: "Comment posted" },
+  // WS-39 LP-1a: one update of a project, with its health.
+  post_project_update: { icon: "Megaphone", label: "Project update posted" },
   add_subtasks: { icon: "ListTree", label: "Subtasks added" },
   link_tasks: { icon: "Link", label: "Tasks linked" },
   unlink_tasks: { icon: "Unlink", label: "Link removed" },
@@ -147,6 +159,9 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   move_task: { icon: "MoveRight", label: "Task moved" },
   file_tasks: { icon: "MoveRight", label: "Tasks filed" },
   link_tasks_batch: { icon: "Link", label: "Tasks linked" },
+  update_tasks: { icon: "PenLine", label: "Tasks updated" },
+  // SP-8a: the contract of an epic, one card.
+  set_epic_contract: { icon: "ClipboardCheck", label: "Epic contract saved" },
   watch: { icon: "Eye", label: "Watching changed" },
   complete: { icon: "CheckCircle2", label: "Task done" },
   defer: { icon: "CalendarClock", label: "Deferred" },
@@ -165,7 +180,7 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   update_tag: { icon: "PenLine", label: "Tag updated" },
   edit_comment: { icon: "MessageSquare", label: "Comment edited" },
   set_recurrence: { icon: "Repeat", label: "Repeat rule set" },
-  create_personal_task: { icon: "Plus", label: "Private task captured" },
+  create_personal_task: { icon: "ClipboardCheck", label: "Private task captured" },
   set_my_overlay: { icon: "SlidersHorizontal", label: "Your triage updated" },
   // S3 — the guarded acts. Same receipt: the card BEFORE the act carried
   // the counts, this one says what the route reported.
@@ -194,6 +209,14 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   attach_to_task: { icon: "Paperclip", label: "File attached" },
   grant_access: { icon: "UserPlus", label: "Access given" },
   revoke_access: { icon: "UserMinus", label: "Access removed" },
+  pin_authority: { icon: "UserPlus", label: "Authority page pinned" },
+  unpin_authority: { icon: "UserMinus", label: "Authority page removed" },
+  // WS-39 LP-1a: the delete of a project update.
+  delete_project_update: { icon: "Trash2", label: "Project update deleted" },
+  // WS-39 TPL-1a: an org-wide template, and a project made from one.
+  save_as_template: { icon: "LayoutList", label: "Template saved" },
+  create_project_from_template: { icon: "FolderPlus", label: "Project made from a template" },
+  answer_decision: { icon: "UserPlus", label: "Decision answered" },
   add_report_recipient: { icon: "UserPlus", label: "Recipient added" },
   remove_report_recipient: { icon: "UserMinus", label: "Recipient removed" },
   set_report_schedule: { icon: "CalendarClock", label: "Schedule changed" },
@@ -230,9 +253,10 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
  * The event the Projects page listens for to reload the board after a chat
  * write (S4). Fired once per receipt that reports a done write. The page
  * owns its loaders, so this is the one seam between the two; a card never
- * reaches into the page's state.
+ * reaches into the page's state. The name lives in `lib/projectsEvents.ts`,
+ * so the shell can listen with no import of this file (PKG-8a fix round 2).
  */
-export const PROJECTS_CHANGED_EVENT = "cc-projects-changed";
+export { PROJECTS_CHANGED_EVENT };
 const announced = new Set<string>();
 
 /**
@@ -307,10 +331,17 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "attach_to_task",
   "grant_access",
   "revoke_access",
+  "pin_authority",
+  "unpin_authority",
+  "delete_project_update",
+  "answer_decision",
   "add_report_recipient",
   "remove_report_recipient",
   "set_report_schedule",
   "promote_reminder",
+  // WS-39 TPL-1a
+  "save_as_template",
+  "create_project_from_template",
 ]);
 
 /**
@@ -496,7 +527,7 @@ function TaskRowView({ row }: { row: ProjectTaskRow }) {
 function listLabel(e: ToolEvent): string {
   const args = (e.args ?? {}) as Record<string, unknown>;
   if (e.name === "find_tasks") return `Search${args.query ? ` · ${String(args.query)}` : ""}`;
-  if (e.name === "my_work") return String(args.view ?? "") === "inbox" ? "My task inbox" : "Assigned to me";
+  if (e.name === "my_work") return String(args.view ?? "") === "inbox" ? "My task inbox" : args.untriaged ? "New in My tasks" : "Assigned to me";
   if (e.name === "calendar") return "Calendar";
   if (e.name === "intake_queue") return "Intake";
   if (e.name === "notifications") return "Notifications";
@@ -630,7 +661,9 @@ export function forPeople(result: string): string {
 export function forPeopleFenced(result: string): string {
   return withoutLegend(result)
     .split("\n")
-    .filter((l) => !/^\s*(?:[a-z_]+_id|link|done):/.test(l))
+    // `fire_at`, `zone`, `undo` and `was_*` are the lines of a reminder
+    // receipt (RX-2): its card reads them, a person does not.
+    .filter((l) => !/^\s*(?:[a-z_]+_id|link|done|fire_at|zone|undo|was_[a-z_]+):/.test(l))
     // A gateway refusal leads with the route (`Projects PUT /projects/...: `).
     // The member needs the reason, not the address it came from.
     .map((l) =>
@@ -909,6 +942,8 @@ export const BATCH_TOOLS: ReadonlyMap<string, BatchKind> = new Map<string, Batch
   // 2026-10-19: `writes.py` `link_tasks_batch` prints each link made as the
   // row of its first task, with the link in the row's facts.
   ["link_tasks_batch", { rows: "task", maybe: "Links may have been made" }],
+  // WS-PJP PJP-4: `writes.py` `update_tasks` prints each task changed as a task row.
+  ["update_tasks", { rows: "task", maybe: "Tasks may have been updated" }],
 ]);
 
 const NL = "\n";
@@ -965,8 +1000,8 @@ export function batchNotes(result: string): string[] {
     }
     if (/^\s*full_id:/i.test(line) || !line.trim()) continue;
     if (/listed above exist\. Never create them again/.test(line)) continue;
-    // The same line of the two batches of `writes.py` (`_batch_receipt`).
-    if (/listed above (?:moved|exist)\. Do not (?:move|link) them again/.test(line)) continue;
+    // The same line of the batches of `writes.py` (`_batch_receipt`).
+    if (/listed above (?:moved|exist|changed)\. Do not (?:move|link|change) them again/.test(line)) continue;
     kept.push(line);
   }
   return forPeopleFenced(kept.join(NL)).split(NL).filter((l) => l.trim());
@@ -1103,6 +1138,32 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
   );
 }
 
+/** Whether a tool event is the receipt of a reminder write that happened. */
+export function isReminderReceipt(e: ToolEvent): boolean {
+  const result = (e.result || "").trim();
+  return (
+    classifyActionResult(result, e.status, e.name) === "done" && readReminderReceipt(e.name, result) !== null
+  );
+}
+
+/** The reminder card of one receipt, with the same store note as a plain receipt. */
+function ReminderReceiptHost({ event: e, mine }: { event: ToolEvent; mine: boolean }) {
+  const result = (e.result || "").trim();
+  const receipt = readReminderReceipt(e.name, result);
+  const openTask = useOpenTask();
+  // The page's store learns the new state, as for any receipt (RM-4).
+  useEffect(() => {
+    if (!isFreshReceipt(e)) return;
+    noteReminderReceipt(e.name, result);
+    announceChange(e.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
+  }, [e.id]);
+  if (!receipt) return null;
+  const meta = ACTION_META[e.name] ?? { icon: "Bell", label: genericLabel(e.name) };
+  const label = receipt.already ? ALREADY_HEAD : meta.label;
+  return <ReminderReceiptCard id={e.id} label={label} receipt={receipt} openTask={openTask} mine={mine} />;
+}
+
 /** A label for a tool this file has no entry for — the generic card. */
 function genericLabel(name: string): string {
   const words = name.replace(/_/g, " ").trim();
@@ -1111,7 +1172,14 @@ function genericLabel(name: string): string {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-export default function ProjectToolCards({ toolEvents }: { toolEvents?: ToolEvent[] }) {
+export default function ProjectToolCards({
+  toolEvents,
+  mine = true,
+}: {
+  toolEvents?: ToolEvent[];
+  /** False when another member ran the turn: a reminder receipt then offers no act (RX-7). */
+  mine?: boolean;
+}) {
   const dismissed = useDismissedToolCards();
   const all = (toolEvents ?? []).filter(
     (e) => !dismissed.has(e.id) && hasProjectCard(e),
@@ -1129,6 +1197,12 @@ export default function ProjectToolCards({ toolEvents }: { toolEvents?: ToolEven
     const meta = INFO_META[e.name];
     if (meta) {
       items.push(<InfoCard key={e.id} event={e} icon={meta.icon} label={meta.label} />);
+      continue;
+    }
+    // A reminder the chat set, changed or moved draws as the reminder itself
+    // (RX-2). A refusal or a cancel still draws as a plain receipt.
+    if (isReminderReceipt(e)) {
+      items.push(<ReminderReceiptHost key={e.id} event={e} mine={mine} />);
       continue;
     }
     // A write, known or new. A new one draws the generic receipt from its

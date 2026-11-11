@@ -208,6 +208,10 @@ def gw(monkeypatch: pytest.MonkeyPatch) -> Gateway:
             # A read that uses POST (EM-G11c1): the bulk card lists each
             # message. It writes nothing, so it is not in ``writes``.
             return {"summaries": []}
+        if path == "/email/metorite-files/resolve":
+            # Task 2491: the check of each workspace file before the card. A
+            # read, so it is not in ``writes``. Each file resolves.
+            return {"files": [], "refused": []}
         return await g.write("POST", path, body)
 
     async def _patch(path: str, body: Any) -> Any:
@@ -229,6 +233,10 @@ def gw(monkeypatch: pytest.MonkeyPatch) -> Gateway:
     # channel (EM-G11c1 answers that one with the Chat-app text).
     monkeypatch.setattr("acb_skills.ask_tools.confirmation_channel_open",
                         lambda: True)
+    # §18.10: these tests read the plain send card. A run that cannot draw the
+    # card to edit keeps it (WhatsApp, no channel). test_email_new_mail_card.py
+    # holds the edit card of a new mail.
+    monkeypatch.setattr(agents, "_edit_card_open", lambda: False)
     return g
 
 

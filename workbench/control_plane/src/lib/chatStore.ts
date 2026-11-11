@@ -148,6 +148,9 @@ export interface SessionStreamState {
   pendingSends: string[];
   /** The held sends that are a Continue: they go out with `resume`. */
   pendingResume: string[];
+  /** The held sends that the member typed in the message box: they go out
+   *  with the typed mark (WS-63 D-PZ-37, `lib/typedMark.ts`). */
+  pendingTyped?: string[];
   /** This tab steered the live run. Once the run ends, the chat asks the
    *  server once for a follow-up turn, which answers any steer the run never
    *  read (`lib/chatSteer.ts`). A Stop clears it. */

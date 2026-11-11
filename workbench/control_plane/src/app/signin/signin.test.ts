@@ -23,7 +23,7 @@ import { describe, expect, it } from "vitest";
 
 import { authPosture, configuredProviders } from "@/authPosture";
 
-import { signInErrorMessage } from "./errorCopy";
+import { codeStepRedirect, signInErrorMessage } from "./errorCopy";
 
 const page = readFileSync(new URL("./page.tsx", import.meta.url), "utf-8");
 
@@ -117,12 +117,55 @@ describe("error copy speaks Auth.js v5", () => {
     // never arrive, which is how a consent-screen cancel reached the raw
     // fallback before.
     expect(signInErrorMessage("OAuthCallbackError")).toMatch(/cancelled/);
-    expect(signInErrorMessage("Configuration")).toMatch(/misconfigured/);
+    expect(signInErrorMessage("Configuration")).toMatch(/our service/);
     expect(signInErrorMessage("AccessDenied")).toMatch(/invite/);
-    expect(signInErrorMessage("SomethingNew")).toBe(
-      "Authentication error: SomethingNew",
-    );
+    // The fallback keeps the type, so a reported message finds its log line.
+    expect(signInErrorMessage("SomethingNew")).toMatch(/\(SomethingNew\)/);
     expect(signInErrorMessage(null)).toBeNull();
+  });
+
+  it("shows no raw code for a stale form or a bare error link (task 1535)", () => {
+    // Production served both as "Sign-in failed (<code>)" on 2026-11-03.
+    const csrf = signInErrorMessage("MissingCSRF");
+    expect(csrf).toMatch(/expired/);
+    expect(csrf).toMatch(/Reload the page/);
+    expect(csrf).not.toMatch(/MissingCSRF/);
+    // `/api/auth/error` with no `?error=` arrives as the string "undefined".
+    const bare = signInErrorMessage("undefined");
+    expect(bare).toMatch(/did not finish/);
+    expect(bare).not.toMatch(/undefined/);
+  });
+
+  it("explains a wrong email code and the two OTP limits (task 1529)", () => {
+    // `Verification` is the wrong-code error. It used to reach Auth.js's
+    // built-in page, a dead end, so it had no copy of its own at all.
+    const wrongCode = signInErrorMessage("Verification");
+    expect(wrongCode).toMatch(/code did not work/);
+    expect(wrongCode).toMatch(/10 minutes/);
+    expect(wrongCode).toMatch(/new code/);
+    expect(wrongCode).toMatch(/five wrong tries/);
+    // The send limit and the wrong-code lockout reach the page as
+    // `Configuration` (`@auth/core` hides every other error type), so that
+    // copy must name both waits. "Wait a minute" sent people into a lockout.
+    const limited = signInErrorMessage("Configuration");
+    expect(limited).toMatch(/too many codes or wrong tries/);
+    expect(limited).toMatch(/10 minutes/);
+    expect(limited).toMatch(/an hour/);
+    // No copy blames access for a typo (D33.1).
+    for (const c of ["Verification", "Configuration"]) {
+      expect(signInErrorMessage(c)).not.toMatch(/access denied|isn't authorized/i);
+    }
+  });
+
+  it("sends a wrong code back to the code page, and nothing else (task 1529)", () => {
+    expect(codeStepRedirect("Verification")).toBe("/signin/code?error=Verification");
+    for (const c of [null, "", "AccessDenied", "Configuration"]) {
+      expect(codeStepRedirect(c)).toBeNull();
+    }
+    // The page is a server component, so it cannot render in this node test.
+    // Pin the wiring: it reads `?error=` and redirects through the helper.
+    expect(page).toContain("codeStepRedirect(");
+    expect(page).toContain("redirect(back)");
   });
 
   it("errorCopy speaks the two CP-2b codes", () => {
@@ -545,6 +588,13 @@ describe("the email OTP provider ships dark and rides the one session (CP-2d)", 
     // `@auth/core`'s built-in "check your email" page — right for a magic link,
     // a dead end for an OTP.
     expect(authSrc).toContain('verifyRequest: "/signin/code"');
+  });
+
+  it("never shows Auth.js's built-in error page (task 1529)", () => {
+    // Without `pages.error`, a wrong code rendered `@auth/core`'s own page,
+    // whose "Sign in" button led to `?error=Verification/signin`: a bare
+    // "Error" card. `/signin` is public in `proxy.ts`, so the redirect lands.
+    expect(authSrc).toContain('error: "/signin",');
   });
 
   it("the SEND leg never resolves — only the completion does (clause 13)", () => {

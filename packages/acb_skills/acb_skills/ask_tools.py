@@ -39,6 +39,8 @@ import re as _re
 from collections.abc import Iterator as _Iterator
 from typing import Any
 
+from acb_common.no_person import no_person_present as _no_person_present
+
 # ── A run with no card channel (WS-47 WAC-3) ──────────────────────────────────
 #
 # A run that the server starts for a channel with no cards (WhatsApp) has no
@@ -80,8 +82,12 @@ def refuse_cards() -> _Iterator[None]:
 
 
 def cards_refused() -> bool:
-    """True inside :func:`refuse_cards`: this run has no card channel."""
-    return _CARDS_REFUSED.get()
+    """True inside :func:`refuse_cards`: this run has no card channel.
+
+    A run with no person present has none either (AUTO-7a). So each reader
+    of this switch closes for that run too.
+    """
+    return _CARDS_REFUSED.get() or _no_person_present()
 
 
 def refuse_cards_for_run(refused: bool) -> _contextvars.Token[bool]:
@@ -94,8 +100,10 @@ def refuse_cards_for_run(refused: bool) -> _contextvars.Token[bool]:
     its caller allowed. Give the token to :func:`release_cards_switch`.
 
     It is a ContextVar, so it covers the callers of ``run_agent_stream`` on
-    MAF, whose tools run in the run's context. A Copilot SDK tool that runs
-    in a JSON-RPC thread reads a fresh context, so it is NOT covered. The
+    MAF, whose tools run in the run's context. A Copilot SDK tool starts on a
+    JSON-RPC thread with a fresh context. ``carry_run_context`` runs it in a
+    copy of the run's context, so it is covered too. An agent that the carry
+    cannot wrap is not. Fence: ``tests/unit/test_no_person_present.py``. The
     email chat route that passed ``shows_cards=False`` is gone (WS-17
     EM-G11f3). The chat pane of the Email app runs on ``/agent/run/stream``."""
     return _CARDS_REFUSED.set(bool(refused) or _CARDS_REFUSED.get())
@@ -405,6 +413,13 @@ def _crm_follow_up(cleaned: list[dict]) -> tuple[float | None, list[dict]]:
         return None, []
 
 
+_QUESTIONS_SHAPE_HINT = (
+    'Pass a JSON string like \'{"questions":[{"header":"Confirm",'
+    '"question":"Proceed?"}]}\'. A JSON array of question objects also works.'
+)
+_QUESTIONS_SHAPE_ERROR = "Error: questions is not valid JSON of the expected shape. " + _QUESTIONS_SHAPE_HINT
+
+
 async def ask_questions(questions: str) -> str:
     """Ask the user one or more clarifying questions before proceeding.
 
@@ -455,20 +470,32 @@ async def ask_questions(questions: str) -> str:
     if cards_refused():
         # WS-47 WAC-3: no card channel. Answer at once, push and park nothing.
         return NO_CARD_QUESTIONS
-    try:
-        data = _json.loads(questions)
-    except (_json.JSONDecodeError, TypeError):
-        return (
-            "Error: questions must be valid JSON, e.g. "
-            '\'{"questions":[{"header":"Confirm","question":"Proceed?"}]}\''
-        )
-
-    if not isinstance(data, dict):
-        return "Error: questions must be a JSON object with a 'questions' key"
-
-    qs = data.get("questions", [])
+    # Task 1533: a model sends three shapes. A JSON string of an object with a
+    # 'questions' key (the documented one), a JSON string of the list itself,
+    # and a list or object that is already parsed. All three are accepted.
+    # MAF reads the parameter as `questions: str`, so a model call through MAF
+    # always gives a string, and the parsed shape never comes from that path.
+    # The parsed branch serves a direct Python caller, and it costs nothing.
+    # Fence: tests/unit/test_ask_questions_shapes.py.
+    data: Any = questions
+    if isinstance(questions, (str, bytes)):
+        try:
+            data = _json.loads(questions)
+        except (_json.JSONDecodeError, TypeError, UnicodeDecodeError):
+            return _QUESTIONS_SHAPE_ERROR
+    if isinstance(data, list):
+        qs = data
+    elif isinstance(data, dict):
+        qs = data.get("questions", [])
+    else:
+        return _QUESTIONS_SHAPE_ERROR
+    if isinstance(qs, str):  # a doubly encoded list
+        try:
+            qs = _json.loads(qs)
+        except (_json.JSONDecodeError, TypeError):
+            return _QUESTIONS_SHAPE_ERROR
     if not isinstance(qs, list) or len(qs) == 0:
-        return "Error: 'questions' must be a non-empty array"
+        return "Error: 'questions' must be a non-empty array. " + _QUESTIONS_SHAPE_HINT
 
     cleaned: list[dict] = []
     for i, q in enumerate(qs):
@@ -889,6 +916,8 @@ def clean_reply_form(form: dict | None) -> dict | None:
 
     if not isinstance(form, dict):
         raise ValueError("reply is a dict")
+    if form.get("kind") == "new":
+        return _clean_new_mail_form(form)
     recipients = form.get("recipients") if isinstance(form.get("recipients"), dict) else {}
     reply = _clean_recipients(recipients.get("reply"))
     reply_all = _clean_recipients(recipients.get("reply_all"))
@@ -921,6 +950,9 @@ def clean_reply_form(form: dict | None) -> dict | None:
         # The local id of the draft that the card wrote. The member's Discard
         # names it, and the gateway checks it before a trash.
         "draft_id": _draft_id(form.get("draft_id")),
+        # Task 1526, item 11: the draft write had an unknown outcome, so the
+        # card shows its Send and Save stopped. A form with none is as before.
+        **({"draft_unsaved": True} if form.get("draft_unsaved") is True else {}),
         "note": _clip_line(form.get("note")),
         # A notice names addresses, so it is never cut: an over-long one fails.
         "notices": [_whole_line(n) for n in notices if str(n or "").strip()],
@@ -940,6 +972,166 @@ def clean_reply_form(form: dict | None) -> dict | None:
         **({"marks": _reply_marks(form["marks"], reply_all)}
            if isinstance(form.get("marks"), dict) and form["marks"] else {}),
     }
+
+
+#: The most file rows of a new-mail form (``held_card.MAX_ROWS``).
+_NEW_MAIL_FILES_MAX = 100
+#: The longest note of a new-mail form. It holds whole warning lines, one for
+#: each look-alike domain past the four notices, so it is long.
+_NEW_MAIL_NOTE_MAX = 40_000
+
+
+def _clean_new_mail_form(form: dict) -> dict:
+    """The form of a NEW mail (§18.10, owner 2026-11-03), checked.
+
+    It keeps the shape of a reply form, so the one card draws it: the one
+    list of people sits under both ``reply`` and ``reply_all``. It names no
+    email that it answers and no draft. The subject is editable, so it shows
+    whole: a subject over ``reply_card.MAX_SUBJECT``, or one with a line
+    break, raises ``ValueError`` before any card is drawn. ``files`` are the
+    fixed rows of the files that go, each line whole. The text shows whole,
+    cleaned of each hidden character, as a reply's does."""
+    from acb_skills.reply_card import (
+        MAX_REPLY_BODY,
+        MAX_SUBJECT,
+        NEW_MAIL_KIND,
+        clean_reply_body,
+    )
+
+    recipients = form.get("recipients") if isinstance(form.get("recipients"), dict) else {}
+    people = _clean_recipients(recipients.get("reply_all"))
+    if not people["to"]:
+        raise ValueError("a new-mail form needs a recipient")
+    subject = form.get("subject")
+    subject = subject if isinstance(subject, str) else ""
+    if len(subject) > MAX_SUBJECT or any(ch in subject for ch in "\r\n\u2028\u2029"):
+        raise ValueError("a new-mail subject shows whole on one line")
+    notices = form.get("notices") if isinstance(form.get("notices"), list) else []
+    if len(notices) > 4:
+        raise ValueError("a new-mail form has at most four notices")
+    files = form.get("files") if isinstance(form.get("files"), list) else []
+    if len(files) > _NEW_MAIL_FILES_MAX:
+        raise ValueError("a new-mail form names too many files")
+    # Fix round 1 (P3): the longest text that the act of this card takes. A
+    # held card takes HELD_TEXT_MAX, and the card says so before Send.
+    max_body = form.get("max_body", MAX_REPLY_BODY)
+    if not isinstance(max_body, int) or isinstance(max_body, bool) or not (
+            0 < max_body <= MAX_REPLY_BODY):
+        raise ValueError("a new-mail form names a text limit the server takes")
+    body = clean_reply_body(str(form.get("body") or ""))
+    if len(body) > max_body:
+        raise ValueError("a new mail is too long for the card")
+    # The note holds the warnings that did not fit as notices (a look-alike
+    # domain). It is never cut, so no warning loses its end (fix round 1, P3).
+    note = " ".join(str(form.get("note") or "").split())
+    if len(note) > _NEW_MAIL_NOTE_MAX:
+        raise ValueError("a new-mail note is too long for the card")
+    out: dict = {
+        "kind": NEW_MAIL_KIND,
+        "message_id": "",
+        "mailbox": _clip_line(form.get("mailbox")),
+        "subject": subject,
+        "original": {"from": "", "subject": "", "received": "", "excerpt": ""},
+        "recipients": {"reply": people, "reply_all": people},
+        "reply_all": True,
+        "body": body,
+        "max_body": max_body,
+        "draft_id": "",
+        "note": note,
+        "notices": [_whole_line(n) for n in notices if str(n or "").strip()],
+        "files": [_whole_line(f) for f in files if str(f or "").strip()],
+    }
+    if isinstance(form.get("classes"), dict) and form["classes"]:
+        out["classes"] = _reply_classes(form["classes"])
+    if isinstance(form.get("ticked"), dict):
+        # The one list: the start of the ticks is the same for both keys.
+        start = form["ticked"].get("reply_all", form["ticked"])
+        ticked = _reply_ticked({"reply": start, "reply_all": start}, people, people)
+        out["ticked"] = ticked
+    if isinstance(form.get("marks"), dict) and form["marks"]:
+        out["marks"] = _reply_marks(form["marks"], people)
+    if isinstance(form.get("file_rows"), list) and form["file_rows"]:
+        out["file_rows"] = _new_mail_file_rows(form["file_rows"])
+    # §18.11 rule 7: the people that start unticked because the member
+    # unticked them on the draft before. The gateway names them, and the card
+    # says so. Each is a person of the card that starts unticked, or no card shows.
+    if "unticked" in form:
+        out["unticked"] = _new_mail_unticked(form["unticked"], people, out.get("ticked"))
+    out.update(_new_mail_redraft(form))
+    return out
+
+
+def _new_mail_redraft(form: dict) -> dict:
+    """The redraft fields of a new-mail form (§18.11), checked.
+
+    ``revises`` and ``draft`` (step 6): the card that this card replaces, and
+    its draft number. The gateway sets both, and the tool copies them from its
+    answer. The client draws the card in that card's slot, as "Draft <n>". A
+    bad pair raises ``ValueError``.
+
+    ``reopened`` (fix round 5): the SAME card, shown again because a revise
+    did not run. The client puts it back in its slot, with the member's edits.
+    Only ``True`` stands."""
+    out: dict = {"reopened": True} if form.get("reopened") is True else {}
+    if "revises" in form or "draft" in form:
+        revises, draft = form.get("revises"), form.get("draft")
+        if (not isinstance(revises, str) or not _CARD_ID_RE.fullmatch(revises)
+                or not isinstance(draft, int) or isinstance(draft, bool)
+                or not 1 < draft <= _NEW_MAIL_DRAFT_MAX):
+            raise ValueError("a new-mail form names the card it revises and its draft")
+        out["revises"], out["draft"] = revises, draft
+    return out
+
+
+#: The highest draft number of a new-mail card (``redraft.MAX_DRAFT``).
+_NEW_MAIL_DRAFT_MAX = 99
+
+
+def _new_mail_unticked(value: Any, people: dict, ticked: dict | None) -> list[str]:
+    """The kept unticks of a new-mail form (§18.11 rule 7), in lower case.
+
+    Each name is a person of the card, and none of them starts ticked, so the
+    note never names a person that the card ticks. A form
+    with no ticked start ticks each person, so it can name nobody. A bad name
+    raises ``ValueError`` before any card is drawn."""
+    from acb_skills.reply_card import MAX_REPLY_RECIPIENTS
+
+    if not isinstance(value, list) or len(value) > 3 * MAX_REPLY_RECIPIENTS:
+        raise ValueError("a new-mail form names its unticked people as a list")
+    have = {a.lower() for part in people.values() for a in part}
+    start = (ticked or {}).get("reply_all") if ticked else None
+    on = ({a.lower() for part in start.values() for a in part} if isinstance(start, dict)
+          else have)
+    out: list[str] = []
+    for item in value:
+        addr = " ".join(str(item or "").split()).lower()
+        if addr not in have or addr in on:
+            raise ValueError("an unticked person is a person of the card who starts unticked")
+        if addr not in out:
+            out.append(addr)
+    return out
+
+
+def _new_mail_file_rows(rows: list) -> list[dict]:
+    """The file rows of a held new mail (fix round 1, §21.1 item 3): each
+    with its own short id, its label and its hint whole, and its tick. The
+    member can untick a file, and the answer names the ticked ids. A bad row
+    raises ``ValueError`` before any card is drawn."""
+    if len(rows) > _NEW_MAIL_FILES_MAX:
+        raise ValueError("a new-mail form names too many files")
+    out: list[dict] = []
+    seen: set[str] = set()
+    for row in rows:
+        rid = str((row or {}).get("id") or "").strip() if isinstance(row, dict) else ""
+        if not rid or len(rid) > _ROW_ID_MAX or rid in seen:
+            raise ValueError("each file row needs its own short id")
+        seen.add(rid)
+        label = _whole_line(row.get("label"))
+        if not label:
+            raise ValueError("each file row names its file")
+        out.append({"id": rid, "label": label, "hint": _whole_line(row.get("hint")),
+                    "checked": row.get("checked", True) is not False})
+    return out
 
 
 def _reply_marks(value: dict, reply_all: dict) -> dict[str, str]:
@@ -1317,6 +1509,24 @@ def reply_card_channel_open() -> bool:
     return confirmation_channel_open() and not _whatsapp_run()
 
 
+def edit_card_channel_open() -> bool:
+    """True when this run can show a card that the member EDITS (§18.10):
+    ``EMAIL_EDIT_CARD_ORGS`` names the run's organization
+    (``reply_card.edit_card_on``), a card channel is open
+    (:func:`confirmation_channel_open`), and the run is not of WhatsApp.
+
+    With the flag off, a new mail shows the cards of before, exactly. A
+    WhatsApp run draws no card to edit, so a new mail there keeps the card
+    of before, which parks for the member's reply code (H-391). A run with no
+    channel keeps it too, and that card fails closed. A fault reads False."""
+    try:
+        from acb_skills.reply_card import edit_card_on
+
+        return edit_card_on() and confirmation_channel_open() and not _whatsapp_run()
+    except Exception:
+        return False
+
+
 def _whatsapp_email_path() -> bool:
     """True in a WhatsApp run with writes on, where an email card can park
     for a reply code or take the yes of one (H-391). A fault reads False."""
@@ -1416,7 +1626,9 @@ async def request_confirmation(
             card draws the form, and its Approve carries the member's choice
             and body. Neither ``rows`` nor the WhatsApp profile goes with it:
             a run with no card, a WhatsApp run included, gets ``None`` at
-            once, whatever ``non_interactive_default`` says.
+            once, whatever ``non_interactive_default`` says. A form with
+            ``kind: "new"`` is the card of a new mail (§18.10), and only a
+            new-mail answer (``reply_card.parse_new_mail_answer``) approves it.
         close_on_steer: close the card when the member writes in the chat
             while it waits, and give :data:`REVISED`. On by default for a
             reply form. A send card turns it on, so "make it shorter" changes
@@ -1448,6 +1660,11 @@ async def request_confirmation(
         id the card offered. It is EMPTY, and so falsy, when the member did
         not approve, or when the answer named an id the card did not offer.
 
+        In a run with no person present (AUTO-7a) it denies first, before
+        every path, whatever ``non_interactive_default`` says. A denial is
+        ``False``, an empty ``frozenset`` with ``rows``, and ``None`` with
+        ``reply`` or ``with_answer``.
+
         Inside :func:`refuse_cards` (WS-47 WAC-3) it denies at once, before
         any channel is tried, whatever ``non_interactive_default`` says.
         One exception comes first (WS-47 WAC-4): the WhatsApp profile parks
@@ -1464,6 +1681,12 @@ async def request_confirmation(
     _rows = clean_card_rows(rows)
     _reply = clean_reply_form(reply)
     _with_answer = _check_card_args(request_id, with_answer, _rows)
+    if _no_person_present():
+        # AUTO-7a: before every path, the WhatsApp paths too. A run with no
+        # person cannot ask anyone, and no argument of a tool changes that.
+        if _reply is not None or _with_answer:
+            return None
+        return frozenset() if _rows is not None else False
     # H-391: an email card in a WhatsApp run parks for the member's reply
     # code, or takes the yes of the code that approved it. Anything else
     # goes on below, as before.
@@ -1529,12 +1752,14 @@ async def request_confirmation(
             # else, or of nobody named, is no approval.
             return "REJECT", None
         if _reply is not None:
-            from acb_skills.reply_card import parse_reply_answer
+            from acb_skills.reply_card import parse_new_mail_answer, parse_reply_answer
 
             # The exact text, not the stripped one: the gateway's record holds
-            # the digest of what the browser posted.
+            # the digest of what the browser posted. A new-mail card (§18.10)
+            # takes a new-mail answer only, and a reply card a reply only.
             raw = str(result.get("answer", ""))
-            choice = parse_reply_answer(raw)
+            choice = (parse_new_mail_answer(raw) if _reply.get("kind") == "new"
+                      else parse_reply_answer(raw))
             if choice is None:
                 return "REJECT", None
             _replied.append(ReplyAnswer(rid, raw, choice,

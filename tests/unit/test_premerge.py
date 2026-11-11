@@ -77,8 +77,8 @@ def _advance_main(repo: Path, path: str, text: str = "x\n") -> None:
     _git(repo, "checkout", "-q", "feat")
 
 
-def _run(repo: Path, **env: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([_BASH, SCRIPT.as_posix()], cwd=repo, capture_output=True,
+def _run(repo: Path, *args: str, **env: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run([_BASH, SCRIPT.as_posix(), *args], cwd=repo, capture_output=True,
                           text=True, encoding="utf-8", env={**_ENV, **env}, timeout=120)
 
 
@@ -94,10 +94,37 @@ _FAILS = 'echo "FAILED tests/t.py::test_a - boom"; exit 1'
 def test_a_test_that_fails_only_when_merged_blocks(repo):
     """Green alone, red together: the case the overlap step exists for."""
     _both_sides_change_shared(repo)
-    res = _run(repo, PREMERGE_AFFECTED_CMD=_FAILS, PREMERGE_RERUN_CMD="true")
+    res = _run(repo, "--with-tests", PREMERGE_AFFECTED_CMD=_FAILS, PREMERGE_RERUN_CMD="true")
     assert res.returncode == 1
     assert "tests/t.py::test_a" in res.stderr and "pass on the branch alone" in res.stderr
     assert not (repo / ".git" / "MERGE_HEAD").exists()
+
+
+def test_the_default_runs_no_affected_tests(repo):
+    """CIV-12 (D176): without --with-tests the script runs the collision fences
+    only. A files-overlap case that would fail the affected run still passes."""
+    _both_sides_change_shared(repo)
+    marker = repo.parent / "affected-ran"
+    res = _run(repo, PREMERGE_AFFECTED_CMD=f"touch {marker.as_posix()}; {_FAILS}",
+               PREMERGE_RERUN_CMD="true")
+    assert res.returncode == 0, res.stderr
+    assert "PASS" in res.stdout
+    assert not marker.exists(), "the affected tests ran without --with-tests"
+    assert "--with-tests" in res.stdout
+
+
+def test_with_tests_runs_the_affected_tests(repo):
+    _both_sides_change_shared(repo)
+    marker = repo.parent / "affected-ran"
+    res = _run(repo, "--with-tests", PREMERGE_AFFECTED_CMD=f"touch {marker.as_posix()}",
+               PREMERGE_RERUN_CMD="true")
+    assert res.returncode == 0, res.stderr
+    assert marker.exists()
+
+
+def test_an_unknown_flag_is_refused(repo):
+    res = _run(repo, "--bogus")
+    assert res.returncode == 1 and "--bogus" in res.stderr
 
 
 def test_a_test_that_fails_alone_too_does_not_block(repo):
@@ -105,7 +132,7 @@ def test_a_test_that_fails_alone_too_does_not_block(repo):
     merge they did not come from (LD-3b, 2026-10-30)."""
     _both_sides_change_shared(repo)
     head = _git(repo, "rev-parse", "HEAD")
-    res = _run(repo, PREMERGE_AFFECTED_CMD=_FAILS, PREMERGE_RERUN_CMD=_FAILS)
+    res = _run(repo, "--with-tests", PREMERGE_AFFECTED_CMD=_FAILS, PREMERGE_RERUN_CMD=_FAILS)
     assert res.returncode == 0, res.stderr
     assert "did not cause them" in res.stdout and "PASS" in res.stdout
     assert _git(repo, "rev-parse", "HEAD") == head
@@ -115,7 +142,7 @@ def test_a_test_that_fails_alone_too_does_not_block(repo):
 
 def test_a_run_that_names_no_test_blocks(repo):
     _both_sides_change_shared(repo)
-    res = _run(repo, PREMERGE_AFFECTED_CMD="echo boom; exit 2", PREMERGE_RERUN_CMD="true")
+    res = _run(repo, "--with-tests", PREMERGE_AFFECTED_CMD="echo boom; exit 2", PREMERGE_RERUN_CMD="true")
     assert res.returncode == 1
     assert "no test is named" in res.stderr
 

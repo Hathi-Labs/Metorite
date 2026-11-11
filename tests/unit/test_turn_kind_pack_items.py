@@ -392,7 +392,8 @@ CRM_NINE = set(sf.SKILL_FAMILIES["crm-records"]["tools"])
 
 
 @pytest.mark.parametrize(("mode", "dropped"), [
-    ("mirror", {"create_lead", "update_deal_status", "convert_lead"}),
+    ("mirror", {"create_lead", "update_deal_status", "convert_lead",
+                "crm_update_record"}),
     ("live", set()),
 ])
 @pytest.mark.usefixtures("store")
@@ -408,6 +409,9 @@ async def test_layer_c_drops_the_mirror_record_writes_through_load_early(
         return mode
 
     monkeypatch.setattr("acb_skills.crm_tools.crm_mode", crm_mode)
+    # CRM-M3a: an org on CRM_PIPELINES_ORGS, so only the Mirror drop applies.
+    # The flag drop has its own fence (test_crm_pipelines_native.py).
+    monkeypatch.setattr(ti, "_crm_pipelines_open", lambda: True)
     loader = _loader(_record(), offered=("crm-records",))
     assert loader.set_early(["crm-records"]) == ("crm-records",)
     context = await _before_run(loader, _dummies(10))
@@ -445,5 +449,9 @@ async def test_a_held_crm_pack_gives_the_mail_reason_in_layer_b_and_c(
             await eg.mark_untrusted_answer()
         context = await _before_run(loader, _dummies(10))
         text = "\n".join(context.instructions)
-    assert eg.EGRESS_HOLD_NOTE_PACK_OTHER in text and eg.EGRESS_HOLD_NOTE_SANDBOX not in text
+    # D169: with `HELD_CARD_WRITES_ORGS` off (the default) the pack holds no
+    # write, and the note says so. Either way it gives the mail reason.
+    note = (eg.EGRESS_HOLD_NOTE_PACK_OTHER if eg.held_card_writes_on()
+            else eg.EGRESS_HOLD_NOTE_PACK_NO_WRITES)
+    assert note in text and eg.EGRESS_HOLD_NOTE_SANDBOX not in text
     assert "CRM TOOLS." in text

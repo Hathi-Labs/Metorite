@@ -20,7 +20,7 @@ import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { KnowledgeError, listPages, movePage, pagesKey } from "../lib/api";
-import { canWriteIn } from "../lib/labels";
+import { canWriteIn, realSpaces } from "../lib/labels";
 import { TOP_LEVEL, hasChildren, moveRequest, parentChoices } from "../lib/movePlan";
 import type { PageMoved, PageSummary, Space } from "../lib/types";
 
@@ -66,7 +66,7 @@ function MoveForm({
   const there = useCachedResource<PageSummary[]>(pagesKey(spaceId), () => listPages(spaceId));
   const keepsSpace = hasChildren(here.data ?? [], page.id);
 
-  const spaceOptions: SelectOption[] = spaces
+  const spaceOptions: SelectOption[] = realSpaces(spaces)
     .filter((s) => s.id === page.space_id || (canWriteIn(s.level) && !s.archived_at))
     .map((s) => ({
       value: s.id,

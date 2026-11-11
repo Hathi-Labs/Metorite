@@ -44,10 +44,10 @@ import {
   projectsKey,
 } from "../lib/api";
 import { type AttentionPage, LENS_LABEL } from "../lib/needsAttention";
-import { EMPTY_FILTERS, type Filters, type GroupBy, NO_LANES, type BoardLanes, type SubtaskMode, groupTasks, toQuery } from "../lib/grouping";
+import { EMPTY_FILTERS, type Filters, type GroupBy, NO_LANES, type BoardLanes, type SubtaskMode, groupTasks, isFiltered, toQuery } from "../lib/grouping";
 import { DEFAULT_SHOWN } from "../lib/shownFields";
 import { appendTasks, nextTaskPage } from "../lib/paging";
-import { loadedOfTotal } from "../lib/compactChrome";
+import { chromeKind, loadedOfTotal } from "../lib/compactChrome";
 import { type CalendarLayout, calendarGrid, calendarWindow, dayKey, shiftGrid } from "../lib/calendar";
 import { EXPORT_FILENAME, exportPath } from "../lib/export";
 import { useLiveRefresh } from "@/lib/liveRefresh";
@@ -61,19 +61,23 @@ import {
   type OwnStatuses,
   chipCount,
   chipNeedsEveryPage,
+  MY_TASKS_EMPTY_TEXT,
   chipRows,
   mineStatuses,
   myTasksQuery,
+  myTasksTrulyEmpty,
   planMineDrop,
   quickAddHome,
   stageGroups,
   truncationNotice,
 } from "../lib/myTasks";
 import { useSubtaskComplete } from "./useSubtaskComplete";
+import { useTaskUndo } from "./useTaskUndo";
 import { myDayLink } from "../lib/reportEntry";
 import { FilterChrome } from "./CompactFilterBar";
 import { CalendarView } from "./CalendarView";
 import { MoreTasksBar } from "./MoreTasksBar";
+import { MyArchiveView } from "./MyArchiveView";
 import NodeDashboard from "./NodeDashboard";
 import { NeedsAttentionList } from "./NeedsAttentionList";
 import { TableView } from "./TableView";
@@ -143,24 +147,28 @@ async function readMine(
  */
 export function MyTasksActionRow({
   view,
-  onView,
+  onView: setView,
   attentionCount,
   onReport,
   onCapture,
 }: {
   view: MyTasksView;
-  onView: (next: MyTasksView) => void;
+  /** `pick` is true for an explicit tab choice, so the page keeps it. */
+  onView: (next: MyTasksView, pick?: boolean) => void;
   attentionCount: number | null;
   onReport: (href: string) => void;
   onCapture: () => void;
 }) {
+  // ARC-1: the Archive chip draws no tab, so a tab pick leaves it for All.
+  const onView = (next: MyTasksView, pick?: boolean) =>
+    setView(pick && next.chip === "archive" && !next.attention ? { ...next, chip: "all" } : next, pick);
   return (
     <div className="flex flex-wrap items-center gap-1 px-3 pb-2 pt-1.5 glass:px-4 glass:pb-2.5" data-my-tasks-tabs="">
       <ModeSwitch
         modes={MODE_OPTIONS}
-        mode={view.attention ? null : view.mode}
+        mode={view.attention || view.chip === "archive" ? null : view.mode}
         layout="toolbar"
-        onPick={(mode) => onView({ ...view, mode, attention: false })}
+        onPick={(mode) => onView({ ...view, mode, attention: false }, true)}
       />
       <Button
         variant="ghost"
@@ -192,7 +200,7 @@ export function MyTasksActionRow({
   );
 }
 
-/** The chip row: All, Today, Next, Waiting, Someday and Done, with server counts. */
+/** The chip row: All, New, Today, Next, Waiting, Someday and Done, with server counts. */
 export function MyTasksChips({
   chip,
   summary,
@@ -204,7 +212,7 @@ export function MyTasksChips({
 }) {
   return (
     <div className="border-b border-border px-3 py-1.5 glass:px-4 glass:py-2" data-my-tasks-chips="">
-      <ScrollStrip label="My tasks lists" className="gap-1">
+      <ScrollStrip label="My tasks lists" className="gap-1" revealKey={chip}>
         {MY_TASKS_CHIPS.map((entry) => {
           const count = chipCount(summary, entry.id);
           return (
@@ -229,7 +237,8 @@ export function MyTasksChips({
 
 interface Props {
   view: MyTasksView;
-  onView: (next: MyTasksView) => void;
+  /** `pick` is true for an explicit tab choice, so the page keeps it. */
+  onView: (next: MyTasksView, pick?: boolean) => void;
   /** A phone, with the compact chrome. The tabs then live in the View sheet. */
   phone: boolean;
   compactChrome: boolean;
@@ -240,6 +249,8 @@ interface Props {
   projectPath: (projectId: string) => readonly string[];
   /** OP-12b — true when a project is in the private space (the personal root or its folders). */
   isPrivateProject?: (projectId: string) => boolean;
+  /** ARC-1 — true when the project, or one above it, is archived. */
+  projectArchived: (projectId: string) => boolean;
   /** Where a quick add files: the member's personal root, or null. */
   personalRootId: string | null;
   /** Opens the ONE Projects task panel over My tasks. */
@@ -250,6 +261,8 @@ interface Props {
   onReport: (href: string) => void;
   /** Bumped by the page when the panel changed a task, so the rows read again. */
   version: number;
+  /** PJP-12a — opens the project tree, the way the sidebar does. */
+  onOpenProjects: () => void;
 }
 
 const NO_ROWS: TaskRow[] = [];
@@ -263,6 +276,7 @@ export default function MyTasksSpace({
   people,
   personLabels,
   projectPath,
+  projectArchived,
   isPrivateProject,
   personalRootId,
   onOpenTask,
@@ -270,6 +284,7 @@ export default function MyTasksSpace({
   onOpenProject,
   onReport,
   version,
+  onOpenProjects,
 }: Props) {
   const { mode, chip, attention } = view;
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
@@ -287,6 +302,8 @@ export default function MyTasksSpace({
   const again = useCallback(() => setReload((n) => n + 1), []);
   useLiveRefresh(again, "projects");
   const subtaskComplete = useSubtaskComplete();
+  // UNDO-1 — a board write and a calendar drag on My tasks offer Undo.
+  const taskUndo = useTaskUndo();
 
   // ── The summary, the Overview and the chips ────────────────────────────
   const summary = useMySummary(true);
@@ -294,7 +311,8 @@ export default function MyTasksSpace({
   // The zone the server counted Today in, so a chip and its count agree when
   // the browser sits in another zone (fix round item 8).
   const zone = summary.data?.time_zone || undefined;
-  const overview = mode === "overview" && !attention;
+  const archiveChip = chip === "archive";
+  const overview = mode === "overview" && !attention && !archiveChip;
   const stuck = useCachedResource(overview ? projectsKey("analytics/stuck", { subject: "me" }) : null, () =>
     projectsApi.stuck(undefined, "me"),
   );
@@ -311,7 +329,7 @@ export default function MyTasksSpace({
   );
 
   // ── The rows: paged like a board, every page while a chip filters ──────
-  const listMode = !attention && (mode === "list" || mode === "board" || mode === "table");
+  const listMode = !attention && !archiveChip && (mode === "list" || mode === "board" || mode === "table");
   const filterQuery = useMemo(() => toQuery(filters), [filters]);
   const queryKey = JSON.stringify(filterQuery);
   const wantsAll = chipNeedsEveryPage(chip);
@@ -407,7 +425,7 @@ export default function MyTasksSpace({
     undated: 0,
     truncated: false,
   });
-  const calendarOn = !attention && mode === "calendar";
+  const calendarOn = !attention && !archiveChip && mode === "calendar";
   useEffect(() => {
     if (!calendarOn) return;
     let live = true;
@@ -506,7 +524,15 @@ export default function MyTasksSpace({
         const asked = await subtaskComplete.changeStatus(task, status, own.rows, () => reloadAll());
         if (asked) return;
       }
-      await projectsApi.patchTask(task.id, plan.patch);
+      const fresh = await projectsApi.patchTask(task.id, plan.patch);
+      // UNDO-1 (fix round 1, finding 4) — the drag, the Mark-done tick and
+      // the Status menu take the SAME undo path as the project board.
+      const lane = status ? own.rows.find((s) => s.id === status)?.name : null;
+      taskUndo.edited(task, plan.patch, fresh, {
+        label: `moved ${task.title}`,
+        receipt: lane ? `Moved to ${lane}` : "Task moved",
+        after: reloadAll,
+      });
     } catch (err) {
       setWriteError(String((err as Error).message));
     }
@@ -563,33 +589,63 @@ export default function MyTasksSpace({
   }
 
   const chips = <MyTasksChips chip={chip} summary={summary.data} onChip={(next) => onView({ ...view, chip: next })} />;
+  if (archiveChip) {
+    // ARC-1 — the Archive chip draws its own list in the place of the tabs.
+    return (
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden" data-testid="my-tasks-space" data-mode={mode} data-chip="archive">
+        {errorLine}
+        {chips}
+        <div className="min-h-0 flex-1 overflow-auto">
+          <MyArchiveView
+            projectPath={projectPath}
+            projectArchived={projectArchived}
+            onOpenTask={onOpenTask}
+            version={version}
+            onRestored={summary.refresh}
+          />
+        </div>
+      </div>
+    );
+  }
+  const chrome = chromeKind({ overview: mode === "overview", phone, compact: compactChrome });
   const listLoaded = list.key === queryKey;
   // A chip other than All reads at most MY_TASKS_MAX_ROWS rows. Past that it
   // says so, in the place of the board's "Load more" bar (item 5).
   const truncated = wantsAll && listMode && listLoaded ? truncationNotice(list.rows.length, list.total) : null;
-  const emptyChip =
+  // PJP-12a — chip All, read done, no row, no filter: the member has no tasks.
+  const trulyEmpty = myTasksTrulyEmpty({ chip, loaded: listLoaded, total: list.total ?? list.rows.length, filtered: isFiltered(filters) });
+  const emptyChip = trulyEmpty ? (
+    <EmptyState
+      icon="ListChecks"
+      message={MY_TASKS_EMPTY_TEXT}
+      action={{ label: "Go to Projects", icon: "FolderKanban", onClick: onOpenProjects }}
+    />
+  ) : (
     chip !== "all" && listLoaded && shown.length === 0 ? (
       <EmptyState
         icon="ListChecks"
         message={`Nothing in ${MY_TASKS_CHIPS.find((c) => c.id === chip)?.label ?? chip}.`}
         action={{ label: "Show all", icon: "List", onClick: () => onView({ ...view, chip: "all" }) }}
       />
-    ) : null;
+    ) : null
+  );
 
   return (
     <div className="flex min-w-0 flex-1 flex-col overflow-hidden" data-testid="my-tasks-space" data-mode={mode}>
       {errorLine}
       {/* D-PM-38: the "close the subtasks too?" question of a board write. */}
       {subtaskComplete.dialog}
-      {mode === "overview" ? null : (
+      {chrome === "none" ? null : (
         <>
-          {chips}
+          {chrome === "full" ? chips : null}
           <FilterChrome
             compact={compactChrome}
+            // MOB-1: an Overview on a phone keeps the View button, the way back.
+            viewOnly={chrome === "view-only"}
             phone={phone}
             // On a phone the tabs live in the View sheet (OP-1).
             modes={MODE_OPTIONS}
-            onMode={(next) => onView({ ...view, mode: next as MyTasksMode })}
+            onMode={(next) => onView({ ...view, mode: next as MyTasksMode }, true)}
             resultCount={list.total}
             loadedLabel={loadedOfTotal(list.rows.length, list.total)}
             agentSummary={null}
@@ -706,6 +762,13 @@ export default function MyTasksSpace({
                 setWriteError(null);
                 void projectsApi
                   .patchTask(task.id, patch)
+                  .then((fresh) =>
+                    taskUndo.edited(task, patch, fresh, {
+                      label: `rescheduled ${task.title}`,
+                      receipt: "Task rescheduled",
+                      after: reloadAll,
+                    }),
+                  )
                   .catch((err: unknown) => setWriteError(String((err as Error).message)))
                   .finally(reloadAll);
               }}

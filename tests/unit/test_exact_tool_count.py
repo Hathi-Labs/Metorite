@@ -146,6 +146,9 @@ async def test_the_estimate_equals_the_sent_count_on_the_staging_shape(
         old = _estimate_with_facts(orchestrator) + 1
     got = await _flow(orchestrator, "", monkeypatch)
     assert got["packs"] == 0 and got["loader"] == 1
+    # Still 59 after WS-CRM CRM-M1 (2026-11-03): the read `crm_change_history`
+    # is in the `crm-records` pack and not in the orchestrator's base, because
+    # the base was at the 110-tool cap (test_projects_packs.py).
     assert got["plan"] == got["sent"] == 59, got
     assert got["base"] + 1 == 62, got
     assert old == got["base"] + 1 + 3 == 65, (old, got)

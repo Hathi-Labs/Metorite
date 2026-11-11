@@ -417,6 +417,7 @@ system of record, Zoho becomes an import source, then Zoho is retired.**
 - SLA/response-time engine, assignment rules, sequences/campaigns, marketing automation.
 - No-code custom-field or layout editors. Fields live in migrations; layouts in code.
 - Quoting/invoicing/taxes. Deal line items only (Phase C); billing stays out of scope.
+  - **D205.4 reverses this non-goal.** Quotes are now in scope. CRX-0 (task 2733) writes the catalog section.
 - Telephony SDKs (Twilio/Exotel). Manual call logging only.
 - A saved-views table. v1 view state lives in the URL (trycompai pattern); canned views are
   code.
@@ -1028,6 +1029,7 @@ WS-2 (the standing "rotate Zoho token" P0 becomes "revoke", strictly better).
   must represent Zoho's actual stage names, and the owner reshapes the pipeline without a
   deploy. Rejected: trycompai's hardcoded enum — their own docs show it froze their process
   into code.
+- *Amended by D165 (2026-11-02): scopes replace this decision for an org that turns them on. The default stays Everyone.*
 - **D-CRM-3 — CRM data is org-visible to `feature:crm` holders in v1; `owner_email` is
   assignment, not ACL.** A CRM is a shared team surface (both reference products agree);
   D11 records one org, and the workflows app's org-wide-read v1 is the shipped precedent
@@ -1086,6 +1088,7 @@ WS-2 (the standing "rotate Zoho token" P0 becomes "revoke", strictly better).
   lost-reason requirement, and drives funnel math. Zoho's `forecast_type`
   ("Open"/"Closed Won"/"Closed Lost") maps onto `type` at the WS-26f metadata pull; no
   parallel forecast-category enum is added.
+- *Amended by D166 (2026-11-02): Native mode now creates many pipelines. This decision is closed for Native mode.*
 - **D-CRM-11 — `DECISION (agent-proposed, owner may overrule)`: one pipeline until a
   second sales motion exists.** No `crm_pipelines` table now. The additive path when a
   second motion is real: `pipeline_id` FK on `crm_deal_statuses` + `crm_deals`, a board

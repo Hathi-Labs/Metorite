@@ -33,6 +33,15 @@ row run in one ``async with _tenant_session() as db:`` block. The session
 commits on a clean exit and rolls back on any exception, so a 409 after a
 partial write leaves nothing behind.
 
+**One reminder for one ask (WS-66 RX-2).** A create acts with no card in a
+chat that read no outside mail, so a model retry, a double tool call or a
+double click reaches this route twice. :func:`create_reminder` takes a
+transaction-level advisory lock on the member, then looks for an open reminder
+of that member with the same title and link, within :data:`SAME_MOMENT`. It
+answers that row with ``already: true`` and writes nothing, also no ledger row.
+Every door comes here, so the rule holds for each one. The lock is the race
+guard. No unique index exists, so two sessions serialise on the lock.
+
 **One ledger row for each change**: ``created``, each move of the time
 (``snoozed``, ``rescheduled``), each answer (``done``, ``dropped``,
 ``promoted``) and each edit (``edited``). An edit changes the title, the
@@ -85,7 +94,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from acb_auth import UserContext, get_current_user
 from acb_common import get_settings
-from fastapi import Depends, HTTPException, Query
+from acb_common.db import current_tenant
+from fastapi import Depends, HTTPException, Query, Response
 from gateway.routes.projects.core import (
     ACTOR_VIA,
     ListResponse,
@@ -126,6 +136,11 @@ TITLE_MAX = 200
 #: The longest act a reminder sizes its grace for (§5.4): one week, in
 #: minutes. A larger guess is a mistake, not an estimate.
 ESTIMATE_MAX = 7 * 24 * 60
+#: Two creates of one title closer than this are one reminder. ``in_minutes``
+#: adds the minutes to the clock of the call, so a retry names an instant some
+#: seconds later than the first call, and an exact match would miss it. A
+#: reminder fires on the minute, so no member means two within this.
+SAME_MOMENT = timedelta(minutes=1)
 #: How far ahead a snooze ("Later") may move a reminder: a time after now,
 #: within this. A time past it is a new time, which `/reschedule` takes.
 SNOOZE_MAX = timedelta(days=366)
@@ -380,6 +395,54 @@ _MINE_FOR_UPDATE_SQL = (
 )
 
 
+#: Serialises the creates of ONE member in one organization, to the commit.
+_CREATE_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
+
+
+def create_lock_key(tenant: str | None, member: str) -> str:
+    """The advisory-lock key of one member's creates, in one tenant (RX-7).
+
+    The tenant is part of the key, so one address that holds a seat in two
+    organizations does not make one org's create wait on the other's.
+    Fence: ``tests/unit/test_reminder_create_lock_key.py``.
+    """
+    return f"reminder_create:{tenant or ''}:{member}"
+
+_OPEN_NEAR_SQL = (
+    "SELECT * FROM reminders "
+    "WHERE member_email = :me AND state = ANY(:states) "
+    "AND fire_at > :low AND fire_at < :high "
+    "ORDER BY created_at, id"
+)
+
+
+def _title_key(title: str | None) -> str:
+    """A title as a duplicate check reads it: the case and the spacing go."""
+    return " ".join(str(title or "").split()).casefold()
+
+
+async def _open_twin(
+    db: Any, me: str, title: str, fire_at: datetime,
+    subject_kind: str | None, subject_id: str | None,
+) -> Any:
+    """My open reminder that this create would repeat, or None.
+
+    The oldest match answers. A different link is a different reminder, so two
+    tasks with one title each keep their own. Run it under the create lock.
+    """
+    rows = (await db.execute(
+        text(_OPEN_NEAR_SQL),
+        {"me": me, "states": list(OPEN_STATES),
+         "low": fire_at - SAME_MOMENT, "high": fire_at + SAME_MOMENT},
+    )).fetchall()
+    wanted = _title_key(title)
+    for row in rows:
+        if (_title_key(row.title) == wanted and row.subject_kind == subject_kind
+                and row.subject_id == subject_id):
+            return row
+    return None
+
+
 async def _load_mine(db: Any, reminder_id: UUID, me: str) -> Any:
     """My reminder, locked for this transaction, or 404.
 
@@ -439,7 +502,6 @@ async def _bump(user: Any, me: str) -> None:
     is the bound tenant that the write went to, which the session set
     (R11). It waits 0.5 s at most and never raises
     (``cache.bump_member_safe``), so the write stands."""
-    from acb_common.db import current_tenant
     from gateway.routes.shell import cache as feed_cache
 
     org = current_tenant() or getattr(user, "organization_id", None)
@@ -517,9 +579,16 @@ async def list_reminders(
 
 @router.post("/my/reminders", status_code=201, dependencies=_ON)
 async def create_reminder(
-    payload: ReminderIn, user: UserContext = Depends(get_current_user),
+    payload: ReminderIn, response: Response,
+    user: UserContext = Depends(get_current_user),
 ) -> dict:
-    """Set one reminder. It starts ``scheduled`` and writes a ``created`` row."""
+    """Set one reminder. It starts ``scheduled`` and writes a ``created`` row.
+
+    A repeat of an open reminder answers 200 with that row and
+    ``already: true``, and writes nothing (:func:`_open_twin`). The advisory
+    lock holds to the commit, so a second create waits, then reads the row of
+    the first.
+    """
     me = _member(user)
     title = _title(payload.title)
     fire_at = _instant(payload.fire_at, "fire_at")
@@ -527,6 +596,14 @@ async def create_reminder(
     subject_kind, subject_id = _subject(payload.subject_kind, payload.subject_id)
     source = _source(user)
     async with _tenant_session() as db:
+        await db.execute(
+            text(_CREATE_LOCK_SQL),
+            {"key": create_lock_key(current_tenant(), me)},
+        )
+        twin = await _open_twin(db, me, title, fire_at, subject_kind, subject_id)
+        if twin is not None:
+            response.status_code = 200
+            return {**_out(twin), "already": True}
         row = (await db.execute(
             text(
                 "INSERT INTO reminders (member_email, title, notes, kind, "
@@ -1028,7 +1105,7 @@ CARD_STEPS: tuple[str, ...] = ("fired", "check_back", "gave_up")
 #: takes its `fire_at`.
 _CARDS_SQL = (
     "SELECT r.id, r.title, r.kind, r.state, r.fire_at, r.next_check_at, "
-    "r.cycles, r.important, s.step, s.step_at "
+    "r.cycles, r.important, r.subject_kind, r.subject_id, s.step, s.step_at "
     "FROM reminders r LEFT JOIN LATERAL ("
     "  SELECT e.event AS step, e.at AS step_at FROM reminder_events e "
     "   WHERE e.reminder_id = r.id AND e.event = ANY(CAST(:steps AS text[])) "
@@ -1066,3 +1143,68 @@ async def my_open_cards(
         })).fetchall()
         edge = (await db.execute(text(_EDGE_SQL), {"me": me, "now": now})).scalar()
     return [dict(r._mapping) for r in rows], edge
+
+
+# ── The Reminders band of My Day (RX-3) ────────────────────────────────────
+
+#: Upcoming reminders of the rest of the day that the band reads.
+AHEAD_LIMIT = 10
+#: The longest label of a linked object, in characters.
+SUBJECT_LABEL_MAX = 80
+
+#: The scheduled reminders from now to the end of the member's local day.
+#: Never a needs row: the feed puts them in ``reminders_ahead`` only.
+_AHEAD_SQL = (
+    "SELECT id, title, kind, fire_at, important, subject_kind, subject_id "
+    "FROM reminders WHERE member_email = :me AND state = 'scheduled' "
+    "AND fire_at > :now AND fire_at < :end "
+    "ORDER BY fire_at, created_at, id LIMIT :limit"
+)
+
+
+async def my_day_band(
+    user: Any, *, now: datetime, subjects: list[tuple[str, str, str]],
+) -> dict[str, Any]:
+    """What the Reminders band of My Day needs beyond the open cards (RX-3).
+
+    ``rows`` are my ``scheduled`` reminders from *now* to the end of my
+    local day, soonest first, at most :data:`AHEAD_LIMIT`. ``subjects`` maps
+    a reminder id to its linked object, for these rows and for the fired
+    ones in *subjects* (``(reminder_id, subject_kind, subject_id)``). The
+    label is set only when the member may see the object (``_subject_of``).
+    The flag is the caller's check. One tenant session reads it all.
+    """
+    from types import SimpleNamespace
+
+    from gateway.reminders.context import plain
+    from gateway.reminders.loop import member_day
+
+    me = _member(user)
+    async with _tenant_session() as db:
+        day = await member_day(db, me)
+        local = now.astimezone(day.tz)
+        end = datetime.combine(
+            local.date() + timedelta(days=1), datetime.min.time(), tzinfo=day.tz,
+        )
+        found = (await db.execute(text(_AHEAD_SQL), {
+            "me": me, "now": now, "end": end, "limit": AHEAD_LIMIT,
+        })).fetchall()
+        rows = [{
+            "id": str(r.id), "title": r.title, "kind": r.kind,
+            "fire_at": _iso(r.fire_at), "important": bool(r.important),
+        } for r in found]
+        wanted = list(subjects) + [
+            (str(r.id), r.subject_kind, r.subject_id) for r in found
+            if r.subject_kind and r.subject_id
+        ]
+        labels: dict[str, dict[str, Any]] = {}
+        for rid, kind, sid in wanted:
+            subject = await _subject_of(
+                db, user, SimpleNamespace(subject_kind=kind, subject_id=sid),
+            )
+            if subject is None:
+                continue
+            title = None if subject.hidden or not subject.title else plain(
+                subject.title, SUBJECT_LABEL_MAX)
+            labels[rid] = {"kind": kind, "label": title}
+    return {"rows": rows, "subjects": labels}

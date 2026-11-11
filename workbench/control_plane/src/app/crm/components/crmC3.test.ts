@@ -330,7 +330,7 @@ describe("the Mirror editor", () => {
 describe("the Native grid", () => {
   it("hides a stage in its Edit dialog, and a lost reason with its box", () => {
     // CRM-U11: the stage row lost its "hidden" box. The Edit dialog holds
-    // "Show this column on the board", and a hidden stage shows a tag.
+    // "Hide on the board", and a hidden stage shows a tag.
     const html = renderToStaticMarkup(
       createElement(PipelineSettings, {
         dealStatuses: [status("Open", { type: "open" as StatusType })],
@@ -344,7 +344,7 @@ describe("the Native grid", () => {
         onReorderLostReasons: async () => undefined,
       })
     );
-    expect(html.match(/>hidden</g)?.length).toBe(1);
+    expect(html.match(/>Hidden</g)?.length).toBe(1);
     // The Native grid keeps its own source fields: no Zoho column.
     expect(html).not.toContain("Zoho ");
     const form = renderToStaticMarkup(
@@ -358,8 +358,9 @@ describe("the Native grid", () => {
         onCancel: () => undefined,
       })
     );
-    expect(form).toContain("Show this column on the board");
-    expect(form).not.toMatch(/type="checkbox"[^>]*checked=""[^>]*>[^<]*Show this column/);
+    expect(form).toContain("Hide on the board");
+    // Checked means hidden (CRM-U17a): this stage is hidden, so the box is checked.
+    expect(form).toMatch(/type="checkbox"[^>]*checked=""[^>]*>[^<]*Hide on the board/);
     const list = renderToStaticMarkup(
       createElement(StageList, {
         kind: "deal",

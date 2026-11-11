@@ -52,7 +52,11 @@ in a session that read an untrusted answer (``egress.session_is_marked``).
 in the member's TYPED words of this turn (``assistant_profile.typed_words``).
 The route binds them before any server rewrite of the message, and binds
 nothing for a Continue, a card answer, a Confirm or a forwarded text. A
-paste grounds nothing. Each address and link must be a whole token of
+paste grounds nothing. The chat route binds them only for a message with
+the ONE typed mark of D-PZ-37: the member typed it in the message box. A
+tapped pill, a choice, a card action, a feed starter and the Fix prompt
+bind nothing, so a save from one asks the confirm card where a card can
+show, and refuses where none can. Each address and link must be a whole token of
 them, each number must be one of their numbers, and 80% of the content
 words at least must be in them (``assistant_profile.grounded``). Else the
 write refuses with ``not_your_words``.
@@ -152,6 +156,7 @@ from acb_common.assistant_profile import (
     grounded,
     interview_stopped,
     is_sensitive,
+    member_sent,
     member_typed,
     needs_confirm,
     open_areas,
@@ -449,6 +454,24 @@ def _run_org() -> str:
         return ""
 
 
+def _forms_offer(area: str, profile: dict[str, Any]) -> str:
+    """The PZ-40 offer for the name question, or ``""``. It comes only for the
+    area ``name``, only where ``ADDRESS_FORMS_ORGS`` is on for the run's org,
+    and it reads the language that the profile stores, never a guess."""
+    if area != "name":
+        return ""
+    try:
+        from acb_common import honorifics
+        from acb_common.assistant_profile import address_forms_for
+
+        if not address_forms_for(_run_org()):
+            return ""
+        style = profile.get("style") if isinstance(profile.get("style"), dict) else {}
+        return " " + honorifics.offer_line(style.get("language"))
+    except Exception:
+        return ""
+
+
 def _card_channel() -> bool:
     """True when a card may ground a value or carry an offer (PZ-32).
 
@@ -476,12 +499,16 @@ def _ground(*values: Any, card: bool = True) -> list[str]:
 
     The answer is ``[]`` when the words hold each value. A value that they
     do not hold refuses with ``not_your_words``. The one exception: *card*
-    is True, the member typed words in this message, and the run can show
+    is True, the member sent words in this message, and the run can show
     a card (:func:`_card_channel`). There the answer is ``[ASK_NOT_TYPED]``:
     the caller's ONE card shows the exact value and names that reason, and
-    only the member's approve writes it (PZ-32). A turn with no typed words
-    (a Continue, a card answer, a paste) never gets that card. The caller
-    asked :func:`_write_gate` first, so a marked session never gets here."""
+    only the member's approve writes it (PZ-32). The member sent words when
+    they typed them, or tapped a pill, a choice, a card action or a feed
+    starter (``assistant_profile.member_sent``, D-PZ-37). A tap grounds
+    nothing, so a save from it asks the card and never saves at once. A
+    turn with no words of the member (a Continue, a card answer, a paste)
+    never gets that card. The caller asked :func:`_write_gate` first, so a
+    marked session never gets here."""
     if _confirming():
         # The member typed "Confirm" for a stored act (PZ-6b). The values
         # are the stored ones, and the card gate binds them to the card.
@@ -489,7 +516,7 @@ def _ground(*values: Any, card: bool = True) -> list[str]:
     words = _member_words()
     if all(not value or grounded(value, words) for value in values):
         return []
-    if card and words.strip() and _card_channel():
+    if card and (words.strip() or member_sent()) and _card_channel():
         return [ASK_NOT_TYPED]
     raise _Refused(NOT_YOUR_WORDS_TEXT if words.strip() else NO_TYPED_TEXT,
                    "not_your_words")
@@ -515,6 +542,8 @@ ASK_ADDRESS = "It holds an address, a link or a number."
 ASK_SENSITIVE = ("It is sensitive: health, religion, caste, politics, sexuality "
                  "or money.")
 ASK_REPLACES = "It replaces a fact that you saved."
+ASK_CELEBRATIONS = "It is a birthday, a festival or a work anniversary that you ask me to greet."
+CELEBRATIONS_OFF = "Celebrations are not on for your organization. Nothing saved."
 CONFIRM_CHECK = "Check it before you approve."
 CONFIRM_DETAIL = f"{ASK_ADDRESS} {CONFIRM_CHECK}"
 
@@ -1164,7 +1193,7 @@ def _free_text(key: str, value: dict[str, Any], prior: dict[str, Any]) -> list[A
 
 
 @_write_tool
-async def profile_set(key: Literal["address", "style"], value: dict[str, Any],
+async def profile_set(key: Literal["address", "style", "celebrations"], value: dict[str, Any],
                       sensitive: bool = False) -> str:
     """Set how to address the member, or how to answer them.
 
@@ -1180,14 +1209,19 @@ async def profile_set(key: Literal["address", "style"], value: dict[str, Any],
     first. It answers the interview areas name (address name or formality),
     language (style language) and detail.
 
+    Key ``celebrations`` (only where it is on): birthday as
+    {"month": 3, "day": 12} with no year, festivals as a list of ids,
+    work_anniversary true or false. Never guess a festival, a religion or a
+    community. It always asks the member first.
+
     Args:
-        key: address or style.
+        key: address, style or celebrations.
         value: The fields that change, for example {"length": "short"}.
         sensitive: True for a note about health, religion, caste, politics,
             sexuality or money. The member approves it first.
     """
-    if key not in ("address", "style"):
-        raise _Refused("The key is address or style. Nothing saved.")
+    if key not in ("address", "style", "celebrations"):
+        raise _Refused("The key is address, style or celebrations. Nothing saved.")
     if not isinstance(value, dict) or not value:
         raise _Refused("Give at least one field to change. Nothing saved.")
     headers = await _write_gate()
@@ -1201,6 +1235,18 @@ async def profile_set(key: Literal["address", "style"], value: dict[str, Any],
     if merged == prior:
         raise _Refused("Already set.", "duplicate")
     reasons = [*typed, *_reasons(free, sensitive)]
+    if key == "celebrations":
+        from acb_common.celebrations import celebrations_for, is_clear
+
+        clearing = is_clear(merged)
+        # PZ-43: with the flag off the member can still CLEAR a saved value
+        # (§7 rule 2), and can set nothing.
+        if not clearing and not celebrations_for(_run_org()):
+            raise _Refused(CELEBRATIONS_OFF)
+        if not clearing:
+            # A birthday and a festival pick are personal data (D-PZ-41).
+            # The member says yes on a card that shows the exact value.
+            reasons.append(ASK_CELEBRATIONS)
     if reasons or _confirming():
         await _cards(f"{key}: {json.dumps(merged, ensure_ascii=False, sort_keys=True)}",
                      reasons, second=ASK_NOT_TYPED in reasons)
@@ -1446,7 +1492,8 @@ async def profile_interview(action: str, area: str = "") -> str:
         if not open_:
             return NO_OPEN_AREA
         return "\n".join([INTERVIEW_HEADER, *(
-            f"{a}: {AREA_INTENTS[a]}. {EXAMPLE_TAG} «{AREAS[a]}»" for a in open_)])
+            f"{a}: {AREA_INTENTS[a]}. {EXAMPLE_TAG} «{AREAS[a]}»"
+            f"{_forms_offer(a, profile)}" for a in open_)])
     status, data = await _send(headers, "POST", f"/interview/{area_id}", {"state": act})
     if status == 422 and act == "asked":
         raise _Refused(NO_SITTING_TEXT)

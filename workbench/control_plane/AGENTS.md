@@ -159,6 +159,13 @@ Twelve rules on top of the three above. Each one exists because somebody broke i
    **`src/lib/autoOpenArtifact.ts` is the one rule** for a file a chat agent
    writes: `/chat` and the Projects rail both call it. Fence:
    `autoOpenArtifact.test.ts`.
+   **Only the composer sends the typed mark** (WS-63 D-PZ-37). The chat
+   composer, the shell's Ask field and the ⌘K draft send `typed: true`. A
+   link such as `/chat?q=` never does. A pill, a choice,
+   a card action, a feed starter, the Fix prompt, a retry and an edit send
+   none. Words that a program puts in the box take the mark away until the
+   box is empty. `src/lib/typedMark.ts` holds the rules. Fence:
+   `src/lib/typedMark.test.ts`.
    **`src/lib/assistantCheckpoint.ts` is the one row shape** the chat
    translator (`api/agent/chat/route.ts`) saves (WS-27bm S10). The live
    stream names the requested agent in `author_email`. An `@name` turn names
@@ -284,7 +291,10 @@ Twelve rules on top of the three above. Each one exists because somebody broke i
    one line: number, title, status pill and open icon. Fence:
    `src/lib/cardDenseLayout.test.ts`.
    **A card key has one label,** in `CARD_FIELDS` in `src/lib/cardFields.ts`,
-   and its kind draws its value. The Python fakes read that map and fail a
+   and its kind draws its value. ⚠️ Read the map through `ownSpec`
+   (`Object.hasOwn`) only. A key comes from tool and agent data, and
+   `constructor` or `__proto__` read the prototype chain and broke a card
+   (MCP-P1b-1 re-review P1). The Python fakes read that map and fail a
    card test that prints a key with no label (`tests/unit/_card_words.py`).
    A read result draws through `components/Readout.tsx`, with no
    id and no `[key]`. That includes the email and CRM reads. Fences:
@@ -462,6 +472,15 @@ Twelve rules on top of the three above. Each one exists because somebody broke i
    From NS-2, `src/lib/nav.test.ts` will also fail on a live pane with no
    team or purpose. Until then, the manifest half is advisory. R9 in
    `work_plan.md` §1 binds the app's spec to declare it.
+   **A reminder looks and acts like a reminder** (RX-3, owner, 2026-11-01).
+   My Day draws it in the Reminders band (`src/lib/shell/RemindersBand.tsx`)
+   above the groups, with the Bell glyph and not the Calendar icon. The
+   groups leave the three reminder kinds out. `reminderBand.ts` holds every
+   rule of the band. `ReminderActs.tsx` draws Done and Snooze, and the band
+   and the bell both use it. The acts write the reminder row through
+   `reminderOpen.ts`, the one client of the routes, and never card state.
+   Fences: `reminderBand.test.ts`, `reminderActions.test.ts` and
+   `remindersBand.test.ts`.
 11. **The shell bar is constant. An app never renders into it. Every app
    opens with `AppTopBar`, its one title bar: rail toggle, name, subtitle,
    actions, tools.** *(Owner direction, 2026-10-10.)* The owner said: "I

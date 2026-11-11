@@ -156,7 +156,7 @@ class Fakes:
         self.slow_mailbox: set[str] = set()
         self.tasks: dict[str, list[dict]] = {
             ME: [
-                _task("t-late", "Ship the extruder", now - timedelta(hours=2)),
+                _task("t-late", "Ship the extruder", now - timedelta(days=1)),
                 _task("t-old", "File the VAT return", now - timedelta(days=3)),
                 _task("t-soon", "Call the supplier", later_today),
                 _task("t-next", "Plan the launch", now + timedelta(days=3)),
@@ -596,9 +596,20 @@ class TestTheClock:
         ]
 
     def test_the_split_follows_the_routes_clock(self, monkeypatch, fakes):
-        # Non-vacuity: the freeze reaches the split. One minute past t-soon's
-        # deadline, the route calls it overdue. This was the CI failure.
+        # Non-vacuity: the freeze reaches the split, for a read that gives no
+        # date. Past the hour of t-soon it stays due today (RX-5). One minute
+        # into the next UTC day, the route calls it overdue.
+        real = fakes.my_due_tasks
+
+        async def no_date(user, *, limit):
+            answer = await real(user, limit=limit)
+            return {"rows": answer["rows"], "timezone": "UTC"}
+
+        monkeypatch.setattr(personal, "my_due_tasks", no_date)
         _freeze(monkeypatch, LATER_TODAY + timedelta(minutes=1))
+        rows = {i["id"]: i for i in run(member(*ALL))["items"]}
+        assert rows["tasks:t-soon"]["kind"] == "due_today"
+        _freeze(monkeypatch, fakes.tomorrow + timedelta(minutes=1))
         rows = {i["id"]: i for i in run(member(*ALL))["items"]}
         assert rows["tasks:t-soon"]["kind"] == "overdue"
 
@@ -645,7 +656,7 @@ class TestTheCaps:
 
     def _flood(self, fakes, overdue: int, due_today: int) -> None:
         fakes.tasks[ME] = (
-            [_task(f"t-o{n:02}", "x", NOW - timedelta(hours=n + 1)) for n in range(overdue)]
+            [_task(f"t-o{n:02}", "x", NOW - timedelta(days=n + 1)) for n in range(overdue)]
             + [_task(f"t-d{n:02}", "x", LATER_TODAY) for n in range(due_today)])
         fakes.pending[ORG] = [
             {"id": f"pa-{n:02}", "actor": "agent:x", "action": "crm.zoho_update",
@@ -1110,7 +1121,23 @@ class TestTheReminderSource:
         assert order[-1] == "approvals"
         assert order.index("reminders") == order.index("approvals") - 1
 
-    def test_the_three_kinds_come_last_and_oldest_first(self):
-        assert [k for k, _ in sorted(shell.KIND_ORDER.items(), key=lambda kv: kv[1])][-3:] == [
-            "reminder_due", "reminder_check", "reminder_unconfirmed"]
+    def test_the_fired_kinds_come_first_and_the_unconfirmed_last(self):
+        """RX-7. Mutation: put `reminder_due` back after `needs_reply` in
+        `KIND_ORDER` and this fails, and so does the cut test below."""
+        order = [k for k, _ in sorted(shell.KIND_ORDER.items(), key=lambda kv: kv[1])]
+        assert order[:2] == ["reminder_due", "reminder_check"]
+        assert order[-1] == "reminder_unconfirmed"
         assert all(shell.NEWEST_FIRST[k] is False for k in shell.REMINDER_KINDS)
+
+    def test_the_cut_keeps_a_fired_reminder_behind_thirty_other_rows(self):
+        """RX-7. The server keeps the first `size` rows. Thirty overdue tasks
+        and one fired reminder: the reminder stays."""
+        at = "2026-11-02T08:00:00+00:00"
+        rows = [{"id": f"tasks:{n}", "kind": "overdue", "app": "projects", "at": at}
+                for n in range(30)]
+        rows.append({"id": "reminders:r-1", "kind": "reminder_due", "app": "calendar", "at": at})
+        rows.append({"id": "reminders:r-2", "kind": "reminder_check", "app": "calendar", "at": at})
+        cut = shell._fit(rows, shell.DEFAULT_LIMIT)
+        ids = [i["id"] for i in cut["items"]]
+        assert ids[:2] == ["reminders:r-1", "reminders:r-2"]
+        assert cut["count"] == shell.DEFAULT_LIMIT and cut["total"] == 32

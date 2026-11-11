@@ -115,6 +115,8 @@ async def forget_member_profile(db: Any, email: str) -> None:
         text(CLEAR_FOR_MEMBER_SQL_TEMPLATE.replace("{org}", _BOUND_ORG)),
         {"email": email},
     )
+    # PZ-35: the chat summaries of the member go with the profile.
+    await clear_for_member(db, email)
     mark_changed(email)
 
 
@@ -690,6 +692,8 @@ _CREDENTIAL_CASCADES: dict[str, tuple[str, ...]] = {
     # WS-65 SM-1 adds the four tables of a shared mailbox. A member purge
     # reaches a shared row only while its user_id is the leaver, until SM-8
     # leaves a shared row out of the member scope (shared_mailbox.md §4.2).
+    # WS-17 SG-2 adds `email_signature_settings`, the signature mode of the
+    # mailbox.
     "email_accounts": (
         "crm_auto_lead_cursors",
         "email_actions", "email_ai_drafts", "email_assistant_settings",
@@ -699,8 +703,8 @@ _CREDENTIAL_CASCADES: dict[str, tuple[str, ...]] = {
         "email_mailbox_grants", "email_mailbox_member_prefs", "email_messages",
         "email_newsletters", "email_rule_guidance", "email_rule_patterns",
         "email_rules", "email_scheduled_sends", "email_send_log", "email_senders",
-        "email_sync_log", "email_thread_assignments", "email_thread_status",
-        "email_voice_profiles",
+        "email_signature_settings", "email_sync_log", "email_thread_assignments",
+        "email_thread_status", "email_voice_profiles",
     ),
     # The whole WhatsApp mirror — 14 direct, 16 with transitives
     # (`wa_media` and `wa_message_embeddings` hang off `wa_messages`).
@@ -795,6 +799,24 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # stays, and `purge_crm_member` takes the address off it.
     _PersonRows("crm_member_rules", "crm_business_rules",
                 "scope = 'member' AND lower(member_email) = :email"),
+    # WS-CRM CRM-M1: the Change history rows that only the member reads, the
+    # changes of a private saved view or of an own business rule. They hold
+    # the text of a private view or an own rule, which only the member
+    # reads, so they go with the member. This purge deletes the own rules
+    # (`crm_member_rules` above). It does not delete the saved views
+    # (`crm_views`). An Undo row has the same readers as the row it undoes
+    # (`change_log.log_change`), so the `ON DELETE CASCADE` key of
+    # `undoes_id` takes only rows that this clause counts too, and no org
+    # row goes with them. The clause names
+    # the bound org beside RLS, as `reminders` does. The org's rows that the
+    # member made stay with the address, as `app_audit` does, because a row
+    # never changes (migration 341). They are not counted as kept: the table
+    # cascades into itself, so `test_no_keep_clause_survives_a_cascade_on_
+    # the_delete_side` takes a keep clause only as the exact complement of
+    # this one, and the org's rows are keyed by `actor_email`, not by
+    # `private_to`.
+    _PersonRows("crm_private_changes", "crm_change_log",
+                f"lower(private_to) = :email AND organization_id = {_BOUND_ORG}"),
     # WS-61 KB-2f: the member's starred Knowledge pages. A star is the
     # member's own shortcut, so it goes with the member. The page stays.
     _PersonRows("knowledge_favorites", "kb_favorites", "lower(member_email) = :email"),
@@ -858,6 +880,25 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # the same address in another organization stay.
     _PersonRows("push_devices", "push_subscriptions",
                 f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-CAL CE-4 (D138): the member's calendar entries of THIS organization,
+    # the events they made and the copies of their own provider calendar.
+    # Only the owner changes an entry, so nobody else could ever delete one.
+    # The clause names the bound org, as `reminders` does. The attendee rows
+    # of these entries go by their `ON DELETE CASCADE` key. ⚠️ This row runs
+    # before any connection delete of the purge (`purge_knowledge_member`
+    # runs after the list), because `calendar_entries.connection_id` has NO
+    # cascade (migration 331).
+    _PersonRows("calendar_entries", "calendar_entries",
+                f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # The member's own rows on the entries of colleagues: their seat, RSVP
+    # and lead time. The entry stays with its owner. The clause leaves out
+    # the rows on the member's own entries, which the cascade above deletes,
+    # so the two counts never count one row twice.
+    _PersonRows("calendar_attendances", "calendar_entry_attendees",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG} "
+                "AND NOT EXISTS (SELECT 1 FROM calendar_entries AS e "
+                "WHERE e.id = calendar_entry_attendees.entry_id "
+                "AND lower(e.owner_email) = :email)"),
     # The identity itself. LAST.
     _PersonRows("member_record", "app_user", "id = CAST(:uid AS uuid)"),
 )
@@ -903,6 +944,13 @@ _PURGE_KEEPS: tuple[_PersonRows, ...] = (
     # `test_the_purge_names_no_task_table_and_deletes_no_pm_row`). Kept
     # whole, so the table is on one side only.
     _PersonRows("agent_run_strands", "pm_agent_run_strands",
+                "lower(member_email) = :email"),
+    # WS-39 SP-1 (project_management_app.md §13.2a): the member's review
+    # minutes in the capacity snapshot of a started cycle. Kept and counted,
+    # not deleted: a cycle's capacity snapshot is part of the record of the
+    # cycle, no UPDATE may change it, and a purge deletes no `pm_` row (D63).
+    # Kept whole, so the table is on one side only.
+    _PersonRows("cycle_capacity", "pm_cycle_capacity",
                 "lower(member_email) = :email"),
     # WS-PKG PKG-4 (package_host.md §5.1 decision 5): the group and org
     # installs that the member made. Other people use them, so they stay, as
@@ -1196,8 +1244,9 @@ async def purge_member_rows(
 
     # Before the commit, on its own connection — see the admin route's
     # docstring.
+    # Task 2221: the org of this purge. The operator door binds no tenant.
     record_admin_change(actor_email, "org.member_purged", f"user:{addr}",
-                        deleted=deleted, kept=kept)
+                        organization_id=org_id, deleted=deleted, kept=kept)
     return deleted, kept, plans
 
 

@@ -68,6 +68,8 @@ import {
 } from "./mockData";
 import { isInToday } from "./today";
 import { browserTimeZone, isCalendarItem, isTickled, localDate } from "./utils";
+import { rememberMemberZone } from "@/lib/shell/memberZone";
+import { zoneToSave } from "@/lib/shell/saveZone";
 import {
   clarifyChangesSharedTask,
   clarifyQueue,
@@ -1466,6 +1468,9 @@ interface TaskState {
   /** Per-user task-manager settings (AI tiers + toggles). Defaults render
    *  immediately; hydrate() refreshes from the gateway. */
   settings: TaskSettings;
+  /** True once `hydrate` read the saved settings. Before that, `settings.timezone` is the
+   *  placeholder "UTC", and no client may judge the saved zone by it (RX-7). */
+  settingsLoaded: boolean;
   /** Patch settings (optimistic; persisted via PUT /tasks/settings). */
   updateSettings: (patch: Partial<TaskSettings>) => Promise<void>;
   settingsModalOpen: boolean;
@@ -1682,7 +1687,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     set((s) => {
       const counted = s.clarifiedThisSession.has(id);
       const clarifiedThisSession = new Set(s.clarifiedThisSession).add(id);
-      const nextInbox = clarifyQueue(s.items, s.fromProjectIds, clarifiedThisSession)[0];
+      const nextInbox = clarifyQueue(s.items, clarifiedThisSession)[0];
       return {
         clarifiedThisSession,
         selectedItemId: nextInbox?.id ?? null,
@@ -2335,7 +2340,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       }
       const clarifiedThisSession = new Set(s.clarifiedThisSession).add(id);
       // advance to the OLDEST remaining item of the walk — GTD processes FIFO
-      const nextInbox = clarifyQueue(items, s.fromProjectIds, clarifiedThisSession)[0];
+      const nextInbox = clarifyQueue(items, clarifiedThisSession)[0];
       return {
         items,
         projects,
@@ -2431,11 +2436,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   /** LIVE member refresh for one workspace (delegate-picker freshness). */
   skipToNextInbox: () =>
     set((s) => {
-      // The same walk Clarify advances through: captures and untriaged
-      // "From Projects" rows together, oldest first.
-      const inbox = clarifyQueue(s.items, s.fromProjectIds, s.clarifiedThisSession);
-      if (inbox.length <= 1) return s; // nothing else to move to
+      // The same walk Clarify advances through: the captures, oldest first
+      // (D170, INB-1). A row opened from My tasks is off the walk, so skip
+      // moves to the first capture.
+      const inbox = clarifyQueue(s.items, s.clarifiedThisSession);
       const idx = inbox.findIndex((i) => i.id === s.selectedItemId);
+      if (inbox.length === 0 || (idx >= 0 && inbox.length === 1)) return s; // nothing else to move to
       const next = inbox[(idx + 1) % inbox.length];
       return { selectedItemId: next.id };
     }),
@@ -3961,13 +3967,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       void get().loadLedProjects();
       // Settings load in parallel — defaults already render, so the panes are
       // usable before they arrive.
-      const settings = await fetchTaskSettings().catch(() => get().settings);
-      set({ settings });
+      let read = true;
+      const settings = await fetchTaskSettings().catch(() => {
+        read = false;
+        return get().settings;
+      });
+      set({ settings, settingsLoaded: read });
       // F5 — the gateway reads "today" for the start-date rule in the zone
-      // stored here. Store this browser's zone when it differs, as
-      // `CalendarView` does, so the inbox and `isTickled` agree on the date.
-      const zone = browserTimeZone();
-      if (zone && zone !== settings.timezone) void get().updateSettings({ timezone: zone });
+      // stored here. RX-7: store this browser's zone only when the saved zone is
+      // unset or the "UTC" default (`zoneToSave`, the shell's one rule), so a
+      // zone the member chose in the Calendar settings is never overwritten on
+      // an open. A failed read judges nothing.
+      const zone = read ? zoneToSave(settings.timezone, browserTimeZone()) : null;
+      if (zone) void get().updateSettings({ timezone: zone });
       // ⚠️ The auto-sync-on-open fire was REMOVED 2026-08-25 (D52, WS-39 S1
       // repair round 1). It ran `syncNow()` whenever any `task_accounts` row
       // survived — which, after the retirement, is the ONLY state it could be
@@ -3992,6 +4004,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
   },
 
+  settingsLoaded: false,
   settings: {
     chatModel: "tier-powerful",
     clarifyModel: "tier-balanced",
@@ -4025,6 +4038,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     if (get().backend !== "live") return;
     try {
       set({ settings: await updateTaskSettings(patch) });
+      // The page's one memory of the saved zone follows (`memberZone.ts`, RX-7).
+      if (patch.timezone) rememberMemberZone(patch.timezone);
     } catch {
       /* next hydrate reconciles */
     }

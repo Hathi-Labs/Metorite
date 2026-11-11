@@ -38,3 +38,18 @@ describe("TaskCardShell — the parent crumb", () => {
     expect(card(undefined)).not.toContain("Subtask");
   });
 });
+
+describe("TaskCardShell — dense", () => {
+  const html = (dense?: boolean) =>
+    renderToStaticMarkup(createElement(TaskCardShell, { dense, children: "Call the vendor" }));
+
+  it("is the board's box by default", () => {
+    expect(html()).toMatch(/\bgap-2 p-3\b/);
+  });
+
+  it("takes the tighter box for a narrow rail, with no second padding class", () => {
+    const dense = html(true);
+    expect(dense).toMatch(/\bgap-1\.5 p-2\.5\b/);
+    expect(dense).not.toMatch(/\bp-3\b/);
+  });
+});

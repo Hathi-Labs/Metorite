@@ -32,8 +32,9 @@
  * courtesy half.
  *
  * Native mode with several pipelines (CRM-Q2) shows one read-only section for
- * each. The stage routes for a second pipeline are not in this build. Mirror
- * mode takes any count of pipelines, with a picker over the list.
+ * each. A second pipeline has its own stage routes (`/crm/pipelines/{id}/stages`),
+ * which the sections do not use yet. Mirror mode takes any count of pipelines,
+ * with a picker over the list.
  *
  * **Mirror mode** (WS-53 CRM-C3, crm_platform.md §20.6 item 14). Zoho owns the
  * stages, and an admin edits the Metorite overlay: the order, the win chance,
@@ -55,7 +56,7 @@ import { Input } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
 import SelectButton, { type SelectOption } from "@/components/ui/SelectButton";
 import Tabs, { type TabDef } from "@/components/Tabs";
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import {
   orderLanes,
   REQUIREABLE_FIELD_LABELS,
@@ -63,7 +64,9 @@ import {
   stageAccent,
   stageIcon,
 } from "../lib/board";
+import { TRY_AGAIN } from "../lib/api";
 import { colorOptions } from "../lib/colorOptions";
+import { defaultDealName, defaultFeedWords, type PipelineKind } from "../lib/newPipeline";
 import { orderedPipelines, placesOf, showPicker } from "../lib/pipelines";
 import {
   CLAMPED_PROBABILITY,
@@ -76,15 +79,18 @@ import {
   validateLostReasonDraft,
   validateOverlayProbability,
   validateStatusDraft,
+  vocabularyShows,
   type PositionPatch,
+  type VocabularyState,
 } from "../lib/settings";
 import type { SettingsSectionId } from "../lib/settingsSections";
 import { useCrmStore } from "../lib/store";
 import ConvertMappingCard from "./ConvertMappingCard";
 import FieldMapCard from "./FieldMapCard";
+import NewPipelineDialog from "./NewPipelineDialog";
 import FieldsCard from "./FieldsCard";
 import RecordNamesCard from "./RecordNamesCard";
-import { Card, NameList, PipelineSections } from "./SettingsCards";
+import { Card, NameList, PipelineSections, STATE_ROW, VocabularyNotice } from "./SettingsCards";
 import SuggestionsCard from "./Suggestions";
 import SyncHealthCard from "./SyncHealthCard";
 import type {
@@ -99,15 +105,23 @@ import type {
  * The draft of one row, kept in the CRM store under `key` (CRM-C1 review).
  * A section change unmounts the row, and the draft stays for its return. A
  * re-read of `served` drops it, as the local state did before.
+ *
+ * `refused` (CRM-U17a): the last save was refused. A refused save re-reads the
+ * list, and the new rows would drop the draft. So the draft stays, and it
+ * moves to the new base. The member fixes the value and saves again.
  */
 function useSettingsDraft<T>(
   key: string,
-  served: T
+  served: T,
+  refused = false
 ): [T, (next: T) => void, () => void] {
   const stored = useCrmStore((state) => state.settingsDrafts[key]);
   const setDraft = useCrmStore((state) => state.setSettingsDraft);
+  useEffect(() => {
+    if (refused && stored && stored.base !== served) setDraft(key, { base: served, value: stored.value });
+  }, [refused, stored, served, key, setDraft]);
   return [
-    draftOf(stored, served),
+    refused && stored ? (stored.value as T) : draftOf(stored, served),
     (next: T) => setDraft(key, Object.is(next, served) ? null : { base: served, value: next }),
     // A saved draft leaves the store. Kept, it would come back when another
     // admin sets the served value back to its base, and a Save would then
@@ -174,6 +188,9 @@ export default function PipelineSettings({
   dealStatuses,
   leadStatuses,
   lostReasons,
+  vocabularyState = "loaded",
+  vocabularyError = null,
+  onRetryVocabulary,
   saving,
   onSaveStatus,
   onRemoveStatus,
@@ -183,10 +200,12 @@ export default function PipelineSettings({
   setup,
   access,
   pipelines = null,
+  leadPipelines = null,
   pipelineId = null,
   showAdminCards = false,
   readOnly = false,
   studioAdmin = false,
+  pipelineCreate = false,
   section,
   questions,
   rules,
@@ -215,11 +234,23 @@ export default function PipelineSettings({
    * lead-conversion mapping. The page gives the same value to the sections.
    */
   studioAdmin?: boolean;
+  /**
+   * WS-CRM CRM-M3a: the caller is an admin, the CRM is Native, and
+   * `CRM_PIPELINES_ORGS` holds the org (`pipeline_create` of `GET /crm/mode`).
+   * Then the Deal stages card shows "New pipeline". The route checks again.
+   */
+  pipelineCreate?: boolean;
   /** The Setup hub (it holds the connection, CRM-X0) and the Access card of an admin, in this order. */
   setup?: React.ReactNode;
   access?: React.ReactNode;
   /** The deal pipelines (CRM-Q2). `null` while the gateway has no such route. */
   pipelines?: DealPipeline[] | null;
+  /**
+   * WS-CRM CRM-M4a: the lead pipelines (`GET /crm/pipelines?kind=lead`). With
+   * one or more, the Native Lead statuses card lists them to read, beside the
+   * default lead list.
+   */
+  leadPipelines?: DealPipeline[] | null;
   /** The pipeline the Deals board shows (CRM-U11). The stage list opens on it. */
   pipelineId?: string | null;
   /** The Fields and Sync health cards are for an admin. */
@@ -227,6 +258,12 @@ export default function PipelineSettings({
   dealStatuses: Status[];
   leadStatuses: Status[];
   lostReasons: LostReason[];
+  /** The first read of the three lists above (CRM-U17a). With none, they are read. */
+  vocabularyState?: VocabularyState;
+  /** The reason of a failed read. */
+  vocabularyError?: string | null;
+  /** The Retry of a failed read. */
+  onRetryVocabulary?: () => void;
   saving: boolean;
   onSaveStatus: (
     kind: StatusKind,
@@ -242,11 +279,45 @@ export default function PipelineSettings({
   onReorderLostReasons: (patches: PositionPatch[]) => Promise<void>;
 }) {
   const several = showPicker(pipelines);
+  // In the store, so the dialog stays open when the page mounts its phone tree.
+  const newPipelineOpen = useCrmStore((state) => state.newPipeline.open);
+  const newPipelineKind: PipelineKind = useCrmStore((state) => state.newPipeline.kind) ?? "deal";
+  const setNewPipeline = useCrmStore((state) => state.setNewPipeline);
+  const createPipeline = useCrmStore((state) => state.createPipeline);
+  // One dialog makes both kinds (CRM-M4a). A button of the other kind starts
+  // a fresh draft, so a deal draft never becomes a lead pipeline.
+  const openNew = (kind: PipelineKind) =>
+    setNewPipeline(kind === newPipelineKind ? { open: true, kind } : { open: true, kind, draft: null });
+  // CRM-M3a: "New pipeline", on the Native Deal stages card, for an admin.
+  const newPipeline =
+    pipelineCreate && !readOnly ? (
+      <Button variant="secondary" size="sm" icon="Plus" disabled={saving} onClick={() => openNew("deal")}>
+        New pipeline
+      </Button>
+    ) : undefined;
+  // CRM-M4a: the same, on the Native Lead statuses card. It opens the dialog
+  // in lead mode.
+  const newLeadPipeline = newPipeline ? (
+    <Button variant="secondary" size="sm" icon="Plus" disabled={saving} onClick={() => openNew("lead")}>
+      New pipeline
+    </Button>
+  ) : undefined;
+  const leadSections = leadPipelines && leadPipelines.length > 0 ? leadPipelines : null;
   const orderStatuses = useCrmStore((state) => state.orderStatuses);
   const resetStatusOrder = useCrmStore((state) => state.resetStatusOrder);
   const addStage = useCrmStore((state) => state.addStageBeforeClosed);
   /** Does the section on screen hold this card? With no section, each does. */
   const show = (id: SettingsSectionId) => !section || section === id;
+  // A list with no rows is loading or failed until a read says "empty"
+  // (CRM-U17a). The notice stands in for the card, with its title.
+  const held = (title: string, count: number, card: React.ReactNode): React.ReactNode => {
+    const shows = vocabularyShows(vocabularyState, count);
+    return shows === "loading" || shows === "failed" ? (
+      <VocabularyNotice title={title} state={shows} error={vocabularyError} onRetry={onRetryVocabulary} />
+    ) : (
+      card
+    );
+  };
   return (
     <div className="flex-1 space-y-6 overflow-y-auto p-4 sm:p-6">
       {show("setup") && setup}
@@ -255,99 +326,160 @@ export default function PipelineSettings({
       {readOnly && show("rules") && rules}
       {readOnly && showAdminCards ? (
         <>
-          {show("stages") && (
-            <StageList
-              kind="deal"
-              mode="mirror"
-              statuses={dealStatuses}
-              pipelines={pipelines}
-              pipelineId={pipelineId}
-              saving={saving}
-              onSave={onSaveStatus}
-              onOrder={orderStatuses}
-              onResetOrder={resetStatusOrder}
-            />
-          )}
-          {show("lead-statuses") && (
-            <StageList
-              kind="lead"
-              mode="mirror"
-              statuses={leadStatuses}
-              saving={saving}
-              onSave={onSaveStatus}
-              onOrder={orderStatuses}
-              onResetOrder={resetStatusOrder}
-            />
-          )}
-          {show("lost-reasons") && (
-            <MirrorReasonGrid reasons={lostReasons} saving={saving} onSave={onSaveLostReason} />
-          )}
+          {show("stages") &&
+            held(
+              "Deal stages",
+              dealStatuses.length,
+              <StageList
+                kind="deal"
+                mode="mirror"
+                statuses={dealStatuses}
+                pipelines={pipelines}
+                pipelineId={pipelineId}
+                saving={saving}
+                onSave={onSaveStatus}
+                onOrder={orderStatuses}
+                onResetOrder={resetStatusOrder}
+              />
+            )}
+          {show("lead-statuses") &&
+            held(
+              "Lead statuses",
+              leadStatuses.length,
+              <StageList
+                kind="lead"
+                mode="mirror"
+                statuses={leadStatuses}
+                saving={saving}
+                onSave={onSaveStatus}
+                onOrder={orderStatuses}
+                onResetOrder={resetStatusOrder}
+              />
+            )}
+          {show("lost-reasons") &&
+            held(
+              "Lost reasons",
+              lostReasons.length,
+              <MirrorReasonGrid reasons={lostReasons} saving={saving} onSave={onSaveLostReason} />
+            )}
         </>
       ) : readOnly ? (
         <>
-          {show("stages") && (
-            <PipelineSections
-              pipelines={pipelines}
-              fallback={dealStatuses}
-              note="Stages come from Zoho."
-            />
-          )}
-          {show("lead-statuses") && (
-            <Card title="Lead statuses" note="Lead Status values come from Zoho.">
-              <NameList names={leadStatuses.map((x) => x.name)} />
-            </Card>
-          )}
-          {show("lost-reasons") && (
-            <Card title="Lost reasons" note="Lost reasons come from Zoho.">
-              <NameList names={lostReasons.map((x) => x.label)} />
-            </Card>
-          )}
+          {show("stages") &&
+            held(
+              "Deal stages",
+              dealStatuses.length,
+              <PipelineSections
+                pipelines={pipelines}
+                fallback={dealStatuses}
+                note="Stages come from Zoho."
+              />
+            )}
+          {show("lead-statuses") &&
+            held(
+              "Lead statuses",
+              leadStatuses.length,
+              <Card title="Lead statuses" note="Lead Status values come from Zoho.">
+                <NameList names={leadStatuses.map((x) => x.name)} />
+              </Card>
+            )}
+          {show("lost-reasons") &&
+            held(
+              "Lost reasons",
+              lostReasons.length,
+              <Card title="Lost reasons" note="Lost reasons come from Zoho.">
+                <NameList names={lostReasons.map((x) => x.label)} />
+              </Card>
+            )}
         </>
       ) : (
         <>
           {show("stages") &&
-            (several ? (
-              <PipelineSections
-                pipelines={pipelines}
-                fallback={dealStatuses}
-                note="Stage editing for several pipelines is not available yet."
-              />
-            ) : (
-              <StageList
-                kind="deal"
-                mode="native"
-                statuses={dealStatuses}
-                pipelines={pipelines}
+            held(
+              "Deal stages",
+              dealStatuses.length,
+              several ? (
+                <PipelineSections
+                  pipelines={pipelines}
+                  fallback={dealStatuses}
+                  note={SEVERAL_PIPELINES_NOTE}
+                  action={newPipeline}
+                />
+              ) : (
+                <StageList
+                  kind="deal"
+                  mode="native"
+                  statuses={dealStatuses}
+                  pipelines={pipelines}
+                  saving={saving}
+                  onSave={onSaveStatus}
+                  onOrder={orderStatuses}
+                  onRemove={onRemoveStatus}
+                  onAdd={addStage}
+                  action={newPipeline}
+                />
+              )
+            )}
+          {newPipeline && (
+            <NewPipelineDialog
+              open={newPipelineOpen}
+              kind={newPipelineKind}
+              pipelines={newPipelineKind === "lead" ? leadPipelines : pipelines}
+              dealPipelines={pipelines}
+              saving={saving}
+              onClose={() => setNewPipeline({ open: false, draft: null })}
+              onCreate={async (body) => {
+                const refused = await createPipeline(body);
+                if (refused === null) setNewPipeline({ open: false, draft: null });
+                return refused;
+              }}
+            />
+          )}
+
+          {show("lead-statuses") &&
+            held(
+              "Lead statuses",
+              leadStatuses.length,
+              leadSections ? (
+                // CRM-M4a: with a lead pipeline, the default list counts as the
+                // first one, as the default deal pipeline does. The card reads
+                // only until the status editor of each pipeline.
+                <PipelineSections
+                  title="Lead statuses"
+                  pipelines={[defaultLeadList(leadStatuses), ...leadSections]}
+                  fallback={leadStatuses}
+                  note={LEAD_PIPELINES_NOTE}
+                  action={newLeadPipeline}
+                  lineOf={(p) => feedsLine(p, pipelines)}
+                  emptyLine={vocabularyState === "loading" ? "Loading statuses…" : "No statuses yet."}
+                />
+              ) : (
+                <StageList
+                  kind="lead"
+                  mode="native"
+                  statuses={leadStatuses}
+                  saving={saving}
+                  onSave={onSaveStatus}
+                  onOrder={orderStatuses}
+                  onRemove={onRemoveStatus}
+                  onAdd={addStage}
+                  action={newLeadPipeline}
+                />
+              )
+            )}
+
+          {show("lost-reasons") &&
+            held(
+              "Lost reasons",
+              lostReasons.length,
+              <ReasonGrid
+                reasons={lostReasons}
                 saving={saving}
-                onSave={onSaveStatus}
-                onOrder={orderStatuses}
-                onRemove={onRemoveStatus}
-                onAdd={addStage}
+                onSave={onSaveLostReason}
+                onRemove={onRemoveLostReason}
+                onReorder={onReorderLostReasons}
               />
-            ))}
-
-          {show("lead-statuses") && (
-            <StageList
-              kind="lead"
-              mode="native"
-              statuses={leadStatuses}
-              saving={saving}
-              onSave={onSaveStatus}
-              onOrder={orderStatuses}
-              onRemove={onRemoveStatus}
-              onAdd={addStage}
-            />
-          )}
-
-          {show("lost-reasons") && (
-            <ReasonGrid
-              reasons={lostReasons}
-              saving={saving}
-              onSave={onSaveLostReason}
-              onRemove={onRemoveLostReason}
-              onReorder={onReorderLostReasons}
-            />
-          )}
+            )}
         </>
       )}
       {showAdminCards && (
@@ -401,6 +533,54 @@ const LIST_WORDS: Record<
   },
 };
 
+/**
+ * The Native Deal stages card with two or more pipelines (CRM-M3a). It reads
+ * only until the stage editor of each pipeline (CRM-M3c), so it says what is
+ * coming. The words hold for any count of pipelines.
+ */
+export const SEVERAL_PIPELINES_NOTE =
+  "Each pipeline lists its stages here to read. Stage editing for each pipeline comes in a " +
+  "later release. Until then, the stages stay as they are.";
+
+/**
+ * The Native Lead statuses card with a lead pipeline (CRM-M4a). It reads only
+ * until the status editor of each lead pipeline, a later slice.
+ */
+export const LEAD_PIPELINES_NOTE =
+  "The default list holds each lead with no pipeline, and every lead status. Each lead " +
+  "pipeline lists its statuses here to read. Status editing for each pipeline comes in a " +
+  "later release. Until then, the statuses stay as they are.";
+
+/** The id of the default lead list on the read-only card. It is no pipeline. */
+export const DEFAULT_LEAD_LIST_ID = "default-lead-list";
+
+/**
+ * The default lead list as one more section: each lead status in lane order.
+ * A lead with no pipeline sits on it, so it comes first.
+ */
+export function defaultLeadList(statuses: readonly Status[]): DealPipeline {
+  return {
+    id: DEFAULT_LEAD_LIST_ID,
+    name: "Default list",
+    is_default: false,
+    position: Number.MIN_SAFE_INTEGER,
+    kind: "lead",
+    stages: statuses.map((s) => ({ id: s.id, name: s.name, position: s.position, type: s.type })),
+  };
+}
+
+/** Where the deals of one lead pipeline go, in words. None for the default list. */
+export function feedsLine(
+  pipeline: DealPipeline,
+  dealPipelines: readonly DealPipeline[] | null | undefined,
+): string | null {
+  if (pipeline.id === DEFAULT_LEAD_LIST_ID) return null;
+  const fed = pipeline.feeds_pipeline_id
+    ? dealPipelines?.find((p) => p.id === pipeline.feeds_pipeline_id)?.name
+    : null;
+  return `Feeds deals into ${fed ?? defaultFeedWords(defaultDealName(dealPipelines))}.`;
+}
+
 /** The two choices of "Column order" (Mirror mode). */
 const ORDER_TABS: TabDef[] = [
   { id: "zoho", label: "Same as Zoho" },
@@ -423,8 +603,9 @@ const laneOf = (status: Status) => ({ status, pipeline_position: null });
  * order on the board. A move saves at once, every id of the kind, through the
  * order route. On a failure the row goes back and the page shows the error.
  *
- * Mirror mode serves any count of pipelines. Native mode serves one pipeline
- * or none, and `PipelineSections` keeps the read-only list for more.
+ * Mirror mode serves any count of pipelines. Native mode edits the one
+ * pipeline on screen, and `PipelineSections` lists the stages of each pipeline
+ * to read when there are two or more.
  */
 export function StageList({
   kind,
@@ -438,9 +619,12 @@ export function StageList({
   onResetOrder,
   onRemove,
   onAdd,
+  action,
 }: {
   kind: StatusKind;
   mode: "mirror" | "native";
+  /** One control at the right end of the header ("New pipeline", CRM-M3a). */
+  action?: React.ReactNode;
   /** Every row of the kind, hidden and gone ones included. */
   statuses: Status[];
   /** `GET /crm/pipelines`, or null with no such route. */
@@ -470,6 +654,11 @@ export function StageList({
   const [dragging, setDragging] = useState<number | null>(null);
   const [picked, setPicked] = useState<string | null>(pipelineId);
   const [editing, setEditing] = useState<string | null>(null);
+  // The stage whose delete the member is asked to confirm (CRM-U17a). The
+  // Edit dialog closes first, so no dialog opens over another one.
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  // The delete was refused: the Edit dialog opens again, with the reason.
+  const [deleteRefused, setDeleteRefused] = useState(false);
   const [confirmingReset, setConfirmingReset] = useState(false);
   // The server's answer is the truth, as in the lost reasons grid. Adjusted
   // during render, so a re-read never paints the stale order once.
@@ -533,14 +722,21 @@ export function StageList({
     if (!custom) void saveOrder(fullIds);
   }
 
-  const close = () => setEditing(null);
+  const close = () => {
+    setEditing(null);
+    setDeleteRefused(false);
+  };
+  const doomed = confirmingDelete ? (statuses.find((s) => s.id === confirmingDelete) ?? null) : null;
 
   return (
     <section className="rounded-xl border border-border bg-card/40" aria-label={words.title}>
       <header className="space-y-3 border-b border-border px-4 py-3">
-        <div>
-          <h2 className="text-sm font-semibold text-foreground">{words.title}</h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">{words.line}</p>
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-semibold text-foreground">{words.title}</h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">{words.line}</p>
+          </div>
+          {action && <div className="shrink-0">{action}</div>}
         </div>
         {mirror && (
           <div className="space-y-1">
@@ -599,9 +795,7 @@ export function StageList({
           </li>
         ))}
         {shown.length === 0 && (
-          <li className="px-4 py-6 text-center text-xs text-muted-foreground">
-            {words.empty[mode]}
-          </li>
+          <li className={STATE_ROW}>{words.empty[mode]}</li>
         )}
       </ul>
       {!mirror && onAdd && (
@@ -629,22 +823,47 @@ export function StageList({
           await onResetOrder?.(kind);
         }}
       />
+      <ConfirmDialog
+        open={doomed !== null}
+        title={`Delete “${doomed?.name ?? ""}”?`}
+        body={DELETE_STAGE_BODY}
+        confirmLabel="Delete"
+        busy={saving}
+        onCancel={() => {
+          // Back to the Edit dialog. Its draft is in the store.
+          setEditing(confirmingDelete);
+          setConfirmingDelete(null);
+        }}
+        onConfirm={async () => {
+          const id = confirmingDelete;
+          setConfirmingDelete(null);
+          if (!id || !onRemove) return;
+          if (await onRemove(kind, id)) {
+            useCrmStore.getState().setSettingsDraft(`status:${kind}:${id}`, null);
+            setDeleteRefused(false);
+          } else {
+            setDeleteRefused(true);
+            setEditing(id);
+          }
+        }}
+      />
       <StageEditModal
         kind={kind}
         mode={mode}
         editing={editing}
         statuses={statuses}
         saving={saving}
+        refused={deleteRefused}
         onClose={close}
         onSave={async (statusId, body) => {
           const ok = await onSave(kind, statusId, body);
           if (ok) close();
           return ok;
         }}
-        onRemove={async (statusId) => {
-          const ok = onRemove ? await onRemove(kind, statusId) : false;
-          if (ok) close();
-          return ok;
+        onAskRemove={(statusId) => {
+          setEditing(null);
+          setDeleteRefused(false);
+          setConfirmingDelete(statusId);
         }}
         onAdd={async (body) => {
           const id = onAdd ? await onAdd(kind, body) : null;
@@ -743,9 +962,10 @@ function StageEditModal({
   editing,
   statuses,
   saving,
+  refused,
   onClose,
   onSave,
-  onRemove,
+  onAskRemove,
   onAdd,
 }: {
   kind: StatusKind;
@@ -754,9 +974,12 @@ function StageEditModal({
   editing: string | null;
   statuses: Status[];
   saving: boolean;
+  /** A delete was refused, and the dialog opens on its reason. */
+  refused: boolean;
   onClose: () => void;
   onSave: (statusId: string, body: Record<string, unknown>) => Promise<boolean>;
-  onRemove: (statusId: string) => Promise<boolean>;
+  /** Delete: the list closes this dialog and asks to confirm. */
+  onAskRemove: (statusId: string) => void;
   onAdd: (body: Record<string, unknown>) => Promise<boolean>;
 }) {
   const status = editing && editing !== NEW ? (statuses.find((s) => s.id === editing) ?? null) : null;
@@ -787,15 +1010,20 @@ function StageEditModal({
           kind={kind}
           status={status}
           saving={saving}
+          refused={refused}
           onSave={(body) => (status ? onSave(status.id, body) : Promise.resolve(false))}
           onAdd={onAdd}
-          onRemove={() => (status ? onRemove(status.id) : Promise.resolve(false))}
+          onRemove={() => status && onAskRemove(status.id)}
           onCancel={onClose}
         />
       ) : null}
     </Modal>
   );
 }
+
+/** What the delete confirm of a stage says. The store's refusal names the records that hold it. */
+export const DELETE_STAGE_BODY =
+  "The stage leaves the settings and the board. You cannot delete it while a record is still in it.";
 
 /** One field of the Edit dialog: a label, the control, and a help line. */
 function Field({
@@ -820,7 +1048,7 @@ function Field({
   );
 }
 
-/** "Show this column on the board": the inverse of hide (CRM-C3). */
+/** "Hide on the board" (CRM-C3). Checked means hidden. */
 function ShowOnBoardField({
   kind,
   hidden,
@@ -833,13 +1061,13 @@ function ShowOnBoardField({
   return (
     <div className="space-y-1">
       <label className="flex items-center gap-2 text-xs text-foreground">
-        <Checkbox size="sm" checked={!hidden} onChange={(e) => onChange(!e.target.checked)} />
-        Show this column on the board
+        <Checkbox size="sm" checked={hidden} onChange={(e) => onChange(e.target.checked)} />
+        Hide on the board
       </label>
       <p className="pl-5 text-[11px] text-muted-foreground">
         {kind === "deal"
-          ? "Off: the column shows only while it holds deals, and no picker offers the stage."
-          : "Off: the column shows only while it holds leads, and no picker offers the status."}
+          ? "A hidden stage still shows while it holds a deal."
+          : "A hidden status still shows while it holds a lead."}
       </p>
     </div>
   );
@@ -997,6 +1225,7 @@ export function NativeStageForm({
   kind,
   status,
   saving,
+  refused = false,
   onSave,
   onAdd,
   onRemove,
@@ -1006,17 +1235,19 @@ export function NativeStageForm({
   /** Null for "Add stage". */
   status: Status | null;
   saving: boolean;
+  /** The dialog opens on a refusal (a refused delete). */
+  refused?: boolean;
   onSave: (body: Record<string, unknown>) => Promise<boolean>;
   onAdd: (body: Record<string, unknown>) => Promise<boolean>;
-  onRemove: () => Promise<boolean>;
+  /** Delete. The list confirms it, outside this dialog (CRM-U17a). */
+  onRemove: () => void;
   onCancel: () => void;
 }) {
   // In the store, as each settings draft is (CRM-C1), so a closed dialog
   // keeps an edit for its return. A re-read of the stage drops it.
-  const [draft, setDraft, clearDraft] = useSettingsDraft(`status:${kind}:${status?.id ?? NEW}`, status ?? NEW_STAGE);
+  const [failed, setFailed] = useState(refused);
+  const [draft, setDraft, clearDraft] = useSettingsDraft(`status:${kind}:${status?.id ?? NEW}`, status ?? NEW_STAGE, failed);
   const [invalid, setInvalid] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-  const [confirming, setConfirming] = useState(false);
   const storeError = useCrmStore((state) => state.error);
   const id = useId();
   const pinned = CLAMPED_PROBABILITY[draft.type];
@@ -1149,7 +1380,7 @@ export function NativeStageForm({
           </>
         )}
       </div>
-      <FormError text={invalid ?? (failed ? (storeError ?? "The save did not go through. Try again.") : null)} />
+      <FormError text={invalid ?? (failed ? (storeError ?? TRY_AGAIN) : null)} />
       <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-3">
         {status && (
           <Button
@@ -1158,7 +1389,7 @@ export function NativeStageForm({
             size="sm"
             icon="Trash2"
             disabled={saving}
-            onClick={() => setConfirming(true)}
+            onClick={onRemove}
           >
             {kind === "deal" ? "Delete stage" : "Delete status"}
           </Button>
@@ -1181,21 +1412,6 @@ export function NativeStageForm({
           </Button>
         </div>
       </div>
-      {status && (
-        <ConfirmDialog
-          open={confirming}
-          title={`Delete “${status.name}”?`}
-          body="The stage leaves the settings and the board. The server refuses the delete while any record is still in it."
-          confirmLabel="Delete"
-          busy={saving}
-          onCancel={() => setConfirming(false)}
-          onConfirm={async () => {
-            setConfirming(false);
-            if (await onRemove()) clearDraft();
-            else setFailed(true);
-          }}
-        />
-      )}
     </form>
   );
 }
@@ -1219,9 +1435,9 @@ export function MirrorStageForm({
   onCancel: () => void;
 }) {
   // In the store, as each settings draft is (CRM-C1).
-  const [draft, setDraft, clearDraft] = useSettingsDraft(`overlay:${kind}:${status.id}`, status);
-  const [invalid, setInvalid] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const [draft, setDraft, clearDraft] = useSettingsDraft(`overlay:${kind}:${status.id}`, status, failed);
+  const [invalid, setInvalid] = useState<string | null>(null);
   const storeError = useCrmStore((state) => state.error);
   const id = useId();
   const pinned = CLAMPED_PROBABILITY[status.type];
@@ -1322,7 +1538,7 @@ export function MirrorStageForm({
           />
         )}
       </div>
-      <FormError text={invalid ?? (failed ? (storeError ?? "The save did not go through. Try again.") : null)} />
+      <FormError text={invalid ?? (failed ? (storeError ?? TRY_AGAIN) : null)} />
       <div className="flex items-center justify-end gap-2 border-t border-border px-4 py-3">
         <Button
           type="button"
@@ -1365,7 +1581,7 @@ function HideBox({
         disabled={disabled}
         onChange={(e) => onChange(e.target.checked)}
       />
-      hidden
+      Hidden
     </label>
   );
 }
@@ -1386,7 +1602,7 @@ export function MirrorReasonGrid({
       note="The reasons come from Zoho. A hidden reason stays on its deals, and no picker offers it."
     >
       {reasons.length === 0 ? (
-        <p className="px-4 py-3 text-xs text-muted-foreground">None yet.</p>
+        <p className={STATE_ROW}>None yet.</p>
       ) : (
         <ul>
           {[...reasons]
@@ -1512,9 +1728,8 @@ function ReasonGrid({
           </li>
         ))}
         {rows.length === 0 && (
-          <li className="px-4 py-6 text-center text-xs text-muted-foreground">
-            No lost reasons yet — deals cannot be marked lost until there is at
-            least one.
+          <li className={STATE_ROW}>
+            No lost reasons yet. Deals cannot be marked lost until there is at least one.
           </li>
         )}
       </ul>
@@ -1540,15 +1755,20 @@ function ReasonRow({
   onRemove: () => Promise<boolean>;
 }) {
   // In the store, as in `StatusRow`, so a section change keeps it (CRM-C1).
-  const [label, setLabel, clearDraft] = useSettingsDraft(`reason:${reason.id}`, reason.label);
+  const [refused, setRefused] = useState(false);
+  const [label, setLabel, clearDraft] = useSettingsDraft(`reason:${reason.id}`, reason.label, refused);
   const [invalid, setInvalid] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const storeError = useCrmStore((state) => state.error);
+  const reasonText = invalid ?? (refused ? (storeError ?? TRY_AGAIN) : null);
 
   async function save() {
     const message = validateLostReasonDraft(label);
     setInvalid(message);
+    setRefused(false);
     if (message) return;
     if (await onSave(label.trim())) clearDraft();
+    else setRefused(true);
   }
 
   return (
@@ -1589,7 +1809,11 @@ function ReasonRow({
         disabled={saving}
         onClick={() => setConfirming(true)}
       />
-      {invalid && <p className="w-full text-xs text-destructive">{invalid}</p>}
+      {reasonText && (
+        <p role="alert" className="w-full text-xs text-destructive">
+          {reasonText}
+        </p>
+      )}
       <DeleteReasonDialog
         open={confirming}
         reason={reason}

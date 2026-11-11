@@ -143,7 +143,7 @@ const FIELDS: Record<EntitySlug, Field[]> = {
     },
     {
       key: "probability",
-      label: "Probability",
+      label: "Win chance",
       kind: "number",
       show: (r, status) => {
         const stated = r.probability as number | null | undefined;

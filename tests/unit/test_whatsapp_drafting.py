@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+from gateway.routes.whatsapp.automation import drafting as wa_drafting
 from gateway.routes.whatsapp.automation.drafting import (
+    NO_MODEL_ANSWER,
+    DraftUnavailable,
     build_draft_messages,
     detect_language,
     draft_reply,
@@ -90,15 +95,74 @@ class _DraftFakeDB:
         return _Result(None)
 
 
-async def test_draft_reply_returns_none_when_llm_fails() -> None:
+async def test_draft_reply_raises_when_llm_fails() -> None:
+    """Task 1128: a failed call is no verdict, so it is not None (the 422 of
+    "not enough to say"). It raises, and never returns a fake draft."""
     db = _DraftFakeDB([_Msg("in", "kitna for 2 units?")])
 
     async def _boom(*a, **k):
         raise RuntimeError("llm down")
 
-    with patch("acb_llm.context.acompletion_with_fallback", _boom):
-        out = await draft_reply(db, "acc", "chat-1")
-    assert out is None                              # sentinel, never a fake draft
+    with (patch("acb_llm.context.acompletion_with_fallback", _boom),
+          pytest.raises(DraftUnavailable)):
+        await draft_reply(db, "acc", "chat-1")
+
+
+@pytest.mark.parametrize("content", [None, "", "   "])
+async def test_draft_reply_raises_on_an_empty_answer(content) -> None:
+    """Task 1128: the model gave no text. That is not a NO_DRAFT verdict."""
+    db = _DraftFakeDB([_Msg("in", "kitna for 2 units?")])
+    captured = {}
+    resp = SimpleNamespace(choices=[SimpleNamespace(
+        message=SimpleNamespace(content=content))])
+
+    async def _empty(*a, **k):
+        captured.update(k)
+        return resp, "tier-powerful"
+
+    with (patch("acb_llm.context.acompletion_with_fallback", _empty),
+          pytest.raises(DraftUnavailable)):
+        await draft_reply(db, "acc", "chat-1")
+    assert captured["job"] == "writing" and captured["max_tokens"] == 600
+
+
+class _Owned:
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+async def _route_with(monkeypatch, outcome):
+    from fastapi import HTTPException
+    from gateway.routes.whatsapp.automation.drafting import generate_draft
+
+    async def _owned(*_a, **_k):
+        return "acc"
+
+    async def _draft(*_a, **_k):
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(wa_drafting, "_tenant_session", _Owned)
+    monkeypatch.setattr(wa_drafting, "assert_chat_owned", _owned)
+    monkeypatch.setattr(wa_drafting, "draft_reply", _draft)
+    with pytest.raises(HTTPException) as err:
+        await generate_draft("chat-1", user=type("U", (), {"email": "o@x.test"})())
+    return err.value
+
+
+async def test_the_route_says_no_answer_when_the_model_gave_nothing(monkeypatch) -> None:
+    err = await _route_with(monkeypatch, DraftUnavailable("empty"))
+    assert err.status_code == 502 and err.detail == NO_MODEL_ANSWER
+    assert "not enough to say" not in err.detail
+
+
+async def test_the_route_keeps_the_422_for_a_no_draft_verdict(monkeypatch) -> None:
+    err = await _route_with(monkeypatch, None)
+    assert err.status_code == 422 and "not enough to say" in err.detail
 
 
 async def test_draft_reply_returns_none_on_no_draft_verdict() -> None:

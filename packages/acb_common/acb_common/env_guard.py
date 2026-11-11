@@ -108,6 +108,8 @@ _SHELL_SPECIAL = frozenset(" $`\\'\";&|<>()")
 PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # Database, cache and graph.
     "DATABASE_URL", "REDIS_URL", "CC_DSN", "APP_DB", "DBS",
+    # What `tenant_session` does with an aborted transaction (H-249).
+    "TENANT_SESSION_ABORT_MODE",
     # Sign-in and access. EXECUTIVE_EMAILS grants the EXECUTIVE role, and
     # ALLOWED_EMAIL_DOMAIN decides who may sign in at all.
     "ALLOWED_EMAIL_DOMAIN", "EXECUTIVE_EMAILS", "ACCESS_LEGACY_FALLBACK",
@@ -166,11 +168,127 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # child spends model tokens at the org's cost, so only the owner writes it
     # (work_plan.md §6 D4).
     "SPAWN_SUBAGENTS_ORGS",
+    # WS-67 RX-1: the orgs where a chat that read outside mail keeps the writes
+    # that a card shows. It moves a guard, so only the operator writes it.
+    "HELD_CARD_WRITES_ORGS",
+    # one_assistant_context.md §9 WT-1: the orgs where a member may continue
+    # a held chat in a fresh chat. It opens a way around a hold, so only the
+    # owner writes it (work_plan.md §6 D4).
+    "CHAT_CONTINUE_ORGS",
+    # projects_ai_chat.md §31 VOX-1: the orgs whose chat shows the mic. Each
+    # clip draws AI credits, so only the operator writes it.
+    "CHAT_VOICE_ORGS",
+    # §18.10: the orgs whose chat shows a new mail on the card that the member
+    # edits. It changes the card of a send, so only the operator writes it.
+    "EMAIL_EDIT_CARD_ORGS",
+    # WS-17 task 1966: the orgs whose Outlook push watches all mail. It changes
+    # what Microsoft sends to the box, so only the operator writes it.
+    "OUTLOOK_ALL_MAIL_WEBHOOK_ORGS",
+    # WS-17 SG-2: the orgs whose mailboxes may use a layout signature. It
+    # changes the signature of each send, so only the operator writes it. The
+    # `EMAIL_` prefix covers it too, and the exact name keeps the fence if that
+    # prefix ever narrows.
+    "EMAIL_SIGNATURE_TEMPLATES_ORGS",
     # WS-63 PZ-33: the orgs that get a summary of each private chat. The job
     # spends the org's AI credits with no request of the member, so only the
     # owner writes it (D-PZ-35). The `ASSISTANT_PROFILE_` prefix below does
     # not cover it.
     "ASSISTANT_CHAT_SUMMARY_ORGS",
+    # WS-63 PZ-34: the orgs whose chat opens with the briefing block. It puts
+    # the member's other chats into a run, so only the operator writes it. The
+    # `ASSISTANT_PROFILE_` prefix below does not cover it.
+    "ASSISTANT_BRIEFING_ORGS",
+    # WS-63 PZ-43: the orgs where a member sets a birthday and festivals and
+    # the chat greets on the day. It adds a line to each turn, so only the
+    # operator writes it.
+    "CELEBRATIONS_ORGS",
+    # WS-63 PZ-40: the orgs where the name question offers forms of address
+    # and the block keeps the chosen form as written. It adds a line to each
+    # turn, so only the operator writes it.
+    "ADDRESS_FORMS_ORGS",
+    # H-328 part (b): the orgs whose unattended workflow runs may start. A run
+    # can send mail or WhatsApp and spend credits with no person present, so
+    # only the operator writes it. The `WORKFLOW_` prefix covers it too, and
+    # the exact name keeps the fence if that prefix ever narrows.
+    "WORKFLOW_UNATTENDED_ORGS",
+    # WS-ALN ALN-2a: DECISIONS_ORGS opens "one person decides" for an org. A
+    # tenant that set it could open the bell row for every org on the box.
+    "DECISIONS_ORGS",
+    # WS-AUTO AUTO-7b: AUTO_PARK_ORGS parks the gate of an unattended run on a
+    # decision of the workflow's owner. It moves who settles a run, so only
+    # the operator writes it.
+    "AUTO_PARK_ORGS",
+    # WS-AUTO AUTO-8a: HEADLESS_TURN_ORGS opens the capped headless turn for an
+    # org. A turn spends the member's AI credits with no person present, so
+    # only the owner writes it.
+    "HEADLESS_TURN_ORGS",
+    # WS-MCP SW-31a: AGENT_GUIDANCE_ORGS opens the org's written rules for
+    # agents. The text reaches every agent session of the org, so a tenant
+    # must not open it for another org.
+    "AGENT_GUIDANCE_ORGS",
+    # WS-MCP PB-2: PLAYBOOK_ORGS opens the orchestration playbook prompts,
+    # resources and the default guidance block. It is Metorite's own text and
+    # it reaches every agent session of the org, so only the operator writes it.
+    "PLAYBOOK_ORGS",
+    # SW-68a: MY_WORK_PLAN_ORDER_ORGS turns on the plan order of `my_work`. It
+    # changes which task an agent takes first, so only the operator writes it.
+    "MY_WORK_PLAN_ORDER_ORGS",
+    # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
+    # A queued row waits for the worker, so only the operator writes it
+    # (project_alignment.md §5 item 8).
+    "ALIGN_JOBS_ORGS",
+    # WS-ALN ALN-4: AUTHORITY_PINS_ORGS opens the pin of a Knowledge page to a
+    # project for an org. A pin changes what a finding quotes, so only the
+    # owner writes it.
+    "AUTHORITY_PINS_ORGS",
+    # WS-39 LP-1a: PROJECTS_UPDATES_ORGS opens the project updates for an org.
+    # An update reaches each member who sees the project, so a tenant must not
+    # open it for another org.
+    "PROJECTS_UPDATES_ORGS",
+    # SP-8a: EPIC_CONTRACT_ORGS opens the contract of an epic for an org. A
+    # tenant must not open it for another org, so only the owner writes it.
+    "EPIC_CONTRACT_ORGS",
+    # WS-KG KG-4: GRAPH_SWEEP_ORGS opens the nightly sweep that writes graph
+    # edges into kb_links for an org. A tenant must not open it for another
+    # org, so only the operator writes it.
+    "GRAPH_SWEEP_ORGS",
+    # WS-ALN ALN-5a: PROJECT_RULES_ORGS opens the rules of a project for an
+    # org. A rule reaches each agent and each check of the project, so a
+    # tenant must not open it for another org.
+    "PROJECT_RULES_ORGS",
+    # WS-39 SP-1: PROJECTS_SPRINTS_ORGS opens the cycle store of Projects for
+    # an org. A tenant must not open it for another org, so only the owner
+    # writes it.
+    "PROJECTS_SPRINTS_ORGS",
+    # WS-39 TPL-1a: PROJECTS_TEMPLATES_ORGS opens the templates of Projects
+    # for an org. A tenant must not open it for another org, so only the
+    # owner writes it.
+    "PROJECTS_TEMPLATES_ORGS",
+    # WS-MCP MCP-P1b-1: APP_REQUESTS_ORGS opens the approval store of the app
+    # door for an org. A request waits for a member and can then run, so only
+    # the owner writes it.
+    "APP_REQUESTS_ORGS",
+    # WS-55 EA-18a: AGENT_QUESTIONS_ORGS narrows who may answer an agent's
+    # question and opens the list of the questions, so only the owner writes
+    # it.
+    "AGENT_QUESTIONS_ORGS",
+    # WS-55 MCP-G20: the write cap of each agent connection on the box. A
+    # tenant that raised it would lift the cap of every org, so only the
+    # owner writes it. The AGENT_ prefix covers both too, and the exact
+    # names keep the fence if that prefix ever narrows.
+    "AGENT_WRITE_CAP", "AGENT_WRITE_WINDOW_S",
+    # WS-MCP SW-53: GITHUB_APP_ORGS turns the GitHub App on for an org. On,
+    # deliveries write the org's pull requests and a merge can move its tasks,
+    # so only the owner writes it. The GITHUB_APP_ prefix covers it too.
+    "GITHUB_APP_ORGS",
+    # WS-AP AP-1a: WAITING_ORGS opens the list of what waits on a member for
+    # an org. The list reads held writes, chat questions, app requests and
+    # decisions, so only the owner writes it.
+    "WAITING_ORGS",
+    # WS-42 PST-4: STATUS_SET_GUARD_ORGS turns on the shared-set refusal of the
+    # chat status tools. It changes what a chat write may do, so only the owner
+    # writes it.
+    "STATUS_SET_GUARD_ORGS",
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",
@@ -201,16 +319,34 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # daily ceiling. Each moves what an org pays, so only the operator writes
     # them (my_day_feed.md §10.9 items 5 and 6).
     "MY_DAY_DECIDE_ORGS", "MY_DAY_DECIDE_ORG_DAILY_CALLS",
+    # DEC-1: the orgs that may ask `decide` for a `projects.*` feature. It
+    # moves what an org pays, so only the operator writes it.
+    "PROJECTS_DECIDE_ORGS",
     # WS-43y1a: the fault hook of the data engine (exit, kill, sleep, grow).
     # Only its tests set it. A tenant that set it would break each verb.
     "DATA_ENGINE_FAULT",
+    # WS-BUD BUD-1: the capture rig of e2e/buddy-hello.spec.ts. Only a local
+    # capture run sets them. They choose the look and the size of a capture.
+    "HELLO_ACCENT", "HELLO_DENSITY", "HELLO_HEIGHT", "HELLO_NAME",
+    "HELLO_SHOTS", "HELLO_THEME", "HELLO_WIDTH",
     # Server: uvicorn reads these from the env of acb-gateway.service.
     "FORWARDED_ALLOW_IPS", "WEB_CONCURRENCY",
+    # CIV-14f: the answer watcher of the home box (scripts/home_server). The
+    # token is a read-only box token. A tenant must never save these.
+    "METORITE_WATCHER_TOKEN", "METORITE_WATCHER_STATE", "METORITE_REPO",
+    "METORITE_MCP_URL", "WATCHER_CLAUDE_CMD",
     # Deploy, backup and watchdog scripts (variables they read).
     "APP_DIR", "ENV_FILE", "ACTIONS", "CURRENT", "DEST", "DRY_RUN", "EUID",
     "FAILED", "FORENSICS", "OURS_FAILED", "ROUTES", "SCRATCH", "STAMP",
     "SVC_USER", "UNITS", "UNITS_CHANGED", "VENV_OWNER", "VERIFY_RESTORE",
     "UX_OUT",
+    # STU-B2c-1: vps_apply.sh holds the key of the Studio direct proof here.
+    # Do not name that key in this file: only the proof module and the
+    # settings may name it (test_studio_direct_proof.py).
+    "DIRECT_KEY",
+    # STU-D2b-1: scripts/dev_seed_studio.py reads the gateway token of a local
+    # dev_up.sh stack. It never runs on a box.
+    "DEV_UP_GATEWAY_TOKEN",
     # WS-49 BH-6: the scripts of the root copy (root_lib_files.txt) are in
     # the scan now. These are their own variables and the BH-6 deploy steps.
     "ACK", "DROPIN", "EXPIRES", "EXPIRY_WHY", "HEALTH_TRIES", "NAME",
@@ -292,9 +428,20 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # a tenant that set it would hold the key of every org's devices.
     # WEB_PUSH_ENABLED is the switch, and the `_ENABLED` suffix covers it too.
     "VAPID_", "WEB_PUSH_",
+    # WS-WEB WEB-2: web research. WEB_RESEARCH_ORGS gives an org the local
+    # page reader, and WEB_READER_REMOTE=jina sends each URL of those orgs to
+    # a third party. A tenant that set either would change it for every org
+    # on the box, so only the owner writes them.
+    # WEB-4: SEARXNG_URL names the search host of every org on the box.
+    # WEB-6: WEB_WORKER_TOKEN is the bearer of the web worker. A tenant that
+    # set it could send a render job for any org.
+    "WEB_RESEARCH_", "WEB_READER_", "SEARXNG_", "WEB_WORKER_",
     # WS-66 RM-1: reminders. CALENDAR_REMINDERS is the switch of the reminder
     # routes, so a tenant that set it could turn them on for every org.
     "CALENDAR_REMINDERS",
+    # WS-CAL CE-4: events. CALENDAR_EVENTS is the switch of the event store,
+    # so a tenant that set it could turn it on for every org.
+    "CALENDAR_EVENTS",
     # WS-BRIEF BR-1a: the shared job queue. JOB_QUEUE is the switch of the job
     # worker, so a tenant that set it could start the worker for every org.
     "JOB_QUEUE",
@@ -308,8 +455,21 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # WS-OB OB-8: the push prompt. PUSH_PROMPT_ORGS opens the chat sheet for an
     # org, so a tenant that set it could open the sheet for every org.
     "PUSH_PROMPT_",
+    # WS-VOX VOX-3: IMAGE_ANALYSIS_ORGS lets the chat send an image to a model
+    # for an org, and each call draws credits. A tenant that set it could
+    # open it for every org on the box.
+    "IMAGE_ANALYSIS_",
+    # RX-5: the morning summary push. DUE_PUSH_ORGS opens it for an org, so a
+    # tenant that set it could send a push to the members of every org.
+    "DUE_PUSH_",
     # STU-B1: STUDIO_ORGS opens the AI Studio catalog for an org.
     "STUDIO_",
+    # WS-OB GD-5a: GUIDE_ORGS opens the tour's entries for an org, so a
+    # tenant that set it could open them for every org on the box.
+    "GUIDE_",
+    # WS-PKG PKG-5b: PACKAGE_HOST_ORGS opens the resolved shell manifest for
+    # an org, so a tenant that set it could open it for every org.
+    "PACKAGE_HOST_",
     # Agent runtime, sandbox and models.
     "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
     "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_",

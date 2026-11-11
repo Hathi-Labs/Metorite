@@ -168,12 +168,14 @@ export default function KanbanBoard({
           {emptyNote}
         </p>
       ) : null}
-      <Board className="flex-1">
-        {(lanes as Array<BoardLane | LeadLane>).map((lane) => {
+      <Board data-guide="crm.pipeline" className="flex-1">
+        {(lanes as Array<BoardLane | LeadLane>).map((lane, laneIndex) => {
           const isTarget = over === lane.status.id;
           return (
             <BoardColumn
               key={lane.status.id}
+              // One ring for one column: the first stage carries the guide anchor.
+              guideAnchor={laneIndex === 0}
               header={{
                 accent: stageAccent(lane.status, mode),
                 title: lane.status.name,

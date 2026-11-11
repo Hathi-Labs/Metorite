@@ -32,11 +32,13 @@ def test_a_task_made_from_a_mail_a_call_or_a_chat_is_private() -> None:
 
 def test_the_core_rules_keep_the_oa8g_lines_and_the_size_pin() -> None:
     """Mutation: drop the no-agent line or the hand-off bullet, or grow the
-    rules past 3400 characters -> red."""
+    rules past 3500 characters -> red."""
     rules = _flat(tp._PROJECTS_RULES)
     assert "No Projects agent exists to hand a task to." in rules
     assert "While a Projects pack is held, do its work with its tools." in rules
-    assert len(tp.rules_for("projects")) < 3450  # MT-1228: was 3400, +reminder line
+    # MT-1228: was 3400, +reminder line. ALN-4 and PJP-2: was 3450, +the authority
+    # pack and the pack names of reports and reminders.
+    assert len(tp.rules_for("projects")) < 3500
 
 
 def test_the_route_bullet_still_names_all_three_other_packs() -> None:

@@ -314,6 +314,10 @@ async def test_the_free_card_names_each_file_and_its_size(monkeypatch) -> None:
     monkeypatch.setattr(agents, "_mailbox_name", name)
     monkeypatch.setattr(agents, "_usual_mailbox_note", lambda *_a: _empty())
     monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", card)
+    # §18.10: these tests read the plain send card. A run that cannot draw the
+    # card to edit keeps it (WhatsApp, no channel). test_email_new_mail_card.py
+    # holds the edit card of a new mail.
+    monkeypatch.setattr(agents, "_edit_card_open", lambda: False)
     out = await agents.send_email(F.BOX, body="Prices attached.", to=[F.KNOWN],
                                   subject="Prices", attachments=[f"knowledge:{PAGE}"])
     [c] = cards

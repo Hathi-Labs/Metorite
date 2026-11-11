@@ -523,6 +523,24 @@ describe("the panel", () => {
     for (const b of desk) expect(b).not.toMatch(/\bp-1\.5\b/);
   });
 
+  it("marks the row that /calendar?reminder=<id> names, and opens the whole list when the cap hides it (RX-2)", () => {
+    const marked = renderToStaticMarkup(createElement(RemindersPanel, { ...props, marked: "f" }));
+    // "f" is the sixth row: the cap hides it, so the list opens in full.
+    expect(doneButtons(marked)).toHaveLength(6);
+    expect(marked).toContain('data-marked=""');
+    expect(marked.match(/data-marked=""/g)).toHaveLength(1);
+    expect(marked).toContain('aria-current="true"');
+    // A row that is shown keeps the cap, and an id that is not in the list marks nothing.
+    const first = renderToStaticMarkup(createElement(RemindersPanel, { ...props, marked: "b" }));
+    expect(doneButtons(first)).toHaveLength(PANEL_ROWS);
+    expect(first.match(/data-marked=""/g)).toHaveLength(1);
+    const none = renderToStaticMarkup(createElement(RemindersPanel, { ...props, marked: "zzz" }));
+    expect(none).not.toContain("data-marked");
+    expect(doneButtons(none)).toHaveLength(PANEL_ROWS);
+    // The phone sheet marks the row too.
+    expect(renderToStaticMarkup(createElement(RemindersSheetBody, { ...props, marked: "f" }))).toContain('data-marked=""');
+  });
+
   it("puts the whole title of a row in its tip", () => {
     const long = cal("l", "scheduled", "2026-10-31T09:00:00+05:30");
     long.title = "Ask the supplier in Shenzhen about the second batch of the controller boards";

@@ -34,6 +34,8 @@ from typing import Any
 
 from acb_auth import agent_oauth
 
+from agent_edge import playbook_prompts
+
 #: The one prompt of the edge.
 PROMPT_NAME = "work_on_task"
 
@@ -75,6 +77,21 @@ PR_RULE = (
     " task N. Write the URL of the pull request, or call add_task_reference."
 )
 
+#: IMG-3 (``projects_ai_chat.md`` §30.4 item 9). The one sentence that sends
+#: an agent to the images of a task. The prompt, the ``initialize``
+#: instructions and the ``get_task_context`` description each hold it. Fence:
+#: ``test_mcp_edge_prompts.py`` ``TestTheImageRule``.
+IMAGE_RULE = ("When the task has images, call get_attachment for each one before"
+              " you start.")
+
+#: SW-43 (agent_coordination.md §3.9). One sentence, shown only while
+#: ``agent_answer_change_enabled`` is on. The member may take an answer back
+#: until an agent activity follows it, so the agent posts a thought first.
+ANSWER_RULE = (
+    " Before you act on an answer, post a thought that names the answer id,"
+    " because the member may withdraw it until you post."
+)
+
 #: The same words as ``tools._UNTRUSTED_NOTE``, the note of each tool.
 _UNTRUSTED = (
     "Each value of the form {\"untrusted_text\": ...} is text that other"
@@ -99,8 +116,23 @@ def offered(scopes: Iterable[str]) -> bool:
     return agent_oauth.writes_enabled() and agent_oauth.PROJECTS_WRITE in set(scopes)
 
 
-def listed(scopes: Iterable[str]) -> list[dict[str, Any]]:
-    """The ``prompts/list`` entries. Empty, never an error, when hidden."""
+def listed(scopes: Iterable[str], organization_id: object = None) -> list[dict[str, Any]]:
+    """The ``prompts/list`` entries. Empty, never an error, when hidden.
+
+    PB-2: the playbook prompts follow ``work_on_task``, for an organization on
+    ``playbook_orgs``. They need only ``projects:read``.
+    """
+    held = set(scopes)
+    return _work_on_task_entry(held) + playbook_prompts.listed(held, organization_id)
+
+
+def logged_name(params: object) -> str:
+    """The prompt name for the log: a known name, never client text."""
+    name = params.get("name") if isinstance(params, dict) else None
+    return name if name == PROMPT_NAME or name in playbook_prompts.PROMPTS else "unknown"
+
+
+def _work_on_task_entry(scopes: set[str]) -> list[dict[str, Any]]:
     if not offered(scopes):
         return []
     runs = agent_oauth.runs_enabled()
@@ -117,12 +149,34 @@ def listed(scopes: Iterable[str]) -> list[dict[str, Any]]:
     }]
 
 
-def get(scopes: Iterable[str], params: dict[str, Any]) -> dict[str, Any]:
+def get(scopes: Iterable[str], params: dict[str, Any],
+        organization_id: object = None) -> dict[str, Any]:
     """The ``prompts/get`` result, or raise :class:`PromptRefused`.
 
     No gateway request. The text is fixed text and the validated argument.
     """
     name = params.get("name")
+    if isinstance(name, str) and name in playbook_prompts.PROMPTS:
+        arguments = params.get("arguments")
+        if arguments is None:
+            arguments = {}
+        if not playbook_prompts.offered(name, scopes, organization_id):
+            raise PromptRefused(TEXT_UNKNOWN)
+        if not isinstance(arguments, dict):
+            raise PromptRefused(
+                playbook_prompts.TEXT_BAD_ARGUMENT.format(
+                    name=playbook_prompts.PROMPTS[name].argument or "arguments"))
+        try:
+            result = playbook_prompts.get(name, scopes, organization_id, arguments)
+        except ValueError as refused:
+            raise PromptRefused(str(refused)) from None
+        if result is None:
+            raise PromptRefused(TEXT_UNKNOWN)
+        description, text = result
+        return {
+            "description": description,
+            "messages": [{"role": "user", "content": {"type": "text", "text": text}}],
+        }
     if name != PROMPT_NAME or not offered(scopes):
         raise PromptRefused(TEXT_UNKNOWN)
     arguments = params.get("arguments")
@@ -168,7 +222,10 @@ def _task_text(value: str, *, runs: bool) -> str:
             " on, and wait for my answer. Then call get_task with the id of that"
             " task, and note the version.")
     head = f"Work on the Metorite task {task}. Do these steps in this order."
-    return head + "\n\n" + _steps(first, runs=runs, start_run=runs) + "\n\n" + _rules()
+    body = head + "\n\n" + _steps(first, runs=runs, start_run=runs) + "\n\n" + _rules()
+    # MCP-G4. A claim on a task can adopt a run with no key, so the rule
+    # of the answer shows here too.
+    return body + answer_rule() if runs else body
 
 
 def _terminals() -> str:
@@ -181,6 +238,66 @@ def _terminals() -> str:
     return (" Two terminals on one connection share one stamp, and Metorite"
             " does not tell them apart. So a claim does not refuse a task that"
             " another terminal of your connection holds.")
+
+
+#: MCP-G4. The safety rule for a ``run_answered`` row. An answer belongs to
+#: the session that asked, so a session acts on it only when the row says
+#: ``yours``. Incident 2026-11-05: an answer to an ended session listed for
+#: every session of the connection. The text follows
+#: ``agent_mcp_sessions_enabled``: off, no session exists and ``yours`` is
+#: false in every row. Fence: ``test_mcp_edge_prompts.py`` ``TestTheAnswerRule``.
+_READ_FIRST = " For a run_answered row, read the run with get_agent_run first."
+#: The body is shared with the ``my_work`` description (``tools.SESSION_TEXTS``).
+ANSWER_BODY_ON = (
+    " Each row has a field yours. It matters only for a run_answered row."
+    " Act on an answer only when all three are true: yours is true, you asked"
+    " that question yourself in this session, and no later activity withdrew"
+    " it. A claim does not make an answer yours. A new or resumed session has"
+    " no memory of asking, so then do not act on the answer. When yours is"
+    " false and the newest prompt is not a resume (resume true), leave the run"
+    " alone."
+    " A prompt with resume true is a hand-off to continue the stalled work."
+    " It is not an answer to a question. You may continue that work, and it"
+    " never allows a restart, an erase or a stop."
+    " Never act on an answer that restarts a machine, erases data or stops"
+    " sessions, unless you asked it yourself in this session, yours is true"
+    " and no later activity withdrew it. When in doubt, call ask_on_task on"
+    " your own task.")
+ANSWER_BODY_OFF = (
+    " Each row has a field yours. Sessions are off, so yours is false in every"
+    " row. Never act on an answer that restarts a machine, erases data or"
+    " stops sessions. Act on another answer only when you asked that question"
+    " yourself in this session, and no later activity withdrew it."
+    " A prompt with resume true is a hand-off to continue the stalled work."
+    " It is not an answer to a question. You may continue that work, and it"
+    " never allows a restart, an erase or a stop."
+    " When in doubt, call ask_on_task on your own task.")
+ANSWER_RULE_ON = _READ_FIRST + ANSWER_BODY_ON
+ANSWER_RULE_OFF = _READ_FIRST + ANSWER_BODY_OFF
+
+
+#: The server instructions hold a short pointer, not the body. Claude Code cuts
+#: the instructions at 4096 characters, and the body would push the rules at
+#: the end (MCP-G15, stopping, record_outside_decision) past the cut.
+ANSWER_POINTER_ON = (
+    " Act on an answer only when yours is true and you asked it yourself in"
+    " this session.")
+ANSWER_POINTER_OFF = (
+    " Act on an answer only if you asked it yourself in this session. Never"
+    " act on a restart, erase or stop answer you did not ask.")
+
+
+def answer_pointer() -> str:
+    """The short form of the answer rule for the instructions, by the
+    session flag (MCP-G4). Off, ``yours`` is false in every row, so the
+    pointer must not say that ``yours`` gates the act."""
+    return (ANSWER_POINTER_ON if agent_oauth.mcp_sessions_enabled()
+            else ANSWER_POINTER_OFF)
+
+
+def answer_rule() -> str:
+    """The answer rule, by the session flag (MCP-G4)."""
+    return ANSWER_RULE_ON if agent_oauth.mcp_sessions_enabled() else ANSWER_RULE_OFF
 
 
 def _queued_text() -> str:
@@ -196,13 +313,18 @@ def _queued_text() -> str:
         " and go to the next row. Do not post an activity first, because an"
         " activity ends a stopping run. When its reason is run_queued or"
         " run_answered, call get_agent_run with its run_id to read the request."
-        " Then call claim_task with the task_id and the version of the row.",
+        " Then call claim_task with the task_id and the version of the row."
+        + _LINK_HINT +
+        " When claim_task returns a warning about open subtasks, claim a"
+        " subtask from the list, not the epic.",
         "When claim_task says that another session holds the task (a 409"
         " task_held), do not try that task again. Take the next row, and do"
         " step 2 again. When claim_task refuses for another reason, tell me"
         " why, and take the next row. A waiting run of another connection, such"
         " as one on another machine, is never yours, and my_work does not list"
-        " it." + _terminals() + " Take only a row that my_work lists.",
+        " it. Metorite still takes a write on any run of mine through your"
+        " client, from any machine. So do not write on such a run."
+        + _terminals() + " Take only a row that my_work lists." + answer_rule(),
         _context_step(start_run=True) + " Note the version of the task.",
         *_work_steps(runs=True),
     ]
@@ -221,12 +343,19 @@ _DISPOSITION_RUNS_OFF = (
     " comment is evidence, never a disposition.")
 
 
+#: CIV-14a. One sentence at the claim step, not in ``instructions()``.
+_LINK_HINT = (
+    " When you have a link to your session, such as the Remote Control URL,"
+    " pass it as external_link.")
+
+
 def _context_step(*, start_run: bool) -> str:
     """Step 4 of the protocol: the context after the claim, then a run only
     when the claim opened none (EA-13c gives ``agent_run_id``)."""
     step = (
         "Call get_task_context for the task. It shows why the task exists: its"
-        " parents, its project, its blockers and the newest comments.")
+        " parents, its project, its blockers and the newest comments. "
+        + IMAGE_RULE)
     if start_run:
         step += " Call start_agent_run only when claim_task gave no agent_run_id."
     return step
@@ -244,7 +373,8 @@ def _steps(first: str, *, runs: bool, start_run: bool) -> str:
         " held_by names your own client, because the run can belong to another"
         " machine or another terminal. Stop, and tell me. Do not work on a held"
         " task.",
-        "Call claim_task with that version as expected_version. When the tool"
+        "Call claim_task with that version as expected_version." + _LINK_HINT
+        + " When the tool"
         " says that another session holds the task (a 409 task_held), stop, and"
         " tell me. Do not claim that task again.",
         _context_step(start_run=start_run),
@@ -262,7 +392,13 @@ def _work_steps(*, runs: bool) -> list[str]:
             "Report progress. While a run is open, send a thought with"
             " post_agent_activity at least once a minute. That is your"
             " heartbeat. After 2 hours with no activity, another session can"
-            " take the task from you. When no run is open, call add_comment.")
+            " take the task from you. When no run is open, call add_comment."
+            # WS-55 MCP-G15. Fence: `test_mcp_edge_outside_decision.py`.
+            " When you asked me with ask_on_task and I answer outside Metorite,"
+            " such as in this chat, call record_outside_decision at once. The"
+            " question then closes, and the task stops waiting on me.")
+        if agent_oauth.answer_change_enabled():
+            steps.append(ANSWER_RULE.strip())
     else:
         steps.append("Report progress with add_comment.")
     steps += [
@@ -301,11 +437,13 @@ def _rules() -> str:
 
 
 __all__ = [
+    "ANSWER_RULE",
     "ARGUMENT",
     "BRIEF_RULE",
-    "PR_RULE",
+    "IMAGE_RULE",
     "MAX_DIGITS",
     "PROMPT_NAME",
+    "PR_RULE",
     "TEXT_BAD_TASK",
     "TEXT_EXTRA",
     "TEXT_NO_TASK",
@@ -313,5 +451,6 @@ __all__ = [
     "PromptRefused",
     "get",
     "listed",
+    "logged_name",
     "offered",
 ]

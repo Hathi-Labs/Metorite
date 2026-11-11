@@ -10,6 +10,8 @@ dependencies = [
     # (`acb_auth.agent_oauth`). The edge never imports the gateway.
     "acb-auth",
     "acb-common",
+    # PB-2. The playbook topics that the prompts carry (`orchestration_playbook.md`).
+    "acb-playbook",
     # EA-3b-1. `agent_edge/gateway_client.py` calls the gateway with it. The
     # edge declares it itself, and does not rely on `acb-auth` to bring it.
     "httpx>=0.28",

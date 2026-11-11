@@ -88,11 +88,15 @@ EMPTIED = (
     "crm_field_fill",
     # CRM-Q18-1: the versions of the plan name the old field rules.
     "crm_mapping_plans",
+    # CRM-M4a: the lead statuses of each lead pipeline.
+    "crm_lead_pipeline_stages",
 )
 #: What the start over keeps. The same set as ``core.RESET_KEEPS``.
 KEPT = ("crm_settings", "crm_views", "crm_sync_runs", "crm_auto_lead_cursors",
         # CRM-Q33: a business rule describes the business, not the account.
-        "crm_business_rules")
+        "crm_business_rules",
+        # CRM-M1: the Change history is the record of what changed.
+        "crm_change_log")
 ALL = EMPTIED + KEPT
 
 
@@ -239,6 +243,13 @@ def _seed(p: Any, org: str, *, tag: str, deals: int, status: str = "disconnected
         c.execute(text(
             "INSERT INTO crm_pipeline_stages (organization_id, pipeline_id, status_id) "
             "VALUES (CAST(:o AS uuid), :p, :s)"), {**o, "p": pipe, "s": ds})
+        # CRM-M4a: a lead pipeline, from a time in Native mode, with its status.
+        lead_pipe = c.execute(text(
+            "INSERT INTO crm_pipelines (organization_id, name, kind) "
+            "VALUES (CAST(:o AS uuid), 'Trade show', 'lead') RETURNING id"), o).scalar()
+        c.execute(text(
+            "INSERT INTO crm_lead_pipeline_stages (organization_id, pipeline_id, status_id) "
+            "VALUES (CAST(:o AS uuid), :p, :s)"), {**o, "p": lead_pipe, "s": ls})
         company = c.execute(text(
             "INSERT INTO crm_companies (organization_id, name, ext_source, ext_id) "
             "VALUES (CAST(:o AS uuid), :n, 'zoho', :e) RETURNING id"),
@@ -349,6 +360,13 @@ def _seed(p: Any, org: str, *, tag: str, deals: int, status: str = "disconnected
             "created_by, updated_by) VALUES (CAST(:o AS uuid), 'org', 'net-of-gst', "
             "'All amounts net of GST', 'settings', 'admin@crm-t5-r8.test', "
             "'admin@crm-t5-r8.test')"), o)
+        # CRM-M1: a row of the Change history. The start over keeps it.
+        c.execute(text(
+            "INSERT INTO crm_change_log (organization_id, actor_email, via, "
+            "ladder_level, area, action, summary, before, after, reversible) "
+            "VALUES (CAST(:o AS uuid), 'admin@crm-t5-r8.test', 'ui', 'team', "
+            "'lost_reason', 'change', 'Renamed the lost reason', "
+            "'{\"label\": \"Price\"}'::jsonb, '{\"label\": \"Cost\"}'::jsonb, true)"), o)
         c.execute(text(
             "INSERT INTO crm_field_rules (organization_id, ext_source, entity, "
             "field_api_name, field_type, profile_version, target_column, status, "
@@ -561,15 +579,14 @@ async def _callback(p: Any, user: Any, params: dict[str, str]) -> Any:
     import httpx
     from acb_auth import get_current_user
     from acb_common.db import bind_tenant, clear_tenant, release_tenant
-    from fastapi import FastAPI
-    from gateway.routes import crm as crm_package
 
     async def _caller() -> Any:
         bind_tenant(user.organization_id)
         return user
 
-    app = FastAPI()
-    app.include_router(crm_package.router)
+    from tests.unit._crm_app import crm_app
+
+    app = crm_app()
     app.dependency_overrides[get_current_user] = _caller
     scope = clear_tenant()
     try:

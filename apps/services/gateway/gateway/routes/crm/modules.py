@@ -426,7 +426,8 @@ async def list_modules(
 ) -> list[ModuleSummary]:
     """The mirrored generic modules, in the profile order, with a row count.
 
-    A Native org, and an org with no profile, gets an empty list.
+    A Native org gets the modules that still hold records (CRM-Z10d). An org
+    with no profile gets an empty list.
     """
     async with _tenant_session() as db:
         mirrored = await mirrored_modules(db)

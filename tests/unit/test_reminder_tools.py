@@ -14,9 +14,14 @@ And more that this file holds:
 
 3. **The reply quotes the SAVED row.** The time and the zone come from the
    route's answer (``reads.saved_when``), never from the tool's argument.
-4. **Each write asks first.** One card through ``writes._confirm``, and no
-   write before the member's yes. ``test_projects_agent_writes.py`` holds
-   that for every class B and C tool; the cases here pin the reminder words.
+4. **A write asks first, unless it acts at once.** One card through
+   ``writes._confirm``, and no write before the member's yes.
+   ``test_projects_agent_writes.py`` holds that for every class B and C tool.
+   WS-66 RX-2 (2026-11-01): set, update, resolve, reopen and reschedule act
+   at once in a run that may send, and keep the card in a HELD run (this file
+   binds no run, which reads as held). ``test_reminder_acts_at_once.py``
+   holds the open-run side. ``promote_reminder`` always asks. The cases
+   here pin the reminder words.
 5. **Two gates before any card** (review round 1). With
    ``CALENDAR_REMINDERS`` off the routes answer 404, and a run with no card
    channel (WhatsApp) cannot ask. Either way the tool refuses before the card

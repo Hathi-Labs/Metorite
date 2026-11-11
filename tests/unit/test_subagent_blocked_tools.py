@@ -62,6 +62,7 @@ MEMORY_WRITES = [
 SENDS = [
     "send_email", "forward_email", "unsubscribe_sender", "send_draft", "schedule_send",
     "create_lead", "update_deal_status", "log_activity", "convert_lead",
+    "crm_update_record", "crm_update_task",
 ]
 AUTOMATION = [
     "run_workflow", "create_rule", "update_rule", "create_rules_from_prompt",
@@ -75,7 +76,7 @@ ASK_THE_MEMBER = [
 #: OA-9c review: the tools that draw a card or move the member's page. Several
 #: say read-only. ``emit_generative_ui`` is in ``ASK_THE_MEMBER`` above.
 DRAW_A_CARD = [
-    "show_in_app", "render_board", "render_tasks", "render_timeline", "open_in_app",
+    "show_in_app", "show_guide", "render_board", "render_tasks", "render_timeline", "open_in_app",
     "show_view",
     # STU-G2: the Studio plan card waits on one confirmation card
     "studio_plan",
@@ -291,7 +292,7 @@ def test_the_tables_match_production() -> None:
     assert set(DRAW_A_CARD) | {"emit_generative_ui"} == set(sc.DISPLAY_TOOLS)
     assert set(DELEGATION[:5]) == set(eg.DELEGATION_TOOLS)
     assert len(DELEGATION) == 12
-    assert len(MEMORY_WRITES) == 11 and len(SENDS) == 9 and len(AUTOMATION) == 11
+    assert len(MEMORY_WRITES) == 11 and len(SENDS) == 11 and len(AUTOMATION) == 11
     assert len(ASK_THE_MEMBER) == 5
 
 

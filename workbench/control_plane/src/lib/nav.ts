@@ -442,32 +442,15 @@ export const NAV_SECTIONS: NavSection[] = [
         launch: "live",
       },
       {
-        href: "/workflows",
+        href: "/studio",
         team: "studio",
-        label: "Workflows",
-        icon: "Workflow",
-        note: "Visual automation across agents · tools · integrations",
-        feature: "workflows",
-        launch: "preview", // WS-11 incomplete
-      },
-      {
-        href: "/build/apps",
-        team: "studio",
-        label: "App Workshop",
-        icon: "PlusSquare",
-        note: "User-created applications",
-        feature: "build.apps",
-        launch: "preview",
-        agent: "app-builder",
-      },
-      {
-        href: "/build/agents",
-        team: "studio",
-        label: "Agent Workshop",
-        icon: "Wrench",
-        note: "MAF agents & skills",
-        feature: "build.agents",
-        launch: "preview",
+        blurb: "Build apps, workflows and skills for your company",
+        label: "Studio",
+        icon: "Hammer",
+        note: "Apps · workflows · skills in one library",
+        feature: "studio", // ai_studio.md §14 J1: the gate of every /studio route
+        launch: "live", // ai_studio.md §14 A1: the one library pane. Live for the beta (D179)
+        agent: "app-builder", // until G3 gives the dock `studio-builder`
       },
     ],
   },

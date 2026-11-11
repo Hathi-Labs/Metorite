@@ -14,16 +14,14 @@
           "to-do",
           "capture",
           "add",
-          "remind",
-          "reminder",
           "note"
         ],
         "icon": "CirclePlus",
         "app": "/projects",
         "href": "/projects?do=capture",
-        "meaning": "add a task, a to-do or a reminder for themselves",
+        "meaning": "add a task or a to-do for themselves. A reminder is a different job: set-reminder",
         "fields": {
-          "title": "the task itself, in the member's own words, without 'remind me to'"
+          "title": "the task itself, in the member's own words"
         },
         "feature": "projects",
         "fallback": {

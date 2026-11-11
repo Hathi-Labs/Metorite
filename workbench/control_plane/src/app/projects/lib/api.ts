@@ -3,6 +3,7 @@ import { cacheKey, invalidate } from "@/lib/dataCache";
 import type { ParentFact, PullRequestFact } from "@/lib/taskCard";
 
 import {
+  type AgentActivity,
   type AgentPromptBody,
   type AgentRun,
   type AgentRunDetail,
@@ -12,9 +13,12 @@ import {
   type ArchiveApprovalBody,
   type ArchiveApprovalResult,
   type AgentSummary,
+  type WithdrawBody,
   agentRunRows,
   normalizeRunDetail,
 } from "./agentRuns";
+import { type TaskDecisions, answerBody, readTaskDecisions } from "./decisions";
+import type { EpicRollup } from "./epicRollup";
 import {
   ATTENTION_LIMIT,
   type AttentionPage,
@@ -23,6 +27,7 @@ import {
   resumeBody,
 } from "./needsAttention";
 import type { Rule as RecurrenceRule } from "./recurrence";
+import { taskVersions } from "./taskUndo";
 
 /**
  * Projects · the browser's client for /api/projects/*.
@@ -297,6 +302,13 @@ export interface NodeSummary {
     by_category: Record<string, number>;
   };
   /**
+   * WS-39 LP-1a — the newest live update of a project or a subproject, or
+   * null when it has none. The key is there only while
+   * `PROJECTS_UPDATES_ORGS` holds the org, so the Overview draws the line
+   * with the roll-up, in one read, and nothing moves when it arrives.
+   */
+  latest_update?: ProjectUpdate | null;
+  /**
    * WS-64 OP-11 — the My tasks summary only (`GET /projects/my/summary`).
    * `due_soon` is open work due in the next `due_soon_days`. `by_disposition`
    * holds the chip counts, by the rules of `mine.fold_dispositions`. `today`
@@ -306,7 +318,7 @@ export interface NodeSummary {
   due_soon?: number;
   due_soon_days?: number;
   by_disposition?: Partial<
-    Record<"inbox" | "today" | "next" | "waiting" | "someday" | "done", number>
+    Record<"inbox" | "today" | "next" | "waiting" | "someday" | "done" | "new", number>
   >;
   today?: string;
   time_zone?: string;
@@ -1714,6 +1726,23 @@ export interface SubtreeRow {
   archived: boolean;
 }
 
+/** WS-MCP SW-23 — the three results of a run of a Check. */
+export type CheckResult = "open" | "passed" | "cannot_run";
+
+/**
+ * WS-MCP SW-23 — the Check of a task, as `checks.attach_check` sends it. The
+ * text and the evidence are words that a person or an agent wrote.
+ */
+export interface TaskCheck {
+  text: string;
+  /** The instant of the last reported run, or `null` when none ran yet. */
+  last_run_at: string | null;
+  last_result: CheckResult | null;
+  last_evidence: string | null;
+  /** Never run, or not run for seven days. The gateway decides it. */
+  due: boolean;
+}
+
 export interface TaskRow {
   id: string;
   project_id: string;
@@ -1808,6 +1837,12 @@ export interface TaskRow {
    */
   time_spent_mins?: number;
   /**
+   * SP-9 — the roll-up of an EPIC over every descendant the reader can see.
+   * Only the single read carries it, and only for a task whose type is an
+   * epic type. `subtasks` above still counts the direct children.
+   */
+  rollup?: EpicRollup;
+  /**
    * WS-55 EA-12c — the derived state of the newest open agent run, or null
    * when the task has none (`external_agent_access.md` §12.1, EA12-10).
    * The run types live in `agentRuns.ts`, with the two optional run facts
@@ -1832,12 +1867,23 @@ export interface TaskRow {
    */
   agent_worked?: boolean | null;
   /**
+   * WS-MCP SW-23 — the Check of the task: a read-only command that an agent
+   * runs, with its last result. Absent while the gateway's Check flag is off,
+   * and `null` for a task with no Check. `TaskCheckBlock` draws it.
+   */
+  check?: TaskCheck | null;
+  /**
    * WS-64 OP-11 — the CALLER's overlay, on a read with `with_overlay=1`
    * (`mine.attach_my_overlay`). `disposition` is the effective one (D77).
    * Absent on every other read.
    */
   disposition?: string | null;
   is_triaged?: boolean;
+  /**
+   * D170 (INB-1) — "New": assigned to me on a company board and I have not
+   * stated a disposition yet (`mine.new_work`). A disposition write clears it.
+   */
+  is_new?: boolean;
   is_mine?: boolean;
   context?: string | null;
   energy?: string | null;
@@ -1865,6 +1911,24 @@ export interface StatusRow {
   is_default: boolean;
 }
 
+/**
+ * A project below the owner that keeps its own set (PST-1, §9.4).
+ *
+ * ⚠️ `path` and `used_by` are optional for the release window: an old gateway
+ * sends `{id, name}` only. The copy module reads them with a default.
+ */
+export interface StatusSetOverride {
+  id: string;
+  name: string;
+  /**
+   * The names above it, from the first one the caller can see. A hidden
+   * run after a visible name is one "…", so no hidden name reaches the browser.
+   */
+  path?: string[];
+  /** Projects that use ITS set, it left out. */
+  used_by?: number;
+}
+
 /** Where a project's lanes come from — `projectsApi.statusSet`. */
 export interface StatusSetInfo {
   project_id: string;
@@ -1887,6 +1951,27 @@ export interface StatusSetInfo {
    */
   inherit_from_id: string | null;
   inherit_from_name: string | null;
+  /*
+   * ⚠️ The PST-1 fields below are optional for the release window. For a few
+   * minutes an old gateway sends none of them, and the screen then draws the
+   * sentences with no count (`statusSetCopy.ts`).
+   */
+  /** The kind of the owner node. A space is a root (PST-1, §9.4). */
+  owner_kind?: "space" | "project";
+  /**
+   * Projects that use the set, the owner left out. It counts every depth
+   * below the owner and stops at a node that owns a set. It leaves a folder
+   * out, because a folder holds no lanes. It counts projects the caller
+   * cannot see, because an edit changes them too. It is the N of "shared
+   * with N" (§9.4).
+   */
+  used_by?: number;
+  /**
+   * Every board that an edit changes: `used_by`, plus the owner when its own
+   * board shows lanes. A team space shows none, and a project does. The N
+   * of "A change here changes the lanes of N projects".
+   */
+  reach?: number;
   /**
    * Projects under the OWNER that keep their own lanes — an edit here does not
    * reach them.
@@ -1897,8 +1982,13 @@ export interface StatusSetInfo {
    * Immediate breakaways only. A project that overrode a project that overrode
    * this one was never getting these lanes, and listing it would grow this
    * list with the tree rather than with the decisions somebody took.
+   *
+   * Only the ones the caller can see (PST-1). `hidden_overrides` counts the
+   * rest, and no name of them reaches the browser.
    */
-  overrides: { id: string; name: string }[];
+  overrides: StatusSetOverride[];
+  /** Breakaways the caller cannot see. The UI counts them and names none. */
+  hidden_overrides?: number;
   /** False on a space: there is nothing above it to inherit from. */
   can_inherit: boolean;
   /** A set it owned before, kept so switching back restores those lanes. */
@@ -2090,6 +2180,31 @@ export function refusedFields(err: unknown): FieldRow[] {
 }
 
 /**
+ * WS-39 LP-1a — one update of a project (`GET /projects/nodes/{id}/updates`).
+ * The author picks the health by hand. `body` is the text a person wrote.
+ */
+export type ProjectHealthValue = "on_track" | "at_risk" | "off_track";
+
+export type ProjectUpdate = {
+  id: string;
+  project_id: string;
+  author: string;
+  health: ProjectHealthValue;
+  body: string;
+  posted_at: string | null;
+  drafted_by_ai: boolean;
+  via: string | null;
+  /** This reader's right to delete it (`authority.may_delete_update`). */
+  can_delete?: boolean;
+  delete_refusal?: string | null;
+};
+
+export type ProjectUpdatesPage = {
+  rows: ProjectUpdate[];
+  next_before: string | null;
+};
+
+/**
  * The one request seam for `/api/projects/*`.
  *
  * Exported as `projectsCall` (WS-39 S3a-client) because the Tasks lens speaks
@@ -2242,6 +2357,7 @@ export const projectsApi = {
 
   /** The same shape one level up — every space the caller can see. */
   portfolio: () => call<NodeSummary>("summary"),
+
 
   /**
    * §9.12.7 analytics. `nodeId` omitted means the PORTFOLIO.
@@ -2687,6 +2803,9 @@ export const projectsApi = {
    * the open subtasks too. `opts.ifMatch` is the row's `updated_at` as last
    * read, so a write that lands after somebody else's answers 412 (D79,
    * Undo). Both are optional and absent means the old request exactly.
+   *
+   * UNDO-1 — each answer's `updated_at` goes into `taskVersions`, so an undo
+   * sends the version of this session's last write as its If-Match.
    */
   patchTask: (
     taskId: string,
@@ -2700,7 +2819,10 @@ export const projectsApi = {
         body: JSON.stringify(payload),
         ...(opts?.ifMatch ? { headers: { "If-Match": opts.ifMatch } } : {}),
       },
-    ),
+    ).then((row) => {
+      taskVersions.note(taskId, row?.updated_at);
+      return row;
+    }),
 
   /**
    * File a task out of every default list, board, calendar and search.
@@ -2766,10 +2888,16 @@ export const projectsApi = {
       `tasks/${taskId}/subtree`,
     ),
 
-  setAssignees: (taskId: string, assignees: string[]) =>
+  /**
+   * `opts.ifMatch` is the row's `updated_at` as last read, under the PATCH's
+   * rule (`tasks._check_version`): a field change since answers 412. Absent
+   * means the old request exactly. UNDO-1 sends it on an undo.
+   */
+  setAssignees: (taskId: string, assignees: string[], opts?: { ifMatch?: string | null }) =>
     call<{ task_id: string; assignees: string[] }>(`tasks/${taskId}/assignees`, {
       method: "PUT",
       body: JSON.stringify({ assignees }),
+      ...(opts?.ifMatch ? { headers: { "If-Match": opts.ifMatch } } : {}),
     }),
 
   /**
@@ -3118,6 +3246,30 @@ export const refsApi = {
 };
 
 /**
+ * WS-ALN ALN-2b — the decisions of a task (`project_alignment.md` §3.2). The
+ * pure rules are in `decisions.ts`. `forTask` gives `null` while the routes
+ * are OFF (`DECISIONS_ORGS`): every route answers 404, and the block draws
+ * nothing. `answer` is the ONE answer route, the one the chat tool calls.
+ */
+export const decisionsApi = {
+  forTask: async (taskId: string): Promise<TaskDecisions | null> => {
+    try {
+      const raw = await call<unknown>(`decisions?task_id=${encodeURIComponent(taskId)}`);
+      return readTaskDecisions(raw);
+    } catch (err) {
+      if (err instanceof ProjectsApiError && err.status === 404) return null;
+      throw err;
+    }
+  },
+
+  answer: (decisionId: string, key: string, reason: string) =>
+    call<{ decision: unknown }>(`decisions/${encodeURIComponent(decisionId)}/answer`, {
+      method: "POST",
+      body: JSON.stringify(answerBody(key, reason)),
+    }),
+};
+
+/**
  * WS-55 EA-12c — agent runs on a task (`external_agent_access.md` §12.1).
  * The wire types and the pure rules are in `agentRuns.ts`.
  */
@@ -3186,6 +3338,17 @@ export const agentRunsApi = {
     ),
 
   /**
+   * SW-43. The run's member takes back an answer that no agent has read.
+   * 404 while the gateway flag is off, 403 for any other caller, 409 when the
+   * agent already has the answer. A retry with the same key writes once.
+   */
+  withdrawAnswer: (runId: string, body: WithdrawBody) =>
+    call<{ run: AgentRun; activity: AgentActivity; withdrawn: boolean }>(
+      `agent-runs/${encodeURIComponent(runId)}/answer/withdraw`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  /**
    * EA-6g (EA3-40). The run's member approves or declines an agent's
    * archive request. An approve archives the task, never its subtasks. Any
    * other member gets 403, and a request past its expiry gets 409.
@@ -3206,6 +3369,21 @@ export const agentRunsApi = {
       return true;
     } catch {
       return false;
+    }
+  },
+
+  /**
+   * CIV-14k. Every open question of the caller, oldest first, with the task
+   * number, title and project name on each row. `null` means the routes are
+   * OFF (404), and then the Approvals page draws no list.
+   */
+  waiting: async (): Promise<AgentRun[] | null> => {
+    try {
+      const raw = await call<unknown>("agent-runs?status=awaiting&order=oldest&with_task=true&limit=100");
+      return agentRunRows<AgentRun>(raw);
+    } catch (err) {
+      if (err instanceof ProjectsApiError && err.status === 404) return null;
+      throw err;
     }
   },
 
@@ -3241,8 +3419,9 @@ export const attentionApi = {
 
 export interface NotificationRow {
   id: string;
-  /** `agent_question`: an outside agent asks on a task (WS-55 EA-12c). */
-  kind: "assigned" | "mention" | "comment" | "nudge" | "agent_question";
+  /** `agent_question`: an outside agent asks on a task (WS-55 EA-12c).
+   *  `decision`: one person decides (WS-ALN ALN-2a). */
+  kind: "assigned" | "mention" | "comment" | "nudge" | "agent_question" | "decision";
   task_id: string;
   actor: string;
   excerpt?: string | null;

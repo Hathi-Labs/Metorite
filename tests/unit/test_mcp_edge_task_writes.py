@@ -832,18 +832,9 @@ def world():
         pytest.skip("TENANT_LADDER_DATABASE_URL unset")
     admin_url = make_url(w._URL)
     dedicated = f"{admin_url.database}_mcptaskw"
-    w._drop_database(admin_url, dedicated)
-    with create_engine(admin_url, isolation_level="AUTOCOMMIT").connect() as c:
-        c.execute(text(f'CREATE DATABASE "{dedicated}"'))
+    w._clone_promoted_database(admin_url, dedicated)
     ded_admin_url = admin_url.set(database=dedicated)
     eng = create_engine(ded_admin_url, future=True)
-    with eng.begin() as conn:
-        apply_ladder(conn)
-    for phase in ("01_add_columns.sql", "02_backfill.sql", "03_constraints.sql",
-                  "04_policies.sql"):
-        with eng.begin() as conn, open(os.path.join(w._GENERATED, phase),
-                                       encoding="utf-8") as fh:
-            w._exec_sql_file(conn, fh.read())
     with create_engine(ded_admin_url, isolation_level="AUTOCOMMIT").connect() as c:
         c.execute(text(
             f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='{_APP_ROLE}')"
@@ -1034,8 +1025,11 @@ class TestTheSourceAndTheToolsOnARealDatabase:
             "project_id": live.team, "title": "child", "parent_task_id": parent})
         row = _row(live, result["structuredContent"]["task"]["id"])
         assert str(row.parent_task_id) == parent
-        # The parent's open lane, through the one seam (D-PM-38).
-        assert str(row.status_id) == live.s.doing
+        # MCP-G20 (task 2212): an agent's subtask with no status_id starts in
+        # the default status, as `create_task` says, and not in the lane of
+        # an In progress parent. A member's subtask keeps the parent lane
+        # (D-PM-38), `test_mcp_edge_bulk_updates.py`.
+        assert str(row.status_id) == live.s.todo
 
     async def test_the_same_key_makes_one_row(self, live):
         args = {"project_id": live.team, "title": "once only", "idempotency_key": "r8-once-1"}

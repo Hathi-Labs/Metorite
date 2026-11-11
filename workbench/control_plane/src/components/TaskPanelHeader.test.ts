@@ -194,8 +194,11 @@ describe("both apps render it", () => {
     expect(src).toMatch(
       /<EditableTaskTitle value=\{task\.title\} onSave=\{\(t\) => void rename\(t\)\}\s+refResolver=\{taskRefResolverFor\(task\.root_project_id\)\} \/>/,
     );
-    // The existing task-update path, and no new endpoint.
-    expect(src).toMatch(/onChanged\(await projectsApi\.patchTask\(task\.id, \{ title \}\)\);/);
+    // The existing task-update path, and no new endpoint. UNDO-1 keeps the
+    // answer, so the rename can offer Undo, then hands it on.
+    expect(src).toMatch(
+      /const fresh = await projectsApi\.patchTask\(task\.id, \{ title \}\);\s*onChanged\(fresh\);/,
+    );
     // The old read-only title.
     expect(src).not.toMatch(/<h2[^>]*>\s*\{task\.title\}\s*<\/h2>/);
   });

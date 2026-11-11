@@ -8,8 +8,9 @@ The suite runs on a phase-4 promoted scratch database, as the app role, so
 FORCE RLS binds. Two orgs, three members, a frozen clock, the worker's own
 ``run_org``. The feed, the day and the identity reads are fakes: the seams
 ``loop.resolve``, ``loop.snapshot``, ``my_day_loop._read_day`` and
-``feed._working_day`` answer what the test sets. ``acompletion_with_fallback``
-and ``outbox.plan`` fail the test when anything calls them.
+``feed._working_day`` answer what the test sets. ``BRIEF_COMPOSE`` is off
+here, so ``acompletion_with_fallback`` and ``outbox.plan`` fail the test when
+anything calls them. The phrase step is ``test_brief_phrase_r8.py``.
 
 Run (a PRIVATE ladder database, one R8 suite at a time)::
 
@@ -200,8 +201,8 @@ def world(promoted, monkeypatch):  # noqa: F811
     async def working_day(user: Any, today: date) -> bool:
         return w.working
 
-    async def never(*a: Any, **k: Any) -> Any:
-        raise AssertionError("the slice calls no model and sends nothing")
+    async def no_model_with_brief_compose_off(*a: Any, **k: Any) -> Any:
+        raise AssertionError("with BRIEF_COMPOSE off the run calls no model and sends nothing")
 
     from gateway import my_day_loop
     from gateway.routes.shell import feed
@@ -210,10 +211,11 @@ def world(promoted, monkeypatch):  # noqa: F811
     monkeypatch.setattr(loop, "snapshot", snapshot)
     monkeypatch.setattr(my_day_loop, "_read_day", read_day)
     monkeypatch.setattr(feed, "_working_day", working_day)
-    monkeypatch.setattr(outbox, "plan", never)
+    monkeypatch.setattr(outbox, "plan", no_model_with_brief_compose_off)
     import acb_llm.context
 
-    monkeypatch.setattr(acb_llm.context, "acompletion_with_fallback", never)
+    monkeypatch.setattr(acb_llm.context, "acompletion_with_fallback",
+                        no_model_with_brief_compose_off)
     yield w
     worker._stopping.clear()
     with p.admin_engine.begin() as c:

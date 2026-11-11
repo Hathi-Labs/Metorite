@@ -82,7 +82,10 @@ export const COUNT_LABELS: Record<keyof ConnectionCounts, string> = {
   gmail: "Gmail",
   imap: "IMAP",
   syncErrors: "Sync errors",
-  firstSyncPending: "Waiting for first sync",
+  // `first_sync_pending` counts each mailbox whose import has not ended: a
+  // new one, and one whose import of older mail resumed at the storage limit
+  // (EM-T6f). The words of the sync banner name both.
+  firstSyncPending: "Importing mail",
 };
 
 export interface CountTile {

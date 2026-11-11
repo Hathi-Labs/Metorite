@@ -5,12 +5,22 @@
   "contributes": {
     "nav": [
       {
+        "href": "/studio",
+        "feature": "studio"
+      }
+    ],
+    "gates": [
+      {
         "href": "/build/apps",
         "feature": "build.apps"
       },
       {
         "href": "/build/agents",
         "feature": "build.agents"
+      },
+      {
+        "href": "/apps",
+        "feature": "studio"
       }
     ]
   }

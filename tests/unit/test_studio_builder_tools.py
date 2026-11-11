@@ -159,7 +159,10 @@ async def test_patch_applies_and_returns_the_new_manifest_with_a_diff(catalog) -
     out = await st.studio_patch(m, ops)
     assert out["ok"], out
     assert out["manifest"]["objects"][0]["name"] == "order"
-    assert out["diff"] == ["add /objects/-"]
+    # STU-BETA-2: the diff also names the record actions that the check added.
+    assert out["diff"][0].startswith("add /actions (record actions of order)")
+    assert out["diff"][1] == "add /objects/-"
+    assert len(out["diff"]) == 2
     assert m == before, "the input manifest is never changed"
 
 
@@ -569,6 +572,25 @@ def test_every_tool_is_annotated_read_only_and_closed_world() -> None:
     for fn in st.STUDIO_TOOLS:
         hints = fn.__tool_risk__
         assert hints["read_only"] is True and hints["open_world"] is False, fn.__name__
+
+
+def test_no_skill_tool_takes_an_org_or_a_member_argument() -> None:
+    """STU-F2d: the second tuple holds the three skill tools, and none takes an identity."""
+    identity = {"organization_id", "org_id", "organization", "org", "tenant", "tenant_id",
+                "member", "member_email", "user", "user_email", "email", "actor", "as_user",
+                "owner", "owner_email", "visibility", "confirm", "confirmed"}
+    assert len(st.STUDIO_SKILL_TOOLS) == 3
+    for fn in st.STUDIO_SKILL_TOOLS:
+        assert not set(inspect.signature(fn).parameters) & identity, fn.__name__
+        assert inspect.iscoroutinefunction(fn)
+
+
+def test_the_skill_list_is_read_only_and_the_other_two_write_and_all_are_closed_world() -> None:
+    hints = {fn.__name__: fn.__tool_risk__ for fn in st.STUDIO_SKILL_TOOLS}
+    assert hints["studio_skill_list"]["read_only"] is True
+    assert hints["studio_skill_save"]["read_only"] is False
+    assert hints["studio_skill_state"]["read_only"] is False
+    assert all(h["open_world"] is False for h in hints.values())
 
 
 # -- the fence: no studio module runs code -----------------------------------

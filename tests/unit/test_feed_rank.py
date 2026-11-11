@@ -42,7 +42,7 @@ class TestTheTable:
             # WS-66 RM-2b: the five needs bases rose by 3, to make room for the
             # three reminder kinds above `agent_asks`.
             "overdue": 63, "approval": 59, "due_today": 55, "notification": 51,
-            "needs_reply": 47, "agent_asks": 43, "promise_due": 42,
+            "needs_reply": 47, "agent_asks": 43, "decision": 43, "promise_due": 42,
             "crm_followup_due": 41, "block_overlap": 40, "absent_on_due": 39,
             "unblocked": 38, "waiting_quiet": 37, "block_soon": 36, "no_answer": 35,
             "deal_close_passed": 34, "deal_quiet": 33, "day_overbooked": 32,
@@ -79,8 +79,18 @@ class TestTheTable:
         assert min(needs) > max(others)
 
     def test_the_needs_kinds_keep_the_needs_feeds_own_order(self):
+        """RX-7: the needs list puts the two fired reminder kinds FIRST, so
+        the bell's cut cannot drop them. The My Day rank keeps them below the
+        five others (the test above), so they are the one named exception.
+        Mutation: move `needs_reply` ahead of `overdue` in `KIND_ORDER`, and
+        this fails."""
+        def kept(kinds):
+            return [k for k in kinds if k not in ("reminder_due", "reminder_check")]
+
         by_base = sorted(KIND_ORDER, key=lambda k: -feed_rank.BASE[k])
-        assert by_base == sorted(KIND_ORDER, key=KIND_ORDER.__getitem__)
+        assert kept(by_base) == kept(sorted(KIND_ORDER, key=KIND_ORDER.__getitem__))
+        first = sorted(KIND_ORDER, key=KIND_ORDER.__getitem__)[:2]
+        assert first == ["reminder_due", "reminder_check"]
 
     def test_an_unknown_kind_raises(self):
         # An MD-9 kind, which no slice has added yet.
@@ -165,7 +175,8 @@ class TestTheOtherTerms:
 class TestTheGroupTable:
     @pytest.mark.parametrize(("kind", "facts", "group"), [
         ("overdue", {}, "needs_you"),
-        ("due_today", {"due_at": (NOW + timedelta(minutes=90)).isoformat()}, "now"),
+        # RX-5: a due date is a day, so no hour moves a task into Now.
+        ("due_today", {"due_at": (NOW + timedelta(minutes=90)).isoformat()}, "needs_you"),
         ("due_today", {"due_at": (NOW + timedelta(hours=5)).isoformat()}, "needs_you"),
         ("notification", {"notification": "assigned"}, "needs_you"),
         ("notification", {"notification": "mention"}, "needs_you"),
@@ -198,6 +209,7 @@ class TestTheGroupTable:
         ("deal_close_passed", {}, "needs_you"),
         ("colleague_out", {}, "fyi"),
         ("agent_asks", {}, "needs_you"),
+        ("decision", {}, "needs_you"),
         ("digest_ready", {}, "fyi"),
         # WS-53 CRM-Q32-4: needs you while a question about money is open.
         ("crm_open_questions", {"money": True}, "needs_you"),
@@ -296,9 +308,9 @@ def _seed() -> list[Signal]:
         _signal("tasks:crit", "overdue", "tasks", at=NOW - 2 * hour, urgent=NOW - 2 * hour,
                 facts={"due_at": (NOW - 2 * hour).isoformat(), "days_late": 0,
                        "priority": "critical"}),
-        _signal("tasks:soon", "due_today", "tasks", at=NOW + hour, urgent=NOW + hour,
+        _signal("tasks:soon", "due_today", "tasks", at=NOW + hour,
                 facts={"due_at": (NOW + hour).isoformat(), "priority": "important"}),
-        _signal("tasks:eve", "due_today", "tasks", at=NOW + 8 * hour, urgent=NOW + 8 * hour,
+        _signal("tasks:eve", "due_today", "tasks", at=NOW + 8 * hour,
                 facts={"due_at": (NOW + 8 * hour).isoformat(), "priority": "urgent"}),
         _signal("tasks:blk", "block_soon", "calendar", at=NOW + 0.25 * hour,
                 urgent=NOW + 0.25 * hour,
@@ -323,11 +335,11 @@ class TestTheFixedSeed:
         cards = feed.build_cards(_seed(), NOW, ZoneInfo("UTC"), TODAY)
         got = [(c["signal_id"], c["group"], c["score"]) for c in feed_rank.order(cards, 40)]
         assert got == [
-            ("tasks:soon", "now", 55 + 40 + 12),
             ("tasks:blk", "now", 36 + 40),
             ("tasks:crit", "needs_you", 63 + 60 + 24),
             ("tasks:old", "needs_you", 63 + 66 + 0),
             ("tasks:eve", "needs_you", 55 + 0 + 18),
+            ("tasks:soon", "needs_you", 55 + 0 + 12),
             ("tasks:ask", "needs_you", 51),
             ("tasks:wk", "needs_you", 40),
             ("tasks:note", "fyi", 51),
@@ -335,11 +347,11 @@ class TestTheFixedSeed:
 
     def test_a_seen_card_moves_only_behind_the_new_cards_of_its_group(self):
         # MD-2a, §6.8 item 6: inside a group a new card sorts before a seen
-        # one. That rule alone changes the seed: `tasks:soon` drops behind
-        # `tasks:blk` in Now, and nothing else moves.
+        # one. That rule alone changes the seed: `tasks:crit` drops behind the
+        # new cards of Needs you, and nothing else moves.
         cards = feed.build_cards(_seed(), NOW, ZoneInfo("UTC"), TODAY)
         for c in cards:
-            c["state"] = "seen" if c["signal_id"] == "tasks:soon" else "new"
+            c["state"] = "seen" if c["signal_id"] == "tasks:crit" else "new"
         got = [c["signal_id"] for c in feed_rank.order(cards, 40)]
-        assert got == ["tasks:blk", "tasks:soon", "tasks:crit", "tasks:old", "tasks:eve",
-                       "tasks:ask", "tasks:wk", "tasks:note"]
+        assert got == ["tasks:blk", "tasks:old", "tasks:eve", "tasks:soon", "tasks:ask",
+                       "tasks:wk", "tasks:crit", "tasks:note"]

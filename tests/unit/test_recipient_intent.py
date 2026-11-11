@@ -31,6 +31,7 @@ from acb_skills import reply_card as rcard
 from fastapi import HTTPException
 from gateway.routes.email.automation import held_card as hc
 from gateway.routes.email.automation import reply_card as rc
+from gateway.routes.email.mailbox_access import mailbox_predicate
 
 from tests.unit import _held_card_fakes as F
 from tests.unit._held_card_fakes import email_tool_mode  # noqa: F401 - OA-7b: owner and pack
@@ -102,7 +103,17 @@ class _Db:
                          for a, n, t in self.usual])
         if q == rc.RECENT_REPLY_SQL:
             return rows(list(self.recent))
+        if q == _DRAFT_STATE_SQL:
+            # Task 1526: the card's draft is still in Drafts.
+            return rows([types.SimpleNamespace()] if p.get("did") == CARD_DRAFT else [])
         raise AssertionError(f"unexpected SQL: {q[:80]}")
+
+
+#: The LOCAL id of the draft that each card of this world writes (task 1526,
+#: item 10): a real UUID, so the record of the card confirms its draft.
+CARD_DRAFT = "0d0d0d0d-0000-4000-8000-0000000000d1"
+_DRAFT_STATE_SQL = rc._DRAFT_STATE_SQL.format(
+    owner=mailbox_predicate("ea", uid="uid", level="read"))
 
 
 class _World:
@@ -126,7 +137,7 @@ class _World:
                        bcc: Any = None) -> tuple[str, bool]:
             self.drafts.append((list(to), list(cc)))
             self.bcc_drafts.append(bcc)
-            return "local-draft-1", False
+            return CARD_DRAFT, False
 
         async def no_record(_mail: Any) -> list[str]:
             return []

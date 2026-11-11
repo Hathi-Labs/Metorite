@@ -10,6 +10,7 @@ import {
   fromWarning, mailboxOf, ownAddresses, replyRecipients, sendBlocked, swapSignature,
 } from "../lib/mailbox";
 import { getSentFrom } from "../lib/api";
+import { withFailedFiles } from "../lib/attachmentRow";
 import { FromRow } from "./FromRow";
 import { MailboxChip, mailboxLabel } from "./MailboxChip";
 import {
@@ -29,6 +30,7 @@ const POP_OUT_LOSES_FILES =
 import { useDraftSession } from "../lib/useDraftSession";
 import { ArtifactAttachPicker } from "./ArtifactAttachPicker";
 import { ComposerQuote, AiButton } from "./ComposerAI";
+import { draftCc } from "../lib/draftRecipients";
 import { DraftAssistant } from "./DraftAssistant";
 import { ComposerBody, ComposerExpandButton, useComposerSize } from "./ComposerSize";
 import { MessageContent } from "./MessageContent";
@@ -37,11 +39,12 @@ import { AttachmentList } from "./AttachmentList";
 import { getSignatureText, seededBody, stripSignature } from "../lib/signature";
 import { RecipientInput } from "./RecipientInput";
 import { ConversationView, DraftCard, isDraftEmail } from "./ConversationView";
-import { ContactTrigger, RecipientList } from "./ContactCard";
+import { ContactTrigger, RecipientSummary } from "./ContactCard";
 import { LabelMenu } from "./LabelMenu";
 import { LabelChip } from "./LabelChip";
 import { MessageTimelineModal } from "./MessageTimelineModal";
-import { MessageActions } from "./MessageActions";
+import { MessageActions, MessageReplyBar } from "./MessageActions";
+import { showsReplyBar } from "../lib/messageActions";
 import { toggleLightVersion, useLightVersions } from "../lib/lightVersion";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { revealWithin } from "@/lib/scrollWithin";
@@ -172,6 +175,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
   // The reply/forward composer block — scrolled into view when opened from a
   // conversation card so the draft box isn't off-screen below a long thread.
   const composerRef = useRef<HTMLDivElement>(null);
+  // The text box of the reply. A new reply puts the focus there (UI review,
+  // 2026-11-06).
+  const replyBoxRef = useRef<HTMLTextAreaElement>(null);
   // The thread scroller. The composer reveal scrolls this box and no other.
   const threadRef = useRef<HTMLDivElement>(null);
   // The size of the reply body: auto-grow, a dragged height, or the whole
@@ -422,7 +428,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
         }
       })
       .catch(() => {
-        if (!cancelled) setDetail(email); // fall back to list row
+        // Fall back to the list row. The fetch threw, so its files did not load.
+        if (!cancelled) setDetail(withFailedFiles(email));
       })
       .finally(() => {
         // Each fetch clears its own id, also after a switch to another mail.
@@ -779,7 +786,16 @@ export function EmailDetail({ email }: EmailDetailProps) {
     // Bring the composer into view (it renders below a possibly-long thread).
     // Scroll the thread only. `scrollIntoView` also scrolls each box above it,
     // and that moved the app shell (owner report, 2026-10-10).
-    setTimeout(() => revealWithin(threadRef.current, composerRef.current, "smooth"), 60);
+    // The focus goes to the text box. A press below another message keeps the
+    // composer mounted, so `autoFocus` does not run again, and the pressed
+    // button is gone: the focus fell to the page (UI review, 2026-11-06).
+    // A focus already in the composer stays: the member may be in To.
+    setTimeout(() => {
+      revealWithin(threadRef.current, composerRef.current, "smooth");
+      if (!composerRef.current?.contains(document.activeElement)) {
+        replyBoxRef.current?.focus({ preventScroll: true });
+      }
+    }, 60);
   };
 
   /** Switch reply mode without resetting the body/draft — only rebuilds recipients. */
@@ -873,6 +889,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
     setSendErr(null);
     const target = replyTargetRef.current ?? email;
     const toArr = replyTo.split(",").map((s) => s.trim()).filter(Boolean);
+    // A forward goes to the people in To and Cc, so the draft is a note to
+    // them and not an answer to the sender (task 1817). A reply sends no Cc.
+    const ccArr = draftCc(replyMode, replyCc);
     // A dashboard nudge seeds a follow-up instruction (consumed once); a
     // manual AI draft uses whatever the user typed in the AI box.
     const seeded = autoDraftInstructionRef.current;
@@ -887,6 +906,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
         // The drafter reads the thread only inside the mailbox of the mail.
         messageId: sameConversation ? target.id : undefined,
         to: toArr,
+        cc: ccArr,
         subject: replyTarget.subject,
       },
       { instruction },
@@ -1225,6 +1245,12 @@ export function EmailDetail({ email }: EmailDetailProps) {
       onToggleLight={() => toggleLightVersion(m.id)}
     />
   );
+  /** The Reply, Reply all and Forward buttons below the body of one message
+   *  (owner, 2026-11-06). The message that the composer answers has none. */
+  const replyBar = (m: Email) =>
+    showsReplyBar(m.id, replyMode, replyTargetId) ? (
+      <MessageReplyBar message={m} onReply={(mode) => startReply(mode, m)} />
+    ) : null;
   // Point the auto-draft ref at the current-render closure so the nonce effect
   // reads fresh reply state (recipients/mode startReply just set).
   runAiDraftRef.current = runAiDraft;
@@ -1487,6 +1513,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
             messages={shownThread}
             openedId={email.id}
             renderActions={messageActions}
+            renderReplyBar={replyBar}
             lightVersions={lightVersions}
             onSent={refreshThreadAfterSend}
           />
@@ -1521,24 +1548,15 @@ export function EmailDetail({ email }: EmailDetailProps) {
                 &lt;{email.from.email}&gt;
               </span>
             </div>
-            <div className="mt-0.5">
-              <RecipientList
-                label="To"
-                people={email.to}
-                accountId={email.accountId}
-              />
-            </div>
-            <RecipientList
-              label="Cc"
-              people={email.cc ?? []}
+            {/* To, Cc and Bcc in one line until the member asks (owner,
+                2026-11-01). A Bcc shows only on a mail the member sent:
+                the provider gives no Bcc of a received mail. */}
+            <RecipientSummary
+              to={email.to}
+              cc={email.cc}
+              bcc={email.bcc}
               accountId={email.accountId}
-            />
-            {/* A Bcc shows only on a mail the member sent: the provider
-                gives no Bcc of a received mail. */}
-            <RecipientList
-              label="Bcc"
-              people={email.bcc ?? []}
-              accountId={email.accountId}
+              className="mt-0.5"
             />
             <div className="text-xs text-muted-foreground">
               {fullDateLabel(email.receivedAt)}
@@ -1548,6 +1566,24 @@ export function EmailDetail({ email }: EmailDetailProps) {
               is its first menu item (owner, 2026-10-10). */}
           {messageActions(email)}
         </div>
+
+        {/* The files of this mail, on top of its body as in Outlook (owner,
+            2026-11-06). The fetch sets `detail` when it ends, also on a failure,
+            so the space holds only while the list can still arrive. */}
+        {view.hasAttachments && (
+          <AttachmentList
+            attachments={view.attachments}
+            status={view.attachmentsStatus}
+            onRetry={async () => {
+              // One message only: the thread and the pane stay as they are.
+              const full = await getEmail(email.id);
+              setDetail((cur) => (cur?.id === full.id || cur === null ? full : cur));
+              hydrateEmail(full);
+            }}
+            pending={detail?.id !== email.id}
+            className="mb-4"
+          />
+        )}
 
         {/* Body */}
         {loadingDetail ? (
@@ -1615,13 +1651,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
           </div>
         )}
 
-        {/* Attachments — same card UI the conversation view uses per message. */}
-        {view.hasAttachments && (
-          <AttachmentList
-            attachments={view.attachments}
-            className="mt-6 pt-4 border-t border-border"
-          />
-        )}
+        {/* While the body loads, the buttons wait, or they would jump down. */}
+        {!loadingDetail && replyBar(view)}
         </>
         )}
 
@@ -1630,6 +1661,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
           <div
             ref={composerRef}
             data-email-composer=""
+            data-ask-clear=""
             style={composerSize.rootStyle}
             className={`mt-8 border border-primary/30 rounded-lg bg-secondary/30 ${composerSize.rootClass || "overflow-hidden"}`}
           >
@@ -1675,6 +1707,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   onToggle={() => composerSize.dispatch({ type: "toggleExpand" })}
                 />
                 <button
+                  type="button"
+                  aria-label="Close the draft"
                   className="text-muted-foreground hover:text-foreground transition-colors"
                   onClick={() => {
                     // The X keeps the draft, so the pending save runs at once
@@ -1759,6 +1793,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
             )}
             <ComposerBody size={composerSize} value={replyBody}>
             <textarea
+              ref={replyBoxRef}
               value={replyBody}
               readOnly={forwarding}
               onChange={(e) => { replyDirty.current = true; setReplyBody(e.target.value); }}

@@ -12,6 +12,10 @@ seam, and the first two detached kinds: `brief.plan` and `brief.run`
 AUTO-2 (Metorite #814) adds the ledger of unattended runs in section 9. It is
 BUILT and dark, and its switch `UNATTENDED_LEDGER` is OFF.
 
+AUTO-8a (task 1392) adds the detached kind `auto.turn` in section 10, the
+capped headless turn. It is BUILT and dark. It registers only with
+`JOB_QUEUE` on, and no code enqueues it.
+
 The first producer is the brief. The seed hook of section 5c enqueues
 `brief.plan`, and `brief.plan` enqueues `brief.run`. The switch `JOB_QUEUE`
 is OFF. The rest of BR-1b moves the reminder loop, send-later and the
@@ -67,6 +71,9 @@ The writes of a handler and `done` commit together, or neither commits.
 - **A handler must use only the session that it receives.** A second session
   is a second transaction. Its writes commit when the try fails, and its
   locks can wait on the row lock of the run.
+- **A handler runs with no person present (AUTO-7a).** The worker marks each
+  handler in both modes (`acb_common.no_person`). A marked handler cannot
+  approve, reject, resume or answer anything, and each card denies.
 - **A `session` handler runs while a session is open.** Do not call a model
   or a provider inside it. Use the `detached` mode for that work.
 - **A `detached` handler runs with no session open.** Register it with
@@ -163,6 +170,21 @@ await queue.enqueue(db, "email.send_later", {"draft_id": draft_id},
 ```
 
 A kind matches `[a-z][a-z0-9_.]{0,63}`.
+
+**State the effect (BR-7a).** `register` takes `effect`: `read`, `own_rows`,
+`send` or `write`. A `send` or `write` kind also names its `policy`, and
+`register` refuses it without one. `tests/unit/test_job_effects_fence.py`
+fails on a kind with no effect, on a `register` call in `gateway/` with no
+`effect=`, and on a send seam in the `gateway/brief/` imports.
+
+**A producer on a member's write.** `align/trigger.py::enqueue_check` (WS-ALN
+ALN-1) enqueues `align.check` on the session of a task write, inside
+`db.begin_nested()`. So the write and the job commit together, and a failed
+enqueue rolls back the savepoint only. Without the savepoint, a Postgres error
+aborts the member's write. The gate needs the worker on and the org in
+`ALIGN_JOBS_ORGS`, because `prune` deletes no queued row. Copy this form for a
+new producer on a request path. `project_alignment.md` §5 holds the design, and
+`test_align_trigger.py` is the fence.
 
 ## 5a. The detached mode (BR-1b-a, built)
 
@@ -267,11 +289,24 @@ worker.register("email.send_later", send, mode="detached", idempotent=True)
 - **The first consumer.** `brief/planner.py` seeds `brief.plan` for each org
   that `BRIEF_ENABLED` and `BRIEF_ORGS` admit. `brief/run.py` adds the hook
   at import, and `main.py` imports it before the worker starts.
-- **The next consumer (planned, not built).** WS-63 PZ-33b adds
-  `assistant_summaries.seed`. It enqueues the detached kind
-  `assistant.chat_summary` for each org that `ASSISTANT_CHAT_SUMMARY_ORGS`
-  admits, and only with the Router on. `personalization.md` §15.3 holds the
-  design.
+- **The second consumer (WS-63 PZ-33b, built dark).**
+  `assistant_summaries.seed` enqueues the detached kind
+  `assistant.chat_summary` for each idle private chat. It runs only for an
+  org that `ASSISTANT_CHAT_SUMMARY_ORGS` admits, and only with the Router
+  on. Its dedupe key is `summary:<session_id>:<through>`, so one chat and
+  one newest row give one live job. `chat_summary_job.py` adds the hook at
+  import, and `main.py` imports it. `personalization.md` §15.3 and §15.9
+  hold the design.
+- **The third consumer (BR-2d, built dark).** `brief/monitor.py` seeds the
+  session kind `brief.slo` once each hour and org, with the dedupe key
+  `slo:<hour>`. It logs `brief.slo_missed` at error when the org is under
+  99% on time over 7 days. `core_brief.md` §7 holds the rules.
+- **The fourth consumer (WS-KG KG-4, built dark).**
+  `kb_entities/graph.seed` seeds the session kind `graph.sweep` once each
+  UTC night and org, from 20:00 UTC, with the dedupe key
+  `graph_sweep:<day>`. It runs only for an org that `GRAPH_SWEEP_ORGS`
+  names. The job writes the structural edges of `knowledge_graph.md` §4.1,
+  with no model.
 - **Fence.** `test_r8_run_org_runs_each_seed_hook_once_for_each_org_and_bucket`
   in `test_job_queue.py`.
 
@@ -516,3 +551,43 @@ function does nothing. Reach behaves as before. The one reader is
 - A UI, a retry of a send, a new queue, and a change to `reach_outbox`.
 - The workflows scheduler (after H4), My Day and the BR-2a brief wiring.
 - A production deploy and the flip of `UNATTENDED_LEDGER`.
+
+## 10. The headless turn (AUTO-8a)
+
+One job of kind `auto.turn` runs one capped turn of the assistant for one
+goal, with no person present. `proactive_agent.md` §4.4 holds the design.
+
+| Part | Path |
+|---|---|
+| The handler | `apps/services/gateway/gateway/jobs/headless_turn.py` |
+| The goal and the cap rule | `packages/acb_common/acb_common/goal_store.py` |
+| The switch | `HEADLESS_TURN_ORGS`, default empty. The one reader is `headless_turn.headless_allowed` |
+| The fences | `tests/unit/test_headless_turn.py`, and `tests/unit/test_headless_turn_r8.py` (R8) |
+
+- **The kind.** `auto.turn` uses the detached mode, and it is not
+  idempotent. So the worker gives each job one try. `register_jobs` registers it only when `JOB_QUEUE`
+  is on. No production code enqueues it.
+- **The payload** is `{goal_id, candidate}`, with no other key. Another key
+  gives up with `BadPayload`. The member comes from the goal row, never from
+  the payload.
+- **The ledger.** The turn runs inside `unattended.once`, and the slot is
+  the job id. At the cap the ledger row ends `ok`, because `cap_reached`
+  lives on the goal row.
+- **The time limit.** A turn has 120 seconds, and 180 seconds at most. The
+  clock starts in `run()`, before `unattended.recover`. That bound and a
+  settle margin of 60 seconds stay at or below `HANDLER_TIMEOUT`. The meter
+  and the record of a round each get a third of the margin.
+  `test_the_caps_are_bounded` fences the order.
+- **No cost reader, no call.** The default meter raises before the first
+  call. The job then gives up with `NoCostReader`, and
+  `headless_turn.no_cost_reader` logs at error.
+
+| Event | Level | When |
+|---|---|---|
+| `headless_turn.skipped` | info | The job made no model call: the switch is off, the goal takes no round, the member left, or no candidate exists. The line names the reason |
+| `headless_turn.ended` | info | A turn ended, with its outcome and its count of rounds |
+| `headless_turn.cap_reached` | info | A round moved the goal to its cap. One line for each goal |
+| `headless_turn.no_cost_reader` | error | No meter can read the cost of a run, so the turn made no model call |
+| `headless_turn.cost_unknown` | error | The meter failed or timed out (`MeterTimeout`) after a call, so the round counts as the rest of the budget |
+| `headless_turn.round_unrecorded` | warning | The turn did not record a round, because the goal changed twice or is not active now |
+| `headless_turn.round_unrecorded` | error | The record of a round timed out (`RecordTimeout`). The cost of that round does not reach the goal, and the job gives up with `TurnFailed` |

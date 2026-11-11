@@ -28,6 +28,20 @@
         "href": "/chat",
         "feature": "chat"
       }
+    ],
+    "anchors": [
+      {
+        "id": "panel",
+        "label": "Assistant panel",
+        "route": "/",
+        "does": "Holds the side chat where the member asks the assistant."
+      },
+      {
+        "id": "message-field",
+        "label": "Message field",
+        "route": "/",
+        "does": "Takes the member's message to the assistant."
+      }
     ]
   }
 }

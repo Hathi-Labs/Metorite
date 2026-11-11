@@ -50,6 +50,8 @@ ALLOWED = [
     "ASSISTANT_PROFILE_CARD_WRITES_ORGS",
     # WS-63 PZ-33a: it spends tier-fast credits. The tool comment says so.
     "ASSISTANT_CHAT_SUMMARY_ORGS",
+    # WS-63 PZ-34: the briefing block. It calls no model.
+    "ASSISTANT_BRIEFING_ORGS",
     "ATTACHMENT_OCR",
     "JOB_QUEUE", "UNATTENDED_LEDGER",
     "BRIEF_ENABLED", "BRIEF_ORGS", "BRIEF_IN_APP",

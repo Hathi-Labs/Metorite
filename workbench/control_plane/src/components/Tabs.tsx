@@ -49,6 +49,13 @@ export interface TabDef {
    * state change, and calling both would fire a redundant re-render.
    */
   href?: string;
+  /**
+   * The CRM record sheet names its Timeline tab as a guide anchor
+   * (`crm.timeline-tab`, WS-OB GD-10b). Only that call site sets it, and only
+   * the underline button reads it. Every other tab draws the same DOM as
+   * before. The attribute is a literal because fence F1 refuses an expression.
+   */
+  guideAnchor?: boolean;
 }
 
 export interface TabsProps {
@@ -130,6 +137,18 @@ export default function Tabs({
             >
               {inner}
             </Link>
+          ) : t.guideAnchor ? (
+            <button
+              key={t.id}
+              data-guide="crm.timeline-tab"
+              role="tab"
+              aria-selected={active}
+              onClick={() => onTabChange(t.id)}
+              title={t.note}
+              className={cls}
+            >
+              {inner}
+            </button>
           ) : (
             <button
               key={t.id}

@@ -24,7 +24,7 @@ import { Input } from "@/components/ui/Input";
 import { useActiveSessions, useUnreadIds } from "@/hooks/useActiveSessions";
 import type { ChatSession } from "@/lib/sessions";
 
-import { relativeAge, sessionTitle, splitSessions } from "./chatHistory";
+import { dateGroups, relativeAge, sessionTitle, splitSessions } from "./chatHistory";
 
 // ── The session picker ───────────────────────────────────────────────────────
 
@@ -100,8 +100,10 @@ function SessionRow({
           on ? "bg-primary/10 text-primary glass:bg-sidebar-accent glass:text-foreground" : ""
         }`}
       >
-        <SessionRunDot running={running} unread={unread} placeholder />
+        {/* A dot only when it says something: a live run or an unread
+            reply (CO-0). A grey dot on every row said nothing. */}
         <span className={`min-w-0 flex-1 truncate ${on ? "font-medium" : ""}`}>{title}</span>
+        <SessionRunDot running={running} unread={unread} />
         <span className="shrink-0 text-[11px] text-muted-foreground group-hover:invisible group-focus-within:invisible glass:text-caption">
           {relativeAge(session.updatedAt, now)}
         </span>
@@ -226,7 +228,17 @@ export function SessionPicker({
             {query ? "No chat matches." : "Your chats will show here."}
           </p>
         ) : (
-          <ul className="flex flex-col gap-0.5">{lists.open.map((s) => row(s, false))}</ul>
+          query ? (
+            <ul className="flex flex-col gap-0.5">{lists.open.map((s) => row(s, false))}</ul>
+          ) : (
+            // By day, newest first (CO-0). A search shows one list.
+            dateGroups(lists.open, now).map((g) => (
+              <section key={g.label} aria-label={g.label} data-chat-group={g.label} className="mb-1">
+                <h3 className="px-2 pb-1 pt-2 text-[11px] font-medium text-muted-foreground glass:px-3 glass:text-caption">{g.label}</h3>
+                <ul className="flex flex-col gap-0.5">{g.items.map((s) => row(s, false))}</ul>
+              </section>
+            ))
+          )
         )}
         {lists.archived.length > 0 ? (
           <div className="mt-1 border-t border-border pt-1">

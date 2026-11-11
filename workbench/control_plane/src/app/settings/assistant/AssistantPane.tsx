@@ -43,19 +43,29 @@ import {
   KIND_LABELS,
   LANGUAGES,
   LENGTHS,
+  MONTHS,
   ProfileError,
   addAlias,
   addFact,
   areaLabel,
+  celebrationsGate,
+  chatHref,
+  daysInMonth,
   deleteAlias,
+  DELETE_ONE_BODY,
+  deleteAllBody,
+  deleteAllSummaries,
   deleteFact,
+  deleteSummary,
   errorText,
   fallbackAddress,
   fetchBlock,
   fetchExport,
-  fetchProfile,
+  fetchProfileAndGate,
+  fetchSummaries,
   forgetAll,
   mergeAddress,
+  mergeCelebrations,
   mergeStyle,
   nearCap,
   patchAlias,
@@ -64,6 +74,8 @@ import {
   resetArea,
   resetInterview,
   saveAddress,
+  saveCelebrations,
+  saveKeepSummaries,
   saveLearning,
   saveStyle,
   shortDate,
@@ -72,7 +84,11 @@ import {
   withoutInterview,
   type Address,
   type Alias,
+  type CelebrationsGate,
+  type ChatSummary,
   type ProfileBlock,
+  type SummariesPage,
+  type SummaryGate,
   type ExportFormat,
   type Fact,
   type FactKind,
@@ -105,6 +121,28 @@ export interface PaneHandlers {
   onResetArea: (id: InterviewAreaId) => Promise<boolean>;
   /** Ask to reset the whole interview. A confirm dialog follows. */
   onResetInterview: () => void;
+  /** Save the birthday, the festival picks or the work-anniversary switch (PZ-43). */
+  onCelebrations: (edit: Parameters<typeof mergeCelebrations>[1]) => Promise<boolean>;
+  /** The switch "Keep chat summaries" (PZ-35). */
+  onKeepSummaries: (value: boolean) => Promise<boolean>;
+  /** Ask to delete the summary of one chat. A confirm dialog follows (PZ-35). */
+  onDeleteSummary: (id: string) => void;
+  /** Ask to delete every summary. A confirm dialog follows (PZ-35). */
+  onDeleteAllSummaries: () => void;
+  /** Load the list again after a failed load (PZ-35). */
+  onRetrySummaries: () => void;
+}
+
+/** The list of "Recent chats" (PZ-35). */
+export type SummariesList =
+  | { status: "loading" }
+  | { status: "error"; error: string }
+  | ({ status: "ready" } & SummariesPage);
+
+/** The section "Recent chats": the member's switch and the list (PZ-35). */
+export interface SummariesView {
+  keep: boolean;
+  list: SummariesList;
 }
 
 /** The state of "What the assistant sees" (PZ-20a). */
@@ -136,6 +174,17 @@ export interface AssistantPaneViewProps extends PaneHandlers {
   fallbackName?: { name: string; from: "preferred" | "display" } | null;
   /** "What the assistant sees". Without it, the section does not draw. */
   block?: BlockState;
+  /** "Celebrations" (PZ-43). Without it, the section does not draw (the flag is off). */
+  celebrations?: CelebrationsGate;
+  /** "Recent chats". Without it, the section does not draw (the flag is off). */
+  summaries?: SummariesView;
+  confirmDeleteSummaries?: boolean;
+  onCancelDeleteSummaries?: () => void;
+  /** The chat whose summary waits on its confirm, or null. */
+  confirmDeleteSummaryId?: string | null;
+  onCancelDeleteSummary?: () => void;
+  onConfirmDeleteSummary?: () => void;
+  onConfirmDeleteSummaries?: () => void;
 }
 
 const noop = async () => true;
@@ -156,6 +205,11 @@ export const NO_HANDLERS: PaneHandlers = {
   onGetToKnow: () => {},
   onResetArea: noop,
   onResetInterview: () => {},
+  onCelebrations: noop,
+  onKeepSummaries: noop,
+  onDeleteSummary: () => {},
+  onDeleteAllSummaries: () => {},
+  onRetrySummaries: () => {},
 };
 
 /** The jump links at the top, and the id each section answers to. */
@@ -170,6 +224,18 @@ const JUMPS = [
   { id: "assistant-download", label: "Download" },
   { id: "assistant-forget", label: "Forget" },
 ] as const;
+
+
+/** The jump links of the sections that draw. "Celebrations" and "Recent chats" come only with their flags. */
+function jumpsFor(v: { summaries?: unknown; celebrations?: unknown }) {
+  const out: { id: string; label: string }[] = [...JUMPS];
+  if (v.celebrations) out.splice(3, 0, { id: "assistant-celebrations", label: "Celebrations" });
+  if (v.summaries) {
+    const at = out.findIndex((j) => j.id === "assistant-download");
+    out.splice(at, 0, { id: "assistant-summaries", label: "Recent chats" });
+  }
+  return out;
+}
 
 function Section({
   id,
@@ -234,6 +300,123 @@ function BlockSection({ block, onRetry }: { block: BlockState; onRetry: () => vo
       <p className="text-xs text-muted-foreground">
         In a chat, the assistant can add one reminder line to this text.
       </p>
+    </Section>
+  );
+}
+
+/** The date of a chat, or "" when the gateway sent none. */
+function chatDate(date: string | null): string {
+  return date ? shortDate(date) : "";
+}
+
+function SummaryRow({ s, v }: { s: ChatSummary; v: AssistantPaneViewProps }) {
+  const busy = v.busy[`summary-${s.id}`];
+  const when = chatDate(s.date);
+  const title = s.title || "Untitled chat";
+  return (
+    <li className="space-y-1.5 rounded-lg border border-border bg-card px-3 py-2">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 flex-1 space-y-1">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <Link href={chatHref(s.id)} className="text-sm font-medium text-foreground underline-offset-2 hover:underline">
+              {title}
+            </Link>
+            {when ? <span>{when}</span> : null}
+          </div>
+          {s.text ? <p className="break-words text-sm text-foreground">{s.text}</p> : null}
+          {s.follow_ups.length > 0 ? (
+            <ul className="list-disc space-y-0.5 pl-4 text-xs text-muted-foreground">
+              {s.follow_ups.map((f) => (
+                <li key={f} className="break-words">
+                  {f}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-1 sm:shrink-0">
+          <Button
+            size="sm"
+            variant="ghost"
+            icon="Trash2"
+            aria-label={`Delete the summary of ${title}`}
+            loading={busy}
+            disabled={busy}
+            onClick={() => v.onDeleteSummary(s.id)}
+          >
+            Delete
+          </Button>
+        </div>
+      </div>
+      <RowError text={v.errors[`summary-${s.id}`]} />
+    </li>
+  );
+}
+
+/**
+ * "Recent chats" (PZ-35, `personalization.md` §15.5): the switch, and each
+ * summary with Delete. It draws only when the organization has the flag on.
+ */
+function SummariesSection({ view, v }: { view: SummariesView; v: AssistantPaneViewProps }) {
+  const list = view.list;
+  const empty = list.status === "ready" && list.summaries.length === 0;
+  return (
+    <Section
+      id="assistant-summaries"
+      title="Recent chats"
+      description="A short summary of each private chat, so the assistant can pick up where you left off. Other members never see it."
+    >
+      <label className="flex items-start gap-2.5">
+        <Checkbox
+          checked={view.keep}
+          disabled={v.busy.summaries}
+          onChange={(e) => v.onKeepSummaries(e.target.checked)}
+          aria-label="Keep chat summaries"
+        />
+        <span className="space-y-0.5">
+          <span className="block text-sm font-medium text-foreground">Keep chat summaries</span>
+          <span className="block text-xs text-muted-foreground">
+            When this is off, the assistant writes no new summary. The summaries below stay until
+            you delete them.
+          </span>
+        </span>
+      </label>
+      <RowError text={v.errors.summaries} />
+      {list.status === "loading" ? (
+        <div data-testid="assistant-summaries-loading">
+          <SkeletonRows count={2} />
+        </div>
+      ) : list.status === "error" ? (
+        <div role="alert" className="space-y-2 rounded-lg border border-border bg-card p-3">
+          <p className="text-xs text-foreground">The summaries did not load.</p>
+          <p className="text-xs text-muted-foreground">{list.error || "Try again."}</p>
+          <Button size="sm" variant="secondary" icon="RefreshCw" onClick={v.onRetrySummaries}>
+            Retry
+          </Button>
+        </div>
+      ) : empty ? (
+        <p className="text-xs text-muted-foreground">
+          No summaries yet. A summary comes after a private chat has been quiet for a while.
+        </p>
+      ) : (
+        <>
+          <ul className="space-y-2">
+            {list.summaries.map((s) => (
+              <SummaryRow key={s.id} s={s} v={v} />
+            ))}
+          </ul>
+          <Button
+            size="sm"
+            variant="destructive"
+            icon="Trash2"
+            loading={v.busy["summaries-all"]}
+            onClick={v.onDeleteAllSummaries}
+          >
+            Delete all
+          </Button>
+        </>
+      )}
+      <RowError text={v.errors["summaries-all"]} />
     </Section>
   );
 }
@@ -485,6 +668,135 @@ function StyleSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
         </div>
       </div>
       <RowError text={v.errors.style} />
+    </Section>
+  );
+}
+
+// ── Celebrations (PZ-43) ──────────────────────────────────────────────────
+
+/** The words shown while the list of festivals is empty (`personalization.md` §16.9 Q3). */
+export const FESTIVALS_LATER = "The list of festivals comes later. Until then, I greet no festival.";
+
+/**
+ * "Celebrations". The birthday is a day and a month, with no year field. The
+ * festival picker draws only when the server lists a festival. The assistant
+ * greets once on the day, and never guesses a festival from your name, your
+ * region or your mail. Draws only with the flag on.
+ */
+function CelebrationsSection({
+  p,
+  gate,
+  v,
+}: {
+  p: Profile;
+  gate: CelebrationsGate;
+  v: AssistantPaneViewProps;
+}) {
+  const c = p.celebrations;
+  const [month, setMonth] = useDraft<string>(c?.birthday ? String(c.birthday.month) : "", v.epoch ?? 0);
+  const [day, setDay] = useDraft<string>(c?.birthday ? String(c.birthday.day) : "", v.epoch ?? 0);
+  const busy = v.busy.celebrations;
+  const stored = c?.birthday ? `${c.birthday.month}-${c.birthday.day}` : "";
+  const draft = month && day ? `${month}-${day}` : "";
+  // Save when the draft is a whole date, or when both parts are cleared.
+  const whole = (month === "") === (day === "");
+  const canSave = !busy && whole && draft !== stored;
+  const max = month ? daysInMonth(Number(month)) : 31;
+  const days = Array.from({ length: max }, (_, i) => String(i + 1));
+  const monthLabels = Object.fromEntries(MONTHS.map((m, i) => [String(i + 1), m]));
+  const picked = c?.festivals ?? [];
+  return (
+    <Section
+      id="assistant-celebrations"
+      title="Celebrations"
+      description="Tell the assistant which days to greet you on. It greets once on the day. It never guesses, and other members never see it."
+    >
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Field label="Birthday month">
+          <Choice
+            label="Birthday month"
+            value={month}
+            values={MONTHS.map((_, i) => String(i + 1))}
+            labels={monthLabels}
+            none="Not set"
+            disabled={busy}
+            onChange={(x) => {
+              setMonth(x);
+              if (x && day && Number(day) > daysInMonth(Number(x))) setDay("");
+            }}
+          />
+        </Field>
+        <Field label="Birthday day">
+          <Choice
+            label="Birthday day"
+            value={day}
+            values={days}
+            labels={Object.fromEntries(days.map((d) => [d, d]))}
+            none="Not set"
+            disabled={busy}
+            onChange={setDay}
+          />
+        </Field>
+        <div className="flex items-end">
+          <Button
+            size="sm"
+            variant="secondary"
+            loading={busy}
+            disabled={!canSave}
+            onClick={() =>
+              v.onCelebrations({
+                birthday: draft ? { month: Number(month), day: Number(day) } : null,
+              })
+            }
+          >
+            Save birthday
+          </Button>
+        </div>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        A day and a month only. I do not keep a year.
+      </p>
+      {gate.festivals.length === 0 ? (
+        <p data-testid="celebrations-festivals-later" className="text-xs text-muted-foreground">
+          {FESTIVALS_LATER}
+        </p>
+      ) : (
+        <fieldset className="space-y-2" data-testid="celebrations-festivals">
+          <legend className="text-xs font-medium text-foreground">Festivals to greet me on</legend>
+          {gate.festivals.map((f) => (
+            <label key={f.id} className="flex items-center gap-2.5">
+              <Checkbox
+                checked={picked.includes(f.id)}
+                disabled={busy}
+                onChange={(e) =>
+                  v.onCelebrations({
+                    festivals: e.target.checked ? [...picked, f.id] : picked.filter((x) => x !== f.id),
+                  })
+                }
+                aria-label={f.name}
+              />
+              <span className="text-sm text-foreground">{f.name}</span>
+            </label>
+          ))}
+        </fieldset>
+      )}
+      <label className="flex items-start gap-2.5">
+        <Checkbox
+          checked={c?.work_anniversary === true}
+          disabled={busy}
+          onChange={(e) => v.onCelebrations({ work_anniversary: e.target.checked })}
+          aria-label="Greet me on my work anniversary"
+        />
+        <span className="space-y-0.5">
+          <span className="block text-sm font-medium text-foreground">
+            Greet me on my work anniversary
+          </span>
+          <span className="block text-xs text-muted-foreground">
+            It uses the join date in your People profile. It is off until you turn it on.
+          </span>
+        </span>
+      </label>
+      <RowError text={v.errors.celebrations} />
     </Section>
   );
 }
@@ -833,7 +1145,7 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
   return (
     <div className="space-y-8">
       <nav aria-label="Sections on this page" className="flex flex-wrap gap-1.5">
-        {JUMPS.map((j) => (
+        {jumpsFor(v).map((j) => (
           <Button
             key={j.id}
             size="sm"
@@ -872,10 +1184,12 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
       </Section>
       <AddressSection p={p} v={v} />
       <StyleSection p={p} v={v} />
+      {v.celebrations ? <CelebrationsSection p={p} gate={v.celebrations} v={v} /> : null}
       <FactsSection p={p} v={v} />
       <InterviewSection p={p} v={v} />
       <AliasesSection p={p} v={v} />
       {v.block ? <BlockSection block={v.block} onRetry={v.onRetryBlock} /> : null}
+      {v.summaries ? <SummariesSection view={v.summaries} v={v} /> : null}
       <Section
         id="assistant-download"
         title="Download my profile"
@@ -906,7 +1220,7 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
       <Section
         id="assistant-forget"
         title="Forget everything"
-        description="Clears every setting, fact and name above at once. You cannot undo this."
+        description="Clears every fact, name and style note above, and every chat summary, at once. The Keep chat summaries switch stays as it is. You cannot undo this."
       >
         <Button variant="destructive" size="sm" icon="Trash2" loading={v.busy.forget} onClick={v.onForget}>
           Forget everything
@@ -916,13 +1230,37 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
       <ConfirmDialog
         open={v.confirmForget}
         title="Forget everything?"
-        body="The assistant loses every fact, name and style note you set. It cannot be undone."
+        body="The assistant loses every fact, name and style note you set, and every chat summary. The Keep chat summaries switch stays as it is. It cannot be undone."
         confirmLabel="Forget everything"
         confirmVariant="destructive"
         busy={v.busy.forget}
         onConfirm={v.onConfirmForget}
         onCancel={v.onCancelForget}
       />
+      {v.summaries && v.summaries.list.status === "ready" ? (
+        <ConfirmDialog
+          open={!!v.confirmDeleteSummaries}
+          title="Delete all chat summaries?"
+          body={deleteAllBody(v.summaries.list)}
+          confirmLabel="Delete all"
+          confirmVariant="destructive"
+          busy={v.busy["summaries-all"]}
+          onConfirm={v.onConfirmDeleteSummaries ?? (() => {})}
+          onCancel={v.onCancelDeleteSummaries ?? (() => {})}
+        />
+      ) : null}
+      {v.summaries ? (
+        <ConfirmDialog
+          open={!!v.confirmDeleteSummaryId}
+          title="Delete this summary?"
+          body={DELETE_ONE_BODY}
+          confirmLabel="Delete"
+          confirmVariant="destructive"
+          busy={v.confirmDeleteSummaryId ? v.busy[`summary-${v.confirmDeleteSummaryId}`] : false}
+          onConfirm={v.onConfirmDeleteSummary ?? (() => {})}
+          onCancel={v.onCancelDeleteSummary ?? (() => {})}
+        />
+      ) : null}
       <ConfirmDialog
         open={v.confirmResetInterview}
         title="Reset the interview?"
@@ -953,6 +1291,29 @@ export default function AssistantPane() {
   const [fallbackName, setFallbackName] = useState<AssistantPaneViewProps["fallbackName"]>(null);
   const [block, setBlock] = useState<BlockState>({ status: "loading" });
   const [blockTry, setBlockTry] = useState(0);
+  // Recent chats (PZ-35). The gate is what the profile read says, and the list
+  // loads only when the organization has the flag on.
+  const [gate, setGate] = useState<SummaryGate>({ enabled: false, keep: true });
+  // Celebrations (PZ-43): the flag of the organization and the festival list.
+  const [celeb, setCeleb] = useState<CelebrationsGate>(celebrationsGate(null));
+  const [summaries, setSummaries] = useState<SummariesList>({ status: "loading" });
+  const [summariesTry, setSummariesTry] = useState(0);
+  const [confirmDeleteSummaries, setConfirmDeleteSummaries] = useState(false);
+  const [confirmDeleteSummaryId, setConfirmDeleteSummaryId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (status !== "ready" || !gate.enabled) return;
+    let live = true;
+    fetchSummaries()
+      .then((page) => live && setSummaries({ status: "ready", ...page }))
+      .catch((e) =>
+        live &&
+        setSummaries({ status: "error", error: e instanceof ProfileError ? e.message : errorText("", 502) }),
+      );
+    return () => {
+      live = false;
+    };
+  }, [status, gate.enabled, summariesTry]);
 
   // The text the assistant reads (PZ-20a). It loads again after each change
   // of the profile, so the member sees what a save did. The old text stays
@@ -991,7 +1352,10 @@ export default function AssistantPane() {
   const load = useCallback(async () => {
     setStatus("loading");
     try {
-      setProfile(await fetchProfile());
+      const read = await fetchProfileAndGate();
+      setProfile(read.profile);
+      setGate(read.gate);
+      setCeleb(read.celebrations);
       setStatus("ready");
     } catch (e) {
       setLoadError(e instanceof ProfileError ? e.message : errorText("", 502));
@@ -1100,6 +1464,21 @@ export default function AssistantPane() {
         setProfile((p) => (p ? withoutArea(p, id) : p));
       }),
     onResetInterview: () => setConfirmResetInterview(true),
+    onCelebrations: (edit) =>
+      run("celebrations", async () =>
+        setProfile(await saveCelebrations(mergeCelebrations(base.celebrations, edit))),
+      ),
+    onKeepSummaries: (value) =>
+      run("summaries", async () => {
+        await saveKeepSummaries(value);
+        setGate((g) => ({ ...g, keep: value }));
+      }),
+    onDeleteSummary: (id) => setConfirmDeleteSummaryId(id),
+    onDeleteAllSummaries: () => setConfirmDeleteSummaries(true),
+    onRetrySummaries: () => {
+      setSummaries({ status: "loading" });
+      setSummariesTry((n) => n + 1);
+    },
     onRetry: () => void load(),
     onRetryBlock: () => {
       setBlock({ status: "loading" });
@@ -1123,6 +1502,32 @@ export default function AssistantPane() {
       epoch={epoch}
       fallbackName={fallbackName}
       block={block}
+      celebrations={celeb.enabled ? celeb : undefined}
+      summaries={gate.enabled ? { keep: gate.keep, list: summaries } : undefined}
+      confirmDeleteSummaryId={confirmDeleteSummaryId}
+      onCancelDeleteSummary={() => setConfirmDeleteSummaryId(null)}
+      onConfirmDeleteSummary={async () => {
+        const id = confirmDeleteSummaryId;
+        if (!id) return;
+        const ok = await run(`summary-${id}`, async () => {
+          await deleteSummary(id);
+          setSummaries((l) =>
+            l.status === "ready" ? { ...l, summaries: l.summaries.filter((x) => x.id !== id) } : l,
+          );
+        });
+        setConfirmDeleteSummaryId(null);
+        if (ok) toast.show({ variant: "success", title: "The summary is deleted" });
+      }}
+      confirmDeleteSummaries={confirmDeleteSummaries}
+      onCancelDeleteSummaries={() => setConfirmDeleteSummaries(false)}
+      onConfirmDeleteSummaries={async () => {
+        const ok = await run("summaries-all", async () => {
+          await deleteAllSummaries();
+          setSummaries((l) => (l.status === "ready" ? { status: "ready", summaries: [], more: false } : l));
+        });
+        setConfirmDeleteSummaries(false);
+        if (ok) toast.show({ variant: "success", title: "The chat summaries are deleted" });
+      }}
       confirmForget={confirmForget}
       onCancelForget={() => setConfirmForget(false)}
       confirmResetInterview={confirmResetInterview}
@@ -1139,6 +1544,8 @@ export default function AssistantPane() {
         const ok = await run("forget", async () => {
           setProfile(await forgetAll());
           setEpoch((n) => n + 1);
+          // Forget clears the summaries and keeps the switch (PZ-35).
+          setSummariesTry((n) => n + 1);
         });
         setConfirmForget(false);
         if (ok) toast.show({ variant: "success", title: "The assistant forgot everything" });

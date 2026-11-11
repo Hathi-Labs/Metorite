@@ -53,7 +53,7 @@ _LOOPBACK = "127.0.0.1"
 
 # Every host port the tracked compose files publish today. A scan that finds
 # nothing passes the loopback test, so this floor makes an empty scan fail.
-_KNOWN_HOST_PORTS = {"5432", "6379", "7474", "7687", "3000", "8095", "6080", "8080"}
+_KNOWN_HOST_PORTS = {"5432", "6379", "7474", "7687", "3000", "8095", "6080", "8080", "8096"}
 
 # A compose file by its name: docker-compose*.yml, compose*.yaml and so on.
 _COMPOSE_NAME = re.compile(r"^(docker-)?compose[^/]*\.ya?ml$")

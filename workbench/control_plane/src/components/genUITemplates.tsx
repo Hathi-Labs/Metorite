@@ -27,6 +27,7 @@
  */
 
 import { createElement, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import GenUIFallback from "@/components/GenUIFallback";
 import LiveChart from "@/components/LiveChart";
@@ -57,6 +58,7 @@ import { useNumberSystem } from "@/lib/numberSystem";
 import { hasMoreToTheRight } from "@/lib/scrollCue";
 import PlanCardBody from "@/components/PlanCardBody";
 import Badge from "@/components/ui/Badge";
+import { Input } from "@/components/ui/Input";
 import RecommendedBadge, { RECOMMENDED_RING } from "@/components/RecommendedBadge";
 import { pickedFromAnswer } from "@/lib/askAnswers";
 import { sentFormValues } from "@/lib/askOutcome";
@@ -65,6 +67,7 @@ import { DeclinedNote, NotNowButton, NotNowClose } from "@/components/NotNow";
 import { Checkbox } from "@/components/ui/Checkbox";
 import GenUiText from "@/components/GenUiText";
 import SuggestionPills from "@/components/SuggestionPills";
+import { runHelloChip } from "@/lib/shell/buddyHello";
 import { clipWords, plainTitle } from "@/lib/fencedText";
 import { type CardFamily, templateTitle } from "@/lib/chatPlacement";
 import { fieldSpec, formatCardDate } from "@/lib/cardFields";
@@ -103,6 +106,9 @@ import {
   runReminderAct,
   useKnownReminder,
 } from "@/lib/shell/reminderOpen";
+import { laterPresets } from "@/lib/reminderClock";
+import { useMemberZone } from "@/lib/shell/memberZone";
+import { snoozeZone } from "@/lib/shell/reminderBand";
 import { statusAccent } from "@/lib/statusAccent";
 import { priorityChip } from "@/lib/taskCard";
 import { TYPE } from "@/lib/typeScale";
@@ -126,6 +132,10 @@ const G_FRAME = "glass:glass-card-tile glass:rounded-[16px]! glass:border-transp
 const G_FRAME_ASK = "glass:glass-card-tile glass:rounded-[16px]! glass:border-primary/35! glass:glass-raised! glass:p-4!";
 /** A frame whose children bring their own padding (a table, a comparison). */
 const G_FRAME_FLUSH = "glass:glass-card-tile glass:rounded-[16px]! glass:border-transparent! glass:glass-raised!";
+/** A card drawn INSIDE another card (a table in a report). The parent is the
+ *  raised surface, so the inner one keeps a visible hairline and no second
+ *  raise. A transparent border here drew only the corners (task 1651). */
+const G_NESTED = "glass:glass-card-tile glass:rounded-[12px]! glass:border-border! glass:p-3!";
 /** An inner group: a rounded block on the card, with no border. */
 const G_BLOCK = "glass:rounded-[10px]! glass:border-transparent! glass:bg-secondary!";
 /** A field of a form: a rounded fill with no border. */
@@ -290,6 +300,13 @@ export const TEMPLATE_CATALOG: TemplateSpec[] = [
     name: "reminderCard",
     summary: "A reminder that a tap opened in the chat, with its chips: Done, Not yet, Later, Drop, Make it a task. The server writes it as the chat's first row. An agent does not emit it.",
     data: "{ reminderId, title, when?, zone?, state('scheduled'|'due'|'unconfirmed'|'done'|'dropped'|'cancelled'), resolution?, kind?('action'|'notice'), link? }",
+    family: "result",
+  },
+  // ── The hello of a new member (WS-BUD BUD-1) ────────────────────────────
+  {
+    name: "buddyHello",
+    summary: "The hello a new member sees in the assistant, with three chips: Show me around, What can you do here?, I'll look around. The server writes it as the chat's first row. An agent does not emit it.",
+    data: "{ chips:[{ id('tour'|'ask'|'look'), label }] }",
     family: "result",
   },
 ];
@@ -1322,6 +1339,9 @@ export const OWN_HEAD_TEMPLATES: ReadonlySet<string> = new Set([
   "report",
   // A reminder that a tap opened (WS-66 RM-4).
   "reminderCard",
+  // The hello (WS-BUD BUD-1) draws no head at all: the chat's title says Welcome.
+  // It is here so the frame adds no generic "Card" header over its chips.
+  "buddyHello",
 ]);
 
 /**
@@ -1642,13 +1662,29 @@ function rootRemPx(): number {
 const useIsoLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 /**
+ * The cell editing of a Studio Table (STU-D2b). A grid with no `edit` draws as
+ * it always did. `components/studio/StudioTable.tsx` supplies one, and the
+ * store behind it is `lib/studio/inlineEdit.ts`. A row with no `id` never edits.
+ */
+export interface GridEdit {
+  /** Can the cells of column `index` edit? */
+  can(index: number): boolean;
+  /** The editor that replaces the cell, or null to draw the cell with an edit button. */
+  editor(rowId: string, index: number): React.ReactNode | null;
+  /** The member asked to edit this cell. */
+  open(rowId: string, index: number): void;
+  /** Is a save of this cell in flight? */
+  pending(rowId: string, index: number): boolean;
+}
+
+/**
  * The `dataGrid` template. It draws a table where the box is wide enough,
  * and stacked rows where it is not (`lib/dataGridLayout.ts`). `layout` fixes
  * one of the two, for a test. The data may also carry `kinds`, one card kind
  * per column (`task_dataset` sends them). Without them, each column takes
  * the kind of its card label.
  */
-export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) {
+export function DataGrid({ data, layout, edit, nested }: { data: Data; layout?: GridLayout; edit?: GridEdit; nested?: boolean }) {
   const kinds = Array.isArray(data.kinds)
     ? data.kinds.map((k) => (typeof k === "string" ? k : undefined))
     : undefined;
@@ -1658,6 +1694,14 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
   const { shown, categoryAt, primaryAt } = gridColumns(labels, kinds);
   const base = str(data.openBase, "/projects?task=");
   const [sort, setSort] = useState<{ col: number; dir: 1 | -1 } | null>(null);
+  // A Studio table (`data.filterable`) shows a box that keeps the rows whose
+  // cells hold the typed words (STU-D2a). Other grids draw as they did.
+  const filterable = data.filterable === true;
+  const [filter, setFilter] = useState("");
+  const query = filterable ? filter.trim().toLowerCase() : "";
+  const kept = query
+    ? rows.filter((r) => arr(r.cells).some((c) => cellText(c).toLowerCase().includes(query)))
+    : rows;
   const boxRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
@@ -1686,9 +1730,9 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
       el.removeEventListener("scroll", check);
       observer?.disconnect();
     };
-  }, [mode, rows.length]);
+  }, [mode, kept.length]);
   const sorted = sort
-    ? [...rows].sort((a, b) => {
+    ? [...kept].sort((a, b) => {
       const av = arr(a.cells)[sort.col];
       const bv = arr(b.cells)[sort.col];
       const an = typeof av === "number" ? av : parseFloat(cellText(av));
@@ -1696,32 +1740,62 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
       if (Number.isFinite(an) && Number.isFinite(bn)) return (an - bn) * sort.dir;
       return cellText(av).localeCompare(cellText(bv)) * sort.dir;
     })
-    : rows;
-  const cellOf = (r: Data, c: GridColumn) => (
+    : kept;
+  // A cell that edits shows its editor, or a button that opens it (STU-D2b).
+  const withEdit = (r: Data, c: GridColumn, plain: React.ReactNode): React.ReactNode => {
+    const id = str(r.id);
+    if (!edit || !id || !edit.can(c.index)) return plain;
+    const editor = edit.editor(id, c.index);
+    if (editor !== null) return editor;
+    const busy = edit.pending(id, c.index);
+    return (
+      <Button type="button" variant="text" size="none" radius="keep" layout="block" data-cell-edit=""
+        aria-label={`Edit ${c.label}`} aria-busy={busy || undefined} disabled={busy}
+        onClick={() => edit.open(id, c.index)} style={{ color: "inherit" }}
+        className="min-h-5 w-full min-w-8 cursor-text text-left">
+        {isEmptyCell(arr(r.cells)[c.index]) ? <span style={{ color: "var(--muted-foreground)" }}>—</span> : plain}
+        {/* A quiet pencil says the cell edits. It needs no hover, so touch sees it too. */}
+        <span data-edit-mark="" aria-hidden="true"
+          style={{ display: "inline-block", marginLeft: 4, verticalAlign: "middle", opacity: 0.45 }}>
+          <Icon name="Pencil" size={10} />
+        </span>
+      </Button>
+    );
+  };
+  const cellOf = (r: Data, c: GridColumn) => withEdit(r, c, (
     <GridCell kind={c.kind} cell={arr(r.cells)[c.index]}
       category={categoryAt >= 0 ? arr(r.cells)[categoryAt] : undefined} />
-  );
+  ));
   const titleOf = (r: Data) => {
-    const href = taskHref(r.id, base);
+    // An empty `openBase` means "no link": a Studio record id is a UUID, and `base + id` would be a bad relative link.
+    const href = base ? taskHref(r.id, base) : null;
     // The title draws by its column's kind: a groups table by stage puts the
     // stage first, and it reads as its label, never the key (review round 1).
     const kind = shown.find((c) => c.index === primaryAt)?.kind ?? "text";
     const cell = <GridCell kind={kind} cell={arr(r.cells)[primaryAt]}
       category={categoryAt >= 0 ? arr(r.cells)[categoryAt] : undefined} />;
-    return href ? <a href={href} style={{ color: "var(--primary)", textDecoration: "none" }}>{cell}</a> : cell;
+    const plain = href ? <a href={href} style={{ color: "var(--primary)", textDecoration: "none" }}>{cell}</a> : cell;
+    const primary = shown.find((c) => c.index === primaryAt);
+    return primary ? withEdit(r, primary, plain) : plain;
   };
   const lead = shown.find((c) => c.role === "lead");
   return (
-    <div ref={boxRef} data-grid-layout={mode} className={`${G_FRAME} ${T_BLUE}`} style={CARD_BOX}>
+    <div ref={boxRef} data-grid-layout={mode} className={`${nested ? G_NESTED : G_FRAME} ${T_BLUE}`} style={CARD_BOX}>
       <TemplateHead icon="table-2" title={data.title != null ? str(data.title) : null} />
       <TemplateBody>
+      {filterable && (
+        <div style={{ marginBottom: 6 }}>
+          <Input inputSize="sm" icon="Search" value={filter} placeholder="Filter rows"
+            aria-label="Filter rows" onChange={(e) => setFilter(e.target.value)} />
+        </div>
+      )}
       {mode === "stacked" ? (
         <div style={{ maxHeight: 420, overflowY: "auto" }}>
-          {rows.map((r, i) => {
+          {kept.map((r, i) => {
             const facts = shown.filter((c) => c.role === "secondary" && !isEmptyCell(arr(r.cells)[c.index]));
             return (
               <div key={str(r.id) || i} data-grid-row="" style={{ padding: "6px 0",
-                borderBottom: i < rows.length - 1 ? "1px solid var(--border)" : "none" }}>
+                borderBottom: i < kept.length - 1 ? "1px solid var(--border)" : "none" }}>
                 <div style={{ ...CELL, overflowWrap: "anywhere" }}>
                   {lead && <span style={{ ...MUTED, marginRight: 4 }}>{cellText(arr(r.cells)[lead.index])}</span>}
                   {titleOf(r)}
@@ -1744,7 +1818,7 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
               </div>
             );
           })}
-          {rows.length === 0 && <div style={{ ...MUTED, padding: 8 }}>No rows.</div>}
+          {kept.length === 0 && <div style={{ ...MUTED, padding: 8 }}>{query ? "No rows match." : "No rows."}</div>}
         </div>
       ) : (
         <>
@@ -1780,7 +1854,7 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
                   </tr>
                 ))}
                 {sorted.length === 0 && (
-                  <tr><td colSpan={Math.max(1, shown.length)} style={{ ...MUTED, padding: 8 }}>No rows.</td></tr>
+                  <tr><td colSpan={Math.max(1, shown.length)} style={{ ...MUTED, padding: 8 }}>{query ? "No rows match." : "No rows."}</td></tr>
                 )}
               </tbody>
             </table>
@@ -1832,7 +1906,7 @@ function ReportCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           click, so the file is the Reports app's numbers of that moment. */}
       <ReportFileButtons reportId={data.reportId} />
       {stats.length > 0 && <StatDashboard data={{ stats }} />}
-      {tables.map((t, i) => <DataGrid key={i} data={{ title: t.title, columns: t.columns, rows: t.rows, openBase: "" }} />)}
+      {tables.map((t, i) => <DataGrid key={i} nested={fold != null} data={{ title: t.title, columns: t.columns, rows: t.rows, openBase: "" }} />)}
       {pills.length > 0 && (
         <SuggestionPills suggestions={pills} onPick={(line) => ctx?.onAction?.(line)} label={BRIEF_PILLS_LABEL} align="start" />
       )}
@@ -1880,12 +1954,36 @@ function ReminderCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   const resolution = known ? known.row.resolution : data.resolution == null ? null : str(data.resolution);
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<string | null>(null);
+  // The presets of "Later" read the member's SAVED zone, as the window of My
+  // Day does, else the browser's (RX-7).
+  const laterZone = snoozeZone(useMemberZone());
+  // "Later" asks for a time first: three presets, then `/snooze` (RX-2).
+  const [choosing, setChoosing] = useState(false);
   const acts = ctx?.onAction ? reminderActs({ state, resolution, via: known?.via }) : [];
   const link = str(data.link).trim();
   const closed = said ? "" : closedWords(state, resolution);
+  const pickLater = async (words: string) => {
+    if (busy) return;
+    if (words === "Back") {
+      setChoosing(false);
+      return;
+    }
+    const zone = laterZone;
+    const preset = laterPresets(Date.now(), zone).find((p) => p.label === words);
+    if (!preset) return;
+    setChoosing(false);
+    setBusy(true);
+    const got = await runReminderAct(id, "later", fetch, { fireAt: preset.time.iso, tz: zone });
+    setBusy(false);
+    setSaid(got.ok ? actResultWords("later", got.row, zone) : got.words);
+  };
   const pick = async (words: string) => {
     const act = actOfWords(words);
     if (!act || busy) return;
+    if (act === "later") {
+      setChoosing(true);
+      return;
+    }
     const turn = actTurn(act);
     if (turn) {
       ctx?.onAction?.(turn);
@@ -1905,7 +2003,7 @@ function ReminderCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           {link ? <div className="text-xs text-muted-foreground" data-reminder-link="">{link}</div> : null}
           {closed ? <div className="text-xs text-muted-foreground" data-reminder-closed="">{closed}</div> : null}
           <div role="status" className="text-xs text-foreground" data-reminder-said="">{said ?? ""}</div>
-          {acts.length > 0 && (
+          {acts.length > 0 && !choosing && (
             <SuggestionPills
               suggestions={acts.map((a) => REMINDER_CHIPS[a])}
               onPick={(words) => void pick(words)}
@@ -1914,7 +2012,63 @@ function ReminderCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
               disabled={busy}
             />
           )}
+          {acts.length > 0 && choosing && (
+            <SuggestionPills
+              suggestions={laterPresets(Date.now(), laterZone).map((p) => p.label).concat("Back")}
+              onPick={(words) => void pickLater(words)}
+              label="Remind me again"
+              align="start"
+              disabled={busy}
+            />
+          )}
         </div>
+      </TemplateBody>
+    </div>
+  );
+}
+
+// ── The hello of a new member (WS-BUD BUD-1, D177) ──────────────────────────
+//
+// The server writes the row and its words (`routes/chat_brief.py`). This card
+// draws the three chips under the text. A tap runs on the client
+// (`lib/shell/buddyHello.ts`): the tour starts, the question goes out as the
+// member's message, or the panel closes. With no `onAction` (the side panel)
+// the card draws read-only, with no chips.
+
+/** The words over the chips. */
+const HELLO_CHIPS_LABEL = "Where to start";
+
+/** The chips. Its own component, so only a card that can act asks for the router. */
+function HelloChips({ chips, onAction }: { chips: Array<{ label: string; message: string }>; onAction: (text: string) => void }) {
+  const router = useRouter();
+  // One chip acts, and all three hold: a second tap would send the question
+  // twice (the reminder chips, `ReminderCard`, hold the same way).
+  const [busy, setBusy] = useState(false);
+  return (
+    <SuggestionPills
+      suggestions={chips}
+      onPick={(id) => {
+        if (busy) return;
+        setBusy(true);
+        runHelloChip(id, onAction, (href) => router.push(href));
+      }}
+      disabled={busy}
+      label={HELLO_CHIPS_LABEL}
+      align="start"
+    />
+  );
+}
+
+function BuddyHello({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
+  const chips = arr(data.chips)
+    .map((c) => (c ?? {}) as Data)
+    .map((c) => ({ label: str(c.label).trim(), message: str(c.id).trim() }))
+    .filter((c) => c.label && c.message);
+  return (
+    <div data-buddy-hello="">
+      {/* No header, icon or chevron: the chat's title already says Welcome. */}
+      <TemplateBody>
+        {ctx?.onAction && chips.length > 0 ? <HelloChips chips={chips} onAction={ctx.onAction} /> : null}
       </TemplateBody>
     </div>
   );
@@ -1985,7 +2139,7 @@ function ReportVisualBlock({ visual, minWidth, heading = "", card = false }: {
       case "statDashboard":
         return <StatDashboard data={mapped.data} />;
       case "dataGrid":
-        return <DataGrid data={mapped.data} />;
+        return <DataGrid data={mapped.data} nested />;
       case "taskBoard":
         return <TaskBoard data={mapped.data} />;
       case "timeline":
@@ -2342,6 +2496,7 @@ export const TEMPLATE_REGISTRY: Record<string, TemplateRenderer> = {
   chart: (data) => <ChartCard spec={data} />,
   report: (data) => <ReportTemplate data={data} />,
   reminderCard: (data, ctx) => <ReminderCard data={data} ctx={ctx} />,
+  buddyHello: (data, ctx) => <BuddyHello data={data} ctx={ctx} />,
 };
 
 /** Render a template node, or an inert fallback if the name is unknown. */

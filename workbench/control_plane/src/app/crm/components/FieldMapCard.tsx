@@ -94,6 +94,7 @@ import {
 import { SUGGESTIONS_KEY } from "../lib/suggestions";
 import type { EntitySlug } from "../lib/types";
 import { FIELD_ENTITIES } from "./FieldsCard";
+import { typeLabel } from "../lib/fieldStudio";
 import { Card } from "./SettingsCards";
 
 const KEY_PREFIX = "crm:field-map:";
@@ -311,7 +312,7 @@ function FieldRow({
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="font-medium text-foreground">{field.label}</span>
         <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">
-          {field.type}
+          {typeLabel(field.type)}
         </span>
         {rule && (
           <>

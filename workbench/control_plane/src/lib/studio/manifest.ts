@@ -49,12 +49,16 @@ export interface FieldDef {
   to?: string | null;
   // The field gets a row in the index side table of C1 (studio_record_hot).
   hot?: boolean;
+  // C13. A lines relation: the field of the object `to` that names this one.
+  lines?: string | null;
 }
 
 export interface ObjectDef {
   name: string;
   label?: string | null;
   fields?: FieldDef[];
+  // The constraints and state machines of the object (C6).
+  rules?: Record<string, unknown>[];
 }
 
 export interface ActionDef {
@@ -91,6 +95,32 @@ export interface ViewDef {
   sort?: string | null;
   actions?: string[];
   text?: string | null;
+}
+
+// STU-D11a: how the views sit on a page. A view stays one block.
+export interface CellDef {
+  view: string;
+  // Columns the cell spans, 1 to 4, and never more than the page `cols`.
+  span?: number | null;
+}
+
+export interface SideDef {
+  view: string;
+}
+
+export interface TabDef {
+  id: string;
+  title: string;
+  cells: CellDef[];
+}
+
+export interface PageDef {
+  id: string;
+  title?: string | null;
+  cols?: number;
+  tabs?: TabDef[];
+  cells?: CellDef[];
+  side?: SideDef | null;
 }
 
 export interface Trigger {
@@ -163,6 +193,7 @@ export interface StudioManifest {
   objects?: ObjectDef[];
   actions?: ActionDef[];
   views?: ViewDef[];
+  pages?: PageDef[];
   workflows?: WorkflowDef[];
   skill?: Skill | null;
   shell?: Shell | null;

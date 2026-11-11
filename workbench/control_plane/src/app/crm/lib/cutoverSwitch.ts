@@ -197,7 +197,7 @@ const SYNC_STOPPED: Record<string, string> = {
   budget: "The final sync stopped, because Zoho's daily credit limit is used up. Try again tomorrow.",
   needs_reconnect: "The final sync stopped, because Zoho asks you to connect again. Reconnect Zoho, then try again.",
   mode_changed: "The CRM changed while the final sync ran. Load the page again.",
-  shutdown: "The final sync stopped, because the server restarted. Try again.",
+  shutdown: "The final sync paused for an update. Try again.",
   stale: "The final sync stopped answering. Try again.",
 };
 

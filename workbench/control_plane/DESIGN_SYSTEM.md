@@ -525,6 +525,11 @@ Check `src/components/` before writing a tab bar, filter pills or a page header.
   phone swipes it. `FilterPills` and the Email quick filters use it. Use it for
   any chip row that can outgrow its pane, and do not write a second one.
 * `PageHeader` — the page's title, subtitle and whole-surface actions.
+* A page grid inside an app follows its container width with `@container`
+  queries, as the Projects reports and `genUITemplates` do. The window width
+  does not show the shell rail or a side column.
+* A side column beside a page grid starts at `lg`, with a `Modal` sheet below.
+  The 260 px rail leaves too little room at `md`. `StudioPage` is the example.
 
 ```tsx
 import PageHeader from "@/components/PageHeader";
@@ -904,6 +909,9 @@ dependency and no second look. This changes the two-speed rule of
    `workbench/control_plane/src` without that line. Fence: the "Visual review
    line" step of the Frontend job in `.github/workflows/pr-check.yml`, a
    required check. `tests/unit/test_fence_lists.py` keeps the step there.
+   The step reads the LIVE body (CIV-8). When the line is missing, edit the PR
+   body and run `gh run rerun <run id> --failed`. Do not push a commit for it.
+   A push starts a whole new run of about 17 jobs.
 4. **The UI checklist of the diff review.** Item 8 of `diff-reviewer` reads
    the code for the rules that no test sees. For a UI diff it runs in build
    mode too. The full adversarial review still follows the tier of the slice

@@ -4,12 +4,23 @@ from Metorite (WS-17 EM-T6c).
 Spec: ``project-docs/specs/email_app_master_plan.md`` §10.4.7, the part
 "EM-T6c". Owner decision D-EM-14 and the owner answers Q1 to Q4 (§10.2).
 
-This module is the ONE owner of four rules. Do not copy them:
+This module is the ONE owner of the rules below. Do not copy them:
 
 * **The limit (Q1).** Each mailbox has its own limit. The setting
-  ``email_mailbox_storage_limit_mb`` (default 500) times 1,048,576 is the
+  ``email_mailbox_storage_limit_mb`` (default 2048) times 1,048,576 is the
   limit in bytes (:func:`storage_limit_bytes`). A mailbox is at the limit when
   its meter is at or over that value (:func:`at_limit`).
+* **The resume (EM-T6f).** A first import that the limit stopped ends in the
+  phase ``limit``. :func:`import_resumes` says when that import goes on: the
+  phase is ``limit``, the meter ran, the meter is under the limit by at
+  least :func:`resume_margin_bytes` (20 MB, or 1% of the limit when that is
+  more), and the import has a point to go on from (``import_reached_at``).
+  :func:`resume_import` then writes ``initial_sync_done = false`` and
+  ``import_phase = 'importing'``, in one conditional UPDATE. The scheduler
+  calls it in phase (a) of a loop cycle, under the mailbox lock. The import
+  then goes on from ``import_reached_at`` down to the floor, and it stops at
+  the limit again as before. The scheduler paces the resumes
+  (``STORAGE_RESUME_GAP_SECS``).
 * **The meter (D-EM-14).** :func:`measure_stored_bytes` sums
   ``pg_column_size`` of each column of variable length in the
   ``email_messages`` rows of the mailbox, its ``email_attachments`` rows and
@@ -17,6 +28,14 @@ This module is the ONE owner of four rules. Do not copy them:
   ``stored_bytes_at``. ``pg_column_size`` reads the size of a stored value
   from its header, so the meter fetches no body. Do not use
   ``octet_length``, and do not take the size of a whole row.
+* **The meter of an import (EM-T6f review P1).** The full meter reads every
+  row of the mailbox, so an import does not run it after each batch.
+  :class:`ImportMeter` runs it after the first batch of a run. After each
+  later batch it adds the growth of that batch only: the same sums over the
+  rows of the batch, before and after its write (:func:`batch_bytes`,
+  :func:`add_batch_growth`). When that sum is at the limit, the full meter
+  runs again and decides. A run makes at most :data:`IMPORT_FULL_METERS`
+  full meters, and after that the sum decides.
 * **The preview.** :func:`preview_older` returns the count of messages and
   the bytes that a removal before a date would free. It writes nothing.
 * **The removal.** :func:`advance_import_since` moves the import floor
@@ -58,22 +77,31 @@ from sqlalchemy import text
 
 __all__ = [
     "ATTACHMENT_COLUMNS",
+    "BATCH_ROWS_SQL",
     "BYTES_PER_MB",
     "EMBEDDING_COLUMNS",
+    "IMPORT_FULL_METERS",
     "KEPT_FOLDERS_SQL",
     "MESSAGE_COLUMNS",
     "MESSAGE_DERIVED_COLUMNS",
     "REMOVE_CHUNK",
+    "RESUME_MARGIN_MIN_BYTES",
+    "ImportMeter",
     "OlderMail",
     "RemovedChunk",
+    "add_batch_growth",
     "advance_import_since",
     "at_limit",
+    "batch_bytes",
     "delete_empty_thread_status",
     "delete_orphan_ai_drafts",
     "end_limit_phase",
+    "import_resumes",
     "measure_stored_bytes",
     "preview_older",
     "remove_older_chunk",
+    "resume_import",
+    "resume_margin_bytes",
     "storage_limit_bytes",
 ]
 
@@ -87,6 +115,21 @@ REMOVE_CHUNK = 1000
 #: unsent draft stays in Metorite. The test of the folder copies the one in
 #: ``body_backfill.py``, so a NULL folder is not a draft. It reads ``em``.
 KEPT_FOLDERS_SQL = "LOWER(COALESCE(em.folder, '')) NOT IN ('drafts', 'draft')"
+
+#: The filter of the rows of one import batch, by provider id (EM-T6f review
+#: P1). The unique key ``(account_id, provider_message_id)`` makes it an index
+#: read. It is a WHERE test, never a size. It reads ``em``.
+BATCH_ROWS_SQL = "em.provider_message_id = ANY(CAST(:pids AS text[]))"
+
+#: The least room under the limit that a resume needs (EM-T6f review P3a).
+#: :func:`resume_margin_bytes` takes the larger of this and 1% of the limit.
+RESUME_MARGIN_MIN_BYTES = 20 * BYTES_PER_MB
+
+#: The full meters that one run of the import may make (EM-T6f review P1).
+#: One runs after the first batch. Up to two more run when the sum of the
+#: batches reaches the limit. Phase (d) of the cycle adds one, so a cycle
+#: makes at most four, whatever the size of the import.
+IMPORT_FULL_METERS = 3
 
 #: The columns of variable length of each table that the meter counts. A
 #: column of fixed length (a uuid, a timestamp, a boolean) is the same size in
@@ -152,6 +195,30 @@ _MEASURE = text(
        UPDATE email_accounts
           SET stored_bytes = (SELECT bytes FROM total),
               stored_bytes_at = now()
+        WHERE id = :aid
+    RETURNING stored_bytes"""
+)
+
+#: The bytes that the rows of one import batch hold now: the same sums as the
+#: meter, over the rows of the batch only (EM-T6f review P1). It writes
+#: nothing.
+_BATCH_BYTES = text(
+    _bytes_cte(f" AND {BATCH_ROWS_SQL}")
+    + "\n       SELECT bytes FROM total"
+)
+
+#: The meter after a later batch of an import (EM-T6f review P1). It adds the
+#: growth of the batch, the bytes of its rows now minus ``:before``, to the
+#: meter. It keeps ``stored_bytes_at``, the time of the last full meter. A
+#: row with no meter yet counts as 0, but the first batch of each run writes
+#: the full meter, so a later batch always finds one.
+_ADD_BATCH_GROWTH = text(
+    _bytes_cte(f" AND {BATCH_ROWS_SQL}")
+    + """
+       UPDATE email_accounts
+          SET stored_bytes = COALESCE(stored_bytes, 0)
+                             + (SELECT bytes FROM total)
+                             - CAST(:before AS bigint)
         WHERE id = :aid
     RETURNING stored_bytes"""
 )
@@ -262,6 +329,22 @@ _END_LIMIT_PHASE = text(
           AND (import_reached_at IS NULL OR import_since >= import_reached_at)"""
 )
 
+#: The resume of an import that the limit stopped (EM-T6f). The import of
+#: the scheduler goes on while ``initial_sync_done`` is false, and it starts
+#: at ``import_reached_at`` with the count that it reached. So the UPDATE
+#: writes these two columns only, and it keeps ``import_reached_at`` and
+#: ``import_count``. The ``WHERE`` makes the write conditional. The phase must
+#: still be ``limit``, so a second write finds no row. The meter must still
+#: be the value that :func:`import_resumes` judged, so a meter that changed
+#: since the read keeps the row as it is.
+_RESUME_IMPORT = text(
+    """UPDATE email_accounts
+          SET initial_sync_done = false, import_phase = 'importing',
+              updated_at = now()
+        WHERE id = :aid AND import_phase = 'limit'
+          AND stored_bytes = :stored"""
+)
+
 
 def storage_limit_bytes() -> int:
     """The limit of one mailbox in bytes (Q1)."""
@@ -277,6 +360,19 @@ def at_limit(stored_bytes: int | None) -> bool:
     return int(stored_bytes) >= storage_limit_bytes()
 
 
+def resume_margin_bytes() -> int:
+    """The room under the limit that a resume needs (EM-T6f review P3a).
+
+    It is the larger of :data:`RESUME_MARGIN_MIN_BYTES` (20 MB) and 1% of the
+    limit, so 20.48 MB at 2 GB. A mailbox that stopped a few KB over the
+    limit then does not resume when a deleted draft takes it just under, and
+    a resume has room for many batches. The margin is never more than a
+    tenth of the limit, so a small limit (a test, or a box that sets a few
+    MB) can still resume."""
+    limit = storage_limit_bytes()
+    return min(max(RESUME_MARGIN_MIN_BYTES, limit // 100), limit // 10)
+
+
 async def measure_stored_bytes(db: Any, account_id: str) -> int | None:
     """Measure the copy of one mailbox, write it, and return it.
 
@@ -287,6 +383,86 @@ async def measure_stored_bytes(db: Any, account_id: str) -> int | None:
     commits."""
     value = (await db.execute(_MEASURE, {"aid": account_id})).scalar()
     return None if value is None else int(value)
+
+
+async def batch_bytes(db: Any, account_id: str, pids: list[str]) -> int:
+    """The bytes that the rows of ``pids`` hold now in the mailbox: their
+    messages, attachment rows and embeddings (EM-T6f review P1). A message
+    that is not stored counts 0. It reads those rows only, by the unique key,
+    and writes nothing. Takes the caller's session, opens none and never
+    commits."""
+    if not pids:
+        return 0
+    value = (await db.execute(
+        _BATCH_BYTES, {"aid": account_id, "pids": list(pids)})).scalar()
+    return int(value or 0)
+
+
+async def add_batch_growth(
+    db: Any, account_id: str, pids: list[str], before: int,
+) -> int | None:
+    """Add the growth of one import batch to the meter, and return the new
+    meter (EM-T6f review P1). The growth is the bytes of the rows of ``pids``
+    now minus ``before``, their bytes before the write. It returns ``None``
+    when the account row is gone. Takes the caller's session, opens none and
+    never commits."""
+    value = (await db.execute(
+        _ADD_BATCH_GROWTH,
+        {"aid": account_id, "pids": list(pids), "before": int(before)})).scalar()
+    return None if value is None else int(value)
+
+
+class ImportMeter:
+    """The meter of one run of an import, in bounded work (EM-T6f review P1).
+
+    The full meter reads every row of the mailbox. One run after each batch
+    of 100 made the I/O of an import grow with the square of its size. So:
+
+    * The first batch of a run ends with the full meter. The run then starts
+      from an exact value, which also counts the bodies and the embeddings
+      that phases (e) and (f) wrote after the meter of the cycle before.
+    * Each later batch reads its own rows before its write
+      (:meth:`before_write`), and after it (:meth:`after_write`). The
+      difference is the growth of the batch, and one UPDATE adds it to
+      ``stored_bytes``. An insert adds its bytes, an update adds its change
+      and a delete takes its bytes off. So the sum follows each write of the
+      import, and other writers move only by what they store meanwhile.
+    * When the sum is at the limit, the full meter runs again, and its value
+      decides. A run makes at most :data:`IMPORT_FULL_METERS` full meters.
+      After that, the sum decides. A sum over the true value only stops the
+      import early.
+
+    The stop keeps its batch: the import stops after the batch that takes
+    the meter to the limit, as before, so it can go over the limit by at
+    most one batch. Each method takes the caller's session, opens none and
+    never commits. The caller calls both methods in the block of the batch.
+    """
+
+    def __init__(self, account_id: str) -> None:
+        self.account_id = account_id
+        #: The full meters that this run made.
+        self.full_meters = 0
+        self._before = 0
+
+    async def before_write(self, db: Any, pids: list[str]) -> None:
+        """Read the bytes of the rows of the batch before its write. The
+        first batch reads nothing, because the full meter follows it."""
+        self._before = (0 if self.full_meters == 0
+                        else await batch_bytes(db, self.account_id, pids))
+
+    async def after_write(self, db: Any, pids: list[str]) -> int | None:
+        """Write the meter after the batch, and return it. ``None`` means the
+        account row is gone."""
+        if self.full_meters == 0:
+            return await self._full(db)
+        stored = await add_batch_growth(db, self.account_id, pids, self._before)
+        if at_limit(stored) and self.full_meters < IMPORT_FULL_METERS:
+            stored = await self._full(db)
+        return stored
+
+    async def _full(self, db: Any) -> int | None:
+        self.full_meters += 1
+        return await measure_stored_bytes(db, self.account_id)
 
 
 @dataclass(frozen=True)
@@ -399,3 +575,47 @@ async def end_limit_phase(db: Any, account_id: str, stored_bytes: int | None) ->
     if stored_bytes is None or at_limit(stored_bytes):
         return False
     return _rowcount(await db.execute(_END_LIMIT_PHASE, {"aid": account_id})) > 0
+
+
+def import_resumes(
+    phase: str | None, stored_bytes: int | None, reached_at: datetime | None,
+) -> bool:
+    """True when the import of a mailbox that the limit stopped goes on
+    (EM-T6f). Each of the four tests must hold:
+
+    * The phase is ``limit``. A mailbox in any other phase is never touched.
+    * The meter ran. ``None`` means that it did not run, and the import
+      does not go on. Note that :func:`at_limit` reads ``None`` as under the
+      limit, so this test comes first.
+    * The meter is under the limit by at least :func:`resume_margin_bytes`
+      (review P3a). Nearer the limit, the import stays stopped, so it does
+      not stop and start at each cycle when a small delete takes the meter
+      just under the limit.
+    * The import reached a point (``import_reached_at``). With no point, it
+      would start again from now and read the newest mail a second time."""
+    if phase != "limit":
+        return False
+    if stored_bytes is None:
+        return False
+    if int(stored_bytes) + resume_margin_bytes() >= storage_limit_bytes():
+        return False
+    return reached_at is not None
+
+
+async def resume_import(
+    db: Any, account_id: str, *, phase: str | None, stored_bytes: int | None,
+    reached_at: datetime | None,
+) -> bool:
+    """Write the resume of an import that the limit stopped (EM-T6f), when
+    :func:`import_resumes` says yes for the values that the caller read.
+    Returns True when it wrote the row.
+
+    The write is conditional (``_RESUME_IMPORT``). The row must still be in
+    the phase ``limit`` and still hold the meter ``stored_bytes``. So a
+    second write, or a write after a change of the meter, finds no row. The
+    caller holds the mailbox lock. Takes the caller's session, opens none and
+    never commits."""
+    if not import_resumes(phase, stored_bytes, reached_at):
+        return False
+    return _rowcount(await db.execute(
+        _RESUME_IMPORT, {"aid": account_id, "stored": stored_bytes})) > 0

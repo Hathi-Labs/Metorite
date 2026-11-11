@@ -585,7 +585,7 @@ def seeded(_ladder):
     * ``T1`` (A) is blocked by ``K1`` (A, due +5): misordered, on time →
       ``dependency_order``. ``K4`` relates to ``T1`` and ``K5`` (closed) blocks
       it, with dates that would conflict: neither gives a row.
-    * ``T2`` (A) is blocked by ``K2`` (A, due -1): late AND misordered → one
+    * ``T2`` (A) is blocked by ``K2`` (A, due -2): late AND misordered → one
       ``blocker_late``.
     * ``T4`` (A) is blocked by ``K6`` in the STOPPED project → a row.
     * ``T5`` (A) is blocked by ``KH`` in ``H`` → a row, unless the viewer
@@ -733,7 +733,7 @@ def seeded(_ladder):
         link("K4", "T1", "duplicates")
         link("K5", "T1")
         task("T2", "A", start=-5, due=3)
-        task("K2", "A", start=-10, due=-1)
+        task("K2", "A", start=-10, due=-2)
         link("K2", "T2")
         task("T4", "A", start=2, due=12)
         task("K6", "S", due=9)

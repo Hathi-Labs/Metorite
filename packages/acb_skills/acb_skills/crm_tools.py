@@ -232,11 +232,7 @@ def _internal_token() -> str:
     from acb_common import get_settings
 
     settings = get_settings()
-    return (
-        getattr(settings, "gateway_internal_token", "")
-        or getattr(settings, "litellm_master_key", "")
-        or "sk-local"
-    )
+    return (getattr(settings, "gateway_internal_token", "") or "").strip()
 
 
 def _headers() -> dict[str, str]:
@@ -405,7 +401,7 @@ _BUDGETED = frozenset({
     "crm_list_records", "crm_get_record", "crm_list_fields", "crm_list_pipelines",
     "crm_deal_contacts", "crm_list_owners", "crm_report", "crm_aggregate",
     "crm_stage_dwell", "crm_list_modules", "crm_list_module_records",
-    "crm_get_module_record", "crm_search_notes",
+    "crm_get_module_record", "crm_search_notes", "crm_change_history",
 })
 
 
@@ -979,20 +975,12 @@ async def _overlay_lanes(mod: str) -> str:
     return "\n".join(lines)
 
 
-@_read_tool
-async def crm_list_pipelines() -> str:
-    """The deal pipelines, each with its stages in order: the stage type, the
-    probability that a weighted forecast uses, and the stage id."""
-    mod = await _overlay_module("deals")
-    if mod is not None:
-        return await _overlay_lanes(mod)
-    pipelines = await _get("/crm/pipelines")
-    if not pipelines:
-        return "The CRM has no deal pipeline yet."
-    lines = []
+def _pipeline_lines(pipelines: list[dict[str, Any]], label: str) -> list[str]:
+    """One heading for each pipeline, then its stages in order."""
+    lines: list[str] = []
     for p in pipelines:
         lines.append(
-            f"Pipeline {p.get('name')}" + (" (default)" if p.get("is_default") else "")
+            f"{label} {p.get('name')}" + (" (default)" if p.get("is_default") else "")
             + f" (id={p.get('id')}):"
         )
         for s in p.get("stages") or []:
@@ -1002,6 +990,28 @@ async def crm_list_pipelines() -> str:
                 + (f" · {prob}%" if prob is not None else "")
                 + f" (id={s.get('id')})"
             )
+    return lines
+
+
+@_read_tool
+async def crm_list_pipelines() -> str:
+    """The deal pipelines, each with its stages in order: the stage type, the
+    probability that a weighted forecast uses, and the stage id. Then the lead
+    pipelines, if any, each with its lead statuses in order."""
+    mod = await _overlay_module("deals")
+    if mod is not None:
+        return await _overlay_lanes(mod)
+    pipelines = await _get("/crm/pipelines")
+    # CRM-M4a: the lead pipelines of the org, with ``kind=lead``. A lead with
+    # no pipeline sits on the default lead list, which holds every status.
+    leads = [p for p in await _get("/crm/pipelines", {"kind": "lead"}) or []
+             if isinstance(p, dict) and p.get("kind") == "lead"]
+    lines = (_pipeline_lines(pipelines, "Pipeline") if pipelines
+             else ["The CRM has no deal pipeline yet."])
+    if leads:
+        lines.append(
+            "Lead pipelines (a lead with no pipeline is on the default lead list):")
+        lines += _pipeline_lines(leads, "Lead pipeline")
     return "\n".join(lines)
 
 
@@ -3485,6 +3495,93 @@ async def crm_search_notes(query: str, limit: int = 10) -> str:
     return "\n".join(lines)
 
 
+# ── The Change history of the CRM set-up (WS-CRM CRM-M1) ────────────────────
+
+#: The shape of an area name. The route checks the name against its list.
+_CHANGE_AREA = re.compile(r"^[a-z][a-z_]{0,39}$")
+#: The longest value of a field that one line of the history shows.
+_CHANGE_VALUE_CHARS = 120
+
+
+def _change_value(value: Any) -> str:
+    """One value of a change, in one short line. Empty reads as "(none)"."""
+    if value is None or value == "" or value == [] or value == {}:
+        return "(none)"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    text_ = value if isinstance(value, str) else repr(value)
+    one = " ".join(str(text_).split())
+    if len(one) <= _CHANGE_VALUE_CHARS:
+        return one
+    # A cut of one string, never of rows (test_read_tool_paging.py reads
+    # `str(...)` as text).
+    return str(one)[: _CHANGE_VALUE_CHARS - 1] + "…"
+
+
+def _change_lines(row: dict[str, Any]) -> list[str]:
+    """What one change did, field by field: before → after."""
+    before = row.get("before") if isinstance(row.get("before"), dict) else {}
+    after = row.get("after") if isinstance(row.get("after"), dict) else {}
+    keys = [k for k in (*after, *before) if k not in ("owner_email",)]
+    seen: list[str] = []
+    for key in keys:
+        if key not in seen:
+            seen.append(key)
+    return [
+        f"    {_humanize(key)}: {_change_value(before.get(key))} → "
+        f"{_change_value(after.get(key))}"
+        for key in seen
+    ]
+
+
+@_read_tool
+async def crm_change_history(
+    since: str | None = None, until: str | None = None,
+    area: str | None = None, page: int = 1,
+) -> str:
+    """The changes of the CRM set-up, newest first: who can open the CRM,
+    the CRM setup, the record names, deal stages, lead statuses, lost reasons,
+    pipelines, saved views and business rules. Each change shows when, who,
+    through what, what changed (before → after), and whether it was undone.
+    since and until take a date (YYYY-MM-DD, a day in UTC) or an ISO 8601
+    date and time, and until includes its whole day. area is one of access,
+    setup, record_names, deal_stage, lead_status, lost_reason, pipeline,
+    pipeline_stage, view or rule. A member who is not an admin sees only
+    their own changes."""
+    number = _page(page)
+    if area is not None and not _CHANGE_AREA.match(str(area)):
+        raise GatewayRefusal(
+            "Give area as one name: access, setup, record_names, deal_stage, "
+            "lead_status, lost_reason, pipeline, pipeline_stage, view or rule.")
+    data = await _get("/crm/change-history", {
+        "since": since or None, "until": until or None, "area": area or None,
+        "page": number, "page_size": MAX_ROWS,
+    }) or {}
+    rows = [r for r in (data.get("rows") or []) if isinstance(r, dict)]
+    total = int(data.get("total") or 0)
+    if not rows:
+        return ("No change of the CRM set-up matches." if total == 0
+                else f"No changes on page {number}. The history holds {total}.")
+    lines = [f"CRM set-up changes: {total}, page {number}, newest first."]
+    for r in rows:
+        when = str(r.get("at") or "")[:16].replace("T", " ")
+        who = r.get("actor_name") or r.get("actor_email") or "a member"
+        marks = []
+        if r.get("undone_by"):
+            marks.append("undone later")
+        if r.get("undoes_id"):
+            marks.append("this undid an earlier change")
+        if not r.get("reversible") and not r.get("undoes_id"):
+            marks.append("cannot be undone")
+        lines.append(
+            f"- {when} UTC · {who} · via {r.get('via')} · {r.get('area_label') or r.get('area')}: "
+            f"{r.get('summary')}" + (f" ({'; '.join(marks)})" if marks else "")
+        )
+        lines.extend(_change_lines(r))
+    lines.append(_more(total, number, MAX_ROWS).strip())
+    return "\n".join(line for line in lines if line)
+
+
 #: Every tool, in one list. The skill family ``crm`` holds these names.
 CRM_TOOLS: tuple[Callable[..., Awaitable[str]], ...] = (
     crm_list_records,
@@ -3500,6 +3597,7 @@ CRM_TOOLS: tuple[Callable[..., Awaitable[str]], ...] = (
     crm_list_module_records,
     crm_get_module_record,
     crm_search_notes,
+    crm_change_history,
 )
 
 CRM_TOOL_NAMES: frozenset[str] = frozenset(fn.__name__ for fn in CRM_TOOLS)

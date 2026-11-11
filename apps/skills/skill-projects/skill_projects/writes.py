@@ -39,6 +39,7 @@ import asyncio
 import calendar
 import functools
 import json
+import math
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
@@ -46,8 +47,17 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
+from acb_common.card_body import (
+    CARD_CLIP,
+    CUT_MARK,
+    CardWontFit,
+    card_body,
+    cut_refusal,
+    is_cut,
+)
+from acb_common.mentions import mention_targets, new_mentions
 
-from skill_projects import choices
+from skill_projects import choices, task_files
 from skill_projects.client import (
     GatewayRefusal,
     data,
@@ -55,9 +65,11 @@ from skill_projects.client import (
     get,
     patch,
     post,
+    post_file,
     put,
     uuid_of,
 )
+from skill_projects.hues import hue_of
 from skill_projects.priority import (
     CLEAR_PRIORITY,
     Removed,
@@ -77,6 +89,7 @@ from skill_projects.reads import (
     _number,
     _rule_text,
     _task_line,
+    _valid_zone,
     clock_of,
     for_the_model,
     no_card_channel,
@@ -101,8 +114,10 @@ except Exception:  # pragma: no cover — platform package absent in isolation
 
 #: ``request_confirmation`` clips ``context`` at 4000 characters. The clip is
 #: ours and visible, never the card silently losing whatever came last.
-CARD_CONTEXT_LIMIT = 4000
-_TRUNCATED = "… [truncated on this card; the full text is what gets written]"
+#: ``acb_common.card_body`` holds the rule: each short field shows, and only
+#: long text may be cut.
+CARD_CONTEXT_LIMIT = CARD_CLIP
+_TRUNCATED = CUT_MARK
 #: The fixed first line of every card body. The member signs as themselves.
 CARD_NOTE = "This change is recorded as yours, made through the Projects assistant."
 
@@ -116,18 +131,19 @@ LINK_TYPES = ("blocks", "relates_to", "duplicates")
 # ── The card ─────────────────────────────────────────────────────────────────
 
 
-def _fields_block(payload: dict[str, Any], *, before: dict[str, Any] | None = None) -> str:
+def _fields_block(
+    payload: dict[str, Any], *, before: dict[str, Any] | None = None, lead: str = "",
+) -> str:
     """The payload as the card body, rendered from what goes on the wire.
 
     ``before`` adds the current value beside each changed field, so a member
-    approving an update sees the change and not only the result.
+    approving an update sees the change and not only the result. *lead* is a
+    line that stays right under the fixed note. Each short field shows, and only
+    long text may be cut (``acb_common.card_body``). A body whose short fields do
+    not fit raises the refusal, in every chat.
     """
-    body = _card_lines(payload, before=before)
-    budget = CARD_CONTEXT_LIMIT - len(CARD_NOTE) - 1
-    if len(body) <= budget:
-        return f"{CARD_NOTE}\n{body}"
-    keep = max(0, budget - len(_TRUNCATED) - 1)
-    return f"{CARD_NOTE}\n{body[:keep]}\n{_TRUNCATED}"
+    note = f"{CARD_NOTE}\n{lead}" if lead else CARD_NOTE
+    return card_body(note, _card_rows(payload, before=before))
 
 
 def _fits_on_card(payload: dict[str, Any]) -> bool:
@@ -141,6 +157,13 @@ def _fits_on_card(payload: dict[str, Any]) -> bool:
 
 def _card_lines(payload: dict[str, Any], *, before: dict[str, Any] | None = None) -> str:
     """The card body before the clip: one ``key: value`` line per field."""
+    return "\n".join(line for _key, line in _card_rows(payload, before=before))
+
+
+def _card_rows(
+    payload: dict[str, Any], *, before: dict[str, Any] | None = None,
+) -> list[tuple[str, str]]:
+    """Each field of the card: its key, and its whole ``key: value`` line."""
 
     def shown(value: Any) -> Any:
         # A value that carries a fence is usually ours (`data()`, `_ref()`),
@@ -152,13 +175,61 @@ def _card_lines(payload: dict[str, Any], *, before: dict[str, Any] | None = None
             return " ".join(value.split()) if "«" in value else data(value)
         return value
 
-    lines: list[str] = []
+    rows: list[tuple[str, str]] = []
     for key, value in payload.items():
         if before is not None and key in before and before[key] != value:
-            lines.append(f"{key}: {shown(before[key])} → {shown(value)}")
+            rows.append((key, f"{key}: {shown(before[key])} → {shown(value)}"))
         else:
-            lines.append(f"{key}: {shown(value)}")
-    return "\n".join(lines)
+            rows.append((key, f"{key}: {shown(value)}"))
+    return rows
+
+
+#: The most characters of a name in the detail line of a card. ``ask_tools``
+#: clips that line at 500, so a long title would hide what comes after it.
+_DETAIL_NAME_MAX = 120
+
+
+def _brief(name: Any) -> str:
+    """*name*, fenced, short enough for the detail line. The card body shows
+    it whole."""
+    text = " ".join(str(name or "").split())
+    return data(text if len(text) <= _DETAIL_NAME_MAX else f"{text[:_DETAIL_NAME_MAX - 1]}…")
+
+
+async def _held_chat() -> bool:
+    """True when this chat read outside mail, and the switch is on (RX-1).
+
+    ``egress.chat_is_held`` is the reader, and it fails closed. With no platform
+    package, no run can be checked, so this reads as held.
+    """
+    try:
+        from acb_skills.egress import chat_is_held
+    except ImportError:
+        return True
+    return await chat_is_held()
+
+
+async def _held_param_refusal(tool: str, param: str) -> str:
+    """The answer of *tool* to *param* in a held chat, or ``""`` (RX-1). The
+    parameter is one of ``egress.HELD_REFUSED_PARAMS``."""
+    if not await _held_chat():
+        return ""
+    from acb_skills.egress import held_param_refusal
+
+    return held_param_refusal(tool, param)
+
+
+async def _check_card(context: str) -> None:
+    """Two refusals at the one door (RX-1). A body past the clip would lose its
+    tail in ``ask_tools`` with no mark, so no chat sends one. A held chat refuses
+    a cut card too, because a cut text is not consent there."""
+    if len(context) > CARD_CONTEXT_LIMIT:
+        raise CardWontFit(
+            "This change does not fit on one card, so nothing was changed. Split "
+            "the change, and call the tool once more."
+        )
+    if is_cut(context) and await _held_chat():
+        raise GatewayRefusal(cut_refusal(context))
 
 
 async def _confirm(
@@ -172,6 +243,7 @@ async def _confirm(
     """
     from acb_skills.ask_tools import request_confirmation
 
+    await _check_card(context)
     # `fenced`: every member value on these cards is in «marks» (`data()`),
     # so the client draws each one as a token and never shows the marks.
     if rows is None:
@@ -301,12 +373,14 @@ async def _resolve_status(project_id: str, status: str) -> dict[str, Any]:
     return await _named(await _statuses_of(project_id), status, "status", "statuses")
 
 
-#: H-236: the refusal of an agent assignee in a run that may not send.
+#: H-236: the refusal of an agent assignee in a run that may not send. Such a
+#: run holds for member data of a sandboxed turn, or for mail that a stranger
+#: wrote, so the text claims neither cause. D169 item 7: it names the act and
+#: the reason, and it sends the member to no app and no new chat.
 AGENT_ASSIGNEE_REFUSED = (
-    "This chat works with member data from a sandboxed turn, so it cannot "
-    "assign a task to an agent: an assigned agent starts a run of its own, "
-    "outside this chat's controls. Assign a person, or ask the member to "
-    "assign the agent in the Projects app."
+    "This chat cannot assign a task to an agent now. An assigned agent starts a "
+    "run of its own, outside the controls that hold this chat. Assign a person "
+    "here, and tell the member in one sentence why the agent is not assigned."
 )
 
 
@@ -365,7 +439,12 @@ async def _resolve_assignee(value: str, *, dispatch: bool = True) -> str:
     ``dispatch=False``, because taking an agent off a task starts nothing.
     """
     resolved = await _resolve_assignee_name(value)
-    return _refuse_agent_assignee(resolved) if dispatch else resolved
+    if not dispatch:
+        return resolved
+    # RX-1: a top-level run in a marked chat binds no `no_egress`.
+    if resolved.startswith("agent:") and await _held_chat():
+        raise AgentAssigneeRefused(AGENT_ASSIGNEE_REFUSED)
+    return _refuse_agent_assignee(resolved)
 
 
 async def _resolve_assignee_name(value: str) -> str:
@@ -423,6 +502,59 @@ async def _unknown_addresses(who: list[str]) -> list[str]:
 
 def _split(csv: str) -> list[str]:
     return [part.strip() for part in str(csv or "").split(",") if part.strip()]
+
+
+def _seen_by(view: dict[str, Any]) -> str:
+    """Who opens a project, in the words of a card (``GET .../audience``)."""
+    count = int(view.get("count") or 0)
+    if view.get("everyone"):
+        return f"everyone in the organization ({count} people)"
+    names = [str(name) for name in view.get("sample") or []]
+    more = count - len(names)
+    return ", ".join(names) + (f" and {more} more" if more > 0 else "") if names else "nobody"
+
+
+async def _access_lines(
+    project_id: str, people: list[str] | None = None, beyond: str = "",
+) -> dict[str, Any]:
+    """The lines of a held card: who sees the project, and who this opens it to.
+
+    ``seen by`` is who opens *project_id* (RX-1, P1). ``gives access to`` names
+    each of *people* who cannot open it now, because an assignment opens a task
+    to its assignee (``notifications.grant_holders``), and each person who opens
+    it and not *beyond*, because a move changes who sees a row (D-OP-14). The
+    server answers, from the one predicate. A failed read raises the refusal, so
+    a held chat shows no card that cannot say who sees the row. An agent is no
+    person here: it never opens a task by a grant.
+    """
+    pid = uuid_of(project_id, "project_id")
+    params: dict[str, str] = {}
+    humans = [p for p in people or [] if not p.startswith("agent:")]
+    if humans:
+        params["people"] = ",".join(humans)
+    if beyond:
+        params["beyond"] = uuid_of(beyond, "project_id")
+    view = (await get(f"/projects/nodes/{pid}/audience", params)) or {}
+    lines: dict[str, Any] = {"seen by": _seen_by(view)}
+    gives = [str(p) for p in [*(view.get("without_access") or []), *(view.get("gains") or [])]]
+    if gives:
+        more = int(view.get("gains_count") or 0) - len(view.get("gains") or [])
+        lines["gives access to"] = ", ".join(dict.fromkeys(gives)) + (
+            f" and {more} more" if more > 0 else "")
+    return lines
+
+
+def _told(text: Any, old: Any = None) -> dict[str, Any]:
+    """The ``sent to`` line of a text that tells a person (RX-1, P2).
+
+    Each address that the text @mentions is notified (``activities.add_comment``),
+    and an edit tells only the addresses it adds (``new_mentions``). The parser
+    is the gateway's own (``acb_common.mentions``), so the card and the write
+    agree. Empty when the text tells nobody.
+    """
+    who = new_mentions(str(old or ""), str(text or "")) if old is not None else (
+        mention_targets(str(text or "")))
+    return {"sent to": ", ".join(who)} if who else {}
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -861,7 +993,7 @@ async def field_values(
 # ── Tasks ────────────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 @takes_priority
 @agent_assignee_refusal_as_text
 async def create_task(
@@ -890,6 +1022,7 @@ async def create_task(
     type: str = "",
     fields: str = "",
     source: str = "",
+    files: list[str] | None = None,
 ) -> str:
     """Create one task in a project. project_id is a `full_id` from
     projects_tree (a project or subproject, never a folder). status is by
@@ -918,6 +1051,12 @@ async def create_task(
     it out for work the member typed. Use email only for a task made from a
     mail that email-assistant described. The card then says that the text
     leaves the mailbox.
+    files are the names of files the member attached in THIS chat, as the
+    upload message shows them. When the member attached files and asks for a
+    task, pass them here, and do not call attach_to_task after it. The one
+    card names each file. An image also goes at the end of the description.
+    A file that is empty, of a blocked type, or past the 10 MB a task holds
+    is refused before the card.
     The card may flag an open task that looks the same."""
     pid, by_name = await _project_ref(project_id)
     name = str(title or "").strip()
@@ -942,9 +1081,13 @@ async def create_task(
     if isinstance(repeating, str):
         return repeating
     # After the argument checks, which answer with no call, and before the card.
-    stop = await space_refusal(pid, (await _node(pid))[1])
+    node = (await _node(pid))[1]
+    stop = await space_refusal(pid, node)
     if stop:
         return stop
+    chat_files = await _chat_files_for_new_task(files)
+    if isinstance(chat_files, str):
+        return chat_files
     new = await _prepare_new_task(
         pid,
         name,
@@ -973,22 +1116,31 @@ async def create_task(
     twin = (await choices.twin_flags(get, pid, [name])).get(0)
     if twin is not None:
         card["note"] = choices.twin_note(twin)
-    where = ""
-    if by_name is not None:
-        # The project came from a NAME, so the card names it, first (review
-        # P1). The id line alone would not tell the member where it goes.
-        card = {"project": data(by_name), **{k: v for k, v in card.items() if k != "project_id"}}
-        where = f" · in {data(by_name)}"
-    if new.payload.get("source") == "email":
-        # P9: the first line of the card says what leaves the mailbox.
-        shown = data(by_name or (await _node(pid))[1].get("name"))
-        card = {"mailbox": mailbox_line(shown), **card}
+    # The card names the project, first, however the model named it. The client
+    # hides a line that holds only an id, so an id line tells the member nothing
+    # (RX-1, review P1 of 2026-10-09). The parent gets its name the same way.
+    place = data(by_name or node.get("name"))
+    hidden = ("project_id", "parent_task_id")
+    card = {"project": place, **{k: v for k, v in card.items() if k not in hidden}}
+    if new.parent is not None:
+        card["parent"] = _ref(new.parent)
+    if chat_files:
+        card["files"] = task_files.card_line(chat_files)
+    where = f" · in {place}"
+    held = await _held_chat()
+    if held:
+        card.update(await _access_lines(pid, new.who))
+    if held or new.payload.get("source") == "email":
+        # P9: the first line of the card says what leaves the mailbox. RX-1: a
+        # held chat says it from the server's answer, because a steered model
+        # would leave out `source`.
+        card = {"mailbox": mailbox_line(place), **card}
     # WS-47 WAC-4: a card that names the project by NAME must still bind the
     # project it resolved, and the people, for a Confirm on WhatsApp.
     _bind_card_facts(project_id=pid, assignees=sorted(new.who))
     if not await _confirm(
         title=repeating.card_title,
-        detail=f"{data(name)}{where} · status {new.status_label}"
+        detail=f"{_brief(name)}{where} · status {new.status_label}"
         + (f" · {', '.join(new.who)}" if new.who else "")
         + repeating.detail(),
         context=_fields_block(card),
@@ -1004,7 +1156,121 @@ async def create_task(
     lines = [*_task_line(task, status_label), *level_note(priority, task)]
     if twin is not None:
         lines.append(f"  note: {choices.twin_note(twin)}")
-    return repeating.receipt(task, lines, saved, failed, new.extra)
+    receipt = repeating.receipt(task, lines, saved, failed, new.extra)
+    if chat_files:
+        receipt += await _attach_new_files(task, chat_files, str(new.payload.get("description") or ""))
+    return receipt
+
+
+async def _chat_files_for_new_task(files: list[str] | None) -> list[task_files.ChatFile] | str:
+    """The files of ``create_task``, read and checked BEFORE the card, or the
+    refusal that names the file and the reason (IMG-2). ``[]`` for none.
+
+    A held chat refuses ``files``: a file on a shared task is one more person's
+    reach, and ``attach_to_task`` is off there too (``egress.HELD_REFUSED_PARAMS``).
+    The total is checked against an empty task, because the task is new.
+    """
+    names = task_files.split_names(files)
+    if not names:
+        return []
+    refused = await _held_param_refusal("create_task", "files")
+    if refused:
+        return refused
+    got = await task_files.read_checked(names)
+    if isinstance(got, str):
+        return got
+    return task_files.budget_refusal(got, 0, "The new task") or got
+
+
+async def _attach_new_files(
+    task: dict[str, Any], chat_files: list[task_files.ChatFile], description: str
+) -> str:
+    """The posts after the create: each file, then ONE description PATCH that
+    puts each image at the end (IMG-2, as TR-4 does for a paste).
+
+    The task exists, so nothing here raises. A file that fails is named with
+    its reason and ``attach_to_task`` finishes it. A failed PATCH leaves the
+    files in place, and the receipt says the description has no inline image.
+    """
+    tid = uuid_of(str(task.get("id")), "task_id")
+    landed: list[dict[str, Any]] = []
+    lines: list[str] = []
+    for name, content in chat_files:
+        try:
+            row = (
+                await post_file(
+                    f"/projects/tasks/{tid}/attachments", "file", name, content,
+                    task_files.mime_of(name),
+                )
+            ) or {}
+        except _WRITE_FAILED as exc:
+            lines.append(
+                f"not attached: {data(name)}. {_file_failure(exc)} "
+                f"Next: call attach_to_task with task_id {tid} and file_name "
+                f"{data(name)} to try this file again."
+            )
+            continue
+        row.setdefault("name", name)
+        landed.append(row)
+    out = ["Files attached:"] if landed else []
+    out += [f"  {data(r.get('name'))} · attachment_id: {r.get('attachment_id')}" for r in landed]
+    images = [md for md in (task_files.image_markdown(r) for r in landed) if md]
+    if images:
+        failure = await _put_images_in_description(tid, description, images)
+        if failure:
+            lines.append(
+                f"The description has no inline image. {failure} The files are on the task."
+            )
+    return "\n" + "\n".join([*out, *lines]) if (out or lines) else ""
+
+
+async def _put_images_in_description(task_id: str, written: str, images: list[str]) -> str:
+    """Append *images* to the description, under ``If-Match``. ``""`` when it
+    is done, else the reason it is not.
+
+    *written* is the text the create wrote. The PATCH carries the version that
+    was read, so an edit made since is a 412, never a lost edit. On a 412 the
+    task is read once more. The images go on the CURRENT text only when it still
+    starts with *written*. Any other change, or a second 412, stops here.
+    """
+    tid = uuid_of(task_id, "task_id")
+    base = written.rstrip()
+    changed = "Someone changed the description, so I left it alone."
+    for attempt in range(2):
+        try:
+            cur = await get(f"/projects/tasks/{tid}") or {}
+        except _WRITE_FAILED as exc:
+            return _file_failure(exc)
+        now = str(cur.get("description") or "")
+        if not now.startswith(base):
+            return changed
+        text = "\n\n".join(([now.rstrip()] if now.strip() else []) + images)
+        token = str(cur.get("updated_at") or "")
+        try:
+            await patch(
+                f"/projects/tasks/{tid}", {"description": text},
+                headers={"If-Match": token} if token else None,
+            )
+        except GatewayRefusal as exc:
+            if exc.status == 412 and attempt == 0:
+                continue
+            return changed if exc.status == 412 else _file_failure(exc)
+        except httpx.TransportError as exc:
+            return _file_failure(exc)
+        return ""
+    return ""
+
+
+def _file_failure(exc: Exception) -> str:
+    """Why a write after the create failed, for the receipt."""
+    if isinstance(exc, httpx.TransportError):
+        return (
+            f"The connection to the gateway broke ({type(exc).__name__}), so it may or "
+            "may not have landed. Read the task first."
+        )
+    if isinstance(exc, GatewayRefusal):
+        return f"Gateway said: {_refusal_words(exc)}."
+    return str(exc)
 
 
 #: WS-46 P9 (G10). Where a new task came from: the values of
@@ -1425,7 +1691,7 @@ async def _edit_task_fields(
     return out
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 @takes_priority
 async def update_task(
     task_id: str,
@@ -1457,6 +1723,88 @@ async def update_task(
     and no answer, the tool asks first. The card shows each change as before
     → after, and the timeline records every change."""
     tid, task = await _task(task_id)
+    plan = await _plan_task_edit(
+        task,
+        title=title,
+        description=description,
+        status=status,
+        due=due,
+        start=start,
+        estimate_mins=estimate_mins,
+        tags=tags,
+        clear=clear,
+        priority=priority,
+        important=important,
+        leveraged=leveraged,
+        importance=importance,
+        type=type,
+        fields=fields,
+        include_subtasks=include_subtasks,
+    )
+    if isinstance(plan, str):
+        return plan
+    if plan.question:
+        return plan.question
+    if not await _confirm(
+        title="Update this task?",
+        detail=plan.detail,
+        context=_fields_block(plan.card, before=plan.before),
+    ):
+        return CANCELLED
+    updated = await patch(f"/projects/tasks/{tid}", plan.payload, params=plan.params)
+    updated["assignees"] = task.get("assignees") or []
+    lane = plan.lane
+    return "\n".join(
+        [
+            "Updated:",
+            *_task_line(updated, str(lane.get("name")) if lane else ""),
+            *level_note(priority, updated),
+            *_subtask_receipt(updated, "subtasks_completed", "complete"),
+        ]
+    )
+
+
+class _EditPlan:
+    """What one task edit will send and show: the output of `_plan_task_edit`."""
+
+    def __init__(self) -> None:
+        #: The PATCH body.
+        self.payload: dict[str, Any] = {}
+        #: The values before the edit, for the card.
+        self.before: dict[str, Any] = {}
+        #: The card: each change by name.
+        self.card: dict[str, Any] = {}
+        #: The card's detail line.
+        self.detail = ""
+        #: The status lane of the edit, when it sets one.
+        self.lane: dict[str, Any] | None = None
+        #: The query parameters of the PATCH.
+        self.params: dict[str, Any] = {}
+        #: The include_subtasks ask, when the edit needs an answer first.
+        self.question = ""
+
+
+async def _plan_task_edit(
+    task: dict[str, Any],
+    *,
+    title: str = "",
+    description: str = "",
+    status: str = "",
+    due: str = "",
+    start: str = "",
+    estimate_mins: int = 0,
+    tags: str = "",
+    clear: str = "",
+    priority: str = "",
+    important: str = "",
+    leveraged: str = "",
+    importance: Any = None,
+    type: str = "",
+    fields: str = "",
+    include_subtasks: str = "",
+) -> _EditPlan | str:
+    """Check one edit of *task* and plan it, with no write and no card: the
+    plan, or the refusal text. `update_task` and `update_tasks` both call it."""
     flags = priority_fields(
         priority=priority,
         important=important,
@@ -1503,8 +1851,10 @@ async def update_task(
         lane=lane,
         include_subtasks=include_subtasks,
     )
+    plan = _EditPlan()
     if extra.question:
-        return extra.question
+        plan.question = extra.question
+        return plan
     payload.update(extra.payload)
     taken = {**(stated if isinstance(stated, dict) else flags), **extra.payload}
     cleared = _edit_clears(clear, taken, task, before)
@@ -1517,20 +1867,12 @@ async def update_task(
     if not payload:
         return "Nothing to change. Pass at least one field."
     card, detail = _edit_card(payload, before, extra, lane, task)
-    if not await _confirm(
-        title="Update this task?", detail=detail, context=_fields_block(card, before=before)
-    ):
-        return CANCELLED
-    updated = await patch(f"/projects/tasks/{tid}", payload, params=extra.params)
-    updated["assignees"] = task.get("assignees") or []
-    return "\n".join(
-        [
-            "Updated:",
-            *_task_line(updated, str(lane.get("name")) if lane else ""),
-            *level_note(priority, updated),
-            *_subtask_receipt(updated, "subtasks_completed", "complete"),
-        ]
-    )
+    if payload.get("description"):
+        # A description edit tells each address that it adds (`tasks.patch_task`).
+        card.update(_told(payload["description"], old=task.get("description") or ""))
+    plan.card, plan.detail = card, detail
+    plan.payload, plan.before, plan.lane, plan.params = payload, before, lane, extra.params
+    return plan
 
 
 def _edit_clears(
@@ -1570,7 +1912,7 @@ def _edit_card(
     return card, detail
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 @agent_assignee_refusal_as_text
 async def assign(task_id: str, assignees: str) -> str:
     """Set who holds a task. assignees is comma-separated: emails,
@@ -1584,10 +1926,13 @@ async def assign(task_id: str, assignees: str) -> str:
     if sorted(who) == sorted(current):
         return f"{_ref(task)} already has exactly those assignees."
     agents = [a for a in who if a.startswith("agent:") and a not in current]
-    context = _fields_block(
-        {"assignees": ", ".join(who) or "(nobody)"},
-        before={"assignees": ", ".join(current) or "(nobody)"},
-    )
+    shown: dict[str, Any] = {"assignees": ", ".join(who) or "(nobody)"}
+    added = [a for a in who if a not in current]
+    if added and await _held_chat():
+        # An assignment opens the task to its assignee (`grant_holders`).
+        access = await _access_lines(str(task.get("project_id")), added)
+        shown.update({k: v for k, v in access.items() if k == "gives access to"})
+    context = _fields_block(shown, before={"assignees": ", ".join(current) or "(nobody)"})
     if agents:
         context += f"\nAssigning {', '.join(agents)} starts an agent run on this task."
     strangers = await _unknown_addresses([a for a in who if a not in current])
@@ -1604,7 +1949,19 @@ async def assign(task_id: str, assignees: str) -> str:
     return "\n".join(["Assigned:", *_task_line(task)])
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+async def _comment_tells(tid: str, text: str) -> dict[str, Any]:
+    """The ``sent to`` line of a new comment: each address that it @mentions,
+    and in a held chat each person that the task already tells, because the
+    comment reaches them too (``notifications.task_audience``)."""
+    who = mention_targets(text)
+    if await _held_chat():
+        task_id = uuid_of(tid, "task_id")
+        read = (await get(f"/projects/tasks/{task_id}/watchers", {"audience": "true"})) or {}
+        who.extend(str(person) for person in read.get("audience") or [])
+    return {"sent to": ", ".join(dict.fromkeys(who))} if who else {}
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def comment(task_id: str, body: str, reply_to: str = "") -> str:
     """Add a comment to a task's timeline, in the member's own words.
     reply_to is the id of the comment it answers (one level deep). The card
@@ -1620,14 +1977,14 @@ async def comment(task_id: str, body: str, reply_to: str = "") -> str:
     if not await _confirm(
         title="Post this comment?",
         detail=f"on {_ref(task)}",
-        context=_fields_block(payload),
+        context=_fields_block({**payload, **await _comment_tells(tid, text_body)}),
     ):
         return CANCELLED
     row = await post(f"/projects/tasks/{tid}/comments", payload)
     return f"Commented on {_ref(task)} (comment id {row.get('id')}).\n  full_id: {tid}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def add_subtasks(task_id: str, titles: str) -> str:
     """Break a task into steps. titles is one subtask per line, or
     comma-separated. ONE card lists every subtask; the member approves the
@@ -1685,7 +2042,7 @@ async def _lane_name(project_id: str, status_id: Any) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def link_tasks(task_id: str, other_task_id: str, link_type: str = "relates_to") -> str:
     """Link two tasks. link_type is blocks (task_id blocks other_task_id),
     relates_to, or duplicates. The card names both tasks. unlink_tasks
@@ -1713,7 +2070,7 @@ async def link_tasks(task_id: str, other_task_id: str, link_type: str = "relates
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def unlink_tasks(task_id: str, link_id: str) -> str:
     """Remove a link from a task. link_id comes from task_detail's Links
     list. The card names the task and the link."""
@@ -1736,6 +2093,333 @@ async def unlink_tasks(task_id: str, link_id: str) -> str:
         return CANCELLED
     await delete(f"/projects/tasks/{tid}/links/{lid}")
     return f"Removed the link: {label}.\n  full_id: {tid}"
+
+
+# ── SP-8a — the contract of an epic (project_management_app.md §13.3) ──────
+#
+# One class B tool. The route replaces the whole contract. The card shows
+# only what changes: the parts that move, and one row for each check that is
+# added, removed or changed. The draft lives on the card: the store keeps no
+# contract with fewer than 3 checks.
+
+#: The rules of a contract. Copies of the gateway's ``epic_contract.py``,
+#: and ``test_epic_contract_r8.py`` pins each pair equal. The tool checks
+#: them BEFORE the card, so a card never asks for a save that the route
+#: refuses.
+EPIC_MIN_CHECKS = 3
+EPIC_MAX_CHECKS = 7
+EPIC_RISK_TIERS: tuple[str, ...] = ("LOW", "STANDARD", "HIGH")
+EPIC_MAX_CHECK_CHARS = 300
+EPIC_MAX_EVIDENCE_CHARS = 1000
+EPIC_MAX_OUTCOME_CHARS = 500
+EPIC_MAX_OUT_OF_SCOPE_CHARS = 2000
+EPIC_MAX_WORKSTREAM_CHARS = 120
+EPIC_MAX_SPEC_LINK_CHARS = 500
+EPIC_MAX_APPETITE_CREDITS = 1_000_000_000
+EPIC_MAX_APPETITE_REVIEW_HOURS = 100_000
+#: The answer while ``EPIC_CONTRACT_ORGS`` does not hold the org. The route
+#: answers 404, and the tool makes no card.
+EPIC_CONTRACTS_OFF = "Epic contracts are not on for this organization yet. Nothing was changed."
+#: The answer of a 412: the task changed after the card was made, for
+#: example an agent ticked a check. The save sends the version of the read
+#: as ``If-Match``, so it never replaces a change that the card did not show.
+EPIC_CONTRACT_CHANGED = (
+    "The epic contract changed after this card was made, so nothing was changed. "
+    "Read the task again, then set the contract."
+)
+#: A list mark at the start of a line of checks: "- ", "* ", "1. " or "2) ".
+_CHECK_BULLET = re.compile(r"^\s*(?:[-*•]|\d{1,2}[.)])\s+")
+#: A done mark at the start of a check: "[x] " or "[ ] ". The word "check"
+#: before it is the line of task_detail, so a copied line reads right.
+_CHECK_DONE = re.compile(r"^(?:check\s+)?\[([xX ])\]\s*", re.IGNORECASE)
+#: The parts of a contract that the card names, in the order of the card.
+_EPIC_PARTS: tuple[tuple[str, str], ...] = (
+    ("outcome", "outcome"), ("out_of_scope", "out of scope"),
+    ("risk_tier", "risk tier"), ("appetite_credits", "appetite credits"),
+    ("appetite_review_hours", "appetite review hours"),
+    ("workstream", "workstream"), ("spec_link", "spec link"),
+)
+#: The cap of each text part, with the name that a refusal uses.
+_EPIC_TEXT_CAPS: tuple[tuple[str, str, int], ...] = (
+    ("outcome", "outcome", EPIC_MAX_OUTCOME_CHARS),
+    ("out_of_scope", "out_of_scope", EPIC_MAX_OUT_OF_SCOPE_CHARS),
+    ("workstream", "workstream", EPIC_MAX_WORKSTREAM_CHARS),
+    ("spec_link", "spec_link", EPIC_MAX_SPEC_LINK_CHARS),
+)
+#: The impact line of the card. It is a ``key: value`` row, so the card
+#: client draws the body as rows (one note line at most before the rows).
+_EPIC_FIRST = "This is the first contract of this epic."
+_EPIC_CHANGE = "Only the rows below change. The rest of the contract stays as it is."
+
+
+def _epic_items(acceptance: str) -> list[dict[str, Any]] | str:
+    """The checks that the member gave: a JSON list, or one check on each
+    line. A line that starts with ``[x]`` is done. A refusal is a string."""
+    raw = str(acceptance or "").strip()
+    if raw.startswith("["):
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, list):
+            items: list[dict[str, Any]] = []
+            for entry in parsed:
+                if isinstance(entry, str):
+                    items.append({"text": entry.strip()})
+                elif isinstance(entry, dict) and isinstance(entry.get("text"), str):
+                    item: dict[str, Any] = {"text": entry["text"].strip()}
+                    if isinstance(entry.get("done"), bool):
+                        item["done"] = entry["done"]
+                    if isinstance(entry.get("evidence"), str):
+                        item["evidence"] = entry["evidence"].strip()
+                    items.append(item)
+                else:
+                    return ("Each item of acceptance is a text, or an object with a "
+                            "text. Nothing was changed.")
+            return [i for i in items if i["text"]]
+    lines: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        text_ = _CHECK_BULLET.sub("", line, count=1).strip()
+        mark = _CHECK_DONE.match(text_)
+        item = {}
+        if mark:
+            item["done"] = mark.group(1).lower() == "x"
+            text_ = text_[mark.end():].strip()
+        if text_:
+            lines.append({"text": text_, **item})
+    return lines
+
+
+def _epic_checks(acceptance: str, stored: list[dict[str, Any]]) -> list[dict[str, Any]] | str:
+    """The checks to save, or a refusal. A check with the text of a saved
+    check keeps its id, and its done mark and its evidence unless the member
+    set them again. So a new outcome never loses the evidence of a check."""
+    items = _epic_items(acceptance)
+    if isinstance(items, str):
+        return items
+    if not EPIC_MIN_CHECKS <= len(items) <= EPIC_MAX_CHECKS:
+        return (
+            f"An epic contract needs {EPIC_MIN_CHECKS} to {EPIC_MAX_CHECKS} acceptance "
+            f"checks, and this one has {len(items)}. Nothing was changed. Send "
+            f"{EPIC_MIN_CHECKS} to {EPIC_MAX_CHECKS} checks, one on each line."
+        )
+    saved = {str(c.get("text") or "").casefold(): c for c in stored if isinstance(c, dict)}
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if len(item["text"]) > EPIC_MAX_CHECK_CHARS:
+            return (f"A check is longer than {EPIC_MAX_CHECK_CHARS} characters. "
+                    "Nothing was changed. Make each check one short sentence.")
+        old = saved.get(item["text"].casefold()) or {}
+        check: dict[str, Any] = {
+            "text": item["text"],
+            "done": item["done"] if "done" in item else bool(old.get("done")),
+        }
+        if old.get("id"):
+            check["id"] = str(old["id"])
+        evidence = item["evidence"] if "evidence" in item else old.get("evidence")
+        if isinstance(evidence, str) and evidence.strip():
+            if len(evidence.strip()) > EPIC_MAX_EVIDENCE_CHARS:
+                return (f"The evidence of a check is longer than {EPIC_MAX_EVIDENCE_CHARS} "
+                        "characters. Nothing was changed. Link to the evidence.")
+            check["evidence"] = evidence.strip()
+        out.append(check)
+    texts = [c["text"].casefold() for c in out]
+    if len(set(texts)) != len(texts):
+        return "Two checks have the same text. Nothing was changed. Give each check its own text."
+    return out
+
+
+def _appetite(value: Any, name: str, cap: int) -> float | str | None:
+    """A number from 0 to *cap*, ``None`` for blank, or a refusal string."""
+    raw = str(value if value is not None else "").strip().replace(",", "")
+    if not raw:
+        return None
+    try:
+        number = float(raw)
+    except ValueError:
+        number = -1.0
+    if not math.isfinite(number) or not 0 <= number <= cap:
+        return f"{name} is a number from 0 to {cap:,}, such as 40. Nothing was changed."
+    return number
+
+
+def _epic_text(value: Any) -> str | None:
+    """A stripped text part, ``None`` for blank. (``_blank`` of this module
+    is another helper that answers a bool, so the name differs.)"""
+    text_ = str(value or "").strip()
+    return text_ or None
+
+
+def _epic_number(value: Any) -> Any:
+    """A number as a member reads it: 40, not 40.0."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+def _epic_shown(value: Any) -> Any:
+    """One part on the card: "(none)" for an empty part, a whole number with
+    no ".0"."""
+    if value is None or value == "":
+        return "(none)"
+    return _epic_number(value)
+
+
+def _check_line(check: dict[str, Any]) -> str:
+    line = f"{'[x]' if check.get('done') else '[ ]'} {check.get('text') or ''}"
+    if check.get("evidence"):
+        line += f" (evidence: {check['evidence']})"
+    return line
+
+
+def _epic_change_rows(
+    before: dict[str, Any] | None, after: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """``(rows, before_rows)`` of the card: only what changes.
+
+    A part that changes shows its old and new value. A first contract shows
+    each part that it sets. Each check that is added, removed or changed has
+    one row, and "checks unchanged" counts the rest. So a tick of one check
+    makes a card of a few lines, whatever the size of the contract.
+    """
+    found = before or {}
+    rows: dict[str, Any] = {}
+    old_rows: dict[str, Any] = {}
+    for part, label in _EPIC_PARTS:
+        old, new = found.get(part), after.get(part)
+        if before is None:
+            if new not in (None, ""):
+                rows[label] = _epic_shown(new)
+            continue
+        if _epic_shown(old) != _epic_shown(new):
+            rows[label] = _epic_shown(new)
+            old_rows[label] = _epic_shown(old)
+    kept = {str(c.get("text") or "").casefold(): c
+            for c in found.get("acceptance") or () if isinstance(c, dict)}
+    seen: set[str] = set()
+    added = changed = same = 0
+    for check in after.get("acceptance") or ():
+        key = str(check.get("text") or "").casefold()
+        seen.add(key)
+        old = kept.get(key)
+        if old is None:
+            added += 1
+            rows[f"new check {added}"] = _check_line(check)
+        elif _check_line(old) != _check_line(check):
+            changed += 1
+            rows[f"changed check {changed}"] = (
+                f"{data(_check_line(old))} → {data(_check_line(check))}")
+        else:
+            same += 1
+    removed = 0
+    for key, old in kept.items():
+        if key not in seen:
+            removed += 1
+            rows[f"removed check {removed}"] = _check_line(old)
+    if before is not None and same:
+        rows["checks unchanged"] = same
+    return rows, old_rows
+
+
+def _epic_too_long(contract: dict[str, Any]) -> str:
+    """A refusal for a text part over its cap, or ``""``."""
+    for part, name, cap in _EPIC_TEXT_CAPS:
+        value = contract.get(part)
+        if isinstance(value, str) and len(value) > cap:
+            return f"{name} is longer than {cap} characters. Nothing was changed."
+    return ""
+
+
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
+async def set_epic_contract(
+    task_id: str,
+    acceptance: str,
+    outcome: str = "",
+    out_of_scope: str = "",
+    risk_tier: str = "",
+    appetite_credits: str = "",
+    appetite_review_hours: str = "",
+    workstream: str = "",
+    spec_link: str = "",
+) -> str:
+    """Set the contract of an epic: the outcome in one sentence, 3 to 7
+    acceptance checks that a reviewer can tick, what is out of scope, the
+    risk tier (LOW, STANDARD or HIGH, which the lead sets), the appetite in
+    credits and in review hours, the workstream and a spec link (a Knowledge
+    page or a repository file). acceptance holds one check on each line, and
+    a line that starts with [x] is done. The contract replaces the saved one,
+    and a part left empty is cleared. So read task_detail first and send each
+    part to keep. A check with the text of a saved check keeps its id, its
+    done mark and its evidence. Only a task of the Epic type takes a
+    contract. Draft the outcome and the checks for the member: the card shows
+    what changes, and nothing is saved before the member approves."""
+    tid, task = await _task(task_id)
+    try:
+        current = (await get(f"/projects/tasks/{tid}/epic-contract")) or {}
+    except GatewayRefusal as exc:
+        # The task was just read, so a 404 here is the flag of the org.
+        if getattr(exc, "status", None) == 404:
+            return EPIC_CONTRACTS_OFF
+        raise
+    if not current.get("is_epic"):
+        return (
+            f"{_ref(task)} is not an epic, so it takes no epic contract. Nothing was "
+            "changed. Make it an epic first: set its type to Epic with update_task, "
+            f"then set the contract.\n  full_id: {tid}"
+        )
+    before = current.get("epic_contract") if isinstance(current.get("epic_contract"), dict) else None
+    checks = _epic_checks(acceptance, list((before or {}).get("acceptance") or ()))
+    if isinstance(checks, str):
+        return checks
+    tier = str(risk_tier or "").strip().upper()
+    if tier and tier not in EPIC_RISK_TIERS:
+        return "risk_tier is LOW, STANDARD or HIGH. Nothing was changed."
+    credits = _appetite(appetite_credits, "appetite_credits", EPIC_MAX_APPETITE_CREDITS)
+    if isinstance(credits, str):
+        return credits
+    hours = _appetite(appetite_review_hours, "appetite_review_hours",
+                      EPIC_MAX_APPETITE_REVIEW_HOURS)
+    if isinstance(hours, str):
+        return hours
+    contract: dict[str, Any] = {
+        "outcome": _epic_text(outcome),
+        "acceptance": checks,
+        "out_of_scope": _epic_text(out_of_scope),
+        "risk_tier": tier or None,
+        "appetite_credits": credits,
+        "appetite_review_hours": hours,
+        "workstream": _epic_text(workstream),
+        "spec_link": _epic_text(spec_link),
+    }
+    too_long = _epic_too_long(contract)
+    if too_long:
+        return too_long
+    rows, old_rows = _epic_change_rows(before, contract)
+    if before is not None and set(rows) <= {"checks unchanged"}:
+        return f"The epic contract of {_ref(task)} already says that. Nothing was changed."
+    lead = "impact: " + (_EPIC_FIRST if before is None else _EPIC_CHANGE)
+    if not await _confirm(
+        title="Save this epic contract?" if before is None else "Change this epic contract?",
+        detail=_ref(task),
+        context=_fields_block(rows, before=old_rows, lead=lead),
+    ):
+        return _not_confirmed()
+    # The version of the read rides as If-Match. A change by another writer
+    # while the card waited is a 412, and the save then writes nothing.
+    version = current.get("version")
+    try:
+        saved = (await put(
+            f"/projects/tasks/{tid}/epic-contract", {"epic_contract": contract},
+            headers={"If-Match": str(version)} if version else None,
+        )) or {}
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 412:
+            return EPIC_CONTRACT_CHANGED + f"\n  full_id: {tid}"
+        raise
+    changed = [str(c).removeprefix("epic_").replace("_", " ")
+               for c in saved.get("changed") or () if isinstance(c, str)]
+    said = f" Changed: {', '.join(changed)}." if changed else ""
+    return f"Saved the epic contract of {_ref(task)}.{said}\n  full_id: {tid}"
 
 
 # ── WS-57 TR-3 — a task's URL references ────────────────────────────────────
@@ -1773,7 +2457,7 @@ def _ref_line(row: dict[str, Any]) -> str:
 #: The card's next read fetches a GitHub title and state. Every Projects
 #: chat tool is closed-world (`test_projects_agent_refusals.py`), so a run
 #: that may not reach the outside (`no_egress`) keeps this tool too.
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def add_task_ref(task_id: str, url: str, title: str = "") -> str:
     """Attach a URL to a task: a GitHub pull request, issue, commit, branch or
     comment, a GitLab merge request, a Google Doc, Sheet or Slides, a Figma
@@ -1808,7 +2492,7 @@ async def add_task_ref(task_id: str, url: str, title: str = "") -> str:
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def remove_task_ref(task_id: str, url: str) -> str:
     """Take a URL reference off a task. url is the link as task_detail's
     References list shows it, or its ref id. The card names the task and the
@@ -1843,7 +2527,7 @@ async def remove_task_ref(task_id: str, url: str) -> str:
     return f"Removed the link {_ref_line(row)} from {_ref(task)}.\n  full_id: {tid}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def move_task(
     task_ids: str,
     destination_project_id: str = "",
@@ -2081,6 +2765,10 @@ async def _plan_move(
     if missing:
         return await _required_refusal(dest, missing, len(ids) > 1)
     card = _move_card(plan, tasks, dest_node, field_card, bool(wanted), count)
+    if await _held_chat():
+        # D-OP-14: a move changes who sees a row. The tasks of one call come
+        # from one project (`move.shared_source`).
+        card.update(await _access_lines(dest, beyond=str(tasks[0].get("project_id"))))
     drops = sorted(plan.get("drops") or [])
     if answers:
         # One task, with the answers: the promote door's route, which lands
@@ -2743,7 +3431,7 @@ def _ask_subtasks_once(rows: list[_FileRow]) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def file_tasks(moves: str, include_subtasks: str = "") -> str:
     """File several tasks into their projects with ONE approval, for example
     an inbox into the right projects. Use it for 2 or more tasks, even when
@@ -2983,7 +3671,7 @@ def _link_exists(rels: list[dict[str, Any]], row: _LinkRow) -> bool:
     return False
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def link_tasks_batch(links: str) -> str:
     """Link many pairs of tasks with ONE approval. Use it for 3 or more
     links. For 1 or 2 links, use link_tasks. links is a JSON list with one
@@ -3024,7 +3712,260 @@ async def link_tasks_batch(links: str) -> str:
     return _batch_receipt(LINK_WORDS, head, out, chosen, left, list(stuck))
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+# ── update_tasks: several edits, a different change for each task ───────────
+
+#: The keys of one `update_tasks` row: `update_task`'s own arguments.
+UPDATE_ROW_KEYS = (
+    "task_id",
+    "title",
+    "description",
+    "status",
+    "due",
+    "start",
+    "estimate_mins",
+    "tags",
+    "clear",
+    "priority",
+    "important",
+    "leveraged",
+    "type",
+    "fields",
+    "include_subtasks",
+)
+
+UPDATE_FORMAT = (
+    'changes is a JSON list with one object per task, for example [{"task_id": '
+    '"<full_id>", "due": "2026-03-01"}, {"task_id": "<full_id>", "status": "Done"}]. '
+    "A row takes the arguments of update_task."
+)
+
+UPDATE_WORDS = _BatchWords(
+    tool="update_tasks",
+    noun="task",
+    done="Changed",
+    do="change",
+    undone="not changed",
+    maybe="changed",
+    again="changed. Do not change them again",
+)
+
+
+def _update_arg(key: str, value: Any) -> Any:
+    """One row value as `update_task` takes it. A list joins with commas
+    and an object is JSON, so a model may send either shape."""
+    if value is None:
+        return 0 if key == "estimate_mins" else ""
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(v) for v in value)
+    if isinstance(value, dict):
+        return json.dumps(value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return value if key == "estimate_mins" else str(value)
+
+
+#: The order of a row's hint after the status and its subtasks line.
+_UPDATE_HINT_ORDER = (
+    "due_at", "start_date", "estimate_mins", "type", "priority", "important", "leveraged", "tags",
+)
+#: A date at the start of a value: ``2026-03-03`` or ``2026-03-03T…``.
+_ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}(?:$|T)")
+
+
+def _hint_value(key: str, value: Any) -> str:
+    """A value of a row hint, in the words of the single-task card: "none"
+    for an empty value, a list as a comma list, and an estimate in hours and
+    minutes."""
+    if value is None or value == "":
+        return "none"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value) or "none"
+    if key in ("due_at", "start_date") and isinstance(value, str) and _ISO_DAY.match(value):
+        day = date.fromisoformat(value.split("T", 1)[0])
+        return f"{day.day} {day:%b} {day.year}"
+    if key == "estimate_mins" and isinstance(value, int) and not isinstance(value, bool):
+        hours, mins = divmod(value, 60)
+        return " ".join(p for p in (f"{hours}h" if hours else "", f"{mins}m" if mins else "") if p) or "0m"
+    return str(value)
+
+
+#: The words of the single-task card for a hint key.
+_UPDATE_HINT_LABEL = {"due_at": "due", "start_date": "start", "estimate_mins": "estimate"}
+
+
+class _UpdateRow(_BatchRow):
+    """One row of an `update_tasks` call: one `update_task`, planned by
+    `_plan_task_edit` and sent on the route of `update_task`."""
+
+    def __init__(self, index: int, task_id: str, args: dict[str, Any]) -> None:
+        super().__init__(index)
+        self.task_id = task_id
+        self.args = args
+        self.task: dict[str, Any] = {}
+        self.plan: _EditPlan | None = None
+
+    @property
+    def ready(self) -> bool:
+        return not self.why and self.plan is not None
+
+    @property
+    def ref(self) -> str:
+        return _ref(self.task) if self.task else _hidden(self.task_id)
+
+    @property
+    def hint(self) -> str:
+        """What the row changes, as before → after. The facts with the most
+        effect come first, and the text of a title or description comes last.
+        The hint is never cut: a row too long for the card is refused."""
+        if self.plan is None:
+            return ""
+        card, before = self.plan.card, self.plan.before
+        first = ("status", "subtasks", *_UPDATE_HINT_ORDER)
+        last = ("title", "description")
+        keys = [k for k in first if k in card]
+        keys += [k for k in card if k not in first and k not in last]
+        keys += [k for k in last if k in card]
+        parts = []
+        for key in keys:
+            value = card[key]
+            name = _UPDATE_HINT_LABEL.get(key, key)
+            if key in before and before[key] != value:
+                old = _hint_value(key, before[key])
+                parts.append(f"{name}: {old} → {_hint_value(key, value)}")
+            else:
+                parts.append(f"{name} → {_hint_value(key, value)}")
+        return _unfence(", ".join(parts))
+
+    async def send(self) -> Any:
+        assert self.plan is not None
+        tid = uuid_of(self.task_id, "task_id")
+        updated = await patch(
+            f"/projects/tasks/{tid}", self.plan.payload, params=self.plan.params
+        )
+        updated["assignees"] = self.task.get("assignees") or []
+        return updated
+
+    def done(self, result: Any) -> list[str]:
+        assert self.plan is not None
+        lane = self.plan.lane
+        return [
+            *_task_line(result, str(lane.get("name")) if lane else ""),
+            *level_note(str(self.args.get("priority") or ""), result),
+            *_subtask_receipt(result, "subtasks_completed", "complete"),
+        ]
+
+
+def _update_rows(changes: str) -> list[_UpdateRow] | str:
+    """The rows of ``changes``, or the refusal that names the bad row."""
+    parsed = _json_rows(changes, UPDATE_ROW_KEYS, UPDATE_FORMAT, "update_tasks")
+    if isinstance(parsed, str):
+        return parsed
+    rows: list[_UpdateRow] = []
+    seen: dict[str, int] = {}
+    for i, item in enumerate(parsed, start=1):
+        try:
+            task_id = uuid_of(item.get("task_id"), f"Row {i}: task_id")
+        except GatewayRefusal as exc:
+            return f"{exc} Nothing was changed."
+        if task_id in seen:
+            return (
+                f"Rows {seen[task_id]} and {i} name the same task. Put every change of one "
+                "task in one row. Nothing was changed."
+            )
+        seen[task_id] = i
+        args = {k: _update_arg(k, v) for k, v in item.items() if k != "task_id"}
+        rows.append(_UpdateRow(i, task_id, args))
+    return rows
+
+
+async def _update_plan(row: _UpdateRow) -> None:
+    """Read the task and plan the row through `_plan_task_edit`. Reads only."""
+    est = row.args.get("estimate_mins")
+    # update_task's int argument refuses "1h" and 1.5. int() would drop the
+    # first and round the second, so the row says so instead.
+    bad_estimate = est not in (None, "", 0, "0") and (
+        _int_or_none(est) is None or (isinstance(est, float) and not est.is_integer())
+    )
+    try:
+        row.task = (await _task(row.task_id))[1]
+        if bad_estimate:
+            row.why = "the estimate must be a whole number of minutes"
+            return
+        planned = await _plan_task_edit(row.task, **row.args)
+    except GatewayRefusal as exc:
+        if not _named_refusal(exc):
+            raise
+        row.why = _refusal_words(exc)
+        return
+    if isinstance(planned, str):
+        row.why = _row_reason(planned)
+    elif planned.question:
+        # No prompt in the middle of a batch: the row names its own answer.
+        row.why = (
+            "the task has open subtasks. Ask the member whether to finish them too, "
+            "then change this task on its own"
+        )
+    else:
+        from acb_skills.ask_tools import _ROW_HINT_MAX
+
+        row.plan = planned
+        if len(row.hint) > _ROW_HINT_MAX:
+            row.plan = None
+            row.why = (
+                "the change is too long to show in full on one card row. "
+                "Change this task on its own"
+            )
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
+async def update_tasks(changes: str) -> str:
+    """Change many tasks with ONE approval, a different change for each task.
+    Use it for 3 or more related changes. For 1 or 2 changes, call
+    update_task once for each. For ONE value across many tasks, use
+    bulk_update. changes is a JSON list with one object per task:
+    {"task_id": "<full_id>", "due": "2026-03-01", "status": "Done"}. A row
+    takes the same arguments as update_task: title, description, status, due,
+    start, estimate_mins, tags, clear, priority, important, leveraged, type,
+    fields and include_subtasks. To change owners, use assign. Rows apply in
+    card order, so put a parent with include_subtasks before its child. The
+    tool checks every row first. A row that
+    update_task would refuse is named on the card and left out. A row that
+    needs an include_subtasks answer is left out too, with no question. The
+    member sees ONE card with a checkbox for each row, shown as before →
+    after, unticks a wrong one, and approves once. The receipt names each
+    task changed and each one that was not, with why. Never change a task
+    again that the receipt lists."""
+    rows = _update_rows(changes)
+    if isinstance(rows, str):
+        return rows
+    await _each_at_once(rows, _update_plan)
+    ready = [r for r in rows if r.ready]
+    stuck = [r for r in rows if not r.ready]
+    if not ready:
+        return "\n".join(
+            ["No change of these can be made. Nothing was changed."]
+            + [f"not changed: row {r.index} {r.ref}: {r.why}" for r in stuck]
+        )
+    body = {
+        f"cannot change {k}": f"{r.ref}: {_row_reason(r.why)}" for k, r in enumerate(stuck, start=1)
+    }
+    # No count on the card: a count goes stale when the member unticks a row.
+    more = " and the tasks below" if len(ready) > 1 else ""
+    asked = await _ask_batch(
+        "Update these tasks?",
+        f"{ready[0].ref}{more} · untick a task to leave it out",
+        body,
+        list(ready),
+    )
+    if isinstance(asked, str):
+        return asked
+    chosen, left = asked
+    out = await _apply_batch(chosen)
+    head = f"Changed {out.made} task{'s' if out.made != 1 else ''}:"
+    return _batch_receipt(UPDATE_WORDS, head, out, chosen, left, list(stuck))
+
+
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def watch(target_id: str, kind: str = "task", stop: bool = False) -> str:
     """Watch a task or a project for the member, so its changes reach their
     notifications. kind is task or project. stop=true unwatches. Watching
@@ -3053,7 +3994,7 @@ async def watch(target_id: str, kind: str = "task", stop: bool = False) -> str:
     return f"You now watch {label}.\n  full_id: {row.get('id')}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def complete(task_id: str, include_subtasks: str = "") -> str:
     """Mark a task done. This moves the task's SHARED status to its
     project's done lane, for everyone. To reopen, set a status by name with
@@ -3105,7 +4046,7 @@ def _defer_scope(task: dict[str, Any]) -> str:
     return "your inbox only"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def defer(task_id: str, until: str) -> str:
     """Hide a task from the member's own inbox until a date (YYYY-MM-DD).
     Mine only: the team's board does not change, even on a finished task."""
@@ -3125,7 +4066,7 @@ async def defer(task_id: str, until: str) -> str:
     return f"Deferred {_ref(task)} until {when} in your inbox.\n  full_id: {tid}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def unarchive_task(task_id: str) -> str:
     """Bring an archived task back onto its board. This is the undo of
     archiving. list_tasks with include_archived=true finds archived tasks."""
@@ -3148,7 +4089,7 @@ async def unarchive_task(task_id: str) -> str:
 # ── Projects ─────────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_project(
     name: str,
     parent_project_id: str = "",
@@ -3163,6 +4104,10 @@ async def create_project(
     label = str(name or "").strip()
     if not label:
         return "A project needs a name."
+    if lead.strip():
+        refused = await _held_param_refusal("create_project", "lead")
+        if refused:
+            return refused
     which = str(kind or "project").strip().lower()
     if which not in ("project", "folder"):
         return "kind is project or folder."
@@ -3320,7 +4265,7 @@ def _level_refusal(node: dict[str, Any], payload: dict[str, Any]) -> str:
     return ""
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def update_project(
     project_id: str,
     name: str = "",
@@ -3347,6 +4292,10 @@ async def update_project(
     months are measured from. clear switches settings off: icon, icon_slot,
     archive_after_months, close_after_months (comma-separated)."""
     pid = uuid_of(project_id, "project_id")
+    if lead.strip():
+        refused = await _held_param_refusal("update_project", "lead")
+        if refused:
+            return refused
     node = await get(f"/projects/nodes/{pid}")
     settings = _project_settings(
         node, icon, icon_slot, archive_after_months, close_after_months, timezone, clear
@@ -3445,7 +4394,7 @@ async def _report_change(
     return f"Updated report {data(row.get('name'))}.\n  full_id: {rid}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def report_save(
     name: str, project_id: str = "", sections: str = "", weeks: int = 0, report_id: str = ""
 ) -> str:
@@ -3522,8 +4471,82 @@ DISPOSITIONS = ("INBOX", "NEXT", "WAITING", "SOMEDAY", "PROJECT", "REFERENCE", "
 ENERGIES = ("low", "medium", "high")
 
 
-def status_edit_refusal(status_set: dict[str, Any], node_name: Any) -> str:
+def status_guard_on(status_set: dict[str, Any]) -> bool:
+    """True when the status-set read says ``guard_on`` (PST-4).
+
+    The tool never reads the setting. The route is the ONE reader of
+    ``STATUS_SET_GUARD_ORGS`` and returns the answer. Only an explicit
+    ``True`` counts, so an older gateway means "off".
+    """
+    return status_set.get("guard_on") is True
+
+
+def _n_projects(n: int) -> str:
+    return f"{n} project{'' if n == 1 else 's'}"
+
+
+def shared_reach(status_set: dict[str, Any]) -> int:
+    """N of "changes the statuses of {owner} for {N} projects" (§9.4 ``reach``).
+
+    The read counts each board that an edit changes. An older read has
+    ``used_by`` only. A project that uses a set is always one of them.
+    """
+    n = int(status_set.get("reach") or status_set.get("used_by") or 0)
+    return max(n, 1) if status_set.get("owns") is False else n
+
+
+def shared_set_line(status_set: dict[str, Any]) -> str:
+    """The card words when an edit reaches other projects, or ``""``.
+
+    ``""`` with the flag off, so the card is as before this slice.
+    """
+    if not status_guard_on(status_set):
+        return ""
+    n = shared_reach(status_set)
+    if n < 2 and status_set.get("owns") is not False:
+        return ""
+    return (
+        f"Changes the statuses of {data(status_set.get('owner_name'))} "
+        f"for {_n_projects(n)}"
+    )
+
+
+def shared_set_refusal(status_set: dict[str, Any], node_name: Any) -> str:
+    """The refusal when a project that does not own its set asks for a change.
+
+    Said BEFORE any card (PST-4, task 1790). On 2026-11-05 the chat added and
+    renamed lanes of a set that 28 projects share, because the id it passed
+    was a subproject that used the space's set. The words name the owner and
+    N, and offer ``set_status_set`` mode=own first.
+    """
+    owner = data(status_set.get("owner_name"))
+    kind = "space" if status_set.get("owner_kind") == "space" else "project"
+    n = shared_reach(status_set)
+    return "\n".join([
+        f"{REFUSED} {data(node_name)} uses the statuses of the {kind} {owner}. "
+        f"{_n_projects(n)} {'shares' if n == 1 else 'share'} that set, so a change here "
+        f"changes {'it' if n == 1 else f'all {n}'}. "
+        "Nothing was done.",
+        "Next: To change the statuses of this project only, call set_status_set "
+        "with mode=own first. That gives the project a copy, and then you change "
+        "the copy. To change the shared set on purpose, ask the member. Then call "
+        "this tool again with change_whole_set=true.",
+    ])
+
+
+def status_edit_refusal(
+    status_set: dict[str, Any],
+    node_name: Any,
+    *,
+    guard_shared: bool = False,
+    change_shared: bool = False,
+) -> str:
     """The server's "no" before a status card, or ``""`` to go on.
+
+    PST-4: with ``guard_shared`` and the read's ``guard_on``, a project that
+    does not own its set is also refused (:func:`shared_set_refusal`), unless
+    the member asked for the shared change (``change_shared``). The flag is
+    the route's (``guard_on``). With it off, nothing here changes.
 
     *status_set* is ``GET /projects/nodes/{id}/status-set``. Its ``may_edit``
     is ``core.can_manage_settings``, the predicate the status write checks,
@@ -3535,6 +4558,13 @@ def status_edit_refusal(status_set: dict[str, Any], node_name: Any) -> str:
     write then decides. Fence: ``tests/unit/test_projects_agent_grants.py``.
     """
     if status_set.get("may_edit") is not False:
+        if (
+            guard_shared
+            and not change_shared
+            and status_guard_on(status_set)
+            and status_set.get("owns") is False
+        ):
+            return shared_set_refusal(status_set, node_name)
         return ""
     said = str(status_set.get("edit_refusal") or "").strip()
     lines = [
@@ -3686,17 +4716,79 @@ def _yes_no(value: str, what: str) -> bool | None:
     raise GatewayRefusal(f"{what} is yes or no.")
 
 
+def _category_words(category: Any) -> str:
+    """A category key in words, for text the model reads: in_progress → in progress."""
+    return str(category or "").replace("_", " ")
+
+
 def _next_position(rows: list[dict[str, Any]]) -> int:
     taken = [int(r.get("position") or 0) for r in rows]
     return (max(taken) + 10) if taken else 10
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
-async def create_status(project_id: str, name: str, category: str = "todo", color: str = "") -> str:
+def _place_args(slot: int, after: str) -> tuple[int, str]:
+    """``slot`` (1-based, 0 = not given) and ``after`` (a lane name, empty = not given)."""
+    return max(int(slot or 0), 0), str(after or "").strip()
+
+
+def _place_refusal(
+    rows: list[dict[str, Any]], cat: str, self_id: str, slot: int, after: str,
+) -> str:
+    """The refusal BEFORE the card when the place cannot be: a slot past the
+    stage, or an ``after`` that is not a lane of the stage. ``""`` to go on.
+
+    The route refuses the same places with a 422. Saying it first means the
+    member never approves a card that cannot succeed (PST-4 review).
+    """
+    others = [r for r in rows if r.get("category") == cat and str(r.get("id")) != self_id]
+    size = len(others) + 1
+    stage = _category_words(cat)
+    names = ", ".join(data(r.get("name")) for r in others)
+    if after:
+        if any(str(r.get("name") or "").strip().lower() == after.lower() for r in others):
+            return ""
+        return (
+            f"{REFUSED} No lane named {data(after)} is in the {stage} stage"
+            + (f". Its other lanes, in order: {names}." if names else ", and it has no other lane.")
+            + " Nothing was done.\nNext: Name a lane of this stage in after, or pass slot."
+        )
+    if slot > size:
+        return (
+            f"{REFUSED} Slot {slot} is outside the {stage} stage. The stage has {size} "
+            f"place{'' if size == 1 else 's'} for this lane, so the slot is 1 to {size}. "
+            "Nothing was done.\nNext: Pass a slot in that range, or name a lane of this "
+            "stage in after."
+        )
+    return ""
+
+
+def _place_words(rows: list[dict[str, Any]], cat: str, self_id: str, slot: int, after: str) -> str:
+    """A place for the card: ``3 of 4 in its stage`` or ``after «Review»``."""
+    if after:
+        return f"after {data(after)}"
+    size = len([r for r in rows if r.get("category") == cat and str(r.get("id")) != self_id]) + 1
+    return f"{slot} of {size} in its stage"
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
+async def create_status(
+    project_id: str,
+    name: str,
+    category: str = "todo",
+    color: str = "",
+    slot: int = 0,
+    after: str = "",
+    change_whole_set: bool = False,
+) -> str:
     """Add a status lane. category is backlog, todo, in_progress, done,
-    cancelled or triage. The lane lands LAST in the set the project uses;
-    the card names the project that owns that set, because a subproject
-    may inherit its lanes from a parent. Deleting a lane is a guarded act."""
+    cancelled or triage. color is one of six hues: gray, red, amber, green,
+    blue or violet. Another colour maps to the nearest hue. The lane lands
+    LAST in its stage in the set the project uses. slot (1-based, inside the
+    stage) or after (a lane name of the same stage) places it elsewhere. The
+    card names the project that owns that set, because a subproject may
+    inherit its lanes from a parent. Pass change_whole_set=true only when the
+    member asks to change a set that other projects share. Deleting a lane is
+    a guarded act."""
     pid, node = await _node(project_id)
     label = str(name or "").strip()
     if not label:
@@ -3705,30 +4797,62 @@ async def create_status(project_id: str, name: str, category: str = "todo", colo
     if cat not in STATUS_CATEGORIES:
         return f"category is one of {', '.join(STATUS_CATEGORIES)}."
     owner = (await get(f"/projects/nodes/{pid}/status-set")) or {}
-    refused = status_edit_refusal(owner, node.get("name"))
+    refused = status_edit_refusal(
+        owner, node.get("name"), guard_shared=True, change_shared=change_whole_set,
+    )
     if refused:
         return refused
+    guard = status_guard_on(owner)
+    place, behind = _place_args(slot, after)
     rows = await _vocab(pid, "statuses")
     if _matches_by_name(rows, label):
         return f"{data(label)} already exists here. The statuses are: {_names(rows)}."
-    payload: dict[str, Any] = {"name": label, "category": cat, "position": _next_position(rows)}
+    bad_place = _place_refusal(rows, cat, "", place, behind) if (place or behind) else ""
+    if bad_place:
+        return bad_place
+    payload: dict[str, Any] = {"name": label, "category": cat}
+    shown: dict[str, Any] = {}
+    # slot and after are open in every org (a tool schema cannot be dark). The
+    # flag only decides what happens with NO place: last in the stage by slot
+    # (on), or the old raw position (off).
+    if behind:
+        payload["after"] = behind
+    elif place or guard:
+        payload["slot"] = place or len([r for r in rows if r.get("category") == cat]) + 1
+    else:
+        payload["position"] = _next_position(rows)
+    if "slot" in payload or "after" in payload:
+        shown["position"] = _place_words(rows, cat, "", payload.get("slot", 0), behind)
     if color.strip():
-        payload["color"] = color.strip()
+        payload["color"] = hue_of(color)
     set_of = "this project" if owner.get("owns") else data(owner.get("owner_name"))
+    shared = shared_set_line(owner)
+    wire = {k: v for k, v in payload.items() if k not in ("slot", "after")}
     if not await _confirm(
         title="Add this status?",
-        detail=f"{data(label)} [{cat}] in {data(node.get('name'))}",
-        context=_fields_block({**payload, "project": data(node.get("name")), "status set": set_of}),
+        detail=(
+            f"{data(label)} in {data(node.get('name'))}"
+            + (f". {shared}" if shared else "")
+        ),
+        context=_fields_block(
+            {**wire, **shown, "project": data(node.get("name")), "status set": set_of}
+        ),
     ):
         return CANCELLED
     row = await post(f"/projects/nodes/{pid}/statuses", payload)
+    where = (
+        f"to the statuses of {data(owner.get('owner_name'))}, used by {data(node.get('name'))}"
+        if guard and owner.get("owns") is False
+        else f"to {data(node.get('name'))}"
+    )
     return (
-        f"Added status {data(row.get('name') or label)} [{row.get('category') or cat}] "
-        f"to {data(node.get('name'))}.\n  status_id: {row.get('id')}"
+        f"Added status {data(row.get('name') or label)} "
+        f"(category: {_category_words(row.get('category') or cat)}) "
+        f"{where}.\n  status_id: {row.get('id')}"
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def update_status(
     project_id: str,
     status: str,
@@ -3736,16 +4860,33 @@ async def update_status(
     category: str = "",
     color: str = "",
     position: int = -1,
+    slot: int = 0,
+    after: str = "",
+    change_whole_set: bool = False,
 ) -> str:
     """Rename, recategorise, recolour or reorder one lane, found by NAME in
     the project's set. Only the arguments you pass change. A rename changes
-    what every task in the lane reads. The card shows before → after."""
+    what every task in the lane reads. color is one of gray, red, amber,
+    green, blue or violet. To reorder, pass slot (1-based, inside the stage of
+    the lane) or after (a lane name of the same stage). A lane never leaves
+    its stage by a reorder. position is a raw sort key, so do not guess it.
+    Pass change_whole_set=true only when the member asks to change a set that
+    other projects share. The card shows before → after."""
     pid, node = await _node(project_id)
+    owner = (await get(f"/projects/nodes/{pid}/status-set")) or {}
     refused = status_edit_refusal(
-        (await get(f"/projects/nodes/{pid}/status-set")) or {}, node.get("name")
+        owner, node.get("name"), guard_shared=True, change_shared=change_whole_set,
     )
     if refused:
         return refused
+    guard = status_guard_on(owner)
+    place, behind = _place_args(slot, after)
+    if guard and position >= 0:
+        return (
+            "position is a raw sort key, and the tool does not send it. Pass slot "
+            "(1-based, inside the stage of the lane) or after (a lane name of the "
+            "same stage). Nothing was done."
+        )
     row = await _resolve_status(pid, status)
     sid = uuid_of(str(row.get("id")), "status_id")
     payload: dict[str, Any] = {}
@@ -3760,27 +4901,47 @@ async def update_status(
         payload["category"] = cat
         before["category"] = row.get("category")
     if color.strip():
-        payload["color"] = color.strip()
+        payload["color"] = hue_of(color)
         before["color"] = row.get("color")
     if position >= 0:
         payload["position"] = int(position)
         before["position"] = row.get("position")
+    send = dict(payload)
+    if place or behind:
+        if place and behind:
+            return "Pass slot or after, not both."
+        rows = await _vocab(pid, "statuses")
+        cat = str(payload.get("category") or row.get("category"))
+        bad_place = _place_refusal(rows, cat, str(row.get("id")), place, behind)
+        if bad_place:
+            return bad_place
+        here = [r for r in rows if r.get("category") == row.get("category")]
+        send["after" if behind else "slot"] = behind or place
+        payload["position"] = _place_words(rows, cat, str(row.get("id")), place, behind)
+        if row.get("category") == cat:
+            at = next((i for i, r in enumerate(here) if r.get("id") == row.get("id")), 0)
+            before["position"] = f"{at + 1} of {len(here)} in its stage"
     if not payload:
         return "Nothing to change. Pass at least one field."
+    shared = shared_set_line(owner)
     if not await _confirm(
         title="Change this status?",
-        detail=f"{data(row.get('name'))} in {data(node.get('name'))}",
+        detail=(
+            f"{data(row.get('name'))} in {data(node.get('name'))}"
+            + (f". {shared}" if shared else "")
+        ),
         context=_fields_block({**payload, "project": data(node.get("name"))}, before=before),
     ):
         return CANCELLED
-    updated = await patch(f"/projects/statuses/{sid}", payload)
+    updated = await patch(f"/projects/statuses/{sid}", send)
     return (
         f"Updated status {data(updated.get('name') or row.get('name'))} "
-        f"[{updated.get('category') or row.get('category')}].\n  status_id: {sid}"
+        f"(category: {_category_words(updated.get('category') or row.get('category'))}).\n"
+        f"  status_id: {sid}"
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_type(
     project_id: str,
     name: str,
@@ -3794,7 +4955,12 @@ async def create_type(
     start as it. is_epic makes it a top level in the hierarchy rule.
     org_wide=true mints it for every project, and the server decides
     whether the member may. An org-wide type cannot be the default.
+    color is one of gray, red, amber, green, blue or violet.
     Deleting a type is a guarded act; tasks keep existing, untyped."""
+    if org_wide:
+        refused = await _held_param_refusal("create_type", "org_wide")
+        if refused:
+            return refused
     pid, node = await _node(project_id)
     label = str(name or "").strip()
     if not label:
@@ -3807,7 +4973,7 @@ async def create_type(
     if icon.strip():
         payload["icon"] = icon.strip()
     if color.strip():
-        payload["color"] = color.strip()
+        payload["color"] = hue_of(color)
     if is_default and org_wide:
         # The route's rule (admin.create_type): the default is each project's
         # own choice. Refused here, so the card is not shown for a 422.
@@ -3829,7 +4995,7 @@ async def create_type(
     return f"Added type {data(row.get('name') or label)} to {where}.\n  type_id: {row.get('id')}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def update_type(
     project_id: str,
     type_name: str,
@@ -3842,7 +5008,8 @@ async def update_type(
     """Rename, re-icon, recolour a task type found by NAME, make it the
     project's default (make_default=true), or set epic to yes or no. Only
     the arguments you pass change. The Epic system type cannot be renamed
-    or un-flagged; the route says so."""
+    or un-flagged; the route says so. color is one of gray, red, amber,
+    green, blue or violet."""
     pid, node = await _node(project_id)
     rows = await _vocab(pid, "types")
     row = _one_named(rows, type_name, "type")
@@ -3856,7 +5023,7 @@ async def update_type(
         payload["icon"] = icon.strip()
         before["icon"] = row.get("icon")
     if color.strip():
-        payload["color"] = color.strip()
+        payload["color"] = hue_of(color)
         before["color"] = row.get("color")
     demoted = ""
     if make_default:
@@ -3921,7 +5088,7 @@ def _field_of(rows: list[dict[str, Any]], wanted: str) -> dict[str, Any]:
     raise GatewayRefusal(f"{data(wanted)} matches more than one field. Pass its key.")
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_field(
     project_id: str,
     name: str,
@@ -3936,6 +5103,10 @@ async def create_field(
     for select and multi_select. required=true means a task cannot MOVE
     into this project without a value. org_wide=true mints it for every
     project. The key is derived from the name and never changes."""
+    if org_wide:
+        refused = await _held_param_refusal("create_field", "org_wide")
+        if refused:
+            return refused
     pid, node = await _node(project_id)
     label = str(name or "").strip()
     if not label:
@@ -3985,7 +5156,7 @@ async def create_field(
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def update_field(
     project_id: str,
     field: str,
@@ -4042,14 +5213,19 @@ async def update_field(
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_tag(
     project_id: str, name: str, color: str = "", description: str = "", org_wide: bool = False
 ) -> str:
     """Register a tag on the project's root, with a colour and a
     description. A tag typed onto a task registers itself; this is for
-    naming one before it is used, or giving it a colour. org_wide=true
+    naming one before it is used, or giving it a colour (gray, red, amber,
+    green, blue or violet). org_wide=true
     mints it for every project. Deleting a tag is a guarded act."""
+    if org_wide:
+        refused = await _held_param_refusal("create_tag", "org_wide")
+        if refused:
+            return refused
     pid, node = await _node(project_id)
     label = str(name or "").strip()
     if not label:
@@ -4060,7 +5236,7 @@ async def create_tag(
     root = await _root_of(pid, node)
     payload: dict[str, Any] = {"name": label}
     if color.strip():
-        payload["color"] = color.strip()
+        payload["color"] = hue_of(color)
     if description.strip():
         payload["description"] = description.strip()
     if org_wide:
@@ -4076,13 +5252,14 @@ async def create_tag(
     return f"Added tag {data(row.get('name') or label)} to {where}.\n  tag_id: {row.get('id')}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def update_tag(
     project_id: str, tag: str, name: str = "", color: str = "", description: str = ""
 ) -> str:
     """Rename, recolour or describe a tag found by NAME. A rename rewrites
     every task that wears the tag, and the card says how many. Renaming
-    onto an existing tag is refused by the route; merging is a guarded act."""
+    onto an existing tag is refused by the route. color is one of gray, red,
+    amber, green, blue or violet. Merging is a guarded act."""
     pid, node = await _node(project_id)
     row = _one_named(await _vocab(pid, "tags"), tag, "tag")
     gid = uuid_of(str(row.get("id")), "tag_id")
@@ -4092,7 +5269,7 @@ async def update_tag(
         payload["name"] = name.strip()
         before["name"] = row.get("name")
     if color.strip():
-        payload["color"] = color.strip()
+        payload["color"] = hue_of(color)
         before["color"] = row.get("color")
     if description.strip():
         payload["description"] = description.strip()
@@ -4132,7 +5309,7 @@ async def update_tag(
 # ── A comment of the member's own ────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def edit_comment(task_id: str, comment_id: str, body: str) -> str:
     """Reword a comment the member wrote. comment_id comes from task_detail's
     timeline or from comment's receipt. Only the author can edit, and the
@@ -4161,7 +5338,10 @@ async def edit_comment(task_id: str, comment_id: str, body: str) -> str:
     if not await _confirm(
         title="Edit your comment?",
         detail=f"on {_ref(task)}",
-        context=_fields_block({"body": text_body}, before={"body": old.get("body")}),
+        context=_fields_block(
+            {"body": text_body, **_told(text_body, old=old.get("body") or "")},
+            before={"body": old.get("body")},
+        ),
     ):
         return CANCELLED
     await patch(f"/projects/comments/{aid}", {"body": text_body})
@@ -4524,7 +5704,7 @@ def _weekly_days(
     return str(day), note
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def set_recurrence(
     task_id: str,
     freq: str = "",
@@ -4587,7 +5767,7 @@ async def set_recurrence(
 # ── The member's own: a private capture, and the overlay ─────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_personal_task(
     title: str, notes: str = "", due: str = "", context: str = "", next_action: str = "",
     block_start: str = "", block_end: str = "",
@@ -4655,10 +5835,15 @@ async def create_personal_task(
 # off the routes answer 404, so the tool refuses. Both refusals send the
 # model to a private task with a block (``create_personal_task``).
 #
-# **Confirm, for now.** Each write shows ONE card through ``_confirm``, the
-# one door, until the act-at-once seam of CF-6 exists
-# (``chat_first_surface.md``). Then set, update, resolve, reopen and
-# reschedule act at once with Undo. The promote keeps its card: it is class C
+# **Act at once (WS-66 RX-2, owner 2026-11-01).** A reminder is private, it
+# reaches nobody else, and Undo reverses it. So set, update, resolve, reopen
+# and reschedule act at once in a chat that read no outside mail
+# (``_reminder_acts_at_once``), and the receipt carries the Undo (the ``undo:``
+# line of ``_reminder_receipt``). A chat that read outside mail, a held run, a
+# delegated run and a run whose mark is unknown keep the one card through
+# ``_confirm``, the one door (``egress.write_must_show_card``). There is no
+# general act-at-once seam here: CF-6 stays unbuilt, and only these five tools
+# read ``_reminder_acts_at_once``. The promote keeps its card: it is class C
 # and lives in ``guarded.py``.
 #
 # **Time.** The tool resolves it. ``at`` is ISO 8601 with an offset, a wall
@@ -4706,6 +5891,32 @@ async def _reminder_gate(tool: str) -> str:
     Then the flag (``reads.reminders_off``), one read of the list route.
     """
     return no_card_channel(tool) or await reminders_off()
+
+
+async def _reminder_acts_at_once() -> bool:
+    """True when a reminder write in this run needs no card (WS-66 RX-2).
+
+    The owner rule: a chat that read outside mail never acts at once. It shows
+    the card. ``egress.write_must_show_card`` is the one reader of that rule,
+    and it reads the mark of the session as well as ``no_egress``. A chat run
+    binds ``no_egress=False`` in a marked chat, so ``no_egress`` alone is not
+    enough. Any fault reads as the card. A run with no card channel never gets
+    here: ``_reminder_gate`` refused it first.
+    """
+    try:
+        from acb_skills.egress import write_must_show_card
+
+        return not await write_must_show_card()
+    except Exception:  # no platform package, or a fault: the card shows
+        return False
+
+
+async def _ask_reminder(title: str, detail: str, context: str) -> bool:
+    """``True`` to write: at once in a chat that read no outside mail, else
+    after the one card."""
+    if await _reminder_acts_at_once():
+        return True
+    return bool(await _confirm(title=title, detail=detail, context=context))
 
 
 class _When:
@@ -4879,12 +6090,47 @@ def _reminder_card(row: dict[str, Any] | None) -> dict[str, Any]:
     return card
 
 
-def _reminder_receipt(head: str, row: dict[str, Any], hint: str = "") -> str:
+#: What the model says after a write: the receipt card shows the time and the Undo.
+_RECEIPT_CARD = "The member sees a receipt card with an Undo, so say it in one short line."
+#: What the model says when the route found the same open reminder: no write.
+_ALREADY_SET = (
+    "This reminder exists, so no second one was set. Say so in one short line, "
+    "and do not set it again."
+)
+#: The fields that the Undo of ``update_reminder`` can put back.
+_UNDO_PATCH_FIELDS = frozenset({"title", "kind", "fire_at", "tz"})
+
+
+def _reminder_was(row: dict[str, Any] | None, payload: dict[str, Any]) -> dict[str, Any]:
+    """The stored values that a change replaced, for the Undo on the card."""
+    if row is None:
+        return {}
+    was: dict[str, Any] = {}
+    if "title" in payload:
+        was["title"] = _reminder_title(str(row.get("title") or ""))
+    if "kind" in payload:
+        was["kind"] = row.get("kind")
+    if "fire_at" in payload:
+        was["fire_at"] = row.get("fire_at")
+        was["zone"] = row.get("tz") if _valid_zone(row.get("tz")) else None
+    return was
+
+
+def _reminder_receipt(
+    head: str, row: dict[str, Any], hint: str = "", *,
+    undo: str = "", was: dict[str, Any] | None = None,
+) -> str:
     """The reply after a write: the SAVED row, in the route's own words.
 
     The time is ``saved_when(row)``, so it is the instant and the zone that
     the server stored. It is never the argument the tool was given. The last
     line is for the model only: the member's receipt does not show it.
+
+    The machine lines (``fire_at``, ``zone``, ``task_id``, ``undo`` and
+    ``was_*``) are for the receipt card of the app (WS-66 RX-2): it draws
+    the exact time, the relative time and the Undo from them. The member
+    never reads them. ``undo`` names the way back: ``drop`` (a new reminder),
+    ``reschedule`` or ``patch`` (the ``was_*`` values), else no Undo.
     """
     rid = row.get("id")
     if not rid:
@@ -4895,15 +6141,27 @@ def _reminder_receipt(head: str, row: dict[str, Any], hint: str = "") -> str:
     facts = [f"state {row.get('state') or '?'}", f"kind {row.get('kind') or 'action'}"]
     if row.get("important"):
         facts.append("important")
-    return "\n".join([
+    lines = [
         f"{head}: {data(row.get('title'))} at {saved_when(row)}.",
         "  " + " · ".join(facts) + " · private, yours. A reminder, not a task.",
         f"  reminder_id: {rid}",
-        for_the_model(f"{QUOTE_THE_TIME} {hint}".strip()),
-    ])
+    ]
+    if row.get("fire_at"):
+        lines.append(f"  fire_at: {row['fire_at']}")
+    if _valid_zone(row.get("tz")):
+        lines.append(f"  zone: {row['tz']}")
+    if row.get("subject_kind") == "task" and row.get("subject_id"):
+        lines.append(f"  task_id: {row['subject_id']}")
+    if undo:
+        lines.append(f"  undo: {undo}")
+        for key, value in (was or {}).items():
+            if value not in (None, ""):
+                lines.append(f"  was_{key}: {' '.join(str(value).split())}")
+    lines.append(for_the_model(f"{QUOTE_THE_TIME} {hint}".strip()))
+    return "\n".join(lines)
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def set_reminder(
     title: str,
     at: str = "",
@@ -4934,7 +6192,9 @@ async def set_reminder(
     early"). subject_kind (task, email_thread, crm_contact, wa_chat or
     project) and subject_id link one object. estimate_minutes is your guess
     of how long the act takes. important is yes or no.
-    The member answers one card first. Then quote the time and the zone of
+    The reminder is saved at once, and the member sees a receipt with an
+    Undo. In a chat that read outside mail, the member answers one card first.
+    Always quote the time and the zone of
     the reply exactly, such as "Fri 31 Oct, 09:00 IST". Never say that a
     reminder is set when the reply does not say so. When reminders are not
     on, or this chat cannot ask the member, the reply says so: tell the
@@ -4975,15 +6235,17 @@ async def set_reminder(
     if flag:
         payload["important"] = card["important"] = True
     card["visible to"] = "you only"
-    if not await _confirm(
+    if not await _ask_reminder(
         title="Set this reminder?", detail=data(label), context=_fields_block(card),
     ):
         return _not_confirmed()
     row = await post(REMINDERS, payload) or {}
-    return _reminder_receipt("Reminder set", row)
+    if row.get("already") is True:
+        return _reminder_receipt("Reminder already set", row, _ALREADY_SET)
+    return _reminder_receipt("Reminder set", row, _RECEIPT_CARD, undo="drop")
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def update_reminder(
     reminder_id: str,
     title: str = "",
@@ -5003,7 +6265,7 @@ async def update_reminder(
     changes. at and in_minutes take the time as set_reminder does, and a new
     time is a move the member asked for. clear empties notes, link or
     estimate. Pass the reminder_id that list_reminders or set_reminder
-    printed. The card shows the old and the new value. Then quote the time
+    printed. It acts at once, and the receipt has an Undo. Quote the time
     and the zone of the reply exactly."""
     gate = await _reminder_gate("update_reminder")
     if gate:
@@ -5029,14 +6291,20 @@ async def update_reminder(
     if not payload:
         return "Nothing to change. Pass at least one field."
     shown = card if row is not None else {**_reminder_card(None), **card}
-    if not await _confirm(
+    if not await _ask_reminder(
         title="Change this reminder?",
         detail=_reminder_named(row),
         context=_fields_block(shown, before=_reminder_before(row, card)),
     ):
         return _not_confirmed()
     saved = await patch(f"{REMINDERS}/{rid}", payload) or {}
-    return _reminder_receipt("Reminder changed", saved)
+    # Undo restores the title, the kind and the time. A change to any other
+    # field (notes, link, estimate, important) has no Undo on the card.
+    restorable = row is not None and set(payload) <= _UNDO_PATCH_FIELDS
+    return _reminder_receipt(
+        "Reminder changed", saved, _RECEIPT_CARD,
+        undo="patch" if restorable else "", was=_reminder_was(row, payload),
+    )
 
 
 def _reminder_words(
@@ -5117,7 +6385,7 @@ def _reminder_before(row: dict[str, Any] | None, card: dict[str, Any]) -> dict[s
     return {k: ("none" if v in (None, "") else v) for k, v in stored.items() if k in card}
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def resolve_reminder(reminder_id: str, answer: str = "done") -> str:
     """The member's answer to one of their OPEN reminders: answer is done
     ("I did it") or drop ("forget it"). Either closes it. reopen_reminder
@@ -5133,7 +6401,7 @@ async def resolve_reminder(reminder_id: str, answer: str = "done") -> str:
     if row is None and whole:
         return _reminder_not_found()
     card = {**_reminder_card(row), "undo": "reopen the reminder"}
-    if not await _confirm(
+    if not await _ask_reminder(
         title="Mark this reminder done?" if word == "done" else "Drop this reminder?",
         detail=_reminder_named(row),
         context=_fields_block(card),
@@ -5144,7 +6412,7 @@ async def resolve_reminder(reminder_id: str, answer: str = "done") -> str:
     return _reminder_receipt(head, saved, "reopen_reminder undoes this answer.")
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def reopen_reminder(reminder_id: str) -> str:
     """Undo a done or a drop: the reminder is open again, in the state it
     had before the answer. A reminder that became a task (promote_reminder)
@@ -5158,7 +6426,7 @@ async def reopen_reminder(reminder_id: str) -> str:
     if row is not None and row.get("resolution") == "promoted":
         return "This reminder became a task, so it cannot reopen. The task is the record now."
     card = {**_reminder_card(row), "reopens": "it goes back to its state before the answer"}
-    if not await _confirm(
+    if not await _ask_reminder(
         title="Reopen this reminder?", detail=_reminder_named(row), context=_fields_block(card),
     ):
         return _not_confirmed()
@@ -5166,7 +6434,7 @@ async def reopen_reminder(reminder_id: str) -> str:
     return _reminder_receipt("Reopened", saved)
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def reschedule_reminder(
     reminder_id: str, at: str = "", in_minutes: int = 0, snooze: str = "",
 ) -> str:
@@ -5175,8 +6443,8 @@ async def reschedule_reminder(
     "later" or "snooze it for an hour": then the time must be within 366
     days, and smart is refused. With no snooze it is a move to a named time.
     at="smart" asks Metorite to pick the next good slot. If the server cannot
-    pick one yet, the reply says so and nothing moves: then name a time. The
-    card shows the old and the new time. Then quote the time and the zone of
+    pick one yet, the reply says so and nothing moves: then name a time. It
+    acts at once, and the receipt has an Undo. Quote the time and the zone of
     the reply exactly."""
     is_snooze = bool(_yes_no(snooze, "snooze"))
     gate = await _reminder_gate("reschedule_reminder")
@@ -5193,7 +6461,7 @@ async def reschedule_reminder(
         payload["tz"] = when.zone
     card = {**_reminder_card(row), **when.card_lines()}
     before = {"when": saved_when(row)} if row is not None else None
-    if not await _confirm(
+    if not await _ask_reminder(
         title="Snooze this reminder?" if is_snooze else "Move this reminder?",
         detail=_reminder_named(row),
         context=_fields_block(card, before=before),
@@ -5210,7 +6478,10 @@ async def reschedule_reminder(
                 + "\n" + for_the_model("Name a time, and move the reminder there.")
             )
         raise
-    return _reminder_receipt("Moved" if not is_snooze else "Snoozed", saved)
+    return _reminder_receipt(
+        "Moved" if not is_snooze else "Snoozed", saved, _RECEIPT_CARD,
+        undo="reschedule" if row is not None else "", was=_reminder_was(row, payload),
+    )
 
 
 #: The dispositions that reopen a finished task on the board when stated
@@ -5431,7 +6702,7 @@ async def _overlay_times(given: dict[str, str], values: dict[str, Any]) -> None:
             values[_OVERLAY_TIMES[arg]] = _instant(raw, arg, zone)
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def set_my_overlay(
     task_id: str,
     disposition: str = "",

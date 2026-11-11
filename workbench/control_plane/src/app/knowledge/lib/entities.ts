@@ -150,7 +150,7 @@ export function ownerHref(entity: Pick<Entity, "type" | "ref_table" | "ref_id">)
     case "workstream":
       return `/projects?project=${id}`;
     case "workflow":
-      return entity.ref_table === "workflows" ? `/workflows/${id}` : null;
+      return entity.ref_table === "workflows" ? `/studio/workflows/${id}` : null;
     default:
       return null;
   }

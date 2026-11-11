@@ -172,13 +172,16 @@ def _seed(world: Any, member: str, fire_at: datetime, *, org: str | None = None,
     """One reminder, as the superuser, past RLS. ``cols`` sets any column."""
     values = {"title": "Get a haircut", "kind": "action", "state": "scheduled",
               "important": False, "estimate_minutes": None, "cycles": 0,
-              "first_fired_at": None, "next_check_at": None, **cols}
+              "first_fired_at": None, "next_check_at": None,
+              "subject_kind": None, "subject_id": None, **cols}
     with world.p.admin_engine.begin() as c:
         return str(c.execute(text(
             "INSERT INTO reminders (organization_id, member_email, title, kind, fire_at, "
-            "state, important, estimate_minutes, cycles, first_fired_at, next_check_at) "
+            "state, important, estimate_minutes, cycles, first_fired_at, next_check_at, "
+            "subject_kind, subject_id) "
             "VALUES (CAST(:o AS uuid), :m, :title, :kind, :fire_at, :state, :important, "
-            ":estimate_minutes, :cycles, :first_fired_at, :next_check_at) RETURNING id"),
+            ":estimate_minutes, :cycles, :first_fired_at, :next_check_at, "
+            ":subject_kind, :subject_id) RETURNING id"),
             {"o": org or world.p.org_b, "m": member, "fire_at": fire_at, **values},
         ).scalar_one())
 
@@ -846,3 +849,66 @@ def test_r8_every_member_move_restarts_the_72_hour_window(world) -> None:
     _ticks(world, row.next_check_at)
     assert _row(world, rid).state == "due"
     assert _events(world, rid) == ["snoozed", "fired", "check_back"]
+
+
+# ── The Reminders band of My Day (RX-3) ────────────────────────────────────
+
+
+def _band(world: Any, member: str, now: datetime,
+          subjects: list[tuple[str, str, str]] | None = None) -> dict:
+    from tests.unit._projects_fakes import member_user
+
+    async def go() -> dict:
+        async with tenant_engine_scope(_dsn(world.p.app_url)):
+            token = bind_tenant(world.p.org_b)
+            try:
+                return await rm.my_day_band(member_user(member), now=now,
+                                            subjects=subjects or [])
+            finally:
+                release_tenant(token)
+
+    return asyncio.run(go())
+
+
+def test_r8_the_band_reads_the_scheduled_rest_of_the_members_day(world) -> None:
+    """RX-3. My scheduled reminders from now to the end of MY local day, soonest
+    first. Not a closed one, not a due one, not tomorrow's, not another
+    member's. Mutation: drop `fire_at < :end` from `_AHEAD_SQL` and the
+    tomorrow row appears; drop `member_email = :me` and Bob's appears."""
+    later = _seed(world, ALICE, _utc(10, 18), title="Evening call")
+    soon = _seed(world, ALICE, _utc(10, 12), title="Lunch with Asha")
+    tomorrow = _seed(world, ALICE, _utc(11, 0), title="Past midnight")
+    past = _seed(world, ALICE, _utc(10, 9), title="Earlier today")
+    due = _seed(world, ALICE, _utc(10, 10), title="Already fired", state="due")
+    closed = _seed(world, ALICE, _utc(10, 13), title="Closed", state="done")
+    bobs = _seed(world, BOB, _utc(10, 14), title="Bob's own")
+    out = _band(world, ALICE, _utc(10, 10, 30))
+    got = [r["id"] for r in out["rows"]]
+    assert got == [soon, later]
+    assert not ({tomorrow, past, due, closed, bobs} & set(got))
+    assert out["rows"][0]["title"] == "Lunch with Asha"
+    assert out["rows"][0]["fire_at"] and out["rows"][0]["kind"] == "action"
+
+
+def test_r8_the_day_ends_at_the_members_own_midnight(world) -> None:
+    """Priya's zone is Kolkata. 23:30 IST on the 10th is in her day, and 00:30
+    IST on the 11th is not, though both are the 10th in UTC."""
+    inside = _seed(world, PRIYA, _ist(10, 23, 30), title="Late")
+    outside = _seed(world, PRIYA, _ist(11, 0, 30), title="Tomorrow")
+    out = _band(world, PRIYA, _ist(10, 21))
+    assert [r["id"] for r in out["rows"]] == [inside]
+    assert outside not in [r["id"] for r in out["rows"]]
+
+
+def test_r8_a_linked_object_the_member_cannot_read_shows_its_kind_only(world) -> None:
+    """A thread is of a kind the server does not read, so the label is None.
+    A task the member cannot see is hidden the same way."""
+    thread = _seed(world, ALICE, _utc(10, 16), title="Reply to Dana",
+                   subject_kind="email_thread", subject_id="thread-1")
+    out = _band(world, ALICE, _utc(10, 10))
+    assert out["subjects"] == {thread: {"kind": "email_thread", "label": None}}
+    # The same read serves a fired reminder's link, passed in by the feed.
+    ghost = str(uuid.uuid4())
+    fired = _seed(world, ALICE, _utc(10, 9), title="Fired", state="due")
+    out = _band(world, ALICE, _utc(10, 10), [(fired, "task", ghost)])
+    assert out["subjects"][fired] == {"kind": "task", "label": None}

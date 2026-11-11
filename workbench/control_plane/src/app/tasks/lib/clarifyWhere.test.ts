@@ -140,8 +140,8 @@ describe("Clarify opens on an untriaged From Projects row", () => {
     const html = renderToStaticMarkup(createElement(ClarifyModal));
     expect(html).toContain("Processing my task inbox");
     expect(html).toContain(FROM_BOARD.title);
-    // Both halves of the walk are counted.
-    expect(html).toContain("2 left");
+    // D170 (INB-1): the walk is the inbox, so only the capture is counted.
+    expect(html).toContain("1 left");
   });
 
   it("a decision drops the row from From Projects and opens the next item", () => {
@@ -155,25 +155,25 @@ describe("Clarify opens on an untriaged From Projects row", () => {
     expect(html).toContain(CAPTURE.title);
   });
 
-  it("clarifying a capture walks on to an untriaged board row, oldest first", () => {
+  it("clarifying a capture does not walk on to an untriaged board row (D170)", () => {
     const newer = { ...FROM_BOARD, createdAt: "2026-09-22T08:00:00+00:00" };
     seed({ items: [newer, CAPTURE] });
     useTaskStore.getState().openClarify(CAPTURE.id);
     useTaskStore.getState().clarify(CAPTURE.id, { kind: "reference" } as never);
-    expect(useTaskStore.getState().selectedItemId).toBe(FROM_BOARD.id);
+    expect(useTaskStore.getState().selectedItemId).toBeNull();
     expect(useTaskStore.getState().processedThisSession).toBe(1);
   });
 
-  it("skip walks the union too", () => {
+  it("skip walks the captures", () => {
     useTaskStore.getState().openClarify(FROM_BOARD.id);
     useTaskStore.getState().skipToNextInbox();
     expect(useTaskStore.getState().selectedItemId).toBe(CAPTURE.id);
   });
 
-  it("the queue is FIFO over both sets and leaves out an archived board row", () => {
-    const archived = { ...FROM_BOARD, id: "t-gone", archivedAt: "2026-09-23T00:00:00Z" };
-    const q = clarifyQueue([CAPTURE, FROM_BOARD, archived], new Set([FROM_BOARD.id, "t-gone"]));
-    expect(q.map((i) => i.id)).toEqual([FROM_BOARD.id, CAPTURE.id]);
+  it("the queue is the captures, oldest first, and holds no untriaged board row (D170)", () => {
+    const older = { ...CAPTURE, id: "c-old", createdAt: "2026-09-01T08:00:00+00:00" };
+    const q = clarifyQueue([CAPTURE, FROM_BOARD, older]);
+    expect(q.map((i) => i.id)).toEqual(["c-old", CAPTURE.id]);
   });
 });
 
@@ -365,12 +365,13 @@ describe("the walk never revisits a decided row", () => {
     const st = () => useTaskStore.getState();
     st().openClarify("A");
     st().clarify("A", { kind: "someday" } as never);
-    expect(st().selectedItemId).toBe("B");
+    expect(st().selectedItemId).toBe("C");
+    st().openClarify("B");
     st().clarify("B", { kind: "someday" } as never);
     // A re-read that answered before B's write landed puts B straight back.
     useTaskStore.setState({ fromProjectIds: new Set(["B"]) });
     expect(st().selectedItemId).toBe("C");
-    expect(clarifyQueue(st().items, st().fromProjectIds, st().clarifiedThisSession).map((i) => i.id)).toEqual(["C"]);
+    expect(clarifyQueue(st().items, st().clarifiedThisSession).map((i) => i.id)).toEqual(["C"]);
     expect(isClarifiable(B, st().fromProjectIds, st().clarifiedThisSession)).toBe(false);
     expect(st().processedThisSession).toBe(2);
     // The modal draws C, and counts one left.

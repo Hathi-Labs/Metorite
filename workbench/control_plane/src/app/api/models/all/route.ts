@@ -3,33 +3,16 @@
  *
  * Unified model catalogue for the AgentChat model picker.
  *
- * Two runtime groups — each routes through a completely different execution path:
+ * One runtime group, read from the Router (WS-43o, D84): the tier slate and the
+ * models the member enabled. No GitHub Copilot SDK group exists.
  *
- * 1. "GitHub Copilot SDK" group  (model.runtime = "copilot")
- *    What it is: The GitHub Copilot SDK (`github-copilot-sdk` Python package).
- *                NOT CopilotKit (the React UI library). NOT just an LLM call.
- *    What it does: Launches a `CopilotClient` subprocess running `gh copilot` CLI
- *                  in autopilot mode. Has native tool-calling (shell, file r/w,
- *                  Python scripts). Reads AGENTS.md from the agent workspace.
- *                  Tool events (tool_start/tool_end) stream back to the UI via SSE hooks.
- *    Route: /api/agent/chat?mode=copilot → gateway /copilot/chat → CopilotClient
- *    Auth:  GITHUB_TOKEN (api.githubcopilot.com) or BYOK via LiteLLM
- *    Models: claude-sonnet-4.5, gpt-5.5, gemini-3.1-pro-preview, etc.
- *            (live list from /copilot/models if GITHUB_TOKEN is set; fallback list otherwise)
- *
- * 2. "LiteLLM (tier routing)" group  (model.runtime = "litellm")
+ * "LiteLLM (tier routing)" group  (model.runtime = "litellm")
  *    What it is: A direct OpenAI-compatible streaming call to gateway /v1 (litellm SDK).
  *                No orchestration, no tool calling, no agent workspace.
  *    What it does: Raw /chat/completions call to LiteLLM; response streamed to UI.
  *    Route: /api/agent/chat?mode=litellm → LiteLLM /chat/completions
  *    Models: tier1/2/3 aliases (see infra/litellm/config.yaml for current backend routing)
  *    Current routing: all tiers → Gemini 2.5 Flash variants (GEMINI_API_KEY)
- *
- * Why no copilot/* aliases in the LiteLLM group?
- *    LiteLLM does have copilot/* entries (e.g. copilot/claude-sonnet-4.5) but these
- *    are not shown in the UI — the same models are accessible directly via the
- *    Copilot SDK group, and duplicating them would cause confusion about which
- *    execution path is active.
  */
 
 import { NextResponse } from "next/server";
@@ -62,14 +45,6 @@ export interface UnifiedModelsResponse {
   source: string;
   configured_providers: string[];
 }
-
-const COPILOT_FALLBACK: { id: string; label: string; context_window?: number }[] = [
-  { id: "auto", label: "auto (SDK picks)", context_window: 200_000 },
-  { id: "claude-sonnet-4.5", label: "Claude Sonnet 4.5", context_window: 200_000 },
-  { id: "claude-haiku-4.5", label: "Claude Haiku 4.5", context_window: 200_000 },
-  { id: "gpt-5.5", label: "GPT 5.5", context_window: 400_000 },
-  { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", context_window: 1_000_000 },
-];
 
 // LiteLLM model catalogue.
 // `provider` maps to an env-var gate — the model is only shown when that provider key is set.
@@ -219,51 +194,15 @@ export async function GET(): Promise<
   } catch (_e) {
     // safe to ignore — custom_models.json may not exist yet
   }
-  // Fetched live from the gateway when GITHUB_TOKEN is set; fallback otherwise.
-  type CopilotModel = { id: string; label: string; model_picker_enabled?: boolean; context_window?: number };
-  let copilotModels: CopilotModel[] = configured.has("github")
-    ? COPILOT_FALLBACK
-    : [{ id: "auto", label: "auto (SDK picks — needs GITHUB_TOKEN)" }];
-  let source = configured.has("github") ? "fallback" : "no-token";
-
-  if (configured.has("github")) {
-    try {
-      const res = await gatewayFetch(`${GATEWAY_URL}/copilot/models`, {
-        signal: AbortSignal.timeout(4000),
-      });
-      if (res.ok) {
-        const data = (await res.json()) as {
-          models?: CopilotModel[];
-          source?: string;
-        };
-        if (Array.isArray(data.models) && data.models.length > 0) {
-          copilotModels = [
-            // "auto" lets the SDK pick — default to the Claude Sonnet context
-            // window (the SDK's current default model).
-            { id: "auto", label: "auto (SDK picks)", model_picker_enabled: false, context_window: 200_000 },
-            ...data.models.filter((m) => m.id !== "auto"),
-          ];
-          source = data.source ?? "live";
-        }
-      }
-    } catch (_e) {
-      // keep fallback list
-    }
-  }
-
   // ── Build model list ─────────────────────────────────────────────────────
   //
-  // The picker contains exactly three categories:
+  // The picker contains exactly two categories:
   //
   //   1. Tier aliases  — tier1/tier2/tier3, always shown.  These are routing
   //      shortcuts that go through whatever provider is configured on the
   //      gateway, not pinned models.  They work even with no models enabled.
   //
-  //   2. GitHub Copilot SDK models  — shown only when GITHUB_TOKEN is set.
-  //      These use a completely different execution path (Copilot CLI) and
-  //      are not LiteLLM models.
-  //
-  //   3. User-enabled models  — exactly the models the user turned on via
+  //   2. User-enabled models  — exactly the models the user turned on via
   //      Settings → Models → eye icon (stored in infra/enabled_models.json).
   //      Nothing else.  The LITELLM_MODELS built-in list is only used as a
   //      display-label lookup — it never adds models to the picker on its own.
@@ -281,12 +220,6 @@ export async function GET(): Promise<
   // Tier routing aliases — always present regardless of what's enabled.
   const tierModels = LITELLM_MODELS.filter((m) => m.provider === null);
 
-  // The Models-page allow-list: every model id the user explicitly enabled
-  // (LiteLLM + GitHub Copilot).  Used to gate the Copilot SDK group so the
-  // picker shows only what the user turned on (strict allow-list), instead of
-  // the full live Copilot catalogue.
-  const enabledIdSet = new Set(enabledModels.map((m) => m.id));
-
   // Resolve label/group for an enabled model: prefer the built-in LITELLM_MODELS
   // entry for accurate labels, fall back to what's stored in enabled_models.json.
   const resolveModel = (em: { id: string; label: string; provider: string }) => {
@@ -300,40 +233,21 @@ export async function GET(): Promise<
   };
 
   const models: UnifiedModel[] = [
+    // ⓪ Auto: the agent's own engine picks the model. "copilot" is the name of the
+    //    agent-executor mode (the MAF tool path), not the SDK. It is the only way
+    //    back to the tool path after a tier pick. The name retires with WS-43q.
+    { id: "auto", label: "Auto (the assistant picks)", runtime: "copilot" as ModelRuntime, group: "Assistant" },
+
     // ① Tier routing aliases — always present
     ...tierModels.map((m) => ({
       id: m.id, label: m.label, runtime: "litellm" as ModelRuntime, group: m.group,
     })),
 
-    // ② GitHub Copilot SDK group — separate execution path, shown when token is set.
-    //    Strict allow-list: only "auto" (the safe default picker) plus Copilot
-    //    models the user enabled on the Models page.  IDs match because
-    //    /llm/provider-models?provider=github now serves the same live Copilot
-    //    list this dropdown reads from.
-    ...(configured.has("github")
-      ? copilotModels
-          .filter((m) => !hiddenSet.has(m.id)
-            && (m.id === "auto" || enabledIdSet.has(m.id)))
-          .map((m) => ({
-            id: m.id,
-            label: m.label,
-            runtime: "copilot" as ModelRuntime,
-            group: "GitHub Copilot SDK",
-            model_picker_enabled: m.model_picker_enabled ?? false,
-            // Real context window from the Copilot SDK (provider-sourced) when
-            // available.
-            ...(m.context_window && m.context_window > 0
-              ? { contextWindow: m.context_window }
-              : {}),
-          }))
-      : []),
-
-    // ③ User-enabled models — the only source for LiteLLM models.
+    // ② User-enabled models — the only source for LiteLLM models.
     //    If the user hasn't enabled anything yet, nothing extra appears here
     //    (the tier aliases above are always sufficient to start chatting).
-    //    GitHub-provider models are Copilot-runtime and already surface in the
-    //    Copilot group above (different execution path), so exclude them here to
-    //    avoid litellm-runtime duplicates pointing at the wrong endpoint.
+    //    GitHub-provider models ran on the removed Copilot path (D84), so
+    //    they are excluded here.
     //    ⚠️ NONE while the Router serves: each of these is a raw model id,
     //    and the Router answers a raw model with 400 (D32.7).
     ...(routerServing ? [] : enabledModels)
@@ -344,7 +258,7 @@ export async function GET(): Promise<
       .map(resolveModel),
   ];
 
-  // Deduplicate by id (in case both the enabled list and Copilot list have the same id)
+  // Deduplicate by id (in case the enabled list repeats an id)
   const seen = new Set<string>();
   const deduped = models.filter((m) => {
     if (seen.has(m.id)) return false;
@@ -375,7 +289,7 @@ export async function GET(): Promise<
 
   return NextResponse.json({
     models: deduped,
-    source,
+    source: "router",
     configured_providers: Array.from(configured),
   });
 }

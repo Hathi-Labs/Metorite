@@ -8,7 +8,7 @@ What this file holds:
 
 * ``waiting_agent_requests`` is a read. It asks for the ``awaiting`` runs, shows
   the task number and title, the agent, the request in plain words, its age and
-  the link to the task card. It keeps the order of the route (newest first);
+  the link to the task card. It keeps the order of the route (oldest first);
 * text that an agent or a person wrote is fenced as data;
 * it writes nothing and shows no card;
 * THE FENCE. No tool of the skill calls the archive approval or the answer
@@ -95,7 +95,7 @@ async def test_it_lists_each_request_with_task_agent_age_and_card_link(monkeypat
     assert writes(calls) == []
 
 
-async def test_it_keeps_the_order_of_the_route_newest_first(monkeypatch) -> None:
+async def test_it_keeps_the_order_of_the_route_oldest_first(monkeypatch) -> None:
     _gateway(monkeypatch, [_run(T1, ago=timedelta(minutes=1)), _run(T2, ago=timedelta(days=3))])
     out = await skill_projects.waiting_agent_requests()
     assert out.index(T1) < out.index(T2)
@@ -108,6 +108,7 @@ async def test_it_asks_for_the_awaiting_runs_only(monkeypatch) -> None:
     out = await skill_projects.waiting_agent_requests()
     ask = [c for c in calls if c["path"] == "/projects/agent-runs"]
     assert len(ask) == 1 and ask[0]["params"]["status"] == "awaiting"
+    assert ask[0]["params"]["order"] == "oldest"
     assert T1 in out and T2 not in out, "a finished run is not a request"
 
 
@@ -161,6 +162,13 @@ async def test_agent_runs_switched_off_get_a_plain_answer(monkeypatch) -> None:
 #: ``/projects/agent-runs`` with no trailing slash, so it is not matched.
 ANSWER_PATHS = ("archive-approval", "agent-runs/")
 
+#: A tool whose name says "answer" and that answers no agent request.
+#: `answer_decision` (WS-ALN ALN-2a) answers a decision row on
+#: `/projects/decisions/{id}/answer`. A person confirms its card, and
+#: `no_person_present()` refuses a run with no person first. The tests
+#: `test_answer_decision_*` in `test_decisions_tool.py` hold both facts.
+NAMED_ANSWER_TOOLS = frozenset({"answer_decision"})
+
 
 def test_no_tool_of_the_skill_calls_an_answer_route() -> None:
     """The source of every module of the skill names neither answer route."""
@@ -184,7 +192,12 @@ def test_the_answer_routes_belong_to_no_tool() -> None:
     assert "EA3-40" in approval.reason and "D-OP-13" in approval.reason
     post = m.route_for("POST", "/projects/agent-runs/{run_id}/activities")
     assert post is not None and post.tool not in set(skill_projects.__all__)
-    assert not {n for n in skill_projects.__all__ if "approve" in n or "answer" in n}
+    assert not {
+        n for n in skill_projects.__all__
+        if ("approve" in n or "answer" in n) and n not in NAMED_ANSWER_TOOLS
+    }
+    # Each named tool still exists, so a stale name cannot hide a new one.
+    assert NAMED_ANSWER_TOOLS <= set(skill_projects.__all__)
 
 
 def test_the_list_is_a_read_the_agent_offers_and_the_instructions_never_claim_to_approve() -> None:

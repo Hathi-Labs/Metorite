@@ -40,6 +40,7 @@ from typing import Any, AsyncIterator, Callable, Iterator
 from acb_audit import AuditEvent, record
 from acb_common import get_logger, get_settings
 from acb_common.child_env import child_env, copilot_env
+from acb_common.no_person import no_person_present
 from acb_llm.run_errors import run_error_event
 from acb_skills.ask_tools import QUESTION_HEADER_MAX as _QUESTION_HEADER_MAX
 from acb_skills.ask_tools import QUESTION_TEXT_MAX as _QUESTION_TEXT_MAX
@@ -107,6 +108,8 @@ from orchestrator._tool_injection import (
     _count_agent_tools,
     _log_agent_tools_resolved,
     _build_registry_block,
+    _chat_marked,
+    _covered_chain,
     _gate_injected_tool,
     _held_tool_names,
     _host_shell_refused,
@@ -720,9 +723,13 @@ _PROFILE_AGENT = "orchestrator"
 #: too, so a member with no profile costs one read a minute. A write in this
 #: process moves the count, so the next turn reads again.
 #: The last field says whether the stored profile holds something (PZ-20b).
-_PROFILE_CACHE: dict[tuple[str, str], tuple[float, int, str, str, str, Any, bool]] = {}
+_PROFILE_CACHE: dict[tuple[str, str], tuple[float, int, str, str, str, Any, bool, str]] = {}
 _PROFILE_TTL_SECONDS = 60.0
 _PROFILE_CACHE_MAX = 4096
+#: PZ-43: by ``(org, member)``, whether the stored ``celebrations`` key sets
+#: anything, as of the last profile read. The celebration prime asks it first,
+#: so a member with nothing set costs no query.
+_CELEBRATIONS_SET: dict[tuple[str, str], bool] = {}
 
 
 def _read_member_profile(org: str, member: str) -> tuple[Any, str, str, str] | None:
@@ -796,28 +803,40 @@ def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
     gen = assistant_profile.generation(member)
     hit = _PROFILE_CACHE.get(key)
     if hit and now - hit[0] < _PROFILE_TTL_SECONDS and hit[1] == gen:
-        return (_with_interview_line(hit[2], hit[5], key), hit[3], hit[4])
+        return (_with_interview_line(hit[2], hit[5], key, hit[7]), hit[3], hit[4])
     block, zone, greeting, interview = "", "", "", None
     has_stored = False
+    forms_line = ""
     try:
         read = _read_member_profile(str(org), member)
         if read is not None:
             raw, preferred, zone, display = read
             stored = assistant_profile.stored_profile(raw)
+            _CELEBRATIONS_SET.pop(key, None)
+            _CELEBRATIONS_SET[key] = "celebrations" in stored
+            while len(_CELEBRATIONS_SET) > _PROFILE_CACHE_MAX:
+                _CELEBRATIONS_SET.pop(next(iter(_CELEBRATIONS_SET)))
             has_stored = assistant_profile.has_stored_content(raw)
-            block = assistant_profile.member_block(raw, preferred, display)
+            block = assistant_profile.member_block(raw, preferred, display, str(org))
+            if block and assistant_profile.address_forms_for(str(org)):
+                # PZ-40: the offer for the name question. The language is the
+                # stored one, never a guess.
+                from acb_common import honorifics
+
+                forms_line = honorifics.offer_line(stored["style"].get("language"))
             greeting = assistant_profile.effective_greeting(raw) if block else ""
             if stored["learning"] is True:
                 interview = stored.get("interview")
     except Exception:
         block, zone, greeting, interview, has_stored = "", "", "", None, False
+        forms_line = ""
     if not block:
-        zone, greeting, interview, has_stored = "", "", None, False
+        zone, greeting, interview, has_stored, forms_line = "", "", None, False, ""
     _PROFILE_CACHE.pop(key, None)
-    _PROFILE_CACHE[key] = (now, gen, block, zone, greeting, interview, has_stored)
+    _PROFILE_CACHE[key] = (now, gen, block, zone, greeting, interview, has_stored, forms_line)
     while len(_PROFILE_CACHE) > _PROFILE_CACHE_MAX:
         _PROFILE_CACHE.pop(next(iter(_PROFILE_CACHE)))
-    return (_with_interview_line(block, interview, key), zone, greeting)
+    return (_with_interview_line(block, interview, key, forms_line), zone, greeting)
 
 
 def _interview_now() -> Any:
@@ -853,7 +872,8 @@ def _interview_peek() -> Iterator[None]:
         _INTERVIEW_PEEK.reset(token)
 
 
-def _with_interview_line(block: str, interview: Any, key: tuple[str, str] | None = None) -> str:
+def _with_interview_line(block: str, interview: Any, key: tuple[str, str] | None = None,
+                         forms_line: str = "") -> str:
     """*block* with the due line of the interview (PZ-26, §14.4), or *block*.
 
     *interview* is the stored value of a member whose ``learning`` is on,
@@ -877,7 +897,7 @@ def _with_interview_line(block: str, interview: Any, key: tuple[str, str] | None
         shown = _INTERVIEW_SHOWN.get(key) if key is not None else None
         if shown is not None and now - shown <= timedelta(hours=assistant_profile.DUE_HOURS):
             return block
-        line = assistant_profile.interview_due_line(interview, now)
+        line = assistant_profile.interview_due_line(interview, now, forms_line)
         if not line or len(block) + 1 + len(line) > assistant_profile.RENDER_MAX:
             return block
         if key is not None and not _INTERVIEW_PEEK.get():
@@ -1262,6 +1282,594 @@ def _inherited_chat_constraints(parent: Any) -> dict[str, Any]:
     return {cc.CONSTRAINTS: tuple(items)} if items else {}
 
 
+# ── The briefing at the start of a chat (WS-63 PZ-34) ───────────────────────
+# ``personalization.md`` §15.4. The async prime builds the block, or reads the
+# stored copy, and binds it for THIS run only. The sync builder reads the run
+# binding and checks each gate again. Fences:
+# ``tests/unit/test_executor_briefing_block.py`` and
+# ``tests/unit/test_executor_briefing_block_r8.py`` (R8).
+
+#: The Redis namespace of the stored block, through the tenant wrapper (R5).
+_BRIEFING_NAMESPACE = "chat-briefing"
+#: The life of a stored block. Each turn of the chat in this time reads the
+#: same bytes, so the block stays stable in the cached prefix (D-PZ-29).
+#: A Forget, a Delete or the switch does not clear a stored block, so one
+#: chat can keep a deleted summary for up to this long (D-PZ-38).
+_BRIEFING_TTL_S = 24 * 3600
+#: The longest wait of a turn for the block: the Redis read, the build and
+#: the store. A slower turn gets no block, and the turn goes on at once.
+_BRIEFING_TIMEOUT_S = 1.0
+#: The run-binding key of the block of THIS run: ``(run_id, org, member,
+#: text)``. A delegated run binds its own context and its own run id, so the
+#: sync builder never gives it the block of its parent.
+_BRIEFING_KEY = "member_briefing"
+#: The version of the stored value.
+_BRIEFING_VERSION = 1
+
+
+def _briefing_now() -> Any:
+    """The clock of the time line. A seam for the tests."""
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC)
+
+
+def _briefing_redis() -> Any:
+    """The tenant Redis client. A seam, so a test passes a fake client."""
+    from acb_common.tenant_redis import get_tenant_redis
+
+    return get_tenant_redis()
+
+
+def _briefing_member_part(member: str) -> str:
+    """A hash of the member, so the key holds no address."""
+    import hashlib
+
+    return hashlib.sha256(member.encode("utf-8")).hexdigest()[:24]
+
+
+def _briefing_slot(
+    agent_name: str,
+    *,
+    organization_id: str | None,
+    thread_id: str | None,
+    delegated: bool,
+    shows_cards: bool,
+    batch_thread: bool,
+) -> tuple[str, str, str] | None:
+    """``(org, session, member)`` of a run that may get the block, or None.
+
+    Only the orchestrator, in the member's own chat on the web: a run that is
+    not delegated, not a batch run, and that shows cards (a WhatsApp run shows
+    none, D115). The org is the run's tenant and must be the bound one. The
+    flag must name it (``assistant_profile.briefing_for``, which needs
+    ``enabled_for`` too). The run needs a verified member and a solo room
+    from the run boundary. Each input comes from the run boundary, never from
+    the payload (R5).
+    """
+    if agent_name != _PROFILE_AGENT or delegated or batch_thread or not shows_cards:
+        return None
+    org = str(organization_id or "").strip()
+    session = str(thread_id or "").strip()
+    if not org or not session or org != str(_current_run_org() or "").strip():
+        return None
+    from acb_common import assistant_profile
+
+    if not assistant_profile.briefing_for(org):
+        return None
+    member = _verified_run_member()
+    if not member or _RUN_SOLO_ROOM.get() is not True:
+        return None
+    return org, session, member
+
+
+def _briefing_aware(value: Any) -> Any:
+    """A stored time as an aware datetime in UTC, or None."""
+    from datetime import UTC, datetime
+
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if isinstance(value, str) and value.strip():
+        try:
+            at = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return at if at.tzinfo is not None else at.replace(tzinfo=UTC)
+    return None
+
+
+async def _briefing_chats(org: str, session: str, member: str) -> tuple[list[Any], str]:
+    """The member's recent chats for the block, and the member's zone.
+
+    One short session of the run's tenant. ``assistant_summaries.recent`` is
+    the one reader of the summaries, and it holds the flag, the switch and the
+    rules of a chat. The zone is the member's own, read by
+    ``personal.stored_zone``, the one read that the due tasks use too. The
+    current chat never shows: ``recent`` leaves it out, and so does this.
+    """
+    from zoneinfo import ZoneInfo
+
+    from acb_common import assistant_profile as ap
+    from acb_common.db import tenant_session
+    from gateway.assistant_summaries import recent
+    from gateway.routes.projects.due_day import zone_name
+    from gateway.routes.projects.personal import stored_zone
+
+    async with tenant_session(org) as db:
+        found = await recent(db, member, exclude=session)
+        zone = zone_name(await stored_zone(db, member))
+    tz = ZoneInfo(zone)
+    chats: list[Any] = []
+    for item in found:
+        if item.session_id == session:
+            continue
+        at = _briefing_aware(item.updated_at)
+        chats.append(ap.BriefingChat(
+            day=at.astimezone(tz).date() if at is not None else None,
+            title=item.title, text=item.text, follow_ups=tuple(item.follow_ups)))
+    return chats, zone
+
+
+class _BriefingReadFailed(RuntimeError):
+    """The identity read or the role read of the member failed. The build
+    stops, so the store keeps nothing, and the next turn tries again."""
+
+
+async def _briefing_tasks(org: str, member: str, zone: str) -> list[Any]:
+    """At most three of the member's tasks that are due today or overdue.
+
+    ``personal.my_due_tasks`` is the one reader (D-PZ-30), the reader of the
+    needs feed. Like the feed, it runs only for a member with
+    ``feature:projects``. The member's context comes from
+    ``acb_auth.deps.member_context``, as the My Day loop takes it. ⚠️ That
+    call binds the member's org as a side effect, so it runs in the task of
+    :func:`_briefing_within_budget`, and the run's own binding never changes.
+    A context of another org reads nothing.
+
+    ⚠️ A failed read is not "no tasks" (repair round 1, P2-1). The identity
+    read gives ``(None, None)`` and sets ``identity_read_failed()``, and the
+    role read degrades and sets ``role_read_failed()``. Either one raises
+    :class:`_BriefingReadFailed`, so the turn gets no block and the store
+    keeps nothing, as ``my_day_loop.departed`` treats the same flag.
+    """
+    from acb_auth.access import identity_read_failed, role_read_failed
+    from acb_auth.deps import member_context
+    from acb_common import assistant_profile as ap
+    from gateway.routes.projects.due_day import local_date
+    from gateway.routes.projects.personal import my_due_tasks
+
+    user = await member_context(member)
+    if identity_read_failed() or role_read_failed():
+        raise _BriefingReadFailed("the identity or the role read of the member failed")
+    if str(getattr(user, "organization_id", "") or "").strip().lower() != org.lower():
+        return []
+    if not user.has_permission("feature:projects"):
+        return []
+    answer = await my_due_tasks(user, limit=ap.BRIEFING_TASKS_MAX)
+    task_zone = answer.get("timezone") or zone
+    tasks: list[Any] = []
+    for row in answer.get("rows") or []:
+        due = _briefing_aware(row.get("due_at"))
+        tasks.append(ap.BriefingTask(
+            title=str(row.get("title") or ""),
+            due=local_date(task_zone, due) if due is not None else None))
+    return tasks
+
+
+async def _build_member_briefing(org: str, session: str, member: str) -> str:
+    """The text of the block, or ``""`` when it holds no item. One build."""
+    from zoneinfo import ZoneInfo
+
+    from acb_common import assistant_profile as ap
+
+    chats, zone = await _briefing_chats(org, session, member)
+    tasks = await _briefing_tasks(org, member, zone)
+    return ap.render_briefing(chats, tasks, at=_briefing_now().astimezone(ZoneInfo(zone)))
+
+
+async def _briefing_text(org: str, session: str, member: str) -> str:
+    """The stored block of this chat and member, else a new build.
+
+    The key is ``tenant_redis.key("chat-briefing", session, member hash)``
+    under the run's org. A stored value wins, the empty marker too, so a turn
+    after the first runs no read of the database and the bytes stay the
+    same. A build stores its text, or the empty marker, for 24 hours. A
+    Redis fault raises, so the turn gets no block (§15.4).
+    """
+    from acb_common.tenant_redis import key, organization_scope
+
+    redis = _briefing_redis()
+    with organization_scope(org):
+        slot = key(_BRIEFING_NAMESPACE, session, _briefing_member_part(member))
+        raw = await redis.get(slot)
+    if raw is not None:
+        try:
+            stored = json.loads(raw)
+        except (TypeError, ValueError):
+            return ""
+        text = stored.get("text") if isinstance(stored, dict) else None
+        return text if isinstance(text, str) else ""
+    text = await _build_member_briefing(org, session, member)
+    value = json.dumps({"v": _BRIEFING_VERSION, "text": text}, ensure_ascii=False)
+    with organization_scope(org):
+        await redis.setex(slot, _BRIEFING_TTL_S, value)
+    return text
+
+
+def _drop_briefing_result(task: asyncio.Future[Any]) -> None:
+    """Read the end of a build that the turn left, so no warning names it."""
+    if not task.cancelled():
+        task.exception()
+
+
+async def _briefing_within_budget(org: str, session: str, member: str) -> str:
+    """:func:`_briefing_text` within :data:`_BRIEFING_TIMEOUT_S`, else ``""``.
+
+    The work runs in its own task, so a value that it binds (the org of
+    ``member_context``) stays in that task. The turn waits for the budget at
+    most, and never for a cancel. A slow build, a Redis fault and any other
+    fault give ``""`` and a log line with the class only. A cancel of the
+    turn cancels the work too.
+    """
+    task = asyncio.ensure_future(_briefing_text(org, session, member))
+    try:
+        done, _pending = await asyncio.wait({task}, timeout=_BRIEFING_TIMEOUT_S)
+    finally:
+        if not task.done():
+            task.cancel()
+            task.add_done_callback(_drop_briefing_result)
+    if task not in done:
+        _log.warning("executor.briefing_slow", timeout_s=_BRIEFING_TIMEOUT_S)
+        return ""
+    if task.cancelled():
+        return ""
+    exc = task.exception()
+    if exc is not None:
+        _log.warning("executor.briefing_failed", error=type(exc).__name__)
+        return ""
+    text = task.result()
+    return text if isinstance(text, str) else ""
+
+
+async def _prime_member_briefing(
+    agent_name: str,
+    *,
+    organization_id: str | None,
+    thread_id: str | None,
+    delegated: bool,
+    shows_cards: bool,
+    batch_thread: bool,
+) -> None:
+    """Bind the briefing block of this turn into the run, or bind nothing.
+
+    ``personalization.md`` §15.4. The gates are :func:`_briefing_slot`. The
+    run binding must name the verified member and this chat. The block goes
+    into the run binding with this run's id, after ``bind_artifact_context``,
+    so :func:`_member_briefing_block` reads it. A delegated run binds its own
+    context, so it never inherits the block. Awaited once per turn, after the
+    artifact context binds. Never raises, apart from a cancel of the turn.
+    """
+    slot = _briefing_slot(
+        agent_name, organization_id=organization_id, thread_id=thread_id,
+        delegated=delegated, shows_cards=shows_cards, batch_thread=batch_thread)
+    if slot is None:
+        return
+    try:
+        from acb_skills.write_artifact import artifact_context, derive_artifact_context
+    except ImportError:
+        return
+    org, session, member = slot
+    ctx = artifact_context()
+    run_id = str(ctx.get("run_id") or "")
+    if not run_id or ctx.get("batch_thread") is True:
+        return
+    if str(ctx.get("member") or "").strip().lower() != member:
+        return
+    if str(ctx.get("session_id") or "") != session:
+        return
+    text = await _briefing_within_budget(org, session, member)
+    if text:
+        derive_artifact_context(**{_BRIEFING_KEY: (run_id, org, member, text)})
+
+
+def _member_briefing_block(agent_name: str) -> str:
+    """The briefing block of this run, or ``""``.
+
+    It reads the run binding that :func:`_prime_member_briefing` set, and no
+    database and no Redis. It checks each gate again: the agent, the flag of
+    the run's org, the verified member, the solo room, and the run id of the
+    binding. So a run whose parent had a block gets none, and a flag turned
+    off drops the block at once. No exception escapes.
+    """
+    if agent_name != _PROFILE_AGENT:
+        return ""
+    try:
+        from acb_common import assistant_profile
+        from acb_skills.write_artifact import artifact_context
+
+        org = str(_current_run_org() or "").strip()
+        if not org or not assistant_profile.briefing_for(org):
+            return ""
+        member = _verified_run_member()
+        if not member or _RUN_SOLO_ROOM.get() is not True:
+            return ""
+        ctx = artifact_context()
+        entry = ctx.get(_BRIEFING_KEY)
+        if not isinstance(entry, tuple) or len(entry) != 4:
+            return ""
+        run_id, bound_org, bound_member, text = entry
+        if not run_id or run_id != ctx.get("run_id") or ctx.get("batch_thread") is True:
+            return ""
+        if bound_org != org or bound_member != member:
+            return ""
+        return text if isinstance(text, str) else ""
+    except Exception:
+        return ""
+
+
+# ── When to greet (PZ-39, owner 2026-11-06) ─────────────────────────────────
+# The chat greets in the first reply of a chat and in the first reply after
+# ``today.GREET_GAP_HOURS`` with no message in it. The answer comes from the
+# STORED rows of this chat (``chat_message``) in a tenant session, never from
+# ``event_payload["messages"]``, which the client sends (R5). An async prime
+# step binds the answer into the run, and the sync context builder reads it,
+# as the briefing does. A fault, a timeout and an unknown result all give
+# "do not greet": a missed hello is harmless and a hello mid-conversation is
+# the defect. A run without cards (WhatsApp) has no reachable chat rows of its
+# own, so it never greets. Fences: ``tests/unit/test_executor_greet_due.py``
+# and ``tests/unit/test_executor_greet_due_r8.py`` (R8).
+
+#: The run-binding key of the answer of THIS run: ``(run_id, org, member,
+#: due)``. ``due`` is True or False. A run with NO entry has no decision.
+_GREET_KEY = "greet_due"
+#: The longest wait of a turn for the read. A slower turn does not greet.
+_GREET_TIMEOUT_S = 1.0
+#: One read, two answers. First: the server-set time (``created_at``, never the
+#: browser's ``timestamp_ms``) of the newest row of this chat that has content,
+#: leaving out the rows of THIS turn BY ID: the minted reply (``:rid``) and the
+#: member's prompt (``:pid``). Never "the newest user row": a failed prompt
+#: write would then hide the previous prompt (PZ-39 repair F1). Second: the
+#: server time of the prompt row itself, when it exists. An old prompt row is a
+#: re-send, not a new message (F2).
+_GREET_READ_SQL = (
+    "SELECT "
+    "(SELECT (EXTRACT(EPOCH FROM max(created_at)) * 1000)::bigint "
+    " FROM chat_message WHERE session_id = :sid AND content <> '' "
+    " AND id NOT IN (:rid, :pid)), "
+    "(SELECT (EXTRACT(EPOCH FROM created_at) * 1000)::bigint "
+    " FROM chat_message WHERE session_id = :sid AND id = :pid AND :pid <> '')"
+)
+
+
+async def _greet_read(
+    org: str, session: str, reply_id: str = "", prompt_id: str = "",
+) -> tuple[int | None, int | None]:
+    """``(last_ms, prompt_ms)``: the server time of the newest earlier row with
+    content, and of this turn's prompt row. Each is None when absent."""
+    from acb_common.db import tenant_session
+    from sqlalchemy import text
+
+    async with tenant_session(org) as db:
+        row = (await db.execute(text(_GREET_READ_SQL), {
+            "sid": session, "rid": reply_id or "", "pid": prompt_id or ""})).first()
+    last, prompt = (row[0], row[1]) if row else (None, None)
+    return (None if last is None else int(last), None if prompt is None else int(prompt))
+
+
+async def _greet_decision(
+    org: str, session: str, turn_ids: tuple[str, ...] = (),
+) -> bool:
+    """True when this turn opens a conversation. False on any fault.
+
+    *turn_ids* is ``(reply_id, prompt_id)``. The gateway route passes them, and
+    the request supplies both ids. The read skips those rows only. It stays
+    bound to the run's org, member and session (R5), so a client can change
+    only its own greeting: naming older rows of its chat can add one
+    greeting, and nothing else. A turn with no new member message (no
+    prompt id, or a prompt row older than the gap: a regenerate or a retry)
+    never greets (F2). The gap is measured on ``chat_message.created_at``,
+    which the database sets for EVERY row (``DEFAULT now()``, and no writer
+    sets it). So a browser clock cannot move it (F3). A row that a bulk
+    import wrote reads as the time of the import."""
+    from acb_common.today import GREET_GAP_HOURS, greet_due
+
+    reply_id = turn_ids[0] if len(turn_ids) > 0 else ""
+    prompt_id = turn_ids[1] if len(turn_ids) > 1 else ""
+    if not prompt_id:
+        return False
+    try:
+        last_ms, prompt_ms = await asyncio.wait_for(
+            _greet_read(org, session, reply_id, prompt_id),
+            timeout=_GREET_TIMEOUT_S)
+        now_ms = int(_briefing_now().timestamp() * 1000)
+        if prompt_ms is not None and now_ms - prompt_ms >= GREET_GAP_HOURS * 3600 * 1000:
+            return False
+        return greet_due(last_ms, now_ms, first_reply=last_ms is None)
+    except Exception as exc:
+        _log.warning("executor.greet_read_failed", error=type(exc).__name__)
+        return False
+
+
+async def _prime_greet_due(
+    agent_name: str,
+    *,
+    organization_id: str | None,
+    thread_id: str | None,
+    delegated: bool,
+    shows_cards: bool,
+    batch_thread: bool,
+    turn_ids: tuple[str, ...] = (),
+) -> None:
+    """Bind the greeting decision of this turn into the run, or bind nothing.
+
+    Same gates as the briefing without its flag: the orchestrator, a run that
+    is not delegated, not batch and that shows cards, the run's own org, a
+    verified member and a solo room. All from the run boundary (R5). A run
+    that fails a gate gets NO decision, and its part-of-day line keeps the old
+    rule (first reply of the conversation only). A decided run binds True or
+    False. Never raises, apart from a cancel of the turn."""
+    if agent_name != _PROFILE_AGENT or delegated or batch_thread or not shows_cards:
+        return
+    org = str(organization_id or "").strip()
+    session = str(thread_id or "").strip()
+    if not org or not session or org != str(_current_run_org() or "").strip():
+        return
+    member = _verified_run_member()
+    if not member or _RUN_SOLO_ROOM.get() is not True:
+        return
+    try:
+        from acb_common import assistant_profile
+        from acb_skills.write_artifact import artifact_context, derive_artifact_context
+
+        if not assistant_profile.enabled_for(org):
+            return
+        ctx = artifact_context()
+        run_id = str(ctx.get("run_id") or "")
+        if not run_id or ctx.get("batch_thread") is True:
+            return
+        if str(ctx.get("session_id") or "") != session:
+            return
+        due = await _greet_decision(org, session, tuple(turn_ids))
+        derive_artifact_context(**{_GREET_KEY: (run_id, org, member, due)})
+    except ImportError:
+        return
+
+
+def _greet_due_now() -> bool | None:
+    """The decision of this run: True, False, or None when none was made.
+    Reads no database."""
+    try:
+        from acb_skills.write_artifact import artifact_context
+
+        org = str(_current_run_org() or "").strip()
+        member = _verified_run_member()
+        if not org or not member or _RUN_SOLO_ROOM.get() is not True:
+            return None
+        ctx = artifact_context()
+        entry = ctx.get(_GREET_KEY)
+        if not isinstance(entry, tuple) or len(entry) != 4:
+            return None
+        run_id, bound_org, bound_member, due = entry
+        if not run_id or run_id != ctx.get("run_id") or ctx.get("batch_thread") is True:
+            return None
+        if bound_org != org or bound_member != member or not isinstance(due, bool):
+            return None
+        return due
+    except Exception:
+        return None
+
+
+# ── Celebrations (WS-63 PZ-43, personalization.md §16.6) ────────────────────
+# The birthday, the festival picks and the work anniversary of the member. The
+# async prime step reads ONE row in a tenant session (``celebrations.READ_SQL``)
+# and binds it into the run. The sync context builder reads the binding and
+# asks the pure ``celebrations.celebration_line`` for the line, at the member's
+# zone. The line appears in the first reply of the member's local day only,
+# because it needs no assistant reply since local midnight. A fault, a timeout
+# and the flag off all give no line. Fence: ``tests/unit/test_celebrations.py``.
+
+_CELEBRATION_KEY = "celebration_state"
+_CELEBRATION_TIMEOUT_S = 1.0
+
+
+async def _celebration_read(org: str, member: str) -> tuple[Any, Any, Any]:
+    """``(celebrations, last_reply_at, join_date)`` of *member* in *org*."""
+    from acb_common import celebrations
+    from acb_common.db import tenant_session
+    from sqlalchemy import text
+
+    since = celebrations.lookback_since(_briefing_now())
+    async with tenant_session(org) as db:
+        row = (await db.execute(text(celebrations.READ_SQL), {
+            "org": org, "m": member, "since": since})).first()
+    return (row[0], row[1], row[2]) if row else (None, None, None)
+
+
+async def _prime_celebrations(
+    agent_name: str,
+    *,
+    organization_id: str | None,
+    thread_id: str | None,
+    delegated: bool,
+    shows_cards: bool,
+    batch_thread: bool,
+) -> None:
+    """Bind the celebration state of this turn into the run, or bind nothing.
+
+    The gates are those of the briefing: the orchestrator, a run that is not
+    delegated, not batch and that shows cards, the run's own org, a verified
+    member and a solo room, all from the run boundary (R5). The flag
+    ``CELEBRATIONS_ORGS`` must name the org. Never raises, apart from a cancel."""
+    if agent_name != _PROFILE_AGENT or delegated or batch_thread or not shows_cards:
+        return
+    org = str(organization_id or "").strip()
+    session = str(thread_id or "").strip()
+    if not org or not session or org != str(_current_run_org() or "").strip():
+        return
+    member = _verified_run_member()
+    if not member or _RUN_SOLO_ROOM.get() is not True:
+        return
+    try:
+        from acb_common import celebrations
+        from acb_skills.write_artifact import artifact_context, derive_artifact_context
+
+        if not celebrations.celebrations_for(org):
+            return
+        # The profile of this run (cached, one read a minute) says whether
+        # anything is set. Nothing set: no query. Unknown: ask the database.
+        _member_profile_entry(agent_name)
+        if _CELEBRATIONS_SET.get((org, member)) is False:
+            return
+        ctx = artifact_context()
+        run_id = str(ctx.get("run_id") or "")
+        if not run_id or ctx.get("batch_thread") is True:
+            return
+        if str(ctx.get("session_id") or "") != session:
+            return
+        state = await asyncio.wait_for(
+            _celebration_read(org, member.strip().lower()), timeout=_CELEBRATION_TIMEOUT_S)
+        derive_artifact_context(**{_CELEBRATION_KEY: (run_id, org, member, state)})
+    except ImportError:
+        return
+    except Exception as exc:
+        _log.warning("executor.celebration_read_failed", error=type(exc).__name__)
+
+
+def _celebration_line(agent_name: str, zone: str | None) -> str:
+    """The celebration line of this run, or ``""``. Reads the binding that
+    :func:`_prime_celebrations` set, and no database. It checks each gate
+    again, so a flag turned off drops the line at once. No exception escapes."""
+    if agent_name != _PROFILE_AGENT:
+        return ""
+    try:
+        from acb_common import celebrations
+        from acb_skills.write_artifact import artifact_context
+
+        org = str(_current_run_org() or "").strip()
+        member = _verified_run_member()
+        if not org or not member or _RUN_SOLO_ROOM.get() is not True:
+            return ""
+        if not celebrations.celebrations_for(org):
+            return ""
+        ctx = artifact_context()
+        entry = ctx.get(_CELEBRATION_KEY)
+        if not isinstance(entry, tuple) or len(entry) != 4:
+            return ""
+        run_id, bound_org, bound_member, state = entry
+        if not run_id or run_id != ctx.get("run_id") or ctx.get("batch_thread") is True:
+            return ""
+        if bound_org != org or bound_member != member:
+            return ""
+        raw, last_reply_at, join_date = state
+        from acb_common.assistant_profile import _as_dict
+
+        return celebrations.celebration_line(
+            _as_dict(raw),
+            now=_briefing_now(), zone=zone, join_date=join_date, last_reply_at=last_reply_at)
+    except Exception:
+        return ""
+
+
 # ── The tool packs of the one assistant (WS-67 OA-7c) ───────────────────────
 # ``one_assistant_context.md`` §4.2.2 and §4.2.8. Layer (a) in a live run.
 # The read starts beside the load (:func:`_start_pack_turn`), the apply runs
@@ -1307,14 +1915,18 @@ def _start_pack_turn(
     if not verified or str(member or "").strip().lower() != verified:
         return None
     try:
-        from acb_common.assistant_profile import typed_words
+        from acb_common.assistant_profile import sent_words
         from acb_skills import tool_packs
     except ImportError:
         return None
     allowed = tool_packs.packs_on(organization_id)
     if not allowed:
         return None
-    words = typed_words()
+    # WS-63 D-PZ-37: the words that the member SENT, typed or tapped. A tapped
+    # pill "Draft a reply to the email from Acme" holds no typed words, and it
+    # must still load the email pack. These words only choose tools, and they
+    # change no guard. The typed words stay the one value that grounds a write.
+    words = sent_words()
     # OA-7d: the app of the dock. The gateway cleaned it and bound it for this
     # run, and begin_turn cleans it again. It adds the core pack of that app
     # only when the flag allows it, and it changes no guard.
@@ -1452,6 +2064,26 @@ def _log_pack_request_tools(agents: list[Any]) -> None:
     log("executor.pack_request_tools", tools=count, cap=MAX_REQUEST_TOOLS)
 
 
+def _pack_left_block(agent_name: str) -> str:
+    """Task 1747: the line that names the sticky packs that left this chat
+    at the start of the turn (``tool_packs.left_line``), or "".
+
+    It reads the record of the packs from the run binding, which
+    ``_apply_tool_packs`` built and the run bound after
+    ``bind_artifact_context``. A delegated run drops the record, so it gets no
+    line. The line is part of the context of the turn, after the cache break,
+    so the persona keeps its bytes. Never raises."""
+    if agent_name != _PACK_AGENT:
+        return ""
+    try:
+        from acb_skills.tool_packs import PACKS_KEY, left_line
+        from acb_skills.write_artifact import artifact_context
+
+        return left_line(artifact_context().get(PACKS_KEY))
+    except Exception:
+        return ""
+
+
 class _SetupLaps:
     """Chat speed SPD-1: the ms of each setup step of a streamed run, up to
     its first model request.
@@ -1578,18 +2210,20 @@ def _crm_questions_on(org: Any) -> bool:
         return False
 
 
-def _pack_delegation_refusal(agent_name: str) -> str | None:
+def _pack_delegation_refusal(agent_name: str, run_id: str = "") -> str | None:
     """The pack refusal of a hand-off to *agent_name* from this frame, or None.
 
     The rule is ``tool_packs.delegation_refusal``: the chat run holds a pack
     that replaces the agent. It reads the run binding of the CALLING run,
     never a tool argument. Never raises. Its one caller starts the hand-off
     when the answer is None, so it asks with ``starts=True`` (WS-67 OA-8i):
-    a pack write of the owner later in this run then refuses."""
+    a pack write of the owner later in this run then refuses. Task 1533:
+    *run_id* is the sub-run, so a start that ``call_agent`` recorded for the
+    same run is not counted twice."""
     try:
         from acb_skills.tool_packs import delegation_refusal
 
-        refused = delegation_refusal(agent_name, starts=True)
+        refused = delegation_refusal(agent_name, starts=True, run_id=run_id)
     except Exception:
         return None
     if refused:
@@ -1597,15 +2231,22 @@ def _pack_delegation_refusal(agent_name: str) -> str | None:
     return refused
 
 
-def _pack_handoff_ended(agent_name: str, parent_ctx: Any, *, finished: bool) -> None:
+def _pack_handoff_ended(
+    agent_name: str, parent_ctx: Any, *, finished: bool, calls: Any = None,
+    run_id: str = "",
+) -> None:
     """Tell the calling run's pack record whether a hand-off finished (WS-67
     OA-8i review, P2). *parent_ctx* is the calling run's context, read before
     the sub-run derived its own. The rule is ``tool_packs.handoff_ended``.
-    Never raises."""
+    Task 1533: *run_id* closes that sub-run, and *calls* are the calls that
+    it reported. Never raises."""
     try:
         from acb_skills.tool_packs import handoff_ended
 
-        handoff_ended(agent_name, parent_ctx, finished=finished)
+        handoff_ended(
+            agent_name, parent_ctx, finished=finished, run_id=run_id,
+            tools=[str(c.get("name") or "") for c in (calls or []) if isinstance(c, dict)],
+        )
     except Exception:
         return
 
@@ -2067,7 +2708,13 @@ def resolve_user_input(
     Future resolves with ``{"answer": "", "declined": True}`` and the run
     goes on: each parking site reads it with ``ask_tools.is_declined``. The
     key goes only on a decline, so every answer is exactly as before.
+
+    AUTO-7a: a run with no person present answers no card and no question,
+    of its own run or of a live chat, so it resolves nothing.
     """
+    if no_person_present():
+        _log.warning("executor.user_input_no_person", request_id=request_id[:12])
+        return False
     fut = _pending_user_input.get(request_id)
     if fut is None or fut.done():
         return False
@@ -2558,7 +3205,7 @@ async def _run_sub_agent_streaming(
     # chat run holds. The specialist tools, delegate_to_agent, call_agent and
     # call_agents_parallel all come here. It reads the parent's binding on the
     # parent's frame, before any work and before any mark of the chat.
-    _pack_refused = _pack_delegation_refusal(agent_name)
+    _pack_refused = _pack_delegation_refusal(agent_name, run_id)
     if _pack_refused is not None:
         return _pack_refused
     # WS-67 OA-9a: the worker runs only for a bound job (the second of three
@@ -2614,12 +3261,15 @@ async def _run_sub_agent_streaming(
     # binding, and bound at once, so no later path reads the parent's frame.
     _parent_ctx_sub = artifact_context()
     _sub_no_egress = _run_no_egress(agent_name, _parent_ctx_sub)
+    # RX-1 (D169): a covered run keeps H-236 as it was, down the whole chain.
+    _sub_cover = _covered_chain(agent_name, _parent_ctx_sub)
+    _sub_marked = await _chat_marked(_parent_ctx_sub)
     # WS-67 OA-7c: a delegated run never inherits the run key or the record of
     # its parent's packs, so its own hand-offs are never refused for them.
     # OA-9c: a spawn child takes the key of its own pack tools instead.
     derive_artifact_context(
-        no_egress=_sub_no_egress, **_without_pack_keys(agent_name),
-        **_without_job_key(agent_name),
+        no_egress=_sub_no_egress, covered_chain=_sub_cover, chat_marked=_sub_marked,
+        **_without_pack_keys(agent_name), **_without_job_key(agent_name),
     )
     _sub_calls: list[dict[str, Any]] = []
 
@@ -2727,7 +3377,7 @@ async def _run_sub_agent_streaming(
                 if hasattr(loaded, "config") else None,
             )
             # CRM-C7: no CRM record write in Mirror mode, read as the member.
-            await _drop_mirror_record_writes(agents, no_egress=_sub_no_egress)
+            await _drop_mirror_record_writes(agents)
             _sub_own_tools = _count_agent_tools(agents)  # WS-8o
             _sub_run_tools = _inject_agent_tools(
                 agents,
@@ -2843,6 +3493,8 @@ async def _run_sub_agent_streaming(
                 # H-236: set from the parent's binding, never cleared here.
                 # The batch run of a MAF sub-agent reads it as its parent.
                 no_egress=_sub_no_egress,
+                covered_chain=_sub_cover,
+                chat_marked=_sub_marked,
                 # The chat that asked. The batch run of a MAF sub-agent
                 # passes it on (``delegation_target``).
                 deliver_to=_deliver_to,
@@ -2973,6 +3625,14 @@ async def _run_sub_agent_streaming(
                                 text_parts.append(_sev["delta"])
                             _note_sub_call(_sub_calls, _sev)
                             await _emit_sub_event(_sev)
+                    # Release a line that the placeholder filter still holds.
+                    for _sev in _wrap_sub_agent_events(
+                        _close_text_message(_sub_t_state),
+                        agent_name=agent_name, run_id=run_id,
+                    ):
+                        if _sev["type"] == "SUB_AGENT_TEXT_DELTA":
+                            text_parts.append(_sev["delta"])
+                        await _emit_sub_event(_sev)
             else:
                 # MAF or unknown runtime: batch run, emit one result delta.
                 # Forward the parent's resolved tier so native MAF sub-agents
@@ -3054,7 +3714,8 @@ async def _run_sub_agent_streaming(
     finally:
         # WS-67 OA-8i review, P2: first, before any await, the calling run's
         # pack record learns whether this hand-off finished.
-        _pack_handoff_ended(agent_name, _parent_ctx_sub, finished=_sub_done)
+        _pack_handoff_ended(agent_name, _parent_ctx_sub, finished=_sub_done, calls=_sub_calls,
+                            run_id=run_id)
         _drop_agent_push(run_id, "the sub-task did not finish")
         try:
             from acb_common import publish_activity
@@ -3093,6 +3754,60 @@ def _custom_apps_root() -> Path:
     return (Path(settings.agents_clone_dir).expanduser() / "custom_apps").resolve()
 
 
+#: The folders of the App Workshop apps of one organization. The explicit
+#: ``organization_id`` filter holds also for a role that bypasses RLS.
+#: A Studio package (``format = 'manifest'``) has no folder.
+_ORG_APP_FOLDERS_SQL = (
+    "SELECT workspace_path FROM apps "
+    "WHERE organization_id = CAST(:org AS uuid) "
+    "AND format IS DISTINCT FROM 'manifest' "
+    "AND workspace_path IS NOT NULL AND btrim(workspace_path) <> ''"
+)
+
+
+def _app_workspace_of_org(resolved: Path, org: str | None) -> bool:
+    """True when *resolved* lies in the folder of an app of *org* (task 2462).
+
+    The slug of an app is unique over all orgs, and each app folder is
+    ``apps_root()/<slug>``. So a folder of a deleted app of org A can become
+    the folder of a new app of org B. A path check under the root is not
+    enough. The run's org must own an ``apps`` row whose folder holds the path.
+
+    It fails closed: no org, a read error or no matching row answers False.
+    *org* comes from the run binding, never from input (R5). The read always
+    binds *org* (``acb_graph.tenant_session``), as the gateway's twin
+    ``workspace._app_workspace_for`` does, so it holds with the
+    ``ACB_GRAPH_TENANT_BIND`` flag OFF too.
+    Fence: ``tests/unit/test_app_delete_workspace_r8.py``.
+    """
+    if not org:
+        return False
+    try:
+        from acb_graph import tenant_session
+        from sqlalchemy import text
+
+        with tenant_session(str(org)) as s:
+            rows = s.execute(text(_ORG_APP_FOLDERS_SQL), {"org": str(org)}).fetchall()
+    except Exception as exc:
+        _log.warning("executor.app_workspace_lookup_failed", error=str(exc)[:200])
+        return False
+    try:
+        root = _custom_apps_root()
+    except OSError:
+        return False
+    for row in rows:
+        try:
+            folder = Path(str(row.workspace_path)).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        # A corrupt row that names the root itself must never cover every app.
+        if folder == root or not folder.is_relative_to(root):
+            continue
+        if resolved == folder or resolved.is_relative_to(folder):
+            return True
+    return False
+
+
 def _session_workspace_override(
     thread_id: str | None, agent_config: dict[str, Any]
 ) -> str | None:
@@ -3106,9 +3821,14 @@ def _session_workspace_override(
     Fail-closed containment: the stored path must resolve to an existing
     directory inside the Custom Apps root — anything else (traversal,
     symlink escape, stale path) falls back to the agent clone.
+
+    Task 2462: the folder must also be the folder of an app of the run's own
+    org (:func:`_app_workspace_of_org`). A stale path to a slug that another
+    org took after a delete falls back the same way.
     """
     if not thread_id or not agent_config.get("allow_session_workspace"):
         return None
+    run_org = _RUN_ORG.get(thread_id)
     workspace_path = ""
     try:
         from sqlalchemy import text
@@ -3131,7 +3851,10 @@ def _session_workspace_override(
     try:
         resolved = Path(workspace_path).expanduser().resolve(strict=True)
         root = _custom_apps_root()
-        if resolved.is_dir() and resolved != root and resolved.is_relative_to(root):
+        if (
+            resolved.is_dir() and resolved != root and resolved.is_relative_to(root)
+            and _app_workspace_of_org(resolved, run_org)
+        ):
             return str(resolved)
     except OSError:
         pass
@@ -3289,6 +4012,13 @@ async def _first_party_admin_runs() -> tuple[bool, str]:
     delegated run keeps its parent's member, because a run that binds no user
     leaves the parent's ``user`` and ``member_verified`` in place. Every
     failure answers no.
+
+    The member must be an active member of the run's org
+    (``acb_auth.access.is_active_member``), and the admin permission is read
+    in the run's org (``acb_auth.access.resolve_access_in_org``). A person
+    with an active membership in two orgs passes only when their role row is
+    in the run's org (PLN-Q5, H-232b). Roles live on one ``app_user`` row, in
+    one org (D48 moves them). A failed read or a mismatch answers no.
     """
     from acb_common import get_run_context
 
@@ -3305,14 +4035,43 @@ async def _first_party_admin_runs() -> tuple[bool, str]:
             return False, "not the first-party organization"
     except Exception as exc:
         return False, f"the first-party check failed: {str(exc)[:120]}"
-    try:
-        from acb_auth import resolve_access
-        access = await resolve_access(member)
-    except Exception as exc:
-        return False, f"the access check failed: {str(exc)[:120]}"
+    # H-232: the member must belong to the run's org. ``resolve_access`` reads
+    # roles by email alone, so an admin of another org passed this gate.
+    # H-232b: ask about the run's org, not "the member's one org", because
+    # ``resolve_identity`` has no answer for a person in two orgs under the
+    # cutover. Fence: ``tests/unit/test_root_agent_first_party.py``.
+    access, why = await _member_access_in_run_org(member, org)
+    if access is None:
+        return False, why
     if not (access.is_active and access.has(_FIRST_PARTY_ADMIN_PERMISSION)):
         return False, "not an admin of the first-party organization"
     return True, ""
+
+
+async def _member_access_in_run_org(
+    member: str, org: str,
+) -> tuple[Any, str]:
+    """The member's access in the run's org, or ``(None, why)``. H-232b.
+
+    Two ``acb_auth`` reads keyed on ``(email, org)``. First the membership
+    (``is_active_member``), then the roles of the member in that org
+    (``resolve_access_in_org``). Both fail closed, and an exception is a
+    refusal. Both run gates call it: :func:`_first_party_admin_runs` and
+    :func:`_agent_push_allowed`.
+    """
+    try:
+        from acb_auth.access import is_active_member
+        member_ok = await is_active_member(member, org)
+    except Exception as exc:
+        return None, f"the membership check failed: {str(exc)[:120]}"
+    if not member_ok:
+        return None, "the member is not of the run's organization"
+    try:
+        from acb_auth.access import resolve_access_in_org
+        access = await resolve_access_in_org(member, org)
+    except Exception as exc:
+        return None, f"the access check failed: {str(exc)[:120]}"
+    return access, ""
 
 
 async def _agent_push_allowed() -> tuple[bool, str]:
@@ -3323,6 +4082,11 @@ async def _agent_push_allowed() -> tuple[bool, str]:
     in the first-party org or in an org of ``AGENT_REGISTRY_ORGS``. The member
     and the org come from the run binding only, never from the payload (R5), as in
     :func:`_first_party_admin_runs`. Every failure answers no.
+
+    H-232b: the member must be an active member of the run's org, and the
+    permission is read in the run's org (:func:`_member_access_in_run_org`).
+    Before, ``resolve_access`` read it by email alone, so an ``agents:manage``
+    holder of another org passed on a run of a registry org.
 
     The run binds the answer as ``agent_push_allowed``. The Copilot permission
     guard and ``run_script`` read it, and :func:`_detect_agent_commits` asks it
@@ -3338,10 +4102,11 @@ async def _agent_push_allowed() -> tuple[bool, str]:
     org = _current_run_org()
     if not org:
         return False, "no organization"
+    access, why = await _member_access_in_run_org(member, org)
+    if access is None:
+        return False, why
     try:
-        from acb_auth import resolve_access
         from acb_auth.agent_operator import may_review_agent_commits
-        access = await resolve_access(member)
     except Exception as exc:
         return False, f"the access check failed: {str(exc)[:120]}"
     if not access.is_active:
@@ -4046,6 +4811,8 @@ def _audit_agent_push(
                 "branch": str(details.get("branch") or ""),
                 "shas": [str(x)[:40] for x in details.get("shas") or []],
                 "reviewed_by": "chat:autopush",
+                # BR-7b (core_brief.md §8.2): the policy that allowed it.
+                "policy": "chat:autopush",
             },
             organization_id=org,
         ))
@@ -4477,7 +5244,9 @@ async def _detect_agent_commits(
         )
 
 
-async def _integration_authorizer(event_payload: Any, thread_id: str | None = None):
+async def _integration_authorizer(
+    event_payload: Any, thread_id: str | None = None, *, session_user: str | None = None,
+):
     """Build the per-run integration filter for the run's authority, or None.
 
     Org access control (spec §5, seam 3). An agent's ``config.json`` declares
@@ -4495,8 +5264,9 @@ async def _integration_authorizer(event_payload: Any, thread_id: str | None = No
     Returns ``None`` — meaning no filtering, the pre-org-access-control
     behaviour — whenever the run is **not** attributable to an active member:
 
-    * no ``user_email`` in the payload (cron, reconciler, webhook-triggered
-      runs: the platform acting on its own behalf, not a person's);
+    * no session member and no ``user_email`` in the payload (cron,
+      reconciler, webhook-triggered runs: the platform acting on its own
+      behalf, not a person's);
     * a synthetic principal such as ``system:internal``;
     * an address that does not resolve to an ACTIVE member.
 
@@ -4506,12 +5276,19 @@ async def _integration_authorizer(event_payload: Any, thread_id: str | None = No
     happened not to be a provisioned member. Who may start a run at all is
     already enforced upstream by ``assert_can_run_agent``, so an
     unidentifiable address here means "platform-initiated", not "attacker".
+
+    🔴 **The member is the session's, through** :func:`_run_member` (MCP-C1).
+    H-337 removes the body's ``user_email`` in the stream route, so a check
+    that read the body found nobody in EVERY web chat. Then this returned
+    ``None``: no integration filter, and no MCP card (``member_present``
+    False). *session_user* wins, and a run whose caller passes none keeps the
+    body's claim, as before. A VERIFIED member who does not resolve active
+    gets nothing, never ``None``: a session names a person, so "the platform
+    started this run" cannot be the reason (review of MCP-C1). Fence:
+    ``tests/unit/test_org_access_credentials.py`` and
+    ``tests/unit/test_maf_mcp_confirm.py``.
     """
-    email = ""
-    if isinstance(event_payload, dict):
-        email = str(
-            event_payload.get("user_email") or event_payload.get("user_id") or ""
-        ).strip()
+    email, verified = _run_member(event_payload, session_user)
     if not email or ":" in email:
         return None
 
@@ -4531,6 +5308,11 @@ async def _integration_authorizer(event_payload: Any, thread_id: str | None = No
 
         access = await resolve_access(email)
         if not access.is_active:
+            if verified:
+                # A degraded read or a suspension of a session member: deny
+                # every credential for this run, as for IdentityUnavailable.
+                _log.warning("executor.integration_authorizer_inactive_member")
+                return lambda _service: False
             return None
 
         # Shared-session fold: the intersection REPLACES the actor's access
@@ -4757,7 +5539,7 @@ async def _assemble_batch_agents(
         agents, loaded.config.get("own_tool_scope") or None,
     )
     # CRM-C7: no CRM record write in Mirror mode, read as the member.
-    await _drop_mirror_record_writes(agents, no_egress=no_egress)
+    await _drop_mirror_record_writes(agents)
     own_tools = _count_agent_tools(agents)  # WS-8o
     run_tools = _inject_agent_tools(
         agents,
@@ -4948,7 +5730,12 @@ async def _run_agent_inner(
                       or _run_covered(agent_name, organization_id))
     else:
         _no_egress = _run_no_egress(agent_name, _parent_ctx, organization_id)
-    derive_artifact_context(no_egress=_no_egress)
+    # RX-1 (D169): a covered run keeps H-236 as it was, down the whole chain.
+    _cover = _covered_chain(agent_name, _parent_ctx, organization_id)
+    _marked = await _chat_marked(
+        {**dict(_parent_ctx), "session_id": _parent_ctx.get("session_id") or thread_id,
+         "batch_thread": _batch_thread}, organization_id)
+    derive_artifact_context(no_egress=_no_egress, covered_chain=_cover, chat_marked=_marked)
     # WS-17 EM-G11f3: the batch twin of the mark in _run_sub_agent_streaming.
     await _mark_untrusted_session(agent_name, _parent_ctx)
     # WS-45 S4: a covered batch run has its own tier policy (below). Its
@@ -5182,7 +5969,9 @@ async def _run_agent_inner(
             optional_integrations: list[str] = loaded.config.get("optional_integrations", [])
             # One access lookup for the run, as on the stream path. The
             # integrations and the MCP servers (WAC-P3) read the same answer.
-            _authorizer = await _integration_authorizer(event_payload, thread_id)
+            _authorizer = await _integration_authorizer(
+                event_payload, thread_id, session_user=session_user,
+            )
             integrations, integration_warnings = build_integrations(
                 mandatory_integrations, optional_integrations, settings,
                 is_authorized=_authorizer,
@@ -5254,11 +6043,10 @@ async def _run_agent_inner(
                 gateway_url=str(
                     getattr(settings, "gateway_base_url", "http://127.0.0.1:8000")
                 ),
+                # GATEWAY_INTERNAL_TOKEN only, with no LLM-key rung (WS-24b).
                 gateway_token=str(
-                    getattr(settings, "gateway_internal_token", "")
-                    or getattr(settings, "litellm_master_key", "")
-                    or "sk-local"
-                ),
+                    getattr(settings, "gateway_internal_token", "") or ""
+                ).strip(),
                 # D85, two halves. ``shell_tools_withheld``: the injected
                 # shell tools are withheld (a cover may lift it).
                 # ``host_shell_refused``: the Copilot CLI's own shell, which
@@ -5278,6 +6066,8 @@ async def _run_agent_inner(
                 # H-236: a delegated run of a covered parent sends nothing
                 # off the platform. Its own delegations inherit this.
                 no_egress=_no_egress,
+                covered_chain=_cover,
+                chat_marked=_marked,
                 # The chat that asked, for a delegated run.
                 **({"deliver_to": _deliver_to} if _deliver_to is not None else {}),
                 # WS-45 S4: the System-1 threshold of a covered run follows
@@ -5832,6 +6622,10 @@ async def run_agent_stream(
     #: WS-63 PZ-2: True when the caller's run boundary knows the room is the
     #: member's own. ``None`` keeps the parent's value. See `_RUN_SOLO_ROOM`.
     solo_room: bool | None = None,
+    #: PZ-39: ``(reply_id, prompt_id)``, the ids of THIS turn's own rows, set by
+    #: the gateway route from its own mint. The greeting decision leaves them
+    #: out of the gap. Empty means no decision.
+    turn_row_ids: tuple[str, ...] = (),
 ) -> AsyncIterator[str]:
     """Load a named agent and yield AG-UI SSE events while it runs.
 
@@ -6044,7 +6838,13 @@ async def run_agent_stream(
     from acb_skills.write_artifact import artifact_context as _ctx_now
     from acb_skills.write_artifact import derive_artifact_context as _derive_ctx
     _stream_no_egress = _run_no_egress(agent_name, _ctx_now(), organization_id)
-    _derive_ctx(no_egress=_stream_no_egress)
+    # RX-1 (D169): a covered run keeps H-236 as it was, down the whole chain.
+    _stream_cover = _covered_chain(agent_name, _ctx_now(), organization_id)
+    _stream_marked = await _chat_marked(
+        {**dict(_ctx_now()), "session_id": thread_id or run_id, "batch_thread": _batch_thread},
+        organization_id)
+    _derive_ctx(
+        no_egress=_stream_no_egress, covered_chain=_stream_cover, chat_marked=_stream_marked)
     if _stream_no_egress:
         _remember_no_egress_run(run_id)
     # WS-67 OA-7c (§4.2.2): layer (a) of the tool packs. The read of the
@@ -6187,7 +6987,9 @@ async def run_agent_stream(
             optional = loaded.config.get("optional_integrations", [])
             # One access lookup for the run. The integrations below and the
             # MCP servers of a native agent (WS-8c) read the same answer.
-            _authorizer = await _integration_authorizer(event_payload, thread_id)
+            _authorizer = await _integration_authorizer(
+                event_payload, thread_id, session_user=session_user,
+            )
             _laps.lap("authorizer")
             # Filter BEFORE the env injection below, so a credential the
             # acting member may not use never enters the run's environment at
@@ -6230,9 +7032,7 @@ async def run_agent_stream(
                 agents, loaded.config.get("own_tool_scope") or None,
             )
             # CRM-C7: no CRM record write in Mirror mode, read as the member.
-            await _drop_mirror_record_writes(
-                agents, no_egress=_stream_no_egress,
-            )
+            await _drop_mirror_record_writes(agents)
             _laps.lap("crm_mirror")
             _own_tools = _count_agent_tools(agents)  # WS-8o
             _run_tools = _inject_agent_tools(
@@ -6350,11 +7150,10 @@ async def run_agent_stream(
                 gateway_url=str(
                     getattr(settings, "gateway_base_url", "http://127.0.0.1:8000")
                 ),
+                # GATEWAY_INTERNAL_TOKEN only, with no LLM-key rung (WS-24b).
                 gateway_token=str(
-                    getattr(settings, "gateway_internal_token", "")
-                    or getattr(settings, "litellm_master_key", "")
-                    or "sk-local"
-                ),
+                    getattr(settings, "gateway_internal_token", "") or ""
+                ).strip(),
                 # D85, two halves. ``shell_tools_withheld``: the injected
                 # shell tools are withheld (a cover may lift it).
                 # ``host_shell_refused``: the Copilot CLI's own shell, which
@@ -6375,6 +7174,8 @@ async def run_agent_stream(
                 # bind True for itself: its delegations compute it from
                 # covers(), and the sandbox middleware withholds its own.
                 no_egress=_stream_no_egress,
+                covered_chain=_stream_cover,
+                chat_marked=_stream_marked,
                 # WS-45 S1: the effort mode, so the System-1 `decide` reads
                 # its threshold from the run binding (ai_tier_routing.md §5).
                 think_mode=think_mode or "auto",
@@ -6425,6 +7226,30 @@ async def run_agent_stream(
             # working set, for the sync context and each delegated task.
             await _prime_chat_constraints(agent_name)
             _laps.lap("constraints")
+            # WS-63 PZ-34 (§15.4): the briefing of the member's other chats,
+            # bound for this run only, for the sync context. A delegated, a
+            # batch or a card-less run (WhatsApp) gets none. One second at
+            # most, and a fault costs the block, never the turn.
+            await _prime_member_briefing(
+                agent_name, organization_id=organization_id, thread_id=thread_id,
+                delegated=_delegated_run, shows_cards=shows_cards,
+                batch_thread=_batch_thread,
+            )
+            _laps.lap("briefing")
+            # PZ-39: whether this turn opens a conversation, from the stored
+            # rows of this chat. A fault costs the greeting, never the turn.
+            await _prime_greet_due(
+                agent_name, organization_id=organization_id, thread_id=thread_id,
+                delegated=_delegated_run, shows_cards=shows_cards,
+                batch_thread=_batch_thread, turn_ids=turn_row_ids,
+            )
+            # WS-63 PZ-43 (§16.6): the member's birthday, festivals and work
+            # anniversary, for the sync context. Dark behind CELEBRATIONS_ORGS.
+            await _prime_celebrations(
+                agent_name, organization_id=organization_id, thread_id=thread_id,
+                delegated=_delegated_run, shows_cards=shows_cards,
+                batch_thread=_batch_thread,
+            )
             try:
                 # Ensure the three visible workspace directories exist so the
                 # Files Viewer sidebar shows them even before the agent writes
@@ -6488,6 +7313,11 @@ async def run_agent_stream(
             # turn) and the ask_user/working_directory wiring (audit
             # follow-up, 2026-07-22).
             _is_copilot_sdk = _is_copilot_built(agent, _agent_runtime)
+            # WS-43h (review P3): the runtime of THIS run, from the built
+            # object, for the log lines. The label can differ: app-builder
+            # is labelled "maf", and its factory builds a Copilot agent for
+            # an org outside `app_builder:<org>`.
+            _run_runtime = "github-copilot" if _is_copilot_sdk else "maf"
             # WS-43t2: the stored session of a native run. Tier 1 loads it,
             # and Tier 2 reuses it when Tier 1 fails before any output.
             _session_turn: Any = None
@@ -6624,12 +7454,12 @@ async def run_agent_stream(
                     getattr(settings, "litellm_base_url", "")
                     or "http://127.0.0.1:8080"
                 ).rstrip("/")
-                # Internal-token precedence must match require_internal_auth
-                # (gateway_internal_token → litellm_master_key); a divergence
-                # otherwise 401s the BYOK /v1 call and surfaces on the Copilot
-                # session as "Authorization error, run /login".
+                # A /v1 call, so the LLM API key and NEVER the identity token
+                # (`Settings.llm_api_key`, the key of _model_resolution).
+                # require_llm_api_auth accepts it. WS-24b removed the
+                # identity token from this provider config.
                 _gw_key = (
-                    getattr(settings, "gateway_internal_token", "")
+                    getattr(settings, "llm_api_key", "")
                     or getattr(settings, "litellm_master_key", "")
                     or "sk-local"
                 ).strip()
@@ -6643,7 +7473,7 @@ async def run_agent_stream(
                 _log.info(
                     "executor.copilot_maf_byok_early",
                     agent=agent_name,
-                    runtime=_agent_runtime,
+                    runtime=_run_runtime,
                     model=_byok_model_id_early,
                     base_url=_gw_base,
                 )
@@ -6661,7 +7491,7 @@ async def run_agent_stream(
                     _log.info(
                         "executor.maf_model_override",
                         agent=agent_name,
-                        runtime=_agent_runtime,
+                        runtime=_run_runtime,
                         model=_final_model_early,
                     )
                 except Exception:
@@ -6685,7 +7515,7 @@ async def run_agent_stream(
                             _log.info(
                                 "executor.think_mode_applied",
                                 agent=agent_name,
-                                runtime=_agent_runtime,
+                                runtime=_run_runtime,
                                 think_mode=think_mode,
                             )
                     except Exception:  # never break a run over a rendering hint
@@ -8353,7 +9183,7 @@ async def run_agent_stream(
                 # save that did not happen (orchestrator/setup_tokens.py).
                 if any(v.strip() for _, _k, v in raw_matches):
                     _GATEWAY_URL = settings.gateway_base_url if hasattr(settings, "gateway_base_url") else "http://127.0.0.1:8000"
-                    _token = getattr(settings, "gateway_internal_token", "") or getattr(settings, "litellm_master_key", "")
+                    _token = (getattr(settings, "gateway_internal_token", "") or "").strip()
                     try:
                         import httpx
 
@@ -8776,7 +9606,14 @@ async def _llm_recovery(
             tier=LLMTier.TIER_2,
             messages=recovery_msgs,
             max_tokens=400,
+            job="writing",
         )
+        if not (content or "").strip():
+            # No recovery text (task 1128). Send no blank reply and no stock
+            # apology as a finished run. None makes the caller go on to the
+            # self-mutation step and raise the first error, with its class.
+            _log.warning("self_anneal.llm_recovery_empty", agent=agent_name)
+            return None
         _log.info("self_anneal.llm_recovery_success", agent=agent_name)
         return {"result": {"role": "assistant", "content": content}}
     except Exception as llm_exc:
@@ -8952,9 +9789,23 @@ async def _run_with_maf_agent(
             await stack.enter_async_context(agent)
         response = await _with_tier_policy(agent, tier_policy).run(run_input)
 
-    text: str = getattr(response, "text", "") or ""
+    return _batch_result(response, run_id, agent_name)
+
+
+def _batch_result(response: Any, run_id: str, agent_name: str) -> dict[str, Any]:
+    """The dict `run_agent` returns for one batch run.
+
+    Task 1787: this is the ONE strip of litellm's empty-text placeholder for
+    every caller of a batch result (WhatsApp, the project agent sink, the
+    sub-agent). The placeholder never leaves here.
+    """
+    from acb_llm.message_hygiene import strip_placeholder_lines
+
+    text: str = strip_placeholder_lines(getattr(response, "text", "") or "")
+    steps = [t for t in (strip_placeholder_lines(x).strip()
+                         for x in _step_texts(response)) if t]
     return {"answer": text, "run_id": run_id, "agent": agent_name, "result": text,
-            "steps": _step_texts(response), "tool_calls": _tool_calls_of(response)}
+            "steps": steps, "tool_calls": _tool_calls_of(response)}
 
 
 def _tool_calls_of(response: Any) -> list[dict[str, Any]]:
@@ -9367,6 +10218,13 @@ def _native_session_skip(
     ``<agent>:<run>`` default), a delegated run, and an event with no current
     turn. An agent that brings its own history provider keeps it, and gets
     no second one.
+
+    WS-43h: a provider with the store's own source id
+    (``native_session_store.HISTORY_SOURCE_ID``) is the store's provider. A
+    harness agent must hold one history provider, so app-builder's factory
+    gives it that one. It reads and writes the very session state that the
+    store loads and saves, so it is no reason to skip, and
+    :func:`_agent_for_run` attaches no second one beside it.
     """
     thread = str(caller_thread_id or "").strip()
     if not thread or thread == f"{agent_name}:{run_id}":
@@ -9378,8 +10236,13 @@ def _native_session_skip(
         return "no_current_turn"
     from agent_framework import HistoryProvider
 
+    from orchestrator.native_session_store import HISTORY_SOURCE_ID
+
     for provider in getattr(agent, "context_providers", None) or []:
-        if isinstance(provider, HistoryProvider) and provider.load_messages:
+        if (
+            isinstance(provider, HistoryProvider) and provider.load_messages
+            and getattr(provider, "source_id", None) != HISTORY_SOURCE_ID
+        ):
             return "agent_history_provider"
     return None
 
@@ -10144,6 +11007,8 @@ def _render_history_block(
     drop first (mirroring assemble_run_context's whole-turn eviction); a single
     oversized message is trimmed rather than allowed to eat the whole budget.
     """
+    from acb_llm.message_hygiene import strip_placeholder_lines
+
     budget = _history_char_budget(model)
     # Cap any ONE message so a single giant turn can't crowd out all the others.
     per_msg_cap = max(_HISTORY_MIN_CHARS // 2, budget // 4)
@@ -10156,7 +11021,11 @@ def _render_history_block(
     for idx in range(total - 1, max(-1, total - _HISTORY_MAX_MESSAGES - 1), -1):
         m = history[idx]
         role = m.get("role", "user")
-        content = (m.get("content") or "").strip()
+        content = (m.get("content") or "")
+        if role == "assistant":
+            # A stored turn may hold litellm's placeholder line (task 1787).
+            content = strip_placeholder_lines(content)
+        content = content.strip()
         if not content:
             continue
         # Skip the current turn if the caller also included it in history.
@@ -10191,10 +11060,14 @@ def _context_preamble_parts(
     orchestrator (:func:`_knowledge_index_block`, WS-61 KB-4a), then
     ``memory_context``, then ``system_context`` (which carries the persona),
     then the member's name line (:func:`_member_name_line`), the member's
-    profile block (:func:`_member_profile_block`, WS-63 PZ-2), the member's
+    profile block (:func:`_member_profile_block`, WS-63 PZ-2), the briefing
+    of the member's other chats (:func:`_member_briefing_block`, WS-63
+    PZ-34), the member's
     number-system line (:func:`run_number_system`), today's date
     (``acb_common.today.today_line``), and last the member's part of the day
-    beside a profile block that greets (``part_of_day_line``, PZ-4). :func:`_build_event_message`
+    beside a profile block that greets (``part_of_day_line``, PZ-4), then the
+    line of the tool packs that left at the start of the turn
+    (:func:`_pack_left_block`, task 1747). :func:`_build_event_message`
     puts the history and the current turn after them. The structured path of
     WS-43t1 sends the same blocks through its per-run context provider
     (:func:`_run_context_text`). One builder, so the two paths cannot drift.
@@ -10270,6 +11143,16 @@ def _context_preamble_parts(
     if profile_block:
         parts.append(profile_block)
 
+    # WS-63 PZ-34 (personalization.md §15.4): the briefing, the newest
+    # summaries of the member's other private chats and their due tasks. For
+    # the orchestrator in the member's own web chat, behind
+    # ASSISTANT_BRIEFING_ORGS. From the run binding that
+    # `_prime_member_briefing` set, never the payload (R5). Right after the
+    # profile block, so every block above keeps its place and its bytes.
+    briefing = _member_briefing_block(agent_name)
+    if briefing:
+        parts.append(briefing)
+
     # The member's number system, one line (owner, 2026-10-19): lakh and
     # crore by default. From the run boundary, never from the payload (R5).
     # Last, so the blocks above keep their places. A run with no org (a
@@ -10279,23 +11162,91 @@ def _context_preamble_parts(
         from acb_common.number_system import prompt_line
 
         parts.append(prompt_line(run_number_system()))
+    # WS-63 PZ-51 (personalization.md §5.3): the one language rule, on every
+    # turn of every agent and both channels, beside or without a profile
+    # block. Answer in the member's language, save every record in English.
+    from acb_common.assistant_profile import LANGUAGE_RULE_LINE
+
+    parts.append(LANGUAGE_RULE_LINE)
     # WS-53 §18.16 part 1: today's date, weekday and zone, on both channels.
     # Two runs of 2026-10-19 read a month with no year as two different years
     # because no run knew the date. Last, so each block above keeps its place.
-    from acb_common.today import today_line
+    from acb_common.today import resolve_zone, today_line
 
-    line = today_line()
+    # Task 1649: the line carries the time too, in the member's own zone.
+    settings_zone, people_zone = _member_zones()
+    member_zone = resolve_zone(settings_zone, people_zone, profile_zone)
+    line = today_line(zone=member_zone, with_time=True)
     if line:
         parts.append(line)
     # WS-63 PZ-4 (personalization.md §5.2): the member's part of the day, at
-    # the zone of their People row, so a greeting fits the hour. Only beside
+    # the same resolved zone as the "now" line (PZ-39), so a greeting fits the hour. Only beside
     # a profile block whose greeting is not "none". Last, so each block above
     # keeps its place.
     if profile_block and profile_greeting != "none":
+        from acb_common.assistant_profile import block_language
         from acb_common.today import part_of_day_line
 
-        parts.append(part_of_day_line(profile_zone or None))
+        parts.append(part_of_day_line(
+            member_zone, greet=_greet_due_now(), language=block_language(profile_block)))
+        # WS-63 PZ-43 (§16.6): one wish on the member's birthday, festival or
+        # work anniversary, in the first reply of that local day.
+        celebration = _celebration_line(agent_name, member_zone)
+        if celebration:
+            parts.append(celebration)
+    # Task 1747: the tool packs that left this chat at the start of the turn.
+    # The model's history still shows their tools, so the line says that they
+    # left, and how to load them again. From the run binding, never from the
+    # payload (R5). Last, so each block above keeps its place. An empty line
+    # adds nothing.
+    parts.extend(filter(None, [_pack_left_block(agent_name)]))
     return parts
+
+
+_ZONE_CACHE: dict[tuple[str, str], tuple[float, str, str]] = {}
+
+
+def _member_zones() -> tuple[str, str]:
+    """``(user_settings.timezone, people.timezone)`` of the run's verified
+    member, or ``("", "")``. Task 1649: the zone of the "now" line.
+
+    From the run boundary, never the payload (R5). One short read, cached for
+    a minute per ``(org, member)``. It never raises. The browser stores its own
+    zone in ``user_settings.timezone`` (``saveZone.ts``), so that column is
+    the browser's zone too."""
+    import time
+
+    org, member = _current_run_org(), _verified_run_member()
+    if not org or not member:
+        return ("", "")
+    key = (str(org), member)
+    hit = _ZONE_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < 60.0:
+        return (hit[1], hit[2])
+    settings_zone = people_zone = ""
+    try:
+        opener = _opener_for_org(str(org))
+        if opener is not None:
+            from acb_common.assistant_profile import ADDRESS_SQL
+            from sqlalchemy import text
+
+            with opener() as session:
+                row = session.execute(
+                    text("SELECT timezone FROM user_settings "
+                         "WHERE organization_id = CAST(:org AS uuid) "
+                         "AND lower(user_id) = lower(:m) "
+                         "ORDER BY updated_at DESC LIMIT 1"),
+                    {"org": str(org), "m": member}).first()
+                names = session.execute(
+                    text(ADDRESS_SQL), {"org": str(org), "m": member}).first()
+            settings_zone = str(row[0] or "") if row else ""
+            people_zone = str(names[1] or "") if names else ""
+    except Exception:
+        return ("", "")
+    _ZONE_CACHE[key] = (time.monotonic(), settings_zone, people_zone)
+    while len(_ZONE_CACHE) > 4096:
+        _ZONE_CACHE.pop(next(iter(_ZONE_CACHE)))
+    return (settings_zone, people_zone)
 
 
 def _run_context_text(

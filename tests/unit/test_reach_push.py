@@ -420,7 +420,9 @@ def test_r8_a_due_reminder_sends_one_push_within_90_s_of_fire_at(world, app_engi
     assert post["headers"]["Urgency"] == "high" and post["headers"]["TTL"] == "3600"
     [payload] = _payloads(world, ALICE)
     assert payload == {"title": "Get a haircut at 3:00 PM", "body": _org_name(world, org),
-                       "url": f"/chat?reminder={rid}", "tag": rid}
+                       "url": f"/chat?reminder={rid}", "tag": rid, "renotify": True,
+                       # RX-4: the worker adds Done and In 1 hour from these two.
+                       "reminder_id": rid, "kind": "reminder_due"}
 
     [row] = _outbox(world, ALICE)
     fired = next(e for e in _ledger(world, rid) if e.event == "fired")
@@ -1177,7 +1179,7 @@ def test_r8_org_b_reads_nothing_of_org_a(world) -> None:
         raise AssertionError("org B claimed a row of org A")
 
     async def as_org_b() -> tuple[list[str], Any, Counter, int]:
-        listed = await outbox.planned_pushes(b, limit=100)
+        listed = [i for i, _kind in await outbox.planned_pushes(b, limit=100)]
         claimed = await outbox.claim_push(b, row.id, never)
         sent = await push_channel.send_planned(b, lambda: at)
         async with tenant_session(b) as db:

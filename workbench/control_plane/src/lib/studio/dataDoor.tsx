@@ -10,9 +10,44 @@
  * holds the one renderer that reads them. Fence: `dataDoor.test.ts`.
  */
 import { text } from "@/lib/genUiText";
+import { fieldGrid, parseFields } from "./blocks";
 
 /** One row of a source. The block reads the keys it needs. */
 export type Row = Record<string, unknown>;
+
+/**
+ * What a list answer says about the records it left out. The door attaches it to the
+ * rows it returns, as a hidden property, so `read` keeps its `Row[]` result and the one
+ * cache. A block reads it with `moreLine`.
+ */
+export interface RowsMeta {
+  /** The count of all matching records, when the store gives it. */
+  total?: number;
+  /** The store counted this far and stopped. */
+  atLeast?: number;
+}
+const META = Symbol.for("studio.rowsMeta");
+
+/** Attach the paging facts of an answer to its rows. Returns the same array. */
+export function withMeta(rows: Row[], meta: RowsMeta): Row[] {
+  if (meta.total === undefined && meta.atLeast === undefined) return rows;
+  Object.defineProperty(rows, META, { value: meta, enumerable: false, configurable: true });
+  return rows;
+}
+
+/** The one line that says some records are not loaded, or null when the rows are all of them. */
+export function moreLine(rows: readonly unknown[] | null | undefined): string | null {
+  const meta = (rows as unknown as Record<symbol, RowsMeta | undefined> | null | undefined)?.[META];
+  if (!rows || !meta) return null;
+  const shown = rows.length;
+  if (typeof meta.total === "number" && meta.total > shown) {
+    return `Showing the first ${shown} of ${meta.total} records.`;
+  }
+  if (typeof meta.atLeast === "number" && meta.atLeast > shown) {
+    return `Showing the first ${shown} of at least ${meta.atLeast} records.`;
+  }
+  return null;
+}
 
 /** What a page reads: a named action and its arguments. */
 export interface StudioSource {
@@ -70,11 +105,11 @@ export function parseSource(raw: unknown): StudioSource | null {
   return { action, args: isObject(raw.args) ? raw.args : undefined };
 }
 
-/** The kinds that bind in STU-D1: a `table` and the `dataGrid` template. */
+/** The kinds that bind: a `table`, and the `dataGrid` and `board` templates (D1, D3). */
 export function bindsSource(type: string, props: Record<string, unknown>): boolean {
   if (parseSource(props.source) === null) return false;
   if (type === "table") return true;
-  return type === "template" && props.name === "dataGrid";
+  return type === "template" && (props.name === "dataGrid" || props.name === "board");
 }
 
 /** A button's action: the old sentence, or a typed action. */
@@ -146,6 +181,15 @@ export function pressAction(
   onAction?.(action.sentence);
 }
 
+/**
+ * Can the member try the read again? The door words a wait or a network fault with
+ * "Try again", and nothing else can change by a retry (a 404, a 403, a sign-in). A
+ * generic fault with no sentence can be tried again.
+ */
+export function canRetryRead(error: string | null | undefined): boolean {
+  return !error || /try again/i.test(error);
+}
+
 /** What a bound block draws. */
 export type BoundView = "loading" | "error" | "empty" | "rows";
 
@@ -166,11 +210,16 @@ export function boundView(state: {
  * and a `columns` list. A door row is keyed by column name, so each cell is
  * the row value under that column. A row that has `cells` already stays as
  * it is. Without `columns`, the keys of the first row name them (`id` aside).
+ * With `fields`, `fieldGrid` (`blocks.ts`) builds the columns, the kinds and the cells.
  */
 export function gridData(
   data: Record<string, unknown>,
   rows: Row[],
 ): Record<string, unknown> {
+  // A Table of a Studio object names its `fields` (STU-D2a). A column is a
+  // field: its label, its cell kind and its words come from the field type.
+  const fields = parseFields(data.fields);
+  if (fields.length > 0) return { openBase: "", ...data, ...fieldGrid(fields, rows) };
   let columns = Array.isArray(data.columns) ? data.columns.map((c) => text(c)) : [];
   const clean = rows.filter((r) => r && typeof r === "object");
   if (columns.length === 0 && clean.length > 0) {

@@ -1,5 +1,7 @@
 # SaaS multi-tenancy — selling Metorite to other companies
 
+> **Dated 2026-11-11, price (D204.9).** Seat tiers are final. The flat ₹500 seat ends when PLN-0 merges. Until then the code sells the flat seat. Read each line that says the flat seat as the seat of D152 after PLN-0. Lines: 51 and 1187.
+
 **Status:** Architecture of record (owner-requested 2026-08-08) · **Board row: `work_plan.md` §2 → WS-29 · Decision: D15** · **§11 is the dispatchable ticket list — start there; [`saas_multitenancy_implementation.md`](saas_multitenancy_implementation.md) is its child and holds the build shapes** · **Owner:** vjvarada ·
 **Supersedes:** `tenancy_and_visibility.md` §1 and §6 · **Verified against code:** 2026-08-08,
 working tree at `b09093a`; **§11's MT-1 anchors re-verified 2026-08-19** ·
@@ -2161,9 +2163,13 @@ constructed without one **refuses to run** rather than defaulting.
 > and each sweeps exactly its own. Proven two-org against a real Postgres by
 > `tests/live/live_ws27aa.py`.
 >
-> **`_pm_task_updater` beside it is still open** — it patches ONE task by id on
-> the unbound seam, so it wants the task's own organization threaded from the
-> node config, not a loop. It belongs to WS-29's H4 slice, not to Projects.
+> **H-328 part (a) closed `_pm_task_updater` beside it for a run with an org
+> (2026-11-02).** It patches ONE task by id through `_run_session(org)`, with the
+> org of the run. A run with no org keeps the unbound seam until parts (b) and
+> (c). No live door reaches this write yet: `run_published_workflow` refuses a
+> task node, because a run does not check which tasks a member can see. It
+> belongs to WS-29's H4 slice, not to Projects. Fence:
+> `tests/unit/test_workflows_lifecycle_rls_r8.py`.
 
 #### MT-1e · Redis: prefixes enforced by the client · ◐ **WRAPPER BUILT, ONE CALL SITE CONVERTED (EM-T2b, BUILT, not merged)**
 
@@ -2174,6 +2180,17 @@ constructed without one **refuses to run** rather than defaulting.
 > `cc:<org>:email-att:<id>` through `get_tenant_redis(binary=True)`. That is the same wrapper
 > over a second, small pool that does not decode replies. `routes/email/core.py` left the
 > import allow-list. Fence: `tests/unit/test_email_attachment_cache_tenancy.py`.
+> **Converted (H-201c, task 1718, 2026-11-05, BUILT, not merged):** the live activity feed.
+> The stream is `cc:<org>:activity` and the presence keys are `cc:<org>:activity:live:<run>`,
+> through the wrapper. A writer with no org writes nothing. The SSE `XREAD BLOCK` runs on a
+> third pool (`get_tenant_redis(blocking=True)`). Fence: `tests/unit/test_activity_feed_tenant.py`.
+> **Converted (H-201e, task 1748, 2026-11-05, BUILT, not merged):** the daily cost rollup.
+> It is `cc:<org>:cost:<day>`, through the wrapper, and `/observability/cost` reads the viewer's
+> org only. A priced call with no tenant folds into ONE deployment-level hash,
+> `cc:_unattributed:cost:<day>`. No tenant route reads it, and `_` cannot lead an org id.
+> There is no dual read of the old `cc:cost:{day}`. `activity.py` stays on the import
+> allow-list for its one-shot no-loop clients, and on the literal allow-list for the
+> unattributed key only. Fence: `tests/unit/test_cost_rollup_tenant.py`.
 > **NOT converted:** the other key sites, across 9 clients. Deliberately separate — the docstring
 > carries the migration path, including *not* writing a dual-read shim (every key is cache,
 > presence or a bounded stream, so conversion is a cache-cold event, not a data migration).
@@ -2188,8 +2205,8 @@ constructed without one **refuses to run** rather than defaulting.
 >    `orchestrator/agents.py:436`, which hands `redis_url` to `agent_framework`'s
 >    `RedisHistoryProvider`, keying chat history **outside this wrapper entirely**. That one
 >    needs its own decision, not a conversion.
-**Owner:** §0.9.4, §1.9 · **Anchor:** today's untenanted `cc:activity`, `cc:room`,
-`cc:cost`, `cc:presence`, `cc:runactor`, …
+**Owner:** §0.9.4, §1.9 · **Anchor:** today's untenanted `cc:room`,
+`cc:presence`, `cc:runactor`, … (`cc:activity` converted by H-201c, and `cc:cost` by H-201e, 2026-11-05)
 
 **Done when:** a wrapper client is the only way the codebase reaches Redis and it **cannot
 construct an unprefixed key**; consumer groups are per-tenant; a grep-assertion test fails

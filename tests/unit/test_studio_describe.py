@@ -117,3 +117,64 @@ def test_the_block_enum_equals_what_the_validator_accepts() -> None:
         errs = [e for e in validate_manifest(_doc(token)) if e.path.endswith("block")]
         assert errs, token
         assert token not in run("blocks")["blocks"]["tokens"]
+
+
+def test_fields_part_names_the_computed_fields_and_the_formula_grammar() -> None:
+    """C7a: a formula target is computed and read-only, so a Form sends no key for it."""
+    from acb_common import studio_expr, studio_rules
+
+    c = run("fields")["fields"]["computed"]
+    assert c["rule"] == "formula" and c["read_only"] is True
+    assert c["target_types"] == list(studio_rules.FORMULA_TARGET_TYPES)
+    assert c["target_types"] == ["number", "money", "text", "checkbox", "date"]
+    assert c["functions"] == list(studio_expr.FUNCTIONS)
+    assert c["roundings"] == ["half_up", "half_even", "down", "up"]
+    assert c["limits"] == {
+        "max_depth": 8, "max_nodes": 64, "max_args": 4, "max_steps": 256,
+        "max_formula_rules": 8, "max_scale": 4, "max_places": 8, "max_text_literal_chars": 200,
+    }
+
+
+def test_the_object_description_marks_each_formula_target_computed() -> None:
+    from acb_common import studio_rules
+    from gateway.studio import objects_store as store
+
+    fields = tuple(sfl.FieldSpec(key=k, type="number") for k in ("qty", "total", "other"))
+    rules = studio_rules.parse_rules([
+        {"name": "t", "kind": "formula", "target": "total", "rounding": "up",
+         "expr": {"fn": "add", "args": [{"ref": "qty"}, {"num": "1"}]}},
+        {"name": "o", "kind": "formula", "target": "other", "rounding": "up",
+         "expr": {"fn": "add", "args": [{"ref": "qty"}, {"num": "2"}]}},
+    ])
+    obj = store.StudioObject("i", "p", "o", None, "a", None, None, fields, rules)  # type: ignore[arg-type]
+    assert obj.computed == ("total", "other")
+
+
+def test_fields_part_names_the_rollup_rule_and_its_limits() -> None:
+    """C7b: a roll-up target is computed too, so a Form marks it read-only."""
+    from acb_common import studio_rules
+
+    r = run("fields")["fields"]["computed"]["rollup"]
+    assert r["rule"] == "rollup" and r["read_only"] is True
+    assert r["aggs"] == ["sum", "count", "min", "max"]
+    assert r["field_types"] == {"sum": ["number", "money"], "min": ["number", "money", "date"],
+                                "max": ["number", "money", "date"]}
+    assert r["limits"] == {"max_where": 2, "max_parents_per_batch": 100,
+                           "max_aggregates_per_batch": 100}
+    assert r["limits"]["max_where"] == studio_rules.MAX_ROLLUP_WHERE
+    assert "relation" in run("fields")["fields"]["hot_types"]
+
+
+def test_the_object_description_marks_each_rollup_target_computed_too() -> None:
+    from acb_common import studio_rules
+    from gateway.studio import objects_store as store
+
+    fields = tuple(sfl.FieldSpec(key=k, type="number") for k in ("qty", "total", "count"))
+    rules = studio_rules.parse_rules([
+        {"name": "t", "kind": "formula", "target": "total", "rounding": "up",
+         "expr": {"fn": "add", "args": [{"ref": "qty"}, {"num": "1"}]}},
+        {"name": "c", "kind": "rollup", "target": "count", "source": "entry", "via": "account",
+         "agg": "count"},
+    ])
+    obj = store.StudioObject("i", "p", "o", None, "a", None, None, fields, rules)  # type: ignore[arg-type]
+    assert obj.computed == ("total", "count")

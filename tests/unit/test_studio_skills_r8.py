@@ -35,6 +35,11 @@ g. Org B reads and writes none of org A's skills or versions. A version
 h. The member purge deletes the member's skills of this org, and their
    versions. The skills of another member and of another org stay, also as
    the superuser.
+i. (WS-STU F1b) The store refuses a hidden character in the name, the
+   description, and each string and key of the body. The refusal names the
+   path and the place, never the text, and it writes no row. The kept
+   scripts of ``tests/fixtures/hidden_text_cases.json`` round-trip byte for
+   byte, and a body at the limit that holds them still passes.
 
 **The mutations (R7).** Commit before each, and restore with git after.
 
@@ -65,6 +70,12 @@ h. The member purge deletes the member's skills of this org, and their
 * M8. ``skills_store._text``: drop the NUL check or the UTF-8 check. The
   ``nul`` or the ``surrogate`` cases of
   ``test_the_store_refuses_text_that_postgres_refuses`` go red.
+* M9. ``skills_store._text``: drop the ``hidden_problem`` check.
+  ``test_the_store_refuses_a_hidden_character_in_a_text_column`` and
+  ``test_r8_a_hidden_name_or_description_writes_no_row`` go red.
+* M10. ``skills_store.check_body``: drop the ``body_hidden_problem`` check.
+  ``test_check_body_refuses_a_hidden_character_with_its_path`` and
+  ``test_r8_a_hidden_body_key_writes_nothing`` go red.
 """
 
 from __future__ import annotations
@@ -109,6 +120,12 @@ ANA = f"ana.{TAG}@stuf1.test"
 BEN = f"ben.{TAG}@stuf1.test"
 _LIKE = f"%.{TAG}@stuf1.test"
 _HASH = "0" * 64
+
+#: The shared cases of the hidden-character rule (WS-STU F1b).
+_CASES = json.loads((_ROOT / "tests" / "fixtures" / "hidden_text_cases.json").read_text(
+    encoding="utf-8"))
+_KEPT = _CASES["kept"]
+_ZWSP, _TAG_A, _VS17 = chr(0x200B), chr(0xE0041), chr(0xE0100)
 
 
 def _dsn(url: Any) -> str:
@@ -485,7 +502,10 @@ def _body_of_size(size: int) -> dict[str, Any]:
         "instructions": "i",
         "actions": ["crm.read_deal"],
         "cards": [{"bb": [1.5, -2, 0.25, 123456789012345.6, True, False, None]}],
-        "knowledge": [{"zz": {}, "a": [], "ctl": "\x01\x1f\x7f", "ls": "\u2028"}],
+        # F1b refuses the other controls, so the legal ones carry the escapes.
+        # The kept scripts of the fixture add joiners and selectors.
+        "knowledge": [{"zz": {}, "a": [], "ctl": "\r\t\n", "ls": "\u2028",
+                       "kept": [case["text"] for case in _KEPT]}],
         "tests": [{"q": "\u20ac and \U0001f600", "n": 10 ** 20}],
     }
     pad = size - len(store.check_body(body).encode("utf-8"))
@@ -551,6 +571,125 @@ def test_r8_a_refused_body_writes_nothing(world) -> None:
     assert len(after) == len(_JSONB_BAD)
     assert all(s is not None and s.current_version is None for s in after)
     assert _count(world, "studio_skill_versions") == 0
+
+
+# -- i. Hidden characters (WS-STU F1b) -----------------------------------------
+
+
+def _sentence(path: str, at: int, ch: str) -> str:
+    return (f"{path}: This text holds a hidden character at position {at} "
+            f"(U+{ord(ch):04X}). Remove it.")
+
+
+@pytest.mark.parametrize(("kw", "path", "at", "bad"), [
+    ({"name": "Quotes" + _ZWSP}, "name", 7, _ZWSP),
+    ({"name": chr(0x3164) + "Quotes"}, "name", 1, chr(0x3164)),
+    ({"description": "Prices" + _TAG_A + " and terms"}, "description", 7, _TAG_A),
+    ({"description": "Use " + chr(0x202E) + "it"}, "description", 5, chr(0x202E)),
+], ids=["name_zwsp", "name_hangul_filler", "description_tag", "description_rlo"])
+def test_the_store_refuses_a_hidden_character_in_a_text_column(
+        kw: dict[str, str], path: str, at: int, bad: str) -> None:
+    """The session is None, so a call that reached the database fails on it.
+    The refusal names the field and the place, and never echoes the value."""
+    args = {"name": "Quotes", "slug": "quote", "description": "", **kw}
+    with pytest.raises(store.SkillStoreError) as refused:
+        asyncio.run(store.create_skill(None, ANA, **args))
+    message = str(refused.value)
+    assert message == _sentence(path, at, bad)
+    assert bad not in message and "Quotes" not in message and "Prices" not in message
+
+
+@pytest.mark.parametrize(("body", "path", "at", "bad"), [
+    ({"description": "d" + _ZWSP, "instructions": "i"}, "body.description", 2, _ZWSP),
+    ({"description": "d", "instructions": "Write" + _VS17}, "body.instructions", 6, _VS17),
+    ({"description": "d", "instructions": "i", "cards": [{"title": "T" + _TAG_A}]},
+     "body.cards[0].title", 2, _TAG_A),
+    ({"description": "d", "instructions": "i", "x": {"n" + chr(0xFEFF): 1}},
+     "body.x key 1", 2, chr(0xFEFF)),
+    ({"description": "d", "instructions": "i", "actions": ["crm.read" + chr(0x2060)]},
+     "body.actions[0]", 9, chr(0x2060)),
+], ids=["description", "instructions", "nested_string", "nested_key", "action"])
+def test_check_body_refuses_a_hidden_character_with_its_path(
+        body: dict[str, Any], path: str, at: int, bad: str) -> None:
+    with pytest.raises(store.SkillStoreError) as refused:
+        store.check_body(body)
+    assert str(refused.value) == _sentence(path, at, bad)
+    with pytest.raises(store.SkillStoreError):
+        asyncio.run(store.add_version(None, ANA, str(uuid.uuid4()), body))
+
+
+def test_r8_the_kept_scripts_round_trip_byte_equal(world) -> None:
+    """jsonb and the text columns keep a legal ZWNJ, ZWJ, U+FE0F and keycap
+    byte for byte: Persian, Hindi, Bengali, a family emoji, a heart and a
+    keycap. A joiner after a virama at a word end (a Malayalam chillu, a
+    Bengali khanda ta, a Devanagari explicit halant) is kept too, in a column
+    and in the body. The superuser reads the stored text to compare."""
+    a = world.p.org_a
+    kept = {case["id"]: case["text"] for case in _KEPT}
+    name = ("Plan " + kept["persian_zwnj"] + " " + kept["heart_vs16"] + " "
+            + kept["malayalam_chillu_zwj_word_end"])
+    desc = (kept["hindi_zwj"] + " " + kept["bengali_zwj"] + " "
+            + kept["bengali_khanda_ta_word_end"] + " " + kept["malayalam_chillu_zwj_text_end"])
+    body = {"description": desc, "instructions": "\n".join(kept.values()),
+            "actions": [], "cards": [{"title": kept["family_emoji"] + kept["keycap_one"]}]}
+
+    async def go() -> tuple[store.Skill, store.Version | None]:
+        async with tenant_session(a) as db:
+            skill = await store.create_skill(db, ANA, name=name, slug=_slug("kept"),
+                                             description=desc)
+            return skill, await store.add_version(db, ANA, skill.id, body)
+
+    skill, version = _go(world, go)
+    assert version is not None and version.body == body
+    assert (skill.name, skill.description) == (name, desc)
+    with world.p.admin_engine.connect() as c:
+        row = c.execute(text(
+            "SELECT s.name, s.description, v.body->>'instructions', "
+            "v.body->'cards'->0->>'title' FROM studio_skills s JOIN studio_skill_versions v "
+            "ON v.skill_id = s.id WHERE s.id = CAST(:i AS uuid)"), {"i": skill.id}).one()
+    assert tuple(row) == (name, desc, body["instructions"], body["cards"][0]["title"])
+    assert row[2].encode("utf-8") == body["instructions"].encode("utf-8")
+
+
+def test_r8_a_hidden_name_or_description_writes_no_row(world) -> None:
+    a = world.p.org_a
+
+    async def go() -> list[str]:
+        messages = []
+        for kw in ({"name": "Quotes" + _ZWSP}, {"description": "d" + _TAG_A}):
+            async with tenant_session(a) as db:
+                with pytest.raises(store.SkillStoreError) as refused:
+                    await store.create_skill(db, ANA, **{
+                        "name": "Quotes", "slug": _slug("hidden"), "description": "", **kw})
+                messages.append(str(refused.value))
+                # No statement ran, so the session still reads.
+                assert await store.list_for(db, ANA) == []
+        return messages
+
+    assert _go(world, go) == [_sentence("name", 7, _ZWSP),
+                              _sentence("description", 2, _TAG_A)]
+    assert _count(world, "studio_skills") == 0
+
+
+def test_r8_a_hidden_body_key_writes_nothing(world) -> None:
+    """A version 1 goes in. A version with a hidden character in a nested key
+    raises before a statement. The session stays usable, and the number does
+    not move."""
+    a = world.p.org_a
+    bad = {**_body("two"), "cards": [{"title": "ok", "no" + _ZWSP + "te": "x"}]}
+
+    async def go() -> tuple[str, store.Skill | None]:
+        skill = await _create(a)
+        await _add(a, skill.id)
+        async with tenant_session(a) as db:
+            with pytest.raises(store.SkillStoreError) as refused:
+                await store.add_version(db, ANA, skill.id, bad)
+            return str(refused.value), await store.get_skill(db, ANA, skill.id)
+
+    message, after = _go(world, go)
+    assert message == _sentence("body.cards[0] key 2", 3, _ZWSP)
+    assert after is not None and after.current_version == 1
+    assert _count(world, "studio_skill_versions") == 1
 
 
 # ── d. Versions in order ───────────────────────────────────────────────────

@@ -77,6 +77,10 @@ REACH_CLASS: dict[str, str] = {
     "reminder_due": "urgent",
     "reminder_check": "interrupt",
     "reminder_unconfirmed": "brief",
+    # WS-ALN ALN-2a (project_alignment.md §3.2, §7.4): a question that waits on
+    # the member by name. It may interrupt, inside the budget. ALN-2b adds the
+    # provider. DECISIONS_ORGS (off by default) keeps the table empty until then.
+    "decision": "interrupt",
     # "Tell me on WhatsApp" (RE-5, §11.3). A rule or a workflow at ``normal``
     # interrupts. The member's own request, and a rule at ``urgent``, are
     # ``urgent`` (below).

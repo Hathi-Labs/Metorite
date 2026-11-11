@@ -63,12 +63,69 @@ def env(tmp_path, monkeypatch):
 def test_only_per_org_and_mode_flags_reload() -> None:
     assert len(fr.RELOADABLE) >= 20
     assert all(re.fullmatch(r"[A-Z0-9_]+_(ORGS|MODES)", k) for k in fr.RELOADABLE)
-    for key in ("CRM_ORGS", "TOOL_PACKS_ORGS", "DECIDE_FEATURE_MODES", "crm_orgs"):
+    for key in ("CRM_ORGS", "TOOL_PACKS_ORGS", "DECIDE_FEATURE_MODES", "crm_orgs",
+                "STATUS_SET_GUARD_ORGS", "status_set_guard_orgs"):
         assert fr.reloadable(key), key
     for key in ("DATABASE_URL", "PGPASSWORD", "PGSSLMODE", "CALENDAR_REMINDERS",
                 "JOB_QUEUE", "V1_ALLOW_CALLER_ENDPOINT_OVERRIDE", "DB_POOL_SIZE",
                 "EMAIL_SYNC_ENABLED", "TOOL_RESULT_SPILL", "GATEWAY_INTERNAL_TOKEN"):
         assert not fr.reloadable(key), key
+
+
+def test_agent_questions_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-55 EA-18a, spec §12.8. The reload list holds the key, and the one
+    reader sees a change with no restart. So the list, the write rule, the
+    audience and the focus move together."""
+    from gateway.routes.projects.filters import agent_questions_allowed
+
+    assert fr.reloadable("AGENT_QUESTIONS_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("AGENT_QUESTIONS_ORGS", "")
+    get_settings.cache_clear()
+    assert not agent_questions_allowed("acme")
+    env(**{**_START, "AGENT_QUESTIONS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("AGENT_QUESTIONS_ORGS",)
+    assert agent_questions_allowed("acme")
+    assert not agent_questions_allowed("globex")
+
+
+def test_waiting_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-AP AP-1a, waiting_on_me.md §7.3. The reload list holds the key, and
+    the one reader sees a change with no restart."""
+    from gateway.routes.shell.waiting import waiting_allowed
+
+    assert fr.reloadable("WAITING_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("WAITING_ORGS", "")
+    get_settings.cache_clear()
+    assert not waiting_allowed("acme")
+    env(**{**_START, "WAITING_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("WAITING_ORGS",)
+    assert waiting_allowed("acme")
+    assert not waiting_allowed("globex")
+
+
+def test_github_app_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-MCP SW-53, agent_coordination.md. The reload list holds the key, and
+    the one reader sees a change with no restart. The master stays a restart
+    key, and it gates the list."""
+    from gateway.connections.github_app import github_app_org_allowed
+
+    assert fr.reloadable("GITHUB_APP_ORGS")
+    assert not fr.reloadable("GITHUB_APP_ENABLED")
+    # `setenv` records each key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("GITHUB_APP_ORGS", "")
+    monkeypatch.setenv("GITHUB_APP_ENABLED", "true")
+    env(**{**_START, "GITHUB_APP_ENABLED": "true"})
+    fr._state["loaded"] = fr._read(fr._state["path"])
+    get_settings.cache_clear()
+    assert not github_app_org_allowed("acme"), "an empty list is off (fail closed)"
+    env(**{**_START, "GITHUB_APP_ENABLED": "true", "GITHUB_APP_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("GITHUB_APP_ORGS",)
+    assert github_app_org_allowed("acme")
+    assert not github_app_org_allowed("globex")
+    monkeypatch.setattr(get_settings(), "github_app_enabled", False)
+    assert not github_app_org_allowed("acme"), "the master off is off for all"
 
 
 def test_each_reloadable_field_is_named_by_its_env_key() -> None:

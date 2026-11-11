@@ -125,7 +125,7 @@ export function FieldsCardView({
                           </span>
                           {!def.visible && (
                             <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">
-                              hidden
+                              Hidden
                             </span>
                           )}
                         </div>

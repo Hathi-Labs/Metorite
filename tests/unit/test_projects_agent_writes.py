@@ -426,6 +426,80 @@ def _op6b_answers(call: dict) -> Any:
     return None
 
 
+#: WS-ALN ALN-4. The pins of the project, as `GET /projects/nodes/{id}/authorities` lists them.
+PIN_ID = "b2c9fad5-d9cb-469f-a165-70867728950e"
+PINS = [{"id": PIN_ID, "project_id": UUID, "page_id": FILE, "page_version": 1,
+         "pinned_by": "a@x.io", "state": "active", "stale_reason": None,
+         "page_hidden": False, "title": "Project rules"}]
+
+
+def _aln4_answers(call: dict) -> Any:
+    """WS-ALN ALN-4: the pin list, a new pin and a removed one."""
+    path, method = call["path"], call["method"]
+    base = f"/projects/nodes/{UUID}/authorities"
+    if path == base and method == "GET":
+        return {"rows": PINS, "total": len(PINS)}
+    if path == base and method == "POST":
+        return {**PINS[0], "id": OTHER, "page_id": call["json"]["page_id"]}
+    if path == f"{base}/{PIN_ID}" and method == "DELETE":
+        return {**PINS[0], "state": "removed"}
+    return None
+
+
+def _sp8a_answers(call: dict) -> Any:
+    """SP-8a: the epic contract of the task UUID, which is an epic here, and
+    the PUT that replaces it."""
+    path, method = call["path"], call["method"]
+    if path != f"/projects/tasks/{UUID}/epic-contract":
+        return None
+    if method == "GET":
+        return {"task_id": UUID, "is_epic": True, "epic_contract": None,
+                "version": "2026-11-08T10:00:00+00:00"}
+    return {"task_id": UUID, "is_epic": True, "changed": ["epic_outcome", "epic_acceptance"],
+            "epic_contract": call["json"]["epic_contract"],
+            "version": "2026-11-08T10:00:01+00:00"}
+
+
+#: WS-ALN ALN-2a. One open decision that names the member, on the task LIVE.
+DECISION_ID = "d1f8fad5-d9cb-469f-a165-70867728950e"
+DECISION = {"id": DECISION_ID, "subject_kind": "task", "subject_id": LIVE,
+            "decider": "pm@fracktal.in", "question": "Ship it today?", "state": "open",
+            "expires_at": "2026-11-09T00:00:00+00:00",
+            "options": [{"key": "yes", "label": "Yes"}, {"key": "no", "label": "No"}]}
+
+
+#: WS-39 LP-1a. One live update of the project UUID, which the member may delete.
+UPDATE_ID = "c3d9fad5-d9cb-469f-a165-70867728950e"
+UPDATE_ROW = {"id": UPDATE_ID, "project_id": UUID, "author": "pm@fracktal.in",
+              "health": "at_risk", "body": "The vendor slipped a week.",
+              "posted_at": "2026-11-08T10:00:00+00:00", "drafted_by_ai": False,
+              "via": None, "can_delete": True, "delete_refusal": None}
+
+
+def _lp1a_answers(call: dict) -> Any:
+    """WS-39 LP-1a: the updates of a project, a post and a delete."""
+    path, method = call["path"], call["method"]
+    base = f"/projects/nodes/{UUID}/updates"
+    if path == base and method == "GET":
+        return {"rows": [UPDATE_ROW], "next_before": None}
+    if path == base and method == "POST":
+        return {**UPDATE_ROW, "id": OTHER, **(call["json"] or {})}
+    if path == f"{base}/{UPDATE_ID}" and method == "DELETE":
+        return {"id": UPDATE_ID, "project_id": UUID, "deleted": True,
+                "deleted_at": "2026-11-09T10:00:00+00:00"}
+    return None
+
+
+def _aln2a_answers(call: dict) -> Any:
+    """WS-ALN ALN-2a: the member's open decisions, and the answer."""
+    path, method = call["path"], call["method"]
+    if path == "/projects/decisions" and method == "GET":
+        return {"decisions": [DECISION]}
+    if path == f"/projects/decisions/{DECISION_ID}/answer" and method == "POST":
+        return {"decision": {**DECISION, "state": "answered", "answer_key": "yes"}}
+    return None
+
+
 def _op6d_answers(call: dict) -> Any:
     """WS-64 OP-6d: the list of a report, an add, a remove and the schedule."""
     path, method = call["path"], call["method"]
@@ -507,9 +581,37 @@ def _reminder_answers(call: dict) -> Any:
     return {**REMINDER_ROW, "state": "scheduled"}
 
 
+#: WS-39 TPL-1a. One template of the org, as `GET /projects/templates` lists it.
+TEMPLATE_ROW = {
+    "id": UUID, "kind": "project", "name": "Install kit", "description": None,
+    "work_style": None, "created_by": "a@x.io", "created_at": "2026-11-08T10:00:00+00:00",
+    "counts": {"statuses": 4, "types": 3, "fields": 2, "tags": 1, "tasks": 6},
+}
+
+
+def _template_answers(call: dict) -> Any:
+    """The three template routes (WS-39 TPL-1a)."""
+    path, method = call["path"], call["method"]
+    body = call["json"] if isinstance(call["json"], dict) else {}
+    if path == "/projects/templates" and method == "GET":
+        return {"rows": [TEMPLATE_ROW], "total": 1, "more": False}
+    if path == "/projects/templates" and method == "POST":
+        return {**TEMPLATE_ROW, "id": OTHER, "name": body.get("name")}
+    if path.startswith("/projects/templates/") and path.endswith("/apply"):
+        return {
+            "project": {"id": OTHER, "name": body.get("name") or "Install kit"},
+            "template_id": UUID, "replayed": False, "own_statuses": True,
+            "created": {"statuses": 4, "types": 0, "fields": 0, "tags": 0, "tasks": 6},
+        }
+    return None
+
+
 def responder(call: dict) -> Any:
     """A gateway that answers every read the write tools make, and every write."""
     path, method = call["path"], call["method"]
+    template = _template_answers(call)
+    if template is not None:
+        return template
     if path == f"/projects/tasks/{UUID}":
         return TASK
     if path == f"/projects/tasks/{OTHER}":
@@ -520,7 +622,7 @@ def responder(call: dict) -> Any:
     # `_op6c_answers` before `_s2b_answers`: its task answers a `/my/tasks/` read that
     # `_s2b_answers` also claims. WS-66 RM-3: `_reminder_answers` claims only the
     # member's zone and `/projects/my/reminders`, so it may lead.
-    answered = _answered(call, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
+    answered = _answered(call, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _aln4_answers, _lp1a_answers, _sp8a_answers, _aln2a_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
                          _s2b_answers, _subtree_answers, _area_answers)
     if answered is not None:
         return answered
@@ -743,6 +845,14 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "attach_to_task": [{"task_id": UUID, "file_name": "brief.pdf"}],
     # WS-64 OP-6b — one grant per card, by grant_id or by subject
     "grant_access": [{"project_id": UUID, "subject": "org"}],
+    # WS-ALN ALN-4 — one pin per card, by pin_id
+    "pin_authority": [{"project_id": UUID, "page_id": OTHER}],
+    # WS-39 TPL-1a: one template per card, and one project per card.
+    "save_as_template": [{"project_id": UUID, "name": "Office move"}],
+    "create_project_from_template": [{"template_id": UUID, "parent_id": UUID}],
+    "unpin_authority": [{"project_id": UUID, "pin_id": PIN_ID}],
+    # WS-ALN ALN-2a: one answer per card
+    "answer_decision": [{"decision_id": DECISION_ID, "answer_key": "yes"}],
     "revoke_access": [
         {"project_id": UUID, "grant": GRANT_ID},
         {"project_id": UUID, "grant": "group:Design"},
@@ -792,6 +902,23 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
             f'{{"from_task_id": "{UUID}", "to_task_id": "{OTHER}", "type": "duplicates"}}]',
         }
     ],
+    # SP-8a — the contract of an epic, one card.
+    "set_epic_contract": [
+        {
+            "task_id": UUID,
+            "acceptance": "- The page renders\n- [x] The R8 suite passes\n3. The owner approves",
+            "outcome": "Members fill an epic contract.",
+            "risk_tier": "high",
+            "appetite_credits": "40",
+        }
+    ],
+    # WS-PJP PJP-4 — several edits, a different change for each task, one card.
+    "update_tasks": [
+        {
+            "changes": f'[{{"task_id": "{UUID}", "title": "A"}}, '
+            f'{{"task_id": "{OTHER}", "title": "B"}}]',
+        }
+    ],
     # 2026-10-18 — several tasks filed into their projects, one card with rows.
     "file_tasks": [
         {
@@ -799,6 +926,12 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
             f'{{"task_id": "{OTHER}", "destination_project_id": "{SALES}"}}]',
         }
     ],
+    # WS-39 LP-1a — a project update with the health that the member picks,
+    # and the delete of one, one card each.
+    "post_project_update": [
+        {"project_id": UUID, "health": "at risk", "body": "The vendor slipped a week."}
+    ],
+    "delete_project_update": [{"project_id": UUID, "update_id": UPDATE_ID}],
     "propose_plan": [
         {
             "name": "Q4 launch",
@@ -837,10 +970,16 @@ _ONE_ID: dict[str, str] = {
     "attach_to_task": "task_id",
     "grant_access": "subject",
     "revoke_access": "grant",
+    "pin_authority": "page_id",
+    "unpin_authority": "pin_id",
+    "answer_decision": "decision_id",
+    "delete_project_update": "update_id",
     "add_report_recipient": "recipient",
     "remove_report_recipient": "recipient",
     "set_report_schedule": "report_id",
     "promote_reminder": "reminder_id",
+    "save_as_template": "project_id",
+    "create_project_from_template": "template_id",
 }
 
 
@@ -880,16 +1019,29 @@ def _a_chat_upload(monkeypatch) -> None:
     stub_chat_upload(monkeypatch)
 
 
+#: WS-66 RX-2: these five reminder writes act at once in a run that may send.
+#: They keep their one card in a HELD run (``no_egress=True``), so each card
+#: test below binds a held run for them. ``test_reminder_acts_at_once.py`` holds
+#: the open-run behaviour. ``promote_reminder`` is class C and always asks.
+ACT_AT_ONCE = frozenset({
+    "set_reminder", "update_reminder", "resolve_reminder", "reopen_reminder",
+    "reschedule_reminder",
+})
+
+
 @pytest.fixture(autouse=True)
-def _an_open_run() -> Any:
+def _an_open_run(request: pytest.FixtureRequest) -> Any:
     """Each tool runs inside a run, as in production. This run may send
     (``no_egress=False``). H-236 reads a frame with no run as ``no_egress``,
     and then ``assign`` refuses the ``agent:`` assignee of the cases above.
-    ``test_delegation_no_egress.py`` covers the refusal."""
+    ``test_delegation_no_egress.py`` covers the refusal. A tool of
+    ``ACT_AT_ONCE`` runs held, so it shows the card these tests count."""
     from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
 
+    callspec = getattr(request.node, "callspec", None)
+    tool = (callspec.params.get("tool") if callspec else None) or ""
     with artifact_context_scope():
-        bind_artifact_context(agent_name="projects-assistant", no_egress=False)
+        bind_artifact_context(agent_name="projects-assistant", no_egress=tool in ACT_AT_ONCE)
         yield
 
 
@@ -1032,6 +1184,7 @@ def test_every_class_b_tool_awaits_the_one_confirm_door() -> None:
     tree = ast.parse(source)
     assert source.count("def _confirm(") == 1, "a second card door"
     delegates = {"edit_task": "update_task", "edit_project": "update_project"}
+    delegates.update({t: "_ask_reminder" for t in ACT_AT_ONCE})
     # The one-card batches (2026-10-18) share `_ask_batch`, which is itself
     # a caller of `_confirm`, so it is no second door.
     shared = next(
@@ -1040,7 +1193,7 @@ def test_every_class_b_tool_awaits_the_one_confirm_door() -> None:
     )
     assert "_confirm" in {getattr(n.func, "id", "") for n in ast.walk(shared)
                           if isinstance(n, ast.Call)}
-    batches = {"file_tasks", "link_tasks_batch"}
+    batches = {"file_tasks", "link_tasks_batch", "update_tasks"}
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.AsyncFunctionDef) or fn.name not in _class_b_built():
             continue
@@ -1052,6 +1205,23 @@ def test_every_class_b_tool_awaits_the_one_confirm_door() -> None:
         assert "_confirm" in awaited or delegates.get(fn.name) in awaited, (
             f"{fn.name} never awaits _confirm"
         )
+    # WS-66 RX-2: the five reminder writes reach `_confirm` through the ONE
+    # small reader `_ask_reminder`, which acts at once only in a run that may
+    # send. Nothing else may use it, and it must keep the card for a held run.
+    ask = next(
+        fn for fn in ast.walk(tree)
+        if isinstance(fn, ast.AsyncFunctionDef) and fn.name == "_ask_reminder"
+    )
+    assert "_confirm" in {getattr(n.func, "id", "") for n in ast.walk(ask)
+                          if isinstance(n, ast.Call)}
+    users = {
+        fn.name for fn in ast.walk(tree)
+        if isinstance(fn, ast.AsyncFunctionDef) and fn.name != "_ask_reminder"
+        and "_ask_reminder" in {getattr(n.func, "id", "") for n in ast.walk(fn)
+                                if isinstance(n, ast.Call)}
+    }
+    assert users == ACT_AT_ONCE, f"act-at-once reminder tools changed: {users ^ ACT_AT_ONCE}"
+    assert not (users & _class_c_built()), "a class C tool must always show its card"
 
 
 # ── 4 and 5. The wire, and the manifest ─────────────────────────────────────
@@ -2334,9 +2504,33 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # WS-55 EA-13e: the strip of the board reads a count route. The chat reads
     # the same counts through a tool after EA-12e.
     ea_13e = {"agent_summary"}
+    # WS-55 MCP-G15: an outside agent records a decision that its member made
+    # outside Metorite. The chat acts as the member, who answers on the task.
+    mcp_g15 = {"record_outside_decision"}
+    # SW-43a: a member takes back an answer on the run card. The chat tool
+    # comes with slice SW-43c (spec agent_coordination.md §3.9).
+    sw_43 = {"withdraw_agent_answer"}
+    # WS-55 EA-18a: the list of the questions that wait on a person. A read
+    # tool for "what questions wait on me" is a later slice (spec §12.8, D109).
+    ea_18a = {"agent_questions"}
+    # WS-55 MCP-G19a: the board count read serves an outside agent over MCP.
+    # The chat tool for the same counts is Metorite task 2223.
+    mcp_g19a = {"board_stats"}
+    # WS-55 MCP-G21: the assignable member read serves an outside agent.
+    mcp_g21 = {"assignable_members"}
+    # WS-MCP SW-23: an outside agent reports a run of a Check over MCP. The
+    # chat moves a task through `update_task`.
+    sw_23 = {"report_check"}
     # WS-66 RM-3 built the seven reminder tools that RM-1 planned, so no
     # reminder tool is planned now.
-    assert set(m.PLANNED) <= {"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e, m.PLANNED
+    # WS-AP AP-8a: the person ask and its withdraw. AP-10 builds both tools.
+    ap_10 = {"ask_person", "withdraw_ask"}
+    # WS-39 SP-1: the cycle routes. SP-5 (Metorite task 964) builds the tools.
+    sp_5 = {"list_cycles", "cycle_detail", "create_cycle", "update_cycle", "delete_cycle",
+            "plan_cycle", "start_cycle", "close_cycle"}
+    assert set(m.PLANNED) <= ({"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e
+                              | mcp_g15 | sw_43 | ea_18a | ap_10 | mcp_g19a | mcp_g21 | sp_5
+                              | sw_23), m.PLANNED
     assert not {t for t in m.PLANNED if "reminder" in t}, m.PLANNED
 
 
@@ -3357,3 +3551,276 @@ async def test_cancel_on_the_plan_card_writes_nothing(monkeypatch) -> None:
     out = await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
     assert out == F.NOT_SUBMITTED
     assert asked == [] and writes(calls) == []
+
+
+# ── IMG-2: one card makes a task with its files (projects_ai_chat.md §30.4) ──
+
+PNG = ("shot.png", b"\x89PNG" + b"x" * 240 * 1024)
+PDF = ("spec.pdf", b"%PDF-1.4" + b"x" * 1100 * 1024)
+SERVED_ID = "ef8fad5b-d9cb-469f-a165-70867728950e"
+
+
+def _chat_files(monkeypatch: Any, *uploads: tuple[str, bytes]) -> None:
+    """Each file the member attached to THIS chat, by name."""
+    from acb_skills import attachment_tools
+
+    held = {u[0]: u for u in uploads}
+
+    async def _bytes(name: str) -> Any:
+        if str(name).strip() in held:
+            return held[str(name).strip()]
+        return f"No file named {name} was attached in this chat. Files attached here: {', '.join(held)}."
+
+    monkeypatch.setattr(attachment_tools, "read_attachment_bytes", _bytes)
+
+
+def _files_gateway(
+    *, fail_on: str = "", patch_fails: bool = False, concurrent: list[str] | None = None
+) -> Any:
+    """The create, the file posts and the description PATCH of a new task.
+
+    The task keeps its description and its version. Each entry of ``concurrent``
+    is a text that a second editor saves just before the next PATCH lands, so
+    that PATCH meets a 412. ``patched`` records every PATCH it received.
+    """
+    state: dict[str, Any] = {"description": "", "v": 1, "patched": []}
+    edits = list(concurrent or [])
+
+    def version() -> str:
+        return f"2026-11-07T10:00:{state['v']:02d}+00:00"
+
+    def answer(call: dict) -> Any:
+        from tests.unit._projects_agent_fakes import FakeResponse
+
+        path, method = call["path"], call["method"]
+        if path == "/projects/tasks" and method == "POST":
+            state["description"] = (call["json"] or {}).get("description") or ""
+            return responder(call)
+        if path == f"/projects/tasks/{OTHER}/attachments" and method == "POST":
+            name = call["files"]["file"][0]
+            if name == fail_on:
+                return FakeResponse({"detail": "That file type is not accepted."}, status_code=422)
+            mime = call["files"]["file"][2]
+            return {
+                "attachment_id": SERVED_ID, "name": name, "mime": mime,
+                "size": len(call["files"]["file"][1]),
+                "kind": "image" if mime.startswith("image/") else "file",
+                "url": f"/api/projects/attachments/{SERVED_ID}/{name}",
+            }
+        if path == f"/projects/tasks/{OTHER}" and method == "GET":
+            return {**TASK, "id": OTHER, "description": state["description"],
+                    "updated_at": version()}
+        if path == f"/projects/tasks/{OTHER}" and method == "PATCH":
+            state["patched"].append(call)
+            if patch_fails:
+                return FakeResponse({"detail": "Not saved."}, status_code=500)
+            if edits:
+                state["description"] = state["description"] + edits.pop(0)
+                state["v"] += 1
+            if call["headers"].get("If-Match") != version():
+                return FakeResponse({"detail": {"error": "precondition_failed"}}, status_code=412)
+            state["description"] = call["json"]["description"]
+            state["v"] += 1
+            return {**TASK, "id": OTHER}
+        return responder(call)
+
+    answer.state = state  # type: ignore[attr-defined]
+    return answer
+
+
+def _kinds(calls: list[dict]) -> list[str]:
+    return [f"{c['method']} {c['path']}" for c in writes(calls)]
+
+
+async def test_create_task_with_files_is_one_card_with_the_files_on_it(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG, PDF)
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    out = await skill_projects.create_task(UUID, "Fix the bug", files=[PNG[0], PDF[0]])
+    [card] = asked
+    assert (
+        "files: «shot.png» (240 KB), «spec.pdf» (1.1 MB) · everyone who can open "
+        "the task can open them"
+    ) in card["context"]
+    # The order: the task, each file, then ONE description PATCH.
+    assert _kinds(calls) == [
+        "POST /projects/tasks",
+        f"POST /projects/tasks/{OTHER}/attachments",
+        f"POST /projects/tasks/{OTHER}/attachments",
+        f"PATCH /projects/tasks/{OTHER}",
+    ]
+    posted = [c for c in calls if c["method"] == "POST" and c.get("files")]
+    assert [c["files"]["file"][0] for c in posted] == [PNG[0], PDF[0]]
+    assert "Content-Type" not in posted[0]["headers"]
+    [edit] = [c for c in calls if c["method"] == "PATCH"]
+    # Only the image goes in the description, as TR-4 writes it for a paste.
+    assert edit["json"] == {
+        "description": f"![shot.png](/api/projects/attachments/{SERVED_ID}/shot.png)"
+    }
+    assert "Files attached:" in out and "shot.png" in out and "not attached" not in out
+
+
+async def test_the_image_goes_after_the_words_of_the_description(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG)
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    await skill_projects.create_task(UUID, "Fix", description="It breaks.", files=[PNG[0]])
+    [edit] = [c for c in calls if c["method"] == "PATCH"]
+    assert edit["json"]["description"].startswith("It breaks.\n\n![shot.png](")
+
+
+async def test_a_file_that_is_not_an_image_makes_no_description_patch(monkeypatch) -> None:
+    _chat_files(monkeypatch, PDF)
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    await skill_projects.create_task(UUID, "Read the spec", files=[PDF[0]])
+    assert _kinds(calls) == ["POST /projects/tasks", f"POST /projects/tasks/{OTHER}/attachments"]
+
+
+async def test_a_task_with_no_files_calls_no_file_route(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    await skill_projects.create_task(UUID, "Plain", files=[])
+    assert _kinds(calls) == ["POST /projects/tasks"]
+
+
+@pytest.mark.parametrize(
+    ("uploads", "asked_for", "words"),
+    [
+        ([("empty.txt", b"")], ["empty.txt"], "«empty.txt» is empty"),
+        ([("setup.exe", b"MZ")], ["setup.exe"], "File type not allowed: «setup.exe»."),
+        ([PNG], ["nope.png"], "No file named nope.png was attached in this chat."),
+        (
+            [("a.bin", b"x" * (6 * 1024 * 1024)), ("b.bin", b"x" * (5 * 1024 * 1024))],
+            ["a.bin", "b.bin"],
+            "would hold 11.0 MB with «a.bin», «b.bin», and the limit is 10.0 MB",
+        ),
+        ([("big.bin", b"x" * (11 * 1024 * 1024))], ["big.bin"], "«big.bin» is 11.0 MB"),
+    ],
+    ids=["empty", "blocked", "missing", "total-over", "one-over"],
+)
+async def test_a_bad_file_is_refused_before_the_card_with_no_post(
+    uploads: list, asked_for: list, words: str, monkeypatch
+) -> None:
+    _chat_files(monkeypatch, *uploads)
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    out = await skill_projects.create_task(UUID, "Fix", files=asked_for)
+    assert words in out, out
+    assert asked == [] and writes(calls) == []
+
+
+async def test_one_file_that_fails_leaves_the_task_and_names_the_file(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG, PDF)
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway(fail_on=PDF[0]))
+    out = await skill_projects.create_task(UUID, "Fix", files=[PNG[0], PDF[0]])
+    assert "not attached: «spec.pdf»" in out and "attach_to_task" in out
+    assert "That file type is not accepted." in out
+    assert OTHER in out, "the task stays, and the reply says its id"
+    assert "shot.png" in out.split("not attached")[0]
+    # The image that landed is still put in the description.
+    assert any(c["method"] == "PATCH" for c in calls)
+
+
+async def test_a_failed_description_patch_keeps_the_files_and_says_so(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG)
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, _files_gateway(patch_fails=True))
+    out = await skill_projects.create_task(UUID, "Fix", files=[PNG[0]])
+    assert "The description has no inline image." in out
+    assert "Files attached:" in out and "The files are on the task." in out
+
+
+async def test_a_declined_card_with_files_writes_nothing(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG)
+    deny(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    assert await skill_projects.create_task(UUID, "Fix", files=[PNG[0]]) == W.CANCELLED
+    assert writes(calls) == []
+
+
+def test_create_task_files_are_in_the_pin_and_the_rule_text() -> None:
+    """Mutation: drop `files` from the pin or from a rule text -> red."""
+    from acb_skills import egress, tool_packs
+
+    assert "files" in egress.HELD_CARD_WRITE_TOOLS["create_task"]
+    root = SKILL_DIR.parents[2]
+    path = root / "agents/agent-projects/instructions.md"
+    text_ = " ".join(path.read_text(encoding="utf-8").split())
+    assert "pass the file names in `create_task` `files`" in text_
+    assert "Do not call `attach_to_task` after it." in text_
+    # The core rules hold a size pin (3500 characters), so the rule lives in
+    # the description of create_task, which the model reads with the tool.
+    doc = " ".join((skill_projects.create_task.__doc__ or "").split())
+    assert "pass them here, and do not call attach_to_task after it." in doc
+    assert "create_task files" not in " ".join(tool_packs._PROJECTS_RULES.split())
+
+
+async def test_the_description_patch_carries_if_match(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG)
+    approve(monkeypatch)
+    gw = _files_gateway()
+    fake_gateway(monkeypatch, gw)
+    await skill_projects.create_task(UUID, "Fix", description="It breaks.", files=[PNG[0]])
+    [edit] = gw.state["patched"]
+    assert edit["headers"]["If-Match"] == "2026-11-07T10:00:01+00:00"
+
+
+async def test_a_412_appends_the_image_to_the_current_description(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG)
+    approve(monkeypatch)
+    gw = _files_gateway(concurrent=[" Also on Linux."])
+    fake_gateway(monkeypatch, gw)
+    out = await skill_projects.create_task(UUID, "Fix", description="It breaks.", files=[PNG[0]])
+    first, second = gw.state["patched"]
+    assert first["headers"]["If-Match"] != second["headers"]["If-Match"]
+    assert gw.state["description"].startswith("It breaks. Also on Linux.\n\n![shot.png](")
+    assert "no inline image" not in out
+
+
+async def test_a_second_412_says_the_description_has_no_inline_image(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG)
+    approve(monkeypatch)
+    gw = _files_gateway(concurrent=[" One.", " Two."])
+    fake_gateway(monkeypatch, gw)
+    out = await skill_projects.create_task(UUID, "Fix", description="It breaks.", files=[PNG[0]])
+    assert len(gw.state["patched"]) == 2
+    assert "The description has no inline image." in out
+    assert "The files are on the task." in out
+    assert "![shot.png]" not in gw.state["description"]
+
+
+async def test_the_alt_text_keeps_every_r_and_drops_brackets_and_line_breaks() -> None:
+    from skill_projects import task_files
+
+    row = {"mime": "image/png", "url": f"/api/projects/attachments/{SERVED_ID}/x.png"}
+    md = task_files.image_markdown({**row, "name": "error[1].png"})
+    assert md.startswith("![error1.png](")
+    md = task_files.image_markdown({**row, "name": "a" + chr(13) + "b" + chr(10) + "c.png"})
+    assert md.startswith("![abc.png](")
+
+
+async def test_one_file_under_two_spellings_is_one_file(monkeypatch) -> None:
+    """`shot.png` and `uploads/shot.png` resolve to one file: one card entry, one post."""
+    from acb_skills import attachment_tools
+
+    async def resolved(name: str) -> Any:
+        return PNG
+
+    monkeypatch.setattr(attachment_tools, "read_attachment_bytes", resolved)
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    await skill_projects.create_task(UUID, "Fix", files=["shot.png", "uploads/shot.png"])
+    assert asked[0]["context"].count("«shot.png»") == 1
+    assert len([c for c in calls if c["method"] == "POST" and c.get("files")]) == 1
+
+
+async def test_a_caller_header_never_replaces_the_identity(monkeypatch) -> None:
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    await client.request(
+        "GET", "/projects/tasks", headers={"X-User-Email": "evil@x.io", "If-Match": "t"}
+    )
+    sent = calls[0]["headers"]
+    assert sent["X-User-Email"] == "pm@fracktal.in"
+    assert sent["If-Match"] == "t"

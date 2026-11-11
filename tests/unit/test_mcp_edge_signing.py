@@ -60,6 +60,9 @@ ORG_A = "0a0a0a0a-0000-4000-8000-00000000000a"
 ORG_B = "0b0b0b0b-0000-4000-8000-00000000000b"
 CONN = "c0c0c0c0-0000-4000-8000-0000000000c0"
 PIN = "a1a1a1a1-0000-4000-8000-0000000000a1"
+#: EA-17a (D-EA-12): a left-out project of the connection. Branch 0 copies it
+#: from the row into the scope, as it copies the pins.
+LEFT_OUT = "a2a2a2a2-0000-4000-8000-0000000000a2"
 MEMBER = "agent-member@signing.test"
 OTHER = "somebody-else@signing.test"
 ORIGIN = "https://client.example"
@@ -82,6 +85,7 @@ class _World:
                 scopes=("projects:read",),
                 pinned_projects=(PIN,),
                 include_personal=False,
+                left_out_projects=(LEFT_OUT,),
             ),
         }
         #: email → (organization, is_active)
@@ -241,6 +245,7 @@ async def test_a_valid_signed_request_resolves_to_the_connections_member(world):
         "scopes": ["projects:read"],
         "pinned_projects": [PIN],
         "include_personal": False,
+        "left_out_projects": [LEFT_OUT],
         "client_origin": ORIGIN,
         "actor_via": VIA,
         # SW-7: no signed X-Agent-Session, so no session key.
@@ -559,15 +564,17 @@ async def test_the_unverified_sso_escape_hatch_does_not_reach_branch_zero(world,
     assert ok.status_code == 200 and ok.json()["email"] == MEMBER
 
 
-async def test_the_llm_key_fallback_does_not_reach_branch_zero(world, monkeypatch):
+async def test_the_llm_key_does_not_reach_branch_zero(world, monkeypatch):
+    """WS-24b removed the LLM-key fallback of service identity. On a box with
+    no internal token the LLM key opens neither branch 0 nor branch 1a."""
     monkeypatch.delenv("GATEWAY_INTERNAL_TOKEN", raising=False)
     monkeypatch.setattr(get_settings(), "gateway_internal_token", "")
     headers = {"Authorization": f"Bearer {LLM_KEY}", "X-User-Email": MEMBER,
                "X-Actor-Via": VIA}
     assert (await _call("GET", TASK, headers)).status_code == 401
-    ok = await _call("GET", TASK, {"Authorization": f"Bearer {LLM_KEY}",
-                                   "X-User-Email": MEMBER})
-    assert ok.status_code == 200, "control: the fallback admits the header alone"
+    alone = await _call("GET", TASK, {"Authorization": f"Bearer {LLM_KEY}",
+                                      "X-User-Email": MEMBER})
+    assert alone.status_code == 401, "the LLM key admits no header on its own"
 
 
 async def test_a_refused_request_leaves_no_tenant_bound(world):

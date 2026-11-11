@@ -44,12 +44,6 @@ const MOTION_EXEMPT: Record<string, string> = {
   // `morphAskBox` again: the side panel's picture while the Ask bar's box
   // flies into it.
   "ask-panel-in": "gated in panelMotion.ts",
-  // `swapStackCard`: a stack's change of card, which starts no view
-  // transition under reduced motion either.
-  "card-swap-throw": "gated in panelMotion.ts",
-  "card-swap-rise": "gated in panelMotion.ts",
-  "card-swap-return": "gated in panelMotion.ts",
-  "card-swap-sink": "gated in panelMotion.ts",
 };
 
 interface Block {
@@ -266,7 +260,7 @@ const BARE_LOOP_DEBT: Record<string, number> = {
   "app/page.tsx": 1,
   "app/tasks/components/FocusMode.tsx": 3,
   "app/workflows/components/WorkflowNode.tsx": 2,
-  "app/workflows/page.tsx": 1,
+  "app/studio/components/WorkflowsGallery.tsx": 1,
   "components/AgentChat.tsx": 3,
   "components/AppShell.tsx": 2,
   "components/ArtifactViewerModal.tsx": 2,

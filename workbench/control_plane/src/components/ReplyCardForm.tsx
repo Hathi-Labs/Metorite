@@ -9,6 +9,11 @@
  * or added, the editable body, and Send, Save to Drafts and Discard. The
  * logic is `lib/replyCard.ts`. This file holds the member's edits only.
  *
+ * A card that wrote a draft says so, and its Save reads "Save draft". It
+ * watches that draft (`watchCardDraft`, owner report 2026-11-03). When the
+ * draft leaves Drafts, the card collapses to `ReplyCardGone`: its title
+ * line, its subject, one line and Close.
+ *
  * The client derives no recipient. The card shows ONE list with a tick box
  * for each person (owner, 2026-10-24). A hidden second list once sent a
  * reply to one person while the member ticked more. So the Reply and Reply
@@ -29,7 +34,7 @@
  * card counts the lines.
  */
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
@@ -41,6 +46,8 @@ import {
   bodyCanGo,
   classOfAddress,
   discardReplyDraft,
+  DRAFT_LEFT_LINE,
+  DRAFT_UNSAVED_LINE,
   leftOutText,
   lineCount,
   markFor,
@@ -52,11 +59,13 @@ import {
   replyAnswer,
   replyHint,
   replySummary,
+  saveLabel,
   sendsCount,
   startTicks,
   replyAllTicks,
   tickedFor,
   toggleTick,
+  watchCardDraft,
   withBcc,
   type ReplyAction,
   type ReplyApproval,
@@ -77,7 +86,9 @@ interface ReplyCardFormProps {
   disabled?: boolean;
 }
 
-function AddressRow({
+/** One row of people with a tick box each. The new-mail card (§18.10) draws
+ *  its people with it too, so both cards show a person the same way. */
+export function AddressRow({
   label,
   list,
   form,
@@ -131,6 +142,73 @@ function AddressRow({
   );
 }
 
+/**
+ * A reply card whose draft left Drafts (task 1526, fix round 1, item 4).
+ * The owner: "it does not disappear in the chat". So the card keeps only
+ * its title line, its subject, the one line and Close. No ticks, no text
+ * box, no Send and no Save. Close ends the card with no trash, because the
+ * draft is not there.
+ *
+ * Item 11: a card whose draft write had an unknown outcome collapses the same
+ * way, with its own `line`. Text that the member typed stays visible, read
+ * only, under "Your text", so the member can copy it (`typed`).
+ */
+export function ReplyCardGone({
+  title,
+  subject,
+  onClose,
+  armed,
+  disabled = false,
+  line = DRAFT_LEFT_LINE,
+  typed = "",
+}: {
+  title: string;
+  subject: string;
+  onClose: () => void;
+  armed: boolean;
+  disabled?: boolean;
+  line?: string;
+  typed?: string;
+}) {
+  return (
+    <div className="space-y-2.5" data-reply-card="" data-reply-card-gone="">
+      <div className="min-w-0">
+        <p className="break-words text-xs font-medium leading-relaxed text-foreground glass:text-label" data-reply-summary="">
+          {title}
+        </p>
+        {subject && <p className="mt-0.5 break-words text-[11px] text-muted-foreground">{subject}</p>}
+      </div>
+      <p
+        className="break-words rounded-md border border-border px-2.5 py-1.5 text-xs text-foreground glass:rounded-[10px] glass:border-transparent glass:bg-secondary glass:px-3 glass:py-2"
+        role="status"
+        data-reply-gone=""
+      >
+        {line}
+      </p>
+      {typed.trim() && (
+        <div className="space-y-0.5" data-reply-typed="">
+          <p className="text-[11px] text-muted-foreground">Your text</p>
+          <p className="whitespace-pre-wrap break-words rounded-md border border-border px-2.5 py-1.5 text-xs text-foreground glass:rounded-[10px] glass:border-transparent glass:bg-secondary glass:px-3 glass:py-2">
+            {typed}
+          </p>
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => armed && onClose()}
+          disabled={disabled}
+          aria-disabled={!armed || undefined}
+          data-reply-close=""
+        >
+          Close
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard, armed, disabled = false }: ReplyCardFormProps) {
   // §21.15: the form grows by each Bcc that the server took for this card.
   const [form, setForm] = useState<ReplyForm | null>(given);
@@ -155,6 +233,16 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight + 2}px`;
   }, [body]);
+  // Owner report, 2026-11-03: the member can send or delete the card's draft
+  // in the Email app while the card waits. The card reads that state, shows
+  // one line, and stops its Send and Save. The gateway refuses both too
+  // (409 `draft_gone`), so the server stays the guard.
+  const [gone, setGone] = useState(false);
+  const draftId = form?.draftId ?? "";
+  useEffect(
+    () => (disabled ? undefined : watchCardDraft(draftId, () => setGone(true))),
+    [draftId, disabled],
+  );
   if (!form) {
     return (
       <div className="space-y-2">
@@ -166,6 +254,23 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
           Discard
         </Button>
       </div>
+    );
+  }
+  if (gone || form.draftUnsaved) {
+    // The draft left Drafts, or its write had an unknown outcome (item 11):
+    // the card collapses to its title, its subject, the one line and Close
+    // (fix round 1, item 4). Close is the card's REJECT, with no trash of a
+    // draft that is not there. Text that the member typed stays visible.
+    return (
+      <ReplyCardGone
+        title={replySummary(form, replyAll, ticks)}
+        subject={form.subject}
+        line={gone ? DRAFT_LEFT_LINE : DRAFT_UNSAVED_LINE}
+        typed={body !== form.body ? body : ""}
+        onClose={onDiscard}
+        armed={armed}
+        disabled={disabled}
+      />
     );
   }
   const shown = recipientsFor(form, replyAll);
@@ -360,7 +465,7 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
           aria-disabled={!armed || undefined}
           data-reply-save=""
         >
-          Save to Drafts
+          {saveLabel(form)}
         </Button>
         <Button
           variant="ghost"

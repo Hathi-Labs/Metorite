@@ -68,7 +68,7 @@ import {
   labelWith,
   toQuery,
 } from "../lib/grouping";
-import { dueInstantForDay, quickAddPrefill } from "../lib/quickAdd";
+import { dueDayOf, dueInstantForDay, quickAddPrefill } from "../lib/quickAdd";
 import {
   MATRIX_FLAG_OPTIONS,
   type MatrixFlags,
@@ -88,6 +88,7 @@ import { NO_CELL, clampCell, stepCell } from "../lib/tableCursor";
 import { ProjectPathChip } from "./ProjectPathChip";
 import { QuickAdd } from "./QuickAdd";
 import { useFlash } from "./useFlash";
+import { useTaskUndo } from "./useTaskUndo";
 import { useSubtaskComplete } from "./useSubtaskComplete";
 
 /** The columns whose cells open an editor on Enter (or a click). */
@@ -194,6 +195,8 @@ export function TableView({
   const toast = useToast();
   // D-PM-38 decision 2 (S5) — a status cell into Done asks about subtasks.
   const subtaskComplete = useSubtaskComplete();
+  // UNDO-1 — a cell edit offers Undo through the shared stack.
+  const taskUndo = useTaskUndo();
   // The collapse state, stamped with the filter it was made under
   // (`subtaskView.collapsedNow`).
   const [fold, setFold] = useState<Fold>({ key: "", ids: new Set() });
@@ -294,14 +297,23 @@ export function TableView({
           return;
         }
       }
+      // UNDO-1 (fix round 1, finding 5) — ONE toast: the Undo toast takes
+      // the key of the save toast, so it replaces it in place.
+      const toastKey = `projects:task-edit:${task.id}`;
       const fresh = await toast.promise(projectsApi.patchTask(task.id, patch), {
-        key: `projects:task-edit:${task.id}`,
+        key: toastKey,
         loading: "Saving…",
         success: (row) => `Saved “${row.title}”`,
         error: "Couldn't save that edit",
         errorAction: { label: "Retry", onClick: () => void saveCell(task, patch) },
       });
       onSaved(fresh);
+      taskUndo.edited(task, patch, fresh, {
+        label: `edited ${task.title}`,
+        receipt: `Saved “${fresh.title}”`,
+        after: () => onReload?.(),
+        toastKey,
+      });
       flash(task.id);
     } catch (err) {
       setError(String((err as Error).message));
@@ -314,6 +326,10 @@ export function TableView({
     try {
       const result = await projectsApi.setAssignees(task.id, parseAssignees(raw));
       onSaved({ ...task, assignees: result.assignees });
+      taskUndo.assigneesEdited(task.id, task.assignees ?? [], result.assignees, {
+        label: `changed assignees of ${task.title}`,
+        after: () => onReload?.(),
+      });
       flash(task.id);
     } catch (err) {
       setError(String((err as Error).message));
@@ -538,7 +554,7 @@ export function TableView({
         <CellText
           label={`Due date of ${task.title}`}
           type="date"
-          defaultValue={task.due_at ? task.due_at.slice(0, 10) : ""}
+          defaultValue={task.due_at ? dueDayOf(task.due_at) : ""}
           onCommit={(value) =>
             // Noon local, the calendar quick-add's rule (`dueInstantForDay`),
             // so the chosen day survives every viewer's timezone.

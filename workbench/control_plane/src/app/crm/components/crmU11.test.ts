@@ -631,7 +631,7 @@ describe("the Deal stages screen (A8)", () => {
     // The prefix joins the accessible name: "Pipeline: Sales", the default.
     expect(mirror).toContain('aria-label="Pipeline: Sales"');
     const native = settings({ readOnly: false, dealStatuses: PART_STATUSES, pipelines: TWO });
-    expect(native).toContain("not available yet");
+    expect(native).toContain("Stage editing for each pipeline comes in a later release");
     expect(native).not.toContain(">Add stage<");
   });
 
@@ -830,7 +830,7 @@ describe("the Edit dialog (A10)", () => {
     expect(html).toMatch(/checked=""\/>Amount</);
     expect(html).toContain("Warn when a deal stays more than");
     expect(html).toContain('value="9"');
-    expect(html).toContain("Show this column on the board");
+    expect(html).toContain("Hide on the board");
     expect(html).toContain(">Save<");
     expect(html).toContain(">Cancel<");
     expect(html).toContain("Delete stage");

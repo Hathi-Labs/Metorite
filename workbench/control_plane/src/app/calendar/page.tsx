@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
 import { CalendarView } from "./CalendarView";
 import { TaskFocusModal } from "@/app/tasks/components/TaskFocusModal";
@@ -8,6 +8,9 @@ import { SchedulePopup } from "@/app/tasks/components/SchedulePopup";
 import { DeleteConfirmModal } from "@/app/tasks/components/DeleteConfirmModal";
 import { UndoToast } from "@/app/tasks/components/UndoToast";
 import { useLiveRefresh } from "@/lib/liveRefresh";
+import { shellChatOn } from "@/lib/shell/chatFlag";
+import { useAssistantFacts } from "@/lib/shell/assistant";
+import { calendarAssistantFacts } from "./lib/assistantFacts";
 import { SyncFailureToast } from "@/app/tasks/components/SyncFailureToast";
 
 /**
@@ -65,6 +68,18 @@ export default function CalendarPage() {
   // quiet and keeps the real rows when the read fails.
   const reloadItems = useTaskStore((s) => s.reloadItems);
   useLiveRefresh(() => void reloadItems(), "calendar");
+
+  // TC-1 (D172.4): the one assistant knows the open card. Calendar published
+  // no facts before, so "this task" meant nothing here.
+  const [chatOn] = useState(() => shellChatOn());
+  const focusedItemId = useTaskStore((s) => s.focusedItemId);
+  const items = useTaskStore((s) => s.items);
+  const assistantFacts = useMemo(() => {
+    if (!chatOn) return null;
+    const open = focusedItemId ? items.find((i) => i.id === focusedItemId) : undefined;
+    return calendarAssistantFacts({ openTask: open ? { id: open.id, title: open.title } : null });
+  }, [chatOn, focusedItemId, items]);
+  useAssistantFacts(assistantFacts);
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-background">

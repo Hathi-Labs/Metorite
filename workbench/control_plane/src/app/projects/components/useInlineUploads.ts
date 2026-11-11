@@ -197,6 +197,24 @@ export function useInlineUploads({ taskId, onUploaded }: Options) {
     [attach],
   );
 
+  /**
+   * ORC-3 — the `onPaste` of the card: a pasted file attaches, on any tab.
+   * A field that took the paste (`pasteInto`) prevented its default, so this
+   * leaves it alone, and a paste of text only does nothing here. True when
+   * it attached, so the card can open its Files tab.
+   */
+  const pasteOnCard = useCallback(
+    (e: ClipboardEvent<HTMLElement>): boolean => {
+      if (e.defaultPrevented) return false;
+      const files = Array.from(e.clipboardData?.files ?? []);
+      if (files.length === 0) return false;
+      e.preventDefault();
+      attach(files);
+      return true;
+    },
+    [attach],
+  );
+
   const pendingTokens = pending.flatMap((p) => (p.token ? [p.token] : []));
 
   return {
@@ -207,6 +225,7 @@ export function useInlineUploads({ taskId, onUploaded }: Options) {
     /** The same answer, as of now. For a handler or a late callback. */
     waitingNow: (text: string) => holdsPending(text, tokensNow.current),
     pasteInto,
+    pasteOnCard,
     allowDrop,
     dropInto,
   };

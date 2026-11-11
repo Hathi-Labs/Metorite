@@ -117,12 +117,15 @@ test.describe("Yes, start on the Get to know me offer sends the request (PZ-27)"
     await page.setViewportSize({ width: 1440, height: 900 });
     await install(page, { cards: [] });
     await page.goto("/");
-    const toggle = page.locator("[data-assistant-toggle]");
+    // The top-bar toggle is gone (GL-12, 30e72d332, 2026-11-01). The Ask bar at
+    // the foot opens the side panel with this button.
+    const toggle = page.getByRole("button", { name: "Open the chat beside the page" });
     await expect(toggle).toBeVisible({ timeout: 60_000 });
-    await expect(async () => {
-      await toggle.click();
-      await expect(panel(page)).toHaveAttribute("data-panel-phase", "open", { timeout: 5_000 });
-    }).toPass({ timeout: 60_000 });
+    // One click. The button leaves the bar once the panel is asked for, so a
+    // second click cannot retry. The panel's chunk loads on demand, and the
+    // first compile can take longer than a few seconds, so this waits for it.
+    await toggle.click();
+    await expect(panel(page)).toHaveAttribute("data-panel-phase", "open", { timeout: 60_000 });
     await expect(composer(page)).toBeEnabled({ timeout: 30_000 });
     await pressYes(page);
   });

@@ -34,7 +34,11 @@ Decision policy (see specs/permissions_sandbox_b6.md for the table):
                                                  destructive (:func:`mcp_needs_confirmation`),
                                                  or with ``mcp_always_confirm``
                                                  for EVERY tool of a server that
-                                                 an admin set so (H-300)
+                                                 an admin set so (H-300), or
+                                                 with ``mcp_read_only_key`` (no
+                                                 card) for every tool of a
+                                                 server whose key an admin says
+                                                 can only read (MCP-C2)
   * network                                    → APPROVE (open_world is normal),
                                                  logged for exfil visibility
   * unknown / unclassifiable                   → APPROVE + WARN (fail-open-loud;
@@ -151,7 +155,8 @@ def _is_within(path: str, root: str) -> bool:
 
 #: The code of an MCP tool that needs the member's confirmation card.
 MCP_CONFIRM = "mcp_confirm"
-#: The code of an MCP tool that runs at once. No other code skips the card.
+#: The code of an MCP tool that runs at once. Only this code and
+#: :data:`MCP_READ_ONLY_KEY` skip the card.
 MCP_READ_ONLY = "mcp_read_only"
 #: The code of an egress call in a run that read an answer of an agent that
 #: reads stranger text (WS-17 EM-G11d round 2, ``acb_skills.egress``). It needs
@@ -162,6 +167,13 @@ UNTRUSTED_ANSWER_CONFIRM = "untrusted_answer_confirm"
 #: (H-300). Every tool of that server needs the card, whatever its hints say,
 #: because the server writes its own hints and a hostile server can lie.
 MCP_ALWAYS_CONFIRM = "mcp_always_confirm"
+#: The code of a tool of a server whose key an admin says can only read
+#: (MCP-C2, ``agent_architecture.md`` §12.2 WS-8c item 32). The tool runs at
+#: once, as for :data:`MCP_READ_ONLY`, whatever its hints say. The admin's
+#: statement about the key, not the server's hints, is the ground.
+#: :data:`MCP_ALWAYS_CONFIRM` wins over it, and an untrusted answer (step 3a)
+#: still asks the card.
+MCP_READ_ONLY_KEY = "mcp_read_only_key"
 
 
 def mcp_needs_confirmation(annotations: Any) -> bool:
@@ -272,9 +284,15 @@ def decide(request: Any) -> tuple[bool, str, str]:
     #     H-300: a server that an admin set to "always confirm" needs the card
     #     for EVERY tool, so the read-only shortcut never applies to it. The
     #     MCP gate passes the flag as the fact ``mcp_always_confirm``.
+    #     MCP-C2: a server whose key an admin says can only read needs no
+    #     card, whatever its hints say (fact ``mcp_read_only_key``). The
+    #     order is the rule: step 3a first, then always confirm, then the
+    #     read-only key, then the hints. Only a real ``True`` counts.
     if _field(request, "mcp_tool"):
         if _field(request, "mcp_always_confirm"):
             return True, MCP_ALWAYS_CONFIRM, tool_name or "(mcp tool)"
+        if _field(request, "mcp_read_only_key") is True:
+            return True, MCP_READ_ONLY_KEY, tool_name or "(mcp tool)"
         if mcp_needs_confirmation(_field(request, "mcp_annotations")):
             return True, MCP_CONFIRM, tool_name or "(mcp tool)"
         return True, MCP_READ_ONLY, tool_name or "(mcp tool)"
