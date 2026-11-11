@@ -773,6 +773,8 @@ _PROJECTS_WORDS = (
     "to-do", "to-do list", "todo", "my projects", "all projects",
     "project summary", "task board",
     "kanban board", "show the board", "draw a board",
+    # WS-55 EA-18d: the questions that agents put and that wait on the member.
+    "agent questions", "agent question", "questions wait on me",
 )
 _PROJECTS_PLAN_WORDS = (
     "burndown", "velocity", "team capacity", "workload",
@@ -799,8 +801,6 @@ _PROJECTS_PLAN_WORDS = (
     "task references", "reference link", "reference to the task",
     "reference from the task", "task dataset", "dataset of all the tasks",
     "dataset of the tasks", "agent requests", "agent request",
-    # WS-55 EA-18d: the questions that agents put and that wait on the member.
-    "agent questions", "agent question", "questions wait on me",
     # SW-43c: the member takes back or changes an answer to an agent.
     "answer to the agent", "answered the agent", "withdraw my answer",
     "take back my answer", "change my answer",

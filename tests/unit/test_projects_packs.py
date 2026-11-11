@@ -77,7 +77,7 @@ SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk", "pr
 #: SW-43c added change_agent_answer to plan, beside waiting_agent_requests. It takes
 #: the last room of plan in the sticky-pack case (a 27th tool fails
 #: test_the_step_aside_moves_the_sticky_pack_that_the_member_did_not_name).
-SIZES = {"projects": 23, "projects-plan": 28, "projects-structure": 27, "projects-bulk": 22,
+SIZES = {"projects": 25, "projects-plan": 26, "projects-structure": 27, "projects-bulk": 22,
          "projects-reminders": 19, "projects-reports": 11, "projects-authority": 7,
          "projects-cycles": 6}
 #: CAL-1a: the owner also holds the ``calendar-day`` pack. It is no Projects family
@@ -735,7 +735,7 @@ async def test_the_loader_adds_a_projects_pack_of_strict_function_tools(store) -
         answer, passed = await _call(loader, "projects-plan", live)
     assert passed is False
     # SW-43c: change_agent_answer is the 26th tool of the plan pack.
-    assert answer.startswith("Loaded the Projects planning tools (28 tools)"), answer
+    assert answer.startswith("Loaded the Projects planning tools (26 tools)"), answer
     assert "PROJECTS PLANNING TOOLS." in answer
     added = live[5:]
     assert [_name(t) for t in added] == list(_family("projects-plan"))

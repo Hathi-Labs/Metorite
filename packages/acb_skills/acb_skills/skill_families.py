@@ -479,6 +479,10 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         ),
         "tools": (
             "add_subtasks",
+            # WS-55 EA-18d: the questions of agents that wait on the member. The
+            # plan pack has no room (test_projects_packs.py, sticky-pack case).
+            "agent_questions",
+            "answer_agent_question",
             "assign",
             "calendar",
             "comment",
@@ -529,9 +533,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         ),
         "tools": (
             "add_task_ref",
-            "agent_questions",
             "analytics_finished",
-            "answer_agent_question",
             "analytics_load",
             "analytics_outlook",
             "analytics_stuck",

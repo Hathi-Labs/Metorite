@@ -1224,10 +1224,10 @@ CHILD_TOOLS: dict[str, frozenset[str]] = {
         "crm_change_history", "crm_search_notes", "get_pipeline", "get_record",
         "get_timeline", "search_crm"}),
     "projects": frozenset({
-        "calendar", "find_tasks", "list_tasks", "my_task", "my_work", "people_for",
+        "agent_questions", "calendar", "find_tasks", "list_tasks", "my_task", "my_work", "people_for",
         "project_summary", "projects_tree", "task_detail", "vocabulary"}),
     "projects-plan": frozenset({
-        "agent_questions", "analytics_finished", "analytics_load", "analytics_outlook", "analytics_stuck",
+        "analytics_finished", "analytics_load", "analytics_outlook", "analytics_stuck",
         "analytics_throughput", "find_conflicts", "fit_for_task", "get_plan", "needs_attention",
         "rebalance", "recurrence", "task_dataset", "team_capacity",
         "waiting_agent_requests"}),

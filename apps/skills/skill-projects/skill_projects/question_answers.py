@@ -3,7 +3,7 @@
 ``answer_agent_question`` is a composite of the manifest tool
 ``post_agent_activity`` (``manifest.COMPOSITE``), so it is class B. It writes ONE
 ``prompt`` on a run that awaits the member. The server decides who may answer:
-``POST /projects/agent-runs/{id}/activities`` runs ``may_answer_run`` (D-EA-14),
+The POST to the activities route of a run runs ``may_answer_run`` (D-EA-14),
 and a refusal comes back as one sentence. The tool holds no copy of that rule.
 
 **The fence.** ``test_projects_agent_requests_tools.py`` forbids every module of
