@@ -2530,6 +2530,8 @@ def test_r8_ax_a_resend_with_only_the_request_id_of_a_declined_change_writes_not
 #   ``test_r8_bd_an_average_of_money_is_refused_with_one_currency`` goes red.
 #   The first run of this mutation survived, because the old case seeded two
 #   currencies, so the refusal of a mixed sum hid it. The case now seeds one.
+# * F2. ``objects_store._aggregate_result``: send a currency for a sum only.
+#   ``test_r8_bd_an_opened_average_of_money_carries_its_currency`` goes red.
 
 _AGG_OUTCOME = {"action": "tally", "uses": "object:visit.aggregate", "class": "A"}
 _FEE = [{"op": "count"}, {"op": "sum", "field": "fee"}, {"op": "average", "field": "hours"}]
