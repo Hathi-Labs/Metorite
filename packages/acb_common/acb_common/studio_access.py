@@ -72,6 +72,7 @@ from acb_common.studio_fields import MAX_FIELDS_PER_OBJECT, NAME_PATTERN, FieldS
 from acb_common.studio_rules import (
     FORMULA,
     GROUP_SUM_MIN,
+    HIERARCHY,
     RANGE,
     ROLLUP,
     STATE_MACHINE,
@@ -500,6 +501,8 @@ def blocked_keys(scope: Scope, rules: Sequence[Rule], hidden: frozenset[str],
     * A ``group_sum_min`` blocks its keys and its field, for a viewer that
       cannot read every record or that cannot see a key that it reads.
     * A state machine whose guard reads a hidden key blocks its field.
+    * A ``hierarchy`` (C18) blocks its parent field for a viewer that cannot
+      read every record, because its walk reads the parents of the record.
     * A roll-up that reads this object blocks each key that it reads here,
       unless the viewer reads every record and sees each of those keys.
 
@@ -517,6 +520,9 @@ def blocked_keys(scope: Scope, rules: Sequence[Rule], hidden: frozenset[str],
             out |= reads
         elif rule.kind == STATE_MACHINE and (reads - {rule.field}) & hidden:
             out.add(str(rule.field))
+        elif rule.kind == HIERARCHY and (scope.row_bound or reads & hidden):
+            # C18: the walk of a new parent reads records past the row rule.
+            out |= reads
     for rule in readers:
         if rule.kind == ROLLUP and not scope.shows_all(rule.source_keys()):
             out |= set(rule.source_keys())

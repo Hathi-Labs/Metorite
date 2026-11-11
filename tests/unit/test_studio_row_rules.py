@@ -325,6 +325,9 @@ def test_blocked_keys_follow_each_rule_that_reads_hidden_data() -> None:
                             "initial": "a", "moves": [{"from": "a", "to": "b", "guard": [
                                 {"field": "bonus", "op": "gt", "value": 1}]}]}])
     assert sa.blocked_keys(employee, machine, frozenset({"bonus"})) == {"state"}
+    tree = parse_rules([{"name": "tree", "kind": "hierarchy", "field": "parent"}])
+    assert sa.blocked_keys(employee, tree, frozenset()) == {"parent"}
+    assert sa.blocked_keys(hr, tree, frozenset()) == frozenset()
 
 
 def test_parse_access_refuses_more_json_than_the_check_holds() -> None:
@@ -503,16 +506,17 @@ def test_the_six_take_viewer_as_a_required_keyword() -> None:
         assert param.default is inspect.Parameter.empty, name
 
 
-def test_no_code_calls_the_aggregate_while_it_takes_no_viewer() -> None:
-    """``aggregate_records`` reads every record of the object. Its first door
-    adds a viewer first, and then joins the six."""
-    assert "viewer" not in inspect.signature(store.aggregate_records).parameters
+@pytest.mark.parametrize("name", ["aggregate_records", "read_tree"])
+def test_no_code_calls_a_reader_that_takes_no_viewer(name: str) -> None:
+    """``aggregate_records`` (C2b) and ``read_tree`` (C18) read every record of
+    the object. The first door of each adds a viewer first, and then joins the six."""
+    assert "viewer" not in inspect.signature(getattr(store, name)).parameters
     found = []
     for path in _source_files():
         if path == _STORE:
             continue
         text = path.read_text(encoding="utf-8")
-        if re.search(r"\baggregate_records\s*\(", text):
+        if re.search(rf"\b{name}\s*\(", text):
             found.append(path.relative_to(_ROOT).as_posix())
     assert found == []
 

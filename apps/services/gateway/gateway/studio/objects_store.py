@@ -167,6 +167,15 @@ the writes. A record of another package or another org is not found, so the
 line is refused. :func:`_find_lines` reads the relations after the org lock,
 and a relation that no longer fits its line object refuses the batch.
 
+**The hierarchy (C18).** A rule of kind ``hierarchy`` makes the records of one
+object a tree, through one hot relation field that points to the same object.
+After the writes of a batch, :func:`_check_trees` walks up and down from each
+record that got a new parent, in one statement for each object. It refuses a
+cycle, a parent that is no record of this object, and a tree of more than
+:data:`~acb_common.studio_rules.MAX_TREE_DEPTH` levels. :func:`read_tree` reads
+a tree or the whole forest, to that depth, in one recursive statement.
+``tests/unit/test_studio_hierarchy_r8.py`` runs both on a real Postgres.
+
 **The sync of a manifest (A5).** :func:`sync_objects` brings the rows of one
 package to the ``objects`` of a published manifest, and the publish route is
 its one caller. It adds an object (:func:`define_object`, whose one caller it
@@ -237,8 +246,8 @@ target over a source that the viewer cannot read whole. The text of a rule
 that reads a hidden key, or of a key rule over records that the viewer cannot
 read, names no field (:func:`_masked`). The parent of a line must be a record
 that the viewer can read. ``test_studio_row_rules.py`` fails each call of the
-six that passes no viewer. ⚠️ :func:`aggregate_records` takes no viewer yet,
-and no route calls it. A door of it must add one first.
+six that passes no viewer. ⚠️ :func:`aggregate_records` and :func:`read_tree` (C18)
+take no viewer yet, and no route calls them. A door of either must add one first.
 
 ⚠️ The store does not authenticate. It only scopes. The actor of a write is
 an argument that the caller takes from the session, never from request input
@@ -303,8 +312,10 @@ from acb_common.studio_query import Condition, Query, QueryError, parse_query
 from acb_common.studio_rules import (
     FORMULA,
     GROUP_SUM_MIN,
+    HIERARCHY,
     MAX_ROLLUP_PARENTS,
     MAX_ROLLUP_STATEMENTS,
+    MAX_TREE_DEPTH,
     MAX_WRITES_PER_BATCH,
     RANGE,
     ROLLUP,
@@ -328,6 +339,7 @@ from acb_common.studio_rules import (
     check_rollups,
     check_rule_is_hot,
     check_rules_fit,
+    check_tree,
     check_unique_count,
     floor_holds_at_zero,
     key_filter,
@@ -340,6 +352,7 @@ from acb_common.studio_rules import (
     run_formulas,
     stored_rules,
     touched_keys,
+    tree_moves,
     where_filter,
     with_initial,
     with_rollup_zero,
@@ -3819,7 +3832,11 @@ async def _run_steps(db: Any, batch: _Batch) -> list[Record | bool]:
     deadline = _clock() + studio_query.TIMEOUT_MS / 1000
     await _check_line_parents(db, batch, deadline)
     await _recompute_parents(db, batch, deadline)
-    await _check_keys(db, batch, _check_records(batch), deadline)
+    keys = _check_records(batch)
+    # C18: the walk of each record that got a new parent, after the checks
+    # with no SQL, so a parent field that is not hot fails closed there first.
+    await _check_trees(db, batch, deadline)
+    await _check_keys(db, batch, keys, deadline)
     # C8a: each hidden key leaves the answer of a create and of an update.
     return [batch.objects[a.object_id].view().shown(a) if isinstance(a, Record) else a
             for a in answers]
@@ -3912,3 +3929,233 @@ async def _one_write(db: Any, who: str, package_id: str, write: Write,
         if isinstance(exc.cause, RecordNotFound):
             return None
         raise exc.cause from None
+
+
+# --- the hierarchy (C18) ------------------------------------------------------
+#
+# A rule of kind `hierarchy` makes the records of one object a tree. Each record
+# names its parent in one hot relation field of the same object. A record with
+# no value is a root, and a root is level 1. Two statements use the hot rows of
+# that field: the primary key finds the parent of a record, and the text index
+# finds its children.
+#
+#   4c. `_check_trees` runs after the writes of a batch, in the same SAVEPOINT
+#       and under the org lock. So it reads the tree as the batch leaves it. One
+#       statement for each object walks up from each record that got a new
+#       parent, and down to its children. The walk up refuses a cycle and a
+#       parent that is no record of this object. Its level plus the levels
+#       below it must be at most MAX_TREE_DEPTH. A new cycle and a new long path
+#       each hold a record that got a new parent, so this check finds each one.
+#   The read. `read_tree` reads a tree, or the whole forest, to a depth of at
+#       most MAX_TREE_DEPTH levels in ONE recursive statement.
+#
+# Each walk carries its path and stops at a record that it saw, so an old cycle
+# (raw SQL, or a rule declared over old data) cannot make a walk run forever.
+# ⚠️ A declaration does not check old data (C1b). A rule binds each later write.
+
+#: The most nodes of one read of a tree. The tree block (D18) opens a tree of
+#: 2,000 nodes in one read.
+MAX_TREE_NODES = 2_000
+
+#: The parent of a record, by the primary key of the hot row. A parent id that
+#: is no UUID, or that names no record of this object, ends the walk.
+_TREE_PARENT = (
+    "JOIN studio_record_hot h ON h.organization_id = " + _BOUND_ORG + " "
+    "AND h.object_id = CAST(:oid AS uuid) AND h.record_id = u.id "
+    "AND h.field_key = CAST(:fk AS text) "
+    "JOIN studio_records p ON p.organization_id = " + _BOUND_ORG + " "
+    "AND p.object_id = CAST(:oid AS uuid) "
+    "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
+)
+
+#: The children of a record, by the text index of the hot rows.
+_TREE_CHILDREN = (
+    "JOIN studio_record_hot h ON h.organization_id = " + _BOUND_ORG + " "
+    "AND h.object_id = CAST(:oid AS uuid) AND h.field_key = CAST(:fk AS text) "
+    "AND h.v_text = CAST(t.id AS text) "
+)
+
+#: The walk of each record of `:rids` (C18): its level (the walk up, which stops
+#: one past the cap), a cycle, the levels below it (the walk down, to the cap),
+#: and whether its parent is a record of this object.
+_TREE_CHECK_SQL = (
+    "WITH RECURSIVE s AS (SELECT DISTINCT x.id FROM unnest(CAST(:rids AS uuid[])) AS x(id) "
+    "WHERE " + _IN_PACKAGE + "), "
+    "up(start, id, depth, path, cyc) AS ("
+    "SELECT s.id, s.id, 1, ARRAY[s.id], false FROM s "
+    "UNION ALL "
+    "SELECT u.start, p.id, u.depth + 1, u.path || p.id, p.id = u.start FROM up u "
+    + _TREE_PARENT +
+    "WHERE NOT u.cyc AND u.depth <= CAST(:cap AS int) "
+    "AND (p.id = u.start OR NOT p.id = ANY(u.path))), "
+    "down(start, id, depth, path) AS ("
+    "SELECT s.id, s.id, 0, ARRAY[s.id] FROM s "
+    "UNION ALL "
+    "SELECT t.start, h.record_id, t.depth + 1, t.path || h.record_id FROM down t "
+    + _TREE_CHILDREN +
+    "WHERE t.depth < CAST(:cap AS int) AND NOT h.record_id = ANY(t.path)) "
+    "SELECT s.id::text, "
+    "(SELECT max(u.depth) FROM up u WHERE u.start = s.id), "
+    "(SELECT bool_or(u.cyc) FROM up u WHERE u.start = s.id), "
+    "(SELECT max(d.depth) FROM down d WHERE d.start = s.id), "
+    "EXISTS (SELECT 1 FROM up u WHERE u.start = s.id AND u.depth = 2) "
+    "FROM s"
+)
+
+#: The object of a tree read, with its rules, of the package that the caller
+#: names. No lock.
+_TREE_OBJECT_SQL = (
+    "SELECT name, constraints FROM studio_objects "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) "
+    "AND package_id = CAST(:pid AS uuid)"
+)
+
+#: The roots of a read of the whole forest: each record of the object with no
+#: parent record of this object. A record whose parent is gone is a root too.
+_TREE_ALL_ROOTS = (
+    "SELECT r.id FROM studio_records r "
+    f"WHERE r.{_OF_ORG} AND r.{_OF_OBJECT} AND NOT EXISTS ("
+    "SELECT 1 FROM studio_record_hot h "
+    "JOIN studio_records p ON p.organization_id = " + _BOUND_ORG + " "
+    "AND p.object_id = CAST(:oid AS uuid) "
+    "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
+    f"WHERE h.{_OF_ORG} AND h.{_OF_OBJECT} AND h.record_id = r.id "
+    "AND h.field_key = CAST(:fk AS text))"
+)
+
+#: The root of a read of one tree: the record `:root` of the object.
+_TREE_ONE_ROOT = (
+    "SELECT r.id FROM studio_records r "
+    f"WHERE r.{_OF_ORG} AND r.{_OF_OBJECT} AND r.id = CAST(:root AS uuid)"
+)
+
+
+def _tree_read_sql(roots: str) -> str:
+    """The one statement of a tree read, from the SQL of its *roots* (one of
+    the two constants above). Each node comes once, with its level and the id
+    of its parent in the read. The order is by level, then by parent, then by
+    the time of the create. The statement reads one node past the limit, so
+    the store knows that the read is cut."""
+    return (
+        "WITH RECURSIVE roots AS (" + roots + " AND " + _IN_PACKAGE + "), "
+        "tree(id, parent, depth, path) AS ("
+        "SELECT roots.id, CAST(NULL AS uuid), 1, ARRAY[roots.id] FROM roots "
+        "UNION ALL "
+        "SELECT h.record_id, t.id, t.depth + 1, t.path || h.record_id FROM tree t "
+        + _TREE_CHILDREN +
+        "WHERE t.depth < CAST(:depth AS int) AND NOT h.record_id = ANY(t.path)) "
+        "SELECT t.depth, t.parent::text, " + _QUERY_COLUMNS + " FROM tree t "
+        "JOIN studio_records r ON r." + _OF_ORG + " AND r." + _OF_OBJECT + " AND r.id = t.id "
+        "ORDER BY t.depth, t.parent NULLS FIRST, r.created_at, r.id "
+        "LIMIT CAST(:limit AS int) + 1"
+    )
+
+
+_TREE_ALL_SQL = _tree_read_sql(_TREE_ALL_ROOTS)
+_TREE_ROOT_SQL = _tree_read_sql(_TREE_ONE_ROOT)
+
+
+@dataclass(frozen=True)
+class TreeNode:
+    """One record of a tree read (C18)."""
+
+    record: Record
+    #: The level in the read: 1 for each root of the read.
+    level: int
+    #: The id of the parent in the read, or None for a root of the read.
+    parent_id: str | None
+
+
+@dataclass(frozen=True)
+class TreePage:
+    """The nodes of one tree read (C18), level by level."""
+
+    nodes: tuple[TreeNode, ...]
+    #: True when the tree holds more nodes than the limit, so the read is cut.
+    truncated: bool
+
+
+def _tree_rule(rules: Sequence[Rule]) -> Rule | None:
+    return next((r for r in rules if r.kind == HIERARCHY), None)
+
+
+def _no_tree_parent(rule: Rule, name: str) -> FieldError:
+    key = str(rule.field)
+    return FieldError(key, f"Field `{key}` names no `{name}` record of this app. "
+                      f"Pick a record of `{name}` in this app.")
+
+
+async def _check_trees(db: Any, batch: _Batch, deadline: float) -> None:
+    """Step 4c (C18). For each object of the batch with a hierarchy, walk each
+    record that got a new parent, in one statement, under the one deadline of
+    the batch. A refusal names the first write of the record."""
+    work: dict[str, dict[str, int]] = {}
+    for (oid, rid), mark in batch.marks.items():
+        rule = _tree_rule(batch.objects[oid].rules)
+        if rule is not None and tree_moves(rule, mark.before, mark.after) is not None:
+            work.setdefault(oid, {})[rid] = mark.index
+    if not work:
+        return
+    async with _time_limit(db, deadline, _RULE_TIMEOUT_MESSAGE) as timed:
+        for oid, starts in sorted(work.items()):
+            held = batch.objects[oid]
+            rule = _tree_rule(held.rules)
+            assert rule is not None
+            rows = (await timed.execute(text(_TREE_CHECK_SQL), {
+                "oid": oid, "pid": batch.pid, "fk": str(rule.field), "rids": sorted(starts),
+                "cap": MAX_TREE_DEPTH})).all()
+            for row in sorted(rows, key=lambda r: starts[str(r[0])]):
+                batch.index = starts[str(row[0])]
+                if not row[4]:
+                    raise _no_tree_parent(rule, held.name)
+                check_tree(rule, held.name, cycle=bool(row[2]),
+                           depth=int(row[1]) + int(row[3] or 0))
+
+
+def _tree_bound(value: Any, what: str, most: int) -> int:
+    if type(value) is not int or not 1 <= value <= most:
+        raise ObjectStoreError(f"{what} is a whole number from 1 to {most}.")
+    return value
+
+
+async def read_tree(db: Any, *, package_id: str, object_id: str, root_id: str | None = None,
+                    depth: Any = MAX_TREE_DEPTH, limit: Any = MAX_TREE_NODES) -> TreePage | None:
+    """The tree of the object *object_id* of the package *package_id* (C18), in
+    ONE statement. Answers None when the bound org holds no such object in that
+    package.
+
+    *root_id* names the record at the top of the read. None reads the whole
+    forest: each record with no parent record of this object is a root. *depth*
+    is the most levels to read, from 1 to
+    :data:`~acb_common.studio_rules.MAX_TREE_DEPTH`, and *limit* is the most
+    nodes, from 1 to :data:`MAX_TREE_NODES`. A root id that names no record of
+    the object gives no nodes. An object with no hierarchy, or with a parent
+    field that is not hot, raises :class:`ObjectStoreError`. The whole call has
+    the deadline of :data:`~acb_common.studio_query.TIMEOUT_MS`.
+    """
+    deadline = _clock() + studio_query.TIMEOUT_MS / 1000
+    oid = _uuid(object_id, "object_id")
+    pid = _uuid(package_id, "package_id")
+    root = None if root_id is None else _uuid(root_id, "root_id")
+    levels = _tree_bound(depth, "depth", MAX_TREE_DEPTH)
+    size = _tree_bound(limit, "limit", MAX_TREE_NODES)
+    async with _time_limit(db, deadline) as timed:
+        found = (await timed.execute(text(_TREE_OBJECT_SQL), {"oid": oid, "pid": pid})).first()
+        if found is None:
+            return None
+        rule = _tree_rule(stored_rules(_json(found[1])))
+        if rule is None:
+            raise ObjectStoreError(f"Object `{found[0]}` holds no hierarchy rule.")
+        hot = {f.key for f in await _fields(timed, oid) if f.hot}
+        if str(rule.field) not in hot:
+            raise ObjectStoreError(f"Field `{rule.field}` is not hot, so the tree cannot be read.")
+        binds: dict[str, Any] = {"oid": oid, "pid": pid, "fk": str(rule.field),
+                                 "depth": levels, "limit": size}
+        if root is not None:
+            binds["root"] = root
+        rows = (await timed.execute(
+            text(_TREE_ALL_SQL if root is None else _TREE_ROOT_SQL), binds)).all()
+    nodes = tuple(TreeNode(record=_record(row[2:]), level=int(row[0]),
+                           parent_id=None if row[1] is None else str(row[1]))
+                  for row in rows[:size])
+    return TreePage(nodes=nodes, truncated=len(rows) > size)
