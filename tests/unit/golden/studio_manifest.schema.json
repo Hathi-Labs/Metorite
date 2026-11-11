@@ -207,6 +207,22 @@
     "ObjectDef": {
       "additionalProperties": false,
       "properties": {
+        "access": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Access"
+        },
         "fields": {
           "items": {
             "$ref": "#/$defs/FieldDef"
@@ -923,6 +939,13 @@
       ],
       "default": null,
       "title": "Purpose"
+    },
+    "roles": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Roles",
+      "type": "array"
     },
     "shell": {
       "anyOf": [
