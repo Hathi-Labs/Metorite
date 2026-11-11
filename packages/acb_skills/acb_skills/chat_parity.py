@@ -395,6 +395,11 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "The shell reads the installed packages to draw the sidebar and the command bar, and reads them "
         "again every few seconds (PKG-6). No member click sends it. The chat acts on the same records.",
     ),
+    "GET /api/shell/layout": (
+        "stream",
+        "The shell reads the org default of the star set and the preset, to draw the sidebar for a member "
+        "with no choice of their own (PKG-17b). No member click sends it. The chat sets no org default here.",
+    ),
     # ── Email ──
     "GET /api/email/attachments/{}/download": (
         "download",
@@ -1009,7 +1014,7 @@ DEBT: dict[str, str] = {
 #: The most debt that each app may carry. A count may go down, never up.
 #: Lower the number in the change that pays the debt.
 DEBT_CEILING: dict[str, int] = {
-    "projects": 8,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, paid by the chat tool of SW-43c (task 1802).
+    "projects": 9,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, and SW-43b (2026-11-11) added agentRunsApi.replaceAnswer. The chat tools of SW-43c (task 1802) pay both.
     "tasks": 9,
     "calendar": 1,
     "email": 14,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182).
