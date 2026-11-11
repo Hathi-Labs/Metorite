@@ -4355,7 +4355,7 @@ wording.
 | **D-PZ-47** | May Metorite record the member's own acts, with no text, to learn habits? | Yes. It follows the learning switch, and it stays dark until the owner says |
 | **D-PZ-48** | May Metorite act on a habit by itself? | No. It suggests. An automatic act needs a rule that the member approved on a card |
 | **D-PZ-49** | One page "How I work" for the style, the voice and the habits? | Yes. The writing-style section of the Email app becomes a view of the member voice |
-| **D-PZ-50** | The consent wording of D-PZ-10. The voice needs it before it reads any sent mail | The owner writes or approves it. It unblocks PZ-12 (task 306) |
+| **D-PZ-50** | The consent wording of D-PZ-10. The voice needs it before it reads any sent mail | PZ-12 drafts it, and the owner reads it before PZ-12 merges (§12.8). It unblocks PZ-12 (task 306) |
 | **D-PZ-51** | How long does an act row live? | 180 days |
 | **D-PZ-52** | When is a pattern a habit? | 3 acts or more, a share of 70% or more, in 90 days |
 
