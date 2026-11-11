@@ -40,6 +40,7 @@ This page tells an agent how to plan a goal on a Metorite board with the tools t
    - **Rung 0** holds urgent safety work: a leak, data loss, a broken live feature or an owner gate with a date. Keep it small. It has no demo.
    - **Rung 1** is the smallest path that works end to end. It goes thin through every layer. It fits in one week.
    - **Start from what is live.** The first rungs improve a live feature. A new area comes after them.
+   - **Order the rungs by visible value for the effort.** Bring a hard unknown forward, but only inside a slice that a person can see. A later rung fits in one or two weeks.
    - **The foundation rides with the rung.** A store change, a refactor or a hardening slice joins the first rung whose demo uses it. No rung ships only plumbing.
    - Write rungs 1 to 3 in detail. Write each later rung in one line. Give each rung its demo in one sentence.
    - Plan the next rungs again after each demo, with what the demo taught.
