@@ -1072,6 +1072,16 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_waiting_seam_r8.py.
     waiting_orgs: str = ""
 
+    # ── Agents: the member view in Projects (WS-AGA AGA-6) ──────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, every route of `agents_view.md` answers 404, today
+    # `GET /projects/agents/overview` (AGA-7). The one reader is
+    # `gateway.routes.projects.agent_summary.agents_view_allowed`. A SIGHUP
+    # reload applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_agents_overview_r8.py.
+    agents_view_orgs: str = ""
+
     # ── The status-set guard in chat (WS-42 PST-4, projects_settings.md §7.1) ──
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
