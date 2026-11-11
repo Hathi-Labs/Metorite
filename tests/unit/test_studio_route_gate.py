@@ -98,6 +98,9 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("PATCH", "/studio/skills/{skill_id}/state"),
     # A5, the package routes.
     ("POST", "/studio/packages"),
+    # K1a, the template list and the one-step create from a template.
+    ("GET", "/studio/templates"),
+    ("POST", "/studio/packages/from-template"),
     ("GET", "/studio/packages"),
     ("GET", "/studio/packages/{package_id}"),
     ("PUT", "/studio/packages/{package_id}/draft"),
