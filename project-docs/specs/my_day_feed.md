@@ -387,6 +387,7 @@ sets the group. A ticket that adds a kind adds its row in the same PR.
 | `deal_close_passed` | Needs you |
 | `colleague_out` | For your information |
 | `agent_asks` | Needs you |
+| `agent_questions` | Needs you |
 | `digest_ready` | For your information (WS-53 CRM-Q28) |
 | `crm_open_questions` | Needs you while a money question is open, else For your information (WS-53 CRM-Q32, specified 2026-10-17) |
 
@@ -567,6 +568,7 @@ nothing (`navigation_shell.md` §4.5, "No second arithmetic").
 | `colleague_out` | A person I have a block with today is absent | Template | Open the day | None | MD-3, **only for a member who passes `can_read_hr_fields`** (`routes/tasks/core.py:75`). The provider calls the People app's own gated read. A plain member gets no row, and a negative test proves it. BUILT in MD-3f, source `people` (§5.9 item 14) |
 | `agent_done` | A chat run that I started finished while I was away | Template from the run | Open chat | None | MD-3. It reads WS-51's run state |
 | `agent_asks` | A run waits for my answer (`chat_pending_ask`) | Template | Open chat | None | MD-3. Feed only, until a §7.2 amendment. BUILT in MD-3f, source `chat` (§5.9 item 14) |
+| `agent_questions` | An agent question waits on me: I created the task, I am an assignee, or my agent asked (`GET /projects/agent-questions?scope=mine`) | Template: the project path, the oldest question, its options and how many more wait | Answer (opens the list in Projects) | None | WS-55 EA-18c. One card, source `agent_questions`, dark behind `AGENT_QUESTIONS_ORGS`. BUILT 2026-11-11, not merged (task 1808). A member with no open question sees no card |
 | `whatsapp_waiting` | A WhatsApp thread waits for me | Template | Open thread | None | MD-9 |
 
 ### 5.7 The cards about the day itself
@@ -746,6 +748,7 @@ needs kind still starts above it.
 | `notification` | 48 |
 | `needs_reply` | 44 |
 | `agent_asks` | 43 |
+| `agent_questions` | 43 (WS-55 EA-18c, ties with `decision`) |
 | `promise_due` | 42 |
 | `crm_followup_due` | 41 |
 | `block_overlap` | 40 |
@@ -783,6 +786,7 @@ These rows join the table of §4.3 and `feed_rank.group`.
 | `deal_close_passed` | Needs you |
 | `colleague_out` | For your information |
 | `agent_asks` | Needs you |
+| `agent_questions` | Needs you |
 | `digest_ready` | For your information (WS-53 CRM-Q28) |
 | `crm_open_questions` | Needs you while a money question is open, else For your information (WS-53 CRM-Q32, specified 2026-10-17) |
 
@@ -807,6 +811,7 @@ note is a change of the task. The fence covers every kind of `BASE`
 | `deal_quiet` | `waiting_since`, set to `status_changed_at` |
 | `deal_close_passed` | `due_at`, the close date at 00:00 in the zone of the member |
 | `agent_asks` | `waiting_since`, the newest `asked_at` on the thread |
+| `agent_questions` | `waiting_since`, the oldest `asked_at` of the questions shown |
 | `colleague_out` | None. The id is the day, so a dismiss holds for that day |
 | `digest_ready` | None. The id is the week, so a dismiss holds for that week (WS-53 CRM-Q28) |
 | `crm_open_questions` | None. The id is the UTC date of `new_at`, so a dismiss holds for that day (WS-53 CRM-Q32) |
@@ -842,6 +847,7 @@ Two names are not allowed:
 | `deal_close_passed` | Close date passed |
 | `colleague_out` | Colleague away |
 | `agent_asks` | Waiting for your answer |
+| `agent_questions` | Waiting for your answer |
 
 #### 7. The budget, and the rule for the flip
 
@@ -997,6 +1003,7 @@ slice gives these facts and no others:
 | `deal_close_passed` | `due_at` |
 | `colleague_out` | `out`, a list of names, and `task`, a title |
 | `agent_asks` | `waiting_since` |
+| `agent_questions` | `waiting_since` |
 
 ⚠️ **No task kind of MD-3c carries a state fact, also not `due_at`.** A
 notification card has no `due_at`. A task kind that carried one would change
