@@ -638,7 +638,9 @@ async def _rekey(db: Any, message_id: str, old: str, new: str) -> None:
                      reason="row_changed")
 
 
-async def _hydrate_attachments(message_id: str, user_email: str) -> list[AttachmentModel]:
+async def _hydrate_attachments(
+    message_id: str, user_email: str
+) -> tuple[list[AttachmentModel], bool]:
     """Fetch a message from its provider and persist its attachment metadata,
     then return it.
 
@@ -649,6 +651,10 @@ async def _hydrate_attachments(message_id: str, user_email: str) -> list[Attachm
     gap: when a message advertises attachments but none are stored, fetch and
     store them regardless of the body state.
 
+    Returns ``(files, ok)``. ``ok`` is False only when the provider call
+    failed (an expired token, a rate limit), so the reader can say so. An
+    empty list with ``ok`` True is a mail whose parts are all inline pictures.
+
     ⚠️ No session is open across the provider call (2026-10-28). Block A
     builds the provider and closes. Block B writes the rows after the fetch.
     """
@@ -658,18 +664,18 @@ async def _hydrate_attachments(message_id: str, user_email: str) -> list[Attachm
                 db, message_id, user_email
             )
         if not await provider.authenticate():
-            return []
+            return [], False
         full = await provider.get_message(provider_msg_id)
         async with _tenant_session() as db:
             await _insert_attachments(db, message_id, full.attachments)
             await _persist_rotated_creds(db, store, account_id, provider)
-            return await _fetch_attachments(db, message_id)
+            return await _fetch_attachments(db, message_id), True
     except Exception as exc:  # noqa: BLE001
         _log.warning(
             "get_message.attach_hydrate_failed",
             message_id=message_id, error=str(exc)[:200],
         )
-        return []
+        return [], False
 
 
 class MessageSummariesRequest(BaseModel):
@@ -891,7 +897,9 @@ async def get_message(
         # Body came from sync (so the hydration block above didn't run) but
         # the attachments were never stored — fetch + store them now.
         if not msg.attachments:
-            msg.attachments = await _hydrate_attachments(message_id, owner)
+            msg.attachments, ok = await _hydrate_attachments(message_id, owner)
+            if not ok:
+                msg.attachments_status = "failed"
     # After the hydration and its write, so the store keeps the whole
     # body (WS-17, 2026-10-09). `is True`, as `mark_read` above, holds the
     # default for a direct Python call.

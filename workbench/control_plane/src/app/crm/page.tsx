@@ -150,6 +150,7 @@ import {
   useFieldDefs,
   useFieldLayout,
   useOwners,
+  useLeadPipelines,
   usePipelineCreate,
   usePipelines,
   useSyncStatus,
@@ -229,6 +230,11 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   const { pipelines, loading: pipelinesLoading } = usePipelines(true);
   // CRM-M3a: "New pipeline" for an admin of a Native CRM on the flag.
   const pipelineCreate = usePipelineCreate(ctx.isAdmin && ctx.mode === "native");
+  // CRM-M4a: the lead pipelines of a Native CRM, for the Lead statuses card
+  // of CRM settings. No other tab reads them yet.
+  const { pipelines: leadPipelines } = useLeadPipelines(
+    ctx.mode === "native" && view.tab === "settings",
+  );
   const [remembered, setRemembered] = useState<string | null>(() => readRemembered());
   /** The pipeline a request filters by, or null for "no filter". */
   const pipelineId = resolvePipeline(pipelines, view.pipelineId, remembered);
@@ -1146,6 +1152,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               questions={questions.gate === "on" ? <OpenQuestionsCard /> : undefined}
               rules={rules.gate === "on" ? <BusinessRulesCard /> : undefined}
               pipelines={pipelines}
+              leadPipelines={leadPipelines}
               pipelineId={pipelineId}
               showAdminCards={ctx.isAdmin}
               pipelineCreate={ctx.isAdmin && pipelineCreate}

@@ -83,6 +83,17 @@ comparison is LEAKPROOF (``docs/rls_and_indexes.md``). So a number filter
 reads the hot rows of its field. A sort on a number still reads the index in
 order.
 
+**The aggregate (C2b).** :func:`aggregate_records` groups the records of one
+object by one hot field and takes a count, a sum or an average of each group.
+``studio_query.parse_aggregate`` checks the input, and :func:`build_aggregate`
+is pure. It reuses the candidates, the guard, the deadline and the check of the
+hot fields of C2a, in one statement. The candidates come in no order, because
+an order with no LIMIT made the planner sort the whole object. Each candidate
+reads the hot row of the group field and of each measure field by its key.
+The 50 groups with the most records stay, and one row ``other`` holds the rest.
+A money sum reads the currency of each amount from ``data`` in the same
+statement, and two currencies refuse the sum.
+
 **The batch (C1b).** :func:`apply_writes` is the one path of a record write.
 :func:`create_record`, :func:`update_record` and :func:`delete_record` are a
 batch of one, with the same signatures and answers, so no single call skips
@@ -144,6 +155,17 @@ batch, under the one deadline of the batch. A parent id that names no record is
 skipped. A child that a money roll-up counts, in another currency than the rule,
 is refused. A roll-up that does not fit now, or that the store cannot read,
 refuses the batch.
+
+**The lines (C13).** A relation field of a parent with ``lines`` names a line
+object of the same package and its field ``via`` that points back. The parent
+holds no value for it (``studio_fields.validate_record``). A write with
+``parent`` names the create or the update of its parent earlier in the batch:
+a linked create gets ``via`` from that record, and a linked update must be a
+line of it. A line that names a parent by itself, on a create or a move, must
+name a record of the parent object of this package, in one statement after
+the writes. A record of another package or another org is not found, so the
+line is refused. :func:`_find_lines` reads the relations after the org lock,
+and a relation that no longer fits its line object refuses the batch.
 
 **The sync of a manifest (A5).** :func:`sync_objects` brings the rows of one
 package to the ``objects`` of a published manifest, and the publish route is
@@ -208,7 +230,7 @@ import json
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from dataclasses import field as dc_field
@@ -230,10 +252,13 @@ from acb_common.studio_fields import (
     NAME_PATTERN,
     FieldError,
     FieldSpec,
+    RecordError,
     check_can_be_hot,
     hot_value,
+    lines_problem,
     parse_field_spec,
     record_json,
+    relation_key,
     storable_text,
     stored_field,
     validate_record,
@@ -404,6 +429,20 @@ _OBJECT_NAMES_SQL = (
     "AND id = ANY(CAST(:oids AS uuid[]))"
 )
 
+#: Each lines relation of one package (C13): the parent object, the key of its
+#: field, the field of the line object that names the parent, and the id of the
+#: line object, which a name of the same package finds. Each alias names the org.
+_LINES_SQL = (
+    "SELECT p.id::text, p.name, f.key, f.spec ->> 'lines', c.id::text, c.name "
+    "FROM studio_object_fields f "
+    f"JOIN studio_objects p ON p.organization_id = {_BOUND_ORG} AND p.id = f.object_id "
+    "AND p.package_id = CAST(:pid AS uuid) "
+    f"LEFT JOIN studio_objects c ON c.organization_id = {_BOUND_ORG} "
+    "AND c.package_id = CAST(:pid AS uuid) AND c.name = f.spec ->> 'to' "
+    f"WHERE f.organization_id = {_BOUND_ORG} AND f.type = 'relation' "
+    "AND (f.spec -> 'lines') IS NOT NULL ORDER BY p.id, f.key"
+)
+
 _SET_RULES_SQL = (
     "UPDATE studio_objects SET constraints = CAST(:rules AS jsonb), updated_at = now() "
     f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) "
@@ -415,6 +454,15 @@ _IN_PACKAGE = (
     "EXISTS (SELECT 1 FROM studio_objects o "
     f"WHERE o.organization_id = {_BOUND_ORG} AND o.id = CAST(:oid AS uuid) "
     "AND o.package_id = CAST(:pid AS uuid))"
+)
+
+#: The parent records that the lines of a batch name (C13), of one parent
+#: object of the package. A parent of another package or another org is not
+#: found, so its line is refused.
+_LINE_PARENTS_SQL = (
+    "SELECT id::text FROM studio_records "
+    f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
+    f"AND id = ANY(CAST(:ids AS uuid[])) AND {_IN_PACKAGE}"
 )
 
 #: Every object of one package, and then every field of those objects. The
@@ -640,12 +688,19 @@ class Record:
 class Write:
     """One write of a batch. ``create`` takes ``data``. ``update`` takes
     ``record_id`` and ``data``, the fields that change. ``delete`` takes
-    ``record_id``."""
+    ``record_id``.
+
+    ``parent`` (C13) links a line to its parent in the same batch: the place
+    of an earlier create or update of the parent record. A create of a line
+    gets the parent field filled with that id. An update of a line must be a
+    line of that parent, and cannot change the parent field. A delete takes
+    no ``parent``."""
 
     op: str
     object_id: str
     record_id: str | None = None
     data: Mapping[str, Any] | None = None
+    parent: int | None = None
 
 
 def _actor(actor: object) -> str:
@@ -1094,7 +1149,7 @@ FIELD_REFUSED = "field_refused"
 STORE_REFUSED = "store_refused"
 
 #: The parts of a field that a sync cannot change. ``hot`` is not one of them.
-_FIELD_ATTRS = ("type", "many", "options", "to", "required", "label")
+_FIELD_ATTRS = ("type", "many", "options", "to", "required", "label", "lines")
 
 
 @dataclass(frozen=True)
@@ -1978,16 +2033,22 @@ def _q_where(conditions: Sequence[Condition], params: dict[str, Any], rid: str,
     return " AND ".join(parts)
 
 
-def _q_source(conditions: Sequence[Condition], params: dict[str, Any]) -> tuple[str, int | None]:
+def _q_source(conditions: Sequence[Condition], params: dict[str, Any],
+              ordered: bool = True) -> tuple[str, int | None]:
     """The candidates ``c`` of a part, and the condition that they meet
-    already: the hot rows of the best condition, or the records of the object."""
+    already: the hot rows of the best condition, or the records of the object.
+    *ordered* False drops the order of the records, for a read of each
+    candidate with no LIMIT (an aggregate of C2b)."""
     ranked = sorted((rank, j) for j, cond in enumerate(conditions)
                     if (rank := _drive_rank(cond)) is not None)
     if not ranked:
         # In the order of the id: the records index `(org, object, id)` gives
-        # it, so a LIMIT stops on the index and no plan scans the table.
+        # it, so a LIMIT stops on the index and no plan scans the table. With
+        # no LIMIT, that order made the planner pick a Seq Scan and a Sort of
+        # an object of 50,000 records (C2b), so an aggregate reads no order.
+        order = " ORDER BY r0.id" if ordered else ""
         return (f"(SELECT r0.id FROM studio_records r0 "
-                f"WHERE r0.{_OF_ORG} AND r0.{_OF_OBJECT} ORDER BY r0.id) c"), None
+                f"WHERE r0.{_OF_ORG} AND r0.{_OF_OBJECT}{order}) c"), None
     j = ranked[0][1]
     cond = conditions[j]
     params[f"fk{j}"] = cond.field.key
@@ -1998,10 +2059,11 @@ def _q_source(conditions: Sequence[Condition], params: dict[str, Any]) -> tuple[
 
 
 def _q_filtered(conditions: Sequence[Condition], params: dict[str, Any], what: str,
-                only_hot: bool = False, gate: str = "TRUE") -> str:
+                only_hot: bool = False, gate: str = "TRUE", ordered: bool = True) -> str:
     """``SELECT what`` from the candidates ``c`` that meet each condition.
-    *gate* is a test of the whole statement, as the guard of ``m``."""
-    source, skip = _q_source(conditions, params)
+    *gate* is a test of the whole statement, as the guard of ``m``. *ordered*
+    goes to :func:`_q_source`."""
+    source, skip = _q_source(conditions, params, ordered)
     used = [c for c in conditions if c.field.hot or not only_hot]
     lookup = f" {_q_lookup('c.id')}" if any(_needs_row(c) for c in used) else ""
     where = _q_where(conditions, params, "c.id", skip, only_hot)
@@ -2252,6 +2314,343 @@ async def query_records(db: Any, *, package_id: str, object_id: str, filter: Any
                       line=line)
 
 
+# --- the aggregate (C2b) ----------------------------------------------------
+#
+# ⚠️ The f-string fence of C2a binds each `_q_agg_*` and `build_aggregate` too.
+#
+# The shape of one aggregate statement (one snapshot serves the groups, the
+# total and the check of the currency):
+#
+#   g, m  (a filter on a field that is not hot) the guard and the candidates,
+#         as in a page
+#   v     the count of the fields that the aggregate reads as hot and that are
+#         hot now
+#   x     one row for each candidate: the key of its group, and the hot value
+#         of each field that a measure reads. Each read is a lookup of one hot
+#         row by its primary key. A money field also reads its currency from
+#         `data`, by the primary key of the record, for a record with a value
+#   a     one row for each group: the records, and the sum and the count of
+#         the values of each field. A money field also keeps its lowest and
+#         its highest currency
+#   w     the count of the groups, the total over every group, and the lowest
+#         and the highest currency of each money field
+#   r, p  (a group) the rank of each group, by its records and then its key.
+#         `p` holds the groups of rank 1 to `:groups`, then one row `other`
+#         for the rest
+#
+# The candidates are those of a page: the hot rows of one hot condition, or
+# the records of the object by the records index. A record with no value of
+# the group field has the key NULL, so it joins the group with no value. A
+# checkbox has two states, so a record with no value joins `false`.
+
+#: The hot row of the group field, for each candidate.
+_GROUP_ROW = (
+    "LEFT JOIN LATERAL (SELECT gk.v_text, gk.v_num, gk.v_ts, gk.v_bool FROM studio_record_hot gk "
+    f"WHERE gk.{_OF_ORG} AND gk.{_OF_OBJECT} AND gk.field_key = CAST(:gk AS text) "
+    "AND gk.record_id = c.id OFFSET 0) gk ON true"
+)
+
+#: The key of a text group. `v_text` holds the first 256 characters, so a
+#: value of 256 characters reads the whole text from `data`, as `eq` does.
+_TEXT_KEY = (
+    f"(CASE WHEN gk.v_text IS NULL OR char_length(gk.v_text) < {HOT_TEXT_CHARS} THEN gk.v_text "
+    "ELSE (SELECT gr.data ->> CAST(:gk AS text) FROM studio_records gr "
+    f"WHERE gr.{_OF_ORG} AND gr.{_OF_OBJECT} AND gr.id = c.id) END)"
+)
+
+#: The key of each type of a group with no bucket.
+_GROUP_KEY: Mapping[str, str] = {
+    "text": _TEXT_KEY, "email": "gk.v_text", "select": "gk.v_text", "relation": "gk.v_text",
+    "number": "gk.v_num", "checkbox": "coalesce(gk.v_bool, false)",
+}
+
+#: The key of a date or a datetime group: the day or the month in UTC.
+_BUCKET_KEY: Mapping[str, str] = {
+    "day": "date_trunc('day', gk.v_ts AT TIME ZONE 'UTC')",
+    "month": "date_trunc('month', gk.v_ts AT TIME ZONE 'UTC')",
+}
+
+#: The key of an aggregate with no group: one group for every record.
+_NO_GROUP_KEY = "CAST(NULL AS text)"
+assert set(_GROUP_KEY) | {"date", "datetime"} == studio_query.GROUP_TYPES, \
+    "each type of a group has a key"
+
+_CURRENCY_MESSAGE = ("Field `{key}` holds amounts in more than one currency, or an amount with no "
+                     "currency. A sum never adds two currencies. Narrow the filter.")
+
+
+@dataclass(frozen=True)
+class AggregateGroup:
+    """One group of an aggregate (C2b)."""
+
+    #: The key: a text, a number, a bool, or the day (``YYYY-MM-DD``) or the
+    #: month (``YYYY-MM``) in UTC. None for the records with no value, for
+    #: ``other`` and for the total.
+    key: Any
+    #: The records of the group.
+    count: int
+    #: One value for each measure, in the order of the measures. A count is an
+    #: ``int``. A sum of a number is a ``Decimal``, and a sum of money is an
+    #: ``int`` of minor units. A sum with no value is 0. An average is a
+    #: ``Decimal``, or None with no value.
+    values: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
+class AggregateResult:
+    """The groups of an aggregate (C2b)."""
+
+    measures: tuple[studio_query.Measure, ...]
+    #: For each measure: the one currency of a money sum, or None.
+    currencies: tuple[str | None, ...]
+    #: The groups with the most records, at most
+    #: :data:`~acb_common.studio_query.MAX_GROUPS`, in the order of the key.
+    #: A select is in the order of its options. The group with no value comes
+    #: last. Empty with no group.
+    groups: tuple[AggregateGroup, ...]
+    #: The groups past the cap, folded into one. None when none fold.
+    other: AggregateGroup | None
+    #: The count of the groups in :attr:`other`.
+    folded: int
+    #: The measures over every record that the filter keeps.
+    total: AggregateGroup
+
+
+def _q_agg_key(agg: studio_query.Aggregate, params: dict[str, Any]) -> tuple[str, str]:
+    """The key of the group of each candidate, and the join of its hot row."""
+    if agg.group is None:
+        return _NO_GROUP_KEY, ""
+    params["gk"] = agg.group.field.key
+    if agg.group.bucket is not None:
+        key = _BUCKET_KEY[agg.group.bucket]
+    else:
+        key = _GROUP_KEY[agg.group.field.type]
+    return key, f" {_GROUP_ROW}"
+
+
+def _q_agg_value(j: int) -> str:
+    """The hot row of the field *j* of the measures, for each candidate."""
+    return (f"LEFT JOIN LATERAL (SELECT mv{j}.v_num FROM studio_record_hot mv{j} "
+            f"WHERE mv{j}.{_OF_ORG} AND mv{j}.{_OF_OBJECT} AND mv{j}.field_key = CAST(:mk{j} AS text) "
+            f"AND mv{j}.record_id = c.id OFFSET 0) mv{j} ON true")
+
+
+def _q_agg_currency(j: int) -> str:
+    """The currency of the money field *j*, from ``data``, for a candidate
+    with a value. An amount with no currency reads as ``''``, so the check
+    fails closed."""
+    return (f"(CASE WHEN mv{j}.v_num IS NOT NULL THEN coalesce((SELECT "
+            f"mc{j}.data -> CAST(:mk{j} AS text) ->> 'currency' FROM studio_records mc{j} "
+            f"WHERE mc{j}.{_OF_ORG} AND mc{j}.{_OF_OBJECT} AND mc{j}.id = c.id), '') END)")
+
+
+def build_aggregate(agg: studio_query.Aggregate, *, object_id: str,
+                    package_id: str) -> tuple[str, dict[str, Any]]:
+    """The one statement of the aggregate *agg*: its SQL and its binds. Pure.
+
+    The first row holds the count of the fields that are still hot (``v.n``),
+    the count of the guard (or NULL with no filter on a field that is not
+    hot), and then the columns of ``w``: the count of the groups, the records,
+    and for each field of the measures its sum and its count of values. A
+    money field adds its lowest and its highest currency. With a group, each
+    row then holds the columns of ``p``: the part (0 for a kept group, 1 for
+    ``other``), the rank, the key, the records, and the sum and the count of
+    each field. With no group in the result, the row holds NULL there.
+    """
+    params: dict[str, Any] = {"oid": object_id, "pid": package_id,
+                              "hk": list(agg.hot_keys()), "groups": studio_query.MAX_GROUPS}
+    conditions = agg.conditions
+    guard = "CAST(NULL AS bigint)"
+    if agg.query().cold():
+        params["small"] = studio_query.SMALL_OBJECT
+        count_hot = _q_count(conditions, params, _GUARD_CAP, only_hot=True)
+        found = _q_filtered(conditions, params, "c.id AS id", gate=_GUARD_GATE, ordered=False)
+        with_sql = f"WITH g AS ({count_hot}), m AS MATERIALIZED ({found}), "
+        guard = "(SELECT g.n FROM g)"
+        cands = "m c"
+    else:
+        ids = _q_filtered(conditions, params, "c.id AS id", ordered=False)
+        with_sql = "WITH "
+        cands = f"({ids}) c"
+    key, joins = _q_agg_key(agg, params)
+    cols = sums = totals = keep = rest = ""
+    for j, field in enumerate(agg.measure_fields()):
+        params[f"mk{j}"] = field.key
+        joins += f" {_q_agg_value(j)}"
+        cols += f", mv{j}.v_num AS n{j}"
+        sums += f", sum(x.n{j}) AS s{j}, count(x.n{j}) AS c{j}"
+        totals += f", sum(a.s{j}) AS ts{j}, sum(a.c{j}) AS tc{j}"
+        keep += f", r.s{j}, r.c{j}"
+        rest += f", sum(r.s{j}), sum(r.c{j})"
+        if field.type == "money":
+            cur = _q_agg_currency(j)
+            cols += f", {cur} AS q{j}"
+            sums += f", min(x.q{j}) AS lo{j}, max(x.q{j}) AS hi{j}"
+            totals += f", min(a.lo{j}) AS tlo{j}, max(a.hi{j}) AS thi{j}"
+    head = (f"{with_sql}v AS ({_STILL_HOT_SQL}), "
+            f"x AS (SELECT {key} AS k{cols} FROM {cands}{joins}), "
+            f"a AS (SELECT x.k, count(*) AS n{sums} FROM x GROUP BY x.k), "
+            f"w AS (SELECT count(*) AS groups, coalesce(sum(a.n), 0) AS n{totals} FROM a)")
+    if agg.group is None:
+        return f"{head} SELECT v.n, {guard}, w.* FROM v CROSS JOIN w", params
+    ranks = "SELECT a.*, row_number() OVER (ORDER BY a.n DESC, a.k ASC NULLS LAST) AS rk FROM a"
+    kept = f"SELECT 0 AS part, r.rk, r.k, r.n{keep} FROM r WHERE r.rk <= :groups"
+    folded = f"SELECT 1, NULL, NULL, sum(r.n){rest} FROM r WHERE r.rk > :groups HAVING count(*) > 0"
+    return (f"{head}, r AS ({ranks}), p AS (({kept}) UNION ALL ({folded})) "
+            f"SELECT v.n, {guard}, w.*, p.* FROM v CROSS JOIN w LEFT JOIN p ON true "
+            "ORDER BY p.part, p.rk"), params
+
+
+def _plain_number(value: Decimal) -> Decimal:
+    """A number key in one form: ``1`` and ``1.0`` are one group, so the key
+    of a whole number has no decimal places."""
+    if value == value.to_integral_value():
+        return value.quantize(Decimal(1))
+    return value.normalize()
+
+
+def _group_key(group: studio_query.GroupBy, raw: Any) -> Any:
+    if raw is None:
+        return None
+    if group.bucket == "day":
+        return raw.date().isoformat()
+    if group.bucket == "month":
+        return f"{raw.year:04d}-{raw.month:02d}"
+    if group.field.type == "number":
+        return _plain_number(Decimal(raw))
+    if group.field.type == "checkbox":
+        return bool(raw)
+    return str(raw)
+
+
+def _group_order(group: studio_query.GroupBy) -> Callable[[AggregateGroup], tuple[Any, ...]]:
+    """The order of the kept groups: the key, a select in the order of its
+    options, and the group with no value last."""
+    options = {o: i for i, o in enumerate(group.field.options or ())}
+
+    def order(g: AggregateGroup) -> tuple[Any, ...]:
+        if g.key is None:
+            return (2,)
+        if group.field.type == "select":
+            return (0, options[g.key], "") if g.key in options else (1, 0, str(g.key))
+        return (0, g.key)
+    return order
+
+
+def _one_currency(field: FieldSpec, low: Any, high: Any) -> str | None:
+    """The one currency of a money sum, or None when no record holds an
+    amount. Two currencies, or an amount with no currency, refuse the sum."""
+    if low is None and high is None:
+        return None
+    if low != high or not low:
+        raise QueryError(studio_query.OP_NOT_ALLOWED, _CURRENCY_MESSAGE.format(key=field.key),
+                         field.key)
+    return str(low)
+
+
+def _measure_values(agg: studio_query.Aggregate, count: int,
+                    sums: Mapping[str, tuple[Any, Any]]) -> tuple[Any, ...]:
+    """The value of each measure of one group, from its records and the sum
+    and the count of the values of each field."""
+    out: list[Any] = []
+    for measure in agg.measures:
+        if measure.field is None:
+            out.append(count)
+            continue
+        total, values = sums[measure.field.key]
+        if measure.op == "average":
+            out.append(None if not values else Decimal(total) / Decimal(values))
+        elif measure.field.type == "money":
+            out.append(int(total or 0))
+        else:
+            out.append(Decimal(total or 0))
+    return tuple(out)
+
+
+def _aggregate_result(agg: studio_query.Aggregate, rows: Sequence[Any]) -> AggregateResult:
+    """The result of the rows of :func:`build_aggregate`. A money sum of two
+    currencies raises :class:`QueryError` here, before any value leaves."""
+    fields = agg.measure_fields()
+    first = rows[0]
+    at = 2
+    n_groups, n_records = int(first[at]), int(first[at + 1])
+    at += 2
+    totals: dict[str, tuple[Any, Any]] = {}
+    currency: dict[str, str | None] = {}
+    for field in fields:
+        totals[field.key] = (first[at], int(first[at + 1] or 0))
+        at += 2
+        if field.type == "money":
+            currency[field.key] = _one_currency(field, first[at], first[at + 1])
+            at += 2
+    currencies = tuple(currency.get(m.field.key) if m.field is not None and m.op == "sum" else None
+                       for m in agg.measures)
+    total = AggregateGroup(None, n_records, _measure_values(agg, n_records, totals))
+    if agg.group is None:
+        return AggregateResult(agg.measures, currencies, (), None, 0, total)
+    kept: list[AggregateGroup] = []
+    other: AggregateGroup | None = None
+    for row in rows:
+        part = row[at]
+        if part is None:
+            continue  # no record, so no group
+        count = int(row[at + 3])
+        sums = {f.key: (row[at + 4 + 2 * i], int(row[at + 5 + 2 * i] or 0))
+                for i, f in enumerate(fields)}
+        values = _measure_values(agg, count, sums)
+        if int(part) == 0:
+            kept.append(AggregateGroup(_group_key(agg.group, row[at + 2]), count, values))
+        else:
+            other = AggregateGroup(None, count, values)
+    kept.sort(key=_group_order(agg.group))
+    return AggregateResult(agg.measures, currencies, tuple(kept), other,
+                           max(0, n_groups - studio_query.MAX_GROUPS), total)
+
+
+async def _read_aggregate(timed: _Timed, oid: str, pid: str, filter: Any, group_by: Any,
+                          measures: Any) -> tuple[studio_query.Aggregate, list[Any]]:
+    """The fields, then the aggregate statement. A field that turned cold
+    after the store read the fields has lost its hot rows, so the store reads
+    the fields and runs the aggregate once more, as :func:`_read_page` does."""
+    for _ in range(2):
+        agg = studio_query.parse_aggregate(await _fields(timed, oid), filter, group_by, measures)
+        sql, params = build_aggregate(agg, object_id=oid, package_id=pid)
+        rows = (await timed.execute(text(sql), params)).all()
+        if int(rows[0][0]) == len(agg.hot_keys()):
+            _check_hot_or_small(rows, agg.query())
+            return agg, rows
+    raise QueryError(studio_query.TIMEOUT, _CHANGED_MESSAGE)
+
+
+async def aggregate_records(db: Any, *, package_id: str, object_id: str, filter: Any = None,
+                            group_by: Any = None,
+                            measures: Any = None) -> AggregateResult | None:
+    """Group the records of the object *object_id* of the package
+    *package_id*, and take a count, a sum or an average of each group (C2b).
+    Answers None when the bound org holds no such object in that package.
+
+    ``acb_common.studio_query.parse_aggregate`` checks the input: the filter of
+    C2a, one group and the measures, each on a hot field. A refusal raises
+    :class:`~acb_common.studio_query.QueryError`, and the session stays usable.
+    One statement reads the groups, the total and the currency of a money sum,
+    under the one deadline of :data:`~acb_common.studio_query.TIMEOUT_MS` and
+    the guard ``hot_or_small``. A money sum is refused unless the ``data`` of
+    each record that it adds holds one currency, as the CRM does (HANDOFF
+    H-333). The :data:`~acb_common.studio_query.MAX_GROUPS` groups with the
+    most records stay, and the rest fold into :attr:`AggregateResult.other`.
+    """
+    deadline = _clock() + studio_query.TIMEOUT_MS / 1000
+    oid = _uuid(object_id, "object_id")
+    pid = _uuid(package_id, "package_id")
+    studio_query.check_aggregate_shape(filter, group_by, measures)
+    async with _time_limit(db, deadline) as timed:
+        found = await timed.execute(text(_QUERY_OBJECT_SQL), {"oid": oid, "pid": pid})
+        if found.first() is None:
+            return None
+        agg, rows = await _read_aggregate(timed, oid, pid, filter, group_by, measures)
+    return _aggregate_result(agg, rows)
+
+
 # --- the batch (C1b) --------------------------------------------------------
 #
 # The steps of one batch, in one SAVEPOINT:
@@ -2318,6 +2717,24 @@ class _Batch:
         self.readers: dict[str, set[str]] = {}
         #: The first write that made each parent stale, for the place of an error.
         self.firsts: dict[tuple[str, str], int] = {}
+        #: The lines relation of each line object of the batch (C13), by its id.
+        self.lines: dict[str, _Lines] = {}
+        #: The id of the record that each create of the batch made, by its place.
+        self.made: dict[int, str] = {}
+        #: The last write that gave each line a new parent (C13), for the place
+        #: of a refusal.
+        self.moved: dict[tuple[str, str], int] = {}
+
+
+@dataclass(frozen=True)
+class _Lines:
+    """One lines relation of the package (C13): the parent object, its field,
+    and ``via``, the field of the line object that names the parent."""
+
+    parent_id: str
+    parent: str
+    key: str
+    via: str
 
 
 def _clean_write(write: Any) -> Write:
@@ -2325,6 +2742,9 @@ def _clean_write(write: Any) -> Write:
     if not isinstance(write, Write) or write.op not in _WRITE_OPS:
         raise ObjectStoreError(f"A write is a Write with the op {', '.join(_WRITE_OPS)}.")
     oid = _uuid(write.object_id, "object_id")
+    if write.parent is not None and (
+            write.op == "delete" or type(write.parent) is not int or write.parent < 0):
+        raise ObjectStoreError("parent is the place of an earlier write, on a create or an update.")
     if write.op == "create":
         if write.record_id is not None:
             raise ObjectStoreError("A create takes no record_id, because the store gives the id.")
@@ -2343,10 +2763,15 @@ def _clean_writes(writes: Any) -> list[Write]:
         raise ObjectStoreError("writes must be a list of writes")
     if len(writes) > MAX_WRITES_PER_BATCH:
         raise BudgetExceeded(f"A batch holds at most {MAX_WRITES_PER_BATCH} writes.")
-    out = []
+    out: list[Write] = []
     for i, write in enumerate(writes):
         try:
-            out.append(_clean_write(write))
+            clean = _clean_write(write)
+            if clean.parent is not None and (
+                    clean.parent >= i or out[clean.parent].op not in ("create", "update")):
+                raise ObjectStoreError(
+                    "parent is the place of an earlier create or update in the batch.")
+            out.append(clean)
         except ObjectStoreError as exc:
             raise BatchError(i, exc) from exc
     return out
@@ -2418,23 +2843,200 @@ def _live_mark(batch: _Batch, step: Write) -> _Mark:
     return mark
 
 
+# --- the lines (C13) ------------------------------------------------------------
+#
+# A lines relation is a relation field of a parent object, with `lines` naming
+# the field of the line object (`via`) that points back to the parent. The
+# parent holds no value for it. The door saves a parent and its lines as ONE
+# batch, so they are written all or none. Three steps join the batch:
+#
+#   1c. `_find_lines` reads the lines relations of the package after the org
+#       lock, and `_check_lines_fit` checks each one against the fields of its
+#       line object after the object locks. A relation that does not fit
+#       refuses the batch (it fails closed).
+#   4.  A write with `parent` is linked to the create or the update of its parent
+#       earlier in the batch (`_link`). A linked create gets `via` from that
+#       record, and a linked update must be a line of it. Neither names `via`.
+#   4a. `_check_line_parents` runs after the writes. A line that names a new
+#       parent by itself, on a create or a move, must name a record of the
+#       parent object of this package. A record of another package or another
+#       org is not found, so the line is refused.
+
+
+def _parent_of(via: str, data: Mapping[str, Any] | None) -> str | None:
+    """The parent id that a line names in its field *via*, in the one form of
+    a hot relation, or None."""
+    raw = None if data is None else data.get(via)
+    if isinstance(raw, Mapping) and isinstance(raw.get("id"), str):
+        return relation_key(raw["id"])
+    return None
+
+
+def _link(batch: _Batch, step: Write) -> tuple[_Lines, str] | None:
+    """The lines relation of a linked write, and the id of its parent record,
+    or None for a write with no ``parent``. Runs no statement."""
+    if step.parent is None:
+        return None
+    link = batch.lines.get(step.object_id)
+    parent = batch.steps[step.parent]
+    if link is None or parent.object_id != link.parent_id:
+        raise RecordError("This write is not a line of the record of its parent write.")
+    if isinstance(step.data, Mapping) and link.via in step.data:
+        raise FieldError(link.via, f"Field `{link.via}` of a line comes from the record that "
+                         "it is saved with. Remove it from the line.")
+    rid = batch.made[step.parent] if parent.op == "create" else str(parent.record_id)
+    return link, rid
+
+
+async def _find_lines(db: Any, batch: _Batch) -> None:
+    """Step 1c (C13). The lines relation of each line object of the batch. The
+    org lock is held, and every change of a field takes it too, so the answer is
+    stable. One statement. An object that two relations name refuses the batch,
+    because its parent would be unclear."""
+    rows = (await db.execute(text(_LINES_SQL), {"pid": batch.pid})).all()
+    first: dict[str, int] = {}
+    for i, step in enumerate(batch.steps):
+        first.setdefault(step.object_id, i)
+    for parent_id, parent, key, via, child_id, child in rows:
+        if child_id is None or str(child_id) not in first:
+            continue
+        if str(child_id) in batch.lines:
+            batch.index = first[str(child_id)]
+            raise RecordError(f"Object `{child}` is the lines of two fields. "
+                              "Publish the app again with one.")
+        batch.lines[str(child_id)] = _Lines(str(parent_id), str(parent), str(key), str(via))
+
+
+def _check_lines_fit(batch: _Batch) -> None:
+    """Step 1c (C13), after the object locks. Fail closed: a stored lines
+    relation that does not fit its line object now refuses the batch. The rule
+    is ``studio_fields.lines_problem``, the one that A2 runs."""
+    for oid, link in batch.lines.items():
+        held = batch.objects[oid]
+        spec = FieldSpec(key=link.key, type="relation", to=held.name, lines=link.via)
+        problem = lines_problem(link.parent, spec, held.name, held.fields)
+        if problem is not None:
+            batch.index = next(i for i, s in enumerate(batch.steps) if s.object_id == oid)
+            raise RecordError(f"The lines of `{link.parent}` do not fit now. {problem}")
+
+
+def _plain_id(value: str) -> bool:
+    """True for a record id in its one form: 36 lower-case characters with 4
+    dashes. Python also reads `urn:uuid:`, `uuid:`, braces, capitals and 32 digits
+    as a UUID, and Postgres refuses some of them, so the store takes none of them
+    for a parent."""
+    try:
+        return str(uuid.UUID(value)) == value
+    except ValueError:
+        return False
+
+
+def _bad_parent(link: _Lines) -> FieldError:
+    return FieldError(link.via, f"Field `{link.via}` takes a record id of `{link.parent}` in "
+                      "one form: 36 lower-case characters with 4 dashes. Send the id as the "
+                      "app gave it.")
+
+
+def _line_moves(batch: _Batch, oid: str, before: Mapping[str, Any] | None,
+                after: Mapping[str, Any]) -> bool:
+    """True when a write gives a line a new parent (C13). It runs before the
+    statement of the write. A write that sets the parent field must send the
+    one form of the id, also for the same parent, so a refusal comes before
+    any statement reads it. A write that leaves the value as it is checks
+    nothing, so an old value never blocks another change of the line."""
+    link = batch.lines.get(oid)
+    raw = None if link is None else after.get(link.via)
+    rid = raw.get("id") if isinstance(raw, Mapping) else None
+    if link is None or not isinstance(rid, str):
+        return False
+    old = None if before is None else before.get(link.via)
+    if isinstance(old, Mapping) and old.get("id") == rid:
+        return False
+    if not _plain_id(rid):
+        raise _bad_parent(link)
+    return before is None or relation_key(rid) != _parent_of(link.via, before)
+
+
+def _new_parents(batch: _Batch) -> dict[str, dict[str, tuple[int, _Lines]]]:
+    """The parent ids that the lines of the batch name by themselves, by
+    parent object, each with the last write that moved the line. A write that
+    keeps the parent of the line names none.
+
+    A linked create took its parent from the batch, so it needs no read. Its
+    parent must still be there at the end of the batch: a later delete of the
+    parent refuses the line. An id of another form is refused again here, so
+    no such id reaches the statement."""
+    out: dict[str, dict[str, tuple[int, _Lines]]] = {}
+    for (oid, rid), mark in sorted(batch.marks.items(), key=lambda kv: kv[1].index):
+        link = batch.lines.get(oid)
+        if link is None or mark.after is None:
+            continue
+        new = _parent_of(link.via, mark.after)
+        if new is None or (mark.before is not None and new == _parent_of(link.via, mark.before)):
+            continue
+        batch.index = batch.moved.get((oid, rid), mark.index)
+        if not _plain_id(new):
+            raise _bad_parent(link)
+        if mark.before is None and batch.steps[mark.index].parent is not None:
+            parent = batch.marks.get((link.parent_id, new))
+            if parent is None or parent.after is None:
+                raise _no_parent(link)
+            continue
+        out.setdefault(link.parent_id, {}).setdefault(new, (batch.index, link))
+    return out
+
+
+def _no_parent(link: _Lines) -> FieldError:
+    return FieldError(link.via, f"Field `{link.via}` names no `{link.parent}` record of this "
+                      f"app. Pick a record of `{link.parent}` in this app.")
+
+
+async def _check_line_parents(db: Any, batch: _Batch, deadline: float) -> None:
+    """Step 4a (C13). Each new parent of a line is a record of the parent
+    object of this package. One statement for each parent object, under the one
+    deadline of the batch. The org lock is held, and every record write takes
+    it first, so no parent goes before the commit."""
+    wanted = _new_parents(batch)
+    if not wanted:
+        return
+    async with _time_limit(db, deadline, _RULE_TIMEOUT_MESSAGE) as timed:
+        for parent_id, ids in sorted(wanted.items()):
+            found = {str(r[0]) for r in (await timed.execute(text(_LINE_PARENTS_SQL), {
+                "oid": parent_id, "pid": batch.pid, "ids": sorted(ids)})).all()}
+            for rid, (index, link) in sorted(ids.items(), key=lambda kv: kv[1][0]):
+                if rid not in found:
+                    batch.index = index
+                    raise _no_parent(link)
+
+
 async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     """Step 4, for one write. Only this function runs the three write statements."""
     oid = step.object_id
     held = batch.objects[oid]
     plain = held.fields if held.plan is None else list(held.plan.plain)
+    linked = _link(batch, step)
     if step.op == "create":
+        if linked is not None and isinstance(step.data, Mapping):
+            # C13: the line takes its parent from the batch, never from its data.
+            step = replace(step, data={**step.data, linked[0].via: {"id": linked[1]}})
         data = with_initial(held.rules, step.data)
         refuse_computed_keys(held.plan, held.name, data)
         data = with_rollup_zero(held.plan, data)
         clean = run_formulas(held.plan, held.name, validate_record(plain, data))
+        moves = _line_moves(batch, oid, None, clean)
         row = (await db.execute(text(_CREATE_RECORD_SQL), {
             "oid": oid, "data": record_json(clean), "actor": batch.who,
             "hot": _hot_rows(held.fields, clean)})).one()
         made = _record(row)
         batch.marks[(oid, made.id)] = _Mark(oid, batch.index, None, clean)
+        batch.made[batch.index] = made.id
+        if moves:
+            batch.moved[(oid, made.id)] = batch.index
         return made
     mark = _live_mark(batch, step)
+    if linked is not None and _parent_of(linked[0].via, mark.after) != linked[1]:
+        raise RecordError("A line of this save is not a line of this record. "
+                          "Change it through its own record.")
     binds = {"oid": oid, "rid": step.record_id, "pid": batch.pid}
     if step.op == "delete":
         await db.execute(text(_DELETE_RECORD_SQL), binds)
@@ -2444,6 +3046,8 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     refuse_computed_keys(held.plan, held.name, changes)
     merged = without_targets(held.plan, {**(mark.after or {}), **changes})
     clean = run_formulas(held.plan, held.name, validate_record(plain, merged))
+    if _line_moves(batch, oid, mark.after, clean):
+        batch.moved[(oid, str(step.record_id))] = batch.index
     row = (await db.execute(text(_UPDATE_RECORD_SQL), {
         **binds, "data": record_json(clean), "actor": batch.who,
         "hot": _hot_rows(held.fields, clean)})).one()
@@ -2734,15 +3338,19 @@ async def _run_steps(db: Any, batch: _Batch) -> list[Record | bool]:
     The caller holds the SAVEPOINT."""
     await _lock_org(db)
     await _find_rollups(db, batch)
+    await _find_lines(db, batch)
     await _lock_objects(db, batch)
+    _check_lines_fit(batch)
     await _lock_records(db, batch)
     answers: list[Record | bool] = []
     for i, step in enumerate(batch.steps):
         batch.index = i
         answers.append(await _apply_write(db, batch, step))
-    # One deadline (C1b) for every read after the writes: the aggregates and the
-    # derived writes of the roll-ups (C7b), then the key checks.
+    # One deadline (C1b) for every read after the writes: the parents of the
+    # lines (C13), the aggregates and the derived writes of the roll-ups (C7b),
+    # then the key checks.
     deadline = _clock() + studio_query.TIMEOUT_MS / 1000
+    await _check_line_parents(db, batch, deadline)
     await _recompute_parents(db, batch, deadline)
     await _check_keys(db, batch, _check_records(batch), deadline)
     return answers

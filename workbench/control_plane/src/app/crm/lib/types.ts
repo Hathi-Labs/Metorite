@@ -467,6 +467,14 @@ export type DealPipeline = {
   position: number;
   ext_url?: string | null;
   stages: PipelineStage[];
+  /**
+   * WS-CRM CRM-M4a: `deal` or `lead`. A lead pipeline's stages are lead
+   * statuses. `GET /crm/pipelines` serves the deal ones, and `?kind=lead`
+   * the lead ones. Left out by a gateway from before CRM-M4a.
+   */
+  kind?: "deal" | "lead";
+  /** CRM-M4a: the deal pipeline that a lead pipeline feeds. Absent: the default one. */
+  feeds_pipeline_id?: string | null;
 };
 
 export type Activity = {

@@ -138,6 +138,9 @@ EXPECTED_SCOPED = {
     "crm_source_profiles",
     "crm_pipelines",
     "crm_pipeline_stages",
+    # WS-CRM CRM-M4a (2026-11-08): migration 386, the lead statuses of each
+    # lead pipeline.
+    "crm_lead_pipeline_stages",
     # WS-53 CRM-Q8 (2026-10-12): the saved views of the lists and boards.
     "crm_views",
     # WS-53 CRM-Q6a (2026-10-12): the generic record store of the mirror.
@@ -164,6 +167,12 @@ EXPECTED_SCOPED = {
     # `agent_avatars.organization_id` on the numbered ladder, because the
     # per-tenant unique index needs it, as 223 did for `email_accounts`.
     "agent_avatars",
+    # WS-39 SP-1 (2026-11-08): the cycle store, keyed at CREATE time.
+    "pm_cycles", "pm_cycle_tasks", "pm_cycle_committed", "pm_cycle_capacity",
+    # WS-39 LP-1a (2026-11-08): the updates of a project, keyed at CREATE time.
+    "pm_project_updates",
+    # WS-39 TPL-1a (2026-11-08): the template store, keyed at CREATE time.
+    "pm_templates", "pm_template_applies",
 }
 
 #: ⚠️ FROZEN at 113 — it was 114 until 2026-09-21, when `people`

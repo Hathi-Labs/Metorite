@@ -13,10 +13,12 @@ names one task and the one next action that ends it:
    (``agent_runs.resume_agent_run``), and Close the run is the second one.
 2. ``dangling``. An open run of a closed task (``filters.task_closed_sql``).
    The action is Close the run, which is the release of EA-14a.
-3. ``blocked``. An open task that an open ``blocks`` link
-   (``filters.open_block_sql``) blocks, where the blocker is parked: a
+3. ``blocked``. One row for each blocked task that an open ``blocks`` link
+   (``filters.open_block_sql``) holds, with the list of its parked blockers.
+   A link counts when the blocked task is active, or the blocker's epic has
+   a slice in progress (spec §12.7). The blocker is parked: a
    ``backlog`` status and nobody holds it by RA-1's holder rule
-   (``analytics.holder_label_sql``). The action opens the blocker.
+   (``analytics.holder_label_sql``). The action opens the first blocker.
 
 ⚠️ **Each rule here is a rule that already exists, joined.** The scope is
 ``analytics.scope_clause``, the open-work predicate is Load's
@@ -37,6 +39,7 @@ nothing, as ``agent_summary.py`` does, because their actions answer 404 then.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 
@@ -99,6 +102,11 @@ STALLED_CONNECTION_GONE: tuple[str, ...] = (ACTION_CLOSE_RUN,)
 
 #: The status category of a parked blocker.
 PARKED_CATEGORY = "backlog"
+
+#: A blocked task is active in these categories. Its blocker raises a row.
+ACTIVE_CATEGORIES: tuple[str, ...] = ("todo", "in_progress")
+#: A slice of the blocker's epic has started in these categories.
+STARTED_CATEGORIES: tuple[str, ...] = ("in_progress",)
 
 #: The most rows that one kind reads, the oldest first. Its count stays
 #: exact, and ``capped`` says when a kind holds more.
@@ -186,8 +194,15 @@ def dangling_sql(scope_sql: str, vis: Any) -> str:
 
 
 def blocked_sql(open_where: str, blocking_where: str) -> str:
-    """The ``blocked`` kind: one row for each open ``blocks`` link whose
-    blocker is parked.
+    """The ``blocked`` kind: one row for each blocked task that has a parked
+    blocker which matters (spec §12.7, tasks 2545 and 2817).
+
+    A link counts when the blocked task is active (``todo`` or
+    ``in_progress``), or when the blocker's epic has a started slice: another
+    child of the blocker's parent, in ``in_progress``. A plan whose tasks all
+    wait in the Backlog, or whose slices are done, raises no row. The row
+    names the blocked task, and ``blockers`` lists every counted parked
+    blocker, the oldest link first. ``blocker_count`` is its length.
 
     ``open_where`` is Load's open-work predicate over the scope, for the
     blocked task ``t``. ``blocking_where`` is the same predicate over every
@@ -197,13 +212,21 @@ def blocked_sql(open_where: str, blocking_where: str) -> str:
     copy. A NULL holder label is nobody: no assignee and no open run that
     keeps the task. Binds ``:closed``, ``:parked`` and ``:me``.
     """
+    active = ", ".join(f"'{c}'" for c in ACTIVE_CATEGORIES)
+    started = ", ".join(f"'{c}'" for c in STARTED_CATEGORIES)
     return (
-        f"SELECT {_TASK_COLUMNS},"
-        f"       b.id AS blocker_id, b.task_number AS blocker_number,"
-        f"       b.title AS blocker_title, l.created_at AS since,"
+        f"SELECT t.id AS task_id, t.task_number, t.title, t.project_id,"
+        f"       t.parent_task_id, t.archived_at, tp.name AS project_name,"
+        f"       s.category,"
+        f"       min(l.created_at) AS since,"
         f"       ow.owner, {_name('ow.owner')} AS owner_name,"
-        f"       EXISTS (SELECT 1 FROM pm_task_assignees y"
-        f"                WHERE y.task_id = t.id AND lower(y.assignee) = :me) AS yours"
+        f"       count(DISTINCT b.id) AS blocker_count,"
+        f"       jsonb_agg(jsonb_build_object("
+        f"         'id', CAST(b.id AS text), 'number', b.task_number,"
+        f"         'title', b.title) ORDER BY l.created_at ASC, b.id ASC) AS blockers,"
+        f"       bool_or(EXISTS (SELECT 1 FROM pm_task_assignees y"
+        f"                WHERE y.task_id = t.id AND lower(y.assignee) = :me))"
+        f"         AS yours"
         f"  FROM pm_task_links l"
         f"  JOIN pm_tasks t ON t.id = l.target_task_id"
         f"  JOIN pm_task_statuses s ON s.id = t.status_id"
@@ -219,10 +242,18 @@ def blocked_sql(open_where: str, blocking_where: str) -> str:
         f" WHERE {open_block_sql('l', 'bs')}"
         f"   AND bs.category = :parked"
         f"   AND ({open_where})"
+        f"   AND (s.category IN ({active})"
+        f"        OR EXISTS (SELECT 1 FROM pm_tasks sib"
+        f"                     JOIN pm_task_statuses ss ON ss.id = sib.status_id"
+        f"                    WHERE sib.parent_task_id = b.parent_task_id"
+        f"                      AND sib.id <> b.id AND sib.archived_at IS NULL"
+        f"                      AND ss.category IN ({started})))"
         f"   AND EXISTS (SELECT 1 FROM pm_tasks t"
         f"                 JOIN pm_task_statuses s ON s.id = t.status_id"
         f"                WHERE t.id = b.id AND ({blocking_where})"
         f"                  AND ({holder_label_sql()}) IS NULL)"
+        f" GROUP BY t.id, t.task_number, t.title, t.project_id, t.parent_task_id,"
+        f"          t.archived_at, tp.name, s.category, ow.owner"
     )
 
 
@@ -243,6 +274,18 @@ def _hours(clock: datetime, at: datetime | None) -> float | None:
     return None if at is None else round((clock - at).total_seconds() / 3600.0, 2)
 
 
+def _blockers(value: Any) -> list[dict[str, Any]] | None:
+    """The blockers list of a blocked row. The driver may give JSON text."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = json.loads(value)
+    return [
+        {"id": str(v["id"]), "number": v.get("number"), "title": v.get("title")}
+        for v in value
+    ]
+
+
 def _row(kind: str, hit: Any, clock: datetime, admin: bool) -> dict[str, Any]:
     """The wire shape of one row. A field that does not apply is null."""
     run_id = getattr(hit, "run_id", None)
@@ -251,6 +294,8 @@ def _row(kind: str, hit: Any, clock: datetime, admin: bool) -> dict[str, Any]:
     actions = STALLED_CONNECTION_GONE if kind == KIND_STALLED and gone else ACTIONS[kind]
     can_act = True if kind == KIND_BLOCKED else bool(admin or hit.may_end)
     owner = getattr(hit, "owner", None)
+    blockers = _blockers(getattr(hit, "blockers", None))
+    first = blockers[0] if blockers else None
     return {
         "kind": kind,
         "task_id": str(hit.task_id),
@@ -270,12 +315,16 @@ def _row(kind: str, hit: Any, clock: datetime, admin: bool) -> dict[str, Any]:
         "client_via": via,
         "client_name": agent_oauth.client_label(via) if via else None,
         "reason": getattr(hit, "reason", None),
-        "blocker_id": str(hit.blocker_id) if getattr(hit, "blocker_id", None) else None,
-        "blocker_number": (
-            int(hit.blocker_number) if getattr(hit, "blocker_number", None) is not None
+        "blocker_id": first["id"] if first else None,
+        "blocker_number": first["number"] if first else None,
+        "blocker_title": first["title"] if first else None,
+        # Every counted parked blocker of the blocked task, and their number.
+        # `blocker_*` above name the first one. Null on a run row.
+        "blocker_count": (
+            int(hit.blocker_count) if getattr(hit, "blocker_count", None) is not None
             else None
         ),
-        "blocker_title": getattr(hit, "blocker_title", None),
+        "blockers": blockers,
         "action": actions[0],
         "actions": list(actions),
         # The rule of Release. A blocked row only opens a task, so any reader

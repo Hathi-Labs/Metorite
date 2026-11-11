@@ -1154,6 +1154,16 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: 3.12 ``ec7a40eb…a945b693`` and 3.13 ``792f53b4…a1c4ea5e`` (WS-24b). The
 #: pins of the BR-7b build before the merge with WS-24b were 3.12
 #: ``7c955afa…6a81b34b`` and 3.13 ``b16fc2b1…7fabf2``.
+#:
+#: MCP-G20 (2026-11-08, external_agent_access.md §9.2, EA3-30, task 2212):
+#: `_claim_write` reads the cap and the window through
+#: ``agent_oauth.write_cap`` and ``write_window_s`` (the settings
+#: ``AGENT_WRITE_CAP`` and ``AGENT_WRITE_WINDOW_S``), in place of the two
+#: constants. The defaults are the same, and the count, the nonce, the scope
+#: and the 503 and 429 answers do not change. Nothing new is read from the
+#: request: the scan and the tripwire are as before. The pins before it were
+#: 3.12 ``29b8aaad…a9a2`` and 3.13 ``187571d8…21f7``. This pin needs
+#: the diff-reviewer review and the independent verification.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
     # WS-24b (2026-11-06): branches 1' and 2 of get_current_user changed (the
     # LLM-key fallback went, and an unset token fails closed). Branch 0 did not.
@@ -1163,8 +1173,8 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
     # (door.scope). No step of branch 0 changed. Both digests were computed
     # with this test's own function under 3.12 and 3.13. This pin needs the
     # diff-reviewer review and the independent verification.
-    (3, 12): "29b8aaad9bc2b3ffc2f9e8a747835a1e4a674622096afeca886d98107ba0a9a2",
-    (3, 13): "187571d8c6dbac8f05cf131dcea9a476289ebb2ae03ef6f58870fa49cbd721f7",
+    (3, 12): "f5c27b8ed2dbeeff26b2cb89fcfe822c0204dbe52c116e8601af34a62cdf515c",
+    (3, 13): "bbc929711b1e309708d5b1fb0b5d01e352dbd17456b4da4046b2afa13815e8cb",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see

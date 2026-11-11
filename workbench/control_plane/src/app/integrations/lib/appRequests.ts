@@ -11,12 +11,25 @@
  * The member and the org come from the session at the gateway. The BFF rules
  * are in `app/api/agent-access/requests/relay.ts`. Fence:
  * `app/api/agent-access/requests/relay.test.ts`.
+ *
+ * The card in the chat (STU-B2c-2c, `components/studio/StudioToolCards.tsx`)
+ * uses the same client: `readRequest` for its request, and `decideRequest`
+ * for the answer.
  */
 
 import type { AppRequest, AppRequestDecision, AppRequestState } from "@/lib/appRequest";
 
 /** Under the agents prefix, so a refresh of the agents view reads it again. */
 export const APP_REQUESTS_KEY = "agents:requests";
+
+/**
+ * The cache key of one request (STU-B2c-2c). It starts with
+ * {@link APP_REQUESTS_KEY}, so a decision that drops the list key drops it
+ * too, and the card in the chat reads the request again.
+ */
+export function requestKey(requestId: string): string {
+  return `${APP_REQUESTS_KEY}:${requestId}`;
+}
 
 export class AppRequestError extends Error {
   status: number;
@@ -46,6 +59,22 @@ export async function listRequests(): Promise<WaitingList | null> {
   const rows = Array.isArray(body.rows) ? body.rows : [];
   const more = typeof body.more === "number" && body.more > 0 ? Math.floor(body.more) : 0;
   return { rows, more: rows.length ? more : 0 };
+}
+
+/**
+ * One request of the member, for the card in the chat (STU-B2c-2c). `null`
+ * when the gateway answers 404: the request is not the member's, or the
+ * store is dark for this org. The card then draws nothing.
+ */
+export async function readRequest(requestId: string): Promise<AppRequest | null> {
+  const res = await fetch(`/api/agent-access/requests/${encodeURIComponent(requestId)}`, { cache: "no-store" });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new AppRequestError("The approval did not load. Try again.", res.status);
+  const body = (await res.json().catch(() => null)) as AppRequest | null;
+  if (!body || typeof body !== "object" || body.request_id !== requestId) {
+    throw new AppRequestError("The approval did not load. Try again.", res.status);
+  }
+  return body;
 }
 
 /** What the list draws. */

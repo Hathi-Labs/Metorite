@@ -993,11 +993,11 @@ def test_preview_uses_deterministic_default_not_the_llm():
 
     preview = inspect.getsource(ce.preview_capture_from_email)
     assert "draft_task_fallback" in preview
-    assert "_llm_capture" not in preview        # no LLM on open
+    assert "_draft_capture" not in preview      # no LLM on open
     assert "_find_similar_tasks" in preview     # similar-task warnings
 
     enhance = inspect.getsource(ce.enhance_capture_from_email)
-    assert "_llm_capture" in enhance            # AI enrich lives here
+    assert "_draft_capture" in enhance          # AI enrich lives here (DEC-2b wrapper of _llm_capture)
     assert "INSERT INTO gtd_items" not in enhance  # never writes
 
 

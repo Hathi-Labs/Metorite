@@ -17,7 +17,9 @@ Two halves, as in ``test_mcp_edge_archive.py``.
 **Database-free (always runs).** The edge app runs in process with a fake
 token store and a fake gateway. It proves the tool record (H8), the body
 that the tool sends, the answer table, the switch read at ``tools/list``
-(H1), and that no text names a delete while the switch is off.
+(H1), and that no text names a delete while the switch is off. MCP-G9 adds
+one exception: the entry of ``delete_comment``, which deletes only a comment
+of the agent's own client, follows the writes flag and not the switch.
 
 **R8 (a real database, as a NON-privileged role, on a phase-4-promoted
 catalog of its own).** The edge calls the REAL gateway app through
@@ -207,10 +209,22 @@ class TestTheToolAtTheEdge:
 
     async def test_h1_with_the_switch_off_no_text_names_a_delete(self, edge, monkeypatch):
         """Off: ``tools/list``, ``instructions`` and the prompt say nothing
-        about a delete. With the runs flag on too, so every text shows."""
+        about a delete. With the runs flag on too, so every text shows.
+
+        MCP-G9 (task 843): the one exception is the entry of
+        ``delete_comment``. The switch is "Let my AI agents delete tasks", and
+        that tool deletes only a comment of the agent's own client, under the
+        writes flag (``external_agent_access.md`` §9.2). Its entry names no
+        task delete. Every other entry stays under the rule."""
         monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
         edge.gateway.answers[SWITCH] = (200, {"delete_enabled": False})
-        said = [json.dumps((await _post(_rpc("tools/list"))).json()["result"])]
+        listed = (await _post(_rpc("tools/list"))).json()["result"]
+        comment_delete = [t for t in listed["tools"] if t["name"] == "delete_comment"]
+        assert len(comment_delete) == 1, "MCP-G9 shows delete_comment with the switch off"
+        assert "delete_task" not in json.dumps(comment_delete).lower()
+        assert "delete a task" not in json.dumps(comment_delete).lower()
+        listed["tools"] = [t for t in listed["tools"] if t["name"] != "delete_comment"]
+        said = [json.dumps(listed)]
         said.append((await _post(_rpc("initialize", {
             "protocolVersion": "2025-11-25", "capabilities": {},
             "clientInfo": {"name": "t", "version": "1"}}))).json()["result"]["instructions"])

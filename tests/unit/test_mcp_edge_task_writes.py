@@ -1025,8 +1025,11 @@ class TestTheSourceAndTheToolsOnARealDatabase:
             "project_id": live.team, "title": "child", "parent_task_id": parent})
         row = _row(live, result["structuredContent"]["task"]["id"])
         assert str(row.parent_task_id) == parent
-        # The parent's open lane, through the one seam (D-PM-38).
-        assert str(row.status_id) == live.s.doing
+        # MCP-G20 (task 2212): an agent's subtask with no status_id starts in
+        # the default status, as `create_task` says, and not in the lane of
+        # an In progress parent. A member's subtask keeps the parent lane
+        # (D-PM-38), `test_mcp_edge_bulk_updates.py`.
+        assert str(row.status_id) == live.s.todo
 
     async def test_the_same_key_makes_one_row(self, live):
         args = {"project_id": live.team, "title": "once only", "idempotency_key": "r8-once-1"}

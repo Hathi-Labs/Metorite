@@ -6,9 +6,10 @@ against the code on 2026-10-29, at `origin/main` `0988e0de9`. The highest
 migration on main is 315.
 
 **Built.** KG-1 (`585046f02`), KG-2 (`ccdf3c109`, dark, backfill open) and
-KG-3a (`a373b0152`, migration 314) are merged. KG-4 is built dark on its
-branch (migration 355, 2026-11-05). KG-3b and KG-5 to KG-14 are not built.
-§9 holds the state of each slice.
+KG-3a (`a373b0152`, migration 314), KG-3b (`d7cc083d4`) and KG-4 (`8d9e643ea`,
+migration 355) are merged. KG-5 is built dark on its branch, with no
+migration (2026-11-07). KG-6 to KG-14 are not built. §9 holds
+the state of each slice.
 
 **Read first.** `work_plan.md` D105, D106, D112, D128 and D132.
 `knowledge_base.md` §20 owns the read seam. `company_context.md` owns the
@@ -184,7 +185,7 @@ evidence (§4.3).
 | `task_link` | `task` → `task` | `pm_task_links` (migration 146: `source_task_id`, `target_task_id`, `link_type`). `organization_id` is NOT NULL with FORCE RLS since migration 161 | KG-4 | EXTRACTED |
 | `attendee` | `meeting` → `person` | KG-4: an id of `meeting.attendee_ids` that is a row of `people`. KG-5: an exact match on the addresses of `meeting.attendees` (migration 99) | KG-4, KG-5 | EXTRACTED, or AMBIGUOUS |
 | `participant` | `email` or `whatsapp` → `person` or `contact` | An exact address or phone match. No email or WhatsApp table holds a person or contact id | KG-5 | EXTRACTED, or AMBIGUOUS with two candidates |
-| `domain_company` | `email` → `company` | the sender domain against the CRM company domain | KG-5 | EXTRACTED, or AMBIGUOUS |
+| `domain_company` | `email` → `company` | the sender domain against the website host of a CRM company | KG-5 | EXTRACTED. A host that two companies share gives no row |
 | `mentions` | `page` or `email` → any node | a code match on aliases and names | KG-10 | INFERRED |
 | `relates_to` | `page` → `entity` or a record | the cheap tier, on a Knowledge page save | KG-10 | INFERRED |
 
@@ -193,6 +194,58 @@ Re-verify each column name at dispatch, because the code is the fact.
 - `meeting.attendee_ids` has no foreign key, and it dates from the legacy
   schema of `01_schema.sql`. So KG-4 checks each id against `people` before
   it writes an edge.
+- **As built at KG-5.** An address matches in lower case after a trim. A
+  phone matches on its digits, from 8 to 15. An email gives its sender,
+  To, Cc and Bcc. A WhatsApp message gives the `wa_id` of its sender only.
+  The candidates of an address are `people.email` and `crm_contacts.email`.
+  A person and a contact with one address are two candidates.
+- **A phone with no country code never matches.** The sweep compares the
+  digits only, and a `wa_id` always holds the country code. So a contact
+  phone saved as `98765 43210` gives no edge. A later slice may add a
+  default country for each org.
+- **No private field is a candidate.** The candidates of a phone are
+  `crm_contacts.phone` and `crm_contacts.mobile` only. `people.phone`,
+  `personal_email`, `birthday` and `emergency_contact` are the private tier
+  (`routes/tasks/people.py` `PRIVATE_FIELDS`). No form reads them, and the
+  fence is `test_kg_links_writer.py`.
+- **The domain of a company is the host of `crm_companies.website` only.**
+  The sweep makes it lower case, then strips the scheme, `www.`, the port
+  and the path. It matches the sender domain exactly, with no subdomain
+  rule. A host that two companies of the org share names no company, so it
+  gives no row. So `domain_company` is never AMBIGUOUS. A free-mail domain
+  of `CONSUMER_DOMAINS` is never a host. Nor is a host of `SITE_HOSTS` in
+  `graph.py`, or a host under one. That list holds profile and
+  site-builder hosts such as `linkedin.com`. It also holds platforms that
+  send mail for many orgs, such as `github.com`. No form reads `crm_companies.email`,
+  because many companies use an address at a free-mail host that the list
+  does not hold.
+- **`SITE_HOSTS` is a floor, not a proof.** A host that the list does not
+  hold can still send mail for many orgs. Then a company that uses a page of
+  that platform as its website gets a wrong `domain_company` edge. This is
+  a known limit. A holder of `knowledge:manage` removes the wrong edge
+  (§4.4), and the list grows when one is found.
+- **`CONSUMER_DOMAINS` must grow.** It does not hold `rediffmail.com`,
+  `yahoo.in` or `yahoo.co.uk`. The email app owns the list
+  (`routes/email/mailbox_identity.py`), so add them there and never copy it
+  here.
+- **An identifier row follows the data.** Its `created_by` is
+  `system:identifier`. Each sweep sets its provenance and confidence to 1/n
+  of today. It deletes the row when the match no longer holds. A row with
+  `removed_at` stays as it is (§4.4). A structural row of KG-4 never
+  changes, because its id is a stored key. A sweep with no change in the
+  data changes 0 rows.
+- **A domain alias follows the data too.** The sweep adds a sender host
+  that names one company to the aliases of its customer entity. On an
+  entity of `ref_table = 'crm_companies'`, only the sweep writes aliases.
+  The create route writes aliases for a product or a topic only, and
+  `ensure_by_ref` writes none. So the sweep owns each host-shaped alias
+  there. It removes one that is not the one-company host of its company
+  today. That covers a changed website and a host that two companies
+  share. It also covers a free-mail host and a site host. It never touches an alias that is
+  not host-shaped, or an entity of another table. Each batch holds 1000
+  hosts. It leaves out a host that the entity holds already, a host longer
+  than 120 characters and an entity that holds 50 aliases. So the next
+  night goes on.
 - `pm_task_refs` (migration 255) holds outside links only: a pull request,
   an issue, a commit, a branch, a comment, a document or a URL. So no task
   to page and no task to artifact edge exists. See Q6.
@@ -386,7 +439,7 @@ here in the same pull request (R4).
 | **KG-3a** (task 788) | ✅ BUILT 2026-10-28, `a373b0152`, migration 314 | Email search under FORCE RLS, a stored tsvector. The backfill ran (task 920) | The email source answers inside its 1.5 s | `test_email_fts_column_r8.py` | `uv run pytest tests/unit/test_email_fts_column_r8.py -p no:xdist -rs -q` | HIGH · AGENT-SAFE |
 | **KG-3b** (task 788) | Open. After the KG-2 backfill | Hybrid search for each source with vectors, email first. One global sort by the CX-1 score (reciprocal rank fusion, k = 60) in place of `_interleave`, behind `CONTEXT_RECENCY`. A cache of the query embedding for the turn. The `--fixture` verdict gains the p50 and p95 limits of §7.3 | The eval runs with `CONTEXT_RECENCY` off and on, and the pull request writes both. A paraphrase of an email subject finds the mail. With the flag off, the output is byte-identical | `test_company_search_fusion.py` (new), `test_search_company_eval.py` | `uv run pytest tests/unit/test_company_search_fusion.py tests/unit/test_search_company_eval.py -q` | STANDARD · AGENT-SAFE to build. The embed spend: **OWNER-GATE** |
 | **KG-4** (task 789) | Built dark 2026-11-05, migration 355, branch `kg4-structural-edges-mt-2a446b84`. Not merged. The sweep is the job kind `graph.sweep`, seeded once a night (Q4) by a `worker.seed_hooks` hook. It needs `JOB_QUEUE` and `GRAPH_SWEEP_ORGS` | The expand migration of §3.2. The sweep of §4.1 that writes the KG-4 relations as EXTRACTED, with no model. The edge read and the removal of §4.4 in `gateway/kb_entities/graph.py`. Behind `GRAPH_SWEEP_ORGS`. `participant` moved to KG-5, because no stored id names a participant | R8: each KG-4 relation appears on a seeded org. Org B reads and writes no edge of org A. A second sweep writes 0 rows. A removed edge stays removed after a sweep. The page-link reads give the same answer as before | `test_kg_links_r8.py` (new). `test_kg_links_writer.py` (new): one writer for each form, no graph row with `page_id`, every relation names its evidence end, no write of a relation outside `RELATIONS`, and `RELATIONS` equals the pinned list of §4.1. `test_tenant_coverage.py`, `test_kb_backlinks_r8.py` | `uv run pytest tests/unit/test_kg_links_writer.py tests/unit/test_kg_links_r8.py tests/unit/test_kb_backlinks_r8.py -p no:xdist -rs -q` | HIGH (migration, RLS) · AGENT-SAFE |
-| **KG-5** (task 790) | Open. After KG-4 | Exact identifiers to records, with no model: an address or a phone to a person or a contact, a domain to a company. Aliases through the registry. AMBIGUOUS rows for two candidates | R8 covers the exact case, the ambiguous case and the free-mail case. The eval improves on the person and company questions | `test_kg_resolve_r8.py` (new), `test_kc_entities.py` | `uv run pytest tests/unit/test_kg_resolve_r8.py tests/unit/test_kc_entities.py -p no:xdist -rs -q` | HIGH (tenancy, identity) · AGENT-SAFE |
+| **KG-5** (task 790) | Built dark 2026-11-07, branch `kg5-resolve-entities`, stacked on KG-4. Not merged. No migration. The forms run in the `graph.sweep` job, behind `GRAPH_SWEEP_ORGS`. `registry.add_aliases` adds a sender domain that names one company to the aliases of its customer entity | Exact identifiers to records, with no model: an address or a phone to a person or a contact, a domain to a company. Aliases through the registry. AMBIGUOUS rows for two candidates | R8 covers the exact case, the ambiguous case and the free-mail case. The eval improves on the person and company questions | `test_kg_resolve_r8.py` (new), `test_kc_entities.py` | `uv run pytest tests/unit/test_kg_resolve_r8.py tests/unit/test_kc_entities.py -p no:xdist -rs -q` | HIGH (tenancy, identity) · AGENT-SAFE |
 | **KG-6** (task 791) | Open. After KG-3b and KG-4 | The graph step of §5, `Source.open` for each source (§6), the budget and the time of §7. Behind `GRAPH_SEARCH_ORGS`. The graph output never goes through `routes/knowledge/core.read_links`, because that read checks visibility for page targets only | A private task, another member's email, a CRM record without CRM access, a page in a closed space and a project outside a `group:<slug>` grant never appear as neighbours. The eval shows the gain, and p95 stays under 3 s. With the flag off, the output is byte-identical | `test_kg_neighbours_r8.py` (new), `test_company_search_graph.py` (new: the budget, the cap, the order, the flag off), `test_company_search_sources.py` | `uv run pytest tests/unit/test_company_search_graph.py tests/unit/test_company_search_sources.py tests/unit/test_kg_neighbours_r8.py -p no:xdist -rs -q` | HIGH (visibility) · AGENT-SAFE |
 | **KG-7** (task 792) | Open. After KG-6 | `get_entity`: a name or a citation in, one entity with its aliases and its neighbours across apps out, each item a link. It reuses the KG-6 read and budget. It joins the core tool pack. No model | On staging, Mira answers "what is going on with <customer>" with one tool call. The eval holds 10 such questions | `test_get_entity_tool.py` (new): no model call, a refusal with no member, the KG-6 visibility | `uv run pytest tests/unit/test_get_entity_tool.py tests/unit/test_kg_neighbours_r8.py -p no:xdist -rs -q` | STANDARD · AGENT-SAFE |
 | **KG-8** (task 793) | Open. After KG-7 | `search_company` and `get_entity` on the Metorite MCP, as reads with no approval (D124), with the member's own visibility | An external agent finds a Fracktal email, deal and page on staging. The MCP returns no record the member cannot open | `test_mcp_edge_coverage.py`, `test_mcp_company_search_r8.py` (new) | `uv run pytest tests/unit/test_mcp_edge_coverage.py tests/unit/test_mcp_company_search_r8.py -p no:xdist -rs -q` | HIGH (auth surface) · AGENT-SAFE |
@@ -429,6 +482,10 @@ Each slice adds its own line from §9.
 # KG-4
 uv run pytest tests/unit/test_kg_links_writer.py tests/unit/test_kg_links_r8.py \
   tests/unit/test_kb_backlinks_r8.py tests/unit/test_tenant_coverage.py -p no:xdist -rs -q
+
+# KG-5
+uv run pytest tests/unit/test_kg_resolve_r8.py tests/unit/test_kg_links_r8.py \
+  tests/unit/test_kg_links_writer.py tests/unit/test_kc_entities.py -p no:xdist -rs -q
 ```
 
 ---
@@ -459,7 +516,9 @@ the owner or a decision gives one. Build to the default.
   company, the old `contact_company` row stays. KG-6 opens each end through
   its app, so the row shows no hidden record. A later slice must decide
   whether the sweep deletes an EXTRACTED row whose source no longer holds
-  the id. Found at KG-4, 2026-11-05.
+  the id. Found at KG-4, 2026-11-05. The KG-5 identifier rows do not have
+  this gap: each sweep deletes a stale one (§4.1, "An identifier row
+  follows the data"). The KG-4 structural rows still have it.
 - **The KG rows of `company_context.md` §12** are the as-built record of
   KG-1, KG-2 and KG-3a. From today this spec owns every KG slice, and the
   KG-3b row there points here.

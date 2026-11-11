@@ -162,6 +162,13 @@ export interface AgentRun {
    * lease, so the next claim may take the task over. The gateway decides it.
    */
   lease_expired?: boolean;
+  /**
+   * SW-4. True when an OPEN run no longer keeps its task: its lease ended, or
+   * its connection is revoked or expired. The same answer as `held_by.stale`.
+   * A gateway before SW-4 does not send it, so `runHolderFree` falls back to
+   * `lease_expired`.
+   */
+  holder_free?: boolean;
   status: AgentRunStatus;
   /** The derived state (`AGENT_RUN_STATE_SQL`). A closed run reads its status. */
   state?: AgentRunState | null;
@@ -1043,6 +1050,11 @@ export function heldByLine(
 
 /** The word beside the line when the lease ended. */
 export const STALE_HOLD_TEXT = "stale";
+
+/** SW-4. Whether the next claim can take the task: the server's holder-free answer. */
+export function runHolderFree(run: Pick<AgentRun, "holder_free" | "lease_expired">): boolean {
+  return run.holder_free ?? run.lease_expired ?? false;
+}
 
 /**
  * May the caller release this run? The run's member, an assignee of the

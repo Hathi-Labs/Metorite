@@ -136,6 +136,16 @@ store that must work before a tenant is known.
     never in :func:`lookup_token` (rule 8). Fence:
     ``tests/unit/test_agent_box_token_store.py`` (R8).
 
+13. ⚠️ **The box routes (EA-19c, spec §10.9).** :func:`revoke_box_connections`
+    revokes every box connection of the bound organization with the reason
+    ``flag_off``, the connection rows first and then their tokens.
+    :func:`update_connection_grant` never reads or writes a box, so Change
+    access refuses one. The list reads ``credential``, ``last_seen_addr``
+    and ``addr_changed_at``. :func:`box_address_event_id` gives one audit
+    row id for each new-address mark, and :func:`audited_events` tells the
+    gateway list route which marks have their row. This module writes no
+    audit row. Fence: ``tests/unit/test_agent_box_token_routes.py`` (R8).
+
 Fence: ``tests/unit/test_agent_connection_tokens.py`` (R8, a phase-4-promoted
 catalog, as a NON-privileged role). D-EA-11:
 ``tests/unit/test_agent_first_party.py`` (R8). EA-17c-1:
@@ -145,6 +155,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -205,8 +216,8 @@ REVOKE_CODE_REPLAY = "code_replay"
 REVOKE_OAUTH_REVOKE = "oauth_revoke"
 #: ``mint_code`` failed after the approve made the connection.
 REVOKE_APPROVE_ROLLBACK = "approve_rollback"
-#: The bulk revoke of the box tokens of an organization. EA-19d writes it.
-#: No path writes it yet.
+#: The bulk revoke of the box tokens of an organization
+#: (:func:`revoke_box_connections`, EA-19c).
 REVOKE_FLAG_OFF = "flag_off"
 
 #: Every reason a revoke may store. A reason outside this set raises.
@@ -915,6 +926,12 @@ class ConnectionRow:
     #: EA-17c-1): :func:`ceiling_of` the live tokens of the connection.
     #: Empty when no token is live.
     ceiling_scopes: tuple[str, ...] = ()
+    #: EA-19c (spec §10.9): ``oauth`` or ``box``. The view shows a Box badge.
+    credential: str = "oauth"
+    #: EA-19c: the last client address of a box (:func:`touch_box_use`), and
+    #: the time of its last new-address mark. ``None`` for an OAuth row.
+    last_seen_addr: str | None = None
+    addr_changed_at: datetime | None = None
 
 
 #: The ``scope`` of each live token of the connection ``c``, as an array.
@@ -940,7 +957,8 @@ SELECT CAST(c.id AS TEXT) AS id, c.member_email, c.client_name,
        c.include_personal, c.created_at, c.last_used_at, c.expires_at,
        CAST(c.left_out_projects AS TEXT[]) AS left_out_projects,
        c.requested_scopes,
-       {_LIVE_TOKEN_SCOPES_EXPR} AS token_scopes
+       {_LIVE_TOKEN_SCOPES_EXPR} AS token_scopes,
+       c.credential, c.last_seen_addr, c.addr_changed_at
   FROM agent_connection c
  WHERE c.organization_id = CAST(:org AS UUID)
    AND c.revoked_at IS NULL
@@ -992,6 +1010,9 @@ def _connection_row(row: Any) -> ConnectionRow:
             else tuple(row.requested_scopes)
         ),
         ceiling_scopes=ceiling_of(tuple(row.token_scopes or ())),
+        credential=row.credential or "oauth",
+        last_seen_addr=row.last_seen_addr,
+        addr_changed_at=row.addr_changed_at,
     )
 
 #: Revoke ONE connection, only when the caller may: the organization always,
@@ -1165,10 +1186,13 @@ _CONNECTION_COLUMNS = f"""CAST(c.id AS TEXT) AS id, c.member_email, c.client_nam
        c.include_personal, c.created_at, c.last_used_at, c.expires_at,
        CAST(c.left_out_projects AS TEXT[]) AS left_out_projects,
        c.requested_scopes,
-       {_LIVE_TOKEN_SCOPES_EXPR} AS token_scopes"""
+       {_LIVE_TOKEN_SCOPES_EXPR} AS token_scopes,
+       c.credential, c.last_seen_addr, c.addr_changed_at"""
 
 #: Lock the ONE live connection of this member in this organization, and
 #: read the row with the scope of each live token.
+#: ⚠️ EA-19c: never a box. Change access does not apply to a box (spec
+#: §10.9 question 2), so a box id reads as no row and the route answers 404.
 #: ⚠️ The lock order of rule 3 holds: the connection row first
 #: (``FOR NO KEY UPDATE``, as an issue takes it), and the tokens are only
 #: read. While the lock holds, no issue and no rotation can add a token. A
@@ -1179,6 +1203,7 @@ SELECT {_CONNECTION_COLUMNS}
  WHERE c.id = CAST(:connection_id AS UUID)
    AND c.organization_id = CAST(:org AS UUID)
    AND c.member_email = CAST(:member AS TEXT)
+   AND c.credential <> 'box'
    AND c.revoked_at IS NULL
    AND c.expires_at > now()
    FOR NO KEY UPDATE OF c
@@ -1198,6 +1223,7 @@ UPDATE agent_connection c
  WHERE c.id = CAST(:connection_id AS UUID)
    AND c.organization_id = CAST(:org AS UUID)
    AND c.member_email = CAST(:member AS TEXT)
+   AND c.credential <> 'box'
    AND c.revoked_at IS NULL
    AND c.expires_at > now()
 RETURNING {_CONNECTION_COLUMNS}
@@ -2220,13 +2246,21 @@ UPDATE agent_connection
 #: ⚠️ The use stamp of a box (spec §10.9 question 5). At most once a minute:
 #: the NULL branch stamps a new connection, which has no stamp yet. Only a
 #: box: an OAuth connection keeps ``last_used_at`` as the last issue
-#: (EA3-7). The address always moves to the new one. A change marks
-#: ``addr_changed_at`` at most once an hour. A first address is no change.
+#: (EA3-7). A change marks ``addr_changed_at`` at most once an hour, and the
+#: address that set the mark STAYS in ``last_seen_addr`` for that hour, so the
+#: audit row and the list name the address that raised the alarm, not the
+#: box that called a minute later (review of 2026-11-07). After the hour the
+#: address moves again. A first address is no change.
 #: ``expires_at`` is not in the SET: use never extends a box.
 _TOUCH_BOX_SQL = """
 UPDATE agent_connection
    SET last_used_at = now(),
-       last_seen_addr = COALESCE(CAST(:addr AS TEXT), last_seen_addr),
+       last_seen_addr = CASE
+           WHEN addr_changed_at IS NOT NULL
+            AND addr_changed_at >= now() - interval '1 hour'
+           THEN last_seen_addr
+           ELSE COALESCE(CAST(:addr AS TEXT), last_seen_addr)
+       END,
        addr_changed_at = CASE
            WHEN CAST(:addr AS TEXT) IS NOT NULL
             AND last_seen_addr IS NOT NULL
@@ -2468,3 +2502,90 @@ async def touch_box_use(
         # 2026-11-07).
         _log.warning("agent_tokens.box_new_address", connection_id=connection)
     return True
+
+
+# ── The bulk revoke and the new-address mark (EA-19c, spec §10.9 q. 5) ──────
+
+#: Revoke every box connection of one organization that is not revoked yet.
+#: ⚠️ The lock order of rule 3 holds: this takes the connection rows first,
+#: and :data:`_REVOKE_TOKENS_OF_SQL` takes their tokens after it. A row past
+#: ``expires_at`` goes too, so a flag that comes back on revives nothing.
+_REVOKE_BOX_CONNECTIONS_SQL = """
+UPDATE agent_connection
+   SET revoked_at = now(),
+       revoked_reason = CAST(:reason AS TEXT)
+ WHERE organization_id = CAST(:org AS UUID)
+   AND credential = 'box'
+   AND revoked_at IS NULL
+RETURNING CAST(id AS TEXT) AS id
+"""
+
+#: The ids of the audit rows of *ids* that exist already. Runs bound to the
+#: tenant, so it reads the rows of that organization only.
+_AUDITED_SQL = """
+SELECT CAST(id AS TEXT) AS id
+  FROM audit_event
+ WHERE id = ANY(CAST(:ids AS UUID[]))
+"""
+
+#: The namespace of the id of a new-address audit row. Fixed for good: a
+#: change makes each old mark look new, and the list writes its row again.
+_BOX_ADDRESS_EVENT_NS = uuid.UUID("5d0f3c51-8f8e-4a5c-9b7e-19c0ad0e5519")
+
+
+async def revoke_box_connections(organization_id: str, *, reason: str) -> list[str]:
+    """Revoke every box connection of *organization_id*, and every token of
+    each, in one transaction. Answer the ids that it revoked (EA-19c).
+
+    The admin's "Revoke all box tokens" calls it with :data:`REVOKE_FLAG_OFF`
+    before an operator turns the flag on again (spec §10.9 question 5). The
+    caller passes the bound tenant, never request input (R11). It does not
+    read the flag, because a revoke only removes access. An OAuth
+    connection never changes.
+    """
+    from sqlalchemy import text
+
+    _reason(reason)
+    org = _canonical_uuid(str(organization_id))
+    if org is None:
+        return []
+    async with _tenant_session(org) as db:
+        ids = [
+            row.id for row in (
+                await db.execute(
+                    text(_REVOKE_BOX_CONNECTIONS_SQL), {"org": org, "reason": reason})
+            ).all()
+        ]
+        if ids:
+            await db.execute(text(_REVOKE_TOKENS_OF_SQL), {"ids": ids, "org": org})
+    _log.warning("agent_tokens.box_connections_revoked", count=len(ids), reason=reason)
+    return ids
+
+
+def box_address_event_id(connection_id: str, marked_at: datetime) -> str:
+    """The id of the ONE audit row of one new-address mark (EA-19c).
+
+    The same connection and the same ``addr_changed_at`` give the same id,
+    so the primary key of ``audit_event`` holds one row for each mark, also
+    when two list reads race. A new mark has a new time, so a new id.
+    """
+    stamp = marked_at.isoformat()
+    return str(uuid.uuid5(_BOX_ADDRESS_EVENT_NS, f"{str(connection_id).lower()}|{stamp}"))
+
+
+async def audited_events(organization_id: str, event_ids: Sequence[str]) -> frozenset[str]:
+    """The ids in *event_ids* that ``audit_event`` holds already (EA-19c).
+
+    The gateway list route reads it before it writes the audit row of a new
+    address, so a second list read writes nothing. The caller passes the
+    bound tenant. An id that is not a UUID is never found.
+    """
+    from sqlalchemy import text
+
+    org = _canonical_uuid(str(organization_id))
+    ids = [i for i in (_canonical_uuid(str(e)) for e in event_ids) if i is not None]
+    if org is None or not ids:
+        return frozenset()
+    async with _tenant_session(org) as db:
+        rows = (await db.execute(text(_AUDITED_SQL), {"ids": ids})).all()
+    return frozenset(row.id for row in rows)
