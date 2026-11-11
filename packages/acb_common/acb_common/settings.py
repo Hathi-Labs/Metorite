@@ -1096,6 +1096,16 @@ class Settings(BaseSettings):
     # value. Fence: tests/unit/test_pm_templates_r8.py.
     projects_templates_orgs: str = ""
 
+    # ── The teams of Projects (WS-39 T-1, task 2532) ────────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `GET /projects/teams` answers 404, and so does a read
+    # of `/projects` that sends a `team` value. The one reader is
+    # `gateway.routes.projects.team_scope.teams_allowed`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). Only the owner writes the
+    # value. Fence: tests/unit/test_teams_read_model_r8.py.
+    teams_orgs: str = ""
+
     # ── The app requests of agents (WS-MCP MCP-P1b-1) ──────────────────────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,

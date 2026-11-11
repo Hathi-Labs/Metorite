@@ -13,6 +13,9 @@
 
 > **Product:** Metorite · **Feature:** Projects (the primary work-management
 > module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-11-11**
+> 🟢 **WS-39 T-1 BUILT 2026-11-11, not merged** (§14.9, task 2532). `GET /projects/teams` gives the teams of
+> the member and the spaces of each. A `team` value narrows the tree, the node list, the task list, the count and
+> the search. Dark behind `TEAMS_ORGS`. No table, no migration, no UI and no chat tool. Fence: `test_teams_read_model_r8.py`.
 > 🟢 **SP-8a BUILT 2026-11-08, not merged** (§13.3, §13.6 row SP-8, migration 402, branch
 > `mt-1cb9f2de-sp8-epic-contract`). An epic has a contract: the store, the routes, `epic_contract`
 > in `get_task` and `get_task_context`, the MCP block and the chat tool `set_epic_contract`.
@@ -9767,7 +9770,7 @@ Fence: `tests/unit/test_team_scope_isolation_r8.py` (T-7, task 2538) binds rules
 | Row | Task | Scope | Done when | Fence | Risk | Flag (default OFF) | Depends on |
 |---|---|---|---|---|---|---|---|
 | **T-0** | 2531 | This section | The section and the D204 record are merged | `tests/unit/test_doc_names_resolve.py` | LOW | none | none |
-| **T-1** | 2532 | The read model. One tenant-safe read returns the teams of the member and the spaces of each team | A member of 2 teams gets 2 lists. A space shared with no team of the member is absent | R8 tests | STANDARD | `TEAMS_ORGS` | T-0 |
+| **T-1** | 2532 | The read model. One tenant-safe read returns the teams of the member and the spaces of each team. **Built 2026-11-11, not merged:** `GET /projects/teams` and the `team` value of `gateway/routes/projects/team_scope.py` | A member of 2 teams gets 2 lists. A space shared with no team of the member is absent | `tests/unit/test_teams_read_model_r8.py` (R8) | STANDARD | `TEAMS_ORGS` | T-0 |
 | **T-2** | 2533 | The team chip on the Projects board. It folds in PX-2 (task 967) | The chip filters the board to the spaces of one team. "All my teams" shows every space the member may open | Component test and the R8 test of T-1 | STANDARD | `TEAMS_ORGS` | T-1 |
 | **T-3** | 2534 | Share a space with a team. Check the existing grants route first and build only the gap | A lead shares a space with a group. The space shows in that team's view | R8 test of the grant | STANDARD | `TEAMS_ORGS` | T-1 |
 | **T-4** | 2535 | The team scope in the shell. One contract of one value: a team slug or "all" (`navigation_shell.md` §4.2a) | The shell holds one scope value, and every app reads it | `src/lib/shell/teamScope.test.ts` (new) | STANDARD | `TEAMS_ORGS` | T-2, T-3, T-7 |
@@ -9775,7 +9778,16 @@ Fence: `tests/unit/test_team_scope_isolation_r8.py` (T-7, task 2538) binds rules
 | **T-6** | 2537 | Chat and MCP through the app door. A write shows an approve card | A chat read and an MCP read of a hidden space answer "not found" | The R8 test of T-7 | STANDARD | `TEAMS_ORGS` | T-3, the MCP-G24 decision |
 | **T-7** | 2538 | The isolation fence: two teams, three spaces and the surfaces that the fence lists. **Built 2026-11-11 for those surfaces, not merged.** The reads that its docstring names as not driven are follow-up | Each listed surface of rule 4 passes with a hidden space. `tests/unit/test_team_scope_isolation_r8.py` | R8, full loop | HIGH | none | T-1 |
 
-**Order.** T-0, then T-1. Then T-2, T-3 and T-7. Then T-4, then T-5. T-6 follows T-3 and the MCP-G24 decision. The flag name `TEAMS_ORGS` is a proposal, and the build task confirms it.
+**Order.** T-0, then T-1. Then T-2, T-3 and T-7. Then T-4, then T-5. T-6 follows T-3 and the MCP-G24 decision. T-1 confirmed the flag name `TEAMS_ORGS`.
+
+**The T-1 read (built 2026-11-11).** `gateway/routes/projects/team_scope.py` holds the value, the reach and the flag. `teams.py` holds the read.
+
+* `GET /projects/teams` gives one row for each group of the member, a group with no space too. A row names the team and its spaces, and counts the tasks of each space. `?team=<slug>` gives one row.
+* A space of a team is a top of the team view: a node whose parent the team does not hold. A grant of a project below a space makes that project a top, and its `level` says `project`. The space above it is not named.
+* The `team` value is a slug or `all`, as `navigation_shell.md` §4.2a says. `all` narrows nothing. `GET /projects/tree`, `/projects/nodes`, `/projects/tasks`, `/projects/tasks/stats` and `/projects/search` take it. The tree keeps `personal` as it is, because the own tree of the member is no team.
+* The one subject grammar checks the slug. A malformed value is 422. A slug that names no group of the member is 404, with the body of a slug that names no group.
+* Each read ANDs the team clause beside its own visibility clause, so the clause only narrows (rule 5). The count of a team comes from `tasks._task_scope`, the scope of the list and of the count read, so the three agree.
+* While `TEAMS_ORGS` does not hold the org, `GET /projects/teams` is 404, and so is each read that sends a `team` value.
 
 ## Board record (2026-08-09) — moved from work_plan.md §2
 

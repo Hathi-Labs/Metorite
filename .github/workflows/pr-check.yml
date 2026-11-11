@@ -721,6 +721,7 @@ jobs:
               tests/unit/test_app_create_slug_r8.py \
               tests/unit/test_app_delete_workspace_r8.py \
               tests/unit/test_team_scope_isolation_r8.py \
+              tests/unit/test_teams_read_model_r8.py \
               tests/unit/test_staging_export.py
 
       # CIV-3. A selection run holds part of the timings. Only a full run

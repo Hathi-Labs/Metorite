@@ -599,6 +599,10 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/templates", "list_templates", "A"),
     Route("POST", "/projects/templates", "save_as_template", "C"),
     Route("POST", "/projects/templates/{template_id}/apply", "create_project_from_template", "C"),
+    # ── teams.py (WS-39 T-1, task 2532) ──────────────────────────────────
+    # Dark behind TEAMS_ORGS. The teams of the member and the spaces of each.
+    # A read, so class A. T-6 (task 2537) builds the chat and MCP read.
+    Route("GET", "/projects/teams", "list_teams", "A"),
 )
 
 #: Tools the manifest names that no slice has built yet, with the slice that
@@ -664,6 +668,9 @@ PLANNED: dict[str, str] = {
     # WS-55 EA-18a (2026-11-06) added the list of the questions that wait on a
     # person. It adds no chat tool (spec §12.8, D109).
     "agent_questions": "WS-55, in-product chat parity, after EA-12e",
+    # WS-39 T-1 (2026-11-11) added the read of the teams of a member. The chat
+    # and the MCP get it through the app door in T-6.
+    "list_teams": "Metorite task 2537, T-6 the teams in the chat and over the MCP",
     # ⚠️ `approve_task_archive` is NOT a chat tool, ever (EA3-40, D-OP-13). Its
     # route is class X with a reason, and `waiting_agent_requests` lists it.
     # WS-66 RM-3 (2026-10-25) built the seven reminder tools that RM-1 planned.
@@ -1402,9 +1409,17 @@ _STATUS_PLACE_REASON = (
     "every organization, and the route accepts it at all times. "
     "test_projects_status_chat.py proves the send."
 )
+#: WS-39 T-1 (task 2532). The team scope of the app, dark behind TEAMS_ORGS.
+_TEAM_SCOPE_REASON = (
+    "The team scope of the app (WS-39 T-1, dark behind TEAMS_ORGS). The chat "
+    "and the MCP get it through the app door in T-6, Metorite task 2537."
+)
 
 
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
+    # WS-39 T-1: the team scope (`team_scope.py`). T-6 gives it to the chat.
+    ("GET", "/projects/teams"): {"team": _TEAM_SCOPE_REASON},
+    ("GET", "/projects/tree"): {"team": _TEAM_SCOPE_REASON},
     ("GET", "/projects/assignable-members"): {"project_id": _MEMBERS_ROUTE_REASON},
     # SP-12: `get_plan` and the MCP tool plan from today. A first working day
     # is a web planner override, and the chat has no use for it.
@@ -1435,6 +1450,7 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "unheld": _STATS_ROUTE_REASON,
         "updated_after": _STATS_ROUTE_REASON,
         "updated_before": _STATS_ROUTE_REASON,
+        "team": _TEAM_SCOPE_REASON,
     },
     # WS-42 PST-4: the place of a lane. The tools send them when the model
     # passes a place, and this fence's witnesses pass none.
@@ -1485,6 +1501,7 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         ),
         "scope": _MINE_SCOPE_REASON,
         "with_overlay": _MINE_OVERLAY_REASON,
+        "team": _TEAM_SCOPE_REASON,
     },
     # WS-64 OP-6c: the export takes the same subset as list_tasks.
     ("GET", "/projects/export/tasks.csv"): {
@@ -1587,6 +1604,7 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/projects/search"): {
         "exclude_relatives_of": "The link picker's filter in the app. task_detail reads links.",
         "include_triage": _TRIAGE_READ_REASON,
+        "team": _TEAM_SCOPE_REASON,
     },
     ("PATCH", "/projects/comments/{activity_id}"): {
         "parent_id": "Only POST reads it. An edit cannot re-parent a comment (activities.py).",
