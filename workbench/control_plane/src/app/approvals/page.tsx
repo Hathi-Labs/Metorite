@@ -23,15 +23,27 @@
 import { AppTopBar } from "@/components/AppTopBar";
 import Button from "@/components/ui/Button";
 import ElicitationCard from "@/components/ElicitationCard";
+import { QuestionsView } from "@/app/projects/components/QuestionsView";
+import { useQuestionsBadge } from "@/app/projects/components/useQuestionsBadge";
 import { agentRunsApi } from "@/app/projects/lib/api";
+import { taskHref as questionTaskHref } from "@/app/projects/lib/agentQuestions";
 import { answerPayload, cardQuestion } from "@/app/projects/lib/agentRuns";
 import { relativeTime } from "@/lib/taskCard";
 import type { ElicitationAnswers } from "@/lib/elicitationAnswer";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import type { PendingAction } from "@/app/api/actions/pending/route";
 
+import { ApprovalTabs } from "./components/ApprovalTabs";
+import {
+  FULL_LIST_HREF,
+  FULL_LIST_LABEL,
+  type ApprovalTab,
+  activeTab,
+  tabsShown,
+  waitingSectionOn,
+} from "./lib/approvalTabs";
 import {
   actionIdFromSearch,
   afterLoad,
@@ -72,8 +84,16 @@ export default function ApprovalsPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<Record<string, "approve" | "reject">>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // WS-55 EA-18c. The "For me" list of Projects. While its route is on
+  // (`AGENT_QUESTIONS_ORGS`), it replaces the CIV-14k section below and the
+  // page draws two tabs. `on` is false when the route answers 404.
+  const router = useRouter();
+  const questions = useQuestionsBadge();
+  const tabs = tabsShown(questions.on);
+  const [picked, setPicked] = useState<ApprovalTab | null>(null);
   // CIV-14k. The open agent questions of the member, oldest first. `null`
-  // means the agent-run routes are off, and then no list draws.
+  // means the agent-run routes are off, and then no list draws. It reads only
+  // while the questions route is off (`waitingSectionOn`).
   const [waiting, setWaiting] = useState<WaitingRun[] | null>(null);
   const [waitingBusy, setWaitingBusy] = useState<Record<string, boolean>>({});
   const [waitingErrors, setWaitingErrors] = useState<Record<string, string>>({});
@@ -117,13 +137,20 @@ export default function ApprovalsPage() {
 
   useEffect(() => {
     void load();
-    void loadWaiting();
-    const t = setInterval(() => {
-      void load();
-      void loadWaiting();
-    }, 15_000);
+    const t = setInterval(() => void load(), 15_000);
     return () => clearInterval(t);
-  }, [load, loadWaiting]);
+  }, [load]);
+
+  const waitingOn = waitingSectionOn(questions.on);
+  useEffect(() => {
+    if (!waitingOn) {
+      setWaiting(null);
+      return;
+    }
+    void loadWaiting();
+    const t = setInterval(() => void loadWaiting(), 15_000);
+    return () => clearInterval(t);
+  }, [waitingOn, loadWaiting]);
 
   const answerWaiting = async (run: WaitingRun, answers: ElicitationAnswers) => {
     const question = openQuestion(run);
@@ -183,6 +210,11 @@ export default function ApprovalsPage() {
     }
   };
 
+  // One count in the title bar: the route's "For me" count with the tabs on,
+  // else the CIV-14k list. The Projects badge and the My Day card say the same.
+  const waitingLen = tabs ? (questions.count ?? 0) : (waiting?.length ?? 0);
+  const shownTab = tabs ? activeTab(picked, queue.load === "closed") : "actions";
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <Suspense fallback={null}>
@@ -193,8 +225,8 @@ export default function ApprovalsPage() {
       <AppTopBar
         title="Approvals"
         subtitle={
-          waitingCount(waiting?.length ?? 0, rows.length) > 0
-            ? `${waitingCount(waiting?.length ?? 0, rows.length)} waiting`
+          waitingCount(waitingLen, rows.length) > 0
+            ? `${waitingCount(waitingLen, rows.length)} waiting`
             : undefined
         }
         tools={
@@ -211,6 +243,31 @@ export default function ApprovalsPage() {
       />
       <div className="min-h-0 flex-1 overflow-auto">
     <div className="mx-auto max-w-3xl px-4 py-6">
+      {tabs && (
+        <ApprovalTabs active={shownTab} questionCount={questions.count} onPick={setPicked} />
+      )}
+      {tabs && shownTab === "questions" && (
+        <section aria-label="Agent questions" className="flex flex-col" data-approval-questions="">
+          <div className="flex min-h-[12rem] flex-col rounded-lg border border-border bg-card/50">
+            <QuestionsView
+              embedded
+              projects={[]}
+              onOpenTask={(id) => router.push(questionTaskHref(id))}
+              onOpenProject={(id) => router.push(`/projects?project=${encodeURIComponent(id)}`)}
+              onChanged={questions.refresh}
+            />
+          </div>
+          <a
+            href={FULL_LIST_HREF}
+            className="mt-3 text-xs text-primary hover:underline"
+            data-approval-full-list=""
+          >
+            {FULL_LIST_LABEL}
+          </a>
+        </section>
+      )}
+      {shownTab === "actions" && (
+      <>
       {waiting !== null && waiting.length > 0 && (
         <section aria-label="Waiting for you" className="mb-8">
           <h2 className="text-sm font-semibold text-foreground">
@@ -394,6 +451,8 @@ export default function ApprovalsPage() {
           );
         })}
       </div>
+      </>
+      )}
     </div>
       </div>
     </div>

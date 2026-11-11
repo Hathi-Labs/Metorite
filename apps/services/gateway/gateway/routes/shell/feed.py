@@ -1015,6 +1015,95 @@ register(Provider("people", ("people", "tasks", "projects"), _people, PEOPLE_KIN
 register(Provider("chat", ("chat",), _chat, CHAT_KINDS, needs=False, gated=True))
 
 
+# ── Questions for me (WS-55 EA-18c, external_agent_access.md §12.8, feed only) ─
+#
+# `agent_questions`: the agent questions that wait on the member, as ONE card.
+# The source reads the list's own read, `agent_questions.read_questions`, and
+# keeps the rows that carry a `why` (the "For me" scope). It writes no SQL.
+# The oldest 3 questions go on the card, and `total` is the count of the list,
+# so the card, the Projects sidebar badge and the Approvals tab say one number.
+#
+# The flag `AGENT_QUESTIONS_ORGS` gates it inside (`SourceAbsent`), as the route
+# does with 404. It is not gated by `MY_DAY_PROVIDERS`, so one flag turns on all
+# three doors. An off org costs one flag read. Its one act opens the list in
+# Projects, where an answer runs the same write as the list (D100, D101).
+#
+# Fence: `tests/unit/test_feed_agent_questions.py` and its `_r8` twin.
+
+QUESTION_KINDS = frozenset({"agent_questions"})
+#: The questions on the card, oldest first.
+QUESTIONS_SHOWN = 3
+#: The longest question, and the longest option label, on the card.
+QUESTION_CLIP = 140
+OPTION_CLIP = 40
+OPTIONS_SHOWN = 4
+#: The link of the card: the Questions section of Projects (``?app=questions``).
+QUESTIONS_HREF = "/projects?app=questions"
+
+
+def _clip(value: Any, size: int) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= size else text[: size - 1].rstrip() + "\u2026"
+
+
+def _question_fact(row: dict[str, Any]) -> dict[str, Any]:
+    """The facts of one question on the card, from a row of the list."""
+    q = row.get("question") or {}
+    path = " \u203a ".join(str(s.get("name") or "") for s in row.get("project_path") or []
+                           if s.get("name"))
+    return {
+        "activity_id": row["activity_id"], "task_id": row["task_id"],
+        "path": path or str(row.get("task_title") or ""),
+        "question": _clip(q.get("body"), QUESTION_CLIP),
+        "options": [_clip(o.get("label"), OPTION_CLIP) for o in (q.get("options") or [])
+                    if isinstance(o, dict) and o.get("label")][:OPTIONS_SHOWN],
+        "agent": row.get("agent_name"),
+    }
+
+
+async def _agent_questions(user: UserContext) -> Found:
+    from gateway.routes.projects import agent_questions as aq
+    from gateway.routes.projects.agent_runs import _member, holds_answer_role
+    from gateway.routes.projects.analytics import scope_clause, scope_params
+    from gateway.routes.projects.core import _tenant_session, resolve_visibility
+    from gateway.routes.projects.filters import agent_questions_allowed, agent_runs_enabled
+
+    if not agent_questions_allowed(getattr(user, "organization_id", None)):
+        raise needs.SourceAbsent("AGENT_QUESTIONS_ORGS does not hold the org")
+    mine: list[tuple[Any, Any]] = []
+    rows: list[dict[str, Any]] = []
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        scope_sql = await scope_clause(db, vis, None, True)
+        if agent_runs_enabled():
+            every = await aq.read_questions(
+                db, vis, _member(user), scope_sql, scope_params(None))
+            # The list's own scope: a row has a `why` when it is "for me".
+            mine = [pair for pair in every if pair[0].why is not None]
+        rows = await aq.question_rows(
+            db, vis, mine[:QUESTIONS_SHOWN], review=holds_answer_role(user))
+    signals: list[Signal] = []
+    if rows:
+        total = len(mine)
+        shown = [_question_fact(r) for r in rows]
+        title = ("An agent question waits for you" if total == 1
+                 else f"{total} agent questions wait for you")
+        asked = _iso(rows[0].get("asked_at"))
+        signals.append(Signal(
+            signal_id="questions:mine", app="projects", kind="agent_questions",
+            entity={"type": "questions", "id": "mine", "label": title}, title=title,
+            facts={"total": total, "questions": shown, "waiting_since": asked,
+                   "request_ids": [q["activity_id"] for q in shown]},
+            href=QUESTIONS_HREF, acts=(link("answer", "Answer", QUESTIONS_HREF),),
+            at=asked,
+        ))
+    return Found([], len(mine), capped=False, signals=lambda: signals)
+
+
+register(Provider("agent_questions", ("projects",), _agent_questions, QUESTION_KINDS,
+                  needs=False, app="projects"))
+
+
 # ── Knowledge (WS-61 KB-9a and KB-9b, knowledge_base.md §9, feed only, gated) ─
 #
 # Three kinds, one source. `kb_gap` keys on `knowledge:gap:<id>`: a question
@@ -1426,11 +1515,30 @@ def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
         # word of a model.
         template, line = _ORG_CARD_LINES[kind]
         return template, line(facts, tz, today)
+    if kind == "agent_questions":
+        return "agent_questions", _questions_card_line(facts)
     if kind == "agent_asks":
         at = facts.get("waiting_since")
         return "asks", (f"Asked {_when(at, tz, today)} at {_clock(at, tz)}. "
                         "The run waits for your answer.")
     raise KeyError(kind)
+
+
+def _questions_card_line(facts: dict[str, Any]) -> str:
+    """The why line of ``agent_questions`` (WS-55 EA-18c): the project path,
+    the oldest question and its options, and how many more wait. The question
+    is the agent's own words, clipped. The card draws no other model text."""
+    shown = facts.get("questions") or []
+    if not shown:
+        return "An agent waits for your answer."
+    first = shown[0]
+    line = f"{first['path']}: {first['question']}" if first.get("question") else str(first["path"])
+    if first.get("options"):
+        line += " Options: " + ", ".join(first["options"]) + "."
+    more = int(facts.get("total") or len(shown)) - 1
+    if more > 0:
+        line += f" {more} more {'question waits' if more == 1 else 'questions wait'}."
+    return line
 
 
 def _decision_line(facts: dict[str, Any], tz: ZoneInfo, today: date, *,

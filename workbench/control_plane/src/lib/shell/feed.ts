@@ -141,6 +141,23 @@ export interface FeedCard {
   state_fp?: string;
 }
 
+/**
+ * The card of the agent questions that wait on the member (WS-55 EA-18c,
+ * `external_agent_access.md` §12.8). ONE card, keyed `questions:mine`. The
+ * gateway writes its why line (project path, the oldest question, its options,
+ * and how many more wait) and its one `answer` act, a link to the list in
+ * Projects (`?app=questions`). The answer runs the list's own write (D100,
+ * D101), so this file draws no answer and keeps no copy of the rules. `AiWaitingCard`
+ * is the chat's card, and it is not this one.
+ */
+export const AGENT_QUESTIONS_KIND = "agent_questions";
+export const AGENT_QUESTIONS_SIGNAL = "questions:mine";
+export const AGENT_QUESTIONS_HREF = "/projects?app=questions";
+
+/** True for the card of the agent questions. */
+export const isAgentQuestionsCard = (card: Pick<FeedCard, "kind">): boolean =>
+  card.kind === AGENT_QUESTIONS_KIND;
+
 /** Who closed a Handled entry: the `by` table of the MD-2c ticket (§16). */
 export type HandledByKind = "you" | "person" | "agent" | "system" | "rules";
 
@@ -1039,6 +1056,8 @@ export const FEED_KIND_LABELS: Readonly<Record<string, string>> = {
   agent_asks: "Waiting for your answer",
   // WS-ALN ALN-2b: a question that waits on me by name.
   decision: "Waiting for your decision",
+  // WS-55 EA-18c: the agent questions that wait on me (the "For me" list).
+  agent_questions: "Waiting for your answer",
   // WS-53 CRM-Q28 item 14: the weekly CRM digest is ready in Reports.
   digest_ready: "Weekly digest",
   // WS-53 CRM-Q32-4: new questions about the CRM data, for a CRM admin.
