@@ -10,9 +10,11 @@ import {
   type AgentStartBody,
   type AgentStartResult,
   type AgentState,
+  type AgentWaiting,
   type ArchiveApprovalBody,
   type ArchiveApprovalResult,
   type AgentSummary,
+  type ReplaceBody,
   type WithdrawBody,
   agentRunRows,
   normalizeRunDetail,
@@ -1862,6 +1864,11 @@ export interface TaskRow {
    */
   agent_note?: string | null;
   /**
+   * Task 1045a (`agent_coordination.md` §3.2) — the wait of a run that reads
+   * `waiting`: what it waits on and when the wait ends. Null in any other state.
+   */
+  agent_waiting?: Pick<AgentWaiting, "on" | "until"> | null;
+  /**
    * WS-55 EA-13d (EA3-48) — the ONE pull request that the gateway picked for
    * the task, with its CI. `lib/taskCard.pullRequestChip` draws it.
    */
@@ -3350,6 +3357,17 @@ export const agentRunsApi = {
   withdrawAnswer: (runId: string, body: WithdrawBody) =>
     call<{ run: AgentRun; activity: AgentActivity; withdrawn: boolean }>(
       `agent-runs/${encodeURIComponent(runId)}/answer/withdraw`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  /**
+   * SW-43b. The run's member swaps an answer that no agent has read for a new
+   * one, in one write. The same 404, 403 and 409 as the withdraw, and 422 for
+   * an id that is not an option. A retry with the same key writes once.
+   */
+  replaceAnswer: (runId: string, body: ReplaceBody) =>
+    call<{ run: AgentRun; activity: AgentActivity; replaced: boolean }>(
+      `agent-runs/${encodeURIComponent(runId)}/answer/replace`,
       { method: "POST", body: JSON.stringify(body) },
     ),
 

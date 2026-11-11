@@ -488,11 +488,22 @@ def test_native_agent_gets_the_server_tools_end_to_end(monkeypatch, caplog):
             row("other-org-srv", org=ORG_B, url=srv.url),
         ]).install(monkeypatch)
         _stub_pin(monkeypatch, srv.url)
+        # Task 2494: a chat run calls a per-run view of the agent (the steer
+        # turns), so the MCP tool sits on the agent that the run used.
+        from orchestrator import executor as _ex
+        used: list[Any] = []
+        _real_inject = _ex._inject_mcp_servers
+
+        async def _record(agent: Any, *a: Any, **k: Any) -> Any:
+            used.append(agent)
+            return await _real_inject(agent, *a, **k)
+
+        monkeypatch.setattr(_ex, "_inject_mcp_servers", _record)
         model = ScriptedModel([
             tool_turn("probe-srv_echo", '{"text": "ping"}'), text_turn("done"),
         ])
         with structlog.testing.capture_logs() as logs:
-            events, built = drive_native(
+            events, _built = drive_native(
                 _AGENT, "apps/agents/agent-apis-config", monkeypatch, model,
                 thread_id="thread-ws8c-e2e",
                 extra_payload={"organization_id": ORG_B},
@@ -509,7 +520,7 @@ def test_native_agent_gets_the_server_tools_end_to_end(monkeypatch, caplog):
         assert any("echo:ping" in str(m.get("content")) for m in tool_msgs), tool_msgs
         assert any(h.get("authorization") == SENTINEL for h in srv.headers_seen), (
             "the stored header never reached the server")
-        tool = built[0].mcp_tools[0]
+        tool = next(a for a in used if a.mcp_tools).mcp_tools[0]
         assert tool.is_connected is False, "the run left the MCP session open"
         text = logged_text(logs, caplog)
         assert SENTINEL not in text
