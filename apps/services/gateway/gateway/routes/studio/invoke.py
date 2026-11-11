@@ -354,6 +354,9 @@ BAD_ARGS_TEXT = (
 APP_UNAVAILABLE = "app_unavailable"
 APP_DOWN = "The app of this action is not available now, so try the action again later."
 APP_REFUSED = "app_refused"
+#: B2b-2b review: a door op whose request sends an identity header twice. It
+#: is 400 with the code ``bad_input``, before the body read.
+REPEATED_HEADERS = "Send each identity header of this request once, so the app reads one caller."
 
 #: J3a: the one code of an action of a paused package, its status and its one
 #: sentence. The door refuses each action and each class with it, before the
@@ -1356,12 +1359,12 @@ async def _run_door_op(request: Request, door: DoorOp, raw: bytes, out: _Outcome
     use is 422 ``bad_args`` with the key. A 4xx of the app passes unchanged,
     and a 5xx is 503 ``app_unavailable``."""
     try:
-        call = door_op.call_of(door, raw)
+        call, lowered = door_op.call_of(door, raw)
     except door_op.BadArgs as exc:
         out.fail = _Fail("refused", BAD_ARGS, HTTPException(status_code=422, detail={
             "code": BAD_ARGS, "message": BAD_ARGS_TEXT, "field": exc.field}))
         return
-    answer = await door_op.run(request, call)
+    answer = await door_op.run(request, call, lowered)
     out.door_status = answer.status
     if answer.reply is not None:
         out.door_reply = answer.reply
@@ -1660,7 +1663,12 @@ async def invoke_action(
                     # too. The app's own gates decide. A read in a preview is
                     # a real read (G4).
                     out.refusal, door = _door_op_of(ref, user)
-                    if out.refusal is None:
+                    if out.refusal is None and door_op.repeated(request.headers):
+                        # Two values of one identity header name no single caller.
+                        out.fail = _Fail("refused", BAD_INPUT, HTTPException(
+                            status_code=400,
+                            detail={"code": BAD_INPUT, "message": REPEATED_HEADERS}))
+                    elif out.refusal is None:
                         await _run_executor(request, user, pid, action, out, direct,
                                             delegated, DOOR_OP_MODE, None, preview, door)
                 elif out.refusal is None and not preview:

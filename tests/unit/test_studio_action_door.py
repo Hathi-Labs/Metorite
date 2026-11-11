@@ -1071,7 +1071,8 @@ class TestTheTables:
                     "request_refused": invoke.ASK_AGAIN,
                     "approval_ask": invoke.APPROVAL_ASK,
                     "read_busy": invoke.READ_BUSY_MESSAGE,
-                    "bad_args": invoke.BAD_ARGS_TEXT, "app_unavailable": invoke.APP_DOWN}
+                    "bad_args": invoke.BAD_ARGS_TEXT, "app_unavailable": invoke.APP_DOWN,
+                    "repeated_headers": invoke.REPEATED_HEADERS}
         # B2c-2a: each refused spend has its own code and one sentence.
         messages.update({code: text for _, code, text in invoke.SPEND_REFUSALS.values()})
         for code, message in messages.items():
@@ -1941,6 +1942,7 @@ DOOR_MANIFEST: dict[str, Any] = {**MANIFEST, "actions": [
     *MANIFEST["actions"],
     {"id": "page", "uses": "knowledge.get_page"},
     {"id": "maint", "uses": "knowledge.list_maintenance"},
+    {"id": "recent", "uses": "knowledge.list_recent"},
     {"id": "search", "uses": "knowledge.search"},
     {"id": "loop", "uses": "probe.loop"},
 ]}
@@ -1991,6 +1993,8 @@ def _inner(w: Any) -> APIRouter:
 
     r.add_api_route("/knowledge/pages/{page_id}", _serve, methods=["GET"])
     r.add_api_route("/knowledge/maintenance", _serve, methods=["GET"])
+    # A paged op (``Page`` of ``list_recent``): its limit key is ``limit``.
+    r.add_api_route("/knowledge/recent", _serve, methods=["GET"])
     return r
 
 
@@ -2100,6 +2104,69 @@ class TestTheDoorOp:
         raw = [(b"authorization", b"Bearer a"), (b"authorization", b"Bearer b"),
                (b"x-user-email", ANA.encode()), (b"cookie", b"s=1")]
         assert door_op.forwarded(Headers(raw=raw)) == {"x-user-email": ANA}
+        assert door_op.repeated(Headers(raw=raw))
+        assert not door_op.repeated(Headers(raw=[(b"cookie", b"a"), (b"cookie", b"b")]))
+
+    @pytest.mark.parametrize("name", ["Authorization", "X-User-Email", "X-User-Role",
+                                      "X-Actor-Via"])
+    def test_an_identity_header_sent_twice_is_refused_before_the_call(self, opw, name):
+        """Review P3: two values of one identity header name no single caller,
+        so the door refuses the call. It does not send one of the two."""
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        sent = [(k, v) for k, v in INBOUND.items() if k != name]
+        sent += [(name, "first"), (name, "second")]
+        r = _door_client(opw).post(f"/studio/apps/{pid}/actions/page",
+                                   json={"page_id": PAGE}, headers=sent)
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == {"code": "bad_input", "message": invoke.REPEATED_HEADERS}
+        assert opw.calls == []
+        [row] = opw.audits
+        assert (row["detail"]["outcome"], row["detail"]["reason"]) == ("refused", "bad_input")
+
+    def test_an_error_of_the_send_is_503_with_an_audit_row(self, opw):
+        """Review P3: a header value that is not ASCII fails the send of httpx
+        (UnicodeEncodeError). The door answers 503, never a 500."""
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        sent = [(k.encode(), v.encode()) for k, v in INBOUND.items() if k != "X-User-Role"]
+        sent.append((b"X-User-Role", "employé".encode("latin-1")))
+        r = _door_client(opw).post(f"/studio/apps/{pid}/actions/page",
+                                   json={"page_id": PAGE}, headers=sent)
+        assert r.status_code == 503, r.text
+        assert r.json()["detail"] == {"code": "app_unavailable", "message": invoke.APP_DOWN}
+        assert opw.calls == []
+        [row] = opw.audits
+        assert (row["detail"]["outcome"], row["detail"]["reason"]) == (
+            "failed", "app_unavailable")
+        assert "status" not in row["detail"]
+
+    @pytest.mark.parametrize("action,args,sent,lowered", [
+        ("maint", {"limit": 100}, "50", True),
+        ("maint", {"limit": "120"}, "50", True),
+        ("maint", {"limit": 50}, "50", False),
+        ("maint", {"limit": 5}, "5", False),
+        ("recent", {"limit": 100}, "50", True),
+        ("recent", {}, "50", False),
+        ("recent", {"limit": 7}, "7", False),
+    ])
+    def test_the_row_limit_is_at_most_50_before_the_call(self, opw, action, args, sent,
+                                                          lowered):
+        """Review P2: the app reads at most 50 rows, so its cursor never skips
+        a row that the door cut. A paged op with no limit gets 50. When the
+        door lowered the limit and a list came back full, ``truncated`` holds."""
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        opw.reply = (200, {"pages": [{"id": i} for i in range(50)],
+                           "next_cursor": "after-50"}, None)
+        got = _door(opw, pid, action, args).json()
+        assert opw.calls[0]["query"]["limit"] == sent
+        assert got["result"]["next_cursor"] == "after-50"
+        assert got["truncated"] is lowered
+
+    def test_a_limit_of_another_type_goes_to_the_app(self, opw):
+        """The door lowers only a whole number. The app refuses each other
+        value with its own 422, which passes unchanged."""
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        _door(opw, pid, "maint", {"limit": True})
+        assert opw.calls[0]["query"]["limit"] == "true"
 
     def test_no_session_is_open_during_the_call(self, opw):
         pid = _package(opw, manifest=DOOR_MANIFEST)

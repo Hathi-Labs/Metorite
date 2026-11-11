@@ -44518,7 +44518,7 @@
 "tests/unit/test_studio_action_door.py::TestTheTables::test_one_check_runs_twice": 0.001,
 "tests/unit/test_studio_action_door.py::TestTheTables::test_parse_uses_names_the_source_of_each_form": 0.0,
 "tests/unit/test_studio_action_door.py::TestTheTables::test_the_accepted_keys_are_the_properties_of_the_input_schema": 0.0,
-"tests/unit/test_studio_action_door.py::TestTheTables::test_the_door_opens_the_object_get_and_the_object_list_only": 0.0,
+"tests/unit/test_studio_action_door.py::TestTheTables::test_the_door_opens_the_object_get_the_object_list_and_the_door_op": 0.0,
 "tests/unit/test_studio_action_door.py::TestTheTables::test_the_object_verb_table_holds_the_five_verbs_of_the_grammar": 0.0,
 "tests/unit/test_studio_action_door.py::TestTheTables::test_the_r8_suite_is_named_in_the_ci_skip_guard": 0.001,
 "tests/unit/test_studio_action_door.py::TestTheTables::test_the_refusal_text_names_each_direct_verb": 0.0,
