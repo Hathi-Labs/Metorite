@@ -272,7 +272,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     // Only a change of the run's facts reports. The task object changes on
     // every merge, and listing it would report again for each one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, state, run?.client_via, run?.member_email]);
+  }, [enabled, state, run?.client_via, run?.member_email, run?.agent_label]);
 
   // M1 (ORC-3): the panel sits above the task card's tabs, so its first read
   // must not move the Add row and the tab bar. Until the read answers, keep
