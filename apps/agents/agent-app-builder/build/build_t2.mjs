@@ -54,11 +54,12 @@
 //     esbuild the same bytes ({ contents, loader }). esbuild never reads a
 //     file of the app by itself, so a write between check and parse changes
 //     nothing (round 4).
-//   - The check refuses a require() or import() whose path is built from
-//     parts (`+` or `${}`). esbuild turns such a call into a glob, and sends
-//     each match straight to onLoad. The check reads the text, then
-//     esbuild's own transform of it, which turns `(require)(...)`,
+//   - The check refuses a require() or import() whose first argument is not
+//     one plain string literal. esbuild turns a path built from parts into
+//     a glob, and sends each match straight to onLoad. The check reads
+//     esbuild's own transforms of the file, which turn `(require)(...)`,
 //     `require!(...)`, a cast, a \u escape and a comment into a plain call.
+//     The second transform folds constants as the minify does (round 5).
 //   - Each import of an app file resolves through pluginBuild.resolve. A
 //     resolve error and a file outside the roots give the SAME refusal, so a
 //     package.json field cannot test whether a path of another app exists.
@@ -66,8 +67,9 @@
 //     in the app in `main`, `module`, `browser`, `exports` and `imports`.
 //     esbuild falls back when a field's file is missing (a "browser" map to
 //     the plain file, `main` to index.js), so only a check that reads no
-//     target hides whether a path exists. A package.json that changes
-//     during the build fails it.
+//     target hides whether a path exists. A package.json that does not
+//     parse, or that holds a key twice, is refused (round 5). A
+//     package.json that changes during the build fails it.
 //   - A refusal of a file outside every root names no path, and the error
 //     printer prints each line once. A diagnostic placed in a file outside
 //     the roots shows only the fixed text (review round 3).
@@ -181,70 +183,28 @@ function refuseUnnamed() {
 
 // The files that esbuild parses as code. Only these can hold a glob import.
 const CODE_FILE = /\.(?:[cm]?[jt]sx?)$/i;
-const CALL_START = /\b(?:require|import)\s*(?:\/\*[\s\S]*?\*\/\s*)*\(/g;
+const CALL_START = /\b(?:require|import)\s*\(/g;
+// The one legal first argument: ONE plain string literal (a template literal
+// with no `${`), and then `)`. A `,` may follow only when an object (the
+// options of import(), as in `{ with: ... }`) or `)` comes next.
+const FIXED_ARGUMENT =
+  /\s*(?:"(?:[^"\\\r\n]|\\[\s\S])*"|'(?:[^'\\\r\n]|\\[\s\S])*'|`(?:[^`\\$]|\\[\s\S]|\$(?!\{))*`)\s*(?:\)|,\s*[{)])/y;
 
-/** The end index of the string or template literal that starts at *i*. */
-function skipLiteral(source, i) {
-  const quote = source[i];
-  let j = i + 1;
-  while (j < source.length) {
-    const c = source[j];
-    if (c === "\\") { j += 2; continue; }
-    if (c === quote) return j + 1;
-    if (quote === "`" && c === "$" && source[j + 1] === "{") {
-      let depth = 1;
-      j += 2;
-      while (j < source.length && depth > 0) {
-        if (source[j] === "{") depth++;
-        else if (source[j] === "}") depth--;
-        j++;
-      }
-      continue;
-    }
-    j++;
-  }
-  return j;
-}
-
-/** True when *source* holds a require() or import() whose argument is built
- * from parts: a literal joined with `+`, or a template literal with `${`.
- * esbuild turns such a call into a glob, reads the matching dir and sends each
- * match to onLoad. So the build refuses the file before esbuild parses it
- * (task 2464 review P0). A call with one fixed literal, or with no literal
- * at all (`import(x)`), stays legal. */
-function hasGlobImport(source) {
+/** True when *code* holds a require() or import() whose first argument is
+ * not one plain string literal. esbuild turns a call with a path built from
+ * parts into a glob, reads the matching dir and sends each match to onLoad
+ * (task 2464 review P0). The check fails closed (round 5). It reads no
+ * argument form: a regex literal with a quote in it misled a parser of the
+ * forms, and the minify of the bundle folded `(/"/, "x") + y` into a glob.
+ * So any other first argument is refused, `import(x)` too, and so is a
+ * second argument that is not an object. *code* is
+ * esbuild's transform of the file, with no comment and no type in it. */
+function hasGlobImport(code) {
   CALL_START.lastIndex = 0;
   let m;
-  while ((m = CALL_START.exec(source))) {
-    let i = m.index + m[0].length;
-    let depth = 1;
-    let literals = 0;
-    let joined = false;
-    while (i < source.length && depth > 0) {
-      const c = source[i];
-      if (c === '"' || c === "'" || c === "`") {
-        const end = skipLiteral(source, i);
-        literals++;
-        if (c === "`" && source.slice(i, end).includes("${")) joined = true;
-        i = end;
-        continue;
-      }
-      if (c === "/" && source[i + 1] === "*") {
-        const end = source.indexOf("*/", i + 2);
-        i = end < 0 ? source.length : end + 2;
-        continue;
-      }
-      if (c === "/" && source[i + 1] === "/") {
-        const end = source.indexOf("\n", i);
-        i = end < 0 ? source.length : end;
-        continue;
-      }
-      if (c === "(") depth++;
-      else if (c === ")") depth--;
-      else if (c === "+") joined = true;
-      i++;
-    }
-    if (literals > 0 && joined) return true;
+  while ((m = CALL_START.exec(code))) {
+    FIXED_ARGUMENT.lastIndex = m.index + m[0].length;
+    if (!FIXED_ARGUMENT.test(code)) return true;
   }
   return false;
 }
@@ -427,27 +387,31 @@ function containmentPlugin({ app, vendor, ui, allowlist, esbuild }) {
             const globbed = {
               errors: [{
                 text:
-                  `${shown} builds an import path from parts (with + or \${}). ` +
-                  `${OWN_FILES_ONLY} Import each file by its fixed path.`,
+                  `${shown} builds an import path from parts, or from no fixed string. ` +
+                  `${OWN_FILES_ONLY} Give require() and import() one fixed string, ` +
+                  `as in import("./x").`,
               }],
             };
             const text = bytes.toString("utf-8");
-            // The cheap check on the text first. Then the check on esbuild's
-            // own transform of the same bytes: it turns `(require)(...)`,
-            // `require!(...)`, `(require as any)(...)`, `require(...)`
-            // and a comment before `(` into a plain call (round 4 P0).
-            if (hasGlobImport(text)) return globbed;
-            let code;
-            try {
-              ({ code } = await esbuild.transform(text, {
-                loader, jsx: "automatic", target: "es2020", logLevel: "silent",
-                tsconfigRaw: {},
-              }));
-            } catch (err) {
-              const first = (err.errors && err.errors[0] && err.errors[0].text) || "it does not parse";
-              return { errors: [{ text: `${shown}: ${first}` }] };
+            // The check reads esbuild's own transforms of the same bytes. They
+            // turn `(require)(...)`, `require!(...)`, `(require as any)(...)`,
+            // a \u escape and a comment before `(` into a plain call (round
+            // 4 P0). The second transform also folds the constants, as the
+            // minify of the bundle does: `(0, require)(...)` and
+            // `(/"/, "x") + y` (round 5 P0).
+            for (const minifySyntax of [false, true]) {
+              let code;
+              try {
+                ({ code } = await esbuild.transform(text, {
+                  loader, jsx: "automatic", target: "es2020", logLevel: "silent",
+                  tsconfigRaw: {}, minifySyntax,
+                }));
+              } catch (err) {
+                const first = (err.errors && err.errors[0] && err.errors[0].text) || "it does not parse";
+                return { errors: [{ text: `${shown}: ${first}` }] };
+              }
+              if (hasGlobImport(code)) return globbed;
             }
-            if (hasGlobImport(code)) return globbed;
           }
           return { contents: bytes, loader };
         }
@@ -545,25 +509,63 @@ function stringsIn(value, out = []) {
   return out;
 }
 
-/** The package.json of the app whose path field leads out of the app dir, or
- * null (task 2464 round 4). esbuild tries a field, and when its file is
+// One token of a JSON text: a string, or a mark of its structure. Numbers,
+// `true`, `false` and `null` hold no quote and no mark, so the scan skips them.
+const JSON_TOKEN = /"(?:[^"\\]|\\[\s\S])*"|[{}[\],:]/g;
+
+/** True when an object in the valid JSON *text* holds the same key twice, at
+ * any depth. JSON.parse keeps the last value of a key, and esbuild keeps the
+ * first (task 2464 round 5). A key is compared after its escapes, so
+ * `"m\u0061in"` and `"main"` are the same key. */
+function hasDuplicateKey(text) {
+  const stack = [];
+  JSON_TOKEN.lastIndex = 0;
+  let m;
+  while ((m = JSON_TOKEN.exec(text))) {
+    const t = m[0];
+    const top = stack[stack.length - 1];
+    if (t === "{") stack.push({ keys: new Set(), expectKey: true });
+    else if (t === "[") stack.push({ keys: null, expectKey: false });
+    else if (t === "}" || t === "]") stack.pop();
+    else if (t === ",") { if (top && top.keys) top.expectKey = true; }
+    else if (t === ":") { if (top && top.keys) top.expectKey = false; }
+    else if (top && top.keys && top.expectKey) {
+      const key = JSON.parse(t);
+      if (top.keys.has(key)) return true;
+      top.keys.add(key);
+    }
+  }
+  return false;
+}
+
+/** The refusal of the first package.json of the app that the build cannot
+ * check, or null (task 2464 rounds 4 and 5). A path field that leads out of
+ * the app dir is refused. esbuild tries a field, and when its file is
  * missing it may fall back (a "browser" map to the plain file, `main` to
- * index.js). So the build would differ for a path of another app that
- * exists and one that does not. A static check reads no target at all. */
+ * index.js). So the build would differ for a path of another app that exists
+ * and one that does not. A static check reads no target at all. The check
+ * fails closed: a package.json that does not parse, or that holds a key
+ * twice, is refused too. esbuild and JSON.parse can read those apart. */
 function packageLeavingTheApp(files) {
-  for (const [file, text] of files) {
+  for (const [file, raw] of files) {
+    const shown = relative(workspace, file).split(sep).join("/");
+    // esbuild skips a leading BOM, and JSON.parse throws on one.
+    const text = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
     let pkg;
     try {
       pkg = JSON.parse(text);
     } catch {
-      continue; // esbuild reports the app's own bad JSON itself
+      return `${shown} is not valid JSON, so the build cannot check it. Repair it, then build again.`;
+    }
+    if (hasDuplicateKey(text)) {
+      return `${shown} holds the same key twice. Remove the second copy, then build again.`;
     }
     if (!pkg || typeof pkg !== "object") continue;
     const dir = dirname(file);
     for (const field of PACKAGE_PATH_FIELDS) {
       for (const target of stringsIn(pkg[field])) {
         if (!within(workspace, resolve(dir, target.replace(/\\/g, "/")))) {
-          return relative(workspace, file).split(sep).join("/");
+          return `${shown} names a path out of this app in a package field. ${OWN_FILES_ONLY}`;
         }
       }
     }
@@ -583,9 +585,7 @@ function samePackageJsons(before) {
 
 const packageFiles = packageJsons(workspace);
 const leaving = packageLeavingTheApp(packageFiles);
-if (leaving) {
-  fail(`${leaving} names a path out of this app in a package field. ${OWN_FILES_ONLY}`);
-}
+if (leaving) fail(leaving);
 // A package.json that changes during the build could undo the check above.
 const CHANGED_DURING_BUILD =
   "A package.json of this app changed during the build. Build again when no file changes.";

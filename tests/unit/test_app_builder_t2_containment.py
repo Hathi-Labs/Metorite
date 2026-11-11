@@ -64,6 +64,12 @@ Mutations this suite catches (R7), each run red once by hand:
 * no dot-part rule: the dot-part tests (the refusal no longer names the
   import);
 * no ``delivery_guard`` in ``build_app``: the dir lock test;
+* ``build_app`` ignores the quota flag that ``delivery_guard`` yields: the
+  quota test (round 5);
+* the old parser of the call forms in place of the fail-closed check: the
+  regex-literal tests (round 5);
+* ``JSON.parse`` with no BOM strip, no duplicate-key check, or a ``continue``
+  on a parse error: the package parse tests (round 5);
 * ``build_app`` takes the script from the clone cache again
   (``_agent_workspace_dir("agent-app-builder")``): the two route tests.
 """
@@ -475,6 +481,79 @@ def test_a_disguised_glob_call_is_refused_the_same_for_a_hit_and_a_miss(
     assert "src/main.tsx builds an import path from parts" in out, out
 
 
+def _probe_pair_no_bundle(
+    b: Path, vendor: Path, write: Any, hit: str, miss: str,
+) -> tuple[subprocess.CompletedProcess[str], subprocess.CompletedProcess[str]]:
+    """``_probe_pair``, and neither build may write ``dist/bundle.html``."""
+    runs = []
+    for target in (hit, miss):
+        if (b / "dist").is_dir():
+            shutil.rmtree(b / "dist")
+        write(target)
+        runs.append(_build(b, vendor))
+        assert not (b / "dist" / "bundle.html").exists(), runs[-1].stdout + runs[-1].stderr
+    return runs[0], runs[1]
+
+
+#: Round 5 P0: a regex literal with a quote in it misled the text parser of
+#: the call forms. The minify of the bundle then folded ``(/"/, "x") + y``
+#: into ``"x" + y``, a glob. ``%s`` is the last part of the path.
+REGEX_FORMS = {
+    "comma": (
+        "const y = (window as any).n;\n"
+        'console.log(require((/"/, "../../org-a-app/src/%s") + y));\n'
+    ),
+    "ternary": (
+        "const y = (window as any).n;\n"
+        'console.log(require(/"/.source ? "../../org-a-app/src/%s" + y : ""));\n'
+    ),
+    "single_quote": (
+        "const y = (window as any).n;\n"
+        "console.log(require((/'/, '../../org-a-app/src/%s') + y));\n"
+    ),
+}
+
+
+@docker
+@pytest.mark.parametrize("mode", ["default", "custom_deps"])
+@pytest.mark.parametrize("form", sorted(REGEX_FORMS))
+def test_a_regex_literal_glob_is_refused_the_same_for_a_hit_and_a_miss(
+    apps: dict[str, Path], vendor: Path, form: str, mode: str,
+) -> None:
+    """The check fails closed: a require() or import() whose first argument is
+    not one plain string literal is refused, whatever the argument holds."""
+    b = apps["b"]
+    if mode == "custom_deps":
+        _custom_deps(b)
+    pair = _probe_pair_no_bundle(
+        b, vendor, lambda last: _write(b / "src" / "main.tsx", REGEX_FORMS[form] % last),
+        "data", "nothere-2464",
+    )
+    out = _assert_same_refusal(pair, b)
+    assert "src/main.tsx builds an import path from parts" in out, out
+
+
+@docker
+def test_a_call_with_no_fixed_string_is_refused(apps: dict[str, Path], vendor: Path) -> None:
+    """Round 5: ``import(x)`` and ``(0, require)(...)`` are refused too, and a
+    call with one fixed string still builds."""
+    b = apps["b"]
+    _write(b / "src" / "own.ts", "export default 1;\n")
+    for body in (
+        "const x = (window as any).n;\nimport(x).then(console.log);\n",
+        'const y = (window as any).n;\nconsole.log((0, require)("../../org-a-app/src/" + y));\n',
+    ):
+        _write(b / "src" / "main.tsx", body)
+        done = _build(b, vendor)
+        out = done.stdout + done.stderr
+        assert done.returncode != 0, out
+        assert "src/main.tsx builds an import path from parts" in out, out
+        assert not (b / "dist" / "bundle.html").exists(), out
+    _write(b / "src" / "main.tsx", 'import("./own").then(console.log);\nconsole.log(/"/, `t`);\n')
+    done = _build(b, vendor)
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
 #: Package fields that name a path in another app (round 4 P1). Each is
 #: ``(mode, writer)``. The writer sets up org B's app for a target, and
 #: ``hit`` names a file of org A, ``miss`` one that does not exist.
@@ -536,6 +615,76 @@ def test_a_package_field_out_of_the_app_reads_the_same_for_a_hit_and_a_miss(
         _probe_pair(b, vendor, lambda target: write(b, target), "data.json", "nothere-2464.json"), b,
     )
     assert PACKAGE_OUT in out, out
+
+
+#: Round 5 P0: package.json forms that JSON.parse and esbuild read apart.
+#: Each writer names org A's *target* in a ``main`` that esbuild would read.
+def _duplicate_main(b: Path, target: str) -> None:
+    _write(b / "node_modules" / "evil" / "index.js", "module.exports = 1;\n")
+    _write(
+        b / "node_modules" / "evil" / "package.json",
+        f'{{"name": "evil", "main": "../../../org-a-app/src/{target}", "main": "./index.js"}}',
+    )
+    _write(b / "src" / "main.tsx", 'import e from "evil";\nconsole.log(e);\n')
+
+
+def _escaped_duplicate_main(b: Path, target: str) -> None:
+    _write(b / "node_modules" / "evil" / "index.js", "module.exports = 1;\n")
+    _write(
+        b / "node_modules" / "evil" / "package.json",
+        f'{{"name": "evil", "main": "../../../org-a-app/src/{target}", "m\\u0061in": "./index.js"}}',
+    )
+    _write(b / "src" / "main.tsx", 'import e from "evil";\nconsole.log(e);\n')
+
+
+def _bom_main(b: Path, target: str) -> None:
+    _write(b / "node_modules" / "evil" / "index.js", "module.exports = 1;\n")
+    _write(
+        b / "node_modules" / "evil" / "package.json",
+        "\ufeff" + json.dumps({"name": "evil", "main": f"../../../org-a-app/src/{target}"}),
+    )
+    _write(b / "src" / "main.tsx", 'import e from "evil";\nconsole.log(e);\n')
+
+
+PACKAGE_PARSE_FORMS = {
+    "duplicate_key": (_duplicate_main, "holds the same key twice."),
+    "escaped_duplicate_key": (_escaped_duplicate_main, "holds the same key twice."),
+    "bom": (_bom_main, PACKAGE_OUT),
+}
+
+
+@docker
+@pytest.mark.parametrize("form", sorted(PACKAGE_PARSE_FORMS))
+def test_a_package_json_that_parsers_read_apart_is_refused_the_same_for_a_hit_and_a_miss(
+    apps: dict[str, Path], vendor: Path, form: str,
+) -> None:
+    """JSON.parse keeps the last copy of a key and esbuild the first, and
+    JSON.parse threw on a BOM, so the check let the file through. Now a key
+    twice is refused, and a BOM is stripped before the check."""
+    b = apps["b"]
+    _custom_deps(b)
+    write, refusal = PACKAGE_PARSE_FORMS[form]
+    pair = _probe_pair_no_bundle(b, vendor, lambda target: write(b, target), "data.json", "nothere-2464.json")
+    first, second = pair
+    out_hit, out_miss = first.stdout + first.stderr, second.stdout + second.stderr
+    assert first.returncode != 0 and second.returncode != 0, f"{out_hit}\n---\n{out_miss}"
+    assert out_hit == out_miss, f"an oracle: the hit and the miss read apart:\n{out_hit}\n---\n{out_miss}"
+    assert f"node_modules/evil/package.json {refusal}" in out_hit, out_hit
+    _assert_no_leak(out_hit, b)
+
+
+@docker
+def test_a_package_json_that_does_not_parse_is_refused(apps: dict[str, Path], vendor: Path) -> None:
+    """Round 5: the check fails closed. Before, it skipped a package.json that
+    JSON.parse refused, and left the file to esbuild unchecked."""
+    b = apps["b"]
+    _write(b / "src" / "pkg" / "package.json", '{"main": "./a.js",}')
+    _write(b / "src" / "main.tsx", 'console.log("own");\n')
+    done = _build(b, vendor)
+    out = done.stdout + done.stderr
+    assert done.returncode != 0, out
+    assert "src/pkg/package.json is not valid JSON" in out, out
+    assert not (b / "dist" / "bundle.html").exists(), out
 
 
 #: Imports that esbuild's resolver follows out of the app dir through a link
@@ -962,6 +1111,36 @@ def test_the_host_route_checks_and_builds_under_the_dir_lock(
     out = asyncio.run(host_route.files.build_app("org-b-app", user=None))
     assert out["built"] is True, out
     assert events == ["lock", "check", "build", "unlock"], events
+
+
+def test_the_host_route_builds_nothing_while_the_dir_is_over_its_quota(
+    host_route: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round 5: delivery_guard yields True while a container on the dir is
+    over its quota. The build writes dist/, so the route refuses it."""
+    events: list[str] = []
+
+    @contextlib.asynccontextmanager
+    async def guard(_workspace: Path) -> Any:
+        events.append("lock")
+        try:
+            yield True
+        finally:
+            events.append("unlock")
+
+    def refusal(_workspace: Path) -> None:
+        events.append("check")
+
+    async def run(_ws: Path, _script: Path) -> tuple[bool, str]:
+        events.append("build")
+        return True, "build_t2: ok"
+
+    monkeypatch.setattr(host_route.broker, "delivery_guard", guard)
+    monkeypatch.setattr(host_route.files, "host_build_refusal", refusal)
+    monkeypatch.setattr(host_route.files, "_run_build_t2", run)
+    out = asyncio.run(host_route.files.build_app("org-b-app", user=None))
+    assert out == {"built": False, "error": host_route.files.HOST_BUILD_OVER_QUOTA_MESSAGE}, out
+    assert events == ["lock", "unlock"], events
 
 
 def test_a_build_past_the_timeout_is_killed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -55,6 +55,13 @@ HOST_BUILD_OFF_MESSAGE = (
     "This app builds in its sandbox. Ask the builder to build it, or ask Metorite support."
 )
 
+#: The answer of the host build route while a container on the app dir is over
+#: its quota (task 2464 round 5). The build writes dist/, so it is refused.
+HOST_BUILD_OVER_QUOTA_MESSAGE = (
+    "The app dir is over its quota, so the build did not run. "
+    "Delete files to free space, then build again."
+)
+
 
 class AppFileEntry(BaseModel):
     path: str
@@ -373,7 +380,11 @@ async def _build_under_dir_lock(workspace: Path, script: Path) -> tuple[bool, st
 
     if delivery_guard is None:
         return await checked_build()
-    async with delivery_guard(workspace):
+    async with delivery_guard(workspace) as over_quota:
+        # A container on the dir is over its quota (§7.1 rule 10). The build
+        # writes dist/, so it is refused, as each delegated write is.
+        if over_quota:
+            return False, HOST_BUILD_OVER_QUOTA_MESSAGE
         return await checked_build()
 
 
