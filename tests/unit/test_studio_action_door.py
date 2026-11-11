@@ -826,6 +826,8 @@ class _Body:
         self.world, self.chunk, self.repeat, self.fails = world, chunk, repeat, fails
         self.method, self.headers = "POST", {}
         self.url = SimpleNamespace(path="/studio/apps/x/actions/y")
+        # The door reads the query of each call: the preview marker (G4).
+        self.query_params: dict[str, str] = {}
         self.reads = 0
         self.sent = 0
 
@@ -1466,6 +1468,8 @@ def _handler_call(dw: Any, pid: str, action: str, body: Any) -> Any:
     class _Req:
         method = "POST"
         url = SimpleNamespace(path=path)
+        # The door reads the query of each call: the preview marker (G4).
+        query_params: dict[str, str] = {}  # noqa: RUF012
 
         async def stream(self):
             yield raw

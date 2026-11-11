@@ -39,7 +39,7 @@ package declares. The route registers on the router of ``actions.py``, as
    too. A delegated call of a run with no person present gets 403
    ``no_person_present`` (AUTO-7a) after the first check, before the body.
    A viewer (J2a) gets 403 ``read_only`` for each class B and C action, with
-   a proof or an ``ask=1`` too, before the body.
+   a proof, an ``ask=1`` or a ``preview=1`` (G4) too, before the body.
 7. The body. Only a call that an open or a direct executor runs, or that
    asks for a card, reads the body. So a non-owner and a refused action read
    no byte. The resend of an approved request reads no byte either. No session
@@ -144,6 +144,30 @@ store.
 * A refused spend answers the code of ``classify_refusal``
   (:data:`SPEND_REFUSALS`). A refused write answers 422 ``{code, message,
   rule, fieldErrors}``, as a direct write does.
+
+**The preview (G4, ``ai_studio.md`` §6.2 step 4).** A call with the query
+mark ``preview=1`` (:data:`PREVIEW_MARKER`) changes nothing outside its
+answer. Any other value of ``preview`` gets 422 ``bad_preview``, so a typo
+never falls through to a live write.
+
+* A read runs as before, with its audit row. A read changes nothing.
+* A create, an update or a delete of an object runs the SAME write path
+  (:func:`_do_object_write`, the checks of each field and rule, and the
+  lines) in a SAVEPOINT that ALWAYS rolls back (:func:`_run_preview_write`).
+  So the answer shows what the write would give, and no row of the object
+  store changes. Each other session sees nothing at any time, because the
+  write never commits. The call needs no proof and no card: it opens no
+  request and spends none.
+* A class B or C action of another source (a workflow, a door op such as a
+  send, an integration) runs NO executor. The answer is 200
+  ``{preview, simulated: {action, uses, class}}``. No sender, no workflow
+  and no event hook is called.
+* The audit row of a preview write or send has the outcome ``simulated`` and
+  the key ``preview``. So no row says that a write ran. A preview create
+  names no record, because its id was never stored.
+* The call runs inside ``studio.preview.preview_scope``. A record event (C3)
+  goes out only through ``studio.preview.emit_record_event``, which emits
+  nothing in that scope.
 """
 
 from __future__ import annotations
@@ -180,11 +204,13 @@ from gateway.routes.apps._common import record_app_audit_bound, record_app_audit
 from gateway.routes.studio import actions, flags
 from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store, packages_store
+from gateway.studio.preview import preview_scope
 
 __all__ = ["ASK_MARKER", "DELEGATED_EXECUTORS", "DIRECT_EXECUTORS", "DOOR_TEMPLATE",
            "LIST_INPUT_KEYS", "MAX_AUDIT_TEXT", "MAX_BODY_BYTES",
-           "OPEN_EXECUTORS", "READERS_PER_ORG", "READERS_TOTAL", "REFUSALS", "REQUEST_APP",
-           "REQUEST_VIA", "SPEND_REFUSALS", "WRITERS_PER_ORG", "WRITERS_TOTAL", "router"]
+           "OPEN_EXECUTORS", "PREVIEW_MARKER", "READERS_PER_ORG", "READERS_TOTAL",
+           "REFUSALS", "REQUEST_APP", "REQUEST_VIA", "SPEND_REFUSALS", "WRITERS_PER_ORG",
+           "WRITERS_TOTAL", "router"]
 
 _log = get_logger("gateway.studio.invoke")
 
@@ -220,6 +246,12 @@ _DELEGATED_MODES = ("ask", "spend")
 #: opens a card only with it. B2c-2b's tools send it, and the member's own
 #: screen never does. It is in no digest and no binding.
 ASK_MARKER = ("ask", "1")
+
+#: The query marker of a preview (G4): ``preview=1``. A preview call commits
+#: no write and runs no send. Any other value of the key is 422.
+PREVIEW_MARKER = ("preview", "1")
+BAD_PREVIEW = "bad_preview"
+BAD_PREVIEW_TEXT = "Send preview=1 to preview this action, or send no preview key."
 
 #: The most writes in flight for one org, and in the process (B2c-1). The door
 #: counts them BEFORE it opens a session, so a call past the cap holds no
@@ -427,6 +459,12 @@ class _Outcome:
     viewer: bool = False
     #: J2a. The installed version that a viewer read, for the audit row.
     version: int | None = None
+    #: G4: True when the call is a preview write or a preview send. Its audit
+    #: row says ``simulated`` and holds ``preview``.
+    preview: bool = False
+    #: G4: True when a preview of a class B or C action of another source
+    #: answered a simulated result, and no executor ran.
+    simulated: bool = False
 
 
 #: What the door reads an action of: the package of its owner, or the
@@ -459,13 +497,18 @@ def _declared(manifest: dict[str, Any], action: str) -> dict[str, Any] | None:
 
 
 def refusal_for(ref: UsesRef, cls: str | None, direct: bool = False,
-                delegated: bool = False, viewer: bool = False) -> str | None:
+                delegated: bool = False, viewer: bool = False,
+                preview: bool = False) -> str | None:
     """The refusal code of an action of *ref* and class *cls*, or None when
     an executor runs it. *cls* is None when no source gives the action a
     class. A class B or C object action runs for a *direct* call when
     :data:`DIRECT_EXECUTORS` holds it (B2c-1). For a *delegated* call it asks
     the member first, when :data:`DELEGATED_EXECUTORS` holds it (B2c-2a). A
-    *viewer* (J2a) runs no class B or C action, whatever the proof."""
+    *viewer* (J2a) runs no class B or C action, whatever the proof, and a
+    preview does not change that.
+    For a *preview* (G4), each class B or C action passes: an object write
+    runs and rolls back, and each other source gets a simulated result.
+    Class X and an id outside the catalog stay refused."""
     if cls is None:
         return NOT_IN_CATALOG
     if cls == "X":
@@ -474,6 +517,8 @@ def refusal_for(ref: UsesRef, cls: str | None, direct: bool = False,
         return READ_ONLY
     if cls in ("B", "C"):
         key = (ref.source, ref.op)
+        if preview and (ref.source != "object" or key in DIRECT_EXECUTORS):
+            return None
         if (direct and key in DIRECT_EXECUTORS) or (delegated and key in DELEGATED_EXECUTORS):
             return None
         return APPROVAL_REQUIRED
@@ -615,7 +660,8 @@ async def _run_object_list(db: Any, package: _App, ref: UsesRef,
 
 
 async def _check(db: Any, member: str, pid: str, action: str, out: _Outcome,
-                 direct: bool = False, delegated: bool = False, *,
+                 direct: bool = False, delegated: bool = False,
+                 preview: bool = False, *,
                  org: str | None = None) -> tuple[_App, UsesRef | None]:
     """One run of the checks on the session *db*: the package as *member*, the
     declaration, then the class of an object action. Each other source takes
@@ -648,7 +694,7 @@ async def _check(db: Any, member: str, pid: str, action: str, out: _Outcome,
     out.uses = str(entry["uses"])
     if ref.source == "object":
         out.cls = OBJECT_OP_CLASSES.get(str(ref.op))
-        out.refusal = refusal_for(ref, out.cls, direct, delegated, out.viewer)
+        out.refusal = refusal_for(ref, out.cls, direct, delegated, out.viewer, preview)
     return package, ref
 
 
@@ -931,12 +977,39 @@ async def _run_object_write(db: Any, member: str, package: packages_store.Packag
     out.audited = True
 
 
-# ── The delegated writes (B2c-2a) ─────────────────────────────────────────
-
-
 class _Undo(Exception):
-    """Roll the SAVEPOINT of a spend back, because the stored write did not
-    run. The request then stays approved."""
+    """Roll a SAVEPOINT back. A spend raises it when the stored write did not
+    run, so the request stays approved (B2c-2a). A preview raises it after
+    each write, so the write never commits (G4)."""
+
+
+async def _run_preview_write(db: Any, member: str, package: packages_store.Package,
+                             ref: UsesRef, raw: bytes, out: _Outcome) -> None:
+    """The preview of one write (G4), in the ONE session *db*.
+
+    It runs the same write path as a direct write, :func:`_do_object_write`,
+    so each check of a field, a rule and a line runs for real. The write sits
+    in a SAVEPOINT that ALWAYS rolls back, also when the write ran. So the
+    answer shows what the write would give, and no row of the object store
+    changes. The audit row comes after the rollback, with the outcome
+    ``simulated``. A raw fault rolls the SAVEPOINT back as it leaves, and
+    ``tenant_session`` rolls back the rest."""
+    try:
+        async with db.begin_nested():
+            await _do_object_write(db, member, package, ref, raw, out)
+            raise _Undo
+    except _Undo:
+        pass
+    out.preview = True
+    if ref.op == "create":
+        # The id of a preview create was never stored, so no row names it.
+        out.record_id = None
+    await record_app_audit_in(db, app_id=package.id, user_email=member, kind="action",
+                              detail=_audit_detail(out))
+    out.audited = True
+
+
+# ── The delegated writes (B2c-2a) ─────────────────────────────────────────
 
 
 def _door_call(pid: str, action: str, uses: str | None, body: Any) -> dict[str, Any]:
@@ -1082,13 +1155,16 @@ async def _run_spend(db: Any, org: str, member: str, package: packages_store.Pac
 
 
 def _mode(first: UsesRef | None, direct: bool, delegated: bool,
-          request_id: str | None) -> str:
-    """How the door runs the action of the first check: ``read``, ``direct``,
-    ``ask``, ``spend`` or ``none``. A write runs at once for a direct call
-    (B2c-1). Each other write is delegated (B2c-2a): with no *request_id* it
-    asks, and with one it spends."""
+          request_id: str | None, preview: bool = False) -> str:
+    """How the door runs the action of the first check: ``read``,
+    ``preview``, ``direct``, ``ask``, ``spend`` or ``none``. A *preview*
+    write runs and rolls back (G4), and wins over each other mode. A write
+    runs at once for a direct call (B2c-1). Each other write is delegated
+    (B2c-2a): with no *request_id* it asks, and with one it spends."""
     if first is None or (first.source, first.op) not in DIRECT_EXECUTORS:
         return "read"
+    if preview:
+        return "preview"
     if direct:
         return "direct"
     if delegated:
@@ -1111,9 +1187,23 @@ def _asks(request: Request) -> bool:
     return request.query_params.get(key) == value
 
 
+def _previews(request: Request) -> bool:
+    """True when the query holds the preview marker ``preview=1`` (G4). No
+    key is False. Any other value is 422 ``bad_preview``, because a client
+    that means a preview must never get a live write."""
+    key, value = PREVIEW_MARKER
+    found = request.query_params.get(key)
+    if found is None:
+        return False
+    if found != value:
+        raise HTTPException(status_code=422, detail={
+            "code": BAD_PREVIEW, "message": BAD_PREVIEW_TEXT})
+    return True
+
+
 async def _run_executor(request: Request, user: UserContext, pid: str, action: str,
                         out: _Outcome, direct: bool, delegated: bool, mode: str,
-                        request_id: str | None) -> None:
+                        request_id: str | None, preview: bool = False) -> None:
     """Read the body, check again, then run the executor. No session is
     open during the read, so a slow client holds no pool connection. The read
     can last as long as the client wants, so the first check proves nothing
@@ -1122,7 +1212,8 @@ async def _run_executor(request: Request, user: UserContext, pid: str, action: s
     A direct write takes its writer slot BEFORE the session (B2c-1), and the
     same session holds the write and its audit row. A spend does the same, and
     it reads no byte of the body (B2c-2a). An ask opens its card in the
-    session of the check."""
+    session of the check. A preview write takes a slot too, because it runs
+    the write and holds the org lock until its SAVEPOINT rolls back (G4)."""
     member = str(user.email)
     org = str(user.organization_id or "")
     if mode == "spend":
@@ -1133,7 +1224,7 @@ async def _run_executor(request: Request, user: UserContext, pid: str, action: s
     if raw is None:
         out.too_large = True
         return
-    wants = mode in ("direct", "spend")
+    wants = mode in ("direct", "spend", "preview")
     # J2a: a read of a viewer takes a reader slot. A read of the owner takes none.
     reads = mode == "read" and out.viewer
     with _writer_slot(org, wants) as admitted, _reader_slot(org, reads) as read_admitted:
@@ -1146,7 +1237,7 @@ async def _run_executor(request: Request, user: UserContext, pid: str, action: s
             return
         async with _tenant_session() as db:
             package, ref = await _check(db, member, pid, action, out, direct, delegated,
-                                        org=org)
+                                        preview, org=org)
             if out.refusal is not None or ref is None:
                 return
             if ref.source != "object":
@@ -1157,7 +1248,12 @@ async def _run_executor(request: Request, user: UserContext, pid: str, action: s
             if (ref.source, ref.op) in DIRECT_EXECUTORS:
                 if not isinstance(package, packages_store.Package):
                     # J2a: a viewer never reaches a write, whatever the class says.
+                    # A preview write of a viewer stops here too.
                     out.refusal = READ_ONLY
+                    return
+                if mode == "preview" and admitted:
+                    # G4: the write runs and rolls back. It never commits.
+                    await _run_preview_write(db, member, package, ref, raw, out)
                     return
                 if mode == "ask":
                     await _run_ask(db, org, member, package, ref, raw, out)
@@ -1171,7 +1267,7 @@ async def _run_executor(request: Request, user: UserContext, pid: str, action: s
                     return
                 await _run_object_write(db, member, package, ref, raw, out)
                 return
-            if mode in _DELEGATED_MODES:
+            if mode in (*_DELEGATED_MODES, "preview"):
                 # The manifest changed during the read to name a read.
                 out.refusal = SOURCE_NOT_OPEN
                 return
@@ -1204,9 +1300,17 @@ def _query_refusal(exc: studio_query.QueryError) -> HTTPException:
         "code": exc.code, "message": exc.message, "field": exc.field})
 
 
-def _audit_detail(out: _Outcome) -> dict[str, Any]:
-    """The audit row of *out*: the action, its class and the outcome. It holds
-    no record data and no value of the body, and each text is capped."""
+def _outcome(out: _Outcome) -> tuple[str, str | None]:
+    """The outcome and the reason of the audit row of *out*. A preview write
+    or send that ran changed nothing, so its outcome is ``simulated`` (G4)."""
+    outcome, reason = _plain_outcome(out)
+    if out.preview and outcome == "ran":
+        return "simulated", reason
+    return outcome, reason
+
+
+def _plain_outcome(out: _Outcome) -> tuple[str, str | None]:
+    """The outcome and the reason of *out*, as if it were no preview."""
     reason: str | None
     if out.catalog_down:
         outcome, reason = "failed", CATALOG_UNAVAILABLE
@@ -1229,8 +1333,17 @@ def _audit_detail(out: _Outcome) -> dict[str, Any]:
         outcome, reason = "asked", None
     else:
         outcome, reason = "ran", None
+    return outcome, reason
+
+
+def _audit_detail(out: _Outcome) -> dict[str, Any]:
+    """The audit row of *out*: the action, its class and the outcome. It holds
+    no record data and no value of the body, and each text is capped."""
+    outcome, reason = _outcome(out)
     detail: dict[str, Any] = {"action": _cap(out.action), "uses": _cap(out.uses),
                               "class": _cap(out.cls), "outcome": outcome}
+    if out.preview:
+        detail["preview"] = True
     if reason is not None:
         detail["reason"] = reason
     if out.record_id is not None:
@@ -1273,15 +1386,20 @@ def _answer(out: _Outcome) -> dict[str, Any] | JSONResponse:
         return JSONResponse(status_code=202, content={
             "state": out.asked.state, "request_id": out.asked.request_id,
             "expires_at": out.asked.expires_at})
+    if out.simulated:
+        # G4: no executor ran. The answer names what a live call would run.
+        return {"preview": True, "simulated": {
+            "action": _cap(out.action), "uses": _cap(out.uses), "class": _cap(out.cls)}}
     if out.page is not None:
         return dataclasses.asdict(out.page)
+    mark: dict[str, Any] = {"preview": True} if out.preview else {}
     if out.deleted is not None:
-        return {"deleted": True, "id": out.deleted}
+        return {"deleted": True, "id": out.deleted, **mark}
     if out.missing or out.record is None:
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     if out.lines:
-        return {"record": dataclasses.asdict(out.record), "lines": out.lines}
-    return {"record": dataclasses.asdict(out.record)}
+        return {"record": dataclasses.asdict(out.record), "lines": out.lines, **mark}
+    return {"record": dataclasses.asdict(out.record), **mark}
 
 
 @router.post("/apps/{app_id}/actions/{action}", response_model=None)
@@ -1298,42 +1416,58 @@ async def invoke_action(
     if not _ACTION_ID.fullmatch(action):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     pid = _app_id(app_id)
+    # G4: the preview mark, from the query only. A bad value is 422 here,
+    # before any read, so it never falls through to a live write.
+    preview = _previews(request)
     out = _Outcome(action=action)
     # The proof is read once, here, before any body read (B2c-1).
     direct = _is_direct(request, user)
     # B2c-2a: a call that is not direct is delegated only when it asks for a
     # card with ask=1, or names a request (fix round 1). While APP_REQUESTS_ORGS
     # leaves the org out, or with no marker, it gets today's 403. So an
-    # unsigned Save of the member's own screen never gets a 202.
-    allowed = not direct and app_requests.requests_allowed(user.organization_id)
+    # unsigned Save of the member's own screen never gets a 202. A preview
+    # (G4) asks for no card and spends none.
+    allowed = not direct and not preview and app_requests.requests_allowed(
+        user.organization_id)
     request_id = _request_id(request) if allowed else None
     delegated = allowed and (request_id is not None or _asks(request))
-    async with _tenant_session() as db:
-        package, ref = await _check(db, user.email, pid, action, out, direct, delegated,
-                                    org=user.organization_id)
-    # Fix round 2: where an ask works (the org flag, an object write, a person
-    # present), the text of approval_required names the step: ask=1.
-    out.can_ask = (allowed and ref is not None and not out.viewer
-                   and (ref.source, ref.op) in DELEGATED_EXECUTORS and not no_person_present())
-    if ref is not None and out.uses is not None and ref.source != "object":
-        try:
-            out.cls = await _catalog_class(out.uses)
-        except Exception as exc:
-            _log.warning("studio.invoke.catalog_failed", error=type(exc).__name__)
-            out.catalog_down = True
-        else:
-            out.refusal = refusal_for(ref, out.cls, viewer=out.viewer)
-    elif ref is not None and out.refusal is None:
-        mode = _mode(ref, direct, delegated, request_id)
-        if mode in _DELEGATED_MODES and no_person_present():
-            # AUTO-7a: nobody sees the card of a run with no person present,
-            # so it opens none and spends none. The mark is a ContextVar: it
-            # binds an in-process caller, and an HTTP call does not carry it.
-            out.refusal = NO_PERSON
-        else:
-            await _run_executor(request, user, pid, action, out, direct, delegated, mode,
-                                request_id)
-    if not out.audited:
-        await record_app_audit_bound(app_id=package.id, user_email=user.email, kind="action",
-                                     detail=_audit_detail(out))
+    with preview_scope(preview):
+        async with _tenant_session() as db:
+            package, ref = await _check(db, user.email, pid, action, out, direct, delegated,
+                                        preview, org=user.organization_id)
+        # Fix round 2: where an ask works (the org flag, an object write, a person
+        # present), the text of approval_required names the step: ask=1.
+        out.can_ask = (allowed and ref is not None and not out.viewer
+                       and (ref.source, ref.op) in DELEGATED_EXECUTORS
+                       and not no_person_present())
+        if ref is not None and out.uses is not None and ref.source != "object":
+            try:
+                out.cls = await _catalog_class(out.uses)
+            except Exception as exc:
+                _log.warning("studio.invoke.catalog_failed", error=type(exc).__name__)
+                out.catalog_down = True
+            else:
+                # J2a: a viewer gets read_only for a class B or C action, also
+                # in a preview (G4), so a viewer never gets a simulated send.
+                out.refusal = refusal_for(ref, out.cls, viewer=out.viewer, preview=preview)
+                if out.refusal is None and not preview:
+                    # No executor of another source exists. Fail closed.
+                    out.refusal = SOURCE_NOT_OPEN
+                elif out.refusal is None:
+                    # A preview of a class B or C action: no executor of
+                    # another source runs, and nothing is sent (G4).
+                    out.preview = out.simulated = True
+        elif ref is not None and out.refusal is None:
+            mode = _mode(ref, direct, delegated, request_id, preview)
+            if mode in _DELEGATED_MODES and no_person_present():
+                # AUTO-7a: nobody sees the card of a run with no person present,
+                # so it opens none and spends none. The mark is a ContextVar: it
+                # binds an in-process caller, and an HTTP call does not carry it.
+                out.refusal = NO_PERSON
+            else:
+                await _run_executor(request, user, pid, action, out, direct, delegated, mode,
+                                    request_id, preview)
+        if not out.audited:
+            await record_app_audit_bound(app_id=package.id, user_email=user.email,
+                                         kind="action", detail=_audit_detail(out))
     return _answer(out)
