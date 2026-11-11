@@ -1,6 +1,6 @@
 # Orchestration playbook — the know-how that Metorite ships to every organization that connects
 
-**Status: ACTIVE (PB-0, 2026-11-06). KIT-1 (the kit core, task 2549) and KIT-2b (the Codex pack, task 2550) are built. The rest is not.** The decision is **D186** in `work_plan.md` §3, and task 1906 (SW-P10) planned this spec. Its slices are PB-1 to PB-10, and the kit slices KIT-0 to KIT-9 (§6a, epic 2547). Each has a task on the board.
+**Status: ACTIVE (PB-0, 2026-11-06). Built so far: PB-1, PB-2, PB-3a, PB-3b, PB-4, PB-5, KIT-0, KIT-1, KIT-2b, KIT-2c, KIT-2d and the KIT-6 tooling, with no live client run. The rest is not.** The decision is **D186** in `work_plan.md` §3, and task 1906 (SW-P10) planned this spec. Its slices are PB-1 to PB-10, and the kit slices KIT-0 to KIT-9 (§6a, epic 2547). Each has a task on the board.
 
 **Board row:** **WS-MCP** in `work_plan.md` §2.1. **Owner direction (2026-11-06):** Metorite "not only becomes a place we use for orchestrating multiple agents". It "also contains the know-how and understanding in the system prompt to help set up multi-org orchestration systems for whoever connects the Metorite MCP." **Price:** part of the flat seat (`launch_surface.md` §4). No SKU and no add-on (D186.3).
 
@@ -14,6 +14,7 @@
 - **The know-how lives in six places.** MCP prompts, MCP resources, short tips in tool results, guidance layers, setup tools and an orchestration doctor. Chat reaches the same six (§5).
 - **The default layer is neutral.** HathiLabs rules are the HathiLabs layer in the HathiLabs organization, never the product default (§4).
 - **One agent is the default.** The setup tools propose one lane first. A second lane needs a named bottleneck (§3).
+- **Plan by the gratification ladder.** A plan is a set of rungs, and each rung ends in a demo that a person sees and uses. The nearest rung goes first (§6d).
 - **A fact that spreads needs a source and an age.** One false fact at the hub reaches every agent (§3).
 
 ---
@@ -79,7 +80,7 @@ Guidance comes in layers (D140.6, SW-31). P10 adds one at the bottom. The neares
 | # | Place | What it holds | Mechanism |
 |---|---|---|---|
 | 1 | **MCP prompts** (slash commands) | `set_up_agent_team`, `plan_slices`, `write_brief`, `review_my_fleet`, `run_retro`, and the session commands of SW-82 | `prompts/list` (EA3-39) |
-| 2 | **MCP resources** | `metorite://playbook/index`, `.../pattern/{slug}`, `.../brief-contract`, `.../gates`, `.../failures`, `.../cost-model`, `.../lane-templates`, `.../kit/{file}`. Each has a version | SW-34a |
+| 2 | **MCP resources** | One resource for each topic: `metorite://playbook/{slug}`, such as `metorite://playbook/brief-contract` and `metorite://playbook/patterns/one-agent-first`. The slug is the path of the topic in `acb_playbook`. Each has a version | SW-34a, PB-3b |
 | 3 | **Tips in results** | At most 2 short lines in the result of `claim_task`, `my_work` and `delegate_task`. Example on `claim_task`: "Write a brief before you delegate." Each line names a playbook topic and shows once for each run | SW-56 |
 | 4 | **Guidance layers** | The Metorite default, then the organization, the space and the project | SW-31 |
 | 5 | **Setup tools** | `propose_agent_setup` reads the organization and proposes lanes, leads, gates and budgets on a card. `get_starter_kit` returns the kit files | New tools (PB-6) |
@@ -145,13 +146,38 @@ The kit is the static part of the playbook. It is a set of files that a member p
 
 Fence: `tests/unit/test_kit_core.py` (new, KIT-1) counts the lines and checks each tool name against the allowlist.
 
+**The conformance matrix.** KIT-6 scores a recorded run of a client against the protocol. The script is `scripts/kit_conformance.py`. Its test is `tests/unit/test_kit_conformance.py`. Each row holds the client, its version, the kit version, the date and the score. A step that passed before and now fails blocks the release, but a live run is advisory (R7).
+
+| Client | Client version | Kit version | Date | Score |
+|---|---|---|---|---|
+| Claude Code | not run | not run | not run | not run |
+| OpenAI Codex | not run | not run | not run | not run |
+| GitHub Copilot editor | not run | not run | not run | not run |
+| GitHub Copilot coding agent | not run | not run | not run | not run |
+| Gemini CLI | not run | not run | not run | not run |
+| Google Antigravity | not run | not run | not run | not run |
+
+**Scenario 1, one agent.** A fresh agent has only the kit. It reads `my_work` and `get_plan`, claims a slice and works in a worktree. It posts activity each minute and parks at a wait. It ends with one disposition and calls `finish_agent_run`. The seven steps are `connect_reads`, `claims_slice`, `worktree`, `heartbeat`, `parks_at_wait`, `one_disposition` and `finishes_run`.
+
+**Scenario 2, a coordinator.** A coordinator starts two sub-agents under one parent run. It adds three steps: `two_subagents`, `subagents_silent` and `coordinator_posts`. A sub-agent must not post. Only the coordinator posts.
+
+**Who starts a run.** Claude Code, Codex and Gemini CLI can run in a script. A person starts a run of the Copilot editor, the Copilot coding agent and Antigravity. The transcript comes from the activity of the run on Metorite and from the shell log. The script reads it as lines of JSON, and its header holds the scenario. No live client run is done yet.
+
 ---
 
 ## 6b. Delegating a sub-project, and hand-offs
 
-**Owner directive, 2026-11-10 (D204 points 10 and 11).** The owner gives each app project to one person. That person's agents work along the critical path of that project. This section is the contract between two people and their agents.
+**Owner directive, 2026-11-10 (D204 points 10 and 11).** The owner gives each app project to one person. That person's agents work up the ladder of that project, rung by rung (§6d, D211). This section is the contract between two people and their agents.
 
-**What each project carries.** The description of a project holds a delegation brief with these lines: the owner slot, the entry point (the first ready slice), the critical path (task numbers in order), the hand-ins (work this project needs from others), the hand-outs (work others need from this project), and the first command to run (`my_work`, then `claim_task`). The brief holds no secret. The program plan (task 2546) holds the order of the projects.
+**What each project carries.** The description of a project holds a delegation brief. The brief has these lines:
+- The owner slot.
+- The entry point: the first ready slice of the lowest open rung.
+- The ladder: each rung, its demo task and its state (§6d).
+- The hand-ins: work that this project needs from others.
+- The hand-outs: work that others need from this project.
+- The first command to run: `my_work`, then `claim_task`.
+
+The brief holds no secret. The program plan (task 2546) holds the order of the projects.
 
 **The hand-off form.** When task A in project P gives work that task B in project Q needs, both tasks hold one comment that starts with `Hand-off:`. The comment names the other task number, the other project, the direction (`gives` or `needs`) and the reason in one sentence. A `blocks` link joins A to B. The person who owns Q reads the comment in `my_work` or in the plan of project Q. An agent never starts B while A is open. It posts a question on B instead.
 
@@ -188,6 +214,51 @@ Fence: `tests/unit/test_kit_core.py` (new, KIT-1) counts the lines and checks ea
 
 ---
 
+## 6d. The gratification ladder — the default way to plan
+
+**Owner directive, 2026-11-11 (D211).** Plan in stages that each give a visible win. Show a quick win first, as a minimum viable product, and grow from there. This is the default of the Metorite project system and of every harness that connects to it. So it is part of the neutral layer (§4), and not a HathiLabs rule. Any plan that a person or an agent makes in Metorite follows it.
+
+**The rules.**
+
+1. **A plan is a ladder of rungs.** Each rung ends in a demo: a person sees and uses the result on production. A flag that is on for one pilot organization is enough.
+2. **Rung 1 is the smallest path that works end to end.** It goes thin through every layer. It is never one finished layer. A manual step or a seeded example is fine when it shows the result sooner.
+3. **Start from what is live.** The first rungs make a live feature better, easier to reach or more complete. A new area starts after that.
+4. **Order the rungs by visible value for the effort.** Bring a hard unknown forward, but only inside a slice that a person can see.
+5. **A foundation rides with the rung that needs it.** A store change, a refactor or a hardening slice joins the first rung whose demo uses it. No rung ships only plumbing.
+6. **Rung 0 outranks the ladder.** A security leak, data loss, a broken live feature or an owner gate with a date goes first. Keep rung 0 small.
+7. **Size.** Rung 1 fits in one week of the team's capacity, at most. A later rung fits in one or two weeks.
+8. **Plan the near rungs in detail and the far rungs in one line.** Cut rungs 1 to 3 into slices. Give each later rung one line. After each demo, plan the next rungs again with what the demo taught.
+
+**On the board.**
+
+- **The demo task.** Each rung has one task, with the title `<area> · Rung N demo · <what a person can do>` and the tag `Demo`. Its description holds the demo script: what to open, what to click and what to see. Each slice of the rung blocks it. The demo task of rung N blocks the demo task of rung N+1.
+- **The rung tag.** Each slice of a rung has the tag `Rung N`. Rung 0 work has the tag `Rung 0` and no demo task. A slice with no rung tag is Later.
+- **The order.** Take a ready slice of the lowest open rung first. Inside a rung, take the least slack to that rung's demo, then the priority. The critical path runs to the next demo, not to the end of the epic.
+- **The delegation brief** (§6b) names the ladder: each rung, its demo task and its state. The entry point is the first ready slice of the lowest open rung.
+- **Done.** A rung is done when the owner of the project sees the demo and says so on the demo task. For a small rung, the captures are enough.
+
+**Other ways of planning.** The ladder is the default, not the only way (D211 point 9). It is one block of the work-style catalogue of `project_management_app.md` §13.1.
+- The ladder is on by default in Flow, Sprints or Cycles, Shape Up and Personal. In Sprints, the review of a cycle is the demo of a rung. In Shape Up, a shipped bet is a rung.
+- The ladder is off by default in Plan-driven. That style plans by milestones, phase gates and the critical path to the end date.
+- A project owner can turn the ladder off or on for one project. An org admin sets the default for new projects (LAD-5).
+- A person can ask for another way at any time, in the app or in chat. The agent then plans in that way, says what changes, and does not add rungs.
+- Where the ladder is off, the order of work is the order of the style. For a plan-driven project, that is the least slack on the critical path (D195.6).
+
+**What carries the rule to every agent.** Epic task 2887 (WS-LAD) holds seven slices.
+
+- LAD-0 (task 2941) records that the ladder is the default and that other ways stay open.
+- LAD-1 (task 2888) teaches the rule in `kit/plan-the-work`, `kit/skill/planning`, `start-here` and the `plan_slices` prompt. LAD-1b (task 2943) teaches the other ways in the same pages.
+- LAD-5 (task 2942) adds the switch for each project and the org default.
+- LAD-2 makes the Projects planning AI draft the rungs first, where the ladder is on.
+- LAD-3 shows the rungs and the next demo in `get_plan` and in the plan view.
+- LAD-4 makes `my_work` take the nearest rung first, where the ladder is on.
+
+Until LAD-4 ships, an agent applies the order of this section by hand, with the `Rung N` tags and `get_plan`.
+
+**Fence.** `tests/unit/test_playbook_ladder.py` (LAD-1) proves that the planning pages and the `plan_slices` prompt state the demo task, the `Rung N` tag, rung 0 and rule 5. It checks words, so it cannot catch a page that contradicts the rule. The reviewer of a playbook change reads the pages against this section.
+
+---
+
 ## 7. The slices
 
 Each names its scope, its done-when, its fence (R7), its risk tier and its gate. All are AGENT-SAFE and ship dark behind `PLAYBOOK_ORGS`, unless they say more. A migration makes a slice HIGH.
@@ -211,7 +282,7 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 #### PB-3 · The resources and `read_playbook`
 
 - **Metorite task.** 1949.
-- **Scope.** The `metorite://playbook/...` resources of §5 beside the three resources of SW-34a. The tool `read_playbook(topic)` for a client with no resources. Content is the same for every organization. The organization layer adds its notes after the default text, marked as the organization's.
+- **Scope.** PB-3 is split (orchestrator, 2026-11-07). **PB-3a** is the tool `read_playbook`, built. **PB-3b** is the `metorite://playbook/{slug}` resources of §5, beside the project and task resources of SW-34a, and it needs both flags: `agent_resources_orgs` and `playbook_orgs`. Content is the same for every organization. The organization layer adds its notes after the default text, marked as the organization's.
 - **Done when.** A client lists and reads each resource. An unknown topic answers not found. The text leaves as `untrusted_text`.
 - **Fence.** The transport test of SW-34a, `test_mcp_edge_coverage.py`.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-34a.
@@ -219,15 +290,15 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 #### PB-4 · Tips in the results
 
 - **Metorite task.** 1950.
-- **Scope.** `tips` beside `protocol` (SW-56): at most 2 lines of 120 characters, chosen by a rule table on the tool and the context. Each names a topic and shows once for each run. The edge keeps no state, so the gateway stores which tips a run has seen in a column `pm_agent_runs.tips_seen` (migration, expand only). They are separate from the safety lines.
+- **Scope.** `tips` beside `protocol` (SW-56): at most 2 lines of 120 characters, chosen by a rule table on the tool and the context. Each names a topic and shows once for each run. The edge keeps one `SET NX` key in the tenant Redis wrapper for each connection, run and tip, so "once" needs no migration. **Changed on 2026-11-07 (PB-4 build):** the first text said a gateway column `pm_agent_runs.tips_seen`. A tip is a hint and grants nothing. A lost key shows a tip again, and a store outage shows none. So the state does not belong on the lease table. The tips show only while the runs flag is on and the organization is on `playbook_orgs`. The first tips are `brief` (a task with little text, until SW-70 gives the task a brief) and `stalled` (a quiet run in `my_work`). They are separate from the safety lines.
 - **Done when.** A claim of a delegated task with no brief carries the brief tip once. The same run sees it once. An organization that switched tips off sees none, and still sees the safety lines.
 - **Fence.** `test_mcp_edge_context.py`, `test_mcp_edge_prompts.py`.
-- **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-56.
+- **Risk.** STANDARD (no migration, see above). **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-56.
 
 #### PB-5 · The default layer, and the neutral fence
 
 - **Metorite task.** 1951.
-- **Scope.** The Metorite default level in guidance (SW-31): read-only, versioned, below the organization. The setting that switches tips off. It widens the neutral test to the product strings and defaults, and adds the drift test of §4.
+- **Scope.** The Metorite default level in guidance (SW-31): read-only, versioned, below the organization. It widens the neutral test to the product strings and defaults, and adds the drift test of §4. **As built (2026-11-07):** the gateway adds one block of level `default` at the end of the guidance answer, built from the playbook topic `default-guidance` (its version is the topic's version), for an organization on `playbook_orgs` and on `AGENT_GUIDANCE_ORGS`. It is the farthest block, so the cap drops it first. No route writes it and the history never lists it. The edge accepts the level `default` and the source kind `default`. The PB-1 drift test already exists (`test_playbook_org_neutral.py`), and PB-5 widens the scan to the instructions, the `work_on_task` messages, every tool description, the default block, and (when they exist) the protocol lines and tips. **Not built:** the setting that switches tips off for one organization. The allowlist `playbook_orgs` is the switch for now, and the per-organization policy key waits for SW-94.
 - **Done when.** `get_task_context` returns the default block last. A HathiLabs token in any playbook file fails the test. A token in the fixture that is gone from `CLAUDE.md` fails the second test.
 - **Fence.** `test_playbook_org_neutral.py` (extended), `test_agent_guidance_r8.py`.
 - **Risk.** HIGH (a channel that reaches every agent, tenancy). **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-31.
@@ -342,9 +413,9 @@ The Claude pack is SW-82 (task 1927) in `agent_coordination.md`. It follows this
 #### KIT-6 · The conformance matrix
 
 - **Metorite task.** 2556. It extends MCP-G23 (task 2523).
-- **Scope.** A table of clients against the protocol steps, with the result of a scripted run for each.
+- **Scope.** The scenarios, the scoring script and the matrix of §6a. Live runs are advisory (R7).
 - **Done when.** Each client of the file map has one row with a date and a result.
-- **Fence.** The suite of MCP-G23, extended. A live client run is advisory (R7).
+- **Fence.** The suite of MCP-G23 (`tests/unit/test_mcp_client_conformance.py`), extended. A live client run is advisory (R7).
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** KIT-2b, KIT-2c, KIT-2d, SW-82.
 
 #### KIT-7 · The company layer
@@ -403,7 +474,7 @@ Each slice ships dark behind `LEARNING_ORGS`. Each slice that adds a rule names 
 | PB-1 | `uv run pytest -q -p no:cacheprovider tests/unit/test_playbook_content.py tests/unit/test_playbook_org_neutral.py` |
 | PB-2 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_prompts.py` |
 | PB-3 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_session.py tests/unit/test_mcp_edge_coverage.py` |
-| PB-4 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_context.py tests/unit/test_mcp_edge_prompts.py` |
+| PB-4 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_context.py tests/unit/test_mcp_edge_claim.py tests/unit/test_mcp_edge_prompts.py` |
 | PB-5 | `uv run pytest -q -p no:cacheprovider tests/unit/test_playbook_org_neutral.py tests/unit/test_agent_guidance_r8.py` |
 | PB-6 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_setup_proposal_r8.py tests/unit/test_mcp_edge_coverage.py` |
 | PB-7 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_doctor_r8.py tests/unit/test_needs_attention_r8.py` |

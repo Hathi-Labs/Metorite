@@ -12,7 +12,7 @@ What it holds:
 
 1. **The router, both ways.** A served route with no row fails, and so does a
    row that names a route the router does not serve.
-2. **The chat manifest, row for row.** The table repeats the 211 pairs, so
+2. **The chat manifest, row for row.** The table repeats the 215 pairs, so
    it is an exception to AD-1 and D136.1 for Projects (D208.2). This file
    holds the pairs, the class and the chat tool equal, so the two cannot
    drift.

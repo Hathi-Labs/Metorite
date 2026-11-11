@@ -138,6 +138,9 @@ MACHINE_SITES: dict[str, str] = {
     "packages/acb_memory/acb_memory/graphiti_client.py::_is_episode_worthy": "yes or no",
     GW + "settings.py::test_tier": "a health ping",
     "packages/acb_skills/acb_skills/loader.py::_call_llm_for_merge_resolution": "resolves a merge conflict in an agent file",
+    # VOX-3 (task 2263): a tool result that the chat model reads. The chat's
+    # own answer carries the house voice, so this call writes no member prose.
+    "packages/acb_skills/acb_skills/attachment_tools.py::analyze_image": "a tool result for the chat model, which writes the member's answer",
     # The member's own words or voice is the point, so the house voice must
     # not bias what the call learns or imitates.
     GW + "email/automation/drafting.py::_llm_summarize_writing_style": "learns the member's own style",

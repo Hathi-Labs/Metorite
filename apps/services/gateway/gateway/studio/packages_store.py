@@ -29,13 +29,14 @@ writes longer, and at most :data:`MAX_MANIFEST_BYTES` bytes. So no manifest
 reaches a statement that the CHECK ``apps_manifest_package`` refuses. Each
 refusal raises one :class:`PackageStoreError` that carries every path.
 
-**The slug.** ``apps.slug`` is UNIQUE for all orgs. The slug of a package is
-``<manifest id>-<8 hex digits of the new id>``. So a slug that org A holds
-never blocks a package of org B. When the slug is taken anyway, the INSERT
-writes nothing (``ON CONFLICT (slug) DO NOTHING``), and the store tries a new
-id. No refusal names the slug of another org. The slug never changes after
-the INSERT, and so the manifest id never changes either:
-:func:`update_manifest` refuses a new id.
+**The slug.** ``apps.slug`` is UNIQUE for all orgs until WS-STU A3b-2. The
+slug of a package is ``<manifest id>-<8 hex digits of the new id>``. So a slug
+that org A holds never blocks a package of org B. When the slug is taken
+anyway, the INSERT writes nothing (``ON CONFLICT DO NOTHING``), and the store
+tries a new id. The clause names no column, so it holds with
+``apps_slug_key`` and with ``apps_org_slug_key`` (A3b-1). No refusal names
+the slug of another org. The slug never changes after the INSERT, and so the
+manifest id never changes either: :func:`update_manifest` refuses a new id.
 
 **Private and a draft.** A new package has ``visibility = 'private'``,
 ``status = 'draft'`` and ``workspace_path = ''``, because it has no files. No
@@ -130,7 +131,7 @@ _CREATE_SQL = (
     "status, manifest, workspace_path, format) "
     "VALUES (CAST(:id AS uuid), :slug, :name, :desc, :m, 'private', 'draft', "
     "CAST(:manifest AS jsonb), '', 'manifest') "
-    "ON CONFLICT (slug) DO NOTHING "
+    "ON CONFLICT DO NOTHING "
     f"RETURNING {_PACKAGE_COLUMNS}"
 )
 

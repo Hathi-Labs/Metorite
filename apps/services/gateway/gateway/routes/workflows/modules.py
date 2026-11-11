@@ -4,6 +4,15 @@ The loop: describe → generate (gateway ``/v1`` tier routing) → validate (AST
 rung 2) → test against sample input → refine → save. A module only becomes
 usable in workflows when its status is ``ready``; every generated module
 carries provenance (prompt, model, who saved it).
+
+⚠️ **The two test routes are dark by org (WS-STU STU-Q15a).** A test runs
+member code as a child process on the box. Each test route checks
+``MODULE_RUN_ORGS`` for the session's org first, before it opens a session or
+validates the code, and answers 403 ``module_runs_off`` with the member's
+words. ``run_module_code`` checks the same switch again as the one choke
+point of every run path. The org is ``user.organization_id``, never request
+input (R5). The CRUD routes and ``/modules/generate`` run no code and do not
+change. Fence: ``tests/unit/test_module_runs_off.py``.
 """
 
 from __future__ import annotations
@@ -14,6 +23,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.module_runs import ModuleRunsOff, refuse_unless_allowed
 from gateway.routes.workflows.core import (
     _log,
     _tenant_session,
@@ -235,12 +245,27 @@ async def delete_module(
         )
 
 
+def _runs_off(exc: ModuleRunsOff) -> HTTPException:
+    """403 ``{code: "module_runs_off", message}`` (STU-Q15a)."""
+    return HTTPException(status_code=403, detail={"code": exc.code, "message": exc.message})
+
+
+def _require_module_runs(user: UserContext) -> None:
+    """403 unless ``MODULE_RUN_ORGS`` holds the session's org. The first line
+    of each test route, so a refused call opens no session."""
+    try:
+        refuse_unless_allowed(user.organization_id)
+    except ModuleRunsOff as exc:
+        raise _runs_off(exc) from None
+
+
 @router.post("/modules/test")
 async def test_module(
     body: ModuleTest,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Run code (saved or draft) against sample inputs (spec §5 step 4)."""
+    _require_module_runs(user)
     code = body.code
     if not code:
         raise HTTPException(status_code=422, detail="Provide code to test")
@@ -248,7 +273,11 @@ async def test_module(
     if violations:
         return {"ok": False, "violations": [v.as_dict() for v in violations]}
     try:
-        output = await run_module_code(code, body.inputs)
+        output = await run_module_code(
+            code, body.inputs, organization_id=user.organization_id
+        )
+    except ModuleRunsOff as exc:
+        raise _runs_off(exc) from None
     except ModuleExecutionError as exc:
         return {"ok": False, "error": str(exc)}
     return {"ok": True, "output": output}
@@ -260,6 +289,7 @@ async def test_saved_module(
     body: ModuleTest,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
+    _require_module_runs(user)
     async with _tenant_session() as db:
         row = (
             await db.execute(
@@ -270,7 +300,11 @@ async def test_saved_module(
     if row is None:
         raise HTTPException(status_code=404, detail="Module not found")
     try:
-        output = await run_module_code(row.code, body.inputs)
+        output = await run_module_code(
+            row.code, body.inputs, organization_id=user.organization_id
+        )
+    except ModuleRunsOff as exc:
+        raise _runs_off(exc) from None
     except ModuleExecutionError as exc:
         return {"ok": False, "error": str(exc)}
     return {"ok": True, "output": output}

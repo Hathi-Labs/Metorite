@@ -733,11 +733,14 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # the reminders and bulk packs must fit under MAX_REQUEST_TOOLS in their
     # measured turns. WS-39 LP-1a adds the two tools of a project update here,
     # for the same reason: the reports pack fills the room of a measured turn.
+    # SP-8a: the contract of an epic joins it too. The plan pack has one tool
+    # of room in the sticky-pack case of test_pack_room.py.
     "projects-authority": {
         "label": "Projects authority page and updates",
         "summary": (
-            "The authority page and the updates of a project: read the pinned "
-            "pages, pin or unpin one, and read, post or delete an update."
+            "The authority page and the updates of a project, and the "
+            "contract of an epic: read the pinned pages, pin or unpin one, "
+            "read, post or delete an update, and set the contract of an epic."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for the "
@@ -746,7 +749,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "tools to read the pins of a project, to pin a page and to "
             "remove a pin. It also holds the tools to read the updates of a "
             "project, to post one with the health that the member picks, and "
-            "to delete one. "
+            "to delete one, and the tool that sets the contract of an epic. "
             "Each change asks the member first. A run loads a pack only "
             "where tool packs are on, so until then this switch has no "
             "effect."
@@ -757,6 +760,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "pin_authority",
             "post_project_update",
             "project_authorities",
+            "set_epic_contract",
             "unpin_authority",
         ),
         "owner": "projects-assistant",
@@ -802,6 +806,37 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "my_tasks_start_my_day",
             "my_tasks_unschedule",
             "my_tasks_update_calendar_settings",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # WS-39 SP-5a (task 964): the cycles (sprints) of a project. Own pack, because
+    # the other Projects packs are full in their measured turns.
+    "projects-cycles": {
+        "label": "Projects cycles",
+        "summary": (
+            "The cycles (sprints) of a project: list them, read one, plan one, "
+            "add or remove tasks, then start or close it."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools for the cycles "
+            "of a project, for the main assistant to load when a turn names "
+            "a cycle or a sprint. The pack holds the tools to list the "
+            "cycles of a project and to read one with its tasks. It also "
+            "holds the tools to plan a cycle, to add tasks to it or take "
+            "them out, to start it and to close it. Each change asks the "
+            "member first. A run loads a pack only where tool packs are on, "
+            "so until then this switch has no effect."
+        ),
+        "tools": (
+            "close_cycle",
+            "create_cycle",
+            "cycle_detail",
+            "list_cycles",
+            "plan_cycle",
+            "start_cycle",
         ),
         "owner": "projects-assistant",
         "core": False,

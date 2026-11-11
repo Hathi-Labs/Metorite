@@ -135,6 +135,7 @@ import {
   enterSends, touchKeyboard,
   takeLeftoverQueue,
 } from "@/lib/chatSteer";
+import { boxHadFocus, refocusAfterPress, refocusQuietly } from "@/lib/composerFocus";
 import { canRetry, retryPlan } from "@/lib/chatRetry";
 import { mergeCappedText } from "@/lib/chatTurnFailure";
 import { EDIT_LOADING, editableLastUserId, submitEdit, withoutSuperseded, type EditOutcome } from "@/lib/chatEdit";
@@ -919,6 +920,21 @@ export default function AgentChat({
   const runView = useSteadyRunView(run);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Task 2867 (owner, 2026-11-11): on a phone, a focus() on the box opens the
+  // keyboard. A press in the composer notes whether the box had focus, and
+  // only then may the box take it back (`lib/composerFocus.ts`).
+  const pressFocusRef = useRef(false);
+  const focusAfterPress = useCallback(() => {
+    const box = inputRef.current;
+    if (!box) return;
+    const hadFocus = pressFocusRef.current || boxHadFocus(box);
+    pressFocusRef.current = false;
+    if (refocusAfterPress({ touch: touchKeyboard(), hadFocus })) box.focus();
+  }, []);
+  const focusQuietly = useCallback(() => {
+    const box = inputRef.current;
+    if (box && refocusQuietly({ touch: touchKeyboard() })) box.focus();
+  }, []);
   // VOX-1 (projects_ai_chat §31): the mic beside Attach. The flag decides
   // whether it shows. The transcript goes in at the caret, and the member
   // sends it. Enter and Escape in the box stop or cancel a recording.
@@ -937,10 +953,11 @@ export default function AgentChat({
     requestAnimationFrame(() => {
       const box = inputRef.current;
       if (!box) return;
-      box.focus();
+      // Task 2867: dictation never opens the phone's keyboard.
+      focusQuietly();
       box.setSelectionRange(next.caret, next.caret);
     });
-  }, [setInput, setComposerNotice]);
+  }, [setInput, setComposerNotice, focusQuietly]);
   // IMG-1 (projects_ai_chat §30.4): a file is a chip until the member sends.
   const att = useChatAttachments(sessionId);
   const attRef = useRef(att);
@@ -998,9 +1015,9 @@ export default function AgentChat({
       const back = editStart(text, (p) => workspaceFileUrl(sessionIdRef.current, p));
       setInput((prev) => mergeCappedText(prev, back.words));
       if (back.items.length) attRef.current.restore(back.items);
-      inputRef.current?.focus();
+      focusQuietly();
     };
-  }, []);
+  }, [focusQuietly]);
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [statuses, setStatuses] = useState<IntegrationStatus[]>(externalStatuses ?? []);
   const [viewerEntry, setViewerEntry] = useState<FileEntry | null>(null);
@@ -1867,8 +1884,8 @@ export default function AgentChat({
     setInput((prev) => mergeCappedText(prev, back.words));
     if (back.items.length) attRef.current.restore(back.items);
     setComposerNotice(notice);
-    inputRef.current?.focus();
-  }, []);
+    focusQuietly();
+  }, [focusQuietly]);
 
   // §18.10 (owner, 2026-11-03): a chip of a new-mail card puts its words in
   // the box and focuses it. It sends nothing. A program put the words there,
@@ -1972,7 +1989,8 @@ export default function AgentChat({
       setInput("");
       att.clear();
     }
-    inputRef.current?.focus();
+    // Task 2867: a closed phone keyboard stays closed after Send.
+    focusAfterPress();
   };
 
   // Collapse the auto-grown textarea back to one line whenever the input is
@@ -2855,7 +2873,7 @@ export default function AgentChat({
               icon={composerExpanded ? "Minimize2" : "Maximize2"}
               onClick={() => {
                 setComposerExpanded((v) => !v);
-                inputRef.current?.focus();
+                focusAfterPress();
               }}
               aria-label={composerExpanded ? "Make the message box smaller" : "Make the message box taller"}
               title={composerExpanded ? "Make the message box smaller" : "Make the message box taller"}
@@ -2922,7 +2940,7 @@ export default function AgentChat({
             messageCount={messages.length}
             streaming={isLoading}
             visible={visible}
-            onClosed={() => inputRef.current?.focus()}
+            onClosed={focusQuietly}
           />
           {/* The message box (owner, 2026-10-12: "it looks quite untidy").
               The message takes the whole width, with no gutter. One bar inside
@@ -2946,14 +2964,17 @@ export default function AgentChat({
               if (!canSend || !hasFiles(e.dataTransfer?.types)) return;
               e.preventDefault();
               att.add(Array.from(e.dataTransfer.files));
-              inputRef.current?.focus();
+              focusAfterPress();
             }}
+            // Task 2867: a press anywhere in the composer notes whether the
+            // box had focus, before the press can move it.
+            onPointerDownCapture={() => { pressFocusRef.current = boxHadFocus(inputRef.current); }}
             onFocus={() => setComposerFocused(true)} onBlur={() => setComposerFocused(false)} className={[
             dragOver ? "rounded-2xl border border-primary bg-primary/10 tech-transition glass:ring-2 glass:ring-primary glass:bg-primary/10" : "rounded-2xl border border-border bg-secondary/50 focus-within:border-primary/40 tech-transition",
             "glass:relative glass:z-10 glass:rounded-[20px] glass:border-transparent glass:focus-within:border-transparent glass:glass-chrome glass:glass-spectrum-edge",
             canSend ? "" : "pointer-events-none opacity-40",
           ].join(" ")}>
-            <PendingChips items={att.items} onRemove={(id) => { att.remove(id); inputRef.current?.focus(); }} onRetry={att.retry} />
+            <PendingChips items={att.items} onRemove={(id) => { att.remove(id); focusAfterPress(); }} onRetry={att.retry} />
             <textarea ref={inputRef} value={input}
               onChange={(e) => { setInput(e.target.value); if (composerNotice) setComposerNotice(null); }}
               onPaste={(e) => {
@@ -2986,7 +3007,7 @@ export default function AgentChat({
                 into a staircase (visual review, 2026-10-12, 390 px). */}
             <div className="flex flex-wrap items-end gap-1 px-1.5 pb-1.5 glass:px-2.5 glass:pb-2.5">
               <FileUploadButton sessionId={sessionId}
-                onPick={(files) => { att.add(files); inputRef.current?.focus(); }}
+                onPick={(files) => { att.add(files); focusAfterPress(); }}
                 className={`shrink-0 flex ${tap} items-center justify-center`} />
               {voiceAvailability.shown && (
                 <VoiceInputButton ref={voiceRef} availability={voiceAvailability}

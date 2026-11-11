@@ -9,7 +9,7 @@ manifest (``skill_projects.manifest.MANIFEST``), with the same method, path,
 class and chat tool. The chat manifest stays the allowlist of Mira's
 Projects client, in ``skill_projects``. This table adds the door half only:
 a door ``op``, or an ``off_door`` reason (AD-2). This module cannot import
-``skill_projects``, so it repeats the 211 pairs. That is an exception to
+``skill_projects``, so it repeats the 215 pairs. That is an exception to
 AD-1 and D136.1 for Projects (D208.2), until MCP-G24c moves the chat
 manifest into ``acb_common``. The fence holds the pairs, the class and the
 tool equal, row for row.
@@ -329,6 +329,10 @@ PROJECTS_DOOR = App(
         Route("POST", "/projects/tasks/{task_id}/links", "link_tasks", "B", off_door=TYPED),
         Route("DELETE", "/projects/tasks/{task_id}/links/{link_id}", "unlink_tasks", "B",
               off_door=TYPED),
+        Route("GET", "/projects/tasks/{task_id}/epic-contract", "set_epic_contract", "B",
+              off_door=LATER),
+        Route("PUT", "/projects/tasks/{task_id}/epic-contract", "set_epic_contract", "B",
+              off_door=TYPED),
         # ── bulk.py · move.py · merge.py ──
         Route("POST", "/projects/tasks/bulk", "bulk_update", "C", off_door=LATER),
         Route("POST", "/projects/tasks/move/preview", "move_task", "B", off_door=TYPED),
@@ -529,6 +533,8 @@ PROJECTS_DOOR = App(
               off_door=LATER),
         Route("POST", "/projects/agent-runs/{run_id}/answer/withdraw", "withdraw_agent_answer",
               "B", off_door=LATER),
+        Route("POST", "/projects/agent-runs/{run_id}/answer/replace", "replace_agent_answer",
+              "B", off_door=LATER),
         Route("POST", "/projects/agent-runs/{run_id}/outside-decision",
               "record_outside_decision", "B", off_door=TYPED),
         Route("POST", "/projects/tasks/{task_id}/archive-request", "request_task_archive", "B",
@@ -539,6 +545,7 @@ PROJECTS_DOOR = App(
         # ── agent_summary.py · needs_attention.py · agent_questions.py ──
         Route("GET", "/projects/{project_id}/agent-summary", "agent_summary", "A",
               off_door=LATER),
+        Route("GET", "/projects/agents/overview", "agents_list", "A", off_door=LATER),
         Route("GET", "/projects/needs-attention", "needs_attention", "A", off_door=LATER),
         Route("GET", "/projects/agent-questions", "agent_questions", "A", off_door=LATER),
         # ── watchers.py ──

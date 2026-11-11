@@ -31,6 +31,11 @@
  *   answer to the question that the server refuses STAYS for this page
  *   (`keep`), so a fault never traps the member in the question. The browser
  *   copy keeps only what the server confirmed.
+ * - **The org default does not flash** (PKG-17b). It has its own browser
+ *   copy per account (`orgLayout.ts`), and that copy draws the first frame.
+ *   With no copy yet, `loading` stays true for a member with null pins until
+ *   the org default answers, for `ORG_LAYOUT_WAIT_MS` at most
+ *   (`orgLayoutSettled`). A member with their own pins never waits.
  */
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useSession } from "next-auth/react";
@@ -42,6 +47,7 @@ import { chatScope, type ChatSession } from "@/lib/sessions";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { setGuideAllowed, setGuideHold } from "./guide";
+import { ORG_LAYOUT_WAIT_MS, orgDefaultFor, orgLayoutSettled, useOrgLayout } from "./orgLayout";
 import { EMPTY_SHELL, shellLayout, type ShellLayout, type StoredShell } from "./presets";
 import { asLayout, readCachedLayout, writeCachedLayout, writeNudgeRetired } from "./shellCache";
 import { shellNavOn } from "./shellNav";
@@ -81,6 +87,8 @@ onClear(() => {
   helloPendingHere = false;
   // A new member: the guide waits for their own read (GD-5a).
   setGuideAllowed(null);
+  // A new member: Module Studio is off until their own read says so (STU-Q15a).
+  setModuleRuns(false);
 });
 
 /** Tests only: start a new page. */
@@ -123,6 +131,51 @@ export function guideOn(body: unknown): boolean {
   return !!body && typeof body === "object" && (body as { guide?: unknown }).guide === true;
 }
 
+// ── Module runs (WS-STU STU-Q15a, `ai_studio.md` §14) ──────────────────────
+//
+// `module_runs` is a fact of the server, as `guide` is: `MODULE_RUN_ORGS` on
+// the gateway holds the member's org. A code module of Module Studio runs on
+// the box, and the box is not a sandbox, so the switch ships off. `/studio`
+// shows the Module Studio tab only when it is true (`studioLibraryView`). The
+// shell read is the one writer. Before the read answers, after a failed read
+// and after a member change, it reads as off.
+
+let moduleRunsHere = false;
+const moduleRunsListeners = new Set<() => void>();
+
+function setModuleRuns(on: boolean): void {
+  if (moduleRunsHere === on) return;
+  moduleRunsHere = on;
+  moduleRunsListeners.forEach((l) => l());
+}
+
+/**
+ * The module runs switch in an answer: true only when the gateway says
+ * `module_runs: true`. A missing field, as from an older gateway, is off.
+ */
+export function moduleRunsOn(body: unknown): boolean {
+  return !!body && typeof body === "object" && (body as { module_runs?: unknown }).module_runs === true;
+}
+
+/** What the last shell read of this page said about module runs. */
+export function moduleRunsAllowed(): boolean {
+  return moduleRunsHere;
+}
+
+/** Live: whether the member's org may run code modules (STU-Q15a). */
+export function useModuleRunsOn(): boolean {
+  return useSyncExternalStore(
+    (l) => {
+      moduleRunsListeners.add(l);
+      return () => {
+        moduleRunsListeners.delete(l);
+      };
+    },
+    moduleRunsAllowed,
+    () => false,
+  );
+}
+
 export async function readShellPrefs(): Promise<StoredShell> {
   const res = await fetch(SHELL_PREFS_PATH, { cache: "no-store" });
   if (!res.ok) throw new Error(`shell layout ${res.status}`);
@@ -136,6 +189,8 @@ export async function readShellPrefs(): Promise<StoredShell> {
   if (layout.answered === null && shellNavOn() && !askedHere) setGuideHold(true);
   // The one read tells the guide whether its entries may show (GD-5a).
   setGuideAllowed(guideOn(body));
+  // And it tells `/studio` whether the Module Studio tab shows (STU-Q15a).
+  setModuleRuns(moduleRunsOn(body));
   return layout;
 }
 
@@ -468,7 +523,11 @@ export interface ShellPrefsState {
   fresh: StoredShell | undefined;
   /** What to draw. The role's preset when nothing is known. */
   layout: ShellLayout;
-  /** True while nothing is known: no read answered, and no copy. */
+  /**
+   * True while nothing is known: no read answered, and no copy. Also true
+   * while the org default holds the shell (`orgLayoutSettled`): null pins,
+   * no copy and no answer of the org default, for `ORG_LAYOUT_WAIT_MS` at most.
+   */
   loading: boolean;
   /** True when the last read failed and nothing else is known. */
   failed: boolean;
@@ -529,13 +588,29 @@ export function useShellPrefs(): ShellPrefsState {
     if (scope && layout) writeCachedLayout(scope, layout);
   }, [scope, res.data]);
 
+  // The org default (PKG-17b): a fallback for a member with no stored choice.
+  // Its browser copy draws the first frame. With no copy, the hold below
+  // waits for the read, for `ORG_LAYOUT_WAIT_MS` at most.
+  const org = useOrgLayout(enabled, scope);
+  const [orgWaited, setOrgWaited] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setOrgWaited(true), ORG_LAYOUT_WAIT_MS);
+    return () => clearTimeout(t);
+  }, []);
   const fresh = enabled ? (unsaved ?? res.data) : undefined;
   const stored = enabled ? (fresh ?? cached) : undefined;
+  const orgHold =
+    stored !== undefined &&
+    !orgLayoutSettled({
+      storedPins: stored.pins,
+      orgState: org.state,
+      elapsedMs: orgWaited ? ORG_LAYOUT_WAIT_MS : 0,
+    });
   return {
     stored,
     fresh,
-    layout: shellLayout(stored, access.roles ?? []),
-    loading: enabled && stored === undefined && res.loading,
+    layout: shellLayout(stored, access.roles ?? [], orgDefaultFor(org.layout, access.roles ?? [])),
+    loading: enabled && ((stored === undefined && res.loading) || orgHold),
     failed: enabled && stored === undefined && !res.loading && res.error !== null,
     enabled,
     answered: enabled && !res.loading && (res.data !== undefined || res.error !== null),

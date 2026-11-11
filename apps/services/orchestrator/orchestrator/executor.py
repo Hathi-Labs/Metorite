@@ -3247,6 +3247,11 @@ async def _run_sub_agent_streaming(
         reset_artifact_context,
     )
     _artifact_token = enter_artifact_context()
+    # MCP-C3 review: this run's access lookup below arms the memory gate on
+    # the PARENT's task. The token gives the parent its own gate back in the
+    # finally, so a child's wider gate never outlives the hand-off.
+    from acb_skills.memory_tools import enter_memory_permission, reset_memory_permission
+    _memory_gate_token = enter_memory_permission()
     # WS-63 PZ-6a: a delegated run never writes the member's profile.
     _sub_writes_token = _bind_profile_writes(False)
     # The parent run's acting member, from the parent's bound context and
@@ -3346,8 +3351,16 @@ async def _run_sub_agent_streaming(
         ) as loaded:
             mandatory = loaded.config.get("integrations", [])
             optional = loaded.config.get("optional_integrations", [])
+            # 🔴 MCP-C3: the member's filter binds a delegated run too, BEFORE
+            # the env injection below. This run has no session of its own, so
+            # the check reads the parent's member from the run binding, and
+            # folds the room of the chat that asked. A run with no member keeps
+            # None, as before.
+            _sub_authorizer = await _integration_authorizer(
+                None, _delegated_authority_thread(_parent_ctx_sub), session_user=None,
+            )
             integrations, _sub_warnings = build_integrations(
-                mandatory, optional, settings,
+                mandatory, optional, settings, is_authorized=_sub_authorizer,
             )
             # Scope this sub-agent's creds to its run; restored in the finally.
             _integration_env_token = _bind_run_credentials(integrations)
@@ -3730,6 +3743,9 @@ async def _run_sub_agent_streaming(
         # B6 Phase-5 Tier 0: tear down this sub-agent's scoped integration creds
         # so a delegated agent's secrets don't linger for the parent/next run.
         _release_run_credentials(_integration_env_token)
+        # MCP-C3 review: give the parent back its own memory gate, before any
+        # await of this finally, so nothing can skip it.
+        reset_memory_permission(_memory_gate_token)
         # WS-43d (§16.3): a delegated run's run data ends with it too.
         await _end_sandbox_run()
         # Give the parent back its own artifact context (H-201, §21.16).
@@ -3754,6 +3770,61 @@ def _custom_apps_root() -> Path:
     return (Path(settings.agents_clone_dir).expanduser() / "custom_apps").resolve()
 
 
+#: The folders of the App Workshop apps of one organization. The explicit
+#: ``organization_id`` filter holds also for a role that bypasses RLS.
+#: A Studio package (``format = 'manifest'``) has no folder.
+_ORG_APP_FOLDERS_SQL = (
+    "SELECT workspace_path FROM apps "
+    "WHERE organization_id = CAST(:org AS uuid) "
+    "AND format IS DISTINCT FROM 'manifest' "
+    "AND workspace_path IS NOT NULL AND btrim(workspace_path) <> ''"
+)
+
+
+def _app_workspace_of_org(resolved: Path, org: str | None) -> bool:
+    """True when *resolved* lies in the folder of an app of *org* (task 2462).
+
+    The folder of an app made before WS-STU A3b-1 is ``apps_root()/<slug>``.
+    So a stale path to a folder of a deleted app of org A can point at a
+    folder that another app uses later. A new app has its folder at
+    ``apps_root()/<app id>``. A path check under the root is not enough. The
+    run's org must own an ``apps`` row whose folder holds the path.
+
+    It fails closed: no org, a read error or no matching row answers False.
+    *org* comes from the run binding, never from input (R5). The read always
+    binds *org* (``acb_graph.tenant_session``), as the gateway's twin
+    ``workspace._app_workspace_for`` does, so it holds with the
+    ``ACB_GRAPH_TENANT_BIND`` flag OFF too.
+    Fence: ``tests/unit/test_app_delete_workspace_r8.py``.
+    """
+    if not org:
+        return False
+    try:
+        from acb_graph import tenant_session
+        from sqlalchemy import text
+
+        with tenant_session(str(org)) as s:
+            rows = s.execute(text(_ORG_APP_FOLDERS_SQL), {"org": str(org)}).fetchall()
+    except Exception as exc:
+        _log.warning("executor.app_workspace_lookup_failed", error=str(exc)[:200])
+        return False
+    try:
+        root = _custom_apps_root()
+    except OSError:
+        return False
+    for row in rows:
+        try:
+            folder = Path(str(row.workspace_path)).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        # A corrupt row that names the root itself must never cover every app.
+        if folder == root or not folder.is_relative_to(root):
+            continue
+        if resolved == folder or resolved.is_relative_to(folder):
+            return True
+    return False
+
+
 def _session_workspace_override(
     thread_id: str | None, agent_config: dict[str, Any]
 ) -> str | None:
@@ -3767,9 +3838,14 @@ def _session_workspace_override(
     Fail-closed containment: the stored path must resolve to an existing
     directory inside the Custom Apps root — anything else (traversal,
     symlink escape, stale path) falls back to the agent clone.
+
+    Task 2462: the folder must also be the folder of an app of the run's own
+    org (:func:`_app_workspace_of_org`). A stale path to a slug that another
+    org took after a delete falls back the same way.
     """
     if not thread_id or not agent_config.get("allow_session_workspace"):
         return None
+    run_org = _RUN_ORG.get(thread_id)
     workspace_path = ""
     try:
         from sqlalchemy import text
@@ -3792,7 +3868,10 @@ def _session_workspace_override(
     try:
         resolved = Path(workspace_path).expanduser().resolve(strict=True)
         root = _custom_apps_root()
-        if resolved.is_dir() and resolved != root and resolved.is_relative_to(root):
+        if (
+            resolved.is_dir() and resolved != root and resolved.is_relative_to(root)
+            and _app_workspace_of_org(resolved, run_org)
+        ):
             return str(resolved)
     except OSError:
         pass
@@ -5225,8 +5304,19 @@ async def _integration_authorizer(
     started this run" cannot be the reason (review of MCP-C1). Fence:
     ``tests/unit/test_org_access_credentials.py`` and
     ``tests/unit/test_maf_mcp_confirm.py``.
+
+    🔴 **A delegated run acts as the member of its parent** (MCP-C3). A
+    hand-off sends ``{"message", "mode"}``, with no session member and no
+    claim. So a member with a deny on ``integrations:use:zoho-crm`` got the
+    Zoho credential through any agent that the assistant delegated to. When
+    the run names nobody, the check reads the member of the run binding
+    (:func:`_bound_run_member`), which the server binds and a body never
+    sets. A top-level cron or webhook run binds no member, so it keeps
+    ``None``. Fence: ``tests/unit/test_delegated_integration_filter.py``.
     """
     email, verified = _run_member(event_payload, session_user)
+    if not email:
+        email, verified = _bound_run_member()
     if not email or ":" in email:
         return None
 
@@ -5295,6 +5385,45 @@ async def _integration_authorizer(
         # transient fault.
         _log.warning("executor.integration_authorizer_failed", error=str(exc))
         return None
+
+
+def _bound_run_member() -> tuple[str, bool]:
+    """The member of the run binding, and True when the binding verified it.
+
+    MCP-C3. ``bind_run_context`` keeps the parent's ``user`` and
+    ``member_verified`` when a nested run binds no user of its own. So a
+    delegated run reads here the member that its parent's filter used. Only
+    the server binds these keys: a run boundary (:func:`_run_member`), the
+    auth layer and ``job_member_scope``. A request body never sets them. An
+    unverified member is the parent's own claim, and the parent was filtered
+    by that claim. So the fallback only narrows, and never widens.
+    """
+    try:
+        from acb_common import get_run_context
+
+        ctx = get_run_context() or {}
+    except Exception:
+        return "", False
+    member = str(ctx.get("user") or "").strip()
+    return member, bool(member) and ctx.get("member_verified") == "1"
+
+
+def _delegated_authority_thread(parent_ctx: Any) -> str | None:
+    """The chat whose room caps a delegated run, or None (MCP-C3).
+
+    In a shared room the parent acts with the intersection of the room
+    (``resolve_session_access``). A delegated run mints a thread of its own,
+    and that thread has no participant. So a fold on it gave the delegated run
+    the typer's whole access, which is wider than the parent's. This answers
+    the chat at the top of the chain (``delegation_target``), else the
+    parent's own session. It reads the parent's bound artifact context only,
+    never the payload (R5).
+    """
+    from acb_skills.write_artifact import delegation_target
+
+    target = delegation_target(parent_ctx) or {}
+    chat = str(target.get("session_id") or "").strip()
+    return chat or str(parent_ctx.get("session_id") or "").strip() or None
 
 
 def _payload_user(event_payload: Any) -> str:
@@ -5571,10 +5700,12 @@ async def run_agent(
         # made here reached the Router with no member, no app and no run, and
         # billed nobody by name. Scoped so a NESTED run restores its parent.
         from acb_common import run_context_scope
+        from acb_skills.memory_tools import memory_permission_scope
         from acb_skills.write_artifact import artifact_context_scope
         # H-201 (§21.16): the run's artifact context ends with the run, and a
-        # nested run gives its parent back the parent's exact context.
-        with run_context_scope(), artifact_context_scope():
+        # nested run gives its parent back the parent's exact context. MCP-C3
+        # review: the memory gate too, because this run's lookup arms it here.
+        with run_context_scope(), artifact_context_scope(), memory_permission_scope():
             try:
                 return await _run_agent_inner(
                     agent_name, event_payload,
@@ -5907,8 +6038,13 @@ async def _run_agent_inner(
             optional_integrations: list[str] = loaded.config.get("optional_integrations", [])
             # One access lookup for the run, as on the stream path. The
             # integrations and the MCP servers (WAC-P3) read the same answer.
+            # MCP-C3: a delegated run that names no member of its own acts as
+            # its parent, so its room is the parent's chat, not its own thread.
+            _authority_thread = thread_id
+            if session_user is None and _parent_ctx.get("run_id"):
+                _authority_thread = _delegated_authority_thread(_parent_ctx) or thread_id
             _authorizer = await _integration_authorizer(
-                event_payload, thread_id, session_user=session_user,
+                event_payload, _authority_thread, session_user=session_user,
             )
             integrations, integration_warnings = build_integrations(
                 mandatory_integrations, optional_integrations, settings,
@@ -8892,23 +9028,16 @@ async def run_agent_stream(
                         })
                         raise
                     else:
-                        # Mid-run steer (§4.6): a tool boundary is where guidance
-                        # that arrived during the turn enters the model's
-                        # context. No pending steer => `result` is returned
-                        # unchanged, so this path is a dict lookup for every
-                        # ordinary call.
+                        # Task 2494: a mid-run steer never joins a tool
+                        # result. The model reads it as a user turn of its
+                        # next call (`steer.SteerTurns`).
                         from acb_common.tool_refusals import (  # noqa: PLC0415
                             is_refusal,
                         )
-                        from orchestrator.steer import (  # noqa: PLC0415
-                            decorate_tool_result,
-                        )
-                        # Asked BEFORE the steer text joins the result. A
-                        # refused call returns its text for the model, and it
-                        # is still no success for the card (event_translator
-                        # asks the same function).
+                        # A refused call returns its text for the model, and
+                        # it is still no success for the card
+                        # (event_translator asks the same function).
                         refused = is_refusal(result)
-                        result = decorate_tool_result(result, thread_id)
                         result_str = str(result) if result is not None else ""
                         await queue.put({
                             "type": "TOOL_CALL_RESULT",
@@ -10266,15 +10395,11 @@ def _verified_run_member() -> str:
     ``run_agent_stream`` binds from the session's member (H-73), never from
     the payload. The store loads a session only for a thread that is this
     member's alone, so a run with no verified member gets none.
-    """
-    try:
-        from acb_common import get_run_context
 
-        ctx = get_run_context() or {}
-    except Exception:
-        return ""
-    member = str(ctx.get("user") or "").strip().lower()
-    return member if member and ctx.get("member_verified") == "1" else ""
+    :func:`_bound_run_member` is the one reader of the binding (MCP-C3).
+    """
+    member, verified = _bound_run_member()
+    return member.lower() if verified else ""
 
 
 async def _finish_native_session(turn: Any) -> None:

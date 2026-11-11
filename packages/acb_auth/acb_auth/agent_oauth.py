@@ -203,6 +203,20 @@ def runs_enabled() -> bool:
     return bool(get_settings().agent_runs_enabled)
 
 
+#: Task 1045a (``agent_coordination.md`` §3.2). What a ``waiting`` line of an
+#: agent run may wait on. ONE copy for both units: the gateway checks the
+#: input against it, and the edge offers it as the enum of the tool. The CHECK
+#: ``pm_agent_runs_waiting_on`` of the migration lists the same five. It lives
+#: here because the edge's ``tools.py`` may not hold the word as a literal
+#: (rule 15 of the edge's AGENTS.md).
+#: The wait is on work that is not the agent's own (owner, 2026-11-07). While
+#: the agent's own sub-agents work, the run is working, so no value names
+#: them. ``agent`` is another (external) agent.
+RUN_WAITING_ON: tuple[str, ...] = ("ci", "review", "deploy", "member", "agent")
+#: The longest wait, in minutes (D140.8). A shorter lease lowers it.
+RUN_WAITING_MAX_MIN = 120
+
+
 def answer_change_enabled() -> bool:
     """True when ``agent_answer_change_enabled`` is on (SW-43).
 
@@ -847,7 +861,7 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: switch is on, and it checks the version and the exact title. ⚠️ The plain
 #: ``DELETE /projects/tasks/{task_id}`` stays OUT of both sets.
 #: WS-55 MCP-G2 adds two pairs. The ``PUT`` of the assignees is the route of
-#: ``set_assignees``, the one ``PUT`` of the set. The task move is the route
+#: ``set_assignees``, the first ``PUT`` of the set. The task move is the route
 #: of the ``parent_task_id`` of ``update_task``, and the route refuses a
 #: signed move to another project.
 #: WS-55 MCP-G1 adds four pairs. The node POST and PATCH are the routes of
@@ -863,6 +877,9 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: SW-16a adds the link pair: the POST and the DELETE of a task link, the
 #: routes of ``add_task_link`` and ``remove_task_link``. The route checks that
 #: the member sees BOTH tasks. SW-16b owns the write fence for these routes.
+#: SP-8a adds the ``PUT`` of the epic contract, the route of the
+#: ``epic_contract`` block of ``update_task``. It replaces the whole contract,
+#: and the route refuses a task that is not an epic.
 #: WS-55 MCP-G9 adds the PATCH and the DELETE of one comment, the routes of
 #: ``update_comment`` and ``delete_comment``. For a signed agent the route
 #: changes only a comment that the member wrote AND whose ``meta.via`` is the
@@ -897,6 +914,10 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # SW-16a: `add_task_link` and `remove_task_link`.
     ("POST", "/projects/tasks/{task_id}/links"),
     ("DELETE", "/projects/tasks/{task_id}/links/{link_id}"),
+    # SP-8a: the `epic_contract` block of `update_task`. It replaces the
+    # whole contract of an epic. The gateway refuses a task that is not an
+    # epic (422), and a pinned connection reaches only the epics of its pin.
+    ("PUT", "/projects/tasks/{task_id}/epic-contract"),
     ("POST", "/projects/tasks"),
     ("POST", "/projects/tasks/{task_id}/comments"),
     # MCP-G9: `update_comment` and `delete_comment`, own client only.

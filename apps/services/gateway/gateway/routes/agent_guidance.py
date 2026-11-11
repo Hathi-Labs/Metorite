@@ -58,12 +58,14 @@ Fence: ``tests/unit/test_agent_guidance.py`` and, on a real database,
 
 from __future__ import annotations
 
+import functools
 import uuid
 from typing import Any
 
-from acb_auth import UserContext, get_current_user, require_feature_router
+from acb_auth import UserContext, agent_oauth, get_current_user, require_feature_router
 from acb_common import get_logger, get_settings
 from acb_common.db import current_tenant
+from acb_playbook import PlaybookError, load_topic
 from fastapi import APIRouter, Depends, HTTPException, Query
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.projects.authority import assert_may_write_guidance
@@ -102,7 +104,20 @@ AGENT_WRITE_REFUSED = "An agent connection cannot change guidance. A member does
 ARCHIVED_REFUSED = "This project is archived, so its agent guidance cannot change."
 SAVE_BUSY = "Another save of this guidance was in progress. Try again."
 
-LEVELS = ("project", "space", "company")
+LEVELS = ("project", "space", "company", "default")
+
+#: PB-5 (D186, ``orchestration_playbook.md`` §4, §7). The Metorite default
+#: level: one read-only block at the end of the answer, below the org. Its text
+#: is the playbook topic :data:`DEFAULT_TOPIC`, and its version is the version
+#: of that topic. No route writes it, and the history route never lists it.
+#: It shows only for an org that ``playbook_orgs`` names. It is the farthest
+#: block, so the cap of the answer drops it first.
+DEFAULT_TOPIC = "default-guidance"
+DEFAULT_LEVEL = "default"
+#: A fixed id, so a client can tell the block from a row of the table.
+DEFAULT_BLOCK_ID = str(uuid.uuid5(uuid.NAMESPACE_OID, "metorite.guidance.default"))
+DEFAULT_SOURCE: dict[str, Any] = {
+    "kind": "default", "project_id": None, "name": None, "hidden": False}
 
 #: The source of a block whose project the member cannot see. It names no
 #: project, so the answer cannot show which hidden project holds the rule.
@@ -210,7 +225,14 @@ SELECT DISTINCT ON (g.project_id)
 """
 
 
-async def _chains(db: Any, origins: list[str]) -> dict[str, list[Any]]:
+async def project_chains(db: Any, origins: list[str]) -> dict[str, list[Any]]:
+    """``{origin id: [the origin, its parent, ..., the space]}``, nearest first.
+
+    The ONE project-tree walk of agent settings. The guidance blocks read it,
+    and the policy store (``routes/agent_policies.py``, SW-94) reuses it and
+    adds no walk of its own. Each row holds ``id``, ``parent_project_id``,
+    ``name`` and ``depth``. An unknown origin has no key.
+    """
     rows = (await db.execute(text(_CHAINS_SQL), {"origins": origins})).fetchall()
     out: dict[str, list[Any]] = {}
     for r in rows:
@@ -241,6 +263,30 @@ async def _latest(db: Any, project_ids: list[str]) -> dict[str | None, Any]:
     return {(str(r.project_id) if r.project_id is not None else None): r for r in rows}
 
 
+@functools.lru_cache(maxsize=1)
+def _default_topic() -> Any:
+    """The default topic, read once. The text is the same for every org."""
+    try:
+        return load_topic(DEFAULT_TOPIC)
+    except PlaybookError:
+        _log.warning("playbook default topic unreadable")
+        return None
+
+
+def default_block(organization_id: str | None) -> dict[str, Any] | None:
+    """The Metorite default block for an org, or ``None``.
+
+    ``None`` while ``playbook_orgs`` does not name the org, or when the topic
+    cannot be read. The org is the bound tenant, never request input (R5)."""
+    if not agent_oauth.playbook_allowed(organization_id):
+        return None
+    topic = _default_topic()
+    if topic is None or not topic.body.strip():
+        return None
+    return {"id": DEFAULT_BLOCK_ID, "level": DEFAULT_LEVEL, "source": dict(DEFAULT_SOURCE),
+            "version": topic.version, "body": topic.body}
+
+
 def _has_text(row: Any) -> bool:
     """A scope that was cleared (an empty body) applies no block."""
     return bool(row is not None and str(row.body).strip())
@@ -263,10 +309,11 @@ def cut_to_answer(blocks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], i
 async def blocks_for_project(db: Any, vis: Any, project_id: str) -> tuple[list[dict[str, Any]], int]:
     """The blocks that apply to a task in *project_id*, nearest first, and the
     number dropped by the cap of the answer."""
-    chain = (await _chains(db, [project_id])).get(project_id, [])
+    chain = (await project_chains(db, [project_id])).get(project_id, [])
     ids = [str(r.id) for r in chain]
     if not ids:
-        return [], 0
+        floor = default_block(current_tenant())
+        return cut_to_answer([floor] if floor else [])
     seen = await _visible_ids(db, vis, ids)
     latest = await _latest(db, ids)
     blocks: list[dict[str, Any]] = []
@@ -293,6 +340,9 @@ async def blocks_for_project(db: Any, vis: Any, project_id: str) -> tuple[list[d
             "source": {"kind": "company", "project_id": None, "name": None, "hidden": False},
             "version": int(org.version), "body": org.body,
         })
+    floor = default_block(current_tenant())
+    if floor is not None:
+        blocks.append(floor)
     return cut_to_answer(blocks)
 
 
@@ -431,7 +481,7 @@ async def guidance_refs(
     async with _tenant_session() as db:
         visible = await _visible_ids(db, await resolve_visibility(db, user), ids)
         origins = [p for p in ids if p in visible]
-        chains = await _chains(db, origins) if origins else {}
+        chains = await project_chains(db, origins) if origins else {}
         every = sorted({str(r.id) for rows in chains.values() for r in rows})
         latest = await _latest(db, every) if every else {}
         for origin in origins:

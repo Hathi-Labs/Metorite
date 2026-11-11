@@ -1875,6 +1875,8 @@ function TimelineBar({
 }) {
   const inside = drawnBar.widthPx >= LABEL_INSIDE_PX;
   const title = bad && blockerTitle ? conflictLabel(blockerTitle) : task.title;
+  // A derived bar has no dates of its own, so the tooltip says where they come from.
+  const hint = drawnBar.derived ? `${title}. From the dates of its tasks.` : title;
   const span = interval(task);
   const place = labelSide(drawnBar, canvasPx);
 
@@ -1939,7 +1941,7 @@ function TimelineBar({
             if (!drawnBar.derived) onGrab(event, "move");
           }}
           onClick={onOpen}
-          title={title}
+          title={hint}
           className={`flex h-full w-full items-center gap-1 overflow-hidden rounded-md px-2 text-left text-[11px] ${
             drawnBar.derived ? "cursor-pointer" : "cursor-grab"
           } ${dragging ? "cursor-grabbing ring-2 ring-ring" : ""} ${tone}`}
@@ -2017,7 +2019,7 @@ function TimelineBar({
         <button
           type="button"
           onClick={onOpen}
-          title={title}
+          title={hint}
           className={`absolute top-1/2 -translate-y-1/2 truncate rounded bg-card px-1 py-0.5 text-[11px] text-foreground hover:underline ${
             place.side === "right" ? "text-left" : "text-right"
           }`}

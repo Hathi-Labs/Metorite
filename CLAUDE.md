@@ -284,6 +284,12 @@ When the owner answers in chat and not on the task, call
 
 Rules that make it work:
 
+- **⚠️ PLAN BY THE GRATIFICATION LADDER** *(owner directive, 2026-11-11,
+  D211)*. A plan is a set of rungs, and each rung ends in a demo that the owner
+  sees and uses on production. Take the lowest open rung first, then the least
+  slack to its demo. Rung 0 (a leak, data loss, a broken live feature) goes
+  before all rungs. Every plan you make, on the board or for a spec, follows
+  `orchestration_playbook.md` §6d.
 - **The verifier is never the implementer**, and re-derives facts from the code
   instead of trusting the write-up.
 - **Sonnet does the work. Opus takes the hard cases.** Owner directive,

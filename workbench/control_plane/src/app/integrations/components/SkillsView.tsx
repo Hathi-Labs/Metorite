@@ -1,9 +1,10 @@
 "use client";
 
-/** The Skills view (moved from the old Skills tab, no behaviour change). */
+/** The Built-in skills view (moved from the old Skills tab). The skills that a company writes live in Studio, under "Your skills" (STB-4). */
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
+import Link from "next/link";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { SkillFamily, SkillsCatalog } from "@/app/api/integrations/skills/route";
 
@@ -120,7 +121,7 @@ export default function SkillsView() {
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h2 className="font-semibold text-foreground">Agent Skills</h2>
+              <h2 className="font-semibold text-foreground">Built-in skills</h2>
               <p className="text-xs text-muted-foreground mt-0.5">
                 {loading
                   ? "Measuring…"
@@ -139,6 +140,11 @@ export default function SkillsView() {
             family&apos;s system-prompt addendum plus its tool schemas, counted with the run-context tokenizer.
             The matrix shows each agent&apos;s effective surface (declared scope ∩ enabled families);
             toggle families per agent from the Agents page side panel.
+          </p>
+          <p className="text-sm text-muted-foreground mt-2">
+            Skills that your company wrote are in{" "}
+            <Link href="/studio?kind=skills" className="text-primary hover:underline">Your skills</Link>
+            {" "}in Studio.
           </p>
         </div>
       </div>
