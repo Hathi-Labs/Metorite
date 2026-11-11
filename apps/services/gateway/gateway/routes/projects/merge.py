@@ -70,10 +70,11 @@ from gateway.routes.projects.core import (
     router,
     row_to_dict,
     touch_task,
+    transient_as_409,
     update_row,
 )
 from gateway.routes.projects.filters import attach_agent_state
-from gateway.routes.projects.relations import assert_no_block_cycle
+from gateway.routes.projects.relations import assert_no_block_cycle, lock_block_graph
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -437,6 +438,7 @@ async def _reparent_children(db: Any, source_id: str, target: Any) -> list[str]:
 
 
 @router.post("/tasks/{task_id}/merge")
+@transient_as_409
 async def merge_tasks(
     task_id: str, payload: MergeIn,
     user: UserContext = Depends(get_current_user),
@@ -473,6 +475,9 @@ async def merge_tasks(
             )
         sources = [await _load_mergeable(db, vis, t, target) for t in wanted]
 
+        # SW-16a: `_move_links` takes this lock through the loop check. Taken
+        # here too, before the first row write, so that one lock order holds.
+        await lock_block_graph(db)
         bumped: list[str] = []
         for source in sources:
             await _move_links(db, str(source.id), task_id)

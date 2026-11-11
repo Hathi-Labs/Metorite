@@ -20,18 +20,25 @@
  * A member who then sends from the chat closes this card, and the assistant
  * shows a new one (`close_on_steer`).
  *
+ * §18.11: the form reports the member's version after each edit
+ * (`onDraftChange`, `lib/redraftCard.ts`), so a request in the chat carries
+ * it. A card that revises another shows "Draft <n>" and a "Changed:" line,
+ * which the client computes from its own copy of the member's last version.
+ *
  * Nothing hides. The summary names each ticked To in full. Each notice shows.
  * The text box grows to hold the whole text, so no line sits under an inner
  * scroll. Fences: `src/components/newMailCard.test.ts`, `src/lib/replyCard.test.ts`.
  */
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import { AddressRow } from "@/components/ReplyCardForm";
+import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import { Input, Textarea } from "@/components/ui/Input";
+import { CHANGED_LEAD, REOPENED_CHECK_LINE, REOPENED_LINE, cardDraftOf, changedText, changesOf, draftLabel, keptOutOf, keptOutText, linePieces, type CardDraft, type CardText, type Changes, type PeopleBefore } from "@/lib/redraftCard";
 import {
   leftOutText,
   lineCount,
@@ -44,9 +51,11 @@ import {
   newMailSummary,
   NUDGE_CHIPS,
   NUDGE_EDITED,
+  NUDGE_EDITED_AT_REST,
   NUDGE_LEAD,
   NUDGE_TEXT,
   newMailEdited,
+  newMailTicksMoved,
   recipientsFor,
   sendsCount,
   startFileTicks,
@@ -55,6 +64,7 @@ import {
   subjectCanGo,
   tickedFor,
   toggleTick,
+  type NewMailEdits,
   type ReplyAction,
   type ReplyApproval,
   type ReplyForm,
@@ -75,6 +85,66 @@ export interface NewMailCardFormProps {
   /** False for the first moments of a new card (`ARM_MS`): clicks do nothing. */
   armed: boolean;
   disabled?: boolean;
+  /**
+   * §18.11: the member's version after each edit, or null when the card shows
+   * its own start again. `AgentChat` keeps it for the next chat message.
+   */
+  onDraftChange?: (draft: CardDraft | null) => void;
+  /** §18.11: the member's last version of the card that this card revises. */
+  before?: CardText & { people?: PeopleBefore };
+  /**
+   * §18.11: a message in the chat goes as a steer now, the one path that
+   * carries the member's version. False at rest, as after a Stop.
+   */
+  carriesEdits?: boolean;
+  /**
+   * The member's edits of this card, from before a change of tab. The queue
+   * holds them, because a change of tab unmounts this form.
+   */
+  savedEdits?: NewMailEdits;
+  /** Report the member's edits, for `savedEdits`. */
+  onEdits?: (edits: NewMailEdits) => void;
+}
+
+/**
+ * The "Changed:" line of a redrafted card (§18.11): the words that went, struck
+ * through, and the words that came, marked. The client computed it from the
+ * member's last version and the new text (`changesOf`). The line and its
+ * accessible name draw the same pieces (`linePieces`), so they read alike,
+ * with each change as a phrase and the people in sentences of their own.
+ */
+export function ChangedLine({ changes }: { changes: Changes }) {
+  const [lead, ...rest] = linePieces(changes);
+  return (
+    <p className="break-words text-[11px] leading-relaxed text-muted-foreground" data-redraft-changed="" aria-label={changedText(changes)}>
+      <span className="font-medium text-foreground">{"text" in lead ? lead.text.trimEnd() : CHANGED_LEAD.trimEnd()}</span>{" "}
+      {rest.map((p, i) =>
+        "removed" in p ? (
+          <del key={i} className="text-muted-foreground line-through">{p.removed}</del>
+        ) : "added" in p ? (
+          <mark key={i} className="rounded-sm bg-primary/10 text-foreground">{p.added}</mark>
+        ) : (
+          <span key={i}>{p.text}</span>
+        ),
+      )}
+    </p>
+  );
+}
+
+/**
+ * The note on the people that start unticked because the member unticked
+ * them on the draft before (§18.11 rule 7). It reads the server's names on
+ * the form, so it shows on every path: in a slot, with no slot, and after a
+ * remount, where the card has no "Changed:" line.
+ */
+export function KeptOutLine({ names }: { names: readonly string[] }) {
+  const text = keptOutText(names);
+  if (!text) return null;
+  return (
+    <p className="break-words text-[11px] leading-relaxed text-muted-foreground" data-redraft-kept-out="">
+      {text}
+    </p>
+  );
 }
 
 /**
@@ -83,35 +153,42 @@ export interface NewMailCardFormProps {
  * `onSuggest`, and that is all it does: it sends nothing, and it answers no
  * card. With no `onSuggest`, the line shows with no chips.
  *
- * `edited` (fix round 1, P1): the member changed the subject or the text. A
- * request in the chat would start again from the assistant's draft and drop
- * those edits, so the chips hide and the line says so (`NUDGE_EDITED`).
+ * `edited`: the member changed the card. While a run is live, a request in
+ * the chat carries those edits (§18.11), so the line says so
+ * (`NUDGE_EDITED`), and the chips stay. With `carriesEdits` false, as after a
+ * Stop, a plain send carries none. The line says that
+ * (`NUDGE_EDITED_AT_REST`), and the chips hide, so no chip leads the member
+ * to lose the edits.
  */
 export function NudgeLine({
   onSuggest,
   disabled = false,
   edited = false,
+  carriesEdits = false,
 }: {
   onSuggest?: (text: string) => void;
   disabled?: boolean;
   edited?: boolean;
+  carriesEdits?: boolean;
 }) {
+  const lost = edited && !carriesEdits;
   return (
     <div
       className="flex flex-wrap items-center gap-1.5 rounded-md bg-muted/40 px-2.5 py-1.5 text-xs glass:rounded-[10px] glass:bg-secondary glass:px-3 glass:py-2"
-      data-new-mail-nudge={edited ? "edited" : ""}
+      data-new-mail-nudge={lost ? "edited-at-rest" : edited ? "edited" : ""}
     >
       <Icon name="Sparkles" size={12} className="shrink-0 text-muted-foreground" />
       {edited ? (
-        <span className="text-foreground">{NUDGE_EDITED}</span>
+        // The words keep a width of their own beside the icon, so at 390 px
+        // the chips wrap below them and the icon never sits alone.
+        <span className={lost ? "min-w-0 flex-1 text-foreground" : "min-w-0 flex-[1_1_14rem] text-foreground"}>{lost ? NUDGE_EDITED_AT_REST : NUDGE_EDITED}</span>
       ) : (
         <span className="text-foreground">
           <span className="font-medium">{NUDGE_LEAD}</span>{" "}
           <span className="text-muted-foreground">{NUDGE_TEXT}</span>
         </span>
       )}
-      {onSuggest &&
-        !edited &&
+      {onSuggest && !lost &&
         NUDGE_CHIPS.map((chip) => (
           <Button
             key={chip}
@@ -136,13 +213,51 @@ export default function NewMailCardForm({
   onSuggest,
   armed,
   disabled = false,
+  onDraftChange,
+  before,
+  carriesEdits = false,
+  savedEdits,
+  onEdits,
 }: NewMailCardFormProps) {
-  const [subject, setSubject] = useState(form.subject);
-  const [body, setBody] = useState(form.body);
-  const [ticks, setTicks] = useState<ReplyTicks>(() => startTicks(form));
+  // A change of tab unmounts this form. Each state starts from the member's
+  // edits, or an untick comes back ticked, and Send goes to that person.
+  const [subject, setSubject] = useState(savedEdits?.subject ?? form.subject);
+  const [body, setBody] = useState(savedEdits?.body ?? form.body);
+  const [ticks, setTicks] = useState<ReplyTicks>(() => savedEdits?.ticks ?? startTicks(form));
   // The file rows of a held new mail (fix round 1): a ticked file goes.
-  const [fileTicks, setFileTicks] = useState<string[]>(() => startFileTicks(form));
+  const [fileTicks, setFileTicks] = useState<string[]>(() => savedEdits?.fileTicks ?? startFileTicks(form));
+  // Fix round 6: did this form start from the kept edits? Read once, at the
+  // mount: a later `savedEdits` is this form's own report. A chat switch or a
+  // new mount of the chat keeps no edits, so a card that came back then asks
+  // the member to check it. Its report says so, so a change of tab asks too.
+  const [fromKept] = useState(() => savedEdits !== undefined && !savedEdits.startedBare);
+  const bare = !!form.reopened && !fromKept;
+  const keepEdits = useRef(onEdits);
+  useEffect(() => { keepEdits.current = onEdits; }, [onEdits]);
+  useEffect(() => {
+    keepEdits.current?.({ subject, body, ticks, fileTicks, ...(bare ? { startedBare: true as const } : {}) });
+  }, [subject, body, ticks, fileTicks, bare]);
   const box = useRef<HTMLTextAreaElement>(null);
+  // §18.11 step 1: the member's version after each edit, for the next chat
+  // message. A ref holds the callback, so a new callback runs no report.
+  const report = useRef(onDraftChange);
+  useEffect(() => { report.current = onDraftChange; }, [onDraftChange]);
+  useEffect(() => {
+    report.current?.(cardDraftOf(form, form.requestId ?? "", { subject, body, ticks }));
+  }, [form, subject, body, ticks]);
+  const label = draftLabel(form.draft);
+  // The new text against the member's last version: never a claim of the model.
+  const offered = recipientsFor(form, true);
+  const changes = before
+    ? changesOf(before, {
+        subject: form.subject,
+        body: form.body,
+        people: {
+          all: [...offered.to, ...offered.cc, ...(offered.bcc ?? [])].map((a) => a.toLowerCase()),
+          ticked: startTicks(form).reply_all,
+        },
+      })
+    : null;
   // The box is as tall as its text, so no line hides under an inner scroll.
   useLayoutEffect(() => {
     const el = box.current;
@@ -167,10 +282,24 @@ export default function NewMailCardForm({
   return (
     <div className="space-y-2.5" data-reply-card="" data-new-mail-card="">
       <div className="min-w-0">
-        <p className="break-words text-xs font-medium leading-relaxed text-foreground glass:text-label" data-reply-summary="">
-          {newMailSummary(form, ticks)}
-        </p>
+        <div className="flex min-w-0 items-start gap-2">
+          <p className="min-w-0 flex-1 break-words text-xs font-medium leading-relaxed text-foreground glass:text-label" data-reply-summary="">
+            {newMailSummary(form, ticks)}
+          </p>
+          {label && (
+            <span className="shrink-0" data-redraft-label="">
+              <Badge size="xs">{label}</Badge>
+            </span>
+          )}
+        </div>
         {detail && <p className="mt-0.5 break-words text-[11px] text-muted-foreground">{detail}</p>}
+        {changes && <ChangedLine changes={changes} />}
+        {form.reopened && (
+          <p className="break-words text-[11px] leading-relaxed text-foreground" data-redraft-reopened={fromKept ? "kept" : "check"} role="status">
+            {fromKept ? REOPENED_LINE : REOPENED_CHECK_LINE}
+          </p>
+        )}
+        <KeptOutLine names={keptOutOf(form)} />
       </div>
 
       {form.notices.length > 0 && (
@@ -268,7 +397,12 @@ export default function NewMailCardForm({
         </ul>
       )}
 
-      <NudgeLine onSuggest={onSuggest} disabled={disabled} edited={newMailEdited(form, subject, body)} />
+      <NudgeLine
+        onSuggest={onSuggest}
+        disabled={disabled}
+        edited={newMailEdited(form, subject, body) || newMailTicksMoved(form, ticks)}
+        carriesEdits={carriesEdits}
+      />
 
       <div className="flex flex-wrap items-center gap-2">
         <Button

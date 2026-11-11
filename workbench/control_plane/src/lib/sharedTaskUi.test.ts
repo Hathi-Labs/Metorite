@@ -422,7 +422,9 @@ describe("both apps reach the shared modules", () => {
     ["tasks", "components/TaskPanelHeader"],
     ["projects", "lib/statusCategory"],
     ["tasks", "lib/statusCategory"],
-    ["projects", "lib/taskPanel"],
+    // 2026-11-06 (ORC-1, D181): /projects reaches the shared panel seam through
+    // its panelMode shim, and that seam reads taskPanel. /tasks imports it directly.
+    ["projects", "lib/panelMode"],
     ["tasks", "lib/taskPanel"],
   ])("/%s consumes @/%s", (app, module) => {
     expect(

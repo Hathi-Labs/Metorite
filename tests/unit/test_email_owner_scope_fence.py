@@ -91,6 +91,13 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
         "forward_email joins user_id, and a file comes through "
         "_fetch_owned_attachment."
     ),
+    "revise_new_mail_card": (
+        "§18.11. Reads no email table and no mailbox. It peeks and then spends "
+        "the caller's own card record of one thread (peek_record and "
+        "take_record check the owner of the record), and its own snapshot and "
+        "link in tenant Redis. It sends and saves nothing "
+        "(test_email_redraft_snapshot.py)."
+    ),
     "cleanup_status": (
         "Reads the in-process _SWEEP_JOBS registry, and answers idle unless "
         "the job's owner is the caller. No table read."
@@ -186,6 +193,30 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
         "seven integer counts: no address, no member and no account id. "
         "R8: test_email_org_connection_counts.py."
     ),
+    "retire_signature_image": (
+        "WS-17 SG-1. A signature image belongs to the org, not to a mailbox. "
+        "The retire binds 'created_by = :me OR :admin' into its UPDATE, with "
+        "the session member and admin:settings:manage, and a miss is 404. It "
+        "sets retired_at only (test_email_signature_images.py)."
+    ),
+    "signature_image_file": (
+        "WS-17 SG-1, D-EM-68. The public image of a sent signature, with no "
+        "member. It reads one email_signature_images row by its 256-bit "
+        "token under tenant_session(org) and RLS, and reads no mailbox "
+        "(test_email_signature_images_r8.py)."
+    ),
+    "signature_image_head": (
+        "WS-17 SG-1 fix round 1. The HEAD of signature_image_file: the same "
+        "read through _public_image, the same headers, and no body "
+        "(test_email_signature_images_r8.py)."
+    ),
+    "preview_signature": (
+        "WS-17 SG-2, D-EM-65. Reads no email table and no mailbox, and writes "
+        "nothing. It renders the layout and the fields of the request body "
+        "with signature_render.render, and answers 404 while "
+        "EMAIL_SIGNATURE_TEMPLATES_ORGS does not hold the org of the session "
+        "(test_email_signature_resolver.py)."
+    ),
 }
 
 # ── List 2: the modules outside routes/email that read an email child table ─
@@ -194,6 +225,16 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
 #: and why its read is scoped. A key that ends in ``/`` is a package. Paths
 #: are relative to the repository root.
 OUTSIDE_EMAIL_READERS: dict[str, str] = {
+    "apps/services/gateway/gateway/kb_entities/graph.py": (
+        "The WS-KG graph sweep (KG-5) runs as the graph.sweep job inside "
+        "tenant_session(org) with FORCE RLS, behind GRAPH_SWEEP_ORGS. It reads "
+        "email senders and recipients only to write kb_links rows of ids and "
+        "a relation, and it has no viewer: it builds no name, snippet or "
+        "output. The neighbour read of KG-6 never opens an email through this "
+        "module. It opens the mail through the email app, with the account "
+        "and folder scope of Email search. Fences: test_kg_resolve_r8.py and "
+        "test_kg_links_writer.py."
+    ),
     "apps/services/gateway/gateway/routes/admin/members.py": (
         "An admin removes or purges a member (H-375). It cancels or deletes "
         "only the scheduled sends whose owner_email is that member, inside "
@@ -216,11 +257,6 @@ OUTSIDE_EMAIL_READERS: dict[str, str] = {
     "apps/services/gateway/gateway/routes/tasks/email_link.py": (
         "The task-close hop. _closer_owns_mailbox checks that the member who "
         "closes the task owns the mailbox before any write (EM-T2c item 8)."
-    ),
-    "apps/services/gateway/gateway/routes/notes/dispatch.py": (
-        "Reads the signature of the account that _default_email_account "
-        "selected with user_id = the meeting owner, after "
-        "cross_owner_refusal. Not in the spec list of 2026-10-02."
     ),
     "apps/services/email_ingestion/email_ingestion/": (
         "The sync engine. It reads and writes the mailbox it syncs, by "

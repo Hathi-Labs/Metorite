@@ -14,7 +14,11 @@ mints three shapes and this router must answer for all of them:
 
     a@b.com        that person's private episodic memory
     agent:<name>   memory shared across every user of that agent
-    org:global     organisation-wide memory
+    org:<org id>   the memory of one organization (KG-9). Only its own members
+                   reach it. Another org's id answers 404
+    org:global     the OLD org key, shared by every organization. Nothing
+                   writes it after KG-9. The memory tenant guard keeps Mem0
+                   off while two organizations exist
 
 ``require_internal_auth`` was doing the whole job here, and it was the wrong
 job. It proves the CALLER IS THE PLATFORM — which the Next.js BFF is, on behalf
@@ -52,6 +56,7 @@ router = APIRouter(
 #: that fails open because an optional dependency is missing is not a gate.
 AGENT_SCOPE_PREFIX = "agent:"
 ORG_SCOPE_KEY = "org:global"
+ORG_SCOPE_PREFIX = "org:"
 ROOM_SCOPE_PREFIX = "room:"
 PREFS_SCOPE_PREFIX = "prefs:"
 
@@ -77,6 +82,20 @@ def _authorize_org(user: UserContext, *, write: bool) -> None:
     needed = "memory:write_org" if write else "memory:read_org"
     if not user.has_permission(needed):
         raise _deny(f"Forbidden: organisation memory needs '{needed}'.")
+
+
+def _authorize_own_org(scope: str, user: UserContext, *, write: bool) -> None:
+    """KG-9: ``org:<org id>`` is the memory of one organization.
+
+    The org id must be the member's own, from the session. Another org's id
+    answers 404, as an unknown scope does, so the answer says nothing about
+    that org. Then the ``memory:*_org`` rule applies as for the old key.
+    """
+    org = scope[len(ORG_SCOPE_PREFIX):].strip().lower()
+    mine = str(getattr(user, "organization_id", None) or "").strip().lower()
+    if not org or not mine or org != mine:
+        raise _deny("Unknown memory scope", 404)
+    _authorize_org(user, write=write)
 
 
 def _authorize_room(scope: str, user: UserContext, *, write: bool) -> None:
@@ -128,6 +147,20 @@ def _authorize_person(scope: str, user: UserContext) -> None:
         raise _deny("Forbidden: that is somebody else's private memory.")
 
 
+def _canonical_scope(scope: str) -> str:
+    """The one spelling of a scope key that the readers use (KG-9 review).
+
+    ``org:<org id>`` is lowercase, as ``acb_memory.org_scope_key`` writes it.
+    Each handler authorizes and then calls Mem0 with this value, never with the
+    raw path. Else ``org:<ID>`` in capitals passes the check and writes a key
+    that no reader reads.
+    """
+    scope = (scope or "").strip()
+    if scope.startswith(ORG_SCOPE_PREFIX):
+        return scope.lower()
+    return scope
+
+
 def _authorize_scope(scope: str, user: UserContext, *, write: bool) -> None:
     """Raise 403/404 unless *user* may touch this memory scope.
 
@@ -159,6 +192,8 @@ def _authorize_scope(scope: str, user: UserContext, *, write: bool) -> None:
 
     if scope == ORG_SCOPE_KEY:
         return _authorize_org(user, write=write)
+    if scope.startswith(ORG_SCOPE_PREFIX):
+        return _authorize_own_org(scope, user, write=write)
     if scope.startswith(ROOM_SCOPE_PREFIX):
         return _authorize_room(scope, user, write=write)
     if scope.startswith(PREFS_SCOPE_PREFIX):
@@ -193,6 +228,7 @@ async def list_memories(
     user: UserContext = Depends(get_current_user),
 ) -> list[dict]:
     """Return all stored episodic memories in *scope*."""
+    scope = _canonical_scope(scope)
     _authorize_scope(scope, user, write=False)
     client = _get_mem0()
     if client is None:
@@ -207,6 +243,7 @@ async def search_memories(
     user: UserContext = Depends(get_current_user),
 ) -> list[dict]:
     """Return memories in *scope* semantically relevant to the query."""
+    scope = _canonical_scope(scope)
     _authorize_scope(scope, user, write=False)
     client = _get_mem0()
     if client is None:
@@ -228,15 +265,24 @@ async def delete_memory(
     somebody else's memory id would delete their memory — the same IDOR one
     level down, and the one a path-parameter check alone would leave open.
     """
+    scope = _canonical_scope(scope)
     _authorize_scope(scope, user, write=True)
     client = _get_mem0()
     if client is None:
         return
-    owned = {
-        str(m.get("id"))
-        for m in await client.get_all(scope)
-        if isinstance(m, dict) and m.get("id")
-    }
+    # KG-9 review: the owner read of a delete is not gated by the memory
+    # tenant guard, as the delete is not. A refused layer must still forget.
+    # The read names this one authorized scope, so the isolation check holds.
+    # The keys `agent:<name>` and `org:global` hold no org. While the layer
+    # is refused (two orgs exist) their ids span every org, so a delete there
+    # could remove another org's memory. Refuse them until KG-11 (review P2).
+    from acb_memory import memory_tenancy_ok  # noqa: PLC0415
+
+    if (scope.startswith("agent:") or scope == "org:global") and not (
+        await memory_tenancy_ok()
+    ):
+        raise HTTPException(status_code=404, detail="Memory not found")
+    owned = await client.scope_ids(scope)
     if memory_id not in owned:
         # 404, not 403: whether a memory id exists elsewhere is itself
         # something the caller should not be able to probe for.
@@ -255,6 +301,7 @@ async def add_memories(
     This endpoint is called by the Control Plane after a session ends.
     The extraction runs asynchronously — returns 202 immediately.
     """
+    scope = _canonical_scope(scope)
     _authorize_scope(scope, user, write=True)
     client = _get_mem0()
     if client is None:
@@ -281,6 +328,7 @@ async def memory_status(
     Gated like the others: the count alone tells you how much a colleague has
     stored, which is not much and is still not yours to know.
     """
+    scope = _canonical_scope(scope)
     _authorize_scope(scope, user, write=False)
     from acb_common import get_settings  # noqa: PLC0415
 

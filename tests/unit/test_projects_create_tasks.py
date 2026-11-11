@@ -403,7 +403,7 @@ def test_the_row_keys_are_create_tasks_arguments() -> None:
     The mutation: a new create_task argument with no decision here fails.
     """
     params = set(inspect.signature(skill_projects.create_task).parameters)
-    decided = set(F.ROW_KEYS) | set(F.REPEAT_KEYS) | {"project_id", "importance"}
+    decided = set(F.ROW_KEYS) | set(F.REPEAT_KEYS) | {"project_id", "importance", "files"}
     assert params == decided, f"undecided: {sorted(params ^ decided)}"
     assert set(inspect.signature(skill_projects.create_tasks).parameters) == {
         "project_id",

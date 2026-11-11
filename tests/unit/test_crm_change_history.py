@@ -72,6 +72,9 @@ LOGGED: dict[str, str] = {
     "POST /crm/lost-reasons": "a new lost reason (team); Undo removes it",
     "PATCH /crm/lost-reasons/{reason_id}": "a lost reason edit (team)",
     "PATCH /crm/pipelines/{pipeline_id}": "a pipeline rename (company)",
+    # WS-CRM CRM-M3a: a new pipeline (company). Undo deletes it, and refuses
+    # while a deal names it. Each new stage logs its own deal_stage row.
+    "POST /crm/pipelines": "a new pipeline (company); Undo deletes it",
     "POST /crm/pipelines/{pipeline_id}/stages": "a stage into a pipeline (team)",
     "DELETE /crm/pipelines/{pipeline_id}/stages/{status_id}":
         "a stage out of a pipeline (team); Undo puts it back",
@@ -440,9 +443,12 @@ def test_the_chat_reads_the_history_through_the_crm_pack() -> None:
 
 
 def test_the_chat_parity_row_names_the_read() -> None:
-    from acb_skills import chat_parity
+    """CRM-M2a: the CRM manifest decides the action, not a table row."""
+    from acb_common.app_manifests import base
+    from acb_common.app_manifests.crm import CRM
 
-    assert chat_parity.COVERED["GET /api/crm/change-history"] == "crm_change_history"
+    row = base.route_for(CRM, "GET", "/crm/change-history")
+    assert row is not None and row.tool == "crm_change_history"
 
 
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
@@ -1219,7 +1225,7 @@ async def test_the_undo_of_a_pipeline_rename_refuses_a_newer_rename(
 ) -> None:
     """P3d (fix round 1). Rename a pipeline twice, then undo the first
     rename: 409 ``changed_since``, and the newer name stays. Mutation: drop
-    the check of ``pipelines._undo_rename`` → the old name comes back → red."""
+    the check of ``pipelines._undo_pipeline`` → the old name comes back → red."""
     _settings(ns, ns.org_a, "native")
     pipeline = _pipeline(ns, ns.org_a, "Sales")
     admin = _admin(ns.org_a)

@@ -55,6 +55,8 @@ import { githubSetupNote, splitSetupVars, UNREACHABLE_NOTE } from "@/lib/setupTo
 import { cleanSurface, surfaceField } from "@/lib/shell/surface";
 import { typedField } from "@/lib/typedMark";
 import { bindToRun } from "@/lib/runBinding";
+import { MAX_CARD_DRAFTS } from "@/lib/redraftCard";
+import { unsafeGatewayPath } from "@/lib/gatewayPath";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -117,6 +119,11 @@ interface ChatRequest {
    *  pill, a choice, a card action, a feed starter and the Fix prompt send
    *  none (`lib/typedMark.ts`). The gateway pops it. */
   typed?: boolean;
+  /** §18.11: the member's version of an open new-mail card, on a steer
+   *  (`lib/redraftCard.ts`). The gateway pops it, checks it against its own
+   *  record of the card, and keeps it only for a steer. It never reaches the
+   *  model as an instruction, and no act reads it. */
+  cardDraft?: unknown;
 }
 
 const LITELLM_BASE_URL =
@@ -161,9 +168,11 @@ async function persistAssistantMessage(
     // lives in lib/assistantCheckpoint.ts.
     const payload = [assistantCheckpointRow(checkpoint)];
     // Write directly to the gateway's chat message store so messages survive
-    // even if the Next.js process restarts mid-stream.
+    // even if the Next.js process restarts mid-stream. The thread id comes
+    // from the body, so it is encoded: a `?` or `/` in it must not move the
+    // write to another route (H-280).
     await gatewayFetch(
-      `${GATEWAY_URL}/chat/sessions/${threadId}/messages`,
+      `${GATEWAY_URL}/chat/sessions/${encodeURIComponent(threadId)}/messages`,
       {
         method: "POST",
         headers: await gatewayHeaders({ "Content-Type": "application/json" }),
@@ -695,12 +704,27 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   const { agentName, message, messages, threadId, mode, model, context, surface, thinkMode, assistantMessageId, lastEventId, reconnect, resume, supersedes, userMessageId, userMessageTs, steerFollowUp, cardAnswer, typed } = body;
+  // §18.11: the member's version of each open new-mail card. Only an object
+  // or a short list of objects goes on, and the gateway checks each part. A
+  // longer list keeps its first ones (fix round 2): the chat puts each card
+  // that the member edited first, so the cut loses no edit.
+  const cardDraft = Array.isArray(body.cardDraft)
+    ? (body.cardDraft.length > 0 ? body.cardDraft.slice(0, MAX_CARD_DRAFTS) : null)
+    : body.cardDraft && typeof body.cardDraft === "object" ? body.cardDraft : null;
   // A steer follow-up has no words of its own: the gateway's ENGAGE seam
   // makes the stored steers its message. It runs on the gateway path only.
   const followUp = steerFollowUp === true && mode === "copilot" && !!threadId;
   if (!agentName || (!message && !followUp)) {
     return new Response(
       `data: ${JSON.stringify({ type: "error", content: "agentName and message are required" })}\n\n`,
+      { status: 400, headers: sseHeaders() }
+    );
+  }
+  // The thread id goes into gateway paths. A `?`, `#` or `/` in it would
+  // move the call to another route, so the path guard refuses it (H-280).
+  if (threadId && (typeof threadId !== "string" || unsafeGatewayPath([threadId]) !== null)) {
+    return new Response(
+      `data: ${JSON.stringify({ type: "error", content: "Invalid threadId" })}\n\n`,
       { status: 400, headers: sseHeaders() }
     );
   }
@@ -865,6 +889,9 @@ export async function POST(req: NextRequest): Promise<Response> {
               : {}),
             ...(supersedes ? { supersedes } : {}),
             ...(cardAnswer && typeof cardAnswer === "object" ? { card_answer: cardAnswer } : {}),
+            // §18.11: the gateway pops it before the executor, and keeps it
+            // only for a steer, after its own checks.
+            ...(cardDraft ? { card_draft: cardDraft } : {}),
             // WS-63 D-PZ-37: the typed mark, as the chat sent it. Only `true`
             // passes, and the gateway pops it before the executor.
             ...typedField(typed),

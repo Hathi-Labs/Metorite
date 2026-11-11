@@ -19,6 +19,11 @@ reply card of §18.4 with ``kind: "new"``. No second card mechanism exists.
 A held chat (H-236) never reaches these routes. Its new mail goes through
 ``POST /email/held-card`` (§21), which keeps the classes and the unticked
 new addresses. Fence: ``tests/unit/test_email_new_mail_card.py``.
+
+§18.11: a chat message that closes the card as REVISED spends its record
+through ``POST /email/new-card/revise`` (``redraft.py``). The record keeps the
+chat thread and the draft number, and only the gateway links a new card to
+the old one (``redraft.link_fields``).
 """
 from __future__ import annotations
 
@@ -85,6 +90,12 @@ class NewMailCardRequest(BaseModel):
     #: Metorite files that the member can see (H-392). This route resolves
     #: each one as the member, and records its digest.
     metorite_files: list[str] = Field(default_factory=list, max_length=MAX_CARD_FILES)
+    #: §18.11: the chat thread that draws the card. The tool sends its run's
+    #: own thread, never a value of the model. The record keeps it, so only
+    #: that thread can send a snapshot of the card or take its link. There is
+    #: no ``revises`` and no ``draft`` field: only the gateway sets those, and
+    #: ``extra="forbid"`` refuses a request that names them with a 422.
+    card_thread_id: str = Field(default="", max_length=200)
 
 
 class NewMailActRequest(BaseModel):
@@ -166,6 +177,12 @@ async def new_mail_card(
     each refused, and no card shows."""
     from acb_skills.held_card import file_label
     from acb_skills.reply_card import clean_reply_body
+    from gateway.routes.email.automation.redraft import (
+        form_link,
+        kept_unticked,
+        link_fields,
+        start_unticked,
+    )
     from gateway.routes.email.core import _assert_account_owner
     from gateway.routes.email.transport.metorite_files import resolve_metorite_files
 
@@ -182,11 +199,26 @@ async def new_mail_card(
     shared = (await resolve_metorite_files(user, list(req.metorite_files))
               if req.metorite_files else [])
     artifacts = [a.model_dump(exclude_none=True) for a in req.artifacts]
+    thread = req.card_thread_id.strip()
+    # §18.11 rule 7: a person that the member unticked on a card that a chat
+    # message revised starts unticked here, even when the tool names that
+    # person again (an always-copy colleague). Each card of the member in the
+    # thread reads it, and none spends it. It only unticks. The record keeps
+    # the names, so the next draft keeps them too. The act still sends only
+    # to the ticks of the member's answer. A fault answers 503 here, before
+    # the link below, so a retry still takes the link (fix round 4).
+    start, unticked = start_unticked(lists, await kept_unticked(user, thread))
+    # §18.11 step 6: the gateway, never the tool, links this card to the card
+    # of the thread that a chat message revised ("Draft 2"). Only a card to
+    # the same people takes the link (fix round 3).
+    linked = await link_fields(user, thread, lists["to"])
     record = {
         "v": 1, "owner": owner.lower(), "kind": "new-mail", "account_id": req.account_id,
         "to": lists["to"], "cc": lists["cc"], "bcc": lists["bcc"],
         "subject": subject, "body": body, "artifacts": artifacts,
         "metorite": [{"ref": f.ref, "digest": f.digest} for f in shared],
+        **({"thread": thread} if thread else {}), **linked,
+        **({"unticked": unticked} if unticked else {}),
     }
     card_id = await write_record(user, record, namespace=RECORD_NAMESPACE)
     # The one label of a file row (``held_card.file_label``): the name in
@@ -197,7 +229,9 @@ async def new_mail_card(
               files=len(files))
     return {"card_id": card_id, "mailbox": _mailbox_text(me), "subject": subject,
             "body": body, "to": lists["to"], "cc": lists["cc"], "bcc": lists["bcc"],
-            "files": files}
+            "files": files, **form_link(linked),
+            # The tool copies both to the card's form, and sets neither.
+            **({"ticked": start, "unticked": unticked} if unticked else {})}
 
 
 async def _metorite_attachments(user: UserContext, recorded: list[dict[str, str]]) -> list[Any]:

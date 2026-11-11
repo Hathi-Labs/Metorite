@@ -21,6 +21,14 @@ gateway reads them.
   studio of a Native CRM (WS-53 CRM-C4a). The grammar is the one of
   ``CRM_ORGS``. An empty list allows no organization, so each studio route
   answers 404. :func:`require_field_studio` is their dependency.
+* ``CRM_PIPELINES_ORGS`` — the organization ids whose admins may create a
+  deal pipeline (WS-CRM CRM-M3a, ``crm_conversational.md`` §8 CRM-M3). The
+  grammar is the one of ``CRM_ORGS``. An empty list allows no organization:
+  ``POST /crm/pipelines`` and its preview answer 404, ``GET /crm/mode``
+  leaves out ``pipeline_create``, and the chat run drops
+  ``crm_create_pipeline``. :func:`pipelines_allowed` is the one check, and
+  :func:`require_crm_pipelines` is the dependency. A name in the list spends
+  nothing, so its flip is gate ``enforcement-flip``.
 * ``CRM_FILL_RANK_ORGS`` — the organization ids that get the fill rank and
   the source labels of the mirror (WS-53 CRM-Q17a-1, ``crm_platform.md``
   §18.9.3). The grammar is the one of ``CRM_ORGS``. An empty list allows no
@@ -177,6 +185,26 @@ def field_studio_allowed(organization_id: str | None) -> bool:
     return ALL_ORGS in orgs or org in orgs
 
 
+def crm_pipelines_orgs() -> frozenset[str]:
+    """The organization ids that may create a pipeline (CRM-M3a). Empty means none."""
+    return _parse_orgs(str(get_settings().crm_pipelines_orgs or ""))
+
+
+def pipelines_allowed(organization_id: str | None) -> bool:
+    """True when an admin of this org may create a deal pipeline.
+
+    It needs the CRM switch with the CRM list (:func:`crm_org_allowed`) AND a
+    place on ``CRM_PIPELINES_ORGS``, or ``*`` there (CRM-M3a). It reads the
+    settings and nothing else, so the orchestrator may ask it for the org of
+    a run before it builds the tools.
+    """
+    if not crm_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = crm_pipelines_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
 def crm_fill_rank_orgs() -> frozenset[str]:
     """The organization ids that get the fill rank. Empty means none."""
     return _parse_orgs(str(get_settings().crm_fill_rank_orgs or ""))
@@ -328,6 +356,18 @@ async def require_field_studio(
     It reads ``user.organization_id`` and nothing else from the request.
     """
     if not field_studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+async def require_crm_pipelines(
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> None:
+    """404 unless the caller's organization may create a pipeline (CRM-M3a).
+
+    It runs before the admin floor, so a dark org gets 404 and never 403. It
+    reads ``user.organization_id`` and nothing else from the request.
+    """
+    if not pipelines_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail="Not Found")
 
 

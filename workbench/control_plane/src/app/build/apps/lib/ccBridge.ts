@@ -62,14 +62,21 @@ function safeScriptJson(value: unknown): string {
 /**
  * The `window.cc` SDK injected into every app frame (preview AND published,
  * so behaviour is identical in both — no "works in preview, breaks live").
- * Dependency-free, promise-based, ~80 lines. `__SLUG__` / `__MODE__` are
- * replaced with JSON literals at build time.
+ * Dependency-free, promise-based, ~80 lines. `__SLUG__` / `__MODE__` /
+ * `__NONCE__` are replaced with JSON literals at build time.
+ *
+ * NONCE (task 2433): every message to the parent carries the nonce that the
+ * page wrote into THIS document. The parent's broker answers only its own
+ * app frame AND only that nonce, so a chat artifact frame on the same page,
+ * or a page this frame navigated itself to, gets no answer. The listener
+ * below also takes a reply or a test request only from the parent window.
  */
 const CC_SDK = `
 <script>
   (function () {
     var SLUG = __SLUG__;
     var MODE = __MODE__;
+    var NONCE = __NONCE__;
     var TIMEOUT_MS = 30000;
     var seq = 0;
     var pending = {};
@@ -85,7 +92,10 @@ const CC_SDK = `
         pending[id] = { resolve: resolve, reject: reject, timer: timer };
         try {
           parent.postMessage(
-            { __ccsdk: true, id: id, method: method, args: args || [], slug: SLUG, mode: MODE },
+            {
+              __ccsdk: true, id: id, method: method, args: args || [],
+              slug: SLUG, mode: MODE, nonce: NONCE
+            },
             "*"
           );
         } catch (e) {
@@ -96,6 +106,9 @@ const CC_SDK = `
       });
     }
     window.addEventListener("message", function (ev) {
+      // Only the page that holds this frame replies or drives a test. A
+      // sibling frame can reach this window through parent.frames.
+      if (ev.source !== parent) return;
       var d = ev.data;
       if (!d || typeof d !== "object" || d.__ccsdk !== true || !d.id) return;
       // A "test." method is an incoming REQUEST from an outside test runner
@@ -133,7 +146,8 @@ const CC_SDK = `
           level: level,
           message: msg,
           slug: SLUG,
-          mode: MODE
+          mode: MODE,
+          nonce: NONCE
         };
         if (stk) payload.stack = stk;
         parent.postMessage(payload, "*");
@@ -271,6 +285,22 @@ const CC_SDK = `
 export interface BuildAppSrcDocOpts {
   slug: string;
   mode: "draft" | "live";
+  /**
+   * The page's bridge nonce ({@link newBridgeNonce}). The same value goes to
+   * {@link useCcBridge}, which answers only messages that carry it.
+   */
+  nonce: string;
+}
+
+/**
+ * A fresh, unguessable bridge nonce: 128 random bits as hex. A page makes ONE
+ * for its app frame, writes it into the frame with {@link buildAppSrcDoc} and
+ * hands it to {@link useCcBridge}. Never put it in a URL or a log line.
+ */
+export function newBridgeNonce(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 /**
@@ -282,10 +312,11 @@ export function buildAppSrcDoc(
   bundleHtml: string,
   opts: BuildAppSrcDocOpts
 ): string {
-  const sdk = CC_SDK.replace("__SLUG__", safeScriptJson(opts.slug)).replace(
-    "__MODE__",
-    safeScriptJson(opts.mode)
-  );
+  // Function replacers: a `$` in a value must stay a `$` (String.replace
+  // reads `$&` and `$'` in a replacement STRING as patterns).
+  const sdk = CC_SDK.replace("__SLUG__", () => safeScriptJson(opts.slug))
+    .replace("__MODE__", () => safeScriptJson(opts.mode))
+    .replace("__NONCE__", () => safeScriptJson(opts.nonce));
   // (\s[^>]*)? — match <head> / <head lang…> but never <header>.
   const headMatch = /<head(\s[^>]*)?>/i.exec(bundleHtml);
   if (headMatch) {
@@ -315,6 +346,35 @@ export function extractCcIconNames(html: string): string[] {
 }
 
 // ─── Parent-side broker ───────────────────────────────────────────────────
+
+/** What the broker of one page expects of a message from its app frame. */
+export interface BridgeExpectation {
+  slug: string;
+  nonce: string;
+  /** The app's own frame, or null before it mounts. */
+  frame: HTMLIFrameElement | null;
+}
+
+/**
+ * Whether the broker may act on this message (task 2433). All three hold:
+ *   1. it comes from the app's OWN frame window — not a chat artifact frame,
+ *      not another frame of the page;
+ *   2. it names this app's slug. A message with no slug is refused;
+ *   3. it carries the nonce that the page wrote into that frame's document.
+ *      A page that the frame navigated itself to never had it.
+ */
+export function acceptsBridgeMessage(
+  ev: Pick<MessageEvent, "source" | "data">,
+  expect: BridgeExpectation,
+): boolean {
+  const own = expect.frame?.contentWindow ?? null;
+  if (!own || ev.source !== own) return false;
+  const d = ev.data as Record<string, unknown> | null;
+  if (!d || typeof d !== "object") return false;
+  if (typeof d.slug !== "string" || d.slug !== expect.slug) return false;
+  if (!expect.nonce || typeof d.nonce !== "string" || d.nonce !== expect.nonce) return false;
+  return true;
+}
 
 interface CcSdkRequest {
   __ccsdk: true;
@@ -561,11 +621,24 @@ async function dispatch(
  * Install the parent-side `window.cc` broker for an app frame on this page.
  * Listens for `__ccsdk` requests, executes them against /api/apps/{slug}/…,
  * and posts the reply back to the requesting frame. Cleans up on unmount.
+ *
+ * It acts ONLY on a message from the window of `getFrame()` that names
+ * `slug` and carries `nonce` ({@link acceptsBridgeMessage}, task 2433).
+ * Every other window on the page — a chat artifact in the assistant panel
+ * among them — gets no answer and causes no call.
  */
 export function useCcBridge(
   slug: string,
-  opts?: {
+  opts: {
     mode?: "draft" | "live";
+    /** The nonce that {@link buildAppSrcDoc} wrote into this page's app frame. */
+    nonce: string;
+    /**
+     * The app's own frame, read when a message arrives. Pass a stable
+     * callback over the ref that `<SandboxedHtml iframeRef={…}>` fills, such
+     * as `useCallback(() => frameRef.current, [])`.
+     */
+    getFrame: () => HTMLIFrameElement | null;
     /** Invoked for `event: "console"` notifications from the app frame. */
     onConsoleEvent?: (e: CcConsoleEvent) => void;
     /**
@@ -580,22 +653,26 @@ export function useCcBridge(
     onToolConfirm?: (req: CcToolConfirmRequest) => Promise<CcToolConfirmDecision>;
   }
 ): void {
-  const mode = opts?.mode ?? "live";
+  const mode = opts.mode ?? "live";
+  const nonce = opts.nonce;
+  const getFrame = opts.getFrame;
   // Ref'd so a new callback identity never tears down the listener.
-  const onConsoleEventRef = useRef(opts?.onConsoleEvent);
-  const onToolConfirmRef = useRef(opts?.onToolConfirm);
+  const onConsoleEventRef = useRef(opts.onConsoleEvent);
+  const onToolConfirmRef = useRef(opts.onToolConfirm);
   useEffect(() => {
-    onConsoleEventRef.current = opts?.onConsoleEvent;
-    onToolConfirmRef.current = opts?.onToolConfirm;
+    onConsoleEventRef.current = opts.onConsoleEvent;
+    onToolConfirmRef.current = opts.onToolConfirm;
   });
   useEffect(() => {
     let disposed = false;
 
     function onMessage(ev: MessageEvent) {
       const data: unknown = ev.data;
+      if (!isCcConsoleMessage(data) && !isCcSdkRequest(data)) return;
+      // The one gate (task 2433): own frame, own slug, own nonce.
+      if (!acceptsBridgeMessage(ev, { slug, nonce, frame: getFrame() })) return;
       // Console notifications (no id) are not RPC — surface and stop.
       if (isCcConsoleMessage(data)) {
-        if (data.slug !== slug) return;
         onConsoleEventRef.current?.({
           level: data.level,
           message: data.message,
@@ -604,8 +681,6 @@ export function useCcBridge(
         return;
       }
       if (!isCcSdkRequest(data)) return;
-      // Ignore requests stamped for a different app (two frames on one page).
-      if (data.slug && data.slug !== slug) return;
       const source = ev.source;
       if (!source) return;
 
@@ -639,5 +714,5 @@ export function useCcBridge(
       disposed = true;
       window.removeEventListener("message", onMessage);
     };
-  }, [slug, mode]);
+  }, [slug, mode, nonce, getFrame]);
 }

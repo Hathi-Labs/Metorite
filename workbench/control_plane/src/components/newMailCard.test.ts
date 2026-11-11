@@ -25,8 +25,10 @@ import {
   MAX_SUBJECT,
   NUDGE_CHIPS,
   NUDGE_EDITED,
+  NUDGE_EDITED_AT_REST,
   isNewMail,
   newMailEdited,
+  newMailTicksMoved,
   newMailLimitLine,
   newMailAnswer,
   newMailSummary,
@@ -239,25 +241,58 @@ describe("a chip puts its words in the chat box and sends nothing", () => {
     expect(onSuggest).toHaveBeenCalledWith("make it shorter");
   });
 
-  it("hides the chips and says that a chat request starts again, once the member edited (fix round 1, P1)", () => {
-    // A chip or any chat message closes the card, and the new card comes from
-    // the assistant's draft. Mutation: keep the chips after an edit → red.
+  it("says that the edits go with a chat request, and keeps the chips, once the member edited (§18.11)", () => {
+    // A chat message closes the card, and since §18.11 it carries the
+    // member's version (`lib/redraftCard.ts`). Fix round 1 of §18.10 hid the
+    // chips while the edits were lost. Mutation: hide the chips again, or
+    // say that the request starts from the assistant's draft → red.
     const form = replyFromEvent(VALUE)!;
     expect(newMailEdited(form, form.subject, form.body)).toBe(false);
     expect(newMailEdited(form, "Rates for May", form.body)).toBe(true);
     expect(newMailEdited(form, form.subject, `${form.body} More.`)).toBe(true);
     const onSuggest = vi.fn();
-    const chips = elements(NudgeLine({ onSuggest, edited: true })).filter((el) => el.type === Button);
-    expect(chips).toHaveLength(0);
-    const html = renderToStaticMarkup(createElement(NudgeLine, { onSuggest, edited: true }));
-    expect(html).toContain(NUDGE_EDITED.replace("'", "&#x27;"));
+    const chips = elements(NudgeLine({ onSuggest, edited: true, carriesEdits: true })).filter((el) => el.type === Button);
+    expect(chips).toHaveLength(2);
+    const html = renderToStaticMarkup(createElement(NudgeLine, { onSuggest, edited: true, carriesEdits: true }));
+    expect(html).toContain(NUDGE_EDITED);
+    expect(html).toContain('data-new-mail-nudge="edited"');
     expect(html).not.toContain("Want it changed?");
-    expect(html).not.toContain("data-nudge-chip");
+    expect(NUDGE_EDITED).not.toMatch(/starts again|assistant's draft/);
     // Two short sentences at most, and Save draft keeps the member's version.
     expect(NUDGE_EDITED.split(". ").length).toBeLessThanOrEqual(2);
+    expect(NUDGE_EDITED).toContain("Your edits go with a request in the chat.");
     expect(NUDGE_EDITED).toContain("Save draft keeps your version.");
     // The card passes the edit state to the line.
-    expect(read("components/NewMailCardForm.tsx")).toContain("edited={newMailEdited(form, subject, body)}");
+    expect(read("components/NewMailCardForm.tsx")).toContain("edited={newMailEdited(form, subject, body) || newMailTicksMoved(form, ticks)}");
+  });
+
+  it("at rest, as after a Stop, the nudge says that the edits do not go (§18.11 fix round 4)", () => {
+    // Only a steer carries the member's version. A plain send carries none, so
+    // the honest line names that, and no chip leads the member to lose the
+    // edits. Mutation: claim that the edits go, or keep the chips → red.
+    const onSuggest = vi.fn();
+    const atRest = { onSuggest, edited: true, carriesEdits: false };
+    expect(elements(NudgeLine(atRest)).filter((el) => el.type === Button)).toHaveLength(0);
+    const html = renderToStaticMarkup(createElement(NudgeLine, atRest));
+    expect(html).toContain('data-new-mail-nudge="edited-at-rest"');
+    expect(html).toContain(NUDGE_EDITED_AT_REST.replace("'", "&#x27;"));
+    expect(html).not.toContain(NUDGE_EDITED);
+    expect(NUDGE_EDITED_AT_REST).toContain("starts again from the assistant's draft.");
+    expect(NUDGE_EDITED_AT_REST).toContain("Save draft keeps your version.");
+    // At 390 px the live edited words keep a width beside the icon (fix round
+    // 5), so the chips wrap below them. Mutation: drop the width → red.
+    const live = renderToStaticMarkup(createElement(NudgeLine, { onSuggest, edited: true, carriesEdits: true }));
+    expect(live).toContain('class="min-w-0 flex-[1_1_14rem] text-foreground"');
+    // With no edit, nothing is lost, so the plain nudge and its chips stay.
+    expect(elements(NudgeLine({ onSuggest })).filter((el) => el.type === Button)).toHaveLength(2);
+    // An untick is an edit too, also when its order moved and came back.
+    const form = replyFromEvent(VALUE)!;
+    const start = startTicks(form);
+    expect(newMailTicksMoved(form, start)).toBe(false);
+    const person = start.reply_all[0];
+    const off = toggleTick(start, true, person);
+    expect(newMailTicksMoved(form, off)).toBe(true);
+    expect(newMailTicksMoved(form, toggleTick(off, true, person))).toBe(false);
   });
 
   it("draws no chip where no chat box can take the words", () => {

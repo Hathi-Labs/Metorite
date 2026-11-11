@@ -59,8 +59,11 @@ import {
   type AgentRun,
   type AgentStartResult,
   type AgentState,
+  ARE_YOU_SURE,
   answerPayload,
   answerHeldLine,
+  confirmLabels,
+  replacePayload,
   answerTo,
   answeredLine,
   archiveApprovalPayload,
@@ -76,6 +79,7 @@ import {
   RELEASE_COPY,
   releaseBody,
   STALE_HOLD_TEXT,
+  runHolderFree,
   runIdentity,
   isOpenRun,
   isRunMember,
@@ -142,6 +146,16 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmStop, setConfirmStop] = useState(false);
+  // SW-43b. The member changes the answer, or has picked a costly option and
+  // is asked "Are you sure?" before it goes out.
+  const [changing, setChanging] = useState(false);
+  // The card fires Submit once for each mount, so a new number remounts it.
+  const [cardNonce, setCardNonce] = useState(0);
+  const [pendingAnswer, setPendingAnswer] = useState<{
+    answers: ElicitationAnswers;
+    labels: string[];
+    change: boolean;
+  } | null>(null);
   const [confirmRelease, setConfirmRelease] = useState(false);
   /** The caller has an open run on this task that the panel does not show. */
   const [otherOpenMine, setOtherOpenMine] = useState(false);
@@ -177,6 +191,8 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     setSent(null);
     setReply("");
     setError(null);
+    setChanging(false);
+    setPendingAnswer(null);
     setOtherOpenMine(false);
     setAsking(false);
     void (async () => {
@@ -242,6 +258,20 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, state, run?.client_via, run?.member_email]);
 
+  // M1 (ORC-3): the panel sits above the task card's tabs, so its first read
+  // must not move the Add row and the tab bar. Until the read answers, keep
+  // the space of the "Ask an agent" row, the most common result. A run card
+  // is taller and still moves them, and it is the thing to see. Routes that
+  // are off (`false`) draw nothing.
+  if (enabled === null) {
+    return (
+      <div className="invisible mb-3 flex items-center" aria-hidden data-ask-agent-placeholder="">
+        <Button variant="ghost" size="sm" icon="Bot" tabIndex={-1} disabled>
+          {ASK_COPY.open}
+        </Button>
+      </div>
+    );
+  }
   if (!enabled) return null;
 
   // EA-12d: the caller may ask an agent while they have no open run here.
@@ -344,6 +374,45 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     } finally {
       setBusy(false);
     }
+  }
+
+  /** SW-43b. A costly option asks "Are you sure?" first. Nothing is sent yet. */
+  function askBeforeSending(answers: ElicitationAnswers, change: boolean) {
+    if (!elicitation) return;
+    const labels = confirmLabels(elicitation, answers);
+    if (labels.length) {
+      setPendingAnswer({ answers, labels, change });
+      setCardNonce((n) => n + 1);
+      return;
+    }
+    void (change ? submitChange(answers) : submitAnswer(answers));
+  }
+
+  /** SW-43b. Swap an answer that no agent has read, in one write. */
+  async function submitChange(answers: ElicitationAnswers) {
+    if (!elicitation) return;
+    const target = run ? withdrawTarget(run) : null;
+    const body = target ? replacePayload(target, elicitation, answers) : null;
+    if (!body) {
+      setError("Pick an option or type an answer.");
+      setCardNonce((n) => n + 1);
+      return;
+    }
+    const ok = await write(
+      () => agentRunsApi.replaceAnswer(shownRunId, body),
+      "answered",
+      "Could not change the answer.",
+    );
+    if (!ok) return;
+    setChanging(false);
+    setSent({
+      id: `local:${body.idempotency_key}`,
+      seq: Number.MAX_SAFE_INTEGER,
+      type: "prompt",
+      content: { body: body.body ?? null, selected: body.selected ?? [] },
+      actor: me || null,
+      in_reply_to: elicitation.id,
+    });
   }
 
   async function submitAnswer(answers: ElicitationAnswers) {
@@ -494,7 +563,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
         <div className="flex min-w-0 items-center gap-2 text-xs" data-agent-held-by="">
           <p className="min-w-0 flex-1 truncate text-muted-foreground" title={heldByLine(run, personLabels)}>
             {heldByLine(run, personLabels)}
-            {run.lease_expired ? (
+            {runHolderFree(run) ? (
               <span
                 className="ml-1.5 rounded border border-border px-1 text-[10px] uppercase tracking-wide"
                 data-agent-held-stale=""
@@ -549,12 +618,48 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
 
       {cardOpen && elicitation && !archiveRequest ? (
         <ElicitationCard
+          key={`answer-${cardNonce}`}
           id={`agent-run:${elicitation.id}`}
           questions={[cardQuestion(elicitation)]}
-          onSubmit={(answers) => void submitAnswer(answers)}
+          onSubmit={(answers) => askBeforeSending(answers, false)}
           disabled={busy}
           hint={AGENT_SUBMIT_HINT}
         />
+      ) : null}
+
+      {pendingAnswer ? (
+        <div
+          data-agent-confirm=""
+          className="space-y-1.5 rounded-md border border-border p-2 text-xs"
+        >
+          <p className="text-foreground">
+            <strong>{ARE_YOU_SURE}</strong> You picked: {pendingAnswer.labels.join(", ")}
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              icon="Check"
+              disabled={busy}
+              data-agent-confirm-yes=""
+              onClick={() => {
+                const next = pendingAnswer;
+                setPendingAnswer(null);
+                void (next.change ? submitChange(next.answers) : submitAnswer(next.answers));
+              }}
+            >
+              Yes, send it
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              icon="X"
+              disabled={busy}
+              onClick={() => setPendingAnswer(null)}
+            >
+              Go back
+            </Button>
+          </div>
+        </div>
       ) : null}
 
       {archiveRequest && elicitation ? (
@@ -624,16 +729,38 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
 
       {withdrawShown(run, answer, archiveMine, canReply) ? (
         run.answer?.changeable ? (
-          <div className="flex items-center" data-agent-withdraw="">
-            <Button
-              size="sm"
-              variant="secondary"
-              icon="Undo2"
-              disabled={busy}
-              onClick={() => void withdraw()}
-            >
-              Withdraw my answer
-            </Button>
+          <div className="space-y-1.5" data-agent-withdraw="">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                icon="Pencil"
+                disabled={busy}
+                data-agent-change=""
+                onClick={() => setChanging((open) => !open)}
+              >
+                {changing ? "Keep my answer" : "Change"}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                icon="Undo2"
+                disabled={busy}
+                onClick={() => void withdraw()}
+              >
+                Withdraw my answer
+              </Button>
+            </div>
+            {changing && elicitation ? (
+              <ElicitationCard
+                key={`change-${cardNonce}`}
+                id={`agent-run-change:${elicitation.id}`}
+                questions={[cardQuestion(elicitation)]}
+                onSubmit={(answers) => askBeforeSending(answers, true)}
+                disabled={busy}
+                hint={AGENT_SUBMIT_HINT}
+              />
+            ) : null}
           </div>
         ) : (
           <p className="text-xs text-muted-foreground" data-agent-held="">
