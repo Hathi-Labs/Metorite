@@ -343,6 +343,11 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
     reader in `routes/studio` is the org and group install of PKG-8b, a share
     to others (D180.3, `package_host.md` §6.1).
 
+    J2a (the read of a viewer, `ai_studio.md` §14 J2a) adds no reader. A
+    viewer reads through an install that a holder of the verb made, and the
+    read checks no right of its own. The new module `package_host/viewer.py`
+    must not read the verb either, so the scan covers it too.
+
     The check reads the syntax tree, so the quote style does not matter. The
     string constant `studio:publish` occurs once in `routes/studio`: the
     definition of `packages.SHARE_RIGHT`. The name `SHARE_RIGHT` is read in
@@ -359,7 +364,9 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
     verbs: list[tuple[str, str, str]] = []
     names: list[tuple[str, str, str]] = []
     calls: list[tuple[str, str, str]] = []
-    for path in sorted(_STUDIO_DIR.glob("*.py")):
+    viewer = _ROOT / "apps/services/gateway/gateway/package_host/viewer.py"
+    assert viewer.is_file()
+    for path in [*sorted(_STUDIO_DIR.glob("*.py")), viewer]:
         text = path.read_text(encoding="utf-8")
         assert ".access.has(" not in text, path.name
         tree = ast.parse(text)
