@@ -1,5 +1,7 @@
 # WhatsApp Message Manager — plan & feature brainstorm
 
+> **Dated 2026-11-11, ON HOLD (D205.3).** The inbox and ingest direction waits. The transport, the webhook and Embedded Signup are the base of WS-WB. WB-0 (task 2651) writes the bots spec.
+
 > **Product:** Metorite · **Feature:** WhatsApp channel vertical (channel #2, after email)
 > **Created:** 2026-07-23 · **Revised:** 2026-07-23 (v3 — calm-UI pass grounded in a prior-art
 > study; v2 — official WhatsApp Business Platform only, per founder decision; unofficial

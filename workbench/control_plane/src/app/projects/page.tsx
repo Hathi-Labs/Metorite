@@ -4862,6 +4862,9 @@ function ProjectsWorkspace() {
   const personalHeadRootId = personalHeading(personal).root?.id ?? null;
   const personalIds = new Set(flatten(personal).map((e) => e.node.id));
   const myTasksPath = (projectId: string) => taskWhere(allRoots, projectId).map((n) => n.name);
+  // ARC-1 — a task of an archived project cannot be restored alone.
+  const myTasksProjectArchived = (projectId: string) =>
+    pathTo(allRoots, projectId).some((node) => Boolean((node as ProjectRow).archived_at));
   const openMineIn = (id: string) => {
     const row = flatten(visibleRoots).find((e) => e.node.id === id);
     if (!row) return;
@@ -4886,6 +4889,7 @@ function ProjectsWorkspace() {
       people={people}
       personLabels={personLabels}
       projectPath={myTasksPath}
+      projectArchived={myTasksProjectArchived}
       isPrivateProject={(id) => personalIds.has(id)}
       personalRootId={personal[0]?.id ?? null}
       onOpenTask={(task) => void openWithStatuses(task, true)}
