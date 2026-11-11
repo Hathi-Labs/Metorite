@@ -18,6 +18,11 @@ consent rows hold a grant for the patient, for the purpose ``fhir_export``,
 that has not been withdrawn and has not expired. It checks consent before it
 reads one field, so a refusal builds nothing.
 
+**Scope of the caller.** The caller reads the records under the rights of the
+viewer and passes only the observations and conditions of this visit and this
+patient. The module cannot see another patient's rows, and it gives each one
+the patient of the export as ``subject``.
+
 **Check.** :func:`validate_bundle` checks the shape that the export promises:
 a resource type that the module knows, a well-formed id, the required elements
 of each type, and a reference that resolves inside the bundle. It does not
@@ -29,6 +34,7 @@ A refusal never echoes a field value, because a record holds patient data.
 from __future__ import annotations
 
 import re
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -53,12 +59,17 @@ _DATETIME_RE = re.compile(
 #: ``quantity``: a number with the ``unit`` of the binding.
 ELEMENTS: dict[str, dict[str, str]] = {
     "Patient": {"name": "text", "birthDate": "date", "gender": "code", "telecom": "text"},
-    "Encounter": {"period.start": "datetime", "period.end": "datetime", "reason": "text"},
+    "Encounter": {"period.start": "datetime", "period.end": "datetime", "reasonCode": "text"},
     "Observation": {"valueQuantity": "quantity", "valueString": "text", "effectiveDateTime": "datetime"},
     "Condition": {"code": "code", "onsetDateTime": "datetime"},
 }
 
-_GENDERS = frozenset({"male", "female", "other", "unknown"})
+_GENDERS = {"male": "male", "m": "male", "female": "female", "f": "female",
+            "other": "other", "unknown": "unknown"}
+#: The resource that each object name of the export carries.
+OBJECT_RESOURCE: dict[str, str] = {"patient": "Patient", "visit": "Encounter",
+                                   "observation": "Observation", "condition": "Condition"}
+_NS = uuid.UUID("5f0c1d2e-8a4b-4c3d-9e6f-1a2b3c4d5e6f")
 _REQUIRED: dict[str, tuple[str, ...]] = {
     "Patient": (),
     "Encounter": ("status", "class", "subject"),
@@ -95,11 +106,15 @@ def check_binding(b: FhirBinding) -> None:
     elements = ELEMENTS.get(b.resource)
     if elements is None:
         raise FhirError(f"Binding {b.object}.{b.field}: resource type is not supported.")
+    if OBJECT_RESOURCE.get(b.object) != b.resource:
+        raise FhirError(f"Binding {b.object}.{b.field}: the object does not carry this resource.")
     kind = elements.get(b.element)
     if kind is None:
         raise FhirError(f"Binding {b.object}.{b.field}: element is not supported.")
     if kind == "quantity" and not b.unit:
         raise FhirError(f"Binding {b.object}.{b.field}: a quantity needs a unit.")
+    if (b.resource, b.element) == ("Patient", "telecom") and b.system not in ("phone", "email"):
+        raise FhirError(f"Binding {b.object}.{b.field}: telecom needs the system phone or email.")
     if b.resource == "Observation" and not b.code:
         raise FhirError(f"Binding {b.object}.{b.field}: an Observation needs a fixed code.")
 
@@ -108,20 +123,29 @@ def check_consent(consents: Sequence[Mapping[str, Any]], patient_id: str, *,
                   now: datetime | None = None) -> None:
     """Raise :class:`ConsentError` unless one live grant covers this patient."""
     at = now or datetime.now(UTC)
+    if at.tzinfo is None:
+        raise ConsentError("No consent covers this export. Nothing was exported.")
     for row in consents:
-        if row.get("patient_id") != patient_id or row.get("purpose") != CONSENT_PURPOSE:
+        if str(row.get("patient_id")) != patient_id or row.get("purpose") != CONSENT_PURPOSE:
             continue
         if row.get("withdrawn_at"):
             continue
-        expires = row.get("expires_at")
-        if isinstance(expires, datetime) and expires <= at:
+        granted = row.get("granted_at")
+        # Fail closed: a grant needs an aware datetime that is not in the future,
+        # and an expiry, when present, must be an aware datetime in the future.
+        if not isinstance(granted, datetime) or granted.tzinfo is None or granted > at:
             continue
-        if row.get("granted_at"):
-            return
+        expires = row.get("expires_at")
+        if expires is not None and (not isinstance(expires, datetime)
+                                    or expires.tzinfo is None or expires <= at):
+            continue
+        return
     raise ConsentError("No consent covers this export. Nothing was exported.")
 
 
 def _fhir_id(raw: Any) -> str:
+    if raw is None:
+        raise FhirError("A record has no id.")
     text = str(raw)
     if not _ID_RE.fullmatch(text):
         raise FhirError("A record id is not a valid FHIR id.")
@@ -150,7 +174,10 @@ def _value(b: FhirBinding, raw: Any) -> Any:
     if not isinstance(raw, str) or not raw:
         raise FhirError(f"Field {b.field}: expected a code.")
     if b.resource == "Patient" and b.element == "gender":
-        return raw if raw in _GENDERS else "unknown"
+        gender = _GENDERS.get(raw.strip().lower())
+        if gender is None:
+            raise FhirError(f"Field {b.field}: not a gender code.")
+        return gender
     coding: dict[str, str] = {"code": raw}
     if b.system:
         coding["system"] = b.system
@@ -165,8 +192,8 @@ def _set(resource: dict[str, Any], element: str, value: Any) -> None:
         resource[head] = value
 
 
-def _telecom(value: str) -> list[dict[str, str]]:
-    return [{"value": value}]
+def _urn(rtype: str, rid: str) -> str:
+    return f"urn:uuid:{uuid.uuid5(_NS, f'{rtype}/{rid}')}"
 
 
 def export_visit(*, patient: Mapping[str, Any], visit: Mapping[str, Any],
@@ -195,8 +222,8 @@ def export_visit(*, patient: Mapping[str, Any], visit: Mapping[str, Any],
                 continue
             value = _value(b, data[b.field])
             if b.resource == "Patient" and b.element == "telecom":
-                value = _telecom(value)
-            elif (b.resource, b.element) in {("Patient", "name"), ("Encounter", "reason")}:
+                value = [{"system": b.system, "value": value}]
+            elif (b.resource, b.element) in {("Patient", "name"), ("Encounter", "reasonCode")}:
                 value = [{"text": value}]
             _set(resource, b.element, value)
 
@@ -205,7 +232,7 @@ def export_visit(*, patient: Mapping[str, Any], visit: Mapping[str, Any],
     visit_id = _fhir_id(visit.get("id"))
     e: dict[str, Any] = {
         "resourceType": "Encounter", "id": visit_id, "status": "finished",
-        "class": {"code": "AMB"}, "subject": {"reference": f"Patient/{patient_id}"},
+        "class": {"code": "AMB"}, "subject": {"reference": _urn("Patient", patient_id)},
     }
     fill(e, "visit", visit.get("data") or {})
     entries: list[dict[str, Any]] = [p, e]
@@ -216,25 +243,25 @@ def export_visit(*, patient: Mapping[str, Any], visit: Mapping[str, Any],
             if b.resource != "Observation" or data.get(b.field) in (None, ""):
                 continue
             o: dict[str, Any] = {
-                "resourceType": "Observation", "id": f"{obs_id}-{b.field.replace(chr(95), chr(45))}",
+                "resourceType": "Observation", "id": str(uuid.uuid5(_NS, f"{obs_id}/{b.field}")),
                 "status": "final",
                 "code": {"coding": [{"code": b.code, **({"system": b.code_system} if b.code_system else {}),
                                      **({"display": b.display} if b.display else {})}]},
-                "subject": {"reference": f"Patient/{patient_id}"},
-                "encounter": {"reference": f"Encounter/{visit_id}"},
+                "subject": {"reference": _urn("Patient", patient_id)},
+                "encounter": {"reference": _urn("Encounter", visit_id)},
             }
             _set(o, b.element, _value(b, data[b.field]))
             entries.append(o)
     for rec in conditions:
         c: dict[str, Any] = {
             "resourceType": "Condition", "id": _fhir_id(rec.get("id")),
-            "subject": {"reference": f"Patient/{patient_id}"},
-            "encounter": {"reference": f"Encounter/{visit_id}"},
+            "subject": {"reference": _urn("Patient", patient_id)},
+            "encounter": {"reference": _urn("Encounter", visit_id)},
         }
         fill(c, "condition", rec.get("data") or {})
         entries.append(c)
     bundle = {"resourceType": "Bundle", "type": "collection",
-              "entry": [{"fullUrl": f"{r['resourceType']}/{r['id']}", "resource": r} for r in entries]}
+              "entry": [{"fullUrl": _urn(r["resourceType"], r["id"]), "resource": r} for r in entries]}
     validate_bundle(bundle)
     return bundle
 
@@ -255,7 +282,9 @@ def validate_bundle(bundle: Mapping[str, Any]) -> None:
         rid = res.get("id")
         if not isinstance(rid, str) or not _ID_RE.fullmatch(rid):
             raise FhirError("A resource has no valid id.")
-        key = f"{res['resourceType']}/{rid}"
+        key = _urn(res["resourceType"], rid)
+        if item.get("fullUrl") != key:
+            raise FhirError("A fullUrl does not match its resource.")
         if key in seen:
             raise FhirError("Two resources share one id.")
         seen.add(key)

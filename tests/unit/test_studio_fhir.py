@@ -18,7 +18,7 @@ BINDINGS = [
     fh.FhirBinding("patient", "dob", "Patient", "birthDate"),
     fh.FhirBinding("patient", "sex", "Patient", "gender"),
     fh.FhirBinding("visit", "started", "Encounter", "period.start"),
-    fh.FhirBinding("visit", "complaint", "Encounter", "reason"),
+    fh.FhirBinding("visit", "complaint", "Encounter", "reasonCode"),
     fh.FhirBinding("observation", "pulse", "Observation", "valueQuantity", unit="/min",
                    code="8867-4", code_system="http://loinc.org", display="Heart rate"),
     fh.FhirBinding("condition", "icd10", "Condition", "code", system="http://hl7.org/fhir/sid/icd-10"),
@@ -43,7 +43,7 @@ def test_test_visit_exports_a_valid_bundle():
     assert kinds == ["Patient", "Encounter", "Observation", "Condition"]
     obs = bundle["entry"][2]["resource"]
     assert obs["valueQuantity"] == {"value": 72, "unit": "/min"}
-    assert obs["subject"]["reference"] == "Patient/p-1"
+    assert obs["subject"]["reference"] == bundle["entry"][0]["fullUrl"]
 
 
 def test_unbound_field_never_leaves():
@@ -58,6 +58,10 @@ def test_unbound_field_never_leaves():
     [{"patient_id": "p-1", "purpose": "fhir_export", "granted_at": NOW,
       "expires_at": NOW - timedelta(seconds=1)}],
     [{"patient_id": "p-1", "purpose": "fhir_export"}],
+    [{"patient_id": "p-1", "purpose": "fhir_export", "granted_at": NOW, "expires_at": "2027-01-01"}],
+    [{"patient_id": "p-1", "purpose": "fhir_export", "granted_at": NOW, "expires_at": datetime(2027, 1, 1)}],
+    [{"patient_id": "p-1", "purpose": "fhir_export", "granted_at": "2026-01-01"}],
+    [{"patient_id": "p-1", "purpose": "fhir_export", "granted_at": NOW + timedelta(days=1)}],
 ])
 def test_no_valid_consent_exports_nothing(consents):
     with pytest.raises(fh.ConsentError) as err:
@@ -104,3 +108,28 @@ def test_bad_record_id_is_refused():
         fh.export_visit(patient={"id": "bad id!", "data": {}}, visit=VISIT, bindings=BINDINGS,
                         consents=[{"patient_id": "bad id!", "purpose": "fhir_export",
                                    "granted_at": NOW}], now=NOW)
+
+
+def test_binding_on_the_wrong_object_is_refused():
+    with pytest.raises(fh.FhirError):
+        fh.check_binding(fh.FhirBinding("patient", "dx", "Condition", "code"))
+
+
+def test_telecom_needs_a_system_and_gender_is_not_guessed():
+    with pytest.raises(fh.FhirError):
+        fh.check_binding(fh.FhirBinding("patient", "phone", "Patient", "telecom"))
+    b = [*BINDINGS, fh.FhirBinding("patient", "phone", "Patient", "telecom", system="phone")]
+    pat = {"id": "p-1", "data": {"sex": "F", "phone": "+911234567890"}}
+    out = fh.export_visit(patient=pat, visit=VISIT, bindings=b, consents=CONSENT, now=NOW)
+    res = out["entry"][0]["resource"]
+    assert res["gender"] == "female" and res["telecom"][0]["system"] == "phone"
+    bad = {"id": "p-1", "data": {"sex": "zzz"}}
+    with pytest.raises(fh.FhirError):
+        fh.export_visit(patient=bad, visit=VISIT, bindings=b, consents=CONSENT, now=NOW)
+
+
+def test_entries_use_urn_full_urls_and_a_missing_id_is_refused():
+    bundle = _export()
+    assert all(e["fullUrl"].startswith("urn:uuid:") for e in bundle["entry"])
+    with pytest.raises(fh.FhirError):
+        fh.export_visit(patient={"data": {}}, visit=VISIT, bindings=BINDINGS, consents=CONSENT, now=NOW)
