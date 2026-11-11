@@ -55,9 +55,10 @@ class ResidencyRefusal(Exception):
 #: here in the same pull request, and the fence refuses a row with no region.
 HEALTH_OUTBOUND_PATHS: tuple[OutboundPath, ...] = (
     OutboundPath("postgres", "store", REGION_IN, True,
-                 "work_plan.md section 2 R-f; docs/EXTERNAL_POSTGRES.md (Mumbai, ap-south-1)"),
-    OutboundPath("object_store", "store", REGION_IN, True,
-                 "docs/EXTERNAL_POSTGRES.md: the S3 endpoint of the Mumbai project"),
+                 "customer_console_infrastructure.md section 2 R-f; docs/EXTERNAL_POSTGRES.md (Mumbai, ap-south-1)"),
+    OutboundPath("object_store", "store", REGION_UNKNOWN, True,
+                 "settings.object_store_region defaults to us-east-1 and the endpoint is free. "
+                 "The Mumbai bucket is MT-1g-2, not built. Set to in when it lands"),
     OutboundPath("redis", "store", REGION_UNKNOWN, False,
                  "The box region is not recorded. Keys only, no record body"),
     OutboundPath("llm_router_decide", "vendor", REGION_UNKNOWN, True,
@@ -68,6 +69,12 @@ HEALTH_OUTBOUND_PATHS: tuple[OutboundPath, ...] = (
                  "settings.openrouter_api_key: the public OpenRouter API"),
     OutboundPath("embeddings_openai", "vendor", REGION_OUTSIDE, True,
                  "settings.email_embedding_model: text-embedding-3-small"),
+    OutboundPath("llm_gemini", "vendor", REGION_OUTSIDE, True, "settings.gemini_api_key: the public Gemini API"),
+    OutboundPath("llm_groq", "vendor", REGION_OUTSIDE, True, "settings.groq_api_key: the public Groq API"),
+    OutboundPath("email_smtp", "vendor", REGION_UNKNOWN, True, "settings.smtp_host: the host is free text"),
+    OutboundPath("channel_whatsapp", "vendor", REGION_UNKNOWN, True,
+                 "settings.whatsapp_assistant_access_token: the Cloud API states no region"),
+    OutboundPath("web_push", "vendor", REGION_UNKNOWN, False, "settings.vapid_*: the push service of the browser"),
     OutboundPath("speech_to_text", "vendor", REGION_UNKNOWN, True,
                  "stt_assemblyai.py: the vendor states no region (D19.6)"),
 )
@@ -103,10 +110,15 @@ def _listed(raw: str) -> frozenset[str]:
 
 
 def residency_on(organization_id: str | None) -> bool:
-    """True when ``STUDIO_RESIDENCY_ORGS`` holds the org, or holds ``*``."""
-    if not organization_id:
-        return False
+    """True when ``STUDIO_RESIDENCY_ORGS`` holds the org, or holds ``*``.
+
+    A missing org counts as on when the list is not empty (fail closed).
+    """
     listed = _listed(str(getattr(get_settings(), "studio_residency_orgs", "") or ""))
+    if not organization_id:
+        # No org: the flag only adds refusals, so a caller with no org fails
+        # closed whenever any org holds the flag.
+        return bool(listed)
     return "*" in listed or str(organization_id).strip().lower() in listed
 
 

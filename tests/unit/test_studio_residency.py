@@ -62,9 +62,32 @@ def test_the_flag_is_per_org_and_star_opens_all(flag):
     assert r.path_allowed("org-b", "llm_anthropic")
     flag("*")
     assert not r.path_allowed("org-b", "llm_anthropic")
-    assert not r.residency_on(None)
+    assert r.residency_on(None)
 
 
 def test_listing_is_case_and_space_tolerant(flag):
     flag(" ORG-A , org-c")
     assert r.residency_on("Org-A") and r.residency_on("org-c")
+
+
+def test_no_org_fails_closed_when_any_org_holds_the_flag(flag):
+    flag("")
+    assert r.path_allowed(None, "llm_anthropic")
+    flag("org-a")
+    assert not r.path_allowed(None, "llm_anthropic")
+
+
+def test_the_object_store_is_not_claimed_as_india():
+    assert r._BY_KEY["object_store"].region != r.REGION_IN
+
+
+def test_each_vendor_setting_has_a_row():
+    from acb_common.settings import Settings
+    fields = set(Settings.model_fields)
+    for name, key in {
+        "anthropic_api_key": "llm_anthropic", "openrouter_api_key": "llm_openrouter",
+        "gemini_api_key": "llm_gemini", "groq_api_key": "llm_groq",
+        "smtp_host": "email_smtp", "whatsapp_assistant_access_token": "channel_whatsapp",
+    }.items():
+        assert name in fields, name
+        assert key in r._BY_KEY, key

@@ -692,7 +692,9 @@ class Settings(BaseSettings):
     # stays in India. `*` opens every org. Empty opens none (no change for
     # any org). It only adds refusals: a listed org's health app may use a
     # store or a vendor only when `acb_common.studio_residency` records the
-    # region as India. Reader: `acb_common.studio_residency.residency_on`.
+    # region as India. NO CALLER READS IT YET: the guard `require_path` is not
+    # wired into any send path, so flipping it changes nothing today.
+    # Reader: `acb_common.studio_residency.residency_on`.
     # The flip is the owner's (`enforcement-flip`). Spec: ai_studio.md J10.
     studio_residency_orgs: str = ""
     # WS-OB GD-5a: GUIDE_ORGS lists the org ids whose members see the entries
