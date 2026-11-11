@@ -2589,9 +2589,12 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # WS-39 SP-1: the cycle routes. SP-5 (Metorite task 964) builds the tools.
     sp_5 = {"list_cycles", "cycle_detail", "create_cycle", "update_cycle", "delete_cycle",
             "plan_cycle", "start_cycle", "close_cycle"}
+    # WS-AGA AGA-7: the member view of agents. AGA-11 builds the chat pack
+    # `agents-overview`, and its `agents_list` reads the overview route.
+    aga_11 = {"agents_list"}
     assert set(m.PLANNED) <= ({"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e
                               | mcp_g15 | sw_43 | ea_18a | ap_10 | mcp_g19a | mcp_g21 | sp_5
-                              | sw_23), m.PLANNED
+                              | sw_23 | aga_11), m.PLANNED
     assert not {t for t in m.PLANNED if "reminder" in t}, m.PLANNED
 
 
