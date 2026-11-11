@@ -48,8 +48,6 @@ EXAMPLE_NAMES: frozenset[str] = frozenset(
         "NOTES.md",
         "SCRIPTS.md",
         "PLAYBOOK.md",
-        # Files of other coding agents that the kit pack of KIT-0 names (orchestration_playbook.md section 6a).
-        "GEMINI.md",
         # Specs that an epic writes in its first slice (INDEX.md section PLANNED, D205). Delete each name when its file lands.
         "whatsapp_bots.md",
         "knowledge_shared.md",
