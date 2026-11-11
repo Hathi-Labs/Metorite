@@ -219,10 +219,10 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 #### PB-4 · Tips in the results
 
 - **Metorite task.** 1950.
-- **Scope.** `tips` beside `protocol` (SW-56): at most 2 lines of 120 characters, chosen by a rule table on the tool and the context. Each names a topic and shows once for each run. The edge keeps no state, so the gateway stores which tips a run has seen in a column `pm_agent_runs.tips_seen` (migration, expand only). They are separate from the safety lines.
+- **Scope.** `tips` beside `protocol` (SW-56): at most 2 lines of 120 characters, chosen by a rule table on the tool and the context. Each names a topic and shows once for each run. The edge keeps one `SET NX` key in the tenant Redis wrapper for each connection, run and tip, so "once" needs no migration. **Changed on 2026-11-07 (PB-4 build):** the first text said a gateway column `pm_agent_runs.tips_seen`. A tip is a hint and grants nothing. A lost key shows a tip again, and a store outage shows none. So the state does not belong on the lease table. The tips show only while the runs flag is on and the organization is on `playbook_orgs`. The first tips are `brief` (a task with little text, until SW-70 gives the task a brief) and `stalled` (a quiet run in `my_work`). They are separate from the safety lines.
 - **Done when.** A claim of a delegated task with no brief carries the brief tip once. The same run sees it once. An organization that switched tips off sees none, and still sees the safety lines.
 - **Fence.** `test_mcp_edge_context.py`, `test_mcp_edge_prompts.py`.
-- **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-56.
+- **Risk.** STANDARD (no migration, see above). **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-56.
 
 #### PB-5 · The default layer, and the neutral fence
 
@@ -403,7 +403,7 @@ Each slice ships dark behind `LEARNING_ORGS`. Each slice that adds a rule names 
 | PB-1 | `uv run pytest -q -p no:cacheprovider tests/unit/test_playbook_content.py tests/unit/test_playbook_org_neutral.py` |
 | PB-2 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_prompts.py` |
 | PB-3 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_session.py tests/unit/test_mcp_edge_coverage.py` |
-| PB-4 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_context.py tests/unit/test_mcp_edge_prompts.py` |
+| PB-4 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_context.py tests/unit/test_mcp_edge_claim.py tests/unit/test_mcp_edge_prompts.py` |
 | PB-5 | `uv run pytest -q -p no:cacheprovider tests/unit/test_playbook_org_neutral.py tests/unit/test_agent_guidance_r8.py` |
 | PB-6 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_setup_proposal_r8.py tests/unit/test_mcp_edge_coverage.py` |
 | PB-7 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_doctor_r8.py tests/unit/test_needs_attention_r8.py` |
