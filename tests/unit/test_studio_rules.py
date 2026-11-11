@@ -732,7 +732,8 @@ def test_a_machine_parses_and_round_trips() -> None:
 
 
 def test_the_closed_list_of_kinds() -> None:
-    kinds = ("range", "unique", "group_sum_min", "state_machine", "formula", "rollup")
+    kinds = ("range", "unique", "group_sum_min", "state_machine", "formula", "rollup",
+             "hierarchy")
     assert kinds == sr.RULE_KINDS
     assert sr.ROLLUP in sr._PARSERS and sr.ROLLUP in sr._KIND_KEYS
     assert sr.STATE_MACHINE in sr._PARSERS and sr.STATE_MACHINE in sr._KIND_KEYS
