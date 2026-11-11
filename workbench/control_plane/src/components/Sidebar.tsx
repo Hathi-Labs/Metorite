@@ -33,9 +33,10 @@ import {
   shellNavOn,
   shellSidebar,
 } from "@/lib/shell/shellNav";
+import { useAgentGuidanceEnabled } from "@/lib/useAgentGuidanceEnabled";
 import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
 import { latestShell, saveShellPrefs, useShellPending, useShellPrefs } from "@/lib/shell/shellPrefs";
-import { EMPTY_SHELL, toggleStar } from "@/lib/shell/presets";
+import { EMPTY_SHELL, starBase, toggleStar } from "@/lib/shell/presets";
 import { foldHeading, isFolded, readFolds, writeFolds, type Folds } from "@/lib/shell/sidebarFolds";
 import { needsLabel, needsSuffix, rowMeta, rowName } from "@/lib/shell/navNeeds";
 import { useNavNeeds } from "@/lib/shell/useNavNeeds";
@@ -123,6 +124,8 @@ export default function Sidebar() {
   const [shellNav] = useState(() => shellNavOn());
   // WS-63 PZ-25: the "Assistant settings" account row, only with the profile on for this org.
   const assistant = useAssistantProfileEnabled();
+  // WS-MCP SW-31b: the "Agents" account row, only with guidance on for this org.
+  const agents = useAgentGuidanceEnabled();
   // "Home", or "My Day" with that flag on (NS-3). Read once, as above.
   // ⚠️ Read in `useState`, as `shellNavOn` is: with the dev-only
   // `localStorage` override the server and the browser can disagree, and
@@ -225,7 +228,7 @@ export default function Sidebar() {
   const toast = useToast();
   const canHide = shellNav && shell.enabled && shell.stored !== undefined;
   const flipStar = (href: string) => {
-    const base = { ...EMPTY_SHELL, ...(latestShell() ?? shell.stored) };
+    const base = starBase({ ...EMPTY_SHELL, ...(latestShell() ?? shell.stored) }, shell.layout);
     return saveShellPrefs({ ...base, ...toggleStar(base, sections, href) });
   };
   const hideFromSidebar = (pane: NavPane) => {
@@ -609,7 +612,7 @@ export default function Sidebar() {
           collapsed={collapsed}
           accounts={accounts}
           reload={reloadAccounts}
-          you={shellNav ? accountLinks(sections, { assistant }) : undefined}
+          you={shellNav ? accountLinks(sections, { assistant, agents }) : undefined}
         />
       )}
       {!barOn && !shellNav && !accounts.enabled && !collapsed && (

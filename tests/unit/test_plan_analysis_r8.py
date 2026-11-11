@@ -94,6 +94,13 @@ class TestThePlanRoute:
                                   "date": "2026-11-03"}
         assert body["missing"]["no_owner"] == 4
         assert body["hidden"] == {"slices": 0, "outside_blockers": 0}
+        # PJP-6: every slice has an estimate and no description, so each has the same gaps.
+        assert body["gaps"]["no_estimate"] == [] and body["gaps"]["too_big"] == []
+        assert sorted(body["gaps"]["no_done_when"]) == sorted(
+            [ids["a"], ids["b"], ids["c"], ids["d"]])
+        not_ready = {row["task_id"]: row["reasons"] for row in body["not_ready"]}
+        assert "open blocker" in not_ready[ids["b"]] and "open blocker" in not_ready[ids["c"]]
+        assert "open blocker" not in not_ready[ids["a"]]
         # SP-12: a title is only in `labels`, for a visible task that the answer names.
         assert body["labels"][ids["a"]]["title"] == "pjp6a tree a"
         assert "pjp6a tree" not in json.dumps({k: v for k, v in body.items() if k != "labels"})

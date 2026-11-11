@@ -1,6 +1,6 @@
 ---
 slug: start-here
-version: 4
+version: 5
 title: "Start here: agent teams in plain words"
 summary: What the words mean, how a week of work goes, and how to start. For people who are new to agents, and for the agents that help them.
 audience: both
@@ -53,6 +53,9 @@ The solid lines show what belongs to what. The dotted line says that one job mus
 | 🏆 **Goal** | The result that all the work is for. One sentence, and a way to know that you got there. | The cup at the end of the season. | Coming. Until then, write the goal in the description of each epic. |
 | 📦 **Epic** | One big part of the goal. A person can accept it as a whole. | One chapter of a book. | Built. A person chooses the type on the task, or uses "Make it an epic". An agent can also set it. |
 | 🧩 **Slice** | One small job. One agent finishes it in one go, and a person checks it in 15 to 30 minutes. | One bag of bricks with its own instructions. | Built, as a subtask of the epic. |
+| 🪜 **Rung** | One step of the plan that ends in a demo. A person sees and uses the result. Rung 1 is the smallest path that works end to end. The foundation rides with the rung that needs it. | One step of a ladder. | Built, as the tag `Rung N` on a slice. |
+| 🎬 **Demo task** | The task that ends a rung. Its title is `<area> · Rung N demo · <what a person can do>` and its tag is `Demo`. Its description is the demo script. Each slice of the rung blocks it. | The show at the end of a school term. | Built, as a normal task with `blocks` links. |
+| 🚨 **Rung 0** | Urgent safety work: a leak, data loss, a broken live feature or an owner gate with a date. It goes before every rung and has no demo task. | The fire drill. It comes before the lesson. | Built, as the tag `Rung 0`. |
 | 🗒️ **Task** | Any card on the board. A slice is a task. | A sticky note on the fridge. | Built. |
 | 🧾 **Brief** | The instructions in a slice: what to make, what not to touch, and how to check it. | A recipe card. | Built, as the text of the task. |
 | ⛓️ **Blocks** | A link that says: this job must be done before that job can start. | You bake the cake before you put the icing on. | Built. A person sets it in the app, and an agent sets it with `add_task_link`. `my_work` does not offer the waiting job. Nothing refuses a claim of it. |

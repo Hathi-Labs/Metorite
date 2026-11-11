@@ -2,15 +2,17 @@
 
 > **Dated 2026-11-11, price (D204.9).** Seat tiers are final. The flat ₹500 seat ends when PLN-0 merges. Until then the code sells the flat seat. Read each line that says the flat seat as the seat of D152 after PLN-0. Lines: 474 and 724.
 
-**Status: ACTIVE (SW-0, 2026-10-30). SW-68a (the plan order of `my_work`) is built, 2026-11-08. The rest of SW-68 is open. The replan of 2026-11-09 (task 2518) sets the queue order, the lane scope and pull start (SW-100, new). It parks SW-17, SW-20, SW-22, SW-69, SW-74, SW-75, SW-89, SW-90 and SW-92. SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
+**Status: ACTIVE (SW-0, 2026-10-30). SW-68a (the plan order of `my_work`) is built, 2026-11-08. The rest of SW-68 is open. The replan of 2026-11-09 (task 2518) sets the queue order, the lane scope and pull start (SW-100, new). It parks SW-17, SW-20, SW-22, SW-69, SW-74, SW-75, SW-89, SW-90 and SW-92. SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b (change an answer) is built and dark, 2026-11-11. SW-43c is open. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
 
 **SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
 
 **SW-23 (a task carries a Check) is built and dark, 2026-11-11.**
 
-**P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
+**P10 (§3.11, §5.11, D186) was planned on 2026-11-06. The backend of SW-94 (the policy store) is built and dark, 2026-11-08. Its Settings tab is not built. No other P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
+
+**1045a (the `waiting` state, migration 403) is built, 2026-11-06. It also carries SW-4 item 2. The owner's change of 2026-11-07 is built: own sub-agents keep a run working, and `agent` is a wait on another agent. 1045b and 1045c are open.**
 
 This spec gates every SW slice (D135.4). The decisions are **D140** in `work_plan.md` §3.
 
@@ -148,7 +150,7 @@ While the sweep is off, no fingerprint exists, so `stranded` is null. That is wh
 
 **Two clocks, two meanings.** The 5-minute **stale band** says whether an agent works on the task now. It is display only. The 2-hour **lease** says whether the run still keeps the task.
 
-A quiet run keeps its task until the lease ends. An orchestrator can wait 20 to 50 minutes on sub-agents or CI and post nothing (task 1045). The `waiting` line tells the board the truth during that wait.
+A quiet run keeps its task until the lease ends. An orchestrator can wait 20 to 50 minutes on sub-agents or CI and post nothing (task 1045). While its own sub-agents work, the run reads `working`, so the agent posts a thought at least once a minute (owner, 2026-11-07). The `waiting` line is only for work that is not the agent's own: CI, a deploy, a review or a person, or another agent. It tells the board the truth during that wait.
 
 **The lease clock** reads the newest activity of any author, a member's answer too (D140.10). Resume (SW-11a) depends on this: its member prompt renews the lease. Task 1045b adds linked events (a pull request push or a check event) to the clock, and keeps them out of the answered rule.
 
@@ -249,7 +251,7 @@ The source is the Linear research of 2026-10-30, the comment on epic 321. Append
 - **Race.** The route takes the same `FOR UPDATE` lock of the run as an agent post. The check runs under the lock. So one write wins. When the agent wins, the member gets 409 "The agent already has your answer. Send a comment instead."
 - **Protocol.** An agent posts a thought that names the answer id before it acts on an answer. The thought ends the window.
 - **Flag.** `agent_answer_change_enabled`, default off. Off: the route answers 404 and the run wire has no `answer` field. No migration.
-- **Slices.** SW-43a withdraw (built dark). SW-43b a replace route, with the option `confirm: true` and the card text "Are you sure?", and a Change button. SW-43c the chat tool, the agent text on by default, and the flag on.
+- **Slices.** SW-43a withdraw (built dark). SW-43b a replace route, with the option `confirm: true` and the card text "Are you sure?", and a Change button (built dark, 2026-11-11). SW-43c the chat tool, the agent text on by default, and the flag on.
 
 ### 3.10 Many people, each with their own agents (P9, D183)
 
@@ -610,7 +612,7 @@ The first keys: `stages_required`, `brief_required`, `claim_scope_mode`, `review
 
 | Item | Already planned | New |
 |---|---|---|
-| **Shared lessons for each project** | SW-31 (guidance with history; SW-31a is built, SW-31b is not). Task 1068 (SW-42): an agent proposes a guidance edit and a lead approves. The guidance table holds rule rows with `state`, `proposed_by`, a source and a quote, and lead acceptance (ALN-5, ALN-5b, ALN-11) | **SW-98.** A lesson is a rule row. SW-98 adds `verify_by` and provenance, so a lesson expires unless someone verifies it again. An import path takes local memory files as proposals |
+| **Shared lessons for each project** | SW-31 (guidance with history, with SW-31a and SW-31b built and dark). Task 1068 (SW-42): an agent proposes a guidance edit and a lead approves. The guidance table holds rule rows with `state`, `proposed_by`, a source and a quote, and lead acceptance (ALN-5, ALN-5b, ALN-11) | **SW-98.** A lesson is a rule row. SW-98 adds `verify_by` and provenance, so a lesson expires unless someone verifies it again. An import path takes local memory files as proposals |
 | **A cause tag on each stalled run** | §3.10.11 names seven causes in prose. `pm_agent_run_strands` holds a `reason` (`agent_quiet`, `answer_unread`, `question_unanswered`) that says which sweep rule fired | **SW-99.** A fixed `cause` vocabulary that says why the run stalled, on the strand and on the release activity of a run. Reports group by cause |
 | **Versioned lane and prompt templates** | Nothing | **PB-9** (`orchestration_playbook.md`). The templates are playbook content. A lane (SW-67) names the template version it came from |
 
@@ -820,7 +822,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 - **Scope.**
   1. `AgentRunPanel.tsx` reads `lease_expired`. So for a dead connection, it does not say that the next claim can take the task. `external_agent_access.md` §12.3 names this gap. Make the panel read the server's holder-free answer, which `held_by.stale` already carries.
-  2. Cap a `waiting` time at one lease. When `AGENT_RUN_LEASE_SECONDS` is below 7200, the cap is the lease in minutes, not 120.
+  2. Cap a `waiting` time at one lease. When `AGENT_RUN_LEASE_SECONDS` is below 7200, the cap is the lease in minutes, not 120. **Built with 1045a** (2026-11-06).
   3. Add an R8 test with a moved clock, if `test_agent_run_exclusive.py` lacks one. A claim at the lease plus 1 minute takes the task over. A claim at the lease minus 1 minute gets 409.
 - **Not in scope.** The 15-minute TTL of the first text (D140.10). The end of a run when its task closes is H-409 item 1, Metorite #748.
 - **Done when.** The panel, the card and `held_by.stale` agree for a dead connection. The moved-clock test passes on a real database.
@@ -879,18 +881,20 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### 1045a · The `waiting` state
 
+- **Built** 2026-11-06, migration 403, live under `agent_runs_enabled`. The build also caps a wait at one lease when the lease is shorter than 2 hours (SW-4 item 2, `filters.agent_run_waiting_cap_min`). The task row carries `agent_waiting`, so the card says "waiting on CI".
 - **Scope.**
-  1. `post_agent_activity` takes an optional `waiting: {on, until_minutes, note}`. `on` is `subagents`, `ci`, `review`, `deploy` or `member`. `until_minutes` is 1 to 120. 1045a ships this fixed cap of 120 minutes. SW-4 later lowers the cap to the lease when the lease is shorter. `note` holds at most 200 characters.
+  1. `post_agent_activity` takes an optional `waiting: {on, until_minutes, note}`. `on` is `ci`, `review`, `deploy`, `member` or `agent`. `agent` is another (external) agent, and the card says "another agent". No value names the agent's own sub-agents. While they work, the run reads `working`, so the gateway refuses `subagents` with 422 (owner, 2026-11-07). `until_minutes` is 1 to 120. 1045a ships this fixed cap of 120 minutes. SW-4 later lowers the cap to the lease when the lease is shorter. `note` holds at most 200 characters.
   2. Migration, expand only: `pm_agent_runs.waiting_on TEXT NULL`, with a CHECK of the five values, and `waiting_until TIMESTAMPTZ NULL`.
   3. `_write_activity` is the one writer. An activity with `waiting` sets both columns. Any other activity clears them.
   4. `AGENT_RUN_STATE_SQL` gains `waiting` first in its `in_progress` arm (§3.2). `WORKING_STATES` gains `waiting`, so the strip counts do not change.
   5. The run wire and the edge gain `waiting: {on, until, note}`. The note leaves as untrusted text.
   6. `AGENT_STATES`, `agentCardLook` and the pill gain `waiting`: a still accent edge. It does not move, because motion means working (EA-13g). The group-by gains a lane "Waiting".
-  7. The text that tells agents. Change the server instructions (`mcp.py`), the `work_on_task` steps (`prompts.py`) and `next-ticket.md`. Each says: post a `waiting` line before a wait of more than 2 minutes. A wait on a person longer than 120 minutes is a question (`ask_on_task`) or a wait record (SW-9).
+  7. The text that tells agents. Change the server instructions (`mcp.py`), the `work_on_task` steps (`prompts.py`) and `next-ticket.md`. Each says: while your own sub-agents work, post a thought at least once a minute, and the run stays working. Post a `waiting` line only before a wait of more than 2 minutes. The wait is on CI, a deploy, a review, a person or another agent. A wait on a person longer than 120 minutes is a question (`ask_on_task`) or a wait record (SW-9).
 - **Done when.**
   - R8: a run with `waiting {on: ci, until_minutes: 30}` reads `waiting` at minute 20 and `stale` at minute 31.
   - R8: a thought at minute 10 clears the wait, and the run reads `working`.
   - `until_minutes` of 121 gets 422.
+  - `on: subagents` gets 422, and the gateway takes `on: agent`.
   - The stranded clause never matches a run that reads `waiting`.
   - A vitest maps `waiting` to its look in light and dark.
 - **Fence.** `test_agent_runs_r8.py`, `test_mcp_edge_agent_runs.py`, `test_mcp_edge_prompts.py`, `agentCardLook.test.ts`.
@@ -988,7 +992,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-31 · Agent guidance
 
-- **Status.** **SW-31a is built, dark** (backend and MCP return, no UI), behind `AGENT_GUIDANCE_ORGS`. SW-31b (the Settings screen) is not built.
+- **Status.** **SW-31a and SW-31b are built, dark**, behind `AGENT_GUIDANCE_ORGS`. SW-31a is the backend and the MCP return. SW-31b is the Settings → Agents screen at `/settings/agents`. It waits for the D145 owner preview before the merge. The chat tool is SW-31c (task 1531).
 - **Split.** SW-31a: items 1, 3, 4 and 5 below, the routes `/agent-guidance`, and the flag. SW-31b: item 2, the Settings → Agents screen at the new route `/settings/agents`.
 - **Gate for SW-31b.** D145 owner preview. It is a new route and a new screen, so the owner approves the preview before the merge.
 - **Scope.**
@@ -1006,6 +1010,14 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
   - **Who writes.** The save of a project or a space needs the write floor of a grant (`authority.assert_may_write_guidance`). The save of the org needs `admin:settings:manage` (`core.ORG_VOCABULARY_WRITE`), the house rule for an org-wide write. A `manager` holds `projects:settings:write` and not that permission, so a manager gets 403 on the org.
   - **Who reads.** A member who sees a task but not its space gets the space block. Its source is the stub `{"hidden": true}`, with no name and no project id, as EA-15 shows a hidden parent. The refs read each id through the visibility seam, so a hidden or an unknown project gets null.
   - **The answer.** The edge returns `guidance` as `{blocks, dropped}`. `dropped` counts the farthest blocks that the cap cut. `get_task_context` makes 14 gateway calls at most (MCP-G18 added the attachments read). The blocks name their level as `project`, `space` or `company`. The chat tool for guidance is a follow-up (SW-31c).
+- **As built (SW-31b).** These notes record the build.
+  - **The page.** `workbench/control_plane/src/app/settings/agents/page.tsx` opens with `AppTopBar`. Every member can open it, because the lead of a project also writes guidance. The account menu shows "Agents" in its Settings group while guidance is on for the org (`useAgentGuidanceEnabled`). The Organisation bar also links to it for an admin. The way back leads to Organisation for an admin, and to Settings for any other member.
+  - **The parts.** A scope picker (`SelectButton`) holds the whole organization and the team tree of `GET /projects/tree`, read with `buildProjectTree`. A Markdown `Textarea` has a counter against 8,000. "Save guidance" saves a new version. The History list shows the version, the writer, the time and the first line. A version opens read-only, and "Use this text" copies it into the editor.
+  - **Who writes.** The org level needs the capability `admin:settings:manage`. A project reads `can_write_grants` from `GET /projects/nodes/{id}`. A failed read of those facts turns Save off, with the reason. A member who cannot write reads the text, with Save off and the reason. The gateway still decides each save, and its 403 shows in the same place.
+  - **The editor.** One reducer (`editorReducer`) holds a draft, a note and a save state for each scope. After a save, the draft stays until the History head shows the new version. Discard shows for any changed draft.
+  - **Dark.** A 404 with the detail "Not Found" draws "Agent guidance is not turned on for this organization". A hidden project gets its own words.
+  - **The BFF.** `api/agent-guidance/route.ts` (POST) and `api/agent-guidance/history/route.ts` (GET) forward through `proxyToGateway`. The POST answers 422 for a `project_id` that is not a project id or null. The pure decisions are in `guidance.ts`, and `guidance.test.ts` holds them.
+  - **Parity.** `chat_parity.py` holds the save and the history read as P-8 debt, and SW-31c pays it. The settings ceiling went from 26 to 28.
 
 #### SW-32 · A plan on each run
 
@@ -1203,6 +1215,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 #### SW-43b · Change an answer
 
 - **Scope.** A replace route that withdraws and answers in one transaction. An option `confirm: true` asks "Are you sure?" before it writes. A Change button on the card.
+- **Built dark, 2026-11-11 (task 1801).** `POST /projects/agent-runs/{run_id}/answer/replace` takes `answer_id`, `selected`, an optional `body` and a key. It writes the marker of a withdraw and a new member prompt with `content.replaces`, in one transaction. A bad option rolls the withdraw back. The key of the marker is the key plus `:w`. The option field `confirm` is stored only when true. The card asks "Are you sure?" and then sends. The run card has a Change button next to Withdraw.
 - **Depends on.** SW-43a.
 
 #### SW-43c · Chat tool and flag on
@@ -1455,7 +1468,7 @@ They keep their own gates.
 
 ### 5.11 P10 — Metorite runs the fleet and teaches it
 
-**Source.** §3.11 and D186. Task 1906 holds the brief. Each slice below has a task in Backlog under epic 321. The slices PB-1 to PB-10 are in `orchestration_playbook.md` §7. Slices of other specs keep their owners and gates. P10 depends on these slices: SW-7a, SW-46, SW-48, SW-56, SW-60, SW-31 (SW-31a is built, SW-31b is not), SW-34a and EA-19 (task 1819). It also depends on task 1731. P10 merges after PR 1777, which holds P9.
+**Source.** §3.11 and D186. Task 1906 holds the brief. Each slice below has a task in Backlog under epic 321. The slices PB-1 to PB-10 are in `orchestration_playbook.md` §7. Slices of other specs keep their owners and gates. P10 depends on these slices: SW-7a, SW-46, SW-48, SW-56, SW-60, SW-31 (SW-31a and SW-31b are built, dark), SW-34a and EA-19 (task 1819). It also depends on task 1731. P10 merges after PR 1777, which holds P9.
 
 **Common rules.** Every slice ships dark behind a flag or a setting that is off, unless it says otherwise. A new table is tenant-scoped under FORCE ROW LEVEL SECURITY (R5). A migration is expand only (R6), and its number is taken at build time (R1). Each new route joins `skill_projects/manifest.py`. Each new tool joins `MCP_WRITE_ROUTES` or `MCP_ROUTES` with a named scope (§2.3 rule 6). A box token authenticates at the edge, so a runner call is an MCP tool and not a gateway route. A migration makes a slice HIGH.
 
@@ -1711,10 +1724,20 @@ They keep their own gates.
 #### SW-94 · One policy store
 
 - **Metorite task.** 1940.
+- **Status.** **The backend is built and dark** (2026-11-08), behind `AGENT_POLICY_ORGS`. The tab "Policies" of the Settings, Agents screen is not built. It needs SW-31b and a D145 owner preview.
 - **Scope.** §3.11.5. The table `pm_agent_policies`, with history. The functions `policy_for(task, key)` and `policy_for_actor(org, member, box, lane, key)` reuse the project-tree walk of SW-31a (`routes/agent_guidance.py`) and add no walk of their own. A row has a scope kind: organization, project, lane, member or box. A key lists the scope kinds it accepts. A key that sits on the auth path (`agents_paused`, `budget_mode`, `required_checks`, `claim_scope_mode`, `lane_mode`, `question_auto_after_minutes`, `pr_open_to_review`) needs the permission `admin:settings:manage`, except as the writer rules below say. An admin writes any key at any scope. A member writes `agents_paused` at the scope kind member, for self only (R8: a member pauses own agents and gets 403 on another member). A project lead writes a key that is not on the auth path, for the lead's own project, except `required_checks`, which stays admin only as SW-54 says. Where a flag has ordered modes, the flag is the ceiling. A policy may choose a mode at or below the flag and never above it. The flag stays the default of the organization. The first keys are in §3.11.5, with `release_cutoff` (default none). The screen is a tab "Policies" of the Settings, Agents screen (SW-31b). `review_cap` moves from the Integrations setting of §3.10.3 to this tab, and SW-49 reads it from here. If SW-18, SW-49 or SW-54 has merged before this slice, SW-94 copies their stored values into policy rows (expand only), with an R8 case. After that, they read through it.
 - **Done when.** R8: the nearest project wins over the organization, and a tier row wins over `any`. An unknown key gets 422. A key on a scope kind it does not accept gets 422. A project lead writing an auth-path key gets 403. A policy cannot turn on what a flag turns off. With the flag at `warn` and the policy at `refuse`, the result is `warn`. Each save adds a row.
 - **Fence.** `test_agent_policies_r8.py` (new), `test_tenant_coverage.py`.
 - **Risk.** HIGH (a tenant table, a write authority rule). **Gate.** AGENT-SAFE dark. D145 owner preview for the tab. Build it first in step 3 of §5.0b. **Depends on.** SW-31b.
+- **As built (SW-94).** These notes record the build of the backend.
+  - **Table.** Migration 404 (`infra/postgres/404_pm_agent_policies.sql`) adds `pm_agent_policies`. The builder took the number at build time, and premerge checks it again (R1). A row holds `scope_kind`, `project_id`, `scope_ref`, `tier`, `key`, a JSONB `value`, `version`, `written_by` and `written_at`. `project_id` is set for the kind `project` only, with cascade. `scope_ref` holds a lane id, a member's email or a box id. `tier` is `any`, `LOW`, `STANDARD` or `HIGH`. The lane and box tables are later slices, so `scope_ref` has no foreign key. A SQL NULL value clears a scope, and then the next level applies. The trigger `pm_agent_policies_guard` refuses each UPDATE. The table is tenant-scoped with FORCE RLS, and the generated phases carry it.
+  - **Keys.** `agent_policies.REGISTRY` holds the 18 keys of §3.11.5. Each key names its form (task or actor), its scope kinds, its value type, its default, its auth-path mark and whether it takes a tier. A task key takes the kinds organization and project. An actor key takes the kinds organization and lane, and `agents_paused` also takes member and box. An actor key takes no tier. `loop_guard_repeats` is an actor key, beside the day budgets of SW-95.
+  - **Readers.** `policy_for(db, task, key)` walks the tree through `agent_guidance.project_chains`, the walk of SW-31a. The module adds no walk of its own. `policy_for_actor(db, org, member, box, lane, key)` reads box, member, lane, then org. While the flag is off, each reader gives the default under the master flag. No caller reads a policy yet.
+  - **The master flag.** A mode key names the `Settings` field of its master flag, a map from organization to mode (`org=mode` pairs, or `*=mode`). The flags `AGENT_CLAIM_SCOPE_MODES`, `AGENT_LANE_MODES` and `AGENT_BUDGET_MODES` are not `Settings` fields yet. Each reads as `off` until its slice (SW-46, SW-67, SW-95) adds it. `question_auto_after_minutes` gives its default while `AGENT_AUTO_ANSWER_ORGS` does not name the org.
+  - **Route.** `POST /agent-policies` in `gateway/routes/agent_policies.py`, not under `/projects`. The router checks the flag first, then `feature:projects`. The lead floor is `authority.guidance_write_refusal`, the write floor of guidance and of a grant. So a holder of `projects:settings:write` also writes a key off the auth path for a project. No read route is built. The tab of SW-31b adds it.
+  - **Copy.** SW-18, SW-49 and SW-54 had not merged, so no stored value was copied.
+  - **Pause.** A member writes `agents_paused` for self with the value true only. A resume or a clear by a member gets 403, so a member cannot lift a pause that an admin holds. An admin writes both.
+  - **Not yet.** `agent_policies.FLAGS_NOT_YET` names each master flag that is not a `Settings` field yet. The slice that adds the field takes its name off the list.
 
 #### SW-95 · Day budgets and loop guards
 
