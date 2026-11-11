@@ -1494,6 +1494,11 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "status_id": (
             "One lane by id. export_tasks filters by status_category, as list_tasks does."
         ),
+        "scope": (
+            "WS-64 OP-11: the My tasks roll-up. The export takes it so a file of "
+            "My tasks holds only the member's own rows. The chat's my_work reads "
+            "the same set through the mine rule, so no tool argument sets it."
+        ),
         "assignee": "The older single form. export_tasks sends assignees.",
         "sort": "The order of the app's list. The file holds the rows in the route's own order.",
         "direction": "The order of the app's list. The file holds the rows in the route's own order.",

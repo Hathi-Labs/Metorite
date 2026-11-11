@@ -12,12 +12,15 @@
 > only task store, and `routes/projects/personal.py` is the lens Tasks renders.
 
 > **Product:** Metorite · **Feature:** Projects (the primary work-management
-> module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-11-09**
+> module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-11-11**
 > 🟢 **SP-8a BUILT 2026-11-08, not merged** (§13.3, §13.6 row SP-8, migration 402, branch
 > `mt-1cb9f2de-sp8-epic-contract`). An epic has a contract: the store, the routes, `epic_contract`
 > in `get_task` and `get_task_context`, the MCP block and the chat tool `set_epic_contract`.
 > It ships dark behind `EPIC_CONTRACT_ORGS` (repair round 1, 2026-11-09).
 > SP-8b, the form in the app, is open.
+> 🟢 **WS-39 T-7 BUILT 2026-11-11, not merged** (§14.9, task 2538). The isolation fence of teams,
+> `tests/unit/test_team_scope_isolation_r8.py`, binds rules 2 and 4 for the surfaces that it lists, on a real database.
+> It does not cover all of rule 4. Its docstring names the reads that it leaves out as follow-up. No table and no flag.
 > 🟢 **WS-39 LP-1a BUILT 2026-11-08, not merged** (§14.2a, migration 383, task 988). A member posts a project update
 > with a health that the author picks. The Overview shows the newest one. Dark behind `PROJECTS_UPDATES_ORGS`.
 > 🟢 **WS-39 SP-1 BUILT 2026-11-08, merged 2026-11-09** (§13.2a, migration 372, task 960). The cycle
@@ -9759,7 +9762,7 @@ Proposed, owner review in this pull request. A team is a group (`group:<slug>`, 
 4. **A hidden space is never named and never counted.** This holds in a list, a count, a search, `board_stats`, an assistant answer and an MCP read. A direct link answers "not found".
 5. **A scope never grants.** The team scope narrows a view. It opens nothing that the member could not already open.
 
-Fence: `tests/unit/test_team_scope_isolation_r8.py` (new, T-7) binds rules 2 and 4. Until T-7 lands, the rules are advisory (R7).
+Fence: `tests/unit/test_team_scope_isolation_r8.py` (T-7, task 2538) binds rules 2 and 4 on a real database (R8), for the surfaces that it drives. These are the tree, the board, `board_stats`, My tasks, search, the CSV export, the delta feed, the direct link, six chat tools and six MCP tools. The MCP tools run with an OAuth token and with a box token. The fence does not cover all of rule 4. Its docstring lists each read that it does not drive, and that list is follow-up work. Rule 4 stays advisory for those reads (R7). Rules 3 and 5 stay advisory until the T-4 fence lands (R7).
 
 | Row | Task | Scope | Done when | Fence | Risk | Flag (default OFF) | Depends on |
 |---|---|---|---|---|---|---|---|
@@ -9770,7 +9773,7 @@ Fence: `tests/unit/test_team_scope_isolation_r8.py` (new, T-7) binds rules 2 and
 | **T-4** | 2535 | The team scope in the shell. One contract of one value: a team slug or "all" (`navigation_shell.md` §4.2a) | The shell holds one scope value, and every app reads it | `src/lib/shell/teamScope.test.ts` (new) | STANDARD | `TEAMS_ORGS` | T-2, T-3, T-7 |
 | **T-5** | 2536 | Apps adopt the scope. One task for each app. Planning only | Each app has a task that names its adopt step | Advisory | LOW | none | T-4 |
 | **T-6** | 2537 | Chat and MCP through the app door. A write shows an approve card | A chat read and an MCP read of a hidden space answer "not found" | The R8 test of T-7 | STANDARD | `TEAMS_ORGS` | T-3, the MCP-G24 decision |
-| **T-7** | 2538 | The isolation fence: two teams, three spaces and every surface | Each surface of rule 4 passes with a hidden space. `tests/unit/test_team_scope_isolation_r8.py` (new) | R8, full loop | HIGH | none | T-1 |
+| **T-7** | 2538 | The isolation fence: two teams, three spaces and the surfaces that the fence lists. **Built 2026-11-11 for those surfaces, not merged.** The reads that its docstring names as not driven are follow-up | Each listed surface of rule 4 passes with a hidden space. `tests/unit/test_team_scope_isolation_r8.py` | R8, full loop | HIGH | none | T-1 |
 
 **Order.** T-0, then T-1. Then T-2, T-3 and T-7. Then T-4, then T-5. T-6 follows T-3 and the MCP-G24 decision. The flag name `TEAMS_ORGS` is a proposal, and the build task confirms it.
 
