@@ -1337,7 +1337,7 @@ export function TaskBody({
                 {/* SP-9 — an epic rolls up EVERY slice below it that the reader
                     can see. The board card keeps its direct-child count. */}
                 {rollup ? (
-                  <FieldCell label="Slices" icon="GitBranch">
+                  <FieldCell label="Progress" icon="GitBranch">
                     <span className="text-sm text-foreground" data-testid="epic-rollup">
                       {rollupLine(rollup)}
                     </span>
