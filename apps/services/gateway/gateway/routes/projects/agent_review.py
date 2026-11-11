@@ -37,9 +37,12 @@ approve finds nothing to approve (409). Then it moves the task to the first
 ``done`` lane of its set and closes the open agent run of the task
 (``agent_runs.close_reviewed_run``), in the same transaction.
 
-**A wait ends on any other move.** A status move through the PATCH that is not
-the redirect clears the wait. So a person who moves the task by hand, to done
-or back to work, decides the review too.
+**A wait ends on any other move.** A status move through
+``core.apply_status_transition`` that is not the redirect clears the wait: the
+PATCH, Mark done, the bulk edit and workflows. So a person who moves the task
+by hand, to done or back to work, decides the review too. A move across
+projects with two status sets writes ``status_id`` directly and does not clear
+the wait. The next status move does (a known gap, with the flag off).
 
 Dark: while ``agent_review_enabled`` is off (``agent_oauth.agent_review_enabled``,
 the one reader), both routes answer 404 and :func:`redirect_for` returns None.
