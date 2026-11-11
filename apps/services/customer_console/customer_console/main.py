@@ -2986,6 +2986,13 @@ def declare_capability(req: CapabilityRequest, staff: Operator) -> dict[str, Any
     Nobody is billed against it, so correcting it destroys no audit trail.
     """
     try:
+        # 🔴 Refuse a bad pair BEFORE the database opens (the order before
+        # MS-1). A 400 needs no connection, and main's push unit job runs
+        # with no Console database (task 2511). `_write_capability` runs the
+        # same checks again for the health-fix path, so the two cannot drift.
+        invocation = catalog.check_invocation_for_task(req.invocation, req.task)
+        catalog.check_model_for_invocation(req.model, invocation, task=req.task)
+        catalog.check_streams(req.task, req.streams)
         with get_engine().begin() as conn:
             return _write_capability(
                 conn,

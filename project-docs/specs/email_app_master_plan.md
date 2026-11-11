@@ -1,5 +1,7 @@
 # Email App — Master Plan (single source of truth)
 
+> **Dated 2026-11-11, `email_knowledge` (D105, WS-KS).** KS-12 (task 2726) moves email reading to the one read seam. It stops new writes to `email_knowledge`.
+
 > **Product:** Metorite · **Feature:** Email AI Assistant App · **Created:** 2026-07-22
 > **Status (verified on the box, 2026-10-01 17:57 UTC):** 🟢 **Email sync is ON in production.**
 > The interim Microsoft app is installed (§10.2, D-EM-2). **§10 owns** Email for every organization.
@@ -13697,8 +13699,9 @@ next cycle started again.
 
 #### 12.3.12.9 EM-G4b-f3 — each cycle stays under the quota of Google
 
-**Status.** 🔨 Built on branch `mt-87552e7e-gmail-sweep`, not merged. Task 1223. The verifier failed
-the first build, and this section holds the fix round.
+**Status.** ✅ MERGED `27b0586c1` (2026-11-02), live on production the same day. Task 1223. The
+verifier failed the first build, and this section holds the fix round. §12.3.12.10 (EM-G4b-f4)
+repairs one known limit of this slice.
 
 **Gate.** 🟢 AGENT-SAFE. No migration and no flag. This slice repairs a sync that fails for each
 new large mailbox, so it has no off state and no kill switch.
@@ -13906,8 +13909,8 @@ and `test_gmail_history_cursor.py` is H.
   `quota_mailbox`.
 - A restart empties the meter and the clock, because both live in the process. The first calls after
   it can get a 403, and the next cycle goes on.
-- A mail that always fails at the top of a read ends the sweep in the abandon. The mail below that
-  point stays unread, and a Resync recovers it.
+- ~~A mail that always fails at the top of a read ends the sweep in the abandon. The mail below that
+  point stays unread, and a Resync recovers it.~~ EM-G4b-f4 (§12.3.12.10) repairs it.
 - An older process reads a reset cursor as no cursor. It then sweeps again from the start, and it
   drops the point that the sweep reached.
 
@@ -13919,6 +13922,81 @@ ssh metorite "sudo -n journalctl -u acb-gateway --since '1 hour ago' --no-pager 
 
 `sync.import_paused` lines and a rising message count show the fix. A `gmail.rate_limit_gave_up`
 line now names the reason of Google.
+
+#### 12.3.12.10 EM-G4b-f4 — a failed mail cannot hold the reset sweep for ever
+
+**Status.** 🔨 Built on branch `mt-303a02d9-gmail-hold-cap`, not merged. Task 1448. The verifier
+of task 1223 found the defect.
+
+**Gate.** 🟢 AGENT-SAFE. No migration and no flag. The change is in `gmail.py` only, and the cursor
+form stays readable by an older process.
+
+**The defect.** When the history cursor of a mailbox is stale, the sync runs a reset sweep (§12.3.12.9,
+D-G4b-f3-12). One mail at the top of the read answers 5xx on each try. `held_at` keeps the bound
+above that mail, so the bound cannot move, and the sweep counts as short. After
+`CATCH_UP_MAX_MISSES` short loop cycles, the scheduler abandons the sweep and writes the seed. Each
+cycle stored the mail of its share below the failed mail, but the mail past that share was never
+read. The `sync_error` note reaches the API only, so the member never knew.
+
+**Decisions.**
+
+- **D-G4b-f4-1. The reset cursor counts its held cycles.** A cut that a failed fetch holds stores
+  the same bound with `"held": <n>`. The form is
+  `{"v":1,"seed":...,"reset":[after,until],"held":n}`, and `held` is absent at 0. A process before
+  this slice ignores `held`, so a rollback loses the count and nothing else.
+- **D-G4b-f4-2. The cap is `GMAIL_FETCH_HOLD_CYCLES` (3), as on the history path.** On the cycle
+  that reaches it, the bound moves to the oldest mail of the whole read. The sweep then passes each
+  failed mail that the list names before the last mail of the read. Each one gets the log
+  `gmail.fetch_abandoned message_id=<id> held_cycles=<n>` and a record in `errors`, with its id
+  only. That is the same line and record as `_cursor_after_read`. A failed mail below the last mail
+  of the read is older than the bound, so the next cycle reads it again, and it gets no record
+  (verifier finding).
+- **D-G4b-f4-3. The count belongs to the bound.** A cycle that moves the bound in the normal way
+  stores no `held`. So a failed mail holds the sweep for 3 cycles in a row at most.
+- **D-G4b-f4-4. A held cycle is a cut, not a short sweep.** It sets `rate_limited` and stores the
+  cursor, as a spent share does. The changed `held` makes the cursor differ, so the cycle is
+  progress for `_early_stop`, and the rate-limit clock does not start. The loop comes back after
+  `SYNC_RESUME_SECS`. A held cycle reads the same page again, so 3 held cycles cost 3 shares.
+- **D-G4b-f4-5. Only the cut is in scope.** A read that reaches the end of the list with a failed
+  mail still counts as short, as before. It read every other mail, so it drops no older mail.
+
+**Acceptance.** `tests/unit/test_gmail_history_cursor.py` holds the fences:
+
+1. A mail that always fails at the top holds the bound for 2 cycles, with `held` 1 and 2. The third
+   cycle moves the bound past it and logs `gmail.fetch_abandoned` once. The fourth reads the older
+   mail and ends with the first seed (`test_a_mail_that_fails_for_good_cannot_stop_the_reset_sweep`).
+2. The abandon goes into `errors` at the cap only, and the moved bound stores no `held`
+   (`test_a_held_reset_bound_records_the_abandoned_mail`). A failed mail below the last mail of
+   the read gets no abandon record (`test_the_cap_records_only_the_failed_mail_that_it_passes`).
+3. A bound that moves clears the count (`test_a_bound_that_moves_clears_the_held_count`).
+4. A failed mail at the top of the first cycle stores `held` 1, and the sweep still reads one page
+   (`test_a_failed_fetch_does_not_lift_the_share`).
+5. A bad `held` is no reset cursor, and a held cursor is no other cursor
+   (`test_text_that_is_no_reset_cursor`, `test_a_reset_cursor_is_no_other_cursor`).
+
+**The mutations.** Each mutation patched a copy of the package, and a fence went red. All 11 went
+red. The worktree was never written.
+
+| Mutation | Fence that failed |
+|---|---|
+| A The held count never grows | `test_a_mail_that_fails_for_good_cannot_stop_the_reset_sweep` |
+| B The cap is one cycle late | `test_a_held_reset_bound_records_the_abandoned_mail` |
+| C The cap stays above the failed mail | `test_a_mail_that_fails_for_good_cannot_stop_the_reset_sweep` |
+| D The abandon writes no record | `test_a_held_reset_bound_records_the_abandoned_mail` |
+| D2 The abandon writes no log line | `test_a_mail_that_fails_for_good_cannot_stop_the_reset_sweep` |
+| E A bound that moves keeps the count | `test_a_bound_that_moves_clears_the_held_count` |
+| F The parse drops `held` | `test_a_reset_cursor_is_no_other_cursor` |
+| G The format drops `held` | `test_a_failed_fetch_does_not_lift_the_share` |
+| H The old defect: a held cycle is short | `test_a_mail_that_fails_for_good_cannot_stop_the_reset_sweep` |
+| I The cap records a mail below the read | `test_the_cap_records_only_the_failed_mail_that_it_passes` |
+| D (fix round) The abandon writes no record | `test_the_cap_records_only_the_failed_mail_that_it_passes` |
+
+**Verify on production, after the release.** After a `gmail.reset_held` line, the log shows a
+`gmail.fetch_abandoned` line or a `gmail.reset_partial` line, at the latest 2 cycles later.
+
+```bash
+ssh metorite "sudo -n journalctl -u acb-gateway --since '1 day ago' --no-pager | grep -E 'gmail.reset_held|gmail.fetch_abandoned'"
+```
 
 #### 12.3.13 EM-G11 — Google verification readiness of the Gmail app (2026-10-14)
 
@@ -21946,6 +22024,14 @@ already see. Three stores own such a file. Each reference names its store.
   reads the file again and checks the digest.
 - A held chat refuses a file of the `email-assistant` workspace, because the
   held run can write there.
+- **Each file resolves before its card (task 2491).** Status: built on
+  2026-11-09 on the branch `email-files-before-card-mt-5575616a`, not merged.
+  The plain card, the new-mail card and the held card each resolve every file
+  first, the way the send resolves it. `POST /email/metorite-files/resolve`
+  checks a workspace path with `send.refused_artifacts`, and reads no bytes.
+  A file that does not resolve shows no card. The tool answer names the file
+  and the next step. Before, the member approved a card, and then the send
+  refused the file (production, 2026-11-09).
 
 **The tick boxes of the reply card.** Each To and Cc on the reply card has a
 tick box. The gateway stays the only source of the lists.
@@ -21981,6 +22067,7 @@ tick box. The gateway stays the only source of the lists.
 | Hidden text in a draft | `tests/unit/test_held_hidden_text.py` |
 | A card never shows less than the send | `tests/unit/test_held_card_shows_less.py` |
 | A Metorite file, as the member (21.11) | `tests/unit/test_email_metorite_files.py` |
+| A file resolves before its card (21.11, task 2491) | `tests/unit/test_email_files_before_card.py` |
 | The tick boxes of the reply card (21.11) | `tests/unit/test_email_chat_reply.py`, `workbench/control_plane/src/lib/replyCard.test.ts`, `workbench/control_plane/e2e/email-chat-reply.spec.ts` |
 
 ### 21.12 Recipient intent (2026-10-24)

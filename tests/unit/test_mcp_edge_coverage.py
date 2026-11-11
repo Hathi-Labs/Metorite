@@ -190,10 +190,11 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
     the move preview and the move (§9.2). MCP-G15 adds the outside decision
     (§12.1): an agent records a decision that its member made outside
     Metorite, on its own awaiting run. SW-16a adds the link POST and the link
-    DELETE, the routes of ``add_task_link`` and ``remove_task_link``. MCP-G9
-    adds the comment PATCH and DELETE, the routes of ``update_comment`` and
-    ``delete_comment``. The route takes only a comment of the agent's own
-    client (``test_mcp_edge_comment_edit_r8.py``)."""
+    DELETE, the routes of ``add_task_link`` and ``remove_task_link``. SP-8a
+    adds the PUT of the epic contract, the route of the ``epic_contract``
+    block of ``update_task``. MCP-G9 adds the comment PATCH and DELETE, the
+    routes of ``update_comment`` and ``delete_comment``. The route takes only
+    a comment of the agent's own client (``test_mcp_edge_comment_edit_r8.py``)."""
     expected = {
         ("POST", "/projects/nodes"),
         ("PATCH", "/projects/nodes/{project_id}"),
@@ -219,6 +220,10 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("DELETE", "/projects/tasks/{task_id}/links/{link_id}"),
         # WS-39 LP-1a: `post_project_update` (project_management_app.md §14.2a).
         ("POST", "/projects/nodes/{project_id}/updates"),
+        ("PUT", "/projects/tasks/{task_id}/epic-contract"),
+        # WS-MCP SW-23: `report_check` (agent_coordination.md SW-23). A pass
+        # closes the task only under the rule of a status move.
+        ("POST", "/projects/tasks/{task_id}/check-result"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 
@@ -713,15 +718,20 @@ def test_rule_4_only_ask_on_task_sends_a_prior_write():
 def test_rule_4_only_update_task_sends_a_write_in_place_of_its_own():
     """MCP-G2. A write in place of the tool's own widens rule 4 for that
     tool, so the spec names each one (§9.2): ``update_task`` sends the task
-    move for ``parent_task_id``, because the PATCH refuses that field.
-    MCP-G20: ``update_tasks`` sends the same move for an item, because each
-    item is a call of ``update_task``. Mutation: give ``set_assignees`` an
-    alt write, and this test fails."""
+    move for ``parent_task_id``, because the PATCH refuses that field. SP-8a:
+    it sends the PUT of the epic contract for ``epic_contract``. MCP-G20:
+    ``update_tasks`` sends the same writes for an item, the move and the PUT
+    of a contract, because each item is a call of ``update_task``. Mutation:
+    give ``set_assignees`` an alt write, and this test fails."""
     declared = {(tool.name, pair) for tool in _tools() for pair in tool.alt_writes}
     assert declared == {("update_task", ("POST", "/projects/tasks/{task_id}/move")),
-                        ("update_tasks", ("POST", "/projects/tasks/{task_id}/move"))}
+                        ("update_task", ("PUT", "/projects/tasks/{task_id}/epic-contract")),
+                        ("update_tasks", ("POST", "/projects/tasks/{task_id}/move")),
+                        ("update_tasks", ("PUT", "/projects/tasks/{task_id}/epic-contract"))}
     params = _route_parameters()
     assert {"parent_task_id", "If-Match"} <= params[("POST", "/projects/tasks/{task_id}/move")]
+    assert {"epic_contract", "If-Match"} <= (
+        params[("PUT", "/projects/tasks/{task_id}/epic-contract")])
     assert "If-Match" in params[("PUT", "/projects/tasks/{task_id}/assignees")]
 
 

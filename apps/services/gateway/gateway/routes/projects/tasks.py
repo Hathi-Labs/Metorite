@@ -48,6 +48,11 @@ from gateway.routes.projects.cascade import (
     movable_subtree,
     subtree_privacy_refusals,
 )
+from gateway.routes.projects.checks import (
+    attach_check,
+    check_patch_values,
+    clean_check_text,
+)
 from gateway.routes.projects.core import (
     AGENT_TASK_SOURCE,
     CLIENT_TASK_SOURCES,
@@ -73,6 +78,7 @@ from gateway.routes.projects.core import (
     assert_move_keeps_privacy,
     assert_no_task_cycle,
     assert_not_archived,
+    assert_task_is_epic,
     clean_payload,
     count_where,
     diff_changes,
@@ -95,6 +101,7 @@ from gateway.routes.projects.core import (
     record_field_change,
     remap_one_status,
     remap_one_type,
+    require_exact_version,
     require_precondition,
     require_row,
     require_status_in_project,
@@ -105,6 +112,7 @@ from gateway.routes.projects.core import (
     status_owner_id,
     task_visibility_clause,
     touch_task,
+    transient_as_409,
     triage_exclusion_clause,
     update_row,
     validate_choice,
@@ -115,6 +123,13 @@ from gateway.routes.projects.custom_fields import (
     load_definitions,
 )
 from gateway.routes.projects.cycles import detach_moved_tasks
+from gateway.routes.projects.epic_contract import (
+    EpicContractIn,
+    clean_contract,
+    epic_contract_of,
+    refuse_when_off,
+    save_contract,
+)
 from gateway.routes.projects.filters import (
     UPDATED_AGE_SQL,
     agent_filter_clauses,
@@ -162,6 +177,9 @@ _log = get_logger("gateway.projects.tasks")
 _TRACKED_TASK_FIELDS: tuple[str, ...] = (
     "title", "description", "importance", "leveraged", "due_at", "start_date",
     "estimate_mins", "type_id", "parent_task_id", "project_id",
+    # SW-23: the Check decides when a pass may close the task, so each change
+    # of it is on the timeline. It is not revertible (`activities._REVERTIBLE`).
+    "check_text",
 )
 
 _LINK_TYPES: tuple[str, ...] = ("blocks", "relates_to", "duplicates")
@@ -177,6 +195,10 @@ AGENT_CREATE_FIELDS: frozenset[str] = frozenset({
     "project_id", "title", "description", "parent_task_id", "type_id",
     "status_id", "tags", "due_at",
     "importance", "leveraged", "estimate_mins", "start_date", "assignees",
+    # SP-8a: the contract of a new epic, in the create's own transaction.
+    "epic_contract",
+    # SW-23: the `check` of `create_task`. 422 while the Check flag is off.
+    "check_text",
 })
 #: The PATCH set is the union of `set_task_status` (`status_id`) and
 #: `update_task` (the other fields). MCP-G2 adds the four planning fields.
@@ -185,6 +207,8 @@ AGENT_PATCH_FIELDS: frozenset[str] = frozenset({
     "importance", "leveraged", "estimate_mins", "start_date",
     # SP-6: `update_task` sets the type, and null clears it.
     "type_id",
+    # SW-23: the `check` of `update_task`, and null clears it.
+    "check_text",
 })
 #: WS-55 MCP-G2. The one body key of a signed agent MOVE. A move to another
 #: project stays a person's step in the app, so `project_id`,
@@ -256,32 +280,6 @@ def _check_version(task: Any, if_match: str | None) -> None:
     """
     if isinstance(if_match, str):
         require_precondition(task, if_match, row_to_dict(task, TaskModel))
-
-
-async def _require_exact_version(db: Any, task_id: str, if_match: str | None) -> None:
-    """Strict ``If-Match`` for an agent that replaces the assignee set.
-
-    WS-55 MCP-G2, fix round 1. An assignment moves ``updated_at`` and not
-    ``fields_at``, so ``precondition_holds`` passes a token from before
-    somebody else's assignment. A replaced set would then drop that person
-    in silence. So an agent's PUT keeps strict equality, as
-    ``agent_delete_task`` does: any change after the read, a comment too,
-    stales the token. The caller reads the assignees first, so the stamp
-    read here is at least as new as the set it replaces. A member's PUT
-    keeps :func:`_check_version`. An absent header passes (D-PM-20).
-    """
-    if not isinstance(if_match, str):
-        return
-    expected = parse_precondition(if_match)
-    stamp = (await db.execute(
-        text("SELECT updated_at FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
-        {"tid": task_id},
-    )).scalar()
-    if stamp != expected:
-        raise HTTPException(status_code=412, detail={
-            "error": "precondition_failed",
-            "message": "This row changed since you loaded it.",
-        })
 
 
 def _is_calendar_date(value: Any) -> bool:
@@ -488,6 +486,15 @@ class TaskCreateIn(TaskIn):
     """
 
     assignees: list[str] | None = None
+    #: SP-8a (``project_management_app.md`` §13.3). The contract of a new
+    #: task of an epic type, saved in the create's own transaction through
+    #: the one writer (``epic_contract.save_contract``). A type that is not
+    #: an epic answers 422 and no task is made. ``None`` saves no contract.
+    epic_contract: EpicContractIn | None = None
+    #: WS-MCP SW-23. The Check of the new task. A create field here and a
+    #: PATCH field on ``TaskPatchIn``, never on ``TaskIn``, which other
+    #: doors share. 422 while ``agent_task_checks_enabled`` is off.
+    check_text: str | None = None
 
 
 class LinkIn(BaseModel):
@@ -877,6 +884,9 @@ async def list_tasks(
             await attach_assignees(db, page_rows)
             # WS-55 EA-12a — the agent pill, in one query for the page.
             await attach_agent_state(db, page_rows)
+            # SW-23 — the Check of each row, in one query. `my_work` reads
+            # `check.due`. No key while the flag is off.
+            await attach_check(db, page_rows)
             await attach_relation_counts(db, page_rows, vis)
             # D-PM-38 — "↳ Parent" on every flat row, under the reader's grants.
             await attach_parent_context(db, vis, page_rows)
@@ -1091,6 +1101,8 @@ async def get_task(
         result["time_spent_mins"] = await time_spent_mins(db, task_id)
         # WS-55 EA-12a — the agent pill on the task detail (EA12-10).
         await attach_agent_state(db, [result])
+        # SW-23 — the Check, with its last run. No key while the flag is off.
+        await attach_check(db, [result])
         # WS-64 OP-8 — the chat refuses before its card where this is false.
         await attach_can_delete(db, user, [result], kind="task")
         # SP-9 — an epic rolls up EVERY descendant the reader can see. The key
@@ -1101,6 +1113,8 @@ async def get_task(
         rollup = await epic_rollup(db, vis, row)
         if rollup is not None:
             result["rollup"] = rollup
+        # SP-8a — the contract of an epic, or null (§13.3).
+        result["epic_contract"] = await epic_contract_of(db, row)
         return result
 
 
@@ -1148,11 +1162,26 @@ async def create_task(
     first_assignees = check_task_values(user, values)
     project_id = values["project_id"]
     title = values["title"]
+    # SP-8a. Not a column: the contract lands after the insert, in the same
+    # transaction. Its rules run here, before any read. Dark: while
+    # EPIC_CONTRACT_ORGS lacks the org, a body with a contract makes no task.
+    raw_contract = values.pop("epic_contract", None)
+    if raw_contract is not None:
+        refuse_when_off(getattr(user, "organization_id", None))
+    contract = (
+        clean_contract(EpicContractIn.model_validate(raw_contract))
+        if raw_contract is not None else None
+    )
 
     async with _tenant_session() as db:
         made = await create_task_in(db, user, values, first_assignees)
         row, assigned = made.row, made.assigned
         task_id = str(row.id)
+        if contract is not None:
+            # A type that is not an epic is a 422, and the raise rolls the new
+            # task back. After the create, so a hidden project stays a 404.
+            await assert_task_is_epic(db, getattr(row, "type_id", None))
+            await save_contract(db, user, row, contract)
         result = row_to_dict(row, TaskModel)
 
     await emit("pm.task.created", {
@@ -1208,6 +1237,11 @@ def check_task_values(
     if not project_id:
         raise HTTPException(status_code=422, detail="A task needs a project_id.")
     validate_choice(values.get("source"), CLIENT_TASK_SOURCES, "source")
+    if "check_text" in values:
+        # SW-23. 422 while the Check flag is off. A blank text is no Check.
+        values["check_text"] = clean_check_text(values["check_text"])
+        if values["check_text"] is None:
+            values.pop("check_text")
     if getattr(user, "agent", None) is not None:
         # The task source of an agent comes from branch 0's signed context,
         # never from the body (the narrowing above refuses a body `source`).
@@ -1395,6 +1429,8 @@ async def patch_task(
         # write — so a caller who cannot see the task still gets 404 and never
         # learns from a 412 that it exists (R5: 404, never 403).
         require_precondition(before, if_match, row_to_dict(before, TaskModel))
+        # SW-23. A new Check text clears its last result, in this same write.
+        check_patch_values(before, values)
 
         # WS-27l. Merged against the definitions on the task's OWN root, not the
         # caller's current project: a task opened from My work can belong to a
@@ -1497,6 +1533,8 @@ async def patch_task(
         # WS-55 EA-12c — the pill survives an edit. The client merges this
         # row over its copy, so a null here would erase the pill (EA12-10).
         await attach_agent_state(db, [result])
+        # SW-23 — the Check survives an edit too. No key while the flag is off.
+        await attach_check(db, [result])
         if include_subtasks:
             result["subtasks_completed"] = len(cascade.ids) if cascade else 0
             result["subtask_changes"] = cascade.changes if cascade else []
@@ -2071,6 +2109,7 @@ async def task_subtree(
 
 
 @router.delete("/tasks/{task_id}")
+@transient_as_409
 async def delete_task(
     task_id: str, user: UserContext = Depends(get_current_user),
     delete_subtask_ids: list[str] = Query(default=[]),
@@ -2178,6 +2217,7 @@ def _agent_delete_via(user: UserContext) -> str:
 
 
 @router.post("/tasks/{task_id}/agent-delete")
+@transient_as_409
 async def agent_delete_task(
     task_id: str, payload: AgentDeleteIn,
     user: UserContext = Depends(get_current_user),
@@ -2530,7 +2570,7 @@ async def set_assignees(
 
     WS-55 MCP-G2. For a member, ``If-Match`` is the version rule of the
     PATCH (``precondition_holds``). For a signed agent it is strict equality
-    (:func:`_require_exact_version`, fix round 1), checked after the read of
+    (``core.require_exact_version``, fix round 1), checked after the read of
     the current set. An absent header passes (D-PM-20), so the app's calls
     are unchanged. The writer is :func:`_write_assignees`.
     """
@@ -2564,7 +2604,7 @@ async def set_assignees(
         if agent_call:
             # After the read of `current`: an assignment that this read saw
             # moved `updated_at` in the same commit, so it stales the token.
-            await _require_exact_version(db, task_id, if_match)
+            await require_exact_version(db, task_id, if_match)
         assigned = await _write_assignees(
             db, user, task_id=task_id, project_id=str(task.project_id),
             wanted=wanted, current=current,

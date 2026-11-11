@@ -193,6 +193,8 @@ TASK_TABLES_IGNORED: dict[str, str] = {
     "pm_task_assignees": "an assignment by a member writes an activity, which rule 2 reads",
     "pm_notifications": "a notification is a message to a member, not their work",
     "pm_intake": "an intake item a member converted names a task the member made",
+    # SP-8a: a save of a contract that changes it writes a field_change.
+    "pm_epic_contracts": "a contract save by a member writes a field_change activity, which rule 2 reads",
 }
 
 
@@ -221,12 +223,12 @@ NODE_WORK_SQL = _node_work_sql()
 LOCK_TASKS_SQL = (
     "SELECT id FROM pm_tasks "
     " WHERE organization_id = CAST(:org AS uuid) AND origin->>'run_id' = CAST(:run AS text) "
-    "FOR UPDATE"
+    " ORDER BY id FOR UPDATE"
 )
 LOCK_NODES_SQL = (
     "SELECT id FROM pm_projects "
     " WHERE organization_id = CAST(:org AS uuid) AND id = ANY(CAST(:nodes AS uuid[])) "
-    "FOR UPDATE"
+    " ORDER BY id FOR UPDATE"
 )
 
 COUNT_TASKS_SQL = (
