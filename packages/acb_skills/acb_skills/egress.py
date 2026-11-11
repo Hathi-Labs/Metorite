@@ -1439,6 +1439,10 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     # the project, the health and the exact text, and the post writes the
     # one row. It tells nobody and reaches no other system.
     "post_project_update": _pin("project_id health body"),
+    # WS-39 SP-5a: plan a cycle, and put tasks in it or take them out. The card
+    # shows the exact tasks. Both change rows that the app changes back.
+    "create_cycle": _pin("project_id name starts_on ends_on goal"),
+    "plan_cycle": _pin("cycle_id add_task_ids remove_task_ids"),
     "set_recurrence": _pin(
         "task_id freq interval weekdays day_of_month month_of_year anchor until "
         "max_occurrences stop"),

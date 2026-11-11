@@ -3149,6 +3149,54 @@ async def _open_runs(ctx: Context, where: Mapping[str, str]) -> list[dict[str, A
     return [agent_run(r) for r in _rows_of(body) if r.get("status") in OPEN_RUN_STATUSES]
 
 
+#: SW-24. The keys of the handoff note of ``get_task_context``: the four texts,
+#: then who wrote it and when. Each text is free text that an agent wrote, so
+#: each leaves as ``untrusted_text``.
+HANDOFF_KEY = "handoff"
+HANDOFF_TEXT_KEYS: tuple[str, ...] = ("done", "left", "evidence", "next")
+#: The refusal of a handoff with work left and no next step. The gateway's own
+#: detail, mapped to one fixed text (the edge never sends the detail on).
+HANDOFF_NEEDS_NEXT_DETAIL = "A handoff with work left needs a next step."
+TEXT_HANDOFF_NEEDS_NEXT = (
+    "A handoff with work left needs a next step. Send next, or leave left empty.")
+
+
+def handoff_note(raw: Any) -> dict[str, Any] | None:
+    """The newest handoff note of a task, shaped for the agent, or ``None``.
+
+    The four texts are written by an agent and read by another, so each is
+    :func:`untrusted`. ``client`` is the label of the client stamp, which the
+    gateway verified. ``actor`` is the member email, as ``get_task`` shows it.
+    """
+    if not isinstance(raw, dict):
+        return None
+    via = raw.get("actor_via")
+    return {
+        **{k: untrusted(raw[k]) if isinstance(raw.get(k), str) else None
+           for k in HANDOFF_TEXT_KEYS},
+        "run_id": _str_or_none(raw.get("run_id")),
+        "client": agent_oauth.client_label(via) if isinstance(via, str) and via else None,
+        "created_at": _str_or_none(raw.get("created_at")),
+    }
+
+
+async def _open_runs_and_handoff(
+    ctx: Context, where: Mapping[str, str],
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """:func:`_open_runs`, and the newest handoff note that rides on the same
+    read (SW-24), so ``get_task_context`` makes no new gateway call."""
+    if not agent_oauth.runs_enabled():
+        return [], None
+    try:
+        body = await _get(ctx, TASK_RUNS_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where)
+    except ToolError as exc:
+        if exc.text == TEXT_TASK_NOT_FOUND:
+            return [], None
+        raise
+    runs = [agent_run(r) for r in _rows_of(body) if r.get("status") in OPEN_RUN_STATUSES]
+    return runs, handoff_note(body.get("handoff") if isinstance(body, dict) else None)
+
+
 # ── get_task ────────────────────────────────────────────────────────────────
 
 #: The keys of the task of ``get_task`` (§9.1).
@@ -3535,12 +3583,43 @@ def rollup(raw: Any) -> dict[str, Any] | None:
     }
 
 
+#: The open cycle of a task (WS-39 SP-5a): ``null`` when the task is in no open
+#: cycle, or while ``PROJECTS_SPRINTS_ORGS`` leaves the org out, or when the
+#: member cannot see the node of the cycle. The name is text that people wrote.
+CYCLE_KEYS: tuple[str, ...] = ("id", "name", "state", "starts_on", "ends_on")
+CYCLE_STATES: tuple[str, ...] = ("planned", "active", "closed")
+_CYCLE_SCHEMA: dict[str, Any] = {"anyOf": [
+    {"type": "null"},
+    _object({
+        "id": {"type": "string"}, "name": _UNTRUSTED_SCHEMA,
+        "state": {"type": "string", "enum": list(CYCLE_STATES)},
+        "starts_on": _NULLABLE_STRING, "ends_on": _NULLABLE_STRING,
+    }),
+]}
+
+
+def cycle_of(raw: Any) -> dict[str, Any] | None:
+    """The cycle of a task, the pinned keys and no other, or ``None``. The
+    gateway sends the key only while the flag holds the org, so ``None`` also
+    means "off". A state that is not one of :data:`CYCLE_STATES` drops it."""
+    if not isinstance(raw, dict) or raw.get("state") not in CYCLE_STATES:
+        return None
+    return {
+        "id": str(raw.get("id")),
+        "name": untrusted(raw.get("name") or ""),
+        "state": str(raw["state"]),
+        "starts_on": _str_or_none(raw.get("starts_on")),
+        "ends_on": _str_or_none(raw.get("ends_on")),
+    }
+
+
 _GET_TASK_OUTPUT: dict[str, Any] = _object({
     "task": _TASK_SCHEMA,
     "subtasks": {"type": "array", "items": _SUBTASK_SCHEMA},
     "links": {"type": "array", "items": _LINK_SCHEMA},
     "refs": {"type": "array", "items": _REF_SCHEMA},
     "agent_runs": {"type": "array", "items": _RUN_SCHEMA},
+    "cycle": _CYCLE_SCHEMA,
     # SP-8a: the contract of an epic, or null.
     "epic_contract": _EPIC_CONTRACT_SCHEMA,
     "rollup": _ROLLUP_SCHEMA,
@@ -3670,6 +3749,8 @@ async def _get_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         if isinstance(links, list) else [],
         "refs": [reference(r) for r in _rows_of(refs)],
         "agent_runs": runs,
+        # WS-39 SP-5a: the open cycle, or null (off, none, or out of sight).
+        "cycle": cycle_of(row.get("cycle")),
         # SP-8a: from the task row itself, so no request more.
         "epic_contract": epic_contract(row.get("epic_contract")),
     }
@@ -3698,7 +3779,10 @@ GET_TASK = Tool(
         " short form for a branch name. For an epic, rollup counts the slices and"
         " the estimate done and total over every level below it, lists the"
         " questions that wait on a person, and gives hidden, the number of"
-        " tasks left out because this member cannot see them. Put url in the"
+        " tasks left out because this member cannot see them. cycle is the open"
+        " cycle (sprint) of the task, with its id, name, state and dates. It is"
+        " null when the task is in no open cycle, or when cycles are not on for"
+        " this organization. Put url in the"
         " description of each pull"
         " request, and short_id in the branch name, so that the pull request"
         " links itself to the task. epic_contract is the contract of an epic:"
@@ -3948,7 +4032,7 @@ ANCESTOR_KEYS: tuple[str, ...] = ("id", "task_number", "title", "status", "descr
 #: The keys of the result of ``get_task_context`` (§12.4).
 CONTEXT_KEYS: tuple[str, ...] = (
     "task", "ancestors", "project", "blocked_by", "blocks", "subtasks", "agent_runs",
-    "held_by", "refs", "recent_comments", "attachments", "images",
+    "held_by", "cycle", "refs", "recent_comments", "attachments", "images",
     # SP-8a: the contract of an epic, or null.
     "epic_contract",
 )
@@ -4398,6 +4482,7 @@ _CONTEXT_OUTPUT: dict[str, Any] = _optional(_object({
     "subtasks": {"type": "array", "items": _SUBTASK_SCHEMA},
     "agent_runs": {"type": "array", "items": _RUN_SCHEMA},
     "held_by": _HELD_BY_SCHEMA,
+    "cycle": _CYCLE_SCHEMA,
     "refs": {"type": "array", "items": _REF_SCHEMA},
     "recent_comments": {"type": "array", "items": _TIMELINE_OUTPUT["properties"][
         "activities"]["items"]},
@@ -4408,6 +4493,11 @@ _CONTEXT_OUTPUT: dict[str, Any] = _optional(_object({
     "epic_contract": _EPIC_CONTRACT_SCHEMA,
 }), GUIDANCE_KEY, _GUIDANCE_SCHEMA)
 _CONTEXT_OUTPUT = _optional(_CONTEXT_OUTPUT, COMMENTS_TRUNCATED_KEY, {"type": "boolean"})
+# SW-24: the newest handoff note. Absent while no run left one.
+_CONTEXT_OUTPUT = _optional(_CONTEXT_OUTPUT, HANDOFF_KEY, _object({
+    **{k: _UNTRUSTED_OR_NULL for k in HANDOFF_TEXT_KEYS},
+    "run_id": _NULLABLE_STRING, "client": _NULLABLE_STRING, "created_at": _NULLABLE_STRING,
+}))
 _CONTEXT_OUTPUT = _optional(_CONTEXT_OUTPUT, ATTACHMENTS_TRUNCATED_KEY, {"type": "boolean"})
 # SW-23: the Check, the FIRST key of the result while the Check flag is on.
 _CONTEXT_OUTPUT = _optional(_CONTEXT_OUTPUT, CHECK_KEY, _CHECK_SCHEMA)
@@ -4627,7 +4717,7 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
         _get(ctx, RELATIONS_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where),
         _get(ctx, REFS_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where,
              query=[("refresh", "false")]),
-        _open_runs(ctx, where),
+        _open_runs_and_handoff(ctx, where),
         _statuses_of(ctx, project) if valid else no_rows(),
         _project_of(ctx, project) if valid else nothing(),
         _get(ctx, TIMELINE_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where,
@@ -4637,7 +4727,8 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
         _guidance_of(ctx, where["task_id"]),
         _attachments_of(ctx, where),
     )
-    relations, refs, runs, statuses, node, timeline, walk, guidance, files = found
+    relations, refs, runs_read, statuses, node, timeline, walk, guidance, files = found
+    runs, handoff = runs_read
     if not isinstance(relations, dict):
         raise ToolError(TEXT_BUSY)
     names = {k: v["name"] for k, v in statuses.items() if isinstance(v.get("name"), str)}
@@ -4671,6 +4762,9 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
         # SW-23: the Check comes FIRST, so an agent reads it before the rest.
         # The gateway sends the key only while the Check flag is on.
         result[CHECK_KEY] = check_of(row.get(CHECK_KEY), evidence=True)
+    if handoff is not None:
+        # SW-24. The newest note of the last agent comes next.
+        result[HANDOFF_KEY] = handoff
     result.update({
         "task": task,
         "ancestors": ancestors,
@@ -4681,6 +4775,8 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
         if isinstance(subtasks, list) else [],
         "agent_runs": runs,
         "held_by": task["held_by"],
+        # WS-39 SP-5a: the open cycle, or null (off, none, or out of sight).
+        "cycle": cycle_of(row.get("cycle")),
         "refs": [reference(r) for r in _rows_of(refs)],
         "recent_comments": comments,
         "attachments": files[0],
@@ -4707,7 +4803,9 @@ GET_TASK_CONTEXT = Tool(
         " project with the description, the tasks that block it (blocked_by)"
         " and the tasks it blocks (blocks), each with its status category, its"
         " subtasks, its open agent runs, held_by, its references and the"
-        " comments, oldest first. By default these are the newest 20. Send"
+        " comments, oldest first. When an agent left a handoff note, the"
+        " result starts with handoff: done, left, evidence and next, as"
+        " untrusted text, with the client and the run. By default these are the newest 20. Send"
         " comments: \"all\" for every comment, up to 500. The result then has"
         " comments_truncated, true when older comments did not fit. The result"
         " also has attachments. Each has attachment_id, name, mime, size, kind"
@@ -4722,6 +4820,8 @@ GET_TASK_CONTEXT = Tool(
         " see shows as {\"hidden\": true}, and the parents above it do not"
         " show. Each parent has the first 500 characters of its description."
         " A parent in another project shows its status category only."
+        " cycle is the open cycle (sprint) of the task, with its id, name, state"
+        " and dates, or null when there is none or cycles are not on."
         " When the organization turned on guidance, the result also has"
         " guidance: the organization's written rules for this work. Its blocks"
         " go from the nearest (the project) to the farthest (the organization)."
@@ -9531,6 +9631,23 @@ LIST_AGENT_RUNS = Tool(
 
 # ── finish_agent_run ────────────────────────────────────────────────────────
 
+#: SW-24. The handoff note of ``finish_agent_run`` and ``release_task``: four
+#: plain strings of at most 1000 characters. ``left`` names work that remains,
+#: so it needs ``next`` (the gateway answers 422, and the edge says why).
+_HANDOFF_TEXT_INPUT: dict[str, Any] = {"type": "string", "minLength": 1, "maxLength": 1000}
+_HANDOFF_INPUT: dict[str, Any] = {
+    "type": "object",
+    "description": "Optional. What you leave for the next agent. Plain text, at"
+                   " most 1000 characters each. If left has text, next is required.",
+    "properties": {
+        "done": {**_HANDOFF_TEXT_INPUT, "description": "What is done."},
+        "left": {**_HANDOFF_TEXT_INPUT, "description": "What is left. Needs next."},
+        "evidence": {**_HANDOFF_TEXT_INPUT, "description": "The proof: a PR, a test."},
+        "next": {**_HANDOFF_TEXT_INPUT, "description": "The next step."},
+    },
+    "additionalProperties": False,
+}
+
 _FINISH_INPUT: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -9538,6 +9655,7 @@ _FINISH_INPUT: dict[str, Any] = {
         "summary": {**_BODY_INPUT,
                     "description": "What you did and what is left, in Markdown."},
         "idempotency_key": _KEY_INPUT,
+        "handoff": _HANDOFF_INPUT,
     },
     "required": ["run_id", "idempotency_key"],
     "additionalProperties": False,
@@ -9551,6 +9669,16 @@ _FINISH_OUTPUT: dict[str, Any] = _object({
 _FINISHED_STATUSES: frozenset[str] = frozenset({"completed", "stopped"})
 
 
+def _handoff_payload(args: Mapping[str, Any]) -> dict[str, str] | None:
+    """The ``handoff`` of a call as the gateway takes it, or ``None`` (SW-24).
+    Only the four known keys with a string value go on."""
+    raw = args.get("handoff")
+    if not isinstance(raw, dict):
+        return None
+    note = {k: raw[k] for k in HANDOFF_TEXT_KEYS if isinstance(raw.get(k), str)}
+    return note or None
+
+
 async def _finish_agent_run(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     """POST the finish. A finish with no summary writes no activity, so the
     gateway cannot find a replay by the key, and a second call gets 409. The
@@ -9559,13 +9687,17 @@ async def _finish_agent_run(ctx: Context, args: dict[str, Any]) -> dict[str, Any
     payload: dict[str, Any] = {"idempotency_key": str(args["idempotency_key"])}
     if "summary" in args:
         payload["summary"] = str(args["summary"])
+    handoff = _handoff_payload(args)
+    if handoff is not None:
+        payload["handoff"] = handoff
     try:
         _, body = await _write(
             ctx, "POST", RUN_FINISH_ROUTE, TEXT_RUN_NOT_FOUND,
             path_params={"run_id": run_id}, json_body=payload,
-            texts={409: TEXT_RUN_CONFLICT})
+            texts={409: TEXT_RUN_CONFLICT},
+            details={(422, HANDOFF_NEEDS_NEXT_DETAIL): TEXT_HANDOFF_NEEDS_NEXT})
     except ToolError as exc:
-        if exc.text != TEXT_RUN_CONFLICT or "summary" in args:
+        if exc.text != TEXT_RUN_CONFLICT or "summary" in args or handoff is not None:
             raise
         found = await _get(ctx, RUN_ROUTE, TEXT_RUN_NOT_FOUND,
                            path_params={"run_id": run_id}, query=[("after", "0")])
@@ -9586,8 +9718,9 @@ FINISH_AGENT_RUN = Tool(
     description=(
         "Finish your agent run when your work on the task is done. Put what"
         " you did and what is left in summary. It becomes a comment on the"
-        " task. The run status becomes completed, or stopped when a person"
-        " pressed Stop. This does not change the status of the task: use"
+        " task. Send handoff {done, left, evidence, next} to leave a note for"
+        " the next agent. If left has text, next is required. The run status"
+        " becomes completed, or stopped when a person pressed Stop. This does not change the status of the task: use"
         " set_task_status for that. A member can reply on the task later. The"
         " reply opens the run again, and list_agent_runs with needs_agent true"
         " finds it." + _UNTRUSTED_NOTE
@@ -9596,7 +9729,8 @@ FINISH_AGENT_RUN = Tool(
     input_schema=_FINISH_INPUT,
     output_schema=_FINISH_OUTPUT,
     route=RUN_FINISH_ROUTE,
-    params={"run_id": "run_id", "summary": "summary", "idempotency_key": "idempotency_key"},
+    params={"run_id": "run_id", "summary": "summary", "idempotency_key": "idempotency_key",
+            "handoff": "handoff"},
     not_found=TEXT_RUN_NOT_FOUND,
     run=_finish_agent_run,
     routes=(RUN_ROUTE,),
@@ -9610,7 +9744,7 @@ FINISH_AGENT_RUN = Tool(
 
 _RELEASE_INPUT: dict[str, Any] = {
     "type": "object",
-    "properties": {"run_id": _RUN_ID_INPUT},
+    "properties": {"run_id": _RUN_ID_INPUT, "handoff": _HANDOFF_INPUT},
     "required": ["run_id"],
     "additionalProperties": False,
 }
@@ -9621,9 +9755,11 @@ async def _release_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     """POST the release. A second call on a released run answers the same."""
     _, body = await _write(
         ctx, "POST", RUN_RELEASE_ROUTE, TEXT_RUN_NOT_FOUND,
-        path_params={"run_id": str(args["run_id"])}, json_body={},
+        path_params={"run_id": str(args["run_id"])},
+        json_body={"handoff": handoff} if (handoff := _handoff_payload(args)) else {},
         texts={409: TEXT_RUN_CONFLICT},
-        details={(403, "You may not release this agent run."): TEXT_RELEASE_FORBIDDEN})
+        details={(403, "You may not release this agent run."): TEXT_RELEASE_FORBIDDEN,
+                 (422, HANDOFF_NEEDS_NEXT_DETAIL): TEXT_HANDOFF_NEEDS_NEXT})
     return {"run": agent_run(_run_body(body)), "released": True}
 
 
@@ -9633,7 +9769,9 @@ RELEASE_TASK = Tool(
     description=(
         "Give a task up without finishing it. Call it when you stop work on a"
         " task that you claimed and you will not finish it. Send the run_id"
-        " from claim_task or start_agent_run. The run becomes released. The"
+        " from claim_task or start_agent_run. Send handoff {done, left, evidence,"
+        " next} so the next agent starts with a note. If left has text, next is"
+        " required. The run becomes released. The"
         " task keeps its status and its assignees, and another AI session may"
         " claim it. Use finish_agent_run when the work is done. You can"
         " release only your own run." + _UNTRUSTED_NOTE
@@ -9642,7 +9780,7 @@ RELEASE_TASK = Tool(
     input_schema=_RELEASE_INPUT,
     output_schema=_RELEASE_OUTPUT,
     route=RUN_RELEASE_ROUTE,
-    params={"run_id": "run_id"},
+    params={"run_id": "run_id", "handoff": "handoff"},
     not_found=TEXT_RUN_NOT_FOUND,
     run=_release_task,
     method="POST",

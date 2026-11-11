@@ -305,6 +305,12 @@ _BASE: dict[str, dict[str, Any]] = {
     "list_project_updates": {"project_id": UUID},
     "post_project_update": {"project_id": UUID, "health": "at_risk",
                             "body": "The vendor slipped a week."},
+    # WS-39 SP-5a: the cycles. The date, the name and the goal are the witnesses of a plan.
+    "create_cycle": {"project_id": UUID, "name": "Sprint 8", "starts_on": "2026-11-30",
+                     "ends_on": "2026-12-11"},
+    "plan_cycle": {"cycle_id": tw.PLANNED_CYCLE},
+    "start_cycle": {"cycle_id": tw.PLANNED_CYCLE},
+    "close_cycle": {"cycle_id": tw.ACTIVE_CYCLE},
     # WS-ALN ALN-2a: a decision of the member. The answer key is the witness.
     "answer_decision": {"decision_id": tw.DECISION_ID},
     # WS-64 OP-6d: the report is the one of the write fence.
@@ -377,6 +383,12 @@ _BASE: dict[str, dict[str, Any]] = {
 }
 _SAMPLE: dict[str, Any] = {
     "all_unread": True,
+    # WS-39 SP-5a: the witnesses of the cycle fields.
+    "add_task_ids": UUID,
+    "carry_over": "backlog",
+    "ends_on": "2026-12-11",
+    "goal": "Ship the nozzle",
+    "starts_on": "2026-11-30",
     # WS-39 LP-1a: the cursor of the updates is the id of an update.
     "before": OTHER,
     "page_id": UUID,
