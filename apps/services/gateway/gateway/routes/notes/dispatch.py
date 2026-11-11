@@ -21,10 +21,12 @@ routes each one to the system that actually does that kind of work:
 Two entry points: ``auto_dispatch(meeting_id, triggered_by)`` runs after notes
 generation (per-kind settings + a confidence gate), and ``POST /notes/actions/
 {id}/dispatch`` is the manual per-item button. Both funnel through
-``_dispatch`` so behaviour never diverges. Every dispatch writes an
-``audit_event`` row and records its destination in
-``action_item.dispatch_ref`` — or its failure in ``dispatch_error``, leaving
-the row a draft so a human can retry.
+``_dispatch`` so behaviour never diverges. Every dispatch records its
+destination in ``action_item.dispatch_ref`` — or its failure in
+``dispatch_error``, leaving the row a draft so a human can retry. It also
+records an ``audit_event`` row through ``acb_audit``, in the bound tenant. A
+dispatch with no bound tenant (with ``ACB_GRAPH_TENANT_BIND`` on) logs
+``audit.skipped_no_tenant`` and writes no audit row (task 2189).
 
 ``triggered_by`` is not decoration. ``auto_dispatch`` is reached from notes
 generation, notes generation is reached from ``POST /meetings/{id}/summarize``
@@ -44,7 +46,9 @@ import json
 import re
 from datetime import UTC, datetime
 
+from acb_audit import AuditEvent, record, refuse_tenantless
 from acb_auth import UserContext, get_current_user
+from acb_common.db import current_tenant
 from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
 from gateway.routes.notes.actions import ApproveResponse, _create_task_from_action
@@ -293,7 +297,7 @@ async def _dispatch_email(
     from gateway.routes.email.automation.rules import _account_provider
     from gateway.routes.email.core import _get_db as _email_db
     from gateway.routes.email.core import provider_session
-    from gateway.routes.email.signature import build_signed_bodies
+    from gateway.routes.email.signature import build_signed_bodies, resolve_signature
 
     db = await _email_db()
     try:
@@ -313,16 +317,8 @@ async def _dispatch_email(
             draft = await _draft_email(action, meeting, recipient, excerpts)
 
         async with provider_session(db, owner_email, account_id=account_id) as sess:
-            sig_row = (
-                await db.execute(
-                    text(
-                        "SELECT signature FROM email_assistant_settings "
-                        "WHERE account_id = :aid"
-                    ),
-                    {"aid": account_id},
-                )
-            ).fetchone()
-            signature = (sig_row.signature if sig_row else "") or ""
+            # WS-17 SG-2 (D-EM-66): the resolver gives the signature of new mail.
+            signature = await resolve_signature(db, account_id, "new")
 
             if recipient and draft and not draft_only:
                 body_text, body_html = build_signed_bodies(
@@ -468,26 +464,29 @@ async def _mark(action_id: str, *, ref: str | None, task_id: str | None,
 
 async def _audit(actor: str, action_id: str, meeting_id: str, kind: str,
                  ref: str | None, error: str | None) -> None:
+    """Record one ``notes.action_dispatched`` row in the bound tenant (task 2189).
+
+    It goes through the one ``acb_audit`` seam, never a raw INSERT. The org is
+    ``current_tenant()``, which the request or the job bound, never a request
+    field. With no tenant and ``ACB_GRAPH_TENANT_BIND`` on (a background path
+    that H4 has not bound yet), ``refuse_tenantless`` skips the row, so it
+    never lands under the operator org. ``record`` is best-effort and does not
+    block a loop. A failed audit write never breaks the dispatch. Fence:
+    ``tests/unit/test_notes_dispatch_audit_org_r8.py``.
+    """
     with contextlib.suppress(Exception):
-        # H4: reached from the background summary pipeline and the meeting-bot
-        # poller — no ambient tenant; derive it from the meeting/action row.
-        async with await _get_db() as db:
-            await db.execute(
-                text(
-                    "INSERT INTO audit_event (actor, action, target, payload) "
-                    "VALUES (:actor, 'notes.action_dispatched', :target, "
-                    "CAST(:p AS JSONB))"
-                ),
-                {
-                    "actor": actor,
-                    "target": f"action_item:{action_id}",
-                    "p": json.dumps(
-                        {"meeting_id": meeting_id, "kind": kind,
-                         "ref": ref, "error": error}
-                    ),
-                },
-            )
-            await db.commit()
+        org = current_tenant()
+        event = AuditEvent(
+            actor=actor,
+            action="notes.action_dispatched",
+            target=f"action_item:{action_id}",
+            payload={"meeting_id": meeting_id, "kind": kind,
+                     "ref": ref, "error": error},
+            organization_id=str(org) if org else None,
+        )
+        if refuse_tenantless(event):
+            return
+        record(event)
 
 
 async def _dispatch(

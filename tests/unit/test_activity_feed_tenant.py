@@ -31,7 +31,9 @@ Mutations this suite catches (R7). Each was run, and each turned it red:
 * M3: no no-org guard, so a write with no tenant goes to a global key;
 * M4: the readers take the ambient (writer's) tenant, not the viewer's org.
 * M5: the early ``if not org: return`` in ``publish_activity``, so a priced
-  call with no tenant no longer folds into the global ``cc:cost:{day}``;
+  call with no tenant no longer counts. H-201e moved it to the
+  deployment-level ``cc:_unattributed:cost:{day}`` hash.
+  ``test_cost_rollup_tenant.py`` owns the cost proof;
 * M6: no sleep after a failed ``XREAD``, so the SSE loop spins on a full pool.
 
 Run::
@@ -289,7 +291,7 @@ def test_each_key_starts_with_its_org(fake_redis, roster_stub):
     assert f"cc:{_ORG_A}:activity:live:run-key-a" in written
     assert f"cc:{_ORG_B}:activity:live:run-key-b" in written
     assert "cc:activity" not in written
-    feed_keys = {k for k in written if not k.startswith("cc:cost:")}
+    feed_keys = written
     assert all(
         k.startswith((f"cc:{_ORG_A}:", f"cc:{_ORG_B}:")) for k in feed_keys
     ), feed_keys
@@ -439,17 +441,17 @@ def test_the_stream_read_uses_the_blocking_pool(fake_redis, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# The cost rollup stays global: a priced call with no tenant still counts.
+# A priced call with no tenant still counts (H-201e: the unattributed hash).
 # ---------------------------------------------------------------------------
 
 def _cost_keys(r: _FakeRedis) -> set[str]:
-    return {k for k in r.hashes if k.startswith("cc:cost:")}
+    return {k for k in r.hashes if k.split(":")[2:3] == ["cost"]}
 
 
 def test_an_untenanted_priced_call_counts_and_writes_no_feed_key(fake_redis):
     """The deployment-key ``/v1/chat/completions`` binds no tenant. Its cost
-    still folds into ``cc:cost:{day}``, and it writes no stream or presence
-    key. M5: the early ``if not org: return`` in ``publish_activity`` turns
+    still folds into ``cc:_unattributed:cost:{day}``, and it writes no stream
+    or presence key. M5: the early ``if not org: return`` in ``publish_activity`` turns
     this red."""
     from acb_common import publish_activity
 
@@ -460,8 +462,9 @@ def test_an_untenanted_priced_call_counts_and_writes_no_feed_key(fake_redis):
 
     asyncio.run(_go())
     written = fake_redis.keys_written()
-    assert len(_cost_keys(fake_redis)) == 1
-    assert written == _cost_keys(fake_redis), written
+    [cost_key] = _cost_keys(fake_redis)
+    assert cost_key.startswith("cc:_unattributed:cost:")
+    assert written == {cost_key}, written
     assert fake_redis.streams == {} and fake_redis.store == {}
     assert not any(k.startswith("cc:activity") for k in written)
 
@@ -481,7 +484,8 @@ def test_a_tenanted_priced_call_writes_the_feed_and_the_cost(fake_redis):
 
     asyncio.run(_go())
     assert set(fake_redis.streams) == {f"cc:{_ORG_A}:activity"}
-    assert len(_cost_keys(fake_redis)) == 1
+    [cost_key] = _cost_keys(fake_redis)
+    assert cost_key.startswith(f"cc:{_ORG_A}:cost:")
 
 
 # ---------------------------------------------------------------------------

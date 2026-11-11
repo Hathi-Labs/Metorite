@@ -17,6 +17,8 @@ route from any other file takes its decision from that app's manifest.
 2. No row names an action that the UI no longer sends.
 3. Each ``COVERED`` tool is a registered tool, and its own source names the
    gateway route of the action, with the same verb. So a false claim fails.
+   Each ``ALSO`` tool passes the same check, on an action that ``COVERED``
+   holds (STU-B2c-2b: one door route, a list tool and three write tools).
 4. Each exemption names a kind of ``EXEMPT_KINDS`` and a real reason.
 5. Each debt row names a wave that holds its app.
 6. The debt of each app equals its ceiling. A new debt fails, and a paid
@@ -139,6 +141,33 @@ def false_claims(acts: dict[str, r.Action], tables: dict[str, dict[str, Any]]) -
             bad.append(f"{key}: {tool} does not send {names}")
         if isinstance(value, tuple) and not _bff_names(act, routes[0][1]):
             bad.append(f"{key}: the BFF route of {act.path} does not name {value[1]}")
+    return bad
+
+
+def false_also_claims(
+    acts: dict[str, r.Action], tables: dict[str, dict[str, Any]],
+    also: dict[str, tuple[str, ...]],
+) -> list[str]:
+    """Each ``ALSO`` tool that its own source does not bear out, with the check
+    of :func:`false_claims`. A row needs a ``COVERED`` row of its action."""
+    registered = r.registered_tools()
+    bad: list[str] = []
+    for key, tools in sorted(also.items()):
+        if key not in tables["COVERED"]:
+            bad.append(f"{key}: an ALSO row needs a COVERED row of the same action")
+            continue
+        act = acts.get(key)
+        if act is None:
+            continue  # The stale check names the COVERED row.
+        routes = _gateway_of(act, tables["COVERED"][key])
+        for tool in tools:
+            if tool not in registered:
+                bad.append(f"{key}: {tool} is not a registered chat tool")
+            elif r.tool_routes(tool) is None:
+                bad.append(f"{key}: no file of TOOL_SOURCES defines {tool}")
+            elif not any(r.reaches(tool, verb, path) for verb, path in routes):
+                names = ", ".join(f"{v} {p}" for v, p in routes)
+                bad.append(f"{key}: {tool} does not send {names}")
     return bad
 
 
@@ -355,6 +384,33 @@ def test_a_false_claim_fails() -> None:
     assert "POST /api/email/drafts/send: list_accounts does not send POST /email/drafts/send" in bad
     assert "GET /api/email/accounts: zz_no_such_tool is not a registered chat tool" in bad
     assert len(bad) == 2, bad
+
+
+def test_every_also_tool_sends_the_route_of_its_action() -> None:
+    """STU-B2c-2b: the three record write tools send the door route of the
+    package page, as the list tool of its ``COVERED`` row does."""
+    acts, _ = _read()
+    assert cp.ALSO["POST /api/studio/apps/{}/actions/{}"] == (
+        "studio_record_create", "studio_record_update", "studio_record_delete")
+    bad = false_also_claims(acts, _tables(), cp.ALSO)
+    assert not bad, "these ALSO claims are false:\n  " + "\n  ".join(bad)
+
+
+def test_a_false_also_claim_fails() -> None:
+    """Mutation: a tool that sends another route, a name that is no tool, and
+    a row with no ``COVERED`` row."""
+    acts, _ = _read()
+    also = {
+        "POST /api/studio/apps/{}/actions/{}": ("studio_package_get", "zz_no_such_tool"),
+        "POST /api/zz/nothing": ("studio_record_create",),
+    }
+    bad = false_also_claims(acts, _tables(), also)
+    assert bad == [
+        "POST /api/studio/apps/{}/actions/{}: studio_package_get does not send "
+        "POST /studio/apps/{}/actions/{}",
+        "POST /api/studio/apps/{}/actions/{}: zz_no_such_tool is not a registered chat tool",
+        "POST /api/zz/nothing: an ALSO row needs a COVERED row of the same action",
+    ], bad
 
 
 # ── 4 and 5. Each exemption has a kind, and each debt a wave ────────────────

@@ -75,6 +75,7 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 _REPO = Path(__file__).resolve().parents[2]
 _MIGRATIONS = _REPO / "infra" / "postgres"
 _SERVICE = _REPO / "apps/services/gateway/gateway/routes/projects/decisions.py"
+_WAITING = _REPO / "apps/services/gateway/gateway/routes/shell/waiting.py"
 
 #: Every bound on a wait. Broken code goes red and never hangs.
 _WAIT = 60
@@ -192,11 +193,14 @@ def test_the_table_keeps_no_score_for_any_person() -> None:
     }, columns
     for index in re.findall(r"CREATE\s+(?:UNIQUE\s+)?INDEX[^;]*;", sql, re.IGNORECASE):
         assert not re.search(r"decider|answered_by|asked_by", index), index
-    code = re.sub(r"#.*", "", _SERVICE.read_text(encoding="utf-8"))
-    code = re.sub(r'""".*?"""', "", code, flags=re.DOTALL)
-    for forbidden in (r"group\s+by", r"count\s*\(", r"\brank\b", r"\bscore\b",
-                      r"\bsum\s*\(", r"\bavg\s*\("):
-        assert not re.search(forbidden, code, re.IGNORECASE), forbidden
+    # WS-AP V6 (waiting_on_me.md §4.4): the read seam of "Waiting" keeps no
+    # score for any person either.
+    for source in (_SERVICE, _WAITING):
+        code = re.sub(r"#.*", "", source.read_text(encoding="utf-8"))
+        code = re.sub(r'""".*?"""', "", code, flags=re.DOTALL)
+        for forbidden in (r"group\s+by", r"count\s*\(", r"\brank\b", r"\bscore\b",
+                          r"\bsum\s*\(", r"\bavg\s*\("):
+            assert not re.search(forbidden, code, re.IGNORECASE), (source.name, forbidden)
 
 
 def test_the_member_purge_keeps_decisions_as_it_keeps_every_pm_row() -> None:
@@ -214,7 +218,9 @@ def test_the_member_purge_keeps_decisions_as_it_keeps_every_pm_row() -> None:
     assert "DELETE FROM pm_decisions" not in members
 
 
-def test_the_routes_are_mounted_and_there_is_no_ask_route() -> None:
+def test_the_routes_are_mounted_and_the_only_ask_route_is_the_person_ask() -> None:
+    """WS-AP AP-8a: one ask route, the person ask, and its withdraw. The
+    nudge of §7.2 is AP-8b and is not built."""
     from gateway.routes.projects import router
 
     mounted = {(m, r.path) for r in router.routes for m in getattr(r, "methods", set())}
@@ -223,6 +229,16 @@ def test_the_routes_are_mounted_and_there_is_no_ask_route() -> None:
     ours = {(m, p) for (m, p) in mounted if "/decisions" in p}
     assert ours == {("GET", "/projects/decisions"),
                     ("POST", "/projects/decisions/{decision_id}/answer")}, ours
+    asks = {(m, p) for (m, p) in mounted if p.endswith("/asks") or "/asks/" in p}
+    assert asks == {("POST", "/projects/tasks/{task_id}/asks"),
+                    ("POST", "/projects/asks/{ask_id}/withdraw")}, asks
+    assert not any("nudge" in p for (_m, p) in asks)
+    # The person ask routes read both flags.
+    for r in router.routes:
+        if getattr(r, "path", "") in {"/projects/tasks/{task_id}/asks",
+                                      "/projects/asks/{ask_id}/withdraw"}:
+            calls = {d.call for d in r.dependant.dependencies}
+            assert {decisions.require_decisions, decisions.require_waiting} <= calls, r.path
 
 
 def test_the_answer_body_names_no_person() -> None:

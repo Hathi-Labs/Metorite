@@ -23,11 +23,17 @@
 > keyed for each tenant. The stream is `cc:<org>:activity`, and the presence
 > keys are `cc:<org>:activity:live:{run_id}`. The four readers take the
 > viewer's org from the session. A member of one org sees no entry of
-> another. The daily cost rollup `cc:cost:{day}` is still global, and task
-> 1748 converts it. A priced model call with no tenant writes no feed key.
-> It still adds to `cc:cost:{day}`, so `/observability/cost` counts the
-> deployment-key `/v1/chat/completions` calls.
+> another. A priced model call with no tenant writes no feed key.
 > Fence: `tests/unit/test_activity_feed_tenant.py`.
+> **H-201e (task 1748), built 2026-11-05, not merged.** The daily cost rollup
+> is keyed for each tenant: `cc:<org>:cost:{day}`. `/observability/cost`
+> reads the viewer's org from the session only. A viewer with no org gets the
+> empty summary. A priced call with no tenant (the deployment-key
+> `/v1/chat/completions`) folds into ONE deployment-level hash,
+> `cc:_unattributed:cost:{day}`. No tenant route reads it. No code reads the
+> old global `cc:cost:{day}` hash. So the cost chart starts at zero after the
+> deploy, and the old hashes expire by their 45-day TTL.
+> Fence: `tests/unit/test_cost_rollup_tenant.py`.
 > **Verified against code on 2026-08-01** (paths, `agent_run` token columns,
 > uv.lock telemetry deps); `bind_run_context` key set re-verified 2026-08-02.
 > **Module:** E2 (core_module_map.md).
@@ -250,7 +256,8 @@ Turns the live feed into the full "complete visibility" app the user asked for.
 - **Live cost.** `_emit_usage` prices every call via litellm (`completion_cost`
   → `cost_per_token` fallback; unknown model → `None`, shown as "—", never a
   misleading $0) and puts `cost_usd` on the model activation. `activity._axadd`
-  folds priced calls into a per-UTC-day Redis hash `cc:cost:{date}` (additive
+  folds priced calls into a per-UTC-day Redis hash `cc:cost:{date}` (H-201e
+  changed it to `cc:<org>:cost:{date}` for each tenant. Additive
   `total|` / `model|` / `source|` / `agent|` fields, ~45-day TTL) — an always-on
   rollup with NO per-call Postgres write (that stays the `LLM_USAGE_AUDIT` opt-in).
   `cost_summary(days)` reads it; `GET /observability/cost` serves per-day totals

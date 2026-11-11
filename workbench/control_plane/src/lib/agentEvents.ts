@@ -60,6 +60,12 @@ export interface AgentSubscriber {
   onRunStarted?: (payload: AgentEventPayload) => void;
   /** Agent execution completed (RUN_FINISHED or stream ended). */
   onRunFinalized?: (payload: AgentEventPayload) => void;
+  /**
+   * The run rests, by any end: a `done` on either stream, a Stop, a failure,
+   * or a run the server stopped listing. A blocking card stays as it is on
+   * this event: only a slot of a redraft ends (§18.11 step 7).
+   */
+  onRunRested?: (payload: AgentEventPayload) => void;
   /** Agent state changed (STATE_SNAPSHOT / STATE_DELTA). */
   onStateChanged?: (payload: AgentEventPayload) => void;
   /** Messages were added or modified. */

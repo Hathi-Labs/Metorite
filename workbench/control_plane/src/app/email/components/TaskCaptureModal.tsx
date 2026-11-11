@@ -1,5 +1,6 @@
 "use client";
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { dueDayOf, dueInstantForDay } from "@/app/projects/lib/quickAdd";
@@ -96,6 +97,11 @@ export function TaskCaptureModal({
 
   // Load the preview (default title + similar tasks) when the popup opens.
   // Commitment mode skips this — its draft was detected on send.
+  // A bar tap closes the window, unless it is saving (MOB-9).
+  useCloseOnBarTap(() => {
+    if (!saving) onClose();
+  });
+
   useEffect(() => {
     if (commitment || !emailId) return;
     let cancelled = false;

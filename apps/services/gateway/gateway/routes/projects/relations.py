@@ -32,6 +32,7 @@ links stop being maintained and the feature is worse than absent.
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
@@ -81,8 +82,45 @@ def subtask_progress(children: list[dict[str, Any]]) -> dict[str, int]:
     return {"done": done, "total": total}
 
 
+def canonical_task_id(value: Any) -> str:
+    """The one text form of a task id.
+
+    Postgres casts ``A1B2...`` and ``a1b2...`` to one uuid, and a comparison of
+    text sees two tasks. So an id from a path or a body passes through this
+    before any comparison with an id that the database gave back (SW-16a).
+    """
+    try:
+        return str(UUID(str(value)))
+    except ValueError:
+        return str(value).lower()
+
+
+#: One ``blocks`` writer at a time in one organization. The org is the one that
+#: the session is bound to, never a value from the request.
+_BLOCK_GRAPH_LOCK_SQL = (
+    "SELECT pg_advisory_xact_lock(hashtextextended('pm_task_links:blocks:' "
+    "|| COALESCE(current_setting('app.tenant_id', true), ''), 0))"
+)
+
+
+async def lock_block_graph(db: Any) -> None:
+    """Hold the ``blocks`` graph of this organization to the end of the transaction.
+
+    The loop check reads the graph and the caller then writes it. Without the
+    lock, "A blocks B" and "B blocks A" can both pass the check and both land,
+    and ``my_work`` then skips both tasks with no error. A transaction-level
+    lock is safe under transaction pooling. ⚠️ Take it before any row lock of
+    the transaction, so that one lock order holds.
+    """
+    await db.execute(text(_BLOCK_GRAPH_LOCK_SQL))
+
+
 async def assert_no_block_cycle(db: Any, source_id: str, target_id: str) -> None:
     """Refuse a ``blocks`` link that would close a loop.
+
+    Every writer of a ``blocks`` edge calls this, so the lock lives here. The
+    caller writes the edge in the SAME transaction, and the lock holds until
+    that transaction ends.
 
     Walks forward from the proposed target: if the chain of things *it* blocks
     ever reaches the source, the new link would complete a cycle.
@@ -95,16 +133,18 @@ async def assert_no_block_cycle(db: Any, source_id: str, target_id: str) -> None
     a chain nobody is reading, and an unbounded walk over data somebody can
     create is a denial-of-service surface rather than a thorough check.
     """
-    if str(source_id) == str(target_id):
+    source, target = canonical_task_id(source_id), canonical_task_id(target_id)
+    if source == target:
         raise HTTPException(
             status_code=422, detail="A task cannot block itself.",
         )
-    frontier = {str(target_id)}
+    await lock_block_graph(db)
+    frontier = {target}
     seen: set[str] = set()
     for _ in range(MAX_DEPTH):
         if not frontier:
             return
-        if str(source_id) in frontier:
+        if source in frontier:
             raise HTTPException(
                 status_code=422,
                 detail="That link would make a loop: this task already depends "
@@ -134,9 +174,11 @@ async def insert_task_link(
 
     The ONE insert of ``pm_task_links``. ``POST /tasks/{id}/links`` calls it
     after its checks, and so do the links from text (TR-5, ``text_links.py``).
-    It writes the ``link`` activity on the source and bumps the target,
-    because a link is readable from both ends. The caller has checked that
-    both tasks are visible, and the cycle rule for ``blocks``.
+    A new row writes the ``link`` activity on the source and bumps the target,
+    because a link is readable from both ends. A link that is already there
+    changes nothing: no activity and no bump, so a repeated add cannot stale
+    the ``expected_version`` that another writer holds (SW-16a). The caller
+    has checked that both tasks are visible, and the cycle rule for ``blocks``.
     """
     row = (await db.execute(
         text(
@@ -144,10 +186,15 @@ async def insert_task_link(
             "(source_task_id, target_task_id, link_type, created_by) "
             "VALUES (CAST(:src AS uuid), CAST(:tgt AS uuid), :kind, :who) "
             "ON CONFLICT (source_task_id, target_task_id, link_type) "
-            "DO UPDATE SET link_type = EXCLUDED.link_type RETURNING id"
+            "DO UPDATE SET link_type = EXCLUDED.link_type "
+            # `xmax = 0` is true for a row this statement inserted, and false
+            # for a row that the conflict arm found.
+            "RETURNING id, (xmax = 0) AS inserted"
         ),
         {"src": source_id, "tgt": target_id, "kind": link_type, "who": by},
     )).fetchone()
+    if not row.inserted:
+        return str(row.id)
     await record_activity(
         db, activity_type="link", created_by=by, task_id=source_id,
         meta={"target": target_id, "type": link_type},
@@ -158,6 +205,127 @@ async def insert_task_link(
     # only the blocked task would otherwise never learn it is blocked.
     await touch_task(db, target_id)
     return str(row.id)
+
+
+#: The delete of a link that a caller removes. The path may name either end.
+#: ``merge.py`` has one more delete, for a link that a merge makes redundant.
+_DELETE_LINK_SQL = (
+    "DELETE FROM pm_task_links WHERE id = CAST(:lid AS uuid) "
+    "AND (source_task_id = CAST(:tid AS uuid) "
+    "     OR target_task_id = CAST(:tid AS uuid)) "
+    "{far_end}"
+    "RETURNING id, source_task_id, target_task_id, link_type"
+)
+
+#: The far end of the link, inside the reach of a signed agent. In the DELETE
+#: itself, so no read can go stale before the write.
+_FAR_END_VISIBLE_SQL = (
+    "AND EXISTS (SELECT 1 FROM pm_tasks t WHERE t.id = "
+    "CASE WHEN pm_task_links.source_task_id = CAST(:tid AS uuid) "
+    "     THEN pm_task_links.target_task_id "
+    "     ELSE pm_task_links.source_task_id END "
+    "AND {visible}) "
+)
+
+#: The timeline line of a removal. This text names no task, because the reader
+#: of one end may not see the other end. ``meta.target`` does hold the other
+#: task: :func:`drop_unseen_link_targets` takes it out of each read for a
+#: reader who cannot see that task.
+LINK_REMOVED_BODY = "Removed a link"
+
+
+async def delete_task_link(
+    db: Any, task_id: str, link_id: str, *, by: str,
+    far_end_vis: Any | None = None,
+) -> bool:
+    """Remove one task link inside the caller's transaction. True when it went.
+
+    ``DELETE /tasks/{id}/links/{link_id}`` calls it after it has checked that
+    the caller sees ``task_id``. A signed agent passes ``far_end_vis``: its
+    reach must hold the other end too, as ``create_link`` requires. A link
+    that leaves its pin then matches no row, so the agent reads the answer of
+    a missing link and nothing is written. A person passes nothing, and the
+    end that they see is enough.
+
+    A removal writes one ``link`` activity on EACH end, and each activity bumps
+    its task. ``meta.link_action`` says that the link went, ``meta.target`` is
+    the other task and ``meta.direction`` is the side of this task. Without
+    the row, an agent removes "A1 blocks A2", A2 becomes startable, and nobody
+    can see who did it (SW-16a).
+    """
+    far_end = (
+        _FAR_END_VISIBLE_SQL.format(visible=task_visibility_clause(far_end_vis))
+        if far_end_vis is not None else ""
+    )
+    row = (await db.execute(
+        text(_DELETE_LINK_SQL.format(far_end=far_end)),
+        {
+            "lid": link_id, "tid": task_id,
+            **(far_end_vis.params if far_end_vis is not None else {}),
+        },
+    )).fetchone()
+    if row is None:
+        return False
+    source, target = str(row.source_task_id), str(row.target_task_id)
+    # In id order, as `touch_task` writes them, so that two removals over the
+    # same pair of tasks take their row locks in one order.
+    for here, other, direction in sorted((
+        (source, target, "outgoing"), (target, source, "incoming"),
+    )):
+        await record_activity(
+            db, activity_type="link", created_by=by, task_id=here,
+            body=LINK_REMOVED_BODY,
+            meta={
+                "target": other, "type": row.link_type,
+                "direction": direction, "link_action": "removed",
+            },
+        )
+    return True
+
+
+async def drop_unseen_link_targets(
+    db: Any, vis: Any, activities: list[dict[str, Any]],
+) -> None:
+    """Take ``meta.target`` out of each ``link`` row whose task the reader cannot see.
+
+    A timeline read checks only the task that it names. A ``link`` row of that
+    task holds the id of the other task, so without this a pinned agent reads
+    the id of a task that ``get_task`` hides. One query over the page. The
+    stored row keeps ``target``, for a reader who can see both ends.
+    """
+    def target_of(row: dict[str, Any]) -> Any:
+        meta = row.get("meta")
+        if row.get("type") != "link" or not isinstance(meta, dict):
+            return None
+        return meta.get("target")
+
+    wanted = sorted({
+        canonical_task_id(target) for row in activities
+        if (target := target_of(row)) and _is_uuid(target)
+    })
+    if not wanted:
+        visible: set[str] = set()
+    else:
+        visible = {str(r.id) for r in (await db.execute(
+            text(
+                "SELECT t.id FROM pm_tasks t "
+                "WHERE t.id = ANY(CAST(:target_ids AS uuid[])) "
+                f"AND {task_visibility_clause(vis)}"
+            ),
+            {"target_ids": wanted, **vis.params},
+        )).fetchall()}
+    for row in activities:
+        target = target_of(row)
+        if target and canonical_task_id(target) not in visible:
+            row["meta"] = {k: v for k, v in row["meta"].items() if k != "target"}
+
+
+def _is_uuid(value: Any) -> bool:
+    try:
+        UUID(str(value))
+    except ValueError:
+        return False
+    return True
 
 
 #: Subtasks, with the one status field the panel needs to draw progress.
@@ -276,9 +444,14 @@ async def get_relations(
 
 __all__ = [
     "DIRECTED_TYPES",
+    "LINK_REMOVED_BODY",
     "LINK_TYPES",
     "assert_no_block_cycle",
     "blocked_by_open",
+    "canonical_task_id",
+    "delete_task_link",
+    "drop_unseen_link_targets",
     "insert_task_link",
+    "lock_block_graph",
     "subtask_progress",
 ]

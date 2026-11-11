@@ -382,13 +382,11 @@ async def save_episode(
     try:
         from acb_memory import add_episode  # noqa: PLC0415
 
-        user_id = _get_memory_user_id() or "default"
-
+        # KG-9: the bound tenant names the episode's group (``org_<id>``).
         await add_episode(
             name=name,
             content=content,
             source_description=source,
-            group_id=user_id,
         )
         _log.info(
             "memory_tools.save_episode_ok",
@@ -509,10 +507,12 @@ async def recall_org(query: str) -> str:
     """
     _close_profile_writes()
     try:
-        from acb_memory import get_scoped_context, scope_key  # noqa: PLC0415
+        from acb_memory import get_scoped_context, org_scope  # noqa: PLC0415
 
+        # KG-9: ``org:<bound tenant>``. With no tenant the scope is "" and
+        # the read answers nothing.
         result = await get_scoped_context(
-            scope_key(org=True), query, header="Organisation memory"
+            org_scope(), query, header="Organisation memory"
         )
         return result if result else "(no organisation memories found)"
     except ImportError:
@@ -553,7 +553,7 @@ async def save_org_memory(fact: str) -> str:
             "Saving this as a personal memory instead may be what you want."
         )
     try:
-        from acb_memory import add_scoped_memories, scope_key  # noqa: PLC0415
+        from acb_memory import add_scoped_memories, org_scope  # noqa: PLC0415
 
         agent = _get_memory_agent_name() or "org"
         # The same rule as save_memory (personalization.md §2.1).
@@ -564,7 +564,12 @@ async def save_org_memory(fact: str) -> str:
             {"role": "user", "content": f"Remember this company-wide fact: {fact}"},
             {"role": "assistant", "content": f"Saved to organisation memory: {fact}"},
         ]
-        await add_scoped_memories(scope_key(org=True), messages, agent_id=agent)
+        # KG-9: ``org:<bound tenant>``. No tenant, no write, and the tool says so.
+        scope = org_scope()
+        if not scope:
+            _log.info("memory_tools.save_org_memory_skipped_no_tenant")
+            return "(organisation memory needs a bound organization. The fact is not kept.)"
+        await add_scoped_memories(scope, messages, agent_id=agent)
         _log.info("memory_tools.save_org_memory_ok", fact=fact[:80])
         return "Organisation memory saved."
     except ImportError:
