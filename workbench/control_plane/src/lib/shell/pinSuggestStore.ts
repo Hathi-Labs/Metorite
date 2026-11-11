@@ -110,3 +110,24 @@ export function hideSuggestion(email: string | null, href: string, now: number, 
   const next = { ...readHidden(email, now, storage), [href]: now + SUGGEST_HIDE_DAYS * DAY_MS };
   write(hiddenKey(email), next, storage);
 }
+
+/**
+ * Forget the open times and the hides of each account in `emails`. A sign-out
+ * calls it, so no address of a signed-out account stays in a key name. It
+ * follows `clearAppearanceForAccounts` in `lib/theme/scope.ts`.
+ */
+export function clearPinSuggestForAccounts(
+  emails: readonly string[],
+  storage?: Pick<Storage, "removeItem">,
+): void {
+  const s = storage ?? (typeof window === "undefined" ? null : window.localStorage);
+  if (!s) return;
+  for (const e of new Set(emails.map((x) => x.trim().toLowerCase()).filter(Boolean))) {
+    try {
+      s.removeItem(opensKey(e));
+      s.removeItem(hiddenKey(e));
+    } catch {
+      /* storage unavailable: nothing is stored */
+    }
+  }
+}

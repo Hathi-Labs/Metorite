@@ -11,7 +11,7 @@ import {
   suggestPin,
   suggestionWhy,
 } from "./pinSuggest";
-import { OPENS_CAP, hideSuggestion, hiddenKey, opensKey, readHidden, readOpens, recordOpen, type StoreLike } from "./pinSuggestStore";
+import { OPENS_CAP, clearPinSuggestForAccounts, hideSuggestion, hiddenKey, opensKey, readHidden, readOpens, recordOpen, type StoreLike } from "./pinSuggestStore";
 import { STARRABLE } from "./presets";
 
 const held: NavPane[] = PANES.filter((p) => STARRABLE.has(p.href)).slice(0, 4);
@@ -158,5 +158,29 @@ describe("the store", () => {
     expect(() => hideSuggestion("a@x.com", A.href, NOW, bad)).not.toThrow();
     expect(readOpens("a@x.com", bad)).toEqual({});
     expect(readHidden("a@x.com", NOW, bad)).toEqual({});
+  });
+});
+
+describe("a sign-out", () => {
+  it("removes the open times and the hides of the signed-out accounts, and no other", () => {
+    const s = memory();
+    const removable = Object.assign(s, { removeItem: (k: string) => void s.data.delete(k) });
+    recordOpen("Ana@Alpha.example", A.href, NOW, s);
+    hideSuggestion("ana@alpha.example", A.href, NOW, s);
+    recordOpen("ben@alpha.example", A.href, NOW, s);
+    hideSuggestion("ben@alpha.example", A.href, NOW, s);
+    clearPinSuggestForAccounts(["ANA@alpha.example", " "], removable);
+    expect([...s.data.keys()].some((k) => k.includes("ana@"))).toBe(false);
+    expect(s.data.has(opensKey("ben@alpha.example"))).toBe(true);
+    expect(s.data.has(hiddenKey("ben@alpha.example"))).toBe(true);
+  });
+  it("swallows a storage that throws", () => {
+    const bad = { removeItem: () => { throw new Error("denied"); } };
+    expect(() => clearPinSuggestForAccounts(["ana@alpha.example"], bad)).not.toThrow();
+  });
+  it("is called by both sign-out paths of accountSwitch", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../accountSwitch.ts", import.meta.url), "utf-8");
+    expect(src.match(/clearPinSuggestForAccounts\(/g)?.length).toBe(2);
   });
 });
