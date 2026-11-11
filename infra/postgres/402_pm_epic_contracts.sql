@@ -1,5 +1,5 @@
 -- ============================================================================
--- 399_pm_epic_contracts.sql — the contract of an epic (SP-8a, Metorite task
+-- 402_pm_epic_contracts.sql — the contract of an epic (SP-8a, Metorite task
 -- 2291).
 --
 -- What: one new table. `pm_epic_contracts` holds one row for each epic: the
@@ -57,7 +57,7 @@
 -- other branches held 380 and 382, so the file became 385. Later on
 -- 2026-11-09 origin/main held 390, and branches held 393, 394 and 396, so the
 -- file became 397. On 2026-11-09 later still, origin/main held 393, and
--- branches held 396 and 398 (CRM-M3b), so the file became 399, above them all.
+-- branches held 396 and 398 (CRM-M3b), so the file became 399, then 402 after 400 and 401 landed on main.
 -- Check it again at merge.
 -- Pinned by tests/unit/test_epic_contract_r8.py, which finds this file by
 -- CONTENT, never by number (R1).

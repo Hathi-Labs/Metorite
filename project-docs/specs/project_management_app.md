@@ -13,7 +13,7 @@
 
 > **Product:** Metorite · **Feature:** Projects (the primary work-management
 > module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-11-09**
-> 🟢 **SP-8a BUILT 2026-11-08, not merged** (§13.3, §13.6 row SP-8, migration 399, branch
+> 🟢 **SP-8a BUILT 2026-11-08, not merged** (§13.3, §13.6 row SP-8, migration 402, branch
 > `mt-1cb9f2de-sp8-epic-contract`). An epic has a contract: the store, the routes, `epic_contract`
 > in `get_task` and `get_task_context`, the MCP block and the chat tool `set_epic_contract`.
 > It ships dark behind `EPIC_CONTRACT_ORGS` (repair round 1, 2026-11-09).
@@ -9107,7 +9107,7 @@ The model has five records. Each lives in the one task store (D52) or beside it.
 
 **How SP-8a stores the contract (2026-11-08, Metorite task 2291).** These rules bind the build. The column "Who writes it" names a role. It is not a permission check.
 
-1. **A table of its own, not the custom-field store.** `pm_epic_contracts` (migration 399) holds one row for each epic, keyed by `task_id`. The custom-field store has no list type for the checks and no scope for epics only. Each project would also have to define the seven fields by hand. The table is tenant-scoped with FORCE ROW LEVEL SECURITY (R5). A guard refuses a row whose task is in another organization. Each column is nullable (R6).
+1. **A table of its own, not the custom-field store.** `pm_epic_contracts` (migration 402) holds one row for each epic, keyed by `task_id`. The custom-field store has no list type for the checks and no scope for epics only. Each project would also have to define the seven fields by hand. The table is tenant-scoped with FORCE ROW LEVEL SECURITY (R5). A guard refuses a row whose task is in another organization. Each column is nullable (R6).
 2. **3 to 7 checks on each save.** The code refuses a save with fewer than 3 or more than 7 checks, so the store keeps no draft. The chat card holds a draft until the member approves it. Each check has a text of 1 to 300 characters, and two checks may not have one text. A check that comes with no id gets an id from its text. So a save of the same text keeps the id. Fence: `tests/unit/test_epic_contract_r8.py`.
 3. **The lead sets the risk tier.** The tier is LOW, STANDARD or HIGH, and a CHECK in the database holds it. No code proposes a tier from the paths in SP-8a. A later slice can add the proposal.
 4. **Only an epic takes a contract.** A write on a task that is not an epic answers 422 with `core.NOT_EPIC_DETAIL`. That text says what happened. It also says the next step: make the task an epic first. A read of such a task gives `epic_contract: null`. `core.assert_task_is_epic` uses the predicate of the Epic-root rule (`core.is_epic_type`).
