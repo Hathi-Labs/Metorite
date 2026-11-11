@@ -55,6 +55,12 @@
         "feature": "projects"
       }
     ],
+    "gates": [
+      {
+        "href": "/projects/agents",
+        "feature": "agents_view"
+      }
+    ],
     "scope": [
       {
         "href": "/projects",

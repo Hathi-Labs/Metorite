@@ -477,13 +477,25 @@ def test_a_40s_delete_never_keeps_the_run_live_end_to_end(monkeypatch):
     srv = _Server(slow_delete=40.0).install(monkeypatch)
     set_flag(monkeypatch, "*")
     RegistrySpy([row("probe-srv", org="org-native-maf-probe", url=URL)]).install(monkeypatch)
+    # Task 2494: a chat run calls a per-run view of the agent (the steer
+    # turns), so the MCP tool sits on the agent that the run used.
+    from orchestrator import executor as _ex
+    used: list[Any] = []
+    _real_inject = _ex._inject_mcp_servers
+
+    async def _record(agent: Any, *a: Any, **k: Any) -> Any:
+        used.append(agent)
+        return await _real_inject(agent, *a, **k)
+
+    monkeypatch.setattr(_ex, "_inject_mcp_servers", _record)
     model = ScriptedModel([text_turn("done")])
-    events, built = drive_native(
+    events, _built = drive_native(
         "apis-config", "apps/agents/agent-apis-config", monkeypatch, model,
         thread_id="thread-ws8c-slow-delete",
     )
     assert not [e for e in events if e.get("type") == "RUN_ERROR"], events
-    assert [t.name for t in built[0].mcp_tools] == ["probe-srv"]
+    assert used, "the run injected no MCP server"
+    assert [t.name for a in used for t in a.mcp_tools] == ["probe-srv"]
     assert order == ["mark_inactive", "close", "server:delete.start", "close.returned"], (
         f"the 40 s DELETE held the end of the run: {order}")
     assert srv.deletes == 1

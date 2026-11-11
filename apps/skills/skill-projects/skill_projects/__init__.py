@@ -9,6 +9,14 @@ Spec: ``project-docs/specs/projects_ai_chat.md``.
 tool that is not exported is in ``manifest.PLANNED`` with its slice.
 """
 
+from skill_projects.cycles import (
+    close_cycle,
+    create_cycle,
+    cycle_detail,
+    list_cycles,
+    plan_cycle,
+    start_cycle,
+)
 from skill_projects.forms import (
     create_tags,
     create_tasks,
@@ -24,6 +32,7 @@ from skill_projects.guarded import (
     archive_task,
     attach_to_task,
     bulk_update,
+    change_agent_answer,
     convert_folder_to_project,
     create_project_from_template,
     delete_area,
@@ -209,6 +218,9 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "list_project_updates",
     # Class A — WS-39 TPL-1a, the templates of the organization
     "list_templates",
+    # Class A — WS-39 SP-5a, the cycles (sprints) of a node and one cycle's status
+    "list_cycles",
+    "cycle_detail",
     # Class A — navigation (S6)
     "open_in_app",
     "show_view",
@@ -289,6 +301,9 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "reschedule_reminder",
     # Class B — WS-39 LP-1a, an update of a project with its health, one card
     "post_project_update",
+    # Class B — WS-39 SP-5a, plan a cycle and plan its tasks, one card each
+    "create_cycle",
+    "plan_cycle",
     # Class C — hard to undo, one act one card, the impact first (S3)
     "archive_project",
     "archive_task",
@@ -316,6 +331,9 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "report_delete",
     "revoke_access",
     "unpin_authority",
+    # Class C — WS-39 SP-5a, a cycle starts and a cycle closes, one card each
+    "start_cycle",
+    "close_cycle",
     # Class C — WS-39 LP-1a, the delete of a project update, one card
     "delete_project_update",
     "add_report_recipient",
@@ -329,4 +347,6 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     # Class C — WS-39 TPL-1a: an org-wide template, and a project made from one
     "save_as_template",
     "create_project_from_template",
+    # Class C — SW-43c: the member takes back or changes an answer to an agent
+    "change_agent_answer",
 ]

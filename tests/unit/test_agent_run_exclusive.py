@@ -680,7 +680,9 @@ def _person(email: str, org: str, *, admin: bool = False, sees_all: bool = True)
     if sees_all:
         perms.append("data:org:read")
     if admin:
-        perms.append("admin:members:read")
+        # H-409 item 2 (task 748): an admin of a release holds the write
+        # slug `admin:members:manage` (owner, Q5), and a real admin holds both.
+        perms.extend(["admin:members:read", "admin:members:manage"])
     return UserContext(
         email=email, role=UserRole.EMPLOYEE, access=build_access(perms), organization_id=org)
 
