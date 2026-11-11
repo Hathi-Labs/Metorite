@@ -3868,6 +3868,17 @@ def _pack_base_count(
     logs the true count after the injection (``executor.pack_request_tools``)
     and warns past the cap. Fence: ``tests/unit/test_exact_tool_count.py``.
     """
+    return len(_pack_base_names(agent, agent_name=agent_name, tool_scope=tool_scope,
+                                agent_config=agent_config, disabled=disabled))
+
+
+def _pack_base_names(
+    agent: Any, *, agent_name: str | None, tool_scope: list[str] | None,
+    agent_config: dict[str, Any] | None, disabled: frozenset[str],
+) -> set[str]:
+    """The names of the tools that :func:`_pack_base_count` counts. WS-STU F3
+    reads them too: a skill pack loads only when the run holds each of its
+    tools (:func:`_skills_present`)."""
     from acb_skills.skill_families import SKILL_FAMILIES
 
     names = {_tool_name(t) for _label, pool in _own_tool_pools(agent) for t in pool}
@@ -3883,7 +3894,7 @@ def _pack_base_count(
         injected = set(chain)
     if "workflows" not in disabled:
         injected |= set(SKILL_FAMILIES["workflows"]["tools"])
-    return len(names | (injected - withheld))
+    return names | (injected - withheld)
 
 
 def _specialist_counts(
@@ -3966,6 +3977,8 @@ async def _apply_tool_packs(
     # its parent off, as it is on where the pack flag names its parent.
     disabled = tool_packs.with_followers(_load_disabled_skill_families(agent_name))
     allow = frozenset(allowed) - disabled
+    # WS-STU F3: the published skills that the words of this turn name.
+    turn = await _turn_with_skills(turn)
     base = _pack_base_count(agent, agent_name=agent_name, tool_scope=tool_scope,
                             agent_config=agent_config, disabled=disabled)
     specialists = _specialist_counts(pool)
@@ -3988,7 +4001,7 @@ async def _apply_tool_packs(
     if not choice.slugs:
         _log.info("executor.packs_chosen", packs=[], evicted=list(choice.evicted),
                   skipped=list(choice.skipped), base_tools=base)
-        if not offer_loader:
+        if not offer_loader and not choice.skills:
             return None
     run_key = secrets.token_urlsafe(24)
     build_ctx = {**dict(run_ctx), tool_packs.PACK_RUN_KEY: run_key}
@@ -4000,11 +4013,20 @@ async def _apply_tool_packs(
             continue
         builds.append(build)
         holds |= {_tool_name(t) for t in build.tools}
-    if not builds and not offer_loader:
+    skills = _skills_present(
+        choice.skills, holds, agent, agent_name=agent_name, tool_scope=tool_scope,
+        agent_config=agent_config, disabled=disabled)
+    if not builds and not offer_loader and not skills:
         return None
     loaded = [(build.slug, build.held) for build in builds]
     added = _as_agent_tools([tool for build in builds for tool in build.tools])
-    draft = tool_packs.PackRun.of(turn, choice, loaded)
+    # WS-STU F3, review fixes P1 and P2: a skill pack takes a place of the 3,
+    # so the plan and the loader count it. A code pack that holds a tool of a
+    # skill never leaves for a load (``PackRun.needs``).
+    skill_slugs = [s.slug for s in skills]
+    named = {name for s in skills for name in s.tools}
+    needs = [b.slug for b in builds if named & {_tool_name(t) for t in b.tools}]
+    draft = tool_packs.PackRun.of(turn, choice, loaded, skills=skill_slugs, needs=needs)
     kept = [t for t in pool if _delegates_to(t) not in draft.replaced]
     current = base + len(added) - (len(pool) - len(kept))
     plan = tool_packs.LoaderPlan()
@@ -4015,24 +4037,27 @@ async def _apply_tool_packs(
         # also reaches the owner through it.
         built = {b.slug: len(b.tools) for b in builds}
         plan = await _plan_pack_loader(
-            agent, allow, [b.slug for b in builds], builds=builds, current=current,
+            agent, allow, [*(b.slug for b in builds), *skill_slugs], builds=builds,
+            current=current,
             pool=kept, persona=str(opts.get("instructions") or ""), bullets=bullets,
             agent_name=agent_name, no_egress=bool(run_ctx.get("no_egress")),
             is_authorized=is_authorized,
             spare={slug: built[slug] for slug in draft.spare() if slug in built})
-    if not builds and not plan.offered:
+    if not builds and not plan.offered and not skills:
         return None
     via = plan.via_loader
     try:
         persona = tool_packs.persona_for(
-            str(opts.get("instructions") or ""), loaded, bullets, via, build_ctx)
+            str(opts.get("instructions") or ""), loaded, bullets, via, build_ctx,
+            skills=skills)
     except RuntimeError as exc:
         _log.error("executor.packs_refused", reason="persona_swap", error=str(exc)[:200])
         return None
     # Task 1747: the record keeps the sticky packs that left at the start of
     # this turn, and which of them the loader offers. The context of the turn
     # names them (``executor._pack_left_block``, ``tool_packs.left_line``).
-    record = tool_packs.PackRun.of(turn, choice, loaded, via, offered=plan.offered)
+    record = tool_packs.PackRun.of(turn, choice, loaded, via, offered=plan.offered,
+                                   skills=skill_slugs, needs=needs)
     replaced = frozenset(record.replaced)
     # OA-8f: the count that the run sends once this apply is done: the base
     # (with the load tool only when the plan offers it), the pack tools, less
@@ -4065,10 +4090,114 @@ async def _apply_tool_packs(
         packs=list(record.slugs), base_tools=base, current_tools=current,
         planned_tools=planned_tools,
     )
+    _log_skills_loaded(skills, choice.skills_skipped)
     applied = PackApply(builds=tuple(builds), record=record, run_key=run_key)
     if offer_loader and not _offer_pack_loader(agents, applied, plan) and via:
         _log.error("executor.pack_loader_stranded", owners=sorted(via))
-    return applied if builds or plan.offered else None
+    return applied if builds or plan.offered or skills else None
+
+
+# ── Published skills as packs (WS-STU F3) ───────────────────────────────────
+# ``ai_studio.md`` §7 "Runtime", §11.1 and the §14 F3 row. Dark: the read
+# runs only inside :func:`_apply_tool_packs`, so only for an org that
+# the pack gate of ``tool_packs`` names, and only while
+# ``STUDIO_ORGS`` names the org and the member holds ``feature:studio``
+# (:func:`_studio_member_open`). Fences: ``tests/unit/test_skill_packs.py``
+# and ``tests/unit/test_skill_packs_r8.py`` (R8).
+
+
+async def _turn_with_skills(turn: Any) -> Any:
+    """*turn* with the published skills that its words name, or *turn* as it
+    was. Never raises: a fault loads no skill.
+
+    The org is the bound tenant of the run, and the member is the verified
+    member of the run (``executor._verified_run_member``). Both must agree
+    with the turn, so a turn of another chat reads nothing (R5). The read
+    opens ``tenant_session()`` on the bound tenant, so RLS binds it. The
+    store gives only the skills that the member may load
+    (``skills_store.list_loadable``). The match reads the names, and only the
+    matched skills read a body, at most ``tool_packs.MAX_PACKS`` of them."""
+    from acb_common.db import current_tenant
+    from acb_skills import skill_packs, tool_packs
+
+    words = str(getattr(turn, "words", "") or "")
+    if not words.strip() or not _studio_open():
+        return turn
+    try:
+        from orchestrator.executor import _verified_run_member
+
+        member = _verified_run_member()
+        org = str(current_tenant() or "").strip().lower()
+        if (not member or not org or org != str(getattr(turn, "org", "")).strip().lower()
+                or tool_packs._member_part(member) != getattr(turn, "member_part", None)):
+            return turn
+        if not await _studio_member_open():
+            return turn
+        from acb_common.db import tenant_session
+        from gateway.studio import skills_store
+
+        async with tenant_session() as db:
+            heads = await skills_store.list_loadable(db, member)
+            named = [h.id for h in heads if skill_packs.matches(h.name, h.slug, words)]
+            pairs = (await skills_store.loadable_versions(
+                db, member, named[:tool_packs.MAX_PACKS]) if named else [])
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("executor.skills_unread", error_type=type(exc).__name__)
+        return turn
+    packs: list[Any] = []
+    for skill, version in pairs:
+        built = skill_packs.build(
+            skill.id, skill.name, skill.description, version.version,
+            version.content_hash, version.body, max_tools=tool_packs.MAX_PACK_TOOLS)
+        if isinstance(built, str):
+            _log.info("executor.skill_refused", skill=skill.id, version=version.version,
+                      reason=built)
+            continue
+        packs.append(built)
+    return dataclasses.replace(turn, skills=tuple(packs)) if packs else turn
+
+
+def _skills_present(
+    skills: Sequence[Any], holds: Iterable[str], agent: Any, *, agent_name: str | None,
+    tool_scope: list[str] | None, agent_config: dict[str, Any] | None,
+    disabled: frozenset[str],
+) -> tuple[Any, ...]:
+    """The skill packs of *skills* whose every tool the run holds.
+
+    A skill pack adds no tool. Its tools are the agent's own tools, the
+    platform tools that the injection adds (:func:`_pack_base_names`), or the
+    tools of a code pack of this turn (*holds*). A skill that names a tool
+    the run does not hold fails to load, so Mira gets no rule for a tool
+    that she cannot call."""
+    if not skills:
+        return ()
+    present = set(holds) | _pack_base_names(
+        agent, agent_name=agent_name, tool_scope=tool_scope,
+        agent_config=agent_config, disabled=disabled)
+    kept: list[Any] = []
+    for found in skills:
+        missing = sorted(set(found.tools) - present)
+        if missing:
+            _log.info("executor.skill_refused", skill=found.skill_id,
+                      version=found.version, reason="tool_absent", tools=missing)
+            continue
+        kept.append(found)
+    return tuple(kept)
+
+
+def _log_skills_loaded(skills: Sequence[Any], skipped: Sequence[str]) -> None:
+    """One ``executor.skill_loaded`` line for each skill pack of the run, in
+    load order (§11.1, "model-visible means logged"). It names the skill,
+    the version, its hash, its tools, the token cost and the prefix effect,
+    and never the text of the skill."""
+    for place, found in enumerate(skills):
+        _log.info(
+            "executor.skill_loaded", skill=found.skill_id, version=found.version,
+            content_hash=found.content_hash, tools=list(found.tools),
+            token_cost=found.token_cost, changes_prefix=found.changes_prefix,
+            place=place)
+    if skipped:
+        _log.info("executor.skills_skipped", skills=list(skipped), reason="cap")
 
 
 def _loader_agent_ok(agent: Any) -> bool:
