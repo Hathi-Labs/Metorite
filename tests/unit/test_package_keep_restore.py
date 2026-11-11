@@ -93,6 +93,7 @@ class _World:
         self.refuse: host_store.InstallError | None = None
         self.nows: list[datetime] = []
         self.members: list[str] = []
+        self.audits: list[dict[str, Any]] = []
 
 
 @pytest.fixture
@@ -128,7 +129,14 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
             raise w.refuse
         return now + host_store.RESTORED_ENDS
 
+    async def audit(db: Any, *, app_id: str, user_email: str, kind: str,
+                    detail: dict[str, Any] | None = None, app_version: int | None = None) -> None:
+        w.calls.append("audit")
+        w.audits.append({"app_id": app_id, "user_email": user_email, "kind": kind,
+                         **(detail or {})})
+
     monkeypatch.setattr(packages, "_tenant_session", session)
+    monkeypatch.setattr(packages, "record_app_audit_in", audit)
     monkeypatch.setattr(store, "lock_for_install", lock_for_install)
     monkeypatch.setattr(host_store, "private_install_id", private_install_id)
     monkeypatch.setattr(host_store, "keep_install", keep_install)
@@ -189,7 +197,7 @@ def test_a_body_with_a_date_an_org_or_a_member_changes_nothing(world: _World, ro
     r = _post(route, body)
     assert r.status_code == 200, r.text
     assert world.members == [OWEN]
-    assert world.calls == ["lock", "find", f"{route}:{INSTALL}"]
+    assert world.calls == ["lock", "find", f"{route}:{INSTALL}", "audit"]
     if route == "restore":
         [now] = world.nows
         assert now.year != 2000 and now.year != 2099
@@ -274,7 +282,7 @@ def test_an_owner_with_no_private_install_gets_409_that_names_the_rule(
 def test_one_session_locks_then_finds_then_calls_the_store(world: _World, route: str) -> None:
     assert _post(route).status_code == 200
     assert world.sessions == 1
-    assert world.calls == ["lock", "find", f"{route}:{INSTALL}"]
+    assert world.calls == ["lock", "find", f"{route}:{INSTALL}", "audit"]
 
 
 def test_the_lock_comes_before_the_find_and_the_store_call_in_the_source() -> None:
@@ -312,6 +320,38 @@ def test_a_keep_is_200_and_a_second_keep_is_200_with_no_change(world: _World) ->
     again = _post("keep")
     assert again.status_code == 200
     assert again.json()["changed"] is False
+
+
+def test_a_keep_that_changes_the_row_and_a_restore_each_write_one_audit_row(
+        world: _World) -> None:
+    assert _post("keep").status_code == 200
+    assert _post("restore").status_code == 200
+    assert world.audits == [
+        {"app_id": PID, "user_email": OWEN, "kind": "action",
+         "op": "package.keep", "install_id": INSTALL},
+        {"app_id": PID, "user_email": OWEN, "kind": "action",
+         "op": "package.restore", "install_id": INSTALL},
+    ]
+
+
+def test_a_keep_that_changes_nothing_writes_no_audit_row(world: _World) -> None:
+    world.changed = False
+    assert _post("keep").status_code == 200
+    assert world.audits == []
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_a_refused_call_writes_no_audit_row(world: _World, route: str) -> None:
+    world.refuse = host_store.StateRefused("state_refused", "Refused.")
+    assert _post(route).status_code == 409
+    assert world.audits == []
+
+
+def test_the_audit_row_is_written_inside_the_session_of_the_write() -> None:
+    for name, op in (("keep_package", "package.keep"), ("restore_package", "package.restore")):
+        src = ast.unparse(_handler(name))
+        assert "record_app_audit_in(" in src and f"'op': '{op}'" in src, name
+        assert "record_app_audit_bound" not in src, name
 
 
 @pytest.mark.parametrize(("route", "refusal", "status"), [

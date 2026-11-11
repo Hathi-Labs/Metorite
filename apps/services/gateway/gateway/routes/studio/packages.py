@@ -132,7 +132,9 @@ transaction (kind ``publish``). A create, and a sync that changed rows, write
 a row through ``record_app_audit_bound`` (kind ``action``) after the session
 closes. ⚠️ Never ``record_app_audit``: its unbound session writes no row under
 FORCE RLS (task 1317). A draft save and a 404 write no row. The rows hold the
-op, a hash, a size and names, and no manifest text.
+op, a hash, a size and names, and no manifest text. A keep that changes the
+row and each restore write a row through ``record_app_audit_in`` (ops
+``package.keep`` and ``package.restore``, PKG-10d). It commits with the write.
 
 **The expected hash (STU-G1c review round 1).** A draft save takes the query
 ``?based_on=<hash>``, and a publish takes ``based_on`` in its body. The value
@@ -988,6 +990,11 @@ async def keep_package(
             changed = await host_store.keep_install(db, install_id=install_id)
         except host_store.InstallError as exc:
             raise _refused(user, exc) from None
+        if changed:
+            # The audit row commits with the keep, or neither does.
+            await record_app_audit_in(
+                db, app_id=pid, user_email=user.email, kind="action",
+                detail={"op": "package.keep", "install_id": install_id})
     _log.info("studio.packages.kept", package_id=pid, changed=changed)
     return {"install": {"id": install_id, "app_id": pid, "ends_at": None}, "changed": changed}
 
@@ -1016,6 +1023,10 @@ async def restore_package(
                 db, install_id=install_id, now=datetime.now(UTC))
         except host_store.InstallError as exc:
             raise _refused(user, exc) from None
+        # The audit row commits with the restore, or neither does.
+        await record_app_audit_in(
+            db, app_id=pid, user_email=user.email, kind="action",
+            detail={"op": "package.restore", "install_id": install_id})
     _log.info("studio.packages.restored", package_id=pid)
     return {"install": {"id": install_id, "app_id": pid, "state": "active",
                         "ends_at": ends_at}}
