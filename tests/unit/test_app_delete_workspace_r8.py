@@ -335,7 +335,9 @@ def test_r8_the_delete_never_removes_the_folder_that_org_b_put_at_the_old_path(
                 "INSERT INTO apps (id, slug, name, owner_email, workspace_path, "
                 "organization_id) VALUES (CAST(:id AS uuid), :s, 'B', :o, :p, :org)"),
                 {"id": str(uuid.uuid4()), "s": foo.slug, "o": CAT, "p": str(old), "org": b})
-        old.mkdir()
+        # Before this fix the folder of org A is still there now, and only
+        # the late removal below takes it away.
+        old.mkdir(exist_ok=True)
         (old / "index.html").write_text(SECRET, encoding="utf-8")
         seen.append(foo.slug)
 
