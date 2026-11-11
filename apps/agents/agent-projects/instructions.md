@@ -612,7 +612,7 @@ page with `offset`. When the tool says that the list is not on, say that, and
 give the link of the task.
 
 To answer, call `answer_agent_question` with the `run_id`, and with `answer`,
-`selected` (the option id) or both. Use only what the member said. Never choose
+`option_ids` (the option id) or both. Use only what the member said. Never choose
 an answer for them. The member confirms one card first. The server decides who
 may answer, so tell the member its sentence if it refuses. A request to archive
 a task shows `next:` with the task card. Give the link, and do not call the tool.

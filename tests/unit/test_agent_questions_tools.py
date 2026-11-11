@@ -175,7 +175,7 @@ def test_the_answer_refuses_a_run_with_no_person_before_any_call(monkeypatch) ->
 def test_the_answer_posts_one_prompt_after_a_confirmed_card(monkeypatch) -> None:
     calls = _gateway(monkeypatch)
     asked = approve(monkeypatch)
-    said = _run(skill_projects.answer_agent_question(RUN, answer="Use the small one", selected="a"))
+    said = _run(skill_projects.answer_agent_question(RUN, answer="Use the small one", option_ids="a"))
     assert "Answered" in said and RUN in said
     assert len(asked) == 1
     assert "Which nozzle size?" in asked[0]["context"] and "0.4 mm" in asked[0]["context"]
@@ -217,8 +217,8 @@ def test_a_run_with_no_open_question_is_refused(monkeypatch) -> None:
 
 @pytest.mark.parametrize("kwargs,words", [
     ({}, "needs text"),
-    ({"selected": "z"}, "option ids"),
-    ({"selected": "a,b"}, "takes one option"),
+    ({"option_ids": "z"}, "option ids"),
+    ({"option_ids": "a,b"}, "takes one option"),
     ({"answer": "x" * 4001}, "at most"),
 ])
 def test_a_bad_answer_is_refused_before_any_card(monkeypatch, kwargs, words) -> None:
@@ -231,7 +231,7 @@ def test_a_bad_answer_is_refused_before_any_card(monkeypatch, kwargs, words) -> 
 def test_several_options_are_allowed_when_the_question_allows_them(monkeypatch) -> None:
     calls = _gateway(monkeypatch, run=_open_run(multiple=True))
     approve(monkeypatch)
-    _run(skill_projects.answer_agent_question(RUN, selected="a,b"))
+    _run(skill_projects.answer_agent_question(RUN, option_ids="a,b"))
     assert writes(calls)[0]["json"]["selected"] == ["a", "b"]
 
 
@@ -286,13 +286,13 @@ def test_a_race_that_returns_another_answer_is_not_called_the_same(monkeypatch) 
 def test_a_replay_with_the_same_selected_ids_is_the_same_answer(monkeypatch) -> None:
     _gateway(monkeypatch, post={"created": False, "activity": {"content": {"selected": ["a"]}, "in_reply_to": QID}})
     approve(monkeypatch)
-    assert "same answer" in _run(skill_projects.answer_agent_question(RUN, selected="a"))
+    assert "same answer" in _run(skill_projects.answer_agent_question(RUN, option_ids="a"))
 
 
 def test_duplicate_ids_are_refused_before_the_card(monkeypatch) -> None:
     calls = _gateway(monkeypatch, run=_open_run(multiple=True))
     asked = approve(monkeypatch)
-    said = _run(skill_projects.answer_agent_question(RUN, selected="a,a"))
+    said = _run(skill_projects.answer_agent_question(RUN, option_ids="a,a"))
     assert "twice" in said
     assert asked == [] and writes(calls) == []
 

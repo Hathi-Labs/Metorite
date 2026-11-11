@@ -933,6 +933,8 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "unpin_authority": [{"project_id": UUID, "pin_id": PIN_ID}],
     # WS-ALN ALN-2a: one answer per card
     "answer_decision": [{"decision_id": DECISION_ID, "answer_key": "yes"}],
+    # WS-55 EA-18d: the run is the fake's one open run; the card then posts one prompt.
+    "answer_agent_question": [{"run_id": UUID, "answer": "Use the staging box"}],
     # SW-43c: the member's own answer to an agent, taken back or changed
     "change_agent_answer": [
         {"task_id": UUID, "withdraw": True},

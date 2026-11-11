@@ -118,12 +118,12 @@ def _pick_refusal(question: dict[str, Any], options: list[dict[str, Any]], picke
     if not picked:
         return ""
     if len(set(picked)) != len(picked):
-        return "selected names the same option twice. Nothing was changed."
+        return "option_ids names the same option twice. Nothing was changed."
     ids = {str(o.get("id")) for o in options}
     if not ids:
-        return "This question has no options, so selected does not apply. Answer in text."
+        return "This question has no options, so option_ids does not apply. Answer in text."
     if not set(picked) <= ids:
-        return f"selected must be option ids from: {', '.join(sorted(ids))}. Nothing was changed."
+        return f"option_ids must be option ids from: {', '.join(sorted(ids))}. Nothing was changed."
     if len(picked) > 1 and not (question.get("signal_metadata") or {}).get("allow_multiple"):
         return "This question takes one option. Nothing was changed."
     return ""
@@ -144,10 +144,10 @@ def _outcome(written: Any, question: dict[str, Any], text: str, picked: list[str
 
 
 @_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
-async def answer_agent_question(run_id: str, answer: str = "", selected: str = "") -> str:
+async def answer_agent_question(run_id: str, answer: str = "", option_ids: str = "") -> str:
     """Answer ONE question that an agent put and that waits on the member. run_id
     comes from agent_questions. Send what the member said, in answer (free text),
-    selected (the option id, from agent_questions, or several ids split by a
+    option_ids (the option id, from agent_questions, or several ids split by a
     comma), or both. Never invent an answer. A card shows the question and the
     answer, and nothing is sent until the member confirms. The server decides if
     this member may answer, and a refusal comes back in one sentence. A request
@@ -157,7 +157,7 @@ async def answer_agent_question(run_id: str, answer: str = "", selected: str = "
         return f"{REFUSED} {NO_PERSON_TEXT} Nothing was changed."
     rid = uuid_of(run_id, "run_id")
     text = str(answer or "").strip()
-    picked = [p.strip() for p in str(selected or "").split(",") if p.strip()]
+    picked = [p.strip() for p in str(option_ids or "").split(",") if p.strip()]
     if refusal := _input_refusal(text, picked):
         return refusal
     payload = (await get(f"/projects/agent-runs/{rid}")) or {}

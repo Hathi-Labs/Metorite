@@ -1397,7 +1397,7 @@ CARD_WRITE_KEY = "card_write"
 HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     # The Projects core pack.
     "add_subtasks": _pin("task_id titles"),
-    "answer_agent_question": _pin("run_id answer selected"),
+    "answer_agent_question": _pin("run_id answer option_ids"),
     "assign": _pin("task_id assignees"),
     "comment": _pin("task_id body reply_to"),
     "complete": _pin("task_id include_subtasks"),
