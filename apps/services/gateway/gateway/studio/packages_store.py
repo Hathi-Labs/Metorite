@@ -55,6 +55,17 @@ is the backstop. Each writes its ``app_audit`` row in the same transaction.
 approval is J2. The install is WS-PKG, and ``apps.live_version`` is only the
 pointer of the author.
 
+**The save history (G17).** ``studio_draft_revisions`` holds each save of
+a draft: the whole manifest, its hash, a diff, a message and the author. The
+migration that adds the table (406 at build) owns its schema. A caller opts
+in: :func:`create_package` and :func:`update_manifest` append a revision only
+with an ``author``, so each caller from before G17 writes as before.
+:func:`revert_to_revision` appends a NEW revision, so a revert loses none.
+:func:`publish_version` with ``name_revision=True`` writes the revision that
+it took in ``app_versions.draft_revision``. The store never updates or
+deletes a revision. ``tests/unit/test_studio_draft_revisions_r8.py`` runs
+this SQL on a real Postgres.
+
 **The delete (A5c-1).** :func:`delete_preview` counts what a delete takes
 and gives :func:`confirm_token` of the counts. :func:`delete_package` is one
 step in the caller's transaction: the package row ``FOR UPDATE`` first, then
