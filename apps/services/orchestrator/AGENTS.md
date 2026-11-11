@@ -122,6 +122,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - `PACK_RUN_KEY` and `PACKS_KEY` go into the run binding after `bind_artifact_context`. `_run_sub_agent_streaming` drops both from a child's context. A spawn child (the worker) gets the key of its own pack tools instead (OA-9c, `_job_pack_keys`), and the batch run binds it again. Fence: `test_spawn_subagents.py`.
    - `tool_packs.delegation_refusal` is the ONE refusal rule. `_run_sub_agent_streaming`, `agent_tools.call_agent` and `call_agents_parallel` ask it. Do not add a refusal with a rule of its own. The "Delegatable agents" block leaves out an agent only while the run refuses the hand-off to it (`PACK_REFUSED_ATTR`).
    - `_pack_base_count` reads the same scope and withheld names as `_inject_agent_tools`. Change both together. Pack names stay out of `run_tools`.
+   - WS-STU F3: `_turn_with_skills` is the ONE reader of the published skills of a turn, inside `_apply_tool_packs`. It needs `STUDIO_ORGS` and `feature:studio`, the bound tenant and the verified member of the turn, and it fails closed. A skill pack adds no tool. `_skills_present` drops a skill whose tool the run does not hold. Fences: `test_skill_packs.py`, `test_skill_packs_r8.py` (R8).
    - `_record_pack_call` holds a lock of the chat around the email working set. Its event goes through `_emit_to_run_or_relay`.
    - Fences: `test_tool_packs_choice.py`, `test_tool_packs_off.py`.
 
