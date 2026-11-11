@@ -20,6 +20,7 @@ router of ``actions.py``, as ``skills.py`` and ``invoke.py`` do, so
 ``DELETE /packages/{id}/install``        remove an org or group install (200)
 ``POST /packages/{id}/keep``             keep the private install (200)
 ``POST /packages/{id}/restore``          restore the private install (200)
+``GET /packages/{id}/lifetime``          the lifetime of the private install
 =======================================  ======================================
 
 **The switch.** The first line of each handler reads ``STUDIO_ORGS``. An org
@@ -134,6 +135,14 @@ store call takes the org lock and the row lock.
   member: 409 ``state_refused`` (a keep of an archived install, a restore of
   an install that is not archived), 409 ``restore_closed`` (the 30 days
   ended), 404 ``app_not_installable`` and 404 ``install_not_found``.
+
+**The lifetime read (WS-PKG PKG-10e-1, ``package_host.md`` §6.2).**
+``GET /packages/{id}/lifetime`` gives the state, ``ends_at``,
+``archived_at`` and ``restore_until`` of the private install of the owner,
+and ``now`` from the server clock. The order and the owner rule are the ones
+of Keep and Restore (``_owned_private_install``). An owner with no private
+install gets 200 ``{"install": null}``, not 409. The store read
+(``host_store.read_lifetime``) takes no lock and writes no audit row.
 
 **The answers.** 422 holds ``{message, errors: [{path, message}]}`` with at
 most :data:`MAX_PROBLEMS` errors. 409 holds ``{code, message, ...}``:
@@ -1118,20 +1127,30 @@ async def uninstall_package(
 # ── Keep and Restore of the private install (WS-PKG PKG-10d) ───────────────
 
 
-async def _own_private_install(db: Any, user: UserContext, pid: str) -> str:
-    """The id of the private install of the session member for the package
-    *pid*, in the session *db*.
+async def _owned_private_install(db: Any, user: UserContext, pid: str) -> str | None:
+    """The ONE owner rule of the private install (PKG-10d, PKG-10e-1). It
+    answers the id of the private install of the session member for the
+    package *pid*, in the session *db*, or None when the owner has none.
 
     ``lock_for_install`` first holds the ``apps`` row ``FOR KEY SHARE``: the
     lock order of §5.5, before the org lock of the install store. It answers
     None for a package of another member or org, an App Workshop app and an
-    archived package, so each of them is 404 ``Not found``. An owner with
-    no private install gets 409 :data:`PRIVATE_ONLY`."""
+    archived package, so each of them is 404 ``Not found``. Keep and Restore
+    call it through :func:`_own_private_install`. The lifetime read calls it
+    direct."""
     with _store_errors():
         target = await store.lock_for_install(db, user.email, pid)
     if target is None:
         raise _not_found()
-    found = await host_store.private_install_id(db, app_id=pid, member=user.email or "")
+    return await host_store.private_install_id(db, app_id=pid, member=user.email or "")
+
+
+async def _own_private_install(db: Any, user: UserContext, pid: str) -> str:
+    """The id of the private install of the session member for the package
+    *pid*, through :func:`_owned_private_install`. An owner with no private
+    install gets 409 :data:`PRIVATE_ONLY`, because Keep and Restore have no
+    row to change."""
+    found = await _owned_private_install(db, user, pid)
     if found is None:
         raise HTTPException(status_code=409, detail={
             "code": PRIVATE_ONLY, "message": NO_PRIVATE_INSTALL})
@@ -1199,3 +1218,41 @@ async def restore_package(
     _log.info("studio.packages.restored", package_id=pid)
     return {"install": {"id": install_id, "app_id": pid, "state": "active",
                         "ends_at": ends_at}}
+
+
+def _iso(at: datetime | None) -> str | None:
+    return None if at is None else at.isoformat()
+
+
+@router.get("/packages/{package_id}/lifetime")
+async def package_lifetime(
+    package_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The lifetime of the private install of a package of the caller
+    (``package_host.md`` §6.2, PKG-10e-1). The end-date bar of PKG-10e-2
+    reads it.
+
+    The owner rule is the one of Keep and Restore. An owner with no private
+    install gets 200 ``{"install": null}``, so the page shows no bar.
+    ``restore_until`` is ``archived_at`` plus 30 days for an archived install.
+    ``now`` is the server clock, so the page counts days with no browser
+    clock. The handler takes no body and no query (R5). It is a read, so it
+    writes no audit row."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not package_host_allowed(user.organization_id):
+        raise _not_found()
+    pid = _package_id(package_id)
+    async with _tenant_session() as db:
+        install_id = await _owned_private_install(db, user, pid)
+        life = (None if install_id is None
+                else await host_store.read_lifetime(db, install_id=install_id))
+    if life is None:
+        return {"install": None}
+    restore_until = (life.archived_at + host_store.RESTORE_DAYS
+                     if life.state == "archived" and life.archived_at is not None else None)
+    return {"install": {"state": life.state, "ends_at": _iso(life.ends_at),
+                        "archived_at": _iso(life.archived_at),
+                        "restore_until": _iso(restore_until),
+                        "now": datetime.now(UTC).isoformat()}}

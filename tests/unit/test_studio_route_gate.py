@@ -117,6 +117,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     # WS-PKG PKG-10d, Keep and Restore of the private install.
     ("POST", "/studio/packages/{package_id}/keep"),
     ("POST", "/studio/packages/{package_id}/restore"),
+    # WS-PKG PKG-10e-1, the lifetime read of the private install.
+    ("GET", "/studio/packages/{package_id}/lifetime"),
     # B2a to B2c, the action door.
     ("POST", "/studio/apps/{app_id}/actions/{action}"),
 )
