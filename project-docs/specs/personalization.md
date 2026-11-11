@@ -4165,11 +4165,12 @@ merge confirms the number (R1).
 
 ---
 
-## 19. How I work: the member model of how the member acts (PROPOSED, 2026-11-11)
+## 19. How I work: the member model of how the member acts (ACCEPTED, 2026-11-11)
 
-**Status: PROPOSED, 2026-11-11. Nothing is built.** Owner ask of 2026-11-11,
-in chat. Epic task 2876. It extends §4, §12 and §15, and it changes no rule
-of them. The decisions D-PZ-47 to D-PZ-52 of §19.12 wait on the owner.
+**Status: ACCEPTED, 2026-11-11 (D212). Nothing is built.** Owner ask of
+2026-11-11, in chat. Epic task 2876. It extends §4, §12 and §15, and it
+changes no rule of them. The owner accepted the decisions D-PZ-47 to
+D-PZ-52 of §19.12 the same day.
 
 ### 19.1 The owner's ask
 
@@ -4348,9 +4349,11 @@ Only the member reads the page (D-PZ-3). An admin sees nothing of it.
 306) unblocks part 2 of MM-6, and MM-7. The gate of PZ-12 is the consent
 wording.
 
-### 19.12 Decisions for the owner
+### 19.12 Decisions
 
-| # | Question | Default |
+The owner accepted each default in chat on 2026-11-11, recorded as **D212**.
+
+| # | Question | Decision |
 |---|---|---|
 | **D-PZ-47** | May Metorite record the member's own acts, with no text, to learn habits? | Yes. It follows the learning switch, and it stays dark until the owner says |
 | **D-PZ-48** | May Metorite act on a habit by itself? | No. It suggests. An automatic act needs a rule that the member approved on a card |
