@@ -65,7 +65,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import pytest
@@ -1240,6 +1240,52 @@ class TestTheProtocolBlock:
         monkeypatch.setattr(get_settings(), "agent_protocol_orgs", "*")
         await self._result()
         assert board.paths() == before
+
+
+class TestTheHandoffNote:
+    """SW-24. ``handoff`` leads the result, as untrusted text, and is absent
+    when no run left a note.
+
+    Mutations (R7):
+
+    * a text leaves bare: ``test_the_note_leads_and_each_text_is_untrusted``.
+    * the key shows with no note: ``test_no_note_means_no_key``.
+    * a tool drops ``handoff`` from its input:
+      ``test_the_run_tools_take_a_handoff_and_it_is_optional``.
+    """
+
+    NOTE: ClassVar[dict[str, str]] = {"done": "Built it.", "left": "The UI.", "evidence": "PR 12.",
+            "next": "Add the card.", "actor": ME, "actor_via": "mcp:claude.ai:claude-code",
+            "run_id": "11111111-1111-4111-8111-111111111111",
+            "created_at": "2026-11-11T06:00:00Z"}
+
+    async def test_the_note_leads_and_each_text_is_untrusted(self, board):
+        board.answers[("GET", f"/projects/tasks/{TASK}/agent-runs")] = (
+            200, {"rows": [], "handoff": self.NOTE})
+        body = await _context()
+        assert next(iter(body)) == "handoff"
+        note = body["handoff"]
+        for key in ("done", "left", "evidence", "next"):
+            assert note[key] == {"untrusted_text": self.NOTE[key]}
+        assert note["client"] == "Claude Code"
+        assert note["run_id"] == self.NOTE["run_id"]
+        assert SENTINEL not in json.dumps(note)
+
+    async def test_no_note_means_no_key(self, board):
+        board.answers[("GET", f"/projects/tasks/{TASK}/agent-runs")] = (
+            200, {"rows": [], "handoff": None})
+        assert "handoff" not in await _context()
+
+    def test_the_run_tools_take_a_handoff_and_it_is_optional(self):
+        for tool in (tools.FINISH_AGENT_RUN, tools.RELEASE_TASK):
+            schema = tool.input_schema
+            assert "handoff" in schema["properties"] and "handoff" not in schema["required"]
+            note = schema["properties"]["handoff"]
+            assert set(note["properties"]) == {"done", "left", "evidence", "next"}
+            assert note["additionalProperties"] is False
+            assert all(p["maxLength"] == 1000 for p in note["properties"].values())
+        out = tools.GET_TASK_CONTEXT.output_schema
+        assert "handoff" in out["properties"] and "handoff" not in out["required"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
