@@ -25,8 +25,9 @@ CORE = CONTENT_DIR / "kit" / "agents-md.md"
 MAX_LINES = 150
 # The one place the test reads the kit version: a line "kit_version: N" in the core.
 VERSION_LINE = re.compile(r"^kit_version: (\d+)$", re.M)
-# Tools that the playbook names and that the edge does not list yet (PB-6).
-PLANNED_TOOLS = {"read_playbook"}
+# Tools that the playbook names and that the edge does not list yet. None today:
+# read_playbook shipped with PB-3a, so a tool name that is not in TOOLS now fails.
+PLANNED_TOOLS: set[str] = set()
 PROMPTS = {"set_up_agent_team", "plan_slices", "write_brief", "review_my_fleet", "run_retro", "work_on_task"}
 PROTOCOL = [
     ("my_work", "claim_task"),

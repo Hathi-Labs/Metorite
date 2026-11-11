@@ -80,7 +80,7 @@ describe("the section shows only when a request waits", () => {
     const view = src.slice(src.indexOf('data-testid="agents-view"'));
     const waiting = view.indexOf("<WaitingRequests />");
     expect(waiting).toBeGreaterThan(0);
-    for (const before of ["<ConnectCard />", "<DeleteSwitchCard />", 'testId="agents-mine"', 'testId="agents-org"']) {
+    for (const before of ["<ConnectCard ", "<DeleteSwitchCard />", 'testId="agents-mine"', 'testId="agents-org"']) {
       expect(view.indexOf(before), before).toBeGreaterThan(0);
       expect(view.indexOf(before), before).toBeLessThan(waiting);
     }
