@@ -13,6 +13,7 @@ import {
   type ArchiveApprovalBody,
   type ArchiveApprovalResult,
   type AgentSummary,
+  type ReplaceBody,
   type WithdrawBody,
   agentRunRows,
   normalizeRunDetail,
@@ -3345,6 +3346,17 @@ export const agentRunsApi = {
   withdrawAnswer: (runId: string, body: WithdrawBody) =>
     call<{ run: AgentRun; activity: AgentActivity; withdrawn: boolean }>(
       `agent-runs/${encodeURIComponent(runId)}/answer/withdraw`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  /**
+   * SW-43b. The run's member swaps an answer that no agent has read for a new
+   * one, in one write. The same 404, 403 and 409 as the withdraw, and 422 for
+   * an id that is not an option. A retry with the same key writes once.
+   */
+  replaceAnswer: (runId: string, body: ReplaceBody) =>
+    call<{ run: AgentRun; activity: AgentActivity; replaced: boolean }>(
+      `agent-runs/${encodeURIComponent(runId)}/answer/replace`,
       { method: "POST", body: JSON.stringify(body) },
     ),
 
