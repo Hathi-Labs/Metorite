@@ -601,13 +601,14 @@ class TestTheFlag:
 
     async def test_the_list_says_whether_change_access_is_on(self, live, monkeypatch):
         """EA-17c-2. The view shows "Change access" only when the list says so."""
-        live.a.connection(MEMBER)
+        cid, _ = live.a.connection(MEMBER)
         body = (await _as(live, MEMBER, "GET", LIST)).json()
         assert body["change_access"] is True
+        assert cid in {c["id"] for c in body["connections"]}
         monkeypatch.setattr(get_settings(), "agent_change_access_orgs", "")
         body = (await _as(live, MEMBER, "GET", LIST)).json()
         assert body["change_access"] is False
-        assert len(body["connections"]) == 1
+        assert cid in {c["id"] for c in body["connections"]}
 
     async def test_agent_access_off_gives_404(self, live, monkeypatch):
         cid, _ = live.a.connection(MEMBER)

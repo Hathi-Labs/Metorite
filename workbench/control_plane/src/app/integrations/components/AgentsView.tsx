@@ -522,7 +522,7 @@ export default function AgentsView({ canManageOrg }: { canManageOrg: boolean }) 
   }
 
   return (
-    <div data-testid="agents-view"className="flex flex-1 flex-col gap-6 overflow-y-auto p-4 sm:p-6">
+    <div data-testid="agents-view" className="flex flex-1 flex-col gap-6 overflow-y-auto p-4 sm:p-6">
       {off ? null : <ConnectCard />}
 
       {off ? null : <DeleteSwitchCard />}
