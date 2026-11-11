@@ -404,6 +404,55 @@ class TestTheGuideFlag:
         assert "guide" not in json.loads(params["shell_prefs"])
 
 
+# ── The module runs flag (WS-STU STU-Q15a, `ai_studio.md` §14) ──────────────
+
+
+def _module_run_orgs(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "module_run_orgs", raw, raising=False)
+
+
+class TestTheModuleRunsFlag:
+    """`/studio` shows the Module Studio tab only when the read says
+    `module_runs: true`. `gateway.module_runs.module_runs_allowed` is the one
+    reader, and the org is the session's."""
+
+    @pytest.mark.parametrize(("raw", "org", "on"), [
+        ("*", "org-a", True),
+        ("org-b, ORG-A", "org-a", True),
+        ("org-b", "org-a", False),
+        ("", "org-a", False),
+        ("*", None, False),
+    ])
+    def test_the_read_says_module_runs_for_the_session_s_org(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+        raw: str, org: str | None, on: bool,
+    ) -> None:
+        _module_run_orgs(monkeypatch, raw)
+        assert _client(_in_org(org)).get("/auth/me/shell").json()["module_runs"] is on
+
+    def test_the_org_comes_from_the_session_never_the_request(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _module_run_orgs(monkeypatch, "org-b")
+        res = _client(_in_org("org-a")).get(
+            "/auth/me/shell?organization_id=org-b", headers={"X-Organization-Id": "org-b"},
+        )
+        assert res.json()["module_runs"] is False
+
+    def test_a_save_answers_with_the_flag_and_never_stores_it(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _module_run_orgs(monkeypatch, "*")
+        body = {"pins": ["/tasks"], "module_runs": False}
+        res = _client(_in_org("org-a")).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        assert res.json()["module_runs"] is True
+        [(_, params)] = _writes(fake)
+        assert "module_runs" not in json.loads(params["shell_prefs"])
+
+
 # ── The write ──────────────────────────────────────────────────────────────
 
 
@@ -412,7 +461,7 @@ class TestTheWrite:
         res = _client(_user()).put("/auth/me/shell", content="null",
                                    headers={"Content-Type": "application/json"})
         assert res.status_code == 200
-        assert res.json() == {**me.EMPTY_SHELL, "guide": False}
+        assert res.json() == {**me.EMPTY_SHELL, "guide": False, "module_runs": False}
         [(sql, params)] = _writes(fake)
         assert sql.startswith("UPDATE user_settings SET shell_prefs = NULL")
         assert params == {"uid": "ana@alpha.example"}
@@ -455,7 +504,7 @@ class TestTheRead:
     def test_no_row_is_never_asked(self, fake: _FakeDB) -> None:
         res = _client(_user()).get("/auth/me/shell")
         assert res.status_code == 200
-        assert res.json() == {**me.EMPTY_SHELL, "guide": False}
+        assert res.json() == {**me.EMPTY_SHELL, "guide": False, "module_runs": False}
 
     def test_a_failed_read_is_503_never_the_empty_layout(self, fake: _FakeDB) -> None:
         fake.fail = True
@@ -469,7 +518,7 @@ class TestTheRead:
         assert body == {"preset": None, "answered": "skipped", "pins": ["/tasks"],
                         "known": None, "cardOrder": None, "newOrder": ["capture"],
                         "chat_first_message_at": None, "tour_seen_at": None,
-                        "buddy_hello_at": None, "guide": False}
+                        "buddy_hello_at": None, "guide": False, "module_runs": False}
 
     def test_a_stale_known_entry_is_dropped_not_refused(self, fake: _FakeDB) -> None:
         fake.stored = json.dumps({"answered": "answered", "preset": "engineer",
