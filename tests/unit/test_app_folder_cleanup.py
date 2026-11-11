@@ -14,6 +14,8 @@ b. The removal never runs under a write that still runs. The writer
 c. A read-only file in a read-only folder goes. A failure that stays is
    logged with the folder, and never with the contents of a file.
 d. The delete sweep removes an old tombstone and keeps a new one.
+e. A restore that cannot put the folder back renames the tombstone to
+   ``.restore-failed-*``, and the sweep never removes that copy.
 
 **The mutations (R7).**
 
@@ -23,6 +25,8 @@ d. The delete sweep removes an old tombstone and keeps a new one.
   the late write makes the folder again.
 * M4. ``_remove_folder``: no ``onexc``. Test c goes red.
 * M5. ``_sweep_tombstones``: no age check. Test d goes red.
+* M6. ``_restore_tombstone``: keep the ``.deleted-*`` name on a failure.
+  Test e goes red.
 """
 
 from __future__ import annotations
@@ -257,3 +261,45 @@ def test_a_tombstone_name_is_never_a_slug_or_a_clean_app_path(tmp_path: Path) ->
     assert not SLUG_RE.match(tomb.name)
     with pytest.raises(HTTPException):
         clean_app_rel(tomb.name)
+
+
+# ── e. A failed restore keeps the only copy out of the sweep ─────────────
+
+
+def test_a_failed_restore_keeps_the_tombstone_out_of_the_sweep(tmp_path: Path) -> None:
+    app_id = "0b9e6c1e-0000-4000-8000-000000000001"
+    old_time = int(time.time()) - lifecycle._TOMBSTONE_MAX_AGE_S - 5
+    tomb = tmp_path / f"{lifecycle._TOMBSTONE_PREFIX}{app_id}-{old_time}"
+    tomb.mkdir()
+    (tomb / "index.html").write_text(_SECRET, encoding="utf-8")
+    # A read rebuilt the folder while the delete was open.
+    workspace = tmp_path / "an-app"
+    workspace.mkdir()
+    (workspace / "index.html").write_text("rebuilt", encoding="utf-8")
+
+    with structlog.testing.capture_logs() as caps:
+        lifecycle._restore_tombstone(tomb, workspace)
+
+    kept = tmp_path / f"{lifecycle._RESTORE_FAILED_PREFIX}{app_id}-{old_time}"
+    assert not tomb.exists(), "the copy kept its .deleted- name"
+    assert (kept / "index.html").read_text(encoding="utf-8") == _SECRET
+    assert (workspace / "index.html").read_text(encoding="utf-8") == "rebuilt"
+    [line] = [c for c in caps if c["event"] == "apps.tombstone_restore_failed"]
+    assert line["tombstone"] == kept.name
+    assert _SECRET not in repr(line)
+
+    lifecycle._sweep_tombstones(tmp_path)
+
+    assert (kept / "index.html").read_text(encoding="utf-8") == _SECRET, (
+        "the sweep removed the only copy of the app")
+
+
+def test_a_restore_failed_name_is_never_a_slug_or_a_clean_app_path() -> None:
+    from fastapi import HTTPException
+    from gateway.routes.apps._common import SLUG_RE, clean_app_rel
+
+    name = f"{lifecycle._RESTORE_FAILED_PREFIX}0b9e6c1e-0000-4000-8000-000000000000-1"
+    assert not name.startswith(lifecycle._TOMBSTONE_PREFIX)
+    assert not SLUG_RE.match(name)
+    with pytest.raises(HTTPException):
+        clean_app_rel(name)

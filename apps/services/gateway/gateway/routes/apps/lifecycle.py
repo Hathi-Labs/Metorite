@@ -479,6 +479,10 @@ class _NewFolder:
 #: ``clean_app_rel`` refuses it, so no route reaches a tombstone as an app.
 _TOMBSTONE_PREFIX = ".deleted-"
 
+#: The name of a tombstone that a failed restore could not put back. It
+#: starts with a dot too, and :func:`_sweep_tombstones` never matches it.
+_RESTORE_FAILED_PREFIX = ".restore-failed-"
+
 #: A tombstone older than this is a leftover of a delete that a restart
 #: stopped after its commit. The next hard delete removes it.
 _TOMBSTONE_MAX_AGE_S = 3600
@@ -853,14 +857,28 @@ def _move_to_tombstone(workspace: Path, tomb: Path) -> bool:
 
 
 def _restore_tombstone(tomb: Path, workspace: Path) -> None:
-    """Put the folder back after a delete that did not commit."""
+    """Put the folder back after a delete that did not commit.
+
+    The rename back can fail, for example when a read rebuilt the folder in
+    the meantime (``ensure_workspace``). The row still exists, so the
+    tombstone then holds the only full copy. It gets a
+    ``.restore-failed-`` name, which the sweep never removes, and an operator
+    recovers it by hand. When that rename fails too, the tombstone stays."""
     try:
         os.rename(tomb, workspace)
+        return
     except OSError as exc:
-        _log.error(
-            "apps.tombstone_restore_failed", tombstone=tomb.name,
-            folder=str(workspace), error=f"{type(exc).__name__}: {exc}"[:160],
-        )
+        error = f"{type(exc).__name__}: {exc}"[:160]
+    kept = tomb.with_name(_RESTORE_FAILED_PREFIX + tomb.name[len(_TOMBSTONE_PREFIX):])
+    try:
+        os.rename(tomb, kept)
+    except OSError as again:
+        kept = tomb
+        error = f"{error}; keep: {type(again).__name__}: {again}"[:240]
+    _log.error(
+        "apps.tombstone_restore_failed", tombstone=kept.name,
+        folder=str(workspace), error=error,
+    )
 
 
 def _remove_tombstone(root: Path, tomb: Path | None) -> None:
