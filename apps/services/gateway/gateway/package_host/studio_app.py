@@ -8,10 +8,15 @@ session of the publish, after ``sync_objects``, and only while
 ``flags.package_host_allowed`` holds the org.
 
 **One install for the owner.** The first publish writes one private install
-for the owner, with ``version`` the published number and no end date. Each
-later publish moves that install to the new version and replaces its claims
+for the owner, with ``version`` the published number. Each later publish
+moves that install to the new version and replaces its claims
 (``store.set_version``). So a publish never writes a second row and never
 answers 409 ``already_installed``.
+
+**The end date (PKG-12).** The route gives ``ends_at``. A publish from chat
+gives now plus ``store.CHAT_ENDS``, and a publish from the IDE gives None.
+Only the first publish writes it. ``set_version`` keeps the end date that
+the install holds, so a later publish never moves it.
 
 **Jobs (PKG-8c).** Each ``shell.jobs`` item with a verb and a view adds a
 ``jobs`` claim, keyed ``<app id>:<view>``. See :func:`_job_claims`.
@@ -50,6 +55,7 @@ from __future__ import annotations
 
 import unicodedata
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any
 
 from acb_auth.permissions import normalize_grant_subject
@@ -155,6 +161,7 @@ async def keep_private_install(
     version: int,
     owner: str,
     manifest: Mapping[str, Any],
+    ends_at: datetime | None,
 ) -> Install:
     """Keep the private install of *owner* at *version*, with its claims.
 
@@ -163,6 +170,9 @@ async def keep_private_install(
     exists, and writes it when it does not. A refusal of the store raises an
     :class:`store.InstallError`, and the route answers with its
     ``detail_for`` of the member.
+
+    *ends_at* is the end date of a new install (PKG-12). A move keeps the
+    end date that the install holds, so a move ignores *ends_at*.
     """
     claims = claims_of(app_id, manifest)
     moved = await store.set_version(
@@ -172,7 +182,7 @@ async def keep_private_install(
         return moved
     return await store.install(
         db, app_id=app_id, version=version, scope_subject=owner, scope_kind="private",
-        installed_by=owner, ends_at=None, contributions=claims)
+        installed_by=owner, ends_at=ends_at, contributions=claims)
 
 
 #: The scopes of the install route (PKG-8b). A private install comes with the

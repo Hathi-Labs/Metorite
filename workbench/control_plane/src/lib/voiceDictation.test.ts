@@ -152,13 +152,16 @@ describe("source fences", () => {
 
   it("the composer puts the transcript in the box and never sends it", () => {
     const start = chat.indexOf("const putDictation = useCallback(");
-    const end = chat.indexOf("}, [setInput, setComposerNotice]);", start);
+    const end = chat.indexOf("}, [setInput, setComposerNotice, focusQuietly]);", start);
     const body = chat.slice(start, end);
     expect(start).toBeGreaterThan(0);
     expect(end).toBeGreaterThan(start);
     expect(body).toContain("insertAtCaret(");
     expect(body).toContain("setInput(next.value)");
-    expect(body).toContain("box.focus()");
+    // Task 2867: the box takes focus on a desktop only. Dictation never opens
+    // a phone's keyboard (`lib/composerFocus.ts`).
+    expect(body).toContain("focusQuietly()");
+    expect(body).not.toContain("box.focus()");
     expect(body).not.toMatch(/submitText\(|sendMessage\(|steerMessage\(|handleSubmit\(/);
     // D-PZ-37: a program put the words in the box, so they carry no typed mark.
     expect(body).toContain("boxMarkRef.current = filled(boxMarkRef.current, false);");
