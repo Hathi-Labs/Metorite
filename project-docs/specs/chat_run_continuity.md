@@ -15,7 +15,7 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 | S7 — browser push for "needs your answer" and "finished" | The transport is BUILT and dark (WS-66 PN-1, 2026-10-25). The two chat events are not built (H-289). D-2 is decided: opt-in per member |
 | The run cap — 5 live runs per member (D-3) | **BUILT** 2026-10-10, branch `ws51-run-cap-and-todos`, no flag |
 | §4.9 — a message sent during a run always steers it | **BUILT** 2026-10-12, branch `composer-always-steer`, no flag |
-| §4.9 — a steer is a user turn, and a Projects or CRM card closes on it (task 2494) | **BUILT** 2026-11-09, branch `steer-redraws-card-mt-fdaefd16`, no flag |
+| §4.9 — a steer is a user turn, and a Projects or CRM card closes on it (task 2494) | **BUILT** 2026-11-09, fix round 1 2026-11-11, branch `steer-redraws-card-mt-fdaefd16`, no flag |
 | §4.10 — one run status in the open chat | **BUILT** 2026-10-19, branch `chat-run-status`, no flag |
 | D-1 — a separate run worker | **DEFERRED** 2026-10-29 on evidence (§5). Not built |
 
@@ -888,6 +888,14 @@ steer. So these rules hold:
 - A Projects card (`skill_projects.writes._confirm`) and each CRM card set
   `close_on_steer`. A steer closes the card as REVISED, the tool writes
   nothing, and the model can show a new card with the change.
+- A closed card is not a decline, so its answer never says "Cancelled".
+  `_confirm` raises `refusals.CardClosedByChat`, and the Projects wrapper
+  gives the model `writes.CARD_REVISED`. Each CRM card returns
+  `_closed_by_chat`. A card with rows gives `ask_tools.REVISED_ROWS`, an
+  empty set that `is_revised` tells from a card with no ticks (fix round 1).
+- The session history stores each steer turn after its tool result
+  (`native_session_store.SessionHistoryProvider.after_run`). With
+  `MAF_NATIVE_SESSIONS` on, the next turn reads the member's words.
 - A Copilot SDK agent gets no steer turn. Its steer waits for the run end,
   and the follow-up below answers it.
 - Fence: `tests/unit/test_steer_user_turn.py`.

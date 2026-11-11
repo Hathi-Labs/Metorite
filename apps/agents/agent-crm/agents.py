@@ -747,6 +747,37 @@ async def _held_fields_block(payload: dict[str, Any], note: str = _ZOHO_NOTE) ->
     return body
 
 
+def _closed_by_chat(unchanged: str) -> str:
+    """The answer of a card that a chat message of the member closed (task 2494).
+
+    It is not a decline, so it never reads like the card's "Cancelled" line.
+    The member did not answer the card, and their words come next as their own
+    turn. *unchanged* says what was not written, for example "No lead was
+    created for Veena Rao."
+    """
+    return (
+        "The member wrote in the chat while the card was open, so the card is "
+        f"closed. {unchanged} The member's words come next, as their own chat "
+        "message. If they change this write, change it, keep every part they "
+        "did not ask to change, and call the tool again, so a new card shows. "
+        "If they ask about something else, answer that first, then ask whether "
+        "to show the card again."
+    )
+
+
+def _not_written(answer: Any, *, declined: str, unchanged: str) -> str:
+    """The answer of a CRM card that wrote nothing (task 2494).
+
+    *declined* when the member declined the card. :func:`_closed_by_chat` with
+    *unchanged* when a chat message of the member closed it
+    (``ask_tools.is_revised``). A closed card is no decline, so the model must
+    not read "that wasn't approved" and drop the member's change.
+    """
+    from acb_skills.ask_tools import is_revised
+
+    return _closed_by_chat(unchanged) if is_revised(answer) else declined
+
+
 def _names(rows: Any, field: str) -> list[str]:
     """Each row's human-facing name, verbatim — spacing and casing preserved."""
     return [
@@ -837,15 +868,20 @@ async def create_lead(
 
     from acb_skills.ask_tools import request_confirmation
     _where = f" at {payload['organization_name']}" if organization_name else ""
-    if not await request_confirmation(
+    answer = await request_confirmation(
         # Task 2494: the member's chat message closes the card, nothing is
         # written, and the model reads the message as a user turn.
         close_on_steer=True,
         title="Create this CRM lead?",
         detail=f"{name}{_where}" + (f" · {payload['email']}" if email else ""),
         context=await _held_fields_block(payload),
-    ):
-        return f"Cancelled — no lead was created for {name}."
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            declined=f"Cancelled — no lead was created for {name}.",
+            unchanged=f"No lead was created for {name}.",
+        )
     try:
         row = await _post("/crm/leads", payload)
     except _MirrorBlocked as blocked:
@@ -1079,15 +1115,20 @@ async def crm_create_pipeline(
 
     from acb_skills.ask_tools import request_confirmation
     note = _LEAD_PIPELINE_NOTE if which == "lead" else _PIPELINE_NOTE
-    if not await request_confirmation(
+    answer = await request_confirmation(
         # Task 2494: the member's chat message closes the card, nothing is
         # written, and the model reads the message as a user turn.
         close_on_steer=True,
         title=f"Create the {words['pipeline']} {title}?",
         detail=f"{title} · {words['pipeline']} · {start} · {count} {words['stages']}",
         context=await _held_fields_block(card, note=note),
-    ):
-        return f"Cancelled — no pipeline was created. {title} does not exist."
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            declined=f"Cancelled — no pipeline was created. {title} does not exist.",
+            unchanged=f"No pipeline was created. {title} does not exist.",
+        )
     try:
         made = await _post("/crm/pipelines", body)
     except _MirrorBlocked as blocked:
@@ -1236,15 +1277,20 @@ async def update_deal_status(
 
     title = _row_title("deals", deal if isinstance(deal, dict) else {})
     from acb_skills.ask_tools import request_confirmation
-    if not await request_confirmation(
+    answer = await request_confirmation(
         # Task 2494: the member's chat message closes the card, nothing is
         # written, and the model reads the message as a user turn.
         close_on_steer=True,
         title=f"Move this deal to {lane}?",
         detail=f"{title} → {lane}",
         context=await _held_fields_block({"deal": title, "stage": lane, **payload}),
-    ):
-        return f"Cancelled — {title} was not moved to {lane}."
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            declined=f"Cancelled — {title} was not moved to {lane}.",
+            unchanged=f"{title} was not moved to {lane}.",
+        )
     try:
         await _patch(f"/crm/deals/{record}", payload)
     except _MirrorBlocked as blocked:
@@ -1315,15 +1361,20 @@ async def log_activity(
 
     from acb_skills.ask_tools import request_confirmation
     label = ENTITY_LABELS[slug].lower()
-    if not await request_confirmation(
+    answer = await request_confirmation(
         # Task 2494: the member's chat message closes the card, nothing is
         # written, and the model reads the message as a user turn.
         close_on_steer=True,
         title=f"Log this {kind} on {target}?",
         detail=f"{target} ({label}) · {kind}: {line}",
         context=await _held_fields_block({label: target, **payload}),
-    ):
-        return f"Cancelled — nothing was logged on {target}: {line}"
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            declined=f"Cancelled — nothing was logged on {target}: {line}",
+            unchanged=f"Nothing was logged on {target}.",
+        )
     try:
         await _post(f"/crm/{slug}/{record}/activities", payload)
     except _MirrorBlocked as blocked:
@@ -1378,15 +1429,20 @@ async def convert_lead(
     payload: dict[str, Any] = {"deal": deal} if deal else {}
 
     from acb_skills.ask_tools import request_confirmation
-    if not await request_confirmation(
+    answer = await request_confirmation(
         # Task 2494: the member's chat message closes the card, nothing is
         # written, and the model reads the message as a user turn.
         close_on_steer=True,
         title="Convert this lead into a deal?",
         detail=f"{title} → {deal.get('name') or title}",
         context=await _held_fields_block({"lead": title, **deal}),
-    ):
-        return f"Cancelled — {title} was not converted."
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            declined=f"Cancelled — {title} was not converted.",
+            unchanged=f"{title} was not converted.",
+        )
     try:
         result = await _post(f"/crm/leads/{record}/convert", payload)
     except _MirrorBlocked as blocked:
@@ -1562,7 +1618,7 @@ async def crm_update_record(
     target = _row_title(slug, current)
     label = ENTITY_LABELS[slug].lower()
     from acb_skills.ask_tools import request_confirmation
-    if not await request_confirmation(
+    answer = await request_confirmation(
         # Task 2494: the member's chat message closes the card, nothing is
         # written, and the model reads the message as a user turn.
         close_on_steer=True,
@@ -1573,8 +1629,13 @@ async def crm_update_record(
             # `field <Name>` is the card's key for a field it has no line for.
             **{f"field {_human(k)}": f"{o} → {n}" for k, (o, n) in shown.items()},
         }),
-    ):
-        return f"Cancelled — {target} was not changed."
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            declined=f"Cancelled — {target} was not changed.",
+            unchanged=f"{target} was not changed.",
+        )
     try:
         await _patch(f"/crm/{slug}/{record}", payload)
     except _MirrorBlocked as blocked:
@@ -1653,15 +1714,20 @@ async def crm_update_task(
     link = await _linked_title(task)
     names = {"field Done": "Done", "field Due date": "Due date"}
     from acb_skills.ask_tools import request_confirmation
-    if not await request_confirmation(
+    answer = await request_confirmation(
         # Task 2494: the member's chat message closes the card, nothing is
         # written, and the model reads the message as a user turn.
         close_on_steer=True,
         title="Change this CRM task?",
         detail=f"{subject} · " + ", ".join(names[k] for k in lines),
         context=await _held_fields_block({"field Task": subject, **link, **lines}),
-    ):
-        return f"Cancelled — {subject} was not changed."
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            declined=f"Cancelled — {subject} was not changed.",
+            unchanged=f"{subject} was not changed.",
+        )
     try:
         await _patch(f"/crm/activities/{record}", payload)
     except _MirrorBlocked as blocked:

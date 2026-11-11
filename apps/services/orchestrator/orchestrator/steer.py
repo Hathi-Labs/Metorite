@@ -43,6 +43,7 @@ import itertools
 import json
 import time
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -662,6 +663,11 @@ STEER_TURNS_SOURCE_ID = "metorite-steer-turns"
 #: is a real user turn, and the mark only lets the run find it again.
 STEER_TURN_KEY = "metorite_steer_turn"
 
+#: The key of the run's :class:`SteerTurns` in ``SessionContext.metadata``,
+#: MAF's dict for the providers of one run. The session history reads it
+#: (``native_session_store.SessionHistoryProvider``).
+STEER_TURNS_KEY = "metorite_steer_turns"
+
 
 def take_steer_turns(thread_id: str | None) -> list[str]:
     """Take every waiting note of *thread_id* for the next model call.
@@ -711,7 +717,9 @@ class SteerTurns(ChatMiddleware):
     this object keeps each turn that it added, with the message that came
     before it, and puts it back in each later request of the same run. A
     request that no longer holds that message (a service that keeps the
-    history) gets no second copy.
+    history) gets no second copy. For the same reason the run's response
+    holds no steer turn, so a session history asks :meth:`in_place` for them
+    (:func:`with_steer_turns`).
     """
 
     def __init__(self, thread_id: str | None = None) -> None:
@@ -751,10 +759,68 @@ class SteerTurns(ChatMiddleware):
             _log.warning("steer.turns_failed")
         await call_next()
 
+    def in_place(self, messages: Sequence[Any]) -> list[Any]:
+        """*messages*, the run's response, with each steer turn in its place.
+
+        Each turn goes right after the message that came before it in its
+        model request. That is the same object, or the tool message with the
+        same call ids, because a streamed response builds new messages. A turn
+        whose message came before the response (the run's input) goes first.
+        A turn that *messages* already holds is not added again.
+        """
+        out = list(messages)
+        for anchor, turn in self._placed:
+            if any(m is turn for m in out):
+                continue
+            at = _after_anchor(out, anchor)
+            while at < len(out) and _is_steer_turn(out[at]):
+                at += 1
+            out.insert(at, turn)
+        return out
+
 
 def _is_steer_turn(message: Any) -> bool:
     props = getattr(message, "additional_properties", None) or {}
     return getattr(message, "role", None) == "user" and props.get(STEER_TURN_KEY) is True
+
+
+def _result_ids(message: Any) -> frozenset[str]:
+    """The call ids of the tool results in *message*."""
+    return frozenset(
+        str(c.call_id) for c in (getattr(message, "contents", None) or [])
+        if getattr(c, "type", None) == "function_result" and getattr(c, "call_id", None)
+    )
+
+
+def _after_anchor(messages: list[Any], anchor: Any) -> int:
+    """The index right after *anchor* in *messages*. See :meth:`SteerTurns.in_place`."""
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i] is anchor:
+            return i + 1
+    ids = _result_ids(anchor)
+    if not ids:
+        return 0
+    for i in range(len(messages) - 1, -1, -1):
+        if ids & _result_ids(messages[i]):
+            return i + 1
+    return len(messages)
+
+
+def with_steer_turns(context: Any, messages: Sequence[Any]) -> list[Any]:
+    """*messages* of one ``agent.run``, with each steer turn of that run in place.
+
+    MAF stores the input and the response of a run. Neither holds a steer
+    turn, so the session history calls this before it saves (task 2494).
+    The next turn then reads the member's words as their own turn, after the
+    tool result. With no steer it gives *messages* unchanged. Never raises.
+    """
+    try:
+        turns = (getattr(context, "metadata", None) or {}).get(STEER_TURNS_KEY)
+        if isinstance(turns, SteerTurns):
+            return turns.in_place(messages)
+    except Exception:  # a save must go on whatever happens here
+        _log.warning("steer.history_turns_failed")
+    return list(messages)
 
 
 class SteerTurnsProvider(ContextProvider):
@@ -762,7 +828,9 @@ class SteerTurnsProvider(ContextProvider):
 
     ``_tool_injection._apply_steer_turns`` attaches it as a per-run view, so
     the shared agent object never holds it. It adds no tool, no instruction
-    and no message of its own.
+    and no message of its own. It keeps the run's :class:`SteerTurns` in
+    ``context.metadata`` (:data:`STEER_TURNS_KEY`), so the session history of
+    the run can store each steer turn (:func:`with_steer_turns`).
     """
 
     def __init__(self) -> None:
@@ -771,7 +839,9 @@ class SteerTurnsProvider(ContextProvider):
     async def before_run(
         self, *, agent: Any, session: Any, context: Any, state: dict[str, Any],
     ) -> None:
-        context.extend_middleware(self.source_id, [SteerTurns()])
+        turns = SteerTurns()
+        context.metadata[STEER_TURNS_KEY] = turns
+        context.extend_middleware(self.source_id, [turns])
 
 
 def format_replayed(signals: list[dict[str, Any]]) -> str:

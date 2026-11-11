@@ -2809,8 +2809,8 @@ def _inject_agent_tools(
                     for t in _do["tools"]
                 }
                 # Gate the agent's OWN tools too, BEFORE the injected ones
-                # join the list (they are gated above already). Same B6 gate
-                # and steer drain the Copilot branch gives its own tools.
+                # join the list (they are gated above already). The same B6
+                # gate that the Copilot branch gives its own tools.
                 _gate_own_maf_tools(_do["tools"])
                 for fn in _extra_tools:
                     if fn.__name__ not in existing_names:

@@ -99,7 +99,7 @@ from skill_projects.reads import (
     saved_when,
     when_text,
 )
-from skill_projects.refusals import REFUSED
+from skill_projects.refusals import REFUSED, CardClosedByChat
 
 try:
     from acb_skills.tool_annotations import annotate as _annotate
@@ -240,26 +240,45 @@ async def _confirm(
     With ``rows`` (WS-46 P13 one-card), the card draws one checkbox per row,
     and the answer is the ``frozenset`` of the ticked row ids: empty when the
     member did not approve. With no rows, the call is exactly as before.
+
+    Task 2494: a chat message of the member closes the card
+    (``close_on_steer``). Then this raises :class:`CardClosedByChat` with
+    :data:`CARD_REVISED`, so no line after the card runs and nothing is
+    written. ``refusals.refusals_as_text`` gives that text to the model, which
+    reads the member's message as a user turn and can show a new card.
     """
-    from acb_skills.ask_tools import request_confirmation
+    from acb_skills.ask_tools import is_revised, request_confirmation
 
     await _check_card(context)
     # `fenced`: every member value on these cards is in «marks» (`data()`),
     # so the client draws each one as a token and never shows the marks.
-    # Task 2494: a chat message of the member closes the card, nothing is
-    # written, and the model reads the message as a user turn and can show a
-    # new card with the change (`close_on_steer`).
     if rows is None:
-        return await request_confirmation(
+        answer = await request_confirmation(
             title=title, detail=detail, context=context, fenced=True, close_on_steer=True
         )
-    return await request_confirmation(
-        title=title, detail=detail, context=context, rows=rows, fenced=True,
-        close_on_steer=True,
-    )
+    else:
+        answer = await request_confirmation(
+            title=title, detail=detail, context=context, rows=rows, fenced=True,
+            close_on_steer=True,
+        )
+    if is_revised(answer):
+        raise CardClosedByChat(CARD_REVISED)
+    return answer
 
 
 CANCELLED = "Cancelled — nothing was changed."
+
+#: The answer of a card that a chat message of the member closed (task 2494).
+#: It is not a decline: the member did not answer the card, and their words
+#: come next as their own turn. So it must never read like :data:`CANCELLED`.
+CARD_REVISED = (
+    "The member wrote in the chat while the card was open, so the card is "
+    "closed. Nothing was changed. The member's words come next, as their own "
+    "chat message. If they change this act, change it, keep every part they "
+    "did not ask to change, and call the tool again, so a new card shows. If "
+    "they ask about something else, answer that first, then ask whether to "
+    "show the card again."
+)
 
 
 def _not_confirmed() -> str:

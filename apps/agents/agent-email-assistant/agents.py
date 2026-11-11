@@ -2481,7 +2481,7 @@ _CARD_REVISED = (
     "The member wrote in the chat while the card was open, so the card is "
     "closed. Nothing was sent. The draft of this reply in Drafts holds the "
     "text of the card, and a new card updates it. The member's words come "
-    "next, as their own chat message (task 2494). If "
+    "next, as their own chat message. If "
     "they change this mail, change it, keep every part they did not ask to "
     "change, and show a new card with the new text. If they ask about "
     "something else, answer that first, then ask whether to show the card "

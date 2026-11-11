@@ -76,7 +76,6 @@ from __future__ import annotations
 
 import copy
 import functools
-import inspect
 import json
 import os
 import shlex
@@ -98,7 +97,7 @@ from agent_framework import (
 )
 
 from acb_skills.addendum import render_run_sections
-from acb_skills.egress import _register_platform_callable, _register_platform_wrapper
+from acb_skills.egress import _register_platform_callable
 from acb_skills.tool_guard import RefuseTools, WithholdTools, tool_name
 from acb_skills.write_artifact import announce_artifact, artifact_context
 
@@ -190,12 +189,6 @@ def _audit_decision(tool_name: str, command: str) -> tuple[bool, str]:
         would_deny=not approved, reason=code, surface="sandbox_tool",
     )
     return not enforced, code
-
-
-def _with_steer(text: str) -> Any:
-    """The tool's text, unchanged. Task 2494: a mid-run steer never joins a
-    tool result. The model reads it as a user turn (``steer.SteerTurns``)."""
-    return text
 
 
 def _format(label: str, result: Any, saved: list[str]) -> str:
@@ -467,10 +460,11 @@ async def run_command(command: str, timeout_s: int = _DEFAULT_TIMEOUT_SECONDS) -
         The exit code, the time, the output (cut to its first and last 6 KB
         when it is long), and the files the command saved.
     """
-    text = await _run_in_sandbox(
+    # Task 2494: a mid-run steer never joins a tool result. The model reads
+    # it as a user turn of its next call (``orchestrator.steer.SteerTurns``).
+    return await _run_in_sandbox(
         command, timeout_s, tool_name="run_command", label="run_command",
     )
-    return _with_steer(text)
 
 
 async def request_network_access(reason: str, hosts: list[str]) -> str:
@@ -545,7 +539,6 @@ class SandboxScriptRunner:
         elif isinstance(args, (list, tuple)):
             argv = [str(a) for a in args]
         command = " ".join(shlex.quote(p) for p in ["python3", path, *argv])
-        # The steer drain runs at the tool, which _steered() wraps.
         return await self._run(
             command, _DEFAULT_TIMEOUT_SECONDS,
             tool_name="run_skill_script", label=f"skill script {script.name}",
@@ -730,31 +723,6 @@ class RefuseHostTools(RefuseTools):
 
 
 _one_tool_name = tool_name
-
-
-def _steered(item: Any) -> Any:
-    """A copy of a provider tool whose result drains a pending steer (review P2).
-
-    The B6 gate does this for an agent's own tools (``_gate_own_maf_tools``).
-    The file tools and the skill tools join the run through a context
-    provider, so the gate never sees them. The copy keeps the tool's name,
-    description and schema, and the original object is never changed.
-    """
-    func = getattr(item, "func", None)
-    if not callable(func) or getattr(func, "__cc_steered__", False):
-        return item
-
-    @functools.wraps(func)
-    async def call(*args: Any, **kwargs: Any) -> Any:
-        result = func(*args, **kwargs)
-        if inspect.isawaitable(result):
-            result = await result
-        return _with_steer(result)
-
-    call.__cc_steered__ = True  # type: ignore[attr-defined]
-    clone = copy.copy(item)
-    clone.func = _register_platform_wrapper(func, call)
-    return clone
 
 
 # ── Paged reads of the sandbox files (agent reads page, part 2) ─────────────
@@ -980,11 +948,10 @@ async def _add_tools(
     # Agent reads page, part 2: a window on each file read, a page on each list.
     context.tools[before:] = page_file_tools(context.tools[before:])
     # H-236: the provider tools ARE the platform's, so record each one by
-    # identity under its tool name before the steer wrap copies it.
+    # identity under its tool name. Task 2494: no tool result carries a steer,
+    # so these tools need no steer wrap. The model reads a steer as a user turn.
     for added in context.tools[before:]:
         _register_platform_callable(getattr(added, "func", None), _one_tool_name(added))
-    # The steer drain at every tool these two providers added (review P2).
-    context.tools[before:] = [_steered(t) for t in context.tools[before:]]
     context.extend_tools(SOURCE_ID, [tool(run_command, approval_mode="never_require")])
     context.extend_middleware(SOURCE_ID, [WithholdHostTools(), RefuseHostTools()])
     # WS-43u (§16.3): the rules for code, keyed on `run_command`. They come
