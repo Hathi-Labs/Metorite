@@ -39,7 +39,7 @@ _ALLOWED: dict[str, str] = {
 #: A regex literal that names a credential prefix: the prefix, then a class or alternation.
 _SHAPE_LITERAL = re.compile(
     r"sk-\\?\[|gh\\?\[pous|AKIA\\?[\[|]|AIza\\?\[|xox\\?\[|cc_(?:live|depl)[-_]?\\?\["
-    r"|github_pat_\\?\[|\\?\[spr\\?\]k_|\(\?:[a-z|]*(?:gsk|xai|pplx)\b|eyJ\\?\["
+    r"|github_pat_\\?\[|\\?\[spr\\?\]k_|\b[spr]k_(?:live|test)_|\b(?:sk|rk|pk)\)?_(?:live|test)_|\(\?:[spr|]*k\)?_(?:live|test)|\(\?:[a-z|]*(?:gsk|xai|pplx)\b|eyJ\\?\["
 )
 _SCAN_ROOTS = ("apps", "packages", "scripts", "evals")
 
@@ -132,3 +132,30 @@ def test_every_pattern_is_linear() -> None:
             rx.search(text)
             rx.sub("#", text)
     assert time.perf_counter() - start < 10.0
+
+
+@pytest.mark.parametrize(
+    "benign", ["fw-config-update", "gsk_summary", "csk_total_rows", "xai_grok_thing"]
+)
+def test_plain_words_are_not_scrubbed(benign: str) -> None:
+    text = f"see {benign} here"
+    for rx in REDACTION_SHAPES:
+        assert rx.sub("#", text) == text
+
+
+def test_real_shaped_vendor_keys_are_scrubbed() -> None:
+    for key in ("gsk_" + "a1B2" * 6, "xai-" + "q" * 20, "pplx-" + "z9" * 10):
+        out = f"k {key} e"
+        for rx in REDACTION_SHAPES:
+            out = rx.sub("#", out)
+        assert out == "k # e"
+
+
+@pytest.mark.parametrize(
+    "old", ["pk-abcdef12", "rk-abcdef12", "sk_other_abc123", "eyJh.b.c", "eyJhb_c.d-e.f9"]
+)
+def test_old_tool_refusals_coverage_is_kept(old: str) -> None:
+    out = f"x {old} y"
+    for rx in REDACTION_SHAPES:
+        out = rx.sub("#", out)
+    assert out == "x # y"

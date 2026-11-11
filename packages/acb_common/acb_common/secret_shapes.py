@@ -67,9 +67,10 @@ _NOT_WORD = r"(?<![A-Za-z0-9_])"
 #: short on purpose, so ``sk-abc123`` goes too. Every repeat is bounded and
 #: possessive, so the scan is linear.
 REDACTION_SHAPES: tuple[re.Pattern[str], ...] = (
-    re.compile(_NOT_WORD + r"sk-[A-Za-z0-9_-]{6,512}+"),
-    re.compile(_NOT_WORD + r"[spr]k_(?:live|test)_[A-Za-z0-9]{8,256}+"),
-    re.compile(_NOT_WORD + r"(?:gsk|xai|pplx|csk|fw)[-_][A-Za-z0-9_-]{6,512}+"),
+    # sk-, pk-, rk- and sk_<anything>_x: the old tool_refusals coverage.
+    re.compile(_NOT_WORD + r"[spr]k[-_][A-Za-z0-9_-]{6,512}+"),
+    # Other vendor prefixes read like plain words ("gsk_summary"), so they need a key-length tail.
+    re.compile(_NOT_WORD + r"(?:gsk|xai|pplx|csk)[-_][A-Za-z0-9_-]{16,512}+"),
     re.compile(_NOT_WORD + r"gh[pousr]_[A-Za-z0-9]{20,512}+"),
     re.compile(_NOT_WORD + r"github_pat_[A-Za-z0-9_]{20,512}+"),
     re.compile(_NOT_WORD + r"xox[abprs]-[A-Za-z0-9-]{6,512}+"),
@@ -77,7 +78,7 @@ REDACTION_SHAPES: tuple[re.Pattern[str], ...] = (
     re.compile(_NOT_WORD + r"(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])"),
     re.compile(_NOT_WORD + r"AIza[0-9A-Za-z_-]{6,512}+"),
     re.compile(
-        r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{5,256}+\.[A-Za-z0-9_-]{5,2048}+\.[A-Za-z0-9_-]{1,1024}+"
+        r"(?<![A-Za-z0-9_-])eyJ[\w-]{1,256}+\.[\w-]{1,2048}+\.[\w-]{1,1024}+"
     ),
 )
 #: A bearer value of any length, for scrubbing (the strict shape needs 16 characters).
