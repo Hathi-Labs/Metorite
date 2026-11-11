@@ -237,9 +237,23 @@ The brief holds no secret. The program plan (task 2546) holds the order of the p
 - **The delegation brief** (§6b) names the ladder: each rung, its demo task and its state. The entry point is the first ready slice of the lowest open rung.
 - **Done.** A rung is done when the owner of the project sees the demo and says so on the demo task. For a small rung, the captures are enough.
 
-**What carries the rule to every agent.** Epic task 2887 (WS-LAD) holds four slices.
+**Other ways of planning.** The ladder is the default, not the only way (D211 point 9). It is one block of the work-style catalogue of `project_management_app.md` §13.1.
+- The ladder is on by default in Flow, Sprints or Cycles, Shape Up and Personal. In Sprints, the review of a cycle is the demo of a rung. In Shape Up, a shipped bet is a rung.
+- The ladder is off by default in Plan-driven. That style plans by milestones, phase gates and the critical path to the end date.
+- A project owner can turn the ladder off or on for one project. An org admin sets the default for new projects (LAD-5).
+- A person can ask for another way at any time, in the app or in chat. The agent then plans in that way, says what changes, and does not add rungs.
+- Where the ladder is off, the order of work is the order of the style. For a plan-driven project, that is the least slack on the critical path (D195.6).
 
-LAD-1 (task 2888) teaches the rule in `kit/plan-the-work`, `kit/skill/planning`, `start-here` and the `plan_slices` prompt. LAD-2 makes the Projects planning AI draft the rungs first. LAD-3 shows the rungs and the next demo in `get_plan` and in the plan view. LAD-4 makes `my_work` take the nearest rung first. Until LAD-4 ships, an agent applies the order of this section by hand, with the `Rung N` tags and `get_plan`.
+**What carries the rule to every agent.** Epic task 2887 (WS-LAD) holds seven slices.
+
+- LAD-0 (task 2941) records that the ladder is the default and that other ways stay open.
+- LAD-1 (task 2888) teaches the rule in `kit/plan-the-work`, `kit/skill/planning`, `start-here` and the `plan_slices` prompt. LAD-1b (task 2943) teaches the other ways in the same pages.
+- LAD-5 (task 2942) adds the switch for each project and the org default.
+- LAD-2 makes the Projects planning AI draft the rungs first, where the ladder is on.
+- LAD-3 shows the rungs and the next demo in `get_plan` and in the plan view.
+- LAD-4 makes `my_work` take the nearest rung first, where the ladder is on.
+
+Until LAD-4 ships, an agent applies the order of this section by hand, with the `Rung N` tags and `get_plan`.
 
 **Fence.** `tests/unit/test_playbook_ladder.py` (LAD-1) proves that the planning pages and the `plan_slices` prompt state the demo task, the `Rung N` tag, rung 0 and rule 5. It checks words, so it cannot catch a page that contradicts the rule. The reviewer of a playbook change reads the pages against this section.
 

@@ -2065,6 +2065,12 @@ async def studio_skill_state(skill_id: str, state: str) -> dict[str, Any]:
 
 #: The A5 routes.
 PACKAGES_PATH = "/studio/packages"
+#: The origin that a publish from chat sends (WS-PKG PKG-12). The route reads
+#: it as ``packages.ORIGIN_CHAT``, and the first publish of the app writes the
+#: private install with an end date 30 days later (``package_host.md`` §6.2).
+#: The tool takes no org, member or date: the route reads them from the session
+#: and the server clock (R5).
+PUBLISH_ORIGIN = "chat"
 
 #: The tenant-Redis namespace of the approval record of a plan card. The key
 #: holds a hash of the member of the run and a hash of the manifest id, so a
@@ -2834,7 +2840,8 @@ async def studio_publish(package_id: str, notes: str = "") -> dict[str, Any]:
         # row lock (review round 1, P1).
         # The path is a literal, so the chat-parity fence reads the route (STU-G5).
         reply = await _send("POST", f"/studio/packages/{pid}/versions",
-                            {"notes": notes, "based_on": digest}, "publish",
+                            {"notes": notes, "based_on": digest,
+                             "origin": PUBLISH_ORIGIN}, "publish",
                             _PKG_MAYBE_PUBLISHED)
     except _Refused as exc:
         return _refusal(str(exc))

@@ -814,6 +814,7 @@ export function TaskList({
                         clientVia={task.agent_client_via}
                         memberEmail={task.agent_member_email}
                         note={task.agent_note}
+                        waiting={task.agent_waiting}
                         viewerEmail={me}
                         labels={personLabels}
                       />

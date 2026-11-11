@@ -1711,6 +1711,14 @@ async def get_plan(root_task_id: str) -> str:
                 )
     for sentence in (plan.get("missing") or {}).get("words") or []:
         out.append(f"Gap: {sentence} (counted as 0 minutes of work, so the date may be early).")
+    for sentence in (plan.get("gaps") or {}).get("words") or []:
+        out.append(f"Breakdown gap: {sentence}.")
+    not_ready = [r for r in plan.get("not_ready") or [] if isinstance(r, dict)]
+    if not_ready:
+        out.append(f"Not ready to start ({len(not_ready)}):")
+        for row in not_ready:
+            why = ", ".join(str(r) for r in row.get("reasons") or [])
+            out.append(f"  {_plan_name(labels, row.get('task_id'))}: {why}")
     if hidden.get("slices") or hidden.get("outside_blockers"):
         out.append(
             f"Hidden from this member: {hidden.get('slices', 0)} slices and"
