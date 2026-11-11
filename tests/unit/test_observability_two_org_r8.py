@@ -29,16 +29,26 @@ The setup, for each test:
 * Each route runs with the tenant of the viewer bound, as the request
   middleware does.
 
-Each test asserts three things, so no test can pass on an empty answer:
+Each reader test asserts three things, so it cannot pass on an empty answer:
 
 * org A sees its own markers;
 * org B sees its own markers;
 * the whole answer of org B holds no marker of org A, and the reverse.
 
+The one exception is ``dynamic_agents``. The roster reads it through the
+unbound ``get_session()``, so under FORCE RLS no org sees its own row. That
+test pins the isolation only.
+
+``model_config`` has no row policy. Its ``WHERE organization_id = %s`` is the
+only fence of the alias overlay, so this suite is the proof for it.
+
 Mutations this suite catches (R7). Each was run, and each turned it red:
 
-* M1: ``observability.runs`` opens ``tenant_session`` of a fixed org, not the
-  viewer's org. Org B reads org A's run (see the AGA-5 report).
+* M1: ``model_config.load_blob`` loses ``organization_id = %s``. Org B reads
+  the alias blob of org A: ``test_roster`` and
+  ``test_the_agent_alias_blob_reads_only_the_bound_org`` go red.
+* M2: ``observability.runs`` opens the unbound ``get_session()`` and not
+  ``tenant_session(org)``. Org A loses its own run: ``test_runs`` goes red.
 
 Run::
 
