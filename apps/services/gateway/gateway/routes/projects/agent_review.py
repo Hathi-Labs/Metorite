@@ -223,7 +223,8 @@ async def redirect_for(db: Any, user: UserContext, task: Any, target_status_id: 
 
     ``None`` when the rule does not apply: the flag is off, the caller is a
     person, the target is not a ``done`` lane of the task's own set, the task
-    is closed already, or the task's project does not need review. A target that is not in the set is
+    is done already, or the task's project does not need review. A cancelled
+    task is redirected. A target that is not in the set is
     left to ``apply_status_transition``, which refuses it as before.
     """
     if not review_on() or getattr(user, "agent", None) is None:
@@ -235,10 +236,11 @@ async def redirect_for(db: Any, user: UserContext, task: Any, target_status_id: 
     target = (await db.execute(text(_TARGET_SQL), {"sid": sid, "owner": owner})).fetchone()
     if target is None or target.category != COMPLETED_CATEGORY:
         return None
-    # A task that is closed already stays where it is: a repeated done never
-    # opens it again into review.
+    # A done task stays done: a repeated done never opens it again into
+    # review. A CANCELLED task is redirected like an open one, so an agent
+    # cannot undo a person's Cancel with a done that skips the review.
     current = (await db.execute(text(_CATEGORY_SQL), {"sid": str(task.status_id)})).fetchone()
-    if current is not None and current.category in CLOSING_CATEGORIES:
+    if current is not None and current.category == COMPLETED_CATEGORY:
         return None
     setting = (await db.execute(text(_SETTING_SQL), {"pid": str(task.project_id)})).fetchone()
     if setting is None or not setting.agent_work_needs_review:
@@ -275,12 +277,6 @@ _REQUEST_SQL = (
     " WHERE id = CAST(:tid AS uuid) AND agent_review_requested_at IS NULL"
     " RETURNING id"
 )
-_CLEAR_SQL = (
-    "UPDATE pm_tasks SET agent_reviewer = NULL, agent_review_requested_at = NULL,"
-    " updated_at = now()"
-    " WHERE id = CAST(:tid AS uuid) AND agent_review_requested_at IS NOT NULL"
-    " RETURNING id"
-)
 
 
 async def record_request(db: Any, user: UserContext, task_id: str, redirect: Redirect
@@ -306,40 +302,71 @@ async def settle_after_move(db: Any, user: UserContext, task_id: str, before: An
                             redirect: Redirect | None, moved: Any) -> bool:
     """The wait after a status move of the PATCH or of a Check report.
 
-    A redirect into the review lane starts the wait. Any other move ends a
-    wait that holds, whoever moved the task. True when it wrote, so the
-    caller reads the row again for its version.
+    A redirect into the review lane starts the wait. Every status move ends
+    a wait in ``core.apply_status_transition``, the one seam of a move, so
+    this function only starts one. True when it wrote, so the caller reads
+    the row again for its version. *before* and *moved* stay for the callers.
     """
+    del before, moved
     if redirect is not None and redirect.lane is not None:
         return await record_request(db, user, task_id, redirect)
-    if moved is None or getattr(before, "agent_review_requested_at", None) is None:
-        return False
-    return (await db.execute(text(_CLEAR_SQL), {"tid": task_id})).fetchone() is not None
+    return False
 
 
 #: The detail codes of a signed agent's move that would leave the review.
 MOVE_WAITING = "review_waiting"
+MOVE_LEAVES_REVIEW = "review_project"
 MOVE_NEEDS_REVIEW = "review_needed"
+
+_NEEDS_REVIEW_ANY_SQL = (
+    "SELECT id FROM pm_projects WHERE id = ANY(CAST(:ids AS uuid[]))"
+    " AND agent_work_needs_review LIMIT 1"
+)
+
+
+async def refuse_agent_move_out(db: Any, user: UserContext, rows: list[Any],
+                                dest_project_id: Any) -> None:
+    """A signed agent never moves work out of a reviewed project (SW-18a).
+
+    ``move._plan`` calls it for the named tasks AND each carried subtask, so
+    the preview and the apply refuse alike. A move out is a person's act,
+    because the destination may not need review: a new child project starts
+    with the setting off. While the flag is on, a signed agent gets 403 for a
+    task that waits for review, and for a task whose project needs review. A
+    task that stays in the destination is not checked. A person's move is
+    unchanged.
+    """
+    if not review_on() or getattr(user, "agent", None) is None:
+        return
+    leaving = [r for r in rows if str(r.project_id) != str(dest_project_id)]
+    if any(getattr(r, "agent_review_requested_at", None) is not None for r in leaving):
+        raise HTTPException(status_code=403, detail={
+            "error": MOVE_WAITING,
+            "message": "A task in this move waits for a person to review the "
+                       "agent's work, so a person moves it.",
+        })
+    ids = sorted({str(r.project_id) for r in leaving})
+    if ids and (await db.execute(text(_NEEDS_REVIEW_ANY_SQL), {"ids": ids})).fetchone():
+        raise HTTPException(status_code=403, detail={
+            "error": MOVE_LEAVES_REVIEW,
+            "message": "A person accepts agent work in this project, so a person "
+                       "moves work out of it.",
+        })
 
 
 async def refuse_agent_move(db: Any, user: UserContext, task: Any, dest_project_id: Any,
                             landing_category: str | None) -> None:
-    """A signed agent's bulk move keeps the review (SW-18a, ``move.move_tasks``).
+    """A signed agent's bulk move lands no task in ``done`` of a reviewed
+    project (SW-18a, ``move.move_tasks``).
 
-    A move with a ``status_map`` is a status move too, so an agent could land
-    its task in a ``done`` lane with no review. While the flag is on, a
-    signed agent gets 403 for a task that waits for review, and for a landing
-    in ``done`` when the source or the destination project needs review. A
+    A move with a ``status_map`` is a status move too. While the flag is on,
+    a signed agent gets 403 for a landing in ``done`` when the source or the
+    destination project needs review. :func:`refuse_agent_move_out` has
+    already refused a waiting task and a move out of a reviewed project. A
     person's move is unchanged.
     """
     if not review_on() or getattr(user, "agent", None) is None:
         return
-    if getattr(task, "agent_review_requested_at", None) is not None:
-        raise HTTPException(status_code=403, detail={
-            "error": MOVE_WAITING,
-            "message": "This task waits for a person to review the agent's work. "
-                       "A person moves it.",
-        })
     if landing_category != COMPLETED_CATEGORY:
         return
     for pid in sorted({str(task.project_id), str(dest_project_id)}):
@@ -520,7 +547,11 @@ async def decide_agent_review(
         raise HTTPException(status_code=404, detail="Task not found")
     # Imported here: `agent_runs` imports `tasks`, and `tasks` imports this
     # module, so a module import would make a cycle.
-    from gateway.routes.projects.agent_runs import close_reviewed_run, lock_open_task_run
+    from gateway.routes.projects.agent_runs import (
+        bump_cleared,
+        close_reviewed_run,
+        lock_open_task_run,
+    )
 
     moved = None
     async with _tenant_session() as db:
@@ -549,7 +580,8 @@ async def decide_agent_review(
             moved = await apply_status_transition(
                 db, claimed, str(done.id), created_by=actor(user),
             )
-        run_id = await close_reviewed_run(db, run) if run is not None else None
+        run_id, cleared = (await close_reviewed_run(db, run) if run is not None
+                           else (None, []))
         await record_activity(
             db, activity_type="system", created_by=actor(user), task_id=task_id,
             body=APPROVED_BODY,
@@ -564,6 +596,9 @@ async def decide_agent_review(
             "version": wire(after.updated_at),
         }
 
+    # After the commit: the My Day of each member whose question the close of
+    # an awaiting run marked read, as the other close paths do.
+    await bump_cleared(user, cleared)
     await emit("pm.task.updated", {"task_id": task_id})
     if moved is not None:
         await emit("pm.task.status_changed", {

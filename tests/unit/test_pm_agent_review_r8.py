@@ -37,6 +37,9 @@ Run::
 * R9. ``G/move.py``: no ``refuse_agent_move``. ``test_an_agent_move_does_not_skip_the_review``.
 * R10. ``G/agent_review.py``: ``settle_after_move`` keeps the wait. ``test_a_person_move_ends_the_wait``.
 * R11. ``G/agent_review.py``: ``redirect_for`` reads no current category. ``test_a_done_task_never_opens_again_into_review``.
+* R12. ``G/agent_review.py``: ``redirect_for`` skips a cancelled task. ``test_an_agent_done_of_a_cancelled_task_lands_in_review``.
+* R13. ``G/move.py``: ``_plan`` skips ``refuse_agent_move_out``. ``test_an_agent_moves_no_work_into_a_new_child_project`` and ``test_a_carried_subtask_keeps_the_review``.
+* R14. ``G/core.py``: ``apply_status_transition`` keeps the wait. ``test_mark_done_by_a_person_ends_the_wait``.
 """
 from __future__ import annotations
 
@@ -223,6 +226,7 @@ def world():
         doing=a.status(team, "Doing", "in_progress", 1),
         review=a.status(team, "In Review", "in_progress", 2),
         done=a.status(team, "Done", "done", 3),
+        cancelled=a.status(team, "Dropped", "cancelled", 4),
         p_todo=a.status(plain, "To do", "todo", 0),
         p_doing=a.status(plain, "Doing", "in_progress", 1),
         p_done=a.status(plain, "Done", "done", 3),
@@ -328,6 +332,16 @@ class TestTheRedirectOnARealDatabase:
         assert body["agent_review"]["reviewer"] == REVIEWER
         # A second done keeps the first wait.
         assert _row(live, task).agent_review_requested_at == row.agent_review_requested_at
+
+    async def test_an_agent_done_of_a_cancelled_task_lands_in_review(self, live):
+        """P1-a: a person's Cancel is not undone by an agent's done that skips
+        the review."""
+        task = live.task(live.team, live.s.cancelled, "sw18a cancelled")
+        got = await _agent_done(live, task, live.s.done)
+        assert got["status"]["id"] == live.s.review
+        row = _row(live, task)
+        assert str(row.status_id) == live.s.review and row.completed_at is None
+        assert row.agent_reviewer == REVIEWER and row.agent_review_requested_at is not None
 
     async def test_a_done_task_never_opens_again_into_review(self, live):
         task = live.task(live.team, live.s.done, "sw18a done already")
@@ -503,14 +517,97 @@ class TestTheApproveOnARealDatabase:
             "task_ids": [waiting], "destination_project_id": live.off, "accepted_drops": []})
         assert moved.status_code == 403, moved.text
         assert moved.json()["detail"]["error"] == "review_waiting"
-        fresh = await made("sw18a move to done")
-        landed = await _send(live, "POST", "/projects/tasks/move", body={
+        fresh = await made("sw18a move out")
+        out = await _send(live, "POST", "/projects/tasks/move", body={
             "task_ids": [fresh], "destination_project_id": live.off, "accepted_drops": [],
             "status_map": {live.s.todo: live.s.o_done}})
-        assert landed.status_code == 403, landed.text
-        assert landed.json()["detail"]["error"] == "review_needed"
+        assert out.status_code == 403, out.text
+        assert out.json()["detail"]["error"] == "review_project"
         assert str(_row(live, fresh).project_id) == live.team
         assert str(_row(live, waiting).project_id) == live.team
+        # Into a reviewed project from one with the setting off: no landing in done.
+        made_off = await _mcp(live, "write", "create_task",
+                              {"project_id": live.off, "title": "sw18a move in"})
+        assert made_off["isError"] is False, made_off
+        incoming = made_off["structuredContent"]["task"]["id"]
+        landed = await _send(live, "POST", "/projects/tasks/move", body={
+            "task_ids": [incoming], "destination_project_id": live.team, "accepted_drops": [],
+            "status_map": {live.s.o_doing: live.s.done}})
+        assert landed.status_code == 403, landed.text
+        assert landed.json()["detail"]["error"] == "review_needed"
+        assert str(_row(live, incoming).project_id) == live.off
+
+    async def test_an_agent_moves_no_work_into_a_new_child_project(self, live):
+        """Gap (a): an agent makes a child project, whose setting starts off,
+        and moves its own task there. The move out of the reviewed project is
+        a person's act, in the preview and in the apply."""
+        child = await _send(live, "POST", "/projects/nodes", body={
+            "name": "sw18a child", "parent_project_id": live.team})
+        assert child.status_code in (200, 201), child.text
+        child_id = child.json()["id"]
+        made = await _mcp(live, "write", "create_task",
+                          {"project_id": live.team, "title": "sw18a to the child"})
+        assert made["isError"] is False, made
+        task = made["structuredContent"]["task"]["id"]
+        body = {"task_ids": [task], "destination_project_id": child_id, "accepted_drops": []}
+        preview = await _send(live, "POST", "/projects/tasks/move/preview", body=body)
+        assert preview.status_code == 403, preview.text
+        assert preview.json()["detail"]["error"] == "review_project"
+        moved = await _send(live, "POST", "/projects/tasks/move", body=body)
+        assert moved.status_code == 403, moved.text
+        assert moved.json()["detail"]["error"] == "review_project"
+        assert str(_row(live, task).project_id) == live.team
+
+    async def test_a_carried_subtask_keeps_the_review(self, live):
+        """Gap (b): the parent sits in a project with the setting off, and its
+        subtask in a reviewed project. A move that carries the subtask out is
+        refused, for a wait and for the project alike."""
+        seeder = live.seeder
+        off2 = seeder.project("sw18a off two", in_space=True)
+        for who in (REVIEWER, LEAD, OTHER):
+            _grant(seeder, seeder.root(off2), who)
+        seeder.status(off2, "Doing", "in_progress", 1)
+        seeder.status(off2, "Done", "done", 3)
+        parent = live.task(live.off, live.s.o_doing, "sw18a parent")
+        seeder.one("UPDATE pm_tasks SET created_by = :m WHERE id = CAST(:t AS uuid)"
+                   " RETURNING id", m=MEMBER, t=parent)
+        child = live.task(live.team, live.s.review, "sw18a carried child")
+        seeder.one("UPDATE pm_tasks SET parent_task_id = CAST(:p AS uuid),"
+                   " agent_review_requested_at = now(), agent_reviewer = :r"
+                   " WHERE id = CAST(:t AS uuid) RETURNING id", p=parent, r=REVIEWER, t=child)
+        body = {"task_ids": [parent], "destination_project_id": off2, "accepted_drops": [],
+                "include_subtasks": True}
+        waiting = await _send(live, "POST", "/projects/tasks/move", body=body)
+        assert waiting.status_code == 403, waiting.text
+        assert waiting.json()["detail"]["error"] == "review_waiting"
+        preview = await _send(live, "POST", "/projects/tasks/move/preview", body=body)
+        assert preview.status_code == 403 and preview.json()["detail"]["error"] == "review_waiting"
+        seeder.one("UPDATE pm_tasks SET agent_review_requested_at = NULL, agent_reviewer = NULL"
+                   " WHERE id = CAST(:t AS uuid) RETURNING id", t=child)
+        out = await _send(live, "POST", "/projects/tasks/move", body=body)
+        assert out.status_code == 403, out.text
+        assert out.json()["detail"]["error"] == "review_project"
+        assert str(_row(live, parent).project_id) == live.off
+        assert str(_row(live, child).project_id) == live.team
+        # Without the subtask, the parent leaves a project with the setting off.
+        alone = await _send(live, "POST", "/projects/tasks/move", body={
+            **body, "include_subtasks": False})
+        assert alone.status_code == 200, alone.text
+        assert str(_row(live, parent).project_id) == off2
+
+    async def test_mark_done_by_a_person_ends_the_wait(self, live):
+        """P2: every status move ends a wait, Mark done too
+        (``core.apply_status_transition``)."""
+        task = live.task(live.team, live.s.doing, "sw18a mark done")
+        await _agent_done(live, task, live.s.done)
+        assert _row(live, task).agent_review_requested_at is not None
+        done = await _person(live, MEMBER, "POST", f"/projects/tasks/{task}/complete")
+        assert done.status_code == 200, done.text
+        row = _row(live, task)
+        assert str(row.status_id) == live.s.done
+        assert row.agent_review_requested_at is None and row.agent_reviewer is None
+        refused = await _approve(live, REVIEWER, task)
+        assert refused.status_code == 409 and refused.json()["detail"] == "not_waiting"
 
 
 @pytest.mark.usefixtures("review_on")

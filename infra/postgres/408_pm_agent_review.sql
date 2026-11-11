@@ -30,10 +30,10 @@
 --
 -- Who writes them: `PUT /projects/nodes/{id}/agent-review` writes the two
 --   project columns. The PATCH of a task and the report of a Check write the
---   two task columns when an agent's done lands in review, and the PATCH
---   clears them on any other status move. `POST /projects/tasks/{id}/
---   agent-review` clears them when a person approves
---   (`gateway/routes/projects/agent_review.py`). While `AGENT_REVIEW_ENABLED`
+--   two task columns when an agent's done lands in review
+--   (`gateway/routes/projects/agent_review.py`). `core.apply_status_transition`
+--   clears them on every other status move, and `POST /projects/tasks/{id}/
+--   agent-review` clears them when a person approves. While `AGENT_REVIEW_ENABLED`
 --   is off, no writer sets them, so every row keeps false and NULL.
 --
 -- Expand only (R6): the BOOLEAN has a constant default, so Postgres 11 and

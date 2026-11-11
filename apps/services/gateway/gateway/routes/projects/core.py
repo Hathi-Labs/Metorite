@@ -3717,6 +3717,16 @@ async def apply_status_transition(
         values["completed_at"] = None
 
     row = await update_row(db, "pm_tasks", str(task.id), values)
+    # WS-MCP SW-18a. Any status move ends a wait for review: a person who
+    # moves the task by hand decides, through every door (the PATCH, Mark
+    # done, the bulk edit, a workflow). The redirect of an agent's done
+    # starts a new wait AFTER this (`agent_review.record_request`). The test
+    # reads the row that the UPDATE returned, so a caller's partial row
+    # cannot hide a wait.
+    if getattr(row, "agent_review_requested_at", None) is not None:
+        row = await update_row(db, "pm_tasks", str(task.id), {
+            "agent_reviewer": None, "agent_review_requested_at": None,
+        })
     await record_activity(
         db,
         activity_type="status_change",

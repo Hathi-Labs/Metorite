@@ -2959,7 +2959,7 @@ async def lock_open_task_run(db: Any, task_id: str) -> Any | None:
     return run if run.status in OPEN_STATUSES else None
 
 
-async def close_reviewed_run(db: Any, run: Any) -> str:
+async def close_reviewed_run(db: Any, run: Any) -> tuple[str, list[str]]:
     """Close *run*, a row of :func:`lock_open_task_run`, after a person
     approved the agent's work (SW-18a), in the caller's transaction.
 
@@ -2967,12 +2967,21 @@ async def close_reviewed_run(db: Any, run: Any) -> str:
     :data:`REVIEW_CLOSED_BODY` as a system line with ``server_close`` set to
     ``review``. So the agent may still leave one late summary, as after the
     other server closes. No caller passes a user: the server closes the run.
+
+    Returns the run id and the members whose question rows the close marked
+    read (an ``awaiting`` run). The caller hands them to
+    :func:`bump_cleared` after its commit, so their My Day moves.
     """
     new_status = transition(run.status, "review_close")
-    await _move_run(db, run, new_status, ts=await _clock(db), user=None, via=None)
+    cleared = await _move_run(db, run, new_status, ts=await _clock(db), user=None, via=None)
     await _system_activity(db, run, actor_email=run.member_email, via=None,
                            body=REVIEW_CLOSED_BODY, server_close="review")
-    return str(run.id)
+    return str(run.id), cleared
+
+
+async def bump_cleared(user: UserContext, recipients: list[str]) -> None:
+    """:func:`_bump_cleared` for a caller outside this module (SW-18a)."""
+    await _bump_cleared(user, recipients)
 
 
 async def _server_closed(db: Any, run_id: str) -> bool:
