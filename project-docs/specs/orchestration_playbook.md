@@ -241,7 +241,7 @@ The brief holds no secret. The program plan (task 2546) holds the order of the p
 
 LAD-1 (task 2888) teaches the rule in `kit/plan-the-work`, `kit/skill/planning`, `start-here` and the `plan_slices` prompt. LAD-2 makes the Projects planning AI draft the rungs first. LAD-3 shows the rungs and the next demo in `get_plan` and in the plan view. LAD-4 makes `my_work` take the nearest rung first. Until LAD-4 ships, an agent applies the order of this section by hand, with the `Rung N` tags and `get_plan`.
 
-**Fence.** Advisory until LAD-1. Then `tests/unit/test_playbook_ladder.py` (new) proves that the planning pages and the `plan_slices` prompt state the demo task, the `Rung N` tag, rung 0 and rule 5.
+**Fence.** `tests/unit/test_playbook_ladder.py` (LAD-1) proves that the planning pages and the `plan_slices` prompt state the demo task, the `Rung N` tag, rung 0 and rule 5. It checks words, so it cannot catch a page that contradicts the rule. The reviewer of a playbook change reads the pages against this section.
 
 ---
 
