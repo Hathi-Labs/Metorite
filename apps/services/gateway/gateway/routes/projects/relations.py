@@ -567,11 +567,11 @@ async def affects_notes(
 
 
 __all__ = [
-    "MAX_NOTE_CHARS",
-    "NOTE_TYPES",
     "DIRECTED_TYPES",
     "LINK_REMOVED_BODY",
     "LINK_TYPES",
+    "MAX_NOTE_CHARS",
+    "NOTE_TYPES",
     "assert_no_block_cycle",
     "blocked_by_open",
     "canonical_task_id",

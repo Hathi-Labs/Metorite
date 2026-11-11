@@ -351,12 +351,11 @@ class TestTheNoteOnARealDatabase:
         assert sent.status_code == 422
         assert _scalar(live, "SELECT count(*) FROM pm_task_links WHERE source_task_id ="
                              " CAST(:a AS uuid)", a=a) == 0
-        with pytest.raises(Exception, match="pm_task_links_note_len"):
-            with live.admin.begin() as c:
-                c.execute(text(
-                    "INSERT INTO pm_task_links (source_task_id, target_task_id, link_type,"
-                    " created_by, note) VALUES (CAST(:a AS uuid), CAST(:b AS uuid),"
-                    " 'affects', 'x', :n)"), {"a": a, "b": b, "n": "x" * 501})
+        with pytest.raises(Exception, match="pm_task_links_note_len"), live.admin.begin() as c:
+            c.execute(text(
+                "INSERT INTO pm_task_links (source_task_id, target_task_id, link_type,"
+                " created_by, note) VALUES (CAST(:a AS uuid), CAST(:b AS uuid),"
+                " 'affects', 'x', :n)"), {"a": a, "b": b, "n": "x" * 501})
 
     async def test_the_route_refuses_an_affects_with_no_note_and_a_note_on_blocks(self, live):
         a = live.task(live.team, live.s.todo, "sw25 route A")

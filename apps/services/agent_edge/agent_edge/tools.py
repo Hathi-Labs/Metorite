@@ -5438,6 +5438,36 @@ async def _affects_notes(ctx: Context, ids: list[str]) -> dict[str, list[dict[st
     return found
 
 
+def _session_holds(runs: list[dict[str, Any]], session: str | None) -> dict[str, str | None]:
+    """The tasks that this session holds, each with the id of its open run
+    (SW-25). A run counts when it is open and it is of this session (or of no
+    session yet, as :func:`_this_session` says)."""
+    held: dict[str, str | None] = {}
+    for run in runs:
+        task_id = _id(run.get("task_id"))
+        if (task_id is not None and run.get("status") in OPEN_RUN_STATUSES
+                and _this_session(run, session)):
+            held.setdefault(task_id, _id(run.get("id")))
+    return held
+
+
+def _list_note_rows(listed: list[tuple[str, str, str | None, bool]], seen: set[str],
+                    notes: Mapping[str, Any], runs: Mapping[str, str | None]) -> None:
+    """Add one ``note_from_task`` row for each task with notes that no row
+    above lists yet (SW-25). A task that is listed keeps its reason."""
+    for task_id in notes:
+        if task_id not in seen:
+            seen.add(task_id)
+            listed.append((task_id, REASON_NOTE, runs.get(task_id), True))
+
+
+def _attach_notes(out: list[dict[str, Any]], notes: Mapping[str, Any]) -> None:
+    """Put the notes on the row of their task (SW-25)."""
+    for item in out:
+        if item["task_id"] in notes:
+            item[NOTES_KEY] = notes[item["task_id"]]
+
+
 def _work_row(task_id: str, row: Mapping[str, Any] | None, reason: str,
               run_id: str | None,
               names_by_project: Mapping[str, Mapping[str, str]],
@@ -5497,11 +5527,7 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         needs, idle, every_run = await _together(
             _my_runs(ctx, via, needs_agent=True), _my_runs(ctx, via, state=HELD_STATE),
             _my_runs(ctx, via))
-        for run in every_run:
-            held = _id(run.get("task_id"))
-            if (held is not None and run.get("status") in OPEN_RUN_STATUSES
-                    and _this_session(run, ctx.session)):
-                session_runs.setdefault(held, _id(run.get("id")))
+        session_runs = _session_holds(every_run, ctx.session)
         # SW-7: a waiting run of a SIBLING session of this connection is
         # that session's, until its lease ended. A run with no session key
         # (a member start, a reopen of a finished run, or a run from before
@@ -5542,10 +5568,7 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     # row of a task that is listed above keeps its reason and gains the
     # notes. Any other task gets a row of its own, right after those.
     notes = await _affects_notes(ctx, list(session_runs))
-    for task_id in notes:
-        if task_id not in seen:
-            seen.add(task_id)
-            listed.append((task_id, REASON_NOTE, session_runs.get(task_id), True))
+    _list_note_rows(listed, seen, notes, session_runs)
 
     # SW-68a: the plan ranks the WHOLE assigned list of this tool, before any
     # row is hidden. Then this tool hides the rows that it never offers. So a
@@ -5582,9 +5605,8 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     names = await _status_names(ctx, _distinct_projects(shown))
     out = [_work_row(t, rows.get(t), reason, run_id, names, mine, links.get(t))
            for t, reason, run_id, mine in listed]
+    _attach_notes(out, notes)
     for item in out:
-        if item["task_id"] in notes:
-            item[NOTES_KEY] = notes[item["task_id"]]
         if item["reason"] in (REASON_ASSIGNED, REASON_CHECK_DUE) and item["task_id"] in plans:
             item[PLAN_KEY] = plans[item["task_id"]]
         # SW-23: the gateway sends the key only while the Check flag is on.
