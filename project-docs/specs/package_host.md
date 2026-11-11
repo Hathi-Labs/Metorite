@@ -265,7 +265,7 @@ The workbench caches the answer through `useCachedResource`. A change to an inst
 
 **Step 1.** The system points are `jobs`, `nav` and `cards`. A job has its `id` as its key. A nav entry has its `href`, and a card has its `key`. `load_contributes()` in `acb_common/app_manifests/shell_manifest.py` reads them, each with its feature.
 
-**Step 2.** The resolve drops a paused, archived or expired install (`ends_at` in the past). It also drops each install whose app has `apps.status = 'archived'`. A draft install (`version IS NULL`) shows to its owner only.
+**Step 2.** The resolve drops a paused, archived or expired install (`ends_at` in the past). It also drops each install whose app has `apps.status = 'archived'` or a value in `apps.paused_at` (`ai_studio.md` J3a). A draft install (`version IS NULL`) shows to its owner only.
 
 **Step 2, private installs.** A private install shows to its owner. It also shows to each `app_grants` grantee that passes the three tests of §5.1 decision 3. It still shows to the grantees after its owner leaves the org.
 
@@ -294,7 +294,7 @@ The workbench caches the answer through `useCachedResource`. A change to an inst
 
 ### 5.3 Disposal
 
-**Removal deletes the install row in one transaction, by `install_id`, and the FK cascade of `324_package_registry.sql` deletes every contribution of it.** No point keeps a list of its own, so no point can keep a stale row. `store.remove_install` is the one path, and the expiry job of PKG-10 calls it at the end of the 30 days in the archive. **A pause is a state, not a removal.** `store.pause_install` moves one install from `active` to `paused`, and `store.resume_install` moves it back. A paused install keeps its claims and their keys (§4). The resolve hides it at the next read, because it shows only `active` installs (§5.2 step 2). The kill switch of `ai_studio.md` J3 calls `pause_install` for each install of the package, and J3 owns the stop of new actions. Each function takes the lock of `install` and works only in the bound org. The routes of PKG-8, PKG-12 and J3 decide who may call it.
+**Removal deletes the install row in one transaction, by `install_id`, and the FK cascade of `324_package_registry.sql` deletes every contribution of it.** No point keeps a list of its own, so no point can keep a stale row. `store.remove_install` is the one path, and the expiry job of PKG-10 calls it at the end of the 30 days in the archive. **A pause is a state, not a removal.** `store.pause_install` moves one install from `active` to `paused`, and `store.resume_install` moves it back. A paused install keeps its claims and their keys (§4). The resolve hides it at the next read, because it shows only `active` installs (§5.2 step 2). The kill switch of `ai_studio.md` J3a (built dark) calls `pause_install` for each install of the package, and J3a owns the stop of new actions. It also stamps `apps.paused_at`, and the resolve drops each install of a paused app (§5.2 step 2). Each function takes the lock of `install` and works only in the bound org. The routes of PKG-8, PKG-12 and J3 decide who may call it.
 
 ### 5.4 Needs
 
