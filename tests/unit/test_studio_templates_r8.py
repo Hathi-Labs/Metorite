@@ -33,7 +33,11 @@ install.
 The publish test goes red. M2: take the member from the body. The isolation
 test goes red. M3: drop ``resume=True``. The retry test goes red. M4: drop
 ``first_of``. The race test goes red. M5: read the catalog after the create.
-The catalog test goes red.
+The catalog test goes red. M6: in ``_create_checked`` drop the hash compare of
+the resumed draft. The hand-made draft test and the changed draft test go red.
+M7: in ``_publish_draft`` drop the hash compare after the lock. No test here
+turns red, because a PUT between the two sessions needs a timed race. The
+compare is a second guard behind M6.
 """
 
 from __future__ import annotations
@@ -274,6 +278,66 @@ def test_r8_a_failed_publish_leaves_a_draft_and_the_retry_publishes_it(world, mo
     assert status == 409 and got["code"] == packages.PACKAGE_EXISTS
     assert got["package_id"] == draft[0]
     assert len(_apps(world)) == 1
+
+
+def _make_draft(world: Any, email: str, manifest: dict[str, Any]) -> str:
+    async def go() -> str:
+        token = bind_tenant(world.a)
+        try:
+            async with packages._tenant_session() as db:
+                made = await packages.store.create_package(db, email, manifest)
+                return str(made.id)
+        finally:
+            release_tenant(token)
+    return _run(world, go)
+
+
+def _put_manifest(world: Any, email: str, pid: str, manifest: dict[str, Any]) -> None:
+    async def go() -> None:
+        token = bind_tenant(world.a)
+        try:
+            async with packages._tenant_session() as db:
+                assert await packages.store.update_manifest(db, email, pid, manifest)
+        finally:
+            release_tenant(token)
+    _run(world, go)
+
+
+def _assert_refused_and_untouched(world: Any, pid: str) -> None:
+    status, got = _run(world, lambda: _call("create_from_template", world.a, ANA,
+                                            {"template": TEMPLATE}))
+    assert status == 409, got
+    assert got["code"] == packages.PACKAGE_EXISTS and got["package_id"] == pid
+    assert _versions(world, pid) == []
+    assert _installs(world, pid) == []
+    (app,) = _apps(world)
+    assert app[0] == pid and app[4] == "draft" and app[5] is None
+
+
+def test_r8_a_hand_made_draft_with_the_template_id_is_not_published(world) -> None:
+    mine = dict(reg.get_template(TEMPLATE))
+    mine["name"] = "My own field visits"
+    mine["purpose"] = "Not the template."
+    pid = _make_draft(world, ANA, mine)
+    _assert_refused_and_untouched(world, pid)
+
+
+def test_r8_a_leftover_draft_changed_by_put_is_not_published(world, monkeypatch) -> None:
+    real = objects_store.sync_objects
+
+    async def boom(*args: Any, **kwargs: Any) -> Any:
+        raise objects_store.StoreBusy(objects_store._BUSY_MESSAGE)
+
+    monkeypatch.setattr(objects_store, "sync_objects", boom)
+    status, _ = _run(world, lambda: _call("create_from_template", world.a, ANA,
+                                          {"template": TEMPLATE}))
+    assert status == 503
+    monkeypatch.setattr(objects_store, "sync_objects", real)
+    (draft,) = _apps(world)
+    changed = dict(reg.get_template(TEMPLATE))
+    changed["purpose"] = "Changed after the failed call."
+    _put_manifest(world, ANA, draft[0], changed)
+    _assert_refused_and_untouched(world, draft[0])
 
 
 def test_r8_the_retry_never_publishes_the_draft_of_another_member(world, monkeypatch) -> None:

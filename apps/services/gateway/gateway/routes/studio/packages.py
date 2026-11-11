@@ -543,6 +543,9 @@ async def _create_checked(user: UserContext, manifest: dict[str, Any], *,
                         draft = await store.get_package(db, user.email, found.id)
                         if draft is None:
                             raise _not_found()
+                        if manifest_hash(draft.manifest) != manifest_hash(manifest):
+                            # A hand-made or changed draft is not the template.
+                            raise _package_exists(found.id)
                         return {"package": _package_out(draft)}
                     raise _package_exists(found.id)
             if len(held) >= MAX_PACKAGES_PER_MEMBER:
@@ -607,7 +610,7 @@ async def create_from_template(
     created = await _create_checked(user, manifest, resume=True)
     pid = created["package"]["id"]
     published = await _publish_draft(user, pid, "", None, ORIGIN_IDE, known=known,
-                                     first_of=manifest["id"])
+                                     first_of=manifest["id"], template_manifest=manifest)
     return {"package": created["package"], **published}
 
 
@@ -672,7 +675,8 @@ async def save_draft(
 
 async def _publish_draft(user: UserContext, pid: str, notes: str, expected: str | None,
                          origin: str, *, known: dict[str, str] | None = None,
-                         first_of: str | None = None) -> dict[str, Any]:
+                         first_of: str | None = None,
+                         template_manifest: dict[str, Any] | None = None) -> dict[str, Any]:
     """Publish the draft of the package *pid* of the caller, project its objects
     and keep the private install, in one transaction. The publish route and the
     template route both call it: there is ONE publish path.
@@ -680,7 +684,9 @@ async def _publish_draft(user: UserContext, pid: str, notes: str, expected: str 
     *known* is a catalog that the caller read already. With *first_of* (the
     template route only, a manifest id), the session first takes the create
     lock, and a package that is live already is 409 ``package_exists``. So of
-    two parallel template calls only one publishes."""
+    two parallel template calls only one publishes. With *template_manifest*,
+    the stored draft must still hash the same, or the answer is 409
+    ``package_exists`` and nothing is written."""
     if known is None:
         known = await _catalog()
     async with _tenant_session() as db:
@@ -691,6 +697,10 @@ async def _publish_draft(user: UserContext, pid: str, notes: str, expected: str 
                 if current is None:
                     raise _not_found()
                 if current.live_version is not None:
+                    raise _package_exists(pid)
+                if template_manifest is not None and (
+                        manifest_hash(current.manifest) != manifest_hash(template_manifest)):
+                    # A PUT between the two sessions changed the draft.
                     raise _package_exists(pid)
             version = await store.publish_version(db, user.email, pid, notes, catalog=known,
                                                   expected_hash=expected)
