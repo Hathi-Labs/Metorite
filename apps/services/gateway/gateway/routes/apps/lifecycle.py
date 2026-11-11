@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import secrets
 import shutil
 from collections.abc import Callable, Iterator
@@ -653,13 +654,36 @@ async def patch_app(
     return _to_detail(row, user, grants)
 
 
+#: Clear the bound folder of each chat of this org that points into the
+#: folder of a deleted app (task 2462). RLS scopes it to the caller's org.
+#: ``left`` and not ``LIKE``, so a ``_`` or ``%`` in a slug matches only itself.
+_UNBIND_SESSIONS_SQL = (
+    "UPDATE chat_session SET workspace_path = NULL "
+    "WHERE workspace_path IN (:stored, :resolved) "
+    "OR left(workspace_path, length(:stored_prefix)) = :stored_prefix "
+    "OR left(workspace_path, length(:resolved_prefix)) = :resolved_prefix"
+)
+
+
+def _unbind_params(stored: Path, resolved: Path) -> dict[str, str]:
+    """The folder of the app as the row stored it and as it resolves, each
+    also as a prefix that ends with the path separator."""
+    return {
+        "stored": str(stored),
+        "resolved": str(resolved),
+        "stored_prefix": str(stored).rstrip(os.sep) + os.sep,
+        "resolved_prefix": str(resolved).rstrip(os.sep) + os.sep,
+    }
+
+
 @router.delete("/{slug}")
 async def delete_app(
     slug: str,
     user: UserContext = Depends(require_app_author),
 ) -> dict[str, Any]:
     """Soft-archive (edit-gated); a second delete by the OWNER of an already
-    archived app removes the row (cascades) and its workspace folder."""
+    archived app removes the row (cascades) and its workspace folder. The
+    hard delete also unbinds each chat of the org from that folder (task 2462)."""
     async with _tenant_session() as db:
         row, _grants = await get_app_or_404(db, slug, user, edit=True)
         if row.status != "archived":
@@ -678,10 +702,15 @@ async def delete_app(
             )
         # The folder BEFORE the DELETE: a row with no folder answers 409 and
         # the session rolls back, so nothing is deleted (WS-STU A3).
-        workspace = app_workspace(row).resolve()
+        stored = app_workspace(row)
+        workspace = stored.resolve()
         await db.execute(
             text("DELETE FROM apps WHERE id = :id"), {"id": str(row.id)},
         )
+        # Task 2462: the slug is free now, so another org can take this
+        # folder. Unbind every chat of this org that points into it, for
+        # every member, in the same transaction as the DELETE.
+        await db.execute(text(_UNBIND_SESSIONS_SQL), _unbind_params(stored, workspace))
     # Remove the workspace folder — but only when it's really under apps_root
     # (a corrupt workspace_path must never delete arbitrary directories).
     root = apps_root().resolve()
