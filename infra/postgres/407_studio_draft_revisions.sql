@@ -1,5 +1,5 @@
 -- ============================================================================
--- 406_studio_draft_revisions.sql — the save history of a Studio draft
+-- 407_studio_draft_revisions.sql — the save history of a Studio draft
 -- (WS-STU G17, Metorite task 2390).
 --
 -- What: one new table and one new column.
@@ -61,8 +61,8 @@
 -- add a lock between `app_versions` and this table for no gain.
 --
 -- The number is taken at build time (R1). On 2026-11-11 origin/main held
--- 402, and open pull request branches held 403, 404 and 405. Check it again
--- at merge.
+-- 402, and open pull request branches held 403, 404, 405 and 406. This file
+-- was 406 first, and an open pull request took 406. Check it again at merge.
 -- Pinned by tests/unit/test_studio_draft_revisions_r8.py, which finds this
 -- file by CONTENT, never by number (R1).
 -- ============================================================================
