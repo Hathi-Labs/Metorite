@@ -744,6 +744,7 @@ jobs:
               tests/unit/test_task_check_r8.py \
               tests/unit/test_app_create_slug_r8.py \
               tests/unit/test_team_scope_isolation_r8.py \
+              tests/unit/test_teams_read_model_r8.py \
               tests/unit/test_staging_export.py
 
   # ── Publish the ref the STAGING box will poll (WS-38) ─────────────────

@@ -97,6 +97,7 @@ from gateway.routes.projects.cycles import detach_moved_tasks
 from gateway.routes.projects.due_day import overdue_sql
 from gateway.routes.projects.notifications import project_audience
 from gateway.routes.projects.tasks import _narrow_agent_body
+from gateway.routes.projects.team_scope import TeamScope, resolve_team_scope
 from gateway.routes.projects.updates import latest_update, updates_allowed
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -421,13 +422,18 @@ class DeleteResponse(BaseModel):
 # ── Reads ───────────────────────────────────────────────────────────────────
 
 async def _visible_projects(
-    db: Any, user: UserContext, vis: Any = None,
+    db: Any, user: UserContext, vis: Any = None, *, team: TeamScope | None = None,
 ) -> list[Any]:
     # ⚠️ `vis` is passed in by a caller that already resolved it. Resolving it
     # a second time costs two more round trips for a caller without
     # `data:org:read`, on the read every Projects page opens with.
     if vis is None:
         vis = await resolve_visibility(db, user)
+    # WS-39 T-1. A team scope is ANDed beside the visibility clause, so it
+    # narrows the list to the projects of one team and opens nothing (§14.9
+    # rule 5). With no team the statement does not change.
+    team_sql = f"AND {team.project_clause('id')} " if team is not None else ""
+    params = {**vis.params, **team.params} if team is not None else vis.params
     # Personal projects are excluded from every TEAM read (147/§3.11). They are
     # ordinary projects the grant model already scopes to one person, so this is
     # not a security filter — it is that "My tasks" does not belong in a
@@ -437,10 +443,11 @@ async def _visible_projects(
         text(
             f"SELECT * FROM pm_projects "
             f"WHERE {vis.project_clause()} AND personal_owner IS NULL "
+            f"{team_sql}"
             # The id breaks a tie of the name: the chat pages this list.
             f"ORDER BY position NULLS LAST, name, id"
         ),
-        vis.params,
+        params,
     )).fetchall()
 
 
@@ -516,7 +523,11 @@ async def grantable_project_ids(user: UserContext) -> frozenset[str]:
 
 
 @router.get("/tree")
-async def get_tree(user: UserContext = Depends(get_current_user)) -> dict:
+async def get_tree(
+    user: UserContext = Depends(get_current_user),
+    # WS-39 T-1. A team slug or `all` (`team_scope.py`). Dark behind TEAMS_ORGS.
+    team: str | None = None,
+) -> dict:
     """The caller's forest, nested.
 
     Built in Python from the flat visible set rather than by a recursive read:
@@ -529,10 +540,15 @@ async def get_tree(user: UserContext = Depends(get_current_user)) -> dict:
     with the same counts. ``rows`` does not change (R6), so an old client
     sees no change. Each personal node carries ``personal: true``, and
     ``can_write_grants`` false with the words of the 403 (OP-6b).
+
+    WS-39 T-1. ``team`` narrows ``rows`` to the projects of one team of the
+    caller. A node whose parent is outside the team is a root, as above.
+    ``personal`` does not change, because the member's own tree is no team.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        rows = await _visible_projects(db, user, vis)
+        scope = await resolve_team_scope(db, user, vis, team)
+        rows = await _visible_projects(db, user, vis, team=scope)
         counts = await _open_and_done(db, vis)
         nodes = {str(r.id): {**row_to_dict(r, ProjectModel), "children": []} for r in rows}
         own = await _own_personal_projects(db, vis)
@@ -691,9 +707,18 @@ def _attach_progress(
 
 
 @router.get("/nodes")
-async def list_nodes(user: UserContext = Depends(get_current_user)) -> dict:
+async def list_nodes(
+    user: UserContext = Depends(get_current_user),
+    # WS-39 T-1. The team scope of `GET /projects/tree`, on the flat list.
+    team: str | None = None,
+) -> dict:
     async with _tenant_session() as db:
-        rows = await _visible_projects(db, user)
+        if team is None:
+            rows = await _visible_projects(db, user)
+        else:
+            vis = await resolve_visibility(db, user)
+            scope = await resolve_team_scope(db, user, vis, team)
+            rows = await _visible_projects(db, user, vis, team=scope)
     return {"rows": [row_to_dict(r, ProjectModel) for r in rows], "total": len(rows)}
 
 
