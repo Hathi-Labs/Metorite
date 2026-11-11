@@ -93,7 +93,9 @@ PROMPTS: dict[str, PlaybookPrompt] = {p.name: p for p in (
         steps=(
             "Find the parent task. If I gave an argument, call get_task_context for it."
             " Otherwise ask me which task or goal to plan, and wait for my answer.",
-            "First group the work into rungs. Each rung ends in a demo task that a person can use."
+            "Check the way of working. Offer the ladder of rungs as the default."
+            " Use another way only if the project turns the ladder off or I ask for it. Say which way you use.",
+            "In the ladder, group the work into rungs. Each rung ends in a demo task that a person can use."
             " Rung 0 holds urgent safety work and has no demo. The foundation rides with the rung that needs it.",
             "Cut the slices of rungs 1 to 3. A slice is small enough for one agent to finish in one session."
             " Give each later rung one line.",
