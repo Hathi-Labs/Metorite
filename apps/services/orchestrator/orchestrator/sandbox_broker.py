@@ -323,6 +323,18 @@ def _custom_apps_root() -> Path:
     return root()
 
 
+def _app_dir_of_org(path: Path, org: str) -> bool:
+    """True when *path* lies in the folder of an app of *org* (task 2462).
+
+    A dir under the Custom Apps root can be the folder of an app of another
+    org, because a deleted slug is free again. The ONE check is
+    ``executor._app_workspace_of_org``, read at call time.
+    """
+    from orchestrator import executor
+
+    return executor._app_workspace_of_org(path, org)
+
+
 def app_builder_build_source() -> Path | None:
     """The repo checkout that holds the agent's ``build/`` dir, or ``None`` (§7.8).
 
@@ -429,7 +441,8 @@ def _mount_source_for(agent: str, instance: str, org: str, workspace: str) -> Pa
 
     A run with a store key mounts ``state/<agent>/<slug of key>``. A tenant
     key must be this run's own ``o:<org>``. app-builder may also mount its app
-    dir under the Custom Apps root. Anything else is refused.
+    dir under the Custom Apps root, when an app of this run's org owns that
+    dir (task 2462). Anything else is refused.
     """
     from acb_skills.agent_paths import (
         agent_state_dir,
@@ -448,7 +461,12 @@ def _mount_source_for(agent: str, instance: str, org: str, workspace: str) -> Pa
             raise SandboxRefused("The working dir of this run is not its own state dir.")
         return _check_strictly_under(raw, state_root())
     if agent == APP_BUILDER_AGENT:
-        return _check_strictly_under(raw, _custom_apps_root())
+        real = _check_strictly_under(raw, _custom_apps_root())
+        if not _app_dir_of_org(real, org):
+            raise SandboxRefused(
+                "The working dir of this run is not an app of its organization."
+            )
+        return real
     raise SandboxRefused("This run has no store key, so it has no sandbox working dir.")
 
 
