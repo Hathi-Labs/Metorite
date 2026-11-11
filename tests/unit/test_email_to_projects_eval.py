@@ -195,6 +195,9 @@ def test_card_per_write_fails_with_a_rejected_card(records) -> None:
     "There are no emails for Vozzo Creditvision.",
     "No emails turned up, so I changed nothing.",
     "I could not find any mail on TATV.",
+    "Nothing came up for Aroh in the inbox. There are no results.",
+    "The search for Aroh came back empty.",
+    "My search returned nothing about Aroh.",
 ])
 def test_no_false_none_fails_a_claim_of_no_mail(records, claim: str) -> None:
     ev = _good(records, "EP-3")

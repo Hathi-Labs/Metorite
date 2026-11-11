@@ -237,7 +237,8 @@ def plan_e() -> tuple[list[Any], list[Any]]:
     orch.append(tool_turn("query_inbox", {"query": fx.NO_MAIL}, call_id="s2"))
     orch.append(text_turn(
         "I found no mail about Zephyr. I searched the company records for «Zephyr», and I searched "
-        "the inbox for «Zephyr». Both came back empty. Do you want me to make the project "
+        "the inbox for «Zephyr». Both searches for Zephyr came back empty. Do you want me to "
+        "make the project "
         "Zephyr with no mail behind it, or do you know another spelling of Zephyr?"))
     return orch, []
 

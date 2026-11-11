@@ -38,7 +38,11 @@ UPDATES_OFF = "not on for this organization"
 _NONE = re.compile(
     r"\b(?:no|any|zero)\s+(?:matching\s+)?(?:e-?mails?|mails?|messages?|records?|threads?)\b"
     r"|\bnone\s+found\b|\bfound\s+(?:no|nothing)\b|\bnothing\s+(?:found|turned up)\b"
-    r"|\bcould\s*n[o']t\s+find\b|\bdid\s+not\s+find\b|\bno\s+trace\b",
+    r"|\bcould\s*n[o']t\s+find\b|\bdid\s+not\s+find\b|\bno\s+trace\b"
+    # Verifier F1 (2026-11-12): the softer phrasings of "no mail".
+    r"|\bnothing\s+(?:came\s+up|showed\s+up|matched|about|on|for)\b"
+    r"|\bno\s+(?:results?|hits?|matches)\b|\bcame\s+(?:back\s+)?empty\b"
+    r"|\breturned\s+(?:nothing|no\b)|\bempty\s+(?:result|search)\b",
     re.IGNORECASE,
 )
 #: A sentence that claims a change. A sentence with a negation is not a claim.
