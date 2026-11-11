@@ -105,8 +105,19 @@ describe("keepPackage and restorePackage", () => {
     expect(f.mock.calls[1]).toEqual(["/api/studio/packages/p1/restore", { method: "POST" }]);
   });
   it("carries the message of a 409", async () => {
-    const got = await keepPackage("p1", reply(409, { code: "private_only", message: "Only a private app ends." }));
+    const got = await keepPackage(
+      "p1",
+      reply(409, { detail: { code: "private_only", message: "Only a private app ends." } }),
+    );
     expect(got).toEqual({ kind: "error", status: 409, message: "Only a private app ends." });
+  });
+  it("reads a plain string detail", async () => {
+    const got = await restorePackage("p1", reply(404, { detail: "Not found" }));
+    expect(got).toEqual({ kind: "error", status: 404, message: "Not found" });
+  });
+  it("still reads an unwrapped message as a last step", async () => {
+    const got = await restorePackage("p1", reply(409, { message: "Window over." }));
+    expect(got).toEqual({ kind: "error", status: 409, message: "Window over." });
   });
   it("uses a short sentence when the body has no message", async () => {
     const got = await restorePackage("p1", reply(500, "oops"));

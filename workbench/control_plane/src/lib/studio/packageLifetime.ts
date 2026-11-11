@@ -83,7 +83,13 @@ async function outcome(call: () => Promise<Response>, fallback: string): Promise
     const res = await call();
     if (res.ok) return { kind: "ok" };
     const body = await res.json().catch(() => null);
-    const message = isObject(body) ? text(body.message) : null;
+    // The gateway wraps a refusal as {"detail": {code, message}}. A plain 404 or 422 may send
+    // {"detail": "sentence"}. The unwrapped {message} is read as a last step.
+    const detail = isObject(body) ? body.detail : undefined;
+    const message =
+      (isObject(detail) ? text(detail.message) : null) ??
+      (typeof detail === "string" ? text(detail) : null) ??
+      (isObject(body) ? text(body.message) : null);
     return { kind: "error", status: res.status, message: message ?? fallback };
   } catch {
     return { kind: "error", status: 0, message: OFFLINE_LINE };
