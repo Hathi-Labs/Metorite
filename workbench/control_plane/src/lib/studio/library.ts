@@ -61,7 +61,7 @@ export function studioLibraryView(
       { id: "all", label: "All" },
       ...(canBuildApps ? [{ id: "apps" as const, label: "Apps" }] : []),
       ...(canWorkflows ? [{ id: "workflows" as const, label: "Workflows" }] : []),
-      { id: "skills", label: "Skills" },
+      { id: "skills", label: "Your skills" },
     ],
     activeKind,
     showApps: canBuildApps && (activeKind === "all" || activeKind === "apps"),

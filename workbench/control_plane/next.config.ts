@@ -25,6 +25,8 @@ export const STUDIO_REDIRECTS = [
   { source: "/workflows/:id", destination: "/studio/workflows/:id", permanent: true },
   { source: "/build/apps", destination: "/studio", permanent: true },
   { source: "/build/agents", destination: "/studio", permanent: true },
+  // STB-1: the old API connector page. It was a client-side redirect.
+  { source: "/apis", destination: "/integrations", permanent: true },
 ];
 
 const nextConfig: NextConfig = {
