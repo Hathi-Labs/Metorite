@@ -127,3 +127,11 @@ def test_reader_adds_no_connection_or_second_visibility_check() -> None:
            / "knowledge_link.py").read_text(encoding="utf-8")
     for banned in ("kb_pages", "tenant_session", "create_engine", "get_db", "text("):
         assert banned not in src.split('"""', 2)[2], banned
+
+
+def test_a_fence_closes_only_with_its_own_marker():
+    from acb_common.studio_knowledge_link import extract_section
+
+    body = "## A\nx\n```\n~~~\n## B\n```\ny\n## C\nz"
+    text = extract_section(body, "A")
+    assert "## B" in text and "y" in text and "## C" not in text

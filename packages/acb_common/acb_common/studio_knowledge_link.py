@@ -95,14 +95,19 @@ def extract_section(body_md: str, heading: str | None) -> str | None:
         return body_md
     want = _norm(heading)
     lines = body_md.splitlines()
-    fenced = False
+    fence: str | None = None
     start: int | None = None
     level = 0
     for i, line in enumerate(lines):
-        if _FENCE.match(line):
-            fenced = not fenced
+        fm = _FENCE.match(line)
+        if fm is not None:
+            # Only the marker that opened the fence closes it.
+            if fence is None:
+                fence = fm.group(1)
+            elif fm.group(1) == fence:
+                fence = None
             continue
-        if fenced:
+        if fence is not None:
             continue
         m = _HEADING.match(line)
         if m is None:
