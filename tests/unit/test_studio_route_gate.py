@@ -18,10 +18,10 @@ c. A holder of ``feature:studio`` passes the gate on each route. With the
    org outside ``STUDIO_ORGS``, each route answers 404, and no handler reads
    a store.
 d. The router carries one feature gate, ``feature:studio``. No route adds a
-   second gate. Only the org and group install of WS-PKG PKG-8b reads
-   ``studio:publish``, in its handler, because such an install is a share to
-   others (D180.3, ``package_host.md`` §6.1). No other route reads it (J2 owns
-   the review of a share). The fence reads the syntax tree, so a second read
+   second gate. Only the org and group install of WS-PKG PKG-8b and its
+   uninstall of PKG-8e read ``studio:publish``, in their handlers, because
+   such an install is a share to others (D180.3, ``package_host.md`` §6.1).
+   No other route reads it (J2 owns the review of a share). The fence reads the syntax tree, so a second read
    in another quote style fails too.
 e. ``EXPECTED_ROUTES`` pins the routes. A new route fails here until a person
    adds it, and so adds its 403 case.
@@ -112,6 +112,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("DELETE", "/studio/packages/{package_id}"),
     # WS-PKG PKG-8b, the org and group install.
     ("POST", "/studio/packages/{package_id}/install"),
+    # WS-PKG PKG-8e, the org and group uninstall.
+    ("DELETE", "/studio/packages/{package_id}/install"),
     # WS-PKG PKG-10d, Keep and Restore of the private install.
     ("POST", "/studio/packages/{package_id}/keep"),
     ("POST", "/studio/packages/{package_id}/restore"),
@@ -348,14 +350,15 @@ def _owners(tree: Any) -> dict[int, str]:
 def test_the_share_verb_is_read_by_the_install_only() -> None:
     """J1-1 adds `studio:publish` to the vocabulary. Version publish of a
     member's own app needs `feature:studio` and ownership (STU-Q4b). The one
-    reader in `routes/studio` is the org and group install of PKG-8b, a share
-    to others (D180.3, `package_host.md` §6.1).
+    readers in `routes/studio` are the org and group install of PKG-8b, a
+    share to others (D180.3, `package_host.md` §6.1), and its uninstall of
+    PKG-8e.
 
     The check reads the syntax tree, so the quote style does not matter. The
     string constant `studio:publish` occurs once in `routes/studio`: the
     definition of `packages.SHARE_RIGHT`. The name `SHARE_RIGHT` is read in
-    `install_package` only. The one `has_permission` call is
-    `user.has_permission(SHARE_RIGHT)` in `install_package`. No file reads
+    `install_package` and `uninstall_package` only. Each holds one
+    `has_permission` call, `user.has_permission(SHARE_RIGHT)`. No file reads
     `.access.has(`, the other door to the same check."""
     import ast
 
@@ -385,8 +388,10 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
                 calls.append((*where, ast.unparse(node)))
     assert verbs == [("packages.py", "<module>", "constant")], verbs
     assert sorted(names) == [("packages.py", "<module>", "Store"),
-                             ("packages.py", "install_package", "Load")], names
-    assert calls == [("packages.py", "install_package",
+                             ("packages.py", "install_package", "Load"),
+                             ("packages.py", "uninstall_package", "Load")], names
+    assert calls == [("packages.py", "install_package", "user.has_permission(SHARE_RIGHT)"),
+                     ("packages.py", "uninstall_package",
                       "user.has_permission(SHARE_RIGHT)")], calls
 
 
