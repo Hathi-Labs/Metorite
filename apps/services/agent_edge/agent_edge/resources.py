@@ -61,7 +61,7 @@ MIME = "application/json"
 #: PB-3b. The playbook URI. The slug has the shape of a topic path, so a bad
 #: shape never reaches the loader.
 PLAYBOOK_PREFIX = "metorite://playbook/"
-_PLAYBOOK_URI = re.compile(r"metorite://playbook/([a-z0-9]+(?:[/-][a-z0-9]+)*)", re.ASCII)
+_PLAYBOOK_URI = re.compile(r"metorite://playbook/([A-Za-z0-9]+(?:[/-][A-Za-z0-9]+)*)", re.ASCII)
 PLAYBOOK_SCOPE = agent_oauth.PROJECTS_READ
 
 
