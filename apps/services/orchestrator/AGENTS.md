@@ -21,6 +21,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
 
 1. executor.py is the single entry point for agent execution (streaming and batch). It injects platform tools, MCP server config and integration credentials at runtime.
    - Credentials are filtered by the ACTING MEMBER first (`_integration_authorizer`), BEFORE the per-run env injection. A run with no member (cron, reconciler, webhooks) is unfiltered on purpose (spec `org_access_control.md` §8a).
+   - MCP-C3: a run that names no member reads the member of the run binding (`_bound_run_member`). So a delegated run gets the filter of its parent's member. `_run_sub_agent_streaming` filters its own build. A delegated run uses the room of the chat that asked (`_delegated_authority_thread`). Every `build_integrations` call here passes `is_authorized`. The lookup of a child arms the memory gate on the parent's task. So `run_agent` scopes the gate (`memory_tools.memory_permission_scope`), and `_run_sub_agent_streaming` resets its own token. Fence: `test_delegated_integration_filter.py`.
    - ⚠️ Every `/v1` client here MUST read `settings.llm_api_key`, never `gateway_internal_token`. Fence: `test_service_identity_and_webhook_auth.py`.
 2. copilot_agent.py provides MetoriteCopilotAgent, the MAF wrapper for Copilot SDK agents with BYOK and MCP server forwarding.
    - ⚠️ It is the ONE builder of a spawning Copilot client. `child_env_client` builds every agent client with `env=copilot_env()`, and `install_child_env_guard` (installed by `orchestrator/__init__.py`) covers every path.
@@ -88,6 +89,12 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
 20. **A self-anneal retry holds no tool that the first try did not hold.** Access is an intersection, never a union.
    - `_assemble_batch_agents` is the one batch assembly. `_narrow_to_held` removes each tool outside the held set of `_BatchRunInputs`.
    - Do not build or inject agents for a retry anywhere else. Fence: `test_anneal_retry_scope.py`.
+20a. **A member's steer is a USER turn of the next model call, never text in a tool result** (task 2494, `chat_run_continuity.md` §4.9).
+   - `_tool_injection._apply_steer_turns` puts `steer.SteerTurnsProvider` on a per-run view of each native agent of a run with a relay thread. Do not drain the steer buffer anywhere else.
+   - Only `stream_relay._steer_apply` calls `steer.buffer_guidance`. Fence: `test_steer_user_turn.py`.
+   - The session history stores each steer turn after its tool result (`native_session_store.SessionHistoryProvider.after_run`, `steer.with_steer_turns`).
+   - ⚠️ On the web chat, the next turn does not load that session yet. The gateway saves the steer as a user row, and the save digest does not hold it, so the next load gives `digest_drop`. The next turn then reads the member's words from the text history. Task 2948 owns the fix.
+   - A Copilot SDK agent (`GitHubCopilotAgent`) gets no steer turn during its run. `steer.return_unconsumed` gives the steer back at the run end, and the follow-up turn answers it.
 20b. **Each turn carries today's date.** `_context_preamble_parts` adds `acb_common.today.today_line()` LAST. Fence: `test_crm_answer_consistency.py`.
 21. **The orchestrator's per-turn context carries the Knowledge index block** (spec `knowledge_base.md` §6.5).
    - Only the agent `orchestrator` gets it, behind `COMPANY_SEARCH_ENABLED`, `KNOWLEDGE_ENABLED` and `KNOWLEDGE_ORGS`. The org comes from `_current_run_org()` and the member from `_verified_run_member()`, never from the payload.

@@ -166,6 +166,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "unlink_tasks": ("unlink these two tasks",),
     "update_project": ("change the project deadline",),
     "waiting_agent_requests": ("which agent requests are waiting for me?",),
+    # SW-43c: the member's own answer to an agent.
+    "change_agent_answer": ("change my answer to the agent to Not now",),
     # -- projects-structure --
     "capture_intake": ("capture this into the intake queue",),
     "create_area": ("create an area called Health",),
@@ -238,6 +240,13 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "save_as_template": ("save this project as a template",),
     "create_project_from_template": ("use the project template Install kit for the Acme job",
                                      "start the Acme job from the template Install kit"),
+    # WS-39 SP-5a: the cycles pack.
+    "list_cycles": ("show the cycles of Website Relaunch",),
+    "cycle_detail": ("how is the current sprint of Website Relaunch going?",),
+    "create_cycle": ("plan a new cycle on Website Relaunch from Monday to Friday",),
+    "plan_cycle": ("add these six tasks to the next cycle",),
+    "start_cycle": ("start the planned cycle of Website Relaunch",),
+    "close_cycle": ("close the active cycle and send the unfinished tasks to the backlog",),
     # SP-8a: the contract of an epic sits in the authority pack.
     "set_epic_contract": ("set the epic contract of this epic",),
     # -- studio (STU-G1) --

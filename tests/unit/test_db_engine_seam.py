@@ -485,12 +485,16 @@ H2_BASELINE_ELSEWHERE = 62
 #:     helpers are dual-audience: the HTTP route AND the orchestrator's
 #:     in-process agent tools (``orchestrator/app_tools.py``), which run with
 #:     no request and no bound tenant.
-#:   * ``_common.py`` (1) — ``record_app_audit``, reached from that same
-#:     agent path; converting it would silently drop agent-action audit rows.
 #:   * ``tools.py`` (1) — ``_apply_publish_review``, an Action Broker
 #:     handler that runs when an admin approves a queued proposal.
+#:
+#: ``_common.py`` (1 → 0): task 1317 (2026-11-11) removed the unbound
+#: ``record_app_audit``. Under FORCE RLS its insert wrote no row as
+#: ``acb_app``. The request handlers now write through
+#: ``record_app_audit_bound``, and ``execute_app_action`` writes through
+#: ``tenant_session(<the org of the app row>)``. Fence:
+#: ``test_app_audit_bound_r8.py``.
 H2_APPS_EXEMPT_SITES: dict[str, int] = {
-    "apps/services/gateway/gateway/routes/apps/_common.py": 1,
     "apps/services/gateway/gateway/routes/apps/actions.py": 4,
     "apps/services/gateway/gateway/routes/apps/tools.py": 1,
 }
@@ -607,7 +611,7 @@ def _tenant_session_functions(module_rel: str) -> frozenset[str]:
 
     AST calls, not source text — an H4 marker comment that merely *mentions*
     tenant_session must not read as an opener (first version's false positive:
-    `record_app_audit`'s own exemption comment).
+    the old `record_app_audit`'s own exemption comment).
     """
     path = _REPO / module_rel
     if not path.exists():
