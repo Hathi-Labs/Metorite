@@ -322,7 +322,10 @@ def patch_door(monkeypatch):
     async def load_visible_task(db, vis, task_id):
         return PARENT
 
-    async def apply_status_transition(db, task, status_id, *, created_by, completed_at=None):
+    # `closer`: the PATCH names its caller, so a close ends the task's open
+    # agent run (H-409 item 1, task 748). This fake ends none.
+    async def apply_status_transition(db, task, status_id, *, created_by, completed_at=None,
+                                      closer=None):
         return {
             "row": task,
             "from": SimpleNamespace(name="To do"),
