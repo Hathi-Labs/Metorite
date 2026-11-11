@@ -221,6 +221,12 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/tasks/{task_id}/check-result", "report_check", "B"),
     Route("POST", "/projects/tasks/{task_id}/links", "link_tasks", "B"),
     Route("DELETE", "/projects/tasks/{task_id}/links/{link_id}", "unlink_tasks", "B"),
+    # ── epic_contract.py (SP-8a, project_management_app.md §13.3) ────────
+    # The tool reads the contract before its card, and the PUT replaces it.
+    # An outside agent reaches the PUT through the `epic_contract` block of
+    # `update_task` (external_agent_access.md §9.2).
+    Route("GET", "/projects/tasks/{task_id}/epic-contract", "set_epic_contract", "B"),
+    Route("PUT", "/projects/tasks/{task_id}/epic-contract", "set_epic_contract", "B"),
     # ── bulk.py · move.py · merge.py ─────────────────────────────────────
     Route("POST", "/projects/tasks/bulk", "bulk_update", "C"),
     Route("POST", "/projects/tasks/move/preview", "move_task", "B"),
@@ -900,6 +906,10 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "target_task_id": "link_tasks.other_task_id",
         "link_type": "link_tasks.link_type",
     },
+    # SP-8a: the whole contract, from the tool's parts.
+    ("PUT", "/projects/tasks/{task_id}/epic-contract"): {
+        "epic_contract": "set_epic_contract.acceptance",
+    },
     # WS-57 TR-3: the chat's reads take the stored rows and call no GitHub.
     ("GET", "/projects/tasks/{task_id}/refs"): {"refresh": "task_detail"},
     # WS-57 TR-3: the URL and the optional title the member gave.
@@ -1492,6 +1502,11 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "status_id": (
             "One lane by id. export_tasks filters by status_category, as list_tasks does."
         ),
+        "scope": (
+            "WS-64 OP-11: the My tasks roll-up. The export takes it so a file of "
+            "My tasks holds only the member's own rows. The chat's my_work reads "
+            "the same set through the mine rule, so no tool argument sets it."
+        ),
         "assignee": "The older single form. export_tasks sends assignees.",
         "sort": "The order of the app's list. The file holds the rows in the route's own order.",
         "direction": "The order of the app's list. The file holds the rows in the route's own order.",
@@ -1547,6 +1562,19 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
             "assigns through assign, after the create."
         ),
         "check_text": _CHECK_TEXT_REASON,
+        # SP-8a.
+        "epic_contract": (
+            "An outside agent sets the contract of a new epic in the create's own "
+            "transaction. The chat sets it through set_epic_contract, after the create, "
+            "so the member sees each part on its own card."
+        ),
+    },
+    # SP-8a: the edit guard of an outside agent.
+    ("PUT", "/projects/tasks/{task_id}/epic-contract"): {
+        "If-Match": (
+            "The edit guard of an outside agent (D-PM-20, SP-8a). A chat write reads "
+            "the contract first, and the member approves the card."
+        ),
     },
     ("PUT", "/projects/tasks/{task_id}/assignees"): {
         "If-Match": (
