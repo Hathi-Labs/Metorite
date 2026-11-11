@@ -149,6 +149,12 @@ async def share_with_people(db: Any, *, install_id: str, emails: Sequence[str],
     (``shared_by_another_owner``). Each refusal writes nothing. Answers the
     normalised addresses, in order. :class:`NotTheOwner` comes from
     ``store.py``, which the promotion shares.
+
+    Lock order: the insert into ``app_grants`` needs the ``apps`` row. A
+    caller that does not hold it MUST call
+    ``studio/packages_store.lock_for_install`` first, as the store
+    docstring says. Without it, a share and a publish of the same package
+    can deadlock. The PKG-11b route owns this call.
     """
     install = _install_id(install_id)
     by = _member(sharer)
