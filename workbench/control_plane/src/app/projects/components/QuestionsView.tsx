@@ -99,6 +99,8 @@ export function QuestionsView({
   const [off, setOff] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  /** Failed sends of each row. The card remounts on a change, so its Submit works again. */
+  const [attempts, setAttempts] = useState<Record<string, number>>({});
   const [failed, setFailed] = useState<Record<string, string>>({});
   /** The answer sent from here, by activity id, until the list reads again. */
   const [sent, setSent] = useState<Record<string, AgentActivity>>({});
@@ -148,8 +150,7 @@ export function QuestionsView({
 
   // A new tab, project or sort reads at once.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPage(null);
+    // The last rows stay on screen while the new read runs.
     void load();
   }, [scope, project, sort, load]);
 
@@ -185,6 +186,7 @@ export function QuestionsView({
       const message = err instanceof Error ? err.message : undefined;
       const said = writeFailure(status, message, failure);
       setFailed((held) => ({ ...held, [row.activity_id]: said.text }));
+      setAttempts((held) => ({ ...held, [row.activity_id]: (held[row.activity_id] ?? 0) + 1 }));
       // A 409: another member answered first. Read the list again.
       if (said.reload) void load();
       return false;
@@ -303,9 +305,14 @@ export function QuestionsView({
 
       <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
         {error ? (
-          <p role="alert" className="mb-2 text-xs text-destructive">
-            {error}
-          </p>
+          <div className="mb-2 flex flex-wrap items-center gap-2" data-questions-error="">
+            <p role="alert" className="text-xs text-destructive">
+              {error}
+            </p>
+            <Button size="sm" variant="secondary" icon="RefreshCw" onClick={() => void load()}>
+              Retry
+            </Button>
+          </div>
         ) : null}
 
         {page === null && !error ? (
@@ -379,6 +386,7 @@ export function QuestionsView({
                       </div>
                     </div>
                     <AgentQuestionCard
+                      key={`${row.activity_id}:${attempts[row.activity_id] ?? 0}`}
                       elicitation={questionActivity(row)}
                       run={{ member_email: "" }}
                       clientLabel={row.agent_name || "The agent"}
@@ -387,7 +395,6 @@ export function QuestionsView({
                       canAnswer={row.can_answer}
                       archiveMine={answerRoute(row) === "archive-approval"}
                       kind={row.question.kind}
-                      expired={false}
                       busy={busy === row.activity_id}
                       personLabels={personLabels}
                       onAnswer={(answers) => void answer(row, answers)}

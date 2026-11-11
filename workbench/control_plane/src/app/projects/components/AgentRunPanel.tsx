@@ -138,6 +138,8 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   /** The caller has an open run on this task that the panel does not show. */
   const [otherOpenMine, setOtherOpenMine] = useState(false);
   const [asking, setAsking] = useState(false);
+  /** Failed writes. The question card remounts on a change, so its Submit works again. */
+  const [failures, setFailures] = useState(0);
 
   // The newest values, for the poll's closure.
   const runRef = useRef<AgentRun | null>(null);
@@ -344,6 +346,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
       const message = err instanceof Error ? err.message : undefined;
       const failed = writeFailure(status, message, failure);
       setError(failed.text);
+      setFailures((n) => n + 1);
       // A 409: the run moved under the member. Show its newest state.
       if (failed.reload) void refresh(run.id).catch(() => undefined);
       return false;
@@ -549,6 +552,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
       {elicitation ? (
         // EA-18b: the answer part is ONE component, shared with the Questions list.
         <AgentQuestionCard
+          key={`${elicitation.id}:${failures}`}
           elicitation={elicitation}
           run={run}
           clientLabel={client}

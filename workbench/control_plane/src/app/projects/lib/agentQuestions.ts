@@ -14,7 +14,7 @@
  *
  * Fence: `agentQuestions.test.ts`.
  */
-import type { AgentActivity, AgentOption } from "./agentRuns";
+import { ARCHIVE_REQUEST_KIND, type AgentActivity, type AgentOption } from "./agentRuns";
 
 /** The sidebar entry, as `?app=questions` opens it. */
 export const QUESTIONS_APP_ID = "questions";
@@ -46,6 +46,8 @@ export interface QuestionBody {
   body: string | null;
   options: AgentOption[];
   allow_multiple: boolean;
+  /** A typed archive request only: when it expires. The card draws the expired state from it. */
+  expires_at?: string | null;
 }
 
 /** One row of `GET /projects/agent-questions`. */
@@ -101,6 +103,7 @@ function row(raw: QuestionRow): QuestionRow {
       body: typeof q.body === "string" ? q.body : null,
       options: Array.isArray(q.options) ? q.options : [],
       allow_multiple: q.allow_multiple === true,
+      ...(typeof q.expires_at === "string" ? { expires_at: q.expires_at } : {}),
     },
     can_answer: raw.can_answer === true,
     why: WHY_VALUES.includes(String(raw.why)) ? (raw.why as QuestionWhy) : null,
@@ -207,7 +210,7 @@ export function emptyCopy(scope: QuestionScope): { message: string; hint?: strin
 
 /** The sentence of a row the reader may not answer. */
 export function readOnlyLine(who: string): string {
-  return `${who} or an admin can answer this`;
+  return `Only ${who}, the creator of the task, its assignees, or an owner, admin or manager can answer this`;
 }
 
 /* ── Age ─────────────────────────────────────────────────────────────────── */
@@ -301,6 +304,10 @@ export function questionActivity(r: QuestionRow): AgentActivity {
     content: { body: r.question.body },
     signal: "select",
     signal_metadata: { options: r.question.options, allow_multiple: r.question.allow_multiple },
+    // A typed request carries the server's expiry, so the card reads it as the panel does.
+    ...(r.question.kind === "archive_request"
+      ? { content_metadata: { request: { kind: ARCHIVE_REQUEST_KIND, expires_at: r.question.expires_at ?? null } } }
+      : {}),
     created_at: r.asked_at,
   };
 }

@@ -614,6 +614,8 @@ class TestTheRead:
             [row] = got.json()["rows"]
             assert row["why"] == "my_agent" and row["can_answer"] is True
             assert [o["id"] for o in row["question"]["options"]] == ["approve", "decline"]
+            # EA-18b: a typed request carries its expiry, and a free question does not.
+            assert row["question"]["expires_at"]
             for reader in (w.creator, w.assignee, w.owner, w.admin, w.manager, w.viewer):
                 got = await _list(call, reader)
                 assert got.json()["rows"] == [], reader.email
@@ -622,6 +624,12 @@ class TestTheRead:
                 got = await _list(call, reader, scope="everyone")
                 assert got.json()["rows"] == [], reader.email
                 assert got.json()["counts"]["everyone"] == 0, reader.email
+
+    async def test_a_free_question_carries_no_expiry(self, w):
+        async with _session(w.p) as call:
+            await _ask(w, call)
+            [row] = await _rows(call, w.creator)
+            assert "expires_at" not in row["question"]
 
     async def test_a_question_on_a_closed_task_does_not_show(self, w):
         """It is a ``dangling`` row of Needs attention, and the sweep closes it."""

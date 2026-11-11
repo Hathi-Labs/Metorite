@@ -225,7 +225,9 @@ describe("the row words", () => {
   });
 
   it("words the read-only line and the counts", () => {
-    expect(readOnlyLine("Priya")).toBe("Priya or an admin can answer this");
+    expect(readOnlyLine("Priya")).toBe(
+      "Only Priya, the creator of the task, its assignees, or an owner, admin or manager can answer this",
+    );
     expect(questionsCount(1)).toBe("1 question");
     expect(questionsCount(2)).toBe("2 questions");
     expect(QUESTIONS_COPY.allProjects).toBe("All projects");
@@ -284,5 +286,25 @@ describe("the shared answer", () => {
       selected: ["pg", "my"],
       body: "also SQLite",
     });
+  });
+});
+
+describe("the expiry of a typed request", () => {
+  const req = (expires_at?: string) =>
+    questionsPage({
+      rows: [wire({ question: { kind: "archive_request", body: "x", options: [], allow_multiple: false, expires_at } })],
+    }).rows[0];
+
+  it("reaches the card as the stamp the run panel reads", () => {
+    const act = questionActivity(req("2999-01-01T00:00:00Z"));
+    expect(act.content_metadata?.request).toEqual({ kind: "archive_task", expires_at: "2999-01-01T00:00:00Z" });
+  });
+
+  it("a request with no stamp reads as expired, as the gateway reads it", () => {
+    expect(questionActivity(req()).content_metadata?.request?.expires_at).toBeNull();
+  });
+
+  it("a free question carries no request", () => {
+    expect(questionActivity(questionsPage({ rows: [wire()] }).rows[0]).content_metadata).toBeUndefined();
   });
 });

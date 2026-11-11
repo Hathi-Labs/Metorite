@@ -114,7 +114,7 @@ describe("a reader who may not answer", () => {
   it("shows the question read-only with who can answer it", () => {
     expect(html).toContain('data-agent-question="readonly"');
     expect(html).toContain("Which database?");
-    expect(html).toContain("Priya or an admin can answer this");
+    expect(html).toContain("Only Priya, the creator of the task, its assignees, or an owner, admin or manager can answer this");
   });
 
   it("draws no option and no Submit", () => {
@@ -211,6 +211,16 @@ describe("one component, no copy", () => {
 
   it("the run panel reads can_answer off the run, and reads an absent flag as true", () => {
     expect(panel).toContain("run.can_answer !== false");
+  });
+
+  it("both hosts remount the card after a failed send, so Submit works again", () => {
+    expect(panel).toMatch(/key=\{`\$\{elicitation\.id\}:\$\{failures\}`\}/);
+    expect(list).toContain("attempts[row.activity_id]");
+  });
+
+  it("the list has a Retry for a failed read and passes the server's expiry", () => {
+    expect(list).toContain("Retry");
+    expect(list).not.toContain("expired={false}");
   });
 
   it("the list sends a typed request to archive-approval and not to the generic route", () => {
