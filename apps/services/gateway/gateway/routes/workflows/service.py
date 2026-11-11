@@ -522,6 +522,10 @@ def build_node_services(
     once. The value comes from the run (:func:`_execute_run`), never from the
     ambient tenant or from node input. ``None`` means that the run carries no
     organization, so it keeps the old path until H4 slice 6c.
+
+    The module node reads ``organization_id`` too: ``run_module_code`` runs
+    the code of a module only for an org on ``MODULE_RUN_ORGS``, and never
+    for a run with no org (STU-Q15a).
     """
     return NodeServices(
         run_agent=_agent_runner(workflow_id),
@@ -530,6 +534,7 @@ def build_node_services(
         actor=actor,
         update_task=_pm_task_updater(workflow_id, organization_id),
         run_lifecycle_sweep=_pm_lifecycle_sweeper(workflow_id, organization_id),
+        organization_id=organization_id,
     )
 
 

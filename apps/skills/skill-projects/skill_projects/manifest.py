@@ -182,10 +182,12 @@ MANIFEST: tuple[Route, ...] = (
     # click, so D-OP-9 gives it a chat tool: AP-10 builds `withdraw_ask`.
     Route("POST", "/projects/asks/{ask_id}/withdraw", "withdraw_ask", "C"),
     # ── cycles.py — the cycle store (WS-39 SP-1, D195) ───────────────────
-    # Dark behind PROJECTS_SPRINTS_ORGS. SP-5 (Metorite task 964) builds each
-    # tool. A delete of a planned cycle, a start and a close are hard to undo,
-    # so they are class C. A plan and an edit change rows that the app can
-    # change back, so they are class B.
+    # Dark behind PROJECTS_SPRINTS_ORGS. SP-5a (Metorite task 964) built six
+    # tools: list_cycles, cycle_detail, create_cycle, plan_cycle, start_cycle
+    # and close_cycle (skill_projects/cycles.py). update_cycle and delete_cycle
+    # stay PLANNED. A delete of a planned cycle, a start and a close are hard
+    # to undo, so they are class C. A plan and an edit change rows that the app
+    # can change back, so they are class B.
     Route("GET", "/projects/nodes/{project_id}/cycles", "list_cycles", "A"),
     Route("POST", "/projects/nodes/{project_id}/cycles", "create_cycle", "B"),
     Route("GET", "/projects/cycles/{cycle_id}", "cycle_detail", "A"),
@@ -539,8 +541,14 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/agent-runs/{run_id}/resume", "resume_agent_run", "B"),
     # SW-43a (spec agent_coordination.md §3.9). The run's member takes back an
     # answer that no agent has read. It writes one marker prompt and changes
-    # no task, so class B. The chat gets the tool with SW-43c.
-    Route("POST", "/projects/agent-runs/{run_id}/answer/withdraw", "withdraw_agent_answer", "B"),
+    # no task. SW-43b: the same member swaps the answer for a new one in one
+    # write, a withdraw marker and a new prompt. SW-43c builds ONE chat tool for
+    # both, class C as `answer_decision` is: an agent acts on an answer as soon
+    # as it reads it, so the change is hard to undo, and a held chat holds the
+    # tool off (RX-1, D169). One card for each act. One tool, because the plan
+    # pack has room for one tool more (`test_projects_packs.py`).
+    Route("POST", "/projects/agent-runs/{run_id}/answer/withdraw", "change_agent_answer", "C"),
+    Route("POST", "/projects/agent-runs/{run_id}/answer/replace", "change_agent_answer", "C"),
     # WS-55 MCP-G15. An outside agent records a decision that its member made
     # outside Metorite, on its own awaiting run. It writes an agent response
     # and changes no task, so class B. The chat acts as the member, and the
@@ -563,6 +571,10 @@ MANIFEST: tuple[Route, ...] = (
     # Five counts over the tasks the caller can see. A read, so class A. The
     # chat reads the same counts through a tool after EA-12e.
     Route("GET", "/projects/{project_id}/agent-summary", "agent_summary", "A"),
+    # WS-AGA AGA-7 (agents_view.md §6): the member view of agents, dark behind
+    # AGENTS_VIEW_ORGS. A read, so class A. The chat tool comes with the pack
+    # `agents-overview` of AGA-11. It is in no door set (no MCP_ROUTES row).
+    Route("GET", "/projects/agents/overview", "agents_list", "A"),
     # ── needs_attention.py — Needs attention (WS-55 SW-11a, spec §12.7) ──────
     # Stalled runs, open runs of closed tasks and tasks blocked by parked work,
     # over the tasks the caller can see. A read, so class A, and the chat asks
@@ -624,26 +636,22 @@ PLANNED: dict[str, str] = {
     # WS-55 EA-14a. A person releases a run from the card. The chat gets the
     # tool with the other run tools in EA-12e.
     "release_agent_run": "WS-55 EA-12e, in-product chat parity",
-    # WS-39 SP-1 built the cycle routes. SP-5 builds their tools.
-    "list_cycles": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
-    "cycle_detail": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
-    "create_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
-    "update_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
-    "delete_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
-    "plan_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
-    "start_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
-    "close_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
+    # WS-39 SP-1 built the cycle routes. SP-5a (task 964) built six of their
+    # tools in the chat. These two wait for a later slice.
+    "update_cycle": "Metorite task 964, a later SP-5 slice: edit a cycle in the chat",
+    "delete_cycle": "Metorite task 964, a later SP-5 slice: delete a planned cycle in the chat",
     # WS-AP AP-8a built the person ask route. AP-10 builds its chat tool.
     "ask_person": "WS-AP AP-10, the chat tools of Waiting",
     "withdraw_ask": "WS-AP AP-10, the chat tools of Waiting",
     # WS-55 SW-11a. A person resumes a stalled run from Needs attention. The
     # chat gets the tool with the other run tools in EA-12e.
     "resume_agent_run": "WS-55 EA-12e, in-product chat parity",
-    # SW-43a. A member withdraws an answer on the run card. The chat gets the
-    # tool with the change tool in slice SW-43c (spec agent_coordination.md §3.9).
-    "withdraw_agent_answer": "SW-43c, in-product chat parity",
+    # SW-43c (2026-11-11) built `change_agent_answer` for the withdraw and the
+    # replace of SW-43a and SW-43b.
     # WS-55 EA-13e (2026-10-18) added the summary route for the board strip.
     "agent_summary": "WS-55, in-product chat parity, after EA-12e",
+    # WS-AGA AGA-7 (2026-11-11) added the member view of agents.
+    "agents_list": "WS-AGA AGA-11 (Metorite task 2114), the chat pack agents-overview",
     # WS-55 EA-6b (2026-10-15) added the claim route for an outside agent.
     # The chat assigns through `assign` and moves through `update_task`.
     "claim_task": "WS-55, in-product chat parity, after EA-12e",
@@ -718,6 +726,13 @@ COMPOSITE: dict[str, frozenset[str]] = {
     "list_project_updates": frozenset({"project_summary"}),
     "post_project_update": frozenset({"project_summary", "list_project_updates"}),
     "delete_project_update": frozenset({"project_summary", "list_project_updates"}),
+    # WS-39 SP-5a: the cycle tools read the node, the cycle and the task
+    # before a card, so a dark flag or a wrong id shows a sentence and no card.
+    "list_cycles": frozenset({"project_summary"}),
+    "create_cycle": frozenset({"project_summary", "list_cycles"}),
+    "plan_cycle": frozenset({"cycle_detail", "task_detail"}),
+    "start_cycle": frozenset({"cycle_detail", "list_cycles"}),
+    "close_cycle": frozenset({"cycle_detail", "list_cycles"}),
     "project_views": frozenset({"project_summary"}),
     "edit_task": frozenset({"update_task"}),
     "edit_project": frozenset({"update_project"}),
@@ -764,6 +779,9 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # id. Each also reads the project (project_summary's route).
     "save_as_template": frozenset({"list_templates", "project_summary"}),
     "create_project_from_template": frozenset({"list_templates", "project_summary"}),
+    # SW-43c: before the card, the tool reads the task, the runs of the task
+    # and the one run, to name the question and the answer.
+    "change_agent_answer": frozenset({"task_detail", "agent_runs"}),
 }
 
 #: POST routes that WRITE NOTHING. A preview computes what an act would do
@@ -820,6 +838,17 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "status": "waiting_agent_requests",
         "limit": "waiting_agent_requests",
         "order": "waiting_agent_requests",
+    },
+    # ── the member's own answer to an agent (SW-43c) ─────────────────────
+    ("POST", "/projects/agent-runs/{run_id}/answer/withdraw"): {
+        "answer_id": "change_agent_answer.withdraw",
+        "idempotency_key": "change_agent_answer.withdraw",
+    },
+    ("POST", "/projects/agent-runs/{run_id}/answer/replace"): {
+        "answer_id": "change_agent_answer.option",
+        "selected": "change_agent_answer.option",
+        "body": "change_agent_answer.answer",
+        "idempotency_key": "change_agent_answer.option",
     },
     # ── Needs attention (WS-55 SW-11a) ───────────────────────────────────
     ("GET", "/projects/needs-attention"): {
@@ -1115,6 +1144,17 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "health": "post_project_update.health",
         "body": "post_project_update.body",
     },
+    # WS-39 SP-5a: the cycle routes. The page of the cycles has no query. The
+    # edit, the two optional plan fields and the capacity stay in FIELD_PLANNED.
+    ("POST", "/projects/nodes/{project_id}/cycles"): {
+        "name": "create_cycle.name",
+        "goal": "create_cycle.goal",
+        "starts_on": "create_cycle.starts_on",
+        "ends_on": "create_cycle.ends_on",
+    },
+    ("POST", "/projects/cycles/{cycle_id}/tasks"): {"task_id": "plan_cycle.add_task_ids"},
+    ("POST", "/projects/cycles/{cycle_id}/start"): {"goal": "start_cycle.goal"},
+    ("POST", "/projects/cycles/{cycle_id}/close"): {"choices": "close_cycle.carry_over"},
     # WS-ALN ALN-2a: the one field of an answer.
     ("POST", "/projects/decisions/{decision_id}/answer"): {
         "answer_key": "answer_decision.answer_key"
@@ -1714,26 +1754,25 @@ FIELD_GAPS: dict[str, str] = {
     # Its rows are in SENDS.
     # WS-AP AP-8a: the person ask. The chat gets `ask_person` in AP-10.
     "G25": "AP-10",
-    # WS-39 SP-1: the cycle routes. The chat and the MCP get them in SP-5.
+    # WS-39 SP-1: the cycle routes. SP-5a sent the fields of the plan, the
+    # start and the close. The edit fields and the capacity wait.
     "G26": "SP-5",
 }
 
 #: A field that a later slice gives the chat: field -> its gap id. The slice
 #: that closes a gap moves its rows to ``SENDS``, so this table only shrinks.
 FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
-    # G26 (WS-39 SP-1): the cycle routes. SP-5 (Metorite task 964) sends each
-    # field.
+    # G26 (WS-39 SP-1): the cycle routes. SP-5a (Metorite task 964) sends the
+    # fields of the plan, the add, the start and the close. The edit and the
+    # two optional fields of a plan stay planned.
     ("POST", "/projects/nodes/{project_id}/cycles"): {
-        "name": "G26", "goal": "G26", "starts_on": "G26", "ends_on": "G26",
         "cooldown_days": "G26", "credit_budget": "G26",
     },
     ("PATCH", "/projects/cycles/{cycle_id}"): {
         "name": "G26", "goal": "G26", "starts_on": "G26", "ends_on": "G26",
         "cooldown_days": "G26", "credit_budget": "G26", "If-Match": "G26",
     },
-    ("POST", "/projects/cycles/{cycle_id}/tasks"): {"task_id": "G26"},
-    ("POST", "/projects/cycles/{cycle_id}/start"): {"goal": "G26", "capacity": "G26"},
-    ("POST", "/projects/cycles/{cycle_id}/close"): {"choices": "G26"},
+    ("POST", "/projects/cycles/{cycle_id}/start"): {"capacity": "G26"},
     # G25 (WS-AP AP-8a): the person ask. AP-10 sends each field.
     ("POST", "/projects/tasks/{task_id}/asks"): {
         "addressee": "G25", "question": "G25", "choices": "G25", "due_at": "G25",
@@ -1904,9 +1943,10 @@ UI_ACTIONS: dict[str, str] = {
     # WS-55 SW-11a: a person resumes a stalled run from Needs attention
     # (`resume_agent_run`, PLANNED for EA-12e), and the list itself.
     "agentRunsApi.resume": "resume_agent_run",
-    # SW-43a: a member takes back an answer on the run card
-    # (`withdraw_agent_answer`, PLANNED for SW-43c).
-    "agentRunsApi.withdrawAnswer": "withdraw_agent_answer",
+    # SW-43a and SW-43b: a member takes back or changes an answer on the run
+    # card. SW-43c gives the chat both acts in one tool.
+    "agentRunsApi.withdrawAnswer": "change_agent_answer",
+    "agentRunsApi.replaceAnswer": "change_agent_answer",
     "attentionApi.list": "needs_attention",
     # The Needs attention lens of My tasks: the same route with `mine=true`.
     "attentionApi.mine": "needs_attention",

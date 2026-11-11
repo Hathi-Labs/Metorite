@@ -1,24 +1,30 @@
 """Custom Apps · lifecycle — list / create+scaffold / read / update / archive.
 
-Creating an app writes its workspace at ``apps_root()/{slug}``: ``app.json``
+Creating an app writes its workspace at ``apps_root()/{app id}``: ``app.json``
 (the RFC §4.1 manifest), a starter ``index.html``, and a best-effort
 ``git init`` + baseline commit (checkpoints ride the same repo later). The DB
 row is authoritative for visibility/status; the workspace is authoritative for
 the manifest (the DB copy is the scaffold-time fallback).
 
 ⚠️ A new app (create, fork) reserves its slug with its INSERT BEFORE any file
-write (task 2429). The slug is unique over all orgs, and every folder is a
-sibling under ``apps_root()``. FORCE RLS shows only the rows of the caller's
-org, so a read of the slugs cannot see the slug of another org. See
-``_reserve_app``. Fence: ``tests/unit/test_app_create_slug_r8.py``.
+write (task 2429). The folder of a new app is ``apps_root()/<app id>``, never
+``apps_root()/<slug>`` (WS-STU A3b-1, task 1310). So two orgs never share a
+folder, also when the slug becomes unique for each org only (A3b-2). An app
+made before A3b-1 keeps its old folder, because each reader takes the stored
+``apps.workspace_path``. FORCE RLS shows only the rows of the caller's org, so
+a read of the slugs cannot see the slug of another org. See ``_reserve_app``.
+Fences: ``tests/unit/test_app_create_slug_r8.py`` and
+``tests/unit/test_apps_slug_per_org_r8.py``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import secrets
 import shutil
+import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -235,21 +241,27 @@ def _sync_workspace_manifest(workspace: Path, fields: dict[str, Any]) -> None:
 # ── A new app: reserve the slug, then claim the folder (task 2429) ──────────
 
 #: The INSERT of a new app. It runs BEFORE any file write, so it reserves the
-#: slug. A slug that another org holds makes no row and raises nothing, so the
-#: session stays usable, and the next slug is tried. The row commits with the
-#: session, so a failure after it gives the slug back.
+#: slug. A taken slug makes no row and raises nothing, so the session stays
+#: usable, and the next slug is tried. The row commits with the session, so a
+#: failure after it gives the slug back.
+#:
+#: The conflict clause names no column (A3b-1). While ``apps_slug_key`` (slug
+#: alone) and ``apps_org_slug_key`` (org and slug) both exist, a bare
+#: ``ON CONFLICT DO NOTHING`` skips a conflict on either key. A clause that
+#: names ``(slug)`` fails once A3b-2 drops ``apps_slug_key``. Fence:
+#: ``test_no_apps_insert_names_on_conflict_slug``.
 _RESERVE_SQL = (
     """INSERT INTO apps
-       (slug, name, icon, description, owner_email,
+       (id, slug, name, icon, description, owner_email,
         manifest, workspace_path)
-       VALUES (:slug, :name, :icon, :description, :owner,
+       VALUES (CAST(:id AS uuid), :slug, :name, :icon, :description, :owner,
                :manifest ::jsonb, :workspace_path)
-       ON CONFLICT (slug) DO NOTHING
+       ON CONFLICT DO NOTHING
        RETURNING *"""
 )
 
 #: The tries of a sequential slug (``name``, ``name-2`` …), when another org
-#: holds it or a folder is on disk.
+#: holds it (until A3b-2).
 SLUG_TRIES = 10
 #: Then the tries of a slug with a random suffix, so a common name never runs
 #: out (the ``packages_store.SLUG_HEX`` pattern).
@@ -267,12 +279,9 @@ _NO_SLUG = (
 _UNRESERVE_SQL = "DELETE FROM apps WHERE id = :id"
 
 
-def _folder_free(folder: Path) -> bool:
-    """True when nothing is on disk at *folder*, a broken link included.
-
-    A folder with no row (a failed write, a failed delete) is never written.
-    The new app takes the next slug instead."""
-    return not (folder.exists() or folder.is_symlink())
+def _new_app_id() -> uuid.UUID:
+    """The id of a new app. The folder of the app is named by it."""
+    return uuid.uuid4()
 
 
 def _random_hex() -> str:
@@ -303,11 +312,20 @@ async def _reserve_app(
     """Insert the row of a new app, then make its folder. Answer the row, the
     folder and the manifest. Write no file in the folder before this returns.
 
-    The slug is unique over all orgs, but FORCE RLS shows only the slugs of
-    the caller's org. So the read below cannot see the slug of another org,
-    and the INSERT is the real check. A concurrent INSERT of the same slug
-    waits on the unique key until this session ends. When another writer
-    made the folder after the check, the row goes, and the next slug is tried.
+    The folder is ``apps_root()/<app id>`` (A3b-1). The id is new for each
+    try, so the folder never depends on the slug, and a folder on disk never
+    changes the slug. Two orgs can therefore never share a folder.
+
+    The read below sees only the slugs of the caller's org (FORCE RLS), so the
+    sequential slugs skip only those. Until A3b-2 drops ``apps_slug_key``, a
+    slug that another org holds still makes no row on the INSERT. The create
+    then takes the next slug, in the same shape as a slug of the own org: a
+    normal answer, never a 500, and nothing that names the other org. A3b-2
+    removes this last sign, because then only the own org's slugs block.
+
+    A concurrent INSERT of the same slug waits on the unique key until this
+    session ends. When the folder of the new id is there already, the row
+    goes, and the next slug is tried with a new id.
     """
     root = apps_root()
     taken = {
@@ -317,11 +335,11 @@ async def _reserve_app(
     }
     loop = asyncio.get_event_loop()
     for slug in _slug_candidates(name, taken):
-        workspace = root / slug
-        if not _folder_free(workspace):
-            continue
+        app_id = _new_app_id()
+        workspace = root / str(app_id)
         manifest = manifest_for(slug)
         row = (await db.execute(text(_RESERVE_SQL), {
+            "id": str(app_id),
             "slug": slug,
             "name": name,
             "icon": icon,
@@ -653,13 +671,36 @@ async def patch_app(
     return _to_detail(row, user, grants)
 
 
+#: Clear the bound folder of each chat of this org that points into the
+#: folder of a deleted app (task 2462). RLS scopes it to the caller's org.
+#: ``left`` and not ``LIKE``, so a ``_`` or ``%`` in a slug matches only itself.
+_UNBIND_SESSIONS_SQL = (
+    "UPDATE chat_session SET workspace_path = NULL "
+    "WHERE workspace_path IN (:stored, :resolved) "
+    "OR left(workspace_path, length(:stored_prefix)) = :stored_prefix "
+    "OR left(workspace_path, length(:resolved_prefix)) = :resolved_prefix"
+)
+
+
+def _unbind_params(stored: Path, resolved: Path) -> dict[str, str]:
+    """The folder of the app as the row stored it and as it resolves, each
+    also as a prefix that ends with the path separator."""
+    return {
+        "stored": str(stored),
+        "resolved": str(resolved),
+        "stored_prefix": str(stored).rstrip(os.sep) + os.sep,
+        "resolved_prefix": str(resolved).rstrip(os.sep) + os.sep,
+    }
+
+
 @router.delete("/{slug}")
 async def delete_app(
     slug: str,
     user: UserContext = Depends(require_app_author),
 ) -> dict[str, Any]:
     """Soft-archive (edit-gated); a second delete by the OWNER of an already
-    archived app removes the row (cascades) and its workspace folder."""
+    archived app removes the row (cascades) and its workspace folder. The
+    hard delete also unbinds each chat of the org from that folder (task 2462)."""
     async with _tenant_session() as db:
         row, _grants = await get_app_or_404(db, slug, user, edit=True)
         if row.status != "archived":
@@ -678,10 +719,15 @@ async def delete_app(
             )
         # The folder BEFORE the DELETE: a row with no folder answers 409 and
         # the session rolls back, so nothing is deleted (WS-STU A3).
-        workspace = app_workspace(row).resolve()
+        stored = app_workspace(row)
+        workspace = stored.resolve()
         await db.execute(
             text("DELETE FROM apps WHERE id = :id"), {"id": str(row.id)},
         )
+        # Task 2462: the slug is free now, so another org can take this
+        # folder. Unbind every chat of this org that points into it, for
+        # every member, in the same transaction as the DELETE.
+        await db.execute(text(_UNBIND_SESSIONS_SQL), _unbind_params(stored, workspace))
     # Remove the workspace folder — but only when it's really under apps_root
     # (a corrupt workspace_path must never delete arbitrary directories).
     root = apps_root().resolve()

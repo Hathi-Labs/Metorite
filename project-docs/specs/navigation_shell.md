@@ -469,8 +469,9 @@ each under its own category.
 **The storage.** `shell_prefs.pins` now holds the starred apps. The field
 keeps its NS-7 name, so no row and no migration changes (R6). A new field,
 `known`, holds the apps that the member could see at their last save. The
-gateway accepts the `nav.ts` hrefs only, and it caps `known` as it caps
-`pins`.
+gateway accepts the `nav.ts` hrefs, and the install hrefs of the viewer's
+own resolved manifest while `PACKAGE_HOST_ORGS` holds the org
+(`package_host.md` PKG-6c-1). It caps `known` as it caps `pins`.
 
 **Four rules for what shows** (`starredHrefs` in `presets.ts`):
 
@@ -820,26 +821,29 @@ private task of another member and asserts that no card returns it.
 
 ### 4.2a The team scope contract (T-4, task 2535, replan 2026-11-09)
 
-Proposed, owner review in this pull request. The shell holds one scope value. The value is a team slug or the word "all". The scope rides on `scope=<slug>` as §4.2 rule 1 says. Every app reads this one value and builds no scope of its own.
+Decided 2026-11-10: the owner approved this on task 2531. The shell holds one scope value. The value is a team slug or the word "all". The scope rides on `scope=<slug>` as §4.2 rule 1 says. Every app reads this one value and builds no scope of its own.
 
 A scope never grants. It narrows a view and opens nothing that the member could not already open (§4.2 rule 4). A team is a group, and the shell shows no team object (D87). The rules of hidden spaces are in `project_management_app.md` §14.9.
 
 Fence: `src/lib/shell/teamScope.test.ts` (new) fails when the value takes a third form or when a scope opens a row. Until T-4 builds it, the rule is advisory (R7).
 
-### 4.3 Personal Center — three apps, three jobs
+### 4.3 Personal Center — four apps, four jobs
+
+**Amended 2026-11-07 (D188, `my_day_command_centre.md`).** My Day is now the command centre. It notices, plans, starts work, focuses and closes the day. Calendar keeps the week, the full grid and events. Projects keeps the structure. The table below shows the new jobs.
 
 My Tasks and Calendar already read the one task store. My Day joins them at
 the top. The risk is a third view of the same tasks, so each app gets one job.
 
 | App | Its job | The question | What it may change | What it hands on |
 |---|---|---|---|---|
-| **My Day** | Notice | "What needs me, across every app?" | One-click acts only: done, approve, snooze. A longer act opens the owning app | Planning goes to Calendar. Lists go to My Tasks |
+| **My Day** | Run the day | "What needs me, and what do I do now?" | Capture, the top 3, the One Thing, today's blocks, the focus session, done, roll over. A longer act opens the owning app | The week and the full grid go to Calendar. Lists go to My Tasks |
 | **My Tasks** | Commit | "What have I promised, and what is next?" | Every task field, every list, capture | Time goes to Calendar |
-| **Calendar** | Place | "When will I do it?" | The schedule, focus blocks, the start and the end of the day | What to do goes to My Tasks |
+| **Calendar** | Plan the week | "When will I do it, this week?" | The schedule of any day, events, recurring windows, planner settings | What to do goes to My Tasks |
 | **Email** | Reply | "Who waits for my answer?" | Its own threads | It feeds My Day through its manifest |
 
-**No second ritual.** Calendar has `StartupRitual`. The first open of My Day
-each day offers that ritual. My Day does not copy it.
+**No second ritual.** Calendar has `StartupRitual`. The Plan phase of My Day
+mounts that same component. My Day does not copy it. `my_day_command_centre.md`
+§5 owns the phases.
 
 **What goes into the feed lives in `my_day_feed.md` (WS-58, ACTIVE
 2026-10-13).** That spec owns the signals, the cards, the order, the life of

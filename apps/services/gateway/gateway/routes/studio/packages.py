@@ -66,6 +66,15 @@ the install store comes after the two locks above. A refusal of the install
 store is 409 or 422 with its ``detail_for`` of the member, and it rolls the
 publish back. With the switch off, a publish writes no install.
 
+**The origin of a publish (WS-PKG PKG-12, ``package_host.md`` §6.2 step 1).**
+The body may hold ``origin``: ``chat`` or ``ide`` (:data:`ORIGINS`). With no
+``origin``, the publish is ``ide``. Each other value is 422. The chat tool
+``studio_publish`` sends ``chat``, and the Studio IDE sends nothing. A first
+publish from chat writes the private install with ``ends_at`` 30 days after
+now (``host_store.CHAT_ENDS``). A publish from the IDE writes no end date. A
+later publish keeps the end date that the install holds (``set_version``).
+The route takes no date, org or member from the body (R5).
+
 **The org and group install (WS-PKG PKG-8b, ``package_host.md`` §6.1).**
 ``POST /packages/{id}/install`` with the body ``{"scope": "org"}`` or
 ``{"scope": "group:<slug>"}``. The scope comes from the body, and the member
@@ -119,7 +128,8 @@ The ``based_on`` check reads the stored draft, so the addition never moves it.
 **Create.** There is no idempotency key. A second create with the same
 manifest id by the same member answers 409 ``package_exists`` with the id of
 the first. Two creates at the same moment can both pass, and that is
-accepted. A member holds at most :data:`MAX_PACKAGES_PER_MEMBER` packages.
+accepted. The template route takes an advisory lock of the member and the
+manifest id first, so two of its calls cannot both pass. A member holds at most :data:`MAX_PACKAGES_PER_MEMBER` packages.
 
 **The delete (A5c-1).** Two steps, with no state in the database. The owner
 reads ``GET /packages/{id}/delete-preview``: each object with its field
@@ -165,10 +175,12 @@ import json
 import re
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
+from acb_common import studio_templates as templates
 from acb_common.studio_manifest import manifest_hash
 from acb_skills.studio_tools import complete_record_actions
 from fastapi import Depends, HTTPException, Request, Response
@@ -227,11 +239,19 @@ CATALOG_UNAVAILABLE = "catalog_unavailable"
 STORE_BUSY = "store_busy"
 BODY_TOO_LARGE = "body_too_large"
 DRAFT_CHANGED = "draft_changed"
+#: The origin of a publish from chat (PKG-12). The chat tool sends it.
+ORIGIN_CHAT = "chat"
+#: The origin of a publish with no ``origin`` in its body: the Studio IDE.
+ORIGIN_IDE = "ide"
+#: The closed set of origins of a publish (PKG-12).
+ORIGINS = frozenset({ORIGIN_CHAT, ORIGIN_IDE})
 COUNTS_CHANGED = "counts_changed"
 NOT_PUBLISHED = "not_published"
 VERSION_CHANGED = "version_changed"
 FORBIDDEN = "forbidden"
 UNKNOWN_GROUP = "unknown_group"
+UNKNOWN_TEMPLATE = ("The template is not in the registry. Send an id that GET /studio/templates "
+                    "lists.")
 
 CATALOG_DOWN = "The action catalog is not available now, so try the publish again later."
 BODY_OVER_CAP = "This body is too large, so send a smaller manifest."
@@ -241,6 +261,7 @@ BAD_CURSOR = "The cursor before is a version number, so send a whole number from
 BAD_VERSION = "The version is a whole number from 1, so send a version that the list names."
 BAD_HASH = ("based_on is the hash of the draft that you read: 64 hexadecimal digits. Send it, "
             "or leave it out.")
+BAD_ORIGIN = "origin is chat or ide. Send one of the two, or leave it out."
 BAD_CONFIRM = ("confirm is the token of the delete preview: 64 hexadecimal digits. Read the "
                "preview, then send its token.")
 NO_SHARE_RIGHT = ("Only a holder of studio:publish installs an app for the organization or "
@@ -281,6 +302,21 @@ def _based_on(raw: object, path: str = "$.based_on") -> str | None:
     if isinstance(raw, str) and _HASH.fullmatch(raw.strip().lower()):
         return raw.strip().lower()
     raise _unprocessable(BAD_HASH, [{"path": path, "message": BAD_HASH}])
+
+
+def _origin(raw: object) -> str:
+    """The origin of a publish (PKG-12): ``chat``, or ``ide`` when the body
+    holds none. Each other value is 422 at ``$.origin``.
+
+    ⚠️ A browser can send ``chat`` too. That is harmless: the origin only
+    sets the end date of the private install of the session member, on the
+    first publish of their own package. It reaches no other member, org or
+    install, and the member can keep the install (§6.2 step 2)."""
+    if raw is None:
+        return ORIGIN_IDE
+    if isinstance(raw, str) and raw in ORIGINS:
+        return raw
+    raise _unprocessable(BAD_ORIGIN, [{"path": "$.origin", "message": BAD_ORIGIN}])
 
 
 def _cursor(raw: str | None) -> int | None:
@@ -442,17 +478,23 @@ def _sync_out(result: objects_store.SyncResult) -> dict[str, Any]:
 
 
 async def _keep_install(db: Any, user: UserContext, pid: str,
-                        version: store.PackageVersion) -> None:
+                        version: store.PackageVersion, origin: str) -> None:
     """PKG-8a: the private install of the owner follows the publish, in its
     session. With ``PACKAGE_HOST_ORGS`` off for the org, it writes nothing.
     A refusal of the install store is its ``detail_for`` of the member and
-    nothing else, and the raise rolls the publish back."""
+    nothing else, and the raise rolls the publish back.
+
+    PKG-12: *origin* is the value of :func:`_origin`. A publish from chat
+    gives an end date of now plus ``host_store.CHAT_ENDS``. The store writes
+    it on the first publish only, and a later publish keeps the date of the
+    install. The time is the server clock, never request input (R5)."""
     if not package_host_allowed(user.organization_id) or version.manifest is None:
         return
+    ends_at = (datetime.now(UTC) + host_store.CHAT_ENDS) if origin == ORIGIN_CHAT else None
     try:
         await studio_app.keep_private_install(
             db, app_id=pid, version=version.version, owner=user.email,
-            manifest=version.manifest)
+            manifest=version.manifest, ends_at=ends_at)
     except host_store.InstallError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail_for(user.email)) from None
 
@@ -468,26 +510,44 @@ def _sync_audit(version: int, result: objects_store.SyncResult) -> dict[str, Any
     }
 
 
-@router.post("/packages", status_code=201)
-async def create_package(
-    request: Request,
-    user: UserContext = Depends(get_current_user),
-) -> dict[str, Any]:
-    """A new private draft package of the caller, from the manifest in the body."""
-    if not flags.studio_allowed(user.organization_id):
-        raise HTTPException(status_code=404, detail=NOT_FOUND)
-    manifest = await _json_body(request)
+def _package_exists(pid: str) -> HTTPException:
+    """409 ``package_exists`` with the id of the package of the caller."""
+    return HTTPException(status_code=409, detail={
+        "code": PACKAGE_EXISTS, "package_id": pid,
+        "message": "You have a package with this manifest id. "
+        "Save to it with PUT, or choose a new id."})
+
+
+async def _create_checked(user: UserContext, manifest: dict[str, Any], *,
+                          resume: bool = False) -> dict[str, Any]:
+    """Create a private draft package of the caller from *manifest*. The create
+    route and the template route both call it, so the checks (a repeat manifest
+    id is 409 ``package_exists``, the per-member limit) stay in one place.
+
+    With *resume* (the template route only, STU-K1a), the session first takes
+    the create lock of the member and the manifest id, so a parallel call
+    waits. A draft of the caller with that manifest id and no live version is
+    the trace of a call whose publish failed. The answer is that draft, and
+    no new package. The create route sends no *resume*, so its answers do not
+    change."""
     with _store_errors():
         encoded = store.check_manifest(manifest)
     async with _tenant_session() as db:
         with _store_errors():
+            if resume:
+                await store.lock_create(db, user.email, manifest["id"])
             held = await store.list_summaries(db, user.email)
             for found in held:
                 if found.manifest_id == manifest["id"]:
-                    raise HTTPException(status_code=409, detail={
-                        "code": PACKAGE_EXISTS, "package_id": found.id,
-                        "message": "You have a package with this manifest id. "
-                        "Save to it with PUT, or choose a new id."})
+                    if resume and found.live_version is None:
+                        draft = await store.get_package(db, user.email, found.id)
+                        if draft is None:
+                            raise _not_found()
+                        if manifest_hash(draft.manifest) != manifest_hash(manifest):
+                            # A hand-made or changed draft is not the template.
+                            raise _package_exists(found.id)
+                        return {"package": _package_out(draft)}
+                    raise _package_exists(found.id)
             if len(held) >= MAX_PACKAGES_PER_MEMBER:
                 raise HTTPException(status_code=409, detail={
                     "code": PACKAGE_LIMIT,
@@ -500,6 +560,58 @@ async def create_package(
                 "sha256": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
                 "bytes": len(encoded.encode("utf-8"))})
     return {"package": _package_out(package)}
+
+
+@router.post("/packages", status_code=201)
+async def create_package(
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """A new private draft package of the caller, from the manifest in the body."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    manifest = await _json_body(request)
+    return await _create_checked(user, manifest)
+
+
+@router.get("/templates")
+async def list_app_templates(user: UserContext = Depends(get_current_user)) -> dict[str, Any]:
+    """The Studio app templates of the code registry: id, name and purpose."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    return {"templates": [dict(t) for t in templates.list_templates()]}
+
+
+@router.post("/packages/from-template", status_code=201)
+async def create_from_template(
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """One step (STU-K1a): create a package from a template, publish it, and
+    keep the private install of the caller. The body holds ``template`` and
+    nothing else is read. The member is the session member and the org is the
+    bound tenant. A member who holds a live package of the template manifest id
+    gets 409 ``package_exists`` (the create route's answer), and nothing changes.
+
+    The catalog read comes first, so a 503 ``catalog_unavailable`` writes
+    nothing. The create and the publish are two transactions. When the publish
+    fails after the create, a draft stays, and a retry publishes that draft:
+    the same id, no second package. Both sessions take the create lock of the
+    member and the manifest id first, so of two parallel calls one publishes
+    and the other gets 409 ``package_exists``."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    body = await _json_body(request)
+    manifest = templates.get_template(body.get("template"))
+    if manifest is None:
+        raise _unprocessable(UNKNOWN_TEMPLATE, [{"path": "$.template", "message": UNKNOWN_TEMPLATE}])
+    # The catalog first: a catalog that is down answers 503 and writes nothing.
+    known = await _catalog()
+    created = await _create_checked(user, manifest, resume=True)
+    pid = created["package"]["id"]
+    published = await _publish_draft(user, pid, "", None, ORIGIN_IDE, known=known,
+                                     first_of=manifest["id"], template_manifest=manifest)
+    return {"package": created["package"], **published}
 
 
 @router.get("/packages")
@@ -561,6 +673,53 @@ async def save_draft(
             "record_actions": {"added": [a["id"] for a in added], "skipped": skipped}}
 
 
+async def _publish_draft(user: UserContext, pid: str, notes: str, expected: str | None,
+                         origin: str, *, known: dict[str, str] | None = None,
+                         first_of: str | None = None,
+                         template_manifest: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Publish the draft of the package *pid* of the caller, project its objects
+    and keep the private install, in one transaction. The publish route and the
+    template route both call it: there is ONE publish path.
+
+    *known* is a catalog that the caller read already. With *first_of* (the
+    template route only, a manifest id), the session first takes the create
+    lock, and a package that is live already is 409 ``package_exists``. So of
+    two parallel template calls only one publishes. With *template_manifest*,
+    the stored draft must still hash the same, or the answer is 409
+    ``package_exists`` and nothing is written."""
+    if known is None:
+        known = await _catalog()
+    async with _tenant_session() as db:
+        with _store_errors():
+            if first_of is not None:
+                await store.lock_create(db, user.email, first_of)
+                current = await store.get_package(db, user.email, pid)
+                if current is None:
+                    raise _not_found()
+                if current.live_version is not None:
+                    raise _package_exists(pid)
+                if template_manifest is not None and (
+                        manifest_hash(current.manifest) != manifest_hash(template_manifest)):
+                    # A PUT between the two sessions changed the draft.
+                    raise _package_exists(pid)
+            version = await store.publish_version(db, user.email, pid, notes, catalog=known,
+                                                  expected_hash=expected)
+            if version is None or version.manifest is None:
+                raise _not_found()
+            result = await objects_store.sync_objects(
+                db, user.email, package_id=pid, objects=version.manifest.get("objects") or [])
+            if result is None:
+                raise _not_found()
+            await _keep_install(db, user, pid, version, origin)
+            rows = await objects_store.list_objects(db, pid)
+    if result.changed:
+        await record_app_audit_bound(
+            app_id=pid, user_email=user.email, kind="action",
+            app_version=version.version, detail=_sync_audit(version.version, result))
+    return {"version": _version_out(version), "objects": [_object_out(o) for o in rows],
+            "sync": _sync_out(result)}
+
+
 @router.post("/packages/{package_id}/versions", status_code=201)
 async def publish(
     package_id: str,
@@ -582,25 +741,8 @@ async def publish(
         raise _unprocessable("The release notes are text.", [
             {"path": "$.notes", "message": "The release notes are text."}])
     expected = _based_on(body.get("based_on"))
-    known = await _catalog()
-    async with _tenant_session() as db:
-        with _store_errors():
-            version = await store.publish_version(db, user.email, pid, notes, catalog=known,
-                                                  expected_hash=expected)
-            if version is None or version.manifest is None:
-                raise _not_found()
-            result = await objects_store.sync_objects(
-                db, user.email, package_id=pid, objects=version.manifest.get("objects") or [])
-            if result is None:
-                raise _not_found()
-            await _keep_install(db, user, pid, version)
-            rows = await objects_store.list_objects(db, pid)
-    if result.changed:
-        await record_app_audit_bound(
-            app_id=pid, user_email=user.email, kind="action",
-            app_version=version.version, detail=_sync_audit(version.version, result))
-    return {"version": _version_out(version), "objects": [_object_out(o) for o in rows],
-            "sync": _sync_out(result)}
+    origin = _origin(body.get("origin"))
+    return await _publish_draft(user, pid, notes, expected, origin)
 
 
 @router.get("/packages/{package_id}/versions")

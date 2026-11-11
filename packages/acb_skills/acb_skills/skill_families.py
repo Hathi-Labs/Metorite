@@ -520,7 +520,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "It holds the five analytics reads, the team's capacity, who "
             "fits a task, plan conflicts, the task table, the "
             "timeline, a plan from a goal, links between tasks, repeat "
-            "rules, and a new project with its settings. The reports are in "
+            "rules, and a new project with its settings. It also lists the "
+            "agent requests that wait for the member, and it takes back or "
+            "changes the member's answer to an agent. The reports are in "
             "projects-reports. A run loads a pack "
             "only where tool packs are on, so until then this switch has no "
             "effect."
@@ -532,6 +534,10 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "analytics_outlook",
             "analytics_stuck",
             "analytics_throughput",
+            # SW-43c: the member takes back or changes an answer to an agent,
+            # beside the list of the agent requests. It takes the last room of
+            # the pack in the sticky-pack case (test_projects_packs.py).
+            "change_agent_answer",
             "create_project",
             "edit_project",
             "find_conflicts",
@@ -806,6 +812,37 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "my_tasks_start_my_day",
             "my_tasks_unschedule",
             "my_tasks_update_calendar_settings",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # WS-39 SP-5a (task 964): the cycles (sprints) of a project. Own pack, because
+    # the other Projects packs are full in their measured turns.
+    "projects-cycles": {
+        "label": "Projects cycles",
+        "summary": (
+            "The cycles (sprints) of a project: list them, read one, plan one, "
+            "add or remove tasks, then start or close it."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools for the cycles "
+            "of a project, for the main assistant to load when a turn names "
+            "a cycle or a sprint. The pack holds the tools to list the "
+            "cycles of a project and to read one with its tasks. It also "
+            "holds the tools to plan a cycle, to add tasks to it or take "
+            "them out, to start it and to close it. Each change asks the "
+            "member first. A run loads a pack only where tool packs are on, "
+            "so until then this switch has no effect."
+        ),
+        "tools": (
+            "close_cycle",
+            "create_cycle",
+            "cycle_detail",
+            "list_cycles",
+            "plan_cycle",
+            "start_cycle",
         ),
         "owner": "projects-assistant",
         "core": False,

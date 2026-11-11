@@ -401,6 +401,32 @@ class CloseIn(BaseModel):
 # ── Reads ───────────────────────────────────────────────────────────────────
 
 
+async def task_open_cycle(db: Any, vis: Any, task_id: Any) -> dict[str, Any] | None:
+    """The open (planned or active) cycle of a task, for the task read and so
+    for the MCP ``get_task`` (SP-5a). ``None`` when the task is in no open
+    cycle, or when the reader cannot see the node of that cycle: the name of a
+    cycle is not for a reader who cannot see its node (§13.7). A closed cycle is
+    history and never shows. The caller checks the flag first
+    (:func:`sprints_allowed`). The reads sit on the session, so the tenant is the
+    bound one (R5).
+    """
+    row = (await db.execute(
+        text(
+            "SELECT c.id, c.name, c.state, c.starts_on, c.ends_on"
+            "  FROM pm_cycle_tasks ct JOIN pm_cycles c ON c.id = ct.cycle_id"
+            " WHERE ct.task_id = CAST(:t AS uuid) AND ct.cycle_open"
+            f"  AND {vis.project_clause('c.project_id')} LIMIT 1"
+        ),
+        {"t": str(task_id), **vis.params},
+    )).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": str(row.id), "name": row.name, "state": row.state,
+        "starts_on": _iso(row.starts_on), "ends_on": _iso(row.ends_on),
+    }
+
+
 def _member_counts_sql(vis: Any) -> str:
     """For each cycle of ``:ids``: its member tasks, and those the reader sees."""
     return (
@@ -1198,4 +1224,5 @@ __all__ = [
     "detach_moved_tasks",
     "require_sprints",
     "sprints_allowed",
+    "task_open_cycle",
 ]

@@ -133,7 +133,7 @@ model (layer b). A test holds the words of each chat against the word lists.
 | Set | Chats | Turns | What it covers |
 |---|---|---|---|
 | `crm` | 9 | 12 | The pipeline, a deal's history, a find and a move, a logged call, a new lead, a converted lead, Mirror mode, a word of the pack with no surface, and a miss with no word and no surface. |
-| `projects` | 17 | 22 | My work, a project view, an overdue list, a find, a capacity question (`projects-plan`), a stuck-work report, a status change and a tag batch (`projects-structure`), an archive and three new tasks (`projects-bulk`), a reminders read (`projects-reminders`), an authority page read (`projects-authority`), a saved-reports read (`projects-reports`, PJP-2), the Calendar and Tasks pages, a private task, and two misses. |
+| `projects` | 18 | 23 | My work, a project view, an overdue list, a find, a capacity question (`projects-plan`), a stuck-work report, a status change and a tag batch (`projects-structure`), an archive and three new tasks (`projects-bulk`), a reminders read (`projects-reminders`), an authority page read (`projects-authority`), a cycles read (`projects-cycles`), a saved-reports read (`projects-reports`, PJP-2), the Calendar and Tasks pages, a private task, and two misses. |
 | `mixed` | 2 | 4 | "Make a task from it" after a mail read. "Log this call on Orbit", then "Make a task to send the new quote". |
 | `fanout` | 3 | 3 | Five companies, five tasks, ten invoices. Listed and skipped until OA-9b. |
 

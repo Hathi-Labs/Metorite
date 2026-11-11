@@ -14,6 +14,7 @@ implementation too many; the server decides and the client renders.
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -24,6 +25,8 @@ from acb_common import get_logger
 from acb_common.app_manifests.shell_manifest import load_vocabulary
 from acb_common.guide_flags import guide_allowed
 from fastapi import APIRouter, Body, Depends, HTTPException
+from gateway.module_runs import module_runs_allowed
+from gateway.package_host.flags import package_host_allowed
 from gateway.routes.admin._common import _tenant_session, get_org_id
 from pydantic import (
     BaseModel,
@@ -61,7 +64,47 @@ async def _catalog_slugs(db: Any) -> list[str]:
     return [r.slug for r in rows if getattr(r, "slug", None)]
 
 
-def resolve_features(access: Any, catalog: list[str]) -> dict[str, list[Any]]:
+def _every_feature(_slug: str) -> bool:
+    """The ``can_use`` that :func:`_install_slugs` gives the resolve.
+
+    Step 3 of the resolve drops a claim whose feature the viewer lacks. Then
+    the slug could not reach ``features_denied``. So the resolve keeps every
+    claim that the viewer sees, and :func:`resolve_features` splits the slugs
+    by the access set, as it does for a system slug. This grants nothing.
+    """
+    return True
+
+
+async def _install_slugs(db: Any, user: UserContext) -> list[str]:
+    """The feature slugs of the installs that the viewer sees (WS-PKG PKG-7).
+
+    ``package_host.md`` §10, the PKG-7 row. The org is the bound tenant of
+    the session, and the viewer is ``user.email``, never request input (R5).
+
+    While ``PACKAGE_HOST_ORGS`` leaves the org out, this answers ``[]`` and
+    runs no statement. So the body of ``/auth/me`` stays as it was.
+
+    It fails closed. The resolve runs in a savepoint, and an error gives
+    ``[]`` and a log line, never a 500. ``install_feature_slugs`` drops a
+    slug that is not text or that breaks the grammar of a permission.
+    """
+    if not package_host_allowed(user.organization_id):
+        return []
+    from gateway.package_host import resolve as _resolve
+
+    try:
+        async with db.begin_nested():
+            body = await _resolve.resolve_for(
+                db, viewer=user.email or "", can_use=_every_feature)
+        return _resolve.install_feature_slugs(body)
+    except Exception as exc:
+        _log.warning("auth.me.install_features_failed", error=type(exc).__name__)
+        return []
+
+
+def resolve_features(
+    access: Any, catalog: list[str], installed: list[str] | None = None,
+) -> dict[str, list[Any]]:
     """Split every known feature into what this caller may reach and what they
     may not, naming the permission each absent one needs.
 
@@ -80,11 +123,17 @@ def resolve_features(access: Any, catalog: list[str]) -> dict[str, list[Any]]:
     ``denied`` is what makes the failure legible: "Projects needs
     `feature:projects`" is something a person can act on. A pane that silently
     is not there is something they can only guess at.
+
+    **The third source (WS-PKG PKG-7).** ``installed`` holds the slugs that
+    the installs of the viewer declare (:func:`_install_slugs`). They come
+    after the catalog and the code list. The same access set splits them, so
+    a ``*`` or ``feature:*`` holder sees each one in ``features``, and a
+    guest sees it in ``features_denied``.
     """
     from acb_auth.permissions import FEATURES, feature_permission
 
     known: list[str] = []
-    for slug in [*catalog, *FEATURES]:
+    for slug in [*catalog, *FEATURES, *(installed or ())]:
         if slug and slug not in known:
             known.append(slug)
 
@@ -173,6 +222,7 @@ async def get_me(user: UserContext = Depends(get_current_user)) -> dict[str, Any
     # legitimately absent on a box whose resolve flag has never been on.
     organization: dict[str, str | None] = {}
     catalog: list[str] = []
+    installed: list[str] = []
     try:
         async with _tenant_session() as db:
             # The CALLER's organization, not the deployment's. This line used to
@@ -202,6 +252,8 @@ async def get_me(user: UserContext = Depends(get_current_user)) -> dict[str, Any
                 # CP-2j, and SEPARATE on purpose — see the helper.
                 organization.update(await _registry_projection(db, org_id))
             catalog = await _catalog_slugs(db)
+            # PKG-7: the slugs of the installs. Flag off, no statement runs.
+            installed = await _install_slugs(db, user)
     except Exception:  # noqa: BLE001
         # An unprovisioned org must not stop a member from loading the app —
         # the access set is authoritative either way. An unreachable catalog
@@ -228,7 +280,7 @@ async def get_me(user: UserContext = Depends(get_current_user)) -> dict[str, Any
         # predates its slug — and `features_denied` names the permission each
         # absent pane needs, so "why is Projects missing" has an answer on
         # screen instead of being a silent nothing.
-        **resolve_features(access, catalog),
+        **resolve_features(access, catalog, installed),
         "agents": [n for n in _agent_names() if access.can_run_agent(n)],
         "permissions": sorted(access.granted),
         # Resolved yes/no for every concrete capability, so the browser never
@@ -278,7 +330,9 @@ SHELL_CARDS: frozenset[str] = frozenset(_VOCABULARY.cards)
 SHELL_PANES: frozenset[str] = frozenset(_VOCABULARY.panes)
 
 #: Caps on each list. There are 21 panes, 5 cards and 23 jobs today.
-MAX_PINS = 24
+#: ``pins`` and ``known`` also hold install panes while ``PACKAGE_HOST_ORGS``
+#: holds the org (WS-PKG PKG-6c-1), so their cap is 64 (PKG-Q24).
+MAX_PINS = 64
 MAX_CARDS = 8
 MAX_JOBS = 16
 
@@ -393,8 +447,21 @@ class ShellPrefs(BaseModel):
 
     @field_validator("pins", "known")
     @classmethod
-    def _pins(cls, v: list[str] | None) -> list[str] | None:
-        return None if v is None else _known(v, SHELL_PANES, "pane")
+    def _pins(cls, v: list[str] | None, info: ValidationInfo) -> list[str] | None:
+        """A system pane, always. An install href too, when the context says
+        ``install_hrefs`` (WS-PKG PKG-6c-1). That is the check of the syntax
+        only: ``put_my_shell`` then keeps the hrefs that the viewer's own
+        resolve holds. With no context, the check is the system list only."""
+        if v is None:
+            return None
+        if not (info.context or {}).get("install_hrefs"):
+            return _known(v, SHELL_PANES, "pane")
+        from gateway.package_host.shell_pins import safe_href
+
+        unsafe = sorted({x for x in v if x not in SHELL_PANES and safe_href(x) is None})
+        if unsafe:
+            raise ValueError(f"unknown pane: {', '.join(unsafe)[:200]}")
+        return _unique(v)
 
     @field_validator("card_order")
     @classmethod
@@ -478,7 +545,7 @@ _SET_BY_MODE = {
 #: Fields of the ANSWER that are facts of the server, not of the layout. A
 #: tab on an older bundle spreads the whole answer back into its save, so the
 #: PUT drops these before it validates, and never stores them.
-READ_ONLY_ANSWER_KEYS: tuple[str, ...] = ("guide",)
+READ_ONLY_ANSWER_KEYS: tuple[str, ...] = ("guide", "module_runs")
 
 
 def _server_stamp() -> str:
@@ -486,13 +553,19 @@ def _server_stamp() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def stored_shell(raw: Any) -> dict[str, Any]:
+def stored_shell(raw: Any, installs: bool = False) -> dict[str, Any]:
     """A stored value, as the route answers it. Lenient on purpose.
 
     A pane leaves `nav.ts`, or a job is renamed, after a member saved it. A
     read must still answer, so this drops what it does not know rather than
     refuse the whole layout. The write is the strict half (`ShellPrefs`).
+
+    *installs* is true while ``PACKAGE_HOST_ORGS`` holds the session's org
+    (WS-PKG PKG-6c-1). Then ``pins`` and ``known`` also keep a stored install
+    href that is safe and that no system pane owns. The write checked it
+    against the resolve. With the flag off, the read drops it.
     """
+    from gateway.package_host.shell_pins import install_href
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
@@ -501,19 +574,20 @@ def stored_shell(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return dict(EMPTY_SHELL)
 
-    def _list(key: str, vocabulary: frozenset[str], cap: int) -> list[str] | None:
+    def _list(key: str, vocabulary: frozenset[str], cap: int, *, hrefs: bool = False) -> list[str] | None:
         v = raw.get(key)
         if not isinstance(v, list):
             return None
-        return _unique([x for x in v if isinstance(x, str) and x in vocabulary])[:cap]
+        return _unique([x for x in v if isinstance(x, str) and (
+            x in vocabulary or (hrefs and install_href(x) is not None))])[:cap]
 
     preset = raw.get("preset")
     answered = raw.get("answered")
     return {
         "preset": preset if preset in SHELL_PRESETS else None,
         "answered": answered if answered in ("answered", "skipped") else None,
-        "pins": _list("pins", SHELL_PANES, MAX_PINS),
-        "known": _list("known", SHELL_PANES, MAX_PINS),
+        "pins": _list("pins", SHELL_PANES, MAX_PINS, hrefs=installs),
+        "known": _list("known", SHELL_PANES, MAX_PINS, hrefs=installs),
         "cardOrder": _list("cardOrder", SHELL_CARDS, MAX_CARDS),
         "newOrder": _list("newOrder", _job_ids(), MAX_JOBS),
         "chat_first_message_at": _stamp(raw.get("chat_first_message_at")),
@@ -523,12 +597,20 @@ def stored_shell(raw: Any) -> dict[str, Any]:
 
 
 def _answer(layout: dict[str, Any], user: UserContext) -> dict[str, Any]:
-    """The layout, and ``guide``: true when ``GUIDE_ORGS`` holds the
-    session's org (WS-OB GD-5a). The org comes from the session, never from
-    the request (R5). ``guide`` is a fact of the server, not of the layout,
-    so ``ShellPrefs`` refuses it in a body."""
+    """The layout, and two facts of the server about the session's org.
+
+    ``guide`` is true when ``GUIDE_ORGS`` holds it (WS-OB GD-5a).
+    ``module_runs`` is true when ``MODULE_RUN_ORGS`` holds it (WS-STU
+    STU-Q15a), and `/studio` shows the Module Studio tab only then. The org
+    comes from the session, never from the request (R5). Neither is a fact of
+    the layout, so ``ShellPrefs`` refuses each in a body."""
     org = getattr(user, "organization_id", None)
-    return {**layout, "guide": guide_allowed(str(org) if org else None)}
+    bound = str(org) if org else None
+    return {
+        **layout,
+        "guide": guide_allowed(bound),
+        "module_runs": module_runs_allowed(bound),
+    }
 
 
 def _member(user: UserContext) -> str:
@@ -605,18 +687,43 @@ async def get_my_shell(user: UserContext = Depends(get_current_user)) -> dict[st
 
     A failed read answers 503, never an empty layout. All-null means "ask the
     first sign-in question", and a database fault must not ask it again.
-    The answer also carries ``guide`` (``_answer``, WS-OB GD-5a).
+    The answer also carries ``guide`` (WS-OB GD-5a) and ``module_runs``
+    (WS-STU STU-Q15a), through ``_answer``.
     """
+    from gateway.package_host.flags import package_host_allowed
+
     uid = _member(user)
     if not uid:
         return _answer(dict(EMPTY_SHELL), user)
+    installs = package_host_allowed(getattr(user, "organization_id", None))
     try:
         async with _tenant_session() as db:
             row = await _read_shell(db, uid)
     except Exception as exc:
         _log.warning("auth.shell.read_failed", error=str(exc)[:160])
         raise HTTPException(status_code=503, detail="unavailable") from exc
-    return _answer(stored_shell(row[0]) if row is not None else dict(EMPTY_SHELL), user)
+    return _answer(stored_shell(row[0], installs) if row is not None else dict(EMPTY_SHELL), user)
+
+
+def _has_install_href(prefs: dict[str, Any] | None) -> bool:
+    """True when ``pins`` or ``known`` names an href outside ``SHELL_PANES``."""
+    return prefs is not None and any(
+        v not in SHELL_PANES for k in ("pins", "known") for v in (prefs.get(k) or ()))
+
+
+async def _keep_install_hrefs(db: Any, user: UserContext, prefs: dict[str, Any]) -> None:
+    """Drop from *prefs* each install href that the viewer's resolve does not
+    hold (WS-PKG PKG-6c-1). *db* is the session of the write, bound to the
+    session's org. The viewer is ``user.email``, never request input (R5).
+    A fault in the resolve raises, and the caller answers 503."""
+    from gateway.package_host import resolve as _resolve
+    from gateway.package_host import shell_pins
+
+    manifest = await _resolve.resolve_for(db, viewer=user.email, can_use=user.can_use_feature)
+    held = shell_pins.install_nav_hrefs(manifest)
+    for k in ("pins", "known"):
+        if k in prefs:
+            prefs[k] = shell_pins.keep_held(prefs[k], held)
 
 
 @me_router.put("/me/shell", summary="Save or reset the caller's shell layout (NS-7)")
@@ -627,15 +734,28 @@ async def put_my_shell(
     """Save the layout. A body of ``null`` resets the member to the preset.
 
     It needs a signed-in member and no feature, so a guest can pin an app.
+
+    **An install pane (WS-PKG PKG-6c-1).** While ``PACKAGE_HOST_ORGS`` holds
+    the session's org, ``pins`` and ``known`` may name a safe href outside
+    ``SHELL_PANES``. In the session of the write, and before it,
+    ``resolve.resolve_for`` reads the viewer's own manifest. The org is the
+    bound session and the viewer is ``user.email``, never request input (R5).
+    A href that the resolve does not hold drops in silence, so no answer
+    tells an install that exists from one that does not (PKG-Q20). A fault
+    in the resolve answers 503 and writes nothing. With the flag off, the
+    href answers 422 and runs no SQL, as before.
     """
+    from gateway.package_host.flags import package_host_allowed
+
     uid = _member(user)
     if not uid:
         raise HTTPException(status_code=403, detail="Sign in to save a layout")
+    installs = package_host_allowed(getattr(user, "organization_id", None))
     prefs: dict[str, Any] | None = None
     mode = "layout"
     keep: tuple[str, ...] = ()
     if body is not None:
-        # An old tab sends back the answer it read, ``guide`` included.
+        # An old tab sends back the answer it read, ``guide`` and ``module_runs`` included.
         body = {k: v for k, v in body.items() if k not in READ_ONLY_ANSWER_KEYS}
         # The hello route is the ONLY writer of ``buddy_hello_at`` (BUD-1).
         # A client PUT never claims it, so it never blocks the hello.
@@ -645,7 +765,7 @@ async def put_my_shell(
                 # The mark was all the body held: write nothing, answer the read.
                 return await get_my_shell(user)
         try:
-            model = ShellPrefs.model_validate(body)
+            model = ShellPrefs.model_validate(body, context={"install_hrefs": installs})
         except ValidationError as exc:
             raise HTTPException(
                 status_code=422,
@@ -678,13 +798,17 @@ async def put_my_shell(
         # The first time stays: a stored time wins over this one.
         if stamped and mode == "stamp":
             mode = "stamp-first"
+    # PKG-6c-1: an href outside the system list needs the resolve.
+    extra = installs and _has_install_href(prefs)
     try:
         async with _tenant_session() as db:
+            if extra and prefs is not None:
+                await _keep_install_hrefs(db, user, prefs)
             stored = await _write_shell(db, uid, prefs, mode, keep)
     except Exception as exc:
         _log.warning("auth.shell.write_failed", error=str(exc)[:160])
         raise HTTPException(status_code=503, detail="unavailable") from exc
-    return _answer(stored_shell(stored) if stored is not None else dict(EMPTY_SHELL), user)
+    return _answer(stored_shell(stored, installs) if stored is not None else dict(EMPTY_SHELL), user)
 
 
 # ── /auth/me/zone — the member's time zone (RX-7) ──────────────────────────
@@ -777,3 +901,163 @@ async def put_my_zone(
         _log.warning("auth.zone.write_failed", error=str(exc)[:160])
         raise HTTPException(status_code=503, detail="unavailable") from exc
     return {"timezone": body.timezone}
+
+
+# ── /auth/me/appearance — the member's mode, density and accent (PKG-20) ────
+#
+# `package_host.md` §9.5. Mode, density and accent lived in the browser only
+# (`lib/theme/storage.ts`), so a second device opened in the defaults. This
+# route keeps one copy for each member in each organization, in the column
+# `user_settings.appearance`. The workbench reads it once after the first
+# paint (`lib/theme/syncAppearance.ts`), and writes it only on a member's
+# change. The Design choice (`cc-look`) is not part of the record.
+#
+# **Dark.** Both routes check `package_host_allowed` FIRST, as `GET
+# /shell/manifest` does, and before the sign-in check. An org outside
+# `PACKAGE_HOST_ORGS` (the default, empty) gets 404 and no session opens.
+#
+# It needs only a signed-in member, as `/auth/me/zone` does. It reads and
+# writes the member's OWN row in the session's tenant. The write is the one
+# write of the settings row (`write_member_settings`), so no second writer
+# exists. The member and the tenant come from the session only (R5). The body
+# names neither, and the model refuses a key it does not know. The SERVER
+# stamps `updated_at`, never the client. The last write wins.
+#
+# Fences: `tests/unit/test_auth_me_appearance.py` (with the accent sample
+# list that the TypeScript test reads too) and
+# `tests/unit/test_auth_me_appearance_r8.py`.
+
+#: The colour modes. next-themes runs with `enableSystem={false}`.
+APPEARANCE_MODES: tuple[str, ...] = ("dark", "light")
+
+#: The densities of `lib/theme/types.ts` `DENSITY_SCALE`. Null follows the org.
+APPEARANCE_DENSITIES: tuple[str, ...] = ("compact", "default", "comfortable")
+
+#: The longest accent, after the trim. The TypeScript rule has the same cap.
+MAX_ACCENT = 64
+
+#: The characters of `\s` and of `String.prototype.trim` in JavaScript. Python's
+#: own `\s` and `str.strip()` read a different set, so the port names them.
+_JS_SPACE = (
+    "\t\n\v\f\r \u00a0\u1680"
+    + "".join(chr(c) for c in range(0x2000, 0x200B))
+    + "\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+
+#: A port of `SAFE_COLOR` in `workbench/control_plane/src/lib/theme/css.ts`.
+#: `re.ASCII` keeps `[a-z]` with IGNORECASE to the ASCII letters, as the
+#: JavaScript rule without the `u` flag does. The character class spells the
+#: JavaScript `\s` set. `fullmatch` stands for `^...$`. The fence that the two
+#: rules agree is the shared sample list `tests/fixtures/accent_samples.json`.
+SAFE_COLOR = re.compile(
+    "(#[0-9a-f]{3,8}|(rgb|hsl|oklch|lab|lch)a?\\([0-9a-z%.,/"
+    + _JS_SPACE
+    + "+-]*\\)|[a-z]{3,20})",
+    re.IGNORECASE | re.ASCII,
+)
+
+
+def is_safe_color(value: Any) -> bool:
+    """The Python half of `isSafeColor` in `lib/theme/css.ts`."""
+    if not isinstance(value, str):
+        return False
+    v = value.strip(_JS_SPACE)
+    return 0 < len(v) <= MAX_ACCENT and SAFE_COLOR.fullmatch(v) is not None
+
+
+#: The answer for a member with no server copy.
+EMPTY_APPEARANCE: dict[str, Any] = {
+    "mode": None, "density": None, "accent": None, "updated_at": None,
+}
+
+_READ_APPEARANCE_SQL = (
+    "SELECT appearance FROM user_settings "
+    "WHERE organization_id = {org} AND user_id = :uid"
+)
+
+
+class AppearanceIn(BaseModel):
+    """What `PUT /auth/me/appearance` accepts: the whole record, less the stamp."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["dark", "light"]
+    density: Literal["compact", "default", "comfortable"] | None = None
+    accent: str | None = None
+
+    @field_validator("accent")
+    @classmethod
+    def _accent(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if not is_safe_color(v):
+            raise ValueError("accent is a colour literal, such as #e11d48")
+        return v.strip(_JS_SPACE)
+
+
+def stored_appearance(raw: Any) -> dict[str, Any]:
+    """A stored value, as the route answers it. Lenient on purpose: a field
+    that is not valid reads as null, and the other fields still answer."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return dict(EMPTY_APPEARANCE)
+    if not isinstance(raw, dict):
+        return dict(EMPTY_APPEARANCE)
+    mode = raw.get("mode")
+    density = raw.get("density")
+    accent = raw.get("accent")
+    return {
+        "mode": mode if mode in APPEARANCE_MODES else None,
+        "density": density if density in APPEARANCE_DENSITIES else None,
+        "accent": accent.strip(_JS_SPACE) if is_safe_color(accent) else None,
+        "updated_at": _stamp(raw.get("updated_at")),
+    }
+
+
+@me_router.get("/me/appearance", summary="The caller's saved appearance (PKG-20)")
+async def get_my_appearance(user: UserContext = Depends(get_current_user)) -> dict[str, Any]:
+    """The saved record, or all-null for a member with no server copy. A
+    failed read answers 503, never a default, so the browser changes nothing."""
+    from gateway.package_host.flags import package_host_allowed
+    from gateway.routes.tasks.settings import _BOUND_ORG
+    from sqlalchemy import text
+
+    if not package_host_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    uid = _member(user)
+    if not uid:
+        raise HTTPException(status_code=403, detail="Sign in to read your appearance")
+    try:
+        async with _tenant_session() as db:
+            row = (await db.execute(
+                text(_READ_APPEARANCE_SQL.format(org=_BOUND_ORG)), {"uid": uid},
+            )).first()
+    except Exception as exc:
+        _log.warning("auth.appearance.read_failed", error=str(exc)[:160])
+        raise HTTPException(status_code=503, detail="unavailable") from exc
+    return stored_appearance(row[0] if row is not None else None)
+
+
+@me_router.put("/me/appearance", summary="Save the caller's appearance (PKG-20)")
+async def put_my_appearance(
+    body: AppearanceIn, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Save the whole record in the member's own settings row. It needs a
+    signed-in member and no app feature. The server stamps ``updated_at``."""
+    from gateway.package_host.flags import package_host_allowed
+    from gateway.routes.tasks.settings import write_member_settings
+
+    if not package_host_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    uid = _member(user)
+    if not uid:
+        raise HTTPException(status_code=403, detail="Sign in to save your appearance")
+    record = {**body.model_dump(), "updated_at": _server_stamp()}
+    try:
+        await write_member_settings(uid, {"appearance": record})
+    except Exception as exc:
+        _log.warning("auth.appearance.write_failed", error=str(exc)[:160])
+        raise HTTPException(status_code=503, detail="unavailable") from exc
+    return record

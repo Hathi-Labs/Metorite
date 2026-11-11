@@ -226,6 +226,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # agents. The text reaches every agent session of the org, so a tenant
     # must not open it for another org.
     "AGENT_GUIDANCE_ORGS",
+    # WS-MCP SW-94: AGENT_POLICY_ORGS opens the policy store of agent work. A
+    # policy can pause the agents of an org and set how strict a refusal is,
+    # so a tenant must not open it for another org.
+    "AGENT_POLICY_ORGS",
     # WS-MCP PB-2: PLAYBOOK_ORGS opens the orchestration playbook prompts,
     # resources and the default guidance block. It is Metorite's own text and
     # it reaches every agent session of the org, so only the operator writes it.
@@ -268,6 +272,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # door for an org. A request waits for a member and can then run, so only
     # the owner writes it.
     "APP_REQUESTS_ORGS",
+    # WS-STU STU-Q15a: MODULE_RUN_ORGS lets the code modules of an org run as
+    # a child process on the box. A tenant that set it could run member code
+    # for every org, so only the owner writes it.
+    "MODULE_RUN_ORGS",
     # WS-55 EA-18a: AGENT_QUESTIONS_ORGS narrows who may answer an agent's
     # question and opens the list of the questions, so only the owner writes
     # it.
@@ -285,6 +293,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # an org. The list reads held writes, chat questions, app requests and
     # decisions, so only the owner writes it.
     "WAITING_ORGS",
+    # WS-AGA AGA-6: AGENTS_VIEW_ORGS opens the member view of agents for an
+    # org. The view reads the agent runs of the org, so only the owner writes it.
+    "AGENTS_VIEW_ORGS",
     # WS-42 PST-4: STATUS_SET_GUARD_ORGS turns on the shared-set refusal of the
     # chat status tools. It changes what a chat write may do, so only the owner
     # writes it.

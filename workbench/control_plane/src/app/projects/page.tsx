@@ -62,6 +62,8 @@ import { ConvertFolderDialog } from "./components/ConvertFolderDialog";
 import { DeleteProjectDialog } from "./components/DeleteProjectDialog";
 import { MoveDialog } from "./components/MoveDialog";
 import { AgentWorkStrip } from "./components/AgentWorkStrip";
+import { AgentsAtWorkView, useAgentsAtWork } from "./components/AgentsAtWork";
+import { LENS_LABEL as AGENTS_LENS_LABEL } from "./lib/agentsAtWork";
 import { NeedsAttentionList } from "./components/NeedsAttentionList";
 import { type AttentionPage, LENS_LABEL, badgeText } from "./lib/needsAttention";
 import { AskAgentDialog } from "./components/AskAgentDialog";
@@ -151,6 +153,7 @@ import {
   isWaitingOnMe,
   matchesAgentFocus,
 } from "./lib/agentRuns";
+import { epicOptions, filterByEpic } from "./lib/epicFilter";
 import { TaskPanel } from "./components/TaskPanel";
 import type { TaskWhere } from "@/components/TaskPanelHeader";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
@@ -1307,6 +1310,9 @@ function ProjectsWorkspace() {
    * then offers no button.
    */
   const [waitingOnMe, setWaitingOnMe] = useState(false);
+  // SP-2a — the Epic filter. Page state like "Waiting on me": it narrows the
+  // loaded rows in the browser (`lib/epicFilter`).
+  const [epicId, setEpicId] = useState("");
   const [agentRunsOn, setAgentRunsOn] = useState(false);
   /**
    * WS-55 EA-13e (EA3-43, EA3-49) — "Agent work" and the count button of the
@@ -1331,6 +1337,13 @@ function ProjectsWorkspace() {
    * the last answer, and the header badge and the toggle read its total.
    */
   const [attentionFor, setAttentionFor] = useState<string | null>(null);
+  /**
+   * WS-AGA AGA-8 — the "Agents at work" lens. Page state like the lens above.
+   * `agentsRead` is one read of the overview. A dark read (404) draws neither
+   * the toggle nor the section.
+   */
+  const [agentsOpen, setAgentsOpen] = useState(false);
+  const agentsRead = useAgentsAtWork();
   const [attention, setAttention] = useState<{
     projectId: string;
     page: AttentionPage;
@@ -1965,11 +1978,14 @@ function ProjectsWorkspace() {
   // lens is on for it. A new project opens on its board, never on the lens of
   // the last one. While the lens is on, the view switch selects no mode.
   const attentionProject = selected && !dashboardOnly ? selected.id : null;
-  const attentionLens = attentionFor !== null && attentionFor === attentionProject;
-  const shownMode: ViewMode | null = attentionLens ? null : mode;
+  const agentsLens = agentsOpen && agentsRead.kind !== "dark" && Boolean(selected) && !dashboardOnly;
+  const attentionLens =
+    !agentsLens && attentionFor !== null && attentionFor === attentionProject;
+  const shownMode: ViewMode | null = attentionLens || agentsLens ? null : mode;
   /** A pick of a view mode leaves the lens, from every door. */
   const pickMode = (next: ViewMode) => {
     setAttentionFor(null);
+    setAgentsOpen(false);
     setChosenMode(next);
   };
   // OP-12: the saved views of the tab row. The project's order-bearing board
@@ -2817,13 +2833,16 @@ function ProjectsWorkspace() {
   // D-PM-38 — Hidden drops the subtasks here too, not only in SQL. Rows held
   // from the read before the switch are painted first, and the selection
   // (`onScreen`) must not keep a row nobody can see.
+  const epics = useMemo(() => epicOptions(tasks, taskTypes), [tasks, taskTypes]);
+  // An epic from another project is not in the list, and then no filter applies.
+  const epicScoped = epics.some((o) => o.value === epicId) ? epicId : "";
   const groups = useMemo(
     () =>
       groupTasks(
         visibleTasks(
           // Task #986: the server filters by these now (`boardReadParams`), so
           // this is only a paint-time guard for rows held from before a switch.
-          tasks.filter(
+          filterByEpic(tasks, epicScoped).filter(
             (t) =>
               (!waitingOnMe || isWaitingOnMe(t, me)) &&
               (!agentWork || isAgentWork(t)) &&
@@ -2837,7 +2856,7 @@ function ProjectsWorkspace() {
           projectName,
         },
       ),
-    [tasks, subtaskMode, groupBy, statuses, projectName, waitingOnMe, agentWork, agentFocus, me]
+    [tasks, subtaskMode, groupBy, statuses, projectName, waitingOnMe, agentWork, agentFocus, me, epicScoped]
   );
 
   const onScreen = useMemo(() => visibleIds(groups), [groups]);
@@ -4787,7 +4806,10 @@ function ProjectsWorkspace() {
                 ? "Back to the board"
                 : "Show the work that stopped and waits for a person"
             }
-            onClick={() => setAttentionFor(attentionLens ? null : selected.id)}
+            onClick={() => {
+              setAgentsOpen(false);
+              setAttentionFor(attentionLens ? null : selected.id);
+            }}
           >
             {compactChrome ? (
               <span className="hidden @[56rem]:inline">{LENS_LABEL}</span>
@@ -4797,6 +4819,24 @@ function ProjectsWorkspace() {
             {attentionHere && attentionHere.total > 0 ? (
               <span className="ml-1 tabular-nums opacity-70">{attentionHere.total}</span>
             ) : null}
+          </Button>
+        ) : null}
+        {selected && (agentsRead.kind === "ready" || agentsRead.kind === "error") ? (
+          <Button
+            className="shrink-0"
+            variant="ghost"
+            size="sm"
+            icon="Bot"
+            selected={agentsLens}
+            data-agents-toggle=""
+            title={agentsLens ? "Back to the board" : "Show the agents and what they did last"}
+            onClick={() => setAgentsOpen(!agentsLens)}
+          >
+            {compactChrome ? (
+              <span className="hidden @[56rem]:inline">{AGENTS_LENS_LABEL}</span>
+            ) : (
+              AGENTS_LENS_LABEL
+            )}
           </Button>
         ) : null}
         <div
@@ -5004,6 +5044,13 @@ function ProjectsWorkspace() {
         renderState("loading", "Counting the work below…")
       )}
     </>
+  ) : agentsLens && selected ? (
+    // WS-AGA AGA-8 — the Agents at work lens. It takes the place of the
+    // canvas, as the Needs attention lens does, and it only reads.
+    <>
+      {shownError ? renderState("error", shownError) : null}
+      <AgentsAtWorkView read={agentsRead} onBack={() => setAgentsOpen(false)} />
+    </>
   ) : attentionLens && selected ? (
     // WS-55 SW-11a — the Needs attention lens. It takes the place of the
     // canvas, and the filter bar, the strip, the bulk bar, the composer and the
@@ -5086,6 +5133,9 @@ function ProjectsWorkspace() {
           me={me}
           waitingOnMe={waitingOnMe}
           onWaitingOnMe={agentRunsOn ? onWaitingOnMe : undefined}
+          epic={epicScoped}
+          epics={epics}
+          onEpic={setEpicId}
           agentWork={agentWork}
           onAgentWork={agentRunsOn ? setAgentWork : undefined}
           people={people}
@@ -5419,6 +5469,17 @@ function ProjectsWorkspace() {
               onToggleAll={setPicked}
               onExtendSelection={extendSelection}
               onSelect={(task) => void openWithStatuses(task)}
+              // MOB-2: the phone row. Same flag as the board above.
+              phone={compactChrome && isMobile}
+              onDrop={handleDrop}
+              // The project shows only when it is not the one that is open,
+              // so the rows of one project do not repeat its name. A row of
+              // a child project still names its project.
+              projectPath={
+                compactChrome && isMobile
+                  ? (t) => (t.project_id === selected?.id ? null : [projectName(t.project_id)])
+                  : undefined
+              }
             />
           )}
           {/* OP-1: with the compact chrome the load-more row sits at the END of
@@ -6131,7 +6192,8 @@ function ProjectsWorkspace() {
                       // A saved view filters a list. From the Overview or the
                       // lens, it opens on the canvas it was saved from.
                       setAttentionFor(null);
-                      if (mode === "overview" || attentionLens) {
+                      setAgentsOpen(false);
+                      if (mode === "overview" || attentionLens || agentsLens) {
                         setChosenMode(view.view_type === "board" ? "board" : "list");
                       }
                       applyView(view);

@@ -111,6 +111,14 @@ clean after each restore.
 * M32, the old draft_changed text of the save: ``draft_changed_texts_name_a
   _recovery``.
 * M33, the draft save names ``$.based_on``: 4 red in ``test_studio_package_routes.py``.
+
+PKG-12 (``package_host.md`` §6.2 step 1). The publish sends ``origin`` =
+``chat``, and the fake reads it with the real ``packages._origin``. The tool
+takes no org, member or date argument
+(``test_the_publish_tool_takes_no_org_member_or_date``).
+
+* M34, send no origin with the publish: ``name_the_hash_that_they_checked``.
+* M35, add an ``ends_at`` argument to ``studio_publish``: ``takes_no_org_member_or_date``.
 """
 from __future__ import annotations
 
@@ -278,6 +286,7 @@ class Gateway:
             raise HTTPException(422, {"message": "The release notes are text.", "errors": [
                 {"path": "$.notes", "message": "The release notes are text."}]})
         expected = packages._based_on(sent.get("based_on"))
+        packages._origin(sent.get("origin"))  # the real parse (PKG-12)
         with packages._store_errors():
             store._notes(notes)
             store._expect(p["manifest"], expected)
@@ -724,7 +733,20 @@ async def test_the_publish_and_the_save_name_the_hash_that_they_checked(gw) -> N
     await _plan(other)
     assert (await st.studio_publish(pid))["ok"]
     body = next(b for verb, p, b, _h in gw.calls if verb == "POST" and p.endswith("/versions"))
-    assert body == {"notes": "", "based_on": st.manifest_hash(other)}
+    assert body == {"notes": "", "based_on": st.manifest_hash(other), "origin": "chat"}
+    assert packages._origin(body["origin"]) == packages.ORIGIN_CHAT
+
+
+def test_the_publish_tool_takes_no_org_member_or_date() -> None:
+    """PKG-12 (R5). The route reads the org and the member from the session
+    and the end date from the server clock. So the model can name only the
+    package and the notes. Mutation M35 -> red."""
+    params = inspect.signature(st.studio_publish).parameters
+    assert list(params) == ["package_id", "notes"]
+    words = ("org", "tenant", "member", "email", "user", "owner", "date", "ends", "time",
+             "days", "origin")
+    for name in params:
+        assert not any(w in name.lower() for w in words), name
 
 
 async def test_a_draft_that_changes_between_the_read_and_the_publish_is_not_published(
