@@ -159,6 +159,19 @@ function checkAccess(
       }
     });
   });
+  // Fix round 1: the lines of a table with access need their own access (`_check_open_lines`).
+  const index = new Map(objects.map((o, i) => [text(o.name), i]));
+  const flagged = new Set<string>();
+  objects.forEach((o) => {
+    if (!Array.isArray(o.access)) return;
+    list(o.fields).forEach((f) => {
+      const child = text(f.lines) ? text(f.to) : "";
+      const ci = index.get(child);
+      if (ci === undefined || flagged.has(child) || Array.isArray(objects[ci].access)) return;
+      flagged.add(child);
+      err(`$.objects[${ci}]`, `The ${child} object is the lines of ${text(o.name)}, which has access. Give it access too.`);
+    });
+  });
 }
 
 export function countProblems(problems: readonly Problem[]): { errors: number; warnings: number } {

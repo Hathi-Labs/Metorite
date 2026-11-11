@@ -114,6 +114,20 @@ describe("checkDraft, the row rules of C8a", () => {
       "$.objects[0].access[0].role", "$.objects[0].access[0].read",
     ]);
   });
+
+  it("asks for access on the lines of a table with access (fix round 1)", () => {
+    const withLines = (lineAccess: unknown[] | undefined): unknown => ({
+      ...ok,
+      roles: ["hr"],
+      objects: [
+        { name: "m", fields: [{ key: "rows", type: "relation", to: "row", lines: "m" }],
+          access: [{ role: "hr", read: "all" }] },
+        { name: "row", fields: [{ key: "m", type: "relation", to: "m" }], access: lineAccess },
+      ],
+    });
+    expect(only(withLines(undefined), "error")).toEqual(["$.objects[1]"]);
+    expect(only(withLines([{ role: "hr", read: "all" }]), "error")).toEqual([]);
+  });
 });
 
 describe("the count", () => {

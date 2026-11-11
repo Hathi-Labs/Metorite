@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -98,16 +99,26 @@ AS_M1 = Viewer(M1, frozenset({"manager"}))
 AS_M2 = Viewer(M2, frozenset({"manager"}))
 AS_HR = Viewer(HR, frozenset({"hr"}))
 AS_STRANGER = Viewer(f"x.{TAG}@stuc8a.test", frozenset({"intern"}))
+# Fix round 1: two roles of one member.
+AS_M1_BOTH = Viewer(M1, frozenset({"manager", "employee"}))
+AS_E1_AUDIT = Viewer(E1, frozenset({"auditor", "employee"}))
 
 TEAM_FIELDS: list[dict[str, Any]] = [
     {"key": "name", "type": "text"},
     {"key": "headcount", "type": "number"},
+    {"key": "lead", "type": "person", "hot": True},
+]
+#: Fix round 1 (P1-3): a team is restricted. An employee reads and changes only the
+#: team that they lead.
+TEAM_ACCESS: list[dict[str, Any]] = [
+    {"role": "hr", "read": "all", "write": "all"},
+    {"role": "employee", "read": {"where": "lead = $me"}, "write": "all"},
 ]
 SLIP_FIELDS: list[dict[str, Any]] = [
     {"key": "employee", "type": "person", "hot": True},
     {"key": "manager", "type": "person", "hot": True},
     {"key": "team", "type": "relation", "to": "team", "hot": True},
-    {"key": "month", "type": "text"},
+    {"key": "month", "type": "text", "hot": True},
     {"key": "amount", "type": "number"},
     {"key": "bonus", "type": "number"},
     {"key": "total", "type": "number"},
@@ -123,6 +134,7 @@ SLIP_RULES: list[dict[str, Any]] = [
     {"name": "pay", "kind": "formula", "target": "total", "rounding": "half_up",
      "expr": {"fn": "add", "args": [{"ref": "amount"}, {"ref": "bonus"}]}},
     {"name": "total_ok", "kind": "range", "field": "total", "max": 1_000_000},
+    {"name": "slip_once", "kind": "unique", "fields": ["month"]},
 ]
 TEAM_RULES: list[dict[str, Any]] = [
     {"name": "heads", "kind": "rollup", "target": "headcount", "source": "slip",
@@ -133,6 +145,8 @@ SLIP_ACCESS: list[dict[str, Any]] = [
     {"role": "manager", "read": {"where": "manager = $me"}},
     {"role": "employee", "read": {"where": "employee = $me"}, "write": "all",
      "hide": ["bank_account", "bonus"]},
+    # Fix round 1 (P1-1): reads every record, and writes none.
+    {"role": "auditor", "read": "all"},
 ]
 _HIDDEN = {"bank_account", "bonus", "total"}
 
@@ -188,14 +202,16 @@ def world(promoted):  # noqa: F811
             await store.set_constraints(db, team.id, TEAM_RULES, package_id=pkg)
             done = await store.set_access(db, slip.id, SLIP_ACCESS, package_id=pkg)
             assert done is not None and done.access is not None
-            t1 = (await store.apply_writes(db, OWNER, package_id=pkg, viewer=AS_OWNER, writes=[
-                Write("create", team.id, data={"name": "Plant 4"})]))[0]
+            assert await store.set_access(db, team.id, TEAM_ACCESS, package_id=pkg)
+            t1, t2 = await store.apply_writes(db, OWNER, package_id=pkg, viewer=AS_OWNER, writes=[
+                Write("create", team.id, data={"name": "Plant 4", "lead": E1}),
+                Write("create", team.id, data={"name": "Plant 9", "lead": E3})])
             rows = [_slip(E1, M1, t1.id, 1), _slip(E2, M1, t1.id, 2), _slip(E3, M2, t1.id, 3),
                     _slip(M1, M2, t1.id, 4)]
             made = await store.apply_writes(db, OWNER, package_id=pkg, viewer=AS_OWNER,
                                             writes=[Write("create", slip.id, data=r) for r in rows])
         return SimpleNamespace(p=p, a=p.org_a, b=p.org_b, pkg=pkg, pkg_b=ids["b"], slip=slip,
-                               team=team, claim=claim, t1=t1.id,
+                               team=team, claim=claim, t1=t1.id, t2=t2.id,
                                s1=made[0].id, s2=made[1].id, s3=made[2].id, s4=made[3].id)
 
     w = _run(p, build)
@@ -385,14 +401,107 @@ def test_r8_a_roll_up_over_rows_that_the_viewer_cannot_read_is_hidden(world) -> 
         assert shown is not None and shown.data["headcount"] >= 4
 
 
-def test_r8_a_refusal_of_a_rule_names_no_hidden_key(world) -> None:
-    big = Write("update", world.slip.id, world.s1, {"amount": 2_000_000})
-    masked = _refused(world, AS_E1, big)
-    assert isinstance(masked, ConstraintViolation) and masked.rule == "total_ok"
-    assert "total" not in masked.message.replace("total_ok", "") and "1000000" not in masked.message
-    full = _refused(world, AS_OWNER, big)
-    assert "`total`" in full.message
+def test_r8_a_bisection_of_a_hidden_key_gets_one_refusal_for_every_amount(world) -> None:
+    """Fix round 1 (P1-4). `total = amount + bonus` holds a range, and `bonus` is
+    hidden from an employee. A refusal that follows the amount would show `bonus`
+    by bisection, so the store refuses each write of `amount` by the employee,
+    with one text that names no hidden key."""
+    said: set[str] = set()
+    for amount in (1, 500_000, 999_989, 999_990, 999_991, 2_000_000):
+        cause = _refused(world, AS_E1, Write("update", world.slip.id, world.s1, {"amount": amount}))
+        assert isinstance(cause, AccessDenied), (amount, cause)
+        said.add(str(cause))
+    assert len(said) == 1
+    named = set(re.findall(r"`(\w+)`", said.pop()))
+    assert "amount" in named and not named & _HIDDEN
     assert _stored(world, world.s1)["amount"] == 100
+    full = _refused(world, AS_OWNER, Write("update", world.slip.id, world.s1, {"amount": 2_000_000}))
+    assert "`total`" in full.message
+
+
+def test_r8_a_key_rule_over_rows_that_the_viewer_cannot_read_names_no_field(world) -> None:
+    """A `unique` refusal still tells a viewer that some record holds the key: the
+    one bit that the spec lists. Its text names the rule and the object only."""
+    taken = Write("create", world.slip.id, data={"employee": E1, "month": "2026-02"})
+    masked = _refused(world, AS_E1, taken)
+    assert isinstance(masked, ConstraintViolation) and masked.rule == "slip_once"
+    assert "`month`" not in masked.message
+    full = _refused(world, AS_OWNER, taken)
+    assert "`month`" in full.message
+
+
+# ── Fix round 1 ─────────────────────────────────────────────────────────────
+
+
+def _team_heads(world: Any, rid: str) -> Any:
+    return _stored(world, rid).get("headcount")
+
+
+def test_r8_two_roles_write_only_the_rows_that_a_write_grant_reads(world) -> None:
+    """P1-1. The write right is decided for each record. The manager grant of M1
+    reads s1 and writes nothing, so M1 cannot change or delete s1, also with an
+    employee grant that writes. An auditor grant reads all and writes nothing, so
+    E1 still writes only the slips of E1."""
+    before = {rid: _stored(world, rid) for rid in (world.s1, world.s2)}
+    for viewer, rid in ((AS_M1_BOTH, world.s1), (AS_E1_AUDIT, world.s2)):
+        for write in (Write("update", world.slip.id, rid, {"month": "taken"}),
+                      Write("delete", world.slip.id, rid)):
+            cause = _refused(world, viewer, write)
+            assert isinstance(cause, AccessDenied), (viewer, write.op, cause)
+    assert {rid: _stored(world, rid) for rid in (world.s1, world.s2)} == before
+    # The own slip of each still takes a write.
+    _write(world, AS_M1_BOTH, Write("update", world.slip.id, world.s4, {"month": "2026-04b"}))
+    _write(world, AS_E1_AUDIT, Write("update", world.slip.id, world.s1, {"month": "2026-01c"}))
+    _write(world, AS_OWNER, Write("update", world.slip.id, world.s4, {"month": "2026-04"}))
+
+
+def test_r8_a_write_cannot_widen_what_the_viewer_reads(world) -> None:
+    """P1-2. M1 holds the manager and the employee grants. On the own slip s4
+    (employee M1, manager M2) the employee grant hides `bank_account`. A write of
+    `manager = M1` would make the manager grant read s4 too, and show the key. A
+    viewer with no grant that writes all cannot set a person field that a `where`
+    of the object reads, unless a write grant of the viewer reads that field."""
+    cause = _refused(world, AS_M1_BOTH, Write("update", world.slip.id, world.s4, {"manager": M1}))
+    assert isinstance(cause, AccessDenied) and "`manager`" in str(cause)
+    assert _stored(world, world.s4)["manager"] == M2
+    own = _get(world, AS_M1_BOTH, world.s4)
+    assert own is not None and "bank_account" not in own.data
+    cause = _refused(world, AS_M1_BOTH,
+                     Write("create", world.slip.id, data={"employee": M1, "manager": M1}))
+    assert isinstance(cause, AccessDenied)
+    made = _write(world, AS_M1_BOTH, Write("create", world.slip.id, data={"employee": M1}))[0]
+    _write(world, AS_OWNER, Write("delete", world.slip.id, made.id))
+
+
+def test_r8_a_child_cannot_change_a_roll_up_parent_that_the_viewer_cannot_read(world) -> None:
+    """P1-3. E1 reads every slip (the auditor grant) and writes the own slips. E1
+    leads t1 and cannot read t2. A slip of t2 would change the head count of t2,
+    so the store refuses it, with the text of a team that is not there."""
+    before = _team_heads(world, world.t2)
+    cause = _refused(world, AS_E1_AUDIT, Write("create", world.slip.id, data={
+        "employee": E1, "team": {"id": world.t2}}))
+    gone = _refused(world, AS_E1_AUDIT, Write("create", world.slip.id, data={
+        "employee": E1, "team": {"id": str(uuid.uuid4())}}))
+    assert isinstance(cause, FieldError) and cause.field == "team"
+    assert isinstance(gone, FieldError) and gone.message == cause.message
+    assert _team_heads(world, world.t2) == before
+    moved = _refused(world, AS_E1_AUDIT, Write("update", world.slip.id, world.s1,
+                                                {"team": {"id": world.t2}}))
+    assert isinstance(moved, FieldError) and moved.message == cause.message
+    made = _write(world, AS_E1_AUDIT, Write("create", world.slip.id, data={
+        "employee": E1, "team": {"id": world.t1}}))[0]
+    _write(world, AS_OWNER, Write("delete", world.slip.id, made.id))
+    assert _team_heads(world, world.t2) == before
+
+
+def test_r8_a_filter_or_a_sort_on_a_field_that_is_not_text_is_refused(world) -> None:
+    """P2. A field name that is a list is refused with `query_field_unknown`, for a
+    viewer with hidden keys too. It never reaches a set test (a TypeError, a 500)."""
+    for query in ({"filter": [{"field": ["bank_account"], "op": "eq", "value": "x"}]},
+                  {"sort": {"field": ["bank_account"]}}):
+        with pytest.raises(QueryError) as refused:
+            _list(world, AS_E1, **query)
+        assert refused.value.code == "query_field_unknown"
 
 
 # ── The writes ──────────────────────────────────────────────────────────────
@@ -475,7 +584,8 @@ def test_r8_a_person_field_that_a_row_rule_reads_cannot_turn_cold(world) -> None
 def test_r8_the_sync_of_a_publish_stores_the_access_and_a_bad_one_writes_nothing(world) -> None:
     def manifest(access: Any) -> list[dict[str, Any]]:
         return [{"name": "claim", "fields": CLAIM_FIELDS},
-                {"name": "team", "fields": TEAM_FIELDS, "rules": TEAM_RULES},
+                {"name": "team", "fields": TEAM_FIELDS, "rules": TEAM_RULES,
+                 "access": TEAM_ACCESS},
                 {"name": "slip", "fields": SLIP_FIELDS, "rules": SLIP_RULES, "access": access}]
 
     narrow = [{"role": "hr", "read": "all", "write": "all"}]

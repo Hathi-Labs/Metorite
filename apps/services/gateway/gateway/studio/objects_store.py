@@ -268,6 +268,7 @@ from acb_common.studio_access import (
     Scope,
     Viewer,
     access_reads,
+    blocked_keys,
     check_access_fit,
     parse_access,
     rollup_hidden,
@@ -2582,15 +2583,19 @@ def _refuse_hidden_query(view: _View, items: Sequence[Mapping[str, Any]], sort: 
     hidden = view.maybe_hidden()
     if not hidden:
         return
+    # Fix round 1 (P2): `check_shape` refuses a field name that is not text, and
+    # this test of the type stays, so a list never reaches the set (a TypeError).
     for item in items:
-        if item["field"] in hidden:
+        key = item["field"]
+        if isinstance(key, str) and key in hidden:
             raise QueryError(studio_query.OP_NOT_ALLOWED,
-                             f"Field `{item['field']}` is hidden from you, so a query cannot "
-                             "filter by it.", str(item["field"]))
-    if isinstance(sort, Mapping) and sort.get("field") in hidden:
+                             f"Field `{key}` is hidden from you, so a query cannot "
+                             "filter by it.", key)
+    key = sort.get("field") if isinstance(sort, Mapping) else None
+    if isinstance(key, str) and key in hidden:
         raise QueryError(studio_query.OP_NOT_ALLOWED,
-                         f"Field `{sort['field']}` is hidden from you, so a query cannot sort "
-                         "by it.", str(sort["field"]))
+                         f"Field `{key}` is hidden from you, so a query cannot sort "
+                         "by it.", key)
 
 
 def _empty_page(start: int, size: int) -> RecordPage:
@@ -3019,11 +3024,19 @@ class _Held:
     scope: Scope | None = None
     #: C8a. The roll-up targets of this object that the viewer may not read.
     tainted: frozenset[str] = frozenset()
+    #: C8a fix round 1 (P1-4). The keys that the viewer may not write, because
+    #: a rule answers from data that the viewer cannot read.
+    blocked: frozenset[str] = frozenset()
 
     def view(self) -> _View:
         """The view of the viewer of the batch, as a read builds it."""
         assert self.scope is not None
         return _View(self.scope, self.rules, self.tainted)
+
+    @property
+    def computed(self) -> frozenset[str]:
+        """The keys that a formula or a roll-up fills. No caller writes them."""
+        return frozenset(str(r.target) for r in self.rules if r.kind in (FORMULA, ROLLUP))
 
 
 @dataclass
@@ -3169,7 +3182,11 @@ async def _lock_objects(db: Any, batch: _Batch) -> None:
         if oid in stepped and not scope.writes:
             raise AccessDenied(f"Your roles in this app cannot change records of `{row[0]}`.")
         tainted = await _tainted(db, batch.pid, rules, batch.viewer, batch.owner)
-        batch.objects[oid] = _Held(str(row[0]), fields, rules, plan, scope, tainted)
+        # Fix round 1 (P1-4): the roll-ups of other objects that read this one.
+        readers = [r for _, _, r in batch.rollups if r.source == str(row[0])]
+        hidden = _View(scope, rules, tainted).maybe_hidden()
+        blocked = blocked_keys(scope, rules, hidden, readers)
+        batch.objects[oid] = _Held(str(row[0]), fields, rules, plan, scope, tainted, blocked)
 
 
 async def _lock_records(db: Any, batch: _Batch) -> None:
@@ -3396,14 +3413,45 @@ def _refuse_hidden_write(held: _Held, data: Any) -> None:
         raise FieldError(key, f"Field `{key}` is hidden from you, so a write cannot set it.")
 
 
-def _check_sees(held: _Held, clean: Mapping[str, Any]) -> None:
-    """C8a. A create or an update must leave a record that the viewer reads,
-    as ``WITH CHECK`` does. So a member cannot make or move a record into the
-    rows of another member."""
-    if held.scope is not None and not held.scope.sees(clean):
-        keys = ", ".join(f"`{k}`" for k in held.scope.where_keys)
-        raise AccessDenied(f"This write leaves a record of `{held.name}` that you cannot read. "
-                           f"Name yourself in {keys or 'the record'}.")
+def _changed(held: _Held, before: Mapping[str, Any] | None,
+             after: Mapping[str, Any]) -> set[str]:
+    """The keys that one write of the viewer sets or changes. The keys that a
+    formula or a roll-up fills are left out, because the store fills them."""
+    old = before or {}
+    keys = {k for k in set(old) | set(after) if old.get(k) != after.get(k)}
+    return keys - held.computed
+
+
+def _check_write(held: _Held, before: Mapping[str, Any] | None,
+                 after: Mapping[str, Any] | None) -> None:
+    """C8a and fix round 1. The rules of one write of a viewer that a row rule
+    binds (``Scope.write_problem`` and ``studio_access.blocked_keys``). Each
+    refusal is :class:`AccessDenied`, and its text names the object and at
+    most one key that the viewer can see. It names no value, and it is the
+    same for each value, so a viewer learns nothing by trying values. The
+    owner and a viewer of an open object pass."""
+    scope = held.scope
+    if scope is None:
+        return
+    problem = scope.write_problem(before, after)
+    if problem is not None:
+        code, key = problem
+        if code == "row":
+            raise AccessDenied(f"Your roles in this app cannot change this record of `{held.name}`.")
+        if code == "leaves":
+            keys = ", ".join(f"`{k}`" for k in scope.write_keys)
+            raise AccessDenied(f"This write leaves a record of `{held.name}` that you cannot "
+                               f"change. Name yourself in {keys or 'the record'}.")
+        if code == "guarded":
+            raise AccessDenied(f"Your roles cannot set `{key}` of `{held.name}`. A role that "
+                               "changes every record sets it.")
+        raise AccessDenied(f"This write would show you more of this record of `{held.name}`, "
+                           "so your roles cannot make it.")
+    if after is None or not held.blocked:
+        return
+    for key in sorted(_changed(held, before, after) & held.blocked):
+        raise AccessDenied(f"Your roles cannot set `{key}` of `{held.name}`, because a rule "
+                           "over data that you cannot read uses it.")
 
 
 async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
@@ -3421,7 +3469,7 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
         refuse_computed_keys(held.plan, held.name, data)
         data = with_rollup_zero(held.plan, data)
         clean = run_formulas(held.plan, held.name, validate_record(plain, data))
-        _check_sees(held, clean)
+        _check_write(held, None, clean)
         moves = _line_moves(batch, oid, None, clean)
         row = (await db.execute(text(_CREATE_RECORD_SQL), {
             "oid": oid, "data": record_json(clean), "actor": batch.who,
@@ -3438,15 +3486,18 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
                           "Change it through its own record.")
     binds = {"oid": oid, "rid": step.record_id, "pid": batch.pid}
     if step.op == "delete":
+        # Fix round 1 (P1-1): a grant that reads the record must also write.
+        _check_write(held, mark.after, None)
         await db.execute(text(_DELETE_RECORD_SQL), binds)
         mark.after = None
         return True
     changes = dict(step.data or {})
+    _check_write(held, mark.after, None)
     _refuse_hidden_write(held, changes)
     refuse_computed_keys(held.plan, held.name, changes)
     merged = without_targets(held.plan, {**(mark.after or {}), **changes})
     clean = run_formulas(held.plan, held.name, validate_record(plain, merged))
-    _check_sees(held, clean)
+    _check_write(held, mark.after, clean)
     if _line_moves(batch, oid, mark.after, clean):
         batch.moved[(oid, str(step.record_id))] = batch.index
     row = (await db.execute(text(_UPDATE_RECORD_SQL), {
@@ -3652,7 +3703,14 @@ async def _lock_parents(db: Any, batch: _Batch,
                         work: dict[tuple[str, str], list[Rule]]) -> None:
     """Step 4b, locks. A parent in the batch is locked already. The others come
     in ascending `(object_id, record_id)`. A parent that no record holds is
-    dangling, and it leaves the work. So does a parent that the batch deleted."""
+    dangling, and it leaves the work. So does a parent that the batch deleted.
+
+    C8a fix round 1 (P1-3). A child write changes its parent, so a viewer that
+    a row rule binds on the parent object must read the parent record AND
+    write it. The lock reads with the row rule of the viewer, and a parent
+    that the viewer cannot read, cannot write, or that is not there, refuses
+    the batch with ONE text. A missing parent then tells such a viewer
+    nothing. The owner and a viewer of an open parent object keep the skip."""
     for key in sorted(work):
         mark = batch.marks.get(key)
         if mark is not None:
@@ -3661,12 +3719,20 @@ async def _lock_parents(db: Any, batch: _Batch,
             continue
         oid, rid = key
         batch.index = batch.firsts[key]
-        row = (await db.execute(text(_LOCK_RECORD_SQL), {
-            "oid": oid, "rid": rid, "pid": batch.pid})).first()
-        if row is None:
+        scope = batch.objects[oid].scope
+        bound = scope if scope is not None and not scope.open else None
+        binds = {"oid": oid, "rid": rid, "pid": batch.pid}
+        sql = _LOCK_RECORD_SQL if bound is None else _scoped(
+            _LOCK_RECORD_SQL, _LOCK_RECORD_SCOPED_SQL, bound, binds)
+        row = (await db.execute(text(sql), binds)).first()
+        data = None if row is None else dict(_json(row[2]))
+        if bound is not None and (data is None or not bound.may_write(data)):
+            via = str(work[key][0].via)
+            raise FieldError(via, f"Field `{via}` names no `{batch.objects[oid].name}` record "
+                             "that you can change.")
+        if data is None:
             del work[key]
             continue
-        data = dict(_json(row[2]))
         batch.marks[key] = _Mark(oid, batch.firsts[key], data, data, derived=True)
 
 

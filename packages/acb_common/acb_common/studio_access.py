@@ -33,6 +33,20 @@ it, as before C8a.
 * A create or an update must leave a record that the viewer can read
   (:meth:`Scope.sees`), as ``WITH CHECK`` does for RLS.
 
+**Fix round 1 (2026-11-11), the rules of a write.** :meth:`Scope.write_problem`
+and :func:`blocked_keys` hold them.
+
+* The write right is decided for each record: ONE grant must both read the
+  record and write. A change and a delete need it before the write, and a
+  create and a change need it after.
+* A viewer with no grant that reads all and writes cannot change a person
+  field that a ``where`` of the object reads, unless a write grant of the
+  viewer reads that field. An update must not make more grants read the
+  record. So no write shows the viewer more of a record.
+* A viewer cannot write a key that a rule reads together with data that the
+  viewer cannot read (:func:`blocked_keys`), because the refusal would show
+  that data by bisection.
+
 **One module of the grammar.** A2 (``studio_manifest.py``) and the object
 store (``gateway/studio/objects_store.py``) each call :func:`parse_access` and
 :func:`check_access_fit`, and neither keeps a copy. The store applies the
@@ -48,13 +62,22 @@ app-level check. The one-reader fence and the R8 suite hold it.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from acb_common.studio_fields import MAX_FIELDS_PER_OBJECT, NAME_PATTERN, FieldSpec, storable_text
-from acb_common.studio_rules import FORMULA, ROLLUP, Rule, rule_reads
+from acb_common.studio_rules import (
+    FORMULA,
+    GROUP_SUM_MIN,
+    RANGE,
+    ROLLUP,
+    STATE_MACHINE,
+    Rule,
+    rule_reads,
+)
 
 #: The roles of one package, and the grants of one object.
 MAX_ROLES = 16
@@ -62,6 +85,10 @@ MAX_ROLES = 16
 ALL = "all"
 #: The marker of the viewer in a ``where``.
 ME = "$me"
+#: The JSON text of the grants of one object, in bytes. The CHECK
+#: ``studio_objects_access_shape`` holds the same number, so a publish over it
+#: gets a sync problem and never a database fault.
+MAX_ACCESS_BYTES = 16_384
 
 _NAME_RE = re.compile(NAME_PATTERN, re.ASCII)
 #: ``<field> = $me``, with optional spaces around ``=``. `fullmatch` only.
@@ -212,6 +239,12 @@ def parse_access(raw: Any, roles: Collection[str] | None = None) -> tuple[Grant,
         if grant.role in seen:
             raise AccessError(f"[{i}].role", f"Role `{grant.role}` has two grants. Give it one.")
         seen.add(grant.role)
+    # The jsonb text form has the separators of json.dumps, so this is the count
+    # of the CHECK `octet_length(access::text)`.
+    stored = json.dumps([g.stored() for g in grants], ensure_ascii=False)
+    if len(stored.encode("utf-8")) > MAX_ACCESS_BYTES:
+        raise AccessError("", f"`access` holds at most {MAX_ACCESS_BYTES} bytes of JSON. "
+                              "Hide fewer fields.")
     return tuple(grants)
 
 
@@ -273,6 +306,10 @@ class Scope:
     me: str
     open: bool
     grants: tuple[Grant, ...] = ()
+    #: Fix round 1 (P1-2). Each person field that a ``where`` of the object
+    #: reads, in the grants of every role. A write of one can move a record
+    #: into a grant that hides less.
+    guarded: frozenset[str] = frozenset()
 
     @property
     def read_all(self) -> bool:
@@ -297,9 +334,19 @@ class Scope:
 
     @property
     def writes(self) -> bool:
-        """True when the viewer may create, change and delete records. A
-        change and a delete still need a record that the viewer reads."""
+        """True when a grant of the viewer writes. Each record still needs a
+        grant that reads it AND writes (:meth:`may_write`)."""
         return self.open or any(g.write for g in self.grants)
+
+    @property
+    def write_all(self) -> bool:
+        """True when a grant of the viewer reads every record and writes."""
+        return self.open or any(g.write and g.where is None for g in self.grants)
+
+    @property
+    def write_keys(self) -> tuple[str, ...]:
+        """The person fields of the viewer's grants that write with a row rule."""
+        return tuple(sorted({g.where for g in self.grants if g.write and g.where is not None}))
 
     def _matching(self, data: Mapping[str, Any]) -> list[Grant]:
         return [g for g in self.grants if g.where is None or data.get(g.where) == self.me]
@@ -307,6 +354,46 @@ class Scope:
     def sees(self, data: Mapping[str, Any]) -> bool:
         """True when the viewer reads the record *data*."""
         return self.open or bool(self._matching(data))
+
+    def may_write(self, data: Mapping[str, Any]) -> bool:
+        """Fix round 1 (P1-1). True when ONE grant of the viewer both reads the
+        record *data* and writes. A grant that reads and does not write gives
+        no write, also beside a grant that writes other records."""
+        return self.open or any(g.write for g in self._matching(data))
+
+    def covering(self, data: Mapping[str, Any]) -> frozenset[str]:
+        """The roles whose grants read the record *data*."""
+        return frozenset(g.role for g in self._matching(data))
+
+    def write_problem(self, before: Mapping[str, Any] | None,
+                      after: Mapping[str, Any] | None) -> tuple[str, str | None] | None:
+        """Why the viewer may not make one write, as ``(code, key)``, or None.
+
+        *before* is None for a create, and *after* is None for a delete. The
+        codes are ``row`` (no grant reads and writes the record), ``leaves``
+        (the write leaves a record that no grant of the viewer writes),
+        ``guarded`` (P1-2: a write of a person field that a ``where`` reads,
+        by a viewer with no grant that writes all, unless a write grant of
+        the viewer reads that field) and ``widens`` (an update that makes
+        more grants read the record). The owner and a viewer of an open
+        object get None."""
+        if self.open:
+            return None
+        if before is not None and not self.may_write(before):
+            return ("row", None)
+        if after is None:
+            return None
+        if not self.may_write(after):
+            return ("leaves", None)
+        if self.write_all:
+            return None
+        old = before or {}
+        for key in sorted(self.guarded - set(self.write_keys)):
+            if old.get(key) != after.get(key):
+                return ("guarded", key)
+        if before is not None and not self.covering(after) <= self.covering(before):
+            return ("widens", None)
+        return None
 
     def hidden_for(self, data: Mapping[str, Any]) -> frozenset[str]:
         """The keys hidden on the record *data*: the keys that EACH grant that
@@ -347,7 +434,8 @@ def scope_for(grants: Sequence[Grant] | None, viewer: Viewer, *, owner: bool) ->
     package row, never from the caller."""
     if owner or grants is None:
         return Scope(viewer.email, True)
-    return Scope(viewer.email, False, tuple(g for g in grants if g.role in viewer.roles))
+    return Scope(viewer.email, False, tuple(g for g in grants if g.role in viewer.roles),
+                 access_reads(grants))
 
 
 def rollup_hidden(rules: Sequence[Rule], sources: Mapping[str, Scope]) -> frozenset[str]:
@@ -380,4 +468,56 @@ def with_formulas(hidden: frozenset[str], rules: Sequence[Rule]) -> frozenset[st
             if rule.target not in out and rule_reads(rule) & out:
                 out.add(str(rule.target))
                 grown = True
+    return frozenset(out)
+
+
+def _inputs(key: str, rules: Sequence[Rule]) -> set[str]:
+    """*key* and each key that a formula of it reads, through each formula."""
+    out, todo = {key}, [key]
+    while todo:
+        here = todo.pop()
+        for rule in rules:
+            if rule.kind == FORMULA and rule.target == here:
+                for read in rule_reads(rule) - out:
+                    out.add(read)
+                    todo.append(read)
+    return out
+
+
+def blocked_keys(scope: Scope, rules: Sequence[Rule], hidden: frozenset[str],
+                 readers: Sequence[Rule] = ()) -> frozenset[str]:
+    """Fix round 1 (P1-4). The keys that *scope* may not write, because a rule
+    would answer from data that the viewer cannot read. A refusal that follows
+    the value of a write would show that data by bisection. The rule is
+    conservative, and the owner may relax it later.
+
+    *rules* are the rules of the object, *hidden* is what the viewer may not
+    see of it (``_View.maybe_hidden``), and *readers* are the roll-ups of
+    other objects that read this object.
+
+    * A formula that reads a hidden key blocks each key that it reads.
+    * A ``range`` on a hidden key blocks each input of that key.
+    * A ``group_sum_min`` blocks its keys and its field, for a viewer that
+      cannot read every record or that cannot see a key that it reads.
+    * A state machine whose guard reads a hidden key blocks its field.
+    * A roll-up that reads this object blocks each key that it reads here,
+      unless the viewer reads every record and sees each of those keys.
+
+    ``unique`` blocks nothing. Its refusal stays one bit: some record holds
+    the key. The owner and a viewer of an open object with no hidden key
+    get nothing."""
+    out: set[str] = set()
+    for rule in rules:
+        reads = rule_reads(rule)
+        if rule.kind == FORMULA and reads & hidden:
+            out |= reads
+        elif rule.kind == RANGE and rule.field in hidden:
+            out |= _inputs(str(rule.field), rules)
+        elif rule.kind == GROUP_SUM_MIN and (scope.row_bound or reads & hidden):
+            out |= reads
+        elif rule.kind == STATE_MACHINE and (reads - {rule.field}) & hidden:
+            out.add(str(rule.field))
+    for rule in readers:
+        if rule.kind == ROLLUP and not scope.shows_all(rule.source_keys()):
+            out |= set(rule.source_keys())
     return frozenset(out)

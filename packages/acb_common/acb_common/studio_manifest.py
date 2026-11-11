@@ -814,6 +814,27 @@ def _check_access(m: Manifest, out: list[ManifestError]) -> None:
                 check_access_fit(grants, specs)
         except AccessError as exc:
             out.append(_err(f"{path}{exc.path}", exc.message))
+    _check_open_lines(m, out)
+
+
+def _check_open_lines(m: Manifest, out: list[ManifestError]) -> None:
+    """C8a fix round 1. The lines of a table with `access` hold its data too, so
+    an object that is the lines of such a table needs its own `access`. Else
+    each member would read the lines of a record that the row rule hides."""
+    index = {o.name: i for i, o in enumerate(m.objects)}
+    flagged: set[str] = set()
+    for o in m.objects:
+        if o.access is None:
+            continue
+        for f in o.fields:
+            child = f.to if f.lines is not None and isinstance(f.to, str) else None
+            if child is None or child not in index or child in flagged:
+                continue
+            if m.objects[index[child]].access is None:
+                flagged.add(child)
+                out.append(_err(f"$.objects[{index[child]}]",
+                                f"Object `{child}` is the lines of `{o.name}`, which has `access`. "
+                                "Give it `access` too."))
 
 
 def _parsed_fields(o: ObjectDef) -> list[FieldSpec] | None:

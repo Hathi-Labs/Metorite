@@ -252,6 +252,119 @@ def test_a_formula_of_a_hidden_key_is_hidden_too() -> None:
     assert sa.with_formulas(frozenset(), rules) == frozenset()
 
 
+# ── Fix round 1: the rules of a write ───────────────────────────────────────
+
+AUDITOR = {"role": "auditor", "read": "all"}
+WRITER = {"role": "employee", "read": {"where": "employee = $me"}, "write": "all",
+          "hide": ["bank_account"]}
+OWN = {"employee": ME, "manager": "ben@x.test"}
+TEAM = {"employee": "cy@x.test", "manager": ME}
+_ROLES_PLUS = [*ROLES, "auditor"]
+
+
+def _scope_plus(*roles: str, specs: tuple[dict[str, Any], ...]) -> sa.Scope:
+    grants = sa.parse_access(list(specs), _ROLES_PLUS)
+    return sa.scope_for(grants, sa.Viewer(ME, frozenset(roles)), owner=False)
+
+
+def test_the_write_right_is_decided_for_each_record() -> None:
+    """P1-1. One grant must both read the record and write."""
+    both = _scope_plus("manager", "employee", specs=(MANAGER, WRITER))
+    assert both.writes and not both.write_all
+    assert both.may_write(OWN) and not both.may_write(TEAM)
+    assert both.write_problem(TEAM, None) == ("row", None)
+    assert both.write_problem(TEAM, {**TEAM, "note": "x"}) == ("row", None)
+    audit = _scope_plus("auditor", "employee", specs=(AUDITOR, WRITER))
+    assert audit.read_all and not audit.row_bound and not audit.write_all
+    assert not audit.may_write(TEAM) and audit.may_write(OWN)
+    assert audit.write_problem(None, {"employee": "cy@x.test"}) == ("leaves", None)
+    hr = _scope_plus("hr", specs=(HR,))
+    assert hr.write_all and hr.write_problem(TEAM, {**TEAM, "manager": "cy@x.test"}) is None
+    assert sa.scope_for(None, sa.Viewer(ME), owner=False).write_problem(TEAM, {}) is None
+
+
+def test_a_write_cannot_set_a_person_field_that_another_grant_reads() -> None:
+    """P1-2. Only a write grant that reads a person field lets a viewer set it."""
+    both = _scope_plus("manager", "employee", specs=(MANAGER, WRITER))
+    assert both.guarded == {"employee", "manager"}
+    assert both.write_problem(OWN, {**OWN, "manager": ME}) == ("guarded", "manager")
+    assert both.write_problem(None, {"employee": ME, "manager": ME}) == ("guarded", "manager")
+    assert both.write_problem(None, {"employee": ME}) is None
+    assert both.write_problem(OWN, {**OWN, "note": "x"}) is None
+
+
+def test_an_update_cannot_make_more_grants_read_the_record() -> None:
+    """P1-2. Two write grants on two person fields: a move into both widens."""
+    lead = {"role": "manager", "read": {"where": "manager = $me"}, "write": "all"}
+    two = _scope_plus("manager", "employee", specs=(lead, WRITER))
+    assert two.write_problem(OWN, {**OWN, "manager": ME}) == ("widens", None)
+    assert two.covering(OWN) == {"employee"}
+
+
+def test_blocked_keys_follow_each_rule_that_reads_hidden_data() -> None:
+    """P1-4. A key that a rule reads beside hidden data, or over rows that the
+    viewer cannot read, cannot be written. `unique` blocks nothing."""
+    rules = parse_rules([
+        {"name": "pay", "kind": "formula", "target": "total", "rounding": "half_up",
+         "expr": {"fn": "add", "args": [{"ref": "amount"}, {"ref": "bonus"}]}},
+        {"name": "cap", "kind": "range", "field": "total", "max": 10},
+        {"name": "once", "kind": "unique", "fields": ["month"]},
+        {"name": "stock", "kind": "group_sum_min", "field": "qty", "group_by": ["sku"], "min": 0},
+    ])
+    employee = _scope_plus("employee", specs=(WRITER,))
+    hidden = frozenset({"bonus", "total"})
+    blocked = sa.blocked_keys(employee, rules, hidden)
+    assert {"amount", "qty", "sku"} <= blocked and "month" not in blocked
+    hr = _scope_plus("hr", specs=(HR,))
+    assert sa.blocked_keys(hr, rules, frozenset()) == frozenset()
+    roll = parse_rules([{"name": "heads", "kind": "rollup", "target": "n", "source": "slip",
+                         "via": "team", "agg": "count"}])
+    assert sa.blocked_keys(employee, (), frozenset(), roll) == {"team"}
+    assert sa.blocked_keys(hr, (), frozenset(), roll) == frozenset()
+    machine = parse_rules([{"name": "flow", "kind": "state_machine", "field": "state",
+                            "initial": "a", "moves": [{"from": "a", "to": "b", "guard": [
+                                {"field": "bonus", "op": "gt", "value": 1}]}]}])
+    assert sa.blocked_keys(employee, machine, frozenset({"bonus"})) == {"state"}
+
+
+def test_parse_access_refuses_more_json_than_the_check_holds() -> None:
+    """The CHECK `studio_objects_access_shape` holds 16 KiB. A list over it is an
+    AccessError, so a publish gets a sync problem and never a database fault."""
+    sql = next(p for p in (_ROOT / "infra" / "postgres").glob("*.sql")
+               if "studio_objects ADD COLUMN IF NOT EXISTS access" in p.read_text(encoding="utf-8"))
+    assert f"octet_length(access::text) <= {sa.MAX_ACCESS_BYTES}" in sql.read_text(encoding="utf-8")
+    keys = [f"k{i:02d}_" + "x" * 40 for i in range(60)]
+    roles = [f"r{i}" for i in range(16)]
+    big = [{"role": r, "read": "all", "hide": keys} for r in roles]
+    with pytest.raises(sa.AccessError) as refused:
+        sa.parse_access(big, roles)
+    assert str(sa.MAX_ACCESS_BYTES) in refused.value.message
+    assert sa.parse_access(big[:2], roles) is not None
+
+
+@pytest.mark.parametrize(("filter_", "sort"), [
+    ([{"field": ["bank_account"], "op": "eq", "value": "x"}], None),
+    ([{"field": {"k": 1}, "op": "eq", "value": "x"}], None),
+    (None, {"field": ["bank_account"]}),
+])
+def test_a_field_name_that_is_not_text_is_refused_by_the_shape(filter_: Any, sort: Any) -> None:
+    """P2. The shape check refuses it with `query_field_unknown`, before a read."""
+    with pytest.raises(sq.QueryError) as refused:
+        sq.check_shape(filter_, sort)
+    assert refused.value.code == sq.FIELD_UNKNOWN
+
+
+def test_the_lines_of_a_table_with_access_need_their_own_access() -> None:
+    doc = _manifest([HR])
+    doc["objects"][0]["fields"].append({"key": "rows", "type": "relation", "to": "row",
+                                        "lines": "payslip"})
+    doc["objects"].append({"name": "row", "fields": [
+        {"key": "payslip", "type": "relation", "to": "payslip"}]})
+    assert [e.path for e in validate_manifest(doc)] == ["$.objects[1]"]
+    doc["objects"][1]["access"] = [HR]
+    assert validate_manifest(doc) == []
+
+
 # ── The field type and the query grammar ────────────────────────────────────
 
 

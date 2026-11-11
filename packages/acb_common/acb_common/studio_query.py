@@ -243,6 +243,9 @@ def check_shape(filter: Any, sort: Any = None) -> list[Mapping[str, Any]]:
             raise QueryError(
                 VALUE_INVALID, "Each condition is an object with field, op and value, and no other key.")
         key = _named(item["field"])
+        if not isinstance(item["field"], str):
+            # C8a fix round 1 (P2): a field name is text, before any read.
+            raise QueryError(FIELD_UNKNOWN, f"Field `{key}` is not a field of this object.", key)
         if item["op"] not in OPS:
             raise QueryError(OP_NOT_ALLOWED, f"Field `{key}`: the op is unknown. Use {_OP_LIST}.", key)
         if item["op"] == "in":
@@ -260,6 +263,9 @@ def _check_sort_shape(sort: Any) -> None:
         return
     if not isinstance(sort, Mapping) or "field" not in sort or not set(sort) <= _SORT_KEYS:
         raise QueryError(VALUE_INVALID, 'A sort is an object: {"field": <key>, "dir": "asc" or "desc"}.')
+    if not isinstance(sort["field"], str):
+        # C8a fix round 1 (P2): a field name is text, before any read.
+        raise QueryError(FIELD_UNKNOWN, "Field `?` is not a field of this object.", "?")
     if sort.get("dir", "asc") not in ("asc", "desc"):
         raise QueryError(VALUE_INVALID, 'The sort `dir` is "asc" or "desc".', _named(sort["field"]))
 
