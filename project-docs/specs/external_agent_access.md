@@ -445,7 +445,7 @@ The orchestrator took the two engineering decisions below from the audit. Neithe
 
 **EA3-39 in full.**
 
-1. **One prompt.** The edge serves one prompt, `work_on_task`, with one argument, `task`. The argument is optional while the runs flag is on, and required while it is off. So the `prompts/list` entry differs by flag.
+1. **One prompt.** The edge serves one prompt, `work_on_task`, with one argument, `task`. The argument is optional while the runs flag is on, and required while it is off. So the `prompts/list` entry differs by flag. **PB-2 (D186) widens this:** the edge also serves five read-only playbook prompts for an organization on `playbook_orgs`, with `projects:read` (`orchestration_playbook.md` §5, `agent_coordination.md` §4.2 item 13).
 2. **The shapes.** The argument is a UUID, or `#N` or `N` (ASCII digits, at most 18). The edge refuses each other shape, `PRJ-42` included, until the product has a task key. Today `task_number` is unique only inside one root, and nothing checks `task_prefix`.
 3. **No gateway request.** `prompts/get` returns fixed server text and the validated argument only. It makes no gateway request. It never holds member text, because Claude Code puts the prompt into the session as a user turn.
 4. **The routine with an argument.** The message gives the agent these steps, in this order:
@@ -721,6 +721,7 @@ EA-6a builds two write tools, and EA-6d builds two more (EA3-31). EA-6b builds `
 | `update_project` (MCP-G1) | B | `project_id`, `expected_version`, and one or more of `name`, `description` and `status` | `PATCH /projects/nodes/{project_id}` with the sent fields only and `If-Match: <expected_version>`. No query. Then the re-read | `project` and `version` |
 | `preview_move_tasks` (MCP-G1) | A, through a POST | `task_ids` (at most 50), `destination_project_id`, `include_subtasks?` (true when not sent), `status_map?` and `field_map?` | `GET /projects/nodes/{destination_project_id}`, then `POST /projects/tasks/move/preview` with the selection. It writes nothing | The plan of the rules below, `blocked`, `can_move` and `preview_id` |
 | `post_project_update` (WS-39 LP-1a) | B | `project_id`, `health` (`on_track`, `at_risk` or `off_track`), `body` (1 to 20000 characters), `idempotency_key` | `POST /projects/nodes/{project_id}/updates` (`updates.py`) with the body `{health, body}` only. No read before or after it | `update` (`id`, `project_id`, `health`, `body` (U), `author` (S), `posted_at`, `drafted_by_ai` and `via`), `id`, `project_id` and `created`. A replay returns `id`, `project_id` and `created` only |
+| `report_check` (SW-23) | B | `task_id`, `result` (`open`, `passed` or `cannot_run`), `evidence` (1 to 4000 characters), `expected_version` | `POST /projects/tasks/{task_id}/check-result` (`checks.py`) with the body `{result, evidence}` only and `If-Match: <expected_version>`. No read before or after it. It shows only while `agent_task_checks_enabled` is on | `task_id`, `result`, `last_run_at`, `closed`, `not_closed`, `status_id` and `version` |
 | `move_tasks` (MCP-G1) | C | The input of `preview_move_tasks`, and `preview_id` | The two calls of the preview again. Then `POST /projects/tasks/move` with the selection, `accept_drops` and `accepted_drops` | `moved`, `task_ids`, `destination_project_id`, `dropped_fields`, `subtasks_moved` and `subtask_ids` |
 
 **Rules of `set_task_status`.**
@@ -1062,6 +1063,8 @@ WS-39 LP-1a (`project_management_app.md` §14.2a) adds one read pair and one wri
 - **The write.** `post_project_update` takes the `idempotency_key` in the slot of `add_comment`, so it adds one edge input. The write cap of branch 0 counts it. A space or a folder gets its own text, and an archived project gets a refusal.
 - **The flag.** While `PROJECTS_UPDATES_ORGS` does not hold the organization, both routes answer 404 with the detail `agent_oauth.PROJECT_UPDATES_OFF`. The edge maps that detail to the text that the feature is off. Any other 404 is `Project not found.`
 - **The delete stays off.** `DELETE /projects/nodes/{project_id}/updates/{update_id}` is a member's act in LP-1a. No pair of `MCP_ROUTES` names it, and `NEVER_ON_THE_EDGE` of the fence holds it out. An update that an agent posts has `drafted_by_ai` true.
+
+WS-MCP SW-23 (`agent_coordination.md` SW-23) adds one write pair: `POST /projects/tasks/{task_id}/check-result` for `report_check`. The manifest holds it as class B, for a chat tool in `PLANNED`. A pass closes the task only under the rule of a status move, and `open` and `cannot_run` never close it. The pair does not change branch 0, so the digest of §10.1 does not change. While `agent_task_checks_enabled` is off, the route answers 404 and the edge lists no tool. The tool adds no edge input, because each input maps to a parameter of the route.
 
 SW-31a (`agent_coordination.md` SW-31) adds two read pairs: `GET /agent-guidance/tasks/{task_id}` and `GET /agent-guidance/refs`. They are not Projects routes, so `NAMED_EXCEPTIONS` of the fence names each one (rule 2). The save and the history stay off the edge, because only a member writes guidance. Neither pair changes branch 0.
 
