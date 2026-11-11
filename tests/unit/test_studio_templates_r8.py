@@ -24,9 +24,16 @@ member. A second call for the same member and template is 409
 ``package_exists`` (the answer of the create route) and writes nothing. Another
 member and org B see nothing.
 
+**The retry and the race (K1a review).** A publish that fails after the
+create leaves a draft, and a retry publishes that same draft. A catalog that
+is down writes nothing. Two parallel calls end with one package and one
+install.
+
 **The mutations (R7).** M1: in ``create_from_template`` skip ``_publish_draft``.
 The publish test goes red. M2: take the member from the body. The isolation
-test goes red.
+test goes red. M3: drop ``resume=True``. The retry test goes red. M4: drop
+``first_of``. The race test goes red. M5: read the catalog after the create.
+The catalog test goes red.
 """
 
 from __future__ import annotations
@@ -153,6 +160,13 @@ def _objects(world: Any, pid: str) -> list[str]:
             {"p": pid}).all()]
 
 
+def _versions(world: Any, pid: str) -> list[int]:
+    with world.p.admin_engine.connect() as c:
+        return [int(r[0]) for r in c.execute(text(
+            "SELECT version FROM app_versions WHERE app_id = CAST(:p AS uuid) ORDER BY version"),
+            {"p": pid}).all()]
+
+
 def test_r8_one_call_makes_a_private_published_package_and_install(world) -> None:
     status, got = _run(world, lambda: _call("create_from_template", world.a, ANA,
                                             {"template": TEMPLATE}))
@@ -222,6 +236,96 @@ def test_r8_a_second_call_is_package_exists_and_writes_nothing(world) -> None:
     assert got["package_id"] == first["package"]["id"]
     assert _apps(world) == before
     assert len(_installs(world, first["package"]["id"])) == 1
+
+
+def test_r8_a_failed_publish_leaves_a_draft_and_the_retry_publishes_it(world, monkeypatch) -> None:
+    real = objects_store.sync_objects
+    calls = {"n": 0}
+
+    async def flaky(*args: Any, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise objects_store.StoreBusy(objects_store._BUSY_MESSAGE)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(objects_store, "sync_objects", flaky)
+    status, got = _run(world, lambda: _call("create_from_template", world.a, ANA,
+                                            {"template": TEMPLATE}))
+    assert status == 503 and got["code"] == packages.STORE_BUSY, got
+    (draft,) = _apps(world)
+    assert draft[1] == ANA and draft[4] == "draft" and draft[5] is None
+    assert _installs(world, draft[0]) == []
+    assert _versions(world, draft[0]) == []
+
+    status, got = _run(world, lambda: _call("create_from_template", world.a, ANA,
+                                            {"template": TEMPLATE}))
+    assert status == 200, got
+    assert got["package"]["id"] == draft[0]
+    assert got["version"]["version"] == 1
+    (app,) = _apps(world)
+    assert app[0] == draft[0] and app[4] == "live" and app[5] == 1
+    assert _versions(world, draft[0]) == [1]
+    (inst,) = _installs(world, draft[0])
+    assert inst[1] == 1 and inst[4] == ANA
+
+    # A third call finds the live package, and the answer is 409 again.
+    status, got = _run(world, lambda: _call("create_from_template", world.a, ANA,
+                                            {"template": TEMPLATE}))
+    assert status == 409 and got["code"] == packages.PACKAGE_EXISTS
+    assert got["package_id"] == draft[0]
+    assert len(_apps(world)) == 1
+
+
+def test_r8_the_retry_never_publishes_the_draft_of_another_member(world, monkeypatch) -> None:
+    real = objects_store.sync_objects
+    calls = {"n": 0}
+
+    async def flaky(*args: Any, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise objects_store.StoreBusy(objects_store._BUSY_MESSAGE)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(objects_store, "sync_objects", flaky)
+    status, _ = _run(world, lambda: _call("create_from_template", world.a, ANA,
+                                          {"template": TEMPLATE}))
+    assert status == 503
+    (ana_draft,) = _apps(world)
+    status, got = _run(world, lambda: _call("create_from_template", world.a, BEN,
+                                            {"template": TEMPLATE}))
+    assert status == 200, got
+    assert got["package"]["id"] != ana_draft[0]
+    after = {a[0]: a for a in _apps(world)}
+    assert after[ana_draft[0]][4] == "draft" and after[ana_draft[0]][5] is None
+    assert _installs(world, ana_draft[0]) == []
+
+
+def test_r8_a_catalog_that_is_down_writes_nothing(world, monkeypatch) -> None:
+    async def down() -> Any:
+        raise RuntimeError("catalog down")
+
+    monkeypatch.setattr(packages.actions, "catalog_rows", down)
+    status, got = _run(world, lambda: _call("create_from_template", world.a, ANA,
+                                            {"template": TEMPLATE}))
+    assert status == 503 and got["code"] == packages.CATALOG_UNAVAILABLE, got
+    assert _apps(world) == []
+
+
+def test_r8_two_parallel_calls_make_one_package_and_one_install(world) -> None:
+    async def both() -> Any:
+        return await asyncio.gather(
+            _call("create_from_template", world.a, ANA, {"template": TEMPLATE}),
+            _call("create_from_template", world.a, ANA, {"template": TEMPLATE}))
+
+    answers = _run(world, both)
+    statuses = sorted(a[0] for a in answers)
+    assert statuses[0] == 200, answers
+    assert statuses[1] in (409, 503), answers
+    (app,) = _apps(world)
+    assert app[4] == "live" and app[5] == 1
+    assert _versions(world, app[0]) == [1]
+    (inst,) = _installs(world, app[0])
+    assert inst[4] == ANA
 
 
 def test_r8_an_unknown_template_is_422_and_writes_nothing(world) -> None:

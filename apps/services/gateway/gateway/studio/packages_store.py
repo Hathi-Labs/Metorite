@@ -134,6 +134,19 @@ _CREATE_SQL = (
     f"RETURNING {_PACKAGE_COLUMNS}"
 )
 
+#: The lock of one create from a template (STU-K1a): the bound org, the
+#: member and the manifest id, until the transaction ends. The idiom of
+#: ``objects_store._ORG_LOCK_SQL``. The first column is false when no tenant
+#: is bound, and then the lock key is NULL and Postgres takes no lock.
+_CREATE_LOCK_SQL = (
+    f"SELECT {_BOUND_ORG} IS NOT NULL, pg_advisory_xact_lock(hashtextextended("
+    f"'studio_package_create:' || CAST({_BOUND_ORG} AS text) || ':' || :m || ':' || :mid, 0))"
+)
+
+#: The longest wait for the create lock, in milliseconds. It covers one
+#: publish of a template. Past it the caller gets ``StoreBusy`` (503).
+CREATE_LOCK_WAIT_MS = 5_000
+
 _GET_SQL = (
     f"SELECT {_PACKAGE_COLUMNS} FROM apps "
     f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
@@ -544,6 +557,24 @@ async def create_package(db: Any, member: str, manifest: dict[str, Any]) -> Pack
             return _package(row)
     # The text names no slug, so it tells nothing of a package of another org.
     raise PackageStoreError("No free name is left for this package. Try again.")
+
+
+async def lock_create(db: Any, member: str, manifest_id: str) -> None:
+    """Take the advisory lock of one create of *member* with *manifest_id* in
+    the bound org, until the transaction ends (STU-K1a).
+
+    The template route takes it first in its create session and first in its
+    publish session. So two calls of one member for one template run one
+    after the other, and the second one reads the package of the first. The
+    wait stops at :data:`CREATE_LOCK_WAIT_MS` with ``objects_store.StoreBusy``.
+    The key holds the org, so a lock of org A never blocks org B."""
+    m = _member(member)
+    if not isinstance(manifest_id, str) or not manifest_id:
+        raise PackageStoreError("manifest_id must be a non-empty string")
+    async with objects_store.bounded_wait(db, CREATE_LOCK_WAIT_MS):
+        bound = (await db.execute(text(_CREATE_LOCK_SQL), {"m": m, "mid": manifest_id})).first()
+    if bound is None or not bound[0]:
+        raise PackageStoreError("A create needs a session bound to a tenant")
 
 
 async def get_package(db: Any, member: str, package_id: str, *,
