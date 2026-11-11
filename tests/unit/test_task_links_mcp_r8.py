@@ -121,9 +121,9 @@ class TestTheRecords:
             ("DELETE", {"task_id": ID_A, "link_id": ID_A}, {}),
         ]
 
-    def test_link_type_is_blocks_only(self):
+    def test_link_type_is_blocks_relates_to_and_affects(self):
         schema = self._listed("add_task_link")["inputSchema"]["properties"]["link_type"]
-        assert schema["enum"] == ["blocks"]
+        assert schema["enum"] == ["blocks", "relates_to", "affects"]
         assert self._listed("add_task_link")["inputSchema"]["required"] == [
             "task_id", "target_task_id", "link_type"]
 
@@ -550,7 +550,7 @@ class TestTheReachAndTheLoopOfALink:
     async def test_remove_refuses_a_link_that_is_not_blocks(self, live):
         a = live.task(live.team, live.s.todo, "sw16a kind A")
         b = live.task(live.team, live.s.todo, "sw16a kind B")
-        link_id = await _person_link(live, a, b, "relates_to")
+        link_id = await _person_link(live, a, b, "duplicates")
         stamps = _stamps(live, a, b)
         rows = len(_link_rows(live, a)), len(_link_rows(live, b))
         refused = await _mcp(live, "write", "remove_task_link", {

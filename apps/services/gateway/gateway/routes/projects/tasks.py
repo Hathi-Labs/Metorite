@@ -151,17 +151,22 @@ from gateway.routes.projects.landing import (
 )
 from gateway.routes.projects.mine import attach_my_overlay, check_scope, mine_scope
 from gateway.routes.projects.notifications import (
+    deliverable,
     excerpt_of,
     grant_holders,
     new_mentions,
     notify,
+    task_audience,
 )
 from gateway.routes.projects.relations import (
     DIRECTED_TYPES,
+    LINK_TYPES,
+    MAX_NOTE_CHARS,
+    NOTE_TYPES,
     assert_no_block_cycle,
     canonical_task_id,
     delete_task_link,
-    insert_task_link,
+    insert_task_link_row,
 )
 from gateway.routes.projects.tags import apply_task_tags
 from gateway.routes.projects.text_links import link_from_text, saved_texts
@@ -182,7 +187,7 @@ _TRACKED_TASK_FIELDS: tuple[str, ...] = (
     "check_text",
 )
 
-_LINK_TYPES: tuple[str, ...] = ("blocks", "relates_to", "duplicates")
+_LINK_TYPES: tuple[str, ...] = LINK_TYPES
 
 #: WS-55 EA-6d (spec `external_agent_access.md` §9.2). The body keys that a
 #: signed agent write may send, by route. The MCP edge sends no other key, and
@@ -500,6 +505,8 @@ class TaskCreateIn(TaskIn):
 class LinkIn(BaseModel):
     target_task_id: str
     link_type: str = "relates_to"
+    #: SW-25. The short note of an `affects` or `relates_to` link.
+    note: str | None = None
 
 
 class DeleteResponse(BaseModel):
@@ -2982,6 +2989,41 @@ async def claim_task(
 
 # ── Links ───────────────────────────────────────────────────────────────────
 
+def _link_note(payload: LinkIn) -> str | None:
+    """The note of a link, trimmed, or None (SW-25). 422 for a note that the
+    type does not take, one that is too long, and an `affects` with none."""
+    note = (payload.note or "").strip() or None
+    if note is not None and payload.link_type not in NOTE_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail="Only an affects or relates_to link takes a note.")
+    if note is not None and len(note) > MAX_NOTE_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"A link note holds at most {MAX_NOTE_CHARS} characters.")
+    if note is None and payload.link_type == "affects":
+        raise HTTPException(status_code=422, detail="An affects link needs a note.")
+    return note
+
+
+async def _bell_for_affects(
+    db: Any, source_id: str, target_id: str, note: str | None, by: str,
+) -> None:
+    """The bell for a new affects note: the people of the target task (SW-25).
+
+    The audience is the task's assignees and watchers, as a comment has it.
+    ``notify`` drops the actor and every agent. A person who cannot see the
+    SOURCE task too hears nothing, because the note comes from that task and
+    the panel hides it from them in the same way.
+    """
+    audience = await task_audience(db, target_id)
+    from_source = await deliverable(db, audience, source_id) if audience else []
+    await notify(
+        db, recipients=from_source, kind="comment", task_id=target_id,
+        actor_id=by, excerpt=excerpt_of(f"Affects note: {note}"),
+    )
+
+
 @router.post("/tasks/{task_id}/links", status_code=201)
 async def create_link(
     task_id: str, payload: LinkIn,
@@ -2997,6 +3039,7 @@ async def create_link(
         raise HTTPException(
             status_code=422, detail="A task cannot be linked to itself.",
         )
+    note = _link_note(payload)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         await load_visible_task(db, vis, task_id)
@@ -3011,10 +3054,13 @@ async def create_link(
             await assert_no_block_cycle(db, task_id, str(payload.target_task_id))
         # The ONE insert, shared with the links from text (TR-5): the row,
         # the `link` activity on the source and the bump of the target.
-        link_id = await insert_task_link(
+        link_id, news = await insert_task_link_row(
             db, task_id, str(payload.target_task_id), payload.link_type,
-            by=actor(user),
+            by=actor(user), note=note,
         )
+        if news and payload.link_type == "affects":
+            await _bell_for_affects(
+                db, task_id, str(payload.target_task_id), note, actor(user))
         return {
             "id": link_id, "source_task_id": task_id,
             "target_task_id": str(payload.target_task_id),
