@@ -4511,9 +4511,10 @@ _CONTEXT_OUTPUT = _optional(_CONTEXT_OUTPUT, COMMENTS_TRUNCATED_KEY, {"type": "b
 # SW-25: the affects notes. Each key is absent while the list is empty.
 AFFECTED_BY_KEY = "affected_by"
 AFFECTS_KEY = "affects"
-for _key in (AFFECTED_BY_KEY, AFFECTS_KEY):
-    _CONTEXT_OUTPUT = _optional(
-        _CONTEXT_OUTPUT, _key, {"type": "array", "items": _LINK_SCHEMA})
+_CONTEXT_OUTPUT = _optional(
+    _CONTEXT_OUTPUT, AFFECTED_BY_KEY, {"type": "array", "items": _LINK_SCHEMA})
+_CONTEXT_OUTPUT = _optional(
+    _CONTEXT_OUTPUT, AFFECTS_KEY, {"type": "array", "items": _LINK_SCHEMA})
 # SW-24: the newest handoff note. Absent while no run left one.
 _CONTEXT_OUTPUT = _optional(_CONTEXT_OUTPUT, HANDOFF_KEY, _object({
     **{k: _UNTRUSTED_OR_NULL for k in HANDOFF_TEXT_KEYS},
