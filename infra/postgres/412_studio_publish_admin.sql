@@ -1,5 +1,5 @@
 -- ============================================================================
--- 410_studio_publish_admin.sql — the seed of `studio:publish` onto `admin`.
+-- 412_studio_publish_admin.sql — the seed of `studio:publish` onto `admin`.
 --
 -- What: one capability seed, in two parts.
 --       Part 1 gives `studio:publish` to the `admin` role of every
@@ -32,9 +32,11 @@
 -- part 2 does nothing when the element is already in the body.
 -- Tenant scope (R5): no new table. The tenant of each row comes from the ROLE
 -- that gets the grant, never from request input.
--- The number is taken at build time (R1). On 2026-11-11 origin/main held 404,
--- and the open branches and worktrees held 396, 398, 400, 405 to 408 and
--- 409 (stu-c8-roles-mt-47d4c51f). Check it again at merge
+-- The number is taken at build time (R1). On 2026-11-11 origin/main held 404.
+-- The open branches and worktrees held 396, 398, 400 and 405 to 411: 409 on
+-- stu-c8-roles-mt-47d4c51f and stu-g17-save-history, 410 on
+-- crm-m3b-mt-4fb4caf2, and 411 in the worktrees of C8 and J3a. This file
+-- took 410 first and moved to 412 the same day. Check it again at merge
 -- (scripts/premerge.sh). The tests find this file by CONTENT, never by number.
 -- Fence: tests/unit/test_studio_publish_seed_r8.py (R8).
 -- ============================================================================
@@ -108,27 +110,27 @@ BEGIN
      LIMIT 1;
 
     IF src IS NULL THEN
-        RAISE NOTICE '410: provision_org_roles absent, nothing to rewrite';
+        RAISE NOTICE '412: provision_org_roles absent, nothing to rewrite';
         RETURN;
     END IF;
 
     IF position('''studio:publish''' in src) > 0 THEN
-        RAISE NOTICE '410: provision_org_roles already grants studio:publish';
+        RAISE NOTICE '412: provision_org_roles already grants studio:publish';
         RETURN;
     END IF;
 
     hits := (length(src) - length(replace(src, anchor, ''))) / length(anchor);
     IF hits <> 1 THEN
         RAISE EXCEPTION
-            '410: provision_org_roles holds % copies of the admin anchor, not 1. '
-            '200 changed shape. Update 410 to match before deploying, or new '
+            '412: provision_org_roles holds % copies of the admin anchor, not 1. '
+            '200 changed shape. Update 412 to match before deploying, or new '
             'organizations get studio:publish on the wrong role or on none.',
             hits;
     END IF;
 
     out := replace(src, anchor, anchor || ' ''studio:publish'',');
     EXECUTE out;
-    RAISE NOTICE '410: provision_org_roles rewritten to grant studio:publish to admin';
+    RAISE NOTICE '412: provision_org_roles rewritten to grant studio:publish to admin';
 END
 $seed$;
 
