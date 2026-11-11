@@ -233,8 +233,9 @@ the chat does part of it, or does it in a way that fails in practice.
 | G24 | The member's reminders: list, set, change, answer, reopen, promote and move | The Calendar (RM-5) | `routes/projects/reminders.py` (`calendar_events_reminders.md` §5.8) | Closed by RM-3: the seven tools are built, and each field is in `SENDS` | Closed | RM-3 |
 | G25 | A member asks a member about a task (WS-AP AP-8a) | The task card (AP-9) | `POST /projects/tasks/{id}/asks` (`waiting_on_me.md` §7.2) | The tools `ask_person` and `withdraw_ask` are in `PLANNED`. The withdraw route (`POST /projects/asks/{id}/withdraw`) is class C, not class X, because a member withdraws by a click. Both routes are dark | **Missing** | AP-10 |
 | G26 | Cycles: list, read, plan, edit, delete, add and remove a task, start and close (WS-39 SP-1) | The Backlog canvas (SP-3) and the start and close dialogs (SP-4) | `routes/projects/cycles.py` (`project_management_app.md` §13.2a) | The eight tools are in `PLANNED` for Metorite task 964. The routes are dark behind `PROJECTS_SPRINTS_ORGS` | **Missing** | SP-5 |
+| G27 | The Goal of an epic, and the Goal type (WS-39 WM-5) | None yet. WM-5 has no UI | `goal_task_id` on `POST` and `PATCH /projects/tasks`, `is_goal` on the type routes (`project_management_app.md` §13.6a) | No tool sends either field. `get_task` reads the roll-up of a Goal. The fields are dark behind `PROJECTS_GOALS_ORGS` | **Missing** | WM-5 follow-up |
 
-**Count: 26 gaps.** WS-39 SP-1 added G26 on 2026-11-08. WS-AP AP-8a added G25 on 2026-11-07. WS-55 EA-12a added G23 on 2026-10-14. WS-66 RM-1 added G24 on 2026-10-25, and RM-3 closed it on the same day. The counts below are the measure of 2026-10-05. P1, P2
+**Count: 27 gaps.** WS-39 WM-5 added G27 on 2026-11-11. WS-39 SP-1 added G26 on 2026-11-08. WS-AP AP-8a added G25 on 2026-11-07. WS-55 EA-12a added G23 on 2026-10-14. WS-66 RM-1 added G24 on 2026-10-25, and RM-3 closed it on the same day. The counts below are the measure of 2026-10-05. P1, P2
 and P6 have closed G1 to G9 since then, and P7 has closed G12 to G18.
 
 - 6 missing: G6, G7, G17, G20, G21 and G22. G21 is closed by P10 (2026-10-23).

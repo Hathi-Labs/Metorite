@@ -313,7 +313,7 @@ async def goal_rollup(db: Any, vis: Any, task: Any) -> dict[str, Any] | None:
         "truncated": len(seen) > len(listed),
         "slices": slices,
         "estimate_mins": estimate,
-        "waits": {"count": waits},
+        "waits": {"count": waits, "items": []},
         # An epic that the reader cannot see: counted here, never named.
         "hidden": len(rows) - len(seen),
         "health": _worst([e["health"] for e in epics]),
