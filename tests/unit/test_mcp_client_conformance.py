@@ -39,10 +39,12 @@ row MCP-G23 says how a person runs it.
 
 **The scorer.** Each session writes a KIT-6 transcript (header and events, the
 format at the top of ``scripts/kit_conformance.py``) and scores it with
-``kit_conformance.score``. A machine cannot honestly make a worktree or edit a
-file here, so ``worktree`` fails by design. The script both asks a question
-and releases the task, so ``one_disposition`` fails by design. The test pins
-exactly those two failures. It does not fake a pass.
+``kit_conformance.score``. A machine makes no worktree here, so ``worktree``
+fails by design. There are two scripted sessions for each client. The MAIN
+session claims, posts and ends with ``release_task`` and ``finish_agent_run``.
+It fails ``worktree`` only. The PARK session asks a question and ends at the
+park, because the run waits on a person. It fails ``worktree`` and
+``finishes_run`` only. The test pins exactly those failures.
 
 **The mutations (R7).** Each one turns the named test red.
 
@@ -137,11 +139,14 @@ CLIENT_PROFILES: dict[str, dict[str, Any]] = {
 }
 
 #: The tools that each session calls, in order. PINNED.
-PINNED_TOOL_LOG = [
+MAIN_TOOL_LOG = [
     "my_work", "get_task_context", "create_task", "update_task", "claim_task",
-    "post_agent_activity", "ask_on_task", "get_agent_run", "release_task",
-    "finish_agent_run",
+    "post_agent_activity", "release_task", "finish_agent_run",
 ]
+PARK_TOOL_LOG = [
+    "my_work", "get_task_context", "claim_task", "post_agent_activity", "ask_on_task", "get_agent_run",
+]
+ALL_PINNED = [*dict.fromkeys([*MAIN_TOOL_LOG, *PARK_TOOL_LOG])]
 ROUTINE_TOOLS = ["my_work", "claim_task", "get_plan", "ask_on_task", "release_task",
                  "finish_agent_run"]
 
@@ -320,14 +325,13 @@ def _key(label: str) -> str:
     return f"mcp-g23-{label}"
 
 
-async def run_session(profile: dict[str, Any], stack: Any) -> Client:
-    """One scripted session of *profile*. The log is ``client.events``."""
+async def _open(profile: dict[str, Any]) -> tuple[Client, str]:
+    """Connect, list and read: the common start. Returns the client and the
+    version of the top ``my_work`` row."""
     client = Client(profile)
     init = await client.connect()
     p = profile
     assert init["serverInfo"]["name"] == "metorite"
-
-    # list
     listed = await client.rpc("tools/list")
     client.listed_tools = listed["tools"]
     if "prompts/list" in p["sends"]:
@@ -339,15 +343,16 @@ async def run_session(profile: dict[str, Any], stack: Any) -> Client:
     if "resources/list" in p["sends"]:
         # Dark: the playbook is off, so the list is empty and never an error.
         assert (await client.rpc("resources/list"))["resources"] == []
-
-    # read
     rows = (await client.call("my_work", {}))["rows"]
     assert [r["task_id"] for r in rows] == [TASK] and rows[0]["reason"] == "assigned"
-    version = rows[0]["version"]
+    return client, rows[0]["version"]
+
+
+async def run_session(profile: dict[str, Any], stack: Any) -> Client:
+    """The MAIN scripted session of *profile*. One disposition: release."""
+    client, version = await _open(profile)
     context = await client.call("get_task_context", {"task_id": TASK})
     assert context["task"]["id"] == TASK
-
-    # write
     made = await client.call("create_task", {
         "project_id": PROJECT, "title": "A follow-up task", "status_id": S_OPEN,
         "idempotency_key": _key("create")})
@@ -363,8 +368,26 @@ async def run_session(profile: dict[str, Any], stack: Any) -> Client:
         "run_id": run_id, "type": "thought", "body": "Reading the code.",
         "idempotency_key": _key("thought")})
     assert thought["activity"]["type"] == "thought"
+    released = await client.call("release_task", {"run_id": run_id})
+    assert released["released"] is True
+    finished = await client.call("finish_agent_run", {
+        "run_id": run_id, "summary": "Released the task.",
+        "idempotency_key": _key("finish")})
+    assert finished["run"]["status"] == "completed"
+    return client
 
-    # park
+
+async def run_park_session(profile: dict[str, Any], stack: Any) -> Client:
+    """The PARK session: claim, ask with options, then wait on a person. It
+    ends at the park and calls no ``finish_agent_run``."""
+    client, version = await _open(profile)
+    await client.call("get_task_context", {"task_id": TASK})
+    claimed = await client.call("claim_task", {"task_id": TASK, "expected_version": version})
+    run_id = claimed["agent_run_id"]
+    assert run_id == RUN
+    await client.call("post_agent_activity", {
+        "run_id": run_id, "type": "thought", "body": "Reading the code.",
+        "idempotency_key": _key("thought")})
     asked = await client.call("ask_on_task", {
         "task_id": TASK, "question": "Which option?", "idempotency_key": _key("ask"),
         "options": [{"id": "a", "label": "Option A", "recommended": True},
@@ -374,14 +397,6 @@ async def run_session(profile: dict[str, Any], stack: Any) -> Client:
     client.note("wait")
     seen = await client.call("get_agent_run", {"run_id": run_id, "wait_seconds": 0})
     assert seen["run"]["open_question"] is not None
-
-    # end
-    released = await client.call("release_task", {"run_id": run_id})
-    assert released["released"] is True
-    finished = await client.call("finish_agent_run", {
-        "run_id": run_id, "summary": "Asked, then released.",
-        "idempotency_key": _key("finish")})
-    assert finished["run"]["status"] == "completed"
     return client
 
 
@@ -412,9 +427,12 @@ class TestAScriptedSession:
 
     async def test_the_session_runs_and_logs_each_tool_in_the_pinned_order(self, stack, name):
         client = await run_session(CLIENT_PROFILES[name], stack)
-        assert client.tool_calls == PINNED_TOOL_LOG
+        assert client.tool_calls == MAIN_TOOL_LOG
         logged = [e["name"] for e in client.events if e["kind"] == "tool"]
-        assert logged == PINNED_TOOL_LOG
+        assert logged == MAIN_TOOL_LOG
+        park = await run_park_session(CLIENT_PROFILES[name], stack)
+        assert park.tool_calls == PARK_TOOL_LOG
+        assert [e["name"] for e in park.events if e["kind"] == "tool"] == PARK_TOOL_LOG
         # The scripted writes reached the gateway as the tools define them.
         sent = [(r.method, r.path) for r in stack.gateway.requests if r.method != "GET"]
         assert ("POST", "/projects/tasks") in sent
@@ -441,22 +459,22 @@ class TestAScriptedSession:
         client = await run_session(CLIENT_PROFILES[name], stack)
         names = [t["name"] for t in client.listed_tools]
         assert set(ROUTINE_TOOLS) <= set(names)
-        assert set(PINNED_TOOL_LOG) <= set(names)
+        assert set(ALL_PINNED) <= set(names)
         assert set(names) <= set(tools.TOOLS)
 
-    async def test_the_log_scores_on_the_tool_level_steps(self, stack, name):
+    async def test_the_main_log_fails_only_the_worktree_step(self, stack, name):
         client = await run_session(CLIENT_PROFILES[name], stack)
-        result = _score(client)
-        passed = {s.id for s in result.steps if s.passed}
-        failed = {s.id: s.reason for s in result.steps if not s.passed}
-        # Skipped by design: a machine makes no worktree, and the script
-        # both asks and releases, which are two dispositions.
-        assert set(failed) == {"worktree", "one_disposition"}, failed
+        failed = {s.id: s.reason for s in _score(client).steps if not s.passed}
+        assert set(failed) == {"worktree"}, failed
+        assert "no worktree command" in failed["worktree"]  # a machine makes none
+
+    async def test_the_park_log_fails_only_worktree_and_finishes_run(self, stack, name):
+        client = await run_park_session(CLIENT_PROFILES[name], stack)
+        failed = {s.id: s.reason for s in _score(client).steps if not s.passed}
+        assert set(failed) == {"worktree", "finishes_run"}, failed
         assert "no worktree command" in failed["worktree"]
-        assert failed["one_disposition"] == (
-            "two different dispositions: ask_on_task, release_task")
-        assert passed == {"connect_reads", "claims_slice", "heartbeat", "parks_at_wait",
-                          "finishes_run"}
+        # The run waits on a person, so it does not finish.
+        assert failed["finishes_run"] == "finish_agent_run was never called"
 
     async def test_the_transcript_is_the_kit_6_jsonl(self, stack, name, tmp_path):
         client = await run_session(CLIENT_PROFILES[name], stack)
@@ -466,7 +484,7 @@ class TestAScriptedSession:
         assert tuple(header) == kc.HEADER_KEYS
         assert all(set(e) == {"t", "kind", "name", "args", "actor"} for e in events)
         assert {e["kind"] for e in events} == {"tool", "note"}
-        assert kc.score(events, header).failed_ids == ["worktree", "one_disposition"]
+        assert kc.score(events, header).failed_ids == ["worktree"]
 
     async def test_every_tool_result_has_the_documented_shape(self, stack, name):
         """``Client.call`` validates each ``structuredContent`` against the
@@ -474,7 +492,7 @@ class TestAScriptedSession:
         checked, and the text content is the JSON of the structured part."""
         client = await run_session(CLIENT_PROFILES[name], stack)
         by_name = {t["name"]: t for t in client.listed_tools}
-        for tool in PINNED_TOOL_LOG:
+        for tool in ALL_PINNED:
             assert by_name[tool]["outputSchema"]["type"] == "object"
             assert by_name[tool]["annotations"]["title"]
 
@@ -594,6 +612,15 @@ class TestThePinnedListCanFail:
         with pytest.raises((StopIteration, AssertionError)):
             await run_session(CLIENT_PROFILES["codex"], stack)
 
+    async def test_m2_a_tools_list_without_my_work_breaks_the_pinned_log(
+            self, stack, monkeypatch):
+        """M2. The edge does not offer ``my_work``: the session cannot run."""
+        reduced = {k: v for k, v in tools.TOOLS.items() if k != "my_work"}
+        monkeypatch.setattr(tools, "TOOLS", reduced)
+        with pytest.raises((StopIteration, AssertionError)):
+            client = await run_session(CLIENT_PROFILES["claude_code"], stack)
+            assert client.tool_calls == MAIN_TOOL_LOG
+
     async def test_the_writes_flag_off_hides_the_write_tools(self, stack, monkeypatch):
         monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", False)
         client = Client(CLIENT_PROFILES["codex"])
@@ -615,7 +642,7 @@ class TestTheProfilesAreHonest:
         assert "tools/call" not in CLIENT_PROFILES["codex"]["sends"]
 
     def test_the_scorer_knows_every_tool_the_session_calls_as_a_real_tool(self):
-        assert set(PINNED_TOOL_LOG) <= set(tools.TOOLS)
-        assert set(PINNED_TOOL_LOG) & kc.KNOWN_TOOLS >= {
+        assert set(ALL_PINNED) <= set(tools.TOOLS)
+        assert set(ALL_PINNED) & kc.KNOWN_TOOLS >= {
             "my_work", "get_task_context", "claim_task", "post_agent_activity",
             "ask_on_task", "release_task", "finish_agent_run", "create_task"}
