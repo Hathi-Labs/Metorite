@@ -3701,8 +3701,8 @@ async def apply_status_transition(
     (``agent_runs.end_runs_of_closed_task``), and the result carries
     ``runs_cleared``. A caller that passes no closer ends no run: the sweep
     closes such a run after its lease (spec §12.6). Fix round 1: on the
-    crossing OUT of a closing category (an Undo, a reopen), and while the
-    task is not archived, the same caller puts back the run that the close
+    crossing OUT of a closing category (an Undo, a reopen) on a task that
+    is not archived, the same caller puts back the run that the close
     ended, inside the undo window
     (``agent_runs.reopen_run_of_reopened_task``).
     """

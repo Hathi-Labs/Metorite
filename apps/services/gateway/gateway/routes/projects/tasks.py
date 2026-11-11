@@ -2478,8 +2478,8 @@ async def unarchive_task(
     cascade reported, and nothing else.
 
     H-409 fix round 1 (task 748). The archive ended the task's open agent
-    run, so the unarchive puts that run back inside the undo window, while
-    the task's status is open (``agent_runs.reopen_run_of_reopened_task``).
+    run, so the unarchive puts that run back inside the undo window, in any
+    lane (the marker decides, fix round 2; ``agent_runs.reopen_run_of_reopened_task``).
     A run that an agent write holds refuses the lock, and
     ``transient_as_409`` answers 409 with nothing written.
     """
