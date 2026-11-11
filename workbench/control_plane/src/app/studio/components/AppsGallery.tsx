@@ -22,11 +22,12 @@ import type { AppMeta } from "@/app/build/apps/lib/types";
 import { startApp } from "@/lib/studio/startApp";
 import { useViewMode } from "@/components/ViewModeProvider";
 import {
-  PACKAGES_FAILED_LINE, type LibraryFilter, changedWords, libraryCounts, mergeLibrary,
+  ACTION_CALLS_LABEL, PACKAGES_FAILED_LINE, type LibraryFilter, type OrgCard,
+  changedWords, libraryCounts, membersPill, mergeLibrary, orgCard,
   packageShows, type PackageCard as PackageCardData,
 } from "@/lib/studio/packageLibrary";
 import { buildHref } from "@/lib/studio/packageDraft";
-import { STUDIO_OFF, type PackageSummary, listPackages } from "@/lib/studio/realDoor";
+import { STUDIO_OFF, type OrgPackage, type PackageSummary, listOrgPackages, listPackages } from "@/lib/studio/realDoor";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -286,6 +287,52 @@ function PackageCard({ card, onOpen }: { card: PackageCardData; onOpen: () => vo
   );
 }
 
+// ─── Org package card (admin view, J4) ────────────────────────────────────
+
+/** One line of the card: a label and its value. The value wraps and never clips the label. */
+function Fact({ label, children, tone = "text-foreground" }: { label: string; children: React.ReactNode; tone?: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 text-[11px]">
+      <dt className="text-muted-foreground shrink-0">{label}</dt>
+      <dd className={`min-w-0 text-right break-words ${tone}`}>{children}</dd>
+    </div>
+  );
+}
+
+/** A package of any member, as an admin sees it. It opens nothing, because the package page is the owner's. It holds no reason text and no value. */
+function OrgPackageCard({ card }: { card: OrgCard }) {
+  const live = card.state === "live";
+  return (
+    <div data-org-package={card.id} className="flex w-full flex-col rounded-xl border border-border bg-card">
+      <div className="w-full p-3 sm:p-4 pb-2 text-left">
+        <div className="flex items-start gap-3">
+          <div className={`w-9 h-9 rounded-lg border border-border flex items-center justify-center shrink-0 ${glyphGradient(card.id)}`}>
+            <Icon name="Boxes" className="w-4 h-4 text-primary" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-sm font-semibold text-foreground truncate">{card.name}</h3>
+            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mt-0.5">
+              <span className="truncate">by {card.mine ? "you" : card.owner}</span>
+              <span>·</span>
+              <Icon name="Clock" className="w-3 h-3 shrink-0" />
+              <span className="shrink-0">{changedWords(card.changedAt)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <dl className="flex flex-col gap-1 px-3 sm:px-4 pb-2">
+        <Fact label="Live version">{card.version}</Fact>
+        <Fact label={ACTION_CALLS_LABEL}>{card.calls}</Fact>
+        <Fact label="Last error" tone={card.error ? "text-destructive" : "text-foreground"}>{card.errorLine}</Fact>
+        <Fact label="Use">{card.use}</Fact>
+      </dl>
+      <div className="mt-auto flex items-center gap-2 px-3 sm:px-4 pb-3">
+        <Badge tone={live ? "success" : "warning"} size="xs">{live ? "Live" : "Draft"}</Badge>
+      </div>
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function AppsGallery() {
@@ -302,6 +349,10 @@ export default function AppsGallery() {
   const [describe, setDescribe] = useState("");
   const [packages, setPackages] = useState<PackageSummary[]>([]);
   const [packagesError, setPackagesError] = useState(false);
+  // The admin view (J4). The gateway says `admin: true` only to a holder of the admin right.
+  const [orgPackages, setOrgPackages] = useState<OrgPackage[]>([]);
+  const [orgAdmin, setOrgAdmin] = useState(false);
+  const [orgTruncated, setOrgTruncated] = useState(false);
 
   // Fetch-on-mount wiring: same pattern (and lint carve-out) as
   // tasks/components/AssistantRail.tsx.
@@ -324,6 +375,21 @@ export default function AppsGallery() {
         setPackages([]);
         setPackagesError(!(e instanceof Error && e.message === STUDIO_OFF));
       });
+    // The admin read goes with it. A failure, a switch that is off and a caller without the right
+    // all leave the pill out, so a member never sees a broken control.
+    const orgRead = listOrgPackages()
+      .then((found) => {
+        if (seq !== packagesSeq.current) return;
+        setOrgAdmin(found.admin);
+        setOrgPackages(found.packages);
+        setOrgTruncated(found.truncated);
+      })
+      .catch(() => {
+        if (seq !== packagesSeq.current) return;
+        setOrgAdmin(false);
+        setOrgPackages([]);
+        setOrgTruncated(false);
+      });
     try {
       const res = await fetch("/api/apps");
       if (!res.ok) {
@@ -342,6 +408,7 @@ export default function AppsGallery() {
       // Hold the skeleton until both reads settle, so "No apps yet" never flashes
       // while the packages are still on the way. A failure of one still shows the other.
       await packagesRead;
+      await orgRead;
       setLoading(false);
     }
   }, []);
@@ -470,6 +537,10 @@ export default function AppsGallery() {
     return mergeLibrary(apps.filter(keep), shownPackages);
   }, [apps, packages, filter, myEmail]);
   const total = apps.length + packages.length;
+  const orgCards = useMemo(() => orgPackages.map((p) => orgCard(p)), [orgPackages]);
+  const members = membersPill(orgAdmin, orgPackages.length);
+  // A pill that is gone cannot stay chosen.
+  const showMembers = filter === "members" && members !== null;
 
   return (
     <section className="flex flex-col" aria-label="Apps">
@@ -507,8 +578,9 @@ export default function AppsGallery() {
           { id: "team", label: "Team", count: counts.team },
           { id: "drafts", label: "Drafts", count: counts.drafts },
           { id: "templates", label: "Templates", count: counts.templates },
+          ...(members ? [members] : []),
         ]}
-        activeId={filter}
+        activeId={showMembers || filter !== "members" ? filter : "all"}
         onChange={(id) => setFilter(id as Filter)}
       />
 
@@ -594,7 +666,26 @@ export default function AppsGallery() {
             </div>
           )}
 
-          {!loading && !(error && total === 0) && visible.length === 0 && (
+          {/* The admin view: every package of the org */}
+          {!loading && showMembers && (
+            <>
+              <p className="text-xs text-muted-foreground">
+                {`Every Studio app of the org, with its owner. ${ACTION_CALLS_LABEL} are calls through the door of an app. They are not workflow runs.`}
+                {orgTruncated ? " The list shows the newest 500 apps." : ""}
+              </p>
+              {orgCards.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No Studio apps in this org yet. The apps that members build show here.</p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                  {orgCards.map((card) => (
+                    <OrgPackageCard key={card.id} card={card} />
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          {!loading && !showMembers && !(error && total === 0) && visible.length === 0 && (
             <div className="flex flex-col items-center justify-center h-56 gap-3 text-center">
               <div className="w-11 h-11 rounded-xl bg-primary/10 flex items-center justify-center">
                 <Icon name="Hammer" className="w-5 h-5 text-primary" />
@@ -616,7 +707,7 @@ export default function AppsGallery() {
           )}
 
           {/* App grid */}
-          {!loading && !(error && total === 0) && visible.length > 0 && (
+          {!loading && !showMembers && !(error && total === 0) && visible.length > 0 && (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
               {visible.map((item) => item.kind === "package" ? (
                 <PackageCard key={item.key} card={item} onOpen={() => router.push(item.href)} />
