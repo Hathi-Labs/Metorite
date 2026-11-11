@@ -1,5 +1,5 @@
 -- ============================================================================
--- 409_studio_row_rules.sql — app roles and row rules of a Studio object
+-- 411_studio_row_rules.sql — app roles and row rules of a Studio object
 -- (WS-STU C8a).
 --
 -- What: two expand-only changes, and no new table.
