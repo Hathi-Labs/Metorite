@@ -2,19 +2,24 @@
 
 from skill_my_tasks.core import (
     my_tasks_accounts,
+    my_tasks_add_day_rule,
     my_tasks_add_subtasks,
     my_tasks_archive,
     my_tasks_capture,
     my_tasks_capture_many,
     my_tasks_clarify,
+    my_tasks_close_my_day,
     my_tasks_complete,
     my_tasks_day_digest,
     my_tasks_delegate,
+    my_tasks_delete_day_rule,
     my_tasks_detail,
+    my_tasks_edit_day_rule,
     my_tasks_estimate_stats,
     my_tasks_get_calendar_settings,
     my_tasks_inbox_insights,
     my_tasks_list,
+    my_tasks_list_day_rules,
     my_tasks_list_projects,
     my_tasks_list_schedule,
     my_tasks_move,
@@ -27,6 +32,7 @@ from skill_my_tasks.core import (
     my_tasks_schedule,
     my_tasks_set_one_thing,
     my_tasks_set_stage,
+    my_tasks_start_my_day,
     my_tasks_subtasks,
     my_tasks_sync,
     my_tasks_unschedule,
@@ -34,7 +40,7 @@ from skill_my_tasks.core import (
     my_tasks_update_calendar_settings,
 )
 
-#: Tools that only the main chat's `calendar-day` pack holds (CAL-2, task 1676).
+#: Tools that only the main chat's `calendar-day` pack holds (CAL-2 to CAL-4).
 #: They are in ``__all__`` so the pack builder, the card routing and the parity
 #: fences see them. A declarative agent (``orchestrator.declarative``) skips them,
 #: so the Tasks assistant keeps the tools that it has on main. Fence:
@@ -42,23 +48,34 @@ from skill_my_tasks.core import (
 PACK_ONLY_TOOLS = (
     "my_tasks_get_calendar_settings",
     "my_tasks_update_calendar_settings",
+    "my_tasks_list_day_rules",
+    "my_tasks_add_day_rule",
+    "my_tasks_edit_day_rule",
+    "my_tasks_delete_day_rule",
+    "my_tasks_start_my_day",
+    "my_tasks_close_my_day",
 )
 
 __all__ = [
     "my_tasks_accounts",
+    "my_tasks_add_day_rule",
     "my_tasks_add_subtasks",
     "my_tasks_archive",
     "my_tasks_capture",
     "my_tasks_capture_many",
     "my_tasks_clarify",
+    "my_tasks_close_my_day",
     "my_tasks_complete",
     "my_tasks_day_digest",
     "my_tasks_delegate",
+    "my_tasks_delete_day_rule",
     "my_tasks_detail",
+    "my_tasks_edit_day_rule",
     "my_tasks_estimate_stats",
     "my_tasks_get_calendar_settings",
     "my_tasks_inbox_insights",
     "my_tasks_list",
+    "my_tasks_list_day_rules",
     "my_tasks_list_projects",
     "my_tasks_list_schedule",
     "my_tasks_move",
@@ -71,6 +88,7 @@ __all__ = [
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
     "my_tasks_set_stage",
+    "my_tasks_start_my_day",
     "my_tasks_subtasks",
     "my_tasks_sync",
     "my_tasks_unschedule",

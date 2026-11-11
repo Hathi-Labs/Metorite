@@ -164,7 +164,10 @@ _RESET_DELETES: tuple[str, ...] = (
     # CRM-Q6a: the reset deletes the module cursors below, so a generic record
     # that lands after the count must not stay without its cursor.
     "crm_module_records",
-    "crm_status_changes", "crm_pipeline_stages", "crm_pipelines",
+    "crm_status_changes", "crm_pipeline_stages",
+    # CRM-M4a: the lead statuses of each lead pipeline, before the pipelines
+    # and the statuses that it names.
+    "crm_lead_pipeline_stages", "crm_pipelines",
     "crm_deal_statuses", "crm_lead_statuses", "crm_lost_reasons",
     # The shape of the old Zoho account (CRM-Q1). A new setup reads its own.
     "crm_source_profiles",

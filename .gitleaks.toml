@@ -14,6 +14,18 @@ title = "Metorite gitleaks config"
 [extend]
 useDefault = true
 
+# EA-19e (external_agent_access.md §10.9 question 3): a Metorite box token is
+# `mbt_` and 43 URL-safe characters (256 bits, secrets.token_urlsafe(32)).
+# The same shape as BOX_TOKEN_RE in packages/acb_common/acb_common/_log.py.
+# ⚠️ The global allowlist below skips every path under tests/, so a test that
+# proves this rule must scan a folder outside tests/ and build its sample at
+# run time. Fence: tests/unit/test_box_token_secret_rules.py.
+[[rules]]
+id = "metorite-box-token"
+description = "Metorite box token (mbt_ + 43 URL-safe characters)"
+regex = '''mbt_[A-Za-z0-9_-]{43}'''
+keywords = ["mbt_"]
+
 [allowlist]
 description = "Documented dev defaults + fixtures that are not real secrets"
 paths = [

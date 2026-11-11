@@ -489,7 +489,9 @@ three distinct symptoms, one cause.
 
 **Cap work in flight.** The constraint is not agent capacity; it is integration
 bandwidth, and that is one person. Three or four open branches is the ceiling. A
-queue of six (2026-08-09) is above it.
+queue of six (2026-08-09) is above it. More machines do not raise this cap.
+`docs/dev_capacity.md` sizes lanes, sub-agents and CI to the machines that we
+have, inside this cap.
 
 **The supervisor loop:** audit the spec (is it dispatchable?) → set the risk
 tier → implement one narrowed slice → **independently** verify against the
