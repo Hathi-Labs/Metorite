@@ -47,6 +47,7 @@ import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { Textarea } from "@/components/ui/Input";
 import { useAccess } from "@/components/AccessProvider";
+import { hasCapability } from "@/lib/access";
 import type { ElicitationAnswers } from "@/lib/elicitationAnswer";
 
 import { ProjectsApiError, type TaskRow, agentRunsApi } from "../lib/api";
@@ -76,6 +77,7 @@ import {
   cardQuestion,
   clientName,
   heldByLine,
+  RELEASE_ADMIN_PERMISSION,
   RELEASE_COPY,
   releaseBody,
   STALE_HOLD_TEXT,
@@ -338,11 +340,12 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   const archiveStale = archiveRequest !== null && archiveExpired(archiveRequest);
   const canStop = STOPPABLE.has(run.status);
   // EA-14a: one AI for each task. The card says who holds the task, and the
-  // run's member, an assignee or an admin may release it.
+  // run's member, an assignee or an admin may release it. H-409 item 2: the
+  // admin is a holder of the gateway's release permission, not `is_admin`.
   const holding = isOpenRun(run);
   const canRelease = canReleaseRun(run, {
     me,
-    isAdmin: access.is_admin,
+    isAdmin: hasCapability(access, RELEASE_ADMIN_PERMISSION),
     assignees: task.assignees,
   });
   const canReply = REPLYABLE.has(run.status) && (!cardOpen || archiveStale);

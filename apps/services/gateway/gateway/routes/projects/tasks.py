@@ -1376,7 +1376,20 @@ async def create_task_in(
     return CreatedTask(row=row, assigned=assigned)
 
 
+async def _bump_closed_runs(user: UserContext, recipients: list[str]) -> None:
+    """After the commit of a task close (H-409 item 1): move the My Day of
+    each member whose question bells closed with the run that the close
+    ended (AP-BUG-3). An empty list does nothing."""
+    if not recipients:
+        return
+    # Imported here: `agent_runs` imports this module.
+    from gateway.routes.projects.agent_runs import bump_closed_questions
+
+    await bump_closed_questions(user, recipients)
+
+
 @router.patch("/tasks/{task_id}")
+@transient_as_409
 async def patch_task(
     task_id: str, payload: TaskPatchIn,
     user: UserContext = Depends(get_current_user),
@@ -1397,6 +1410,12 @@ async def patch_task(
     closes this task only. A move into ``cancelled`` never cascades: nobody
     asked to cancel the children. The reply then carries
     ``subtasks_completed`` and ``subtask_changes``, the Undo record.
+
+    H-409 item 1 (task 748). A move into ``done`` or ``cancelled`` ends the
+    task's open agent run in the same transaction, unless the run is the
+    caller's own agent run (``agent_runs.end_runs_of_closed_task``). A run
+    that an agent write holds at that moment refuses the lock, and
+    ``transient_as_409`` answers 409 with nothing written.
     """
     values = clean_payload(payload)
     # WS-55 EA-6d. A signed agent PATCH sends only the keys of
@@ -1482,7 +1501,7 @@ async def patch_task(
         if new_status is not None and str(new_status) != str(before.status_id):
             moved = await apply_status_transition(
                 db, after, str(new_status), created_by=actor(user),
-                completed_at=done_at,
+                completed_at=done_at, closer=user,
             )
             # WS-55 EA-6d. Inside the transaction, so the refusal rolls the
             # whole PATCH back, the field changes too. EA-6f: an agent may
@@ -1539,6 +1558,7 @@ async def patch_task(
             result["subtasks_completed"] = len(cascade.ids) if cascade else 0
             result["subtask_changes"] = cascade.changes if cascade else []
 
+    await _bump_closed_runs(user, list((moved or {}).get("runs_cleared") or ()))
     await emit("pm.task.updated", {"task_id": task_id})
     if moved is not None:
         await emit("pm.task.status_changed", {
@@ -2301,10 +2321,14 @@ class ArchiveOutcome:
     was_archived: bool
     #: The subtree that ``include_subtasks`` shelved, or ``None``.
     cascade: Any | None
+    #: H-409 item 1: the members whose question bells closed with the run
+    #: that the archive ended. The caller moves their My Day after its commit.
+    runs_cleared: tuple[str, ...] = ()
 
 
 async def archive_task_in(
     db: Any, vis: Any, task: Any, user: UserContext, *, include_subtasks: bool,
+    end_runs: bool = False,
 ) -> ArchiveOutcome:
     """The ONE core of an archive, inside the caller's transaction.
 
@@ -2315,6 +2339,12 @@ async def archive_task_in(
     default, so each caller says whether it shelves the subtree. The caller
     emits ``pm.task.archived`` after its commit when ``was_archived`` is
     false, and the events of ``cascade``.
+
+    H-409 item 1 (task 748). With ``end_runs``, the archive ends each open
+    agent run of the task in this transaction
+    (``agent_runs.end_runs_of_closed_task``). :func:`archive_task` passes it.
+    The approval does not, because it closes its own run itself
+    (``close_archived_run``).
     """
     task_id = str(task.id)
     status = await require_row(
@@ -2339,16 +2369,23 @@ async def archive_task_in(
                 str(getattr(status, "category", "") or ""),
             ),
         )
+    runs_cleared: list[str] = []
+    if end_runs and not was_archived:
+        # Imported here: `agent_runs` imports this module.
+        from gateway.routes.projects.agent_runs import end_runs_of_closed_task
+
+        runs_cleared = await end_runs_of_closed_task(db, task_id, "archived", user)
     cascade = (
         await archive_subtree(db, vis, task_id, by=actor(user))
         if include_subtasks else None
     )
     result = row_to_dict(row, TaskModel)
     await attach_agent_state(db, [result])
-    return ArchiveOutcome(result, was_archived, cascade)
+    return ArchiveOutcome(result, was_archived, cascade, tuple(runs_cleared))
 
 
 @router.post("/tasks/{task_id}/archive")
+@transient_as_409
 async def archive_task(
     task_id: str, user: UserContext = Depends(get_current_user),
     include_subtasks: bool = False,
@@ -2376,12 +2413,16 @@ async def archive_task(
 
     The work is :func:`archive_task_in`, the one core that the archive
     approval of WS-55 EA-6g calls too.
+
+    H-409 item 1: the archive ends the task's open agent run in the same
+    transaction. A run that an agent write holds at that moment refuses the
+    lock, and ``transient_as_409`` answers 409 with nothing written.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
         outcome = await archive_task_in(
-            db, vis, task, user, include_subtasks=include_subtasks,
+            db, vis, task, user, include_subtasks=include_subtasks, end_runs=True,
         )
         result = outcome.row
         cascade = outcome.cascade
@@ -2389,6 +2430,7 @@ async def archive_task(
             result["subtasks_archived"] = len(cascade.ids)
             result["subtask_ids"] = cascade.ids
 
+    await _bump_closed_runs(user, list(outcome.runs_cleared))
     if not outcome.was_archived:
         await emit("pm.task.archived", {"task_id": task_id})
     if cascade is not None:

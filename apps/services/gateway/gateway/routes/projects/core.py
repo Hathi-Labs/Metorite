@@ -3675,6 +3675,7 @@ def _checked_completed_at(task: Any, when: datetime) -> datetime:
 async def apply_status_transition(
     db: Any, task: Any, new_status_id: str, *, created_by: str,
     automation: bool = False, completed_at: datetime | None = None,
+    closer: Any | None = None,
 ) -> dict[str, Any]:
     """Move a task to a new status. **Three effects, one helper.**
 
@@ -3693,6 +3694,13 @@ async def apply_status_transition(
     closing category: Undo of a Reopen passes the date the task held. It may
     not be in the future or before ``task.created_at`` (422). Every other
     caller leaves it ``None`` and gets the stamp ``now()``.
+
+    ``closer`` (H-409 item 1, task 748) is the caller of a member door, the
+    PATCH today. On the crossing INTO a closing category it ends each open
+    agent run of the task in this transaction
+    (``agent_runs.end_runs_of_closed_task``), and the result carries
+    ``runs_cleared``. A caller that passes no closer ends no run: the sweep
+    closes such a run after its lease (spec §12.6).
     """
     old_status = await require_row(
         db, "pm_task_statuses", str(task.status_id), "Status",
@@ -3746,9 +3754,19 @@ async def apply_status_transition(
 
         successor = await spawn_successor(db, row, actor_id=created_by)
 
+    # H-409 item 1. The same crossing ends the task's open agent run, in this
+    # transaction. Imported here for the reason of `spawn_successor` above.
+    runs_cleared: list[str] = []
+    if is_closed and not was_closed and closer is not None:
+        from gateway.routes.projects.agent_runs import end_runs_of_closed_task
+
+        runs_cleared = await end_runs_of_closed_task(
+            db, str(task.id), str(new_status.category), closer,
+        )
+
     return {
         "row": row, "from": old_status, "to": new_status,
-        "recurred_to": successor,
+        "recurred_to": successor, "runs_cleared": runs_cleared,
     }
 
 

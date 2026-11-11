@@ -130,6 +130,7 @@ from gateway.routes.projects.filters import (
     AGENT_RUN_OPEN_STATUSES,
     AGENT_RUN_STATE_SQL,
     AGENT_RUN_WAITING_MAX_MIN,
+    BOUND_ORG_SQL,
     agent_questions_allowed,
     agent_run_waiting_cap_min,
     agent_runs_enabled,
@@ -504,8 +505,13 @@ _MOVES: dict[str, dict[str, str]] = {
     "archive_close": {"in_progress": "completed"},
     # SW-10a fix round. The task of the run is done, cancelled or archived,
     # and the run was quiet for the stale band: the sweep closes it. Only
-    # `close_closed_task_run` passes it.
-    "task_close": {"in_progress": "completed"},
+    # `close_closed_task_run` passes it. H-409 item 1 (task 748): a person
+    # closes the task, and `end_runs_of_closed_task` ends its open run at
+    # once, from any open status. The sweep still reads `in_progress` only.
+    "task_close": {
+        "created": "completed", "in_progress": "completed", "awaiting": "completed",
+        "stopping": "completed",
+    },
     # SW-10a fix round. The agent of a run that the SERVER closed (one of
     # the two moves above) finishes later with a summary. The summary is kept
     # as a `response`, and the run stays `completed`. Only `finish_agent_run`
@@ -675,6 +681,11 @@ _NEEDS_AGENT_SQL = f"({_NEEDS_AGENT_REASON_SQL} IS NOT NULL)"
 #: EA-14a: every read of a run also carries ``idle_s`` (the seconds since its
 #: last activity, for the lease) and the display name of its member. SW-10a:
 #: and ``needs_agent``, the reason it waits for an agent.
+#:
+#: H-409 item 3 (task 748): the join to the org of the bound session
+#: (``filters.BOUND_ORG_SQL``) is defence in depth beside FORCE RLS. It is in
+#: the prefix, so each read that starts with it holds it, and the prefix
+#: keeps no WHERE of its own.
 _RUN_SELECT = (
     f"SELECT r.*, {AGENT_RUN_STATE_SQL} AS state, "
     f" {_NEEDS_AGENT_REASON_SQL} AS needs_agent, "
@@ -683,6 +694,7 @@ _RUN_SELECT = (
     " (SELECT u.display_name FROM app_user u"
     "   WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name "
     "FROM pm_agent_runs r"
+    f" JOIN (SELECT {BOUND_ORG_SQL} AS id) bound_org ON r.organization_id = bound_org.id"
 )
 
 _OPEN_ELICITATIONS_SQL = """
@@ -1628,6 +1640,8 @@ async def list_task_agent_runs(
 #: ``pm_agent_runs_one_open_per_task`` allows one open run for each task.
 #: SW-13c: ``connection_gone`` is true when the run's agent connection is
 #: revoked or expired, and :func:`_free` then lets the gate take it over.
+#: H-409 item 3 (task 748): the run is of the org of the bound session
+#: (``filters.BOUND_ORG_SQL``), as defence in depth beside FORCE RLS.
 _HOLDER_SQL = (
     f"SELECT r.*, {AGENT_RUN_STATE_SQL} AS state, "
     " EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s, "
@@ -1636,6 +1650,7 @@ _HOLDER_SQL = (
     "   WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name "
     "FROM pm_agent_runs r WHERE r.task_id = CAST(:tid AS uuid) "
     "  AND r.task_id IS NOT NULL AND r.status = ANY(:open) "
+    f"  AND r.organization_id = {BOUND_ORG_SQL} "
     "ORDER BY r.created_at DESC, r.id DESC LIMIT 1"
 )
 
@@ -2423,11 +2438,15 @@ async def finish_agent_run(
 
 # ── Release (WS-55 EA-14a) ──────────────────────────────────────────────────
 
-#: The permission that makes a member an org admin for a release. The same
-#: gate as the billing routes. HANDOFF H-409 item 2: the Release button of the
-#: run panel reads `access.is_admin`, and the owner has not yet decided
-#: whether a read permission may end another member's run.
-RELEASE_ADMIN_PERMISSION = "admin:members:read"
+#: The permission that makes a member an org admin for a release (and for
+#: Resume, and for ``can_act`` of Needs attention). H-409 item 2 (task 748):
+#: the owner decided Q5 of ``agent_coordination.md`` §8 on 2026-11-06 (task
+#: 1874). Ending another member's run is a write, so a read permission
+#: (``admin:members:read``, which the ``manager`` role holds) does not give
+#: it. The Release button of the run panel reads the same slug
+#: (``agentRuns.ts`` ``RELEASE_ADMIN_PERMISSION``), so the two cannot
+#: disagree. Fence: ``test_agent_run_task_close_r8.py``.
+RELEASE_ADMIN_PERMISSION = "admin:members:manage"
 
 
 def person_may_end_sql(run: str) -> str:
@@ -2472,9 +2491,10 @@ async def may_end_run(db: Any, run: Any, user: UserContext) -> bool:
 # ── Who may answer (WS-55 EA-18a, D-EA-14, spec §12.8) ──────────────────────
 
 #: The organization roles that may answer any question the reader can see, and
-#: that read the "Everyone" tab. A role, and not a permission: the owner has not
-#: decided if a read permission may act on the run of another member (HANDOFF
-#: H-409 item 2). "Manager" is this role, not the manager of a space.
+#: that read the "Everyone" tab. A role, and not a permission (D-EA-14). The
+#: owner decided in Q5 that a read permission does not END the run of another
+#: member (H-409 item 2, :data:`RELEASE_ADMIN_PERMISSION`). An answer is no
+#: end. "Manager" is this role, not the manager of a space.
 ANSWER_REVIEW_ROLES: frozenset[str] = frozenset({"owner", "admin", "manager"})
 
 #: The 403 of an answer from a person outside the set. It says who may answer
@@ -3017,15 +3037,87 @@ async def closed_task_runs(db: Any, *, limit: int) -> list[tuple[str, str]]:
         text(_closed_task_runs_sql()), {"n": limit})).fetchall()]
 
 
-async def close_closed_task_run(db: Any, run: Any, why: str) -> None:
+async def close_closed_task_run(db: Any, run: Any, why: str) -> list[str]:
     """Close a run whose task is closed (SW-10a fix round). The run moves to
     ``completed`` and gets the line of :data:`CLOSED_TASK_BODIES`. The task is
     never touched. Nobody can claim a closed task, so a nudge would be false,
-    and the run would hold nothing."""
+    and the run would hold nothing.
+
+    It returns the members whose question bells the move marked read
+    (AP-BUG-3), for a caller that moves their My Day after its commit. The
+    sweep and :func:`end_runs_of_closed_task` call it."""
     new_status = transition(run.status, "task_close")
-    await _move_run(db, run, new_status, ts=await _clock(db), user=None, via=None)
+    cleared = await _move_run(db, run, new_status, ts=await _clock(db), user=None, via=None)
     await _system_activity(db, run, actor_email=run.member_email, via=None,
                            body=CLOSED_TASK_BODIES[why], server_close=why)
+    return cleared
+
+
+#: H-409 item 1 (task 748). The open runs of one task, locked for the end of
+#: a run at the moment its task closes. ⚠️ ``NOWAIT``: an agent write takes
+#: the run first and the task row second (EA-13c), and the close already
+#: holds the task row. A wait here could close a cycle, so the close refuses
+#: at once: Postgres raises 55P03, and the route answers 409 through
+#: ``core.transient_as_409``. Nothing is written, and the person tries again.
+_LOCK_OPEN_TASK_RUNS_SQL = (
+    "SELECT id FROM pm_agent_runs WHERE task_id = CAST(:tid AS uuid)"
+    " AND task_id IS NOT NULL AND status = ANY(:open)"
+    f" AND organization_id = {BOUND_ORG_SQL}"
+    " ORDER BY id FOR UPDATE NOWAIT"
+)
+
+
+def _own_agent_run(run: Any, closer: UserContext) -> bool:
+    """True when *run* is the run of the closing agent: the same member and
+    the same client stamp, as an agent's own run reads for a release
+    (:func:`may_end_run`). The stamp comes from ``UserContext.agent``, which
+    branch 0 builds from the signed request, never from a body. A person is
+    never the owner here."""
+    agent = getattr(closer, "agent", None)
+    via = str(getattr(agent, "actor_via", "") or "") if agent is not None else ""
+    return bool(via) and run.member_email == _member(closer) and run.client_via == via
+
+
+async def end_runs_of_closed_task(db: Any, task_id: str, why: str,
+                                  closer: UserContext) -> list[str]:
+    """H-409 item 1 (task 748, spec §12.3). End each open run of *task_id* at
+    the moment its task closes, in the caller's transaction. *why* is
+    ``done``, ``cancelled`` or ``archived``: the key of
+    :data:`CLOSED_TASK_BODIES`.
+
+    * Each run moves to ``completed`` by the move ``task_close``, with one
+      server-close line (:func:`close_closed_task_run`, the writer of the
+      sweep). So the agent may still leave ONE late summary, and the run
+      analytics read the run as ``server_closed``.
+    * The run of the closing AGENT stays open (:func:`_own_agent_run`). Its
+      close is its own disposition: it finishes the run itself, and the sweep
+      closes it after its lease (§12.6 step 2).
+    * Exactly once. The runs are locked first (:data:`_LOCK_OPEN_TASK_RUNS_SQL`),
+      and only an open run moves. A second close of the task finds none.
+    * While ``agent_runs_enabled`` is off, no statement runs.
+
+    It returns the members whose question bells closed (AP-BUG-3).
+    """
+    if not agent_runs_enabled():
+        return []
+    locked = (await db.execute(
+        text(_LOCK_OPEN_TASK_RUNS_SQL),
+        {"tid": str(task_id), "open": list(AGENT_RUN_OPEN_STATUSES)},
+    )).fetchall()
+    cleared: list[str] = []
+    for found in locked:
+        run = await _load_run(db, str(found.id))
+        if run.status not in OPEN_STATUSES or _own_agent_run(run, closer):
+            continue
+        cleared.extend(await close_closed_task_run(db, run, why))
+    return sorted(set(cleared))
+
+
+async def bump_closed_questions(user: UserContext, recipients: list[str]) -> None:
+    """After the commit of a task close: move the My Day of each member whose
+    question bells :func:`end_runs_of_closed_task` marked read (AP-BUG-3).
+    The task routes call it, as the run routes call ``_bump_cleared``."""
+    await _bump_cleared(user, recipients)
 
 
 #: SW-10a fix round. True when the newest activity of the run that is not
@@ -3527,9 +3619,11 @@ __all__ = [
     "StartIn",
     "archive_applied_run_ids",
     "archive_request_of",
+    "bump_closed_questions",
     "close_archived_run",
     "close_closed_task_run",
     "closed_task_runs",
+    "end_runs_of_closed_task",
     "load_run",
     "member_name",
     "option_labels",
