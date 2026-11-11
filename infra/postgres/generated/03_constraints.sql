@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 191
+-- Tables in this phase: 192
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -2690,6 +2690,18 @@ ALTER TABLE package_field_value ADD CONSTRAINT package_field_value_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS package_field_value_org_idx ON package_field_value (organization_id);
 
+-- pm_agent_policies
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_agent_policies WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_agent_policies still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_agent_policies ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_agent_policies ADD CONSTRAINT pm_agent_policies_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_agent_policies_org_idx ON pm_agent_policies (organization_id);
+
 -- pm_cycles
 DO $$
 BEGIN
@@ -2809,3 +2821,15 @@ ALTER TABLE email_signature_settings ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE email_signature_settings ADD CONSTRAINT email_signature_settings_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS email_signature_settings_org_idx ON email_signature_settings (organization_id);
+
+-- pm_epic_contracts
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_epic_contracts WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_epic_contracts still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_epic_contracts ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_epic_contracts ADD CONSTRAINT pm_epic_contracts_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_epic_contracts_org_idx ON pm_epic_contracts (organization_id);
