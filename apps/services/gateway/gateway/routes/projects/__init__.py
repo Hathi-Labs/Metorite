@@ -47,6 +47,7 @@ from gateway.routes.projects import analytics_rebalance as _analytics_rebalance 
 from gateway.routes.projects import activities as _activities  # noqa: F401
 from gateway.routes.projects import agent_runs as _agent_runs  # noqa: F401
 from gateway.routes.projects import agent_questions as _agent_questions  # noqa: F401
+from gateway.routes.projects import agent_review as _agent_review  # noqa: F401
 from gateway.routes.projects import agent_summary as _agent_summary  # noqa: F401
 from gateway.routes.projects import assignees as _assignees  # noqa: F401
 from gateway.routes.projects import authorities as _authorities  # noqa: F401

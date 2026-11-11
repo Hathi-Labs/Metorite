@@ -103,6 +103,11 @@ EXPECTED: dict[str, dict[str, str]] = {
     "agent_outside_decision": {"awaiting": "in_progress"},
     # SW-43: the member takes back an answer that no agent has read.
     "member_withdraw": {"in_progress": "awaiting", "stale": "awaiting"},
+    # SW-18a: a person approved the agent's work, so the open run closes.
+    "review_close": {
+        "created": "completed", "in_progress": "completed", "stale": "completed",
+        "awaiting": "completed", "stopping": "stopped",
+    },
 }
 
 

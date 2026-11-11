@@ -14,7 +14,10 @@ An agent reads it from ``my_work``, runs it, and reports the result here.
 * ``passed``: the Check passed. The task moves to the first ``done`` lane of
   its status set, and the evidence becomes a comment, only when the caller
   may move it (:func:`_closing_refusal`). Otherwise the run is still
-  recorded, and the answer says why the task stayed open.
+  recorded, and the answer says why the task stayed open. SW-18a: when the
+  project needs a person to accept agent work, a signed agent's pass moves
+  the task to its review lane instead (``agent_review.redirect_for``), and
+  ``not_closed`` is :data:`WAITING_REVIEW`.
 
 The four columns are on ``pm_tasks`` (migration ``*_pm_tasks_check.sql``).
 ``tasks.py`` writes ``check_text`` through the create and the PATCH. This
@@ -33,6 +36,7 @@ from typing import Any, Literal
 from acb_auth import UserContext, get_current_user
 from acb_auth.agent_oauth import task_checks_enabled
 from fastapi import Depends, Header, HTTPException
+from gateway.routes.projects.agent_review import redirect_for, settle_after_move
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -84,6 +88,9 @@ CHECK_CHANGED = "check_changed"
 ALREADY_CLOSED = "already_closed"
 NO_DONE_STATUS = "no_done_status"
 HELD_BY_OTHER = "held_by_other"
+#: SW-18a. The project needs a person to accept agent work: the pass moved
+#: the task to its review lane, and the task waits there.
+WAITING_REVIEW = "waiting_review"
 
 #: The prefix of the comment that a pass writes, before the evidence.
 PASSED_COMMENT_PREFIX = "Check passed."
@@ -313,13 +320,22 @@ async def report_check(
             done = None if not_closed else await _done_status(db, after)
             if not_closed is None and done is None:
                 not_closed = NO_DONE_STATUS
-            if done is not None:
-                # The one transition of every status move: the new status,
-                # `completed_at` and the `status_change` row.
-                moved = await apply_status_transition(
-                    db, after, str(done.id), created_by=actor(user),
-                )
-                after = moved["row"]
+            # SW-18a. A signed agent's pass in a project that needs review
+            # lands in the review lane, as its done through the PATCH does.
+            review = (await redirect_for(db, user, after, str(done.id))
+                      if done is not None else None)
+            target = review.lane if review is not None and review.lane is not None else done
+            if target is not None:
+                if target is not done:
+                    not_closed = WAITING_REVIEW
+                if str(target.id) != str(after.status_id):
+                    # The one transition of every status move: the new
+                    # status, `completed_at` and the `status_change` row.
+                    moved = await apply_status_transition(
+                        db, after, str(target.id), created_by=actor(user),
+                    )
+                    after = moved["row"]
+                await settle_after_move(db, user, task_id, before, review, moved)
                 await record_activity(
                     db, activity_type="comment", created_by=actor(user),
                     task_id=task_id, body=f"{PASSED_COMMENT_PREFIX}\n\n{evidence}",
@@ -330,7 +346,7 @@ async def report_check(
             "task_id": str(after.id),
             "result": after.check_last_result,
             "last_run_at": wire(after.check_last_run_at),
-            "closed": moved is not None,
+            "closed": moved is not None and moved["to"].category in CLOSING_CATEGORIES,
             "not_closed": not_closed,
             "status_id": str(after.status_id),
             "version": wire(after.updated_at),

@@ -44,6 +44,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.projects.agent_review import refuse_agent_move
 from gateway.routes.projects.authority import assert_may_move_task
 from gateway.routes.projects.bulk import MAX_BULK, dedupe_ids
 from gateway.routes.projects.cascade import (
@@ -842,6 +843,11 @@ async def move_tasks(
                         ),
                     )
                 values["status_id"] = landing
+            # WS-MCP SW-18a. A signed agent's move never skips the review: a
+            # waiting task stays, and no landing in done of a project that
+            # needs review. A member's move is unchanged.
+            await refuse_agent_move(db, user, task, plan["destination_project_id"],
+                                    landing_category)
 
             dropped: dict[str, Any] = {}
             if plan["crosses_root"]:

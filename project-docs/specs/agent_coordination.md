@@ -8,6 +8,8 @@
 
 **SW-23 (a task carries a Check) is built and dark, 2026-11-11.**
 
+**SW-18a (the review setting, the redirect of an agent's done and Approve) is built and dark, 2026-11-11 (task 349). SW-18b (Request changes) is open.**
+
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
@@ -164,7 +166,7 @@ A quiet run keeps its task until the lease ends. An orchestrator can wait 20 to 
 | The sweep finds no live path | `needs_agent` `stranded` | Built, dark (SW-10a) |
 | A member presses Resume | `needs_agent` `answered` | Built (SW-11a) |
 | The last open blocker closes | `needs_agent` `queued`, with the reason "blockers resolved" | SW-15 |
-| A reviewer requests changes | `needs_agent` `queued` | SW-18 |
+| A reviewer requests changes | `needs_agent` `queued` | SW-18b |
 | A person delegates a task, or writes `@agent` | a `created` run on that agent | SW-30a |
 
 **Each wake is idempotent.** A wake keys on a fingerprint, so a status flap or a second gateway process wakes once. SW-10a keys on `(run, reason)`. SW-15 keys on `(task, the set of closed blockers)`.
@@ -1159,10 +1161,43 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-18 · A person accepts agent work before it is done
 
-- **Scope.** As task 349. A project setting "Agent work needs review", default off, with an optional default reviewer. When it is on, an agent's move to done lands in the review lane, and the task records the reviewer. Approve moves it to done and closes the run. Request changes needs a comment, and it queues the agent. Only the named reviewer or a project lead decides.
-- **Done when.** With the setting on, `set_task_status(done)` from an agent lands in review. Approve marks it done. Request changes queues the agent.
-- **Fence.** R8 route tests, and an edge test for the redirected status.
-- **Risk.** HIGH (a write authority rule). **Gate.** AGENT-SAFE.
+- **Scope.** As task 349. A project setting "Agent work needs review", default off, with an optional default reviewer. With the setting on, an agent's move to done lands in the review lane, and the task records the reviewer. A person approves it, or asks for changes. Only the named reviewer or a project lead decides.
+- **Split.** SW-18a builds the setting, the redirect and Approve. SW-18b builds Request changes.
+- **Risk.** HIGH (a write authority rule, a migration). **Gate.** AGENT-SAFE to build dark. OWNER-GATE `enforcement-flip` to turn on.
+
+#### SW-18a · The setting, the redirect and Approve
+
+- **Status.** Built (task 349), dark, 2026-11-11. The flag is `AGENT_REVIEW_ENABLED`, default off.
+- **Storage (owner, 2026-11-11).** Columns, not the policy store of SW-94. Migration `408_pm_agent_review.sql`, expand only. It adds `pm_projects.agent_work_needs_review` (`BOOLEAN NOT NULL DEFAULT false`) and `pm_projects.agent_review_default_reviewer`. It adds `pm_tasks.agent_reviewer` and `pm_tasks.agent_review_requested_at`. SW-94 copies these values into policy rows when it lands.
+- **Who is an agent.** A signed outside agent: a request whose `UserContext.agent` is set. A person, and the chat that acts for a person, are never redirected.
+- **The review lane.** The first status of category `in_progress` in the task's own status set whose name holds "review", in any case, in lane order. The MCP routine already uses this convention (`agent_edge/prompts.py`). With no such status the setting does nothing. The agent's done goes to done, and the answer says why.
+- **Which setting counts.** The setting of the task's own project. The setting of a parent project does not reach a child project.
+- **The redirect.** It runs in the gateway, at each door that a signed agent can reach to set a status:
+  1. `PATCH /projects/tasks/{id}`, which serves `set_task_status`, `update_task` and `update_tasks`.
+  2. `POST /projects/tasks/{id}/check-result`. A pass of an agent then answers `not_closed: waiting_review`.
+  3. `POST /projects/tasks/move`. A signed agent gets 403 for a task that waits for review. It also gets 403 for a landing in done of a project that needs review.
+- **The wait.** The redirect starts the wait and records the default reviewer. A second done keeps the first wait. Any other status move through the PATCH ends the wait, so a person who moves the task by hand decides too.
+- **Approve.** `POST /projects/tasks/{id}/agent-review` with `{decision: "approve"}` and an optional `If-Match`. The named reviewer, or a lead of the project or of an ancestor, may approve (`authority.may_approve_agent_work`). Everybody else gets 403, and so does a signed agent or a run with no person present. A task of another tenant, or a hidden task, gets 404. The approve clears the wait, moves the task to the first done lane, and closes the open agent run in one transaction. A second approve gets 409 `not_waiting` and changes nothing.
+- **The setting route.** `PUT /projects/nodes/{id}/agent-review` with `{needs_review, default_reviewer}`. A lead of the project or of an ancestor, or a Projects admin, may change it. The default reviewer must open the project. The answer names the review lane, or says that the project has none.
+- **Off the MCP edge.** Neither route is in `MCP_ROUTES`. The edge texts of `set_task_status` and `report_check` name the review only while the flag is on.
+- **Done when.** With the setting on, `set_task_status(done)` from an agent lands in review. The reviewer or a lead approves, and the task is done and its run closed.
+- **Non-goals.**
+  - Request changes. SW-18b builds it, because it needs the `needs_agent` queue state of §3.1.
+  - A bell or a mail to the reviewer.
+  - A screen. The Projects settings screen has no place for the setting yet, so a lead sets it through the route.
+  - A review chain with more than one stage.
+  - The agreement of a merge and a review (SW-55, task 1888). A merge through GitHub keeps its rule of GH-7.
+  - A setting that a parent project gives to its children.
+- **Anchors** (read on 2026-11-11). `gateway/routes/projects/agent_review.py` (new, both routes and `redirect_for`). `tasks.py` `patch_task`. `checks.py` `report_check`. `move.py` `move_tasks`. `authority.py` `may_approve_agent_work`. `agent_runs.py` `close_reviewed_run` and the event `review_close`. `acb_auth/agent_oauth.py` `agent_review_enabled`.
+- **Fence.** `tests/unit/test_pm_agent_review_r8.py` (R8) and `tests/unit/test_mcp_edge_coverage.py`.
+- **Verify.** `uv run pytest -q -p no:cacheprovider tests/unit/test_pm_agent_review_r8.py tests/unit/test_task_check_r8.py tests/unit/test_mcp_edge_coverage.py`.
+- **Risk.** HIGH. **Gate.** AGENT-SAFE dark. OWNER-GATE `enforcement-flip` to turn on.
+
+#### SW-18b · Request changes
+
+- **Scope.** The decision `request_changes` on the same route. It needs a comment, and it queues the agent through the `needs_agent` state `queued` (§3.1). The task leaves the review lane.
+- **Done when.** Request changes queues the agent, and `my_work` offers the run.
+- **Risk.** HIGH. **Gate.** AGENT-SAFE. **Depends on.** SW-18a.
 
 #### SW-36 · Agent-drafted project updates
 
@@ -1925,7 +1960,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-12 to SW-14, SW-13b | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_context.py tests/unit/test_mcp_edge_prompts.py` |
 | SW-15 | `uv run pytest -q -p no:cacheprovider tests/unit/test_blocker_wake_r8.py` (new) |
 | SW-16a, SW-16b, SW-25 | `uv run pytest -q -p no:cacheprovider tests/unit/test_task_links_mcp_r8.py tests/unit/test_mcp_edge_coverage.py` |
-| SW-18 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_review_r8.py` (new) |
+| SW-18a, SW-18b | `uv run pytest -q -p no:cacheprovider tests/unit/test_pm_agent_review_r8.py tests/unit/test_mcp_edge_coverage.py` |
 | SW-19a, SW-19c | `node .claude/hooks/session-handoff.test.mjs`, and the test of the PR hook (new) |
 | SW-19, SW-19b | `uv run pytest -q -p no:cacheprovider tests/unit/test_handoff_queue.py` |
 | SW-23 | `uv run pytest -q -p no:cacheprovider tests/unit/test_task_check_r8.py` (new) `tests/unit/test_mcp_edge_coverage.py` |

@@ -1171,16 +1171,38 @@ CHECK_TEXTS: Mapping[str, tuple[str, str]] = {
 }
 
 
+#: WS-MCP SW-18a. The sentences of a tool description that follow
+#: ``agent_review_enabled``: each marker, and its text with the flag on and
+#: with it off. While the flag is off, no description names a review.
+REVIEW_TEXTS: Mapping[str, tuple[str, str]] = {
+    "[[REVIEW_DONE]]": (
+        " When the project needs a person to accept agent work, a move to done"
+        " lands in its in progress status whose name says review, and the result"
+        " shows that status. The reviewer or a project lead then approves it in"
+        " Metorite. Do not move the task again. When the project has no such"
+        " status, the move goes to done.",
+        ""),
+    "[[REVIEW_CHECK]]": (
+        ", or waiting_review when the project needs a person to accept agent"
+        " work: the task then moves to its review status",
+        ""),
+}
+
+
 def session_text(text: str) -> str:
     """*text* with each marker of :data:`SESSION_TEXTS` filled by the
     session flag (SW-7), then each marker of :data:`CHECK_TEXTS` filled by
-    the Check flag (SW-23)."""
+    the Check flag (SW-23), then each marker of :data:`REVIEW_TEXTS` filled
+    by the review flag (SW-18a)."""
     on = agent_oauth.mcp_sessions_enabled()
     for mark, (yes, no) in SESSION_TEXTS.items():
         text = text.replace(mark, yes if on else no)
     checks = agent_oauth.task_checks_enabled()
     for mark, (yes, no) in CHECK_TEXTS.items():
         text = text.replace(mark, yes if checks else no)
+    review = agent_oauth.agent_review_enabled()
+    for mark, (yes, no) in REVIEW_TEXTS.items():
+        text = text.replace(mark, yes if review else no)
     return text
 
 
@@ -5324,8 +5346,8 @@ SET_TASK_STATUS = Tool(
         " task changed after that read, the tool refuses, and you read the task"
         " again. Move the task to a done status when the work is finished. A"
         " move into a cancelled status stays a human step, so the tool refuses"
-        " it. A move to done does not close the subtasks. Returns the task id,"
-        " its status and its new version." + _UNTRUSTED_NOTE
+        " it. A move to done does not close the subtasks.[[REVIEW_DONE]] Returns"
+        " the task id, its status and its new version." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_SET_STATUS_INPUT,
@@ -5347,7 +5369,11 @@ SET_TASK_STATUS = Tool(
 CHECK_RESULT_ROUTE = "/projects/tasks/{task_id}/check-result"
 #: Why a pass did not close the task: copies of the codes of
 #: ``routes/projects/checks.py``, pinned by ``test_task_check_r8.py``.
-CHECK_NOT_CLOSED: tuple[str, ...] = ("already_closed", "no_done_status", "held_by_other")
+CHECK_NOT_CLOSED: tuple[str, ...] = (
+    "already_closed", "no_done_status", "held_by_other",
+    # SW-18a: the project needs a person to accept agent work.
+    "waiting_review",
+)
 #: The keys of the result of ``report_check``.
 REPORT_CHECK_KEYS: tuple[str, ...] = (
     "task_id", "result", "last_run_at", "closed", "not_closed", "status_id", "version",
@@ -5429,7 +5455,8 @@ REPORT_CHECK = Tool(
         " expected_version. passed moves the task to done and adds the evidence as a"
         " comment, only when you may move the task: closed is then true. Otherwise"
         " not_closed says why: already_closed, no_done_status, or held_by_other when"
-        " another session holds the task. open and cannot_run never close the task."
+        " another session holds the task[[REVIEW_CHECK]]. open and cannot_run never"
+        " close the task."
         " Returns the new version." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,

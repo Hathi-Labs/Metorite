@@ -490,6 +490,13 @@ _MOVES: dict[str, dict[str, str]] = {
     # question is open again, so the run waits for a person. Only
     # `withdraw_agent_answer` passes it, after `answer_changeable_sql` holds.
     "member_withdraw": {"in_progress": "awaiting"},
+    # SW-18a. A person approved the agent's work, and the task is done: the
+    # run closes, from each open status. A Stop that waits still ends as
+    # `stopped`. Only `close_reviewed_run` passes it.
+    "review_close": {
+        "created": "completed", "in_progress": "completed", "awaiting": "completed",
+        "stopping": "stopped",
+    },
 }
 
 
@@ -1592,8 +1599,9 @@ async def _system_activity(db: Any, run: Any, *, actor_email: str, via: str | No
     a takeover or a release. No comment and no notification.
 
     SW-10a: *server_close* names why the server closed the run (``archive``,
-    ``done``, ``cancelled`` or ``archived``). ``_server_closed`` reads it, so
-    the agent may still leave one late summary."""
+    ``done``, ``cancelled`` or ``archived``, and ``review`` since SW-18a).
+    ``_server_closed`` reads it, so the agent may still leave one late
+    summary."""
     content: dict[str, Any] = {"body": body, "system": True}
     if server_close is not None:
         content["server_close"] = server_close
@@ -2841,6 +2849,41 @@ _SERVER_CLOSED_SQL = (
     " WHERE a.run_id = CAST(:rid AS uuid) AND NOT a.ephemeral"
     " ORDER BY a.seq DESC LIMIT 1"
 )
+
+
+#: SW-18a. The system line of a run that a person's approve closed.
+REVIEW_CLOSED_BODY = "Closed: a person approved the work, and the task is done."
+
+
+async def lock_open_task_run(db: Any, task_id: str) -> Any | None:
+    """The open run of *task_id*, locked for the caller's transaction, or
+    ``None`` (SW-18a). The approve of agent work calls it BEFORE its write of
+    the task row. An agent write locks the run and then bumps the task, so
+    the run first keeps one lock order and no deadlock."""
+    holder = (await db.execute(text(_HOLDER_SQL), {
+        "tid": task_id, "open": list(AGENT_RUN_OPEN_STATUSES),
+    })).fetchone()
+    if holder is None:
+        return None
+    run = await _lock_run(db, str(holder.id))
+    # Another writer can end it during the lock wait.
+    return run if run.status in OPEN_STATUSES else None
+
+
+async def close_reviewed_run(db: Any, run: Any) -> str:
+    """Close *run*, a row of :func:`lock_open_task_run`, after a person
+    approved the agent's work (SW-18a), in the caller's transaction.
+
+    The run moves by the event ``review_close`` and gets
+    :data:`REVIEW_CLOSED_BODY` as a system line with ``server_close`` set to
+    ``review``. So the agent may still leave one late summary, as after the
+    other server closes. No caller passes a user: the server closes the run.
+    """
+    new_status = transition(run.status, "review_close")
+    await _move_run(db, run, new_status, ts=await _clock(db), user=None, via=None)
+    await _system_activity(db, run, actor_email=run.member_email, via=None,
+                           body=REVIEW_CLOSED_BODY, server_close="review")
+    return str(run.id)
 
 
 async def _server_closed(db: Any, run_id: str) -> bool:

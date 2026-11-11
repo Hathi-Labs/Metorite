@@ -910,6 +910,9 @@ _READERS = frozenset({
     "apps/services/gateway/gateway/routes/projects/agent_runs.py",
     # WS-ALN ALN-2a: the answer of a decision.
     "apps/services/gateway/gateway/routes/projects/decisions.py",
+    # WS-MCP SW-18a: a person approves agent work, and sets the review of a
+    # project. A run with no person present gets 403 before any read.
+    "apps/services/gateway/gateway/routes/projects/agent_review.py",
     # WS-ALN ALN-2a: the one tool that names a route that answers. See
     # `_NAMED_TOOL_EXEMPTIONS`.
     "apps/skills/skill-projects/skill_projects/guarded.py",

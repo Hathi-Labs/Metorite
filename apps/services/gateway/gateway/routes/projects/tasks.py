@@ -35,6 +35,11 @@ from fastapi import Depends, Header, HTTPException, Query
 from gateway.align.trigger import enqueue_check
 from gateway.db import current_tenant
 from gateway.routes.projects.agent_dispatch import MEMBER_KEY, assigning_member
+from gateway.routes.projects.agent_review import (
+    attach_review_outcome,
+    review_target,
+    settle_review,
+)
 from gateway.routes.projects.authority import (
     assert_may_delete_task,
     assert_may_move_task,
@@ -1479,6 +1484,11 @@ async def patch_task(
                 )
         moved = None
         cascade = None
+        # WS-MCP SW-18a. A signed agent's done in a project that needs review
+        # lands in the review lane of the task's set. With no such lane the
+        # move goes to done, and the answer says so. A person is never
+        # redirected (`agent_review.redirect_for`).
+        review, new_status = await review_target(db, user, before, new_status)
         if new_status is not None and str(new_status) != str(before.status_id):
             moved = await apply_status_transition(
                 db, after, str(new_status), created_by=actor(user),
@@ -1499,6 +1509,10 @@ async def patch_task(
                 cascade = await complete_subtree(
                     db, vis, task_id, by=actor(user),
                 )
+
+        # SW-18a. The redirect starts the wait, and any other move ends one.
+        # Inside this transaction, and the row is read again for its version.
+        after = await settle_review(db, user, task_id, before, review, moved, after)
 
         if values or moved is not None:
             # WS-27v — editing a task subscribes the editor (idempotent). Only
@@ -1535,6 +1549,9 @@ async def patch_task(
         await attach_agent_state(db, [result])
         # SW-23 — the Check survives an edit too. No key while the flag is off.
         await attach_check(db, [result])
+        # SW-18a — what the review rule did with an agent's done, only when it
+        # ran: the review lane and its reviewer, or the note of no lane.
+        attach_review_outcome(result, review)
         if include_subtasks:
             result["subtasks_completed"] = len(cascade.ids) if cascade else 0
             result["subtask_changes"] = cascade.changes if cascade else []
