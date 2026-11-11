@@ -233,6 +233,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # SW-68a: MY_WORK_PLAN_ORDER_ORGS turns on the plan order of `my_work`. It
     # changes which task an agent takes first, so only the operator writes it.
     "MY_WORK_PLAN_ORDER_ORGS",
+    # SW-45: AGENT_CLAIM_SCOPE_MODES warns on or refuses an agent claim outside
+    # the member's own apps. A tenant that set it would change the claims of
+    # every org, so only the operator writes it.
+    "AGENT_CLAIM_SCOPE_MODES",
     # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
     # A queued row waits for the worker, so only the operator writes it
     # (project_alignment.md §5 item 8).

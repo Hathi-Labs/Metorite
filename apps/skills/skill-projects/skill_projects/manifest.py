@@ -269,6 +269,8 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/assigned-to-me", "my_work", "A"),
     # SW-68a: the plan order of the member's tasks. The MCP `my_work` reads it.
     Route("GET", "/projects/plan/order", "my_work", "A"),
+    # SW-45: the free tasks of the member's own apps. The MCP `my_work` reads it.
+    Route("GET", "/projects/my/own-app-free", "my_work", "A"),
     Route("GET", "/projects/my/project", "my_work", "A"),
     Route(
         "POST",

@@ -371,6 +371,43 @@ def plan_order_allowed(organization_id: object) -> bool:
     return ALL_ORGS in orgs or org in orgs
 
 
+#: SW-45. The modes of ``AGENT_CLAIM_SCOPE_MODES``, from the weakest.
+CLAIM_SCOPE_MODES: tuple[str, ...] = ("off", "warn", "refuse")
+
+
+def _parse_claim_scope(raw: str) -> dict[str, str]:
+    """The ``org=mode`` pairs of *raw*. A pair with an organization that is
+    not ``*`` and not a canonical UUID, or with an unknown mode, is dropped.
+    The last pair of one organization wins."""
+    found: dict[str, str] = {}
+    for part in raw.split(","):
+        key, sep, value = part.partition("=")
+        entry, mode = key.strip().lower(), value.strip().lower()
+        if not sep or mode not in CLAIM_SCOPE_MODES:
+            continue
+        org = ALL_ORGS if entry == ALL_ORGS else _canonical_org(entry)
+        if org is not None:
+            found[org] = mode
+    return found
+
+
+def claim_scope_mode(organization_id: object) -> str:
+    """The claim scope of *organization_id*: ``off``, ``warn`` or ``refuse``.
+
+    SW-45 (``agent_coordination.md`` §3.10.1). The ONE reader of
+    ``agent_claim_scope_modes``. An exact id wins over ``*``. An organization
+    that the value does not name reads as ``off``, and so does a value that is
+    not an id. It reads the settings at each call, so a SIGHUP reload of the
+    gateway applies a change. The caller passes the organization of the
+    session, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return "off"
+    modes = _parse_claim_scope(str(get_settings().agent_claim_scope_modes or ""))
+    return modes.get(org) or modes.get(ALL_ORGS) or "off"
+
+
 def org_allowed(organization_id: object) -> bool:
     """True when ``agent_access_orgs`` allows *organization_id*.
 
@@ -946,6 +983,9 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # `labels`: the number and title of the VISIBLE blockers, for the chat. The
     # edge ignores `labels`, and a hidden blocker is never named.
     ("GET", "/projects/plan/order"),
+    # SW-45: the free tasks of the member's own apps, for `my_work`. A read. It
+    # answers no rows while `AGENT_CLAIM_SCOPE_MODES` is off for the org.
+    ("GET", "/projects/my/own-app-free"),
     # MCP-G21: the members that `set_assignees` would accept, for `list_members`.
     ("GET", "/projects/assignable-members"),
     # SP-12: the order of work under one goal, epic or project, for `get_plan`.

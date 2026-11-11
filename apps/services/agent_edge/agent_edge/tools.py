@@ -4634,8 +4634,24 @@ REASON_ASSIGNED = "assigned"
 #: answered work, and above the other assigned tasks. Only while the Check
 #: flag is on, because the gateway marks ``due`` then only.
 REASON_CHECK_DUE = "check_due"
+#: SW-45 (agent_coordination.md §3.10.1). A free task of the member's own
+#: apps: no assignee, and no open run holds it. Its rows come after every
+#: assigned row, so the assigned rows keep their order.
+REASON_OWN_APP_FREE = "own_app_free"
 MY_WORK_REASONS: tuple[str, ...] = (
-    *WAITING_REASONS.values(), REASON_HELD, REASON_CHECK_DUE, REASON_ASSIGNED)
+    *WAITING_REASONS.values(), REASON_HELD, REASON_CHECK_DUE, REASON_ASSIGNED,
+    REASON_OWN_APP_FREE)
+#: SW-45. The route of the free tasks of the own apps. It answers no rows while
+#: ``AGENT_CLAIM_SCOPE_MODES`` is off for the org, and the edge reads no flag.
+OWN_APP_FREE_ROUTE = "/projects/my/own-app-free"
+#: The most ``own_app_free`` rows (the route's own cap).
+OWN_APP_FREE_MAX = 5
+#: The seconds that the read of the free tasks may take. Over it, ``my_work``
+#: answers with no ``own_app_free`` row.
+OWN_APP_FREE_BUDGET_S = 2.0
+#: The key of an ``own_app_free`` row that names its app: ``{id, name}``. The
+#: name ``app`` is taken by migration 342 (the door app).
+APP_PROJECT_KEY = "app_project"
 #: SW-68a. The route that ranks the assigned rows by the plan engine, and the
 #: key of the row that it adds: ``{epic_id, ready, slack_mins, blocked_by,
 #: blocked_by_hidden}``. Ids and counts only. The key is absent on a row that
@@ -4680,6 +4696,10 @@ _MY_WORK_ROW_SCHEMA = _optional(_MY_WORK_ROW_SCHEMA, PLAN_KEY, _object({
 }))
 # SW-23: the Check of the row's task, with no evidence. Only while the flag is on.
 _MY_WORK_ROW_SCHEMA = _optional(_MY_WORK_ROW_SCHEMA, CHECK_KEY, _CHECK_ROW_SCHEMA)
+# SW-45: the app of an `own_app_free` row. Only on those rows.
+_MY_WORK_ROW_SCHEMA = _optional(_MY_WORK_ROW_SCHEMA, APP_PROJECT_KEY, _object({
+    "id": {"type": "string"}, "name": _UNTRUSTED_OR_NULL,
+}))
 _MY_WORK_OUTPUT: dict[str, Any] = _optional(_object({
     "rows": {"type": "array", "items": _MY_WORK_ROW_SCHEMA},
 }), PROTOCOL_KEY, _PROTOCOL_SCHEMA)
@@ -4722,6 +4742,65 @@ async def _plan_of(ctx: Context, ids: list[str]) -> tuple[list[str], dict[str, d
             "blocked_by": blockers, "blocked_by_hidden": max(hidden, 0),
         }
     return order, shaped
+
+
+async def _own_app_free(ctx: Context) -> list[dict[str, Any]]:
+    """SW-45: the free tasks of the member's own apps, best priority first.
+
+    The gateway reads the flag, so the edge reads none. A failed read, an old
+    gateway (404) and an answer of the wrong shape give no row, and a read
+    that hangs ends at :data:`OWN_APP_FREE_BUDGET_S`. The rows are an aid, so
+    they never turn ``my_work`` into "busy"."""
+    try:
+        async with asyncio.timeout(OWN_APP_FREE_BUDGET_S):
+            found = await _get(ctx, OWN_APP_FREE_ROUTE, TEXT_TASK_NOT_FOUND,
+                               timeout_s=OWN_APP_FREE_BUDGET_S)
+    except (ToolError, GatewayUnauthorized, TimeoutError):
+        return []
+    rows = found.get("rows") if isinstance(found, dict) else None
+    if not isinstance(rows, list):
+        return []
+    return [r for r in rows[:OWN_APP_FREE_MAX]
+            if isinstance(r, dict) and _id(r.get("id")) is not None]
+
+
+def _app_project(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The ``app_project`` of an ``own_app_free`` row: the id only in the shape
+    of an id, and the name as ``untrusted_text``. ``None`` for any other shape."""
+    app = row.get(APP_PROJECT_KEY) if isinstance(row, Mapping) else None
+    if not isinstance(app, Mapping) or _id(app.get("id")) is None:
+        return None
+    name = app.get("name")
+    return {"id": _id(app.get("id")),
+            "name": untrusted(name) if isinstance(name, str) and name else None}
+
+
+async def _list_own_app_free(
+    ctx: Context, listed: list[tuple[str, str, str | None, bool]], seen: set[str],
+    limit: int,
+) -> dict[str, dict[str, Any]]:
+    """SW-45: append the ``own_app_free`` rows to *listed*, after every other
+    row, and return the gateway row of each one by task id. A task that an
+    earlier row already lists keeps that row. No read while *listed* is full."""
+    free = await _own_app_free(ctx) if len(listed) < limit else []
+    found: dict[str, dict[str, Any]] = {}
+    for row in free:
+        task_id = _id(row.get("id"))
+        if task_id is None or task_id in seen:
+            continue
+        seen.add(task_id)
+        found[task_id] = row
+        listed.append((task_id, REASON_OWN_APP_FREE, None, False))
+    return found
+
+
+def _add_app_project(item: dict[str, Any], free_rows: Mapping[str, Any]) -> None:
+    """SW-45: put ``app_project`` on an ``own_app_free`` row only."""
+    if item.get("reason") != REASON_OWN_APP_FREE:
+        return
+    app = _app_project(free_rows.get(item["task_id"]))
+    if app is not None:
+        item[APP_PROJECT_KEY] = app
 
 
 async def _my_runs(ctx: Context, via: str, *, needs_agent: bool = False,
@@ -4955,10 +5034,14 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
                 continue
             seen.add(task_id)
             listed.append((task_id, wanted, None, False))
+    # SW-45: the free tasks of the own apps come after every assigned row, so
+    # the assigned rows keep their order. The gateway answers none while the
+    # org's claim scope is off.
+    free_rows = await _list_own_app_free(ctx, listed, seen, limit)
     # P3c: every read below runs on the rows that are shown, after the cut.
     listed = listed[:limit]
 
-    rows = {str(r.get("id")): r for r in assigned}
+    rows = {**free_rows, **{str(r.get("id")): r for r in assigned}}
     missing = [task_id for task_id, _, _, _ in listed if task_id not in rows]
     rows.update(await _tasks_by_id(ctx, missing))
     shown = [rows[t] for t, _, _, _ in listed if t in rows]
@@ -4972,6 +5055,7 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         task_row = rows.get(item["task_id"])
         if isinstance(task_row, dict) and CHECK_KEY in task_row:
             item[CHECK_KEY] = check_of(task_row.get(CHECK_KEY), evidence=False)
+        _add_app_project(item, free_rows)
     # SW-31a: one read of the refs for all rows. No body: the agent reads the
     # blocks with get_task_context.
     refs = await _guidance_refs(
@@ -5005,7 +5089,10 @@ MY_WORK = Tool(
         " Take the top row. For a waiting run, read it with"
         " get_agent_run and its run_id. For a task, with projects:write, claim"
         " the task with claim_task, the task_id and the version.[[ROWS]]"
-        "[[ANSWER]] The"
+        "[[ANSWER]] Last, when the organization turned on app scope, up to 5"
+        " free tasks of the apps that this member leads (own_app_free): no"
+        " assignee and no AI session holds them, best priority first. Their"
+        " app_project names the app. Outside those rows, the"
         " list never holds a task that is not assigned to this member and that"
         " this connection does not hold." + _UNTRUSTED_NOTE
     ),
@@ -5017,7 +5104,7 @@ MY_WORK = Tool(
     not_found=TEXT_PROJECT_NOT_FOUND,
     run=_my_work,
     routes=(LIST_TASKS_ROUTE, ME_ROUTE, MY_RUNS_ROUTE, TASK_ROUTE, STATUSES_ROUTE,
-            GUIDANCE_REFS_ROUTE, PLAN_ORDER_ROUTE),
+            GUIDANCE_REFS_ROUTE, PLAN_ORDER_ROUTE, OWN_APP_FREE_ROUTE),
     edge_inputs=frozenset({"limit"}),
 )
 
@@ -6907,6 +6994,45 @@ CLAIM_TEXTS: Mapping[str, str] = {
         "The project of this task has no in progress status. Ask a person to add one."),
 }
 
+#: SW-45. The code of the 403 of a claim outside the member's own apps
+#: (``claim_scope.OUTSIDE_APPS``), apart from :data:`CLAIM_TEXTS`, which
+#: mirrors the 422 codes. ``test_agent_claim_scope_edge.py`` pins it equal.
+CLAIM_OUTSIDE_APPS = "outside_apps"
+
+
+def _lead_of(value: Any) -> str | None:
+    """A lead address of the gateway, only in the shape of an address."""
+    if isinstance(value, str) and len(value) <= MAX_ADDRESS_CHARS and _EMAIL_RE.fullmatch(value):
+        return value
+    return None
+
+
+def outside_apps_warning(lead: str | None) -> str:
+    """The edge's own words for a claim outside the own apps in mode ``warn``.
+    The one value in it is the lead, and only in the shape of an address."""
+    if lead is not None:
+        return (f"This task is outside your apps. Its app lead is {lead}."
+                " The task timeline records this claim.")
+    return ("This task is outside your apps, and its app has no lead."
+            " The task timeline records this claim.")
+
+
+def outside_apps_refusal(detail: Mapping[str, Any]) -> str:
+    """The edge's own words for the 403 ``outside_apps`` (mode ``refuse``)."""
+    lead = _lead_of(detail.get("lead"))
+    who = f"its app lead, {lead}," if lead is not None else "a person"
+    return (f"This task is outside your apps. Ask {who} to assign it to you,"
+            " or take a task from my_work.")
+
+
+#: The coded refusals of the claim: the 422 codes and the 403 of SW-45.
+_CLAIM_CODED: Mapping[str, str | Callable[[Mapping[str, Any]], str]] = {
+    **CLAIM_TEXTS, CLAIM_OUTSIDE_APPS: outside_apps_refusal}
+
+#: The fixed SW-63 sentence at the start of a claim ``warning``.
+_SUBTASKS_WARNING_RE = re.compile(
+    r"This task has [0-9]{1,9} open subtasks\. Claim the slice, not the epic\.")
+
 _CLAIM_INPUT: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -6950,7 +7076,8 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         ctx, "POST", CLAIM_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": str(args["task_id"])},
         json_body={} if link is None else {"external_link": link},
-        if_match=str(args["expected_version"]), coded=CLAIM_TEXTS)
+        if_match=str(args["expected_version"]), coded=_CLAIM_CODED,
+        coded_statuses=(422, 403))
     if not isinstance(after, dict) or _id(after.get("id")) is None:
         raise ToolError(TEXT_BUSY)
     written: dict[str, Any] = after
@@ -6971,11 +7098,19 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     # fixed on the gateway, and the ids leave only in the shape of an id.
     ids = [i for i in (_id(v) for v in
                        (written.get("open_subtasks") or [])[:5]) if i]
-    if ids and isinstance(written.get("warning"), str) and re.fullmatch(
-            r"This task has [0-9]{1,9} open subtasks\. Claim the slice, not"
-            r" the epic\.", written["warning"]):
-        result["warning"] = written["warning"]
+    said = written.get("warning")
+    subtasks = _SUBTASKS_WARNING_RE.match(said) if isinstance(said, str) else None
+    words: list[str] = []
+    if ids and subtasks is not None:
+        words.append(subtasks.group(0))
         result["open_subtasks"] = ids
+    # SW-45: a claim outside the member's own apps, in mode warn. The edge
+    # builds its own text, and the lead leaves only in the shape of an address.
+    outside = written.get("outside_apps")
+    if isinstance(outside, dict):
+        words.append(outside_apps_warning(_lead_of(outside.get("lead"))))
+    if words:
+        result["warning"] = " ".join(words)
     if guidance is not None:
         result[GUIDANCE_KEY] = guidance
     protocol = _protocol(ctx)
@@ -7001,7 +7136,12 @@ CLAIM_TASK = Tool(
         " [[OWN]] that it found, or null when agent"
         " runs are off. A task with open subtasks still claims, and the result"
         " also has warning and open_subtasks, up to 5 ids: claim the slice,"
-        " not the epic. Only one AI session may hold a task. When another"
+        " not the epic. When the organization turned on app scope, a claim of a"
+        " task with no assignee outside the apps that this member leads"
+        " returns warning, which names the app lead, and the task timeline"
+        " records the claim. Where the organization refuses such a claim, the"
+        " tool refuses it: take a task from my_work. A task assigned to this"
+        " member always claims. Only one AI session may hold a task. When another"
         " session holds it, the tool refuses: pick another task, and do not"
         " claim this one again.[[SHARED]] Send external_link, an https link to"
         " your session, when you have one. The run then shows it. A new link"

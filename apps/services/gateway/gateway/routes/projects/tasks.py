@@ -53,6 +53,11 @@ from gateway.routes.projects.checks import (
     check_patch_values,
     clean_check_text,
 )
+from gateway.routes.projects.claim_scope import (
+    apply_warning,
+    check_claim_scope,
+    record_outside_claim,
+)
 from gateway.routes.projects.core import (
     AGENT_TASK_SOURCE,
     CLIENT_TASK_SOURCES,
@@ -2738,7 +2743,10 @@ async def claim_task(
     WS-55 EA-6b (spec `external_agent_access.md` §9.2, EA3-34). ONE
     transaction, with ``If-Match`` and no body. The name says that the call
     can move the status, which ``assignees/self`` hid. A member may call it
-    too, and nothing here reads ``UserContext.agent``.
+    too. Only the SW-45 scope check (``claim_scope.check_claim_scope``) reads
+    ``UserContext.agent``: an agent claim of a task with no assignee, outside
+    the member's own apps, warns or gets 403 ``outside_apps`` by
+    ``AGENT_CLAIM_SCOPE_MODES``.
 
     * ``backlog`` or ``todo``: add the caller, keep every other assignee, and
       move the task to the first ``in_progress`` lane of its OWN status set
@@ -2800,6 +2808,10 @@ async def claim_task(
                 {"tid": task_id},
             )).fetchall()
         }
+        # SW-45: an agent claim of a task with no assignee, outside the
+        # member's own apps, warns or is refused (AGENT_CLAIM_SCOPE_MODES).
+        # Before any write, so a refusal writes nothing.
+        scope_note = await check_claim_scope(db, user, seen.project_id, current)
         wanted = sorted({me} - current)
         await assert_assignable_here(db, str(seen.project_id), set(wanted))
         # Final fix (review P2): `added` is the set that THIS insert wrote,
@@ -2871,6 +2883,10 @@ async def claim_task(
         # the row it crossed a member's PATCH, which writes the row and then
         # the editor's watcher key (fix round 3).
         await ensure_watchers(db, task_id, added, by=actor(user))
+        # SW-45: the ONE timeline line of a claim outside the own apps. Only a
+        # claim that wrote the key writes it, so a second claim adds none.
+        if scope_note is not None and added:
+            await record_outside_claim(db, user, task_id, scope_note)
 
         row = await load_visible_task(db, vis, task_id)
         result = row_to_dict(row, TaskModel)
@@ -2883,6 +2899,9 @@ async def claim_task(
         result["agent_run_id"] = run_id
         # SW-63: a task with open subtasks still claims. The result warns.
         await _warn_open_subtasks(db, vis, task_id, result)
+        # SW-45: the warning of a claim outside the own apps, after SW-63's.
+        if scope_note is not None:
+            apply_warning(result, scope_note)
 
     if added:
         await emit("pm.task.assigned", {

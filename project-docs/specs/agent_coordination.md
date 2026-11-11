@@ -1268,6 +1268,7 @@ They keep their own gates.
 - **Done when.** R8: a member with one own app gets that app's free tasks in `own_app_free`. A claim outside it warns in `warn`, gets 403 in `refuse`, and passes in `off`. An assigned task passes in all modes.
 - **Fence.** `test_agent_claim_scope_r8.py` (new). `test_app_ownership_seam.py` (new) fails when a module other than `authority.py` names `pm_projects.lead` or `lead =`. Its allowlist holds the public walk SQL symbol of `authority.py`. An edge test for the warning text.
 - **Risk.** HIGH (a refusal on a write). **Gate.** AGENT-SAFE dark. The flip to `refuse` is OWNER-GATE `enforcement-flip`. **Depends on.** SW-44. Q6.
+- **Status.** BUILT 2026-11-11, dark (task 1878). `AGENT_CLAIM_SCOPE_MODES` is empty by default, so each org reads `off`. Its one reader is `agent_oauth.claim_scope_mode`, and a SIGHUP reload of the gateway applies a change. `authority.own_apps` and `authority.app_owner` read the own apps. `pm_project_grants` holds no access level, so a grant gives a view and never makes an app the member's own. `GET /projects/my/own-app-free` (`routes/projects/claim_scope.py`) gives the free rows. It skips a task with an open blocker. The check reads an agent claim only. The chat `my_work` does not show the group yet.
 
 #### SW-46 · The lead answers, and a preview goes to the lead first
 
@@ -1935,7 +1936,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-36 | `uv run pytest -q -p no:cacheprovider tests/unit/test_project_update_draft.py` (new) |
 | SW-43a | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_runs_r8.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_ui_actions.py tests/unit/test_mcp_edge_agent_runs.py`, and `npx vitest run src/app/projects/lib/agentRuns.test.ts` |
 | SW-44 | `uv run pytest -q -p no:cacheprovider tests/unit/test_needs_attention_r8.py` |
-| SW-45 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_claim_scope_r8.py` (new) `tests/unit/test_agent_label_fence.py` |
+| SW-45 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_claim_scope_r8.py tests/unit/test_agent_claim_scope_edge.py tests/unit/test_app_ownership_seam.py`. SW-7b adds `tests/unit/test_agent_label_fence.py`, which does not exist yet |
 | SW-46 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_questions_r8.py tests/unit/test_agent_approver_r8.py` (new) `tests/unit/test_mcp_edge_prompts.py tests/unit/test_tenant_coverage.py` |
 | SW-47 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_run_sweep_r8.py tests/unit/test_needs_attention_r8.py` |
 | SW-48 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_runs_r8.py tests/unit/test_agent_run_exclusive.py` |
