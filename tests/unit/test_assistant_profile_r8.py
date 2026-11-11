@@ -615,12 +615,14 @@ async def test_set_then_undo_restores_the_prior_whole_object(db) -> None:
             body={"key": "style", "value": {"length": "detailed"}}, user=user,
             x_profile_via="chat"), db.org_a)
         ((_o, mid),) = _stored(db, email)
-        assert mid["last_change"]["prior"] == {"length": "short", "language": "en"}
+        # PZ-52: the write adds the list of one beside ``language``.
+        assert mid["last_change"]["prior"] == {
+            "length": "short", "language": "en", "languages": ["en"]}
         assert "last_change" not in await _get(db.org_a, user)
         done = await _undo(db.org_a, user)
         read = await _get(db.org_a, user)
     assert done == {"undone": {"op": "put", "key": "style"}}
-    assert read["style"] == {"length": "short", "language": "en"}
+    assert read["style"] == {"length": "short", "language": "en", "languages": ["en"]}
     ((_o, stored),) = _stored(db, email)
     assert "last_change" not in stored
 

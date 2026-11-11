@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { AssistantPaneView, BLOCK_EMPTY, NO_HANDLERS, type AssistantPaneViewProps } from "./AssistantPane";
+import { AssistantPaneView, BLOCK_EMPTY, LANGUAGES_HELP, NO_HANDLERS, type AssistantPaneViewProps } from "./AssistantPane";
 import { CAPS, EMPTY_PROFILE, type Profile } from "./lib/profile";
 
 const base: AssistantPaneViewProps = {
@@ -456,5 +456,58 @@ describe("Delete asks first, and Forget names the summaries (PZ-35 repair)", () 
 
   it("the date line uses the same size token as the other text of the section", () => {
     expect(src).not.toMatch(/gap-2 text-\[11px\] text-muted-foreground">\s*<Link/);
+  });
+});
+
+describe("Languages I speak (PZ-53)", () => {
+  const withList = (languages: string[]) =>
+    draw({ profile: { ...EMPTY_PROFILE, style: { language: languages[0], languages } } });
+
+  it("draws ranked rows, with Preferred on the first only", () => {
+    const html = withList(["en", "hi", "kn"]);
+    expect(html).toContain("Languages I speak");
+    expect(html).toContain("English");
+    expect(html).toContain("Kannada");
+    expect(html.match(/Preferred/g)).toHaveLength(1);
+    expect(html).toContain('aria-label="Move Hindi up"');
+    expect(html).toContain('aria-label="Move Hindi down"');
+    expect(html).toContain('aria-label="Remove Hindi"');
+  });
+
+  it("disables Up on the first row and Down on the last", () => {
+    const html = withList(["en", "hi"]);
+    expect(html).toMatch(/<button[^>]*aria-label="Move English up"[^>]*disabled=""/);
+    expect(html).toMatch(/<button[^>]*aria-label="Move Hindi down"[^>]*disabled=""/);
+    expect(html).not.toMatch(/<button[^>]*aria-label="Move Hindi up"[^>]*disabled=""/);
+  });
+
+  it("makes every row button 44 px, and draws the help line", () => {
+    const html = withList(["en", "hi"]);
+    expect(html).toContain("h-11 w-11");
+    expect(html).toContain(LANGUAGES_HELP);
+    expect(LANGUAGES_HELP).toBe(
+      "The assistant understands any of these, and answers in the language you write or speak. Your records are always saved in English.",
+    );
+  });
+
+  it("reads an old profile with only language as a list of one", () => {
+    const html = draw({ profile: { ...EMPTY_PROFILE, style: { language: "kn" } } });
+    expect(html).toContain("Kannada");
+    expect(html.match(/Preferred/g)).toHaveLength(1);
+  });
+
+  it("shows the English hint, and stores nothing, for an empty list", () => {
+    const html = draw({});
+    expect(html).toContain("The assistant follows the language of your message.");
+    expect(html).not.toContain("Preferred");
+  });
+
+  it("saves the whole new order through the style handler, from the keyboard buttons", () => {
+    const src = readFileSync(new URL("./AssistantPane.tsx", import.meta.url), "utf-8");
+    expect(src).toContain("onChange(moveLanguage(languages, from, to))");
+    expect(src).toContain('onClick={() => move(i, i - 1, "up")}');
+    expect(src).toContain('onClick={() => move(i, i + 1, "down")}');
+    expect(src).toContain('e.key === "ArrowUp"');
+    expect(src).toContain("onChange={(languages) => v.onStyle({ languages })}");
   });
 });

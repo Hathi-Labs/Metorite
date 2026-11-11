@@ -19,8 +19,9 @@
  */
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
+import Icon from "@/components/Icon";
 import Badge, { type BadgeTone } from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
@@ -47,6 +48,7 @@ import {
   ProfileError,
   addAlias,
   addFact,
+  addLanguage,
   areaLabel,
   celebrationsGate,
   chatHref,
@@ -66,11 +68,15 @@ import {
   forgetAll,
   mergeAddress,
   mergeCelebrations,
+  languageName,
+  languagesToAdd,
   mergeStyle,
+  moveLanguage,
   nearCap,
   patchAlias,
   patchFact,
   reconcileDraft,
+  removeLanguage,
   resetArea,
   resetInterview,
   saveAddress,
@@ -78,6 +84,7 @@ import {
   saveKeepSummaries,
   saveLearning,
   saveStyle,
+  styleLanguages,
   shortDate,
   sourceLabel,
   withoutArea,
@@ -591,7 +598,7 @@ function StyleSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
     <Section
       id="assistant-style"
       title="How the assistant answers"
-      description="Length, language and up to five notes on your style."
+      description="Length, languages and up to five notes on your style."
     >
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Answer length">
@@ -604,18 +611,12 @@ function StyleSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
             onChange={(x) => v.onStyle({ length: (x || null) as Style["length"] })}
           />
         </Field>
-        <Field label="Language">
-          <Choice
-            label="Language"
-            value={s.language ?? ""}
-            values={Object.keys(LANGUAGES)}
-            labels={LANGUAGES}
-            none="Same as my message"
-            disabled={busy}
-            onChange={(x) => v.onStyle({ language: x || null })}
-          />
-        </Field>
       </div>
+      <LanguageList
+        languages={styleLanguages(s)}
+        busy={busy}
+        onChange={(languages) => v.onStyle({ languages })}
+      />
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <span className="text-xs font-medium text-foreground">Notes</span>
@@ -669,6 +670,216 @@ function StyleSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
       </div>
       <RowError text={v.errors.style} />
     </Section>
+  );
+}
+
+// ── Languages I speak (PZ-53, `personalization.md` §5.3a) ─────────────────
+
+/** The line under the list. The words are the owner's, and the spec quotes them. */
+export const LANGUAGES_HELP =
+  "The assistant understands any of these, and answers in the language you write or speak. Your records are always saved in English.";
+
+/**
+ * The ordered list of languages. Rank 1 is "Preferred". The member reorders
+ * by drag or with the arrow buttons (both reach the keyboard), removes with
+ * the cross, and adds from the menu of the languages not yet in the list.
+ * Every change saves the whole list at once. An empty list stores nothing.
+ */
+function LanguageList({
+  languages,
+  busy,
+  onChange,
+}: {
+  languages: string[];
+  busy?: boolean;
+  onChange: (languages: string[]) => Promise<boolean>;
+}) {
+  const [dragFrom, setDragFrom] = useState<number | null>(null);
+  const [over, setOver] = useState<number | null>(null);
+  const [said, setSaid] = useState("");
+  const list = useRef<HTMLOListElement>(null);
+  // A moved row is a moved DOM node, and a browser drops its focus. The
+  // button that the member used takes it back once the new order draws.
+  const refocus = useRef<{ tag: string; act: string } | null>(null);
+  const order = languages.join(",");
+  useEffect(() => {
+    const want = refocus.current;
+    refocus.current = null;
+    if (!want || !list.current) return;
+    const rows = list.current.querySelectorAll<HTMLButtonElement>(`[data-tag="${want.tag}"]`);
+    const same = Array.from(rows).find((b) => b.dataset.act === want.act && !b.disabled);
+    (same ?? Array.from(rows).find((b) => !b.disabled))?.focus();
+  }, [order]);
+
+  const move = async (from: number, to: number, act?: string) => {
+    if (busy || to < 0 || to >= languages.length || from === to) return;
+    const tag = languages[from];
+    if (act) refocus.current = { tag, act };
+    if (await onChange(moveLanguage(languages, from, to))) {
+      setSaid(`${languageName(tag)} is now number ${to + 1}.`);
+    }
+  };
+  const remove = async (i: number) => {
+    if (busy) return;
+    const name = languageName(languages[i]);
+    if (await onChange(removeLanguage(languages, i))) setSaid(`${name} removed.`);
+  };
+  const full = languages.length >= CAPS.languages;
+  const choices = languagesToAdd(languages);
+  const menu = choices.map((t) => ({ value: t, label: `${LANGUAGES[t]} (${t})` }));
+
+  return (
+    <div className="space-y-2" data-testid="language-list">
+      <div className="flex items-center justify-between">
+        <span id="assistant-languages-label" className="text-xs font-medium text-foreground">
+          Languages I speak
+        </span>
+        <Counter used={languages.length} cap={CAPS.languages} unit="languages" />
+      </div>
+      {languages.length === 0 ? (
+        <div className="flex min-h-13 items-center gap-2 rounded-lg border border-dashed border-border px-3 py-1 text-xs text-muted-foreground">
+          <strong className="font-medium text-foreground">English</strong>
+          <span>The assistant follows the language of your message. Add a language to set an order.</span>
+        </div>
+      ) : (
+        <ol ref={list} aria-labelledby="assistant-languages-label" className="space-y-1.5">
+          {languages.map((tag, i) => (
+            <li
+              key={tag}
+              draggable={!busy}
+              onDragStart={(e) => {
+                setDragFrom(i);
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData("text/plain", tag);
+              }}
+              onDragEnd={() => {
+                setDragFrom(null);
+                setOver(null);
+              }}
+              onDragOver={(e) => {
+                if (dragFrom === null) return;
+                e.preventDefault();
+                setOver(i);
+              }}
+              onDragLeave={() => setOver((o) => (o === i ? null : o))}
+              onDrop={(e) => {
+                e.preventDefault();
+                const from = dragFrom;
+                setDragFrom(null);
+                setOver(null);
+                if (from !== null) void move(from, i);
+              }}
+              onKeyDown={(e) => {
+                if (!e.altKey) return;
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  void move(i, i - 1);
+                } else if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  void move(i, i + 1);
+                }
+              }}
+              className={`flex min-h-13 items-center gap-2 rounded-lg border bg-background py-1 pl-2 pr-1 ${
+                over === i && dragFrom !== null ? "border-primary ring-1 ring-primary" : "border-border"
+              } ${dragFrom === i ? "opacity-50" : ""}`}
+            >
+              <span aria-hidden className="flex h-11 w-5 shrink-0 cursor-grab items-center justify-center text-muted-foreground">
+                <Icon name="GripVertical" size={16} />
+              </span>
+              <span
+                aria-hidden
+                className={`flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold tabular-nums ${
+                  i === 0 ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"
+                }`}
+              >
+                {i + 1}
+              </span>
+              <span className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2">
+                <span className="text-sm font-medium text-foreground">{languageName(tag)}</span>
+                <span className="text-[11px] text-muted-foreground">{tag}</span>
+                {i === 0 ? <span className="text-[11px] font-semibold text-primary">Preferred</span> : null}
+              </span>
+              <LanguageButton
+                act="up"
+                tag={tag}
+                icon="ArrowUp"
+                label={`Move ${languageName(tag)} up`}
+                disabled={busy || i === 0}
+                onClick={() => move(i, i - 1, "up")}
+              />
+              <LanguageButton
+                act="down"
+                tag={tag}
+                icon="ArrowDown"
+                label={`Move ${languageName(tag)} down`}
+                disabled={busy || i === languages.length - 1}
+                onClick={() => move(i, i + 1, "down")}
+              />
+              <LanguageButton
+                act="remove"
+                tag={tag}
+                icon="X"
+                label={`Remove ${languageName(tag)}`}
+                disabled={busy}
+                onClick={() => remove(i)}
+              />
+            </li>
+          ))}
+        </ol>
+      )}
+      <SelectButton
+        label="Add a language"
+        value=""
+        options={menu}
+        prompt={full ? `The list is full (${CAPS.languages} languages)` : "Add a language"}
+        defaultValue=""
+        widthClass="w-full"
+        className="min-h-11 text-sm"
+        disabled={busy || full || choices.length === 0}
+        onChange={(x) => {
+          if (!x) return;
+          void onChange(addLanguage(languages, x)).then((ok) => {
+            if (ok) setSaid(`${languageName(x)} added as number ${languages.length + 1}.`);
+          });
+        }}
+      />
+      <p className="text-xs text-muted-foreground">{LANGUAGES_HELP}</p>
+      <p className="sr-only" role="status" aria-live="polite">
+        {said}
+      </p>
+    </div>
+  );
+}
+
+/** One 44 px icon button of a language row. */
+function LanguageButton({
+  act,
+  tag,
+  icon,
+  label,
+  disabled,
+  onClick,
+}: {
+  act: string;
+  tag: string;
+  icon: string;
+  label: string;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="none"
+      icon={icon}
+      aria-label={label}
+      data-act={act}
+      data-tag={tag}
+      disabled={disabled}
+      onClick={onClick}
+      className="h-11 w-11 shrink-0 justify-center text-muted-foreground hover:text-foreground"
+    />
   );
 }
 
