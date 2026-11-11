@@ -733,11 +733,14 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # the reminders and bulk packs must fit under MAX_REQUEST_TOOLS in their
     # measured turns. WS-39 LP-1a adds the two tools of a project update here,
     # for the same reason: the reports pack fills the room of a measured turn.
+    # SP-8a: the contract of an epic joins it too. The plan pack has one tool
+    # of room in the sticky-pack case of test_pack_room.py.
     "projects-authority": {
         "label": "Projects authority page and updates",
         "summary": (
-            "The authority page and the updates of a project: read the pinned "
-            "pages, pin or unpin one, and read, post or delete an update."
+            "The authority page and the updates of a project, and the "
+            "contract of an epic: read the pinned pages, pin or unpin one, "
+            "read, post or delete an update, and set the contract of an epic."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for the "
@@ -746,7 +749,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "tools to read the pins of a project, to pin a page and to "
             "remove a pin. It also holds the tools to read the updates of a "
             "project, to post one with the health that the member picks, and "
-            "to delete one. "
+            "to delete one, and the tool that sets the contract of an epic. "
             "Each change asks the member first. A run loads a pack only "
             "where tool packs are on, so until then this switch has no "
             "effect."
@@ -757,6 +760,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "pin_authority",
             "post_project_update",
             "project_authorities",
+            "set_epic_contract",
             "unpin_authority",
         ),
         "owner": "projects-assistant",
