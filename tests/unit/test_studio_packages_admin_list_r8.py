@@ -30,17 +30,17 @@ is not a pass.
 4. The answer holds no manifest, no reason text and no value.
 5. A package with no audit row shows honest empty fields.
 
-**The mutations (R7).** Each ran on 2026-11-11, and each test named went red.
+**The mutations (R7).** Each ran on 2026-11-11, and each test named went red. The code was restored after each run.
 
 * M1: ``holds_admin_right`` answers ``True``. Red:
   ``test_a_member_gets_only_their_own_packages``.
 * M2: drop the ``LATERAL`` filter on the outcome in ``_SQL``. Red:
   ``test_the_last_error_is_the_newest_failed_or_refused_action_call``.
-* M3: add ``x.detail->>'reason'`` to the answer. Red:
+* M3: add ``"reason"`` to ``row_out``. Red, in the hermetic file:
   ``test_the_answer_holds_no_manifest_reason_or_value``.
-* M4: drop ``organization_id`` from the ``WHERE`` of ``_SQL`` (RLS still
-  holds, so the test reads the statement too). Red: the hermetic
-  ``test_the_statement_is_one_bounded_set_read_that_never_selects_a_secret``.
+
+M1 also turns the hermetic ``test_the_right_is_the_admin_right_of_the_roster``
+red. M2 also turns the hermetic statement fence red.
 """
 
 from __future__ import annotations
