@@ -36,8 +36,8 @@ CLIENTS = [
     "Claude Code",
     "OpenAI Codex",
     "GitHub Copilot",
-    "Google Antigravity",
     "Gemini CLI",
+    "Google Antigravity",
     "Any other MCP client",
 ]
 SUBSECTIONS = ["Connect", "Get the kit", "Check it works"]
@@ -86,7 +86,7 @@ def test_each_client_section_has_connect_kit_and_check(client):
     mine = next(s for s in section if s.startswith(client + "\n"))
     subs = re.findall(r"^### (.+)$", mine, flags=re.M)
     assert subs == SUBSECTIONS
-    assert "Download the agent kit" in mine
+    assert "Download the kit for " in mine
     assert "Call my_work" in mine
     assert re.search(r"^1\. ", mine, flags=re.M)
 
@@ -173,16 +173,18 @@ def test_the_page_would_fail_if_it_copied_a_second_line_of_the_block():
     assert [ln for ln in block_lines if ln in page] != [block_lines[0]]
 
 
-def test_the_copy_button_text_equals_the_kit_block():
-    ts = _read(SETUP_TS)
+def _copy_text_equals_kit(ts: str, kit: str) -> bool:
     match = re.search(r"AGENT_SETUP_TEXT = `([\s\S]*?)`;", ts)
-    assert match
-    assert match.group(1) == _kit_block()
+    return bool(match) and match.group(1) == kit
 
 
-def test_a_drifted_copy_button_text_would_fail():
-    drifted = _kit_block().replace("one git worktree", "one folder")
-    assert drifted != _kit_block()
+def test_the_copy_button_text_equals_the_kit_block():
+    assert _copy_text_equals_kit(_read(SETUP_TS), _kit_block())
+
+
+def test_a_drifted_copy_button_text_fails_the_pin():
+    ts = _read(SETUP_TS).replace("one git worktree", "one folder", 1)
+    assert not _copy_text_equals_kit(ts, _kit_block())
 
 
 def test_tool_and_prompt_names_on_the_page_exist():

@@ -33,7 +33,9 @@ This page does not copy the kit or the MCP text. It points to them.
 
 ### Get the kit
 
-Open Integrations, then **AI agents**, and choose the tab for Claude Code. Select **Download the agent kit**. The control appears only for organizations on the early list. The zip holds an install note, `METORITE_KIT.md`. If you already have a `CLAUDE.md` or `AGENTS.md`, merge the kit text into it.
+Open Integrations, then **AI agents**. In the card **Connect an AI agent**, below **Setup for your agent**, choose the tab **Claude Code**. Select **Download the kit for Claude Code**.
+
+The button **Copy the install steps** gives the same steps as text. The control appears only for organizations on the early list. The zip holds an install note, `METORITE_KIT.md`. It also adds a `CLAUDE.md` that holds the single line `@AGENTS.md`. If you already have a `CLAUDE.md` or `AGENTS.md`, merge the kit text into it.
 
 ### Check it works
 
@@ -53,7 +55,7 @@ Open Integrations, then **AI agents**, and choose the tab for Claude Code. Selec
 
 ### Get the kit
 
-Open Integrations, then **AI agents**, and choose the tab for Codex. Select **Download the agent kit**. The control appears only for organizations on the early list. Read `METORITE_KIT.md` in the zip. Merge the kit text into an existing `AGENTS.md`, and keep the file under 32 KiB.
+On the same card, choose the tab **OpenAI Codex**. Select **Download the kit for OpenAI Codex**. The control appears only for organizations on the early list. Read `METORITE_KIT.md` in the zip. Merge the kit text into an existing `AGENTS.md`, and keep the file under 32 KiB.
 
 ### Check it works
 
@@ -77,27 +79,7 @@ The examples are `vscode-mcp.json.example` and `coding-agent-mcp.json.example` i
 
 ### Get the kit
 
-Open Integrations, then **AI agents**, and choose the tab for Copilot. Select **Download the agent kit**. The control appears only for organizations on the early list. Read `METORITE_KIT.md` in the zip. Merge the kit text into an existing `.github/copilot-instructions.md`.
-
-### Check it works
-
-1. Send the first message `Call my_work`.
-2. Read the rows that come back.
-3. Ask the agent to claim a slice, with `claim_task`.
-
-## Google Antigravity
-
-### Connect
-
-1. Copy `mcp_config.json.example` to `.agents/mcp_config.json` in the workspace.
-2. For all workspaces, use `~/.gemini/config/mcp_config.json` instead.
-3. Set the key `serverUrl` to `https://mcp.metorite.com/mcp`. Antigravity does not take `httpUrl`.
-4. Restart Antigravity and finish the sign-in.
-5. Put the rules in `AGENTS.md` or `GEMINI.md` in the workspace.
-
-### Get the kit
-
-Open Integrations, then **AI agents**, and choose the tab for Antigravity. Select **Download the agent kit**. The control appears only for organizations on the early list. Read `METORITE_KIT.md` in the zip. Merge the kit text into an existing `AGENTS.md` or `GEMINI.md`.
+On the same card, choose the tab **GitHub Copilot**. Select **Download the kit for GitHub Copilot**. The control appears only for organizations on the early list. Read `METORITE_KIT.md` in the zip. Merge the kit text into an existing `.github/copilot-instructions.md`.
 
 ### Check it works
 
@@ -112,12 +94,32 @@ Open Integrations, then **AI agents**, and choose the tab for Antigravity. Selec
 1. Open `~/.gemini/settings.json`, or `.gemini/settings.json` in the project.
 2. Add an entry under `mcpServers` named `metorite`, with `httpUrl` set to `https://mcp.metorite.com/mcp`.
 3. Add the setting `context.fileName`, so that Gemini CLI also reads `AGENTS.md`.
-4. Start Gemini CLI and finish the sign-in in the browser.
+4. Start Gemini CLI, then run `/mcp auth metorite` and finish the sign-in in the browser.
 5. Put the rules in `GEMINI.md` in `~/.gemini` or in the workspace.
 
 ### Get the kit
 
-Open Integrations, then **AI agents**, and choose the tab for Gemini CLI. Select **Download the agent kit**. The control appears only for organizations on the early list. Read `METORITE_KIT.md` in the zip. Merge the kit text into an existing `GEMINI.md`.
+On the same card, choose the tab **Gemini CLI**. Select **Download the kit for Gemini CLI**. The control appears only for organizations on the early list. Read `METORITE_KIT.md` in the zip. Merge the kit text into an existing `GEMINI.md`.
+
+### Check it works
+
+1. Send the first message `Call my_work`.
+2. Read the rows that come back.
+3. Ask the agent to claim a slice, with `claim_task`.
+
+## Google Antigravity
+
+### Connect
+
+1. The zip holds the file `.agents/mcp_config.json.example`. Rename it to `mcp_config.json` in the workspace.
+2. For all workspaces, use `~/.gemini/config/mcp_config.json` instead.
+3. Set the key `serverUrl` to `https://mcp.metorite.com/mcp`. Antigravity does not take `httpUrl`.
+4. Restart Antigravity and finish the sign-in.
+5. Put the rules in `AGENTS.md` or `GEMINI.md` in the workspace.
+
+### Get the kit
+
+On the same card, choose the tab **Google Antigravity**. Select **Download the kit for Google Antigravity**. The control appears only for organizations on the early list. Read `METORITE_KIT.md` in the zip. Merge the kit text into an existing `AGENTS.md` or `GEMINI.md`.
 
 ### Check it works
 
@@ -136,7 +138,7 @@ Open Integrations, then **AI agents**, and choose the tab for Gemini CLI. Select
 
 ### Get the kit
 
-Use any tab on Integrations, then **AI agents**. Select **Download the agent kit**. The control appears only for organizations on the early list. The rules file in the zip is neutral, so you can copy it to the name that your client reads. Read `METORITE_KIT.md` in the zip.
+On the same card, choose the tab **Other**. Select **Download the kit for Other**. The control appears only for organizations on the early list. The rules file in the zip is neutral, so you can copy it to the name that your client reads. Read `METORITE_KIT.md` in the zip.
 
 ### Check it works
 

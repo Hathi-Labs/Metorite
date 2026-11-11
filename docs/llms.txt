@@ -12,7 +12,7 @@
 
 ## The kit
 
-- Download: Integrations, then AI agents, then "Download the agent kit". The route is /agent-kit/CLIENT.zip on https://app.metorite.com. Only organizations on the early list see it.
+- Download: Integrations, then AI agents, then "Download the agent kit". The route is /api/agent-kit/CLIENT.zip on https://app.metorite.com. Only organizations on the early list see it.
 - [Core rules](packages/acb_playbook/acb_playbook/content/kit/agents-md.md): the neutral AGENTS.md of the kit.
 - [Setup text](packages/acb_playbook/acb_playbook/content/kit/paste-in.md): the block for a rules file.
 
