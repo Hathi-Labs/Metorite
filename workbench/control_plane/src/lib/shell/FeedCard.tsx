@@ -130,7 +130,10 @@ import {
 import { joinNeedsPoll } from "./ShellBell";
 
 /** EA-18e. The question list loads when a card opens it, not with My Day. */
-const QuestionsInCard = dynamic(() => import("./QuestionsInCard"), { ssr: false });
+const QuestionsInCard = dynamic(() => import("./QuestionsInCard"), {
+  ssr: false,
+  loading: () => <Skeleton className="mt-2 h-16 w-full basis-full" />,
+});
 
 const DANGER = accentForHue("red");
 
@@ -700,7 +703,7 @@ export function FeedColumn({
         error={feed.menuErrors[card.signal_id] ?? card.acts.flatMap(actRows).map((r) => feed.errors[r]).find(Boolean)}
         onAct={(a, from) => feed.act(card, a, from)}
         onMenu={(choice) => feed.menu(card, choice)}
-        renderExpand={(c) => (isAgentQuestionsCard(c) ? <QuestionsInCard onChanged={feed.refresh} /> : null)}
+        renderExpand={(c, close) => (isAgentQuestionsCard(c) ? <QuestionsInCard onChanged={feed.refresh} onClose={close} /> : null)}
         layout="row"
       />
     </div>
@@ -1047,13 +1050,26 @@ export function FeedCard({
    * EA-18e. What an expand act (`isExpandAct`) opens under the card. The
    * column gives it. With none, the act stays the link it was sent as.
    */
-  renderExpand?: (card: Card) => React.ReactNode;
+  renderExpand?: (card: Card, close: () => void) => React.ReactNode;
 }) {
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   // Which "···" opened the menu: the phone's holds the row's acts too.
   const [menuPhone, setMenuPhone] = useState(false);
   const opener = useRef<HTMLElement | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const toggle = useRef<HTMLElement | null>(null);
+  // A card that leaves with its list open (the last answer) must not drop
+  // focus to the page body: it goes to the column's heading.
+  useEffect(() => {
+    if (!expanded) return;
+    return () => {
+      requestAnimationFrame(() => {
+        if (document.activeElement === document.body) {
+          document.querySelector<HTMLElement>("[data-leave-focus]")?.focus();
+        }
+      });
+    };
+  }, [expanded]);
   const expandHere = (a: FeedAct) => !!renderExpand && isExpandAct(card, a);
   const expandedId = `feed-expand-${safeId(card.signal_id)}`;
   const time = nowMs === null ? "" : cardTime(card, nowMs);
@@ -1244,7 +1260,10 @@ export function FeedCard({
                   aria-expanded={expanded}
                   aria-controls={expandedId}
                   aria-label={`${a.label}: ${card.title}`}
-                  onClick={() => setExpanded((v) => !v)}
+                  onClick={(e) => {
+                toggle.current = e.currentTarget;
+                setExpanded((v) => !v);
+              }}
                 >
                   {a.label}
                 </Button>
@@ -1285,7 +1304,7 @@ export function FeedCard({
             x={menuAt.x}
             y={menuAt.y}
             card={card}
-            acts={phoneActs}
+            acts={phoneActs.map((a) => (expanded && expandHere(a) ? { ...a, label: "Hide answers" } : a))}
             onAct={(a) => (expandHere(a) ? setExpanded((v) => !v) : onAct(a, opener.current ?? document.body))}
             expandHere={expandHere}
             onMenu={withMenu ? onMenu : undefined}
@@ -1293,7 +1312,7 @@ export function FeedCard({
           />
         ) : null}
         <div id={expandedId} className="basis-full empty:hidden" hidden={!expanded}>
-          {expanded ? renderExpand?.(card) : null}
+          {expanded ? renderExpand?.(card, () => { setExpanded(false); toggle.current?.focus(); }) : null}
         </div>
       </section>
     );
@@ -1343,7 +1362,10 @@ export function FeedCard({
                 aria-expanded={expanded}
                 aria-controls={expandedId}
                 aria-label={`${a.label}: ${card.title}`}
-                onClick={() => setExpanded((v) => !v)}
+                onClick={(e) => {
+                toggle.current = e.currentTarget;
+                setExpanded((v) => !v);
+              }}
               >
                 {a.label}
               </Button>
@@ -1363,7 +1385,7 @@ export function FeedCard({
         </div>
       ) : null}
       <div id={expandedId} className="px-2 empty:hidden" hidden={!expanded}>
-        {expanded ? renderExpand?.(card) : null}
+        {expanded ? renderExpand?.(card, () => { setExpanded(false); toggle.current?.focus(); }) : null}
       </div>
       {error ? (
         <p role="alert" className={`px-2 pb-1 text-xs ${DANGER.text}`}>

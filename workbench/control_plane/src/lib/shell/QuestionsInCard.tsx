@@ -8,25 +8,37 @@
  * `archive-approval` for a typed archive request). This file adds no rule and
  * no write. `may_answer_run` still decides: the server sends `can_answer`.
  *
+ * ⚠️ D101 point 4: class C never runs in a card. A typed archive request is
+ * the approval of an agent's act, so `noArchiveDecision` makes it read-only
+ * here, with a "Decide in Projects" link. Escape closes the list.
+ *
  * "Open in Projects" stays as a link, for a member who wants the whole list.
  */
 
 import { useRouter } from "next/navigation";
 
+import { taskHref } from "@/app/projects/lib/agentQuestions";
 import { QuestionsView } from "@/app/projects/components/QuestionsView";
 import { AGENT_QUESTIONS_HREF } from "./feed";
 
-export default function QuestionsInCard({ onChanged }: { onChanged?: () => void }) {
+export default function QuestionsInCard({ onChanged, onClose }: { onChanged?: () => void; onClose?: () => void }) {
   const router = useRouter();
   return (
     <div
       data-feed-expanded="questions"
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && onClose) {
+          e.stopPropagation();
+          onClose();
+        }
+      }}
       className="mt-2 flex basis-full flex-col rounded-lg border border-border bg-card/50"
     >
       <QuestionsView
         embedded
+        noArchiveDecision
         projects={[]}
-        onOpenTask={(id) => router.push(`/projects?task=${encodeURIComponent(id)}`)}
+        onOpenTask={(id) => router.push(taskHref(id))}
         onOpenProject={(id) => router.push(`/projects?project=${encodeURIComponent(id)}`)}
         onChanged={onChanged}
       />

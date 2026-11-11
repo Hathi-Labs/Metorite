@@ -58,4 +58,13 @@ describe("the card draws the embedded Questions list, with no second writer", ()
     expect(feedCard).toContain("aria-expanded={expanded}");
     expect(feedCard).toContain('dynamic(() => import("./QuestionsInCard")');
   });
+  it("D101 point 4: an archive request is read-only in the card", () => {
+    expect(inCard).toMatch(/<QuestionsView[\s\S]*noArchiveDecision/);
+    const view = read("../../app/projects/components/QuestionsView.tsx");
+    expect(view).toContain('answerRoute(row) === "archive-approval" && !noArchiveDecision');
+    expect(view).toContain("Decide in Projects");
+  });
+  it("Escape closes the list", () => {
+    expect(inCard).toMatch(/e\.key === "Escape"/);
+  });
 });
