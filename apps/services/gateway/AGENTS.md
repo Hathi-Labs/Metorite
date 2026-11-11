@@ -487,6 +487,11 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
         - A draft is 409 `not_published`. A `version` in the body that is not the live version is 409 `version_changed`. A new install is 201, and a move is 200. A later publish does not move an org or a group install.
         - Each install and each move writes one `app_audit` row (kind `action`, op `package.install`) through `record_app_audit_in`, in the same transaction.
         - Fences: `test_studio_package_install.py`, `test_studio_package_install_r8.py`, `test_studio_route_gate.py`.
+    - **PKG-6c-1, a star for an install pane** (`shell_pins.py`, `routes/admin/me.py::_keep_install_hrefs`). While `flags.package_host_allowed` holds the org, `PUT /auth/me/shell` takes an install href in `pins` and `known`. It keeps the href only when the viewer's own resolve holds it, and drops it in silence when not.
+        - ⚠️ `SHELL_PANES` stays the system list. Do not add an install href to it. `TestOneVocabulary` fences it.
+        - ⚠️ The resolve runs in the session of the write, with the session's org and `user.email`, before `_write_shell`. A fault answers 503 and writes nothing. With the flag off, an install href answers 422 and runs no SQL.
+        - `safe_href` and `system_owns` mirror `safeHref` and `systemOwns` of `packageManifest.ts`. The server copy is stricter: no `//` at any place, no DEL, and 200 characters at most.
+        - Fences: `test_auth_me_shell.py`, `test_auth_me_shell_install_r8.py`.
     - **PKG-10d, Keep and Restore** (`routes/studio/packages.py::keep_package`, `restore_package` and `_own_private_install`, `store.private_install_id`). `POST /studio/packages/{id}/keep` calls `store.keep_install`. `POST /studio/packages/{id}/restore` calls `store.restore_install` with `datetime.now(UTC)`.
         - ⚠️ The first line reads `flags.studio_allowed`, and the second reads `package_host_allowed`. Each answers 404 with no session.
         - ⚠️ Only the owner acts, and only on the private install. The handler takes no body, so no date, org, member or scope comes from the request (R5). `lock_for_install` holds the `apps` row first, so another member, another org and an archived package get 404 `Not found`. An owner with no private install gets 409 `private_only`.
