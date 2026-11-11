@@ -820,7 +820,7 @@ private task of another member and asserts that no card returns it.
 
 ### 4.2a The team scope contract (T-4, task 2535, replan 2026-11-09)
 
-Proposed, owner review in this pull request. The shell holds one scope value. The value is a team slug or the word "all". The scope rides on `scope=<slug>` as §4.2 rule 1 says. Every app reads this one value and builds no scope of its own.
+Decided 2026-11-10: the owner approved this on task 2531. The shell holds one scope value. The value is a team slug or the word "all". The scope rides on `scope=<slug>` as §4.2 rule 1 says. Every app reads this one value and builds no scope of its own.
 
 A scope never grants. It narrows a view and opens nothing that the member could not already open (§4.2 rule 4). A team is a group, and the shell shows no team object (D87). The rules of hidden spaces are in `project_management_app.md` §14.9.
 
