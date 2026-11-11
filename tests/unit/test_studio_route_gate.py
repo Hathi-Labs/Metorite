@@ -114,6 +114,9 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/studio/packages/{package_id}/install"),
     # WS-PKG PKG-8e, the org and group uninstall.
     ("DELETE", "/studio/packages/{package_id}/install"),
+    # WS-PKG PKG-10d, Keep and Restore of the private install.
+    ("POST", "/studio/packages/{package_id}/keep"),
+    ("POST", "/studio/packages/{package_id}/restore"),
     # B2a to B2c, the action door.
     ("POST", "/studio/apps/{app_id}/actions/{action}"),
 )

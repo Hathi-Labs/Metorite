@@ -34,7 +34,10 @@ org lock and the same guards. :func:`keep_install` clears ``ends_at``.
 days after ``archived_at``. :func:`expire_due` archives each due install,
 then deletes each install that was archived 30 days before. A paused
 install never expires (PKG-Q8). :func:`notice_times` gives the times of the
-two bell notes and sends nothing. No route, loop or flag calls them yet.
+two bell notes and sends nothing. The Keep and Restore routes of PKG-10d
+(``routes/studio/packages.py``) call the first two on the private install
+of the owner, which :func:`private_install_id` finds. The loop of PKG-10b
+calls :func:`expire_due`.
 
 **Tenancy (R5).** :func:`install` takes a session that the caller opened with
 ``tenant_session(org)``. It opens no session and commits nothing. No function
@@ -1039,6 +1042,33 @@ async def expire_due(db: Any, *, now: datetime, limit: int = EXPIRE_LIMIT) -> di
             continue
         deleted += 1
     return {"archived": archived, "deleted": deleted}
+
+
+#: The private install of one member for one app in the bound org (PKG-10d).
+#: It takes no lock: :func:`keep_install` and :func:`restore_install` lock the
+#: row by its id and read it again.
+_PRIVATE_INSTALL_SQL = (
+    "SELECT CAST(id AS text) FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = CAST(:app AS uuid) "
+    "AND scope_kind = 'private' AND scope_subject = :subject"
+)
+
+
+async def private_install_id(db: Any, *, app_id: str, member: str) -> str | None:
+    """The id of the private install of *member* for the app *app_id* in the
+    bound org, or None (PKG-10d).
+
+    *member* is the session member. The store folds it as :func:`install`
+    does, so the read finds the row that a publish wrote. A private install
+    belongs to its subject, so the answer is always an install of *member*.
+    The Keep and Restore routes call this, then :func:`keep_install` or
+    :func:`restore_install` with the id. It writes nothing.
+    """
+    owner = _member(member)
+    app = _app_id(app_id)
+    row = (await db.execute(text(_PRIVATE_INSTALL_SQL), {
+        "app": app, "subject": owner})).first()
+    return None if row is None else str(row[0])
 
 
 def notice_times(ends_at: datetime | None,
