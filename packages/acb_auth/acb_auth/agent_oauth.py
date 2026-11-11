@@ -827,6 +827,14 @@ def first_party_redirect_allowed(client_id: str, redirect_uri: str) -> bool:
 #: ``deps.get_current_user`` checks the stamp too. ONE copy.
 ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 
+#: MCP-P1b-2 (spec §19.5, path 2). The ask of ``app_write``: it opens one
+#: request that waits for the member, and runs nothing.
+REQUEST_ASK_ROUTE: tuple[str, str] = ("POST", "/agent-access/apps/{app}/requests")
+
+#: MCP-P1b-2. The wait of ``app_write``: one request of the agent's own
+#: connection, held for up to ``wait_s`` seconds (EA12-4).
+REQUEST_READ_ROUTE: tuple[str, str] = ("GET", "/agent-access/requests/{request_id}")
+
 #: The write pairs of the MCP edge (EA-6a, EA3-29). A subset of
 #: :data:`MCP_ROUTES`, and no pair here is a GET. Branch 0 admits a method
 #: other than GET only for one of these pairs, and only with the writes flag,
@@ -888,6 +896,8 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: the task. It answers 404 while ``agent_task_checks_enabled`` is off. HIGH
 #: tier from the start (identity of who may close a task).
 #: Fence: ``tests/unit/test_task_check_r8.py`` and the coverage fence.
+#: MCP-P1b-2 (spec §19.5) adds the ask of ``app_write``,
+#: :data:`REQUEST_ASK_ROUTE`. It opens a request and runs nothing.
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/nodes"),
     ("PATCH", "/projects/nodes/{project_id}"),
@@ -926,6 +936,10 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # WS-MCP SW-23: `report_check`. A pass closes the task only when the
     # caller may move it. It answers 404 while the Check flag is off.
     ("POST", "/projects/tasks/{task_id}/check-result"),
+    # MCP-P1b-2 (spec §19.5, AD-4): the ask of `app_write`. It opens one
+    # request for the member and runs nothing. Branch 0 takes any `<app>:write`
+    # here (`request_write_scope`), and the route checks the app of its path.
+    REQUEST_ASK_ROUTE,
 })
 
 #: The ONE allowlist of the MCP edge (EA3-6). Each pair is a method and the
@@ -984,6 +998,10 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # for `list_apps` and `describe_app`. They hold no data of an app.
     ("GET", "/agent-access/apps"),
     ("GET", "/agent-access/apps/{app}"),
+    # MCP-P1b-2 (spec §19.5, "The new pairs"): the wait of `app_write`. The
+    # route gives an agent only a request of its own connection (AD-16). The
+    # list `GET /agent-access/requests` and the decision stay OFF the edge.
+    REQUEST_READ_ROUTE,
     # WS-39 LP-1a: `list_project_updates`, newest first. It answers 404 while
     # PROJECTS_UPDATES_ORGS does not hold the org.
     ("GET", "/projects/nodes/{project_id}/updates"),
@@ -1005,6 +1023,7 @@ ATTACHMENT_FILENAME_PATTERN = r"(?!.*\.\.)[A-Za-z0-9_-][A-Za-z0-9._ -]{0,119}"
 MCP_PATH_SHAPES: Mapping[tuple[str, str], Mapping[str, str]] = MappingProxyType({
     ("GET", "/agent-access/apps/{app}"): MappingProxyType(
         {"app": app_manifests.APP_ID_PATTERN}),
+    REQUEST_ASK_ROUTE: MappingProxyType({"app": app_manifests.APP_ID_PATTERN}),
     ("GET", "/projects/attachments/{attachment_id}/{filename}"): MappingProxyType(
         {"filename": ATTACHMENT_FILENAME_PATTERN}),
 })
@@ -1022,10 +1041,29 @@ PROJECT_UPDATES_OFF = "Project updates are off for this organization."
 APP_OFF_CODE = "app_off"
 
 #: AD-18. The ``detail`` of the 403 of a door write of class B or C that is
-#: not a proposal and carries no spent approval. Before MCP-P1b no approval
-#: can exist, so branch 0 refuses each such call. Never a 401, so the client
-#: keeps its token.
+#: not a proposal and carries no approval that branch 0 can spend: no
+#: ``X-Agent-Approval``, a request that the member has not decided, or a
+#: request that this member and connection do not hold. Never a 401, so the
+#: client keeps its token.
 APPROVAL_REQUIRED_CODE = "approval_required"
+
+#: MCP-P1b-2 (AD-6, §19.12). The ``detail`` of the 409 of a spend whose call
+#: is not the approved call: another body, path, query or ``If-Match``. The
+#: request stays approved, so the right call can still spend it.
+APPROVAL_MISMATCH_CODE = "approval_mismatch"
+
+#: MCP-P1b-2 (AD-6). The ``detail`` of the 409 of a spend of a request that
+#: is spent, declined or expired. Nothing changes. The agent asks again.
+APPROVAL_USED_CODE = "approval_used"
+
+#: MCP-P1b-2 (§19.4). The code of a door write that waits for the member
+#: while the approval path is off for the organization: the runs flag of
+#: §12.1 is off, or ``APP_REQUESTS_ORGS`` does not hold the organization.
+REQUESTS_OFF_CODE = "requests_off"
+
+#: AD-19. The code of an op that can cause mail to leave Metorite. It waits
+#: for ``AGENT_DOOR_SENDS`` of MCP-P2b, so it fails closed until then.
+SENDS_OFF_CODE = "sends_off"
 
 #: AD-13. A connection makes at most :data:`DOOR_READ_CAP` door reads in
 #: :data:`DOOR_READ_WINDOW_S` seconds. Branch 0 counts in the tenant Redis
@@ -1041,19 +1079,38 @@ DOOR_WRITES_OFF_CODE = "writes_off"
 
 def door_available(door: app_manifests.DoorOp) -> tuple[bool, str | None]:
     """``(available, code)`` of a door op, by the rules that the edge and the
-    gateway share (MCP-P1a). The ONE copy: ``describe_app`` on both sides
-    reads it.
+    gateway share (MCP-P1a, MCP-P1b-2). The ONE copy: ``describe_app`` on
+    both sides and the ask of the gateway read it.
 
-    * AD-18: a write of class B or C that is not a proposal waits for the
-      approval path of MCP-P1b, :data:`APPROVAL_REQUIRED_CODE`.
-    * A proposal needs the writes flag, :data:`DOOR_WRITES_OFF_CODE`.
+    * A proposal or a write needs the writes flag, :data:`DOOR_WRITES_OFF_CODE`.
+    * A write that waits for the member (``asks`` is ``each_call``) needs the
+      approval path. An op that can send mail is off until MCP-P2b
+      (:data:`SENDS_OFF_CODE`, AD-19). The runs flag of §12.1 must be on
+      (:data:`REQUESTS_OFF_CODE`). The gateway also reads
+      ``APP_REQUESTS_ORGS`` for the organization, with the same code.
     * A read is available.
     """
-    if door.asks != "never":
-        return False, APPROVAL_REQUIRED_CODE
     if door.kind != "read" and not writes_enabled():
         return False, DOOR_WRITES_OFF_CODE
+    if door.asks != "never":
+        if door.route.sends:
+            return False, SENDS_OFF_CODE
+        if not runs_enabled():
+            return False, REQUESTS_OFF_CODE
     return True, None
+
+
+def request_write_scope(scopes: Iterable[str]) -> str | None:
+    """The write scope that branch 0 checks for the ask of ``app_write``
+    (:data:`REQUEST_ASK_ROUTE`, AD-4): the first ``<app>:write`` of a door
+    app that the door flag serves and that *scopes* hold, or ``None``. The
+    route then checks the app of its path."""
+    held = frozenset(scopes)
+    for app in app_manifests.APPS:
+        if (app.write_scope in app.scopes and app.write_scope in held
+                and door_serves(app.id)):
+            return app.write_scope
+    return None
 
 
 def door_route(pair: tuple[str, str | None]) -> app_manifests.DoorOp | None:
@@ -1315,7 +1372,9 @@ def authorization_redirect(redirect_uri: str, params: Mapping[str, str | None]) 
 __all__ = [
     "ACTOR_VIA_PATTERN",
     "ALL_ORGS",
+    "APPROVAL_MISMATCH_CODE",
     "APPROVAL_REQUIRED_CODE",
+    "APPROVAL_USED_CODE",
     "APP_OFF_CODE",
     "APP_SCOPES",
     "ATTACHMENT_FILENAME_PATTERN",
@@ -1341,8 +1400,12 @@ __all__ = [
     "PROJECTS_WRITE",
     "PROJECT_UPDATES_OFF",
     "READ_SCOPES",
+    "REQUESTS_OFF_CODE",
+    "REQUEST_ASK_ROUTE",
+    "REQUEST_READ_ROUTE",
     "RESOURCE_SCOPES",
     "S256",
+    "SENDS_OFF_CODE",
     "SUPPORTED_SCOPES",
     "WRITES_DISABLED_CODE",
     "WRITE_CAP",
@@ -1384,6 +1447,7 @@ __all__ = [
     "redirect_display",
     "redirect_host",
     "redirect_uri_matches",
+    "request_write_scope",
     "resource",
     "resources_allowed",
     "revocation_endpoint",

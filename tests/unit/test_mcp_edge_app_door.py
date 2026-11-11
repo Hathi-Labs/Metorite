@@ -1,4 +1,4 @@
-"""MCP-P1a — the four tools of the app door, and the branch 0 half (AD-18).
+"""MCP-P1a and MCP-P1b-2 — the four tools of the app door, and the branch 0 half.
 
 Spec: ``project-docs/specs/external_agent_access.md`` §19.4 (the tools and
 their texts), §19.5 (AD-18), §19.7 (AD-10, AD-12, AD-13, AD-14) and §19.13.
@@ -43,11 +43,43 @@ Mutations this file catches (R7):
   ``test_a_bad_stamp_writes_one_audit_row``;
 * drop the ``_audit_door`` call of the writes flag in ``deps._door_gate`` ->
   ``test_a_write_with_writes_off_writes_one_audit_row``.
+
+MCP-P1b-2 (spec §19.5 path 2, AD-6, AD-17). The edge asks, waits and sends
+the stored call once (``TestTheAsk``, ``TestTheWaitAndTheSend``,
+``TestListAppsWaiting``). Branch 0 spends the approval with the store as a
+stand-in (``TestTheSpendInBranchZero``). The spend SQL runs on a real
+database in ``test_app_requests_r8.py``. Each mutation below was run on the
+built tree, turned its test red, and was restored:
+
+* M-A, drop the AD-18 refusal of a write with no approval in
+  ``deps._door_gate`` -> ``test_a_write_with_no_approval_fails_closed``;
+* M-B, spend before the scope check ->
+  ``test_a_refused_call_spends_nothing``;
+* M-C, let ``deps._claim_call`` take an approval on any pair ->
+  ``test_an_approval_off_a_door_write_that_asks_is_refused``;
+* M-D, leave the approval out of the signed string in
+  ``deps._verify_signed_request`` ->
+  ``test_an_approval_that_is_not_signed_or_twice_is_refused``;
+* M-E, let ``deps._approval_of`` take two ``If-Match`` headers ->
+  ``test_two_if_match_headers_are_refused``;
+* M-F, map ``mismatch`` to ``approval_used`` ->
+  ``test_a_refused_spend_runs_nothing``;
+* M-G, send the approved call with no approval in ``tools._app_wait`` ->
+  ``test_after_an_approve_the_edge_sends_the_stored_call_once``;
+* M-H, drop the availability check of a write in ``tools._door_op`` ->
+  ``test_the_edge_sends_no_request_while_the_approval_path_is_off``;
+* M-I, drop the method and template check of ``tools._stored_call`` ->
+  ``test_a_request_that_cannot_send_sends_nothing``;
+* M-J, drop the id shape check of ``tools._waiting_rows`` ->
+  ``TestListAppsWaiting``;
+* M-K, check ``projects:write`` for the ask ->
+  ``test_the_ask_takes_the_write_scope_of_any_served_app``.
 """
 from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -657,8 +689,13 @@ def _ctx(scopes: tuple[str, ...]) -> tools.Context:
 
 class TestAd18AtTheEdge:
 
-    async def test_the_edge_sends_no_request_for_a_write_that_needs_approval(
-            self, edge, test_app):
+    async def test_the_edge_sends_no_request_while_the_approval_path_is_off(
+            self, edge, test_app, monkeypatch):
+        """MCP-P1b-2. With the runs flag of §12.1 off, the approval path is
+        off, and the edge refuses a write that waits for the member before
+        any request. Mutation: drop the ``door_available`` check of a write
+        in ``tools._door_op``, and the edge sends the ask."""
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
         ctx = _ctx(("testdoor:read", "testdoor:write"))
         result = await tools.call(tools.APP_WRITE, ctx, {
             "app": "testdoor", "op": "make_item", "args": {"name": "x"},
@@ -667,8 +704,9 @@ class TestAd18AtTheEdge:
         assert edge.gateway.requests == []
         assert not edge.redis.slots(), "no slot is claimed for a refused write"
 
-    async def test_describe_app_marks_it_unavailable_whatever_the_gateway_says(
-            self, edge, test_app):
+    async def test_describe_app_marks_it_unavailable_while_the_path_is_off(
+            self, edge, test_app, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
         edge.gateway.answers[("GET", "/agent-access/apps/testdoor")] = (200, {"ops": [
             {"op": name, "available": True, "args": {}} for name in am.door_ops(TEST_APP)]})
         out = _ok(await tools.call(tools.DESCRIBE_APP, _ctx(("testdoor:read",)),
@@ -678,6 +716,240 @@ class TestAd18AtTheEdge:
         assert ops["make_item"]["asks"] == "each_call" and ops["make_item"]["kind"] == "write"
         assert ops["make_item"]["why_not"] == tools.TEXT_NEEDS_APPROVAL
         assert ops["file_draft"]["available"] is True and ops["get_item"]["available"] is True
+
+    async def test_describe_app_follows_the_gateway_for_the_org_flag(
+            self, edge, test_app, monkeypatch):
+        """MCP-P1b-2. With the runs flag on, the edge marks the write
+        available only when the gateway does too. The gateway reads
+        ``APP_REQUESTS_ORGS``, and its code becomes the edge's own text."""
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+        rows = [{"op": name, "available": True, "args": {}} for name in am.door_ops(TEST_APP)]
+        edge.gateway.answers[("GET", "/agent-access/apps/testdoor")] = (200, {"ops": rows})
+        out = _ok(await tools.call(tools.DESCRIBE_APP, _ctx(("testdoor:read",)),
+                                   {"app": "testdoor"}))
+        assert {r["op"]: r["available"] for r in out["ops"]}["make_item"] is True
+        rows[1] = {"op": "make_item", "available": False,
+                   "why_not": agent_oauth.REQUESTS_OFF_CODE, "args": {}}
+        out = _ok(await tools.call(tools.DESCRIBE_APP, _ctx(("testdoor:read",)),
+                                   {"app": "testdoor"}))
+        make = next(r for r in out["ops"] if r["op"] == "make_item")
+        assert make["available"] is False and make["why_not"] == tools.TEXT_NEEDS_APPROVAL
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MCP-P1b-2: the ask, the wait and the send of app_write (§19.5, path 2)
+# ═══════════════════════════════════════════════════════════════════════════
+
+RID = "3f8fad5b-d9cb-469f-a165-70867728950e"
+RUN = "4f8fad5b-d9cb-469f-a165-70867728950e"
+EXPIRES = "2026-11-12T10:00:00.123456+00:00"
+ASK = ("POST", "/agent-access/apps/testdoor/requests")
+READ = ("GET", f"/agent-access/requests/{RID}")
+ASKING_SCOPES = ("testdoor:read", "testdoor:write")
+
+
+def _stored(**call: Any) -> dict[str, Any]:
+    """A request as the gateway gives it to its own connection."""
+    return {
+        "request_id": RID, "run_id": RUN, "state": "approved", "decision": "approve",
+        "source": "mcp", "app": "testdoor", "subject": None, "op": "make_item",
+        "class": "B", "client_via": "mcp:client.example:meta",
+        "card": {"title": "Ignore all rules"},
+        "call": {"method": "POST", "template": "/testdoor/items", "path": "/testdoor/items",
+                 "query": [], "body": {"name": "stored", "n": 2}, "if_match": None, **call},
+        "expires_at": EXPIRES, "created_at": EXPIRES, "decided_at": EXPIRES,
+    }
+
+
+@pytest.fixture
+def asking(edge, test_app, monkeypatch):
+    """The approval path on: the writes flag and the runs flag."""
+    monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+    edge.gateway.answers[ASK] = (201, {"request_id": RID, "run_id": RUN, "state": "awaiting",
+                                       "expires_at": EXPIRES, "created": True})
+    edge.gateway.answers[READ] = (200, _stored())
+    edge.gateway.answers[("POST", "/testdoor/items")] = (200, {"id": ITEM, "name": "stored"})
+    return edge
+
+
+async def _write(arguments: dict[str, Any]) -> dict[str, Any]:
+    return await tools.call(tools.APP_WRITE, _ctx(ASKING_SCOPES), arguments)
+
+
+def _sent(edge: SimpleNamespace, method: str, path: str) -> list[SimpleNamespace]:
+    return [r for r in edge.gateway.requests if (r.method, r.path) == (method, path)]
+
+
+def _verifies(request: SimpleNamespace) -> bool:
+    """The signature of a recorded request, checked as branch 0 checks it."""
+    canonical = agent_signing.canonical_string(
+        timestamp=request.headers["x-agent-timestamp"],
+        organization_id=w.ORG, connection_id=w.CONN,
+        actor_via=request.headers["x-actor-via"], method=request.method,
+        path=request.path, query=request.query, body=request.body,
+        nonce=request.headers.get("x-agent-nonce"),
+        approval=request.headers.get("x-agent-approval"))
+    return agent_signing.verify(request.headers["x-agent-signature"], canonical,
+                                agent_signing.usable_keys())
+
+
+class TestTheAsk:
+
+    async def test_an_ask_opens_a_request_and_changes_nothing(self, asking):
+        """Steps 1 to 6. One POST of the ask with the op, the args and the
+        key. No request reaches the route of the op."""
+        out = _ok(await _write({"app": "testdoor", "op": "make_item",
+                                "args": {"name": "x", "z": None}, "idempotency_key": KEY}))
+        assert out == {"state": "awaiting", "result": None, "finish_in": "Test door, Drafts",
+                       "replayed": False, "truncated": False, "request_id": RID,
+                       "run_id": RUN, "expires_at": EXPIRES}
+        [ask] = _sent(asking, *ASK)
+        assert json.loads(ask.body) == {"op": "make_item", "args": {"name": "x", "z": None},
+                                        "idempotency_key": KEY}
+        assert "x-agent-approval" not in ask.headers and _verifies(ask)
+        assert _sent(asking, "POST", "/testdoor/items") == []
+        assert not asking.redis.slots(), "the gateway keeps the key of a request"
+
+    async def test_the_same_key_replays_the_first_request(self, asking):
+        asking.gateway.answers[ASK] = (200, {"request_id": RID, "run_id": RUN,
+                                             "state": "approved", "expires_at": EXPIRES,
+                                             "created": False})
+        out = _ok(await _write({"app": "testdoor", "op": "make_item", "args": {"name": "x"},
+                                "idempotency_key": KEY}))
+        assert out["state"] == "awaiting" and out["replayed"] is True
+        assert _sent(asking, "POST", "/testdoor/items") == []
+
+    async def test_a_bad_input_is_refused_before_any_request(self, asking):
+        result = await _write({"app": "testdoor", "op": "make_item", "args": {"a b": 1},
+                               "idempotency_key": KEY})
+        assert _text(result) == "The input 'args.a b' is not a valid key."
+        assert asking.gateway.requests == []
+
+    @pytest.mark.parametrize(("status", "detail", "text"), [
+        (409, {"error": "idempotency_key_reused", "message": "evil"},
+         tools.TEXT_DOOR_KEY_REUSED),
+        (429, {"error": "too_many_requests", "message": "evil"}, tools.TEXT_TOO_MANY_REQUESTS),
+        (413, {"error": "payload_too_large", "message": "evil"}, tools.TEXT_REQUEST_TOO_LARGE),
+        (422, {"error": "secret_in_payload", "message": "evil"}, tools.TEXT_REQUEST_SECRET),
+        (422, {"error": "bad_args", "message": "evil"}, tools.TEXT_REQUEST_UNSHOWABLE),
+        (404, "Not Found", tools.TEXT_NEEDS_APPROVAL),
+        (403, agent_oauth.REQUESTS_OFF_CODE, tools.TEXT_NEEDS_APPROVAL),
+        (403, agent_oauth.WRITES_DISABLED_CODE, tools.TEXT_WRITES_OFF),
+        (403, "insufficient_scope", tools.TEXT_WRITE_FORBIDDEN),
+        (429, "slow", tools.TEXT_CAP),
+    ])
+    async def test_each_refusal_of_the_ask_has_a_fixed_text(self, asking, status, detail,
+                                                            text):
+        asking.gateway.answers[ASK] = (status, {"detail": detail})
+        result = await _write({"app": "testdoor", "op": "make_item", "args": {"name": "x"},
+                               "idempotency_key": KEY})
+        assert _text(result) == text
+        assert _sent(asking, "POST", "/testdoor/items") == []
+
+
+class TestTheWaitAndTheSend:
+
+    async def test_a_wait_while_the_member_has_not_decided_sends_nothing(self, asking):
+        asking.gateway.answers[READ] = (200, {**_stored(), "state": "awaiting",
+                                              "decision": None})
+        out = _ok(await _write({"app": "testdoor", "request_id": RID, "wait_seconds": 20}))
+        assert out["state"] == "awaiting" and out["request_id"] == RID
+        [read] = _sent(asking, *READ)
+        assert read.pairs == {"wait_s": "20"} and _verifies(read)
+        assert _sent(asking, "POST", "/testdoor/items") == []
+
+    @pytest.mark.parametrize("state", ["declined", "expired"])
+    async def test_a_decline_or_an_expiry_changes_nothing(self, asking, state):
+        asking.gateway.answers[READ] = (200, {**_stored(), "state": state})
+        out = _ok(await _write({"app": "testdoor", "request_id": RID}))
+        assert out["state"] == state and out["result"] is None
+        assert _sent(asking, "POST", "/testdoor/items") == []
+
+    async def test_after_an_approve_the_edge_sends_the_stored_call_once(self, asking):
+        """Step 10. The edge sends the STORED call, with the body bytes of
+        ``app_requests.body_bytes`` and the signed approval line. Mutation:
+        send the call with no approval in ``tools._app_wait``, and the
+        header test fails. Mutation: write the body with no sorted keys, and
+        the body test fails."""
+        out = _ok(await _write({"app": "testdoor", "request_id": RID.upper(),
+                                "wait_seconds": 20}))
+        assert out["state"] == "done" and out["request_id"] == RID
+        # AD-10: `make_item` names no plain key, so each string is untrusted.
+        assert out["result"] == {"id": {"untrusted_text": ITEM},
+                                 "name": {"untrusted_text": "stored"}}
+        [send] = _sent(asking, "POST", "/testdoor/items")
+        assert send.body == b'{"n":2,"name":"stored"}'
+        assert send.headers["x-agent-approval"] == RID
+        assert "if-match" not in send.headers and _verifies(send)
+        assert len(asking.gateway.requests) == 2, "one read and one send"
+
+    async def test_the_send_carries_the_stored_version(self, asking):
+        asking.gateway.answers[READ] = (200, _stored(if_match="2026-11-11T10:00:00Z",
+                                                     query=[["b", "2"], ["a", "x y"]]))
+        _ok(await _write({"app": "testdoor", "request_id": RID}))
+        [send] = _sent(asking, "POST", "/testdoor/items")
+        assert send.headers["if-match"] == "2026-11-11T10:00:00Z"
+        assert send.pairs == {"a": "x y", "b": "2"} and _verifies(send)
+
+    @pytest.mark.parametrize(("answer", "text"), [
+        ({**_stored(), "app": "knowledge"}, tools.TEXT_REQUEST_OTHER_APP),
+        ({**_stored(), "state": "done"}, tools.TEXT_REQUEST_SPENT),
+        (_stored(template="/testdoor/drafts", path="/testdoor/drafts"),
+         tools.TEXT_REQUEST_STALE),
+        (_stored(method="DELETE"), tools.TEXT_REQUEST_STALE),
+        ({**_stored(), "op": "file_draft"}, tools.TEXT_REQUEST_STALE),
+        ({**_stored(), "state": "evil"}, tools.TEXT_BUSY),
+    ])
+    async def test_a_request_that_cannot_send_sends_nothing(self, asking, answer, text):
+        asking.gateway.answers[READ] = (200, answer)
+        assert _text(await _write({"app": "testdoor", "request_id": RID})) == text
+        assert _sent(asking, "POST", "/testdoor/items") == []
+        assert _sent(asking, "POST", "/testdoor/drafts") == []
+
+    async def test_an_unknown_request_reads_as_none(self, asking):
+        asking.gateway.answers[READ] = (404, {"detail": "Request not found"})
+        assert _text(await _write({"app": "testdoor", "request_id": RID})) == (
+            tools.TEXT_NO_REQUEST)
+
+    @pytest.mark.parametrize(("status", "detail", "text"), [
+        (409, agent_oauth.APPROVAL_MISMATCH_CODE, tools.TEXT_APPROVAL_MISMATCH),
+        (409, agent_oauth.APPROVAL_USED_CODE, tools.TEXT_APPROVAL_USED),
+        (403, agent_oauth.APPROVAL_REQUIRED_CODE, tools.TEXT_NOT_APPROVED),
+        (409, "a record conflict", tools.TEXT_DOOR_CONFLICT),
+    ])
+    async def test_each_refused_spend_has_a_fixed_text(self, asking, status, detail, text):
+        asking.gateway.answers[("POST", "/testdoor/items")] = (status, {"detail": detail})
+        assert _text(await _write({"app": "testdoor", "request_id": RID})) == text
+
+    async def test_the_writes_flag_off_sends_nothing(self, asking, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", False)
+        assert _text(await _write({"app": "testdoor", "request_id": RID})) == (
+            tools.TEXT_WRITES_OFF)
+        assert asking.gateway.requests == []
+
+
+class TestListAppsWaiting:
+
+    async def test_the_waiting_rows_leave_in_their_shape_only(self, asking):
+        """§19.4. ``waiting`` names the requests of this connection. Each
+        value leaves only in its shape, and a row of a read op, of another
+        state or of a bad id is dropped."""
+        good = {"request_id": RID.upper(), "op": "make_item", "state": "approved",
+                "expires_at": EXPIRES}
+        asking.gateway.answers[("GET", "/agent-access/apps")] = (200, {"apps": [
+            {"id": "testdoor", "read": True, "write": True, "available": True,
+             "waiting": [good, {**good, "op": "get_item"}, {**good, "state": "done"},
+                         {**good, "request_id": "../x"}, {**good, "expires_at": "soon"},
+                         {**good, "card": "evil"} | {"op": "make_item"}, "evil"]},
+            {"id": "projects", "read": True, "write": True, "available": True,
+             "waiting": [good]},
+        ]})
+        out = _ok(await tools.call(tools.LIST_APPS, _ctx(ASKING_SCOPES), {}))
+        rows = {row["id"]: row for row in out["apps"]}
+        expected = {"request_id": RID, "op": "make_item", "state": "approved",
+                    "expires_at": EXPIRES}
+        assert rows["testdoor"]["waiting"] == [expected, expected]
+        assert rows["projects"]["waiting"] == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -772,21 +1044,30 @@ def _gateway(world: _World) -> FastAPI:
     async def _file_draft(user: UserContext = Depends(get_current_user)) -> dict:
         return _who(user, "file_draft")
 
+    # MCP-P1b-2: a stand-in at the template of the ask, a pair of
+    # MCP_WRITE_ROUTES, so branch 0 decides it as it decides the real route.
+    @app.post("/agent-access/apps/{app}/requests")
+    async def _ask(app: str, user: UserContext = Depends(get_current_user)) -> dict:
+        return _who(user, "ask")
+
     return app
 
 
 async def _send(world: _World, method: str, path: str, body: bytes = b"",
-                via: str = VIA) -> httpx.Response:
+                via: str = VIA, approval: str | None = None, query: str = "",
+                extra: tuple[tuple[str, str], ...] = ()) -> httpx.Response:
     headers = agent_signing.signed_headers(
         SIGNING_KEY, organization_id=ORG, connection_id=CONN, actor_via=via,
-        method=method, path=path, query="", body=body)
+        method=method, path=path, query=query, body=body, approval=approval)
     if method != "GET":
         headers["Content-Type"] = "application/json"
+    sent = [*headers.items(), *extra]
+    url = f"{path}?{query}" if query else path
 
     async def go() -> httpx.Response:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=_gateway(world)),
                                      base_url="http://gateway") as client:
-            return await client.request(method, path, headers=headers, content=body)
+            return await client.request(method, url, headers=sent, content=body)
 
     return await asyncio.create_task(go())
 
@@ -905,3 +1186,213 @@ class TestBranchZero:
         r = await _send(world, "GET", "/testdoor/items")
         assert r.status_code in (401, 404, 405)
         assert world.audit == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MCP-P1b-2: the spend in branch 0 (AD-6), with the store as a stand-in.
+# The spend SQL runs on a real database in test_app_requests_r8.py.
+# ═══════════════════════════════════════════════════════════════════════════
+
+ITEM_BODY = b'{"name":"x"}'
+
+
+@pytest.fixture
+def spends(world, monkeypatch):
+    """The two functions of the store and the tenant session, as stand-ins.
+    ``world.spent`` is what ``spend`` gives, and ``world.why`` is the class of
+    a refusal. Each call is recorded with its arguments."""
+    import contextlib
+
+    from acb_auth import app_requests as store
+    from acb_common import db as db_module
+
+    world.spent, world.why, world.spend_calls, world.sessions = None, "not_found", [], []
+
+    @contextlib.asynccontextmanager
+    async def session(org=None):
+        if getattr(world, "session_error", None) is not None:
+            raise world.session_error
+        world.sessions.append(org)
+        yield SimpleNamespace()
+
+    async def spend(db, **kwargs):
+        world.spend_calls.append(kwargs)
+        return world.spent
+
+    async def classify(db, **kwargs):
+        return world.why
+
+    monkeypatch.setattr(db_module, "tenant_session", session)
+    monkeypatch.setattr(store, "spend", spend)
+    monkeypatch.setattr(store, "classify_refusal", classify)
+    return world
+
+
+def _spent() -> Any:
+    from acb_auth import app_requests as store
+
+    return store.Spent(request_id=RID, run_id=RUN, app="testdoor", op="make_item", cls="B",
+                       source="mcp", subject="", call={}, digest="d" * 64)
+
+
+def _digest_of(body: bytes = ITEM_BODY, *, path: str = "/testdoor/items",
+               query: tuple[tuple[str, str], ...] = (), if_match: str | None = None) -> str:
+    from acb_auth import app_requests as store
+
+    return store.digest_of(binding=store.mcp_binding(CONN), method="POST",
+                           template="/testdoor/items", path=path, query=query,
+                           body_sha256=hashlib.sha256(body).hexdigest(), if_match=if_match)
+
+
+class TestTheSpendInBranchZero:
+
+    async def test_an_approved_write_spends_once_and_runs_as_the_member(self, spends):
+        """AD-6. The gate spends the approval in a tenant session of the ROW's
+        organization, with the digest of THIS call and the binding of the
+        connection. Then the route runs as the member, and the audit row
+        names the request."""
+        spends.spent = _spent()
+        r = await _send(spends, "POST", "/testdoor/items", ITEM_BODY, approval=RID)
+        assert r.status_code == 200, r.text
+        assert spends.calls == [("make_item", MEMBER)]
+        assert spends.sessions == [ORG]
+        assert spends.spend_calls == [{
+            "org": ORG, "request_id": RID, "app": "testdoor", "member": MEMBER,
+            "binding": f"conn:{CONN}", "digest": _digest_of()}]
+        assert _decisions(spends) == [("make_item", "allowed")]
+        assert spends.audit[-1].payload["request_id"] == RID
+
+    async def test_the_digest_reads_the_query_and_the_one_if_match(self, spends):
+        spends.spent = _spent()
+        r = await _send(spends, "POST", "/testdoor/items", ITEM_BODY, approval=RID,
+                        query="b=2&a=x", extra=(("If-Match", "2026-11-11T10:00:00Z"),))
+        assert r.status_code == 200, r.text
+        assert spends.spend_calls[0]["digest"] == _digest_of(
+            query=(("a", "x"), ("b", "2")), if_match="2026-11-11T10:00:00Z")
+
+    @pytest.mark.parametrize(("why", "status", "code"), [
+        ("mismatch", 409, agent_oauth.APPROVAL_MISMATCH_CODE),
+        ("declined", 409, agent_oauth.APPROVAL_USED_CODE),
+        ("spent", 409, agent_oauth.APPROVAL_USED_CODE),
+        ("expired", 409, agent_oauth.APPROVAL_USED_CODE),
+        ("awaiting", 403, agent_oauth.APPROVAL_REQUIRED_CODE),
+        ("not_found", 403, agent_oauth.APPROVAL_REQUIRED_CODE),
+    ])
+    async def test_a_refused_spend_runs_nothing(self, spends, why, status, code):
+        """A decline, an expiry, a second spend, another call and a request
+        of another connection each change nothing. Mutation: map
+        ``mismatch`` to ``approval_used`` in ``deps._SPEND_REFUSALS``, and
+        the first case fails."""
+        spends.why = why
+        r = await _send(spends, "POST", "/testdoor/items", ITEM_BODY, approval=RID)
+        assert (r.status_code, r.json()) == (status, {"detail": code}), r.text
+        assert spends.calls == []
+        assert _decisions(spends) == [("make_item", code)]
+        assert spends.audit[-1].payload["request_id"] == RID
+
+    async def test_a_refused_call_spends_nothing(self, spends, monkeypatch):
+        """The spend runs last in the gate. A call that the scope, the writes
+        flag or the cap refuses never reaches the store. Mutation: move the
+        spend before the scope check in ``deps._door_gate``, and this fails."""
+        spends.spent = _spent()
+        spends.connection = dataclasses.replace(spends.connection, scopes=("testdoor:read",))
+        r = await _send(spends, "POST", "/testdoor/items", ITEM_BODY, approval=RID)
+        assert r.status_code == 401, r.text
+        spends.connection = dataclasses.replace(spends.connection,
+                                                scopes=("testdoor:read", "testdoor:write"))
+        monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", False)
+        r = await _send(spends, "POST", "/testdoor/items", ITEM_BODY, approval=RID)
+        assert r.status_code == 403, r.text
+        monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", True)
+        monkeypatch.setattr(get_settings(), "agent_write_cap", 1)
+        assert (await _send(spends, "POST", "/testdoor/drafts", b"{}")).status_code == 200
+        r = await _send(spends, "POST", "/testdoor/items", ITEM_BODY, approval=RID)
+        assert r.status_code == 429, r.text
+        assert spends.spend_calls == [] and spends.calls == [("file_draft", MEMBER)]
+
+    async def test_an_approval_off_a_door_write_that_asks_is_refused(self, spends):
+        """An approval goes with a door write that waits for the member, and
+        nothing else: not a proposal and not a write of MCP_WRITE_ROUTES."""
+        spends.spent = _spent()
+        r = await _send(spends, "POST", "/testdoor/drafts", b"{}", approval=RID)
+        assert r.status_code == 401, r.text
+        r = await _send(spends, "POST", "/agent-access/apps/testdoor/requests", b"{}",
+                        approval=RID)
+        assert r.status_code == 401, r.text
+        assert spends.spend_calls == [] and spends.calls == []
+        assert _decisions(spends) == [("file_draft", "approval")]
+
+    async def test_an_approval_that_is_not_signed_or_twice_is_refused(self, spends):
+        """The request id comes ONLY from the signed header. One added after
+        the signing, two of them, one on a GET and one of another shape are
+        refused before any spend."""
+        spends.spent = _spent()
+        approval = agent_signing.HEADER_APPROVAL
+        r = await _send(spends, "POST", "/testdoor/items", ITEM_BODY, extra=((approval, RID),))
+        assert r.status_code == 401, r.text
+        r = await _send(spends, "POST", "/testdoor/items", ITEM_BODY, approval=RID,
+                        extra=((approval, RID),))
+        assert r.status_code == 401, r.text
+        r = await _send(spends, "GET", f"/testdoor/items/{ITEM}", extra=((approval, RID),))
+        assert r.status_code == 401, r.text
+        r = await _send(spends, "POST", "/testdoor/items", ITEM_BODY,
+                        extra=((approval, RID.upper()),))
+        assert r.status_code == 401, r.text
+        assert spends.spend_calls == [] and spends.calls == []
+
+    async def test_two_if_match_headers_are_refused(self, spends):
+        """The digest reads the ONE ``If-Match`` that the route reads. Two of
+        them could let the route read a value that the digest did not."""
+        spends.spent = _spent()
+        r = await _send(spends, "POST", "/testdoor/items", ITEM_BODY, approval=RID,
+                        extra=(("If-Match", "2026-11-11T10:00:00Z"),
+                               ("If-Match", "2026-11-11T11:00:00Z")))
+        assert r.status_code == 401, r.text
+        assert spends.spend_calls == [] and spends.calls == []
+        assert _decisions(spends) == [("make_item", "approval")]
+
+    async def test_a_store_failure_is_503_and_runs_nothing(self, spends):
+        spends.session_error = ConnectionError("down")
+        r = await _send(spends, "POST", "/testdoor/items", ITEM_BODY, approval=RID)
+        assert r.status_code == 503 and r.headers["retry-after"] == "2"
+        assert spends.calls == []
+        assert _decisions(spends) == [("make_item", "unavailable")]
+
+    async def test_the_ask_takes_the_write_scope_of_any_served_app(self, spends):
+        """AD-4. Branch 0 admits the ask with any ``<app>:write`` of a served
+        app, and the route checks the app of its path. ``projects:write``
+        alone, or a read scope, is refused."""
+        r = await _send(spends, "POST", "/agent-access/apps/testdoor/requests", b"{}")
+        assert r.status_code == 200, r.text
+        for scopes in (("projects:read", "projects:write"), ("testdoor:read",)):
+            spends.connection = dataclasses.replace(spends.connection, scopes=scopes)
+            r = await _send(spends, "POST", "/agent-access/apps/testdoor/requests", b"{}")
+            assert r.status_code == 401, (scopes, r.text)
+        assert spends.calls == [("ask", MEMBER)]
+
+
+@pytest.mark.parametrize("change", [
+    {"body": b'{"name":"y"}'}, {"path": "/testdoor/items/x"}, {"query": "a=1"},
+    {"if_match": ["2026-11-11T10:00:00Z"]}, {"template": "/testdoor/drafts"},
+    {"connection_id": "d0d0d0d0-0000-4000-8000-0000000000d0"}, {"method": "PATCH"},
+])
+def test_the_digest_of_a_call_binds_each_part(change):
+    """AD-17. Each part of a call is a line of its digest, so another body,
+    path, query, ``If-Match``, template, method or connection is another
+    change, and the spend refuses it."""
+    parts: dict[str, Any] = {"connection_id": CONN, "approval_id": RID, "method": "POST",
+                             "template": "/testdoor/items", "path": "/testdoor/items",
+                             "query": "", "body": ITEM_BODY, "if_match": []}
+    base_digest = deps._approval_of(**parts)
+    assert base_digest == (RID, _digest_of())
+    assert deps._approval_of(**{**parts, **change})[1] != base_digest[1]
+
+
+def test_an_approval_with_no_digest_is_none_and_no_approval_is_nothing():
+    parts: dict[str, Any] = {"connection_id": CONN, "approval_id": RID, "method": "POST",
+                             "template": "/testdoor/items", "path": "/testdoor/items",
+                             "query": "", "body": ITEM_BODY, "if_match": []}
+    assert deps._approval_of(**{**parts, "approval_id": None}) is None
+    for bad in ({"if_match": ["a", "b"]}, {"path": "/testdoor/items\nconn:x"},
+                {"template": None}, {"query": "a=1&a=2"}):
+        assert deps._approval_of(**{**parts, **bad}) == (RID, None), bad

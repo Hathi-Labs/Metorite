@@ -20,9 +20,14 @@ What it proves:
 3. The member's visibility decides each row: member A and member B see
    different pages through the same op.
 4. A class B door op that is not a proposal gets the 403
-   ``approval_required`` at branch 0, the route never runs, and the edge
-   sends no request for it (AD-18). A test variant of the Knowledge manifest
-   gives the real page PATCH an op for this.
+   ``approval_required`` at branch 0 with no approval, and the route never
+   runs (AD-18). A test variant of the Knowledge manifest gives the real page
+   PATCH an op for this.
+4b. MCP-P1b-2 (§19.5, path 2). While the approval path is off, the edge
+   sends no request for that op. With it on, the agent asks, the member
+   approves through the real decision route, and the agent sends the
+   stored call once. Branch 0 spends the request, the page changes once,
+   and a second wait changes nothing. A decline changes nothing.
 5. Each door call writes one audit row (AD-14).
 6. D-EA-4 (§19.8): a connection with ``include_personal`` false sees no
    ``me`` space and no page of one. A connection with it true sees them, and
@@ -327,16 +332,21 @@ async def _signed(world, name: str, method: str, path: str, body: bytes = b"") -
     return await _in_scope(world, go)
 
 
-async def _as_member(world, who: str, path: str) -> httpx.Response:
-    """One GET as the member *who* in the app: the internal bearer and the
-    member's email (branch 1a). No ``UserContext.agent`` is set."""
+async def _as_member(world, who: str, path: str, body: dict[str, Any] | None = None,
+                     ) -> httpx.Response:
+    """One GET, or with *body* one POST, as the member *who* in the app: the
+    internal bearer and the member's email (branch 1a). No
+    ``UserContext.agent`` is set."""
     from gateway.main import app as gateway_app
+
+    headers = {"Authorization": f"Bearer {INTERNAL}", "X-User-Email": who}
 
     async def go() -> httpx.Response:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=gateway_app),
                                      base_url="http://gateway.test") as client:
-            return await client.get(path, headers={"Authorization": f"Bearer {INTERNAL}",
-                                                   "X-User-Email": who})
+            if body is None:
+                return await client.get(path, headers=headers)
+            return await client.post(path, headers=headers, json=body)
     return await _in_scope(world, go)
 
 
@@ -540,8 +550,11 @@ class TestAd18OnTheRealRoute:
                                p=live.page_a) == "Team plan"
         assert _decisions(live) == [("update_page", "approval_required")]
 
-    async def test_the_edge_sends_no_request_for_it(self, live, monkeypatch):
+    async def test_the_edge_sends_no_request_while_the_path_is_off(self, live, monkeypatch):
+        """MCP-P1b-2. The runs flag of §12.1 is off, so the approval path is
+        off. The edge refuses the op before any request."""
         monkeypatch.setattr(am, "APPS", (_variant(),))
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
         result = await _result(live, "a", "app_write", app="knowledge", op="update_page",
                                idempotency_key=f"upd-{uuid.uuid4().hex[:12]}",
                                args={"page_id": live.page_a, "title": "Changed"})
@@ -550,3 +563,130 @@ class TestAd18OnTheRealRoute:
         described = _ok(await _result(live, "a", "describe_app", app="knowledge"))
         update = next(o for o in described["ops"] if o["op"] == "update_page")
         assert update["available"] is False and update["asks"] == "each_call"
+
+    async def test_the_org_flag_off_opens_no_request(self, live, monkeypatch):
+        """``APP_REQUESTS_ORGS`` ships empty, and only the owner sets it. With
+        the runs flag on and the org flag empty, ``describe_app`` marks the op
+        off, the ask answers 404, and no request and no change exist."""
+        monkeypatch.setattr(am, "APPS", (_variant(),))
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+        monkeypatch.setattr(get_settings(), "app_requests_orgs", "")
+        described = _ok(await _result(live, "a", "describe_app", app="knowledge"))
+        update = next(o for o in described["ops"] if o["op"] == "update_page")
+        assert update["available"] is False and update["why_not"] == tools.TEXT_NEEDS_APPROVAL
+        result = await _result(live, "a", "app_write", app="knowledge", op="update_page",
+                               idempotency_key=f"upd-{uuid.uuid4().hex[:12]}",
+                               args={"page_id": live.page_a, "title": "Changed"})
+        assert _text(result) == tools.TEXT_NEEDS_APPROVAL
+        assert live.seeder.one("SELECT count(*) FROM pm_agent_runs WHERE app IS NOT NULL") == 0
+        assert live.seeder.one("SELECT title FROM kb_pages WHERE id = CAST(:p AS uuid)",
+                               p=live.page_a) == "Team plan"
+
+
+@pytest.fixture
+def asking(live, monkeypatch):
+    """The approval path on for the org: the runs flag and APP_REQUESTS_ORGS.
+    The page of member A starts with its own title again."""
+    monkeypatch.setattr(am, "APPS", (_variant(),))
+    monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+    monkeypatch.setattr(get_settings(), "app_requests_orgs", live.org)
+    live.seeder.one("UPDATE kb_pages SET title = 'Team plan' WHERE id = CAST(:p AS uuid)"
+                    " RETURNING id", p=live.page_a)
+    return live
+
+
+async def _decide(world, request_id: str, decision: str) -> httpx.Response:
+    return await _as_member(world, MEMBER_A, f"/agent-access/requests/{request_id}/decision",
+                            {"decision": decision, "idempotency_key": uuid.uuid4().hex})
+
+
+def _title(world) -> str:
+    return world.seeder.one("SELECT title FROM kb_pages WHERE id = CAST(:p AS uuid)",
+                            p=world.page_a)
+
+
+class TestAskWaitSendOnTheRealRoute:
+    """MCP-P1b-2, acceptance 1 and 2 end to end: the real edge, branch 0,
+    the request routes, the decision route and the Knowledge page PATCH."""
+
+    async def test_the_agent_asks_the_member_approves_and_the_agent_sends_once(
+            self, asking):
+        asked = _ok(await _result(asking, "a", "app_write", app="knowledge",
+                                  op="update_page",
+                                  idempotency_key=f"upd-{uuid.uuid4().hex[:12]}",
+                                  args={"page_id": asking.page_a,
+                                        "title": "Changed by an agent"}))
+        assert asked["state"] == "awaiting" and _title(asking) == "Team plan"
+        rid = asked["request_id"]
+        listed = _ok(await _result(asking, "a", "list_apps"))
+        [knowledge] = [row for row in listed["apps"] if row["id"] == "knowledge"]
+        assert [(r["request_id"], r["op"], r["state"]) for r in knowledge["waiting"]] == [
+            (rid, "update_page", "awaiting")]
+        waiting = _ok(await _result(asking, "a", "app_write", app="knowledge",
+                                    request_id=rid, wait_seconds=0))
+        assert waiting["state"] == "awaiting" and _title(asking) == "Team plan"
+        decided = await _decide(asking, rid, "approve")
+        assert decided.status_code == 200, decided.text
+        done = _ok(await _result(asking, "a", "app_write", app="knowledge", request_id=rid,
+                                 wait_seconds=0))
+        assert done["state"] == "done"
+        assert done["result"]["title"] == {"untrusted_text": "Changed by an agent"}
+        assert _title(asking) == "Changed by an agent"
+        # Another change of the page by a person, then a second wait: nothing.
+        asking.seeder.one("UPDATE kb_pages SET title = 'A person' WHERE id = CAST(:p AS uuid)"
+                          " RETURNING id", p=asking.page_a)
+        again = await _result(asking, "a", "app_write", app="knowledge", request_id=rid)
+        assert _text(again) == tools.TEXT_REQUEST_SPENT
+        assert _title(asking) == "A person"
+        assert [(op, d) for op, d in _decisions(asking)] == [("update_page", "allowed")]
+        assert [e.payload["request_id"] for e in asking.audit] == [rid]
+        listed = _ok(await _result(asking, "a", "list_apps"))
+        assert [row["waiting"] for row in listed["apps"] if row["id"] == "knowledge"] == [[]]
+
+    async def test_a_decline_changes_nothing(self, asking):
+        asked = _ok(await _result(asking, "a", "app_write", app="knowledge",
+                                  op="update_page",
+                                  idempotency_key=f"upd-{uuid.uuid4().hex[:12]}",
+                                  args={"page_id": asking.page_a, "title": "Declined"}))
+        assert (await _decide(asking, asked["request_id"], "decline")).status_code == 200
+        out = _ok(await _result(asking, "a", "app_write", app="knowledge",
+                                request_id=asked["request_id"]))
+        assert out["state"] == "declined" and _title(asking) == "Team plan"
+        assert asking.audit == [], "no change reached the page route"
+
+    async def test_another_connection_cannot_wait_or_send(self, asking):
+        """AD-16. The member's other connection reads the request as none,
+        and a signed send with it changes nothing."""
+        asked = _ok(await _result(asking, "a", "app_write", app="knowledge",
+                                  op="update_page",
+                                  idempotency_key=f"upd-{uuid.uuid4().hex[:12]}",
+                                  args={"page_id": asking.page_a, "title": "Other"}))
+        rid = asked["request_id"]
+        assert (await _decide(asking, rid, "approve")).status_code == 200
+        # A second connection of the same member, with the write scope.
+        other, _ = asking.seeder.connection(MEMBER_A, ("knowledge:read", "knowledge:write"))
+        body = json.dumps({"title": "Other"}, sort_keys=True, separators=(",", ":")).encode()
+        signed = await _signed_with_approval(asking, other, "PATCH",
+                                             f"/knowledge/pages/{asking.page_a}", body, rid)
+        assert (signed.status_code, signed.json()) == (
+            403, {"detail": "approval_required"}), signed.text
+        assert _title(asking) == "Team plan"
+        done = _ok(await _result(asking, "a", "app_write", app="knowledge", request_id=rid))
+        assert done["state"] == "done" and _title(asking) == "Other"
+
+
+async def _signed_with_approval(world, connection: str, method: str, path: str,
+                                body: bytes, approval: str) -> httpx.Response:
+    """One write that the test signs itself, with an approval."""
+    from gateway.main import app as gateway_app
+
+    headers = agent_signing.signed_headers(
+        KEY, organization_id=world.org, connection_id=connection, actor_via=VIA,
+        method=method, path=path, query="", body=body, approval=approval)
+    headers["Content-Type"] = "application/json"
+
+    async def go() -> httpx.Response:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=gateway_app),
+                                     base_url="http://gateway.test") as client:
+            return await client.request(method, path, headers=headers, content=body)
+    return await _in_scope(world, go)

@@ -78,6 +78,7 @@ such request. Fence: ``tests/unit/test_mcp_edge_signing.py``.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import os
 import secrets
 from collections.abc import Collection
@@ -87,7 +88,7 @@ from acb_common import app_manifests, bind_run_context, db_busy, get_logger, ten
 from acb_common.db import bind_tenant, clear_tenant
 from fastapi import Depends, Header, HTTPException, Request
 
-from acb_auth import agent_oauth, agent_signing, agent_tokens
+from acb_auth import agent_oauth, agent_signing, agent_tokens, app_requests
 from acb_auth.access import (
     SERVICE_ACCESS,
     IdentityUnavailable,
@@ -409,7 +410,7 @@ def _one_header(request: Request, name: str) -> str | None:
 #: write refusals of EA-6a, "method" and "nonce", come before the signature.
 _UNSIGNED_REFUSALS = frozenset({
     "disabled", "no_key", "headers", "connection_header", "body", "query",
-    "signature", "method", "nonce", "session",
+    "signature", "method", "nonce", "session", "approval",
 })
 
 
@@ -422,15 +423,20 @@ def _refuse_agent(reason: str, **ids: str) -> UserContext:
 
 def _verify_signed_request(
     request: Request, keys: dict[str, str], body: bytes, nonce: str | None,
-) -> tuple[str, str, str, str | None] | str:
+) -> tuple[str, str, str, str | None, str | None] | str:
     """Step 2 of branch 0: ``(organization, connection, actor stamp,
-    session key)`` of a well-signed, fresh request, or the reason to
-    refuse it.
+    session key, approval)`` of a well-signed, fresh request, or the reason
+    to refuse it.
 
     SW-7 (spec §12.5): ``X-Agent-Session`` is optional. Once and in its
-    shape, it is the last line of the signed string. Twice, or in another
+    shape, it is a line of the signed string. Twice, or in another
     shape, it is a refusal. The session key comes ONLY from this signed
     header, never from a body or a query.
+
+    MCP-P1b-2 (AD-6): ``X-Agent-Approval`` is optional too, and only a write
+    may carry it. Once and in the shape of a request id, it is the line
+    after the session line. Twice, in another shape, or on a GET, it is a
+    refusal. The request id comes ONLY from this signed header.
 
     A GET passes ``b""`` and no *nonce*. A write (EA-6a) passes the body that
     ``_agent_user`` read and the nonce it checked, and both are signed.
@@ -451,6 +457,12 @@ def _verify_signed_request(
         session is not None and not agent_signing.session_key_is_well_formed(session)
     ):
         return "session"
+    approvals = request.headers.getlist(agent_signing.HEADER_APPROVAL)
+    approval = approvals[0] if approvals else None
+    if len(approvals) > 1 or (approval is not None and (
+        nonce is None or not agent_signing.approval_is_well_formed(approval)
+    )):
+        return "approval"
     # A GET has no nonce and a write has one. Anything else never signs.
     if (request.method.upper() == "GET") != (nonce is None):
         return "nonce"
@@ -481,12 +493,13 @@ def _verify_signed_request(
         body=body,
         nonce=nonce,
         session=session,
+        approval=approval,
     )
     if not agent_signing.verify(signature, canonical, keys):
         return "signature"
     if not agent_signing.timestamp_is_fresh(timestamp):
         return "timestamp"
-    return organization_id, connection_id, actor_via, session
+    return organization_id, connection_id, actor_via, session, approval
 
 
 async def _read_connection(
@@ -608,7 +621,7 @@ DOOR_READ_CAP_DETAIL = "Too many reads from this connection. Wait a few minutes.
 
 def _audit_door(
     connection: agent_tokens.LiveConnection, door: app_manifests.DoorOp | None,
-    via: str, decision: str,
+    via: str, decision: str, request_id: str | None = None,
 ) -> None:
     """AD-14: the ONE audit row of a door call, allowed or refused. A call
     that is not a door call (*door* is ``None``) writes none.
@@ -616,8 +629,8 @@ def _audit_door(
     It holds the organization, the connection, the member and the stamp,
     then the app, the op, the class, the request id and the decision of
     branch 0. It holds no body and no argument value. The write is best
-    effort, as ``acb_audit.record`` is. MCP-P1a has no request, so the
-    request id is ``None``.
+    effort, as ``acb_audit.record`` is. *request_id* is the approval that
+    the call spends (MCP-P1b-2), and ``None`` for a call with none.
     """
     if door is None:
         return
@@ -636,7 +649,7 @@ def _audit_door(
                 "app": door.app.id,
                 "op": door.name,
                 "class": door.route.cls,
-                "request_id": None,
+                "request_id": request_id,
                 "decision": decision,
                 # BR-7b (core_brief.md §8.2): the app scope that the door
                 # checks. The close-out names it on an allowed call.
@@ -682,22 +695,142 @@ async def _claim_door_read(connection: agent_tokens.LiveConnection) -> int | Non
 
 async def _claim_call(
     connection: agent_tokens.LiveConnection, door: app_manifests.DoorOp | None,
-    nonce: str | None, via: str,
+    nonce: str | None, via: str, pair: tuple[str, str | None],
+    approval: tuple[str, str | None] | None = None,
 ) -> str | None:
-    """Steps 5a to 5d of branch 0: :func:`_door_gate` for a door pair, else
-    :func:`_claim_write` with ``projects:write`` for a write of
-    ``MCP_WRITE_ROUTES``. A read of ``MCP_ROUTES`` needs neither. A refusal
-    reason (401), or ``None``."""
+    """Steps 5a to 5e of branch 0: :func:`_door_gate` for a door pair, else
+    :func:`_claim_write` for a write of ``MCP_WRITE_ROUTES``. A read of
+    ``MCP_ROUTES`` needs neither. A refusal reason (401), or ``None``.
+
+    A write of ``MCP_WRITE_ROUTES`` needs ``projects:write``. The ask of
+    ``app_write`` (MCP-P1b-2, AD-4) needs any ``<app>:write`` of an app that
+    the door serves (``agent_oauth.request_write_scope``), and the route
+    checks the app of its path.
+
+    MCP-P1b-2 (AD-6): only a door write that waits for the member may carry
+    an *approval*, and only one whose digest :func:`_approval_of` could
+    form. Any other approval is ``"approval"``, with its audit row for a door
+    pair, so no approval reaches a route that does not spend it."""
+    if approval is not None and (door is None or door.asks == "never"
+                                 or approval[1] is None):
+        _audit_door(connection, door, via, "approval", approval[0])
+        return "approval"
     if door is not None:
-        return await _door_gate(connection, door, nonce, via)
+        return await _door_gate(connection, door, nonce, via, approval)
     if nonce is not None:
-        return await _claim_write(connection, nonce, agent_oauth.PROJECTS_WRITE)
+        scope: str | None = agent_oauth.PROJECTS_WRITE
+        if pair == agent_oauth.REQUEST_ASK_ROUTE:
+            scope = agent_oauth.request_write_scope(connection.scopes)
+        if scope is None:
+            return "write_scope"
+        return await _claim_write(connection, nonce, scope)
     return None
+
+
+def _approval_of(
+    connection_id: str, approval_id: str | None, method: str, template: str | None,
+    path: str, query: str | bytes, body: bytes, if_match: list[str],
+) -> tuple[str, str | None] | None:
+    """The approval of a call and the digest of the call (MCP-P1b-2,
+    AD-17): ``(request id, digest)``, or ``None`` for a call with no
+    approval. The digest is ``None`` when branch 0 must refuse the call.
+
+    The parts are the method, the matched template, the signed path and
+    query, the hash of the signed body, the ONE ``If-Match`` that the route
+    reads, and the binding of the ROW's connection. Two ``If-Match`` headers,
+    or a part that cannot form one line of the digest, give no digest.
+    """
+    if approval_id is None:
+        return None
+    pairs = agent_signing.query_pairs(query)
+    if len(if_match) > 1 or not template or pairs is None:
+        return approval_id, None
+    try:
+        return approval_id, app_requests.digest_of(
+            binding=app_requests.mcp_binding(connection_id),
+            method=method, template=template, path=path, query=pairs,
+            body_sha256=hashlib.sha256(body).hexdigest(),
+            if_match=if_match[0] if if_match else None,
+        )
+    except ValueError:
+        return approval_id, None
+
+
+#: MCP-P1b-2 (AD-6). Each class of a refused spend, with its status and its
+#: code. A request that waits for the member, or that this member, app and
+#: connection do not hold, has no approval to spend.
+_SPEND_REFUSALS: dict[str, tuple[int, str]] = {
+    "mismatch": (409, agent_oauth.APPROVAL_MISMATCH_CODE),
+    "declined": (409, agent_oauth.APPROVAL_USED_CODE),
+    "spent": (409, agent_oauth.APPROVAL_USED_CODE),
+    "expired": (409, agent_oauth.APPROVAL_USED_CODE),
+    "awaiting": (403, agent_oauth.APPROVAL_REQUIRED_CODE),
+    "not_found": (403, agent_oauth.APPROVAL_REQUIRED_CODE),
+}
+
+
+async def _spend_approval(
+    connection: agent_tokens.LiveConnection, door: app_manifests.DoorOp,
+    approval: tuple[str, str | None], via: str,
+) -> None:
+    """Step 5e of branch 0 (MCP-P1b-2, AD-6): spend the approval once.
+
+    *approval* is the signed request id and the digest of THIS call
+    (:func:`_approval_of`). ``acb_auth.app_requests.spend`` is the ONE
+    spend: one ``UPDATE ... RETURNING`` whose WHERE holds the org, the app,
+    the member, the connection, the whole binding, the decision, the expiry
+    and the digest, so two calls that race get one winner. It runs in a
+    tenant session of the ROW's organization, and it commits before the
+    route runs. So a route that refuses the call after the spend changes
+    nothing, and the request stays spent (§19.12).
+
+    A refused spend changes nothing. It answers 409 ``approval_mismatch``
+    for another call (the request stays approved), 409 ``approval_used`` for
+    a spent, declined or expired request, and 403 ``approval_required`` for
+    a request with no decision or one that this member, app and connection
+    do not hold. Each refusal writes its audit row. A failure of the
+    database is the ONE 503 of :func:`_identity_unavailable`, never a 401.
+    """
+    from acb_common.db import tenant_session
+
+    # `_claim_call` refused an approval with no digest. An empty digest
+    # matches no request, so this line cannot open a spend.
+    request_id, digest = approval[0], approval[1] or ""
+    binding = app_requests.mcp_binding(connection.connection_id)
+    spent: app_requests.Spent | None = None
+    why = "not_found"
+    try:
+        async with tenant_session(connection.organization_id) as db:
+            spent = await app_requests.spend(
+                db, org=connection.organization_id, request_id=request_id,
+                app=door.app.id, member=connection.member_email, binding=binding,
+                digest=digest)
+            if spent is None:
+                why = await app_requests.classify_refusal(
+                    db, org=connection.organization_id, request_id=request_id,
+                    app=door.app.id, member=connection.member_email, binding=binding,
+                    digest=digest)
+    except Exception as exc:
+        if db_busy.is_db_outage(exc):
+            db_busy.mark()
+        _log.warning("auth.agent_spend_failed", error=type(exc).__name__,
+                     connection_id=connection.connection_id)
+        _audit_door(connection, door, via, "unavailable", request_id)
+        raise _identity_unavailable() from exc
+    if spent is not None:
+        _log.info("auth.agent_approval_spent", request_id=request_id,
+                  connection_id=connection.connection_id)
+        return
+    status, code = _SPEND_REFUSALS.get(why, (403, agent_oauth.APPROVAL_REQUIRED_CODE))
+    _audit_door(connection, door, via, code, request_id)
+    _log.info("auth.agent_refused", reason=code, why=why,
+              connection_id=connection.connection_id)
+    raise HTTPException(status_code=status, detail=code)
 
 
 async def _door_gate(
     connection: agent_tokens.LiveConnection, door: app_manifests.DoorOp,
-    nonce: str | None, via: str,
+    nonce: str | None, via: str, approval: tuple[str, str | None] | None = None,
 ) -> str | None:
     """Step 5a of branch 0, for a door pair (MCP-P1a, spec §19.5 to §19.7).
 
@@ -708,32 +841,36 @@ async def _door_gate(
        ``MCP_WRITE_ROUTES``. It runs here, so the refusal has a connection
        for its audit row.
     1. The door flag names the app, else the coded 403 ``app_off``.
-    2. AD-18: a write of class B or C that is not a proposal gets the coded
-       403 ``approval_required``. Before MCP-P1b no approval can exist, so
-       each such call fails, whatever the scope.
+    2. AD-18: a write of class B or C that is not a proposal needs the
+       member's approval. A call with no *approval* gets the coded 403
+       ``approval_required``, whatever the scope. :func:`_claim_call`
+       already refused an approval on a call that asks nothing.
     3. AD-4: the connection holds the app scope of the op, ``<app>:read`` for
        a read and ``<app>:write`` for a change, else ``"door_scope"`` (401).
     4. AD-13: a read counts under the door read cap (429). A write takes the
        nonce and the write cap of :func:`_claim_write`, with the app's write
-       scope.
+       scope. So the ask and the spend of one change count as two writes.
+    5. MCP-P1b-2 (AD-6): the spend of *approval* (:func:`_spend_approval`),
+       last, so a refused call spends nothing.
 
     Returns a refusal reason, or ``None`` when the call may go on. Each
     refusal writes its audit row (:func:`_audit_door`) before it returns or
     raises. The caller writes the row of an allowed call at the end.
     """
+    request_id = approval[0] if approval is not None else None
     if nonce is not None and not agent_oauth.writes_enabled():
-        _audit_door(connection, door, via, agent_oauth.WRITES_DISABLED_CODE)
+        _audit_door(connection, door, via, agent_oauth.WRITES_DISABLED_CODE, request_id)
         raise _writes_disabled()
     if not agent_oauth.door_serves(door.app.id):
-        _audit_door(connection, door, via, agent_oauth.APP_OFF_CODE)
+        _audit_door(connection, door, via, agent_oauth.APP_OFF_CODE, request_id)
         _log.info("auth.agent_refused", reason=agent_oauth.APP_OFF_CODE)
         raise HTTPException(status_code=403, detail=agent_oauth.APP_OFF_CODE)
-    if door.asks != "never":
+    if door.asks != "never" and approval is None:
         _audit_door(connection, door, via, agent_oauth.APPROVAL_REQUIRED_CODE)
         _log.info("auth.agent_refused", reason=agent_oauth.APPROVAL_REQUIRED_CODE)
         raise HTTPException(status_code=403, detail=agent_oauth.APPROVAL_REQUIRED_CODE)
     if not agent_oauth.scope_holds(connection.scopes, door.scope):
-        _audit_door(connection, door, via, "door_scope")
+        _audit_door(connection, door, via, "door_scope", request_id)
         return "door_scope"
     over: int | None = None
     refused: str | None = None
@@ -744,7 +881,7 @@ async def _door_gate(
             refused = await _claim_write(connection, nonce, door.scope)
     except HTTPException as exc:
         _audit_door(connection, door, via,
-                    "write_cap" if exc.status_code == 429 else "unavailable")
+                    "write_cap" if exc.status_code == 429 else "unavailable", request_id)
         raise
     if over is not None:
         _audit_door(connection, door, via, "read_cap")
@@ -754,8 +891,11 @@ async def _door_gate(
             headers={"Retry-After": str(over)},
         )
     if refused is not None:
-        _audit_door(connection, door, via, refused)
-    return refused
+        _audit_door(connection, door, via, refused, request_id)
+        return refused
+    if approval is not None:
+        await _spend_approval(connection, door, approval, via)
+    return None
 
 
 
@@ -786,6 +926,13 @@ async def _agent_user(request: Request) -> UserContext:
     (AD-13). Each door call that reaches a live connection writes ONE audit
     row (AD-14): the stamp check and the gate write a refusal, the seat check
     its own, and the end writes ``allowed``.
+
+    The spend (MCP-P1b-2, AD-6). A door write that waits for the member
+    carries the signed ``X-Agent-Approval``. Branch 0 computes the digest of
+    the call (:func:`_approval_of`), and the gate spends the request
+    once, last, in place of the blanket refusal of AD-18
+    (:func:`_spend_approval`). A call with no approval still gets the 403
+    ``approval_required``.
 
     ⚠️ A database outage is not a refusal. It answers the ONE 503 of
     :func:`_identity_unavailable`, with ``Retry-After: 2``, and it never
@@ -835,7 +982,7 @@ async def _agent_user(request: Request) -> UserContext:
     signed = _verify_signed_request(request, keys, body, nonce)
     if isinstance(signed, str):
         return _refuse_agent(signed)
-    organization_id, connection_id, actor_via, session = signed
+    organization_id, connection_id, actor_via, session, approval_id = signed
 
     # 3. The matched route template is in MCP_ROUTES, or it is a door pair.
     if pair not in agent_oauth.MCP_ROUTES and door is None:
@@ -880,15 +1027,25 @@ async def _agent_user(request: Request) -> UserContext:
     ):
         # AD-14: a refused door call writes its row too. The row holds the
         # row's own stamp, never the header value.
-        _audit_door(connection, door, expected_via, "actor_via")
+        _audit_door(connection, door, expected_via, "actor_via", approval_id)
         return _refuse_agent("actor_via", **ids)
 
-    # 5a, a door pair (MCP-P1a): the door flag, AD-18, the app scope and the
-    # caps, in `_door_gate`. 5b to 5d, a write of MCP_WRITE_ROUTES:
-    # `projects:write` on the connection (EA3-29), a fresh nonce (EA3-28) and
-    # room under the cap (EA3-30). They run before the resolve, so a refused
-    # call binds no tenant.
-    refused = await _claim_call(connection, door, nonce, expected_via)
+    # 5a'. MCP-P1b-2 (AD-6, AD-17): the approval of THIS call and its digest,
+    # for the spend, or None. The parts are the signed path, query and body,
+    # the matched template, the ONE `If-Match` that the route reads, and the
+    # ROW's connection.
+    approval = _approval_of(
+        connection.connection_id, approval_id, method, pair[1],
+        str(request.scope.get("path") or ""), request.scope.get("query_string") or b"",
+        body, request.headers.getlist("if-match"),
+    )
+
+    # 5a, a door pair (MCP-P1a): the door flag, AD-18, the app scope, the
+    # caps and, last, the spend of an approval (MCP-P1b-2), in `_door_gate`.
+    # 5b to 5d, a write of MCP_WRITE_ROUTES: its write scope (EA3-29), a
+    # fresh nonce (EA3-28) and room under the cap (EA3-30). They run before
+    # the resolve, so a refused call binds no tenant.
+    refused = await _claim_call(connection, door, nonce, expected_via, pair, approval)
     if refused is not None:
         return _refuse_agent(refused, **ids)
 
@@ -906,15 +1063,17 @@ async def _agent_user(request: Request) -> UserContext:
         # request keeps none.
         clear_tenant()
         outage = identity_read_failed() or role_read_failed()
-        _audit_door(connection, door, expected_via, "unavailable" if outage else "seat")
+        _audit_door(connection, door, expected_via, "unavailable" if outage else "seat",
+                    approval_id)
         if outage:
             # The database refused a read: an outage, not "no seat".
             db_busy.mark()
             raise _identity_unavailable()
         return _refuse_agent("seat", **ids)
 
-    # The audit row of an allowed door call (AD-14).
-    _audit_door(connection, door, expected_via, "allowed")
+    # The audit row of an allowed door call (AD-14), with the request id of
+    # the approval that it spent (MCP-P1b-2).
+    _audit_door(connection, door, expected_via, "allowed", approval_id)
     # Attach the scope LAST. No `_bind_session_member`: no route in
     # MCP_ROUTES and no door op calls a model (AD-11).
     return dataclasses.replace(

@@ -5,7 +5,7 @@ member routes") and AD-16, and row MCP-P1b-1 of §19.13.
 
     POST /agent-access/apps/{app}/requests          → {request_id, run_id, state, expires_at, created}
     GET  /agent-access/requests                      → {rows, more}
-    GET  /agent-access/requests/{request_id}         → the request
+    GET  /agent-access/requests/{request_id}?wait_s  → the request
     POST /agent-access/requests/{request_id}/decision → {request_id, run_id, decision, state, created}
 
 The store is ``gateway/app_requests.py``. These routes only check who asks.
@@ -16,10 +16,10 @@ The store is ``gateway/app_requests.py``. These routes only check who asks.
    signed agent only (``UserContext.agent``), and 404 for anyone else. It
    needs the door flag, the feature of the app, the scope ``<app>:write``
    and the writes flag. The op must be a door op of class B or C that is not
-   a proposal. The class comes from the manifest, never from the body.
-   ``build_call`` builds the call. Nothing runs. In MCP-P1b-1 no pair here is
-   in ``MCP_ROUTES``, so branch 0 refuses a signed call to it: the edge flow
-   is MCP-P1b-2.
+   a proposal, and ``agent_oauth.door_available`` must give it (MCP-P1b-2).
+   The class comes from the manifest, never from the body. ``build_call``
+   builds the call. Nothing runs. MCP-P1b-2 puts the ask in
+   ``MCP_WRITE_ROUTES``, and branch 0 takes any ``<app>:write`` for it.
 2. **The decision is the member's.** ``POST .../decision`` refuses a signed
    agent with 403, and it is in no door set and not in ``MCP_ROUTES``
    (``test_decision_route_not_in_door_sets``). Only the member of the request
@@ -28,7 +28,10 @@ The store is ``gateway/app_requests.py``. These routes only check who asks.
    member only. An agent gets 404.
 4. **One read for both.** ``GET .../requests/{request_id}`` gives the member
    their request. An agent reads only a request of its own connection
-   (AD-16): another connection is 404, with no oracle.
+   (AD-16): another connection is 404, with no oracle. MCP-P1b-2 puts it in
+   ``MCP_ROUTES`` for the wait of ``app_write``. With ``wait_s``, the answer
+   waits while the request is ``awaiting``, for at most that many seconds,
+   and no session is open while it sleeps (EA12-4).
 5. **The org and the member come from the session (R5, R11).** Each body
    forbids extra keys, so no body names an org, a member or a connection.
 6. **Dark.** Each route answers 404 while ``APP_REQUESTS_ORGS`` does not
@@ -43,15 +46,17 @@ Fences: ``tests/unit/test_app_requests_r8.py`` (R8) and
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Literal
 
 from acb_auth import UserContext, agent_oauth, get_current_user
 from acb_auth import app_requests as store
 from acb_common import app_manifests
-from fastapi import APIRouter, Depends, HTTPException, Path, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from gateway import app_requests
 from gateway.db import current_tenant, tenant_session
 from gateway.routes.agent_apps import _require_door
+from gateway.routes.projects import agent_runs
 from pydantic import BaseModel, ConfigDict, Field
 
 #: The shape of a request id: the id of its elicitation.
@@ -136,12 +141,12 @@ async def open_app_request(
         raise _refuse(422, "not_an_approval_op")
     if not agent_oauth.scope_holds(agent.scopes, found.write_scope):
         raise _refuse(403, "insufficient_scope")
-    if not agent_oauth.writes_enabled():
-        raise _refuse(403, agent_oauth.DOOR_WRITES_OFF_CODE)
-    if door.route.sends:
-        # AD-19. A send waits for `AGENT_DOOR_SENDS` of MCP-P2b, so it fails
-        # closed here until then.
-        raise _refuse(403, "sends_off")
+    # MCP-P1b-2: the one rule of availability, as `describe_app` gives it.
+    # The writes flag, the runs flag of §12.1, and AD-19: a send waits for
+    # `AGENT_DOOR_SENDS` of MCP-P2b, so it fails closed here until then.
+    available, code = agent_oauth.door_available(door)
+    if not available:
+        raise _refuse(403, code or agent_oauth.REQUESTS_OFF_CODE)
     try:
         call = app_manifests.build_call(found, payload.op, payload.args)
     except app_manifests.BadCall as bad:
@@ -186,16 +191,29 @@ async def list_app_requests(user: UserContext = Depends(get_current_user)) -> di
 @router.get("/requests/{request_id}")
 async def read_app_request(
     request_id: str = Path(..., pattern=_ID),
+    wait_s: int = Query(0, ge=0, le=agent_runs.MAX_WAIT_S),
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """One request of the member, or of the agent's own connection (rule 4)."""
+    """One request of the member, or of the agent's own connection (rule 4).
+
+    With ``wait_s`` (MCP-P1b-2), the answer waits while the request is
+    ``awaiting``, for at most that many seconds. The gateway reads again
+    every ``agent_runs.POLL_S`` seconds, and NO session is open while it
+    sleeps (EA12-4).
+    """
     binding = None
     if user.agent is not None:
         binding = store.mcp_binding(str(user.agent.connection_id))
     org = _org(user)
-    async with tenant_session() as db:
-        found = await app_requests.read_request(
-            db, org=org, member=user.email, request_id=request_id, binding=binding)
+    deadline = time.monotonic() + wait_s
+    while True:
+        async with tenant_session() as db:
+            found = await app_requests.read_request(
+                db, org=org, member=user.email, request_id=request_id, binding=binding)
+        left = deadline - time.monotonic()
+        if found is None or found["state"] != "awaiting" or left <= 0:
+            break
+        await agent_runs._sleep(min(agent_runs.POLL_S, left))
     if found is None:
         raise HTTPException(status_code=404, detail="Request not found")
     return found

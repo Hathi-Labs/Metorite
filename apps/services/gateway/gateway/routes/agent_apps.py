@@ -21,8 +21,10 @@ admits that pair from the manifests (``acb_auth.agent_oauth.door_route``).
 2. **Dark.** 404 while ``agent_access_enabled`` is off, and while
    ``agent_door_apps`` names no app (AD-15).
 3. **No data of an app.** An answer holds the manifest, the args schemas
-   and the state of the organization. The module opens no database session
-   and adds no seam (R5).
+   and the state of the organization. It opens one tenant session, through
+   the seam, only for the ``waiting`` key of ``list_apps`` (MCP-P1b-2), and
+   only while ``APP_REQUESTS_ORGS`` holds the organization. That key names
+   the live requests of THIS connection, with no call (R5, AD-16).
 4. **The member and the tenant come from the session (R11).** No input names
    them. ``{app}`` is an app id of the pattern of the manifests.
 5. **Three kinds of app stay out** (§19.4): an app that the door flag does
@@ -30,6 +32,9 @@ admits that pair from the manifests (``acb_auth.agent_oauth.door_route``).
    MCP-P3, an app that the admin switched off.
 6. **One rule of availability.** ``agent_oauth.door_available`` decides each
    op, on both sides of the door. A refused op gives a code, never a text.
+   MCP-P1b-2: a write that waits for the member also needs
+   ``app_requests.requests_allowed`` for the organization, else the code
+   ``requests_off``.
 
 Fences: ``tests/unit/test_mcp_edge_app_door.py`` and, on a real database,
 ``tests/unit/test_mcp_edge_app_door_r8.py``.
@@ -47,6 +52,8 @@ from acb_auth import UserContext, agent_oauth, get_current_user
 from acb_auth.roles import AgentScope
 from acb_common import app_manifests, get_logger
 from fastapi import APIRouter, Depends, HTTPException, Path
+from gateway import app_requests
+from gateway.db import current_tenant, tenant_session
 from pydantic import BaseModel, ConfigDict, Field, create_model
 from pydantic.fields import FieldInfo
 
@@ -97,10 +104,40 @@ def _scopes_of(app: app_manifests.App) -> tuple[str, str | None]:
     return app.read_scope, write
 
 
+def _org_of(user: UserContext) -> str | None:
+    """The org of the bound session, or ``None``. Never from input (R11)."""
+    org = current_tenant() or user.organization_id
+    if not org or (user.organization_id and str(org) != str(user.organization_id)):
+        return None
+    return str(org)
+
+
+def _requests_on(user: UserContext) -> bool:
+    """True when the approval path is on for the org of the session."""
+    return app_requests.requests_allowed(_org_of(user))
+
+
+async def _waiting(user: UserContext, agent: AgentScope) -> dict[str, list[dict[str, Any]]]:
+    """The live requests of THIS connection, by app (MCP-P1b-2, §19.4).
+    Empty, with no session, while ``APP_REQUESTS_ORGS`` does not hold the org."""
+    org = _org_of(user)
+    if org is None or not app_requests.requests_allowed(org):
+        return {}
+    async with tenant_session() as db:
+        rows = await app_requests.list_waiting(
+            db, org=org, member=user.email or "", connection_id=str(agent.connection_id))
+    out: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        out.setdefault(str(row["app"]), []).append(
+            {key: row[key] for key in ("request_id", "op", "state", "expires_at")})
+    return out
+
+
 @router.get("/apps")
 async def list_apps(user: UserContext = Depends(get_current_user)) -> dict[str, Any]:
     """The apps that the door serves to this member (§19.4, ``list_apps``)."""
     agent = _agent_of(user)
+    waiting = await _waiting(user, agent)
     rows: list[dict[str, Any]] = []
     for app in app_manifests.every_app():
         if app.door == "ops" and not agent_oauth.door_serves(app.id):
@@ -117,8 +154,8 @@ async def list_apps(user: UserContext = Depends(get_current_user)) -> dict[str, 
             "write": write is not None and agent_oauth.scope_holds(agent.scopes, write),
             "available": True,
             "why_not": None,
-            # MCP-P1b fills it with the open requests of this connection.
-            "waiting": [],
+            # MCP-P1b-2: the live requests of this connection for the app.
+            "waiting": waiting.get(app.id, []),
         })
     return {"apps": rows}
 
@@ -223,8 +260,11 @@ async def describe_app(
     if found is None or not agent_oauth.door_serves(found.id) or not _feature_held(user, found):
         raise HTTPException(status_code=404, detail="Not Found")
     ops: list[dict[str, Any]] = []
+    requests_on = _requests_on(user)
     for door in app_manifests.door_ops(found).values():
         available, code = agent_oauth.door_available(door)
+        if available and door.asks != "never" and not requests_on:
+            available, code = False, agent_oauth.REQUESTS_OFF_CODE
         ops.append({
             "op": door.name,
             "title": door.route.title,

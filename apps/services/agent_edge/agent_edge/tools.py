@@ -92,6 +92,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from acb_auth import agent_oauth
+from acb_auth import app_requests as approval_store
 from acb_common import app_manifests, get_logger, get_settings
 from acb_common.priority import importance_for
 
@@ -9538,9 +9539,13 @@ RELEASE_TASK = Tool(
 # result has at most :data:`DOOR_RESULT_MAX_BYTES` (AD-12).
 #
 # AD-18. A write of class B or C that is not a proposal needs the member's
-# approval. MCP-P1b builds that path. Until then the edge refuses each such
-# op before any request (:data:`TEXT_NEEDS_APPROVAL`), and branch 0 refuses
-# it with the coded 403 ``approval_required``.
+# approval. MCP-P1b-2 builds that path (§19.5, path 2): ``app_write`` asks
+# the member through ``POST /agent-access/apps/{app}/requests``, waits with
+# ``GET /agent-access/requests/{request_id}``, and after an approve sends the
+# STORED call once with the signed ``X-Agent-Approval``. Branch 0 spends the
+# request. A call with no approval still gets the coded 403
+# ``approval_required``. While the approval path is off, the edge refuses
+# the op before any request (:data:`TEXT_NEEDS_APPROVAL`).
 
 DOOR_APPS_ROUTE = "/agent-access/apps"
 DOOR_APP_ROUTE = "/agent-access/apps/{app}"
@@ -9561,8 +9566,26 @@ TEXT_USE_WRITE = "Use app_write for a change."
 TEXT_USE_READ = "Use app_read for a read."
 TEXT_NEEDS_APPROVAL = (
     "This change needs the member's approval, and Metorite cannot ask the member"
-    " for it yet. Nothing changed.")
+    " for it now. Nothing changed.")
 TEXT_NOT_APPROVED = "Metorite refused this change, because the member has not approved it."
+#: MCP-P1b-2 (§19.4). The texts of a spend that branch 0 refuses.
+TEXT_APPROVAL_MISMATCH = "This change is not the change that the member approved. Ask again."
+TEXT_APPROVAL_USED = "That approval is used or expired. Ask again."
+#: MCP-P1b-2. The texts of an ask that the request route refuses.
+TEXT_TOO_MANY_REQUESTS = "Too many changes wait for the member. Wait for an answer first."
+TEXT_REQUEST_TOO_LARGE = "This change is too large for the member's card. Make it smaller."
+TEXT_REQUEST_SECRET = "This change holds a key that names a secret. Metorite refuses it."
+TEXT_REQUEST_UNSHOWABLE = (
+    "This change holds a value that the member's card cannot show exactly. Check the"
+    " numbers and the characters.")
+#: MCP-P1b-2. The texts of a wait.
+TEXT_REQUEST_OTHER_APP = "That request is for another app. Send the app of the request."
+TEXT_REQUEST_SPENT = (
+    "Metorite already sent the change of that request. Read the app to check the"
+    " result. To make another change, ask again.")
+TEXT_REQUEST_STALE = (
+    "The operation of that request changed after the member approved it. Nothing"
+    " changed. Ask again.")
 TEXT_DOOR_INPUT = "Metorite could not use that input. Check: {names}."
 TEXT_DOOR_INPUT_ANY = "Metorite could not use that input. Check the input."
 TEXT_DOOR_NOT_FOUND = "{app} has nothing at that id."
@@ -9588,6 +9611,9 @@ TEXT_DOOR_KEY_UNKNOWN = (
 WHY_NOT_TEXTS: Mapping[str, str] = {
     agent_oauth.APPROVAL_REQUIRED_CODE: TEXT_NEEDS_APPROVAL,
     agent_oauth.DOOR_WRITES_OFF_CODE: TEXT_WRITES_OFF,
+    # MCP-P1b-2: the approval path is off for the organization.
+    agent_oauth.REQUESTS_OFF_CODE: TEXT_NEEDS_APPROVAL,
+    agent_oauth.SENDS_OFF_CODE: TEXT_UNAVAILABLE,
 }
 
 #: AD-12. A door page holds at most :data:`DOOR_PAGE_MAX` rows, and one result
@@ -9755,8 +9781,9 @@ def _door_app(app_id: Any) -> app_manifests.App:
 def _door_op(app_id: Any, op: Any, *, write: bool) -> app_manifests.DoorOp:
     """The door op of the call, or the fixed tool error of §19.4.
 
-    AD-18: a write of class B or C that is not a proposal is refused here,
-    before any request, because no approval can exist before MCP-P1b.
+    AD-18 (MCP-P1b-2): a write of class B or C that is not a proposal waits
+    for the member. While ``agent_oauth.door_available`` says that the
+    approval path is off, it is refused here, before any request.
     """
     found = _door_app(app_id)
     door = app_manifests.door_ops(found).get(op) if isinstance(op, str) else None
@@ -9767,7 +9794,9 @@ def _door_op(app_id: Any, op: Any, *, write: bool) -> app_manifests.DoorOp:
     if not write and door.kind != "read":
         raise ToolError(TEXT_USE_WRITE)
     if write and door.asks != "never":
-        raise ToolError(TEXT_NEEDS_APPROVAL)
+        available, code = agent_oauth.door_available(door)
+        if not available:
+            raise ToolError(WHY_NOT_TEXTS.get(code or "", TEXT_UNAVAILABLE))
     return door
 
 
@@ -9824,6 +9853,11 @@ def _door_body(answer: Answer, door: app_manifests.DoorOp, *, write: bool) -> An
         raise ToolError(TEXT_WRITE_FORBIDDEN if write else TEXT_FORBIDDEN)
     if status == 404:
         raise ToolError(TEXT_DOOR_NOT_FOUND.format(app=door.app.name))
+    # MCP-P1b-2: the two coded 409 answers of a spend that branch 0 refuses.
+    if status == 409 and detail == agent_oauth.APPROVAL_MISMATCH_CODE:
+        raise ToolError(TEXT_APPROVAL_MISMATCH)
+    if status == 409 and detail == agent_oauth.APPROVAL_USED_CODE:
+        raise ToolError(TEXT_APPROVAL_USED)
     if status in (409, 412):
         raise ToolError(TEXT_DOOR_CONFLICT)
     if status == 422:
@@ -9838,10 +9872,12 @@ def _door_body(answer: Answer, door: app_manifests.DoorOp, *, write: bool) -> An
 
 
 async def _door_send(ctx: Context, call: app_manifests.Call, door: app_manifests.DoorOp,
-                     *, write: bool) -> Any:
-    """Send one door call, and map its answer (:func:`_door_body`)."""
+                     *, write: bool, approval: str | None = None) -> Any:
+    """Send one door call, and map its answer (:func:`_door_body`).
+    *approval* is the request id that an approved write spends (MCP-P1b-2)."""
     try:
-        answer = await send_call(ctx.key, ctx.caller.lookup, call, session=ctx.session)
+        answer = await send_call(ctx.key, ctx.caller.lookup, call, session=ctx.session,
+                                 approval=approval)
     except GatewayNotSent:
         raise _NotSent(TEXT_BUSY) from None
     except GatewayUnreachable:
@@ -9913,10 +9949,42 @@ async def _list_apps(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
             "available": available,
             "why_not": None if available else WHY_NOT_TEXTS.get(
                 str(row.get("why_not")), TEXT_UNAVAILABLE),
-            # MCP-P1b fills it with the open requests of this connection.
-            "waiting": [],
+            # MCP-P1b-2: the live requests of this connection for the app.
+            "waiting": _waiting_rows(found, row.get("waiting")),
         })
     return {"apps": out}
+
+
+#: MCP-P1b-2. The states of a request that ``list_apps`` names as waiting.
+WAITING_STATES = frozenset({"awaiting", "approved"})
+
+
+def _waiting_rows(found: app_manifests.App, rows: Any) -> list[dict[str, Any]]:
+    """The ``waiting`` key of one app of ``list_apps`` (MCP-P1b-2, §19.4).
+
+    Each row holds ``request_id``, ``op``, ``state`` and ``expires_at``, and
+    nothing more. A value leaves only in its shape: an id, a door write op of
+    THIS app, a state of :data:`WAITING_STATES` and an ISO-8601 time. A row
+    with any other value is dropped, and so is each row of an app with no
+    ops. At most :data:`DOOR_PAGE_MAX` rows.
+    """
+    if found.door != "ops" or not isinstance(rows, list):
+        return []
+    ops = app_manifests.door_ops(found)
+    out: list[dict[str, Any]] = []
+    for row in rows[:DOOR_PAGE_MAX]:
+        if not isinstance(row, dict):
+            continue
+        rid, op, state, expires = (row.get("request_id"), row.get("op"),
+                                   row.get("state"), row.get("expires_at"))
+        door = ops.get(op) if isinstance(op, str) else None
+        if (not isinstance(rid, str) or not _ID_RE.fullmatch(rid) or door is None
+                or door.kind != "write" or state not in WAITING_STATES
+                or not isinstance(expires, str) or not _ISO_TIME_RE.fullmatch(expires)):
+            continue
+        out.append({"request_id": rid.lower(), "op": op, "state": state,
+                    "expires_at": expires})
+    return out
 
 
 LIST_APPS = Tool(
@@ -10173,11 +10241,58 @@ _APP_WRITE_INPUT: dict[str, Any] = {
     "required": ["app"],
     "additionalProperties": False,
 }
-_APP_WRITE_OUTPUT = _object({
-    "state": {"type": "string", "enum": ["done", "awaiting", "declined", "expired"]},
-    "result": {}, "finish_in": _NULLABLE_STRING, "replayed": {"type": "boolean"},
-    "truncated": {"type": "boolean"},
-})
+#: The answer of ``app_write`` (§19.4). A change that waits for the member
+#: also names its request: ``request_id``, ``run_id`` and ``expires_at``
+#: (MCP-P1b-2). A proposal has no request, so those three keys are optional.
+_APP_WRITE_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "state": {"type": "string", "enum": ["done", "awaiting", "declined", "expired"]},
+        "result": {}, "finish_in": _NULLABLE_STRING, "replayed": {"type": "boolean"},
+        "truncated": {"type": "boolean"},
+        "request_id": _NULLABLE_STRING, "run_id": _NULLABLE_STRING,
+        "expires_at": _NULLABLE_STRING,
+    },
+    "required": ["state", "result", "finish_in", "replayed", "truncated"],
+    "additionalProperties": False,
+}
+
+#: MCP-P1b-2. The two routes of path 2 of §19.5: the ask and the wait.
+REQUEST_ASK_ROUTE = agent_oauth.REQUEST_ASK_ROUTE[1]
+REQUEST_READ_ROUTE = agent_oauth.REQUEST_READ_ROUTE[1]
+
+#: MCP-P1b-2. The limit of one ``app_write`` call: a wait of up to
+#: :data:`MAX_WAIT_SECONDS` with its request margin, then one send with the
+#: limit of any tool. The send of an approved change runs in the same call.
+APP_WRITE_TIMEOUT_S = MAX_WAIT_SECONDS + LONG_POLL_REQUEST_MARGIN_S + TOOL_TIMEOUT_S
+
+#: MCP-P1b-2. The coded refusals of the ask, by the ``error`` of the route or
+#: of the store. The edge never sends the gateway's text (EA3-16).
+_ASK_CODED: Mapping[str, str] = {
+    "idempotency_key_reused": TEXT_DOOR_KEY_REUSED,
+    "too_many_requests": TEXT_TOO_MANY_REQUESTS,
+    "payload_too_large": TEXT_REQUEST_TOO_LARGE,
+    "secret_in_payload": TEXT_REQUEST_SECRET,
+    "bad_args": TEXT_REQUEST_UNSHOWABLE,
+    "class_refused": TEXT_UNAVAILABLE,
+}
+
+#: MCP-P1b-2. The refusals of the ask whose ``detail`` is a plain code.
+_ASK_DETAILS: Mapping[tuple[int, str], str] = {
+    (403, "insufficient_scope"): TEXT_WRITE_FORBIDDEN,
+    (403, agent_oauth.DOOR_WRITES_OFF_CODE): TEXT_WRITES_OFF,
+    (403, agent_oauth.REQUESTS_OFF_CODE): TEXT_NEEDS_APPROVAL,
+    (403, agent_oauth.SENDS_OFF_CODE): TEXT_UNAVAILABLE,
+    (422, "unknown_op"): TEXT_NO_OP,
+    (422, "not_an_approval_op"): TEXT_UNAVAILABLE,
+}
+
+#: MCP-P1b-2. A request state of the gateway, as the state of ``app_write``.
+#: ``approved`` is not an answer: the edge sends the change in its place.
+_REQUEST_STATES: Mapping[str, str] = {
+    "awaiting": "awaiting", "approved": "awaiting",
+    "declined": "declined", "expired": "expired",
+}
 
 #: The annotations of ``app_write`` (§19.4). One tool covers class C too, so
 #: ``destructiveHint`` is true and a client may ask the person first. A call
@@ -10196,21 +10311,136 @@ def _replayed_id(body: Any) -> str:
     return found if isinstance(found, str) else ""
 
 
+def _request_answer(found: app_manifests.App, body: Any, *, replayed: bool,
+                    state: str | None = None) -> dict[str, Any]:
+    """The answer of ``app_write`` for a request that waits for the member
+    (MCP-P1b-2, §19.4). Each id leaves only in the shape of an id, and the
+    expiry only in the shape of a time. A spent request is a tool error,
+    because only the send that spent it holds the result."""
+    if not isinstance(body, dict):
+        raise ToolError(TEXT_BUSY)
+    rid, run_id, expires = body.get("request_id"), body.get("run_id"), body.get("expires_at")
+    if not isinstance(rid, str) or not _ID_RE.fullmatch(rid):
+        raise ToolError(TEXT_BUSY)
+    raw = state if state is not None else body.get("state")
+    if raw == "done":
+        raise ToolError(TEXT_REQUEST_SPENT)
+    mapped = _REQUEST_STATES.get(raw) if isinstance(raw, str) else None
+    if mapped is None:
+        raise ToolError(TEXT_BUSY)
+    return {
+        "state": mapped, "result": None, "finish_in": found.finish_in or None,
+        "replayed": replayed, "truncated": False, "request_id": rid.lower(),
+        "run_id": run_id.lower() if isinstance(run_id, str) and _ID_RE.fullmatch(run_id)
+        else None,
+        "expires_at": expires if isinstance(expires, str) and _ISO_TIME_RE.fullmatch(expires)
+        else None,
+    }
+
+
+async def _app_ask(ctx: Context, found: app_manifests.App, door: app_manifests.DoorOp,
+                   sent: dict[str, Any], key: str) -> dict[str, Any]:
+    """Path 2 of §19.5, steps 1 to 6 (MCP-P1b-2): ask the member to approve
+    ONE call. Nothing changes yet.
+
+    The edge sends the op, the args and the key. The gateway builds the call
+    with ``build_call``, the one builder, and keeps the key with the request,
+    so the same key and args give the first request, and another change
+    under the key is refused. The class never leaves the edge.
+    """
+    status, body = await _write(
+        ctx, "POST", REQUEST_ASK_ROUTE, TEXT_NEEDS_APPROVAL,
+        json_body={"op": door.name, "args": sent, "idempotency_key": key},
+        path_params={"app": found.id}, details=_ASK_DETAILS, coded=_ASK_CODED,
+        coded_statuses=(409, 413, 422, 429))
+    return _request_answer(found, body, replayed=status == 200)
+
+
+def _stored_call(door: app_manifests.DoorOp, stored: Any) -> app_manifests.Call:
+    """The call that the member approved, from the request (MCP-P1b-2).
+
+    The edge sends the STORED call, never the args of this tool call. Its
+    method and template must be the ones of the door op, or the op of the
+    request changed after the approval, and nothing goes out. The body bytes
+    are ``acb_auth.app_requests.body_bytes`` of the stored body, the bytes
+    that the digest of the request read (AD-17).
+    """
+    if not isinstance(stored, dict):
+        raise ToolError(TEXT_BUSY)
+    method, template, path = stored.get("method"), stored.get("template"), stored.get("path")
+    if (method, template) != (door.route.method, door.route.path) or not isinstance(path, str):
+        raise ToolError(TEXT_REQUEST_STALE)
+    query: list[tuple[str, str]] = []
+    for pair in stored.get("query") or ():
+        if (not isinstance(pair, list) or len(pair) != 2
+                or not all(isinstance(part, str) for part in pair)):
+            raise ToolError(TEXT_BUSY)
+        query.append((pair[0], pair[1]))
+    if_match = stored.get("if_match")
+    if if_match is not None and not isinstance(if_match, str):
+        raise ToolError(TEXT_BUSY)
+    return app_manifests.Call(method=method, template=template, path=path,
+                              query=tuple(query),
+                              body=approval_store.body_bytes(stored.get("body")),
+                              if_match=if_match)
+
+
+async def _app_wait(ctx: Context, found: app_manifests.App,
+                    args: dict[str, Any]) -> dict[str, Any]:
+    """Path 2 of §19.5, steps 8 to 10 (MCP-P1b-2): wait for the member, and
+    after an approve send the stored call once.
+
+    One read of :data:`REQUEST_READ_ROUTE`, which holds the answer for up to
+    ``wait_seconds``. The gateway gives only a request of THIS connection
+    (AD-16), so another id reads as no request. A request of another app is
+    refused. After an approve, the edge sends the stored call with the
+    signed ``X-Agent-Approval`` in the same tool call. Branch 0 spends the
+    request, so a second send gets ``approval_used`` and changes nothing.
+    """
+    rid = str(args["request_id"]).lower()
+    wait = int(args.get("wait_seconds", 0))
+    body = await _get(ctx, REQUEST_READ_ROUTE, TEXT_NO_REQUEST,
+                      path_params={"request_id": rid}, query=[("wait_s", str(wait))],
+                      timeout_s=wait + LONG_POLL_REQUEST_MARGIN_S)
+    if not isinstance(body, dict):
+        raise ToolError(TEXT_BUSY)
+    if body.get("app") != found.id:
+        raise ToolError(TEXT_REQUEST_OTHER_APP)
+    state = body.get("state")
+    if state != "approved":
+        return _request_answer(found, {**body, "request_id": rid}, replayed=False)
+    op = body.get("op")
+    door = app_manifests.door_ops(found).get(op) if isinstance(op, str) else None
+    if door is None or door.kind != "write":
+        raise ToolError(TEXT_REQUEST_STALE)
+    available, code = agent_oauth.door_available(door)
+    if not available:
+        raise ToolError(WHY_NOT_TEXTS.get(code or "", TEXT_UNAVAILABLE))
+    call = _stored_call(door, body.get("call"))
+    sent = await _door_send(ctx, call, door, write=True, approval=rid)
+    result, truncated = door_cut(door_value(sent, _plain_of(door)))
+    answer = _request_answer(found, {**body, "request_id": rid}, replayed=False,
+                             state="approved")
+    return {**answer, "state": "done", "result": result, "truncated": truncated}
+
+
 async def _app_write(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     """``app_write``: a proposal goes to the route of its op at once (AD-8).
 
-    Each other write needs the approval path of MCP-P1b, so the edge refuses
-    it here with no request (AD-18). A ``request_id`` names no request
-    before MCP-P1b. The ``idempotency_key`` holds the slot of
-    :func:`_claim_slot`, so a retry with the same key and input gives the
-    first answer and makes one proposal.
+    Each other write waits for the member (path 2 of §19.5, MCP-P1b-2). The
+    first call asks (:func:`_app_ask`) and answers ``awaiting``. A call with
+    ``request_id`` waits, and after an approve it sends the stored call once
+    (:func:`_app_wait`). For a proposal, the ``idempotency_key`` holds the
+    slot of :func:`_claim_slot`, so a retry with the same key and input
+    gives the first answer and makes one proposal. For a request, the
+    gateway keeps the key with the request.
     """
     found = _door_app(args["app"])
     asking = any(name in args for name in ("op", "args", "idempotency_key"))
     if "request_id" in args:
         if asking:
             raise ToolError(TEXT_TWO_FORMS)
-        raise ToolError(TEXT_NO_REQUEST)
+        return await _app_wait(ctx, found, args)
     if "wait_seconds" in args:
         raise ToolError(TEXT_WAIT_NEEDS_REQUEST)
     for name in ("op", "idempotency_key"):
@@ -10221,6 +10451,10 @@ async def _app_write(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     if _holds_nul(sent):
         raise ToolError(text_nul("args"))
     call = _door_call(door, sent)
+    if door.kind == "write":
+        # Path 2: the call is built here only to refuse a bad input with no
+        # request. The gateway builds the same call with the same builder.
+        return await _app_ask(ctx, found, door, sent, str(args["idempotency_key"]))
     claim = await _claim_slot(ctx, f"app_write.{found.id}.{door.name}",
                               str(args["idempotency_key"]), args, _DOOR_KEY_TEXTS)
     if claim.earlier is not None:
@@ -10247,9 +10481,13 @@ APP_WRITE = Tool(
         " from describe_app, send args as its args schema says, and send a new"
         " idempotency_key. An op of kind proposal files a draft at once, and a"
         " person accepts or rejects it in the app (finish_in says where). An op"
-        " of kind write waits for the member's approval. Metorite cannot ask"
-        " for that approval yet, so such an op is not available."
-        + _UNTRUSTED_NOTE
+        " of kind write asks the member first: the answer has state awaiting"
+        " and a request_id, and nothing has changed. Then call app_write with"
+        " app, request_id and wait_seconds 20, again and again, while the state"
+        " is awaiting. After the member approves, that call makes the approved"
+        " change once and answers state done with the result. declined or"
+        " expired means that nothing changed. list_apps names the requests that"
+        " still wait." + _UNTRUSTED_NOTE
     ),
     required_scope=None,
     input_schema=_APP_WRITE_INPUT,
@@ -10262,6 +10500,7 @@ APP_WRITE = Tool(
     annotations=dict(APP_WRITE_ANNOTATIONS),
     door=True,
     app_scope="write",
+    timeout_s=APP_WRITE_TIMEOUT_S,
 )
 
 
@@ -10937,4 +11176,17 @@ __all__ = [
     "untrusted",
     "updated_comment",
     "write_limit_line",
+    "TEXT_APPROVAL_MISMATCH",
+    "TEXT_APPROVAL_USED",
+    "TEXT_TOO_MANY_REQUESTS",
+    "TEXT_REQUEST_TOO_LARGE",
+    "TEXT_REQUEST_SECRET",
+    "TEXT_REQUEST_UNSHOWABLE",
+    "TEXT_REQUEST_OTHER_APP",
+    "TEXT_REQUEST_SPENT",
+    "TEXT_REQUEST_STALE",
+    "WAITING_STATES",
+    "REQUEST_ASK_ROUTE",
+    "REQUEST_READ_ROUTE",
+    "APP_WRITE_TIMEOUT_S",
 ]

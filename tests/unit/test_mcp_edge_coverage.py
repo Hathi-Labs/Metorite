@@ -108,6 +108,16 @@ NAMED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "MCP-P1a. `describe_app` reads the ops of one app and their args schema."
         " It is not a Projects route (spec §19.4)."
     ),
+    # MCP-P1b-2 (spec §19.5, "The new pairs"): the ask and the wait of
+    # `app_write`. Neither is a Projects route, and neither runs a write.
+    ("POST", "/agent-access/apps/{app}/requests"): (
+        "MCP-P1b-2. `app_write` asks the member to approve one door call. The"
+        " route opens a request and runs nothing (spec §19.5, path 2)."
+    ),
+    ("GET", "/agent-access/requests/{request_id}"): (
+        "MCP-P1b-2. `app_write` waits for the member. The route gives an agent"
+        " only a request of its own connection (spec §19.5, AD-16)."
+    ),
 }
 
 #: The tools of the app door whose route is the route of the op in each call
@@ -229,6 +239,8 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         # WS-MCP SW-23: `report_check` (agent_coordination.md SW-23). A pass
         # closes the task only under the rule of a status move.
         ("POST", "/projects/tasks/{task_id}/check-result"),
+        # MCP-P1b-2: the ask of `app_write` (spec §19.5). It runs nothing.
+        ("POST", "/agent-access/apps/{app}/requests"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 

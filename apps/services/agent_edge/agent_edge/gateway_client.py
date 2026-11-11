@@ -7,8 +7,10 @@ Spec ``project-docs/specs/external_agent_access.md`` §5.1, §9.5, §9.6 and
 ``acb_auth.agent_signing.signed_headers`` and nothing else that this module
 sets. A write (EA-6a) also carries the fifth signed header,
 ``X-Agent-Nonce``, a ``Content-Type`` of JSON, and ``If-Match`` when the
-tool sends a version. No ``Authorization`` header, no member header, and no
-header copied from the client request. The gateway reads the member from the
+tool sends a version. A door write that spends the member's approval also
+carries the signed ``X-Agent-Approval`` (MCP-P1b-2, :func:`send_call`). No
+``Authorization`` header, no member header, and no header copied from the
+client request. The gateway reads the member from the
 connection row (branch 0 of ``get_current_user``). ``trust_env`` is off, so no
 proxy setting and no ``.netrc`` entry can add a credential either.
 
@@ -163,13 +165,18 @@ def actor_via(caller: TokenLookup) -> str:
 def signed_request_headers(
     key: str, caller: TokenLookup, path: str, query: Sequence[tuple[str, str]],
     *, method: str = _GET, body: bytes = b"", session: str | None = None,
+    approval: str | None = None,
 ) -> dict[str, str]:
     """The signed headers of one gateway request: four for a read, and five
     for a write, whose fifth is a fresh ``X-Agent-Nonce`` (EA3-28).
 
     SW-7: *session* is the MCP session key that ``mcp.py`` read from a
     verified ``Mcp-Session-Id``. It goes out as the signed
-    ``X-Agent-Session``, and ``None`` sends no such header."""
+    ``X-Agent-Session``, and ``None`` sends no such header.
+
+    MCP-P1b-2: *approval* is the id of the request that the member approved.
+    It goes out as the signed ``X-Agent-Approval`` on a door write only, and
+    ``None`` sends no such header."""
     return agent_signing.signed_headers(
         key,
         organization_id=caller.organization_id,
@@ -180,6 +187,7 @@ def signed_request_headers(
         query=list(query),
         body=body,
         session=session,
+        approval=approval,
     )
 
 
@@ -268,16 +276,21 @@ async def send_call(
     call: app_manifests.Call,
     *,
     session: str | None = None,
+    approval: str | None = None,
 ) -> Answer:
     """One signed door call (MCP-P1a, spec §19.3), or raise
     :class:`GatewayUnreachable` or :class:`RouteRefused`.
 
     *call* is the answer of ``app_manifests.build_call``, the one builder,
-    and this function sends its bytes as they are. The pair must be a door
-    pair (``agent_oauth.door_route``). The path is built again from the
+    or the stored call of an approved request, and this function sends its
+    bytes as they are. The pair must be a door pair
+    (``agent_oauth.door_route``). The path is built again from the
     template, so a call whose path does not match its template never goes
     out. A write carries a fresh nonce, a JSON ``Content-Type`` and
     ``If-Match`` when the call has a version.
+
+    MCP-P1b-2 (AD-6): *approval* is the request id that the call spends. It
+    goes out as the signed ``X-Agent-Approval``, on a write only.
     """
     pair = (call.method, call.template)
     if agent_oauth.door_route(pair) is None:
@@ -291,10 +304,12 @@ async def send_call(
     write = call.method != _GET
     if not write and call.body:
         raise RouteRefused("a read sends no body")
+    if approval is not None and (not write or not agent_signing.approval_is_well_formed(approval)):
+        raise RouteRefused("an approval goes with a door write only")
     try:
         headers = signed_request_headers(
             key, caller, call.path, list(call.query), method=call.method,
-            body=call.body, session=session)
+            body=call.body, session=session, approval=approval)
         if write:
             headers["Content-Type"] = "application/json"
         if call.if_match is not None:

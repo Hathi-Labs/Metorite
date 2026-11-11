@@ -18,6 +18,8 @@ call.
   ``in_progress``. A decline closes it (``app_close``).
 * :func:`read_request` and :func:`list_open` read the stored request of the
   member, never the call of another member.
+* :func:`list_waiting` reads the live requests of ONE connection, with no
+  call and no card, for the ``waiting`` key of ``list_apps`` (MCP-P1b-2).
 
 **This module is the one writer of app runs.** ``routes/projects/agent_runs``
 stays the one writer of task runs, and this module reuses its status machine
@@ -366,6 +368,45 @@ async def list_open(db: Any, *, org: str, member: str) -> OpenList:
     total = int(rows[0].waiting) if rows else 0
     return OpenList(rows=[_request_out(row) for row in rows],
                     more=max(total - len(rows), 0))
+
+
+#: The live requests of ONE connection of the member that wait or are
+#: approved and not spent (MCP-P1b-2, ``list_apps.waiting``). The index
+#: ``pm_agent_runs_app_open_connection`` serves the status and the connection.
+_WAITING_SQL = (
+    f"{_REQUEST_SELECT}"
+    "   AND r.connection_id = CAST(:conn AS uuid)"
+    "   AND r.status IN ('awaiting', 'in_progress')"
+    "   AND CAST(e.content_metadata->'request'->>'expires_at' AS timestamptz)"
+    "       > clock_timestamp()"
+    " ORDER BY e.created_at DESC, e.id DESC LIMIT :limit"
+)
+
+
+async def list_waiting(db: Any, *, org: str, member: str,
+                       connection_id: str) -> list[dict[str, Any]]:
+    """The live requests of the connection *connection_id* of *member*,
+    newest first, at most :data:`OPEN_CAP` (MCP-P1b-2, §19.4).
+
+    Each row holds the app, the request id, the op, the state (``awaiting``
+    or ``approved``) and the expiry. It holds no call and no card, because
+    ``list_apps`` names the requests only. The org is the bound session's
+    and the member is ``user.email``. A request of another connection never
+    shows (AD-16).
+    """
+    conn = _uuid_or_none(connection_id)
+    if conn is None:
+        return []
+    rows = (await db.execute(text(_WAITING_SQL), {
+        "org": org, "me": _member(member), "conn": conn, "limit": OPEN_CAP,
+    })).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        request = (from_jsonb(row.content_metadata) or {}).get("request") or {}
+        out.append({"app": row.app, "request_id": str(row.request_id),
+                    "op": request.get("op"), "state": _state(row),
+                    "expires_at": request.get("expires_at")})
+    return out
 
 
 # ── The one write of an activity on an app run ──────────────────────────────
@@ -762,6 +803,7 @@ __all__ = [
     "Opened",
     "decide",
     "list_open",
+    "list_waiting",
     "open_request",
     "open_studio_request",
     "read_request",

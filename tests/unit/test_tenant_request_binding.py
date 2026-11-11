@@ -252,11 +252,15 @@ _ALLOWED_CHAINS = frozenset({
 #: ``query_string`` are the signed path and query (§10.1).
 _SCOPE_KEYS = frozenset({"route", "app", "path", "query_string"})
 #: The four signed headers, the two that tell branch 0 to refuse a body on a
-#: GET, the nonce of a write (EA-6a, EA3-28), and the signed MCP session key
-#: (SW-7, spec §12.5).
+#: GET, the nonce of a write (EA-6a, EA3-28), the signed MCP session key
+#: (SW-7, spec §12.5), and the signed approval of a door write with the ONE
+#: ``If-Match`` that the digest of its call reads (MCP-P1b-2, AD-6, AD-17).
+#: ``If-Match`` is not signed. The digest binds it: another value is another
+#: digest, so the spend refuses it.
 _HEADERS = frozenset({
     "x-agent-connection", "x-agent-timestamp", "x-agent-signature", "x-actor-via",
     "content-length", "transfer-encoding", "x-agent-nonce", "x-agent-session",
+    "x-agent-approval", "if-match",
 })
 #: EA-6a (EA3-28): the ONE function that may read the body, and only as
 #: ``await request.body()`` with no argument. It hashes the body of a write
@@ -1164,17 +1168,30 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: request: the scan and the tripwire are as before. The pins before it were
 #: 3.12 ``29b8aaad…a9a2`` and 3.13 ``187571d8…21f7``. This pin needs
 #: the diff-reviewer review and the independent verification.
+#:
+#: MCP-P1b-2 (2026-11-11, external_agent_access.md §19.5 and AD-6, task 1722):
+#: step 2 reads the optional signed ``X-Agent-Approval`` once and in the shape
+#: of a lower-case request id, on a write only. The canonical string gains the
+#: line ``approval:<id>`` after the session line, only when it is present.
+#: Step 5a' gives `_approval_of` the signed path, query and body, the matched
+#: template and the ``If-Match`` values, and it forms the digest of AD-17 with
+#: the binding of the ROW's connection. `_claim_call` refuses an approval on a
+#: pair that is not a door write that waits for the member, or one with no
+#: digest. It checks any ``<app>:write`` for the ask route. `_door_gate`
+#: refuses a door write with no approval (AD-18, as before), and spends the
+#: approval LAST, after the scope and the caps, in `_spend_approval`. That
+#: helper opens a tenant session of the ROW's organization and calls
+#: ``acb_auth.app_requests.spend``. The audit row holds the request id. The
+#: scan and the tripwire allow ``x-agent-approval`` and ``if-match``. The pins
+#: before it were 3.12 ``f5c27b8e…cdf515c`` and 3.13 ``bbc92971…3815e8cb``.
+#: This pin needs the diff-reviewer review and the independent verification.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    # WS-24b (2026-11-06): branches 1' and 2 of get_current_user changed (the
-    # LLM-key fallback went, and an unset token fails closed). Branch 0 did not.
-    # This pin needs the diff-reviewer review and the independent verification.
-    # BR-7b (2026-11-07): the merge of main (the EA-19b pins above) with the BR-7b
-    # change of `_audit_door`: it adds the `policy` key of the audit payload
-    # (door.scope). No step of branch 0 changed. Both digests were computed
-    # with this test's own function under 3.12 and 3.13. This pin needs the
+    # MCP-P1b-2 (2026-11-11): both digests were computed from the files with
+    # the steps of this test's own function, under CPython 3.12.12 and 3.13.2.
+    # That reader gave the pins of main exactly. This pin needs the
     # diff-reviewer review and the independent verification.
-    (3, 12): "f5c27b8ed2dbeeff26b2cb89fcfe822c0204dbe52c116e8601af34a62cdf515c",
-    (3, 13): "bbc929711b1e309708d5b1fb0b5d01e352dbd17456b4da4046b2afa13815e8cb",
+    (3, 12): "1bd6d959c10fd61db326ad228ce39c2063e3f093bd83b9ef39f7ce84d876ea1d",
+    (3, 13): "3484cbb6a3dadfbc3265cabb67994b6baef92a265eef6a5722994f66e38ba02d",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see
@@ -1183,9 +1200,13 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
 #: digest covers them, and an edit to either one fails the digest test.
 #: MCP-P1a adds the four helpers of the app door: the claim dispatch, the door
 #: gate (the door flag, AD-18, the app scope and the caps), the door read cap
-#: and the audit row. None of them sees the request.
+#: and the audit row. None of them sees the request. MCP-P1b-2 adds the two
+#: helpers of the spend: ``_approval_of``, the digest of an approved call,
+#: and ``_spend_approval``, the one spend in a tenant session of the ROW's
+#: organization. Neither sees the request.
 _BRANCH_ZERO_HELPERS = ("_read_connection", "_claim_write", "_claim_call", "_door_gate",
-                        "_claim_door_read", "_audit_door")
+                        "_claim_door_read", "_audit_door", "_approval_of",
+                        "_spend_approval")
 
 
 def _branch_zero_digest() -> str:

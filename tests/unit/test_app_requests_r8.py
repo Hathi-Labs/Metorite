@@ -105,6 +105,32 @@ Fix round 2 (2026-11-05):
   word).
 
 The record of each red run is in the report of the MCP-P1b-1 build.
+
+**MCP-P1b-2, the branch 0 cases** (``TestBranchZeroSpendsOnARealDatabase``).
+Each agent call is signed and goes through the REAL ``get_current_user``.
+The spend runs on the real database as the app role:
+
+* b0_01 ask, approve, send once, and a second send is 409 (acceptance 1);
+* b0_02 a decline and an expiry change nothing (acceptance 2);
+* b0_03 a changed body or query changes nothing, and the request stays
+  approved (acceptance 2);
+* b0_04 another connection of the member cannot read or spend (acceptance 2);
+* b0_05 a call with no approval, or of an undecided request, is 403
+  ``approval_required`` (acceptance 3);
+* b0_06 three sends at once have one winner (TOCTOU);
+* b0_07 the approval of a delete binds its path;
+* b0_08 the ask needs the write scope of an app;
+* b0_09 the wait holds the answer, and reads again after each sleep.
+
+The mutations of MCP-P1b-2, each run on the built tree and restored:
+
+* M-R1. ``deps._approval_of``: digest the template in place of the path.
+  ``test_b0_07_a_class_c_delete_binds_its_path``.
+* M-R2. ``deps._door_gate``: drop the spend.
+  ``test_b0_01_ask_approve_send_once`` and
+  ``test_b0_02_a_decline_or_an_expiry_changes_nothing``.
+* M-R3. ``SPEND_SQL``: drop the digest predicate.
+  ``test_b0_03_a_changed_body_changes_nothing``.
 """
 
 from __future__ import annotations
@@ -1473,3 +1499,357 @@ class TestAppRequestsOnARealDatabase:
             assert fits.status_code == 201, fits.text
             [row] = (await ctx(w.a, "GET", "/agent-access/requests")).json()["rows"]
         assert row["call"]["body"] == {"name": emoji, "note": indic}
+
+
+# ══ R8, branch 0 (MCP-P1b-2) ═══════════════════════════════════════════════════
+#
+# The REAL default-deny guard and the REAL ``get_current_user``: each agent
+# call is signed, and branch 0 reads the connection row and spends the
+# request on the real database, as the app role. The member decides through
+# the override app above, as the card does. The member resolve and Redis are
+# stand-ins, because neither is what these cases test.
+
+B0_KEY = "p1b2-branch-zero-signing-key-" + "b" * 24
+B0_INTERNAL = "p1b2-branch-zero-internal-token"
+
+
+def _seed_door_connection(p: Any, org: str, email: str) -> str:
+    """A live connection of *email* that holds the scopes of the test app."""
+    with p.admin_engine.begin() as c:
+        return str(c.execute(text(
+            "INSERT INTO agent_connection (organization_id, member_email, client_id,"
+            " client_name, client_origin, scopes, pinned_projects, include_personal,"
+            " expires_at) VALUES (CAST(:o AS uuid), :m, :client, 'Claude Code', :origin,"
+            " CAST(:scopes AS text[]), CAST('{}' AS uuid[]), false,"
+            " now() + interval '1 day') RETURNING id"),
+            {"o": org, "m": email, "origin": ORIGIN, "client": CLIENT_ID,
+             "scopes": [f"{APP_ID}:read", f"{APP_ID}:write"]}).scalar())
+
+
+def _branch_zero_app(calls: list[tuple[str, str]]) -> Any:
+    """The real request routes and a stand-in for the two write routes of
+    :data:`TEST_APP`, each behind the real branch 0."""
+    from acb_auth import UserContext, get_current_user, require_authenticated
+    from fastapi import Depends, FastAPI
+    from gateway.routes import agent_requests
+
+    app = FastAPI(dependencies=[require_authenticated(public=frozenset())])
+    app.include_router(agent_requests.router)
+
+    @app.post("/testreq/items")
+    async def _make(user: UserContext = Depends(get_current_user)) -> dict[str, Any]:
+        calls.append(("make_item", user.email or ""))
+        return {"made": True}
+
+    @app.delete("/testreq/items/{item_id}")
+    async def _drop(item_id: str, user: UserContext = Depends(get_current_user)) -> dict:
+        calls.append((f"drop_item:{item_id}", user.email or ""))
+        return {"dropped": item_id}
+
+    return app
+
+
+class _Signed:
+    """One client of the branch-0 app. Each call is signed by the edge key
+    and runs in a task of its own, so no tenant binding leaks between calls."""
+
+    def __init__(self, client: httpx.AsyncClient, org: str) -> None:
+        self.client = client
+        self.org = org
+
+    async def __call__(self, conn: str, method: str, path: str, body: bytes = b"",
+                       approval: str | None = None, query: str = "") -> httpx.Response:
+        from acb_auth import agent_signing
+
+        headers = agent_signing.signed_headers(
+            B0_KEY, organization_id=self.org, connection_id=conn, actor_via=VIA,
+            method=method, path=path, query=query, body=body, approval=approval)
+        if method != "GET":
+            headers["Content-Type"] = "application/json"
+        url = f"{path}?{query}" if query else path
+        return await asyncio.create_task(
+            self.client.request(method, url, headers=headers, content=body))
+
+
+@contextlib.asynccontextmanager
+async def _branch_zero(p: Any, calls: list[tuple[str, str]]):
+    """The member's override app and the signed branch-0 app, on ONE engine
+    scope of the app role."""
+    from acb_common.db import clear_tenant, release_tenant
+
+    users: dict[str, Any] = {}
+    scope = clear_tenant()
+    try:
+        async with (
+            tenant_engine_scope(p.app_url.render_as_string(hide_password=False)),
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=_app(users)),
+                              base_url="http://gw.test") as member,
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=_branch_zero_app(calls)),
+                              base_url="http://gw.test") as agent,
+        ):
+            yield _Ctx(member, users), _Signed(agent, p.org_a)
+    finally:
+        release_tenant(scope)
+
+
+@pytest.fixture
+def b0(w, monkeypatch):
+    """Branch 0 on: the edge key, the flags, two connections of member a
+    with the scopes of the test app, a stand-in resolve and Redis, and the
+    audit rows caught."""
+    import acb_audit
+    from acb_auth import agent_oauth, deps
+    from acb_auth.permissions import EffectiveAccess, build_access
+    from acb_common import get_settings, tenant_redis
+    from acb_common.tenant_redis import TenantRedis
+
+    from tests.unit.test_mcp_edge_task_writes import _FakeRedis
+
+    assert agent_oauth.actor_via_for(ORIGIN, client_id=CLIENT_ID) == VIA
+    settings = get_settings()
+    for name, value in (("agent_access_orgs", "*"), ("agent_edge_signing_key", B0_KEY),
+                        ("agent_edge_signing_key_previous", ""),
+                        ("gateway_internal_token", B0_INTERNAL)):
+        monkeypatch.setattr(settings, name, value)
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", B0_INTERNAL)
+    for name in ("GATEWAY_TRUST_UNVERIFIED_SSO_HEADERS", "IDENTITY_CUTOVER"):
+        monkeypatch.delenv(name, raising=False)
+    member = w.a_email
+
+    async def resolve_access(email, *, legacy_role=None, record_request=False, **_):
+        if (email or "").lower() != member:
+            return EffectiveAccess(is_active=False)
+        return build_access(["feature:projects"], [], is_active=True)
+
+    async def resolve_identity(email):
+        return ("uid-b0", w.p.org_a) if (email or "").lower() == member else (None, None)
+
+    monkeypatch.setattr(deps, "resolve_access", resolve_access)
+    monkeypatch.setattr(deps, "resolve_identity", resolve_identity)
+    monkeypatch.setattr(tenant_redis, "get_tenant_redis",
+                        lambda **_: TenantRedis(_FakeRedis()))
+    audit: list[Any] = []
+    monkeypatch.setattr(acb_audit, "record", audit.append)
+    w.audit = audit
+    w.door_a = _seed_door_connection(w.p, w.p.org_a, member)
+    w.door_a2 = _seed_door_connection(w.p, w.p.org_a, member)
+    return w
+
+
+def _ask_body(args: dict[str, Any], op: str = "make_item", key: str | None = None) -> bytes:
+    return json.dumps({"op": op, "args": args, "idempotency_key": key or _key()}).encode()
+
+
+async def _ask_signed(agent: _Signed, conn: str, args: dict[str, Any],
+                      op: str = "make_item") -> dict[str, Any]:
+    asked = await agent(conn, "POST", f"/agent-access/apps/{APP_ID}/requests",
+                        _ask_body(args, op))
+    assert asked.status_code == 201, asked.text
+    return asked.json()
+
+
+async def _stored_call(agent: _Signed, conn: str, request_id: str) -> dict[str, Any]:
+    read = await agent(conn, "GET", f"/agent-access/requests/{request_id}")
+    assert read.status_code == 200, read.text
+    return read.json()
+
+
+def _door_rows(w: Any) -> list[tuple[str, str, Any]]:
+    return [(e.payload["op"], e.payload["decision"], e.payload["request_id"])
+            for e in w.audit if e.action == "agent_door_call"]
+
+
+@_DB_GATE
+class TestBranchZeroSpendsOnARealDatabase:
+    """MCP-P1b-2, the branch 0 cases. Each one signs its calls and goes
+    through the real branch 0. The spend is the one ``UPDATE ... RETURNING``
+    of ``acb_auth.app_requests.spend``, on the real database."""
+
+    async def test_b0_01_ask_approve_send_once(self, b0):
+        """Acceptance 1. The agent asks for a class B write, the member
+        approves it on the card, and the agent sends it once. A second send
+        changes nothing."""
+        calls: list[tuple[str, str]] = []
+        async with _branch_zero(b0.p, calls) as (member, agent):
+            asked = await _ask_signed(agent, b0.door_a, {"name": "Fan"})
+            rid = asked["request_id"]
+            assert asked["state"] == "awaiting" and calls == []
+            assert (await _stored_call(agent, b0.door_a, rid))["state"] == "awaiting"
+            assert (await _decide(member, b0.a, rid, "approve")).status_code == 200
+            stored = await _stored_call(agent, b0.door_a, rid)
+            assert stored["state"] == "approved" and stored["call"]["body"] == {"name": "Fan"}
+            body = store.body_bytes(stored["call"]["body"])
+            sent = await agent(b0.door_a, "POST", "/testreq/items", body, approval=rid)
+            assert sent.status_code == 200, sent.text
+            assert calls == [("make_item", b0.a_email)]
+            again = await agent(b0.door_a, "POST", "/testreq/items", body, approval=rid)
+            assert again.status_code == 409, again.text
+            assert again.json() == {"detail": "approval_used"}
+            assert calls == [("make_item", b0.a_email)], "the second send ran nothing"
+            assert (await _stored_call(agent, b0.door_a, rid))["state"] == "done"
+        assert _run_status(b0, asked["run_id"]) == "completed"
+        assert _count(b0.p, "SELECT count(*) FROM pm_agent_run_activities"
+                            " WHERE type = 'action'") == 1
+        assert _door_rows(b0) == [("make_item", "allowed", rid),
+                                  ("make_item", "approval_used", rid)]
+
+    async def test_b0_02_a_decline_or_an_expiry_changes_nothing(self, b0):
+        """Acceptance 2: a decline and an expiry."""
+        calls: list[tuple[str, str]] = []
+        body = store.body_bytes({"name": "x"})
+        async with _branch_zero(b0.p, calls) as (member, agent):
+            declined = (await _ask_signed(agent, b0.door_a, {"name": "x"}))["request_id"]
+            assert (await _decide(member, b0.a, declined, "decline")).status_code == 200
+            got = await agent(b0.door_a, "POST", "/testreq/items", body, approval=declined)
+            assert (got.status_code, got.json()) == (409, {"detail": "approval_used"})
+            expired = (await _ask_signed(agent, b0.door_a, {"name": "x"}))["request_id"]
+            assert (await _decide(member, b0.a, expired, "approve")).status_code == 200
+            _expire(b0.p, expired)
+            got = await agent(b0.door_a, "POST", "/testreq/items", body, approval=expired)
+            assert (got.status_code, got.json()) == (409, {"detail": "approval_used"})
+        assert calls == []
+        assert _count(b0.p, "SELECT count(*) FROM pm_agent_run_activities"
+                            " WHERE type = 'action'") == 0
+
+    async def test_b0_03_a_changed_body_changes_nothing(self, b0):
+        """Acceptance 2: a changed body. The request stays approved, so the
+        call that the member approved still spends it."""
+        calls: list[tuple[str, str]] = []
+        async with _branch_zero(b0.p, calls) as (member, agent):
+            asked = await _ask_signed(agent, b0.door_a, {"name": "right"})
+            rid = asked["request_id"]
+            assert (await _decide(member, b0.a, rid, "approve")).status_code == 200
+            for wrong in (store.body_bytes({"name": "wrong"}), b'{"name": "right"}',
+                          store.body_bytes({"name": "right", "extra": 1})):
+                got = await agent(b0.door_a, "POST", "/testreq/items", wrong, approval=rid)
+                assert (got.status_code, got.json()) == (
+                    409, {"detail": "approval_mismatch"}), wrong
+            got = await agent(b0.door_a, "POST", "/testreq/items",
+                              store.body_bytes({"name": "right"}), approval=rid, query="x=1")
+            assert (got.status_code, got.json()) == (409, {"detail": "approval_mismatch"})
+            assert calls == [] and _run_status(b0, asked["run_id"]) == "in_progress"
+            got = await agent(b0.door_a, "POST", "/testreq/items",
+                              store.body_bytes({"name": "right"}), approval=rid)
+            assert got.status_code == 200, got.text
+        assert calls == [("make_item", b0.a_email)]
+
+    async def test_b0_04_another_connection_cannot_spend_or_read(self, b0):
+        """Acceptance 2: a spend by another connection. The member's other
+        connection gets 404 on the read and 403 on the spend, and nothing
+        changes. The own connection then spends."""
+        calls: list[tuple[str, str]] = []
+        body = store.body_bytes({"name": "x"})
+        async with _branch_zero(b0.p, calls) as (member, agent):
+            asked = await _ask_signed(agent, b0.door_a, {"name": "x"})
+            rid = asked["request_id"]
+            assert (await _decide(member, b0.a, rid, "approve")).status_code == 200
+            other = await agent(b0.door_a2, "GET", f"/agent-access/requests/{rid}")
+            assert other.status_code == 404, other.text
+            got = await agent(b0.door_a2, "POST", "/testreq/items", body, approval=rid)
+            assert (got.status_code, got.json()) == (403, {"detail": "approval_required"})
+            assert calls == [] and _run_status(b0, asked["run_id"]) == "in_progress"
+            got = await agent(b0.door_a, "POST", "/testreq/items", body, approval=rid)
+            assert got.status_code == 200, got.text
+        assert calls == [("make_item", b0.a_email)]
+
+    async def test_b0_05_a_call_with_no_approval_still_gets_403(self, b0):
+        """Acceptance 3, and a request that waits for the member."""
+        calls: list[tuple[str, str]] = []
+        body = store.body_bytes({"name": "x"})
+        async with _branch_zero(b0.p, calls) as (_member, agent):
+            got = await agent(b0.door_a, "POST", "/testreq/items", body)
+            assert (got.status_code, got.json()) == (403, {"detail": "approval_required"})
+            rid = (await _ask_signed(agent, b0.door_a, {"name": "x"}))["request_id"]
+            got = await agent(b0.door_a, "POST", "/testreq/items", body, approval=rid)
+            assert (got.status_code, got.json()) == (403, {"detail": "approval_required"})
+            unknown = await agent(b0.door_a, "POST", "/testreq/items", body,
+                                  approval=str(uuid.uuid4()))
+            assert unknown.status_code == 403, unknown.text
+        assert calls == []
+
+    async def test_b0_06_two_sends_at_once_have_one_winner(self, b0):
+        """TOCTOU: two sends of one approval race. The row lock of the one
+        UPDATE gives one winner, and the loser changes nothing."""
+        calls: list[tuple[str, str]] = []
+        body = store.body_bytes({"name": "x"})
+        async with _branch_zero(b0.p, calls) as (member, agent):
+            rid = (await _ask_signed(agent, b0.door_a, {"name": "x"}))["request_id"]
+            assert (await _decide(member, b0.a, rid, "approve")).status_code == 200
+            got = await asyncio.gather(*[
+                agent(b0.door_a, "POST", "/testreq/items", body, approval=rid)
+                for _ in range(3)])
+        assert sorted(r.status_code for r in got) == [200, 409, 409], [r.text for r in got]
+        assert calls == [("make_item", b0.a_email)]
+
+    async def test_b0_07_a_class_c_delete_binds_its_path(self, b0):
+        """The digest holds the path. The approval of a delete of one item
+        never spends on a delete of another item."""
+        calls: list[tuple[str, str]] = []
+        item, other = str(uuid.uuid4()), str(uuid.uuid4())
+        async with _branch_zero(b0.p, calls) as (member, agent):
+            rid = (await _ask_signed(agent, b0.door_a, {"item_id": item},
+                                     op="drop_item"))["request_id"]
+            assert (await _decide(member, b0.a, rid, "approve")).status_code == 200
+            stored = await _stored_call(agent, b0.door_a, rid)
+            body = store.body_bytes(stored["call"]["body"])
+            got = await agent(b0.door_a, "DELETE", f"/testreq/items/{other}", body,
+                              approval=rid)
+            assert (got.status_code, got.json()) == (409, {"detail": "approval_mismatch"})
+            got = await agent(b0.door_a, "DELETE", f"/testreq/items/{item}", body,
+                              approval=rid)
+            assert got.status_code == 200, got.text
+        assert calls == [(f"drop_item:{item}", b0.a_email)]
+
+    async def test_b0_08_the_ask_needs_the_write_scope_of_the_app(self, b0):
+        """AD-4. Branch 0 takes any ``<app>:write`` for the ask, and the
+        route checks the app. A connection with ``projects:write`` alone
+        gets 401 at branch 0 and opens no request."""
+        projects_only = _seed_connection(b0.p, b0.p.org_a, b0.a_email)
+        with b0.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE agent_connection SET scopes ="
+                           " ARRAY['projects:read', 'projects:write']"
+                           " WHERE id = CAST(:c AS uuid)"), {"c": projects_only})
+        async with _branch_zero(b0.p, []) as (_member, agent):
+            got = await agent(projects_only, "POST", f"/agent-access/apps/{APP_ID}/requests",
+                              _ask_body({"name": "x"}))
+            assert got.status_code == 401, got.text
+        assert _count(b0.p, "SELECT count(*) FROM pm_agent_runs") == 0
+
+    async def test_b0_09_the_wait_holds_the_answer_while_it_waits(self, b0, monkeypatch):
+        """§19.5 step 9 (EA12-4). With ``wait_s``, the read sleeps while the
+        request waits, and it reads again after each sleep. A decision during
+        the sleep comes back at once. With no decision, the read answers
+        ``awaiting`` at the deadline. No session is open during a sleep,
+        because each read opens and closes its own."""
+        slept: list[float] = []
+        async with _branch_zero(b0.p, []) as (_member, agent):
+            rid = (await _ask_signed(agent, b0.door_a, {"name": "x"}))["request_id"]
+
+            async def approve_on_first_sleep(seconds: float) -> None:
+                slept.append(seconds)
+                if len(slept) == 1:
+                    async with _db(b0.p.org_a) as db:
+                        await app_requests.decide(db, org=b0.p.org_a, member=b0.a_email,
+                                                  request_id=rid, decision="approve",
+                                                  idempotency_key=_key())
+
+            monkeypatch.setattr(agent_runs, "_sleep", approve_on_first_sleep)
+            got = await agent(b0.door_a, "GET", f"/agent-access/requests/{rid}",
+                              query="wait_s=10")
+            assert got.status_code == 200, got.text
+            assert got.json()["state"] == "approved" and len(slept) == 1
+            other = (await _ask_signed(agent, b0.door_a, {"name": "y"}))["request_id"]
+            slept.clear()
+
+            async def no_decision(seconds: float) -> None:
+                slept.append(seconds)
+                await asyncio.sleep(seconds)
+
+            monkeypatch.setattr(agent_runs, "_sleep", no_decision)
+            got = await agent(b0.door_a, "GET", f"/agent-access/requests/{other}",
+                              query="wait_s=1")
+            assert got.status_code == 200 and got.json()["state"] == "awaiting"
+            assert slept and sum(slept) <= 1.0
+            too_long = await agent(b0.door_a, "GET", f"/agent-access/requests/{other}",
+                                   query="wait_s=21")
+            assert too_long.status_code == 422, too_long.text
