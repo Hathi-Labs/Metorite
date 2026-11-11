@@ -1726,6 +1726,23 @@ export interface SubtreeRow {
   archived: boolean;
 }
 
+/** WS-MCP SW-23 — the three results of a run of a Check. */
+export type CheckResult = "open" | "passed" | "cannot_run";
+
+/**
+ * WS-MCP SW-23 — the Check of a task, as `checks.attach_check` sends it. The
+ * text and the evidence are words that a person or an agent wrote.
+ */
+export interface TaskCheck {
+  text: string;
+  /** The instant of the last reported run, or `null` when none ran yet. */
+  last_run_at: string | null;
+  last_result: CheckResult | null;
+  last_evidence: string | null;
+  /** Never run, or not run for seven days. The gateway decides it. */
+  due: boolean;
+}
+
 export interface TaskRow {
   id: string;
   project_id: string;
@@ -1849,6 +1866,12 @@ export interface TaskRow {
    * `agent_worked.py`. The "Agent work" filter reads it.
    */
   agent_worked?: boolean | null;
+  /**
+   * WS-MCP SW-23 — the Check of the task: a read-only command that an agent
+   * runs, with its last result. Absent while the gateway's Check flag is off,
+   * and `null` for a task with no Check. `TaskCheckBlock` draws it.
+   */
+  check?: TaskCheck | null;
   /**
    * WS-64 OP-11 — the CALLER's overlay, on a read with `with_overlay=1`
    * (`mine.attach_my_overlay`). `disposition` is the effective one (D77).

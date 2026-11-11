@@ -6,6 +6,8 @@
 
 **SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
 
+**SW-23 (a task carries a Check) is built and dark, 2026-11-11.**
+
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
@@ -824,6 +826,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Done when.** The panel, the card and `held_by.stale` agree for a dead connection. The moved-clock test passes on a real database.
 - **Fence.** `test_agent_run_exclusive.py`, `agentRunsPanel.test.ts`.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** 1045a for item 2.
+- **Built (task 335).** Items 1 and 3. The runs wire carries `holder_free` (the rule of the gate and of `held_by.stale`), the panel reads it through `runHolderFree`, and R8 test `test_x5b` moves the clock to the lease minus and plus one minute. **Left:** item 2, because the 120-minute cap of 1045a (`waiting`, `until_minutes`) is not in code yet. The card draws no lease text, so it needs no change.
 
 #### SW-5 · Show the lease on the board and in the MCP tools
 
@@ -966,6 +969,15 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Done when.** An agent reads a Check from `my_work`, runs it and closes the task with the evidence. A `cannot_run` never closes a task. R8 runs as the NOBYPASSRLS role.
 - **Fence.** A new R8 suite, `test_task_check_r8.py`, with `pytestmark = _DB_GATE`, and the edge coverage fence.
 - **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE.
+- **Status.** Built and dark, 2026-11-11. The flag is `AGENT_TASK_CHECKS_ENABLED`, default off. The flip is OWNER-GATE `enforcement-flip`.
+- **As built.** These notes record the build.
+  - **Migration.** `401_pm_tasks_check.sql`, expand only. The four columns are nullable with no default. The CHECK `pm_tasks_check_result_known` holds the three results. The CHECK `pm_tasks_check_run_whole` keeps the result and its time together. Check the number again at merge (R1).
+  - **Gateway.** `routes/projects/checks.py` is the one writer of the result columns. The route is `POST /projects/tasks/{task_id}/check-result`. It takes `result` and `evidence`, and a signed agent must send `If-Match`. `create_task` and `update_task` send `check` as the body field `check_text`. A new text clears the last result, and the timeline records each change.
+  - **Who may close.** A pass closes the task only under the rule of a status move. The caller sees the task and the version holds. A live run of another session or another member keeps the task open, with `not_closed: held_by_other`. A task in a closed lane gives `already_closed`, and a set with no done lane gives `no_done_status`. The gateway records the run in each case. A pass that closes moves the task to the first done lane and writes the evidence as one comment.
+  - **Reads.** `GET /projects/tasks` and `GET /projects/tasks/{id}` carry `check`: the text, the last run, the result, the evidence and `due`. The gateway decides `due` in SQL: never run, or not run for 7 days. While the flag is off, no row has the key. `get_task_context` returns `check` as its first key. A `my_work` row carries `check` with no evidence. An assigned task whose Check is due gets the reason `check_due`, below the claimed and the answered work and above the other assigned tasks.
+  - **Safety.** The Check is text that a person or an agent wrote, so it leaves the edge as untrusted text. The tool descriptions tell an agent to run only a read-only command, and to report `cannot_run` with the reason for any other command.
+  - **The task panel.** `TaskCheckBlock` shows the command, the last result and the day of the last run. It is read only, and it draws nothing while the flag is off.
+  - **Deferred.** The manifest holds the chat tool `report_check` in `PLANNED`, after EA-12e. Nobody can edit the Check in the task panel yet.
 
 #### SW-24 · A structured handoff note
 
@@ -1570,8 +1582,8 @@ They keep their own gates.
 - **Metorite task.** 1924.
 - **Scope.** §3.11.4. The first release is task 1731 as the owner decided: a box token with the scope `projects:read` only, which never wakes an old session. Later releases add three things. They post the heartbeat (SW-77), they start a run on the server for a queued or woken run, and they wake a live session with `claude --resume <session> "prompt"` where the version allows (2.1.285). Those need a second token with a narrow scope (decided, Q18). SW-77 defines the scope. Release 2 depends on SW-77. Minting a token on a live box stays an owner act. The runner reads lanes and caps (SW-67, SW-68) once they exist. It writes the notice file for the fast path. It never starts two sessions for one run. It keeps the secret in the box's secret store and reads no OAuth token. Later it also starts a session for a ready slice that has no run (pull start, SW-100).
 - **Workstation order (D195 Q7).** The first path for a non-developer is one workstation with this runner (path B of the design): EA-19 first, then this slice. Cloud agents (WS-56) come later. Advisory (R7).
-- **Done when, release 1 (step 1 of §5.0b).** This is task 1731: a fake `list_agent_runs` shows one start for one run, with the read-only token, and no wake of an old session. **Release 2 (step 5).** It needs SW-67, SW-68, SW-64 and the runner scope of Q18. A fake `list_agent_runs` and a fake `claude` show one start for one run, a wake for a run with a live link, and no start for a full lane. The notice file holds an unread steer within 10 seconds of the poll.
-- **Fence.** A test in `scripts/home_server/`. `test_runner_no_secret.py` (new) refuses a read of an OAuth token path.
+- **Done when, release 1 (step 1 of §5.0b).** This is task 1731: a fake `list_agent_runs` shows one start for one run, with the read-only token, and no wake of an old session. **Release 2 (step 5).** It needs SW-67, SW-68, SW-64 and the runner scope of Q18. A fake `list_agent_runs` and a fake `claude` show one start for one run, a wake for a run with a live link, and no start for a full lane. The notice file holds an unread steer within 10 seconds of the poll. **Pull start (SW-100, task 2527).** A fake queue of three ready slices and a lane with two free slots gives two starts. An empty queue gives none. A queue that reads `account_limit`, `box_memory` or `review_cap` gives none. The runner test of SW-100 holds these cases, and release 2 is not done until it passes.
+- **Fence.** A test in `scripts/home_server/`. `test_runner_no_secret.py` (new) refuses a read of an OAuth token path. The pull-start cases above run in the runner test of SW-100.
 - **Risk.** HIGH (it starts sessions with credentials). **Gate.** AGENT-SAFE to build. Minting the second token on a live box is an owner act. The install on the home box is `deploy`. **Depends on.** Release 1: task 1731 and EA-19. Release 2: also SW-77, SW-64, SW-67 and SW-68.
 
 #### SW-79 · Recover the fleet in one step

@@ -76,6 +76,7 @@ import {
   RELEASE_COPY,
   releaseBody,
   STALE_HOLD_TEXT,
+  runHolderFree,
   runIdentity,
   isOpenRun,
   isRunMember,
@@ -534,7 +535,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
         <div className="flex min-w-0 items-center gap-2 text-xs" data-agent-held-by="">
           <p className="min-w-0 flex-1 truncate text-muted-foreground" title={heldByLine(run, personLabels)}>
             {heldByLine(run, personLabels)}
-            {run.lease_expired ? (
+            {runHolderFree(run) ? (
               <span
                 className="ml-1.5 rounded border border-border px-1 text-[10px] uppercase tracking-wide"
                 data-agent-held-stale=""

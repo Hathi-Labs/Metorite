@@ -685,6 +685,7 @@ _RUN_SELECT = (
     f"SELECT r.*, {AGENT_RUN_STATE_SQL} AS state, "
     f" {_NEEDS_AGENT_REASON_SQL} AS needs_agent, "
     " EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s, "
+    f" {connection_gone_sql('r')} AS connection_gone, "
     " (SELECT u.display_name FROM app_user u"
     "   WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name "
     "FROM pm_agent_runs r"
@@ -769,6 +770,15 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
                 row.status in OPEN_STATUSES
                 and getattr(row, "idle_s", None) is not None
                 and lease_expired(row.status, float(row.idle_s))
+            ),
+            # SW-4: the holder-free answer of the gate and of `held_by.stale`
+            # (`filters.holder_free`): the lease ended, or the connection is
+            # revoked or expired. The panel reads this, not `lease_expired`.
+            "holder_free": bool(
+                row.status in OPEN_STATUSES
+                and getattr(row, "idle_s", None) is not None
+                and holder_free(row.status, float(row.idle_s),
+                                getattr(row, "connection_gone", False) is True)
             ),
             "connection_id": wire(row.connection_id),
             # SW-7: the MCP session key, so `my_work` keeps this session's
