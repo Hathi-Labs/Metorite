@@ -9,7 +9,8 @@ router of ``actions.py``, as ``skills.py`` and ``invoke.py`` do, so
 =======================================  ======================================
 ``POST /packages``                       create a package from a manifest (201)
 ``GET /packages``                        the packages of the caller, no manifest
-``GET /packages/{id}``                   one package, its manifest and objects
+``GET /packages/{id}``                   one package, its manifest and objects;
+                                         a viewer reads the installed version
 ``PUT /packages/{id}/draft``             replace the draft manifest
 ``POST /packages/{id}/versions``         publish the draft, project its objects
 ``GET /packages/{id}/versions``          a page of 100 versions, no manifest
@@ -29,7 +30,20 @@ the raw request and reads no byte before that line. Fence:
 org, a member or a package from the body. A key such as ``owner_email`` or
 ``organization_id`` in a body changes nothing. A bad id, a package of another
 member, a package of another org and an App Workshop app all answer 404
-``Not found``. An answer names no owner.
+``Not found``. An answer names no owner. The one exception is the read of
+J2a, below.
+
+**The read of a member who is not the owner (WS-STU J2a).** ``GET
+/packages/{id}`` reads the owner first, and that answer does not change.
+When the owner read misses and ``PACKAGE_HOST_ORGS`` holds the org, the
+route reads the app through ``package_host/viewer.py``: the install that
+the sidebar shows to the member. The answer holds the INSTALLED version
+(``access: viewer``, ``version``, its manifest and its hash), never the
+draft. The objects are the rows that the installed version names, with only
+the fields and the rules of that version (``viewer.InstalledApp.project``,
+because a later publish adds fields to the rows). A draft,
+a paused, an archived and an expired install give 404, and so does each
+read while the switch is off. Each other route stays the owner's.
 
 **The order of the checks.** The switch, then the id. A body route on a
 package then reads the raw body, then reads the package as the member, then
@@ -184,7 +198,7 @@ from acb_skills.studio_tools import complete_record_actions
 from fastapi import Depends, HTTPException, Request, Response
 from gateway.db import tenant_session as _tenant_session
 from gateway.package_host import store as host_store
-from gateway.package_host import studio_app
+from gateway.package_host import studio_app, viewer
 from gateway.package_host.flags import package_host_allowed
 from gateway.routes.apps._common import record_app_audit_bound, record_app_audit_in
 from gateway.routes.studio import actions, flags
@@ -551,19 +565,40 @@ async def list_packages(user: UserContext = Depends(get_current_user)) -> dict[s
     return {"packages": [_summary_out(f) for f in found]}
 
 
+def _viewer_out(app: viewer.InstalledApp) -> dict[str, Any]:
+    """The app as a member who does not own it reads it (J2a): the installed
+    version and its manifest. It names no owner, no slug and no draft."""
+    return {"id": app.id, "name": app.name, "description": app.description,
+            "access": viewer.VIEWER, "version": app.version, "manifest": app.manifest,
+            "manifest_hash": manifest_hash(app.manifest)}
+
+
 @router.get("/packages/{package_id}")
 async def get_package(
     package_id: str,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """One package of the caller, with its draft manifest and its object rows."""
+    """One package of the caller, with its draft manifest and its object rows.
+
+    J2a: a member who does not own the package reads the installed version
+    that the member sees (``package_host/viewer.py``), while
+    ``PACKAGE_HOST_ORGS`` holds the org. Else the answer is 404."""
     if not flags.studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     pid = _package_id(package_id)
     async with _tenant_session() as db:
         package = await store.get_package(db, user.email, pid)
         if package is None:
-            raise _not_found()
+            app: viewer.InstalledApp | None = None
+            if package_host_allowed(user.organization_id):
+                app = await viewer.installed_app(db, viewer=user.email, app_id=pid)
+            if app is None:
+                raise _not_found()
+            names = app.object_names
+            # The installed version only: its objects, and their fields and rules (fix round 1).
+            shown = [app.project(o) for o in await objects_store.list_objects(db, pid)
+                     if o.name in names]
+            return {"package": _viewer_out(app), "objects": [_object_out(o) for o in shown]}
         objects = await objects_store.list_objects(db, pid)
     return {"package": _package_out(package), "objects": [_object_out(o) for o in objects]}
 
