@@ -417,6 +417,7 @@ system of record, Zoho becomes an import source, then Zoho is retired.**
 - SLA/response-time engine, assignment rules, sequences/campaigns, marketing automation.
 - No-code custom-field or layout editors. Fields live in migrations; layouts in code.
 - Quoting/invoicing/taxes. Deal line items only (Phase C); billing stays out of scope.
+  - **D205.4 reverses this non-goal.** Quotes are now in scope. CRX-0 (task 2733) writes the catalog section.
 - Telephony SDKs (Twilio/Exotel). Manual call logging only.
 - A saved-views table. v1 view state lives in the URL (trycompai pattern); canned views are
   code.

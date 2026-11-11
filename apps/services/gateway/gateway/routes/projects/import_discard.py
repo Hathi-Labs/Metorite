@@ -223,12 +223,12 @@ NODE_WORK_SQL = _node_work_sql()
 LOCK_TASKS_SQL = (
     "SELECT id FROM pm_tasks "
     " WHERE organization_id = CAST(:org AS uuid) AND origin->>'run_id' = CAST(:run AS text) "
-    "FOR UPDATE"
+    " ORDER BY id FOR UPDATE"
 )
 LOCK_NODES_SQL = (
     "SELECT id FROM pm_projects "
     " WHERE organization_id = CAST(:org AS uuid) AND id = ANY(CAST(:nodes AS uuid[])) "
-    "FOR UPDATE"
+    " ORDER BY id FOR UPDATE"
 )
 
 COUNT_TASKS_SQL = (

@@ -1,5 +1,7 @@
 # Calendar → Focus OS — evaluation & redesign brainstorm
 
+> **Dated 2026-11-11, `gtd_` (D52 to D54, D138).** Migration 217 dropped the `gtd_` tables. The Calendar reads `pm_tasks` and `calendar_entries`. Read each `gtd_` name in this spec as history.
+
 > 🔴 **READ §10 FIRST — 2026-08-24, D54 gives Calendar its own app.**
 > The calendar stops being a view inside `/tasks` and becomes **`/calendar`**, a
 > top-level `live` pane in the **Personal Center** section. Board row **WS-39**.

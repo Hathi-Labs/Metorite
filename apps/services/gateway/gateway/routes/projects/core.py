@@ -34,8 +34,9 @@ correct in the UI and silently empties the timeline — the CRM learned this in
 
 from __future__ import annotations
 
+import functools
 import json
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -48,6 +49,7 @@ from acb_auth.agent_oauth import ACTOR_VIA_PATTERN
 from acb_auth.permissions import normalize_grant_subject
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from gateway.db import tenant_session as _tenant_session  # noqa: F401
 
 # The shared seam (BO-10 → MT-1c/H2). `_tenant_session` IS
 # `acb_common.db.tenant_session`, aliased per-package for the same reason
@@ -59,7 +61,6 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 # ⚠️ It reads as UNUSED inside this module — it is a re-export. `ruff --fix`
 # deletes it and takes 25 test modules with it; do not let a linter "tidy" it.
 from pydantic import BaseModel, field_validator
-from gateway.db import tenant_session as _tenant_session
 from skill_projects.hues import hue_of
 from sqlalchemy import text
 
@@ -987,6 +988,11 @@ class TaskPatchIn(TaskIn):
     """
 
     completed_at: str | None = None
+    #: WS-MCP SW-23. The Check of the task, a read-only command. A PATCH that
+    #: changes it clears the last result (``checks.check_patch_values``). A
+    #: write that sends it while ``agent_task_checks_enabled`` is off gets
+    #: 422. Not on ``TaskIn``, so only this PATCH and ``POST /tasks`` take it.
+    check_text: str | None = None
 
 
 class StatusModel(BaseModel):
@@ -4338,3 +4344,35 @@ def is_transient(err: BaseException) -> bool:
             return True
         seen = getattr(seen, "orig", None) or seen.__cause__
     return False
+
+
+#: The words of the 409 when the database refuses a task write for a race.
+TASK_RACE_DETAIL = (
+    "Someone else changed these tasks at the same moment. Try again."
+)
+
+
+def transient_as_409(
+    route: Callable[..., Awaitable[Any]],
+) -> Callable[..., Awaitable[Any]]:
+    """Answer a deadlock or lock timeout in a task-write *route* with a 409.
+
+    Postgres rolled the transaction back, so nothing was written and the
+    caller may send the same request again. The SQLSTATE set is
+    ``TRANSIENT_SQLSTATES``, the one ``tree._tree_race_as_409`` reads.
+    Put it under ``@router.<verb>``: ``functools.wraps`` keeps the
+    signature that FastAPI reads.
+    """
+
+    @functools.wraps(route)
+    async def guarded(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await route(*args, **kwargs)
+        except HTTPException:
+            raise
+        except Exception as err:
+            if is_transient(err):
+                raise HTTPException(status_code=409, detail=TASK_RACE_DETAIL) from err
+            raise
+
+    return guarded

@@ -2194,7 +2194,9 @@ def _attention_lines(row: dict[str, Any]) -> list[str]:
         facts.append(f"the task is {row.get('reason') or 'closed'}, and the run is "
                      f"{row.get('run_status')}, quiet {_hours_ago(row.get('age_hours'))}")
     elif kind == "blocked":
-        facts.append(f"blocked by #{row.get('blocker_number')} {data(row.get('blocker_title'))} "
+        more = int(row.get("blocker_count") or 1) - 1
+        facts.append(f"blocked by #{row.get('blocker_number')} {data(row.get('blocker_title'))}"
+                     f"{f' and {more} more' if more > 0 else ''} "
                      f"{_hours_ago(row.get('age_hours'))}")
     owner = row.get("owner_name") or row.get("owner")
     facts.append(f"owner {data(owner)}" if owner else "no owner")
