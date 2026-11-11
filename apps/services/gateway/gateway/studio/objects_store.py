@@ -219,9 +219,31 @@ cascade of a package hard delete. A write that lowers a group past about
 500,000 rows can reach ``query_timeout``, and so can each write on a floor
 above 0. A running balance table is a later slice.
 
+**The row rules (C8a).** ``studio_objects.access`` holds the grants of an
+object (``acb_common/studio_access.py`` holds the grammar), and the sync of a
+publish writes it, so a rule binds the published manifest and never the
+draft. Each of :func:`get_record`, :func:`query_records`,
+:func:`apply_writes`, :func:`create_record`, :func:`update_record` and
+:func:`delete_record` takes a REQUIRED keyword ``viewer``. The store reads the
+owner of the package from its ``apps`` row: the owner passes every rule, and
+so does each viewer of an object with no ``access``. Else the scope of the
+viewer's roles binds. A row rule joins the one statement as one ``EXISTS`` on
+the hot rows of the person fields (:func:`_q_access`). A hidden key leaves
+each answer, a filter or a sort on it is refused, and a write that names it is
+refused. A change or a delete of a record that the viewer cannot read answers
+"not found", and a write must leave a record that the viewer can read. A
+formula target that reads a hidden key is hidden too, and so is a roll-up
+target over a source that the viewer cannot read whole. The text of a rule
+that reads a hidden key, or of a key rule over records that the viewer cannot
+read, names no field (:func:`_masked`). The parent of a line must be a record
+that the viewer can read. ``test_studio_row_rules.py`` fails each call of the
+six that passes no viewer. ⚠️ :func:`aggregate_records` takes no viewer yet,
+and no route calls it. A door of it must add one first.
+
 ⚠️ The store does not authenticate. It only scopes. The actor of a write is
 an argument that the caller takes from the session, never from request input
-(R5, contract R11). The door (B2) checks the viewer.
+(R5, contract R11). The door (B2) checks the package, and the viewer's email
+comes from the session too.
 """
 
 from __future__ import annotations
@@ -240,6 +262,19 @@ from typing import Any
 
 from acb_common import studio_query
 from acb_common.paging import page_line
+from acb_common.studio_access import (
+    AccessError,
+    Grant,
+    Scope,
+    Viewer,
+    access_reads,
+    check_access_fit,
+    parse_access,
+    rollup_hidden,
+    scope_for,
+    stored_access,
+    with_formulas,
+)
 from acb_common.studio_fields import (
     HOT_TEXT_CHARS,
     MAX_FIELDS_PER_OBJECT,
@@ -266,6 +301,7 @@ from acb_common.studio_fields import (
 from acb_common.studio_query import Condition, Query, QueryError, parse_query
 from acb_common.studio_rules import (
     FORMULA,
+    GROUP_SUM_MIN,
     MAX_ROLLUP_PARENTS,
     MAX_ROLLUP_STATEMENTS,
     MAX_WRITES_PER_BATCH,
@@ -275,10 +311,12 @@ from acb_common.studio_rules import (
     STATE_MACHINE,
     UNIQUE,
     ConstraintError,
+    ConstraintViolation,
     FormulaPlan,
     RollupError,
     RollupSource,
     Rule,
+    RuleViolation,
     add_change,
     check_group_sum,
     check_kind_known,
@@ -340,7 +378,8 @@ _NAME_RE = re.compile(NAME_PATTERN, re.ASCII)
 _ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 
 _OBJECT_COLUMNS = (
-    "id::text, package_id::text, name, label, created_by, created_at, updated_at, constraints"
+    "id::text, package_id::text, name, label, created_by, created_at, updated_at, constraints, "
+    "access"
 )
 _RECORD_COLUMNS = "id::text, object_id::text, data, created_by, updated_by, created_at, updated_at"
 #: The value columns of a hot row, as ``jsonb_to_recordset`` reads them.
@@ -400,10 +439,45 @@ _LOCK_OBJECT_SQL = _GET_OBJECT_SQL + " FOR UPDATE"
 #: The foreign key check of the record takes the same lock. The object must be
 #: of the package that the caller names. The org lock came in an earlier
 #: statement, so this snapshot holds the last rules of the object.
+#: C8a: the grants of the object, and the owner of the package in lower case.
+#: The owner passes every row rule, so the store reads the owner here and never
+#: takes it from a caller. The ``apps`` row takes no lock.
 _SHARE_OBJECT_SQL = (
-    "SELECT name, constraints FROM studio_objects "
+    "SELECT name, constraints, access, (SELECT lower(a.owner_email) FROM apps a "
+    f"WHERE a.organization_id = {_BOUND_ORG} AND a.id = CAST(:pid AS uuid)) "
+    "FROM studio_objects "
     f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) "
     "AND package_id = CAST(:pid AS uuid) FOR KEY SHARE"
+)
+
+#: C8a. The rules and the grants of one object of the package, and the owner
+#: of the package, in one statement, for a read. No lock.
+_VIEW_SQL = (
+    "SELECT o.constraints, o.access, lower(a.owner_email) FROM studio_objects o "
+    f"JOIN apps a ON a.organization_id = {_BOUND_ORG} AND a.id = o.package_id "
+    f"WHERE o.organization_id = {_BOUND_ORG} AND o.id = CAST(:oid AS uuid) "
+    "AND o.package_id = CAST(:pid AS uuid)"
+)
+
+#: C8a. The grants of the objects of the package that a roll-up reads, by name.
+_SOURCE_ACCESS_SQL = (
+    "SELECT name, access FROM studio_objects "
+    f"WHERE organization_id = {_BOUND_ORG} AND package_id = CAST(:pid AS uuid) "
+    "AND name = ANY(CAST(:names AS text[]))"
+)
+
+#: C8a. The grants of one object of the package, for the parent of a line.
+_OBJECT_ACCESS_SQL = (
+    "SELECT access FROM studio_objects "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) "
+    "AND package_id = CAST(:pid AS uuid)"
+)
+
+#: C8a. The grants of an object. NULL means an open object.
+_SET_ACCESS_SQL = (
+    "UPDATE studio_objects SET access = CAST(:access AS jsonb), updated_at = now() "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) "
+    f"AND package_id = CAST(:pid AS uuid) RETURNING {_OBJECT_COLUMNS}"
 )
 
 #: A declaration locks the object row of the package that the caller names.
@@ -464,6 +538,21 @@ _LINE_PARENTS_SQL = (
     f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
     f"AND id = ANY(CAST(:ids AS uuid[])) AND {_IN_PACKAGE}"
 )
+
+#: C8a. The row rule of a viewer on a row of ``studio_records`` with no alias:
+#: a hot row of one of the person fields ``:akeys`` holds the viewer ``:me``.
+#: The text index of the hot rows serves it. A person field stays hot while a
+#: grant reads it, and a field with no hot rows reads nothing (it fails closed).
+_ACCESS_ROW_SQL = (
+    "EXISTS (SELECT 1 FROM studio_record_hot ac "
+    f"WHERE ac.organization_id = {_BOUND_ORG} AND ac.object_id = CAST(:oid AS uuid) "
+    "AND ac.record_id = studio_records.id AND ac.field_key = ANY(CAST(:akeys AS text[])) "
+    "AND ac.v_text = CAST(:me AS text))"
+)
+
+#: C8a. A parent of a line that the viewer can read. A parent that the viewer
+#: cannot read is not found, so the refusal is the one of a parent that is gone.
+_LINE_PARENTS_SCOPED_SQL = f"{_LINE_PARENTS_SQL} AND {_ACCESS_ROW_SQL}"
 
 #: Every object of one package, and then every field of those objects. The
 #: caller (``sync_objects``) holds the org lock, so the two reads agree.
@@ -569,6 +658,11 @@ _GET_RECORD_SQL = (
 #: A batch locks each record that it changes, before its first write.
 _LOCK_RECORD_SQL = _GET_RECORD_SQL + " FOR NO KEY UPDATE"
 
+#: C8a. A record that the row rule of the viewer reads, for a get and for the
+#: lock of a change or a delete. A record that the viewer cannot read is not found.
+_GET_RECORD_SCOPED_SQL = f"{_GET_RECORD_SQL} AND {_ACCESS_ROW_SQL}"
+_LOCK_RECORD_SCOPED_SQL = _GET_RECORD_SCOPED_SQL + " FOR NO KEY UPDATE"
+
 #: The record and its hot rows, in one statement. The DELETE takes the hot
 #: rows of the keys that hold no value now, and the INSERT writes the others.
 #: The two touch different rows.
@@ -633,6 +727,14 @@ class StoreBusy(ObjectStoreError):
     code = "store_busy"
 
 
+class AccessDenied(ObjectStoreError):
+    """C8a. The roles of the viewer give no write on the object, or the write
+    would leave a record that the viewer cannot read. The text names the
+    object and never a record."""
+
+    code = "access_denied"
+
+
 class BatchError(Exception):
     """One refused batch. Its SAVEPOINT rolled back, so it wrote nothing.
 
@@ -662,6 +764,8 @@ class StudioObject:
     updated_at: datetime
     fields: tuple[FieldSpec, ...]
     constraints: tuple[Rule, ...] = ()
+    #: C8a. The grants of the object, or None for an open object.
+    access: tuple[Grant, ...] | None = None
 
     @property
     def computed(self) -> tuple[str, ...]:
@@ -728,7 +832,7 @@ def _object(row: Any, fields: Sequence[FieldSpec]) -> StudioObject:
         id=str(row[0]), package_id=str(row[1]), name=str(row[2]),
         label=None if row[3] is None else str(row[3]), created_by=str(row[4]),
         created_at=row[5], updated_at=row[6], fields=tuple(fields),
-        constraints=stored_rules(_json(row[7])))
+        constraints=stored_rules(_json(row[7])), access=stored_access(_json(row[8])))
 
 
 def _record(row: Any) -> Record:
@@ -969,6 +1073,15 @@ def _check_no_rule_reads(rules: Sequence[Rule], key: str) -> None:
                 "Remove the rule first.")
 
 
+def _check_no_access_reads(grants: Sequence[Grant] | None, key: str) -> None:
+    """C8a. A person field that a row rule reads stays hot: the rule reads its
+    hot rows, so a cold field would read no record."""
+    if key in access_reads(grants):
+        raise ObjectStoreError(
+            f"Field `{key}` must stay hot, because a row rule of `access` reads it. "
+            "Change the access first.")
+
+
 async def _package_rollups(db: Any, pid: str, *, strict: bool = False) -> list[tuple[str, str, Rule]]:
     """Each roll-up rule of the package *pid*, as ``(object id, object name, rule)``.
     The org lock is held. With *strict*, a stored roll-up that this code cannot
@@ -1026,6 +1139,7 @@ async def set_field_hot(db: Any, object_id: str, key: str, hot: bool) -> bool:
         return True
     if not hot:
         _check_no_rule_reads(_object(row, fields).constraints, key)
+        _check_no_access_reads(_object(row, fields).access, key)
         await _check_no_rollup_reads(db, row, key)
         await db.execute(text(_SET_HOT_SQL), {"oid": oid, "key": key, "hot": False})
         await db.execute(text(_UNHOT_SQL), {"oid": oid, "key": key})
@@ -1137,6 +1251,43 @@ async def set_constraints(db: Any, object_id: str, constraints: Any, *,
     return _object(row, fields)
 
 
+def _access_json(grants: Sequence[Grant] | None) -> str | None:
+    """The grants as the store keeps them, or None for an open object."""
+    if grants is None:
+        return None
+    return json.dumps([g.stored() for g in grants], ensure_ascii=False)
+
+
+async def _write_access(db: Any, oid: str, pid: str, grants: Sequence[Grant] | None) -> Any:
+    return (await db.execute(text(_SET_ACCESS_SQL), {
+        "oid": oid, "pid": pid, "access": _access_json(grants)})).one()
+
+
+async def set_access(db: Any, object_id: str, access: Any, *,
+                     package_id: str) -> StudioObject | None:
+    """C8a. Replace the grants of the object *object_id* of the package
+    *package_id*. None makes the object open. Answers None when the bound org
+    holds no such object in that package.
+
+    ``studio_access.parse_access`` checks the shape before any statement, and
+    ``check_access_fit`` checks the grants against the fields: a ``where``
+    names a hot person field, and ``hide`` names fields of the object. Each
+    raises :class:`~acb_common.studio_access.AccessError`. The roles are not
+    checked here, because A2 checked them at the publish. The org lock comes
+    first, then the object row, as :func:`set_constraints` does.
+    """
+    oid = _uuid(object_id, "object_id")
+    pid = _uuid(package_id, "package_id")
+    grants = parse_access(access)
+    await _lock_org(db)
+    locked = (await db.execute(text(_LOCK_PACKAGE_OBJECT_SQL), {"oid": oid, "pid": pid})).first()
+    if locked is None:
+        return None
+    fields = await _fields(db, oid)
+    check_access_fit(grants, fields)
+    return _object(await _write_access(db, oid, pid, grants), fields)
+
+
 # --- the sync of a manifest (STU-A5) ----------------------------------------
 
 #: The kinds of a sync problem.
@@ -1147,6 +1298,8 @@ REQUIRED_OVER_RECORDS = "required_over_records"
 RULES_REFUSED = "rules_refused"
 FIELD_REFUSED = "field_refused"
 STORE_REFUSED = "store_refused"
+#: C8a. The access of an object that the store refuses.
+ACCESS_REFUSED = "access_refused"
 
 #: The parts of a field that a sync cannot change. ``hot`` is not one of them.
 _FIELD_ATTRS = ("type", "many", "options", "to", "required", "label", "lines")
@@ -1181,10 +1334,13 @@ class SyncResult:
     fields_added: tuple[tuple[str, str], ...] = ()
     hot_changed: tuple[tuple[str, str, bool], ...] = ()
     rules_set: tuple[str, ...] = ()
+    #: C8a. The objects whose grants changed.
+    access_set: tuple[str, ...] = ()
 
     @property
     def changed(self) -> bool:
-        return bool(self.objects_created or self.fields_added or self.hot_changed or self.rules_set)
+        return bool(self.objects_created or self.fields_added or self.hot_changed or self.rules_set
+                    or self.access_set)
 
 
 @dataclass
@@ -1201,6 +1357,9 @@ class _Item:
     add: list[Mapping[str, Any]] = dc_field(default_factory=list)
     heat: list[tuple[str, bool]] = dc_field(default_factory=list)
     set_rules: bool = False
+    #: C8a. The grants of the manifest, or None for an open object.
+    access: tuple[Grant, ...] | None = None
+    set_access: bool = False
 
 
 async def list_objects(db: Any, package_id: str) -> list[StudioObject]:
@@ -1246,7 +1405,12 @@ def _read_entry(entry: Any, problems: list[SyncProblem]) -> _Item | None:
     except ConstraintError as exc:
         problems.append(SyncProblem(RULES_REFUSED, clean, rule=exc.rule, message=exc.message))
         return None
-    return _Item(clean, label, raw_fields, fields, raw_rules, rules)
+    try:
+        access = parse_access(entry.get("access"))
+    except AccessError as exc:
+        problems.append(SyncProblem(ACCESS_REFUSED, clean, message=exc.message))
+        return None
+    return _Item(clean, label, raw_fields, fields, raw_rules, rules, access=access)
 
 
 async def _plan_fields(db: Any, item: _Item, row: StudioObject,
@@ -1300,9 +1464,11 @@ async def _plan_sync(db: Any, rows: Sequence[StudioObject],
         item.row = by_name.get(item.name)
         if item.row is None:
             item.set_rules = bool(item.rules)
+            item.set_access = item.access is not None
         else:
             await _plan_fields(db, item, item.row, problems)
             item.set_rules = _rules_json(item.rules) != _rules_json(item.row.constraints)
+            item.set_access = _access_json(item.access) != _access_json(item.row.access)
         items.append(item)
     kept = {i.name for i in items}
     for row in rows:
@@ -1326,6 +1492,7 @@ class _Done:
     added: list[tuple[str, str]] = dc_field(default_factory=list)
     heated: list[tuple[str, str, bool]] = dc_field(default_factory=list)
     ruled: list[str] = dc_field(default_factory=list)
+    accessed: list[str] = dc_field(default_factory=list)
 
 
 async def _sync_new_objects(db: Any, who: str, pid: str, items: Sequence[_Item],
@@ -1421,6 +1588,28 @@ async def _sync_rules_full(db: Any, pid: str, items: Sequence[_Item], done: _Don
     done.ruled.extend(it.name for it in items if it.set_rules)
 
 
+async def _sync_access_first(db: Any, pid: str, items: Sequence[_Item], done: _Done) -> None:
+    """C8a, pass 1 of the grants: each stored grant list that changes goes, so
+    a person field that it reads may turn cold. The sync runs in one
+    transaction, so no reader sees the object open."""
+    for it in items:
+        if it.row is not None and it.set_access and it.row.access is not None:
+            done.where, done.field = it.name, None
+            await _write_access(db, it.row.id, pid, None)
+
+
+async def _sync_access_full(db: Any, pid: str, items: Sequence[_Item], done: _Done) -> None:
+    """C8a, pass 2 of the grants: the manifest list of each object, through the
+    one store path :func:`set_access`, after the fields are in place and hot."""
+    for it in items:
+        if it.set_access and it.access is not None:
+            done.where, done.field = it.name, None
+            if await set_access(db, done.ids[it.name], [g.stored() for g in it.access],
+                                package_id=pid) is None:
+                raise ObjectStoreError("The object is gone.")
+    done.accessed.extend(it.name for it in items if it.set_access)
+
+
 async def _apply_sync(db: Any, who: str, pid: str, items: Sequence[_Item]) -> SyncResult:
     """Write the plan in one SAVEPOINT, so a refusal leaves no part of it.
 
@@ -1432,18 +1621,24 @@ async def _apply_sync(db: Any, who: str, pid: str, items: Sequence[_Item]) -> Sy
     cap passes, also when a rule moves with it. A rule needs its fields in
     place and hot, so pass 2 comes last. The store still refuses a cold flip
     that a staying rule reads. A refusal of a field step names the field.
+    The grants of C8a go first and come back last, in the same way.
     """
     done = _Done(ids={it.name: it.row.id for it in items if it.row is not None})
     try:
         async with db.begin_nested():
+            await _sync_access_first(db, pid, items, done)
             first = await _sync_rules_first(db, pid, items, done)
             await _sync_heat(db, items, done, hot=False)
             await _sync_new_objects(db, who, pid, items, done)
             await _sync_new_fields(db, items, done)
             await _sync_heat(db, items, done, hot=True)
             await _sync_rules_full(db, pid, items, done, first)
+            await _sync_access_full(db, pid, items, done)
     except StoreBusy:
         raise
+    except AccessError as exc:
+        raise ObjectsOutOfSync([SyncProblem(
+            ACCESS_REFUSED, done.where, message=exc.message)]) from None
     except ConstraintError as exc:
         raise ObjectsOutOfSync([SyncProblem(
             RULES_REFUSED, done.where, rule=exc.rule, message=exc.message)]) from None
@@ -1455,7 +1650,8 @@ async def _apply_sync(db: Any, who: str, pid: str, items: Sequence[_Item]) -> Sy
         raise ObjectsOutOfSync([SyncProblem(
             STORE_REFUSED, done.where, field=done.field, message=str(exc))]) from None
     return SyncResult(
-        tuple(done.created), tuple(done.added), tuple(done.heated), tuple(done.ruled))
+        tuple(done.created), tuple(done.added), tuple(done.heated), tuple(done.ruled),
+        tuple(done.accessed))
 
 
 async def sync_objects(db: Any, actor: str, *, package_id: str,
@@ -1686,7 +1882,7 @@ async def purge_records(db: Any, package_id: str, *, limit: int = PURGE_CHUNK,
 
 
 async def create_record(db: Any, actor: str, object_id: str, data: Mapping[str, Any], *,
-                        package_id: str) -> Record | None:
+                        package_id: str, viewer: Viewer) -> Record | None:
     """Create one record of the object *object_id* of the package *package_id*.
     Answers None when the bound org holds no such object in that package.
 
@@ -1694,27 +1890,110 @@ async def create_record(db: Any, actor: str, object_id: str, data: Mapping[str, 
     raises :class:`FieldError` with its field key. The record and its hot rows
     go in one statement. This is a batch of one, so a rule of the object runs,
     and a refusal raises
-    :class:`~acb_common.studio_rules.ConstraintViolation`.
+    :class:`~acb_common.studio_rules.ConstraintViolation`. The scope of
+    *viewer* binds (C8a), and a refusal of it raises :class:`AccessDenied`.
     """
     who = _actor(actor)
-    made = await _one_write(db, who, package_id, Write("create", object_id, data=data))
+    made = await _one_write(db, who, package_id, Write("create", object_id, data=data), viewer)
     return made if isinstance(made, Record) else None
 
 
+def _check_viewer(viewer: Any) -> Viewer:
+    """C8a. The viewer is a :class:`~acb_common.studio_access.Viewer`, which
+    the caller builds from the session."""
+    if not isinstance(viewer, Viewer):
+        raise ObjectStoreError("viewer must be a Viewer of the session's member")
+    return viewer
+
+
+@dataclass(frozen=True)
+class _View:
+    """C8a. What one viewer reads of one object: the scope of the viewer's
+    roles, the rules of the object, and the roll-up targets that it hides."""
+
+    scope: Scope
+    rules: tuple[Rule, ...] = ()
+    tainted: frozenset[str] = frozenset()
+
+    def hidden(self, data: Mapping[str, Any]) -> frozenset[str]:
+        """The keys hidden on the record *data*, with each formula that reads one."""
+        if self.scope.open and not self.tainted:
+            return frozenset()
+        return with_formulas(self.scope.hidden_for(data) | self.tainted, self.rules)
+
+    def maybe_hidden(self) -> frozenset[str]:
+        """The keys that a filter, a sort and a write refuse."""
+        return with_formulas(self.scope.maybe_hidden() | self.tainted, self.rules)
+
+    def shown(self, record: Record) -> Record:
+        """*record* with each hidden key gone."""
+        hidden = self.hidden(record.data)
+        if not hidden:
+            return record
+        return replace(record, data={k: v for k, v in record.data.items() if k not in hidden})
+
+
+async def _tainted(db: Any, pid: str, rules: Sequence[Rule], viewer: Viewer,
+                   owner: bool) -> frozenset[str]:
+    """The roll-up targets of an object with *rules* that *viewer* may not
+    read (C8a). One statement, only for a roll-up and a viewer who is not the
+    owner. A source that the package no longer holds hides the target."""
+    names = sorted({str(r.source) for r in rules if r.kind == ROLLUP and r.source is not None})
+    if owner or not names:
+        return frozenset()
+    rows = (await db.execute(text(_SOURCE_ACCESS_SQL), {"pid": pid, "names": names})).all()
+    sources = {str(r[0]): scope_for(stored_access(_json(r[1])), viewer, owner=False) for r in rows}
+    return rollup_hidden(rules, sources)
+
+
+async def _view(db: Any, oid: str, pid: str, viewer: Viewer) -> _View | None:
+    """The view of *viewer* on the object *oid* of the package *pid*, or None
+    when the package holds no such object. The owner comes from the ``apps``
+    row of the package, never from the caller."""
+    row = (await db.execute(text(_VIEW_SQL), {"oid": oid, "pid": pid})).first()
+    if row is None:
+        return None
+    owner = row[2] is not None and str(row[2]) == viewer.email
+    rules = stored_rules(_json(row[0]))
+    scope = scope_for(stored_access(_json(row[1])), viewer, owner=owner)
+    return _View(scope, rules, await _tainted(db, pid, rules, viewer, owner))
+
+
+def _scoped(sql: str, scoped_sql: str, scope: Scope, binds: dict[str, Any]) -> str:
+    """*scoped_sql* with the binds of the row rule when one binds *scope*,
+    else *sql*."""
+    if not scope.row_bound:
+        return sql
+    binds["akeys"] = list(scope.where_keys)
+    binds["me"] = scope.me
+    return scoped_sql
+
+
 async def get_record(db: Any, object_id: str, record_id: str, *,
-                     package_id: str) -> Record | None:
+                     package_id: str, viewer: Viewer) -> Record | None:
     """The record *record_id* of the object *object_id* of the package
-    *package_id*, or None."""
-    row = (await db.execute(text(_GET_RECORD_SQL), {
-        "oid": _uuid(object_id, "object_id"), "rid": _uuid(record_id, "record_id"),
-        "pid": _uuid(package_id, "package_id")})).first()
-    return None if row is None else _record(row)
+    *package_id*, or None.
+
+    C8a: a record that the row rule of *viewer* does not read answers None, as
+    a record that is not there does, and each hidden key leaves the answer."""
+    who = _check_viewer(viewer)
+    oid = _uuid(object_id, "object_id")
+    binds = {"oid": oid, "rid": _uuid(record_id, "record_id"),
+             "pid": _uuid(package_id, "package_id")}
+    view = await _view(db, oid, binds["pid"], who)
+    if view is None or not view.scope.reads:
+        return None
+    sql = _scoped(_GET_RECORD_SQL, _GET_RECORD_SCOPED_SQL, view.scope, binds)
+    row = (await db.execute(text(sql), binds)).first()
+    return None if row is None else view.shown(_record(row))
 
 
 async def update_record(db: Any, actor: str, object_id: str, record_id: str,
-                        changes: Mapping[str, Any], *, package_id: str) -> Record | None:
+                        changes: Mapping[str, Any], *, package_id: str,
+                        viewer: Viewer) -> Record | None:
     """Change the record *record_id* of the object *object_id* of the package
-    *package_id*. Answers None when the bound org holds no such record.
+    *package_id*. Answers None when the bound org holds no such record, and
+    when the row rule of *viewer* does not read it (C8a).
 
     *changes* names the fields that change. A ``None`` value clears a field.
     The merged record is checked whole, so a required field stays filled.
@@ -1723,21 +2002,23 @@ async def update_record(db: Any, actor: str, object_id: str, record_id: str,
     """
     who = _actor(actor)
     write = Write("update", object_id, record_id, changes)
-    done = await _one_write(db, who, package_id, write)
+    done = await _one_write(db, who, package_id, write, viewer)
     return done if isinstance(done, Record) else None
 
 
 async def delete_record(db: Any, actor: str, object_id: str, record_id: str, *,
-                        package_id: str) -> bool:
+                        package_id: str, viewer: Viewer) -> bool:
     """Delete the record *record_id* of the object *object_id* of the package
     *package_id*, and its hot rows by cascade. Answers False when the bound org
-    holds no such record. This is a batch of one, so a rule of the object runs.
+    holds no such record, and when the row rule of *viewer* does not read it
+    (C8a). This is a batch of one, so a rule of the object runs.
 
     The deleted record keeps no actor, but a roll-up parent of it gets a derived
     write (C7b), and that write names *actor* in ``updated_by``, as a batch does.
     """
     who = _actor(actor)
-    return await _one_write(db, who, package_id, Write("delete", object_id, record_id)) is True
+    write = Write("delete", object_id, record_id)
+    return await _one_write(db, who, package_id, write, viewer) is True
 
 
 # --- the query (C2a) --------------------------------------------------------
@@ -1795,7 +2076,7 @@ _RECORD_ROW = "r.id, r.object_id, r.data, r.created_by, r.updated_by, r.created_
 _HOT_COLUMN: Mapping[str, str] = {
     "text": "v_text", "email": "v_text", "select": "v_text", "number": "v_num",
     "money": "v_num", "date": "v_ts", "datetime": "v_ts", "checkbox": "v_bool",
-    "relation": "v_text",
+    "relation": "v_text", "person": "v_text",
 }
 assert set(_HOT_COLUMN) == set(studio_query.OPS_BY_TYPE), "each type of the op table has a column"
 
@@ -1901,7 +2182,7 @@ def _q_data(kind: str, i: int) -> str:
         # The id, in the one form that `studio_fields.relation_key` gives a hot row.
         rid = f"(CASE WHEN jsonb_typeof(r.data -> {kref}) = 'object' THEN r.data -> {kref} ->> 'id' END)"
         return f"(CASE WHEN {rid} ~ {_UUID_FORM} THEN CAST({rid} AS uuid)::text ELSE {rid} END)"
-    if kind in ("text", "email", "select"):
+    if kind in ("text", "email", "select", "person"):
         return f"(r.data ->> {kref})"
     if kind == "number":
         return (f"(CASE WHEN jsonb_typeof(r.data -> {kref}) = 'number' "
@@ -2021,11 +2302,27 @@ def _q_lookup(rid: str) -> str:
             f"WHERE r.{_OF_ORG} AND r.{_OF_OBJECT} AND r.id = {rid} OFFSET 0) r")
 
 
+def _q_access(rid: str) -> str:
+    """C8a. The row rule of the viewer on the record id *rid*: a hot row of one
+    of the person fields ``:akeys`` holds the viewer ``:me``. One ``EXISTS``
+    holds the UNION of the viewer's row rules."""
+    return (f"EXISTS (SELECT 1 FROM studio_record_hot ac WHERE ac.{_OF_ORG} AND ac.{_OF_OBJECT} "
+            f"AND ac.record_id = {rid} AND ac.field_key = ANY(CAST(:akeys AS text[])) "
+            "AND ac.v_text = CAST(:me AS text))")
+
+
 def _q_where(conditions: Sequence[Condition], params: dict[str, Any], rid: str,
              skip: int | None = None, only_hot: bool = False) -> str:
     """Each condition, with its index in *conditions*, so one statement holds
-    one bind for each condition. *only_hot* leaves out a field that is not hot."""
+    one bind for each condition. *only_hot* leaves out a field that is not hot.
+
+    C8a: when *params* holds the viewer (``me``, set by :func:`build_query`
+    only), each part also holds the row rule. So the count, the guard, the head
+    and the tail of a page read the same records. A check of a rule (C1b) and a
+    roll-up (C7b) set no viewer, and they read every record."""
     parts = [_IN_PACKAGE]
+    if "me" in params:
+        parts.append(_q_access(rid))
     for i, cond in enumerate(conditions):
         if i == skip or (only_hot and not cond.field.hot):
             continue
@@ -2127,7 +2424,8 @@ def _q_small_ids(query: Query, params: dict[str, Any]) -> str:
 
 
 def build_query(query: Query, *, object_id: str, package_id: str, limit: int,
-                offset: int) -> tuple[str, dict[str, Any]]:
+                offset: int, access: tuple[Sequence[str], str] | None = None
+                ) -> tuple[str, dict[str, Any]]:
     """The one statement of a page of *query*: its SQL and its binds. Pure.
 
     Each row holds the total (``t.n``), the count of the guard (``g.n``, or
@@ -2138,10 +2436,15 @@ def build_query(query: Query, *, object_id: str, package_id: str, limit: int,
     first, in the order of the hot index and then the id, both in the
     direction of the sort. The records with no value come after, in the
     ascending order of their id.
+
+    C8a: *access* is the row rule of the viewer, ``(person keys, address)``.
+    Each part of the statement then holds it (:func:`_q_access`).
     """
     params: dict[str, Any] = {"oid": object_id, "pid": package_id, "lim": limit,
                               "off": offset, "cap": studio_query.TOTAL_CAP,
                               "hk": list(query.hot_keys())}
+    if access is not None:
+        params["akeys"], params["me"] = list(access[0]), access[1]
     dirn = " DESC" if query.sort is not None and query.sort.desc else ""
     guard = "CAST(NULL AS bigint)"
     if query.cold():
@@ -2258,13 +2561,14 @@ def _check_hot_or_small(rows: Sequence[Any], query: Query) -> None:
 
 
 async def _read_page(timed: _Timed, oid: str, pid: str, filter: Any, sort: Any, size: int,
-                     start: int) -> list[Any]:
+                     start: int, access: tuple[Sequence[str], str] | None = None) -> list[Any]:
     """The fields, then the page statement. A field that turned cold after
     the store read the fields has lost its hot rows, so the statement says so,
     and the store reads the fields and runs the query once more."""
     for _ in range(2):
         query = studio_query.parse_query(await _fields(timed, oid), filter, sort)
-        sql, params = build_query(query, object_id=oid, package_id=pid, limit=size, offset=start)
+        sql, params = build_query(query, object_id=oid, package_id=pid, limit=size, offset=start,
+                                  access=access)
         rows = (await timed.execute(text(sql), params)).all()
         if int(rows[0][2]) == len(query.hot_keys()):
             _check_hot_or_small(rows, query)
@@ -2272,8 +2576,31 @@ async def _read_page(timed: _Timed, oid: str, pid: str, filter: Any, sort: Any, 
     raise QueryError(studio_query.TIMEOUT, _CHANGED_MESSAGE)
 
 
-async def query_records(db: Any, *, package_id: str, object_id: str, filter: Any = None,
-                        sort: Any = None, limit: Any = None,
+def _refuse_hidden_query(view: _View, items: Sequence[Mapping[str, Any]], sort: Any) -> None:
+    """C8a. A filter or a sort on a key that is hidden from the viewer would
+    show the value, so it is refused before any read of a record."""
+    hidden = view.maybe_hidden()
+    if not hidden:
+        return
+    for item in items:
+        if item["field"] in hidden:
+            raise QueryError(studio_query.OP_NOT_ALLOWED,
+                             f"Field `{item['field']}` is hidden from you, so a query cannot "
+                             "filter by it.", str(item["field"]))
+    if isinstance(sort, Mapping) and sort.get("field") in hidden:
+        raise QueryError(studio_query.OP_NOT_ALLOWED,
+                         f"Field `{sort['field']}` is hidden from you, so a query cannot sort "
+                         "by it.", str(sort["field"]))
+
+
+def _empty_page(start: int, size: int) -> RecordPage:
+    """C8a. The page of a viewer whose roles read no record of the object."""
+    line = page_line(0, start, 0, noun="records", reach=studio_query.MAX_OFFSET)
+    return RecordPage(records=(), total=0, total_at_least=None, offset=start, limit=size, line=line)
+
+
+async def query_records(db: Any, *, package_id: str, object_id: str, viewer: Viewer,
+                        filter: Any = None, sort: Any = None, limit: Any = None,
                         offset: Any = None) -> RecordPage | None:
     """One page of the records of the object *object_id* of the package
     *package_id*, with a filter and a sort (C2a). Answers None when the bound
@@ -2289,19 +2616,28 @@ async def query_records(db: Any, *, package_id: str, object_id: str, filter: Any
     may try again. A record with no value of the sort field comes
     after the records with a value. The total is exact below
     :data:`~acb_common.studio_query.TOTAL_CAP`.
+
+    C8a: the row rule of *viewer* joins that one statement, so the page and
+    its total hold only the records that the viewer reads. A filter or a sort
+    on a hidden key is refused, and each hidden key leaves each record.
     """
+    who = _check_viewer(viewer)
     deadline = _clock() + studio_query.TIMEOUT_MS / 1000
     oid = _uuid(object_id, "object_id")
     pid = _uuid(package_id, "package_id")
     start, size = studio_query.page_bounds(offset, limit)
-    studio_query.check_shape(filter, sort)
+    items = studio_query.check_shape(filter, sort)
     async with _time_limit(db, deadline) as timed:
-        found = await timed.execute(text(_QUERY_OBJECT_SQL), {"oid": oid, "pid": pid})
-        if found.first() is None:
+        view = await _view(timed, oid, pid, who)
+        if view is None:
             return None
-        rows = await _read_page(timed, oid, pid, filter, sort, size, start)
+        _refuse_hidden_query(view, items, sort)
+        if not view.scope.reads:
+            return _empty_page(start, size)
+        access = (view.scope.where_keys, who.email) if view.scope.row_bound else None
+        rows = await _read_page(timed, oid, pid, filter, sort, size, start, access)
     count = int(rows[0][0])
-    records = tuple(_record(row[3:]) for row in rows if row[3] is not None)
+    records = tuple(view.shown(_record(row[3:])) for row in rows if row[3] is not None)
     exact = count < studio_query.TOTAL_CAP
     shown = len(records)
     reach = studio_query.MAX_OFFSET
@@ -2679,6 +3015,15 @@ class _Held:
     rules: tuple[Rule, ...]
     #: The formulas of the object, checked once for the batch (C7a). None when it has none.
     plan: FormulaPlan | None = None
+    #: C8a. The scope of the viewer of the batch on this object.
+    scope: Scope | None = None
+    #: C8a. The roll-up targets of this object that the viewer may not read.
+    tainted: frozenset[str] = frozenset()
+
+    def view(self) -> _View:
+        """The view of the viewer of the batch, as a read builds it."""
+        assert self.scope is not None
+        return _View(self.scope, self.rules, self.tainted)
 
 
 @dataclass
@@ -2701,10 +3046,13 @@ class _Batch:
     """The state of one batch. ``index`` names the write that runs now, so an
     error gets its place in the list."""
 
-    def __init__(self, who: str, pid: str, steps: Sequence[Write]) -> None:
+    def __init__(self, who: str, pid: str, steps: Sequence[Write], viewer: Viewer) -> None:
         self.who = who
         self.pid = pid
         self.steps = steps
+        #: C8a. The viewer of the batch, and whether the viewer owns the package.
+        self.viewer = viewer
+        self.owner = False
         self.objects: dict[str, _Held] = {}
         self.marks: dict[tuple[str, str], _Mark] = {}
         self.index = 0
@@ -2806,6 +3154,7 @@ async def _lock_objects(db: Any, batch: _Batch) -> None:
     for parent, _, _ in batch.rollups:
         first.setdefault(parent, 0)
         writes.add(parent)  # a derived write computes the formulas of the parent
+    stepped = {step.object_id for step in batch.steps}
     for oid in sorted(first):
         batch.index = first[oid]
         row = (await db.execute(text(_SHARE_OBJECT_SQL), {"oid": oid, "pid": batch.pid})).first()
@@ -2815,7 +3164,12 @@ async def _lock_objects(db: Any, batch: _Batch) -> None:
         rules = stored_rules(_json(row[1]))
         # A delete computes nothing, so only a create or an update builds the plan.
         plan = plan_formulas(rules, str(row[0]), fields) if oid in writes else None
-        batch.objects[oid] = _Held(str(row[0]), fields, rules, plan)
+        batch.owner = row[3] is not None and str(row[3]) == batch.viewer.email
+        scope = scope_for(stored_access(_json(row[2])), batch.viewer, owner=batch.owner)
+        if oid in stepped and not scope.writes:
+            raise AccessDenied(f"Your roles in this app cannot change records of `{row[0]}`.")
+        tainted = await _tainted(db, batch.pid, rules, batch.viewer, batch.owner)
+        batch.objects[oid] = _Held(str(row[0]), fields, rules, plan, scope, tainted)
 
 
 async def _lock_records(db: Any, batch: _Batch) -> None:
@@ -2826,8 +3180,12 @@ async def _lock_records(db: Any, batch: _Batch) -> None:
             first.setdefault((step.object_id, step.record_id), i)
     for (oid, rid), index in sorted(first.items()):
         batch.index = index
-        row = (await db.execute(text(_LOCK_RECORD_SQL), {
-            "oid": oid, "rid": rid, "pid": batch.pid})).first()
+        binds = {"oid": oid, "rid": rid, "pid": batch.pid}
+        scope = batch.objects[oid].scope
+        assert scope is not None
+        # C8a: a record that the row rule of the viewer does not read is not found.
+        sql = _scoped(_LOCK_RECORD_SQL, _LOCK_RECORD_SCOPED_SQL, scope, binds)
+        row = (await db.execute(text(sql), binds)).first()
         if row is None:
             raise RecordNotFound("This package holds no such record.")
         data = dict(_json(row[2]))
@@ -2986,6 +3344,21 @@ def _new_parents(batch: _Batch) -> dict[str, dict[str, tuple[int, _Lines]]]:
     return out
 
 
+async def _parent_scope(db: Any, batch: _Batch, oid: str) -> Scope:
+    """C8a. The scope of the viewer of the batch on the parent object *oid*.
+    A parent object that the batch writes has its scope already. A parent
+    object that is gone reads nothing."""
+    held = batch.objects.get(oid)
+    if held is not None and held.scope is not None:
+        return held.scope
+    if batch.owner:
+        return Scope(batch.viewer.email, True)
+    rows = (await db.execute(text(_OBJECT_ACCESS_SQL), {"oid": oid, "pid": batch.pid})).all()
+    if not rows:
+        return Scope(batch.viewer.email, False)
+    return scope_for(stored_access(_json(rows[0][0])), batch.viewer, owner=False)
+
+
 def _no_parent(link: _Lines) -> FieldError:
     return FieldError(link.via, f"Field `{link.via}` names no `{link.parent}` record of this "
                       f"app. Pick a record of `{link.parent}` in this app.")
@@ -3001,12 +3374,36 @@ async def _check_line_parents(db: Any, batch: _Batch, deadline: float) -> None:
         return
     async with _time_limit(db, deadline, _RULE_TIMEOUT_MESSAGE) as timed:
         for parent_id, ids in sorted(wanted.items()):
-            found = {str(r[0]) for r in (await timed.execute(text(_LINE_PARENTS_SQL), {
-                "oid": parent_id, "pid": batch.pid, "ids": sorted(ids)})).all()}
+            binds = {"oid": parent_id, "pid": batch.pid, "ids": sorted(ids)}
+            # C8a: a parent that the viewer cannot read is not found, so its
+            # refusal is the one of a parent that is not there.
+            scope = await _parent_scope(timed, batch, parent_id)
+            sql = _scoped(_LINE_PARENTS_SQL, _LINE_PARENTS_SCOPED_SQL, scope, binds)
+            found = {str(r[0]) for r in (await timed.execute(text(sql), binds)).all()}
             for rid, (index, link) in sorted(ids.items(), key=lambda kv: kv[1][0]):
                 if rid not in found:
                     batch.index = index
                     raise _no_parent(link)
+
+
+def _refuse_hidden_write(held: _Held, data: Any) -> None:
+    """C8a. A write that names a key hidden from the viewer is refused: the
+    viewer cannot read the value back, and a refusal of it would show it."""
+    if held.scope is None or held.scope.open or not isinstance(data, Mapping):
+        return
+    hidden = held.scope.maybe_hidden()
+    for key in sorted(str(k) for k in data if k in hidden):
+        raise FieldError(key, f"Field `{key}` is hidden from you, so a write cannot set it.")
+
+
+def _check_sees(held: _Held, clean: Mapping[str, Any]) -> None:
+    """C8a. A create or an update must leave a record that the viewer reads,
+    as ``WITH CHECK`` does. So a member cannot make or move a record into the
+    rows of another member."""
+    if held.scope is not None and not held.scope.sees(clean):
+        keys = ", ".join(f"`{k}`" for k in held.scope.where_keys)
+        raise AccessDenied(f"This write leaves a record of `{held.name}` that you cannot read. "
+                           f"Name yourself in {keys or 'the record'}.")
 
 
 async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
@@ -3016,6 +3413,7 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     plain = held.fields if held.plan is None else list(held.plan.plain)
     linked = _link(batch, step)
     if step.op == "create":
+        _refuse_hidden_write(held, step.data)
         if linked is not None and isinstance(step.data, Mapping):
             # C13: the line takes its parent from the batch, never from its data.
             step = replace(step, data={**step.data, linked[0].via: {"id": linked[1]}})
@@ -3023,6 +3421,7 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
         refuse_computed_keys(held.plan, held.name, data)
         data = with_rollup_zero(held.plan, data)
         clean = run_formulas(held.plan, held.name, validate_record(plain, data))
+        _check_sees(held, clean)
         moves = _line_moves(batch, oid, None, clean)
         row = (await db.execute(text(_CREATE_RECORD_SQL), {
             "oid": oid, "data": record_json(clean), "actor": batch.who,
@@ -3043,9 +3442,11 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
         mark.after = None
         return True
     changes = dict(step.data or {})
+    _refuse_hidden_write(held, changes)
     refuse_computed_keys(held.plan, held.name, changes)
     merged = without_targets(held.plan, {**(mark.after or {}), **changes})
     clean = run_formulas(held.plan, held.name, validate_record(plain, merged))
+    _check_sees(held, clean)
     if _line_moves(batch, oid, mark.after, clean):
         batch.moved[(oid, str(step.record_id))] = batch.index
     row = (await db.execute(text(_UPDATE_RECORD_SQL), {
@@ -3353,26 +3754,61 @@ async def _run_steps(db: Any, batch: _Batch) -> list[Record | bool]:
     await _check_line_parents(db, batch, deadline)
     await _recompute_parents(db, batch, deadline)
     await _check_keys(db, batch, _check_records(batch), deadline)
-    return answers
+    # C8a: each hidden key leaves the answer of a create and of an update.
+    return [batch.objects[a.object_id].view().shown(a) if isinstance(a, Record) else a
+            for a in answers]
 
 
-async def _apply_batch(db: Any, who: str, pid: str, steps: list[Write]) -> list[Record | bool]:
+#: C8a. The text of a refusal that would name a hidden key, or show a record
+#: that the viewer cannot read. It names the rule and the object only.
+_MASKED = "Rule `{rule}` of object `{object}` refuses this write. Ask the owner of the app why."
+
+
+def _masked(batch: _Batch, exc: Exception) -> Exception:
+    """C8a. The refusal of a rule as the viewer may read it. A rule that reads
+    or fills a key hidden from the viewer, and a ``unique`` or a
+    ``group_sum_min`` that reads records past the viewer's row rule, get one
+    plain text that names no field. The owner, and a viewer that no rule
+    binds, get the full text."""
+    name = getattr(exc, "object", None)
+    held = next((h for h in batch.objects.values() if h.name == name), None)
+    if not isinstance(exc, RuleViolation) or held is None or held.scope is None:
+        return exc
+    if held.scope.open and not held.tainted:
+        return exc
+    rule = next((r for r in held.rules if r.name == exc.rule), None)
+    reads: set[str] = set()
+    if rule is not None:
+        reads = set(rule_reads(rule)) | ({rule.target} if rule.target is not None else set())
+    hidden = held.view().maybe_hidden()
+    others = rule is not None and rule.kind in (UNIQUE, GROUP_SUM_MIN) and held.scope.row_bound
+    if rule is None or others or reads & hidden:
+        return ConstraintViolation(exc.rule, held.name, _MASKED.format(rule=exc.rule, object=held.name))
+    return exc
+
+
+async def _apply_batch(db: Any, who: str, pid: str, steps: list[Write],
+                       viewer: Viewer) -> list[Record | bool]:
     """The one path of a record write. An error rolls back the SAVEPOINT as it
     leaves the block, so the batch writes nothing and the caller's earlier work
     stays."""
     if not steps:
         return []
-    batch = _Batch(who, pid, steps)
+    batch = _Batch(who, pid, steps, viewer)
     try:
         async with db.begin_nested():
             answers = await _run_steps(db, batch)
     except Exception as exc:
+        shown = _masked(batch, exc)
+        if shown is not exc:
+            # The cause would carry the text that the mask hides.
+            raise BatchError(batch.index, shown) from None
         raise BatchError(batch.index, exc) from exc
     return answers
 
 
 async def apply_writes(db: Any, actor: str, *, package_id: str,
-                       writes: Sequence[Write]) -> list[Record | bool]:
+                       writes: Sequence[Write], viewer: Viewer) -> list[Record | bool]:
     """Apply *writes* to the package *package_id*, all or none (C1b).
 
     Answers one item for each write: the :class:`Record` of a create or an
@@ -3385,18 +3821,27 @@ async def apply_writes(db: Any, actor: str, *, package_id: str,
     write that names no such object or record is a :class:`RecordNotFound`.
     A timeout in a check gives ``query_timeout``. The caller's transaction
     stays usable with its earlier work.
+
+    C8a: the scope of *viewer* binds each write. Roles with no write give
+    :class:`AccessDenied`, and so does a write that leaves a record that the
+    viewer cannot read. A change or a delete of a record that the row rule
+    does not read gives :class:`RecordNotFound`. A key that is hidden from the
+    viewer leaves each answer, and a write that names one is refused.
     """
     who = _actor(actor)
+    seen = _check_viewer(viewer)
     pid = _uuid(package_id, "package_id")
-    return await _apply_batch(db, who, pid, _clean_writes(writes))
+    return await _apply_batch(db, who, pid, _clean_writes(writes), seen)
 
 
-async def _one_write(db: Any, who: str, package_id: str, write: Write) -> Record | bool | None:
+async def _one_write(db: Any, who: str, package_id: str, write: Write,
+                     viewer: Viewer) -> Record | bool | None:
     """A batch of one, for the three record functions. Each raises the cause
     of a refusal, and answers None for a record that is not there."""
+    seen = _check_viewer(viewer)
     pid = _uuid(package_id, "package_id")
     try:
-        return (await _apply_batch(db, who, pid, _clean_writes([write])))[0]
+        return (await _apply_batch(db, who, pid, _clean_writes([write]), seen))[0]
     except BatchError as exc:
         if isinstance(exc.cause, RecordNotFound):
             return None

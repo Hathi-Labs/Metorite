@@ -19,6 +19,7 @@ import pytest
 from acb_common import studio_fields as sf
 from acb_common import studio_query as sq
 from acb_common import studio_rules as sr
+from acb_common.studio_access import Viewer
 from acb_common.studio_rules import ConstraintError, ConstraintViolation, RuleViolation
 from gateway.studio import objects_store as store
 
@@ -534,10 +535,13 @@ class _NoSQL:
 OID = "00000000-0000-0000-0000-00000000000a"
 PID = "00000000-0000-0000-0000-00000000000b"
 RID = "00000000-0000-0000-0000-00000000000c"
+#: C8a. The store takes a viewer. No object of this suite declares `access`,
+#: so each object is open and any member reads and writes it.
+_VIEWER = Viewer("ana@x.test")
 
 
 def _apply(db: Any, writes: Any, actor: str = "ana@x.test", pid: str = PID) -> Any:
-    return asyncio.run(store.apply_writes(db, actor, package_id=pid, writes=writes))
+    return asyncio.run(store.apply_writes(db, actor, package_id=pid, writes=writes, viewer=_VIEWER))
 
 
 def test_batch_cap_is_50() -> None:

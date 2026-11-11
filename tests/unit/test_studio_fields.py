@@ -504,7 +504,8 @@ def test_a_url_with_no_credential_still_passes() -> None:
 
 
 def test_a_relation_may_be_hot_and_holds_its_id_in_the_text_column() -> None:
-    assert "relation" in sf.HOT_TYPES and sf.HOT_TYPES[-1] == "relation"
+    # C8a adds `person` after `relation` (test_studio_row_rules.py).
+    assert sf.HOT_TYPES[-2:] == ("relation", "person")
     field = _field("relation", key="account", hot=True)
     row = sf.hot_value(field, {"id": "abc-1"})
     assert row == {"k": "account", "t": "abc-1", "n": None, "ts": None, "b": None}

@@ -56,9 +56,11 @@ FIELD_TYPES: tuple[str, ...] = (
 )  # fmt: skip
 
 #: The types that a hot field may have. Each maps to one value column of
-#: ``studio_record_hot`` (see :func:`hot_value`).
+#: ``studio_record_hot`` (see :func:`hot_value`). C8a adds ``person``, because
+#: a row rule (``studio_access.py``) reads the hot row of a person field.
 HOT_TYPES: tuple[str, ...] = (
     "text", "select", "number", "money", "date", "datetime", "checkbox", "email", "relation",
+    "person",
 )  # fmt: skip
 
 #: A field key and an object name: lower-case, a letter first, at most 48.
@@ -683,6 +685,10 @@ def hot_value(field: FieldSpec, value: Any) -> dict[str, Any] | None:
     kind = field.type
     if kind in ("text", "select", "email"):
         row["t"] = value[:HOT_TEXT_CHARS]
+    elif kind == "person":
+        # C8a. The whole lower-case address: an address holds at most 254
+        # characters, so the row never cuts it, and a row rule compares it whole.
+        row["t"] = value
     elif kind == "relation":
         row["t"] = relation_key(value["id"])
     elif kind == "number":

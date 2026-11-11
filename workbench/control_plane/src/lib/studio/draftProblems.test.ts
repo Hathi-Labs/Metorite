@@ -73,6 +73,49 @@ describe("checkDraft", () => {
   });
 });
 
+/**
+ * C8a fence (row rules): the browser check refuses a `where` on a field that is not a hot person
+ * field, as `studio_access.check_access_fit` does on the server.
+ * Mutation 5: drop the hot test of `checkAccess`. "refuses a where on a cold person field" turns red.
+ * Mutation 6: drop the type test. "refuses a where on a field that is not a person" turns red.
+ */
+describe("checkDraft, the row rules of C8a", () => {
+  const slip = (access: unknown[], fields?: unknown[]) => ({
+    ...ok,
+    roles: ["hr", "employee"],
+    objects: [{
+      name: "m",
+      fields: fields ?? [{ key: "employee", type: "person", hot: true }, { key: "pay", type: "number" }],
+      access,
+    }],
+  });
+  const readsMe = { where: "employee = $me" };
+
+  it("finds nothing in a sound access list", () => {
+    expect(only(slip([{ role: "hr", read: "all", write: "all" }, { role: "employee", read: readsMe, hide: ["pay"] }]),
+      "error")).toEqual([]);
+  });
+
+  it("refuses a where on a cold person field", () => {
+    const cold = [{ key: "employee", type: "person" }, { key: "pay", type: "number" }];
+    const p = checkDraft(slip([{ role: "employee", read: readsMe }], cold)).filter((x) => x.severity === "error");
+    expect(p.map((x) => x.path)).toEqual(["$.objects[0].access[0].read"]);
+    expect(p[0].message).toMatch(/must be hot/);
+  });
+
+  it("refuses a where on a field that is not a person", () => {
+    const p = checkDraft(slip([{ role: "employee", read: { where: "pay = $me" } }])).filter((x) => x.severity === "error");
+    expect(p.map((x) => x.path)).toEqual(["$.objects[0].access[0].read"]);
+    expect(p[0].message).toMatch(/not a person field/);
+  });
+
+  it("refuses a read of another shape and a role that the app does not declare", () => {
+    expect(only(slip([{ role: "boss", read: "some" }]), "error")).toEqual([
+      "$.objects[0].access[0].role", "$.objects[0].access[0].read",
+    ]);
+  });
+});
+
 describe("the count", () => {
   it("counts errors and warnings apart", () => {
     const p = [

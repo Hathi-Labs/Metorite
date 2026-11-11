@@ -90,6 +90,7 @@ import httpx
 from acb_auth import UserContext, UserRole, build_access, direct_proof, get_current_user
 from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant, tenant_session
+from acb_common.studio_access import Viewer
 from acb_common.studio_fields import FieldError
 from acb_skills import studio_tools as st
 from fastapi import FastAPI, HTTPException
@@ -114,6 +115,9 @@ pytestmark = _DB_GATE
 
 TAG = uuid.uuid4().hex[:8]
 ANA = f"ana.{TAG}@stuc13.test"
+#: C8a. The store takes a viewer. No object of this suite declares `access`,
+#: so each object is open and any member reads and writes it.
+_VIEWER = Viewer(ANA)
 DIRECT_KEY = "r8-c13-direct-key-" + "k" * 30
 
 ORDER_FIELDS: list[dict[str, Any]] = [
@@ -362,8 +366,8 @@ def test_r8_the_store_writes_twenty_linked_lines_all_or_none(world) -> None:
     async def go() -> tuple[BatchError, list[Any]]:
         async with tenant_session(w.a) as db:
             with pytest.raises(BatchError) as refused:
-                await store.apply_writes(db, ANA, package_id=w.pkg, writes=batch(True))
-            done = await store.apply_writes(db, ANA, package_id=w.pkg, writes=batch(False))
+                await store.apply_writes(db, ANA, package_id=w.pkg, writes=batch(True), viewer=_VIEWER)
+            done = await store.apply_writes(db, ANA, package_id=w.pkg, writes=batch(False), viewer=_VIEWER)
         return refused.value, done
 
     refused, done = _run(w, go)
@@ -489,7 +493,7 @@ def test_r8_a_line_cannot_move_to_a_parent_of_another_package(world) -> None:
         async with tenant_session(w.a) as db:
             with pytest.raises(BatchError) as refused:
                 await store.apply_writes(db, ANA, package_id=w.pkg, writes=[Write(
-                    "update", w.line.id, line, {"order": {"id": theirs.upper()}})])
+                    "update", w.line.id, line, {"order": {"id": theirs.upper()}})], viewer=_VIEWER)
         got["store"] = refused.value
         # A move inside the package runs, and both roll-ups follow.
         got["inside"] = await _direct(w.a, w.pkg, "change_line", {
@@ -527,7 +531,7 @@ def test_r8_a_line_cannot_move_to_a_parent_of_another_org(world) -> None:
         async with tenant_session(w.a) as db:
             with pytest.raises(BatchError) as refused:
                 await store.apply_writes(db, ANA, package_id=w.pkg, writes=[Write(
-                    "create", w.line.id, data={"order": {"id": parent_b}, "qty": 2})])
+                    "create", w.line.id, data={"order": {"id": parent_b}, "qty": 2})], viewer=_VIEWER)
         got["store"] = refused.value
         return got
 
@@ -569,7 +573,7 @@ async def _batch(w: Any, writes: list[Write]) -> BatchError | list[Any]:
     """One batch of the store in org A, package 1. A refusal is the answer."""
     async with tenant_session(w.a) as db:
         try:
-            return await store.apply_writes(db, ANA, package_id=w.pkg, writes=writes)
+            return await store.apply_writes(db, ANA, package_id=w.pkg, writes=writes, viewer=_VIEWER)
         except BatchError as exc:
             return exc
 

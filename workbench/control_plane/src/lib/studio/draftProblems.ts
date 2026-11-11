@@ -80,6 +80,7 @@ export function checkDraft(manifest: unknown): Problem[] {
       err(`$.objects[${i}].fields[${j}].to`, `The field links to ${to}, and the app has no such object.`);
     }
   }));
+  checkAccess(manifest, objects, err);
 
   const actions = list(manifest.actions);
   const actionIds = new Set<string>();
@@ -122,6 +123,42 @@ export function checkDraft(manifest: unknown): Problem[] {
   const size = JSON.stringify(manifest).length;
   if (size > CHAT_CAP) warn("$", `The draft is ${size} characters. Mira can edit ${CHAT_CAP}. Start a new, smaller app, and add the parts to it one at a time.`);
   return out;
+}
+
+/** `<field> = $me`, the one row rule of C8a (`studio_access._WHERE_RE`). */
+const WHERE_RE = /^\s*([a-z][a-z0-9_]{0,47})\s*=\s*\$me\s*$/;
+
+/**
+ * C8a. The row rules of each object, as `studio_access.check_access_fit` checks them: a grant names
+ * a declared role, its read is `all` or a `where` on a person field, and that field is hot. The
+ * server check stays the gate.
+ */
+function checkAccess(
+  manifest: Record<string, unknown>,
+  objects: Record<string, unknown>[],
+  err: (path: string, message: string) => void,
+): void {
+  const roles = new Set((Array.isArray(manifest.roles) ? manifest.roles : []).map(text));
+  objects.forEach((o, i) => {
+    const fields = new Map(list(o.fields).map((f) => [text(f.key), f]));
+    list(o.access).forEach((g, k) => {
+      const at = `$.objects[${i}].access[${k}]`;
+      const role = text(g.role);
+      if (!roles.has(role)) err(`${at}.role`, `The role ${role || "(none)"} is not in the roles of the app.`);
+      if (g.read === "all") return;
+      const where = isObject(g.read) && typeof g.read.where === "string" ? WHERE_RE.exec(g.read.where) : null;
+      if (!where) {
+        err(`${at}.read`, "A read is all, or a where that names a person field: employee = $me.");
+        return;
+      }
+      const field = fields.get(where[1]);
+      if (!field || text(field.type) !== "person" || field.many === true) {
+        err(`${at}.read`, `The row rule reads ${where[1]}, and it is not a person field of this object.`);
+      } else if (field.hot !== true) {
+        err(`${at}.read`, `The row rule reads ${where[1]}, so the field must be hot. Turn it hot.`);
+      }
+    });
+  });
 }
 
 export function countProblems(problems: readonly Problem[]): { errors: number; warnings: number } {

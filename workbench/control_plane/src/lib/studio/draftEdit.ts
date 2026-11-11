@@ -47,8 +47,13 @@ export function rulesNaming(m: unknown, object: string, key: string): string[] {
   return out;
 }
 
-/** The field types that may be hot (`studio_fields.HOT_TYPES`). */
-const HOT_TYPES: readonly string[] = ["text", "select", "number", "money", "date", "datetime", "checkbox", "email", "relation"];
+/**
+ * The field types that may be hot (`studio_fields.HOT_TYPES`). `test_studio_row_rules.py` holds the
+ * two lists equal. C8a adds `person`, because a row rule reads the hot row of a person field.
+ */
+export const HOT_TYPES: readonly string[] = [
+  "text", "select", "number", "money", "date", "datetime", "checkbox", "email", "relation", "person",
+];
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);

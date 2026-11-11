@@ -109,12 +109,15 @@ OPS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "checkbox": frozenset({"eq", "ne", "is_empty"}),
     # A relation holds an id (C7b). It joins a child to its parent, and it has no order.
     "relation": frozenset({"eq", "ne", "in", "is_empty"}),
+    # C8a. A person holds the lower-case address of a member, as the relation
+    # set: it has no order. A value runs through `studio_fields._person`.
+    "person": frozenset({"eq", "ne", "in", "is_empty"}),
 }
 
 #: The types that a sort takes. A sort needs a hot field, and ``v_bool`` has
 #: no index, so a checkbox field takes no sort. An id has no useful order, so a
-#: relation field takes none either.
-SORT_TYPES: frozenset[str] = frozenset(OPS_BY_TYPE) - {"checkbox", "relation"}
+#: relation field takes none either, and a person field (C8a) takes none.
+SORT_TYPES: frozenset[str] = frozenset(OPS_BY_TYPE) - {"checkbox", "relation", "person"}
 
 # --- the errors -------------------------------------------------------------
 
@@ -423,8 +426,10 @@ MEASURE_OPS: tuple[str, ...] = ("count", "sum", "average")
 #: bucket takes ``day``.
 BUCKETS: tuple[str, ...] = ("day", "month")
 #: The types that a group takes: each type of the op table except money. A
-#: money value has a currency, so it is not a key.
-GROUP_TYPES: frozenset[str] = frozenset(OPS_BY_TYPE) - {"money"}
+#: money value has a currency, so it is not a key. A person (C8a) is not a key
+#: either: the aggregate takes no viewer yet, and a count for each member would
+#: show the records of a row rule.
+GROUP_TYPES: frozenset[str] = frozenset(OPS_BY_TYPE) - {"money", "person"}
 #: The types of the field of each measure that reads one.
 MEASURE_TYPES: Mapping[str, frozenset[str]] = {
     "sum": frozenset({"number", "money"}),

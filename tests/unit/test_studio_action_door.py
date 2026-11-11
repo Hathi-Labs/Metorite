@@ -183,7 +183,14 @@ class _FakeDB:
         if sql == objects_store._OBJECT_BY_NAME_SQL:
             for o in w.objects:
                 if (o["org"], o["package"], o["name"]) == (self.org, p["pid"], p["name"]):
-                    return _Result([(o["id"], o["package"], o["name"], None, ANA, NOW, NOW, [])])
+                    return _Result([(o["id"], o["package"], o["name"], None, ANA, NOW, NOW, [],
+                                     None)])
+            return _Result()
+        if sql == objects_store._VIEW_SQL:
+            # C8a: the rules, the grants (an open object) and the owner of the package.
+            for o in w.objects:
+                if (o["org"], o["package"], o["id"]) == (self.org, p["pid"], p["oid"]):
+                    return _Result([([], None, w.packages[o["package"]]["owner"].lower())])
             return _Result()
         if sql == objects_store._FIELDS_SQL:
             return _Result([("site", "text", {}, False), ("notes", "text", {}, False)])
@@ -223,7 +230,7 @@ def world(monkeypatch):
     w = SimpleNamespace(org=None, packages={}, objects=[], records=[], statements=[],
                         log=[], session_args=[], audits=[], catalog=list(CATALOG),
                         catalog_fails=False, queries=[], query_raises=None,
-                        store_says_none=False)
+                        store_says_none=False, viewers=[])
 
     @asynccontextmanager
     async def _session(*args: Any):
@@ -244,10 +251,13 @@ def world(monkeypatch):
         w.log.append("audit")
         w.audits.append(kw)
 
-    async def _query(db: Any, *, package_id: str, object_id: str, filter: Any = None,
-                     sort: Any = None, limit: Any = None, offset: Any = None) -> Any:
+    async def _query(db: Any, *, package_id: str, object_id: str, viewer: Any,
+                     filter: Any = None, sort: Any = None, limit: Any = None,
+                     offset: Any = None) -> Any:
         """The store's list on the fake session, under the real page bounds and
-        the real shape check. It filters on the bound org, as RLS does."""
+        the real shape check. It filters on the bound org, as RLS does. C8a:
+        it keeps the viewer that the door passed."""
+        w.viewers.append(viewer)
         w.queries.append({"package_id": package_id, "object_id": object_id, "filter": filter,
                           "sort": sort, "limit": limit, "offset": offset})
         start, size = studio_query.page_bounds(offset, limit)
@@ -627,6 +637,19 @@ class TestTheList:
         r = _raw(_client(world), pid, "find", content)
         assert r.status_code == 200, r.text
         assert world.queries == [{"package_id": pid, "object_id": oid, **NO_INPUT}]
+
+    def test_the_door_passes_the_owner_of_the_session_as_the_viewer(self, world):
+        """C8a: the door reaches the store for the owner only, and it names the
+        session's member as the viewer, with no role. So the owner reads as
+        before, and no body names the viewer."""
+        pid, _oid, rid = _setup(world)
+        c = _client(world)
+        assert _call(c, pid, "find", {**LIST_BODY, "viewer": "ben@x.test"}).status_code == 422
+        assert _call(c, pid, "find", LIST_BODY).status_code == 200
+        assert _call(c, pid, "peek", {"id": rid}).status_code == 200
+        assert [(v.email, v.roles) for v in world.viewers] == [(ANA.lower(), frozenset())]
+        views = [p for sql, p in world.statements if sql == objects_store._VIEW_SQL]
+        assert len(views) == 1 and views[0]["pid"] == pid
 
     def test_a_list_passes_its_input_to_the_store_with_the_package_of_the_path(self, world):
         pid, oid, _ = _setup(world)
@@ -1110,7 +1133,8 @@ def dw(world, monkeypatch):
     world.writes, world.audits_in, world.write_raises = [], [], None
     world.audit_in_raises, world.write_gate = None, None
 
-    async def _apply(db, actor, *, package_id, writes):
+    async def _apply(db, actor, *, package_id, writes, viewer):
+        world.viewers.append(viewer)
         world.log.append("write")
         world.writes.append((db, actor, package_id, list(writes)))
         if world.write_gate is not None:
@@ -1182,6 +1206,8 @@ class TestTheDirectWrites:
         assert kw["detail"]["outcome"] == "ran" and kw["kind"] == "action"
         assert dw.audits == []  # the best-effort writer never ran
         assert "Plant 9" not in json.dumps(kw["detail"])
+        # C8a: the viewer of the write is the session's member, the owner, with no role.
+        assert [(v.email, v.roles) for v in dw.viewers] == [(ANA.lower(), frozenset())]
 
     def test_the_audit_row_names_the_record_of_each_direct_write(self, dw):
         """Fix round 1: the new id for a create, and the id of the body for

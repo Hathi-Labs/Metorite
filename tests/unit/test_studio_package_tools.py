@@ -1198,7 +1198,8 @@ def test_each_copy_of_the_route_matches_the_route() -> None:
     text = Path(objects_store.__file__).read_text(encoding="utf-8")
     block = text.split("#: The kinds of a sync problem.", 1)[1].split("\n\n", 1)[0]
     kinds = set(re.findall(r'^[A-Z_]+ = "([a-z_]+)"$', block, re.MULTILINE))
-    assert len(kinds) == 7, "non-vacuity: the block holds the seven kinds"
+    # C8a adds `access_refused`.
+    assert len(kinds) == 8, "non-vacuity: the block holds the eight kinds"
     assert set(st._FIX_LINES) == set(st._KIND_WORDS) == kinds
 
 

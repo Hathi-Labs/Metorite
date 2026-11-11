@@ -150,6 +150,7 @@ from acb_auth import direct_proof as _direct_proof
 from acb_common import get_logger, studio_query
 from acb_common.app_manifests.base import OP_PATTERN
 from acb_common.no_person import no_person_present
+from acb_common.studio_access import Viewer
 from acb_common.studio_fields import FieldError, FieldSpec, RecordError
 from acb_common.studio_manifest import OBJECT_OP_CLASSES, UsesRef, parse_uses
 from acb_common.studio_rules import (
@@ -316,6 +317,8 @@ RETRY_AFTER = "2"
 BUSY_RETRY_AFTER = "1"
 
 STORE_BUSY = "store_busy"
+#: C8a. A write that the roles of the viewer do not give.
+ACCESS_DENIED = "access_denied"
 FIELD_INVALID = "field_invalid"
 RULE_REFUSED = "rule_refused"
 RECORD_INVALID = "record_invalid"
@@ -494,10 +497,22 @@ def _list_input(raw: bytes) -> dict[str, Any]:
     return payload
 
 
+def _viewer(member: str) -> Viewer:
+    """The viewer of a call (C8a): the session's member, and never a body.
+
+    The door reaches the executors only for the owner of the package, because
+    :func:`_check` reads the package as the member. The store reads the owner
+    from the ``apps`` row, and the owner passes every row rule, so the owner
+    reads and writes as before C8a. C8b gives a member who is not the owner
+    the roles of the role map of the install. It resolves them here, in the
+    session of the second check, and again at a spend."""
+    return Viewer(member)
+
+
 async def _run_object_get(db: Any, package: packages_store.Package, ref: UsesRef,
-                          raw: bytes, out: _Outcome) -> None:
+                          raw: bytes, out: _Outcome, viewer: Viewer) -> None:
     """Read one record of the object *ref* of *package*. The id comes from
-    the body, checked by the id rule of C1."""
+    the body, checked by the id rule of C1. The row rules of *viewer* bind (C8a)."""
     rid = _record_id(raw)
     if rid is None:
         out.invalid = True
@@ -510,7 +525,8 @@ async def _run_object_get(db: Any, package: packages_store.Package, ref: UsesRef
         if obj is None:
             out.object_missing = True
             return
-        rec = await objects_store.get_record(db, obj.id, rid, package_id=package.id)
+        rec = await objects_store.get_record(db, obj.id, rid, package_id=package.id,
+                                             viewer=viewer)
     except objects_store.ObjectStoreError:
         out.invalid = True
         return
@@ -521,9 +537,10 @@ async def _run_object_get(db: Any, package: packages_store.Package, ref: UsesRef
 
 
 async def _run_object_list(db: Any, package: packages_store.Package, ref: UsesRef,
-                           raw: bytes, out: _Outcome) -> None:
+                           raw: bytes, out: _Outcome, viewer: Viewer) -> None:
     """Read one page of the records of the object *ref* of *package*. The body
-    is checked first, so a refused body reads nothing."""
+    is checked first, so a refused body reads nothing. The row rules of
+    *viewer* bind (C8a)."""
     try:
         body = _list_input(raw)
         obj = await objects_store.get_object_by_name(
@@ -535,7 +552,7 @@ async def _run_object_list(db: Any, package: packages_store.Package, ref: UsesRe
         # and a timeout rolls back its SAVEPOINT only. So a refusal here
         # leaves the session usable.
         page = await objects_store.query_records(
-            db, package_id=package.id, object_id=obj.id, filter=body.get("filter"),
+            db, package_id=package.id, object_id=obj.id, viewer=viewer, filter=body.get("filter"),
             sort=body.get("sort"), limit=body.get("limit"), offset=body.get("offset"))
     except studio_query.QueryError as exc:
         out.query_error = exc
@@ -663,6 +680,9 @@ def _set_write_error(out: _Outcome, exc: Exception, line: _Line | None = None) -
         out.missing = True
     elif isinstance(exc, objects_store.RecordNotFound):
         out.fail = _refused(BAD_LINES, _at(line, NO_SUCH_LINE), field=line.key)
+    elif isinstance(exc, objects_store.AccessDenied):
+        # C8a: the roles of the viewer give no such write. The owner never gets it.
+        out.fail = _refused(ACCESS_DENIED, _at(line, str(exc)))
     elif isinstance(exc, FieldError):
         out.fail = _refused(FIELD_INVALID, _at(line, exc.message),
                             field=exc.field if line is None else line.key)
@@ -805,9 +825,12 @@ async def _do_object_write(db: Any, member: str, package: packages_store.Package
         out.object_missing = True
         return
     write = objects_store.Write(op=op, object_id=obj.id, record_id=body.get("id"), data=data)
+    # C8a: the viewer comes from the session, in this session, so a spend
+    # resolves it again at its own time.
+    viewer = _viewer(member)
     try:
         answers = await objects_store.apply_writes(
-            db, member, package_id=package.id, writes=[write, *line_writes])
+            db, member, package_id=package.id, writes=[write, *line_writes], viewer=viewer)
     except objects_store.BatchError as exc:
         # The SAVEPOINT of the batch rolled back, so the session is usable.
         line = lines[exc.index - 1] if 0 < exc.index <= len(lines) else None
@@ -831,7 +854,7 @@ async def _do_object_write(db: Any, member: str, package: packages_store.Package
             # write, in the same batch. The answer reads it once, so it shows
             # the sum that the batch committed.
             out.record = await objects_store.get_record(
-                db, obj.id, done.id, package_id=package.id) or done
+                db, obj.id, done.id, package_id=package.id, viewer=viewer) or done
 
 
 async def _run_object_write(db: Any, member: str, package: packages_store.Package,
@@ -1080,7 +1103,7 @@ async def _run_executor(request: Request, user: UserContext, pid: str, action: s
                 out.refusal = SOURCE_NOT_OPEN
                 return
             run = _run_object_list if ref.op == "list" else _run_object_get
-            await run(db, package, ref, raw, out)
+            await run(db, package, ref, raw, out, _viewer(member))
 
 
 def _is_direct(request: Request, user: UserContext) -> bool:
