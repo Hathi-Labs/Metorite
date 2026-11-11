@@ -272,6 +272,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # door for an org. A request waits for a member and can then run, so only
     # the owner writes it.
     "APP_REQUESTS_ORGS",
+    # WS-STU STU-Q15a: MODULE_RUN_ORGS lets the code modules of an org run as
+    # a child process on the box. A tenant that set it could run member code
+    # for every org, so only the owner writes it.
+    "MODULE_RUN_ORGS",
     # WS-55 EA-18a: AGENT_QUESTIONS_ORGS narrows who may answer an agent's
     # question and opens the list of the questions, so only the owner writes
     # it.
