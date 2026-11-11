@@ -155,7 +155,7 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 | Slice | Task | What | Fence (R7) | Tier |
 |---|---|---|---|---|
 | **HRD-0** | 2979 | This spec, the INDEX row and the WS-CHAT row | STE lint | LOW |
-| **HRD-1** | 2980 | An unknown tool name gets a way through | `tests/unit/test_unknown_tool_answer.py` | STANDARD |
+| **HRD-1** | 2980 | An unknown tool name gets a way through. **BUILT 2026-11-12:** the answer text is live. The auto-load is dark behind `CHAT_TOOL_AUTOLOAD` until D-HRD-1 | `tests/unit/test_unknown_tool_answer.py` | STANDARD |
 | **HRD-2** | 2981 | Print the hidden ids. Accept a task number and a `kind:` prefix | `tests/unit/test_tool_id_provenance.py` | STANDARD |
 | **HRD-3** | 2982 | One wrapper on each pack tool: text for each failure, and each argument in its declared shape | `tests/unit/test_every_pack_tool_answers_text.py`, `tests/unit/test_tool_argument_shapes.py` | STANDARD |
 | **HRD-4** | 2983 | Search that finds | `tests/unit/test_search_fallback.py` | STANDARD |
