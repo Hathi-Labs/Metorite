@@ -249,3 +249,14 @@ def test_r8_a_turn_loads_the_rules_of_its_skill(world, monkeypatch) -> None:
     assert got[ids["mine"]].version == 1
     miss = _go(world, lambda: go("Open the payroll notes and the layoff plan"))
     assert miss.skills == ()
+
+
+def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
+    """An R8 suite that CI does not list still skips in silence when the
+    database gate is disarmed. Match the argument line, not a mention."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    workflow = (root / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
+    assert re.search(r"^\s+tests/unit/test_skill_packs_r8\.py \\?$", workflow, re.M)
