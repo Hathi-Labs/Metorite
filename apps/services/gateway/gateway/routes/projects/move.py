@@ -59,6 +59,7 @@ from gateway.routes.projects.core import (
     assert_holds_tasks,
     assert_move_keeps_privacy,
     assert_not_archived,
+    drop_lost_goal,
     emit,
     from_jsonb,
     load_visible_project,
@@ -867,6 +868,8 @@ async def move_tasks(
                 )
                 if task.type_id:
                     values["type_id"] = type_to.get(str(task.type_id))
+                # WS-39 WM-5. A type that lands as no epic clears the Goal.
+                await drop_lost_goal(db, task, values, dropped)
 
             old_number = task.task_number
             lost_type = (

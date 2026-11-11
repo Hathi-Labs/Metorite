@@ -951,7 +951,7 @@ class TaskModel(BaseModel):
     #: WS-55 EA-13e (EA3-49). True when the agent-worked rule of
     #: ``agent_worked.py`` holds now. ``filters.attach_agent_worked`` fills it.
     agent_worked: bool | None = None
-    #: WS-39 WM-5 (migration 403). The Goal of this epic, across projects, or
+    #: WS-39 WM-5 (migration 405). The Goal of this epic, across projects, or
     #: ``None``. Only an epic carries it (:func:`assert_goal_link`).
     goal_task_id: str | None = None
 
@@ -996,9 +996,10 @@ class TaskPatchIn(TaskIn):
     #: write that sends it while ``agent_task_checks_enabled`` is off gets
     #: 422. Not on ``TaskIn``, so only this PATCH and ``POST /tasks`` take it.
     check_text: str | None = None
-    #: WS-39 WM-5 (migration 403). The Goal of this epic. ``None`` clears the
-    #: link. :func:`assert_goal_link` holds the rules, and a write that sends
-    #: it while ``PROJECTS_GOALS_ORGS`` does not hold the org gets 422.
+    #: WS-39 WM-5 (migration 405). The Goal of this epic. ``None`` clears the
+    #: link, also while the flag is off. :func:`assert_goal_link` holds the
+    #: rules, and a write that sends a Goal while ``PROJECTS_GOALS_ORGS`` does
+    #: not hold the org gets 422.
     goal_task_id: str | None = None
 
 
@@ -1029,7 +1030,7 @@ class TypeModel(BaseModel):
     #: and on the wire so a picker can tell a member WHY a type refuses a
     #: parent instead of surfacing it as an unexplained 422.
     is_epic: bool = False
-    #: WS-39 WM-5 (migration 403). A task of this type is a Goal. Read by
+    #: WS-39 WM-5 (migration 405). A task of this type is a Goal. Read by
     #: :func:`is_goal_type`, written through ``admin.create_type``/``patch_type``.
     is_goal: bool = False
 
@@ -3384,7 +3385,7 @@ async def assert_epic_has_no_parent(
         )
 
 
-# ── WS-39 WM-5 — the Goal type and the Goal of an epic (migration 403) ──────
+# ── WS-39 WM-5 — the Goal type and the Goal of an epic (migration 405) ──────
 #
 # Spec: ``project_management_app.md`` §13.6a row WM-5, D204.4, D199.6. A Goal
 # is a task whose type carries ``is_goal``. An epic points at its Goal with
@@ -3426,7 +3427,6 @@ def is_goal_type(row: Any) -> bool:
 
 async def assert_goal_link(
     db: Any, vis: Any, type_id: str | None, goal_task_id: str | None,
-    *, target: bool = True,
 ) -> None:
     """The rules of ``goal_task_id`` on a task write. ``None`` clears the link.
 
@@ -3437,9 +3437,9 @@ async def assert_goal_link(
        is a 404, the same answer as a task that does not exist (R5).
     3. The Goal's type is a Goal type (:func:`is_goal_type`).
 
-    *target* False checks rule 1 only. A PATCH that changes the type of a
-    task that keeps its Goal passes it, because the writer did not name the
-    Goal and may not see it.
+    A PATCH that changes the type of a task that keeps its Goal does not
+    call it. :func:`goal_link_lost` decides that case, and a type that is not
+    an epic clears the link.
 
     The caller checks the flag first (:func:`require_goals`). An epic still
     has no parent (:func:`assert_epic_has_no_parent`), and nothing here
@@ -3452,8 +3452,6 @@ async def assert_goal_link(
         raise HTTPException(
             status_code=422, detail="Only an Epic can have a Goal.",
         )
-    if not target:
-        return
     goal = await load_visible_task(db, vis, str(goal_task_id))
     goal_type = (
         await load_row(db, "pm_task_types", str(goal.type_id))
@@ -3463,6 +3461,96 @@ async def assert_goal_link(
         raise HTTPException(
             status_code=422, detail="The task you linked is not a Goal.",
         )
+
+
+async def goal_link_lost(db: Any, task: Any, type_id_after: str | None) -> bool:
+    """WM-5. True when *task* carries a Goal and *type_id_after* is not an
+    epic type. A move to another root remaps the type by name, and a PATCH
+    can set a new type. Then the caller clears ``goal_task_id`` in the same
+    write, because only an epic carries a Goal. No flag check: a clear only
+    removes a link, and a stale link would block each later type change.
+    """
+    if not getattr(task, "goal_task_id", None):
+        return False
+    row = (
+        await load_row(db, "pm_task_types", str(type_id_after))
+        if type_id_after else None
+    )
+    return row is None or not is_epic_type(row)
+
+
+async def drop_lost_goal(
+    db: Any, task: Any, values: dict[str, Any], dropped: dict[str, Any],
+) -> None:
+    """WM-5. A move to another root calls it after the type remap. When
+    :func:`goal_link_lost` says so, it sets ``goal_task_id`` to NULL in
+    *values* and records the old Goal in *dropped*, so the timeline keeps it.
+    An epic that stays an epic keeps its Goal, because the link works across
+    projects. ``tasks._cross_root_values`` and ``move.move_tasks`` both call
+    it, so the two move paths cannot disagree."""
+    if await goal_link_lost(db, task, values.get("type_id")):
+        values["goal_task_id"] = None
+        dropped["goal_task_id"] = str(task.goal_task_id)
+
+
+#: WM-5. The epics that point at one Goal, in this tenant. An archived epic
+#: and an epic that the writer cannot see count too, because each keeps the
+#: link.
+_GOAL_LINKS_SQL = """
+SELECT count(*) AS n
+  FROM pm_tasks
+ WHERE goal_task_id = CAST(:goal AS uuid)
+   AND organization_id = CAST(:org AS uuid)
+"""
+
+#: WM-5. The epics that point at a Goal task of one type, in this tenant.
+_TYPE_GOAL_LINKS_SQL = """
+SELECT count(*) AS n
+  FROM pm_tasks e
+  JOIN pm_tasks g ON g.id = e.goal_task_id
+ WHERE g.type_id = CAST(:type_id AS uuid)
+   AND g.organization_id = CAST(:org AS uuid)
+   AND e.organization_id = CAST(:org AS uuid)
+"""
+
+
+async def _refuse_goal_links(
+    db: Any, sql: str, params: dict[str, Any], organization_id: str | None,
+) -> None:
+    """409 when *sql* counts one or more linked epics. No org, no rows."""
+    if not organization_id:
+        return
+    row = (await db.execute(
+        text(sql), {**params, "org": str(organization_id)},
+    )).fetchone()
+    count = int(getattr(row, "n", 0) or 0) if row is not None else 0
+    if count:
+        noun = "epic links" if count == 1 else "epics link"
+        raise HTTPException(
+            status_code=409,
+            detail=f"{count} {noun} to this Goal, so unlink them first.",
+        )
+
+
+async def assert_goal_has_no_links(
+    db: Any, organization_id: str | None, goal_task_id: str,
+) -> None:
+    """WM-5. 409 when an epic points at the task *goal_task_id*. A retype of
+    a Goal to a type that is not a Goal type calls it, so no epic keeps a
+    link to a task that is not a Goal."""
+    await _refuse_goal_links(
+        db, _GOAL_LINKS_SQL, {"goal": str(goal_task_id)}, organization_id,
+    )
+
+
+async def assert_goal_type_has_no_links(
+    db: Any, organization_id: str | None, type_id: str,
+) -> None:
+    """WM-5. 409 when an epic points at a task of the type *type_id*. A type
+    write that sets ``is_goal`` false calls it."""
+    await _refuse_goal_links(
+        db, _TYPE_GOAL_LINKS_SQL, {"type_id": str(type_id)}, organization_id,
+    )
 
 
 async def next_task_number(db: Any, root_id: str) -> int:

@@ -74,6 +74,7 @@ from gateway.routes.projects.core import (
     archive_note,
     assert_assignable_here,
     assert_epic_has_no_parent,
+    assert_goal_has_no_links,
     assert_goal_link,
     assert_holds_tasks,
     assert_move_keeps_privacy,
@@ -82,12 +83,16 @@ from gateway.routes.projects.core import (
     clean_payload,
     count_where,
     diff_changes,
+    drop_lost_goal,
     emit,
     from_jsonb,
+    goal_link_lost,
     insert_assignees,
     insert_row,
+    is_goal_type,
     lift_subtasks_to_grandparent,
     load_default_status,
+    load_row,
     load_visible_project,
     load_visible_task,
     lock_task,
@@ -1393,21 +1398,29 @@ async def _check_goal_patch(
 ) -> None:
     """WM-5. The Goal rules of a PATCH, before any write.
 
-    A body that sends ``goal_task_id`` gets 422 while the flag is off. Only
-    an epic carries a Goal. A new link names a Goal that the writer sees, and
-    it replaces the old one, because the link is one column. A change of
-    type keeps a Goal only on an epic.
+    A body that sends a Goal in ``goal_task_id`` gets 422 while the flag is
+    off. A null clears the link with the flag on or off, because a clear is
+    the way out of a stale link. Only an epic carries a Goal. A new link
+    names a Goal that the writer sees, and it replaces the old one, because
+    the link is one column. A new type that is not an epic clears the link in
+    the same write (:func:`core.goal_link_lost`). A Goal that epics point at
+    keeps a Goal type (:func:`core.assert_goal_has_no_links`, 409).
     """
     type_after = (
         values["type_id"] if "type_id" in values else getattr(before, "type_id", None)
     )
     if "goal_task_id" in values:
-        require_goals(vis.organization_id)
-        await assert_goal_link(db, vis, type_after, values["goal_task_id"])
-    elif "type_id" in values and getattr(before, "goal_task_id", None):
-        await assert_goal_link(
-            db, vis, type_after, str(before.goal_task_id), target=False,
-        )
+        if values["goal_task_id"] is not None:
+            require_goals(vis.organization_id)
+            await assert_goal_link(db, vis, type_after, values["goal_task_id"])
+    elif "type_id" in values and await goal_link_lost(db, before, type_after):
+        values["goal_task_id"] = None
+    type_before = getattr(before, "type_id", None)
+    if "type_id" in values and type_before and str(type_after or "") != str(type_before):
+        old = await load_row(db, "pm_task_types", str(type_before))
+        new = await load_row(db, "pm_task_types", str(type_after)) if type_after else None
+        if is_goal_type(old) and not is_goal_type(new):
+            await assert_goal_has_no_links(db, vis.organization_id, str(before.id))
 
 
 @router.patch("/tasks/{task_id}")
@@ -1632,6 +1645,10 @@ async def _cross_root_values(
         values["type_id"] = await remap_one_type(
             db, type_id=str(task.type_id), root_id=new_root,
         )
+    # WS-39 WM-5. Only an epic carries a Goal. A type that lands as no type or
+    # as a type that is not an epic clears the link in this same write, and
+    # the timeline keeps the old Goal.
+    await drop_lost_goal(db, task, values, dropped)
     # The number belongs to the old root's sequence and would collide in the
     # new one, so it is reallocated rather than carried. The old number is
     # recorded on the timeline by the caller — a task's human id changing

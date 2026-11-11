@@ -38,12 +38,14 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     assert_can_manage_settings,
+    assert_goal_type_has_no_links,
     can_manage_settings,
     clean_payload,
     count_where,
     holds_lanes,
     hue_values,
     is_epic_type,
+    is_goal_type,
     is_org_wide,
     load_visible_project,
     org_wide_exists,
@@ -111,7 +113,7 @@ class TypeIn(BaseModel):
     #: about its own vocabulary. `is_system` stays a hard-coded literal below,
     #: because that one grants an exemption rather than accepting a rule.
     is_epic: bool | None = None
-    #: WS-39 WM-5 (migration 403). A task of this type is a Goal. 422 while
+    #: WS-39 WM-5 (migration 405). A task of this type is a Goal. 422 while
     #: ``PROJECTS_GOALS_ORGS`` does not hold the org. A type is never both a
     #: Goal and an epic (:func:`_refuse_goal_and_epic`).
     is_goal: bool | None = None
@@ -1394,6 +1396,12 @@ async def patch_type(
             )
         # WM-5. The flag, and one level for each type.
         _refuse_goal_and_epic(user, values, existing)
+        if values.get("is_goal") is False and is_goal_type(existing):
+            # WM-5. A Goal that epics point at keeps a Goal type, so no epic
+            # links to a task that is not a Goal. 409 names the count.
+            await assert_goal_type_has_no_links(
+                db, getattr(existing, "organization_id", None), type_id,
+            )
         if not values:
             return row_to_dict(existing, TypeModel)
         try:

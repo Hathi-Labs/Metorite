@@ -5,12 +5,13 @@ Spec: ``project-docs/specs/project_management_app.md`` §13.3 "Roll-ups".
 Two reads. ``epic_rollup``: ``GET /projects/tasks/{id}`` adds its answer under
 ``rollup`` for a task whose type is an epic type. ``goal_rollup`` (WS-39 WM-5,
 task 984): the same key for a Goal, the sum of ``epic_rollup`` over the epics
-that point at the Goal (``pm_tasks.goal_task_id``, migration 403). The web
+that point at the Goal (``pm_tasks.goal_task_id``, migration 405). The web
 app, the chat and the MCP ``get_task`` all read it from that one place. There
 is no route of its own.
 
 * **Goal.** The epics of a Goal may sit in many projects. An epic that the
-  reader cannot see is counted in ``hidden`` and never named. The health of
+  reader cannot see is counted in ``hidden`` and never named. ``hidden``
+  also counts the hidden slices of each listed epic. The health of
   each visible epic is the health of the newest update of its project
   (``pm_project_updates``, migration 383), while ``PROJECTS_UPDATES_ORGS``
   holds the org and the reader sees that project. The health of the Goal is
@@ -285,6 +286,7 @@ async def goal_rollup(db: Any, vis: Any, task: Any) -> dict[str, Any] | None:
     slices = {"done": 0, "total": 0}
     estimate = {"done": 0, "total": 0}
     waits = 0
+    hidden_slices = 0
     epics: list[dict[str, Any]] = []
     for r in listed:
         one = await epic_rollup(db, vis, r)
@@ -294,6 +296,7 @@ async def goal_rollup(db: Any, vis: Any, task: Any) -> dict[str, Any] | None:
             slices[key] += one["slices"][key]
             estimate[key] += one["estimate_mins"][key]
         waits += one["waits"]["count"]
+        hidden_slices += one["hidden"]
         health = healths.get(str(r.project_id))
         epics.append({
             "id": str(r.id),
@@ -314,7 +317,9 @@ async def goal_rollup(db: Any, vis: Any, task: Any) -> dict[str, Any] | None:
         "slices": slices,
         "estimate_mins": estimate,
         "waits": {"count": waits, "items": []},
-        # An epic that the reader cannot see: counted here, never named.
-        "hidden": len(rows) - len(seen),
+        # An epic that the reader cannot see, and a hidden slice of a listed
+        # epic: counted here, never named. The epic reply counts its own
+        # hidden slices the same way, so the two reads agree.
+        "hidden": (len(rows) - len(seen)) + hidden_slices,
         "health": _worst([e["health"] for e in epics]),
     }
