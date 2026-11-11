@@ -132,6 +132,7 @@ from gateway.routes.projects.filters import (
     AGENT_RUN_WAITING_MAX_MIN,
     BOUND_ORG_SQL,
     agent_questions_allowed,
+    agent_run_lease_s,
     agent_run_waiting_cap_min,
     agent_runs_enabled,
     answer_change_enabled,
@@ -512,6 +513,13 @@ _MOVES: dict[str, dict[str, str]] = {
         "created": "completed", "in_progress": "completed", "awaiting": "completed",
         "stopping": "completed",
     },
+    # H-409 fix round 1 (task 748). The inverse of a task-side `task_close`:
+    # the task was put back (an Undo, a move out of a closing lane, an
+    # unarchive) inside the undo window, so the run goes back to the open
+    # status that the close moved it from. One event for each status, so
+    # `transition` stays the one status machine. Only
+    # `reopen_run_of_reopened_task` passes them, after its own checks.
+    **{f"task_reopen:{s}": {"completed": s} for s in AGENT_RUN_OPEN_STATUSES},
     # SW-10a fix round. The agent of a run that the SERVER closed (one of
     # the two moves above) finishes later with a summary. The summary is kept
     # as a `response`, and the run stays `completed`. Only `finish_agent_run`
@@ -1724,14 +1732,15 @@ def _task_held(holder: Any, *, me: str | None = None, via: str | None = None,
 
 
 async def _system_activity(db: Any, run: Any, *, actor_email: str, via: str | None,
-                           body: str, server_close: str | None = None) -> None:
+                           body: str, server_close: str | None = None,
+                           extra: dict[str, Any] | None = None) -> None:
     """One ``response`` row on *run* that the SERVER writes, as the record of
     a takeover or a release. No comment and no notification.
 
     SW-10a: *server_close* names why the server closed the run (``archive``,
     ``done``, ``cancelled`` or ``archived``). ``_server_closed`` reads it, so
     the agent may still leave one late summary."""
-    content: dict[str, Any] = {"body": body, "system": True}
+    content: dict[str, Any] = {"body": body, "system": True, **(extra or {})}
     if server_close is not None:
         content["server_close"] = server_close
     await db.execute(
@@ -3037,11 +3046,18 @@ async def closed_task_runs(db: Any, *, limit: int) -> list[tuple[str, str]]:
         text(_closed_task_runs_sql()), {"n": limit})).fetchall()]
 
 
-async def close_closed_task_run(db: Any, run: Any, why: str) -> list[str]:
+async def close_closed_task_run(db: Any, run: Any, why: str,
+                                undo: dict[str, Any] | None = None) -> list[str]:
     """Close a run whose task is closed (SW-10a fix round). The run moves to
     ``completed`` and gets the line of :data:`CLOSED_TASK_BODIES`. The task is
     never touched. Nobody can claim a closed task, so a nudge would be false,
     and the run would hold nothing.
+
+    *undo* (H-409 fix round 1) is the marker ``task_close`` of a task-side
+    close (:func:`end_runs_of_closed_task`). The line carries it, so a put-back
+    of the task inside the undo window can reopen the run
+    (:func:`reopen_run_of_reopened_task`). The sweep passes none, so a run
+    that the sweep closed never reopens.
 
     It returns the members whose question bells the move marked read
     (AP-BUG-3), for a caller that moves their My Day after its commit. The
@@ -3049,7 +3065,8 @@ async def close_closed_task_run(db: Any, run: Any, why: str) -> list[str]:
     new_status = transition(run.status, "task_close")
     cleared = await _move_run(db, run, new_status, ts=await _clock(db), user=None, via=None)
     await _system_activity(db, run, actor_email=run.member_email, via=None,
-                           body=CLOSED_TASK_BODIES[why], server_close=why)
+                           body=CLOSED_TASK_BODIES[why], server_close=why,
+                           extra={"task_close": undo} if undo is not None else None)
     return cleared
 
 
@@ -3062,41 +3079,54 @@ async def close_closed_task_run(db: Any, run: Any, why: str) -> list[str]:
 #: ``NO KEY UPDATE`` is the lock of the status UPDATE that follows. It meets
 #: the ``FOR UPDATE`` of ``_lock_run`` in each run write, and it lets a bare
 #: foreign key check (``FOR KEY SHARE``) pass, so that check gives no 409.
+#:
+#: Fix round 1: the run of the closing AGENT (the same member and the same
+#: stamp, the rule of an agent's own run for a release) is never read here.
+#: Its close is its own disposition, so the run stays open, and a parallel
+#: write of that agent on its own run gives it no 409. A person binds a NULL
+#: stamp, and the row compare is then always distinct.
 _LOCK_OPEN_TASK_RUNS_SQL = (
     "SELECT id FROM pm_agent_runs WHERE task_id = CAST(:tid AS uuid)"
     " AND task_id IS NOT NULL AND status = ANY(:open)"
     f" AND organization_id = {BOUND_ORG_SQL}"
+    " AND (member_email, client_via) IS DISTINCT FROM (CAST(:me AS text), CAST(:via AS text))"
     " ORDER BY id FOR NO KEY UPDATE NOWAIT"
 )
 
 
-def _own_agent_run(run: Any, closer: UserContext) -> bool:
-    """True when *run* is the run of the closing agent: the same member and
-    the same client stamp, as an agent's own run reads for a release
-    (:func:`may_end_run`). The stamp comes from ``UserContext.agent``, which
-    branch 0 builds from the signed request, never from a body. A person is
-    never the owner here."""
+def _closer_binds(closer: UserContext) -> dict[str, Any]:
+    """The member and the stamp of the closer, for the own-run arm of
+    :data:`_LOCK_OPEN_TASK_RUNS_SQL`. The stamp comes from
+    ``UserContext.agent``, which branch 0 builds from the signed request,
+    never from a body. A person has no stamp."""
     agent = getattr(closer, "agent", None)
     via = str(getattr(agent, "actor_via", "") or "") if agent is not None else ""
-    return bool(via) and run.member_email == _member(closer) and run.client_via == via
+    return {"me": _member(closer), "via": via or None}
 
 
 async def end_runs_of_closed_task(db: Any, task_id: str, why: str,
-                                  closer: UserContext) -> list[str]:
+                                  closer: UserContext, *,
+                                  status_id: str | None = None) -> list[str]:
     """H-409 item 1 (task 748, spec §12.3). End each open run of *task_id* at
     the moment its task closes, in the caller's transaction. *why* is
     ``done``, ``cancelled`` or ``archived``: the key of
-    :data:`CLOSED_TASK_BODIES`.
+    :data:`CLOSED_TASK_BODIES`. *status_id* is the closing status of a status
+    move, and ``None`` for an archive.
 
     * Each run moves to ``completed`` by the move ``task_close``, with one
       server-close line (:func:`close_closed_task_run`, the writer of the
       sweep). So the agent may still leave ONE late summary, and the run
       analytics read the run as ``server_closed``.
-    * The run of the closing AGENT stays open (:func:`_own_agent_run`). Its
-      close is its own disposition: it finishes the run itself, and the sweep
-      closes it after its lease (§12.6 step 2).
-    * Exactly once. The runs are locked first (:data:`_LOCK_OPEN_TASK_RUNS_SQL`),
-      and only an open run moves. A second close of the task finds none.
+    * The line carries the marker ``task_close``: the status the run had,
+      its last activity, its wait and the closing status. Fix round 1: a
+      put-back inside the undo window reopens the run from it
+      (:func:`reopen_run_of_reopened_task`).
+    * The run of the closing AGENT stays open, and the lock never reads it
+      (:data:`_LOCK_OPEN_TASK_RUNS_SQL`). Its close is its own disposition:
+      it finishes the run itself, and the sweep closes it after its lease
+      (§12.6 step 2).
+    * Exactly once. The runs are locked first, and only an open run moves. A
+      second close of the task finds none.
     * While ``agent_runs_enabled`` is off, no statement runs.
 
     It returns the members whose question bells closed (AP-BUG-3).
@@ -3105,15 +3135,176 @@ async def end_runs_of_closed_task(db: Any, task_id: str, why: str,
         return []
     locked = (await db.execute(
         text(_LOCK_OPEN_TASK_RUNS_SQL),
-        {"tid": str(task_id), "open": list(AGENT_RUN_OPEN_STATUSES)},
+        {"tid": str(task_id), "open": list(AGENT_RUN_OPEN_STATUSES), **_closer_binds(closer)},
     )).fetchall()
     cleared: list[str] = []
     for found in locked:
         run = await _load_run(db, str(found.id))
-        if run.status not in OPEN_STATUSES or _own_agent_run(run, closer):
+        if run.status not in OPEN_STATUSES:
             continue
-        cleared.extend(await close_closed_task_run(db, run, why))
+        undo = {
+            "from": run.status, "seen": wire(run.last_activity_at),
+            "waiting_on": run.waiting_on, "waiting_until": wire(run.waiting_until),
+            "status_id": status_id,
+        }
+        cleared.extend(await close_closed_task_run(db, run, why, undo))
     return sorted(set(cleared))
+
+
+# ── The put-back of a closed task (H-409 fix round 1, task 748) ────────────
+
+#: The undo window of a task-side close, in seconds: 15 minutes. A put-back
+#: of the task inside it (the Undo of the board, a move out of the closing
+#: lane, an unarchive) reopens the run that the close ended. After it, the
+#: put-back is a new decision, and the run stays closed.
+TASK_CLOSE_UNDO_DEFAULT_S = 900
+
+
+def task_close_undo_s() -> int:
+    """The undo window: 15 minutes, or the lease when the lease is shorter.
+    Read on each call, so the environment override of the lease works in a
+    running process."""
+    return max(1, min(TASK_CLOSE_UNDO_DEFAULT_S, agent_run_lease_s()))
+
+
+#: The system line of a reopened run.
+REOPENED_BODY = "Reopened: the task was put back."
+
+#: Why a put-back left a closed run closed, by reason. The line keeps
+#: ``server_close``, so the agent may still leave one late summary.
+REOPEN_REFUSED_BODIES: dict[str, str] = {
+    "window": "Not reopened: the task was put back after the undo window.",
+    "newer_run": "Not reopened: a newer run of this task exists.",
+    "held": "Not reopened: another run holds the task.",
+    "race": "Not reopened: another run took the task at the same moment.",
+}
+
+#: The one candidate of a put-back: the newest run of the task that is
+#: ``completed`` and whose newest line that is not ephemeral is the line of a
+#: task-side close (the marker ``task_close``, with the open status that the
+#: close moved the run from) of this kind. A status
+#: put-back names the closing status that the task leaves (``:sid``). An
+#: unarchive binds NULL and matches an archive close. The run is locked as
+#: the close locks it (``NOWAIT``, because the task row is held).
+#: ``in_window`` and ``newer`` are the rules (d) and (b) of the fix round.
+_REOPEN_CANDIDATE_SQL = (
+    "SELECT r.id, a.id AS line_id, a.content AS line,"
+    " (a.created_at >= clock_timestamp() - CAST(:win AS integer) * interval '1 second')"
+    "   AS in_window,"
+    " EXISTS (SELECT 1 FROM pm_agent_runs n WHERE n.task_id = r.task_id"
+    "         AND n.organization_id = r.organization_id"
+    "         AND (n.created_at, n.id) > (r.created_at, r.id)) AS newer"
+    " FROM pm_agent_runs r"
+    " JOIN LATERAL (SELECT x.id, x.content, x.created_at FROM pm_agent_run_activities x"
+    "                WHERE x.run_id = r.id AND NOT x.ephemeral"
+    "                ORDER BY x.seq DESC LIMIT 1) a ON true"
+    " WHERE r.task_id = CAST(:tid AS uuid) AND r.task_id IS NOT NULL"
+    "   AND r.status = 'completed'"
+    f"  AND r.organization_id = {BOUND_ORG_SQL}"
+    "   AND a.content->'task_close'->>'from' = ANY(:open)"
+    "   AND ((CAST(:sid AS text) IS NULL AND a.content->>'server_close' = 'archived')"
+    "        OR a.content->'task_close'->>'status_id' = CAST(:sid AS text))"
+    " ORDER BY r.created_at DESC, r.id DESC LIMIT 1"
+    " FOR NO KEY UPDATE OF r NOWAIT"
+)
+
+#: The reopen spends the marker: the close line keeps its text, and
+#: ``server_close`` becomes ``server_close_undone``. So the run analytics
+#: read the end of the run that follows, and no later put-back matches.
+_SPEND_CLOSE_LINE_SQL = (
+    "UPDATE pm_agent_run_activities"
+    " SET content = (content - 'server_close' - 'task_close')"
+    "     || jsonb_build_object('server_close_undone', CAST(:why AS text))"
+    " WHERE id = CAST(:aid AS uuid)"
+)
+
+#: The wait that the run had before the close, restored with the run.
+_RESTORE_WAIT_SQL = (
+    "UPDATE pm_agent_runs SET waiting_on = CAST(:won AS text),"
+    " waiting_until = CAST(:wun AS timestamptz) WHERE id = CAST(:rid AS uuid)"
+)
+
+
+def _instant(value: Any) -> datetime | None:
+    """An instant of the marker (the ``wire`` form), or None."""
+    try:
+        return datetime.fromisoformat(str(value)) if value else None
+    except ValueError:
+        return None
+
+
+async def reopen_run_of_reopened_task(db: Any, task_id: str, *,
+                                      status_id: str | None) -> bool:
+    """H-409 fix round 1 (task 748, spec §12.3). The task left its closed
+    state: a status move out of the closing status *status_id*, or an
+    unarchive (``None``). Reopen the run that the task-side close ended, in
+    the caller's transaction, when ALL of these hold:
+
+    (a) The run is the candidate of :data:`_REOPEN_CANDIDATE_SQL`: its newest
+        line that is not ephemeral is the close line of THIS kind of close,
+        by the marker ``task_close``, never by the text. A run that the sweep
+        closed carries no marker. A run with a later line (a late summary, a
+        refusal) is no candidate.
+    (b) The run is still the newest run of the task.
+    (c) No other run is open on the task (``_HOLDER_SQL``). The unique index
+        ``pm_agent_runs_one_open_per_task`` decides a race.
+    (d) The close is inside the undo window (:func:`task_close_undo_s`).
+
+    The run goes back to the open status that the close moved it from, with
+    the last activity and the wait that it had, so its lease is the lease it
+    had. An ``awaiting`` run keeps the same question, because (a) means that
+    no answer came. It gets the line :data:`REOPENED_BODY`. Nothing else
+    changes. The session key stays clear, and the next write of the agent's
+    connection adopts the run (SW-7).
+
+    A candidate that fails (b), (c) or (d) stays closed, with one line of
+    :data:`REOPEN_REFUSED_BODIES`. The line keeps ``server_close``, so the
+    agent may still leave one late summary, and no later put-back matches.
+    While ``agent_runs_enabled`` is off, no statement runs. True when a run
+    reopened."""
+    if not agent_runs_enabled():
+        return False
+    found = (await db.execute(text(_REOPEN_CANDIDATE_SQL), {
+        "tid": str(task_id), "sid": status_id, "win": task_close_undo_s(),
+        "open": list(AGENT_RUN_OPEN_STATUSES),
+    })).fetchone()
+    if found is None:
+        return False
+    line = from_jsonb(found.line) or {}
+    marker = line["task_close"]
+    prior = marker["from"]
+    run = await _load_run(db, str(found.id))
+    why = str(line.get("server_close") or "")
+    reason: str | None = None
+    if not found.in_window:
+        reason = "window"
+    elif found.newer:
+        reason = "newer_run"
+    elif (await db.execute(
+            text(_HOLDER_SQL), {"tid": str(task_id), "open": list(AGENT_RUN_OPEN_STATUSES)},
+    )).fetchone() is not None:
+        reason = "held"
+    else:
+        seen = _instant(marker.get("seen")) or await _clock(db)
+        try:
+            await _move_run(db, run, transition(run.status, f"task_reopen:{prior}"),
+                            ts=seen, user=None, via=None)
+        except HTTPException:
+            reason = "race"
+    if reason is not None:
+        await _system_activity(db, run, actor_email=run.member_email, via=None,
+                               body=REOPEN_REFUSED_BODIES[reason], server_close=why,
+                               extra={"reopen_refused": reason})
+        return False
+    wait_until = _instant(marker.get("waiting_until"))
+    if marker.get("waiting_on") and wait_until is not None:
+        await db.execute(text(_RESTORE_WAIT_SQL), {
+            "rid": str(run.id), "won": marker["waiting_on"], "wun": wait_until,
+        })
+    await db.execute(text(_SPEND_CLOSE_LINE_SQL), {"aid": str(found.line_id), "why": why})
+    await _system_activity(db, run, actor_email=run.member_email, via=None,
+                           body=REOPENED_BODY, extra={"server_reopen": why})
+    return True
 
 
 async def bump_closed_questions(user: UserContext, recipients: list[str]) -> None:
@@ -3632,6 +3823,7 @@ __all__ = [
     "option_labels",
     "outside_comment",
     "record_outside_decision",
+    "reopen_run_of_reopened_task",
     "transition",
     "typed_question",
     "write_strand_line",

@@ -3700,7 +3700,11 @@ async def apply_status_transition(
     agent run of the task in this transaction
     (``agent_runs.end_runs_of_closed_task``), and the result carries
     ``runs_cleared``. A caller that passes no closer ends no run: the sweep
-    closes such a run after its lease (spec §12.6).
+    closes such a run after its lease (spec §12.6). Fix round 1: on the
+    crossing OUT of a closing category (an Undo, a reopen), and while the
+    task is not archived, the same caller puts back the run that the close
+    ended, inside the undo window
+    (``agent_runs.reopen_run_of_reopened_task``).
     """
     old_status = await require_row(
         db, "pm_task_statuses", str(task.status_id), "Status",
@@ -3754,20 +3758,40 @@ async def apply_status_transition(
 
         successor = await spawn_successor(db, row, actor_id=created_by)
 
-    # H-409 item 1. The same crossing ends the task's open agent run, in this
-    # transaction. Imported here for the reason of `spawn_successor` above.
-    runs_cleared: list[str] = []
-    if is_closed and not was_closed and closer is not None:
-        from gateway.routes.projects.agent_runs import end_runs_of_closed_task
-
-        runs_cleared = await end_runs_of_closed_task(
-            db, str(task.id), str(new_status.category), closer,
-        )
+    runs_cleared = (
+        await _runs_follow_the_task(db, row, old_status, new_status, closer)
+        if closer is not None and was_closed != is_closed else []
+    )
 
     return {
         "row": row, "from": old_status, "to": new_status,
         "recurred_to": successor, "runs_cleared": runs_cleared,
     }
+
+
+async def _runs_follow_the_task(
+    db: Any, row: Any, old_status: Any, new_status: Any, closer: Any,
+) -> list[str]:
+    """H-409 item 1 and fix round 1 (task 748). The agent run follows a
+    member door's crossing, in the caller's transaction. INTO a closing
+    category: the task's open run ends (``end_runs_of_closed_task``). OUT of
+    one, on a task that is not archived: the run that the close ended comes
+    back inside the undo window (``reopen_run_of_reopened_task``). Imported
+    here for the reason of ``spawn_successor`` above. It returns the members
+    whose question bells closed."""
+    from gateway.routes.projects.agent_runs import (
+        end_runs_of_closed_task,
+        reopen_run_of_reopened_task,
+    )
+
+    if new_status.category in CLOSING_CATEGORIES:
+        return await end_runs_of_closed_task(
+            db, str(row.id), str(new_status.category), closer,
+            status_id=str(new_status.id),
+        )
+    if getattr(row, "archived_at", None) is None:
+        await reopen_run_of_reopened_task(db, str(row.id), status_id=str(old_status.id))
+    return []
 
 
 # ── The task row lock of a claim (WS-55 EA-6b) ──────────────────────────────

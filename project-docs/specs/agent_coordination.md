@@ -1311,7 +1311,7 @@ They keep their own gates.
 #### SW-48 · The lead acts on the runs of their apps
 
 - **Metorite task.** 1881.
-- **Scope.** Edit `person_may_end_sql` in `agent_runs.py`, the one text. `may_end_run` and `needs_attention.py` read it. So the button and the route agree. Add one branch with the public lead-walk SQL of `authority.py`. The app lead of the run's task may Release and Resume the run. Today the org-wide case uses `RELEASE_ADMIN_PERMISSION = "admin:members:read"`. Q5 recommends `admin:members:manage` and is still open. The lead does not answer by this rule (SW-46).
+- **Scope.** Edit `person_may_end_sql` in `agent_runs.py`, the one text. `may_end_run` and `needs_attention.py` read it. So the button and the route agree. Add one branch with the public lead-walk SQL of `authority.py`. The app lead of the run's task may Release and Resume the run. The org-wide case uses `RELEASE_ADMIN_PERMISSION = "admin:members:manage"`. The owner decided Q5 on 2026-11-06, and H-409 built it (task 748). The lead does not answer by this rule (SW-46).
 - **Done when.** R8: the lead of the app gets 200 on Release and Resume. A member who is not the run's member and not the lead gets 403. A lead of another app gets 403. `can_act` on Needs attention agrees with the route.
 - **Fence.** `test_agent_runs_r8.py`, `test_agent_run_exclusive.py` and `test_needs_attention_r8.py`.
 - **Risk.** HIGH (a write authority rule). **Gate.** AGENT-SAFE. **Depends on.** SW-44. Q5 and Q9.

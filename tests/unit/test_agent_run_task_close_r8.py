@@ -36,9 +36,10 @@ each other. ``P`` is ``workbench/control_plane/src/app/projects/``.
 * C1. ``C`` ``apply_status_transition``: never call
   ``end_runs_of_closed_task``. ``test_c1_a_person_moves_the_task_to_done``,
   ``test_c3_a_person_cancels_the_task`` and ``test_c5_a_question_closes_too``.
-* C2. ``G`` ``end_runs_of_closed_task``: drop the ``_own_agent_run`` arm.
-  ``test_c2_the_closing_agent_keeps_its_own_run`` and
-  ``test_the_own_agent_run_is_the_member_and_the_stamp``.
+* C2. ``G`` ``_LOCK_OPEN_TASK_RUNS_SQL``: drop the own-run arm
+  (``IS DISTINCT FROM``). ``test_c2_the_closing_agent_keeps_its_own_run``,
+  ``test_c9_the_own_parallel_write_gives_the_closing_agent_no_409`` and
+  ``test_the_lock_refuses_at_once_and_names_the_org``.
 * C3. ``G`` ``_LOCK_OPEN_TASK_RUNS_SQL``: drop ``NOWAIT``.
   ``test_c7_a_run_that_a_write_holds_refuses_the_close`` (a wait, then the
   timeout) and ``test_the_lock_refuses_at_once_and_names_the_org``.
@@ -63,6 +64,36 @@ each other. ``P`` is ``workbench/control_plane/src/app/projects/``.
 * O3. ``G`` ``_RUN_SELECT``: drop the ``bound_org`` join. ``test_o1_...``.
 * O4. ``F`` ``agent_state_sql``: drop the ``BOUND_ORG_SQL`` arm. ``test_o1_...``.
 * O5. ``F`` ``holder_sql``: drop the org arm. ``test_o1_...``.
+
+Fix round 1 (the Opus review, P1): a put-back of the task inside the undo
+window reopens the run that the close ended. The window is 15 minutes, or the
+lease when the lease is shorter (``agent_runs.task_close_undo_s``).
+
+* U1. ``G`` ``_REOPEN_CANDIDATE_SQL``: drop the marker arm
+  (``task_close'->>'from' = ANY(:open)``).
+  ``test_u7_a_close_with_no_marker_never_reopens`` (a run with no marker
+  becomes the candidate, and the move has no event).
+* U2. ``G`` ``reopen_run_of_reopened_task``: no ``newer`` test.
+  ``test_u4_a_newer_run_blocks_the_reopen``.
+* U3. ``G`` ``reopen_run_of_reopened_task``: no holder test.
+  ``test_u4b_an_open_run_blocks_the_reopen`` (the index then refuses, and the
+  line names a race, not a holder).
+* U4. ``G`` ``reopen_run_of_reopened_task``: no window test.
+  ``test_u3_a_put_back_after_the_window_does_not_reopen``.
+* U5. ``C`` ``_runs_follow_the_task``: no reopen call.
+  ``test_u1_an_undo_of_done_reopens_the_run``.
+* U6. ``T`` ``unarchive_task``: no ``_reopen_after_unarchive``.
+  ``test_u2_an_unarchive_reopens_the_run``.
+* U7. ``G`` ``reopen_run_of_reopened_task``: the clock for ``ts=seen``.
+  ``test_u1_an_undo_of_done_reopens_the_run`` (the lease must be the one
+  the run had).
+* U8. ``G`` ``reopen_run_of_reopened_task``: do not spend the close line.
+  ``test_u1_an_undo_of_done_reopens_the_run`` (the later finish reads
+  ``server_closed``).
+* U9. ``G`` ``reopen_run_of_reopened_task``: the refusal line without
+  ``server_close``. ``test_u3_...`` (the late summary gets 409).
+* U10. ``G`` ``reopen_run_of_reopened_task``: no wait restore.
+  ``test_u6_the_wait_comes_back``.
 """
 
 from __future__ import annotations
@@ -134,21 +165,45 @@ class TestTheRules:
         assert refused.value.status_code == 409
 
     def test_the_lock_refuses_at_once_and_names_the_org(self) -> None:
-        """C3. The close never waits on a run lock, so it cannot close a
-        cycle with an agent write (run, then task row)."""
+        """C3 and C2. The close never waits on a run lock, so it cannot close
+        a cycle with an agent write (run, then task row). It never reads the
+        run of the closing agent (member and stamp)."""
         sql = " ".join(agent_runs._LOCK_OPEN_TASK_RUNS_SQL.split())
         assert sql.endswith("FOR NO KEY UPDATE NOWAIT")
         assert "task_id IS NOT NULL" in sql
         assert f"organization_id = {filters.BOUND_ORG_SQL}" in sql
+        assert ("(member_email, client_via) IS DISTINCT FROM"
+                " (CAST(:me AS text), CAST(:via AS text))") in sql
 
-    def test_the_own_agent_run_is_the_member_and_the_stamp(self) -> None:
-        """C2. Only the closing agent's own run (member and stamp) stays."""
+    def test_the_closer_binds_the_member_and_the_stamp(self) -> None:
+        """C2. An agent binds its member and its stamp. A person binds a NULL
+        stamp, so the row compare keeps each run of the task."""
         org, conn = str(uuid.uuid4()), str(uuid.uuid4())
-        run = SimpleNamespace(member_email=ALICE, client_via=VIA)
-        assert agent_runs._own_agent_run(run, _agent(ALICE, org, conn, VIA)) is True
-        assert agent_runs._own_agent_run(run, _agent(ALICE, org, conn, VIA_CURSOR)) is False
-        assert agent_runs._own_agent_run(run, _agent(BOB, org, conn, VIA)) is False
-        assert agent_runs._own_agent_run(run, _person(ALICE, org)) is False
+        assert agent_runs._closer_binds(_agent(ALICE, org, conn, VIA)) == {
+            "me": ALICE, "via": VIA}
+        assert agent_runs._closer_binds(_person(ALICE, org)) == {"me": ALICE, "via": None}
+
+    @pytest.mark.parametrize("status", ["created", "in_progress", "awaiting", "stopping"])
+    def test_a_reopen_goes_back_to_the_status_that_the_close_ended(self, status: str) -> None:
+        assert agent_runs.transition("completed", f"task_reopen:{status}") == status
+        with pytest.raises(HTTPException):
+            agent_runs.transition("released", f"task_reopen:{status}")
+
+    def test_the_undo_window_is_fifteen_minutes_or_the_lease(self, monkeypatch) -> None:
+        monkeypatch.delenv(filters.AGENT_RUN_LEASE_ENV, raising=False)
+        assert agent_runs.task_close_undo_s() == 900
+        monkeypatch.setenv(filters.AGENT_RUN_LEASE_ENV, "120")
+        assert agent_runs.task_close_undo_s() == 120
+
+    def test_the_candidate_matches_by_the_marker_and_locks_at_once(self) -> None:
+        sql = " ".join(agent_runs._REOPEN_CANDIDATE_SQL.split())
+        assert "a.content->'task_close'->>'from' = ANY(:open)" in sql
+        assert "NOT x.ephemeral ORDER BY x.seq DESC LIMIT 1" in sql
+        assert "task_id IS NOT NULL" in sql
+        assert f"r.organization_id = {filters.BOUND_ORG_SQL}" in sql
+        assert sql.endswith("FOR NO KEY UPDATE OF r NOWAIT")
+        # The match is by the marker, never by the words of the line.
+        assert "Closed:" not in sql and "body" not in sql
 
     async def test_the_flag_off_runs_no_statement(self, monkeypatch) -> None:
         """C6. While ``agent_runs_enabled`` is off, the close reads nothing."""
@@ -357,12 +412,13 @@ class TestATaskCloseEndsItsRun:
         assert [x.why for x in _close_lines(w, run)] == ["done"]
 
     async def test_c6_the_run_ends_exactly_once(self, w):
-        """Done, then cancelled (no crossing), then a reopen and done again,
-        then an archive: one server-close line in all."""
+        """Done, then cancelled (no crossing), then an archive (no open run):
+        one server-close line in all. Fix round 1: a put-back reopens the
+        run (``TestAPutBackReopensTheRun``), so this test closes no more."""
         t = _closable(w.p, w.org, ALICE)
         async with _session(w.p) as call:
             run = (await _claim(call, w.alice, t.id)).json()["agent_run_id"]
-            for lane in (t.done, t.cancelled, t.doing, t.done):
+            for lane in (t.done, t.cancelled):
                 answer = await _move(call, w.eve_stranger, t.id, lane)
                 assert answer.status_code == 200, answer.text
             shelved = await call(w.eve_stranger, "POST", f"/projects/tasks/{t.id}/archive", None)
@@ -395,6 +451,25 @@ class TestATaskCloseEndsItsRun:
             moved = await _move(call, w.eve_stranger, t.id, t.done)
         assert moved.status_code == 200, moved.text
         assert _run(w, run).status == "completed"
+
+    async def test_c9_the_own_parallel_write_gives_the_closing_agent_no_409(self, w):
+        """Fix round 1. A write of the closing agent holds its own run. The
+        close never reads that run, so the agent's own done goes through."""
+        t = _closable(w.p, w.org, ALICE)
+        async with _session(w.p) as call:
+            run = (await _claim(call, w.alice, t.id)).json()["agent_run_id"]
+            with w.p.admin_engine.connect() as c:
+                held = c.begin()
+                c.execute(text("SELECT id FROM pm_agent_runs WHERE id = CAST(:i AS uuid) "
+                               "FOR UPDATE"), {"i": run})
+                try:
+                    moved = await asyncio.wait_for(
+                        _move(call, w.alice, t.id, t.done), timeout=15)
+                finally:
+                    held.rollback()
+        assert moved.status_code == 200, moved.text
+        assert _status_of(w, t.id) == t.done
+        assert _run(w, run).status == "in_progress"
 
     async def test_c8_with_the_flag_off_no_run_ends(self, w, monkeypatch):
         from acb_common import get_settings
@@ -506,3 +581,241 @@ class TestTheOrgArm:
         assert t.id in {r["id"] for r in listing["rows"]}
         assert claim.status_code == 200, claim.text
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fix round 1: a put-back of the task reopens the run (R8)
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: A run of the task, planted by the RLS-bypassing admin with a chosen status
+#: and age: a run that another session started in between.
+_PLANT_AT_SQL = (
+    "INSERT INTO pm_agent_runs (organization_id, task_id, member_email, client_via,"
+    " status, started_by, started_at, last_activity_at, last_agent_activity_at,"
+    " created_at, ended_at)"
+    " VALUES (CAST(:o AS uuid), CAST(:t AS uuid), :m, :via, :status, 'agent',"
+    " now() - make_interval(secs => :age), now(), now(),"
+    " now() - make_interval(secs => :age),"
+    " CASE WHEN :status = 'completed' THEN now() END) RETURNING id"
+)
+
+
+def _bodies(ns: Any, run_id: str) -> list[str]:
+    return [r.body for r in _rows(
+        ns.p, "SELECT content->>'body' AS body FROM pm_agent_run_activities"
+              " WHERE run_id = CAST(:i AS uuid) AND NOT ephemeral ORDER BY seq", i=run_id)]
+
+
+def _seen(ns: Any, run_id: str) -> Any:
+    return _rows(ns.p, "SELECT last_activity_at, waiting_on, waiting_until FROM pm_agent_runs"
+                       " WHERE id = CAST(:i AS uuid)", i=run_id)[0]
+
+
+def _age_close(ns: Any, run_id: str, seconds: int) -> None:
+    """Make the close line of *run_id* older by *seconds*."""
+    with ns.p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE pm_agent_run_activities SET created_at = now() - make_interval(secs => :s)"
+            " WHERE run_id = CAST(:i AS uuid) AND content ? 'task_close'"),
+            {"s": seconds, "i": run_id})
+
+
+def _server_closed(ns: Any, run_id: str) -> bool:
+    from gateway.routes.projects import analytics_agent_runs as ar
+
+    with ns.p.admin_engine.connect() as c:
+        return bool(c.execute(text(
+            f"SELECT {ar.SERVER_CLOSED_SQL} FROM pm_agent_runs r WHERE r.id = CAST(:i AS uuid)"),
+            {"i": run_id}).scalar())
+
+
+async def _claimed(call: Any, ns: Any, task: Any) -> str:
+    answer = await _claim(call, ns.alice, task.id)
+    assert answer.status_code == 200, answer.text
+    return str(answer.json()["agent_run_id"])
+
+
+async def _beat(call: Any, ns: Any, run: str) -> Any:
+    return await call(ns.alice, "POST", f"/projects/agent-runs/{run}/activities",
+                      {"type": "thought", "body": "back at it", "idempotency_key": _key()})
+
+
+@_DB_GATE
+class TestAPutBackReopensTheRun:
+
+    async def test_u1_an_undo_of_done_reopens_the_run(self, w):
+        """Eve drags the task to Done, then clicks Undo (the inverse PATCH).
+        The run comes back with the lease it had, the task is held again,
+        and the agent's next write works. Its later finish is a success."""
+        t = _closable(w.p, w.org, ALICE)
+        async with _session(w.p) as call:
+            run = await _claimed(call, w, t)
+            doing = _status_of(w, t.id)
+            before = _seen(w, run)
+            closed = await _move(call, w.eve_stranger, t.id, t.done)
+            assert closed.status_code == 200, closed.text
+            assert _run(w, run).status == "completed"
+            undo = await _move(call, w.eve_stranger, t.id, doing)
+            assert undo.status_code == 200, undo.text
+            assert _run(w, run).status == "in_progress"
+            assert _run(w, run).ended_at is None
+            assert _seen(w, run).last_activity_at == before.last_activity_at
+            assert _bodies(w, run)[-2:] == ["Closed: the task is done.",
+                                            agent_runs.REOPENED_BODY]
+            # The marker is spent: no line of the run is a server close now.
+            assert _close_lines(w, run) == []
+            beat = await _beat(call, w, run)
+            assert beat.status_code == 201, beat.text
+            held = await _claim(call, w.bob, t.id)
+            assert held.status_code == 409, held.text
+            assert held.json()["detail"]["error"] == "task_held"
+            fin = await call(w.alice, "POST", f"/projects/agent-runs/{run}/finish",
+                             {"summary": "Done.", "idempotency_key": _key()})
+        assert fin.status_code == 200, fin.text
+        assert _run(w, run).status == "completed"
+        assert _server_closed(w, run) is False
+
+    async def test_u2_an_unarchive_reopens_the_run(self, w):
+        t = _closable(w.p, w.org, ALICE)
+        async with _session(w.p) as call:
+            run = await _claimed(call, w, t)
+            shelved = await call(w.eve_stranger, "POST", f"/projects/tasks/{t.id}/archive", None)
+            assert shelved.status_code == 200, shelved.text
+            assert _run(w, run).status == "completed"
+            back = await call(w.eve_stranger, "POST", f"/projects/tasks/{t.id}/unarchive", None)
+            assert back.status_code == 200, back.text
+            assert _run(w, run).status == "in_progress"
+            assert _bodies(w, run)[-2:] == ["Closed: the task is archived.",
+                                            agent_runs.REOPENED_BODY]
+            beat = await _beat(call, w, run)
+        assert beat.status_code == 201, beat.text
+
+    async def test_u3_a_put_back_after_the_window_does_not_reopen(self, w):
+        """Eve closes. Later, past the undo window, Carol moves the task back
+        for her own reason. The run stays closed, with one line that says
+        why, and its agent may still leave one late summary."""
+        t = _closable(w.p, w.org, ALICE)
+        async with _session(w.p) as call:
+            run = await _claimed(call, w, t)
+            doing = _status_of(w, t.id)
+            assert (await _move(call, w.eve_stranger, t.id, t.done)).status_code == 200
+            _age_close(w, run, agent_runs.task_close_undo_s() + 60)
+            back = await _move(call, w.carol_admin, t.id, doing)
+            assert back.status_code == 200, back.text
+            assert _run(w, run).status == "completed"
+            assert _bodies(w, run)[-1] == agent_runs.REOPEN_REFUSED_BODIES["window"]
+            late = await call(w.alice, "POST", f"/projects/agent-runs/{run}/finish",
+                              {"summary": "Wrapped up.", "idempotency_key": _key()})
+            assert late.status_code == 200, late.text
+            for lane in (t.done, doing):
+                assert (await _move(call, w.carol_admin, t.id, lane)).status_code == 200
+        assert _run(w, run).status == "completed"
+        refusals = [b for b in _bodies(w, run) if b.startswith("Not reopened")]
+        assert refusals == [agent_runs.REOPEN_REFUSED_BODIES["window"]]
+
+    async def test_u4_a_newer_run_blocks_the_reopen(self, w):
+        t = _closable(w.p, w.org, ALICE)
+        async with _session(w.p) as call:
+            run = await _claimed(call, w, t)
+            doing = _status_of(w, t.id)
+            assert (await _move(call, w.eve_stranger, t.id, t.done)).status_code == 200
+            with w.p.admin_engine.begin() as c:
+                c.execute(text(_PLANT_AT_SQL), {"o": w.org, "t": t.id, "m": DAVE, "via": VIA,
+                                                "status": "completed", "age": 0})
+            undo = await _move(call, w.eve_stranger, t.id, doing)
+        assert undo.status_code == 200, undo.text
+        assert _run(w, run).status == "completed"
+        assert _bodies(w, run)[-1] == agent_runs.REOPEN_REFUSED_BODIES["newer_run"]
+
+    async def test_u4b_an_open_run_blocks_the_reopen(self, w):
+        """Another run is open on the task (an older run that a prompt opened
+        again, say). The put-back leaves the closed run closed and names the
+        holder. Without the holder test the unique index refuses instead."""
+        t = _closable(w.p, w.org, ALICE)
+        async with _session(w.p) as call:
+            run = await _claimed(call, w, t)
+            doing = _status_of(w, t.id)
+            assert (await _move(call, w.eve_stranger, t.id, t.done)).status_code == 200
+            with w.p.admin_engine.begin() as c:
+                other = str(c.execute(text(_PLANT_AT_SQL), {
+                    "o": w.org, "t": t.id, "m": DAVE, "via": VIA, "status": "in_progress",
+                    "age": 86400}).scalar())
+            undo = await _move(call, w.eve_stranger, t.id, doing)
+        assert undo.status_code == 200, undo.text
+        assert _run(w, run).status == "completed"
+        assert _run(w, other).status == "in_progress"
+        assert _bodies(w, run)[-1] == agent_runs.REOPEN_REFUSED_BODIES["held"]
+
+    async def test_u5_a_question_comes_back_with_the_run(self, w):
+        t = _closable(w.p, w.org, ALICE)
+        async with _session(w.p) as call:
+            run = await _claimed(call, w, t)
+            doing = _status_of(w, t.id)
+            asked = await call(w.alice, "POST", f"/projects/agent-runs/{run}/activities", {
+                "type": "elicitation", "body": "Which one?", "idempotency_key": _key(),
+                "options": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}]})
+            assert asked.status_code == 201, asked.text
+            question = asked.json()["activity"]["id"]
+            assert (await _move(call, w.eve_stranger, t.id, t.done)).status_code == 200
+            assert (await _move(call, w.eve_stranger, t.id, doing)).status_code == 200
+            listed = await call(w.alice_person, "GET", f"/projects/tasks/{t.id}/agent-runs", None)
+        assert _run(w, run).status == "awaiting"
+        [row] = listed.json()["rows"]
+        assert row["open_elicitation"] is not None
+        assert row["open_elicitation"]["id"] == question
+
+    async def test_u6_the_wait_comes_back(self, w):
+        t = _closable(w.p, w.org, ALICE)
+        async with _session(w.p) as call:
+            run = await _claimed(call, w, t)
+            doing = _status_of(w, t.id)
+            waits = await call(w.alice, "POST", f"/projects/agent-runs/{run}/activities", {
+                "type": "thought", "body": "Waiting on CI", "idempotency_key": _key(),
+                "waiting": {"on": "ci", "until_minutes": 30}})
+            assert waits.status_code == 201, waits.text
+            before = _seen(w, run)
+            assert before.waiting_on == "ci"
+            assert (await _move(call, w.eve_stranger, t.id, t.done)).status_code == 200
+            assert _seen(w, run).waiting_on is None
+            assert (await _move(call, w.eve_stranger, t.id, doing)).status_code == 200
+        after = _seen(w, run)
+        assert _run(w, run).status == "in_progress"
+        assert (after.waiting_on, after.waiting_until) == (before.waiting_on, before.waiting_until)
+
+    @pytest.mark.parametrize("door", ["status", "archive"])
+    async def test_u7_a_close_with_no_marker_never_reopens(self, w, door):
+        """A close line with no marker (the sweep's close) is no candidate."""
+        t = _closable(w.p, w.org, ALICE)
+        async with _session(w.p) as call:
+            run = await _claimed(call, w, t)
+            doing = _status_of(w, t.id)
+            if door == "status":
+                assert (await _move(call, w.eve_stranger, t.id, t.done)).status_code == 200
+            else:
+                shelved = await call(w.eve_stranger, "POST", f"/projects/tasks/{t.id}/archive",
+                                     None)
+                assert shelved.status_code == 200, shelved.text
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("UPDATE pm_agent_run_activities SET content = content - 'task_close'"
+                               " WHERE run_id = CAST(:i AS uuid)"), {"i": run})
+            lines = len(_bodies(w, run))
+            if door == "status":
+                back = await _move(call, w.eve_stranger, t.id, doing)
+            else:
+                back = await call(w.eve_stranger, "POST", f"/projects/tasks/{t.id}/unarchive",
+                                  None)
+        assert back.status_code == 200, back.text
+        assert _run(w, run).status == "completed"
+        assert len(_bodies(w, run)) == lines
+
+    async def test_u8_with_the_flag_off_no_run_reopens(self, w, monkeypatch):
+        from acb_common import get_settings
+
+        t = _closable(w.p, w.org, ALICE)
+        async with _session(w.p) as call:
+            run = await _claimed(call, w, t)
+            doing = _status_of(w, t.id)
+            assert (await _move(call, w.eve_stranger, t.id, t.done)).status_code == 200
+            monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
+            back = await _move(call, w.eve_stranger, t.id, doing)
+        assert back.status_code == 200, back.text
+        assert _run(w, run).status == "completed"
