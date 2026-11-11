@@ -36,7 +36,9 @@ overview reads the whole organization, and most of its agents hold no task.
   ``gateway.routes.agent``, with the label "shared by Metorite". ``org`` is a
   row of ``dynamic_agents`` of the bound tenant. ``external`` is an outside
   agent, one row for each ``client_via`` of the task runs in
-  ``pm_agent_runs``.
+  ``pm_agent_runs``. Its name is ``agent_oauth.client_label(via)``, the one
+  label seam of the run pill. The self-declared ``client_name`` of its
+  connection never names it, because any host can declare "Claude Code".
 * **The state.** An outside agent is ``waiting_on_person`` while one of its
   open runs is ``awaiting``, ``working`` while one is queued or in one of
   ``filters.WORKING_STATES``, and ``idle`` otherwise. A built-in or org agent
@@ -64,7 +66,7 @@ import unicodedata
 from datetime import datetime
 from typing import Any
 
-from acb_auth import UserContext, get_current_user
+from acb_auth import UserContext, agent_oauth, get_current_user
 from acb_common import active_runs, get_settings
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.authority import led_projects
@@ -198,10 +200,7 @@ WITH seen AS (
            COALESCE(r.started_at, r.created_at) AS run_at,
            COALESCE(r.ended_at, r.last_activity_at) AS ended_at,
            r.error_metadata->>'body' AS error_body,
-           {gone} AS connection_gone,
-           (SELECT c.client_name FROM agent_connection c
-             WHERE c.id = r.connection_id
-               AND c.organization_id = r.organization_id) AS client_name
+           {gone} AS connection_gone
       FROM pm_agent_runs r
       JOIN pm_tasks t ON t.id = r.task_id
      WHERE r.task_id IS NOT NULL
@@ -214,9 +213,7 @@ WITH seen AS (
            bool_or(status IN ({open}) AND state = 'awaiting') AS waiting,
            bool_or(status IN ({open}) AND state IN ({busy})) AS busy,
            (array_agg(run_at ORDER BY created_at DESC, id DESC))[1] AS last_at,
-           (array_agg(state ORDER BY created_at DESC, id DESC))[1] AS last_state,
-           (array_agg(client_name ORDER BY created_at DESC, id DESC)
-              FILTER (WHERE client_name IS NOT NULL AND client_name <> ''))[1] AS client_name
+           (array_agg(state ORDER BY created_at DESC, id DESC))[1] AS last_state
       FROM seen GROUP BY client_via
 ), err AS (
     SELECT DISTINCT ON (client_via) client_via, status AS err_status,
@@ -291,15 +288,6 @@ def _split_description(name: str, description: str) -> tuple[str, str]:
     if job and job[0].islower():
         job = job[0].upper() + job[1:]
     return _line(title, name), _line(job, "No job description yet.")
-
-
-def _external_name(client_via: str, client_name: Any) -> str:
-    """The name of an outside agent: its connection name, else the last part
-    of its stamp (``mcp:claude.ai:claude-code`` gives ``claude-code``)."""
-    named = _line(client_name)
-    if named:
-        return named
-    return _line(str(client_via or "").rsplit(":", 1)[-1], "Outside agent")
 
 
 def _external_error(row: Any) -> dict[str, Any] | None:
@@ -423,7 +411,9 @@ async def agents_overview(
         via = str(row.client_via)
         rows.append({
             "key": f"external:{via}",
-            "name": _external_name(via, row.client_name),
+            # The one label seam, as on the run pill. The self-declared
+            # client_name of the connection never names an agent.
+            "name": _line(agent_oauth.client_label(via), "Agent"),
             "agent": via,
             "job": EXTERNAL_JOB,
             "source": "external",

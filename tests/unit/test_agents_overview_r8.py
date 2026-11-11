@@ -18,6 +18,8 @@ R7, the mutations (each turns a test here red, see the AGA-7 report):
 * **M3** ``_reach_sql`` drops the member arm (``lower(r.member_email) = :me``)
   -> the member test.
 * **M4** ``_reach_sql`` drops the lead arm (``:led``) -> the lead test.
+* **M5** the row name of an outside agent reads the self-declared
+  ``agent_connection.client_name`` -> the spoofed-name test.
 """
 
 from __future__ import annotations
@@ -52,6 +54,9 @@ VIA_Y = "mcp:acme:y-agent"  # awaiting on another member's task
 VIA_Z = "mcp:acme:z-agent"  # failed on a task of the led project
 VIA_W = "mcp:acme:w-agent"  # the member's own run on another member's task
 VIA_C = "mcp:acme:c-agent"  # an open run on a revoked connection
+#: An outside agent whose connection declares the name "Claude Code".
+VIA_E = "mcp:evil.example:claude-code"
+SPOOF = "Claude Code"
 
 ORG_AGENT_A = "aga7-a-sales-helper"
 ORG_AGENT_B = "aga7-b-only-agent"
@@ -174,6 +179,14 @@ def _seed(w: Any) -> None:
                   {"c": conn})
         c.execute(text("UPDATE pm_agent_runs SET connection_id = CAST(:c AS uuid) "
                        "WHERE id = CAST(:r AS uuid)"), {"c": conn, "r": gone})
+    # The connection declares "Claude Code" (``_seed_connection``), and its
+    # stamp is of another host. The name is the host's, never the declared one.
+    spoof_task = b.task(p, p.org_a, OTHER_A, w.plain)
+    spoof = b.run(p, p.org_a, spoof_task, OTHER_A, "awaiting", via=VIA_E)
+    spoof_conn = b._seed_connection(p, p.org_a, OTHER_A)
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_agent_runs SET connection_id = CAST(:c AS uuid) "
+                       "WHERE id = CAST(:r AS uuid)"), {"c": spoof_conn, "r": spoof})
     w.proj_b = b.project(p, p.org_b, ADMIN_B, grant="org")
     task_b = b.task(p, p.org_b, ADMIN_B, w.proj_b)
     b.run(p, p.org_b, task_b, ADMIN_B, "awaiting", via=VIA_X)
@@ -226,7 +239,7 @@ class TestTheOverview:
         assert status == 200, body
         assert body["viewer"] == "admin"
         ext = _external(body)
-        assert set(ext) == {VIA_X, VIA_Y, VIA_Z, VIA_W, VIA_C}
+        assert set(ext) == {VIA_X, VIA_Y, VIA_Z, VIA_W, VIA_C, VIA_E}
         # Org B's run of the same agent is not counted, and its state is not A's.
         assert ext[VIA_X]["runs"] == 1 and ext[VIA_X]["state"] == "working"
         rows = _by_key(body)
@@ -280,6 +293,16 @@ class TestTheOverview:
         assert "revoked or has expired" in gone["what"]
         assert "Integrations, AI agents" in gone["next_step"]
         assert ext[VIA_X]["last_error"] is None
+
+    async def test_a_declared_client_name_never_names_an_outside_agent(self, w):
+        from acb_auth import agent_oauth
+
+        _, body = await _get(w, w.admin_a)
+        ext = _external(body)
+        assert ext[VIA_E]["name"] == agent_oauth.client_label(VIA_E) == "evil.example"
+        assert ext[VIA_E]["state"] == "waiting_on_person"
+        assert ext[VIA_C]["name"] == agent_oauth.client_label(VIA_C)
+        assert SPOOF not in json.dumps(body)
 
     async def test_no_cost_and_no_credit_field(self, w):
         _, body = await _get(w, w.admin_a)
