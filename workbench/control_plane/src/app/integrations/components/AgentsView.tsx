@@ -32,7 +32,7 @@
  * BFF rules are in `app/api/agent-access/connections/relay.ts`.
  */
 
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 
 import { EmptyState } from "@/components/EmptyState";
 import Icon from "@/components/Icon";
@@ -345,9 +345,12 @@ export function AgentRow({
   showMember,
   onRevoke,
   onRotate,
+  rotatingId,
 }: {
   row: AgentConnection;
   showMember: boolean;
+  /** The id whose rotation runs. Its Rotate buttons stay off until it ends. */
+  rotatingId?: string | null;
   onRevoke: (row: AgentConnection) => void;
   /** Own box rows only: the gateway rotates the member's own box and no other. */
   onRotate?: (row: AgentConnection, now: boolean) => void;
@@ -355,6 +358,7 @@ export function AgentRow({
   const host = agentHost(row);
   const claim = agentClaim(row);
   const box = isBox(row);
+  const rotatingNow = rotatingId === row.id;
   return (
     <li
       data-testid="agent-row"
@@ -373,7 +377,7 @@ export function AgentRow({
           ) : null}
         </div>
         {claim ? <p className="text-xs text-muted-foreground">{claim}</p> : null}
-        <NewAddressMark row={row} />
+        <NewAddressMark row={row} own={!showMember} />
         <div className="flex flex-wrap gap-1">
           {scopeWords(row.scopes).map((words) => (
             <Badge key={words} tone="neutral">
@@ -398,6 +402,8 @@ export function AgentRow({
               icon="RefreshCw"
               title={ROTATE_TIP}
               onClick={() => onRotate(row, false)}
+              loading={rotatingNow}
+              disabled={rotatingNow}
               aria-label={`Rotate the token of ${host}`}
             >
               Rotate
@@ -408,6 +414,7 @@ export function AgentRow({
               icon="RefreshCw"
               title={ROTATE_NOW_TIP}
               onClick={() => onRotate(row, true)}
+              disabled={rotatingNow}
               aria-label={`Rotate the token of ${host} now`}
             >
               Rotate now
@@ -439,6 +446,7 @@ function AgentList({
   empty,
   onRevoke,
   onRotate,
+  rotatingId,
   headerAction,
 }: {
   title: string;
@@ -451,6 +459,7 @@ function AgentList({
   empty: { message: string; hint: string };
   onRevoke: (row: AgentConnection) => void;
   onRotate?: (row: AgentConnection, now: boolean) => void;
+  rotatingId?: string | null;
   headerAction?: ReactNode;
 }) {
   const headingId = `${testId}-title`;
@@ -473,7 +482,14 @@ function AgentList({
       ) : (
         <ul className="flex flex-col gap-2">
           {rows.map((row) => (
-            <AgentRow key={row.id} row={row} showMember={showMember} onRevoke={onRevoke} onRotate={onRotate} />
+            <AgentRow
+              key={row.id}
+              row={row}
+              showMember={showMember}
+              onRevoke={onRevoke}
+              onRotate={onRotate}
+              rotatingId={rotatingId}
+            />
           ))}
         </ul>
       )}
@@ -495,15 +511,29 @@ export default function AgentsView({ canManageOrg }: { canManageOrg: boolean }) 
   const [rotating, setRotating] = useState<AgentConnection | null>(null);
   // The new token of a rotation. It lives in this state until the dialog closes.
   const [issued, setIssued] = useState<IssuedBoxToken | null>(null);
+  // The id whose rotation runs. The ref is the guard: a second click in the
+  // same tick sees it before the state paints. A second rotation would revoke
+  // the token that the first one made.
+  const [rotatingId, setRotatingId] = useState<string | null>(null);
+  const rotateLock = useRef<Set<string>>(new Set());
 
   const off = mine.data === null;
   const copy = asking ? revokeCopy(asking.row, asking.admin) : null;
 
   async function rotate(row: AgentConnection, now: boolean): Promise<void> {
+    if (rotateLock.current.has(row.id)) return;
+    rotateLock.current.add(row.id);
+    setRotatingId(row.id);
     setBusy(true);
-    const result = await rotateBoxToken(row.id, { now });
-    setBusy(false);
-    setRotating(null);
+    let result: Awaited<ReturnType<typeof rotateBoxToken>>;
+    try {
+      result = await rotateBoxToken(row.id, { now });
+    } finally {
+      rotateLock.current.delete(row.id);
+      setRotatingId(null);
+      setBusy(false);
+      setRotating(null);
+    }
     if (result.ok) {
       setIssued(result.value);
       invalidate(AGENTS_KEY_PREFIX);
@@ -569,6 +599,7 @@ export default function AgentsView({ canManageOrg }: { canManageOrg: boolean }) 
         }}
         onRevoke={(row) => setAsking({ row, admin: false })}
         onRotate={askRotate}
+        rotatingId={rotatingId}
       />
 
       {canManageOrg && !off ? (

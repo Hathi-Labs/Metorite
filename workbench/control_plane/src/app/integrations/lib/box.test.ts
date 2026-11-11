@@ -6,6 +6,11 @@ import {
   DAY_MS,
   EMPTY_BOX_FORM,
   NEW_ADDRESS_HINT,
+  NEW_ADDRESS_HINT_OTHER,
+  BOX_GONE,
+  BOX_SIGNED_OUT,
+  BOX_UNREACHABLE,
+  probeBoxTokens,
   boxBody,
   boxScopeRows,
   daysProblem,
@@ -197,5 +202,64 @@ describe("the requests", () => {
     expect(await revokeAllBoxTokens()).toEqual({ ok: true, value: 3 });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(reply(403, { error: "forbidden" })));
     expect(await revokeAllBoxTokens()).toMatchObject({ ok: false });
+  });
+});
+
+describe("failure copy explains", () => {
+  const form = { ...EMPTY_BOX_FORM, name: "home" };
+
+  it("turns the BFF codes into a sentence that says what to do", async () => {
+    for (const code of ["unavailable", "bad_gateway"]) {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(reply(502, { error: code })));
+      expect(await mintBoxToken(form)).toEqual({ ok: false, off: false, message: BOX_UNREACHABLE });
+    }
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(reply(401, { error: "unauthenticated" })));
+    expect(await rotateBoxToken("c1", { now: false })).toEqual({ ok: false, off: false, message: BOX_SIGNED_OUT });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(reply(502, { error: "unavailable" })));
+    expect(await revokeAllBoxTokens()).toEqual({ ok: false, off: false, message: BOX_UNREACHABLE });
+    expect(BOX_UNREACHABLE).not.toMatch(/unavailable|bad_gateway/);
+  });
+
+  it("says a network error in words too", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("down")));
+    expect(await rotateBoxToken("c1", { now: false })).toMatchObject({ message: BOX_UNREACHABLE });
+  });
+
+  it("reads a 404 of a rotate as a gone row, not as the flag off", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(reply(404, { detail: "No such agent connection." })));
+    expect(await rotateBoxToken("c1", { now: false })).toEqual({ ok: false, off: false, message: BOX_GONE });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(reply(200, { ticket: "T" })).mockResolvedValueOnce(reply(404, {})),
+    );
+    expect(await rotateBoxToken("c1", { now: false })).toMatchObject({ off: false, message: BOX_GONE });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(reply(404, {})));
+    expect(await revokeAllBoxTokens()).toMatchObject({ off: false, message: BOX_GONE });
+  });
+
+  it("names the hint of another member's row without Rotate now", () => {
+    const row = { credential: "box", last_seen_addr: "1.2.3.4", addr_changed_at: new Date(NOW - 1000).toISOString() };
+    expect(newAddress(row, NOW, false)?.hint).toBe(NEW_ADDRESS_HINT_OTHER);
+    expect(NEW_ADDRESS_HINT_OTHER).not.toContain("Rotate now");
+  });
+});
+
+describe("the flag probe", () => {
+  it("posts an empty check once, and hides on a 404 only", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(reply(404, {}));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await probeBoxTokens()).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/agent-access/box-tokens/check");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({});
+  });
+
+  it("shows on a 422, on another status and on a network error", async () => {
+    for (const status of [422, 401, 500, 502]) {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(reply(status, {})));
+      expect(await probeBoxTokens()).toBe(true);
+    }
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("down")));
+    expect(await probeBoxTokens()).toBe(true);
   });
 });

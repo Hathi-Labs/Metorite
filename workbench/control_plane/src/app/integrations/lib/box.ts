@@ -155,16 +155,18 @@ export function expiryView(expiresAt: string | null | undefined, now: number = D
 }
 
 export const NEW_ADDRESS_HINT = 'Use "Rotate now" or Revoke if this was not your box';
+export const NEW_ADDRESS_HINT_OTHER = "Revoke this connection if the address is not expected.";
 
 /** The new-address mark: the last seen address, when it changed in the last 24 hours. */
 export function newAddress(
   row: Pick<AgentConnection, "credential" | "last_seen_addr" | "addr_changed_at">,
   now: number = Date.now(),
+  own: boolean = true,
 ): { addr: string; hint: string } | null {
   if (!isBox(row) || !row.addr_changed_at) return null;
   const t = Date.parse(row.addr_changed_at);
   if (Number.isNaN(t) || now - t > NEW_ADDRESS_MS || t - now > 60_000) return null;
-  return { addr: row.last_seen_addr || "unknown address", hint: NEW_ADDRESS_HINT };
+  return { addr: row.last_seen_addr || "unknown address", hint: own ? NEW_ADDRESS_HINT : NEW_ADDRESS_HINT_OTHER };
 }
 
 export const ROTATE_TIP = "Make a new token. The old token works for 24 more hours.";
@@ -199,18 +201,56 @@ export type BoxResult<T> = { ok: true; value: T } | { ok: false; off: boolean; m
 
 const FAILED = "The token was not made. Try again.";
 
+/** Which act asked. A 404 means "flag off" for a mint only. */
+export type BoxOp = "mint" | "rotate" | "revoke";
+
+export const BOX_UNREACHABLE = "Metorite could not reach its server. Nothing changed. Try again in a minute.";
+export const BOX_SIGNED_OUT = "Your session ended. Sign in again, then retry.";
+export const BOX_GONE = "This connection no longer exists. Refresh the list.";
+export const BOX_CROSS_SITE = "The request was refused as unsafe. Reload the page, then retry.";
+
+/** The BFF's own codes (`box-tokens/relay.ts`), in words that say what to do. */
+const BFF_CODES: Record<string, string> = {
+  unavailable: BOX_UNREACHABLE,
+  bad_gateway: BOX_UNREACHABLE,
+  unauthenticated: BOX_SIGNED_OUT,
+  cross_site: BOX_CROSS_SITE,
+  length_required: BOX_CROSS_SITE,
+  bad_body: BOX_CROSS_SITE,
+  too_large: BOX_CROSS_SITE,
+};
+
 async function readJson(res: Response): Promise<Record<string, unknown>> {
   const body = (await res.json().catch(() => ({}))) as unknown;
   return body && typeof body === "object" ? (body as Record<string, unknown>) : {};
 }
 
 /** The words of a refusal: the gateway's own description, else a plain line. */
-function refusal(res: Response, body: Record<string, unknown>): { ok: false; off: boolean; message: string } {
-  if (res.status === 404) return { ok: false, off: true, message: BOX_OFF_MESSAGE };
+function refusal(
+  res: Response,
+  body: Record<string, unknown>,
+  op: BoxOp,
+): { ok: false; off: boolean; message: string } {
+  if (res.status === 404) {
+    // Only the mint (check or mint) reads a 404 as "flag off". A rotate or a
+    // revoke that gets 404 names a row that is gone, as in another tab.
+    return op === "mint"
+      ? { ok: false, off: true, message: BOX_OFF_MESSAGE }
+      : { ok: false, off: false, message: BOX_GONE };
+  }
   const detail = body.detail;
   const inner = detail && typeof detail === "object" ? (detail as Record<string, unknown>) : body;
-  const words = inner.error_description ?? inner.error;
-  return { ok: false, off: false, message: typeof words === "string" && words ? words : `${FAILED} (${res.status})` };
+  const described = inner.error_description;
+  if (typeof described === "string" && described) return { ok: false, off: false, message: described };
+  const code = typeof inner.error === "string" ? inner.error : "";
+  const known = BFF_CODES[code];
+  if (known) return { ok: false, off: false, message: known };
+  if (res.status === 401) return { ok: false, off: false, message: BOX_SIGNED_OUT };
+  if (res.status === 502 || res.status === 503 || res.status === 504) {
+    return { ok: false, off: false, message: BOX_UNREACHABLE };
+  }
+  const fallback = op === "revoke" ? "The box tokens were not revoked. Try again." : FAILED;
+  return { ok: false, off: false, message: `${fallback} (${res.status})` };
 }
 
 async function post(path: string, body: unknown): Promise<{ res: Response; json: Record<string, unknown> }> {
@@ -227,19 +267,34 @@ function isIssued(v: Record<string, unknown>): v is Record<string, unknown> & Is
   return typeof v.token === "string" && v.token.length > 0 && typeof v.connection_id === "string";
 }
 
+/**
+ * Is the box flag on? An empty check answers 404 with the flag off (the gateway
+ * dependency runs before the body) and 422 with it on, and it makes no ticket.
+ * Only a 404 says "off". Any other answer, and a network error, say "on", so a
+ * fault never hides the button.
+ */
+export async function probeBoxTokens(): Promise<boolean> {
+  try {
+    const { res } = await post("/api/agent-access/box-tokens/check", {});
+    return res.status !== 404;
+  } catch {
+    return true;
+  }
+}
+
 /** Check, then mint with the ticket. */
 export async function mintBoxToken(form: BoxForm): Promise<BoxResult<IssuedBoxToken>> {
   const body = boxBody(form);
   try {
     const check = await post("/api/agent-access/box-tokens/check", body);
-    if (!check.res.ok) return refusal(check.res, check.json);
+    if (!check.res.ok) return refusal(check.res, check.json, "mint");
     if (typeof check.json.ticket !== "string") return { ok: false, off: false, message: FAILED };
     const mint = await post("/api/agent-access/box-tokens", { ...body, ticket: check.json.ticket });
-    if (!mint.res.ok) return refusal(mint.res, mint.json);
+    if (!mint.res.ok) return refusal(mint.res, mint.json, "mint");
     if (!isIssued(mint.json)) return { ok: false, off: false, message: FAILED };
     return { ok: true, value: mint.json };
   } catch {
-    return { ok: false, off: false, message: FAILED };
+    return { ok: false, off: false, message: BOX_UNREACHABLE };
   }
 }
 
@@ -252,17 +307,17 @@ export async function rotateBoxToken(
   const base = { days, now: opts.now };
   try {
     const check = await post("/api/agent-access/box-tokens/check", { ...base, connection_id: connectionId });
-    if (!check.res.ok) return refusal(check.res, check.json);
+    if (!check.res.ok) return refusal(check.res, check.json, "rotate");
     if (typeof check.json.ticket !== "string") return { ok: false, off: false, message: FAILED };
     const rotate = await post(`/api/agent-access/box-tokens/${encodeURIComponent(connectionId)}/rotate`, {
       ...base,
       ticket: check.json.ticket,
     });
-    if (!rotate.res.ok) return refusal(rotate.res, rotate.json);
+    if (!rotate.res.ok) return refusal(rotate.res, rotate.json, "rotate");
     if (!isIssued(rotate.json)) return { ok: false, off: false, message: FAILED };
     return { ok: true, value: rotate.json };
   } catch {
-    return { ok: false, off: false, message: FAILED };
+    return { ok: false, off: false, message: BOX_UNREACHABLE };
   }
 }
 
@@ -270,10 +325,10 @@ export async function rotateBoxToken(
 export async function revokeAllBoxTokens(): Promise<BoxResult<number>> {
   try {
     const { res, json } = await post("/api/agent-access/box-tokens/revoke-all", {});
-    if (!res.ok) return refusal(res, json);
+    if (!res.ok) return refusal(res, json, "revoke");
     return { ok: true, value: typeof json.revoked === "number" ? json.revoked : 0 };
   } catch {
-    return { ok: false, off: false, message: "The box tokens were not revoked. Try again." };
+    return { ok: false, off: false, message: BOX_UNREACHABLE };
   }
 }
 

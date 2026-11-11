@@ -14,7 +14,7 @@
  * list. The decisions and the requests are in `../lib/box.ts`.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState, type MutableRefObject } from "react";
 
 import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
@@ -43,6 +43,7 @@ import {
   mintBoxToken,
   nameProblem,
   newAddress,
+  probeBoxTokens,
   revokeAllBoxTokens,
   revokeAllCopy,
   revokedText,
@@ -52,12 +53,15 @@ import {
 } from "../lib/box";
 import type { AgentConnection } from "../lib/agents";
 
-function useCopy(): (text: string, what: string) => void {
+function useCopy(): (text: string, what: string, onCopied?: () => void) => void {
   const toast = useToast();
-  return (text, what) => {
+  return (text, what, onCopied) => {
     void navigator.clipboard
       .writeText(text)
-      .then(() => toast.show({ key: "agents:box-copy", variant: "success", title: `${what} copied` }))
+      .then(() => {
+        onCopied?.();
+        toast.show({ key: "agents:box-copy", variant: "success", title: `${what} copied` });
+      })
       .catch(() => toast.show({ key: "agents:box-copy", variant: "error", title: "Could not copy" }));
   };
 }
@@ -91,8 +95,8 @@ export function BoxBadges({ row, now }: { row: AgentConnection; now?: number }) 
 }
 
 /** The new-address mark: a warning pill with the address, and what to do. */
-export function NewAddressMark({ row, now }: { row: AgentConnection; now?: number }) {
-  const mark = newAddress(row, now);
+export function NewAddressMark({ row, now, own = true }: { row: AgentConnection; now?: number; own?: boolean }) {
+  const mark = newAddress(row, now, own);
   if (!mark) return null;
   const accent = statusAccent({ color: "amber" });
   return (
@@ -111,8 +115,23 @@ export function NewAddressMark({ row, now }: { row: AgentConnection; now?: numbe
 // ── The one-time panel ─────────────────────────────────────────────────────
 
 /** The token, once, with Copy, the warning and the connect command. */
-export function BoxTokenPanel({ issued, onDone }: { issued: IssuedBoxToken; onDone: () => void }) {
+export function BoxTokenPanel({
+  issued,
+  onDone,
+  holdRef,
+}: {
+  issued: IssuedBoxToken;
+  onDone: () => void;
+  /** Set true while the token is shown and not copied, so a close can ask first. */
+  holdRef?: MutableRefObject<boolean>;
+}) {
   const copy = useCopy();
+  useEffect(() => {
+    if (holdRef) holdRef.current = true;
+    return () => {
+      if (holdRef) holdRef.current = false;
+    };
+  }, [holdRef]);
   return (
     <div data-testid="box-token-panel" className="flex flex-col gap-4">
       <div className="flex flex-col gap-1.5">
@@ -132,7 +151,11 @@ export function BoxTokenPanel({ issued, onDone }: { issued: IssuedBoxToken; onDo
             variant="secondary"
             size="sm"
             icon="Copy"
-            onClick={() => copy(issued.token, "Token")}
+            onClick={() =>
+              copy(issued.token, "Token", () => {
+                if (holdRef) holdRef.current = false;
+              })
+            }
             aria-label="Copy the token"
           >
             Copy
@@ -171,18 +194,68 @@ export function BoxTokenPanel({ issued, onDone }: { issued: IssuedBoxToken; onDo
   );
 }
 
+export const CLOSE_ASK_TITLE = "Close anyway?";
+export const CLOSE_ASK_BODY = "You will not see this token again. Close anyway?";
+
+/**
+ * Escape, an outside press and Done all ask first while a token is shown and
+ * not yet copied. `holdRef` is set by `BoxTokenPanel`. Render `dialog` once.
+ */
+export function useTokenCloseGuard(close: () => void) {
+  const holdRef = useRef(false);
+  const [asking, setAsking] = useState(false);
+  const request = () => {
+    if (holdRef.current) setAsking(true);
+    else close();
+  };
+  const dialog = (
+    <ConfirmDialog
+      open={asking}
+      title={CLOSE_ASK_TITLE}
+      body={CLOSE_ASK_BODY}
+      confirmLabel="Close anyway"
+      confirmVariant="destructive"
+      icon="TriangleAlert"
+      onConfirm={() => {
+        setAsking(false);
+        holdRef.current = false;
+        close();
+      }}
+      onCancel={() => setAsking(false)}
+    />
+  );
+  return { holdRef, request, dialog };
+}
+
 /** The panel in a dialog, for a rotation. `issued` null means closed. */
 export function BoxTokenModal({ issued, onClose }: { issued: IssuedBoxToken | null; onClose: () => void }) {
+  const guard = useTokenCloseGuard(onClose);
   return (
-    <Modal open={issued !== null} onClose={onClose} title="New box token" icon="KeyRound" size="lg">
-      <div className="p-4">{issued ? <BoxTokenPanel issued={issued} onDone={onClose} /> : null}</div>
-    </Modal>
+    <>
+      <Modal open={issued !== null} onClose={guard.request} title="New box token" icon="KeyRound" size="lg">
+        <div className="p-4">
+          {issued ? <BoxTokenPanel issued={issued} onDone={guard.request} holdRef={guard.holdRef} /> : null}
+        </div>
+      </Modal>
+      {guard.dialog}
+    </>
   );
 }
 
 // ── The connect dialog ─────────────────────────────────────────────────────
 
-export function ConnectForm({ onClose, onMade }: { onClose: () => void; onMade: () => void }) {
+export function ConnectForm({
+  onClose,
+  onMade,
+  onDone,
+  holdRef,
+}: {
+  onClose: () => void;
+  onMade: () => void;
+  /** Done on the token panel. Defaults to `onClose`. */
+  onDone?: () => void;
+  holdRef?: MutableRefObject<boolean>;
+}) {
   const [form, setForm] = useState<BoxForm>(EMPTY_BOX_FORM);
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -191,10 +264,11 @@ export function ConnectForm({ onClose, onMade }: { onClose: () => void; onMade: 
   // The raw token. It lives here only, and it goes when this component unmounts.
   const [issued, setIssued] = useState<IssuedBoxToken | null>(null);
 
-  if (issued) return <BoxTokenPanel issued={issued} onDone={onClose} />;
+  if (issued) return <BoxTokenPanel issued={issued} onDone={onDone ?? onClose} holdRef={holdRef} />;
 
   const nameError = touched ? nameProblem(form.name) : null;
   const daysError = daysProblem(form.days);
+  const scopeError = touched && !nameProblem(form.name) && !daysProblem(form.days) ? formProblem(form) : null;
 
   async function submit(): Promise<void> {
     setTouched(true);
@@ -255,7 +329,11 @@ export function ConnectForm({ onClose, onMade }: { onClose: () => void; onMade: 
         ) : null}
       </label>
 
-      <fieldset className="flex flex-col gap-2">
+      <fieldset
+        className="flex flex-col gap-2"
+        aria-invalid={scopeError ? true : undefined}
+        aria-describedby={scopeError ? "box-scope-error" : undefined}
+      >
         <legend className="mb-1 text-xs font-medium text-muted-foreground">What the box may do</legend>
         {boxScopeRows().map((row) => (
           <label key={row.scope} className="flex items-start gap-3">
@@ -269,6 +347,11 @@ export function ConnectForm({ onClose, onMade }: { onClose: () => void; onMade: 
             </span>
           </label>
         ))}
+        {scopeError ? (
+          <span id="box-scope-error" data-testid="box-scope-error" className="text-xs text-destructive">
+            {scopeError}
+          </span>
+        ) : null}
       </fieldset>
 
       <label className="flex items-start gap-3">
@@ -318,22 +401,46 @@ export function ConnectForm({ onClose, onMade }: { onClose: () => void; onMade: 
   );
 }
 
-/** The "Connect a box" button and its dialog. */
-export function ConnectBoxButton({ onMade }: { onMade: () => void }) {
+/**
+ * The "Connect a box" button and its dialog. It probes once on mount. With the
+ * flag off the gateway answers 404 and the button is not drawn. Until the probe
+ * answers it draws nothing, so the button never flashes. Any other outcome
+ * shows it. `initialEnabled` skips the probe, for a render without effects.
+ */
+export function ConnectBoxButton({ onMade, initialEnabled }: { onMade: () => void; initialEnabled?: boolean }) {
   const [open, setOpen] = useState(false);
+  const [enabled, setEnabled] = useState<boolean | null>(initialEnabled ?? null);
+  const guard = useTokenCloseGuard(() => setOpen(false));
+  useEffect(() => {
+    if (initialEnabled !== undefined) return;
+    let live = true;
+    void probeBoxTokens().then((on) => {
+      if (live) setEnabled(on);
+    });
+    return () => {
+      live = false;
+    };
+  }, [initialEnabled]);
+  if (!enabled) return null;
   return (
     <>
       <Button variant="secondary" size="sm" icon="Server" onClick={() => setOpen(true)}>
         Connect a box
       </Button>
-      <Modal open={open} onClose={() => setOpen(false)} title="Connect a box" icon="Server" size="lg">
+      <Modal open={open} onClose={guard.request} title="Connect a box" icon="Server" size="lg">
         {/* Mounted only while open, so the token leaves state on close. */}
         {open ? (
           <div className="p-4">
-            <ConnectForm onClose={() => setOpen(false)} onMade={onMade} />
+            <ConnectForm
+              onClose={() => setOpen(false)}
+              onDone={guard.request}
+              onMade={onMade}
+              holdRef={guard.holdRef}
+            />
           </div>
         ) : null}
       </Modal>
+      {guard.dialog}
     </>
   );
 }

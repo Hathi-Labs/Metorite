@@ -100,10 +100,33 @@ describe("an OAuth row", () => {
 
 describe("the dialog", () => {
   it("opens on a button, and holds no form while closed", () => {
-    const html = renderToStaticMarkup(createElement(ConnectBoxButton, { onMade: noop }));
+    const html = renderToStaticMarkup(createElement(ConnectBoxButton, { onMade: noop, initialEnabled: true }));
     expect(html).toContain("Connect a box");
     expect(html).not.toContain("box-form");
     expect(html).not.toContain("mbt_");
+  });
+
+  it("draws nothing while the flag probe is pending or the flag is off", () => {
+    expect(renderToStaticMarkup(createElement(ConnectBoxButton, { onMade: noop }))).toBe("");
+    expect(renderToStaticMarkup(createElement(ConnectBoxButton, { onMade: noop, initialEnabled: false }))).toBe("");
+  });
+
+  it("probes once on mount, with no polling", () => {
+    const src = readFileSync(new URL("./BoxConnect.tsx", import.meta.url), "utf8");
+    expect(src).toContain("probeBoxTokens()");
+    expect(src).not.toMatch(/setInterval|setTimeout/);
+  });
+
+  it("renders the scope problem under the form, tied by aria", () => {
+    const src = readFileSync(new URL("./BoxConnect.tsx", import.meta.url), "utf8");
+    expect(src).toContain('data-testid="box-scope-error"');
+    expect(src).toContain('aria-describedby={scopeError ? "box-scope-error" : undefined}');
+  });
+
+  it("asks before it closes a token that was not copied", () => {
+    const src = readFileSync(new URL("./BoxConnect.tsx", import.meta.url), "utf8");
+    expect(src).toContain("You will not see this token again. Close anyway?");
+    expect(src).toMatch(/onClose=\{guard\.request\}/);
   });
 
   it("draws the form: name, scope switches, days 90, personal off", () => {
@@ -163,5 +186,31 @@ describe("the wiring of Revoke all in the view", () => {
     const src = readFileSync(new URL("./AgentsView.tsx", import.meta.url), "utf8");
     expect(src).toContain("showRevokeAll(canManageOrg, org.data)");
     expect(src).not.toMatch(/showRevokeAll\(\s*true/);
+  });
+});
+
+describe("the Rotate guard in the view", () => {
+  const src = readFileSync(new URL("./AgentsView.tsx", import.meta.url), "utf8");
+
+  it("ignores a second rotation of one row with a ref, not only the disabled prop", () => {
+    expect(src).toMatch(/if \(rotateLock\.current\.has\(row\.id\)\) return;/);
+    expect(src).toMatch(/rotateLock\.current\.delete\(row\.id\)/);
+  });
+
+  it("disables both Rotate buttons of the row that rotates", () => {
+    const html = renderToStaticMarkup(
+      createElement(AgentRow, { row: agent(), showMember: false, onRevoke: noop, onRotate: noop, rotatingId: "c1" }),
+    );
+    expect(html.match(/disabled=""/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    const idle = renderToStaticMarkup(
+      createElement(AgentRow, { row: agent(), showMember: false, onRevoke: noop, onRotate: noop, rotatingId: "other" }),
+    );
+    expect(idle).not.toContain('disabled=""');
+  });
+
+  it("names Rotate now on an own row only", () => {
+    const fresh = { last_seen_addr: "203.0.113.7", addr_changed_at: iso(-3600_000) };
+    expect(row(agent(fresh), true)).not.toContain("Rotate now&quot;");
+    expect(row(agent(fresh), false)).toContain("Rotate now&quot;");
   });
 });
