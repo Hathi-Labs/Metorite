@@ -1874,6 +1874,10 @@ BOARD_STATS = Tool(
 
 PLAN_ROUTE = "/projects/plan/analysis"
 
+#: The reasons a slice is not ready, as the engine words them (PJP-6).
+_PLAN_NOT_READY_REASONS = frozenset(
+    {"open blocker", "no owner", "no estimate", "no done-when"})
+
 _ID_SCHEMA: dict[str, Any] = {"type": "string", "pattern": _UUID_PATTERN}
 _ID_LIST: dict[str, Any] = {"type": "array", "items": _ID_SCHEMA}
 
@@ -1935,6 +1939,30 @@ _GET_PLAN_OUTPUT: dict[str, Any] = {
             "additionalProperties": False,
         },
         "not_enough": {"type": ["string", "null"]},
+        "gaps": {
+            "type": "object",
+            "properties": {
+                "no_owner": _ID_LIST,
+                "no_estimate": _ID_LIST,
+                "too_big": _ID_LIST,
+                "no_done_when": _ID_LIST,
+                "words": {"type": "array", "items": {"type": "string"}},
+            },
+            "additionalProperties": False,
+        },
+        "not_ready": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "task_id": _ID_SCHEMA,
+                    "reasons": {"type": "array",
+                                "items": {"type": "string", "enum": sorted(_PLAN_NOT_READY_REASONS)}},
+                },
+                "required": ["task_id", "reasons"],
+                "additionalProperties": False,
+            },
+        },
         "ignored_links": {
             "type": "array",
             "items": {
@@ -1995,6 +2023,8 @@ async def _get_plan(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     words = missing.get("words")
     waves = body.get("waves")
     labels = body.get("labels")
+    gaps = body.get("gaps") if isinstance(body.get("gaps"), dict) else {}
+    gap_words = gaps.get("words")
     return {
         "root_task_id": body["root_task_id"],
         "slices": _int(body.get("slices")),
@@ -2024,6 +2054,21 @@ async def _get_plan(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         },
         "not_enough": (body["not_enough"]
                        if isinstance(body.get("not_enough"), str) else None),
+        "gaps": {
+            "no_owner": _ids(gaps.get("no_owner")),
+            "no_estimate": _ids(gaps.get("no_estimate")),
+            "too_big": _ids(gaps.get("too_big")),
+            "no_done_when": _ids(gaps.get("no_done_when")),
+            "words": ([w for w in gap_words if isinstance(w, str)]
+                      if isinstance(gap_words, list) else []),
+        },
+        "not_ready": [
+            {"task_id": row["task_id"],
+             "reasons": [r for r in (row.get("reasons") if isinstance(row.get("reasons"), list) else [])
+                         if r in _PLAN_NOT_READY_REASONS]}
+            for row in _dicts(body.get("not_ready"))
+            if _id(row.get("task_id")) is not None
+        ],
         "ignored_links": [
             {"blocker": row["blocker"], "blocked": row["blocked"], "reason": row["reason"]}
             for row in _dicts(body.get("ignored_links"))
@@ -2054,7 +2099,10 @@ GET_PLAN = Tool(
         " start. held holds the slices that wait on an open blocker outside the"
         " tree, and outside_blockers names those blockers. hidden counts the"
         " slices and blockers that this member cannot see, and never names them."
-        " cycle lists a loop of links, and then no path is given. labels gives"
+        " gaps lists the open slices with no owner, no estimate, no done-when or an"
+        " estimate over 10 working days. not_ready lists the slices that are not"
+        " ready to start, each with its reasons. cycle lists a loop of links,"
+        " and then no path is given. labels gives"
         " the number and title of the tasks that the answer names." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
