@@ -513,49 +513,79 @@ def _parent(w: Any, child: str, parent: str) -> None:
 
 @_DB_GATE
 class TestTheBlockedGrouping:
-    """Task 2545: one row for each parked blocker, and a link counts only when
-    the blocked task is active or the blocker's epic has a started slice."""
+    """Tasks 2545 and 2817: one row for each blocked task, with all its parked
+    blockers. A link counts only when the blocked task is active or a sibling
+    of the blocker is in progress. A done sibling does not count."""
 
-    def _plan(self, w: Any, proj: dict, *, blockers: int, links: int,
-              category: str) -> tuple[str, list[str]]:
+    def _plan(self, w: Any, proj: dict, *, blockers: int, blocked: int,
+              category: str) -> tuple[str, list[str], list[str]]:
+        """Each blocked task has a link from every blocker."""
         epic = _task(w, proj, category="backlog", title="Epic")
         parked = []
         for _ in range(blockers):
             blocker = _task(w, proj, category="backlog")
             _parent(w, blocker, epic)
             parked.append(blocker)
-        for i in range(links):
-            _link(w, parked[i % blockers], _task(w, proj, category=category))
-        return epic, parked
+        tasks = [_task(w, proj, category=category) for _ in range(blocked)]
+        for t in tasks:
+            for p_ in parked:
+                _link(w, p_, t)
+        return epic, parked, tasks
 
     async def test_g1_a_backlog_plan_raises_nothing_until_a_slice_starts(self, w):
         proj = _project(w)
-        epic, parked = self._plan(w, proj, blockers=20, links=100, category="backlog")
+        epic, parked, tasks = self._plan(w, proj, blockers=4, blocked=5,
+                                         category="backlog")
+        assert (await _list(w, w.alice, proj))["rows"] == []
+        done = _task(w, proj, category="done")
+        _parent(w, done, epic)
         body = await _list(w, w.alice, proj)
         assert body["rows"] == [] and body["counts"]["blocked"] == 0
         started = _task(w, proj, category="in_progress")
         _parent(w, started, epic)
         body = await _list(w, w.alice, proj)
-        assert len(body["rows"]) == 20
-        assert body["counts"]["blocked"] == 20 and body["total"] == 20
-        assert {r["blocker_id"] for r in body["rows"]} == set(parked)
-        assert {r["blocked_count"] for r in body["rows"]} == {5}
+        assert len(body["rows"]) == 5
+        assert body["counts"]["blocked"] == 5 and body["total"] == 5
+        assert {r["task_id"] for r in body["rows"]} == set(tasks)
+        for row in body["rows"]:
+            assert row["blocker_count"] == 4
+            assert {x["id"] for x in row["blockers"]} == set(parked)
 
-    async def test_g2_active_blocked_tasks_group_by_blocker(self, w):
+    async def test_g2_active_blocked_tasks_group_by_blocked_task(self, w):
         proj = _project(w)
-        self._plan(w, proj, blockers=20, links=100, category="todo")
+        _, _parked, tasks = self._plan(w, proj, blockers=3, blocked=7, category="todo")
         body = await _list(w, w.alice, proj)
-        assert len(body["rows"]) == 20 and body["counts"]["blocked"] == 20
+        assert len(body["rows"]) == 7 and body["counts"]["blocked"] == 7
         assert len(body["rows"]) == body["listed"] == body["total"]
+        assert {r["task_id"] for r in body["rows"]} == set(tasks)
 
-    async def test_g3_a_blocker_a_member_starts_clears_its_rows(self, w):
+    async def test_g2b_a_todo_task_with_two_parked_blockers_gives_one_row(self, w):
         proj = _project(w)
-        _, parked = self._plan(w, proj, blockers=3, links=9, category="todo")
-        assert len((await _list(w, w.alice, proj))["rows"]) == 3
+        blocked = _task(w, proj, category="todo", assignee=ERIN)
+        first = _task(w, proj, category="backlog", title="First")
+        second = _task(w, proj, category="backlog", title="Second")
+        _link(w, first, blocked)
+        _link(w, second, blocked)
+        body = await _list(w, w.alice, proj)
+        [row] = body["rows"]
+        assert row["task_id"] == blocked and row["blocker_count"] == 2
+        assert {x["id"] for x in row["blockers"]} == {first, second}
+        assert {x["title"] for x in row["blockers"]} == {"First", "Second"}
+        assert row["blocker_id"] == row["blockers"][0]["id"]
+        assert body["counts"]["blocked"] == body["total"] == len(body["rows"]) == 1
+
+    async def test_g3_a_blocker_a_member_starts_leaves_the_list(self, w):
+        proj = _project(w)
+        _, parked, _tasks = self._plan(w, proj, blockers=3, blocked=2, category="todo")
+        [r0, r1] = (await _list(w, w.alice, proj))["rows"]
+        assert r0["blocker_count"] == r1["blocker_count"] == 3
         b.run(w.p, w.a, parked[0], ALICE, "in_progress")
         _move(w, parked[1], proj, "in_progress")
         body = await _list(w, w.alice, proj)
-        assert {r["blocker_id"] for r in body["rows"]} == {parked[2]}
+        assert len(body["rows"]) == 2
+        for row in body["rows"]:
+            assert row["blocker_count"] == 1
+            assert [x["id"] for x in row["blockers"]] == [parked[2]]
 
     async def test_g4_a_blocked_in_progress_task_still_raises_a_row(self, w):
         proj = _project(w)
@@ -567,9 +597,22 @@ class TestTheBlockedGrouping:
         body = await _list(w, w.alice, proj)
         [row] = body["rows"]
         assert (row["task_id"], row["blocker_id"]) == (blocked, blocker)
-        assert row["blocked_count"] == 1 and row["owner"] == ERIN
+        assert row["blocker_count"] == 1 and row["owner"] == ERIN
         assert (await _list(w, w.erin, proj, mine=True))["counts"]["blocked"] == 1
         assert (await _list(w, w.dave, proj, mine=True))["counts"]["blocked"] == 0
+
+    async def test_g5_yours_is_the_assignee_of_the_blocked_task(self, w):
+        proj = _project(w)
+        mine = _task(w, proj, category="todo", assignee=ERIN)
+        other = _task(w, proj, category="todo", assignee=DAVE)
+        blocker = _task(w, proj, category="backlog")
+        _link(w, blocker, mine)
+        _link(w, blocker, other)
+        body = await _list(w, w.erin, proj)
+        assert {r["task_id"]: r["yours"] for r in body["rows"]} == {mine: True, other: False}
+        only = await _list(w, w.erin, proj, mine=True)
+        assert [r["task_id"] for r in only["rows"]] == [mine]
+        assert only["counts"]["blocked"] == 1 == only["total"]
 
 
 @_DB_GATE
