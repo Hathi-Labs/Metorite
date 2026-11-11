@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "metorite": {
+      "type": "http",
+      "url": "https://mcp.metorite.com/mcp",
+      "tools": ["*"]
+    }
+  }
+}

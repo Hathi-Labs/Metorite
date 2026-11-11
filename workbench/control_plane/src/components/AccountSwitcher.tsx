@@ -51,6 +51,7 @@ import type { NavSection } from "@/lib/nav";
 import { TOUR_HREF, useGuideAllowed } from "@/lib/shell/guide";
 import { TAKE_TOUR_ITEM, accountMenu, type AccountLink, type AccountMenuItem } from "@/lib/shell/shellNav";
 import { CHANGE_LAYOUT } from "@/lib/shell/shellPrefs";
+import { useAgentGuidanceEnabled } from "@/lib/useAgentGuidanceEnabled";
 import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
 
 /**
@@ -501,6 +502,8 @@ export function AccountFoot({
   // WS-63 PZ-25: the "Assistant settings" row, only with the profile on for this org.
   // Read here, where the foot always mounts, so the row is known at open.
   const assistant = useAssistantProfileEnabled();
+  // WS-MCP SW-31b: the "Agents" row, only while AGENT_GUIDANCE_ORGS holds the org.
+  const agents = useAgentGuidanceEnabled();
   // WS-OB GD-5a: "Take the tour", only while GUIDE_ORGS holds the org.
   const tour = useGuideAllowed();
   const router = useRouter();
@@ -625,6 +628,7 @@ export function AccountFoot({
               sections={sections}
               layout={layout}
               assistant={assistant}
+              agents={agents}
               tour={tour}
               go={router.push}
               onChanged={() => void reload(true)}
@@ -676,6 +680,7 @@ export function AccountFootMenu({
   onDone,
   pages = true,
   assistant = false,
+  agents = false,
   tour = false,
   go,
 }: {
@@ -687,6 +692,8 @@ export function AccountFootMenu({
   pages?: boolean;
   /** True adds the "Assistant settings" row to Settings (PZ-25, PZ-28). `AccountFoot` reads it. */
   assistant?: boolean;
+  /** True adds the "Agents" row to Settings (SW-31b). `AccountFoot` reads it. */
+  agents?: boolean;
   /** True adds "Take the tour" to Settings (WS-OB GD-5a). `AccountFoot` reads the guide's switch. */
   tour?: boolean;
   /**
@@ -728,7 +735,7 @@ export function AccountFootMenu({
     }
   };
 
-  const groups = accountMenu(sections, { layout, switcher: accounts.enabled, others: others.length, pages, assistant, tour });
+  const groups = accountMenu(sections, { layout, switcher: accounts.enabled, others: others.length, pages, assistant, agents, tour });
 
   const row = (item: AccountMenuItem) => {
     switch (item.kind) {
