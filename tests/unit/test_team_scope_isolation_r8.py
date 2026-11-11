@@ -1,4 +1,4 @@
-"""T-7 (task 2538): the isolation fence of teams. Two teams, three spaces, every surface.
+"""T-7 (task 2538): the isolation fence of teams. Two teams, three spaces, the listed surfaces.
 
 Spec: ``project-docs/specs/project_management_app.md`` §14.9, rules 2 and 4.
 ``navigation_shell.md`` §4.2 rule 4 and §4.2a.
@@ -6,13 +6,15 @@ Spec: ``project-docs/specs/project_management_app.md`` §14.9, rules 2 and 4.
 A team is a group, ``group:<slug>`` (D12). There is no team object and no
 team table (D87, D49). A grant of a space to a group in ``pm_project_grants``
 puts the space in the view of that team. This file proves two rules on a
-real database, as a role that cannot bypass RLS:
+real database, as a role that cannot bypass RLS, for the surfaces that it
+lists below:
 
 * **Rule 2.** A space that is shared with no team of the member is hidden.
-* **Rule 4.** A hidden space is never named and never counted. That holds in
-  a list, a count, a search, ``board_stats``, an assistant answer and an MCP
-  read. A direct link answers the same "not found" as an id that does not
-  exist.
+* **Rule 4.** A hidden space is never named and never counted. A direct link
+  answers the same "not found" as an id that does not exist.
+
+The file does not cover all of rule 4. The section "Reads not driven" names
+each read that it leaves out. Those reads are follow-up work.
 
 It also proves that a grant that goes away takes effect on the next read of
 the same session, and that a member who leaves a team loses its spaces on
@@ -21,30 +23,37 @@ the next read.
 **The world.** One tenant. Two groups, ``team-a`` and ``team-b``. Three
 spaces, each with one project, and the tasks in the project:
 
-* ``Kestrel space``, granted to ``group:team-a`` only. One task.
-* ``Heron space``, granted to ``group:team-b`` only. Two tasks.
-* ``Osprey space``, granted to both groups. Four tasks.
+* ``Kestrel space``, granted to ``group:team-a`` only. Two tasks.
+* ``Heron space``, granted to ``group:team-b`` only. Four tasks.
+* ``Osprey space``, granted to both groups. Eight tasks.
 
-The counts 1, 2 and 4 are on purpose. Each set of spaces then has its own
+The counts 2, 4 and 8 are on purpose. Each set of spaces then has its own
 sum, so a count alone shows which spaces a read counted. Four members:
 
-* ``a`` is in ``team-a`` only. It reaches Kestrel and Osprey (5 tasks).
-* ``b`` is in ``team-b`` only. It reaches Heron and Osprey (6 tasks).
-* ``ab`` is in both teams. It reaches all three (7 tasks). This is the read
+* ``a`` is in ``team-a`` only. It reaches Kestrel and Osprey (10 tasks).
+* ``b`` is in ``team-b`` only. It reaches Heron and Osprey (12 tasks).
+* ``ab`` is in both teams. It reaches all three (14 tasks). This is the read
   of "All my teams".
 * ``nobody`` is in no team. It reaches nothing.
 
-``a`` and ``b`` each have one WAITING overlay on a task of the space that
-they cannot see, and one on a task of Osprey that they can see. Each is also
-assigned one task of Osprey. So the My tasks reads hold a hidden row to
-leave out and a visible row to keep. Nobody is assigned a task of a hidden
-space, because an assignment is a way in by design (``load_visible_task``).
+``a`` and ``b`` each have these rows of My tasks:
+
+* a WAITING overlay and an INBOX overlay, each on a task of the space that
+  they cannot see;
+* a WAITING overlay on a task of Osprey;
+* one assigned task of Osprey, with an INBOX overlay.
+
+So each My tasks read holds a hidden row to leave out and a visible row to
+keep. Nobody is assigned a task of a hidden space, because an assignment is
+a way in by design (``load_visible_task``).
 
 **The leak check.** Each name of a space, a project and a task holds the
 word of its space. For each read, the test looks for the words and the ids
 of the hidden spaces in the whole body of the answer. One hit fails the
-test. Each read also has a positive control: it must name and count what
-the member can see, so a read that returns nothing cannot pass.
+test. Each read also has a positive control for each member who sees a
+space. The read must name, count or open what the member can see, so a read
+that returns nothing cannot pass. ``nobody`` sees no space, so its reads
+have no positive control.
 
 **The surfaces, one test class each.**
 
@@ -55,11 +64,13 @@ the member can see, so a read that returns nothing cannot pass.
   summary.
 * ``board_stats``: ``GET /projects/tasks/stats``, with ``group_by=project``.
 * My tasks: ``GET /projects/tasks?scope=mine``, ``/projects/my/inbox``,
-  ``/projects/my/summary`` and ``/projects/assigned-to-me``.
+  ``/projects/my/summary``, ``/projects/assigned-to-me`` and the single read
+  ``/projects/my/tasks/{id}``.
 * Search: ``GET /projects/search`` and ``/projects/search/refs``.
 * The CSV export and the delta feed.
-* The direct link: ``GET /projects/tasks/{id}`` and ``/projects/nodes/{id}``
-  of a hidden row answer the body of an id that does not exist.
+* The direct link: ``GET /projects/tasks/{id}``, ``/projects/nodes/{id}`` and
+  ``/projects/nodes/{id}/grants`` of a hidden row answer the body of an id
+  that does not exist.
 * The assistant: the chat tools ``projects_tree``, ``project_summary``,
   ``find_tasks``, ``list_tasks``, ``my_work`` and ``task_detail`` of
   ``skill_projects``, through the real gateway app.
@@ -71,9 +82,18 @@ the member can see, so a read that returns nothing cannot pass.
   a group, each hide the space on the next read of the app, the chat and
   the MCP door.
 
-**Named gaps.** This file does not drive these surfaces. Each one is named
-here so that nobody reads the file as wider than it is.
+**Reads not driven.** This file does not drive these reads. Each one is
+named here so that nobody reads the file as wider than it is. Each one is
+follow-up work for this fence.
 
+* The MCP tools ``my_work``, ``get_task_context``, ``get_plan``,
+  ``get_task_timeline``, ``list_project_updates`` and ``list_tags``.
+* ``GET /projects/my/today``, ``/projects/plan/order``, the notifications
+  and the intake reads.
+* ``GET /projects/tasks/{id}/subtree``, ``/projects/tasks/{id}/timeline``
+  and ``/projects/tasks/{id}/relations``.
+* ``GET /projects/nodes/{id}/statuses``, ``/projects/nodes/{id}/fields`` and
+  ``/projects/nodes/{id}/tags``.
 * The team chip and the team scope of the shell (T-2, T-4). They are not
   built. Rule 3 and rule 5 ("a scope never grants") wait for
   ``src/lib/shell/teamScope.test.ts``.
@@ -94,7 +114,8 @@ here so that nobody reads the file as wider than it is.
 
 **The mutations (R7).** Each planted fault below turned the named tests red
 on 2026-11-11. Each was reverted. ``G`` is
-``apps/services/gateway/gateway/routes/projects``.
+``apps/services/gateway/gateway/routes/projects``. M1 to M5 ran against the
+first world, which had 1, 2 and 4 tasks and no INBOX overlays.
 
 * M1. ``G/core.py`` ``_MY_GROUPS_SQL``: no member filter, so each member is
   in every group. 94 of 146 tests fail, in every class, for ``a``, ``b`` and
@@ -105,7 +126,18 @@ on 2026-11-11. Each was reverted. ``G`` is
 * M3. ``G/core.py`` ``mine_clause``: the WAITING arm drops its grant
   closure. ``TestMyTasks.test_the_inbox`` fails for ``a`` and ``b``. The list
   over mine and the Overview also AND the visibility clause, so they stay
-  green.
+  green. Rerun on the current world: ``test_the_inbox`` and
+  ``test_the_single_read`` fail for ``a`` and ``b`` (4 failed). The chat
+  ``my_work`` stays green, because its inbox view reads INBOX rows only.
+* M3b. ``G/core.py`` ``mine_clause``: the WAITING arm takes an overlay of any
+  disposition, and drops its grant closure. ``TestTheAssistant.test_my_work``
+  fails for ``a`` and ``b``, because the hidden INBOX row reaches the chat.
+  ``test_the_inbox`` and ``test_the_single_read`` fail too (6 failed).
+* M6. ``G/tasks.py`` ``_task_scope``: ``TRUE`` in place of the visibility
+  clause. 23 tests fail on the current world: the list and its lane counts,
+  ``TestBoardStats``, the chat ``list_tasks``, the MCP ``list_tasks`` and
+  ``board_stats``, for ``a``, ``b`` and ``nobody``, and both tests of
+  ``TestTheNextRead``.
 * M4. ``G/tasks.py`` ``get_task``: a hidden task answers a 404 text of its
   own. ``TestADirectLinkIsNotFound.test_a_hidden_task``, the ``task_detail``
   test of ``TestTheAssistant`` and the deleted-grant test of
@@ -176,9 +208,9 @@ TEAM_B = "group:team-b"
 WORD = "marmot"
 #: The key of each space: the word of its names, its grants, its task count.
 SPACES: dict[str, tuple[str, tuple[str, ...], int]] = {
-    "A": ("kestrel", (TEAM_A,), 1),
-    "B": ("heron", (TEAM_B,), 2),
-    "AB": ("osprey", (TEAM_A, TEAM_B), 4),
+    "A": ("kestrel", (TEAM_A,), 2),
+    "B": ("heron", (TEAM_B,), 4),
+    "AB": ("osprey", (TEAM_A, TEAM_B), 8),
 }
 #: The spaces that the teams of each member reach.
 REACH: dict[str, tuple[str, ...]] = {
@@ -255,11 +287,11 @@ def _space(seeder: w._Seeder, word: str, grants: tuple[str, ...], count: int, *,
                            tasks=tasks, numbers=numbers, grants=grant_ids)
 
 
-def _waiting(seeder: w._Seeder, task: str, member: str) -> None:
+def _overlay(seeder: w._Seeder, task: str, member: str, disposition: str) -> None:
     seeder.one(
         "INSERT INTO pm_task_personal (task_id, member_email, disposition,"
-        " organization_id) VALUES (CAST(:t AS uuid), :m, 'WAITING', CAST(:o AS uuid))"
-        " RETURNING task_id", t=task, m=member, o=seeder.org)
+        " organization_id) VALUES (CAST(:t AS uuid), :m, :d, CAST(:o AS uuid))"
+        " RETURNING task_id", t=task, m=member, d=disposition, o=seeder.org)
 
 
 def _assign(seeder: w._Seeder, task: str, member: str) -> None:
@@ -325,19 +357,23 @@ def world():
     spaces = {key: _space(s, word, grants, count)
               for key, (word, grants, count) in SPACES.items()}
     sa, sb, sab = spaces["A"], spaces["B"], spaces["AB"]
-    # My tasks: a hidden WAITING row, a visible WAITING row and one assignment.
-    _waiting(s, sb.tasks[0], A)
-    _waiting(s, sab.tasks[0], A)
-    _assign(s, sab.tasks[2], A)
-    _waiting(s, sa.tasks[0], B)
-    _waiting(s, sab.tasks[1], B)
-    _assign(s, sab.tasks[3], B)
+    # My tasks, for `a` and for `b`. A WAITING row and an INBOX row on tasks
+    # of the hidden space. A WAITING row on a task of Osprey. One assigned
+    # task of Osprey with an INBOX row, so the inbox of the chat has a row.
+    for who, hidden, waits, owns in ((A, sb, 0, 2), (B, sa, 1, 3)):
+        _overlay(s, hidden.tasks[0], who, "WAITING")
+        _overlay(s, hidden.tasks[1], who, "INBOX")
+        _overlay(s, sab.tasks[waits], who, "WAITING")
+        _assign(s, sab.tasks[owns], who)
+        _overlay(s, sab.tasks[owns], who, "INBOX")
 
     world_ = SimpleNamespace(
         admin=eng, org=org, seeder=s, groups=groups, spaces=spaces,
         mine={A: {sab.tasks[0], sab.tasks[2]}, B: {sab.tasks[1], sab.tasks[3]},
               AB: set(), NOBODY: set()},
         assigned={A: {sab.tasks[2]}, B: {sab.tasks[3]}, AB: set(), NOBODY: set()},
+        #: The hidden tasks with a WAITING row and an INBOX row of the member.
+        overlay_hidden={A: sb.tasks[:2], B: sa.tasks[:2]},
         oauth={who: _oauth_connection(s, who) for who in MEMBERS},
         box={},
     )
@@ -467,12 +503,26 @@ async def _ok(world: Any, who: str, path: str) -> httpx.Response:
     return r
 
 
-async def _not_found(world: Any, who: str, path: str, hidden: str) -> None:
-    """*path* with the hidden id answers as the same path with :data:`MISSING`."""
+async def _not_found(world: Any, who: str, path: str, hidden: str,
+                     visible: str | None = None) -> None:
+    """*path* with the hidden id answers as the same path with :data:`MISSING`.
+
+    *visible* is the positive control: the same path with an id that the
+    member may open answers 200, so a path that always answers 404 fails.
+    """
     got = await _as(world, who, "GET", path.format(id=hidden))
     missing = await _as(world, who, "GET", path.format(id=MISSING))
     assert got.status_code == 404, (who, path, got.status_code, got.text)
     assert (missing.status_code, got.json()) == (404, missing.json()), (who, path)
+    if visible is not None:
+        seen = await _as(world, who, "GET", path.format(id=visible))
+        assert seen.status_code == 200, (who, path, seen.status_code, seen.text)
+
+
+def _control(world: Any, who: str) -> SimpleNamespace | None:
+    """A space that *who* may see, for a positive control, or ``None``."""
+    seen = _seen(world, who)
+    return seen[0] if seen else None
 
 
 async def _chat(world: Any, monkeypatch: Any, who: str, act: Any) -> Any:
@@ -599,12 +649,14 @@ class TestTheBoardAndTheList:
 
     @pytest.mark.parametrize("who", MEMBERS)
     async def test_a_hidden_project_is_the_404_of_a_missing_one(self, live, who):
+        ctrl = _control(live, who)
         for sp in _unseen(live, who):
-            for node in (sp.space, sp.project):
+            for kind in ("space", "project"):
+                visible = getattr(ctrl, kind) if ctrl else None
                 for path in ("/projects/tasks?project_id={id}",
                              "/projects/nodes/{id}/summary",
                              "/projects/nodes/{id}/views"):
-                    await _not_found(live, who, path, node)
+                    await _not_found(live, who, path, getattr(sp, kind), visible)
 
 
 class TestBoardStats:
@@ -624,13 +676,23 @@ class TestBoardStats:
 
     @pytest.mark.parametrize("who", MEMBERS)
     async def test_a_hidden_project_is_the_404_of_a_missing_one(self, live, who):
+        ctrl = _control(live, who)
         for sp in _unseen(live, who):
-            await _not_found(live, who, "/projects/tasks/stats?project_id={id}", sp.space)
+            await _not_found(live, who, "/projects/tasks/stats?project_id={id}", sp.space,
+                             ctrl.space if ctrl else None)
 
 
 class TestMyTasks:
-    """Rule 4 in My tasks. A WAITING overlay on a task of a hidden space is
-    left out. The WAITING row of a visible space stays."""
+    """Rule 4 in My tasks. A WAITING or INBOX overlay on a task of a hidden
+    space is left out. The rows of Osprey stay."""
+
+    @pytest.mark.parametrize("who", (A, B))
+    async def test_the_single_read(self, live, who):
+        """``/projects/my/tasks/{id}`` of a hidden task with a WAITING row of
+        the member answers the 404 of a missing id. A visible WAITING row reads."""
+        visible = live.spaces["AB"].tasks[0 if who == A else 1]
+        for hidden in live.overlay_hidden[who]:
+            await _not_found(live, who, "/projects/my/tasks/{id}", hidden, visible)
 
     @pytest.mark.parametrize("who", MEMBERS)
     async def test_the_list_over_mine(self, live, who):
@@ -675,6 +737,9 @@ class TestSearch:
         for sp in _unseen(live, who):
             r = await _ok(live, who, f"/projects/search?q={sp.word}&limit=50")
             assert r.json()["rows"] == [], (who, sp.word)
+        for sp in _seen(live, who):
+            r = await _ok(live, who, f"/projects/search?q={sp.word}&limit=50")
+            assert _row_ids(r.json()) == set(sp.tasks), (who, sp.word)
 
     @pytest.mark.parametrize("who", MEMBERS)
     async def test_the_task_numbers_resolve_only_the_team_tasks(self, live, who):
@@ -706,16 +771,21 @@ class TestADirectLinkIsNotFound:
 
     @pytest.mark.parametrize("who", MEMBERS)
     async def test_a_hidden_task(self, live, who):
+        ctrl = _control(live, who)
         for sp in _unseen(live, who):
             for task in sp.tasks:
-                await _not_found(live, who, "/projects/tasks/{id}", task)
+                await _not_found(live, who, "/projects/tasks/{id}", task,
+                                 ctrl.tasks[0] if ctrl else None)
 
     @pytest.mark.parametrize("who", MEMBERS)
     async def test_a_hidden_space_and_its_project(self, live, who):
+        ctrl = _control(live, who)
         for sp in _unseen(live, who):
-            for node in (sp.space, sp.project):
-                await _not_found(live, who, "/projects/nodes/{id}", node)
-                await _not_found(live, who, "/projects/nodes/{id}/grants", node)
+            for kind in ("space", "project"):
+                visible = getattr(ctrl, kind) if ctrl else None
+                await _not_found(live, who, "/projects/nodes/{id}", getattr(sp, kind), visible)
+                await _not_found(live, who, "/projects/nodes/{id}/grants",
+                                 getattr(sp, kind), visible)
 
     async def test_the_control_a_visible_task_reads(self, live):
         task = live.spaces["AB"].tasks[0]
@@ -779,11 +849,21 @@ class TestTheAssistant:
 
     @pytest.mark.parametrize("who", MEMBERS)
     async def test_my_work(self, live, monkeypatch, who):
+        """The inbox view reads INBOX rows over mine. ``a`` and ``b`` each have
+        an INBOX row on a hidden task, which must stay out, and one on their
+        assigned task of Osprey, which must show. The assigned view reads
+        ``/projects/assigned-to-me``, which has no grant clause by design: an
+        assignment is a way in, so only the positive control binds it."""
         from skill_projects import reads
 
+        osprey = live.spaces["AB"].word
         for view in ("assigned", "inbox"):
             out = await _chat(live, monkeypatch, who, lambda v=view: reads.my_work(view=v))
             _no_leak(live, who, out, f"my_work {view}")
+            if live.assigned[who]:
+                assert osprey in out.lower(), (who, view, out)
+            else:
+                assert out.rstrip().endswith("nothing."), (who, view, out)
 
     @pytest.mark.parametrize("who", MEMBERS)
     async def test_task_detail_of_a_hidden_task_is_the_refusal_of_a_missing_one(
@@ -801,6 +881,11 @@ class TestTheAssistant:
         for sp in _unseen(live, who):
             for task in sp.tasks:
                 assert await refusal(task) == missing, (who, sp.word)
+        ctrl = _control(live, who)
+        if ctrl:
+            out = await _chat(live, monkeypatch, who, lambda: reads.task_detail(ctrl.tasks[0]))
+            assert f"full_id: {ctrl.tasks[0]}" in out and ctrl.word in out.lower(), out
+            _no_leak(live, who, out, "task_detail")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -875,6 +960,15 @@ class TestTheMcpDoor:
             for node in (sp.space, sp.project):
                 got = await _mcp(live, token, "get_project", {"project_id": node})
                 assert got == missing_node, (who, sp.word)
+        # The positive control: a task and a space that the member may open.
+        ctrl = _control(live, who)
+        if ctrl:
+            got = await _mcp(live, token, "get_task", {"task_id": ctrl.tasks[0]})
+            assert got["isError"] is False and ctrl.tasks[0] in json.dumps(got), got
+            _no_leak(live, who, json.dumps(got), "MCP get_task")
+            got = await _mcp(live, token, "get_project", {"project_id": ctrl.space})
+            assert got["isError"] is False and ctrl.space in json.dumps(got), got
+            _no_leak(live, who, json.dumps(got), "MCP get_project")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
