@@ -166,6 +166,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "unlink_tasks": ("unlink these two tasks",),
     "update_project": ("change the project deadline",),
     "waiting_agent_requests": ("which agent requests are waiting for me?",),
+    # SW-43c: the member's own answer to an agent.
+    "change_agent_answer": ("change my answer to the agent to Not now",),
     # -- projects-structure --
     "capture_intake": ("capture this into the intake queue",),
     "create_area": ("create an area called Health",),

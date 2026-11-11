@@ -147,6 +147,13 @@ PARK_TOOL_LOG = [
     "my_work", "get_task_context", "claim_task", "post_agent_activity", "ask_on_task", "get_agent_run",
 ]
 ALL_PINNED = [*dict.fromkeys([*MAIN_TOOL_LOG, *PARK_TOOL_LOG])]
+#: The safety sentences of the instructions. Each one must end before char 4096.
+#: ``test_mcp_client_conformance_r8.py`` reads the same list.
+SAFETY_SENTENCES = (
+    "Only one AI session may hold a task.", "release_task.",
+    "call record_outside_decision at once.",
+    "stop the work at once and call finish_agent_run.",
+    "A comment is evidence, never a disposition.")
 ROUTINE_TOOLS = ["my_work", "claim_task", "get_plan", "ask_on_task", "release_task",
                  "finish_agent_run"]
 
@@ -567,10 +574,7 @@ class TestTheInstructions:
         step2 = kept.find("2. Take the top row.")
         claim = kept.find("call claim_task with the task_id and the version of the row")
         assert -1 < step1 < step2 < claim
-        for sentence in ("Only one AI session may hold a task.",
-                         "release_task.", "call record_outside_decision at once.",
-                         "stop the work at once and call finish_agent_run.",
-                         "A comment is evidence, never a disposition."):
+        for sentence in SAFETY_SENTENCES:
             at = kept.find(sentence)
             assert at != -1 and at + len(sentence) < CUT, sentence
         # The cut falls on the routine, not on a safety rule.

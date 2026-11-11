@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import re
 
+from acb_common.secret_shapes import KEY_SHAPES, SECRET_SHAPES
+
 # External resource loads / network calls — non-functional in the sandbox and
 # off-architecture by contract. Matched case-insensitively.
 _ERROR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -45,12 +47,9 @@ _ERROR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 # Credential-shaped strings — nothing key-like belongs in an app, ever.
-_KEY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("OpenAI/Anthropic-style secret key", re.compile(r"\bsk-[A-Za-z0-9_-]{16,}")),
-    ("AWS access key id", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-    ("Google API key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}")),
-    ("Slack token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{8,}")),
-    ("GitHub token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}")),
+# The list lives in ``acb_common.secret_shapes`` (task 1272).
+_KEY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (label, rx) for label, rx in SECRET_SHAPES if rx in KEY_SHAPES
 )
 
 # Likely-broken-in-sandbox usage: worth a warning, not a block (an app may

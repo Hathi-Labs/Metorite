@@ -839,6 +839,8 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: the one plan engine, writes nothing and says open_world=False.
 #: 2026-11-08 (SP-8a): set_epic_contract joined. It writes one epic contract through the
 #: gateway, behind one card, and says open_world=False.
+#: 2026-11-11 (SW-43c): change_agent_answer joined. It changes the member's own answer to
+#: an agent through the gateway, behind one card, and says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
     "analyze_image",
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
@@ -857,6 +859,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "answer_decision", "my_decisions",
     "report_recipients", "add_report_recipient", "remove_report_recipient", "set_report_schedule",
     "waiting_agent_requests", "needs_attention",
+    "change_agent_answer",
     "delete_attachment", "delete_comment", "delete_field", "delete_project", "delete_status", "delete_task",
     "delete_tag", "delete_type", "delete_view", "edit_comment", "edit_project",
     "edit_task", "emit_generative_ui", "file_access_delete", "file_access_grep",
