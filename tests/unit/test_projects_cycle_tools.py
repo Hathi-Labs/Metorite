@@ -440,3 +440,14 @@ def test_the_text_fences_hold_for_the_module() -> None:
     source = Path(C.__file__).read_text(encoding="utf-8")
     for phrase in ("you cannot", "admin can", "may not edit"):
         assert phrase not in source.lower(), phrase
+
+
+async def test_a_timeout_on_the_first_write_is_a_partial_receipt(monkeypatch) -> None:
+    """A transport fault on the first write may have landed: no "Nothing was changed"."""
+    approve(monkeypatch)
+    first, _second = sorted((T1, T2))
+    _gateway(monkeypatch, timeout_on=first)
+    out = await skill_projects.plan_cycle(PLANNED, add_task_ids=first)
+    assert "stopped:" in out and "may or may not" in out
+    assert "Nothing was changed" not in out
+    assert f"cycle_id: {PLANNED}" in out

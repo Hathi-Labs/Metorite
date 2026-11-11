@@ -365,11 +365,13 @@ async def plan_cycle(cycle_id: str, add_task_ids: str = "", remove_task_ids: str
     lines: list[str] = []
     changed = 0
     stop = ""
+    unknown = False  # a transport fault: the write may exist, so the card is partial
     for n, (tid, ref, remove) in enumerate(todo):
         try:
             moved = await _send(cid, tid, remove=remove)
         except Exception as exc:  # every call ends in the receipt, never in a raise
             stop = f"stopped: {ref} {_why(exc)}."
+            unknown = not isinstance(exc, GatewayRefusal)
             left = [r for _t, r, _rm in todo[n + 1:]]
             if left:
                 lines.append("not tried: " + ", ".join(left))
@@ -381,7 +383,7 @@ async def plan_cycle(cycle_id: str, add_task_ids: str = "", remove_task_ids: str
             lines.append(f"already in: {ref}")
     head = f"{name}: {changed} of {len(todo)} task changes made."
     body = "\n".join([head, stop, *lines] if stop else [head, *lines])
-    if not changed:
+    if not changed and not unknown:
         return body + "\nNothing was changed in the cycle."
     return f"{body}\n  cycle_id: {cid}"
 
