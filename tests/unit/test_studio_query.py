@@ -477,7 +477,7 @@ def test_no_fstring_in_the_query_sql_takes_a_value() -> None:
                                       "_q_filtered", "_q_count", "_q_head", "_q_sorted_ids",
                                       "_q_small_ids", "build_query", "build_count",
                                       "build_group_sum", "_q_agg_key", "_q_agg_value",
-                                      "_q_agg_currency", "build_aggregate"}
+                                      "_q_agg_currency", "build_aggregate", "build_lookup"}
     bad: list[str] = []
     for func in funcs:
         for node in ast.walk(func):

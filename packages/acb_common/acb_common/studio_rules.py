@@ -1676,6 +1676,8 @@ LOOKUP_MISSING = "lookup_missing"
 LOOKUP_AMBIGUOUS = "lookup_ambiguous"
 #: The field types of a target, and so of the field that a lookup reads.
 LOOKUP_VALUE_TYPES: tuple[str, ...] = ("number", "money", "text", "checkbox", "date")
+
+
 def _stored_lookup(rule: Rule) -> dict[str, Any]:
     """The keys of a lookup in the JSON of :meth:`Rule.stored`. Empty for each
     other kind."""
