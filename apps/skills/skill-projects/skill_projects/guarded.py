@@ -2593,6 +2593,21 @@ ANSWER_BOTH = (
     "Take the answer back, or give a new answer. One call does one of the two. "
     "Nothing was changed."
 )
+#: The most characters of the agent's question, and of the old answer, on a
+#: card. Both are context: neither route writes them. So each is cut with an
+#: ellipsis, and the card always fits under ``CARD_CLIP``. A long question of
+#: an agent never makes the card refuse (SW-43c review, P2). The new answer
+#: is the write, so it shows whole.
+ANSWER_CARD_CONTEXT_MAX = 600
+
+
+def _clip_context(text: Any) -> str:
+    """*text* as one line of at most :data:`ANSWER_CARD_CONTEXT_MAX`
+    characters, cut with an ellipsis when it is longer."""
+    flat = " ".join(str(text or "").split())
+    if len(flat) <= ANSWER_CARD_CONTEXT_MAX:
+        return flat
+    return f"{flat[: ANSWER_CARD_CONTEXT_MAX - 1]}…"
 
 
 @dataclass(frozen=True)
@@ -2608,17 +2623,19 @@ class _LiveAnswer:
 
 
 def _answer_words(activity: dict[str, Any]) -> str:
-    """The words of one answer, fenced: its option labels, then its text."""
+    """The words of the old answer, fenced and cut to the context size: its
+    option labels, then its text."""
     content = activity.get("content") or {}
-    parts = [data(label) for label in content.get("labels") or [] if str(label).strip()]
+    parts = [str(label) for label in content.get("labels") or [] if str(label).strip()]
     body = str(content.get("body") or "").strip()
     if body:
-        parts.append(data(body))
-    return ", ".join(parts) or "(no words)"
+        parts.append(body)
+    return data(_clip_context(", ".join(parts))) if parts else "(no words)"
 
 
 def _question_words(question: dict[str, Any]) -> str:
-    return data((question.get("content") or {}).get("body") or "")
+    """The agent's question, fenced and cut to the context size."""
+    return data(_clip_context((question.get("content") or {}).get("body") or ""))
 
 
 def _options_of(question: dict[str, Any]) -> list[dict[str, Any]]:

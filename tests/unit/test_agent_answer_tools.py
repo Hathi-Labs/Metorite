@@ -285,6 +285,42 @@ async def test_a_question_of_one_option_refuses_two(monkeypatch) -> None:
     assert [c["json"]["selected"] for c in writes(many)] == [["no", "later"]]
 
 
+# ── A long question still gets its card (review P2) ─────────────────────────
+
+
+@pytest.mark.parametrize("act", ACTS, ids=ACT_IDS)
+async def test_a_question_of_20000_characters_still_gets_a_card(act: dict, monkeypatch) -> None:
+    """The question is context: no route writes it. So the card cuts it with an
+    ellipsis, and the card fits. Before, ``card_body`` raised ``CardWontFit``
+    and told the model to shorten the agent's question. Mutation: drop the cut
+    in ``_question_words`` -> no card -> red."""
+    from acb_common.card_body import CARD_CLIP
+
+    long_question = {**_question(), "content": {"body": "Restart the box? " + "x" * 20_000}}
+    calls = _gateway(monkeypatch, question=long_question)
+    asked = approve(monkeypatch)
+    said = await _change(**act)
+    assert len(asked) == 1, said
+    context = asked[0]["context"]
+    assert len(context) <= CARD_CLIP
+    line = next(row for row in context.split("\n") if row.startswith("question: "))
+    assert line.endswith("…»") and len(line) <= guarded.ANSWER_CARD_CONTEXT_MAX + 20
+    assert len(writes(calls)) == 1 and f"full_id: {TASK}" in said
+
+
+async def test_an_old_answer_of_20000_characters_still_gets_a_card(monkeypatch) -> None:
+    """The old answer is context too, on the withdraw and as the "before" of a
+    replace. Mutation: drop the cut in ``_answer_words`` -> no card -> red."""
+    from acb_common.card_body import CARD_CLIP
+
+    _gateway(monkeypatch, answer=_answer([], [], "Wait. " + "y" * 20_000))
+    asked = approve(monkeypatch)
+    await _change(withdraw=True)
+    await _change(option="no")
+    assert len(asked) == 2
+    assert all(len(card["context"]) <= CARD_CLIP and "…»" in card["context"] for card in asked)
+
+
 # ── The refusals before any card ────────────────────────────────────────────
 
 
