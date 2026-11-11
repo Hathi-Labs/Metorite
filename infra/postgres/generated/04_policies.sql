@@ -1656,3 +1656,10 @@ DROP POLICY IF EXISTS email_signature_settings_tenant_isolation ON email_signatu
 CREATE POLICY email_signature_settings_tenant_isolation ON email_signature_settings
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_epic_contracts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_epic_contracts FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_epic_contracts_tenant_isolation ON pm_epic_contracts;
+CREATE POLICY pm_epic_contracts_tenant_isolation ON pm_epic_contracts
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
