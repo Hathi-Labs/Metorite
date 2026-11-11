@@ -76,7 +76,11 @@ export interface ViewProps {
 
 export function HomeLayoutView(p: ViewProps) {
   if (p.read.kind === "loading") {
-    return <Skeleton className="h-72 w-full" aria-busy="true" />;
+    return (
+      <div aria-busy="true">
+        <Skeleton className="h-72 w-full" />
+      </div>
+    );
   }
   if (p.read.kind === "off") {
     return (

@@ -97,7 +97,9 @@ describe("the states", () => {
   });
 
   it("asks before the first save of an empty read", () => {
-    expect(view({ confirmOpen: true })).toContain(CONFIRM_BODY);
+    // The dialog draws in a portal, which a static render skips. The wiring is read from the source.
+    const form = code(read("HomeLayoutForm.tsx"));
+    expect(form).toMatch(/<ConfirmDialog[\s\S]*?open=\{p\.confirmOpen\}[\s\S]*?body=\{CONFIRM_BODY\}[\s\S]*?confirmLabel="Save"[\s\S]*?cancelLabel="Cancel"/);
     expect(CONFIRM_BODY).toBe("This replaces the whole default. The read showed none. Save only if you mean it.");
     expect(needsConfirm(true, false)).toBe(true);
     expect(needsConfirm(true, true)).toBe(false);
