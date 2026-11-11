@@ -29,9 +29,7 @@ import pytest
 pytest.importorskip("gateway.routes.shell", reason="gateway not installed")
 
 from gateway.routes.projects import agent_questions as aq
-from gateway.routes.projects import agent_runs, core
-from gateway.routes.projects import analytics as analytics_mod
-from gateway.routes.projects import filters
+from gateway.routes.projects import agent_runs, filters
 from gateway.routes.shell import feed, feed_rank, needs
 from gateway.routes.shell import prefs as shell_prefs
 
@@ -88,20 +86,27 @@ def world(monkeypatch):
                                 review=review) for r, _h in page]
 
     monkeypatch.setattr(filters, "agent_questions_allowed", lambda org: w.on)
-    monkeypatch.setattr(filters, "agent_runs_enabled", lambda: w.runs)
-    monkeypatch.setattr(core, "_tenant_session", session)
-    monkeypatch.setattr(core, "resolve_visibility", resolve)
-    monkeypatch.setattr(analytics_mod, "scope_clause", scope)
+    monkeypatch.setattr(aq, "agent_runs_enabled", lambda: w.runs)
+    monkeypatch.setattr(aq, "_tenant_session", session)
+    monkeypatch.setattr(aq, "resolve_visibility", resolve)
+    monkeypatch.setattr(aq, "scope_clause", scope)
     monkeypatch.setattr(aq, "read_questions", read)
     monkeypatch.setattr(aq, "question_rows", rows)
     return w
 
 
-def test_the_provider_is_feed_only_ungated_and_belongs_to_projects() -> None:
+def test_the_provider_is_feed_only_gated_and_belongs_to_projects(monkeypatch) -> None:
+    from acb_common import get_settings
+
     p = needs.REGISTRY["agent_questions"]
-    assert p.needs is False and p.gated is False
+    assert p.needs is False and p.gated is True
     assert p.kinds == frozenset({"agent_questions"}) and p.features == ("projects",)
-    assert p not in needs.needs_providers() and p in needs.feed_only_providers()
+    assert p not in needs.needs_providers()
+    # Gated: it runs only while MY_DAY_PROVIDERS lists it (the feed is byte-equal before).
+    monkeypatch.setattr(get_settings(), "my_day_providers", "")
+    assert p not in needs.feed_only_providers()
+    monkeypatch.setattr(get_settings(), "my_day_providers", "agent_questions")
+    assert p in needs.feed_only_providers()
     assert needs.source_app("agent_questions") == "projects"
     # Not a bell row: the bell keeps showing the notification (`ASKING_NOTIFICATIONS`).
     assert "agent_questions" not in needs.KIND_ORDER
@@ -122,9 +127,14 @@ def test_the_reason_arm_of_my_agent_stays_in_the_one_text() -> None:
     """The provider reads the list's own read. It never builds this text alone,
     and the "mine" scope it keeps is this ``why``."""
     assert "AND lower(r.member_email) = :me THEN 'my_agent'" in agent_runs.question_reason_sql("r")
+    # The provider calls the Projects app's own read, and that read calls the
+    # route's `read_questions`. Neither builds this text, or any SQL, alone.
     source = inspect.getsource(feed._agent_questions)
-    assert "read_questions" in source and "question_reason_sql" not in source
+    assert "aq.read_mine(" in source and "question_reason_sql" not in source
     assert "text(" not in source and "SELECT" not in source
+    mine = inspect.getsource(aq.read_mine)
+    assert "read_questions(" in mine and "question_rows(" in mine
+    assert "question_reason_sql" not in mine and "text(" not in mine and "SELECT" not in mine
 
 
 async def test_the_flag_off_reads_absent_and_runs_no_read(world) -> None:
@@ -162,7 +172,7 @@ async def test_the_card_shows_path_question_options_and_the_whole_count(world) -
     [card] = feed.build_cards([signal], NOW, TZ, TODAY)
     assert card["kind"] == "agent_questions" and card["group"] == "needs_you"
     assert card["why_key"] == "agent_questions"
-    assert card["why"] == ("Metorite › AI Studio: Which branch? Options: main, dev. "
+    assert card["why"] == ("Metorite \u203a AI Studio: Which branch? Options: main, dev. "
                            "3 more questions wait.")
     assert [(a["id"], a["way"], a["href"]) for a in card["acts"]] == [
         ("answer", "open", "/projects?app=questions")]
@@ -175,7 +185,7 @@ async def test_one_question_reads_in_the_singular(world) -> None:
     [signal] = (await needs.REGISTRY["agent_questions"].run(_user())).signals()
     assert signal.title == "An agent question waits for you"
     [card] = feed.build_cards([signal], NOW, TZ, TODAY)
-    assert card["why"] == "Metorite › AI Studio: Which branch?"
+    assert card["why"] == "Metorite \u203a AI Studio: Which branch?"
 
 
 async def test_a_new_question_moves_the_fingerprint(world) -> None:
@@ -192,5 +202,5 @@ async def test_a_long_question_and_many_options_are_clipped(world) -> None:
     world.pairs = [_pair(1, body="x" * 400, options=tuple(f"opt{i}" for i in range(9)))]
     [signal] = (await needs.REGISTRY["agent_questions"].run(_user())).signals()
     [fact] = signal.facts["questions"]
-    assert len(fact["question"]) == feed.QUESTION_CLIP and fact["question"].endswith("…")
+    assert len(fact["question"]) == feed.QUESTION_CLIP and fact["question"].endswith("\u2026")
     assert len(fact["options"]) == feed.OPTIONS_SHOWN

@@ -2487,6 +2487,8 @@ The agent paths do not change. The "no person present" 403 (`_refuse_a_marked_pr
 
 **My Day (EA-18c).** A new card kind, `agent_questions`, joins the catalogue of `my_day_feed.md`. A provider in the feed route (`gateway/routes/shell/feed.py`) and a type in `lib/shell/feed.ts` carry it. It reads the "mine" list, the 3 oldest. It shows the project path, the question and the options. An answer runs the same write as the list (D100, D101).
 
+**Built (2026-11-11).** The source is `agent_questions`. It gives ONE card, keyed `questions:mine`, with the 3 oldest questions and the whole "mine" count. It is gated like the other feed-only sources, so `MY_DAY_PROVIDERS` must list it and `AGENT_QUESTIONS_ORGS` must hold the org. The provider calls `agent_questions.read_mine`, which writes no SQL. The one act, "Answer", opens the list in Projects (`?app=questions`), and an answer there runs the same write (D100, D101). The card does not answer in place.
+
 The card gets a row in the old-path table of `my_day_feed.md`, group "Needs you". It gets a weight in `feed_rank.BASE`. A member with no open question sees no card. `lib/shell/AiWaitingCard.tsx` is the chat's card, and it is not this one.
 
 **Approvals (EA-18c).** `src/app/approvals/page.tsx` gains two tabs: "Actions" (the Action Broker queue, unchanged) and "Agent questions". The second tab renders the list component with `scope=mine`. The tab needs no new feature grant. The route reads the Projects visibility of the reader, so a reader sees nothing that they could not open (D87 rule 4).

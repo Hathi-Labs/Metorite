@@ -212,6 +212,29 @@ async def question_rows(
     ]
 
 
+async def read_mine(user: UserContext, limit: int) -> tuple[list[dict[str, Any]], int]:
+    """The oldest *limit* rows of "For me", and the whole "mine" count, for the
+    My Day card (EA-18c). It runs the reads of the route as they are:
+    :func:`read_questions` with the scope of the whole tenant that the reader
+    sees, the "mine" filter (a row with a ``why``), and :func:`question_rows`.
+    It writes no SQL of its own. The caller checks ``agent_questions_allowed``.
+    With ``agent_runs_enabled`` off, the list is empty, as for the route.
+    """
+    mine: list[tuple[Any, Any]] = []
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        scope_sql = await scope_clause(db, vis, None, True)
+        if agent_runs_enabled():
+            every = await read_questions(
+                db, vis, _member(user), scope_sql, scope_params(None),
+            )
+            mine = [pair for pair in every if pair[0].why is not None]
+        rows = await question_rows(
+            db, vis, mine[:limit], review=holds_answer_role(user),
+        )
+    return rows, len(mine)
+
+
 @router.get("/agent-questions", dependencies=[Depends(require_agent_questions)])
 async def list_agent_questions(
     scope: Literal["mine", "everyone"] = "mine",
@@ -267,6 +290,7 @@ __all__ = [
     "question_row",
     "question_rows",
     "questions_sql",
+    "read_mine",
     "read_questions",
     "require_agent_questions",
 ]
