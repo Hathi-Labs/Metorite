@@ -451,6 +451,11 @@ _SQL_NAMES = frozenset({
     "_UUID_FORM",
     # C7b: the constant column of the written children that a money roll-up counts.
     "_ROLLUP_MINE",
+    # C2b: the order of the records (a constant or ""), the constant join of the hot
+    # row of a group, a key from a constant map, and the SQL that `build_aggregate`
+    # builds from these and from the index `j`.
+    "order", "_GROUP_ROW", "key", "cands", "joins", "cols", "sums", "totals", "keep",
+    "rest", "cur", "ranks", "kept", "folded",
 })
 
 
@@ -471,7 +476,8 @@ def test_no_fstring_in_the_query_sql_takes_a_value() -> None:
                                       "_q_cold", "_q_lookup", "_q_where", "_q_source",
                                       "_q_filtered", "_q_count", "_q_head", "_q_sorted_ids",
                                       "_q_small_ids", "build_query", "build_count",
-                                      "build_group_sum"}
+                                      "build_group_sum", "_q_agg_key", "_q_agg_value",
+                                      "_q_agg_currency", "build_aggregate"}
     bad: list[str] = []
     for func in funcs:
         for node in ast.walk(func):
@@ -553,3 +559,289 @@ def test_a_relation_filter_builds_a_hot_text_match_and_binds_the_id() -> None:
         query.conditions, object_id=_PARENT, package_id=_PARENT, cap=2)
     assert "v_text" in sql and _PARENT not in sql
     assert _PARENT in params.values()
+
+
+# ── The aggregate (C2b) ─────────────────────────────────────────────────────
+#
+# `test_studio_query_r8.py` lists the mutations A1 to A6 (R7). A5 turns
+# `test_a_money_sum_needs_one_currency` red here too. The mutation A7 is
+# hermetic: in `objects_store.build_aggregate`, pass `ordered=True` to
+# `_q_filtered`. `test_an_aggregate_reads_the_records_in_no_order_and_a_page_in_id_order`
+# goes red.
+
+_QTY = sf.parse_field_spec({"key": "qty", "type": "number"})
+AGG_FIELDS = [*FIELDS, _REL, _QTY]
+_SUMS = [{"op": "count"}, {"op": "sum", "field": "hours"}, {"op": "average", "field": "hours"}]
+
+
+def _agg(filter: Any = None, group_by: Any = None, measures: Any = None) -> sq.Aggregate:
+    return sq.parse_aggregate(AGG_FIELDS, filter, group_by, measures)
+
+
+def _agg_refused(code: str, filter: Any = None, group_by: Any = None,
+                 measures: Any = None) -> QueryError:
+    with pytest.raises(QueryError) as refused:
+        _agg(filter, group_by, measures)
+    assert refused.value.code == code, (refused.value.code, refused.value.message)
+    return refused.value
+
+
+def test_the_aggregate_caps_and_tables() -> None:
+    assert (sq.MAX_GROUPS, sq.MAX_MEASURES) == (50, 4)
+    assert sq.MEASURE_OPS == ("count", "sum", "average") and sq.BUCKETS == ("day", "month")
+    assert set(sq.OPS_BY_TYPE) - {"money"} == sq.GROUP_TYPES
+    assert dict(sq.MEASURE_TYPES) == {"sum": {"number", "money"}, "average": {"number"}}
+
+
+def test_an_aggregate_parses_its_filter_group_and_measures() -> None:
+    plain = _agg()
+    assert (plain.conditions, plain.group, plain.measures) == ((), None, (sq.Measure("count"),))
+    agg = _agg([{"field": "status", "op": "eq", "value": "open"}], {"field": "day"}, _SUMS)
+    assert agg.group == sq.GroupBy(BY_KEY["day"], "day"), "a date takes `day` when it names none"
+    assert [m.op for m in agg.measures] == ["count", "sum", "average"]
+    assert agg.measure_fields() == (BY_KEY["hours"],), "one read of a field for two measures"
+    assert agg.hot_keys() == ("day", "hours", "status")
+    month = _agg(group_by={"field": "at", "bucket": "month"})
+    assert month.group == sq.GroupBy(BY_KEY["at"], "month")
+    assert _agg(group_by={"field": "account"}).group == sq.GroupBy(_REL)
+    assert _agg(measures=[{"op": "sum", "field": "fee"}]).measures == (
+        sq.Measure("sum", BY_KEY["fee"]),)
+
+
+@pytest.mark.parametrize(("group_by", "measures", "code", "field"), [
+    ({"field": "note"}, None, "query_not_indexed", "note"),
+    ({"field": "fee"}, None, "query_op_not_allowed", "fee"),
+    ({"field": "body"}, None, "query_op_not_allowed", "body"),
+    ({"field": "tags"}, None, "query_op_not_allowed", "tags"),
+    ({"field": "owner"}, None, "query_op_not_allowed", "owner"),
+    ({"field": "nope"}, None, "query_field_unknown", "nope"),
+    ({"field": "name", "bucket": "day"}, None, "query_value_invalid", "name"),
+    ({"field": "day", "bucket": "week"}, None, "query_value_invalid", "day"),
+    ("status", None, "query_value_invalid", None),
+    ({"field": "status", "dir": "asc"}, None, "query_value_invalid", None),
+    ({}, None, "query_value_invalid", None),
+    (None, [{"op": "sum", "field": "name"}], "query_op_not_allowed", "name"),
+    (None, [{"op": "sum", "field": "paid"}], "query_op_not_allowed", "paid"),
+    (None, [{"op": "average", "field": "fee"}], "query_op_not_allowed", "fee"),
+    (None, [{"op": "sum", "field": "qty"}], "query_not_indexed", "qty"),
+    (None, [{"op": "average", "field": "qty"}], "query_not_indexed", "qty"),
+    (None, [{"op": "sum", "field": "nope"}], "query_field_unknown", "nope"),
+    (None, [{"op": "median", "field": "hours"}], "query_op_not_allowed", None),
+    (None, [{"op": "count", "field": "hours"}], "query_value_invalid", None),
+    (None, [{"op": "sum"}], "query_value_invalid", None),
+    (None, [], "query_value_invalid", None),
+    (None, "count", "query_value_invalid", None),
+    (None, [["count"]], "query_value_invalid", None),
+    (None, [{"op": "sum", "field": "hours", "x": 1}], "query_value_invalid", None),
+    (None, [{"op": "sum", "field": "hours"}] * 2, "query_value_invalid", None),
+    (None, [{"op": "count"}] * 5, "query_too_big", None),
+])
+def test_a_bad_group_or_measure_is_refused(group_by: Any, measures: Any, code: str,
+                                           field: str | None) -> None:
+    err = _agg_refused(code, None, group_by, measures)
+    assert err.field == field
+    if field is not None:
+        assert f"`{field}`" in err.message
+
+
+@pytest.mark.parametrize(("group_by", "measures", "code"), [
+    ("status", None, "query_value_invalid"),
+    ({"field": "status", "dir": "asc"}, None, "query_value_invalid"),
+    ({"field": "day", "bucket": "week"}, None, "query_value_invalid"),
+    (None, [{"op": "median", "field": "hours"}], "query_op_not_allowed"),
+    (None, [{"op": "count", "field": "hours"}], "query_value_invalid"),
+    (None, [], "query_value_invalid"),
+    (None, [{"op": "sum", "field": "hours"}] * 2, "query_value_invalid"),
+    (None, [{"op": "count"}] * 5, "query_too_big"),
+])
+def test_the_shape_check_of_an_aggregate_needs_no_fields(group_by: Any, measures: Any,
+                                                         code: str) -> None:
+    """A route can run it before it opens a session."""
+    with pytest.raises(QueryError) as refused:
+        sq.check_aggregate_shape(None, group_by, measures)
+    assert refused.value.code == code
+
+
+def test_four_measures_pass_and_the_filter_keeps_its_grammar() -> None:
+    four = [{"op": "count"}, {"op": "sum", "field": "hours"}, {"op": "average", "field": "hours"},
+            {"op": "sum", "field": "fee"}]
+    assert len(_agg(measures=four).measures) == 4
+    _agg_refused("query_op_not_allowed", [{"field": "name", "op": "lt", "value": "x"}])
+    _agg_refused("query_too_big", [{"field": "hours", "op": "eq", "value": 1}] * 9)
+
+
+@pytest.mark.parametrize("key", ["x'; DROP TABLE studio_records; --", "%", "Name", 7, None])
+def test_a_hostile_group_or_measure_key_is_unknown_and_never_echoed(key: Any) -> None:
+    for group_by, measures in (({"field": key}, None), (None, [{"op": "sum", "field": key}])):
+        err = _agg_refused("query_field_unknown", None, group_by, measures)
+        if isinstance(key, str):
+            assert key not in err.message
+        assert err.field == "?"
+
+
+def test_the_aggregate_input_schema_holds_the_caps() -> None:
+    schema = sq.aggregate_input_schema()
+    props = schema["properties"]
+    assert set(props) == {"filter", "group_by", "measures"}
+    assert props["filter"] == sq.list_input_schema()["properties"]["filter"]
+    assert props["measures"]["maxItems"] == sq.MAX_MEASURES
+    assert props["measures"]["items"]["properties"]["op"]["enum"] == list(sq.MEASURE_OPS)
+    assert props["group_by"]["anyOf"][0]["properties"]["bucket"]["enum"] == list(sq.BUCKETS)
+    schema["properties"].clear()
+    assert sq.aggregate_input_schema()["properties"], "each call gives a new copy"
+
+
+def test_the_list_door_takes_no_aggregate_key() -> None:
+    """No door reads the aggregate yet (C2b is dark), so the list input is
+    unchanged."""
+    assert set(sq.list_input_schema()["properties"]) == {"filter", "sort", "limit", "offset"}
+
+
+def _agg_sql(filter: Any = None, group_by: Any = None, measures: Any = None) -> tuple[str, dict[str, Any]]:
+    return store.build_aggregate(_agg(filter, group_by, measures), object_id="o", package_id="p")
+
+
+_FEE = [{"op": "count"}, {"op": "sum", "field": "fee"}, {"op": "sum", "field": "hours"}]
+
+
+@pytest.mark.parametrize(("filter", "group_by", "measures"), [
+    (None, None, None),
+    (_HOT_MIX, {"field": "status"}, _SUMS),
+    (_MIX, {"field": "name"}, _FEE),
+    (None, {"field": "at", "bucket": "month"}, _FEE),
+])
+def test_each_alias_of_an_aggregate_names_the_org_the_object_and_the_package(
+        filter: Any, group_by: Any, measures: Any) -> None:
+    sql, _ = _agg_sql(filter, group_by, measures)
+    aliases = set(_ALIAS.findall(sql))
+    assert aliases
+    for alias in aliases:
+        assert f"{alias}.{_ORG}" in sql, alias
+        assert f"{alias}.object_id = CAST(:oid AS uuid)" in sql, alias
+    assert "o.package_id = CAST(:pid AS uuid)" in sql
+
+
+def test_one_statement_reads_the_groups_the_total_and_the_currency() -> None:
+    sql, params = _agg_sql(None, {"field": "status"}, _FEE)
+    assert sql.startswith("WITH v AS (") and sql.count("SELECT v.n, ") == 1
+    assert "data -> CAST(:mk0 AS text) ->> 'currency'" in sql
+    assert "min(x.q0) AS lo0, max(x.q0) AS hi0" in sql and "q1" not in sql
+    assert "r.rk <= :groups" in sql and "r.rk > :groups HAVING count(*) > 0" in sql
+    assert "ORDER BY a.n DESC, a.k ASC NULLS LAST" in sql
+    assert params["groups"] == 50 and (params["gk"], params["mk0"], params["mk1"]) == (
+        "status", "fee", "hours")
+    assert params["hk"] == ["fee", "hours", "status"]
+    plain, params = _agg_sql()
+    assert "gk" not in params and "CAST(NULL AS text) AS k" in plain and " p AS " not in plain
+
+
+def test_an_aggregate_reads_the_records_in_no_order_and_a_page_in_id_order() -> None:
+    """With no LIMIT, the order of the id made the planner sort the object."""
+    agg, _ = _agg_sql()
+    assert "WHERE r0." in agg and "ORDER BY r0.id" not in agg
+    page, _ = _sql()
+    assert "ORDER BY r0.id" in page
+
+
+def test_a_day_and_a_month_are_buckets_in_utc() -> None:
+    day, _ = _agg_sql(None, {"field": "day"})
+    assert "date_trunc('day', gk.v_ts AT TIME ZONE 'UTC') AS k" in day
+    month, _ = _agg_sql(None, {"field": "at", "bucket": "month"})
+    assert "date_trunc('month', gk.v_ts AT TIME ZONE 'UTC') AS k" in month
+
+
+def test_a_long_text_key_reads_data_and_a_checkbox_key_has_two_states() -> None:
+    text_sql, _ = _agg_sql(None, {"field": "name"})
+    assert ("CASE WHEN gk.v_text IS NULL OR char_length(gk.v_text) < 256 THEN gk.v_text "
+            "ELSE (SELECT gr.data ->> CAST(:gk AS text) FROM studio_records gr") in text_sql
+    box, _ = _agg_sql(None, {"field": "paid"})
+    assert "coalesce(gk.v_bool, false) AS k" in box
+
+
+def test_a_cold_filter_keeps_its_guard_in_the_aggregate() -> None:
+    sql, params = _agg_sql([{"field": "note", "op": "eq", "value": "kit"}], {"field": "status"})
+    assert sql.startswith("WITH g AS (SELECT count(*) AS n FROM (SELECT 1 FROM ")
+    assert "WHERE (SELECT g.n FROM g) <= CAST(:small AS bigint) AND " in sql
+    assert "FROM m c LEFT JOIN LATERAL" in sql and "SELECT v.n, (SELECT g.n FROM g), " in sql
+    assert params["small"] == 5_000
+
+
+def _keyed_agg(key: str, kind: str) -> tuple[str, dict[str, Any]]:
+    """An aggregate that groups by the field *key* of type *kind*, or sums it.
+    The key goes in by hand, as if a key of another shape got past the CHECK."""
+    field = sf.FieldSpec(key=key, type=kind, hot=True)
+    group = None if kind == "money" else sq.GroupBy(field, "day" if kind == "date" else None)
+    measures = (sq.Measure("sum", field),) if kind in ("number", "money") else (sq.Measure("count"),)
+    return store.build_aggregate(sq.Aggregate((), group, measures), object_id="o", package_id="p")
+
+
+def test_a_hostile_key_never_reaches_the_aggregate_sql() -> None:
+    """The SQL of a hostile group or measure key equals the SQL of a plain
+    one. Each key is a bind."""
+    for bad in _HOSTILE:
+        for kind in ("text", "number", "date", "checkbox", "money"):
+            plain, _ = _keyed_agg("k", kind)
+            sql, params = _keyed_agg(bad, kind)
+            assert sql == plain, (kind, bad)
+            assert bad in params.values()
+
+
+def test_a_money_sum_needs_one_currency() -> None:
+    fee = BY_KEY["fee"]
+    assert store._one_currency(fee, None, None) is None
+    assert store._one_currency(fee, "INR", "INR") == "INR"
+    for low, high in (("INR", "USD"), ("", "INR"), ("", "")):
+        with pytest.raises(QueryError) as refused:
+            store._one_currency(fee, low, high)
+        err = refused.value
+        assert (err.code, err.field) == ("query_op_not_allowed", "fee")
+        assert "`fee`" in err.message and "INR" not in err.message and "USD" not in err.message
+
+
+def _row(*cells: Any) -> tuple[Any, ...]:
+    return cells
+
+
+def test_the_result_keeps_the_option_order_and_folds_the_rest() -> None:
+    """The rows of a group by `status`, with a count and a sum and an average of
+    `hours`. `w` names 53 groups, so 3 fold into `other`."""
+    agg = _agg(None, {"field": "status"}, _SUMS)
+    head = (2, None, 53, 10, Decimal(30), 6)
+    rows = [
+        _row(*head, 0, 1, "done", 4, Decimal(8), 2),
+        _row(*head, 0, 2, None, 3, None, 0),
+        _row(*head, 0, 3, "open", 2, Decimal(12), 2),
+        _row(*head, 1, None, None, 1, Decimal(10), 2),
+    ]
+    result = store._aggregate_result(agg, rows)
+    assert [(g.key, g.count, g.values) for g in result.groups] == [
+        ("open", 2, (2, Decimal(12), Decimal(6))),
+        ("done", 4, (4, Decimal(8), Decimal(4))),
+        (None, 3, (3, Decimal(0), None)),
+    ]
+    assert result.other == store.AggregateGroup(None, 1, (1, Decimal(10), Decimal(5)))
+    assert result.folded == 3
+    assert result.total == store.AggregateGroup(None, 10, (10, Decimal(30), Decimal(5)))
+    assert result.currencies == (None, None, None)
+
+
+def test_the_result_of_no_record_is_one_empty_total() -> None:
+    agg = _agg(None, {"field": "day", "bucket": "month"}, _SUMS)
+    result = store._aggregate_result(agg, [(1, None, 0, 0, None, 0, None, None, None, None, None,
+                                            None)])
+    assert (result.groups, result.other, result.folded) == ((), None, 0)
+    assert result.total == store.AggregateGroup(None, 0, (0, Decimal(0), None))
+
+
+def test_a_key_comes_back_in_one_form() -> None:
+    day = sq.GroupBy(BY_KEY["day"], "day")
+    month = sq.GroupBy(BY_KEY["at"], "month")
+    stamp = datetime(2026, 1, 31, 0, 0)
+    assert store._group_key(day, stamp) == "2026-01-31"
+    assert store._group_key(month, stamp) == "2026-01"
+    hours = sq.GroupBy(BY_KEY["hours"])
+    assert str(store._group_key(hours, Decimal("5.0"))) == "5"
+    assert str(store._group_key(hours, Decimal("5.50"))) == "5.5"
+    assert str(store._group_key(hours, Decimal("100"))) == "100"
+    assert store._group_key(sq.GroupBy(BY_KEY["paid"]), True) is True
+    assert store._group_key(hours, None) is None
