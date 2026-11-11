@@ -1,11 +1,11 @@
 -- ============================================================================
--- 411_apps_slug_per_org.sql - one slug per organization for an app. The
+-- 414_apps_slug_per_org.sql - one slug per organization for an app. The
 -- EXPAND half of an expand/contract change (WS-STU A3b-1, Metorite task 1310).
 -- ============================================================================
 -- Spec: project-docs/specs/ai_studio.md §14 rows A3b-1 and A3b-2 · R1 · R5 ·
 -- R6 · R8.
 -- R1: origin/main held 404 as its highest file on 2026-11-11. Open branches
--- hold 405, 406, 407, 408 and 410. So this file is 411. Check the number
+-- hold 405, 406, 408, 411 and 413. So this file is 414. Check the number
 -- again at merge (scripts/premerge.sh).
 --
 -- What: (1) `apps.organization_id` on the NUMBERED ladder, only where it is
