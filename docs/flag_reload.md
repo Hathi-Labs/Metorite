@@ -41,6 +41,13 @@ numbers in each write tool. Set both units to the same value. Then restart
 `acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
 (`enforcement-flip`).
 
+`PACKAGE_HOST_ORGS` opens `GET /shell/manifest` (`package_host.md` §10). It
+also selects the orgs where the daily expiry tick may delete installs
+(PKG-10b). A reload that widens it to `*` widens the delete to every org at
+the next tick. The owner must treat a change of this list as part of the
+expiry decision. `PACKAGE_EXPIRY_ENABLED` does not reload. Only a restart
+changes it.
+
 A reload does NOT apply any other key. The log names each one under
 `restart`. That includes:
 

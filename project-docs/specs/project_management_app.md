@@ -9754,7 +9754,7 @@ The apply is quiet, as the file import is (§6.10 of `project_import.md`). It em
 
 ### 14.9 Teams (epic E7, task 2530, replan 2026-11-09)
 
-Proposed, owner review in this pull request. A team is a group (`group:<slug>`, D12). There is no team object (D87, D49). A member sees two words: Team and Space.
+Decided 2026-11-10: the owner approved this on task 2531 (scope value, flag `TEAMS_ORGS`, and who is a team). PX-2 (task 967) is folded in as T-2. A team is a group (`group:<slug>`, D12). There is no team object (D87, D49). A member sees two words: Team and Space.
 
 1. **One team has many spaces.** A grant of a space to a group in `pm_project_grants` makes the space part of that team's view.
 2. **A space shared with no team of the member is hidden from that team's view.**
