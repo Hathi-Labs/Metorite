@@ -8814,25 +8814,64 @@ async def set_sender_status(
 
 # ── Reply Zero ───────────────────────────────────────────────────────────────
 
-@_annotate_risk(open_world=False)
-async def mark_thread_done(
-    account_id: str, thread_id: str, done: bool = True
-) -> str:
-    """Mark a Reply-Zero thread done (handled) or reopen it (done=false).
-    It shows the user a card first."""
-    # Fix round 1 (P2-b): the card names the thread, so read it first. The
-    # list read changes no read state.
+async def _thread_of_email(email_id: str) -> tuple[str, str]:
+    """The thread id and the mailbox of one email, or two empty strings.
+
+    The email decides the thread and the mailbox, as in ``read_thread``
+    (EM-T8e-2). The gateway answers only an email that the member may read.
+    """
     try:
-        rows = (await _get("/email/messages", {
+        head = await _get(f"/email/messages/{email_id}") or {}
+    except Exception:
+        return "", ""
+    return (str(head.get("thread_id") or "").strip(),
+            str(head.get("account_id") or "").strip())
+
+
+async def _thread_rows(account_id: str, thread_id: str) -> list[dict[str, Any]]:
+    """One email of the thread in the mailbox, so the card can name it. The
+    list read changes no read state (fix round 1, P2-b)."""
+    try:
+        return (await _get("/email/messages", {
             "thread_id": thread_id, "account_id": account_id, "page_size": "1",
         })).get("emails", [])
-    except Exception:  # the card then names the id
-        rows = []
+    except Exception:
+        return []
+
+
+@_annotate_risk(open_world=False)
+async def mark_thread_done(
+    account_id: str, thread_id: str = "", done: bool = True, email_id: str = "",
+) -> str:
+    """Mark a Reply-Zero thread done (handled) or reopen it (done=false).
+    Give the email_id that find_priority, query_inbox, read_email or
+    read_thread showed: the email decides its thread and its mailbox. A
+    thread_id works too. It shows the user a card first."""
+    tid = (thread_id or "").strip()
+    acct = (account_id or "").strip()
+    eid = (email_id or "").strip()
+    if eid:
+        tid, box = await _thread_of_email(eid)
+        acct = box or acct
+    if not tid:
+        return ("Nothing changed. Give the email_id of an email in the thread, "
+                "as find_priority or query_inbox shows it.")
+    rows = await _thread_rows(acct, tid)
+    if not rows and not eid:
+        # Task 2873 (2026-11-11): every read tool shows EMAIL ids, so the chat
+        # passed one as the thread id, twice, and the member was sent to the
+        # Email app. A thread id that names no thread is tried once as an email.
+        as_thread, box = await _thread_of_email(tid)
+        if as_thread:
+            tid, acct = as_thread, box or acct
+            rows = await _thread_rows(acct, tid)
     if not rows:
         return (
-            f"Nothing changed. No email of {await _named(account_id)} is in the "
-            f"thread {thread_id}. Read the thread id again with find_priority."
+            f"Nothing changed. No email of {await _named(acct)} is in that "
+            f"thread. Call mark_thread_done again with the email_id that "
+            f"find_priority or query_inbox shows for the email."
         )
+    account_id, thread_id = acct, tid
     subject = _card_text(rows[0].get("subject") or "(no subject)", 120)
     box = await _named(account_id)
     refusal = await _card_refusal(

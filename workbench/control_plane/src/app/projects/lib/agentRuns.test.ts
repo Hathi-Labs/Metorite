@@ -36,6 +36,10 @@ import { AgentPill } from "../components/AgentPill";
 import {
   AGENT_STATE_VALUES,
   ARCHIVE_CARD_TITLE,
+  ARE_YOU_SURE,
+  confirmLabels,
+  hasConfirmOption,
+  replacePayload,
   CLIENT_LABELS,
   activityAttribution,
   githubMergeReason,
@@ -635,5 +639,51 @@ describe("SW-43 the id to withdraw", () => {
     expect(
       withdrawTarget({ answer: { id: "local:k", seq: 1, changeable: true } } as AgentRun),
     ).toBeNull();
+  });
+});
+
+describe("SW-43b confirm and replace", () => {
+  const COSTLY: AgentActivity = {
+    ...ELICIT,
+    id: "a9",
+    signal_metadata: {
+      options: [
+        { id: "go", label: "Restart it now", confirm: true },
+        { id: "no", label: "Not now" },
+      ],
+      allow_multiple: false,
+    },
+  };
+
+  it("asks only for an option that carries confirm", () => {
+    // Mutation: ignore `confirm` and a costly option goes out with no second step.
+    expect(confirmLabels(COSTLY, { Question: { selected: ["Restart it now"] } })).toEqual([
+      "Restart it now",
+    ]);
+    expect(confirmLabels(COSTLY, { Question: { selected: ["Not now"] } })).toEqual([]);
+    expect(ARE_YOU_SURE).toBe("Are you sure?");
+  });
+
+  it("builds the replace body from labels, with the key", () => {
+    expect(replacePayload("p9", COSTLY, { Question: { selected: ["Not now"] } }, "k1")).toEqual({
+      answer_id: "p9",
+      selected: ["no"],
+      idempotency_key: "k1",
+    });
+  });
+
+  it("sends a typed answer with no option, and nothing when both are empty", () => {
+    expect(replacePayload("p9", COSTLY, { Question: { freeform: "hi" } }, "k1")).toEqual({
+      answer_id: "p9",
+      body: "hi",
+      idempotency_key: "k1",
+    });
+    expect(replacePayload("p9", COSTLY, { Question: {} }, "k1")).toBeNull();
+  });
+
+  it("finds a costly option on the question", () => {
+    expect(hasConfirmOption(COSTLY)).toBe(true);
+    expect(hasConfirmOption(ELICIT)).toBe(false);
+    expect(hasConfirmOption(null)).toBe(false);
   });
 });

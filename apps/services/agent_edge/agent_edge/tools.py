@@ -1249,6 +1249,11 @@ class Tool:
     #: 3 and 4 of ``test_mcp_edge_coverage.py`` do not read them, and
     #: ``tests/unit/test_mcp_edge_app_door.py`` holds them.
     app_scope: str = ""
+    #: PB-3a (D186). True for ``read_playbook``. It reads the playbook package
+    #: and no gateway route, so it has no fixed route and the rules 3 and 4 of
+    #: ``test_mcp_edge_coverage.py`` do not read it. It shows only for an
+    #: organization on ``playbook_orgs`` (:func:`offered`).
+    playbook: bool = False
     #: WS-MCP SW-23. True for ``report_check``. It shows only while
     #: ``agent_task_checks_enabled`` is on, read through
     #: ``agent_oauth.task_checks_enabled``.
@@ -1874,6 +1879,10 @@ BOARD_STATS = Tool(
 
 PLAN_ROUTE = "/projects/plan/analysis"
 
+#: The reasons a slice is not ready, as the engine words them (PJP-6).
+_PLAN_NOT_READY_REASONS = frozenset(
+    {"open blocker", "no owner", "no estimate", "no done-when"})
+
 _ID_SCHEMA: dict[str, Any] = {"type": "string", "pattern": _UUID_PATTERN}
 _ID_LIST: dict[str, Any] = {"type": "array", "items": _ID_SCHEMA}
 
@@ -1935,6 +1944,30 @@ _GET_PLAN_OUTPUT: dict[str, Any] = {
             "additionalProperties": False,
         },
         "not_enough": {"type": ["string", "null"]},
+        "gaps": {
+            "type": "object",
+            "properties": {
+                "no_owner": _ID_LIST,
+                "no_estimate": _ID_LIST,
+                "too_big": _ID_LIST,
+                "no_done_when": _ID_LIST,
+                "words": {"type": "array", "items": {"type": "string"}},
+            },
+            "additionalProperties": False,
+        },
+        "not_ready": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "task_id": _ID_SCHEMA,
+                    "reasons": {"type": "array",
+                                "items": {"type": "string", "enum": sorted(_PLAN_NOT_READY_REASONS)}},
+                },
+                "required": ["task_id", "reasons"],
+                "additionalProperties": False,
+            },
+        },
         "ignored_links": {
             "type": "array",
             "items": {
@@ -1995,6 +2028,8 @@ async def _get_plan(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     words = missing.get("words")
     waves = body.get("waves")
     labels = body.get("labels")
+    gaps = body.get("gaps") if isinstance(body.get("gaps"), dict) else {}
+    gap_words = gaps.get("words")
     return {
         "root_task_id": body["root_task_id"],
         "slices": _int(body.get("slices")),
@@ -2024,6 +2059,21 @@ async def _get_plan(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         },
         "not_enough": (body["not_enough"]
                        if isinstance(body.get("not_enough"), str) else None),
+        "gaps": {
+            "no_owner": _ids(gaps.get("no_owner")),
+            "no_estimate": _ids(gaps.get("no_estimate")),
+            "too_big": _ids(gaps.get("too_big")),
+            "no_done_when": _ids(gaps.get("no_done_when")),
+            "words": ([w for w in gap_words if isinstance(w, str)]
+                      if isinstance(gap_words, list) else []),
+        },
+        "not_ready": [
+            {"task_id": row["task_id"],
+             "reasons": [r for r in (row.get("reasons") if isinstance(row.get("reasons"), list) else [])
+                         if r in _PLAN_NOT_READY_REASONS]}
+            for row in _dicts(body.get("not_ready"))
+            if _id(row.get("task_id")) is not None
+        ],
         "ignored_links": [
             {"blocker": row["blocker"], "blocked": row["blocked"], "reason": row["reason"]}
             for row in _dicts(body.get("ignored_links"))
@@ -2054,7 +2104,10 @@ GET_PLAN = Tool(
         " start. held holds the slices that wait on an open blocker outside the"
         " tree, and outside_blockers names those blockers. hidden counts the"
         " slices and blockers that this member cannot see, and never names them."
-        " cycle lists a loop of links, and then no path is given. labels gives"
+        " gaps lists the open slices with no owner, no estimate, no done-when or an"
+        " estimate over 10 working days. not_ready lists the slices that are not"
+        " ready to start, each with its reasons. cycle lists a loop of links,"
+        " and then no path is given. labels gives"
         " the number and title of the tasks that the answer names." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
@@ -2814,6 +2867,7 @@ _OPTION_ID_SCHEMA: dict[str, Any] = {"anyOf": [{"type": "string"}, _UNTRUSTED_SC
 _OPTION_SCHEMA = _object({
     "id": _OPTION_ID_SCHEMA, "label": _UNTRUSTED_SCHEMA,
     "description": _UNTRUSTED_OR_NULL, "recommended": {"type": "boolean"},
+    "confirm": {"type": "boolean"},
 })
 _OPTIONS_OR_NULL: dict[str, Any] = {"anyOf": [
     {"type": "array", "items": _OPTION_SCHEMA}, {"type": "null"}]}
@@ -2894,6 +2948,7 @@ def _option(raw: Any) -> dict[str, Any] | None:
         "label": untrusted(raw.get("label") or ""),
         "description": untrusted(description) if isinstance(description, str) else None,
         "recommended": _bool(raw.get("recommended")),
+        "confirm": _bool(raw.get("confirm")),
     }
 
 
@@ -3986,6 +4041,111 @@ PROTOCOL_LINES: tuple[str, ...] = (
     "End each turn with one result: review or done, a question, or release_task.",
     "Hand off with evidence: what is done, what is left, and the proof.",
 )
+#: PB-4 (D186, orchestration_playbook.md §5, §7). The tips of the results of
+#: ``claim_task`` and ``my_work``: at most :data:`TIPS_MAX` short lines of fixed
+#: server text, each naming one playbook topic. A tip shows once for each run.
+#: They are apart from the protocol block, which holds the safety lines. They
+#: show only while the runs flag is on and the organization is on
+#: ``playbook_orgs``, the flag of the playbook content. The edge keeps no state
+#: of its own, so "once" is one ``SET NX`` key in the tenant Redis wrapper for
+#: each connection, run and tip. That is a hint, not an authority: a lost key
+#: only shows a tip again, and a store outage shows none. Fence:
+#: ``test_mcp_edge_context.py`` ``TestTheTips``.
+TIPS_KEY = "tips"
+TIPS_MAX = 2
+TIP_LINE_MAX = 120
+TIPS_NAMESPACE = "agent_tips"
+#: A key lives three days, longer than a run holds a task.
+TIPS_TTL_S = 3 * 24 * 60 * 60
+#: A task with a description shorter than this has no brief yet. SW-70 gives the
+#: task a real brief, and this test then reads it.
+TIP_BRIEF_MIN_CHARS = 40
+
+
+@dataclass(frozen=True)
+class Tip:
+    id: str
+    tool: str
+    topic: str
+    text: str
+
+
+#: The rule table. Each row names the tool, and :func:`_tip_applies` holds the
+#: context test. Order is the order of preference when two apply.
+TIP_RULES: tuple[Tip, ...] = (
+    Tip("brief", "claim_task", "brief-contract",
+        "This task has little text. Write its brief first: read_playbook topic brief-contract."),
+    Tip("stalled", "my_work", "failures",
+        "A run of yours went quiet. Name its cause: read_playbook topic failures."),
+)
+
+_TIP_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"id": {"type": "string"}, "topic": {"type": "string"},
+                   "text": {"type": "string", "maxLength": TIP_LINE_MAX}},
+    "required": ["id", "topic", "text"],
+    "additionalProperties": False,
+}
+_TIPS_SCHEMA: dict[str, Any] = {"type": "array", "maxItems": TIPS_MAX, "items": _TIP_SCHEMA}
+
+
+def _description_chars(task: Any) -> int:
+    """The length of the description of a task of a result, 0 for none."""
+    found = task.get("description") if isinstance(task, dict) else None
+    text = found.get("untrusted_text") if isinstance(found, dict) else None
+    return len(text.strip()) if isinstance(text, str) else 0
+
+
+def _tip_applies(tip: Tip, result: Mapping[str, Any]) -> bool:
+    if tip.id == "brief":
+        return _description_chars(result.get("task")) < TIP_BRIEF_MIN_CHARS
+    if tip.id == "stalled":
+        rows = result.get("rows")
+        return isinstance(rows, list) and any(
+            isinstance(r, dict) and r.get("reason") == REASON_HELD for r in rows)
+    return False
+
+
+async def _tip_unseen(ctx: Context, scope: str, tip: Tip) -> bool:
+    """True the first time this connection sees *tip* for *scope* (a run id, or
+    the session). A store failure reads as seen: no tip, no error."""
+    lookup = ctx.caller.lookup
+    # A claim that landed is never reported as busy (EA-6d): the read takes the
+    # post-write budget when it is smaller than 2 seconds, and no time means no tip.
+    limit = min(2.0, _post_write_budget())
+    if limit <= 0:
+        return False
+    try:
+        async with asyncio.timeout(limit):
+            return await idempotency.first_time(
+                lookup, TIPS_NAMESPACE, (scope, tip.id), ttl_s=TIPS_TTL_S)
+    except Exception as exc:
+        _log.warning("agent_edge.tips_unavailable", tip=tip.id, error=type(exc).__name__,
+                     connection_id=lookup.connection_id)
+        return False
+
+
+async def _tips(ctx: Context, tool: str, result: Mapping[str, Any],
+                run_id: str | None) -> list[dict[str, str]] | None:
+    """The tips of one result, or ``None``: the key is then left out.
+
+    ``None`` while the runs flag is off, the organization of the token row is not
+    on ``playbook_orgs``, no rule applies, or every applying tip was shown for
+    this run. *run_id* is the run of the claim. ``my_work`` has no single run, so
+    its tips show once for each MCP session, or for the connection."""
+    if not (agent_oauth.runs_enabled()
+            and agent_oauth.playbook_allowed(ctx.caller.lookup.organization_id)):
+        return None
+    scope = run_id or ctx.session or "connection"
+    shown: list[dict[str, str]] = []
+    for tip in TIP_RULES:
+        if len(shown) >= TIPS_MAX:
+            break
+        if tip.tool == tool and _tip_applies(tip, result) and await _tip_unseen(ctx, scope, tip):
+            shown.append({"id": tip.id, "topic": tip.topic, "text": tip.text})
+    return shown or None
+
+
 _PROTOCOL_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -4903,6 +5063,7 @@ _MY_WORK_ROW_SCHEMA = _optional(_MY_WORK_ROW_SCHEMA, CHECK_KEY, _CHECK_ROW_SCHEM
 _MY_WORK_OUTPUT: dict[str, Any] = _optional(_object({
     "rows": {"type": "array", "items": _MY_WORK_ROW_SCHEMA},
 }), PROTOCOL_KEY, _PROTOCOL_SCHEMA)
+_MY_WORK_OUTPUT = _optional(_MY_WORK_OUTPUT, TIPS_KEY, _TIPS_SCHEMA)
 
 
 async def _plan_of(ctx: Context, ids: list[str]) -> tuple[list[str], dict[str, dict[str, Any]]]:
@@ -5204,6 +5365,9 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     protocol = _protocol(ctx)
     if protocol is not None:
         answer[PROTOCOL_KEY] = protocol
+    tips = await _tips(ctx, "my_work", answer, None)
+    if tips is not None:
+        answer[TIPS_KEY] = tips
     return answer
 
 
@@ -7210,6 +7374,7 @@ _CLAIM_OUTPUT: dict[str, Any] = _optional(_optional(_optional(_object({
     "open_subtasks", {"type": "array", "maxItems": 5, "items": {"type": "string"}},
 ), GUIDANCE_KEY, _GUIDANCE_SCHEMA)
 _CLAIM_OUTPUT = _optional(_CLAIM_OUTPUT, PROTOCOL_KEY, _PROTOCOL_SCHEMA)
+_CLAIM_OUTPUT = _optional(_CLAIM_OUTPUT, TIPS_KEY, _TIPS_SCHEMA)
 
 
 async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
@@ -7260,6 +7425,9 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     protocol = _protocol(ctx)
     if protocol is not None:
         result[PROTOCOL_KEY] = protocol
+    tips = await _tips(ctx, "claim_task", result, result["agent_run_id"])
+    if tips is not None:
+        result[TIPS_KEY] = tips
     return result
 
 
@@ -8557,6 +8725,10 @@ _OPTIONS_INPUT: dict[str, Any] = {
                             "description": "What the choice means, if it is not clear."},
             "recommended": {"type": "boolean",
                             "description": "True for the choice you recommend."},
+            "confirm": {"type": "boolean",
+                        "description": "True for a costly choice: it stops machines or"
+                                       " sessions, or restarts a box. The member must"
+                                       " confirm it with \"Are you sure?\"."},
         },
         "required": ["id", "label"],
         "additionalProperties": False,
@@ -9427,6 +9599,11 @@ TEXT_NO_APP = "Metorite has no app with that name. Call list_apps."
 TEXT_TOOLS_APP = "This app has tools of its own. Use those tools, not app_read or app_write."
 TEXT_APP_OFF = "Agents cannot use this app in this organization."
 TEXT_APPS_OFF = "Agents cannot use the apps of this organization now."
+
+#: PB-3a. The playbook is dark for an organization off ``playbook_orgs``.
+TEXT_PLAYBOOK_OFF = "The playbook is not on for this organization."
+#: PB-3a. A topic that the playbook does not hold. It never echoes the input.
+TEXT_NO_TOPIC = "The playbook has no topic with that name. Call read_playbook with no topic to list them."
 TEXT_NO_OP = "This app has no operation with that name. Call describe_app."
 TEXT_USE_WRITE = "Use app_write for a change."
 TEXT_USE_READ = "Use app_read for a read."
@@ -10155,6 +10332,85 @@ def scope_of(tool: Tool, arguments: Any) -> str | None:
     return wanted if wanted in found.scopes else None
 
 
+# ── PB-3a: read_playbook (D186, orchestration_playbook.md §5 and §7) ─────────
+
+_READ_PLAYBOOK_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {"topic": {
+        "type": "string", "minLength": 1, "maxLength": 100,
+        "pattern": "^[a-z0-9]+([/-][a-z0-9]+)*$",
+        "description": "The topic to read, such as brief-contract or patterns/one-agent-first."
+                       " Leave it out to list the topics."}},
+    "additionalProperties": False,
+}
+
+_PLAYBOOK_TOPIC_PROPS: dict[str, Any] = {
+    "slug": {"type": "string"}, "version": {"type": "integer"},
+    "title": _UNTRUSTED_SCHEMA, "summary": _UNTRUSTED_SCHEMA,
+    "audience": {"type": "string"},
+}
+
+_READ_PLAYBOOK_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "topics": {"type": "array", "items": {
+            "type": "object", "properties": _PLAYBOOK_TOPIC_PROPS,
+            "required": list(_PLAYBOOK_TOPIC_PROPS), "additionalProperties": False}},
+        "topic": {"type": ["object", "null"], "properties": {
+            **_PLAYBOOK_TOPIC_PROPS, "body": _UNTRUSTED_SCHEMA},
+            "required": [*_PLAYBOOK_TOPIC_PROPS, "body"], "additionalProperties": False},
+    },
+    "required": ["topics", "topic"],
+    "additionalProperties": False,
+}
+
+
+def _playbook_entry(topic: Any) -> dict[str, Any]:
+    return {"slug": topic.slug, "version": topic.version, "title": untrusted(topic.title),
+            "summary": untrusted(topic.summary), "audience": topic.audience}
+
+
+async def _read_playbook(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``read_playbook``: the topics of the playbook, or one topic with its body.
+
+    No gateway request. The text is the playbook of ``acb_playbook``, the same
+    for every organization, and it leaves as untrusted text (§9.4).
+    """
+    from acb_playbook import load_all
+
+    topics = load_all()
+    wanted = args.get("topic")
+    if wanted is None:
+        return {"topics": [_playbook_entry(t) for t in topics], "topic": None}
+    for topic in topics:
+        if topic.slug == wanted:
+            return {"topics": [], "topic": {**_playbook_entry(topic),
+                                            "body": untrusted(topic.body)}}
+    raise ToolError(TEXT_NO_TOPIC)
+
+
+READ_PLAYBOOK = Tool(
+    name="read_playbook",
+    title="Read the playbook",
+    description=(
+        "Read the orchestration playbook of Metorite: patterns for agent teams,"
+        " the brief contract, gates, failure causes, the cost model and starter"
+        " files. Leave topic out to list the topics, each with its version and"
+        " summary. Send a topic to read it. The text is the same for every"
+        " organization. Use it when your client shows no MCP resources."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_READ_PLAYBOOK_INPUT,
+    output_schema=_READ_PLAYBOOK_OUTPUT,
+    route="",
+    params={},
+    not_found=TEXT_NO_TOPIC,
+    run=_read_playbook,
+    playbook=True,
+)
+
+
 # ── The registry ────────────────────────────────────────────────────────────
 
 #: Every tool of the edge, by name, in the order of ``tools/list``. The two
@@ -10190,16 +10446,20 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RECORD_OUTSIDE_DECISION,
     RELEASE_TASK, DELETE_TASK,
     LIST_APPS, DESCRIBE_APP, APP_READ, APP_WRITE,
+    READ_PLAYBOOK,
 )}
 
 
-def offered(tool: Tool) -> bool:
+def offered(tool: Tool, organization_id: object = None) -> bool:
     """A read always. A write only while the writes flag is on (fix round 1),
     read through the ONE reader, ``agent_oauth.writes_enabled``. An
     agent-run tool only while the runs flag is on too (EA-12b), read through
     the ONE reader, ``agent_oauth.runs_enabled``. A tool of the app door only
-    while ``agent_oauth.door_apps`` names an app (MCP-P1a, AD-15)."""
+    while ``agent_oauth.door_apps`` names an app (MCP-P1a, AD-15). The playbook
+    tool only for an organization that ``playbook_orgs`` names (PB-3a)."""
     if tool.door and not agent_oauth.door_apps():
+        return False
+    if tool.playbook and not agent_oauth.playbook_allowed(organization_id):
         return False
     if tool.runs and not agent_oauth.runs_enabled():
         return False
@@ -10208,7 +10468,7 @@ def offered(tool: Tool) -> bool:
     return tool.method == "GET" or agent_oauth.writes_enabled()
 
 
-def _covered(tool: Tool, scopes: frozenset[str]) -> bool:
+def _covered(tool: Tool, scopes: frozenset[str], organization_id: object = None) -> bool:
     """True when *scopes* hold the tool's scope and the tool is offered.
     ``app_read`` and ``app_write`` show with no app scope, because their scope
     is the one of the app in each call (:func:`scope_of`), and check 8 asks
@@ -10220,17 +10480,19 @@ def _covered(tool: Tool, scopes: frozenset[str]) -> bool:
     ``tests/unit/test_mcp_edge_readonly.py``."""
     if tool.app_scope == "write" and not any(agent_oauth.covered_by(s) for s in scopes):
         return False
-    return (tool.required_scope is None or tool.required_scope in scopes) and offered(tool)
+    return ((tool.required_scope is None or tool.required_scope in scopes)
+            and offered(tool, organization_id))
 
 
-def listed(scopes: frozenset[str], *, delete_on: bool = False) -> list[dict[str, Any]]:
+def listed(scopes: frozenset[str], *, delete_on: bool = False,
+           organization_id: object = None) -> list[dict[str, Any]]:
     """The ``tools/list`` entries that *scopes* cover. Varies by scope, a
     write tool shows only while the writes flag is on (EA-6a), and an
     agent-run tool only while the runs flag is on (EA-12b). ``delete_task``
     shows only with *delete_on*, the member's switch (EA-6h)."""
     return [
         t.describe() for t in TOOLS.values()
-        if _covered(t, scopes) and (delete_on or not t.switch)
+        if _covered(t, scopes, organization_id) and (delete_on or not t.switch)
     ]
 
 
@@ -10253,8 +10515,10 @@ async def listed_for(ctx: Context) -> list[dict[str, Any]]:
     switch only when the scopes and the flags would show ``delete_task``,
     so a read connection sends no request."""
     scopes = frozenset(ctx.caller.scopes)
-    wants = any(t.switch and _covered(t, scopes) for t in TOOLS.values())
-    return listed(scopes, delete_on=wants and await delete_switch_on(ctx))
+    org = ctx.caller.lookup.organization_id
+    wants = any(t.switch and _covered(t, scopes, org) for t in TOOLS.values())
+    return listed(scopes, delete_on=wants and await delete_switch_on(ctx),
+                  organization_id=org)
 
 
 def call_timeout(tool: Tool, args: Mapping[str, Any]) -> float:
@@ -10277,7 +10541,9 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
     :data:`TEXT_WRITES_OFF`, and an agent-run tool while the runs flag is
     off answers :data:`TEXT_RUNS_OFF`. Neither makes a gateway request.
     """
-    if not offered(tool):
+    if not offered(tool, ctx.caller.lookup.organization_id):
+        if tool.playbook and not agent_oauth.playbook_allowed(ctx.caller.lookup.organization_id):
+            return error_result(TEXT_PLAYBOOK_OFF)
         if tool.door and not agent_oauth.door_apps():
             return error_result(TEXT_APPS_OFF)
         if tool.runs and not agent_oauth.runs_enabled():
@@ -10502,6 +10768,7 @@ __all__ = [
     "PROTOCOL_LINE_MAX",
     "PROTOCOL_VERSION",
     "READ_ANNOTATIONS",
+    "READ_PLAYBOOK",
     "RECORD_OUTSIDE_DECISION",
     "REF_KEYS",
     "RELEASE_TASK",
@@ -10613,6 +10880,7 @@ __all__ = [
     "TEXT_NO_PAGES",
     "TEXT_NO_REQUEST",
     "TEXT_NO_RUN_STATE",
+    "TEXT_NO_TOPIC",
     "TEXT_OUTSIDE_KEY_USED",
     "TEXT_PAGE_ARGS",
     "TEXT_PARENT_ARCHIVED",
@@ -10622,6 +10890,7 @@ __all__ = [
     "TEXT_PARENT_NOT_FOUND",
     "TEXT_PARENT_OTHER_PROJECT",
     "TEXT_PARENT_TOO_DEEP",
+    "TEXT_PLAYBOOK_OFF",
     "TEXT_PROJECT_KEY_REUSED",
     "TEXT_PROJECT_KEY_UNKNOWN",
     "TEXT_PROJECT_NOT_FOUND",
@@ -10653,6 +10922,13 @@ __all__ = [
     "TEXT_WRITES_OFF",
     "TEXT_WRITE_FORBIDDEN",
     "TIMELINE_ROW_KEYS",
+    "TIPS_KEY",
+    "TIPS_MAX",
+    "TIPS_NAMESPACE",
+    "TIPS_TTL_S",
+    "TIP_BRIEF_MIN_CHARS",
+    "TIP_LINE_MAX",
+    "TIP_RULES",
     "TOOLS",
     "TOOL_TIMEOUT_S",
     "TREE_RACE_DETAIL",
@@ -10671,6 +10947,7 @@ __all__ = [
     "Context",
     "GatewayUnauthorized",
     "ImageContent",
+    "Tip",
     "Tool",
     "ToolError",
     "agent_run",

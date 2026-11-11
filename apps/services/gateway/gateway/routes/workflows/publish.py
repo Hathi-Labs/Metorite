@@ -6,8 +6,12 @@ no credential-shaped strings, and compile cleanly — or nothing is published.
 Runs execute versions, never the draft, so editing never breaks in-flight
 automations.
 
-AUTHORITY (spec Q3): drafting and test-running need only ``feature:workflows``
-— a draft fires no triggers and its writes are still broker-held. Publishing
+AUTHORITY (spec Q3): drafting and test-running need ``feature:workflows``, and
+``feature:studio`` too where ``WORKFLOW_STUDIO_GATE_ORGS`` holds the org
+(STU-J1-3, ``core.AUTHOR_GATE``) — a draft fires no triggers and its writes
+are still broker-held. The four routes here add no ``feature:studio`` and no
+``studio:publish`` (owner rule 2, task 1818): they keep the org tier of
+``workflows:publish`` until J2 decides a private tier. Publishing
 ARMS the thing: webhooks, cron ticks, and event bindings start running it
 unattended against production systems. So every endpoint here — publish,
 rollback, disable, enable — requires ``workflows:publish`` (seeded to owner/
