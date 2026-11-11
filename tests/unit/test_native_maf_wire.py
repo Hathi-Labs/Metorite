@@ -15,9 +15,11 @@ script (:class:`tests.unit._native_maf_harness.ScriptedModel`).
    RUN_ERROR before one model request. A native agent now sends
    ``reasoning_effort`` only.
 2. **Steer.** On Tier 1 a native agent's OWN tools had no
-   ``_gate_injected_tool`` wrapper, and that wrapper is the only steer drain.
+   ``_gate_injected_tool`` wrapper, and that wrapper was the only steer drain.
    A steer that arrived during a turn that called only own tools was lost.
    Own tools are gated now, and the schema the model sees did not change.
+   Since task 2494 the steer is a USER turn of the next request
+   (``steer.SteerTurns``), and no tool result carries it.
 """
 from __future__ import annotations
 
@@ -110,7 +112,8 @@ _STEER_TEXT = "Also cover the Drive API, please."
 def test_a_steer_during_an_own_tool_only_turn_reaches_the_model(monkeypatch) -> None:
     """A second person steers while the model works. The turn then calls ONE
     own tool (apis-config's ``web_search``, offline here). The steer must
-    ride that tool's result into the next model request."""
+    reach the next model request as a USER turn, right after that tool's
+    result, and the tool result keeps its own text (task 2494)."""
     import acb_skills.web_tools as web_tools
     from orchestrator import steer
 
@@ -138,11 +141,17 @@ def test_a_steer_during_an_own_tool_only_turn_reaches_the_model(monkeypatch) -> 
     assert not [e for e in events if e.get("type") == "RUN_ERROR"], events
     assert [e.get("type") for e in events][-1] == "RUN_FINISHED"
     assert len(model.bodies) == 2, "the tool result never went back to the model"
-    tool_messages = [m for m in model.bodies[1]["messages"] if m.get("role") == "tool"]
-    assert tool_messages, model.bodies[1]["messages"]
-    assert any(_STEER_TEXT in str(m.get("content")) for m in tool_messages), (
+    messages = model.bodies[1]["messages"]
+    tool_messages = [m for m in messages if m.get("role") == "tool"]
+    assert tool_messages, messages
+    assert not any(_STEER_TEXT in str(m.get("content")) for m in tool_messages), (
+        "a tool result carried the steer"
+    )
+    assert messages[-1].get("role") == "user", messages[-1]
+    assert _STEER_TEXT in str(messages[-1].get("content")), (
         "the steer was buffered but never reached the model"
     )
+    assert messages[-2].get("role") == "tool", "the steer turn follows the tool result"
     assert not steer.has_guidance(thread_id)
 
     # The own tool the model called is the gated copy, not the bare function.
