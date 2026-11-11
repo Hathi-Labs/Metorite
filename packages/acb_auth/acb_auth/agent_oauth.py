@@ -931,6 +931,9 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/agent-runs/{run_id}/release"),
     # MCP-G15: the decision a member made outside Metorite.
     ("POST", "/projects/agent-runs/{run_id}/outside-decision"),
+    # WS-MCP SW-32: `set_run_plan`. It replaces the plan of the agent's own
+    # run, and it writes one `action` activity as a heartbeat.
+    ("PUT", "/projects/agent-runs/{run_id}/plan"),
     ("POST", "/projects/tasks/{task_id}/archive-request"),
     ("POST", "/projects/tasks/{task_id}/agent-delete"),
     # WS-39 LP-1a: `post_project_update`. The route needs the right of a task

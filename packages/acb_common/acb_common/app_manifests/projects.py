@@ -537,6 +537,8 @@ PROJECTS_DOOR = App(
               "B", off_door=LATER),
         Route("POST", "/projects/agent-runs/{run_id}/outside-decision",
               "record_outside_decision", "B", off_door=TYPED),
+        Route("PUT", "/projects/agent-runs/{run_id}/plan", "set_run_plan", "B",
+              off_door=TYPED),
         Route("POST", "/projects/tasks/{task_id}/archive-request", "request_task_archive", "B",
               off_door=TYPED),
         Route("POST", "/projects/agent-runs/{run_id}/archive-approval", "", "X",
