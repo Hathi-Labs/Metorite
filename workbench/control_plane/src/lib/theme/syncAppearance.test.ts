@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { isSafeColor } from "./css";
-import { bindAppearanceScope } from "./scope";
+import { bindAppearanceScope, clearAppearanceForAccounts, clearSignedOutAppearance } from "./scope";
 import { MODE_STORAGE_KEY, STORAGE_KEYS, __newAppearanceTabForTests, onAppearanceStorage, scopedKey } from "./storage";
 import { useAppearanceStore } from "./store";
 import {
@@ -13,6 +13,7 @@ import {
   noteMemberMode,
   parseServerAppearance,
   startAppearanceSync,
+  unsentMark,
 } from "./syncAppearance";
 
 /**
@@ -48,7 +49,13 @@ const B = { email: "b@two.test", org: "org-2" };
 const SCOPE_A = "a@one.test|org-1";
 
 const ROSE = "hsl(347 77% 50%)";
+/** The server copy of the tests is older than the clock of the tests. */
 const STAMP = "2026-11-07T10:00:00.000Z";
+/** The clock of the tests. */
+const NOW = "2026-11-11T08:00:00.000Z";
+/** A server copy that another device wrote after NOW. */
+const LATER = "2026-11-11T09:00:00.000Z";
+const UNSENT_A = `cc-appearance-unsent:${SCOPE_A}`;
 
 type Call = { url: string; method: string; body: unknown };
 let calls: Call[];
@@ -95,6 +102,7 @@ beforeEach(() => {
   g.localStorage = ls;
   g.window = globalThis;
   vi.useFakeTimers();
+  vi.setSystemTime(new Date(NOW));
   newPage();
 });
 afterEach(() => {
@@ -328,7 +336,8 @@ describe("the write of the server copy", () => {
     await startAppearanceSync(A.email, A.org, { setMode });
     expect(useAppearanceStore.getState().accent).toBe(ROSE);
     expect(setMode).not.toHaveBeenCalled();
-    expect(gets()).toHaveLength(0);
+    // The bind reads the server copy first. The mark is newer, so it sends.
+    expect(gets()).toHaveLength(1);
     expect(puts()).toHaveLength(1);
     expect(puts()[0]).toMatchObject({ body: { accent: ROSE } });
   });
@@ -390,7 +399,9 @@ describe("the write of the server copy", () => {
     calls = [];
     bindA();
     await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
-    expect(gets()).toHaveLength(0);
+    // The server copy is older than the mark, so the page sends and applies nothing.
+    expect(gets()).toHaveLength(1);
+    expect(puts()).toHaveLength(1);
     expect(useAppearanceStore.getState().accent).toBe("#7c3aed");
   });
 
@@ -471,6 +482,222 @@ describe("the write of the server copy", () => {
     vi.advanceTimersByTime(WRITE_DELAY_MS);
     expect(puts()).toHaveLength(0);
     expect(gets()).toHaveLength(2);
+  });
+});
+
+/**
+ * A server that holds each PUT until the test releases it. It commits the
+ * body when it answers, as a slow database commit does. It counts the PUTs
+ * that are out at one time.
+ */
+function heldServer(start: Record<string, unknown> = { mode: null, density: null, accent: null, updated_at: null }) {
+  const held: Array<() => void> = [];
+  const state = { server: start, out: 0, maxOut: 0 };
+  calls = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      calls.push({ url: String(input), method, body });
+      if (method !== "PUT") return json(state.server);
+      state.out += 1;
+      state.maxOut = Math.max(state.maxOut, state.out);
+      await new Promise<void>((r) => held.push(r));
+      state.server = { ...body, updated_at: new Date().toISOString() };
+      state.out -= 1;
+      return new Response("{}", { status: 200 });
+    }),
+  );
+  return {
+    state,
+    held,
+    /** Answer the oldest PUT that is out, and let the page act on the answer. */
+    async release() {
+      held.shift()?.();
+      await vi.advanceTimersByTimeAsync(0);
+    },
+  };
+}
+
+describe("review round 3: the unsent mark holds a time", () => {
+  it("P1-a: a sign-out clears the unsent mark, and the next sign-in sends nothing", async () => {
+    calls = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        calls.push({ url: String(input), method, body: undefined });
+        if (method === "PUT") throw new TypeError("fetch failed");
+        return json({ mode: null, density: null, accent: null, updated_at: null });
+      }),
+    );
+    bindA();
+    await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
+    useAppearanceStore.getState().setAccent(ROSE);
+    await vi.advanceTimersByTimeAsync(WRITE_DELAY_MS);
+    expect(ls.getItem(UNSENT_A)).not.toBeNull();
+    clearAppearanceForAccounts([A.email]);
+    expect(ls.getItem(UNSENT_A)).toBeNull();
+    const keys = Array.from({ length: ls.length }, (_, i) => ls.key(i) ?? "");
+    expect(keys.filter((k) => k.includes(A.email))).toEqual([]);
+    // The member signs in again on this browser, with the defaults.
+    newPage();
+    stubFetch(() => json({ mode: "dark", density: "compact", accent: "#0ea5e9", updated_at: STAMP }));
+    bindA();
+    await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
+    vi.advanceTimersByTime(WRITE_DELAY_MS * 4);
+    expect(puts()).toHaveLength(0);
+    expect(useAppearanceStore.getState().accent).toBe("#0ea5e9");
+  });
+
+  it("P1-a: a sign-out that the page did not start clears the unsent mark too", () => {
+    bindA();
+    ls.setItem(UNSENT_A, String(Date.now()));
+    clearSignedOutAppearance();
+    expect(ls.getItem(UNSENT_A)).toBeNull();
+  });
+
+  it("P1-b: a change while the org is dark sets no mark", async () => {
+    bindA();
+    stubFetch(() => json({ detail: "Not found" }, 404));
+    await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
+    useAppearanceStore.getState().setAccent(ROSE);
+    vi.advanceTimersByTime(WRITE_DELAY_MS * 4);
+    expect(ls.getItem(UNSENT_A)).toBeNull();
+    expect(puts()).toHaveLength(0);
+  });
+
+  it("P1-b: a 404 on the read clears a mark that exists", async () => {
+    ls.setItem(UNSENT_A, String(Date.now() - 1000));
+    bindA();
+    stubFetch(() => json({ detail: "Not found" }, 404));
+    await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
+    expect(ls.getItem(UNSENT_A)).toBeNull();
+    expect(puts()).toHaveLength(0);
+  });
+
+  it("P1-b: a 404 on the write clears the mark, and the next change sets none", async () => {
+    calls = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        calls.push({ url: String(input), method, body: undefined });
+        if (method === "PUT") return json({ detail: "Not found" }, 404);
+        return json({ mode: null, density: null, accent: null, updated_at: null });
+      }),
+    );
+    bindA();
+    await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
+    useAppearanceStore.getState().setAccent(ROSE);
+    expect(ls.getItem(UNSENT_A)).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(WRITE_DELAY_MS);
+    expect(puts()).toHaveLength(1);
+    expect(ls.getItem(UNSENT_A)).toBeNull();
+    useAppearanceStore.getState().setAccent("#7c3aed");
+    await vi.advanceTimersByTimeAsync(WRITE_DELAY_MS * 4);
+    expect(ls.getItem(UNSENT_A)).toBeNull();
+    expect(puts()).toHaveLength(1);
+  });
+
+  it("P1-b: a mark older than the server copy applies the server copy and clears the mark", async () => {
+    // Device 1 chose Rose and never sent it. Device 2 wrote a newer copy later.
+    ls.setItem(scopedKey(STORAGE_KEYS.accent, SCOPE_A), ROSE);
+    ls.setItem(UNSENT_A, String(Date.now()));
+    bindA();
+    stubFetch(() => json({ mode: "light", density: null, accent: "#0ea5e9", updated_at: LATER }));
+    const setMode = vi.fn();
+    await startAppearanceSync(A.email, A.org, { setMode });
+    expect(useAppearanceStore.getState().accent).toBe("#0ea5e9");
+    expect(setMode).toHaveBeenCalledWith("light");
+    expect(ls.getItem(UNSENT_A)).toBeNull();
+    vi.advanceTimersByTime(WRITE_DELAY_MS * 4);
+    expect(puts()).toHaveLength(0);
+  });
+
+  it("P1-b: a mark newer than the server copy sends the browser copy", async () => {
+    ls.setItem(scopedKey(STORAGE_KEYS.accent, SCOPE_A), ROSE);
+    ls.setItem(UNSENT_A, String(Date.now()));
+    bindA();
+    stubFetch(() => json({ mode: "light", density: null, accent: "#0ea5e9", updated_at: STAMP }));
+    const setMode = vi.fn();
+    await startAppearanceSync(A.email, A.org, { setMode });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(setMode).not.toHaveBeenCalled();
+    expect(useAppearanceStore.getState().accent).toBe(ROSE);
+    expect(puts()).toHaveLength(1);
+    expect(puts()[0].body).toMatchObject({ accent: ROSE });
+    // The good PUT clears the mark that it carried.
+    expect(ls.getItem(UNSENT_A)).toBeNull();
+  });
+
+  it("P1-b: the mark holds the time of the last change", async () => {
+    bindA();
+    heldServer();
+    await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
+    useAppearanceStore.getState().setAccent(ROSE);
+    expect(unsentMark(SCOPE_A)).toBe(Date.parse(NOW));
+  });
+
+  it("P2-a: A then B, with A out, sends B next, and the server ends on B", async () => {
+    bindA();
+    const srv = heldServer();
+    await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
+    useAppearanceStore.getState().setAccent(ROSE);
+    await vi.advanceTimersByTimeAsync(WRITE_DELAY_MS);
+    expect(puts()).toHaveLength(1);
+    useAppearanceStore.getState().setAccent("#7c3aed");
+    await vi.advanceTimersByTimeAsync(WRITE_DELAY_MS);
+    // B waits for the answer to A.
+    expect(puts()).toHaveLength(1);
+    await srv.release();
+    expect(puts()).toHaveLength(2);
+    expect(puts()[1].body).toMatchObject({ accent: "#7c3aed" });
+    await srv.release();
+    expect(srv.state.server).toMatchObject({ accent: "#7c3aed" });
+    expect(ls.getItem(UNSENT_A)).toBeNull();
+    // One write for B, not one for each change that came while A was out.
+    expect(puts()).toHaveLength(2);
+  });
+
+  it("P2-a: a slow write cannot commit after a newer one, because one write is out at a time", async () => {
+    bindA();
+    const srv = heldServer();
+    await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
+    const colours = [ROSE, "#7c3aed", "#0ea5e9", "#16a34a"];
+    for (const c of colours) {
+      useAppearanceStore.getState().setAccent(c);
+      await vi.advanceTimersByTimeAsync(WRITE_DELAY_MS);
+      expect(srv.held.length).toBeLessThanOrEqual(1);
+    }
+    while (srv.held.length) await srv.release();
+    expect(srv.state.maxOut).toBe(1);
+    expect(srv.state.server).toMatchObject({ accent: "#16a34a" });
+    expect(puts().at(-1)?.body).toMatchObject({ accent: "#16a34a" });
+  });
+
+  it("P2-b: the answer to tab 1 does not clear the newer mark of tab 2", async () => {
+    bindA();
+    const srv = heldServer();
+    await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
+    useAppearanceStore.getState().setAccent(ROSE);
+    await vi.advanceTimersByTimeAsync(WRITE_DELAY_MS);
+    // Tab 2 of the same scope makes a change while the write of tab 1 is out.
+    const tab2 = String(Date.now() + 100);
+    ls.setItem(UNSENT_A, tab2);
+    await srv.release();
+    expect(ls.getItem(UNSENT_A)).toBe(tab2);
+  });
+
+  it("P2-b: the answer to tab 1 clears its own mark when no newer mark came", async () => {
+    bindA();
+    const srv = heldServer();
+    await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
+    useAppearanceStore.getState().setAccent(ROSE);
+    await vi.advanceTimersByTimeAsync(WRITE_DELAY_MS);
+    await srv.release();
+    expect(ls.getItem(UNSENT_A)).toBeNull();
   });
 });
 

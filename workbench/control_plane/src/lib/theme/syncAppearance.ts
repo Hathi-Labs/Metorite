@@ -30,12 +30,21 @@
  *    `{mode, density, accent}`, 500 ms after the last change, and a failure
  *    is silent. The apply of a server copy never writes, so two browsers
  *    cannot write each other in a loop.
- * 6. A member change sets an "unsent" mark for the scope in the browser, and
- *    only a successful write clears it. While the mark is set, the page does
- *    not apply the server copy. It sends the browser copy at the bind. So a
- *    failed write, or a tab that closes inside the 500 ms, never lets an older
- *    server copy replace the last choice (last write wins).
- * 7. The write goes only to the bound scope. A passive tab (another tab moved
+ * 6. A member change sets an "unsent" mark for the scope in the browser. The
+ *    mark holds the time of the change, in epoch ms. A good write clears it,
+ *    but only when the mark is not newer than the change that the write
+ *    carried, so one tab never clears the mark of a newer change in another
+ *    tab. A 404 clears it, and no mark is set while the feature is off.
+ * 7. The bind always reads the server copy first. With a mark, the page
+ *    sends the browser copy only when the mark is newer than the server
+ *    `updated_at`. Otherwise it applies the server copy and clears the mark.
+ *    So a failed write, or a tab that closes inside the 500 ms, never lets an
+ *    older server copy replace the last choice, and an old choice never
+ *    replaces a newer copy of another device (last write wins).
+ * 8. Only one write is out at a time. A change while a write is out sends
+ *    the newest record once, when the answer comes. So the server ends on
+ *    the newest change.
+ * 9. The write goes only to the bound scope. A passive tab (another tab moved
  *    the pointer to another account) writes nothing.
  *
  * Fence: `syncAppearance.test.ts`. The colour rule is `css.ts::isSafeColor`,
@@ -47,7 +56,13 @@ import { useTheme } from "next-themes";
 
 import { isSafeColor } from "./css";
 import { appearanceScopeFor } from "./scope";
-import { DEFAULT_MODE, isAppearancePassive, tabAppearanceScope, themeStorage } from "./storage";
+import {
+  APPEARANCE_UNSENT_PREFIX,
+  DEFAULT_MODE,
+  isAppearancePassive,
+  tabAppearanceScope,
+  themeStorage,
+} from "./storage";
 import { onMemberAppearanceChange, useAppearanceStore } from "./store";
 import { DENSITY_SCALE, type Density, type ThemeMode } from "./types";
 
@@ -88,8 +103,14 @@ const sync = {
   memberMode: null as ThemeMode | null,
   /** The gateway answered 404: the feature is dark for this org. */
   off: false,
-  /** Counts the member changes. A write clears the unsent mark only if no change came after it started. */
-  changes: 0,
+  /** The time (epoch ms) of the last member change in this page, or 0. */
+  lastChange: 0,
+  /** A write is out. No second write starts before it answers. */
+  inFlight: false,
+  /** A change came while the write was out. Its answer sends the newest record. */
+  again: false,
+  /** Goes up at each new page session of the tests. An old write then changes no state. */
+  session: 0,
 };
 
 function modeOf(value: unknown): ThemeMode {
@@ -120,34 +141,65 @@ function owns(scope: string): boolean {
   return !isAppearancePassive() && tabAppearanceScope() === scope;
 }
 
-const UNSENT_PREFIX = "cc-appearance-unsent:";
-
 function unsentKey(scope: string): string {
-  return `${UNSENT_PREFIX}${scope}`;
+  return `${APPEARANCE_UNSENT_PREFIX}${scope}`;
 }
 
-function setUnsent(scope: string | null, on: boolean): void {
+/** The time of the unsent mark of `scope`, or null when it has none. */
+export function unsentMark(scope: string): number | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(unsentKey(scope));
+    const at = raw === null ? NaN : Number(raw);
+    return Number.isFinite(at) ? at : null;
+  } catch {
+    return null;
+  }
+}
+
+function markUnsent(scope: string | null, at: number): void {
   if (!scope || typeof window === "undefined") return;
   try {
-    if (on) window.localStorage.setItem(unsentKey(scope), "1");
-    else window.localStorage.removeItem(unsentKey(scope));
+    window.localStorage.setItem(unsentKey(scope), String(at));
   } catch {
-    // No storage: the old behaviour holds.
+    // No storage: no mark, and the server copy applies at the next bind.
   }
 }
 
-function hasUnsent(scope: string): boolean {
-  if (typeof window === "undefined") return false;
+/**
+ * Clear the mark of `scope`. With `upTo`, clear it only when the mark is not
+ * newer than `upTo`. A newer mark belongs to a change that is not sent yet.
+ */
+function clearUnsent(scope: string, upTo?: number): void {
+  if (typeof window === "undefined") return;
+  if (upTo !== undefined) {
+    const at = unsentMark(scope);
+    if (at !== null && at > upTo) return;
+  }
   try {
-    return window.localStorage.getItem(unsentKey(scope)) === "1";
+    window.localStorage.removeItem(unsentKey(scope));
   } catch {
-    return false;
+    // No storage: nothing to clear.
   }
 }
 
-async function send(record: AppearanceRecord, scope: string): Promise<void> {
+/**
+ * Send what this page shows to the server copy of `scope`. Only one write is
+ * out at a time. A call while a write is out asks for one more write. That
+ * write reads the record when it starts, so it carries the newest change.
+ */
+async function send(scope: string): Promise<void> {
   if (sync.off) return;
-  const seen = sync.changes;
+  if (sync.inFlight) {
+    sync.again = true;
+    return;
+  }
+  sync.inFlight = true;
+  const session = sync.session;
+  // The time of the newest change that this record carries. A page with no
+  // change of its own sends the mark of an earlier page.
+  const carried = sync.lastChange || unsentMark(scope) || 0;
+  const record = currentAppearance();
   try {
     const res = await fetch(APPEARANCE_URL, {
       method: "PUT",
@@ -155,13 +207,22 @@ async function send(record: AppearanceRecord, scope: string): Promise<void> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(record),
     });
-    if (res.status === 404) sync.off = true;
-    // Only a 2xx clears the mark. A 404 means the feature is dark here, so
-    // the mark stays and nothing reads the server copy in that case.
-    else if (res.ok && sync.changes === seen) setUnsent(scope, false);
+    if (res.status === 404) {
+      // The feature is dark for this org. Nothing is to sync, so no mark stays.
+      if (session === sync.session && sync.bound === scope) sync.off = true;
+      clearUnsent(scope);
+    } else if (res.ok) {
+      clearUnsent(scope, carried);
+    }
   } catch {
     // Silent: the mark stays, and the next bind sends the browser copy.
   }
+  if (session !== sync.session) return;
+  sync.inFlight = false;
+  if (!sync.again) return;
+  sync.again = false;
+  const next = sync.bound;
+  if (next && !sync.off && owns(next)) await send(next);
 }
 
 function flush(): void {
@@ -171,18 +232,19 @@ function flush(): void {
     sync.pending = true;
     return;
   }
-  if (owns(scope)) void send(currentAppearance(), scope);
+  if (owns(scope)) void send(scope);
 }
 
 /**
  * A member changed the mode, the density or the accent in this page. It
  * stops the apply of a server copy, and sends the whole record 500 ms after
- * the last change.
+ * the last change. It sets the unsent mark, but not while the feature is off.
  */
 export function noteMemberAppearanceChange(): void {
   sync.touched = true;
-  sync.changes += 1;
-  setUnsent(tabAppearanceScope(), true);
+  // Each change gets a later time than the one before, also inside one ms.
+  sync.lastChange = Math.max(Date.now(), sync.lastChange + 1);
+  if (!sync.off) markUnsent(tabAppearanceScope(), sync.lastChange);
   if (sync.timer) clearTimeout(sync.timer);
   sync.timer = setTimeout(flush, WRITE_DELAY_MS);
 }
@@ -260,25 +322,43 @@ async function readAndApply(scope: string, apply: AppearanceApply): Promise<void
   try {
     const res = await fetch(APPEARANCE_URL, { cache: "no-store" });
     if (res.status === 404) {
-      sync.off = true;
+      // The feature is dark for this org. No mark stays, and no PUT goes.
+      if (sync.bound === scope) sync.off = true;
+      clearUnsent(scope);
       return;
     }
     if (!res.ok) return;
     body = await res.json();
   } catch {
+    // A failed read changes nothing. A mark stays for the next bind.
     return;
   }
-  // A member change while the read was out wins. So does another account.
+  // A member change while the read was out wins, and its own write follows.
+  // Another account wins too.
   if (sync.touched || sync.bound !== scope || !owns(scope)) return;
   const server = parseServerAppearance(body);
+  const mark = unsentMark(scope);
+  if (mark !== null) {
+    const serverAt = server?.updated_at ? Date.parse(server.updated_at) : NaN;
+    if (!Number.isFinite(serverAt) || mark > serverAt) {
+      // A choice of this browser never reached the server, and it is newer
+      // than the server copy. Send it, and do not apply the server copy.
+      void send(scope);
+      return;
+    }
+    // The server copy is as new as the mark, or newer: another device wrote
+    // it after the choice of this browser. The server copy wins.
+    clearUnsent(scope, mark);
+  }
   if (server) applyServerAppearance(server, apply);
 }
 
 /**
- * Start the sync for the account `ThemeProvider` just bound. It reads the
- * server copy once for each scope, and sends a member change that came
- * before the bind. It does nothing with no full scope, in a passive tab, or
- * when this tab shows another scope.
+ * Start the sync for the account `ThemeProvider` just bound. It sends a
+ * member change that came before the bind, and reads the server copy once for
+ * each scope. The read decides between an unsent mark and the server copy by
+ * their times. It does nothing with no full scope, in a passive tab, or when
+ * this tab shows another scope.
  */
 export function startAppearanceSync(
   email: string | null | undefined,
@@ -294,20 +374,21 @@ export function startAppearanceSync(
     sync.timer = null;
     sync.touched = false;
     sync.memberMode = null;
+    sync.lastChange = 0;
+    sync.again = false;
+    // The 404 of one org says nothing of another org. The read of the new
+    // scope finds out again.
+    sync.off = false;
   }
   sync.bound = scope;
   if (sync.pending) {
     sync.pending = false;
-    void send(currentAppearance(), scope);
+    // The change had no scope to mark. It has one now.
+    if (!sync.off) markUnsent(scope, sync.lastChange);
+    void send(scope);
   }
   if (sync.readFor === scope) return Promise.resolve();
   sync.readFor = scope;
-  if (hasUnsent(scope)) {
-    // A choice of this browser never reached the server. It is newer than the
-    // server copy, so send it and do not apply the server copy over it.
-    void send(currentAppearance(), scope);
-    return Promise.resolve();
-  }
   return readAndApply(scope, apply);
 }
 
@@ -321,5 +402,8 @@ export function __resetAppearanceSyncForTests(): void {
   sync.timer = null;
   sync.memberMode = null;
   sync.off = false;
-  sync.changes = 0;
+  sync.lastChange = 0;
+  sync.inFlight = false;
+  sync.again = false;
+  sync.session += 1;
 }
