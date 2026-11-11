@@ -1,6 +1,6 @@
 # Agents: the member view in Projects (WS-AGA)
 
-**Status: ACTIVE as a spec (AGA-1, 2026-11-11). Nothing is built.** Owner answers to Q1, Q2 and Q3 are open. The text marks each recommended answer "Proposed, owner to confirm". Phase 1 starts after the owner confirms Q1 and Q3.
+**Status: ACTIVE (AGA-1, 2026-11-11). AGA-6 and AGA-7 are built, dark (2026-11-11). The rest is not built.** Owner answers to Q1, Q2 and Q3 are open. The text marks each recommended answer "Proposed, owner to confirm". Phase 1 starts after the owner confirms Q1 and Q3.
 
 **Verified against code on 2026-11-11 at `83e9e8b23` (`origin/main`).** Each path in §2 was read on that commit. Re-check each anchor when you dispatch a slice.
 
@@ -177,8 +177,8 @@ The epic plan gives no task number for AGA-3 and AGA-4. The owner or the next se
 
 | ID | Task | Slice | Rung | Depends | Done when | Tier | Gate |
 |---|---|---|---|---|---|---|---|
-| AGA-6 | 2109 | A shell manifest with no nav entry, and the flag `AGENTS_VIEW_ORGS` (empty) | 3 | AGA-1 | The host loads the manifest. With the flag empty every route of this spec returns 404. A manifest test fences it. | STANDARD | AGENT-SAFE |
-| AGA-7 | 2110 | `GET /projects/agents/overview`: one tenant read. Per agent: name, one-line job, source (built-in, org, external), state (working, idle, waiting on a person), last run, last error in plain words | 3 | AGA-6, AGA-5 | R8 with two orgs and no cross-read. Built-in agents carry "shared by Metorite". Each error says what happened and the next step. It follows §4. | HIGH (tenancy) | AGENT-SAFE |
+| AGA-6 | 2109 | A shell manifest with no nav entry, and the flag `AGENTS_VIEW_ORGS` (empty). **Built, dark (2026-11-11).** §6.1 records the choice. | 3 | AGA-1 | The host loads the manifest. With the flag empty every route of this spec returns 404. A manifest test fences it. | STANDARD | AGENT-SAFE |
+| AGA-7 | 2110 | `GET /projects/agents/overview`: one tenant read. Per agent: name, one-line job, source (built-in, org, external), state (working, idle, waiting on a person), last run, last error in plain words. **Built, dark (2026-11-11).** §6.1 records the shape. | 3 | AGA-6, AGA-5 | R8 with two orgs and no cross-read. Built-in agents carry "shared by Metorite". Each error says what happened and the next step. It follows §4. | HIGH (tenancy) | AGENT-SAFE |
 | AGA-8 | 2111 | The section "Agents at work" in the Agents panel. It extends SW-8 and SW-51 when they land. Before they land, it is a minimal section in the same panel. | 3 | AGA-7, SW-8 | Four captures: light, compact, changed accent, beside the Projects board. It uses `src/lib/statusAccent.ts` and no local palette. The PR has a `Visual review:` line. | STANDARD | AGENT-SAFE |
 | AGA-9 | 2112 | The drill-down: the last 40 runs from `agent_run`, with outcome and run time. No trace blob. | 3 | AGA-8 | A member sees only runs inside their D12 visibility. The executive-only trace stays gated. | HIGH (tenancy) | AGENT-SAFE |
 | AGA-10 | 2113 | The chip "Waiting on a person" on each agent, linked to `/waiting` | 3 | AGA-8, AP-1b, AP-2c | The chip count equals the Waiting list count for that agent. One test. | STANDARD | AGENT-SAFE |
@@ -206,8 +206,25 @@ The epic plan gives no task number for AGA-3 and AGA-4. The owner or the next se
 ### 6.1 Notes on the anchors
 
 - **AGA-6 and the existing `agents.json`.** The file `app_manifests/shell/agents.json` exists and carries the nav entry of `/agents`. The slice must not remove that entry. It adds a second manifest file, or a contribution in `projects.json`. The builder picks one, reads `tests/unit/test_shell_manifests.py` and `tests/unit/test_agent_manifest.py`, and records the choice in the PR.
+- **AGA-6, the choice (built 2026-11-11).** The slice adds a contribution in `projects.json`: one `gates` entry, `/projects/agents` with the feature `agents_view`. It adds no second file and no nav entry. The reasons:
+  - The member view is a part of Projects (§5.1), so its gate belongs to the Projects package.
+  - A `gates` entry is the existing seam for a route that is not a pane, as `workflows.json` shows.
+  - A second file is a second package id for one part of one app.
+  - `agents.json` keeps its one nav entry, as it was.
+  - `agents_view` is not yet a slug of `FEATURES` or of `feature_catalog`, so no member holds it, and the workbench route stays closed. AGA-8 adds the slug when it draws the section.
+  - Fence: `test_shell_manifests.py::test_the_agents_view_is_a_projects_gate_and_no_nav_entry`.
+- **AGA-6, the flag.** `AGENTS_VIEW_ORGS` is a comma list of organization ids, or `*`. Empty is off. Its one reader is `agent_summary.agents_view_allowed`, and a SIGHUP reload applies a change (`docs/flag_reload.md`). Each flip is OWNER-GATE (`enforcement-flip`). Fence: `tests/unit/test_agents_overview_r8.py`.
 - **AGA-4 and `/waiting`.** The page `/waiting` does not exist yet. AGA-4 waits for AP-2c.
 - **AGA-7 and `agent-summary`.** The route `GET /projects/agents/overview` is new. The route `GET /{project_id}/agent-summary` stays the one summary route of SW-8 (it forbids a second one). The builder decides in the PR whether the overview is a mode of that route. If it is not, the PR names the reason.
+- **AGA-7, the decision (built 2026-11-11).** The overview is not a mode of `agent-summary`. It lives in the same module, `agent_summary.py`. The summary counts the tasks of one project, and a project id that the caller cannot see answers 404. The overview reads the whole organization, and most of its agents hold no task.
+- **AGA-7, the shape.** Each row holds `key`, `name`, `agent`, `job`, `source`, `label`, `state`, `runs`, `last_run` and `last_error`. The answer also holds `count`, `viewer` and `truncated`.
+  - `built_in` is the code registry of `gateway.routes.agent`, with the label "shared by Metorite". `org` is a row of `dynamic_agents`. `external` is one row for each `client_via` of the task runs.
+  - An outside agent is `waiting_on_person` when an open run is `awaiting`. It is `working` when an open run waits in the queue or works, and `idle` otherwise.
+  - A built-in or org agent reads the live presence of the tenant. Only an admin counts the live runs of other members.
+  - The admin of §4 is the holder of `data:org:read`. The lead arm reads `authority.led_projects`. The member arm is the runs on the tasks that the member created or holds, and the member's own runs.
+  - `last_error` holds `at`, `what` and `next_step`. It comes from a failed run, or from an open run on a revoked or expired connection.
+  - A built-in or org agent has no `last_error` yet, because the live presence holds no error. AGA-9 reads `agent_run`.
+  - The chat tool waits for AGA-11 (`agents_list` in `PLANNED`). The route is in no door set.
 
 ---
 
