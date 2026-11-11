@@ -4100,7 +4100,7 @@ async def _apply_tool_packs(
 # ── Published skills as packs (WS-STU F3) ───────────────────────────────────
 # ``ai_studio.md`` §7 "Runtime", §11.1 and the §14 F3 row. Dark: the read
 # runs only inside :func:`_apply_tool_packs`, so only for an org that
-# ``TOOL_PACKS_ORGS`` names (``tool_packs.packs_on``), and only while
+# the pack gate of ``tool_packs`` names, and only while
 # ``STUDIO_ORGS`` names the org and the member holds ``feature:studio``
 # (:func:`_studio_member_open`). Fences: ``tests/unit/test_skill_packs.py``
 # and ``tests/unit/test_skill_packs_r8.py`` (R8).
