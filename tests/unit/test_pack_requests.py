@@ -245,6 +245,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "plan_cycle": ("add these six tasks to the next cycle",),
     "start_cycle": ("start the planned cycle of Website Relaunch",),
     "close_cycle": ("close the active cycle and send the unfinished tasks to the backlog",),
+    # SP-8a: the contract of an epic sits in the authority pack.
+    "set_epic_contract": ("set the epic contract of this epic",),
     # -- studio (STU-G1) --
     "studio_describe": ("which field types can a studio app manifest use?",),
     "studio_draft": ("draft an app manifest in AI Studio",),

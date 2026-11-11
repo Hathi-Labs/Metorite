@@ -1600,8 +1600,11 @@ class TestGetTask:
     async def test_the_task_has_exactly_the_pinned_keys(self, armed):
         body = _structured(await _tool("get_task", {"task_id": T_ONE}))
         # WS-39 SP-5a: `cycle` is always there, and null while the flag is off.
-        assert set(body) == {"task", "subtasks", "links", "refs", "agent_runs", "cycle"}
+        # SP-8a: `epic_contract`, null for a task that is not an epic.
+        assert set(body) == {"task", "subtasks", "links", "refs", "agent_runs", "cycle",
+                             "epic_contract"}
         assert body["cycle"] is None
+        assert body["epic_contract"] is None
         assert tuple(body["task"]) == tools.GET_TASK_KEYS
         assert [tuple(s) for s in body["subtasks"]] == [tools.SUBTASK_KEYS]
         assert [tuple(link) for link in body["links"]] == [tools.LINK_KEYS]

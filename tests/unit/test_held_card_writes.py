@@ -74,7 +74,8 @@ KEPT_PROJECTS = frozenset({
     "create_cycle", "plan_cycle",  # WS-39 SP-5a: class B, one card each
     "remove_task_ref",
     "reopen_reminder", "report_save", "reschedule_reminder", "resolve_reminder",
-    "save_view", "set_my_overlay", "set_recurrence", "set_reminder", "triage_intake",
+    "save_view", "set_epic_contract", "set_my_overlay", "set_recurrence", "set_reminder",
+    "triage_intake",
     "unarchive_task", "unlink_tasks", "update_field", "update_project",
     "update_reminder", "update_status", "update_tag", "update_task", "update_tasks",
     "update_type", "watch",
