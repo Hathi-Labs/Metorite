@@ -280,7 +280,7 @@ REFUSALS: dict[str, str] = {
         "This door runs only the actions of an object: get and list, and create, update "
         "and delete from the member's own screen."),
     NO_PERSON: "This run has no person present, so it cannot ask a member to approve a write.",
-    READ_ONLY: "The owner shares this app with you to read, so only the owner changes its records.",
+    READ_ONLY: "This app is shared with you to read, so you cannot change its records.",
 }
 
 #: The text of ``approval_required`` for a write of an object while

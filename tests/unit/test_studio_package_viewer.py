@@ -623,10 +623,16 @@ def test_the_chat_read_of_a_viewer_says_who_changes_the_app(
         out = asyncio.run(st.studio_package_get(PID))
         assert (out["access"], out["installed_version"], out["note"]) == ("viewer", 1, note)
         assert "Publish" not in out["note"]
+        # Fix round 2: a viewer is offered the reads only, never a write.
+        assert [a["id"] for a in out["actions"]] == ["peek", "find"]
+    # An access value that the tool does not know reads as a viewer too.
+    answers["body"] = {"package": {**pkg, "access": "editor"}, "objects": []}
+    assert asyncio.run(st.studio_package_get(PID))["access"] == "viewer"
     answers["body"] = {"package": {"id": PID, "name": "Site visits", "status": "live",
                                    "manifest": INSTALLED}, "objects": []}
     owner = asyncio.run(st.studio_package_get(PID))
     assert "access" not in owner and owner["note"].startswith("This package has no object yet.")
+    assert [a["id"] for a in owner["actions"]] == ["peek", "find", "add", "change", "remove"]
 
 
 # ── 7. The R8 twin runs in CI ──────────────────────────────────────────────
