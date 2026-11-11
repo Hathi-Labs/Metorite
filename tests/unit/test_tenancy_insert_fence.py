@@ -231,6 +231,11 @@ _GRANDFATHERED: dict[tuple[str, str], tuple[int, str]] = {
     # organization, in the two-arm shape of 207 and 272. The no-column half is
     # the one counted. The other names `organization_id` from the ROLE.
     ("296_email_shared_mailbox.sql", "org_role_permission"): (1, "GUARDED"),
+    # WS-STU J1-2 seeds `studio:publish` onto `admin` in every organization,
+    # in the two-arm shape of 207, 272 and 296. The no-column half is the one
+    # counted. The other names `organization_id` from the ROLE, and binds
+    # each tenant in turn, as 221 does.
+    ("410_studio_publish_admin.sql", "org_role_permission"): (1, "GUARDED"),
 }
 
 
