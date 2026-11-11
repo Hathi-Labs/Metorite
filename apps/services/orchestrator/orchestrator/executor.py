@@ -3346,8 +3346,16 @@ async def _run_sub_agent_streaming(
         ) as loaded:
             mandatory = loaded.config.get("integrations", [])
             optional = loaded.config.get("optional_integrations", [])
+            # 🔴 MCP-C3: the member's filter binds a delegated run too, BEFORE
+            # the env injection below. This run has no session of its own, so
+            # the check reads the parent's member from the run binding, and
+            # folds the room of the chat that asked. A run with no member keeps
+            # None, as before.
+            _sub_authorizer = await _integration_authorizer(
+                None, _delegated_authority_thread(_parent_ctx_sub), session_user=None,
+            )
             integrations, _sub_warnings = build_integrations(
-                mandatory, optional, settings,
+                mandatory, optional, settings, is_authorized=_sub_authorizer,
             )
             # Scope this sub-agent's creds to its run; restored in the finally.
             _integration_env_token = _bind_run_credentials(integrations)
@@ -5287,8 +5295,19 @@ async def _integration_authorizer(
     started this run" cannot be the reason (review of MCP-C1). Fence:
     ``tests/unit/test_org_access_credentials.py`` and
     ``tests/unit/test_maf_mcp_confirm.py``.
+
+    🔴 **A delegated run acts as the member of its parent** (MCP-C3). A
+    hand-off sends ``{"message", "mode"}``, with no session member and no
+    claim. So a member with a deny on ``integrations:use:zoho-crm`` got the
+    Zoho credential through any agent that the assistant delegated to. When
+    the run names nobody, the check reads the member of the run binding
+    (:func:`_bound_run_member`), which the server binds and a body never
+    sets. A top-level cron or webhook run binds no member, so it keeps
+    ``None``. Fence: ``tests/unit/test_delegated_integration_filter.py``.
     """
     email, verified = _run_member(event_payload, session_user)
+    if not email:
+        email, verified = _bound_run_member()
     if not email or ":" in email:
         return None
 
@@ -5357,6 +5376,45 @@ async def _integration_authorizer(
         # transient fault.
         _log.warning("executor.integration_authorizer_failed", error=str(exc))
         return None
+
+
+def _bound_run_member() -> tuple[str, bool]:
+    """The member of the run binding, and True when the binding verified it.
+
+    MCP-C3. ``bind_run_context`` keeps the parent's ``user`` and
+    ``member_verified`` when a nested run binds no user of its own. So a
+    delegated run reads here the member that its parent's filter used. Only
+    the server binds these keys: a run boundary (:func:`_run_member`), the
+    auth layer and ``job_member_scope``. A request body never sets them. An
+    unverified member is the parent's own claim, and the parent was filtered
+    by that claim. So the fallback only narrows, and never widens.
+    """
+    try:
+        from acb_common import get_run_context
+
+        ctx = get_run_context() or {}
+    except Exception:
+        return "", False
+    member = str(ctx.get("user") or "").strip()
+    return member, bool(member) and ctx.get("member_verified") == "1"
+
+
+def _delegated_authority_thread(parent_ctx: Any) -> str | None:
+    """The chat whose room caps a delegated run, or None (MCP-C3).
+
+    In a shared room the parent acts with the intersection of the room
+    (``resolve_session_access``). A delegated run mints a thread of its own,
+    and that thread has no participant. So a fold on it gave the delegated run
+    the typer's whole access, which is wider than the parent's. This answers
+    the chat at the top of the chain (``delegation_target``), else the
+    parent's own session. It reads the parent's bound artifact context only,
+    never the payload (R5).
+    """
+    from acb_skills.write_artifact import delegation_target
+
+    target = delegation_target(parent_ctx) or {}
+    chat = str(target.get("session_id") or "").strip()
+    return chat or str(parent_ctx.get("session_id") or "").strip() or None
 
 
 def _payload_user(event_payload: Any) -> str:
@@ -5969,8 +6027,13 @@ async def _run_agent_inner(
             optional_integrations: list[str] = loaded.config.get("optional_integrations", [])
             # One access lookup for the run, as on the stream path. The
             # integrations and the MCP servers (WAC-P3) read the same answer.
+            # MCP-C3: a delegated run that names no member of its own acts as
+            # its parent, so its room is the parent's chat, not its own thread.
+            _authority_thread = thread_id
+            if session_user is None and _parent_ctx.get("run_id"):
+                _authority_thread = _delegated_authority_thread(_parent_ctx) or thread_id
             _authorizer = await _integration_authorizer(
-                event_payload, thread_id, session_user=session_user,
+                event_payload, _authority_thread, session_user=session_user,
             )
             integrations, integration_warnings = build_integrations(
                 mandatory_integrations, optional_integrations, settings,
