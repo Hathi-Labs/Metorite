@@ -57,7 +57,7 @@ pointer of the author.
 
 **The save history (G17).** ``studio_draft_revisions`` holds each save of
 a draft: the whole manifest, its hash, a diff, a message and the author. The
-migration that adds the table (407 at build) owns its schema. A caller opts
+migration that adds the table (409 at build) owns its schema. A caller opts
 in: :func:`create_package` and :func:`update_manifest` append a revision only
 with an ``author``, so each caller from before G17 writes as before.
 :func:`revert_to_revision` appends a NEW revision, so a revert loses none.
@@ -887,7 +887,7 @@ async def get_version(db: Any, member: str, package_id: str,
 
 # --- the save history of a draft (WS-STU G17) --------------------------------
 #
-# Each save of a draft is a row of ``studio_draft_revisions`` (migration 407
+# Each save of a draft is a row of ``studio_draft_revisions`` (migration 409
 # at build): the whole manifest, its ``manifest_hash``, a diff against the
 # revision before it, a message and the author. History is append-only: no
 # statement here updates or deletes a revision. A revert writes a NEW revision
@@ -909,9 +909,9 @@ AUTHOR_KINDS = frozenset({"member", "mira", "system"})
 MIRA = "mira"
 #: The author name of a revision that the store keeps by itself.
 SYSTEM_AUTHOR = "metorite"
-#: The longest message, in characters. The CHECK of 407 holds the same number.
+#: The longest message, in characters. The CHECK of 409 holds the same number.
 MAX_MESSAGE_CHARS = 500
-#: The longest stored diff, in UTF-8 bytes. The CHECK of 407 holds the same number.
+#: The longest stored diff, in UTF-8 bytes. The CHECK of 409 holds the same number.
 MAX_DIFF_BYTES = 262144
 #: The most revisions in one page of :func:`list_revisions`.
 MAX_REVISIONS_PAGE = 100
@@ -951,7 +951,7 @@ _SYSTEM = Author("system", SYSTEM_AUTHOR)
 
 
 def _author(author: object) -> Author:
-    """An :class:`Author` that the CHECKs of 407 take. The refusal names no value."""
+    """An :class:`Author` that the CHECKs of 409 take. The refusal names no value."""
     if not isinstance(author, Author) or author.kind not in AUTHOR_KINDS:
         raise PackageStoreError("author must be an Author of a known kind")
     if author.kind == "member":

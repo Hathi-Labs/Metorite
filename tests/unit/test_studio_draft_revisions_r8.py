@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/ai_studio.md`` §14 G17 row (task 2390). Code:
 ``gateway/studio/packages_store.py``. Migration: the file that creates
-``studio_draft_revisions`` (407 at build), found by content, never by number
+``studio_draft_revisions`` (409 at build), found by content, never by number
 (R1). The hermetic twin is ``tests/unit/test_studio_draft_revisions.py``.
 
 The store runs on a phase-4 promoted scratch database, as the non-privileged
