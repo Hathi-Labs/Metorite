@@ -43,7 +43,7 @@ from gateway.routes.apps._common import (
     parse_db_manifest,
     publish_app_activity,
     read_workspace_manifest,
-    record_app_audit,
+    record_app_audit_bound,
     require_app_author,
     require_app_user,
     router,
@@ -227,7 +227,7 @@ async def publish_app(
     # (best-effort — the version row above is already committed).
     await sync_workspace_best_effort(row)
     review = "pending" if needs_review else "auto"
-    await record_app_audit(
+    await record_app_audit_bound(
         app_id=str(row.id), user_email=_uid(user), kind="publish",
         app_version=version,
         detail={"notes": body.notes.strip()[:500],
@@ -267,7 +267,7 @@ async def rollback_app(
             ),
             {"version": body.version, "id": str(row.id)},
         )
-    await record_app_audit(
+    await record_app_audit_bound(
         app_id=str(row.id), user_email=_uid(user), kind="rollback",
         app_version=body.version, detail={"to_version": body.version},
     )
@@ -353,7 +353,7 @@ async def get_app_bundle(
         if vrow is None:
             raise HTTPException(status_code=404, detail="Version not found")
     if track:
-        await record_app_audit(
+        await record_app_audit_bound(
             app_id=str(row.id), user_email=_uid(user), kind="open",
             app_version=vrow.version, detail={"requested": version},
         )
