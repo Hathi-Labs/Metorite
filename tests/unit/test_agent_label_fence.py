@@ -483,6 +483,26 @@ class TestTheLabelOnARealDatabase:
         assert row_one.json()["agent_label"] == "backend-worker-1"
         assert row_two.json()["agent_label"] == "backend-worker-2"
 
+    async def test_a_label_less_call_clears_the_label_of_an_ended_session(self, w):
+        """A Resume, a reopen or a take-over clears the session key and leaves
+        the label. The next session that adopts the run and sends no label
+        must not show the old name. Mutation: pass `adopted=False` and the
+        last assert fails."""
+        from sqlalchemy import text
+
+        task = _fresh(w)
+        session = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            claimed = await call(session, "POST", f"/projects/tasks/{task}/claim",
+                                 {"agent_label": "lane-3"})
+            run_id = claimed.json()["agent_run_id"]
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("UPDATE pm_agent_runs SET session_key = NULL "
+                               "WHERE id = CAST(:r AS uuid)"), {"r": run_id})
+            later = await call(w.alice, "POST", f"/projects/tasks/{task}/claim", None)
+            assert later.json()["agent_run_id"] == run_id
+        assert _label_of(w, run_id) is None
+
     async def test_a_start_replaces_the_label_and_a_call_with_none_keeps_it(self, w):
         task = _fresh(w)
         session = _in_session(w.alice, _key())

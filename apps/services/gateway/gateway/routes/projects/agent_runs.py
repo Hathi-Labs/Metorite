@@ -1814,11 +1814,15 @@ _SET_LABEL_SQL = (
 )
 
 
-async def _set_run_label(db: Any, run_id: str, label: str | None) -> None:
+async def _set_run_label(db: Any, run_id: str, label: str | None, *,
+                         adopted: bool = False) -> None:
     """SW-7b. Set the label of an open run that the caller already owns, as
     :func:`_set_run_link` sets the link. A call with no label keeps the old
-    one. The run came from the gate, so the label never chooses the run."""
-    if label is None:
+    one, except for a run with no session key (*adopted*): its session ended
+    (a Resume, a reopen or a take-over cleared the key), so the old label
+    names a session that is gone, and a call with no label clears it. The run
+    came from the gate, so the label never chooses the run."""
+    if label is None and not adopted:
         return
     await db.execute(text(_SET_LABEL_SQL), {"rid": run_id, "label": label})
 
@@ -1997,7 +2001,8 @@ async def start_agent_run(
             # CIV-14a: an agent's start on its open run sets the link.
             await _set_run_link(db, str(existing.id), link)
             # SW-7b: and the label of its session.
-            await _set_run_label(db, str(existing.id), label)
+            await _set_run_label(db, str(existing.id), label,
+                            adopted=getattr(existing, "session_key", None) is None)
             existing = await _load_run(db, str(existing.id))
         if existing is not None:
             # The open run is the answer (EA12-6). A member's instruction is
@@ -2969,7 +2974,8 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
                                 session=_agent_session(user))
     if existing is not None:
         await _set_run_link(db, str(existing.id), link)
-        await _set_run_label(db, str(existing.id), label)
+        await _set_run_label(db, str(existing.id), label,
+                            adopted=getattr(existing, "session_key", None) is None)
         return str(existing.id), False
     ts = await _clock(db)
     made = (await db.execute(text(_INSERT_RUN_SQL), {
@@ -2987,7 +2993,8 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
                                 session=_agent_session(user))
     if existing is not None:
         await _set_run_link(db, str(existing.id), link)
-        await _set_run_label(db, str(existing.id), label)
+        await _set_run_label(db, str(existing.id), label,
+                            adopted=getattr(existing, "session_key", None) is None)
     return (str(existing.id) if existing is not None else None), False
 
 
