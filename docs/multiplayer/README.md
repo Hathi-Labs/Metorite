@@ -490,6 +490,11 @@ tool boundary goes back to `cc:steer:` at the run's terminal event, and the chat
 follow-up turn that replays it through ENGAGE. `project-docs/specs/chat_run_continuity.md`
 §4.9 owns the rule and its fences.
 
+**Changed 2026-11-09 (task 2494).** Step 3 above is no longer a note on a tool result. The
+model read member text inside a tool result as a possible prompt injection. Now the run's next
+model call gets each steer as a user message (`orchestrator.steer.SteerTurns`). The text below
+that says "a steer rides the next tool result" is history.
+
 ---
 
 ## 5. Q2 — Managing how many people can work with the agents

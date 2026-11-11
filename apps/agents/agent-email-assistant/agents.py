@@ -2480,7 +2480,8 @@ _KEPT_DRAFT = (" Your earlier draft of this email stays in Drafts as it was, and
 _CARD_REVISED = (
     "The member wrote in the chat while the card was open, so the card is "
     "closed. Nothing was sent. The draft of this reply in Drafts holds the "
-    "text of the card, and a new card updates it. Read the member's words below. If "
+    "text of the card, and a new card updates it. The member's words come "
+    "next, as their own chat message. If "
     "they change this mail, change it, keep every part they did not ask to "
     "change, and show a new card with the new text. If they ask about "
     "something else, answer that first, then ask whether to show the card "
@@ -2501,7 +2502,7 @@ _CARD_REVISED_DRAFT_GONE = (
     "closed. Nothing was sent from the card. The card's draft is no longer in "
     "Drafts. It was sent, deleted or replaced outside this card, so it has no "
     "draft_id to use. Do not say that the reply was sent. Read the member's "
-    "words below, and ask what they want before you show a new card.")
+    "next chat message, and ask what they want before you show a new card.")
 
 
 async def _revised_line(form: dict[str, Any], kept: str, prep: dict[str, Any]) -> str:
@@ -6420,7 +6421,8 @@ async def send_email(
 #: The answer when the member wrote in the chat while a new-mail card was open.
 _NEW_MAIL_REVISED = (
     "The member wrote in the chat while the card was open, so the card is "
-    "closed. Nothing was sent. Read the member's words below. If they change "
+    "closed. Nothing was sent. The member's words come next, as their own "
+    "chat message. If they change "
     "this mail, change it, keep every part they did not ask to change, and "
     "call send_email again with the new text, so a new card shows. If they ask "
     "to add a person, find the address with find_contact first. If they ask "
@@ -6429,7 +6431,7 @@ _NEW_MAIL_REVISED = (
 #: version itself is the gateway's neutral data block (``compose_card_draft``).
 _START_FROM_THE_MEMBER = (
     "Start from the member's own version above, not from your first text. "
-    "Keep each part of it that their words below do not ask to change.")
+    "Keep each part of it that their next message does not ask to change.")
 #: The longest data block of the member's version that the tool passes on
 #: (``chat_recovery.CARD_DRAFT_MAX``).
 _MEMBER_VERSION_MAX = 24_000
@@ -7216,7 +7218,8 @@ def _with_draft_text(
 #: The answer when the member wrote in the chat while a held card was open.
 _HELD_CARD_REVISED = (
     "The member wrote in the chat while the card was open, so the card is "
-    "closed. Nothing was sent. Read the member's words below. If they change "
+    "closed. Nothing was sent. The member's words come next, as their own "
+    "chat message. If they change "
     "this mail, change it, and show a new card. If they ask about something "
     "else, answer that first.")
 
