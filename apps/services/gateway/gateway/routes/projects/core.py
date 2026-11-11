@@ -47,7 +47,7 @@ from uuid import UUID
 from acb_auth import AgentScope, UserContext, require_feature_router
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN
 from acb_auth.permissions import normalize_grant_subject
-from acb_common import get_logger
+from acb_common import get_logger, get_settings
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from gateway.db import tenant_session as _tenant_session  # noqa: F401
 
@@ -951,6 +951,9 @@ class TaskModel(BaseModel):
     #: WS-55 EA-13e (EA3-49). True when the agent-worked rule of
     #: ``agent_worked.py`` holds now. ``filters.attach_agent_worked`` fills it.
     agent_worked: bool | None = None
+    #: WS-39 WM-5 (migration 403). The Goal of this epic, across projects, or
+    #: ``None``. Only an epic carries it (:func:`assert_goal_link`).
+    goal_task_id: str | None = None
 
     @field_validator("leveraged", mode="before")
     @classmethod
@@ -993,6 +996,10 @@ class TaskPatchIn(TaskIn):
     #: write that sends it while ``agent_task_checks_enabled`` is off gets
     #: 422. Not on ``TaskIn``, so only this PATCH and ``POST /tasks`` take it.
     check_text: str | None = None
+    #: WS-39 WM-5 (migration 403). The Goal of this epic. ``None`` clears the
+    #: link. :func:`assert_goal_link` holds the rules, and a write that sends
+    #: it while ``PROJECTS_GOALS_ORGS`` does not hold the org gets 422.
+    goal_task_id: str | None = None
 
 
 class StatusModel(BaseModel):
@@ -1022,6 +1029,9 @@ class TypeModel(BaseModel):
     #: and on the wire so a picker can tell a member WHY a type refuses a
     #: parent instead of surfacing it as an unexplained 422.
     is_epic: bool = False
+    #: WS-39 WM-5 (migration 403). A task of this type is a Goal. Read by
+    #: :func:`is_goal_type`, written through ``admin.create_type``/``patch_type``.
+    is_goal: bool = False
 
 
 class ActivityModel(BaseModel):
@@ -3371,6 +3381,87 @@ async def assert_epic_has_no_parent(
         raise HTTPException(
             status_code=422,
             detail="An Epic cannot have a parent task; it is the top level.",
+        )
+
+
+# ── WS-39 WM-5 — the Goal type and the Goal of an epic (migration 403) ──────
+#
+# Spec: ``project_management_app.md`` §13.6a row WM-5, D204.4, D199.6. A Goal
+# is a task whose type carries ``is_goal``. An epic points at its Goal with
+# ``pm_tasks.goal_task_id``. The link works across projects, because
+# ``parent_task_id`` stays the tree inside one project. One column gives one
+# Goal for each epic, so a second link replaces the first.
+
+#: The detail of the 422 when a write sends a Goal field while
+#: ``PROJECTS_GOALS_ORGS`` does not hold the org.
+GOALS_OFF = "goals_off"
+
+
+def goals_allowed(organization_id: str | None) -> bool:
+    """True when ``PROJECTS_GOALS_ORGS`` holds the org, or holds ``*``.
+
+    Default OFF. The org comes from the session, never from request input
+    (R5). It reads ``get_settings()`` on each call, so a flag reload needs no
+    restart (``docs/flag_reload.md``). THE one reader of the flag.
+    """
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    raw = str(getattr(get_settings(), "projects_goals_orgs", "") or "")
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or org in listed
+
+
+def require_goals(organization_id: str | None) -> None:
+    """422 :data:`GOALS_OFF` while the flag does not hold the org."""
+    if not goals_allowed(organization_id):
+        raise HTTPException(status_code=422, detail=GOALS_OFF)
+
+
+def is_goal_type(row: Any) -> bool:
+    """Does this ``pm_task_types`` row make a task a Goal? The one reader of
+    ``is_goal``. A Goal has no seed name, so the flag is the only arm."""
+    return bool(getattr(row, "is_goal", False))
+
+
+async def assert_goal_link(
+    db: Any, vis: Any, type_id: str | None, goal_task_id: str | None,
+    *, target: bool = True,
+) -> None:
+    """The rules of ``goal_task_id`` on a task write. ``None`` clears the link.
+
+    1. Only an epic carries a Goal (:func:`is_epic_type` on *type_id*, the
+       type the task has after the write).
+    2. The Goal is a task that the writer can see. The visibility seam loads
+       it, with the tenant clause and RLS, so a task of another organization
+       is a 404, the same answer as a task that does not exist (R5).
+    3. The Goal's type is a Goal type (:func:`is_goal_type`).
+
+    *target* False checks rule 1 only. A PATCH that changes the type of a
+    task that keeps its Goal passes it, because the writer did not name the
+    Goal and may not see it.
+
+    The caller checks the flag first (:func:`require_goals`). An epic still
+    has no parent (:func:`assert_epic_has_no_parent`), and nothing here
+    changes that.
+    """
+    if goal_task_id is None:
+        return
+    type_row = await load_row(db, "pm_task_types", str(type_id)) if type_id else None
+    if type_row is None or not is_epic_type(type_row):
+        raise HTTPException(
+            status_code=422, detail="Only an Epic can have a Goal.",
+        )
+    if not target:
+        return
+    goal = await load_visible_task(db, vis, str(goal_task_id))
+    goal_type = (
+        await load_row(db, "pm_task_types", str(goal.type_id))
+        if getattr(goal, "type_id", None) else None
+    )
+    if goal_type is None or not is_goal_type(goal_type):
+        raise HTTPException(
+            status_code=422, detail="The task you linked is not a Goal.",
         )
 
 

@@ -74,6 +74,7 @@ from gateway.routes.projects.core import (
     archive_note,
     assert_assignable_here,
     assert_epic_has_no_parent,
+    assert_goal_link,
     assert_holds_tasks,
     assert_move_keeps_privacy,
     assert_no_task_cycle,
@@ -100,6 +101,7 @@ from gateway.routes.projects.core import (
     record_field_change,
     remap_one_status,
     remap_one_type,
+    require_goals,
     require_precondition,
     require_row,
     require_status_in_project,
@@ -505,6 +507,10 @@ class TaskCreateIn(TaskIn):
     #: PATCH field on ``TaskPatchIn``, never on ``TaskIn``, which other
     #: doors share. 422 while ``agent_task_checks_enabled`` is off.
     check_text: str | None = None
+    #: WS-39 WM-5. The Goal of the new epic (``core.assert_goal_link``). A
+    #: create field here and a PATCH field on ``TaskPatchIn``. 422 while
+    #: ``PROJECTS_GOALS_ORGS`` does not hold the org.
+    goal_task_id: str | None = None
 
 
 class LinkIn(BaseModel):
@@ -1235,6 +1241,11 @@ def check_task_values(
         values["check_text"] = clean_check_text(values["check_text"])
         if values["check_text"] is None:
             values.pop("check_text")
+    if "goal_task_id" in values:
+        # WM-5. 422 while the Goal flag is off. A null is no Goal.
+        require_goals(getattr(user, "organization_id", None))
+        if values["goal_task_id"] is None:
+            values.pop("goal_task_id")
     if getattr(user, "agent", None) is not None:
         # The task source of an agent comes from branch 0's signed context,
         # never from the body (the narrowing above refuses a body `source`).
@@ -1310,6 +1321,10 @@ async def create_task_in(
     _refuse_agent_parent(user, parent, str(project_id))
     await _refuse_agent_type(db, user, values.get("type_id"), str(root))
     await assert_epic_has_no_parent(db, values.get("type_id"), parent_id)
+    # WM-5. Only an epic carries a Goal, and the writer sees the Goal.
+    await assert_goal_link(
+        db, vis, values.get("type_id"), values.get("goal_task_id"),
+    )
 
     # A stated status always wins. A new step with no stated status takes
     # its parent's lane through the ONE seam (D-PM-38, D79), so the
@@ -1369,6 +1384,28 @@ async def create_task_in(
     return CreatedTask(row=row, assigned=assigned)
 
 
+async def _check_goal_patch(
+    db: Any, vis: Any, before: Any, values: dict[str, Any],
+) -> None:
+    """WM-5. The Goal rules of a PATCH, before any write.
+
+    A body that sends ``goal_task_id`` gets 422 while the flag is off. Only
+    an epic carries a Goal. A new link names a Goal that the writer sees, and
+    it replaces the old one, because the link is one column. A change of
+    type keeps a Goal only on an epic.
+    """
+    type_after = (
+        values["type_id"] if "type_id" in values else getattr(before, "type_id", None)
+    )
+    if "goal_task_id" in values:
+        require_goals(vis.organization_id)
+        await assert_goal_link(db, vis, type_after, values["goal_task_id"])
+    elif "type_id" in values and getattr(before, "goal_task_id", None):
+        await assert_goal_link(
+            db, vis, type_after, str(before.goal_task_id), target=False,
+        )
+
+
 @router.patch("/tasks/{task_id}")
 async def patch_task(
     task_id: str, payload: TaskPatchIn,
@@ -1424,6 +1461,8 @@ async def patch_task(
         require_precondition(before, if_match, row_to_dict(before, TaskModel))
         # SW-23. A new Check text clears its last result, in this same write.
         check_patch_values(before, values)
+        # WM-5. The Goal of an epic, after the visibility load, before a write.
+        await _check_goal_patch(db, vis, before, values)
 
         # WS-27l. Merged against the definitions on the task's OWN root, not the
         # caller's current project: a task opened from My work can belong to a

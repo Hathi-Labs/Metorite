@@ -43,6 +43,7 @@ from gateway.routes.projects.core import (
     count_where,
     holds_lanes,
     hue_values,
+    is_epic_type,
     is_org_wide,
     load_visible_project,
     org_wide_exists,
@@ -51,6 +52,7 @@ from gateway.routes.projects.core import (
     refuse_org_wide_write,
     remap_task_statuses,
     require_done_status,
+    require_goals,
     require_known_tenant,
     require_org_vocabulary_edit,
     require_org_vocabulary_write,
@@ -109,6 +111,34 @@ class TypeIn(BaseModel):
     #: about its own vocabulary. `is_system` stays a hard-coded literal below,
     #: because that one grants an exemption rather than accepting a rule.
     is_epic: bool | None = None
+    #: WS-39 WM-5 (migration 403). A task of this type is a Goal. 422 while
+    #: ``PROJECTS_GOALS_ORGS`` does not hold the org. A type is never both a
+    #: Goal and an epic (:func:`_refuse_goal_and_epic`).
+    is_goal: bool | None = None
+
+
+def _refuse_goal_and_epic(user: UserContext, values: dict, existing: Any = None) -> None:
+    """WM-5. The flag first, then one level for each type: a Goal is not an
+    epic, because an epic points at its Goal and a type cannot be both ends."""
+    if "is_goal" not in values:
+        if values.get("is_epic") and existing is not None and getattr(
+            existing, "is_goal", False,
+        ):
+            raise HTTPException(
+                status_code=422, detail="A task type cannot be a Goal and an Epic.",
+            )
+        return
+    require_goals(getattr(user, "organization_id", None))
+    goal = bool(values.get("is_goal"))
+    epic = (
+        bool(values.get("is_epic")) if "is_epic" in values
+        else existing is not None and is_epic_type(existing)
+    )
+    if goal and epic:
+        raise HTTPException(
+            status_code=422, detail="A task type cannot be a Goal and an Epic.",
+        )
+    values["is_goal"] = goal
 
 
 async def _root_for(db: Any, vis: Any, project_id: str) -> str:
@@ -1226,6 +1256,7 @@ async def create_type(
     name = str(values.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=422, detail="A task type needs a name.")
+    _refuse_goal_and_epic(user, values)
     org_wide = values.get("scope") == "org"
     if org_wide:
         require_org_vocabulary_write(user)
@@ -1269,9 +1300,9 @@ async def create_type(
                 text(
                     "INSERT INTO pm_task_types "
                     "(project_id, organization_id, name, icon, color, is_default, "
-                    " is_epic, is_system) "
+                    " is_epic, is_goal, is_system) "
                     "VALUES (CAST(:root AS uuid), CAST(:org AS uuid), :name, :icon, "
-                    "        :color, :is_default, :is_epic, false) RETURNING *"
+                    "        :color, :is_default, :is_epic, :is_goal, false) RETURNING *"
                 ),
                 {
                     "root": None if org_wide else root,
@@ -1280,6 +1311,7 @@ async def create_type(
                     "icon": values.get("icon"), "color": values.get("color"),
                     "is_default": bool(values.get("is_default")),
                     "is_epic": bool(values.get("is_epic")),
+                    "is_goal": bool(values.get("is_goal")),
                 },
             )).fetchone()
         except IntegrityError as exc:
@@ -1360,6 +1392,8 @@ async def patch_type(
                     "level; the hierarchy rule keys off it."
                 ),
             )
+        # WM-5. The flag, and one level for each type.
+        _refuse_goal_and_epic(user, values, existing)
         if not values:
             return row_to_dict(existing, TypeModel)
         try:
