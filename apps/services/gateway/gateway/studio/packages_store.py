@@ -87,6 +87,7 @@ The admin path of a delete and its chat tool are A5c-2.
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import math
@@ -180,15 +181,17 @@ _UPDATE_SQL = (
 
 _VERSION_FIELDS = (
     "version, manifest, bundle_sha256, release_notes, published_by, "
-    "published_at, review_status")
+    "published_at, review_status, draft_revision")
 
 #: One statement takes the next number, so it never reads a stale maximum.
 #: The caller holds the package row lock. ``bundle_html`` is '' for a package.
+#: ``draft_revision`` is the revision that the publish took (G17), or NULL.
 _VERSION_INSERT_SQL = (
     "INSERT INTO app_versions (app_id, version, manifest, bundle_html, "
-    "bundle_sha256, release_notes, scope_set_hash, published_by, review_status) "
+    "bundle_sha256, release_notes, scope_set_hash, published_by, review_status, "
+    "draft_revision) "
     "SELECT CAST(:id AS uuid), COALESCE(MAX(version), 0) + 1, "
-    "CAST(:manifest AS jsonb), '', :sha, :notes, '', :m, 'auto' "
+    "CAST(:manifest AS jsonb), '', :sha, :notes, '', :m, 'auto', CAST(:rev AS integer) "
     "FROM app_versions WHERE app_id = CAST(:id AS uuid) "
     f"RETURNING app_id::text, {_VERSION_FIELDS}"
 )
@@ -197,7 +200,7 @@ _VERSION_INSERT_SQL = (
 #: than the cursor ``:before``.
 _VERSION_LIST_SQL = (
     "SELECT v.app_id::text, v.version, NULL, v.bundle_sha256, v.release_notes, "
-    "v.published_by, v.published_at, v.review_status "
+    "v.published_by, v.published_at, v.review_status, v.draft_revision "
     "FROM app_versions v JOIN apps a ON a.id = v.app_id "
     f"WHERE a.organization_id = {_BOUND_ORG} AND a.format = 'manifest' "
     "AND a.owner_email = :m AND a.id = CAST(:id AS uuid) "
@@ -206,7 +209,7 @@ _VERSION_LIST_SQL = (
 
 _VERSION_GET_SQL = (
     "SELECT v.app_id::text, v.version, v.manifest, v.bundle_sha256, "
-    "v.release_notes, v.published_by, v.published_at, v.review_status "
+    "v.release_notes, v.published_by, v.published_at, v.review_status, v.draft_revision "
     "FROM app_versions v JOIN apps a ON a.id = v.app_id "
     f"WHERE a.organization_id = {_BOUND_ORG} AND a.format = 'manifest' "
     "AND a.owner_email = :m AND a.id = CAST(:id AS uuid) AND v.version = :v"
@@ -523,15 +526,20 @@ def _package(row: Any) -> Package:
         created_at=row[9], updated_at=row[10])
 
 
-async def create_package(db: Any, member: str, manifest: dict[str, Any]) -> Package:
+async def create_package(db: Any, member: str, manifest: dict[str, Any], *,
+                         author: Author | None = None) -> Package:
     """Create a package of *member* from *manifest*: private, a draft, no files.
 
     The name is ``manifest["name"]`` and the description is
     ``manifest["purpose"]``. The slug is ``<manifest id>-<8 hex digits>``.
     A manifest that fails :func:`check_manifest` raises
     :class:`PackageStoreError` and writes nothing.
+
+    With *author* (G17), the create writes revision 1 of the draft in the
+    same transaction. With None, it writes no revision, as before G17.
     """
     m = _member(member)
+    who = None if author is None else _author(author)
     encoded = check_manifest(manifest)
     params = {"name": manifest["name"], "desc": manifest["purpose"], "m": m,
               "manifest": encoded}
@@ -541,7 +549,11 @@ async def create_package(db: Any, member: str, manifest: dict[str, Any]) -> Pack
         row = (await db.execute(text(_CREATE_SQL), {
             **params, "id": str(new_id), "slug": slug})).first()
         if row is not None:
-            return _package(row)
+            package = _package(row)
+            if who is not None:
+                await _insert_revision(db, m, package.id, manifest, encoded, who,
+                                       CREATED_TEXT, before=None)
+            return package
     # The text names no slug, so it tells nothing of a package of another org.
     raise PackageStoreError("No free name is left for this package. Try again.")
 
@@ -601,7 +613,9 @@ async def list_package_actions(db: Any, member: str, *,
 
 async def update_manifest(db: Any, member: str, package_id: str,
                           manifest: dict[str, Any], *,
-                          expected_hash: str | None = None) -> Package | None:
+                          expected_hash: str | None = None,
+                          author: Author | None = None,
+                          message: str = "") -> Package | None:
     """Replace the manifest of the package *package_id* of *member*.
 
     The name and the description follow the new manifest. The slug, the
@@ -616,9 +630,18 @@ async def update_manifest(db: Any, member: str, package_id: str,
     With *expected_hash*, the stored draft must hash to it under the row lock,
     or :class:`DraftChanged` raises and nothing is written. So of two saves
     that read one draft, one writes and the other gets the refusal.
+
+    With *author* (G17), the save appends a draft revision in the same
+    transaction, under the same row lock (:func:`_record_save`). So two saves
+    at once get two numbers in the order of their commits. A save that
+    changes nothing appends no revision. *message* is the text of the
+    revision, and "" gives :data:`SAVED_TEXT`. With None, the save writes no
+    revision, as before G17.
     """
     m = _member(member)
     pid = _package_id(package_id)
+    who = None if author is None else _author(author)
+    note = _message(message) if who is not None else ""
     encoded = check_manifest(manifest)
     current = await get_package(db, m, pid, for_update=True)
     if current is None:
@@ -629,7 +652,12 @@ async def update_manifest(db: Any, member: str, package_id: str,
     row = (await db.execute(text(_UPDATE_SQL), {
         "m": m, "id": pid, "manifest": encoded, "name": manifest["name"],
         "desc": manifest["purpose"]})).first()
-    return None if row is None else _package(row)
+    if row is None:
+        return None
+    if who is not None:
+        await _record_save(db, m, pid, current.manifest, manifest, encoded, who,
+                           note or SAVED_TEXT)
+    return _package(row)
 
 
 @dataclass(frozen=True)
@@ -645,17 +673,23 @@ class PackageVersion:
     published_by: str
     published_at: datetime
     review_status: str
+    #: The draft revision that this publish took (G17), or None: a version
+    #: from before G17, a rollback, or a draft whose newest save is not the
+    #: draft that the publish read.
+    draft_revision: int | None = None
 
 
 def _version(row: Any) -> PackageVersion:
     manifest = row[2]
     if isinstance(manifest, str | bytes):
         manifest = json.loads(manifest)
+    revision = row[8] if len(row) > 8 else None
     return PackageVersion(
         package_id=str(row[0]), version=int(row[1]),
         manifest=None if manifest is None else dict(manifest),
         bundle_sha256=str(row[3]), release_notes=str(row[4] or ""),
-        published_by=str(row[5]), published_at=row[6], review_status=str(row[7]))
+        published_by=str(row[5]), published_at=row[6], review_status=str(row[7]),
+        draft_revision=None if revision is None else int(revision))
 
 
 def _notes(notes: object) -> str:
@@ -702,10 +736,11 @@ def _sha256(encoded: str) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-async def _append_version(db: Any, m: str, pid: str, encoded: str, notes: str) -> PackageVersion:
+async def _append_version(db: Any, m: str, pid: str, encoded: str, notes: str, *,
+                          revision: int | None = None) -> PackageVersion:
     row = (await db.execute(text(_VERSION_INSERT_SQL), {
         "id": pid, "manifest": encoded, "sha": _sha256(encoded), "notes": notes,
-        "m": m})).first()
+        "m": m, "rev": revision})).first()
     if row is None:  # pragma: no cover - the INSERT .. SELECT always answers a row
         raise PackageStoreError("The version was not written.")
     return _version(row)
@@ -721,7 +756,8 @@ async def _audit(db: Any, m: str, pid: str, version: int | None, kind: str,
 
 async def publish_version(db: Any, member: str, package_id: str, notes: str, *,
                           catalog: Mapping[str, str],
-                          expected_hash: str | None = None) -> PackageVersion | None:
+                          expected_hash: str | None = None,
+                          name_revision: bool = False) -> PackageVersion | None:
     """Publish the draft of the package *package_id* of *member* as version N+1.
 
     Answers None when no package of the member has the id. The call locks the
@@ -745,6 +781,11 @@ async def publish_version(db: Any, member: str, package_id: str, notes: str, *,
     or :class:`DraftChanged` raises and nothing is written (STU-G1c review
     round 1). A chat publish names the draft that its approved plan names, so
     a save that lands after its read cannot go live in its place.
+
+    With *name_revision* (G17), the version names the newest draft revision
+    in ``draft_revision``, when that revision holds the draft that the publish
+    read. Else the version names none. The read runs under the row lock, so
+    no save lands between the read and the version row.
     """
     m = _member(member)
     pid = _package_id(package_id)
@@ -755,10 +796,14 @@ async def publish_version(db: Any, member: str, package_id: str, notes: str, *,
         return None
     _expect(current.manifest, expected_hash)
     encoded = _check_publishable(current.manifest, known)
-    version = await _append_version(db, m, pid, encoded, note)
+    revision = await _revision_of_draft(db, pid, current.manifest) if name_revision else None
+    version = await _append_version(db, m, pid, encoded, note, revision=revision)
     await db.execute(text(_PUBLISH_POINT_SQL), {"m": m, "id": pid, "v": version.version})
-    await _audit(db, m, pid, version.version, "publish", {
-        "version": version.version, "sha256": version.bundle_sha256, "notes": note})
+    detail: dict[str, Any] = {
+        "version": version.version, "sha256": version.bundle_sha256, "notes": note}
+    if revision is not None:
+        detail["draft_revision"] = revision
+    await _audit(db, m, pid, version.version, "publish", detail)
     return version
 
 
@@ -827,6 +872,333 @@ async def get_version(db: Any, member: str, package_id: str,
     row = (await db.execute(text(_VERSION_GET_SQL), {
         "m": _member(member), "id": _package_id(package_id), "v": version})).first()
     return None if row is None else _version(row)
+
+
+# --- the save history of a draft (WS-STU G17) --------------------------------
+#
+# Each save of a draft is a row of ``studio_draft_revisions`` (migration 406
+# at build): the whole manifest, its ``manifest_hash``, a diff against the
+# revision before it, a message and the author. History is append-only: no
+# statement here updates or deletes a revision. A revert writes a NEW revision
+# with the old manifest. The draft itself stays in ``apps.manifest``, so a
+# revision store adds no second draft. The callers hold the package row
+# ``FOR UPDATE`` (``update_manifest``, ``revert_to_revision``), so the next
+# number is MAX + 1 with no race, and ``UNIQUE (app_id, seq)`` is the
+# backstop. A new package row (``create_package``) is not visible to any
+# other session, so it needs no lock.
+#
+# ⚠️ No draft loses a state. When the stored draft is not the newest revision
+# (a draft from before G17, a save with the switch off, or a rollback of A4,
+# which overwrites the draft), the next save first keeps the stored draft as
+# a revision of the author ``system``. Then it appends the new one.
+
+#: The kinds of author. The server sets each one, never a request body.
+AUTHOR_KINDS = frozenset({"member", "mira", "system"})
+#: The author name of a save by Mira.
+MIRA = "mira"
+#: The author name of a revision that the store keeps by itself.
+SYSTEM_AUTHOR = "metorite"
+#: The longest message, in characters. The CHECK of 406 holds the same number.
+MAX_MESSAGE_CHARS = 500
+#: The longest stored diff, in UTF-8 bytes. The CHECK of 406 holds the same number.
+MAX_DIFF_BYTES = 262144
+#: The most revisions in one page of :func:`list_revisions`.
+MAX_REVISIONS_PAGE = 100
+#: The message of revision 1 of a new package.
+CREATED_TEXT = "Created the draft."
+#: The message of a save that names no message.
+SAVED_TEXT = "Saved the draft."
+#: The message of the revision that keeps a stored draft that no revision holds.
+OUTSIDE_TEXT = "The draft before this save. It changed outside the save history."
+#: The message of a revert that names no message.
+REVERT_TEXT = "Reverted to revision {seq}."
+#: The refusal of a revert to the draft that the draft holds now.
+REVERT_SAME = "The draft already holds that revision. Nothing was written."
+#: The diff text of a diff that is too large to store.
+DIFF_TOO_LARGE = ("The diff is larger than 256 KiB, so it is not stored. Compare the two "
+                  "revisions.")
+
+
+@dataclass(frozen=True)
+class Author:
+    """Who made a save. ``kind`` is one of :data:`AUTHOR_KINDS`. ``name`` is
+    the member email for ``member``, :data:`MIRA` for ``mira`` and
+    :data:`SYSTEM_AUTHOR` for ``system``."""
+
+    kind: str
+    name: str
+
+
+def member_author(email: str) -> Author:
+    """The author of a save that a member made."""
+    return Author("member", _member(email))
+
+
+#: The author of a save that Mira made.
+MIRA_AUTHOR = Author("mira", MIRA)
+_SYSTEM = Author("system", SYSTEM_AUTHOR)
+
+
+def _author(author: object) -> Author:
+    """An :class:`Author` that the CHECKs of 406 take. The refusal names no value."""
+    if not isinstance(author, Author) or author.kind not in AUTHOR_KINDS:
+        raise PackageStoreError("author must be an Author of a known kind")
+    if author.kind == "member":
+        return member_author(author.name)
+    expected = MIRA if author.kind == "mira" else SYSTEM_AUTHOR
+    if author.name != expected:
+        raise PackageStoreError(f"the author of kind {author.kind} is {expected}")
+    return author
+
+
+def _message(message: object) -> str:
+    """The text of a revision, with the checks of the release notes."""
+    if not isinstance(message, str):
+        raise _refuse("$.message", "The message is text.")
+    if "\x00" in message:
+        raise _refuse("$.message", "The message holds a NUL character. Remove it.")
+    try:
+        message.encode("utf-8")
+    except UnicodeEncodeError:
+        raise _refuse("$.message", "The message holds a lone surrogate. Remove it.") from None
+    if looks_like_secret(message):
+        raise _refuse("$.message", "The message looks like a secret. Remove it.")
+    if len(message) > MAX_MESSAGE_CHARS:
+        raise _refuse("$.message", f"The message is longer than {MAX_MESSAGE_CHARS} characters.")
+    return message
+
+
+def _revision_number(seq: object) -> int:
+    """A revision number is an int from 1 to :data:`MAX_VERSION`."""
+    if isinstance(seq, bool) or not isinstance(seq, int) or not 1 <= seq <= MAX_VERSION:
+        raise PackageStoreError(f"revision must be an integer from 1 to {MAX_VERSION}")
+    return seq
+
+
+@dataclass(frozen=True)
+class DraftRevision:
+    """One save of a draft. ``manifest`` and ``diff`` are None in the answer
+    of :func:`list_revisions`, which carries the metadata only."""
+
+    package_id: str
+    seq: int
+    manifest: dict[str, Any] | None
+    manifest_hash: str
+    diff: str | None
+    message: str
+    author_kind: str
+    author: str
+    on_behalf_of: str
+    restores: int | None
+    created_at: datetime
+
+
+def _revision(row: Any) -> DraftRevision:
+    manifest = _jsonb(row[2])
+    return DraftRevision(
+        package_id=str(row[0]), seq=int(row[1]),
+        manifest=None if manifest is None else dict(manifest),
+        manifest_hash=str(row[3]), diff=None if row[4] is None else str(row[4]),
+        message=str(row[5] or ""), author_kind=str(row[6]), author=str(row[7]),
+        on_behalf_of=str(row[8]), restores=None if row[9] is None else int(row[9]),
+        created_at=row[10])
+
+
+_REVISION_RETURNING = (
+    "app_id::text, seq, NULL, manifest_hash, NULL, message, author_kind, author, "
+    "on_behalf_of, restores, created_at")
+
+#: One statement takes the next number. The caller holds the package row lock.
+#: The org comes from the column DEFAULT, the bound tenant.
+_REVISION_INSERT_SQL = (
+    "INSERT INTO studio_draft_revisions (app_id, seq, manifest, manifest_hash, diff, "
+    "message, author_kind, author, on_behalf_of, restores) "
+    "SELECT CAST(:id AS uuid), COALESCE(MAX(seq), 0) + 1, CAST(:manifest AS jsonb), "
+    ":hash, :diff, :message, :kind, :author, :m, CAST(:restores AS integer) "
+    f"FROM studio_draft_revisions WHERE organization_id = {_BOUND_ORG} "
+    "AND app_id = CAST(:id AS uuid) "
+    f"RETURNING {_REVISION_RETURNING}"
+)
+
+#: The newest revision of a package, for the store only. The caller holds the
+#: package row lock, so the member filter ran on that row.
+_REVISION_LATEST_SQL = (
+    "SELECT seq, manifest, manifest_hash FROM studio_draft_revisions "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = CAST(:id AS uuid) "
+    "ORDER BY seq DESC LIMIT 1"
+)
+
+_REVISION_SCOPE = (
+    "FROM studio_draft_revisions r JOIN apps a "
+    "ON a.organization_id = r.organization_id AND a.id = r.app_id "
+    f"WHERE a.organization_id = {_BOUND_ORG} AND a.format = 'manifest' "
+    "AND a.owner_email = :m AND a.id = CAST(:id AS uuid) "
+)
+
+#: One page of revisions, newest first: at most ``:limit``, each older than
+#: the cursor ``:before``. No manifest and no diff.
+_REVISION_LIST_SQL = (
+    "SELECT r.app_id::text, r.seq, NULL, r.manifest_hash, NULL, r.message, "
+    "r.author_kind, r.author, r.on_behalf_of, r.restores, r.created_at "
+    f"{_REVISION_SCOPE}"
+    "AND r.seq < CAST(:before AS bigint) ORDER BY r.seq DESC LIMIT :limit"
+)
+
+_REVISION_GET_SQL = (
+    "SELECT r.app_id::text, r.seq, r.manifest, r.manifest_hash, r.diff, r.message, "
+    "r.author_kind, r.author, r.on_behalf_of, r.restores, r.created_at "
+    f"{_REVISION_SCOPE}"
+    "AND r.seq = :s"
+)
+
+
+def revision_diff(before: dict[str, Any] | None, after: dict[str, Any],
+                  before_seq: int | None) -> str:
+    """The unified diff of *before* to *after*, as text. "" when *before* is
+    None (revision 1). Each side is the JSON of the manifest with sorted keys
+    and an indent of 2, so a diff names lines that a person can read. A diff
+    over :data:`MAX_DIFF_BYTES` gives :data:`DIFF_TOO_LARGE`: the two
+    revisions still hold their whole manifests."""
+    if before is None:
+        return ""
+
+    def lines(doc: dict[str, Any]) -> list[str]:
+        return json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False).splitlines()
+
+    seq = before_seq or 0
+    out = "\n".join(difflib.unified_diff(
+        lines(before), lines(after), fromfile=f"revision {seq}",
+        tofile=f"revision {seq + 1}", lineterm=""))
+    if len(out.encode("utf-8", "surrogatepass")) > MAX_DIFF_BYTES:
+        return DIFF_TOO_LARGE
+    return out
+
+
+@dataclass(frozen=True)
+class _Latest:
+    seq: int
+    manifest: dict[str, Any]
+    manifest_hash: str
+
+
+async def _latest_revision(db: Any, pid: str) -> _Latest | None:
+    row = (await db.execute(text(_REVISION_LATEST_SQL), {"id": pid})).first()
+    if row is None:
+        return None
+    return _Latest(seq=int(row[0]), manifest=dict(_jsonb(row[1])), manifest_hash=str(row[2]))
+
+
+async def _insert_revision(db: Any, m: str, pid: str, manifest: dict[str, Any], encoded: str,
+                           who: Author, message: str, *, before: _Latest | None,
+                           restores: int | None = None) -> DraftRevision:
+    """Append one revision. *before* is the newest revision, or None."""
+    diff = revision_diff(None if before is None else before.manifest, manifest,
+                         None if before is None else before.seq)
+    row = (await db.execute(text(_REVISION_INSERT_SQL), {
+        "id": pid, "manifest": encoded, "hash": manifest_hash(manifest), "diff": diff,
+        "message": message, "kind": who.kind, "author": who.name, "m": m,
+        "restores": restores})).first()
+    if row is None:  # pragma: no cover - the INSERT .. SELECT always answers a row
+        raise PackageStoreError("The revision was not written.")
+    found = _revision(row)
+    return DraftRevision(**{**found.__dict__, "manifest": dict(manifest), "diff": diff})
+
+
+async def _record_save(db: Any, m: str, pid: str, stored: dict[str, Any],
+                       manifest: dict[str, Any], encoded: str, who: Author, message: str, *,
+                       restores: int | None = None) -> DraftRevision | None:
+    """Append the revision of a save. The caller holds the package row lock and
+    read *stored*, the draft before the save. Answers None when the save
+    changed nothing."""
+    latest = await _latest_revision(db, pid)
+    if latest is None or latest.manifest_hash != manifest_hash(stored):
+        kept = json.dumps(stored, ensure_ascii=False)
+        found = await _insert_revision(db, m, pid, stored, kept, _SYSTEM, OUTSIDE_TEXT,
+                                       before=latest)
+        latest = _Latest(seq=found.seq, manifest=dict(stored),
+                         manifest_hash=found.manifest_hash)
+    if manifest_hash(manifest) == latest.manifest_hash:
+        return None
+    return await _insert_revision(db, m, pid, manifest, encoded, who, message, before=latest,
+                                  restores=restores)
+
+
+async def _revision_of_draft(db: Any, pid: str, draft: dict[str, Any]) -> int | None:
+    """The number of the newest revision when it holds *draft*, else None."""
+    latest = await _latest_revision(db, pid)
+    if latest is None or latest.manifest_hash != manifest_hash(draft):
+        return None
+    return latest.seq
+
+
+async def list_revisions(db: Any, member: str, package_id: str, *,
+                         limit: int = MAX_REVISIONS_PAGE,
+                         before: int | None = None) -> list[DraftRevision]:
+    """One page of the revisions of a package of *member*, newest first, with
+    no manifest and no diff: at most *limit* (1 to :data:`MAX_REVISIONS_PAGE`),
+    and only the revisions older than *before* when it is given. A package of
+    another member or org answers an empty list."""
+    if (isinstance(limit, bool) or not isinstance(limit, int)
+            or not 1 <= limit <= MAX_REVISIONS_PAGE):
+        raise PackageStoreError(f"limit must be an integer from 1 to {MAX_REVISIONS_PAGE}")
+    cursor = MAX_VERSION + 1 if before is None else _revision_number(before)
+    rows = (await db.execute(text(_REVISION_LIST_SQL), {
+        "m": _member(member), "id": _package_id(package_id), "before": cursor,
+        "limit": limit})).all()
+    return [_revision(r) for r in rows]
+
+
+async def get_revision(db: Any, member: str, package_id: str, seq: int) -> DraftRevision | None:
+    """One revision, with its manifest and its diff, or None."""
+    _revision_number(seq)
+    row = (await db.execute(text(_REVISION_GET_SQL), {
+        "m": _member(member), "id": _package_id(package_id), "s": seq})).first()
+    return None if row is None else _revision(row)
+
+
+async def revert_to_revision(db: Any, member: str, package_id: str, seq: int, *,
+                             author: Author, expected_hash: str | None = None,
+                             message: str = "") -> tuple[Package, DraftRevision] | None:
+    """Set the draft to the manifest of revision *seq*, as a NEW revision.
+
+    No revision is lost: the revert appends one that copies *seq*, and
+    ``restores`` names *seq*. Under the package row lock it reads the stored
+    draft and the revision, runs :func:`check_manifest` on the copy, and
+    writes the draft through the statement of :func:`update_manifest`. So the
+    name and the description follow the copy.
+
+    Answers None for a missing package or a missing revision. Raises
+    :class:`PackageStoreError` (:data:`REVERT_SAME`) when the draft holds that
+    manifest now, and :class:`DraftChanged` for a stale *expected_hash*. Each
+    refusal writes nothing.
+    """
+    m = _member(member)
+    pid = _package_id(package_id)
+    seq = _revision_number(seq)
+    who = _author(author)
+    note = _message(message)
+    current = await get_package(db, m, pid, for_update=True)
+    if current is None:
+        return None
+    _expect(current.manifest, expected_hash)
+    old = await get_revision(db, m, pid, seq)
+    if old is None or old.manifest is None:
+        return None
+    encoded = check_manifest(old.manifest)
+    if current.manifest.get("id") != old.manifest.get("id"):  # pragma: no cover - the id is fixed
+        raise PackageStoreError(ID_FIXED, [ManifestError(path="$.id", message=ID_FIXED)])
+    if manifest_hash(old.manifest) == manifest_hash(current.manifest):
+        raise PackageStoreError(REVERT_SAME)
+    row = (await db.execute(text(_UPDATE_SQL), {
+        "m": m, "id": pid, "manifest": encoded, "name": old.manifest["name"],
+        "desc": old.manifest["purpose"]})).first()
+    if row is None:  # pragma: no cover - the row is locked
+        return None
+    revision = await _record_save(db, m, pid, current.manifest, old.manifest, encoded, who,
+                                  note or REVERT_TEXT.format(seq=seq), restores=seq)
+    if revision is None:  # pragma: no cover - REVERT_SAME refused an equal draft
+        raise PackageStoreError(REVERT_SAME)
+    return _package(row), revision
 
 
 # --- the lock of an install (WS-PKG PKG-8b) ---------------------------------
