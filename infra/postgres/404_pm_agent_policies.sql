@@ -1,5 +1,5 @@
 -- ============================================================================
--- 371_pm_agent_policies.sql — one policy store for agent work (WS-MCP SW-94,
+-- 404_pm_agent_policies.sql — one policy store for agent work (WS-MCP SW-94,
 -- Metorite task 1940, agent_coordination.md §3.11.5 and SW-94, D186).
 --
 -- What: one new table. `pm_agent_policies` holds the policy rows of an org.
@@ -53,7 +53,7 @@
 -- The number (R1): the builder takes the number at build time, and
 -- scripts/premerge.sh checks it again at the merge. On 2026-11-08 origin/main
 -- held 366 and the open pull requests held numbers up to 370, so this file
--- took 371. (The first build took 367, which an open pull request also held.)
+-- took 404 (renumbered at merge: main held 401, open PRs held 402 and 403). (The first build took 367, which an open pull request also held.)
 -- Pinned by tests/unit/test_agent_policies_r8.py, which finds this
 -- file by CONTENT, never by number (R1).
 -- ============================================================================

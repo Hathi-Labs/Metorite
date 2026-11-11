@@ -443,9 +443,12 @@ def test_the_chat_reads_the_history_through_the_crm_pack() -> None:
 
 
 def test_the_chat_parity_row_names_the_read() -> None:
-    from acb_skills import chat_parity
+    """CRM-M2a: the CRM manifest decides the action, not a table row."""
+    from acb_common.app_manifests import base
+    from acb_common.app_manifests.crm import CRM
 
-    assert chat_parity.COVERED["GET /api/crm/change-history"] == "crm_change_history"
+    row = base.route_for(CRM, "GET", "/crm/change-history")
+    assert row is not None and row.tool == "crm_change_history"
 
 
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:

@@ -407,7 +407,8 @@ async def test_each_refusal_writes_nothing_and_says_what_to_do(pns) -> None:
         ({"name": "X", "copy_from": str(uuid4())}, 404, "no_pipeline"),
         ({"name": "X", "copy_from": "not-an-id"}, 422, None),
         ({"name": "X", "stages": [{"name": "A"}], "via": "chat"}, 422, None),
-        ({"name": "X", "kind": "lead", "stages": [{"name": "A"}]}, 422, None),
+        # CRM-M4a: `lead` is a kind now. Another word is not.
+        ({"name": "X", "kind": "contact", "stages": [{"name": "A"}]}, 422, None),
     ]
     for body, status, code in cases:
         r = await _call(pns, admin, "POST", "/crm/pipelines", body)

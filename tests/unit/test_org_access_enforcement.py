@@ -131,6 +131,10 @@ GATED_ROUTERS: dict[str, set[str]] = {
         # The OAuth callback left this set in EM-T1a: it runs behind the
         # session now (email_app_master_plan.md §10.4.1, risk R-4).
         "/email/webhook/microsoft",
+        # WS-17 SG-1 (D-EM-68): a mail reader fetches a signature logo with
+        # no session. The 256-bit token is the capability, read under
+        # tenant_session(org) and RLS. It is in main.PUBLIC_ROUTES too.
+        "/email/signature-image/{org}/{token}.{ext}",
     },
     "gateway.routes.notes": {
         "/notes/meetings/{meeting_id}/live/segment",

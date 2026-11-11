@@ -3,7 +3,7 @@
 Spec: ``project-docs/specs/agent_coordination.md`` §3.11.5 ("One policy store")
 and the slice SW-94 of §5.11 (D186.8).
 
-A policy is a row of ``pm_agent_policies`` (migration 371). It holds a scope
+A policy is a row of ``pm_agent_policies`` (migration 404). It holds a scope
 (``organization``, ``project``, ``lane``, ``member`` or ``box``), a risk tier or
 ``any``, a key from :data:`REGISTRY`, a value, the author and a version. Each
 save adds a row, as guidance does (SW-31). The trigger
@@ -112,7 +112,7 @@ GONE_REFUSED = "The project of this policy was not found."
 SHAPE_REFUSED = "The store cannot hold this policy. Check the scope and the value."
 
 #: The unique index of one version of a (scope, tier, key). A save retries
-#: only on a unique violation of this index (migration 371).
+#: only on a unique violation of this index (migration 404).
 VERSION_INDEX = "pm_agent_policies_version"
 LEAD_REFUSED = "Only the project lead or an organization admin can change the agent policies of this project."
 AGENT_WRITE_REFUSED = "An agent connection cannot change a policy. A member does it in Settings."

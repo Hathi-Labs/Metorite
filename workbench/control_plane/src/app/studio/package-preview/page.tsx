@@ -38,7 +38,7 @@ import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, moreLine, sourceKey } from "@/lib/studio/dataDoor";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import {
-  fieldSpecs, formFields, missingObjectNote, noBoardReason, objectBoardBlock, pickObject, previewHref, recordTitle, tableFields,
+  detailFields, fieldSpecs, formFields, missingObjectNote, noBoardReason, objectBoardBlock, pickObject, previewHref, recordTitle, tableFields,
 } from "@/lib/studio/packagePreview";
 import { buildHref } from "@/lib/studio/packageDraft";
 import { STUDIO_OFF, createDoorKeeper, getPackage, listPackages, verbMap } from "@/lib/studio/realDoor";
@@ -192,7 +192,7 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
                     title="Edit record" submitLabel="Save changes" savedMessage="Changes saved"
                     onSaved={() => setEditing(false)} />
                 ) : (
-                  <StudioDetail fields={fields} record={record} />
+                  <StudioDetail fields={detailFields(fields)} record={record} />
                 )}
                 <div className="flex flex-wrap items-center gap-2">
                   <Button type="button" variant="secondary" size="sm" icon={editing ? "X" : "Pencil"}

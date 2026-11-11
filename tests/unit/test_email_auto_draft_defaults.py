@@ -106,7 +106,8 @@ def _column_default(col: str) -> str:
 def _settings_row(**over) -> SimpleNamespace:
     """A stored settings row, with every column the GET reads."""
     base = dict(
-        about="", signature="", auto_run=True, cold_email_blocker="OFF",
+        about="", signature="", auto_run=True, auto_run_chosen_at=None,
+        cold_email_blocker="OFF",
         rule_model=None,
         digest_frequency="OFF", personal_instructions="", writing_style="",
         learned_writing_style="", draft_replies=False, follow_up_days=0,
@@ -143,7 +144,16 @@ def _db(*, settings=None, drafts: bool = False, sent: list[str] | None = None,
         if hits(s, "FROM email_rules"):
             one, many = SimpleNamespace(drafts=drafts), []
         elif hits(s, "INSERT INTO email_assistant_settings"):
-            one, many = SimpleNamespace(learned_writing_style=""), []
+            # Task 2305: the PUT RETURNs the stored Auto-run and its stamp.
+            # The fake keeps a stored stamp (the COALESCE) and adds one only
+            # for a bound ``choice``. R8 proves the real SQL.
+            p = params or {}
+            stamp = getattr(settings, "auto_run_chosen_at", None)
+            if p.get("choice") is True and stamp is None:
+                stamp = "2026-11-09T00:00:00Z"
+            one, many = SimpleNamespace(
+                learned_writing_style="", auto_run=p.get("auto"),
+                auto_run_chosen_at=stamp), []
         elif hits(s, "FROM email_assistant_settings"):
             one, many = settings, []
         elif hits(s, "FROM email_accounts"):
@@ -329,33 +339,90 @@ async def test_the_get_answers_the_effective_auto_run(provider, settings, expect
     assert body["auto_run"] is expected
 
 
+_STAMP = "2026-11-08T10:00:00Z"
+
+
 @pytest.mark.parametrize(("provider", "settings", "auto_run", "chosen"), [
     ("gmail", None, False, False),                          # no row: Gmail still OFF
-    ("gmail", _settings_row(auto_run=False), False, True),  # stored OFF: chosen
-    ("gmail", _settings_row(auto_run=True), True, True),
+    # Task 2305: a row with OFF and no stamp is no choice. A save of another
+    # field wrote it from the GET body.
+    ("gmail", _settings_row(auto_run=False), False, False),
+    ("gmail", _settings_row(auto_run=False, auto_run_chosen_at=_STAMP), False, True),
+    ("gmail", _settings_row(auto_run=True), True, True),    # a stored ON: chosen
     ("microsoft", None, True, False),                       # Outlook unchanged
-    ("microsoft", _settings_row(auto_run=False), False, True),
-], ids=["gmail-no-row", "gmail-stored-off", "gmail-stored-on", "outlook-no-row", "outlook-stored-off"])
+    ("microsoft", _settings_row(auto_run=False, auto_run_chosen_at=_STAMP), False, True),
+], ids=["gmail-no-row", "gmail-off-no-stamp", "gmail-off-stamped", "gmail-stored-on",
+        "outlook-no-row", "outlook-off-stamped"])
 async def test_the_get_tells_a_stored_choice_from_none(provider, settings, auto_run, chosen) -> None:
-    """Task 2267: ``auto_run_chosen`` is true when a settings row exists. It
-    does not change ``auto_run``, so a Gmail mailbox with no row still reads
-    OFF and makes no background write (EM-G11c2)."""
+    """Task 2267, with the rule of task 2305: ``auto_run_chosen`` is a stored
+    stamp OR a stored ON. It does not change ``auto_run``, so a Gmail mailbox
+    with no row still reads OFF and makes no background write (EM-G11c2)."""
     body = await _get(_db(settings=settings, provider=provider))
     assert body["auto_run_chosen"] is chosen
     assert body["auto_run"] is auto_run
 
 
+@pytest.mark.parametrize(("row", "chosen"), [
+    (None, False),
+    (SimpleNamespace(auto_run=False, auto_run_chosen_at=None), False),
+    (SimpleNamespace(auto_run=None, auto_run_chosen_at=None), False),
+    (SimpleNamespace(auto_run=True, auto_run_chosen_at=None), True),
+    (SimpleNamespace(auto_run=False, auto_run_chosen_at=_STAMP), True),
+])
+def test_the_one_rule_of_a_choice(row, chosen) -> None:
+    """Task 2305: the GET and the PUT answer share one rule."""
+    assert assistant_mod.auto_run_chosen(row) is chosen
+
+
 async def test_the_put_ignores_the_read_only_auto_run_chosen() -> None:
     """The settings screen PUTs the GET body back. The field is read-only: the
-    model has no such field, and the PUT stores nothing for it."""
+    model has no such field. Task 2305: a save of another field on a Gmail
+    mailbox with no row stamps nothing, and the answer reads not chosen."""
     assert "auto_run_chosen" not in AssistantSettingsModel.model_fields
     get_body = await _get(_db())
     assert get_body["auto_run_chosen"] is False
     db = _db()
-    res = await _put(db, get_body)
-    assert res["auto_run_chosen"] is True
-    (sql, _), = _executed(db, "INSERT INTO email_assistant_settings")
-    assert "auto_run_chosen" not in sql
+    res = await _put(db, {**get_body, "signature": "— Me"})
+    assert res["auto_run_chosen"] is False
+    assert res["auto_run"] is False
+    (_, params), = _executed(db, "INSERT INTO email_assistant_settings")
+    assert params["choice"] is False
+    # An old client echoes the GET field. It is not the marker.
+    db = _db()
+    res = await _put(db, {**get_body, "auto_run_chosen": True})
+    (_, params), = _executed(db, "INSERT INTO email_assistant_settings")
+    assert params["choice"] is False and res["auto_run_chosen"] is False
+
+
+@pytest.mark.parametrize(("body", "choice"), [
+    ({"auto_run": True, "auto_run_choice": True}, True),    # Turn on
+    ({"auto_run": False, "auto_run_choice": True}, True),   # an OFF on purpose
+    ({"auto_run": False}, False),                           # an old client
+    ({"auto_run_choice": True}, False),                     # a marker with no value
+    ({"auto_run": True, "auto_run_choice": False}, False),
+], ids=["turn-on", "off-on-purpose", "old-client", "marker-no-value", "marker-false"])
+async def test_only_the_marker_with_a_value_stamps(body, choice) -> None:
+    """Task 2305: the PUT binds ``choice`` only for the marker AND a value of
+    ``auto_run``. The answer reads the row that the upsert RETURNs."""
+    db = _db()
+    res = await _put(db, body)
+    (_, params), = _executed(db, "INSERT INTO email_assistant_settings")
+    assert params["choice"] is choice
+    assert res["auto_run_chosen"] is (choice or res["auto_run"] is True)
+    assert "auto_run_choice" not in res
+
+
+def test_the_upsert_never_clears_the_stamp() -> None:
+    """Task 2305: the INSERT stamps only for ``choice``, and the DO UPDATE
+    keeps a stamp that exists. No statement sets it to NULL."""
+    src = inspect.getsource(assistant_mod.put_assistant_settings)
+    assert "CASE WHEN CAST(:choice AS boolean) THEN now() END" in src
+    update = src.split("DO UPDATE SET", 1)[1]
+    assert re.search(
+        r"auto_run_chosen_at = COALESCE\(\s*email_assistant_settings\.auto_run_chosen_at,"
+        r"\s*EXCLUDED\.auto_run_chosen_at\)", update)
+    assert "RETURNING learned_writing_style, auto_run, auto_run_chosen_at" in src
+    assert "auto_run_chosen_at = NULL" not in src
 
 
 @pytest.mark.parametrize(("provider", "expected"), [("gmail", False), ("microsoft", True)])
@@ -410,6 +477,93 @@ async def test_the_agent_saving_another_field_keeps_drafting_off(monkeypatch) ->
     assert AssistantSettingsModel.model_validate(sent[0]).draft_replies is False
     # EM-G11c2: and saving the signature leaves Auto-run OFF on a new Gmail box.
     assert sent[0]["auto_run"] is False
+    # Task 2305: and it records no Auto-run choice.
+    assert "auto_run_choice" not in sent[0]
+    db = _db()
+    res = await _put(db, sent[0])
+    (_, params), = _executed(db, "INSERT INTO email_assistant_settings")
+    assert params["choice"] is False and res["auto_run_chosen"] is False
+
+
+async def _agent_saves(monkeypatch, call) -> list[dict]:
+    """Run one chat settings tool over the GET body of a new Gmail mailbox,
+    with a yes on each card. Returns each PUT body that the tool sent."""
+    agents = _load_agent()
+    get_body = await _get(_db())
+    sent: list[dict] = []
+
+    async def fake_get(path, params=None):
+        if path == "/email/accounts":
+            return []
+        assert path == "/email/assistant/settings"
+        return dict(get_body)
+
+    async def fake_accounts():
+        return [{"id": "a0000000-0000-4000-8000-000000000001",
+                 "email_address": _ME, "provider": "gmail"}]
+
+    async def fake_patch_settings(body):
+        sent.append(body)
+        return body
+
+    async def yes(**kw):
+        return True
+
+    monkeypatch.setattr(agents, "_get", fake_get)
+    monkeypatch.setattr(agents, "_accounts", fake_accounts)
+    monkeypatch.setattr(agents, "_patch_settings", fake_patch_settings)
+    monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", yes)
+    # A run that may reach out: the held run has its own fence
+    # (``test_held_settings.py``). With no run context the check fails closed.
+    monkeypatch.setattr(agents, "_egress_held", lambda: False)
+    await call(agents)
+    return sent
+
+
+@pytest.mark.parametrize(("kw", "marked"), [
+    ({"auto_run": True}, True),
+    ({"auto_run": False}, True),       # an OFF on purpose is a choice too
+    ({"draft_replies": True}, False),
+    ({"signature": "— Me", "cold_email_blocker": "LABEL"}, False),
+], ids=["on", "off", "drafting-only", "other-fields"])
+async def test_the_chat_tool_marks_only_an_auto_run_change(monkeypatch, kw, marked) -> None:
+    """Task 2305, ``update_assistant_settings`` outside a held run: the PUT
+    body carries ``auto_run_choice`` only when the model passed ``auto_run``."""
+    sent = await _agent_saves(monkeypatch, lambda a: a.update_assistant_settings(
+        "a0000000-0000-4000-8000-000000000001", **kw))
+    [body] = sent
+    assert ("auto_run_choice" in body) is marked
+    if marked:
+        assert body["auto_run_choice"] is True and body["auto_run"] is kw["auto_run"]
+    req = AssistantSettingsModel.model_validate(body)
+    assert req.auto_run_choice is marked
+
+
+@pytest.mark.parametrize(("kw", "marked"), [
+    ({"auto_run": True}, True),
+    ({"auto_run": False}, True),
+    ({"draft_replies": True}, False),
+], ids=["on", "off", "drafting-only"])
+async def test_the_bulk_chat_tool_marks_only_an_auto_run_change(monkeypatch, kw, marked) -> None:
+    """Task 2305, ``apply_settings_to_mailboxes``: the same rule for each
+    mailbox body."""
+    sent = await _agent_saves(monkeypatch, lambda a: a.apply_settings_to_mailboxes(
+        account_ids=["a0000000-0000-4000-8000-000000000001"], **kw))
+    [body] = sent
+    assert ("auto_run_choice" in body) is marked
+
+
+def test_each_chat_settings_put_goes_through_the_marker() -> None:
+    """Task 2305: each chat path that PUTs the settings sets the marker through
+    the one helper, from the model's own ``auto_run`` and nothing else."""
+    src = _AGENT.read_text(encoding="utf-8")
+    assert src.count("_mark_auto_run_choice(body, auto_run)") == 1
+    assert src.count('_mark_auto_run_choice(body, wanted.get("auto_run"))') == 1
+    assert src.count('_mark_auto_run_choice(body, values.get("auto_run"))') == 1
+    assert src.count("await _patch_settings(body)") == 3
+    # No chat path writes the marker by hand: the one constant names it.
+    assert src.count('"auto_run_choice"') == 1
+    assert '_AUTO_RUN_CHOICE = "auto_run_choice"' in src
 
 
 # ── the stored choice that the preset seed reads ────────────────────────────

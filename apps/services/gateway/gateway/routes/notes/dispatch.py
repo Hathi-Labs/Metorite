@@ -297,7 +297,7 @@ async def _dispatch_email(
     from gateway.routes.email.automation.rules import _account_provider
     from gateway.routes.email.core import _get_db as _email_db
     from gateway.routes.email.core import provider_session
-    from gateway.routes.email.signature import build_signed_bodies
+    from gateway.routes.email.signature import build_signed_bodies, resolve_signature
 
     db = await _email_db()
     try:
@@ -317,16 +317,8 @@ async def _dispatch_email(
             draft = await _draft_email(action, meeting, recipient, excerpts)
 
         async with provider_session(db, owner_email, account_id=account_id) as sess:
-            sig_row = (
-                await db.execute(
-                    text(
-                        "SELECT signature FROM email_assistant_settings "
-                        "WHERE account_id = :aid"
-                    ),
-                    {"aid": account_id},
-                )
-            ).fetchone()
-            signature = (sig_row.signature if sig_row else "") or ""
+            # WS-17 SG-2 (D-EM-66): the resolver gives the signature of new mail.
+            signature = await resolve_signature(db, account_id, "new")
 
             if recipient and draft and not draft_only:
                 body_text, body_html = build_signed_bodies(
