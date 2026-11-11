@@ -1,5 +1,5 @@
 -- ============================================================================
--- 405_studio_row_rules.sql — app roles and row rules of a Studio object
+-- 407_studio_row_rules.sql — app roles and row rules of a Studio object
 -- (WS-STU C8a).
 --
 -- What: two expand-only changes, and no new table.
@@ -34,8 +34,8 @@
 -- tables, and `access` holds no tenant id.
 --
 -- The number is taken at build time (R1). On 2026-11-11 origin/main held 401,
--- and open branches held 396, 398, 400, 402, 403 and 404. Check it again at
--- merge. Pinned by tests/unit/test_studio_objects_r8.py and
+-- and open branches held 396 and 398 to 406 (405 and 406 came during the
+-- build). Check it again at merge. Pinned by tests/unit/test_studio_objects_r8.py and
 -- test_studio_row_rules_r8.py, which find the latest file that defines each
 -- CHECK by CONTENT, never by number (R1).
 -- ============================================================================
