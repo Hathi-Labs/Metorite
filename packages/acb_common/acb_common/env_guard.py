@@ -269,6 +269,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # question and opens the list of the questions, so only the owner writes
     # it.
     "AGENT_QUESTIONS_ORGS",
+    # WS-MCP SW-48: APP_LEAD_RUNS_ORGS lets the app lead Release and Resume a
+    # teammate's agent run. It widens who may write to a run, so only the
+    # owner writes it.
+    "APP_LEAD_RUNS_ORGS",
     # WS-55 MCP-G20: the write cap of each agent connection on the box. A
     # tenant that raised it would lift the cap of every org, so only the
     # owner writes it. The AGENT_ prefix covers both too, and the exact

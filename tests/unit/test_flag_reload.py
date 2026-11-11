@@ -89,6 +89,24 @@ def test_agent_questions_orgs_reloads_and_its_reader_follows(env, monkeypatch) -
     assert not agent_questions_allowed("globex")
 
 
+def test_app_lead_runs_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-MCP SW-48, agent_coordination.md §3.10.2. The reload list holds the
+    key, and the one reader sees a change with no restart. So the Release and
+    Resume routes and ``can_act`` of Needs attention move together."""
+    from gateway.routes.projects.filters import app_lead_runs_allowed
+
+    assert fr.reloadable("APP_LEAD_RUNS_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("APP_LEAD_RUNS_ORGS", "")
+    get_settings.cache_clear()
+    assert not app_lead_runs_allowed("acme")
+    env(**{**_START, "APP_LEAD_RUNS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("APP_LEAD_RUNS_ORGS",)
+    assert app_lead_runs_allowed("acme")
+    assert not app_lead_runs_allowed("globex")
+    assert not app_lead_runs_allowed(None)
+
+
 def test_waiting_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-AP AP-1a, waiting_on_me.md §7.3. The reload list holds the key, and
     the one reader sees a change with no restart."""
