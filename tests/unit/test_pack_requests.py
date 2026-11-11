@@ -238,6 +238,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "save_as_template": ("save this project as a template",),
     "create_project_from_template": ("use the project template Install kit for the Acme job",
                                      "start the Acme job from the template Install kit"),
+    # SP-8a: the contract of an epic sits in the authority pack.
+    "set_epic_contract": ("set the epic contract of this epic",),
     # -- studio (STU-G1) --
     "studio_describe": ("which field types can a studio app manifest use?",),
     "studio_draft": ("draft an app manifest in AI Studio",),
