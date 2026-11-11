@@ -72,6 +72,7 @@ from gateway.routes.projects.core import (
     router,
     status_order_sql,
     status_owner_id,
+    transient_as_409,
     update_row,
     vocabulary_scope,
 )
@@ -744,6 +745,7 @@ AGENT_MOVE_NEEDS_DROPS = (
 
 
 @router.post("/tasks/move")
+@transient_as_409
 async def move_tasks(
     payload: MoveIn, user: UserContext = Depends(get_current_user),
 ) -> dict:
