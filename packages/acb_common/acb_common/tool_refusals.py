@@ -49,6 +49,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from acb_common._log import get_logger
+from acb_common.secret_shapes import REDACTION_BEARER, REDACTION_SHAPES
 
 _log = get_logger("acb_common.tool_refusals")
 
@@ -141,12 +142,9 @@ _LEAK_MARKERS = (
 )
 #: A URL or a DSN (``postgresql://user:pass@host/db``), in any scheme.
 _URL = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://\S+")
-#: A bearer value, and the key shapes the platform issues or holds.
-_SECRET = re.compile(
-    r"(?i)\bbearer\s+\S+"
-    r"|\b(?:sk|pk|rk|ghp|gho|ghs|xox[abprs]|cc_live|cc_depl)[-_][A-Za-z0-9_\-]{6,}"
-    r"|\beyJ[\w-]+\.[\w-]+\.[\w-]+"
-)
+#: A bearer value, and the key shapes the platform issues or holds. The list
+#: lives in ``secret_shapes`` (task 1272), and this tuple only names the views.
+_SECRETS = (REDACTION_BEARER, *REDACTION_SHAPES)
 #: An email address. Only the acting member's own address stays.
 _EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 #: An absolute path on a server, or on a Windows box.
@@ -219,7 +217,8 @@ def safe_detail(
     if any(marker in text.lower() for marker in _LEAK_MARKERS):
         return "", named
     text = _URL.sub("<link removed>", text)
-    text = _SECRET.sub("<secret removed>", text)
+    for _rx in _SECRETS:
+        text = _rx.sub("<secret removed>", text)
     own = member.strip().lower()
     text = _EMAIL.sub(
         lambda m: m.group(0) if own and m.group(0).lower() == own else "<address removed>",

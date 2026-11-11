@@ -65,6 +65,7 @@ from pathlib import Path
 
 from acb_common._log import get_logger
 from acb_common.child_env import child_env
+from acb_common.secret_shapes import KEY_SHAPES
 
 __all__ = [
     "CREDENTIAL_ENV",
@@ -141,9 +142,7 @@ _GITHUB_URL = re.compile(
 _USERINFO = re.compile(r"^(https?://)([^@/\s]+)@", re.IGNORECASE)
 _BRANCH = re.compile(r"^[A-Za-z0-9._/-]+$")
 #: The shapes of a GitHub token. A fence scans a clone's config for them.
-_TOKEN_SHAPES = re.compile(
-    r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})",
-)
+_TOKEN_SHAPES = KEY_SHAPES  # the list: acb_common.secret_shapes
 
 
 # ── URLs ─────────────────────────────────────────────────────────────────────
@@ -752,7 +751,7 @@ def _text_holds_secret(text: str, tokens: Sequence[str]) -> bool:
     low = text.lower()
     return bool(
         re.search(r"https?://[^@/\s]+@", text, re.IGNORECASE)
-        or _TOKEN_SHAPES.search(text)
+        or any(rx.search(text) for rx in _TOKEN_SHAPES)
         or "extraheader" in low
         or re.search(r"^\s*\[credential", low, re.MULTILINE)
         or any(t and t in text for t in tokens)
