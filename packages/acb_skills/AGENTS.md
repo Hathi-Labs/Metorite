@@ -76,6 +76,13 @@ not write a second copy of that seam. A bare test file name is under
    - OA-7i: `plan_loader` is the ONE reachability rule of the loader in a run. Its `LoaderPlan` gives the offer and `via_loader`, the owners whose specialist leaves. A hand-off to such an owner answers `LOADER_HANDOFF_REFUSED`. Fence: `test_loader_replaces_handoff.py`.
    - `PackRun.holds()` gives each pack of the run, loads too. `PackRun.refusal` applies `_refusals_for` to them. `_rules_block` is the ONE rules text of both layers. Fence: `test_load_skill_tools.py`.
    - `owner_scope(owner, held)` binds `no_egress` for any value of `held` but `False`. Fences: `test_tool_packs_registry.py`, `test_pack_guards.py`.
+5a-2. skill_packs.py -- a published Studio skill as a pack of one turn (WS-STU F3, spec `ai_studio.md` §14 F3). It does no I/O and never imports the orchestrator or the gateway.
+   - `orchestrator._tool_injection._turn_with_skills` is the ONE reader. It runs inside `_apply_tool_packs`, so only where `packs_on` gives a pack. It also needs `STUDIO_ORGS` and `feature:studio`, and it fails closed.
+   - The reader takes the bound tenant and the verified member, and both must agree with the turn (R5). `gateway.studio.skills_store.list_loadable` and `loadable_versions` hold the rule: published, with a version, owned by the member or of visibility `org`.
+   - `action_tool` is the ONE map from a catalog action to a chat tool. An action with no chat tool makes the skill fail to load. So does a tool that the run does not hold (`_skills_present`).
+   - `build` strips each hidden character first (5m-1). It refuses a `{{` or `}}`, more than `MAX_PACK_TOOLS` tools and rules over `MAX_RULES_TOKENS`.
+   - `tool_packs.choose` puts the skills after the code packs, in the order of the skill id, in the places that `MAX_PACKS` leaves. `persona_for` puts their rules after the rules of the code packs. A skill pack is never sticky.
+   - For each skill that loads, the run writes one `executor.skill_loaded` line, with no skill text. Fences: `test_skill_packs.py`, `test_skill_packs_r8.py` (R8).
 5b. decide_tools.py -- the `decide` core-floor tool (spec `customer_console.md` §6A.14). It sends no member and never logs `context`.
    - `decide_tool_enabled()` is its ONE switch. `decide_tool_for(agent_name)` is the one place that picks `system_one_decide` or the Jev `decide`.
    - Fences: `test_decide_tool.py`, `test_system_one_tool.py`.

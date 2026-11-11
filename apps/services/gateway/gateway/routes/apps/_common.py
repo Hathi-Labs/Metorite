@@ -27,7 +27,7 @@ from acb_skills import safe_open
 from fastapi import APIRouter, Depends, HTTPException
 
 # The shared gateway engine (BO-10) — see the DB section below.
-from gateway.db import get_db as _get_db
+from gateway.db import get_db as _get_db  # noqa: F401
 from gateway.db import get_session_factory as _get_session_factory  # noqa: F401
 
 # The tenant-bound seam (BO-10 → MT-1c/H2). `_tenant_session` IS
@@ -85,9 +85,10 @@ DEFAULT_AI_TIER = "tier-fast"
 # This package used to build its own engine here with its own 10+20 pool. It now
 # has none: `_get_db` / `_get_session_factory` / `_tenant_session` at the top of
 # this module are re-exports of the shared seam. Since H2 the request handlers
-# acquire sessions through `_tenant_session` only; `_get_db` remains ONLY for
-# the named H4-deferred sites (`record_app_audit` below, and `actions.py`'s
-# dual-audience dispatch), which `test_db_engine_seam.py` pins by exact count.
+# acquire sessions through `_tenant_session` only. `_get_db` remains ONLY for
+# the named H4-deferred sites (`actions.py`'s dual-audience dispatch and
+# `tools.py`'s broker handler), which `test_db_engine_seam.py` pins by exact
+# count. This module opens no unbound session (task 1317).
 
 
 # ── Auth gate ────────────────────────────────────────────────────────────────
@@ -631,65 +632,27 @@ async def record_app_audit_bound(
     kind: str,
     detail: dict[str, Any] | None = None,
     app_version: int | None = None,
-) -> None:
-    """Append one ``app_audit`` row in the tenant that the request bound.
-
-    The twin of :func:`record_app_audit` for a caller in a request, such as
-    the Studio action door (STU-B2a). ``app_audit`` has FORCE RLS, so a row
-    needs a bound session. The unbound session of :func:`record_app_audit`
-    writes no row as a role without BYPASSRLS. Best-effort: it opens its own
-    ``tenant_session()``, and a failure logs and never raises. Call it after
-    the caller's own session closes, so a request holds one session at a time.
-    """
-    try:
-        async with _tenant_session() as db:
-            await db.execute(text(_APP_AUDIT_SQL), _app_audit_params(
-                app_id=app_id, user_email=user_email, kind=kind, detail=detail,
-                app_version=app_version))
-    except Exception as exc:
-        _log.warning("apps.audit_failed", kind=kind, error=str(exc)[:160])
-
-
-async def record_app_audit(
-    *,
-    app_id: str,
-    user_email: str,
-    kind: str,
-    detail: dict[str, Any] | None = None,
-    app_version: int | None = None,
     tokens_in: int = 0,
     tokens_out: int = 0,
     cost_usd: float = 0.0,
     model: str = "",
 ) -> None:
-    """Append one ``app_audit`` row. Best-effort: opens its own session so a
-    failed audit can neither raise nor poison the caller's transaction.
+    """Append one ``app_audit`` row in the tenant that the request bound.
 
-    ⚠️ H4, DELIBERATELY NOT H2 (`saas_multitenancy_handover.md`): this helper
-    is reached from OUTSIDE any request — `actions.execute_app_action` audits
-    every dispatch, and the orchestrator's agent tools call that function
-    in-process during an agent run with no request and no bound tenant
-    (`orchestrator/app_tools.py`). Converting this site to the ambient
-    `tenant_session()` would raise `TenantUnbound` there, and this except-all
-    wrapper would then silently DROP the audit row — a security trail. It
-    stays on the unbound `get_db()` until H4 threads the explicit tenant (the
-    app row's organization, resolvable from ``app_id``) through the call —
-    `tenant_session(org_id)`. The H2 ratchet in `test_db_engine_seam.py`
-    carries this site as a named, counted exemption.
+    The audit writer of every request handler in ``routes/apps`` and of the
+    Studio action door (STU-B2a). ``app_audit`` has FORCE RLS, so a row needs
+    a bound session. An unbound session writes no row as a role without
+    BYPASSRLS (task 1317 removed the old unbound writer). Best-effort: it
+    opens its own ``tenant_session()``, and a failure logs and never raises.
+    Call it after the caller's own session closes, so a request holds one
+    session at a time. Fence: ``test_app_audit_bound_r8.py``.
     """
     try:
-        db = await _get_db()
-        try:
-            await db.execute(
-                text(_APP_AUDIT_SQL),
-                _app_audit_params(
-                    app_id=app_id, user_email=user_email, kind=kind, detail=detail,
-                    app_version=app_version, tokens_in=tokens_in,
-                    tokens_out=tokens_out, cost_usd=cost_usd, model=model),
-            )
-            await db.commit()
-        finally:
-            await db.close()
+        async with _tenant_session() as db:
+            await db.execute(text(_APP_AUDIT_SQL), _app_audit_params(
+                app_id=app_id, user_email=user_email, kind=kind, detail=detail,
+                app_version=app_version, tokens_in=tokens_in,
+                tokens_out=tokens_out, cost_usd=cost_usd, model=model))
     except Exception as exc:
         _log.warning("apps.audit_failed", kind=kind, error=str(exc)[:160])
 

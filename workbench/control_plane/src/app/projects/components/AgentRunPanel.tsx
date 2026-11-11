@@ -98,9 +98,11 @@ import {
   withdrawTarget,
   writeFailure,
 } from "../lib/agentRuns";
+import { newestHandoff } from "../lib/agentHandoff";
 import { ASK_COPY, hasOpenRunOf } from "../lib/askAgent";
 import { AgentPill } from "./AgentPill";
 import { AskAgentDialog } from "./AskAgentDialog";
+import { HandoffCard } from "./HandoffCard";
 
 /** How often the open run is read again. */
 export const AGENT_RUN_POLL_MS = 5_000;
@@ -162,6 +164,8 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   /** The caller has an open run on this task that the panel does not show. */
   const [otherOpenMine, setOtherOpenMine] = useState(false);
   const [asking, setAsking] = useState(false);
+  /** SW-24. The newest handoff note of a task that has no open run. */
+  const [idleNote, setIdleNote] = useState<AgentActivity | null>(null);
 
   // The newest values, for the poll's closure.
   const runRef = useRef<AgentRun | null>(null);
@@ -197,6 +201,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     setPendingAnswer(null);
     setOtherOpenMine(false);
     setAsking(false);
+    setIdleNote(null);
     void (async () => {
       try {
         const runs = await agentRunsApi.list(task.id);
@@ -208,7 +213,15 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
         setEnabled(true);
         const shown = runToShow(runs);
         setOtherOpenMine(hasOpenRunOf(runs.filter((r) => r.id !== shown?.id), meRef.current));
-        if (!shown) return;
+        if (!shown) {
+          // SW-24. No open run: the newest finished run may hold a note.
+          const last = runs[0];
+          if (last && !isOpenRun(last)) {
+            const past = await agentRunsApi.get(last.id);
+            if (live) setIdleNote(newestHandoff(past.activities));
+          }
+          return;
+        }
         runRef.current = shown;
         setRun(shown);
         const detail = await agentRunsApi.get(shown.id);
@@ -312,13 +325,24 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     </Button>
   ) : null;
 
+  // SW-24. The newest handoff note, above the run card and the comments.
+  const noteActivity = run ? newestHandoff(activities) : idleNote;
+  const noteCard = noteActivity ? (
+    <HandoffCard activity={noteActivity} labels={personLabels} />
+  ) : null;
+
   if (!run) {
-    if (!canAsk) return null;
+    if (!canAsk && !noteCard) return null;
     return (
-      <div className="mb-3 flex items-center" data-ask-agent-row="">
-        {askButton}
-        {askDialog}
-      </div>
+      <>
+        {noteCard}
+        {canAsk ? (
+          <div className="mb-3 flex items-center" data-ask-agent-row="">
+            {askButton}
+            {askDialog}
+          </div>
+        ) : null}
+      </>
     );
   }
 
@@ -515,6 +539,8 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   }
 
   return (
+    <>
+    {noteCard}
     <section
       aria-label={`Agent run of ${client}`}
       data-agent-run-panel={run.status}
@@ -828,5 +854,6 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
         onCancel={() => setConfirmStop(false)}
       />
     </section>
+    </>
   );
 }
