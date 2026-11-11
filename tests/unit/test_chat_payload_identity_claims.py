@@ -8,7 +8,8 @@ gateway-calling tools from ``user_email`` or ``user_id`` in the payload
 ``user_email=<another member>`` bound the run to that member, in a solo chat
 too. In a shared room, the claim also replaced the ``room:<thread>`` id that
 the route sets. ``routes/agent.py::_drop_identity_claims`` removes the claim
-at each run door that holds a member's session.
+at each run door that holds a member's session. ``POST /pull`` in
+``main.py`` calls the same helper before its Mem0 read (H-438, task 1127).
 
 The stream route is the REAL ``run_agent_stream_endpoint``, driven through
 FastAPI with the edges of ``test_steer_follow_up.py`` faked. The memory id
@@ -24,7 +25,9 @@ Mutations this file catches:
 * the helper removes a service caller's claim: test 4 fails;
 * a kept claim keeps the body's padded or other-case text: test 5 fails;
 * the executor reads a person key that ``_IDENTITY_CLAIMS`` lacks: the
-  source scan fails.
+  source scan fails;
+* ``POST /pull`` takes the member as ``req.user_email or <session>``
+  (H-438, task 1127): the pull cases and the pull AST guard fail.
 
 Hermetic: no SQL, so no database (R8 does not apply).
 """
@@ -370,3 +373,108 @@ def test_the_source_scan_names_a_new_person_key():
         "    return event_payload.get(\"member_email\"), event_payload[\"actor\"]\n"
     )
     assert _person_keys_not_dropped(source) == {"member_email", "actor"}
+
+
+# ── 5. The pull door (H-438, task 1127) ─────────────────────────────────────
+
+_MAIN_PY = (
+    Path(__file__).resolve().parents[2]
+    / "apps/services/gateway/gateway/main.py"
+)
+
+
+@pytest.fixture
+def pull_reads(monkeypatch) -> list[str]:
+    """``POST /pull`` with the agent faked. It records the Mem0 user id."""
+    from types import SimpleNamespace
+
+    import orchestrator.agents as orch_agents
+
+    seen: list[str] = []
+
+    class _Agent:
+        def __init__(self) -> None:
+            self.default_options: dict[str, Any] = {}
+
+        async def __aenter__(self) -> _Agent:
+            return self
+
+        async def __aexit__(self, *_a: Any) -> None:
+            return None
+
+        async def run(self, _query: str) -> Any:
+            return SimpleNamespace(text="ok")
+
+    async def _enrich(_agent: Any, user_id: str, _query: str, *_a: Any, **_k: Any) -> str:
+        seen.append(user_id)
+        return ""
+
+    monkeypatch.setattr(orch_agents, "build_orchestrator_agent", lambda **_k: _Agent())
+    monkeypatch.setattr(orch_agents, "enrich_instructions_with_memory", _enrich)
+    return seen
+
+
+def _pull(email: str | None, claim: str | None) -> None:
+    from gateway import main as gw_main
+
+    req = gw_main.PullRequest(query="What do you know about me?", user_email=claim)
+    out = asyncio.run(gw_main.pull(req, _user(email)))
+    assert out.answer == "ok"
+
+
+# The two ``None`` rows call ``pull`` DIRECTLY. Over HTTP they cannot happen:
+# ``/pull`` is not in ``PUBLIC_ROUTES``, so the app-wide ``require_authenticated``
+# gate answers 401 for a caller with no email before the handler runs
+# (``acb_auth.deps.require_authenticated``). The rows pin the helper's rule for
+# a caller with no person in the session, not a reachable anonymous path.
+# The BEHAVIOUR rows are the real fence. The AST guard below only adds to them:
+# it does not see a body read that is copied to a local name before the drop.
+@pytest.mark.parametrize(("email", "claim", "member"), [
+    (_ALICE, _BOB, _ALICE),
+    (_ALICE, f" {_ALICE.upper()} ", _ALICE),
+    (_ALICE, None, _ALICE),
+    (_SERVICE, _BOB, _BOB),
+    (None, _BOB, _BOB),
+    (None, None, "anonymous"),
+], ids=[
+    "member-names-another", "member-names-self-in-upper-case", "member-no-claim",
+    "service-keeps-claim", "no-email-keeps-claim", "anonymous-no-claim",
+])
+def test_pull_reads_the_session_member_memory(pull_reads, email, claim, member):
+    _pull(email, claim)
+    # The Mem0 read is keyed on this id. A member's body cannot choose it.
+    assert pull_reads == [member]
+
+
+def test_pull_drops_the_claim_before_the_memory_read():
+    tree = ast.parse(_MAIN_PY.read_text(encoding="utf-8"))
+    fn = next(
+        n for n in tree.body
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "pull"
+    )
+    drops = _calls(fn, "_drop_identity_claims")
+    assert len(drops) == 1, "pull must call _drop_identity_claims once"
+    drop = drops[0]
+    assert any(isinstance(s, ast.Expr) and s.value is drop for s in fn.body), (
+        "pull: the call must not sit inside a branch"
+    )
+    keywords = {k.arg: k.value for k in drop.keywords}
+    got = keywords.get("keep_own")
+    assert isinstance(got, ast.Constant) and got.value is True
+    reads = _calls(fn, "enrich_instructions_with_memory")
+    assert reads and all(drop.lineno < r.lineno for r in reads)
+    # No path reads the body's claim as the member past the helper.
+    claim_reads = [
+        n for n in ast.walk(fn)
+        if isinstance(n, ast.Attribute) and n.attr == "user_email"
+        and ast.unparse(n.value) == "req"
+    ]
+    assert all(n.lineno < drop.lineno for n in claim_reads), (
+        "pull reads req.user_email after the claim is dropped"
+    )
+    assert not any(
+        isinstance(n, ast.BoolOp) and any(
+            ast.unparse(v) == "req.user_email" for v in n.values
+        )
+        for n in ast.walk(fn)
+    ), "pull must not take the member as `req.user_email or ...`"

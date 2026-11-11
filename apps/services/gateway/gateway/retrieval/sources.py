@@ -46,7 +46,10 @@ takes ``reviewed`` and ranks a page past its review date lower. Only
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -57,6 +60,14 @@ from acb_auth import UserContext
 
 #: The most characters of matched text a hit carries (§20.3).
 SNIPPET_CHARS = 400
+
+logger = logging.getLogger(__name__)
+
+#: Seconds kept back from the source timeout, so the vector half ends before
+#: the route's own deadline (KG-3b).
+VECTOR_MARGIN_S = 0.2
+#: The least time worth a vector half. Under it, the lexical answer goes at once.
+VECTOR_FLOOR_S = 0.15
 
 _MARK = re.compile(r"</?mark>", re.IGNORECASE)
 _SPACE = re.compile(r"\s+")
@@ -136,6 +147,9 @@ class Source:
     #: ``None``. A closed switch gives no hit. The route then does not name
     #: the app as searched (CX-1). The reader still checks it itself.
     gate: Callable[[UserContext], bool] | None = None
+    #: True when the app's reader takes ``vectors=``: it fuses a vector half
+    #: with its lexical half (KG-3b). The route sets it with ``CONTEXT_RECENCY``.
+    vectors: bool = False
 
     def reaches(self, user: UserContext) -> bool:
         """True when *user* holds the feature and the app's switch is open."""
@@ -144,7 +158,8 @@ class Source:
     async def find(
         self, user: UserContext, q: str, k: int, *, hybrid: bool = False,
         after: datetime | None = None, reviewed: bool = False,
-        verified_only: bool = False,
+        verified_only: bool = False, vectors: bool = False,
+        budget_s: float | None = None,
     ) -> list[Hit]:
         """At most *k* hits for *q*, as *user*. No feature, no call and no hit.
 
@@ -163,6 +178,12 @@ class Source:
             options["hybrid"] = hybrid
         if self.dated and after is not None:
             options["after"] = after
+        if self.vectors and vectors:
+            options["vectors"] = True
+            # The time the route really left this source (KG-3b). Set only with
+            # the flag on, so the vector half never outlives the outer deadline.
+            if budget_s is not None:
+                options["budget_s"] = budget_s
         if self.reviewed and reviewed:
             options["reviewed"] = True
             if verified_only:
@@ -241,10 +262,27 @@ async def _tasks(user: UserContext, q: str, k: int) -> list[Hit]:
 
 # ── email ───────────────────────────────────────────────────────────────────
 
+def _email_hit(m: Any) -> Hit:
+    row = _as_dict(m)
+    sender = row.get("from_address") or {}
+    who = sender.get("name") or sender.get("email") or "someone"
+    text = _MARK.sub("", str(row.get("highlight") or "")) or row.get("snippet")
+    return Hit(
+        app="email", kind="email", id=str(row["id"]),
+        title=_title(row.get("subject") or "(no subject)"),
+        hint=f"Email · from {who}", href=f"/email?email={quote(str(row['id']))}",
+        snippet=_clip(text), when=_when(row.get("received_at")),
+        stamp=_when(row.get("received_at")),
+    )
+
+
 async def _email(
     user: UserContext, q: str, k: int, *, after: datetime | None = None,
+    vectors: bool = False, budget_s: float | None = None,
 ) -> list[Hit]:
     from gateway.routes.email.transport.search import search_messages
+
+    started = time.monotonic()
 
     # ⚠️ Every parameter, by name. The route declares them with `Query(...)`
     # defaults, and a direct call that left one out would pass the `Query`
@@ -261,20 +299,59 @@ async def _email(
         importance=None, hybrid=False, light=True, page=1, page_size=k,
         with_total=False, user=user,
     )
-    out = []
-    for m in (answer.get("emails") or [])[:k]:
-        row = _as_dict(m)
-        sender = row.get("from_address") or {}
-        who = sender.get("name") or sender.get("email") or "someone"
-        text = _MARK.sub("", str(row.get("highlight") or "")) or row.get("snippet")
-        out.append(Hit(
-            app="email", kind="email", id=str(row["id"]),
-            title=_title(row.get("subject") or "(no subject)"),
-            hint=f"Email · from {who}", href=f"/email?email={quote(str(row['id']))}",
-            snippet=_clip(text), when=_when(row.get("received_at")),
-            stamp=_when(row.get("received_at")),
-        ))
-    return out
+    lexical = [_email_hit(m) for m in (answer.get("emails") or [])[:k]]
+    if not vectors:
+        return lexical
+    # The budget of the vector half is measured from the START of this source:
+    # what the route left (or SOURCE_TIMEOUT_S), less the time the lexical half
+    # took, less a margin. Too little left: the lexical answer, no embed call.
+    from gateway.kb_index.query import QUERY_EMBED_TIMEOUT_S
+    from gateway.retrieval.company import SOURCE_TIMEOUT_S
+
+    total = SOURCE_TIMEOUT_S if budget_s is None else min(SOURCE_TIMEOUT_S, budget_s)
+    left = total - (time.monotonic() - started) - VECTOR_MARGIN_S
+    if left < VECTOR_FLOOR_S:
+        return lexical
+    vector_budget = min(QUERY_EMBED_TIMEOUT_S, left)
+    # KG-3b: the vector half, fused with the lexical one by reciprocal rank
+    # fusion. A failure of the vector half leaves the lexical answer.
+    try:
+        from gateway.kb_index.query import rrf_scores
+        from gateway.retrieval import turn_vector
+        from gateway.routes.email.transport.search import semantic_messages
+
+        async def embed(words: str) -> list[float] | None:
+            kept = turn_vector.recall(user.organization_id, words)
+            if kept is not None:
+                return kept
+            from email_ingestion.email_embeddings import embed_query
+
+            vector = await embed_query(words, user.organization_id)
+            turn_vector.remember(user.organization_id, words, vector)
+            return vector
+
+        # The lexical hits are held above. The vector half has its own budget,
+        # below SOURCE_TIMEOUT_S, so a slow embed or read never drops them.
+        found = await asyncio.wait_for(
+            semantic_messages(
+                user=user, words=q, k=k, embed=embed,
+                received_after=after.isoformat() if after is not None else None,
+            ),
+            vector_budget,
+        )
+    except TimeoutError:
+        logger.info("search.company email vectors timed out")
+        return lexical
+    except Exception as exc:
+        logger.warning("search.company email vectors failed",
+                       extra={"error": type(exc).__name__})
+        return lexical
+    semantic = [_email_hit(m) for m in found[:k]]
+    if not semantic:
+        return lexical
+    scores, hits = rrf_scores((lexical, semantic), key=lambda h: h.id)
+    order = sorted(hits, key=lambda ident: -scores[ident])  # stable: first seen wins a tie
+    return [hits[ident] for ident in order][:k]
 
 
 # ── people ──────────────────────────────────────────────────────────────────
@@ -525,7 +602,7 @@ REGISTRY: dict[str, Source] = {
     s.key: s
     for s in (
         Source("tasks", "projects", "Tasks", _tasks),
-        Source("email", "email", "Email", _email, dated=True),
+        Source("email", "email", "Email", _email, dated=True, vectors=True),
         Source("people", "people", "People", _people),
         Source("crm", "crm", "CRM", _crm, gate=_crm_open),
         Source("artifacts", "artifacts", "Artifacts", _artifacts, gate=_artifacts_open),

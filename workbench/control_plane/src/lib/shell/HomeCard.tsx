@@ -147,8 +147,11 @@ export function moveFocusAfterLeave(from: HTMLElement | null): void {
   const card = from.closest("[data-feed]") ?? from.closest("[data-home-card], [data-needs-panel]");
   if (!card) return;
   const own = from.hasAttribute("data-leaves-card") ? from.closest("[data-home-card]") : null;
+  // A feed row draws its acts twice, one form for a phone and one from `sm`,
+  // and CSS hides one (task 1898). A hidden control takes no focus, so only
+  // a drawn one is a target.
   const acts = [...card.querySelectorAll<HTMLElement>("[data-row-act]")].filter(
-    (a) => a === from || !own?.contains(a),
+    (a) => a === from || (!own?.contains(a) && a.getClientRects().length > 0),
   );
   const target = focusTarget(acts, from, card.querySelector<HTMLElement>("h2, [data-leave-focus]"));
   // After React has taken the row out.

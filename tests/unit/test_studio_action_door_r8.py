@@ -1951,22 +1951,543 @@ def test_r8_three_runs_of_one_change_each_open_a_new_request_at_a_constant_cost(
 
 
 def test_r8_the_read_of_the_open_request_is_a_bounded_index_scan(rworld) -> None:
-    """With the plain scan off, the planner reads ``pm_agent_runs`` through
-    ``pm_agent_runs_app_member``, and the window of a live request on
+    """``pm_agent_runs_app_member`` can serve the read as a bounded range scan:
+    with it the only index to choose, and the plain scan off, the planner reads
+    ``pm_agent_runs`` through it, and the window of a live request on
     ``created_at`` is part of the index condition. So the read never walks the
     whole history of the member. ``clock_timestamp()`` is volatile and cannot
-    bound an index, so the window reads ``now()``."""
+    bound an index, so the window reads ``now()``.
+
+    Task 2229. The test used to leave every index of the table in place and
+    expect the planner to pick this one. On a table of a few rows the cost of
+    ``pm_agent_runs_app_open_connection`` (organization, connection) wins as
+    often as this one, and the pick followed the statistics that earlier tests
+    left. So the other indexes are dropped INSIDE a transaction that rolls back
+    (DDL is transactional in Postgres), and the plan is read in that state. The
+    test then stands for the capability of the index and no longer for the whim
+    of a planner on tiny statistics."""
     w = rworld
-    params = {"org": w.a, "me": ANA, "app": "studio",
-              "binding": f"session:{ANA}:studio:{w.pkg}", "digest": "0" * 64,
-              "window": app_requests.OPEN_WINDOW_SECONDS}
-    with w.p.admin_engine.begin() as c:
-        c.execute(text("SET LOCAL enable_seqscan = off"))
-        lines = [r[0] for r in c.execute(
-            text(f"EXPLAIN {app_requests._OPEN_OF_CHANGE_SQL}"), params)]
+    params = {
+        "org": w.a,
+        "me": ANA,
+        "app": "studio",
+        "binding": f"session:{ANA}:studio:{w.pkg}",
+        "digest": "0" * 64,
+        "window": app_requests.OPEN_WINDOW_SECONDS,
+    }
+    keep = "pm_agent_runs_app_member"
+    with w.p.admin_engine.connect() as c:
+        trans = c.begin()
+        try:
+            c.execute(text("SET LOCAL lock_timeout = '10s'"))
+            # Every index of the table that no constraint owns, except the one
+            # under test. A constraint index (the key, a unique) cannot be dropped.
+            others = [
+                r[0]
+                for r in c.execute(
+                    text(
+                        "SELECT i.indexname FROM pg_indexes i"
+                        " WHERE i.schemaname = current_schema() AND i.tablename = 'pm_agent_runs'"
+                        "   AND i.indexname <> :keep"
+                        "   AND NOT EXISTS (SELECT 1 FROM pg_constraint k"
+                        "                   JOIN pg_class ic ON ic.oid = k.conindid"
+                        "                   WHERE ic.relname = i.indexname)"
+                    ),
+                    {"keep": keep},
+                )
+            ]
+            assert others, (
+                "the table lost its other indexes: this test then proves nothing about the choice"
+            )
+            for name in others:
+                c.execute(text(f'DROP INDEX "{name}"'))
+            c.execute(text("SET LOCAL enable_seqscan = off"))
+            lines = [
+                r[0] for r in c.execute(text(f"EXPLAIN {app_requests._OPEN_OF_CHANGE_SQL}"), params)
+            ]
+        finally:
+            trans.rollback()
     plan = "\n".join(lines)
     assert "Seq Scan on pm_agent_runs" not in plan, plan
     at = next(i for i, line in enumerate(lines) if "on pm_agent_runs r" in line)
-    assert "pm_agent_runs_app_member" in lines[at], plan
+    assert keep in lines[at], plan
     cond = lines[at + 1]
     assert "Index Cond" in cond and "created_at >" in cond, plan
+
+
+# ── ap. The chat tools of B2c-2b on the real door ──────────────────────────
+#
+# Acceptance (spec row B2c-2b). The three write tools of Mira call the door
+# over HTTP as the member, with no proof, as a chat does. An ``httpx``
+# transport carries each request into a FastAPI app that holds the REAL Studio
+# router, and it records the method, the path, the query and the body.
+#
+# ap. A create from chat asks ONCE: one request, nothing written, and the
+#     result says not saved. The member's list of open requests (``list_open``,
+#     the list of Integrations, AI agents, Waiting for you) holds that Studio
+#     request. A resend before the approval writes nothing. After the member
+#     approves, the resend runs the stored change once, with no body. A second
+#     resend writes nothing.
+# aq. An update that the member declines writes nothing, and the tool says so.
+#     A delete after the approval deletes the record once.
+# ar. With ``APP_REQUESTS_ORGS`` off, a write from chat opens no request and
+#     says that record changes from chat are not open yet.
+# as. Fix round 1: on the real package read, a key that is no field opens no
+#     request, and the tool says so before any ask.
+#
+# **The mutations (R7).** Each ran on 2026-11-06 on a committed tree, and was
+# restored with git. See the docstring of ``test_studio_record_writes.py``.
+
+import httpx  # noqa: E402
+from acb_auth import get_current_user  # noqa: E402
+from acb_skills import studio_tools as st  # noqa: E402
+from fastapi import FastAPI  # noqa: E402
+from fastapi import Request as _HttpRequest  # noqa: E402
+from gateway.routes import agent_requests  # noqa: E402
+from gateway.routes.studio import router as studio_router  # noqa: E402
+
+#: The plain record actions of the package of the tools: no ``set``, so the
+#: tools may use each one.
+_PLAIN_ACTIONS: list[dict[str, Any]] = [
+    {"id": "find", "uses": "object:visit.list"},
+    {"id": "peek", "uses": "object:visit.get"},
+    {"id": "add", "uses": "object:visit.create"},
+    {"id": "change", "uses": "object:visit.update"},
+    {"id": "remove", "uses": "object:visit.delete"},
+]
+
+
+class _Seen(httpx.AsyncBaseTransport):
+    """The ASGI transport into *app*, which records each request first."""
+
+    def __init__(self, app: FastAPI, seen: list[tuple[str, str, str, bytes]]) -> None:
+        self.inner = httpx.ASGITransport(app=app)
+        self.seen = seen
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.seen.append((request.method, request.url.path, request.url.query.decode(),
+                          request.content))
+        return await self.inner.handle_async_request(request)
+
+
+@pytest.fixture
+def tworld(rworld, monkeypatch):
+    """The request world, with a package of Ana whose record actions are
+    plain, and the chat tools wired to the real Studio router."""
+    w = rworld
+    mid = f"door-{TAG}-tools{uuid.uuid4().hex[:6]}"
+    manifest = {"studio": 1, "id": mid, "name": "Visits", "purpose": "Track install visits.",
+                "objects": [{"name": "visit", "fields": _FIELDS}], "actions": _PLAIN_ACTIONS}
+
+    async def setup() -> None:
+        w.tpkg = await _package(w.a, ANA, manifest)
+        w.tobj, w.trec = await _object_with_record(w.a, w.tpkg)
+
+    _run(w, setup)
+    app = FastAPI()
+    app.include_router(studio_router)
+    # B2c-2c fix round 1: the resend by the request_id alone reads the request.
+    app.include_router(agent_requests.router)
+
+    async def as_member(request: _HttpRequest) -> UserContext:
+        return _user(w.a, request.headers.get("X-User-Email", ""))
+
+    app.dependency_overrides[get_current_user] = as_member
+    w.seen = []
+    real = httpx.AsyncClient
+    monkeypatch.setattr(st.httpx, "AsyncClient",
+                        lambda **kw: real(transport=_Seen(app, w.seen), **kw))
+    monkeypatch.setattr(st, "_current_user_email", lambda: ANA)
+    yield w
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM app_audit WHERE app_id = CAST(:p AS uuid)"), {"p": w.tpkg})
+        c.execute(text("DELETE FROM studio_objects WHERE package_id = CAST(:p AS uuid)"),
+                  {"p": w.tpkg})
+        c.execute(text("DELETE FROM apps WHERE id = CAST(:p AS uuid)"), {"p": w.tpkg})
+
+
+def _chat(w: Any, fn: Callable[[], Awaitable[Any]]) -> Any:
+    """Run ``fn()`` as a chat runs a tool: the org of the run is bound, as
+    the gateway binds it for the member of the internal bearer."""
+    async def go() -> Any:
+        token = bind_tenant(w.a)
+        try:
+            return await fn()
+        finally:
+            release_tenant(token)
+    return _run(w, go)
+
+
+async def _open_rows(w: Any) -> list[dict[str, Any]]:
+    """The open requests of Ana: the store read of the list route."""
+    async with tenant_session(w.a) as db:
+        return (await app_requests.list_open(db, org=w.a, member=ANA)).rows
+
+
+def _door_posts(w: Any) -> list[tuple[str, str, bytes]]:
+    return [(path.rsplit("/", 1)[-1], query, body) for method, path, query, body in w.seen
+            if method == "POST"]
+
+
+def test_r8_ap_a_chat_create_asks_once_and_the_resend_after_the_approval_runs_once(
+        tworld, monkeypatch) -> None:
+    w = tworld
+    count = _record_count(w, w.tobj)
+    data = {**_DATA, "site": "Chat site"}
+    monkeypatch.setattr(get_settings(), "agent_access_enabled", True)
+
+    async def go() -> dict[str, Any]:
+        got: dict[str, Any] = {"asked": await st.studio_record_create(w.tpkg, "visit", data=data)}
+        rid = got["asked"]["request_id"]
+        got["after_ask"] = _record_count(w, w.tobj)
+        got["open"] = await _open_rows(w)
+        # The list route of Integrations, AI agents, Waiting for you, as Ana.
+        await agent_requests._require_access(user=_user(w.a, ANA))
+        got["route"] = await agent_requests.list_app_requests(user=_user(w.a, ANA))
+        got["early"] = await st.studio_record_create(w.tpkg, "visit", request_id=rid)
+        got["after_early"] = _record_count(w, w.tobj)
+        await _decide(w, rid, "approve")
+        got["open_after"] = await _open_rows(w)
+        got["ran"] = await st.studio_record_create(w.tpkg, "visit", request_id=rid)
+        got["after_ran"] = _record_count(w, w.tobj)
+        got["again"] = await st.studio_record_create(w.tpkg, "visit", request_id=rid)
+        return got
+
+    got = _chat(w, go)
+    asked = got["asked"]
+    assert (asked["ok"], asked["saved"], asked["state"]) == (False, False, "awaiting"), asked
+    assert asked["note"] == st._ASKED_NOTE and asked["expires_at"]
+    rid = asked["request_id"]
+    assert got["after_ask"] == count, "an ask writes nothing"
+    # The member sees the one Studio request in the list of Integrations.
+    mine = [r for r in got["open"] if r["request_id"] == rid]
+    assert len(mine) == 1 and len(got["open"]) == 1, got["open"]
+    row = mine[0]
+    assert (row["app"], row["client_via"], row["state"], row["class"]) == (
+        "studio", "studio:door", "awaiting", "B")
+    assert row["card"]["client"] == "Studio" and row["card"]["title"] == "Add a record to visit."
+    assert row["call"]["body"] == {"data": data} and row["subject"] == w.tpkg
+    assert [r["request_id"] for r in got["route"]["rows"]] == [rid]
+    # Before the approval, nothing runs.
+    assert got["early"]["saved"] is False and got["early"]["code"] == "request_awaiting"
+    assert got["after_early"] == count
+    assert got["open_after"] == [], "an answered request leaves the list"
+    # After it, the resend runs the stored change once.
+    ran = got["ran"]
+    assert (ran["ok"], ran["saved"]) == (True, True), ran
+    assert got["after_ran"] == count + 1
+    assert _data_of(w, ran["record_id"])["site"] == "Chat site"
+    again = got["again"]
+    assert (again["saved"], again["code"]) == (False, "request_spent"), again
+    assert _record_count(w, w.tobj) == count + 1
+    # The wire: one ask with the marker and the body, then three resends with
+    # the request and NO body. No call names a decision.
+    posts = _door_posts(w)
+    assert posts[0][:2] == ("add", "ask=1") and json.loads(posts[0][2]) == {"data": data}
+    assert posts[1:] == [("add", f"request_id={rid}", b"")] * 3
+    assert all("decision" not in path for _m, path, _q, _b in w.seen)
+    rows = _ran(w, w.tpkg, "add")
+    assert [(r["outcome"], r.get("reason"), r.get("request_id")) for r in rows] == [
+        ("asked", None, rid), ("refused", "request_awaiting", rid), ("ran", None, rid),
+        ("refused", "request_spent", rid)]
+
+
+def test_r8_aq_a_declined_update_writes_nothing_and_an_approved_delete_runs_once(
+        tworld) -> None:
+    w = tworld
+    before = _record_row(w, w.trec)
+
+    async def go() -> dict[str, Any]:
+        got: dict[str, Any] = {}
+        asked = await st.studio_record_update(w.tpkg, "visit", w.trec, {"notes": "From chat"})
+        got["asked"] = asked
+        await _decide(w, asked["request_id"], "decline")
+        got["declined"] = await st.studio_record_update(
+            w.tpkg, "visit", request_id=asked["request_id"])
+        got["after_decline"] = _record_row(w, w.trec)
+        gone = await st.studio_record_delete(w.tpkg, "visit", w.trec)
+        got["gone_asked"] = gone
+        got["after_gone_ask"] = _record_row(w, w.trec)
+        await _decide(w, gone["request_id"], "approve")
+        got["deleted"] = await st.studio_record_delete(
+            w.tpkg, "visit", request_id=gone["request_id"])
+        return got
+
+    got = _chat(w, go)
+    assert got["asked"]["saved"] is False and got["asked"]["state"] == "awaiting"
+    declined = got["declined"]
+    assert (declined["saved"], declined["code"]) == (False, "request_declined")
+    assert "nothing was written" in declined["errors"][0]["message"]
+    assert got["after_decline"] == before, "a declined card writes nothing"
+    assert got["gone_asked"]["saved"] is False and got["after_gone_ask"] == before
+    deleted = got["deleted"]
+    assert (deleted["ok"], deleted["saved"], deleted["record_id"]) == (True, True, w.trec)
+    assert _record_row(w, w.trec) is None
+    assert [q for _a, q, b in _door_posts(w) if b == b""] == [
+        f"request_id={got['asked']['request_id']}",
+        f"request_id={got['gone_asked']['request_id']}"]
+
+
+def test_r8_ar_with_the_org_flag_off_a_chat_write_opens_no_request(tworld, monkeypatch) -> None:
+    w = tworld
+    monkeypatch.setattr(get_settings(), "app_requests_orgs", "")
+    runs = _studio_runs(w)
+
+    async def go() -> dict[str, Any]:
+        return await st.studio_record_create(w.tpkg, "visit", data=dict(_DATA))
+
+    out = _chat(w, go)
+    assert (out["ok"], out["saved"], out["code"], out["status"]) == (
+        False, False, "approval_required", 403)
+    assert out["errors"][0]["message"] == st.WRITE_REFUSALS["approval_required"]
+    assert _studio_runs(w) == runs
+    assert [r["outcome"] for r in _ran(w, w.tpkg, "add")] == ["refused"]
+
+
+def test_r8_as_a_key_that_is_no_field_opens_no_request_on_the_real_package_read(
+        tworld) -> None:
+    """Fix round 1 (P2), on the real package read: its ``objects`` hold the
+    fields that the tool checks. A key that is no field gets its sentence
+    before an ask, so no card waits for a change that the store refuses."""
+    w = tworld
+    runs = _studio_runs(w)
+
+    async def go() -> dict[str, Any]:
+        return await st.studio_record_create(w.tpkg, "visit", data={"site": "A", "sight": "B"})
+
+    out = _chat(w, go)
+    assert out["saved"] is False and out["errors"][0]["message"] == st._UNKNOWN_FIELD.format(
+        object="visit", keys="sight")
+    assert _studio_runs(w) == runs and _door_posts(w) == []
+    assert _ran(w, w.tpkg, "add") == []
+
+
+# ── at to av. The card in the chat of B2c-2c on the real routes ────────────
+#
+# Acceptance (spec row B2c-2c). The card in the chat reads its request
+# through ``GET /agent-access/requests/{id}`` and answers through
+# ``POST /agent-access/requests/{id}/decision``, as the member, with the BFF
+# in front. Its follow-up message names the request id, and Mira's next turn
+# sends the change again with it (the resend of B2c-2b). Here the routes run
+# as their handlers, with the org bound as the auth layer binds it.
+#
+# at. An ask, then the approval on the decision route, then the resend: the
+#     write runs ONCE. The read route gives the request as the card draws it:
+#     awaiting, then approved, then done. A second press with the same key
+#     gives the first answer. No tool of Mira calls the decision route.
+# au. An ask that the member declines on the decision route writes nothing,
+#     and the resend says so.
+# av. Org B, and Ben in org A, get 404 from the read route and from the
+#     decision route for the request of Ana in org A, also with Ana's email.
+#     The request stays as it was, and nothing is written.
+#
+# **The mutations (R7).** Each ran on 2026-11-08 on a committed tree, and was
+# restored with git. See the report of the slice for the tests that went red.
+
+
+def _as(org: str, fn: Callable[[], Awaitable[Any]]) -> Callable[[], Awaitable[Any]]:
+    """``fn`` with *org* bound, as the auth layer binds the org of a member."""
+    async def go() -> Any:
+        token = bind_tenant(org)
+        try:
+            return await fn()
+        finally:
+            release_tenant(token)
+    return go
+
+
+async def _read_route(org: str, email: str, rid: str) -> Any:
+    """The read route of the card, as *email* of *org*: the request, or the
+    status of a refusal."""
+    async def read() -> Any:
+        user = _user(org, email)
+        await agent_requests._require_access(user=user)
+        return await agent_requests.read_app_request(request_id=rid, user=user)
+    try:
+        return await _as(org, read)()
+    except HTTPException as exc:
+        return exc.status_code
+
+
+async def _decide_route(org: str, email: str, rid: str, decision: str, key: str) -> Any:
+    """The decision route of the card, as *email* of *org*."""
+    async def decide() -> Any:
+        user = _user(org, email)
+        await agent_requests._require_access(user=user)
+        return await agent_requests.decide_app_request(
+            payload=agent_requests.DecisionIn(decision=decision, idempotency_key=key),
+            request_id=rid, user=user)
+    try:
+        return await _as(org, decide)()
+    except HTTPException as exc:
+        return exc.status_code
+
+
+def test_r8_at_the_card_approves_on_the_real_routes_and_the_resend_runs_once(
+        tworld, monkeypatch) -> None:
+    w = tworld
+    monkeypatch.setattr(get_settings(), "agent_access_enabled", True)
+    count = _record_count(w, w.tobj)
+    data = {**_DATA, "site": "Card site"}
+
+    async def go() -> dict[str, Any]:
+        got: dict[str, Any] = {"asked": await st.studio_record_create(w.tpkg, "visit", data=data)}
+        rid = got["asked"]["request_id"]
+        got["read"] = await _read_route(w.a, ANA, rid)
+        got["decided"] = await _decide_route(w.a, ANA, rid, "approve", "card-press-1")
+        got["again"] = await _decide_route(w.a, ANA, rid, "approve", "card-press-1")
+        got["read_after"] = await _read_route(w.a, ANA, rid)
+        got["after_decision"] = _record_count(w, w.tobj)
+        # The member's follow-up names the request id. Mira sends the change again.
+        got["ran"] = await st.studio_record_create(w.tpkg, "visit", request_id=rid)
+        got["after_ran"] = _record_count(w, w.tobj)
+        got["read_done"] = await _read_route(w.a, ANA, rid)
+        got["second"] = await st.studio_record_create(w.tpkg, "visit", request_id=rid)
+        return got
+
+    got = _chat(w, go)
+    asked = got["asked"]
+    assert (asked["ok"], asked["saved"], asked["status"], asked["state"]) == (
+        False, False, 202, "awaiting"), asked
+    rid = asked["request_id"]
+    # What the card draws: the server's frame and the stored call.
+    read = got["read"]
+    assert isinstance(read, dict), read
+    assert (read["request_id"], read["state"], read["source"], read["app"], read["class"]) == (
+        rid, "awaiting", "studio", "studio", "B")
+    assert (read["card"]["client"], read["card"]["title"]) == ("Studio", "Add a record to visit.")
+    assert read["call"]["body"] == {"data": data} and read["subject"] == w.tpkg
+    # The card's press: one decision, and the same key again gives the first answer.
+    assert (got["decided"]["decision"], got["decided"]["state"], got["decided"]["created"]) == (
+        "approve", "approved", True)
+    assert (got["again"]["state"], got["again"]["created"]) == ("approved", False)
+    assert got["read_after"]["state"] == "approved"
+    assert got["after_decision"] == count, "an approval runs nothing"
+    # The resend after the follow-up runs the stored change once.
+    assert (got["ran"]["ok"], got["ran"]["saved"]) == (True, True), got["ran"]
+    assert got["after_ran"] == count + 1
+    assert _data_of(w, got["ran"]["record_id"])["site"] == "Card site"
+    assert got["read_done"]["state"] == "done"
+    assert (got["second"]["saved"], got["second"]["code"]) == (False, "request_spent")
+    assert _record_count(w, w.tobj) == count + 1
+    # Mira's tools sent one ask and two resends, and never the decision route.
+    assert [q for _a, q, _b in _door_posts(w)] == [
+        "ask=1", f"request_id={rid}", f"request_id={rid}"]
+    assert all("decision" not in path for _m, path, _q, _b in w.seen)
+
+
+def test_r8_au_a_change_that_the_card_declines_writes_nothing(tworld, monkeypatch) -> None:
+    w = tworld
+    monkeypatch.setattr(get_settings(), "agent_access_enabled", True)
+    before = _record_row(w, w.trec)
+
+    async def go() -> dict[str, Any]:
+        got: dict[str, Any] = {}
+        asked = await st.studio_record_update(w.tpkg, "visit", w.trec, {"notes": "From the card"})
+        got["asked"] = asked
+        rid = asked["request_id"]
+        got["declined"] = await _decide_route(w.a, ANA, rid, "decline", "card-press-2")
+        got["read"] = await _read_route(w.a, ANA, rid)
+        got["resend"] = await st.studio_record_update(w.tpkg, "visit", request_id=rid)
+        return got
+
+    got = _chat(w, go)
+    assert got["asked"]["state"] == "awaiting"
+    assert (got["declined"]["decision"], got["declined"]["state"]) == ("decline", "declined")
+    assert got["read"]["state"] == "declined"
+    resend = got["resend"]
+    assert (resend["saved"], resend["code"]) == (False, "request_declined"), resend
+    assert "nothing was written" in resend["errors"][0]["message"]
+    assert _record_row(w, w.trec) == before, "a declined card writes nothing"
+
+
+def test_r8_av_org_b_and_another_member_see_no_request_of_ana(tworld, monkeypatch) -> None:
+    w = tworld
+    monkeypatch.setattr(get_settings(), "agent_access_enabled", True)
+    count = _record_count(w, w.tobj)
+
+    async def go() -> dict[str, Any]:
+        got: dict[str, Any] = {}
+        asked = await st.studio_record_create(w.tpkg, "visit", data={**_DATA, "site": "Org A"})
+        rid = asked["request_id"]
+        # Org B, with Ana's own email, and Ben of org A.
+        got["b_read"] = await _read_route(w.b, ANA, rid)
+        got["b_decide"] = await _decide_route(w.b, ANA, rid, "approve", "org-b-press")
+        got["ben_read"] = await _read_route(w.a, BEN, rid)
+        got["ben_decide"] = await _decide_route(w.a, BEN, rid, "approve", "ben-press")
+        got["ana_read"] = await _read_route(w.a, ANA, rid)
+        got["resend"] = await st.studio_record_create(w.tpkg, "visit", request_id=rid)
+        return got
+
+    got = _chat(w, go)
+    assert (got["b_read"], got["b_decide"], got["ben_read"], got["ben_decide"]) == (
+        404, 404, 404, 404), got
+    # The request of Ana waits as it was. Nothing approved it, so nothing ran.
+    assert got["ana_read"]["state"] == "awaiting" and got["ana_read"]["decision"] is None
+    assert (got["resend"]["saved"], got["resend"]["code"]) == (False, "request_awaiting")
+    assert _record_count(w, w.tobj) == count
+    with w.p.admin_engine.connect() as c:
+        assert c.execute(text(
+            "SELECT count(*) FROM pm_agent_runs WHERE app = 'studio' "
+            "AND organization_id = CAST(:b AS uuid) AND member_email IN (:a, :n)"),
+            {"b": w.b, "a": ANA, "n": BEN}).scalar_one() == 0
+
+
+# ── aw and ax. The resend with only the request_id (B2c-2c fix round 1) ────
+#
+# The next turn of a chat may hold only text, so Mira may not know the package
+# id and the object name. The tool reads the request as the member (the read
+# route of the card) and sends the stored action with ``?request_id=``.
+#
+# aw. An ask, the approval on the decision route, then a resend with ONLY the
+#     request_id: the write runs once, and a second one is request_spent.
+# ax. A resend with ONLY the request_id of a declined request writes nothing.
+
+
+def test_r8_aw_a_resend_with_only_the_request_id_writes_once(tworld, monkeypatch) -> None:
+    w = tworld
+    monkeypatch.setattr(get_settings(), "agent_access_enabled", True)
+    count = _record_count(w, w.tobj)
+    data = {**_DATA, "site": "Id only"}
+
+    async def go() -> dict[str, Any]:
+        got: dict[str, Any] = {"asked": await st.studio_record_create(w.tpkg, "visit", data=data)}
+        rid = got["asked"]["request_id"]
+        got["decided"] = await _decide_route(w.a, ANA, rid, "approve", "id-only-press")
+        got["ran"] = await st.studio_record_create(request_id=rid)
+        got["after"] = _record_count(w, w.tobj)
+        got["again"] = await st.studio_record_create(request_id=rid)
+        return got
+
+    got = _chat(w, go)
+    rid = got["asked"]["request_id"]
+    assert got["decided"]["state"] == "approved"
+    assert (got["ran"]["ok"], got["ran"]["saved"]) == (True, True), got["ran"]
+    assert got["after"] == count + 1
+    assert _data_of(w, got["ran"]["record_id"])["site"] == "Id only"
+    assert (got["again"]["saved"], got["again"]["code"]) == (False, "request_spent")
+    assert _record_count(w, w.tobj) == count + 1
+    # The tool read the request, then sent the stored action. No call decided.
+    reads = [(m, p) for m, p, _q, _b in w.seen if m == "GET" and p.startswith("/agent-access/")]
+    assert reads == [("GET", f"/agent-access/requests/{rid}")] * 2
+    assert [q for _a, q, _b in _door_posts(w)] == [
+        "ask=1", f"request_id={rid}", f"request_id={rid}"]
+    assert all("decision" not in path for _m, path, _q, _b in w.seen)
+
+
+def test_r8_ax_a_resend_with_only_the_request_id_of_a_declined_change_writes_nothing(
+        tworld, monkeypatch) -> None:
+    w = tworld
+    monkeypatch.setattr(get_settings(), "agent_access_enabled", True)
+    before = _record_row(w, w.trec)
+
+    async def go() -> dict[str, Any]:
+        asked = await st.studio_record_update(w.tpkg, "visit", w.trec, {"notes": "Id only"})
+        rid = asked["request_id"]
+        await _decide_route(w.a, ANA, rid, "decline", "id-only-decline")
+        return {"rid": rid, "resend": await st.studio_record_update(request_id=rid)}
+
+    got = _chat(w, go)
+    resend = got["resend"]
+    assert (resend["saved"], resend["code"]) == (False, "request_declined"), resend
+    assert _record_row(w, w.trec) == before, "a declined change writes nothing"

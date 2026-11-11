@@ -136,3 +136,61 @@ export function uploadNote(files: ReadonlyArray<{ name: string; path: string }>)
     "Read them with read_attachment."
   );
 }
+
+/** A file that the note names: its name, and its path in the thread folder. */
+export interface NotedFile {
+  name: string;
+  path: string;
+}
+
+/** The words of a message, and the files that its trailing note names. */
+export interface ParsedUploadNote {
+  words: string;
+  files: NotedFile[];
+}
+
+const NOTE_RE =
+  /^(?:([\s\S]*?)\n\n)?📎 Uploaded (\d+) file\(s\): ([^\n]+)\n\nPaths: (`[^`\n]+`(?:, `[^`\n]+`)*)\n\nRead them with read_attachment\.$/;
+
+/**
+ * The ONE parser of `uploadNote`. It reads a message and finds the note at the
+ * END. It returns the words before the note and the files that it names. It
+ * returns `null` when the message holds no whole note, so a changed or
+ * partial note stays plain text. The bubble, the thread preview and the copy
+ * action all read this and never a regex of their own.
+ */
+export function parseUploadNote(content: string): ParsedUploadNote | null {
+  const m = NOTE_RE.exec(content);
+  if (!m) return null;
+  const paths = Array.from(m[4].matchAll(/`([^`\n]+)`/g), (p) => p[1]);
+  if (paths.length !== Number(m[2]) || paths.length === 0) return null;
+  const files = paths.map((path) => ({ path, name: path.slice(path.lastIndexOf("/") + 1) }));
+  // The header lists the names. They must equal the path endings, or the
+  // note was changed and stays text.
+  if (files.map((f) => f.name).join(", ") !== m[3]) return null;
+  return { words: (m[1] ?? "").trim(), files };
+}
+
+/** The words of a message with its note removed, for a preview or a copy. */
+export function wordsOfMessage(content: string): string {
+  const note = parseUploadNote(content);
+  if (!note) return content;
+  if (note.words) return note.words;
+  return note.files.length === 1
+    ? `📎 ${note.files[0].name}`
+    : `📎 ${note.files.length} files`;
+}
+
+/** A file size for a chip: B, KB or MB. */
+export function formatFileSize(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+const IMAGE_KINDS = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
+
+/** Whether a name is an image that a browser draws as a thumbnail. */
+export function isImageName(name: string): boolean {
+  return IMAGE_KINDS.includes(kindOf(name));
+}

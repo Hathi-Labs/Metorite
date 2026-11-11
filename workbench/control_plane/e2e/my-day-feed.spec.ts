@@ -431,3 +431,91 @@ test.describe("My Day feed, the life of a card (MD-2b)", () => {
     await expect(feed(page).locator('[data-feed-group="handled"]')).toHaveCount(0);
   });
 });
+
+/**
+ * Task 1898 (owner, 2026-11-06): on a phone, the acts of a row took the row,
+ * and a title kept one to twelve letters. Below `sm` the text takes the row:
+ * one icon for a first tap act, and every other act in the "···" menu.
+ *
+ * Mutations, run by hand (2026-11-06): draw the desktop acts on a phone
+ * (drop `hidden` from their row), and the first test fails on the title's
+ * share. Drop the acts from `phoneMenuItems`, and the second test fails on
+ * the menu. `feed.test.ts` fails when the phone controls lose `sm:hidden`.
+ */
+test.describe("My Day feed on a phone (task 1898)", () => {
+  test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+
+  const LONG = {
+    ...CARDS[0],
+    title: "Send the revised quote to Fracktal for the printer order",
+    acts: [
+      ...CARDS[0].acts,
+      { id: "move-tomorrow", label: "Move to tomorrow", class: "A", way: "open", href: "/projects?task=t1" },
+    ],
+  };
+
+  async function phoneFeed(page: Page) {
+    await setup(page);
+    // The last route wins: this answer replaces the feed of `setup`.
+    await page.route((url) => url.pathname === "/api/shell/feed", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          cards: [LONG, CARDS[1], CARDS[2]],
+          groups: [{ id: "needs_you", count: 3 }],
+          needs: NEEDS,
+          sources: { tasks: "ok", projects: "ok", email: "ok", approvals: "absent", calendar: "ok" },
+          capped: [],
+        }),
+      }),
+    );
+    await page.goto("/");
+    await expect(feedCard(page, "tasks:t1")).toBeVisible();
+  }
+
+  test("the title keeps most of the row, one quick act stays, and no other act is drawn", async ({ page }) => {
+    await phoneFeed(page);
+    const row = feedCard(page, "tasks:t1");
+    const rowBox = (await row.boundingBox())!;
+    const titleBox = (await row.locator("h2").boundingBox())!;
+    // Before the fix the title kept 58 px of a 356 px row.
+    expect(titleBox.width / rowBox.width).toBeGreaterThan(0.5);
+    // The whole title shows, on two lines at most.
+    expect(titleBox.height).toBeLessThanOrEqual(44);
+    const done = row.getByRole("button", { name: `Done: ${LONG.title}` });
+    await expect(done).toBeVisible();
+    expect((await done.boundingBox())!.width).toBeLessThanOrEqual(44);
+    // The second act is in the menu, not on the row.
+    await expect(row.getByRole("link", { name: "Move to tomorrow" })).toHaveCount(0);
+    // A card with no act and no menu draws no phone controls.
+    await expect(feedCard(page, "email:acc1:a").locator("[data-feed-phone-acts]")).toHaveCount(0);
+    // The chips stay on one line.
+    const chips = (await feed(page).locator("[data-feed-filter]").boundingBox())!;
+    expect(chips.height).toBeLessThan(52);
+  });
+
+  test("the ··· holds the row's other act, then Snooze, Dismiss and Not useful, and the act opens its link", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await phoneFeed(page);
+    await feedCard(page, "tasks:t1").getByRole("button", { name: `More for ${LONG.title}` }).tap();
+    const menu = page.getByRole("menu");
+    await expect(menu.getByRole("menuitem")).toHaveText([
+      "Move to tomorrow",
+      "Later today",
+      "Tomorrow",
+      "Next week",
+      "Until it changes",
+      "Dismiss",
+      "Not useful",
+    ]);
+    // The router moves the URL after the next page loads, and a dev server
+    // compiles /projects on its first visit. The stub has no task t1, so the
+    // Projects page then drops `?task=`: wait for the first URL, not the last.
+    const went = page.waitForURL(/\/projects\?task=t1$/, { timeout: 60_000 });
+    await menu.getByRole("menuitem", { name: "Move to tomorrow" }).tap();
+    await went;
+  });
+});

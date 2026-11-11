@@ -17,11 +17,14 @@
 import { useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 
-import { calendarLinkFromSearch, type CalendarLink } from "../lib/calendarLink";
+import { calendarLinkFromSearch, linkQuery, type CalendarLink } from "../lib/calendarLink";
 
 export function CalendarDeepLink({ onLink }: { onLink: (link: CalendarLink) => void }) {
   const params = useSearchParams();
-  const query = params?.toString() ?? "";
+  // ⚠️ The link's own keys, never the whole query. The task card writes its
+  // tab to `?ttab=` (ORC-3), and a change of that key opened the linked day
+  // again under an open card, which moved the week the member was on.
+  const query = linkQuery(params);
   const onLinkRef = useRef(onLink);
   useEffect(() => {
     onLinkRef.current = onLink;

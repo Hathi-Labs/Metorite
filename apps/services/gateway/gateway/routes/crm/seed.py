@@ -71,6 +71,11 @@ LOST_REASONS: tuple[tuple[str, int], ...] = (
 #: The name of the pipeline that a Native org starts with.
 DEFAULT_PIPELINE_NAME = "Sales pipeline"
 
+#: CRM-M4a: a deal pipeline. The text of ``core.DEAL_PIPELINE_SQL``, kept here
+#: because this module is a leaf. ``test_crm_lead_pipelines.py`` holds the two
+#: equal.
+DEAL_PIPELINE = "kind = 'deal'"
+
 _PIPELINE_SQL = (
     "INSERT INTO crm_pipelines "
     "(organization_id, name, position, is_default) "
@@ -113,11 +118,12 @@ async def _insert(db: Any, sql: str, params: dict[str, Any]) -> int:
     return len((await db.execute(text(sql), params)).fetchall())
 
 
-async def _has_rows(db: Any, table: str, org: str) -> bool:
-    """True when *org* already has a row in *table*."""
+async def _has_rows(db: Any, table: str, org: str, where: str = "") -> bool:
+    """True when *org* already has a row in *table* (and *where*, when given)."""
     row = (await db.execute(text(
-        f"SELECT 1 FROM {table} "  # table is one of three constants
-        "WHERE organization_id = CAST(:organization_id AS uuid) LIMIT 1"
+        f"SELECT 1 FROM {table} "  # table and where are constants of this module
+        "WHERE organization_id = CAST(:organization_id AS uuid)"
+        + (f" AND {where}" if where else "") + " LIMIT 1"
     ), {"organization_id": org})).fetchone()
     return row is not None
 
@@ -149,7 +155,8 @@ async def seed_native_pipeline(db: Any, organization_id: str) -> dict[str, int]:
                 "probability": probability,
             })
     if (
-        not await _has_rows(db, "crm_pipelines", org)
+        # CRM-M4a: a lead pipeline is not the deal pipeline of the org.
+        not await _has_rows(db, "crm_pipelines", org, DEAL_PIPELINE)
         and await _has_rows(db, "crm_deal_statuses", org)
     ):
         created = (await db.execute(

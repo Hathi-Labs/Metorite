@@ -89,6 +89,12 @@ _CORE_STANDARD_TOOL_NAMES: frozenset[str] = frozenset({
     # and no shell tool, so D85 and the egress rule both keep it.
     # Fence: ``tests/unit/test_chat_upload_every_agent.py``.
     "read_attachment",
+    # An attached image to the model of `tier-vision` (WS-VOX VOX-3,
+    # projects_ai_chat.md §31). Each call draws credits, so it is dark behind
+    # IMAGE_ANALYSIS_ORGS, and it is NOT in `_FLOOR_KEEP`: the email assistant
+    # and the worker agent opt out. Fence:
+    # ``tests/unit/test_attachment_analyze_image.py``.
+    "analyze_image",
 })
 
 
@@ -533,6 +539,16 @@ def _is_held_off(tool: Any, owner: str | None = None) -> bool:
     return is_held_off_write(tool, owner=owner)
 
 
+def _is_held_off_pack(tool: Any, slug: str) -> bool:
+    """True for a write of pack *slug* that a held chat holds off by pack slug
+    (CAL-1a): ``acb_skills.egress.is_held_off_pack_write``."""
+    try:
+        from acb_skills.egress import is_held_off_pack_write
+    except ImportError:
+        return False
+    return is_held_off_pack_write(tool, slug)
+
+
 def _covered_hold(agent_name: str | None) -> bool:
     """True when a covered run alone holds this run (H-236, RX-1).
 
@@ -916,16 +932,20 @@ def _build_output_discipline_block(
 
 
 def _with_attachment_rule(instructions: str, holds_reader: bool) -> str:
-    """*instructions* with the attachment failure rule, once.
+    """*instructions* with the attachment failure rule and the files rule, once.
 
     For a native MAF agent, which reads no Copilot addendum. Only an agent
     that holds ``read_attachment`` gets it, and the rule itself is the
     marker, so a second injection adds nothing (KV-cache stable).
     """
-    from acb_skills.addendum import ATTACHMENT_FAILURE_RULE  # noqa: PLC0415
+    from acb_skills.addendum import (  # noqa: PLC0415
+        ATTACHMENT_FAILURE_RULE,
+        FILES_ON_TASK_RULE,
+    )
     if not holds_reader or ATTACHMENT_FAILURE_RULE in instructions:
         return instructions
-    return instructions + "\n\n" + ATTACHMENT_FAILURE_RULE
+    # IMG-A3 (task 2489): the Projects pack has no room for the files rule.
+    return instructions + "\n\n" + ATTACHMENT_FAILURE_RULE + " " + FILES_ON_TASK_RULE
 
 
 # ── The house voice (WS-52, ``specs/agent_writing_voice.md``) ──────────────
@@ -1472,8 +1492,13 @@ def _build_injected_tools_addendum(
     effective_scope: frozenset[str] | None = None,
     own_risk: frozenset[tuple[str, bool, bool, bool]] = frozenset(),
     agent_name: str | None = None,
+    image_org_on: bool = False,
 ) -> str:
     """Return a system-prompt addendum describing the Metorite-injected tools.
+
+    ``image_org_on`` is a CACHE KEY only (WS-VOX VOX-3 fix round). The renderer
+    reads the run's org itself (``addendum._dark_tools``), so an unscoped
+    agent of a dark org and one of a lit org need two cache entries.
 
     Appended to every GitHub Copilot agent's system message at run time so the
     LLM knows the injected tools exist, when to use them, and what valid agent
@@ -1526,6 +1551,8 @@ def _build_injected_tools_addendum(
         effective_scope=effective_scope,
         registry_block=_registry_block_for(agent_name),
         risk_block=risk_summary_block(own=own_risk),
+        # The text depends on the cache key alone, never on a tenant read.
+        image_on=image_org_on,
     )
 
 
@@ -1692,10 +1719,34 @@ def _apply_own_tool_scope(agents: list[Any], own_scope: list[str] | None) -> Non
 
 #: The CRM record write tools that Mirror mode takes from a run (WS-53
 #: CRM-C7 item 4). Zoho owns the records there, so each would answer 409.
-#: ``log_activity`` stays: a Metorite-only note saves in Mirror mode (CRM-Z6).
+#: ``log_activity`` and ``crm_update_task`` stay: a Metorite-only note or
+#: task saves in Mirror mode (CRM-Z6), and the activity route has no Mirror gate.
 MIRROR_RECORD_WRITES: frozenset[str] = frozenset({
     "create_lead", "update_deal_status", "convert_lead",
+    "crm_update_record",
 })
+
+#: The CRM write that ``CRM_PIPELINES_ORGS`` keeps out of a run (WS-CRM
+#: CRM-M3a). An org off the list gets 404 from the route, so the tool leaves
+#: the run, and the model never offers it.
+PIPELINE_WRITES: frozenset[str] = frozenset({"crm_create_pipeline"})
+
+
+def _crm_pipelines_open() -> bool:
+    """True when ``CRM_PIPELINES_ORGS`` holds the org of this run (CRM-M3a).
+
+    The reader is ``gateway.routes.crm.flags.pipelines_allowed``, the one that
+    the create route reads. The org is the run's own (:func:`_run_org_or_none`),
+    never an argument (R5). It reads the settings only, and it fails closed:
+    no org, no gateway or an error reads as closed. Each build of a run asks
+    it (:func:`_drop_mirror_record_writes`, :func:`_drop_pack_mirror_writes`).
+    """
+    try:
+        from gateway.routes.crm.flags import pipelines_allowed
+        return bool(pipelines_allowed(_run_org_or_none()))
+    except Exception as exc:  # fail closed
+        _log.info("executor.crm_pipelines_flag_unread", error=str(exc)[:200])
+        return False
 
 
 async def _drop_mirror_record_writes(agents: list[Any]) -> None:
@@ -1714,15 +1765,23 @@ async def _drop_mirror_record_writes(agents: list[Any]) -> None:
     egress control drops the writes there (``egress.covered_chain``), and a
     covered run sends no request that it does not need (H-236). With the org off
     (``egress.held_card_writes_on``), a held run reads nothing too, as before.
+
+    CRM-M3a: first, an org that ``CRM_PIPELINES_ORGS`` leaves out loses
+    :data:`PIPELINE_WRITES`, in every run (:func:`_crm_pipelines_open`).
     """
     from acb_skills.egress import covered_chain, held_card_writes_on, no_egress_for_this_run
 
-    if covered_chain() or (no_egress_for_this_run() and not held_card_writes_on()):
-        return
     held = {
         _tool_name(t)
         for agent in agents for _attr, pool in _own_tool_pools(agent) for t in pool
     }
+    # CRM-M3a: the flag of the org first. It reads the settings only, so it
+    # runs in every run, a covered one too.
+    if held & PIPELINE_WRITES and not _crm_pipelines_open():
+        _drop_own_tools(agents, PIPELINE_WRITES)
+        _log.info("executor.crm_pipeline_writes_dropped", tools=sorted(PIPELINE_WRITES))
+    if covered_chain() or (no_egress_for_this_run() and not held_card_writes_on()):
+        return
     if not held & MIRROR_RECORD_WRITES:
         return
     try:
@@ -1926,6 +1985,26 @@ def _facts_withheld() -> frozenset[str]:
         # card and has no human to pick, so it never holds the reply tool.
         off.update(fn.__name__ for fn in (*CRM_QUESTION_TOOLS, *CRM_RULE_TOOLS))
     return frozenset(off)
+
+
+def _image_withheld() -> frozenset[str]:
+    """``analyze_image`` when the run's org is not on ``IMAGE_ANALYSIS_ORGS``.
+
+    WS-VOX VOX-3 fix round. The tool costs about 250 schema tokens, and its
+    addendum section more, in each chat. A dark org pays nothing: the name
+    leaves the SCOPE and the final list, like :func:`_facts_withheld`. The
+    org is the run's own (:func:`_run_org_or_none`), never request input. The
+    answer is per org and not per thread, so the tool list stays the same from
+    turn to turn and the prompt cache holds. No org withholds it too.
+    Fence: ``tests/unit/test_attachment_analyze_image.py``.
+    """
+    try:
+        from acb_common.assistant_profile import image_analysis_for
+    except ImportError:
+        return frozenset({"analyze_image"})
+    if image_analysis_for(_run_org_or_none()):
+        return frozenset()
+    return frozenset({"analyze_image"})
 
 
 def _whatsapp_withheld() -> frozenset[str]:
@@ -2170,9 +2249,11 @@ def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[An
     # Chat attachments (H-229) — the text of a file the member attached in
     # THIS chat, by pure parsing: no subprocess, no code. It is no shell
     # tool, so D85 does not withhold it (`_withheld_shell_tools`).
+    # `analyze_image` (WS-VOX VOX-3) sends an attached image to `tier-vision`
+    # through the Console, and decodes no pixel here.
     try:
-        from acb_skills.attachment_tools import read_attachment
-        _all_tools = [*_all_tools, read_attachment]
+        from acb_skills.attachment_tools import analyze_image, read_attachment
+        _all_tools = [*_all_tools, read_attachment, analyze_image]
     except ImportError:
         pass
 
@@ -2469,7 +2550,7 @@ def _inject_agent_tools(
     # WS-53 CRM-Q32 follow-up: `org_facts` (and, since CRM-Q32-8,
     # `crm_answer_question`) only for a run of an org on CRM_QUESTIONS_ORGS,
     # so no prompt names them for another org.
-    _facts_off = _facts_withheld()
+    _facts_off = _facts_withheld() | _image_withheld()
     _scope_names = _resolve_injected_scope(
         tool_scope, disabled_families=_disabled_families,
         withheld=_withheld | _egress | _mail_store | _opted_out | _wa_withheld | _facts_off,
@@ -2674,6 +2755,7 @@ def _inject_agent_tools(
                         own_risk=_own_risk(list(agent._tools)),
                         # The registry block leaves out the agent itself.
                         agent_name=agent_name,
+                        image_org_on=not _image_withheld(),
                     )
                     opts = getattr(agent, "_default_options", None)
                     if isinstance(opts, dict):
@@ -3279,7 +3361,7 @@ async def _pack_tools(
         # ``func`` is one (the Projects ``_StrictTool``). Any other shape skips.
         if name in taken or not inspect.iscoroutinefunction(_pack_func(fn)):
             skipped.append(name)
-        elif held and (_is_egress(fn) or _is_held_off(fn)):
+        elif held and (_is_egress(fn) or _is_held_off(fn) or _is_held_off_pack(fn, slug)):
             dropped.append(name)
         else:
             tools.append(_pack_call(fn, owner, held, run_key, slug))
@@ -3295,7 +3377,9 @@ async def _pack_tools(
 async def _drop_pack_mirror_writes(
     tools: list[Any], dropped: list[str], *, held: bool = False,
 ) -> tuple[list[Any], list[str]]:
-    """Take the CRM record writes from a pack build in Mirror mode (OA-8a).
+    """Take the CRM record writes from a pack build in Mirror mode (OA-8a),
+    and ``crm_create_pipeline`` from the build of an org that
+    ``CRM_PIPELINES_ORGS`` leaves out (CRM-M3a, :func:`_crm_pipelines_open`).
 
     The drop is part of the builder, so each layer gets it: layer (a) runs
     :func:`_drop_mirror_record_writes` later in the executor, but a pack that
@@ -3310,6 +3394,12 @@ async def _drop_pack_mirror_writes(
     """
     from acb_skills.egress import held_card_writes_on
 
+    # CRM-M3a: an org off `CRM_PIPELINES_ORGS` builds no `crm_create_pipeline`.
+    if any(_tool_name(t) in PIPELINE_WRITES for t in tools) and not _crm_pipelines_open():
+        gone = [_tool_name(t) for t in tools if _tool_name(t) in PIPELINE_WRITES]
+        tools = [t for t in tools if _tool_name(t) not in PIPELINE_WRITES]
+        dropped = [*dropped, *gone]
+        _log.info("executor.crm_pipeline_writes_dropped", tools=gone, source="pack")
     if ((held and not held_card_writes_on())
             or not any(_tool_name(t) in MIRROR_RECORD_WRITES for t in tools)):
         return tools, dropped
@@ -3393,10 +3483,57 @@ async def _drop_pack_unless_studio(
 ) -> tuple[list[Any], list[str]]:
     """Build an empty ``studio`` pack for an org that ``STUDIO_ORGS`` lacks,
     and for a member without ``feature:studio`` (STU-G1 and J1-1,
-    :func:`_studio_member_open`)."""
+    :func:`_studio_member_open`). For an open member, the second filter
+    :func:`_drop_studio_writes_unless_requests` runs next (STU-B2c-2b)."""
     if await _studio_member_open():
-        return tools, dropped
+        return await _drop_studio_writes_unless_requests(tools, dropped, held=held)
     return [], [*dropped, *(_tool_name(t) for t in tools)]
+
+
+def _studio_requests_open() -> bool:
+    """True when ``APP_REQUESTS_ORGS`` holds the org of this run AND agent
+    access is on (STU-B2c-2b, fix round 1).
+
+    ``gateway.app_requests.requests_allowed`` is the reader that the door
+    reads before it opens a request. ``acb_auth.agent_oauth.enabled`` is the
+    second flag of the member's list, Integrations, AI agents, Waiting for
+    you (``routes.agent_requests._require_access`` needs both). Without it,
+    the member cannot see a request to approve it, so a write tool would only
+    ask in vain. The org is the run's own (:func:`_run_org_or_none`), never
+    an argument (R5). It fails closed: no org, no gateway or an error reads
+    as closed.
+    """
+    try:
+        from acb_auth import agent_oauth
+        from gateway.app_requests import requests_allowed
+        return bool(agent_oauth.enabled()) and bool(requests_allowed(_run_org_or_none()))
+    except Exception as exc:  # fail closed
+        _log.info("executor.studio_requests_unread", error=str(exc)[:200])
+        return False
+
+
+async def _drop_studio_writes_unless_requests(
+    tools: list[Any], dropped: list[str], *, held: bool = False,
+) -> tuple[list[Any], list[str]]:
+    """Take the three record write tools out of a ``studio`` pack while the
+    org has no approval store (STU-B2c-2b, :func:`_studio_requests_open`).
+
+    In a dark org, the door answers each write from chat 403
+    ``approval_required``, so a write tool there only fails. The read tools
+    stay. A pack with no write tool reads no flag. The names are
+    ``acb_skills.studio_tools.STUDIO_RECORD_WRITES``, the one list.
+    Fence: ``tests/unit/test_tool_packs_registry.py``.
+    """
+    from acb_skills.studio_tools import STUDIO_RECORD_WRITES
+
+    if not any(_tool_name(t) in STUDIO_RECORD_WRITES for t in tools):
+        return tools, dropped
+    if _studio_requests_open():
+        return tools, dropped
+    kept = [t for t in tools if _tool_name(t) not in STUDIO_RECORD_WRITES]
+    gone = [_tool_name(t) for t in tools if _tool_name(t) in STUDIO_RECORD_WRITES]
+    _log.info("executor.studio_writes_dropped", tools=sorted(gone), source="pack")
+    return kept, [*dropped, *gone]
 
 
 #: The one pre-filter slot of :func:`_pack_tools`, by owner. A filter takes the
@@ -3519,7 +3656,8 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
             _log.warning("executor.pack_call_refused", tool=name, owner=owner)
             return PACK_CALL_REFUSED.format(tool=name)
         held_now = held or read_untrusted_answer(ctx)
-        if held_now and not held and (_is_egress(fn) or _is_held_off(fn)):
+        if held_now and not held and (
+                _is_egress(fn) or _is_held_off(fn) or _is_held_off_pack(fn, slug)):
             return _held_in_turn(owner, name)
         twice = pack_write_refusal(owner, name, ctx)  # OA-8i, before any await
         if twice is not None:
@@ -3730,6 +3868,17 @@ def _pack_base_count(
     logs the true count after the injection (``executor.pack_request_tools``)
     and warns past the cap. Fence: ``tests/unit/test_exact_tool_count.py``.
     """
+    return len(_pack_base_names(agent, agent_name=agent_name, tool_scope=tool_scope,
+                                agent_config=agent_config, disabled=disabled))
+
+
+def _pack_base_names(
+    agent: Any, *, agent_name: str | None, tool_scope: list[str] | None,
+    agent_config: dict[str, Any] | None, disabled: frozenset[str],
+) -> set[str]:
+    """The names of the tools that :func:`_pack_base_count` counts. WS-STU F3
+    reads them too: a skill pack loads only when the run holds each of its
+    tools (:func:`_skills_present`)."""
     from acb_skills.skill_families import SKILL_FAMILIES
 
     names = {_tool_name(t) for _label, pool in _own_tool_pools(agent) for t in pool}
@@ -3737,7 +3886,7 @@ def _pack_base_count(
     names -= gone  # `_add_crm_facts_block` drops an agent's own copy too
     withheld = (_withheld_shell_tools(agent_name, agent_config)
                 | _floor_opt_out(agent_name, agent_config)
-                | _whatsapp_withheld() | gone)
+                | _whatsapp_withheld() | _image_withheld() | gone)
     scope = _resolve_injected_scope(tool_scope, disabled_families=disabled, withheld=withheld)
     chain = [_tool_name(fn) for fn in _collect_injectable_platform_tools(agent_name)]
     injected = set(chain) if scope is None else {name for name in chain if name in scope}
@@ -3745,7 +3894,7 @@ def _pack_base_count(
         injected = set(chain)
     if "workflows" not in disabled:
         injected |= set(SKILL_FAMILIES["workflows"]["tools"])
-    return len(names | (injected - withheld))
+    return names | (injected - withheld)
 
 
 def _specialist_counts(
@@ -3828,6 +3977,8 @@ async def _apply_tool_packs(
     # its parent off, as it is on where the pack flag names its parent.
     disabled = tool_packs.with_followers(_load_disabled_skill_families(agent_name))
     allow = frozenset(allowed) - disabled
+    # WS-STU F3: the published skills that the words of this turn name.
+    turn = await _turn_with_skills(turn)
     base = _pack_base_count(agent, agent_name=agent_name, tool_scope=tool_scope,
                             agent_config=agent_config, disabled=disabled)
     specialists = _specialist_counts(pool)
@@ -3850,7 +4001,7 @@ async def _apply_tool_packs(
     if not choice.slugs:
         _log.info("executor.packs_chosen", packs=[], evicted=list(choice.evicted),
                   skipped=list(choice.skipped), base_tools=base)
-        if not offer_loader:
+        if not offer_loader and not choice.skills:
             return None
     run_key = secrets.token_urlsafe(24)
     build_ctx = {**dict(run_ctx), tool_packs.PACK_RUN_KEY: run_key}
@@ -3862,11 +4013,20 @@ async def _apply_tool_packs(
             continue
         builds.append(build)
         holds |= {_tool_name(t) for t in build.tools}
-    if not builds and not offer_loader:
+    skills = _skills_present(
+        choice.skills, holds, agent, agent_name=agent_name, tool_scope=tool_scope,
+        agent_config=agent_config, disabled=disabled)
+    if not builds and not offer_loader and not skills:
         return None
     loaded = [(build.slug, build.held) for build in builds]
     added = _as_agent_tools([tool for build in builds for tool in build.tools])
-    draft = tool_packs.PackRun.of(turn, choice, loaded)
+    # WS-STU F3, review fixes P1 and P2: a skill pack takes a place of the 3,
+    # so the plan and the loader count it. A code pack that holds a tool of a
+    # skill never leaves for a load (``PackRun.needs``).
+    skill_slugs = [s.slug for s in skills]
+    named = {name for s in skills for name in s.tools}
+    needs = [b.slug for b in builds if named & {_tool_name(t) for t in b.tools}]
+    draft = tool_packs.PackRun.of(turn, choice, loaded, skills=skill_slugs, needs=needs)
     kept = [t for t in pool if _delegates_to(t) not in draft.replaced]
     current = base + len(added) - (len(pool) - len(kept))
     plan = tool_packs.LoaderPlan()
@@ -3877,24 +4037,27 @@ async def _apply_tool_packs(
         # also reaches the owner through it.
         built = {b.slug: len(b.tools) for b in builds}
         plan = await _plan_pack_loader(
-            agent, allow, [b.slug for b in builds], builds=builds, current=current,
+            agent, allow, [*(b.slug for b in builds), *skill_slugs], builds=builds,
+            current=current,
             pool=kept, persona=str(opts.get("instructions") or ""), bullets=bullets,
             agent_name=agent_name, no_egress=bool(run_ctx.get("no_egress")),
             is_authorized=is_authorized,
             spare={slug: built[slug] for slug in draft.spare() if slug in built})
-    if not builds and not plan.offered:
+    if not builds and not plan.offered and not skills:
         return None
     via = plan.via_loader
     try:
         persona = tool_packs.persona_for(
-            str(opts.get("instructions") or ""), loaded, bullets, via, build_ctx)
+            str(opts.get("instructions") or ""), loaded, bullets, via, build_ctx,
+            skills=skills)
     except RuntimeError as exc:
         _log.error("executor.packs_refused", reason="persona_swap", error=str(exc)[:200])
         return None
     # Task 1747: the record keeps the sticky packs that left at the start of
     # this turn, and which of them the loader offers. The context of the turn
     # names them (``executor._pack_left_block``, ``tool_packs.left_line``).
-    record = tool_packs.PackRun.of(turn, choice, loaded, via, offered=plan.offered)
+    record = tool_packs.PackRun.of(turn, choice, loaded, via, offered=plan.offered,
+                                   skills=skill_slugs, needs=needs)
     replaced = frozenset(record.replaced)
     # OA-8f: the count that the run sends once this apply is done: the base
     # (with the load tool only when the plan offers it), the pack tools, less
@@ -3927,10 +4090,114 @@ async def _apply_tool_packs(
         packs=list(record.slugs), base_tools=base, current_tools=current,
         planned_tools=planned_tools,
     )
+    _log_skills_loaded(skills, choice.skills_skipped)
     applied = PackApply(builds=tuple(builds), record=record, run_key=run_key)
     if offer_loader and not _offer_pack_loader(agents, applied, plan) and via:
         _log.error("executor.pack_loader_stranded", owners=sorted(via))
-    return applied if builds or plan.offered else None
+    return applied if builds or plan.offered or skills else None
+
+
+# ── Published skills as packs (WS-STU F3) ───────────────────────────────────
+# ``ai_studio.md`` §7 "Runtime", §11.1 and the §14 F3 row. Dark: the read
+# runs only inside :func:`_apply_tool_packs`, so only for an org that
+# the pack gate of ``tool_packs`` names, and only while
+# ``STUDIO_ORGS`` names the org and the member holds ``feature:studio``
+# (:func:`_studio_member_open`). Fences: ``tests/unit/test_skill_packs.py``
+# and ``tests/unit/test_skill_packs_r8.py`` (R8).
+
+
+async def _turn_with_skills(turn: Any) -> Any:
+    """*turn* with the published skills that its words name, or *turn* as it
+    was. Never raises: a fault loads no skill.
+
+    The org is the bound tenant of the run, and the member is the verified
+    member of the run (``executor._verified_run_member``). Both must agree
+    with the turn, so a turn of another chat reads nothing (R5). The read
+    opens ``tenant_session()`` on the bound tenant, so RLS binds it. The
+    store gives only the skills that the member may load
+    (``skills_store.list_loadable``). The match reads the names, and only the
+    matched skills read a body, at most ``tool_packs.MAX_PACKS`` of them."""
+    from acb_common.db import current_tenant
+    from acb_skills import skill_packs, tool_packs
+
+    words = str(getattr(turn, "words", "") or "")
+    if not words.strip() or not _studio_open():
+        return turn
+    try:
+        from orchestrator.executor import _verified_run_member
+
+        member = _verified_run_member()
+        org = str(current_tenant() or "").strip().lower()
+        if (not member or not org or org != str(getattr(turn, "org", "")).strip().lower()
+                or tool_packs._member_part(member) != getattr(turn, "member_part", None)):
+            return turn
+        if not await _studio_member_open():
+            return turn
+        from acb_common.db import tenant_session
+        from gateway.studio import skills_store
+
+        async with tenant_session() as db:
+            heads = await skills_store.list_loadable(db, member)
+            named = [h.id for h in heads if skill_packs.matches(h.name, h.slug, words)]
+            pairs = (await skills_store.loadable_versions(
+                db, member, named[:tool_packs.MAX_PACKS]) if named else [])
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("executor.skills_unread", error_type=type(exc).__name__)
+        return turn
+    packs: list[Any] = []
+    for skill, version in pairs:
+        built = skill_packs.build(
+            skill.id, skill.name, skill.description, version.version,
+            version.content_hash, version.body, max_tools=tool_packs.MAX_PACK_TOOLS)
+        if isinstance(built, str):
+            _log.info("executor.skill_refused", skill=skill.id, version=version.version,
+                      reason=built)
+            continue
+        packs.append(built)
+    return dataclasses.replace(turn, skills=tuple(packs)) if packs else turn
+
+
+def _skills_present(
+    skills: Sequence[Any], holds: Iterable[str], agent: Any, *, agent_name: str | None,
+    tool_scope: list[str] | None, agent_config: dict[str, Any] | None,
+    disabled: frozenset[str],
+) -> tuple[Any, ...]:
+    """The skill packs of *skills* whose every tool the run holds.
+
+    A skill pack adds no tool. Its tools are the agent's own tools, the
+    platform tools that the injection adds (:func:`_pack_base_names`), or the
+    tools of a code pack of this turn (*holds*). A skill that names a tool
+    the run does not hold fails to load, so Mira gets no rule for a tool
+    that she cannot call."""
+    if not skills:
+        return ()
+    present = set(holds) | _pack_base_names(
+        agent, agent_name=agent_name, tool_scope=tool_scope,
+        agent_config=agent_config, disabled=disabled)
+    kept: list[Any] = []
+    for found in skills:
+        missing = sorted(set(found.tools) - present)
+        if missing:
+            _log.info("executor.skill_refused", skill=found.skill_id,
+                      version=found.version, reason="tool_absent", tools=missing)
+            continue
+        kept.append(found)
+    return tuple(kept)
+
+
+def _log_skills_loaded(skills: Sequence[Any], skipped: Sequence[str]) -> None:
+    """One ``executor.skill_loaded`` line for each skill pack of the run, in
+    load order (§11.1, "model-visible means logged"). It names the skill,
+    the version, its hash, its tools, the token cost and the prefix effect,
+    and never the text of the skill."""
+    for place, found in enumerate(skills):
+        _log.info(
+            "executor.skill_loaded", skill=found.skill_id, version=found.version,
+            content_hash=found.content_hash, tools=list(found.tools),
+            token_cost=found.token_cost, changes_prefix=found.changes_prefix,
+            place=place)
+    if skipped:
+        _log.info("executor.skills_skipped", skills=list(skipped), reason="cap")
 
 
 def _loader_agent_ok(agent: Any) -> bool:

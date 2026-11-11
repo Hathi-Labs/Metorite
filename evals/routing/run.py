@@ -220,8 +220,17 @@ def drivable(case: Case) -> bool:
     ``loader.COPILOT_SPECIALIST_ALLOWED`` keeps) runs its sub-run in the
     Copilot CLI, a process a hermetic run cannot start. Its case gets the
     catalog checks only. Every other Copilot agent is no specialist.
+
+    WS-43h set app-builder's label to ``"maf"``. Its factory still builds the
+    Copilot agent unless ``MAF_CODING_SCOPE`` names ``app_builder`` for the
+    org, so the allow list, and not the label, marks it until WS-43j.
     """
-    return case.expected is None or runtime_of(case.expected) == "maf"
+    from acb_skills.loader import COPILOT_SPECIALIST_ALLOWED
+
+    agent = case.expected
+    return agent is None or (
+        runtime_of(agent) == "maf" and agent not in COPILOT_SPECIALIST_ALLOWED
+    )
 
 
 def representative(cases: Iterable[Case]) -> list[Case]:

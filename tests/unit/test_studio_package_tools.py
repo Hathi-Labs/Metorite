@@ -111,6 +111,14 @@ clean after each restore.
 * M32, the old draft_changed text of the save: ``draft_changed_texts_name_a
   _recovery``.
 * M33, the draft save names ``$.based_on``: 4 red in ``test_studio_package_routes.py``.
+
+PKG-12 (``package_host.md`` §6.2 step 1). The publish sends ``origin`` =
+``chat``, and the fake reads it with the real ``packages._origin``. The tool
+takes no org, member or date argument
+(``test_the_publish_tool_takes_no_org_member_or_date``).
+
+* M34, send no origin with the publish: ``name_the_hash_that_they_checked``.
+* M35, add an ``ends_at`` argument to ``studio_publish``: ``takes_no_org_member_or_date``.
 """
 from __future__ import annotations
 
@@ -278,6 +286,7 @@ class Gateway:
             raise HTTPException(422, {"message": "The release notes are text.", "errors": [
                 {"path": "$.notes", "message": "The release notes are text."}]})
         expected = packages._based_on(sent.get("based_on"))
+        packages._origin(sent.get("origin"))  # the real parse (PKG-12)
         with packages._store_errors():
             store._notes(notes)
             store._expect(p["manifest"], expected)
@@ -724,7 +733,20 @@ async def test_the_publish_and_the_save_name_the_hash_that_they_checked(gw) -> N
     await _plan(other)
     assert (await st.studio_publish(pid))["ok"]
     body = next(b for verb, p, b, _h in gw.calls if verb == "POST" and p.endswith("/versions"))
-    assert body == {"notes": "", "based_on": st.manifest_hash(other)}
+    assert body == {"notes": "", "based_on": st.manifest_hash(other), "origin": "chat"}
+    assert packages._origin(body["origin"]) == packages.ORIGIN_CHAT
+
+
+def test_the_publish_tool_takes_no_org_member_or_date() -> None:
+    """PKG-12 (R5). The route reads the org and the member from the session
+    and the end date from the server clock. So the model can name only the
+    package and the notes. Mutation M35 -> red."""
+    params = inspect.signature(st.studio_publish).parameters
+    assert list(params) == ["package_id", "notes"]
+    words = ("org", "tenant", "member", "email", "user", "owner", "date", "ends", "time",
+             "days", "origin")
+    for name in params:
+        assert not any(w in name.lower() for w in words), name
 
 
 async def test_a_draft_that_changes_between_the_read_and_the_publish_is_not_published(
@@ -1293,3 +1315,45 @@ async def test_every_result_stays_under_the_cap(gw) -> None:
     outs.append(await st.studio_publish(pid))
     for out in outs:
         assert len(json.dumps(out, ensure_ascii=False)) < st.MAX_MANIFEST_CHARS
+
+
+# -- 13. The Studio IDE binds the chat to one package (STU-G3a) ---------------------
+
+
+async def test_a_chat_bound_by_page_facts_saves_to_that_package_with_the_hash_of_the_facts(gw) -> None:
+    """STU-G3a fix 1, fence C. The IDE puts the package id, the draft and ``based_on`` (the
+    ``manifest_hash`` of the GET answer) in the page facts. The agent saves with that hash. The
+    save goes to package X by one PUT, and no POST makes a new package.
+
+    Mutation 1: make ``_save_draft`` POST a new package when it finds a package id. "no create" turns red.
+    Mutation 2: skip the based_on compare. The stale test below turns red.
+    """
+    x = await _save(_visit())
+    other = await _save(_visit("other-app"))
+    x_id = x["package_id"]
+    gw.calls.clear()
+    from_facts = st.manifest_hash(gw.packages[x_id]["manifest"])
+    changed = _visit(name="Renamed by Mira")
+    out = await st.studio_save(changed, x_id, from_facts)
+    assert out["ok"] and out["package_id"] == x_id
+    assert gw.packages[x_id]["manifest"] == changed
+    assert gw.packages[other["package_id"]]["manifest"] != changed
+    assert gw.writes() == [("PUT", "/studio/packages/{}/draft")]
+    assert not [1 for m, p, *_ in gw.calls if m == "POST"], "no create"
+
+
+async def test_a_stale_hash_from_the_page_facts_is_refused_and_writes_nothing(gw) -> None:
+    """STU-G3a fix 1. The page facts hold the hash of an older draft (Mira or the member changed
+    the draft since). The save fails closed, names the recovery, and writes nothing."""
+    x = await _save(_visit())
+    x_id = x["package_id"]
+    old_hash = st.manifest_hash(gw.packages[x_id]["manifest"])
+    newer = _visit(name="Newer")
+    assert (await st.studio_save(newer, x_id, old_hash))["ok"]
+    gw.calls.clear()
+    before = copy.deepcopy(gw.packages[x_id]["manifest"])
+    out = await st.studio_save(_visit(name="Late change"), x_id, old_hash)
+    assert out["ok"] is False and _msg(out) == st._PKG_STALE
+    assert "apply the change again" in st._PKG_STALE and "page facts" in st._PKG_STALE
+    assert gw.writes() == []
+    assert gw.packages[x_id]["manifest"] == before

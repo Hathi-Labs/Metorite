@@ -292,6 +292,8 @@ class TestTheMemberDoorActs:
             {"email": PRIYA, "org_id": ORG, "status": "removed"}]
         assert PRIYA in db.invalidated
         assert db.audit == [("org.member_removed", f"user:{PRIYA}")]
+        # Task 2221: the row lands in the org the door wrote, not the operator's.
+        assert [k.get("organization_id") for k in db.audit_payloads] == [ORG]
         # The BFF tells the Console. The gateway door does not.
         assert member_world["console"] == []
 
@@ -311,6 +313,8 @@ class TestTheMemberDoorActs:
         # The audit entry is written BEFORE the commit, by the shared body.
         assert db.audit_at_commit == [1]
         assert db.audit == [("org.member_purged", f"user:{PRIYA}")]
+        # Task 2221: the shared purge body names the org of the purge.
+        assert [k.get("organization_id") for k in db.audit_payloads] == [ORG]
         assert member_world["shadow_purges"] == [
             {"email": PRIYA, "org_id": ORG}]
         assert PRIYA in db.invalidated
@@ -502,8 +506,11 @@ class TestTheRenameDoorAct:
     def test_the_audit_names_the_operator(self, client, rename_world):
         assert _rename(client).status_code == 200
         assert rename_world["audit"] == [
+            # Task 2221: the door binds no tenant, so it names the org
+            # it wrote, and the row lands there, not in the operator org.
             ("operator", "org.renamed", "org:acme",
-             {"display_name": "Shaurrya Tele", "via": "operator"}),
+             {"organization_id": ORG, "display_name": "Shaurrya Tele",
+              "via": "operator"}),
         ]
 
     def test_the_door_and_the_admin_route_share_one_update_body(self):

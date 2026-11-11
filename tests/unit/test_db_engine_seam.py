@@ -788,6 +788,14 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "not go blind. Every read and write after it binds one organization "
         "with `tenant_session`, and the sweep starts only while "
         "`agent_run_sweep_enabled` is on",
+    ("apps/services/gateway/gateway/package_host/expiry_loop.py",
+     "_organization_ids"):
+        "WS-PKG PKG-10b: which organizations the daily expiry of the package "
+        "host looks at. It lists the RLS-EXEMPT `organization` table, so it "
+        "does not go blind. It keeps the orgs that `PACKAGE_HOST_ORGS` names, "
+        "and each call of `expire_due` after it binds one organization with "
+        "`tenant_session`. The loop starts only while "
+        "`PACKAGE_EXPIRY_ENABLED` is on",
     ("apps/services/gateway/gateway/routes/github/webhook.py",
      "_installation_org"):
         "WS-54 GH-4: which org owns the GitHub installation of a webhook. "
@@ -795,6 +803,12 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "through the SECURITY DEFINER `github_installation_org` of migration "
         "282, granted to `acb_app` alone, AFTER the HMAC check, and the route "
         "binds the org it returns",
+    ("packages/acb_memory/acb_memory/tenant_guard.py",
+     "_probe_organizations"):
+        "WS-KG KG-9: the memory tenant guard asks which organizations exist, "
+        "two at most. It reads at most two rows of the RLS-EXEMPT `organization` "
+        "table and no other table, so it cannot run bound. A yes keeps Mem0 "
+        "and Graphiti down, and it runs only while one of their flags is on",
     ("apps/services/gateway/gateway/routes/email/memory_purge.py",
      "_organization_ids"):
         "WS-17 EM-G11f2: which organizations the mailbox purge loop sweeps. "

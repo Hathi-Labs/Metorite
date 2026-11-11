@@ -10,7 +10,6 @@ from acb_auth import (UserContext, UserRole, get_current_user,
                       require_role)
 from acb_common import configure_logging, get_logger, get_settings
 from acb_common import db_busy
-from acb_common.child_env import copilot_env
 from acb_common.db import TenantUnbound, clear_tenant, release_tenant
 from fastapi import BackgroundTasks, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -130,29 +129,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:  # pragma: no cover
         _log.warning("gateway.runtime_check_failed", error=str(exc))
 
-    # Pre-warm the Copilot model list cache so /api/models/all returns instantly.
-    async def _warmup_copilot_models() -> None:
-        try:
-            _gh = getattr(settings, "github_token", "") or os.environ.get("GITHUB_TOKEN", "")
-            if not _gh:
-                return
-            os.environ.setdefault("GITHUB_TOKEN", _gh)
-            import time as _t
-
-            _m = await _list_copilot_models(_gh)
-            if _m:
-                _copilot_models_cache["data"] = {
-                    "models": [{"id": x.id, "label": x.name, "model_picker_enabled": True}
-                               for x in _m if not x.policy or x.policy.state == "enabled"],
-                    "source": "live",
-                }
-                _copilot_models_cache["ts"] = _t.monotonic()
-                _log.info("gateway.copilot_models_cache_warmed", count=len(_m))
-        except Exception as _e:
-            _log.warning("gateway.copilot_models_warmup_failed", error=str(_e))
-
     import asyncio as _asyncio
-    _asyncio.ensure_future(_warmup_copilot_models())
 
     # Sweep any `cc-copilot-*` sandbox containers (BO-7 phase 2 —
     # copilot_sandbox.py) left running by a prior crashed gateway process.
@@ -480,6 +457,21 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.reach_loop_skipped", error=str(exc))
 
+    # KG-9 (task 786): the memory layer refuses to start while two or more
+    # organizations exist, because the Mem0 and Graphiti stores have no org
+    # scope. The gateway still starts. Only Mem0 and Graphiti stay down, and
+    # each call asks the guard again. With MEM0_ENABLED and GRAPHITI_ENABLED
+    # off this reads two settings and opens no session.
+    # Fence: tests/unit/test_memory_tenant_guard.py.
+    try:
+        from acb_memory.tenant_guard import MemoryTenancyRefused, check_memory_tenancy
+        try:
+            await check_memory_tenancy()
+        except MemoryTenancyRefused as exc:
+            _log.error("gateway.memory_refused", error=str(exc)[:300])
+    except Exception as exc:
+        _log.warning("gateway.memory_tenancy_check_skipped", error=str(exc)[:200])
+
     # Start the mailbox purge loop (routes/email/memory_purge.py; spec
     # email_app_master_plan.md §12.3.13.9, WS-17 EM-G11f2). It finishes each
     # Mem0 purge that a disconnect owes. No flag: with Mem0 off a tick ends
@@ -537,6 +529,20 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.align_jobs_skipped", error=str(exc))
     try:
+        # The headless turn (WS-AUTO AUTO-8a, gateway/jobs/headless_turn.py)
+        # registers `auto.turn` at import, only with JOB_QUEUE on. Dark: no
+        # code enqueues it, and HEADLESS_TURN_ORGS ships empty.
+        from gateway.jobs import headless_turn as _headless_turn  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.headless_turn_jobs_skipped", error=str(exc))
+    try:
+        # The graph sweep kind and its seed hook register at import (WS-KG
+        # KG-4, gateway/kb_entities/graph.py). Dark: the seed needs
+        # GRAPH_SWEEP_ORGS. Its own try, for the reason above.
+        from gateway.kb_entities import graph as _kg_graph  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.graph_jobs_skipped", error=str(exc))
+    try:
         from gateway.jobs.worker import start_job_worker
         _log.info("gateway.job_worker", started=await start_job_worker())
     except Exception as exc:
@@ -576,6 +582,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         _log.info("gateway.agent_run_sweep", started=agent_run_sweep_started)
     except Exception as exc:
         _log.warning("gateway.agent_run_sweep_skipped", error=str(exc))
+
+    # Start the daily expiry of the package host (gateway/package_host/
+    # expiry_loop.py; spec package_host.md section 6.2, WS-PKG PKG-10b). Each
+    # day it archives each due install, and it deletes each install that
+    # stayed 30 days in the archive. Dark by default: with
+    # PACKAGE_EXPIRY_ENABLED off it starts no task and logs once. The gate
+    # lives inside the start function. A flip on production is the owner's.
+    try:
+        from gateway.package_host.expiry_loop import start_package_expiry
+        package_expiry_started = await start_package_expiry()
+        _log.info("gateway.package_expiry", started=package_expiry_started)
+    except Exception as exc:
+        _log.warning("gateway.package_expiry_skipped", error=str(exc))
 
     # Chat-run liveness (incident 2026-10-09). This process beats a heartbeat
     # key, so a run it holds reads as alive and a run of a dead process reads
@@ -728,6 +747,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.agent_run_sweep import stop_agent_run_sweep
         await stop_agent_run_sweep()
+    except Exception:
+        pass
+
+    # Stop the daily expiry of the package host and wait for a tick in progress.
+    try:
+        from gateway.package_host.expiry_loop import stop_package_expiry
+        await stop_package_expiry()
     except Exception:
         pass
 
@@ -949,6 +975,14 @@ PUBLIC_ROUTES: frozenset[str] = frozenset({
     # Microsoft Graph change notification — validationToken echo, then the
     # signed `org` in the URL, then clientState inside that tenant.
     "/email/webhook/microsoft",
+
+    # WS-17 SG-1 (D-EM-68) — a hosted signature image. Every reader of a mail
+    # fetches it with no session. The 256-bit token in the URL IS the
+    # credential: the route checks the org is a UUID, binds
+    # tenant_session(org) and reads the one row whose token matches, under
+    # RLS. Every miss is the same 404. It serves image bytes only, with
+    # nosniff and `default-src 'none'`. routes/email/signature_images.py.
+    "/email/signature-image/{org}/{token}.{ext}",
 
     # Meta webhook — verify-token on GET, signature on POST.
     "/whatsapp/webhook",
@@ -1453,7 +1487,8 @@ if _HAS_MAF:
                                 name=f"chat:{user_id[:20]}",
                                 content=_mem_last_user[:500],
                                 source_description="copilot_chat",
-                                group_id=user_id,
+                                # KG-9: the episode's group is its org.
+                                organization_id=_organization_id,
                             )
                     except ImportError:
                         pass
@@ -1885,6 +1920,26 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # projects_ai_chat.md §31 VOX-1 — the chat's voice input, a clip to the
+    # Console's metered transcribe door. Shares /chat's prefix, in its own
+    # module, as the brief does. Dark behind CHAT_VOICE_ORGS.
+    from gateway.routes.chat_transcribe import router as _chat_transcribe_router
+
+    app.include_router(_chat_transcribe_router)
+except Exception:  # pragma: no cover
+    pass
+
+# Task 2432 (F1 of STU-L0) — the rate limit of the React artifact compile.
+# The workbench takes one slot here before it starts esbuild. The counter
+# lives in the tenant Redis wrapper. No `try`: the module needs only
+# acb_auth, acb_common and fastapi, and a router that silently failed to
+# import would answer 404, which the workbench reads as an outage.
+# Fence: `test_artifact_compile_slot.py::test_the_real_gateway_app_serves_both_routes`.
+from gateway.routes.artifact_compile import router as _artifact_compile_router  # noqa: E402
+
+app.include_router(_artifact_compile_router)
+
+try:
     # WS-66 RM-4 — a tap on a reminder link opens the chat with a first
     # message that code built (`calendar_events_reminders.md` §5.7). Shares
     # /chat's prefix, in its own module, as the brief does.
@@ -2180,6 +2235,16 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-MCP SW-94 — one policy store for agent work (agent_coordination.md
+    # §3.11.5 and SW-94): the save of a policy row. Ships dark: 404 while
+    # `AGENT_POLICY_ORGS` does not hold the caller's org.
+    from gateway.routes.agent_policies import router as _agent_policies_router
+
+    app.include_router(_agent_policies_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-ALN ALN-5a — the rules of a project (project_alignment.md §4.2), on
     # the one guidance store: create, accept, edit, retire, the level, the
     # list and the history. Ships dark: 404 while `PROJECT_RULES_ORGS` does
@@ -2187,6 +2252,17 @@ try:
     from gateway.routes.project_rules import router as _project_rules_router
 
     app.include_router(_project_rules_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-ALN ALN-5b — Mira proposes the rules of one pinned page
+    # (project_alignment.md §4.2): one model call with no tools, each quote
+    # checked, at most 12 proposals for each page version. Ships dark behind
+    # the same `PROJECT_RULES_ORGS` (404 while the org is not listed).
+    from gateway.routes.project_rules_propose import router as _project_rules_propose_router
+
+    app.include_router(_project_rules_propose_router)
 except Exception:  # pragma: no cover
     pass
 
@@ -2249,12 +2325,10 @@ class Version(BaseModel):
 
 
 def _runtime_checks() -> dict[str, dict]:
-    """Validate the GitHub Copilot SDK (Tier 1.5) sandbox prerequisites.
+    """Report the Tier 1.5 sandbox prerequisites that remain, plus the Router.
 
-    Checks (M2.6 cloud-sandbox requirements):
-      - copilot SDK importable (bundled copilot.exe present)
-      - pwsh on PATH (copilot.exe shell tool backend)
-      - GITHUB_TOKEN configured (Copilot auth)
+    WS-43o: no check imports the Copilot SDK. ``pwsh`` and ``github_token``
+    stay until WS-43q removes the executor Copilot path.
 
     Returns ``{check_name: {"ok": bool, "detail": str}}``. Never raises.
     """
@@ -2263,13 +2337,22 @@ def _runtime_checks() -> dict[str, dict]:
     settings = get_settings()
     checks: dict[str, dict] = {}
 
-    # copilot SDK importable
+    # The Router (Console) is how the model list and chat are served.
     try:
-        import copilot  # noqa: F401
+        from acb_llm.routed import router_wired
 
-        checks["copilot_sdk"] = {"ok": True, "detail": "importable"}
+        wired = router_wired()
+        # With Router serving on, chat needs the wiring (D57.7), so an unwired
+        # Router is a failed check. With serving off, the tier slate still lists.
+        serving = bool(getattr(settings, "router_serving_enabled", False))
+        checks["router"] = {
+            "ok": bool(wired) or not serving,
+            "detail": "wired" if wired else (
+                "NOT wired, and Router serving is on: chat fails" if serving
+                else "not wired (the tier slate still lists)"),
+        }
     except Exception as exc:
-        checks["copilot_sdk"] = {"ok": False, "detail": f"import failed: {exc}"}
+        checks["router"] = {"ok": False, "detail": f"router check failed: {exc}"}
 
     # pwsh on PATH
     pwsh = shutil.which("pwsh") or shutil.which("powershell")
@@ -2363,7 +2446,7 @@ async def version() -> Version:
 
 @app.get("/health/runtime", tags=["meta"])
 async def health_runtime() -> dict:
-    """Report Tier 1.5 sandbox readiness (copilot SDK, pwsh, GITHUB_TOKEN)."""
+    """Report runtime readiness (Router, pwsh, GITHUB_TOKEN). No Copilot SDK check."""
     checks = _runtime_checks()
     return {"ok": all(c["ok"] for c in checks.values()), "checks": checks}
 
@@ -2433,146 +2516,24 @@ async def embeddings(
 
 
 
-# ---------- Copilot models ----------
-# Returns the list of models available via the GitHub Copilot SDK.
-# The UI at /api/models/all calls this to populate the Copilot SDK model group.
-# If GITHUB_TOKEN is not set, returns the static fallback list so the UI still
-# works without blocking.
-
-_COPILOT_MODELS_STATIC = [
-    {"id": "claude-sonnet-4.6",    "label": "Claude Sonnet 4.6"},
-    {"id": "claude-sonnet-4.5",    "label": "Claude Sonnet 4.5"},
-    {"id": "claude-haiku-4.5",     "label": "Claude Haiku 4.5"},
-    {"id": "claude-opus-4.6",      "label": "Claude Opus 4.6"},
-    {"id": "claude-opus-4.6-fast", "label": "Claude Opus 4.6 (fast mode)"},
-    {"id": "claude-opus-4.5",      "label": "Claude Opus 4.5"},
-    {"id": "gpt-5.4",              "label": "GPT-5.4"},
-    {"id": "gpt-5-mini",           "label": "GPT-5 mini"},
-]
-
-
-def _copilot_ctx(model_id: str) -> int:
-    """Curated context-window (tokens) for a Copilot SDK model id.
-
-    Used as a fallback when the SDK model object doesn't expose its limits.
-    Substring match so version variants (claude-sonnet-4.5/4.6, gpt-5.4/5.5)
-    resolve to the right family.
-    """
-    mid = (model_id or "").lower()
-    if "claude" in mid:
-        return 200_000
-    if "gpt-5" in mid or "gpt5" in mid:
-        return 400_000
-    if "gpt-4.1" in mid:
-        return 1_000_000
-    if "gpt-4o" in mid or "gpt-4" in mid:
-        return 128_000
-    if mid.startswith(("o1", "o3", "o4")) or "-o3" in mid or "-o1" in mid:
-        return 200_000
-    if "gemini-3" in mid or "gemini-2.5" in mid or "gemini" in mid:
-        return 1_000_000
-    # DeepSeek V4 via Copilot CLI: docs configure an 840K prompt limit
-    # (https://api-docs.deepseek.com/quick_start/agent_integrations/copilot_cli);
-    # native DeepSeek API context is 1M but Copilot CLI caps the prompt budget.
-    if "deepseek-v4" in mid or "deepseek/deepseek-v4" in mid:
-        return 840_000
-    if "deepseek" in mid:
-        return 128_000
-    return 0
-
-
-def _sdk_ctx(model: object) -> int:
-    """Best-effort extraction of a Copilot SDK model's context window.
-
-    The GitHub Copilot models API exposes
-    capabilities.limits.max_context_window_tokens; the SDK may surface it as
-    nested attributes or a dict.  Returns 0 when unavailable (caller falls back
-    to the curated map)."""
-    caps = getattr(model, "capabilities", None)
-    # Dict form
-    if isinstance(caps, dict):
-        lim = caps.get("limits") or {}
-        if isinstance(lim, dict):
-            v = lim.get("max_context_window_tokens") or lim.get("max_prompt_tokens")
-            if isinstance(v, int) and v > 0:
-                return v
-    # Attribute form
-    lim = getattr(caps, "limits", None)
-    for attr in ("max_context_window_tokens", "max_prompt_tokens"):
-        v = getattr(lim, attr, None)
-        if isinstance(v, int) and v > 0:
-            return v
-    return 0
-
-import time as _time
-
-_copilot_models_cache: dict = {"data": None, "ts": 0.0}
-_COPILOT_MODELS_CACHE_TTL = 300
-
-
-async def _list_copilot_models(github_token: str) -> list:
-    """Start one Copilot CLI to list the models, then stop it.
-
-    The startup warmup and ``/copilot/models`` both call this. WS-49 BH-1: the
-    CLI gets ``copilot_env()`` and no gateway secret. The SDK adds
-    ``COPILOT_SDK_AUTH_TOKEN`` from ``github_token`` itself.
-    """
-    from copilot import CopilotClient
-
-    sdk = CopilotClient(github_token=github_token, env=copilot_env())  # SDK 1.0: keywords (H-181)
-    await sdk.start()
-    try:
-        return list(await sdk.list_models() or [])
-    finally:
-        await sdk.stop()
-
+# ---------- Model list (WS-43o, D84) ----------
+# The Copilot SDK model list is gone. The model picker reads the Router tier
+# slate through the Control Plane at /api/models/all. This route stays so an
+# old caller gets a clear answer and not a 404.
 
 @app.get("/copilot/models", tags=["copilot"])
 async def copilot_models() -> dict:
-    """Return Copilot SDK models with 5-min TTL cache."""
-    _now = _time.monotonic()
-    if _copilot_models_cache["data"] is not None and (_now - _copilot_models_cache["ts"]) < _COPILOT_MODELS_CACHE_TTL:
-        return _copilot_models_cache["data"]
-    settings = get_settings()
-    github_token: str = (
-        os.environ.get("COPILOT_GITHUB_TOKEN", "")
-        or getattr(settings, "github_token", "")
-        or os.environ.get("GITHUB_TOKEN", "")
-    )
-    if github_token:
-        try:
-            os.environ.setdefault("GITHUB_TOKEN", github_token)
-            _models = await _list_copilot_models(github_token)
-            if _models:
-                result = {
-                    "models": [
-                        {
-                            "id": m.id,
-                            "label": m.name,
-                            "model_picker_enabled": True,
-                            # Real context window from the provider (SDK) when
-                            # exposed; curated fallback otherwise.
-                            "context_window": _sdk_ctx(m) or _copilot_ctx(m.id),
-                        }
-                        for m in _models if not m.policy or m.policy.state == "enabled"
-                    ],
-                    "source": "live",
-                }
-                _copilot_models_cache["data"] = result
-                _copilot_models_cache["ts"] = _now
-                return result
-        except Exception as _e:
-            _log.warning("gateway.copilot_models_failed", error=str(_e))
-    static = {
+    """Retired (WS-43o). Answers the Router tier slate, never the Copilot SDK."""
+    from acb_llm.routed import PICKER_WIRE_IDS
+
+    return {
         "models": [
-            dict(m, model_picker_enabled=False, context_window=_copilot_ctx(m["id"]))
-            for m in _COPILOT_MODELS_STATIC
+            {"id": wire, "label": slate, "model_picker_enabled": True}
+            for wire, slate in PICKER_WIRE_IDS.items()
         ],
-        "source": "static",
+        "source": "router",
+        "retired": "Use /api/models/all. The Copilot SDK list is removed.",
     }
-    _copilot_models_cache["data"] = static
-    _copilot_models_cache["ts"] = _now - (_COPILOT_MODELS_CACHE_TTL - 30)
-    return static
 
 
 # ---------- Pull mode (Phase 0 stub) ----------
@@ -2596,7 +2557,17 @@ async def pull(req: PullRequest, _user: UserContext = Depends(get_current_user))
     from acb_llm.guardrails import CITATION_RE  # local import to avoid cold-start cost
 
     trace_id = uuid.uuid4().hex
-    user_id: str = req.user_email or getattr(_user, "email", "") or "anonymous"
+    # H-438 (task 1127): the session names the member, never the body. The
+    # member keys the Mem0 read below. The run doors' own helper drops a
+    # signed-in member's claim of another person, and keeps an own claim in
+    # any case as the session's address. A service caller keeps its claim.
+    # Lazy import, as the router mount does. Fence:
+    # tests/unit/test_chat_payload_identity_claims.py.
+    from gateway.routes.agent import _drop_identity_claims
+
+    claims: dict[str, str | None] = {"user_email": req.user_email} if req.user_email else {}
+    _drop_identity_claims(claims, _user, keep_own=True)
+    user_id: str = claims.get("user_email") or getattr(_user, "email", "") or "anonymous"
     _log.info("pull.received", query=req.query, user=user_id, trace_id=trace_id)
     try:
         from orchestrator.agents import build_orchestrator_agent, enrich_instructions_with_memory

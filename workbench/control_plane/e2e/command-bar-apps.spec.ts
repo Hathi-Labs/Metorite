@@ -74,7 +74,10 @@ const mod = process.platform === "darwin" ? "Meta" : "Control";
 async function openBar(page: Page) {
   await page.goto("/settings/appearance");
   // The shell has the member's access once the account menu can name them.
-  await expect(page.locator("[data-shell-bar]")).toBeVisible({ timeout: 30_000 });
+  // (The top bar went with GL-12, 30e72d332; the account sits in the sidebar.)
+  await expect(page.getByRole("button", { name: /^Account and settings: priya@example\.com/ })).toBeVisible({
+    timeout: 30_000,
+  });
   // The sidebar shows only the starred app. People is not starred, so the
   // bar is its one door here.
   await expect(page.locator('aside [data-nav-section] a[href="/calendar"]')).toBeVisible();

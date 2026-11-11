@@ -208,7 +208,7 @@ export function PlanDayPanel({
       onClick={onClose}
     >
       <div
-        className="flex max-h-[92vh] w-full flex-col overflow-hidden rounded-t-2xl border border-border bg-card shadow-2xl sm:max-h-[85vh] sm:max-w-lg sm:rounded-2xl"
+        className="flex max-h-[calc(92vh-var(--phone-nav-h))] w-full flex-col overflow-hidden rounded-t-2xl border border-border bg-card shadow-2xl sm:max-h-[85vh] sm:max-w-lg sm:rounded-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* grab handle (mobile) */}
@@ -496,7 +496,7 @@ export function PlanDayPanel({
 
         <div
           className="flex shrink-0 items-center justify-end gap-2 border-t border-border px-4 py-3"
-          style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
+          style={{ paddingBottom: "0.75rem" }}
         >
           <Button variant="text" size="none" radius="keep" layout="" type="button" onClick={onClose} className="rounded-md px-3 py-2 text-xs">
             Cancel

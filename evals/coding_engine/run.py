@@ -37,6 +37,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import os
 import secrets
 import shutil
 import subprocess
@@ -209,6 +210,11 @@ class Harness:
             # secret (WS-43v). A box with no usable secret has no member id
             # and refuses every skill, so this sweep uses a secret of its own.
             self._patches.set(settings, "gateway_session_secret", secrets.token_urlsafe(32))
+        if not (settings.gateway_internal_token or "").strip():
+            # WS-24b: a skill sends GATEWAY_INTERNAL_TOKEN as its bearer, and
+            # an empty one is not a legal header. The stub checks only that a
+            # bearer is present, so this sweep sends a token of its own.
+            self._patches.set(settings, "gateway_internal_token", "eval-internal-token")
         url = self.stub.url
         self._patches.set(projects_client, "gateway_url", lambda: url)
         self._module = load_agent_module(AGENT_DIR)
@@ -648,9 +654,10 @@ async def sweep(
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m evals.coding_engine.run", description=__doc__)
     p.add_argument("--engine", choices=["maf"], default="maf")
-    p.add_argument("--agent", choices=[AGENT], default=AGENT)
+    # WS-43h: app-builder has its own task, WS43-E8 (evals/coding_engine/app_builder.py).
+    p.add_argument("--agent", choices=[AGENT, "app-builder"], default=AGENT)
     p.add_argument("--tier", default="tier-balanced", help="the Router tier of the sweep")
-    p.add_argument("--tasks", default="all", help="all, a comma list, or WS43-E10..WS43-E17")
+    p.add_argument("--tasks", default="all", help="all, a comma list, or WS43-E10..WS43-E17 (WS43-E8 with --agent app-builder)")
     p.add_argument("--repeat", "--runs", dest="repeat", type=int, default=DEFAULT_REPEAT)
     p.add_argument("--org", default="", help="the test organization (default: the fixture's)")
     p.add_argument("--out", default="", help="the results dir (default: a new one under results/)")
@@ -661,6 +668,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.agent == "app-builder":
+        from evals.coding_engine import app_builder
+
+        return app_builder.main(args)
     try:
         chosen = tasks.select(args.tasks)
     except ValueError as exc:
@@ -695,7 +706,10 @@ def _router_gate(tier: str, member: str) -> preflight.Check:
     from tests.unit._native_maf_harness import load_agent_module
 
     provider = load_agent_module(AGENT_DIR)._llm_provider()
-    return preflight.router(provider["base_url"], provider["api_key"], tier, member)
+    # WS-24b: the LLM key opens /v1 only. /settings/llm takes the internal token.
+    internal = os.environ.get("GATEWAY_INTERNAL_TOKEN", "")
+    return preflight.router(provider["base_url"], provider["api_key"], tier, member,
+                            internal_token=internal)
 
 
 if __name__ == "__main__":
