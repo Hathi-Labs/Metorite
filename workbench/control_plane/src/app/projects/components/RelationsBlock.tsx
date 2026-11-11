@@ -304,6 +304,11 @@ export function RelationsBlock({
                       onClick={() => void removeLink(l.link_id)}
                     />
                   </div>
+                  {l.note ? (
+                    <p className="mt-0.5 break-words px-1 text-[11px] text-muted-foreground">
+                      {l.note}
+                    </p>
+                  ) : null}
                   {failure ? (
                     <p
                       role="alert"

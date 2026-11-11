@@ -93,6 +93,13 @@ describe("populated", () => {
     expect(got.map((s) => s.label)).toEqual(["Duplicates", "Duplicated by"]);
   });
 
+  it("labels the two ends of an affects link, with the note kept (SW-25)", () => {
+    const withNote = { ...link("affects", "incoming", "a"), note: "Renames a column." };
+    const got = populated([link("affects", "outgoing", "b"), withNote]);
+    expect(got.map((s) => s.label)).toEqual(["Affected by", "Affects"]);
+    expect(got[0].links[0].note).toBe("Renames a column.");
+  });
+
   it("is empty for a task with no links at all", () => {
     expect(populated([])).toEqual([]);
   });

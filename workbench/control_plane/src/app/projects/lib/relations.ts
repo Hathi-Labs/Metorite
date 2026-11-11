@@ -9,7 +9,7 @@
  * opposite of the truth half the time.
  */
 
-export type LinkType = "blocks" | "relates_to" | "duplicates";
+export type LinkType = "blocks" | "relates_to" | "duplicates" | "affects";
 export type Direction = "outgoing" | "incoming";
 
 export interface RelatedTask {
@@ -31,6 +31,11 @@ export interface RelatedTask {
    */
   start_date?: string | null;
   due_at?: string | null;
+  /**
+   * SW-25 — the short note of an `affects` or `relates_to` link. An agent may
+   * have written it, so the panel draws it as plain text and never as markup.
+   */
+  note?: string | null;
 }
 
 export interface SubtaskRow {
@@ -101,6 +106,9 @@ export const SECTIONS: Array<{
 }> = [
   { key: "blocked_by", label: "Blocked by", type: "blocks", direction: "incoming" },
   { key: "blocks", label: "Blocks", type: "blocks", direction: "outgoing" },
+  // SW-25 — a note from another task says that its change touches this one.
+  { key: "affected_by", label: "Affected by", type: "affects", direction: "incoming" },
+  { key: "affects", label: "Affects", type: "affects", direction: "outgoing" },
   { key: "relates", label: "Related", type: "relates_to", direction: "outgoing" },
   { key: "relates_in", label: "Related", type: "relates_to", direction: "incoming" },
   { key: "dupes", label: "Duplicates", type: "duplicates", direction: "outgoing" },
