@@ -1237,7 +1237,7 @@ def _personal_to_dict(row: Any) -> dict[str, Any]:
         # collecting a real value that no caller could read — the Weekly
         # Review's "when did I last look at this" had no way to ask.
         "clarified_at": _iso(row, "clarified_at"),
-        # WS-MDC CC-2 (349): my mark of today's focus, a date or None.
+        # WS-MDC CC-2 (411): my mark of today's focus, a date or None.
         "focus_on": _iso(row, "focus_on"),
     }
 
@@ -1286,7 +1286,7 @@ def _apply_overlay(task: dict[str, Any], row: Any) -> None:
     # and it read as a plain bool before 188. Kept that way rather than widened
     # in passing — a wire-shape change is not a free rider on a column add.
     task["is_two_minute"] = bool(getattr(row, "p_is_two_minute", False))
-    # WS-MDC CC-2 (349): my mark of today's focus, a date or None. The chat's
+    # WS-MDC CC-2 (411): my mark of today's focus, a date or None. The chat's
     # card reads it as the value before a change.
     focus = getattr(row, "p_focus_on", None)
     task["focus_on"] = focus.isoformat() if focus is not None else None
