@@ -129,6 +129,7 @@ APP_OF: tuple[tuple[str, str], ...] = (
     ("/api/signup", "admin"),
     ("/api/integrations", "integrations"),
     ("/api/agent-access", "integrations"),
+    ("/api/agent-kit", "integrations"),
     # WS-STU. The gateway serves `/studio` (STU-B1). The skill creator sends to it (STU-F2b).
     ("/api/studio", "studio"),
 )
@@ -404,6 +405,12 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "The shell reads the org default of the star set and the preset, to draw the sidebar for a member "
         "with no choice of their own (PKG-17b). No member click sends it. The chat sets no org default here.",
     ),
+    # ── AI Studio ──
+    "GET /api/studio/packages/{}/lifetime": (
+        "stream",
+        "The app page reads the end date of the private install of the owner, to draw the end-date bar "
+        "(PKG-10e-2). No member click sends it. The chat keeps or restores an app with the Keep and Restore rows.",
+    ),
     # ── Email ──
     "GET /api/email/attachments/{}/download": (
         "download",
@@ -627,6 +634,14 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "The approval card in the chat reads its own request to draw it, also after a reload "
         "(STU-B2c-2c). It is the chat's own card. The tool result gives Mira the request.",
     ),
+    "GET /api/agent-kit": (
+        "download",
+        "Lists the clients of the agent kit for the download block (KIT-4b). The chat reads the playbook.",
+    ),
+    "GET /api/agent-kit/{}": (
+        "download",
+        "Streams the zip of the agent kit for one client (KIT-4b). A zip is a file for the browser.",
+    ),
     "POST /api/agent-access/authorize/approve": (
         "oauth",
         "The member's approval on the consent screen of an outside agent (MCP OAuth).",
@@ -678,6 +693,9 @@ EXEMPT: dict[str, tuple[str, str]] = {
 #: An action -> the wave that gives the chat a tool for it.
 DEBT: dict[str, str] = {
     # ── AI Studio ──
+    # PKG-10e-2 (task 2971): the end-date bar of an app page sends Keep and Restore. A later chat tool pays both.
+    "POST /api/studio/packages/{}/keep": "P-9",
+    "POST /api/studio/packages/{}/restore": "P-9",
     # STU-G5: the Publish dialog reads the live version with its manifest. G1d (chat reads versions) pays it.
     "GET /api/studio/packages/{}/versions/{}": "P-9",
     # ── Tasks ──
@@ -1056,7 +1074,7 @@ DEBT_CEILING: dict[str, int] = {
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write.
     "admin": 36,
     "integrations": 22,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access.
-    "studio": 1,  # G5 adds the version read. A5c-2 paid the two delete requests of BETA-1 (3 to 1). B2c-2b adds no debt: its writes are ALSO rows of the door route.
+    "studio": 3,  # PKG-10e-2 added Keep and Restore of the end-date bar (task 2971), paid by P-9 (1 to 3). G5 adds the version read. A5c-2 paid the two delete requests of BETA-1. B2c-2b adds no debt: its writes are ALSO rows of the door route.
 }
 
 #: A UI file -> the most requests in it that the fence cannot read. A new

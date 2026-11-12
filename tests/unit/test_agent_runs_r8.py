@@ -2055,3 +2055,168 @@ class TestTheRunPlan:
             empty = await call(w.a, "PATCH", f"/projects/tasks/{w.task_a}",
                                {"description": "plan row 3"})
             assert empty.json()["agent_plan"] is None
+
+
+# ── Task 1045b: linked events count as life (agent_coordination.md) ─────────
+#
+# R7, the mutations. Each one turns a test here red:
+#
+# * 1045b-M1 ``_signal_sql`` also sets ``last_activity_at`` -> the run reads
+#   ``answered`` and ``needs_agent`` lists it:
+#   ``test_a_check_event_leaves_a_thought_run_out_of_answered_and_needs_agent``.
+# * 1045b-M2 ``AGENT_RUN_ANSWER_WAITS_SQL`` reads ``run_life_at_sql`` -> the
+#   same test.
+# * 1045b-M3 ``lease_held_sql`` reads ``last_activity_at`` again ->
+#   ``test_a_linked_event_renews_the_lease_and_the_stranded_clause_stops``.
+
+LINKED_SHA = "e" * 40
+
+
+def _signal_migration() -> Path:
+    """The migration that adds ``pm_agent_runs.last_signal_at``, found by
+    content (R1)."""
+    found = [
+        p for p in sorted(_MIGRATIONS.glob("*.sql"))
+        if "ADD COLUMN IF NOT EXISTS last_signal_at" in p.read_text(encoding="utf-8")
+    ]
+    assert len(found) == 1, found
+    return found[0]
+
+
+def test_the_signal_migration_is_expand_only() -> None:
+    """1045b item 2. One nullable column, no default and no backfill."""
+    sql = _signal_migration().read_text(encoding="utf-8")
+    body = sql.split("-- ====")[-1]
+    assert "ADD COLUMN IF NOT EXISTS last_signal_at TIMESTAMPTZ;" in body
+    for forbidden in ("DEFAULT", "NOT NULL", "DROP ", "RENAME", "UPDATE "):
+        assert forbidden not in body.upper().replace("COMMENT ON", ""), forbidden
+
+
+def test_every_reader_of_the_run_clock_reads_the_life_clock() -> None:
+    """1045b item 3 and item 4. The stale band, the lease, the strand fit and
+    the idle seconds read ``run_life_at_sql``. The answered rule does not."""
+    from gateway import agent_run_sweep
+    from gateway.routes.projects import filters
+
+    life = filters.run_life_at_sql("r")
+    assert life == "GREATEST(r.last_activity_at, r.last_signal_at)"
+    assert "last_signal_at" not in filters.AGENT_RUN_ANSWER_WAITS_SQL
+    stale_arm = filters.AGENT_RUN_STATE_SQL.split("THEN 'waiting'")[1].split("THEN 'stale'")[0]
+    assert life in stale_arm and "r.last_activity_at <" not in stale_arm
+    assert filters.run_life_at_sql("h") in filters.lease_held_sql("h")
+    assert filters.run_life_at_sql("r") in filters.strand_fits_sql("s", "r")
+    for sql in (agent_runs._RUN_SELECT, agent_runs._HOLDER_SQL,
+                filters.agent_state_sql("true"), agent_run_sweep._stranded_sql()):
+        assert filters.run_idle_s_sql("r") in sql
+        assert "clock_timestamp() - r.last_activity_at" not in sql
+    for sql in (agent_run_sweep._CLEAR_SQL, agent_run_sweep._FIRST_MISS_SQL):
+        assert life in sql
+
+
+def _seed_linked_pr(p: Any, org: str, task: str, number: int = 21) -> str:
+    with p.admin_engine.begin() as c:
+        return str(c.execute(text(
+            "INSERT INTO pm_task_refs (organization_id, task_id, kind, provider, ref, url,"
+            " via, created_by, head_sha) VALUES (CAST(:o AS uuid), CAST(:t AS uuid),"
+            " 'pull_request', 'github', :ref, :url, 'ui', 'dev@runs-r8.test', :sha)"
+            " RETURNING id"),
+            {"o": org, "t": task, "ref": f"acme/widgets#{number}", "sha": LINKED_SHA,
+             "url": f"https://github.com/acme/widgets/pull/{number}"}).scalar_one())
+
+
+def _drop_ref(p: Any, ref: str) -> None:
+    with p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM pm_task_refs WHERE id = CAST(:i AS uuid)"), {"i": ref})
+
+
+async def _check_event(p: Any, org: str, event: str = "ci_passed") -> int:
+    """One check event on the linked head, as the webhook sends it: in the
+    bound tenant session of *org*, as the non-privileged role."""
+    from gateway.db import tenant_session
+
+    async with (tenant_engine_scope(p.app_url.render_as_string(hide_password=False)),
+                tenant_session(org) as db):
+        return await agent_runs.signal_linked_runs(
+            db, org, match="head_sha", key=LINKED_SHA, event=event)
+
+
+def _clocks(w: Any, rid: str) -> Any:
+    return _rows(w.p, "SELECT last_activity_at, last_agent_activity_at, last_signal_at"
+                      " FROM pm_agent_runs WHERE id = CAST(:r AS uuid)", r=rid)[0]
+
+
+def _lines(w: Any, rid: str) -> list[str]:
+    return [r.body for r in _rows(
+        w.p, "SELECT content->>'body' AS body FROM pm_agent_run_activities"
+             " WHERE run_id = CAST(:r AS uuid) AND content->>'system' = 'true' ORDER BY seq",
+        r=rid)]
+
+
+@_DB_GATE
+class TestLinkedEvents:
+    async def test_a_check_event_leaves_a_thought_run_out_of_answered_and_needs_agent(
+            self, w):
+        """1045b done-when 2. The newest activity is an agent thought. A check
+        event refreshes the run to ``working``, and the run never reads
+        ``answered``, and ``needs_agent`` does not list it."""
+        ref = _seed_linked_pr(w.p, w.p.org_a, w.task_a)
+        try:
+            async with _session(w.p) as call:
+                rid = (await _start(w, call))["id"]
+                said = await _act(call, w.agent_a, rid, type="thought", body="Pushed a fix")
+                assert said.status_code == 201, said.text
+                _clock_back(w, rid, 10)
+                assert await _status(call, w.a, rid) == ("in_progress", "stale")
+                before = _clocks(w, rid)
+                assert await _check_event(w.p, w.p.org_a) == 1
+                assert await _status(call, w.a, rid) == ("in_progress", "working")
+                after = _clocks(w, rid)
+                assert after.last_signal_at is not None
+                assert after.last_activity_at == before.last_activity_at
+                assert after.last_agent_activity_at == before.last_agent_activity_at
+                needs = await call(w.agent_a, "GET", "/projects/agent-runs?needs_agent=true")
+                assert needs.status_code == 200, needs.text
+                assert needs.json()["rows"] == []
+                task = await call(w.a, "GET", f"/projects/tasks/{w.task_a}")
+                assert task.json()["agent_state"] == "working"
+                assert _lines(w, rid) == ["CI passed on PR 21."]
+                # A run of org B saw nothing: the org arm and RLS hold.
+                assert await _check_event(w.p, w.p.org_b) == 0
+                assert _clocks(w, rid).last_signal_at == after.last_signal_at
+        finally:
+            _drop_ref(w.p, ref)
+
+    async def test_a_linked_event_renews_the_lease_and_the_stranded_clause_stops(self, w):
+        """1045b done-when 3. A run whose lease ended is stranded and leaves
+        the task unheld. A linked event renews the lease, so the task is held
+        again and the stranded clause stops matching."""
+        from gateway.routes.projects import filters
+
+        stranded = (f"SELECT count(*) FROM pm_agent_runs r WHERE r.id = CAST(:r AS uuid)"
+                    f" AND {filters.stranded_clause()}")
+        unheld = (f"SELECT count(*) FROM pm_tasks t WHERE t.id = CAST(:t AS uuid)"
+                  f" AND {filters.unheld_clause()}")
+        ref = _seed_linked_pr(w.p, w.p.org_a, w.task_a)
+        try:
+            async with _session(w.p) as call:
+                rid = (await _start(w, call))["id"]
+                await _act(call, w.agent_a, rid, type="thought", body="Waiting for CI")
+                with w.p.admin_engine.begin() as c:
+                    c.execute(text(
+                        "UPDATE pm_agent_runs SET last_activity_at = now() - interval '3 hours',"
+                        " last_agent_activity_at = now() - interval '3 hours'"
+                        " WHERE id = CAST(:r AS uuid)"), {"r": rid})
+                assert _count(w.p, stranded, r=rid) == 1
+                assert _count(w.p, unheld, t=w.task_a) == 1
+                assert await _check_event(w.p, w.p.org_a, "ci_failed") == 1
+                assert _count(w.p, stranded, r=rid) == 0
+                assert _count(w.p, unheld, t=w.task_a) == 0
+                # The stale band reads the same clock.
+                held = await call(w.a, "GET", f"/projects/agent-runs/{rid}")
+                assert held.json()["run"]["state"] == "working"
+                assert _lines(w, rid) == ["CI failed on PR 21."]
+                # One more event with the same words writes no second line.
+                assert await _check_event(w.p, w.p.org_a, "ci_failed") == 1
+                assert _lines(w, rid) == ["CI failed on PR 21."]
+        finally:
+            _drop_ref(w.p, ref)

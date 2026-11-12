@@ -97,6 +97,7 @@ import { AGENT_SUBMIT_HINT, AgentQuestionCard } from "./AgentQuestionCard";
 import AgentRunPlan from "./AgentRunPlan";
 import { AskAgentDialog } from "./AskAgentDialog";
 import { HandoffCard } from "./HandoffCard";
+import { MarkdownBody } from "@/components/MarkdownMessage";
 
 /** How often the open run is read again. */
 export const AGENT_RUN_POLL_MS = 5_000;
@@ -623,7 +624,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
               title={ephemeral}
               data-agent-ephemeral=""
             >
-              {ephemeral}
+              <MarkdownBody content={ephemeral} inline />
             </p>
           ) : null}
           {host ? (

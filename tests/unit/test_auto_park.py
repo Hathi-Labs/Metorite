@@ -470,8 +470,9 @@ def test_f3_an_approved_word_in_the_snapshot_or_the_payload_resumes_nothing(monk
 def test_f3_a_yes_of_the_decider_resumes_as_the_decider_in_the_rows_org(monkeypatch) -> None:
     seen = _decided_scan(monkeypatch, _decision(
         answered_by="owner@a.test", answer_key="yes", answered_at="now"), {})
+    # STU-B2c-2d: the decided scan alone carries the decision into the run.
     assert seen.resumes == [("r-1", {"resumed_by": "owner@a.test", "organization_id": ORG,
-                                     "pause_id": "p-1"})]
+                                     "pause_id": "p-1", "decided": True})]
 
 
 def test_f3_a_marked_turn_resumes_nothing(monkeypatch) -> None:

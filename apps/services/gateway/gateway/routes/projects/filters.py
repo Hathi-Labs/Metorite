@@ -1059,6 +1059,28 @@ def lease_expired(status: str, idle_s: float) -> bool:
     return idle_s > agent_run_hold_s(status)
 
 
+def run_life_at_sql(alias: str) -> str:
+    """The life clock of the run *alias*, in SQL (task 1045b): the newer of
+    ``last_activity_at`` and ``last_signal_at``. A linked event (a push to a
+    linked pull request or a check event) moves ``last_signal_at`` only.
+
+    ONE text for every reader of the run clock: the stale band
+    (:data:`AGENT_RUN_STATE_SQL`), the lease (:func:`lease_held_sql`), the
+    idle seconds of each run read, and the strand fit
+    (:func:`strand_fits_sql`). The answered rule
+    (:data:`AGENT_RUN_ANSWER_WAITS_SQL`) does NOT read it, so a linked event
+    never makes a run read ``answered``. ``GREATEST`` skips a NULL, so a run
+    with no linked event reads ``last_activity_at``."""
+    return f"GREATEST({alias}.last_activity_at, {alias}.last_signal_at)"
+
+
+def run_idle_s_sql(alias: str) -> str:
+    """The seconds since the life clock of the run *alias*
+    (:func:`run_life_at_sql`), for the lease rule in Python
+    (:func:`lease_expired`). ONE text for each read that carries ``idle_s``."""
+    return f"EXTRACT(EPOCH FROM (clock_timestamp() - {run_life_at_sql(alias)}))"
+
+
 def connection_gone_sql(alias: str) -> str:
     """SW-13c. True in SQL when the agent connection of the run *alias* is
     revoked or expired (``agent_connection``, migration 248). Such a run can
@@ -1089,8 +1111,9 @@ def lease_held_sql(alias: str) -> str:
     activity is newer than the lease, or three leases while it waits on a
     question. The SQL twin of NOT :func:`lease_expired`. ONE text for the
     ``unheld`` filter (:func:`unheld_clause`) and :func:`holder_free_sql`.
-    The idle time is ``last_activity_at``, so ANY activity renews it, a
-    member's answer too.
+    The idle time is the life clock (:func:`run_life_at_sql`), so ANY
+    activity renews it, a member's answer too. Task 1045b: so does a linked
+    event.
 
     The lease is read when the text is built, never at import, so the
     environment override works in a running process.
@@ -1098,7 +1121,7 @@ def lease_held_sql(alias: str) -> str:
     lease = agent_run_lease_s()
     hold = lease * AGENT_RUN_QUESTION_LEASE_FACTOR
     return (
-        f"{alias}.last_activity_at >= now() - (CASE WHEN {alias}.status = 'awaiting'"
+        f"{run_life_at_sql(alias)} >= now() - (CASE WHEN {alias}.status = 'awaiting'"
         f" THEN {hold} ELSE {lease} END) * interval '1 second'"
     )
 
@@ -1116,6 +1139,9 @@ def holder_free_sql(alias: str) -> str:
 #: activity of the run is a member's prompt, and no agent activity followed
 #: it. ONE text: the derived state, the ``needs_agent`` filter
 #: (``agent_runs._NEEDS_AGENT_SQL``) and the strand reason all read it.
+#: ⚠️ Task 1045b: it reads ``last_activity_at`` and never
+#: :func:`run_life_at_sql`. A linked event moves ``last_signal_at`` only, so
+#: it never makes a run read ``answered``.
 AGENT_RUN_ANSWER_WAITS_SQL = (
     "(r.last_agent_activity_at IS NULL"
     " OR r.last_activity_at > r.last_agent_activity_at)"
@@ -1140,13 +1166,16 @@ AGENT_RUN_ANSWER_WAITS_SQL = (
 #:   activity clears it (``agent_runs._move_run``), so the rule holds only
 #:   while the waiting line is the newest activity. A wait whose time passed
 #:   reads ``stale`` at once, before the stale band ends.
+#: * Task 1045b: the stale band reads the life clock
+#:   (:func:`run_life_at_sql`), so a linked event refreshes a quiet run to
+#:   ``working``. The answered arm still reads ``last_activity_at`` only.
 #: * Every other status reads as itself.
 AGENT_RUN_STATE_SQL = (
     "CASE r.status"
     " WHEN 'created' THEN 'queued'"
     " WHEN 'in_progress' THEN CASE"
     "   WHEN r.waiting_until > now() THEN 'waiting'"
-    f"   WHEN r.last_activity_at < now() - interval '{AGENT_RUN_STALE_AFTER_S} seconds'"
+    f"   WHEN {run_life_at_sql('r')} < now() - interval '{AGENT_RUN_STALE_AFTER_S} seconds'"
     "     OR r.waiting_until IS NOT NULL"
     "     THEN 'stale'"
     f"   WHEN {AGENT_RUN_ANSWER_WAITS_SQL} THEN 'answered'"
@@ -1212,11 +1241,15 @@ def strand_fits_sql(strand: str, run: str) -> str:
     (SW-10a): the strand is not cleared, the run is still ``in_progress``,
     and no activity came on the run since the first miss. ONE text for
     ``needs_agent`` (:func:`open_strand_sql`) and for ``stranded`` on the runs
-    wire (``agent_runs._OPEN_STRANDS_SQL``)."""
+    wire (``agent_runs._OPEN_STRANDS_SQL``).
+
+    Task 1045b: ``seen_activity_at`` holds the life clock of the run at the
+    first miss (:func:`run_life_at_sql`), so a linked event ends the fit
+    too."""
     return (
         f"({strand}.run_id = {run}.id AND {strand}.organization_id = {run}.organization_id"
         f" AND {strand}.cleared_at IS NULL AND {run}.status = 'in_progress'"
-        f" AND {strand}.seen_activity_at = {run}.last_activity_at)"
+        f" AND {strand}.seen_activity_at = {run_life_at_sql(run)})"
     )
 
 
@@ -1300,7 +1333,7 @@ def holder_sql() -> str:
         f"   AND h.status IN ({open_list})"
         f"   AND {lease_held_sql('h')}"
         f"   AND NOT {connection_gone_sql('h')}"
-        " ORDER BY h.last_activity_at DESC LIMIT 1)"
+        f" ORDER BY {run_life_at_sql('h')} DESC LIMIT 1)"
     )
 
 
@@ -1346,7 +1379,7 @@ SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
        r.waiting_on, r.waiting_until, r.plan,
        COALESCE(r.started_at, r.created_at) AS held_since,
        r.last_activity_at AS held_last,
-       EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s,
+       {run_idle_s_sql('r')} AS idle_s,
        {connection_gone_sql('r')} AS connection_gone,
        (SELECT u.display_name FROM app_user u
          WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name

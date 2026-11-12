@@ -336,6 +336,7 @@ Each epic writes its owning spec in its first slice. Until then this table and t
 | WS-MIR CRM mirror and connectors (2790) | MIR-n | `crm_connectors.md` (MIR-0, task 2791) | Import and mapping, connections |
 | WS-MKT app marketplace (2818) | MKT-n | `app_marketplace.md` (MKT-0, task 2820) | The manifest, actions and the door, records and objects |
 | WS-OPS operations apps (2819) | OPM-n | `operations_apps.md` (OPM-0, task 2824) | Records and objects, products and prices, the task store, workflows, files |
+| WS-CON company content (3039) | CON-n | `company_context.md` §16 (CON-0, task 3040) | Files, knowledge and retrieval, the organization identity |
 | WS-OTW one-time workflows (3010) | OTW-n | `workflows_app.md` §14 (OTW-0, task 3011) | Workflows, signals and delivery, the action door |
 | WS-SND sound cues (2862) | SND-n | `DESIGN_SYSTEM.md` §4c and `proactive_reach.md` §8.4 (SND-0, task 2864) | Signals and delivery, the one look |
 | SCALE (2566) | SC-n | `agent_coordination.md` and `dev_capacity.md` | none (process) |

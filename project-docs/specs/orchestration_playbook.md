@@ -1,6 +1,6 @@
 # Orchestration playbook — the know-how that Metorite ships to every organization that connects
 
-**Status: ACTIVE (PB-0, 2026-11-06). Built so far: PB-1, PB-2, PB-3a, PB-3b, PB-4, PB-5, KIT-0, KIT-1, KIT-2b, KIT-2c, KIT-2d, KIT-8, the KIT-6 tooling and KIT-4a, with no live client run. The rest is not.** The decision is **D186** in `work_plan.md` §3, and task 1906 (SW-P10) planned this spec. Its slices are PB-1 to PB-10, and the kit slices KIT-0 to KIT-9 (§6a, epic 2547). Each has a task on the board.
+**Status: ACTIVE (PB-0, 2026-11-06). Built so far: PB-1, PB-2, PB-3a, PB-3b, PB-4, PB-5, KIT-0, KIT-1, KIT-2b, KIT-2c, KIT-2d, KIT-8, the KIT-6 tooling, KIT-4a and the UI half KIT-4b, with no live client run. The rest is not.** The decision is **D186** in `work_plan.md` §3, and task 1906 (SW-P10) planned this spec. Its slices are PB-1 to PB-10, and the kit slices KIT-0 to KIT-9 (§6a, epic 2547). Each has a task on the board.
 
 **Board row:** **WS-MCP** in `work_plan.md` §2.1. **Owner direction (2026-11-06):** Metorite "not only becomes a place we use for orchestrating multiple agents". It "also contains the know-how and understanding in the system prompt to help set up multi-org orchestration systems for whoever connects the Metorite MCP." **Price:** part of the flat seat (`launch_surface.md` §4). No SKU and no add-on (D186.3).
 
@@ -398,7 +398,8 @@ The Claude pack is SW-82 (task 1927) in `agent_coordination.md`. It follows this
 
 - **Metorite task.** 2554.
 - **Scope.** A route that serves the pack of one client as a zip. It reads the `kit/` files and adds no content. The route is dark behind `PLAYBOOK_ORGS`.
-- **Built (KIT-4a).** The backend half: `GET /agent-kit` and `GET /agent-kit/{client}.zip` in `routes/agent_kit.py`, and `acb_playbook/kit_zip.py`. The Integrations control is KIT-4b and needs an owner preview. Tests: `test_kit_zip.py`, `test_kit_download_route.py`. The R8 file named below is not yet written.
+- **Built (KIT-4a).** The backend half: `GET /agent-kit` and `GET /agent-kit/{client}.zip` in `routes/agent_kit.py`, and `acb_playbook/kit_zip.py`. The Integrations control is KIT-4b. Tests: `test_kit_zip.py`, `test_kit_download_route.py`. The R8 file named below is not yet written.
+- **Built (KIT-4b).** The UI half: the "Download the agent kit" section of the Connect card on Integrations, AI agents (`AgentKitDownload.tsx`, `lib/agentKit.ts`), and two BFF relays, `/api/agent-kit` and `/api/agent-kit/<client>.zip`. It draws nothing while the gateway answers 404. The owner approved the preview (D145) on 2026-11-11. Test: `agentKit.test.ts`.
 - **Done when.** A listed organization gets the zip. An unlisted organization gets 404. The zip holds the same `kit_version` as the MCP.
 - **Fence.** `tests/unit/test_kit_download_r8.py` (new), `test_tenant_coverage.py`.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE dark. **Depends on.** KIT-1, KIT-2b, KIT-2c, KIT-2d, KIT-6, SW-82.
