@@ -822,6 +822,8 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: the gateway, behind one card, and says open_world=False.
 #: 2026-10-25 (WS-55 SW-11a, external_agent_access.md §12.7): needs_attention (a read) joined.
 #: It reads one gateway route, writes nothing and says open_world=False.
+#: 2026-11-11 (WS-55 EA-18d, external_agent_access.md §12.8): agent_questions (a read) and
+#: answer_agent_question (one card) joined. Each reaches only the gateway, and says open_world=False.
 #: 2026-10-25 (WS-66 RM-3, D114): list_reminders (a read) and the six reminder writes
 #: joined. Each write is the member's own reminder, through the gateway, behind one
 #: card, and says open_world=False. None sends anything outside Metorite.
@@ -858,7 +860,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "set_epic_contract",
     "answer_decision", "my_decisions",
     "report_recipients", "add_report_recipient", "remove_report_recipient", "set_report_schedule",
-    "waiting_agent_requests", "needs_attention",
+    "waiting_agent_requests", "needs_attention", "agent_questions", "answer_agent_question",
     "change_agent_answer",
     "delete_attachment", "delete_comment", "delete_field", "delete_project", "delete_status", "delete_task",
     "delete_tag", "delete_type", "delete_view", "edit_comment", "edit_project",

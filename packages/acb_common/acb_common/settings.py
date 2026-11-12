@@ -488,6 +488,21 @@ class Settings(BaseSettings):
     # gate `enforcement-flip`. Fence: tests/unit/test_calendar_entries_r8.py.
     calendar_events: bool = False
 
+    # ── Calendar sync with Google and Outlook (WS-CAL CE-10, CE-11, 2026-11-12)
+    #
+    # `calendar_sync_read` and `calendar_sync_write` are org lists, or `*`.
+    # Empty is the default and means OFF: the sync loop starts no task, each
+    # `/tasks/calendar/connections` route answers 404, and no request leaves
+    # for Google or Microsoft. `calendar_sync_members` narrows both to listed
+    # member addresses, for the test phase while the OAuth apps are in Testing.
+    # The one reader is gateway/calendar_sync/flags.py. Spec
+    # project-docs/specs/calendar_events_reminders.md §8 and §9. A flip on a
+    # box is gate `enforcement-flip`, and the owner says "turn it on".
+    # Fence: tests/unit/test_calendar_sync_read.py.
+    calendar_sync_read: str = ""
+    calendar_sync_write: str = ""
+    calendar_sync_members: str = ""
+
     # ── The shared job queue (WS-BRIEF BR-1a, 2026-10-28) ───────────────────
     #
     # `job_queue` is the switch of the job worker in the gateway, default
@@ -697,6 +712,15 @@ class Settings(BaseSettings):
     # none. Reader: `gateway.routes.studio.flags.studio_allowed`. Spec:
     # ai_studio.md section 3.2.
     studio_orgs: str = ""
+    # STU-J10: STUDIO_RESIDENCY_ORGS lists the org ids whose health data
+    # stays in India. `*` opens every org. Empty opens none (no change for
+    # any org). It only adds refusals: a listed org's health app may use a
+    # store or a vendor only when `acb_common.studio_residency` records the
+    # region as India. NO CALLER READS IT YET: the guard `require_path` is not
+    # wired into any send path, so flipping it changes nothing today.
+    # Reader: `acb_common.studio_residency.residency_on`.
+    # The flip is the owner's (`enforcement-flip`). Spec: ai_studio.md J10.
+    studio_residency_orgs: str = ""
     # WS-OB GD-5a: GUIDE_ORGS lists the org ids whose members see the entries
     # of the guide's tour (the welcome button and the account menu row). `*`
     # opens every org. Empty opens none. Reader: `acb_common.guide_flags.

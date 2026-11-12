@@ -713,3 +713,43 @@ def test_the_migration_replays(kc) -> None:
             "SELECT count(*) FROM pg_policies WHERE tablename IN "
             "('kb_sources', 'kb_source_nodes')")).scalar()
     assert policies == 2
+
+
+def test_a_live_calendar_connection_holds_the_google_grant_too(kc, app_engine) -> None:  # noqa: F811
+    """Migration 425 (WS-CAL CE-10a): the Gmail and the Drive disconnect must
+    see a live ``google_calendar`` row of the same account as a holder."""
+    _assert_non_priv(app_engine)
+    migration = _MIGRATIONS / "425_calendar_grant_shared.sql"
+    with kc.admin_engine.begin() as c:
+        sql = migration.read_text(encoding="utf-8").replace("%", "%%")
+        c.exec_driver_sql(sql)
+        c.exec_driver_sql(sql)  # it replays
+    _grant_both_to_app_role(kc.admin_engine)
+    address = f"cal-{uuid.uuid4().hex[:6]}@kc1a-g.test"
+    gmail_a = _seed_gmail(kc.admin_engine, kc.org_a, address)
+    drive_b = _seed_drive(kc.admin_engine, kc.org_b, address)
+    gmail, drive = "email_gmail_grant_shared", "kb_google_drive_grant_shared"
+    # Before a calendar row: the Gmail row is the only holder of its kind.
+    assert _ask(app_engine, kc.org_b, gmail, address, gmail_a) is True  # Drive holds it
+    with kc.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM email_accounts WHERE id = CAST(:i AS uuid)"), {"i": gmail_a})
+        c.execute(text("DELETE FROM integration_connections WHERE id = CAST(:i AS uuid)"),
+                  {"i": drive_b})
+    assert _ask(app_engine, kc.org_b, gmail, address, NIL) is False
+    with kc.admin_engine.begin() as c:
+        cal = str(c.execute(text(
+            "INSERT INTO integration_connections (organization_id, provider, owning_app, "
+            "scope_kind, member_email, status, provider_meta, credentials_encrypted) "
+            "VALUES (CAST(:o AS uuid), 'google_calendar', 'calendar', 'member', :m, "
+            "'connected', CAST(:meta AS jsonb), 'cal-blob') RETURNING id"),
+            {"o": kc.org_a, "m": f"m-{uuid.uuid4().hex[:6]}@kc1a.test",
+             "meta": f'{{"account_email": "{address}"}}'}).scalar())
+    # A Gmail or Drive disconnect now sees the calendar row, in any tenant.
+    assert _ask(app_engine, kc.org_b, gmail, address, NIL) is True
+    assert _ask(app_engine, kc.org_b, drive, address, NIL) is True
+    # The calendar row itself is excluded from its own answer.
+    assert _ask(app_engine, kc.org_b, drive, address, cal) is False
+    with kc.admin_engine.begin() as c:
+        c.execute(text("UPDATE integration_connections SET status = 'disconnected' "
+                       "WHERE id = CAST(:i AS uuid)"), {"i": cal})
+    assert _ask(app_engine, kc.org_b, gmail, address, NIL) is False

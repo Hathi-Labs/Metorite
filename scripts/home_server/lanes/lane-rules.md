@@ -28,8 +28,10 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
      stops the session on a permission prompt that nobody can answer.
    - Run each command as `cd <worktree path> && ...` in Bash. Give subagents
      the absolute path.
-   - Sonnet does the work. Use Opus only for a HIGH-tier slice or an
-     adversarial review.
+   - Route each dispatch by job (D218). Haiku does lookups. Sonnet does LOW
+     slices and verifies LOW and STANDARD. Opus does HIGH, shared-seam and
+     review work. Fable plans a feature once. Set the effort. `next-ticket.md`
+     step 1c holds the table.
 4. **Never wait on the owner, and never wait in silence.** When a slice needs
    a decision, a D145 preview or a flag flip, you MUST call `ask_on_task`. A
    thought or a comment that says "waits on the owner" does NOT reach the
@@ -42,9 +44,9 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
      worktree. Start it again only when the owner asks for a live look.
 5. **Put the small slices of one feature into one pull request** where you
    can. Never skip the verifier or a required gate.
-6. **Local CI:** `bash scripts/ci_local.sh`. When another run holds the lane,
-   do not wait more than 20 minutes. Push the branch, and use GitHub's
-   pr-check on the SAME SHA as the full-suite evidence.
+6. **The gate is GitHub `pr-check` (D218).** Push when your verifier passes.
+   `bash scripts/ci_local.sh` is optional: run it when GitHub is down, or for
+   an early signal. When another run holds the lane, do not wait for it.
 7. **A test that is red on `main` is not yours.** Before you blame your
    change, read the newest `main` run with `gh run list --branch main`. Do not
    edit a spec that another task repairs.

@@ -409,7 +409,8 @@ def test_the_delete_of_a_package_is_covered_by_its_chat_tool() -> None:
         assert key in acts, key
         assert cp.COVERED[key] == "studio_delete_package" and key not in cp.DEBT
         assert r.reaches("studio_delete_package", verb, path), (key, verb, path)
-    assert cp.DEBT_CEILING["studio"] == 1
+    # 1 after A5c-2 paid the two delete requests, plus Keep and Restore of PKG-10e-2 (task 2971, paid by P-9).
+    assert cp.DEBT_CEILING["studio"] == 3
 
 
 def test_a_false_also_claim_fails() -> None:

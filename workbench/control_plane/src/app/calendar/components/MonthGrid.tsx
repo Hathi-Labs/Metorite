@@ -13,6 +13,8 @@ import {
 } from "./shared";
 import Icon from "@/components/Icon";
 import { monthChips, type CalReminder } from "../lib/reminders";
+import { externalChips, type ExternalView } from "../lib/externalEntries";
+import { externalLook } from "./externalLook";
 
 
 // ── Month grid ───────────────────────────────────────────────────────────────
@@ -24,6 +26,8 @@ export function MonthGrid({
   reminders = [],
   reminderZone = "UTC",
   onOpenReminder,
+  externals = [],
+  onOpenExternal,
 }: {
   anchor: Date;
   items: MyTask[];
@@ -33,6 +37,9 @@ export function MonthGrid({
   reminders?: CalReminder[];
   reminderZone?: string;
   onOpenReminder?: (id: string) => void;
+  /** Google and Outlook events (CE-5a): a hatched chip, all-day first. */
+  externals?: ExternalView[];
+  onOpenExternal?: (id: string) => void;
 }) {
   const gridStart = startOfMonthGrid(anchor);
   const cells = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
@@ -55,6 +62,13 @@ export function MonthGrid({
           const blocks = blocksForDay(items, day);
           const deadlines = deadlinesForDay(items, day);
           const chips = [
+            ...externalChips(externals, day, reminderZone).map((x) => ({
+              id: x.id,
+              title: x.title,
+              kind: "external" as const,
+              time: x.time,
+              look: externalLook(x),
+            })),
             ...blocks.map((b) => ({ id: b.item.id, title: b.item.title, kind: "block" as const, time: "" })),
             ...deadlines.map((d) => ({ id: d.id, title: d.title, kind: "deadline" as const, time: "" })),
             ...monthChips(reminders, day, reminderZone).map((r) => ({
@@ -94,6 +108,7 @@ export function MonthGrid({
                     onClick={(e) => {
                       e.stopPropagation();
                       if (c.kind === "reminder") onOpenReminder?.(c.id);
+                      else if (c.kind === "external") onOpenExternal?.(c.id);
                       else onOpen(c.id);
                     }}
                     className={[
@@ -102,14 +117,16 @@ export function MonthGrid({
                         ? "bg-destructive/10 text-destructive"
                         : c.kind === "reminder"
                           ? "text-muted-foreground"
-                          : "bg-primary/10 text-primary",
+                          : c.kind === "external"
+                            ? c.look
+                            : "bg-primary/10 text-primary",
                     ].join(" ")}
                   >
                     {c.kind === "deadline" ? "⚑ " : ""}
                     {c.kind === "reminder" && (
                       <Icon name="Bell" className="mr-0.5 inline h-2.5 w-2.5 align-[-1px]" />
                     )}
-                    {c.kind === "reminder" ? `${c.time} ` : ""}
+                    {c.kind === "reminder" || c.kind === "external" ? (c.time ? `${c.time} ` : "") : ""}
                     {c.title}
                   </span>
                 ))}

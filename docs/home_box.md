@@ -292,7 +292,8 @@ second lane. The script's header and `engineering_practice.md` §7a own the
 details. On 2026-11-06 a full suite peaked at about 10.7 GB of memory and
 took about 41 minutes (task 1907). So run one full suite at a time on the box.
 
-Before each push, run the tests that the diff can affect:
+GitHub `pr-check` is the gate (D218), so `ci_local` is optional. Before each
+push, run the tests that the diff can affect:
 `timeout 2400 uv run python scripts/affected_tests.py --run`.
 
 ### 6.2 Merge and release
