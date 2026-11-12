@@ -290,6 +290,8 @@ The workbench caches the answer through `useCachedResource`. A change to an inst
 - **(c) A package need.** A system package or an install that this viewer sees meets it, and nothing else does. An install whose version has no row in `app_versions` has no manifest, so its needs fail closed.
 - **(d) The switch.** `GET /shell/manifest` answers 404 for an org outside `PACKAGE_HOST_ORGS`, and it opens no session. `gateway/package_host/flags.py` is the one reader. The org is the bound session, and the viewer is `user.email`.
 
+**The read of a viewer (WS-STU J2a).** `resolve.visible_installs` is the one install read of this resolve and of `package_host/viewer.py`, which `ai_studio.md` §14 J2a owns.
+
 ### 5.3 Disposal
 
 **Removal deletes the install row in one transaction, by `install_id`, and the FK cascade of `324_package_registry.sql` deletes every contribution of it.** No point keeps a list of its own, so no point can keep a stale row. `store.remove_install` is the one path, and the expiry job of PKG-10 calls it at the end of the 30 days in the archive. **A pause is a state, not a removal.** `store.pause_install` moves one install from `active` to `paused`, and `store.resume_install` moves it back. A paused install keeps its claims and their keys (§4). The resolve hides it at the next read, because it shows only `active` installs (§5.2 step 2). The kill switch of `ai_studio.md` J3 calls `pause_install` for each install of the package, and J3 owns the stop of new actions. Each function takes the lock of `install` and works only in the bound org. The routes of PKG-8, PKG-12 and J3 decide who may call it.
