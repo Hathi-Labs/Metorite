@@ -944,3 +944,15 @@ async def test_r8_a_crashed_pull_does_not_stop_the_push(world):
         await _task(world.org_a, ALICE, "Pushes anyway", T0)
         s = await task_out.run_pass(world.org_a, world.conn["a"], provider=fake)
     assert s.created == 1
+
+
+@pytest.mark.asyncio
+async def test_r8_an_outlook_connection_is_skipped_until_its_codes_are_mapped(world):
+    """Outlook raises ErrorItemNotFound, sends no transactionId and never says
+    ``exists``, so the recovery paths would do nothing. Mutation (M20): empty
+    ``UNSUPPORTED_PROVIDERS``. The pass then sends requests."""
+    fake = FakeProvider(provider="outlook_calendar", source="outlook")
+    async with _in(world, world.org_a):
+        await _task(world.org_a, ALICE, "Outlook block", T0)
+        s = await task_out.run_pass(world.org_a, world.conn["a"], provider=fake)
+    assert s.skipped == "provider_unsupported" and fake.calls == [] and _links(world, world.org_a) == []

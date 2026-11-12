@@ -380,6 +380,8 @@ def _task_url_builder() -> Callable[[str], str | None]:
 
 META_TASK_CURSOR = "task_cursor"
 META_TASK_CALENDAR_ID = "task_calendar_id"
+#: Providers whose write-out is not ready (see ``run_pass``).
+UNSUPPORTED_PROVIDERS = frozenset({"outlook_calendar"})
 
 
 SAME = "same"  # the links belong to this calendar
@@ -524,6 +526,12 @@ async def pull_remote_changes(
 
 async def run_pass(org: str, connection_id: str, *, provider: Any) -> PassStats:
     """What the loop calls after the main read: pull first, then push."""
+    if getattr(provider, "provider", "") in UNSUPPORTED_PROVIDERS:
+        # Outlook answers a missing item with the Graph code ErrorItemNotFound, not
+        # ``not_found``, sends no transactionId and never says ``exists``: the
+        # recovery paths below would do nothing. CE-13b maps them, then lifts this.
+        _log.info("calendar_sync.task_pass_skipped", organization_id=org, provider=provider.provider)
+        return PassStats(skipped="provider_unsupported")
     try:
         await pull_remote_changes(org, connection_id, provider=provider)
     except Exception as exc:  # noqa: BLE001 - a failed read must not stop the push
