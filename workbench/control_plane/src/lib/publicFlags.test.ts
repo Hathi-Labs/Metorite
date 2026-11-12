@@ -120,6 +120,8 @@ describe("every NEXT_PUBLIC flag reaches the browser", () => {
       "NEXT_PUBLIC_TODAY_BAND",
       // WS-PKG PKG-19a-2: the shell counts pane opens, and My Day draws the pin card.
       "NEXT_PUBLIC_PIN_SUGGEST",
+      // WS-CAL CE-5a: the Calendar draws Google and Outlook events.
+      "NEXT_PUBLIC_CALENDAR_EVENTS",
       // PK-1 (D213): a task row on My Day opens the task in My Day's panel.
       "NEXT_PUBLIC_MY_DAY_PEEK",
       // WS-62 CF-1: the chat-first surface, first the peek strip on a phone.

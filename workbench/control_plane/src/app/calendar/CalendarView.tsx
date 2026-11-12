@@ -49,6 +49,7 @@ import {
   HOUR_PX,
   addMonths,
   plannerCandidates,
+  startOfMonthGrid,
   startOfWeek,
   useNow,
   type Mode,
@@ -81,6 +82,8 @@ import {
   type MoveBack,
   type ZonedTime,
 } from "./lib/reminders";
+import { ExternalSheet } from "./components/ExternalSheet";
+import { useExternalEntries, visibleWindow } from "./lib/useExternalEntries";
 import { runReminderAct } from "@/lib/shell/reminderOpen";
 import { ShellJob } from "@/lib/shell/doJob";
 import { browserTimeZone } from "@/app/tasks/lib/utils";
@@ -132,6 +135,16 @@ export function CalendarView() {
   // The grid draws on the browser's wall clock, so every reminder computation
   // uses the browser's zone. `settings.timezone` is "UTC" until settings load.
   const remZone = gridZone(browserTimeZone());
+  // Google and Outlook events (CE-5a). Flag off: no read, an empty list.
+  const [externalId, setExternalId] = useState<string | null>(null);
+  const externals = useExternalEntries(
+    mode === "month"
+      ? visibleWindow(startOfMonthGrid(anchor), addDays(startOfMonthGrid(anchor), 42))
+      : mode === "week"
+        ? visibleWindow(startOfWeek(anchor), addDays(startOfWeek(anchor), 7))
+        : visibleWindow(anchor, addDays(anchor, 1)),
+  );
+  const externalOpen = externalId ? externals.find((x) => x.id === externalId) : undefined;
   const [remForm, setRemForm] = useState<{ mode: "new"; title?: string } | { mode: "move"; id: string } | null>(null);
   // `/calendar?reminder=<id>` (RX-2): the Reminders panel marks this row.
   const [markReminder, setMarkReminder] = useState<string | null>(null);
@@ -834,6 +847,8 @@ export function CalendarView() {
               reminders={remShown ? remList.rows : []}
               reminderZone={remZone}
               onOpenReminder={openReminder}
+              externals={externals}
+              onOpenExternal={setExternalId}
             />
           ) : (
             <TimeGrid
@@ -872,6 +887,8 @@ export function CalendarView() {
               onMoveReminder={(id, to) => void moveReminderTo(id, to)}
               onPickReminderMove={(id) => setRemForm({ mode: "move", id })}
               onResolveReminder={(id, action) => void resolveReminderAs(id, action)}
+              externals={externals}
+              onOpenExternal={setExternalId}
             />
           )}
         </div>
@@ -967,6 +984,8 @@ export function CalendarView() {
           )}
         </Modal>
       )}
+
+      {externalOpen && <ExternalSheet entry={externalOpen} zone={remZone} onClose={() => setExternalId(null)} />}
 
       {sheet && (
         <ScheduleSheet

@@ -45,7 +45,9 @@
   **CE-4 (the event store) is BUILT, 2026-10-31, dark** behind
   `CALENDAR_EVENTS` (migration 331, `routes/tasks/entries.py`, the
   `entries` key of `GET /projects/my/calendar`). No box has the flag on.
-  CE-5 to CE-12 are not built.
+  **CE-5a (Google and Outlook events on the grid, read only) is BUILT,
+  2026-11-12, dark** behind `NEXT_PUBLIC_CALENDAR_EVENTS`. The Event kind
+  of CE-5 is task 2616. The rest of CE-5 to CE-12 is not built.
   **RX-3 (a reminder looks and acts like a reminder in My Day) and RX-4
   (the push has buttons) are BUILT, 2026-11-02**, under epic task 1402. They
   are not dark. They draw wherever `CALENDAR_REMINDERS` and the My Day feed

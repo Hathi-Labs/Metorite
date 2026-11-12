@@ -55,6 +55,9 @@ import {
   type CalReminder,
   type ZonedTime,
 } from "../lib/reminders";
+import { allDayRow, laneSegments, segmentsForDay, type ExternalView } from "../lib/externalEntries";
+import { ExternalAllDayRow } from "./ExternalAllDayRow";
+import { externalLook } from "./externalLook";
 
 
 // ── the card ─────────────────────────────────────────────────────────────────
@@ -141,6 +144,8 @@ export function TimeGrid({
   onMoveReminder,
   onPickReminderMove,
   onResolveReminder,
+  externals = [],
+  onOpenExternal,
 }: {
   days: Date[];
   items: MyTask[];
@@ -192,7 +197,12 @@ export function TimeGrid({
   /** "Move to…" opens the date and time form. */
   onPickReminderMove?: (id: string) => void;
   onResolveReminder?: (id: string, action: "done" | "drop") => void;
+  /** Google and Outlook events (CE-5a). Read only: no handle, no lane of a task. */
+  externals?: ExternalView[];
+  onOpenExternal?: (id: string) => void;
 }) {
+  const allDay = allDayRow(externals, days);
+  const hasAllDay = allDay.bars.length > 0 || allDay.more.some(Boolean);
   const hours = Array.from({ length: dayEnd - dayStart }, (_, i) => dayStart + i);
   const gridHeight = hours.length * HOUR_PX;
   // Where the time pill sits in the gutter: day view, today, inside the grid.
@@ -381,8 +391,10 @@ export function TimeGrid({
       {/* Column headers (week). The grid body below is its own stacking
           context (`relative z-0`), so no pin, now line or block in it can
           draw over this header when the grid scrolls under it. */}
+      {(days.length > 1 || hasAllDay) && (
+        <div className="sticky top-0 z-10 bg-background">
       {days.length > 1 && (
-        <div className="sticky top-0 z-10 flex border-b border-border bg-background">
+        <div className="flex border-b border-border">
           <div className="w-14 shrink-0" />
           {days.map((d) => {
             const today = sameDay(d, now);
@@ -406,6 +418,9 @@ export function TimeGrid({
               </div>
             );
           })}
+        </div>
+      )}
+      {hasAllDay && <ExternalAllDayRow days={days} externals={externals} onOpen={(id) => onOpenExternal?.(id)} />}
         </div>
       )}
 
@@ -651,6 +666,39 @@ export function TimeGrid({
                   <span className="absolute -left-1 -top-1 h-2 w-2 rounded-full bg-primary motion-safe:animate-pulse" />
                 </div>
               )}
+
+              {/* external events (CE-5a) — hatched, read only, no handle. They
+                  take lanes among themselves and never join `blocksForDay`.
+                  They come before the task cards in the DOM, so a card draws
+                  over one. A click opens the sheet and stops here, so it does
+                  not open the schedule-here sheet. */}
+              {laneSegments(segmentsForDay(externals, day, reminderZone)).map(({ seg, lane, lanes }) => {
+                const top = ((seg.startMin - dayStart * 60) / 60) * HOUR_PX;
+                const height = Math.max(20, ((seg.endMin - seg.startMin) / 60) * HOUR_PX - 2);
+                if (top + height < 0 || top > gridHeight) return null;
+                const x = seg.entry;
+                return (
+                  <button
+                    key={`ex-${x.id}-${seg.startMin}`}
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onOpenExternal?.(x.id);
+                    }}
+                    title={x.title}
+                    aria-label={`${x.source === "google" ? "Google" : "Outlook"} event: ${x.title}`}
+                    className={`absolute overflow-hidden rounded-md px-1.5 py-0.5 text-left text-[11px] leading-tight focus-visible:ring-2 focus-visible:ring-ring ${externalLook(x)}`}
+                    style={{
+                      top: Math.max(0, top) + 1,
+                      height,
+                      left: `calc(${(lane / lanes) * 100}% + 2px)`,
+                      width: `calc(${100 / lanes}% - 4px)`,
+                    }}
+                  >
+                    <span className="block truncate font-medium">{x.title}</span>
+                  </button>
+                );
+              })}
 
               {/* reminder pins (WS-66 RM-5) — a line with no height at the
                   minute of the reminder. Not a block: no lane, no capacity.
