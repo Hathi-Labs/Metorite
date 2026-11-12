@@ -320,10 +320,32 @@ def row(res: Result) -> str:
             f"| {h['date']} | {res.score} | {fails} |")
 
 
-def matrix() -> str:
+RESULTS_FILE = Path(__file__).resolve().parents[1] / "docs" / "kit_conformance_results.jsonl"
+
+
+def load_results(path: Path = RESULTS_FILE) -> list[dict]:
+    """The stored runs: one JSON object per line, as ``score --json`` prints it, plus ``score``."""
+    if not path.exists():
+        return []
+    return [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+
+def matrix(results: list[dict] | None = None) -> str:
+    """One row for each client. A client with a stored run shows its newest run."""
+    newest: dict[str, dict] = {}
+    for r in sorted(results or [], key=lambda r: str(r.get("date", ""))):
+        newest[r.get("client")] = r
     out = ["| Client | Client version | Scenario | Kit version | Date | Score | Failed steps |",
            "|---|---|---|---|---|---|---|"]
-    out += [f"| {c} | not run | not run | not run | not run | not run | not run |" for c in CLIENTS]
+    for c in CLIENTS:
+        r = newest.get(c)
+        if r is None:
+            out.append(f"| {c} | not run | not run | not run | not run | not run | not run |")
+            continue
+        steps = SCENARIOS[r["scenario"]]
+        failed = [sid for sid, _ in steps if sid not in r.get("passed_steps", [])]
+        out.append(f"| {c} | {r['client_version']} | {r['scenario']} | {r['kit_version']} | {r['date']} "
+                   f"| {len(steps) - len(failed)}/{len(steps)} | {', '.join(failed) or 'none'} |")
     return "\n".join(out)
 
 
@@ -342,7 +364,7 @@ def main(argv: list[str]) -> int:
         return 2
     cmd = argv[0]
     if cmd == "matrix":
-        print(matrix())
+        print(matrix(load_results()))
         return 0
     if cmd == "score":
         header, events = load(Path(argv[1]))

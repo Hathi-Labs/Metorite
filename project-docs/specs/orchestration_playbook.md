@@ -417,6 +417,7 @@ The Claude pack is SW-82 (task 1927) in `agent_coordination.md`. It follows this
 
 - **Metorite task.** 2556. It extends MCP-G23 (task 2523).
 - **Scope.** The scenarios, the scoring script and the matrix of §6a. Live runs are advisory (R7).
+- **Built (adapter, 2026-11-12).** `scripts/kit_claude_adapter.py` turns the stream of `claude -p --output-format stream-json --verbose` into a transcript for `kit_conformance.py`. Test: `tests/unit/test_kit_claude_adapter.py`. Other clients need an adapter of their own.
 - **Done when.** Each client of the file map has one row with a date and a result.
 - **Fence.** The suite of MCP-G23 (`tests/unit/test_mcp_client_conformance.py`), extended. A live client run is advisory (R7).
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** KIT-2b, KIT-2c, KIT-2d, SW-82.
