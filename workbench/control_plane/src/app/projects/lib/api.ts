@@ -3506,6 +3506,12 @@ export const questionsApi = {
       return questionsPage(await call<unknown>(`agent-questions?${questionsQuery(opts)}`));
     } catch (err) {
       if (err instanceof ProjectsApiError && err.status === 404) return null;
+      // A member without the Projects feature gets 403 on "For me": the door is
+      // off for them, not broken. "Everyone" keeps its 403 (the reader is not a
+      // reviewer), which the list handles itself.
+      if (err instanceof ProjectsApiError && err.status === 403 && (opts.scope ?? "mine") === "mine") {
+        return null;
+      }
       throw err;
     }
   },

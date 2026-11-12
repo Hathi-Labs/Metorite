@@ -59,6 +59,7 @@ REACH = "reach"
 #: two prefixes of an act (``core_brief.md`` §8.2 item 3).
 SOURCE_APPS: frozenset[str] = frozenset({
     "tasks", "email", "approvals", "crm", "calendar", "chat", "knowledge", "reminders",
+    "questions",
     AUDIT, REACH})
 
 

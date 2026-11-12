@@ -82,6 +82,12 @@ export interface QuestionsViewProps {
   onOpenProject: (projectId: string) => void;
   /** An answer landed. The sidebar badge reads again. */
   onChanged?: () => void;
+  /**
+   * EA-18c. The list inside another page (the Approvals tab): "For me" only,
+   * so no title, no scope tabs and no project filter. The sort stays. The rows,
+   * the card and the writes are the same.
+   */
+  embedded?: boolean;
 }
 
 export function QuestionsView({
@@ -90,6 +96,7 @@ export function QuestionsView({
   onOpenTask,
   onOpenProject,
   onChanged,
+  embedded = false,
 }: QuestionsViewProps) {
   const { access } = useAccess();
   const me = access.email;
@@ -269,9 +276,16 @@ export function QuestionsView({
   return (
     <section aria-label={QUESTIONS_COPY.title} className="flex min-h-0 flex-1 flex-col" data-questions="">
       <div className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2">
-        <Icon name="MessageCircleQuestion" className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
-        <h3 className="text-sm font-medium text-foreground">{QUESTIONS_COPY.title}</h3>
-        <div role="tablist" aria-label="Which questions" className="flex items-center gap-1">
+        {embedded ? null : (
+          <Icon name="MessageCircleQuestion" className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+        )}
+        {embedded ? null : <h3 className="text-sm font-medium text-foreground">{QUESTIONS_COPY.title}</h3>}
+        <div
+          role="tablist"
+          aria-label="Which questions"
+          className="flex items-center gap-1"
+          hidden={embedded}
+        >
           <Button
             role="tab"
             aria-selected={scope === "mine"}
@@ -296,6 +310,7 @@ export function QuestionsView({
           ) : null}
         </div>
         <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">
+          {embedded ? null : (
           <SelectButton
             label={QUESTIONS_COPY.projectFilter}
             value={project}
@@ -307,6 +322,7 @@ export function QuestionsView({
               ...projects.map((p) => ({ value: p.id, label: p.label, depth: p.depth })),
             ]}
           />
+          )}
           <SelectButton
             label={QUESTIONS_COPY.sortLabel}
             value={sort}
