@@ -217,6 +217,18 @@ def test_a_long_read_stops_before_the_token_dies_and_is_not_a_reconnect():
     assert h.sizes == []
 
 
+def test_a_read_stops_part_way_when_the_token_runs_low():
+    ticks = iter(range(0, 10_000, 20))  # the clock moves 20 s on each call
+    p = outlook.OutlookProvider(
+        _Scripted(_delta_pages(10)), client_id="cid", client_secret="sec",
+        redirect_uri="https://app.example/cb", clock=lambda: NOW + timedelta(seconds=next(ticks)))
+    h = p._http
+    with pytest.raises(ProviderError) as e:
+        run(p.sync(cred(expires_at=NOW + timedelta(seconds=100)), None, Window.around(NOW)))
+    assert e.value.code == "token_expiring" and not isinstance(e.value, NeedsReconnect)
+    assert 0 < len(h.sizes) < 10  # some pages were read, then it stopped
+
+
 def test_first_sync_is_full_skips_metorite_calendar_and_returns_cursor_map():
     h = FakeHttp([
         ("GET", "skiptoken=", 200, fx("delta_page2.json")),
