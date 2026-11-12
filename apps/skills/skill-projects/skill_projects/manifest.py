@@ -518,6 +518,8 @@ MANIFEST: tuple[Route, ...] = (
     Route("PUT", "/projects/tasks/{task_id}/recurrence", "set_recurrence", "B"),
     Route("DELETE", "/projects/tasks/{task_id}/recurrence", "set_recurrence", "B"),
     Route("GET", "/projects/tasks/{task_id}/relations", "task_detail", "A"),
+    # SW-25: the unread affects notes of the tasks that `my_work` holds.
+    Route("GET", "/projects/affects-notes", "my_work", "A"),
     # ── refs.py — a task's URL references (WS-57 TR-1, TR-3) ─────────────
     Route("GET", "/projects/tasks/{task_id}/refs", "task_detail", "A"),
     Route("POST", "/projects/tasks/{task_id}/refs", "add_task_ref", "B"),
@@ -1449,6 +1451,16 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     # SW-68a: `my_work` sends the ids of the rows it just listed. The member sets no id.
     ("GET", "/projects/plan/order"): {
         "task_ids": "The ids of the rows that `my_work` just read, in their order. The tool has no argument for it (SW-68a).",
+    },
+    # SW-25: the note of an `affects` or `relates_to` link. The MCP
+    # `add_task_link` sends it. The chat `link_tasks` makes no affects link.
+    ("POST", "/projects/tasks/{task_id}/links"): {
+        "note": "Only the MCP `add_task_link` sends it, for an affects or relates_to link. The chat `link_tasks` makes no affects link (SW-25).",
+    },
+    # SW-25: the MCP `get_task_context` of the agent session that holds the
+    # task marks its affects notes read. A person who opens the panel marks nothing.
+    ("GET", "/projects/tasks/{task_id}/relations"): {
+        "mark_read": "Only the MCP `get_task_context` of the agent session that holds the task sets it. The chat reads the notes and marks nothing (SW-25).",
     },
     ("GET", "/projects/tasks/stats"): {
         "assigned": _STATS_ROUTE_REASON,

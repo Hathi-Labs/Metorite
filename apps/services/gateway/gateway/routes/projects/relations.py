@@ -40,6 +40,7 @@ from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     MAX_DEPTH,
     _tenant_session,
+    actor,
     load_visible_task,
     record_activity,
     resolve_visibility,
@@ -48,6 +49,7 @@ from gateway.routes.projects.core import (
     touch_task,
     wire,
 )
+from gateway.routes.projects.filters import AGENT_RUN_OPEN_STATUSES, connection_gone_sql
 from sqlalchemy import text
 
 LINK_TYPES: tuple[str, ...] = ("blocks", "relates_to", "duplicates", "affects")
@@ -55,7 +57,7 @@ LINK_TYPES: tuple[str, ...] = ("blocks", "relates_to", "duplicates", "affects")
 #: The link types that carry a note (SW-25). The note is agent text at times,
 #: so every reader of it fences it as untrusted.
 NOTE_TYPES: tuple[str, ...] = ("affects", "relates_to")
-#: The longest note, in characters. The column has the same CHECK (417).
+#: The longest note, in characters. The column has the same CHECK (420).
 MAX_NOTE_CHARS = 500
 
 #: The only link type with a direction that means anything to scheduling, and so
@@ -472,9 +474,11 @@ async def get_relations(
 
         # SW-25: an agent that reads the context of the task has read the
         # affects notes that point at it. `my_work` then stops listing them.
-        # Only for a signed agent: a person who opens the panel marks nothing.
-        # The task version stays put: no touch, and no activity.
-        if mark_read and getattr(user, "agent", None) is not None:
+        # Only for the signed agent session that HOLDS the task: a person who
+        # opens the panel, and an agent that only looks, marks nothing. The
+        # task version stays put: no touch, and no activity.
+        held = _session_hold_binds(user)
+        if mark_read and held is not None:
             unread = [
                 link["link_id"] for link in links
                 if link["link_type"] == "affects" and link["direction"] == "incoming"
@@ -485,9 +489,10 @@ async def get_relations(
                     text(
                         "UPDATE pm_task_links SET note_read_at = now() "
                         " WHERE id = ANY(CAST(:ids AS uuid[])) "
-                        "   AND note_read_at IS NULL"
+                        "   AND note_read_at IS NULL "
+                        f"  AND EXISTS ({_held_run_sql('CAST(:tid AS uuid)')})"
                     ),
-                    {"ids": unread},
+                    {"ids": unread, "tid": task_id, **held},
                 )
 
         # "Blocked by" is the INCOMING half of `blocks`: somebody else's task
@@ -504,23 +509,58 @@ async def get_relations(
         }
 
 
-#: The most task ids that one read of the affects notes takes.
-NOTES_MAX_TASKS = 25
 #: The most notes that one read answers.
 NOTES_MAX_ROWS = 50
 
-#: The unread affects notes that point at the asked tasks (SW-25). BOTH ends
-#: pass the visibility clause of the reader, so a note from a task that the
-#: reader cannot see is never listed, and its source is never named.
+
+def _held_run_sql(task_col: str) -> str:
+    """The newest open run of the CALLER's agent session on the task
+    *task_col* (SW-25). The rule of ``agent_runs._OPEN_RUN_SQL``: this member,
+    this client stamp, this connection, and the session key of this session or
+    no key yet (SW-7). A run on a revoked or expired connection holds nothing
+    (SW-13c). The binds come from :func:`_session_hold_binds`."""
+    return (
+        "SELECT h.id FROM pm_agent_runs h"
+        f" WHERE h.task_id = {task_col} AND h.member_email = :hme"
+        "   AND h.status = ANY(:hopen) AND h.client_via = :hvia"
+        "   AND h.connection_id = CAST(:hcid AS uuid)"
+        "   AND (h.session_key IS NULL OR h.session_key = CAST(:hsk AS text))"
+        f"  AND NOT {connection_gone_sql('h')}"
+        " ORDER BY h.created_at DESC, h.id DESC LIMIT 1"
+    )
+
+
+def _session_hold_binds(user: UserContext) -> dict[str, Any] | None:
+    """The binds of :func:`_held_run_sql`, from the SIGNED agent of *user*
+    (branch 0 fills ``UserContext.agent``). Never from the request. ``None``
+    for a person, and for an agent with no client stamp or no connection."""
+    agent = getattr(user, "agent", None)
+    if agent is None:
+        return None
+    via = str(getattr(agent, "actor_via", "") or "").strip().lower()
+    connection = getattr(agent, "connection_id", None)
+    if not via.startswith("mcp:") or connection is None:
+        return None
+    return {
+        "hme": actor(user).strip().lower(), "hvia": via, "hcid": str(connection),
+        "hsk": getattr(agent, "session_key", None),
+        "hopen": list(AGENT_RUN_OPEN_STATUSES),
+    }
+
+
+#: The unread affects notes on the tasks that the caller's agent session
+#: holds (SW-25). BOTH ends pass the visibility clause of the reader, so a
+#: note from a task that the reader cannot see is never listed, and its
+#: source is never named. The run id is the open run of the session.
 _NOTES_SQL = """
-SELECT l.id, l.note, l.created_at, l.target_task_id,
+SELECT l.id, l.note, l.created_at, l.target_task_id, held.run_id,
        s.id AS from_id, s.title AS from_title, s.task_number AS from_number
   FROM pm_task_links l
   JOIN pm_tasks t ON t.id = l.target_task_id
   JOIN pm_tasks s ON s.id = l.source_task_id
+  CROSS JOIN LATERAL ({held}) held(run_id)
  WHERE l.link_type = 'affects'
    AND l.note IS NOT NULL AND l.note_read_at IS NULL
-   AND l.target_task_id = ANY(CAST(:ids AS uuid[]))
    AND {visible_target}
    AND {visible_source}
  ORDER BY l.created_at, l.id
@@ -529,35 +569,33 @@ SELECT l.id, l.note, l.created_at, l.target_task_id,
 
 
 @router.get("/affects-notes")
-async def affects_notes(
-    task_ids: str, user: UserContext = Depends(get_current_user),
-) -> dict:
-    """The unread affects notes of the asked tasks, oldest first (SW-25).
+async def affects_notes(user: UserContext = Depends(get_current_user)) -> dict:
+    """The unread affects notes on the tasks that the caller's agent session
+    holds, oldest first (SW-25).
 
-    ``my_work`` calls it with the tasks that its session holds. It never marks
-    a note read: ``get_relations`` does, for the agent that reads the context.
+    ``my_work`` calls it once. The gateway finds the held tasks from the
+    signed session, so the edge sends no task id and reads no extra runs
+    list. A person holds no task through a session, so a person reads no
+    notes here. It never marks a note read: ``get_relations`` does, for the
+    session that holds the task and reads its context.
     """
-    ids: list[str] = []
-    for part in task_ids.split(","):
-        try:
-            ids.append(str(UUID(part.strip())))
-        except ValueError:
-            continue
-    ids = list(dict.fromkeys(ids))[:NOTES_MAX_TASKS]
-    if not ids:
+    held = _session_hold_binds(user)
+    if held is None:
         return {"notes": []}
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         rows = (await db.execute(
             text(_NOTES_SQL.format(
+                held=_held_run_sql("l.target_task_id"),
                 visible_target=task_visibility_clause(vis, "t"),
                 visible_source=task_visibility_clause(vis, "s"),
             )),
-            {"ids": ids, "cap": NOTES_MAX_ROWS, **vis.params},
+            {"cap": NOTES_MAX_ROWS, **held, **vis.params},
         )).fetchall()
     return {"notes": [
         {
             "link_id": str(r.id), "task_id": str(r.target_task_id),
+            "run_id": str(r.run_id),
             "from_task_id": str(r.from_id), "from_title": r.from_title,
             "from_task_number": r.from_number, "note": r.note,
             "created_at": wire(r.created_at),

@@ -5195,6 +5195,15 @@ MY_WORK_REASONS: tuple[str, ...] = (
 #: created_at}]``. The title and the note are untrusted text.
 AFFECTS_NOTES_ROUTE = "/projects/affects-notes"
 NOTES_KEY = "notes"
+
+#: SW-25. The key of the ``my_work`` answer that says the read of the
+#: affects notes failed, and its fixed text. A refused route or a 4xx must
+#: never read as "no notes", so the answer says so out loud.
+NOTES_FAILED_KEY = "notes_failed"
+TEXT_NOTES_FAILED = (
+    "my_work could not read the affects notes of the tasks that this session"
+    " holds. A note can wait on one of them. Read each held task with"
+    " get_task_context.")
 #: SW-68a. The route that ranks the assigned rows by the plan engine, and the
 #: key of the row that it adds: ``{epic_id, ready, slack_mins, blocked_by,
 #: blocked_by_hidden}``. Ids and counts only. The key is absent on a row that
@@ -5249,6 +5258,8 @@ _MY_WORK_OUTPUT: dict[str, Any] = _optional(_object({
     "rows": {"type": "array", "items": _MY_WORK_ROW_SCHEMA},
 }), PROTOCOL_KEY, _PROTOCOL_SCHEMA)
 _MY_WORK_OUTPUT = _optional(_MY_WORK_OUTPUT, TIPS_KEY, _TIPS_SCHEMA)
+# SW-25: present only when the read of the affects notes failed.
+_MY_WORK_OUTPUT = _optional(_MY_WORK_OUTPUT, NOTES_FAILED_KEY, {"type": "string"})
 
 
 async def _plan_of(ctx: Context, ids: list[str]) -> tuple[list[str], dict[str, dict[str, Any]]]:
@@ -5404,31 +5415,37 @@ async def _tasks_by_id(ctx: Context, ids: list[str]) -> dict[str, dict[str, Any]
     return {i: r for i, r in zip(ids, found, strict=True) if r is not None}
 
 
-async def _affects_notes(ctx: Context, ids: list[str]) -> dict[str, list[dict[str, Any]]]:
-    """The unread affects notes of the tasks *ids*, by task (SW-25). The
-    gateway lists only a note whose two tasks this member can see. A failed
-    read, and a gateway that has no such route, give no notes: the notes are
-    an aid, and they never stop ``my_work``. The title and the note leave as
-    untrusted text, and the note is cut at :data:`MAX_LINK_NOTE_CHARS`."""
-    if not ids:
-        return {}
+async def _affects_notes(ctx: Context) -> tuple[
+        dict[str, list[dict[str, Any]]], dict[str, str | None], bool]:
+    """The unread affects notes on the tasks that this session holds, by task,
+    with the open run of each task, and True when the read failed (SW-25).
+
+    The gateway finds the held tasks from the signed session, so this is ONE
+    call and no runs list. It lists only a note whose two tasks this member
+    can see. A busy gateway raises, as each read of ``my_work`` does. Any
+    other failure (a refused route, a 403, a 404) gives no notes and True, and
+    ``my_work`` then says :data:`TEXT_NOTES_FAILED`. The title and the note
+    leave as untrusted text, and the note is cut at :data:`MAX_LINK_NOTE_CHARS`."""
     try:
-        body = await _get(ctx, AFFECTS_NOTES_ROUTE, TEXT_TASK_NOT_FOUND,
-                          query=[("task_ids", ",".join(ids))])
+        body = await _get(ctx, AFFECTS_NOTES_ROUTE, TEXT_NOTES_FAILED)
     except ToolError as exc:
         if exc.text == TEXT_BUSY:
             raise
-        return {}
+        return {}, {}, True
     notes = body.get("notes") if isinstance(body, dict) else None
+    if not isinstance(notes, list):
+        return {}, {}, True
     found: dict[str, list[dict[str, Any]]] = {}
-    for row in notes if isinstance(notes, list) else ():
+    runs: dict[str, str | None] = {}
+    for row in notes:
         if not isinstance(row, dict):
             continue
         task_id, link_id = _id(row.get("task_id")), _id(row.get("link_id"))
         source, text = _id(row.get("from_task_id")), row.get("note")
         if (task_id is None or link_id is None or source is None
-                or task_id not in ids or not isinstance(text, str) or not text):
+                or not isinstance(text, str) or not text):
             continue
+        runs.setdefault(task_id, _id(row.get("run_id")))
         found.setdefault(task_id, []).append({
             "link_id": link_id, "from_task_id": source,
             "from_task_number": _int_or_none(row.get("from_task_number")),
@@ -5436,20 +5453,20 @@ async def _affects_notes(ctx: Context, ids: list[str]) -> dict[str, list[dict[st
             "note": untrusted(text[:MAX_LINK_NOTE_CHARS]),
             "created_at": _str_or_none(row.get("created_at")),
         })
-    return found
+    return found, runs, False
 
 
-def _session_holds(runs: list[dict[str, Any]], session: str | None) -> dict[str, str | None]:
-    """The tasks that this session holds, each with the id of its open run
-    (SW-25). A run counts when it is open and it is of this session (or of no
-    session yet, as :func:`_this_session` says)."""
-    held: dict[str, str | None] = {}
-    for run in runs:
-        task_id = _id(run.get("task_id"))
-        if (task_id is not None and run.get("status") in OPEN_RUN_STATUSES
-                and _this_session(run, session)):
-            held.setdefault(task_id, _id(run.get("id")))
-    return held
+async def _held_notes(ctx: Context, via: str | None) -> tuple[
+        dict[str, list[dict[str, Any]]], dict[str, str | None], dict[str, str]]:
+    """:func:`_affects_notes` for ``my_work`` (SW-25). No read while the runs
+    flag is off or the caller has no stamp, because a session holds a task
+    only through a run, as the runs reads of ``my_work`` say. The third item
+    is what the answer adds: :data:`NOTES_FAILED_KEY` when the read failed,
+    else nothing."""
+    if not (agent_oauth.runs_enabled() and via is not None):
+        return {}, {}, {}
+    notes, runs, failed = await _affects_notes(ctx)
+    return notes, runs, ({NOTES_FAILED_KEY: TEXT_NOTES_FAILED} if failed else {})
 
 
 def _list_note_rows(listed: list[tuple[str, str, str | None, bool]], seen: set[str],
@@ -5511,7 +5528,10 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     only (SW-13b). Then the task list of the member. Its rows carry
     ``blocked_by_count``, so the blocker test needs no call. Then the task
     route for a run row whose task is not in that list, and the statuses of
-    the projects of the rows, as ``list_tasks`` reads them.
+    the projects of the rows, as ``list_tasks`` reads them. SW-25: while the
+    runs flag is on, one read of the affects notes comes after the task
+    list. The gateway finds the tasks that this session holds, so no third
+    runs list goes out.
     """
     limit = int(args.get("limit", MY_WORK_LIMIT_DEFAULT))
     me = await _get(ctx, ME_ROUTE, TEXT_BUSY)
@@ -5521,14 +5541,10 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
 
     waiting: list[dict[str, Any]] = []
     holding: list[dict[str, Any]] = []
-    # SW-25: the open run of THIS session for each task that it holds.
-    session_runs: dict[str, str | None] = {}
     via = _via(actor_via(ctx.caller.lookup))
     if agent_oauth.runs_enabled() and via is not None:
-        needs, idle, every_run = await _together(
-            _my_runs(ctx, via, needs_agent=True), _my_runs(ctx, via, state=HELD_STATE),
-            _my_runs(ctx, via))
-        session_runs = _session_holds(every_run, ctx.session)
+        needs, idle = await _together(
+            _my_runs(ctx, via, needs_agent=True), _my_runs(ctx, via, state=HELD_STATE))
         # SW-7: a waiting run of a SIBLING session of this connection is
         # that session's, until its lease ended. A run with no session key
         # (a member start, a reopen of a finished run, or a run from before
@@ -5566,10 +5582,12 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
                        _yours(run, ctx.session)))
 
     # SW-25: an unread affects note on a task that this session holds. The
-    # row of a task that is listed above keeps its reason and gains the
-    # notes. Any other task gets a row of its own, right after those.
-    notes = await _affects_notes(ctx, list(session_runs))
-    _list_note_rows(listed, seen, notes, session_runs)
+    # gateway finds the held tasks from the signed session. The row of a task
+    # that is listed above keeps its reason and gains the notes. Any other
+    # task gets a row of its own, right after those. A session holds a task
+    # only through a run, so the read waits on the runs flag too.
+    notes, note_runs, notes_said = await _held_notes(ctx, via)
+    _list_note_rows(listed, seen, notes, note_runs)
 
     # SW-68a: the plan ranks the WHOLE assigned list of this tool, before any
     # row is hidden. Then this tool hides the rows that it never offers. So a
@@ -5622,7 +5640,7 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         for item in out:
             project = item.get("project_id")
             item[GUIDANCE_REF_KEY] = refs.get(project) if isinstance(project, str) else None
-    answer: dict[str, Any] = {"rows": out}
+    answer: dict[str, Any] = {"rows": out, **notes_said}
     protocol = _protocol(ctx)
     if protocol is not None:
         answer[PROTOCOL_KEY] = protocol
@@ -5645,7 +5663,8 @@ MY_WORK = Tool(
         " session holds, when another task left an affects note on it (reason"
         " note_from_task). Its notes field holds each note, with the task that"
         " wrote it, as untrusted text. The row stays until you read the task"
-        " with get_task_context. Third, the tasks assigned to"
+        " with get_task_context. If the notes cannot be read, notes_failed"
+        " says so. Third, the tasks assigned to"
         " this member that no AI session holds and that no open task blocks"
         " (assigned).[[CHECK_DUE]] When the organization has plan order on, a task under an"
         " epic is ranked by the plan: a ready slice before a held one, then the least slack. Its plan field then says"
@@ -7868,9 +7887,6 @@ TEXT_LINK_NOTE_NEEDED = (
     " does to the other task. Nothing changed.")
 TEXT_LINK_NOTE_NOT_TAKEN = (
     "Only a link of type affects or relates_to takes a note. Nothing changed.")
-TEXT_LINK_NOTE_LONG = (
-    f"The note of a link holds at most {MAX_LINK_NOTE_CHARS} characters."
-    " Nothing changed.")
 TEXT_LINK_TOO_LONG = (
     "The chain of tasks that wait on each other is too long. Nothing changed.")
 TEXT_LINK_NOT_FOUND = "Task or link not found."
@@ -7959,12 +7975,13 @@ async def _add_task_link(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         raise ToolError(TEXT_LINK_SELF)
     # SW-25: the note. The checks come before any read or write, and they say
     # nothing of either task, so they tell nothing about what the caller sees.
+    # The input schema refuses a note over MAX_LINK_NOTE_CHARS before this
+    # code runs ("The input 'note' is too long."), and the gateway and the
+    # column hold the same cap.
     raw = args.get("note")
     note = raw.strip() if isinstance(raw, str) else None
     if note and kind not in NOTE_LINK_TYPES:
         raise ToolError(TEXT_LINK_NOTE_NOT_TAKEN)
-    if note and len(note) > MAX_LINK_NOTE_CHARS:
-        raise ToolError(TEXT_LINK_NOTE_LONG)
     if kind == NOTE_REQUIRED_TYPE and not note:
         raise ToolError(TEXT_LINK_NOTE_NEEDED)
     existed = await _link_exists(ctx, task_id, target, kind)

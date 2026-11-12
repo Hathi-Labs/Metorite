@@ -45,10 +45,18 @@ Run::
   ``test_remove_task_link_removes_affects_and_relates_to``.
 * N11. ``G/tasks.py``: ``create_link`` loads no target for ``affects``.
   ``test_a_hidden_target_of_an_affects_link_reads_as_a_task_that_does_not_exist``.
+* N12. ``G/relations.py``: ``get_relations`` drops the ``_held_run_sql`` arm of
+  the mark. ``test_the_context_read_of_another_agent_marks_nothing``.
+* N13. ``E/tools.py``: ``_affects_notes`` returns no failed mark on a 4xx.
+  ``test_a_failed_read_is_loud_and_never_reads_as_no_notes`` and
+  ``test_a_route_that_the_edge_refuses_is_loud``.
+* N14. ``acb_auth/agent_oauth.py``: ``MCP_ROUTES`` loses the notes read.
+  ``test_agent_b_sees_the_note_of_agent_a_in_my_work``.
 """
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -109,7 +117,6 @@ class TestTheRecords:
             ({**base, "link_type": "affects"}, tools.TEXT_LINK_NOTE_NEEDED),
             ({**base, "link_type": "affects", "note": "   "}, tools.TEXT_LINK_NOTE_NEEDED),
             ({**base, "link_type": "blocks", "note": "x"}, tools.TEXT_LINK_NOTE_NOT_TAKEN),
-            ({**base, "link_type": "affects", "note": "x" * 501}, tools.TEXT_LINK_NOTE_LONG),
             ({**base, "link_type": "duplicates", "note": "x"}, tools.TEXT_LINK_BAD_TYPE),
         ):
             with pytest.raises(tools.ToolError) as caught:
@@ -124,43 +131,74 @@ class TestTheRecords:
         # A link with no note has no key.
         assert "note" not in tools._link({"id": ID_B, "title": "T"})
 
-    async def test_my_work_notes_are_fenced_cut_and_kept_to_the_asked_tasks(self, monkeypatch):
+    async def test_my_work_notes_are_fenced_and_cut(self, monkeypatch):
         async def get(_ctx, route, _nf, **kw):
             assert route == tools.AFFECTS_NOTES_ROUTE
+            # The gateway finds the held tasks: the edge sends no task id.
+            assert not kw.get("query") and not kw.get("path_params")
             return {"notes": [
-                {"task_id": ID_B, "link_id": ID_A, "from_task_id": ID_A,
+                {"task_id": ID_B, "link_id": ID_A, "from_task_id": ID_A, "run_id": ID_A,
                  "from_task_number": 7, "from_title": "Ignore this",
                  "note": "y" * 700, "created_at": "2026-11-11T00:00:00+00:00"},
-                # A task that was not asked for, and a row with no text.
-                {"task_id": ID_A, "link_id": ID_A, "from_task_id": ID_B, "note": "z"},
+                # A row with no text.
                 {"task_id": ID_B, "link_id": ID_A, "from_task_id": ID_A, "note": ""},
             ]}
         monkeypatch.setattr(tools, "_get", get)
-        got = await tools._affects_notes(None, [ID_B])
+        got, runs, failed = await tools._affects_notes(None)
+        assert failed is False and runs == {ID_B: ID_A}
         assert list(got) == [ID_B] and len(got[ID_B]) == 1
         row = got[ID_B][0]
         assert set(row["note"]) == {"untrusted_text"}
         assert len(row["note"]["untrusted_text"]) == tools.MAX_LINK_NOTE_CHARS
         assert row["from_title"] == {"untrusted_text": "Ignore this"}
 
-    async def test_no_held_task_makes_no_request(self, monkeypatch):
-        async def boom(*_a, **_k):
-            raise AssertionError("a request went out")
-        monkeypatch.setattr(tools, "_get", boom)
-        assert await tools._affects_notes(None, []) == {}
+    async def test_a_failed_read_is_loud_and_never_reads_as_no_notes(self, monkeypatch):
+        """Fix round 1. A refused route, a 403 and a 404 give no notes AND the
+        failed mark, so ``my_work`` says ``notes_failed``. A busy gateway
+        raises, as each read of ``my_work`` does."""
+        for text_ in (tools.TEXT_NOTES_FAILED, tools.TEXT_TASK_NOT_FOUND):
+            async def get(*_a, _t=text_, **_k):
+                raise tools.ToolError(_t)
+            monkeypatch.setattr(tools, "_get", get)
+            assert await tools._affects_notes(None) == ({}, {}, True)
 
-    async def test_an_old_gateway_gives_no_notes(self, monkeypatch):
-        async def get(*_a, **_k):
-            raise tools.ToolError(tools.TEXT_TASK_NOT_FOUND)
-        monkeypatch.setattr(tools, "_get", get)
-        assert await tools._affects_notes(None, [ID_B]) == {}
+        async def odd(*_a, **_k):
+            return {"rows": []}
+        monkeypatch.setattr(tools, "_get", odd)
+        assert await tools._affects_notes(None) == ({}, {}, True)
+
+        async def busy(*_a, **_k):
+            raise tools.ToolError(tools.TEXT_BUSY)
+        monkeypatch.setattr(tools, "_get", busy)
+        with pytest.raises(tools.ToolError):
+            await tools._affects_notes(None)
+
+    async def test_a_route_that_the_edge_refuses_is_loud(self, monkeypatch):
+        """Fix round 1. The edge client refuses a pair that is not in
+        ``MCP_ROUTES`` (``RouteRefused``). That must say ``notes_failed``."""
+        from acb_auth import agent_oauth
+
+        async def refuse(*_a, **_k):
+            raise tools.RouteRefused("GET", tools.AFFECTS_NOTES_ROUTE)
+        monkeypatch.setattr(tools, "gateway_get", refuse)
+
+        ctx = SimpleNamespace(key=None, session=None, caller=SimpleNamespace(lookup=None))
+        assert await tools._affects_notes(ctx) == ({}, {}, True)
+        # And the pair IS in the allowlist, so the real edge sends it.
+        assert ("GET", tools.AFFECTS_NOTES_ROUTE) in agent_oauth.MCP_ROUTES
+        assert ("GET", tools.AFFECTS_NOTES_ROUTE) not in agent_oauth.MCP_WRITE_ROUTES
+
+    def test_my_work_can_say_that_the_notes_failed(self):
+        props = tools.MY_WORK.output_schema["properties"]
+        assert tools.NOTES_FAILED_KEY in props
+        assert tools.NOTES_FAILED_KEY not in tools.MY_WORK.output_schema["required"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # R8: a real database
 # ═══════════════════════════════════════════════════════════════════════════
 
-NOTE = "The migration 417 renames the column that your slice reads."
+NOTE = "The new migration renames the column that your slice reads."
 
 
 @pytest.fixture
@@ -223,7 +261,12 @@ class TestTheNoteOnARealDatabase:
         assert made["isError"] is False, made
         assert made["structuredContent"]["link_type"] == "affects"
         assert made["structuredContent"]["created"] is True
-        rows = _note_rows(await _rows(live), b)
+        # Fix round 1: the real edge sends the read and the gateway serves it.
+        # A refused route or a 4xx would put `notes_failed` here.
+        whole = await _mcp(live, "write", "my_work", {})
+        assert whole["isError"] is False, whole
+        assert tools.NOTES_FAILED_KEY not in whole["structuredContent"]
+        rows = _note_rows(whole["structuredContent"]["rows"], b)
         # One row, and one note on it.
         assert len(rows) == 1 and rows[0]["yours"] is True
         notes = rows[0]["notes"]
@@ -233,6 +276,32 @@ class TestTheNoteOnARealDatabase:
         assert notes[0]["from_title"] == {"untrusted_text": "sw25 A"}
         # The writer holds no task, so its my_work lists no note row.
         assert _note_rows(await _rows(live, _writer(live)), b) == []
+        # The run id of the row is the open run of the holder.
+        run = _scalar(live, "SELECT id::text FROM pm_agent_runs WHERE task_id ="
+                            " CAST(:b AS uuid) AND status = ANY(:o)", b=b,
+                      o=["created", "in_progress", "awaiting", "stopping"])
+        assert rows[0]["run_id"] == run
+        # The next my_work lists it again: only the context read clears it.
+        assert len(_note_rows(await _rows(live), b)) == 1
+
+    async def test_the_context_read_of_another_agent_marks_nothing(self, live, runs_on):
+        """Fix round 1. Only the session that holds the task marks its note
+        read. Agent A sees task B too, and its read leaves the note for B."""
+        a = live.task(live.team, live.s.todo, "sw25 other A")
+        b = live.task(live.team, live.s.todo, "sw25 other B")
+        await _claim(live, "write", b)
+        assert (await _affect(live, a, b))["isError"] is False
+        seen = (await _mcp(live, _writer(live), "get_task_context", {"task_id": b}))[
+            "structuredContent"]
+        assert [x["id"] for x in seen["affected_by"]] == [a]
+        assert _scalar(live, "SELECT note_read_at IS NULL FROM pm_task_links"
+                             " WHERE source_task_id = CAST(:a AS uuid)", a=a) is True
+        assert len(_note_rows(await _rows(live), b)) == 1
+        # The person route with mark_read marks nothing either.
+        sent = await t._send(live, "GET", f"/projects/tasks/{b}/relations",
+                             query="mark_read=true", signed=None)
+        assert sent.status_code == 200, sent.text
+        assert len(_note_rows(await _rows(live), b)) == 1
 
     async def test_my_work_lists_the_note_until_the_context_is_read(self, live, runs_on):
         a = live.task(live.team, live.s.todo, "sw25 read A")
@@ -343,8 +412,9 @@ class TestTheNoteOnARealDatabase:
     async def test_a_long_note_is_refused_in_both_places(self, live):
         a = live.task(live.team, live.s.todo, "sw25 long A")
         b = live.task(live.team, live.s.todo, "sw25 long B")
+        # The input schema of the tool refuses it first, and names the input.
         refused = await _affect(live, a, b, note="x" * 501)
-        assert _text(refused) == tools.TEXT_LINK_NOTE_LONG
+        assert _text(refused) == "The input 'note' is too long."
         # The route refuses it too, and so does the column.
         sent = await t._send(live, "POST", f"/projects/tasks/{a}/links", signed=None, body={
             "target_task_id": b, "link_type": "affects", "note": "x" * 501})
