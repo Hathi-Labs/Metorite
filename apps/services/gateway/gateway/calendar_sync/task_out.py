@@ -94,7 +94,7 @@ _DESIRED = (
 
 _LINKS = """
 SELECT task_id::text AS task_id, external_id, synced_block_hash, attempts,
-       sync_state, next_attempt_at
+       sync_state, next_attempt_at, created_at
   FROM calendar_task_links
  WHERE organization_id = CAST(:org AS uuid)
    AND connection_id = CAST(:cid AS uuid) AND member_email = :me
@@ -129,8 +129,10 @@ async def plan(db: Any, org: str, connection_id: str, me: str, now: datetime) ->
 
 
 async def _lease(db: Any, org: str, connection_id: str, me: str, task_id: str,
-                 clock: Callable[[], datetime], *, create: bool) -> bool:
-    """Take the link for one send. False when another worker holds it.
+                 clock: Callable[[], datetime], *, create: bool) -> datetime | None:
+    """Take the link for one send. Returns the ``created_at`` of the link row
+    (its GENERATION, see :func:`client_event_id`), or None when another worker
+    holds it.
 
     The time comes from a FRESH ``clock()`` call, not from the start of the
     pass: a pass that runs long must not see a lease that has already ended.
@@ -145,16 +147,18 @@ async def _lease(db: Any, org: str, connection_id: str, me: str, task_id: str,
             "INSERT INTO calendar_task_links (organization_id, task_id, member_email, "
             "connection_id, sync_state, next_attempt_at) "
             "VALUES (CAST(:org AS uuid), CAST(:tid AS uuid), :me, CAST(:cid AS uuid), "
-            "'pending', :until) ON CONFLICT DO NOTHING RETURNING task_id"), params)
-        if r.fetchone() is not None:
-            return True
+            "'pending', :until) ON CONFLICT DO NOTHING RETURNING created_at"), params)
+        row = r.fetchone()
+        if row is not None:
+            return row.created_at
     r = await db.execute(text(
         "UPDATE calendar_task_links SET next_attempt_at = :until "
         "WHERE organization_id = CAST(:org AS uuid) AND connection_id = CAST(:cid AS uuid) "
         "AND task_id = CAST(:tid AS uuid) AND member_email = :me "
         + ("AND external_id IS NULL AND sync_state <> 'sent' " if create else "")
-        + "AND (next_attempt_at IS NULL OR next_attempt_at <= :now) RETURNING task_id"), params)
-    return r.fetchone() is not None
+        + "AND (next_attempt_at IS NULL OR next_attempt_at <= :now) RETURNING created_at"), params)
+    row = r.fetchone()
+    return None if row is None else row.created_at
 
 
 async def _mark_failed(org: str, connection_id: str, me: str, task_id: str,
@@ -169,14 +173,22 @@ async def _mark_failed(org: str, connection_id: str, me: str, task_id: str,
              "org": org, "cid": connection_id, "tid": task_id, "me": me})
 
 
-def client_event_id(task_id: str, connection_id: str) -> str:
+def client_event_id(task_id: str, connection_id: str, generation: datetime | None = None) -> str:
     """A stable id for the INSERT of one block on one connection.
 
     Base32hex, lower case, 32 characters: legal for a Google event ``id`` and
     for a Graph ``transactionId``. A retry after a timeout then names the same
     event, and the provider answers "exists" instead of making a second one.
+
+    ``generation`` is the ``created_at`` of the link row. It is the SAME for
+    every retry of one create, and NEW for a link made after the old one was
+    deleted (a block cleared and planned again, an event reset). Without it, a
+    recreated block reuses the id of an event that the provider still holds in
+    its bin: Graph then hands back the deleted event, and Google answers 409.
     """
-    digest = hashlib.sha256(f"metorite-task{task_id}{connection_id}".encode()).digest()[:20]
+    gen = generation.astimezone(UTC).isoformat() if generation is not None else ""
+    parts = ("metorite-task", task_id, connection_id, gen)
+    digest = hashlib.sha256(chr(31).join(parts).encode()).digest()[:20]
     return base64.b32hexencode(digest).decode("ascii").lower().rstrip("=")
 
 
@@ -259,10 +271,11 @@ async def reconcile_task_blocks(
     for d, link in work["push"]:
         creating = link is None or not link.external_id
         async with tenant_session(org) as db:
-            if not await _lease(db, org, str(conn.id), me, d.task_id, now, create=creating):
-                continue
+            generation = await _lease(db, org, str(conn.id), me, d.task_id, now, create=creating)
+        if generation is None:
+            continue
         attempts = 0 if link is None else int(link.attempts or 0)
-        cid = client_event_id(d.task_id, str(conn.id))
+        cid = client_event_id(d.task_id, str(conn.id), generation)
         ev_out = out_event(d, task_url_for(d.task_id), cid if creating else None)
         try:
             try:
@@ -311,14 +324,14 @@ async def reconcile_task_blocks(
 
     for link in work["remove"]:
         async with tenant_session(org) as db:
-            if not await _lease(db, org, str(conn.id), me, link.task_id, now, create=False):
+            if await _lease(db, org, str(conn.id), me, link.task_id, now, create=False) is None:
                 continue
         try:
             # A create whose answer was lost left no id, but the event may exist
             # under our client id. 404 is success, so this is always safe.
             ident = link.external_id
             if not ident and getattr(provider, "client_id_is_event_id", False):
-                ident = client_event_id(link.task_id, str(conn.id))
+                ident = client_event_id(link.task_id, str(conn.id), link.created_at)
             if ident:
                 await provider.delete_event(cred, cal_id, ident)
         except NeedsReconnect:
@@ -360,12 +373,12 @@ async def _forget_calendar(org: str, connection_id: str) -> None:
 
 
 async def _reset_event(org: str, connection_id: str, me: str, task_id: str) -> None:
-    """The event is gone at the provider while its block lives: forget the id,
-    so the next pass creates it again."""
+    """The event is gone at the provider while its block lives: drop the link,
+    so the next pass makes a NEW link (a new generation, so a new client id)
+    and creates the event again."""
     async with tenant_session(org) as db:
         await db.execute(text(
-            "UPDATE calendar_task_links SET external_id = NULL, etag = NULL, "
-            "sync_state = 'pending', next_attempt_at = NULL, updated_at = now() "
+            "DELETE FROM calendar_task_links "
             "WHERE organization_id = CAST(:org AS uuid) AND connection_id = CAST(:cid AS uuid) "
             "AND task_id = CAST(:tid AS uuid) AND member_email = :me"),
             {"org": org, "cid": connection_id, "tid": task_id, "me": me})
@@ -615,6 +628,17 @@ async def _pull(
     return routed
 
 
+async def _meta_unbound(org: str, connection_id: str) -> bool:
+    """True when the connection holds no stored calendar id for its links: a
+    reconnect replaced ``provider_meta``. Whatever stopped the pull (a failure
+    before it reached the identity check), the links are not bound yet."""
+    from gateway.calendar_sync import connections
+
+    async with tenant_session(org) as db:
+        conn = await connections.get_connection(db, org, connection_id)
+    return conn is not None and not conn.provider_meta.get(META_TASK_CALENDAR_ID)
+
+
 async def _has_links(org: str, connection_id: str) -> bool:
     async with tenant_session(org) as db:
         row = (await db.execute(text(
@@ -632,12 +656,19 @@ async def run_pass(
 
     A pull that did not finish while the links are not bound to the calendar (a
     reconnect, a new calendar) skips the push: the push would send an update
-    that revives an event the member deleted in the gap."""
+    that revives an event the member deleted in the gap.
+
+    ⚠️ This hold fully works on Google only. A Google full list carries
+    ``showDeleted``, so the pull reads the gap delete as cancelled and unschedules
+    the block BEFORE the push. A Graph delta round lists live events only, so
+    an event the member deleted in the gap on Outlook is not seen: its PATCH
+    answers 404, ``_reset_event`` runs, and the event is made again."""
     state: dict[str, bool] = {}
     try:
         await _pull(org, connection_id, provider=provider, now=now, state=state)
     except Exception as exc:  # noqa: BLE001 - a failed read must not stop a bound push
         _log.warning("calendar_sync.task_pull_crashed", organization_id=org, error=type(exc).__name__)
-    if state.get("unbound") and await _has_links(org, connection_id):
+    if ((state.get("unbound") or await _meta_unbound(org, connection_id))
+            and await _has_links(org, connection_id)):
         return PassStats(skipped="pull_incomplete")  # an update could revive a gap delete
     return await reconcile_task_blocks(org, connection_id, provider=provider, now=now)

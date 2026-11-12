@@ -233,6 +233,15 @@ async def _close(org: str, task_id: str) -> None:
                          {"s": done.id, "t": task_id})
 
 
+def _cid(world: Any, tid: str) -> str:
+    """The client id of the current link of *tid* (its generation is created_at)."""
+    with world.p.admin_engine.connect() as c:
+        row = c.execute(text("SELECT created_at, connection_id FROM calendar_task_links "
+                             "WHERE task_id = CAST(:t AS uuid) AND member_email = :m"),
+                        {"t": tid, "m": ALICE}).fetchone()
+    return task_out.client_event_id(tid, str(row.connection_id), row.created_at)
+
+
 def _links(world: Any, org: str) -> list[Any]:
     with world.p.admin_engine.connect() as c:
         return list(c.execute(text(
@@ -574,7 +583,7 @@ async def test_r8_a_create_carries_a_stable_client_id_and_an_update_does_not(wor
         await _move(world.org_a, ALICE, tid, T0 + timedelta(hours=1))
         await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=1))
     (first, second) = fake.client_ids
-    assert first[0] is None and first[1] == task_out.client_event_id(tid, world.conn["a"])
+    assert first[0] is None and first[1] == _cid(world, tid)
     assert second == ("ev1", None)
     cid = first[1]
     assert 5 <= len(cid) <= 1024 and set(cid) <= set("0123456789abcdefghijklmnopqrstuv")
@@ -697,7 +706,7 @@ async def test_r8_a_young_link_is_not_unscheduled_by_a_full_list(world):
 
 def tid_cid(world: Any, ups: list) -> str:
     """The client id of the only task of the test (read from the recorded insert)."""
-    return task_out.client_event_id(_only_task(world), world.conn["a"])
+    return _cid(world, _only_task(world))
 
 
 def _only_task(world: Any) -> str:
@@ -811,7 +820,7 @@ async def test_r8_an_existing_event_with_our_client_id_is_adopted(world):
     assert s.failed == 0 and s.created == 1
     (link,) = _links(world, world.org_a)
     assert link.sync_state == "sent"
-    cid = task_out.client_event_id(tid, world.conn["a"])
+    cid = _cid(world, tid)
     assert fake.client_ids[-1][0] == cid  # the second call named the event by its client id
 
 
@@ -837,7 +846,7 @@ async def test_r8_a_failed_create_with_no_event_id_takes_the_create_lease(world)
         fake.fail_with = None
         s = await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=10))
     assert s.created == 1
-    assert fake.client_ids[-1] == (None, task_out.client_event_id(tid, world.conn["a"]))  # still a create
+    assert fake.client_ids[-1] == (None, _cid(world, tid))  # still a create
 
 
 @pytest.mark.asyncio
@@ -936,11 +945,12 @@ async def test_r8_a_closed_task_deletes_the_event_of_a_create_whose_answer_was_l
     async with _in(world, world.org_a):
         tid = await _task(world.org_a, ALICE, "Lost answer", T0)
         await _pass(world, world.org_a, world.conn["a"], fake)  # link failed, no external id
+        cid = _cid(world, tid)  # the generation of the link that sent the lost create
         fake.fail_with = None
         await _move(world.org_a, ALICE, tid, None)  # the block is cleared
         s = await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=10))
     assert s.deleted == 1
-    assert ("delete", "cal-metorite", task_out.client_event_id(tid, world.conn["a"])) in fake.calls
+    assert ("delete", "cal-metorite", cid) in fake.calls
     assert _links(world, world.org_a) == []
 
 
@@ -1085,3 +1095,69 @@ async def test_r8_a_provider_whose_client_id_is_not_the_event_id_is_never_adopte
         await _move(world.org_a, ALICE, tid, None)
         s = await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=10))
     assert not [c for c in fake.calls if c[0] == "delete"] and _links(world, world.org_a) == []
+
+
+# ── CE-13b, Opus P1: one client id for each GENERATION of a link ───────────
+#
+# * M26. ``task_out.py`` ``client_event_id``: leave ``gen`` out of the hash. A
+#   block cleared and planned again reuses the id of an event that Graph still
+#   holds in its bin.
+#   ``test_r8_a_recreated_block_gets_a_new_client_id_and_a_retry_keeps_it``.
+
+
+@pytest.mark.asyncio
+async def test_r8_a_recreated_block_gets_a_new_client_id_and_a_retry_keeps_it(world):
+    fake = FakeProvider(fail_with=ProviderError("http_503"))
+    async with _in(world, world.org_a):
+        tid = await _task(world.org_a, ALICE, "Again", T0)
+        await _pass(world, world.org_a, world.conn["a"], fake)  # a create that fails
+        fake.fail_with = None
+        await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=10))  # the retry
+        first, retry = [c[1] for c in fake.client_ids if c[0] is None][:2]
+        assert first == retry  # a retry of ONE create keeps its id (a lost answer is adopted)
+        await _move(world.org_a, ALICE, tid, None)  # cleared: the event and the link go
+        await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=20))
+        assert _links(world, world.org_a) == []
+        await _move(world.org_a, ALICE, tid, T0)  # planned again: a NEW link
+        await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=30))
+    third = [c[1] for c in fake.client_ids if c[0] is None][-1]
+    assert third != first  # a new generation, so Graph cannot hand back the binned event
+
+
+@pytest.mark.asyncio
+async def test_r8_a_reset_event_makes_a_new_link_with_a_new_client_id(world):
+    from gateway.calendar_sync.provider import CalendarInfo
+
+    fake = FakeProvider()
+    async with _in(world, world.org_a):
+        tid = await _task(world.org_a, ALICE, "Gone behind our back", T0)
+        await _pass(world, world.org_a, world.conn["a"], fake)
+        old = _cid(world, tid)
+        fake.listed = [CalendarInfo(id="cal-metorite", name="Metorite", primary=False, writable=True)]
+        fake.fail_with = ProviderError("not_found")
+        await _move(world.org_a, ALICE, tid, T0 + timedelta(hours=1))
+        await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=1))
+        fake.fail_with = None
+        await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=2))
+        assert _cid(world, tid) != old
+    assert [c[1] for c in fake.client_ids if c[0] is None][-1] == _cid(world, tid)
+
+
+@pytest.mark.asyncio
+async def test_r8_a_pull_that_stops_before_the_identity_check_still_holds_the_push(world, monkeypatch):
+    """Whatever ends the pull early, links with no stored calendar id (a
+    reconnect) must not be pushed over. Mutation (M27): drop ``_meta_unbound``
+    from ``run_pass``."""
+    fake = FakeProvider()
+    async with _in(world, world.org_a):
+        await _task(world.org_a, ALICE, "Held", T0)
+        await _pass(world, world.org_a, world.conn["a"], fake)
+        _reconnect(world)
+
+        async def stops_early(*a, **k):
+            return 0  # e.g. a credential failure: it never set state
+
+        monkeypatch.setattr(task_out, "_pull", stops_early)
+        n = len(fake.sends())
+        s = await task_out.run_pass(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
+    assert s.skipped == "pull_incomplete" and len(fake.sends()) == n
