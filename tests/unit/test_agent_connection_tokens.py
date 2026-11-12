@@ -867,7 +867,11 @@ class TestTheTenantBindIsLocal:
             pid, _ = await _residue()
             token = bind_tenant(promoted.org_a)
             try:
-                cid = await create_connection("bind@agenttok.test", _CLIENT)
+                # EA-17c-3 (rule 14): a refresh token needs `offline_access`
+                # on the connection too, so the grant holds it.
+                cid = await create_connection(
+                    "bind@agenttok.test", _CLIENT,
+                    scopes=["projects:read", "offline_access"])
             finally:
                 release_tenant(token)
             code = await _fresh_code(promoted.org_a, cid)
