@@ -132,6 +132,8 @@ class FakeProvider:
 
     async def sync(self, cred, cursor, window, *, calendar_id=None):
         self.calls.append(("sync", calendar_id, cursor))
+        if isinstance(self.feed, Exception):
+            raise self.feed
         return self.feed
 
     def sends(self) -> list[tuple]:
@@ -686,11 +688,22 @@ async def test_r8_a_young_link_is_not_unscheduled_by_a_full_list(world):
         assert (await _block(world.org_a, ALICE, tid)).scheduled_start == T0
 
 
+def tid_cid(world: Any, ups: list) -> str:
+    """The client id of the only task of the test (read from the recorded insert)."""
+    return task_out.client_event_id(_only_task(world), world.conn["a"])
+
+
+def _only_task(world: Any) -> str:
+    with world.p.admin_engine.connect() as c:
+        return str(c.execute(text("SELECT task_id FROM calendar_task_links WHERE member_email = :m"),
+                             {"m": ALICE}).scalar())
+
+
 @pytest.mark.asyncio
 async def test_r8_a_disconnect_keeps_the_links_and_a_reconnect_makes_no_second_event(world):
     fake = FakeProvider()
     async with _in(world, world.org_a):
-        await _task(world.org_a, ALICE, "Linked", T0)
+        tid = await _task(world.org_a, ALICE, "Linked", T0)
         await _pass(world, world.org_a, world.conn["a"], fake)
         assert len(fake.sends()) == 1
         from gateway.connections import store
@@ -699,13 +712,24 @@ async def test_r8_a_disconnect_keeps_the_links_and_a_reconnect_makes_no_second_e
             conn = await store.lock_by_id(db, world.org_a, world.conn["a"])
             await connections.disconnect_connection(db, world.org_a, conn)
         assert len(_links(world, world.org_a)) == 1  # the events stay, so the links stay
-        # The member connects the same account again: the core finds "Metorite" by name.
+        # The member connects the same account again. ``save_credential`` REPLACES
+        # provider_meta, so the calendar id AND our task keys are gone. The core
+        # finds "Metorite" by name. Google still holds the event, so the create
+        # under our client id answers 409 and the writer adopts it.
+        from gateway.calendar_sync.provider import CalendarInfo
+
         with world.p.admin_engine.begin() as c:
             c.execute(text("UPDATE integration_connections SET status = 'connected', "
-                           "provider_meta = provider_meta || CAST(:m AS jsonb) WHERE id = CAST(:i AS uuid)"),
-                      {"i": world.conn["a"], "m": '{"metorite_calendar_id": "cal-metorite"}'})
+                           "provider_meta = CAST(:m AS jsonb) WHERE id = CAST(:i AS uuid)"),
+                      {"i": world.conn["a"], "m": '{"account_email": "alice@task-out.test"}'})
+        fake.listed = [CalendarInfo(id="cal-metorite", name="Metorite", primary=False, writable=True)]
+        fake.exists_once = True
         s = await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=5))
-    assert s.created == 0 and len(fake.sends()) == 1  # no second event for the block
+    assert s.created == 1 and s.failed == 0
+    ups = [c for c in fake.calls if c[0] == "upsert"]
+    assert [u[5] for u in ups][-2:] == [None, tid_cid(world, ups)]  # the 409, then the adopt by id
+    (link,) = _links(world, world.org_a)
+    assert link.sync_state == "sent" and link.external_id == tid_cid(world, ups)  # ONE event
 
 
 @pytest.mark.asyncio
@@ -822,3 +846,80 @@ async def test_r8_deleting_the_connection_row_deletes_its_links(world):
         c.execute(text("DELETE FROM integration_connections WHERE id = CAST(:i AS uuid)"),
                   {"i": world.conn["a"]})
     assert _links(world, world.org_a) == []
+
+
+# ── Opus round 3 ──────────────────────────────────────────────────────────
+#
+# * M12. ``task_out.py`` ``calendar_identity``: ``changed = bool(stored)``. A
+#   reconnect (no stored id) keeps the old links and a full list clears blocks.
+#   ``test_r8_a_reconnect_that_lost_the_stored_calendar_clears_no_block``.
+# * M13. ``task_out.py`` the remove path: ``if link.external_id:`` back. A
+#   create with a lost answer leaves its event behind.
+#   ``test_r8_a_closed_task_deletes_the_event_of_a_create_whose_answer_was_lost``.
+# * M14. ``google.py`` ``_out_body``: drop ``status``. Tested in
+#   ``test_calendar_sync_google_out.py``.
+
+
+@pytest.mark.asyncio
+async def test_r8_a_reconnect_that_lost_the_stored_calendar_clears_no_block(world):
+    from gateway.calendar_sync.provider import CalendarInfo
+
+    fake = FakeProvider()
+    async with _in(world, world.org_a):
+        tid = await _task(world.org_a, ALICE, "Must survive", T0)
+        await _pass(world, world.org_a, world.conn["a"], fake)
+        # The reconnect REPLACED provider_meta: no calendar id, no task keys. The
+        # member deleted "Metorite" meanwhile, so the provider makes a new one.
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE integration_connections SET provider_meta = '{}'::jsonb "
+                           "WHERE id = CAST(:i AS uuid)"), {"i": world.conn["a"]})
+            c.execute(text("UPDATE calendar_task_links SET updated_at = now() - interval '1 hour'"))
+        fake.listed = [CalendarInfo(id="primary", name="me", primary=True, writable=True)]
+        fake.new_calendar = "cal-fresh"
+        fake.feed = SyncResult(changes=[RemoteEvent(external_id="stranger", etag="s")],
+                               next_cursor="c1", full=True)
+        s = await task_out.run_pass(world.org_a, world.conn["a"], provider=fake)
+        assert (await _block(world.org_a, ALICE, tid)).scheduled_start == T0  # untouched
+    assert s.created == 1
+    assert [c[1] for c in fake.calls if c[0] == "upsert"][-1] == "cal-fresh"
+
+
+@pytest.mark.asyncio
+async def test_r8_a_forgotten_calendar_is_made_again_with_no_block_edit(world):
+    from gateway.calendar_sync.provider import CalendarInfo
+
+    fake = FakeProvider()
+    async with _in(world, world.org_a):
+        await _task(world.org_a, ALICE, "Quiet block", T0)
+        await _pass(world, world.org_a, world.conn["a"], fake)
+        with world.p.admin_engine.begin() as c:  # what _forget_calendar does
+            c.execute(text("UPDATE integration_connections SET provider_meta = provider_meta - "
+                           "'metorite_calendar_id' WHERE id = CAST(:i AS uuid)"), {"i": world.conn["a"]})
+        fake.listed = [CalendarInfo(id="primary", name="me", primary=True, writable=True)]
+        fake.new_calendar = "cal-2"
+        s = await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=1))
+    assert s.created == 1  # no block was edited, and the event still came back
+
+
+@pytest.mark.asyncio
+async def test_r8_a_closed_task_deletes_the_event_of_a_create_whose_answer_was_lost(world):
+    fake = FakeProvider(fail_with=ProviderError("http_503"))
+    async with _in(world, world.org_a):
+        tid = await _task(world.org_a, ALICE, "Lost answer", T0)
+        await _pass(world, world.org_a, world.conn["a"], fake)  # link failed, no external id
+        fake.fail_with = None
+        await _move(world.org_a, ALICE, tid, None)  # the block is cleared
+        s = await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=10))
+    assert s.deleted == 1
+    assert ("delete", "cal-metorite", task_out.client_event_id(tid, world.conn["a"])) in fake.calls
+    assert _links(world, world.org_a) == []
+
+
+@pytest.mark.asyncio
+async def test_r8_a_crashed_pull_does_not_stop_the_push(world):
+    fake = FakeProvider()
+    fake.feed = RuntimeError("boom")
+    async with _in(world, world.org_a):
+        await _task(world.org_a, ALICE, "Pushes anyway", T0)
+        s = await task_out.run_pass(world.org_a, world.conn["a"], provider=fake)
+    assert s.created == 1

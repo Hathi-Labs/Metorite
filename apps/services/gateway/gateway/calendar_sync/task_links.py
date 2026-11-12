@@ -49,7 +49,11 @@ def block_hash(title: str, starts_at: datetime, ends_at: datetime) -> str:
 
 
 async def is_task_link(db: Any, org: str, connection_id: str, external_id: str) -> bool:
-    """True when the event is the provider copy of a task block of ours."""
+    """True when the event is the provider copy of a task block of ours.
+
+    No caller today: the main read lists the primary calendar (Google) and
+    skips the "Metorite" calendar (Graph), so it never sees our events. A read
+    that ever lists that calendar must call this first."""
     row = (await db.execute(
         text(
             "SELECT 1 FROM calendar_task_links "

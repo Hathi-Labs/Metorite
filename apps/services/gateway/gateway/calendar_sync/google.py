@@ -200,6 +200,9 @@ def _out_body(event: OutEvent) -> dict[str, Any]:
     body: dict[str, Any] = {
         "summary": event.title,
         "transparency": "opaque" if event.busy else "transparent",
+        # Google keeps the id of a deleted event as a CANCELLED event. A create
+        # that reuses our client id adopts it by PATCH, and only this revives it.
+        "status": "confirmed",
     }
     if event.notes:
         body["description"] = event.notes

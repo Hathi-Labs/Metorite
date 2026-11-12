@@ -26,8 +26,10 @@
 -- NO foreign key to `pm_tasks`: a deleted task must leave the link behind,
 -- so the writer can delete the provider event (the loop reads the link, finds
 -- no task, and deletes the event). The connection key CASCADES on a row DELETE
--- (a purged member). `disconnect_connection` only sets the row `disconnected`,
--- so it deletes the links itself. The provider events stay in the "Metorite"
+-- (a purged member). `disconnect_connection` only sets the row `disconnected`
+-- and KEEPS the links. A reconnect drops the stored calendar id, so
+-- `task_out.calendar_identity` drops the links then, and the next push adopts
+-- each event by its client id. The provider events stay in the "Metorite"
 -- calendar of the member, who owns that calendar.
 --
 -- ⚠️ RLS covers the org only. The member is a second axis: every read and
@@ -64,7 +66,7 @@ CREATE TABLE IF NOT EXISTS calendar_task_links (
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (organization_id, task_id, member_email, connection_id),
-    -- The connection of the SAME org. CASCADE: a disconnect drops the links.
+    -- The connection of the SAME org. CASCADE: deleting the row (a purge) drops the links.
     CONSTRAINT calendar_task_links_connection_fk
         FOREIGN KEY (organization_id, connection_id)
         REFERENCES integration_connections (organization_id, id) ON DELETE CASCADE,
