@@ -102,6 +102,15 @@ def estimate_tokens(text: str) -> int:
     return (len(str(text)) + 3) // 4
 
 
+#: F10a. The record tool of each plain object verb. ``get`` has no tool.
+OBJECT_VERB_TOOLS: Mapping[str, str] = {
+    "list": "studio_record_list",
+    "create": "studio_record_create",
+    "update": "studio_record_update",
+    "delete": "studio_record_delete",
+}
+
+
 def action_tool(action_id: object) -> str | None:
     """The chat tool of the catalog action *action_id*, or None.
 
@@ -110,13 +119,18 @@ def action_tool(action_id: object) -> str | None:
     * ``workflow:<id>`` gives ``run_workflow``, which takes the id.
     * ``<app>.<op>``, a door op of a manifest app, gives the chat tool of its
       row (``Route.tool``), when the row names one.
-    * Each other action has no chat tool in F3.
+    * ``object:<name>.<verb>``, a record action, gives the record tool of the
+      verb (``OBJECT_VERB_TOOLS``). ``get`` has no tool, so it gives None.
+    * Each other action has no chat tool.
     """
     if not isinstance(action_id, str):
         return None
     action = action_id.strip()
     if action.startswith("workflow:") and len(action) > len("workflow:"):
         return "run_workflow"
+    if action.startswith("object:"):
+        name, dot, verb = action[len("object:"):].partition(".")
+        return OBJECT_VERB_TOOLS.get(verb) if name and dot else None
     if ":" in action or action.count(".") != 1:
         return None
     app_id, op = action.split(".", 1)
@@ -127,6 +141,50 @@ def action_tool(action_id: object) -> str | None:
     found = door_op(app_id, op)
     tool = getattr(getattr(found, "route", None), "tool", "") if found is not None else ""
     return str(tool) if tool else None
+
+
+def button_tools(manifest: Mapping[str, Any]) -> tuple[
+        tuple[tuple[str, str, str], ...], tuple[tuple[str, str, str], ...]]:
+    """F10a. Split the buttons of the views of *manifest* by chat tool.
+
+    A button is an id in ``views[].actions`` or the ``views[].submit`` of a view.
+    Pure: no I/O. Returns ``(served, unserved)``. A served item is
+    ``(view_id, action_id, tool)``. An unserved item is
+    ``(view_id, action_id, reason)``. The reason is one of ``undeclared``,
+    ``set`` (a set-action does not run in chat), ``door_op``, ``integration``
+    or ``no_tool``. A plain object verb or a workflow is served.
+    """
+    declared: dict[str, Mapping[str, Any]] = {}
+    for act in manifest.get("actions") or []:
+        if isinstance(act, Mapping) and isinstance(act.get("id"), str):
+            declared[act["id"]] = act
+    served: list[tuple[str, str, str]] = []
+    unserved: list[tuple[str, str, str]] = []
+    for view in manifest.get("views") or []:
+        if not isinstance(view, Mapping):
+            continue
+        view_id = str(view.get("id", ""))
+        names = [n for n in (view.get("actions") or []) if isinstance(n, str)]
+        submit = view.get("submit")
+        if isinstance(submit, str) and submit not in names:
+            names.append(submit)
+        for name in names:
+            act = declared.get(name)
+            if act is None:
+                unserved.append((view_id, name, "undeclared"))
+                continue
+            uses = str(act.get("uses") or "").strip()
+            if act.get("set"):
+                unserved.append((view_id, name, "set"))
+            elif uses.startswith("integration:"):
+                unserved.append((view_id, name, "integration"))
+            elif not (uses.startswith("object:") or uses.startswith("workflow:")):
+                unserved.append((view_id, name, "door_op"))
+            elif (tool := action_tool(uses)) is None:
+                unserved.append((view_id, name, "no_tool"))
+            else:
+                served.append((view_id, name, tool))
+    return tuple(served), tuple(unserved)
 
 
 def _phrase(raw: str) -> str:

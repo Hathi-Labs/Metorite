@@ -65,7 +65,13 @@ def _turn(words: str = "", skills: tuple[Any, ...] = ()) -> tp.PackTurn:
     ("knowledge.list_pages", None),  # the row plans its tool (KB-5)
     ("knowledge.no_such_op", None),
     ("integration:send_sms", None),
-    ("object:items.list", None),
+    ("object:items.list", "studio_record_list"),
+    ("object:items.create", "studio_record_create"),
+    ("object:items.update", "studio_record_update"),
+    ("object:items.delete", "studio_record_delete"),
+    ("object:items.get", None),  # no get tool exists
+    ("object:items", None),
+    ("object:.list", None),
     ("workflow:", None),
     ("projects.create_task", None),  # Projects is a tool app, no door op
     (42, None),
@@ -74,6 +80,69 @@ def test_action_tool_is_the_one_map(action: Any, tool: str | None) -> None:
     """Mutation: map each ``<app>.<op>`` to its op name, or map an object
     action to a tool → red."""
     assert sp.action_tool(action) == tool
+
+
+# ── F10a: the buttons of a manifest ───────────────────────────────────────
+
+#: R7 debt list. A button of a shipped template that has no chat tool yet.
+#: It may only SHRINK. F10b removes an entry when its button gets a tool.
+#: A new unserved button in a shipped template fails the test, and so does an
+#: entry that is served now (delete it from the list).
+_SHIPPED_UNSERVED_DEBT: frozenset[tuple[str, str, str, str]] = frozenset({
+    ("field_visits", "check_in", "close_visit", "set"),
+})
+
+
+def _m(actions: list[dict[str, Any]], views: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"actions": actions, "views": views}
+
+
+def test_button_tools_splits_served_and_unserved() -> None:
+    """Mutation: serve a set-action, a door op or an integration, serve an
+    undeclared button, or drop ``submit`` from the scan -> red."""
+    manifest = _m(
+        [
+            {"id": "add", "uses": "object:item.create"},
+            {"id": "done", "uses": "object:item.update", "set": {"s": "done"}},
+            {"id": "door", "uses": "knowledge.get_page"},
+            {"id": "sms", "uses": "integration:send_sms"},
+            {"id": "one", "uses": "object:item.get"},
+        ],
+        [
+            {"id": "v1", "actions": ["add", "done", "door", "sms", "ghost", "one"]},
+            {"id": "v2", "submit": "add"},
+        ],
+    )
+    served, unserved = sp.button_tools(manifest)
+    assert served == (("v1", "add", "studio_record_create"),
+                      ("v2", "add", "studio_record_create"))
+    assert unserved == (
+        ("v1", "done", "set"), ("v1", "door", "door_op"),
+        ("v1", "sms", "integration"), ("v1", "ghost", "undeclared"),
+        ("v1", "one", "no_tool"),
+    )
+
+
+def test_shipped_template_buttons_only_shrink_the_debt() -> None:
+    """R7 fence. The unserved buttons of each shipped template must equal the
+    named debt list. The list may only shrink. Mutation: add a template button
+    with no tool, or leave a served button in the list -> red."""
+    found: set[tuple[str, str, str, str]] = set()
+    for name, manifest in _template_files():
+        _, unserved = sp.button_tools(manifest)
+        found |= {(name, v, a, r) for v, a, r in unserved}
+    assert found == set(_SHIPPED_UNSERVED_DEBT)
+
+
+def _template_files() -> list[tuple[str, dict[str, Any]]]:
+    import json
+    from pathlib import Path
+
+    from acb_common import studio_templates as st
+
+    root = Path(st.__file__).parent
+    return [(p.stem, json.loads(p.read_text(encoding="utf-8")))
+            for p in sorted(root.glob("*.json"))]
 
 
 # ── The build: what fails to load ──────────────────────────────────────────
@@ -111,7 +180,7 @@ def test_the_loader_strips_each_hidden_character() -> None:
     ({"description": "For {{ team }} quotes."}, "unresolved_variable"),
     ({"instructions": "   "}, "no_instructions"),
     ({"instructions": 7}, "no_instructions"),
-    ({"actions": ["knowledge.get_page", "object:items.list"]}, "action_unserved"),
+    ({"actions": ["knowledge.get_page", "object:items.get"]}, "action_unserved"),
     ({"actions": ["integration:send_sms"]}, "action_unserved"),
     ({"instructions": "x" * (sp.MAX_RULES_TOKENS * 4 + 4)}, "too_long"),
 ])
