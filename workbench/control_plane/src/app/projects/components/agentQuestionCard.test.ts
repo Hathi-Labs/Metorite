@@ -205,7 +205,11 @@ describe("one component, no copy", () => {
   });
 
   it("neither host draws the question card by hand", () => {
-    expect(panel).not.toContain("<ElicitationCard");
+    // SW-43b: the panel's one `<ElicitationCard` is the "Change answer" form
+    // (`key={`change-...`}`). The first answer and the archive form are the card.
+    const hand = panel.match(/<ElicitationCard[^>]*>/g) ?? [];
+    expect(hand.length).toBeLessThanOrEqual(1);
+    for (const h of hand) expect(panel.slice(panel.indexOf(h), panel.indexOf(h) + 120)).toMatch(/change-/);
     expect(list).not.toContain("<ElicitationCard");
   });
 
@@ -220,8 +224,10 @@ describe("one component, no copy", () => {
       expect(host).not.toMatch(/<AgentQuestionCard[^>]*\bkey=\{[^}]*(retry|fail|attempt)/i);
       expect(host).toContain("retryToken=");
     }
-    // A new question is a new card (review of #945, P1): the panel keys on the question id.
-    expect(panel).toMatch(/<AgentQuestionCard\s+key=\{elicitation\.id\}/);
+    // A new question is a new card (review of #945, P1): the panel keys on the
+    // question id. SW-43b's `cardNonce` joins the key: it moves only when an
+    // "Are you sure?" step starts, never on a failed send.
+    expect(panel).toMatch(/<AgentQuestionCard\s+key=\{`\$\{elicitation\.id\}:\$\{cardNonce\}`\}/);
     expect(list).toContain("attempts[row.activity_id]");
     const card = readFileSync(`${dir}../../../components/ElicitationCard.tsx`, "utf8");
     expect(card).toMatch(/\}, \[closed, retryToken\]\)/);
