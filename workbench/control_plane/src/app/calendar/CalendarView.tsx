@@ -49,6 +49,7 @@ import {
   HOUR_PX,
   addMonths,
   plannerCandidates,
+  startOfMonthGrid,
   startOfWeek,
   useNow,
   type Mode,
@@ -60,6 +61,8 @@ import { EndOfDayReview } from "./components/EndOfDayReview";
 import { ScheduleSheet } from "./components/ScheduleSheet";
 import { PlanDayPanel } from "./components/PlanDayPanel";
 import { CalendarSettings } from "./components/CalendarSettings";
+import { CalendarConnectPrompt, CalendarConnectReturn } from "./components/CalendarConnections";
+import type { ReturnNotice } from "./lib/calendarConnections";
 import { TimeGrid } from "./components/TimeGrid";
 import { MonthGrid } from "./components/MonthGrid";
 import { UnscheduledRail } from "./components/UnscheduledRail";
@@ -81,6 +84,9 @@ import {
   type MoveBack,
   type ZonedTime,
 } from "./lib/reminders";
+import { calendarEventsOn } from "@/lib/shell/calendarEventsFlag";
+import { ExternalSheet } from "./components/ExternalSheet";
+import { useExternalEntries, visibleWindow } from "./lib/useExternalEntries";
 import { runReminderAct } from "@/lib/shell/reminderOpen";
 import { ShellJob } from "@/lib/shell/doJob";
 import { browserTimeZone } from "@/app/tasks/lib/utils";
@@ -113,6 +119,10 @@ export function CalendarView() {
   const [mode, setMode] = useState<Mode>("day");
   const [anchor, setAnchor] = useState<Date>(() => startOfDay(new Date()));
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // CE-10c: what the calendar consent redirect said, shown in the settings sheet.
+  const [connectNotice, setConnectNotice] = useState<ReturnNotice | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
+  const openConnectSettings = useCallback(() => setSettingsOpen(true), []);
   // The AI planner panel: "plan" fills free slots from unscheduled next actions;
   // "replan" reorganizes the rest of today's flexible blocks from now. null = shut.
   const [planMode, setPlanMode] = useState<null | "plan" | "replan">(null);
@@ -132,6 +142,16 @@ export function CalendarView() {
   // The grid draws on the browser's wall clock, so every reminder computation
   // uses the browser's zone. `settings.timezone` is "UTC" until settings load.
   const remZone = gridZone(browserTimeZone());
+  // Google and Outlook events (CE-5a). Flag off: no read, an empty list.
+  const [externalId, setExternalId] = useState<string | null>(null);
+  const { views: externals, note: externalNote } = useExternalEntries(
+    mode === "month"
+      ? visibleWindow(startOfMonthGrid(anchor), addDays(startOfMonthGrid(anchor), 42))
+      : mode === "week"
+        ? visibleWindow(startOfWeek(anchor), addDays(startOfWeek(anchor), 7))
+        : visibleWindow(anchor, addDays(anchor, 1)),
+  );
+  const externalOpen = externalId ? externals.find((x) => x.id === externalId) : undefined;
   const [remForm, setRemForm] = useState<{ mode: "new"; title?: string } | { mode: "move"; id: string } | null>(null);
   // `/calendar?reminder=<id>` (RX-2): the Reminders panel marks this row.
   const [markReminder, setMarkReminder] = useState<string | null>(null);
@@ -713,7 +733,13 @@ export function CalendarView() {
         <CalendarSettings
           settings={settings}
           onChange={(patch) => void updateSettings(patch)}
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => {
+            setSettingsOpen(false);
+            setGuideOpen(false);
+          }}
+          guideOpen={guideOpen}
+          connectNotice={connectNotice}
+          onDismissConnectNotice={() => setConnectNotice(null)}
         />
       )}
     </>
@@ -725,6 +751,7 @@ export function CalendarView() {
           Suspense boundary, and this one holds only the reader. */}
       <Suspense fallback={null}>
         <CalendarDeepLink onLink={openLink} />
+        <CalendarConnectReturn onNotice={setConnectNotice} onOpenSettings={openConnectSettings} />
       </Suspense>
       {/* The command bar's "New reminder" job (RX-6, `?do=new-reminder`): it
           opens the form and saves nothing. A filled title is a suggestion. */}
@@ -777,6 +804,15 @@ export function CalendarView() {
         }}
       />
 
+      {/* CE-10c: offer Connect Google Calendar / Outlook when none is connected. Draws nothing
+          until the gateway says the feature is on. */}
+      <CalendarConnectPrompt
+        onOpenGuide={() => {
+          setGuideOpen(true);
+          setSettingsOpen(true);
+        }}
+      />
+
       {/* Startup ritual offer — once per local day, dismissible. Habits form
           around rituals; the banner invites, it never ambushes. */}
       {startupOffered && !startupOpen && !dayClosed && (
@@ -798,6 +834,12 @@ export function CalendarView() {
             }} className="shrink-0 rounded-md px-2 py-1">
             Skip
           </Button>
+        </div>
+      )}
+
+      {externalNote && (
+        <div role="status" className="border-b border-border px-4 py-1.5 text-xs text-muted-foreground">
+          {externalNote}
         </div>
       )}
 
@@ -834,6 +876,8 @@ export function CalendarView() {
               reminders={remShown ? remList.rows : []}
               reminderZone={remZone}
               onOpenReminder={openReminder}
+              externals={externals}
+              onOpenExternal={setExternalId}
             />
           ) : (
             <TimeGrid
@@ -872,6 +916,9 @@ export function CalendarView() {
               onMoveReminder={(id, to) => void moveReminderTo(id, to)}
               onPickReminderMove={(id) => setRemForm({ mode: "move", id })}
               onResolveReminder={(id, action) => void resolveReminderAs(id, action)}
+              externals={externals}
+              reserveAllDay={calendarEventsOn()}
+              onOpenExternal={setExternalId}
             />
           )}
         </div>
@@ -967,6 +1014,8 @@ export function CalendarView() {
           )}
         </Modal>
       )}
+
+      {externalOpen && <ExternalSheet entry={externalOpen} zone={remZone} onClose={() => setExternalId(null)} />}
 
       {sheet && (
         <ScheduleSheet

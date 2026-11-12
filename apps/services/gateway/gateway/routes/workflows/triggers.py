@@ -20,15 +20,22 @@ from __future__ import annotations
 
 from typing import Any
 
-# H4: event consumer, not a request handler — `dispatch_event` fires from the
-# webhook receivers' sink fan-out with no member session, so there is no bound
-# tenant to inherit and inheriting an ambient one is exactly what H4 forbids.
-# Stays on the unbound `get_db()` until H4 threads an explicit tenant through
-# the event payload (`tenant_session(org_id)` derived from the workflow row's
-# organization).
-from gateway.routes.workflows.core import _get_db, _log, parse_jsonb
+# H4 and H-328 part (c): the org of an event is the tenant that the EMITTER
+# bound. `dispatch_event` reads `current_tenant()` ONCE at entry. A member
+# request binds it (`projects/core.py` emit, `studio/preview.py`
+# `emit_record_event`), so the org is a trusted fact of the request. The other
+# emitters (`routes/agent.py` `receive_webhook`, the Zoho and Gmail receivers
+# and `ingestion/consumer.py`) bind no tenant, so they start nothing, as
+# before. With no tenant, or with an org that is not on
+# `WORKFLOW_UNATTENDED_ORGS`, the door logs one line and starts nothing.
+# ⚠️ Never take the org from the payload: it is request input (R5, R11). Never
+# loop over each org: an event of org A would then start B's workflow.
+from acb_common.db import current_tenant
+from gateway.routes.workflows import unattended
+from gateway.routes.workflows.core import _log, _tenant_session, parse_jsonb
 from gateway.routes.workflows.service import (
     RunRejected,
+    _member_blind_write_nodes,
     load_version_serialized,
     start_run,
 )
@@ -46,15 +53,25 @@ def event_trigger_matches(config: dict[str, Any], source: str, event_type: str) 
 async def dispatch_event(
     source: str, event_type: str, payload: dict[str, Any]
 ) -> list[dict[str, str]]:
-    """Start a run for every published workflow bound to this event.
+    """Start a run for every published workflow of the bound org that is bound
+    to this event.
 
     Best-effort and never raises — event delivery must not break the webhook
     receivers that call it. Returns ``[{workflow_id, run_id}, …]``.
     """
     started: list[dict[str, str]] = []
+    org = current_tenant()
+    if not org or not unattended.org_allowed(org):
+        _log.info(
+            "workflows.event_skipped_no_listed_org",
+            source=source,
+            event_type=event_type,
+            bound=bool(org),
+        )
+        return started
     try:
-        db = await _get_db()
-        try:
+        matches: list[tuple[Any, dict[str, Any]]] = []
+        async with _tenant_session(org) as db:
             rows = (
                 await db.execute(
                     text(
@@ -77,30 +94,40 @@ async def dispatch_event(
                 )
                 if serialized is None:
                     continue
-                try:
-                    run_id = await start_run(
-                        workflow_id=str(row.workflow_id),
-                        workflow_name=row.name,
-                        version=int(row.latest_version),
-                        serialized=serialized,
-                        trigger_kind="event",
-                        trigger_payload={
-                            "source": source,
-                            "event_type": event_type,
-                            **payload,
-                        },
-                        variables=parse_jsonb(row.variables, {}),
-                        started_by=f"event:{source}",
-                    )
-                    started.append({"workflow_id": str(row.workflow_id), "run_id": run_id})
-                except RunRejected as exc:
+                if _member_blind_write_nodes(serialized):
+                    # A task node writes `pm_tasks` with no member check. An
+                    # event names no member to check, so the door refuses.
                     _log.warning(
-                        "workflows.event_run_rejected",
+                        "workflows.event_run_refused_task_node",
                         workflow_id=str(row.workflow_id),
-                        error=str(exc),
                     )
-        finally:
-            await db.close()
+                    continue
+                matches.append((row, serialized))
+        # The session is closed before `start_run`: the run opens its own.
+        for row, serialized in matches:
+            try:
+                run_id = await start_run(
+                    workflow_id=str(row.workflow_id),
+                    workflow_name=row.name,
+                    version=int(row.latest_version),
+                    serialized=serialized,
+                    trigger_kind="event",
+                    trigger_payload={
+                        "source": source,
+                        "event_type": event_type,
+                        **payload,
+                    },
+                    variables=parse_jsonb(row.variables, {}),
+                    started_by=f"event:{source}",
+                    organization_id=org,
+                )
+                started.append({"workflow_id": str(row.workflow_id), "run_id": run_id})
+            except RunRejected as exc:
+                _log.warning(
+                    "workflows.event_run_rejected",
+                    workflow_id=str(row.workflow_id),
+                    error=str(exc),
+                )
     except Exception as exc:
         _log.warning(
             "workflows.event_dispatch_failed",

@@ -9,8 +9,7 @@ review, so this file parses ``routes/workflows/`` and names every caller.
 **What fails.** Any function that is not in :data:`ALLOWED` and that passes an
 org keyword (``organization_id`` and its spellings) or a ``**`` expansion to
 ``start_run`` or ``resume_run``. A stale entry fails too, so the list cannot
-rot. Paths that part (c) owns (``triggers.py``, ``hooks.py``, the manual Run in
-``runs.py``) pass no org today, and they stay outside this list until part (c).
+rot. Part (c) added the three doors: the hook, the event and the manual Run.
 
 Mutation (R7): add ``start_run(..., organization_id=x)`` to any other function
 under ``routes/workflows/`` and this test goes red.
@@ -51,6 +50,18 @@ ALLOWED: dict[tuple[str, str, str], str] = {
     ("broker_handlers.py", "_resume_run_handler", "resume_run"):
         "The approval door. The org is the approver's bound tenant, which RLS "
         "makes equal to the org of the run row. A person approved the run.",
+    ("hooks.py", "workflow_hook", "start_run"):
+        "The hook door (H-328 part (c)). The org is the org of the WORKFLOW "
+        "ROW that the token names, read in that org's own session. The loop "
+        "skips an org that is not on the allowlist before it reads.",
+    ("triggers.py", "dispatch_event", "start_run"):
+        "The event door (H-328 part (c)). The org is `current_tenant()`, read "
+        "once at entry. Only a member request that emits binds it. No tenant "
+        "or an org that is not listed starts nothing. Never the payload.",
+    ("runs.py", "run_workflow", "start_run"):
+        "The manual door (H-328 part (c)). The org is the org of the WORKFLOW "
+        "ROW that the member read in the member's own tenant. A person "
+        "pressed Run.",
 }
 
 
@@ -137,9 +148,3 @@ def test_the_scanner_sees_a_forbidden_call() -> None:
     clean = "async def fine():\n    await start_run(workflow_id=w)\n    await resume_run(rid)\n"
     assert _callers(clean) == set()
 
-
-def test_part_c_paths_pass_no_org_yet() -> None:
-    """``triggers.py``, ``hooks.py`` and ``runs.py`` are part (c). They start
-    runs with no org today, so the scan finds no org call in them."""
-    found_files = {rel for rel, _fn, _t in _scan_package()}
-    assert not found_files & {"triggers.py", "hooks.py", "runs.py"}, found_files

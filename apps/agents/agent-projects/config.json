@@ -72,6 +72,8 @@
     "waiting_agent_requests",
     "get_plan",
     "needs_attention",
+    "agent_questions",
+    "answer_agent_question",
     "my_task",
     "recurrence",
     "render_board",

@@ -256,6 +256,155 @@ export function markdownUrlTransform(
   return defaultUrlTransform(url);
 }
 
+// ─── Local files (task 3031) ─────────────────────────────────────────────────
+//
+// An agent names a capture as `file:///C:/wt/x.png`, `C:\wt\x.png` or
+// `/c/wt/x.png`. That file is on the agent's computer. A browser never opens a
+// `file:` URL from an https page, and `markdownUrlTransform` blanks the href,
+// so a link would be dead. These paths draw as a "local file" chip with a
+// Copy path button instead (`LocalFileChip` in `MarkdownMessage.tsx`).
+// The plugin never makes an `href`, so no unsafe protocol becomes clickable.
+//
+// Fence: `src/lib/markdownMedia.test.ts` ("local files").
+
+/** The tooltip of the chip, for a file and an image alike. */
+export const LOCAL_FILE_TIP =
+  "This file is on the computer of the agent that made it. Copy the path to open it there, or ask the agent to attach it.";
+
+/** The attribute the chip's `span` carries. It holds the path to copy. */
+export const LOCAL_FILE_ATTR = "data-local-file";
+
+/**
+ * A `file:` URL, a Windows path (a drive letter AND a separator) or a `/c/…`
+ * path. The look-behind keeps a match out of a word, a longer path and a URL,
+ * so `a/b`, `3/4` and `https://x/C:/y` stay words.
+ */
+const LOCAL_PATH_RE =
+  /(?<![A-Za-z0-9_/\\.:~-])(?:file:\/\/[^\s<>"'`|*?]+|[A-Za-z]:[\\/][^\s<>"'`|*?]+|\/[A-Za-z]\/[^\s<>"'`|*?]+)/gi;
+const WHOLE_LOCAL_PATH_RE =
+  /^(?:file:\/\/[^\s<>"'`|*?]+|[A-Za-z]:[\\/][^\s<>"'`|*?]+|\/[A-Za-z]\/[^\s<>"'`|*?]+)$/i;
+const TRAILING_MARKS = /[.,;:!?)\]}>]+$/;
+
+/** The path a `file:` URL, a Windows path or a `/c/…` path names, or null
+ *  when `text` is none of them. A `file:` URL loses its scheme and escapes. */
+export function localPathOf(text: string): string | null {
+  const raw = text.trim();
+  if (!WHOLE_LOCAL_PATH_RE.test(raw)) return null;
+  if (!/^file:/i.test(raw)) return raw;
+  try {
+    const url = new URL(raw);
+    let path = decodeURIComponent(url.pathname);
+    if (/^\/[A-Za-z]:/.test(path)) path = path.slice(1);
+    return url.host && url.host !== "localhost" ? `//${url.host}${path}` : path;
+  } catch {
+    return raw.replace(/^file:\/*/i, "");
+  }
+}
+
+/** The file name at the end of a path. */
+export function localFileName(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
+interface LocalNode {
+  type: string;
+  value?: string;
+  url?: string;
+  children?: LocalNode[];
+  data?: Record<string, unknown>;
+}
+
+const LOCAL_SKIP = new Set([
+  "code", "inlineCode", "html", "definition", "linkReference", "imageReference",
+]);
+
+function localChip(path: string): LocalNode {
+  return {
+    type: "localFile",
+    data: {
+      hName: "span",
+      hProperties: { [LOCAL_FILE_ATTR]: path },
+      hChildren: [{ type: "text", value: localFileName(path) }],
+    },
+  };
+}
+
+/** A bare path (no quotes) becomes a chip only when its last segment has an
+ *  extension (a dot and 1 to 5 letters or digits) or it ends in a separator.
+ *  A path with a space in it is cut at the space, so it fails this test and
+ *  stays plain text rather than showing a wrong name. */
+function bareLocalPathOf(match: string): string | null {
+  const path = localPathOf(match);
+  if (!path) return null;
+  if (/[\\/]$/.test(match)) return path;
+  const tail = match.split(/[\\/]/).pop() ?? "";
+  return /\.[A-Za-z0-9]{1,5}$/.test(tail) ? path : null;
+}
+
+/** A path inside double quotes may hold spaces. The whole quote is one path. */
+const QUOTED_LOCAL_RE =
+  /"((?:file:\/\/|[A-Za-z]:[\\/]|\/[A-Za-z]\/)[^"\n<>|*?]+)"/gi;
+const SCAN_RE = new RegExp(`${QUOTED_LOCAL_RE.source}|${LOCAL_PATH_RE.source}`, "gi");
+
+function splitLocalPaths(value: string): LocalNode[] {
+  const out: LocalNode[] = [];
+  let last = 0;
+  for (const m of value.matchAll(SCAN_RE)) {
+    const at = m.index ?? 0;
+    let path: string | null;
+    let length: number;
+    if (m[1] !== undefined) {
+      const inner = m[1].trim();
+      path = /^file:/i.test(inner)
+        ? localPathOf(inner.replace(/ /g, "%20"))
+        : inner;
+      length = m[0].length;
+    } else {
+      const match = m[0].replace(TRAILING_MARKS, "");
+      path = bareLocalPathOf(match);
+      length = match.length;
+    }
+    if (!path) continue;
+    if (at > last) out.push({ type: "text", value: value.slice(last, at) });
+    out.push(localChip(path));
+    last = at + length;
+  }
+  if (last === 0) return [{ type: "text", value }];
+  if (last < value.length) out.push({ type: "text", value: value.slice(last) });
+  return out;
+}
+
+function walkLocal(node: LocalNode): void {
+  if (!node.children || LOCAL_SKIP.has(node.type)) return;
+  const next: LocalNode[] = [];
+  for (const child of node.children) {
+    if (child.type === "text") {
+      next.push(...splitLocalPaths(child.value ?? ""));
+    } else if ((child.type === "link" || child.type === "image") && child.url) {
+      // `[shot](file:///…)` and `![](C:\wt\x.png)`: the target is a local file.
+      const path = localPathOf(child.url);
+      next.push(path ? localChip(path) : child);
+    } else {
+      walkLocal(child);
+      next.push(child);
+    }
+  }
+  node.children = next;
+}
+
+/**
+ * A remark plugin: each `file:` URL, Windows path and `/c/…` path in plain
+ * text, and each link or image that targets one, becomes a `span` with
+ * `data-local-file`. Code spans and code blocks stay code. Put it AFTER
+ * `remark-gfm`.
+ */
+export function remarkLocalFiles() {
+  return (tree: unknown) => {
+    walkLocal(tree as LocalNode);
+  };
+}
+
 // ─── The raw-HTML gate (rehype) ──────────────────────────────────────────────
 
 interface HastNode {
