@@ -4,6 +4,11 @@ import { describe, expect, it } from "vitest";
 
 import { agentCardLook } from "./agentCardLook";
 
+const css = readFileSync(
+  fileURLToPath(new URL("../../globals.css", import.meta.url)),
+  "utf8",
+);
+
 const via = "mcp:claude.ai:claude-code";
 
 describe("agentCardLook", () => {
@@ -87,13 +92,44 @@ describe("agentCardLook", () => {
     ).toBe("Waiting");
     expect(agentCardLook("waiting").edge).not.toBe("live");
   });
+
+  // Task 1045c. A stranded run draws the warning edge and says when the
+  // last word came. It never reads as working or waiting.
+  it("stranded is a still warning edge with the time of the last word", () => {
+    const now = Date.parse("2026-11-12T15:00:00");
+    const at = new Date(now - 29 * 60 * 1000);
+    const hhmm = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+    const stranded = { idle_s: 29 * 60 };
+    for (const st of ["working", "answered", "waiting", "stale", "queued", "awaiting"]) {
+      expect(agentCardLook(st, { clientVia: via, stranded, nowMs: now, note: "busy" })).toEqual({
+        edge: "warning",
+        line: `No word since ${hhmm}`,
+      });
+    }
+    // Without idle_s the time of the nudge is the fallback.
+    const nudged = new Date("2026-11-12T14:31:00");
+    expect(
+      agentCardLook("working", { stranded: { nudged_at: nudged.toISOString() } }).line,
+    ).toBe("No word since 14:31");
+    expect(agentCardLook("working", { stranded: {} }).line).toBe("No word for a while");
+    // A failed or stopping run keeps its own look; no strand means no change.
+    expect(agentCardLook("failed", { stranded }).edge).toBe("destructive");
+    expect(agentCardLook("stopping", { stranded }).edge).toBeNull();
+    expect(agentCardLook("working", { stranded: null }).edge).toBe("live");
+  });
+
+  it("draws the warning edge from the warning token in light and in dark", () => {
+    const warn = css.match(/\[data-agent-edge="warning"\]\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(warn).toMatch(/var\(--warning\)/);
+    expect(warn).not.toMatch(/#[0-9a-f]{3,8}\b|rgb\(|hsl\(|animation/i);
+    const block = (selector: string) =>
+      css.match(new RegExp(`(?:^|\\n)${selector}\\s*\\{([\\s\\S]*?)\\n\\}`))?.[1] ?? "";
+    expect(block(":root"), "dark").toMatch(/--warning:/);
+    expect(block("\\.light"), "light").toMatch(/--warning:/);
+  });
 });
 
 describe("the stylesheet", () => {
-  const css = readFileSync(
-    fileURLToPath(new URL("../../globals.css", import.meta.url)),
-    "utf8",
-  );
   it("has no dashed rule on an agent edge, and draws each edge it names", () => {
     const rules = css.match(/\[data-agent-edge[^{]*\{[^}]*\}/g) ?? [];
     expect(rules.length).toBeGreaterThan(0);

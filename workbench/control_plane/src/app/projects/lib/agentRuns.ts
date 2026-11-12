@@ -216,6 +216,43 @@ export interface AgentRun {
    * `waiting`, else null. A gateway before 1045a does not send it.
    */
   waiting?: AgentWaiting | null;
+  /**
+   * Task 1045c. The open strand of the run (`stranded` of the runs wire,
+   * SW-10a), else null. The sweep nudged the member and no word came since.
+   */
+  stranded?: AgentStranded | null;
+}
+
+/** `stranded` of the runs wire (`_stranded_out` in the gateway). */
+export interface AgentStranded {
+  reason?: string | null;
+  nudged_at?: string | null;
+  recovered_at?: string | null;
+  /** Seconds since the last activity, when the gateway measured it. */
+  idle_s?: number | null;
+}
+
+/**
+ * Task 1045c. "No word since 14:31" for a stranded run. The time is the last
+ * activity (now minus `idle_s`), else the time of the nudge. Local time, HH:MM.
+ * Null when the gateway sent neither.
+ */
+export function strandedLine(
+  stranded: Pick<AgentStranded, "nudged_at" | "idle_s"> | null | undefined,
+  nowMs: number = Date.now(),
+): string | null {
+  if (!stranded) return null;
+  let at: number | null = null;
+  if (typeof stranded.idle_s === "number" && Number.isFinite(stranded.idle_s)) {
+    at = nowMs - stranded.idle_s * 1000;
+  } else if (stranded.nudged_at) {
+    const t = Date.parse(stranded.nudged_at);
+    at = Number.isNaN(t) ? null : t;
+  }
+  if (at === null) return "No word for a while";
+  const d = new Date(at);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `No word since ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 /**
@@ -530,6 +567,8 @@ export interface AgentPillFacts {
   labels?: ReadonlyMap<string, string>;
   /** Task 1045a. The wait of a `waiting` run: `agent_waiting` of the row. */
   waiting?: Pick<AgentWaiting, "on" | "until"> | null;
+  /** Task 1045c. `agent_stranded` of the row: the open strand of the run. */
+  stranded?: Pick<AgentStranded, "nudged_at" | "idle_s"> | null;
   /** The clock for the minutes of a wait. Tests pass it. */
   nowMs?: number;
 }
