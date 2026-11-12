@@ -36,6 +36,10 @@ META_FULL_AT = "full_sync_at"
 META_CALENDAR_ID = "metorite_calendar_id"
 META_ACCOUNT_EMAIL = "account_email"
 META_ACCOUNT_ID = "account_id"
+#: The member's switch: write the task blocks of this connection out (CE-13d).
+#: Absent means ON, so every row made before this key keeps today's behaviour
+#: (R6). Only an explicit JSON ``false`` turns the write-out off.
+META_PUSH_TASKS = "push_tasks"
 META_RETRY_AT = "retry_at"
 
 #: Provider names on the connection row, and the word the API uses.
@@ -131,6 +135,11 @@ async def save_cursor(
     if full_at is not None:
         extra[META_FULL_AT] = full_at.isoformat()
     await store.merge_provider_meta(db, org, connection_id, extra)
+
+
+def push_tasks_enabled(conn: store.Connection) -> bool:
+    """True unless the member switched the write-out of task blocks off."""
+    return conn.provider_meta.get(META_PUSH_TASKS) is not False
 
 
 def metorite_calendar_id(conn: store.Connection) -> str | None:
