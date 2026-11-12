@@ -133,6 +133,9 @@ class OutEvent:
     tz: str | None = None
     busy: bool = True
     task_url: str | None = None
+    #: A client-chosen id for an INSERT (Google ``id``, Graph ``transactionId``),
+    #: so a retry after a timeout makes no second event (CE-13).
+    client_id: str | None = None
     client_id: str | None = None  # id to send on insert, so a lost answer can retry
 
 

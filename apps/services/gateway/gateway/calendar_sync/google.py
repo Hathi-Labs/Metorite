@@ -204,6 +204,8 @@ def _out_body(event: OutEvent) -> dict[str, Any]:
         body["description"] = event.notes
     if event.location:
         body["location"] = event.location
+    if event.client_id:
+        body["id"] = event.client_id
     if event.task_url:
         body["source"] = {"title": "Metorite", "url": event.task_url}
     if event.start_date and event.end_date:
@@ -297,6 +299,8 @@ class GoogleCalendar:
             raise exc
         if status == 404:
             raise ProviderError("not_found")
+        if status == 409:
+            raise ProviderError("exists")  # an insert named an id that is taken
         if status == 409:
             raise ProviderError("exists")
         if status == 403:
