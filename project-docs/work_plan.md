@@ -216,6 +216,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-OPS | **Operations apps**: inventory, procurement, BOM, production, MRP, shop floor, quality, maintenance, costing, dispatch and operational accounting, as AI Studio apps | 🟢 active · M3 | `specs/operations_apps.md`, planned (OPM-0, task 2824) · base `specs/ai_studio.md` K3, K4 | Metorite: epic 2819 (AI Studio), OPM-0 to OPM-17 · decisions OPS-Q1 to Q3 in task 2852 · pilot Fracktal (owner act) |
 | WS-AGA | **Agents: the member view**: a section of the Agents panel in Projects, with an honest cost and the D12 visibility. No new pane | 🟢 active · M2 | `specs/agents_view.md` (AGA-1) | Metorite: epic 2103 (MCP & External Agents), AGA-1 to AGA-18 = tasks 2104 to 2121 except AGA-3 and AGA-4 (no task yet) · D204.5 · AGA-1, 5 to 10 are MCP Rung 3 (demo task 2897) · next AGA-5, AGA-6 |
 | WS-LAD | **The gratification ladder**: the default way to plan, in the playbook, the Projects planning AI, `get_plan` and `my_work` (D211) | 🟢 active · M1 | `specs/orchestration_playbook.md` §6d | Metorite: epic 2887 (Projects/Tasks App), LAD-1 = task 2888 (MCP), LAD-2 to LAD-4 = tasks 2889 to 2891 · replan task 2885 |
+| WS-CON | **Company content**: Metorite files, reads and reuses what a member drops in the chat, in decks and reports in the company's own style (D216) | 🟢 active · M2 | `specs/company_context.md` §16 | Metorite: epic 3039 (Knowledge), CON-0 to CON-5 = tasks 3040 to 3045, AM-7 = task 206, demos 3046 to 3048 · flag `COMPANY_CONTENT_ORGS`, default empty |
 | WS-OTW | **One-time workflows**: ask someone, wait for the one answer, run once to propose the record updates, then retire (D214) | 🟢 active · M2 | `specs/workflows_app.md` §14 | Metorite: epic 3010 (AI Studio), OTW-0 to OTW-10 = tasks 3011 to 3021, demos 3022 to 3024 · flag `ONE_TIME_WORKFLOWS_ORGS`, default empty |
 | WS-SND | **Sound cues**: a few tasteful sounds for an email sent or arrived, the agent needs me, new in My Day, and a reminder (D210) | 🟢 active · M2 | `workbench/control_plane/DESIGN_SYSTEM.md` §4c and `specs/proactive_reach.md` §8.4, planned (SND-0, task 2864) | Metorite: epic 2862 (My Day), SND-P to SND-7 = tasks 2863 to 2872 · flag `NEXT_PUBLIC_SOUND_CUES`, default OFF |
 
@@ -6174,6 +6175,19 @@ The owner asked in chat on 2026-11-12: a workflow that runs only once. The examp
 10. **Retention** (owner, in chat, 2026-11-12). A daily job of each org deletes the workflows that were archived longer ago than the org's period. The period is 30, 90, 180 or 365 days, or "Keep", and the default is 90 days. An audit row keeps the name, the owner, the dates and the outcome of each delete. The record changes of its runs stay. The owner or an admin can delete one at once.
 
 Fence: each slice in `workflows_app.md` §14.7 names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D214 entries merge. **Re-check this number at merge.** On 2026-11-12, main held D213 at most, and no open branch held D214.
+
+### D216 — Company content: Metorite files, reads and reuses what a member drops in the chat, in decks and reports (2026-11-12)
+
+The owner asked in chat on 2026-11-12. A member drops decks, PDFs, documents and links in the chat. Metorite files each one, reads it, and reuses its text, images and logo in later decks and reports. Over time it knows the company better. Epic: task 3039 (WS-CON). Owner text: `company_context.md` §16.
+
+1. **No new store.** A file is an artifact (D162). Text that people read is a Knowledge page, and an agent writes it only as a draft (D-KB-4). An image, a logo or a slide from a file is a derived artifact with the scope of its source.
+2. **AI proposes, and a person confirms.** One card proposes the place of each upload: the chat only, Files, or Files and a Knowledge draft. With no answer, the file stays in the chat.
+3. **Search and output stay one.** `search_company` finds the filed content. The one deck and report builder reuses it through `object:` references that code checks against the member's read rights.
+4. **The brand kit is part of the organization identity.** Mira drafts the logo, the colours and the fonts from the filed decks. An admin confirms them.
+5. **The order.** Rung 1 files, reads and finds. Rung 2 reuses the parts and the brand kit in a PDF. Rung 3 writes a pptx in the company's own template.
+6. **Ship dark.** `COMPANY_CONTENT_ORGS`, default empty, with `ARTIFACT_REGISTRY_ENABLED` for the org.
+
+Fence: each slice in `company_context.md` §16.3 names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D216 entries merge. **Re-check this number at merge.** On 2026-11-12, main held D214 at most, and the open branch `cal-spec-s0` held D215.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
