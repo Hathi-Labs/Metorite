@@ -200,6 +200,9 @@ def _out_body(event: OutEvent) -> dict[str, Any]:
     body: dict[str, Any] = {
         "summary": event.title,
         "transparency": "opaque" if event.busy else "transparent",
+        # Google keeps the id of a deleted event as a CANCELLED event. A create
+        # that reuses our client id adopts it by PATCH, and only this revives it.
+        "status": "confirmed",
     }
     if event.notes:
         body["description"] = event.notes
@@ -315,7 +318,10 @@ class GoogleCalendar:
         out: list[CalendarInfo] = []
         token = ""
         for _ in range(MAX_PAGES):
-            params = {"maxResults": "250", **({"pageToken": token} if token else {})}
+            # showHidden: a "Metorite" calendar the member hid must still be found
+            # by name on a reconnect, or a second one is made.
+            params = {"maxResults": "250", "showHidden": "true",
+                      **({"pageToken": token} if token else {})}
             body = await self._call(cred, "GET", "users/me/calendarList", params=params)
             for item in body.get("items") or ():
                 if isinstance(item, Mapping) and item.get("id"):
