@@ -435,6 +435,26 @@ async def test_r8_the_flag_off_reads_nothing(world):
     assert n == 0 and fake.calls == []
 
 
+@pytest.mark.asyncio
+async def test_r8_an_unrelated_edit_does_not_make_the_block_win_over_a_provider_move(world):
+    fake = FakeProvider()
+    new = T0 + timedelta(days=1)
+    async with _in(world, world.org_a):
+        tid = await _task(world.org_a, ALICE, "Edited note", T0)
+        await _pass(world, world.org_a, world.conn["a"], fake)
+        # The provider moves the event at t1, then the member edits a NOTE
+        # (bumps updated_at past t1). The block time is untouched.
+        t1 = datetime.now(UTC)
+        async with tenant_session(world.org_a) as db:
+            await personal._upsert_personal(db, tid, ALICE, {"flexible": True})
+        conn = SimpleNamespace(id=world.conn["a"], member_email=ALICE)
+        ev = RemoteEvent(external_id="ev1", etag='"m1"', starts_at=new,
+                         ends_at=new + timedelta(hours=1), updated=t1)
+        async with tenant_session(world.org_a) as db:
+            assert await task_links.route_remote_change(db, world.org_a, conn, ev) == task_links.MOVED
+        assert (await _block(world.org_a, ALICE, tid)).scheduled_start == new
+
+
 def test_backoff_doubles_and_is_capped():
     assert task_out.backoff(1) == timedelta(seconds=30)
     assert task_out.backoff(2) == timedelta(seconds=60)
