@@ -67,6 +67,7 @@ import {
   archiveExpired,
   archiveRequestOf,
   canReleaseRun,
+  strandedLine,
   clientName,
   heldByLine,
   RELEASE_ADMIN_PERMISSION,
@@ -594,6 +595,15 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
               </span>
             ) : null}
           </p>
+          {run.stranded ? (
+            <span
+              className="shrink-0 text-warning"
+              data-agent-stranded=""
+              title="The run went quiet. Release it to give the task back."
+            >
+              {strandedLine(run.stranded)}
+            </span>
+          ) : null}
           {canRelease ? (
             <Button
               className="shrink-0"

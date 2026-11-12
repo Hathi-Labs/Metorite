@@ -901,6 +901,7 @@ export function TaskBoard({
       memberEmail: task.agent_member_email,
       note: task.agent_note,
       waiting: task.agent_waiting,
+      stranded: task.agent_stranded,
       viewerEmail: me,
       labels: personLabels,
     });

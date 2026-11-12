@@ -11,6 +11,7 @@ import {
   type AgentStartResult,
   type AgentState,
   type AgentWaiting,
+  type AgentStranded,
   type ArchiveApprovalBody,
   type ArchiveApprovalResult,
   type AgentSummary,
@@ -1871,6 +1872,12 @@ export interface TaskRow {
    * `waiting`: what it waits on and when the wait ends. Null in any other state.
    */
   agent_waiting?: Pick<AgentWaiting, "on" | "until"> | null;
+  /**
+   * Task 1045c — the open strand of the run (`stranded` of the runs wire).
+   * ASSUMED on the task row: the task list does not send it yet, so the card
+   * stays as it was until the gateway does.
+   */
+  agent_stranded?: Pick<AgentStranded, "nudged_at" | "idle_s"> | null;
   /**
    * WS-55 EA-13d (EA3-48) — the ONE pull request that the gateway picked for
    * the task, with its CI. `lib/taskCard.pullRequestChip` draws it.

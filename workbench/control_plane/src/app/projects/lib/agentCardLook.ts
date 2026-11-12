@@ -24,6 +24,11 @@
  * The agent said that it waits on CI, a review, a deploy, a person or
  * another agent, and for about how long. The pill already names the client, and a
  * card at 1440 cuts a line that names it twice, so the line leaves it out.
+ *
+ * Task 1045c: a run with an open strand (`stranded` of the runs wire) draws
+ * the warning edge and "No word since 14:31", in any open state. It never
+ * reads `working` or `waiting`: no motion, because motion means working. A
+ * closed or failed run keeps its own look.
  */
 
 import {
@@ -31,6 +36,7 @@ import {
   agentPillText,
   asAgentState,
   clientName,
+  strandedLine,
   waitingText,
 } from "./agentRuns";
 
@@ -50,6 +56,9 @@ export function agentCardLook(
   const known = asAgentState(state);
   if (!known) return NO_AGENT_LOOK;
   const client = clientName(facts.clientVia);
+  if (facts.stranded && known !== "failed" && known !== "stopping") {
+    return { edge: "warning", line: strandedLine(facts.stranded, facts.nowMs) };
+  }
   const note = facts.note?.trim() || null;
   switch (known) {
     case "working":
