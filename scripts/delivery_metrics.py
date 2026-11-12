@@ -187,8 +187,11 @@ def _is_revert(pr):
             or "This reverts commit" in body or "Auto-Revert:" in body)
 
 
-def _merged_prs(gh, start):
-    """Merged PRs of the window, newest update first, read from closed PRs."""
+def _merged_prs(gh, start, trunc=None):
+    """Merged PRs of the window, newest update first, read from closed PRs.
+
+    A read that uses every page without reaching the window start notes it in
+    `trunc`, so a short count never looks complete (verifier, 2026-11-12)."""
     out = []
     for page in range(1, MERGED_PAGES + 1):
         batch = gh(f"repos/{REPO}/pulls?state=closed&sort=updated&direction=desc"
@@ -198,20 +201,29 @@ def _merged_prs(gh, start):
         out += [p for p in batch if p.get("merged_at") and _t(p["merged_at"]) >= start]
         if all(_t(p["updated_at"]) < start for p in batch):
             break
+    else:
+        if trunc is not None:
+            trunc.append(f"quality.merged_prs: the cap of {MERGED_PAGES} pages ended the read")
     return out
 
 
 def _red_main_minutes_per_day(batch, start, now, days):
     """Red stretches: from a red run's completion to the next green run's
     completion, clipped to the window. A run before the window is not read, so
-    a stretch that began earlier counts only from the first run inside it."""
+    a stretch that began earlier counts only from the first run inside it.
+
+    Only a green run ends a stretch. A cancelled or skipped run says nothing
+    about main, so it is ignored. With no batch run at all the number is no
+    data, not a zero (verifier, 2026-11-12)."""
+    if not batch:
+        raise ValueError("no batch run on main in the window")
     red_since, total = None, 0.0
     for r in sorted(batch, key=lambda r: r["updated_at"]):
         done = _t(r["updated_at"])
         if r["conclusion"] in RED:
             if red_since is None:
                 red_since = done
-        elif red_since is not None:
+        elif r["conclusion"] == "success" and red_since is not None:
             total += (min(done, now) - max(red_since, start)).total_seconds() / 60
             red_since = None
     if red_since is not None:
@@ -320,7 +332,7 @@ def collect(gh, days=7, max_runs=200, now=None, durations=None):
     merged: dict = {}
 
     def read_merged():
-        merged["prs"] = _merged_prs(gh, start)
+        merged["prs"] = _merged_prs(gh, start, trunc)
         return len(merged["prs"])
 
     qguard("merged_prs", read_merged)

@@ -383,6 +383,31 @@ def test_red_main_minutes_per_day_clips_to_the_window(dm, tmp_path):
     assert q["red_main_minutes_per_day"] == round((60 + 110 + 300) / 7, 2)
 
 
+def test_a_cancelled_run_does_not_end_a_red_stretch(dm):
+    """Red, cancelled, green: main stays red until the green run completes."""
+    start = NOW - timedelta(days=7)
+    runs = [_push(1, NOW - timedelta(days=2), 10, "failure"),
+            _push(2, NOW - timedelta(days=2) + timedelta(minutes=20), 10, "cancelled"),
+            _push(3, NOW - timedelta(days=2) + timedelta(minutes=100), 10, "success")]
+    assert dm._red_main_minutes_per_day(runs, start, NOW, 7) == round(100 / 7, 2)
+
+
+def test_no_batch_run_is_no_data_not_zero(dm, tmp_path):
+    out = _quality(dm, tmp_path, batch_runs=[])
+    assert out["quality"]["red_main_minutes_per_day"] is None
+    assert any(e.startswith("quality.red_main_minutes_per_day") for e in out["errors"])
+
+
+def test_a_capped_merged_read_says_so(dm):
+    old = _iso(NOW - timedelta(hours=1))
+    page = [{"number": i, "title": "Add x", "body": "", "merged_at": old, "updated_at": old}
+            for i in range(100)]
+    trunc: list[str] = []
+    prs = dm._merged_prs(lambda path: page, NOW - timedelta(days=7), trunc)
+    assert len(prs) == 100 * dm.MERGED_PAGES
+    assert trunc and "merged_prs" in trunc[0]
+
+
 def test_hotfix_releases_skip_the_slots(dm, tmp_path):
     day = datetime(2026, 11, 6, tzinfo=UTC)
     disp = [_dispatch(11, day + timedelta(hours=5, minutes=40)),   # slot 05:30 + 10 min
