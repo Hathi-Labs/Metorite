@@ -204,7 +204,7 @@ from gateway.routes.apps._common import record_app_audit_bound, record_app_audit
 from gateway.routes.studio import actions, flags
 from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store, packages_store
-from gateway.studio.preview import preview_scope
+from gateway.studio.preview import emit_record_event, preview_scope
 
 __all__ = ["ASK_MARKER", "DELEGATED_EXECUTORS", "DIRECT_EXECUTORS", "DOOR_TEMPLATE",
            "LIST_INPUT_KEYS", "MAX_AUDIT_TEXT", "MAX_BODY_BYTES",
@@ -459,6 +459,9 @@ class _Outcome:
     viewer: bool = False
     #: J2a. The installed version that a viewer read, for the audit row.
     version: int | None = None
+    #: C3: the record event of a write that ran, as ``(event_type, payload)``.
+    #: The door emits it after the session commits, and never in a preview.
+    event: tuple[str, dict[str, Any]] | None = None
     #: G4: True when the call is a preview write or a preview send. Its audit
     #: row says ``simulated`` and holds ``preview``.
     preview: bool = False
@@ -905,6 +908,33 @@ def _saved_lines(lines: list[_Line], answers: list[Any]) -> dict[str, list[str]]
     return out
 
 
+#: The event type of each record write (C3). The source is ``studio``.
+RECORD_EVENT_TYPES = {"create": "studio.record.created", "update": "studio.record.updated",
+                      "delete": "studio.record.deleted"}
+
+
+def _record_payload(package: packages_store.Package, obj: Any, op: str, record_id: str,
+                    member: str, changed: list[str]) -> dict[str, Any]:
+    """The payload of a record event (C3). It holds ids, the object name and the
+    keys of the changed fields. It holds no field value, so a restricted field
+    never leaves the store through an event. The org id is added at emit."""
+    return {"package_id": package.id, "object": str(obj.name), "object_id": obj.id,
+            "record_id": record_id, "op": op, "actor": member, "changed": changed}
+
+
+async def _emit_record_event(out: _Outcome, org: str) -> None:
+    """Emit the record event of a write that committed (C3). It never raises:
+    a workflow that cannot start must not fail the write. A preview emits
+    nothing, because ``emit_record_event`` checks the preview mark."""
+    if out.event is None or not _wrote(out):
+        return
+    event_type, payload = out.event
+    try:
+        await emit_record_event(event_type, {**payload, "organization_id": org})
+    except Exception as exc:
+        _log.warning("studio.invoke.record_event_failed", error=type(exc).__name__)
+
+
 async def _do_object_write(db: Any, member: str, package: packages_store.Package,
                            ref: UsesRef, raw: bytes, out: _Outcome) -> None:
     """Run one create, update or delete as *member*, through ONE
@@ -954,9 +984,13 @@ async def _do_object_write(db: Any, member: str, package: packages_store.Package
     done = answers[0]
     if op == "delete":
         out.deleted = str(body["id"])
+        out.event = (RECORD_EVENT_TYPES[op], _record_payload(
+            package, obj, op, str(body["id"]), member, []))
     elif isinstance(done, objects_store.Record):
         out.record = done
         out.record_id = done.id
+        out.event = (RECORD_EVENT_TYPES[op], _record_payload(
+            package, obj, op, done.id, member, sorted(data)))
         if lines:
             out.lines = _saved_lines(lines, answers[1:])
             # A roll-up over the lines (C7b) changed the record after its own
@@ -1470,4 +1504,6 @@ async def invoke_action(
         if not out.audited:
             await record_app_audit_bound(app_id=package.id, user_email=user.email,
                                          kind="action", detail=_audit_detail(out))
+        # C3: after the commit of the write, so no event names a rolled back change.
+        await _emit_record_event(out, str(user.organization_id or ""))
     return _answer(out)
