@@ -55,7 +55,6 @@ def _google() -> CalendarProvider | None:
 
 def _outlook() -> CalendarProvider | None:
     from gateway.calendar_sync.outlook import factory
-
     return factory()
 
 
