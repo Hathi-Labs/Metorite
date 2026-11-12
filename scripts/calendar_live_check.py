@@ -190,15 +190,23 @@ async def _run(org: str, connection_id: str) -> int:
     if provider is None:
         print("calendar_live_check: the provider is not set up on this box.")
         return 2
-    cred = await connections.fresh_credential(org, conn, provider)
+    try:
+        cred = await connections.fresh_credential(org, conn, provider)
+    except Exception as exc:
+        print(f"calendar_live_check: the token cannot be used ({type(exc).__name__}). Reconnect the account.")
+        return 2
     if cred is None:
         print("calendar_live_check: no usable token. Reconnect the account.")
         return 2
     print(f"connection {connection_id} ({provider.provider}), calendar \"Metorite\" found")
-    if provider.provider == "google_calendar":
-        rows = await check_google(provider, cred, cal_id)
-    else:
-        rows = await check_graph(provider, cred, cal_id)
+    try:
+        if provider.provider == "google_calendar":
+            rows = await check_google(provider, cred, cal_id)
+        else:
+            rows = await check_graph(provider, cred, cal_id)
+    except Exception as exc:
+        print(f"calendar_live_check: stopped by {type(exc).__name__}. Events it made were deleted.")
+        return 2
     print(render(rows))
     return exit_code(rows)
 

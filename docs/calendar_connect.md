@@ -101,7 +101,8 @@ The script does these things, and nothing else:
 
 - It runs only with `--live`, `--org` and `--connection`. Without them, it
   prints why and stops.
-- It never turns a flag on and never prints a token.
+- It never turns a flag on and never prints a token. It may refresh the
+  access token and store it, as the sync does.
 - It writes events only into that **Metorite** calendar. Each event has no
   attendees, so the provider sends no mail. Each event is free time, two
   days ahead, and is deleted at the end, also when a check fails.
