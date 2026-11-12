@@ -11,7 +11,9 @@
  * - `allow_multiple` draws one choice and not check boxes;
  * - the run panel keeps its own copy of the card (source test);
  * - CIV-14b: a question with images draws no picture, a picture comes from
- *   another path than the cookie serve route, or a click opens nothing.
+ *   another path than the cookie serve route, or a click opens nothing;
+ * - CIV-14b fix round 1: a picture that fails to load draws no "Removed"
+ *   tile, or that tile is an active button.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -30,8 +32,16 @@ import {
   newestEphemeral,
   newestEphemeralActivity,
 } from "../lib/agentRuns";
+import type { AttachmentRow } from "../lib/api";
 import { previewKind } from "../lib/preview";
+import {
+  AgentImageStripView,
+  type AgentImageStripViewProps,
+  REMOVED_TEXT,
+  REMOVED_TIP,
+} from "./AgentImageStrip";
 import { AgentQuestionCard, type AgentQuestionCardProps } from "./AgentQuestionCard";
+import { AttachmentViewer } from "./AttachmentViewer";
 
 const ELICITATION: AgentActivity = {
   id: "e1",
@@ -290,7 +300,6 @@ describe("images on a question (CIV-14b, external_agent_access.md §12.9)", () =
   };
   const dir = fileURLToPath(new URL(".", import.meta.url));
   const strip = readFileSync(`${dir}AgentImageStrip.tsx`, "utf8");
-  const viewer = readFileSync(`${dir}AttachmentViewer.tsx`, "utf8");
   const card = readFileSync(`${dir}AgentQuestionCard.tsx`, "utf8");
   const panel = readFileSync(`${dir}AgentRunPanel.tsx`, "utf8");
 
@@ -317,18 +326,105 @@ describe("images on a question (CIV-14b, external_agent_access.md §12.9)", () =
     expect(html).toMatch(/<img[^>]*class="[^"]*\bh-16 w-16\b/);
   });
 
-  it("a click opens that image at full size in the one attachment viewer", () => {
-    // The runner has no DOM, and Modal draws nothing on the server. So the
-    // wire is a source check: the button sets the open image, and the viewer
-    // draws that image at full size.
-    expect(strip).toMatch(/onClick=\{\(\) => setOpened\(file\)\}/);
-    expect(strip).toContain("<AttachmentViewer file={opened} onClose={() => setOpened(null)} />");
-    expect(viewer).toMatch(/kind === "image" \? \([\s\S]*?<img\s+src=\{file\.url\}/);
-    expect(viewer).toContain("max-h-[60vh] w-auto max-w-full");
-    // Each row of the strip is one that the viewer shows as an image.
-    const rows = activityImages(WITH_IMAGES);
-    expect(rows).toHaveLength(2);
+  // Fix round 1, item 6. The runner has no DOM, and `Modal` draws nothing on
+  // the server. `AgentImageStripView` holds no hook, so these tests read its
+  // element tree, press a button there, and draw it again with the state
+  // that the press set. `AgentImageStrip` only holds that state.
+  type Node = { type: unknown; props: Record<string, unknown> };
+  function nodes(tree: unknown): Node[] {
+    const out: Node[] = [];
+    const walk = (node: unknown): void => {
+      if (Array.isArray(node)) {
+        node.forEach(walk);
+        return;
+      }
+      if (!node || typeof node !== "object" || !("props" in node)) return;
+      out.push(node as Node);
+      walk((node as Node).props.children);
+    };
+    walk(tree);
+    return out;
+  }
+  const rows = activityImages(WITH_IMAGES);
+  const view = (over: Partial<AgentImageStripViewProps> = {}) =>
+    nodes(
+      AgentImageStripView({
+        images: rows,
+        agentLabel: "Claude Code",
+        opened: null,
+        broken: new Set<string>(),
+        onOpen: noop,
+        onBroken: noop,
+        onClose: noop,
+        ...over,
+      }),
+    );
+  const by = (tree: Node[], key: string, id: string) => tree.find((n) => n.props[key] === id);
+  const viewerOf = (tree: Node[]) => tree.find((n) => n.type === AttachmentViewer);
+
+  it("a click on a picture opens that image at full size in the one attachment viewer", () => {
+    // Mutation: make the button's onClick do nothing, or pass the viewer
+    // no file, and this test fails.
+    let opened: AttachmentRow | null = null;
+    const onOpen = vi.fn((file: AttachmentRow) => {
+      opened = file;
+    });
+    const before = view({ onOpen });
+    expect(viewerOf(before)?.props.file).toBeNull();
+    (by(before, "data-agent-image-open", B)?.props.onClick as () => void)();
+    expect(onOpen).toHaveBeenCalledWith(rows[1]);
+    const onClose = vi.fn();
+    const after = view({ opened, onClose });
+    const shown = viewerOf(after);
+    expect(shown?.props.file).toBe(rows[1]);
+    (shown?.props.onClose as () => void)();
+    expect(onClose).toHaveBeenCalledTimes(1);
+    // The viewer draws that image at full size, from its served path.
+    const full = nodes(AttachmentViewer({ file: rows[1], onClose: noop }));
+    const img = full.find((n) => n.type === "img");
+    expect(img?.props.src).toBe(`/api/projects/attachments/${B}/after.webp`);
+    expect(String(img?.props.className)).toContain("max-h-[60vh] w-auto max-w-full");
     for (const row of rows) expect(previewKind(row.mime)).toBe("image");
+    // The strip keeps the state that the view asks for.
+    expect(strip).toContain("onOpen={setOpened}");
+    expect(strip).toContain("onClose={() => setOpened(null)}");
+  });
+
+  it("a picture that fails to load draws a Removed tile, and that button does nothing", () => {
+    // Mutation: drop the onError of the picture, or draw the tile as an
+    // active button, and this test fails.
+    const onBroken = vi.fn();
+    (by(view({ onBroken }), "data-agent-image", A)?.props.onError as () => void)();
+    expect(onBroken).toHaveBeenCalledWith(A);
+    const onOpen = vi.fn();
+    const broken = new Set([A]);
+    const after = view({ broken, onOpen });
+    const tile = by(after, "data-agent-image-removed", A);
+    expect(tile?.type).toBe("button");
+    expect(tile?.props.disabled).toBe(true);
+    expect(tile?.props.onClick).toBeUndefined();
+    expect(by(after, "data-agent-image", A)).toBeUndefined();
+    expect(by(after, "data-agent-image-open", A)).toBeUndefined();
+    // The other image still opens.
+    (by(after, "data-agent-image-open", B)?.props.onClick as () => void)();
+    expect(onOpen).toHaveBeenCalledWith(rows[1]);
+    // A viewer that showed the removed image closes.
+    expect(viewerOf(view({ broken, opened: rows[0] }))?.props.file).toBeNull();
+    // The drawn tile: the word, its label, the tokens and the same 64 px.
+    const html = renderToStaticMarkup(
+      createElement(AgentImageStripView, {
+        images: rows, agentLabel: "Claude Code", opened: null, broken,
+        onOpen: noop, onBroken: noop, onClose: noop,
+      }),
+    );
+    expect(html).toContain(`>${REMOVED_TEXT}<`);
+    expect(html).toContain('aria-label="Image 1 of 2 was removed from the task: layout one.png"');
+    expect(html).toContain(`title="${REMOVED_TIP}"`);
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*data-agent-image-removed=/);
+    expect(html).toMatch(/class="[^"]*\bh-16 w-16\b[^"]*\bborder-border bg-muted text-muted-foreground\b/);
+    expect([...html.matchAll(/<img/g)]).toHaveLength(1);
+    // The strip keeps the ids that failed, and the set only grows.
+    expect(strip).toMatch(/onBroken=\{\(id\) => setBroken\(/);
   });
 
   it("the read-only question draws the pictures too, and the answered line draws none", () => {
