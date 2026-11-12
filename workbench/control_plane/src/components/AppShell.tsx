@@ -533,6 +533,7 @@ function MobileBottomNavInner({
   const drawerSections = useInstallNav(
     shellNav ? shellSidebar(navSections, shell.loading ? undefined : shell.layout) : navSections,
     access.features,
+    shellNav ? { held: navSections, layout: shell.loading ? undefined : shell.layout } : undefined,
   );
   // The skeleton holds the place while the first layout read is out, as on
   // the desktop sidebar (`useShellPending`).
