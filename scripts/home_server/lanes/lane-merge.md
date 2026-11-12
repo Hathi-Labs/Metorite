@@ -35,14 +35,55 @@ You wait for the checks, so the lanes can keep building.
 
 ## The queue
 
-Other lanes append lines to `~/lanes/merge-queue.tsv`. Each line holds the
-pull request number, the task number, the worktree path, the lane name and a
-note, with tabs between them. In each loop, first handle the list in your
-start note, then read the queue. Treat each new line the same way.
+A lane hands a pull request over with
+`bash scripts/home_server/lane_handover.sh <PR> <task> <worktree> <lane> <tier> <note>`.
+The tier is `LOW`, `STANDARD` or `HIGH`. The script appends one line to
+`~/lanes/merge-bot-queue.tsv`. The fields are the pull request, the task, the
+worktree, the lane, the head SHA, the tier and a note, with tabs between them.
+A `#` header line names them. Nothing else writes this queue.
 
-After you handle a line, append one line to `~/lanes/merge-queue.log`:
-`DONE <pull request> <merge sha>` or `BACK <pull request> <reason>`. A line
-that is in the log is handled.
+The bot writes one result line to `~/lanes/merge-bot.log` for each hand-over:
+`DONE <pull request> <merge sha>` or `BACK <pull request> <reason>`. **Only the
+bot writes this log.** Do not append to it, and no lane appends to it. A
+manual merge does not go in it.
+
+The old `~/lanes/merge-queue.tsv` and `~/lanes/merge-queue.log` stay as
+history. They hold HOLD, RED and NOTE lines that people wrote. The bot never
+reads them. Do not add lines to them.
+
+## The bot and your part
+
+A script does steps a, b, d and e below (D218, 2026-11-12, task 3053). The
+script is `scripts/home_server/merge_bot.sh`, and a timer runs it every
+2 minutes. It uses no model and no Metorite credential.
+
+The bot checks the loop before the merge. It never merges a `HIGH` tier
+slice, because D218 keeps the full loop for HIGH. It merges only a pull
+request whose body has a line that starts with `VERIFY: PASS`.
+`lane_handover.sh` refuses a hand-over with no such line.
+
+The owner's approval stays the duty of the lane. The hand-over is the lane's
+claim that the loop is complete. D218 point 5 lets a flagged slice merge with
+no preview first.
+
+The bot pins the head SHA of the hand-over. When the pull request head moved
+after the hand-over, it logs a BACK. It gates exactly that SHA, on a branch
+`merge-bot/pr-<n>`. Then it merges with
+`gh pr merge <n> --squash --match-head-commit <sha>`, so GitHub refuses a
+newer head. While the timer runs, do not merge a pull request by hand.
+
+Your part is the Metorite side. Read `~/lanes/merge-bot.log` in each loop.
+
+- A new `DONE <pull request> <sha>` line: do step f.
+- A new `BACK <pull request> HIGH tier: ...` line: do steps a to f for it
+  yourself. Step b binds in full.
+- A new `BACK <pull request> <reason>` line: comment the reason on the task,
+  and release the task. Do not fix it. The lane that owns it fixes it and
+  hands it over again.
+
+Keep a note of the last log line that you handled. Then you never repeat one.
+The steps a to e stay here as the rule of the bot. They are also the manual
+fallback when the timer is off.
 
 ## For each pull request
 
@@ -54,8 +95,8 @@ a. **Read the checks first**, with `gh pr checks <n>`. You need no claim to
      ONE time, and come back later.
    - A required check is red: read its log with
      `gh run view <run> --job <job> --log-failed`. Then claim the task, comment
-     the failing test and its first error line, and release the task. Append
-     `BACK` to the log, and go on.
+     the failing test and its first error line, and release the task. Then
+     go on. The comment is the record, not a log line.
    - Every required check passed or skipped: go on to b.
 b. **Claim its task** with `claim_task`. A 409 `task_held` means that a live
    session holds it. Skip it, and come back in the next loop. Call
@@ -70,8 +111,8 @@ d. **The gate**, in the pull request's worktree. When the lane left none, make
    - Run `cd <worktree> && git fetch -q origin && timeout 900 bash scripts/premerge.sh`.
    - Exit 0: go on to e.
    - Exit 1: the merge with today's `main` fails a fence or conflicts. Comment
-     the output on the task, release it, append `BACK`, and go on. Do not
-     resolve conflicts yourself.
+     the output on the task, release it, and go on. Do not resolve
+     conflicts yourself.
 e. **Merge.** Right before the merge, run `git fetch origin main`. When `main`
    moved since step d, run `premerge.sh` again. Then run
    `gh pr merge <n> --squash`. Never pass `--admin` or `--auto`.
@@ -82,7 +123,8 @@ f. **Close it.** Move the task to Done with `set_task_status`, using the
    status whose category is done. Comment the pull request URL and the merge
    SHA, then call `finish_agent_run`. Remove the worktree with
    `bash scripts/worktree.sh remove <slug>`. The slug is the folder name
-   without `wt-`. Append `DONE <pull request> <sha>` to the log.
+   without `wt-`. The bot appends `DONE <pull request> <sha>` to its log.
+   After a manual merge, append nothing.
 g. **Watch `main`.** Every 3 merges, or every 30 minutes, read
    `gh run list --branch main --limit 10`. When a required job of a `main` run
    is red, find the merged pull request that caused it. Comment on that task.
@@ -92,7 +134,7 @@ g. **Watch `main`.** Every 3 merges, or every 30 minutes, read
 
 ## The loop
 
-Go through the list, then the queue. When no pull request is ready, wait
+Read the log, then the list of your start note. When nothing is new, wait
 10 minutes with one `sleep 600`, and look again. Post a thought on the task
 that you work on at least once a minute. While you wait with no task claimed,
 post nothing.
