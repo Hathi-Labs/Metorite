@@ -202,6 +202,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # the chat greets on the day. It adds a line to each turn, so only the
     # operator writes it.
     "CELEBRATIONS_ORGS",
+    # WS-CAL CE-10 and CE-11: the orgs and members where the calendar sync
+    # reads from, and writes to, a member's Google or Outlook calendar. A flip
+    # starts calls to a third party with member tokens, so only the operator
+    # writes it.
+    "CALENDAR_SYNC_READ", "CALENDAR_SYNC_WRITE", "CALENDAR_SYNC_MEMBERS",
     # WS-63 PZ-40: the orgs where the name question offers forms of address
     # and the block keeps the chosen form as written. It adds a line to each
     # turn, so only the operator writes it.
