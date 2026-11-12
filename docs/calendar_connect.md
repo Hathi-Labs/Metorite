@@ -47,6 +47,16 @@ steps below.
 A work account can show "Need admin approval". Send your admin the admin
 steps below.
 
+### Already connected your email?
+
+1. Open **Calendar**, then **Settings**.
+2. Find the row that says your mailbox is connected, and press **Sync its calendar**.
+3. The provider asks you to allow calendar access for the same account.
+4. A Microsoft 365 work account may need an admin to approve Metorite once.
+5. Mail and calendar stay separate. Disconnect one and the other stays connected.
+
+You find the same button under your accounts in **Email**.
+
 ### Choose what syncs
 
 Metorite reads every calendar that you own. To stop one, open **Calendar**,
