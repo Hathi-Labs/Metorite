@@ -1,12 +1,12 @@
 -- ============================================================================
--- 419_agent_run_signal.sql - the linked-event clock of an agent run (WS-MCP
+-- 421_agent_run_signal.sql - the linked-event clock of an agent run (WS-MCP
 -- task 1045b, agent_coordination.md slice 1045b, §3.3)
 -- ============================================================================
 -- Spec: project-docs/specs/agent_coordination.md, slice 1045b · Metorite task
 -- 1045 · R1 · R5 · R6 · R8.
 -- R1: origin/main held 417 as its highest file on 2026-11-12. Open PRs 2137
 -- and 2156 hold 416, open PR 2089 holds 418, and the SW-25 branch holds 417.
--- So this file is 419. Check the number again at merge.
+-- So this file is 421. Check the number again at merge.
 --
 -- What: one nullable column on `pm_agent_runs`.
 --   last_signal_at  TIMESTAMPTZ NULL. When the newest linked event came: a

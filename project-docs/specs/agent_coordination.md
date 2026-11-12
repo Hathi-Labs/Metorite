@@ -12,7 +12,7 @@
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
 
-**1045a (the `waiting` state, migration 403) is built, 2026-11-06. It also carries SW-4 item 2. The owner's change of 2026-11-07 is built: own sub-agents keep a run working, and `agent` is a wait on another agent. 1045b (linked events count as life, migration 419) is built, 2026-11-12. 1045c is open.**
+**1045a (the `waiting` state, migration 403) is built, 2026-11-06. It also carries SW-4 item 2. The owner's change of 2026-11-07 is built: own sub-agents keep a run working, and `agent` is a wait on another agent. 1045b (linked events count as life, migration 421) is built, 2026-11-12. 1045c is open.**
 
 This spec gates every SW slice (D135.4). The decisions are **D140** in `work_plan.md` §3.
 
@@ -903,7 +903,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### 1045b · Linked events count as life
 
-**Status: built, 2026-11-12 (migration 419).** The webhook calls `agent_runs.signal_linked_runs`. A burst of check events with the same words writes one line.
+**Status: built, 2026-11-12 (migration 421).** The webhook calls `agent_runs.signal_linked_runs`. A burst of check events with the same words writes one line.
 
 - **Scope.**
   1. The GitHub webhook handles two events in `webhook.py`: `_on_pull_request` with the action `synchronize`, and `_on_checks`. For each event, it finds each `in_progress` run of a task that references that pull request.
