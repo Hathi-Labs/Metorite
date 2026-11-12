@@ -96,6 +96,40 @@ def test_refresh_keeps_the_rotated_refresh_token_and_dead_grant_reconnects():
         run(prov(dead).refresh(cred()))
 
 
+def test_exchange_refuses_a_grant_that_holds_mail_scope():
+    h = FakeHttp([("POST", "/token", 200, json.dumps(
+        {"access_token": "a", "refresh_token": "r",
+         "scope": "Calendars.ReadWrite Mail.Read User.Read"}).encode())])
+    with pytest.raises(ProviderError) as e:
+        run(prov(h).exchange_code("c"))
+    assert e.value.code == "scope_extra"
+
+
+def test_a_truncated_reply_fails_closed_and_no_default_calendar_fails_not_prunes():
+    class Cut(FakeHttp):
+        async def get(self, url, *, params=None, headers=None):
+            return HttpAnswer(status_code=200, body=b'{"value":[', truncated=True)
+    with pytest.raises(ProviderError) as e:
+        run(prov(Cut([])).list_calendars(cred()))
+    assert e.value.code == "response_too_large"
+    h = FakeHttp([("GET", "/me/calendars", 200, b'{"value":[{"id":"B","name":"Shared"}]}')])
+    with pytest.raises(ProviderError) as e:
+        run(prov(h).sync(cred(), None, Window.around(NOW)))
+    assert e.value.code == "no_calendar"
+
+
+def test_every_graph_and_token_request_sends_identity_encoding():
+    h = FakeHttp([("GET", "/me/calendars", 200, b'{"value":[]}')])
+    seen = {}
+    orig = h.get
+    async def spy(url, *, params=None, headers=None):
+        seen.update(headers or {})
+        return await orig(url, params=params, headers=headers)
+    h.get = spy
+    run(prov(h).list_calendars(cred()))
+    assert seen["Accept-Encoding"] == "identity"
+
+
 def test_first_sync_is_full_skips_metorite_calendar_and_returns_cursor_map():
     h = FakeHttp([
         ("GET", "skiptoken=", 200, fx("delta_page2.json")),
@@ -111,7 +145,7 @@ def test_first_sync_is_full_skips_metorite_calendar_and_returns_cursor_map():
     assert ids.count("EV5") == 1 and {"EV1", "EV4"} <= set(ids)
     assert [c for c in res.changes if c.external_id == "EV5"][0].deleted
     cursor = json.loads(res.next_cursor)
-    assert set(cursor) == {"AAA", "BBB"} and "CCC" not in cursor
+    assert set(cursor) == {"AAA"}  # default calendar only; no shared, no Metorite
     assert not any("/CCC/" in c[1] for c in h.calls)
 
 
@@ -120,7 +154,7 @@ def test_second_sync_uses_the_stored_delta_link_and_is_not_full():
     h = FakeHttp([
         ("GET", "deltatoken=X", 200,
          b'{"value":[],"@odata.deltaLink":"https://graph.microsoft.com/v1.0/me/calendars/AAA/calendarView/delta?$deltatoken=Y"}'),
-        ("GET", "/me/calendars", 200, b'{"value":[{"id":"AAA","name":"Calendar"}]}'),
+        ("GET", "/me/calendars", 200, b'{"value":[{"id":"AAA","name":"Calendar","isDefaultCalendar":true}]}'),
     ])
     res = run(prov(h).sync(cred(), json.dumps({"AAA": link}), Window.around(NOW)))
     assert res.full is False and res.changes == []
@@ -130,7 +164,7 @@ def test_second_sync_uses_the_stored_delta_link_and_is_not_full():
 def test_dead_delta_link_raises_cursor_expired():
     h = FakeHttp([
         ("GET", "deltatoken=X", 410, b'{"error":{"code":"syncStateNotFound"}}'),
-        ("GET", "/me/calendars", 200, b'{"value":[{"id":"AAA","name":"Calendar"}]}'),
+        ("GET", "/me/calendars", 200, b'{"value":[{"id":"AAA","name":"Calendar","isDefaultCalendar":true}]}'),
     ])
     with pytest.raises(CursorExpired):
         run(prov(h).sync(cred(), json.dumps({"AAA": "https://graph.microsoft.com/x?$deltatoken=X"}),

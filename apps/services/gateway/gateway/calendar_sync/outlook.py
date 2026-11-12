@@ -137,7 +137,8 @@ class OutlookProvider:
             "client_id": self._client_id, "client_secret": self._client_secret,
             "scope": " ".join(SCOPES), **form,
         }
-        answer = await self._http.post_form(TOKEN_URL, form=form)
+        answer = await self._http.post_form(
+            TOKEN_URL, form=form, headers={"Accept-Encoding": "identity"})
         body = answer.json()
         if answer.status_code != 200 or not isinstance(body, Mapping) \
                 or not body.get("access_token"):
@@ -168,6 +169,8 @@ class OutlookProvider:
             "redirect_uri": self._redirect_uri,
         })
         scopes = self._scopes(body)
+        if any(_short_scope(s).startswith("mail") for s in scopes):
+            raise ProviderError("scope_extra")  # never keep a mail token here
         if _NEEDED_SCOPE not in {_short_scope(s) for s in scopes}:
             raise ProviderError("scope_missing")
         if not body.get("refresh_token"):
@@ -209,6 +212,8 @@ class OutlookProvider:
         else:
             answer = await self._http.send_json(method, url, body=body, headers=headers)
         status = answer.status_code
+        if getattr(answer, "truncated", False):
+            raise ProviderError("response_too_large")  # fail closed, never a cut body
         if status in (200, 201, 202):
             return answer.json()
         if status == 204:
@@ -283,6 +288,9 @@ class OutlookProvider:
         links = self._load_cursor(cursor)
         full = not links
         cals = g.pick_calendar_ids({"value": await self._all_calendars(cred)})
+        if not cals:
+            # An empty list on a full read would prune every row. Fail instead.
+            raise ProviderError("no_calendar")
         changes = []
         next_links: dict[str, str] = {}
         for cal_id in cals:
