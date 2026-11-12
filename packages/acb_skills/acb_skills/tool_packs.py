@@ -474,8 +474,8 @@ No Projects agent exists to hand a task to.
   names the parent. update_project and edit_project change a project.
 - Until an agent reads the member's answer, change_agent_answer changes it, or
   takes it back with withdraw true. It takes the task. A question that still
-  waits is answered with answer_agent_question, which is in the authority
-  pack: load that pack for it.
+  waits is answered with a tool of the authority pack: load that pack for
+  it.
 - Each write shows a card. The card is the question: do not ask in text before
   it. Say that a change happened only after the receipt says so.
 - Never invent a task, a person, a number or a date. If no tool gave it, you
@@ -1098,8 +1098,7 @@ PACKS: dict[str, Pack] = {
     ),
     "projects-plan": Pack(
         slug="projects-plan",
-        when=("Load for team load, capacity, a timeline, a plan from a goal, task links, repeats, "
-              "new projects or to change or take back an answer that an agent has not read."),
+        when="Load for team load, capacity, a timeline, a plan from a goal, task links, repeats, new projects or to change an unread answer.",
         rules=_PROJECTS_PLAN_RULES,
         words=_PROJECTS_PLAN_WORDS,
         replaces_core="projects",
@@ -1155,9 +1154,7 @@ PACKS: dict[str, Pack] = {
     # on wherever the core pack is on (FOLLOWS).
     "projects-authority": Pack(
         slug="projects-authority",
-        when=("Load for the questions that agents ask and that wait on the member (list them, "
-              "or give the member's answer to an agent), the authority page of a project "
-              "(read, pin or unpin), a project update, or the contract of an epic."),
+        when="Load for questions that agents ask the member (list or answer), a project's authority page, a project update or an epic contract.",
         rules=_PROJECTS_AUTHORITY_RULES,
         words=_PROJECTS_AUTHORITY_WORDS,
         replaces_core="projects",
