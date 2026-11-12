@@ -1,6 +1,6 @@
 # Orchestration playbook — the know-how that Metorite ships to every organization that connects
 
-**Status: ACTIVE (PB-0, 2026-11-06). Built so far: PB-1, PB-2, PB-3a, PB-3b, PB-4, PB-5, KIT-0, KIT-1, KIT-2b, KIT-2c, KIT-2d, the KIT-6 tooling and KIT-4a, with no live client run. The rest is not.** The decision is **D186** in `work_plan.md` §3, and task 1906 (SW-P10) planned this spec. Its slices are PB-1 to PB-10, and the kit slices KIT-0 to KIT-9 (§6a, epic 2547). Each has a task on the board.
+**Status: ACTIVE (PB-0, 2026-11-06). Built so far: PB-1, PB-2, PB-3a, PB-3b, PB-4, PB-5, KIT-0, KIT-1, KIT-2b, KIT-2c, KIT-2d, KIT-8, the KIT-6 tooling and KIT-4a, with no live client run. The rest is not.** The decision is **D186** in `work_plan.md` §3, and task 1906 (SW-P10) planned this spec. Its slices are PB-1 to PB-10, and the kit slices KIT-0 to KIT-9 (§6a, epic 2547). Each has a task on the board.
 
 **Board row:** **WS-MCP** in `work_plan.md` §2.1. **Owner direction (2026-11-06):** Metorite "not only becomes a place we use for orchestrating multiple agents". It "also contains the know-how and understanding in the system prompt to help set up multi-org orchestration systems for whoever connects the Metorite MCP." **Price:** part of the flat seat (`launch_surface.md` §4). No SKU and no add-on (D186.3).
 
@@ -432,6 +432,7 @@ The Claude pack is SW-82 (task 1927) in `agent_coordination.md`. It follows this
 - **Metorite task.** 2558.
 - **Scope.** One page that tells a member how to connect each client. It repeats no kit text and links to the download.
 - **Done when.** The page lists each client of the file map with its connect step.
+- **Built (2026-11-11).** `docs/use_metorite_from_your_coding_agent.md`, the index `docs/llms.txt` and `tests/unit/test_kit_docs_page.py`. The test pins the six headings, the hosts, the MCP address, the tool names and the setup text. No live run on a real client has been done.
 - **Fence.** Advisory (R7). A person reads the page against the file map.
 - **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** KIT-2b, KIT-2c, KIT-2d, SW-82.
 
