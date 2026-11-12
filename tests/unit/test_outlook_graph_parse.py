@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "apps/services/gateway"))
+
 from gateway.calendar_sync import outlook_graph as g  # noqa: E402
 
 FIX = Path(__file__).parent / "fixtures" / "outlook_calendar"
