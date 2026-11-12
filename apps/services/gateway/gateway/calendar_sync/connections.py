@@ -179,16 +179,10 @@ async def disconnect_connection(db: Any, org: str, conn: store.Connection) -> in
     """
     params = {"org": org, "id": conn.id}
     removed = (await db.execute(text(_DELETE_EXTERNAL_SQL), params)).rowcount or 0
-    # CE-13: the row stays (``disconnected``), so no FK cascade fires. The
-    # provider events stay in the member's own "Metorite" calendar.
-    await db.execute(text(
-        "DELETE FROM calendar_task_links WHERE organization_id = CAST(:org AS uuid) "
-        "AND connection_id = CAST(:id AS uuid)"), params)
     await db.execute(text(_CLEAR_OWN_SQL), params)
     await store.disconnect(db, org, conn.id)
     await store.remove_meta_keys(
-        db, org, conn.id, (META_CURSOR, META_FULL_AT, META_CALENDAR_ID,
-                           "task_cursor", "task_calendar_id"))
+        db, org, conn.id, (META_CURSOR, META_FULL_AT, META_CALENDAR_ID))
     return int(removed)
 
 
