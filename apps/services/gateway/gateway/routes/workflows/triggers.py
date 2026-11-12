@@ -76,6 +76,35 @@ def event_trigger_matches(
     )
 
 
+async def _author_may_hear(
+    db: Any, row: Any, source: str, payload: dict[str, Any], org: str,
+) -> bool:
+    """True when the event may start the workflow of *row* (STU-E3 fix).
+
+    Only a Studio record event is checked. Its payload names a package, and
+    the run shows the actor, the object and the record id to every member who
+    reads runs. So the workflow starts only when its AUTHOR
+    (``workflows.owner_email``, the person the run is attributed to) can READ
+    that package, by the one Studio read rule (``studio.access``). It runs in
+    the org-bound session of the door, before the version loads. It fails
+    closed: no package id, an unknown package or a read error is a refusal. The
+    log line names the workflow and holds no payload content. Other sources
+    are unchanged.
+    """
+    from gateway.studio.access import member_reads_package
+    from gateway.studio.preview import RECORD_EVENT_SOURCE
+
+    if source != RECORD_EVENT_SOURCE:
+        return True
+    if await member_reads_package(
+        db, member=str(row.owner_email or ""), package_id=payload.get("package_id"),
+        organization_id=org,
+    ):
+        return True
+    _log.warning("workflows.event_run_refused_package_access", workflow_id=str(row.workflow_id))
+    return False
+
+
 async def dispatch_event(
     source: str, event_type: str, payload: dict[str, Any]
 ) -> list[dict[str, str]]:
@@ -103,7 +132,7 @@ async def dispatch_event(
                 await db.execute(
                     text(
                         """SELECT t.config, w.id AS workflow_id, w.name,
-                                  w.latest_version, w.variables
+                                  w.owner_email, w.latest_version, w.variables
                              FROM workflow_triggers t
                              JOIN workflows w ON w.id = t.workflow_id
                             WHERE t.kind = 'event' AND t.enabled
@@ -119,6 +148,8 @@ async def dispatch_event(
                 if str(row.workflow_id) in seen:
                     # One event starts one run of a workflow, even when two
                     # of its triggers match (STU-E3).
+                    continue
+                if not await _author_may_hear(db, row, source, payload, org):
                     continue
                 serialized = await load_version_serialized(
                     db, str(row.workflow_id), int(row.latest_version)

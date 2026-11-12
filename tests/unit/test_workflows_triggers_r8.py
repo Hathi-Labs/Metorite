@@ -103,6 +103,16 @@ _APP_ROLE = "acb_app_wftrig"
 _APP_PW = "wftrig_scratch_pw"
 
 _OWNERS = {"A": "owner@a.wftrig.test", "B": "owner@b.wftrig.test"}
+#: A second member of org A. M1 is the owner above.
+M2 = "member2@a.wftrig.test"
+
+#: The Studio packages of org A (STU-E3 access fix). All are owned by M1.
+#: PKG_CLAIMS is private and shared with nobody. PKG_ORG has an org install.
+#: PKG_SHARED has a private install that M1 shared with M2.
+PKG_CLAIMS = "6f0b2d3a-0000-4000-8000-0000000000c1"
+PKG_ORG = "6f0b2d3a-0000-4000-8000-0000000000c2"
+PKG_SHARED = "6f0b2d3a-0000-4000-8000-0000000000c3"
+
 
 #: One event that both orgs subscribe to.
 _SOURCE, _EVENT = "r8trig", "lead.created"
@@ -157,14 +167,28 @@ _WORKFLOWS: dict[str, tuple[str, str, dict]] = {
     "Task event in A": ("A", "event", {"source": _SOURCE, "event_type": _TASK_EVENT}),
     # STU-E3: Studio record triggers, filtered by package and object.
     "Claim in A": ("A", "event", {"source": "studio", "event_type": "studio.record.created",
-                                  "filter": {"package_id": "pkg-claims", "object": "claim"}}),
+                                  "filter": {"package_id": PKG_CLAIMS, "object": "claim"}}),
     "Invoice in A": ("A", "event", {"source": "studio", "event_type": "studio.record.created",
-                                    "filter": {"package_id": "pkg-claims", "object": "invoice"}}),
+                                    "filter": {"package_id": PKG_CLAIMS, "object": "invoice"}}),
     "Claim 2 in A": ("A", "event", {"source": "studio", "event_type": "studio.record.created",
                                     "filter": {"object": "claim"}}),
     "Claim in B": ("B", "event", {"source": "studio", "event_type": "studio.record.created",
-                                  "filter": {"package_id": "pkg-claims", "object": "claim"}}),
+                                  "filter": {"package_id": PKG_CLAIMS, "object": "claim"}}),
 }
+# STU-E3 access fix: the same triggers, with an author who is not the owner.
+_WORKFLOWS.update({
+    "Private by M2": ("A", "event", {"source": "studio", "event_type": "studio.record.created",
+                                     "filter": {"package_id": PKG_CLAIMS}}),
+    "Org package by M2": ("A", "event", {"source": "studio", "event_type": "studio.record.created",
+                                         "filter": {"package_id": PKG_ORG}}),
+    "Org package by M1": ("A", "event", {"source": "studio", "event_type": "studio.record.created",
+                                         "filter": {"package_id": PKG_ORG}}),
+    "Shared package by M2": ("A", "event", {"source": "studio",
+                                            "event_type": "studio.record.created",
+                                            "filter": {"package_id": PKG_SHARED}}),
+})
+#: The author of a workflow when it is not the owner of its org.
+_AUTHOR = {"Private by M2": M2, "Org package by M2": M2, "Shared package by M2": M2}
 _TICKERS = ("Tick in A", "Tick in B")
 
 #: name -> the run-model of a workflow that is not trivial.
@@ -203,6 +227,39 @@ def _grant_app_role(ded_admin_url, dedicated: str) -> None:
                        f"TO {_APP_ROLE}"))
 
 
+def _seed_packages(conn, org: str) -> None:
+    """Three packages of M1 in org A, as ``packages_store`` leaves them."""
+    owner = _OWNERS["A"]
+    for pid, slug, scope, installed in (
+        (PKG_CLAIMS, "claims", None, False),
+        (PKG_ORG, "orgwide", "org", True),
+        (PKG_SHARED, "shared", "private", True),
+    ):
+        conn.execute(text(
+            "INSERT INTO apps (id, slug, name, description, owner_email, visibility, "
+            "status, manifest, workspace_path, format, organization_id) VALUES "
+            "(CAST(:id AS uuid), :slug, :slug, '', :o, 'private', 'draft', "
+            "CAST('{\"studio\": 1}' AS jsonb), '', 'manifest', CAST(:org AS uuid))"),
+            {"id": pid, "slug": f"wftrig-{slug}", "o": owner, "org": org})
+        if not installed:
+            continue
+        conn.execute(text(
+            "INSERT INTO app_versions (app_id, version, manifest, bundle_html, "
+            "bundle_sha256, published_by, organization_id) VALUES (CAST(:id AS uuid), 1, "
+            "CAST('{\"studio\": 1}' AS jsonb), '', '', :o, CAST(:org AS uuid))"),
+            {"id": pid, "o": owner, "org": org})
+        conn.execute(text(
+            "INSERT INTO package_install (app_id, version, scope_kind, scope_subject, "
+            "installed_by, organization_id) VALUES (CAST(:id AS uuid), 1, :k, :sub, :o, "
+            "CAST(:org AS uuid))"),
+            {"id": pid, "k": scope, "sub": "org" if scope == "org" else owner,
+             "o": owner, "org": org})
+    conn.execute(text(
+        "INSERT INTO app_grants (app_id, subject, role, granted_by, organization_id) "
+        "VALUES (CAST(:id AS uuid), :m2, 'use', :o, CAST(:org AS uuid))"),
+        {"id": PKG_SHARED, "m2": M2, "o": owner, "org": org})
+
+
 @pytest.fixture(scope="module")
 def promoted():
     """A dedicated phase-4 catalog, a NOBYPASSRLS role, and the trigger
@@ -231,7 +288,8 @@ def promoted():
                 "INSERT INTO workflows (id, name, description, owner_email, status, "
                 "latest_version, hook_token, organization_id) VALUES (:id, :n, '', "
                 ":o, 'published', 1, :tok, :org)"),
-                {"id": wid, "n": name, "o": _OWNERS[tag], "tok": token, "org": orgs[tag]})
+                {"id": wid, "n": name, "o": _AUTHOR.get(name, _OWNERS[tag]), "tok": token,
+                 "org": orgs[tag]})
             conn.execute(text(
                 "INSERT INTO workflow_versions (workflow_id, version, serialized, "
                 "published_by, organization_id) VALUES (:w, 1, CAST(:s AS jsonb), "
@@ -248,6 +306,8 @@ def promoted():
                     {"w": wid, "k": kind, "c": json.dumps(config),
                      "on": kind != "schedule", "o": orgs[tag]})
             wf[name], tokens[name] = wid, token
+
+        _seed_packages(conn, orgs["A"])
 
     ns = SimpleNamespace(
         admin_engine=eng,
@@ -668,7 +728,7 @@ def test_this_suite_is_named_in_the_ci_skip_guard():
 
 # ── STU-E3: the Studio record trigger ────────────────────────────────────────
 
-_REC = {"package_id": "pkg-claims", "object": "claim", "op": "create", "record_id": "r1"}
+_REC = {"package_id": PKG_CLAIMS, "object": "claim", "op": "create", "record_id": "r1"}
 
 
 def _emit_record(promoted, ambient: str | None, payload: dict | None = None):
@@ -721,3 +781,103 @@ def test_two_matching_triggers_of_one_workflow_start_one_run(promoted, monkeypat
             c.execute(text(
                 "DELETE FROM workflow_triggers WHERE workflow_id = CAST(:w AS uuid) "
                 "AND NOT (config ? 'filter')"), {"w": promoted.wf["Claim in A"]})
+
+
+# ── STU-E3 access fix: the author must read the package ─────────────────────
+
+
+def _host_on(monkeypatch, *orgs: str) -> None:
+    """``PACKAGE_HOST_ORGS`` for one case. The viewer path of the Studio read
+    rule opens only for a listed org, as in the action door."""
+    from gateway.package_host import flags
+
+    monkeypatch.setattr(flags, "package_host_orgs", lambda: frozenset(orgs))
+
+
+def _started_names(promoted, started) -> set[str]:
+    """The names of the started workflows. 'Claim 2 in A' (owner M1, no package
+    in its filter) matches each record of object claim, so it is left out."""
+    ids = {s["workflow_id"] for s in started}
+    return {name for name, wid in promoted.wf.items()
+            if wid in ids and name != "Claim 2 in A"}
+
+
+def test_a_write_in_a_private_package_starts_no_run_of_another_author(promoted, monkeypatch):
+    """M1 writes in M1's private package. The workflow of M2 starts no run, and
+    the workflow of M1 does."""
+    _list_orgs(monkeypatch, promoted.org_a)
+    _host_on(monkeypatch, promoted.org_a)
+    started = _emit_record(promoted, promoted.org_a)
+    names = _started_names(promoted, started)
+    assert "Private by M2" not in names
+    assert "Claim in A" in names
+    assert {s["workflow_id"] for s in started} >= {promoted.wf["Claim 2 in A"]}
+    assert _runs_of(promoted, "Private by M2") == []
+
+
+def test_an_author_with_a_share_of_the_package_starts(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_a)
+    _host_on(monkeypatch, promoted.org_a)
+    started = _emit_record(promoted, promoted.org_a, {**_REC, "package_id": PKG_SHARED})
+    assert _started_names(promoted, started) == {"Shared package by M2"}
+    (row,) = _runs_of(promoted, "Shared package by M2")
+    assert (row.trigger_kind, row.org) == ("event", promoted.org_a)
+
+
+def test_an_org_wide_package_starts_the_workflow_of_every_author(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_a)
+    _host_on(monkeypatch, promoted.org_a)
+    started = _emit_record(promoted, promoted.org_a, {**_REC, "package_id": PKG_ORG})
+    assert _started_names(promoted, started) == {"Org package by M1", "Org package by M2"}
+
+
+def test_a_viewer_author_needs_the_package_host_flag_as_the_door_does(promoted, monkeypatch):
+    """With the flag off, only the owner reads (the rule of ``invoke._check``)."""
+    _list_orgs(monkeypatch, promoted.org_a)
+    _host_on(monkeypatch)
+    started = _emit_record(promoted, promoted.org_a, {**_REC, "package_id": PKG_ORG})
+    assert _started_names(promoted, started) == {"Org package by M1"}
+
+
+@pytest.mark.parametrize("package_id", [
+    None, "", "pkg-claims", "not-a-uuid", "6f0b2d3a-0000-4000-8000-0000000000ff",
+    6, ["x"],
+])
+def test_a_record_event_without_a_readable_package_starts_nothing(
+        promoted, monkeypatch, package_id):
+    """Fail closed. 'Claim 2 in A' has a filter with no package, so only the
+    access check can stop it."""
+    _list_orgs(monkeypatch, promoted.org_a)
+    _host_on(monkeypatch, promoted.org_a)
+    payload = {k: v for k, v in _REC.items() if k != "package_id"}
+    if package_id is not None:
+        payload["package_id"] = package_id
+    assert _emit_record(promoted, promoted.org_a, payload) == []
+    assert _runs_of(promoted, "Claim 2 in A") == []
+
+
+def test_an_event_bound_to_org_b_never_reads_a_package_of_org_a(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_a, promoted.org_b)
+    _host_on(monkeypatch, promoted.org_a, promoted.org_b)
+    assert _emit_record(promoted, promoted.org_b) == []
+    assert _runs_of(promoted, "Claim in B") == []
+    assert _runs_of(promoted, "Claim in A") == []
+
+
+def test_a_read_error_starts_nothing(promoted, monkeypatch):
+    from gateway.studio import packages_store
+
+    _list_orgs(monkeypatch, promoted.org_a)
+
+    async def boom(*a, **k):
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(packages_store, "get_package", boom)
+    assert _emit_record(promoted, promoted.org_a) == []
+
+
+def test_other_event_sources_skip_the_package_check(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_a)
+    started = _on_app_role(promoted, promoted.org_a, lambda: triggers.dispatch_event(
+        _SOURCE, _EVENT, {}))
+    assert _started_names(promoted, started) == {"Event in A"}
