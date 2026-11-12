@@ -19,10 +19,11 @@
  * does nothing is worse than no entry.
  */
 
+import { QUESTIONS_LABEL, QUESTIONS_NOTE } from "./agentQuestions";
 import { MY_WORK_VIEWS, myWorkEnabled, type MyWorkId } from "./myWork";
 import { LEGACY_CHIP, asChip, chipForApp, type MyTasksChip } from "./myTasks";
 
-export type ProjectAppId = "reports" | "ai-chat" | "settings" | MyWorkId;
+export type ProjectAppId = "reports" | "questions" | "ai-chat" | "settings" | MyWorkId;
 
 export interface ProjectAppItem {
   id: ProjectAppId;
@@ -59,6 +60,18 @@ export const PROJECT_APP_SECTIONS: ProjectAppSection[] = [
         note: "Look now, or save to deliver",
         // §9.12.8 slice 1 renders in the app. Delivery is built and DARK —
         // `PROJECT_REPORT_EMAIL_ENABLED` is off, and arming it is the owner's.
+        launch: "live",
+      },
+      {
+        // WS-55 EA-18b (`external_agent_access.md` §12.8). The agent questions
+        // that wait on the reader. The row carries a count badge (the "mine"
+        // count). The page draws the row only while `GET
+        // /projects/agent-questions` answers: with `AGENT_QUESTIONS_ORGS` off
+        // for the org the route answers 404 and the row is absent.
+        id: "questions",
+        label: QUESTIONS_LABEL,
+        icon: "MessageCircleQuestion",
+        note: QUESTIONS_NOTE,
         launch: "live",
       },
       {
