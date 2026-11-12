@@ -222,6 +222,9 @@ async def reconcile_task_blocks(
         return stats
     # No cached calendar id (a reconnect drops it, a deleted calendar forgets
     # it): go on, so the calendar is found or made and the links are bound to it.
+    if not connections.metorite_calendar_id(conn) and _calendar_retry_active(conn.provider_meta, t0):
+        stats.skipped = "calendar_backoff"  # the last try failed: no request yet
+        return stats
 
     if provider is None:
         from gateway.calendar_sync.scheduler import PROVIDERS
@@ -232,11 +235,20 @@ async def reconcile_task_blocks(
     if cred is None:
         stats.skipped = "no_credential"
         return stats
-    async with tenant_session(org) as db:
-        cal_id = await connections.ensure_metorite_calendar(db, org, conn, provider, cred)
-    if await calendar_identity(org, str(conn.id), me, cal_id, conn.provider_meta):
-        # The member removed the calendar and it came back with a new id: the
-        # old events went with it. The links went too, so plan again.
+    try:
+        async with tenant_session(org) as db:
+            cal_id = await connections.ensure_metorite_calendar(db, org, conn, provider, cred)
+    except NeedsReconnect:
+        stats.skipped = "needs_reconnect"
+        return stats
+    except SourceError as exc:  # e.g. a grant with no calendar.app.created scope
+        _log.warning("calendar_sync.task_calendar_failed", organization_id=org, code=_code(exc))
+        await _note_calendar_failure(org, str(conn.id), t0)
+        stats.skipped = "calendar_failed"
+        return stats
+    await _clear_calendar_failure(org, str(conn.id), conn.provider_meta)
+    if await calendar_identity(org, str(conn.id), me, cal_id, conn.provider_meta) != SAME:
+        # The calendar is new or was not bound: the links changed. Plan again.
         async with tenant_session(org) as db:
             work = await plan(db, org, str(conn.id), me, t0)
     if not work["push"] and not work["remove"]:
@@ -380,6 +392,10 @@ def _task_url_builder() -> Callable[[str], str | None]:
 
 META_TASK_CURSOR = "task_cursor"
 META_TASK_CALENDAR_ID = "task_calendar_id"
+#: When the calendar "Metorite" could not be found or made (a grant without
+#: ``calendar.app.created`` answers 403), no request is made before this time.
+META_TASK_RETRY_AT = "task_calendar_retry_at"
+CALENDAR_RETRY = timedelta(minutes=10)
 
 
 SAME = "same"  # the links belong to this calendar
@@ -387,47 +403,92 @@ BOUND = "bound"  # no stored id (first pass, or a reconnect): the links are kept
 CHANGED = "changed"  # another calendar id: the old events went with the old calendar
 
 
-async def calendar_identity(org: str, connection_id: str, me: str, cal_id: str,
-                            meta: dict[str, Any]) -> str:
-    """Bind the links to the calendar they were made in.
-
-    * ``SAME``: the stored id is this calendar. Nothing to do.
-    * ``CHANGED``: the stored id differs (the member deleted "Metorite" and the
-      provider made another). The old events are gone. Every link of this
-      connection and member is dropped WITHOUT touching a block, and the cursor
-      resets. The next push creates each event again.
-    * ``BOUND``: no stored id. A reconnect REPLACES ``provider_meta``
-      (``save_credential``), so the origin of the links is unknown. The links
-      are KEPT: a remove that waited for the reconnect must still run. Each
-      link is marked for re-verification (its hash is cleared), so the next push
-      updates the event, and a 404 makes it again (``_reset_event``). The cursor
-      resets, and the caller must NOT sweep for missing events on the one full
-      list that follows, because the list may come from a new calendar.
-    """
-    from gateway.connections import store
-
+def _identity_of(cal_id: str, meta: dict[str, Any]) -> str:
     stored = meta.get(META_TASK_CALENDAR_ID)
     if stored == cal_id:
         return SAME
-    outcome = CHANGED if stored else BOUND
+    return CHANGED if stored else BOUND
+
+
+async def _bind(db: Any, org: str, connection_id: str, me: str, cal_id: str, outcome: str) -> None:
+    """Write the binding of the links to the calendar, in the caller's transaction.
+
+    * ``CHANGED``: the old events went with the old calendar. Drop every link of
+      this connection and member WITHOUT touching a block. The next push
+      creates each event again.
+    * ``BOUND``: keep the links (a remove that waited for the reconnect must
+      still run), keep each hash, and mark each ``pending`` so the next push
+      updates its event once. A 404 there makes the event again.
+    The stored id and the reset cursor are written LAST, with the binding."""
+    from gateway.connections import store
+
+    if outcome == CHANGED:
+        await db.execute(text(
+            "DELETE FROM calendar_task_links WHERE organization_id = CAST(:org AS uuid) "
+            "AND connection_id = CAST(:cid AS uuid) AND member_email = :me"),
+            {"org": org, "cid": connection_id, "me": me})
+    elif outcome == BOUND:
+        await db.execute(text(
+            "UPDATE calendar_task_links SET sync_state = 'pending', next_attempt_at = NULL "
+            "WHERE organization_id = CAST(:org AS uuid) AND connection_id = CAST(:cid AS uuid) "
+            "AND member_email = :me AND external_id IS NOT NULL"),
+            {"org": org, "cid": connection_id, "me": me})
+    await store.merge_provider_meta(
+        db, org, connection_id, {META_TASK_CALENDAR_ID: cal_id, META_TASK_CURSOR: ""})
+
+
+async def calendar_identity(org: str, connection_id: str, me: str, cal_id: str,
+                            meta: dict[str, Any], *, commit: bool = True) -> str:
+    """Tell which calendar the links belong to, and (with ``commit``) bind them.
+
+    * ``SAME``: the stored id is this calendar. Nothing to do.
+    * ``CHANGED``: the stored id differs. See :func:`_bind`.
+    * ``BOUND``: no stored id. A reconnect REPLACES ``provider_meta``
+      (``save_credential``), so the origin of the links is unknown. The caller
+      must NOT sweep for missing events on the one full list that follows,
+      because the list may come from a new calendar.
+
+    The pull passes ``commit=False`` and binds only after its first full list
+    succeeded, so a failed read leaves the state as it was and the push waits.
+    """
+    from gateway.connections import store
+
+    outcome = _identity_of(cal_id, meta)
+    if outcome == SAME or not commit:
+        return outcome
     async with tenant_session(org) as db:
-        locked = await store.lock_by_id(db, org, connection_id)
-        if locked is None:
+        if await store.lock_by_id(db, org, connection_id) is None:
             return SAME
-        if outcome == CHANGED:
-            await db.execute(text(
-                "DELETE FROM calendar_task_links WHERE organization_id = CAST(:org AS uuid) "
-                "AND connection_id = CAST(:cid AS uuid) AND member_email = :me"),
-                {"org": org, "cid": connection_id, "me": me})
-        else:
-            await db.execute(text(
-                "UPDATE calendar_task_links SET synced_block_hash = NULL, next_attempt_at = NULL "
-                "WHERE organization_id = CAST(:org AS uuid) AND connection_id = CAST(:cid AS uuid) "
-                "AND member_email = :me AND external_id IS NOT NULL"),
-                {"org": org, "cid": connection_id, "me": me})
-        await store.merge_provider_meta(
-            db, org, connection_id, {META_TASK_CALENDAR_ID: cal_id, META_TASK_CURSOR: ""})
+        await _bind(db, org, connection_id, me, cal_id, outcome)
     return outcome
+
+
+def _calendar_retry_active(meta: dict[str, Any], t: datetime) -> bool:
+    raw = meta.get(META_TASK_RETRY_AT)
+    if not isinstance(raw, str) or not raw:
+        return False
+    try:
+        until = datetime.fromisoformat(raw)
+    except ValueError:
+        return False
+    return (until if until.tzinfo else until.replace(tzinfo=UTC)) > t
+
+
+async def _note_calendar_failure(org: str, connection_id: str, t: datetime) -> None:
+    from gateway.connections import store
+
+    async with tenant_session(org) as db:
+        await store.merge_provider_meta(
+            db, org, connection_id, {META_TASK_RETRY_AT: (t + CALENDAR_RETRY).isoformat()})
+
+
+async def _clear_calendar_failure(org: str, connection_id: str, meta: dict[str, Any]) -> None:
+    from gateway.connections import store
+
+    if META_TASK_RETRY_AT not in meta:
+        return
+    async with tenant_session(org) as db:
+        await store.remove_meta_keys(db, org, connection_id, (META_TASK_RETRY_AT,))
 
 
 async def pull_remote_changes(
@@ -437,7 +498,23 @@ async def pull_remote_changes(
     provider: Any,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> int:
+    """:func:`_pull` for a caller that needs only the count."""
+    return await _pull(org, connection_id, provider=provider, now=now, state={})
+
+
+async def _pull(
+    org: str,
+    connection_id: str,
+    *,
+    provider: Any,
+    now: Callable[[], datetime],
+    state: dict[str, bool],
+) -> int:
     """Read the changes of the calendar "Metorite" and apply them to the blocks.
+
+    ``state["unbound"]`` is True from the moment the links are not yet bound to
+    this calendar until the first full list was applied and the binding was
+    written. ``run_pass`` skips the push while it is True.
 
     Returns how many changes it routed. It sends no write to the provider, but
     it IS a request, so the flag gates it too. The cursor of this calendar
@@ -465,8 +542,11 @@ async def pull_remote_changes(
     cred = await connections.fresh_credential(org, conn, provider)
     if cred is None:
         return 0
+    t = now()
     cal_id = connections.metorite_calendar_id(conn)
     if not cal_id:
+        if _calendar_retry_active(conn.provider_meta, t):
+            return 0  # the last try failed: no request yet
         # Forgotten (a deleted calendar) or dropped (a reconnect): find or make it.
         try:
             async with tenant_session(org) as db:
@@ -475,13 +555,16 @@ async def pull_remote_changes(
             return 0
         except SourceError as exc:
             _log.warning("calendar_sync.task_calendar_failed", organization_id=org, code=_code(exc))
+            await _note_calendar_failure(org, str(conn.id), t)
             return 0
+        await _clear_calendar_failure(org, str(conn.id), conn.provider_meta)
     raw = conn.provider_meta.get(META_TASK_CURSOR)
     cursor = raw if isinstance(raw, str) and raw else None
-    identity = await calendar_identity(org, str(conn.id), me, cal_id, conn.provider_meta)
+    identity = await calendar_identity(
+        org, str(conn.id), me, cal_id, conn.provider_meta, commit=False)
     if identity != SAME:
         cursor = None
-    t = now()
+        state["unbound"] = True  # bound only after the first full list is applied
     window = Window.around(t)
     try:
         try:
@@ -514,18 +597,40 @@ async def pull_remote_changes(
             routed += outcome != task_links.IGNORED
         live = {e.external_id for e in result.changes if not e.deleted}
         # An empty full list is not proof of a delete: never act on it.
-        if cursor is None and result.full and live and identity != BOUND:
+        if cursor is None and result.full and live and identity == SAME:
             routed += await task_links.unschedule_missing(
                 db, org, locked, live, window.start, window.end)
+        if identity != SAME:
+            await _bind(db, org, connection_id, me, cal_id, identity)
         await store.merge_provider_meta(
             db, org, connection_id, {META_TASK_CURSOR: result.next_cursor or ""})
+        state["unbound"] = False
     return routed
 
 
-async def run_pass(org: str, connection_id: str, *, provider: Any) -> PassStats:
-    """What the loop calls after the main read: pull first, then push."""
+async def _has_links(org: str, connection_id: str) -> bool:
+    async with tenant_session(org) as db:
+        row = (await db.execute(text(
+            "SELECT 1 FROM calendar_task_links WHERE organization_id = CAST(:org AS uuid) "
+            "AND connection_id = CAST(:cid AS uuid) LIMIT 1"),
+            {"org": org, "cid": connection_id})).fetchone()
+    return row is not None
+
+
+async def run_pass(
+    org: str, connection_id: str, *, provider: Any,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> PassStats:
+    """What the loop calls after the main read: pull first, then push.
+
+    A pull that did not finish while the links are not bound to the calendar (a
+    reconnect, a new calendar) skips the push: the push would send an update
+    that revives an event the member deleted in the gap."""
+    state: dict[str, bool] = {}
     try:
-        await pull_remote_changes(org, connection_id, provider=provider)
-    except Exception as exc:  # noqa: BLE001 - a failed read must not stop the push
+        await _pull(org, connection_id, provider=provider, now=now, state=state)
+    except Exception as exc:  # noqa: BLE001 - a failed read must not stop a bound push
         _log.warning("calendar_sync.task_pull_crashed", organization_id=org, error=type(exc).__name__)
-    return await reconcile_task_blocks(org, connection_id, provider=provider)
+    if state.get("unbound") and await _has_links(org, connection_id):
+        return PassStats(skipped="pull_incomplete")  # an update could revive a gap delete
+    return await reconcile_task_blocks(org, connection_id, provider=provider, now=now)
