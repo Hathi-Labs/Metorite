@@ -1,12 +1,12 @@
 -- ============================================================================
--- 416_workflow_runs_delivery_key.sql - a replayed webhook delivery starts one
+-- 420_workflow_runs_delivery_key.sql - a replayed webhook delivery starts one
 -- run (H-328 part (c), H4 slice 6c, Metorite task 856)
 -- ============================================================================
 -- Spec: project-docs/specs/workflows_app.md (the H4 slice 6c note) · HANDOFF
 -- H-328 · R1 · R5 · R6.
 --
 -- R1: on 2026-11-12 origin/main held 415 as its highest file. So this file is
---   416. Check the number again at merge (scripts/premerge.sh).
+--   420. Check the number again at merge (scripts/premerge.sh).
 --
 -- Why: a sender can deliver one webhook two times. Before this file the hook
 --   door kept no delivery id, so a replay started a second run.

@@ -1616,7 +1616,7 @@ line — never reclaim a number by deleting the other entry.
   open until the only hits left are tenant-discovery reads.
 - **State (2026-11-12):** Parts (a), (b) and (c) are built. Each door binds an org, and the list `WORKFLOW_UNATTENDED_ORGS` ships empty.
   The hook door reads the token in each listed org. The event door uses the tenant that the emitter bound. The manual door uses the org of the row.
-  A replayed webhook delivery starts no second run (migration 416). The list stays empty, and only the owner flips it (OWNER-GATE `enforcement-flip`).
+  A replayed webhook delivery starts no second run (migration 420). The list stays empty, and only the owner flips it (OWNER-GATE `enforcement-flip`).
   A run with no member has no billing member, so an agent node fails, and five failures disable the workflow.
   Before the owner lists an org, read two lists for that org: its published workflows with an agent node, and its paused waits of a kind other than schedule, webhook and event.
   Four `await _get_db()` hits stay in `service.py`. `_organization_ids` and `_workflow_billing_member` are discovery reads.

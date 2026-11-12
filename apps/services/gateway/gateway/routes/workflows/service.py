@@ -104,7 +104,7 @@ from typing import Any
 #     needs no list. A long wait refuses when the org is not listed, because
 #     no scan resumes that run.
 # A replayed webhook delivery starts no second run (`delivery_key`, migration
-# 416). Fence: `tests/unit/test_workflows_triggers_r8.py`.
+# 420). Fence: `tests/unit/test_workflows_triggers_r8.py`.
 from acb_common.db import TenantUnbound, bind_tenant, release_tenant
 from gateway.routes.workflows import unattended
 from gateway.routes.workflows.core import (
@@ -742,7 +742,7 @@ async def start_run(
             },
         )
         # Only a set key can conflict: the partial unique index of migration
-        # 416 skips NULL, and the id is a new UUID. So a run with no key
+        # 420 skips NULL, and the id is a new UUID. So a run with no key
         # never reads the result.
         if delivery_key is not None and result.fetchone() is None:
             # The index refused the row, so this is a replayed delivery.

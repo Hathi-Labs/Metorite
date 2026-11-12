@@ -17,7 +17,7 @@ the org at each door and removed the four marks.
 * ``hooks.workflow_hook`` loops over the listed orgs and reads the token in
   ``_tenant_session(org)``. A token of an org that is not listed answers 404,
   the same as a bad token. A replayed delivery key starts no second run
-  (``workflow_runs.delivery_key``, migration 416).
+  (``workflow_runs.delivery_key``, migration 420).
 * ``runs.run_workflow`` (a member's manual run) passes the org of the row
   that the member read. It refuses a task node, and a long wait in an org
   that is not listed.
@@ -372,7 +372,7 @@ def test_an_unbound_read_finds_no_trigger_and_no_workflow(promoted):
 
 
 def test_the_promoted_clone_has_the_delivery_key_and_its_index(promoted):
-    """Migration 416 reached the catalog that the doors run against."""
+    """Migration 420 reached the catalog that the doors run against."""
     with promoted.admin_engine.connect() as c:
         col = c.execute(text(
             "SELECT data_type, is_nullable FROM information_schema.columns "
