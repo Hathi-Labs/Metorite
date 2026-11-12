@@ -123,6 +123,12 @@ export type ColorTokens = Record<CategoricalToken, string> & {
   /** The fifth lane hue. It was `--primary` at 60%, so it was not a hue. */
   violet: string;
   violetForeground: string;
+  /**
+   * The stripe of an external event's hatch on the Calendar (CE-5a). A
+   * translucent ink, drawn over `--muted` by a `repeating-linear-gradient`.
+   * It is a texture and never text, so `contrast.test.ts` does not measure it.
+   */
+  hatchStripe: string;
 
   /**
    * Sidebar surface overrides. Optional — when a theme omits one it falls back

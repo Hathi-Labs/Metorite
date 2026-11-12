@@ -1,0 +1,4 @@
+{"kind":"calendar#events","nextSyncToken":"SYNC-2","items":[
+  {"kind":"calendar#event","id":"evt_standup","etag":"\"3411\"","status":"confirmed","summary":"Standup (moved)","start":{"dateTime":"2026-11-16T10:00:00+05:30","timeZone":"Asia/Kolkata"},"end":{"dateTime":"2026-11-16T10:15:00+05:30","timeZone":"Asia/Kolkata"}},
+  {"kind":"calendar#event","id":"evt_holiday","status":"cancelled"}
+]}

@@ -746,7 +746,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "summary": (
             "The authority page and the updates of a project, and the "
             "contract of an epic: read the pinned pages, pin or unpin one, "
-            "read, post or delete an update, and set the contract of an epic."
+            "read, post or delete an update, set the contract of an epic, and "
+            "list or answer the questions that agents put to the member."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for the "
@@ -761,6 +762,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "effect."
         ),
         "tools": (
+            "agent_questions",
+            "answer_agent_question",
             "delete_project_update",
             "list_project_updates",
             "pin_authority",

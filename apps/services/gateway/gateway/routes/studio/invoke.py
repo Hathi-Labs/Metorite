@@ -185,12 +185,26 @@ never falls through to a live write.
 * The call runs inside ``studio.preview.preview_scope``. A record event (C3)
   goes out only through ``studio.preview.emit_record_event``, which emits
   nothing in that scope.
+
+**The write of a workflow node (B2c-2d).** :func:`run_workflow_write` is the
+one internal path, and the HTTP route does not reach it. A workflow node of
+type ``studio_write`` calls it after the AUTO-7b parked decision of the
+workflow owner said yes. That decision is the ONE approval, so this path opens
+no card. ``workflows.service._studio_writer`` checks the run, the flags and
+the decision first. Here the door runs :func:`_check` as the owner, the class
+check of :data:`DELEGATED_EXECUTORS`, :func:`_do_object_write` and the audit
+row, in one session. Fix round 1: the door needs ``feature:studio`` for the
+owner in the run's org, and it writes only when the write has the digest that
+the decision bound at the park (:func:`workflow_write_digest`). The audit row
+names the run, the node, the decision and the approver. Fence:
+``tests/unit/test_studio_workflow_write_r8.py``.
 """
 
 from __future__ import annotations
 
 import contextlib
 import dataclasses
+import hashlib
 import json
 import re
 import uuid
@@ -223,11 +237,34 @@ from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store, packages_store
 from gateway.studio.preview import emit_record_event, preview_scope
 
-__all__ = ["ASK_MARKER", "DELEGATED_EXECUTORS", "DIRECT_EXECUTORS", "DOOR_OP",
-           "DOOR_TEMPLATE", "LIST_INPUT_KEYS", "MAX_AUDIT_TEXT", "MAX_BODY_BYTES",
-           "OPEN_EXECUTORS", "PACKAGE_PAUSED", "PAUSED_STATUS", "PAUSED_TEXT",
-           "PREVIEW_MARKER", "READERS_PER_ORG", "READERS_TOTAL", "REFUSALS", "REQUEST_APP",
-           "REQUEST_VIA", "SPEND_REFUSALS", "WRITERS_PER_ORG", "WRITERS_TOTAL", "router"]
+__all__ = [
+    "ASK_MARKER",
+    "DELEGATED_EXECUTORS",
+    "DIRECT_EXECUTORS",
+    "DOOR_OP",
+    "DOOR_TEMPLATE",
+    "LIST_INPUT_KEYS",
+    "MAX_AUDIT_TEXT",
+    "MAX_BODY_BYTES",
+    "OPEN_EXECUTORS",
+    "PACKAGE_PAUSED",
+    "PAUSED_STATUS",
+    "PAUSED_TEXT",
+    "PREVIEW_MARKER",
+    "READERS_PER_ORG",
+    "READERS_TOTAL",
+    "REFUSALS",
+    "REQUEST_APP",
+    "REQUEST_VIA",
+    "SPEND_REFUSALS",
+    "WORKFLOW_VIA",
+    "WRITERS_PER_ORG",
+    "WRITERS_TOTAL",
+    "plan_workflow_write",
+    "router",
+    "run_workflow_write",
+    "workflow_write_digest",
+]
 
 _log = get_logger("gateway.studio.invoke")
 
@@ -1280,6 +1317,171 @@ async def _run_spend(db: Any, org: str, member: str, package: packages_store.Pac
     await record_app_audit_in(db, app_id=package.id, user_email=member, kind="action",
                               detail=_audit_detail(out))
     out.audited = True
+
+
+# ── The write of a workflow node (B2c-2d) ─────────────────────────────────
+
+
+#: The ``via`` of the audit row of a write that a workflow node ran (B2c-2d).
+WORKFLOW_VIA = "workflow"
+#: The codes of a refused write of a workflow node.
+WORKFLOW_NO_ORG = "no_org"
+WORKFLOW_STUDIO_OFF = "studio_off"
+WORKFLOW_NO_PACKAGE = "not_found"
+#: Fix round 1. The member lost ``feature:studio`` in the run's org.
+WORKFLOW_NO_FEATURE = "no_feature"
+#: Fix round 1. The write is not the write that the owner approved: the node
+#: config or the ``uses`` of the action changed after the park.
+WORKFLOW_MISMATCH = "write_mismatch"
+#: The verb of each object write, as the parked question names it.
+WORKFLOW_VERBS = {"create": "add", "update": "change", "delete": "delete"}
+
+
+def workflow_write_digest(*, package_id: str, action: str, uses: str, record_id: Any,
+                          data: Any) -> str:
+    """The digest of ONE write of a workflow node (fix round 1).
+
+    The park computes it from the node and the ``uses`` of the action at the
+    park, and the decision payload keeps it. The write computes it again from
+    the node of the run's pinned graph and the ``uses`` of the action now. A
+    write runs only when the two match, like ``request_mismatch`` of B2c-2a."""
+    canon = json.dumps({"package_id": str(package_id), "action": str(action),
+                        "uses": str(uses), "record_id": record_id, "data": data},
+                       sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+@dataclasses.dataclass(frozen=True)
+class WorkflowWritePlan:
+    """What a parked question names about its write (fix round 1)."""
+
+    package_name: str
+    object: str
+    op: str
+    uses: str
+    digest: str
+
+
+async def plan_workflow_write(db: Any, *, member: str, package_id: Any, action: Any,
+                              data: Any, record_id: Any) -> WorkflowWritePlan | None:
+    """The plan of a write of a workflow node, read at the park, or None.
+
+    It runs :func:`_check` as *member* on the caller's session, which binds
+    the run's org. None when the package is not the member's, the action is
+    not declared, or the action is no object write of
+    :data:`DELEGATED_EXECUTORS`. It writes nothing."""
+    pid = _uuid_or_none(str(package_id or ""))
+    if pid is None or not _ACTION_ID.fullmatch(str(action or "")):
+        return None
+    out = _Outcome(action=str(action))
+    try:
+        package, ref = await _check(db, member, pid, str(action), out, delegated=True)
+    except HTTPException:
+        return None
+    if out.refusal is not None or ref is None or (ref.source, ref.op) not in DELEGATED_EXECUTORS:
+        return None
+    uses = str(out.uses)
+    return WorkflowWritePlan(
+        package_name=str(package.name), object=str(ref.object), op=str(ref.op), uses=uses,
+        digest=workflow_write_digest(package_id=pid, action=str(action), uses=uses,
+                                     record_id=record_id, data=data))
+
+
+async def _holds_studio(member: str, org: str) -> bool:
+    """True when *member* holds ``feature:studio`` in *org* now (fix round 1).
+
+    The HTTP door holds the same rule through ``require_feature_router``. A
+    run has no request, so this reads the member's access in the run's org
+    through ``acb_auth.access.resolve_access_in_org``, the one resolver for a
+    member who is not the caller. It fails closed."""
+    from acb_auth.access import resolve_access_in_org
+
+    try:
+        access = await resolve_access_in_org(member, org)
+    except Exception as exc:
+        _log.warning("studio.invoke.workflow_access_failed", error=type(exc).__name__)
+        return False
+    return bool(access.is_active and access.can_use_feature("studio"))
+
+
+def _workflow_body(data: Any, record_id: Any) -> bytes:
+    """The body of the door, from the literal config of the node. A key with
+    no value stays out, so ``_write_input`` checks the keys of the verb."""
+    body = {k: v for k, v in (("id", record_id), ("data", data)) if v is not None}
+    return json.dumps(body).encode("utf-8")
+
+
+def _workflow_result(out: _Outcome) -> dict[str, Any]:
+    """What the node reads back. It holds ids and codes, and no record data,
+    because the run row stores the output of each node."""
+    outcome, reason = _outcome(out)
+    return {"ok": _wrote(out), "outcome": outcome, "code": reason,
+            "record_id": out.record_id, "deleted": out.deleted is not None}
+
+
+async def run_workflow_write(*, organization_id: str, member: str, package_id: str,
+                             action: str, data: Any, record_id: Any, run_id: str,
+                             node_id: str, expected_digest: str,
+                             decision_id: str) -> dict[str, Any]:
+    """Run ONE object write of a workflow node, with no second card (B2c-2d).
+
+    ⚠️ **The one internal path to the executor of a delegated write.** The
+    caller is ``workflows.service._studio_writer`` only. It runs after the
+    AUTO-7b parked decision of the workflow owner said yes, and that decision
+    is the ONE approval of this write. So this path opens no card and spends
+    no request. The HTTP route keeps its 403 ``no_person_present``.
+
+    The caller binds the facts: *organization_id* is the org of the run row,
+    *member* is the owner, the decider of *decision_id*, and
+    *expected_digest* is the digest that the decision payload holds. None of
+    them comes from node input. First the member must hold ``feature:studio``
+    in the org now (fix round 1). Then, in ONE ``_tenant_session(org)``, it
+    runs :func:`_check` as the member, the class check of
+    :data:`DELEGATED_EXECUTORS`, the digest compare, :func:`_do_object_write`
+    and ``record_app_audit_in``. A digest that differs is
+    ``write_mismatch``, and nothing is written. The audit row names the run,
+    the node, the decision and the approver. A failed audit rolls the write
+    back. The record event of C3 goes out after the commit. It never raises an
+    ``HTTPException``: the node fails on each answer that is not ``ok``.
+    """
+    org = str(organization_id or "").strip()
+    out = _Outcome(action=action)
+    if not org:
+        return {"ok": False, "outcome": "refused", "code": WORKFLOW_NO_ORG}
+    if not flags.studio_allowed(org):
+        return {"ok": False, "outcome": "refused", "code": WORKFLOW_STUDIO_OFF}
+    pid = _uuid_or_none(package_id)
+    if pid is None or not _ACTION_ID.fullmatch(str(action or "")):
+        return {"ok": False, "outcome": "not_found", "code": WORKFLOW_NO_PACKAGE}
+    if not await _holds_studio(member, org):
+        return {"ok": False, "outcome": "refused", "code": WORKFLOW_NO_FEATURE}
+    with _writer_slot(org, True) as admitted:
+        if not admitted:
+            return {"ok": False, "outcome": "failed", "code": STORE_BUSY}
+        try:
+            async with _tenant_session(org) as db:
+                package, ref = await _check(db, member, pid, action, out, delegated=True)
+                if out.refusal is None and (
+                        ref is None or (ref.source, ref.op) not in DELEGATED_EXECUTORS):
+                    out.refusal = SOURCE_NOT_OPEN
+                if out.refusal is None and workflow_write_digest(
+                        package_id=pid, action=action, uses=str(out.uses),
+                        record_id=record_id, data=data) != str(expected_digest or ""):
+                    out.refusal = WORKFLOW_MISMATCH
+                if out.refusal is None and ref is not None:
+                    await _do_object_write(db, member, package, ref,
+                                           _workflow_body(data, record_id), out)
+                detail = {**_audit_detail(out), "via": WORKFLOW_VIA,
+                          "run_id": _cap(str(run_id)), "node_id": _cap(str(node_id)),
+                          "decision_id": _cap(str(decision_id)), "approver": _cap(member)}
+                await record_app_audit_in(db, app_id=package.id, user_email=member,
+                                          kind="action", detail=detail)
+        except HTTPException:
+            # The package is not the member's in this org. A 404 writes no row.
+            return {"ok": False, "outcome": "not_found", "code": WORKFLOW_NO_PACKAGE}
+    # C3: after the commit of the write, so no event names a rolled back change.
+    await _emit_record_event(out, org)
+    return _workflow_result(out)
 
 
 def _mode(first: UsesRef | None, direct: bool, delegated: bool,

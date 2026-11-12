@@ -315,10 +315,11 @@ def test_the_direct_path_is_the_only_door_write() -> None:
     whole = Path(invoke.__file__).read_text(encoding="utf-8")
     assert whole.count("apply_writes(") == 1
     assert "apply_writes(" in inspect.getsource(invoke._do_object_write)
-    # Three callers of the write: the direct write, the spent request of a
-    # delegated write (B2c-2a), and the preview (G4). The second runs only
-    # after the spend. The third runs in a SAVEPOINT that always rolls back.
-    assert whole.count("await _do_object_write(") == 3
+    # Four callers of the write: the direct write, the spent request of a
+    # delegated write (B2c-2a), the preview (G4) and the workflow write
+    # (B2c-2d). The second runs only after the spend. The third runs in a
+    # SAVEPOINT that always rolls back. The fourth checks the digest first.
+    assert whole.count("await _do_object_write(") == 4
     assert "await _do_object_write(" in inspect.getsource(invoke._run_object_write)
     spend = inspect.getsource(invoke._run_spend)
     assert spend.index("await store.spend(") < spend.index("await _do_object_write(")

@@ -230,6 +230,12 @@ class FieldDef(_Strict):
     to: str | None = None
     #: The field gets a row in the index side table of C1 (`studio_record_hot`).
     hot: bool = False
+    #: C14. The bounds of a `rating`, the units of a `quantity` and the format of a
+    #: `barcode`. `studio_fields._check_extras` holds the rules of each.
+    min: int | None = None
+    max: int | None = None
+    units: list[str] | None = None
+    format: str | None = None
     #: C13. A lines relation: the field of the object `to` that names this one.
     #: `studio_fields.lines_problem` holds the rule of the object it names.
     lines: str | None = None
