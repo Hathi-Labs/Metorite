@@ -343,6 +343,8 @@ export interface ObjectRow {
   fields: Array<{
     key: string; type: string; label: string | null; required: boolean; many: boolean;
     options: string[] | null; to: string | null; hot: boolean;
+    // STU-C14: the bounds of a rating, the units of a quantity, the format of a barcode.
+    min?: number | null; max?: number | null; units?: string[] | null; format?: string | null;
     /** C13. A lines relation names the field of its line object that points back. */
     lines?: string | null;
   }>;

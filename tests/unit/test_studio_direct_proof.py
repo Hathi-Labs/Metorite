@@ -275,9 +275,9 @@ def _rel(path: Path) -> str:
 def test_the_direct_set_is_create_update_delete_only() -> None:
     assert {("object", "create"), ("object", "update"),
             ("object", "delete")} == invoke.DIRECT_EXECUTORS
-    # STU-D4b adds the aggregate, a read, to the open set.
-    assert {("object", "get"), ("object", "list"),
-            ("object", "aggregate")} == invoke.OPEN_EXECUTORS
+    # STU-D4b adds the aggregate, and B2b-2b the door op, to the open set.
+    assert {("object", "get"), ("object", "list"), ("object", "aggregate"),
+            invoke.DOOR_OP} == invoke.OPEN_EXECUTORS
     assert not invoke.DIRECT_EXECUTORS & invoke.OPEN_EXECUTORS
 
 
@@ -316,10 +316,11 @@ def test_the_direct_path_is_the_only_door_write() -> None:
     whole = Path(invoke.__file__).read_text(encoding="utf-8")
     assert whole.count("apply_writes(") == 1
     assert "apply_writes(" in inspect.getsource(invoke._do_object_write)
-    # Three callers of the write: the direct write, the spent request of a
-    # delegated write (B2c-2a), and the preview (G4). The second runs only
-    # after the spend. The third runs in a SAVEPOINT that always rolls back.
-    assert whole.count("await _do_object_write(") == 3
+    # Four callers of the write: the direct write, the spent request of a
+    # delegated write (B2c-2a), the preview (G4) and the workflow write
+    # (B2c-2d). The second runs only after the spend. The third runs in a
+    # SAVEPOINT that always rolls back. The fourth checks the digest first.
+    assert whole.count("await _do_object_write(") == 4
     assert "await _do_object_write(" in inspect.getsource(invoke._run_object_write)
     spend = inspect.getsource(invoke._run_spend)
     assert spend.index("await store.spend(") < spend.index("await _do_object_write(")

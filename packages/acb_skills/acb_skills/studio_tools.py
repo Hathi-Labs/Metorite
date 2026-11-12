@@ -1,13 +1,14 @@
-"""The Studio builder tools for Mira (STU-G1, STU-G2, STU-F2d and STU-G1c).
+"""The Studio builder tools for Mira (STU-G1, STU-G2, STU-F2d, STU-G1c and STU-A5c-2).
 
-Spec: ``project-docs/specs/ai_studio.md`` sections 6.2 and 14 (G1, G2, F2d
-and G1c).
+Spec: ``project-docs/specs/ai_studio.md`` sections 6.2 and 14 (G1, G2, F2d,
+G1c and A5c-2).
 
 Eight **stateless** builder tools. They keep no draft. The model holds the
 manifest in the chat turn and sends it back on each call. The skill tools
 (F2d) and the package tools (G1c) each form a second tuple, because they
 write: :func:`studio_save` stores a manifest as the draft of a package, and
-:func:`studio_publish` publishes it.
+:func:`studio_publish` publishes it. :func:`studio_delete_package` (A5c-2)
+deletes a package after ONE card that it always shows.
 
 * :func:`studio_describe` (G1b) gives the live manifest schema, the field types
   and the block tokens, so the model reads them before it drafts. It reads
@@ -990,6 +991,8 @@ def _describe_fields() -> dict[str, Any]:
         "types": list(f.FIELD_TYPES),
         "hot_types": list(f.HOT_TYPES),
         "name_pattern": f.NAME_PATTERN,
+        "value_shapes": dict(f.VALUE_SHAPES),
+        "spec_parts": {k: list(v) for k, v in f.SPEC_PARTS.items()},
         "limits": {
             "max_fields_per_object": f.MAX_FIELDS_PER_OBJECT,
             "max_options": f.MAX_OPTIONS,
@@ -2887,10 +2890,220 @@ async def _held_publish(
     return None
 
 
-#: The two package tools, in the order of the skill family ``studio``.
+# ── The delete of a package (STU-A5c-2) ─────────────────────────────────────
+#
+# One write tool over the two delete routes of A5c-1
+# (``gateway/routes/studio/packages.py``), over HTTP as the member. It ALWAYS
+# shows one card with the counts, in a clear chat too, because a delete
+# cannot be undone. The route decides the admin path from the session, so the
+# tool takes the package id only.
+
+#: The codes of the delete answers that the tool reads.
+_COUNTS_CHANGED = "counts_changed"  # packages.COUNTS_CHANGED
+_OWNER_ACTIVE = "owner_active"  # packages.OWNER_ACTIVE
+#: The most DELETE calls of one approved delete. Each call ends before the
+#: client timeout of :func:`_send` (15 s), so the loop ends in 3 minutes,
+#: under the tool limit of the run watchdog (300 s). A bigger app ends with
+#: ``remaining`` and a new card on the next call.
+MAX_DELETE_CALLS = 12
+#: The most tables that one delete card names. The card counts the rest.
+MAX_DELETE_CARD_TABLES = 10
+#: The confirm token of a delete preview: 64 lower-case hex digits. A pattern
+#: text and ``re.fullmatch``, because no studio module calls ``compile``
+#: (``test_studio_builder_tools.py``).
+_TOKEN = r"[0-9a-f]{64}"
+
+_DEL_NOTE = ("Approve to delete this app for good: its tables, records, versions and "
+             "installs. Nothing can bring them back. Reject to delete nothing.")
+_DEL_WONT_FIT = "This app does not fit on one card, so nothing was deleted. Delete it in Studio."
+_DEL_NOT_FOUND = ("No app that you can delete has this id, or AI Studio is not open for this "
+                  "organization. Nothing was deleted. Use the package_id that "
+                  "studio_package_get gives.")
+_DEL_OWNER_ACTIVE = ("The owner of this app is an active member, so only the owner can delete "
+                     "it. Nothing was deleted. Ask the owner to delete it.")
+_DEL_UNREAD = "The counts of the app could not be read, so nothing was deleted. Try again."
+_DEL_MOVED = ("The app changed while the card was open, so nothing was deleted. Call this tool "
+              "again to show the new counts on a new card.")
+_DEL_CHANGED = ("The app changed during the delete, so the delete stopped. Nothing more was "
+                "deleted. Call this tool again to show the new counts on a new card.")
+_DEL_OWNER_BACK = ("The owner of this app became an active member during the delete, so the "
+                   "delete stopped. Nothing more was deleted. Only the owner can delete the rest.")
+_DEL_BUSY = ("The app is busy, so the delete stopped. Records that a call removed stay "
+             "removed. Try again in a moment: this tool shows a new card first.")
+_DEL_GONE = ("No app has this id now, so another delete may have removed it. Nothing more was "
+             "deleted.")
+_DEL_MAYBE = ("The delete may have removed some records. Call this tool again to read the "
+              "counts that are left on a new card.")
+_DEL_NOT_DONE = ("The delete is not finished: {remaining} records are left. Call this tool "
+                 "again to delete the rest. It shows a new card first.")
+_DEL_DONE = "The app is deleted. Its tables, records, versions and installs are gone."
+
+
+def _whole(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _preview_of(data: Any) -> dict[str, Any] | None:
+    """The delete preview of the route, or None for a shape that the tool
+    cannot read. Each count is a whole number, and the token is 64 hex
+    digits. The preview holds names and counts, and no manifest text."""
+    if not isinstance(data, dict):
+        return None
+    package, totals, objects = data.get("package"), data.get("totals"), data.get("objects")
+    token = data.get("confirm")
+    if not (isinstance(package, dict) and isinstance(totals, dict) and isinstance(objects, list)
+            and isinstance(token, str) and re.fullmatch(_TOKEN, token)):
+        return None
+    if not all(_whole(totals.get(k)) for k in (
+            "objects", "fields", "records", "versions", "installs", "other_member_installs")):
+        return None
+    tables = [o for o in objects if isinstance(o, dict)]
+    if len(tables) != len(objects) or not all(
+            _whole(o.get("records")) and _whole(o.get("fields")) for o in tables):
+        return None
+    return {"name": package.get("name"), "tables": tables, "totals": totals, "confirm": token}
+
+
+def _records_words(count: int, capped: bool) -> str:
+    """A count of records. A capped count says "at least"."""
+    return f"at least {count} records" if capped else _plural(count, "record")
+
+
+def _delete_rows(shown: dict[str, Any]) -> list[tuple[str, str]]:
+    """The rows of a delete card: the app, its first tables with their
+    records, then the totals. Each row is short, so nothing cuts it. Each name
+    is inside « » and shows no character that shows nothing."""
+    totals, tables = shown["totals"], shown["tables"]
+    rows = [("app", f"App: {_title_name(shown['name'])}")]
+    for t in tables[:MAX_DELETE_CARD_TABLES]:
+        rows.append(("table", f"- {_title_name(t.get('name'))}: "
+                              f"{_records_words(t['records'], t.get('capped') is True)}, "
+                              f"{_plural(t['fields'], 'field')}"))
+    rest = len(tables) - MAX_DELETE_CARD_TABLES
+    if rest > 0:
+        rows.append(("more", f"and {_plural(rest, 'more table')}"))
+    capped = totals.get("records_capped") is True
+    rows += [
+        ("records", f"Records: {_records_words(totals['records'], capped)} in "
+                    f"{_plural(totals['objects'], 'table')}"),
+        ("versions", f"Versions: {totals['versions']}"),
+        ("installs", f"Installs: {totals['installs']}, and {totals['other_member_installs']} "
+                     "of them reach other members"),
+    ]
+    return rows
+
+
+def _delete_fail(reply: _Reply, **extra: Any) -> dict[str, Any]:
+    """The answer to a refused read or delete. A 404 names both causes, and a
+    403 ``owner_active`` says who can delete. Each other answer goes to
+    :func:`_package_fail`."""
+    if reply.status == 404:
+        return _refusal(_DEL_NOT_FOUND, status=404, **extra)
+    if reply.status == 403 and _code(reply) == _OWNER_ACTIVE:
+        return _refusal(_DEL_OWNER_ACTIVE, status=403, code=_OWNER_ACTIVE, **extra)
+    return _package_fail(reply, "deleted", **extra)
+
+
+def _removed_in(reply: _Reply) -> int:
+    """The records that one DELETE call removed, from its answer or its
+    ``detail``. An answer with no count gives 0."""
+    data = reply.data if isinstance(reply.data, dict) else {}
+    detail = data.get("detail") if isinstance(data.get("detail"), dict) else {}
+    for raw in (data.get("records_removed"), detail.get("records_removed")):
+        if _whole(raw):
+            return int(raw)
+    return 0
+
+
+async def _read_delete_preview(pid: str) -> _Reply:
+    """``GET /studio/packages/{id}/delete-preview`` as the member."""
+    return await _send("GET", f"/studio/packages/{pid}/delete-preview", None, miss=_DEL_UNREAD)
+
+
+async def _delete_calls(pid: str, token: str, decision: str) -> dict[str, Any]:
+    """``DELETE /studio/packages/{id}`` with the token of the approved counts.
+    A 202 gives a new token and the loop sends it, at most
+    :data:`MAX_DELETE_CALLS` times. Each other answer ends the loop."""
+    removed = 0
+    left = 0
+    for _ in range(MAX_DELETE_CALLS):
+        try:
+            reply = await _send("DELETE", f"/studio/packages/{pid}", {"confirm": token},
+                                "delete", _DEL_MAYBE)
+        except _Refused as exc:
+            return _refusal(str(exc), decision=decision, records_removed=removed)
+        removed += _removed_in(reply)
+        data = reply.data if isinstance(reply.data, dict) else {}
+        if reply.status == 200 and data.get("deleted") is True:
+            return {"ok": True, "errors": [], "diff": [], "deleted": True, "package_id": pid,
+                    "records_removed": removed, "decision": decision, "note": _DEL_DONE}
+        nxt = data.get("confirm")
+        if reply.status == 202 and isinstance(nxt, str) and re.fullmatch(_TOKEN, nxt):
+            token = nxt
+            left = int(data["remaining"]) if _whole(data.get("remaining")) else 0
+            continue
+        out = {"decision": decision, "records_removed": removed}
+        if reply.status == 409 and _code(reply) == _COUNTS_CHANGED:
+            return _refusal(_DEL_CHANGED, status=409, code=_COUNTS_CHANGED, **out)
+        if reply.status == 403 and _code(reply) == _OWNER_ACTIVE:
+            return _refusal(_DEL_OWNER_BACK, status=403, code=_OWNER_ACTIVE, **out)
+        if reply.status == 404:
+            return _refusal(_DEL_GONE, status=404, **out)
+        if reply.status == 503:
+            return _refusal(_DEL_BUSY, status=503, **out)
+        return _package_fail(reply, "deleted", **out)
+    return _refusal(_DEL_NOT_DONE.format(remaining=left), status=202, decision=decision,
+                    records_removed=removed, remaining=left)
+
+
+@annotate(read_only=False, idempotent=False, open_world=False)
+async def studio_delete_package(package_id: str) -> dict[str, Any]:
+    """Delete an app for good: its tables, records, versions and installs.
+
+    It always shows ONE card with the counts, in every chat, and waits. The
+    answer has a "decision": approved, revised (the member wrote in the chat),
+    stopped, or no_card (the chat shows no card). Only approved deletes, after
+    a second read of the counts that matches the card. For the other
+    decisions, nothing was deleted. An admin can delete the app of a member
+    who left the organization. When records are left, call it again: it
+    shows a new card.
+    """
+    pid = _skill_path(package_id)
+    if pid is None:
+        return _refusal(_NO_PACKAGE_ID)
+    try:
+        first = await _read_delete_preview(pid)
+        if not first.ok:
+            return _delete_fail(first)
+        shown = _preview_of(first.data)
+        if shown is None:
+            return _refusal(_PKG_SHAPE)
+        rows = _delete_rows(shown)
+        context = await _card(_DEL_NOTE, rows, _DEL_WONT_FIT)
+        capped = shown["totals"].get("records_capped") is True
+        detail = (f"{_records_words(shown['totals']['records'], capped)} go for good. "
+                  "Nothing can bring them back.")
+        decision = await _decide(f"Delete the app {_title_name(shown['name'])}?", detail, context)
+        if decision != "approved":
+            return _pkg_not_done("Nothing was deleted.", decision, context, rows)
+        # The DELETE checks the token under its locks too. This read keeps the
+        # rule of the other cards: nothing changes after a card that moved.
+        second = await _read_delete_preview(pid)
+        if not second.ok:
+            return _delete_fail(second, decision=decision)
+        again = _preview_of(second.data)
+        if again is None or again["confirm"] != shown["confirm"]:
+            return _refusal(_DEL_MOVED, decision=decision)
+    except _Refused as exc:
+        return _refusal(str(exc))
+    return await _delete_calls(pid, shown["confirm"], decision)
+
+
+#: The three package tools, in the order of the skill family ``studio``.
 STUDIO_PACKAGE_TOOLS = (
     studio_save,
     studio_publish,
+    studio_delete_package,
 )
 
 
@@ -2968,9 +3181,20 @@ def _package_objects(found: Any) -> list[dict[str, Any]]:
                 break
             key = _ident(f.get("key")) if isinstance(f, dict) else None
             if key is not None:
-                fields.append({"key": key, "type": _tag(f.get("type"), 20),
-                               "required": f.get("required") is True,
-                               "many": f.get("many") is True})
+                row: dict[str, Any] = {"key": key, "type": _tag(f.get("type"), 20),
+                                       "required": f.get("required") is True,
+                                       "many": f.get("many") is True}
+                # STU-C14: a rating's bounds, a quantity's units and a barcode's format.
+                for part in ("min", "max"):
+                    if type(f.get(part)) is int:
+                        row[part] = f[part]
+                if isinstance(f.get("units"), list):
+                    # The declaration check caps the count and the length of units.
+                    # A unit is member text, so it shows inside « » as a label does.
+                    row["units"] = [_name(u, True) for u in f["units"] if isinstance(u, str)]
+                if f.get("format") in studio_fields.BARCODE_FORMATS:
+                    row["format"] = f["format"]
+                fields.append(row)
         rules = obj.get("rules")
         out.append({"name": name, "label": _name(obj.get("label") or name, True),
                     "fields": fields, "rules": len(rules) if isinstance(rules, list) else 0})
@@ -3677,6 +3901,7 @@ __all__ = [
     "parts_count",
     "plan_card_text",
     "structure_line",
+    "studio_delete_package",
     "studio_describe",
     "studio_draft",
     "studio_interview",

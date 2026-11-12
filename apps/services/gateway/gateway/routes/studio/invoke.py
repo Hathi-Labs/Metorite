@@ -1,4 +1,4 @@
-"""The action door of AI Studio (STU-B2a, B2b-1, B2c-1, B2c-2a and D4b, ``ai_studio.md`` §3.2).
+"""The action door of AI Studio (STU-B2a, B2b-1, B2b-2b, B2c-1, B2c-2a and D4b, ``ai_studio.md`` §3.2).
 
 ``POST /studio/apps/{app_id}/actions/{action}`` runs one action that a Studio
 package declares. The route registers on the router of ``actions.py``, as
@@ -21,6 +21,10 @@ package declares. The route registers on the router of ``actions.py``, as
    (``package_host/viewer.py``), and the declarations are those of that
    version. A draft, a paused, an archived and an expired install get the
    same 404.
+   J3a: a package of the caller that an admin paused (``apps.paused_at``)
+   gets 423 ``package_paused`` for each action, before the declaration. The
+   row of the call holds the code. A viewer of a paused package reads no
+   install of it, so a viewer gets the same 404.
 4. The declaration. The path names an ``actions[].id`` of the manifest. An
    id that the manifest does not declare gets 403 ``not_declared``.
 5. The class. An ``object:<name>.<op>`` action takes its class from
@@ -64,8 +68,21 @@ package declares. The route registers on the router of ``actions.py``, as
    the create, the update and the delete of an object (B2c-1). Each one
    parses the body here, and only here. An object name that the package does not hold gets 404
    ``object_missing``, and a record id that names nothing gets 404 ``Not
-   found``. Each other class A action gets 403 ``source_not_open`` (B2b-2 and
-   B2b-3 name the next executors).
+   found``. A class A door op runs too, while ``STUDIO_DOOR_OPS_ORGS`` holds
+   the org (B2b-2b, below). Each other class A action gets 403
+   ``source_not_open`` (B2b-3 names the next executor).
+
+**A door op (B2b-2b).** A class A ``<app>.<op>`` action runs the op of that
+app as the caller, through ``door_op.py``. Its class comes from the catalog.
+A signed outside agent gets 403 ``outside_agent``, and a route under
+``/studio`` gets 403 ``source_not_open``, both before the body read. The body
+is the args of the op. The second check must find the same ``uses``. Then
+the session closes, and the door holds none while the app runs the call. A
+body that ``build_call`` cannot use is 422 ``bad_args`` with the key. A 4xx
+of the app is the app's own refusal, unchanged. A 5xx is 503
+``app_unavailable``. The audit row holds the status of the app and no data of
+its answer. Class B and C keep ``approval_required``, and an ``off_door`` row
+stays out of the catalog (``not_in_catalog``).
 
 **The list.** An empty body means ``{}``. The door accepts only the keys of
 :data:`LIST_INPUT_KEYS`, and ``limit`` and ``offset`` must each be an ``int``.
@@ -186,12 +203,26 @@ never falls through to a live write.
 * The call runs inside ``studio.preview.preview_scope``. A record event (C3)
   goes out only through ``studio.preview.emit_record_event``, which emits
   nothing in that scope.
+
+**The write of a workflow node (B2c-2d).** :func:`run_workflow_write` is the
+one internal path, and the HTTP route does not reach it. A workflow node of
+type ``studio_write`` calls it after the AUTO-7b parked decision of the
+workflow owner said yes. That decision is the ONE approval, so this path opens
+no card. ``workflows.service._studio_writer`` checks the run, the flags and
+the decision first. Here the door runs :func:`_check` as the owner, the class
+check of :data:`DELEGATED_EXECUTORS`, :func:`_do_object_write` and the audit
+row, in one session. Fix round 1: the door needs ``feature:studio`` for the
+owner in the run's org, and it writes only when the write has the digest that
+the decision bound at the park (:func:`workflow_write_digest`). The audit row
+names the run, the node, the decision and the approver. Fence:
+``tests/unit/test_studio_workflow_write_r8.py``.
 """
 
 from __future__ import annotations
 
 import contextlib
 import dataclasses
+import hashlib
 import json
 import re
 import uuid
@@ -202,8 +233,8 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from acb_auth import app_requests as store
 from acb_auth import direct_proof as _direct_proof
-from acb_common import get_logger, studio_query
-from acb_common.app_manifests.base import OP_PATTERN
+from acb_common import app_manifests, get_logger, studio_query
+from acb_common.app_manifests.base import OP_PATTERN, DoorOp
 from acb_common.no_person import no_person_present
 from acb_common.studio_fields import FieldError, FieldSpec, RecordError
 from acb_common.studio_manifest import OBJECT_OP_CLASSES, UsesRef, parse_uses
@@ -214,29 +245,62 @@ from acb_common.studio_rules import (
     RuleViolation,
 )
 from fastapi import Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from gateway import app_requests
 from gateway.db import tenant_session as _tenant_session
 from gateway.package_host import viewer as _viewer
 from gateway.package_host.flags import package_host_allowed
 from gateway.routes.apps._common import record_app_audit_bound, record_app_audit_in
-from gateway.routes.studio import actions, flags
+from gateway.routes.studio import actions, door_op, flags
 from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store, packages_store
 from gateway.studio.preview import emit_record_event, preview_scope
 
-__all__ = ["AGGREGATE_INPUT_KEYS", "ASK_MARKER", "DELEGATED_EXECUTORS", "DIRECT_EXECUTORS",
-           "DOOR_TEMPLATE", "LIST_INPUT_KEYS", "MAX_AUDIT_TEXT", "MAX_BODY_BYTES",
-           "OPEN_EXECUTORS", "PREVIEW_MARKER", "READERS_PER_ORG", "READERS_TOTAL",
-           "REFUSALS", "REQUEST_APP", "REQUEST_VIA", "SPEND_REFUSALS", "WRITERS_PER_ORG",
-           "WRITERS_TOTAL", "router"]
+__all__ = [
+    "AGGREGATE_INPUT_KEYS",
+    "ASK_MARKER",
+    "DELEGATED_EXECUTORS",
+    "DIRECT_EXECUTORS",
+    "DOOR_OP",
+    "DOOR_TEMPLATE",
+    "LIST_INPUT_KEYS",
+    "MAX_AUDIT_TEXT",
+    "MAX_BODY_BYTES",
+    "OPEN_EXECUTORS",
+    "PACKAGE_PAUSED",
+    "PAUSED_STATUS",
+    "PAUSED_TEXT",
+    "PREVIEW_MARKER",
+    "READERS_PER_ORG",
+    "READERS_TOTAL",
+    "REFUSALS",
+    "REQUEST_APP",
+    "REQUEST_VIA",
+    "SPEND_REFUSALS",
+    "WORKFLOW_VIA",
+    "WRITERS_PER_ORG",
+    "WRITERS_TOTAL",
+    "plan_workflow_write",
+    "router",
+    "run_workflow_write",
+    "workflow_write_digest",
+]
 
 _log = get_logger("gateway.studio.invoke")
 
+#: The key of a door op in :data:`OPEN_EXECUTORS` (STU-B2b-2b): each class A
+#: ``<app>.<op>`` action. It runs only while ``STUDIO_DOOR_OPS_ORGS`` holds
+#: the org (``flags.door_ops_allowed``), and the executor is ``door_op.py``.
+DOOR_OP: tuple[str, str | None] = ("manifest", None)
+
 #: The executors that the door opens, as (source, op): the object ``get`` of
-#: B2a, the object ``list`` of B2b-1 and the object ``aggregate`` of D4b.
+#: B2a, the object ``list`` of B2b-1, the object ``aggregate`` of D4b, and the door op of
+#: B2b-2b.
 OPEN_EXECUTORS: frozenset[tuple[str, str | None]] = frozenset(
-    {("object", "get"), ("object", "list"), ("object", "aggregate")})
+    {("object", "get"), ("object", "list"), ("object", "aggregate"), DOOR_OP})
+
+#: The mode of :func:`_run_executor` for a door op (B2b-2b).
+DOOR_OP_MODE = "door_op"
 
 #: The executors that run for a DIRECT call only (STU-B2c-1): the create, the
 #: update and the delete of an object. A call is direct when the BFF signed it
@@ -322,6 +386,8 @@ BODY_TOO_LARGE = "body_too_large"
 NO_PERSON = "no_person_present"
 #: J2a: a write of a viewer, a member who reads an app through an install.
 READ_ONLY = "read_only"
+#: B2b-2b: a door op of a signed outside agent. Row B3 owns that caller.
+OUTSIDE_AGENT = "outside_agent"
 
 #: The code of each 403 and one sentence that a model can act on.
 REFUSALS: dict[str, str] = {
@@ -332,11 +398,35 @@ REFUSALS: dict[str, str] = {
     APPROVAL_REQUIRED: (
         "This action writes data and needs an approval, which this door cannot ask for yet."),
     SOURCE_NOT_OPEN: (
-        "This door runs only the actions of an object: get, list and aggregate, and create, "
-        "update and delete from the member's own screen."),
+        "This door runs the get, list, aggregate, create, update and delete of an object, and a read "
+        "of another app where Metorite turned that on."),
     NO_PERSON: "This run has no person present, so it cannot ask a member to approve a write.",
     READ_ONLY: "This app is shared with you to read, so you cannot change its records.",
+    OUTSIDE_AGENT: (
+        "An outside agent reads another app through its own app door, so this door does "
+        "not run it."),
 }
+
+#: B2b-2b. The 422 of a body that ``build_call`` cannot use, the 503 of an
+#: app that failed, and the audit reason of an app's own 4xx.
+BAD_ARGS = "bad_args"
+BAD_ARGS_TEXT = (
+    "Send the args of this action as one JSON object, in the shape of its args schema "
+    "in the catalog.")
+APP_UNAVAILABLE = "app_unavailable"
+APP_DOWN = "The app of this action is not available now, so try the action again later."
+APP_REFUSED = "app_refused"
+#: B2b-2b review: a door op whose request sends an identity header twice. It
+#: is 400 with the code ``bad_input``, before the body read.
+REPEATED_HEADERS = "Send each identity header of this request once, so the app reads one caller."
+
+#: J3a: the one code of an action of a paused package, its status and its one
+#: sentence. The door refuses each action and each class with it, before the
+#: declaration, and a resend of an approved card too. 423 is not a 403,
+#: because no right of the caller is missing: the package is stopped.
+PACKAGE_PAUSED = "package_paused"
+PAUSED_STATUS = 423
+PAUSED_TEXT = "This app is paused, so it runs no action until someone resumes it."
 
 #: The text of ``approval_required`` for a write of an object while
 #: ``APP_REQUESTS_ORGS`` holds the org (fix round 2): an ask works there.
@@ -494,6 +584,13 @@ class _Outcome:
     #: G4: True when a preview of a class B or C action of another source
     #: answered a simulated result, and no executor ran.
     simulated: bool = False
+    #: B2b-2b. The HTTP status of the app's answer to a door op, for the
+    #: audit row. The row holds no data of the answer.
+    door_status: int | None = None
+    #: B2b-2b. The answer of a door op that ran: ``{result, truncated}``.
+    door_result: dict[str, Any] | None = None
+    #: B2b-2b. A 4xx of the app: that app's own refusal, unchanged.
+    door_reply: Response | None = None
 
 
 #: What the door reads an action of: the package of its owner, or the
@@ -525,9 +622,15 @@ def _declared(manifest: dict[str, Any], action: str) -> dict[str, Any] | None:
     return None
 
 
+def _key(ref: UsesRef) -> tuple[str, str | None]:
+    """The executor key of *ref*: :data:`DOOR_OP` for each door op, else the
+    source and the verb."""
+    return DOOR_OP if ref.source == "manifest" else (ref.source, ref.op)
+
+
 def refusal_for(ref: UsesRef, cls: str | None, direct: bool = False,
                 delegated: bool = False, viewer: bool = False,
-                preview: bool = False) -> str | None:
+                preview: bool = False, door_ops: bool = False) -> str | None:
     """The refusal code of an action of *ref* and class *cls*, or None when
     an executor runs it. *cls* is None when no source gives the action a
     class. A class B or C object action runs for a *direct* call when
@@ -537,7 +640,8 @@ def refusal_for(ref: UsesRef, cls: str | None, direct: bool = False,
     preview does not change that.
     For a *preview* (G4), each class B or C action passes: an object write
     runs and rolls back, and each other source gets a simulated result.
-    Class X and an id outside the catalog stay refused."""
+    Class X and an id outside the catalog stay refused. A class A door op
+    runs only with *door_ops*, the switch of B2b-2b."""
     if cls is None:
         return NOT_IN_CATALOG
     if cls == "X":
@@ -551,9 +655,30 @@ def refusal_for(ref: UsesRef, cls: str | None, direct: bool = False,
         if (direct and key in DIRECT_EXECUTORS) or (delegated and key in DELEGATED_EXECUTORS):
             return None
         return APPROVAL_REQUIRED
-    if cls != "A" or (ref.source, ref.op) not in OPEN_EXECUTORS:
+    if cls != "A" or _key(ref) not in OPEN_EXECUTORS or (_key(ref) == DOOR_OP and not door_ops):
         return SOURCE_NOT_OPEN
     return None
+
+
+def _door_op_of(ref: UsesRef, user: UserContext) -> tuple[str | None, DoorOp | None]:
+    """The door op of the class A action *ref*, or its refusal (B2b-2b). It
+    runs before the body read.
+
+    A signed outside agent gets :data:`OUTSIDE_AGENT`: branch 0 binds the
+    outer path, and row B3 owns that caller. A door op that no app manifest
+    holds gets :data:`NOT_IN_CATALOG`. A route under ``/studio``, or a row
+    that is not a GET of class A, gets :data:`SOURCE_NOT_OPEN`, so a call
+    never comes back to this door."""
+    if user.agent is not None:
+        return OUTSIDE_AGENT, None
+    door = app_manifests.door_op(ref.app, ref.op)
+    if door is None:
+        return NOT_IN_CATALOG, None
+    path = door.route.path
+    if (door.route.cls != "A" or door.route.method != "GET"
+            or path == door_op.STUDIO_PREFIX or path.startswith(door_op.STUDIO_PREFIX + "/")):
+        return SOURCE_NOT_OPEN, None
+    return None, door
 
 
 async def _catalog_class(uses: str) -> str | None:
@@ -751,10 +876,18 @@ async def _check(db: Any, member: str, pid: str, action: str, out: _Outcome,
     ``package_host/viewer.py``, and the declarations are those of that
     version. A viewer runs no class B or C action (``read_only``). A draft, a
     paused, an archived and an expired install raise the same 404, at each run.
+
+    J3a: a paused package of *member* refuses each action with
+    :data:`PACKAGE_PAUSED`, before the declaration, at each run. The answer
+    names no ``uses``, so no later step of the door reads a class for it.
     """
     out.uses, out.cls, out.refusal = None, None, None
     out.viewer, out.version = False, None
-    package: _App | None = await packages_store.get_package(db, member, pid)
+    owned = await packages_store.get_package(db, member, pid)
+    if owned is not None and owned.paused_at is not None:
+        out.refusal = PACKAGE_PAUSED
+        return owned, None
+    package: _App | None = owned
     if package is None and package_host_allowed(org):
         package = await _viewer.installed_app(db, viewer=member, app_id=pid)
         if package is not None:
@@ -1260,6 +1393,171 @@ async def _run_spend(db: Any, org: str, member: str, package: packages_store.Pac
     out.audited = True
 
 
+# ── The write of a workflow node (B2c-2d) ─────────────────────────────────
+
+
+#: The ``via`` of the audit row of a write that a workflow node ran (B2c-2d).
+WORKFLOW_VIA = "workflow"
+#: The codes of a refused write of a workflow node.
+WORKFLOW_NO_ORG = "no_org"
+WORKFLOW_STUDIO_OFF = "studio_off"
+WORKFLOW_NO_PACKAGE = "not_found"
+#: Fix round 1. The member lost ``feature:studio`` in the run's org.
+WORKFLOW_NO_FEATURE = "no_feature"
+#: Fix round 1. The write is not the write that the owner approved: the node
+#: config or the ``uses`` of the action changed after the park.
+WORKFLOW_MISMATCH = "write_mismatch"
+#: The verb of each object write, as the parked question names it.
+WORKFLOW_VERBS = {"create": "add", "update": "change", "delete": "delete"}
+
+
+def workflow_write_digest(*, package_id: str, action: str, uses: str, record_id: Any,
+                          data: Any) -> str:
+    """The digest of ONE write of a workflow node (fix round 1).
+
+    The park computes it from the node and the ``uses`` of the action at the
+    park, and the decision payload keeps it. The write computes it again from
+    the node of the run's pinned graph and the ``uses`` of the action now. A
+    write runs only when the two match, like ``request_mismatch`` of B2c-2a."""
+    canon = json.dumps({"package_id": str(package_id), "action": str(action),
+                        "uses": str(uses), "record_id": record_id, "data": data},
+                       sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+@dataclasses.dataclass(frozen=True)
+class WorkflowWritePlan:
+    """What a parked question names about its write (fix round 1)."""
+
+    package_name: str
+    object: str
+    op: str
+    uses: str
+    digest: str
+
+
+async def plan_workflow_write(db: Any, *, member: str, package_id: Any, action: Any,
+                              data: Any, record_id: Any) -> WorkflowWritePlan | None:
+    """The plan of a write of a workflow node, read at the park, or None.
+
+    It runs :func:`_check` as *member* on the caller's session, which binds
+    the run's org. None when the package is not the member's, the action is
+    not declared, or the action is no object write of
+    :data:`DELEGATED_EXECUTORS`. It writes nothing."""
+    pid = _uuid_or_none(str(package_id or ""))
+    if pid is None or not _ACTION_ID.fullmatch(str(action or "")):
+        return None
+    out = _Outcome(action=str(action))
+    try:
+        package, ref = await _check(db, member, pid, str(action), out, delegated=True)
+    except HTTPException:
+        return None
+    if out.refusal is not None or ref is None or (ref.source, ref.op) not in DELEGATED_EXECUTORS:
+        return None
+    uses = str(out.uses)
+    return WorkflowWritePlan(
+        package_name=str(package.name), object=str(ref.object), op=str(ref.op), uses=uses,
+        digest=workflow_write_digest(package_id=pid, action=str(action), uses=uses,
+                                     record_id=record_id, data=data))
+
+
+async def _holds_studio(member: str, org: str) -> bool:
+    """True when *member* holds ``feature:studio`` in *org* now (fix round 1).
+
+    The HTTP door holds the same rule through ``require_feature_router``. A
+    run has no request, so this reads the member's access in the run's org
+    through ``acb_auth.access.resolve_access_in_org``, the one resolver for a
+    member who is not the caller. It fails closed."""
+    from acb_auth.access import resolve_access_in_org
+
+    try:
+        access = await resolve_access_in_org(member, org)
+    except Exception as exc:
+        _log.warning("studio.invoke.workflow_access_failed", error=type(exc).__name__)
+        return False
+    return bool(access.is_active and access.can_use_feature("studio"))
+
+
+def _workflow_body(data: Any, record_id: Any) -> bytes:
+    """The body of the door, from the literal config of the node. A key with
+    no value stays out, so ``_write_input`` checks the keys of the verb."""
+    body = {k: v for k, v in (("id", record_id), ("data", data)) if v is not None}
+    return json.dumps(body).encode("utf-8")
+
+
+def _workflow_result(out: _Outcome) -> dict[str, Any]:
+    """What the node reads back. It holds ids and codes, and no record data,
+    because the run row stores the output of each node."""
+    outcome, reason = _outcome(out)
+    return {"ok": _wrote(out), "outcome": outcome, "code": reason,
+            "record_id": out.record_id, "deleted": out.deleted is not None}
+
+
+async def run_workflow_write(*, organization_id: str, member: str, package_id: str,
+                             action: str, data: Any, record_id: Any, run_id: str,
+                             node_id: str, expected_digest: str,
+                             decision_id: str) -> dict[str, Any]:
+    """Run ONE object write of a workflow node, with no second card (B2c-2d).
+
+    ⚠️ **The one internal path to the executor of a delegated write.** The
+    caller is ``workflows.service._studio_writer`` only. It runs after the
+    AUTO-7b parked decision of the workflow owner said yes, and that decision
+    is the ONE approval of this write. So this path opens no card and spends
+    no request. The HTTP route keeps its 403 ``no_person_present``.
+
+    The caller binds the facts: *organization_id* is the org of the run row,
+    *member* is the owner, the decider of *decision_id*, and
+    *expected_digest* is the digest that the decision payload holds. None of
+    them comes from node input. First the member must hold ``feature:studio``
+    in the org now (fix round 1). Then, in ONE ``_tenant_session(org)``, it
+    runs :func:`_check` as the member, the class check of
+    :data:`DELEGATED_EXECUTORS`, the digest compare, :func:`_do_object_write`
+    and ``record_app_audit_in``. A digest that differs is
+    ``write_mismatch``, and nothing is written. The audit row names the run,
+    the node, the decision and the approver. A failed audit rolls the write
+    back. The record event of C3 goes out after the commit. It never raises an
+    ``HTTPException``: the node fails on each answer that is not ``ok``.
+    """
+    org = str(organization_id or "").strip()
+    out = _Outcome(action=action)
+    if not org:
+        return {"ok": False, "outcome": "refused", "code": WORKFLOW_NO_ORG}
+    if not flags.studio_allowed(org):
+        return {"ok": False, "outcome": "refused", "code": WORKFLOW_STUDIO_OFF}
+    pid = _uuid_or_none(package_id)
+    if pid is None or not _ACTION_ID.fullmatch(str(action or "")):
+        return {"ok": False, "outcome": "not_found", "code": WORKFLOW_NO_PACKAGE}
+    if not await _holds_studio(member, org):
+        return {"ok": False, "outcome": "refused", "code": WORKFLOW_NO_FEATURE}
+    with _writer_slot(org, True) as admitted:
+        if not admitted:
+            return {"ok": False, "outcome": "failed", "code": STORE_BUSY}
+        try:
+            async with _tenant_session(org) as db:
+                package, ref = await _check(db, member, pid, action, out, delegated=True)
+                if out.refusal is None and (
+                        ref is None or (ref.source, ref.op) not in DELEGATED_EXECUTORS):
+                    out.refusal = SOURCE_NOT_OPEN
+                if out.refusal is None and workflow_write_digest(
+                        package_id=pid, action=action, uses=str(out.uses),
+                        record_id=record_id, data=data) != str(expected_digest or ""):
+                    out.refusal = WORKFLOW_MISMATCH
+                if out.refusal is None and ref is not None:
+                    await _do_object_write(db, member, package, ref,
+                                           _workflow_body(data, record_id), out)
+                detail = {**_audit_detail(out), "via": WORKFLOW_VIA,
+                          "run_id": _cap(str(run_id)), "node_id": _cap(str(node_id)),
+                          "decision_id": _cap(str(decision_id)), "approver": _cap(member)}
+                await record_app_audit_in(db, app_id=package.id, user_email=member,
+                                          kind="action", detail=detail)
+        except HTTPException:
+            # The package is not the member's in this org. A 404 writes no row.
+            return {"ok": False, "outcome": "not_found", "code": WORKFLOW_NO_PACKAGE}
+    # C3: after the commit of the write, so no event names a rolled back change.
+    await _emit_record_event(out, org)
+    return _workflow_result(out)
+
+
 def _mode(first: UsesRef | None, direct: bool, delegated: bool,
           request_id: str | None, preview: bool = False) -> str:
     """How the door runs the action of the first check: ``read``,
@@ -1307,9 +1605,57 @@ def _previews(request: Request) -> bool:
     return True
 
 
+def _not_admitted(out: _Outcome, writer_busy: bool, reader_busy: bool) -> bool:
+    """True when the call wanted a slot and got none: 503 ``store_busy``. No
+    session was opened, so no audit row can be written."""
+    if writer_busy:
+        out.fail, out.audited = _busy(), True
+    elif reader_busy:
+        out.fail, out.audited = _busy(READ_BUSY_MESSAGE), True
+    return writer_busy or reader_busy
+
+
+def _held_door_op(ref: UsesRef, out: _Outcome, uses: str | None, cls: str | None,
+                  door: DoorOp | None) -> DoorOp | None:
+    """*door* when the second check finds the door op *uses* of the first
+    check, else None (B2b-2b). The same ``uses`` has the same class, so
+    *cls*, which the catalog gave outside the session, holds again. A
+    manifest that changed during the read to name another action gets
+    ``source_not_open``, and nothing runs."""
+    if ref.source != "manifest" or out.uses != uses:
+        out.refusal = SOURCE_NOT_OPEN
+        return None
+    out.cls = cls
+    return door
+
+
+async def _run_door_op(request: Request, door: DoorOp, raw: bytes, out: _Outcome) -> None:
+    """Build the call of *door* from the body *raw*, and run it as the caller
+    (B2b-2b). The caller holds no session. A body that ``build_call`` cannot
+    use is 422 ``bad_args`` with the key. A 4xx of the app passes unchanged,
+    and a 5xx is 503 ``app_unavailable``."""
+    try:
+        call, lowered = door_op.call_of(door, raw)
+    except door_op.BadArgs as exc:
+        out.fail = _Fail("refused", BAD_ARGS, HTTPException(status_code=422, detail={
+            "code": BAD_ARGS, "message": BAD_ARGS_TEXT, "field": exc.field}))
+        return
+    answer = await door_op.run(request, call, lowered)
+    out.door_status = answer.status
+    if answer.reply is not None:
+        out.door_reply = answer.reply
+    elif answer.unavailable:
+        headers = {"Retry-After": answer.retry_after} if answer.retry_after else None
+        out.fail = _Fail("failed", APP_UNAVAILABLE, HTTPException(status_code=503, detail={
+            "code": APP_UNAVAILABLE, "message": APP_DOWN}, headers=headers))
+    else:
+        out.door_result = {"result": answer.result, "truncated": answer.truncated}
+
+
 async def _run_executor(request: Request, user: UserContext, pid: str, action: str,
                         out: _Outcome, direct: bool, delegated: bool, mode: str,
-                        request_id: str | None, preview: bool = False) -> None:
+                        request_id: str | None, preview: bool = False,
+                        door: DoorOp | None = None) -> None:
     """Read the body, check again, then run the executor. No session is
     open during the read, so a slow client holds no pool connection. The read
     can last as long as the client wants, so the first check proves nothing
@@ -1319,9 +1665,16 @@ async def _run_executor(request: Request, user: UserContext, pid: str, action: s
     same session holds the write and its audit row. A spend does the same, and
     it reads no byte of the body (B2c-2a). An ask opens its card in the
     session of the check. A preview write takes a slot too, because it runs
-    the write and holds the org lock until its SAVEPOINT rolls back (G4)."""
+    the write and holds the org lock until its SAVEPOINT rolls back (G4).
+
+    A door op (B2b-2b, *door*) closes the session of the second check first,
+    and then runs the call. So the door holds no connection while the app
+    runs. The second check must find the same door op, or nothing runs."""
     member = str(user.email)
     org = str(user.organization_id or "")
+    # B2b-2b: the door op of the first check. The catalog gave its class
+    # outside the session, and the second check clears it.
+    first_uses, first_cls = out.uses, out.cls
     if mode == "spend":
         # The door runs the STORED call, so the body of a resend is not read.
         raw: bytes | None = b""
@@ -1331,27 +1684,25 @@ async def _run_executor(request: Request, user: UserContext, pid: str, action: s
         out.too_large = True
         return
     wants = mode in ("direct", "spend", "preview")
-    # J2a: a read of a viewer takes a reader slot. A read of the owner takes none.
-    reads = mode == "read" and out.viewer
+    # J2a: a read of a viewer takes a reader slot, and so does a door op of a
+    # viewer (B2b-2b). A read of the owner takes none.
+    reads = mode in ("read", DOOR_OP_MODE) and out.viewer
     with _writer_slot(org, wants) as admitted, _reader_slot(org, reads) as read_admitted:
-        if wants and not admitted:
-            # No session was opened, so no audit row can be written.
-            out.fail, out.audited = _busy(), True
-            return
-        if reads and not read_admitted:
-            out.fail, out.audited = _busy(READ_BUSY_MESSAGE), True
+        if _not_admitted(out, wants and not admitted, reads and not read_admitted):
             return
         async with _tenant_session() as db:
             package, ref = await _check(db, member, pid, action, out, direct, delegated,
                                         preview, org=org)
             if out.refusal is not None or ref is None:
                 return
-            if ref.source != "object":
+            if mode == DOOR_OP_MODE:
+                door = _held_door_op(ref, out, first_uses, first_cls, door)
+            elif ref.source != "object":
                 # The action named an object at the first check. The catalog gives
                 # no class in this session, and no other source has an executor.
                 out.refusal = SOURCE_NOT_OPEN
                 return
-            if (ref.source, ref.op) in DIRECT_EXECUTORS:
+            elif (ref.source, ref.op) in DIRECT_EXECUTORS:
                 if not isinstance(package, packages_store.Package):
                     # J2a: a viewer never reaches a write, whatever the class says.
                     # A preview write of a viewer stops here too.
@@ -1373,11 +1724,17 @@ async def _run_executor(request: Request, user: UserContext, pid: str, action: s
                     return
                 await _run_object_write(db, member, package, ref, raw, out)
                 return
-            if mode in (*_DELEGATED_MODES, "preview"):
+            elif mode in (*_DELEGATED_MODES, "preview"):
                 # The manifest changed during the read to name a read.
                 out.refusal = SOURCE_NOT_OPEN
                 return
-            await _READS[str(ref.op)](db, package, ref, raw, out)
+            else:
+                await _READS[str(ref.op)](db, package, ref, raw, out)
+                return
+        # B2b-2b: only a door op comes here. The session of the second check
+        # is closed, so the door holds no connection while the app runs.
+        if door is not None:
+            await _run_door_op(request, door, raw, out)
 
 
 def _is_direct(request: Request, user: UserContext) -> bool:
@@ -1425,6 +1782,8 @@ def _plain_outcome(out: _Outcome) -> tuple[str, str | None]:
         outcome, reason = "refused", BODY_TOO_LARGE
     elif out.fail is not None:
         outcome, reason = out.fail.outcome, out.fail.reason
+    elif out.door_reply is not None:
+        outcome, reason = "refused", APP_REFUSED
     elif out.query_error is not None:
         timed_out = out.query_error.code == studio_query.TIMEOUT
         outcome, reason = "failed" if timed_out else "refused", out.query_error.code
@@ -1457,6 +1816,9 @@ def _audit_detail(out: _Outcome) -> dict[str, Any]:
         detail["request_id"] = out.request_id
     if out.lines:
         detail["lines"] = sum(len(ids) for ids in out.lines.values())
+    if out.door_status is not None:
+        # B2b-2b: the status of the app's answer, and never its data.
+        detail["status"] = out.door_status
     if out.viewer:
         # J2a: the row of a viewer names the installed version that it read.
         detail["viewer"] = True
@@ -1489,12 +1851,16 @@ def _aggregate_answer(result: objects_store.AggregateResult) -> dict[str, Any]:
     }
 
 
-def _answer(out: _Outcome) -> dict[str, Any] | JSONResponse:
+def _answer(out: _Outcome) -> dict[str, Any] | Response:
     """The answer of the call *out*, or the refusal that it raises. A card
-    that a delegated call opened is 202 (B2c-2a)."""
+    that a delegated call opened is 202 (B2c-2a). A door op answers
+    ``{result, truncated}``, or the app's own 4xx unchanged (B2b-2b)."""
     if out.catalog_down:
         raise HTTPException(status_code=503, detail={
             "code": CATALOG_UNAVAILABLE, "message": CATALOG_DOWN})
+    if out.refusal == PACKAGE_PAUSED:
+        raise HTTPException(status_code=PAUSED_STATUS, detail={
+            "code": PACKAGE_PAUSED, "message": PAUSED_TEXT})
     if out.refusal is not None:
         ask = out.refusal == APPROVAL_REQUIRED and out.can_ask
         raise HTTPException(status_code=403, detail={
@@ -1504,6 +1870,10 @@ def _answer(out: _Outcome) -> dict[str, Any] | JSONResponse:
             "code": BODY_TOO_LARGE, "message": BODY_OVER_CAP})
     if out.fail is not None:
         raise out.fail.error
+    if out.door_reply is not None:
+        return out.door_reply
+    if out.door_result is not None:
+        return out.door_result
     if out.query_error is not None:
         raise _query_refusal(out.query_error)
     if out.invalid:
@@ -1524,6 +1894,12 @@ def _answer(out: _Outcome) -> dict[str, Any] | JSONResponse:
         return dataclasses.asdict(out.page)
     if out.aggregate is not None:
         return _aggregate_answer(out.aggregate)
+    return _record_answer(out)
+
+
+def _record_answer(out: _Outcome) -> dict[str, Any]:
+    """The answer of a record read or an object write: the record and its
+    lines, or the id of a delete. A record that names nothing raises 404."""
     mark: dict[str, Any] = {"preview": True} if out.preview else {}
     if out.deleted is not None:
         return {"deleted": True, "id": out.deleted, **mark}
@@ -1540,7 +1916,7 @@ async def invoke_action(
     action: str,
     request: Request,
     user: UserContext = Depends(get_current_user),
-) -> dict[str, Any] | JSONResponse:
+) -> dict[str, Any] | Response:
     """Run the action *action* of the caller's package *app_id*. See the
     module docstring for the order of the checks."""
     if not flags.studio_allowed(user.organization_id):
@@ -1581,8 +1957,23 @@ async def invoke_action(
             else:
                 # J2a: a viewer gets read_only for a class B or C action, also
                 # in a preview (G4), so a viewer never gets a simulated send.
-                out.refusal = refusal_for(ref, out.cls, viewer=out.viewer, preview=preview)
-                if out.refusal is None and not preview:
+                out.refusal = refusal_for(
+                    ref, out.cls, viewer=out.viewer, preview=preview,
+                    door_ops=flags.door_ops_allowed(user.organization_id))
+                if out.refusal is None and _key(ref) == DOOR_OP and out.cls == "A":
+                    # B2b-2b: a class A door op runs as the caller, a viewer
+                    # too. The app's own gates decide. A read in a preview is
+                    # a real read (G4).
+                    out.refusal, door = _door_op_of(ref, user)
+                    if out.refusal is None and door_op.repeated(request.headers):
+                        # Two values of one identity header name no single caller.
+                        out.fail = _Fail("refused", BAD_INPUT, HTTPException(
+                            status_code=400,
+                            detail={"code": BAD_INPUT, "message": REPEATED_HEADERS}))
+                    elif out.refusal is None:
+                        await _run_executor(request, user, pid, action, out, direct,
+                                            delegated, DOOR_OP_MODE, None, preview, door)
+                elif out.refusal is None and not preview:
                     # No executor of another source exists. Fail closed.
                     out.refusal = SOURCE_NOT_OPEN
                 elif out.refusal is None:

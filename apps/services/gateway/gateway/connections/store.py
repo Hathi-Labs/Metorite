@@ -734,6 +734,25 @@ async def merge_provider_meta(
     })
 
 
+_REMOVE_META_SQL = (
+    "UPDATE integration_connections SET provider_meta = provider_meta "
+    "- CAST(:keys AS text[]), updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid)"
+)
+
+
+async def remove_meta_keys(
+    db: Any, org: str, connection_id: str, keys: Sequence[str],
+) -> None:
+    """Remove keys from ``provider_meta`` of one row, under any status.
+
+    The calendar disconnect drops its cursor and its calendar id here
+    (WS-CAL CE-10). The keys are plain metadata names, never a secret.
+    """
+    await db.execute(text(_REMOVE_META_SQL), {
+        "id": str(connection_id), "org": str(org), "keys": list(keys)})
+
+
 async def merge_meta_by_key(
     db: Any,
     org: str,

@@ -193,12 +193,15 @@ class UsesRef:
 
     ``source`` is ``object``, ``manifest`` (an ``<app>.<op>`` door op),
     ``integration`` or ``workflow``, the source names of the B1 catalog.
-    ``object`` and ``op`` are set for an ``object:`` value only.
+    ``object`` and ``op`` are set for an ``object:`` value. ``app`` and
+    ``op`` are set for a door op (STU-B2b-2b): ``op`` then holds the door op
+    name of that app. An integration and a workflow set none of them.
     """
 
     source: Literal["object", "manifest", "integration", "workflow"]
     object: str | None = None
     op: str | None = None
+    app: str | None = None
 
 
 def parse_uses(uses: object) -> UsesRef | None:
@@ -214,7 +217,7 @@ def parse_uses(uses: object) -> UsesRef | None:
         return UsesRef(source="integration")
     if m.group("wf"):
         return UsesRef(source="workflow")
-    return UsesRef(source="manifest")
+    return UsesRef(source="manifest", app=m.group("app"), op=m.group("appop"))
 
 
 # --- the schema ------------------------------------------------------------
@@ -236,6 +239,12 @@ class FieldDef(_Strict):
     to: str | None = None
     #: The field gets a row in the index side table of C1 (`studio_record_hot`).
     hot: bool = False
+    #: C14. The bounds of a `rating`, the units of a `quantity` and the format of a
+    #: `barcode`. `studio_fields._check_extras` holds the rules of each.
+    min: int | None = None
+    max: int | None = None
+    units: list[str] | None = None
+    format: str | None = None
     #: C13. A lines relation: the field of the object `to` that names this one.
     #: `studio_fields.lines_problem` holds the rule of the object it names.
     lines: str | None = None
@@ -967,6 +976,9 @@ def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[Man
         _check_view_source(vi, v, uses_by_id, catalog, out)
     _check_pages(m, {v.id for v in m.views}, out)
     _check_links(m, objects, catalog, out)
+    if m.extends is not None and m.extends == m.id:
+        out.append(_err("$.extends", "A package cannot extend itself. Name the host package."
+                        + _got(m.extends)))
     return out
 
 

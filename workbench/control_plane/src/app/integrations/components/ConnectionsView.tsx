@@ -53,6 +53,7 @@ import {
   type StatusFilter,
 } from "../lib/connections";
 import ApiKeysView from "./ApiKeysView";
+import CalendarConnectionsGroup from "./CalendarConnectionsGroup";
 import ConnectionList from "./ConnectionList";
 import ConnectionSheet from "./ConnectionSheet";
 import { viewHref } from "../lib/views";
@@ -260,6 +261,8 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
       )}
       {/* WS-54 GH-3: GitHub sends the browser back here after the install. */}
       <GitHubAppReturn onConnected={invalidateConnections} />
+      {/* CE-10c (D96.1): the calendar connections, read-only, with a link to Calendar settings. */}
+      <CalendarConnectionsGroup />
       {res.error && res.data === undefined ? (
         <p role="alert" className="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">
           {res.error}

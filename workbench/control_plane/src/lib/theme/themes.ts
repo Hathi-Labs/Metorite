@@ -163,6 +163,7 @@ const rapidtool: Theme = {
       infoForeground: "hsl(220 13% 8%)",
       violet: "hsl(268 80% 70%)",
       violetForeground: "hsl(220 13% 8%)",
+      hatchStripe: "hsl(215 20% 65% / 0.3)",
       // Categorical ramp — vivid, matching RapidTool's saturated register.
       "cat-1": "hsl(215 85% 61%)",
       "cat-2": "hsl(27 85% 47%)",
@@ -218,6 +219,7 @@ const rapidtool: Theme = {
       infoForeground: "hsl(210 40% 98%)",
       violet: "hsl(268 70% 50%)",
       violetForeground: "hsl(210 40% 98%)",
+      hatchStripe: "hsl(215 16% 47% / 0.24)",
       "cat-1": "hsl(215 85% 47%)",
       "cat-2": "hsl(27 85% 36%)",
       "cat-3": "hsl(142 85% 26%)",
