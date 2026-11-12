@@ -18,8 +18,8 @@ module holds no SQL and runs no second query of the installs.
 **The installed version, never the draft.** The answer holds the manifest of
 the version that the install runs. An install with no version (a draft) gives
 None, so a draft never reaches a member who does not own it. A paused, an
-archived and an expired install, and an archived app, give None, because the
-resolve shows none of them. When the member sees the app at two scopes, the
+archived and an expired install, and an archived or a paused app (J3a), give
+None, because the resolve shows none of them. When the member sees the app at two scopes, the
 widest install wins (``widest_per_app``), as in the sidebar.
 
 **The fields of the installed version (J2a fix round 1).** A publish only adds
