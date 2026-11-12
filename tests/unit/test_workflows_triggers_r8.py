@@ -3,37 +3,40 @@
 Spec: ``project-docs/specs/workflows_app.md`` (the H4 slice 6c note) · board
 R5 and R8 · HANDOFF H-328.
 
-**The owner's order (2026-11-11).** "Write the R8 evidence, report the
-failures, do not fix them." So this file changes no production code. Each
-property that the code breaks today is a case with
-``xfail(strict=True)``. The reason names the failing site. When H4 slice 6c
-binds the org at that site, the case passes, the strict mark turns it red,
-and the author of 6c removes the mark.
+**History.** STB-5 (task 2133) wrote this file on the owner's order of
+2026-11-11: "Write the R8 evidence, report the failures, do not fix them."
+Four cases were strict xfails. H-328 part (c) (H4 slice 6c, task 856) bound
+the org at each door and removed the four marks.
 
-**The doors.** Four entry points start a run with no ``organization_id``:
+**The doors.** Each door now passes an org to ``start_run``:
 
-* ``triggers.dispatch_event`` reads ``workflow_triggers`` on the unbound
-  ``get_db()`` and calls ``start_run`` with no org. It takes no org at all,
-  so it cannot tell an event of org A from an event of org B.
-* ``hooks.workflow_hook`` reads the workflow by its token on the unbound
-  ``get_db()`` and calls ``start_run`` with no org. It reads no delivery id,
-  so a replay starts a second run.
-* ``runs.run_workflow`` (a member's manual run) reads in the member's
-  tenant, then calls ``start_run`` with no org. The run row then goes
-  through the unbound ``get_db()``.
-* ``scheduler._scan_org`` binds the org of the workflow row. It is the one
-  door that works. ``test_workflows_lifecycle_rls_r8.py`` section 9 fences it
-  in depth, and this file keeps one cross-org case beside the other doors.
+* ``triggers.dispatch_event`` reads ``current_tenant()`` once. Only a member
+  request that emits binds one. No tenant, or an org that is not on
+  ``WORKFLOW_UNATTENDED_ORGS``, starts nothing. The org in the payload is
+  input, and the door never reads it.
+* ``hooks.workflow_hook`` loops over the listed orgs and reads the token in
+  ``_tenant_session(org)``. A token of an org that is not listed answers 404,
+  the same as a bad token. A replayed delivery key starts no second run
+  (``workflow_runs.delivery_key``, migration 416).
+* ``runs.run_workflow`` (a member's manual run) passes the org of the row
+  that the member read. It refuses a task node, and a long wait in an org
+  that is not listed.
+* ``scheduler._scan_org`` binds the org of the workflow row.
+  ``test_workflows_lifecycle_rls_r8.py`` section 9 fences it in depth, and
+  this file keeps one cross-org case beside the other doors.
 
-**What passes today, and why.** Under FORCE RLS an unbound read sees no row.
-So no door can start a run in another org: it starts no run at all. The
-cases that prove "never in org B" pass for real, and they stay green after
-6c only if 6c binds the org of the delivery and not the org of each row.
+The hook and the event door also refuse a task node, as the scan does.
 
 Mutations this suite catches (R7):
 
 * ``dispatch_event`` reads every org and binds the org of each row: the
   event cross-org case goes red, because B's workflow starts;
+* ``dispatch_event`` takes the org from the payload: the case with no
+  tenant and an org in the payload goes red;
+* the allowlist check dropped in the hook door: the unlisted hook case goes
+  red;
+* the ``ON CONFLICT`` dropped in ``start_run``: the replay case goes red. A
+  conflict on every key: the two-key case goes red;
 * the allowlist check dropped in ``_scan_once``: the schedule case goes red;
 * the org bind dropped in ``_scan_org``: the schedule case goes red;
 * ``load_workflow_or_404`` read unbound in ``run_workflow``: the manual
@@ -104,8 +107,6 @@ _OWNERS = {"A": "owner@a.wftrig.test", "B": "owner@b.wftrig.test"}
 #: One event that both orgs subscribe to.
 _SOURCE, _EVENT = "r8trig", "lead.created"
 
-_H6C = "H-328 slice 6c: "
-
 
 def _node(nid: str, ntype: str, config: dict | None = None) -> dict:
     return {"id": nid, "type": ntype, "position": {"x": 0, "y": 0},
@@ -122,6 +123,24 @@ def _trivial() -> dict:
     })
 
 
+def _chain(ntype: str, config: dict) -> dict:
+    """trigger -> one node -> output."""
+    return compile_graph({
+        "nodes": [_node("start", "trigger", {"kind": "manual"}),
+                  _node("step", ntype, config),
+                  _node("done", "output", {"value": "end"})],
+        "edges": [{"id": "start->step", "source": "start", "target": "step"},
+                  {"id": "step->done", "source": "step", "target": "done"}],
+    })
+
+
+#: A task write that no run reaches: each door refuses it before the start.
+_TASK_WRITE = {"task_id": "{{trigger.task_id}}", "fields": {"title": "r8"}}
+
+#: The event type of the workflow with a task node, so it never matches the
+#: event of the trivial workflows.
+_TASK_EVENT = "task.created"
+
 #: name -> (org tag, trigger kind, trigger config). A hook token is per name.
 _WORKFLOWS: dict[str, tuple[str, str, dict]] = {
     "Event in A": ("A", "event", {"source": _SOURCE, "event_type": _EVENT}),
@@ -132,8 +151,20 @@ _WORKFLOWS: dict[str, tuple[str, str, dict]] = {
     "Tick in B": ("B", "schedule", {"cron": "* * * * *"}),
     "Manual in A": ("A", "manual", {}),
     "Manual in B": ("B", "manual", {}),
+    "Task manual in A": ("A", "manual", {}),
+    "Wait manual in A": ("A", "manual", {}),
+    "Task hook in A": ("A", "webhook", {}),
+    "Task event in A": ("A", "event", {"source": _SOURCE, "event_type": _TASK_EVENT}),
 }
 _TICKERS = ("Tick in A", "Tick in B")
+
+#: name -> the run-model of a workflow that is not trivial.
+_GRAPHS: dict[str, dict] = {
+    "Task manual in A": _chain("pm_task", _TASK_WRITE),
+    "Wait manual in A": _chain("wait", {"seconds": 3600}),
+    "Task hook in A": _chain("pm_task", _TASK_WRITE),
+    "Task event in A": _chain("pm_task", _TASK_WRITE),
+}
 
 
 def _drop_database(admin_url, name: str) -> None:
@@ -178,7 +209,7 @@ def promoted():
     orgs = {"A": str(uuid.uuid4()), "B": str(uuid.uuid4())}
     wf: dict[str, str] = {}
     tokens: dict[str, str] = {}
-    serialized = json.dumps(_trivial())
+    trivial = json.dumps(_trivial())
     with eng.begin() as conn:
         for tag, oid in orgs.items():
             conn.execute(text(
@@ -195,7 +226,9 @@ def promoted():
             conn.execute(text(
                 "INSERT INTO workflow_versions (workflow_id, version, serialized, "
                 "published_by, organization_id) VALUES (:w, 1, CAST(:s AS jsonb), "
-                "'seed', :org)"), {"w": wid, "s": serialized, "org": orgs[tag]})
+                "'seed', :org)"),
+                {"w": wid, "s": json.dumps(_GRAPHS[name]) if name in _GRAPHS else trivial,
+                 "org": orgs[tag]})
             if kind != "manual":
                 # A schedule stays off until its case arms it.
                 conn.execute(text(
@@ -335,16 +368,40 @@ def test_an_unbound_read_finds_no_trigger_and_no_workflow(promoted):
         assert c.execute(text(
             "SELECT count(*) FROM workflow_triggers WHERE workflow_id = "
             "ANY(CAST(:ids AS uuid[]))"), {"ids": list(promoted.wf.values())}
-        ).scalar() == 6
+        ).scalar() == sum(1 for _t, kind, _c in _WORKFLOWS.values() if kind != "manual")
+
+
+def test_the_promoted_clone_has_the_delivery_key_and_its_index(promoted):
+    """Migration 416 reached the catalog that the doors run against."""
+    with promoted.admin_engine.connect() as c:
+        col = c.execute(text(
+            "SELECT data_type, is_nullable FROM information_schema.columns "
+            "WHERE table_name = 'workflow_runs' AND column_name = 'delivery_key'"
+        )).fetchone()
+        idx = c.execute(text(
+            "SELECT indexdef FROM pg_indexes WHERE tablename = 'workflow_runs' "
+            "AND indexname = 'workflow_runs_delivery_key_uniq'")).scalar()
+    assert col is not None and tuple(col) == ("text", "YES")
+    assert idx is not None and "UNIQUE" in idx, idx
+    assert "(workflow_id, delivery_key)" in idx and "delivery_key IS NOT NULL" in idx, idx
 
 
 # ── 1. The event door (triggers.dispatch_event) ──────────────────────────────
 
 
+def _dispatch(promoted, ambient: str | None, event: str = _EVENT, org: str | None = None):
+    """Emit one event with *ambient* bound. The payload names *org* (A by
+    default), as a receiver's payload can."""
+    return _on_app_role(promoted, ambient, lambda: triggers.dispatch_event(
+        _SOURCE, event, {"organization_id": org or promoted.org_a}))
+
+
 @pytest.mark.parametrize("ambient", [None, "A"])
-def test_an_event_never_starts_a_run_in_another_org(promoted, ambient):
+def test_an_event_never_starts_a_run_in_another_org(promoted, monkeypatch, ambient):
     """An event that org A's receiver delivers never starts org B's
-    workflow, though B subscribes to the same source and event type."""
+    workflow, though B subscribes to the same source and event type. Both
+    orgs are listed, so a door that loops over each org would start B's."""
+    _list_orgs(monkeypatch, promoted.org_a, promoted.org_b)
     amb = promoted.org_a if ambient == "A" else None
     started = _on_app_role(promoted, amb, lambda: triggers.dispatch_event(
         _SOURCE, _EVENT, {"organization_id": promoted.org_a}))
@@ -352,91 +409,151 @@ def test_an_event_never_starts_a_run_in_another_org(promoted, ambient):
     assert _runs_of(promoted, "Event in B") == []
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    _H6C + "triggers.py:56 reads workflow_triggers on the unbound get_db(), "
-    "which sees no row under FORCE RLS, and triggers.py:81 calls start_run "
-    "with no organization_id. dispatch_event takes no org, so no event "
-    "trigger fires in any org."))
-def test_an_event_of_org_a_starts_the_workflow_of_org_a(promoted):
-    started = _on_app_role(promoted, promoted.org_a, lambda: triggers.dispatch_event(
-        _SOURCE, _EVENT, {"organization_id": promoted.org_a}))
+def test_an_event_of_org_a_starts_the_workflow_of_org_a(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_a)
+    started = _dispatch(promoted, promoted.org_a)
     assert [s["workflow_id"] for s in started] == [promoted.wf["Event in A"]]
     (row,) = _runs_of(promoted, "Event in A")
     assert (row.status, row.trigger_kind, row.org) == ("succeeded", "event", promoted.org_a)
     assert _runs_of(promoted, "Event in B") == []
 
 
+def test_an_event_with_b_bound_runs_in_b_and_never_in_a(promoted, monkeypatch):
+    """B is bound and the payload names A. The bound tenant decides: B's
+    workflow runs in B, and A's does not run."""
+    _list_orgs(monkeypatch, promoted.org_a, promoted.org_b)
+    started = _dispatch(promoted, promoted.org_b, org=promoted.org_a)
+    assert [s["workflow_id"] for s in started] == [promoted.wf["Event in B"]]
+    (row,) = _runs_of(promoted, "Event in B")
+    assert (row.status, row.org) == ("succeeded", promoted.org_b)
+    assert _runs_of(promoted, "Event in A") == []
+
+
+def test_an_event_of_an_unlisted_org_starts_no_run(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_b)
+    assert _dispatch(promoted, promoted.org_a) == []
+    assert _runs_of(promoted, "Event in A") == []
+    assert _runs_of(promoted, "Event in B") == []
+
+
+def test_an_event_with_no_tenant_and_an_org_in_the_payload_starts_nothing(
+    promoted, monkeypatch,
+):
+    """The payload is input. With no tenant bound, the door starts nothing,
+    though the payload names a listed org."""
+    _list_orgs(monkeypatch, promoted.org_a, promoted.org_b)
+    assert _dispatch(promoted, None, org=promoted.org_a) == []
+    assert _runs_of(promoted, "Event in A") == []
+    assert _runs_of(promoted, "Event in B") == []
+
+
+def test_an_event_never_starts_a_workflow_with_a_task_node(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_a)
+    assert _dispatch(promoted, promoted.org_a, event=_TASK_EVENT) == []
+    assert _runs_of(promoted, "Task event in A") == []
+
+
 # ── 2. The webhook door (hooks.workflow_hook) ────────────────────────────────
 
 
 @pytest.mark.parametrize("ambient", [None, "B"])
-def test_a_hook_of_org_a_never_starts_a_run_in_org_b(promoted, ambient):
+def test_a_hook_of_org_a_never_starts_a_run_in_org_b(promoted, monkeypatch, ambient):
     """A's token never starts B's workflow, and B bound in the context does
-    not move A's run into B."""
+    not move A's run into B. Both orgs are listed."""
+    _list_orgs(monkeypatch, promoted.org_a, promoted.org_b)
     amb = promoted.org_b if ambient == "B" else None
-    _post_hook(promoted, "Hook in A", ambient=amb)
+    result = _post_hook(promoted, "Hook in A", ambient=amb)
+    assert isinstance(result, dict), getattr(result, "detail", result)
     assert _runs_of(promoted, "Hook in B") == []
-    assert all(r.org == promoted.org_a for r in _runs_of(promoted, "Hook in A"))
+    (row,) = _runs_of(promoted, "Hook in A")
+    assert (row.status, row.org) == ("succeeded", promoted.org_a)
     with promoted.admin_engine.connect() as c:
         assert c.execute(text(
             "SELECT count(*) FROM workflow_runs WHERE organization_id = CAST(:o AS uuid)"),
             {"o": promoted.org_b}).scalar() == 0
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    _H6C + "hooks.py:75 reads the workflow by hook_token on the unbound "
-    "get_db(), which sees no row under FORCE RLS, so a valid token answers "
-    "404 Unknown hook. hooks.py:133 then calls start_run with no "
-    "organization_id."))
-def test_a_hook_of_org_a_starts_one_run_in_org_a(promoted):
+def test_a_hook_of_org_a_starts_one_run_in_org_a(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_a)
     result = _post_hook(promoted, "Hook in A")
     assert isinstance(result, dict), getattr(result, "detail", result)
+    assert result["status"] == "queued"
     (row,) = _runs_of(promoted, "Hook in A")
     assert (row.status, row.trigger_kind, row.org) == ("succeeded", "webhook", promoted.org_a)
 
 
-def _as_if_6c_bound_the_hook(promoted, monkeypatch, org: str) -> None:
-    """Simulate the read and the start that 6c will bind, in the TEST only.
-
-    The hook read gets a session with ``app.tenant_id`` set for its one
-    transaction (``set_config(..., true)``), and ``start_run`` gets *org*.
-    So the replay case below fails on the missing dedupe alone."""
-    real_get_db, real_start = hooks._get_db, hooks.start_run
-
-    async def bound_db():
-        db = await real_get_db()
-        await db.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": org})
-        return db
-
-    async def start(**kw):
-        return await real_start(**kw, organization_id=org)
-
-    monkeypatch.setattr(hooks, "_get_db", bound_db)
-    monkeypatch.setattr(hooks, "start_run", start)
-
-
-def test_the_simulated_binding_starts_a_hook_run_in_org_a(promoted, monkeypatch):
-    """Control for the replay case: with the binding simulated, one POST
-    starts one run in A. So the replay case measures the dedupe, not RLS."""
-    _as_if_6c_bound_the_hook(promoted, monkeypatch, promoted.org_a)
+def test_a_hook_of_an_unlisted_org_answers_404_and_starts_no_run(promoted, monkeypatch):
+    """Only B is listed. A's valid token answers the same 404 as a bad token,
+    so a caller cannot learn that the token exists."""
+    _list_orgs(monkeypatch, promoted.org_b)
     result = _post_hook(promoted, "Hook in A")
+    assert isinstance(result, HTTPException), result
+    assert (result.status_code, result.detail) == (404, "Unknown hook")
+    promoted.tokens["no such hook"] = f"wftrig-{uuid.uuid4().hex}"
+    try:
+        bad = _post_hook(promoted, "no such hook")
+    finally:
+        del promoted.tokens["no such hook"]
+    assert (bad.status_code, bad.detail) == (result.status_code, result.detail)
+    assert _runs_of(promoted, "Hook in A") == []
+
+
+def test_a_hook_never_starts_a_workflow_with_a_task_node(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_a)
+    result = _post_hook(promoted, "Task hook in A")
+    assert isinstance(result, HTTPException) and result.status_code == 409, result
+    assert _runs_of(promoted, "Task hook in A") == []
+
+
+def test_one_keyed_delivery_starts_one_hook_run_in_org_a(promoted, monkeypatch):
+    """Control for the replay case: one POST with a key starts one run in A.
+    So the replay case measures the dedupe, not RLS."""
+    _list_orgs(monkeypatch, promoted.org_a)
+    result = _post_hook(promoted, "Hook in A", headers={"Idempotency-Key": "d-0"})
     assert isinstance(result, dict), getattr(result, "detail", result)
+    assert result["status"] == "queued"
     (row,) = _runs_of(promoted, "Hook in A")
     assert (row.status, row.org) == ("succeeded", promoted.org_a)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    _H6C + "hooks.py:67-146 keeps no delivery id and no idempotency key. "
-    "workflow_runs has no dedupe column, so a replayed delivery starts a "
-    "second run."))
 def test_a_replayed_delivery_starts_exactly_one_run(promoted, monkeypatch):
-    _as_if_6c_bound_the_hook(promoted, monkeypatch, promoted.org_a)
+    _list_orgs(monkeypatch, promoted.org_a)
     delivery = {"X-CC-Delivery": "d-1", "Idempotency-Key": "d-1"}
     first = _post_hook(promoted, "Hook in A", headers=delivery)
     second = _post_hook(promoted, "Hook in A", headers=delivery)
     assert isinstance(first, dict), getattr(first, "detail", first)
-    assert not isinstance(second, dict) or second.get("run_id") == first["run_id"]
+    assert isinstance(second, dict), getattr(second, "detail", second)
+    assert second == {"run_id": first["run_id"], "status": "duplicate"}
     assert len(_runs_of(promoted, "Hook in A")) == 1
+
+
+def test_a_replay_by_the_delivery_header_alone_starts_one_run(promoted, monkeypatch):
+    """With no ``Idempotency-Key``, ``X-CC-Delivery`` is the key."""
+    _list_orgs(monkeypatch, promoted.org_a)
+    first = _post_hook(promoted, "Hook in A", headers={"X-CC-Delivery": "d-2"})
+    second = _post_hook(promoted, "Hook in A", headers={"X-CC-Delivery": "d-2"})
+    assert second == {"run_id": first["run_id"], "status": "duplicate"}
+    assert len(_runs_of(promoted, "Hook in A")) == 1
+
+
+def test_two_delivery_keys_start_two_runs(promoted, monkeypatch):
+    """The dedupe drops only a replay. Two keys, and two POSTs with no key,
+    each start a run."""
+    _list_orgs(monkeypatch, promoted.org_a)
+    for headers in ({"Idempotency-Key": "k-1"}, {"Idempotency-Key": "k-2"}, None, None):
+        result = _post_hook(promoted, "Hook in A", headers=headers)
+        assert isinstance(result, dict) and result["status"] == "queued", result
+    runs_a = _runs_of(promoted, "Hook in A")
+    assert len(runs_a) == 4
+    assert {r.org for r in runs_a} == {promoted.org_a}
+
+
+def test_an_over_long_delivery_key_answers_400_and_starts_no_run(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_a)
+    result = _post_hook(promoted, "Hook in A",
+                        headers={"Idempotency-Key": "k" * (hooks.MAX_DELIVERY_KEY_CHARS + 1)})
+    assert isinstance(result, HTTPException) and result.status_code == 400, result
+    assert _runs_of(promoted, "Hook in A") == []
 
 
 # ── 3. The schedule door (scheduler._scan_org) ───────────────────────────────
@@ -493,16 +610,42 @@ def test_a_member_of_org_a_cannot_run_the_workflow_of_org_b(promoted):
     assert _runs_of(promoted, "Manual in B") == []
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    _H6C + "runs.py:100 calls start_run with no organization_id, so "
-    "service._run_session(None) writes the run row on the unbound get_db(). "
-    "Under FORCE RLS the INSERT into workflow_runs fails, and a member's "
-    "manual run never starts."))
 def test_a_manual_run_starts_in_the_members_org(promoted):
+    """No org is listed: a person pressed Run, so no list gates it."""
     result = _manual(promoted, "Manual in A", promoted.org_a)
     assert isinstance(result, dict), result
     (row,) = _runs_of(promoted, "Manual in A")
     assert (row.status, row.trigger_kind, row.org) == ("succeeded", "manual", promoted.org_a)
+    with promoted.admin_engine.connect() as c:
+        assert c.execute(text(
+            "SELECT count(*) FROM workflow_runs WHERE organization_id = CAST(:o AS uuid)"),
+            {"o": promoted.org_b}).scalar() == 0
+
+
+def test_a_manual_run_with_a_task_node_is_refused(promoted, monkeypatch):
+    """The org is listed, and the door still refuses a task node."""
+    _list_orgs(monkeypatch, promoted.org_a)
+    result = _manual(promoted, "Task manual in A", promoted.org_a)
+    assert isinstance(result, HTTPException) and result.status_code == 409, result
+    assert _runs_of(promoted, "Task manual in A") == []
+
+
+def test_a_manual_long_wait_in_an_unlisted_org_is_refused(promoted, monkeypatch):
+    """Only B is listed, so no scan would resume A's pause."""
+    _list_orgs(monkeypatch, promoted.org_b)
+    result = _manual(promoted, "Wait manual in A", promoted.org_a)
+    assert isinstance(result, HTTPException) and result.status_code == 409, result
+    assert _runs_of(promoted, "Wait manual in A") == []
+
+
+def test_a_manual_long_wait_in_a_listed_org_starts_and_pauses(promoted, monkeypatch):
+    """Control: the wait refusal follows the list. A listed org starts the
+    run, and the run pauses in A for the wait scan."""
+    _list_orgs(monkeypatch, promoted.org_a)
+    result = _manual(promoted, "Wait manual in A", promoted.org_a)
+    assert isinstance(result, dict), result
+    (row,) = _runs_of(promoted, "Wait manual in A")
+    assert (row.status, row.org) == ("paused", promoted.org_a)
 
 
 # ── 5. CI must run this suite ────────────────────────────────────────────────

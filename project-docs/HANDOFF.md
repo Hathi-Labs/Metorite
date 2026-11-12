@@ -1614,9 +1614,13 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `git grep -n "await _get_db()" -- apps/services/gateway/gateway/routes/workflows/`.
   Each hit is an unbound read or write on a FORCE RLS table. This entry is
   open until the only hits left are tenant-discovery reads.
-- **State (2026-11-03):** Part (b) is built: the scans bind each listed org, and the list `WORKFLOW_UNATTENDED_ORGS` ships empty.
-  A scheduled run of a listed org has no billing member, so an agent node fails, and five failures disable the workflow.
+- **State (2026-11-12):** Parts (a), (b) and (c) are built. Each door binds an org, and the list `WORKFLOW_UNATTENDED_ORGS` ships empty.
+  The hook door reads the token in each listed org. The event door uses the tenant that the emitter bound. The manual door uses the org of the row.
+  A replayed webhook delivery starts no second run (migration 416). The list stays empty, and only the owner flips it (OWNER-GATE `enforcement-flip`).
+  A run with no member has no billing member, so an agent node fails, and five failures disable the workflow.
   Before the owner lists an org, read two lists for that org: its published workflows with an agent node, and its paused waits of a kind other than schedule, webhook and event.
+  Four `await _get_db()` hits stay in `service.py`. `_organization_ids` and `_workflow_billing_member` are discovery reads.
+  `_resolve_workflow_organization` and `_run_session(None)` serve only a run with no org, and no door starts one now. Remove them in a later slice, then close this entry.
 - **Added:** 2026-10-15 · PR #1052 review round 1
 
 ### H-320 · An unticked checkbox has no visible edge · [AGENT]
