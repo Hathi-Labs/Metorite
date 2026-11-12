@@ -1686,12 +1686,15 @@ The owner asked on 2026-11-12 for Google and Outlook sync in both
 directions, with the least work for the member. These points bind CE-10,
 CE-11 and CE-13.
 
-1. **Scopes, read.** Google: `https://www.googleapis.com/auth/calendar.events`
-   covers read and write of events, so one scope serves CE-10 and CE-11.
-   The read leg asks `calendar.events.readonly` until the write flag is on.
-   Add `calendar.calendarlist.readonly`, so the member sees the list of
-   calendars. Microsoft: `Calendars.Read` for CE-10, and `Calendars.ReadWrite`
-   for CE-11. `offline_access` and `User.Read` are already in
+1. **Scopes (one consent for read and write).** Google asks
+   `https://www.googleapis.com/auth/calendar.readonly` and
+   `https://www.googleapis.com/auth/calendar.app.created`. The first reads
+   every calendar. The second lets Metorite make the calendar "Metorite" and
+   write events only into calendars that Metorite made. So Metorite can
+   never change the member's own events (CE-11 will need `calendar.events`,
+   a later consent). Microsoft asks `Calendars.ReadWrite` and
+   `offline_access`. Graph has no narrower write scope, so the Metorite
+   code writes only to the "Metorite" calendar. `User.Read` is already in
    `GRAPH_SCOPES`. Never ask a mail scope in the calendar leg.
 2. **Incremental consent.** Google: send `include_granted_scopes=true`. The
    calendar grant adds to the Gmail grant. Microsoft: the new grant lists the
@@ -1712,25 +1715,41 @@ CE-11 and CE-13.
    'calendar'`, `scope_kind = 'member'`. One row for each member and
    provider. A reconnect updates the row. The sync cursor and the chosen
    calendars live in `provider_meta`.
-6. **Which calendars.** The default reads the primary calendar only. The
-   member may add more calendars in settings. This keeps a first sync short.
-7. **Task blocks out (CE-13).** The provider event id of a task block lives
-   on the overlay `pm_task_personal`, in new nullable columns
-   `ext_connection_id`, `ext_event_id` and `ext_etag`. It does NOT live in
-   `calendar_entries`: a task block is not an entry (§0). The key is
-   `(organization_id, ext_connection_id, ext_event_id)`. The sync of CE-10
-   skips a provider event whose id matches one of these, so a task block
-   returns no `external` copy. A new migration adds the columns (R6).
-8. **Two ways for tasks.** A change in Metorite updates the provider
-   event. A change at the provider (time, title, delete) updates the block
-   when its id matches. The newer `updated` time wins. A delete at the
-   provider unschedules the block and keeps the task. Metorite never
-   deletes a task because of a provider change.
+6. **Which calendars.** After consent, Metorite reads every calendar that
+   the member owns or may edit, except holiday and birthday calendars and
+   the calendar "Metorite". The member may untick a calendar in settings.
+   The first sync reads the primary calendar first, so events show fast.
+7. **The calendar "Metorite".** At connect, Metorite makes one calendar
+   named "Metorite" in the member's Google or Outlook account, when
+   `CALENDAR_SYNC_WRITE` is on. Otherwise the loop makes it on the first
+   tick after the flip. Its id lives in `provider_meta.metorite_calendar_id`
+   of the connection row. The member can hide or remove it in one click, and
+   the primary calendar stays clean. The read loop never imports events of
+   this calendar as `external` entries. An event that the member makes by
+   hand in it is ignored.
+8. **Task blocks out (CE-13) and where the provider id lives.** A task with a
+   timed block on `pm_task_personal` writes one event into the calendar
+   "Metorite". The provider event id lives in a new small table,
+   `calendar_task_links`, tenant-scoped (R5), with the key `(organization_id,
+   task_id, member_email, connection_id)` and the columns `external_id`,
+   `etag`, `provider_updated` and `synced_block_hash`. It is NOT a column of
+   `pm_task_personal`, because a member with Google and Outlook has two
+   events for one block. It is NOT in `calendar_entries`: a task block is not
+   an entry (§0). A new migration adds it (R6, taken at build time). The
+   read loop skips an event whose `(connection_id, external_id)` is in this
+   table, and routes it to the block instead.
+   A move or a resize at the provider moves the block. The newer time wins:
+   the provider's `updated` against the block's `updated_at`. An `etag` equal
+   to the stored one is our own echo and changes nothing. A done task, or a
+   cleared block, deletes the provider event. A delete at the provider
+   unschedules the block and keeps the task. Metorite never deletes a task
+   because of a provider change.
 9. **Defaults of the connect flow.** Connect is a button in the Calendar
    settings and on a first-run card. The write switch (CE-11) is on by
-   default when the grant has the write scope. A member who connects for
-   read first sees one more consent step when they turn the write switch
-   on. The first sync starts at once and shows "Syncing…" until it ends.
+   default for task blocks: one switch, "Show my timed tasks in Google
+   Calendar" (or Outlook), on at connect. Connect asks for read and write
+   in one consent, so there is no second step. The first sync starts at
+   once and shows "Syncing…" until it ends.
    A revoked token shows "Reconnect" and stops the loop for that row.
 10. **The guide.** `docs/calendar_connect.md` holds the member steps and the
     admin steps (CE-14). The panel "How to connect" shows the same steps.
@@ -1751,14 +1770,15 @@ together. The owner gates of §8.3 still bind the live flips.
   `(organization_id, connection_id, external_id)` of §3.3, and updates it.
   It never inserts an `external` copy of a single event. For a series, the
   rule of §8.1 item 5 skips each instance of the master.
-- Task blocks as busy time in the provider is a later choice (Q9).
+- Task blocks go out as events of the calendar "Metorite" (Q9, D215), not as
+  `calendar_entries` rows. §8.1a points 7 and 8 hold the rule.
 
 ### 8.3 Owner gates
 
 | Gate | Who | Why |
 |---|---|---|
-| Add the scopes of §8.1a point 1 to the Google consent screen, and pass Google's review of a sensitive scope | Owner | Our OAuth app, and our name on the review. Task 3036 holds the steps |
-| Add `Calendars.Read` and `Calendars.ReadWrite` to the Azure app | Owner | Same |
+| Add `calendar.readonly` and `calendar.app.created` to the Google consent screen, add the test users, and pass Google's review of the sensitive scope | Owner | Our OAuth app, and our name on the review. Task 3036 holds the steps. In Testing status a refresh token lasts 7 days |
+| Add the delegated permission `Calendars.ReadWrite` to the Azure app | Owner | Same. No new redirect URI in either console |
 | Enable the Google Calendar API in the Google Cloud project | Owner | Without it every call answers 403 |
 | Put the client secrets on the box with `scripts/secrets.sh` | Owner | Live credentials. They exist for mail already |
 | Turn `CALENDAR_SYNC_READ` on for a real member | Owner | D54.6 |
@@ -1800,7 +1820,11 @@ needs no decision change.
 | **CE-8** Repeat rules | AGENT-SAFE after CE-4 | `recurrence`, `series_id`, `original_start`, expanded in the window. "This event" or "all events" on a change | A weekly 09:00 event in `Asia/Kolkata` stays at 09:00 in that zone. A cancelled instance does not show | `tests/unit/test_calendar_recurrence.py` (new), with a zone that changes its clock |
 | **CE-9** Colleagues on an event | AGENT-SAFE after CE-0 Q2, CE-4 | Attendee input: the rows with `member_email` and the guest rows. CE-4 writes only the organizer row, and its read already applies the rule of §4.1. `event_invite` with RSVP in place (D101) | An attendee sees the event. A colleague who is not one does not. Decline writes `rsvp` and mutes the entry | `test_calendar_entries_r8.py`, the visibility cases |
 | **CE-10** Read Google and Outlook | 🔴 OWNER-GATE for §8.3. The code is AGENT-SAFE after CE-0 Q1, Q6, CE-4 | §8.1, and the provider of MD-11 | With recorded replies, a sync writes each instance once, and a second sync adds nothing. A disconnect deletes the rows of that connection | `tests/unit/test_calendar_sync_read.py` (R8, new) and the loop in `test_db_engine_seam.py` |
-| **CE-13** Tasks out, two ways | 🔴 OWNER-GATE (§8.3). After CE-10 | §8.1a points 7 and 8: the columns on `pm_task_personal`, the writer, and the return path | A scheduled task block makes one provider event. A move at the provider moves the block. A delete at the provider unschedules the block and keeps the task. The flag off sends no request | `tests/unit/test_calendar_sync_tasks.py` (R8, new) |
+| **CE-10a** Google read, and the shared sync core | 🔴 OWNER-GATE for the live flip (§8.3). The code is AGENT-SAFE | §8.1 and §8.1a: the connect leg, the calendar row, the 60-second loop, the row writer and the Google provider | With recorded replies, a sync writes each instance once, and a second sync adds nothing. A disconnect removes the rows of that connection. A calendar state never writes a mailbox | `tests/unit/test_calendar_sync_read.py` (R8, new) and the loop in `test_db_engine_seam.py` |
+| **CE-10b** Outlook read | As CE-10a. After the core of CE-10a | The Graph provider on the same core: a delta query for each calendar | As CE-10a, with recorded Graph replies, and an `@removed` item sets `cancelled` | `test_calendar_sync_read.py` |
+| **CE-10c** The connect UI and the help panel | AGENT-SAFE, dark | **Connect Google Calendar** and **Connect Outlook** in `CalendarSettings.tsx`, the states "Syncing…" and "Reconnect", the calendar ticks, and the panel "How to connect" that links `docs/calendar_connect.md` | A member connects from the settings in one click. A revoked token shows "Reconnect". The panel shows the member steps | Vitest for the settings and the panel, and a visual review |
+| **CE-5a** External entries on the grid | AGENT-SAFE, dark | The read-only look of an `external` entry on the grid (§6.2) | An external entry shows in its time, locked, with the provider mark. A busy one counts in the overlap | Vitest for the grid, and a visual review |
+| **CE-13** Tasks out, two ways | 🔴 OWNER-GATE for the live flip (§8.3). After CE-10a | §8.1a points 7 and 8: the calendar "Metorite", the table `calendar_task_links`, the writer, and the return path | A scheduled task block makes one provider event in "Metorite". A move at the provider moves the block. A delete at the provider unschedules the block and keeps the task. A done task deletes the event. The flag off sends no request | `tests/unit/test_calendar_sync_tasks.py` (R8, new) |
 | **CE-14** The setup guide | AGENT-SAFE | `docs/calendar_connect.md` (§8.1a point 10) | A member can connect each of the four account types from the text alone | `ste-lint` on the file |
 | **CE-11** Write events to the provider | 🔴 OWNER-GATE (§8.3). After CE-10 | §8.2 | The flag off sends no request. One event makes one provider event, and the next sync makes no copy | `tests/unit/test_calendar_sync_write.py` (new) |
 | **CE-12** Notes meetings | AGENT-SAFE after CE-4 | `meeting_id`. **Prepare notes** and **Send notetaker**. The "Coming up" band reads entries | Prepare notes twice opens one `meeting` row. A moved event moves the band | `tests/unit/test_calendar_meeting_link.py` (new) |
@@ -2087,7 +2111,7 @@ directly.
 | Q6 | Google or Outlook first? | Google. The Gmail connect already runs on our Google project |
 | Q7 | When does write-out start? | After read is live for 2 weeks, and only for events made in Metorite |
 | Q8 | A guest with no connected account | Store the name and address. Send nothing. Offer Connect |
-| Q9 | Do task blocks go to the provider as busy time? | No. An opt-in for each member, after CE-11 |
+| Q9 | Do task blocks go to the provider? | ✅ **DECIDED 2026-11-12 (D215): yes**, as events of the calendar "Metorite", two ways (§8.1a points 7 and 8) |
 | Q10 | The gate of the new acts | `feature:tasks`, as D54.1 |
 
 ## 12. Out of scope

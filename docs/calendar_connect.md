@@ -12,7 +12,7 @@ or a key.
 | Item | Direction |
 |---|---|
 | Events in Google or Outlook | Into Metorite. You see them on your Calendar. |
-| A task that you schedule in Metorite | Out to your calendar, as one event. |
+| A task that you schedule in Metorite | Out to a calendar called **Metorite**, as one event. Your main calendar stays clean. |
 | A move or title change of that event in your calendar | Back into Metorite. The newer change wins. |
 | A delete of that event in your calendar | The task block goes. The task stays. |
 | An event that you make in Metorite with "Also in Google Calendar" | Out to your calendar. |
@@ -49,9 +49,9 @@ steps below.
 
 ### Choose what syncs
 
-By default Metorite reads your main calendar only. To add a calendar, open
-**Calendar**, then **Settings**, then your connected account. Tick the
-calendars you want.
+Metorite reads every calendar that you own. To stop one, open **Calendar**,
+then **Settings**, then your connected account. Untick it. To hide the
+**Metorite** calendar, use the eye in Google or Outlook.
 
 ## Admins
 
