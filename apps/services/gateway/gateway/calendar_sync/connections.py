@@ -38,7 +38,9 @@ META_ACCOUNT_EMAIL = "account_email"
 META_ACCOUNT_ID = "account_id"
 #: The member's switch: write the task blocks of this connection out (CE-13d).
 #: Absent means ON, so every row made before this key keeps today's behaviour
-#: (R6). Only an explicit JSON ``false`` turns the write-out off.
+#: (R6). It lives in the COLUMN ``provider_meta`` only, never in the token blob:
+#: the blob stringifies every value ("False"), and a token refresh merges the
+#: blob's meta back into the column.
 META_PUSH_TASKS = "push_tasks"
 META_RETRY_AT = "retry_at"
 
@@ -137,9 +139,15 @@ async def save_cursor(
     await store.merge_provider_meta(db, org, connection_id, extra)
 
 
+#: A marker that is not a value: "the row had no such key".
+ABSENT: Any = object()
+
+
 def push_tasks_enabled(conn: store.Connection) -> bool:
-    """True unless the member switched the write-out of task blocks off."""
-    return conn.provider_meta.get(META_PUSH_TASKS) is not False
+    """True only for an ABSENT key or the JSON ``true``. FAIL CLOSED: any other
+    value ("False", "false", 0, null) is OFF, because this gates a write to a
+    third party and a garbled switch must never turn the write-out on."""
+    return conn.provider_meta.get(META_PUSH_TASKS, True) is True
 
 
 def metorite_calendar_id(conn: store.Connection) -> str | None:

@@ -36,7 +36,6 @@ from typing import Any, Literal
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, ConfigDict, StrictBool
 from gateway.calendar_sync import connections, engine, flags
 from gateway.calendar_sync.provider import (
     OWNING_APP,
@@ -51,6 +50,7 @@ from gateway.routes.email.transport.signing import (
     verify_state,
 )
 from gateway.routes.tasks.core import _tenant_session, router
+from pydantic import BaseModel, ConfigDict, StrictBool
 from sqlalchemy import text
 
 #: The purpose of each signed state. A value signed for one never verifies for
@@ -233,12 +233,13 @@ async def finish_consent(
                          {"key": f"calendar.connect:{org}:{me}:{prov.provider}"})
         before = await store.get(db, org, prov.provider, OWNING_APP,
                                  scope_kind=store.SCOPE_MEMBER, member_email=me)
-        if before is not None and connections.META_PUSH_TASKS in before.provider_meta:
-            # ``save_credential`` REPLACES provider_meta. A member who switched the
-            # write-out off must not get it back on by reconnecting.
-            cred = replace(cred, provider_meta={
-                **dict(cred.provider_meta),
-                connections.META_PUSH_TASKS: before.provider_meta[connections.META_PUSH_TASKS]})
+        switch: Any = connections.ABSENT
+        if before is not None:
+            # The row lock a PATCH takes, so a switch that commits during the
+            # callback is read here and not lost.
+            held = await store.lock_by_id(db, org, before.id)
+            switch = (held or before).provider_meta.get(connections.META_PUSH_TASKS,
+                                                       connections.ABSENT)
         if before is not None:
             old = before.provider_meta.get(connections.META_ACCOUNT_ID)
             if old and old != who.account_id:
@@ -247,9 +248,16 @@ async def finish_consent(
                 locked = await store.lock_by_id(db, org, before.id)
                 if locked is not None:
                     await connections.disconnect_connection(db, org, locked)
-        await store.save_credential(
+        saved = await store.save_credential(
             db, org, prov.provider, OWNING_APP, cred, connected_by=me,
             scope_kind=store.SCOPE_MEMBER, member_email=me, scopes=cred.scopes)
+        if switch is not connections.ABSENT:
+            # ``save_credential`` REPLACES provider_meta. A member who switched the
+            # write-out off must not get it back on by reconnecting. The value
+            # goes to the COLUMN, never into ``cred`` (the sealed blob stringifies
+            # it, and a token refresh would merge "False" back).
+            await store.merge_provider_meta(
+                db, org, saved.id, {connections.META_PUSH_TASKS: switch})
     return RedirectResponse(f"{base}{RETURN_OK}{word}", status_code=302)
 
 
@@ -272,8 +280,10 @@ async def update_connection(
 
     The member comes from the session, and the connection is found inside the
     member's own tenant session and filtered on the member, so nobody changes a
-    colleague's switch. The row is locked, as a sync locks it, so the change and
-    a running pass do not interleave. Turning it off deletes nothing."""
+    colleague's switch. The row is locked, as a sync locks it, so the change waits
+    for a token refresh or a pull in progress and the callback of a reconnect
+    reads it. A push loop already in progress finishes its pass (at most 100
+    writes) and then reads the switch. Turning it off deletes nothing."""
     org, me = _scope(user)
     cid = _connection_id(connection_id)
     async with _tenant_session() as db:

@@ -19,13 +19,15 @@ Mutations (R7), each turns the named test red:
 * M32. ``calendar_connections.py`` ``finish_consent``: drop the carry of
   ``push_tasks``. A reconnect turns the write-out back on.
   ``test_r8_a_reconnect_keeps_the_switch_off``.
+* M34. ``connections.py`` ``push_tasks_enabled``: ``is not False``. A garbled
+  value reads as ON. ``test_the_switch_reads_fail_closed``.
 * M33. ``task_out.py`` ``_pull``: drop the ``push_tasks_enabled`` test. The pull
   still reads the calendar. Same test as M30.
 """
 
+# ruff: noqa: F811  (the pytest fixture ``world`` is imported, as in the sibling suites)
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -33,15 +35,20 @@ import pytest
 from acb_auth import UserContext, UserRole, get_current_user
 from acb_auth.access import build_access
 from fastapi import FastAPI, Request
-from sqlalchemy import text
+from gateway.calendar_sync import connections
 
-from gateway.calendar_sync import connections, task_out
-from gateway.calendar_sync.provider import OutResult
 from tests.unit.test_calendar_sync_read import (  # noqa: F401
-    ANA, BOB, ZED, _DB_GATE, _connect, _meta, _scope, app_engine, promoted, world,
+    _DB_GATE,
+    ANA,
+    BOB,
+    ZED,
+    _connect,
+    _meta,
+    _scope,
+    app_engine,
+    promoted,
+    world,
 )
-
-NOW = datetime(2026, 11, 20, 8, 0, tzinfo=UTC)
 
 
 async def _call(w: Any, method: str, path: str, member: str, body: Any = None) -> Any:
@@ -151,6 +158,7 @@ async def test_r8_a_reconnect_keeps_the_switch_off(world) -> None:
     from urllib.parse import parse_qs, urlsplit
 
     from gateway.routes.tasks import calendar_connections as cal
+
     from tests.unit.test_calendar_sync_read import _user, answer, fixture
 
     cid = await _connect(world, ANA)
@@ -165,9 +173,26 @@ async def test_r8_a_reconnect_keeps_the_switch_off(world) -> None:
     meta = _meta(world, cid)
     assert meta.status == "connected" and meta.provider_meta["account_email"] == "ana@example.test"
     assert meta.provider_meta["push_tasks"] is False  # the row was replaced, the switch was carried
+    # The switch lives in the COLUMN only. The sealed blob must not hold it: a blob
+    # stringifies it ("False"), and a token refresh merges the blob's meta back.
+    from acb_common.db import tenant_session
+    from gateway.connections import store
+
+    from tests.unit._tenant_ladder import tenant_engine_scope
+    from tests.unit.test_calendar_sync_read import _dsn
+
+    async with tenant_engine_scope(_dsn(world.p)), tenant_session(world.org) as db:
+        sealed = await store.load_credential(db, world.org, "google_calendar", "calendar",
+                                             scope_kind=store.SCOPE_MEMBER, member_email=ANA)
+        assert "push_tasks" not in sealed.provider_meta
+        await store.update_tokens(db, world.org, cid, sealed)  # what a token refresh does
+    assert _meta(world, cid).provider_meta["push_tasks"] is False  # still OFF after the refresh
 
 
-def test_only_an_explicit_false_is_off() -> None:
+def test_the_switch_reads_fail_closed() -> None:
+    """Only an ABSENT key or the JSON true is ON. Any garbled value is OFF: this
+    gates a write to a third party. Mutation (M34): ``is not False``. Then "False"
+    (what a refresh of a sealed blob writes) reads as ON."""
     from types import SimpleNamespace
 
     def conn(meta: dict) -> Any:
@@ -175,6 +200,5 @@ def test_only_an_explicit_false_is_off() -> None:
 
     assert connections.push_tasks_enabled(conn({})) is True
     assert connections.push_tasks_enabled(conn({"push_tasks": True})) is True
-    assert connections.push_tasks_enabled(conn({"push_tasks": None})) is True
-    assert connections.push_tasks_enabled(conn({"push_tasks": "false"})) is True  # never written by us
-    assert connections.push_tasks_enabled(conn({"push_tasks": False})) is False
+    for garbled in (False, "False", "false", "True", 0, 1, None, "off"):
+        assert connections.push_tasks_enabled(conn({"push_tasks": garbled})) is False, garbled
