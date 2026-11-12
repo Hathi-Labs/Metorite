@@ -6202,6 +6202,20 @@ The owner asked in chat on 2026-11-12 for the chat failures that a member will m
 
 Fence: each slice in `chat_failure_modes.md` §6 names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D217 entries merge. Re-check this number at merge.
 
+### D218 — Merge to main as fast as we build: one gate before the merge, a green commit for each release, a bot that reverts (2026-11-12)
+
+The owner asked in chat on 2026-11-12 to "push code as fast as we develop it". The three release slots stay (D194). The owner chose points 3 to 6 in chat on the same day. `ci_velocity.md` §8 holds the measurements, the rungs and the slices CIV-26 to CIV-38 (tasks 3051 to 3066).
+
+1. **One gate before the merge.** GitHub pr-check is the gate. `ci_local.sh` becomes optional (CIV-27).
+2. **Merge on green.** A script merges a green PR when its trial merge with today's `main` is clean. It does not test the PR again after `main` moves. D176 stands: we use no merge queue (CIV-28).
+3. **Ship green.** Each release slot ships the newest commit that passed the full suite. A red tip of `main` holds no release. The R8 gate still runs (CIV-30).
+4. **A bot reverts.** A bot bisects a red batch. A revert PR undoes the culprit, at most 3 an hour, and the culprit's task opens again. One week of dry run comes first (CIV-31).
+5. **The preview gates the flag.** A slice behind a flag that is off merges on green. The owner approves the flag flip. A new screen with no flag still waits for the preview. This amends D145 and D200 (CIV-36).
+6. **Models by job.** Haiku, Sonnet, Opus and Fable each take the jobs that `ci_velocity.md` §8.6 lists. This replaces the rule "Sonnet does the work" of 2026-10-19 (CIV-37).
+7. **The weekly review measures the quality.** A revert share over 5% for 7 days brings the strict gate back for that area (CIV-38).
+
+Each point binds when its slice merges. Until then the old rule holds. Fence: each slice in `ci_velocity.md` §8.5 names its test in its task. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D218 entries merge. Re-check this number at merge.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
