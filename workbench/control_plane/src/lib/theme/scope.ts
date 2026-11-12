@@ -29,7 +29,8 @@
  * `theme` key stays, because next-themes reads it.
  *
  * ⚠️ **Sign-out.** "Sign out of all accounts" and a detected sign-out clear
- * that account's keys and the pointer (`clearAppearanceForAccounts`), as the
+ * that account's keys, its unsent marks and the pointer
+ * (`clearAppearanceForAccounts`), as the
  * chat namespaces are cleared. The sign-in page then paints the bare keys.
  *
  * Fence: `scope.test.ts`.
@@ -40,6 +41,7 @@ import {
   APPEARANCE_ADOPTED_KEY,
   APPEARANCE_LAST_SCOPE_PREFIX,
   APPEARANCE_SCOPE_KEY,
+  APPEARANCE_UNSENT_PREFIX,
   DEFAULT_MODE,
   MODE_STORAGE_KEY,
   SCOPED_KEYS,
@@ -173,7 +175,12 @@ export function clearAppearanceForAccounts(emails: readonly string[]): void {
   if (typeof window === "undefined") return;
   const who = [...new Set(emails.map((e) => normalEmail(e)).filter((e): e is string => !!e))];
   if (who.length === 0) return;
-  const prefixes = who.flatMap((e) => SCOPED_KEYS.map((k) => `${k}${SCOPE_SEPARATOR}${e}|`));
+  // The unsent mark of PKG-20 goes too. A mark that stays after a sign-out
+  // would send the defaults of the next sign-in over the member's server copy.
+  const prefixes = who.flatMap((e) => [
+    ...SCOPED_KEYS.map((k) => `${k}${SCOPE_SEPARATOR}${e}|`),
+    `${APPEARANCE_UNSENT_PREFIX}${e}|`,
+  ]);
   const owns = (scope: string | null) => !!scope && who.some((e) => scope.startsWith(`${e}|`));
   try {
     const ls = window.localStorage;

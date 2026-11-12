@@ -2,7 +2,7 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
-import { useTheme } from "next-themes";
+import { useMemberMode } from "@/lib/theme/syncAppearance";
 import { useEffect, useState } from "react";
 
 /**
@@ -15,10 +15,13 @@ import { useEffect, useState } from "react";
  * this component is named after its hook. It has never switched a theme, and
  * since the engine retired (2026-08-31) there is only one to switch to. Every
  * string it shows says "mode", which is what a member actually changes.
+ *
+ * A click is a member change, so it goes through `useMemberMode`, and the
+ * server copy of the appearance follows it (PKG-20).
  */
 
 export default function ThemeToggle() {
-  const { theme, setTheme } = useTheme();
+  const { mode: theme, setMode: setTheme } = useMemberMode();
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => setMounted(true), []);
@@ -53,7 +56,7 @@ export function ThemeToggleMenuItem({
   onClick?: () => void;
   className?: string;
 }) {
-  const { theme, setTheme } = useTheme();
+  const { mode: theme, setMode: setTheme } = useMemberMode();
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => setMounted(true), []);

@@ -1066,8 +1066,8 @@ def add_steered_words(author: Any, text: Any, *, typed: Any) -> bool:
     * *author* is the run member. Another member's steer never grounds a
       write.
 
-    ``orchestrator.steer.decorate_tool_result`` calls it when a tool result
-    carries a steer to the model. Never raises.
+    ``orchestrator.steer.take_steer_turns`` calls it when a model call reads
+    a steer as a user turn (task 2494). Never raises.
     """
     holder = _STEERS.get()
     if holder is None or typed is not True or not holder.member:
