@@ -34,8 +34,11 @@ export default function RemindersBand({
   feed,
   now,
   className = "",
+  tabbed = false,
 }: {
   feed: Pick<Feed, "answer" | "marked" | "hidden" | "errors" | "refresh">;
+  /** The Reminders tab is open and names the band, so the band drops its own heading word. */
+  tabbed?: boolean;
   /** The page's clock, by the minute. A render reads no clock itself. */
   now: Date | null;
   className?: string;
@@ -57,7 +60,7 @@ export default function RemindersBand({
     >
       <div className="flex items-center gap-1.5 px-1 pb-2 text-xs font-medium text-muted-foreground">
         <Icon name="Bell" size={13} className={waiting > 0 ? WAITING.text : undefined} />
-        <h2 id="my-day-reminders" className="text-xs font-medium">
+        <h2 id="my-day-reminders" className={tabbed ? "sr-only" : "text-xs font-medium"}>
           Reminders
         </h2>
         {waiting > 0 ? (
