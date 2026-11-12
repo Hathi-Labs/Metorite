@@ -52,7 +52,7 @@ from gateway.routes.email.transport.signing import (
 )
 from gateway.routes.tasks.core import _tenant_session, router
 from gateway.routes.tasks.settings import _BOUND_ORG
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from sqlalchemy import text
 
 #: The purpose of each signed state. A value signed for one never verifies for
@@ -140,6 +140,7 @@ def connection_dict(conn: store.Connection, count: int) -> dict[str, Any]:
         "last_sync_at": _iso(conn.last_sync_at),
         "last_error": conn.last_error,
         "metorite_calendar": connections.metorite_calendar_id(conn) is not None,
+        "push_tasks": connections.push_tasks_enabled(conn),
         "entry_count": count,
     }
 
@@ -298,6 +299,13 @@ async def finish_consent(
                          {"key": f"calendar.connect:{org}:{me}:{prov.provider}"})
         before = await store.get(db, org, prov.provider, OWNING_APP,
                                  scope_kind=store.SCOPE_MEMBER, member_email=me)
+        switch: Any = connections.ABSENT
+        if before is not None:
+            # The row lock a PATCH takes, so a switch that commits during the
+            # callback is read here and not lost.
+            held = await store.lock_by_id(db, org, before.id)
+            switch = (held or before).provider_meta.get(connections.META_PUSH_TASKS,
+                                                       connections.ABSENT)
         if before is not None:
             old = before.provider_meta.get(connections.META_ACCOUNT_ID)
             if old and old != who.account_id:
@@ -306,10 +314,59 @@ async def finish_consent(
                 locked = await store.lock_by_id(db, org, before.id)
                 if locked is not None:
                     await connections.disconnect_connection(db, org, locked)
-        await store.save_credential(
+        saved = await store.save_credential(
             db, org, prov.provider, OWNING_APP, cred, connected_by=me,
             scope_kind=store.SCOPE_MEMBER, member_email=me, scopes=cred.scopes)
+        if switch is not connections.ABSENT:
+            # ``save_credential`` REPLACES provider_meta. A member who switched the
+            # write-out off must not get it back on by reconnecting. The value
+            # goes to the COLUMN, never into ``cred`` (the sealed blob stringifies
+            # it, and a token refresh would merge "False" back).
+            await store.merge_provider_meta(
+                db, org, saved.id, {connections.META_PUSH_TASKS: switch})
     return RedirectResponse(f"{base}{RETURN_OK}{word}", status_code=302)
+
+
+class ConnectionSettings(BaseModel):
+    """The member's settings of one calendar connection (CE-13d)."""
+
+    model_config = ConfigDict(extra="forbid")
+    push_tasks: StrictBool
+
+
+#: What the member is told when the write-out goes off. The events stay.
+PUSH_OFF_NOTE = "Your tasks no longer go to this calendar. The events already there stay."
+
+
+@router.patch("/calendar/connections/{connection_id}", dependencies=_ON)
+async def update_connection(
+    connection_id: str, body: ConnectionSettings, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Switch the write-out of task blocks on or off for ONE connection.
+
+    The member comes from the session, and the connection is found inside the
+    member's own tenant session and filtered on the member, so nobody changes a
+    colleague's switch. The row is locked, as a sync locks it, so the change waits
+    for a token refresh or a pull in progress and the callback of a reconnect
+    reads it. A push loop already in progress finishes its pass (at most 100
+    writes) and then reads the switch. Turning it off deletes nothing."""
+    org, me = _scope(user)
+    cid = _connection_id(connection_id)
+    async with _tenant_session() as db:
+        await _own(db, org, me, cid)
+        locked = await store.lock_by_id(db, org, cid)
+        if locked is None or locked.status == store.STATUS_DISCONNECTED:
+            raise HTTPException(status_code=404, detail="Connection not found.")
+        await store.merge_provider_meta(
+            db, org, cid, {connections.META_PUSH_TASKS: bool(body.push_tasks)})
+        conn = await store.get_by_id(db, org, cid)
+        counts = await connections.entry_counts(db, org, [cid])
+    if conn is None:
+        raise HTTPException(status_code=404, detail="Connection not found.")
+    out = connection_dict(conn, counts.get(cid, 0))
+    if not body.push_tasks:
+        out["note"] = PUSH_OFF_NOTE
+    return out
 
 
 @router.post("/calendar/connections/{connection_id}/sync", dependencies=_ON)
