@@ -24,11 +24,12 @@ vi.mock("@/lib/gateway", () => ({
 
 import { POST } from "./route";
 
-const post = (id: string, sameSite = true) =>
+const post = (id: string, sameSite = true, body?: string) =>
   POST(
     new NextRequest("http://localhost/api/calendar/connections/x/connect", {
       method: "POST",
       headers: sameSite ? { "sec-fetch-site": "same-origin" } : {},
+      ...(body === undefined ? {} : { body }),
     }),
     { params: Promise.resolve({ id }) },
   );
@@ -91,5 +92,53 @@ describe("POST /api/calendar/connections/[id]/connect", () => {
     seam.status = 404;
     seam.body = '{"detail":"Not Found"}';
     expect((await post("google")).status).toBe(404);
+  });
+
+  // CE-10d: the optional login hint.
+  it("forwards a valid login_hint as the gateway body", async () => {
+    const res = await post("google", true, '{"login_hint":"ada@example.com"}');
+    expect(res.status).toBe(200);
+    expect(seam.calls).toHaveLength(1);
+    expect(seam.calls[0].path).toBe("/tasks/calendar/connections/google/connect");
+    expect(JSON.parse(String(seam.calls[0].init?.body))).toEqual({ login_hint: "ada@example.com" });
+  });
+
+  it("sends no body for no body or an empty body", async () => {
+    await post("google");
+    await post("google", true, "");
+    expect(seam.calls.map((c) => c.init?.body)).toEqual([undefined, undefined]);
+  });
+
+  it("refuses another key, a bad address and bad JSON, and sends nothing", async () => {
+    const bad = [
+      '{"login_hint":"ada@example.com","extra":1}',
+      '{"other":"ada@example.com"}',
+      '{"login_hint":"not an address"}',
+      '{"login_hint":"a@b"}',
+      `{"login_hint":"${"a".repeat(250)}@example.com"}`,
+      '{"login_hint":5}',
+      '{"login_hint":null}',
+      "[]",
+      '"x"',
+      "{nope",
+      "{}",
+    ];
+    for (const b of bad) expect((await post("google", true, b)).status, b).toBe(400);
+    expect(seam.calls).toEqual([]);
+  });
+
+  it("passes a 409 and a 422 body through unchanged", async () => {
+    for (const [status, detail] of [[409, "already_connected"], [422, "unknown_mailbox"]] as const) {
+      seam.status = status;
+      seam.body = JSON.stringify({ detail });
+      const res = await post("google", true, '{"login_hint":"ada@example.com"}');
+      expect(res.status).toBe(status);
+      expect(await res.json()).toEqual({ detail });
+    }
+  });
+
+  it("refuses a cross-site request that carries a hint", async () => {
+    expect((await post("google", false, '{"login_hint":"ada@example.com"}')).status).toBe(403);
+    expect(seam.calls).toEqual([]);
   });
 });
