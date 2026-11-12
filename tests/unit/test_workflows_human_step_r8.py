@@ -27,13 +27,19 @@ owner and has NO BYPASSRLS. Two orgs, each with its own members and workflow.
 
 * M1. ``_TASK_SQL``: drop the three ``origin`` predicates (S4 red, the
   untied task case).
-* M2. ``human_step.end_step`` and ``resume_run``: drop ``AND status =
-  'pending'`` (the race cases of S2 and S3 red).
-* M3. ``resume_run``: drop ``AND reason <> 'task'`` (S6 red).
+* M2. ``human_step.end_step``, or ``resume_run``: drop BOTH the pause guard
+  (``status = 'pending'``) and the run guard (``status = 'paused'``) (the two
+  race cases of S2 and S3 red). One guard alone is not enough to fail, because
+  the two UPDATEs are in series, and each one stops a second winner.
+* M3. ``resume_run``: drop ``AND reason <> 'task'`` (the hermetic source fence
+  red. S6 stays green, because the ``task_done`` check is a second wall).
 * M4. ``human_step.task_outcome``: ``cancelled`` gives ``resume`` (S3 red).
 * M5. ``scheduler.scan_done_tasks``: read the task with an unbound session
   (S4 red, because RLS then shows no row to the app role).
-* M6. ``human_step.open_step``: drop the ``_owner_in_org`` check (S5 red).
+* M6. ``human_step.open_step``: drop the ``_owner_in_org`` check (S5 red for
+  the suspended member, who keeps a personal tree from the time they were
+  active. For a member of another org, ``ensure_personal_project`` refuses
+  too, a second wall).
 * M7. ``human_step.open_step``: ``announce=True`` (the event spy of S1 red).
 * M8. ``service._hold_at_human_step``: drop the ``org_ready`` check (S5 red).
 
@@ -71,6 +77,7 @@ from tests.unit.test_auto_park import (
     _node,
     _race,
     _seed_member,
+    _seed_personal_root,
     _seed_workflow,
 )
 
@@ -155,6 +162,9 @@ def world():
         for email in (OWNER_A, LENA_A):
             _seed_member(conn, ns.org_a, email)
         _seed_member(conn, ns.org_a, GONE_A, status="suspended")
+        # A tree from the time the member was active: the directory read of
+        # `ensure_personal_project` is skipped, so only the step's own check refuses.
+        _seed_personal_root(conn, ns.org_a, GONE_A)
         for email in (OWNER_B, LENA_B):
             _seed_member(conn, ns.org_b, email)
         for name, org, owner, who in (

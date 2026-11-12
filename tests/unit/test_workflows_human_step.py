@@ -96,6 +96,7 @@ def test_a_valid_step_compiles_and_keeps_its_literal_config() -> None:
         {"assignee": "a@b.test", "title": "   "},
         # A template never picks the person: a payload could name anyone.
         {"assignee": "{{trigger.who}}", "title": "x"},
+        {"assignee": "{{trigger.who}}@example.test", "title": "x"},
         {"assignee": "a@b.test", "title": "Check {{trigger.name}}"},
         {"assignee": "a@b.test", "title": "x", "description": "{{trigger.body}}"},
         {"assignee": "a@b.test", "title": "x", "project_id": "p"},
