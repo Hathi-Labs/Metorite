@@ -14,6 +14,9 @@ CIV-21 (D194) is BUILT on 2026-11-07 (task 2210, branch
 `civ21-three-releases-mt-06e30527`). Production releases three times a day,
 at 05:30, 13:30 and 21:30 UTC. The owner installs the new timer.
 
+**D218 (2026-11-12):** §8 adds the rule "merge to main as fast as we build".
+Its slices are CIV-26 to CIV-38 (tasks 3051 to 3066). None is built yet.
+
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
 **Owning spec** for how much CI runs, and where. `engineering_practice.md` §7a
@@ -38,6 +41,9 @@ slots at 05:30, 13:30 and 21:30 UTC (D194). This spec links to them and adds not
   fast, and then R8 moves into the batch too.
 - The owner decision of 2026-10-16 stays: **no merge queue**. A red batch on
   `main` is fixed forward or reverted at once.
+- **D218 (§8) changes how a PR merges and what a release ships.** A script
+  merges a green PR, and each release ships the newest green commit. Each
+  point binds when its slice merges.
 
 Decision: D176 (2026-11-04). Re-check the number at merge.
 
@@ -792,3 +798,146 @@ AGENT-SAFE. STANDARD tier, with an Opus diff review.
 | CIV-20 | 2207 | | |
 | CIV-22 | 2288 | | |
 | CIV-19 | 2206 | | |
+
+The slices of §8 have their own table in §8.5.
+
+---
+
+## 8. Merge to main as fast as we build (D218, 2026-11-12)
+
+**Owner request, 2026-11-12:** "push code as fast as we develop it". The three
+release slots stay (D194). Testing and the merge to `main` go as fast as the
+quality allows. Task 3051 (CIV-26) holds this plan.
+
+### 8.1 The rule
+
+**A PR waits only for the tests that its change can break. Each test runs once
+before the merge. The full suite runs after the merge, and a bot undoes a
+break.**
+
+1. **One gate before the merge.** GitHub pr-check is the gate. `ci_local.sh`
+   becomes optional (CIV-27).
+2. **Merge on green.** A script merges a green PR when its trial merge with
+   today's `main` is clean. The script does not test the PR again after
+   `main` moves. D176 stands: we use no merge queue (CIV-28).
+3. **Ship green.** Each release slot ships the newest commit that passed the
+   full suite. A red tip of `main` holds no release. The R8 gate still runs
+   (CIV-30).
+4. **Undo a break.** A bot bisects a red batch, reverts the culprit through a
+   revert PR, and opens its task again. One week of dry run comes first
+   (CIV-31).
+5. **Preview the flag.** A slice behind a flag that is off merges on green.
+   The owner preview moves to the flag flip (CIV-36).
+6. **Route the models by job** (§8.6, CIV-37).
+7. **Watch the quality.** The weekly review reads the revert share, the
+   minutes that `main` is red, the hotfixes and the selection misses. A revert
+   share over 5% for 7 days brings the strict gate back for that area
+   (CIV-38).
+
+Each point binds when its slice merges. Until then the old rule holds.
+
+### 8.2 Why (measured 2026-11-12)
+
+| Fact | Number |
+|---|---|
+| Merges a day | 50 on average. Peaks of 101 (11-07) and 91 (11-11) |
+| PR open to merge (133 PRs since 11-09) | Median 1.8 h, p90 18.9 h |
+| One pr-check run | Median 32 min, p90 41 min. Runner wait about 0 |
+| pr-check runs for each branch | Median 2, p90 4 |
+| Red pr-check runs, 7 days | 62%. 36 of 70 red runs failed only the browser suite |
+| Unit shard test step | 14 to 33 min |
+| Test files that a PR selects | Median 337 of 1,734. 4 of 22 commits ran the full suite |
+| Last green run to merge | Median 15 min, p90 2.6 h |
+| `main` batch | 50 min, 15% red. 5 of 12 red batches came after a green PR |
+
+Before each push, `ci_local.sh` ran the PR suite again. It took 17 to 50 min,
+plus lock waits of up to 1 h (session notes, not measured on 11-12). So a
+slice ran the same tests three or four times before its merge. Half of the red
+runs came from a check that blocks nothing.
+
+**Sources.**
+- Anthropic, "Redesigning source control" (Scion): land with no global lock,
+  test after the land, and revert fast.
+- `github.com/CarterT27/scion` and `github.com/tinyhumansai/openscion`: two
+  clean-room builds of that design.
+- `github.com/feder-cr/git-ai`: a green ref, an automatic revert with brakes,
+  and conflict rules whose model fixes are only proposals. Its benchmark: 26
+  to 29 tries for each landed change when each agent tests again after the
+  tip moves.
+
+### 8.3 Before and after
+
+| Step | Before | After |
+|---|---|---|
+| Local run | `ci_local.sh` before each push | Optional (CIV-27) |
+| PR CI | 32 min, with red noise from the browser suite | About 22 min, then about 10 min (CIV-29, CIV-33) |
+| A red run | The full PR selection again | The failed tests and the tests that the fix reaches (CIV-32) |
+| `main` moved | Merge `main` in and test again | Merge when the trial merge is clean (CIV-28) |
+| The merge | A session merges. Median 15 min after green | A script merges in about 1 min (CIV-28) |
+| After the merge | An agent watches the batch. A red `main` holds the release | Nobody waits. A bot reverts. The release ships green (CIV-30, CIV-31) |
+| Production | Three slots, the full suite and R8 | The same |
+
+**Estimates, not measurements.** Code done to merged: median about 2.3 h now,
+about 35 min after rung 0, and about 15 min after rung 2. The merges a day that
+GitHub's 20 free runners carry: about 75 now, about 200 after rung 0, and about
+450 after rung 2. The rung demos measure them.
+
+### 8.4 What keeps the quality
+
+- Every test still runs. A PR runs what its change reaches. Each batch on
+  `main` runs the full unit suite. Each release runs the full suite and the R8
+  suites on real databases.
+- A release ships only a green commit.
+- A HIGH slice keeps its full loop. The verifier is never the implementer.
+- The browser suite stays the UI fence on frontend PRs (D-PM-21, CIV-24).
+- **The trade.** Some breaks reach `main` for up to one batch, about 50 min,
+  before the bot undoes them. That happens today too: 15% of batches are red.
+
+### 8.5 Slices and rungs
+
+Each rung ends in a demo (D211). Each slice of a rung blocks its demo task.
+
+| Slice | Task | Rung | Tier | What |
+|---|---|---|---|---|
+| CIV-26 | 3051 | – | LOW | This section and D218 |
+| CIV-27 | 3052 | 0 | LOW | `ci_local.sh` is optional. A lane pushes once per round |
+| CIV-28 | 3053 | 0 | STANDARD | The merge bot |
+| CIV-29 | 3054 | 0 | STANDARD | Browser suite: inherited failures, the specs of the changed area, the full suite after merge |
+| CIV-36 | 3061 | 0 | LOW | The preview gates the flag |
+| CIV-37 | 3062 | 0 | LOW | Model routing by job |
+| CIV-38 | 3063 | 0 | LOW | The quality numbers and the rollback rule |
+| CIV-30 | 3055 | 1 | HIGH | The green pointer. A release ships green |
+| CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first |
+| CIV-32 | 3057 | 2 | STANDARD | A repair round tests what failed and what the fix reaches |
+| CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection |
+| CIV-34 | 3059 | 2 | STANDARD | Conflict rules in the merge bot, tested on the merged tree |
+| CIV-35 | 3060 | 2 | LOW | A proposal: review depth by file class. It needs an owner decision |
+
+The demo tasks: rung 0 is task 3064, rung 1 is task 3065, and rung 2 is task
+3066. Each slice task holds its full done-when and its fence.
+
+**Order.** Rung 0 comes first, in any order. CIV-38 lands before CIV-31 goes
+`on`. CIV-28 and CIV-30 come before CIV-31. CIV-28 comes before CIV-34.
+
+**Links to other work.**
+- CIV-25 (task 2329) keeps the causes of red PRs. CIV-29 takes its item 2b,
+  and CIV-34 takes its item 3.
+- SC-5 (task 2572) keeps the reserved numbers. Its serialised premerge becomes
+  the trial merge of CIV-28.
+- SC-9 (task 2576) takes the numbers of CIV-38.
+
+### 8.6 Model routing (CIV-37)
+
+| Job | Model |
+|---|---|
+| A lookup, sorting a red CI run, finding callers | Haiku |
+| A LOW slice, a mechanical repair, the verifier of a LOW or STANDARD slice | Sonnet |
+| A STANDARD builder inside one app | Sonnet. Opus when the slice edits a shared seam or list |
+| A HIGH builder and verifier, `diff-reviewer`, the audit of a first slice, a retry after a Sonnet failure, a conflict that needs judgement | Opus |
+| Once a feature: the plan, a hard root cause, the security and scaling review after a release | Fable |
+
+Set the effort on each dispatch. Opus 5.5 defaults to `medium`. Start Sonnet
+at `medium` for coding, and Fable at `high`. Each dispatch posts its model and
+effort. The weekly review counts first-pass verify and CI rounds for each
+model and tier. Until CIV-37 merges, `CLAUDE.md` §4 and `next-ticket.md`
+step 1c keep the old table.
