@@ -162,3 +162,40 @@ async def _unschedule(db: Any, task_id: str, me: str) -> None:
     from gateway.routes.projects.personal import _upsert_personal
 
     await _upsert_personal(db, task_id, me, {"scheduled_start": None, "scheduled_end": None})
+
+
+async def unschedule_missing(
+    db: Any, org: str, conn: Any, live_ids: set[str], start: datetime, end: datetime,
+) -> int:
+    """After a FULL list: a link whose event the list no longer holds, and
+    whose block starts inside the listed window, was deleted at the provider.
+    Unschedule its block and drop the link. The task stays."""
+    me = str(conn.member_email).lower()
+    rows = (await db.execute(
+        text(
+            "SELECT l.task_id::text AS task_id, l.external_id FROM calendar_task_links l "
+            "JOIN pm_task_personal p ON p.task_id = l.task_id "
+            "AND lower(p.member_email) = l.member_email "
+            "WHERE l.organization_id = CAST(:org AS uuid) "
+            "AND l.connection_id = CAST(:cid AS uuid) AND l.member_email = :me "
+            "AND l.external_id IS NOT NULL AND l.sync_state = 'sent' "
+            "AND p.scheduled_start >= :s AND p.scheduled_start < :e"
+        ),
+        {"org": org, "cid": str(conn.id), "me": me, "s": start, "e": end},
+    )).fetchall()
+    n = 0
+    for r in rows:
+        if r.external_id in live_ids:
+            continue
+        await _unschedule(db, r.task_id, me)
+        await db.execute(
+            text(
+                "DELETE FROM calendar_task_links "
+                "WHERE organization_id = CAST(:org AS uuid) "
+                "AND connection_id = CAST(:cid AS uuid) "
+                "AND task_id = CAST(:tid AS uuid) AND member_email = :me"
+            ),
+            {"org": org, "cid": str(conn.id), "tid": r.task_id, "me": me},
+        )
+        n += 1
+    return n
