@@ -3,11 +3,17 @@
  *
  * Proxies to POST /integrations/discover on the FastAPI gateway.
  * Body: { query: string }
- * Returns: { ok: true, definition: DiscoveredDef, web_enhanced: boolean, model: string }
+ * Returns: { ok: true, results: DiscoveredDef[], query: string, web_enhanced: boolean }
+ * On failure: { error: string }, plain copy for the member.
+ *
+ * ⚠️ The raw gateway body is never shown (task 3007). It once carried a
+ * vendor's 401 JSON into the Add API dialog. The gateway's `detail` is
+ * written for the member, so the route passes that through.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { describeFailure, detailText, readJsonBody } from "@/lib/apiError";
 
 export const dynamic = "force-dynamic";
 
@@ -32,15 +38,20 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       return NextResponse.json(await res.json());
     }
     const text = await res.text().catch(() => "");
+    const { value } = readJsonBody(text);
     return NextResponse.json(
-      { error: `Gateway ${res.status}: ${text}` },
+      { error: detailText(value?.detail) || describeFailure(res.status, text) },
       { status: res.status }
     );
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const timedOut = err instanceof Error && err.name === "TimeoutError";
     return NextResponse.json(
-      { error: `Discovery request failed: ${msg}` },
-      { status: 502 }
+      {
+        error: timedOut
+          ? "AI discovery took too long. Try again in a minute."
+          : describeFailure(502),
+      },
+      { status: timedOut ? 504 : 502 }
     );
   }
 }

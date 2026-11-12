@@ -684,7 +684,7 @@ class _AdminDb(_StoreDb):
             row = _package(self.pid, self.owner)
             return _Res([(row.id, row.slug, row.name, row.description, row.owner_email,
                           row.visibility, row.status, row.manifest, row.live_version,
-                          row.created_at, row.updated_at)])
+                          row.created_at, row.updated_at, row.paused_at, row.paused_by)])
         if sql == store._OWNER_ACTIVE_SQL:
             self.log.append("owner_active")
             self.owner_reads.append(p["owner"])
