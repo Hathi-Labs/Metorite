@@ -71,7 +71,7 @@ async def route_remote_change(db: Any, org: str, conn: Any, ev: Any) -> str:
     me = str(conn.member_email).lower()
     link = (await db.execute(
         text(
-            "SELECT task_id::text AS task_id, etag, synced_block_hash "
+            "SELECT task_id::text AS task_id, etag, synced_block_hash, provider_updated "
             "FROM calendar_task_links "
             "WHERE organization_id = CAST(:org AS uuid) "
             "AND connection_id = CAST(:cid AS uuid) AND external_id = :eid "
@@ -121,7 +121,17 @@ async def route_remote_change(db: Any, org: str, conn: Any, ev: Any) -> str:
         return ECHO
 
     remote_updated = _utc(getattr(ev, "updated", None))
-    if remote_updated is not None and remote_updated <= _utc(block.updated_at):
+    # The time of the BLOCK did not change since the last sync when its hash
+    # still equals the stored one. Then Metorite holds no newer plan, and the
+    # provider wins even if an unrelated overlay edit (a note, a flag) bumped
+    # `updated_at`. Only a block that Metorite changed goes to last-writer-wins.
+    unchanged = block_hash(block.title, block.scheduled_start, block.scheduled_end) == link.synced_block_hash
+    if unchanged:
+        # A change older than the last one we saw is a late arrival: drop it.
+        seen = _utc(link.provider_updated)
+        if remote_updated is not None and seen is not None and remote_updated < seen:
+            return KEPT
+    elif remote_updated is not None and remote_updated <= _utc(block.updated_at):
         return KEPT  # the block changed later: it goes out at the next pass
 
     await _move_block(db, link.task_id, me, starts, ends)
