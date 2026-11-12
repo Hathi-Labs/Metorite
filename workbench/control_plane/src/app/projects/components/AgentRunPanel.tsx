@@ -41,21 +41,18 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import ElicitationCard from "@/components/ElicitationCard";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { Textarea } from "@/components/ui/Input";
 import { useAccess } from "@/components/AccessProvider";
 import { hasCapability } from "@/lib/access";
+import ElicitationCard from "@/components/ElicitationCard";
 import type { ElicitationAnswers } from "@/lib/elicitationAnswer";
 
 import { ProjectsApiError, type TaskRow, agentRunsApi } from "../lib/api";
 import {
-  ARCHIVE_CARD_TITLE,
-  ARCHIVE_EXPIRED_HINT,
-  ARCHIVE_EXPIRED_TEXT,
-  ARCHIVE_HINT,
+  cardQuestion,
   type AgentActivity,
   type AgentRun,
   type AgentStartResult,
@@ -66,15 +63,10 @@ import {
   confirmLabels,
   replacePayload,
   answerTo,
-  answeredLine,
   archiveApprovalPayload,
-  archiveCardQuestion,
-  archiveDecisionOf,
   archiveExpired,
   archiveRequestOf,
-  archiveWaitingText,
   canReleaseRun,
-  cardQuestion,
   clientName,
   heldByLine,
   RELEASE_ADMIN_PERMISSION,
@@ -101,14 +93,15 @@ import {
 import { newestHandoff } from "../lib/agentHandoff";
 import { ASK_COPY, hasOpenRunOf } from "../lib/askAgent";
 import { AgentPill } from "./AgentPill";
+import { AGENT_SUBMIT_HINT, AgentQuestionCard } from "./AgentQuestionCard";
 import { AskAgentDialog } from "./AskAgentDialog";
 import { HandoffCard } from "./HandoffCard";
 
 /** How often the open run is read again. */
 export const AGENT_RUN_POLL_MS = 5_000;
 
-/** The line beside the card's Submit. The chat's own line names "the assistant". */
-export const AGENT_SUBMIT_HINT = "The agent reads your answer at its next step.";
+/** The line beside the card's Submit now lives with the card (EA-18b). */
+export { AGENT_SUBMIT_HINT };
 
 /** The statuses that take a member's Stop (§12.1, the status machine). */
 const STOPPABLE = new Set(["created", "in_progress", "awaiting"]);
@@ -164,6 +157,8 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   /** The caller has an open run on this task that the panel does not show. */
   const [otherOpenMine, setOtherOpenMine] = useState(false);
   const [asking, setAsking] = useState(false);
+  /** Failed sends of the question card's own answer. A bump gives the card a new exit gate. */
+  const [retryToken, setRetryToken] = useState(0);
   /** SW-24. The newest handoff note of a task that has no open run. */
   const [idleNote, setIdleNote] = useState<AgentActivity | null>(null);
 
@@ -450,6 +445,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
       "answered",
       "Could not send the answer.",
     );
+    if (!ok) setRetryToken((n) => n + 1);
     if (ok) {
       setSent({
         id: `local:${body.idempotency_key}`,
@@ -460,13 +456,6 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
         in_reply_to: elicitation.id,
       });
     }
-  }
-
-  /** EA-6g: the run's member approves or declines the archive request. */
-  async function submitArchive(answers: ElicitationAnswers) {
-    if (!elicitation) return;
-    const decision = archiveDecisionOf(elicitation, answers);
-    if (decision) await sendDecision(decision);
   }
 
   async function sendDecision(decision: "approve" | "decline") {
@@ -481,7 +470,10 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
       "answered",
       "Could not send the decision.",
     );
-    if (!ok) return;
+    if (!ok) {
+      setRetryToken((n) => n + 1);
+      return;
+    }
     setSent({
       id: `local:${body.idempotency_key}`,
       seq: Number.MAX_SAFE_INTEGER,
@@ -645,14 +637,22 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
         </div>
       ) : null}
 
-      {cardOpen && elicitation && !archiveRequest ? (
-        <ElicitationCard
-          key={`answer-${cardNonce}`}
-          id={`agent-run:${elicitation.id}`}
-          questions={[cardQuestion(elicitation)]}
-          onSubmit={(answers) => askBeforeSending(answers, false)}
-          disabled={busy}
-          hint={AGENT_SUBMIT_HINT}
+      {elicitation ? (
+        // EA-18b: the answer part is ONE component, shared with the Questions list.
+        <AgentQuestionCard
+          key={`${elicitation.id}:${cardNonce}`}
+          retryToken={retryToken}
+          elicitation={elicitation}
+          run={run}
+          clientLabel={client}
+          answer={answer}
+          open={cardOpen}
+          canAnswer={run.can_answer !== false}
+          archiveMine={archiveMine}
+          busy={busy}
+          personLabels={personLabels}
+          onAnswer={(answers) => askBeforeSending(answers, false)}
+          onDecision={(decision) => void sendDecision(decision)}
         />
       ) : null}
 
@@ -689,71 +689,6 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
             </Button>
           </div>
         </div>
-      ) : null}
-
-      {archiveRequest && elicitation ? (
-        archiveStale ? (
-          <div data-archive-request="expired" className="space-y-1.5 text-xs">
-            <p className="flex items-start gap-1.5 text-muted-foreground">
-              <Icon name="Clock" size={12} className="mt-0.5 shrink-0" aria-hidden />
-              <span className="min-w-0 break-words">{ARCHIVE_EXPIRED_TEXT}</span>
-            </p>
-            {archiveMine ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  icon="X"
-                  disabled={busy}
-                  data-archive-decline=""
-                  onClick={() => void sendDecision("decline")}
-                >
-                  Decline
-                </Button>
-                <span className="text-[10px] text-muted-foreground">{ARCHIVE_EXPIRED_HINT}</span>
-              </div>
-            ) : null}
-          </div>
-        ) : archiveMine ? (
-          <div data-archive-request="mine">
-            <ElicitationCard
-              id={`agent-run:${elicitation.id}`}
-              questions={[archiveCardQuestion(elicitation)]}
-              onSubmit={(answers) => void submitArchive(answers)}
-              disabled={busy}
-              hint={ARCHIVE_HINT}
-              title={ARCHIVE_CARD_TITLE}
-            />
-          </div>
-        ) : (
-          // Every other member reads the request and who must answer it.
-          <div
-            data-archive-request="waiting"
-            className="space-y-1 rounded-md border border-border p-2 text-xs"
-          >
-            <p className="flex items-start gap-1.5 text-foreground">
-              <Icon name="Archive" size={12} className="mt-0.5 shrink-0" aria-hidden />
-              <span className="min-w-0 whitespace-pre-wrap break-words">
-                {elicitation.content.body?.trim() || `${client} asks to archive this task.`}
-              </span>
-            </p>
-            <p className="text-muted-foreground" data-archive-waiting="">
-              {archiveWaitingText(run, personLabels)}
-            </p>
-          </div>
-        )
-      ) : null}
-
-      {elicitation && answer ? (
-        <p
-          data-agent-answered=""
-          className="flex items-start gap-1.5 text-xs text-muted-foreground"
-        >
-          <Icon name="CircleCheck" size={12} className="mt-0.5 shrink-0" aria-hidden />
-          <span className="min-w-0 break-words">
-            {answeredLine(answer, elicitation, personLabels)}
-          </span>
-        </p>
       ) : null}
 
       {withdrawShown(run, answer, archiveMine, canReply) ? (
