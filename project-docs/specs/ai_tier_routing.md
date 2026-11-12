@@ -509,7 +509,7 @@ These paths reach a vendor without the Router, whatever the flag says:
 | Three embedding writers call `litellm.aembedding` | `email_ingestion/email_embeddings.py:85-100`, `whatsapp_ingestion/wa_embeddings.py:65-75`, `gateway/routes/tasks/capability.py:87-100` | embed |
 | Transcription through `acb_stt` | `packages/acb_stt/acb_stt/litellm_provider.py:196`, `assemblyai_provider.py:57` | transcribe |
 | Live notes mint Deepgram keys | `gateway/routes/notes/live.py:38` | transcribe |
-| An integration check calls four vendor models | `gateway/routes/integrations.py:1384-1398` | chat |
+| ~~An integration check calls four vendor models~~ Moved to `acb_llm.client.complete`, task 3007 (2449 A6), 2026-11-12 | `gateway/routes/integrations.py`, `discover_api` | chat |
 | The prompt-cache warm-up | `gateway/main.py:500` | chat |
 | The streamed text helper | `acb_llm/context.py`, `acompletion_stream_text` (H-171) | chat |
 
