@@ -279,6 +279,25 @@ def _collection_error(case: ET.Element) -> bool:
     )
 
 
+def _shard_verdicts(jobs: list[dict]) -> tuple[dict[int, str] | None, str]:
+    """``{N: conclusion}`` of each ``Unit tests (shard N)`` job, or ``(None,
+    reason)`` when a shard job has no number or no verdict, or none exists."""
+    shard_jobs: dict[int, str] = {}
+    for job in jobs:
+        name = str(job.get("name", ""))
+        if not name.startswith(SHARD_JOB):
+            continue
+        m = _SHARD_NAME.match(name)
+        if not m:
+            return None, f"a shard job has no number: {name!r}"
+        if job.get("conclusion") not in _RUN_CONCLUSIONS:
+            return None, f"{name} has no verdict ({job.get('conclusion')})"
+        shard_jobs[int(m.group(1))] = str(job.get("conclusion"))
+    if not shard_jobs:
+        return None, "the old run has no shard job"
+    return shard_jobs, ""
+
+
 def old_failures(jobs: list[dict], junit_dir: Path) -> tuple[list[str] | None, str]:
     """``(files, "")``: the test files that the old run did not pass, sorted.
 
@@ -295,19 +314,9 @@ def old_failures(jobs: list[dict], junit_dir: Path) -> tuple[list[str] | None, s
 
     A file counts as not passed when a case failed, errored, or skipped for a
     disarmed R8 reason."""
-    shard_jobs: dict[int, str] = {}
-    for job in jobs:
-        name = str(job.get("name", ""))
-        if not name.startswith(SHARD_JOB):
-            continue
-        m = _SHARD_NAME.match(name)
-        if not m:
-            return None, f"a shard job has no number: {name!r}"
-        if job.get("conclusion") not in _RUN_CONCLUSIONS:
-            return None, f"{name} has no verdict ({job.get('conclusion')})"
-        shard_jobs[int(m.group(1))] = str(job.get("conclusion"))
-    if not shard_jobs:
-        return None, "the old run has no shard job"
+    shard_jobs, why = _shard_verdicts(jobs)
+    if shard_jobs is None:
+        return None, why
     expected = {
         (junit_dir / f"junit-shard-{n}" / f"shard-{n}.xml").resolve(): n for n in shard_jobs
     }
