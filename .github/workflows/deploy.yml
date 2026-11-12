@@ -738,6 +738,7 @@ jobs:
               tests/unit/test_package_lifetime_read_r8.py \
               tests/unit/test_package_field_values_r8.py \
               tests/unit/test_agent_policies_r8.py \
+              tests/unit/test_observability_two_org_r8.py \
               tests/unit/test_package_expiry_loop_r8.py \
               tests/unit/test_app_requests_r8.py \
               tests/unit/test_workflows_lifecycle_rls_r8.py \
