@@ -33,6 +33,7 @@ import { sourceKey } from "./dataDoor";
 import {
   AGGREGATE_KEYS, aggregateBody, APPROVAL_SENTENCE, WAITING_SENTENCE, DoorReadError, STUDIO_OFF, createRealDoor, flattenRecords, getPackage, isReadSource,
   listPackages, mapAnswer, ownMessage, createDoorKeeper, verbMap,
+  NOT_OPEN_SENTENCE, READ_ONLY_SENTENCE, packageAccess, readActions,
 } from "./realDoor";
 import { canRetryRead } from "./dataDoor";
 import { readRefusal } from "./formModel";
@@ -383,5 +384,46 @@ describe("the aggregate (STU-D4b)", () => {
     const door = createRealDoor({ packageId: PKG, actions: ACTIONS.slice(0, 2), fetchImpl: impl });
     await expect(door.read({ action: "object:visit.aggregate" })).rejects.toThrow(/does not declare/);
     expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+describe("J2a: a viewer reads and writes nothing", () => {
+  it("a 403 read_only has its own plain sentence, and never says the action is not open", () => {
+    const res = mapAnswer(403, { detail: { code: "read_only", message: "server words" } });
+    expect(res).toEqual({ ok: false, message: READ_ONLY_SENTENCE });
+    expect(READ_ONLY_SENTENCE).not.toBe(NOT_OPEN_SENTENCE);
+    expect(READ_ONLY_SENTENCE).toMatch(/can read/);
+    expect(READ_ONLY_SENTENCE).toMatch(/owner/);
+  });
+  it("getPackage keeps the access: no key is the owner, viewer is a viewer", async () => {
+    const owner = fakeFetch(200, { package: { id: PKG, name: "Visits", manifest: { actions: ACTIONS } }, objects: [] });
+    expect((await getPackage(PKG, owner.impl)).access).toBe("owner");
+    const viewer = fakeFetch(200, {
+      package: { id: PKG, name: "Visits", access: "viewer", version: 1, manifest: { actions: ACTIONS } }, objects: [],
+    });
+    expect((await getPackage(PKG, viewer.impl)).access).toBe("viewer");
+  });
+  it("an access value that the page does not know reads as a viewer, so it offers no write", () => {
+    expect(packageAccess({})).toBe("owner");
+    expect(packageAccess({ access: "owner" })).toBe("owner");
+    for (const value of ["viewer", "editor", "", null, 1]) {
+      expect(packageAccess({ access: value })).toBe("viewer");
+    }
+  });
+  it("readActions keeps the list and the get, and drops each write", () => {
+    expect(readActions(ACTIONS).map((a) => a.id)).toEqual(["find", "peek"]);
+    expect(readActions(undefined)).toEqual([]);
+  });
+  it("a door built on readActions sends no write to the network", async () => {
+    const { impl, spy } = fakeFetch();
+    const door = createRealDoor({ packageId: PKG, actions: readActions(ACTIONS), fetchImpl: impl });
+    for (const verb of ["create", "update", "delete"]) {
+      const res = await door.run(`object:visit.${verb}`, { id: "x", data: {} });
+      expect(res.ok).toBe(false);
+    }
+    expect(await door.run("close_visit", {})).toEqual({ ok: false, message: NOT_OPEN_SENTENCE });
+    expect(spy).not.toHaveBeenCalled();
+    await door.read({ action: "object:visit.list" });
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 });
