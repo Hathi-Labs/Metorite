@@ -126,7 +126,7 @@ def _row(params: dict[str, Any]) -> tuple[Any, ...]:
     now = datetime.now(UTC)
     return (params.get("id", str(uuid.uuid4())), params.get("slug", "quotes-00000000"),
             params["name"], params["desc"], params["m"], "private", "draft",
-            params["manifest"], None, now, now)
+            params["manifest"], None, now, now, None, None)
 
 
 class _EchoDb(_FakeDb):
@@ -438,7 +438,7 @@ def test_app_workspace_for_refuses_an_empty_workspace_path(
 def _current_row(manifest: dict[str, Any]) -> tuple[Any, ...]:
     now = datetime.now(UTC)
     return (str(uuid.uuid4()), "quotes-00000000", manifest["name"], manifest["purpose"],
-            "ana@x.test", "private", "draft", json.dumps(manifest), None, now, now)
+            "ana@x.test", "private", "draft", json.dumps(manifest), None, now, now, None, None)
 
 
 def test_update_manifest_refuses_a_new_manifest_id() -> None:
@@ -554,7 +554,7 @@ _CAT_MANIFEST_ACTION = {"id": "make_lead", "uses": "crm.create_lead", "set": {}}
 def _pkg_row(manifest: dict[str, Any], live: int | None = None) -> tuple[Any, ...]:
     now = datetime.now(UTC)
     return (str(uuid.uuid4()), "quotes-00000000", manifest["name"], manifest["purpose"],
-            "ana@x.test", "private", "draft", json.dumps(manifest), live, now, now)
+            "ana@x.test", "private", "draft", json.dumps(manifest), live, now, now, None, None)
 
 
 def _ver_row(manifest: dict[str, Any], n: int = 1) -> tuple[Any, ...]:
