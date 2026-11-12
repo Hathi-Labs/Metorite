@@ -53,6 +53,7 @@ import { ShellBell, ShellBellHost } from "@/lib/shell/ShellBell";
 import { AgentPill, RunSignalsHost } from "@/lib/shell/RunSignals";
 import { shellChatOn } from "@/lib/shell/chatFlag";
 import { AssistantWorkArea } from "@/lib/shell/ChatBar";
+import { usePinOpenCount } from "@/lib/shell/usePinOpenCount";
 import { ChatNudge, useChatFirstLanding } from "@/lib/shell/ChatNudge";
 import { closeAssistant, openAssistant, useAssistant } from "@/lib/shell/assistant";
 // D99: the one assistant, loaded on demand, so a shell with the flag off
@@ -169,6 +170,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // section in the same tab. An unknown org (the access read has not
   // answered) changes nothing, so the first load does not empty it twice.
   const cacheOrg = access.organization?.id ?? null;
+  // PKG-19a-2: one pane open for each route change, behind its own flag.
+  usePinOpenCount(pathname, signedInAs);
   useEffect(() => {
     bindIdentity(signedInAs, cacheOrg);
   }, [signedInAs, cacheOrg]);
