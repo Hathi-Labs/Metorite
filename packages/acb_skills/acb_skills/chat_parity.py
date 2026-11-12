@@ -928,6 +928,8 @@ DEBT: dict[str, str] = {
     "POST /api/shell/feed/state": "P-7",
     "POST /api/shell/intent": "P-7",
     "PUT /api/shell/feed/prefs": "P-7",
+    # PKG-17c-1 (task 2969): the save of the org default of the shell layout. P-7 gives the chat a tool for it.
+    "PUT /api/shell/layout": "P-7",
     # ── Settings and the assistant profile ──
     # SW-31b: Settings, Agents, Guidance reads the versions of a scope and
     # saves a new version. The chat tool is SW-31c (task 1531).
@@ -1034,7 +1036,7 @@ DEBT: dict[str, str] = {
 #: The most debt that each app may carry. A count may go down, never up.
 #: Lower the number in the change that pays the debt.
 DEBT_CEILING: dict[str, int] = {
-    "projects": 9,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, and SW-43b (2026-11-11) added agentRunsApi.replaceAnswer. The chat tools of SW-43c (task 1802) pay both.
+    "projects": 7,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43c (task 1802) built the chat tools of agentRunsApi.withdrawAnswer and agentRunsApi.replaceAnswer (9 to 7).
     "tasks": 9,
     "calendar": 1,
     "email": 14,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182).
@@ -1048,7 +1050,7 @@ DEBT_CEILING: dict[str, int] = {
     "apps": 28,
     "agents": 20,
     "chat": 25,
-    "shell": 15,
+    "shell": 16,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. P-7 pays it.
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write.
     "admin": 36,
     "integrations": 22,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access.

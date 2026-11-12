@@ -9,7 +9,8 @@ router of ``actions.py``, as ``skills.py`` and ``invoke.py`` do, so
 =======================================  ======================================
 ``POST /packages``                       create a package from a manifest (201)
 ``GET /packages``                        the packages of the caller, no manifest
-``GET /packages/{id}``                   one package, its manifest and objects
+``GET /packages/{id}``                   one package, its manifest and objects;
+                                         a viewer reads the installed version
 ``PUT /packages/{id}/draft``             replace the draft manifest
 ``POST /packages/{id}/versions``         publish the draft, project its objects
 ``GET /packages/{id}/versions``          a page of 100 versions, no manifest
@@ -17,6 +18,10 @@ router of ``actions.py``, as ``skills.py`` and ``invoke.py`` do, so
 ``GET /packages/{id}/delete-preview``    what a delete removes, and its token
 ``DELETE /packages/{id}``                delete the package (200 or 202)
 ``POST /packages/{id}/install``          an org or group install (201 or 200)
+``DELETE /packages/{id}/install``        remove an org or group install (200)
+``POST /packages/{id}/keep``             keep the private install (200)
+``POST /packages/{id}/restore``          restore the private install (200)
+``GET /packages/{id}/lifetime``          the lifetime of the private install
 =======================================  ======================================
 
 **The switch.** The first line of each handler reads ``STUDIO_ORGS``. An org
@@ -29,7 +34,20 @@ the raw request and reads no byte before that line. Fence:
 org, a member or a package from the body. A key such as ``owner_email`` or
 ``organization_id`` in a body changes nothing. A bad id, a package of another
 member, a package of another org and an App Workshop app all answer 404
-``Not found``. An answer names no owner.
+``Not found``. An answer names no owner. The one exception is the read of
+J2a, below.
+
+**The read of a member who is not the owner (WS-STU J2a).** ``GET
+/packages/{id}`` reads the owner first, and that answer does not change.
+When the owner read misses and ``PACKAGE_HOST_ORGS`` holds the org, the
+route reads the app through ``package_host/viewer.py``: the install that
+the sidebar shows to the member. The answer holds the INSTALLED version
+(``access: viewer``, ``version``, its manifest and its hash), never the
+draft. The objects are the rows that the installed version names, with only
+the fields and the rules of that version (``viewer.InstalledApp.project``,
+because a later publish adds fields to the rows). A draft,
+a paused, an archived and an expired install give 404, and so does each
+read while the switch is off. Each other route stays the owner's.
 
 **The order of the checks.** The switch, then the id. A body route on a
 package then reads the raw body, then reads the package as the member, then
@@ -96,6 +114,50 @@ answer is 201 for a new install and 200 for a move. A store refusal is its
 install, so the holder approves a new version with a new call. Only the
 owner reaches the route until J2.
 
+**The org and group uninstall (WS-PKG PKG-8e, ``package_host.md`` §5.3).**
+``DELETE /packages/{id}/install`` with the same body. The order is that of
+the install, up to the right: the two switches, the id, the raw body, the
+owner read (404), the scope (422), then ``studio:publish`` (403
+``forbidden``). The route does not ask ``group_exists``, so an install of a
+deleted group can go. One session then finds the install at the scope under
+the org lock (``studio_app.remove_scope_install``), and ``remove_install``
+deletes it. The FK cascades delete its claims and its extension values in
+the same transaction, with one ``app_audit`` row (op ``package.uninstall``).
+No install at the scope is 404 ``install_not_found``. The answer is 200
+``{install, removed: true}``. The route takes no ``apps`` row lock, because
+no statement of it checks a foreign key to ``apps``.
+
+**Keep and Restore (WS-PKG PKG-10d, ``package_host.md`` §6.2).**
+``POST /packages/{id}/keep`` clears the end date of the private install of
+the owner (``host_store.keep_install``). ``POST /packages/{id}/restore``
+makes the archived private install of the owner active again, until 30 days
+after ``archived_at``, with ``ends_at`` 30 days after now (PKG-Q7,
+``host_store.restore_install``). The order: the two switches (each 404 with
+no session), the id, then one session. In it, ``lock_for_install`` holds the
+``apps`` row of a package of the member (404 for each other caller), then
+``host_store.private_install_id`` finds the install of the member, then the
+store call takes the org lock and the row lock.
+
+* Only the owner acts, and only on the private install. The handler takes
+  no body and no scope. So an org or a group install is never the target:
+  such an install has no end date, and the uninstall of PKG-8e removes it.
+  An owner with no private install gets 409 ``private_only``.
+* The org and the member come from the session, and the time of a restore
+  is the server clock (R5). No date, org or member comes from the request.
+* A keep of an install with no end date changes nothing and answers 200
+  with ``changed`` False. A store refusal is its ``detail_for`` of the
+  member: 409 ``state_refused`` (a keep of an archived install, a restore of
+  an install that is not archived), 409 ``restore_closed`` (the 30 days
+  ended), 404 ``app_not_installable`` and 404 ``install_not_found``.
+
+**The lifetime read (WS-PKG PKG-10e-1, ``package_host.md`` §6.2).**
+``GET /packages/{id}/lifetime`` gives the state, ``ends_at``,
+``archived_at`` and ``restore_until`` of the private install of the owner,
+and ``now`` from the server clock. The order and the owner rule are the ones
+of Keep and Restore (``_owned_private_install``). An owner with no private
+install gets 200 ``{"install": null}``, not 409. The store read
+(``host_store.read_lifetime``) takes no lock and writes no audit row.
+
 **The answers.** 422 holds ``{message, errors: [{path, message}]}`` with at
 most :data:`MAX_PROBLEMS` errors. 409 holds ``{code, message, ...}``:
 ``package_exists`` and ``package_limit`` at create, and ``objects_out_of_sync``
@@ -107,7 +169,9 @@ transaction (kind ``publish``). A create, and a sync that changed rows, write
 a row through ``record_app_audit_bound`` (kind ``action``) after the session
 closes. ⚠️ Never ``record_app_audit``: its unbound session writes no row under
 FORCE RLS (task 1317). A draft save and a 404 write no row. The rows hold the
-op, a hash, a size and names, and no manifest text.
+op, a hash, a size and names, and no manifest text. A keep that changes the
+row and each restore write a row through ``record_app_audit_in`` (ops
+``package.keep`` and ``package.restore``, PKG-10d). It commits with the write.
 
 **The expected hash (STU-G1c review round 1).** A draft save takes the query
 ``?based_on=<hash>``, and a publish takes ``based_on`` in its body. The value
@@ -186,7 +250,7 @@ from acb_skills.studio_tools import complete_record_actions
 from fastapi import Depends, HTTPException, Request, Response
 from gateway.db import tenant_session as _tenant_session
 from gateway.package_host import store as host_store
-from gateway.package_host import studio_app
+from gateway.package_host import studio_app, viewer
 from gateway.package_host.flags import package_host_allowed
 from gateway.routes.apps._common import record_app_audit_bound, record_app_audit_in
 from gateway.routes.studio import actions, flags
@@ -266,6 +330,8 @@ BAD_CONFIRM = ("confirm is the token of the delete preview: 64 hexadecimal digit
                "preview, then send its token.")
 NO_SHARE_RIGHT = ("Only a holder of studio:publish installs an app for the organization or "
                   "for a group. Ask the owner of your organization for that right.")
+NO_REMOVE_RIGHT = ("Only a holder of studio:publish removes an app from the organization or "
+                   "from a group. Ask the owner of your organization for that right.")
 NO_SUCH_GROUP = ("Your organization has no group with this name, so nothing was installed. "
                  "Check the name of the group, then install again.")
 BAD_VERSION = ("version is the live version that you approve: a whole number from 1. Send it, "
@@ -274,6 +340,11 @@ LIVE_MOVED = ("The live version of this app changed after your read, so nothing 
               "installed. Read the live version, then install it again.")
 NOT_LIVE = ("This app has no published version, so nothing can be installed. Publish it "
             "first, then install it again.")
+#: The refusal of a Keep or a Restore when the owner has no private install
+#: of the app (PKG-10d). It names the rule.
+PRIVATE_ONLY = "private_only"
+NO_PRIVATE_INSTALL = ("Keep and Restore act only on your own private install, and this app has "
+                      "none. An org or a group install has no end date, so it needs no Keep.")
 
 
 def _not_found() -> HTTPException:
@@ -625,19 +696,40 @@ async def list_packages(user: UserContext = Depends(get_current_user)) -> dict[s
     return {"packages": [_summary_out(f) for f in found]}
 
 
+def _viewer_out(app: viewer.InstalledApp) -> dict[str, Any]:
+    """The app as a member who does not own it reads it (J2a): the installed
+    version and its manifest. It names no owner, no slug and no draft."""
+    return {"id": app.id, "name": app.name, "description": app.description,
+            "access": viewer.VIEWER, "version": app.version, "manifest": app.manifest,
+            "manifest_hash": manifest_hash(app.manifest)}
+
+
 @router.get("/packages/{package_id}")
 async def get_package(
     package_id: str,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """One package of the caller, with its draft manifest and its object rows."""
+    """One package of the caller, with its draft manifest and its object rows.
+
+    J2a: a member who does not own the package reads the installed version
+    that the member sees (``package_host/viewer.py``), while
+    ``PACKAGE_HOST_ORGS`` holds the org. Else the answer is 404."""
     if not flags.studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     pid = _package_id(package_id)
     async with _tenant_session() as db:
         package = await store.get_package(db, user.email, pid)
         if package is None:
-            raise _not_found()
+            app: viewer.InstalledApp | None = None
+            if package_host_allowed(user.organization_id):
+                app = await viewer.installed_app(db, viewer=user.email, app_id=pid)
+            if app is None:
+                raise _not_found()
+            names = app.object_names
+            # The installed version only: its objects, and their fields and rules (fix round 1).
+            shown = [app.project(o) for o in await objects_store.list_objects(db, pid)
+                     if o.name in names]
+            return {"package": _viewer_out(app), "objects": [_object_out(o) for o in shown]}
         objects = await objects_store.list_objects(db, pid)
     return {"package": _package_out(package), "objects": [_object_out(o) for o in objects]}
 
@@ -1015,3 +1107,187 @@ async def install_package(
     _log.info("studio.packages.installed", package_id=pid, scope_kind=kind,
               version=kept.version, created=made)
     return {"install": _install_out(kept), "created": made}
+
+
+# ── The org and group uninstall (WS-PKG PKG-8e) ────────────────────────────
+
+
+@router.delete("/packages/{package_id}/install")
+async def uninstall_package(
+    package_id: str,
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Remove the org install or one group install of a package of the
+    caller (``package_host.md`` §5.3, §5.5 and §6.1, PKG-8e).
+
+    The body is ``{"scope": "org"}`` or ``{"scope": "group:<slug>"}``. Each
+    scope needs ``studio:publish`` (D180.3), the right of the install. The
+    group need not exist any more, so an install of a deleted group can go.
+    The install row, its claims and its extension values go in one
+    transaction, with one audit row. 200 with the install that went."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not package_host_allowed(user.organization_id):
+        raise _not_found()
+    pid = _package_id(package_id)
+    raw = await _raw_body(request, MAX_INSTALL_BODY_BYTES)
+    await _require_owned(user.email, pid)
+    body = _parse_json(raw)
+    try:
+        kind, subject = studio_app.install_scope(body.get("scope"))
+    except host_store.InstallError as exc:
+        raise _refused(user, exc) from None
+    # D180.3: the right of the install is the right of the uninstall. Fail closed.
+    if not user.has_permission(SHARE_RIGHT):
+        raise _forbidden(NO_REMOVE_RIGHT)
+    async with _tenant_session() as db:
+        # No apps row lock: the DELETE, its cascades and the audit INSERT
+        # check no foreign key to apps, so the call never waits for a publish.
+        try:
+            gone = await studio_app.remove_scope_install(
+                db, app_id=pid, scope_kind=kind, scope_subject=subject)
+        except host_store.InstallError as exc:
+            raise _refused(user, exc) from None
+        # The audit row commits with the removal, or neither does.
+        await record_app_audit_in(
+            db, app_id=pid, user_email=user.email, kind="action", app_version=gone.version,
+            detail={"op": "package.uninstall", "scope_kind": kind, "scope": subject,
+                    "version": gone.version})
+    _log.info("studio.packages.uninstalled", package_id=pid, scope_kind=kind,
+              version=gone.version)
+    return {"install": _install_out(gone), "removed": True}
+
+
+# ── Keep and Restore of the private install (WS-PKG PKG-10d) ───────────────
+
+
+async def _owned_private_install(db: Any, user: UserContext, pid: str) -> str | None:
+    """The ONE owner rule of the private install (PKG-10d, PKG-10e-1). It
+    answers the id of the private install of the session member for the
+    package *pid*, in the session *db*, or None when the owner has none.
+
+    ``lock_for_install`` first holds the ``apps`` row ``FOR KEY SHARE``: the
+    lock order of §5.5, before the org lock of the install store. It answers
+    None for a package of another member or org, an App Workshop app and an
+    archived package, so each of them is 404 ``Not found``. Keep and Restore
+    call it through :func:`_own_private_install`. The lifetime read calls it
+    direct."""
+    with _store_errors():
+        target = await store.lock_for_install(db, user.email, pid)
+    if target is None:
+        raise _not_found()
+    return await host_store.private_install_id(db, app_id=pid, member=user.email or "")
+
+
+async def _own_private_install(db: Any, user: UserContext, pid: str) -> str:
+    """The id of the private install of the session member for the package
+    *pid*, through :func:`_owned_private_install`. An owner with no private
+    install gets 409 :data:`PRIVATE_ONLY`, because Keep and Restore have no
+    row to change."""
+    found = await _owned_private_install(db, user, pid)
+    if found is None:
+        raise HTTPException(status_code=409, detail={
+            "code": PRIVATE_ONLY, "message": NO_PRIVATE_INSTALL})
+    return found
+
+
+@router.post("/packages/{package_id}/keep")
+async def keep_package(
+    package_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Keep the private install of a package of the caller: its end date
+    becomes NULL (``package_host.md`` §6.2 step 2, PKG-10d).
+
+    The handler takes no body. A keep of an install with no end date changes
+    nothing and answers 200 with ``changed`` False."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not package_host_allowed(user.organization_id):
+        raise _not_found()
+    pid = _package_id(package_id)
+    async with _tenant_session() as db:
+        install_id = await _own_private_install(db, user, pid)
+        try:
+            changed = await host_store.keep_install(db, install_id=install_id)
+        except host_store.InstallError as exc:
+            raise _refused(user, exc) from None
+        if changed:
+            # The audit row commits with the keep, or neither does.
+            await record_app_audit_in(
+                db, app_id=pid, user_email=user.email, kind="action",
+                detail={"op": "package.keep", "install_id": install_id})
+    _log.info("studio.packages.kept", package_id=pid, changed=changed)
+    return {"install": {"id": install_id, "app_id": pid, "ends_at": None}, "changed": changed}
+
+
+@router.post("/packages/{package_id}/restore")
+async def restore_package(
+    package_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Restore the archived private install of a package of the caller
+    (``package_host.md`` §6.2, PKG-10d).
+
+    The restore must come before ``archived_at`` plus 30 days. The install
+    keeps its id, version, scope and claims, and ``ends_at`` becomes 30 days
+    after now (PKG-Q7). The time is the server clock, never request input
+    (R5). The handler takes no body."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not package_host_allowed(user.organization_id):
+        raise _not_found()
+    pid = _package_id(package_id)
+    async with _tenant_session() as db:
+        install_id = await _own_private_install(db, user, pid)
+        try:
+            ends_at = await host_store.restore_install(
+                db, install_id=install_id, now=datetime.now(UTC))
+        except host_store.InstallError as exc:
+            raise _refused(user, exc) from None
+        # The audit row commits with the restore, or neither does.
+        await record_app_audit_in(
+            db, app_id=pid, user_email=user.email, kind="action",
+            detail={"op": "package.restore", "install_id": install_id})
+    _log.info("studio.packages.restored", package_id=pid)
+    return {"install": {"id": install_id, "app_id": pid, "state": "active",
+                        "ends_at": ends_at}}
+
+
+def _iso(at: datetime | None) -> str | None:
+    return None if at is None else at.isoformat()
+
+
+@router.get("/packages/{package_id}/lifetime")
+async def package_lifetime(
+    package_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The lifetime of the private install of a package of the caller
+    (``package_host.md`` §6.2, PKG-10e-1). The end-date bar of PKG-10e-2
+    reads it.
+
+    The owner rule is the one of Keep and Restore. An owner with no private
+    install gets 200 ``{"install": null}``, so the page shows no bar.
+    ``restore_until`` is ``archived_at`` plus 30 days for an archived install.
+    ``now`` is the server clock, so the page counts days with no browser
+    clock. The handler takes no body and no query (R5). It is a read, so it
+    writes no audit row."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not package_host_allowed(user.organization_id):
+        raise _not_found()
+    pid = _package_id(package_id)
+    async with _tenant_session() as db:
+        install_id = await _owned_private_install(db, user, pid)
+        life = (None if install_id is None
+                else await host_store.read_lifetime(db, install_id=install_id))
+    if life is None:
+        return {"install": None}
+    restore_until = (life.archived_at + host_store.RESTORE_DAYS
+                     if life.state == "archived" and life.archived_at is not None else None)
+    return {"install": {"state": life.state, "ends_at": _iso(life.ends_at),
+                        "archived_at": _iso(life.archived_at),
+                        "restore_until": _iso(restore_until),
+                        "now": datetime.now(UTC).isoformat()}}

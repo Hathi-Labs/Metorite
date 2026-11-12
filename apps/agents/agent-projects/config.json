@@ -166,6 +166,7 @@
     "delete_view",
     "add_report_recipient",
     "answer_decision",
+    "change_agent_answer",
     "grant_access",
     "pin_authority",
     "save_as_template",
