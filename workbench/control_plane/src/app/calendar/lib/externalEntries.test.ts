@@ -9,6 +9,9 @@ import {
   externalViews,
   laneSegments,
   splitByTasks,
+  taskInset,
+  STRIP_SHARE_DAY,
+  STRIP_SHARE_WEEK,
   externalReadNote,
   READ_FAILED_WORDS,
   segmentsForDay as segs,
@@ -282,5 +285,25 @@ describe("Month order", () => {
   it("puts the external chips first in the cell", () => {
     const grid = readFileSync(new URL("../components/MonthGrid.tsx", import.meta.url), "utf8");
     expect(grid.indexOf("externalChips(")).toBeLessThan(grid.indexOf("...blocks.map"));
+  });
+});
+
+describe("the overlap strip widths", () => {
+  it("takes 45 percent in Week and 30 in Day", () => {
+    expect(STRIP_SHARE_WEEK).toBe(0.45);
+    expect(STRIP_SHARE_DAY).toBe(0.3);
+  });
+  it("shrinks each overlapped task by the same share, and no other", () => {
+    const meet = view({ starts_at: "2026-11-12T10:00:00Z", ends_at: "2026-11-12T11:00:00Z" });
+    const { beside } = splitByTasks(segmentsForDay([meet], day(2026, 11, 12), "UTC"), [{ start: 600, end: 660 }]);
+    expect(taskInset(beside, { start: 600, end: 630 }, 0.45)).toBe(0.45);
+    expect(taskInset(beside, { start: 630, end: 700 }, 0.45)).toBe(0.45);
+    expect(taskInset(beside, { start: 660, end: 700 }, 0.45)).toBe(0);
+    expect(taskInset([], { start: 600, end: 630 }, 0.45)).toBe(0);
+  });
+  it("wraps the title to two lines in the grid", () => {
+    const grid = readFileSync(new URL("../components/TimeGrid.tsx", import.meta.url), "utf8");
+    expect(grid).toContain("line-clamp-2");
+    expect(grid).toContain("taskInset(");
   });
 });

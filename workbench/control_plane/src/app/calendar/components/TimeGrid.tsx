@@ -55,7 +55,7 @@ import {
   type CalReminder,
   type ZonedTime,
 } from "../lib/reminders";
-import { allDayRow, laneSegments, segmentsForDay, splitByTasks, type ExternalView } from "../lib/externalEntries";
+import { STRIP_SHARE_DAY, STRIP_SHARE_WEEK, allDayRow, laneSegments, segmentsForDay, splitByTasks, taskInset, type ExternalView } from "../lib/externalEntries";
 import { ExternalAllDayRow } from "./ExternalAllDayRow";
 import { externalLook } from "./externalLook";
 
@@ -494,6 +494,13 @@ export function TimeGrid({
             };
           });
           const dayKey = day.toISOString();
+          // An event that shares time with a task takes a strip on the right.
+          // The task cards give up the same share, so no text is under it.
+          const stripShare = days.length > 1 ? STRIP_SHARE_WEEK : STRIP_SHARE_DAY;
+          const { clear: clearExt, beside: besideExt } = splitByTasks(
+            segmentsForDay(externals, day, reminderZone),
+            spans,
+          );
           const nowTop =
             ((minutesInto(now) - dayStart * 60) / 60) * HOUR_PX;
           return (
@@ -679,15 +686,16 @@ export function TimeGrid({
                 // A task at the same time would cover an event, so an event that
                 // shares time with a task takes a strip on the right edge, above
                 // the cards (z-10, under the pins). The rest keep the column.
-                const { clear, beside } = splitByTasks(segmentsForDay(externals, day, reminderZone), spans);
+                const clear = clearExt;
+                const beside = besideExt;
                 const draw = (laid: ReturnType<typeof laneSegments>, strip: boolean) =>
                   laid.map(({ seg, lane, lanes }) => {
                     const top = ((seg.startMin - dayStart * 60) / 60) * HOUR_PX;
                     const height = Math.max(20, ((seg.endMin - seg.startMin) / 60) * HOUR_PX - 2);
                     if (top + height < 0 || top > gridHeight) return null;
                     const x = seg.entry;
-                    const from = strip ? 70 : 0;
-                    const span = strip ? 30 : 100;
+                    const span = strip ? stripShare * 100 : 100;
+                    const from = strip ? 100 - span : 0;
                     return (
                       <button
                         key={`ex-${x.id}-${seg.startMin}`}
@@ -707,7 +715,7 @@ export function TimeGrid({
                           width: `calc(${span / lanes}% - 4px)`,
                         }}
                       >
-                        <span className="block truncate font-medium">{x.title}</span>
+                        <span className="line-clamp-2 break-words font-medium">{x.title}</span>
                       </button>
                     );
                   });
@@ -833,8 +841,13 @@ export function TimeGrid({
                         ),
                       )
                     : null;
-                const leftPct = (lane / lanes) * 100;
-                const widthPct = 100 / lanes;
+                const inset = taskInset(
+                  besideExt,
+                  { start: minutesInto(b.start), end: minutesInto(b.start) + Math.max(mins, (20 / HOUR_PX) * 60) },
+                  stripShare,
+                );
+                const leftPct = (lane / lanes) * 100 * (1 - inset);
+                const widthPct = (100 / lanes) * (1 - inset);
                 // The card's width in px: the column, split by its lanes.
                 const cardW = (colW || 600) * (widthPct / 100) - 4;
                 const layout = blockLayout(mins, cardW, Boolean(b.item.parent), {

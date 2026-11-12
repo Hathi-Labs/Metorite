@@ -186,6 +186,19 @@ export function splitByTasks(
   return { clear, beside };
 }
 
+/** The share of a column the overlap strip takes: Week columns are narrow. */
+export const STRIP_SHARE_WEEK = 0.45;
+export const STRIP_SHARE_DAY = 0.3;
+
+/** The share a task card gives up: the strip's, when an event beside it shares its time. */
+export function taskInset(
+  beside: readonly DaySegment[],
+  task: { start: number; end: number },
+  share: number,
+): number {
+  return beside.some((s) => task.start < s.endMin && s.startMin < task.end) ? share : 0;
+}
+
 /** The line above the grid when the read of events failed (CE-5a). */
 export const READ_FAILED_WORDS = "Could not read your Google and Outlook events. Try again in a minute.";
 
