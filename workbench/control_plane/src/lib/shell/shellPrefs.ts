@@ -48,7 +48,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 
 import { setGuideAllowed, setGuideHold } from "./guide";
 import { ORG_LAYOUT_WAIT_MS, orgDefaultFor, orgLayoutSettled, useOrgLayout } from "./orgLayout";
-import { EMPTY_SHELL, shellLayout, type ShellLayout, type StoredShell } from "./presets";
+import { EMPTY_SHELL, STARRABLE, shellLayout, type ShellLayout, type StoredShell } from "./presets";
 import { asLayout, readCachedLayout, writeCachedLayout, writeNudgeRetired } from "./shellCache";
 import { shellNavOn } from "./shellNav";
 
@@ -210,17 +210,38 @@ export async function readShellPrefs(): Promise<StoredShell> {
  * route alone writes it, first write wins, and the server keeps it.
  */
 /**
- * The most hrefs `known` may hold in a save. The BFF proxy caps a body at
- * 8,192 bytes (`app/api/auth/me/shell/route.ts`), so one entry too many is a 422.
+ * The most hrefs `pins` or `known` may hold in a save. The gateway refuses a
+ * longer list with a 422 (`max_length=64`, `routes/admin/me.py`). System panes
+ * come first and installs are cut, so a hide on a system pane always stays.
  */
 export const KNOWN_MAX = 64;
+
+function capSystemFirst<T extends readonly string[] | null>(list: T): T | string[] {
+  if (!list || list.length <= KNOWN_MAX) return list;
+  return [...list.filter((h) => STARRABLE.has(h)), ...list.filter((h) => !STARRABLE.has(h))].slice(0, KNOWN_MAX);
+}
+
+/**
+ * After a save whose answer lacks `href`, the server dropped the star (a stale
+ * or foreign install). It drops the href from `pins` and from `known`, so rule
+ * 4 would show it as new. Put it in `known` and out of `pins` on the screen.
+ */
+export function keepDroppedHidden(saved: StoredShell, href: string): StoredShell {
+  const patched: StoredShell = {
+    ...saved,
+    pins: (saved.pins ?? []).filter((h) => h !== href),
+    known: [...new Set([...(saved.known ?? []), href])],
+  };
+  put(SHELL_PREFS_PATH, patched);
+  return patched;
+}
 
 export function bodyFor(
   next: StoredShell | null,
 ): (Omit<StoredShell, "chat_first_message_at" | "tour_seen_at" | "buddy_hello_at"> & { chat_first_message_at?: string }) | null {
   if (!next) return null;
   const { preset, answered, pins, known, cardOrder, newOrder, chat_first_message_at } = next;
-  const rest = { preset, answered, pins, known: known && known.length > KNOWN_MAX ? known.slice(0, KNOWN_MAX) : known, cardOrder, newOrder };
+  const rest = { preset, answered, pins: capSystemFirst(pins), known: capSystemFirst(known), cardOrder, newOrder };
   return chat_first_message_at ? { ...rest, chat_first_message_at } : rest;
 }
 

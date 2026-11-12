@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NAV_SECTIONS, visibleSections, type NavPane } from "@/lib/nav";
-import { clearAll } from "@/lib/dataCache";
+import { clearAll, peek } from "@/lib/dataCache";
+import { SHELL_PREFS_PATH } from "./shellPrefs";
 import {
   EMPTY_MANIFEST,
   installNavPanes,
@@ -9,9 +10,9 @@ import {
   mergeStarredInstallNav,
   parseManifest,
 } from "./packageManifest";
-import { EMPTY_SHELL, canStar, isStarred, starBase, toggleStar } from "./presets";
+import { EMPTY_SHELL, canStar, isStarred, starBase, starrableHeld, starsToSave, toggleStar } from "./presets";
 import { shellSidebar } from "./shellNav";
-import { KNOWN_MAX, bodyFor, saveShellPrefs } from "./shellPrefs";
+import { KNOWN_MAX, bodyFor, keepDroppedHidden, saveShellPrefs } from "./shellPrefs";
 
 /**
  * PKG-6c-2 (`package_host.md` §9.1, PKG-Q21). An install pane has a star and a
@@ -42,7 +43,7 @@ const rail = (m: ReturnType<typeof manifest>, s: ReturnType<typeof stars> | null
   return mergeStarredInstallNav(h, shellSidebar(h, s), installNavPanes(m), s);
 };
 const hrefs = (secs: readonly { items: readonly NavPane[] }[]) => secs.flatMap((x) => x.items.map((p) => p.href));
-const systemHrefs = () => hrefs(held()).filter((h) => canStar({ href: h } as NavPane));
+const systemHrefs = () => starrableHeld(held()).map((p) => p.href);
 
 afterEach(() => {
   clearAll();
@@ -118,13 +119,40 @@ describe("PKG-6c-2 install star", () => {
     expect(bodyFor({ ...EMPTY_SHELL, known: null })!.known).toBeNull();
   });
 
-  it("(f) the save answer wins: a dropped install href is not starred", async () => {
+  it("(f) the save answer wins: a dropped install href is not starred, even with the gateway's shape", async () => {
     const merged = mergeInstallNav(held(), installNavPanes(plain()));
     const next = { ...EMPTY_SHELL, answered: "answered" as const, ...stars([...systemHrefs(), "/zz-crm"], [...systemHrefs(), "/zz-crm"]) };
-    const answer = { ...next, pins: systemHrefs(), known: [...systemHrefs(), "/zz-crm"] };
+    // The gateway drops the href from BOTH pins and known.
+    const answer = { ...next, pins: systemHrefs(), known: systemHrefs() };
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(answer), { status: 200 })));
     const saved = await saveShellPrefs(next);
     expect(saved.pins).not.toContain("/zz-crm");
-    expect(isStarred(saved, merged, "/zz-crm")).toBe(false);
+    // Rule 4 would show it as new. keepDroppedHidden puts it back in known.
+    expect(isStarred(saved, merged, "/zz-crm")).toBe(true);
+    const fixed = keepDroppedHidden(saved, "/zz-crm");
+    expect(isStarred(fixed, merged, "/zz-crm")).toBe(false);
+    expect(peek<typeof fixed>(SHELL_PREFS_PATH)?.data.known).toContain("/zz-crm");
+  });
+
+  it("P1: a save over sections with no installs keeps a hidden install hidden", () => {
+    const before = stars(systemHrefs(), [...systemHrefs(), "/apps/x"]);
+    const out = starsToSave(systemHrefs(), held(), before);
+    expect(out.known).toContain("/apps/x");
+    expect(isStarred(out, mergeInstallNav(held(), installNavPanes(manifest([entry("x", { href: "/apps/x", label: "X" })]))), "/apps/x")).toBe(false);
+    // A stored star is kept too.
+    const starred = starsToSave(systemHrefs(), held(), stars([...systemHrefs(), "/apps/x"], [...systemHrefs(), "/apps/x"]));
+    expect(starred.pins).toContain("/apps/x");
+  });
+
+  it("P3: the cap keeps system panes first, for pins and known", () => {
+    const installs = Array.from({ length: 70 }, (_, i) => `/apps/${i}`);
+    const sys = systemHrefs();
+    const body = bodyFor({ ...EMPTY_SHELL, pins: [...installs, ...sys], known: [...installs, ...sys] })!;
+    expect(body.known).toHaveLength(64);
+    expect(body.pins).toHaveLength(64);
+    for (const h of sys) {
+      expect(body.known).toContain(h);
+      expect(body.pins).toContain(h);
+    }
   });
 });

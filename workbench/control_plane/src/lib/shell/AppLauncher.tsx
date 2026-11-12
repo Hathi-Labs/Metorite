@@ -34,10 +34,10 @@ import type { NavSection } from "@/lib/nav";
 import { EMPTY_SHELL, canStar, isStarred, starBase, toggleStar } from "@/lib/shell/presets";
 import { installNavPanes, mergeInstallNav, usePackageManifest } from "@/lib/shell/packageManifest";
 import { isActive, launcherGroups } from "@/lib/shell/shellNav";
-import { latestShell, saveShellPrefs, useShellPrefs } from "@/lib/shell/shellPrefs";
+import { keepDroppedHidden, latestShell, saveShellPrefs, useShellPrefs } from "@/lib/shell/shellPrefs";
 
 /** Shown when the server did not keep a star. */
-export const STAR_DROPPED = "This app could not be starred. It may have been removed.";
+export const STAR_DROPPED = "This app could not be starred. It may have been removed. Reload the page.";
 
 export default function AppLauncher({
   open,
@@ -80,7 +80,10 @@ export default function AppLauncher({
       (saved) => {
         // The server drops a stale or foreign install href in silence, so read
         // its answer and not our guess (PKG-6c-1 review).
-        if (wantStar && !(saved.pins ?? []).includes(href)) setStarError(STAR_DROPPED);
+        if (wantStar && !(saved.pins ?? []).includes(href)) {
+          keepDroppedHidden(saved, href);
+          setStarError(STAR_DROPPED);
+        }
       },
       () => setStarError("Your sidebar was not saved. Try again."),
     );
