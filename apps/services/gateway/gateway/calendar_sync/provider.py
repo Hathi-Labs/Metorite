@@ -106,6 +106,9 @@ class RemoteEvent:
     original_start: datetime | None = None
     original_start_date: date | None = None
     deleted: bool = False
+    #: The provider's last-change time (Google ``updated``, Graph
+    #: ``lastModifiedDateTime``). CE-13 uses it for last-writer-wins.
+    updated: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +135,9 @@ class OutEvent:
     tz: str | None = None
     busy: bool = True
     task_url: str | None = None
+    #: A client-chosen id for an INSERT (Google ``id``, Graph
+    #: ``transactionId``), so a retry after a timeout makes no second event.
+    client_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -161,6 +167,7 @@ class CalendarProvider(Protocol):
 
     async def sync(
         self, cred: SourceCredential, cursor: str | None, window: Window,
+        *, calendar_id: str | None = None,
     ) -> SyncResult: ...
 
     async def create_calendar(self, cred: SourceCredential, name: str) -> str: ...
