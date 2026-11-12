@@ -286,9 +286,13 @@ def test_one_session_locks_then_finds_then_calls_the_store(world: _World, route:
 
 
 def test_the_lock_comes_before_the_find_and_the_store_call_in_the_source() -> None:
-    lines = {ast.unparse(c.func): c.lineno for c in ast.walk(_handler("_own_private_install"))
+    lines = {ast.unparse(c.func): c.lineno for c in ast.walk(_handler("_owned_private_install"))
              if isinstance(c, ast.Call)}
     assert lines["store.lock_for_install"] < lines["host_store.private_install_id"]
+    # PKG-10e-1: Keep and Restore reach the one owner rule through the 409 wrapper.
+    wrapper = {ast.unparse(c.func) for c in ast.walk(_handler("_own_private_install"))
+               if isinstance(c, ast.Call)}
+    assert "_owned_private_install" in wrapper
     for name, call in (("keep_package", "host_store.keep_install"),
                        ("restore_package", "host_store.restore_install")):
         calls = {ast.unparse(c.func): c.lineno for c in ast.walk(_handler(name))
@@ -302,7 +306,7 @@ def test_the_lock_comes_before_the_find_and_the_store_call_in_the_source() -> No
 
 
 def test_the_private_install_is_the_install_of_the_session_member() -> None:
-    call = next(c for c in ast.walk(_handler("_own_private_install"))
+    call = next(c for c in ast.walk(_handler("_owned_private_install"))
                 if isinstance(c, ast.Call) and ast.unparse(c.func) == "host_store.private_install_id")
     member = next(k.value for k in call.keywords if k.arg == "member")
     assert ast.unparse(member) == "user.email or ''"

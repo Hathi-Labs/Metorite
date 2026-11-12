@@ -716,6 +716,8 @@ jobs:
               tests/unit/test_studio_packages_r8.py \
               tests/unit/test_studio_publish_install_r8.py \
               tests/unit/test_studio_package_install_r8.py \
+              tests/unit/test_studio_package_viewer_r8.py \
+              tests/unit/test_studio_package_uninstall_r8.py \
               tests/unit/test_studio_action_door_r8.py \
               tests/unit/test_studio_catalog_r8.py \
               tests/unit/test_studio_packages_versions_r8.py \
@@ -733,6 +735,7 @@ jobs:
               tests/unit/test_auth_me_appearance_r8.py \
               tests/unit/test_package_lifetime_r8.py \
               tests/unit/test_package_keep_restore_r8.py \
+              tests/unit/test_package_lifetime_read_r8.py \
               tests/unit/test_package_field_values_r8.py \
               tests/unit/test_agent_policies_r8.py \
               tests/unit/test_package_expiry_loop_r8.py \
