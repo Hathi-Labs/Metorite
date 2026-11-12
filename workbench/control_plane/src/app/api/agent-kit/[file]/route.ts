@@ -6,6 +6,7 @@
  * path reaches the gateway. The session cookie rides along on the download.
  */
 import { NextResponse, type NextRequest } from "next/server";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 import { GATEWAY_URL, gatewayFetch, gatewayHeaders, requireIdentity } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
@@ -19,6 +20,8 @@ export async function GET(
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   const { file } = await ctx.params;
+  const refused = refuseUnsafePath([file]);
+  if (refused) return refused;
   if (!FILE.test(file)) return NextResponse.json({ error: "agent_kit_unavailable" }, { status: 404 });
   try {
     const res = await gatewayFetch(`${GATEWAY_URL}/agent-kit/${file}`, {
