@@ -154,6 +154,17 @@ export const AGENT_QUESTIONS_KIND = "agent_questions";
 export const AGENT_QUESTIONS_SIGNAL = "questions:mine";
 export const AGENT_QUESTIONS_HREF = "/projects?app=questions";
 
+/**
+ * EA-18e (task 2964, D100, D101). The one act that opens inside its card on
+ * My Day: the `answer` act of the agent-questions card. The gateway still sends
+ * it as a link (`open`, to `AGENT_QUESTIONS_HREF`), so an old client and the
+ * door stay as they were. The column draws it as an `expand` act: the list of
+ * questions opens under the card, and the answer runs the Questions list's own
+ * write. Pure, so a test fences it.
+ */
+export const isExpandAct = (card: Pick<FeedCard, "kind">, act: Pick<FeedAct, "id" | "way">): boolean =>
+  card.kind === AGENT_QUESTIONS_KIND && act.id === "answer" && act.way === "open";
+
 /** True for the card of the agent questions. */
 export const isAgentQuestionsCard = (card: Pick<FeedCard, "kind">): boolean =>
   card.kind === AGENT_QUESTIONS_KIND;

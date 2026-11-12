@@ -88,6 +88,12 @@ export interface QuestionsViewProps {
    * the card and the writes are the same.
    */
   embedded?: boolean;
+  /**
+   * EA-18e, D101 point 4: class C never runs in a card. With this on, a typed
+   * archive request is read-only here ("Decide in Projects"), and only
+   * Projects and Approvals take the decision.
+   */
+  noArchiveDecision?: boolean;
 }
 
 export function QuestionsView({
@@ -97,6 +103,7 @@ export function QuestionsView({
   onOpenProject,
   onChanged,
   embedded = false,
+  noArchiveDecision = false,
 }: QuestionsViewProps) {
   const { access } = useAccess();
   const me = access.email;
@@ -431,13 +438,18 @@ export function QuestionsView({
                       answer={done}
                       open
                       canAnswer={row.can_answer}
-                      archiveMine={answerRoute(row) === "archive-approval"}
+                      archiveMine={answerRoute(row) === "archive-approval" && !noArchiveDecision}
                       kind={row.question.kind}
                       busy={busy === row.activity_id}
                       personLabels={personLabels}
                       onAnswer={(answers) => void answer(row, answers)}
                       onDecision={(decision) => void decide(row, decision)}
                     />
+                    {noArchiveDecision && answerRoute(row) === "archive-approval" ? (
+                      <Button variant="text" size="none" data-questions-decide-in-app="" onClick={() => onOpenTask(row.task_id)}>
+                        Decide in Projects
+                      </Button>
+                    ) : null}
                     {failed[row.activity_id] ? (
                       <p role="alert" className="text-xs text-destructive">
                         {failed[row.activity_id]}

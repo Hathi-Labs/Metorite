@@ -6,7 +6,7 @@
  * no view to a node and reads no page of the manifest (PKG-8 owns that).
  */
 import type { FieldSpec } from "./fieldCheck";
-import { FIELD_TYPE_LIST } from "./blocks";
+import { FIELD_TYPE_LIST, extrasOf } from "./blocks";
 import { boardBlock, MAX_CARD_FIELDS } from "./boardModel";
 import type { FieldType } from "./manifest";
 import { readActions, type DeclaredAction, type ObjectRow, type PackageAccess } from "./realDoor";
@@ -48,6 +48,7 @@ export function fieldSpecs(object: Pick<ObjectRow, "fields">): FieldSpec[] {
       many: f.many === true,
       options: Array.isArray(f.options) ? f.options : undefined,
       to: f.to ?? undefined,
+      ...extrasOf(f as unknown as Record<string, unknown>),
       ...(typeof f.lines === "string" ? { lines: f.lines } : {}),
     });
   }

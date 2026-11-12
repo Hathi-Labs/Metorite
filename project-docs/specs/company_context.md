@@ -671,3 +671,51 @@ It changes no price and no product surface. D104 and D105 stand unchanged.
 | CQ2 | Should session digests be on for every org? | No. Off until the owner names orgs, because they read conversations and spend credits |
 | CQ3 | On production, turn on digests before vectors? | Yes. Digests first, then vectors where the eval shows a gain |
 | CQ4 | The decay constants of §4.1 | As written, until the eval of KG-1 says otherwise |
+
+## 16. Company content from the chat (WS-CON, D216, 2026-11-12)
+
+**Status: PLANNED.** Epic task 3039. Planning task 3038 wrote this section. No slice is built.
+
+**The owner's ask (2026-11-12).** A member drops decks, PDFs, documents and links in the chat. Metorite files each one in the right place, reads it, and reuses its text, images and logo in later decks and reports. Over time Metorite knows the company better and makes more customized output.
+
+### 16.1 What exists today
+
+- **Upload.** The chat takes pdf, docx, pptx, xlsx, odt, odp and images up to 25 MB (`gateway/routes/workspace.py`). The file lands in the chat's workspace, and a chat delete removes it.
+- **Read.** `read_attachment` reads the text of pdf, docx, xlsx, pptx and odp in a bounded parser (`acb_skills/attachment_text.py`). `analyze_image` reads an image.
+- **Stores.** Files are artifacts with one writer (`artifact_management.md`, D162). Knowledge pages hold text, and a file on a page is an artifact with a join (`knowledge_base.md` §4.3). An agent writes Knowledge only as a draft (D-KB-4).
+- **Search.** `search_company` reads artifacts and Knowledge (`knowledge_base.md` §20). The text index of a file inside the registry is AM-7 (task 206), not built.
+- **Output.** One builder makes a deck or a report as a PDF (`acb_skills/documents.py`, `reports.py`, `gateway/pdf_render.py`). Its spec refuses an image on purpose.
+- **Identity.** The org logo exists (`organization_identity.md`, OI-1).
+
+### 16.2 The shape
+
+1. **No new store.** A file is an artifact. Text that people read is a Knowledge page. Metorite can take an image, a logo or a slide from a file. Each one is a derived artifact. It links to its source and takes the scope of its source. Search stays `search_company`, and output stays the one builder.
+2. **AI proposes, and a person confirms.** After an upload, Mira shows one card. It proposes one of three places. The first is this chat only. The second is Files, for me, my team or the company. The third is Files and a Knowledge draft page, whose summary links to the file. The member picks. With no answer, the file stays in the chat.
+3. **The filing rule.** Mira proposes a Knowledge draft for a document that explains the company. Examples are a sales deck, a brochure, a price list, a policy and a proposal. A one-off input goes to Files or stays in the chat. Examples are a screenshot, a form and a file for one task.
+4. **The parts.** A filed pptx, docx or pdf gives its images and a picture of each slide or page. Each one is a derived artifact. Mira labels each image once, and writes a caption. The labels are logo, product photo, people, chart, diagram and other. The label and the caption are searchable. The parser runs in a killable child with time and size limits, because a file is untrusted.
+5. **The brand kit.** The organization identity gains a brand kit. It holds the logo, a main colour and one or two accent colours. It also holds the names of a heading font and a body font. Mira drafts it from the filed decks. An admin confirms it, and nothing applies before that.
+6. **The builder reuses parts.** The deck and report spec takes `object:<artifact id>` for an image. Code checks the member's read right for each reference, and the model never sees a bytes path. The output uses the confirmed brand kit. Rung 3 adds a pptx output of the same spec, with a filed deck as the template.
+7. **Ship dark.** `COMPANY_CONTENT_ORGS`, default empty. It also needs `ARTIFACT_REGISTRY_ENABLED` for the org.
+
+### 16.3 The slices
+
+| Slice | Task | Rung | What it does | Fence |
+|---|---|---|---|---|
+| CON-0 | 3040 | 1 | This section and D216 | `tests/unit/test_doc_names_resolve.py`, `tests/unit/test_decision_ids.py` |
+| CON-1 | 3041 | 1 | The filing card: register the upload, propose the place, a Knowledge draft | R8 tests of the owner, the scope and another org, chat parity rows, a card vitest |
+| AM-7 | 206 | 1 | The text index of pdf, docx and pptx, with the slide or page of each part | R8 tests of recall under the member's rights |
+| CON-2 | 3042 | 2 | The parts of a document as derived artifacts, with labels (HIGH) | R8 tests of the scope, extractor tests, a hostile-file test |
+| CON-3 | 3043 | 2 | The brand kit, drafted by Mira, confirmed by an admin | R8 tests of the admin confirm, a colour and font test |
+| CON-4 | 3044 | 2 | The builder places parts and uses the brand kit | Reference-check tests, a golden PDF, an eval case |
+| CON-5 | 3045 | 3 | A pptx output in a filed template, with reused slides | A pptx test, an eval case |
+
+The demo tasks are 3046 (rung 1), 3047 (rung 2) and 3048 (rung 3).
+
+### 16.4 Later rungs, one line each
+
+- Save a web page from a link into Knowledge, through the WS-WEB reader.
+- Sync a Drive or OneDrive folder (KC-5b, task 463).
+- A company profile that the filed content keeps current (OB-11 and OB-12, tasks 1352 and 1353), always as a draft for an admin.
+- A member's own writing style from their documents (`personalization.md`).
+- Document templates in AI Studio (STU-D13, task 1421).
+- The same reads and writes through the MCP (KS-5 and KS-6, tasks 2719 and 2720).

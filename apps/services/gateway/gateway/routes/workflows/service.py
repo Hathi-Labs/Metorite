@@ -58,7 +58,8 @@ from typing import Any
 # `_hold_at_gate` write it through `_run_session(org)`. An approval resumes
 # through `resume_run(org)`, with the approver's org. A long wait refuses at
 # the start, because the wait scan resumes a run only for a listed org (part
-# (b) below). A run with no org (manual, webhook, event) keeps the unbound path
+# (b) below). Since H-328 part (c), each door passes an org (the FIFTH
+# exception below). Only a caller that passes no org keeps the unbound path
 # above.
 # Fence: `tests/unit/test_workflows_tool_rls_r8.py`.
 #
@@ -69,14 +70,15 @@ from typing import Any
 # ambient tenant and never input. ONE EXCEPTION: the approval door opens its
 # read with the approver's `current_tenant()` (`resume_run`). RLS makes that
 # org equal the stored org, and the resumed nodes take the org from the run
-# row. A run with no org keeps the old path until H4 slice 6c. That path is
-# `_run_session(None)` for the module read and the task write, and the unbound
-# owner resolver for the other two.
+# row. A run with no org keeps the old path. That path is `_run_session(None)`
+# for the module read and the task write, and the unbound owner resolver for
+# the other two. Since part (c), no door starts a run with no org.
 #
 # ⚠️ A task write has no member check (`_member_blind_write_nodes`). So
-# `run_published_workflow`, the schedule scan (`scheduler._scan_org`) and
-# `resume_run` refuse a `pm_task` or `pm_lifecycle` node, and each stays
-# refused until a run checks a verified member.
+# `run_published_workflow`, the schedule scan (`scheduler._scan_org`), the
+# hook door, the event door, the manual door and `resume_run` refuse a
+# `pm_task` or `pm_lifecycle` node. Each stays refused until a run checks a
+# verified member.
 # Fence: `tests/unit/test_workflows_lifecycle_rls_r8.py`.
 #
 # A FOURTH EXCEPTION (H-328 part (b)): the sweeps. `record_skipped_run`,
@@ -87,6 +89,22 @@ from typing import Any
 # `WORKFLOW_UNATTENDED_ORGS` ships empty, so no unattended run starts until
 # the owner lists an org. `_organization_ids` is the one unbound read, and
 # `test_db_engine_seam.H2_TENANT_DISCOVERY_SITES` names it.
+#
+# A FIFTH EXCEPTION (H-328 part (c)): the three doors. Each passes an org to
+# `start_run`, and none takes it from input.
+#   * The hook door (`hooks.workflow_hook`) loops over `_organization_ids()`,
+#     skips an org that is not listed, and reads the token in
+#     `_tenant_session(org)`. The org is the org of the workflow row.
+#   * The event door (`triggers.dispatch_event`) reads `current_tenant()` once.
+#     Only a member request that emits an event binds one. With no tenant, or
+#     with an org that is not listed, it starts nothing. It never reads the
+#     org from the payload, and it never loops over each org.
+#   * The manual door (`runs.run_workflow`) reads the row in the member's
+#     tenant and passes the org of that row. A person pressed Run, so it
+#     needs no list. A long wait refuses when the org is not listed, because
+#     no scan resumes that run.
+# A replayed webhook delivery starts no second run (`delivery_key`, migration
+# 420). Fence: `tests/unit/test_workflows_triggers_r8.py`.
 #
 # STU-B2c-2d: the Studio write node (`_studio_writer`). It runs only in a
 # schedule run of an org on all four lists (`WORKFLOW_UNATTENDED_ORGS`,
@@ -712,8 +730,8 @@ async def _run_session(organization_id: str | None) -> Any:
     A run with no organization keeps the unbound ``_get_db()`` (the H4 note at
     the top of this module). Under FORCE RLS that read finds no row on a fresh
     connection, and raises ``DBAPIError`` on a used one (``invalid input syntax
-    for type uuid: ""``). That write fails on both. H4 slice 6c owns the
-    conversion.
+    for type uuid: ""``). That write fails on both. Since H-328 part (c), each
+    door passes an org, so no door reaches this path.
     """
     if organization_id:
         async with _tenant_session(organization_id) as db:
@@ -735,7 +753,8 @@ def _long_wait_nodes(serialized: dict[str, Any]) -> list[str]:
     pause. Only the wait scan resumes such a pause, and it acts only for an org
     on ``WORKFLOW_UNATTENDED_ORGS`` (H-328 part (b)). That list ships empty.
     So the F13 entry point refuses these workflows rather than start a run
-    that can stay paused for good. Part (c) owns this refusal.
+    that can stay paused for good. The manual door (``runs.run_workflow``)
+    refuses them only for an org that is not listed.
     """
     out: list[str] = []
     for block in serialized.get("blocks") or []:
@@ -774,10 +793,11 @@ def _member_blind_write_nodes(serialized: dict[str, Any]) -> list[str]:
     A fixed task id has the same gap, because the agent still picks the
     workflow. The sweep has it too, and it archives and closes tasks.
 
-    :func:`run_published_workflow`, the schedule scan (``scheduler._scan_org``)
-    and :func:`resume_run` refuse these nodes, whether the task id is a
-    template or fixed. The refusal stays until a run checks a verified member.
-    Part (c) of H-328 must decide which member that is (``workflows_app.md``).
+    :func:`run_published_workflow`, the schedule scan (``scheduler._scan_org``),
+    the hook door, the event door, the manual door and :func:`resume_run`
+    refuse these nodes, whether the task id is a template or fixed. The
+    refusal stays until a run checks a verified member. The spec does not say
+    yet which member that is (``workflows_app.md``).
     """
     return [
         str(block.get("id"))
@@ -829,15 +849,24 @@ async def start_run(
     variables: dict[str, Any] | None = None,
     started_by: str = "",
     organization_id: str | None = None,
+    delivery_key: str | None = None,
 ) -> str:
     """Create the run row + hub entry and launch the supervised task.
 
-    *organization_id* binds the run's writes (:func:`_run_session`). Two
-    callers pass it. The agent door (:func:`run_published_workflow`) passes the
-    org of the agent run's binding. The schedule scan (``scheduler._scan_org``)
-    passes the org of the workflow row, for a listed org only. Each caller
-    refuses a node of :func:`_member_blind_write_nodes` first.
-    ``tests/unit/test_workflows_start_run_org_fence.py`` names each caller.
+    *organization_id* binds the run's writes (:func:`_run_session`). Each door
+    passes it, and ``tests/unit/test_workflows_start_run_org_fence.py`` names
+    each caller. The agent door (:func:`run_published_workflow`) passes the org
+    of the agent run's binding. The schedule scan (``scheduler._scan_org``) and
+    the hook door (``hooks.workflow_hook``) pass the org of the workflow row,
+    for a listed org only. The event door (``triggers.dispatch_event``) passes
+    the bound tenant of the emitter, for a listed org only. The manual door
+    (``runs.run_workflow``) passes the org of the row that the member read.
+    Each caller refuses a node of :func:`_member_blind_write_nodes` first.
+
+    *delivery_key* is the delivery id of a webhook (H-328 part (c)). A second
+    start with the same key for the same workflow writes no row and starts no
+    task. It raises :class:`DuplicateDelivery` with the id of the first run.
+    ``None`` means no key, so the run is never a duplicate.
     """
     global _ACTIVE_TOTAL
     if _ACTIVE_TOTAL >= MAX_CONCURRENT_RUNS:
@@ -847,13 +876,15 @@ async def start_run(
 
     run_id = str(uuid.uuid4())
     async with _run_session(organization_id) as db:
-        await db.execute(
+        result = await db.execute(
             text(
                 """INSERT INTO workflow_runs
                    (id, workflow_id, workflow_name, version, trigger_kind,
-                    trigger_payload, status, started_by)
+                    trigger_payload, status, started_by, delivery_key)
                    VALUES (:id, :wid, :name, :v, :tk,
-                           :tp ::jsonb, 'running', :by)"""
+                           :tp ::jsonb, 'running', :by, :dk)
+                   ON CONFLICT DO NOTHING
+                   RETURNING id"""
             ),
             {
                 "id": run_id,
@@ -863,8 +894,26 @@ async def start_run(
                 "tk": trigger_kind,
                 "tp": json.dumps(trigger_payload, default=str),
                 "by": started_by,
+                "dk": delivery_key,
             },
         )
+        # Only a set key can conflict: the partial unique index of migration
+        # 420 skips NULL, and the id is a new UUID. So a run with no key
+        # never reads the result.
+        if delivery_key is not None and result.fetchone() is None:
+            # The index refused the row, so this is a replayed delivery.
+            first = (
+                await db.execute(
+                    text(
+                        "SELECT id FROM workflow_runs "
+                        "WHERE workflow_id = :wid AND delivery_key = :dk"
+                    ),
+                    {"wid": workflow_id, "dk": delivery_key},
+                )
+            ).fetchone()
+            if first is None:  # pragma: no cover - the conflict names a row
+                raise RunRejected("the run row was not written — retry shortly")
+            raise DuplicateDelivery(str(first.id))
 
     _HUBS[run_id] = RunHub()
     _ACTIVE_TOTAL += 1
@@ -888,6 +937,17 @@ async def start_run(
 
 class RunRejected(Exception):
     """The run was refused before starting (concurrency limits)."""
+
+
+class DuplicateDelivery(Exception):
+    """A webhook delivery with this key already started a run (H-328 (c)).
+
+    ``run_id`` is the id of the first run. No second row and no task exist.
+    """
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__(run_id)
+        self.run_id = run_id
 
 
 async def record_skipped_run(
