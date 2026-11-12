@@ -575,6 +575,10 @@ MANIFEST: tuple[Route, ...] = (
     # AGENTS_VIEW_ORGS. A read, so class A. The chat tool comes with the pack
     # `agents-overview` of AGA-11. It is in no door set (no MCP_ROUTES row).
     Route("GET", "/projects/agents/overview", "agents_list", "A"),
+    # WS-AGA AGA-9: the drill-down, the last 40 runs of one agent, dark behind
+    # the same flag. A read, so class A. Its tool is `agent_recent_runs` of the
+    # AGA-11 pack. It is in no door set.
+    Route("GET", "/projects/agents/{agent_key}/runs", "agent_recent_runs", "A"),
     # ── needs_attention.py — Needs attention (WS-55 SW-11a, spec §12.7) ──────
     # Stalled runs, open runs of closed tasks and tasks blocked by parked work,
     # over the tasks the caller can see. A read, so class A, and the chat asks
@@ -582,8 +586,8 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/needs-attention", "needs_attention", "A"),
     # ── agent_questions.py — Questions for me (WS-55 EA-18a, spec §12.8) ─────
     # The agent questions that wait on the reader. A read, so class A. The chat
-    # has no tool yet: a read tool for "what questions wait on me" is a later
-    # slice (D109), with the other run tools.
+    # reads it through `agent_questions` (WS-55 EA-18d). The member answers
+    # through `answer_agent_question`, a composite of `post_agent_activity`.
     Route("GET", "/projects/agent-questions", "agent_questions", "A"),
     Route("PUT", "/projects/tasks/{task_id}/watch", "watch", "B"),
     Route("DELETE", "/projects/tasks/{task_id}/watch", "watch", "B"),
@@ -652,6 +656,8 @@ PLANNED: dict[str, str] = {
     "agent_summary": "WS-55, in-product chat parity, after EA-12e",
     # WS-AGA AGA-7 (2026-11-11) added the member view of agents.
     "agents_list": "WS-AGA AGA-11 (Metorite task 2114), the chat pack agents-overview",
+    # WS-AGA AGA-9 (2026-11-11) added the drill-down of one agent.
+    "agent_recent_runs": "WS-AGA AGA-11 (Metorite task 2114), the chat pack agents-overview",
     # WS-55 EA-6b (2026-10-15) added the claim route for an outside agent.
     # The chat assigns through `assign` and moves through `update_task`.
     "claim_task": "WS-55, in-product chat parity, after EA-12e",
@@ -664,9 +670,6 @@ PLANNED: dict[str, str] = {
     # WS-55 MCP-G15 (2026-11-04) added the outside decision for an outside
     # agent. The chat acts as the member, who answers on the task.
     "record_outside_decision": "WS-55, in-product chat parity, after EA-12e",
-    # WS-55 EA-18a (2026-11-06) added the list of the questions that wait on a
-    # person. It adds no chat tool (spec §12.8, D109).
-    "agent_questions": "WS-55, in-product chat parity, after EA-12e",
     # ⚠️ `approve_task_archive` is NOT a chat tool, ever (EA3-40, D-OP-13). Its
     # route is class X with a reason, and `waiting_agent_requests` lists it.
     # WS-66 RM-3 (2026-10-25) built the seven reminder tools that RM-1 planned.
@@ -698,6 +701,11 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # D-OP-10 (OP-7): the card lists the subtasks it offers before it asks.
     "delete_task": frozenset({"task_detail"}),
     "add_subtasks": frozenset({"create_task"}),
+    # WS-55 EA-18d (spec §12.8): the member answers one agent question under
+    # one card. The write is ONE `prompt` on `POST …/agent-runs/{id}/activities`,
+    # which stays the route of `post_agent_activity` (PLANNED for EA-12e). The
+    # server decides who may answer (`may_answer_run`).
+    "answer_agent_question": frozenset({"post_agent_activity"}),
     # The create route's INSERT has no `required` column; the flag is a
     # PATCH under the same card (S2b verifier).
     "create_field": frozenset({"update_field"}),
@@ -838,6 +846,14 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "status": "waiting_agent_requests",
         "limit": "waiting_agent_requests",
         "order": "waiting_agent_requests",
+    },
+    # ── Questions for me (WS-55 EA-18d, spec §12.8) ──────────────────────
+    ("GET", "/projects/agent-questions"): {
+        "scope": "agent_questions.scope",
+        "project": "agent_questions.project_id",
+        "sort": "agent_questions.sort",
+        "offset": "agent_questions.offset",
+        "limit": "agent_questions",
     },
     # ── the member's own answer to an agent (SW-43c) ─────────────────────
     ("POST", "/projects/agent-runs/{run_id}/answer/withdraw"): {
@@ -1807,10 +1823,6 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     # WS-55 MCP-G15: the outside decision, with the other run tools.
     ("POST", "/projects/agent-runs/{run_id}/outside-decision"): {
         "decision": "G23", "where": "G23", "selected": "G23", "idempotency_key": "G23",
-    },
-    # WS-55 EA-18a: the list of the questions, with the other run tools.
-    ("GET", "/projects/agent-questions"): {
-        "scope": "G23", "project": "G23", "sort": "G23", "offset": "G23", "limit": "G23",
     },
 }
 
