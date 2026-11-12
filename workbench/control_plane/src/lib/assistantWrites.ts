@@ -89,13 +89,14 @@ const ARTIFACT_WRITES: ReadonlySet<string> = new Set([
  * save and publish packages and skills, which the Studio library lists. The
  * three record writes (STU-B2c-2b) add, change and delete a record of an app
  * when a resend runs the approved change, so an open app re-reads. A first
- * call only asks, and its re-read finds nothing new. The read tools (draft,
- * validate, patch, outline, plan, describe, list_actions, package_get,
- * record_list, skill_list, interview) change nothing stored.
+ * call only asks, and its re-read finds nothing new. The delete of a package
+ * (STU-A5c-2) takes an app out of the library, so the library re-reads. The
+ * read tools (draft, validate, patch, outline, plan, describe, list_actions,
+ * package_get, record_list, skill_list, interview) change nothing stored.
  */
 const STUDIO_WRITES: ReadonlySet<string> = new Set([
-  "studio_save", "studio_publish", "studio_skill_save", "studio_skill_state",
-  "studio_record_create", "studio_record_update", "studio_record_delete",
+  "studio_save", "studio_publish", "studio_delete_package", "studio_skill_save",
+  "studio_skill_state", "studio_record_create", "studio_record_update", "studio_record_delete",
 ]);
 
 /**

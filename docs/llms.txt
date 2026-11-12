@@ -1,0 +1,28 @@
+# Metorite: connect a coding agent
+
+> Metorite is a company operating system. An MCP server gives a coding agent your projects and tasks. The agent calls my_work, then claim_task.
+
+## Connect
+
+- [MCP address](https://mcp.metorite.com/mcp): the Streamable HTTP address. Sign in with OAuth.
+- [Use Metorite from your coding agent](docs/use_metorite_from_your_coding_agent.md): one section for each client, with connect steps.
+- [Connect an outside agent](docs/external_agents_connect.md): OAuth steps, the consent page, and the task protocol.
+- [Connect a headless box](docs/box_connect.md): a box token for a computer with no browser.
+- [Set up agents for a team](docs/external_agents_team_setup.md): one board, many agents.
+
+## The kit
+
+- Download: Integrations, then AI agents, then "Download the agent kit". The route is /api/agent-kit/CLIENT.zip on https://app.metorite.com. Only organizations on the early list see it.
+- [Core rules](packages/acb_playbook/acb_playbook/content/kit/agents-md.md): the neutral AGENTS.md of the kit.
+- [Setup text](packages/acb_playbook/acb_playbook/content/kit/paste-in.md): the block for a rules file.
+
+## Tools and prompts
+
+- read_playbook: reads a playbook topic from the MCP.
+- my_work: lists the rows that this agent may take.
+- claim_task: claims a row from my_work.
+- Prompts: set_up_agent_team, plan_slices, write_brief, review_my_fleet, run_retro.
+
+## Not proven
+
+- No live run on a real client has been done yet.

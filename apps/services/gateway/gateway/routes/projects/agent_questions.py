@@ -165,6 +165,7 @@ def question_row(
     out, and "Everyone" answers 403."""
     via = run.client_via
     meta = from_jsonb(question.signal_metadata) or {}
+    request = archive_request_of(question)
     return {
         "run_id": str(run.run_id),
         "activity_id": str(question.id),
@@ -177,11 +178,13 @@ def question_row(
         "run_started_at": wire(run.run_started_at),
         "project_path": path,
         "question": {
-            "kind": (KIND_ARCHIVE_REQUEST if archive_request_of(question) is not None
-                     else KIND_QUESTION),
+            "kind": KIND_ARCHIVE_REQUEST if request is not None else KIND_QUESTION,
             "body": (from_jsonb(question.content) or {}).get("body"),
             "options": meta.get("options") or [],
             "allow_multiple": bool(meta.get("allow_multiple")),
+            # EA-18b. A typed request carries its expiry, so the card draws the
+            # expired state with a Decline. Absent on any other question.
+            **({"expires_at": request.get("expires_at")} if request is not None else {}),
         },
         "can_answer": bool(review or run.may_answer),
         "why": run.why,

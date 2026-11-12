@@ -1,6 +1,6 @@
 # Antigravity pack
 
-kit_version: 1
+kit_version: 2
 
 This pack connects Google Antigravity to Metorite. It holds no second copy of the rules.
 

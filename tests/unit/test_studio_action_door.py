@@ -178,7 +178,8 @@ class _FakeDB:
             if pkg and pkg["org"] == self.org and pkg["owner"] == p["m"]:
                 return _Result([(pkg["id"], f"visits-{pkg['id'][:8]}", "Visits", "",
                                  pkg["owner"], "private", "draft",
-                                 json.dumps(pkg["manifest"]), None, NOW, NOW)])
+                                 json.dumps(pkg["manifest"]), None, NOW, NOW,
+                                 pkg.get("paused_at"), None)])
             return _Result()
         if sql == objects_store._OBJECT_BY_NAME_SQL:
             for o in w.objects:
