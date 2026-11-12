@@ -134,6 +134,10 @@ class OutEvent:
     busy: bool = True
     task_url: str | None = None
     client_id: str | None = None  # id to send on insert, so a lost answer can retry
+    #: True only on the adopt PATCH after a 409: the event may be CANCELLED
+    #: (Google keeps the id of a deleted event), and only this revives it. An
+    #: ordinary update must NOT revive an event the member deleted.
+    revive: bool = False
 
 
 @dataclass(frozen=True)

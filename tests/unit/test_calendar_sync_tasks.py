@@ -92,6 +92,8 @@ class FakeProvider:
 
     provider: str = "google_calendar"
     source: str = "google"
+    client_id_is_event_id = True  # Google; Outlook says False
+    revives: list = field(default_factory=list)
     calls: list[tuple] = field(default_factory=list)
     fail_with: Exception | None = None
     _n: int = 0
@@ -116,6 +118,7 @@ class FakeProvider:
         self.calls.append(("upsert", calendar_id, event.title, event.starts_at,
                            event.ends_at, external_id, event.task_url))
         self.client_ids.append((external_id, event.client_id))
+        self.revives.append(event.revive)
         if self.exists_once and external_id is None:
             self.exists_once = False
             raise ProviderError("exists")
@@ -959,11 +962,11 @@ async def test_r8_a_crashed_pull_does_not_stop_the_push(world):
 # * M17. ``task_out.py`` ``run_pass``: drop the ``state.get("unbound")`` return.
 #   A failed first pull after a reconnect lets the push revive a gap delete.
 #   ``test_r8_a_failed_first_pull_after_a_reconnect_holds_the_push_and_the_binding``.
-# * M18. ``task_out.py`` ``_bind``: BOUND clears ``synced_block_hash``. The
-#   unrelated-edit guard is off for the reconnect list.
-#   ``test_r8_a_provider_move_in_the_gap_beats_a_metorite_overlay_edit``.
-# * M19. ``task_out.py`` ``_pull``: bind before the read (``commit=True``). A
-#   failed read still writes the stored id. Same test as M17.
+# * M18b. ``task_out.py`` ``_pull``: bind BEFORE the read (``commit=True``) and
+#   let BOUND clear ``synced_block_hash``. The unrelated-edit guard is off for the
+#   reconnect list. ``test_r8_a_provider_move_in_the_gap_beats_a_metorite_overlay_edit``.
+# * M19. ``task_out.py`` ``_pull``: bind before the read (``commit=True``). A failed
+#   read still writes the stored id. Same test as M17.
 
 
 def _meta(world: Any) -> dict:
@@ -1046,13 +1049,39 @@ async def test_r8_a_provider_move_in_the_gap_beats_a_metorite_overlay_edit(world
         assert (await _block(world.org_a, ALICE, tid)).scheduled_start == new
 
 
+# ── CE-13b: the client id contract of each provider ──────────────────────
+#
+# * M20. ``task_out.py`` the adopt: drop ``replace(ev_out, revive=True)``. A
+#   cancelled Google event stays cancelled.
+#   ``test_r8_an_adopt_revives_the_event_and_an_ordinary_update_does_not``.
+# * M21. ``task_out.py`` the adopt: drop the ``client_id_is_event_id`` test. An
+#   Outlook ``exists`` would PATCH a transaction id as an event id.
+#   ``test_r8_a_provider_whose_client_id_is_not_the_event_id_is_never_adopted_or_deleted_by_it``.
+
+
 @pytest.mark.asyncio
-async def test_r8_an_outlook_connection_is_skipped_until_its_codes_are_mapped(world):
-    """Outlook raises ErrorItemNotFound, sends no transactionId and never says
-    ``exists``, so the recovery paths would do nothing. Mutation (M20): empty
-    ``UNSUPPORTED_PROVIDERS``. The pass then sends requests."""
-    fake = FakeProvider(provider="outlook_calendar", source="outlook")
+async def test_r8_an_adopt_revives_the_event_and_an_ordinary_update_does_not(world):
+    fake = FakeProvider()
+    fake.exists_once = True
     async with _in(world, world.org_a):
-        await _task(world.org_a, ALICE, "Outlook block", T0)
-        s = await task_out.run_pass(world.org_a, world.conn["a"], provider=fake)
-    assert s.skipped == "provider_unsupported" and fake.calls == [] and _links(world, world.org_a) == []
+        tid = await _task(world.org_a, ALICE, "Adopt", T0)
+        await _pass(world, world.org_a, world.conn["a"], fake)  # 409, then the adopt
+        await _move(world.org_a, ALICE, tid, T0 + timedelta(hours=1))
+        await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=1))
+    assert fake.revives == [False, True, False]  # create, adopt (revive), ordinary update
+
+
+@pytest.mark.asyncio
+async def test_r8_a_provider_whose_client_id_is_not_the_event_id_is_never_adopted_or_deleted_by_it(world):
+    fake = FakeProvider(provider="outlook_calendar", source="outlook")
+    fake.client_id_is_event_id = False
+    fake.exists_once = True
+    async with _in(world, world.org_a):
+        tid = await _task(world.org_a, ALICE, "Outlook", T0)
+        s = await _pass(world, world.org_a, world.conn["a"], fake)  # create -> exists
+        assert s.failed == 1 and s.created == 0  # failed with a backoff, never a PATCH by transaction id
+        assert all(u[5] is None for u in [c for c in fake.calls if c[0] == "upsert"])
+        # The block is cleared before the retry: with no event id there is nothing to delete.
+        await _move(world.org_a, ALICE, tid, None)
+        s = await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=10))
+    assert not [c for c in fake.calls if c[0] == "delete"] and _links(world, world.org_a) == []

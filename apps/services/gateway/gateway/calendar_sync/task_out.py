@@ -35,7 +35,7 @@ from __future__ import annotations
 import base64
 import hashlib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -269,10 +269,13 @@ async def reconcile_task_blocks(
                 res = await provider.upsert_event(
                     cred, cal_id, ev_out, None if creating else link.external_id)
             except ProviderError as exc:
-                if creating and getattr(exc, "code", "") == "exists":
+                if (creating and getattr(exc, "code", "") == "exists"
+                        and getattr(provider, "client_id_is_event_id", False)):
                     # An earlier create reached the provider and its answer
-                    # was lost. The event holds our client id: adopt it.
-                    res = await provider.upsert_event(cred, cal_id, ev_out, cid)
+                    # was lost. The event holds our client id: adopt it, and
+                    # revive it (the id of a deleted event stays as cancelled).
+                    res = await provider.upsert_event(
+                        cred, cal_id, replace(ev_out, revive=True), cid)
                 else:
                     raise
         except NeedsReconnect:
@@ -313,8 +316,11 @@ async def reconcile_task_blocks(
         try:
             # A create whose answer was lost left no id, but the event may exist
             # under our client id. 404 is success, so this is always safe.
-            await provider.delete_event(
-                cred, cal_id, link.external_id or client_event_id(link.task_id, str(conn.id)))
+            ident = link.external_id
+            if not ident and getattr(provider, "client_id_is_event_id", False):
+                ident = client_event_id(link.task_id, str(conn.id))
+            if ident:
+                await provider.delete_event(cred, cal_id, ident)
         except NeedsReconnect:
             stats.skipped = "needs_reconnect"
             await _release(org, str(conn.id), me, link.task_id)
@@ -396,8 +402,6 @@ META_TASK_CALENDAR_ID = "task_calendar_id"
 #: ``calendar.app.created`` answers 403), no request is made before this time.
 META_TASK_RETRY_AT = "task_calendar_retry_at"
 CALENDAR_RETRY = timedelta(minutes=10)
-#: Providers whose write-out is not ready (see ``run_pass``).
-UNSUPPORTED_PROVIDERS = frozenset({"outlook_calendar"})
 
 
 SAME = "same"  # the links belong to this calendar
@@ -431,7 +435,8 @@ async def _bind(db: Any, org: str, connection_id: str, me: str, cal_id: str, out
             {"org": org, "cid": connection_id, "me": me})
     elif outcome == BOUND:
         await db.execute(text(
-            "UPDATE calendar_task_links SET sync_state = 'pending', next_attempt_at = NULL "
+            "UPDATE calendar_task_links SET sync_state = 'pending', next_attempt_at = NULL, "
+            "updated_at = now() "
             "WHERE organization_id = CAST(:org AS uuid) AND connection_id = CAST(:cid AS uuid) "
             "AND member_email = :me AND external_id IS NOT NULL"),
             {"org": org, "cid": connection_id, "me": me})
@@ -629,12 +634,6 @@ async def run_pass(
     reconnect, a new calendar) skips the push: the push would send an update
     that revives an event the member deleted in the gap."""
     state: dict[str, bool] = {}
-    if getattr(provider, "provider", "") in UNSUPPORTED_PROVIDERS:
-        # Outlook answers a missing item with the Graph code ErrorItemNotFound, not
-        # ``not_found``, sends no transactionId and never says ``exists``: the
-        # recovery paths below would do nothing. CE-13b maps them, then lifts this.
-        _log.info("calendar_sync.task_pass_skipped", organization_id=org, provider=provider.provider)
-        return PassStats(skipped="provider_unsupported")
     try:
         await _pull(org, connection_id, provider=provider, now=now, state=state)
     except Exception as exc:  # noqa: BLE001 - a failed read must not stop a bound push
