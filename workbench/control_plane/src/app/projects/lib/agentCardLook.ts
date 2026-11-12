@@ -40,8 +40,8 @@ import {
   asAgentState,
   clientName,
   strandedLine,
-  withAgentLabel,
   waitingText,
+  withAgentLabel,
 } from "./agentRuns";
 
 export type AgentEdge = "live" | "steady" | "warning" | "breathing" | "destructive";
