@@ -58,7 +58,6 @@ from acb_common.db import bind_tenant, release_tenant
 from fastapi import HTTPException
 from gateway.routes.studio import invoke
 from gateway.studio import objects_store
-from gateway.studio import preview as preview_mod
 from ingestion import event_hooks
 from sqlalchemy import text
 
@@ -234,22 +233,14 @@ def test_r8_a_preview_send_records_a_simulated_send_and_calls_no_sender(
 
 
 def test_r8_a_record_event_fires_for_a_live_write_and_never_for_a_preview(
-        pworld, monkeypatch) -> None:
-    """C3 is not built. Here the write path emits through the one seam, as C3
-    must, and the preview holds it."""
+        pworld) -> None:
+    """C3 is built. The door emits through the one seam, and the preview holds it."""
     w = pworld
     got: list[str] = []
-    real = objects_store.apply_writes
 
     async def _sink(source: str, event_type: str, payload: dict[str, Any]) -> None:
         got.append(event_type)
 
-    async def _emitting(*a: Any, **k: Any) -> Any:
-        done = await real(*a, **k)
-        await preview_mod.emit_record_event("studio.record.changed", {"n": len(done)})
-        return done
-
-    monkeypatch.setattr(objects_store, "apply_writes", _emitting)
     event_hooks.clear_event_sinks()
     event_hooks.register_event_sink(_sink)
     try:
@@ -261,7 +252,7 @@ def test_r8_a_record_event_fires_for_a_live_write_and_never_for_a_preview(
         assert got == []
         status, _ = _run(w, lambda: _live(w.a, ANA, w.pkg, "add", {"data": _DATA}))
         assert status == 200
-        assert got == ["studio.record.changed"]
+        assert got == ["studio.record.created"]
     finally:
         event_hooks.clear_event_sinks()
 
