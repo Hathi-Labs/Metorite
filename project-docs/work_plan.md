@@ -6251,6 +6251,18 @@ Fence: each slice in `workflows_app.md` §14.7 names its test. Until a slice lan
 > §3 — verify by the migration ledger, the deployed SHA and the log line.
 > Faster delivery makes a silent no-op deploy more likely, not less.
 
+### D215 — External calendars: one consent, one redirect URI, tasks out two ways (2026-11-12)
+
+The owner directed on 2026-11-12 that Google Calendar and Outlook sync into Metorite, and that Metorite tasks sync out to them, in both directions. The member must do the least work. `calendar_events_reminders.md` §8.1a holds the points.
+
+1. Google asks `calendar.readonly` and `calendar.app.created`. Microsoft asks `Calendars.ReadWrite`. One consent covers read and write, and the grant adds to the mail grant.
+2. The calendar flow reuses the redirect URI of the mail flow. Its state has its own purpose, `calendar.connect`. The owner adds no URI.
+3. The connection is one `integration_connections` row (`owning_app='calendar'`) for each member and provider.
+4. A task with a timed block writes one event into a calendar named "Metorite" that Metorite makes in the member's account. Its provider event id lives in the new table `calendar_task_links`, not in `calendar_entries`. This decides Q9.
+5. A change at the provider moves the block. A delete at the provider unschedules the block and never deletes the task.
+
+Fence: `tests/unit/test_calendar_sync_read.py`, `test_calendar_sync_write.py` and `test_calendar_sync_tasks.py`. `tests/unit/test_decision_ids.py` fails when two D215 entries merge. **Re-check this number at merge.** On 2026-11-12, main held D214 at most.
+
 ### 6.0 Decisions the owner owes — the short list *(added 2026-08-26)*
 
 > ⚠️ **This sub-section lists DECISIONS, not actions.** The rest of §6 is the register of
