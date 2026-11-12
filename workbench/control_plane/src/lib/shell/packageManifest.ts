@@ -27,6 +27,7 @@ import { useLiveRefresh } from "@/lib/liveRefresh";
 import type { NavPane, NavSection } from "@/lib/nav";
 import { NAV_SECTIONS } from "@/lib/nav";
 import { useCachedResource } from "@/lib/useCachedResource";
+import { canStar, starredHrefs, type Stars } from "./presets";
 import { MANIFEST_CACHE, manifestKey, refreshManifest } from "./manifestCache";
 
 export { MANIFEST_CACHE, manifestKey, refreshManifest };
@@ -322,11 +323,47 @@ export function usePackageManifest(enabled: boolean = true): PackageManifest {
 }
 
 /**
+ * The install panes that the member's stars keep (PKG-6c-2, `package_host.md`
+ * rule 4 of `starredHrefs`). `starredHrefs` runs over the MERGED held sections,
+ * so an install the member never saw (not in `known`) shows. The filter runs
+ * BEFORE `mergeInstallNav`, so a sub-entry keeps its place after its host
+ * (PKG-15b). `held` is `visibleSections`, and `base` is what the rail draws
+ * (`shellSidebar`). With no panes, the SAME `base` array comes back, so the
+ * flag-off shell is the shell it was.
+ */
+export function mergeStarredInstallNav(
+  held: readonly NavSection[],
+  base: readonly NavSection[],
+  panes: readonly NavPane[],
+  stars: Stars | null | undefined,
+): NavSection[] {
+  if (panes.length === 0) return base as NavSection[];
+  const shown = starredHrefs(stars, mergeInstallNav(held, panes));
+  const kept = shown === null ? panes : panes.filter((p) => !canStar(p) || shown.has(p.href));
+  return mergeInstallNav(base, kept);
+}
+
+/** What the member holds, with the install panes: the sections to star over. */
+export function useHeldWithInstalls(held: readonly NavSection[], features: readonly string[]): NavSection[] {
+  const manifest = usePackageManifest();
+  return mergeInstallNav(held, installNavPanes(manifest, features));
+}
+
+/**
  * The nav sections with the panes of the installs in "Apps". The desktop sidebar and
  * the phone drawer both call it, so the two navs show the same installs. With the
  * package host off, the SAME array comes back.
+ *
+ * With `star`, an install pane shows only while the member's stars keep it
+ * (PKG-6c-2). `star.held` is `visibleSections`, and `star.layout` is the layout
+ * to read, or none while it loads.
  */
-export function useInstallNav(sections: readonly NavSection[], features: readonly string[]): NavSection[] {
+export function useInstallNav(
+  sections: readonly NavSection[],
+  features: readonly string[],
+  star?: { held: readonly NavSection[]; layout: Stars | null | undefined },
+): NavSection[] {
   const manifest = usePackageManifest();
-  return mergeInstallNav(sections, installNavPanes(manifest, features));
+  const panes = installNavPanes(manifest, features);
+  return star ? mergeStarredInstallNav(star.held, sections, panes, star.layout) : mergeInstallNav(sections, panes);
 }

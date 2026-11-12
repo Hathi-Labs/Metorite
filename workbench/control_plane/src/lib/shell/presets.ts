@@ -386,8 +386,15 @@ export function starsToSave(
 ): { pins: string[]; known: string[] } {
   const held = starrableHeld(sections).map((p) => p.href);
   const want = new Set(shown);
-  const kept = (before?.pins ?? []).filter((h) => !held.includes(h) && STARRABLE.has(h));
-  return { pins: [...held.filter((h) => want.has(h)), ...kept], known: held };
+  // PKG-6c-2: a save made with no install pane in `sections` (the manifest has
+  // not answered, or failed) must not un-hide an install. It keeps the stored
+  // install hrefs in `pins` and in `known`. The gateway drops a stale or
+  // foreign one itself.
+  const noInstalls = !sections.some((s) => s.items.some((p) => p.team === "apps" && !STARRABLE.has(p.href)));
+  const isStoredInstall = (h: string) => noInstalls && !STARRABLE.has(h) && h.startsWith("/");
+  const kept = (before?.pins ?? []).filter((h) => !held.includes(h) && (STARRABLE.has(h) || isStoredInstall(h)));
+  const keptKnown = noInstalls ? (before?.known ?? []).filter((h) => !held.includes(h) && isStoredInstall(h)) : [];
+  return { pins: [...held.filter((h) => want.has(h)), ...kept], known: [...held, ...keptKnown] };
 }
 
 /** The stars with `href` shown, or hidden. */
