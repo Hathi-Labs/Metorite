@@ -50,7 +50,7 @@ export function refreshConnections(): void {
   invalidate(CONNECTIONS_KEY);
 }
 
-export { isConnectionId, isProvider, gatewayProviderOf } from "./calendarIds";
+export { isConnectionId, isProvider } from "./calendarIds";
 import { isConnectionId, isProvider } from "./calendarIds";
 
 // ── Words ───────────────────────────────────────────────────────────────────
