@@ -20,6 +20,13 @@ import {
   normalizeRunDetail,
 } from "./agentRuns";
 import { type TaskDecisions, answerBody, readTaskDecisions } from "./decisions";
+import {
+  type QuestionScope,
+  type QuestionSort,
+  type QuestionsPage,
+  questionsPage,
+  questionsQuery,
+} from "./agentQuestions";
 import type { EpicRollup } from "./epicRollup";
 import {
   ATTENTION_LIMIT,
@@ -28,7 +35,7 @@ import {
   attentionPage,
   resumeBody,
 } from "./needsAttention";
-import { type AgentsOverview, parseOverview } from "./agentsAtWork";
+import { type AgentRuns, type AgentsOverview, parseAgentRuns, parseOverview } from "./agentsAtWork";
 import type { Rule as RecurrenceRule } from "./recurrence";
 import { taskVersions } from "./taskUndo";
 
@@ -3435,6 +3442,23 @@ export const agentsOverviewApi = {
 };
 
 /**
+ * WS-AGA AGA-9: the last runs of one agent (`GET /projects/agents/{key}/runs`).
+ * `null` means the member may not see this agent (404, 401 or 403).
+ */
+export const agentRecentRunsApi = {
+  read: async (agentKey: string): Promise<AgentRuns | null> => {
+    try {
+      const runs = parseAgentRuns(await call<unknown>(`agents/${encodeURIComponent(agentKey)}/runs`));
+      if (!runs) throw new ProjectsApiError("The runs answer could not be read.", 200);
+      return runs;
+    } catch (err) {
+      if (err instanceof ProjectsApiError && [401, 403, 404].includes(err.status)) return null;
+      throw err;
+    }
+  },
+};
+
+/**
  * WS-55 SW-11a — Needs attention (`external_agent_access.md` §12.7). The
  * stalled runs, the open runs of closed tasks and the tasks blocked by parked
  * work of one project and its subprojects, over the tasks the caller can see.
@@ -3454,6 +3478,32 @@ export const attentionApi = {
    */
   mine: async (): Promise<AttentionPage> =>
     attentionPage(await call<unknown>(`needs-attention?mine=true&limit=${ATTENTION_LIMIT}`)),
+};
+
+/**
+ * WS-55 EA-18b — Questions for me (`external_agent_access.md` §12.8). The open
+ * agent questions that wait on a person. One route feeds the Projects pane,
+ * and later the My Day card and the Approvals tab. The words are in
+ * `agentQuestions.ts`.
+ */
+export const questionsApi = {
+  /**
+   * One page. `null` means the route is OFF: `AGENT_QUESTIONS_ORGS` does not
+   * hold the org, the route answers 404, and the sidebar draws no entry.
+   */
+  list: async (opts: {
+    scope?: QuestionScope;
+    project?: string | null;
+    sort?: QuestionSort;
+    limit?: number;
+  }): Promise<QuestionsPage | null> => {
+    try {
+      return questionsPage(await call<unknown>(`agent-questions?${questionsQuery(opts)}`));
+    } catch (err) {
+      if (err instanceof ProjectsApiError && err.status === 404) return null;
+      throw err;
+    }
+  },
 };
 
 export interface NotificationRow {

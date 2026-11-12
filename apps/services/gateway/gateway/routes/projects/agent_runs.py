@@ -2366,7 +2366,15 @@ async def _read_run(user: UserContext, run_id: str, after: int | None) -> tuple[
         )).fetchall())
         if own:
             rows = await _stamp_returned(db, run_id, rows, locked)
-        return (await _runs_out(db, [run]))[0], [_activity_out(r) for r in rows]
+        out_run = (await _runs_out(db, [run]))[0]
+        # EA-18b. With the flag on, a person's read says if they may answer the
+        # open question, from the ONE rule of the write route. The run panel
+        # shows a read-only card from it. With the flag off the key is absent.
+        if _agent_via(user) is None and agent_questions_allowed(
+            getattr(user, "organization_id", None),
+        ):
+            out_run["can_answer"] = await may_answer_run(db, run, user)
+        return out_run, [_activity_out(r) for r in rows]
 
 
 @router.get("/agent-runs/{run_id}", dependencies=_ENABLED)

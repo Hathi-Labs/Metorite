@@ -575,6 +575,10 @@ MANIFEST: tuple[Route, ...] = (
     # AGENTS_VIEW_ORGS. A read, so class A. The chat tool comes with the pack
     # `agents-overview` of AGA-11. It is in no door set (no MCP_ROUTES row).
     Route("GET", "/projects/agents/overview", "agents_list", "A"),
+    # WS-AGA AGA-9: the drill-down, the last 40 runs of one agent, dark behind
+    # the same flag. A read, so class A. Its tool is `agent_recent_runs` of the
+    # AGA-11 pack. It is in no door set.
+    Route("GET", "/projects/agents/{agent_key}/runs", "agent_recent_runs", "A"),
     # ── needs_attention.py — Needs attention (WS-55 SW-11a, spec §12.7) ──────
     # Stalled runs, open runs of closed tasks and tasks blocked by parked work,
     # over the tasks the caller can see. A read, so class A, and the chat asks
@@ -652,6 +656,8 @@ PLANNED: dict[str, str] = {
     "agent_summary": "WS-55, in-product chat parity, after EA-12e",
     # WS-AGA AGA-7 (2026-11-11) added the member view of agents.
     "agents_list": "WS-AGA AGA-11 (Metorite task 2114), the chat pack agents-overview",
+    # WS-AGA AGA-9 (2026-11-11) added the drill-down of one agent.
+    "agent_recent_runs": "WS-AGA AGA-11 (Metorite task 2114), the chat pack agents-overview",
     # WS-55 EA-6b (2026-10-15) added the claim route for an outside agent.
     # The chat assigns through `assign` and moves through `update_task`.
     "claim_task": "WS-55, in-product chat parity, after EA-12e",
