@@ -57,3 +57,14 @@ async def test_a_write_confirms_the_event_so_an_adopt_revives_a_cancelled_one() 
     await provider(http).upsert_event(cred(), "cal1", OutEvent(
         title="Block", starts_at=NOW, ends_at=NOW + timedelta(hours=1), client_id="abc12"), "abc12")
     assert http.calls[-1][3]["status"] == "confirmed"
+
+
+@pytest.mark.asyncio
+async def test_the_calendar_list_asks_for_hidden_calendars() -> None:
+    """A "Metorite" calendar that the member hid must be found by name on a
+    reconnect. Mutation: drop ``showHidden`` from ``google.list_calendars``."""
+    http = FakeHttp().on("GET", "/users/me/calendarList", answer({"items": [
+        {"id": "hid1", "summary": "Metorite", "accessRole": "owner"}]}))
+    found = await provider(http).list_calendars(cred())
+    assert [c.id for c in found] == ["hid1"]
+    assert http.calls[-1][2]["showHidden"] == "true"

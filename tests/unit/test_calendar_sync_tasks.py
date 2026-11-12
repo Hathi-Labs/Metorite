@@ -1044,3 +1044,15 @@ async def test_r8_a_provider_move_in_the_gap_beats_a_metorite_overlay_edit(world
             next_cursor="c1", full=True)
         await task_out.run_pass(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
         assert (await _block(world.org_a, ALICE, tid)).scheduled_start == new
+
+
+@pytest.mark.asyncio
+async def test_r8_an_outlook_connection_is_skipped_until_its_codes_are_mapped(world):
+    """Outlook raises ErrorItemNotFound, sends no transactionId and never says
+    ``exists``, so the recovery paths would do nothing. Mutation (M20): empty
+    ``UNSUPPORTED_PROVIDERS``. The pass then sends requests."""
+    fake = FakeProvider(provider="outlook_calendar", source="outlook")
+    async with _in(world, world.org_a):
+        await _task(world.org_a, ALICE, "Outlook block", T0)
+        s = await task_out.run_pass(world.org_a, world.conn["a"], provider=fake)
+    assert s.skipped == "provider_unsupported" and fake.calls == [] and _links(world, world.org_a) == []

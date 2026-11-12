@@ -396,6 +396,8 @@ META_TASK_CALENDAR_ID = "task_calendar_id"
 #: ``calendar.app.created`` answers 403), no request is made before this time.
 META_TASK_RETRY_AT = "task_calendar_retry_at"
 CALENDAR_RETRY = timedelta(minutes=10)
+#: Providers whose write-out is not ready (see ``run_pass``).
+UNSUPPORTED_PROVIDERS = frozenset({"outlook_calendar"})
 
 
 SAME = "same"  # the links belong to this calendar
@@ -627,6 +629,12 @@ async def run_pass(
     reconnect, a new calendar) skips the push: the push would send an update
     that revives an event the member deleted in the gap."""
     state: dict[str, bool] = {}
+    if getattr(provider, "provider", "") in UNSUPPORTED_PROVIDERS:
+        # Outlook answers a missing item with the Graph code ErrorItemNotFound, not
+        # ``not_found``, sends no transactionId and never says ``exists``: the
+        # recovery paths below would do nothing. CE-13b maps them, then lifts this.
+        _log.info("calendar_sync.task_pass_skipped", organization_id=org, provider=provider.provider)
+        return PassStats(skipped="provider_unsupported")
     try:
         await _pull(org, connection_id, provider=provider, now=now, state=state)
     except Exception as exc:  # noqa: BLE001 - a failed read must not stop a bound push
