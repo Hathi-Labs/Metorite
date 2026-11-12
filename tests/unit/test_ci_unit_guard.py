@@ -804,6 +804,24 @@ def test_a_collection_error_in_the_old_run_is_not_a_baseline(tmp_path: Path) -> 
     assert failed is None and "collection error" in why and "test_b.py" in why
 
 
+def test_an_interrupt_after_a_real_failure_is_not_a_baseline(tmp_path: Path) -> None:
+    """Opus re-review P2 (2026-11-12): test_a fails, then test_b raises
+    KeyboardInterrupt, so test_c never runs. pytest 9.1.1 with xunit1 writes the
+    failure of test_a and an empty case with no name. Trusting the report
+    would re-test only test_a."""
+    junit = tmp_path / "junit-shard-1"
+    junit.mkdir(parents=True)
+    (junit / "shard-1.xml").write_text(
+        '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" '
+        'errors="0" failures="1" skipped="0" tests="2"><testcase classname="tests.unit.test_a" '
+        'name="test_x" file="tests/unit/test_a.py"><failure message="assert False">E</failure>'
+        '</testcase><testcase time="0.000" /></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    failed, why = guard.old_failures([_job(1, "failure")], tmp_path)
+    assert failed is None and "interrupt" in why
+
+
 def test_each_shard_job_is_paired_with_its_own_report(tmp_path: Path) -> None:
     ok = _repair_case("tests/unit/test_a.py", "t")
     _shard(tmp_path, 1, ok)
