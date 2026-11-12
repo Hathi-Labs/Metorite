@@ -100,6 +100,8 @@ class InstallRow:
 
     ``manifest`` is the manifest of the installed version, or of the app for
     a draft. It can be any JSON value, and the needs check reads it.
+    ``version`` is the installed version, and None for a draft. The viewer
+    read of ``viewer.py`` (WS-STU J2a) reads it.
     """
 
     id: str
@@ -108,6 +110,7 @@ class InstallRow:
     scope_subject: str
     created_at: datetime
     manifest: Any
+    version: int | None = None
 
 
 @dataclass(frozen=True)
@@ -331,7 +334,8 @@ INSTALLS_SQL = (
     "SELECT CAST(package_install.id AS text), CAST(package_install.app_id AS text),"
     " package_install.scope_kind, package_install.scope_subject,"
     " package_install.created_at,"
-    " CASE WHEN package_install.version IS NULL THEN a.manifest ELSE v.manifest END"
+    " CASE WHEN package_install.version IS NULL THEN a.manifest ELSE v.manifest END,"
+    " package_install.version"
     " FROM package_install"
     " JOIN apps AS a ON a.organization_id = package_install.organization_id"
     " AND a.id = package_install.app_id"
@@ -372,7 +376,8 @@ async def read_installs(db: Any, viewer: str, groups: Sequence[str]) -> list[Ins
     rows = (await db.execute(text(INSTALLS_SQL), {
         "viewer": viewer, "groups": list(groups)})).all()
     return [InstallRow(id=str(r[0]), app_id=str(r[1]), scope_kind=str(r[2]),
-                       scope_subject=str(r[3]), created_at=r[4], manifest=r[5])
+                       scope_subject=str(r[3]), created_at=r[4], manifest=r[5],
+                       version=None if r[6] is None else int(r[6]))
             for r in rows]
 
 
@@ -385,6 +390,22 @@ async def read_claims(db: Any, install_ids: Sequence[str]) -> list[ClaimRow]:
                      payload=r[3], position=int(r[4])) for r in rows]
 
 
+async def visible_installs(db: Any, *, viewer: str) -> list[InstallRow]:
+    """The one install of each app that *viewer* sees (step 2 and the rule of
+    one app). :func:`resolve_for` and the viewer read of ``viewer.py`` (WS-STU
+    J2a) both call it, so one rule decides which installs a member sees.
+
+    *db* is a session that the caller opened with ``tenant_session()``.
+    *viewer* is the address of the session member, never request input.
+    """
+    # A lazy import: the CRM package is large, and the gateway loads it first.
+    from gateway.routes.crm.access import my_groups
+
+    member = (viewer or "").strip().lower()
+    groups = sorted(await my_groups(db, member)) if member else []
+    return widest_per_app(await read_installs(db, member, groups))
+
+
 async def resolve_for(db: Any, *, viewer: str, can_use: CanUse) -> dict[str, Any]:
     """The answer of ``GET /shell/manifest`` for *viewer*.
 
@@ -392,11 +413,6 @@ async def resolve_for(db: Any, *, viewer: str, can_use: CanUse) -> dict[str, Any
     *viewer* is the address of the session member, never request input.
     *can_use* is ``user.can_use_feature`` of that member.
     """
-    # A lazy import: the CRM package is large, and the gateway loads it first.
-    from gateway.routes.crm.access import my_groups
-
-    member = (viewer or "").strip().lower()
-    groups = sorted(await my_groups(db, member)) if member else []
-    kept = widest_per_app(await read_installs(db, member, groups))
+    kept = await visible_installs(db, viewer=viewer)
     claims = await read_claims(db, [i.id for i in kept])
     return manifest_body(resolve(system_contributions(), kept, claims, can_use))
