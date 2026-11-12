@@ -2346,8 +2346,9 @@ class Settings(BaseSettings):
     # put up to 4 images on a question or an activity (`attachment_ids`). The
     # same shape as `agent_access_orgs`: ids with a comma between them, or
     # `*`. Empty, the default, keeps both dark: for a signed agent the upload
-    # answers 404 and `attachment_ids` answers 422. Only the gateway reads
-    # it, at each call, so a SIGHUP reload applies a change
+    # answers 404 and `attachment_ids` answers 422. The gateway reads it at
+    # each call, so a SIGHUP reload applies a change there. The edge reads it
+    # too, to hide the tool, and the edge reads its flags at start
     # (`docs/flag_reload.md`). `acb_auth.agent_oauth.image_upload_allowed` is
     # the one reader. 🔴 A change on a box is gate `enforcement-flip`.
     mcp_image_upload_orgs: str = ""

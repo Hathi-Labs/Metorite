@@ -51,9 +51,13 @@ put images on a question (`external_agent_access.md` §12.9, CIV-14b). Off, the
 upload of a signed agent answers 404 and `attachment_ids` answers 422, and the
 MCP edge maps both to one fixed text (`tools.TEXT_IMAGES_OFF`). A person's upload
 in the app does not read it. Its one reader is
-`acb_auth.agent_oauth.image_upload_allowed`, and only the gateway asks it, so
-a reload applies a change. The edge needs no restart. The flip stays
-OWNER-GATE (`enforcement-flip`).
+`acb_auth.agent_oauth.image_upload_allowed`. The gateway asks it at each call,
+so a reload applies a change there. The agent edge asks it too (CIV-14b fix
+round 1). It hides `upload_task_image` for an org off the flag, and
+`ask_on_task` checks it before a run starts. The edge reads its flags at
+start. So set the same value in the env file of both units, reload
+`acb-gateway`, and restart `acb-agent-edge`. The flip stays OWNER-GATE
+(`enforcement-flip`).
 
 `AGENT_WRITE_CAP` and `AGENT_WRITE_WINDOW_S` set the write cap of each agent
 connection (`external_agent_access.md` §9.2, MCP-G20). The defaults are 120
