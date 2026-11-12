@@ -6141,6 +6141,22 @@ This amends `navigation_shell.md` §4.3, which gave My Day only the job Notice. 
 **Re-check this number at merge.** D186 and D187 were open then (both are on main now) on other branches when this record was written. The first merge wins a D-number.
 Fence: named per slice in `specs/my_day_command_centre.md` §10. Advisory until each slice builds its test.
 
+### D213 — A task row on My Day opens the task on My Day. It amends D101 point 2 (2026-11-09)
+
+Owner request, 2026-11-09, in chat. Metorite: task 2469 (PK-1). Owning spec: **`specs/my_day_feed.md`** §11.5.
+
+The owner wrote: "when I open any task card (say, for example, some task when AI needs me), it opens up the projects app itself, and I need to go back to My Day to look at the rest of my day. I think it would be nice to just have emails, tasks, or reminders, whatever, just appear in the card itself on My Day, so that I don't have to switch between apps."
+
+1. **The context opens on My Day.** A plain click on a link to a task opens the task in a panel. The path stays `/`. A row's title and an act that is a link both open it, for example "Move to tomorrow". An act with its own button still runs in place. The panel draws the shared task card of Projects, and never a second task view. This amends D101 point 2 for each link to a task. "Needs more context" no longer sends the member to the owning app. The act test of `my_day_feed.md` §11.2 does not change.
+2. **The member can always open the app.** D101 point 3 stays. The panel's header has "Open in Projects". Ctrl-click, Cmd-click and a middle click open the app in a new tab.
+3. **Back closes the panel.** The URL holds the panel as `?peek=<kind>:<id>`, so a reload opens it again.
+4. **Tasks first.** PK-1 opens tasks. Email (PK-2, task 2470) and reminders (PK-3, task 2471) add their kinds to the same registry, `lib/shell/myDayPeek.ts`.
+5. **Dark first.** `NEXT_PUBLIC_MY_DAY_PEEK` turns it on, default OFF. Turning it on in production is the `enforcement-flip` act.
+
+**What it amends.** `navigation_shell.md` §4.3, row "My Day": "A longer act opens the owning app". A link to a task, a row's or an act's, now opens the panel. An act with its own button runs in place, as before.
+
+Fence: `workbench/control_plane/src/lib/shell/myDayPeek.test.ts`, `src/components/CardPanel.test.ts`, `src/app/projects/lib/useTaskById.test.ts` and `e2e/myday-peek.spec.ts`. `tests/unit/test_decision_ids.py` fails when two D213 entries merge. **Re-check this number at merge.** On 2026-11-09, main and every open branch held D203 at most.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
