@@ -72,6 +72,7 @@ META_ACCOUNT_EMAIL = "account_email"
 META_ACCOUNT_ID = "account_id"
 
 _EXPIRY_SKEW = timedelta(minutes=5)
+_TOKEN_STOP = timedelta(seconds=30)
 _MAX_PAGES = 100
 #: A full read of a busy calendar: 400 pages of up to 50 events.
 _MAX_EVENT_PAGES = 400
@@ -321,6 +322,11 @@ class OutlookProvider:
         while url is not None:
             if len(pages) >= _MAX_EVENT_PAGES:
                 raise ProviderError("delta_paging")
+            if self._clock() >= cred.expires_at - _TOKEN_STOP:
+                # A long full read must not outlive the token: a 401 half way
+                # would mark a healthy connection needs_reconnect. Stop here,
+                # write nothing. The next tick refreshes the token first.
+                raise ProviderError("token_expiring")
             try:
                 data = await self._graph("GET", url, cred, page_size=size)
             except PageTooLarge:

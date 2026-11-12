@@ -208,6 +208,15 @@ def test_a_full_read_of_a_busy_calendar_is_not_cut_at_100_pages():
     assert e.value.code == "delta_paging"
 
 
+def test_a_long_read_stops_before_the_token_dies_and_is_not_a_reconnect():
+    h = _Scripted(_delta_pages(3))
+    soon = cred(expires_at=NOW + timedelta(seconds=10))
+    with pytest.raises(ProviderError) as e:
+        run(prov(h).sync(soon, None, Window.around(NOW)))
+    assert e.value.code == "token_expiring" and not isinstance(e.value, NeedsReconnect)
+    assert h.sizes == []
+
+
 def test_first_sync_is_full_skips_metorite_calendar_and_returns_cursor_map():
     h = FakeHttp([
         ("GET", "skiptoken=", 200, fx("delta_page2.json")),
