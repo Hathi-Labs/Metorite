@@ -12,7 +12,7 @@
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
 
-**1045a (the `waiting` state, migration 403) is built, 2026-11-06. It also carries SW-4 item 2. The owner's change of 2026-11-07 is built: own sub-agents keep a run working, and `agent` is a wait on another agent. 1045b and 1045c are open.**
+**1045a (the `waiting` state, migration 403) is built, 2026-11-06. It also carries SW-4 item 2. The owner's change of 2026-11-07 is built: own sub-agents keep a run working, and `agent` is a wait on another agent. 1045b (linked events count as life, migration 419) is built, 2026-11-12. 1045c is open.**
 
 This spec gates every SW slice (D135.4). The decisions are **D140** in `work_plan.md` §3.
 
@@ -902,6 +902,8 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE.
 
 #### 1045b · Linked events count as life
+
+**Status: built, 2026-11-12 (migration 419).** The webhook calls `agent_runs.signal_linked_runs`. A burst of check events with the same words writes one line.
 
 - **Scope.**
   1. The GitHub webhook handles two events in `webhook.py`: `_on_pull_request` with the action `synchronize`, and `_on_checks`. For each event, it finds each `in_progress` run of a task that references that pull request.
@@ -2057,7 +2059,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 ## 9. What this spec could not settle
 
 - **The column names of the delegate.** SW-29a fixes them at dispatch, under the rules of §3.7 and Q1.
-- **The `push` event.** It is not known whether the GitHub App subscribes to `push` (1045b).
+- **The `push` event.** Settled by 1045b. The GitHub App does not subscribe to `push`. `EVENTS` in `scripts/github_app_manifest.py` lists `pull_request`, `check_suite`, `check_run` and `status` only. So a push to a branch with no pull request sends no event.
 - **The board half of SW-5.** EA-13g may already draw part of the holder line. Read it at dispatch.
 - **The production flags.** This spec uses the reading of 2026-10-29. Read the env files of the box again before SW-7a and SW-10b.
 - **The read-only door.** SW-34b settled it. The path is the mode, and one token works on both paths. An MCP client usually keeps one token for each server entry (SW-34b, "As built").
