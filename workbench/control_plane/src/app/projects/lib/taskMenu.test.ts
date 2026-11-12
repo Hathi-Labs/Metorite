@@ -134,6 +134,21 @@ describe("what a right-click offers", () => {
     expect(asked).toEqual(["t1"]);
   });
 
+  it("Start focus shows only where the surface offers it, and runs focus (CC-4)", () => {
+    // Mutation, run by hand 2026-11-07: drop `when` from `task.focus` -- the
+    // first assertion fails. Mutation: `run` calls `askAgent` -- the last fails.
+    expect(ids(taskMenuItems(board()))).not.toContain("task.focus");
+    const entries = taskMenuItems(board({ canFocus: true }));
+    expect(ids(entries)).toContain("task.focus");
+    const found = entries.find((e) => e.kind === "item" && e.id === "task.focus");
+    if (found?.kind !== "item") throw new Error("not offered");
+    expect(found.label).toBe("Start focus");
+    const started: string[] = [];
+    found.run({ ...spyActions(), focus: (t) => started.push(t.id) }, board({ canFocus: true }));
+    expect(started).toEqual(["t1"]);
+    expect(taskQuickActions(board({ canFocus: true })).map((a) => a.id)).not.toContain("task.focus");
+  });
+
   it("Ask an agent is not a strip button: the strip stays four", () => {
     expect(taskQuickActions(board({ canAskAgent: true })).map((a) => a.id)).not.toContain(
       "task.askAgent",

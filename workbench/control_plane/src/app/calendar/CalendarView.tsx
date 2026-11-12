@@ -11,6 +11,7 @@
 // calendar_ai_review.md.
 
 import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
+import { useStartFocus } from "@/app/tasks/lib/focusStart";
 import { AppTopBar } from "@/components/AppTopBar";
 import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
@@ -236,7 +237,8 @@ export function CalendarView() {
   const now = useNow();
   // Focus Mode — the store-held session (F1): the room + its minimizable dock
   // live globally in AppShell now, so entering here survives navigation.
-  const enterFocusSession = useTaskStore((s) => s.enterFocusSession);
+  // CC-4: the one start door. It also moves a to-do company task to In progress.
+  const startFocusSession = useStartFocus();
   // Startup ritual (F0): the modal itself + the once-a-day offer banner. Both
   // resolve client-side from focusPrefs in an effect (localStorage isn't
   // available during SSR, and reading it in render would mismatch hydration).
@@ -768,7 +770,7 @@ export function CalendarView() {
         onComplete={completeBlock}
         onStart={(item) => {
           startFocus(item);
-          enterFocusSession(item.id);
+          void startFocusSession(item.id);
         }}
         onFillGap={() => {
           // idle gap → the Gap Filler sheet, anchored to right now
@@ -853,7 +855,7 @@ export function CalendarView() {
               onToggleOneThing={handleToggleOneThing}
               onFocusMode={(item) => {
                 if (!item.actualStart || item.actualEnd) startFocus(item);
-                enterFocusSession(item.id);
+                void startFocusSession(item.id);
               }}
               onOpen={openFocus}
               onUnschedule={unschedule}
@@ -984,7 +986,7 @@ export function CalendarView() {
             // room — the Gap Filler's zero-ceremony start (§4.5).
             if (at && Math.abs(at.getTime() - Date.now()) < 5 * 60000) {
               startFocus(t);
-              enterFocusSession(t.id);
+              void startFocusSession(t.id);
             }
           }}
           onDoNow={(t) => quickDispose(t.id, "DONE")}
