@@ -1,11 +1,11 @@
 -- ============================================================================
--- 419_apps_slug_global_key_drop.sql - drop the global slug key of an app. The
+-- 427_apps_slug_global_key_drop.sql - drop the global slug key of an app. The
 -- CONTRACT half of an expand/contract change (WS-STU A3b-2, Metorite task
 -- 2958).
 -- ============================================================================
 -- Spec: project-docs/specs/ai_studio.md §14 row A3b-2 · R1 · R5 · R6 · R8.
 -- R1: origin/main held 417 on 2026-11-12, and open PRs hold 416 (two) and 418.
--- So this file is 419. Check the number again at merge (scripts/premerge.sh).
+-- R1 re-check 2026-11-13: origin/main holds up to 426, so this file is 427. Check the number again at merge (scripts/premerge.sh).
 --
 -- What: drop `apps_slug_key`, the inline UNIQUE on `slug` alone from
 -- migration 114. After this file, only `apps_org_slug_key` on
