@@ -2007,7 +2007,11 @@ def test_r8_the_read_of_the_open_request_is_a_bounded_index_scan(rworld) -> None
             # pm_agent_runs through its key (a constraint index, which this test
             # cannot drop) in a nested loop. With the nested loop off, the plan
             # shows how pm_agent_runs itself is read, which is what this test pins.
+            # A merge join could still read pm_agent_runs in key order through the
+            # key, so it is off too. A hash join is left, and it reads the table
+            # through the one index that has a condition on it.
             c.execute(text("SET LOCAL enable_nestloop = off"))
+            c.execute(text("SET LOCAL enable_mergejoin = off"))
             lines = [
                 r[0] for r in c.execute(text(f"EXPLAIN {app_requests._OPEN_OF_CHANGE_SQL}"), params)
             ]
