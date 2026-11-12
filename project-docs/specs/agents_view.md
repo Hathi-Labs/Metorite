@@ -1,6 +1,6 @@
 # Agents: the member view in Projects (WS-AGA)
 
-**Status: ACTIVE (AGA-1, 2026-11-11). AGA-6, AGA-7 and AGA-8 are built, dark (2026-11-11). The rest is not built.** Owner answers to Q1, Q2 and Q3 are open. The text marks each recommended answer "Proposed, owner to confirm". Phase 1 starts after the owner confirms Q1 and Q3.
+**Status: ACTIVE (AGA-1, 2026-11-11). AGA-6, AGA-7 and AGA-8 are built, dark (2026-11-11). AGA-9 is built, dark: the route and the Recent runs panel. The rest is not built.** Owner answers to Q1, Q2 and Q3 are open. The text marks each recommended answer "Proposed, owner to confirm". Phase 1 starts after the owner confirms Q1 and Q3.
 
 **Verified against code on 2026-11-11 at `83e9e8b23` (`origin/main`).** Each path in §2 was read on that commit. Re-check each anchor when you dispatch a slice.
 
@@ -180,7 +180,7 @@ The epic plan gives no task number for AGA-3 and AGA-4. The owner or the next se
 | AGA-6 | 2109 | A shell manifest with no nav entry, and the flag `AGENTS_VIEW_ORGS` (empty). **Built, dark (2026-11-11).** §6.1 records the choice. | 3 | AGA-1 | The host loads the manifest. With the flag empty every route of this spec returns 404. A manifest test fences it. | STANDARD | AGENT-SAFE |
 | AGA-7 | 2110 | `GET /projects/agents/overview`: one tenant read. Per agent: name, one-line job, source (built-in, org, external), state (working, idle, waiting on a person), last run, last error in plain words. **Built, dark (2026-11-11).** §6.1 records the shape. | 3 | AGA-6, AGA-5 | R8 with two orgs and no cross-read. Built-in agents carry "shared by Metorite". Each error says what happened and the next step. It follows §4. | HIGH (tenancy) | AGENT-SAFE |
 | AGA-8 | 2111 | The section "Agents at work" in the Agents panel. It extends SW-8 and SW-51 when they land. Before they land, it is a minimal section in the same panel. | 3 | AGA-7, SW-8 | Four captures: light, compact, changed accent, beside the Projects board. It uses `src/lib/statusAccent.ts` and no local palette. The PR has a `Visual review:` line. **Built, dark (2026-11-11), owner preview pending.** §6.1 records the host. | STANDARD | AGENT-SAFE |
-| AGA-9 | 2112 | The drill-down: the last 40 runs from `agent_run`, with outcome and run time. No trace blob. | 3 | AGA-8 | A member sees only runs inside their D12 visibility. The executive-only trace stays gated. | HIGH (tenancy) | AGENT-SAFE |
+| AGA-9 | 2112 | The drill-down: the last 40 runs from `agent_run`, with outcome and run time. No trace blob. **Built, dark (2026-11-11): the route and the "Recent runs" list in each row of the Agents panel.** §6.1 records the shape. | 3 | AGA-8 | A member sees only runs inside their D12 visibility. The executive-only trace stays gated. | HIGH (tenancy) | AGENT-SAFE |
 | AGA-10 | 2113 | The chip "Waiting on a person" on each agent, linked to `/waiting` | 3 | AGA-8, AP-1b, AP-2c | The chip count equals the Waiting list count for that agent. One test. | STANDARD | AGENT-SAFE |
 | AGA-11 | 2114 | Chat tools in a new pack `agents-overview`: `agents_list`, `agent_status`, `agent_recent_runs`. Read only. Route-manifest entries for the MCP allowlist. | Later | AGA-7 | The new-chat-tool fence set passes (claim strings, pack summary, pinned tables). Each panel field is reachable from chat. | STANDARD | The code is AGENT-SAFE. The `TOOL_PACKS` line is **OWNER-GATE**: hand it over. |
 | AGA-12 | 2115 | The empty state: "No agent yet" links to Integrations, AI agents, and to the playbook prompt when PB-3 lands | Later | AGA-8 | The copy follows the failure-copy and user-facing-AI-copy rules. It names no internal agent name. | LOW | AGENT-SAFE |
@@ -226,6 +226,14 @@ The epic plan gives no task number for AGA-3 and AGA-4. The owner or the next se
   - A built-in or org agent has no `last_error` yet, because the live presence holds no error. AGA-9 reads `agent_run`.
 - **AGA-8, the host (built 2026-11-11).** The Agents panel of SW-8 and SW-51 does not exist yet. The slice adds a minimal section in Projects. A toggle "Agents" beside "Needs attention" swaps the board for the section "Agents at work", as that lens does. The read goes through the `/api/projects` relay, so no new relay exists. A 404, 401 or 403 answer draws no toggle and no section. The section is read only. The overview holds no task for an agent, so a row names none. The workbench route `/projects/agents` and the `agents_view` feature slug stay for a later slice. Files: `components/AgentsAtWork.tsx`, `lib/agentsAtWork.ts`.
   - The chat tool waits for AGA-11 (`agents_list` in `PLANNED`). The route is in no door set.
+- **AGA-9, the shape (backend built 2026-11-11).** The route is `GET /projects/agents/{agent_key}/runs` in `agent_summary.py`. It is a list of runs, not a third summary. `agent_key` is a `key` of the overview, and `parse_agent_key` checks its shape before any read.
+  - The answer holds `key`, `source`, `runs_of`, `viewer`, `runs`, `count` and `truncated`. Each run holds `id`, `state`, `started_at`, `ended_at`, `run_seconds`, `task` and `error`. It holds at most 40 runs, newest first.
+  - An outside agent reads its task runs in `pm_agent_runs` (`runs_of: task`). The read uses the `seen` text of the overview, so its count agrees with the `runs` of the overview. It leaves out a run on a task that the viewer cannot see. A task run carries the task id and its title.
+  - A built-in or org agent reads its chat runs in `agent_run`, by `agent_name` (`runs_of: chat`). An admin reads each run of the organization. A lead or a member reads only their own runs, the rule of the live presence. A chat run has no task.
+  - Only the chat fold writes `agent_run`. So a run that `agent_dispatch.py` starts on a task is not in the chat runs.
+  - No run holds the trace, the traceback, the tool list, the model or the stored error text. A failed chat run reads one fixed sentence. The trace stays executive-only at `/debug/runs/{run_id}`.
+  - Five cases answer one 404: an unknown key, a key of another organization, a key out of reach, a bad shape and the flag off. Its body names no input.
+  - Fence: `tests/unit/test_agent_runs_drilldown_r8.py`. Its table `_sees` holds §4, so a change of Q3 changes one place. The chat tool `agent_recent_runs` is in `PLANNED` for AGA-11.
 
 ---
 
@@ -239,7 +247,7 @@ Run these after the slice named. The commands are pending until the slice ships.
 | AGA-3, AGA-4 | `cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/agents src/app/inbox` |
 | AGA-5 | `bash scripts/dev_db.sh`, then `eval "$(bash scripts/dev_db.sh --export)"`, then `uv run pytest -q -p no:cacheprovider tests/unit/test_activity_feed_tenant.py tests/unit/test_cost_rollup_tenant.py` and the new R8 file |
 | AGA-6 | `uv run pytest -q -p no:cacheprovider tests/unit/test_shell_manifests.py tests/unit/test_agent_manifest.py` and `cd workbench/control_plane && npx vitest run src/lib/nav.test.ts src/lib/shell/seams.test.ts` |
-| AGA-7, AGA-9 | `uv run pytest -q -p no:cacheprovider tests/unit/test_projects_agent_focus_r8.py` and the new overview file, with the DB gate on |
+| AGA-7, AGA-9 | `uv run pytest -q -p no:cacheprovider tests/unit/test_projects_agent_focus_r8.py tests/unit/test_agents_overview_r8.py tests/unit/test_agent_runs_drilldown_r8.py`, with the DB gate on |
 | AGA-8, AGA-10, AGA-12 | `cd workbench/control_plane && npx tsc --noEmit && npx vitest run` for the panel, and the four captures |
 | AGA-11 | `uv run pytest -q -p no:cacheprovider tests/unit/test_projects_chat_coverage.py` and the new-chat-tool fence set |
 | AGA-13 to AGA-15 | `uv run pytest -q -p no:cacheprovider` for the new cost files, R8 on, and the migration ledger check |

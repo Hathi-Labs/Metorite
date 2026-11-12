@@ -249,6 +249,16 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "close_cycle": ("close the active cycle and send the unfinished tasks to the backlog",),
     # SP-8a: the contract of an epic sits in the authority pack.
     "set_epic_contract": ("set the epic contract of this epic",),
+    # WS-55 EA-18d: the authority pack holds the question tools. The phrasings are
+    # the ones of the review: none may load the plan pack alone.
+    "agent_questions": ("what agent questions wait on me?",
+                        "which questions wait on me?"),
+    "answer_agent_question": (
+        "answer the agent question: use the staging box",
+        "give my answer to the agent on the extruder task: use the staging box",
+        "the agent asked me which box to use. tell it the staging box.",
+        "reply to the agent's question: use the staging box",
+    ),
     # -- studio (STU-G1) --
     "studio_describe": ("which field types can a studio app manifest use?",),
     "studio_draft": ("draft an app manifest in AI Studio",),
@@ -379,3 +389,16 @@ def test_the_known_gaps_stay_listed_with_a_reason() -> None:
 def test_an_ordinary_turn_keeps_its_packs(words: str, slugs: tuple[str, ...]) -> None:
     """Mutation: add a bare common word to a pack -> a control gains a pack."""
     assert _chosen(words) == slugs
+
+
+def test_the_question_tools_are_routed_to_the_authority_pack_and_no_rule_refuses_them() -> None:
+    """EA-18d review. Every phrasing loads ``projects-authority``. The plan rule
+    no longer tells the model to refuse an answer. The authority pack says when
+    to use the tools, and its catalog line names agent questions."""
+    for words in REQUESTS["answer_agent_question"] + REQUESTS["agent_questions"]:
+        assert "projects-authority" in _chosen(words), words
+    plan = tp.PACKS["projects-plan"]
+    assert "Never answer a question" not in plan.rules
+    assert "answer_agent_question" in tp.PACKS["projects-authority"].rules
+    assert "agent" in tp.PACKS["projects-authority"].when
+    assert "answer to an agent" not in plan.when
