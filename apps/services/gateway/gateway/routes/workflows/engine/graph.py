@@ -19,9 +19,12 @@ separately). Fan-out from a node is allowed (parallel branches).
 
 from __future__ import annotations
 
+import re
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from acb_common.app_manifests.base import OP_PATTERN
 from acb_common.secret_shapes import KEY_SHAPES, PRIVATE_KEY_SHAPE
 from gateway.routes.workflows.engine.handlers import MAX_WAIT_SECONDS
 from gateway.routes.workflows.engine.templating import (
@@ -53,8 +56,17 @@ NODE_TYPES = frozenset(
         # which projects) lives in `pm_projects` columns, so there is nothing
         # here for `_validate_node_config` to require.
         "pm_lifecycle",
+        # STU-B2c-2d (`ai_studio.md` §3.2) — one write of an object of a Studio
+        # package. It must follow an `approval` node directly, and one approval
+        # clears at most one such node (`_validate_studio_writes`). Its config is
+        # literal: a `{{ref}}` never reaches the write.
+        "studio_write",
     }
 )
+
+#: The config keys of a ``studio_write`` node, and no other (STU-B2c-2d).
+STUDIO_WRITE_KEYS = frozenset({"package_id", "action", "data", "record_id"})
+_ACTION_ID = re.compile(OP_PATTERN)
 
 #: Node types whose outgoing edges carry branch handles.
 BRANCHING_TYPES = frozenset({"condition"})
@@ -216,6 +228,7 @@ def validate_graph(
 
     edge_keys = _validate_edges(parsed, issues)
     _validate_topology(parsed, edge_keys, triggers, issues)
+    _validate_studio_writes(parsed, edge_keys, issues)
 
     upstream = _upstream_map(parsed)
     for nid, node in parsed.nodes.items():
@@ -362,6 +375,121 @@ def _validate_topology(
                 )
 
 
+def _validate_studio_writes(
+    parsed: _Parsed,
+    edge_keys: set[tuple[str, str, str]],
+    issues: list[GraphIssue],
+) -> None:
+    """Each ``studio_write`` node follows an ``approval`` node DIRECTLY, and
+    one approval clears at most one ``studio_write`` (STU-B2c-2d).
+
+    The parked decision of the approval is the ONE approval of the write, so a
+    write two steps down, or a second write under the same approval, would run
+    on an answer that did not name it. ``runtime_gate_of`` checks the same
+    shape again at run time, because a draft run never passes this check.
+    """
+    parents: dict[str, list[str]] = {}
+    writes_of: dict[str, list[str]] = {}
+    for src, tgt, _handle in sorted(edge_keys):
+        parents.setdefault(tgt, []).append(src)
+        if _node_type(parsed.nodes[tgt]) == "studio_write":
+            writes_of.setdefault(src, []).append(tgt)
+    for nid, node in parsed.nodes.items():
+        if _node_type(node) != "studio_write":
+            continue
+        above = parents.get(nid, [])
+        if len(above) != 1 or _node_type(parsed.nodes[above[0]]) != "approval":
+            issues.append(
+                GraphIssue(
+                    "studio_write_without_approval",
+                    "a Studio write node must follow a Human approval node directly",
+                    nid,
+                )
+            )
+    for gate, writes in writes_of.items():
+        if _node_type(parsed.nodes[gate]) == "approval" and len(writes) > 1:
+            for nid in writes[1:]:
+                issues.append(
+                    GraphIssue(
+                        "approval_clears_one_write",
+                        "one Human approval clears one Studio write only — add a "
+                        "second approval node",
+                        nid,
+                    )
+                )
+
+
+def runtime_gate_of(serialized: dict[str, Any], node_id: str) -> str | None:
+    """The approval node that clears the ``studio_write`` *node_id* of a
+    compiled run-model, or None when the shape is wrong (STU-B2c-2d).
+
+    The run-time twin of :func:`_validate_studio_writes`. It reads the
+    connections of the run's own snapshot, never node input.
+    """
+    types = {str(b.get("id")): str(b.get("type") or "") for b in serialized.get("blocks") or []}
+    if types.get(node_id) != "studio_write":
+        return None
+    conns = serialized.get("connections") or []
+    above = [str(c.get("source")) for c in conns if str(c.get("target")) == node_id]
+    if len(above) != 1 or types.get(above[0]) != "approval":
+        return None
+    gate = above[0]
+    writes = [
+        c for c in conns
+        if str(c.get("source")) == gate and types.get(str(c.get("target"))) == "studio_write"
+    ]
+    return gate if len(writes) == 1 else None
+
+
+def _validate_studio_write_config(
+    nid: str, config: dict[str, Any], issues: list[GraphIssue]
+) -> None:
+    """A Studio write names a package, a declared action and literal values.
+
+    Only :data:`STUDIO_WRITE_KEYS`. ``package_id`` and ``record_id`` are UUIDs,
+    ``action`` is an action id of the manifest, and ``data`` is an object. No
+    value holds a ``{{ref}}``, so the approved write is the write that runs:
+    a trigger payload or a node output never changes it.
+    """
+    unknown = sorted(k for k in config if k not in STUDIO_WRITE_KEYS)
+    if unknown:
+        issues.append(GraphIssue(
+            "unknown_field",
+            f"Studio write node cannot set {unknown} — one of {sorted(STUDIO_WRITE_KEYS)}",
+            nid,
+        ))
+    if any("{{" in s for s in _flatten_strings(config)):
+        issues.append(GraphIssue(
+            "templated_config", "a Studio write node takes literal values only", nid,
+        ))
+    if not _is_uuid(config.get("package_id")):
+        issues.append(GraphIssue(
+            "missing_config", "Studio write node needs a package id", nid,
+        ))
+    if not isinstance(config.get("action"), str) or not _ACTION_ID.fullmatch(config["action"]):
+        issues.append(GraphIssue(
+            "missing_config", "Studio write node needs an action id of the package", nid,
+        ))
+    if "data" in config and not isinstance(config.get("data"), dict):
+        issues.append(GraphIssue(
+            "missing_config", "Studio write node data must be an object", nid,
+        ))
+    if "record_id" in config and not _is_uuid(config.get("record_id")):
+        issues.append(GraphIssue(
+            "missing_config", "Studio write node record id must be a UUID", nid,
+        ))
+
+
+def _is_uuid(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _validate_node(
     nid: str,
     node: dict[str, Any],
@@ -446,6 +574,8 @@ def _validate_node_config(
         _validate_wait_config(nid, config, issues)
     elif ntype == "pm_task":
         _validate_pm_task_config(nid, config, issues)
+    elif ntype == "studio_write":
+        _validate_studio_write_config(nid, config, issues)
 
 
 def _validate_pm_task_config(
