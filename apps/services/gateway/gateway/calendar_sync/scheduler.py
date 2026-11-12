@@ -46,7 +46,6 @@ INTERVAL_SECONDS = 60.0
 CONCURRENCY = 3
 STOP_GRACE_SECONDS = 30.0
 
-#: provider name of the row -> factory. Outlook adds its line here.
 def _google() -> CalendarProvider | None:
     from gateway.calendar_sync.google import factory
 
@@ -58,6 +57,7 @@ def _outlook() -> CalendarProvider | None:
     return factory()
 
 
+#: provider name of the row -> factory. Outlook adds its line here.
 PROVIDERS: dict[str, Callable[[], CalendarProvider | None]] = {
     "google_calendar": _google,
     "outlook_calendar": _outlook,
