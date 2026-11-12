@@ -23,13 +23,16 @@
  *
  * Each row headlines the VERIFIED host and shows the claimed name second, as
  * the consent page does (§10.5). `last_used_at` is stamped on a token issue
- * or refresh only, so the row calls it "Last token refresh".
+ * or refresh only, so the row calls it "Last token refresh". A box token
+ * (EA-19d, §10.9) is stamped on use, so its row says "Last used". A box row
+ * also carries the Box badge, the expiry colour, the new-address mark and
+ * Rotate, Rotate now and Revoke. `BoxConnect.tsx` draws those parts.
  *
  * The decisions live in `../lib/agents.ts`, fenced by `agents.test.ts`. The
  * BFF rules are in `app/api/agent-access/connections/relay.ts`.
  */
 
-import { useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 
 import { EmptyState } from "@/components/EmptyState";
 import Icon from "@/components/Icon";
@@ -43,9 +46,20 @@ import { useToast } from "@/components/ui/Toast";
 import { invalidate, put } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
+import AgentAccessPanel from "./AgentAccessPanel";
 import WaitingRequests from "./WaitingRequests";
 import { AGENT_SETUP_TEXT } from "../lib/agentSetupText";
+import { BoxBadges, BoxTokenModal, ConnectBoxButton, NewAddressMark, RevokeAllBoxes } from "./BoxConnect";
 
+import {
+  ROTATE_NOW_TIP,
+  ROTATE_TIP,
+  isBox,
+  lastUsedLabel,
+  rotateBoxToken,
+  showRevokeAll,
+  type IssuedBoxToken,
+} from "../lib/box";
 import {
   AGENT_ACCESS_KEY,
   AGENT_CAN,
@@ -60,10 +74,8 @@ import {
   agentHost,
   dayText,
   deleteSwitchHint,
-  listMine,
+  listMyAgents,
   listOrg,
-  personalText,
-  pinsText,
   readAgentAccess,
   revoke,
   revokeCopy,
@@ -72,7 +84,9 @@ import {
   shownRows,
   type AgentConnection,
   type ClientState,
+  type MyAgents,
 } from "../lib/agents";
+import { grantChips } from "../lib/changeAccess";
 
 const STATE_TONE: Record<ClientState, BadgeTone> = {
   tested: "success",
@@ -95,7 +109,7 @@ function useCopy(): (text: string, what: string) => void {
 
 // ── 1. The connect card ────────────────────────────────────────────────────
 
-function ConnectCard() {
+function ConnectCard({ onBoxMade }: { onBoxMade: () => void }) {
   const copy = useCopy();
   const [clientId, setClientId] = useState(AGENT_CLIENTS[0].id);
   const client = AGENT_CLIENTS.find((c) => c.id === clientId) ?? AGENT_CLIENTS[0];
@@ -179,6 +193,16 @@ function ConnectCard() {
             ))}
           </ol>
         </div>
+      </div>
+
+      <div
+        data-testid="agents-box-connect"
+        className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4"
+      >
+        <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+          An agent on a server with no browser? Make a box token for it instead.
+        </p>
+        <ConnectBoxButton onMade={onBoxMade} />
       </div>
 
       <div className="grid gap-4 border-t border-border pt-4 sm:grid-cols-2">
@@ -317,27 +341,42 @@ function Fact({ label, value }: { label: string; value: string }) {
   );
 }
 
-function AgentRow({
+export function AgentRow({
   row,
   showMember,
   onRevoke,
+  onChanged,
+  onRotate,
+  rotatingId,
 }: {
   row: AgentConnection;
   showMember: boolean;
+  /** The id whose rotation runs. Its Rotate buttons stay off until it ends. */
+  rotatingId?: string | null;
   onRevoke: (row: AgentConnection) => void;
+  /** Set only where the member may change the grant (their own agents, flag on). */
+  onChanged?: (row: AgentConnection) => void;
+  /** Own box rows only: the gateway rotates the member's own box and no other. */
+  onRotate?: (row: AgentConnection, now: boolean) => void;
 }) {
   const host = agentHost(row);
   const claim = agentClaim(row);
+  const chips = grantChips(row, scopeWords);
+  const [changing, setChanging] = useState(false);
+  const box = isBox(row);
+  const rotatingNow = rotatingId === row.id;
   return (
     <li
       data-testid="agent-row"
       data-agent-id={row.id}
-      className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-start sm:justify-between"
+      className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3"
     >
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
           <Icon name="Bot" size={16} className="shrink-0 text-muted-foreground" />
           <span className="truncate text-sm font-medium text-foreground">{host}</span>
+          <BoxBadges row={row} />
           {showMember ? (
             <span data-testid="agent-row-member" className="truncate text-xs text-muted-foreground">
               {row.member_email}
@@ -345,31 +384,90 @@ function AgentRow({
           ) : null}
         </div>
         {claim ? <p className="text-xs text-muted-foreground">{claim}</p> : null}
-        <div className="flex flex-wrap gap-1">
-          {scopeWords(row.scopes).map((words) => (
+        <NewAddressMark row={row} own={!showMember} />
+        <div data-testid="agent-grant-chips" className="flex flex-wrap gap-1">
+          {chips.scopes.map((words) => (
             <Badge key={words} tone="neutral">
               {words}
             </Badge>
           ))}
+          <span data-testid="chip-projects">
+            <Badge tone="neutral">{chips.projects}</Badge>
+          </span>
+          {chips.personal ? (
+            <span data-testid="chip-personal">
+              <Badge tone="neutral">Personal</Badge>
+            </span>
+          ) : null}
         </div>
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-3 lg:grid-cols-5">
-          <Fact label="Projects" value={pinsText(row.pinned_projects)} />
-          <Fact label="Personal projects" value={personalText(row.include_personal)} />
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-3">
           <Fact label="Connected" value={dayText(row.created_at)} />
-          <Fact label="Last token refresh" value={dayText(row.last_used_at)} />
+          <Fact label={lastUsedLabel(row)} value={dayText(row.last_used_at)} />
           <Fact label="Expires" value={dayText(row.expires_at)} />
         </dl>
       </div>
-      <Button
-        variant="secondary"
-        size="sm"
-        icon="Unplug"
-        className="self-start"
-        onClick={() => onRevoke(row)}
-        aria-label={`Revoke ${host}${showMember ? ` of ${row.member_email}` : ""}`}
-      >
-        Revoke
-      </Button>
+      <div className="flex shrink-0 flex-wrap items-center gap-2 self-start">
+        {onChanged ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="SlidersHorizontal"
+            selected={changing}
+            onClick={() => setChanging((open) => !open)}
+            aria-expanded={changing}
+            aria-label={`Change access for ${host}`}
+          >
+            Change access
+          </Button>
+        ) : null}
+        {box && onRotate ? (
+          <>
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="RefreshCw"
+              title={ROTATE_TIP}
+              onClick={() => onRotate(row, false)}
+              loading={rotatingNow}
+              disabled={rotatingNow}
+              aria-label={`Rotate the token of ${host}`}
+            >
+              Rotate
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="RefreshCw"
+              title={ROTATE_NOW_TIP}
+              onClick={() => onRotate(row, true)}
+              disabled={rotatingNow}
+              aria-label={`Rotate the token of ${host} now`}
+            >
+              Rotate now
+            </Button>
+          </>
+        ) : null}
+        <Button
+          variant="secondary"
+          size="sm"
+          icon="Unplug"
+          onClick={() => onRevoke(row)}
+          aria-label={`Revoke ${host}${showMember ? ` of ${row.member_email}` : ""}`}
+        >
+          Revoke
+        </Button>
+      </div>
+      </div>
+      {changing && onChanged ? (
+        <AgentAccessPanel
+          row={row}
+          onCancel={() => setChanging(false)}
+          onSaved={(next) => {
+            setChanging(false);
+            onChanged(next);
+          }}
+        />
+      ) : null}
     </li>
   );
 }
@@ -384,6 +482,10 @@ function AgentList({
   showMember,
   empty,
   onRevoke,
+  onChanged,
+  onRotate,
+  rotatingId,
+  headerAction,
 }: {
   title: string;
   testId: string;
@@ -394,13 +496,20 @@ function AgentList({
   showMember: boolean;
   empty: { message: string; hint: string };
   onRevoke: (row: AgentConnection) => void;
+  onChanged?: (row: AgentConnection) => void;
+  onRotate?: (row: AgentConnection, now: boolean) => void;
+  rotatingId?: string | null;
+  headerAction?: ReactNode;
 }) {
   const headingId = `${testId}-title`;
   return (
     <section aria-labelledby={headingId} data-testid={testId} className="flex flex-col gap-2">
-      <h2 id={headingId} className="text-sm font-semibold text-foreground">
-        {title}
-      </h2>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 id={headingId} className="text-sm font-semibold text-foreground">
+          {title}
+        </h2>
+        {headerAction}
+      </div>
       {loading ? (
         <SkeletonRows count={2} />
       ) : off ? (
@@ -412,7 +521,15 @@ function AgentList({
       ) : (
         <ul className="flex flex-col gap-2">
           {rows.map((row) => (
-            <AgentRow key={row.id} row={row} showMember={showMember} onRevoke={onRevoke} />
+            <AgentRow
+              key={row.id}
+              row={row}
+              showMember={showMember}
+              onRevoke={onRevoke}
+              onChanged={onChanged}
+              onRotate={onRotate}
+              rotatingId={rotatingId}
+            />
           ))}
         </ul>
       )}
@@ -424,15 +541,57 @@ function AgentList({
 
 export default function AgentsView({ canManageOrg }: { canManageOrg: boolean }) {
   const toast = useToast();
-  const mine = useCachedResource(MY_AGENTS_KEY, listMine);
+  const mine = useCachedResource(MY_AGENTS_KEY, listMyAgents);
   const org = useCachedResource(canManageOrg ? ORG_AGENTS_KEY : null, listOrg);
   // Ids revoked here. Their rows go at once, before the lists read again.
   const [gone, setGone] = useState<ReadonlySet<string>>(new Set());
   const [asking, setAsking] = useState<{ row: AgentConnection; admin: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
+  // Rotate now kills the old token at once, so it asks first.
+  const [rotating, setRotating] = useState<AgentConnection | null>(null);
+  // The new token of a rotation. It lives in this state until the dialog closes.
+  const [issued, setIssued] = useState<IssuedBoxToken | null>(null);
+  // The id whose rotation runs. The ref is the guard: a second click in the
+  // same tick sees it before the state paints. A second rotation would revoke
+  // the token that the first one made.
+  const [rotatingId, setRotatingId] = useState<string | null>(null);
+  const rotateLock = useRef<Set<string>>(new Set());
 
   const off = mine.data === null;
+  const changeAccess = mine.data?.changeAccess === true;
   const copy = asking ? revokeCopy(asking.row, asking.admin) : null;
+
+  async function rotate(row: AgentConnection, now: boolean): Promise<void> {
+    if (rotateLock.current.has(row.id)) return;
+    rotateLock.current.add(row.id);
+    setRotatingId(row.id);
+    setBusy(true);
+    let result: Awaited<ReturnType<typeof rotateBoxToken>>;
+    try {
+      result = await rotateBoxToken(row.id, { now });
+    } finally {
+      rotateLock.current.delete(row.id);
+      setRotatingId(null);
+      setBusy(false);
+      setRotating(null);
+    }
+    if (result.ok) {
+      setIssued(result.value);
+      invalidate(AGENTS_KEY_PREFIX);
+    } else {
+      toast.show({
+        key: `agents:rotate:${row.id}`,
+        variant: "error",
+        title: "The token was not rotated",
+        description: result.message,
+      });
+    }
+  }
+
+  function askRotate(row: AgentConnection, now: boolean): void {
+    if (now) setRotating(row);
+    else void rotate(row, false);
+  }
 
   async function confirmRevoke(): Promise<void> {
     if (!asking) return;
@@ -461,16 +620,35 @@ export default function AgentsView({ canManageOrg }: { canManageOrg: boolean }) 
     }
   }
 
+  /** A saved change: show the stored row at once, then read both lists again. */
+  function changed(next: AgentConnection): void {
+    const current = mine.data;
+    if (current) {
+      const swapped: MyAgents = {
+        ...current,
+        connections: current.connections.map((r) => (r.id === next.id ? next : r)),
+      };
+      put(MY_AGENTS_KEY, swapped);
+    }
+    toast.show({
+      key: `agents:change:${next.id}`,
+      variant: "success",
+      title: "Access changed",
+      description: `${agentHost(next)} uses the new access on its next call.`,
+    });
+    invalidate(AGENTS_KEY_PREFIX);
+  }
+
   return (
     <div data-testid="agents-view" className="flex flex-1 flex-col gap-6 overflow-y-auto p-4 sm:p-6">
-      {off ? null : <ConnectCard />}
+      {off ? null : <ConnectCard onBoxMade={() => invalidate(AGENTS_KEY_PREFIX)} />}
 
       {off ? null : <DeleteSwitchCard />}
 
       <AgentList
         title="My connected agents"
         testId="agents-mine"
-        rows={shownRows(mine.data, gone)}
+        rows={shownRows(mine.data?.connections, gone)}
         loading={mine.loading}
         error={mine.error}
         off={off}
@@ -480,6 +658,9 @@ export default function AgentsView({ canManageOrg }: { canManageOrg: boolean }) 
           hint: "Use the steps above to connect one.",
         }}
         onRevoke={(row) => setAsking({ row, admin: false })}
+        onChanged={changeAccess ? changed : undefined}
+        onRotate={askRotate}
+        rotatingId={rotatingId}
       />
 
       {canManageOrg && !off ? (
@@ -496,12 +677,36 @@ export default function AgentsView({ canManageOrg }: { canManageOrg: boolean }) 
             hint: "Each member connects their own agents.",
           }}
           onRevoke={(row) => setAsking({ row, admin: true })}
+          headerAction={
+            showRevokeAll(canManageOrg, org.data) ? (
+              <RevokeAllBoxes
+                onDone={() => {
+                  invalidate(AGENTS_KEY_PREFIX);
+                }}
+              />
+            ) : null
+          }
         />
       ) : null}
 
       {/* Last, so its arrival after a cold fetch moves nothing above it
           (re-review P3, DESIGN_SYSTEM.md M1). */}
       {off ? null : <WaitingRequests />}
+
+      <BoxTokenModal issued={issued} onClose={() => setIssued(null)} />
+
+      <ConfirmDialog
+        open={rotating !== null}
+        title="Rotate now?"
+        subject={rotating ? agentHost(rotating) : null}
+        body="The old token stops at once. The box must use the new token before it can connect again."
+        confirmLabel="Rotate now"
+        confirmVariant="destructive"
+        icon="RefreshCw"
+        busy={busy}
+        onConfirm={() => (rotating ? void rotate(rotating, true) : undefined)}
+        onCancel={() => (busy ? undefined : setRotating(null))}
+      />
 
       <ConfirmDialog
         open={asking !== null}

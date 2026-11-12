@@ -45,7 +45,14 @@ def test_the_required_topics_exist():
         "kit/team-setup",
         "kit/paste-in",
         "kit/plan-the-work",
+        "kit/skill/SKILL",
+        "kit/skill/planning",
+        "kit/skill/dispatch",
+        "kit/skill/orchestration",
+        "kit/skill/bulk-writes",
+        "kit/skill/review-and-verify",
         "start-here",
+        "default-guidance",
     }
     assert required <= slugs
 

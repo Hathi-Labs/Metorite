@@ -54,6 +54,11 @@ export const WAITING_SENTENCE = "This change waits for an approval, so it is not
 export const GONE_SENTENCE = "That record is gone. Reload the list.";
 export const UNPUBLISHED_SENTENCE = "This package has no such object yet. Publish the package first.";
 export const SIGN_IN_SENTENCE = "Your session ended. Sign in again.";
+/**
+ * J2a. A viewer reads an app that another member owns, through an install. The door
+ * refuses each write of a viewer with 403 `read_only`.
+ */
+export const READ_ONLY_SENTENCE = "You can read this app. Only its owner can change it.";
 
 /** Does `source` name a read? The only test the guard makes. */
 export function isReadSource(action: unknown): action is string {
@@ -83,6 +88,15 @@ export function verbMap(actions: readonly DeclaredAction[] | undefined): Record<
     if (!(a.uses in out)) out[a.uses] = a.id;
   }
   return out;
+}
+
+/**
+ * J2a. The actions that a viewer may use: the reads (`list` and `get`) only. A page
+ * builds the door of a viewer from them, so a write of a viewer never reaches the
+ * network, and the blocks offer no edit.
+ */
+export function readActions(actions: readonly DeclaredAction[] | undefined): DeclaredAction[] {
+  return (actions ?? []).filter((a) => !!a && typeof a.uses === "string" && READ_SOURCE.test(a.uses));
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
@@ -176,6 +190,7 @@ export function mapAnswer(status: number, body: unknown, retryAfter?: string | n
   if (status === 503) return { ok: false, message: busySentence(retryAfter) };
   if (status === 403) {
     if (d.code === "approval_required") return { ok: false, message: APPROVAL_SENTENCE };
+    if (d.code === "read_only") return { ok: false, message: READ_ONLY_SENTENCE };
     return { ok: false, message: d.code === "not_declared" ? NOT_DECLARED_SENTENCE : NOT_OPEN_SENTENCE };
   }
   if (status === 401) return { ok: false, message: SIGN_IN_SENTENCE };
@@ -305,15 +320,33 @@ export interface ObjectRow {
   fields: Array<{
     key: string; type: string; label: string | null; required: boolean; many: boolean;
     options: string[] | null; to: string | null; hot: boolean;
+    /** C13. A lines relation names the field of its line object that points back. */
+    lines?: string | null;
   }>;
   rules: Array<Record<string, unknown>>;
 }
 
+/**
+ * Who reads the package (J2a). `owner` is the member who owns it. `viewer` is a member
+ * who reads the installed version of an app that another member owns. A viewer
+ * writes nothing, deletes nothing and opens no IDE.
+ */
+export type PackageAccess = "owner" | "viewer";
+
 export interface PackageDetail {
   id: string;
   name: string;
+  access: PackageAccess;
   actions: DeclaredAction[];
   objects: ObjectRow[];
+}
+
+/**
+ * The access of a package answer. The owner's answer names no `access`. Each other
+ * value reads as a viewer, so an answer that this page does not know offers no write.
+ */
+export function packageAccess(pkg: Record<string, unknown>): PackageAccess {
+  return pkg.access === undefined || pkg.access === "owner" ? "owner" : "viewer";
 }
 
 /** The studio is off for this org (404 on each route), or the member is out. */
@@ -346,5 +379,5 @@ export async function getPackage(id: string, fetchImpl: typeof fetch = fetch): P
   const manifest = isObject(pkg.manifest) ? pkg.manifest : {};
   const objects = isObject(body) && Array.isArray(body.objects) ? (body.objects.filter(isObject) as unknown as ObjectRow[]) : [];
   const actions = Array.isArray(manifest.actions) ? (manifest.actions.filter(isObject) as unknown as DeclaredAction[]) : [];
-  return { id, name: String(pkg.name ?? ""), actions, objects };
+  return { id, name: String(pkg.name ?? ""), access: packageAccess(pkg), actions, objects };
 }

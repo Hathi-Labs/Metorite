@@ -7,9 +7,12 @@ best-effort audit + activity writers. Mirrors ``routes/tasks/core.py`` (the
 leaf module: it imports nothing from siblings).
 
 Canonical store: the ``apps`` / ``app_*`` tables from
-``infra/postgres/114_custom_apps.sql`` (RFC §4.9). App workspaces live at
-``apps_root()/{slug}`` — git-inited folders holding ``app.json`` (the
-manifest, RFC §4.1) plus the app's source files.
+``infra/postgres/114_custom_apps.sql`` (RFC §4.9). App workspaces live under
+``apps_root()`` — git-inited folders holding ``app.json`` (the
+manifest, RFC §4.1) plus the app's source files. The folder of a new app is
+``apps_root()/{app id}`` (WS-STU A3b-1). An older app keeps its folder at
+``apps_root()/{slug}``. Each reader takes the stored ``apps.workspace_path``,
+never a path that it builds from the slug.
 """
 
 from __future__ import annotations
@@ -17,16 +20,17 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Collection, Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
 from acb_auth import UserContext, UserRole, get_current_user
 from acb_common import get_logger, get_settings
+from acb_skills import safe_open
 from fastapi import APIRouter, Depends, HTTPException
 
 # The shared gateway engine (BO-10) — see the DB section below.
-from gateway.db import get_db as _get_db
+from gateway.db import get_db as _get_db  # noqa: F401
 from gateway.db import get_session_factory as _get_session_factory  # noqa: F401
 
 # The tenant-bound seam (BO-10 → MT-1c/H2). `_tenant_session` IS
@@ -84,9 +88,10 @@ DEFAULT_AI_TIER = "tier-fast"
 # This package used to build its own engine here with its own 10+20 pool. It now
 # has none: `_get_db` / `_get_session_factory` / `_tenant_session` at the top of
 # this module are re-exports of the shared seam. Since H2 the request handlers
-# acquire sessions through `_tenant_session` only; `_get_db` remains ONLY for
-# the named H4-deferred sites (`record_app_audit` below, and `actions.py`'s
-# dual-audience dispatch), which `test_db_engine_seam.py` pins by exact count.
+# acquire sessions through `_tenant_session` only. `_get_db` remains ONLY for
+# the named H4-deferred sites (`actions.py`'s dual-audience dispatch and
+# `tools.py`'s broker handler), which `test_db_engine_seam.py` pins by exact
+# count. This module opens no unbound session (task 1317).
 
 
 # ── Auth gate ────────────────────────────────────────────────────────────────
@@ -165,7 +170,7 @@ def _uid(user: UserContext | None) -> str:
 # ── Workspace root ───────────────────────────────────────────────────────────
 
 def apps_root() -> Path:
-    """The Custom Apps workspace root (one subfolder per app slug), created
+    """The Custom Apps workspace root (one subfolder per app), created
     on demand. ``CUSTOM_APPS_ROOT`` overrides; empty falls back to
     ``{agents_clone_dir}/custom_apps`` (the reboot-safe clone home)."""
     settings = get_settings()
@@ -226,13 +231,14 @@ def generate_slug(name: str, taken: Collection[str] = ()) -> str:
 
 # ── Path containment (mirrors workspace.py's _safe_resolve + blocked paths) ──
 
-def resolve_app_file(app_workspace: Path, rel: str) -> Path:
-    """Resolve *rel* inside *app_workspace* or raise 400.
+def clean_app_rel(rel: str) -> str:
+    """The clean relative path of an app file, or 400.
 
-    Refuses absolute paths, ``..`` traversal, and any dot-segment (which blocks
-    ``.git`` and dotfiles wholesale). The final ``resolve()`` follows symlinks,
-    so a link that points outside the workspace fails the containment check
-    even though its literal path looks safe.
+    No absolute path, no ``..`` and no part that starts with a dot, so
+    ``.git`` and every dotfile are refused. There is no ``resolve()``. The caller opens the
+    path through ``acb_skills.safe_open``, which refuses a link at any depth
+    (``maf_coding_engine.md`` §7.5 rule B). A sandbox container can write an
+    app dir (WS-43h), so a check that resolves and then opens is a race.
     """
     clean = (rel or "").replace("\\", "/").strip()
     if not clean or clean.startswith("/") or Path(clean).is_absolute():
@@ -240,13 +246,51 @@ def resolve_app_file(app_workspace: Path, rel: str) -> Path:
     segments = [s for s in clean.split("/") if s]
     if not segments or any(s == ".." or s.startswith(".") for s in segments):
         raise HTTPException(status_code=400, detail="Invalid path")
-    root = app_workspace.resolve()
-    resolved = (root / "/".join(segments)).resolve()
-    if resolved != root and not resolved.is_relative_to(root):
-        raise HTTPException(status_code=400, detail="Path escapes workspace")
-    if resolved == root:
-        raise HTTPException(status_code=400, detail="Invalid path")
-    return resolved
+    return "/".join(segments)
+
+
+def iter_app_files(
+    workspace: Path, keep_dir: Callable[[tuple[str, ...], str], bool],
+) -> Iterator[tuple[str, ...]]:
+    """The parts of each regular file below *workspace*, with no link followed.
+
+    The order of ``os.walk`` with sorted names: the files of a dir, then each
+    kept subdir. ``keep_dir(parent_parts, name)`` prunes a dir. A link, a
+    device, a socket and a FIFO are never listed (``safe_open.list_dir``).
+    """
+    def walk(parts: tuple[str, ...]) -> Iterator[tuple[str, ...]]:
+        try:
+            listed = safe_open.list_dir(workspace, "/".join(parts))
+        except (safe_open.UnsafePath, OSError):
+            return
+        for name, kind in listed or []:
+            if kind == "file":
+                yield (*parts, name)
+        for name, kind in listed or []:
+            if kind == "dir" and keep_dir(parts, name):
+                yield from walk((*parts, name))
+
+    yield from walk(())
+
+
+def workspace_links(workspace: Path) -> list[str]:
+    """Each symbolic link (or junction) below *workspace*, as a rel path.
+
+    It follows no link. A host process that follows links, such as the host
+    T2 build, refuses a dir that holds one.
+    """
+    import os
+
+    found: list[str] = []
+    if not workspace.is_dir() or workspace.is_symlink():
+        return found
+    for dirpath, dirnames, filenames in os.walk(workspace, followlinks=False):
+        here = Path(dirpath)
+        for name in (*dirnames, *filenames):
+            entry = here / name
+            if entry.is_symlink() or entry.is_junction():
+                found.append(entry.relative_to(workspace).as_posix())
+    return sorted(found)
 
 
 # ── Visibility predicates (pure — the tests exercise the full matrix) ────────
@@ -348,10 +392,12 @@ def default_manifest(
 def read_workspace_manifest(workspace: Path) -> dict[str, Any] | None:
     """Parse ``{workspace}/app.json``; None when missing/unparseable."""
     try:
-        raw = (workspace / "app.json").read_text(encoding="utf-8")
-        data = json.loads(raw)
+        raw = safe_open.read_bytes(workspace, "app.json", limit=MAX_SOURCE_FILE_BYTES)
+        if raw is None:
+            return None
+        data = json.loads(raw.decode("utf-8"))
         return data if isinstance(data, dict) else None
-    except (OSError, ValueError):
+    except (OSError, ValueError):  # UnsafePath is a ValueError: a link refuses
         return None
 
 
@@ -589,65 +635,27 @@ async def record_app_audit_bound(
     kind: str,
     detail: dict[str, Any] | None = None,
     app_version: int | None = None,
-) -> None:
-    """Append one ``app_audit`` row in the tenant that the request bound.
-
-    The twin of :func:`record_app_audit` for a caller in a request, such as
-    the Studio action door (STU-B2a). ``app_audit`` has FORCE RLS, so a row
-    needs a bound session. The unbound session of :func:`record_app_audit`
-    writes no row as a role without BYPASSRLS. Best-effort: it opens its own
-    ``tenant_session()``, and a failure logs and never raises. Call it after
-    the caller's own session closes, so a request holds one session at a time.
-    """
-    try:
-        async with _tenant_session() as db:
-            await db.execute(text(_APP_AUDIT_SQL), _app_audit_params(
-                app_id=app_id, user_email=user_email, kind=kind, detail=detail,
-                app_version=app_version))
-    except Exception as exc:
-        _log.warning("apps.audit_failed", kind=kind, error=str(exc)[:160])
-
-
-async def record_app_audit(
-    *,
-    app_id: str,
-    user_email: str,
-    kind: str,
-    detail: dict[str, Any] | None = None,
-    app_version: int | None = None,
     tokens_in: int = 0,
     tokens_out: int = 0,
     cost_usd: float = 0.0,
     model: str = "",
 ) -> None:
-    """Append one ``app_audit`` row. Best-effort: opens its own session so a
-    failed audit can neither raise nor poison the caller's transaction.
+    """Append one ``app_audit`` row in the tenant that the request bound.
 
-    ⚠️ H4, DELIBERATELY NOT H2 (`saas_multitenancy_handover.md`): this helper
-    is reached from OUTSIDE any request — `actions.execute_app_action` audits
-    every dispatch, and the orchestrator's agent tools call that function
-    in-process during an agent run with no request and no bound tenant
-    (`orchestrator/app_tools.py`). Converting this site to the ambient
-    `tenant_session()` would raise `TenantUnbound` there, and this except-all
-    wrapper would then silently DROP the audit row — a security trail. It
-    stays on the unbound `get_db()` until H4 threads the explicit tenant (the
-    app row's organization, resolvable from ``app_id``) through the call —
-    `tenant_session(org_id)`. The H2 ratchet in `test_db_engine_seam.py`
-    carries this site as a named, counted exemption.
+    The audit writer of every request handler in ``routes/apps`` and of the
+    Studio action door (STU-B2a). ``app_audit`` has FORCE RLS, so a row needs
+    a bound session. An unbound session writes no row as a role without
+    BYPASSRLS (task 1317 removed the old unbound writer). Best-effort: it
+    opens its own ``tenant_session()``, and a failure logs and never raises.
+    Call it after the caller's own session closes, so a request holds one
+    session at a time. Fence: ``test_app_audit_bound_r8.py``.
     """
     try:
-        db = await _get_db()
-        try:
-            await db.execute(
-                text(_APP_AUDIT_SQL),
-                _app_audit_params(
-                    app_id=app_id, user_email=user_email, kind=kind, detail=detail,
-                    app_version=app_version, tokens_in=tokens_in,
-                    tokens_out=tokens_out, cost_usd=cost_usd, model=model),
-            )
-            await db.commit()
-        finally:
-            await db.close()
+        async with _tenant_session() as db:
+            await db.execute(text(_APP_AUDIT_SQL), _app_audit_params(
+                app_id=app_id, user_email=user_email, kind=kind, detail=detail,
+                app_version=app_version, tokens_in=tokens_in,
+                tokens_out=tokens_out, cost_usd=cost_usd, model=model))
     except Exception as exc:
         _log.warning("apps.audit_failed", kind=kind, error=str(exc)[:160])
 

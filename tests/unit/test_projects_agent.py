@@ -180,8 +180,16 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "project_access": [{"project_id": UUID}],
     # WS-ALN ALN-4 — the pins of a project, and its removed pins
     "project_authorities": [{"project_id": UUID}, {"project_id": UUID, "include_removed": True}],
+    # WS-39 LP-1a — the updates of a project, and an older page of them
+    "list_project_updates": [{"project_id": UUID},
+                             {"project_id": UUID, "limit": 2, "before": UUID}],
+    # WS-39 SP-5a — the cycles of a node, and one cycle with a page of its tasks
+    "list_cycles": [{"project_id": UUID}, {"project_id": UUID, "limit": 1, "offset": 1}],
+    "cycle_detail": [{"cycle_id": UUID}, {"cycle_id": UUID, "limit": 1}],
     # WS-ALN ALN-2a — the member's own open decisions
     "my_decisions": [{}],
+    # WS-39 TPL-1a — the templates of the organization
+    "list_templates": [{}],
     "project_views": [{"project_id": UUID}],
     "calendar": [
         {"start": "2026-09-22", "end": "2026-09-29", "project_id": UUID},
@@ -205,6 +213,8 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "rebalance": [{"project_id": UUID, "horizon_days": 21}, {}],
     # S7c — conflicts
     "find_conflicts": [{"project_id": UUID, "horizon_days": 21}, {}],
+    # SP-12 — the order of work under one task
+    "get_plan": [{"root_task_id": UUID}],
     # S7e — on-the-fly analysis: the table, and the server's groups.
     "task_dataset": [
         {"project_id": UUID, "state": "closed", "tags": "bug"},
@@ -626,6 +636,19 @@ def _detail_responder(call: dict) -> Any:
             "energy": None,
             "is_triaged": True,
         }
+    # WS-39 SP-5a: the cycles of a node, and one cycle.
+    if path.startswith("/projects/nodes/") and path.endswith("/cycles"):
+        return {"project_id": UUID, "cycles": [
+            {"id": UUID, "project_id": UUID, "name": "Sprint 7", "state": "planned",
+             "starts_on": "2026-11-16", "ends_on": "2026-11-27", "goal": "Ship", "tasks": 2,
+             "hidden": 0}]}
+    if path.startswith("/projects/cycles/") and path.count("/") == 3:
+        return {"cycle": {"id": UUID, "project_id": UUID, "name": "Sprint 7", "state": "planned",
+                          "starts_on": "2026-11-16", "ends_on": "2026-11-27", "goal": "Ship"},
+                "tasks": [{"id": UUID, "task_number": 7, "title": "Fix the extruder",
+                           "status_name": "To do", "status_category": "todo",
+                           "estimate_mins": 60, "archived": False}],
+                "hidden": 0, "committed": None, "capacity": []}
     if path.startswith("/projects/nodes/") and path.endswith("/summary"):
         return {
             "id": UUID,
@@ -638,6 +661,14 @@ def _detail_responder(call: dict) -> Any:
             "own": {"tasks": 3, "overdue": 1},
             "children": [],
         }
+    if path == "/projects/assigned-to-me":
+        # SW-68a: one row, so `my_work` reaches the plan order route.
+        return {"rows": [{"id": UUID, "title": "Fix the extruder", "task_number": 7,
+                          "status_id": "s1", "root_project_id": UUID}], "total": 1}
+    if path == "/projects/plan/order":
+        return {"order": [UUID], "plan": {UUID: {
+            "epic_id": UUID, "ready": False, "slack_mins": 0,
+            "blocked_by": [], "blocked_by_hidden": 1}}}
     return empty_list(call)
 
 

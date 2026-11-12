@@ -3,6 +3,11 @@
 Test runs of the unpublished draft compile on the fly (``draft: true``) so the
 editor's "Test ▸" loop needs no publish; real triggers always execute the
 published version.
+
+A test run of the draft is authoring, so it also needs ``feature:studio``
+where ``WORKFLOW_STUDIO_GATE_ORGS`` holds the org (STU-J1-3,
+``core.check_author``). A run of the published version is use, and the router
+gate alone decides it (owner rule 1, task 1818).
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from gateway.routes.workflows.core import (
     MAX_RUNS_PAGE,
     _tenant_session,
     _uid,
+    check_author,
     iso,
     load_workflow_or_404,
     parse_jsonb,
@@ -48,6 +54,9 @@ async def run_workflow(
     body: RunRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
+    if body.draft:
+        # Before the session: a refused caller learns nothing of the workflow.
+        await check_author(user)
     async with _tenant_session() as db:
         row = await load_workflow_or_404(db, workflow_id)
         if body.draft:

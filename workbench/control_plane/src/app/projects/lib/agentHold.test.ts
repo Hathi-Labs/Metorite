@@ -17,11 +17,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   OPEN_RUN_STATUSES,
+  RELEASE_ADMIN_PERMISSION,
   RELEASE_COPY,
   STALE_HOLD_TEXT,
   canReleaseRun,
   heldByLine,
   releaseBody,
+  runHolderFree,
 } from "./agentRuns";
 
 const run = {
@@ -101,12 +103,33 @@ describe("AgentRunPanel", () => {
   it("draws the held-by line, the stale word and a Release behind a confirm", () => {
     expect(source).toContain("data-agent-held-by");
     expect(source).toContain("heldByLine(run, personLabels)");
-    expect(source).toContain("run.lease_expired");
+    expect(source).toContain("runHolderFree(run)");
+    expect(source).not.toContain("run.lease_expired");
     expect(source).toContain("STALE_HOLD_TEXT");
     expect(source).toContain("data-agent-release");
     expect(source).toContain("agentRunsApi.release(");
     // The control opens the confirm. It never calls the route itself.
     expect(source).toMatch(/onClick=\{\(\) => setConfirmRelease\(true\)\}/);
     expect(source).toMatch(/onConfirm=\{\(\) => void release\(\)\}/);
+  });
+
+  it("offers Release to an admin by the release permission, not is_admin (H-409 item 2)", () => {
+    // `is_admin` is `admin:members:read`, which a manager holds. Ending the
+    // run of another member is a write, so the panel reads the slug that the
+    // gateway reads. The Python fence holds the two slugs equal.
+    expect(RELEASE_ADMIN_PERMISSION).toBe("admin:members:manage");
+    expect(source).toContain("isAdmin: hasCapability(access, RELEASE_ADMIN_PERMISSION)");
+    expect(source).not.toContain("access.is_admin");
+  });
+});
+
+describe("runHolderFree (SW-4)", () => {
+  it("reads the server holder-free answer, so a dead connection reads free", () => {
+    expect(runHolderFree({ holder_free: true, lease_expired: false })).toBe(true);
+    expect(runHolderFree({ holder_free: false, lease_expired: true })).toBe(false);
+  });
+  it("falls back to lease_expired for a gateway before SW-4", () => {
+    expect(runHolderFree({ lease_expired: true })).toBe(true);
+    expect(runHolderFree({})).toBe(false);
   });
 });

@@ -87,11 +87,13 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "tool_scope: web access, file writing & generative UI, task "
             "tracking, HITL questions, diagnostics, working notes, the "
             "coding skill, inter-agent delegation, fast typed "
-            "decisions (decide, WS-31 CP-13d), and the text of a chat "
-            "attachment (read_attachment, H-229). Not toggleable "
+            "decisions (decide, WS-31 CP-13d), the text of a chat "
+            "attachment (read_attachment, H-229), and a look at an "
+            "attached image (analyze_image, WS-VOX VOX-3). Not toggleable "
             "(skills_registry.md rule 2)."
         ),
         "tools": (
+            "analyze_image",
             "ask_questions",
             "call_agent",
             "call_agent_background",
@@ -414,7 +416,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "Work the CRM records: find a lead, deal or contact, read the "
             "pipeline and a record, read its timeline, create a lead, move "
             "a deal, log an activity, convert a lead, read who changed "
-            "the CRM set-up and create a deal pipeline."
+            "the CRM set-up and create a deal or lead pipeline."
         ),
         "description": (
             "A tool pack: the CRM Assistant's own tools for daily record "
@@ -422,7 +424,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "the tools to search, read the pipeline, open a record and its "
             "timeline, search notes, create a lead, move a deal, log an "
             "activity and convert a lead. It also reads the Change history "
-            "of the CRM set-up, and an admin can create a deal pipeline. "
+            "of the CRM set-up, and an admin can create a deal or a lead "
+            "pipeline. "
             "Each write asks the member first. "
             "A run loads a pack only where tool packs are on, so until then "
             "this switch has no effect."
@@ -433,6 +436,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             # WS-CRM CRM-M1: the read of the Change history of the CRM set-up.
             "crm_change_history",
             # WS-CRM CRM-M3a: a new deal pipeline, on one card (admin only).
+            # CRM-M4a: the same tool makes a lead pipeline (kind="lead").
             "crm_create_pipeline",
             "crm_search_notes",
             "crm_update_record",
@@ -516,7 +520,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "It holds the five analytics reads, the team's capacity, who "
             "fits a task, plan conflicts, the task table, the "
             "timeline, a plan from a goal, links between tasks, repeat "
-            "rules, and a new project with its settings. The reports are in "
+            "rules, and a new project with its settings. It also lists the "
+            "agent requests that wait for the member, and it takes back or "
+            "changes the member's answer to an agent. The reports are in "
             "projects-reports. A run loads a pack "
             "only where tool packs are on, so until then this switch has no "
             "effect."
@@ -528,10 +534,15 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "analytics_outlook",
             "analytics_stuck",
             "analytics_throughput",
+            # SW-43c: the member takes back or changes an answer to an agent,
+            # beside the list of the agent requests. It takes the last room of
+            # the pack in the sticky-pack case (test_projects_packs.py).
+            "change_agent_answer",
             "create_project",
             "edit_project",
             "find_conflicts",
             "fit_for_task",
+            "get_plan",
             "link_tasks",
             "link_tasks_batch",
             "needs_attention",
@@ -556,18 +567,20 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "Projects structure",
         "summary": (
             "Shape a project: the statuses, types, fields and tags, who can "
-            "see a project, saved views and watchers."
+            "see a project, saved views, watchers and project templates."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools to shape a "
             "project, for the main assistant to load when a turn needs "
             "them. It holds the tools for statuses, task types, fields and "
-            "tags, who can see a project, saved views and watchers. "
+            "tags, who can see a project, saved views, watchers and the "
+            "project templates of the organization. "
             "A run loads a pack only where tool packs are on, so until "
             "then this switch has no effect."
         ),
         "tools": (
             "create_field",
+            "create_project_from_template",
             "create_status",
             "create_tag",
             "create_tags",
@@ -579,10 +592,12 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "delete_type",
             "delete_view",
             "grant_access",
+            "list_templates",
             "merge_tags",
             "project_access",
             "project_views",
             "revoke_access",
+            "save_as_template",
             "save_view",
             "set_status_set",
             "show_view",
@@ -722,25 +737,36 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     },
     # WS-ALN ALN-4: the authority page of a project. It has its own pack, because
     # the reminders and bulk packs must fit under MAX_REQUEST_TOOLS in their
-    # measured turns.
+    # measured turns. WS-39 LP-1a adds the two tools of a project update here,
+    # for the same reason: the reports pack fills the room of a measured turn.
+    # SP-8a: the contract of an epic joins it too. The plan pack has one tool
+    # of room in the sticky-pack case of test_pack_room.py.
     "projects-authority": {
-        "label": "Projects authority page",
+        "label": "Projects authority page and updates",
         "summary": (
-            "The authority page of a project: read which pages are pinned "
-            "as the rules of the project, pin one, or remove a pin."
+            "The authority page and the updates of a project, and the "
+            "contract of an epic: read the pinned pages, pin or unpin one, "
+            "read, post or delete an update, and set the contract of an epic."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for the "
-            "authority page of a project, for the main assistant to load "
-            "when a turn names the authority page. The pack holds the tools "
-            "to read the pins of a project, to pin a page and to remove a "
-            "pin. Each change asks the member first. A run loads a pack "
-            "only where tool packs are on, so until then this switch has "
-            "no effect."
+            "authority page and the updates of a project, for the main "
+            "assistant to load when a turn names them. The pack holds the "
+            "tools to read the pins of a project, to pin a page and to "
+            "remove a pin. It also holds the tools to read the updates of a "
+            "project, to post one with the health that the member picks, and "
+            "to delete one, and the tool that sets the contract of an epic. "
+            "Each change asks the member first. A run loads a pack only "
+            "where tool packs are on, so until then this switch has no "
+            "effect."
         ),
         "tools": (
+            "delete_project_update",
+            "list_project_updates",
             "pin_authority",
+            "post_project_update",
             "project_authorities",
+            "set_epic_contract",
             "unpin_authority",
         ),
         "owner": "projects-assistant",
@@ -748,7 +774,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
-    # CAL-1a (task 1675): the day planner, for the main chat. The ten tools are
+    # CAL-1a (task 1675): the day planner, for the main chat. The tools are
     # the My Tasks planner and calendar settings tools (skill_my_tasks.core). The Projects assistant
     # builds them in `_agent_tools()` only, so the specialist's own tool list and
     # `skill_projects.__all__` stay as they were. The pack follows `projects`
@@ -757,7 +783,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "Calendar day planner",
         "summary": (
             "The member's day: rebuild it, plan what is left, roll over, "
-            "set the One Thing, block or release time, and read or change the calendar settings."
+            "set the One Thing, block or release time, read or change the calendar settings, and keep the day rules."
         ),
         "description": (
             "A tool pack: the day planner, for the main assistant to load "
@@ -765,21 +791,58 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "\"I fell behind\". The pack holds the tools to propose and apply "
             "a plan of the day, to fit what is left, to roll over unfinished "
             "work, to read the digest of the day, to set the One Thing, and to "
-            "block, release and read the schedule. It also holds the tools to read and change the calendar settings: the standing instruction, the working hours, the capacity, the lunch window, the energy windows and auto rollover. A plan is proposed first "
+            "block, release and read the schedule. It also holds the tools to read and change the calendar settings: the standing instruction, the working hours, the capacity, the lunch window, the energy windows and auto rollover. It holds four tools for the day rules too: list, add, edit and delete a recurring focus window or block. Two tools run the day flows in one reply, start my day and close my day: they propose and change nothing. A plan is proposed first "
             "and applied after the member agrees. A run loads a pack only "
             "where tool packs are on, so until then this switch has no effect."
         ),
         "tools": (
+            "my_tasks_add_day_rule",
+            "my_tasks_close_my_day",
             "my_tasks_day_digest",
+            "my_tasks_delete_day_rule",
+            "my_tasks_edit_day_rule",
             "my_tasks_get_calendar_settings",
+            "my_tasks_list_day_rules",
             "my_tasks_list_schedule",
             "my_tasks_plan_day",
             "my_tasks_replan_day",
             "my_tasks_rollover",
             "my_tasks_schedule",
             "my_tasks_set_one_thing",
+            "my_tasks_start_my_day",
             "my_tasks_unschedule",
             "my_tasks_update_calendar_settings",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # WS-39 SP-5a (task 964): the cycles (sprints) of a project. Own pack, because
+    # the other Projects packs are full in their measured turns.
+    "projects-cycles": {
+        "label": "Projects cycles",
+        "summary": (
+            "The cycles (sprints) of a project: list them, read one, plan one, "
+            "add or remove tasks, then start or close it."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools for the cycles "
+            "of a project, for the main assistant to load when a turn names "
+            "a cycle or a sprint. The pack holds the tools to list the "
+            "cycles of a project and to read one with its tasks. It also "
+            "holds the tools to plan a cycle, to add tasks to it or take "
+            "them out, to start it and to close it. Each change asks the "
+            "member first. A run loads a pack only where tool packs are on, "
+            "so until then this switch has no effect."
+        ),
+        "tools": (
+            "close_cycle",
+            "create_cycle",
+            "cycle_detail",
+            "list_cycles",
+            "plan_cycle",
+            "start_cycle",
         ),
         "owner": "projects-assistant",
         "core": False,

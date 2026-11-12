@@ -37,8 +37,16 @@ import {
   listQuery,
   queryString,
 } from "./filters";
-import type { NewPipelineDraft } from "./newPipeline";
+import type { NewPipelineDraft, PipelineKind } from "./newPipeline";
 import type { SettingsDraft, VocabularyState } from "./settings";
+
+/** The New pipeline dialog of CRM settings (CRM-M3a), and its kind (CRM-M4a). */
+export type NewPipelineState = {
+  open: boolean;
+  draft: NewPipelineDraft | null;
+  /** `lead` for a lead pipeline. Absent or `deal`: a deal pipeline. */
+  kind?: PipelineKind;
+};
 import { cardSortQuery, type CardSort } from "./nextActivity";
 import {
   applyPatches,
@@ -163,10 +171,11 @@ type CrmState = {
   /**
    * WS-CRM CRM-M3a: the New pipeline dialog, open or shut, and its draft. In
    * the store, because the page mounts another tree at the phone width, and
-   * the dialog must stay open with what the member typed.
+   * the dialog must stay open with what the member typed. CRM-M4a: `kind`
+   * says which pipeline the one dialog makes. Absent: a deal pipeline.
    */
-  newPipeline: { open: boolean; draft: NewPipelineDraft | null };
-  setNewPipeline: (next: Partial<{ open: boolean; draft: NewPipelineDraft | null }>) => void;
+  newPipeline: NewPipelineState;
+  setNewPipeline: (next: Partial<NewPipelineState>) => void;
   /**
    * The view the visible collection was loaded for.
    *

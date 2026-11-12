@@ -103,7 +103,8 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
     assert sf.pack_slugs() == (
         "email", "email-setup", "crm-records",
         "projects", "projects-plan", "projects-structure", "projects-bulk",
-        "projects-reminders", "projects-reports", "projects-authority", "calendar-day", "studio",
+        "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
+        "projects-cycles", "studio",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -273,7 +274,8 @@ PRODUCTION_TOOL_PACKS = (
     "email,email-setup,crm-records,projects,projects-plan,projects-structure,"
     "projects-bulk,projects-reminders")
 #: The packs of ``tool_packs.FOLLOWS``: each is on wherever its parent is on.
-FOLLOWERS = frozenset({"projects-reports", "projects-authority", "calendar-day"})
+FOLLOWERS = frozenset({"projects-reports", "projects-authority", "projects-cycles",
+                       "calendar-day"})
 
 
 def test_a_following_pack_is_on_wherever_its_parent_is_on(_flag) -> None:
@@ -317,6 +319,7 @@ def test_each_following_pack_has_a_parent_of_its_own_owner() -> None:
     Mutation: name a slug that is no pack, or a pack of another owner -> red."""
     assert tp.FOLLOWS == {"projects-reports": "projects-plan",
                           "projects-authority": "projects",
+                          "projects-cycles": "projects",  # WS-39 SP-5a
                           "calendar-day": "projects"}
     assert set(tp.FOLLOWS) == FOLLOWERS
     for follower, parent in tp.FOLLOWS.items():
@@ -332,7 +335,8 @@ def test_with_followers_adds_each_following_pack_of_a_parent_and_nothing_else() 
     the slugs as they are -> a disabled parent leaves its following pack on
     -> red."""
     assert tp.with_followers({"projects-plan"}) == {"projects-plan", "projects-reports"}
-    assert tp.with_followers({"projects"}) == {"projects", "projects-authority", "calendar-day"}
+    assert tp.with_followers({"projects"}) == {
+        "projects", "projects-authority", "projects-cycles", "calendar-day"}
     assert tp.with_followers({"projects-reports"}) == {"projects-reports"}
     assert tp.with_followers({"email", "memory"}) == {"email", "memory"}
     assert tp.with_followers(()) == frozenset()
@@ -885,9 +889,14 @@ def test_the_studio_rules_tell_the_dark_and_the_lit_record_writes() -> None:
         "studio_record_create adds a record, studio_record_update changes one, and "
         "studio_record_delete deletes one.",
         "each asks the member first. The first call saves nothing.",
-        "the member approves or declines the change in Integrations, AI agents, Waiting for you.",
-        "call the same tool again with the same package id, the same object name and that "
-        "request_id. Send no data again",
+        # STU-B2c-2c fix round 1: the card of the web chat first, the list of
+        # Integrations in a channel with no card, and the resend by the id alone.
+        "In the web chat, the approval card shows under your reply, so ask the member to "
+        "answer it there.",
+        "In a channel with no card, the member approves or declines the change in "
+        "Integrations, AI agents, Waiting for you.",
+        "call the same tool again with only that request_id. Send no package id, no object "
+        "name and no data again",
         "Only a result with saved true is saved. Never say that a change is saved before that.",
         "A declined change wrote nothing. Say so.",
     )

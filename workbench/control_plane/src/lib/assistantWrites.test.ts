@@ -8,13 +8,17 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { APP_REQUESTS_KEY, requestKey } from "@/app/integrations/lib/appRequests";
 import { LIVE_PANES } from "@/lib/nav";
 import { PLACEMENT } from "@/lib/chatPlacement";
+import { clearAll, peek, put } from "@/lib/dataCache";
+import { STUDIO_CARD_TOOLS } from "@/lib/studio/studioCardState";
 
 import {
   APPS_WITHOUT_WRITE_TOOLS,
   APPS_WITH_WRITE_TOOLS,
   ASSISTANT_WROTE_EVENT,
+  STUDIO_RECORD_WRITES,
   appsForWrite,
   eventNamesApp,
   noteToolEnd,
@@ -222,5 +226,46 @@ describe("every live app with write tools is wired (the fence for #124)", () => 
 
   it("the old path stays: Projects still hears a receipt card", () => {
     expect(read("lib/liveRefresh.ts")).toContain("PROJECTS_CHANGED_EVENT");
+  });
+});
+
+describe("a record write of Mira reads the approval cards again (STU-B2c-2c)", () => {
+  // The re-review's P3: after a saved resend, the card still showed
+  // "Approved" and "Tell the assistant" until the window took focus. The
+  // write seam now drops the cached request reads, so each card reads its
+  // request again. Mutation: drop the invalidate in announceAssistantWrite ->
+  // the first case goes red.
+  const RID = "5b1e3c2a-7d4f-4a6b-9c8d-0e1f2a3b4c5d";
+  const seed = () => {
+    clearAll();
+    put(requestKey(RID), { request_id: RID, state: "approved" });
+    put(APP_REQUESTS_KEY, { rows: [], more: 0 });
+  };
+
+  it("names the three record writes that the card draws", () => {
+    expect([...STUDIO_RECORD_WRITES].sort()).toEqual([...STUDIO_CARD_TOOLS].sort());
+    expect(requestKey(RID).startsWith(APP_REQUESTS_KEY)).toBe(true);
+  });
+
+  it("a saved resend drops the read of each request and of the list", () => {
+    for (const tool of STUDIO_CARD_TOOLS) {
+      seed();
+      noteToolStart(`w-${tool}`, tool);
+      expect(noteToolEnd(`w-${tool}`, undefined, true)).toEqual(["studio"]);
+      expect(peek(requestKey(RID)), tool).toBeUndefined();
+      expect(peek(APP_REQUESTS_KEY), tool).toBeUndefined();
+    }
+    clearAll();
+  });
+
+  it("a read, another studio write and a failed call keep the reads", () => {
+    for (const [tool, ok] of [["studio_record_list", true], ["studio_save", true],
+      ["studio_record_create", false]] as const) {
+      seed();
+      noteToolStart(`r-${tool}`, tool);
+      noteToolEnd(`r-${tool}`, undefined, ok);
+      expect(peek(requestKey(RID)), tool).toBeDefined();
+    }
+    clearAll();
   });
 });

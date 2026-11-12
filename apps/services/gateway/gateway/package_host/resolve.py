@@ -20,8 +20,10 @@ PKG-5b row of §10. The route is ``GET /shell/manifest`` in
    holds ``key``, ``source`` ``system``, ``install_id`` None, ``needs_setup``
    False, ``feature`` and ``package``, and no payload.
 2. An install shows only when it is ``active``, its ``ends_at`` is NULL or
-   in the future, and its app is a Studio package that is not archived. An
-   ``org`` install shows to each member. A ``group`` install shows to a
+   in the future, and its app is a Studio package that is not archived.
+   This read hides an install at its ``ends_at`` with no write. So
+   ``store.expire_due`` (PKG-10a) only archives it later, and never has to
+   hide it. An ``org`` install shows to each member. A ``group`` install shows to a
    member of the group, by ``routes/crm/access.my_groups``, the one group
    read. A private install shows to its owner, and to each grantee by
    :data:`gateway.package_host.sharing.SHARE_ROW`. A draft (``version``
@@ -61,6 +63,11 @@ route sends it as the ETag.
 Fences: ``tests/unit/test_package_host_resolve.py`` (the pure part, with no
 database) and ``tests/unit/test_package_host_resolve_r8.py`` (a real
 database, FORCE RLS, two orgs).
+
+**PKG-7.** :func:`install_feature_slugs` reads the feature slugs of the
+install claims, and ``/auth/me`` adds them to its lists. Fences:
+``tests/unit/test_auth_me_features.py`` and
+``tests/unit/test_auth_me_install_features_r8.py``.
 """
 
 from __future__ import annotations
@@ -102,6 +109,8 @@ class InstallRow:
 
     ``manifest`` is the manifest of the installed version, or of the app for
     a draft. It can be any JSON value, and the needs check reads it.
+    ``version`` is the installed version, and None for a draft. The viewer
+    read of ``viewer.py`` (WS-STU J2a) reads it.
     """
 
     id: str
@@ -110,6 +119,7 @@ class InstallRow:
     scope_subject: str
     created_at: datetime
     manifest: Any
+    version: int | None = None
 
 
 @dataclass(frozen=True)
@@ -299,6 +309,53 @@ def manifest_body(contributions: Mapping[str, Any]) -> dict[str, Any]:
     return {"version": version_of(contributions), "contributions": dict(contributions)}
 
 
+def install_feature_slugs(resolved: Mapping[str, Any]) -> list[str]:
+    """The ``payload.feature`` slugs of the install claims in *resolved*
+    (WS-PKG PKG-7, ``package_host.md`` §10).
+
+    *resolved* is the answer of :func:`resolve_for`. ``/auth/me`` adds these
+    slugs to the system slugs, and the access set of the member then puts
+    each slug in ``features`` or in ``features_denied``. So this list grants
+    nothing.
+
+    Each slug shows once, in the order of the points and their entries. A
+    system entry adds nothing, because its feature is a system slug. A slug
+    that is not text is dropped. A slug is also dropped when
+    ``feature:<slug>`` fails ``validate_permission``, when the check changes
+    it (upper case or a space), or when it is a wildcard or holds a colon.
+    So a claim cannot widen the vocabulary of permissions.
+    """
+    from acb_auth.permissions import (
+        InvalidPermission,
+        feature_permission,
+        validate_permission,
+    )
+
+    out: list[str] = []
+    points = resolved.get("contributions") if isinstance(resolved, Mapping) else None
+    if not isinstance(points, Mapping):
+        return out
+    for entries in points.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, Mapping) or entry.get("source") == "system":
+                continue
+            slug = entry.get("feature")
+            if not isinstance(slug, str) or not slug or slug in out:
+                continue
+            if "*" in slug or ":" in slug:
+                continue
+            perm = feature_permission(slug)
+            try:
+                if validate_permission(perm) != perm:
+                    continue
+            except InvalidPermission:
+                continue
+            out.append(slug)
+    return out
+
+
 def etag_matches(if_none_match: str | None, version: str) -> bool:
     """True when the ``If-None-Match`` header names *version*, or is ``*``.
 
@@ -328,7 +385,8 @@ INSTALLS_SQL = (
     "SELECT CAST(package_install.id AS text), CAST(package_install.app_id AS text),"
     " package_install.scope_kind, package_install.scope_subject,"
     " package_install.created_at,"
-    " CASE WHEN package_install.version IS NULL THEN a.manifest ELSE v.manifest END"
+    " CASE WHEN package_install.version IS NULL THEN a.manifest ELSE v.manifest END,"
+    " package_install.version"
     " FROM package_install"
     " JOIN apps AS a ON a.organization_id = package_install.organization_id"
     " AND a.id = package_install.app_id"
@@ -369,7 +427,8 @@ async def read_installs(db: Any, viewer: str, groups: Sequence[str]) -> list[Ins
     rows = (await db.execute(text(INSTALLS_SQL), {
         "viewer": viewer, "groups": list(groups)})).all()
     return [InstallRow(id=str(r[0]), app_id=str(r[1]), scope_kind=str(r[2]),
-                       scope_subject=str(r[3]), created_at=r[4], manifest=r[5])
+                       scope_subject=str(r[3]), created_at=r[4], manifest=r[5],
+                       version=None if r[6] is None else int(r[6]))
             for r in rows]
 
 
@@ -382,6 +441,22 @@ async def read_claims(db: Any, install_ids: Sequence[str]) -> list[ClaimRow]:
                      payload=r[3], position=int(r[4])) for r in rows]
 
 
+async def visible_installs(db: Any, *, viewer: str) -> list[InstallRow]:
+    """The one install of each app that *viewer* sees (step 2 and the rule of
+    one app). :func:`resolve_for` and the viewer read of ``viewer.py`` (WS-STU
+    J2a) both call it, so one rule decides which installs a member sees.
+
+    *db* is a session that the caller opened with ``tenant_session()``.
+    *viewer* is the address of the session member, never request input.
+    """
+    # A lazy import: the CRM package is large, and the gateway loads it first.
+    from gateway.routes.crm.access import my_groups
+
+    member = (viewer or "").strip().lower()
+    groups = sorted(await my_groups(db, member)) if member else []
+    return widest_per_app(await read_installs(db, member, groups))
+
+
 async def resolve_for(db: Any, *, viewer: str, can_use: CanUse) -> dict[str, Any]:
     """The answer of ``GET /shell/manifest`` for *viewer*.
 
@@ -389,11 +464,6 @@ async def resolve_for(db: Any, *, viewer: str, can_use: CanUse) -> dict[str, Any
     *viewer* is the address of the session member, never request input.
     *can_use* is ``user.can_use_feature`` of that member.
     """
-    # A lazy import: the CRM package is large, and the gateway loads it first.
-    from gateway.routes.crm.access import my_groups
-
-    member = (viewer or "").strip().lower()
-    groups = sorted(await my_groups(db, member)) if member else []
-    kept = widest_per_app(await read_installs(db, member, groups))
+    kept = await visible_installs(db, viewer=viewer)
     claims = await read_claims(db, [i.id for i in kept])
     return manifest_body(resolve(system_contributions(), kept, claims, can_use))

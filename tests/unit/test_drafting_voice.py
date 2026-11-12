@@ -132,12 +132,15 @@ MACHINE_SITES: dict[str, str] = {
     GW + "email/automation/learning.py::_ai_confirms_sender_pattern._old": "yes or no",
     GW + "email/automation/replyzero.py::_llm_determine_thread_status._old": "thread status",
     GW + "notes/copilot.py::_decide": "act or stay silent, as JSON",
-    GW + "tasks/ai.py::_find_parent_task": "an index",
+    GW + "tasks/ai.py::_llm_parent_check": "an index",
     GW + "tasks/ai.py::_llm_enrich": "enum and assignee fields",
     ORC + "resolution.py::resolve_with_llm": "an entity tie-break integer",
     "packages/acb_memory/acb_memory/graphiti_client.py::_is_episode_worthy": "yes or no",
     GW + "settings.py::test_tier": "a health ping",
     "packages/acb_skills/acb_skills/loader.py::_call_llm_for_merge_resolution": "resolves a merge conflict in an agent file",
+    # VOX-3 (task 2263): a tool result that the chat model reads. The chat's
+    # own answer carries the house voice, so this call writes no member prose.
+    "packages/acb_skills/acb_skills/attachment_tools.py::analyze_image": "a tool result for the chat model, which writes the member's answer",
     # The member's own words or voice is the point, so the house voice must
     # not bias what the call learns or imitates.
     GW + "email/automation/drafting.py::_llm_summarize_writing_style": "learns the member's own style",

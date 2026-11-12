@@ -504,6 +504,7 @@ def test_the_reader_finds_the_client_objects_and_their_routes() -> None:
         "agentRunsApi.summary": [("GET", "/projects/{}/agent-summary")],
         "agentRunsApi.resume": [("POST", "/projects/agent-runs/{}/resume")],
         "agentRunsApi.withdrawAnswer": [("POST", "/projects/agent-runs/{}/answer/withdraw")],
+        "agentRunsApi.replaceAnswer": [("POST", "/projects/agent-runs/{}/answer/replace")],
         "attentionApi.list": [("GET", "/projects/needs-attention")],
         "attentionApi.mine": [("GET", "/projects/needs-attention")],
         "decisionsApi.forTask": [("GET", "/projects/decisions")],

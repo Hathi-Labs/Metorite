@@ -141,6 +141,7 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "export_tasks": ("export the tasks to CSV",),
     "find_conflicts": ("are there scheduling conflicts in the project plan?",),
     "fit_for_task": ("who is the best fit for this task?",),
+    "get_plan": ("what can start now in this epic?",),
     "link_tasks": ("make this task block the other task",),
     "link_tasks_batch": ("link these tasks in order as dependencies",),
     "update_tasks": ("update these tasks, a different due date for each",),
@@ -165,6 +166,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "unlink_tasks": ("unlink these two tasks",),
     "update_project": ("change the project deadline",),
     "waiting_agent_requests": ("which agent requests are waiting for me?",),
+    # SW-43c: the member's own answer to an agent.
+    "change_agent_answer": ("change my answer to the agent to Not now",),
     # -- projects-structure --
     "capture_intake": ("capture this into the intake queue",),
     "create_area": ("create an area called Health",),
@@ -228,6 +231,24 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "project_authorities": ("which page is the authority page of this project?",),
     "pin_authority": ("pin this page as the authority of the project",),
     "unpin_authority": ("remove the authority page of the project",),
+    # WS-39 LP-1a: the updates of a project sit in the same pack.
+    "list_project_updates": ("show the project updates of Website Relaunch",),
+    "post_project_update": ("post a project update: the vendor slipped a week",),
+    "delete_project_update": ("remove my last project update",),
+    # WS-39 TPL-1a: the project templates of the organization.
+    "list_templates": ("which project templates do we have?",),
+    "save_as_template": ("save this project as a template",),
+    "create_project_from_template": ("use the project template Install kit for the Acme job",
+                                     "start the Acme job from the template Install kit"),
+    # WS-39 SP-5a: the cycles pack.
+    "list_cycles": ("show the cycles of Website Relaunch",),
+    "cycle_detail": ("how is the current sprint of Website Relaunch going?",),
+    "create_cycle": ("plan a new cycle on Website Relaunch from Monday to Friday",),
+    "plan_cycle": ("add these six tasks to the next cycle",),
+    "start_cycle": ("start the planned cycle of Website Relaunch",),
+    "close_cycle": ("close the active cycle and send the unfinished tasks to the backlog",),
+    # SP-8a: the contract of an epic sits in the authority pack.
+    "set_epic_contract": ("set the epic contract of this epic",),
     # -- studio (STU-G1) --
     "studio_describe": ("which field types can a studio app manifest use?",),
     "studio_draft": ("draft an app manifest in AI Studio",),
@@ -273,6 +294,15 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "my_tasks_update_calendar_settings": (
         "I work 8 to 6", "never book meetings before 10", "I'm sharpest 9 to 12",
         "turn on auto rollover"),
+    # -- calendar-day rules (CAL-3, task 1677) --
+    "my_tasks_list_day_rules": ("what are my day rules?",),
+    "my_tasks_add_day_rule": ("keep mornings for deep work", "protect my mornings",
+                              "add a focus block on Fridays"),
+    "my_tasks_edit_day_rule": ("move my focus block to 9 to 12",),
+    "my_tasks_delete_day_rule": ("delete the second day rule",),
+    # -- calendar-day flows (CAL-4, task 1678) --
+    "my_tasks_start_my_day": ("start my day", "good morning plan"),
+    "my_tasks_close_my_day": ("close my day", "wrap up my day"),
 }
 
 #: Known gaps, kept out of the table on purpose. A bare "calendar" or "project"

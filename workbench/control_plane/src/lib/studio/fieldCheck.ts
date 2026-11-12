@@ -39,6 +39,8 @@ export interface FieldSpec {
   options?: readonly string[];
   /** The target object of a relation. The check does not read it. */
   to?: string;
+  /** C13. A lines relation: the field of the object `to` that names this record. It holds no value. */
+  lines?: string;
 }
 
 export type CheckResult = { ok: true; value: unknown } | { ok: false; message: string };

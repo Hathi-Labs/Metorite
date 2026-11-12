@@ -219,6 +219,9 @@ launch: "live" | "preview"   // src/lib/nav.ts, NavPane
 
 ## 4. Pricing — flat, per user, plus AI credits (D49)
 
+> **The direction changed (owner, 2026-11-10, D204 point 9 and D190.3).** The D152 seat tiers with base pricing replace the flat seat. The code sells the flat seat until PLN-0 merges. This section stays the record of what the code does today.
+
+
 ### 4.1 The shape
 
 **One sellable seat: ₹500 per user per month, and it carries everything that is

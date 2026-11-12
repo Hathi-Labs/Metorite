@@ -19,10 +19,10 @@ separately). Fan-out from a node is allowed (parallel branches).
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from acb_common.secret_shapes import KEY_SHAPES, PRIVATE_KEY_SHAPE
 from gateway.routes.workflows.engine.handlers import MAX_WAIT_SECONDS
 from gateway.routes.workflows.engine.templating import (
     RESERVED_ROOTS,
@@ -77,13 +77,7 @@ PM_TASK_FIELDS = frozenset(
 #: Very conservative "this looks like a secret" patterns — publish refuses a
 #: graph containing one anywhere in node config (platform contract rung 3:
 #: secrets live in the Integration Registry, never in workflow JSON).
-SECRET_PATTERNS = (
-    re.compile(r"sk-[A-Za-z0-9_-]{16,}"),
-    re.compile(r"AKIA[0-9A-Z]{16}"),
-    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
-    re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-)
+SECRET_PATTERNS = (*KEY_SHAPES, PRIVATE_KEY_SHAPE)  # the list: acb_common.secret_shapes
 
 
 @dataclass(slots=True)

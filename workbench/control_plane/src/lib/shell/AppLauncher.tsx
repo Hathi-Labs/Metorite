@@ -31,7 +31,7 @@ import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import type { NavSection } from "@/lib/nav";
-import { EMPTY_SHELL, STARRABLE, isStarred, toggleStar } from "@/lib/shell/presets";
+import { EMPTY_SHELL, STARRABLE, isStarred, starBase, toggleStar } from "@/lib/shell/presets";
 import { installNavPanes, mergeInstallNav, usePackageManifest } from "@/lib/shell/packageManifest";
 import { isActive, launcherGroups } from "@/lib/shell/shellNav";
 import { latestShell, saveShellPrefs, useShellPrefs } from "@/lib/shell/shellPrefs";
@@ -71,7 +71,7 @@ export default function AppLauncher({
   const toggle = (href: string) => {
     setStarError(null);
     // The latest value, not this render's: two quick clicks must both land.
-    const base = { ...EMPTY_SHELL, ...(latestShell() ?? shell.stored) };
+    const base = starBase({ ...EMPTY_SHELL, ...(latestShell() ?? shell.stored) }, shell.layout);
     const next = { ...base, ...toggleStar(base, held, href) };
     saveShellPrefs(next).catch(() => setStarError("Your sidebar was not saved. Try again."));
   };

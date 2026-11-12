@@ -680,7 +680,9 @@ def _person(email: str, org: str, *, admin: bool = False, sees_all: bool = True)
     if sees_all:
         perms.append("data:org:read")
     if admin:
-        perms.append("admin:members:read")
+        # H-409 item 2 (task 748): an admin of a release holds the write
+        # slug `admin:members:manage` (owner, Q5), and a real admin holds both.
+        perms.extend(["admin:members:read", "admin:members:manage"])
     return UserContext(
         email=email, role=UserRole.EMPLOYEE, access=build_access(perms), organization_id=org)
 
@@ -899,6 +901,26 @@ class TestOneAiForEachTask:
                             "WHERE run_id = CAST(:i AS uuid)", i=old)
         assert line.body == "Taken over by Bob Baker/Claude Code"
         assert [str(r.id) for r in _open_runs(w, task)] == [new]
+
+    async def test_x5b_the_claim_at_the_lease_edge(self, w):
+        """SW-4. A moved clock: one minute inside the lease the task is held
+        (409), and one minute past it the next claim takes it over. The run
+        wire says ``holder_free`` in step with the gate."""
+        lease = filters.agent_run_lease_s()
+        task = _fresh(w)
+        async with _session(w.p) as call:
+            old = (await _claim(call, w.alice, task)).json()["agent_run_id"]
+            _age(w, task, lease - 60)
+            refused = await _claim(call, w.bob, task)
+            listed = await call(w.alice, "GET", f"/projects/tasks/{task}/agent-runs", None)
+            assert refused.status_code == 409 and _detail(refused)["error"] == "task_held"
+            assert [r["holder_free"] for r in listed.json()["rows"]] == [False]
+            _age(w, task, lease + 60)
+            listed = await call(w.alice, "GET", f"/projects/tasks/{task}/agent-runs", None)
+            assert [r["holder_free"] for r in listed.json()["rows"]] == [True]
+            taken = await _claim(call, w.bob, task)
+        assert taken.status_code == 200, taken.text
+        assert taken.json()["agent_run_id"] != old
 
     async def test_x6_a_heartbeat_keeps_the_task(self, w):
         task = _fresh(w)

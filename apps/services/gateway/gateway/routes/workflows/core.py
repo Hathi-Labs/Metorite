@@ -9,17 +9,28 @@ Canonical store: the ``workflows`` / ``workflow_*`` tables from
 ``workflows``; the single exemption is the inbound webhook trigger, which
 authenticates itself by its unguessable per-workflow token (+ optional HMAC)
 — see ``hooks.py`` and the matching entry in ``main.PUBLIC_ROUTES``.
+
+**The authoring gate (STU-J1-3, ``ai_studio.md`` §14 J1-3).** A workflow write
+needs ``feature:studio`` on top of the router gate. A write is a create, a
+duplicate, an edit, a delete, a Copilot turn, or a test run of the draft. The
+route table and the class of each route are in
+``tests/unit/test_workflows_author_gate.py``. ``AUTHOR_GATE`` is the route
+dependency, and ``check_author`` is the same check for the draft branch of
+``POST /{id}/run``. The check is the seam's own ``require_feature("studio")``.
+It applies only where ``WORKFLOW_STUDIO_GATE_ORGS`` holds the org (default
+empty, so the rule before J1-3 holds until the flip).
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import secrets
-from typing import Any
+from typing import Annotated, Any
 
-from acb_auth import UserContext, require_feature_router
+from acb_auth import UserContext, get_current_user, require_feature, require_feature_router
 from acb_common import get_logger, get_settings
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 # The shared gateway engine (BO-10) — see the DB section below.
 from gateway.db import get_db as _get_db  # noqa: F401
@@ -45,6 +56,67 @@ router = APIRouter(
     tags=["workflows"],
     dependencies=[require_feature_router("workflows", exempt=EXEMPT_ROUTES)],
 )
+
+# ── The authoring gate (STU-J1-3) ────────────────────────────────────────────
+#
+# The router gate stays `feature:workflows` on every route: it is the surface
+# gate, and a person who cannot read workflows does not write them. A write
+# ADDS `feature:studio`. So the gate of a write is both features. A deny of
+# either one refuses it, and the router gate answers first. A read, a run of
+# the published version, a module route and the four live routes (publish,
+# rollback, disable, enable) add nothing here (owner rules 1 and 2, task 1818).
+
+#: The feature that a workflow write needs on top of the router gate.
+AUTHOR_FEATURE = "studio"
+
+#: The check of the one entitlement seam (`acb_auth.deps.require_feature`):
+#: 401 with no member, 403 that names `feature:studio`. This module adds no
+#: rule of its own.
+_studio_check = require_feature(AUTHOR_FEATURE).dependency
+
+
+@functools.lru_cache(maxsize=16)
+def _parse_orgs(raw: str) -> frozenset[str]:
+    """The entries of a comma list, trimmed and in lower case."""
+    return frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
+
+
+def author_gate_on(organization_id: str | None) -> bool:
+    """True when ``WORKFLOW_STUDIO_GATE_ORGS`` holds the org, or holds ``*``.
+
+    The ONE reader of the flag. It reads the settings on each call, so a
+    SIGHUP reload applies a flip (``docs/flag_reload.md``). The org comes from
+    the session, never from request input (R5). With ``*``, a caller with no
+    org is checked too, so the gate fails closed.
+    """
+    listed = _parse_orgs(str(getattr(get_settings(), "workflow_studio_gate_orgs", "") or ""))
+    if "*" in listed:
+        return True
+    return bool(organization_id) and str(organization_id).strip().lower() in listed
+
+
+async def check_author(user: UserContext) -> None:
+    """Refuse a workflow write of a caller without ``feature:studio``.
+
+    With the org off the flag, it checks nothing, and the router gate alone
+    decides, as before J1-3. ``runs.run_workflow`` calls it for a test run of
+    the draft, before it opens a session.
+    """
+    if author_gate_on(user.organization_id):
+        await _studio_check(user)
+
+
+async def _require_author(
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> UserContext:
+    await check_author(user)
+    return user
+
+
+#: The route dependency of each authoring route. It runs after the router gate
+#: and before the body check, so a refused write reads nothing and parses
+#: nothing.
+AUTHOR_GATE = Depends(_require_author)
 
 # ── Limits ───────────────────────────────────────────────────────────────────
 

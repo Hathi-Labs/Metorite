@@ -452,6 +452,9 @@ class WorkGateway:
             return {"rows": [], "total": 0, "counts": {}}
         if rest == "agent-runs":
             return {"rows": []}
+        if rest == "plan/order":
+            # SW-68a: no epic in the fake, so the plan keeps the input order.
+            return {"order": [], "plan": {}}
         return None
 
     def _node_read(self, parts: list[str]) -> Any:
@@ -467,6 +470,9 @@ class WorkGateway:
             return self._summary(parts[1])
         if tail in (["types"], ["tags"], ["fields"]):
             return {"rows": []}
+        if tail == ["cycles"]:
+            # WS-39 SP-5a: no cycle is planned in the fake.
+            return {"project_id": parts[1], "cycles": []}
         if tail == ["authorities"]:
             # WS-ALN ALN-4: no page is pinned in the fake.
             return {"rows": [], "total": 0}

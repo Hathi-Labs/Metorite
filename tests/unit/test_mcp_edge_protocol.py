@@ -121,9 +121,13 @@ NEVER_SENT = {"include_triage", "include_archived", "archived_only", "watching"}
 #: two reads of EA-15 (§12.4), then ``get_attachment`` of IMG-3.
 ALL_TOOLS = ["whoami", "list_projects", "get_project", "list_members", "list_tags",
              "list_tasks", "board_stats",
-             "get_task",
+             "get_plan", "get_task",
              "get_task_timeline", "search_tasks", "get_task_context", "my_work",
-             "get_attachment"]
+             "get_attachment",
+             # WS-39 LP-1a: the updates of a project, newest first.
+             "list_project_updates",
+             # WS-39 TPL-1a: the templates of the organization.
+             "list_templates"]
 
 
 def _uuid(n: int) -> str:
@@ -1595,7 +1599,12 @@ class TestGetTask:
 
     async def test_the_task_has_exactly_the_pinned_keys(self, armed):
         body = _structured(await _tool("get_task", {"task_id": T_ONE}))
-        assert set(body) == {"task", "subtasks", "links", "refs", "agent_runs"}
+        # WS-39 SP-5a: `cycle` is always there, and null while the flag is off.
+        # SP-8a: `epic_contract`, null for a task that is not an epic.
+        assert set(body) == {"task", "subtasks", "links", "refs", "agent_runs", "cycle",
+                             "epic_contract"}
+        assert body["cycle"] is None
+        assert body["epic_contract"] is None
         assert tuple(body["task"]) == tools.GET_TASK_KEYS
         assert [tuple(s) for s in body["subtasks"]] == [tools.SUBTASK_KEYS]
         assert [tuple(link) for link in body["links"]] == [tools.LINK_KEYS]

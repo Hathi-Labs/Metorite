@@ -33,6 +33,8 @@ who may write a grant (D-OP-11). What is deliberately NOT here: a bulk
 from __future__ import annotations
 
 import json
+import uuid
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
@@ -51,7 +53,17 @@ from skill_projects.client import (
     post_file,
     uuid_of,
 )
-from skill_projects.inbox import DECISIONS_OFF, _area_key, _clean_area_name, _my_area, subject_words
+from skill_projects.inbox import (
+    DECISIONS_OFF,
+    TEMPLATES_OFF,
+    UPDATE_HEALTHS,
+    UPDATES_OFF,
+    UPDATES_PAGE_MAX,
+    _area_key,
+    _clean_area_name,
+    _my_area,
+    subject_words,
+)
 from skill_projects.priority import (
     Removed,
     card_view,
@@ -81,6 +93,7 @@ from skill_projects.writes import (
     REPORT_CHANGE_REFUSED,
     _clears,
     _confirm,
+    _date_arg,
     _field_of,
     _fields_block,
     _int_or_none,
@@ -2387,6 +2400,89 @@ async def unpin_authority(project_id: str, pin_id: str) -> str:
     return f"Removed {name} as the authority page of {path}.\n  project_id: {pid}\n  pin_id: {pin}"
 
 
+# ── WS-39 LP-1a: delete a project update ─────────────────────────────────────
+
+#: The pages of updates that the delete reads to find the named one. Each
+#: page holds :data:`inbox.UPDATES_PAGE_MAX` updates.
+UPDATE_DELETE_PAGES = 10
+
+
+async def _find_update(pid: str, wanted: str) -> tuple[dict[str, Any] | None, str]:
+    """The live update *wanted* of a project, read page by page.
+
+    Returns ``(row, "")``, or ``(None, "")`` when no page holds it, or
+    ``(None, UPDATES_OFF)`` while the flag is off. Every call is a read.
+    """
+    pid = uuid_of(pid, "project_id")
+    before = ""
+    for _ in range(UPDATE_DELETE_PAGES):
+        params: dict[str, Any] = {"limit": UPDATES_PAGE_MAX}
+        if before:
+            params["before"] = before
+        try:
+            got = (await get(f"/projects/nodes/{pid}/updates", params)) or {}
+        except GatewayRefusal as exc:
+            if getattr(exc, "status", None) == 404:
+                return None, UPDATES_OFF
+            raise
+        for row in got.get("rows") or []:
+            if str(row.get("id") or "").lower() == wanted:
+                return row, ""
+        before = str(got.get("next_before") or "")
+        if not before:
+            break
+    return None, ""
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def delete_project_update(project_id: str, update_id: str) -> str:
+    """Delete one update of a project. update_id is an update_id from
+    list_project_updates. ONE update per call. The card names the project, the
+    health, the author and the text. The update leaves the project and its
+    list, and the app has no undo for it. The server decides if the member may
+    delete it, and a refusal comes back in one sentence."""
+    if _many(update_id) or _many(project_id):
+        return f"delete_project_update {ONE_ACT.replace('id', 'update_id')}"
+    pid, node = await _node(project_id)
+    uid = uuid_of(update_id, "update_id")
+    row, off = await _find_update(pid, uid)
+    if off:
+        return off
+    name = data(node.get("name"))
+    if row is None:
+        return (
+            f"{name} has no live update like that. list_project_updates lists its "
+            f"updates, each with an update_id.\n  project_id: {pid}"
+        )
+    health = UPDATE_HEALTHS.get(str(row.get("health")), str(row.get("health")))
+    refused = delete_refusal(row, "update of", name)
+    if refused:
+        return refused
+    impact = (
+        f"1 update ({health}) leaves {name} and its list of updates. The app has "
+        "no undo for it"
+    )
+    if not await _confirm(
+        title="Delete this project update?",
+        detail=f"{name} · {health}",
+        context=_guard_card(
+            impact,
+            {
+                "project": name,
+                "health": health,
+                "author": data(row.get("author")),
+                "body": str(row.get("body") or ""),
+            },
+        ),
+    ):
+        return CANCELLED
+    await delete(f"/projects/nodes/{pid}/updates/{uid}")
+    return (
+        f"Deleted the update ({health}) of {name}.\n  project_id: {pid}\n"
+        f"  update_id: {uid}"
+    )
+
+
 # ── One person decides (WS-ALN ALN-2a, D-OP-9) ──────────────────────────────
 
 #: What the member reads for a 403, a 404 or a 409 of the answer route.
@@ -2466,6 +2562,324 @@ async def answer_decision(decision_id: str, answer_key: str) -> str:
     except GatewayRefusal as exc:
         return _decision_refusal(exc)
     return f"Answered {data(row.get('question'))} with {data(label)}.{chr(10)}  decision_id: {did}"
+
+
+# ── The member's own answer to an agent (SW-43c, agent_coordination.md §3.9) ─
+#
+# The member answered an outside agent's question on the task card. Until an
+# agent reads the answer or posts after it, the member may take it back or
+# change it. The two routes decide that window under the lock of the run
+# (`filters.answer_changeable_sql`), so these tools only name the answer on
+# the card and send the member's act. Neither tool answers an open question,
+# and neither touches the answer to an archive request (EA3-40, D-OP-13).
+
+#: The tool text while ``agent_answer_change_enabled`` is off. The gateway then
+#: sends no ``answer`` key on a run, and both routes answer 404.
+ANSWER_CHANGE_OFF = (
+    "Changing an answer to an agent is not on in this organization yet. Nothing was changed."
+)
+#: The tool text while agent runs are off (``require_agent_runs`` answers 404).
+ANSWER_RUNS_OFF = "Agent runs are off in this organization. Nothing was changed."
+#: The words of the routes when an agent already read the answer or posted
+#: after it (``agent_runs._ANSWER_STALE``). A pin test holds the copy.
+ANSWER_READ = "The agent already has your answer. Send a comment instead."
+#: SW-43b. The second step of a costly option on the run card (``agentRuns.ts``
+#: ``ARE_YOU_SURE``). A pin test holds the copy.
+ARE_YOU_SURE = "Are you sure?"
+#: The tool text when the new answer is the answer that already stands.
+ANSWER_SAME = "That is already your answer. Nothing was changed."
+#: The tool text when one call both takes the answer back and gives a new one.
+ANSWER_BOTH = (
+    "Take the answer back, or give a new answer. One call does one of the two. "
+    "Nothing was changed."
+)
+#: The most characters of the agent's question, and of the old answer, on a
+#: card. Both are context: neither route writes them. So each is cut with an
+#: ellipsis, and the card always fits under ``CARD_CLIP``. A long question of
+#: an agent never makes the card refuse (SW-43c review, P2). The new answer
+#: is the write, so it shows whole.
+ANSWER_CARD_CONTEXT_MAX = 600
+
+
+def _clip_context(text: Any) -> str:
+    """*text* as one line of at most :data:`ANSWER_CARD_CONTEXT_MAX`
+    characters, cut with an ellipsis when it is longer."""
+    flat = " ".join(str(text or "").split())
+    if len(flat) <= ANSWER_CARD_CONTEXT_MAX:
+        return flat
+    return f"{flat[: ANSWER_CARD_CONTEXT_MAX - 1]}…"
+
+
+@dataclass(frozen=True)
+class _LiveAnswer:
+    """The member's live answer on one task: the task, the run, the answer and
+    the question it answers, each as the gateway sent it."""
+
+    task_id: str
+    task: dict[str, Any]
+    run: dict[str, Any]
+    answer: dict[str, Any]
+    question: dict[str, Any]
+
+
+def _answer_words(activity: dict[str, Any]) -> str:
+    """The words of the old answer, fenced and cut to the context size: its
+    option labels, then its text."""
+    content = activity.get("content") or {}
+    parts = [str(label) for label in content.get("labels") or [] if str(label).strip()]
+    body = str(content.get("body") or "").strip()
+    if body:
+        parts.append(body)
+    return data(_clip_context(", ".join(parts))) if parts else "(no words)"
+
+
+def _question_words(question: dict[str, Any]) -> str:
+    """The agent's question, fenced and cut to the context size."""
+    return data(_clip_context((question.get("content") or {}).get("body") or ""))
+
+
+def _options_of(question: dict[str, Any]) -> list[dict[str, Any]]:
+    meta = question.get("signal_metadata") or {}
+    return [o for o in meta.get("options") or [] if isinstance(o, dict) and o.get("id")]
+
+
+def _option_list(options: list[dict[str, Any]]) -> str:
+    return ", ".join(f"{data(o.get('label'))} (id {data(o.get('id'))})" for o in options)
+
+
+async def _live_answer(task_id: str) -> _LiveAnswer | str:
+    """The member's live answer on *task_id*, or the one sentence that says
+    why no change can go. Every call here is a read, and a read of a member
+    closes no window (``agent_runs._reads_for_member``)."""
+    tid, task = await _task(task_id)
+    name = _ref(task)
+    try:
+        page = (await get(f"/projects/tasks/{tid}/agent-runs")) or {}
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return ANSWER_RUNS_OFF
+        raise
+    rows = [r for r in page.get("rows") or [] if isinstance(r, dict)]
+    if rows and not any("answer" in r for r in rows):
+        return ANSWER_CHANGE_OFF
+    answered = [r for r in rows if isinstance(r.get("answer"), dict)]
+    if not answered:
+        return f"No answer of a member waits for an agent on {name}. Nothing was changed."
+    me = _client.current_user_email().strip().lower()
+    mine = [r for r in answered if str(r.get("member_email") or "").strip().lower() == me]
+    if not mine:
+        return (
+            f"{REFUSED} The answer on {name} is on the agent run of another member. Only "
+            "that member changes it. Nothing was changed."
+        )
+    run = next((r for r in mine if r["answer"].get("changeable") is True), None)
+    if run is None:
+        return f"{REFUSED} {ANSWER_READ} Nothing was changed."
+    rid = uuid_of(run.get("id"), "run_id")
+    aid = uuid_of(run["answer"].get("id"), "answer_id")
+    got = (await get(f"/projects/agent-runs/{rid}")) or {}
+    acts = {str(a.get("id")).lower(): a for a in got.get("activities") or []
+            if isinstance(a, dict)}
+    answer = acts.get(aid)
+    question = acts.get(str((answer or {}).get("in_reply_to") or "").lower())
+    if answer is None or question is None:
+        return (
+            f"{REFUSED} The agent run of {name} is too long to read here. Change the answer "
+            f"on the task card: /projects?task={tid}. Nothing was changed."
+        )
+    if (question.get("content_metadata") or {}).get("request"):
+        return (
+            f"{REFUSED} This answer is to a request to archive {name}. That answer changes "
+            f"on the task card only: /projects?task={tid}. Nothing was changed."
+        )
+    return _LiveAnswer(tid, task, run, answer, question)
+
+
+def _change_refusal(exc: GatewayRefusal) -> str:
+    """One plain sentence for a 403, 404, 409 or 422 of the two answer routes."""
+    status = getattr(exc, "status", None)
+    said = str(getattr(exc, "detail", "") or "")
+    if status == 404:
+        return f"{REFUSED} The server found no answer to change. Nothing was changed."
+    if status == 403:
+        return (
+            f"{REFUSED} The server says that only the member of this agent run changes "
+            "its answer. Nothing was changed."
+        )
+    if status == 409 and "already has your answer" in said:
+        return f"{REFUSED} {ANSWER_READ} Nothing was changed."
+    if status == 409:
+        return (
+            f"{REFUSED} This answer is no longer the live answer, and the question may "
+            "be open again. Read the task card. Nothing was changed."
+        )
+    if status == 422:
+        return f"{REFUSED} The new answer is not an option of the question. Nothing was changed."
+    raise exc
+
+
+def _new_answer(
+    question: dict[str, Any], option: str, text: str,
+) -> tuple[list[str], list[dict[str, Any]], str] | str:
+    """``(option ids, the options, text)`` of a new answer, or the refusal.
+
+    *option* is an id or a label of the question, matched whole and without
+    case. A question that takes many options also takes a comma list. Each
+    name must match one option, and never the first of two."""
+    options = _options_of(question)
+    wanted = " ".join(str(option or "").split())
+    body = str(text or "").strip()
+    if not wanted and not body:
+        listed = f" The options are: {_option_list(options)}." if options else ""
+        return (
+            f"Give the new answer: an option of the question, a text, or both.{listed} "
+            "Nothing was changed."
+        )
+    if not wanted:
+        return [], [], body
+    if not options:
+        return "This question has no options. Give the new answer as a text. Nothing was changed."
+
+    def named(name: str) -> list[dict[str, Any]]:
+        key = name.lower()
+        return [o for o in options if key in (
+            str(o.get("id")).lower(), " ".join(str(o.get("label") or "").split()).lower())]
+
+    many = bool((question.get("signal_metadata") or {}).get("allow_multiple"))
+    names = [wanted] if named(wanted) or not many else [
+        p.strip() for p in wanted.split(",") if p.strip()]
+    picked: list[dict[str, Any]] = []
+    for name in names:
+        found = named(name)
+        if len(found) != 1:
+            why = "matches no option" if not found else "matches two options"
+            return (
+                f"{data(name)} {why}. The options are: {_option_list(options)}. "
+                "Nothing was changed."
+            )
+        if found[0] not in picked:
+            picked.append(found[0])
+    if len(picked) > 1 and not many:
+        return "This question takes one option. Nothing was changed."
+    return [str(o["id"]) for o in picked], picked, body
+
+
+@dataclass(frozen=True)
+class _ChangeCard:
+    """One card of :func:`change_agent_answer`: what the member reads, what
+    goes on the wire after the approve, and the receipt."""
+
+    title: str
+    detail: str
+    context: str
+    body: dict[str, Any]
+    receipt: str
+
+
+def _withdraw_card(live: _LiveAnswer) -> _ChangeCard:
+    name, words = _ref(live.task), _answer_words(live.answer)
+    impact = (
+        "1 answer leaves the agent run. The question is open again on the task card, "
+        "and the agent sees that you took the answer back"
+    )
+    return _ChangeCard(
+        title="Take back your answer?",
+        detail=f"{name} · {words}",
+        context=_guard_card(impact, {
+            "task": name,
+            "question": _question_words(live.question),
+            "answer": words,
+            "undo": "answer the question again on the task card",
+        }),
+        body={},
+        receipt=(f"Took back your answer {words} on {name}. The question is open again "
+                 "on the task card."),
+    )
+
+
+def _replace_card(live: _LiveAnswer, option: str, text: str) -> _ChangeCard | str:
+    new = _new_answer(live.question, option, text)
+    if isinstance(new, str):
+        return new
+    selected, picked, body = new
+    old = live.answer.get("content") or {}
+    if selected == list(old.get("selected") or []) and body == str(old.get("body") or "").strip():
+        return ANSWER_SAME
+    name = _ref(live.task)
+    words = ", ".join([data(o.get("label")) for o in picked] + ([data(body)] if body else []))
+    rows: dict[str, Any] = {
+        "task": name, "question": _question_words(live.question), "answer": words}
+    costly = [data(o.get("label")) for o in picked if o.get("confirm") is True]
+    if costly:
+        rows["note"] = (
+            f"{ARE_YOU_SURE} The agent marked {', '.join(costly)} as a costly choice, such "
+            "as a stop or a restart. Approve only if you are sure."
+        )
+    impact = (
+        "1 answer changes. The agent reads the new answer and not the old one. You may "
+        "change it again until the agent reads it"
+    )
+    sent: dict[str, Any] = {}
+    if selected:
+        sent["selected"] = selected
+    if body:
+        sent["body"] = body
+    return _ChangeCard(
+        title=f"{ARE_YOU_SURE} Change your answer?" if costly else "Change your answer?",
+        detail=f"{name} · {words}",
+        context=_fields_block(rows, before={"answer": _answer_words(live.answer)},
+                              lead="impact: " + " ".join(impact.split())),
+        body=sent,
+        receipt=f"Changed your answer on {name} to {words}. The agent reads the new answer.",
+    )
+
+
+async def _send_change(live: _LiveAnswer, body: dict[str, Any], withdraw: bool) -> None:
+    """The one write of :func:`change_agent_answer`, after the card. The key is
+    new for each approve, so a second act needs a second card."""
+    rid = uuid_of(live.run.get("id"), "run_id")
+    sent = {"answer_id": uuid_of(live.answer.get("id"), "answer_id"),
+            "idempotency_key": uuid.uuid4().hex, **body}
+    if withdraw:
+        await post(f"/projects/agent-runs/{rid}/answer/withdraw", sent)
+    else:
+        await post(f"/projects/agent-runs/{rid}/answer/replace", sent)
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def change_agent_answer(
+    task_id: str, option: str = "", answer: str = "", withdraw: bool = False,
+) -> str:
+    """Take back or change the member's own answer to an outside agent's
+    question on one task, before the agent reads it. ONE task per call. With
+    withdraw true, the answer goes back, and the question is open again on
+    the task card. Else option names an option of the question by its label
+    or id, and answer is a text that may go with it. With neither, the tool
+    lists the options and changes nothing. A run that no person watches
+    cannot do this, and the tool refuses it before any read. The card shows
+    the question and the answer. An option that the agent marked as costly
+    puts "Are you sure?" on the card. When the agent already read the answer,
+    the server refuses, and the member sends a comment instead."""
+    if no_person_present():
+        return f"{REFUSED} {NO_PERSON_TEXT} Nothing was changed."
+    if _many(task_id):
+        return f"change_agent_answer {ONE_ACT.replace('id', 'task_id')}"
+    if withdraw and (str(option or "").strip() or str(answer or "").strip()):
+        return ANSWER_BOTH
+    live = await _live_answer(task_id)
+    if isinstance(live, str):
+        return live
+    card = _withdraw_card(live) if withdraw else _replace_card(live, option, answer)
+    if isinstance(card, str):
+        return card
+    if not await _confirm(title=card.title, detail=card.detail, context=card.context):
+        return CANCELLED
+    try:
+        await _send_change(live, card.body, withdraw)
+    except GatewayRefusal as exc:
+        return _change_refusal(exc)
+    tid = uuid_of(live.task_id, "task_id")
+    return f"{card.receipt}\n  link: /projects?task={tid}\n  full_id: {tid}"
 
 
 # ── Who gets a report, and when (WS-64 OP-6d, D-OP-9) ───────────────────────
@@ -2748,9 +3162,190 @@ __all__ = [  # noqa: RUF022 — grouped by what they act on
     "revoke_access",
     "pin_authority",
     "unpin_authority",
+    "delete_project_update",
     "answer_decision",
+    "change_agent_answer",
     "add_report_recipient",
     "remove_report_recipient",
     "set_report_schedule",
     "promote_reminder",
 ]
+
+
+# ── Templates (WS-39 TPL-1a, task 18) ───────────────────────────────────────
+
+#: The longest template name and description (``templates.NAME_MAX`` and
+#: ``templates.DESCRIPTION_MAX`` of the gateway). A pin test holds the copies.
+TEMPLATE_NAME_MAX = 120
+TEMPLATE_DESCRIPTION_MAX = 2000
+
+
+async def _templates_or_off(template_id: str = "") -> tuple[list[dict[str, Any]], str]:
+    """``(templates, "")``, or ``([], TEMPLATES_OFF)`` when the flag is off.
+    This read runs BEFORE any card. A 404 here is the flag. Any other
+    refusal is raised again for the shared wrapper. *template_id* reads that
+    one template, so a template past the first page of the list is found."""
+    params = {"template_id": template_id} if template_id else None
+    try:
+        got = (await get("/projects/templates", params)) or {}
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return [], TEMPLATES_OFF
+        raise
+    return list(got.get("rows") or []), ""
+
+
+def _template_refusal(exc: GatewayRefusal) -> str:
+    """One plain sentence for a refusal of a template route. The server's own
+    words say what happened and what to do next. A 5xx is raised again."""
+    status = getattr(exc, "status", None)
+    if status in (403, 404, 409, 422):
+        said = str(getattr(exc, "detail", "") or "").strip()
+        return (f"{REFUSED} {data(said) if said else 'The server refused the template.'} "
+                "Nothing was changed.")
+    raise exc
+
+
+def _counts_line(counts: dict[str, Any]) -> str:
+    return (
+        f"{int(counts.get('tasks') or 0)} starter tasks, "
+        f"{int(counts.get('statuses') or 0)} statuses, "
+        f"{int(counts.get('types') or 0)} task types, "
+        f"{int(counts.get('fields') or 0)} fields and "
+        f"{int(counts.get('tags') or 0)} tags"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def save_as_template(
+    project_id: str, name: str, description: str = "", start_date: str = "",
+) -> str:
+    """Save one project as a template of the organization (WS-39 TPL-1a).
+    ONE project per call. The template copies the project's statuses, task
+    types, fields and tags, and its tasks and subtasks with their dates as
+    days from the start. It copies no person, no comment and no history. A
+    done task becomes an open starter task. Every member of the organization
+    can list the template, so the server takes only a project that the whole
+    organization can see. start_date (YYYY-MM-DD) is the day that the
+    offsets count from. Leave it out to count from the earliest task date."""
+    if _many(project_id):
+        return f"save_as_template {ONE_ACT}"
+    title = " ".join(str(name or "").split())
+    if not title:
+        return "A template needs a name. Nothing was changed."
+    if len(title) > TEMPLATE_NAME_MAX:
+        return f"A template name has {TEMPLATE_NAME_MAX} characters at most. Nothing was changed."
+    about = " ".join(str(description or "").split())
+    if len(about) > TEMPLATE_DESCRIPTION_MAX:
+        return (f"A template description has {TEMPLATE_DESCRIPTION_MAX} characters at most. "
+                "Nothing was changed.")
+    start = _date_arg(start_date, "start_date")
+    pid, node = await _node(project_id)
+    held, off = await _templates_or_off()
+    if off:
+        return off
+    taken = next((r for r in held if str(r.get("name") or "").strip().lower() == title.lower()), None)
+    if taken is not None:
+        return (f"A template called {data(taken.get('name'))} already exists. Pick another name. "
+                f"Nothing was changed.\n  template_id: {taken.get('id')}")
+    impact = (
+        "every member of the organization can list this template and make a project from it. "
+        f"It copies the statuses, types, fields, tags and tasks of {data(node.get('name'))}, "
+        "with no person, comment or history"
+    )
+    rest: dict[str, Any] = {"project": data(node.get("name")), "name": data(title)}
+    if about:
+        rest["description"] = data(about)
+    rest["starts from"] = start or "the earliest task date"
+    if not await _confirm(
+        title="Save this project as a template?",
+        detail=f"{data(node.get('name'))} · {data(title)}",
+        context=_guard_card(impact, rest),
+    ):
+        return CANCELLED
+    body: dict[str, Any] = {"project_id": pid, "name": title}
+    if about:
+        body["description"] = about
+    if start:
+        body["start_date"] = start
+    try:
+        row = (await post("/projects/templates", body)) or {}
+    except GatewayRefusal as exc:
+        return _template_refusal(exc)
+    return (
+        f"Saved the template {data(row.get('name'))}: {_counts_line(row.get('counts') or {})}."
+        f"\n  template_id: {row.get('id')}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def create_project_from_template(
+    template_id: str, parent_id: str, name: str = "", description: str = "",
+    start_date: str = "",
+) -> str:
+    """Make a new project from a template (WS-39 TPL-1a). ONE template per
+    call. template_id comes from list_templates. parent_id is the space, the
+    folder or the project to make the new project in. A space holds no
+    tasks, so the template always makes a project. The new project gets the
+    template's statuses, and its starter tasks and subtasks with their dates:
+    start_date (YYYY-MM-DD, today when left out) plus the days of each task.
+    A task type, field or tag that the space lacks is added to the whole
+    space. name is the project name, the template's name when left out."""
+    if _many(template_id) or _many(parent_id):
+        return f"create_project_from_template {ONE_ACT}"
+    tid = uuid_of(template_id, "template_id")
+    title = " ".join(str(name or "").split())
+    about = " ".join(str(description or "").split())
+    start = _date_arg(start_date, "start_date")
+    held, off = await _templates_or_off(tid)
+    if off:
+        return off
+    template = next((r for r in held if str(r.get("id") or "").lower() == tid), None)
+    if template is None:
+        return "No template has that template_id. Call list_templates. Nothing was changed."
+    pid, node = await _node(parent_id)
+    path = await _project_path(node)
+    counts = template.get("counts") or {}
+    impact = (
+        f"a new project with {_counts_line(counts)} goes inside {path}. Each person who "
+        "can see it there sees the new project. A task type, field or tag that the space "
+        "lacks is added to the whole space"
+    )
+    rest = {
+        "from": data(template.get("name")),
+        "under": path,
+        "name": data(title or template.get("name")),
+        "start": start or "today",
+    }
+    if about:
+        rest["description"] = data(about)
+    if not await _confirm(
+        title="Make a project from this template?",
+        detail=f"{data(template.get('name'))} · inside {data(node.get('name'))}",
+        context=_guard_card(impact, rest),
+    ):
+        return CANCELLED
+    # One key for each approved card. A retry of this request makes no
+    # second project: the gateway returns the first one (TPL-1a).
+    body: dict[str, Any] = {
+        "idempotency_key": f"chat-{uuid.uuid4().hex}", "parent_project_id": pid,
+    }
+    if title:
+        body["name"] = title
+    if about:
+        body["description"] = about
+    if start:
+        body["start_date"] = start
+    try:
+        made = (await post(f"/projects/templates/{tid}/apply", body)) or {}
+    except GatewayRefusal as exc:
+        return _template_refusal(exc)
+    project = made.get("project") or {}
+    created = made.get("created") or {}
+    lanes = ("its own copy of the template's statuses" if made.get("own_statuses")
+             else "the statuses of the space")
+    return (
+        f"Made {data(project.get('name'))} from the template {data(template.get('name'))}: "
+        f"{int(created.get('tasks') or 0)} tasks, with {lanes}."
+        f"\n  project_id: {project.get('id')}"
+    )

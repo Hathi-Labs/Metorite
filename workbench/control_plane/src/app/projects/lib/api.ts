@@ -10,14 +10,17 @@ import {
   type AgentStartBody,
   type AgentStartResult,
   type AgentState,
+  type AgentWaiting,
   type ArchiveApprovalBody,
   type ArchiveApprovalResult,
   type AgentSummary,
+  type ReplaceBody,
   type WithdrawBody,
   agentRunRows,
   normalizeRunDetail,
 } from "./agentRuns";
 import { type TaskDecisions, answerBody, readTaskDecisions } from "./decisions";
+import type { EpicRollup } from "./epicRollup";
 import {
   ATTENTION_LIMIT,
   type AttentionPage,
@@ -25,6 +28,7 @@ import {
   attentionPage,
   resumeBody,
 } from "./needsAttention";
+import { type AgentsOverview, parseOverview } from "./agentsAtWork";
 import type { Rule as RecurrenceRule } from "./recurrence";
 import { taskVersions } from "./taskUndo";
 
@@ -300,6 +304,13 @@ export interface NodeSummary {
     overdue: number;
     by_category: Record<string, number>;
   };
+  /**
+   * WS-39 LP-1a — the newest live update of a project or a subproject, or
+   * null when it has none. The key is there only while
+   * `PROJECTS_UPDATES_ORGS` holds the org, so the Overview draws the line
+   * with the roll-up, in one read, and nothing moves when it arrives.
+   */
+  latest_update?: ProjectUpdate | null;
   /**
    * WS-64 OP-11 — the My tasks summary only (`GET /projects/my/summary`).
    * `due_soon` is open work due in the next `due_soon_days`. `by_disposition`
@@ -1718,6 +1729,23 @@ export interface SubtreeRow {
   archived: boolean;
 }
 
+/** WS-MCP SW-23 — the three results of a run of a Check. */
+export type CheckResult = "open" | "passed" | "cannot_run";
+
+/**
+ * WS-MCP SW-23 — the Check of a task, as `checks.attach_check` sends it. The
+ * text and the evidence are words that a person or an agent wrote.
+ */
+export interface TaskCheck {
+  text: string;
+  /** The instant of the last reported run, or `null` when none ran yet. */
+  last_run_at: string | null;
+  last_result: CheckResult | null;
+  last_evidence: string | null;
+  /** Never run, or not run for seven days. The gateway decides it. */
+  due: boolean;
+}
+
 export interface TaskRow {
   id: string;
   project_id: string;
@@ -1812,6 +1840,12 @@ export interface TaskRow {
    */
   time_spent_mins?: number;
   /**
+   * SP-9 — the roll-up of an EPIC over every descendant the reader can see.
+   * Only the single read carries it, and only for a task whose type is an
+   * epic type. `subtasks` above still counts the direct children.
+   */
+  rollup?: EpicRollup;
+  /**
    * WS-55 EA-12c — the derived state of the newest open agent run, or null
    * when the task has none (`external_agent_access.md` §12.1, EA12-10).
    * The run types live in `agentRuns.ts`, with the two optional run facts
@@ -1826,6 +1860,11 @@ export interface TaskRow {
    */
   agent_note?: string | null;
   /**
+   * Task 1045a (`agent_coordination.md` §3.2) — the wait of a run that reads
+   * `waiting`: what it waits on and when the wait ends. Null in any other state.
+   */
+  agent_waiting?: Pick<AgentWaiting, "on" | "until"> | null;
+  /**
    * WS-55 EA-13d (EA3-48) — the ONE pull request that the gateway picked for
    * the task, with its CI. `lib/taskCard.pullRequestChip` draws it.
    */
@@ -1835,6 +1874,12 @@ export interface TaskRow {
    * `agent_worked.py`. The "Agent work" filter reads it.
    */
   agent_worked?: boolean | null;
+  /**
+   * WS-MCP SW-23 — the Check of the task: a read-only command that an agent
+   * runs, with its last result. Absent while the gateway's Check flag is off,
+   * and `null` for a task with no Check. `TaskCheckBlock` draws it.
+   */
+  check?: TaskCheck | null;
   /**
    * WS-64 OP-11 — the CALLER's overlay, on a read with `with_overlay=1`
    * (`mine.attach_my_overlay`). `disposition` is the effective one (D77).
@@ -2143,6 +2188,31 @@ export function refusedFields(err: unknown): FieldRow[] {
 }
 
 /**
+ * WS-39 LP-1a — one update of a project (`GET /projects/nodes/{id}/updates`).
+ * The author picks the health by hand. `body` is the text a person wrote.
+ */
+export type ProjectHealthValue = "on_track" | "at_risk" | "off_track";
+
+export type ProjectUpdate = {
+  id: string;
+  project_id: string;
+  author: string;
+  health: ProjectHealthValue;
+  body: string;
+  posted_at: string | null;
+  drafted_by_ai: boolean;
+  via: string | null;
+  /** This reader's right to delete it (`authority.may_delete_update`). */
+  can_delete?: boolean;
+  delete_refusal?: string | null;
+};
+
+export type ProjectUpdatesPage = {
+  rows: ProjectUpdate[];
+  next_before: string | null;
+};
+
+/**
  * The one request seam for `/api/projects/*`.
  *
  * Exported as `projectsCall` (WS-39 S3a-client) because the Tasks lens speaks
@@ -2295,6 +2365,7 @@ export const projectsApi = {
 
   /** The same shape one level up — every space the caller can see. */
   portfolio: () => call<NodeSummary>("summary"),
+
 
   /**
    * §9.12.7 analytics. `nodeId` omitted means the PORTFOLIO.
@@ -3286,6 +3357,17 @@ export const agentRunsApi = {
     ),
 
   /**
+   * SW-43b. The run's member swaps an answer that no agent has read for a new
+   * one, in one write. The same 404, 403 and 409 as the withdraw, and 422 for
+   * an id that is not an option. A retry with the same key writes once.
+   */
+  replaceAnswer: (runId: string, body: ReplaceBody) =>
+    call<{ run: AgentRun; activity: AgentActivity; replaced: boolean }>(
+      `agent-runs/${encodeURIComponent(runId)}/answer/replace`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  /**
    * EA-6g (EA3-40). The run's member approves or declines an agent's
    * archive request. An approve archives the task, never its subtasks. Any
    * other member gets 403, and a request past its expiry gets 409.
@@ -3330,6 +3412,26 @@ export const agentRunsApi = {
    */
   summary: (projectId: string) =>
     call<AgentSummary>(`${encodeURIComponent(projectId)}/agent-summary`),
+};
+
+/**
+ * WS-AGA AGA-8 — Agents at work. One read of every agent the member may see
+ * (`GET /projects/agents/overview`, AGA-7). `null` means the feature is dark
+ * for this member (404, 401 or 403), and the section then draws nothing.
+ */
+export const agentsOverviewApi = {
+  read: async (): Promise<AgentsOverview | null> => {
+    try {
+      const overview = parseOverview(await call<unknown>("agents/overview"));
+      if (!overview) {
+        throw new ProjectsApiError("The agents answer could not be read.", 200);
+      }
+      return overview;
+    } catch (err) {
+      if (err instanceof ProjectsApiError && [401, 403, 404].includes(err.status)) return null;
+      throw err;
+    }
+  },
 };
 
 /**

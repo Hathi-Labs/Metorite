@@ -576,7 +576,7 @@ def _parse_orgs(raw: str, star: bool = False) -> frozenset[str]:
 
     *star* is True only for a reader that reads ``*`` as each org
     (:func:`card_writes_for`, :func:`chat_summary_for`,
-    :func:`briefing_for`). For any other
+    :func:`briefing_for`, :func:`image_analysis_for`). For any other
     reader ``*`` matches no org, so
     it warns as any entry that is not a uuid does. :func:`enabled_for` reads
     an empty list as each org, and ``*`` there turns the profile off.
@@ -642,6 +642,34 @@ def card_writes_for(org_id: str | None) -> bool:
         from acb_common import get_settings
 
         raw = str(getattr(get_settings(), "assistant_profile_card_writes_orgs", "") or "")
+        orgs = _parse_orgs(raw, star=True)
+        return "*" in orgs or org in orgs
+    except Exception:
+        return False
+
+
+def image_analysis_for(org_id: str | None) -> bool:
+    """True when ``analyze_image`` may call a model for *org_id*. Fails closed.
+
+    ``IMAGE_ANALYSIS_ORGS`` (``image_analysis_orgs``, WS-VOX VOX-3,
+    ``projects_ai_chat.md`` §31) is a comma list of organization ids, or
+    ``*`` for each one. Empty means off, which is the default. It is the one
+    reader of the flag. Each call that the flag lets through draws AI credits
+    on ``tier-vision``. It does not need the profile switch.
+
+    The caller passes the bound tenant of the run
+    (``acb_common.db.current_tenant``), never an id from request input (R5).
+    It reads ``get_settings()`` on each call, so a flag reload
+    (``gateway/flag_reload.py``) applies a change with no restart. Fence:
+    ``tests/unit/test_attachment_analyze_image.py``.
+    """
+    try:
+        org = str(org_id or "").strip().lower()
+        if not org:
+            return False
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "image_analysis_orgs", "") or "")
         orgs = _parse_orgs(raw, star=True)
         return "*" in orgs or org in orgs
     except Exception:
@@ -1038,8 +1066,8 @@ def add_steered_words(author: Any, text: Any, *, typed: Any) -> bool:
     * *author* is the run member. Another member's steer never grounds a
       write.
 
-    ``orchestrator.steer.decorate_tool_result`` calls it when a tool result
-    carries a steer to the model. Never raises.
+    ``orchestrator.steer.take_steer_turns`` calls it when a model call reads
+    a steer as a user turn (task 2494). Never raises.
     """
     holder = _STEERS.get()
     if holder is None or typed is not True or not holder.member:
@@ -1920,7 +1948,32 @@ def _address_line(address: dict[str, Any], name: str, *, own: bool = True,
     return " ".join(bits)
 
 
-_BLOCK_LANGUAGE = re.compile(r"Language: (\S+?)\. Answer in it")
+# Language names for the style line. Same nine as ``LANGUAGES`` in
+# ``settings/assistant/lib/profile.ts``. ``test_assistant_profile_language.py``
+# keeps the two maps equal. A tag outside the map stays a bare tag.
+LANGUAGE_NAMES: dict[str, str] = {
+    "en": "English", "hi": "Hindi", "kn": "Kannada", "ta": "Tamil",
+    "te": "Telugu", "mr": "Marathi", "bn": "Bengali", "gu": "Gujarati",
+    "ml": "Malayalam",
+}
+
+# The one language rule of every chat turn (PZ-51, personalization.md 5.3).
+# ``executor._context_preamble_parts`` adds it to each turn, with or without
+# a profile block. Owner, 2026-11-09: the core truth is saved in English, and
+# the language of the message wins over the profile language.
+LANGUAGE_RULE_LINE = (
+    "Language rule: answer in the language that the member uses in this "
+    "message, also when it differs from their profile language. Use the "
+    "profile language only when the language of the message is unclear. "
+    "Write every saved record in English: task and project titles and "
+    "descriptions, comments, notes, CRM records, calendar events, and email "
+    "or message drafts. Do this even when the member writes in another "
+    "language. The one exception is a member's explicit request for another "
+    "language in that record, such as \"write this email in Hindi\"."
+)
+
+# Accepts "kn" and "Kannada (kn)". The group is always the TAG.
+_BLOCK_LANGUAGE = re.compile(r"Language: (?:[^.()]*?\()?([^\s.()]+?)\)?\. Answer in it")
 
 
 def block_language(block: str) -> str | None:
@@ -1936,7 +1989,10 @@ def _style_line(style: dict[str, Any], notes: list[str]) -> str:
     if style.get("length"):
         bits.append(LENGTH_LINES[style["length"]])
     if style.get("language"):
-        bits.append(f"Language: {_one_line(style['language'])}. Answer in it, "
+        tag = _one_line(style["language"])
+        name = LANGUAGE_NAMES.get(tag.lower())
+        label = f"{name} ({tag})" if name else tag
+        bits.append(f"Language: {label}. Answer in it, "
                     "unless they write in another language.")
     if notes:
         bits.append("Notes: " + " ".join(_sentence(n) for n in notes))

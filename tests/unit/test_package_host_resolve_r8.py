@@ -51,7 +51,8 @@ is not a pass.
 * M3. ``resolve.INSTALLS_SQL``: drop ``package_install.state = 'active'``.
   The same test goes red, and so does
   ``test_r8_the_version_is_stable_and_follows_the_viewer``.
-* M4. ``resolve.resolve_for``: pass ``groups=[]``.
+* M4. ``resolve.visible_installs`` (``resolve.resolve_for`` before WS-STU
+  J2a): pass ``groups=[]``.
   ``test_r8_a_group_install_shows_to_its_members_only``, the widest test and
   the winner test go red.
 """

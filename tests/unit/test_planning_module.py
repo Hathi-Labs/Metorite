@@ -39,9 +39,10 @@ ROOT = Path(__file__).resolve().parents[2]
 W = REVIEW_WAIT_MINS
 
 
-def T(id_, mins=None, *, cat="todo", owner="o", parent=None, rank=None, type_=None):
+def T(id_, mins=None, *, cat="todo", owner="o", parent=None, rank=None, type_=None,
+      dw=False):
     return PlanTask(id=id_, category=cat, estimate_mins=mins, owner=owner,
-                    parent=parent, priority_rank=rank, type=type_)
+                    parent=parent, priority_rank=rank, type=type_, done_when=dw)
 
 
 class TestTheFixtures:
@@ -225,6 +226,87 @@ _IO_MODULES = {
 }
 
 
+class TestGapsAndReadiness:
+    """PJP-6: gaps in the breakdown and Last Planner readiness. No database."""
+
+    def test_each_gap_kind(self):
+        big = planning.MAX_SLICE_MINS
+        r = analyze_plan([
+            T("a", 10, owner=None, dw=True),
+            T("b", None, dw=True),
+            T("c", big + 1, dw=True),
+            T("d", big, dw=False),
+            T("e", 10, dw=True),
+        ], [])
+        assert r.gaps["no_owner"] == ["a"]
+        assert r.gaps["no_estimate"] == ["b"]
+        assert r.gaps["too_big"] == ["c"]
+        assert r.gaps["no_done_when"] == ["d"]
+        assert r.gaps["words"] == [
+            "1 task has no owner", "1 task has no estimate",
+            "1 task has an estimate over 10 working days",
+            "1 task has no done-when",
+        ]
+
+    def test_each_not_ready_reason(self):
+        r = analyze_plan([
+            T("a", 10, dw=True),
+            T("b", 10, dw=True),            # blocked by a
+            T("c", 10, owner=None, dw=True),
+            T("d", None, dw=True),
+            T("e", 10, dw=False),
+            T("f", 10, dw=True),            # ready
+        ], [("a", "b")])
+        got = {row["task_id"]: row["reasons"] for row in r.not_ready}
+        assert got == {
+            "b": ["open blocker"],
+            "c": ["no owner"],
+            "d": ["no estimate"],
+            "e": ["no done-when"],
+        }
+
+    def test_an_outside_blocker_makes_a_task_not_ready(self):
+        r = analyze_plan([T("a", 10, dw=True)], [("x", "a")], outside={"x": "todo"})
+        assert r.not_ready == [{"task_id": "a", "reasons": ["open blocker"]}]
+
+    def test_a_done_blocker_does_not(self):
+        r = analyze_plan([T("a", 10, dw=True)], [("x", "a")], outside={"x": "done"})
+        assert r.not_ready == []
+
+    def test_a_task_can_have_all_reasons(self):
+        r = analyze_plan([T("a", 5, dw=True), T("b", None, owner=None)], [("a", "b")])
+        assert r.not_ready == [
+            {"task_id": "b",
+             "reasons": ["open blocker", "no owner", "no estimate", "no done-when"]}]
+
+    def test_chain_and_diamond_block_downstream_only(self):
+        chain = analyze_plan([T(i, 5, dw=True) for i in "abc"], [("a", "b"), ("b", "c")])
+        assert [x["task_id"] for x in chain.not_ready] == ["b", "c"]
+        dia = analyze_plan([T(i, 5, dw=True) for i in "abcd"],
+                           [("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")])
+        assert [x["task_id"] for x in dia.not_ready] == ["b", "c", "d"]
+
+    def test_a_cycle_still_lists_gaps_and_readiness(self):
+        r = analyze_plan([T("a", 5, dw=True), T("b", None, dw=True)], [("a", "b"), ("b", "a")])
+        assert r.cycle is not None
+        assert r.gaps["no_estimate"] == ["b"]
+        assert {x["task_id"] for x in r.not_ready} == {"a", "b"}
+
+    def test_no_links_and_a_closed_task(self):
+        r = analyze_plan([T("a", 5, dw=True), T("z", None, cat="done")], [])
+        assert r.not_ready == []
+        assert r.gaps["no_owner"] == r.gaps["no_estimate"] == r.gaps["too_big"] == []
+        assert r.gaps["words"] == []
+
+    def test_a_parent_is_not_a_slice(self):
+        r = analyze_plan([T("p", None, owner=None), T("c", 5, parent="p", dw=True)], [])
+        assert r.gaps["no_owner"] == [] and r.not_ready == []
+
+    def test_tasks_from_rows_reads_done_when(self):
+        t = planning.tasks_from_rows([{"id": "a", "category": "todo", "done_when": True}])
+        assert t[0].done_when is True
+
+
 def test_the_module_imports_no_io_library():
     source = (ROOT / "packages/acb_common/acb_common/planning.py").read_text(encoding="utf-8")
     seen: set[str] = set()
@@ -248,6 +330,19 @@ _ALLOWED: dict[str, str] = {
     "apps/skills/skill-projects/skill_projects/forms.py": (
         "`_block_cycle` only finds a loop among the rows of a plan the member "
         "proposes, before the card. It computes no order, wave, slack or date."
+    ),
+    # SP-12: three files read the engine's answer by its key names.
+    "apps/services/gateway/gateway/routes/projects/plan_analysis.py": (
+        "The route that calls `analyze_plan`. It reads the keys of the answer to "
+        "label the tasks that the answer names. It sorts no graph."
+    ),
+    "apps/services/agent_edge/agent_edge/tools.py": (
+        "`get_plan` copies the keys of the route answer, among the keys of 40 other "
+        "tools. It sorts no graph."
+    ),
+    "apps/skills/skill-projects/skill_projects/reads.py": (
+        "`get_plan` prints the keys of the route answer, among the other reads. It "
+        "sorts no graph."
     ),
 }
 

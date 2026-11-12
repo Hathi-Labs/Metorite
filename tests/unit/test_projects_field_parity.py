@@ -282,6 +282,7 @@ _BASE: dict[str, dict[str, Any]] = {
     # WS-57 TR-3: a URL on the task.
     "add_task_ref": {"task_id": UUID, "url": "https://github.com/acme/widgets/pull/12"},
     "analytics_finished": {},
+    "get_plan": {"root_task_id": UUID},
     "analytics_load": {},
     "analytics_outlook": {},
     "analytics_stuck": {},
@@ -299,6 +300,17 @@ _BASE: dict[str, dict[str, Any]] = {
     # WS-ALN ALN-4: a pin is of one project. The page id is the witness.
     "project_authorities": {"project_id": UUID},
     "pin_authority": {"project_id": UUID},
+    # WS-39 LP-1a: the updates of one project. The page and the cursor are the
+    # witnesses of the read. The post sends the health and the text.
+    "list_project_updates": {"project_id": UUID},
+    "post_project_update": {"project_id": UUID, "health": "at_risk",
+                            "body": "The vendor slipped a week."},
+    # WS-39 SP-5a: the cycles. The date, the name and the goal are the witnesses of a plan.
+    "create_cycle": {"project_id": UUID, "name": "Sprint 8", "starts_on": "2026-11-30",
+                     "ends_on": "2026-12-11"},
+    "plan_cycle": {"cycle_id": tw.PLANNED_CYCLE},
+    "start_cycle": {"cycle_id": tw.PLANNED_CYCLE},
+    "close_cycle": {"cycle_id": tw.ACTIVE_CYCLE},
     # WS-ALN ALN-2a: a decision of the member. The answer key is the witness.
     "answer_decision": {"decision_id": tw.DECISION_ID},
     # WS-64 OP-6d: the report is the one of the write fence.
@@ -365,9 +377,26 @@ _BASE: dict[str, dict[str, Any]] = {
     "update_reminder": {"reminder_id": tw.REMINDER, "title": "Fix the extruder today"},
     "resolve_reminder": {"reminder_id": tw.REMINDER},
     "reschedule_reminder": {"reminder_id": tw.REMINDER, "at": "2099-11-02 08:00"},
+    # WS-39 TPL-1a: the fake org holds one template, `UUID`.
+    "save_as_template": {"project_id": UUID, "name": "Office move"},
+    "create_project_from_template": {"template_id": UUID, "parent_id": UUID},
+    # SW-43c: the fake run of `UUID` holds the member's live answer. A witness
+    # names the argument that picks the route: `withdraw`, `option` or `answer`.
+    "change_agent_answer": {"task_id": UUID},
 }
 _SAMPLE: dict[str, Any] = {
     "all_unread": True,
+    # SW-43c: an option of the fake question (tw.QUESTION), and the withdraw.
+    "option": "Not now",
+    "withdraw": True,
+    # WS-39 SP-5a: the witnesses of the cycle fields.
+    "add_task_ids": UUID,
+    "carry_over": "backlog",
+    "ends_on": "2026-12-11",
+    "goal": "Ship the nozzle",
+    "starts_on": "2026-11-30",
+    # WS-39 LP-1a: the cursor of the updates is the id of an update.
+    "before": OTHER,
     "page_id": UUID,
     "include_removed": True,
     "answer_key": "yes",
@@ -483,6 +512,8 @@ _SAMPLE: dict[str, Any] = {
     "estimate_minutes": 30,
     "answer": "drop",
     "state": "done",
+    # WS-39 TPL-1a: the day that a template's offsets count from.
+    "start_date": "2026-12-01",
 }
 #: A row key's sample, where the argument of the same name takes another form.
 _ROW_SAMPLE: dict[str, Any] = {"name": "Spike", "is_epic": "yes"}
@@ -605,6 +636,11 @@ _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
         "anchor": "completed",
     },
     ("POST", "/projects/notifications/read", "all"): {"all_unread": True},
+    # SP-8a: three checks, the least that a contract takes.
+    ("PUT", "/projects/tasks/{task_id}/epic-contract", "epic_contract"): {
+        "task_id": UUID,
+        "acceptance": "The page renders\nThe R8 suite passes\nThe owner approves",
+    },
     ("GET", "/projects/candidates", "title"): {"title": "Weld the frame"},
     ("GET", "/projects/tasks/{task_id}/timeline", "kind"): {"task_id": UUID, "kind": "comments"},
     ("POST", "/projects/nodes", "kind"): {"name": "Q4 launch", "kind": "folder"},
@@ -774,8 +810,8 @@ def test_the_spec_tables_parse() -> None:
     """A spec edit that breaks the parse would pass every check below."""
     # 23 since WS-55 EA-12a added G23, the agent-run routes (EA12-9). 24
     # since WS-66 RM-1 added G24, the reminder routes. 25 since WS-AP AP-8a
-    # added G25, the person ask.
-    assert len(_spec_gaps()) == 25
+    # added G25, the person ask. 26 since WS-39 SP-1 added G26, the cycles.
+    assert len(_spec_gaps()) == 26
     assert {"P1", "P2", "P3"} <= _built_slices()
 
 
