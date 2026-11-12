@@ -33,7 +33,7 @@ request. Org B never writes into the connection of org A.
 * M4. ``task_out.py`` ``_DESIRED``: drop the ``s.category NOT IN`` line. A done
   task kept its event.
   ``test_r8_done_a_cleared_block_and_a_deleted_task_delete_the_event``.
-* M5. ``419_calendar_task_links.sql``: drop the RLS block. Org B read the link
+* M5. ``425_calendar_task_links.sql``: drop the RLS block. Org B read the link
   of org A.
   ``test_r8_org_b_never_writes_into_the_connection_of_org_a``.
 """
