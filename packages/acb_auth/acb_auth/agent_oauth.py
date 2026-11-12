@@ -26,7 +26,9 @@ Four doors check it (spec §10.6): the consent routes, the store's token
 issue, the edge bearer check and the connection read of branch 0.
 :func:`change_access_allowed` is the one reader of
 ``agent_change_access_orgs``, the dark switch of Change access (EA-17c-1,
-spec §10.8).
+spec §10.8). :func:`image_upload_allowed` is the one reader of
+``mcp_image_upload_orgs``, the dark switch of the images of an agent
+(CIV-14b, spec §12.9).
 
 **First-party clients (D-EA-11, spec §10.7).** :func:`is_first_party` is
 the one reader of ``agent_first_party_client_ids``, and
@@ -517,6 +519,41 @@ def change_access_allowed(organization_id: object) -> bool:
     return ALL_ORGS in orgs or org in orgs
 
 
+def image_upload_allowed(organization_id: object) -> bool:
+    """True when ``mcp_image_upload_orgs`` allows *organization_id*.
+
+    CIV-14b (spec §12.9). The ONE reader of the flag. It keeps the images of
+    an outside agent dark: for a signed agent of an organization that it
+    refuses, the upload route answers 404 with :data:`IMAGE_UPLOAD_OFF`, and
+    ``attachment_ids`` of an activity answers 422 with the same code. A person
+    in the app is never refused by it. The list has the shape of
+    ``agent_access_orgs`` and the same parser, and the default is empty. Only
+    the gateway reads it, at each call, so a flag reload applies a change.
+    The caller passes the organization of the session, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().mcp_image_upload_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
+#: CIV-14b. The code of the refusal while :func:`image_upload_allowed` is
+#: false: the ``detail`` of the 404 of the upload, and the ``error`` of the
+#: 422 of ``attachment_ids``. The edge maps it to a fixed tool text. ONE
+#: copy: the edge may not import the gateway.
+IMAGE_UPLOAD_OFF = "image_upload_off"
+
+#: CIV-14b. The most images on one question or one activity
+#: (``attachment_ids``). The gateway body model and the edge schema read it.
+ACTIVITY_IMAGES_MAX = 4
+
+#: CIV-14b. The largest image that a signed agent uploads: 3.75 MiB, the cap
+#: of the read of IMG-3 too. The edge refuses a larger file before it sends
+#: one byte, and the upload route refuses it for a signed agent.
+AGENT_IMAGE_MAX_BYTES = 3_932_160
+
+
 def playbook_allowed(organization_id: object) -> bool:
     """True when ``playbook_orgs`` allows *organization_id*.
 
@@ -985,6 +1022,15 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: the task. It answers 404 while ``agent_task_checks_enabled`` is off. HIGH
 #: tier from the start (identity of who may close a task).
 #: Fence: ``tests/unit/test_task_check_r8.py`` and the coverage fence.
+#: CIV-14b (spec §12.9) adds the upload of a file to a task, the route of
+#: ``upload_task_image``. For a signed agent the route takes only a png,
+#: jpeg, gif or webp image of at most :data:`AGENT_IMAGE_MAX_BYTES`, and only
+#: for an organization of :func:`image_upload_allowed`. The route keeps its
+#: own visibility check, advisory lock and budget of 10 MB for each task. The
+#: author takes the image off again in the Files tab of the task, through
+#: ``DELETE /projects/tasks/{task_id}/attachments/{attachment_id}``. That
+#: DELETE stays OFF both sets. Fences: ``test_mcp_upload_image_tenant_r8.py``
+#: and the coverage fence.
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/nodes"),
     ("PATCH", "/projects/nodes/{project_id}"),
@@ -1023,6 +1069,9 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # WS-MCP SW-23: `report_check`. A pass closes the task only when the
     # caller may move it. It answers 404 while the Check flag is off.
     ("POST", "/projects/tasks/{task_id}/check-result"),
+    # CIV-14b: `upload_task_image`. One image, multipart. The route checks
+    # the first bytes against the type and refuses an SVG for every caller.
+    ("POST", "/projects/tasks/{task_id}/attachments"),
 })
 
 #: The ONE allowlist of the MCP edge (EA3-6). Each pair is a method and the
@@ -1410,7 +1459,9 @@ def authorization_redirect(redirect_uri: str, params: Mapping[str, str | None]) 
 
 
 __all__ = [
+    "ACTIVITY_IMAGES_MAX",
     "ACTOR_VIA_PATTERN",
+    "AGENT_IMAGE_MAX_BYTES",
     "ALL_ORGS",
     "APPROVAL_REQUIRED_CODE",
     "APP_OFF_CODE",
@@ -1428,6 +1479,7 @@ __all__ = [
     "DOOR_READ_WINDOW_S",
     "DOOR_WRITES_OFF_CODE",
     "FIXED_RESOURCE_SCOPES",
+    "IMAGE_UPLOAD_OFF",
     "MAX_SCOPE_CHARS",
     "MAX_URL_CHARS",
     "MCP_PATH_SHAPES",
@@ -1467,6 +1519,7 @@ __all__ = [
     "effective_scopes",
     "enabled",
     "granted_scope",
+    "image_upload_allowed",
     "is_allowed_redirect_uri",
     "is_cimd_client_id",
     "is_valid_challenge",

@@ -25,8 +25,11 @@ gives the answer, and no later check runs:
    ``agent_signing.signing_key()`` is None.
 3. Method: anything but ``POST`` is 405.
 4. ``Origin``: when present, it must equal the origin of the issuer, or 403.
-5. Body: over 1 MiB is 413 before any parse. Not JSON is 400 ``-32700``. A
-   batch, or a body that is not a JSON-RPC message, is 400 ``-32600``.
+5. Body: over 6 MiB is 413 before any parse. Over 1 MiB is 413 after the
+   parse, unless it is one ``tools/call`` of ``upload_task_image`` (CIV-14b),
+   and at most :data:`LARGE_BODIES_AT_ONCE` such bodies are read at once (503
+   after that). Not JSON is 400 ``-32700``. A batch, or a body that is not a
+   JSON-RPC message, is 400 ``-32600``.
 6. Token: §7.1 steps 1 and 2 (:mod:`agent_edge.bearer`). 401, or 503 with
    ``Retry-After: 2`` for a database outage (EA3-10).
 7. Version: after ``initialize``, ``MCP-Protocol-Version`` must be absent
@@ -57,8 +60,9 @@ posts, gets 202 with no body.
 """
 from __future__ import annotations
 
+import contextlib
 import json
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -86,6 +90,23 @@ LATEST_VERSION = "2025-11-25"
 #: This is the cap of ``/mcp`` only. ``token`` and ``revoke`` use
 #: ``agent_oauth_max_body_bytes``.
 MAX_BODY_BYTES = 1024 * 1024
+
+#: CIV-14b (spec §12.9). The cap of the body of ONE call of
+#: :data:`UPLOAD_TOOL`: the base64 of a 3.75 MiB image is 5 MiB, and the rest
+#: holds its line breaks and the envelope. A body over :data:`MAX_BODY_BYTES`
+#: that is not such a call gets the 413 after the parse. The ``max_size`` of
+#: ``mcp.metorite.com`` in the Caddyfile equals this cap.
+MAX_UPLOAD_BODY_BYTES = 6 * 1024 * 1024
+
+#: CIV-14b. The most bodies over :data:`MAX_BODY_BYTES` that the edge holds at
+#: once. The check runs before the token, so it bounds the memory that a
+#: client with no token can take. One more answers 503 with
+#: :data:`LARGE_BODY_RETRY_AFTER_S`, and the edge reads no more of it.
+LARGE_BODIES_AT_ONCE = 4
+LARGE_BODY_RETRY_AFTER_S = 5
+
+#: CIV-14b. The one tool whose call may have a body over :data:`MAX_BODY_BYTES`.
+UPLOAD_TOOL = "upload_task_image"
 
 #: The header of the MCP session (SW-7, spec §12.5).
 SESSION_HEADER = "Mcp-Session-Id"
@@ -378,16 +399,62 @@ class _TooLarge(Exception):
     pass
 
 
-async def _read_capped(request: Request) -> bytes:
+class _TooMany(Exception):
+    """CIV-14b. :data:`LARGE_BODIES_AT_ONCE` large bodies are in flight."""
+
+
+#: The count of the large bodies that the edge holds now. The edge runs one
+#: event loop, so a plain count needs no lock.
+_LARGE_BODIES = [0]
+
+
+def _take_large_slot() -> None:
+    if _LARGE_BODIES[0] >= LARGE_BODIES_AT_ONCE:
+        raise _TooMany()
+    _LARGE_BODIES[0] += 1
+
+
+@contextlib.asynccontextmanager
+async def _body(request: Request) -> AsyncIterator[bytes]:
+    """The body, read under the caps of check 5 (CIV-14b).
+
+    A declared ``Content-Length`` over :data:`MAX_UPLOAD_BODY_BYTES` is
+    refused before any read. A body that passes :data:`MAX_BODY_BYTES` takes
+    one of the :data:`LARGE_BODIES_AT_ONCE` slots, or raises :class:`_TooMany`
+    before the edge reads more. The slot stays taken until the request ends,
+    because the parsed call holds the bytes until then.
+    """
     declared = request.headers.get("content-length")
-    if declared is not None and declared.strip().isdigit() and int(declared) > MAX_BODY_BYTES:
+    size = int(declared) if declared is not None and declared.strip().isdigit() else None
+    if size is not None and size > MAX_UPLOAD_BODY_BYTES:
         raise _TooLarge()
-    body = bytearray()
-    async for chunk in request.stream():
-        body += chunk
-        if len(body) > MAX_BODY_BYTES:
-            raise _TooLarge()
-    return bytes(body)
+    held = False
+    try:
+        if size is not None and size > MAX_BODY_BYTES:
+            _take_large_slot()
+            held = True
+        body = bytearray()
+        async for chunk in request.stream():
+            body += chunk
+            if len(body) > MAX_BODY_BYTES and not held:
+                _take_large_slot()
+                held = True
+            if len(body) > MAX_UPLOAD_BODY_BYTES:
+                raise _TooLarge()
+        raw = bytes(body)
+        del body
+        yield raw
+    finally:
+        if held:
+            _LARGE_BODIES[0] -= 1
+
+
+def _is_upload_call(message: Any) -> bool:
+    """True for one ``tools/call`` of :data:`UPLOAD_TOOL` (CIV-14b)."""
+    if not isinstance(message, dict) or message.get("method") != "tools/call":
+        return False
+    params = message.get("params")
+    return isinstance(params, dict) and params.get("name") == UPLOAD_TOOL
 
 
 def _is_id(value: Any) -> bool:
@@ -497,16 +564,31 @@ async def _serve(request: Request, *, read_only: bool) -> Response:
         return http_error(403, INVALID_REQUEST, "The origin is not allowed.")
 
     try:
-        raw = await _read_capped(request)
+        async with _body(request) as raw:
+            return await _serve_body(request, raw, key, read_only=read_only)
     except _TooLarge:
         return http_error(413, INVALID_REQUEST, "The body is too large.")
+    except _TooMany:
+        return http_error(503, INTERNAL_ERROR, "Metorite is busy. Try again.",
+                          {"Retry-After": str(LARGE_BODY_RETRY_AFTER_S)})
+
+
+async def _serve_body(request: Request, raw: bytes, key: str, *,
+                      read_only: bool) -> Response:
+    """Checks 5 (after the read) to 8 of §9.6, in order, then the method."""
+    large = len(raw) > MAX_BODY_BYTES
     try:
         message = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
         # RecursionError: a body of deeply nested arrays passes the size cap
         # and overflows the parser. It is a body that is not JSON we can read,
         # so it is the same 400, never a 500 (fix round 1).
+        if large:
+            return http_error(413, INVALID_REQUEST, "The body is too large.")
         return http_error(400, PARSE_ERROR, "Parse error")
+    if large and not _is_upload_call(message):
+        # CIV-14b: only the upload of one image may pass the cap of a call.
+        return http_error(413, INVALID_REQUEST, "The body is too large.")
     kind = _kind(message)
     if kind is None:
         return http_error(400, INVALID_REQUEST, "Invalid request")
@@ -650,14 +732,18 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
 
 __all__ = [
     "CAPABILITIES",
+    "LARGE_BODIES_AT_ONCE",
+    "LARGE_BODY_RETRY_AFTER_S",
     "LATEST_VERSION",
     "LEGACY_VERSION",
     "MAX_BODY_BYTES",
+    "MAX_UPLOAD_BODY_BYTES",
     "NO_KEY_RETRY_AFTER_S",
     "READONLY_SEGMENT",
     "ROUTE_METHODS",
     "SESSION_HEADER",
     "SUPPORTED_VERSIONS",
+    "UPLOAD_TOOL",
     "challenge_401",
     "challenge_403",
     "endpoint",

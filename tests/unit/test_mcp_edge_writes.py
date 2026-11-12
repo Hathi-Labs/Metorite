@@ -121,14 +121,17 @@ def _uuid(n: int) -> str:
 #: (``test_mcp_edge_assignees.py``), the two link tools of SW-16a
 #: (``test_task_links_mcp_r8.py``) and the four tools of MCP-G1
 #: (``test_mcp_edge_projects.py``). ``update_tasks`` of MCP-G20 follows
-#: ``update_task`` (``test_mcp_edge_bulk_updates.py``).
+#: ``update_task`` (``test_mcp_edge_bulk_updates.py``). CIV-14b adds
+#: ``upload_task_image`` (``test_mcp_upload_image_limits.py``).
 WRITE_TOOL_NAMES = ("set_task_status", "add_task_reference", "create_task", "update_task",
                     "update_tasks", "add_comment", "update_comment", "delete_comment",
                     "claim_task", "set_assignees", "add_task_link",
                     "remove_task_link", "create_project",
                     "update_project", "preview_move_tasks", "move_tasks",
                     # WS-39 LP-1a: one update of a project.
-                    "post_project_update")
+                    "post_project_update",
+                    # CIV-14b: one image onto a task.
+                    "upload_task_image")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

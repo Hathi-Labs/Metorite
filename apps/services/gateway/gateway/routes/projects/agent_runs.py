@@ -92,6 +92,12 @@ The rules, each one stated in the spec:
   is not ``awaiting`` stay open to each member who sees the task. The list of
   ``agent_questions.py`` reads the same text, so it never offers a button that
   this route refuses.
+* **Images on a question** (WS-55 CIV-14b, spec §12.9). An agent activity
+  takes ``attachment_ids``: at most four images of the run's OWN task, read
+  after the replay check (:func:`_task_images`). Another task's file is 422.
+  ``content.attachments`` keeps each id, name, type and size, so the card
+  draws the images from the cookie serve route. Dark behind
+  ``mcp_image_upload_orgs`` (``agent_oauth.image_upload_allowed``).
 """
 
 from __future__ import annotations
@@ -110,6 +116,7 @@ from typing import Any, Literal
 from acb_auth import UserContext, agent_oauth, get_current_user
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE, actor_via_for
 from acb_common import get_logger
+from acb_common.image_probe import RASTER_MIMES
 from acb_common.no_person import NO_PERSON_PRESENT, NO_PERSON_TEXT, no_person_present
 from fastapi import Depends, HTTPException, Query, Response
 from gateway.routes.projects.core import (
@@ -304,6 +311,12 @@ MAX_WAITING_NOTE = 200
 #: ``filters.agent_run_waiting_cap_min`` (D140.8, SW-4 item 2).
 WAITING_TOO_LONG = "waiting_too_long"
 
+#: CIV-14b (spec §12.9 item 2). The codes of a 422 of ``attachment_ids``: an
+#: id that is not a file of the run's task, and a file that is not a png,
+#: jpeg, gif or webp image. The edge maps each code to a fixed text.
+ATTACHMENT_NOT_ON_TASK = "attachment_not_on_task"
+ATTACHMENT_NOT_IMAGE = "attachment_not_image"
+
 
 class WaitingIn(BaseModel):
     """``waiting`` of an agent activity (task 1045a, ``agent_coordination.md``
@@ -324,7 +337,9 @@ class ActivityIn(BaseModel):
     ``selected`` answers it, on a ``prompt``. ``signal`` is the member's
     ``continue`` (the default) or ``stop``. The server sets ``select`` and
     ``in_reply_to`` itself (EA12-7). Task 1045a: ``waiting`` goes on an
-    agent ``thought``, ``action`` or ``response`` only.
+    agent ``thought``, ``action`` or ``response`` only. CIV-14b:
+    ``attachment_ids`` goes on an agent activity only, at most
+    ``agent_oauth.ACTIVITY_IMAGES_MAX`` images of the run's task.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -339,6 +354,8 @@ class ActivityIn(BaseModel):
     parameters: dict[str, str] | None = None
     signal: Literal["continue", "stop"] | None = None
     waiting: WaitingIn | None = None
+    attachment_ids: list[uuid.UUID] | None = Field(
+        default=None, min_length=1, max_length=agent_oauth.ACTIVITY_IMAGES_MAX)
 
 
 #: SW-24. The most characters of one text of a handoff note.
@@ -1060,6 +1077,9 @@ def _validate_fields(payload: ActivityIn) -> None:
         raise HTTPException(status_code=422, detail="Only a prompt carries selected.")
     if (payload.action is not None or payload.parameters is not None) and kind != "action":
         raise HTTPException(status_code=422, detail="Only an action carries action and parameters.")
+    if payload.attachment_ids is not None and kind == "prompt":
+        # CIV-14b: the images of an agent. A person attaches in the Files tab.
+        raise HTTPException(status_code=422, detail="A prompt carries no attachment_ids.")
     if payload.waiting is not None:
         _validate_waiting(payload)
 
@@ -1284,6 +1304,60 @@ def _refuse_a_marked_prompt(kind: str, run_id: str) -> None:
         )
 
 
+#: CIV-14b. The files of ONE task among the given ids. The join row is the
+#: rule of the serve route: a file is readable by each person who can see a
+#: task that it hangs off. FORCE RLS binds the tenant of both tables.
+_TASK_IMAGES_SQL = (
+    "SELECT a.id, a.name, a.mime, a.size_bytes"
+    "  FROM pm_task_attachments ta"
+    "  JOIN attachments a ON a.id = ta.attachment_id"
+    " WHERE ta.task_id = CAST(:tid AS uuid)"
+    "   AND ta.attachment_id = ANY(CAST(:ids AS uuid[]))"
+)
+
+
+async def _image_content(db: Any, task_id: str, ids: list[str] | None) -> dict[str, Any]:
+    """The ``content`` keys of the images of an activity: ``{}`` with no
+    ids, else ``{"attachments": [...]}`` from :func:`_task_images`."""
+    if not ids:
+        return {}
+    return {"attachments": await _task_images(db, task_id, ids)}
+
+
+async def _task_images(db: Any, task_id: str, ids: list[str]) -> list[dict[str, Any]]:
+    """The image rows of *ids* on the task, in the order of *ids*, once each.
+
+    CIV-14b (spec §12.9 item 2). An id that is not a file of THIS task is a
+    422 with :data:`ATTACHMENT_NOT_ON_TASK`: the serve route would serve a
+    file of any task that the reader can see, so the check is here. A file
+    whose stored type is not a png, jpeg, gif or webp image is a 422 with
+    :data:`ATTACHMENT_NOT_IMAGE`. Each row holds the id, the name, the type
+    and the size, and no address.
+    """
+    wanted = list(dict.fromkeys(i.lower() for i in ids))
+    rows = (await db.execute(
+        text(_TASK_IMAGES_SQL), {"tid": task_id, "ids": wanted},
+    )).fetchall()
+    found = {str(r.id).lower(): r for r in rows}
+    if any(i not in found for i in wanted):
+        raise HTTPException(status_code=422, detail={
+            "error": ATTACHMENT_NOT_ON_TASK,
+            "message": "Each attachment_id must be a file of the task of this run.",
+        })
+    out: list[dict[str, Any]] = []
+    for i in wanted:
+        row = found[i]
+        mime = str(row.mime or "").split(";")[0].strip().lower()
+        if mime not in RASTER_MIMES:
+            raise HTTPException(status_code=422, detail={
+                "error": ATTACHMENT_NOT_IMAGE,
+                "message": "Each attachment_id must be a PNG, JPEG, GIF or WebP image.",
+            })
+        out.append({"attachment_id": i, "name": str(row.name or ""), "mime": mime,
+                    "size": int(row.size_bytes or 0)})
+    return out
+
+
 async def _write_activity(
     db: Any,
     run: Any,
@@ -1307,6 +1381,7 @@ async def _write_activity(
     metadata: dict[str, Any] | None = None,
     withdraws: str | None = None,
     waiting: WaitingIn | None = None,
+    attachment_ids: list[str] | None = None,
 ) -> _Written:
     """Write one activity on a LOCKED run, inside the caller's transaction.
 
@@ -1340,6 +1415,12 @@ async def _write_activity(
     ``content.waiting``, so the note stays with its line, and
     :func:`_move_run` sets ``waiting_on`` and ``waiting_until``. An activity
     with no *waiting* clears both, whoever writes it.
+
+    CIV-14b (spec §12.9 item 2). *attachment_ids* are images of the run's
+    task, read AFTER the replay check, so a retry returns its first row.
+    :func:`_task_images` refuses an id of another task or a file that is not
+    an image, and ``content.attachments`` keeps the id, the name, the type and
+    the size of each. The card draws each one from the cookie serve route.
     """
     run_id = str(run.id)
     task_id = str(run.task_id)
@@ -1353,6 +1434,8 @@ async def _write_activity(
     me = _member(user)
     if is_agent and run.member_email != me:
         raise HTTPException(status_code=403, detail="This agent run belongs to another member.")
+    # CIV-14b: before any write, so a refused id moves no status.
+    images = await _image_content(db, task_id, attachment_ids)
 
     new_status = transition(run.status, event or _event_of(kind, signal))
     reopened_end: str | None = None
@@ -1391,6 +1474,7 @@ async def _write_activity(
         )
     if extra:
         content.update(extra)
+    content.update(images)
     if waiting is not None:
         content["waiting"] = {
             "on": waiting.on, "until_minutes": waiting.until_minutes,
@@ -2498,6 +2582,13 @@ async def post_agent_activity(
     _require_write_scope(user)
     agent = _agent_via(user) is not None
     _validate(payload, agent=agent)
+    if payload.attachment_ids is not None and not agent_oauth.image_upload_allowed(
+            getattr(user, "organization_id", None)):
+        # CIV-14b: dark until `mcp_image_upload_orgs` names the org.
+        raise HTTPException(status_code=422, detail={
+            "error": agent_oauth.IMAGE_UPLOAD_OFF,
+            "message": "Images on an activity are off for this organization.",
+        })
     async with _tenant_session() as db:
         await _load_visible_run(db, user, run_id)
         run = await _lock_run(db, run_id)
@@ -2509,6 +2600,8 @@ async def post_agent_activity(
             allow_multiple=bool(payload.allow_multiple), selected=payload.selected,
             action=payload.action, parameters=payload.parameters, signal=payload.signal,
             waiting=payload.waiting,
+            attachment_ids=([str(a) for a in payload.attachment_ids]
+                            if payload.attachment_ids is not None else None),
         )
         if not written.created:
             response.status_code = 200

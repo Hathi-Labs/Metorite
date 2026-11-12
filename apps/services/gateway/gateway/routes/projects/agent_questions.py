@@ -165,7 +165,11 @@ def question_row(
     out, and "Everyone" answers 403."""
     via = run.client_via
     meta = from_jsonb(question.signal_metadata) or {}
+    content = from_jsonb(question.content) or {}
     request = archive_request_of(question)
+    # CIV-14b (spec §12.9): the images of the question, as the activity row
+    # holds them. Absent on a question with none.
+    images = content.get("attachments") if isinstance(content, dict) else None
     return {
         "run_id": str(run.run_id),
         "activity_id": str(question.id),
@@ -179,12 +183,13 @@ def question_row(
         "project_path": path,
         "question": {
             "kind": KIND_ARCHIVE_REQUEST if request is not None else KIND_QUESTION,
-            "body": (from_jsonb(question.content) or {}).get("body"),
+            "body": content.get("body") if isinstance(content, dict) else None,
             "options": meta.get("options") or [],
             "allow_multiple": bool(meta.get("allow_multiple")),
             # EA-18b. A typed request carries its expiry, so the card draws the
             # expired state with a Decline. Absent on any other question.
             **({"expires_at": request.get("expires_at")} if request is not None else {}),
+            **({"attachments": images} if isinstance(images, list) and images else {}),
         },
         "can_answer": bool(review or run.may_answer),
         "why": run.why,

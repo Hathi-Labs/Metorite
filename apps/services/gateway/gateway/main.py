@@ -1217,6 +1217,12 @@ from gateway.routes.projects.import_body_limit import ImportBodyLimit  # noqa: E
 
 app.add_middleware(ImportBodyLimit)
 
+# CIV-14b: keep a copy of the body of a SIGNED agent upload while FastAPI
+# parses the form, so branch 0 can check the signature over those bytes.
+from gateway.routes.projects.agent_upload_body import AgentUploadBody  # noqa: E402
+
+app.add_middleware(AgentUploadBody)
+
 # ── CORS ── allow workbench dev server (port 3001) and production origin
 app.add_middleware(
     CORSMiddleware,

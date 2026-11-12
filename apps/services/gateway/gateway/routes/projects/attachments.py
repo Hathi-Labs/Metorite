@@ -26,6 +26,14 @@ than conveniences:
    enters this table is by uploading the bytes in the same request.
 2. **A personal capture stays unreachable here.** It has no join row, so the
    serve route below cannot find it no matter who asks.
+
+**The type comes from the bytes (CIV-14b, ``external_agent_access.md``
+§12.9 item 4).** :func:`stored_type` refuses an SVG, and it checks that a
+file that says that it is an image holds one. The route is also the route of
+the MCP tool ``upload_task_image``: a signed agent attaches only a raster
+image of at most 3.75 MB, and only while ``mcp_image_upload_orgs`` names its
+organization. Fences: ``test_mcp_upload_image_types.py`` and
+``test_mcp_upload_image_tenant_r8.py``.
 """
 
 from __future__ import annotations
@@ -34,7 +42,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from acb_auth import UserContext, get_current_user
+from acb_auth import UserContext, agent_oauth, get_current_user
+from acb_common.image_probe import RASTER_MIMES, looks_like_svg, sniff_image_mime
 from fastapi import Depends, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from gateway.routes.projects.core import (
@@ -46,6 +55,7 @@ from gateway.routes.projects.core import (
     record_activity,
     resolve_visibility,
     router,
+    transient_as_409,
 )
 
 # Imported, never re-implemented: one answer to "what may be uploaded".
@@ -128,6 +138,78 @@ def _mb(size: int) -> str:
     return f"{size / (1024 * 1024):.1f} MB"
 
 
+#: CIV-14b (spec §12.9 item 4). The type and the file endings of an SVG.
+#: An SVG is a document that can hold a script, so no caller stores one.
+_SVG_MIME = "image/svg+xml"
+_SVG_SUFFIXES = frozenset({".svg", ".svgz"})
+
+#: The words of each refusal of :func:`stored_type`. Each 415 says what the
+#: member can do next.
+SVG_REFUSED = (
+    "SVG files are not accepted, because an SVG can hold a script. "
+    "Export the image as a PNG or a JPEG and attach that."
+)
+NOT_THE_DECLARED_TYPE = (
+    "This file says that it is a {kind} image, but its content is not a PNG, "
+    "JPEG, GIF or WebP image. Attach the image file itself."
+)
+#: CIV-14b. The refusal of a signed agent upload that is not a raster image.
+AGENT_IMAGE_ONLY = "An agent can attach only a PNG, JPEG, GIF or WebP image."
+AGENT_IMAGE_TOO_LARGE = "An agent can attach an image of 3.75 MB at most."
+
+
+def stored_type(name: str, declared: str | None, content: bytes) -> str:
+    """The type to store for an upload, or raise the 415 (CIV-14b, §12.9 item 4).
+
+    THE one type rule of a task upload, for every caller. An SVG is refused:
+    by its declared type, by its file ending, or by its first bytes. A file
+    that says that it is a PNG, JPEG, GIF or WebP image must hold one of those
+    four, by its first bytes (``acb_common.image_probe.sniff_image_mime``),
+    and the bytes then decide which of the four it is. The client's label
+    never makes the server serve a type that the bytes do not hold. Any other
+    declared type stays as it came, and the serve route downloads it.
+    """
+    base = (declared or "").split(";")[0].strip().lower()
+    if (base == _SVG_MIME or Path(name).suffix.lower() in _SVG_SUFFIXES
+            or looks_like_svg(content)):
+        raise HTTPException(status_code=415, detail=SVG_REFUSED)
+    if base in RASTER_MIMES:
+        sniffed = sniff_image_mime(content)
+        if sniffed is None:
+            kind = base.removeprefix("image/").upper()
+            raise HTTPException(status_code=415,
+                                detail=NOT_THE_DECLARED_TYPE.format(kind=kind))
+        return sniffed
+    return declared or "application/octet-stream"
+
+
+def _agent_upload_refusal(user: UserContext) -> None:
+    """For a signed agent: the dark switch of CIV-14b, before any read.
+
+    An organization off ``mcp_image_upload_orgs`` gets 404 with
+    ``agent_oauth.IMAGE_UPLOAD_OFF``, which the edge maps to its own text. A
+    person in the app never meets this.
+    """
+    if getattr(user, "agent", None) is None:
+        return
+    if not agent_oauth.image_upload_allowed(getattr(user, "organization_id", None)):
+        raise HTTPException(status_code=404, detail=agent_oauth.IMAGE_UPLOAD_OFF)
+
+
+def _agent_image_refusal(user: UserContext, mime: str, size: int) -> None:
+    """For a signed agent: a raster image of at most 3.75 MB only (CIV-14b).
+
+    The edge refuses every other file before it sends one byte. This is the
+    gateway half of the same rule, so an edge fault cannot store another file.
+    """
+    if getattr(user, "agent", None) is None:
+        return
+    if size > agent_oauth.AGENT_IMAGE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail=AGENT_IMAGE_TOO_LARGE)
+    if mime not in RASTER_MIMES:
+        raise HTTPException(status_code=415, detail=AGENT_IMAGE_ONLY)
+
+
 
 def descriptor(row: Any) -> dict[str, Any]:
     """The shape the UI renders — the same field names the capture flow uses."""
@@ -148,6 +230,7 @@ def descriptor(row: Any) -> dict[str, Any]:
 
 
 @router.post("/tasks/{task_id}/attachments", status_code=201)
+@transient_as_409
 async def attach_file(
     task_id: str,
     file: UploadFile,
@@ -158,7 +241,14 @@ async def attach_file(
     Visibility is checked FIRST — before the bytes are read, let alone written.
     Validating a 15MB upload and then discovering the caller cannot see the task
     would mean an unauthorised caller could still make the server do the work.
+
+    CIV-14b (spec §12.9). :func:`stored_type` checks the first bytes against
+    the declared type and refuses an SVG, for every caller. A signed agent
+    also needs its organization on ``mcp_image_upload_orgs``, and it uploads
+    only a raster image of at most 3.75 MB. A deadlock or a lock timeout is a
+    409 "try again" (``core.transient_as_409``), never a 500.
     """
+    _agent_upload_refusal(user)
     email = actor(user)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -178,6 +268,9 @@ async def attach_file(
                 detail=f"Attachment too large ({len(content)} bytes; "
                        f"max {_MAX_BYTES}).",
             )
+        # CIV-14b: the bytes decide the type of an image, and no SVG lands.
+        mime = stored_type(name, file.content_type, content)
+        _agent_image_refusal(user, mime, len(content))
 
         # ⚠️ The budget is PER TASK, not per file (owner directive,
         # 2026-09-19: "limit the max size of the attachments that each task
@@ -257,7 +350,6 @@ async def attach_file(
             )
 
         att_id = str(uuid4())
-        mime = file.content_type or "application/octet-stream"
         dest = _storage_dir() / f"{att_id}{Path(name).suffix.lower()}"
         dest.write_bytes(content)
 
