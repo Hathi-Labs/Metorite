@@ -679,3 +679,227 @@ def test_gate_output_uses_the_timings_and_agrees_with_the_pick_step(tmp_path: Pa
     gate.write_text(json.dumps({"full": False, "files": []}), encoding="utf-8")
     assert dict(x.split("=", 1) for x in guard.gate_output(gate))["shards"] == "[]"
     assert dict(x.split("=", 1) for x in guard.gate_output(tmp_path / "absent.json"))["shards"] == "[1,2,3,4,5,6]"
+
+
+# ── CIV-32 (D218): a repair round re-tests what failed and what the fix reaches ──
+
+_SAFETY = ["tests/unit/test_safety_one.py", "tests/unit/test_safety_two.py"]
+
+
+def _repair_case(file: str, name: str, outcome: str | None = None) -> str:
+    inner = f'<{outcome} message="x">boom</{outcome}>' if outcome else ""
+    mod = file[: -len(".py")].replace("/", ".")
+    return f'<testcase classname="{mod}" name="{name}" file="{file}" time="0.1">{inner}</testcase>'
+
+
+def _write_report(d: Path, name: str, *cases: str) -> None:
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text(
+        f'<testsuites><testsuite name="pytest">{"".join(cases)}</testsuite></testsuites>',
+        encoding="utf-8",
+    )
+
+
+def _gate_result(files: list[str], full: bool = False) -> dict:
+    return {"full": full, "files": sorted({*files, *_SAFETY})}
+
+
+def test_repair_selects_the_failed_files_plus_the_reach_of_the_fix(tmp_path: Path) -> None:
+    _write_report(
+        tmp_path,
+        "shard-1.xml",
+        _repair_case("tests/unit/test_a.py", "t1", "failure"),
+        _repair_case("tests/unit/test_b.py", "t1"),
+        _repair_case("tests/unit/test_c.py", "t1", "error"),
+    )
+    failed = guard.failed_files(tmp_path)
+    assert failed == ["tests/unit/test_a.py", "tests/unit/test_c.py"]
+    out = guard.repair_decision(failed, [], True, _gate_result(["tests/unit/test_d.py"]))
+    assert out["mode"] == "repair"
+    assert out["files"] == sorted(
+        ["tests/unit/test_a.py", "tests/unit/test_c.py", "tests/unit/test_d.py", *_SAFETY]
+    )
+    assert "failed in the old run plus reach of the fix" in out["reason"]
+    assert "test_b.py" not in " ".join(out["files"])  # a passing file of the old run stays out
+
+
+def test_a_merge_of_main_in_the_delta_gives_the_normal_selection() -> None:
+    out = guard.repair_decision(["tests/unit/test_a.py"], ["abc123"], True, _gate_result([]))
+    assert out["mode"] == "full" and out["files"] == []
+    assert "merge" in out["reason"]
+
+
+def test_a_missing_or_broken_old_report_gives_the_normal_selection(tmp_path: Path) -> None:
+    assert guard.failed_files(tmp_path / "absent") is None
+    (tmp_path / "bad.xml").write_text("<testsuites><oops", encoding="utf-8")
+    assert guard.failed_files(tmp_path) is None
+    assert guard.repair_decision(None, [], True, _gate_result([]))["mode"] == "full"
+    empty = tmp_path / "empty"
+    _write_report(empty, "shard-1.xml")  # a report with no test says nothing
+    assert guard.failed_files(empty) is None
+
+
+def test_a_collection_error_with_no_file_gives_the_normal_selection(tmp_path: Path) -> None:
+    _write_report(tmp_path, "s.xml", '<testcase classname="" name="x"><error/></testcase>')
+    assert guard.failed_files(tmp_path) is None
+
+
+def test_a_force_push_gives_the_normal_selection() -> None:
+    out = guard.repair_decision(["tests/unit/test_a.py"], None, False, None)
+    assert out["mode"] == "full" and "force-push" in out["reason"]
+
+
+def test_a_delta_that_selects_the_full_suite_gives_the_normal_selection() -> None:
+    out = guard.repair_decision([], [], True, {"full": True, "files": [], "reasons": ["conftest"]})
+    assert out["mode"] == "full" and out["files"] == []
+
+
+def test_a_delta_with_no_answer_gives_the_normal_selection() -> None:
+    assert guard.repair_decision([], [], True, None)["mode"] == "full"
+    assert guard.repair_decision([], [], True, {"files": []})["mode"] == "full"
+
+
+def test_the_must_run_files_are_always_in_a_repair_selection() -> None:
+    always = ["tests/unit/test_customer_console_sql.py"]
+    out = guard.repair_decision(["tests/unit/test_a.py"], [], True, _gate_result([]), always=always)
+    assert out["mode"] == "repair"
+    assert set(always) | set(_SAFETY) <= set(out["files"])
+
+
+def test_no_failure_and_no_reach_keeps_the_minimum_set_and_never_goes_empty() -> None:
+    out = guard.repair_decision([], [], True, _gate_result([]))
+    assert out["mode"] == "repair"
+    assert out["files"] == sorted(_SAFETY)
+    # Even a gate with no file at all must not hand pytest an empty list.
+    bare = guard.repair_decision([], [], True, {"full": False, "files": []})
+    assert bare["mode"] == "full" and bare["files"] == []
+
+
+def test_a_failed_file_that_the_fix_deleted_leaves_the_selection() -> None:
+    gone = {"tests/unit/test_gone.py"}
+    out = guard.repair_decision(
+        ["tests/unit/test_gone.py"], [], True, _gate_result([]), exists=lambda p: p not in gone
+    )
+    assert "tests/unit/test_gone.py" not in out["files"]
+
+
+def test_a_path_outside_the_safe_shape_never_reaches_pytest() -> None:
+    out = guard.repair_decision(["-evil.py"], [], True, _gate_result([]))
+    assert "-evil.py" not in out["files"]
+
+
+def test_a_repair_selection_goes_through_the_same_shard_count_as_any_other(tmp_path: Path) -> None:
+    out = guard.repair_decision(["tests/unit/test_a.py"], [], True, _gate_result([]))
+    gate_json = tmp_path / "gate.json"
+    gate_json.write_text(json.dumps({"full": False, "files": out["files"]}), encoding="utf-8")
+    lines = guard.gate_output(gate_json)
+    assert lines[0] == "full=false" and lines[2] == "shards=[1]"
+
+
+def _run(**over) -> dict:
+    run = {
+        "id": 10,
+        "status": "completed",
+        "conclusion": "failure",
+        "head_sha": "old",
+        "created_at": "2026-11-13T10:00:00Z",
+        "head_repository": {"full_name": "o/r"},
+        "pull_requests": [{"number": 7}],
+    }
+    return {**run, **over}
+
+
+def test_the_old_run_is_the_newest_finished_run_of_this_pr_for_an_earlier_head() -> None:
+    runs = [
+        _run(id=1, created_at="2026-11-13T09:00:00Z", head_sha="older"),
+        _run(id=2),
+        _run(id=3, created_at="2026-11-13T11:00:00Z", conclusion="cancelled"),
+        _run(id=4, created_at="2026-11-13T12:00:00Z", status="in_progress", conclusion=None),
+        _run(id=5, created_at="2026-11-13T12:30:00Z", head_sha="new"),
+        _run(id=6, created_at="2026-11-13T12:40:00Z", head_repository={"full_name": "fork/r"}),
+        _run(id=7, created_at="2026-11-13T12:50:00Z", pull_requests=[{"number": 8}]),
+    ]
+    got = guard.find_old_run(runs, "o/r", 7, "new")
+    assert got is not None and got["id"] == 2
+    assert guard.find_old_run([], "o/r", 7, "new") is None
+
+
+def test_an_old_run_with_a_crashed_or_missing_shard_is_not_trusted(tmp_path: Path) -> None:
+    _write_report(tmp_path, "shard-1.xml", _repair_case("tests/unit/test_a.py", "t"))
+    ok = [{"name": "Unit tests (shard 1)", "conclusion": "success"}]
+    assert guard.shards_complete(ok, tmp_path)
+    assert not guard.shards_complete([{**ok[0], "conclusion": "cancelled"}], tmp_path)
+    two = [*ok, {"name": "Unit tests (shard 2)", "conclusion": "failure"}]
+    assert not guard.shards_complete(two, tmp_path)  # shard 2 left no report
+    assert not guard.shards_complete([], tmp_path)  # an empty selection left no shard
+
+
+def _git_repo(tmp_path: Path):
+    def git(*a: str) -> str:
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *a],
+            cwd=tmp_path, capture_output=True, text=True, check=True,
+        ).stdout.strip()  # fmt: skip
+
+    git("init", "-q", "-b", "main")
+    return git
+
+
+def test_git_delta_reads_descent_merges_and_changed_files(tmp_path: Path, monkeypatch) -> None:
+    git = _git_repo(tmp_path)
+
+    def commit(name: str) -> str:
+        (tmp_path / name).write_text(name, encoding="utf-8")
+        git("add", name)
+        git("commit", "-q", "-m", name)
+        return git("rev-parse", "HEAD")
+
+    base = commit("base.txt")
+    git("switch", "-q", "-c", "pr")
+    old = commit("a.txt")
+    new = commit("b.txt")
+    monkeypatch.chdir(tmp_path)
+    assert guard.git_delta(old, new) == (True, [], ["b.txt"])
+    # A merge of main: main moves on, and the PR merges it.
+    git("switch", "-q", "main")
+    commit("m.txt")
+    git("switch", "-q", "pr")
+    git("merge", "-q", "--no-ff", "-m", "merge main", "main")
+    merged = git("rev-parse", "HEAD")
+    descends, merges, _ = guard.git_delta(new, merged)
+    assert descends and merges == [merged]
+    # A force-push: the new head does not contain the old head.
+    git("switch", "-q", "-c", "rewrite", base)
+    other = commit("c.txt")
+    assert guard.git_delta(old, other) == (False, None, None)
+    assert guard.git_delta("0" * 40, other)[0] is False
+
+
+def test_the_repair_step_fails_open_to_the_normal_selection(tmp_path: Path, monkeypatch) -> None:
+    gate_json = tmp_path / "gate.json"
+    gate_json.write_text('{"full": false, "files": ["tests/unit/test_a.py"]}', encoding="utf-8")
+    monkeypatch.setattr(guard, "_gh_json", lambda *a: None)
+    assert guard.repair("o/r", 7, "new", gate_json, tmp_path, tmp_path).startswith("full selection:")
+
+    def boom(*a):
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(guard, "_gh_json", boom)
+    assert guard.repair("o/r", 7, "new", gate_json, tmp_path, tmp_path).startswith("full selection:")
+    assert json.loads(gate_json.read_text(encoding="utf-8"))["files"] == ["tests/unit/test_a.py"]
+
+
+def test_the_changes_job_runs_the_repair_step_only_on_a_synchronize_push() -> None:
+    job = _jobs()["changes"]
+    assert job["permissions"] == {"contents": "read", "actions": "read"}
+    gate = next(s for s in job["steps"] if s.get("id") == "gate")
+    run = gate["run"]
+    assert "ci_unit_guard.py repair" in run
+    assert "synchronize" in run and "pull_request" in run
+    assert "GITHUB_STEP_SUMMARY" in run
+    # The repair runs AFTER the normal gate wrote gate.json, and gate-output reads the result.
+    assert run.index("--gate --base") < run.index("ci_unit_guard.py repair") < run.index("gate-output")
+    assert gate["env"]["GH_TOKEN"] == "${{ github.token }}"
+    # The head SHA of the PR, not the synthetic merge commit that checkout builds.
+    assert gate["env"]["NEW_SHA"] == "${{ github.event.pull_request.head.sha }}"
+    assert "uv " not in run

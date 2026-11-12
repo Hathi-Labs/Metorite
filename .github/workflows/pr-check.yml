@@ -90,6 +90,11 @@ jobs:
       # an empty selection, `[1]` for a small one, `[1,2,3,4,5,6]` for a full
       # run. The `test` matrix reads it. Empty here means `changes` failed.
       shards: ${{ steps.gate.outputs.shards }}
+    # CIV-32. `actions: read` lets the gate step find the last run of this PR
+    # and download its shard reports. A job-level block replaces the top one.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v5
         with:
@@ -102,8 +107,24 @@ jobs:
       - id: gate
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
+          # CIV-32 (D218). A repair round re-tests what failed and what the fix
+          # reaches. NEW_SHA is the PR head, not the merge commit that checkout
+          # builds. The step fails open: any doubt keeps the selection above.
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          NEW_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           python3 scripts/affected_tests.py --gate --base "$BASE" > gate.json || rm -f gate.json
+          mode="full selection: not a push to an open PR"
+          if [ "$EVENT" = "pull_request" ] && [ "$ACTION" = "synchronize" ] && [ -f gate.json ]; then
+            mode="$(python3 scripts/ci_unit_guard.py repair --repo "$REPO" --pr "$PR"               --new-sha "$NEW_SHA" --json gate.json --workdir "$RUNNER_TEMP")"               || mode="full selection: the repair step failed"
+          fi
+          echo "$mode"
+          echo "### Unit test selection" >> "$GITHUB_STEP_SUMMARY"
+          echo "$mode" >> "$GITHUB_STEP_SUMMARY"
           python3 scripts/ci_unit_guard.py gate-output --json gate.json \
             "--ignored=$(python3 scripts/fences.py pytest-ignore)" | tee -a "$GITHUB_OUTPUT"
 

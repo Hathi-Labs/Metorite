@@ -26,6 +26,11 @@ subset, so the shards and this guard never treat an absent file as lost.
 and the ``affected_tests.py --r8`` list. It fails when a file skipped for an
 R8 reason and is not in the list, because the release gate never runs it.
 
+``repair`` (CIV-32, D218) narrows a repair round. On a ``synchronize`` push it
+finds the newest finished pr-check run of the same PR, reads its shard
+reports, and selects the files that failed there plus the files that the fix
+reaches. Any doubt gives the normal PR selection, unchanged.
+
 Stdlib only: the ``Unit tests`` job runs it without ``uv sync``.
 Fence: tests/unit/test_ci_unit_guard.py.
 """
@@ -36,6 +41,7 @@ import argparse
 import json
 import math
 import re
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -229,6 +235,192 @@ def durations(junit_dir: Path) -> dict[str, float]:
     return dict(sorted(out.items()))
 
 
+# ── repair (CIV-32, D218) ────────────────────────────────────────────────
+# A repair round re-tests what failed and what the fix can reach. The decision
+# is pure (``repair_decision``) so a test can drive it with fixture reports
+# and fixture diffs. Every doubt returns mode ``full``, which means the normal
+# PR selection, unchanged. The result never holds an empty list.
+SHARD_JOB = "Unit tests (shard "
+_RUN_CONCLUSIONS = ("success", "failure")
+
+
+def failed_files(junit_dir: Path) -> list[str] | None:
+    """The test files with a failure or an error in the reports, sorted.
+
+    None when the reports cannot be trusted: none found, one does not parse,
+    they hold no test, or a failing case names no ``tests/...py`` file (a
+    collection error has no usable path)."""
+    reports = sorted(junit_dir.rglob("*.xml")) if junit_dir.is_dir() else []
+    if not reports:
+        return None
+    try:
+        cases = [c for r in reports for c in ET.parse(r).getroot().iter("testcase")]
+    except ET.ParseError:
+        return None
+    if not cases:
+        return None
+    found: set[str] = set()
+    for case in cases:
+        if case.find("failure") is None and case.find("error") is None:
+            continue
+        path = _file(case)
+        if not _SAFE_PATH.match(path):
+            return None
+        found.add(path)
+    return sorted(found)
+
+
+def find_old_run(runs: list[dict], repo: str, pr: int, new_sha: str) -> dict | None:
+    """The newest finished run of this PR for an earlier head SHA.
+
+    ``runs`` is the ``workflow_runs`` list of the GitHub API. The run has to
+    come from the same head repository and list this PR. A cancelled run is
+    skipped: its shards hold no verdict, and the delta from an older finished
+    run still covers it."""
+    best: dict | None = None
+    for run in runs:
+        head_repo = (run.get("head_repository") or {}).get("full_name")
+        prs = [p.get("number") for p in run.get("pull_requests") or []]
+        if (
+            run.get("status") == "completed"
+            and run.get("conclusion") in _RUN_CONCLUSIONS
+            and run.get("head_sha") != new_sha
+            and head_repo == repo
+            and pr in prs
+            and (best is None or str(run.get("created_at")) > str(best.get("created_at")))
+        ):
+            best = run
+    return best
+
+
+def shards_complete(jobs: list[dict], junit_dir: Path) -> bool:
+    """True when each shard job of the old run finished with a verdict and left
+    one report. A crashed or cancelled shard leaves failures that nobody read."""
+    shard_jobs = [j for j in jobs if str(j.get("name", "")).startswith(SHARD_JOB)]
+    if not shard_jobs:
+        return False
+    if any(j.get("conclusion") not in _RUN_CONCLUSIONS for j in shard_jobs):
+        return False
+    return len(shard_jobs) == len(list(junit_dir.rglob("*.xml")))
+
+
+def repair_decision(
+    old_failed: list[str] | None,
+    merges: list[str] | None,
+    descends: bool,
+    delta_gate: dict | None,
+    always: list[str] | None = None,
+    exists=lambda p: True,
+) -> dict:
+    """``{"mode": "repair"|"full", "reason": str, "files": [...]}``.
+
+    ``old_failed`` None: no usable old report. ``merges``: the merge commits of
+    the old head to the new head, None when git could not say. ``delta_gate``:
+    the ``affected_tests.gate`` result for the delta diff. ``always`` holds the
+    files that every selection keeps. The gate already adds the SAFETY fences."""
+
+    def full(reason: str) -> dict:
+        return {"mode": "full", "reason": reason, "files": []}
+
+    if old_failed is None:
+        return full("the old run left no usable shard report")
+    if not descends:
+        return full("the new head does not descend from the old head (force-push)")
+    if merges is None:
+        return full("git could not read the commits since the old head")
+    if merges:
+        return full("a merge commit sits between the old head and the new head")
+    if not isinstance(delta_gate, dict) or "full" not in delta_gate or "files" not in delta_gate:
+        return full("the selector gave no answer for the delta")
+    if delta_gate["full"]:
+        return full("the delta alone selects the full suite")
+    picked = set(old_failed) | {str(f) for f in delta_gate["files"]} | set(always or [])
+    files = sorted(p for p in picked if _SAFE_PATH.match(p) and exists(p))
+    if not files:
+        return full("the repair selection came out empty")
+    return {
+        "mode": "repair",
+        "reason": f"{len(files)} files (failed in the old run plus reach of the fix)",
+        "files": files,
+    }
+
+
+def _git(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], capture_output=True, text=True, check=False)
+
+
+def git_delta(old: str, new: str) -> tuple[bool, list[str] | None, list[str] | None]:
+    """``(descends, merge commits, changed files)`` from ``old`` to ``new``."""
+    if _git("merge-base", "--is-ancestor", old, new).returncode != 0:
+        return False, None, None
+    log = _git("log", "--merges", "--format=%H", f"{old}..{new}")
+    diff = _git("diff", "--name-only", "--no-renames", old, new)
+    if log.returncode != 0 or diff.returncode != 0:
+        return True, None, None
+    merges = [line for line in log.stdout.split() if line]
+    changed = sorted(n.strip().replace("\\", "/") for n in diff.stdout.splitlines() if n.strip())
+    return True, merges, changed
+
+
+def _gh_json(*args: str) -> dict | list | None:
+    out = subprocess.run(["gh", *args], capture_output=True, text=True, check=False)
+    if out.returncode != 0:
+        return None
+    try:
+        return json.loads(out.stdout)
+    except ValueError:
+        return None
+
+
+def repair(repo: str, pr: int, new_sha: str, gate_json: Path, workdir: Path, root: Path) -> str:
+    """Narrow ``gate_json`` for a repair round. Returns the summary line.
+
+    Overwrites ``gate_json`` only in repair mode. Every error returns the
+    "full selection" line and leaves the file as the normal gate wrote it."""
+    try:
+        return _repair(repo, pr, new_sha, gate_json, workdir, root)
+    except Exception as exc:  # fail open: the normal selection
+        return f"full selection: the repair step failed ({exc!r})"
+
+
+def _repair(repo: str, pr: int, new_sha: str, gate_json: Path, workdir: Path, root: Path) -> str:
+    data = _gh_json(
+        "api",
+        f"repos/{repo}/actions/workflows/pr-check.yml/runs",
+        "-X", "GET", "-f", "event=pull_request", "-f", "status=completed",
+        "-f", "per_page=50",
+    )  # fmt: skip
+    runs = data.get("workflow_runs", []) if isinstance(data, dict) else []
+    old = find_old_run(runs, repo, pr, new_sha)
+    if old is None:
+        return "full selection: no earlier finished run of this PR"
+    run_id, old_sha = old["id"], str(old["head_sha"])
+    junit = workdir / "old-junit"
+    junit.mkdir(parents=True, exist_ok=True)
+    got = subprocess.run(
+        ["gh", "run", "download", str(run_id), "-R", repo, "-p", "junit-shard-*", "-D", str(junit)],
+        capture_output=True, text=True, check=False,
+    )  # fmt: skip
+    jobs_data = _gh_json("api", f"repos/{repo}/actions/runs/{run_id}/jobs", "-f", "per_page=100")
+    jobs = jobs_data.get("jobs", []) if isinstance(jobs_data, dict) else []
+    failed = failed_files(junit) if got.returncode == 0 and shards_complete(jobs, junit) else None
+    descends, merges, changed = git_delta(old_sha, new_sha)
+    delta = None
+    if descends and merges == [] and changed is not None:
+        import affected_tests  # scripts/affected_tests.py, standard library only
+
+        delta = affected_tests.gate(changed, root)
+    decision = repair_decision(
+        failed, merges, descends, delta, exists=lambda p: (root / p).is_file()
+    )
+    if decision["mode"] != "repair":
+        return f"full selection: {decision['reason']} (old run {run_id})"
+    tmp = gate_json.with_suffix(".repair.tmp")
+    tmp.write_text(json.dumps({"full": False, "files": decision["files"]}), encoding="utf-8")
+    tmp.replace(gate_json)
+    return f"repair mode: {decision['reason']}. Old run: {run_id}"
+
+
 # CIV-17. How many unit shards a selection needs. CIV-17b (2026-11-07) counts
 # measured SECONDS, not files: a Python PR selected 400 to 500 files, so a file
 # count gave 6 shards for every one of them, and the tiers never applied. The
@@ -380,8 +572,18 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("r8-covered", help="every R8 skip of a no-database run is in the --r8 list")
     r.add_argument("--junit", type=Path, required=True)
     r.add_argument("--list", type=Path, required=True, help="the output of affected_tests.py --r8")
+    rp = sub.add_parser("repair", help="narrow the selection for a repair round (CIV-32)")
+    rp.add_argument("--repo", required=True)
+    rp.add_argument("--pr", type=int, required=True)
+    rp.add_argument("--new-sha", required=True)
+    rp.add_argument("--json", type=Path, required=True, help="the gate JSON, rewritten in repair mode")
+    rp.add_argument("--workdir", type=Path, default=Path("."))
     args = parser.parse_args(argv)
 
+    if args.cmd == "repair":
+        root = Path(".").resolve()
+        print(repair(args.repo, args.pr, args.new_sha, args.json, args.workdir, root))
+        return 0
     if args.cmd == "r8-covered":
         problems = r8_covered(args.junit, args.list)
         for p in problems:
