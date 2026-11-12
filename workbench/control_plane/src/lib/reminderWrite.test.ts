@@ -16,12 +16,12 @@ const ask = { title: "Call Sam", kind: "action" as const, fireAt: "2026-11-03T09
 describe("createReminder reads `already`", () => {
   it("passes a repeat on, with the time of the twin", async () => {
     const got = await createReminder(ask, reply(200, { id: "r1", already: true, fire_at: "2026-11-03T09:00:00+00:00" }));
-    expect(got).toEqual({ ok: true, already: true, fireAt: "2026-11-03T09:00:00+00:00" });
+    expect(got).toEqual({ ok: true, id: "r1", already: true, fireAt: "2026-11-03T09:00:00+00:00" });
   });
 
   it("answers a new reminder with no `already`", async () => {
     const got = await createReminder(ask, reply(201, { id: "r2", fire_at: ask.fireAt }));
-    expect(got).toEqual({ ok: true });
+    expect(got).toEqual({ ok: true, id: "r2" });
   });
 
   it("still reads a refusal", async () => {
