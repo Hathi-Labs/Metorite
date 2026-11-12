@@ -355,18 +355,25 @@ class OutlookProvider:
         await self._graph("DELETE", url, cred, ok_missing=True)
 
 
-def build_outlook_provider(http: Http, *, redirect_uri: str) -> OutlookProvider:
-    """The provider on the Microsoft app of Outlook mail (``oauth_app``)."""
+def factory() -> OutlookProvider | None:
+    """The provider on the Microsoft app of Outlook mail, or ``None`` when the
+    app is not set up (the loop skips it)."""
     from email_ingestion.providers.app_credentials import oauth_app
 
+    from gateway.calendar_sync.http import CalendarHttp
+    from gateway.routes.email.transport.oauth import _workbench_public_url
+
     app = oauth_app("microsoft")
+    if not app.configured:
+        return None
     return OutlookProvider(
-        http, client_id=app.client_id, client_secret=app.client_secret,
-        redirect_uri=redirect_uri,
+        CalendarHttp(OUTLOOK_HOSTS), client_id=app.client_id,
+        client_secret=app.client_secret,
+        redirect_uri=f"{_workbench_public_url()}/api/calendar/oauth/microsoft/callback",
     )
 
 
 __all__ = [
     "META_ACCOUNT_EMAIL", "META_ACCOUNT_ID", "OUTLOOK_HOSTS", "OutlookProvider",
-    "PROVIDER", "SCOPES", "SOURCE", "build_outlook_provider",
+    "PROVIDER", "SCOPES", "SOURCE", "factory",
 ]

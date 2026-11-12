@@ -53,8 +53,15 @@ def _google() -> CalendarProvider | None:
     return factory()
 
 
+def _outlook() -> CalendarProvider | None:
+    from gateway.calendar_sync.outlook import factory
+
+    return factory()
+
+
 PROVIDERS: dict[str, Callable[[], CalendarProvider | None]] = {
     "google_calendar": _google,
+    "outlook_calendar": _outlook,
 }
 
 _task: asyncio.Task[None] | None = None
