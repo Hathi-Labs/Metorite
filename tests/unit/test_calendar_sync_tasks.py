@@ -55,7 +55,13 @@ pytest.importorskip("sqlalchemy")
 
 from acb_common.db import bind_tenant, release_tenant, tenant_session
 from gateway.calendar_sync import connections, flags, task_links, task_out
-from gateway.calendar_sync.provider import NeedsReconnect, OutResult, ProviderError, RemoteEvent
+from gateway.calendar_sync.provider import (
+    NeedsReconnect,
+    OutResult,
+    ProviderError,
+    RemoteEvent,
+    SyncResult,
+)
 from gateway.routes.projects import personal
 from sqlalchemy import text
 
@@ -110,6 +116,13 @@ class FakeProvider:
         self.calls.append(("delete", calendar_id, external_id))
         if self.fail_with is not None:
             raise self.fail_with
+
+    reads: list[Any] = field(default_factory=list)
+    feed: Any = None  # a SyncResult for the next read
+
+    async def sync(self, cred, cursor, window, *, calendar_id=None):
+        self.calls.append(("sync", calendar_id, cursor))
+        return self.feed
 
     def sends(self) -> list[tuple]:
         return [c for c in self.calls if c[0] in ("upsert", "delete")]
@@ -377,6 +390,49 @@ async def test_r8_a_failure_keeps_a_short_error_with_no_token_and_backs_off(worl
     assert s.created == 1
     (link,) = _links(world, world.org_a)
     assert link.sync_state == "sent" and link.attempts == 0 and link.sync_error is None
+
+
+@pytest.mark.asyncio
+async def test_r8_the_pull_reads_only_the_metorite_calendar_and_moves_and_unschedules(world):
+    fake = FakeProvider()
+    later = datetime.now(UTC) + timedelta(minutes=5)
+    async with _in(world, world.org_a):
+        moved = await _task(world.org_a, ALICE, "Moves at Google", T0)
+        lost = await _task(world.org_a, ALICE, "Lost at Google", T0 + timedelta(hours=3))
+        await _pass(world, world.org_a, world.conn["a"], fake)
+        new = T0 + timedelta(days=2)
+        fake.feed = SyncResult(
+            changes=[RemoteEvent(external_id="ev1", etag='"n1"', starts_at=new,
+                                 ends_at=new + timedelta(hours=1), updated=later)],
+            next_cursor="c1", full=False)
+        n = await task_out.pull_remote_changes(world.org_a, world.conn["a"], provider=fake,
+                                               now=lambda: NOW)
+        assert n == 1
+        assert ("sync", "cal-metorite", None) in fake.calls  # the Metorite calendar, by id
+        assert (await _block(world.org_a, ALICE, moved)).scheduled_start == new
+        # The cursor is kept apart, and the next read sends it.
+        fake.feed = SyncResult(changes=[], next_cursor="c2", full=False)
+        await task_out.pull_remote_changes(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
+        assert ("sync", "cal-metorite", "c1") in fake.calls
+        # A FULL list that no longer holds ev2 means the member deleted it.
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE integration_connections SET provider_meta = provider_meta - 'task_cursor' "
+                           "WHERE id = CAST(:i AS uuid)"), {"i": world.conn["a"]})
+        fake.feed = SyncResult(changes=[RemoteEvent(external_id="ev1", etag='"n1"')], next_cursor="c3", full=True)
+        await task_out.pull_remote_changes(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
+        b = await _block(world.org_a, ALICE, lost)
+        assert b.scheduled_start is None
+        assert (await _block(world.org_a, ALICE, moved)).scheduled_start == new
+    assert [l.external_id for l in _links(world, world.org_a)] == ["ev1"]
+
+
+@pytest.mark.asyncio
+async def test_r8_the_flag_off_reads_nothing(world):
+    fake = FakeProvider()
+    world.flag["on"] = False
+    async with _in(world, world.org_a):
+        n = await task_out.pull_remote_changes(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
+    assert n == 0 and fake.calls == []
 
 
 def test_backoff_doubles_and_is_capped():

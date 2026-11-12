@@ -286,3 +286,83 @@ def _task_url_builder() -> Callable[[str], str | None]:
     except Exception:  # noqa: BLE001 - a missing base must not stop the sync
         return lambda _tid: None
     return lambda tid: f"{base}/projects?task={tid}"
+
+
+# ── The return path: read the calendar "Metorite" ──────────────────────────
+
+META_TASK_CURSOR = "task_cursor"
+
+
+async def pull_remote_changes(
+    org: str,
+    connection_id: str,
+    *,
+    provider: Any,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> int:
+    """Read the changes of the calendar "Metorite" and apply them to the blocks.
+
+    Returns how many changes it routed. It sends no write to the provider, but
+    it IS a request, so the flag gates it too. The cursor of this calendar
+    lives in ``provider_meta["task_cursor"]``, apart from the cursor of the
+    main read.
+
+    A full list (no cursor, or a dead cursor) names every live event of the
+    window. A link whose event is absent from it, and whose block starts inside
+    the window, was deleted at the provider: the block is unscheduled.
+    """
+    from gateway.calendar_sync import connections, flags
+    from gateway.calendar_sync.provider import CursorExpired, NeedsReconnect, Window
+    from gateway.connections import store
+    from gateway.crm_sources.base import SourceError
+
+    from gateway.calendar_sync import task_links
+
+    async with tenant_session(org) as db:
+        conn = await connections.get_connection(db, org, connection_id)
+    if conn is None or conn.status != "connected":
+        return 0
+    me = str(conn.member_email).lower()
+    cal_id = connections.metorite_calendar_id(conn)
+    if not cal_id or not flags.write_allowed(org, me):
+        return 0
+    raw = conn.provider_meta.get(META_TASK_CURSOR)
+    cursor = raw if isinstance(raw, str) and raw else None
+    t = now()
+    window = Window.around(t)
+    cred = await connections.fresh_credential(org, conn, provider)
+    if cred is None:
+        return 0
+    try:
+        try:
+            result = await provider.sync(cred, cursor, window, calendar_id=cal_id)
+        except CursorExpired:
+            cursor = None
+            result = await provider.sync(cred, None, window, calendar_id=cal_id)
+    except NeedsReconnect:
+        return 0
+    except SourceError as exc:
+        _log.warning("calendar_sync.task_pull_failed", organization_id=org, code=_code(exc))
+        return 0
+
+    routed = 0
+    async with tenant_session(org) as db:
+        locked = await store.lock_by_id(db, org, connection_id)
+        if locked is None or locked.status != "connected":
+            return 0
+        for ev in result.changes:
+            outcome = await task_links.route_remote_change(db, org, locked, ev)
+            routed += outcome != task_links.IGNORED
+        if cursor is None and result.full:
+            routed += await task_links.unschedule_missing(
+                db, org, locked, {e.external_id for e in result.changes if not e.deleted},
+                window.start, window.end)
+        await store.merge_provider_meta(
+            db, org, connection_id, {META_TASK_CURSOR: result.next_cursor or ""})
+    return routed
+
+
+async def run_pass(org: str, connection_id: str, *, provider: Any) -> PassStats:
+    """What the loop calls after the main read: pull first, then push."""
+    await pull_remote_changes(org, connection_id, provider=provider)
+    return await reconcile_task_blocks(org, connection_id, provider=provider)
