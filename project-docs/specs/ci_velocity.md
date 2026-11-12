@@ -16,8 +16,9 @@ at 05:30, 13:30 and 21:30 UTC. The owner installs the new timer.
 
 **D218 (2026-11-12):** §8 adds the rule "merge to main as fast as we build".
 Its slices are CIV-26 to CIV-38 (tasks 3051 to 3066). CIV-32 (task 3057) is BUILT
-on 2026-11-13, branch `civ32-repair-retest-mt-924c7003`: a repair round runs the
-failed files plus the reach of the fix. No other slice is built yet.
+on 2026-11-13, branch `civ32-repair-retest-mt-924c7003`. A repair round runs the
+failed files, the reach of the fix, and the reach of main's move (`gate-meta`).
+No other slice is built yet.
 
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
