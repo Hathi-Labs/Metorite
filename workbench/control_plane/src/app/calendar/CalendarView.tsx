@@ -61,6 +61,8 @@ import { EndOfDayReview } from "./components/EndOfDayReview";
 import { ScheduleSheet } from "./components/ScheduleSheet";
 import { PlanDayPanel } from "./components/PlanDayPanel";
 import { CalendarSettings } from "./components/CalendarSettings";
+import { CalendarConnectPrompt, CalendarConnectReturn } from "./components/CalendarConnections";
+import type { ReturnNotice } from "./lib/calendarConnections";
 import { TimeGrid } from "./components/TimeGrid";
 import { MonthGrid } from "./components/MonthGrid";
 import { UnscheduledRail } from "./components/UnscheduledRail";
@@ -117,6 +119,10 @@ export function CalendarView() {
   const [mode, setMode] = useState<Mode>("day");
   const [anchor, setAnchor] = useState<Date>(() => startOfDay(new Date()));
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // CE-10c: what the calendar consent redirect said, shown in the settings sheet.
+  const [connectNotice, setConnectNotice] = useState<ReturnNotice | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
+  const openConnectSettings = useCallback(() => setSettingsOpen(true), []);
   // The AI planner panel: "plan" fills free slots from unscheduled next actions;
   // "replan" reorganizes the rest of today's flexible blocks from now. null = shut.
   const [planMode, setPlanMode] = useState<null | "plan" | "replan">(null);
@@ -727,7 +733,13 @@ export function CalendarView() {
         <CalendarSettings
           settings={settings}
           onChange={(patch) => void updateSettings(patch)}
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => {
+            setSettingsOpen(false);
+            setGuideOpen(false);
+          }}
+          guideOpen={guideOpen}
+          connectNotice={connectNotice}
+          onDismissConnectNotice={() => setConnectNotice(null)}
         />
       )}
     </>
@@ -739,6 +751,7 @@ export function CalendarView() {
           Suspense boundary, and this one holds only the reader. */}
       <Suspense fallback={null}>
         <CalendarDeepLink onLink={openLink} />
+        <CalendarConnectReturn onNotice={setConnectNotice} onOpenSettings={openConnectSettings} />
       </Suspense>
       {/* The command bar's "New reminder" job (RX-6, `?do=new-reminder`): it
           opens the form and saves nothing. A filled title is a suggestion. */}
@@ -788,6 +801,15 @@ export function CalendarView() {
           // idle gap → the Gap Filler sheet, anchored to right now
           const at = new Date(Math.ceil(Date.now() / 300000) * 300000);
           setSheet({ day: startOfDay(new Date()), at });
+        }}
+      />
+
+      {/* CE-10c: offer Connect Google Calendar / Outlook when none is connected. Draws nothing
+          until the gateway says the feature is on. */}
+      <CalendarConnectPrompt
+        onOpenGuide={() => {
+          setGuideOpen(true);
+          setSettingsOpen(true);
         }}
       />
 

@@ -6189,6 +6189,19 @@ The owner asked in chat on 2026-11-12. A member drops decks, PDFs, documents and
 
 Fence: each slice in `company_context.md` §16.3 names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D216 entries merge. **Re-check this number at merge.** On 2026-11-12, main held D214 at most, and the open branch `cal-spec-s0` held D215.
 
+### D217 — Chat hardening: the chat recovers from the failures that production shows, and builds against the ones it does not yet show (2026-11-12)
+
+The owner asked in chat on 2026-11-12 for the chat failures that a member will meet next, built against before a member meets them. `chat_failure_modes.md` holds the evidence, the 30 classes, the contract of §7 and the ladder (epic 2978). The owner chose "Approve all six defaults" on epic 2978 (2026-11-11 21:28 UTC), and confirmed it in chat on 2026-11-12.
+
+1. **D-HRD-1. A missing pack loads.** When the model calls a tool of a pack that the turn has not loaded, the turn loads that pack if the member may use it, and says so (`CHAT_TOOL_AUTOLOAD`, HRD-1).
+2. **D-HRD-2. Most of the words.** When no task has all the words, the search shows the tasks with most of them, under "No task has all the words. These have most of them" (HRD-4).
+3. **D-HRD-3. Three empty answers end a search.** After 3 empty or refused answers from one tool in a turn, the chat says what it tried and asks (HRD-5).
+4. **D-HRD-4. A press is an order.** A pill, a chip or a retry that the member pressed is the member's order for that act. Its words still carry no typed mark for the profile (D-PZ-37 stands, HRD-15).
+5. **D-HRD-5. A paste is data.** A block of 8 lines or more, or text that matches a stored mail, is framed as data. An instruction inside it acts only on the member's own words (HRD-14).
+6. **D-HRD-6. Claims in shadow.** The claim check of HRD-13 only logs. It changes no answer until the owner turns it on.
+
+Fence: each slice in `chat_failure_modes.md` §6 names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D217 entries merge. Re-check this number at merge.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
