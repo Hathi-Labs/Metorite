@@ -1,0 +1,68 @@
+{
+ "kind": "calendar#events",
+ "etag": "\"p1\"",
+ "summary": "ana@example.test",
+ "timeZone": "Asia/Kolkata",
+ "accessRole": "owner",
+ "nextPageToken": "PAGE2",
+ "items": [
+  {
+   "kind": "calendar#event",
+   "id": "evt_standup",
+   "etag": "\"3401\"",
+   "status": "confirmed",
+   "htmlLink": "https://www.google.com/calendar/event?eid=standup",
+   "summary": "Standup",
+   "description": "Daily",
+   "location": "Room 4",
+   "start": {
+    "dateTime": "2026-11-16T09:30:00+05:30",
+    "timeZone": "Asia/Kolkata"
+   },
+   "end": {
+    "dateTime": "2026-11-16T09:45:00+05:30",
+    "timeZone": "Asia/Kolkata"
+   },
+   "hangoutLink": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "kind": "calendar#event",
+   "id": "evt_holiday",
+   "etag": "\"3402\"",
+   "status": "confirmed",
+   "summary": "Diwali",
+   "transparency": "transparent",
+   "start": {
+    "date": "2026-11-08"
+   },
+   "end": {
+    "date": "2026-11-09"
+   }
+  },
+  {
+   "kind": "calendar#event",
+   "id": "evt_untitled",
+   "etag": "\"3403\"",
+   "status": "tentative",
+   "start": {
+    "dateTime": "2026-11-17T10:00:00Z"
+   },
+   "end": {
+    "dateTime": "2026-11-17T11:00:00Z"
+   }
+  },
+  {
+   "kind": "calendar#event",
+   "id": "evt_long",
+   "etag": "\"3404\"",
+   "status": "confirmed",
+   "summary": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "start": {
+    "dateTime": "2026-11-18T10:00:00Z"
+   },
+   "end": {
+    "dateTime": "2026-11-18T11:00:00Z"
+   }
+  }
+ ]
+}

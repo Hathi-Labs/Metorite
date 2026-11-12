@@ -1,13 +1,14 @@
-"""The Studio builder tools for Mira (STU-G1, STU-G2, STU-F2d and STU-G1c).
+"""The Studio builder tools for Mira (STU-G1, STU-G2, STU-F2d, STU-G1c and STU-A5c-2).
 
-Spec: ``project-docs/specs/ai_studio.md`` sections 6.2 and 14 (G1, G2, F2d
-and G1c).
+Spec: ``project-docs/specs/ai_studio.md`` sections 6.2 and 14 (G1, G2, F2d,
+G1c and A5c-2).
 
 Eight **stateless** builder tools. They keep no draft. The model holds the
 manifest in the chat turn and sends it back on each call. The skill tools
 (F2d) and the package tools (G1c) each form a second tuple, because they
 write: :func:`studio_save` stores a manifest as the draft of a package, and
-:func:`studio_publish` publishes it.
+:func:`studio_publish` publishes it. :func:`studio_delete_package` (A5c-2)
+deletes a package after ONE card that it always shows.
 
 * :func:`studio_describe` (G1b) gives the live manifest schema, the field types
   and the block tokens, so the model reads them before it drafts. It reads
@@ -987,6 +988,8 @@ def _describe_fields() -> dict[str, Any]:
         "types": list(f.FIELD_TYPES),
         "hot_types": list(f.HOT_TYPES),
         "name_pattern": f.NAME_PATTERN,
+        "value_shapes": dict(f.VALUE_SHAPES),
+        "spec_parts": {k: list(v) for k, v in f.SPEC_PARTS.items()},
         "limits": {
             "max_fields_per_object": f.MAX_FIELDS_PER_OBJECT,
             "max_options": f.MAX_OPTIONS,
@@ -2065,6 +2068,12 @@ async def studio_skill_state(skill_id: str, state: str) -> dict[str, Any]:
 
 #: The A5 routes.
 PACKAGES_PATH = "/studio/packages"
+#: The origin that a publish from chat sends (WS-PKG PKG-12). The route reads
+#: it as ``packages.ORIGIN_CHAT``, and the first publish of the app writes the
+#: private install with an end date 30 days later (``package_host.md`` §6.2).
+#: The tool takes no org, member or date: the route reads them from the session
+#: and the server clock (R5).
+PUBLISH_ORIGIN = "chat"
 
 #: The tenant-Redis namespace of the approval record of a plan card. The key
 #: holds a hash of the member of the run and a hash of the manifest id, so a
@@ -2711,7 +2720,8 @@ async def _save_draft(pid: str, doc: dict[str, Any], based_on: str) -> dict[str,
             return _refusal(_PKG_MOVED.format(act="saved"), decision=decision)
     # The store compares the hash that this save read, under its row lock. A
     # save that lands after the read gives 409, and nothing is lost.
-    reply = await _send("PUT", f"{PACKAGES_PATH}/{pid}/draft?based_on={digest}", doc, "save",
+    # The path starts with a literal, so the chat-parity reader can read the route (STU-G3c).
+    reply = await _send("PUT", f"/studio/packages/{pid}/draft?based_on={digest}", doc, "save",
                         _PKG_MAYBE_SAVED)
     if reply.status == 409 and _code(reply) == _DRAFT_CHANGED:
         return _refusal(_PKG_RACED_SAVE, status=409, code=_DRAFT_CHANGED, package_id=pid)
@@ -2828,8 +2838,10 @@ async def studio_publish(package_id: str, notes: str = "") -> dict[str, Any]:
         # and the tool calls of one response run at once. So the POST names
         # the hash that the plan approved, and the store compares it under its
         # row lock (review round 1, P1).
-        reply = await _send("POST", f"{PACKAGES_PATH}/{pid}/versions",
-                            {"notes": notes, "based_on": digest}, "publish",
+        # The path is a literal, so the chat-parity fence reads the route (STU-G5).
+        reply = await _send("POST", f"/studio/packages/{pid}/versions",
+                            {"notes": notes, "based_on": digest,
+                             "origin": PUBLISH_ORIGIN}, "publish",
                             _PKG_MAYBE_PUBLISHED)
     except _Refused as exc:
         return _refusal(str(exc))
@@ -2875,10 +2887,220 @@ async def _held_publish(
     return None
 
 
-#: The two package tools, in the order of the skill family ``studio``.
+# ── The delete of a package (STU-A5c-2) ─────────────────────────────────────
+#
+# One write tool over the two delete routes of A5c-1
+# (``gateway/routes/studio/packages.py``), over HTTP as the member. It ALWAYS
+# shows one card with the counts, in a clear chat too, because a delete
+# cannot be undone. The route decides the admin path from the session, so the
+# tool takes the package id only.
+
+#: The codes of the delete answers that the tool reads.
+_COUNTS_CHANGED = "counts_changed"  # packages.COUNTS_CHANGED
+_OWNER_ACTIVE = "owner_active"  # packages.OWNER_ACTIVE
+#: The most DELETE calls of one approved delete. Each call ends before the
+#: client timeout of :func:`_send` (15 s), so the loop ends in 3 minutes,
+#: under the tool limit of the run watchdog (300 s). A bigger app ends with
+#: ``remaining`` and a new card on the next call.
+MAX_DELETE_CALLS = 12
+#: The most tables that one delete card names. The card counts the rest.
+MAX_DELETE_CARD_TABLES = 10
+#: The confirm token of a delete preview: 64 lower-case hex digits. A pattern
+#: text and ``re.fullmatch``, because no studio module calls ``compile``
+#: (``test_studio_builder_tools.py``).
+_TOKEN = r"[0-9a-f]{64}"
+
+_DEL_NOTE = ("Approve to delete this app for good: its tables, records, versions and "
+             "installs. Nothing can bring them back. Reject to delete nothing.")
+_DEL_WONT_FIT = "This app does not fit on one card, so nothing was deleted. Delete it in Studio."
+_DEL_NOT_FOUND = ("No app that you can delete has this id, or AI Studio is not open for this "
+                  "organization. Nothing was deleted. Use the package_id that "
+                  "studio_package_get gives.")
+_DEL_OWNER_ACTIVE = ("The owner of this app is an active member, so only the owner can delete "
+                     "it. Nothing was deleted. Ask the owner to delete it.")
+_DEL_UNREAD = "The counts of the app could not be read, so nothing was deleted. Try again."
+_DEL_MOVED = ("The app changed while the card was open, so nothing was deleted. Call this tool "
+              "again to show the new counts on a new card.")
+_DEL_CHANGED = ("The app changed during the delete, so the delete stopped. Nothing more was "
+                "deleted. Call this tool again to show the new counts on a new card.")
+_DEL_OWNER_BACK = ("The owner of this app became an active member during the delete, so the "
+                   "delete stopped. Nothing more was deleted. Only the owner can delete the rest.")
+_DEL_BUSY = ("The app is busy, so the delete stopped. Records that a call removed stay "
+             "removed. Try again in a moment: this tool shows a new card first.")
+_DEL_GONE = ("No app has this id now, so another delete may have removed it. Nothing more was "
+             "deleted.")
+_DEL_MAYBE = ("The delete may have removed some records. Call this tool again to read the "
+              "counts that are left on a new card.")
+_DEL_NOT_DONE = ("The delete is not finished: {remaining} records are left. Call this tool "
+                 "again to delete the rest. It shows a new card first.")
+_DEL_DONE = "The app is deleted. Its tables, records, versions and installs are gone."
+
+
+def _whole(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _preview_of(data: Any) -> dict[str, Any] | None:
+    """The delete preview of the route, or None for a shape that the tool
+    cannot read. Each count is a whole number, and the token is 64 hex
+    digits. The preview holds names and counts, and no manifest text."""
+    if not isinstance(data, dict):
+        return None
+    package, totals, objects = data.get("package"), data.get("totals"), data.get("objects")
+    token = data.get("confirm")
+    if not (isinstance(package, dict) and isinstance(totals, dict) and isinstance(objects, list)
+            and isinstance(token, str) and re.fullmatch(_TOKEN, token)):
+        return None
+    if not all(_whole(totals.get(k)) for k in (
+            "objects", "fields", "records", "versions", "installs", "other_member_installs")):
+        return None
+    tables = [o for o in objects if isinstance(o, dict)]
+    if len(tables) != len(objects) or not all(
+            _whole(o.get("records")) and _whole(o.get("fields")) for o in tables):
+        return None
+    return {"name": package.get("name"), "tables": tables, "totals": totals, "confirm": token}
+
+
+def _records_words(count: int, capped: bool) -> str:
+    """A count of records. A capped count says "at least"."""
+    return f"at least {count} records" if capped else _plural(count, "record")
+
+
+def _delete_rows(shown: dict[str, Any]) -> list[tuple[str, str]]:
+    """The rows of a delete card: the app, its first tables with their
+    records, then the totals. Each row is short, so nothing cuts it. Each name
+    is inside « » and shows no character that shows nothing."""
+    totals, tables = shown["totals"], shown["tables"]
+    rows = [("app", f"App: {_title_name(shown['name'])}")]
+    for t in tables[:MAX_DELETE_CARD_TABLES]:
+        rows.append(("table", f"- {_title_name(t.get('name'))}: "
+                              f"{_records_words(t['records'], t.get('capped') is True)}, "
+                              f"{_plural(t['fields'], 'field')}"))
+    rest = len(tables) - MAX_DELETE_CARD_TABLES
+    if rest > 0:
+        rows.append(("more", f"and {_plural(rest, 'more table')}"))
+    capped = totals.get("records_capped") is True
+    rows += [
+        ("records", f"Records: {_records_words(totals['records'], capped)} in "
+                    f"{_plural(totals['objects'], 'table')}"),
+        ("versions", f"Versions: {totals['versions']}"),
+        ("installs", f"Installs: {totals['installs']}, and {totals['other_member_installs']} "
+                     "of them reach other members"),
+    ]
+    return rows
+
+
+def _delete_fail(reply: _Reply, **extra: Any) -> dict[str, Any]:
+    """The answer to a refused read or delete. A 404 names both causes, and a
+    403 ``owner_active`` says who can delete. Each other answer goes to
+    :func:`_package_fail`."""
+    if reply.status == 404:
+        return _refusal(_DEL_NOT_FOUND, status=404, **extra)
+    if reply.status == 403 and _code(reply) == _OWNER_ACTIVE:
+        return _refusal(_DEL_OWNER_ACTIVE, status=403, code=_OWNER_ACTIVE, **extra)
+    return _package_fail(reply, "deleted", **extra)
+
+
+def _removed_in(reply: _Reply) -> int:
+    """The records that one DELETE call removed, from its answer or its
+    ``detail``. An answer with no count gives 0."""
+    data = reply.data if isinstance(reply.data, dict) else {}
+    detail = data.get("detail") if isinstance(data.get("detail"), dict) else {}
+    for raw in (data.get("records_removed"), detail.get("records_removed")):
+        if _whole(raw):
+            return int(raw)
+    return 0
+
+
+async def _read_delete_preview(pid: str) -> _Reply:
+    """``GET /studio/packages/{id}/delete-preview`` as the member."""
+    return await _send("GET", f"/studio/packages/{pid}/delete-preview", None, miss=_DEL_UNREAD)
+
+
+async def _delete_calls(pid: str, token: str, decision: str) -> dict[str, Any]:
+    """``DELETE /studio/packages/{id}`` with the token of the approved counts.
+    A 202 gives a new token and the loop sends it, at most
+    :data:`MAX_DELETE_CALLS` times. Each other answer ends the loop."""
+    removed = 0
+    left = 0
+    for _ in range(MAX_DELETE_CALLS):
+        try:
+            reply = await _send("DELETE", f"/studio/packages/{pid}", {"confirm": token},
+                                "delete", _DEL_MAYBE)
+        except _Refused as exc:
+            return _refusal(str(exc), decision=decision, records_removed=removed)
+        removed += _removed_in(reply)
+        data = reply.data if isinstance(reply.data, dict) else {}
+        if reply.status == 200 and data.get("deleted") is True:
+            return {"ok": True, "errors": [], "diff": [], "deleted": True, "package_id": pid,
+                    "records_removed": removed, "decision": decision, "note": _DEL_DONE}
+        nxt = data.get("confirm")
+        if reply.status == 202 and isinstance(nxt, str) and re.fullmatch(_TOKEN, nxt):
+            token = nxt
+            left = int(data["remaining"]) if _whole(data.get("remaining")) else 0
+            continue
+        out = {"decision": decision, "records_removed": removed}
+        if reply.status == 409 and _code(reply) == _COUNTS_CHANGED:
+            return _refusal(_DEL_CHANGED, status=409, code=_COUNTS_CHANGED, **out)
+        if reply.status == 403 and _code(reply) == _OWNER_ACTIVE:
+            return _refusal(_DEL_OWNER_BACK, status=403, code=_OWNER_ACTIVE, **out)
+        if reply.status == 404:
+            return _refusal(_DEL_GONE, status=404, **out)
+        if reply.status == 503:
+            return _refusal(_DEL_BUSY, status=503, **out)
+        return _package_fail(reply, "deleted", **out)
+    return _refusal(_DEL_NOT_DONE.format(remaining=left), status=202, decision=decision,
+                    records_removed=removed, remaining=left)
+
+
+@annotate(read_only=False, idempotent=False, open_world=False)
+async def studio_delete_package(package_id: str) -> dict[str, Any]:
+    """Delete an app for good: its tables, records, versions and installs.
+
+    It always shows ONE card with the counts, in every chat, and waits. The
+    answer has a "decision": approved, revised (the member wrote in the chat),
+    stopped, or no_card (the chat shows no card). Only approved deletes, after
+    a second read of the counts that matches the card. For the other
+    decisions, nothing was deleted. An admin can delete the app of a member
+    who left the organization. When records are left, call it again: it
+    shows a new card.
+    """
+    pid = _skill_path(package_id)
+    if pid is None:
+        return _refusal(_NO_PACKAGE_ID)
+    try:
+        first = await _read_delete_preview(pid)
+        if not first.ok:
+            return _delete_fail(first)
+        shown = _preview_of(first.data)
+        if shown is None:
+            return _refusal(_PKG_SHAPE)
+        rows = _delete_rows(shown)
+        context = await _card(_DEL_NOTE, rows, _DEL_WONT_FIT)
+        capped = shown["totals"].get("records_capped") is True
+        detail = (f"{_records_words(shown['totals']['records'], capped)} go for good. "
+                  "Nothing can bring them back.")
+        decision = await _decide(f"Delete the app {_title_name(shown['name'])}?", detail, context)
+        if decision != "approved":
+            return _pkg_not_done("Nothing was deleted.", decision, context, rows)
+        # The DELETE checks the token under its locks too. This read keeps the
+        # rule of the other cards: nothing changes after a card that moved.
+        second = await _read_delete_preview(pid)
+        if not second.ok:
+            return _delete_fail(second, decision=decision)
+        again = _preview_of(second.data)
+        if again is None or again["confirm"] != shown["confirm"]:
+            return _refusal(_DEL_MOVED, decision=decision)
+    except _Refused as exc:
+        return _refusal(str(exc))
+    return await _delete_calls(pid, shown["confirm"], decision)
+
+
+#: The three package tools, in the order of the skill family ``studio``.
 STUDIO_PACKAGE_TOOLS = (
     studio_save,
     studio_publish,
+    studio_delete_package,
 )
 
 
@@ -2956,9 +3178,20 @@ def _package_objects(found: Any) -> list[dict[str, Any]]:
                 break
             key = _ident(f.get("key")) if isinstance(f, dict) else None
             if key is not None:
-                fields.append({"key": key, "type": _tag(f.get("type"), 20),
-                               "required": f.get("required") is True,
-                               "many": f.get("many") is True})
+                row: dict[str, Any] = {"key": key, "type": _tag(f.get("type"), 20),
+                                       "required": f.get("required") is True,
+                                       "many": f.get("many") is True}
+                # STU-C14: a rating's bounds, a quantity's units and a barcode's format.
+                for part in ("min", "max"):
+                    if type(f.get(part)) is int:
+                        row[part] = f[part]
+                if isinstance(f.get("units"), list):
+                    # The declaration check caps the count and the length of units.
+                    # A unit is member text, so it shows inside « » as a label does.
+                    row["units"] = [_name(u, True) for u in f["units"] if isinstance(u, str)]
+                if f.get("format") in studio_fields.BARCODE_FORMATS:
+                    row["format"] = f["format"]
+                fields.append(row)
         rules = obj.get("rules")
         out.append({"name": name, "label": _name(obj.get("label") or name, True),
                     "fields": fields, "rules": len(rules) if isinstance(rules, list) else 0})
@@ -3017,9 +3250,29 @@ async def studio_package_get(package_id: str = "", offset: int = 0, limit: int =
         True, [], [], id=_tag(package.get("id"), 40), name=_name(package.get("name", ""), True),
         status=_tag(package.get("status"), 20), live_version=package.get("live_version"),
         objects=objects, actions=_declared_actions(reply))
-    if not objects:
+    if package.get("access", "owner") != "owner":
+        # J2a: the member reads the installed version of an app that another member owns. A
+        # value other than the owner's reads as a viewer. A viewer writes nothing, so the
+        # answer lists the reads only (fix round 2).
+        version = package.get("version")
+        out["access"] = "viewer"
+        out["installed_version"] = version if type(version) is int else None
+        out["actions"] = [a for a in out["actions"] if re.match(_READ_USES, a["uses"])]
+        out["note"] = _VIEWER_EMPTY if not objects else _VIEWER_NOTE
+    elif not objects:
         out["note"] = "This package has no object yet. Publish it in Studio to make its objects."
     return out
+
+
+#: J2a. The reads of an object: the only actions that a viewer can run.
+_READ_USES = r"^object:[a-z][a-z0-9_]{0,47}\.(list|get)$"
+
+#: J2a. The notes of a package read by a viewer: a member who reads an app
+#: through an install, and does not own it.
+_VIEWER_NOTE = ("You read this app through an install. You can read its records, and only "
+                "its owner can change them.")
+_VIEWER_EMPTY = ("This app has no object that you can read yet. Only its owner can publish "
+                 "one in Studio.")
 
 
 _BAD_ARG: Any = object()
@@ -3123,11 +3376,15 @@ async def studio_record_list(
 # * The ask. A call with no request_id sends the body with the ask marker
 #   ``ask=1``. The door opens ONE request that waits for the member, and it
 #   writes nothing. The result says that the change is NOT saved, and where
-#   the member answers: Integrations, AI agents, Waiting for you, until
-#   B2c-2c draws the card in the chat.
+#   the member answers: Integrations, AI agents, Waiting for you. In the web
+#   chat, B2c-2c also draws the card of the request under the result
+#   (``components/studio/StudioToolCards.tsx``), and its answer comes back
+#   as the member's next message.
 # * The resend. A call with the request_id names it in the query and sends NO
 #   body. The door reads no byte of a resend body, and it runs the STORED call
-#   of an approved request once.
+#   of an approved request once. The request_id alone is enough (fix round 1
+#   of B2c-2c): the tool reads the request as the member, and takes the
+#   package and the action of the stored call when they match this tool.
 #
 # ⚠️ Only a 200 of a resend is a saved change. No other answer gives ``ok``
 # or ``saved`` True. No tool here names the route that decides a request, so
@@ -3143,17 +3400,25 @@ _ASK_MARKER = ("ask", "1")
 #: The verbs of the write tools, in the order of the tools.
 WRITE_VERBS = ("create", "update", "delete")
 
-#: Where the member answers a request until B2c-2c draws the card in the chat.
+#: Where the member answers a request in every channel. The web chat also
+#: draws its card (B2c-2c), and a channel with no card has only this list.
 APPROVE_WHERE = "Integrations, AI agents, Waiting for you"
 
-#: The note of an ask: the change waits, and how the model goes on.
+#: Where the member answers in the web chat: the card of B2c-2c, under the reply.
+APPROVE_IN_CHAT = ("In the web chat, the approval card shows under your reply, so ask the "
+                   "member to answer it there.")
+
+#: The note of an ask: the change waits, and how the model goes on (fix round 1 of
+#: B2c-2c: the card of the chat first, and the resend with only the request_id).
 _ASKED_NOTE = (
-    f"This change is not saved. It waits for the member to approve it in {APPROVE_WHERE}. "
-    "Tell the member so. When the member says that they approved it, call this tool again "
-    "with this request_id. Until a call says saved, never say that the change is saved.")
+    f"This change is not saved. It waits for the member's approval. {APPROVE_IN_CHAT} "
+    f"In a channel with no card, the member answers in {APPROVE_WHERE}. When the member "
+    "says that they answered, call the same tool again with only the request_id. Until a "
+    "call says saved, never say that the change is saved.")
 _ASKED_APPROVED_NOTE = (
-    "The member approved this change, and it is not saved yet. Call this tool again with "
-    "this request_id to save it. Until a call says saved, never say that the change is saved.")
+    "The member approved this change, and it is not saved yet. Call the same tool again with "
+    "only the request_id to save it. Until a call says saved, never say that the change is "
+    "saved.")
 _SAVED_NOTE = {
     "create": "The approved record is saved. record_id names the new record.",
     "update": "The approved change is saved.",
@@ -3181,8 +3446,18 @@ _MISSING_FIELD = ("A new {object} record needs a value for {keys}, so nothing wa
 #: A resend that carries values (fix round 1, P3). The resend runs the stored call.
 _RESEND_HAS_VALUES = (
     "A call with a request_id sends no values: the approved request saves the approved values. "
-    "Nothing was sent. Call again with only the package id, the object name and the request_id. "
-    "To change the values, call with no request_id, and the member approves the new change.")
+    "Nothing was sent. Call again with only the request_id. To change the values, call with "
+    "no request_id, and the member approves the new change.")
+#: The refusals of a resend by the request_id alone (fix round 1 of B2c-2c). The
+#: tool reads the request as the member, and sends nothing when it does not match.
+_REQUEST_UNREAD = ("The request could not be read, so nothing was sent. Call again with "
+                   "the same request_id in a moment.")
+_NOT_A_RECORD_REQUEST = ("This request_id is not a change of a Studio record, so nothing was "
+                         "sent. Use the request_id that this tool gave.")
+_OTHER_VERB = ("This request_id names a change of kind {found}, and this tool makes a change of "
+               "kind {verb}. Nothing was sent. Call studio_record_{found} with only the request_id.")
+_NOT_THIS_CHANGE = ("This request_id is for another package or object than the values of this "
+                    "call. Nothing was sent. Call again with only the request_id.")
 #: The sentences of a network fault. A repeat of an ask gives the same open
 #: request, and a repeat of a resend of a saved change answers request_spent.
 _ASK_MAYBE = ("The ask may have reached the app. Nothing is saved until the member approves. "
@@ -3217,8 +3492,9 @@ WRITE_REFUSALS: dict[str, str] = {
                          "member that nothing changed. Ask again only when the member asks "
                          "for the change now."),
     "request_awaiting": ("The member has not approved this change yet, so nothing was saved. "
-                         f"The member approves it in {APPROVE_WHERE}. Call again with this "
-                         "request_id after the member says so."),
+                         "In the web chat, the member answers on the approval card. Else the "
+                         f"member answers in {APPROVE_WHERE}. After the member answers, call "
+                         "again with only the request_id."),
     "request_spent": ("This approval ran once already, so an earlier call saved the change. "
                       "Nothing more was written. Read the records to check it. For a new "
                       "change, call this tool with no request_id."),
@@ -3398,17 +3674,79 @@ def _fields_problem(package: _Reply, name: str, verb: str,
     return None
 
 
+#: The door path of a stored Studio call: the package and the action id. A
+#: plain string, as each pattern of this module is (``_IDENT``, ``_USES``).
+_RESEND_PATH = r"^/studio/apps/([0-9a-f-]{36})/actions/([a-z][a-z0-9_]{0,47})$"
+#: The ``uses`` of an object write: the object and the verb. Not
+#: :data:`_OBJECT_USES`, which also takes a read.
+_WRITE_USES = r"^object:([a-z][a-z0-9_]{0,47})\.(create|update|delete)$"
+
+
+def _resend_target(reply: _Reply, verb: str, rid: str, pid: str | None,
+                   name: str | None) -> tuple[str, str] | str:
+    """The package id and the action id of a resend, from the member's own read of
+    the request (fix round 1 of B2c-2c), or the sentence of a refusal.
+
+    The request must be a Studio request whose stored call is a door path of its
+    own package, and whose ``uses`` names the verb of THIS tool. A package id or
+    an object name that the call gives must match it. The door still checks the
+    binding, the member and the digest of the stored call, so a wrong id fails
+    closed there too."""
+    if reply.status == 404:
+        return WRITE_REFUSALS["request_not_found"]
+    data = reply.data if isinstance(reply.data, dict) else None
+    if not reply.ok or data is None:
+        return _REQUEST_UNREAD
+    subject = data.get("subject")
+    call = data.get("call") if isinstance(data.get("call"), dict) else {}
+    if (data.get("source") != "studio" or data.get("request_id") != rid
+            or not isinstance(subject, str) or _skill_path(subject) != subject):
+        return _NOT_A_RECORD_REQUEST
+    path = call.get("path")
+    door = re.match(_RESEND_PATH, path) if isinstance(path, str) else None
+    if door is None or door.group(1) != subject or call.get("method") != "POST":
+        return _NOT_A_RECORD_REQUEST
+    query = call.get("query") if isinstance(call.get("query"), list) else []
+    uses = [p[1] for p in query if isinstance(p, list) and len(p) == 2 and p[0] == "uses"]
+    found = re.match(_WRITE_USES, uses[0]) if len(uses) == 1 and isinstance(uses[0], str) else None
+    if found is None:
+        return _NOT_A_RECORD_REQUEST
+    if found.group(2) != verb:
+        return _OTHER_VERB.format(found=found.group(2), verb=verb)
+    if (pid is not None and pid != subject) or (name is not None and name != found.group(1)):
+        return _NOT_THIS_CHANGE
+    return subject, door.group(2)
+
+
+async def _resend_by_request(verb: str, rid: str, package_id: Any,
+                             object: Any) -> dict[str, Any]:
+    """The resend of a call that names the request_id and not both the package id
+    and the object name. It reads the request as the member, then sends the
+    action of the stored call with ``?request_id=`` and no body, as the resend
+    with all the arguments does."""
+    pid = _skill_path(package_id) if str(package_id or "").strip() else None
+    if str(package_id or "").strip() and pid is None:
+        return _not_saved(_NO_PACKAGE_ID)
+    name = _ident(str(object or "").strip()) if str(object or "").strip() else None
+    if str(object or "").strip() and name is None:
+        return _not_saved(_NO_OBJECT_NAME)
+    try:
+        reply = await _send("GET", f"/agent-access/requests/{rid}", None, miss=_REQUEST_UNREAD)
+        target = _resend_target(reply, verb, rid, pid, name)
+        if isinstance(target, str):
+            return _not_saved(target, reply, "request_not_found" if reply.status == 404 else "")
+        subject, action = target
+        sent = await _send("POST", f"/studio/apps/{subject}/actions/{action}?request_id={rid}",
+                           None, miss=_RESEND_MAYBE)
+    except _Refused as exc:
+        return _not_saved(str(exc))
+    return _resent(sent, verb, rid)
+
+
 async def _record_write(verb: str, package_id: Any, object: Any, request_id: Any,
                         record_id: Any = "", data: Any = None) -> dict[str, Any]:
     """The ask or the resend of one write of *verb*. See the section above."""
-    pid = _skill_path(package_id) if str(package_id or "").strip() else None
-    if pid is None:
-        return _not_saved(_NO_PACKAGE_ID)
-    name = _ident(str(object or "").strip())
-    if name is None:
-        return _not_saved(_NO_OBJECT_NAME)
     rid: str | None = None
-    body: dict[str, Any] | str = {}
     if str(request_id or "").strip():
         rid = _skill_path(request_id)
         if rid is None:
@@ -3416,7 +3754,18 @@ async def _record_write(verb: str, package_id: Any, object: Any, request_id: Any
         carried = _resend_problem(record_id, data)
         if carried is not None:
             return _not_saved(carried)
-    else:
+        # Fix round 1 of B2c-2c: the next turn may not hold the package id and
+        # the object name, so the request_id alone is enough.
+        if not (str(package_id or "").strip() and str(object or "").strip()):
+            return await _resend_by_request(verb, rid, package_id, object)
+    pid = _skill_path(package_id) if str(package_id or "").strip() else None
+    if pid is None:
+        return _not_saved(_NO_PACKAGE_ID)
+    name = _ident(str(object or "").strip())
+    if name is None:
+        return _not_saved(_NO_OBJECT_NAME)
+    body: dict[str, Any] | str = {}
+    if rid is None:
         body = _write_body(verb, record_id, data)
         if isinstance(body, str):
             return _not_saved(body)
@@ -3446,48 +3795,49 @@ async def _record_write(verb: str, package_id: Any, object: Any, request_id: Any
 
 @annotate(read_only=False, idempotent=False, open_world=False)
 async def studio_record_create(
-    package_id: str, object: str, data: dict[str, Any] | None = None, request_id: str = "",
+    package_id: str = "", object: str = "", data: dict[str, Any] | None = None,
+    request_id: str = "",
 ) -> dict[str, Any]:
     """Add a record to an object of your Studio package, after the member approves it.
 
     Give the package id and the object name from studio_package_get, and data:
     a JSON object of field keys and values. The first call saves nothing. It
-    asks the member and gives a request_id. The member approves it in
-    Integrations, AI agents, Waiting for you. After the member says so, call
-    again with the package id, the object name and the request_id. That call
-    saves the approved record once. Only a result with saved true is saved.
+    asks the member and gives a request_id. The member answers on the approval
+    card in the web chat, or in Integrations, AI agents, Waiting for you. After
+    the member says so, call again with only the request_id. That call saves
+    the approved record once. Only a result with saved true is saved.
     """
     return await _record_write("create", package_id, object, request_id, data=data)
 
 
 @annotate(read_only=False, idempotent=False, open_world=False)
 async def studio_record_update(
-    package_id: str, object: str, record_id: str = "", data: dict[str, Any] | None = None,
-    request_id: str = "",
+    package_id: str = "", object: str = "", record_id: str = "",
+    data: dict[str, Any] | None = None, request_id: str = "",
 ) -> dict[str, Any]:
     """Change a record of an object of your Studio package, after the member approves it.
 
     Give the package id, the object name, the record_id from studio_record_list,
     and data: the field keys and the new values. The first call saves nothing.
-    It asks the member and gives a request_id. The member approves it in
-    Integrations, AI agents, Waiting for you. After the member says so, call
-    again with the package id, the object name and the request_id. That call
-    saves the approved change once. Only a result with saved true is saved.
+    It asks the member and gives a request_id. The member answers on the
+    approval card in the web chat, or in Integrations, AI agents, Waiting for
+    you. After the member says so, call again with only the request_id. That
+    call saves the approved change once. Only a result with saved true is saved.
     """
     return await _record_write("update", package_id, object, request_id, record_id, data)
 
 
 @annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def studio_record_delete(
-    package_id: str, object: str, record_id: str = "", request_id: str = "",
+    package_id: str = "", object: str = "", record_id: str = "", request_id: str = "",
 ) -> dict[str, Any]:
     """Delete a record of an object of your Studio package, after the member approves it.
 
     Give the package id, the object name and the record_id from
     studio_record_list. The first call deletes nothing. It asks the member and
-    gives a request_id. The member approves it in Integrations, AI agents,
-    Waiting for you. After the member says so, call again with the package
-    id, the object name and the request_id. That call deletes the record once.
+    gives a request_id. The member answers on the approval card in the web
+    chat, or in Integrations, AI agents, Waiting for you. After the member says
+    so, call again with only the request_id. That call deletes the record once.
     Only a result with saved true deleted it.
     """
     return await _record_write("delete", package_id, object, request_id, record_id)
@@ -3548,6 +3898,7 @@ __all__ = [
     "parts_count",
     "plan_card_text",
     "structure_line",
+    "studio_delete_package",
     "studio_describe",
     "studio_draft",
     "studio_interview",

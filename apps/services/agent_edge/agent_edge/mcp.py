@@ -42,6 +42,11 @@ gives the answer, and no later check runs:
    (MCP-P1a, spec §19.4, ``tools.scope_of``). An app that no manifest holds
    gets a tool error, and no 403.
 
+**The read-only door (SW-34b).** ``POST /mcp/readonly`` runs the same checks
+in the same order. Right after check 6 it narrows the caller's scopes to the
+read scopes (``bearer.read_only``). Check 8 and each method then read the
+narrowed scopes, so a write tool gets the 403 of check 8 there.
+
 **The error body (EA3-13).** Each 4xx and each 503 carries a JSON-RPC error
 with ``id: null``. The code is ``-32700`` for a body that is not JSON,
 ``-32603`` for a 503, and ``-32600`` for every other case.
@@ -132,12 +137,11 @@ _INSTRUCTIONS = (
 #: ``create_task``, so it shows only where the protocol shows: on a write
 #: connection. Fence: ``test_mcp_edge_prompts.py`` ``TestAskedWork``.
 _ASKED_WORK = (
-    " A person may ask you in chat for work that changes code, data or a"
-    " server. That work needs a task too. Before the first edit, find it with"
-    " search_tasks, or make it with create_task. Then claim it and follow"
-    " steps 4 to 6. A session that only reads or answers needs no task."
-    " Before you release a task, comment what is done, what is left and the"
-    " next step."
+    " Work that a person asks for in chat needs a task too. Before the first"
+    " edit, find it with search_tasks, or make it with create_task. Then claim"
+    " it and follow steps 4 to 6. A session that only reads or answers needs"
+    " no task. Before you release a task, comment what is done, what is left"
+    " and the next step."
 )
 
 #: The routine of §12 (EA-6e, EA3-39). It shows on the same test as the
@@ -153,10 +157,8 @@ _ROUTINE_INSTRUCTIONS = (
     " says review. Move the task to done only after the merge, and not when"
     " GitHub already did. See prompt work_on_task."
     # MCP-G1. The tools of the project tree and of a move between projects.
-    " To make or change a space, project or subproject, call create_project or"
-    " update_project. To move tasks to another project, call"
-    " preview_move_tasks, show the person what the move drops, and then call"
-    " move_tasks with its preview_id."
+    " For a project, call create_project or update_project. To move tasks,"
+    " call preview_move_tasks, show the person what it drops, then move_tasks."
 )
 
 #: The protocol of EA-15c (§12.4): one order of steps for each session. The
@@ -171,13 +173,21 @@ _PROTOCOL_RUNS_ON = (
     " (reason run_queued or run_answered), read it with get_agent_run. Then"
     " call claim_task with the task_id and the version of the row."
     " 3. A 409 task_held means that another session holds the task. Do not try"
-    " it again. Take the next row. A run of another connection, such as one"
-    " on another machine, is never yours, and my_work does not list it."
+    " it again. Take the next row. A run of another connection is never"
+    " yours, and my_work does not list it."
     "{terminals}"
     " Take only a row that my_work lists.{answer}"
     " 4. Call get_task_context, then call start_agent_run when the claim"
     " opened no run."
-    " 5. Post a thought with post_agent_activity at least once a minute."
+    # Task 1045a: the waiting line. The text sits at the cut of 4096 (task
+    # 1803), so step 3 gave up the words ", such as one on another machine,"
+    # to make room. The work_on_task steps (`prompts.py`) and the tool
+    # post_agent_activity hold the full rule, with its 2 minutes. Owner,
+    # 2026-11-07: "only" and the list keep a run whose own sub-agents work
+    # out of `waiting`. The step keeps the length it had, because with the
+    # sessions flag off step 6 already ends near the cut.
+    " 5. Post a post_agent_activity thought each minute."
+    " Set waiting only for CI, people or another agent."
     " 6. End with exactly one disposition: the task moves to review or done,"
     " or a question waits on a named member (ask_on_task), or release_task"
     " gives the task back. A comment is evidence, never a disposition."
@@ -274,11 +284,17 @@ def instructions(scopes: Iterable[str] = ()) -> str:
     protocol = _PROTOCOL_RUNS_ON.replace("{terminals}", _terminals()).replace(
         "{answer}", prompts.answer_pointer()) if runs \
         else _PROTOCOL_RUNS_OFF
-    text += protocol + _ASKED_WORK + _ROUTINE_INSTRUCTIONS + prompts.PR_RULE
+    # MCP-G16 (task 1803). Claude Code cuts the instructions at 4096
+    # characters. The safety rules of a run (the held task, the heartbeat,
+    # release_task, record_outside_decision, the stop) come BEFORE the routine
+    # and the PR rule, so the cut falls on the routine. Fence:
+    # ``test_mcp_edge_prompts.py`` ``TestTheSafetyRulesBeforeTheCut``.
+    text += protocol + _ASKED_WORK
     if runs:
         text += _RUN_INSTRUCTIONS
         if agent_oauth.answer_change_enabled():
             text += prompts.ANSWER_RULE
+    text += _ROUTINE_INSTRUCTIONS + prompts.PR_RULE
     return text + _IMAGE_INSTRUCTIONS
 
 #: The methods the route accepts, so that check 3 answers and not the router.
@@ -288,6 +304,20 @@ ROUTE_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 def path() -> str:
     """The path of the resource, ``/mcp`` by default."""
     return urlsplit(agent_oauth.resource()).path or "/mcp"
+
+
+#: SW-34b. The last segment of the read-only door, below :func:`path`.
+READONLY_SEGMENT = "readonly"
+
+
+def readonly_path() -> str:
+    """The read-only door, ``/mcp/readonly`` by default (SW-34b).
+
+    The same token works here and on :func:`path`, because the audience is
+    the resource of :func:`path`. The path is the mode: each call here runs
+    with its scopes narrowed to the read scopes (``bearer.read_only``).
+    """
+    return f"{path().rstrip('/')}/{READONLY_SEGMENT}"
 
 
 def resource_metadata_url() -> str:
@@ -436,6 +466,24 @@ def _session_of(request: Request, caller: bearer.Caller,
 
 async def endpoint(request: Request) -> Response:
     """``/mcp``. Checks 2 to 8 of §9.6, in order, then the method."""
+    return await _serve(request, read_only=False)
+
+
+async def readonly_endpoint(request: Request) -> Response:
+    """``/mcp/readonly`` (SW-34b). The same checks, in the same order, with
+    the caller's scopes narrowed to the read scopes right after check 6.
+
+    So ``tools/list`` shows only reads, and check 8 answers 403
+    ``insufficient_scope`` for each write tool. The prompt, the resources
+    and the instructions read the same narrowed scopes. The path can only
+    narrow a token, never widen it. Fence:
+    ``tests/unit/test_mcp_edge_readonly.py``.
+    """
+    return await _serve(request, read_only=True)
+
+
+async def _serve(request: Request, *, read_only: bool) -> Response:
+    """Checks 2 to 8 of §9.6, in order, then the method."""
     key = agent_signing.signing_key()
     if key is None:
         return http_error(503, INTERNAL_ERROR, "The server is not ready.",
@@ -477,6 +525,10 @@ async def endpoint(request: Request) -> Response:
             return http_error(503, INTERNAL_ERROR, "Metorite is busy. Try again.",
                               {"Retry-After": str(bearer.OUTAGE_RETRY_AFTER_S)})
         return challenge_401(sent=refused.sent)
+    if read_only:
+        # SW-34b: the one narrowing of the read-only door. Every later check
+        # reads `caller.scopes`, so no second scope rule exists.
+        caller = bearer.read_only(caller)
 
     method = message.get("method") if kind != "response" else None
     # 7. The version, and 7b. the session (SW-7).
@@ -494,7 +546,7 @@ async def endpoint(request: Request) -> Response:
         # MCP-P1a: a door tool's scope is the one of the app it names.
         required = (tools.scope_of(tool, params.get("arguments"))
                     if tool is not None else None)
-        if (tool is not None and tools.offered(tool)
+        if (tool is not None and tools.offered(tool, caller.lookup.organization_id)
                 and not bearer.covers(caller.scopes, required)):
             _log.info("agent_edge.insufficient_scope", tool=tool.name,
                       connection_id=caller.lookup.connection_id)
@@ -559,17 +611,18 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
                                                       session=session))
         return _result(request_id, {"tools": listed})
     if method == "prompts/list":
-        return _result(request_id, {"prompts": prompts.listed(caller.scopes)})
+        return _result(request_id, {"prompts": prompts.listed(caller.scopes, caller.lookup.organization_id)})
     if method.startswith("resources/"):
         return await _resources_method(
             request_id, method, params, caller,
             tools.Context(caller=caller, key=key, session=session))
     if method == "prompts/get":
         try:
-            result = prompts.get(caller.scopes, params)
+            result = prompts.get(caller.scopes, params, caller.lookup.organization_id)
         except prompts.PromptRefused as refused:
             return _rpc_error(request_id, INVALID_PARAMS, refused.message)
-        _log.info("agent_edge.prompt_get", prompt=prompts.PROMPT_NAME,
+        _log.info("agent_edge.prompt_get",
+                  prompt=prompts.logged_name(params),
                   connection_id=caller.lookup.connection_id)
         return _result(request_id, result)
     if tool is None:
@@ -601,6 +654,7 @@ __all__ = [
     "LEGACY_VERSION",
     "MAX_BODY_BYTES",
     "NO_KEY_RETRY_AFTER_S",
+    "READONLY_SEGMENT",
     "ROUTE_METHODS",
     "SESSION_HEADER",
     "SUPPORTED_VERSIONS",
@@ -608,5 +662,7 @@ __all__ = [
     "challenge_403",
     "endpoint",
     "path",
+    "readonly_endpoint",
+    "readonly_path",
     "resource_metadata_url",
 ]

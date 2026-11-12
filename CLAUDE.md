@@ -44,6 +44,7 @@ grandfathered. Do not open a pull request that only repairs old text.
 | # | File | What it owns |
 |---|---|---|
 | 1 | **`project-docs/INDEX.md`** | Which specs are **ACTIVE** (you may build from these), and which are deferred or historical (you may not). A spec missing from INDEX is a defect. Say so. |
+| 1a | **`project-docs/specs/building_blocks.md`** | The product shape and the seams (D205). Read it before you add a table, registry, manifest, queue, engine or spec. A vertical is a preset over core blocks. |
 | 2 | **`project-docs/work_plan.md` §1** | The agent-ready spec contract and the standing **R** rules. Binding on every PR. |
 | 3 | **The HathiLabs project Metorite**, then **`project-docs/work_plan.md` §2** | **Metorite holds the state (D118):** the status, the priority, the owner and the order of each work item. Call `my_work` through the Metorite MCP, then `claim_task`. §2 is the index: one row per workstream, with its owning spec and its Metorite epic. Start at **§2.0**, the roadmap (M0 to M4). For scope, the spec wins. For order and owner, Metorite wins. |
 | 4 | **`project-docs/work_plan.md` §6** | The owner-gate registry. Actions you must **refuse by name**, unless §3a opens them. |
@@ -87,11 +88,12 @@ reference tied to code. Do not put product specs in `docs/`.
   palette, bell or assistant rail. A team view is a filter, never a Center.
   `specs/navigation_shell.md` owns it, and `workbench/control_plane/AGENTS.md`
   rule 10 carries it to UI work.
-- **Pricing is FLAT: ₹500/user/month + AI credits**, one sellable seat
-  (`core`), everything live included. `specs/launch_surface.md` §4 is the
-  shape of record. `saas_multitenancy.md` §2.4b is the superseded D23/D24
-  record. Still binding: D19.3's hard cap, D32.5's three counts, the
-  entitlement seam.
+- **Pricing is SEAT TIERS with base pricing (D152, final: owner 2026-11-10, D204
+  point 9)**, plus AI credits. The flat ₹500 seat ends (D190.3) when PLN-0
+  merges. Until then the code sells the flat seat (`core`).
+  `specs/launch_surface.md` §4 is the old shape. The Billing project (epic
+  WS-PLN) builds the tiers. Still binding: D19.3's hard cap, D32.5's three
+  counts, the entitlement seam.
 - **Tenancy is a ROW, not a deployment.** `organization_id` + Postgres FORCE ROW
   LEVEL SECURITY, bound at the `get_db()` seam. We are **multi-tenant from
   customer #1**. "Silo" describes *placement* only. No phase accepts
@@ -218,7 +220,7 @@ delivery makes a silent failed deploy more likely, not less.
 > **audit** the spec is dispatchable → **implement** one narrowed slice with
 > the local stack up (`scripts/dev_up.sh`) → **preview** it to the owner and
 > wait for **approval** → **verify** independently and **review** by risk tier,
-> beside the **local staging gate** (`scripts/stage_local.sh`). Then **merge
+> beside the **gate**: GitHub `pr-check`, then `premerge.sh` (D218). Then **merge
 > it**. Production takes it at the next release slot (05:30, 13:30 or 21:30 UTC).
 
 **Merging is not skipping the loop.** Verify always runs, and the verifier is
@@ -227,23 +229,31 @@ audit when its Metorite task states the acceptance criteria (owner request,
 2026-10-30). Review depth follows the risk tier in `next-ticket.md` step 1b. A
 LOW slice skips the reviewer. What you drop is the wait.
 
-**⚠️ PREVIEW, APPROVE, GATE, MERGE** *(D145, owner directive, 2026-10-31)*.
-The owner retired staging (D144), and this PC does its job now.
+**⚠️ PREVIEW, APPROVE, GATE, MERGE** *(D145, owner directive, 2026-10-31.
+D218, 2026-11-12)*. The owner retired staging (D144), and this PC does its job now.
 
 1. **Show the owner the change first.** Send the local URL, what changed, where
    to click and the captures. Then ask on the task: Approve or Change it.
-2. **Run the full gates after the approval.** `scripts/stage_local.sh` tests the
-   merge with today's `main`. It runs the full suite and the production build.
-   It rehearses the migrations on production's reduced copy, and runs smoke.
-   A pass posts `local-staging` on the head commit, and `premerge.sh` needs it.
+   **D218:** a slice behind a flag that is off does not wait here. It merges on
+   green, and the owner preview gates the flag flip instead (step 4).
+2. **Gate on GitHub (D218).** `pr-check` must pass. Then `premerge.sh` tests
+   the merge with today's `main`. `scripts/ci_local.sh` is optional: run it when
+   GitHub is down, or for an early signal. When LD-9 lands, `scripts/stage_local.sh`
+   runs for a slice that adds a migration or changes the build path. It runs
+   the production build and rehearses the migrations on production's reduced copy.
 3. **Production moves three times a day, at 05:30, 13:30 and 21:30 UTC (D194).**
    Do not dispatch `deploy.yml` after a merge. Dispatch only for a hotfix the
    owner asks for, or when production is down.
    The home box starts each release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
+4. **A flag flips only after the owner approves (D218).** Post the captures on
+   the task, and ask "Approve the flag flip" or "Change it". A new page, screen,
+   navigation entry or flow with no flag still waits for step 1 before the merge.
 
-A slice with nothing to see skips step 1. Until LD-8 to LD-10 land, the gate is
-`scripts/ci_local.sh` and then `premerge.sh`. `engineering_practice.md` §1.3
-owns the loop, and `next-ticket.md` steps 4b and 7 hold the commands.
+A slice with nothing to see skips step 1. **D200 (2026-11-08):** a small, low-risk
+change on an existing screen skips the wait in step 1. It merges after the
+captures and the gate, and the owner reviews it afterwards.
+`engineering_practice.md` §1.3 owns the loop, and `next-ticket.md` steps 4b
+and 7 hold the commands. `ci_velocity.md` §8 owns D218.
 
 **⚠️ WORK UNDER A METORITE TASK** *(owner directive, 2026-10-28, D135)*.
 The owner watches the board, so work that is not on it is invisible. Every
@@ -280,22 +290,36 @@ When the owner answers in chat and not on the task, call
 
 Rules that make it work:
 
+- **⚠️ PLAN BY THE GRATIFICATION LADDER** *(owner directive, 2026-11-11,
+  D211)*. A plan is a set of rungs, and each rung ends in a demo that the owner
+  sees and uses on production. Take the lowest open rung first, then the least
+  slack to its demo. Rung 0 (a leak, data loss, a broken live feature) goes
+  before all rungs. Every plan you make, on the board or for a spec, follows
+  `orchestration_playbook.md` §6d.
 - **The verifier is never the implementer**, and re-derives facts from the code
   instead of trusting the write-up.
-- **Sonnet does the work. Opus takes the hard cases.** Owner directive,
-  2026-10-19. This binds every dispatch: the Agent tool, `/next-ticket` and a
-  Workflow stage. `settings.json` sets `CLAUDE_CODE_SUBAGENT_MODEL=sonnet`, and
-  the agent files in `.claude/agents/` say their own model. Pass
-  `model: "opus"` only for one of these:
-  - Adversarial review. `diff-reviewer` is Opus by its file.
-  - A HIGH-tier slice: tenancy, RLS, auth, identity, a migration, money,
-    credits, secrets, a member or role write, or the deploy path.
-  - A second try after Sonnet failed on the same finding.
-  - A hard problem: three or more services, or a concurrency, cache or
-    ordering bug.
+- **Route each dispatch to the model that fits the job.** Owner decision D218,
+  2026-11-12. It replaces "Sonnet does the work" (2026-10-19). It binds every
+  dispatch: the Agent tool, `/next-ticket` and a Workflow stage. `settings.json`
+  sets `CLAUDE_CODE_SUBAGENT_MODEL=sonnet`, and the agent files in
+  `.claude/agents/` say their own default. Pass `model` to choose another:
+  - **Haiku:** a lookup with no judgement, sorting a red CI run, finding callers.
+  - **Sonnet:** a LOW slice, a mechanical repair, the verifier of a LOW or
+    STANDARD slice, and a STANDARD builder inside one app.
+  - **Opus:** a STANDARD slice that edits a shared seam or list. A HIGH-tier
+    slice: tenancy, RLS, auth, identity, a migration, money, credits, secrets,
+    a member or role write, or the deploy path. Adversarial review
+    (`diff-reviewer` is Opus by its file). The audit of a first slice. A second
+    try after Sonnet failed on the same finding. A merge conflict that needs
+    judgement. A hard problem: three or more services, or a concurrency, cache
+    or ordering bug.
+  - **Fable:** once a feature, for the plan, a hard root cause, and the
+    security and scaling review after a release.
 
-  Use `haiku` for a lookup with no judgement. `/next-ticket` step 1c holds the
-  table per role. Fence: `tests/unit/test_agent_model_routing.py`.
+  Set the effort on each dispatch. Opus 5.5 defaults to `medium`. Each dispatch
+  posts its model and effort in a thought line. `/next-ticket` step 1c holds the
+  table per role, and `ci_velocity.md` §8.6 owns it. Fence:
+  `tests/unit/test_agent_model_routing.py`.
 - **Build first. Harden when the feature works.** Owner directive,
   2026-10-19. In build, only the product tests and the SAFETY fences block.
   The PROCESS fences and STE lint warn, and the loop is implement then
@@ -385,8 +409,15 @@ Rules that make it work:
   Windows PC with Ubuntu 24.04 in WSL, on the tailnet as `metorite-home`.
   From this PC, `ssh metorite-home` reaches user `dev`, and
   `ssh metorite-home-admin` reaches `acb`, who has sudo.
-  `scripts/home_server/` sets it up.
-- **Run the whole pr-check suite before you push:** `bash scripts/ci_local.sh`.
+  `scripts/home_server/` sets it up. **To give the box a session, or to run
+  CI there, read `docs/home_box.md`.** It holds the lane start and wake
+  commands, the keeper, the merge queue, the accounts and the traps. **To size
+  lanes, sub-agents, runners and CI to the machines you have, or to add a
+  machine such as a cloud VPS, read `docs/dev_capacity.md`.**
+- **GitHub `pr-check` is the gate (D218).** Push when the verifier passes, not
+  after each commit, so `pr-check` runs once for each round.
+  `bash scripts/ci_local.sh` runs the whole pr-check suite locally. It is
+  optional: run it when GitHub is down, or for an early signal.
   **The home server runs it**, as user `ci`. This PC's `metorite-ci` WSL2
   distro takes the run only when the home server is busy or does not answer.
   `--home` or `--pc` picks one lane. It tests the COMMIT, so commit first.
@@ -394,8 +425,7 @@ Rules that make it work:
   ⚠️ **When WSL or Docker hangs on this PC** (`HCS_E_CONNECTION_TIMEOUT`, Docker
   answers 500), run `bash scripts/ci_pc/doctor.sh`. `--fix` repairs it in a
   known order, and it restarts SHARED things. Use it only when the report says
-  they are broken. Do not fall back to GitHub-only CI in silence. Say the
-  doctor's result.
+  they are broken. Say the doctor's result.
 - **Do not run all of `tests/unit/` locally.** It takes about 50 minutes.
   Run `uv run python scripts/affected_tests.py --run`. It picks the tests your
   diff can affect, and it prints the `vitest related` command for frontend

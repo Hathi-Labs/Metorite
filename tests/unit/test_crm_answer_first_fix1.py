@@ -306,6 +306,7 @@ async def test_the_purge_forgets_each_crm_key_of_the_member_and_no_other() -> No
 KNOWN_UNPURGED: dict[str, str] = {
     "agent_connection": "WS-55, before CRM-Q33",
     "artifact_member": "artifacts, before CRM-Q33",
+    "calendar_task_links": "CE-13: deleted by the cascade of the connection delete in the purge (426)",
     "integration_connections": "CRM-Z2, before CRM-Q33",
     "my_day_card_state": "WS-58, before CRM-Q33",
     "my_day_judgments": "WS-58, before CRM-Q33",

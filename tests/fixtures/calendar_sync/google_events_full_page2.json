@@ -1,0 +1,5 @@
+{"kind":"calendar#events","etag":"\"p2\"","nextSyncToken":"SYNC-1","items":[
+  {"kind":"calendar#event","id":"evt_series_20261120","etag":"\"3501\"","status":"confirmed","summary":"Weekly review","recurringEventId":"evt_series","originalStartTime":{"dateTime":"2026-11-20T14:00:00+05:30"},"start":{"dateTime":"2026-11-20T14:00:00+05:30"},"end":{"dateTime":"2026-11-20T15:00:00+05:30"}},
+  {"kind":"calendar#event","id":"evt_series_20261127","etag":"\"3502\"","status":"confirmed","summary":"Weekly review","recurringEventId":"evt_series","originalStartTime":{"dateTime":"2026-11-27T14:00:00+05:30"},"start":{"dateTime":"2026-11-27T14:00:00+05:30"},"end":{"dateTime":"2026-11-27T15:00:00+05:30"}},
+  {"kind":"calendar#event","id":"evt_workloc","etag":"\"3503\"","eventType":"workingLocation","status":"confirmed","summary":"Home","start":{"date":"2026-11-16"},"end":{"date":"2026-11-17"}}
+]}

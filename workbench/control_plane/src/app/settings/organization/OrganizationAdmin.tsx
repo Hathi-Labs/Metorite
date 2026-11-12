@@ -166,6 +166,8 @@ const PURGE_LABELS: Record<string, string> = {
   knowledge_proposals: "proposed Knowledge edit",
   // WS-55 SW-10a: a nudge or a recovery record of the member's agent run, kept.
   agent_run_strands: "stranded agent run record",
+  // WS-39 SP-1: the member's review minutes in a started cycle's capacity snapshot, kept.
+  cycle_capacity: "cycle capacity record",
 };
 
 function purgeLabel(key: string, n: number): string {
@@ -544,6 +546,20 @@ export default function OrganizationAdmin() {
                 className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
               >
                 Roles
+              </Link>
+              {/* SW-31b: the written rules for agents (Settings → Agents). */}
+              <Link
+                href="/settings/agents"
+                className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
+              >
+                Agents
+              </Link>
+              {/* PKG-17c-2: the org default of the Home layout. */}
+              <Link
+                href="/settings/layout"
+                className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
+              >
+                Home layout
               </Link>
               {!isMobile && (
                 <Button size="sm" icon="Plus" onClick={() => setInviting(true)}>

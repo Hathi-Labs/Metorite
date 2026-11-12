@@ -23,6 +23,9 @@ import ArtifactViewerModal from "@/components/ArtifactViewerModal";
 import { subscribe as subscribeSidePanel, getOpenDocsForSession, openGenUI } from "@/lib/sidePanelStore";
 import type { FileEntry } from "@/components/ArtifactSidebar";
 import FileUploadButton from "@/components/FileUploadButton";
+import VoiceInputButton, { type VoiceControls } from "@/components/VoiceInputButton";
+import { useVoiceAvailability } from "@/hooks/useVoiceDictation";
+import { insertAtCaret, type VoicePhase } from "@/lib/voiceDictation";
 import { wordsOfMessage } from "@/lib/chatUpload";
 import { PendingChips, workspaceFileUrl } from "@/components/ChatAttachmentChips";
 import { useChatAttachments } from "@/hooks/useChatAttachments";
@@ -132,6 +135,7 @@ import {
   enterSends, touchKeyboard,
   takeLeftoverQueue,
 } from "@/lib/chatSteer";
+import { boxHadFocus, refocusAfterPress, refocusQuietly } from "@/lib/composerFocus";
 import { canRetry, retryPlan } from "@/lib/chatRetry";
 import { mergeCappedText } from "@/lib/chatTurnFailure";
 import { EDIT_LOADING, editableLastUserId, submitEdit, withoutSuperseded, type EditOutcome } from "@/lib/chatEdit";
@@ -149,6 +153,7 @@ import { buildFrontendToolsAddendum, runFrontendToolEvent } from "@/hooks/useFro
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import { missingAgentIntegrations, missingIntegrationsText } from "@/lib/missingIntegrations";
 import { EMPTY_BOX, composerTyped, edited, filled, type ComposerMark } from "@/lib/typedMark";
+import type { AskOutcome } from "@/lib/shell/assistant";
 import {
   composerControls,
   composerModelPlan,
@@ -167,7 +172,9 @@ import {
 // Always includes the tiers (always accessible) and Gemini models (default provider).
 // Provider-specific models for other providers are added dynamically after fetch.
 const MODELS_FALLBACK: UnifiedModel[] = [
-  { id: "auto",              label: "auto (SDK picks)",     runtime: "copilot", group: "GitHub Copilot SDK" },
+  // "copilot" is the name of the agent-executor mode (the MAF tool path), not the SDK.
+  // The name retires with WS-43q (task 2285).
+  { id: "auto",              label: "Auto (the assistant picks)", runtime: "copilot", group: "Assistant" },
   { id: "tier-fast",     label: "Tier 1 (fast / cheap)", runtime: "litellm", group: "LiteLLM — Tiers" },
   { id: "tier-balanced", label: "Tier 2 (balanced)",     runtime: "litellm", group: "LiteLLM — Tiers" },
   { id: "tier-powerful", label: "Tier 3 (powerful)",     runtime: "litellm", group: "LiteLLM — Tiers" },
@@ -368,10 +375,12 @@ interface AgentChatProps {
    * Words to SEND once, as the member's turn (D99: the shell's chat bar).
    * Unlike `pendingInput`, the member already pressed Enter in the bar. It
    * waits until the history has loaded, sends each `seq` once, and then
-   * calls `onAutoSendConsumed`.
+   * calls `onAutoSendConsumed` with `sent`, or with `kept` when the chat
+   * refused the send and the words wait in the composer. A steer that the
+   * server refuses later calls it again with `kept` (STU-B2c-2c).
    */
   autoSend?: { seq: number; text: string; typed?: boolean } | null;
-  onAutoSendConsumed?: (seq: number) => void;
+  onAutoSendConsumed?: (seq: number, outcome: AskOutcome) => void;
   /**
    * D99: the one assistant's name, "Metorite". The member talks to one
    * assistant and never picks an agent, so with this set the chat shows the
@@ -911,6 +920,44 @@ export default function AgentChat({
   const runView = useSteadyRunView(run);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Task 2867 (owner, 2026-11-11): on a phone, a focus() on the box opens the
+  // keyboard. A press in the composer notes whether the box had focus, and
+  // only then may the box take it back (`lib/composerFocus.ts`).
+  const pressFocusRef = useRef(false);
+  const focusAfterPress = useCallback(() => {
+    const box = inputRef.current;
+    if (!box) return;
+    const hadFocus = pressFocusRef.current || boxHadFocus(box);
+    pressFocusRef.current = false;
+    if (refocusAfterPress({ touch: touchKeyboard(), hadFocus })) box.focus();
+  }, []);
+  const focusQuietly = useCallback(() => {
+    const box = inputRef.current;
+    if (box && refocusQuietly({ touch: touchKeyboard() })) box.focus();
+  }, []);
+  // VOX-1 (projects_ai_chat §31): the mic beside Attach. The flag decides
+  // whether it shows. The transcript goes in at the caret, and the member
+  // sends it. Enter and Escape in the box stop or cancel a recording.
+  const voiceAvailability = useVoiceAvailability();
+  const voiceRef = useRef<VoiceControls>(null);
+  const [voicePhase, setVoicePhase] = useState<VoicePhase>("idle");
+  const putDictation = useCallback((text: string) => {
+    const el = inputRef.current;
+    const prev = el?.value ?? "";
+    const next = insertAtCaret(prev, el?.selectionStart ?? prev.length, el?.selectionEnd ?? prev.length, text);
+    // D-PZ-37: the member spoke these words and did not type them. A program
+    // put them in the box, so a send of the box carries no typed mark.
+    boxMarkRef.current = filled(boxMarkRef.current, false);
+    setInput(next.value);
+    setComposerNotice(null);
+    requestAnimationFrame(() => {
+      const box = inputRef.current;
+      if (!box) return;
+      // Task 2867: dictation never opens the phone's keyboard.
+      focusQuietly();
+      box.setSelectionRange(next.caret, next.caret);
+    });
+  }, [setInput, setComposerNotice, focusQuietly]);
   // IMG-1 (projects_ai_chat §30.4): a file is a chip until the member sends.
   const att = useChatAttachments(sessionId);
   const attRef = useRef(att);
@@ -968,9 +1015,9 @@ export default function AgentChat({
       const back = editStart(text, (p) => workspaceFileUrl(sessionIdRef.current, p));
       setInput((prev) => mergeCappedText(prev, back.words));
       if (back.items.length) attRef.current.restore(back.items);
-      inputRef.current?.focus();
+      focusQuietly();
     };
-  }, []);
+  }, [focusQuietly]);
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [statuses, setStatuses] = useState<IntegrationStatus[]>(externalStatuses ?? []);
   const [viewerEntry, setViewerEntry] = useState<FileEntry | null>(null);
@@ -1837,8 +1884,8 @@ export default function AgentChat({
     setInput((prev) => mergeCappedText(prev, back.words));
     if (back.items.length) attRef.current.restore(back.items);
     setComposerNotice(notice);
-    inputRef.current?.focus();
-  }, []);
+    focusQuietly();
+  }, [focusQuietly]);
 
   // §18.10 (owner, 2026-11-03): a chip of a new-mail card puts its words in
   // the box and focuses it. It sends nothing. A program put the words there,
@@ -1861,7 +1908,9 @@ export default function AgentChat({
    * prompt call this with no mark (`lib/typedMark.test.ts`).
    */
   const submitText = useCallback(
-    (text: string, opts?: { typed?: boolean }): boolean => {
+    // `opts.onKept` (STU-B2c-2c): a steer that the server refuses later gives
+    // the words back to the box, and this tells the sender so.
+    (text: string, opts?: { typed?: boolean; onKept?: () => void }): boolean => {
       const trimmed = text.trim();
       // Guard ALL senders (suggestion pills, MCQ choices, HITL card submits,
       // the email "Fix" flow) — not just the textarea form — against sending
@@ -1881,6 +1930,7 @@ export default function AgentChat({
       }
       void (typed ? steerMessage(trimmed, { typed: true }) : steerMessage(trimmed)).then((out) => {
         if (out.kind === "refused") giveBack(trimmed, out.notice, typed);
+        if (out.kind === "refused") opts?.onKept?.();
       });
       return true;
     },
@@ -1901,11 +1951,16 @@ export default function AgentChat({
     // D-PZ-37: the Ask field is one box with the composer, so its typed
     // words carry the mark. A start pill of the field sends none.
     const askTyped = autoSend.typed === true;
-    if (!submitText(autoSend.text, askTyped ? { typed: true } : undefined)) {
+    // STU-B2c-2c: the sender learns what became of the words. A card says
+    // "Sent to the chat" only after a send, never while they wait in the box.
+    const seq = autoSend.seq;
+    const onKept = () => onAutoSendConsumed?.(seq, "kept");
+    const sent = submitText(autoSend.text, askTyped ? { typed: true, onKept } : { onKept });
+    if (!sent) {
       boxMarkRef.current = filled(boxMarkRef.current, askTyped);
       setInput((prev) => mergeCappedText(prev, autoSend.text));
     }
-    onAutoSendConsumed?.(autoSend.seq);
+    onAutoSendConsumed?.(seq, sent ? "sent" : "kept");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoSend?.seq, loadingHistory]);
 
@@ -1934,7 +1989,8 @@ export default function AgentChat({
       setInput("");
       att.clear();
     }
-    inputRef.current?.focus();
+    // Task 2867: a closed phone keyboard stays closed after Send.
+    focusAfterPress();
   };
 
   // Collapse the auto-grown textarea back to one line whenever the input is
@@ -1951,6 +2007,18 @@ export default function AgentChat({
   }, [input]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // VOX-1: while the mic records, Enter stops it and Escape cancels it.
+    // Neither sends: the transcript goes in the box first.
+    if (voicePhase === "recording" && e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      voiceRef.current?.stop();
+      return;
+    }
+    if ((voicePhase === "recording" || voicePhase === "asking") && e.key === "Escape") {
+      e.preventDefault();
+      voiceRef.current?.cancel();
+      return;
+    }
     // Enter sends and Shift+Enter is a new line (owner, 2026-10-31). On a
     // touch keyboard Enter stays a new line (`enterSends`, lib/chatSteer.ts).
     if (enterSends({ ...e, isComposing: e.nativeEvent.isComposing }, touchKeyboard())) {
@@ -2805,7 +2873,7 @@ export default function AgentChat({
               icon={composerExpanded ? "Minimize2" : "Maximize2"}
               onClick={() => {
                 setComposerExpanded((v) => !v);
-                inputRef.current?.focus();
+                focusAfterPress();
               }}
               aria-label={composerExpanded ? "Make the message box smaller" : "Make the message box taller"}
               title={composerExpanded ? "Make the message box smaller" : "Make the message box taller"}
@@ -2872,7 +2940,7 @@ export default function AgentChat({
             messageCount={messages.length}
             streaming={isLoading}
             visible={visible}
-            onClosed={() => inputRef.current?.focus()}
+            onClosed={focusQuietly}
           />
           {/* The message box (owner, 2026-10-12: "it looks quite untidy").
               The message takes the whole width, with no gutter. One bar inside
@@ -2896,14 +2964,17 @@ export default function AgentChat({
               if (!canSend || !hasFiles(e.dataTransfer?.types)) return;
               e.preventDefault();
               att.add(Array.from(e.dataTransfer.files));
-              inputRef.current?.focus();
+              focusAfterPress();
             }}
+            // Task 2867: a press anywhere in the composer notes whether the
+            // box had focus, before the press can move it.
+            onPointerDownCapture={() => { pressFocusRef.current = boxHadFocus(inputRef.current); }}
             onFocus={() => setComposerFocused(true)} onBlur={() => setComposerFocused(false)} className={[
             dragOver ? "rounded-2xl border border-primary bg-primary/10 tech-transition glass:ring-2 glass:ring-primary glass:bg-primary/10" : "rounded-2xl border border-border bg-secondary/50 focus-within:border-primary/40 tech-transition",
             "glass:relative glass:z-10 glass:rounded-[20px] glass:border-transparent glass:focus-within:border-transparent glass:glass-chrome glass:glass-spectrum-edge",
             canSend ? "" : "pointer-events-none opacity-40",
           ].join(" ")}>
-            <PendingChips items={att.items} onRemove={(id) => { att.remove(id); inputRef.current?.focus(); }} onRetry={att.retry} />
+            <PendingChips items={att.items} onRemove={(id) => { att.remove(id); focusAfterPress(); }} onRetry={att.retry} />
             <textarea ref={inputRef} value={input}
               onChange={(e) => { setInput(e.target.value); if (composerNotice) setComposerNotice(null); }}
               onPaste={(e) => {
@@ -2936,8 +3007,13 @@ export default function AgentChat({
                 into a staircase (visual review, 2026-10-12, 390 px). */}
             <div className="flex flex-wrap items-end gap-1 px-1.5 pb-1.5 glass:px-2.5 glass:pb-2.5">
               <FileUploadButton sessionId={sessionId}
-                onPick={(files) => { att.add(files); inputRef.current?.focus(); }}
+                onPick={(files) => { att.add(files); focusAfterPress(); }}
                 className={`shrink-0 flex ${tap} items-center justify-center`} />
+              {voiceAvailability.shown && (
+                <VoiceInputButton ref={voiceRef} availability={voiceAvailability}
+                  onText={putDictation} onNotice={setComposerNotice} onPhase={setVoicePhase}
+                  className={`shrink-0 flex ${tap} items-center justify-center`} />
+              )}
             {hasComposerControls && !phoneChrome && (
             <div data-chat-pickers="" className="order-first flex min-w-0 basis-full flex-wrap items-center gap-1 text-[11px] text-muted-foreground sm:order-none sm:basis-auto sm:flex-initial sm:self-center" ref={modelMenuRef}>
             <>

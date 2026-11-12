@@ -1,0 +1,67 @@
+{
+  "studio": 1,
+  "id": "field-visits",
+  "name": "Field visits",
+  "purpose": "Plan, run and close customer site visits.",
+  "team": "service",
+  "objects": [
+    {
+      "name": "visit",
+      "fields": [
+        {"key": "customer", "type": "relation", "to": "crm.account", "required": true},
+        {"key": "engineer", "type": "person"},
+        {"key": "when", "type": "datetime"},
+        {"key": "status", "type": "select", "options": ["planned", "on site", "done"]},
+        {"key": "site", "type": "geo"},
+        {"key": "photos", "type": "file", "many": true}
+      ]
+    }
+  ],
+  "actions": [
+    {"id": "find", "uses": "object:visit.list"},
+    {"id": "visit_get", "uses": "object:visit.get"},
+    {"id": "visit_create", "uses": "object:visit.create"},
+    {"id": "visit_update", "uses": "object:visit.update"},
+    {"id": "visit_delete", "uses": "object:visit.delete"},
+    {"id": "close_visit", "uses": "object:visit.update", "set": {"status": "done"}}
+  ],
+  "views": [
+    {
+      "id": "board",
+      "block": "board",
+      "source": {"object": "visit"},
+      "group_by": "status",
+      "card": {"title": "customer", "meta": ["engineer", "when"]}
+    },
+    {
+      "id": "list",
+      "block": "table",
+      "source": {"object": "visit"},
+      "columns": ["customer", "engineer", "when", "status"]
+    },
+    {
+      "id": "visit_page",
+      "block": "detail",
+      "object": "visit",
+      "fields": ["customer", "engineer", "when", "status", "site", "photos"]
+    },
+    {
+      "id": "check_in",
+      "block": "form",
+      "object": "visit",
+      "fields": ["status", "photos"],
+      "submit": "close_visit"
+    }
+  ],
+  "skill": {
+    "description": "Use for site visits: plan one, find one, check in, close one.",
+    "instructions": "Ask which customer first. Show the board card. Close a visit only on the member's card.",
+    "actions": ["object:visit.create", "close_visit"],
+    "cards": ["board", "check_in"]
+  },
+  "shell": {
+    "jobs": [{"verb": "Check in to a visit", "view": "check_in"}],
+    "needs": [{"object": "visit", "where": {"engineer": "$me", "status": "planned"}}],
+    "search": ["visit"]
+  }
+}

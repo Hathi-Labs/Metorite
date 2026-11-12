@@ -106,6 +106,17 @@ verification commands.)
   new palette, bell, assistant rail or ⌘K listener in any app. The spec half is
   advisory: the spec-auditor refuses an app spec with no "Shell manifest"
   section, and nothing in CI reads specs for it.
+- **R10 — plan by the gratification ladder** *(D211, 2026-11-11. Owning text:
+  `specs/orchestration_playbook.md` §6d.)* A plan is a set of rungs. Each rung
+  ends in a demo that a person sees and uses on production. A spec's slice
+  table names the rung of each slice. The board holds one demo task for each
+  rung, with the tag `Demo`, and a `Rung N` tag on each slice. Rung 0 (a
+  leak, data loss, a broken live feature, a dated owner gate) outranks the
+  ladder. R10 binds where the ladder is on, which is the default. A
+  plan-driven project, or a project that turns the ladder off, follows its own
+  style (D211 point 9). **Fence.** `tests/unit/test_playbook_ladder.py` (LAD-1,
+  task 2888) fences the playbook half. The spec half is advisory: the
+  spec-auditor checks the rung column.
 
 ---
 
@@ -116,6 +127,8 @@ This section is an index of the workstreams, not their state (D118). Metorite ho
 ### 2.0 Roadmap
 
 The core function brief sets the phases (D119). Customer zero comes first inside Phase 1.
+
+⚠️ **D211 (2026-11-11) sets the order of work inside each milestone.** Each app project climbs its own ladder of rungs, and each rung ends in a demo. AI Studio and the MCP climb first, and the other apps follow (task 2885). The milestones below stay as the company's dates. The critical path below still names the rung 0 work.
 
 ⚠️ **D190 (2026-11-07) sets the order of work.** The M0 items and the cheap isolation fixes go first: steps 1 and 4 of the critical path below. Studio and the package host (lane L7) continue beside them. M2 has no date. The owner sets the date of the first paying customer after the main components of Metorite are built.
 
@@ -143,7 +156,7 @@ The core function brief sets the phases (D119). Customer zero comes first inside
 10. **The daily promise** (brief tasks 2, 4 and 5): BR-4, BR-2a to BR-2d, BR-5 and WS-58. The brief reads across every app, so fast retrieval comes with it: KG-1 to KG-3 (D128). The brief runs unattended, so AUTO-2 makes each run happen at most once.
 11. **Email and calendar out of preview** (brief task 3): E-05, E-09, E-11, E-07, WS-21-P4 and CE-0.
 12. **A real second organization**: MT-1j-exec provisions it and runs the smoke. E-58 and BR-14 follow.
-13. **Pay** (Phase 2): H-14, the rate card and the spend gate (D123), SC-5, H-292 and H-287.
+13. **Pay** (Phase 2): H-14, the rate card and the spend gate (D123), SC-5, H-292 and H-287. WS-PLN holds the offer, its slices and the launch gate (D152).
 14. **The Phase 2 brief tasks**: BR-10, BR-11, BR-12, BR-9, BR-8, BR-13 and BR-15.
 15. **Project alignment and the proactive agent** (M2, D160 and D161): the order is in `specs/project_alignment.md` §10 and `specs/proactive_agent.md` §9. H-328 comes first for any second org.
 
@@ -157,35 +170,55 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 |---|---|---|---|---|
 | WS-CZ | **Customer Zero**: Fracktal and Shaurrya Tele (DEWiN) | 🟢 active · M0 | none yet | Metorite: epic 519 (Metorite Application) · next H-259, BO-23b, CP-8-act, H-326 |
 | WS-TS | **Tenancy and Security**: a second organization is safe | 🟢 active · M1 | `specs/saas_multitenancy.md` · `specs/saas_multitenancy_handover.md` | Metorite: epic 520 · gates H3.2 (D120) and WS-40-Q (D121) · H6a done 2026-10-29 (parity fence, H3.3 enacted) · H-312 five `user_settings` reads built 2026-11-04 (the other `:uid` statements wait on H-104, task 1646) · next AX-0, H-249, H2 |
-| WS-CM | **Console and Money**: seats, credits, invoices | 🟡 gated · M2 | `specs/customer_console.md` | Metorite: epic 478 (Billing & Accounts) · gates H-14 and the rate card (D123) · next H-170, CP-10 |
+| WS-CM | **Console and Money**: seats, credits, invoices | 🟡 gated · M2 | `specs/customer_console.md` | Metorite: epic 478 (Billing & Accounts) · gates H-14 and the rate card (D123) · WS-PLN holds the new offer (D152) · next H-170, CP-10 |
 | WS-TO | **Trust and Operations**: enforced controls, restore, compliance | 🟢 active · M1 | `specs/box_hardening.md` | Metorite: epic 521 (Platform & CI/CD) · SBX-0 decided (D130, `specs/agent_sandbox.md`) · next WS-1e, WS-3, BH-3 with SBX-1, the WS-37 spec (D119.4) |
 | WS-PL | **Platform and CI**: delivery, staging, branch protection | 🟢 active · M1 | `specs/development_and_delivery_framework.md` · the local loop LD-7 to LD-10: `specs/engineering_practice.md` §1.3 (D145) | Metorite: project Platform & CI/CD, and epic 1100 in Developer Workflow · next LD-8c (the backup verify fails each night), LD-8a, LD-8b, LD-9, LD-10, then WS-38a, WS-38e, WS-5a |
 | WS-PT | **Projects and Tasks** | 🟢 active · M1 | `specs/project_management_app.md` · `specs/one_projects_app.md` | Metorite: project Projects/Tasks App · D170 (the inbox holds captures), D172 (the task card), D181 (one record card: `specs/one_record_card.md`, ORC-2 and ORC-3) · `one_projects_app.md` §9b and §9c: the phone (epic 1500), the inbox, Undo, select many, the archive · next MOB-1 and INB-1 (in build), then UNDO-1, SEL-1, MOB-2 · H-257, H-387 |
 | WS-CAL | **Calendar**: events, reminders, external sync | 🟢 active · M1 | `specs/calendar_focus_os.md` · `specs/calendar_events_reminders.md` | Metorite: project Calendar App · CE-0 decided (D138, 2026-10-29) · RE-9b BUILT 2026-10-31 (migration 318). Not dark: it sends wherever `WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS` are on (production: both on) · CE-4 BUILT, dark (2026-10-31, migration 331, `CALENDAR_EVENTS` off) · next CE-1, CE-3, CE-5, then CE-10 with CE-11 |
 | WS-PP | **People and Profile** | 🟢 active · M1 | `specs/people_center_app.md` | Metorite: project My Profile · next E-58 |
 | WS-EM | **Email** | 🟢 active · M0 | `specs/email_app_master_plan.md` · `specs/shared_mailbox.md` | Metorite: project My Email · Gmail in test mode (D122.4) · next E-05, E-09, E-11 |
-| WS-CRM | **CRM**: native mode, the Zoho mirror, and the cutover from one to the other | 🟢 active · M1 | `specs/crm_platform.md` | Metorite: epic 477, cutover sub-epic CRM-Z10 · CRM-Z10f decided (D133) · next H-333, CRM-Z10a to Z10e (the switch, owner ask 2026-10-28), CRM-U13, the whole-app UX batch, H-366· CRM-M, the CRM you talk to: `specs/crm_conversational.md` (D164 to D166), epic #1429, CRM-M1 (Change history, #1431) PR 1 merged (2026-11-04, migration 341). Next CRM-M1 PR 2 · D181, one record card: `specs/one_record_card.md`, ORC-1 (#1834) |
-| WS-WA | **WhatsApp** | 🟡 gated · M2 | `specs/whatsapp_message_manager.md` · `specs/whatsapp_assistant_channel.md` | Metorite: epic 476 · D115 freeze, lifted for brief task 8 only (D122.3) · next BR-8a, E-20 |
+| WS-CRM | **CRM**: native mode, the Zoho mirror, and the cutover from one to the other | 🟢 active · M1 | `specs/crm_platform.md` | Metorite: epic 477, cutover sub-epic CRM-Z10 · CRM-Z10f decided (D133) · next H-333, CRM-Z10a to Z10e (the switch, owner ask 2026-10-28), CRM-U13, the whole-app UX batch, H-366· CRM-M, the CRM you talk to: `specs/crm_conversational.md` (D164 to D166), epic #1429, CRM-M1 (Change history, #1431) PR 1 merged (2026-11-04, migration 341). Next CRM-M1 PR 2 · D181, one record card: `specs/one_record_card.md`, ORC-1 (#1834) · CRM-SIG, customer signals: `specs/crm_conversational.md` §14, epic task 2430, slices in tasks 2435 to 2441 (spec only) |
+| WS-WA | **WhatsApp** | 🟡 gated · M2 | `specs/whatsapp_message_manager.md` · `specs/whatsapp_assistant_channel.md` | Metorite: epic 476 · D115 freeze, lifted for brief task 8 only (D122.3) · next BR-8a, E-20 · CH-TEAM, Mira in team channels: `specs/whatsapp_assistant_channel.md` §19, epic task 2431, slices in tasks 2442 to 2447 (spec only, and D115 binds the WhatsApp parts) · D205.3 (2026-11-10): the direction is bots, see WS-WB, and the inbox of `whatsapp_message_manager.md` is on hold |
 | WS-KB | **Knowledge** | 🟢 active · M2 | `specs/knowledge_base.md` · `specs/knowledge_curation.md` | Metorite: project Knowledge · no P0 or P1 · next H-401, KC-1 |
 | WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_graph.md` · `specs/knowledge_base.md` §20 · `specs/company_context.md` | Metorite: epic 783 (Knowledge) · D128, D132 · 2026-10-29: KG-0 written, KG-1, KG-2 and KG-3a built · next KG-4 and KG-9, then KG-3b after the KG-2 backfill |
 | WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` · `specs/agent_coordination.md` (D140, D183, D186) · `specs/orchestration_playbook.md` (D186) | Metorite: epics 321 (coordination, D135 and D140), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · MCP-P1a built dark 2026-10-30 (`external_agent_access.md` §19) · next tasks 1045 and 1054, SW-4, SW-10b (the sweep on staging first), then SW-29a and SW-30a, and MCP-P1b and MCP-P2a · P9 planned 2026-11-06 (D183, SW-44 to SW-63, task 1874) |
-| WS-STU | **AI Studio**: skills, workflows and apps that a company builds | 🟢 active · started 2026-10-31 (D141) · Stage 1 in M1, Stage 2 in M2 (D146) | `specs/ai_studio.md` | Metorite: project "AI Studio", epic 491 · D127, D139, D141, D146 · Stage 1 merged except A1 and E1 (this PR), F2b and F2c · Stage 2 in build: A3, A4, B2a, C1, G1b and G2 merged, C2a in the gates · next C1b, C6, C7, B1c and B2b, then D2, D3, D11, G3 and F2b · epic 491 holds the plan · finish line of Stage 2: K3 |
-| WS-PKG | **Package host**: every app is a package, and Metorite reshapes itself around the organization and the person | 🟢 active · started 2026-11-01 (D147) · M1 | `specs/package_host.md` | Metorite: project "Package Host", epic 1234 · D89, D127, D136, D141, D146, D147 · Studio H1, H2, J2, J3 and M1 run on this registry · PKG-1 to PKG-5b are built. PKG-4 and PKG-5b are dark: `GET /shell/manifest` answers 404 while `PACKAGE_HOST_ORGS` is empty · PKG-6 is built dark, and PKG-6b (bell setup row, All apps listing, access report) is built dark. Stars for an install pane wait on a gateway change to `SHELL_PANES` in `routes/admin/me.py` · PKG-17a (the org default per role, `GET` and `PUT /shell/layout`) is built dark, and PKG-17b is the client read · PKG-18a (the Today band, client only) is built dark behind `NEXT_PUBLIC_TODAY_BAND` · PKG-11b-2 (task 2174) is built dark: the Studio store writes `app_versions.review_status`, with no route · PKG-11b-1 (`promote_to_org`) comes after PKG-11a merges |
+| WS-STU | **AI Studio**: skills, workflows and apps that a company builds | 🟢 active · started 2026-10-31 (D141) · Stage 1 in M1, Stage 2 in M2 (D146) | `specs/ai_studio.md` | Metorite: project "AI Studio", epic 491 · D127, D139, D141, D146, D193, D202 · Stage 1 merged except A1 and E1 (this PR), F2b and F2c · Stage 2 in build: A3, A4, B2a, C1, G1b and G2 merged, C2a in the gates · next C1b, C6, C7, B1c and B2b, then D2, D3, D11, G3 and F2b · epic 491 holds the plan · finish line of Stage 2: K3 |
+| WS-PKG | **Package host**: every app is a package, and Metorite reshapes itself around the organization and the person | 🟢 active · started 2026-11-01 (D147) · M1 | `specs/package_host.md` | Metorite: project "Package Host", epic 1234 · D89, D127, D136, D141, D146, D147 · Studio H1, H2, J2, J3 and M1 run on this registry · PKG-1 to PKG-6, PKG-9 and PKG-13 are built (PKG-4 to PKG-6, PKG-9 and PKG-13 dark). PKG-4 and PKG-5b are dark: `GET /shell/manifest` answers 404 while `PACKAGE_HOST_ORGS` is empty · PKG-6 is built dark, and PKG-6b (bell setup row, All apps listing, access report) is built dark. PKG-7 is built dark: `/auth/me` reads the slugs of the installs behind the same flag. Stars for an install pane use the resolve check, not `SHELL_PANES`, in `routes/admin/me.py`: PKG-6c-1 (task 2195) is built dark, and PKG-6c-2 (task 2311) is the client · PKG-8b and PKG-8e are built dark: `POST` and `DELETE /studio/packages/{id}/install` install and remove an org or group install of a Studio app · PKG-17a (the org default per role, `GET` and `PUT /shell/layout`) is built dark, and PKG-17b (the client reads the org default, only as the fallback for a member with no stored choice) is built dark. The admin form is PKG-17c. PKG-17c-1 (its BFF `PUT` and the pure admin module, no screen) is built dark · PKG-18a (the Today band, client only) is built dark behind `NEXT_PUBLIC_TODAY_BAND` · PKG-12 is built dark: a first publish from chat ends the private install 30 days later · PKG-20 is built: appearance follows the member, dark behind `PACKAGE_HOST_ORGS` · PKG-10d is built dark: the owner keeps or restores their own private install through two Studio routes, with no screen yet · PKG-10e-1 is built dark: the owner reads the lifetime of their own private install, for the end-date bar of PKG-10e-2 · PKG-19a-1 (the pin rule and open counter, no card) is built dark · PKG-19a-2 (the pin card behind NEXT_PUBLIC_PIN_SUGGEST) is built dark · PKG-11b-2 (task 2174) is built dark: the Studio store writes `app_versions.review_status`, with no route · PKG-11b-1 (`promote_to_org`) comes after PKG-11a merges · next PKG-14 (the host door that reads and writes the PKG-13 values) |
 | WS-WEB | **Web research**: search, read any page or file, crawl, browse and research jobs for Mira, on open-source parts | 🟢 active · started 2026-11-01 (D148) · M1 | `specs/web_research.md` | Metorite: project "Agent Tooling", epic 1235 · D85, D117, D139, D148 · WS-43 CA-4 (task 1032) calls this service · gates WEB-Q1 (SearXNG) for WEB-5 · 2026-11-01: WEB-1 built (the fetch guard). WEB-10 built (the goal record, `goal_records`, no caller yet). WEB-2 built dark behind `WEB_RESEARCH_ORGS` (the local HTML reader). 2026-11-04: WEB-3 built dark (the file readers, the type refusal and the CTX-1 spill). 2026-11-05: WEB-4 built dark (the search provider list). WEB-6 built (the web worker container). 2026-11-06: WEB-7 built dark (`fetch_page` render through the worker, task 1265). Docling and the scanned PDF split to WEB-7b (task 1837). Next WEB-7b, WEB-8, or WEB-5 (waits on WEB-Q1) |
 | WS-CIV | **CI velocity**: each PR runs the tests its diff can affect, and `main` runs the full suite in batches after the merge. No merge queue (D-2026-10-16 stays) | 🟢 active · started 2026-11-04 (D176) | `specs/ci_velocity.md` | Metorite: project "Developer Workflow", epic 1628, slices CIV-1 to CIV-9 = tasks 1629 to 1637 · CIV-1 (outside contributors need approval) done 2026-11-04 · CIV-4 is HIGH (deploy path) · CIV-13 (task 1721, D178, HIGH): the home box starts the 21:30 release, built 2026-11-05 · CIV-21 (task 2210, D194, HIGH): production releases three times a day, at 05:30, 13:30 and 21:30 UTC, built 2026-11-07 |
 | WS-ALN | **Project alignment**: Metorite knows the project of each task, checks work against the project's accepted rules, and asks a person and the lead when work deviates | 🟢 active · started 2026-11-02 (D160) · M2 | `specs/project_alignment.md` | Metorite: project "Projects/Tasks App", epic 1368 · reports to WS-PT · D75, D100, D104, D140, D160 and workflows G5 · the owner answered ALN-Q1 to ALN-Q5 on 2026-11-06 (D192, `project_alignment.md` §14) · ALN-0 is this spec · ALN-1 (the durable trigger) is built dark: `ALIGN_JOBS_ORGS` is empty and the handler is a stub · ALN-2a built (migration 332, backend and chat tools, dark behind `DECISIONS_ORGS`) · ALN-4 (the pin: migration 339, routes and chat tools, no UI) is built dark behind `AUTHORITY_PINS_ORGS` · ALN-5a (the rules of a project: rule rows on the SW-31a store, migration 343, routes, no UI, no chat tool) is built dark behind `PROJECT_RULES_ORGS` · next ALN-2b, ALN-4b, AUTO-7b and ALN-5b, then ALN-6, ALN-7 |
 | WS-AUTO | **Proactive agent**: Mira acts for each person without being asked, within limits that the person sees | 🟢 active · started 2026-11-02 (D161) · M2 | `specs/proactive_agent.md` | Metorite: project "Automations", epic 807 · D103, D124, D131, D161 and workflows G5 · AUTO-2 first slice, AUTO-3 (D131) and AUTO-7a are merged · AUTO-7b is built, dark behind `AUTO_PARK_ORGS`, in review (task 1411) · the owner answered AUTO-Q1 on 2026-11-06 (D192, `proactive_agent.md` §12) · H-328 parts (a) and (b) are merged, and part (c) is open · AUTO-8a is built, dark behind `HEADLESS_TURN_ORGS`, with no production caller (task 1392) · next AUTO-8b (task 2194) and AUTO-6, then AUTO-1, AUTO-4, AUTO-5, AUTO-9, AUTO-10 |
 | WS-PJP | **Plan with Metorite**: the AI plans projects with the member. It finds the critical path, the critical chain and its buffer, the constraint and the risks, proposes the stages that fit the work, and shows three or more changes on one card | 🟢 active · started 2026-11-02 (D168) · M2 | `specs/project_planning.md` | Metorite: project "Projects/Tasks App", epic 1476 · reports to WS-PT · D99, D145, D168 · PJP-0 is this spec · next PJP-1 (pills and swatches), PJP-2 (no hand-off to projects-assistant) and PJP-4 in parallel · PJP-2 needs the owner's `TOOL_PACKS` line before its release |
 | WS-AP | **Waiting**: one list of every agent, approval and person that waits on a member, and of every person the member waits on | 🟢 active · started 2026-11-06 · M2 | `specs/waiting_on_me.md` | Metorite: project "Proactive Intelligence", epic 1615 · D12, D87, D103, D124, D171 and ALN-Q5 · AP-0 is this spec (task 1855) · the owner accepted AP-Q1 to AP-Q8 on 2026-11-06 · the owner answered AP-Q10 on 2026-11-06 at 10:33 UTC: a person of the circle only (AP-16) · AP-1a (task 1616) merged dark as `bf0ece44b` (PR 1797). AP-1b waits on the owner: D-EA-14 or AP-Q2 · AP-8a (task 1858) is built and dark on branch `pro-ap8`, migration 352 · AP-8b is NO-GO until the spec answers B4 to B6 of §8 · next AP-BUG-1 (task 1857) · AP-15 (task 1875) routes a wait that no person owns |
+| WS-MDC | **My Day command centre**: capture, plan, start, focus and close the day from My Day, joined with Calendar and Projects | 🟢 active · started 2026-11-07 · M2 | `specs/my_day_command_centre.md` | Metorite: project "Calendar App", epic 1946 · D12, D89, D101, D170, D171 and D188 (D-MD-1 to D-MD-9) · CC-0 is this spec (task 1967) · next CC-1 (task 1968), CC-2 (task 1969) and CC-4 (task 1971) in parallel · CC-11 (task 1973) waits on PR 1789 |
 | WS-CO | **Chat organization**: topics, picking up a chat, one search, and the full-screen chat | 🟢 active · started 2026-11-02 (D162, D163) · M1 | `specs/chat_organization.md` · `specs/artifact_management.md` §6.0 | next CO-0 (AGENT-SAFE). CO-1 waits for the PZ-33b question on numbers, and its flip is owner-only |
+| WS-PLN | **Seat plans**: seat tiers with an AI allowance, mixed tiers, individual mode, the upgrade to a team, and global sales from day 1 | 🟡 gated · started 2026-11-01 (D152) · M2 | `specs/seat_plans.md` | Metorite: project "Billing & Accounts", epic 1273 · D19, D49, D66, D67, D108, D123, D152 · gates PLN-Q6, PLN-Q7, task 524 · next PLN-6, PLN-20, PLN-42, PLN-1 |
 | WS-UX | **UX System**: the one look, the action contract and the motion vocabulary | 🟢 active · M1 | `workbench/control_plane/DESIGN_SYSTEM.md` (§4b, §11, §12) · `specs/glass_look.md` (phase GL, D143) | Metorite: epic 492, sub-epic UX-D, task 1125 (GL) · UI-G1 is built · **GL (owner, 2026-10-31): Aroh's glass look, LIVE in production since 2026-10-31 05:38 UTC behind `NEXT_PUBLIC_UI_LOOK` (GL-9 done on the owner's word; staging no longer exists). GL-0 to GL-4 built (gate and tokens, primitives, shell, chat). GL-10, GL-11 and GL-12 are built (GL-12, 2026-11-01: the Ask bar at the foot, no top bar, Needs you beside its sidebar row) (GL-11, 2026-11-01: desktop proportions, raised chat cards, the full-height sidebar with hover to expand) (cards, rail, chat edge). **GL-Z1 is built, 2026-10-31 (D149): glass is the only look, and the Design switch and the gate are gone.** Next GL-Z2 (fold each `glass:` class into a plain class, then delete the classic token blocks), then GL-5 and GL-6** · then UXD-1 to UXD-3 (the silent failures), then UXD-5 and UXD-6 (D119.3) |
 | WS-WH | **Writing Help** | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 493 · next WA-1 |
-| WS-CHAT | **AI chat**: Mira, the one assistant | 🟢 active · M1 | `specs/one_assistant_context.md` · `specs/chat_first_surface.md` | Metorite: project AI Chat Interface, epic 470 · a parallel session owns it · next #469 with BR-5, #471, WS-58, SUB-1 (the sub-agent policy for OA-9) |
+| WS-CHAT | **AI chat**: Mira, the one assistant | 🟢 active · M1 | `specs/one_assistant_context.md` · `specs/chat_first_surface.md` · `specs/chat_failure_modes.md` (the hardening ladder, epic 2978, HRD-0 to HRD-19) | Metorite: project AI Chat Interface, epic 470 · a parallel session owns it · next #469 with BR-5, #471, WS-58, SUB-1 (the sub-agent policy for OA-9) |
 | WS-PRE | **Preview apps**: Notes, Meetings, Dashboard | ⏸ after Phase 2 · M4 | `specs/note_taker_app.md` · `specs/meeting_bot_platform_plan.md` | Metorite: epic 494 · next E-28, E-25 |
 | WS-DOC | **Docs and repo cleanup** | 🟢 active · M1 | none yet | Metorite: epic 522 (Developer Workflow) · next DOC-1, DOC-2 |
 | WS-BRIEF | **Core brief**: brief tasks with no earlier plan line | 🟢 active · M1 | `specs/core_brief.md` (ACTIVE) | Metorite: epics 479 (Proactive Intelligence) and 480 (Secrets & Security), connectors in epic 481, automations in sub-epic AUTO of epic 479 · gate AUTO-3 (the trust ladder) · BR-1a built, dark (`JOB_QUEUE`, `docs/job_queue.md`) · AUTO-2 built, dark (`UNATTENDED_LEDGER`, `docs/job_queue.md` §9) · BR-4 slice 1 built: migration 315 and `gateway/brief/store.py`, with no producer · BR-2a-2 slice 1 built, dark (`BRIEF_COMPOSE`) · BR-2c-1, BR-2c-2, BR-4b, BR-2d, BR-7a, BR-5 slices 1 and 2a built (dark where a flag exists) · next BR-2b, BR-5 slice 2b, BR-7b-1 (task 2171) |
 | WS-IR | **Issue Reporting** | 🟢 active · M0 | none yet | Metorite: epic 475 (Observability & Alerts) · D126 · next IR-0, IR-1, IR-2 |
 | WS-OB | **Onboarding and Help** | 🟢 active · M1 | `specs/onboarding.md` (D150, D153). OB-8: `specs/calendar_events_reminders.md` §10.4 | Metorite: Onboarding project, epic 669 · OB-0 (the founder's welcome closes at once) and OB-0b (a new founder lands with no apps, HIGH) MERGED 2026-11-02 · next OB-0c, OB-0d, OB-1a, OB-1b, OB-4, OB-10, OB-24 · AI-led layer: epic 1351, `specs/onboarding.md` §12, D153 · The guide (tour, Show me, practice): `specs/assistant_guide.md`, D167, epic 1451, next GD-1 to GD-5 · The buddy (the hello, then Reach's chat channel, mark, pop and pause): D177, epic 1693, `specs/onboarding.md` §13 and `specs/proactive_reach.md` §19, next BUD-1 · HLP-1, ADM-1. OB-8 (the chat push prompt) BUILT 2026-10-30, dark |
+| WS-BB | **Building blocks**: the product shape, the seams and the rule that a vertical is a preset over core blocks | 🟢 active · M1 | `specs/building_blocks.md` (D205) | Read it before a new table, registry, manifest, queue or engine · D205 points 5 to 10 decided 2026-11-11 (task 2816) |
+| WS-LL | **Learning loop**: each week Metorite reviews the agent sessions and the plan, learns, and changes the harness | 🟢 active · M2 | `specs/orchestration_playbook.md` §6c, §7a | Metorite: epic 2624 (MCP & External Agents), LL-0 to LL-13 = tasks 2625 to 2639 · until LL-3 ships a person runs the review each Monday |
+| WS-KIT | **Agent kit**: one neutral core and a pack for each coding agent (Claude Code, Codex, Copilot, Gemini) | 🟢 active · M2 | `specs/orchestration_playbook.md` §6a, §6b | Metorite: epic 2547, KIT-0 to KIT-9 · next KIT-0 (task 2548) |
+| WS-RC | **Rich email composer**: formatting, tables, images, and a faithful send | 🟢 active · M1 | `specs/email_app_master_plan.md`, new section (RC-0, task 2641) | Metorite: epic 2640 (My Email), RC-0 to RC-8 = tasks 2641 to 2649 |
+| WS-WB | **WhatsApp bots**: a company's own number, with bots for customers, the team and scheduling (D205.3) | 🟢 active · M2 | `specs/whatsapp_bots.md`, planned (WB-0, task 2651) · base `specs/whatsapp_assistant_channel.md` | Metorite: epic 2650 (WhatsApp) · D205.6 and D205.8 decided, D206.1 · owner gate: task 666 (Meta Tech Provider review) |
+| WS-BK | **Booking**: a guest books a person's free time and pays the company (D205.2) | 🟢 active · M2 | booking section of `specs/calendar_events_reminders.md`, planned (BK-0, task 2676) | Metorite: epic 2675 (Calendar App), BK-0 to BK-14 = tasks 2676 to 2690 · payments through task 1515 |
+| WS-KS | **Knowledge everywhere**: one shared read seam, a home article for each project, media, and MCP access with review | 🟢 active · M2 | `specs/knowledge_shared.md`, planned (KS-0, task 2714) | Metorite: epic 2713 (Knowledge), KS-0 to KS-16 = tasks 2714 to 2730 · D205.10 decided, D206.3 |
+| WS-CX | **CRM complete**: quotes, forecast, automation, AI on every part, the CRM through the MCP (D205.4) | 🟢 active · M2 | `specs/crm_complete.md`, planned (CRX-0, task 2733) · base `specs/crm_platform.md` | Metorite: epic 2732 (CRM), slices CRX-n · D205.5 and D205.7 decided, D206.4 · the Zoho cutover (tasks 806, 803) stays first |
+| WS-HX | **App harness**: setup items, nudges, insights and agent prompts declared in the app manifest | 🟢 active · M2 | contribution points in `specs/package_host.md`, planned (HX-0, task 2762) | Metorite: epic 2757 (Proactive Intelligence), HX-0 to HX-7 = tasks 2762 to 2769 · extends My Day, Reach and setup health, never a second engine |
+| WS-CH | **CRM sales harness**: nudges, insights, the setup coach and agent skills for the CRM | 🟢 active · M2 | `specs/crm_complete.md`, planned (SLH-0, task 2770) | Metorite: epic 2758 (CRM), slices SLH-n · waits on WS-HX |
+| WS-MIR | **CRM mirror and connectors**: HubSpot, Salesforce, Pipedrive, Zoho and files, with AI mapping | 🟢 active · M2 | `specs/crm_connectors.md`, planned (MIR-0, task 2791) | Metorite: epic 2790 (CRM), slices MIR-n · keeps the Zoho adapter first |
+| WS-MKT | **App marketplace**: a company installs ready apps, customizes them with an overlay, and keeps getting updates through a three-way merge | 🟢 active · M3 | `specs/app_marketplace.md`, planned (MKT-0, task 2820) · base `specs/package_host.md` | Metorite: epic 2818 (Package Host), MKT-0 to MKT-13 · decisions MKT-Q1 to Q4 in task 2852 |
+| WS-OPS | **Operations apps**: inventory, procurement, BOM, production, MRP, shop floor, quality, maintenance, costing, dispatch and operational accounting, as AI Studio apps | 🟢 active · M3 | `specs/operations_apps.md`, planned (OPM-0, task 2824) · base `specs/ai_studio.md` K3, K4 | Metorite: epic 2819 (AI Studio), OPM-0 to OPM-17 · decisions OPS-Q1 to Q3 in task 2852 · pilot Fracktal (owner act) |
+| WS-AGA | **Agents: the member view**: a section of the Agents panel in Projects, with an honest cost and the D12 visibility. No new pane | 🟢 active · M2 | `specs/agents_view.md` (AGA-1) | Metorite: epic 2103 (MCP & External Agents), AGA-1 to AGA-18 = tasks 2104 to 2121 except AGA-3 and AGA-4 (no task yet) · D204.5 · AGA-1, 5 to 10 are MCP Rung 3 (demo task 2897) · next AGA-5, AGA-6 |
+| WS-LAD | **The gratification ladder**: the default way to plan, in the playbook, the Projects planning AI, `get_plan` and `my_work` (D211) | 🟢 active · M1 | `specs/orchestration_playbook.md` §6d | Metorite: epic 2887 (Projects/Tasks App), LAD-1 = task 2888 (MCP), LAD-2 to LAD-4 = tasks 2889 to 2891 · replan task 2885 |
+| WS-CON | **Company content**: Metorite files, reads and reuses what a member drops in the chat, in decks and reports in the company's own style (D216) | 🟢 active · M2 | `specs/company_context.md` §16 | Metorite: epic 3039 (Knowledge), CON-0 to CON-5 = tasks 3040 to 3045, AM-7 = task 206, demos 3046 to 3048 · flag `COMPANY_CONTENT_ORGS`, default empty |
+| WS-OTW | **One-time workflows**: ask someone, wait for the one answer, run once to propose the record updates, then retire (D214) | 🟢 active · M2 | `specs/workflows_app.md` §14 | Metorite: epic 3010 (AI Studio), OTW-0 to OTW-10 = tasks 3011 to 3021, demos 3022 to 3024 · flag `ONE_TIME_WORKFLOWS_ORGS`, default empty |
+| WS-SND | **Sound cues**: a few tasteful sounds for an email sent or arrived, the agent needs me, new in My Day, and a reminder (D210) | 🟢 active · M2 | `workbench/control_plane/DESIGN_SYSTEM.md` §4c and `specs/proactive_reach.md` §8.4, planned (SND-0, task 2864) | Metorite: epic 2862 (My Day), SND-P to SND-7 = tasks 2863 to 2872 · flag `NEXT_PUBLIC_SOUND_CUES`, default OFF |
 
 ### 2.2 Earlier rows (WS-0 to WS-67)
 
@@ -1186,6 +1219,7 @@ by D15/D16) — read their banners before citing either.
   owning spec `specs/launch_surface.md`, WS-34.)*
   Four parts, taken together because they are one decision about what we sell on
   day one.
+  ⚠️ *Part 1 stays the live offer until D152 takes over at PLN-50 (`seat_plans.md`). Build no new seat, checkout or signup work against it.*
   **(1) Pricing is flat.** ₹500 per user per month, carrying everything that is
   live, plus AI credits metered as before. This **supersedes D23 and D24** —
   `saas_multitenancy.md` §2.4b's Center packages, the two org-wide add-ons, the
@@ -2200,10 +2234,12 @@ by D15/D16) — read their banners before citing either.
      while invoicing is by hand, per §5's Phase-2 posture). Online
      checkout/top-up arrives with MT-4. Owning spec:
      `specs/subscription_console.md` (WS-30).
-  5. **Payments (§8 item 3 — closed): Razorpay only at launch**, behind the
+  5. ⚠️ *Amended by D152, 2026-11-01: two rails at launch. PLN-Q6 picks the second one.*
+     **Payments (§8 item 3 — closed): Razorpay only at launch**, behind the
      `payment_provider` seam; Stripe lands as a second implementation of the same
      seam when the first international customer appears.
-  6. **Data residency (§8 item 4 — closed): promise India-only at launch.** All
+  6. ⚠️ *Amended by D152, 2026-11-01: it stays for storage, and the data agreement names where AI providers process text.*
+     **Data residency (§8 item 4 — closed): promise India-only at launch.** All
      customer data on India-region infrastructure until a second residency tier
      is deliberately priced. Amended for email triage by D-EM-9 (2026-10-02). Mail content may go to TypeSafe and AI/ML API for a triage decision.
 - **D18 — Three owner calls taken 2026-08-09** *(via the consolidation session's
@@ -4653,7 +4689,7 @@ Owner decision, 2026-10-27, in chat, taking the recommendations.
 
 1. **Rate card.** Price it from measured burn before the first paid customer. Flip `CUSTOMER_CONSOLE_SPEND_GATE` after the price is set, never before.
 2. **Razorpay.** The owner creates the TEST account now (H-14). The owner takes the GST position before SC-5 builds the invoice.
-3. **Seats.** Pricing stays flat per user. Ten users per organization is a soft cap that matches `MAX_TEAM_SIZE`.
+3. **Seats.** Pricing stays flat per user. Ten users per organization is a soft cap that matches `MAX_TEAM_SIZE`. ⚠️ *D152 supersedes the flat price at PLN-50. The soft cap stays.*
 4. **Production database.** Move off the free tier before the pilots start. For the tenant plane, use the Supabase Pro plan at Small compute or larger (H-262). The Console database must not auto-pause (H-108). The owner approves the spend.
 
 ### D124 — External agents get full parity with the in-built assistant. Writes and deletes ask the member each time (2026-10-27)
@@ -4937,6 +4973,8 @@ Owner directive, 2026-10-31, in chat. Metorite: task 1215. It supersedes the sta
 
 ### D145 — Preview, owner approval, local staging gate, merge, daily release (2026-10-31)
 
+**Amended by D200 (2026-11-08):** a small, low-risk change on an existing screen merges before the owner's approval, and the owner reviews it afterwards.
+
 Owner directive, 2026-10-31, in chat. Metorite: task 1224 (LD-7), under epic 1100. It supersedes D144 point 2. D144 points 1, 3, 5, 6 and 7 stand.
 
 ```text
@@ -5038,6 +5076,26 @@ Owner decision, 2026-11-02, in chat, on the four defaults of `specs/onboarding.m
 3. **D-OB-3. The founder's four default steps** are `invite_team`, `connect_email`, `first_project` and `ask_assistant`.
 4. **D-OB-4. The card leaves My Day for good when the last step is done.** A later setup item goes to the setup coach (D110), not back onto the card.
 
+### D152 — One seat price holds the AI. An org mixes tiers, one person is an org of one, and the plans sell worldwide from day 1 (2026-11-01)
+
+Owner directive, 2026-11-01, in chat: "I don't want to separately charge customers for seats and then charge for AI compute." The owner then added "we want to go global from day 1 live", and accepted the recommendations on the allowance, on existing orgs and on one login. Owning spec: **`specs/seat_plans.md`**. Board: **WS-PLN**.
+
+1. **A seat tier is the one thing we sell.** Standard, Pro and Max, at $20, $100 and $200 a month. Each tier holds a price, an AI allowance, feature gates and limits, as catalog data. `core` stays the slug of Standard.
+2. **An org mixes tiers.** Each member holds one live tier, and the database enforces this. An admin sets the mix. A person always buys by an explicit act.
+3. **The allowance is per seat.** It resets each month. It does not roll over, and it does not pool. Extra usage is prepaid and OFF by default. A small org pool pays for work with no member.
+4. **An individual is an organization of one** (`organization.kind`). The mode changes presentation and defaults, and it never grants a permission.
+5. **The upgrade to a team keeps the same org id.** A privacy review runs first, and the flow cannot skip it.
+6. **Global from day 1.** USD for the world and INR for India. India stays on Razorpay. PLN-Q6 picks the second rail, and PLN-Q7 picks the AI route.
+7. **Existing orgs stay on `core` at ₹500** until a date that the owner sets.
+8. **One person may belong to many organizations, and may create more.** The owner reversed the first answer on 2026-11-02. Signup first shows the orgs and invites of the verified address, by the exact address only. MT-1k slices B and C move before the launch. `seat_plans.md` §8a holds the rules and the screens.
+
+**The offer is final.** The owner confirmed `seat_plans.md` §3 (PLN-Q2 closed, 2026-11-11; D190.3 and D204 point 9 record the same). D204 point 9 adds base pricing to the tiers. `seat_plans.md` does not yet say how, so a slice must add it (see its §3 note).
+
+**When it binds.** Build work binds now, so new seat, checkout and signup work targets this decision. D49 part 1 stays the live offer until PLN-50 flips.
+
+**What it changes.** It supersedes D49 part 1 and the flat price of D123 item 3, at that flip. The soft cap of ten users stays. It amends D19 items 5 and 6. D32.6 now binds bought credits only. `seat_plans.md` §10 lists each one, and the decisions it keeps.
+
+**Fence.** Each slice in `seat_plans.md` §11 names its fence. Until PLN-1 lands, this decision is advisory.
 ### D153 — Onboarding: the AI-led layer, company context first (2026-11-02)
 
 Owner direction and decision, 2026-11-02, in chat, on the four defaults of `specs/onboarding.md` §12.10. Board: **WS-OB**. Metorite: epic 1351. The owner accepted each default.
@@ -5743,13 +5801,30 @@ Owner decisions, 2026-10-29 (WM-0) and 2026-11-08, in chat. Design: `project-doc
    6. **Q6, dispatch.** Agents pull the ready slices of the active cycle by themselves. They take them in critical-path order, inside the WIP limits. A person can still assign by hand.
    7. **Q7, the workstation.** The first path for a non-developer is one workstation with the runner (path B: EA-19 and SW-78). Cloud agents (WS-56) come later.
    8. **Q8, the critical path.** `specs/project_planning.md` (PJP-6) owns the maths. SW-90 and WM-3 read it. Code computes the path and the model judges it.
-   9. **Q9, dogfood.** HathiLabs runs its Metorite work in cycles from phase 4 of the design. Lanes L1 to L8 are the workstreams.
+   9. **Q9, dogfood.** HathiLabs runs its Metorite work in cycles from phase 4 of the design. Lanes L1 to L8 are the workstreams. **Amended by D199:** the app project is the workstream, and a lane is who does the work.
 
 **What this does not change.** Each slice ships dark. A slice that changes what a member sees needs a D145 preview and the owner's approval. Q3 sets the shape of the Goal that WM-5 (task 984) builds. How one goal links to many projects, and how it reaches agents as context, stays with SW-21 (task 352).
 
 **Re-check this number at merge.** The first merge wins a D-number. No branch or worktree held D195 when task 959 wrote this record. D194 was the highest on `main`.
 
 Fence: none new. Names in this record resolve under `tests/unit/test_doc_names_resolve.py`. The tests of each slice in `specs/project_management_app.md` §13.6 bind its rule. Until a slice lands, the rule is advisory (R7).
+
+
+### D196 — Setup health: each live app lists its setup items, the chat nudges one at a time, and a score follows (ACCEPTED 2026-11-08)
+
+**ACCEPTED.** Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945). Q8 decided: owner, 2026-11-08 15:07 UTC, on task 945 ("Keep it in the Get started settings (my_day_prefs), no new table"). Owner asks of 2026-10-29 (epic 940) and 2026-11-08, in chat. Metorite: tasks 940 and 945.
+
+1. **Two phases.** Phase A gives each live app setup items (done, missing, stale) and one chat nudge. Phase B adds measures, weights, a nightly score and a Setup health page.
+2. **One seam.** The items ride `setup_status` (OB-1a) and the `setup` field of the shell manifest (PZ-18). The nudge rides the personalization interview. No second registry and no second budget.
+3. **One budget.** All unprompted setup questions share the limits of D-PZ-13 with the interview. The limits are one a day across all apps and 14 days after a dismiss. "Do not ask again" stops an item for good.
+4. **A check reads counts and settings, never content.** A member sees the member checks. An admin also sees the org checks and the adoption counts.
+5. **A check with no data waits.** No column is invented. A check that cannot run is out of the score.
+6. **"Not for us"** takes a check out of the nudges and the score. A member marks member checks, and an admin marks org checks.
+7. **The nudge state lives in the `setup` key of `user_settings.my_day_prefs`** (`specs/onboarding.md` §7.2), beside the item state. No new table. The profile does not hold it, so the `learning` switch does not stop a nudge (Q8).
+
+**Re-check this number at merge.** The first merge wins a D-number. A scan of `origin/*` and the worktrees on 2026-11-08 found D195 as the highest, so D196 was free.
+
+Fence: the planned tests of `specs/personalization.md` §18.11. Each rule is advisory (R7) until its slice builds.
 
 ### D197 — Approvals have one named approver, the intake form is for members only, and Projects has no timer: the three answers of LP-0 (2026-11-08)
 
@@ -5763,6 +5838,384 @@ Owner decision, 2026-11-08 at 15:02 UTC, on Metorite task 987 (LP-0). The owner 
 
 Fence: none new. Names in this record resolve under `tests/unit/test_doc_names_resolve.py`. The tests of LP-7 and LP-8 in `specs/project_management_app.md` §14.2 bind their rules. Until those slices land, the rules are advisory (R7).
 
+### D199 — The app project is the workstream, a member sees Goal, Epic and Task, and the roadmap is a view of ranked Goals (2026-11-08)
+
+The owner accepted the recommendation of the plan audit session on 2026-11-08, in chat: "go ahead with your recommendation". The owner's rule: "There shouldn't be too many terms that confuse people, and it should be obvious how best to organize a project." Metorite: task 2309. The context is on WM-5 (task 984) and on the build order LIN (task 2301).
+
+1. **The app project is the workstream.** D190.9 stands. A lane (L1 to L8) is who does the work, not a level of the plan. This amends D195 Q9. The lane rules add no planning level.
+2. **A member sees three words: Goal, Epic and Task.** D195 Q4 keeps its order. "Slice" stays in specs and agent text, and a member sees "task".
+3. **The roadmap is a view, not a record.** It shows the Goals of a space in rank order, each with live progress from its epics in any project. The roadmap adds no initiative object and no milestone object. Milestones and phase gates stay inside the plan-driven preset (WM-2, task 981).
+4. **Workstream and Cycle stay hidden** unless a project picks a style that uses them (D195.1).
+5. **A space-level Goal takes epics from any project** (SW-21, task 352). Goals carry a rank, because M2 has no date (D190.2) and a date alone cannot order the roadmap.
+6. **One epic serves one Goal.** An epic whose tasks span several milestones splits by Goal when the board is reorganized (SOT-14, task 2273).
+
+**What D199 amends.** D195 Q9, and nothing else.
+
+**Re-check this number at merge.** The first merge wins a D-number. On 2026-11-08, branch `mt-e634d840-sh0-setup-health` held D196, and the box worktree `wt-civ23-box-runners` held D198.
+
+Fence: none new. Names in this record resolve under `tests/unit/test_doc_names_resolve.py`. The rules stay advisory until WM-5, SW-21 and WM-2 build their tests (R7).
+
+### D200 — A small, low-risk screen change merges after the captures, and the owner reviews it afterwards (2026-11-08)
+
+Owner directive, 2026-11-08, in chat. Metorite: task 2310. It amends D145 for one class of slice. D145 stays the default.
+
+```text
+"let small, low-risk screen changes merge with only the screenshots, and review them afterwards."
+```
+
+1. **A slice qualifies when all of these hold.** The slice is tier LOW or STANDARD. It is a small change on an existing screen, such as one new field or control, one line of text or a count, or a layout fix. A larger change also qualifies when the whole visible change sits behind a flag that is off by default.
+2. **A slice does not qualify in these cases.** A HIGH slice. A new page, screen, tab, navigation entry or flow. A change to what every member sees by default, with no flag. Any change that touches money or identity, or that sends to a person. When in doubt, preview first (D145).
+3. **Everything else stays.** The slice still needs the four captures and the `Visual review:` line, the independent verifier, and the full gates. The only skipped step is the wait for the owner's approval before the merge.
+4. **After the merge,** the agent posts the captures on the task and calls `ask_on_task` with two options, "Looks right" and "Change it". A "Change it" becomes a follow-up task under the same epic. The task closes when the pull request merges. The question stays open on the run until the owner answers.
+5. **Who judges "small".** The coordinator and the verifier judge it. The pull request body states why the slice qualifies.
+
+Fence: `tests/unit/test_loop_local_first.py` pins D200 in `CLAUDE.md`, `next-ticket.md` and `engineering_practice.md` §1.3. The judgement of "small" is advisory (R7).
+
+### D201 — GitHub Actions light jobs run on the box's own runners, with a safety design (2026-11-08)
+
+Owner decision, 2026-11-08, in chat. Metorite: task 2304 (CIV-23). It reverses the non-goal "no GitHub self-hosted runner" of `specs/ci_velocity.md` §2. It changes no other rule.
+
+1. **What runs on the box.** The light jobs of `pr-check.yml`: lint, migrations, frontend, caddy and the secret scan. The unit shard job (`test`) stays on `ubuntu-24.04`, because it ran over 40 minutes on the box against 14 on GitHub (measured 2026-11-08, quiet box, tmpfs database). `e2e` and `backup-restore` stay there too.
+2. **The label.** The runners carry only the label `metorite-box`. They carry no default label, and no job uses `self-hosted`.
+3. **The switch.** The variable `USE_BOX_RUNNERS` set to `1` turns it on. Any other value sends the job to `ubuntu-24.04`.
+4. **No fork code on the box.** The `runs-on` test routes a fork PR to `ubuntu-24.04`, but it is not the control: a fork PR carries its own workflow file. The control is the repository setting `fork-pr-contributor-approval = all_external_contributors`. A maintainer must not approve a fork run that touches `.github/`. No test pins the setting, so this rule is advisory (R7).
+5. **The runner user.** User `ghrunner` has no sudo, is not in the docker group, and has a home with mode 750. Its Docker is rootless. Runners `metorite-box-1` to `-4` (more may register) run as capped systemd user services (6 GB and 4 CPUs each).
+6. **No sudo in a job.** A step that needs `sudo` or `apt-get` runs only when `runner.environment == 'github-hosted'`. The owner of the box installs each tool that a job needs.
+7. **Service containers.** The box runners share one Docker daemon. The Postgres containers publish to a host port that Docker picks. A step writes the database URLs from that port.
+
+Fence: `tests/unit/test_box_runner_routing.py`. **Re-check this number at merge.** The first merge wins a D-number. Branches held D198 to D200 when task 2304 wrote this record.
+
+### D202 — AI Studio is a full web IDE inside Metorite: blocks first, code files first-class, one UI kit, a sandbox per organization and per person, and the new blocks (2026-11-08)
+
+Owner directives of 2026-11-08, in chat, and the owner's answers in Metorite on tasks 2326 and 2327. Owner spec: `specs/ai_studio.md` §0, §2.2, §5.1, §5.4, §6.3, §6.5, §11.2, §14, §15, §19.10 and §20.1, and the row PKG-14c of `specs/package_host.md`. Board: **WS-STU**. Metorite: task 2326, task 2327 and epic 491.
+
+**It keeps D193, and refines it. It amends one line of D146.1, by the owner's choice 4 on task 2326 (the end of this record says how). It reopens no other decision.** All dates are UTC.
+
+```text
+"The app studio should function like a full blown web IDE, with guardrails and
+connectors that fit it within the Metorite ecosystem. I should be able to reuse
+elements that are already used across Metorite like the kanban boards, list
+views, tabbed views etc so that we don't need to rebuild these elements from
+scratch. Similar the UI/UX feel, rules etc. We should be able to extend
+functionality for installing custom modules, libraries, packages etc as and
+when needed. Need to be careful about how the sandbox for all this works taking
+into account the organisation and people within the organisation."
+                                                          (chat, 2026-11-08)
+
+"the main usecase is that when a company needs to build custom apps to extend
+the functionality of metorite to adapt it with their own organisation"
+                                                          (chat, 2026-11-08)
+
+"Overall goal is to have standard apps like CRM, projects, finance module,
+etc., that are common for all organizations, but be able to extend Metorite by
+making custom applications and also customizing the core apps to completely
+fit hand in glove with existing organizations. Ensure that the app creator is
+able to do something like that."                          (chat, 2026-11-08)
+
+"Accept all four"   (Metorite, task 2326, 2026-11-08 18:25 UTC: choices 1 to 4)
+"looks good"        (chat, 2026-11-08: the use-case brainstorm)
+"Accept all four"   (Metorite, task 2326, 2026-11-08 19:04 UTC: questions A to D)
+"Finance and HR we will build later."                     (chat, 2026-11-08)
+"Accept all six"    (Metorite, task 2327, 2026-11-08 19:04 UTC)
+"go ahead with your recommendations"  (chat, 2026-11-08: questions 7 to 9 of task 2327)
+"would also be good to have git."                         (chat, 2026-11-08)
+"I like your ideas for Git, we should do that. If we are developing a Studio
+app in VS Code, then we need to ensure that there is a proper
+scaffolding/connection/harness to ensure that it properly is compatible with
+AI Studio."                                               (chat, 2026-11-08)
+```
+
+1. **One IDE: blocks first, code files first-class (choice 1).** The IDE of D193 gets a Files branch beside Data, Views and Rules. Each file is TypeScript or TSX, with type hints for the UI kit and the door. The IDE adds a preview that reloads on save, a console, a test panel, a package panel and version history. Mira uses blocks first, and writes code only where no block fits. The four layers of D146.1 stay.
+2. **A Metorite UI kit inside the code frame (choice 2).** The code frame gets the same Board, Table, List, Tabs, Form, Detail and chart components as the app. They come from the same source, use the same tokens and carry TypeScript types. Data moves only through the door.
+3. **A sandbox per organization and per person (choice 3).**
+   - No org shares a run with another org. Metorite stores a package layer once only when its hash is the same. The layer counts against the cap of each org that uses it.
+   - Each org owns its secrets, connectors, credits and caps. An admin stops all code of the org with one switch.
+   - Writing code is off by default. An admin turns it on for a group (a `group:<slug>` grant, D12). Every Studio member still builds with blocks.
+   - A holder of `studio:publish` approves each version and each package list.
+   - Code reads and writes with the rights of the viewer, never of the author.
+   - A restricted field never enters a sandbox, unless a reviewer approves it.
+   - A run with no viewer runs as one named member (B6).
+4. **Custom screens first, before SBX-9 (choice 4).** Screen code runs in the viewer's browser, in a locked frame with no network. The screen path comes first, with the standard set: React, the UI kit, the icons and three.js. Packages and server code come after SBX-9. **The condition:** a spike (L3) must first prove that the TS and TSX compile runs in the browser. The reason: member code stays off the production box (D127.2). If it cannot, all code waits for SBX-9.
+5. **The answers to the brainstorm (2026-11-08).**
+   - People outside the org stay in Group O (§20). No portal accounts.
+   - Offline capture comes in wave 2, for forms and guided steps only.
+   - Record history and the version lock come in wave 1, and formal e-signatures in wave 2.
+   - The first three templates are an assembly guide (Fracktal, customer zero), a shipment tracker and a field site survey.
+6. **More asks of 2026-11-08.** The owner also asked for four more things. They are three.js components, generated images once the image tier exists (task 1406), and Mira inside each app. The fourth is photos or video that turn into a process. Each one is a block or an action of §14. Generated images wait on task 1406.
+7. **Core apps, fitted and extended (questions A to D of task 2326).** Core apps serve every org. Packages fit them to one org through `package_host.md` §8, and custom apps are Studio packages. All three layers share one door, one look and one channel layer.
+   - **A.** When Metorite builds Finance and HR, they are first-party Studio packages. The owner put Finance and HR later, so no slice exists for them now. The HR rows B18, I7 and K10 stay in Backlog, marked later.
+   - **B.** An org may rename record kinds and stages, as display labels in an overlay. The data and the APIs keep one name (STU-H4).
+   - **C.** An org uses its own domain and its own WhatsApp number first. Metorite gives a sender subdomain for notices only, as a fallback, and no shared WhatsApp number (O21).
+   - **D.** A package may add save rules to a core app, through one save-rule seam in each core app. The rules use the closed Studio grammar, only refuse a save, and ship dark (C26).
+8. **The clinic answers (task 2327: the six choices, and questions 7 to 9).**
+   - The clinic app is a template of group K (K9). It runs on sample data until WS-37 and a lawyer clear real patients (D174.6).
+   - The AI scribe, summaries and code suggestions run only with the consent of the patient, an admin opening (D174.6) and the acceptance of a clinician. No AI diagnosis from images.
+   - The ABDM registration comes later, when the first clinic asks. Each clinical field maps to FHIR from now.
+   - Code lists: ICD-10 after a check of the WHO terms, and LOINC, first. SNOMED CT after the NRCeS affiliate licence. No CPT.
+   - Metorite hosts health data in India, with a residency flag for each org (J10).
+   - Each clinic keeps its own drug list, with no interaction check.
+   - Automatic replies to people outside the org follow the four rules of O18.
+   - Booking by email runs on the shared mailbox (task 733, O17).
+   - Payments use Razorpay on the account of each clinic (O10), and prepay is a setting for each service. The owner approves the first live payment link.
+9. **Git in the IDE (2026-11-08).** The IDE gets a full save history with revisions (G17), and named drafts as branches (G18). An optional two-way sync joins a folder in the GitHub repository of the org (G19). A push never publishes by itself, and the token never reaches a sandbox.
+10. **Building outside Metorite (2026-11-08).** An app that a member builds in VS Code is the same package as one built in Studio. It has one manifest format, one validator, one build and one review. A scaffold, an SDK, a CLI and an AI harness keep it compatible, and add no second seam. The CLI calls the server for each check, and has no publish. Metorite accepts source only, and never a bundle that a laptop built. `ai_studio.md` §6.5 and G20 to G27 hold the design.
+
+**How D202 reads earlier decisions.**
+
+- **The layers of D146.1** stay. **D202 amends one line of D146.1, by the owner's choice 4 on task 2326.** D146.1 said that "a member-authored logic module and the code block run only on the off-box sandbox (D127.2)". Now member code runs only in the off-box sandbox (server code) or in the viewer's browser (screens). D127.2 means off the production box. A member logic module still waits for SBX-9.
+- **The IDE of D193** keeps its route, its layout and the one dock. The Explorer gains Files, and the centre gains the code tools of item 1 and the git parts of item 9.
+- **The access model of D180** holds. A group carries no permission (D180.4), and Studio adds no new permission (D180.5). So the code right of item 3 is a Studio setting, not a permission. It is a list of D12 grants that J7 stores and the Studio routes read.
+- **The health rule of D174.6** holds. Each clinical field stays restricted, and the AI reads one only after an admin opened it.
+
+The owner confirmed both wordings on task 2326, 2026-11-08 19:54 UTC.
+
+**Re-check this number at merge.** The first merge wins a D-number. On 2026-11-08, main held D200, and the branch `civ23-box-runners` held D201.
+
+Fence: each rule of `ai_studio.md` §19.10 names its fence, and each rule stays advisory until its slice builds that fence (R7). The four rules of O18 name theirs. `tests/unit/test_decision_ids.py` fails when two D202 entries merge.
+
+### D203 — The browser suite runs on a PR only when it changes the frontend, and every night on main (2026-11-08)
+
+Owner decision, 2026-11-08, in chat: "i approve". Metorite: task 2316 (CIV-24). It narrows D-PM-21 for pull requests. No test is deleted.
+
+1. **A PR.** The suite `e2e` runs only when the diff touches `workbench/control_plane/`. A change to CI alone (`.github/`) no longer forces it. Known gap, advisory (R7): a PR that edits only the steps of the `e2e` job in `pr-check.yml` skips the suite. The next frontend PR shows the break. The job still runs when `changes` fails.
+2. **The night.** `e2e-nightly.yml` runs every spec of the `ci` project at 00:30 UTC on main, in three shards. It also takes `workflow_dispatch`. It uses the box runners only from main and only when `USE_BOX_RUNNERS` is `1`, one shard at a time, because each shard binds port 3101. This amends D201 item 1: the nightly `e2e` is the one heavy job on the box. A red night is a red-on-main finding for lane-ci.
+3. **The register.** The nightly uses the same `ci` project and the same quarantine as the PR gate.
+
+Fence: `workbench/control_plane/src/lib/e2eGate.test.ts` and `tests/unit/test_box_runner_routing.py`. **Re-check this number at merge.**
+
+### D204 — The planning decisions of 2026-11-09 for Projects and MCP (2026-11-09)
+
+The owner decided points 1 to 6 in chat on 2026-11-09. The project manager proposes points 7 and 8 in this pull request. Proposed, owner review in this pull request. Metorite: task 2518 and program plan task 2546.
+
+1. **Queue order.** The queue puts work in flight first. Then it orders by the critical path, least slack first. Then it orders by priority (task 1914).
+2. **A lane serves one app project.** The cross-project order is a separate read (tasks 1913 and 2508).
+3. **Projects reach the MCP through the app-door manifest** (task 2520).
+4. **A Goal is a task type with a rank.** Epics link to a Goal from any project (tasks 984, 352 and 2528).
+5. **The member view of agents folds into the Fleet panel.** The rest of WS-AGA is parked (tasks 1884 and 2103).
+6. **The agent write cap is 250 writes in 600 seconds.** The owner set it on 2026-11-09. A two-counter design is in task 2541.
+7. **The agent kit is neutral and holds no secret.** Company rules go through guidance (epic 2547).
+8. **Teams are groups.** There is no team object (epic 2530). D87 stands.
+9. **The seat tiers are final** (owner, 2026-11-10). The D152 tiers with base pricing replace the flat ₹500 seat, as D190.3 says. Until PLN-0 merges, the code still sells the flat seat. Build the tiers (epic WS-PLN, Billing project).
+10. **A dependency across projects gets a hand-off on both sides** (owner, 2026-11-10). The task that gives work and the task that needs it each hold a `Hand-off` comment with the other task number. `orchestration_playbook.md` section 6b owns the form.
+11. **Aroh is not a separate app** (owner, 2026-11-10). Metorite is the one platform and the Operator Console manages it. Task 2611 removes the Aroh seat kind and the Aroh switch from the Console.
+
+**What D204 amends.** D195 Q9 only, as D199 did. Points 9 and 11 confirm D190.3 and D152 and change no earlier decision.
+
+Fence: none new. The rules stay advisory until the slices name their tests (R7).
+
+### D205 — The product shape: Metorite is one company OS built from reusable blocks, and a company adapts it (2026-11-11)
+
+The owner decided points 1 to 4 in chat on 2026-11-10. The owner approved points 5 to 10 on 2026-11-11, in decision pack task 2816. Metorite: replan task 2518.
+
+1. **`specs/building_blocks.md` is the product shape** and the contract of the seams. A vertical is a preset over the core blocks. An agent extends a seam and never adds a parallel one.
+2. **Booking is in scope** (epic task 2675). A guest sees free slots and never a calendar view. Rooms stay out. Metorite's own mail sender stays off. This narrows `calendar_events_reminders.md` §12 for booking only. The Studio Bookings block (O11) uses the same booking API.
+3. **WhatsApp is bots** (epic task 2650). The inbox and ingest direction of `whatsapp_message_manager.md` is on hold.
+4. **The CRM becomes complete** (epics 2732 and 2790). Quotes are in scope, which reverses the non-goal in `crm_app.md`.
+5. A CRM custom object is a Studio object.
+6. A bot is an install that acts as a `run_as` member. D140.2 stands.
+7. The CRM product catalog owns product and price.
+8. A WhatsApp bot runs as a Studio package on O6 to O8. WS-WB is the product layer.
+9. An app manifest also declares MCP resources and prompts. The MCP keeps its four tools (D136.2).
+10. The publish audience (`internal`, `customer-safe`, `public`) is a page property. It narrows and never widens D12.
+
+**Ids (R2).** CX and CH were taken, so the CRM epics use CRX-n and SLH-n. WS-CM means Console and Money, so the mirror epic is WS-MIR with MIR-n. The two web rows of `hardening_backlog.md` become WEBH-1 and WEBH-2.
+
+**What D205 amends.** D138 §12 for booking only (point 2), D115 for the direction of WhatsApp (point 3), and the quote non-goal of `crm_app.md` (point 4).
+
+Fence: `tests/unit/test_doc_names_resolve.py` for the new spec name. The seam rules of `specs/building_blocks.md` §6.2 name their fences. The rest stays advisory (R7).
+
+### D206 — The decisions of the epics of 2026-11-10 (2026-11-11)
+
+The owner approved each recommendation of decision pack task 2816 on 2026-11-11. The epic task of each point holds the detail.
+
+1. **WhatsApp bots (epic task 2650).** No unofficial driver for existing office groups. Group bots only for an organization with an Official Business Account. A person reads the live Business Solution Terms (section 4.7) before launch (WB-12). Bots count in the seat tiers through AI credits only (WB-21).
+2. **Booking (epic task 2675).** A bookable host is a member with a seat, and a guest is free. The cancellation and refund policy is a setting of the organization, with a safe default. A payment goes to the organization's own Razorpay account. Metorite holds no money and takes no cut (D174.3).
+3. **Knowledge (epic task 2713).** Each project and epic gets a home article on first open, and a task does not. Video comes by link or embed first, and upload with a size cap later. All agent content lands as a draft. The project owner or the space steward reviews it.
+4. **CRM complete (epic task 2732).** E-sign starts as an accept link, and an Indian eSign provider comes later. The forecast uses explainable math, not machine learning. Rules run at stage exit, not as mandatory fields at creation. Parts of the CRM items deleted on 2026-11-10 come back (renewals, the automation half of M14, enrichment, the thank-you mail of a form, the digest toggle). One workflow engine serves CRM rules, Studio and automation. Tier packaging (CRX-30): the core CRM is in every tier, forecast and workflows start at the second tier, and the mirror, the MCP and agents are metered in credits. The first telephony provider stays open until a check of the provider terms.
+5. **CRM mirror (epic task 2790).** An own thin connector SDK first. Self-hosted Nango only for OAuth, after a licence review. A mirror is the default, and it reads only. Two-way sync is opt-in, with a source of truth for each field. The connector order is HubSpot, Pipedrive and Salesforce, with a file source for any other CRM.
+
+**Still the owner's acts (task 2816, section F):** the CRM pilot organization, the owner and date of the Zoho cutover run (tasks 806 and 803), the owners of the first slices, the grants renewal (task 2580), and the marketplace listings (MIR-13).
+
+Fence: none new. Each slice names its test (R7).
+
+### D207 — The app marketplace, the operations apps, and one capability set for every app (2026-11-11)
+
+The owner approved every recommendation of decision pack task 2852 in chat on 2026-11-11, and added points 7 and 8 in the same message.
+
+1. **A staged marketplace (MKT-Q1).** Stage 1 is first-party apps that Metorite reviews and publishes. Stage 2 is a private catalog for an organization's own apps. Each install runs inside its own organization, so D187 holds. This amends the marketplace ban of `package_host.md` and `ai_studio.md` for stages 1 and 2.
+2. **First-party and private apps are free inside the seat (MKT-Q2).** They spend AI credits. STU-Q7 stays.
+3. **Third-party publishers and paid apps wait (MKT-Q3)** for a later decision on review, the sandbox SBX-9 and commerce.
+4. **An installed app is a versioned base plus a customer overlay (MKT-Q4).** An upgrade is a three-way merge. A clash pauses only that one part.
+5. **Operational accounting, not a statutory ledger (OPS-Q1).** Receivables, payables, cost and margin, stock valuation, and GST-correct invoices and challans. A voucher export goes to Tally Prime and then Zoho Books. An e-invoice or an e-way bill through a licensed GSP stays behind a flag that is off.
+6. **An item is the CRM catalog product with a stock facet (OPS-Q2).** Fracktal Works is the pilot, with inventory, procurement, BOM and production first (OPS-Q3).
+7. **Standard apps.** Metorite ships MRP, inventory, procurement, production, maintenance, costing and the other operations and ERP apps as standard apps. An organization turns a standard app on from Apps, with no marketplace step, and customizes it with the same overlay (point 4). A standard app takes updates through the same merge.
+8. **One capability set.** A marketplace app and a standard app have the same capabilities. Both use the same manifest, the same building blocks, the same door classes and the same chat, MCP and harness points. A standard app gets no private API, table or hook that a package cannot use. A need that only a standard app has becomes a contribution point for every app.
+
+Fence: `tests/unit/test_app_capability_parity.py` (new, task of WS-MKT) proves that each standard app installs through the package path and uses no capability outside the manifest. Until it exists, point 8 is advisory (R7).
+
+Re-check this number at merge. The first merge wins a D-number.
+
+### D208 — A Projects act with no typed MCP tool reaches the MCP through the app door (2026-11-11)
+
+The owner chose option (b) in chat on 2026-11-09 (Metorite tasks 2520 and 2521). MCP-G24 records it. `external_agent_access.md` §19.16 holds the design.
+
+1. **One path for the rest of Projects.** A Projects act that no typed tool serves reaches the MCP through the app door of §19 (D136.2). Nobody builds one typed tool for each act. The typed tools of §9 stay, and `MCP_ROUTES` stays their allowlist (§19.3).
+2. **The door table, and an exception to AD-1 and D136.1.** `acb_common/app_manifests/projects.py` holds one row for each of the 215 routes of the Projects chat manifest. Each row has the class and the chat tool of its chat row. It adds an `op` or an `off_door` reason (AD-2). `acb_common` cannot import `skill_projects`, so the table repeats the 215 pairs. That is a second list, so D208 amends AD-1 and D136.1 for Projects. The exception ends when MCP-G24c moves the chat manifest into `acb_common`. Until then, the fence holds the pairs, the class and the tool equal, row for row.
+3. **No pair is in both sets (AD-3).** A row whose route is in `MCP_ROUTES` names no op. It says that a typed tool serves it.
+4. **The first acts.** Cycles and saved views get 11 door ops. Status editing and template apply stay off the door until MCP-G24b, the registration slice. The chat client holds guards that their routes lack (§19.16). Import stays class X, because its routes need `admin:access:manage` (§19.11). Goals and teams have no route. A goal object is later work (task 977), and a team is a filter (D87).
+5. **The approval path.** Each class B or C op asks the member for each call (§19.5, D124.2). No op is a proposal, and no op sends. No op writes a grant, answers for a person, or reaches another person. No op deletes a record for good. Two ops delete the link row of a task in an open cycle, and the task stays.
+6. **Dark.** The table is not in `app_manifests.APPS`, so the door serves no Projects op. MCP-G24b registers it, after MCP-P1b-2 builds the spend. Until then, the table needs no flag.
+
+Fence: `tests/unit/test_projects_door_coverage.py`. MCP-G25 adds `tests/unit/test_mcp_projects_parity.py` on the same table.
+
+Re-check this number at merge. The first merge wins a D-number.
+
+### D210 — Sound cues: a few tasteful sounds for the moments that matter (2026-11-11)
+
+The owner asked in chat on 2026-11-11 for tasteful sound effects. The clear chimes are for an email sent or received, the agent with something for me, a new item in My Day, and a reminder. The owner's standing word applies to the details: the product manager's recommendation, when it fits the philosophy. Epic: task 2862 (WS-SND, project My Day).
+
+1. **Sound is a delivery of the Signals and delivery block** (`building_blocks.md` §2). It is not a new seam. One player, `src/lib/shell/sound.ts`, plays every cue. No app plays its own sound, as no app has its own palette.
+2. **Six cues of one family.** `sent`: my email or message left. `arrived`: an important email or a hand-over came in. `agent`: the assistant or an agent run needs me, or finished a long job. `my_day`: a new card in My Day. `reminder`: a reminder is due. `done`: I finished a task. A cue is shorter than 0.6 seconds, and `reminder` is at most 1.2 seconds. All cues have one loudness. No cue plays for an error.
+3. **Rare by rule.** Cues inside 2 seconds merge into one. A kind plays at most once each 30 seconds, except `reminder`. Only one open tab plays. No cue plays when a page loads. `arrived` plays only for a message in the important group, never for bulk mail.
+4. **The member controls it.** Settings → Notifications → Sounds holds one switch, a volume, a switch for each cue and a Play button for each. The same settings work from chat (D109). The values are a new `sounds` key of `user_settings.my_day_prefs`. No new table. The defaults are on, at volume 40, with `done` off.
+5. **Quiet hours and Focus.** Outside the work hours and during a Focus session, only `reminder` plays. A kind that the member muted makes no sound. The quiet hours are those of `proactive_reach.md` §6.1.
+6. **One sound for one event.** With a visible tab, the push worker gives the event to the tab and shows the notification with no sound. With no visible tab, the phone or the computer plays its own notification sound. Web push cannot carry a custom sound.
+7. **Never sound alone.** Every cue has a visual pair: a card, a badge or a toast.
+8. **Apps (D207.8).** A Studio, standard or marketplace app gets a cue through a signal kind in its manifest. The cue follows the reach class of the kind. An app brings no sound file.
+9. **The sound set** is a small set of files, CC0 or commissioned, with the licence on record. The owner listens to the set and approves it before the first merge (SND-1).
+10. **Ship dark.** `NEXT_PUBLIC_SOUND_CUES`, default OFF. The flip comes after SND-2, so that a member can turn the sounds off before the first one plays.
+
+Fence: `src/lib/shell/sound.test.ts` (the rules of points 3 and 5) and `src/lib/shell/soundSeam.test.ts` (no `new Audio(` or `AudioContext` outside the player, the voice code and the recorder). Both land with SND-1 (task 2865). Until then, point 1 is advisory (R7).
+
+Re-check this number at merge. On 2026-11-11, open branches hold D208 and D209.
+
+### D211 — Plan by the gratification ladder: each stage ends in a win that a person sees and uses (2026-11-11)
+
+The owner said in chat on 2026-11-11: prioritize in stages that give the most gratification as the features evolve. Do not plan only by the critical path. Show quick wins first, as a minimum viable product, and grow from there. This is the default philosophy of the Metorite project system and of its harnesses. Any planning in Metorite, or by an agent that connects to Metorite, follows it. Task 2885 holds the replan.
+
+1. **The rule is the gratification ladder** of `orchestration_playbook.md` §6d. A plan is a set of rungs. Each rung ends in a demo that a person sees and uses on production.
+2. **Rung 1 is the smallest path that works end to end.** Start from what is live. Order the rungs by visible value for the effort.
+3. **A foundation rides with the rung that needs it.** No rung ships only plumbing.
+4. **Rung 0 outranks the ladder.** Rung 0 is a security leak, data loss, a broken live feature, or an owner gate with a date.
+5. **On the board.** Each rung has one demo task with the tag `Demo`. Each slice has a `Rung N` tag and a blocks link to its demo task. Each delegation brief names its ladder.
+6. **The order of work.** Take the lowest open rung first, then the least slack to that rung's demo, then the priority. This changes the queue order of 2026-11-09 (the critical path by least slack). The product follows when LAD-4 (task 2891) ships. Until then, agents apply the order by hand.
+7. **The product default.** The playbook (LAD-1, task 2888), the Projects planning AI (LAD-2) and `get_plan` (LAD-3) teach and show the ladder. The text of the playbook stays neutral, as §4 of the playbook spec says. Epic: task 2887 (WS-LAD).
+8. **The program order.** AI Studio and the MCP climb first. Every other app project then gets its own ladder. The milestones M0 to M4 stay as the company's dates.
+9. **The default, not the only way** (owner, in chat, 2026-11-11). The owner asked that the project system defaults to the ladder and stays flexible for other ways of planning. So the ladder is one block of the work-style catalogue of D195 (`project_management_app.md` §13.1 rule 7).
+   - The ladder is on by default in Flow, Sprints or Cycles, Shape Up and Personal. It is off by default in Plan-driven, which keeps milestones, phase gates and the critical path.
+   - A project owner can switch it for one project. An org admin sets the default for new projects (LAD-5, task 2942).
+   - A person can ask for another way at any time. The agent then plans in that way and says what changes.
+   - Point 6 applies where the ladder is on. Where it is off, the order of the style applies, which for Plan-driven is D195.6 (the least slack on the critical path).
+   - HathiLabs keeps the ladder on for its own projects.
+
+Fence: `tests/unit/test_playbook_ladder.py` (LAD-1, task 2888) fences the playbook half (R7). R10 in §1 carries the rule to specs, and that half is advisory.
+
+Re-check this number at merge. The first merge wins a D-number.
+
+### D212 — How I work: Metorite records the member's own acts, counts habits, and suggests the usual act (2026-11-11)
+
+The owner asked in chat on 2026-11-11 for one place that holds how the member writes and how the member acts. Drafts, suggestions and decisions read it. The owner accepted the six defaults of `personalization.md` §19.12 the same day, in chat: "go ahead with your recommendations for the open questions and close them." Epic: task 2876.
+
+1. **D-PZ-47. The act record.** Metorite records the member's own acts with no subject and no body (`member_action`, §19.4). It follows the learning switch, and it ships dark behind `MEMBER_ACTIONS_ORGS`.
+2. **D-PZ-48. No act by itself.** A habit makes a suggestion and never acts. An automatic act exists only as an email rule that the member approved on a card.
+3. **D-PZ-49. One page.** "How I work" in Settings shows the style, the voice and the habits. The writing-style section of the Email app becomes a view of the member voice. No second store of the voice exists.
+4. **D-PZ-50. The consent wording.** PZ-12 drafts the wording of D-PZ-10, and the owner reads it before PZ-12 merges (§12.8).
+5. **D-PZ-51. Retention.** An act row lives 180 days.
+6. **D-PZ-52. A habit.** It needs 3 acts or more, and a share of 70% or more, in 90 days.
+
+The voice half stays D110 (PZ-12, PZ-13). D-EM-18 stands: the learner reads one mailbox at a time (Q-MM-1). Fence: the tests of §19.10 land with MM-1 to MM-3. Until then the rules are advisory (R7).
+
+Re-check this number at merge. The first merge wins a D-number.
+### D188 — The My Day command centre: capture, plan, start, focus and close from one page (2026-11-07)
+Owner answer on Metorite task 1946 ("Approve all eight recommendations"), 2026-11-07, and an addition in chat the same day. Owner spec: `specs/my_day_command_centre.md`. Board: **WS-MDC**. Metorite: epic 1946, tasks 1967 to 1978.
+"My Day becomes the main operations command center dashboard for managing my day. I should be able to start work, do Pomodoro, capture tasks, etc., from just this one place." (2026-11-06)
+"Ensure that you actually use the "Needs You" tabs because there are multiple sub-apps that might need you." (2026-11-07)
+1. **D-MD-1 (MD-Q1).** My Day is the command centre: notice, plan, start, focus and close. Calendar keeps the week, the full grid and events. Projects keeps the structure. This amends `navigation_shell.md` §4.3.
+2. **D-MD-2 (MD-Q2).** One rule for Today: the One Thing, the top 3, what is on today's calendar, and what is due or starts by today. Every surface reads one helper.
+3. **D-MD-3 (MD-Q3).** A "today's focus" mark on a task. The cap is 3, and the member sets it from 1 to 10. The One Thing is one of them.
+4. **D-MD-4 (MD-Q4).** My Day has the phases Plan, Do and Close. Plan lasts until the day starts. Close starts after 17:30 or on request. A switch lets the member pick.
+5. **D-MD-5 (MD-Q5).** A new table of focus sessions, one row for each session. It is private to the member and scoped to the organization. Only the member sees their own minutes.
+6. **D-MD-6 (MD-Q6).** Focus on a company task in a To do lane moves it to In progress, with Undo. "Done" in the check-in closes it there.
+7. **D-MD-7 (MD-Q7).** A capture goes to the Inbox. A named time also makes a block or a reminder, and the toast offers Undo.
+8. **D-MD-8 (MD-Q8).** On a phone, My Day is one column: the running session, capture and Ask at the thumb, today's plan, then what needs you.
+9. **D-MD-9 (owner addition).** "Needs you" on My Day has one tab for each app that can need the member, each with its count.
+This amends `navigation_shell.md` §4.3, which gave My Day only the job Notice. D101, D170, D171 and D89 stand.
+**Re-check this number at merge.** D186 and D187 were open then (both are on main now) on other branches when this record was written. The first merge wins a D-number.
+Fence: named per slice in `specs/my_day_command_centre.md` §10. Advisory until each slice builds its test.
+
+### D213 — A task row on My Day opens the task on My Day. It amends D101 point 2 (2026-11-09)
+
+Owner request, 2026-11-09, in chat. Metorite: task 2469 (PK-1). Owning spec: **`specs/my_day_feed.md`** §11.5.
+
+The owner wrote: "when I open any task card (say, for example, some task when AI needs me), it opens up the projects app itself, and I need to go back to My Day to look at the rest of my day. I think it would be nice to just have emails, tasks, or reminders, whatever, just appear in the card itself on My Day, so that I don't have to switch between apps."
+
+1. **The context opens on My Day.** A plain click on a link to a task opens the task in a panel. The path stays `/`. A row's title and an act that is a link both open it, for example "Move to tomorrow". An act with its own button still runs in place. The panel draws the shared task card of Projects, and never a second task view. This amends D101 point 2 for each link to a task. "Needs more context" no longer sends the member to the owning app. The act test of `my_day_feed.md` §11.2 does not change.
+2. **The member can always open the app.** D101 point 3 stays. The panel's header has "Open in Projects". Ctrl-click, Cmd-click and a middle click open the app in a new tab.
+3. **Back closes the panel.** The URL holds the panel as `?peek=<kind>:<id>`, so a reload opens it again.
+4. **Tasks first.** PK-1 opens tasks. Email (PK-2, task 2470) and reminders (PK-3, task 2471) add their kinds to the same registry, `lib/shell/myDayPeek.ts`.
+5. **Dark first.** `NEXT_PUBLIC_MY_DAY_PEEK` turns it on, default OFF. Turning it on in production is the `enforcement-flip` act.
+
+**What it amends.** `navigation_shell.md` §4.3, row "My Day": "A longer act opens the owning app". A link to a task, a row's or an act's, now opens the panel. An act with its own button runs in place, as before.
+
+Fence: `workbench/control_plane/src/lib/shell/myDayPeek.test.ts`, `src/components/CardPanel.test.ts`, `src/app/projects/lib/useTaskById.test.ts` and `e2e/myday-peek.spec.ts`. `tests/unit/test_decision_ids.py` fails when two D213 entries merge. **Re-check this number at merge.** On 2026-11-09, main and every open branch held D203 at most.
+
+### D214 — One-time workflows: wait for one event, run once to propose the record updates, then retire (2026-11-12)
+
+The owner asked in chat on 2026-11-12: a workflow that runs only once. The example is an ask to a teammate about the quote of a sale. When the answer arrives, one run updates the CRM or the project, for that one answer. Epic: task 3010 (WS-OTW). Owner text: `workflows_app.md` §14.
+
+1. **One engine.** "Once" is a property of a trigger of the workflow engine. It adds no scheduler, watcher or store.
+2. **At most once.** One conditional update claims the trigger. Two matching events start one run, and a replay starts nothing. Then the trigger retires.
+3. **The match grows by rung.** Rung 1 matches the answer to one person ask. Rung 2 matches a mail reply on one thread from the expected sender. A later rung matches any core-app event.
+4. **The run proposes, and a person confirms** (D205 UX principle 5). The run is one Mira step. Each record write is a card in the asker's "Needs you". It runs in the asker's own session after the approval. A run makes no unattended write until a later decision allows auto-apply.
+5. **One step from chat.** `ask_person` takes `on_answer`, so the ask and the trigger commit in one card.
+6. **Nothing drops in silence.** At the expiry, the asker chooses Chase, Wait or Close.
+7. **The rung 1 event binds its own org** from the bound session of the answer route. H-328 part (c) (task 856) stays the general fix.
+8. **Ship dark.** `ONE_TIME_WORKFLOWS_ORGS`, default empty.
+9. **The auto-archive** (owner, in chat, 2026-11-12). A one-time workflow archives itself when it ends: it ran, it closed at the expiry, or someone cancelled it. The workflow app has a read-only "Archived" view. Any workflow can be archived by hand, and an archived workflow never runs. Restore brings a normal workflow back as disabled. A one-time workflow offers "Ask again".
+10. **Retention** (owner, in chat, 2026-11-12). A daily job of each org deletes the workflows that were archived longer ago than the org's period. The period is 30, 90, 180 or 365 days, or "Keep", and the default is 90 days. An audit row keeps the name, the owner, the dates and the outcome of each delete. The record changes of its runs stay. The owner or an admin can delete one at once.
+
+Fence: each slice in `workflows_app.md` §14.7 names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D214 entries merge. **Re-check this number at merge.** On 2026-11-12, main held D213 at most, and no open branch held D214.
+
+### D216 — Company content: Metorite files, reads and reuses what a member drops in the chat, in decks and reports (2026-11-12)
+
+The owner asked in chat on 2026-11-12. A member drops decks, PDFs, documents and links in the chat. Metorite files each one, reads it, and reuses its text, images and logo in later decks and reports. Over time it knows the company better. Epic: task 3039 (WS-CON). Owner text: `company_context.md` §16.
+
+1. **No new store.** A file is an artifact (D162). Text that people read is a Knowledge page, and an agent writes it only as a draft (D-KB-4). An image, a logo or a slide from a file is a derived artifact with the scope of its source.
+2. **AI proposes, and a person confirms.** One card proposes the place of each upload: the chat only, Files, or Files and a Knowledge draft. With no answer, the file stays in the chat.
+3. **Search and output stay one.** `search_company` finds the filed content. The one deck and report builder reuses it through `object:` references that code checks against the member's read rights.
+4. **The brand kit is part of the organization identity.** Mira drafts the logo, the colours and the fonts from the filed decks. An admin confirms them.
+5. **The order.** Rung 1 files, reads and finds. Rung 2 reuses the parts and the brand kit in a PDF. Rung 3 writes a pptx in the company's own template.
+6. **Ship dark.** `COMPANY_CONTENT_ORGS`, default empty, with `ARTIFACT_REGISTRY_ENABLED` for the org.
+
+Fence: each slice in `company_context.md` §16.3 names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D216 entries merge. **Re-check this number at merge.** On 2026-11-12, main held D214 at most, and the open branch `cal-spec-s0` held D215.
+
+### D217 — Chat hardening: the chat recovers from the failures that production shows, and builds against the ones it does not yet show (2026-11-12)
+
+The owner asked in chat on 2026-11-12 for the chat failures that a member will meet next, built against before a member meets them. `chat_failure_modes.md` holds the evidence, the 30 classes, the contract of §7 and the ladder (epic 2978). The owner chose "Approve all six defaults" on epic 2978 (2026-11-11 21:28 UTC), and confirmed it in chat on 2026-11-12.
+
+1. **D-HRD-1. A missing pack loads.** When the model calls a tool of a pack that the turn has not loaded, the turn loads that pack if the member may use it, and says so (`CHAT_TOOL_AUTOLOAD`, HRD-1).
+2. **D-HRD-2. Most of the words.** When no task has all the words, the search shows the tasks with most of them, under "No task has all the words. These have most of them" (HRD-4).
+3. **D-HRD-3. Three empty answers end a search.** After 3 empty or refused answers from one tool in a turn, the chat says what it tried and asks (HRD-5).
+4. **D-HRD-4. A press is an order.** A pill, a chip or a retry that the member pressed is the member's order for that act. Its words still carry no typed mark for the profile (D-PZ-37 stands, HRD-15).
+5. **D-HRD-5. A paste is data.** A block of 8 lines or more, or text that matches a stored mail, is framed as data. An instruction inside it acts only on the member's own words (HRD-14).
+6. **D-HRD-6. Claims in shadow.** The claim check of HRD-13 only logs. It changes no answer until the owner turns it on.
+
+Fence: each slice in `chat_failure_modes.md` §6 names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D217 entries merge. Re-check this number at merge.
+
+### D218 — Merge to main as fast as we build: one gate before the merge, a green commit for each release, a bot that reverts (2026-11-12)
+
+The owner asked in chat on 2026-11-12 to "push code as fast as we develop it". The three release slots stay (D194). The owner chose points 3 to 6 in chat on the same day. `ci_velocity.md` §8 holds the measurements, the rungs and the slices CIV-26 to CIV-38 (tasks 3051 to 3066).
+
+1. **One gate before the merge.** GitHub pr-check is the gate. `ci_local.sh` becomes optional (CIV-27).
+2. **Merge on green.** A script merges a green PR when its trial merge with today's `main` is clean. It does not test the PR again after `main` moves. D176 stands: we use no merge queue (CIV-28).
+3. **Ship green.** Each release slot ships the newest commit that passed the full suite. A red tip of `main` holds no release. The R8 gate still runs (CIV-30).
+4. **A bot reverts.** A bot bisects a red batch. A revert PR undoes the culprit, at most 3 an hour, and the culprit's task opens again. One week of dry run comes first (CIV-31).
+5. **The preview gates the flag.** A slice behind a flag that is off merges on green. The owner approves the flag flip. A new screen with no flag still waits for the preview. This amends D145 and D200 (CIV-36).
+6. **Models by job.** Haiku, Sonnet, Opus and Fable each take the jobs that `ci_velocity.md` §8.6 lists. This replaces the rule "Sonnet does the work" of 2026-10-19 (CIV-37).
+7. **The weekly review measures the quality.** A revert share over 5% for 7 days brings the strict gate back for that area (CIV-38).
+
+Each point binds when its slice merges. Until then the old rule holds. Fence: each slice in `ci_velocity.md` §8.5 names its test in its task. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D218 entries merge. Re-check this number at merge.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
@@ -5773,6 +6226,7 @@ Fence: none new. Names in this record resolve under `tests/unit/test_doc_names_r
 | **The single member of record** | **`vjvarada@fracktal.in` is the only signed-in member** (⚠️ **owner-reported 2026-08-04, NOT measured** — it is a live-DB fact and §6 forbids an agent the tool that could measure it; re-check on the box before relying on it) | There is exactly one. `EXECUTIVE_EMAILS` is the bootstrap candidate list (`acb_auth/access.py:467-519`) and is **not** a role — a member's real access is resolved from `app_user` + `user_role` + `user_permission_override`. **No agent may add, promote or suspend a member**: `POST /admin/members`, `PUT /admin/members/{email}/roles` and `PATCH/DELETE /admin/members/{email}` are live-DB writes to the access model and are registered in §6. Onboarding runbook: `specs/colleague_onboarding.md` §2 |
 | Groups admin UI + seeding | **WS-13 / Centers B** | groups_sessions_authority §6.5 · org_access §8 Ph2 · multiplayer §4.5 |
 | Team-instanced agents | **WS-14 / Centers C3** (mechanism per D3) | `docs/multiplayer/agent-kinds.md` §6/§8 — **note the path: it is under `docs/multiplayer/`, not `project-docs/specs/`**, and its §6 roster is a **design proposal, not a work list** (seven of its twelve agents do not exist; it contradicts three shipped `config.json` files — both annotated there 2026-08-03) · agent_architecture §6/§12A · memory_architecture §6.1 · groups §6.2 |
+| **The offer and the account model**: seat tiers, the AI allowance, individual mode, the upgrade to a team, one person in many orgs, and global sales || **WS-PLN — `specs/seat_plans.md`** (D152) | `launch_surface.md` §4 keeps the flat offer until PLN-50 · `customer_console.md` owns the catalog tables · `credit_pricing.md` owns the worth of a credit |
 | Shared mailboxes | ⚠️ **OWNERLESS IN FACT — do not dispatch** (measured 2026-08-03) | D5 assigns implementation to `email_app_master_plan.md`, sequenced by WS-14. That spec contains **zero** occurrences of "shared mailbox", and `email_account_member` — cited as Phase-2 content by `department_centers.md` and `org_access_control.md:311` — **exists nowhere in the repo** (0 hits in `*.sql` and `*.py`). D5's *sequencing* stands; its *ownership* is nominal. **Next action is a doc action, not a build:** either `email_app_master_plan.md` gains a section for it, or this row names a different owner. Recorded in `department_centers.md` C2. | org_access §8 Ph2 · groups §1 · research §16.7 |
 | Per-Center approvals routing | **WS-14 C4 — 🔴 OWNER-DECISION, not dispatchable** | `org_access_control.md:405` Q2 is open verbatim (*"who is asked? … per-module approvers is a Phase 2 question"*), **and there is no column to route on**: `infra/postgres/66_pending_actions.sql:13-38` carries no requesting-member, group or Center column. ⚠️ **Corrected 2026-08-03** — this cell used to add "(`actor` is the proposing *agent*)", which is **false**: two of `actor`'s six writers put the requesting human in the string (`routes/apps/tools.py:393`, `routes/apps/actions.py:345`, both `actor=f"app:{slug}:{email}"`), so a group **is** derivable there. The verdict holds on the real evidence — `actor` is free text with five shapes (`app:<slug>:<email>` · `app:<slug>` · `workflow:<name>` · `tasks:<provider>` · `tasks:clickup:ws:<id>`) and a human in only **two of six** proposers, so a Center inbox filtered on it would be silently empty for every workflow-, publish- and provider-originated proposal. The new column must be written by every proposer, not parsed from an ad-hoc string. Evidence: `department_centers.md` C4. The ticket is "answer Q2, then add a column", never "add a filter" |
 | Cost attribution | **WS-6** (D1) | multiplayer §5.3/Ph4 · agent-kinds §9 Q4 · Centers D |
@@ -5838,6 +6292,18 @@ Fence: none new. Names in this record resolve under `tests/unit/test_doc_names_r
 > the pre-migration backup completed, then apply it. And rule 8 of `CLAUDE.md`
 > §3 — verify by the migration ledger, the deployed SHA and the log line.
 > Faster delivery makes a silent no-op deploy more likely, not less.
+
+### D215 — External calendars: one consent, one redirect URI, tasks out two ways (2026-11-12)
+
+The owner directed on 2026-11-12 that Google Calendar and Outlook sync into Metorite, and that Metorite tasks sync out to them, in both directions. The member must do the least work. `calendar_events_reminders.md` §8.1a holds the points.
+
+1. Google asks `calendar.readonly` and `calendar.app.created`. Microsoft asks `Calendars.ReadWrite`. One consent covers read and write, and the grant adds to the mail grant.
+2. The calendar flow reuses the redirect URI of the mail flow. Its state has its own purpose, `calendar.connect`. The owner adds no URI.
+3. The connection is one `integration_connections` row (`owning_app='calendar'`) for each member and provider.
+4. A task with a timed block writes one event into a calendar named "Metorite" that Metorite makes in the member's account. Its provider event id lives in the new table `calendar_task_links`, not in `calendar_entries`. This decides Q9.
+5. A change at the provider moves the block. A delete at the provider unschedules the block and never deletes the task.
+
+Fence: `tests/unit/test_calendar_sync_read.py`, `test_calendar_sync_write.py` and `test_calendar_sync_tasks.py`. `tests/unit/test_decision_ids.py` fails when two D215 entries merge. **Re-check this number at merge.** On 2026-11-12, main held D214 at most.
 
 ### 6.0 Decisions the owner owes — the short list *(added 2026-08-26)*
 
@@ -6030,6 +6496,15 @@ and one thing that cannot be written until a second person exists.
 > The backlog of an org with many notes costs credits for days, so ask the
 > owner first. `specs/crm_platform.md` §18.11 is the authority. No plan-guard
 > rule names these flags either.
+>
+> **DEC-1 — the Projects decide features.** *(Registered 2026-11-08.)* To
+> build the seam is AGENT-SAFE, and it ships dark. A mode other than `off` for
+> `projects.align` in `DECIDE_FEATURE_MODES` is an owner flip, because each
+> request spends the org's credits (CLAUDE.md §3a rule 3). A `projects.` mode
+> spends only for an org in `PROJECTS_DECIDE_ORGS`, so a name in that list is
+> half of the same flip. The grant `enforcement-flip` covers neither.
+> `specs/project_alignment.md` §6.2 is the authority. No plan-guard rule names
+> these flags either.
 >
 > **WS-53 — the CRM mapping pipeline.** *(Registered 2026-10-16 with
 > CRM-Q20-1.)* To build CRM-Q20-1 is AGENT-SAFE, and it ships dark. A mode

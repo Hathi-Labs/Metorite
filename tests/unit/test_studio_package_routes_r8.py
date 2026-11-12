@@ -145,7 +145,11 @@ def _manifest(mid: str, objects: list[dict[str, Any]] | None = None) -> dict[str
     return {
         "studio": 1, "id": mid, "name": "Visits", "purpose": "Track install visits.",
         "objects": objs,
-        "actions": [{"id": "find", "uses": f"object:{objs[0]['name']}.list"}] if objs else [],
+        # The five record actions of the first object, so a draft save (which adds the missing ones,
+        # STU-G3c) stores the manifest as written and the hash of a fixture stays the hash of the row.
+        "actions": [{"id": "find", "uses": f"object:{objs[0]['name']}.list"},
+                    *({"id": f"{objs[0]['name']}_{v}", "uses": f"object:{objs[0]['name']}.{v}"}
+                      for v in ("get", "create", "update", "delete"))] if objs else [],
     }
 
 
@@ -164,6 +168,8 @@ class _Request:
             b"" if payload is None else json.dumps(payload).encode("utf-8"))
         self.method, self.headers = "POST", {}
         self.url = SimpleNamespace(path="/studio/apps/x/actions/y")
+        # The door reads the query of each call: the preview marker (G4).
+        self.query_params: dict[str, str] = {}
         self.reads = 0
 
     async def stream(self) -> Any:
@@ -405,6 +411,30 @@ def test_r8_the_owner_succeeds_on_each_route(world) -> None:
     # STU-G3a fix 1: the read gives the hash of the stored draft, as a real database keeps it.
     assert got[2][1]["package"]["manifest_hash"] == manifest_hash(got[2][1]["package"]["manifest"])
     assert [v["version"] for v in got[5][1]["versions"]] == [1]
+
+
+def test_r8_one_version_reads_with_its_manifest_and_only_for_its_owner(world) -> None:
+    """STU-G5: the owner reads v1 with its manifest and hash. Another member,
+    another org, a missing version and a bad version answer without it."""
+    mid = _mid()
+
+    async def go() -> list[tuple[int, Any]]:
+        pid = await _new(world.a, ANA, _manifest(mid))
+        assert (await _publish(world.a, ANA, pid, "first"))[0] == 200
+        return [
+            await _call("get_version", world.a, ANA, pid, version="1"),
+            await _call("get_version", world.a, BEN, pid, version="1"),
+            await _call("get_version", world.b, ANA, pid, version="1"),
+            await _call("get_version", world.a, ANA, pid, version="2"),
+            await _call("get_version", world.a, ANA, pid, version="0"),
+        ]
+
+    got = _run(world, go)
+    assert [s for s, _ in got] == [200, 404, 404, 404, 422]
+    v = got[0][1]["version"]
+    assert v["version"] == 1 and v["notes"] == "first" and v["manifest"]["id"] == mid
+    assert got[0][1]["manifest_hash"] == manifest_hash(v["manifest"])
+    assert got[1][1] == got[2][1] == got[3][1] == "Not found"
 
 
 def test_r8_another_member_of_the_org_gets_404_on_each_route(world) -> None:
@@ -694,6 +724,51 @@ def test_r8_a_refusal_names_each_problem_with_its_object_and_field(world) -> Non
     assert ("field_changed", "visit", "site") in seen
     assert ("field_changed", "visit", "status") in seen
     assert ("field_removed", "visit", "qty") in seen
+
+
+# ── STU-C14. The parts of the new field types are part of a field ──────────
+
+_C14_FIELDS: list[dict[str, Any]] = [
+    {"key": "title", "type": "text"},
+    {"key": "load", "type": "quantity", "units": ["kg", "t"]},
+    {"key": "score", "type": "rating", "min": 1, "max": 5},
+    {"key": "serial", "type": "barcode", "format": "ean13"},
+]
+
+
+def test_r8_a_change_of_units_or_max_is_refused_as_field_changed(world) -> None:
+    """A published quantity cannot change its `units`, and a rating cannot change its
+    `max`, because a stored value may no longer fit. `objects_store._FIELD_ATTRS` holds them.
+
+    Mutation: drop `min`, `max`, `units` and `format` from `_FIELD_ATTRS`. This test turns red.
+    """
+    mid = _mid()
+    pid = _run(world, lambda: _live(world.a, ANA, _manifest(mid, [_visit(_C14_FIELDS)])))
+    bad = _manifest(mid, [_visit([
+        _C14_FIELDS[0],
+        {"key": "load", "type": "quantity", "units": ["kg"]},
+        {"key": "score", "type": "rating", "min": 1, "max": 10},
+        {"key": "serial", "type": "barcode", "format": "code128"},
+    ])])
+    before = _snapshot(world, pid)
+    assert _run(world, lambda: _save(world.a, ANA, pid, bad))[0] == 200
+    status, got = _run(world, lambda: _publish(world.a, ANA, pid))
+    assert status == 409, got
+    said = {p["field"]: p["message"] for p in got["problems"] if p["kind"] == "field_changed"}
+    assert "(units)" in said["load"]
+    assert "(max)" in said["score"]
+    assert "(format)" in said["serial"]
+    assert _snapshot(world, pid) == before
+
+
+def test_r8_a_resync_of_the_same_c14_fields_writes_nothing(world) -> None:
+    pid = _run(world, lambda: _live(world.a, ANA, _manifest(_mid(), [_visit(_C14_FIELDS)])))
+    before = _snapshot(world, pid)
+    status, got = _run(world, lambda: _publish(world.a, ANA, pid))
+    assert status == 200, got
+    after = _snapshot(world, pid)
+    assert after["objects"] == before["objects"]
+    assert after["fields"] == before["fields"]
 
 
 # ── e. The rules ───────────────────────────────────────────────────────────

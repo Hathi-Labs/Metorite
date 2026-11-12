@@ -32,14 +32,15 @@ Run (a PRIVATE ladder database, one R8 suite at a time, because the
   ``test_r8_a_closed_gate_writes_no_row`` and the gate cases go red.
 * M4. ``trigger.enqueue_check``: drop the compare with *before*.
   ``test_r8_an_edit_with_the_same_text_enqueues_none`` goes red.
-* M5. ``tasks.create_task``: move the enqueue after the session.
-  ``test_the_seam_create_and_patch_enqueue_inside_the_tenant_session`` and
-  ``test_r8_a_rolled_back_write_leaves_no_job`` go red.
+* M5. ``tasks.create_task``: move the call of ``create_task_in`` after the
+  session. ``test_the_seam_create_enqueues_on_the_session_of_its_caller`` and
+  ``test_r8_a_rolled_back_write_leaves_no_job`` go red. WS-39 TPL-1a moved
+  the body of the create into ``create_task_in``, the one creator.
 * M6. ``tasks.patch_task``: pass ``known_team=True``.
   ``test_r8_a_personal_task_is_never_enqueued`` goes red.
 * M7. ``tasks.move_task_in``: enqueue on each move.
   ``test_r8_a_move_between_two_team_projects_enqueues_none`` goes red.
-* M8. ``tasks.create_task``: drop the test of ``personal_owner``.
+* M8. ``tasks.create_task_in``: drop the test of ``personal_owner``.
   ``test_r8_a_personal_task_is_never_enqueued`` goes red.
 * M9. ``check.py``: drop ``register_jobs()``.
   ``test_the_stub_registers_at_import`` goes red.
@@ -309,7 +310,7 @@ def _inside_tenant_session(function: ast.AST, call: ast.Call) -> bool:
     return False
 
 
-@pytest.mark.parametrize("handler", ["create_task", "patch_task"])
+@pytest.mark.parametrize("handler", ["patch_task"])
 def test_the_seam_create_and_patch_enqueue_inside_the_tenant_session(handler: str) -> None:
     """The write and its job share one transaction (§5 item 1). An enqueue
     after the commit could lose the job in a crash."""
@@ -318,6 +319,19 @@ def test_the_seam_create_and_patch_enqueue_inside_the_tenant_session(handler: st
     assert len(calls) == 1, f"{handler} must enqueue once"
     assert _inside_tenant_session(function, calls[0]), (
         f"{handler}: the enqueue must sit inside its `_tenant_session` block")
+
+
+def test_the_seam_create_enqueues_on_the_session_of_its_caller() -> None:
+    """WS-39 TPL-1a. The create is ``create_task_in``, the one creator. It
+    enqueues once, on the session that it was given, and the route calls it
+    inside its ``_tenant_session`` block."""
+    tree = _tree(_ROUTES / "tasks.py")
+    calls = _calls(_function(tree, "create_task_in"), "enqueue_check")
+    assert len(calls) == 1
+    assert getattr(calls[0].args[0], "id", "") == "db"
+    route = _function(tree, "create_task")
+    creates = _calls(route, "create_task_in")
+    assert len(creates) == 1 and _inside_tenant_session(route, creates[0])
 
 
 def test_the_seam_move_enqueues_on_the_session_of_its_caller() -> None:
@@ -348,7 +362,7 @@ def test_the_seam_has_no_hook_on_the_row_helpers(function: str) -> None:
 
 @pytest.mark.parametrize("module", [
     "personal.py", "recurrence.py", "import_writer.py",
-    "activities.py", "automation.py", "merge.py",
+    "activities.py", "automation.py", "merge.py", "templates.py",
 ])
 def test_the_seam_skips_the_creators_that_the_spec_leaves_out(module: str) -> None:
     assert "enqueue_check" not in (_ROUTES / module).read_text(encoding="utf-8")

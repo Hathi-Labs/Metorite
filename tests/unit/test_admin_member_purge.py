@@ -547,6 +547,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "knowledge_proposals": 0,
         # WS-55 SW-10a: the fake holds no strand of her agent runs. They stay.
         "agent_run_strands": 0,
+        # WS-39 SP-1: the fake holds no cycle capacity row of hers. It stays.
+        "cycle_capacity": 0,
         # WS-PKG PKG-4: the org install and the group install she made.
         "shared_app_installs": 2,
         # WS-PKG PKG-4: her private install of the app she shared with Ravi.
@@ -1247,6 +1249,7 @@ def test_every_person_keyed_cascade_child_is_reported_on_one_side_or_other(
 _PURGED_THROUGH_THE_REGISTRY = {
     "integration_connections": "sources.purge_member_sources (store.delete)",
     "kb_sources": "the cascade of that delete (migration 300)",
+    "calendar_task_links": "the cascade of that delete (migration 426, CE-13)",
 }
 
 

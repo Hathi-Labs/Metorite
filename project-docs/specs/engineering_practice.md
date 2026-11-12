@@ -203,6 +203,20 @@ affect (tier 1 of `specs/ci_velocity.md` §4, D176). The full suite runs on
 A slice with nothing to see skips the preview. Docs, tests, a script and a
 refactor with no change in behaviour go straight to step 4.
 
+**Small screen change (D200).** A small, low-risk change on an existing screen
+skips the wait for approval. The slice is LOW or STANDARD, and it is one field,
+one control, one line of text or a layout fix, or its whole change sits behind
+a flag that is off. It still needs the captures, the verifier and the full
+gates. After the merge, ask the owner "Looks right" or "Change it" on the task.
+D200 lists the cases that do not qualify. When in doubt, preview first.
+
+**A slice behind a flag that is off (D218, 2026-11-12).** It merges on green
+with its captures and the `Visual review:` line, and does not wait here. After
+the merge, ask the owner "Approve the flag flip" or "Change it" on the task.
+The flag flips only after Approve. A new page, screen, navigation entry or flow
+with no flag still waits for the preview before the merge. A HIGH slice keeps
+its full loop (D218, `ci_velocity.md` §8).
+
 **3. The owner answers.**
 
 - **Approve:** go to step 4.
@@ -210,13 +224,18 @@ refactor with no change in behaviour go straight to step 4.
 - **No answer in this session:** leave the PR as a draft and the question
   open. The next session finds the answer in `my_work` as `run_answered`.
 
-**4. The local staging gate (LD-9).** Run `bash scripts/stage_local.sh` in the
-worktree. The independent verifier, and the reviewer by tier, run beside it.
-The gate tests the merge of the branch with today's `origin/main`, not the
-branch alone. It runs four steps:
+**4. The gate (D218).** GitHub `pr-check` is the gate for every slice.
+`bash scripts/ci_local.sh` is optional: run it when GitHub is down, or for an
+early signal. Push when the verifier passes, not after each commit.
 
-1. The full pr-check suite on a local CI lane (`scripts/ci_local.sh`). The
-   home server runs it first.
+**The local staging gate (LD-9)** runs only for a slice that adds a migration
+or changes the build path. Run `bash scripts/stage_local.sh` in the worktree.
+The independent verifier, and the reviewer by tier, run beside it. The gate
+tests the merge of the branch with today's `origin/main`, not the branch
+alone. It runs four steps:
+
+1. The full pr-check suite on a local CI lane (`scripts/ci_local.sh`). It is
+   optional when `pr-check` already passed on the same head.
 2. The production build: `next build` and `next start`, and the gateway with
    no reload, as `acb_app` under FORCE RLS.
 3. The migration rehearsal. It restores last night's reduced copy at
@@ -230,9 +249,9 @@ commit, with a summary of the run. A failure posts `failure` and names the
 step. Fence: `tests/unit/test_stage_local.py` (LD-9).
 
 **5. Merge.** Run `bash scripts/premerge.sh > <log> 2>&1 && gh pr merge <n>
---squash`. From LD-10, `premerge.sh` refuses a head commit with no
-`local-staging` pass. A new commit on the branch needs a new pass. LD-10 names
-its fence.
+--squash`. From LD-10, `premerge.sh` refuses a migration or build-path slice
+whose head commit has no `local-staging` pass. A new commit on the branch needs
+a new pass. LD-10 names its fence.
 
 **6. Production, three times a day (D194).** Each release slot, at 05:30,
 13:30 and 21:30 UTC, ships the tip of `main` (§2 and
@@ -243,7 +262,7 @@ confirm `/version` `applied_sha`. The home box's timer starts each release
 (D178). An agent never sets `nightly=true` by hand.
 
 **Until LD-8 to LD-10 land.** The preview runs on the demo seed. The gate is
-`bash scripts/ci_local.sh`, and then `premerge.sh`. Name the steps that ran in
+GitHub `pr-check`, and then `premerge.sh` (D218). Name the steps that ran in
 the PR body.
 
 **Steps 1 to 3 are advisory (R7).** No test makes a skipped preview fail. The
@@ -482,7 +501,9 @@ three distinct symptoms, one cause.
 
 **Cap work in flight.** The constraint is not agent capacity; it is integration
 bandwidth, and that is one person. Three or four open branches is the ceiling. A
-queue of six (2026-08-09) is above it.
+queue of six (2026-08-09) is above it. More machines do not raise this cap.
+`docs/dev_capacity.md` sizes lanes, sub-agents and CI to the machines that we
+have, inside this cap.
 
 **The supervisor loop:** audit the spec (is it dispatchable?) → set the risk
 tier → implement one narrowed slice → **independently** verify against the
@@ -643,8 +664,10 @@ fence goes into one list in the PR that adds it. If you are not sure, choose
 **Before you push.** `bash scripts/prepush.sh` runs the fences and the
 affected tests in a few minutes.
 
-**The whole suite, on the home server or this PC.** `bash scripts/ci_local.sh`
-runs every pr-check job on a preset machine. The machine is preset, so a run
+**The whole suite, on the home server or this PC.** GitHub `pr-check` is the
+gate (D218), so this run is optional. Use it when GitHub is down, or for an
+early signal. `bash scripts/ci_local.sh` runs every pr-check job on a preset
+machine. The machine is preset, so a run
 spends its time on tests, not on installs. The jobs come from
 `.github/workflows/pr-check.yml` through `scripts/ci_pc/steps.py`, so the two
 cannot drift.

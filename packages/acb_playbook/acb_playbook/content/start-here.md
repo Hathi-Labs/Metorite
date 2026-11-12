@@ -1,6 +1,6 @@
 ---
 slug: start-here
-version: 3
+version: 5
 title: "Start here: agent teams in plain words"
 summary: What the words mean, how a week of work goes, and how to start. For people who are new to agents, and for the agents that help them.
 audience: both
@@ -53,11 +53,14 @@ The solid lines show what belongs to what. The dotted line says that one job mus
 | 🏆 **Goal** | The result that all the work is for. One sentence, and a way to know that you got there. | The cup at the end of the season. | Coming. Until then, write the goal in the description of each epic. |
 | 📦 **Epic** | One big part of the goal. A person can accept it as a whole. | One chapter of a book. | Built. A person chooses the type on the task, or uses "Make it an epic". An agent can also set it. |
 | 🧩 **Slice** | One small job. One agent finishes it in one go, and a person checks it in 15 to 30 minutes. | One bag of bricks with its own instructions. | Built, as a subtask of the epic. |
+| 🪜 **Rung** | One step of the plan that ends in a demo. A person sees and uses the result. Rung 1 is the smallest path that works end to end. The foundation rides with the rung that needs it. | One step of a ladder. | Built, as the tag `Rung N` on a slice. |
+| 🎬 **Demo task** | The task that ends a rung. Its title is `<area> · Rung N demo · <what a person can do>` and its tag is `Demo`. Its description is the demo script. Each slice of the rung blocks it. | The show at the end of a school term. | Built, as a normal task with `blocks` links. |
+| 🚨 **Rung 0** | Urgent safety work: a leak, data loss, a broken live feature or an owner gate with a date. It goes before every rung and has no demo task. | The fire drill. It comes before the lesson. | Built, as the tag `Rung 0`. |
 | 🗒️ **Task** | Any card on the board. A slice is a task. | A sticky note on the fridge. | Built. |
 | 🧾 **Brief** | The instructions in a slice: what to make, what not to touch, and how to check it. | A recipe card. | Built, as the text of the task. |
 | ⛓️ **Blocks** | A link that says: this job must be done before that job can start. | You bake the cake before you put the icing on. | Built. A person sets it in the app, and an agent sets it with `add_task_link`. `my_work` does not offer the waiting job. Nothing refuses a claim of it. |
-| ✅ **Ready** | A slice is ready when every job that blocks it is done. | The cake is out of the oven, so the icing can start. | Partly built. `my_work` skips a job that an open job blocks. A list of every ready job, in order, is coming. |
-| 🎯 **Critical path** | The longest chain of jobs that must happen one after another. It sets the earliest finish. | The longest line of dominoes. | Coming. Today you work it out by hand. |
+| ✅ **Ready** | A slice is ready when every job that blocks it is done. | The cake is out of the oven, so the icing can start. | Built. `get_plan` lists every ready job and the next one to start. `my_work` skips a job that an open job blocks. |
+| 🎯 **Critical path** | The longest chain of jobs that must happen one after another. It sets the earliest finish. | The longest line of dominoes. | Built. An agent reads it with `get_plan`. |
 
 ### Words about the team
 
@@ -189,9 +192,9 @@ flowchart LR
 | Part | Built today | Coming |
 |---|---|---|
 | The board | Tasks, subtasks, statuses, assignees, due dates, estimates, comments | — |
-| Epics | An Epic type. A person sets the type on the task or uses "Make it an epic". An agent can also set it. Each epic counts its direct subtasks. | An epic contract: the outcome and the checks. A count over every level. An epic page. |
+| Epics | An Epic type. A person sets the type on the task or uses "Make it an epic". An agent can also set it. Each epic counts every slice below it that you can see, and shows the estimate done and total. It lists the questions that wait on a person, and counts the tasks hidden from you. `get_task` gives this as `rollup`. | An epic contract: the outcome and the checks. Spend against an appetite, a forecast and health. An epic page. |
 | Goals | — | A Goal above the epics |
-| The order of work | "Blocks" links, set by a person in the app or by an agent with `add_task_link`. `my_work` skips a blocked task | Metorite works out what is ready, the waves and the critical path. |
+| The order of work | "Blocks" links, set by a person in the app or by an agent with `add_task_link`. `get_plan` gives what is ready, the waves, the critical path and one finish date. `my_work` skips a blocked task | A forecast with a range. |
 | Planning | An agent plans with you and asks at each gate | The same three gates in the Metorite chat |
 | Cycles | Due dates, and a review that you run each week | A cycle with its capacity, a close and a look back |
 | Agents at work | Connection, claim, heartbeat, questions, runs, the setup text | Agents take the ready jobs in critical-path order, inside the limits |

@@ -48,6 +48,16 @@ EXAMPLE_NAMES: frozenset[str] = frozenset(
         "NOTES.md",
         "SCRIPTS.md",
         "PLAYBOOK.md",
+        # Specs that an epic writes in its first slice (INDEX.md section PLANNED, D205). Delete each name when its file lands.
+        "whatsapp_bots.md",
+        "knowledge_shared.md",
+        "crm_complete.md",
+        "crm_connectors.md",
+        "app_marketplace.md",
+        "operations_apps.md",
+        "AGENTS.override.md",
+        # A file inside the downloaded agent kit zip (KIT-4), not a file of this repo.
+        "METORITE_KIT.md",
         # Example file names inside a spec's worked examples and mockups.
         "notes.md",
         "q3_summary.md",

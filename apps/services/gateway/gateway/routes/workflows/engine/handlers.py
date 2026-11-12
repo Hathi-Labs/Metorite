@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from gateway.module_runs import ModuleRunsOff
 from gateway.routes.workflows.engine.modules import run_module_code
 from gateway.routes.workflows.engine.templating import resolve_value
 
@@ -39,8 +40,10 @@ NODE_TIMEOUTS: dict[str, float] = {
     # An internal DB write — nothing here crosses the network.
     "pm_task": 30.0,
     # The lifecycle sweep walks every root project with a policy (WS-27z).
-    # Internal DB work like pm_task, but N projects × M stale tasks of it.
+    # Internal DB work like pm_task, but N projects x M stale tasks of it.
     "pm_lifecycle": 300.0,
+    # One Studio record write in one transaction (STU-B2c-2d).
+    "studio_write": 30.0,
 }
 DEFAULT_NODE_TIMEOUT = 60.0
 
@@ -80,9 +83,21 @@ class NodeServices:
     #: sweeps differently from what each project's settings say. The wiring
     #: binds the workflow's identity, same as ``update_task``.
     run_lifecycle_sweep: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    #: ``studio_write(node_id, config)`` → what the write did (STU-B2c-2d).
+    #: The wiring (``service._studio_writer``) binds the run, its org, its
+    #: kind and its parked decision. The engine passes the node id and the
+    #: literal config only, so no node input names an org or a member.
+    studio_write: Callable[
+        [str, dict[str, Any]], Awaitable[dict[str, Any]]
+    ] | None = None
     actor: str = "workflow"
     #: Extra context merged into agent messages' metadata (reserved).
     context: dict[str, Any] = field(default_factory=dict)
+    #: The org of the RUN (``service.build_node_services``), never of node
+    #: input. The module node passes it to ``run_module_code``, whose switch
+    #: refuses an org off ``MODULE_RUN_ORGS``. ``None`` (a run with no org, or
+    #: a stub) is always refused (STU-Q15a).
+    organization_id: str | None = None
 
 
 # ── Condition evaluation (no eval(), a closed operator set) ─────────────────
@@ -179,13 +194,7 @@ async def execute_node(
         return await services.run_tool(action, args, services.actor)
 
     if ntype == "module":
-        module_id = str(config.get("module_id") or "").strip()
-        raw_inputs = config.get("inputs") if isinstance(config.get("inputs"), dict) else {}
-        inputs = resolve_value(raw_inputs, state)
-        code = await services.get_module_code(module_id)
-        if not code:
-            raise NodeExecutionError("module not found or not ready")
-        return await run_module_code(code, inputs)
+        return await _execute_module(config, state, services)
 
     if ntype == "condition":
         left = resolve_value(config.get("left"), state)
@@ -212,22 +221,42 @@ async def execute_node(
             await asyncio.sleep(seconds)
         return {"waited_seconds": seconds}
 
-    if ntype == "pm_task":
-        return await _execute_pm_task(config, state, services)
-
-    if ntype == "pm_lifecycle":
-        # Config-free by design (WS-27z): the node is an instruction to apply
-        # whatever each root project's stored policy says, so there is nothing
-        # to resolve and nothing a graph could override.
-        if services.run_lifecycle_sweep is None:
-            raise NodeExecutionError("the Projects app is not available")
-        return await services.run_lifecycle_sweep()
+    internal = _INTERNAL_HANDLERS.get(ntype)
+    if internal is not None:
+        # The nodes that act on an internal app: Projects and Studio.
+        return await internal(block, state, services)
 
     if ntype == "output":
         value = resolve_value(config.get("value"), state)
         return {"value": value}
 
     raise NodeExecutionError(f"unknown node type '{ntype}'")
+
+
+async def _execute_module(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    services: NodeServices,
+) -> dict[str, Any]:
+    """The module node: read the module of the run's org, then run it.
+
+    A function of its own, as ``_execute_set`` is: ``execute_node`` sits at
+    the complexity ceiling. ``run_module_code`` takes the org of the RUN
+    (``services.organization_id``) and refuses an org off
+    ``MODULE_RUN_ORGS`` before it spawns anything (STU-Q15a). The refusal
+    fails this node with the member's words, so the run ends as a failed run
+    and never hangs.
+    """
+    module_id = str(config.get("module_id") or "").strip()
+    raw_inputs = config.get("inputs") if isinstance(config.get("inputs"), dict) else {}
+    inputs = resolve_value(raw_inputs, state)
+    code = await services.get_module_code(module_id)
+    if not code:
+        raise NodeExecutionError("module not found or not ready")
+    try:
+        return await run_module_code(code, inputs, organization_id=services.organization_id)
+    except ModuleRunsOff as exc:
+        raise NodeExecutionError(exc.message) from None
 
 
 def _execute_set(config: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
@@ -277,3 +306,42 @@ async def _execute_pm_task(
     if not isinstance(fields, dict) or not fields:
         raise NodeExecutionError("task node needs at least one field to set")
     return await services.update_task(task_id, fields)
+
+
+async def _execute_pm_task_block(
+    block: dict[str, Any], state: dict[str, Any], services: NodeServices,
+) -> dict[str, Any]:
+    return await _execute_pm_task(block.get("config") or {}, state, services)
+
+
+async def _execute_pm_lifecycle(
+    block: dict[str, Any], state: dict[str, Any], services: NodeServices,
+) -> dict[str, Any]:
+    """Config-free by design (WS-27z): the node is an instruction to apply
+    whatever each root project's stored policy says, so there is nothing to
+    resolve and nothing a graph could override."""
+    if services.run_lifecycle_sweep is None:
+        raise NodeExecutionError("the Projects app is not available")
+    return await services.run_lifecycle_sweep()
+
+
+async def _execute_studio_write(
+    block: dict[str, Any], state: dict[str, Any], services: NodeServices,
+) -> dict[str, Any]:
+    """The Studio write node (STU-B2c-2d). Its config is literal, so nothing
+    resolves here. The seam decides whether the write may run at all."""
+    if services.studio_write is None:
+        raise NodeExecutionError("a Studio write cannot run in this run")
+    config = block.get("config") if isinstance(block.get("config"), dict) else {}
+    return await services.studio_write(str(block.get("id") or ""), dict(config))
+
+
+#: The handlers of the nodes that act on an internal app. One table keeps
+#: ``execute_node`` under the complexity ceiling as the set grows.
+_INTERNAL_HANDLERS: dict[
+    str, Callable[[dict[str, Any], dict[str, Any], NodeServices], Awaitable[dict[str, Any]]]
+] = {
+    "pm_task": _execute_pm_task_block,
+    "pm_lifecycle": _execute_pm_lifecycle,
+    "studio_write": _execute_studio_write,
+}

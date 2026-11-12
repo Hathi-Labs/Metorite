@@ -3,6 +3,11 @@
 Test runs of the unpublished draft compile on the fly (``draft: true``) so the
 editor's "Test ▸" loop needs no publish; real triggers always execute the
 published version.
+
+A test run of the draft is authoring, so it also needs ``feature:studio``
+where ``WORKFLOW_STUDIO_GATE_ORGS`` holds the org (STU-J1-3,
+``core.check_author``). A run of the published version is use, and the router
+gate alone decides it (owner rule 1, task 1818).
 """
 
 from __future__ import annotations
@@ -14,10 +19,12 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from gateway.routes.workflows import unattended
 from gateway.routes.workflows.core import (
     MAX_RUNS_PAGE,
     _tenant_session,
     _uid,
+    check_author,
     iso,
     load_workflow_or_404,
     parse_jsonb,
@@ -28,7 +35,10 @@ from gateway.routes.workflows.engine.graph import (
     compile_graph,
 )
 from gateway.routes.workflows.service import (
+    _MEMBER_BLIND_REASON,
     RunRejected,
+    _long_wait_nodes,
+    _member_blind_write_nodes,
     hub_for,
     load_version_serialized,
     start_run,
@@ -48,6 +58,9 @@ async def run_workflow(
     body: RunRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
+    if body.draft:
+        # Before the session: a refused caller learns nothing of the workflow.
+        await check_author(user)
     async with _tenant_session() as db:
         row = await load_workflow_or_404(db, workflow_id)
         if body.draft:
@@ -85,8 +98,31 @@ async def run_workflow(
                 raise HTTPException(status_code=500, detail="Published version missing")
         variables = parse_jsonb(row.variables, {})
         name = row.name
-    # The session is closed before `start_run`: the run acquires its own
-    # (unbound, H4) sessions and outlives this request's transaction.
+        # H-328 part (c): the org of the ROW that the member read in the
+        # member's own tenant. Never the payload, and never a second read of
+        # the ambient tenant. A person pressed Run, so no list gates it.
+        org = str(row.organization_id)
+    if _member_blind_write_nodes(serialized):
+        # A task node writes `pm_tasks` with no member check, and the spec
+        # does not say yet which member a run checks. So the door refuses, as
+        # the agent door does (`service.run_published_workflow`).
+        raise HTTPException(
+            status_code=409,
+            detail=f"This workflow can change Projects tasks, so it cannot run "
+            f"yet. {_MEMBER_BLIND_REASON} Nothing ran.",
+        )
+    long_waits = _long_wait_nodes(serialized)
+    if long_waits and not unattended.org_allowed(org):
+        # Only the wait scan resumes such a pause, and it acts only for a
+        # listed org. So the run could stay paused for good.
+        raise HTTPException(
+            status_code=409,
+            detail=f"This workflow has a wait node that can pause the run "
+            f"({', '.join(long_waits)}). Nothing can resume that pause for this "
+            "organization yet, so it cannot run. Nothing ran.",
+        )
+    # The session is closed before `start_run`: the run opens its own
+    # sessions in `org` and outlives this request's transaction.
     try:
         run_id = await start_run(
             workflow_id=workflow_id,
@@ -97,6 +133,7 @@ async def run_workflow(
             trigger_payload=body.payload,
             variables=variables,
             started_by=_uid(user),
+            organization_id=org,
         )
     except RunRejected as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc

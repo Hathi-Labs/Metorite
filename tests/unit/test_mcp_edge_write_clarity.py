@@ -36,6 +36,7 @@ Run::
 * C7. ``gateway_client.py``: ``_retry_after`` returns None. ``test_a_busy_answer_passes_on_its_retry_after``.
 * C8. ``tools.py``: ``Tool.describe`` drops the limit line. ``test_every_write_tool_carries_the_limit_line_once``.
 * C9. ``WRITE_CAP`` or ``WRITE_WINDOW_S`` changes. ``test_the_limit_text_is_pinned``.
+* C10. MCP-G20: ``write_limit_line`` names the constants and not the settings. ``test_the_limit_text_follows_the_settings``.
 """
 from __future__ import annotations
 
@@ -51,6 +52,7 @@ import pytest
 pytest.importorskip("sqlalchemy")
 
 from acb_auth import agent_oauth, agent_signing, deps
+from acb_common import get_settings
 from agent_edge import gateway_client, mcp, tools
 from fastapi import HTTPException
 
@@ -287,7 +289,8 @@ class TestTheCapAnswersWithAWait:
 
     async def test_a_burst_past_the_limit_holds_retry_after_and_a_wait_clears_it(
             self, edge, redis_fake, monkeypatch):
-        monkeypatch.setattr(agent_oauth, "WRITE_CAP", 4)
+        # MCP-G20: the cap is the setting, read by branch 0 at each write.
+        monkeypatch.setattr(get_settings(), "agent_write_cap", 4)
         with gateway_client.use_transport(httpx.ASGITransport(app=_CapGateway(edge.gateway))):
             for n in range(4):
                 ok = await _tool("update_task", _update_args(title=f"burst {n}"))
@@ -347,12 +350,34 @@ class TestTheLimitLine:
     instructions."""
 
     def test_the_limit_text_is_pinned(self):
+        # MCP-G20: the constants are the defaults of the two settings, and the
+        # line names the LIVE values. With the defaults the text is the same.
         assert (agent_oauth.WRITE_CAP, agent_oauth.WRITE_WINDOW_S) == (120, 600)
-        assert tools.WRITE_LIMIT_LINE == (
+        assert (agent_oauth.write_cap(), agent_oauth.write_window_s()) == (120, 600)
+        assert tools.write_limit_line() == (
             " Limit: a connection makes at most 120 changes in 10 minutes, counted"
             " from its first change. Past it, a refusal holds retry_after, the"
             " seconds to wait.")
-        assert len(tools.WRITE_LIMIT_LINE) < 200
+        assert len(tools.write_limit_line()) < 200
+
+    def test_the_limit_text_follows_the_settings(self, monkeypatch):
+        """MCP-G20. The owner sets ``AGENT_WRITE_CAP`` and
+        ``AGENT_WRITE_WINDOW_S``, and the text names the new numbers."""
+        settings = get_settings()
+        monkeypatch.setattr(settings, "agent_write_cap", 300)
+        monkeypatch.setattr(settings, "agent_write_window_s", 900)
+        assert tools.write_limit_line().startswith(
+            " Limit: a connection makes at most 300 changes in 15 minutes,")
+        monkeypatch.setattr(settings, "agent_write_window_s", 90)
+        assert " in 90 seconds," in tools.write_limit_line()
+        assert " 300 changes in 90 seconds," in tools.UPDATE_TASK.describe()["description"]
+
+    @pytest.mark.parametrize("value", [0, -5])
+    def test_a_value_below_one_reads_as_the_default(self, monkeypatch, value):
+        settings = get_settings()
+        monkeypatch.setattr(settings, "agent_write_cap", value)
+        monkeypatch.setattr(settings, "agent_write_window_s", value)
+        assert (agent_oauth.write_cap(), agent_oauth.write_window_s()) == (120, 600)
 
     async def test_every_write_tool_carries_the_limit_line_once(self, edge):
         listed = [tool.describe() for tool in tools.TOOLS.values()]
@@ -360,7 +385,7 @@ class TestTheLimitLine:
         assert {"update_task", "create_task", "add_comment", "set_task_status"} <= writes
         seen = {tool["name"]: tool["description"] for tool in listed}
         for name in writes & seen.keys():
-            assert seen[name].count(tools.WRITE_LIMIT_LINE) == 1, name
+            assert seen[name].count(tools.write_limit_line()) == 1, name
         for name in set(seen) - writes:
             assert "Limit: a connection makes" not in seen[name], name
 

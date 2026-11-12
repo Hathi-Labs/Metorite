@@ -52,6 +52,7 @@ from acb_common.studio_fields import (
     NAME_PATTERN,
     FieldError,
     FieldSpec,
+    lines_problem,
     parse_field_spec,
     validate_field_spec,
 )
@@ -183,12 +184,15 @@ class UsesRef:
 
     ``source`` is ``object``, ``manifest`` (an ``<app>.<op>`` door op),
     ``integration`` or ``workflow``, the source names of the B1 catalog.
-    ``object`` and ``op`` are set for an ``object:`` value only.
+    ``object`` and ``op`` are set for an ``object:`` value. ``app`` and
+    ``op`` are set for a door op (STU-B2b-2b): ``op`` then holds the door op
+    name of that app. An integration and a workflow set none of them.
     """
 
     source: Literal["object", "manifest", "integration", "workflow"]
     object: str | None = None
     op: str | None = None
+    app: str | None = None
 
 
 def parse_uses(uses: object) -> UsesRef | None:
@@ -204,7 +208,7 @@ def parse_uses(uses: object) -> UsesRef | None:
         return UsesRef(source="integration")
     if m.group("wf"):
         return UsesRef(source="workflow")
-    return UsesRef(source="manifest")
+    return UsesRef(source="manifest", app=m.group("app"), op=m.group("appop"))
 
 
 # --- the schema ------------------------------------------------------------
@@ -226,6 +230,15 @@ class FieldDef(_Strict):
     to: str | None = None
     #: The field gets a row in the index side table of C1 (`studio_record_hot`).
     hot: bool = False
+    #: C14. The bounds of a `rating`, the units of a `quantity` and the format of a
+    #: `barcode`. `studio_fields._check_extras` holds the rules of each.
+    min: int | None = None
+    max: int | None = None
+    units: list[str] | None = None
+    format: str | None = None
+    #: C13. A lines relation: the field of the object `to` that names this one.
+    #: `studio_fields.lines_problem` holds the rule of the object it names.
+    lines: str | None = None
 
 
 class ObjectDef(_Strict):
@@ -779,6 +792,41 @@ def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[Manifest
                 tail = "" if problem.got is None else _got(problem.got)
                 out.append(_err(f"{base}[{fi}].{problem.path}", problem.message + tail))
         _check_rules(o, f"$.objects[{oi}].rules", out, m.objects)
+    _check_lines(m, out)
+
+
+def _parsed_fields(o: ObjectDef) -> list[FieldSpec] | None:
+    """The fields of *o*, or None when one does not parse. Its own refusal is
+    in the list already."""
+    try:
+        return [parse_field_spec(f.model_dump()) for f in o.fields]
+    except FieldError:
+        return None
+
+
+def _check_lines(m: Manifest, out: list[ManifestError]) -> None:
+    """Each lines relation (C13) names an object of this app whose field points
+    back, and each object is the lines of one parent at most. The rule is
+    `studio_fields.lines_problem`, which the store runs too."""
+    parsed = {o.name: _parsed_fields(o) for o in m.objects}
+    owners: dict[str, str] = {}
+    for oi, o in enumerate(m.objects):
+        for fi, f in enumerate(o.fields):
+            if f.lines is None or f.type != "relation" or not isinstance(f.to, str):
+                continue
+            path = f"$.objects[{oi}].fields[{fi}].lines"
+            spec = next((s for s in parsed[o.name] or () if s.key == f.key), None)
+            if spec is None or spec.lines is None or (f.to in parsed and parsed[f.to] is None):
+                continue  # a field refusal is in the list already
+            problem = lines_problem(o.name, spec, f.to if f.to in parsed else None,
+                                    parsed.get(f.to))
+            if problem is None and f.to in owners:
+                problem = (f"`{f.to}` is the lines of `{owners[f.to]}` already. "
+                           "An object is the lines of one parent.")
+            if problem is not None:
+                out.append(_err(path, problem))
+            else:
+                owners[f.to] = o.name
 
 
 def _rollup_sources(others: Sequence[ObjectDef], own: str) -> dict[str, RollupSource]:
@@ -919,6 +967,9 @@ def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[Man
         _check_view_source(vi, v, uses_by_id, catalog, out)
     _check_pages(m, {v.id for v in m.views}, out)
     _check_links(m, objects, catalog, out)
+    if m.extends is not None and m.extends == m.id:
+        out.append(_err("$.extends", "A package cannot extend itself. Name the host package."
+                        + _got(m.extends)))
     return out
 
 

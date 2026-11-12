@@ -103,7 +103,8 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
     assert sf.pack_slugs() == (
         "email", "email-setup", "crm-records",
         "projects", "projects-plan", "projects-structure", "projects-bulk",
-        "projects-reminders", "projects-reports", "projects-authority", "calendar-day", "studio",
+        "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
+        "projects-cycles", "studio",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -273,7 +274,8 @@ PRODUCTION_TOOL_PACKS = (
     "email,email-setup,crm-records,projects,projects-plan,projects-structure,"
     "projects-bulk,projects-reminders")
 #: The packs of ``tool_packs.FOLLOWS``: each is on wherever its parent is on.
-FOLLOWERS = frozenset({"projects-reports", "projects-authority", "calendar-day"})
+FOLLOWERS = frozenset({"projects-reports", "projects-authority", "projects-cycles",
+                       "calendar-day"})
 
 
 def test_a_following_pack_is_on_wherever_its_parent_is_on(_flag) -> None:
@@ -317,6 +319,7 @@ def test_each_following_pack_has_a_parent_of_its_own_owner() -> None:
     Mutation: name a slug that is no pack, or a pack of another owner -> red."""
     assert tp.FOLLOWS == {"projects-reports": "projects-plan",
                           "projects-authority": "projects",
+                          "projects-cycles": "projects",  # WS-39 SP-5a
                           "calendar-day": "projects"}
     assert set(tp.FOLLOWS) == FOLLOWERS
     for follower, parent in tp.FOLLOWS.items():
@@ -332,7 +335,8 @@ def test_with_followers_adds_each_following_pack_of_a_parent_and_nothing_else() 
     the slugs as they are -> a disabled parent leaves its following pack on
     -> red."""
     assert tp.with_followers({"projects-plan"}) == {"projects-plan", "projects-reports"}
-    assert tp.with_followers({"projects"}) == {"projects", "projects-authority", "calendar-day"}
+    assert tp.with_followers({"projects"}) == {
+        "projects", "projects-authority", "projects-cycles", "calendar-day"}
     assert tp.with_followers({"projects-reports"}) == {"projects-reports"}
     assert tp.with_followers({"email", "memory"}) == {"email", "memory"}
     assert tp.with_followers(()) == frozenset()
@@ -653,13 +657,13 @@ def test_no_crm_pack_tool_takes_an_organization_or_a_member_argument() -> None:
 
 STUDIO = "studio-builder"
 STUDIO_DIR = "apps/agents/agent-studio-builder"
-#: The eight read-only tools, the three skill tools (STU-F2d), the two
-#: package tools (STU-G1c), the two record reads (STU-D2b), then the three
-#: record writes (STU-B2c-2b).
+#: The eight read-only tools, the three skill tools (STU-F2d), the three
+#: package tools (STU-G1c save and publish, STU-A5c-2 delete), the two record
+#: reads (STU-D2b), then the three record writes (STU-B2c-2b).
 STUDIO_TOOLS = ("studio_describe", "studio_draft", "studio_interview",
                 "studio_list_actions", "studio_outline", "studio_patch", "studio_plan",
                 "studio_validate", "studio_skill_list", "studio_skill_save",
-                "studio_skill_state", "studio_save", "studio_publish",
+                "studio_skill_state", "studio_save", "studio_publish", "studio_delete_package",
                 "studio_package_get", "studio_record_list", "studio_record_create",
                 "studio_record_update", "studio_record_delete")
 #: The five record tools: the two reads, then the three writes.
@@ -678,7 +682,7 @@ def test_the_studio_family_equals_the_owners_own_tool_scope_and_fits_the_cap() -
     assert family["owner"] == STUDIO and sf.is_pack("studio") and family["core"] is False
     assert tuple(family["tools"]) == STUDIO_TOOLS
     assert set(family["tools"]) == _studio_scope()
-    assert len(family["tools"]) == 18 <= tp.MAX_PACK_TOOLS == 35
+    assert len(family["tools"]) == 19 <= tp.MAX_PACK_TOOLS == 35
 
 
 def test_the_studio_owner_is_in_no_registry_list() -> None:
@@ -727,7 +731,7 @@ def test_the_pack_loader_finds_the_owner_in_the_owner_list() -> None:
     assert tuple(tool_name(fn) for fn in tp.owner_tools("studio", module)) == STUDIO_TOOLS
 
 
-def test_the_built_studio_pack_is_the_eighteen_tools_as_coroutines() -> None:
+def test_the_built_studio_pack_is_the_nineteen_tools_as_coroutines() -> None:
     import inspect
 
     tools = tp.owner_tools("studio", load_agent_module(STUDIO_DIR))
@@ -885,9 +889,14 @@ def test_the_studio_rules_tell_the_dark_and_the_lit_record_writes() -> None:
         "studio_record_create adds a record, studio_record_update changes one, and "
         "studio_record_delete deletes one.",
         "each asks the member first. The first call saves nothing.",
-        "the member approves or declines the change in Integrations, AI agents, Waiting for you.",
-        "call the same tool again with the same package id, the same object name and that "
-        "request_id. Send no data again",
+        # STU-B2c-2c fix round 1: the card of the web chat first, the list of
+        # Integrations in a channel with no card, and the resend by the id alone.
+        "In the web chat, the approval card shows under your reply, so ask the member to "
+        "answer it there.",
+        "In a channel with no card, the member approves or declines the change in "
+        "Integrations, AI agents, Waiting for you.",
+        "call the same tool again with only that request_id. Send no package id, no object "
+        "name and no data again",
         "Only a result with saved true is saved. Never say that a change is saved before that.",
         "A declined change wrote nothing. Say so.",
     )
@@ -897,6 +906,27 @@ def test_the_studio_rules_tell_the_dark_and_the_lit_record_writes() -> None:
         assert line in rules, line
     assert "No chat tool creates, changes or deletes a record" not in rules
     assert "change the records of a package" in tp.PACKS["studio"].when
+
+
+def test_the_studio_rules_tell_the_one_card_of_a_delete() -> None:
+    """STU-A5c-2. The delete always shows one card, only approved deletes, an
+    admin deletes the app of a member who left, and a result with remaining
+    asks for a new call. The delete is a write of the pack, and the record
+    filter does not take it out. Mutation: drop the DELETE AN APP bullet ->
+    red."""
+    from acb_skills import studio_tools as st
+
+    rules = " ".join(tp.PACKS["studio"].rules.split())
+    for line in ("DELETE AN APP. studio_delete_package deletes an app for good",
+                 "Send the package id only.",
+                 "It always shows one card with the counts, in every chat.",
+                 "Only approved deletes.",
+                 "An admin can delete the app of a member who left.",
+                 "When the result gives remaining, call it again. It shows a new card."):
+        assert line in rules, line
+    assert "studio_delete_package" not in st.STUDIO_RECORD_WRITES
+    assert st.studio_delete_package in st.STUDIO_PACKAGE_TOOLS
+    assert st.studio_delete_package.__tool_risk__["read_only"] is False
 
 
 # -- 8b. The studio pack needs the member's feature:studio (J1-1 fix round 1)

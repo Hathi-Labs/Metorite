@@ -1,9 +1,14 @@
 """Publish authority (spec workflows_app.md Q3, migration 133).
 
-Drafting and Test runs need only ``feature:workflows``; making a workflow LIVE
-— publish, rollback, disable — needs ``workflows:publish``. These tests pin
-the route gates declaratively (no Postgres, no HTTP client) plus the resolved
+Drafting and Test runs never need ``workflows:publish``; making a workflow
+LIVE — publish, rollback, disable, enable — needs it. These tests pin the
+route gates declaratively (no Postgres, no HTTP client) plus the resolved
 `capabilities` outcome the browser uses to grey out the button.
+
+STU-J1-3 adds ``feature:studio`` to the writes and to a test run of the draft,
+where ``WORKFLOW_STUDIO_GATE_ORGS`` holds the org. That gate and the class of
+each route are pinned in ``test_workflows_author_gate.py``. This file pins
+the publish verb only.
 """
 
 from __future__ import annotations
@@ -24,8 +29,9 @@ LIVE_ROUTES = {
     "/workflows/{workflow_id}/enable",
 }
 
-#: Authoring routes that must stay open to any member holding the feature —
-#: a draft fires no triggers and its writes are still broker-held.
+#: Authoring routes that must never need the publish verb — a draft fires no
+#: triggers and its writes are still broker-held. (STU-J1-3 gates the writes
+#: on `feature:studio` instead, behind its flag: test_workflows_author_gate.py.)
 DRAFTING_ROUTES = {
     "/workflows/{workflow_id}/validate",
     "/workflows/{workflow_id}/run",
@@ -80,7 +86,7 @@ def test_publish_route_gate_rejects_a_member_without_the_permission() -> None:
     publisher = build_access(["feature:workflows", PUBLISH_PERMISSION], roles=["manager"])
     owner = build_access(["*"], roles=["owner"])
 
-    assert drafter.can_use_feature("workflows")  # can still build + test
+    assert drafter.can_use_feature("workflows")  # reads, and builds where J1-3 is off
     assert not drafter.has(PUBLISH_PERMISSION)
     assert publisher.has(PUBLISH_PERMISSION)
     assert owner.has(PUBLISH_PERMISSION)  # "*" covers it — no literal grant

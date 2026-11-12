@@ -45,6 +45,15 @@ rules. :data:`RULE_KINDS` is the closed list of kinds.
   (:meth:`Rule.source_keys`), and the store keeps them hot.
   :func:`check_rollups` checks a declaration against the source, and
   :func:`rollup_parents` and :func:`rollup_result` serve the recompute.
+* ``hierarchy`` (C18): ``{field}``. The records of one object make a tree. Each
+  record names its parent in the hot, single relation field *field*, whose
+  ``to`` is the bare name of this object. A record with no value is a root. The
+  store refuses a write that makes a cycle, a parent that is no record of this
+  object, and a tree of more than :data:`MAX_TREE_DEPTH` levels. A root is
+  level 1. An object holds one hierarchy. It reads no key, so
+  :func:`touched_keys` answers none for it. :func:`tree_moves` names the new
+  parent of one written record, and :func:`check_tree` judges the walk of the
+  store.
 
 **A key.** A ``unique`` field and a group field have a type of
 :data:`KEY_TYPES`. A checkbox has two states and a money value has a currency,
@@ -99,6 +108,9 @@ from acb_common.studio_query import MAX_IN_VALUES, OPS, OPS_BY_TYPE, QueryError,
 MAX_RULES_PER_OBJECT = 16
 #: The writes of one batch.
 MAX_WRITES_PER_BATCH = 50
+#: The lines of one save of a parent (C13). The parent and its lines are one
+#: batch, so the parent takes one write of it.
+MAX_LINES_PER_SAVE = MAX_WRITES_PER_BATCH - 1
 MAX_RULE_MESSAGE_CHARS = 200
 #: A ``group_sum_min`` groups by one or two fields.
 MAX_GROUP_FIELDS = 2
@@ -115,6 +127,8 @@ MAX_ROLLUP_WHERE = 2
 #: The parents that one batch recomputes, and the aggregate statements it runs.
 MAX_ROLLUP_PARENTS = 100
 MAX_ROLLUP_STATEMENTS = 100
+#: The levels of one tree of a ``hierarchy`` (C18). A root is level 1.
+MAX_TREE_DEPTH = 20
 
 #: The closed ops of a guard atom. All but ``not_empty`` are ops of C2a.
 GUARD_OPS: tuple[str, ...] = (
@@ -130,9 +144,14 @@ GROUP_SUM_MIN = "group_sum_min"
 STATE_MACHINE = "state_machine"
 FORMULA = "formula"
 ROLLUP = "rollup"
+HIERARCHY = "hierarchy"
 
 #: The closed list of kinds.
-RULE_KINDS: tuple[str, ...] = (RANGE, UNIQUE, GROUP_SUM_MIN, STATE_MACHINE, FORMULA, ROLLUP)
+RULE_KINDS: tuple[str, ...] = (
+    RANGE, UNIQUE, GROUP_SUM_MIN, STATE_MACHINE, FORMULA, ROLLUP, HIERARCHY)
+#: The codes of a write that a hierarchy refuses (C18).
+TREE_CYCLE = "tree_cycle"
+TREE_TOO_DEEP = "tree_too_deep"
 #: The aggregates of a roll-up.
 ROLLUP_AGGS: tuple[str, ...] = ("sum", "count", "min", "max")
 #: The field types that a roll-up reads, for each aggregate. ``count`` reads none.
@@ -166,6 +185,7 @@ _KIND_KEYS: Mapping[str, frozenset[str]] = {
     STATE_MACHINE: frozenset({"field", "initial", "moves"}),
     FORMULA: frozenset({"target", "expr", "scale", "rounding", "currency"}),
     ROLLUP: frozenset({"target", "source", "via", "agg", "field", "where", "currency"}),
+    HIERARCHY: frozenset({"field"}),
 }
 assert tuple(_KIND_KEYS) == RULE_KINDS, "each kind has its keys"
 
@@ -231,6 +251,17 @@ class RollupError(RuleViolation):
         super().__init__(rule, message)
         self.object = object_name
         self.code = code
+
+
+class TreeViolation(ConstraintViolation):
+    """A write that a hierarchy refuses (C18). ``code`` is :data:`TREE_CYCLE` or
+    :data:`TREE_TOO_DEEP`, and ``field`` is the key of the parent field. The
+    message never echoes a value."""
+
+    def __init__(self, rule: str, object_name: str, code: str, field: str, message: str) -> None:
+        super().__init__(rule, object_name, message)
+        self.code = code
+        self.field = field
 
 
 class MoveViolation(RuleViolation):
@@ -301,7 +332,7 @@ class Rule:
         out: dict[str, Any] = {"name": self.name, "kind": self.kind}
         if self.message is not None:
             out["message"] = self.message
-        if self.kind == RANGE:
+        if self.kind in (RANGE, HIERARCHY):
             out["field"] = self.field
         if self.kind == UNIQUE:
             out["fields"] = list(self.keys)
@@ -630,8 +661,13 @@ def _parse_rollup(rule: str, spec: Mapping[str, Any], message: str | None) -> Ru
                 source=source, via=via, agg=agg, where=_parse_where(rule, spec.get("where")))
 
 
+def _parse_hierarchy(rule: str, spec: Mapping[str, Any], message: str | None) -> Rule:
+    return Rule(rule, HIERARCHY, message, field=_key(rule, "field", spec.get("field")))
+
+
 _PARSERS = {RANGE: _parse_range, UNIQUE: _parse_unique, GROUP_SUM_MIN: _parse_group,
-            STATE_MACHINE: _parse_machine, FORMULA: _parse_formula, ROLLUP: _parse_rollup}
+            STATE_MACHINE: _parse_machine, FORMULA: _parse_formula, ROLLUP: _parse_rollup,
+            HIERARCHY: _parse_hierarchy}
 assert tuple(_PARSERS) == RULE_KINDS, "each kind has one parser"
 
 
@@ -677,6 +713,9 @@ def parse_rules(specs: Any) -> tuple[Rule, ...]:
                 raise ConstraintError(
                     rule.name, f"Rule `{rule.name}`: a field has one state machine.")
             machines.add(str(rule.field))
+    trees = [r for r in rules if r.kind == HIERARCHY]
+    if len(trees) > 1:
+        raise ConstraintError(trees[1].name, f"Rule `{trees[1].name}`: an object holds one hierarchy.")
     return rules
 
 
@@ -765,6 +804,21 @@ def _fit_machine(rule: Rule, by_key: Mapping[str, FieldSpec]) -> None:
             _fit_atom(rule, atom, by_key)
 
 
+def _fit_hierarchy(rule: Rule, by_key: Mapping[str, FieldSpec], object_name: str | None) -> None:
+    """The parent field of a hierarchy (C18): one hot relation field of this
+    object that points to this object, by its bare name."""
+    if object_name is None:
+        raise _refuse(rule, "a hierarchy is checked with the name of its object.")
+    field = by_key.get(str(rule.field))
+    if field is None:
+        raise _refuse(rule, f"`{rule.field}` is not a field of this object.")
+    if field.type != "relation" or field.many or field.lines is not None:
+        raise _refuse(rule, f"field `{field.key}` must be one relation field.")
+    if field.to != object_name:
+        raise _refuse(rule, f"field `{field.key}` must point to `{object_name}`, by its bare name.")
+    _hot(rule, field)
+
+
 def check_rules_fit(rules: Sequence[Rule], fields: Sequence[FieldSpec], *,
                     object_name: str | None = None,
                     sources: Mapping[str, RollupSource] | None = None) -> None:
@@ -789,6 +843,9 @@ def check_rules_fit(rules: Sequence[Rule], fields: Sequence[FieldSpec], *,
     for rule in rules:
         if rule.kind == STATE_MACHINE:
             _fit_machine(rule, by_key)
+            continue
+        if rule.kind == HIERARCHY:
+            _fit_hierarchy(rule, by_key, object_name)
             continue
         if rule.kind in (FORMULA, ROLLUP):
             continue
@@ -832,7 +889,7 @@ def _stored_rule(item: Any) -> Rule:
     name = item.get("name") if isinstance(item, Mapping) else None
     if not isinstance(name, str) or not name:
         return Rule("?", MALFORMED)
-    if item.get("kind") in (STATE_MACHINE, FORMULA, ROLLUP):
+    if item.get("kind") in (STATE_MACHINE, FORMULA, ROLLUP, HIERARCHY):
         # The one parser reads it. A role atom or a bad shape fails closed.
         try:
             return parse_rule(item)
@@ -939,7 +996,7 @@ def touched_keys(rule: Rule, before: Mapping[str, Any] | None,
     key only: a delete or an old key cannot add a clash, so a check there
     would only stop the repair of old duplicates. C6 and C7a reuse this hook.
     """
-    if rule.kind in (RANGE, STATE_MACHINE, FORMULA, ROLLUP):
+    if rule.kind in (RANGE, STATE_MACHINE, FORMULA, ROLLUP, HIERARCHY):
         return []
     states: Collection[Mapping[str, Any] | None] = (
         (after,) if rule.kind == UNIQUE else (before, after))
@@ -1562,3 +1619,47 @@ def rollup_result(rule: Rule, object_name: str, field: FieldSpec, raw: Any) -> A
         return check_value(field, stored)
     except (FieldError, ArithmeticError):
         raise _too_large(rule, object_name) from None
+
+
+# --- the hierarchy (C18) ------------------------------------------------------
+
+
+def tree_parent(rule: Rule, data: Mapping[str, Any] | None) -> str | None:
+    """The parent id that the record *data* names in the field of the hierarchy
+    *rule*, in the one form of a hot relation row, or None for a root."""
+    raw = None if data is None else data.get(str(rule.field))
+    ident = raw.get("id") if isinstance(raw, Mapping) else None
+    return relation_key(ident) if isinstance(ident, str) else None
+
+
+def tree_moves(rule: Rule, before: Mapping[str, Any] | None,
+               after: Mapping[str, Any] | None) -> str | None:
+    """The new parent of one written record, or None when the write gives it no
+    new parent. *before* is the record before the batch (None for a create), and
+    *after* is the record after it (None for a delete). A delete and a record
+    that becomes a root cannot make a cycle or a deeper tree, so each answers
+    None. So does a record that keeps its parent, so an old tree that breaks a
+    rule never blocks an edit of another field."""
+    new = tree_parent(rule, after)
+    if new is None or (before is not None and tree_parent(rule, before) == new):
+        return None
+    return new
+
+
+def check_tree(rule: Rule, object_name: str, *, cycle: bool, depth: int) -> None:
+    """Judge the walk of the store for one record that got a new parent.
+    *cycle* is True when the walk up from the record came back to it. *depth* is
+    the count of the levels of the longest path through the record: its level
+    from the root, and the levels of its children below it. Raises
+    :class:`TreeViolation`."""
+    key = str(rule.field)
+    if cycle:
+        raise TreeViolation(
+            rule.name, object_name, TREE_CYCLE, key,
+            f"Rule `{rule.name}` of object `{object_name}`: "
+            f"{rule.message or f'a record cannot be under itself. Pick another `{key}`.'}")
+    if depth > MAX_TREE_DEPTH:
+        raise TreeViolation(
+            rule.name, object_name, TREE_TOO_DEEP, key,
+            f"Rule `{rule.name}` of object `{object_name}`: "
+            f"{rule.message or f'a tree holds at most {MAX_TREE_DEPTH} levels. Pick a higher `{key}`.'}")

@@ -58,6 +58,7 @@ import RecordTabBar from "@/components/RecordTabBar";
 import { TaskLinks } from "./TaskLinks";
 import { AgentRunPanel } from "./AgentRunPanel";
 import { DecisionPanel } from "./DecisionPanel";
+import { TaskCheckBlock } from "./TaskCheckBlock";
 import { activityAttribution, agentKindLabel, viaLabel } from "../lib/agentRuns";
 import { MarkdownBody } from "@/components/MarkdownMessage";
 import { taskRefResolverFor, type TaskRefResolver } from "@/lib/taskRefs";
@@ -115,6 +116,7 @@ import {
   threadComments,
 } from "../lib/activityStream";
 import { typeRefusal, typeSelectOptions } from "../lib/taskEpic";
+import { type EpicRollup, rollupLine } from "../lib/epicRollup";
 import { parseAssignees, withAssignee, withoutAssignee } from "../lib/assignees";
 import { insertMention, notDeliveredNotice } from "../lib/notifications";
 
@@ -316,9 +318,10 @@ export function Entry({
         </span>
       </p>
       {/* WS-57 TR-4 — a comment is Markdown, so an image pasted into it
-          draws inline. Every other entry is a sentence the app wrote, and
-          stays plain text. The byline above is the same for both. */}
-      {activity.type === "comment" ? (
+          draws inline. An agent run's outcome is Markdown too (task 3031: a
+          bare URL or a local file path in it). Every other entry is a sentence
+          the app wrote, and stays plain text. The byline above is the same for both. */}
+      {activity.type === "comment" || (activity.type === "agent_run" && !attribution.reason) ? (
         <div className="min-w-0 break-words text-foreground">
           <MarkdownBody
             content={keepLineBreaks(describeActivity(activity, fields))}
@@ -509,6 +512,9 @@ export function TaskBody({
   // D77 — every member's timed work on the task, summed by the gateway
   // (`GET /projects/tasks/{id}` → `time_spent_mins`). Null until read.
   const [spent, setSpent] = useState<number | null>(null);
+  // SP-9 — the roll-up of an epic, from the same single read. Absent for a
+  // task that is not an epic.
+  const [rollup, setRollup] = useState<EpicRollup | null>(null);
   // SP-6 — the types of THIS task's project, read here so the host (the
   // Projects panel or My Tasks' detail) need not pass them. A failed read
   // leaves the list empty: the control then offers "No type" only.
@@ -569,6 +575,7 @@ export function TaskBody({
       .catch(() => undefined);
     setWatching(null);
     setSpent(null);
+    setRollup(null);
     watchersApi
       .get(task.id)
       .then((res) => {
@@ -579,7 +586,9 @@ export function TaskBody({
     projectsApi
       .task(task.id)
       .then((row) => {
-        if (live) setSpent(row.time_spent_mins ?? 0);
+        if (!live) return;
+        setSpent(row.time_spent_mins ?? 0);
+        setRollup(row.rollup ?? null);
       })
       .catch(() => undefined);
     return () => {
@@ -1030,6 +1039,9 @@ export function TaskBody({
             then the Add row. Nothing that waits on the member hides behind
             a tab (D181, `specs/one_record_card.md` §3.3). */}
         <div className="px-3 py-3">
+          {/* WS-MCP SW-23 — the Check of the task, read only. It draws
+              nothing while the Check flag is off or the task has none. */}
+          <TaskCheckBlock check={task.check} />
           {/* WS-55 EA-12c — the open agent run. ORC-3 moved it from the
               discussion. It draws nothing while the routes are off. */}
           <AgentRunPanel
@@ -1322,6 +1334,16 @@ export function TaskBody({
                     {spent === null ? "…" : spent > 0 ? durationLabel(spent) : "None yet"}
                   </span>
                 </FieldCell>
+
+                {/* SP-9 — an epic rolls up EVERY slice below it that the reader
+                    can see. The board card keeps its direct-child count. */}
+                {rollup ? (
+                  <FieldCell label="Progress" icon="GitBranch">
+                    <span className="text-sm text-foreground" data-testid="epic-rollup">
+                      {rollupLine(rollup)}
+                    </span>
+                  </FieldCell>
+                ) : null}
 
                 <FieldCell label="Repeats" icon="Repeat">
                   <RepeatEditor taskId={task.id} bare />

@@ -26,7 +26,9 @@
  * Pure and DOM-guarded, so the node-env vitest holds it.
  */
 
+import { APP_REQUESTS_KEY } from "@/app/integrations/lib/appRequests";
 import { placementOf } from "@/lib/chatPlacement";
+import { invalidate } from "@/lib/dataCache";
 import { bareToolName } from "@/lib/toolSteps";
 
 /** The window event name. */
@@ -87,12 +89,23 @@ const ARTIFACT_WRITES: ReadonlySet<string> = new Set([
  * save and publish packages and skills, which the Studio library lists. The
  * three record writes (STU-B2c-2b) add, change and delete a record of an app
  * when a resend runs the approved change, so an open app re-reads. A first
- * call only asks, and its re-read finds nothing new. The read tools (draft,
- * validate, patch, outline, plan, describe, list_actions, package_get,
- * record_list, skill_list, interview) change nothing stored.
+ * call only asks, and its re-read finds nothing new. The delete of a package
+ * (STU-A5c-2) takes an app out of the library, so the library re-reads. The
+ * read tools (draft, validate, patch, outline, plan, describe, list_actions,
+ * package_get, record_list, skill_list, interview) change nothing stored.
  */
 const STUDIO_WRITES: ReadonlySet<string> = new Set([
-  "studio_save", "studio_publish", "studio_skill_save", "studio_skill_state",
+  "studio_save", "studio_publish", "studio_delete_package", "studio_skill_save",
+  "studio_skill_state", "studio_record_create", "studio_record_update", "studio_record_delete",
+]);
+
+/**
+ * The record writes of the studio pack (STU-B2c-2b). Each one ends a request of
+ * the approval store: an ask opens one, and a resend spends one. The cards of
+ * the chat (`components/studio/StudioToolCards.tsx`) and the list of
+ * Integrations read those requests under `APP_REQUESTS_KEY`.
+ */
+export const STUDIO_RECORD_WRITES: ReadonlySet<string> = new Set([
   "studio_record_create", "studio_record_update", "studio_record_delete",
 ]);
 
@@ -130,6 +143,11 @@ export const APPS_WITH_WRITE_TOOLS: readonly LiveApp[] = [
 export function announceAssistantWrite(toolName: string): LiveApp[] {
   const apps = appsForWrite(toolName);
   if (apps.length === 0) return apps;
+  // STU-B2c-2c: a record write of Mira changes a request of the approval store.
+  // A saved resend spends it, so drop the cached reads of the requests. Each
+  // card in the chat then reads its request again and shows Done with no
+  // control, and the list of Integrations drops the request.
+  if (STUDIO_RECORD_WRITES.has(bareToolName(toolName))) invalidate(APP_REQUESTS_KEY);
   try {
     window.dispatchEvent(new CustomEvent(ASSISTANT_WROTE_EVENT, { detail: { apps, tool: bareToolName(toolName) } }));
   } catch {

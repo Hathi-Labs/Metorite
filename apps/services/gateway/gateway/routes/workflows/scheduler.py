@@ -404,6 +404,9 @@ async def scan_decided_pauses(org: str) -> int:
     * ``yes`` from the decider: ``resume_run`` as the decider. Its
       compare-and-set lets exactly one caller start the run. The run keeps
       its stored kind, so it stays marked, and a second gate parks again.
+      It passes ``decided=True``, so the resumed run carries the decision.
+      A ``studio_write`` node right after the gate then runs ONE write,
+      after it reads the same decision row again (STU-B2c-2d).
     * any other answer: the pause ``rejected`` and the run ``cancelled``,
       with the error ``decision declined``.
     * no answer, and the DB clock passed ``expires_at``: the same end, with
@@ -436,6 +439,9 @@ async def scan_decided_pauses(org: str) -> int:
                     resumed_by=str(decision.answered_by).strip().lower(),
                     organization_id=str(row.organization_id),
                     pause_id=str(row.id),
+                    # STU-B2c-2d: the one caller that carries the decision, so
+                    # a Studio write node right after this gate may run once.
+                    decided=True,
                 )
                 if result.get("ok"):
                     settled += 1

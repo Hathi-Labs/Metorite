@@ -28,6 +28,9 @@ app reads and revokes through these two routes. A member's own pair is
    the WS-54 helper of the outbound console.
 6. **No answer holds a token, a hash or a client id.** The row shape is
    ``agent_access.AgentConnectionOut``.
+7. **The new-address mark of a box (EA-19c).** The list writes the audit
+   row ``box_token.new_address`` once for each fresh mark, through
+   ``agent_access.audit_new_addresses``, as the member's list does.
 
 Fence: ``tests/unit/test_agent_connections_r8.py`` and
 ``tests/unit/test_org_access_enforcement.py`` (``GATED_ROUTERS``).
@@ -50,6 +53,7 @@ from fastapi.responses import JSONResponse
 from gateway.db import current_tenant
 from gateway.routes.agent_access import (
     AgentConnectionsOut,
+    audit_new_addresses,
     audit_revoke,
     connection_out,
 )
@@ -91,7 +95,10 @@ async def list_org_agent_connections(
 ) -> JSONResponse:
     """Every live agent connection of the organization, newest first."""
     del user  # the router's gates read it. The organization is the bound tenant.
-    rows = await agent_tokens.list_connections(_org())
+    org = _org()
+    rows = await agent_tokens.list_connections(org)
+    # EA-19c: the audit row of each fresh new-address mark, once for each.
+    await audit_new_addresses(org, rows)
     body = AgentConnectionsOut(connections=[connection_out(r) for r in rows])
     return JSONResponse(body.model_dump(), headers=_NO_STORE)
 

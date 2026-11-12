@@ -144,6 +144,8 @@ ALLOWED: dict[str, str] = {
         'A digest. Each section prints its count, and query_inbox pages the mail.',
     'apps/agents/agent-email-assistant/agents.py::_one::(items or [])[:5]':
         'A digest. Each section prints its count, and query_inbox pages the mail.',
+    "apps/skills/skill-my-tasks/skill_my_tasks/core.py::_why::' '.join(str(exc).split())[:120]":
+        'A failed step of a day flow. It keeps the first 120 characters of the error text, no row is lost.',
     'apps/skills/skill-my-tasks/skill_my_tasks/core.py::_fmt_plan::evicted[:5]':
         "A plan receipt. It prints the count and '…', and my_tasks_list(view='next') lists the tasks.",
     'apps/skills/skill-my-tasks/skill_my_tasks/core.py::_fmt_plan::unplaced[:5]':
@@ -287,6 +289,9 @@ ALLOWED: dict[str, str] = {
         "Text, not rows: one object name cut so that the action id fits the 48-character limit of the manifest (STU-BETA-2).",
     "packages/acb_skills/acb_skills/studio_tools.py::with_record_actions::base[:48 - len(str(n))]":
         "Text, not rows: one action id cut so that it fits the limit with its number (STU-BETA-2).",
+    "packages/acb_skills/acb_skills/studio_tools.py::_delete_rows::tables[:MAX_DELETE_CARD_TABLES]":
+        "No row is lost: the delete card names ten tables, counts the other tables in 'and N more "
+        "tables', and the totals row counts every table. The delete takes every table (STU-A5c-2).",
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
@@ -310,8 +315,11 @@ ALLOWED: dict[str, str] = {
 #: view (81). STU-BETA-2 added one: the plan card names six objects at most
 #: and says 'and N more', and two cuts keep a made action id in 48 characters (84).
 #: STU-B2c-2b added two: a refusal names at most two field keys, and it writes
-#: nothing, so the next call names the rest (86).
-ALLOWED_CEILING = 86
+#: nothing, so the next call names the rest (86). CAL-4 added one: the error text
+#: of a failed day-flow step, cut to 120 characters (87). STU-A5c-2 added one: the
+#: delete card names ten tables and counts the rest, and the delete takes every
+#: table (88).
+ALLOWED_CEILING = 88
 
 
 def _stringy(node: ast.AST) -> bool:

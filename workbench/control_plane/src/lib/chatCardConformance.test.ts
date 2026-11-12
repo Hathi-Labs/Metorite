@@ -58,9 +58,12 @@ function code(src: string): string {
 const CHAT_CARDS: Record<string, { seam: true } | { exempt: string }> = {
   "components/ElicitationCard.tsx": { seam: true },
   "components/ConfirmationCard.tsx": { seam: true },
-  // MCP-P1b-1: the one card of an app request. Integrations mounts it now,
-  // and the chat mounts it in B2c, so it keeps the look of a chat card.
+  // MCP-P1b-1: the one card of an app request. Integrations mounts it, and
+  // the chat mounts it through StudioToolCards (STU-B2c-2c).
   "components/AppRequestCard.tsx": { seam: true },
+  // STU-B2c-2c: the approval card of a Studio record change. It draws
+  // AppRequestCard, and its own RollupHeader when the read fails.
+  "components/studio/StudioToolCards.tsx": { seam: true },
   "components/ChatErrorCard.tsx": { seam: true },
   "components/ToolCardShell.tsx": { seam: true },
   "components/GenerativeUINode.tsx": { seam: true },
