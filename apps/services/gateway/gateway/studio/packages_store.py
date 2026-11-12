@@ -29,13 +29,12 @@ writes longer, and at most :data:`MAX_MANIFEST_BYTES` bytes. So no manifest
 reaches a statement that the CHECK ``apps_manifest_package`` refuses. Each
 refusal raises one :class:`PackageStoreError` that carries every path.
 
-**The slug.** ``apps.slug`` is UNIQUE for all orgs until WS-STU A3b-2. The
-slug of a package is ``<manifest id>-<8 hex digits of the new id>``. So a slug
-that org A holds never blocks a package of org B. When the slug is taken
-anyway, the INSERT writes nothing (``ON CONFLICT DO NOTHING``), and the store
-tries a new id. The clause names no column, so it holds with
-``apps_slug_key`` and with ``apps_org_slug_key`` (A3b-1). No refusal names
-the slug of another org. The slug never changes after the INSERT, and so the
+**The slug.** Since WS-STU A3b-2 only ``apps_org_slug_key`` (org and slug)
+is unique, so a slug that org A holds never blocks a package of org B. The
+slug of a package is ``<manifest id>-<8 hex digits of the new id>``. When the
+slug is taken in the own org anyway, the INSERT writes nothing (``ON CONFLICT
+DO NOTHING``), and the store tries a new id. The clause names no column. No
+refusal names the slug of another org. The slug never changes after the INSERT, and so the
 manifest id never changes either: :func:`update_manifest` refuses a new id.
 
 **Private and a draft.** A new package has ``visibility = 'private'``,

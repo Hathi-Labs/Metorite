@@ -588,9 +588,10 @@ def test_r8_two_orgs_may_hold_one_manifest_id(world) -> None:
     assert _count(world) == 2
 
 
-def test_r8_a_slug_clash_with_another_org_leaks_nothing(world, monkeypatch) -> None:
-    """Org A holds the slug that the first id of org B gives. The INSERT of
-    org B writes nothing, raises nothing, and the store takes the next id.
+def test_r8_the_same_slug_in_another_org_blocks_nothing_and_leaks_nothing(
+        world, monkeypatch) -> None:
+    """Org A holds the slug that the first id of org B gives. Since A3b-2
+    only the own org's slugs block, so org B takes that slug on its first id.
     Org B never sees the package of org A."""
     a, b = world.p.org_a, world.p.org_b
     first = uuid.UUID(f"{TAG}-0000-4000-8000-000000000001")
@@ -610,9 +611,9 @@ def test_r8_a_slug_clash_with_another_org_leaks_nothing(world, monkeypatch) -> N
 
     out = _go(world, go)
     assert out["pa"].slug == f"{MID}-{TAG}" and out["pa"].id == str(first)
-    assert out["pb"].id == str(fresh) and out["pb"].slug == f"{MID}-{fresh.hex[:8]}"
+    assert out["pb"].id == str(clash) and out["pb"].slug == out["pa"].slug
     assert [p.id for p in out["listed"]] == [out["pb"].id]
-    assert out["seen"] == 0
+    assert out["seen"] == 1, "org B reads its own row only, never the row of org A"
     assert _count(world) == 2
 
 
