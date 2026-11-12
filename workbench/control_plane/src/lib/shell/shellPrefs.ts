@@ -209,12 +209,18 @@ export async function readShellPrefs(): Promise<StoredShell> {
  * The hello mark (`buddy_hello_at`, BUD-1) is never sent either: the hello
  * route alone writes it, first write wins, and the server keeps it.
  */
+/**
+ * The most hrefs `known` may hold in a save. The BFF proxy caps a body at
+ * 8,192 bytes (`app/api/auth/me/shell/route.ts`), so one entry too many is a 422.
+ */
+export const KNOWN_MAX = 64;
+
 export function bodyFor(
   next: StoredShell | null,
 ): (Omit<StoredShell, "chat_first_message_at" | "tour_seen_at" | "buddy_hello_at"> & { chat_first_message_at?: string }) | null {
   if (!next) return null;
   const { preset, answered, pins, known, cardOrder, newOrder, chat_first_message_at } = next;
-  const rest = { preset, answered, pins, known, cardOrder, newOrder };
+  const rest = { preset, answered, pins, known: known && known.length > KNOWN_MAX ? known.slice(0, KNOWN_MAX) : known, cardOrder, newOrder };
   return chat_first_message_at ? { ...rest, chat_first_message_at } : rest;
 }
 
