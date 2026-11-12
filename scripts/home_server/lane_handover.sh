@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# CIV-20 slice 1: the one way a lane hands a PR to lane-merge.
+# CIV-20 slice 1: the one way a lane hands a PR to the merge bot (CIV-28).
 #
-#   bash scripts/home_server/lane_handover.sh <PR> <task> <worktree> <lane> <note>
+#   bash scripts/home_server/lane_handover.sh <PR> <task> <worktree> <lane> <tier> <note>
 #
+# <tier> is LOW, STANDARD or HIGH: the risk tier of the slice. The bot never
+# merges HIGH (D218 keeps the full loop for it), and it logs a BACK for it.
 # It checks what sent a third of the hand-overs back (BACK lines of 2026-11-07),
-# and it appends the line to ~/lanes/merge-queue.tsv only when every check passes:
+# and it appends one line to ~/lanes/merge-bot-queue.tsv only when every check
+# passes. The fields, with tabs between them, under one "#" header line:
+#   PR  task  worktree  lane  head_sha  tier  note
+# The head SHA pins the merge: the bot merges that commit and no other.
+# The old ~/lanes/merge-queue.tsv stays as history. Nothing reads it now.
 #   1. the worktree is clean, and its HEAD is the head of the PR;
-#   2. the PR body has a "Visual review:" line when the diff touches
+#   2. a line of the PR body starts with "VERIFY: PASS" (the verifier passed).
+#      The PR body has a "Visual review:" line when the diff touches
 #      workbench/control_plane/src (DESIGN_SYSTEM.md section 11);
 #   3. origin/main merges into the branch with no conflict;
 #   4. each new migration number is above main's highest, and no other open PR
@@ -18,15 +25,16 @@
 # Fence: tests/unit/test_lane_handover.py.
 set -uo pipefail
 
-[ $# -ge 5 ] || { echo "usage: lane_handover.sh <PR> <task> <worktree> <lane> <note>" >&2; exit 2; }
-PR="$1"; TASK="$2"; WT="$3"; LANE="$4"; shift 4; NOTE="$*"
+[ $# -ge 6 ] || { echo "usage: lane_handover.sh <PR> <task> <worktree> <lane> <LOW|STANDARD|HIGH> <note>" >&2; exit 2; }
+PR="$1"; TASK="$2"; WT="$3"; LANE="$4"; TIER="$5"; shift 5; NOTE="$*"
 BASE="${HANDOVER_BASE:-origin/main}"
-QUEUE="${HANDOVER_QUEUE:-$HOME/lanes/merge-queue.tsv}"
+QUEUE="${HANDOVER_QUEUE:-$HOME/lanes/merge-bot-queue.tsv}"
 fail() { echo "HANDOVER REFUSED: $*" >&2; exit 1; }
 for v in "$PR" "$TASK"; do
   case "$v" in ''|*[!0-9]*) fail "the PR and the task are numbers: got '$PR' and '$TASK'";; esac
 done
-case "$NOTE" in *$'\t'*|*$'\n'*) fail "the note holds a tab or a newline. The queue is one TSV line.";; esac
+case "$TIER" in LOW|STANDARD|HIGH) ;; *) fail "the tier is LOW, STANDARD or HIGH: got '$TIER'";; esac
+case "$LANE$NOTE" in *$'\t'*|*$'\n'*) fail "the lane or the note holds a tab or a newline. The queue is one TSV line.";; esac
 [ -d "$WT" ] || fail "no worktree at $WT"
 cd "$WT" || fail "cannot enter $WT"
 WT="$(pwd -P)"  # lane-merge runs from another directory, so the queue needs an absolute path
@@ -40,9 +48,11 @@ git fetch -q origin "${BASE#origin/}" 2>/dev/null || echo "warning: git fetch fa
 base="$(git merge-base HEAD "$BASE")" || fail "no merge base with $BASE"
 files="$(git diff --name-only "$base" HEAD)"
 
-# 2. The Visual review line.
+# 2. The VERIFY: PASS line, and the Visual review line.
+body="$(gh pr view "$PR" --json body -q .body)" || fail "gh cannot read the body of PR $PR"
+grep -q '^VERIFY: PASS' <<< "$body" \
+  || fail "no line of the PR body starts with 'VERIFY: PASS'. The merge bot merges only a verified PR. Add the verifier's result to the body, then hand over again."
 if grep -q '^workbench/control_plane/src/' <<< "$files"; then
-  body="$(gh pr view "$PR" --json body -q .body)" || fail "gh cannot read the body of PR $PR"
   grep -qE '^Visual review:[[:space:]]*[^[:space:]<]' <<< "$body" \
     || fail "the diff changes workbench/control_plane/src, and no line of the PR body starts with 'Visual review:'. Name the four captures, or write 'Visual review: no UI change'. Then edit the body."
 fi
@@ -96,5 +106,6 @@ if [ -n "$mine" ]; then
 fi
 
 mkdir -p "$(dirname "$QUEUE")"
-printf '%s\t%s\t%s\t%s\t%s\n' "$PR" "$TASK" "$WT" "$LANE" "$NOTE" >> "$QUEUE"
-echo "handed over: PR $PR (task $TASK) appended to $QUEUE"
+[ -s "$QUEUE" ] || printf '# PR\ttask\tworktree\tlane\thead_sha\ttier\tnote\n' >> "$QUEUE"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PR" "$TASK" "$WT" "$LANE" "$head_pr" "$TIER" "$NOTE" >> "$QUEUE"
+echo "handed over: PR $PR (task $TASK) at ${head_pr:0:9}, tier $TIER, appended to $QUEUE"

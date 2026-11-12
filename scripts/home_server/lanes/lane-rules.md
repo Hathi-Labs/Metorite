@@ -96,10 +96,12 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
     - Hand a pull request over when the verifier passed, the review of its
       risk tier passed, and the owner approved its preview (if it needed one).
       Only GitHub checks or `premerge.sh` may remain.
-    - To hand it over, append ONE line to `~/lanes/merge-queue.tsv`, with tabs
-      between the fields: pull request, task, worktree path, your lane name,
-      and a short note.
-      `printf '%s\t%s\t%s\t%s\t%s\n' 1234 567 /home/dev/wt-x lane-x "note" >> ~/lanes/merge-queue.tsv`
+    - To hand it over, run
+      `bash scripts/home_server/lane_handover.sh <PR> <task> <worktree> <lane> <tier> "note"`.
+      The tier is `LOW`, `STANDARD` or `HIGH`. The PR body needs a line that
+      starts with `VERIFY: PASS`. The script appends the line to
+      `~/lanes/merge-bot-queue.tsv`, and the merge bot reads it. Never append
+      to a queue or a log by hand.
     - Comment on the task: "Handed to lane-merge: <pull request URL>. Verify:
       <result>. Review: <result>. Only GitHub checks remain." Then call
       `release_task`. Lane-merge claims the task, merges it, and moves it to
@@ -110,7 +112,7 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
     - When a required check of your pull request goes red, lane-merge
       comments the failing test on the task and releases it. Find it with
       `my_work` or `search_tasks`, fix it, push, and hand it over again. Read
-      `~/lanes/merge-queue.log` for `BACK` lines after each hand-over.
+      `~/lanes/merge-bot.log` for `BACK` lines after each hand-over.
 15. **Save GitHub runs.** A red run costs a full set of jobs.
     - Before each push, run the tests that your diff can affect on this box:
       `timeout 2400 uv run python scripts/affected_tests.py --run`. For

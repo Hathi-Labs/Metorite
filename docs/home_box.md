@@ -202,8 +202,9 @@ merges it. The other lanes keep building. Its role is in
 
 | File on the box | What it holds |
 |---|---|
-| `~/lanes/merge-queue.tsv` | One line for each hand-over: pull request, task, worktree, lane, note. Tabs between the fields. |
-| `~/lanes/merge-queue.log` | One line for each result: `DONE <pull request> <sha>` or `BACK <pull request> <reason>`. |
+| `~/lanes/merge-bot-queue.tsv` | One line for each hand-over: pull request, task, worktree, lane, head SHA, tier, note. Tabs between the fields, under a `#` header line. Only `lane_handover.sh` writes it. |
+| `~/lanes/merge-bot.log` | One line for each result: `DONE <pull request> <sha>` or `BACK <pull request> <reason>`. Only the merge bot writes it. |
+| `~/lanes/merge-queue.tsv`, `~/lanes/merge-queue.log` | History of the lane-merge session, with HOLD, RED and NOTE lines that people wrote. Nothing reads them now. |
 
 A lane hands over a pull request only after three steps. The verifier passed,
 the review of its risk tier passed, and the owner approved its preview when
@@ -211,12 +212,16 @@ it needed one.
 
 **The merge bot** (D218, task 3053). `scripts/home_server/merge_bot.sh` merges
 the queued pull requests with no model and no Metorite credential. One pass
-reads the queue, and skips each pull request that has a line in the log. It
+reads the queue, and handles each hand-over that has no result line yet. It
+never merges a `HIGH` tier slice, and it needs a PR body line that starts with
+`VERIFY: PASS`. It logs a BACK when the PR head moved after the hand-over. It
 waits for the seven required checks of `main` (a missing or pending one means
-not ready), and reruns a cancelled job once.
+not ready, and only the newest row of a check counts), and reruns a cancelled
+job once.
 
 It then runs the trial merge with
-`origin/main` and `scripts/premerge.sh`, and runs `gh pr merge --squash`. A
+`origin/main` and `scripts/premerge.sh` on the pinned SHA, and runs
+`gh pr merge --squash --match-head-commit <sha>`. A
 branch behind `main` still merges when the trial merge is clean. It never
 pushes, and never passes `--admin` or `--auto`. `MERGE_BOT_DRY_RUN=1` prints
 the actions and calls no write command.

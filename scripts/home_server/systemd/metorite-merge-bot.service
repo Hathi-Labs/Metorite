@@ -6,7 +6,7 @@
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now metorite-merge-bot.timer
 # Logs: journalctl --user -u metorite-merge-bot.service
-# The result lines are in ~/lanes/merge-queue.log.
+# The queue is ~/lanes/merge-bot-queue.tsv. The result lines are in ~/lanes/merge-bot.log.
 [Unit]
 Description=Metorite merge bot: merge the green PRs of the queue (CIV-28)
 
