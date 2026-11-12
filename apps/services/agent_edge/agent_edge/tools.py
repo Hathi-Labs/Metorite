@@ -2918,6 +2918,8 @@ _RUN_SCHEMA = _object({
     "open_question": {"anyOf": [_QUESTION_SCHEMA, {"type": "null"}]},
     "latest_line": {"anyOf": [_LINE_SCHEMA, {"type": "null"}]},
     "stranded": {"anyOf": [_STRANDED_SCHEMA, {"type": "null"}]},
+    # SW-7b. The name that an agent gave its session. An agent wrote it, so (U).
+    "agent_label": _UNTRUSTED_OR_NULL,
     "waiting": {"anyOf": [_WAITING_SCHEMA, {"type": "null"}]},
     "plan": _PLAN_SCHEMA,
 })
@@ -3093,7 +3095,9 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
 
     A database CHECK shapes ``status``, and the gateway derives ``state``.
     The link is (S). The question and the line hold free text, so (U).
+    SW-7b: ``agent_label`` is the name that an agent gave its session, so (U).
     """
+    label = row.get("agent_label")
     out = {
         "id": str(row.get("id")),
         "task_id": str(row.get("task_id")),
@@ -3108,6 +3112,7 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
         "open_question": _question(row.get("open_elicitation")),
         "latest_line": _line(row.get("latest_ephemeral")),
         "stranded": _stranded(row.get("stranded")),
+        "agent_label": untrusted(label) if isinstance(label, str) else None,
         "waiting": _waiting(row.get("waiting")),
         "plan": _plan(row.get("plan")),
     }
@@ -4174,12 +4179,16 @@ GUIDANCE_LEVELS: tuple[str, ...] = ("project", "space", "company", "default")
 #: only for an organization on ``agent_protocol_orgs``. Fence:
 #: ``test_mcp_edge_context.py`` ``TestTheProtocolBlock``.
 PROTOCOL_KEY = "protocol"
-PROTOCOL_VERSION = 1
+#: SW-43c raised the version to 2: the second line names the thought before an
+#: act on an answer (agent_coordination.md §3.9, "Protocol"). The sixth line
+#: stays free for the park of SW-60.
+PROTOCOL_VERSION = 2
 PROTOCOL_LINES_MAX = 6
 PROTOCOL_LINE_MAX = 120
 PROTOCOL_LINES: tuple[str, ...] = (
     "Claim the slice, not the epic.",
-    "Post a thought with post_agent_activity each minute.",
+    "Post a thought with post_agent_activity each minute. Before you act on an answer,"
+    " post one that names its id.",
     "When you are blocked, ask with ask_on_task. Never ask only in the terminal.",
     "End each turn with one result: review or done, a question, or release_task.",
     "Hand off with evidence: what is done, what is left, and the proof.",
@@ -7499,6 +7508,24 @@ _LINK_INPUT: dict[str, Any] = {
     "type": "string", "minLength": 9, "maxLength": 2048, "pattern": r"^https://\S+$",
     "description": "An https link to your session or its log."}
 
+#: SW-7b (``agent_coordination.md`` §3.7 item 2). The most characters of
+#: ``agent_label``. The gateway cleans the value and caps it at the same
+#: number (``agent_runs.AGENT_LABEL_MAX``), and a pin test compares the two.
+AGENT_LABEL_MAX = 40
+
+#: SW-7b. The optional display name of this session, on a claim and a start.
+#: It holds no control character. The guidance lives here only, because the
+#: server instructions are at their budget (task 1803).
+_LABEL_INPUT: dict[str, Any] = {
+    "type": "string", "minLength": 1, "maxLength": AGENT_LABEL_MAX,
+    "pattern": r"^[^\x00-\x1f\x7f-\x9f]+$",
+    "description": (
+        "A short name for this session, such as backend-worker-3. People see"
+        " it beside the client name on the task card and in the run panel. It"
+        " is display data only. It changes no access, no hold and no session."
+        " Send the same name on each claim and each start. A new name replaces"
+        " the old one.")}
+
 #: The fixed text of each refused claim, by the code of the gateway's 422
 #: (``tasks.CLAIM_REFUSALS``). The edge never shows the gateway's message. A
 #: 422 with any other detail is the bad-request text. ``test_mcp_edge_claim``
@@ -7521,6 +7548,7 @@ _CLAIM_INPUT: dict[str, Any] = {
             "type": "string", "pattern": _VERSION_PATTERN,
             "description": "The version that get_task returned for this task."},
         "external_link": _LINK_INPUT,
+        "agent_label": _LABEL_INPUT,
     },
     "required": ["task_id", "expected_version"],
     "additionalProperties": False,
@@ -7548,14 +7576,21 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     ``update_task`` does, so the version works as the next
     ``expected_version``. A failed re-read gives the claim's own answer.
 
-    It needs no ``_refuse_nul`` (EA-6c): both inputs must match a pattern of
-    the input schema, a UUID and a version, so no control character passes.
+    It needs no ``_refuse_nul`` (EA-6c): each input must match a pattern of
+    the input schema, so no NUL passes. SW-7b: ``agent_label`` goes in the
+    body only, and its pattern refuses every control character.
     """
+    body: dict[str, Any] = {}
     link = _str_or_none(args.get("external_link"))
+    if link is not None:
+        body["external_link"] = link
+    label = _str_or_none(args.get("agent_label"))
+    if label is not None:
+        body["agent_label"] = label
     _, after = await _write(
         ctx, "POST", CLAIM_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": str(args["task_id"])},
-        json_body={} if link is None else {"external_link": link},
+        json_body=body,
         if_match=str(args["expected_version"]), coded=CLAIM_TEXTS)
     if not isinstance(after, dict) or _id(after.get("id")) is None:
         raise ToolError(TEXT_BUSY)
@@ -7629,7 +7664,7 @@ CLAIM_TASK = Tool(
     output_schema=_CLAIM_OUTPUT,
     route=CLAIM_ROUTE,
     params={"task_id": "task_id", "expected_version": "If-Match",
-            "external_link": "external_link"},
+            "external_link": "external_link", "agent_label": "agent_label"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_claim_task,
     routes=(TASK_ROUTE, STATUSES_ROUTE, GUIDANCE_ROUTE),
@@ -8924,12 +8959,16 @@ def _check_options(options: list[dict[str, Any]] | None) -> None:
 
 
 async def _start(ctx: Context, task_id: str, key: str,
-                 link: str | None = None) -> tuple[bool, dict[str, Any]]:
+                 link: str | None = None,
+                 label: str | None = None) -> tuple[bool, dict[str, Any]]:
     """POST the start of a run. ``(created, run)``. The gateway gives the
-    open run of this member and client on the task, if one exists (EA12-6)."""
+    open run of this member and client on the task, if one exists (EA12-6).
+    SW-7b: *label* is the display name of this session, in the body only."""
     payload: dict[str, Any] = {"idempotency_key": key}
     if link is not None:
         payload["external_link"] = link
+    if label is not None:
+        payload["agent_label"] = label
     status, body = await _write(
         ctx, "POST", TASK_RUNS_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": task_id}, json_body=payload,
@@ -8969,6 +9008,7 @@ _START_INPUT: dict[str, Any] = {
         "task_id": _TASK_INPUT,
         "external_link": _LINK_INPUT,
         "idempotency_key": _KEY_INPUT,
+        "agent_label": _LABEL_INPUT,
     },
     "required": ["task_id", "idempotency_key"],
     "additionalProperties": False,
@@ -8978,7 +9018,8 @@ _START_OUTPUT: dict[str, Any] = _object({"run": _RUN_SCHEMA, "created": {"type":
 
 async def _start_agent_run(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     created, run = await _start(ctx, str(args["task_id"]), str(args["idempotency_key"]),
-                                _str_or_none(args.get("external_link")))
+                                _str_or_none(args.get("external_link")),
+                                _str_or_none(args.get("agent_label")))
     return {"run": agent_run(run), "created": created}
 
 
@@ -9004,7 +9045,7 @@ START_AGENT_RUN = Tool(
     output_schema=_START_OUTPUT,
     route=TASK_RUNS_ROUTE,
     params={"task_id": "task_id", "external_link": "external_link",
-            "idempotency_key": "idempotency_key"},
+            "idempotency_key": "idempotency_key", "agent_label": "agent_label"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_start_agent_run,
     method="POST",
@@ -9619,7 +9660,8 @@ GET_AGENT_RUN = Tool(
         " person. Its selected holds the chosen option ids, labels holds their"
         " labels, and body holds any text the member wrote. The state is"
         " answered until your next activity, which tells the member that you"
-        " have the answer. If the state is stopping, a person asked you to"
+        " have the answer. Before you act on the answer, post a thought that"
+        " names its id. If the state is stopping, a person asked you to"
         " stop. Stop the work at once. Call finish_agent_run with a summary of"
         " what you did and what is left, and post no activity before it. An"
         " activity on a stopping run ends the run, and the finish then fails."
@@ -10677,6 +10719,9 @@ _READ_PLAYBOOK_OUTPUT: dict[str, Any] = {
         "topics": {"type": "array", "items": {
             "type": "object", "properties": _PLAYBOOK_TOPIC_PROPS,
             "required": list(_PLAYBOOK_TOPIC_PROPS), "additionalProperties": False}},
+        # KIT-5. The current kit version, in the index only (no topic sent).
+        "kit_version": {"type": "integer"},
+        "kits": {"type": "object", "additionalProperties": {"type": "integer"}},
         "topic": {"type": ["object", "null"], "properties": {
             **_PLAYBOOK_TOPIC_PROPS, "body": _UNTRUSTED_SCHEMA},
             "required": [*_PLAYBOOK_TOPIC_PROPS, "body"], "additionalProperties": False},
@@ -10697,12 +10742,13 @@ async def _read_playbook(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     No gateway request. The text is the playbook of ``acb_playbook``, the same
     for every organization, and it leaves as untrusted text (§9.4).
     """
-    from acb_playbook import load_all
+    from acb_playbook import kit_version, kit_versions, load_all
 
     topics = load_all()
     wanted = args.get("topic")
     if wanted is None:
-        return {"topics": [_playbook_entry(t) for t in topics], "topic": None}
+        return {"topics": [_playbook_entry(t) for t in topics], "topic": None,
+                "kit_version": kit_version(), "kits": kit_versions()}
     for topic in topics:
         if topic.slug == wanted:
             return {"topics": [], "topic": {**_playbook_entry(topic),
@@ -10717,7 +10763,7 @@ READ_PLAYBOOK = Tool(
         "Read the orchestration playbook of Metorite: patterns for agent teams,"
         " the brief contract, gates, failure causes, the cost model and starter"
         " files. Leave topic out to list the topics, each with its version and"
-        " summary. Send a topic to read it. The text is the same for every"
+        " summary, and the current kit_version of the agent kit. Send a topic to read it. The text is the same for every"
         " organization. Use it when your client shows no MCP resources."
         + _UNTRUSTED_NOTE
     ),

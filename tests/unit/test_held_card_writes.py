@@ -65,7 +65,7 @@ PROJECT_PACKS = ("projects", "projects-plan", "projects-structure", "projects-bu
 #: ``promote_reminder`` is the one class C entry: the member's own private
 #: record, by the owner's words.
 KEPT_PROJECTS = frozenset({
-    "add_subtasks", "add_task_ref", "assign", "capture_intake", "comment", "complete",
+    "answer_agent_question", "add_subtasks", "add_task_ref", "assign", "capture_intake", "comment", "complete",
     "create_area", "create_field", "create_personal_task", "create_project",
     "create_status", "create_tag", "create_tags", "create_task", "create_tasks",
     "create_type", "create_types", "defer", "edit_comment", "edit_project", "edit_task",
@@ -106,6 +106,9 @@ OFF_PROJECTS = frozenset({
     "start_cycle", "close_cycle",
     # WS-39 TPL-1a: an org-wide template, and a project made from one.
     "save_as_template", "create_project_from_template",
+    # SW-43c: the member's own answer to an agent. Mail that a held chat read
+    # must not steer the answer that an agent acts on.
+    "change_agent_answer",
 })
 
 #: The class A Projects tools that write a file of the chat. They stay.
@@ -357,7 +360,7 @@ def _functions(path: Path) -> dict[str, ast.AsyncFunctionDef]:
 
 def _skill_functions() -> dict[str, ast.AsyncFunctionDef]:
     found: dict[str, ast.AsyncFunctionDef] = {}
-    for name in ("writes.py", "guarded.py", "forms.py", "inbox.py", "cycles.py"):
+    for name in ("writes.py", "guarded.py", "forms.py", "inbox.py", "cycles.py", "question_answers.py"):
         found.update(_functions(SKILL_DIR / name))
     return found
 

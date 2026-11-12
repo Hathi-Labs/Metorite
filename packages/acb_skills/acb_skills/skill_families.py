@@ -520,7 +520,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "It holds the five analytics reads, the team's capacity, who "
             "fits a task, plan conflicts, the task table, the "
             "timeline, a plan from a goal, links between tasks, repeat "
-            "rules, and a new project with its settings. The reports are in "
+            "rules, and a new project with its settings. It also lists the "
+            "agent requests that wait for the member, and it takes back or "
+            "changes the member's answer to an agent. The reports are in "
             "projects-reports. A run loads a pack "
             "only where tool packs are on, so until then this switch has no "
             "effect."
@@ -532,6 +534,10 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "analytics_outlook",
             "analytics_stuck",
             "analytics_throughput",
+            # SW-43c: the member takes back or changes an answer to an agent,
+            # beside the list of the agent requests. It takes the last room of
+            # the pack in the sticky-pack case (test_projects_packs.py).
+            "change_agent_answer",
             "create_project",
             "edit_project",
             "find_conflicts",
@@ -740,7 +746,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "summary": (
             "The authority page and the updates of a project, and the "
             "contract of an epic: read the pinned pages, pin or unpin one, "
-            "read, post or delete an update, and set the contract of an epic."
+            "read, post or delete an update, set the contract of an epic, and "
+            "list or answer the questions that agents put to the member."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for the "
@@ -755,6 +762,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "effect."
         ),
         "tools": (
+            "agent_questions",
+            "answer_agent_question",
             "delete_project_update",
             "list_project_updates",
             "pin_authority",
@@ -846,21 +855,22 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # STU-G1 (ai_studio.md section 6.2): the AI Studio builder tools, for the
     # one assistant to hold in a Studio turn. The owner is `studio-builder`,
     # which is NOT a second assistant. Eight stateless builder tools (G1b added the describe tool,
-    # G2 the interview and the plan card), three skill tools (F2d) and two package tools (G1c:
-    # save and publish over the A5 routes). A run loads a pack only where tool packs are on, and the pack
-    # builds nothing for an org that STUDIO_ORGS does not hold.
+    # G2 the interview and the plan card), three skill tools (F2d) and three package tools (G1c:
+    # save and publish over the A5 routes; A5c-2: delete over the A5c-1 routes, after one card).
+    # A run loads a pack only where tool packs are on, and the pack builds nothing for an org that
+    # STUDIO_ORGS does not hold.
     "studio": {
         "label": "AI Studio builder",
         "summary": (
             "Build an AI Studio app: draft a manifest from a brief, patch it, "
-            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save and publish the app, save, publish, pause and list your skills, and read the records of a package."
+            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save, publish and delete the app, save, publish, pause and list your skills, and read the records of a package."
         ),
         "description": (
             "A tool pack: the builder tools of AI Studio, for the main "
             "assistant to load in a Studio turn. It holds the tools to draft "
             "an app manifest, patch it, validate it, outline it and list the "
             "actions an app may use. It also holds the package tools: save "
-            "an app as a draft and publish it. It also holds the skill tools: save, "
+            "an app as a draft, publish it, and delete it after one card. It also holds the skill tools: save, "
             "publish, pause and list the skills of a member. Two read tools list the "
             "packages of a member and read the records of an object. Three write tools add, "
             "change and delete a record, and each asks the member first. The tools keep no "
@@ -881,6 +891,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "studio_skill_state",
             "studio_save",
             "studio_publish",
+            "studio_delete_package",
             "studio_package_get",
             "studio_record_list",
             "studio_record_create",

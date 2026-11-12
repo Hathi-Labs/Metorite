@@ -1,11 +1,12 @@
 -- ============================================================================
--- 416_agent_run_plan.sql - the plan of an agent run (WS-MCP task 1049, SW-32,
+-- 423_agent_run_plan.sql - the plan of an agent run (WS-MCP task 1049, SW-32,
 -- agent_coordination.md, D140.7)
 -- ============================================================================
 -- Spec: project-docs/specs/agent_coordination.md, slice SW-32 · Metorite task
 -- 1049 · R1 · R5 · R6 · R8.
--- R1: on 2026-11-11 origin/main held 414 as its highest file, and an open
--- branch held 415. So this file is 416. Check the number again at merge.
+-- R1: on 2026-11-12 origin/main held 418 as its highest file, and open
+-- pull requests held 419 to 422. So this file is 423. Check the number again
+-- at merge.
 --
 -- What: one nullable column on `pm_agent_runs`.
 --   plan  JSONB NULL, with the named CHECK `pm_agent_runs_plan_shape`. A

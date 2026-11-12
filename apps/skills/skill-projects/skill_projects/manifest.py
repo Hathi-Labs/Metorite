@@ -541,12 +541,14 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/agent-runs/{run_id}/resume", "resume_agent_run", "B"),
     # SW-43a (spec agent_coordination.md §3.9). The run's member takes back an
     # answer that no agent has read. It writes one marker prompt and changes
-    # no task, so class B. The chat gets the tool with SW-43c.
-    Route("POST", "/projects/agent-runs/{run_id}/answer/withdraw", "withdraw_agent_answer", "B"),
-    # SW-43b. The same member swaps the answer for a new one in one write:
-    # a withdraw marker and a new prompt. No task changes, so class B. The
-    # chat gets the tool with SW-43c.
-    Route("POST", "/projects/agent-runs/{run_id}/answer/replace", "replace_agent_answer", "B"),
+    # no task. SW-43b: the same member swaps the answer for a new one in one
+    # write, a withdraw marker and a new prompt. SW-43c builds ONE chat tool for
+    # both, class C as `answer_decision` is: an agent acts on an answer as soon
+    # as it reads it, so the change is hard to undo, and a held chat holds the
+    # tool off (RX-1, D169). One card for each act. One tool, because the plan
+    # pack has room for one tool more (`test_projects_packs.py`).
+    Route("POST", "/projects/agent-runs/{run_id}/answer/withdraw", "change_agent_answer", "C"),
+    Route("POST", "/projects/agent-runs/{run_id}/answer/replace", "change_agent_answer", "C"),
     # WS-55 MCP-G15. An outside agent records a decision that its member made
     # outside Metorite, on its own awaiting run. It writes an agent response
     # and changes no task, so class B. The chat acts as the member, and the
@@ -577,6 +579,10 @@ MANIFEST: tuple[Route, ...] = (
     # AGENTS_VIEW_ORGS. A read, so class A. The chat tool comes with the pack
     # `agents-overview` of AGA-11. It is in no door set (no MCP_ROUTES row).
     Route("GET", "/projects/agents/overview", "agents_list", "A"),
+    # WS-AGA AGA-9: the drill-down, the last 40 runs of one agent, dark behind
+    # the same flag. A read, so class A. Its tool is `agent_recent_runs` of the
+    # AGA-11 pack. It is in no door set.
+    Route("GET", "/projects/agents/{agent_key}/runs", "agent_recent_runs", "A"),
     # ── needs_attention.py — Needs attention (WS-55 SW-11a, spec §12.7) ──────
     # Stalled runs, open runs of closed tasks and tasks blocked by parked work,
     # over the tasks the caller can see. A read, so class A, and the chat asks
@@ -584,8 +590,8 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/needs-attention", "needs_attention", "A"),
     # ── agent_questions.py — Questions for me (WS-55 EA-18a, spec §12.8) ─────
     # The agent questions that wait on the reader. A read, so class A. The chat
-    # has no tool yet: a read tool for "what questions wait on me" is a later
-    # slice (D109), with the other run tools.
+    # reads it through `agent_questions` (WS-55 EA-18d). The member answers
+    # through `answer_agent_question`, a composite of `post_agent_activity`.
     Route("GET", "/projects/agent-questions", "agent_questions", "A"),
     Route("PUT", "/projects/tasks/{task_id}/watch", "watch", "B"),
     Route("DELETE", "/projects/tasks/{task_id}/watch", "watch", "B"),
@@ -648,14 +654,14 @@ PLANNED: dict[str, str] = {
     # WS-55 SW-11a. A person resumes a stalled run from Needs attention. The
     # chat gets the tool with the other run tools in EA-12e.
     "resume_agent_run": "WS-55 EA-12e, in-product chat parity",
-    # SW-43a. A member withdraws an answer on the run card. The chat gets the
-    # tool with the change tool in slice SW-43c (spec agent_coordination.md §3.9).
-    "withdraw_agent_answer": "SW-43c, in-product chat parity",
-    "replace_agent_answer": "SW-43c, in-product chat parity",
+    # SW-43c (2026-11-11) built `change_agent_answer` for the withdraw and the
+    # replace of SW-43a and SW-43b.
     # WS-55 EA-13e (2026-10-18) added the summary route for the board strip.
     "agent_summary": "WS-55, in-product chat parity, after EA-12e",
     # WS-AGA AGA-7 (2026-11-11) added the member view of agents.
     "agents_list": "WS-AGA AGA-11 (Metorite task 2114), the chat pack agents-overview",
+    # WS-AGA AGA-9 (2026-11-11) added the drill-down of one agent.
+    "agent_recent_runs": "WS-AGA AGA-11 (Metorite task 2114), the chat pack agents-overview",
     # WS-55 EA-6b (2026-10-15) added the claim route for an outside agent.
     # The chat assigns through `assign` and moves through `update_task`.
     "claim_task": "WS-55, in-product chat parity, after EA-12e",
@@ -671,9 +677,6 @@ PLANNED: dict[str, str] = {
     # WS-MCP SW-32 (2026-11-11) added the run plan for an outside agent. The
     # chat has no run of its own.
     "set_run_plan": "WS-MCP SW-32, in-product chat parity, after EA-12e",
-    # WS-55 EA-18a (2026-11-06) added the list of the questions that wait on a
-    # person. It adds no chat tool (spec §12.8, D109).
-    "agent_questions": "WS-55, in-product chat parity, after EA-12e",
     # ⚠️ `approve_task_archive` is NOT a chat tool, ever (EA3-40, D-OP-13). Its
     # route is class X with a reason, and `waiting_agent_requests` lists it.
     # WS-66 RM-3 (2026-10-25) built the seven reminder tools that RM-1 planned.
@@ -705,6 +708,11 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # D-OP-10 (OP-7): the card lists the subtasks it offers before it asks.
     "delete_task": frozenset({"task_detail"}),
     "add_subtasks": frozenset({"create_task"}),
+    # WS-55 EA-18d (spec §12.8): the member answers one agent question under
+    # one card. The write is ONE `prompt` on `POST …/agent-runs/{id}/activities`,
+    # which stays the route of `post_agent_activity` (PLANNED for EA-12e). The
+    # server decides who may answer (`may_answer_run`).
+    "answer_agent_question": frozenset({"post_agent_activity"}),
     # The create route's INSERT has no `required` column; the flag is a
     # PATCH under the same card (S2b verifier).
     "create_field": frozenset({"update_field"}),
@@ -786,6 +794,9 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # id. Each also reads the project (project_summary's route).
     "save_as_template": frozenset({"list_templates", "project_summary"}),
     "create_project_from_template": frozenset({"list_templates", "project_summary"}),
+    # SW-43c: before the card, the tool reads the task, the runs of the task
+    # and the one run, to name the question and the answer.
+    "change_agent_answer": frozenset({"task_detail", "agent_runs"}),
 }
 
 #: POST routes that WRITE NOTHING. A preview computes what an act would do
@@ -842,6 +853,25 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "status": "waiting_agent_requests",
         "limit": "waiting_agent_requests",
         "order": "waiting_agent_requests",
+    },
+    # ── Questions for me (WS-55 EA-18d, spec §12.8) ──────────────────────
+    ("GET", "/projects/agent-questions"): {
+        "scope": "agent_questions.scope",
+        "project": "agent_questions.project_id",
+        "sort": "agent_questions.sort",
+        "offset": "agent_questions.offset",
+        "limit": "agent_questions",
+    },
+    # ── the member's own answer to an agent (SW-43c) ─────────────────────
+    ("POST", "/projects/agent-runs/{run_id}/answer/withdraw"): {
+        "answer_id": "change_agent_answer.withdraw",
+        "idempotency_key": "change_agent_answer.withdraw",
+    },
+    ("POST", "/projects/agent-runs/{run_id}/answer/replace"): {
+        "answer_id": "change_agent_answer.option",
+        "selected": "change_agent_answer.option",
+        "body": "change_agent_answer.answer",
+        "idempotency_key": "change_agent_answer.option",
     },
     # ── Needs attention (WS-55 SW-11a) ───────────────────────────────────
     ("GET", "/projects/needs-attention"): {
@@ -1432,6 +1462,14 @@ _STATUS_PLACE_REASON = (
 )
 
 
+#: WS-MCP SW-7b (``agent_coordination.md`` §3.7 item 2). The name that an
+#: outside agent gives its own MCP session. The gateway answers 422 when a
+#: person sends it, so the chat, which acts as its member, never sends it.
+_AGENT_LABEL_REASON = (
+    "The display name of an outside agent session (SW-7b). Only a signed agent "
+    "sends it, and the gateway refuses it from a person, so the chat sends none."
+)
+
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/projects/assignable-members"): {"project_id": _MEMBERS_ROUTE_REASON},
     # SP-12: `get_plan` and the MCP tool plan from today. A first working day
@@ -1546,6 +1584,11 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
             "The edit guard of an outside agent (D-PM-20, WS-55 EA-6b). The chat "
             "has no claim tool."
         ),
+        "agent_label": _AGENT_LABEL_REASON,
+    },
+    # SW-7b. The start route keeps its other fields in FIELD_PLANNED (G23).
+    ("POST", "/projects/tasks/{task_id}/agent-runs"): {
+        "agent_label": _AGENT_LABEL_REASON,
     },
     # WS-MCP SW-23: the report of a Check. An outside agent sends each field
     # over MCP (`report_check`). The chat has no report tool.
@@ -1803,10 +1846,6 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     },
     # WS-MCP SW-32: the run plan, with the other run tools.
     ("PUT", "/projects/agent-runs/{run_id}/plan"): {"steps": "G23"},
-    # WS-55 EA-18a: the list of the questions, with the other run tools.
-    ("GET", "/projects/agent-questions"): {
-        "scope": "G23", "project": "G23", "sort": "G23", "offset": "G23", "limit": "G23",
-    },
 }
 
 
@@ -1938,12 +1977,10 @@ UI_ACTIONS: dict[str, str] = {
     # WS-55 SW-11a: a person resumes a stalled run from Needs attention
     # (`resume_agent_run`, PLANNED for EA-12e), and the list itself.
     "agentRunsApi.resume": "resume_agent_run",
-    # SW-43a: a member takes back an answer on the run card
-    # (`withdraw_agent_answer`, PLANNED for SW-43c).
-    "agentRunsApi.withdrawAnswer": "withdraw_agent_answer",
-    # SW-43b: a member changes an answer on the run card
-    # (`replace_agent_answer`, PLANNED for SW-43c).
-    "agentRunsApi.replaceAnswer": "replace_agent_answer",
+    # SW-43a and SW-43b: a member takes back or changes an answer on the run
+    # card. SW-43c gives the chat both acts in one tool.
+    "agentRunsApi.withdrawAnswer": "change_agent_answer",
+    "agentRunsApi.replaceAnswer": "change_agent_answer",
     "attentionApi.list": "needs_attention",
     # The Needs attention lens of My tasks: the same route with `mine=true`.
     "attentionApi.mine": "needs_attention",

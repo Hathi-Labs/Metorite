@@ -101,6 +101,7 @@ import asyncio
 import json
 import re
 import time
+import unicodedata
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -194,6 +195,12 @@ EPHEMERAL_TYPES: frozenset[str] = frozenset({"thought", "action"})
 EPHEMERAL_CAP = 20
 #: The longest ``body`` of an activity, in characters.
 MAX_BODY = 20_000
+#: SW-7b (``agent_coordination.md`` §3.7 item 2). The longest
+#: ``agent_label`` after the clean, in characters.
+AGENT_LABEL_MAX = 40
+#: SW-7b. The longest ``agent_label`` that a body may send before the clean.
+#: A longer value is 422, so no big text reaches the clean.
+AGENT_LABEL_INPUT_MAX = 200
 #: ``wait_s`` of the long poll, at most.
 MAX_WAIT_S = 20
 #: The long poll reads again after this many seconds.
@@ -275,7 +282,9 @@ class OptionIn(BaseModel):
 class StartIn(BaseModel):
     """``POST /projects/tasks/{id}/agent-runs``.
 
-    An agent sends ``external_link`` and ``idempotency_key`` only. A member
+    An agent sends ``external_link``, ``idempotency_key`` and
+    ``agent_label`` only. SW-7b: ``agent_label`` is the display name of the
+    agent's own session, and a member's body that names it is 422. A member
     (EA-12d) also sends ``connection_id``, one of their own live agent
     connections, and ``body``, the first ``prompt``. The tenant and the member
     never come from this body (R5).
@@ -287,6 +296,7 @@ class StartIn(BaseModel):
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
     connection_id: str | None = None
     body: str | None = Field(default=None, max_length=MAX_BODY)
+    agent_label: str | None = Field(default=None, max_length=AGENT_LABEL_INPUT_MAX)
 
 
 #: Task 1045a. The longest ``note`` of a wait, in characters.
@@ -684,6 +694,41 @@ def _clean_body(value: str | None) -> str | None:
     return cleaned or None
 
 
+def clean_agent_label(value: str | None) -> str | None:
+    """SW-7b (``agent_coordination.md`` §3.7 item 2). The display label of an
+    agent session, cleaned by the rules of :func:`_clean_body`: no NUL and no
+    space at either end. It also drops each control and format character,
+    keeps one space for each run of white space, and keeps at most
+    :data:`AGENT_LABEL_MAX` characters. ``None`` when nothing is left.
+
+    Display data only. No authorization check, no visibility rule, no run
+    slot and no session key reads it. Fence: ``test_agent_label_fence.py``.
+    """
+    cleaned = _clean_body(value)
+    if cleaned is None:
+        return None
+    kept = "".join(
+        " " if ch.isspace() else ch for ch in cleaned
+        if ch.isspace() or not unicodedata.category(ch).startswith("C"))
+    return _clean_body(" ".join(kept.split())[:AGENT_LABEL_MAX])
+
+
+def agent_label_of(user: UserContext, value: str | None) -> str | None:
+    """SW-7b. The cleaned ``agent_label`` of the body of a claim or a start.
+
+    Only a signed agent names its own session. So a person's body that names
+    a label is 422. The label comes only from that body, never from a header,
+    the token row or the connection.
+    """
+    if value is None:
+        return None
+    if getattr(user, "agent", None) is None:
+        raise HTTPException(
+            status_code=422, detail="Only an agent sends agent_label, the name of its session.",
+        )
+    return clean_agent_label(value)
+
+
 def _handoff_of(note: HandoffIn | None) -> dict[str, str] | None:
     """The cleaned handoff note, or ``None`` when it holds no text (SW-24).
 
@@ -910,6 +955,10 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
             # map `CLIENT_LABELS`, never from the self-declared client name.
             "client_name": agent_oauth.client_label(row.client_via),
             "client_host": agent_oauth.client_host(row.client_via),
+            # SW-7b: the label that the agent gave its session, for "Claude
+            # Code (backend-worker-3)". Display data only: no gate reads it,
+            # and the edge sends it on as untrusted text.
+            "agent_label": getattr(row, "agent_label", None),
             "status": row.status,
             "state": row.state,
             "started_by": row.started_by,
@@ -1345,6 +1394,9 @@ async def _write_activity(
         ended = getattr(run, "ended_at", None)
         reopened_end = ended.isoformat() if isinstance(ended, datetime) else None
         await _clear_for_reopen(db, run, user)
+        # SW-7b. The ended run kept the label of the session that ran it. The
+        # reopen hands the run to the next session, so the old name goes.
+        await _clear_run_label(db, str(run.id))
 
     content: dict[str, Any] = {"body": body}
     # MCP-G15: only `record_outside_decision` passes these, on a response.
@@ -1986,9 +2038,10 @@ _INSERT_RUN_SQL = (
     "INSERT INTO pm_agent_runs "
     "(task_id, member_email, connection_id, client_via, status, started_by, "
     " started_at, external_link, last_activity_at, last_agent_activity_at, "
-    " idempotency_key, session_key) "
+    " idempotency_key, session_key, agent_label) "
     "VALUES (CAST(:tid AS uuid), :me, CAST(:cid AS uuid), :via, :status, :by, "
-    "        :started, :link, :ts, :agent_ts, :key, CAST(:sk AS text)) "
+    "        :started, :link, :ts, :agent_ts, :key, CAST(:sk AS text), "
+    "        CAST(:label AS text)) "
     "ON CONFLICT DO NOTHING RETURNING id"
 )
 
@@ -2007,6 +2060,40 @@ async def _set_run_link(db: Any, run_id: str, link: str | None) -> None:
     if link is None:
         return
     await db.execute(text(_SET_LINK_SQL), {"rid": run_id, "link": link})
+
+
+#: SW-7b. The newest label of the run's own agent session wins.
+_SET_LABEL_SQL = (
+    "UPDATE pm_agent_runs SET agent_label = CAST(:label AS text) "
+    " WHERE id = CAST(:rid AS uuid) AND agent_label IS DISTINCT FROM CAST(:label AS text)"
+)
+
+
+async def _set_run_label(db: Any, run_id: str, label: str | None) -> None:
+    """SW-7b. Set the label of an open run that the caller already owns, as
+    :func:`_set_run_link` sets the link. A call with no label keeps the old
+    one. A Resume and a reopen clear the label (:func:`_clear_run_label`), so
+    a label never outlives its session on an open run. The run came from the
+    gate, so the label never chooses the run."""
+    if label is None:
+        return
+    await db.execute(text(_SET_LABEL_SQL), {"rid": run_id, "label": label})
+
+
+#: SW-7b. The clear of the label when the run passes to the next session.
+_CLEAR_LABEL_SQL = (
+    "UPDATE pm_agent_runs SET agent_label = NULL"
+    " WHERE id = CAST(:rid AS uuid) AND agent_label IS NOT NULL"
+)
+
+
+async def _clear_run_label(db: Any, run_id: str) -> None:
+    """SW-7b. Clear the label of a run that passes to the next session of
+    its connection: a Resume (it clears the key) and a reopen. A label never
+    outlives its session on an open run, so a call with no label can always
+    keep the old one (:func:`_set_run_label`). It is a separate statement,
+    so no run-slot rule names the label (the fence of §3.7)."""
+    await db.execute(text(_CLEAR_LABEL_SQL), {"rid": run_id})
 
 
 #: The ONE open-run read of EA12-6: the open run of a task for a member and a
@@ -2096,6 +2183,8 @@ async def start_agent_run(
     me = _member(user)
     link = _check_link(payload.external_link)
     body = _clean_body(payload.body)
+    # SW-7b: an agent's own label, display data only. A person's is 422.
+    label = agent_label_of(user, payload.agent_label)
     if via is not None and (payload.connection_id is not None or payload.body is not None):
         raise HTTPException(
             status_code=422, detail="An agent sends no connection_id and no body to start a run.",
@@ -2163,7 +2252,7 @@ async def start_agent_run(
                 "by": via if via is not None else me,
                 "started": ts if via is not None else None,
                 "link": link, "ts": ts, "agent_ts": ts if via is not None else None,
-                "key": payload.idempotency_key, "sk": own_session,
+                "key": payload.idempotency_key, "sk": own_session, "label": label,
             })).fetchone()
             if made is None:  # a concurrent start won the open-run or the key index
                 # A retry with the same key that lost the race replays the
@@ -2180,6 +2269,8 @@ async def start_agent_run(
         if existing is not None and via is not None:
             # CIV-14a: an agent's start on its open run sets the link.
             await _set_run_link(db, str(existing.id), link)
+            # SW-7b: and the label of its session.
+            await _set_run_label(db, str(existing.id), label)
             existing = await _load_run(db, str(existing.id))
         if existing is not None:
             # The open run is the answer (EA12-6). A member's instruction is
@@ -2391,7 +2482,15 @@ async def _read_run(user: UserContext, run_id: str, after: int | None) -> tuple[
         )).fetchall())
         if own:
             rows = await _stamp_returned(db, run_id, rows, locked)
-        return (await _runs_out(db, [run]))[0], [_activity_out(r) for r in rows]
+        out_run = (await _runs_out(db, [run]))[0]
+        # EA-18b. With the flag on, a person's read says if they may answer the
+        # open question, from the ONE rule of the write route. The run panel
+        # shows a read-only card from it. With the flag off the key is absent.
+        if _agent_via(user) is None and agent_questions_allowed(
+            getattr(user, "organization_id", None),
+        ):
+            out_run["can_answer"] = await may_answer_run(db, run, user)
+        return out_run, [_activity_out(r) for r in rows]
 
 
 @router.get("/agent-runs/{run_id}", dependencies=_ENABLED)
@@ -2924,6 +3023,8 @@ async def resume_agent_run(
             # A person's prompt keeps the key (`_move_run`), so Resume clears
             # it here, once, in the same transaction.
             await db.execute(text(_RESUME_KEY_SQL), {"rid": run_id})
+            # SW-7b. The label names the quiet session, so it goes too.
+            await _clear_run_label(db, run_id)
         out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
         activity = written.activity if written is not None else replay
         out_activity = _activity_out(activity)
@@ -3592,7 +3693,8 @@ async def _earlier_archive_request(db: Any, task_id: str, me: str, key: str) -> 
 
 
 async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
-                          via: str, link: str | None = None) -> tuple[str | None, bool]:
+                          via: str, link: str | None = None,
+                          label: str | None = None) -> tuple[str | None, bool]:
     """The id of the agent's open run on the task, or of a new
     ``in_progress`` run (EA12-6), and True when this call made it.
 
@@ -3608,13 +3710,14 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
                                 session=_agent_session(user))
     if existing is not None:
         await _set_run_link(db, str(existing.id), link)
+        await _set_run_label(db, str(existing.id), label)
         return str(existing.id), False
     ts = await _clock(db)
     made = (await db.execute(text(_INSERT_RUN_SQL), {
         "tid": task_id, "me": me, "cid": str(user.agent.connection_id),  # type: ignore[union-attr]
         "via": via, "status": "in_progress", "by": via, "started": ts,
         "link": link, "ts": ts, "agent_ts": ts, "key": None,
-        "sk": _agent_session(user),
+        "sk": _agent_session(user), "label": label,
     })).fetchone()
     if made is not None:
         return str(made.id), True
@@ -3625,6 +3728,7 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
                                 session=_agent_session(user))
     if existing is not None:
         await _set_run_link(db, str(existing.id), link)
+        await _set_run_label(db, str(existing.id), label)
     return (str(existing.id) if existing is not None else None), False
 
 
@@ -3640,7 +3744,8 @@ async def _open_or_new_run(db: Any, user: UserContext, task_id: str, me: str,
 
 
 async def open_run_for_claim(db: Any, task_id: str, user: UserContext,
-                             link: str | None = None) -> str | None:
+                             link: str | None = None,
+                             label: str | None = None) -> str | None:
     """WS-55 EA-13c (spec §12.2 item 3, EA3-42). A claim by an agent opens
     its run, so the card reads "working" even when the agent skips
     ``start_agent_run``. ``claim_task`` calls it in the claim's OWN
@@ -3652,7 +3757,8 @@ async def open_run_for_claim(db: Any, task_id: str, user: UserContext,
     * With an open run of this task, member and stamp (EA12-6), it writes
       nothing and returns that run. CIV-14a: a *link* (already checked by
       ``check_run_link``) is the one exception. It sets the link of the run
-      or of the new run, and the newest link wins. Else it
+      or of the new run, and the newest link wins. SW-7b: a *label*
+      (already cleaned by ``agent_label_of``) acts in the same way. Else it
       inserts one ``in_progress`` run, started by the stamp, with the
       connection and ``last_agent_activity_at`` now. No activity row, no
       comment and no notification (C7 and C9 of EA-6b).
@@ -3671,7 +3777,7 @@ async def open_run_for_claim(db: Any, task_id: str, user: UserContext,
     if getattr(user, "agent", None) is None or not agent_runs_enabled():
         return None
     run_id, made = await _agent_open_run(db, user, task_id, _member(user),
-                                         _agent_via(user) or "", link)
+                                         _agent_via(user) or "", link, label)
     if run_id is not None and not made:
         # SW-43. The claim finds the run of the agent: that is a read.
         await _stamp_answer_read(db, await _load_run(db, run_id), user)

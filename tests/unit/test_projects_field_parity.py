@@ -373,6 +373,8 @@ _BASE: dict[str, dict[str, Any]] = {
     "update_type": {"project_id": UUID, "type_name": "bug", "name": "Defect"},
     # WS-66 RM-3: the member's reminders. The fake saves the zone UTC.
     "list_reminders": {},
+    # WS-55 EA-18d: the member answers an agent question (the fake holds one open run).
+    "answer_agent_question": {"run_id": UUID, "answer": "Use the staging box"},
     "set_reminder": {"title": "Call the bank", "at": "2099-10-31 09:00"},
     "update_reminder": {"reminder_id": tw.REMINDER, "title": "Fix the extruder today"},
     "resolve_reminder": {"reminder_id": tw.REMINDER},
@@ -380,9 +382,18 @@ _BASE: dict[str, dict[str, Any]] = {
     # WS-39 TPL-1a: the fake org holds one template, `UUID`.
     "save_as_template": {"project_id": UUID, "name": "Office move"},
     "create_project_from_template": {"template_id": UUID, "parent_id": UUID},
+    # SW-43c: the fake run of `UUID` holds the member's live answer. A witness
+    # names the argument that picks the route: `withdraw`, `option` or `answer`.
+    "change_agent_answer": {"task_id": UUID},
 }
 _SAMPLE: dict[str, Any] = {
+    # WS-55 EA-18d: the arguments of `agent_questions`.
+    "scope": "everyone",
+    "sort": "newest",
     "all_unread": True,
+    # SW-43c: an option of the fake question (tw.QUESTION), and the withdraw.
+    "option": "Not now",
+    "withdraw": True,
     # WS-39 SP-5a: the witnesses of the cycle fields.
     "add_task_ids": UUID,
     "carry_over": "backlog",

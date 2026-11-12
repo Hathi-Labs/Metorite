@@ -178,7 +178,8 @@ class _FakeDB:
             if pkg and pkg["org"] == self.org and pkg["owner"] == p["m"]:
                 return _Result([(pkg["id"], f"visits-{pkg['id'][:8]}", "Visits", "",
                                  pkg["owner"], "private", "draft",
-                                 json.dumps(pkg["manifest"]), None, NOW, NOW)])
+                                 json.dumps(pkg["manifest"]), None, NOW, NOW,
+                                 pkg.get("paused_at"), None)])
             return _Result()
         if sql == objects_store._OBJECT_BY_NAME_SQL:
             for o in w.objects:
@@ -1050,14 +1051,16 @@ class TestTheTables:
         assert src.count("_declared(package") == 1
 
     def test_each_refusal_is_one_short_sentence(self):
+        # J2a adds read_only, the write of a viewer.
         assert set(invoke.REFUSALS) == {"not_declared", "class_x", "not_in_catalog",
                                         "approval_required", "source_not_open",
-                                        "no_person_present"}
+                                        "no_person_present", "read_only"}
         messages = {**invoke.REFUSALS, "catalog_unavailable": invoke.CATALOG_DOWN,
                     "object_missing": invoke.NO_OBJECT, "bad_input": invoke.BAD_RECORD_ID,
                     "bad_list": invoke.BAD_LIST_INPUT, "body_too_large": invoke.BODY_OVER_CAP,
                     "request_refused": invoke.ASK_AGAIN,
-                    "approval_ask": invoke.APPROVAL_ASK}
+                    "approval_ask": invoke.APPROVAL_ASK,
+                    "read_busy": invoke.READ_BUSY_MESSAGE}
         # B2c-2a: each refused spend has its own code and one sentence.
         messages.update({code: text for _, code, text in invoke.SPEND_REFUSALS.values()})
         for code, message in messages.items():

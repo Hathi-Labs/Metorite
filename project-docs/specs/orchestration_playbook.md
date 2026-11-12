@@ -1,6 +1,6 @@
 # Orchestration playbook — the know-how that Metorite ships to every organization that connects
 
-**Status: ACTIVE (PB-0, 2026-11-06). Built so far: PB-1, PB-2, PB-3a, PB-3b, PB-4, PB-5, KIT-0, KIT-1, KIT-2b, KIT-2c, KIT-2d and the KIT-6 tooling, with no live client run. The rest is not.** The decision is **D186** in `work_plan.md` §3, and task 1906 (SW-P10) planned this spec. Its slices are PB-1 to PB-10, and the kit slices KIT-0 to KIT-9 (§6a, epic 2547). Each has a task on the board.
+**Status: ACTIVE (PB-0, 2026-11-06). Built so far: PB-1, PB-2, PB-3a, PB-3b, PB-4, PB-5, KIT-0, KIT-1, KIT-2b, KIT-2c, KIT-2d, KIT-8, the KIT-6 tooling and KIT-4a, with no live client run. The rest is not.** The decision is **D186** in `work_plan.md` §3, and task 1906 (SW-P10) planned this spec. Its slices are PB-1 to PB-10, and the kit slices KIT-0 to KIT-9 (§6a, epic 2547). Each has a task on the board.
 
 **Board row:** **WS-MCP** in `work_plan.md` §2.1. **Owner direction (2026-11-06):** Metorite "not only becomes a place we use for orchestrating multiple agents". It "also contains the know-how and understanding in the system prompt to help set up multi-org orchestration systems for whoever connects the Metorite MCP." **Price:** part of the flat seat (`launch_surface.md` §4). No SKU and no add-on (D186.3).
 
@@ -398,6 +398,7 @@ The Claude pack is SW-82 (task 1927) in `agent_coordination.md`. It follows this
 
 - **Metorite task.** 2554.
 - **Scope.** A route that serves the pack of one client as a zip. It reads the `kit/` files and adds no content. The route is dark behind `PLAYBOOK_ORGS`.
+- **Built (KIT-4a).** The backend half: `GET /agent-kit` and `GET /agent-kit/{client}.zip` in `routes/agent_kit.py`, and `acb_playbook/kit_zip.py`. The Integrations control is KIT-4b and needs an owner preview. Tests: `test_kit_zip.py`, `test_kit_download_route.py`. The R8 file named below is not yet written.
 - **Done when.** A listed organization gets the zip. An unlisted organization gets 404. The zip holds the same `kit_version` as the MCP.
 - **Fence.** `tests/unit/test_kit_download_r8.py` (new), `test_tenant_coverage.py`.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE dark. **Depends on.** KIT-1, KIT-2b, KIT-2c, KIT-2d, KIT-6, SW-82.
@@ -408,6 +409,7 @@ The Claude pack is SW-82 (task 1927) in `agent_coordination.md`. It follows this
 - **Scope.** The `kit_version` fence of §6a, and a doctor check that flags a stale kit.
 - **Done when.** A change to a kit file with no version change fails the test. A stale kit raises one doctor row.
 - **Fence.** `tests/unit/test_kit_version.py` (new), `test_agent_doctor_r8.py` (extended).
+- **Built (KIT-5a, 2026-11-12).** The MCP serves `kit_version` and the version of each client in the `read_playbook` index and in the resource `metorite://playbook/kit-version`. The core has the section "Keep the kit current". `test_kit_version.py` pins a digest of every shipped file to its version. **Not built:** the doctor row, because PB-7 (task 1953) does not exist yet.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** KIT-4, PB-7.
 
 #### KIT-6 · The conformance matrix
@@ -431,6 +433,7 @@ The Claude pack is SW-82 (task 1927) in `agent_coordination.md`. It follows this
 - **Metorite task.** 2558.
 - **Scope.** One page that tells a member how to connect each client. It repeats no kit text and links to the download.
 - **Done when.** The page lists each client of the file map with its connect step.
+- **Built (2026-11-11).** `docs/use_metorite_from_your_coding_agent.md`, the index `docs/llms.txt` and `tests/unit/test_kit_docs_page.py`. The test pins the six headings, the hosts, the MCP address, the tool names and the setup text. No live run on a real client has been done.
 - **Fence.** Advisory (R7). A person reads the page against the file map.
 - **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** KIT-2b, KIT-2c, KIT-2d, SW-82.
 
