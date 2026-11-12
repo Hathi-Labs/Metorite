@@ -34,6 +34,9 @@ no row of org A. The flag off sends no request.
   ``test_r8_a_sync_writes_each_instance_once_and_a_second_adds_nothing``.
 * M5. ``calendar_connections.py``: drop the owner check in ``_own``. Bob
   disconnected Ana. ``test_r8_a_member_cannot_touch_the_connection_of_another``.
+* M7. ``google.py``: drop the ``truncated`` check in ``_call``. A cut page
+  read as an empty feed and the writer pruned every row.
+  ``test_a_page_cut_by_the_size_cap_is_asked_again_smaller_and_never_pruned``.
 * M6. ``engine.py``: drop the cursor compare before the write. Two syncs that
   started on one cursor both wrote.
   ``test_r8_a_sync_that_lost_the_race_writes_nothing``.
@@ -130,7 +133,7 @@ def feed(*, incremental: bool = True) -> FakeHttp:
 def cred(**kw: Any) -> SourceCredential:
     return SourceCredential(
         access_token="ya29.fake", refresh_token="1//fake",
-        expires_at=NOW + timedelta(hours=1),
+        expires_at=datetime.now(UTC) + timedelta(hours=2),
         scopes=kw.pop("scopes", google.SCOPES), **kw)
 
 
@@ -698,3 +701,33 @@ async def _call(w: Any, method: str, path: str, member: str) -> Any:
                                  base_url="http://gateway.test") as client:
         return await client.request(method, path, headers={"x-user-email": member},
                                     follow_redirects=False)
+
+
+# ── A cut page is never a read (Opus review P0) ───────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_page_cut_by_the_size_cap_is_asked_again_smaller_and_never_pruned() -> None:
+    full = fixture("google_events_full_page2.json")  # has the sync token
+    cut = HttpAnswer(status_code=200, body=b'{"items": [{"id": "a"', truncated=True)
+    http = FakeHttp().on("GET", "/events", cut, answer(full))
+    result = await provider(http).sync(cred(), None, WINDOW)
+    sizes = [int(c[2]["maxResults"]) for c in http.calls]
+    assert sizes == [100, 50] and result.next_cursor == "SYNC-1"
+    assert "fields" in http.calls[0][2]
+    # Cut at every size: the read FAILS. It returns no empty feed.
+    http = FakeHttp().on("GET", "/events", cut)
+    with pytest.raises(ProviderError) as err:
+        await provider(http).sync(cred(), None, WINDOW)
+    assert err.value.code == "page_too_large"
+
+
+@pytest.mark.asyncio
+async def test_a_last_page_without_a_sync_token_is_not_a_finished_read() -> None:
+    http = FakeHttp().on("GET", "/events", answer({"items": []}))
+    with pytest.raises(ProviderError) as err:
+        await provider(http).sync(cred(), None, WINDOW)
+    assert err.value.code == "no_sync_token"
+    http = FakeHttp().on("GET", "/events", HttpAnswer(status_code=200, body=b"<html>"))
+    with pytest.raises(ProviderError):
+        await provider(http).sync(cred(), None, WINDOW)

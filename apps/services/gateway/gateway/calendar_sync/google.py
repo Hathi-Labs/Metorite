@@ -69,9 +69,19 @@ HOSTS: frozenset[str] = frozenset({
     "accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com"})
 
 API = "https://www.googleapis.com/calendar/v3"
-PAGE_SIZE = 250
-#: A safety stop: 40 pages of 250 is 10 000 instances in one read.
-MAX_PAGES = 40
+PAGE_SIZE = 100
+#: The guard reads at most 64 KiB of an answer. A page that was cut is asked
+#: again with half the events, down to this size, and then the read fails. A
+#: cut page is NEVER used: it would look like an empty feed and the writer
+#: would prune every row of the connection.
+MIN_PAGE_SIZE = 10
+#: Only the fields the mapper reads, so a page is small.
+EVENT_FIELDS = (
+    "nextPageToken,nextSyncToken,items(id,etag,status,htmlLink,summary,"
+    "description,location,start,end,transparency,eventType,recurringEventId,"
+    "originalStartTime,hangoutLink,conferenceData/entryPoints(entryPointType,uri))")
+#: A safety stop: 100 pages of up to 100 events in one read.
+MAX_PAGES = 100
 
 #: Event types the calendar does not show as a time of the member.
 _SKIP_TYPES = frozenset({"workingLocation"})
@@ -259,7 +269,12 @@ class GoogleCalendar:
             answer = await self._http.send_json(method, url, body=body, headers=headers)
         status = answer.status_code
         if 200 <= status < 300:
-            return answer.json()
+            if answer.truncated:
+                raise PageTooLarge("the answer was cut by the size cap")
+            body_json = answer.json()
+            if answer.body and not isinstance(body_json, Mapping):
+                raise ProviderError("bad_answer")
+            return body_json
         reason = _reason(answer.json())
         if status == 410:
             raise CursorExpired("The Google sync token is dead")
@@ -303,7 +318,7 @@ class GoogleCalendar:
         self, cred: SourceCredential, cursor: str | None, window: Window,
     ) -> SyncResult:
         base: dict[str, str] = {
-            "singleEvents": "true", "showDeleted": "true", "maxResults": str(PAGE_SIZE)}
+            "singleEvents": "true", "showDeleted": "true", "fields": EVENT_FIELDS}
         if cursor:
             base["syncToken"] = cursor
         else:
@@ -311,12 +326,19 @@ class GoogleCalendar:
             base["timeMax"] = window.end.astimezone(UTC).isoformat().replace("+00:00", "Z")
         changes: list[RemoteEvent] = []
         page = ""
+        size = PAGE_SIZE
         next_sync: str | None = None
         for _ in range(MAX_PAGES):
-            params = dict(base)
+            params = {**base, "maxResults": str(size)}
             if page:
                 params["pageToken"] = page
-            body = await self._call(cred, "GET", "calendars/primary/events", params=params)
+            try:
+                body = await self._call(cred, "GET", "calendars/primary/events", params=params)
+            except PageTooLarge:
+                if size <= MIN_PAGE_SIZE:
+                    raise
+                size = max(MIN_PAGE_SIZE, size // 2)
+                continue  # the same page again, with fewer events
             for item in body.get("items") or ():
                 if isinstance(item, Mapping):
                     mapped = map_event(item)
@@ -328,6 +350,10 @@ class GoogleCalendar:
                 break
         else:
             raise ProviderError("too_many_pages")
+        if next_sync is None:
+            # The read did not finish: never hand a half read to the writer,
+            # whose full-list prune would delete the rows it did not see.
+            raise ProviderError("no_sync_token")
         return SyncResult(changes=changes, next_cursor=next_sync, full=not cursor)
 
     # Writes (CE-13)
@@ -366,6 +392,13 @@ class GoogleCalendar:
             if getattr(exc, "code", "") in ("not_found", "cursor_expired"):
                 return  # 404 and 410 mean the event is gone
             raise
+
+
+class PageTooLarge(ProviderError):
+    """A page passed the size cap of the guard. The caller asks for less."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__("page_too_large", message)
 
 
 _RATE_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded"})
