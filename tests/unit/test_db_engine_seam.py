@@ -471,7 +471,14 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: session of its own (-1). The one new unbound read is
 #: `service._organization_ids`, a tenant-discovery site that is not counted
 #: here (+1 in H2_TENANT_DISCOVERY_SITES). Measured drop: 5.
-H2_BASELINE_ELSEWHERE = 62
+#: 62 → 58: H-328 part (c) (2026-11-12). The base measured 60 already: two
+#: sites left in earlier work, and no PR banked them. In routes/workflows,
+#: the hook door (`hooks.workflow_hook`) and the event door
+#: (`triggers.dispatch_event`) moved their read to `_tenant_session(org)`
+#: (-2). The hook door finds the org through `service._organization_ids`,
+#: which is already a discovery site, so it adds no new one. Measured: 58.
+#: `test_workflows_triggers_r8.py` fences both doors under FORCE RLS.
+H2_BASELINE_ELSEWHERE = 58
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files
