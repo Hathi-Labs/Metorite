@@ -1324,3 +1324,64 @@ async def test_r8_a_removal_that_cannot_find_its_event_gives_up_after_the_cap(wo
         s = await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=10))
     assert s.deleted == 1 and _links(world, world.org_a) == []  # the link is gone ...
     assert len([c for c in fake.calls if c[0] == "upsert"]) == n  # ... with no further request
+
+
+# ── CE-13d: the member's switch "push tasks" (task 3068) ──────────────────
+#
+# * M30. ``connections.py`` ``push_tasks_enabled``: return True. The switch does
+#   nothing. ``test_r8_off_sends_no_request_in_either_pass_and_on_again_resumes``.
+# * M33. ``task_out.py`` ``_pull``: drop the ``push_tasks_enabled`` test. The pull
+#   still reads the calendar. Same test.
+
+
+def _push_tasks(world: Any, value: Any) -> None:
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE integration_connections SET provider_meta = provider_meta || "
+                       "jsonb_build_object('push_tasks', CAST(:v AS jsonb)) WHERE id = CAST(:i AS uuid)"),
+                  {"i": world.conn["a"], "v": value})
+
+
+@pytest.mark.asyncio
+async def test_r8_off_sends_no_request_in_either_pass_and_on_again_resumes(world):
+    fake = FakeProvider()
+    fake.feed = SyncResult(changes=[], next_cursor="c1", full=False)
+    _push_tasks(world, "false")
+    async with _in(world, world.org_a):
+        await _task(world.org_a, ALICE, "Switched off", T0)
+        s = await task_out.run_pass(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
+        assert s.skipped == "push_off" and fake.calls == [] and _links(world, world.org_a) == []
+        assert await task_out.pull_remote_changes(
+            world.org_a, world.conn["a"], provider=fake, now=lambda: NOW) == 0 and fake.calls == []
+        _push_tasks(world, "true")
+        s = await task_out.run_pass(world.org_a, world.conn["a"], provider=fake,
+                                    now=lambda: NOW + timedelta(minutes=1))
+    assert s.created == 1  # the block that waited goes out
+
+
+@pytest.mark.asyncio
+async def test_r8_off_keeps_the_events_and_links_and_a_close_during_off_deletes_on_resume(world):
+    fake = FakeProvider()
+    fake.feed = SyncResult(changes=[], next_cursor="c1", full=False)
+    async with _in(world, world.org_a):
+        tid = await _task(world.org_a, ALICE, "Stays while off", T0)
+        await _pass(world, world.org_a, world.conn["a"], fake)  # ev1 is out
+        _push_tasks(world, "false")
+        await _close(world.org_a, tid)
+        n = len(fake.calls)
+        s = await task_out.run_pass(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
+        assert s.skipped == "push_off" and len(fake.calls) == n  # no delete while off
+        assert len(_links(world, world.org_a)) == 1  # the link stays
+        _push_tasks(world, "true")
+        s = await task_out.run_pass(world.org_a, world.conn["a"], provider=fake,
+                                    now=lambda: NOW + timedelta(minutes=1))
+    assert s.deleted == 1 and ("delete", "cal-metorite", "ev1") in fake.calls
+    assert _links(world, world.org_a) == []
+
+
+@pytest.mark.asyncio
+async def test_r8_an_absent_switch_behaves_as_before(world):
+    fake = FakeProvider()
+    async with _in(world, world.org_a):
+        await _task(world.org_a, ALICE, "Default on", T0)
+        s = await _pass(world, world.org_a, world.conn["a"], fake)
+    assert s.created == 1 and "push_tasks" not in _meta(world)

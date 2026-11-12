@@ -1154,11 +1154,22 @@ jobs:
     # 40 is about twice the measured job. A suite that keeps growing will
     # reach it again. Then split the suite, or raise the cap with a new count.
     timeout-minutes: 40
+    # CIV-29a: `actions: read` lets the compare step list and download main's nightly result.
+    permissions:
+      contents: read
+      actions: read
     defaults:
       run:
         working-directory: workbench/control_plane
     steps:
       - uses: actions/checkout@v5
+
+      # ⚠️ After the checkout, never before it: the job's default folder
+      # (workbench/control_plane) exists only after the checkout, and a run
+      # step before it fails the whole shard in one second (PR 2181, first run).
+      - name: What blocks a merge
+        run: |
+          echo "The browser suite is not a required check. Required checks: see Lint, Unit tests, Backup/restore rehearsal, Migration ladder replay, Frontend, Operator console, Secret scan." >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/setup-node@v4
         with:
@@ -1183,13 +1194,49 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Browser suite
+        id: suite
         # The watchdog ends a run whose dev server stops answering. See the
-        # header of scripts/e2e_watchdog.sh. The run's exit code passes through.
+        # header of scripts/e2e_watchdog.sh. CIV-29a (D218): this step hands the
+        # run's exit code to the next step, which fails the job on a NEW failure.
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: e2e-result.json
         run: |
-          npx playwright test --project=ci --shard=${{ matrix.shard }}/3 &
+          npx playwright test --project=ci --reporter=list,json --shard=${{ matrix.shard }}/3 &
           pw=$!
           bash ../../scripts/e2e_watchdog.sh http://127.0.0.1:3101/chat "$pw" &
-          wait "$pw"
+          code=0
+          wait "$pw" || code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+      # CIV-29a (D218): 36 of 70 red runs failed ONLY this suite, and it is not a
+      # required check. A failure that the newest nightly on main also has is
+      # inherited, and it does not fail the PR. A NEW failure still fails the job.
+      # No readable main result keeps the old rule: any failure fails.
+      - name: Compare with main's newest nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHARD: ${{ matrix.shard }}
+        # ⚠️ Trust only a nightly that this repo started: a schedule or a
+        # dispatch. The repo is public, and a fork PR from its own `main` also
+        # has head branch `main`, so `--branch main` alone lets a fork plant a
+        # result in which every test "fails" (Opus review, 2026-11-12). A fork
+        # cannot make a schedule or a dispatch event here.
+        # All three shards are read and joined, because a spec file can move
+        # to another shard when the test count changes.
+        run: |
+          rm -rf ../../.e2e-main && mkdir -p ../../.e2e-main
+          run_id=$(gh run list --workflow e2e-nightly.yml --branch main --status completed --limit 20 \
+            --json databaseId,conclusion,event --jq '[.[] | select((.event == "schedule" or .event == "workflow_dispatch") and (.conclusion == "success" or .conclusion == "failure"))][0].databaseId' || true)
+          mains=()
+          if [ -n "$run_id" ]; then
+            for s in 1 2 3; do
+              gh run download "$run_id" --name "e2e-nightly-result-$s" --dir "../../.e2e-main/$s" || true
+              [ -f "../../.e2e-main/$s/e2e-result.json" ] && mains+=(--main "../../.e2e-main/$s/e2e-result.json")
+            done
+          fi
+          echo "Shard $SHARD compares with nightly run ${run_id:-none} (${#mains[@]} report args)."
+          python3 ../../scripts/e2e_inherited.py --pr e2e-result.json "${mains[@]}" \
+            --exit-code "${{ steps.suite.outputs.code }}" --summary "$GITHUB_STEP_SUMMARY"
 
       # ⚠️ Without this a red run is a wall of text and no screenshot, and an
       # undiagnosable gate is one somebody deletes. The report carries the

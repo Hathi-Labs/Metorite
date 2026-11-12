@@ -228,6 +228,11 @@ async def reconcile_task_blocks(
         if not flags.write_allowed(org, me):
             stats.skipped = "flag_off"  # no request, no cost
             return stats
+        if not connections.push_tasks_enabled(conn):
+            # The member switched it off: no request to the provider. The events
+            # already in the calendar "Metorite" stay, and so do the links.
+            stats.skipped = "push_off"
+            return stats
         work = await plan(db, org, str(conn.id), me, t0)
     if not work["push"] and not work["remove"] and connections.metorite_calendar_id(conn):
         stats.skipped = "nothing_to_do"
@@ -588,6 +593,8 @@ async def _pull(
     me = str(conn.member_email).lower()
     if not flags.write_allowed(org, me):
         return 0
+    if not connections.push_tasks_enabled(conn):
+        return 0  # switched off: not even a read of the calendar "Metorite"
     cred = await connections.fresh_credential(org, conn, provider)
     if cred is None:
         return 0
