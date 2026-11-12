@@ -22,6 +22,10 @@ import {
   rowState,
   showsPrompt,
   startConnect,
+  offerLine,
+  parseOffers,
+  visibleOffers,
+  MAX_OFFERS,
   syncNow,
   syncResultLine,
   wantsSettings,
@@ -291,5 +295,71 @@ describe("the wire", () => {
     expect((await syncNow("../x", spy)).kind).toBe("error");
     expect((await disconnect("a/b", spy)).kind).toBe("error");
     expect(seen).toHaveLength(2);
+  });
+});
+
+// WS-CAL CE-10d: the mailbox offers.
+describe("mailbox offers", () => {
+  const base = { enabled: true, providers: { google: { available: true }, outlook: { available: true } }, connections: [] };
+  it("reads a good list", () => {
+    const l = parseList({ ...base, mailbox_offers: [{ provider: "google", address: "a@b.co" }, { provider: "outlook", address: "c@d.com" }] });
+    expect(l?.mailbox_offers).toEqual([{ provider: "google", address: "a@b.co" }, { provider: "outlook", address: "c@d.com" }]);
+  });
+  it("reads a missing or malformed key as empty", () => {
+    expect(parseList(base)?.mailbox_offers).toEqual([]);
+    for (const bad of [null, 5, "x", {}, [[]], [null, 3, "x"]]) expect(parseOffers(bad)).toEqual([]);
+  });
+  it("drops an entry with a bad provider or address", () => {
+    const bad = [
+      { provider: "yahoo", address: "a@b.co" },
+      { provider: "google", address: "not an address" },
+      { provider: "google", address: `${"a".repeat(250)}@b.co` },
+      { provider: "google", address: "a@b" },
+      { provider: "google", address: 5 },
+      { provider: "google", address: "x<y>@b.co" },
+      { provider: "outlook", address: "ok@b.co" },
+    ];
+    expect(parseOffers(bad)).toEqual([{ provider: "outlook", address: "ok@b.co" }]);
+  });
+  it("keeps at most ten", () => {
+    const many = Array.from({ length: 25 }, (_, i) => ({ provider: "google", address: `u${i}@b.co` }));
+    expect(parseOffers(many)).toHaveLength(MAX_OFFERS);
+  });
+  it("words the offer line", () => {
+    expect(offerLine({ address: "a@b.co" })).toBe("Your mailbox a@b.co is connected. Also sync its calendar?");
+  });
+  it("shows offers only when enabled and the provider can connect", () => {
+    const l = parseList({ ...base, providers: { google: { available: false }, outlook: { available: true } }, mailbox_offers: [{ provider: "google", address: "a@b.co" }, { provider: "outlook", address: "c@d.com" }] });
+    expect(visibleOffers(l).map((o) => o.provider)).toEqual(["outlook"]);
+    expect(visibleOffers(null)).toEqual([]);
+  });
+  it("sends the hint as the body, and maps unknown_mailbox", async () => {
+    const seen: RequestInit[] = [];
+    const f = (async (_u: string, init?: RequestInit) => {
+      seen.push(init ?? {});
+      return new Response(JSON.stringify({ detail: "unknown_mailbox" }), { status: 422 });
+    }) as unknown as typeof fetch;
+    const r = await startConnect("google", f, "a@b.co");
+    expect(JSON.parse(String(seen[0].body))).toEqual({ login_hint: "a@b.co" });
+    expect(r).toEqual({ kind: "error", message: "That mailbox is not connected to your account. Reload the page." });
+    const g = (async () => new Response(JSON.stringify({ detail: "consent_declined" }), { status: 400 })) as unknown as typeof fetch;
+    const d = await startConnect("outlook", g, "a@b.co");
+    expect(d.kind === "error" && d.message).toContain("How to connect");
+  });
+  it("words already_connected the same for both providers", async () => {
+    for (const p of ["google", "outlook"] as const) {
+      const f = (async () => new Response(JSON.stringify({ detail: "already_connected" }), { status: 409 })) as unknown as typeof fetch;
+      expect(await startConnect(p, f, "a@b.co")).toEqual({ kind: "error", message: "This calendar is already connected. Reload the page." });
+      expect(errorCopy("already_connected", p).text).toBe("This calendar is already connected. Reload the page.");
+    }
+  });
+  it("sends no body without a hint", async () => {
+    let init: RequestInit | undefined;
+    const f = (async (_u: string, i?: RequestInit) => {
+      init = i;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    await startConnect("google", f);
+    expect(init).toEqual({ method: "POST" });
   });
 });
