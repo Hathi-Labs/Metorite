@@ -64,6 +64,25 @@ def test_only_a_trusted_nightly_is_read():
     assert "databaseId,conclusion,event" in step
 
 
+def test_checkout_comes_before_any_run_step_in_a_job_with_a_repo_folder():
+    """A `run` step before `actions/checkout` fails in one second when the job's
+    default working folder is inside the repo (PR 2181, first CI run, 2026-11-12)."""
+    import yaml
+
+    for wf in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+        doc = yaml.safe_load(wf.read_text(encoding="utf-8"))
+        for name, job in (doc.get("jobs") or {}).items():
+            folder = ((job.get("defaults") or {}).get("run") or {}).get("working-directory")
+            if not folder or folder.startswith(("/", "~", "$")):
+                continue
+            steps = job.get("steps") or []
+            co = next((i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("actions/checkout")), None)
+            first_run = next((i for i, s in enumerate(steps) if "run" in s and "working-directory" not in s), None)
+            if first_run is None:
+                continue
+            assert co is not None and co < first_run, f"{wf.name} job {name}: a run step comes before the checkout"
+
+
 def test_one_new_failure_fails(tmp_path):
     r = run(tmp_path, report("x", "new"), report("x"), code=1)
     assert r.returncode == 1

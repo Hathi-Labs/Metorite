@@ -1161,11 +1161,14 @@ jobs:
       run:
         working-directory: workbench/control_plane
     steps:
+      - uses: actions/checkout@v5
+
+      # ⚠️ After the checkout, never before it: the job's default folder
+      # (workbench/control_plane) exists only after the checkout, and a run
+      # step before it fails the whole shard in one second (PR 2181, first run).
       - name: What blocks a merge
         run: |
           echo "The browser suite is not a required check. Required checks: see Lint, Unit tests, Backup/restore rehearsal, Migration ladder replay, Frontend, Operator console, Secret scan." >> "$GITHUB_STEP_SUMMARY"
-
-      - uses: actions/checkout@v5
 
       - uses: actions/setup-node@v4
         with:
