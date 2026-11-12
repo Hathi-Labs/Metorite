@@ -2002,6 +2002,12 @@ def test_r8_the_read_of_the_open_request_is_a_bounded_index_scan(rworld) -> None
             for name in others:
                 c.execute(text(f'DROP INDEX "{name}"'))
             c.execute(text("SET LOCAL enable_seqscan = off"))
+            # Task 3049: migrations 418 and 421 widened pm_agent_runs, and the
+            # planner then drove the read from pm_agent_run_activities and reached
+            # pm_agent_runs through its key (a constraint index, which this test
+            # cannot drop) in a nested loop. With the nested loop off, the plan
+            # shows how pm_agent_runs itself is read, which is what this test pins.
+            c.execute(text("SET LOCAL enable_nestloop = off"))
             lines = [
                 r[0] for r in c.execute(text(f"EXPLAIN {app_requests._OPEN_OF_CHANGE_SQL}"), params)
             ]
