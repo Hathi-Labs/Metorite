@@ -39,7 +39,7 @@ _DEF_RE = re.compile(r"^[ \t]*(?:async[ \t]+)?def[ \t]+door_value\b", re.MULTILI
 
 def _python_files() -> list[Path]:
     out: list[Path] = []
-    for root in (_REPO / "apps", _REPO / "packages"):
+    for root in (_REPO / "apps", _REPO / "packages", _REPO / "scripts", _REPO / "evals"):
         out.extend(
             p for p in root.rglob("*.py")
             if "__pycache__" not in p.parts and ".venv" not in p.parts

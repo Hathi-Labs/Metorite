@@ -95,7 +95,7 @@ from acb_auth import agent_oauth
 from acb_common import app_manifests, get_logger, get_settings
 
 # AD-10 and §9.4. The wrap rule of an answer lives in acb_common.door_values,
-# once. This module imports it under its old names and stays the ONE mapping
+# once. This module imports it, with a few private names kept, and stays the ONE mapping
 # module (EA3-9). Fence: tests/unit/test_door_values_single_copy.py.
 from acb_common.door_values import KEY_RE as _KEY_RE
 from acb_common.door_values import (
