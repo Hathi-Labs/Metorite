@@ -165,6 +165,7 @@ def question_row(
     out, and "Everyone" answers 403."""
     via = run.client_via
     meta = from_jsonb(question.signal_metadata) or {}
+    request = archive_request_of(question)
     return {
         "run_id": str(run.run_id),
         "activity_id": str(question.id),
@@ -177,11 +178,13 @@ def question_row(
         "run_started_at": wire(run.run_started_at),
         "project_path": path,
         "question": {
-            "kind": (KIND_ARCHIVE_REQUEST if archive_request_of(question) is not None
-                     else KIND_QUESTION),
+            "kind": KIND_ARCHIVE_REQUEST if request is not None else KIND_QUESTION,
             "body": (from_jsonb(question.content) or {}).get("body"),
             "options": meta.get("options") or [],
             "allow_multiple": bool(meta.get("allow_multiple")),
+            # EA-18b. A typed request carries its expiry, so the card draws the
+            # expired state with a Decline. Absent on any other question.
+            **({"expires_at": request.get("expires_at")} if request is not None else {}),
         },
         "can_answer": bool(review or run.may_answer),
         "why": run.why,
@@ -207,6 +210,34 @@ async def question_rows(
                      review=review)
         for run, _ in page if str(run.run_id) in whole
     ]
+
+
+async def read_mine(
+    user: UserContext, limit: int,
+) -> tuple[list[dict[str, Any]], int, str | None]:
+    """The oldest *limit* rows of "For me", the whole "mine" count, and the time
+    of the NEWEST question of the whole list (``None`` for an empty list), for
+    the My Day card (EA-18c). The newest time moves the card's state fingerprint
+    when a new question arrives, as ``agent_asks`` does. It runs the reads of the route as they are:
+    :func:`read_questions` with the scope of the whole tenant that the reader
+    sees, the "mine" filter (a row with a ``why``), and :func:`question_rows`.
+    It writes no SQL of its own. The caller checks ``agent_questions_allowed``.
+    With ``agent_runs_enabled`` off, the list is empty, as for the route.
+    """
+    mine: list[tuple[Any, Any]] = []
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        scope_sql = await scope_clause(db, vis, None, True)
+        if agent_runs_enabled():
+            every = await read_questions(
+                db, vis, _member(user), scope_sql, scope_params(None),
+            )
+            mine = [pair for pair in every if pair[0].why is not None]
+        rows = await question_rows(
+            db, vis, mine[:limit], review=holds_answer_role(user),
+        )
+    newest = wire(mine[-1][1].created_at) if mine else None
+    return rows, len(mine), newest
 
 
 @router.get("/agent-questions", dependencies=[Depends(require_agent_questions)])
@@ -264,6 +295,7 @@ __all__ = [
     "question_row",
     "question_rows",
     "questions_sql",
+    "read_mine",
     "read_questions",
     "require_agent_questions",
 ]

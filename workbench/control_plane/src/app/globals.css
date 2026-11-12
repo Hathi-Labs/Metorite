@@ -134,6 +134,11 @@
   --violet: hsl(268 80% 70%);
   --violet-foreground: hsl(220 13% 8%);
 
+  /* The stripe of an external event's hatch on the Calendar (CE-5a). A
+     translucent ink over --muted, drawn by a repeating-linear-gradient. A
+     texture, never text. Mirrored in themes.ts; themes.test.ts holds the two. */
+  --hatch-stripe: hsl(215 20% 65% / 0.3);
+
   /* Categorical ramp — eight mutually distinguishable hues for sets whose
      members have no ranking and no meaning (@contexts, tags, custom-field
      options). NOT semantic: use --success/--warning/--destructive for state.
@@ -243,6 +248,7 @@
 
   --violet: hsl(268 70% 50%);
   --violet-foreground: hsl(210 40% 98%);
+  --hatch-stripe: hsl(215 16% 47% / 0.24);
 
   /* Categorical ramp — light mode. Deeper than the dark-mode values because
      these have to clear AA against a white card, not a near-black one. */

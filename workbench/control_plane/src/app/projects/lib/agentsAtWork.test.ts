@@ -114,7 +114,9 @@ describe("the section", () => {
     expect(out).toContain("Waiting for a person");
     expect(out).toContain("Failed, 1h ago");
     expect(out).toContain("The last run failed. Open the task.");
-    expect(out).not.toMatch(/<button/);
+    // Read only (AGA-8): the one control is the "Recent runs" toggle (AGA-9), which acts on nothing.
+    expect((out.match(/<button/g) ?? []).length).toBe(2);
+    expect(out.match(/<button[^>]*>([^<]*)</g)?.every((b) => b.endsWith(">Recent runs<"))).toBe(true);
   });
   it("says in one sentence that no agent exists", () => {
     const out = view({ kind: "ready", overview: parseOverview({ agents: [] })! });

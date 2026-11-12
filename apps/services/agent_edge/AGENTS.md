@@ -14,7 +14,7 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
 ## The MCP endpoint (EA-3b-1 and EA-3b-2)
 
 - `POST /mcp` is the stateless MCP endpoint. `mcp.py` holds the transport and the order of the checks of spec §9.6.
-- `bearer.py` reads the bearer token, looks it up, checks the audience and computes the effective scopes.
+- `bearer.py` reads the bearer token, looks it up, checks the audience and computes the effective scopes with `agent_oauth.effective_scopes`. ⚠️ Since EA-17c-3 a token carries every scope that the agent asked for, so no edge module reads the token scope alone. The token endpoint reads `agent_oauth.granted_scope` for its answer and for the scope check of a refresh.
 - `gateway_client.py` is the only client of the gateway. It sends the four signed headers of `acb_auth.agent_signing` and no other header that it sets.
 - `cursor.py` signs and reads the page cursor of a list tool. The cursor binds the tool name, so a cursor of one tool never pages another.
 - `tools.py` holds the tool records and is the ONE module that maps a gateway response to a tool result (EA3-9). It holds the seven read tools of spec §9.1: `whoami`, `list_projects`, `get_project`, `list_tasks`, `get_task`, `get_task_timeline` and `search_tasks`. EA-6a adds the two write tools of spec §9.2, `set_task_status` and `add_task_reference`. Each needs `projects:write`, and branch 0 of the gateway checks the nonce, the scope, the writes flag and the cap. EA-12b adds the six agent-run tools of spec §12.1 and `agent_runs` in `get_task`. They show only while `agent_runs_enabled` is on, and the edge reads that flag through `agent_oauth.runs_enabled`. So the edge and the gateway need the same value.
@@ -99,6 +99,8 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
   - Fence: `tests/unit/test_agent_box_token_store.py`.
 
 - SW-7 (spec §12.5), dark behind `agent_mcp_sessions_enabled` (default off, read through `agent_oauth.mcp_sessions_enabled`). While it is off, the edge mints, reads and signs no session. While it is on, `initialize` answers an `Mcp-Session-Id` that `agent_signing.mint_mcp_session` makes. It binds the connection and carries an HMAC, so the edge keeps no state. `mcp._session_of` reads it back on each later request (check 7b). An id that does not verify gets 404. The session key goes into `tools.Context.session`, and `gateway_client` signs it in as `X-Agent-Session`. `my_work` keeps the runs of this session and the runs with no key.
+
+- SW-7b (`agent_coordination.md` §3.7 item 2). `claim_task` and `start_agent_run` take the optional `agent_label`, the display name of the session. The edge sends it in the body only, and never as a header. Its pattern refuses each control character, and it holds at most 40 characters (`tools.AGENT_LABEL_MAX`). The guidance is in the argument description only, because the server instructions are at their budget. Each run of the edge gains `agent_label` as untrusted text. No session, gate or scope rule reads it. Fence: `tests/unit/test_agent_label_fence.py`.
 
 - SW-10a (spec §12.6). Each run of the edge gains `stranded`: null, or the reason, the quiet minutes and a fixed note that `tools.STRANDED_NOTES` builds. `my_work` reads the gateway's `needs_agent` reason for group 1 (`tools._waiting_reason`), so an answer older than five minutes still comes back as `run_answered`. A gateway that sends no reason gives the state, as before.
 
