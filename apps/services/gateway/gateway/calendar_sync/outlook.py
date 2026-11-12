@@ -115,6 +115,9 @@ class PageTooLarge(ProviderError):
 class OutlookProvider:
     provider = PROVIDER
     source = SOURCE
+    #: Graph takes the client id as a ``transactionId``, NOT as the event id. The
+    #: writer must not adopt or delete an Outlook event by it.
+    client_id_is_event_id = False
 
     def __init__(
         self, http: Http, *, client_id: str, client_secret: str, redirect_uri: str,
@@ -239,6 +242,13 @@ class OutlookProvider:
         reason = _graph_code(parsed)
         if status in (429, 503, 504):
             raise ProviderError(f"rate_limited_{status}")
+        # The writer (CE-13) speaks one vocabulary: a missing calendar or event is
+        # ``not_found`` (Graph says ErrorItemNotFound), a taken transactionId is
+        # ``exists``. The Graph code stays for every other failure.
+        if status == 404 or reason == "ErrorItemNotFound":
+            raise ProviderError("not_found")
+        if status == 409:
+            raise ProviderError("exists")
         raise ProviderError(reason or f"graph_{status}")
 
     async def account_identity(self, cred: SourceCredential) -> AccountIdentity:
@@ -368,6 +378,10 @@ class OutlookProvider:
     ) -> OutResult:
         payload = g.out_event_payload(event)
         if external_id is None:
+            if event.client_id:
+                # Graph answers a repeat of the same transactionId with the event it
+                # already made, so a create whose answer was lost makes no copy.
+                payload["transactionId"] = event.client_id[:255]
             url = f"{g.calendars_url()}/{quote(calendar_id, safe='')}/events"
             data = await self._graph("POST", url, cred, body=payload)
         else:

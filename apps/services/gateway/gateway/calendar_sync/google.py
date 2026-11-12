@@ -200,10 +200,11 @@ def _out_body(event: OutEvent) -> dict[str, Any]:
     body: dict[str, Any] = {
         "summary": event.title,
         "transparency": "opaque" if event.busy else "transparent",
+    }
+    if event.revive:
         # Google keeps the id of a deleted event as a CANCELLED event. A create
         # that reuses our client id adopts it by PATCH, and only this revives it.
-        "status": "confirmed",
-    }
+        body["status"] = "confirmed"
     if event.notes:
         body["description"] = event.notes
     if event.location:
@@ -227,6 +228,9 @@ def _out_body(event: OutEvent) -> dict[str, Any]:
 
 class GoogleCalendar:
     provider = PROVIDER
+    #: The client id of an insert IS the event id, so the writer may adopt or
+    #: delete an event by it (a create whose answer was lost).
+    client_id_is_event_id = True
     source = SOURCE
 
     def __init__(self, client: OAuthClientConfig, http: Http | None = None) -> None:

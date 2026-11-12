@@ -49,13 +49,18 @@ async def test_a_taken_id_is_the_exists_code() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_write_confirms_the_event_so_an_adopt_revives_a_cancelled_one() -> None:
+async def test_an_adopt_confirms_the_event_and_an_ordinary_write_does_not() -> None:
     """Google keeps the id of a deleted event as a cancelled event. The adopt
-    PATCH must say ``confirmed`` or the block never shows again. Mutation: drop
-    ``status`` from ``google._out_body``."""
+    PATCH (``revive``) says ``confirmed``, or the block never shows again. An
+    ordinary update must NOT say it, or it revives an event the member deleted.
+    Mutation: send ``status`` always, or never."""
     http = FakeHttp().on("PATCH", "/calendars/cal1/events/abc12", answer({"id": "abc12"}))
-    await provider(http).upsert_event(cred(), "cal1", OutEvent(
-        title="Block", starts_at=NOW, ends_at=NOW + timedelta(hours=1), client_id="abc12"), "abc12")
+    out = OutEvent(title="Block", starts_at=NOW, ends_at=NOW + timedelta(hours=1), client_id="abc12")
+    await provider(http).upsert_event(cred(), "cal1", out, "abc12")
+    assert "status" not in http.calls[-1][3]
+    from dataclasses import replace
+
+    await provider(http).upsert_event(cred(), "cal1", replace(out, revive=True), "abc12")
     assert http.calls[-1][3]["status"] == "confirmed"
 
 
