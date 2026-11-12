@@ -330,17 +330,45 @@ function localChip(path: string): LocalNode {
   };
 }
 
+/** A bare path (no quotes) becomes a chip only when its last segment has an
+ *  extension (a dot and 1 to 5 letters or digits) or it ends in a separator.
+ *  A path with a space in it is cut at the space, so it fails this test and
+ *  stays plain text rather than showing a wrong name. */
+function bareLocalPathOf(match: string): string | null {
+  const path = localPathOf(match);
+  if (!path) return null;
+  if (/[\\/]$/.test(match)) return path;
+  const tail = match.split(/[\\/]/).pop() ?? "";
+  return /\.[A-Za-z0-9]{1,5}$/.test(tail) ? path : null;
+}
+
+/** A path inside double quotes may hold spaces. The whole quote is one path. */
+const QUOTED_LOCAL_RE =
+  /"((?:file:\/\/|[A-Za-z]:[\\/]|\/[A-Za-z]\/)[^"\n<>|*?]+)"/gi;
+const SCAN_RE = new RegExp(`${QUOTED_LOCAL_RE.source}|${LOCAL_PATH_RE.source}`, "gi");
+
 function splitLocalPaths(value: string): LocalNode[] {
   const out: LocalNode[] = [];
   let last = 0;
-  for (const m of value.matchAll(LOCAL_PATH_RE)) {
-    const match = m[0].replace(TRAILING_MARKS, "");
-    const path = localPathOf(match);
-    if (!path) continue;
+  for (const m of value.matchAll(SCAN_RE)) {
     const at = m.index ?? 0;
+    let path: string | null;
+    let length: number;
+    if (m[1] !== undefined) {
+      const inner = m[1].trim();
+      path = /^file:/i.test(inner)
+        ? localPathOf(inner.replace(/ /g, "%20"))
+        : inner;
+      length = m[0].length;
+    } else {
+      const match = m[0].replace(TRAILING_MARKS, "");
+      path = bareLocalPathOf(match);
+      length = match.length;
+    }
+    if (!path) continue;
     if (at > last) out.push({ type: "text", value: value.slice(last, at) });
     out.push(localChip(path));
-    last = at + match.length;
+    last = at + length;
   }
   if (last === 0) return [{ type: "text", value }];
   if (last < value.length) out.push({ type: "text", value: value.slice(last) });

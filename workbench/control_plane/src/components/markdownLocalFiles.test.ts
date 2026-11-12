@@ -45,6 +45,16 @@ describe("links", () => {
     const html = render(md);
     expect(html).not.toMatch(/href="(javascript|vbscript|data|file):/i);
   });
+
+  it.each([
+    "[x](javascript:alert(1))",
+    "[x](vbscript:msgbox(1))",
+    "[x](data:text/html;base64,AAAA)",
+  ])("draws %s as plain text with no anchor", (md) => {
+    const html = render(md);
+    expect(html).not.toContain("<a");
+    expect(html).toContain(">x<");
+  });
 });
 
 describe("local files", () => {
@@ -52,8 +62,9 @@ describe("local files", () => {
     const html = render("Shot: file:///C:/wt-ui-keepbar/ux-shots/a%20b.png");
     expect(chips(html)).toBe(1);
     expect(html).toContain("a b.png");
-    expect(html).toContain(LOCAL_FILE_TIP);
     expect(html).toContain('aria-label="Copy path"');
+    // The tip comes from the tip primitive on hover, and the button has no title.
+    expect(html).not.toContain("title=");
     expect(html).not.toContain("href=");
   });
 
@@ -76,7 +87,8 @@ describe("local files", () => {
     expect(LOCAL_FILE_TIP).toBe(
       "This file is on the computer of the agent that made it. Copy the path to open it there, or ask the agent to attach it.",
     );
-    expect(render("C:/a/b.png")).toContain(LOCAL_FILE_TIP);
+    expect(chips(render("C:/a/b.png"))).toBe(1);
+    expect(render("C:/a/b.png")).not.toContain("title=");
   });
 
   it("leaves a path in a code span or a code block as code", () => {
@@ -88,6 +100,37 @@ describe("local files", () => {
     for (const text of ["a/b", "3/4", "and/or", "yes/no/maybe", "https://x.com/C:/y", "an a:b ratio"]) {
       expect(chips(render(text))).toBe(0);
     }
+  });
+
+  it("keeps a bare path with a space as plain text", () => {
+    const html = render("see C:\\Users\\a b\\c.png now");
+    expect(chips(html)).toBe(0);
+    expect(html).toContain("a b");
+  });
+
+  it("draws a quoted path with a space as one chip with the whole name", () => {
+    const html = render('open "C:\\Users\\a b\\c d.png" now');
+    expect(chips(html)).toBe(1);
+    expect(html).toContain("c d.png");
+    expect(html).not.toContain("Users");
+  });
+
+  it("decodes %20 in a file: URL name", () => {
+    const html = render("file:///C:/a%20b/c%20d.png");
+    expect(chips(html)).toBe(1);
+    expect(html).toContain("c d.png");
+  });
+
+  it("leaves the full stop at the end of a sentence outside the chip", () => {
+    const html = render("Saved to C:/wt/shot.png. Then more.");
+    expect(chips(html)).toBe(1);
+    expect(html).toContain("shot.png");
+    expect(html).toContain(". Then more.");
+  });
+
+  it("needs an extension or a trailing separator for a bare path", () => {
+    expect(chips(render("C:/wt/shots/"))).toBe(1);
+    expect(chips(render("C:/wt/shots"))).toBe(0);
   });
 
   it("localPathOf reads each shape and nothing else", () => {

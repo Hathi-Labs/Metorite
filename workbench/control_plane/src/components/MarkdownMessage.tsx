@@ -28,6 +28,7 @@ import { FencedName } from "@/components/FencedText";
 import { ControlLink } from "@/components/ControlLink";
 import MarkdownImage from "@/components/MarkdownImage";
 import Badge from "@/components/ui/Badge";
+import { useOverflowTip } from "@/components/ui/OverflowTip";
 import Button from "@/components/ui/Button";
 import {
   LOCAL_FILE_ATTR,
@@ -307,6 +308,10 @@ function nodeText(node: ReactNode): string {
 }
 
 function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
+  // `markdownUrlTransform` blanks an unsafe target (`javascript:`, `vbscript:`,
+  // a `data:` page, `file:`). A link with no target is plain text, so it does
+  // not look like a link.
+  if (!href) return <>{children}</>;
   // A link to a workspace file opens the app's viewer, never the raw file in
   // a new tab (owner report, 2026-10-16, `components/ArtifactLink.tsx`).
   const file = workspaceFileOfHref(href);
@@ -352,19 +357,29 @@ function LocalFileChip({ path }: { path: string }) {
       setTimeout(() => setCopied(false), 1500);
     }).catch(() => {});
   };
+  // The one tip, from the design system's tip primitive, on the whole chip.
+  const { attachLabel, onPointerEnter, onPointerLeave, onFocus, onBlur, tip } = useOverflowTip(
+    LOCAL_FILE_TIP,
+    { always: true },
+  );
   return (
     <span
+      ref={attachLabel}
+      onPointerEnter={onPointerEnter}
+      onPointerLeave={onPointerLeave}
+      onFocus={onFocus}
+      onBlur={onBlur}
       data-local-file-chip=""
-      title={LOCAL_FILE_TIP}
       className="inline-flex max-w-full items-center gap-0.5 align-middle"
     >
-      <Badge size="md" icon={IMAGE_FILE.test(path) ? "Image" : "FileText"} title={LOCAL_FILE_TIP}
+      <Badge size="md" icon={IMAGE_FILE.test(path) ? "Image" : "FileText"}
         className="min-w-0 max-w-full">
         <span className="min-w-0 truncate">{localFileName(path)}</span>
         <span className="shrink-0 text-muted-foreground">local file</span>
       </Badge>
       <Button variant="ghost" size="icon-xs" icon={copied ? "Check" : "Copy"}
-        aria-label="Copy path" title={LOCAL_FILE_TIP} onClick={copy} />
+        aria-label="Copy path" onClick={copy} />
+      {tip}
     </span>
   );
 }
