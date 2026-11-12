@@ -45,8 +45,6 @@ const text = (v: unknown): string | null => (typeof v === "string" && v ? v : nu
 /** The cache key of the lifetime of one package. */
 export const lifetimeKey = (pkg: string): string => `studio:package-lifetime:${pkg}`;
 
-const base = (pkg: string): string => `/api/studio/packages/${encodeURIComponent(pkg)}`;
-
 /** The install of the wire, or null when the body is not one. */
 export function parseInstall(body: unknown): LifetimeInstall | null {
   if (!isObject(body) || !isObject(body.install)) return null;
@@ -68,7 +66,7 @@ export function parseInstall(body: unknown): LifetimeInstall | null {
  */
 export async function getLifetime(pkg: string, fetchImpl: typeof fetch = fetch): Promise<LifetimeRead> {
   try {
-    const res = await fetchImpl(`${base(pkg)}/lifetime`);
+    const res = await fetchImpl(`/api/studio/packages/${encodeURIComponent(pkg)}/lifetime`);
     if (!res.ok) return { kind: "none" };
     const install = parseInstall(await res.json().catch(() => null));
     return install ? { kind: "bar", install } : { kind: "none" };

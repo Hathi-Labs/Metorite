@@ -76,8 +76,12 @@ function packagePaths(): Map<string, string[]> {
   return found;
 }
 
-/** The owner routes: a viewer gets 404 on each, so they draw nothing for a viewer. */
-const OWNER_ROUTES = /^\/(draft\?|versions|versions\/\$\{[^}]+\}|delete-preview)/;
+/**
+ * The owner routes: a viewer gets 404 on each, so they draw nothing for a viewer. `lifetime`, `keep`
+ * and `restore` (PKG-10e) belong to the owner of the private install. A viewer gets `install: null`
+ * or 404, so the end-date bar draws nothing for a viewer.
+ */
+const OWNER_ROUTES = /^\/(draft\?|versions|versions\/\$\{[^}]+\}|delete-preview|lifetime|keep|restore)/;
 
 describe("each workbench caller of a package path", () => {
   it("each reader of the route reads packageAccess", () => {
