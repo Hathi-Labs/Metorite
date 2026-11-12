@@ -1130,7 +1130,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-25 · Affects notes between tasks
 
-**Status: BUILT 2026-11-11, not merged (branch `mt-bedc23fc-affects-notes`, task 859).** Fix round 1 landed on 2026-11-12. Migration 422 widens the CHECK and adds `note` and `note_read_at`. The gateway takes `note` on `POST /projects/tasks/{id}/links`. A note holds 500 characters. `affects` needs one, and `blocks` and `duplicates` refuse one.
+**Status: BUILT 2026-11-11, not merged (branch `mt-bedc23fc-affects-notes`, task 859).** Fix round 1 landed on 2026-11-12. Migration 424 widens the CHECK and adds `note` and `note_read_at`. The gateway takes `note` on `POST /projects/tasks/{id}/links`. A note holds 500 characters. `affects` needs one, and `blocks` and `duplicates` refuse one.
 
 `GET /projects/affects-notes` lists the unread notes on the tasks that the signed session holds. It lists a note only when the caller sees both tasks. The edge sends no task id, because the gateway finds the held tasks from the session. `my_work` lists a note as the reason `note_from_task`, with a `notes` field. A failed read puts `notes_failed` in the answer.
 

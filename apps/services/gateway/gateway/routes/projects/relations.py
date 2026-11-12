@@ -57,7 +57,7 @@ LINK_TYPES: tuple[str, ...] = ("blocks", "relates_to", "duplicates", "affects")
 #: The link types that carry a note (SW-25). The note is agent text at times,
 #: so every reader of it fences it as untrusted.
 NOTE_TYPES: tuple[str, ...] = ("affects", "relates_to")
-#: The longest note, in characters. The column has the same CHECK (422).
+#: The longest note, in characters. The column has the same CHECK (424).
 MAX_NOTE_CHARS = 500
 
 #: The only link type with a direction that means anything to scheduling, and so

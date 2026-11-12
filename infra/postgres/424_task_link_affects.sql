@@ -1,5 +1,5 @@
 -- ============================================================================
--- 422_task_link_affects.sql — the link type `affects`, with a note (SW-25)
+-- 424_task_link_affects.sql — the link type `affects`, with a note (SW-25)
 -- ============================================================================
 -- Spec: project-docs/specs/agent_coordination.md (SW-25) · R5 · R6.
 --
