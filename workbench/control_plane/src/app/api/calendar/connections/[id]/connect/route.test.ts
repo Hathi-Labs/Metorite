@@ -41,10 +41,11 @@ beforeEach(() => {
 
 describe("POST /api/calendar/connections/[id]/connect", () => {
   it("forwards google and outlook, and returns the consent URL", async () => {
-    for (const word of ["google", "outlook"]) {
+    for (const [word, host] of [["google", "accounts.google.com"], ["outlook", "login.microsoftonline.com"]]) {
+      seam.body = JSON.stringify({ url: `https://${host}/auth?state=s` });
       const res = await post(word);
       expect(res.status).toBe(200);
-      expect(((await res.json()) as { url: string }).url).toContain("https://accounts.google.com/");
+      expect(((await res.json()) as { url: string }).url).toContain(`https://${host}/`);
     }
     expect(seam.calls.map((c) => c.path)).toEqual([
       "/tasks/calendar/connections/google/connect",
@@ -65,10 +66,25 @@ describe("POST /api/calendar/connections/[id]/connect", () => {
   });
 
   it("never passes on a URL that is not a plain https URL", async () => {
-    for (const url of ["http://x.test/a", "javascript:alert(1)", "https://u:p@x.test/a", "//x.test/a", "", 5]) {
+    for (const url of [
+      "http://accounts.google.com/a",
+      "javascript:alert(1)",
+      "https://u:p@accounts.google.com/a",
+      "https://accounts.google.com.evil.test/a",
+      "https://example.com/a",
+      "https://login.microsoftonline.com/a",
+      "",
+      5,
+    ]) {
       seam.body = JSON.stringify({ url });
       expect((await post("google")).status, String(url)).toBe(502);
     }
+  });
+
+  it("passes the Microsoft host for outlook only", async () => {
+    seam.body = '{"url":"https://login.microsoftonline.com/common/oauth2/v2.0/authorize?state=s"}';
+    expect((await post("outlook")).status).toBe(200);
+    expect((await post("google")).status).toBe(502);
   });
 
   it("passes a 404 through", async () => {

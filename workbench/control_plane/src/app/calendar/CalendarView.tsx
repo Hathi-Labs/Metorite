@@ -117,6 +117,7 @@ export function CalendarView() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   // CE-10c: what the calendar consent redirect said, shown in the settings sheet.
   const [connectNotice, setConnectNotice] = useState<ReturnNotice | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
   const openConnectSettings = useCallback(() => setSettingsOpen(true), []);
   // The AI planner panel: "plan" fills free slots from unscheduled next actions;
   // "replan" reorganizes the rest of today's flexible blocks from now. null = shut.
@@ -718,7 +719,11 @@ export function CalendarView() {
         <CalendarSettings
           settings={settings}
           onChange={(patch) => void updateSettings(patch)}
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => {
+            setSettingsOpen(false);
+            setGuideOpen(false);
+          }}
+          guideOpen={guideOpen}
           connectNotice={connectNotice}
           onDismissConnectNotice={() => setConnectNotice(null)}
         />
@@ -787,7 +792,12 @@ export function CalendarView() {
 
       {/* CE-10c: offer Connect Google Calendar / Outlook when none is connected. Draws nothing
           until the gateway says the feature is on. */}
-      <CalendarConnectPrompt onOpenGuide={openConnectSettings} />
+      <CalendarConnectPrompt
+        onOpenGuide={() => {
+          setGuideOpen(true);
+          setSettingsOpen(true);
+        }}
+      />
 
       {/* Startup ritual offer — once per local day, dismissible. Habits form
           around rituals; the banner invites, it never ambushes. */}

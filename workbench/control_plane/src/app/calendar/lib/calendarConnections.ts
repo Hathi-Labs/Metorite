@@ -70,8 +70,19 @@ function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
+/** Does the row carry a failed sync? The engine keeps the status `connected` and sets `last_error`. */
+export function hasSyncError(row: Pick<CalendarConnection, "last_error" | "status">): boolean {
+  return rowState(row) === "connected" && !!row.last_error;
+}
+
+/** The line of a row whose last sync failed: the fact, then the cause and fix. */
+export function syncFailedLine(row: CalendarConnection): string {
+  return `Last sync failed. ${errorCopy(row.last_error, row.provider, "sync").text}`;
+}
+
 /** The line of a connected row. The wire gives an event count and no calendar count. */
 export function connectedLine(row: CalendarConnection): string {
+  if (hasSyncError(row)) return `Connected as ${row.account_email}. ${syncFailedLine(row)}`;
   const reading = `Reading your calendars, ${plural(row.entry_count, "event", "events")} so far.`;
   const tasks = row.metorite_calendar
     ? "Your tasks go to the 'Metorite' calendar."
@@ -83,24 +94,62 @@ export function reconnectLine(provider: Provider): string {
   return `${PROVIDER_NAME[provider]} needs you to sign in again. Press Reconnect.`;
 }
 
-/** Cause and fix for each `calendar_error` code of the redirect. */
-export function errorCopy(code: string | null | undefined): { text: string } {
-  switch (code) {
-    case "access_denied":
-    case "needs_admin":
-      return {
-        text: "Your administrator blocks this app. Ask them to allow Metorite. See How to connect."
-      };
-    case "scope_missing":
-      return { text: "The consent did not include calendar access. Press Connect and allow every box." };
-    case "no_refresh_token":
-      return {
-        text:
-          "Google did not send a long-lived sign-in. Remove Metorite at myaccount.google.com/permissions, then connect again."
-      };
-    default:
-      return { text: "Connecting did not work. Try again." };
+const ACCOUNT_PAGE: Record<Provider, string> = {
+  google: "myaccount.google.com/permissions",
+  outlook: "myapps.microsoft.com",
+};
+
+/**
+ * Cause and fix for a code the gateway sends. The same table serves the redirect
+ * (`calendar_error`, `context: "connect"`) and a row's `last_error` (`context: "sync"`).
+ * The provider is null when the redirect does not say which one. Real codes: see
+ * `calendar_connections.py` (callback) and `calendar_sync/google.py` and `outlook.py`.
+ */
+export function errorCopy(
+  code: string | null | undefined,
+  provider: Provider | null = null,
+  context: "connect" | "sync" = "connect",
+): { text: string } {
+  const who = provider ? PROVIDER_NAME[provider] : "Your calendar provider";
+  const page = provider ? ACCOUNT_PAGE[provider] : "your Google or Microsoft account page";
+  const c = (code ?? "").toLowerCase();
+  const text = (t: string) => ({ text: t });
+  if (c === "consent_declined" || c === "access_denied" || c === "needs_admin") {
+    const admin =
+      provider === "google"
+        ? "A company Google account may need an administrator to allow Metorite."
+        : provider === "outlook"
+          ? "A work or school account may need an administrator to approve Metorite."
+          : "A work or school account may need an administrator to allow Metorite.";
+    return text(`The sign-in was cancelled or blocked. ${admin} See How to connect. Then press Connect.`);
   }
+  if (c === "scope_missing") return text("The consent did not include calendar access. Press Connect and allow every box.");
+  if (c === "scope_extra") {
+    return text(`${who} gave Metorite more access than it asks for. Remove Metorite at ${page}, then connect again.`);
+  }
+  if (c === "no_refresh_token") {
+    return text(`${who} did not send a long-lived sign-in. Remove Metorite at ${page}, then connect again.`);
+  }
+  if (c === "needs_reconnect" || c === "invalid_grant" || c === "consent_required" || c === "interaction_required" || /^token_\d+$/.test(c)) {
+    return text(`${who} needs you to sign in again. Press Reconnect.`);
+  }
+  if (c === "forbidden" || c === "unauthorized_client" || c === "invalid_scope") {
+    return text(`${who} does not let Metorite read this calendar. Ask your administrator to allow Metorite. See How to connect.`);
+  }
+  if (/^rate_limited_\d+$/.test(c)) return text(`${who} asks Metorite to slow down. The next sync tries again on its own.`);
+  if (c === "server_error" || /^graph_\d+$/.test(c) || c === "bad_reply" || c === "bad_answer" || c === "bad_request") {
+    return text(`${who} had a problem. The next sync tries again in a minute.`);
+  }
+  if (["too_many_pages", "response_too_large", "delta_incomplete", "delta_paging", "no_sync_token"].includes(c)) {
+    return text("This calendar is too large to read in one pass. Press Sync now. If it repeats, contact support.");
+  }
+  if (["no_calendar", "no_calendar_id", "calendar_not_created", "event_not_saved", "no_event_id", "not_found"].includes(c)) {
+    return text("Metorite could not reach the 'Metorite' calendar. Press Sync now. If it repeats, press Reconnect.");
+  }
+  if (c === "identity_missing" || c === "account_unreadable") {
+    return text(`Metorite could not read your ${who} account address. Press Connect again.`);
+  }
+  return text(context === "sync" ? "The last sync did not work. Press Sync now. Try again in a minute." : "Connecting did not work. Try again.");
 }
 
 export function disconnectCopy(provider: Provider): { title: string; body: string } {
@@ -148,16 +197,16 @@ export function syncResultLine(r: SyncResult): string {
 
 export type ReturnNotice =
   | { kind: "connected"; provider: Provider }
-  | { kind: "error"; code: string };
+  | { kind: "error"; code: string; provider: Provider | null };
 
 const CODE = /^[a-z0-9_]{1,64}$/;
 
 /** Read `calendar_connected` or `calendar_error` from the URL. Anything odd gives null or "failed". */
-export function returnNotice(search: URLSearchParams): ReturnNotice | null {
+export function returnNotice(search: URLSearchParams, started: Provider | null = null): ReturnNotice | null {
   const ok = search.get("calendar_connected");
   if (isProvider(ok)) return { kind: "connected", provider: ok };
   const err = search.get("calendar_error");
-  if (err !== null) return { kind: "error", code: CODE.test(err) ? err : "failed" };
+  if (err !== null) return { kind: "error", code: CODE.test(err) ? err : "failed", provider: started };
   return null;
 }
 
@@ -297,5 +346,26 @@ export async function disconnect(id: string, fetchImpl: typeof fetch = fetch): P
     return { kind: "ok", removed: isObject(body) && typeof body.removed_entries === "number" ? body.removed_entries : 0 };
   } catch {
     return { kind: "error", message: OFFLINE_LINE };
+  }
+}
+
+const STARTED_KEY = "calendar:connect-started";
+
+/** Remember which provider the member started, so the return can word its error. */
+export function rememberStarted(p: Provider): void {
+  try {
+    sessionStorage.setItem(STARTED_KEY, p);
+  } catch {
+    /* private mode: the error text is then provider-neutral */
+  }
+}
+
+export function recallStarted(): Provider | null {
+  try {
+    const v = sessionStorage.getItem(STARTED_KEY);
+    sessionStorage.removeItem(STARTED_KEY);
+    return isProvider(v) ? v : null;
+  } catch {
+    return null;
   }
 }

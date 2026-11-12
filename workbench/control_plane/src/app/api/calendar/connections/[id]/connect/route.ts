@@ -6,13 +6,14 @@
  * it. Here the value is a PROVIDER word, and only `google` or `outlook` passes.
  *
  * The gateway answers `{ url }`, the consent URL. This route passes it on only when it is an
- * absolute `https` URL with no user and no password, so the route cannot become an open redirect.
+ * `https` URL on the exact consent host of the provider (`safeConsentUrl`), so the route cannot
+ * become an open redirect.
  * A refusal keeps its status (a 404 means the flag is off). The route refuses a request from
  * another site (`sameOrigin`). It never logs the answer, which holds the signed state.
  */
 import { NextRequest, NextResponse } from "next/server";
 
-import { isProvider } from "@/app/calendar/lib/calendarIds";
+import { isProvider, safeConsentUrl } from "@/app/calendar/lib/calendarIds";
 import { sameOrigin } from "@/lib/accountsServer";
 import { proxyToGateway } from "@/lib/gateway";
 import { refuseUnsafePath } from "@/lib/gatewayPath";
@@ -20,19 +21,6 @@ import { refuseUnsafePath } from "@/lib/gatewayPath";
 export const dynamic = "force-dynamic";
 
 const NO_STORE = { "Cache-Control": "no-store" };
-const MAX_URL_CHARS = 4096;
-
-function safeConsentUrl(raw: unknown): string | null {
-  if (typeof raw !== "string" || raw.length > MAX_URL_CHARS) return null;
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return null;
-  }
-  if (url.protocol !== "https:" || !url.hostname || url.username || url.password) return null;
-  return url.toString();
-}
 
 export async function POST(
   req: NextRequest,
@@ -51,7 +39,7 @@ export async function POST(
   }
   if (!res.ok) return res;
   const body: unknown = await res.json().catch(() => null);
-  const url = safeConsentUrl((body as { url?: unknown } | null)?.url);
+  const url = safeConsentUrl(id, (body as { url?: unknown } | null)?.url);
   if (url === null) return NextResponse.json({ detail: "failed" }, { status: 502, headers: NO_STORE });
   return NextResponse.json({ url }, { headers: NO_STORE });
 }

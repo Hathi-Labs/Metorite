@@ -87,8 +87,8 @@ describe("the BFF calendar OAuth callback", () => {
     for (const location of [
       "/calendar?calendar_connected=google",
       "/calendar?calendar_connected=outlook",
-      "/calendar?calendar_error=access_denied",
-      "/calendar?calendar_error=needs_admin",
+      "/calendar?calendar_error=consent_declined",
+      "/calendar?calendar_error=exchange_failed",
       "/calendar?calendar_error=scope_missing",
       "/calendar?calendar_error=no_refresh_token",
     ]) {

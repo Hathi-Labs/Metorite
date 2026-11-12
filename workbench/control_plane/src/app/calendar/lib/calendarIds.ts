@@ -30,3 +30,26 @@ export function gatewayProviderOf(browserWord: unknown): Provider | null {
   if (browserWord === "microsoft") return "outlook";
   return null;
 }
+
+/** The one host each provider may send a browser to for consent. Nothing else. */
+export const CONSENT_HOST: Record<Provider, string> = {
+  google: "accounts.google.com",
+  outlook: "login.microsoftonline.com",
+};
+
+/**
+ * The consent URL when it is safe to send a browser there, else null. It must be an `https` URL
+ * on the exact host of the provider, with no user, no password and no port.
+ */
+export function safeConsentUrl(provider: Provider, raw: unknown): string | null {
+  if (typeof raw !== "string" || raw.length > 4096) return null;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || url.hostname !== CONSENT_HOST[provider]) return null;
+  if (url.username || url.password || url.port) return null;
+  return url.toString();
+}

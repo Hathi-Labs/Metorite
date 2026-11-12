@@ -56,6 +56,7 @@ export function CalendarSettings({
   onClose,
   connectNotice = null,
   onDismissConnectNotice = () => {},
+  guideOpen = false,
 }: {
   settings: TaskSettings;
   onChange: (patch: Partial<TaskSettings>) => void;
@@ -63,6 +64,8 @@ export function CalendarSettings({
   /** What the consent redirect said (CE-10c). Drawn in the Connected calendars section. */
   connectNotice?: ReturnNotice | null;
   onDismissConnectNotice?: () => void;
+  /** Open the How to connect guide expanded. */
+  guideOpen?: boolean;
 }) {
   const wins = settings.energyWindows ?? [];
   const [showDefault, setShowDefault] = useState(false);
@@ -164,7 +167,7 @@ export function CalendarSettings({
           </div>
 
           {/* Connected calendars (CE-10c): draws nothing until the gateway says it is on. */}
-          <ConnectedCalendarsSection notice={connectNotice} onDismissNotice={onDismissConnectNotice} />
+          <ConnectedCalendarsSection notice={connectNotice} onDismissNotice={onDismissConnectNotice} guideOpen={guideOpen} />
 
           <p className={sectionCls}>When you work</p>
           <div className="mb-1 flex items-center justify-between gap-2">

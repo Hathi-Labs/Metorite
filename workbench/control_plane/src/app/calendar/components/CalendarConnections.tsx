@@ -31,6 +31,8 @@ import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { useToast } from "@/components/ui/Toast";
 import { useCachedResource } from "@/lib/useCachedResource";
 
+import { safeConsentUrl } from "../lib/calendarIds";
+
 import {
   CONNECTIONS_KEY,
   CONNECT_LABEL,
@@ -41,10 +43,13 @@ import {
   disconnect,
   disconnectCopy,
   errorCopy,
+  hasSyncError,
   getConnections,
   isEnabled,
   lastSyncLine,
   reconnectLine,
+  recallStarted,
+  rememberStarted,
   refreshConnections,
   returnNotice,
   rowState,
@@ -76,10 +81,10 @@ export function useCalendarConnections() {
 
 // ── The How to connect panel ────────────────────────────────────────────────
 
-export function HowToConnectPanel() {
+export function HowToConnectPanel({ defaultOpen = false }: { defaultOpen?: boolean }) {
   const [copied, setCopied] = useState(false);
   return (
-    <CollapsibleSection label="How to connect" defaultOpen={false} keepMounted className="mb-2">
+    <CollapsibleSection label="How to connect" defaultOpen={defaultOpen} keepMounted className="mb-2">
       <div className="space-y-3 text-[11px] leading-snug text-muted-foreground">
         {GUIDE_LISTS.map((list) => (
           <div key={list.id}>
@@ -175,6 +180,8 @@ export interface SectionViewProps {
   onSync: (row: CalendarConnection) => void;
   onAskDisconnect: (row: CalendarConnection) => void;
   onDismissNotice: () => void;
+  /** Open the How to connect guide expanded. */
+  guideOpen?: boolean;
 }
 
 function Banner({ tone, children, onDismiss }: { tone: "success" | "error"; children: React.ReactNode; onDismiss: () => void }) {
@@ -194,6 +201,7 @@ function Row({
   row,
   now,
   syncing,
+  connecting,
   line,
   onConnect,
   onSync,
@@ -202,29 +210,38 @@ function Row({
   row: CalendarConnection;
   now: number;
   syncing: boolean;
+  connecting: Provider | null;
   line: string | undefined;
   onConnect: (p: Provider) => void;
   onSync: (row: CalendarConnection) => void;
   onAskDisconnect: (row: CalendarConnection) => void;
 }) {
   const state = rowState(row);
+  const failing = hasSyncError(row);
   return (
     <li className="mb-2 rounded-md border border-border bg-background/60 p-2">
       <div className="mb-1 flex items-center gap-2">
         <span className="font-medium text-foreground">{PROVIDER_NAME[row.provider]}</span>
-        <Badge tone={state === "needs_reconnect" ? "warning" : "success"}>
-          {state === "needs_reconnect" ? "Sign in again" : "Connected"}
+        <Badge tone={state === "needs_reconnect" || failing ? "warning" : "success"}>
+          {state === "needs_reconnect" ? "Sign in again" : failing ? "Sync problem" : "Connected"}
         </Badge>
       </div>
       {state === "needs_reconnect" ? (
         <p className="mb-1 text-[11px] text-warning">{reconnectLine(row.provider)}</p>
       ) : (
-        <p className="mb-1 break-words text-[11px] text-muted-foreground">{connectedLine(row)}</p>
+        <p className={`mb-1 break-words text-[11px] ${failing ? "text-warning" : "text-muted-foreground"}`}>{connectedLine(row)}</p>
       )}
       <p className="mb-1.5 text-[10px] text-muted-foreground">{lastSyncLine(row, now)}</p>
       <div className="flex flex-wrap gap-2">
         {state === "needs_reconnect" ? (
-          <Button type="button" variant="primary" size="sm" onClick={() => onConnect(row.provider)}>
+          <Button
+            type="button"
+            variant="primary"
+            size="sm"
+            loading={connecting === row.provider}
+            disabled={connecting !== null}
+            onClick={() => onConnect(row.provider)}
+          >
             Reconnect
           </Button>
         ) : (
@@ -249,7 +266,7 @@ export function ConnectedCalendarsView(p: SectionViewProps) {
   if (!isEnabled(p.list)) return null;
   const list = p.list;
   const offer = connectable(list);
-  const err = p.notice?.kind === "error" ? errorCopy(p.notice.code) : null;
+  const err = p.notice?.kind === "error" ? errorCopy(p.notice.code, p.notice.provider) : null;
   return (
     <section aria-label="Connected calendars">
       <p className={SECTION_CLS}>Connected calendars</p>
@@ -276,6 +293,7 @@ export function ConnectedCalendarsView(p: SectionViewProps) {
               row={row}
               now={p.now}
               syncing={p.syncingId === row.id}
+              connecting={p.connecting}
               line={p.syncLines[row.id]}
               onConnect={p.onConnect}
               onSync={p.onSync}
@@ -296,7 +314,7 @@ export function ConnectedCalendarsView(p: SectionViewProps) {
           onConnect={p.onConnect}
         />
       </div>
-      <HowToConnectPanel />
+      <HowToConnectPanel defaultOpen={p.guideOpen} />
     </section>
   );
 }
@@ -307,16 +325,24 @@ export function ConnectedCalendarsView(p: SectionViewProps) {
 export function useConnect() {
   const [connecting, setConnecting] = useState<Provider | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const inFlight = useRef(false);
   async function connect(p: Provider) {
+    // One press at a time: a double click sends one POST and assigns the location once.
+    if (inFlight.current) return;
+    inFlight.current = true;
     setConnecting(p);
     setError(null);
     const r = await startConnect(p);
-    if (r.kind === "ok") {
-      window.location.assign(r.url);
+    // The server checks the host too. The client checks the same allowlist before it leaves.
+    const url = r.kind === "ok" ? safeConsentUrl(p, r.url) : null;
+    if (url) {
+      rememberStarted(p);
+      window.location.assign(url);
       return;
     }
-    setError(r.message);
+    setError(r.kind === "error" ? r.message : "Connecting did not work. Try again.");
     setConnecting(null);
+    inFlight.current = false;
   }
   return { connecting, error, connect };
 }
@@ -325,9 +351,11 @@ export function useConnect() {
 export function ConnectedCalendarsSection({
   notice,
   onDismissNotice,
+  guideOpen = false,
 }: {
   notice: ReturnNotice | null;
   onDismissNotice: () => void;
+  guideOpen?: boolean;
 }) {
   const res = useCalendarConnections();
   const { connecting, error, connect } = useConnect();
@@ -360,6 +388,8 @@ export function ConnectedCalendarsSection({
     setBusy(false);
     setAsking(null);
     if (r.kind === "ok") {
+      // The "is connected" banner would contradict the toast.
+      onDismissNotice();
       toast.show({ key: "calendar-disconnect", variant: "success", title: `${PROVIDER_NAME[row.provider]} is disconnected.` });
     } else {
       toast.show({ key: "calendar-disconnect", variant: "error", title: r.message });
@@ -382,6 +412,7 @@ export function ConnectedCalendarsSection({
         onSync={(row) => void sync(row)}
         onAskDisconnect={setAsking}
         onDismissNotice={onDismissNotice}
+        guideOpen={guideOpen}
       />
       <ConfirmDialog
         open={asking !== null}
@@ -439,7 +470,7 @@ export function CalendarConnectReturn({
   const done = useRef(false);
   useEffect(() => {
     if (done.current) return;
-    const notice = returnNotice(params);
+    const notice = returnNotice(params, params.get("calendar_error") !== null ? recallStarted() : null);
     const settings = wantsSettings(params);
     if (!notice && !settings) return;
     done.current = true;

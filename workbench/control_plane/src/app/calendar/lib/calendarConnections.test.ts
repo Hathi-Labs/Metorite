@@ -1,10 +1,13 @@
 // WS-CAL CE-10c: the pure helpers and the thin fetch layer of the calendar connections.
 import { describe, expect, it } from "vitest";
 
+import { safeConsentUrl } from "./calendarIds";
 import {
   cleanedHref,
   connectable,
   connectedLine,
+  hasSyncError,
+  syncFailedLine,
   disconnect,
   disconnectCopy,
   errorCopy,
@@ -91,20 +94,83 @@ describe("the state of a row", () => {
 });
 
 describe("copy for each error code", () => {
-  it("gives a cause and a fix for each known code", () => {
-    expect(errorCopy("access_denied").text).toBe(
-      "Your administrator blocks this app. Ask them to allow Metorite. See How to connect.",
+  it("words consent_declined, with the admin steps for a work account", () => {
+    const g = errorCopy("consent_declined", "google").text;
+    const o = errorCopy("consent_declined", "outlook").text;
+    expect(g).toContain("cancelled or blocked");
+    expect(g).toContain("See How to connect");
+    expect(o).toContain("work or school account may need an administrator to approve Metorite");
+    expect(o).toContain("See How to connect");
+    // The dead codes are aliases of the real one.
+    expect(errorCopy("access_denied", "outlook").text).toBe(o);
+    expect(errorCopy("needs_admin", "outlook").text).toBe(o);
+  });
+  it("names the right account page for each provider", () => {
+    expect(errorCopy("no_refresh_token", "google").text).toBe(
+      "Google did not send a long-lived sign-in. Remove Metorite at myaccount.google.com/permissions, then connect again.",
     );
-    expect(errorCopy("needs_admin").text).toBe(errorCopy("access_denied").text);
+    const o = errorCopy("no_refresh_token", "outlook").text;
+    expect(o).toContain("Remove Metorite at myapps.microsoft.com, then connect again.");
+    expect(o).not.toContain("google");
+    expect(errorCopy("scope_extra", "outlook").text).not.toContain("google");
+  });
+  it("covers every real gateway code with a cause and a fix", () => {
+    const codes = [
+      "scope_missing", "scope_extra", "no_refresh_token", "no_code", "exchange_failed", "forbidden",
+      "too_many_pages", "no_sync_token", "response_too_large", "delta_incomplete", "delta_paging",
+      "rate_limited_429", "graph_503", "token_400", "invalid_grant", "server_error", "bad_request",
+      "bad_answer", "bad_reply", "not_found", "no_calendar", "no_calendar_id", "calendar_not_created",
+      "event_not_saved", "no_event_id", "identity_missing", "account_unreadable", "needs_reconnect",
+    ];
+    for (const code of codes) {
+      const t = errorCopy(code, "outlook").text;
+      expect(t.length, code).toBeGreaterThan(20);
+      expect(t, code).not.toContain("google");
+    }
     expect(errorCopy("scope_missing").text).toBe(
       "The consent did not include calendar access. Press Connect and allow every box.",
     );
-    expect(errorCopy("no_refresh_token").text).toContain("myaccount.google.com/permissions");
+    expect(errorCopy("forbidden", "google").text).toContain("Ask your administrator");
   });
-  it("gives a short plain line for any other code", () => {
+  it("gives a short plain line for an unknown code", () => {
     for (const code of ["failed", "invalid_state", "", null, undefined, "<script>"]) {
       expect(errorCopy(code).text).toBe("Connecting did not work. Try again.");
     }
+    expect(errorCopy("zzz", "google", "sync").text).toContain("Press Sync now");
+  });
+  it("words a row with a failed sync", () => {
+    const bad = row({ last_error: "forbidden" });
+    expect(hasSyncError(bad)).toBe(true);
+    expect(hasSyncError(row())).toBe(false);
+    expect(hasSyncError(row({ status: "needs_reconnect", last_error: "x" }))).toBe(false);
+    expect(syncFailedLine(bad)).toBe(`Last sync failed. ${errorCopy("forbidden", "google", "sync").text}`);
+    expect(connectedLine(bad)).not.toContain("Reading your calendars");
+    expect(connectedLine(bad)).toContain("Last sync failed.");
+  });
+});
+
+describe("the consent URL allowlist", () => {
+  it("accepts the exact host of the provider only", () => {
+    expect(safeConsentUrl("google", "https://accounts.google.com/o/oauth2/v2/auth?state=s")).toContain("accounts.google.com");
+    expect(safeConsentUrl("outlook", "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?x=1")).toContain("login.microsoftonline.com");
+  });
+  it("refuses a look-alike host, a wrong-provider host, http, userinfo and a port", () => {
+    for (const bad of [
+      "https://accounts.google.com.evil.test/a",
+      "https://evilaccounts.google.com/a",
+      "https://accounts.google.com@evil.test/a",
+      "https://user:pw@accounts.google.com/a",
+      "https://accounts.google.com:8443/a",
+      "http://accounts.google.com/a",
+      "https://login.microsoftonline.com/a",
+      "https://example.com/a",
+      "javascript:alert(1)",
+      "",
+      5,
+    ]) {
+      expect(safeConsentUrl("google", bad), String(bad)).toBeNull();
+    }
+    expect(safeConsentUrl("outlook", "https://accounts.google.com/a")).toBeNull();
   });
 });
 
@@ -153,11 +219,14 @@ describe("the return from the consent", () => {
   it("reads a connect and an error", () => {
     expect(returnNotice(q("calendar_connected=google"))).toEqual({ kind: "connected", provider: "google" });
     expect(returnNotice(q("calendar_connected=outlook"))).toEqual({ kind: "connected", provider: "outlook" });
-    expect(returnNotice(q("calendar_error=needs_admin"))).toEqual({ kind: "error", code: "needs_admin" });
+    expect(returnNotice(q("calendar_error=needs_admin"))).toEqual({ kind: "error", code: "needs_admin", provider: null });
+  });
+  it("carries the provider the member started", () => {
+    expect(returnNotice(q("calendar_error=consent_declined"), "outlook")).toEqual({ kind: "error", code: "consent_declined", provider: "outlook" });
   });
   it("ignores a crafted value", () => {
     expect(returnNotice(q("calendar_connected=evil"))).toBeNull();
-    expect(returnNotice(q("calendar_error=<b>x</b>"))).toEqual({ kind: "error", code: "failed" });
+    expect(returnNotice(q("calendar_error=<b>x</b>"))).toEqual({ kind: "error", code: "failed", provider: null });
     expect(returnNotice(q("date=2026-11-12"))).toBeNull();
   });
   it("cleans the three keys and keeps the rest", () => {

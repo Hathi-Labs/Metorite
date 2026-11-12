@@ -106,11 +106,38 @@ describe("the Connected calendars section", () => {
   });
 
   it("draws the cause and fix of a calendar_error code", () => {
-    const html = draw({ notice: { kind: "error", code: "scope_missing" } });
+    const html = draw({ notice: { kind: "error", code: "scope_missing", provider: null } });
     expect(html).toContain('role="alert"');
     expect(html).toContain("The consent did not include calendar access. Press Connect and allow every box.");
-    expect(draw({ notice: { kind: "error", code: "needs_admin" } })).toContain("Your administrator blocks this app.");
-    expect(draw({ notice: { kind: "error", code: "other" } })).toContain("Connecting did not work. Try again.");
+    const o = draw({ notice: { kind: "error", code: "consent_declined", provider: "outlook" } });
+    expect(o).toContain("work or school account may need an administrator to approve Metorite");
+    expect(draw({ notice: { kind: "error", code: "no_refresh_token", provider: "outlook" } })).toContain("myapps.microsoft.com");
+    expect(draw({ notice: { kind: "error", code: "other", provider: null } })).toContain("Connecting did not work. Try again.");
+  });
+
+  it("draws a failing row with the warning badge and the cause, not the green reading line", () => {
+    const html = buttons(draw({ list: list([row({ last_error: "too_many_pages" })]) }));
+    expect(html).toContain("Sync problem");
+    expect(html).toContain("Last sync failed.");
+    expect(html).toContain("too large to read in one pass");
+    expect(html).not.toContain("Reading your calendars");
+    expect(html).not.toContain(">Connected<");
+  });
+
+  it("gives Reconnect a loading and disabled state while a connect runs", () => {
+    const idle = buttons(draw({ list: list([row({ status: "needs_reconnect" })]) }));
+    const busy = buttons(draw({ list: list([row({ status: "needs_reconnect" })]), connecting: "google" }));
+    expect(idle).not.toContain('disabled=""');
+    expect(busy).toContain('disabled=""');
+    expect(busy).not.toBe(idle);
+  });
+
+  it("opens the guide expanded when asked", () => {
+    const closed = renderToStaticMarkup(createElement(HowToConnectPanel));
+    const open = renderToStaticMarkup(createElement(HowToConnectPanel, { defaultOpen: true }));
+    expect(open).not.toBe(closed);
+    expect(open).toContain('aria-expanded="true"');
+    expect(closed).toContain('aria-expanded="false"');
   });
 
   it("draws the success notice after a connect", () => {
@@ -159,5 +186,18 @@ describe("the shell seam", () => {
   it("builds no palette, no bell and no rail, and uses no raw palette class", () => {
     expect(src).not.toMatch(/NotificationBell|AgentChat|CommandPalette|keydown/);
     expect(src).not.toMatch(/\b(?:bg|text|border)-(?:red|green|amber|blue|yellow|gray|slate)-\d/);
+  });
+});
+
+describe("the wiring", () => {
+  const src = readFileSync(new URL("./CalendarConnections.tsx", import.meta.url), "utf8");
+  it("checks the consent host in the client, and guards a second Connect press", () => {
+    expect(src).toContain("safeConsentUrl(p, r.url)");
+    expect(src).toContain("if (inFlight.current) return;");
+  });
+  it("clears the connected banner after a successful disconnect", () => {
+    const at = src.indexOf("The \"is connected\" banner would contradict the toast.");
+    expect(at).toBeGreaterThan(0);
+    expect(src.slice(at, at + 120)).toContain("onDismissNotice();");
   });
 });
