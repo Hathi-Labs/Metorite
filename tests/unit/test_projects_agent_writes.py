@@ -507,6 +507,22 @@ RUN_ROW = {"id": RUN_ID, "task_id": UUID, "member_email": "pm@fracktal.in",
            "answer": {"id": ANSWER_ID, "seq": 3, "changeable": True}}
 
 
+#: WS-55 EA-18d: one run that awaits one question, and the activities route.
+ASK_RUN_ID = "e4f9fad5-d9cb-469f-a165-70867728950e"
+ASK_QUESTION_ID = "e5f9fad5-d9cb-469f-a165-70867728950e"
+
+
+def _ea18d_answers(call: dict) -> Any:
+    path, method = call["path"], call["method"]
+    if path == f"/projects/agent-runs/{ASK_RUN_ID}" and method == "GET":
+        return {"run": {"id": ASK_RUN_ID, "status": "awaiting", "open_elicitation": {
+            "id": ASK_QUESTION_ID, "content": {"body": "Which box?"},
+            "signal_metadata": {"options": []}, "content_metadata": None}}}
+    if path == f"/projects/agent-runs/{ASK_RUN_ID}/activities" and method == "POST":
+        return {"created": True, "activity": {"id": OTHER, "in_reply_to": ASK_QUESTION_ID}}
+    return None
+
+
 def _sw43c_answers(call: dict) -> Any:
     """SW-43c: the runs of the task, the one run, and the two answer routes."""
     path, method = call["path"], call["method"]
@@ -702,7 +718,7 @@ def responder(call: dict) -> Any:
     # `_op6c_answers` before `_s2b_answers`: its task answers a `/my/tasks/` read that
     # `_s2b_answers` also claims. WS-66 RM-3: `_reminder_answers` claims only the
     # member's zone and `/projects/my/reminders`, so it may lead.
-    answered = _answered(call, _sw43c_answers, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _aln4_answers, _lp1a_answers, _sp5a_answers, _sp8a_answers, _aln2a_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
+    answered = _answered(call, _ea18d_answers, _sw43c_answers, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _aln4_answers, _lp1a_answers, _sp5a_answers, _sp8a_answers, _aln2a_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
                          _s2b_answers, _subtree_answers, _area_answers)
     if answered is not None:
         return answered
@@ -933,6 +949,8 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "unpin_authority": [{"project_id": UUID, "pin_id": PIN_ID}],
     # WS-ALN ALN-2a: one answer per card
     "answer_decision": [{"decision_id": DECISION_ID, "answer_key": "yes"}],
+    # WS-55 EA-18d: the run is the fake's one open run; the card then posts one prompt.
+    "answer_agent_question": [{"run_id": ASK_RUN_ID, "answer": "Use the staging box"}],
     # SW-43c: the member's own answer to an agent, taken back or changed
     "change_agent_answer": [
         {"task_id": UUID, "withdraw": True},
@@ -1227,6 +1245,8 @@ async def test_a_run_with_nobody_to_act_as_makes_no_call(tool: str, monkeypatch)
             # recipient tools' own tests (test_projects_report_delivery_tools.py)
             # pin the name, the address and the schedule on the card.
             "add_report_recipient",
+            # WS-55 EA-18d: the card names the agent's question, not a row.
+            "answer_agent_question",
             "remove_report_recipient",
             "set_report_schedule",
             # WS-66 RM-3: a NEW reminder, as create_personal_task is a new task.
