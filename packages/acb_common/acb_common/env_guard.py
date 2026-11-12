@@ -280,6 +280,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # question and opens the list of the questions, so only the owner writes
     # it.
     "AGENT_QUESTIONS_ORGS",
+    # WS-55 CIV-14b: MCP_IMAGE_UPLOAD_ORGS lets an outside agent upload an
+    # image to a task and show it on a question. A tenant must not open it
+    # for another org, so only the owner writes it.
+    "MCP_IMAGE_UPLOAD_ORGS",
     # WS-55 MCP-G20: the write cap of each agent connection on the box. A
     # tenant that raised it would lift the cap of every org, so only the
     # owner writes it. The AGENT_ prefix covers both too, and the exact
