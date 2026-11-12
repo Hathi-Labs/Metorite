@@ -21,6 +21,10 @@ package declares. The route registers on the router of ``actions.py``, as
    (``package_host/viewer.py``), and the declarations are those of that
    version. A draft, a paused, an archived and an expired install get the
    same 404.
+   J3a: a package of the caller that an admin paused (``apps.paused_at``)
+   gets 423 ``package_paused`` for each action, before the declaration. The
+   row of the call holds the code. A viewer of a paused package reads no
+   install of it, so a viewer gets the same 404.
 4. The declaration. The path names an ``actions[].id`` of the manifest. An
    id that the manifest does not declare gets 403 ``not_declared``.
 5. The class. An ``object:<name>.<op>`` action takes its class from
@@ -208,9 +212,9 @@ from gateway.studio.preview import emit_record_event, preview_scope
 
 __all__ = ["ASK_MARKER", "DELEGATED_EXECUTORS", "DIRECT_EXECUTORS", "DOOR_TEMPLATE",
            "LIST_INPUT_KEYS", "MAX_AUDIT_TEXT", "MAX_BODY_BYTES",
-           "OPEN_EXECUTORS", "PREVIEW_MARKER", "READERS_PER_ORG", "READERS_TOTAL",
-           "REFUSALS", "REQUEST_APP", "REQUEST_VIA", "SPEND_REFUSALS", "WRITERS_PER_ORG",
-           "WRITERS_TOTAL", "router"]
+           "OPEN_EXECUTORS", "PACKAGE_PAUSED", "PAUSED_STATUS", "PAUSED_TEXT", "PREVIEW_MARKER",
+           "READERS_PER_ORG", "READERS_TOTAL", "REFUSALS", "REQUEST_APP", "REQUEST_VIA",
+           "SPEND_REFUSALS", "WRITERS_PER_ORG", "WRITERS_TOTAL", "router"]
 
 _log = get_logger("gateway.studio.invoke")
 
@@ -314,6 +318,14 @@ REFUSALS: dict[str, str] = {
     NO_PERSON: "This run has no person present, so it cannot ask a member to approve a write.",
     READ_ONLY: "This app is shared with you to read, so you cannot change its records.",
 }
+
+#: J3a: the one code of an action of a paused package, its status and its one
+#: sentence. The door refuses each action and each class with it, before the
+#: declaration, and a resend of an approved card too. 423 is not a 403,
+#: because no right of the caller is missing: the package is stopped.
+PACKAGE_PAUSED = "package_paused"
+PAUSED_STATUS = 423
+PAUSED_TEXT = "This app is paused, so it runs no action until someone resumes it."
 
 #: The text of ``approval_required`` for a write of an object while
 #: ``APP_REQUESTS_ORGS`` holds the org (fix round 2): an ask works there.
@@ -679,10 +691,18 @@ async def _check(db: Any, member: str, pid: str, action: str, out: _Outcome,
     ``package_host/viewer.py``, and the declarations are those of that
     version. A viewer runs no class B or C action (``read_only``). A draft, a
     paused, an archived and an expired install raise the same 404, at each run.
+
+    J3a: a paused package of *member* refuses each action with
+    :data:`PACKAGE_PAUSED`, before the declaration, at each run. The answer
+    names no ``uses``, so no later step of the door reads a class for it.
     """
     out.uses, out.cls, out.refusal = None, None, None
     out.viewer, out.version = False, None
-    package: _App | None = await packages_store.get_package(db, member, pid)
+    owned = await packages_store.get_package(db, member, pid)
+    if owned is not None and owned.paused_at is not None:
+        out.refusal = PACKAGE_PAUSED
+        return owned, None
+    package: _App | None = owned
     if package is None and package_host_allowed(org):
         package = await _viewer.installed_app(db, viewer=member, app_id=pid)
         if package is not None:
@@ -1399,6 +1419,9 @@ def _answer(out: _Outcome) -> dict[str, Any] | JSONResponse:
     if out.catalog_down:
         raise HTTPException(status_code=503, detail={
             "code": CATALOG_UNAVAILABLE, "message": CATALOG_DOWN})
+    if out.refusal == PACKAGE_PAUSED:
+        raise HTTPException(status_code=PAUSED_STATUS, detail={
+            "code": PACKAGE_PAUSED, "message": PAUSED_TEXT})
     if out.refusal is not None:
         ask = out.refusal == APPROVAL_REQUIRED and out.can_ask
         raise HTTPException(status_code=403, detail={
