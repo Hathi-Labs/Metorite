@@ -164,6 +164,8 @@ describe("wireLiveRefresh and the assistant event", () => {
 describe("the Studio pack (D179)", () => {
   it("a studio write tool names the studio app, and a studio read tool names none", () => {
     for (const w of ["studio_save", "studio_publish", "studio_skill_save", "studio_skill_state",
+      // STU-A5c-2: a chat delete takes an app out of the library, so the library re-reads.
+      "studio_delete_package",
       // STU-B2c-2b: a resend after the approval writes a record, so an open app re-reads.
       "studio_record_create", "studio_record_update", "studio_record_delete"]) {
       expect(appsForWrite(w), w).toEqual(["studio"]);

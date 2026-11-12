@@ -697,6 +697,15 @@ class Settings(BaseSettings):
     # none. Reader: `gateway.routes.studio.flags.studio_allowed`. Spec:
     # ai_studio.md section 3.2.
     studio_orgs: str = ""
+    # STU-J10: STUDIO_RESIDENCY_ORGS lists the org ids whose health data
+    # stays in India. `*` opens every org. Empty opens none (no change for
+    # any org). It only adds refusals: a listed org's health app may use a
+    # store or a vendor only when `acb_common.studio_residency` records the
+    # region as India. NO CALLER READS IT YET: the guard `require_path` is not
+    # wired into any send path, so flipping it changes nothing today.
+    # Reader: `acb_common.studio_residency.residency_on`.
+    # The flip is the owner's (`enforcement-flip`). Spec: ai_studio.md J10.
+    studio_residency_orgs: str = ""
     # WS-OB GD-5a: GUIDE_ORGS lists the org ids whose members see the entries
     # of the guide's tour (the welcome button and the account menu row). `*`
     # opens every org. Empty opens none. Reader: `acb_common.guide_flags.

@@ -1284,6 +1284,17 @@ class TestReadPlaybook:
         assert all(t["version"] >= 1 for t in data["topics"])
         assert all(set(t["title"]) == {"untrusted_text"} for t in data["topics"])
 
+    async def test_the_index_holds_the_kit_version_of_each_client(self, on):
+        """KIT-5. Mutation: ``_read_playbook`` leaves the version out of the index."""
+        from acb_playbook import CLIENTS, kit_version
+        data = (await _call_playbook({})).json()["result"]["structuredContent"]
+        assert data["kit_version"] == kit_version() >= 1
+        assert data["kits"] == {c: kit_version() for c in CLIENTS}
+
+    async def test_a_topic_answer_holds_no_kit_version(self, on):
+        data = (await _call_playbook({"topic": "gates"})).json()["result"]["structuredContent"]
+        assert "kit_version" not in data
+
     async def test_a_topic_comes_with_its_body(self, on):
         from acb_playbook import load_topic
         r = await _call_playbook({"topic": "brief-contract"})

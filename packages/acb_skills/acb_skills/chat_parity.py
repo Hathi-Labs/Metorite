@@ -365,6 +365,10 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "PUT /api/studio/packages/{}/draft": "studio_save",
     # STU-G5: the IDE publishes with the POST that studio_publish sends (notes, based_on and origin in the body).
     "POST /api/studio/packages/{}/versions": "studio_publish",
+    # STU-A5c-2: the app page deletes a package (BETA-1) with the preview and the DELETE
+    # that studio_delete_package sends, after its one card.
+    "GET /api/studio/packages/{}/delete-preview": "studio_delete_package",
+    "DELETE /api/studio/packages/{}": "studio_delete_package",
     "POST /api/studio/apps/{}/actions/{}": "studio_record_list",
     "GET /api/studio/skills": "studio_skill_list",
     "GET /api/studio/skills/{}": "studio_skill_list",
@@ -679,9 +683,7 @@ EXEMPT: dict[str, tuple[str, str]] = {
 
 #: An action -> the wave that gives the chat a tool for it.
 DEBT: dict[str, str] = {
-    # ── AI Studio (BETA-1): the app page deletes a package. A5c-2 builds the chat tool. ──
-    "DELETE /api/studio/packages/{}": "P-9",
-    "GET /api/studio/packages/{}/delete-preview": "P-9",
+    # ── AI Studio ──
     # PKG-10e-2 (task 2971): the end-date bar of an app page sends Keep and Restore. A later chat tool pays both.
     "POST /api/studio/packages/{}/keep": "P-9",
     "POST /api/studio/packages/{}/restore": "P-9",
@@ -1063,7 +1065,7 @@ DEBT_CEILING: dict[str, int] = {
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write.
     "admin": 36,
     "integrations": 22,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access.
-    "studio": 5,  # PKG-10e-2 added Keep and Restore of the end-date bar (task 2971), paid by P-9. BETA-1: the delete of a package waits for the chat tool of A5c-2. G5 adds the version read. B2c-2b adds no debt: its writes are ALSO rows of the door route.
+    "studio": 3,  # PKG-10e-2 added Keep and Restore of the end-date bar (task 2971), paid by P-9 (1 to 3). G5 adds the version read. A5c-2 paid the two delete requests of BETA-1. B2c-2b adds no debt: its writes are ALSO rows of the door route.
 }
 
 #: A UI file -> the most requests in it that the fence cannot read. A new

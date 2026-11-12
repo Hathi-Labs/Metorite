@@ -20,6 +20,9 @@
  * "breathing" glows slowly and means idle. "steady" is still. The pill already
  * says "idle" or "Queued for", so the stale and queued lines never repeat it.
  *
+ * SW-7b: `<client>` carries the label of the agent session when it has one,
+ * "Claude Code (backend-worker-3)" (`withAgentLabel`).
+ *
  * Task 1045a: "waiting" is still too, because motion means working (EA-13g).
  * The agent said that it waits on CI, a review, a deploy, a person or
  * another agent, and for about how long. The pill already names the client, and a
@@ -31,6 +34,7 @@ import {
   agentPillText,
   asAgentState,
   clientName,
+  withAgentLabel,
   waitingText,
 } from "./agentRuns";
 
@@ -49,7 +53,8 @@ export function agentCardLook(
 ): AgentCardLook {
   const known = asAgentState(state);
   if (!known) return NO_AGENT_LOOK;
-  const client = clientName(facts.clientVia);
+  // SW-7b: "Claude Code (backend-worker-3)" when the session has a label.
+  const client = withAgentLabel(clientName(facts.clientVia), facts.agentLabel);
   const note = facts.note?.trim() || null;
   switch (known) {
     case "working":

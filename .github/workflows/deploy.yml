@@ -716,12 +716,15 @@ jobs:
               tests/unit/test_studio_packages_r8.py \
               tests/unit/test_studio_publish_install_r8.py \
               tests/unit/test_studio_package_install_r8.py \
+              tests/unit/test_studio_package_viewer_r8.py \
               tests/unit/test_studio_package_uninstall_r8.py \
+              tests/unit/test_studio_package_pause_r8.py \
               tests/unit/test_studio_action_door_r8.py \
               tests/unit/test_studio_catalog_r8.py \
               tests/unit/test_studio_packages_versions_r8.py \
               tests/unit/test_studio_package_routes_r8.py \
               tests/unit/test_studio_package_delete_r8.py \
+              tests/unit/test_studio_package_delete_admin_r8.py \
               tests/unit/test_studio_chat_build_r8.py \
               tests/unit/test_studio_route_gate_r8.py \
               tests/unit/test_studio_publish_seed_r8.py \
@@ -737,6 +740,7 @@ jobs:
               tests/unit/test_package_lifetime_read_r8.py \
               tests/unit/test_package_field_values_r8.py \
               tests/unit/test_agent_policies_r8.py \
+              tests/unit/test_observability_two_org_r8.py \
               tests/unit/test_package_expiry_loop_r8.py \
               tests/unit/test_app_requests_r8.py \
               tests/unit/test_workflows_lifecycle_rls_r8.py \
@@ -747,6 +751,7 @@ jobs:
               tests/unit/test_crm_pipelines_native.py \
               tests/unit/test_crm_lead_pipelines.py \
               tests/unit/test_auto_park.py \
+              tests/unit/test_studio_workflow_write_r8.py \
               tests/unit/test_headless_turn_r8.py \
               tests/unit/test_projects_status_set_read_r8.py \
               tests/unit/test_email_signature_images_r8.py \
@@ -756,6 +761,7 @@ jobs:
               tests/unit/test_projects_status_slot_r8.py \
               tests/unit/test_pm_project_updates_r8.py \
               tests/unit/test_task_check_r8.py \
+              tests/unit/test_agent_label_fence.py \
               tests/unit/test_app_create_slug_r8.py \
               tests/unit/test_apps_slug_per_org_r8.py \
               tests/unit/test_app_audit_bound_r8.py \
