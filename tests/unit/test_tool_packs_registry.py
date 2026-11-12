@@ -657,13 +657,13 @@ def test_no_crm_pack_tool_takes_an_organization_or_a_member_argument() -> None:
 
 STUDIO = "studio-builder"
 STUDIO_DIR = "apps/agents/agent-studio-builder"
-#: The eight read-only tools, the three skill tools (STU-F2d), the two
-#: package tools (STU-G1c), the two record reads (STU-D2b), then the three
-#: record writes (STU-B2c-2b).
+#: The eight read-only tools, the three skill tools (STU-F2d), the three
+#: package tools (STU-G1c save and publish, STU-A5c-2 delete), the two record
+#: reads (STU-D2b), then the three record writes (STU-B2c-2b).
 STUDIO_TOOLS = ("studio_describe", "studio_draft", "studio_interview",
                 "studio_list_actions", "studio_outline", "studio_patch", "studio_plan",
                 "studio_validate", "studio_skill_list", "studio_skill_save",
-                "studio_skill_state", "studio_save", "studio_publish",
+                "studio_skill_state", "studio_save", "studio_publish", "studio_delete_package",
                 "studio_package_get", "studio_record_list", "studio_record_create",
                 "studio_record_update", "studio_record_delete")
 #: The five record tools: the two reads, then the three writes.
@@ -682,7 +682,7 @@ def test_the_studio_family_equals_the_owners_own_tool_scope_and_fits_the_cap() -
     assert family["owner"] == STUDIO and sf.is_pack("studio") and family["core"] is False
     assert tuple(family["tools"]) == STUDIO_TOOLS
     assert set(family["tools"]) == _studio_scope()
-    assert len(family["tools"]) == 18 <= tp.MAX_PACK_TOOLS == 35
+    assert len(family["tools"]) == 19 <= tp.MAX_PACK_TOOLS == 35
 
 
 def test_the_studio_owner_is_in_no_registry_list() -> None:
@@ -731,7 +731,7 @@ def test_the_pack_loader_finds_the_owner_in_the_owner_list() -> None:
     assert tuple(tool_name(fn) for fn in tp.owner_tools("studio", module)) == STUDIO_TOOLS
 
 
-def test_the_built_studio_pack_is_the_eighteen_tools_as_coroutines() -> None:
+def test_the_built_studio_pack_is_the_nineteen_tools_as_coroutines() -> None:
     import inspect
 
     tools = tp.owner_tools("studio", load_agent_module(STUDIO_DIR))
@@ -906,6 +906,27 @@ def test_the_studio_rules_tell_the_dark_and_the_lit_record_writes() -> None:
         assert line in rules, line
     assert "No chat tool creates, changes or deletes a record" not in rules
     assert "change the records of a package" in tp.PACKS["studio"].when
+
+
+def test_the_studio_rules_tell_the_one_card_of_a_delete() -> None:
+    """STU-A5c-2. The delete always shows one card, only approved deletes, an
+    admin deletes the app of a member who left, and a result with remaining
+    asks for a new call. The delete is a write of the pack, and the record
+    filter does not take it out. Mutation: drop the DELETE AN APP bullet ->
+    red."""
+    from acb_skills import studio_tools as st
+
+    rules = " ".join(tp.PACKS["studio"].rules.split())
+    for line in ("DELETE AN APP. studio_delete_package deletes an app for good",
+                 "Send the package id only.",
+                 "It always shows one card with the counts, in every chat.",
+                 "Only approved deletes.",
+                 "An admin can delete the app of a member who left.",
+                 "When the result gives remaining, call it again. It shows a new card."):
+        assert line in rules, line
+    assert "studio_delete_package" not in st.STUDIO_RECORD_WRITES
+    assert st.studio_delete_package in st.STUDIO_PACKAGE_TOOLS
+    assert st.studio_delete_package.__tool_risk__["read_only"] is False
 
 
 # -- 8b. The studio pack needs the member's feature:studio (J1-1 fix round 1)

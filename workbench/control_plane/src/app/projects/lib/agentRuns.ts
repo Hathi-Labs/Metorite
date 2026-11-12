@@ -199,6 +199,13 @@ export interface AgentRun {
    */
   answer?: { id: string; seq: number; changeable: boolean } | null;
   /**
+   * EA-18b. May the reader answer the open question? The server's answer, from
+   * `may_answer_run` (D-EA-14), on the one-run read. The key is there only
+   * while `AGENT_QUESTIONS_ORGS` holds the org. Absent means the old rule, so
+   * every member who sees the task may answer, and the panel reads it as true.
+   */
+  can_answer?: boolean;
+  /**
    * Task 1045a (`agent_coordination.md` §3.2). The wait of a run that reads
    * `waiting`, else null. A gateway before 1045a does not send it.
    */
