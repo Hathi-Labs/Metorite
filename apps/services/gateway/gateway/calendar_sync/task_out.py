@@ -234,7 +234,7 @@ async def reconcile_task_blocks(
                 "sync_error = NULL, attempts = 0, next_attempt_at = NULL, updated_at = now() "
                 "WHERE organization_id = CAST(:org AS uuid) AND connection_id = CAST(:cid AS uuid) "
                 "AND task_id = CAST(:tid AS uuid) AND member_email = :me"),
-                {"eid": res.external_id, "etag": res.etag, "upd": now(),
+                {"eid": res.external_id, "etag": res.etag, "upd": None,
                  "h": block_hash(d.title, d.scheduled_start, d.scheduled_end),
                  "org": org, "cid": str(conn.id), "tid": d.task_id, "me": me})
         stats.created += 1 if creating or not link.external_id else 0
