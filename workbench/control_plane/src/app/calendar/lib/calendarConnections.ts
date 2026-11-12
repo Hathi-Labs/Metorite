@@ -136,6 +136,11 @@ export function errorCopy(
   if (c === "forbidden" || c === "unauthorized_client" || c === "invalid_scope") {
     return text(`${who} does not let Metorite read this calendar. Ask your administrator to allow Metorite. See How to connect.`);
   }
+  const host = provider === "google" ? "Google" : provider === "outlook" ? "Microsoft" : "Your calendar provider";
+  if (c === "transport") return text(`Metorite could not reach ${host}. It will try again in a minute.`);
+  if (c === "guard_refused") return text(`Metorite could not reach ${host} safely. Try again later. If it stays, tell your administrator.`);
+  if (c === "unauthorized") return text(`${host} no longer accepts the sign-in. Press Reconnect.`);
+  if (c === "rate_limited") return text(`${host} asked Metorite to slow down. The next sync is in a few minutes.`);
   if (/^rate_limited_\d+$/.test(c)) return text(`${who} asks Metorite to slow down. The next sync tries again on its own.`);
   if (c === "server_error" || /^graph_\d+$/.test(c) || c === "bad_reply" || c === "bad_answer" || c === "bad_request") {
     return text(`${who} had a problem. The next sync tries again in a minute.`);

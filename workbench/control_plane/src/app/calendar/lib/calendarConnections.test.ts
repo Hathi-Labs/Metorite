@@ -132,6 +132,17 @@ describe("copy for each error code", () => {
     );
     expect(errorCopy("forbidden", "google").text).toContain("Ask your administrator");
   });
+  it("words transport, guard_refused, rate_limited and unauthorized for each provider", () => {
+    expect(errorCopy("transport", "google").text).toBe("Metorite could not reach Google. It will try again in a minute.");
+    expect(errorCopy("transport", "outlook").text).toBe("Metorite could not reach Microsoft. It will try again in a minute.");
+    expect(errorCopy("guard_refused", "google").text).toBe(
+      "Metorite could not reach Google safely. Try again later. If it stays, tell your administrator.",
+    );
+    expect(errorCopy("rate_limited", "google").text).toBe("Google asked Metorite to slow down. The next sync is in a few minutes.");
+    expect(errorCopy("unauthorized", "google").text).toBe("Google no longer accepts the sign-in. Press Reconnect.");
+    expect(errorCopy("unauthorized", "outlook").text).toBe("Microsoft no longer accepts the sign-in. Press Reconnect.");
+    expect(errorCopy("rate_limited", null).text).toContain("Your calendar provider asked");
+  });
   it("gives a short plain line for an unknown code", () => {
     for (const code of ["failed", "invalid_state", "", null, undefined, "<script>"]) {
       expect(errorCopy(code).text).toBe("Connecting did not work. Try again.");
