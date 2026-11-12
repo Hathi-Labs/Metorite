@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/calendar_events_reminders.md`` §8.1 item 3.
 
-A calendar connection is a row of ``integration_connections`` with
+A calendar connection is a row of the connection registry with
 ``owning_app='calendar'``, ``scope_kind='member'`` and the member's address.
 The token is in ``credentials_encrypted``, and ONLY ``connections/store.py``
 reads it. The cursor, the account and the id of the "Metorite" calendar are
@@ -41,11 +41,6 @@ META_ACCOUNT_ID = "account_id"
 PROVIDER_ROWS = {"google": "google_calendar", "outlook": "outlook_calendar"}
 PROVIDER_WORDS = {v: k for k, v in PROVIDER_ROWS.items()}
 SOURCES = {"google_calendar": "google", "outlook_calendar": "outlook"}
-
-_CLEAR_META_SQL = (
-    "UPDATE integration_connections SET provider_meta = provider_meta "
-    "- :k1 - :k2 - :k3, updated_at = now() "
-    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid)")
 
 _DELETE_EXTERNAL_SQL = (
     "DELETE FROM calendar_entries WHERE organization_id = CAST(:org AS uuid) "
@@ -186,8 +181,8 @@ async def disconnect_connection(db: Any, org: str, conn: store.Connection) -> in
     removed = (await db.execute(text(_DELETE_EXTERNAL_SQL), params)).rowcount or 0
     await db.execute(text(_CLEAR_OWN_SQL), params)
     await store.disconnect(db, org, conn.id)
-    await db.execute(text(_CLEAR_META_SQL), {
-        **params, "k1": META_CURSOR, "k2": META_FULL_AT, "k3": META_CALENDAR_ID})
+    await store.remove_meta_keys(
+        db, org, conn.id, (META_CURSOR, META_FULL_AT, META_CALENDAR_ID))
     return int(removed)
 
 

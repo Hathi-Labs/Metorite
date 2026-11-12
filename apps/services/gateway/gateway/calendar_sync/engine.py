@@ -127,6 +127,9 @@ async def _sync(
             return SyncOutcome("skipped", code="disconnected")
         if connections.cursor(locked) != start_cursor:
             return SyncOutcome("busy")  # another worker wrote first
+        if (locked.provider_meta.get(connections.META_ACCOUNT_ID)
+                != conn.provider_meta.get(connections.META_ACCOUNT_ID)):
+            return SyncOutcome("busy")  # the member connected another account
         stats: WriteStats = await apply_changes(db, org, locked, provider.source, result)
         await connections.save_cursor(
             db, org, connection_id, result.next_cursor,

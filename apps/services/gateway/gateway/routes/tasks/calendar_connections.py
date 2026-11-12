@@ -212,7 +212,11 @@ async def callback(
         if before is not None:
             old = before.provider_meta.get(connections.META_ACCOUNT_ID)
             if old and old != who.account_id:
-                await connections.disconnect_connection(db, org, before)
+                # The row lock a sync takes before it writes, so an in-flight
+                # sync of the old account cannot add rows after the delete.
+                locked = await store.lock_by_id(db, org, before.id)
+                if locked is not None:
+                    await connections.disconnect_connection(db, org, locked)
         await store.save_credential(
             db, org, prov.provider, OWNING_APP, cred, connected_by=me,
             scope_kind=store.SCOPE_MEMBER, member_email=me, scopes=cred.scopes)

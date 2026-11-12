@@ -25,7 +25,7 @@ from gateway.crm_sources.base import (
     SourceError,
 )
 
-#: ``integration_connections.owning_app`` of every calendar connection.
+#: ``owning_app`` of the connection registry row of every calendar connection.
 OWNING_APP = "calendar"
 
 #: The window of a full list (spec §8.1 item 4).
@@ -142,7 +142,7 @@ class OutResult:
 
 
 class CalendarProvider(Protocol):
-    provider: str  # integration_connections.provider
+    provider: str  # provider column of the connection row
     source: str  # calendar_entries.source
 
     def consent_url(self, *, state: str, login_hint: str | None = None) -> str: ...
