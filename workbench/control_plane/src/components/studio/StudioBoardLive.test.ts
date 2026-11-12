@@ -271,7 +271,9 @@ describe("the preview page and its Board", () => {
   it("omits update when the manifest does not declare it, so the cards do not drag", () => {
     const node = objectBoardBlock(OBJECT, specs, computedKeys(OBJECT.rules), { action: "object:visit.list" }, false);
     expect(node?.props.data).not.toHaveProperty("update");
-    expect(page).toContain("verbMap(detail.data?.actions)");
+    // J2a: the verbs come from the actions of the page's door. The owner keeps every action, and a
+    // viewer keeps the reads only, so a viewer's cards never drag.
+    expect(page).toContain("verbMap(controls.actions)");
     expect(page).toMatch(/editable: canUpdate/);
   });
   it("shows a read error once: the Board leaves it to the Table", () => {
