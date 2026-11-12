@@ -679,3 +679,17 @@ def test_gate_output_uses_the_timings_and_agrees_with_the_pick_step(tmp_path: Pa
     gate.write_text(json.dumps({"full": False, "files": []}), encoding="utf-8")
     assert dict(x.split("=", 1) for x in guard.gate_output(gate))["shards"] == "[]"
     assert dict(x.split("=", 1) for x in guard.gate_output(tmp_path / "absent.json"))["shards"] == "[1,2,3,4,5,6]"
+
+
+def test_a_selection_passes_tests_unit_once_with_the_plugin() -> None:
+    """CIV-33a: pytest 9.1 re-lists tests/unit for each path argument, so a
+    selection run hands pytest `tests/unit/` once and the plugin drops the rest."""
+    steps = _jobs()["test"]["steps"]
+    run = next(s["run"] for s in steps if s.get("name") == "Run unit tests (this shard)")
+    assert "-p pytest_only_selected" in run
+    assert "CI_SELECTED_FILES=" in run
+    assert 'PLUGIN="-p pytest_only_selected"' in run
+    # The selection branch resets the targets to the one directory.
+    assert run.count('SHARD_TARGETS="tests/unit/"') == 2
+    assert "python -m pytest $SHARD_TARGETS $PLUGIN " in run
+    assert (_ROOT / "scripts/pytest_only_selected.py").is_file()
