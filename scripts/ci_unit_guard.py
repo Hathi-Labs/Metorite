@@ -267,6 +267,18 @@ def _disarmed_skip(case: ET.Element) -> bool:
     )
 
 
+def _collection_error(case: ET.Element) -> bool:
+    """A collection error stops the whole shard before pytest-split cuts the
+    selection, so no other test of that shard ran (Opus review, 2026-11-12:
+    pytest 9.1 writes one case with an empty classname and
+    `<error message="collection failure">`). Such a report is no baseline."""
+    err = case.find("error")
+    return err is not None and (
+        "collection failure" in (err.get("message") or "")
+        or not (case.get("classname") or "").strip()
+    )
+
+
 def old_failures(jobs: list[dict], junit_dir: Path) -> tuple[list[str] | None, str]:
     """``(files, "")``: the test files that the old run did not pass, sorted.
 
@@ -314,6 +326,11 @@ def old_failures(jobs: list[dict], junit_dir: Path) -> tuple[list[str] | None, s
             return None, f"the report of shard {n} holds no test"
         failed = 0
         for case in cases:
+            if _collection_error(case):
+                return None, (
+                    f"shard {n} stopped at a collection error in {_file(case) or '?'}, "
+                    "so its other tests never ran"
+                )
             bad = case.find("failure") is not None or case.find("error") is not None
             failed += bad
             if not bad and not _disarmed_skip(case):

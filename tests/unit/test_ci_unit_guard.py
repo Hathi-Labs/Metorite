@@ -785,6 +785,25 @@ def test_a_failed_shard_with_no_failed_case_is_not_trusted(tmp_path: Path) -> No
     assert failed is None and "shard 1 failed" in why
 
 
+def test_a_collection_error_in_the_old_run_is_not_a_baseline(tmp_path: Path) -> None:
+    """Opus re-review (2026-11-12): an ImportError in test_b stops each shard at
+    collection, so test_a and test_c never ran. pytest 9.1.1 with xunit1 writes
+    ONE case: an empty classname, the module as the name, the file, and
+    `<error message="collection failure">`. Trusting it would re-test only B."""
+    junit = tmp_path / "junit-shard-1"
+    junit.mkdir(parents=True)
+    (junit / "shard-1.xml").write_text(
+        '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" '
+        'errors="1" failures="0" skipped="0" tests="1"><testcase classname="" '
+        'name="tests.unit.test_b" file="tests/unit/test_b.py">'
+        '<error message="collection failure">ImportError: No module named nope_missing'
+        "</error></testcase></testsuite></testsuites>",
+        encoding="utf-8",
+    )
+    failed, why = guard.old_failures([_job(1, "failure")], tmp_path)
+    assert failed is None and "collection error" in why and "test_b.py" in why
+
+
 def test_each_shard_job_is_paired_with_its_own_report(tmp_path: Path) -> None:
     ok = _repair_case("tests/unit/test_a.py", "t")
     _shard(tmp_path, 1, ok)
