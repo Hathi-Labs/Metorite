@@ -152,7 +152,12 @@ In `run_agent`, the run binds the agent name `worker` and the app `chat`. So the
 
 AUTO-8b-2b (task 3081) adds the header `X-CC-Run-Ceiling`. It can only lower `RunCeiling`.
 
-**Status 2026-11-12: known risks of AUTO-8b-2.** (1) The Console `_record_completion` swallows a write fault (`customer_console/main.py`, near line 8686), so a read of the spend can be low. (2) A streamed call writes its row after the last frame (`router.py`, near line 1346), so the runner stays non-streaming. (3) While the rate card has no prices (A1), `billed_credits` is 0, and only the round cap stops a goal. The owner must confirm this before the flip. (4) The production deployment key needs `billing_read`. Without it the door answers 403, and the turn fails closed.
+**Status 2026-11-12: known risks of AUTO-8b-2.**
+
+- The Console `_record_completion` swallows a write fault (`customer_console/main.py`, near line 8686), so a read of the spend can be low.
+- A streamed call writes its row after the last frame (`router.py`, near line 1346), so the runner stays non-streaming.
+- While the rate card has no prices (A1), `billed_credits` is 0, and only the round cap stops a goal. The owner confirms this before the flip.
+- The production deployment key needs `billing_read`. Without it the door answers 403, and the turn fails closed.
 
 ### 4.5 A cap on each member (AUTO-Q1, D192)
 
