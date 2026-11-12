@@ -127,6 +127,16 @@ describe("POST /api/calendar/connections/[id]/connect", () => {
     expect(seam.calls).toEqual([]);
   });
 
+  it("passes a 409 and a 422 body through unchanged", async () => {
+    for (const [status, detail] of [[409, "already_connected"], [422, "unknown_mailbox"]] as const) {
+      seam.status = status;
+      seam.body = JSON.stringify({ detail });
+      const res = await post("google", true, '{"login_hint":"ada@example.com"}');
+      expect(res.status).toBe(status);
+      expect(await res.json()).toEqual({ detail });
+    }
+  });
+
   it("refuses a cross-site request that carries a hint", async () => {
     expect((await post("google", false, '{"login_hint":"ada@example.com"}')).status).toBe(403);
     expect(seam.calls).toEqual([]);

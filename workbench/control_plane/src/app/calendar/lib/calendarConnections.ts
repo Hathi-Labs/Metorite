@@ -56,6 +56,7 @@ export const OFFER_BUTTON = "Sync its calendar";
 export function offerButtonLabel(offer: MailboxOffer): string {
   return `Sync the ${PROVIDER_NAME[offer.provider]} calendar of ${offer.address}`;
 }
+export const ALREADY_CONNECTED_LINE = "This calendar is already connected. Reload the page.";
 export const UNKNOWN_MAILBOX_LINE = "That mailbox is not connected to your account. Reload the page.";
 
 /** The offers to draw: the feature is on, and the provider can connect. */
@@ -164,6 +165,7 @@ export function errorCopy(
           : "A work or school account may need an administrator to allow Metorite.";
     return text(`The sign-in was cancelled or blocked. ${admin} See How to connect. Then press Connect.`);
   }
+  if (c === "already_connected") return text("This calendar is already connected. Reload the page.");
   if (c === "scope_missing") return text("The consent did not include calendar access. Press Connect and allow every box.");
   if (c === "scope_extra") {
     return text(`${who} gave Metorite more access than it asks for. Remove Metorite at ${page}, then connect again.`);
@@ -363,6 +365,7 @@ export async function startConnect(
     if (!res.ok) {
       const err: unknown = await res.json().catch(() => null);
       const code = isObject(err) && typeof err.detail === "string" ? err.detail : "";
+      if (code === "already_connected") return { kind: "error", message: ALREADY_CONNECTED_LINE };
       if (code === "unknown_mailbox") return { kind: "error", message: UNKNOWN_MAILBOX_LINE };
       return { kind: "error", message: CODE.test(code) ? errorCopy(code, provider).text : CONNECT_FAILED_LINE };
     }

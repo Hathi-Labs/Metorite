@@ -83,7 +83,7 @@ export const ALSO_SYNC_TITLE = "Already connected your email?";
 
 export const ALSO_SYNC_STEPS: string[] = [
   "Open Calendar settings.",
-  "Press Sync its calendar on the row of your mailbox.",
+  "Find the row that says your mailbox is connected, and press Sync its calendar.",
   "The provider asks you to allow calendar access for the same account.",
   "A Microsoft 365 work account may need an administrator to approve Metorite once.",
   "Mail and calendar stay separate. Disconnect one and the other stays connected.",

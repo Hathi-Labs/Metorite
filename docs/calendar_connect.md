@@ -50,7 +50,7 @@ steps below.
 ### Already connected your email?
 
 1. Open **Calendar**, then **Settings**.
-2. Press **Sync its calendar** on the row of your mailbox.
+2. Find the row that says your mailbox is connected, and press **Sync its calendar**.
 3. The provider asks you to allow calendar access for the same account.
 4. A Microsoft 365 work account may need an admin to approve Metorite once.
 5. Mail and calendar stay separate. Disconnect one and the other stays connected.

@@ -346,6 +346,13 @@ describe("mailbox offers", () => {
     const d = await startConnect("outlook", g, "a@b.co");
     expect(d.kind === "error" && d.message).toContain("How to connect");
   });
+  it("words already_connected the same for both providers", async () => {
+    for (const p of ["google", "outlook"] as const) {
+      const f = (async () => new Response(JSON.stringify({ detail: "already_connected" }), { status: 409 })) as unknown as typeof fetch;
+      expect(await startConnect(p, f, "a@b.co")).toEqual({ kind: "error", message: "This calendar is already connected. Reload the page." });
+      expect(errorCopy("already_connected", p).text).toBe("This calendar is already connected. Reload the page.");
+    }
+  });
   it("sends no body without a hint", async () => {
     let init: RequestInit | undefined;
     const f = (async (_u: string, i?: RequestInit) => {
