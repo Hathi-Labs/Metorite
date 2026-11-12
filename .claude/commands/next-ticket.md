@@ -71,26 +71,38 @@ Owner decision, 2026-10-16. Say the tier and the reason in one line.
   Verifier only. Skip the reviewer. One repair round.
 If you are not sure, take the higher tier. The verifier is never skipped.
 
-**1c — Pick the model for each dispatch.** Owner directive, 2026-10-19:
-Sonnet does the work, and Opus is for the hard cases. The agent files default
-to Sonnet. Pass `model: "opus"` on the Agent call only where this table says
-so. Say the models in the same line as the tier.
+**1c — Pick the model for each dispatch.** Owner decision D218, 2026-11-12:
+route each dispatch to the model that fits the job (`ci_velocity.md` §8.6). It
+replaces "Sonnet does the work" (2026-10-19). The agent files default to
+Sonnet. Pass `model` and `effort` on the Agent call where this step says so.
+Say the models and the effort in the same line as the tier, and post them in a
+thought line.
 
 | Role | LOW | STANDARD | HIGH |
 |---|---|---|---|
 | `spec-auditor` | sonnet | sonnet | sonnet |
-| `ws-implementer` | sonnet | sonnet | **opus** |
+| `ws-implementer` | sonnet | sonnet, or **opus** when the slice edits a shared seam or list | **opus** |
 | `ws-verifier` | sonnet | sonnet | **opus** |
 | `diff-reviewer` | skipped | **opus**, at the hardening pass | **opus** |
 
-Two escalations override the table:
+These escalations override the table:
+- **The first slice of a spec**: take `opus` for `spec-auditor`.
 - **A repair round after a FAIL on the same finding**: dispatch the next
   `ws-implementer` with `model: "opus"`. Sonnet already missed it once.
 - **A slice that crosses three or more services, or a concurrency, cache or
   ordering bug**: take `opus` for the implementer, at any tier.
+- **A merge conflict that needs judgement**: take `opus`.
+- **Fable, once a feature**: the feature plan, with its contract slice and its
+  owned slices. Also a hard root cause that two tries did not explain. Also the
+  security and scaling review after a release.
+
+**Effort.** Set `effort` on each dispatch. Use `medium` for Sonnet coding. Use
+`high` for an Opus review, a HIGH slice and Fable. Opus 5.5 defaults to
+`medium`.
 
 Use `model: "haiku"` for a pure lookup with no judgement (find a file, list
-callers, count rows). Never use haiku to build, verify or review.
+callers, count rows), and to sort a red CI run (a flake, the browser suite
+alone, or a real failure). Never use haiku to build, verify or review.
 
 **1d — Build or harden.** Owner directive, 2026-10-19. The contract is
 `project-docs/specs/engineering_practice.md` §7a.
@@ -100,9 +112,10 @@ callers, count rows). Never use haiku to build, verify or review.
   `workbench/control_plane/DESIGN_SYSTEM.md` §11). A UI diff also gets item 8
   of `diff-reviewer`, the UI checklist, even when step 6 skips the full
   review. Skip the board-row note,
-  the spec header (R4) and new fence tests (R7). Run `bash scripts/ci_local.sh`
-  before each push. The home server runs it, and this PC takes it when the
-  home server is busy.
+  the spec header (R4) and new fence tests (R7). GitHub `pr-check` is the gate
+  (D218). Push when the verifier passes, not after each commit.
+  `bash scripts/ci_local.sh` is optional: run it when GitHub is down, or for
+  an early signal.
 - **Harden** (when the feature works): one PR, labelled `harden`. Run
   `STE_LINT_BLOCK=1` for the session, `bash scripts/prepush.sh --harden`,
   `diff-reviewer` on the WHOLE feature diff, and the visual review. Write the
@@ -159,6 +172,12 @@ behaviour.
   captures and the `Visual review:` line. After the merge, post the captures and
   call `ask_on_task` with "Looks right" and "Change it". The PR body states why
   the slice qualifies. D200 lists the cases that do not. When in doubt, wait.
+- **A slice behind a flag that is off (D218).** It does not wait for
+  **Approve**. Run steps 5 to 7 with the captures and the `Visual review:`
+  line. After the merge, post the captures and call `ask_on_task` with
+  "Approve the flag flip" and "Change it". Flip the flag only after Approve.
+  A new page, screen, navigation entry or flow with no flag still waits for
+  **Approve** before the merge. A HIGH slice keeps its full loop.
 - `engineering_practice.md` §1.3 owns this step.
 
 **5 — Verify.** Dispatch `ws-verifier`. It checks each behaviour criterion on
@@ -190,19 +209,21 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
   draft for a slice with something to see). The PR body: WS id, the slice
   built, the owner's approval, acceptance evidence, verification output,
   reviewer findings, the gate result, and what waits for a later slice.
-- **Run the local staging gate (D145).** After the owner approves, run
-  `bash scripts/stage_local.sh > <log> 2>&1` in the worktree, beside steps 5
-  and 6. A pass posts `local-staging` on the head commit. A new commit needs a
-  new pass. Until LD-9 lands, run `bash scripts/ci_local.sh` instead, and name
-  the steps that ran in the PR body.
+- **The gate is GitHub `pr-check` (D218).** `bash scripts/ci_local.sh` is
+  optional. For a slice that adds a migration or changes the build path, run
+  `bash scripts/stage_local.sh > <log> 2>&1` in the worktree once LD-9 lands,
+  beside steps 5 and 6. It runs the production build and rehearses the
+  migrations on production's reduced copy. A pass posts `local-staging` on the
+  head commit, and a new commit needs a new pass. Name the steps that ran in
+  the PR body.
 - **Merge it and watch it** (root `CLAUDE.md` §3a and §4). Wait for `pr-check`
   to go green. Then run `bash scripts/premerge.sh` in the worktree, in the
   same command as the merge:
   `bash scripts/premerge.sh > <log> 2>&1 && gh pr merge <n> --squash`. It tests
   the merge with today's main. It runs the collision fences only: migration
   numbers, H-ids and D-numbers. It names the files both sides changed. Add
-  `--with-tests` to run the affected tests too, on this PC (D176). From LD-10 it also refuses a head commit with no
-  `local-staging` pass. Exit 1 means merge `origin/main` into the branch, fix,
+  `--with-tests` to run the affected tests too, on this PC (D176). From LD-10 it also refuses a migration or
+  build-path slice whose head commit has no `local-staging` pass. Exit 1 means merge `origin/main` into the branch, fix,
   push, and run the gate and `pr-check` again. Then find the batch that holds
   your merge, as the steps below say.
 - **Production moves three times a day, at 05:30, 13:30 and 21:30 UTC (D194).**
@@ -272,7 +293,7 @@ PREVIEW:  APPROVED | AWAITING-OWNER | skipped (nothing to see) — <the URL>
 VERIFY:   PASS | FAIL — <the decisive evidence>
 TIER:     HIGH | STANDARD | LOW — <one line why>
 REVIEW:   APPROVE | n findings | skipped (LOW)
-GATE:     local-staging PASS | FAIL at <step> | ci_local.sh only (before LD-9)
+GATE:     pr-check PASS + premerge PASS | local-staging PASS (migration or build path) | FAIL at <step>
 PR:       <url, or why none>
 BOARD:    <the task's status and run state (finished | awaiting | released), and the WS row>
 OWNER NEEDS TO: <gated actions, or "nothing">

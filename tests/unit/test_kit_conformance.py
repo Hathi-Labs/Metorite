@@ -214,6 +214,20 @@ def test_cli_matrix_lists_all_clients():
         assert c in p.stdout
 
 
+def test_matrix_shows_a_stored_run_and_keeps_the_rest_not_run():
+    run = {**HEADER, "client": kc.CLIENTS[0], "passed_steps": SINGLE_IDS[:5]}
+    rows = kc.matrix([run]).splitlines()
+    assert "| 5/7 |" in rows[2]
+    assert "not run" in rows[3]
+    assert kc.CLIENTS[0] in rows[2] and SINGLE_IDS[5] in rows[2]
+
+
+def test_the_stored_results_parse_and_name_real_clients():
+    for r in kc.load_results():
+        assert r["client"] in kc.CLIENTS and r["scenario"] in kc.SCENARIOS
+        assert set(r["passed_steps"]) <= {sid for sid, _ in kc.SCENARIOS[r["scenario"]]}
+
+
 def test_gate_reports_a_dropped_step():
     old = [{"client": "A", "scenario": "single", "passed_steps": SINGLE_IDS}]
     new = {"client": "A", "scenario": "single", "passed_steps": SINGLE_IDS[1:]}

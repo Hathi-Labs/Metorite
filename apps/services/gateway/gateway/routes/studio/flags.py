@@ -1,8 +1,13 @@
-"""The switch of AI Studio (STU-B1).
+"""The switches of AI Studio (STU-B1 and STU-B2b-2b).
 
 ``STUDIO_ORGS`` is a comma list of organization ids. ``*`` opens every org.
 Empty opens none. The default is OFF. The reader runs on each call, so a
 reload of the settings (SIGHUP) takes effect with no restart.
+
+``STUDIO_DOOR_OPS_ORGS`` (B2b-2b) has the same grammar and the same default.
+It opens the door op of the action door: a class A ``<app>.<op>`` action of a
+package runs the op of that app as the caller. :func:`door_ops_allowed` is
+its one reader. A flip in production is the gate ``enforcement-flip``.
 """
 
 from __future__ import annotations
@@ -30,4 +35,14 @@ def studio_allowed(organization_id: str | None) -> bool:
     if not organization_id:
         return False
     listed = studio_orgs()
+    return "*" in listed or str(organization_id).strip().lower() in listed
+
+
+def door_ops_allowed(organization_id: str | None) -> bool:
+    """True when ``STUDIO_DOOR_OPS_ORGS`` holds the org, or holds ``*``
+    (B2b-2b). Default OFF. The one reader of the setting. The org comes from
+    the session, never from request input (R5)."""
+    if not organization_id:
+        return False
+    listed = _parse_orgs(str(getattr(get_settings(), "studio_door_ops_orgs", "") or ""))
     return "*" in listed or str(organization_id).strip().lower() in listed
