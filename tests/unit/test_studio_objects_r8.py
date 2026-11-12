@@ -110,12 +110,17 @@ _POLICIES = _ROOT / "infra" / "postgres" / "generated" / "04_policies.sql"
 _STORE = _ROOT / "apps" / "services" / "gateway" / "gateway" / "studio" / "objects_store.py"
 
 
-def _latest_hot_type_sql() -> str:
-    """The text of the latest migration that defines the hot-type CHECK."""
+def _latest_check_sql(name: str) -> str:
+    """The text of the latest migration that defines the CHECK *name*."""
     defining = [
         p for p in (_ROOT / "infra" / "postgres").glob("*.sql")
-        if "CONSTRAINT studio_object_fields_hot_type CHECK" in p.read_text(encoding="utf-8")]
+        if f"CONSTRAINT {name} CHECK" in p.read_text(encoding="utf-8")]
     return max(defining, key=lambda p: int(p.name.split("_", 1)[0])).read_text(encoding="utf-8")
+
+
+def _latest_hot_type_sql() -> str:
+    """The text of the latest migration that defines the hot-type CHECK."""
+    return _latest_check_sql("studio_object_fields_hot_type")
 
 
 TAG = uuid.uuid4().hex[:8]
@@ -281,7 +286,9 @@ def test_the_migration_holds_the_rls_the_keys_and_the_caps() -> None:
     assert "PERFORM pg_advisory_xact_lock(" in sql
     assert "hashtextextended('studio_objects:' || NEW.organization_id::text, 0)" in sql
     assert "'studio_objects:' || CAST(" in store._ORG_LOCK_SQL
-    type_check = sql.split("CONSTRAINT studio_object_fields_type CHECK", 1)[1].split(";")[0]
+    # C14 widened the type CHECK, so the pin reads the LATEST file that defines it.
+    type_check = _latest_check_sql("studio_object_fields_type").split(
+        "CONSTRAINT studio_object_fields_type CHECK", 1)[1].split(";")[0]
     assert re.findall(r"'(\w+)'", type_check.split("),", 1)[0]) == list(sf.FIELD_TYPES)
     # The CHECK is widened by a later file (C7b), so the pin reads the LATEST file
     # that defines it, found by CONTENT and ordered by number (R1).
