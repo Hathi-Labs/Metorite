@@ -51,9 +51,11 @@ model obeys it. The fences prove the structure: the text sits in one block,
 the token is fresh, no marker run survives inside a block, and no bracket of
 the set survives in trusted text.
 
-``apps/services/agent_edge/agent_edge/tools.py`` has its own shape, the
-``{"untrusted_text": ...}`` value of WS-55's MCP protocol. It is not a marker
-framer, and ``test_mcp_edge_protocol.py`` fences it. Do not move it here.
+The ``{"untrusted_text": ...}`` value of WS-55's MCP protocol is another
+shape. Its rule lives in ``acb_common.door_values``, and
+``apps/services/agent_edge/agent_edge/tools.py`` imports it.
+``test_mcp_edge_protocol.py`` fences it. It is not a marker framer. Do not
+move it here.
 """
 from __future__ import annotations
 

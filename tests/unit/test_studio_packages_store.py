@@ -126,7 +126,7 @@ def _row(params: dict[str, Any]) -> tuple[Any, ...]:
     now = datetime.now(UTC)
     return (params.get("id", str(uuid.uuid4())), params.get("slug", "quotes-00000000"),
             params["name"], params["desc"], params["m"], "private", "draft",
-            params["manifest"], None, now, now)
+            params["manifest"], None, now, now, None, None)
 
 
 class _EchoDb(_FakeDb):
@@ -303,7 +303,8 @@ def test_the_insert_writes_a_private_draft_package_and_names_no_org() -> None:
     assert "organization_id" not in columns
     assert "format" in columns and "workspace_path" in columns
     assert "'private', 'draft'" in sql and "'', 'manifest')" in sql
-    assert "ON CONFLICT (slug) DO NOTHING" in sql
+    # A3b-1: the clause names no column, so it holds with both slug keys.
+    assert "ON CONFLICT DO NOTHING" in sql
 
 
 @pytest.mark.parametrize("name", ["_GET_SQL", "_LIST_SQL", "_UPDATE_SQL"])
@@ -437,7 +438,7 @@ def test_app_workspace_for_refuses_an_empty_workspace_path(
 def _current_row(manifest: dict[str, Any]) -> tuple[Any, ...]:
     now = datetime.now(UTC)
     return (str(uuid.uuid4()), "quotes-00000000", manifest["name"], manifest["purpose"],
-            "ana@x.test", "private", "draft", json.dumps(manifest), None, now, now)
+            "ana@x.test", "private", "draft", json.dumps(manifest), None, now, now, None, None)
 
 
 def test_update_manifest_refuses_a_new_manifest_id() -> None:
@@ -553,7 +554,7 @@ _CAT_MANIFEST_ACTION = {"id": "make_lead", "uses": "crm.create_lead", "set": {}}
 def _pkg_row(manifest: dict[str, Any], live: int | None = None) -> tuple[Any, ...]:
     now = datetime.now(UTC)
     return (str(uuid.uuid4()), "quotes-00000000", manifest["name"], manifest["purpose"],
-            "ana@x.test", "private", "draft", json.dumps(manifest), live, now, now)
+            "ana@x.test", "private", "draft", json.dumps(manifest), live, now, now, None, None)
 
 
 def _ver_row(manifest: dict[str, Any], n: int = 1) -> tuple[Any, ...]:

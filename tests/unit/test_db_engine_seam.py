@@ -471,7 +471,14 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: session of its own (-1). The one new unbound read is
 #: `service._organization_ids`, a tenant-discovery site that is not counted
 #: here (+1 in H2_TENANT_DISCOVERY_SITES). Measured drop: 5.
-H2_BASELINE_ELSEWHERE = 62
+#: 62 → 58: H-328 part (c) (2026-11-12). The base measured 60 already: two
+#: sites left in earlier work, and no PR banked them. In routes/workflows,
+#: the hook door (`hooks.workflow_hook`) and the event door
+#: (`triggers.dispatch_event`) moved their read to `_tenant_session(org)`
+#: (-2). The hook door finds the org through `service._organization_ids`,
+#: which is already a discovery site, so it adds no new one. Measured: 58.
+#: `test_workflows_triggers_r8.py` fences both doors under FORCE RLS.
+H2_BASELINE_ELSEWHERE = 58
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files
@@ -485,12 +492,16 @@ H2_BASELINE_ELSEWHERE = 62
 #:     helpers are dual-audience: the HTTP route AND the orchestrator's
 #:     in-process agent tools (``orchestrator/app_tools.py``), which run with
 #:     no request and no bound tenant.
-#:   * ``_common.py`` (1) — ``record_app_audit``, reached from that same
-#:     agent path; converting it would silently drop agent-action audit rows.
 #:   * ``tools.py`` (1) — ``_apply_publish_review``, an Action Broker
 #:     handler that runs when an admin approves a queued proposal.
+#:
+#: ``_common.py`` (1 → 0): task 1317 (2026-11-11) removed the unbound
+#: ``record_app_audit``. Under FORCE RLS its insert wrote no row as
+#: ``acb_app``. The request handlers now write through
+#: ``record_app_audit_bound``, and ``execute_app_action`` writes through
+#: ``tenant_session(<the org of the app row>)``. Fence:
+#: ``test_app_audit_bound_r8.py``.
 H2_APPS_EXEMPT_SITES: dict[str, int] = {
-    "apps/services/gateway/gateway/routes/apps/_common.py": 1,
     "apps/services/gateway/gateway/routes/apps/actions.py": 4,
     "apps/services/gateway/gateway/routes/apps/tools.py": 1,
 }
@@ -607,7 +618,7 @@ def _tenant_session_functions(module_rel: str) -> frozenset[str]:
 
     AST calls, not source text — an H4 marker comment that merely *mentions*
     tenant_session must not read as an opener (first version's false positive:
-    `record_app_audit`'s own exemption comment).
+    the old `record_app_audit`'s own exemption comment).
     """
     path = _REPO / module_rel
     if not path.exists():
@@ -769,6 +780,13 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "blind. It runs only when `KNOWLEDGE_EMBED` names an org, and every "
         "chunk read and write after it binds one organization with "
         "`tenant_session`",
+    ("apps/services/gateway/gateway/calendar_sync/scheduler.py",
+     "_organization_ids"):
+        "WS-CAL CE-10: which organizations the calendar sync loop looks at. "
+        "It lists the RLS-EXEMPT `organization` table, so it does not go "
+        "blind. It keeps the orgs that `CALENDAR_SYNC_READ` names, and every "
+        "connection read and write after it binds one organization with "
+        "`tenant_session`",
     ("apps/services/gateway/gateway/kb_sync/scheduler.py",
      "_organization_ids"):
         "WS-61 KC-3: which organizations the Knowledge sync loop looks at. It "
@@ -788,6 +806,14 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "not go blind. Every read and write after it binds one organization "
         "with `tenant_session`, and the sweep starts only while "
         "`agent_run_sweep_enabled` is on",
+    ("apps/services/gateway/gateway/package_host/expiry_loop.py",
+     "_organization_ids"):
+        "WS-PKG PKG-10b: which organizations the daily expiry of the package "
+        "host looks at. It lists the RLS-EXEMPT `organization` table, so it "
+        "does not go blind. It keeps the orgs that `PACKAGE_HOST_ORGS` names, "
+        "and each call of `expire_due` after it binds one organization with "
+        "`tenant_session`. The loop starts only while "
+        "`PACKAGE_EXPIRY_ENABLED` is on",
     ("apps/services/gateway/gateway/routes/github/webhook.py",
      "_installation_org"):
         "WS-54 GH-4: which org owns the GitHub installation of a webhook. "

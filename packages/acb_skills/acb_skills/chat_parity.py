@@ -83,6 +83,7 @@ APP_OF: tuple[tuple[str, str], ...] = (
     ("/api/projects/my/calendar", "calendar"),
     ("/api/projects/my/reminders", "calendar"),
     ("/api/tasks/calendar", "calendar"),
+    ("/api/calendar", "calendar"),
     ("/api/projects/my", "tasks"),
     ("/api/tasks/people", "people"),
     ("/api/tasks", "tasks"),
@@ -119,6 +120,8 @@ APP_OF: tuple[tuple[str, str], ...] = (
     ("/api/health", "shell"),
     ("/api/actions", "shell"),
     ("/api/settings", "settings"),
+    # SW-31b: Settings, Agents, Guidance. The gateway serves `/agent-guidance`.
+    ("/api/agent-guidance", "settings"),
     ("/api/auth", "settings"),
     ("/api/accounts", "settings"),
     ("/api/admin", "admin"),
@@ -127,6 +130,7 @@ APP_OF: tuple[tuple[str, str], ...] = (
     ("/api/signup", "admin"),
     ("/api/integrations", "integrations"),
     ("/api/agent-access", "integrations"),
+    ("/api/agent-kit", "integrations"),
     # WS-STU. The gateway serves `/studio` (STU-B1). The skill creator sends to it (STU-F2b).
     ("/api/studio", "studio"),
 )
@@ -361,8 +365,12 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "POST /api/studio/packages": "studio_save",
     # STU-G3c: the IDE saves a draft with the PUT that studio_save sends (based_on in the query).
     "PUT /api/studio/packages/{}/draft": "studio_save",
-    # STU-G5: the IDE publishes with the POST that studio_publish sends (notes and based_on in the body).
+    # STU-G5: the IDE publishes with the POST that studio_publish sends (notes, based_on and origin in the body).
     "POST /api/studio/packages/{}/versions": "studio_publish",
+    # STU-A5c-2: the app page deletes a package (BETA-1) with the preview and the DELETE
+    # that studio_delete_package sends, after its one card.
+    "GET /api/studio/packages/{}/delete-preview": "studio_delete_package",
+    "DELETE /api/studio/packages/{}": "studio_delete_package",
     "POST /api/studio/apps/{}/actions/{}": "studio_record_list",
     "GET /api/studio/skills": "studio_skill_list",
     "GET /api/studio/skills/{}": "studio_skill_list",
@@ -392,6 +400,23 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "stream",
         "The shell reads the installed packages to draw the sidebar and the command bar, and reads them "
         "again every few seconds (PKG-6). No member click sends it. The chat acts on the same records.",
+    ),
+    "GET /api/shell/layout": (
+        "stream",
+        "The shell reads the org default of the star set and the preset, to draw the sidebar for a member "
+        "with no choice of their own (PKG-17b). No member click sends it. The chat sets no org default here.",
+    ),
+    # ── AI Studio ──
+    "GET /api/studio/packages/{}/lifetime": (
+        "stream",
+        "The app page reads the end date of the private install of the owner, to draw the end-date bar "
+        "(PKG-10e-2). No member click sends it. The chat keeps or restores an app with the Keep and Restore rows.",
+    ),
+    # ── Calendar ──
+    "POST /api/calendar/connections/{}/connect": (
+        "oauth",
+        "Connect Google Calendar or Outlook (CE-10c). The consent happens in the browser, on the page of the "
+        "provider. The chat points the member to Calendar settings.",
     ),
     # ── Email ──
     "GET /api/email/attachments/{}/download": (
@@ -616,6 +641,14 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "The approval card in the chat reads its own request to draw it, also after a reload "
         "(STU-B2c-2c). It is the chat's own card. The tool result gives Mira the request.",
     ),
+    "GET /api/agent-kit": (
+        "download",
+        "Lists the clients of the agent kit for the download block (KIT-4b). The chat reads the playbook.",
+    ),
+    "GET /api/agent-kit/{}": (
+        "download",
+        "Streams the zip of the agent kit for one client (KIT-4b). A zip is a file for the browser.",
+    ),
     "POST /api/agent-access/authorize/approve": (
         "oauth",
         "The member's approval on the consent screen of an outside agent (MCP OAuth).",
@@ -623,6 +656,24 @@ EXEMPT: dict[str, tuple[str, str]] = {
     "POST /api/agent-access/authorize/check": (
         "oauth",
         "The consent screen of an outside agent (MCP OAuth). The member answers it in the browser.",
+    ),
+    # EA-19d (D-EA-5, spec §10.9): the box token routes. The page shows the token once, so a
+    # secret never goes through the chat. The routes are person-only: an agent cannot mint.
+    "POST /api/agent-access/box-tokens": (
+        "secret",
+        "Makes a box token and shows it once. A secret never goes through the chat, and an agent may not mint.",
+    ),
+    "POST /api/agent-access/box-tokens/check": (
+        "secret",
+        "Asks for the one-time ticket of a box token. The token is a secret, and the route is person-only.",
+    ),
+    "POST /api/agent-access/box-tokens/revoke-all": (
+        "secret",
+        "Revokes every box token of the organization. An admin acts on a box token only in the page.",
+    ),
+    "POST /api/agent-access/box-tokens/{}/rotate": (
+        "secret",
+        "Gives a box a new token and shows it once. A secret never goes through the chat.",
     ),
     "POST /api/integrations/configure": (
         "secret",
@@ -648,9 +699,10 @@ EXEMPT: dict[str, tuple[str, str]] = {
 
 #: An action -> the wave that gives the chat a tool for it.
 DEBT: dict[str, str] = {
-    # ── AI Studio (BETA-1): the app page deletes a package. A5c-2 builds the chat tool. ──
-    "DELETE /api/studio/packages/{}": "P-9",
-    "GET /api/studio/packages/{}/delete-preview": "P-9",
+    # ── AI Studio ──
+    # PKG-10e-2 (task 2971): the end-date bar of an app page sends Keep and Restore. A later chat tool pays both.
+    "POST /api/studio/packages/{}/keep": "P-9",
+    "POST /api/studio/packages/{}/restore": "P-9",
     # STU-G5: the Publish dialog reads the live version with its manifest. G1d (chat reads versions) pays it.
     "GET /api/studio/packages/{}/versions/{}": "P-9",
     # ── Tasks ──
@@ -664,7 +716,11 @@ DEBT: dict[str, str] = {
     "POST /api/tasks/items/{}/enrich": "P-1",
     "POST /api/tasks/items/{}/suggest-title": "P-1",
     # ── Calendar ──
+    # CE-10c (task 66): the Connected calendars section of Calendar settings. A later chat tool pays all three.
+    "DELETE /api/calendar/connections/{}": "P-1",
+    "GET /api/calendar/connections": "P-1",
     "GET /api/tasks/calendar/day-state": "P-1",
+    "POST /api/calendar/connections/{}/sync": "P-1",
     # ── Email ──
     "DELETE /api/email/messages/{}": "P-2",
     "GET /api/email/accounts/{}/folders": "P-2",
@@ -903,7 +959,13 @@ DEBT: dict[str, str] = {
     "POST /api/shell/feed/state": "P-7",
     "POST /api/shell/intent": "P-7",
     "PUT /api/shell/feed/prefs": "P-7",
+    # PKG-17c-1 (task 2969): the save of the org default of the shell layout. P-7 gives the chat a tool for it.
+    "PUT /api/shell/layout": "P-7",
     # ── Settings and the assistant profile ──
+    # SW-31b: Settings, Agents, Guidance reads the versions of a scope and
+    # saves a new version. The chat tool is SW-31c (task 1531).
+    "GET /api/agent-guidance/history": "P-8",
+    "POST /api/agent-guidance": "P-8",
     "DELETE /api/auth/me/assistant-profile": "P-8",
     "DELETE /api/auth/me/assistant-profile/interview": "P-8",
     "DELETE /api/auth/me/assistant-profile/interview/{}": "P-8",
@@ -914,6 +976,7 @@ DEBT: dict[str, str] = {
     "DELETE /api/settings/branding": "P-8",
     "GET /api/auth/me": "P-8",
     "GET /api/auth/me/agent-access": "P-8",
+    "GET /api/auth/me/appearance": "P-8",
     "GET /api/auth/me/assistant-profile": "P-8",
     "GET /api/auth/me/assistant-profile/address": "P-8",
     "GET /api/auth/me/assistant-profile/block": "P-8",
@@ -926,6 +989,7 @@ DEBT: dict[str, str] = {
     "GET /api/settings/llm": "P-8",
     "GET /api/settings/number-system": "P-8",
     "PUT /api/auth/me/agent-access": "P-8",
+    "PUT /api/auth/me/appearance": "P-8",
     "PUT /api/auth/me/shell": "P-8",
     "PUT /api/auth/me/zone": "P-8",
     "PUT /api/settings/appearance": "P-8",
@@ -975,6 +1039,8 @@ DEBT: dict[str, str] = {
     "DELETE /api/integrations/github": "P-8",
     "DELETE /api/integrations/plugins/{}": "P-8",
     "GET /api/agent-access/connections": "P-8",
+    # EA-17c-2: Change access in the AI agents view. The chat tool is not built.
+    "PATCH /api/agent-access/connections/{}": "P-8",
     # MCP-P1b-1: the list "Waiting for you" and Approve or Decline on
     # AppRequestCard. In a chat, the card of STU-B2c-2c (task 1866) is the
     # chat surface of the decision: the member presses Approve or Decline on
@@ -1001,9 +1067,9 @@ DEBT: dict[str, str] = {
 #: The most debt that each app may carry. A count may go down, never up.
 #: Lower the number in the change that pays the debt.
 DEBT_CEILING: dict[str, int] = {
-    "projects": 8,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, paid by the chat tool of SW-43c (task 1802).
+    "projects": 7,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43c (task 1802) built the chat tools of agentRunsApi.withdrawAnswer and agentRunsApi.replaceAnswer (9 to 7).
     "tasks": 9,
-    "calendar": 1,
+    "calendar": 4,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4).
     "email": 14,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182).
     "crm": 72,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72).
     "notes": 51,
@@ -1015,11 +1081,11 @@ DEBT_CEILING: dict[str, int] = {
     "apps": 28,
     "agents": 20,
     "chat": 25,
-    "shell": 15,
-    "settings": 26,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write.
+    "shell": 16,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. P-7 pays it.
+    "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write.
     "admin": 36,
-    "integrations": 21,  # MCP-P1b-1 added the app-request list and decision (task 1703).
-    "studio": 3,  # BETA-1: the delete of a package waits for the chat tool of A5c-2. G5 adds the version read. B2c-2b adds no debt: its writes are ALSO rows of the door route.
+    "integrations": 22,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access.
+    "studio": 3,  # PKG-10e-2 added Keep and Restore of the end-date bar (task 2971), paid by P-9 (1 to 3). G5 adds the version read. A5c-2 paid the two delete requests of BETA-1. B2c-2b adds no debt: its writes are ALSO rows of the door route.
 }
 
 #: A UI file -> the most requests in it that the fence cannot read. A new

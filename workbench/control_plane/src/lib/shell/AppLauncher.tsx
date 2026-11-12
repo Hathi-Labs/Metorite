@@ -31,10 +31,13 @@ import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import type { NavSection } from "@/lib/nav";
-import { EMPTY_SHELL, STARRABLE, isStarred, toggleStar } from "@/lib/shell/presets";
+import { EMPTY_SHELL, canStar, isStarred, starBase, toggleStar } from "@/lib/shell/presets";
 import { installNavPanes, mergeInstallNav, usePackageManifest } from "@/lib/shell/packageManifest";
 import { isActive, launcherGroups } from "@/lib/shell/shellNav";
-import { latestShell, saveShellPrefs, useShellPrefs } from "@/lib/shell/shellPrefs";
+import { keepDroppedHidden, latestShell, saveShellPrefs, useShellPrefs } from "@/lib/shell/shellPrefs";
+
+/** Shown when the server did not keep a star. */
+export const STAR_DROPPED = "This app could not be starred. It may have been removed. Reload the page.";
 
 export default function AppLauncher({
   open,
@@ -51,10 +54,9 @@ export default function AppLauncher({
   /** One line at the top, for a member who came here to add an app. */
   hint?: string;
 }) {
-  // PKG-6b: the panes an install gives list here too, in "Apps". Stars use
-  // `held` alone, and an install pane has no star: the stored layout
-  // holds only the panes of `nav.ts`. With the package host off, the list is
-  // empty and the SAME array comes back.
+  // PKG-6b: the panes an install gives list here too, in "Apps". With the package host off, the list is
+  // empty and the SAME array comes back. PKG-6c-2: an install pane has a star
+  // too (`canStar`), and the stars run over the merged sections.
   const { access } = useAccess();
   const manifest = usePackageManifest();
   const sections = mergeInstallNav(held, installNavPanes(manifest, access.features));
@@ -66,14 +68,25 @@ export default function AppLauncher({
   const focusHref = (shown.find((p) => isActive(pathname, p.href)) ?? shown[0])?.href;
   const focusRef = useRef<HTMLAnchorElement | null>(null);
   const shell = useShellPrefs();
-  const canStar = shell.enabled && shell.stored !== undefined;
+  const ready = shell.enabled && shell.stored !== undefined;
   const [starError, setStarError] = useState<string | null>(null);
   const toggle = (href: string) => {
     setStarError(null);
     // The latest value, not this render's: two quick clicks must both land.
-    const base = { ...EMPTY_SHELL, ...(latestShell() ?? shell.stored) };
-    const next = { ...base, ...toggleStar(base, held, href) };
-    saveShellPrefs(next).catch(() => setStarError("Your sidebar was not saved. Try again."));
+    const base = starBase({ ...EMPTY_SHELL, ...(latestShell() ?? shell.stored) }, shell.layout);
+    const next = { ...base, ...toggleStar(base, sections, href) };
+    const wantStar = next.pins.includes(href);
+    saveShellPrefs(next).then(
+      (saved) => {
+        // The server drops a stale or foreign install href in silence, so read
+        // its answer and not our guess (PKG-6c-1 review).
+        if (wantStar && !(saved.pins ?? []).includes(href)) {
+          keepDroppedHidden(saved, href);
+          setStarError(STAR_DROPPED);
+        }
+      },
+      () => setStarError("Your sidebar was not saved. Try again."),
+    );
   };
   return (
     <Modal
@@ -118,8 +131,8 @@ export default function AppLauncher({
             <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               {g.items.map((p) => {
                 const here = isActive(pathname, p.href);
-                const starrable = canStar && STARRABLE.has(p.href);
-                const shown = starrable && isStarred(shell.layout, held, p.href);
+                const starrable = ready && canStar(p);
+                const shown = starrable && isStarred(shell.layout, sections, p.href);
                 return (
                   <li key={p.href} className="relative">
                     <Link

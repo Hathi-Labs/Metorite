@@ -61,7 +61,7 @@ Each block has one seam and one owner spec. A second implementation of a block i
 | **Workflows and automation** | A trigger, steps and approvals | The workflow engine (V `routes/workflows/scheduler.py`, `engine/*`). The capped headless turn (V `jobs/unattended.py`). `workflows_app.md` (D6), `proactive_agent.md` | CRM rules (P 2744), nudges (P 2763), Studio apps, bots | No second scheduler. A watch is a template |
 | **Actions and the door** | One typed capability of an app, with a class A, B, C or X | App manifests (V `acb_common/app_manifests/base.py`). The Studio action catalog (V `routes/studio/actions.py`). `external_agent_access.md` §19 (D136) | Mira, the MCP, Studio views, workflows, bots | Four MCP tools serve every app. See D205.9 |
 | **Proposals and approvals** | A change that waits for a person | The waiting seam (V `routes/shell/waiting.py`). `waiting_on_me.md` | Every app with a held write, an ask or a draft | One "Needs you" (AP-Q11). Each queue is a kind of the seam |
-| **Signals and delivery** | What Metorite tells a member, and when | My Day registry (V `routes/shell/feed.py`, `needs.py`). Reach (V `gateway/reach/*`). `my_day_feed.md` (D100), `proactive_reach.md` (D103) | Every app, nudges, the brief, digests | One registry. One budget for caps and quiet hours. Fence `test_shell_feed.py` (V) |
+| **Signals and delivery** | What Metorite tells a member, and when | My Day registry (V `routes/shell/feed.py`, `needs.py`). Reach (V `gateway/reach/*`). `my_day_feed.md` (D100), `proactive_reach.md` (D103). One sound player, `src/lib/shell/sound.ts` (P 2865, D210) | Every app, nudges, the brief, digests, sound cues (P 2862) | One registry. One budget for caps and quiet hours. One sound player. Fence `test_shell_feed.py` (V) |
 | **Connections** | A link to an outside system and its credential | `integration_connections` (V `245_integration_connections.sql`, `connections/store.py`). `integrations_console.md` (D96) | CRM mirrors, MCP servers, GitHub, payments, Drive | A credential never enters the environment. Fence `test_integration_env_scoping.py` (V) |
 | **Import and mapping** | Records that come from a file or an old system | The CRM source seam (V `crm_sources/base.py`) and mapping plans (V `277_crm_mapping_plans.sql`). `crm_platform.md` §5 (D95.4) | CRM (P 2735, 2792 to 2807), Studio objects (P 1419) | One path: Shape, plan, dry run, approve, Undo |
 | **AI calls and credits** | Every model call and its cost | The Router and `acb_llm.decide` (V `acb_llm/decide.py`). `customer_console.md` CP-11, `ai_tier_routing.md` (D90) | Every AI feature | No direct vendor call. One budget key for each usage name |
@@ -197,6 +197,7 @@ Each app declares its setup items (D196). The chat raises one missing item at a 
 7. **Nudges that the member controls.** Reach sends nudges in batches, inside one cap and one set of quiet hours (Reach §6). Each nudge gives its reason. The member can snooze, dismiss or mute a kind.
 8. **Failure copy explains.** A refusal says what happened, why, and the next step. It never shows a raw error.
 9. **Mobile.** Each screen works at 390 px. The bar always shows (`navigation_shell.md` §9.1).
+10. **Sound is rare and tasteful.** A few cues of one family mark the moments that matter. A message left or arrived, the agent needs me, My Day has a new card, or a reminder is due. One player plays them, inside the quiet hours of Reach. The member can turn each cue off. A cue never carries meaning alone (D210).
 
 ---
 
@@ -228,6 +229,7 @@ Before you add a table, a registry, a manifest, a queue, an engine or a spec, do
 | Retrieval | `tests/unit/test_company_search_sources.py` | V |
 | CRM change history | `tests/unit/test_crm_change_history.py` | V |
 | Credentials out of the environment | `tests/unit/test_integration_env_scoping.py` | V |
+| One sound player | `src/lib/shell/soundSeam.test.ts` (SND-1, task 2865) | P |
 | One contribution point per need | advisory until a fence exists | P |
 | One change-record shape | advisory until a fence exists | P |
 
@@ -334,5 +336,8 @@ Each epic writes its owning spec in its first slice. Until then this table and t
 | WS-MIR CRM mirror and connectors (2790) | MIR-n | `crm_connectors.md` (MIR-0, task 2791) | Import and mapping, connections |
 | WS-MKT app marketplace (2818) | MKT-n | `app_marketplace.md` (MKT-0, task 2820) | The manifest, actions and the door, records and objects |
 | WS-OPS operations apps (2819) | OPM-n | `operations_apps.md` (OPM-0, task 2824) | Records and objects, products and prices, the task store, workflows, files |
+| WS-CON company content (3039) | CON-n | `company_context.md` §16 (CON-0, task 3040) | Files, knowledge and retrieval, the organization identity |
+| WS-OTW one-time workflows (3010) | OTW-n | `workflows_app.md` §14 (OTW-0, task 3011) | Workflows, signals and delivery, the action door |
+| WS-SND sound cues (2862) | SND-n | `DESIGN_SYSTEM.md` §4c and `proactive_reach.md` §8.4 (SND-0, task 2864) | Signals and delivery, the one look |
 | SCALE (2566) | SC-n | `agent_coordination.md` and `dev_capacity.md` | none (process) |
 

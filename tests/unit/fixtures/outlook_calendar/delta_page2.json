@@ -1,0 +1,6 @@
+{"@odata.context":"https://graph.microsoft.com/v1.0/$metadata#Collection(event)","@odata.deltaLink":"https://graph.microsoft.com/v1.0/me/calendars/AAA/calendarView/delta?$deltatoken=GwcQ","value":[
+{"@odata.etag":"W/\"abc4\"","id":"EV4","subject":"Cancelled review","isAllDay":false,"isCancelled":true,"showAs":"busy","type":"singleInstance","start":{"dateTime":"2026-11-14T10:00:00.0000000","timeZone":"UTC"},"end":{"dateTime":"2026-11-14T11:00:00.0000000","timeZone":"UTC"}},
+{"id":"EV5","@removed":{"reason":"deleted"}},
+{"id":"EV6","subject":"","isAllDay":false,"showAs":"tentative","start":{"dateTime":"2026-11-15T10:00:00.0000000","timeZone":"UTC"},"end":{"dateTime":"2026-11-15T10:30:00.0000000","timeZone":"UTC"}},
+{"subject":"no id","start":{"dateTime":"2026-11-15T10:00:00.0000000","timeZone":"UTC"},"end":{"dateTime":"2026-11-15T10:30:00.0000000","timeZone":"UTC"}}
+]}

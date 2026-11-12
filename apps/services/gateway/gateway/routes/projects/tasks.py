@@ -78,6 +78,7 @@ from gateway.routes.projects.core import (
     assert_move_keeps_privacy,
     assert_no_task_cycle,
     assert_not_archived,
+    assert_task_is_epic,
     clean_payload,
     count_where,
     diff_changes,
@@ -100,6 +101,7 @@ from gateway.routes.projects.core import (
     record_field_change,
     remap_one_status,
     remap_one_type,
+    require_exact_version,
     require_precondition,
     require_row,
     require_status_in_project,
@@ -121,6 +123,13 @@ from gateway.routes.projects.custom_fields import (
     load_definitions,
 )
 from gateway.routes.projects.cycles import detach_moved_tasks
+from gateway.routes.projects.epic_contract import (
+    EpicContractIn,
+    clean_contract,
+    epic_contract_of,
+    refuse_when_off,
+    save_contract,
+)
 from gateway.routes.projects.filters import (
     UPDATED_AGE_SQL,
     agent_filter_clauses,
@@ -186,6 +195,8 @@ AGENT_CREATE_FIELDS: frozenset[str] = frozenset({
     "project_id", "title", "description", "parent_task_id", "type_id",
     "status_id", "tags", "due_at",
     "importance", "leveraged", "estimate_mins", "start_date", "assignees",
+    # SP-8a: the contract of a new epic, in the create's own transaction.
+    "epic_contract",
     # SW-23: the `check` of `create_task`. 422 while the Check flag is off.
     "check_text",
 })
@@ -269,32 +280,6 @@ def _check_version(task: Any, if_match: str | None) -> None:
     """
     if isinstance(if_match, str):
         require_precondition(task, if_match, row_to_dict(task, TaskModel))
-
-
-async def _require_exact_version(db: Any, task_id: str, if_match: str | None) -> None:
-    """Strict ``If-Match`` for an agent that replaces the assignee set.
-
-    WS-55 MCP-G2, fix round 1. An assignment moves ``updated_at`` and not
-    ``fields_at``, so ``precondition_holds`` passes a token from before
-    somebody else's assignment. A replaced set would then drop that person
-    in silence. So an agent's PUT keeps strict equality, as
-    ``agent_delete_task`` does: any change after the read, a comment too,
-    stales the token. The caller reads the assignees first, so the stamp
-    read here is at least as new as the set it replaces. A member's PUT
-    keeps :func:`_check_version`. An absent header passes (D-PM-20).
-    """
-    if not isinstance(if_match, str):
-        return
-    expected = parse_precondition(if_match)
-    stamp = (await db.execute(
-        text("SELECT updated_at FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
-        {"tid": task_id},
-    )).scalar()
-    if stamp != expected:
-        raise HTTPException(status_code=412, detail={
-            "error": "precondition_failed",
-            "message": "This row changed since you loaded it.",
-        })
 
 
 def _is_calendar_date(value: Any) -> bool:
@@ -501,6 +486,11 @@ class TaskCreateIn(TaskIn):
     """
 
     assignees: list[str] | None = None
+    #: SP-8a (``project_management_app.md`` §13.3). The contract of a new
+    #: task of an epic type, saved in the create's own transaction through
+    #: the one writer (``epic_contract.save_contract``). A type that is not
+    #: an epic answers 422 and no task is made. ``None`` saves no contract.
+    epic_contract: EpicContractIn | None = None
     #: WS-MCP SW-23. The Check of the new task. A create field here and a
     #: PATCH field on ``TaskPatchIn``, never on ``TaskIn``, which other
     #: doors share. 422 while ``agent_task_checks_enabled`` is off.
@@ -1123,6 +1113,14 @@ async def get_task(
         rollup = await epic_rollup(db, vis, row)
         if rollup is not None:
             result["rollup"] = rollup
+        # WS-39 SP-5a — the open cycle of the task, for the MCP `get_task`. The
+        # key is there only while PROJECTS_SPRINTS_ORGS holds the org.
+        from gateway.routes.projects import cycles
+
+        if cycles.sprints_allowed(getattr(user, "organization_id", None)):
+            result["cycle"] = await cycles.task_open_cycle(db, vis, row.id)
+        # SP-8a — the contract of an epic, or null (§13.3).
+        result["epic_contract"] = await epic_contract_of(db, row)
         return result
 
 
@@ -1170,11 +1168,26 @@ async def create_task(
     first_assignees = check_task_values(user, values)
     project_id = values["project_id"]
     title = values["title"]
+    # SP-8a. Not a column: the contract lands after the insert, in the same
+    # transaction. Its rules run here, before any read. Dark: while
+    # EPIC_CONTRACT_ORGS lacks the org, a body with a contract makes no task.
+    raw_contract = values.pop("epic_contract", None)
+    if raw_contract is not None:
+        refuse_when_off(getattr(user, "organization_id", None))
+    contract = (
+        clean_contract(EpicContractIn.model_validate(raw_contract))
+        if raw_contract is not None else None
+    )
 
     async with _tenant_session() as db:
         made = await create_task_in(db, user, values, first_assignees)
         row, assigned = made.row, made.assigned
         task_id = str(row.id)
+        if contract is not None:
+            # A type that is not an epic is a 422, and the raise rolls the new
+            # task back. After the create, so a hidden project stays a 404.
+            await assert_task_is_epic(db, getattr(row, "type_id", None))
+            await save_contract(db, user, row, contract)
         result = row_to_dict(row, TaskModel)
 
     await emit("pm.task.created", {
@@ -1369,7 +1382,20 @@ async def create_task_in(
     return CreatedTask(row=row, assigned=assigned)
 
 
+async def _bump_closed_runs(user: UserContext, recipients: list[str]) -> None:
+    """After the commit of a task close (H-409 item 1): move the My Day of
+    each member whose question bells closed with the run that the close
+    ended (AP-BUG-3). An empty list does nothing."""
+    if not recipients:
+        return
+    # Imported here: `agent_runs` imports this module.
+    from gateway.routes.projects.agent_runs import bump_closed_questions
+
+    await bump_closed_questions(user, recipients)
+
+
 @router.patch("/tasks/{task_id}")
+@transient_as_409
 async def patch_task(
     task_id: str, payload: TaskPatchIn,
     user: UserContext = Depends(get_current_user),
@@ -1390,6 +1416,12 @@ async def patch_task(
     closes this task only. A move into ``cancelled`` never cascades: nobody
     asked to cancel the children. The reply then carries
     ``subtasks_completed`` and ``subtask_changes``, the Undo record.
+
+    H-409 item 1 (task 748). A move into ``done`` or ``cancelled`` ends the
+    task's open agent run in the same transaction, unless the run is the
+    caller's own agent run (``agent_runs.end_runs_of_closed_task``). A run
+    that an agent write holds at that moment refuses the lock, and
+    ``transient_as_409`` answers 409 with nothing written.
     """
     values = clean_payload(payload)
     # WS-55 EA-6d. A signed agent PATCH sends only the keys of
@@ -1475,7 +1507,7 @@ async def patch_task(
         if new_status is not None and str(new_status) != str(before.status_id):
             moved = await apply_status_transition(
                 db, after, str(new_status), created_by=actor(user),
-                completed_at=done_at,
+                completed_at=done_at, closer=user,
             )
             # WS-55 EA-6d. Inside the transaction, so the refusal rolls the
             # whole PATCH back, the field changes too. EA-6f: an agent may
@@ -1532,6 +1564,7 @@ async def patch_task(
             result["subtasks_completed"] = len(cascade.ids) if cascade else 0
             result["subtask_changes"] = cascade.changes if cascade else []
 
+    await _bump_closed_runs(user, list((moved or {}).get("runs_cleared") or ()))
     await emit("pm.task.updated", {"task_id": task_id})
     if moved is not None:
         await emit("pm.task.status_changed", {
@@ -2294,10 +2327,14 @@ class ArchiveOutcome:
     was_archived: bool
     #: The subtree that ``include_subtasks`` shelved, or ``None``.
     cascade: Any | None
+    #: H-409 item 1: the members whose question bells closed with the run
+    #: that the archive ended. The caller moves their My Day after its commit.
+    runs_cleared: tuple[str, ...] = ()
 
 
 async def archive_task_in(
     db: Any, vis: Any, task: Any, user: UserContext, *, include_subtasks: bool,
+    end_runs: bool = False,
 ) -> ArchiveOutcome:
     """The ONE core of an archive, inside the caller's transaction.
 
@@ -2308,6 +2345,12 @@ async def archive_task_in(
     default, so each caller says whether it shelves the subtree. The caller
     emits ``pm.task.archived`` after its commit when ``was_archived`` is
     false, and the events of ``cascade``.
+
+    H-409 item 1 (task 748). With ``end_runs``, the archive ends each open
+    agent run of the task in this transaction
+    (``agent_runs.end_runs_of_closed_task``). :func:`archive_task` passes it.
+    The approval does not, because it closes its own run itself
+    (``close_archived_run``).
     """
     task_id = str(task.id)
     status = await require_row(
@@ -2332,16 +2375,23 @@ async def archive_task_in(
                 str(getattr(status, "category", "") or ""),
             ),
         )
+    runs_cleared: list[str] = []
+    if end_runs and not was_archived:
+        # Imported here: `agent_runs` imports this module.
+        from gateway.routes.projects.agent_runs import end_runs_of_closed_task
+
+        runs_cleared = await end_runs_of_closed_task(db, task_id, "archived", user)
     cascade = (
         await archive_subtree(db, vis, task_id, by=actor(user))
         if include_subtasks else None
     )
     result = row_to_dict(row, TaskModel)
     await attach_agent_state(db, [result])
-    return ArchiveOutcome(result, was_archived, cascade)
+    return ArchiveOutcome(result, was_archived, cascade, tuple(runs_cleared))
 
 
 @router.post("/tasks/{task_id}/archive")
+@transient_as_409
 async def archive_task(
     task_id: str, user: UserContext = Depends(get_current_user),
     include_subtasks: bool = False,
@@ -2369,12 +2419,16 @@ async def archive_task(
 
     The work is :func:`archive_task_in`, the one core that the archive
     approval of WS-55 EA-6g calls too.
+
+    H-409 item 1: the archive ends the task's open agent run in the same
+    transaction. A run that an agent write holds at that moment refuses the
+    lock, and ``transient_as_409`` answers 409 with nothing written.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
         outcome = await archive_task_in(
-            db, vis, task, user, include_subtasks=include_subtasks,
+            db, vis, task, user, include_subtasks=include_subtasks, end_runs=True,
         )
         result = outcome.row
         cascade = outcome.cascade
@@ -2382,6 +2436,7 @@ async def archive_task(
             result["subtasks_archived"] = len(cascade.ids)
             result["subtask_ids"] = cascade.ids
 
+    await _bump_closed_runs(user, list(outcome.runs_cleared))
     if not outcome.was_archived:
         await emit("pm.task.archived", {"task_id": task_id})
     if cascade is not None:
@@ -2389,7 +2444,23 @@ async def archive_task(
     return result
 
 
+async def _reopen_after_unarchive(db: Any, row: Any) -> list[str]:
+    """H-409 fix rounds 1 and 2: put back the run that the archive ended. The
+    marker of the close decides, in any lane: an agent that moved its own
+    task to done kept its run, so an archive and an Undo bring that run
+    back. It returns the members whose question bells moved."""
+    status = await require_row(db, "pm_task_statuses", str(row.status_id), "Status")
+    # Imported here: `agent_runs` imports this module.
+    from gateway.routes.projects.agent_runs import reopen_run_of_reopened_task
+
+    return await reopen_run_of_reopened_task(
+        db, str(row.id), status_id=None,
+        task_open=str(getattr(status, "category", "") or "") not in CLOSING_CATEGORIES,
+    )
+
+
 @router.post("/tasks/{task_id}/unarchive")
+@transient_as_409
 async def unarchive_task(
     task_id: str, user: UserContext = Depends(get_current_user),
 ) -> dict:
@@ -2405,6 +2476,12 @@ async def unarchive_task(
     on the shelf for its own reason, and nothing on the row says whether its
     parent took it there. The client restores the exact ids an archive
     cascade reported, and nothing else.
+
+    H-409 fix round 1 (task 748). The archive ended the task's open agent
+    run, so the unarchive puts that run back inside the undo window, in any
+    lane (the marker decides, fix round 2; ``agent_runs.reopen_run_of_reopened_task``).
+    A run that an agent write holds refuses the lock, and
+    ``transient_as_409`` answers 409 with nothing written.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -2435,8 +2512,10 @@ async def unarchive_task(
                 else "Task restored from the archive"
             ),
         )
+        bells = await _reopen_after_unarchive(db, row)
         result = await _with_agent_state(db, row_to_dict(row, TaskModel))
 
+    await _bump_closed_runs(user, bells)
     await emit("pm.task.unarchived", {"task_id": task_id})
     return result
 
@@ -2563,7 +2642,7 @@ async def set_assignees(
 
     WS-55 MCP-G2. For a member, ``If-Match`` is the version rule of the
     PATCH (``precondition_holds``). For a signed agent it is strict equality
-    (:func:`_require_exact_version`, fix round 1), checked after the read of
+    (``core.require_exact_version``, fix round 1), checked after the read of
     the current set. An absent header passes (D-PM-20), so the app's calls
     are unchanged. The writer is :func:`_write_assignees`.
     """
@@ -2597,7 +2676,7 @@ async def set_assignees(
         if agent_call:
             # After the read of `current`: an assignment that this read saw
             # moved `updated_at` in the same commit, so it stales the token.
-            await _require_exact_version(db, task_id, if_match)
+            await require_exact_version(db, task_id, if_match)
         assigned = await _write_assignees(
             db, user, task_id=task_id, project_id=str(task.project_id),
             wanted=wanted, current=current,
@@ -2685,12 +2764,15 @@ def _refuse_claim(code: str, message: str) -> NoReturn:
 
 class ClaimIn(BaseModel):
     """``POST /projects/tasks/{id}/claim``. The body is optional (CIV-14a).
-    An agent may send ``external_link``, an https link to its session. The
-    tenant and the member never come from this body (R5)."""
+    An agent may send ``external_link``, an https link to its session.
+    SW-7b: it may also send ``agent_label``, the display name of its session,
+    and a person's body that names one is 422. The tenant and the member
+    never come from this body (R5)."""
 
     model_config = ConfigDict(extra="forbid")
 
     external_link: str | None = Field(default=None, max_length=2_048)
+    agent_label: str | None = Field(default=None, max_length=200)
 
 
 #: SW-63 (agent_coordination.md §5.10). The most subtask ids a claim lists.
@@ -2778,6 +2860,8 @@ async def claim_task(
     from gateway.routes.projects import agent_runs
 
     link = agent_runs.check_run_link(payload.external_link)
+    # SW-7b: the display label of the agent's session. A person's is 422.
+    label = agent_runs.agent_label_of(user, payload.agent_label)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         # 1. The visibility load answers 404 for a task the caller cannot see.
@@ -2816,7 +2900,7 @@ async def claim_task(
         # the claim keeps that order (O-M9). Its place after the key does not
         # matter: no run writer takes an assignee key. A refusal below rolls
         # the run back with the claim. None for a member.
-        run_id = await agent_runs.open_run_for_claim(db, task_id, user, link)
+        run_id = await agent_runs.open_run_for_claim(db, task_id, user, link, label)
 
         # 3. The row lock, and the row as the lock read it (fix round 1).
         # Two claims serialise here, and the second one sees the new

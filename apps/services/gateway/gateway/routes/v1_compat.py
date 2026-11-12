@@ -16,6 +16,7 @@ from typing import Any
 
 from acb_auth import member_proof, require_llm_api_auth
 from acb_common import get_logger
+from acb_common.secret_shapes import REDACTION_BEARER, REDACTION_SHAPES
 from acb_common.settings import get_settings
 from acb_llm.client import _ensure_keys_loaded
 from fastapi import APIRouter, Depends, Request
@@ -511,10 +512,9 @@ def _sanitize_messages_for_provider(
 # Bearer token, or an ``sk-…`` key fragment. We surface the reason to the
 # operator (it's THEIR Metorite) but redact anything secret first.
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"sk-[A-Za-z0-9_\-]{6,}"),          # OpenAI-style keys
-    re.compile(r"Bearer\s+[A-Za-z0-9._\-]+", re.I),  # bearer tokens
+    *REDACTION_SHAPES,                               # keys: list in acb_common.secret_shapes
+    REDACTION_BEARER,                                # bearer tokens
     re.compile(r"https?://\S+"),                     # endpoint URLs
-    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),      # GitHub tokens
 )
 
 

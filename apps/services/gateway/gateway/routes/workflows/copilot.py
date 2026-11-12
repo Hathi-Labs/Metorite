@@ -10,6 +10,14 @@ and their nodes are rewired from ``module_name`` to real ``module_id``s. The
 resulting graph is validated (one named-issue repair round) and returned to
 the client, which applies it to the canvas — the maker reviews, tests, and
 saves; the copilot never writes the workflow row itself.
+
+**The gate (STU-J1-3).** A Copilot turn is authoring: it builds a graph for the
+editor and spends credits. So the route carries ``AUTHOR_GATE`` and needs
+``feature:studio`` where ``WORKFLOW_STUDIO_GATE_ORGS`` holds the org. It keeps
+the router gate too, and that gate is the gate of the module write in
+``_save_module``: the module routes keep ``feature:workflows`` until STU-Q15
+has a decision. So J1-3 opens no module write to a person who lacks
+``feature:workflows``.
 """
 
 from __future__ import annotations
@@ -21,6 +29,7 @@ from acb_auth import UserContext, get_current_user
 from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
 from gateway.routes.workflows.core import (
+    AUTHOR_GATE,
     _log,
     _tenant_session,
     _uid,
@@ -263,7 +272,7 @@ async def _capability_context(message: str, db: Any) -> dict[str, Any]:
     }
 
 
-@router.post("/{workflow_id}/copilot")
+@router.post("/{workflow_id}/copilot", dependencies=[AUTHOR_GATE])
 async def workflow_copilot(
     workflow_id: str,
     body: CopilotRequest,

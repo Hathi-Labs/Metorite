@@ -943,6 +943,10 @@ class TaskModel(BaseModel):
     #: `response` or `elicitation` of that run, at most 140 characters, for the
     #: hover of the pill. Filled by ``attach_agent_state``, as the three above.
     agent_note: str | None = None
+    #: WS-MCP SW-7b. The display label that the agent gave its session, at
+    #: most 40 characters, for "Claude Code (backend-worker-3)" on the card.
+    #: Display data only. Filled by ``attach_agent_state``, as the four above.
+    agent_label: str | None = None
     #: WS-55 EA-13d (EA3-48). The ONE pull request chip of the task:
     #: ``{repo, number, state, checks_state, checks_summary, url, title,
     #: merged_at, more}``, or ``None``. ``filters.attach_pr_chip`` fills it in
@@ -2502,6 +2506,38 @@ def require_precondition(row: Any, if_match: str | None, current: dict) -> None:
     )
 
 
+async def require_exact_version(db: Any, task_id: str, if_match: str | None) -> None:
+    """Strict ``If-Match`` for an agent that REPLACES a satellite of a task.
+
+    WS-55 MCP-G2, fix round 1. An assignment moves ``updated_at`` and not
+    ``fields_at``, so ``precondition_holds`` passes a token from before
+    somebody else's assignment. A replaced set would then drop that person
+    in silence. So an agent's PUT keeps strict equality, as
+    ``agent_delete_task`` does: any change after the read, a comment too,
+    stales the token. The caller reads what it replaces first, so the stamp
+    read here is at least as new as the state it replaces. A member's PUT
+    keeps :func:`require_precondition`. An absent header passes (D-PM-20).
+
+    The ONE strict check of a replace. Two routes call it: the PUT of the
+    assignees (``tasks.set_assignees``) and the PUT of an epic contract
+    (``epic_contract.put_epic_contract``, SP-8a), whose save is a satellite
+    bump too. It moved here from ``tasks.py`` so that both share it. Do not
+    write another copy.
+    """
+    if not isinstance(if_match, str):
+        return
+    expected = parse_precondition(if_match)
+    stamp = (await db.execute(
+        text("SELECT updated_at FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
+        {"tid": task_id},
+    )).scalar()
+    if stamp != expected:
+        raise HTTPException(status_code=412, detail={
+            "error": "precondition_failed",
+            "message": "This row changed since you loaded it.",
+        })
+
+
 async def count_where(db: Any, table: str, column: str, value: str) -> int:
     total = (await db.execute(
         text(f"SELECT count(*) FROM {table} WHERE {column} = CAST(:value AS uuid)"),
@@ -3374,6 +3410,38 @@ async def assert_epic_has_no_parent(
         )
 
 
+#: SP-8a (``project_management_app.md`` §13.3). The 422 of an epic contract
+#: on a task that is not an epic. It says what happened and the next step.
+#: ``agent_edge.tools.NOT_EPIC_DETAIL`` is the edge's pinned copy.
+NOT_EPIC_DETAIL = (
+    "This task is not an epic, so it takes no epic contract. Nothing changed. "
+    "Make it an epic first: set its type to Epic, then save the contract."
+)
+
+
+async def task_is_epic(db: Any, type_id: Any) -> bool:
+    """Does a task of type *type_id* carry an epic contract (SP-8a)?
+
+    The same predicate as the Epic-root rule (:func:`is_epic_type`), so the
+    two rules never disagree about a type. No type is not an epic.
+    """
+    if not type_id:
+        return False
+    row = await load_row(db, "pm_task_types", str(type_id))
+    return row is not None and is_epic_type(row)
+
+
+async def assert_task_is_epic(db: Any, type_id: Any) -> None:
+    """Refuse an epic contract on a task that is not an epic, with 422.
+
+    The twin of :func:`assert_epic_has_no_parent`. A READ of a task that is
+    not an epic gives ``epic_contract: null`` and never this refusal. A task
+    whose type stops being an epic keeps its row, and the reads ignore it.
+    """
+    if not await task_is_epic(db, type_id):
+        raise HTTPException(status_code=422, detail=NOT_EPIC_DETAIL)
+
+
 async def next_task_number(db: Any, root_id: str) -> int:
     """Allocate the next human-readable number for a root project.
 
@@ -3611,6 +3679,7 @@ def _checked_completed_at(task: Any, when: datetime) -> datetime:
 async def apply_status_transition(
     db: Any, task: Any, new_status_id: str, *, created_by: str,
     automation: bool = False, completed_at: datetime | None = None,
+    closer: Any | None = None,
 ) -> dict[str, Any]:
     """Move a task to a new status. **Three effects, one helper.**
 
@@ -3629,6 +3698,17 @@ async def apply_status_transition(
     closing category: Undo of a Reopen passes the date the task held. It may
     not be in the future or before ``task.created_at`` (422). Every other
     caller leaves it ``None`` and gets the stamp ``now()``.
+
+    ``closer`` (H-409 item 1, task 748) is the caller of a member door, the
+    PATCH today. On the crossing INTO a closing category it ends each open
+    agent run of the task in this transaction
+    (``agent_runs.end_runs_of_closed_task``), and the result carries
+    ``runs_cleared``. A caller that passes no closer ends no run: the sweep
+    closes such a run after its lease (spec §12.6). Fix round 1: on the
+    crossing OUT of a closing category (an Undo, a reopen) on a task that
+    is not archived, the same caller puts back the run that the close
+    ended, inside the undo window
+    (``agent_runs.reopen_run_of_reopened_task``).
     """
     old_status = await require_row(
         db, "pm_task_statuses", str(task.status_id), "Status",
@@ -3682,10 +3762,43 @@ async def apply_status_transition(
 
         successor = await spawn_successor(db, row, actor_id=created_by)
 
+    runs_cleared = (
+        await _runs_follow_the_task(db, row, old_status, new_status, closer)
+        if closer is not None and was_closed != is_closed else []
+    )
+
     return {
         "row": row, "from": old_status, "to": new_status,
-        "recurred_to": successor,
+        "recurred_to": successor, "runs_cleared": runs_cleared,
     }
+
+
+async def _runs_follow_the_task(
+    db: Any, row: Any, old_status: Any, new_status: Any, closer: Any,
+) -> list[str]:
+    """H-409 item 1 and fix round 1 (task 748). The agent run follows a
+    member door's crossing, in the caller's transaction. INTO a closing
+    category: the task's open run ends (``end_runs_of_closed_task``). OUT of
+    one: the run that the close ended comes back inside the undo window
+    (``reopen_run_of_reopened_task``). Imported here for the reason of
+    ``spawn_successor`` above. It returns the members whose question bells
+    moved, so the caller moves their My Day after its commit."""
+    from gateway.routes.projects.agent_runs import (
+        end_runs_of_closed_task,
+        reopen_run_of_reopened_task,
+    )
+
+    if new_status.category in CLOSING_CATEGORIES:
+        return await end_runs_of_closed_task(
+            db, str(row.id), str(new_status.category), closer,
+            status_id=str(new_status.id),
+        )
+    # Fix round 2: the marker decides. A task that stays archived is not
+    # open, so a matching close waits for its unarchive.
+    return await reopen_run_of_reopened_task(
+        db, str(row.id), status_id=str(old_status.id),
+        task_open=getattr(row, "archived_at", None) is None,
+    )
 
 
 # ── The task row lock of a claim (WS-55 EA-6b) ──────────────────────────────
@@ -3711,13 +3824,13 @@ _LOCK_TASK_SQL = (
 
 async def lock_task(db: Any, task_id: str) -> Any:
     """Lock one task row until the transaction ends, and return the row as
-    the lock read it. Only ``claim_task`` calls it. The claim has passed its
-    visibility load, so the lock reads by id only. 404 when a delete crossed
-    that load."""
-    # WS-55 EA-6h: `tasks.agent_delete_task` calls it too, after its own
-    # visibility load, so the version and title checks hold until the delete.
-    # WS-55 MCP-G9 (fix round 3): `activities._load_agent_comment` calls it
-    # too, so no new comment on the task commits during the last-word check.
+    the lock read it. Four callers, each after its own visibility load, so
+    the lock reads by id only: ``claim_task``; ``tasks.agent_delete_task``
+    (WS-55 EA-6h, so the version and title checks hold until the delete);
+    ``activities._load_agent_comment`` (WS-55 MCP-G9 fix round 3, so no new
+    comment on the task commits during the last-word check); and
+    ``epic_contract.put_epic_contract`` (SP-8a, so the version check and the
+    save hold together). 404 when a delete crossed that load."""
     row = (await db.execute(text(_LOCK_TASK_SQL), {"tid": str(task_id)})).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Task not found")

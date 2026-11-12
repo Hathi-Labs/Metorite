@@ -336,12 +336,13 @@ def test_r8_a_promotion_keeps_the_install_and_shows_it_to_the_group(world) -> No
 
 
 def test_r8_an_overlapping_claim_of_another_app_is_taken_and_nothing_is_written(world) -> None:
-    """Ben is in OPS, Cat is not. The private claims of Ben and Ana never
-    overlap, but a group claim of OPS overlaps the private claim of Ben."""
+    """An install of another app at OPS holds the key. A private claim of
+    Cat, who is outside OPS, never blocks (PKG-Q6, the org wins), and a
+    private claim of a member of OPS does not block either."""
     mine = _install(world, "a1", ANA, [_claim(_k("c1"))])
     cats = _install(world, "a3", CAT, [_claim(_k("c1"))])
     assert isinstance(cats, store.Install), cats
-    bens = _install(world, "a2", BEN, [_claim(_k("c1"))])
+    bens = _install(world, "a2", OPS, [_claim(_k("c1"))])
     assert isinstance(mine, store.Install) and isinstance(bens, store.Install), (mine, bens)
     before, claims = _row(world, mine.id), _claim_rows(world, mine.id)
     got = _promote(world, mine.id, OPS)
@@ -699,15 +700,16 @@ def test_r8_a_promotion_keeps_a_consent_row_and_a_row_of_another_sharer(world) -
 
 def test_r8_a_promotion_that_is_refused_deletes_no_share_row(world) -> None:
     mine = _install(world, "a1", ANA, [_claim(_k("l3"))])
-    bens = _install(world, "a2", BEN, [_claim(_k("l3"))])
+    bens = _install(world, "a2", OPS, [_claim(_k("l3"))])
     assert isinstance(bens, store.Install), bens
     assert _share(world, mine.id, [DAN]) == (DAN.lower(),)
     before, claims = _row(world, mine.id), _claim_rows(world, mine.id)
     got = _promote(world, mine.id, OPS)
     assert isinstance(got, ClaimTaken), got
     _unchanged(world, mine.id, before, claims)
+    # The group claim of the blocker shadows the private claim in the resolve
+    # of a member of OPS (PKG-Q6), so only the share row is checked here.
     assert _grants(world, "a1") == [(DAN.lower(), "use", "", ANA)]
-    assert _sees(world, DAN, mine.id)
 
 
 # ── m. The owner promotes, and a grantee who is not active does not block ──

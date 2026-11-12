@@ -10,14 +10,23 @@ import {
   type AgentStartBody,
   type AgentStartResult,
   type AgentState,
+  type AgentWaiting,
   type ArchiveApprovalBody,
   type ArchiveApprovalResult,
   type AgentSummary,
+  type ReplaceBody,
   type WithdrawBody,
   agentRunRows,
   normalizeRunDetail,
 } from "./agentRuns";
 import { type TaskDecisions, answerBody, readTaskDecisions } from "./decisions";
+import {
+  type QuestionScope,
+  type QuestionSort,
+  type QuestionsPage,
+  questionsPage,
+  questionsQuery,
+} from "./agentQuestions";
 import type { EpicRollup } from "./epicRollup";
 import {
   ATTENTION_LIMIT,
@@ -26,6 +35,7 @@ import {
   attentionPage,
   resumeBody,
 } from "./needsAttention";
+import { type AgentRuns, type AgentsOverview, parseAgentRuns, parseOverview } from "./agentsAtWork";
 import type { Rule as RecurrenceRule } from "./recurrence";
 import { taskVersions } from "./taskUndo";
 
@@ -1852,10 +1862,20 @@ export interface TaskRow {
   agent_client_via?: string | null;
   agent_member_email?: string | null;
   /**
+   * WS-MCP SW-7b — the name that the agent gave its session, such as
+   * "backend-worker-3". Display data only. The card shows it beside the client.
+   */
+  agent_label?: string | null;
+  /**
    * WS-55 EA-13d (EA3-41) — the first line of the newest thing the agent said
    * on its open run, at most 140 characters. The pill shows it on hover.
    */
   agent_note?: string | null;
+  /**
+   * Task 1045a (`agent_coordination.md` §3.2) — the wait of a run that reads
+   * `waiting`: what it waits on and when the wait ends. Null in any other state.
+   */
+  agent_waiting?: Pick<AgentWaiting, "on" | "until"> | null;
   /**
    * WS-55 EA-13d (EA3-48) — the ONE pull request that the gateway picked for
    * the task, with its CI. `lib/taskCard.pullRequestChip` draws it.
@@ -3349,6 +3369,17 @@ export const agentRunsApi = {
     ),
 
   /**
+   * SW-43b. The run's member swaps an answer that no agent has read for a new
+   * one, in one write. The same 404, 403 and 409 as the withdraw, and 422 for
+   * an id that is not an option. A retry with the same key writes once.
+   */
+  replaceAnswer: (runId: string, body: ReplaceBody) =>
+    call<{ run: AgentRun; activity: AgentActivity; replaced: boolean }>(
+      `agent-runs/${encodeURIComponent(runId)}/answer/replace`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  /**
    * EA-6g (EA3-40). The run's member approves or declines an agent's
    * archive request. An approve archives the task, never its subtasks. Any
    * other member gets 403, and a request past its expiry gets 409.
@@ -3396,6 +3427,43 @@ export const agentRunsApi = {
 };
 
 /**
+ * WS-AGA AGA-8 — Agents at work. One read of every agent the member may see
+ * (`GET /projects/agents/overview`, AGA-7). `null` means the feature is dark
+ * for this member (404, 401 or 403), and the section then draws nothing.
+ */
+export const agentsOverviewApi = {
+  read: async (): Promise<AgentsOverview | null> => {
+    try {
+      const overview = parseOverview(await call<unknown>("agents/overview"));
+      if (!overview) {
+        throw new ProjectsApiError("The agents answer could not be read.", 200);
+      }
+      return overview;
+    } catch (err) {
+      if (err instanceof ProjectsApiError && [401, 403, 404].includes(err.status)) return null;
+      throw err;
+    }
+  },
+};
+
+/**
+ * WS-AGA AGA-9: the last runs of one agent (`GET /projects/agents/{key}/runs`).
+ * `null` means the member may not see this agent (404, 401 or 403).
+ */
+export const agentRecentRunsApi = {
+  read: async (agentKey: string): Promise<AgentRuns | null> => {
+    try {
+      const runs = parseAgentRuns(await call<unknown>(`agents/${encodeURIComponent(agentKey)}/runs`));
+      if (!runs) throw new ProjectsApiError("The runs answer could not be read.", 200);
+      return runs;
+    } catch (err) {
+      if (err instanceof ProjectsApiError && [401, 403, 404].includes(err.status)) return null;
+      throw err;
+    }
+  },
+};
+
+/**
  * WS-55 SW-11a — Needs attention (`external_agent_access.md` §12.7). The
  * stalled runs, the open runs of closed tasks and the tasks blocked by parked
  * work of one project and its subprojects, over the tasks the caller can see.
@@ -3415,6 +3483,38 @@ export const attentionApi = {
    */
   mine: async (): Promise<AttentionPage> =>
     attentionPage(await call<unknown>(`needs-attention?mine=true&limit=${ATTENTION_LIMIT}`)),
+};
+
+/**
+ * WS-55 EA-18b — Questions for me (`external_agent_access.md` §12.8). The open
+ * agent questions that wait on a person. One route feeds the Projects pane,
+ * and later the My Day card and the Approvals tab. The words are in
+ * `agentQuestions.ts`.
+ */
+export const questionsApi = {
+  /**
+   * One page. `null` means the route is OFF: `AGENT_QUESTIONS_ORGS` does not
+   * hold the org, the route answers 404, and the sidebar draws no entry.
+   */
+  list: async (opts: {
+    scope?: QuestionScope;
+    project?: string | null;
+    sort?: QuestionSort;
+    limit?: number;
+  }): Promise<QuestionsPage | null> => {
+    try {
+      return questionsPage(await call<unknown>(`agent-questions?${questionsQuery(opts)}`));
+    } catch (err) {
+      if (err instanceof ProjectsApiError && err.status === 404) return null;
+      // A member without the Projects feature gets 403 on "For me": the door is
+      // off for them, not broken. "Everyone" keeps its 403 (the reader is not a
+      // reviewer), which the list handles itself.
+      if (err instanceof ProjectsApiError && err.status === 403 && (opts.scope ?? "mine") === "mine") {
+        return null;
+      }
+      throw err;
+    }
+  },
 };
 
 export interface NotificationRow {

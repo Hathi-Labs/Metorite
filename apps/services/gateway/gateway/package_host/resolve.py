@@ -20,7 +20,10 @@ PKG-5b row of §10. The route is ``GET /shell/manifest`` in
    holds ``key``, ``source`` ``system``, ``install_id`` None, ``needs_setup``
    False, ``feature`` and ``package``, and no payload.
 2. An install shows only when it is ``active``, its ``ends_at`` is NULL or
-   in the future, and its app is a Studio package that is not archived.
+   in the future, and its app is a Studio package that is not archived and
+   not paused (``apps.paused_at``, WS-STU J3a). The pause of a package also
+   pauses each install, so this term covers an install that a publish or a
+   restore makes active during the pause.
    This read hides an install at its ``ends_at`` with no write. So
    ``store.expire_due`` (PKG-10a) only archives it later, and never has to
    hide it. An ``org`` install shows to each member. A ``group`` install shows to a
@@ -34,7 +37,12 @@ PKG-5b row of §10. The route is ``GET /shell/manifest`` in
 4. ``needs_setup`` comes from the needs of the manifest, and is never
    stored. A need is ``{"feature": <slug>}`` or ``{"package": <id>}``. Any
    other shape counts as unmet (fail closed). A package need is met only by
-   a system package or by an install that this viewer sees.
+   a system package that the viewer can use, or by an install that this
+   viewer sees. A system package counts when one of its entries passes the
+   feature check of step 3. The ``extends``
+   of a sub-app (§8.2, PKG-15a) is one more package need. A host that is
+   missing, paused, not text or the sub-app itself leaves the need unmet.
+   Each entry of an install with ``extends`` carries ``"extends": <host>``.
 5. The arrangement of §9 is not in PKG-5b.
 
 **One app.** A viewer can see one app at two scopes (§4 lets them both
@@ -58,12 +66,18 @@ route sends it as the ETag.
 Fences: ``tests/unit/test_package_host_resolve.py`` (the pure part, with no
 database) and ``tests/unit/test_package_host_resolve_r8.py`` (a real
 database, FORCE RLS, two orgs).
+
+**PKG-7.** :func:`install_feature_slugs` reads the feature slugs of the
+install claims, and ``/auth/me`` adds them to its lists. Fences:
+``tests/unit/test_auth_me_features.py`` and
+``tests/unit/test_auth_me_install_features_r8.py``.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -83,6 +97,9 @@ VERSION_HEX = 16
 #: The two shapes of a need in PKG-5b (§5.2 step 4).
 NEED_KINDS = frozenset({"feature", "package"})
 
+#: The shape of a package id. It is the pattern of ``Manifest.extends``.
+PACKAGE_ID = re.compile(r"^[a-z][a-z0-9_-]{0,47}$")
+
 CanUse = Callable[[str], bool]
 
 
@@ -95,6 +112,8 @@ class InstallRow:
 
     ``manifest`` is the manifest of the installed version, or of the app for
     a draft. It can be any JSON value, and the needs check reads it.
+    ``version`` is the installed version, and None for a draft. The viewer
+    read of ``viewer.py`` (WS-STU J2a) reads it.
     """
 
     id: str
@@ -103,6 +122,7 @@ class InstallRow:
     scope_subject: str
     created_at: datetime
     manifest: Any
+    version: int | None = None
 
 
 @dataclass(frozen=True)
@@ -144,14 +164,43 @@ def manifest_id(manifest: Any) -> str | None:
     return None
 
 
+def host_of(manifest: Any) -> str | None:
+    """The host package id of a sub-app, or None (§8.2, PKG-15a).
+
+    None means the manifest has no ``extends``, or its ``extends`` is not a
+    valid package id. :func:`needs_met` treats the second case as unmet.
+    """
+    if not isinstance(manifest, Mapping):
+        return None
+    host = manifest.get("extends")
+    if isinstance(host, str) and PACKAGE_ID.fullmatch(host):
+        return host
+    return None
+
+
+def host_met(manifest: Mapping[str, Any], packages: frozenset[str] | set[str]) -> bool:
+    """True when the ``extends`` of *manifest* is absent or its host is present.
+
+    A null ``extends`` means no host. Any other value that is not a valid
+    package id fails closed. The sub-app is never its own host.
+    """
+    if manifest.get("extends") is None:
+        return True
+    host = host_of(manifest)
+    return host is not None and host != manifest_id(manifest) and host in packages
+
+
 def needs_met(manifest: Any, can_use: CanUse, packages: frozenset[str] | set[str]) -> bool:
     """True when each need of *manifest* is met (§5.2 step 4).
 
     A manifest that is not an object, a ``needs`` that is not a list, and a
     need of any other shape are unmet. A need is an object with one key,
-    ``feature`` or ``package``, and a text value that is not empty.
+    ``feature`` or ``package``, and a text value that is not empty. The
+    ``extends`` of the manifest adds one package need (:func:`host_met`).
     """
     if not isinstance(manifest, Mapping):
+        return False
+    if not host_met(manifest, packages):
         return False
     needs = manifest.get("needs", [])
     if not isinstance(needs, list):
@@ -182,9 +231,18 @@ def feature_ok(feature: Any, can_use: CanUse) -> bool:
     return can_use(feature)
 
 
-def system_package_ids(system: Mapping[str, Sequence[SystemContribution]]) -> frozenset[str]:
-    """The id of each system package that holds an entry."""
-    return frozenset(c.package for entries in system.values() for c in entries)
+def system_package_ids(
+    system: Mapping[str, Sequence[SystemContribution]], can_use: CanUse,
+) -> frozenset[str]:
+    """The id of each system package that the viewer can use (§8.2).
+
+    A system package counts only when at least one of its entries passes
+    :func:`feature_ok`, the gate that hides its entries. So a package whose
+    entries the viewer cannot see is not present. A package whose entries
+    name no feature is present for each viewer.
+    """
+    return frozenset(c.package for entries in system.values() for c in entries
+                     if feature_ok(c.feature, can_use))
 
 
 def resolve(
@@ -200,7 +258,7 @@ def resolve(
     """
     kept = widest_per_app(installs)
     by_id = {i.id: i for i in kept}
-    packages = system_package_ids(system) | {
+    packages = system_package_ids(system, can_use) | {
         mid for i in kept if (mid := manifest_id(i.manifest)) is not None}
     setup = {i.id: not needs_met(i.manifest, can_use, packages) for i in kept}
 
@@ -233,9 +291,13 @@ def resolve(
               if feature_ok(c.payload.get("feature"), can_use)]
     chosen.sort(key=lambda ci: (ci[0].position, ci[0].key, order_key(ci[1])))
     for c, inst in chosen:
+        host = host_of(inst.manifest)
+        # ``extends`` is reserved. Only the manifest of the install sets it.
+        payload = {k: v for k, v in c.payload.items() if k != "extends"}
         out.setdefault(c.point, []).append({
-            **dict(c.payload), "key": c.key, "source": inst.scope_kind,
-            "install_id": inst.id, "needs_setup": setup[inst.id]})
+            **payload, "key": c.key, "source": inst.scope_kind,
+            "install_id": inst.id, "needs_setup": setup[inst.id],
+            **({"extends": host} if host else {})})
     return out
 
 
@@ -248,6 +310,53 @@ def version_of(contributions: Mapping[str, Any]) -> str:
 def manifest_body(contributions: Mapping[str, Any]) -> dict[str, Any]:
     """The answer of ``GET /shell/manifest``: the version and the entries."""
     return {"version": version_of(contributions), "contributions": dict(contributions)}
+
+
+def install_feature_slugs(resolved: Mapping[str, Any]) -> list[str]:
+    """The ``payload.feature`` slugs of the install claims in *resolved*
+    (WS-PKG PKG-7, ``package_host.md`` §10).
+
+    *resolved* is the answer of :func:`resolve_for`. ``/auth/me`` adds these
+    slugs to the system slugs, and the access set of the member then puts
+    each slug in ``features`` or in ``features_denied``. So this list grants
+    nothing.
+
+    Each slug shows once, in the order of the points and their entries. A
+    system entry adds nothing, because its feature is a system slug. A slug
+    that is not text is dropped. A slug is also dropped when
+    ``feature:<slug>`` fails ``validate_permission``, when the check changes
+    it (upper case or a space), or when it is a wildcard or holds a colon.
+    So a claim cannot widen the vocabulary of permissions.
+    """
+    from acb_auth.permissions import (
+        InvalidPermission,
+        feature_permission,
+        validate_permission,
+    )
+
+    out: list[str] = []
+    points = resolved.get("contributions") if isinstance(resolved, Mapping) else None
+    if not isinstance(points, Mapping):
+        return out
+    for entries in points.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, Mapping) or entry.get("source") == "system":
+                continue
+            slug = entry.get("feature")
+            if not isinstance(slug, str) or not slug or slug in out:
+                continue
+            if "*" in slug or ":" in slug:
+                continue
+            perm = feature_permission(slug)
+            try:
+                if validate_permission(perm) != perm:
+                    continue
+            except InvalidPermission:
+                continue
+            out.append(slug)
+    return out
 
 
 def etag_matches(if_none_match: str | None, version: str) -> bool:
@@ -279,7 +388,8 @@ INSTALLS_SQL = (
     "SELECT CAST(package_install.id AS text), CAST(package_install.app_id AS text),"
     " package_install.scope_kind, package_install.scope_subject,"
     " package_install.created_at,"
-    " CASE WHEN package_install.version IS NULL THEN a.manifest ELSE v.manifest END"
+    " CASE WHEN package_install.version IS NULL THEN a.manifest ELSE v.manifest END,"
+    " package_install.version"
     " FROM package_install"
     " JOIN apps AS a ON a.organization_id = package_install.organization_id"
     " AND a.id = package_install.app_id"
@@ -288,7 +398,7 @@ INSTALLS_SQL = (
     f" WHERE package_install.organization_id = {_BOUND_ORG}"
     " AND package_install.state = 'active'"
     " AND (package_install.ends_at IS NULL OR package_install.ends_at > now())"
-    " AND a.format = 'manifest' AND a.status <> 'archived'"
+    " AND a.format = 'manifest' AND a.status <> 'archived' AND a.paused_at IS NULL"
     " AND (package_install.version IS NOT NULL"
     " OR package_install.scope_subject = :viewer)"
     " AND (package_install.scope_kind = 'org'"
@@ -320,7 +430,8 @@ async def read_installs(db: Any, viewer: str, groups: Sequence[str]) -> list[Ins
     rows = (await db.execute(text(INSTALLS_SQL), {
         "viewer": viewer, "groups": list(groups)})).all()
     return [InstallRow(id=str(r[0]), app_id=str(r[1]), scope_kind=str(r[2]),
-                       scope_subject=str(r[3]), created_at=r[4], manifest=r[5])
+                       scope_subject=str(r[3]), created_at=r[4], manifest=r[5],
+                       version=None if r[6] is None else int(r[6]))
             for r in rows]
 
 
@@ -333,6 +444,22 @@ async def read_claims(db: Any, install_ids: Sequence[str]) -> list[ClaimRow]:
                      payload=r[3], position=int(r[4])) for r in rows]
 
 
+async def visible_installs(db: Any, *, viewer: str) -> list[InstallRow]:
+    """The one install of each app that *viewer* sees (step 2 and the rule of
+    one app). :func:`resolve_for` and the viewer read of ``viewer.py`` (WS-STU
+    J2a) both call it, so one rule decides which installs a member sees.
+
+    *db* is a session that the caller opened with ``tenant_session()``.
+    *viewer* is the address of the session member, never request input.
+    """
+    # A lazy import: the CRM package is large, and the gateway loads it first.
+    from gateway.routes.crm.access import my_groups
+
+    member = (viewer or "").strip().lower()
+    groups = sorted(await my_groups(db, member)) if member else []
+    return widest_per_app(await read_installs(db, member, groups))
+
+
 async def resolve_for(db: Any, *, viewer: str, can_use: CanUse) -> dict[str, Any]:
     """The answer of ``GET /shell/manifest`` for *viewer*.
 
@@ -340,11 +467,6 @@ async def resolve_for(db: Any, *, viewer: str, can_use: CanUse) -> dict[str, Any
     *viewer* is the address of the session member, never request input.
     *can_use* is ``user.can_use_feature`` of that member.
     """
-    # A lazy import: the CRM package is large, and the gateway loads it first.
-    from gateway.routes.crm.access import my_groups
-
-    member = (viewer or "").strip().lower()
-    groups = sorted(await my_groups(db, member)) if member else []
-    kept = widest_per_app(await read_installs(db, member, groups))
+    kept = await visible_installs(db, viewer=viewer)
     claims = await read_claims(db, [i.id for i in kept])
     return manifest_body(resolve(system_contributions(), kept, claims, can_use))

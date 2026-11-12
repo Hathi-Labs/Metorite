@@ -1222,11 +1222,41 @@ class _Revised:
 
 #: What :func:`request_confirmation` gives when ``close_on_steer`` is on and
 #: the member wrote in the chat while the card waited. It is falsy, so a
-#: caller that only asks "approved?" reads it as no. The member's words reach
-#: the model on the tool's result (``orchestrator.steer.decorate_tool_result``),
-#: so the agent can change the mail and show a new card. Without this, the
-#: words waited behind the card, and the card kept the old text.
+#: caller that only asks "approved?" reads it as no, and nothing is written.
+#: The member's words reach the model as a USER turn of its next call
+#: (``orchestrator.steer.SteerTurns``, task 2494), never on the tool's result,
+#: so the agent can change the act and show a new card. Without this, the
+#: words waited behind the card, and the card kept the old text. The cards
+#: of Projects (``skill_projects.writes._confirm``) and CRM turn it on.
 REVISED = _Revised()
+
+
+class _RevisedRows(frozenset):
+    """:data:`REVISED` of a card with rows (:data:`REVISED_ROWS`)."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "REVISED_ROWS"
+
+
+#: What a card with ``rows`` gives in place of :data:`REVISED`. It is an
+#: EMPTY ``frozenset``, so each caller that writes the ticked rows writes
+#: nothing. It is a distinct object, so :func:`is_revised` can tell it from
+#: a card where the member ticked nothing.
+REVISED_ROWS = _RevisedRows()
+
+
+def is_revised(answer: Any) -> bool:
+    """True when the member wrote in the chat while the card was open.
+
+    That is :data:`REVISED`, or :data:`REVISED_ROWS` for a card with rows. The
+    card closed with no answer, so the tool writes nothing. Its text must not
+    read as a decline: the member's words come next as their own turn, and
+    the model can show a new card with the change (task 2494).
+    """
+    return answer is REVISED or answer is REVISED_ROWS
+
 
 #: The closing answer of a card that a steer closed.
 REVISED_ANSWER = "REVISED"
@@ -1630,7 +1660,8 @@ async def request_confirmation(
             ``kind: "new"`` is the card of a new mail (§18.10), and only a
             new-mail answer (``reply_card.parse_new_mail_answer``) approves it.
         close_on_steer: close the card when the member writes in the chat
-            while it waits, and give :data:`REVISED`. On by default for a
+            while it waits, and give :data:`REVISED` (:data:`REVISED_ROWS`
+            with ``rows``). On by default for a
             reply form. A send card turns it on, so "make it shorter" changes
             the mail instead of waiting behind the old card.
         request_id: the card id that the gateway minted for a held send
@@ -1659,6 +1690,10 @@ async def request_confirmation(
         With ``rows``: the ``frozenset`` of the ticked row ids, each one an
         id the card offered. It is EMPTY, and so falsy, when the member did
         not approve, or when the answer named an id the card did not offer.
+
+        With ``close_on_steer``, a card that a chat message of the member
+        closed gives :data:`REVISED`, or :data:`REVISED_ROWS` with ``rows``.
+        Both are falsy, and :func:`is_revised` tells them from a decline.
 
         In a run with no person present (AUTO-7a) it denies first, before
         every path, whatever ``non_interactive_default`` says. A denial is
@@ -1834,7 +1869,7 @@ async def request_confirmation(
         if _answer == REVISED_ANSWER:
             if _with_answer:
                 return REVISED
-            return frozenset() if _rows is not None else REVISED
+            return REVISED_ROWS if _rows is not None else REVISED
         if _reply is not None:
             return _replied[0] if _answer == "APPROVE" and _replied else None
         if _with_answer:

@@ -40,6 +40,10 @@ e. A restore of an install whose app is archived raises
 f. Org B cannot keep, restore or expire an install of org A. An unbound
    session raises ``TenantUnbound``. A time with no zone is refused.
 g. Two ``expire_due`` calls at once archive the install one time.
+h. (PKG-12) A private install with the end date of an app made in chat
+   (now plus ``store.CHAT_ENDS``) shows to its owner. At its ``ends_at``,
+   ``resolve_for`` hides it before any ``expire_due`` runs, and the row
+   stays ``active``.
 """
 
 from __future__ import annotations
@@ -643,3 +647,23 @@ def test_r8_notice_times_of_a_real_row(world) -> None:
         row[1] - timedelta(days=3),
         row[2] + timedelta(days=27),
     )
+
+
+# ── h. An app made in chat hides at its end date (PKG-12) ──────────────────
+
+
+def test_r8_h_an_app_made_in_chat_hides_at_its_end_date(world) -> None:
+    now = _now()
+    got = _install(
+        world, "a1", ANA, [_claim(_k("/h1"), point="nav")], ends_at=now + store.CHAT_ENDS
+    )
+    assert got.id in _install_ids(_resolve(world, ANA))
+    assert got.id not in _install_ids(_resolve(world, BEN))
+    _admin_write(
+        world,
+        "UPDATE package_install SET ends_at = now() - interval '1 minute' "
+        "WHERE id = CAST(:i AS uuid)",
+        {"i": got.id},
+    )
+    assert got.id not in _install_ids(_resolve(world, ANA))
+    assert _row(world, got.id)[0] == "active"

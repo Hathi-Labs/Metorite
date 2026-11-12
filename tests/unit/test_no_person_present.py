@@ -913,6 +913,8 @@ _READERS = frozenset({
     # WS-ALN ALN-2a: the one tool that names a route that answers. See
     # `_NAMED_TOOL_EXEMPTIONS`.
     "apps/skills/skill-projects/skill_projects/guarded.py",
+    # WS-55 EA-18d: `answer_agent_question` refuses a marked run before any call.
+    "apps/skills/skill-projects/skill_projects/question_answers.py",
     "apps/services/gateway/gateway/routes/workflows/service.py",
     "apps/services/orchestrator/orchestrator/executor.py",
     # WS-STU B2c-2a: the Studio door refuses a delegated write of a marked run
@@ -1003,10 +1005,14 @@ def test_no_tool_or_request_field_names_the_mark() -> None:
 #: that acts as the member, so only a person makes, rotates or revokes one
 #: (``external_agent_access.md`` §10.9). A tool that names them would mint a
 #: secret with no person present.
+#: SW-43c adds the two routes of the member's own answer to an agent. A
+#: replace writes a new answer, and a withdraw opens the question again, each
+#: as the member.
 _APPROVAL_ROUTES = ("/actions/pending", "/respond-input", "/archive-approval",
                     "/agent-runs/{}/activities", "/agent-runs/{}/resume",
                     "/decisions/{}/answer", "/agent-runs/{}/outside-decision",
-                    "/requests/{}/decision", "/agent-access/box-tokens")
+                    "/requests/{}/decision", "/agent-access/box-tokens",
+                    "/agent-runs/{}/answer/withdraw", "/agent-runs/{}/answer/replace")
 _TOOL_ROOTS = ("apps/agents", "apps/skills", "packages/acb_skills", "skills")
 #: The route table of the Projects tools. It names each route, and it holds a
 #: decision for each. ``test_the_run_tools_stay_planned`` fences the two rows.
@@ -1023,10 +1029,20 @@ _ROUTE_TABLES = frozenset({
 #: decision. That is safe because a person confirms a card first, and the tool
 #: refuses a run with no person present BEFORE any read and any card. The two
 #: tests `test_answer_decision_*` in `test_decisions_tool.py` hold both facts.
-#: The exemption names one file and one route. A second route in that file, or
+#: The exemption names one file and its routes. Another route in that file, or
 #: the same route in another file, still fails the scan.
+#: SW-43c: `change_agent_answer` in the same file posts the member's own
+#: change of an answer to an agent, after the member's card. It refuses a run
+#: with no person present BEFORE any read and any card.
+#: `test_agent_answer_tools.py` holds both facts.
 _NAMED_TOOL_EXEMPTIONS: dict[str, frozenset[str]] = {
-    "apps/skills/skill-projects/skill_projects/guarded.py": frozenset({"/decisions/{}/answer"}),
+    "apps/skills/skill-projects/skill_projects/guarded.py": frozenset({
+        "/decisions/{}/answer", "/agent-runs/{}/answer/withdraw",
+        "/agent-runs/{}/answer/replace"}),
+    # WS-55 EA-18d: one `prompt` on the activities route, after a card and after the
+    # no-person refusal. `may_answer_run` decides on the server.
+    "apps/skills/skill-projects/skill_projects/question_answers.py": frozenset(
+        {"/agent-runs/{}/activities"}),
 }
 
 
@@ -1089,6 +1105,11 @@ def test_the_route_scan_reads_an_f_string() -> None:
     assert _routes_in(decision) == ["/requests/{}/decision"]
     assert _routes_in('u = f"/api/agent-access/requests/{rid}/decision"') == [
         "/requests/{}/decision"]
+    # SW-43c: the member's own answer to an agent, taken back or changed.
+    assert _routes_in('u = f"/projects/agent-runs/{rid}/answer/withdraw"') == [
+        "/agent-runs/{}/answer/withdraw"]
+    assert _routes_in('u = f"/projects/agent-runs/{rid}/answer/replace"') == [
+        "/agent-runs/{}/answer/replace"]
     # WS-55 EA-19c: the box-token routes mint a secret that acts as the member.
     assert _routes_in('u = "/agent-access/box-tokens/check"') == ["/agent-access/box-tokens"]
     assert _routes_in('u = "/api/agent-access/box-tokens/revoke-all"') == [
@@ -1129,8 +1150,12 @@ def test_no_injected_tool_can_approve() -> None:
     assert len(names) > 50, "the walk found no tools, so it proves nothing"
     pattern = re.compile(r"approve|reject|resume|respond|settle|answer", re.I)
     # `answer_decision` (WS-ALN ALN-2a) refuses a marked run before it reads or
-    # raises a card. `test_decisions_tool.py` holds that.
-    assert {n for n in names if pattern.search(n)} == {"crm_answer_question", "answer_decision"}
+    # raises a card. `test_decisions_tool.py` holds that. SW-43c: the tool of the
+    # member's own answer to an agent refuses a marked run the same way, and
+    # `test_agent_answer_tools.py` holds that. WS-55 EA-18d: so does `answer_agent_question`.
+    assert {n for n in names if pattern.search(n)} == {
+        "crm_answer_question", "answer_decision", "change_agent_answer",
+        "answer_agent_question"}
 
 
 def test_a_new_module_keeps_the_import_graph_low() -> None:
