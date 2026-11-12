@@ -66,6 +66,13 @@ def kit_version() -> int:
     return int(_VERSION_LINE.findall(_text(CONTENT_DIR / "kit" / "agents-md.md"))[0])
 
 
+def kit_versions() -> dict[str, int]:
+    """``{client: kit_version}`` for every client. One core serves all of them,
+    so the number is the same. The MCP shows this map (KIT-5)."""
+    version = kit_version()
+    return {client: version for client in CLIENTS}
+
+
 def _readme(client: str, mcp_url: str, version: int) -> str:
     lines = [
         f"Metorite agent kit for {client}, kit_version {version}.",
