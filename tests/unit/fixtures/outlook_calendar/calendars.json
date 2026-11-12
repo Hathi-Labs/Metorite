@@ -1,1 +1,1 @@
-{"value":[{"id":"AAA","name":"Calendar","isDefaultCalendar":true},{"id":"BBB","name":"Birthdays"},{"id":"CCC","name":"Metorite"}]}
+{"value":[{"id":"AAA","name":"Calendar","isDefaultCalendar":true},{"id":"BBB","name":"Shared team","isDefaultCalendar":false},{"id":"CCC","name":"Metorite","isDefaultCalendar":false}]}

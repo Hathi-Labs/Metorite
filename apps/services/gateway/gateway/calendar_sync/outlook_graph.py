@@ -147,8 +147,11 @@ def parse_event(ev: Mapping[str, Any]) -> Optional[RemoteEvent]:
     if ev.get("isAllDay") is True:
         # An all-day event is midnight to midnight. The table wants dates,
         # with end_date after start_date (exclusive end, as Graph gives it).
-        start_date = start.date()
-        end_date = end.date()
+        # The reply is converted to UTC, so a midnight in another zone is not
+        # midnight. +12 h picks the intended day for zones from UTC-12 to UTC+12.
+        half = timedelta(hours=12)
+        start_date = (start + half).date()
+        end_date = (end + half).date()
         if end_date <= start_date:
             end_date = start_date + timedelta(days=1)
         starts_at = ends_at = None
@@ -298,8 +301,11 @@ def read_headers(access_token: str) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json",
-        # naive UTC dateTime in every reply; 100 events a page
-        "Prefer": 'outlook.timezone="UTC", odata.maxpagesize=100',
+                # identity: the guard reads the raw bytes and never inflates, so a
+        # gzip reply would parse as {} (and an empty list would prune rows).
+        "Accept-Encoding": "identity",
+        # 10 events a page keeps a reply under the 64 KiB cap of the guard.
+        "Prefer": 'outlook.timezone="UTC", odata.maxpagesize=10',
     }
 
 
@@ -349,14 +355,16 @@ def out_event_payload(ev: OutEvent) -> dict[str, Any]:
 
 
 def pick_calendar_ids(calendars_reply: Mapping[str, Any]) -> list[str]:
-    """Ids of the calendars to read: every calendar except the "Metorite" one
-    that CE-13 writes (its rows are ours already)."""
+    """Ids of the calendars to read: the member's DEFAULT calendar only (the
+    same rule as the Google provider, audit G4). A calendar that a colleague
+    shares is not the member's own time. The "Metorite" calendar is never read."""
     out: list[str] = []
     for cal in calendars_reply.get("value") or []:
         if not isinstance(cal, Mapping):
             continue
         cid = cal.get("id")
-        if isinstance(cid, str) and cid and cal.get("name") != METORITE_CALENDAR_NAME:
+        if (isinstance(cid, str) and cid and cal.get("isDefaultCalendar") is True
+                and cal.get("name") != METORITE_CALENDAR_NAME):
             out.append(cid)
     return out
 

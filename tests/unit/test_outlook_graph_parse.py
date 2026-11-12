@@ -77,7 +77,7 @@ def test_skip_rule_for_series_written_by_metorite():
 
 def test_calendar_picking_leaves_out_metorite_calendar():
     cals = load("calendars.json")
-    assert g.pick_calendar_ids(cals) == ["AAA", "BBB"]
+    assert g.pick_calendar_ids(cals) == ["AAA"]  # default only, not shared
     assert g.find_metorite_calendar_id(cals) == "CCC"
 
 
@@ -103,3 +103,20 @@ def test_delta_expired():
     assert g.delta_expired(410, None)
     assert g.delta_expired(400, {"error": {"code": "syncStateNotFound"}})
     assert not g.delta_expired(500, None)
+
+
+def test_every_request_asks_for_identity_encoding_and_a_small_page():
+    h = g.read_headers("t")
+    assert h["Accept-Encoding"] == "identity" and "maxpagesize=10" in h["Prefer"]
+
+
+def test_all_day_event_converted_from_another_zone_keeps_its_day():
+    # midnight 2026-11-20 in IST is 18:30 UTC on the 19th
+    ev = {"id": "x", "isAllDay": True,
+          "start": {"dateTime": "2026-11-19T18:30:00.0000000", "timeZone": "UTC"},
+          "end": {"dateTime": "2026-11-20T18:30:00.0000000", "timeZone": "UTC"}}
+    p = g.parse_event(ev)
+    assert (p.start_date, p.end_date) == (date(2026, 11, 20), date(2026, 11, 21))
+    # midnight in PST is 08:00 UTC the same day
+    ev["start"]["dateTime"], ev["end"]["dateTime"] = "2026-11-20T08:00:00", "2026-11-21T08:00:00"
+    assert g.parse_event(ev).start_date == date(2026, 11, 20)
