@@ -405,6 +405,25 @@ def _validate_trigger_specs(triggers: list[TriggerSpec]) -> None:
                 status_code=422,
                 detail="Event triggers need a source (e.g. zoho)",
             )
+        if trig.kind == "event" and trig.config.get("filter") is not None:
+            _validate_event_filter(trig.config)
+
+
+def _validate_event_filter(config: dict[str, Any]) -> None:
+    """422 on a malformed record filter (STU-E3). Only a Studio trigger has
+    one, and only the keys of ``RECORD_FILTER_KEYS``, each a non-empty string."""
+    from gateway.routes.workflows.triggers import RECORD_FILTER_KEYS
+
+    flt = config.get("filter")
+    if str(config.get("source") or "").strip() != "studio":
+        raise HTTPException(status_code=422, detail="Only a studio event trigger has a filter")
+    if not isinstance(flt, dict) or not flt:
+        raise HTTPException(status_code=422, detail="The trigger filter must be an object")
+    for key, val in flt.items():
+        if key not in RECORD_FILTER_KEYS:
+            raise HTTPException(status_code=422, detail=f"Unknown trigger filter key '{key}'")
+        if not isinstance(val, str) or not val.strip():
+            raise HTTPException(status_code=422, detail=f"Trigger filter '{key}' must be a text")
 
 
 def _cron_is_valid(expr: str, timezone: str = "UTC") -> bool:
