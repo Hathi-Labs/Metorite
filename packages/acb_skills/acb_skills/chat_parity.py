@@ -390,6 +390,8 @@ ALSO: dict[str, tuple[str, ...]] = {
         "studio_record_create",
         "studio_record_update",
         "studio_record_delete",
+        # STU-B2b-2c: a read of a door op (<app>.<op>) through the same route.
+        "studio_app_read",
     ),
 }
 

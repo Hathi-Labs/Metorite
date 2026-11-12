@@ -16,9 +16,9 @@ Run: ``uv run pytest tests/unit/test_pack_requests.py -q``.
 from __future__ import annotations
 
 import pytest
-
 from acb_skills import skill_families as sf
 from acb_skills import tool_packs as tp
+
 from tests.unit.test_tool_packs_choice import EVERY, MEMBER, ORG, SESSION
 
 #: The base of the real run, in tools (the staging shape of OA-8e).
@@ -284,6 +284,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "studio_record_create": ("add a record to my studio package",),
     "studio_record_update": ("change a record in my studio package",),
     "studio_record_delete": ("delete a record from my studio package",),
+    # -- studio door read (STU-B2b-2c) --
+    "studio_app_read": ("read a knowledge page through my studio app",),
     # -- projects-reminders --
     "list_reminders": ("what reminders do I have?",),
     "promote_reminder": ("turn the reminder into a task",),
