@@ -327,6 +327,9 @@ def edge(monkeypatch) -> SimpleNamespace:
     monkeypatch.setattr(settings, "agent_issuer", ISSUER)
     monkeypatch.setattr(settings, "agent_resource", RESOURCE)
     monkeypatch.setattr(settings, "agent_edge_gateway_url", "http://gw.test")
+    # CIV-14b fix round 1: `upload_task_image` is listed only for an org of
+    # `mcp_image_upload_orgs`, so the pinned write list holds it with the flag on.
+    monkeypatch.setattr(settings, "mcp_image_upload_orgs", "*")
     fake = _Gateway()
     with gateway_client.use_transport(httpx.ASGITransport(app=fake)):
         yield SimpleNamespace(gateway=fake, tokens=found)

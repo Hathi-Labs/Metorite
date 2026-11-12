@@ -103,6 +103,11 @@ def world():
                              store=store)
     world_.c["write"], world_.tok["write"] = a.connection(
         scopes=("projects:read", "projects:write"))
+    # Fix round 1: the edge reads at most two large bodies of ONE connection
+    # at once (`mcp.LARGE_BODIES_PER_CONNECTION`), so the third parallel
+    # upload comes from a second connection of the same member.
+    world_.c["write2"], world_.tok["write2"] = a.connection(
+        scopes=("projects:read", "projects:write"))
     world_.app_dsn = admin_url.set(
         database=dedicated, username=_APP_ROLE, password=_APP_PW,
     ).render_as_string(hide_password=False)
@@ -125,8 +130,8 @@ def _used(world, task: str) -> int:
             " WHERE ta.task_id = CAST(:t AS uuid)"), {"t": world.t[task]}).scalar())
 
 
-def _call(world, task: str, data: bytes, n: int) -> Any:
-    return tw._mcp_unscoped(world, "write", "upload_task_image", {
+def _call(world, task: str, data: bytes, n: int, who: str = "write") -> Any:
+    return tw._mcp_unscoped(world, who, "upload_task_image", {
         "task_id": world.t[task], "filename": f"capture-{n}.png",
         "idempotency_key": f"budget-{uuid.uuid4().hex[:12]}",
         "content_base64": base64.b64encode(data).decode("ascii")})
@@ -139,7 +144,8 @@ class TestTheBudgetUnderParallelUploads:
 
         async def go() -> list[dict[str, Any]]:
             return list(await asyncio.gather(
-                *(_call(live, "parallel", data, n) for n, data in enumerate(images))))
+                *(_call(live, "parallel", data, n, "write" if n < 2 else "write2")
+                  for n, data in enumerate(images))))
         results = await tw._in_scope(live, go)
         landed = [r for r in results if r["isError"] is False]
         refused = [r for r in results if r["isError"] is True]
