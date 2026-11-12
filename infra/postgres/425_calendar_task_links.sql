@@ -1,5 +1,5 @@
 -- ============================================================================
--- 419_calendar_task_links.sql — the provider event of a task block (WS-CAL
+-- 425_calendar_task_links.sql — the provider event of a task block (WS-CAL
 -- CE-13, D215).
 --
 -- What: one new table. `calendar_task_links` holds, for one timed task block
@@ -25,15 +25,16 @@
 -- The key is (organization_id, task_id, member_email, connection_id). There is
 -- NO foreign key to `pm_tasks`: a deleted task must leave the link behind,
 -- so the writer can delete the provider event (the loop reads the link, finds
--- no task, and deletes the event). The connection key CASCADES: the disconnect
--- of CE-10 removes the links of its connection, and the provider events stay
--- in the "Metorite" calendar of the member, who owns that calendar.
+-- no task, and deletes the event). The connection key CASCADES on a row DELETE
+-- (a purged member). `disconnect_connection` only sets the row `disconnected`,
+-- so it deletes the links itself. The provider events stay in the "Metorite"
+-- calendar of the member, who owns that calendar.
 --
 -- ⚠️ RLS covers the org only. The member is a second axis: every read and
 -- write of calendar_sync/task_out.py also filters on `member_email`.
 --
 -- The number is taken at build time (R1). Check it again at merge: the
--- ledger held 418 on 2026-11-12.
+-- ledger held 422 on 2026-11-12 (424 taken on a branch).
 -- Pinned by tests/unit/test_calendar_sync_tasks.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================
