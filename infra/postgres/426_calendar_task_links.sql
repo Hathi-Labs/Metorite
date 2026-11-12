@@ -1,5 +1,5 @@
 -- ============================================================================
--- 425_calendar_task_links.sql — the provider event of a task block (WS-CAL
+-- 426_calendar_task_links.sql — the provider event of a task block (WS-CAL
 -- CE-13, D215).
 --
 -- What: one new table. `calendar_task_links` holds, for one timed task block
@@ -34,7 +34,7 @@
 -- write of calendar_sync/task_out.py also filters on `member_email`.
 --
 -- The number is taken at build time (R1). Check it again at merge: the
--- ledger held 422 on 2026-11-12 (424 taken on a branch).
+-- ledger held 422 on 2026-11-12 (425 taken on a branch).
 -- Pinned by tests/unit/test_calendar_sync_tasks.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================
