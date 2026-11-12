@@ -1,8 +1,8 @@
 """WS-CAL CE-13d: the member's switch "push tasks" on one calendar connection (R8).
 
 Task 3068. The switch is ``provider_meta["push_tasks"]`` (no migration). ABSENT
-means ON, so every row made before the key keeps today's behaviour (R6). Only an
-explicit JSON ``false`` is OFF. OFF means no request to the provider in either
+means ON, so every row made before the key keeps today's behaviour (R6). The read
+FAILS CLOSED: only an absent key or the JSON ``true`` is ON, any other value is OFF. OFF means no request to the provider in either
 task pass, and the events already in the calendar "Metorite" stay.
 
 Real database, the real store, the real route as the non-privileged app role.
@@ -21,6 +21,9 @@ Mutations (R7), each turns the named test red:
   ``test_r8_a_reconnect_keeps_the_switch_off``.
 * M34. ``connections.py`` ``push_tasks_enabled``: ``is not False``. A garbled
   value reads as ON. ``test_the_switch_reads_fail_closed``.
+* M35. ``calendar_connections.py`` ``finish_consent``: put the switch into the sealed
+  credential again. The blob stringifies it, and a token refresh writes "False" back.
+  ``test_r8_a_reconnect_keeps_the_switch_off``.
 * M33. ``task_out.py`` ``_pull``: drop the ``push_tasks_enabled`` test. The pull
   still reads the calendar. Same test as M30.
 """
