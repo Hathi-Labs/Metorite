@@ -19,6 +19,11 @@ owner and has NO BYPASSRLS. Two orgs, each with its own members and workflow.
   ``test_s3_*``.
 * S4. A task of another org never resumes a run, and a scan of one org
   never touches another: ``test_s4_*``.
+* S3b. A trashed, archived or merged task, and an assignee who left, fail the
+  run too, and a done task that was archived still resumes it: ``test_s3b_*``.
+* S7. A refused hold reports ``failed`` to the hub, the feed and the health
+  streak, and a paused run reports ``paused``: ``test_s7_*``.
+* S8. The task names the workflow as its actor: ``test_s8_*``.
 * S5. Refusals before any write: an org off the list, a person of another org,
   a suspended person: ``test_s5_*``.
 * S6. Nothing but the scan resumes the pause: ``test_s6_*``.
@@ -434,6 +439,135 @@ def test_s3_a_deleted_task_fails_the_run(w) -> None:
     run = _run(w, run_id)
     assert (run.status, run.error) == ("failed", human_step.GONE_ERROR)
     assert _resumes(w, run_id) == 0
+
+
+def _trash(w: Any, task_id: Any, who: str) -> None:
+    with w.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO pm_task_personal (task_id, member_email, disposition, organization_id) "
+            "SELECT t.id, :w, 'TRASH', t.organization_id FROM pm_tasks t WHERE t.id = :t "
+            "ON CONFLICT (task_id, member_email) DO UPDATE SET disposition = 'TRASH'"),
+            {"t": task_id, "w": who})
+
+
+def _archive(w: Any, task_id: Any) -> None:
+    with w.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_tasks SET archived_at = now() WHERE id = :t"), {"t": task_id})
+
+
+def _ended_as_cancelled(w: Any, run_id: str) -> None:
+    assert _scan(w) == 1
+    run = _run(w, run_id)
+    assert (run.status, run.error) == ("failed", human_step.CANCELLED_ERROR), run
+    assert [p.status for p in _pauses(w, run_id)] == ["rejected"]
+    assert _scan(w) == 0
+    assert _resumes(w, run_id) == 0
+
+
+# ── S3b: the ways out that the personal tree has instead of a cancelled lane
+
+
+def test_s3b_a_trashed_task_fails_the_run(w) -> None:
+    run_id, task = _paused(w)
+    _trash(w, task.id, LENA_A)
+    _ended_as_cancelled(w, run_id)
+
+
+def test_s3b_a_trash_of_another_member_does_not_end_the_step(w) -> None:
+    run_id, task = _paused(w)
+    _trash(w, task.id, OWNER_A)
+    assert _scan(w) == 0
+    assert _run(w, run_id).status == "paused"
+
+
+def test_s3b_an_archived_or_merged_task_fails_the_run(w) -> None:
+    """A merge archives its source task, so the archive read covers it."""
+    run_id, task = _paused(w)
+    _archive(w, task.id)
+    _ended_as_cancelled(w, run_id)
+
+
+def test_s3b_a_trash_wins_over_a_done_lane(w) -> None:
+    run_id, task = _paused(w)
+    _stage(w, str(task.id), "done")
+    _trash(w, task.id, LENA_A)
+    _ended_as_cancelled(w, run_id)
+
+
+def test_s3b_a_done_task_that_was_archived_still_resumes_the_run(w) -> None:
+    """The lifecycle sweep archives done tasks."""
+    run_id, task = _paused(w)
+    _stage(w, str(task.id), "done")
+    _archive(w, task.id)
+    assert _scan(w) == 1
+    assert _run(w, run_id).status == "succeeded"
+    assert _resumes(w, run_id) == 1
+
+
+def test_s3b_an_assignee_who_left_fails_the_run(w) -> None:
+    run_id, _ = _paused(w)
+    with w.admin_engine.begin() as c:
+        c.execute(text("UPDATE app_user SET status = 'suspended' WHERE email = :e"), {"e": LENA_A})
+    try:
+        _ended_as_cancelled(w, run_id)
+    finally:
+        with w.admin_engine.begin() as c:
+            c.execute(text("UPDATE app_user SET status = 'active' WHERE email = :e"),
+                      {"e": LENA_A})
+
+
+# ── S7: the run reports what happened
+
+
+def _spy_reports(w: Any, monkeypatch) -> list[tuple[str, str]]:
+    seen: list[tuple[str, str]] = []
+    real_health, real_publish = service.evaluate_automation_health, service.publish_workflow_activity
+
+    async def _health(workflow_id, workflow_name, *, trigger_kind, status, **kw):
+        seen.append(("health", status))
+        return await real_health(workflow_id, workflow_name, trigger_kind=trigger_kind,
+                                 status=status, **kw)
+
+    def _publish(*a, **kw):
+        if kw.get("phase") == "end":
+            seen.append(("feed", kw.get("status")))
+        return real_publish(*a, **kw)
+
+    monkeypatch.setattr(service, "evaluate_automation_health", _health)
+    monkeypatch.setattr(service, "publish_workflow_activity", _publish)
+    return seen
+
+
+def test_s7_a_refused_hold_reports_failed_to_the_feed_and_the_health_streak(w, monkeypatch) -> None:
+    seen = _spy_reports(w, monkeypatch)
+    run_id = _start(w, "Step for a member of B", kind="schedule")
+    assert _run(w, run_id).status == "failed"
+    assert ("health", "failed") in seen and ("feed", "failed") in seen, seen
+    assert ("health", "paused") not in seen and ("feed", "paused") not in seen, seen
+
+
+def test_s7_a_run_that_waits_on_its_task_reports_paused(w, monkeypatch) -> None:
+    seen = _spy_reports(w, monkeypatch)
+    _paused(w, kind="schedule")
+    assert ("health", "paused") in seen and ("feed", "paused") in seen, seen
+    assert ("health", "failed") not in seen, seen
+
+
+# ── S8: the actor of the task
+
+
+def test_s8_the_task_names_the_workflow_as_its_actor(w) -> None:
+    run_id, task = _paused(w)
+    wid, _, _ = w.wf["Step in A"]
+    actor = f"system:workflow:{wid}"
+    assert task.created_by == actor
+    assigned = _all(w, "SELECT assignee, assigned_by FROM pm_task_assignees WHERE task_id = :t",
+                    t=task.id)
+    assert [(a.assignee, a.assigned_by) for a in assigned] == [(LENA_A, actor)]
+    acts = _all(w, "SELECT created_by, meta FROM pm_activities WHERE task_id = :t "
+                   "AND body = 'Captured'", t=task.id)
+    assert len(acts) == 1 and acts[0].created_by == actor
+    assert acts[0].meta.get("automation") is True
 
 
 # ── S4: another org never settles a run ─────────────────────────────────────

@@ -527,7 +527,10 @@ async def scan_done_tasks(org: str) -> int:
         run_id = str(row.run_id)
         try:
             async with _tenant_session(org) as db:
-                task = await human_step.read_task(db, task_id, run_id, str(row.node_id))
+                task = await human_step.read_task(
+                    db, task_id, run_id, str(row.node_id),
+                    str(snapshot.get("assignee") or ""), org,
+                )
             outcome = human_step.task_outcome(task)
             if outcome == human_step.WAIT:
                 continue

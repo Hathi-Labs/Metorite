@@ -1123,7 +1123,7 @@ async def _execute_run(
         )
         if status == "paused" and outcome.paused_nodes:
             node_id = outcome.paused_nodes[0]
-            await _hold_at_gate(
+            held = await _hold_at_gate(
                 run_id=run_id,
                 workflow_id=workflow_id,
                 workflow_name=workflow_name,
@@ -1135,6 +1135,10 @@ async def _execute_run(
                 resume_at=outcome.wait_until.get(node_id),
                 organization_id=organization_id,
             )
+            if held is not None:
+                # A refused hold ended the run `failed` in the row. The hub, the
+                # activity feed and the health streak must say the same (STU-E4).
+                status, error = held
     except Exception as exc:  # engine bugs must still close the run out
         error = f"{type(exc).__name__}: {exc}"[:500]
         _log.warning("workflows.run_crashed", run_id=run_id, error=error)
@@ -1416,7 +1420,7 @@ async def _hold_at_gate(
     started_by: str,
     resume_at: float | None = None,
     organization_id: str | None = None,
-) -> None:
+) -> tuple[str, str] | None:
     """Persist the pause; for an APPROVAL gate, also file the inbox proposal.
 
     Approval (``resume_at`` is None): the proposal (action
@@ -1447,7 +1451,7 @@ async def _hold_at_gate(
     if human_step.is_human_step(serialized, node_id):
         # STU-E4: a task for a person, and a pause until it is done. No broker
         # card and no decision: the task scan resumes the run.
-        await _hold_at_human_step(
+        return await _hold_at_human_step(
             run_id=run_id, workflow_id=workflow_id, workflow_name=workflow_name,
             node_id=node_id,
             snapshot=_pause_snapshot(
@@ -1458,7 +1462,6 @@ async def _hold_at_gate(
             ),
             organization_id=organization_id,
         )
-        return
     is_wait = resume_at is not None
     if not is_wait and await _park_with_decision(
         run_id=run_id,
@@ -1607,7 +1610,7 @@ async def _hold_at_human_step(
     node_id: str,
     snapshot: dict[str, Any],
     organization_id: str | None,
-) -> None:
+) -> tuple[str, str] | None:
     """STU-E4: make the task of a human step and pause the run on it.
 
     The task and the pause row commit in ONE ``_run_session(org)``
@@ -1616,6 +1619,9 @@ async def _hold_at_human_step(
     Without one, or when the step is refused or any write fails, nothing
     commits and the run ends ``failed`` with a plain message. After the commit
     it bumps the assignee's My Day version, because the task sends no event.
+
+    Returns ``("failed", error)`` when the hold ended the run, so the caller
+    reports that status, and None when the run is paused on its task.
     """
     error: str | None = None
     made: dict[str, str] = {}
@@ -1639,9 +1645,10 @@ async def _hold_at_human_step(
             error = human_step.REFUSED_ERROR
     if error is not None:
         await _fail_paused_run(run_id, organization_id, error)
-        return
+        return "failed", error
     _log.info("workflows.human_step_opened", run_id=run_id, task_id=made["task_id"])
     await park.bump_owner_my_day(str(organization_id), made["assignee"])
+    return None
 
 
 async def _park_with_decision(

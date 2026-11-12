@@ -156,6 +156,14 @@ def test_a_step_that_is_not_named_still_pauses() -> None:
         (SimpleNamespace(category="todo"), human_step.WAIT),
         (SimpleNamespace(category="in_progress"), human_step.WAIT),
         (SimpleNamespace(category="triage"), human_step.WAIT),
+        # The default personal tree has no cancelled lane, so these end the step too.
+        (SimpleNamespace(category="todo", archived_at="2026-01-01"), human_step.CANCELLED),
+        (SimpleNamespace(category="todo", trashed=True), human_step.CANCELLED),
+        (SimpleNamespace(category="done", trashed=True), human_step.CANCELLED),
+        (SimpleNamespace(category="todo", assignee_active=False), human_step.CANCELLED),
+        # A done task that the lifecycle sweep archived still resumes the run.
+        (SimpleNamespace(category="done", archived_at="2026-01-01"), human_step.RESUME),
+        (SimpleNamespace(category="done", assignee_active=False), human_step.RESUME),
     ],
 )
 def test_the_outcome_comes_from_the_stage_of_the_task_row(row: Any, want: str) -> None:
@@ -221,6 +229,12 @@ def test_the_step_is_not_a_member_blind_write() -> None:
     assert "human_step" not in service._MEMBER_BLIND_WRITE_TYPES
     serialized = compile_graph(_graph(_GOOD))
     assert service._member_blind_write_nodes(serialized) == []
+
+
+def test_the_task_names_the_workflow_as_its_actor() -> None:
+    calls = _calls(ast.parse(_src("human_step.py")), "create_personal_task")
+    kw = {k.arg for k in calls[0].keywords}
+    assert "actor" in kw
 
 
 def test_the_assignee_is_checked_before_any_write() -> None:

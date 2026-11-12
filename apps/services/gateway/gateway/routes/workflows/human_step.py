@@ -28,12 +28,27 @@ workflow_id, node_id}``. The pause row carries the task id in its snapshot.
 :func:`read_task` reads the task only when BOTH agree, so a task that is not
 the one of this run never settles the run.
 
+**The actor.** The task, its assignment and its "Captured" line name
+``system:workflow:<id>`` (D-PM-4), through the ``actor`` argument of
+``create_personal_task``, so the timeline shows an automation and not the assignee.
+
 **The settle.** ``scheduler.scan_done_tasks`` reads each pending ``task`` pause
 of ONE org in a session bound to that org. The task id comes from the stored
 pause row and never from a payload or a trigger. A done status resumes the run
 through ``service.resume_run``, whose compare-and-set lets exactly one caller
-start it. A cancelled or deleted task ends the run as ``failed`` through
-:func:`end_step`, with the same compare-and-set. Nothing here answers for a
+start it. **Cancelled means more than a cancelled lane**, because the default
+personal tree seeds no cancelled lane. The step also ends when the assignee
+TRASHED the task (the TRASH overlay), when the task is ARCHIVED (by hand, or
+as the source of a merge), when the assignee is no longer an active member, and
+when a lane of the cancelled category holds it. A deleted task ends it too. All
+of them end the run as ``failed`` through :func:`end_step`, with the same
+compare-and-set. A done task wins over an archive, because the lifecycle sweep
+archives done tasks, and a TRASH wins over a done lane, as
+``personal.effective_disposition`` reads it.
+
+**Open: no expiry.** ``park.PARK_LIFE`` is the life of a decision, not of a
+task, and no task seam holds a deadline. So a task that stays open keeps the run
+parked. Nothing here answers for a
 person, and nothing counts or ranks one.
 
 The scan runs only for an org on ``WORKFLOW_UNATTENDED_ORGS``, so the node is
@@ -47,6 +62,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from types import SimpleNamespace
 from typing import Any
 
 from gateway.routes.workflows import park, unattended
@@ -61,7 +77,10 @@ ORIGIN_KIND = "workflow_run"
 WAIT, RESUME, CANCELLED, GONE = "wait", "resume", "cancelled", "gone"
 
 #: The error of a run that a human step ended. Plain words, no task id.
-CANCELLED_ERROR = "A person cancelled the task of a human step, so the run stopped."
+CANCELLED_ERROR = (
+    "The task of a human step was cancelled, removed or archived, or its person "
+    "left, so the run stopped."
+)
 GONE_ERROR = "The task of a human step no longer exists, so the run stopped."
 #: The error of a hold that could not make the task.
 REFUSED_ERROR = (
@@ -200,6 +219,7 @@ async def open_step(
     status = await load_default_status(db, project_id)
     task = await create_personal_task(
         db, who, project_id, project_id, str(status.id), values, announce=False,
+        actor=park.asker(workflow_id),
     )
     task_id = str(task.id)
     pause_id = str(uuid.uuid4())
@@ -232,7 +252,10 @@ PENDING_SQL = (
 #: The task of ONE pause, with its status stage. It must carry the origin of
 #: THIS run and THIS node, so a task of another run never settles this one.
 _TASK_SQL = (
-    "SELECT t.id, s.category "
+    "SELECT t.id, s.category, t.archived_at, "
+    "       EXISTS (SELECT 1 FROM pm_task_personal pp WHERE pp.task_id = t.id "
+    "                  AND lower(pp.member_email) = :who "
+    "                  AND pp.disposition = 'TRASH') AS trashed "
     "  FROM pm_tasks t JOIN pm_task_statuses s ON s.id = t.status_id "
     " WHERE t.id = CAST(:id AS uuid) "
     "   AND t.origin ->> 'kind' = 'workflow_run' "
@@ -254,29 +277,54 @@ def task_id_of(snapshot: Any) -> str | None:
         return None
 
 
-async def read_task(db: Any, task_id: str, run_id: str, node_id: str) -> Any | None:
-    """The task row of one pause, in the org that *db* binds, or None."""
-    return (
+async def read_task(
+    db: Any, task_id: str, run_id: str, node_id: str, assignee: str = "",
+    org: str = "",
+) -> Any | None:
+    """The task row of one pause, in the org that *db* binds, or None.
+
+    The row carries ``category``, ``archived_at``, the ``trashed`` mark of the
+    *assignee* and ``assignee_active``. *assignee* is the person of the stored
+    pause row, and the directory read uses *org*. Both come from the pause row
+    and the scan, never from a payload."""
+    who = str(assignee or "").strip().lower()
+    row = (
         await db.execute(
             text(_TASK_SQL),
-            {"id": task_id, "run_id": str(run_id), "node_id": str(node_id)},
+            {"id": task_id, "run_id": str(run_id), "node_id": str(node_id), "who": who},
         )
     ).fetchone()
+    if row is None:
+        return None
+    active = bool(who and org and await park._owner_in_org(db, who, str(org).strip().lower()))
+    return SimpleNamespace(
+        category=row.category, archived_at=row.archived_at, trashed=bool(row.trashed),
+        assignee_active=active,
+    )
 
 
 def task_outcome(task: Any | None) -> str:
     """What the stored task row says. Nothing else decides.
 
-    ``resume`` for a done status. ``cancelled`` for a cancelled status. ``gone``
-    for a missing row. Any other status is ``wait``.
+    ``gone`` for a missing row. ``cancelled`` when the assignee trashed the
+    task. ``resume`` for a done status. ``cancelled`` for an archived task, a
+    cancelled status or an assignee who is no longer active. Any other row is
+    ``wait``. A row with no ``trashed``, ``archived_at`` or ``assignee_active``
+    reads as a live task of an active person.
     """
     from gateway.routes.projects.core import COMPLETED_CATEGORY
 
     if task is None:
         return GONE
+    if getattr(task, "trashed", False):
+        return CANCELLED
     if task.category == COMPLETED_CATEGORY:
         return RESUME
-    if task.category == "cancelled":
+    if (
+        task.category == "cancelled"
+        or getattr(task, "archived_at", None) is not None
+        or not getattr(task, "assignee_active", True)
+    ):
         return CANCELLED
     return WAIT
 
