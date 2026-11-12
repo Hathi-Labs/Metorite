@@ -251,6 +251,11 @@ export type ButtonProps = Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "c
    */
   target?: React.HTMLAttributeAnchorTarget;
   rel?: string;
+  /**
+   * Only with `href`: the link downloads the file under this name (a plain
+   * `<a download>`). A button ignores it. KIT-4b uses it for the kit zip.
+   */
+  download?: string;
   /** Extra classes for layout only — never for colour, radius or weight. */
   className?: string;
   children?: React.ReactNode;
@@ -270,7 +275,7 @@ const BUTTON_ONLY = [
 ] as const;
 
 /** The attributes that belong to a link and never to a `<button>`. */
-const LINK_ONLY = ["target", "rel"] as const;
+const LINK_ONLY = ["target", "rel", "download"] as const;
 
 function anchorAttributes(rest: Record<string, unknown>): React.AnchorHTMLAttributes<HTMLAnchorElement> {
   const out = { ...rest };

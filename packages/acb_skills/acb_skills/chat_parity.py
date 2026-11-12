@@ -129,6 +129,7 @@ APP_OF: tuple[tuple[str, str], ...] = (
     ("/api/signup", "admin"),
     ("/api/integrations", "integrations"),
     ("/api/agent-access", "integrations"),
+    ("/api/agent-kit", "integrations"),
     # WS-STU. The gateway serves `/studio` (STU-B1). The skill creator sends to it (STU-F2b).
     ("/api/studio", "studio"),
 )
@@ -626,6 +627,14 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "chat",
         "The approval card in the chat reads its own request to draw it, also after a reload "
         "(STU-B2c-2c). It is the chat's own card. The tool result gives Mira the request.",
+    ),
+    "GET /api/agent-kit": (
+        "download",
+        "Lists the clients of the agent kit for the download block (KIT-4b). The chat reads the playbook.",
+    ),
+    "GET /api/agent-kit/{}": (
+        "download",
+        "Streams the zip of the agent kit for one client (KIT-4b). A zip is a file for the browser.",
     ),
     "POST /api/agent-access/authorize/approve": (
         "oauth",
