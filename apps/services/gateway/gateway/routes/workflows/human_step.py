@@ -28,9 +28,11 @@ workflow_id, node_id}``. The pause row carries the task id in its snapshot.
 :func:`read_task` reads the task only when BOTH agree, so a task that is not
 the one of this run never settles the run.
 
-**The actor.** The task, its assignment and its "Captured" line name
+**The actor.** The assignment and the "Captured" line name
 ``system:workflow:<id>`` (D-PM-4), through the ``actor`` argument of
-``create_personal_task``, so the timeline shows an automation and not the assignee.
+``create_personal_task``, so the timeline shows an automation. The task keeps
+the assignee as its creator, so the assignee may move or delete it
+(``authority.may_delete_task``).
 
 **The settle.** ``scheduler.scan_done_tasks`` reads each pending ``task`` pause
 of ONE org in a session bound to that org. The task id comes from the stored
@@ -38,7 +40,7 @@ pause row and never from a payload or a trigger. A done status resumes the run
 through ``service.resume_run``, whose compare-and-set lets exactly one caller
 start it. **Cancelled means more than a cancelled lane**, because the default
 personal tree seeds no cancelled lane. The step also ends when the assignee
-TRASHED the task (the TRASH overlay), when the task is ARCHIVED (by hand, or
+TRASHED the task (the TRASH overlay, for longer than :data:`TRASH_SETTLE_SECONDS`), when the task is ARCHIVED (by hand, or
 as the source of a merge), when the assignee is no longer an active member, and
 when a lane of the cancelled category holds it. A deleted task ends it too. All
 of them end the run as ``failed`` through :func:`end_step`, with the same
@@ -93,6 +95,11 @@ NOT_READY_ERROR = (
 )
 
 _TITLE_MAX = 200
+#: How long a TRASH overlay must stand before it ends the step. My Tasks writes
+#: TRASH as the reversible half of Delete, with an Undo window of 7 s
+#: (``UNDO_WINDOW_SECONDS`` in ``tasks/lib/removal.ts``), and the scan runs every 30 s. A trash
+#: that the person undoes must not fail the run, so the overlay counts after 60 s.
+TRASH_SETTLE_SECONDS = 60
 _TEXT_MAX = 2000
 _EMAIL_MAX = 254
 
@@ -255,7 +262,9 @@ _TASK_SQL = (
     "SELECT t.id, s.category, t.archived_at, "
     "       EXISTS (SELECT 1 FROM pm_task_personal pp WHERE pp.task_id = t.id "
     "                  AND lower(pp.member_email) = :who "
-    "                  AND pp.disposition = 'TRASH') AS trashed "
+    "                  AND pp.disposition = 'TRASH' "
+    "                  AND pp.updated_at < now() - make_interval(secs => :settle)) "
+    "       AS trashed "
     "  FROM pm_tasks t JOIN pm_task_statuses s ON s.id = t.status_id "
     " WHERE t.id = CAST(:id AS uuid) "
     "   AND t.origin ->> 'kind' = 'workflow_run' "
@@ -291,7 +300,8 @@ async def read_task(
     row = (
         await db.execute(
             text(_TASK_SQL),
-            {"id": task_id, "run_id": str(run_id), "node_id": str(node_id), "who": who},
+            {"id": task_id, "run_id": str(run_id), "node_id": str(node_id), "who": who,
+             "settle": TRASH_SETTLE_SECONDS},
         )
     ).fetchone()
     if row is None:

@@ -509,7 +509,11 @@ async def scan_done_tasks(org: str) -> int:
     * done: ``resume_run`` with ``task_done=True``. Its compare-and-set lets
       exactly one caller start the run, so a second scan resumes nothing.
     * cancelled, or the task is gone: the pause ``rejected`` and the run
-      ``failed`` with a plain message, with the same compare-and-set.
+      ``failed`` with a plain message, with the same compare-and-set. That
+      covers a cancelled lane, an archived or merged task, a deleted task,
+      a TRASH of the assignee that stood for 60 seconds, and an assignee who
+      is no longer an active member. A done task wins over an archive, and a
+      standing trash wins over a done lane.
     * any other stage: the run stays paused.
 
     Returns the number of settled steps.

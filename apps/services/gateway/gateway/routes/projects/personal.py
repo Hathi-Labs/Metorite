@@ -699,9 +699,11 @@ async def create_personal_task(
     after its commit. Fence: `tests/unit/test_auto_park.py`.
 
     **`actor`** (STU-E4) names who acted when it is not the member: the
-    `system:workflow:<id>` of D-PM-4. It stamps `created_by`, `assigned_by` and
-    the "Captured" activity, and flags that activity `meta.automation`. Left
-    out, each caller writes the member as before.
+    `system:workflow:<id>` of D-PM-4. It stamps `assigned_by` and the
+    "Captured" activity, and flags that activity `meta.automation`. It never
+    stamps `created_by`: the member stays the creator of a task in their own
+    tree, because `authority.may_move_task` and `may_delete_task` read the
+    creator. Left out, each caller writes the member as before.
     """
     # WS-64. A capture is a NEW placement, so it is refused under an archived
     # Area (one `archived_at` read by id, since callers hold ids and no row).
@@ -721,7 +723,7 @@ async def create_personal_task(
         "root_project_id": root_id,
         "task_number": await next_task_number(db, root_id),
         "status_id": status_id,
-        "created_by": actor or email,
+        "created_by": email,
         **values,
     })
     task_id = str(task.id)

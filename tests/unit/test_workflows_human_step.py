@@ -235,6 +235,12 @@ def test_the_task_names_the_workflow_as_its_actor() -> None:
     calls = _calls(ast.parse(_src("human_step.py")), "create_personal_task")
     kw = {k.arg for k in calls[0].keywords}
     assert "actor" in kw
+    # The creator stays the assignee, so the assignee may move and delete the task.
+    assert "created_by" not in _src("human_step.py").split("def task_values")[1].split("_INSERT_PAUSE")[0]
+    personal = (_ROOT / "apps" / "services" / "gateway" / "gateway" / "routes"
+                / "projects" / "personal.py").read_text(encoding="utf-8")
+    assert '"created_by": email,' in personal
+    assert '"created_by": actor' not in personal
 
 
 def test_the_assignee_is_checked_before_any_write() -> None:

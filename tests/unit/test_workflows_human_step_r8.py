@@ -441,13 +441,16 @@ def test_s3_a_deleted_task_fails_the_run(w) -> None:
     assert _resumes(w, run_id) == 0
 
 
-def _trash(w: Any, task_id: Any, who: str) -> None:
+def _trash(w: Any, task_id: Any, who: str, *, age_s: int = 120) -> None:
+    """A TRASH overlay that was written *age_s* seconds ago."""
     with w.admin_engine.begin() as c:
         c.execute(text(
-            "INSERT INTO pm_task_personal (task_id, member_email, disposition, organization_id) "
-            "SELECT t.id, :w, 'TRASH', t.organization_id FROM pm_tasks t WHERE t.id = :t "
-            "ON CONFLICT (task_id, member_email) DO UPDATE SET disposition = 'TRASH'"),
-            {"t": task_id, "w": who})
+            "INSERT INTO pm_task_personal (task_id, member_email, disposition, "
+            "organization_id, updated_at) SELECT t.id, :w, 'TRASH', t.organization_id, "
+            "now() - make_interval(secs => :age) FROM pm_tasks t WHERE t.id = :t "
+            "ON CONFLICT (task_id, member_email) DO UPDATE SET disposition = 'TRASH', "
+            "updated_at = now() - make_interval(secs => :age)"),
+            {"t": task_id, "w": who, "age": age_s})
 
 
 def _archive(w: Any, task_id: Any) -> None:
@@ -470,6 +473,27 @@ def _ended_as_cancelled(w: Any, run_id: str) -> None:
 def test_s3b_a_trashed_task_fails_the_run(w) -> None:
     run_id, task = _paused(w)
     _trash(w, task.id, LENA_A)
+    _ended_as_cancelled(w, run_id)
+
+
+def test_s3b_a_fresh_trash_does_not_end_the_step(w) -> None:
+    """My Tasks writes TRASH as the reversible half of Delete (Undo, 7 s)."""
+    run_id, task = _paused(w)
+    _trash(w, task.id, LENA_A, age_s=5)
+    assert _scan(w) == 0
+    assert _run(w, run_id).status == "paused"
+    # The person undoes it, and the run still waits.
+    with w.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_task_personal SET disposition = 'NEXT' WHERE task_id = :t"),
+                  {"t": task.id})
+    assert _scan(w) == 0 and _run(w, run_id).status == "paused"
+
+
+def test_s3b_a_trash_that_stood_for_a_minute_ends_the_step(w) -> None:
+    run_id, task = _paused(w)
+    _trash(w, task.id, LENA_A, age_s=5)
+    assert _scan(w) == 0
+    _trash(w, task.id, LENA_A, age_s=human_step.TRASH_SETTLE_SECONDS + 5)
     _ended_as_cancelled(w, run_id)
 
 
@@ -557,10 +581,11 @@ def test_s7_a_run_that_waits_on_its_task_reports_paused(w, monkeypatch) -> None:
 
 
 def test_s8_the_task_names_the_workflow_as_its_actor(w) -> None:
-    run_id, task = _paused(w)
+    _, task = _paused(w)
     wid, _, _ = w.wf["Step in A"]
     actor = f"system:workflow:{wid}"
-    assert task.created_by == actor
+    # The creator stays the assignee: authority reads the creator (see the next test).
+    assert task.created_by == LENA_A
     assigned = _all(w, "SELECT assignee, assigned_by FROM pm_task_assignees WHERE task_id = :t",
                     t=task.id)
     assert [(a.assignee, a.assigned_by) for a in assigned] == [(LENA_A, actor)]
@@ -568,6 +593,31 @@ def test_s8_the_task_names_the_workflow_as_its_actor(w) -> None:
                    "AND body = 'Captured'", t=task.id)
     assert len(acts) == 1 and acts[0].created_by == actor
     assert acts[0].meta.get("automation") is True
+
+
+def test_s8_the_assignee_may_move_and_delete_the_step_task(w) -> None:
+    """``authority.may_move_task`` and ``may_delete_task`` read the creator. A
+    non-admin assignee, who leads no project, passes because they made the task."""
+    from acb_auth import UserContext, UserRole, build_access
+    from gateway.db import tenant_session
+    from gateway.routes.projects import authority
+
+    _, task = _paused(w)
+    user = UserContext(email=LENA_A, role=UserRole.EMPLOYEE,
+                       access=build_access(["feature:projects"]), organization_id=w.org_a)
+    stranger = UserContext(email=OWNER_A, role=UserRole.EMPLOYEE,
+                           access=build_access(["feature:projects"]), organization_id=w.org_a)
+
+    async def body() -> tuple[bool, bool, bool]:
+        async with tenant_session(w.org_a) as db:
+            row = (await db.execute(
+                text("SELECT * FROM pm_tasks WHERE id = :t"), {"t": task.id})).fetchone()
+            await authority.assert_may_move_task(db, user, row)
+            return (await authority.may_delete_task(db, user, row),
+                    await authority.may_move_task(db, user, row),
+                    await authority.may_delete_task(db, stranger, row))
+
+    assert _on_app_role(w, body) == (True, True, False)
 
 
 # ── S4: another org never settles a run ─────────────────────────────────────
