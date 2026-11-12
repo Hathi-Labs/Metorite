@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Mapping, Optional
 from urllib.parse import quote, urlencode
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from gateway.calendar_sync.provider import RemoteEvent, OutEvent, clean_title
 
@@ -126,6 +127,40 @@ def _conference_url(ev: Mapping[str, Any]) -> Optional[str]:
     return url if isinstance(url, str) and url else None
 
 
+#: Windows zone names that Graph gives, for the zones where a fixed bias
+#: fails (UTC+13 and beyond, UTC-12). Other names fall back to the bias.
+_WINDOWS_ZONES = {
+    "New Zealand Standard Time": "Pacific/Auckland",
+    "Tonga Standard Time": "Pacific/Tongatapu",
+    "Samoa Standard Time": "Pacific/Apia",
+    "Line Islands Standard Time": "Pacific/Kiritimati",
+    "Chatham Islands Standard Time": "Pacific/Chatham",
+    "Fiji Standard Time": "Pacific/Fiji",
+    "Dateline Standard Time": "Etc/GMT+12",
+    "UTC-11": "Etc/GMT+11",
+    "UTC+12": "Etc/GMT-12",
+    "UTC+13": "Etc/GMT-13",
+    "UTC+14": "Etc/GMT-14",
+}
+
+
+def _zone(name: Any) -> Optional[ZoneInfo]:
+    if not isinstance(name, str) or not name:
+        return None
+    try:
+        return ZoneInfo(_WINDOWS_ZONES.get(name, name))
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        return None
+
+
+def _all_day_date(instant: datetime, zone: Optional[ZoneInfo]) -> date:
+    if zone is not None:
+        local = instant.astimezone(zone)
+        if (local.hour, local.minute, local.second) == (0, 0, 0):
+            return local.date()
+    return (instant + timedelta(hours=12)).date()
+
+
 def parse_event(ev: Mapping[str, Any]) -> Optional[RemoteEvent]:
     """Map one Graph event to column values, or None when it is unusable.
 
@@ -145,13 +180,13 @@ def parse_event(ev: Mapping[str, Any]) -> Optional[RemoteEvent]:
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     if ev.get("isAllDay") is True:
-        # An all-day event is midnight to midnight. The table wants dates,
-        # with end_date after start_date (exclusive end, as Graph gives it).
-        # The reply is converted to UTC, so a midnight in another zone is not
-        # midnight. +12 h picks the intended day for zones from UTC-12 to UTC+12.
-        half = timedelta(hours=12)
-        start_date = (start + half).date()
-        end_date = (end + half).date()
+        # An all-day event is midnight to midnight in the zone of its owner.
+        # The reply is converted to UTC, so the instant is not midnight. The
+        # event names that zone in originalStartTimeZone: use it when it
+        # resolves. Else +12 h picks the day for zones from UTC-11 to UTC+12.
+        zone = _zone(ev.get("originalStartTimeZone"))
+        start_date = _all_day_date(start, zone)
+        end_date = _all_day_date(end, zone)
         if end_date <= start_date:
             end_date = start_date + timedelta(days=1)
         starts_at = ends_at = None
@@ -297,15 +332,24 @@ def delta_url(calendar_id: str, start: datetime, end: datetime) -> str:
     )
 
 
-def read_headers(access_token: str) -> dict[str, str]:
+#: Events asked per page at first. A cut page (the 64 KiB cap of the guard)
+#: halves it down to 1.
+PAGE_SIZE = 50
+MIN_PAGE_SIZE = 1
+
+
+def read_headers(access_token: str, page_size: int = PAGE_SIZE) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json",
-                # identity: the guard reads the raw bytes and never inflates, so a
+        # identity: the guard reads the raw bytes and never inflates, so a
         # gzip reply would parse as {} (and an empty list would prune rows).
         "Accept-Encoding": "identity",
-        # 10 events a page keeps a reply under the 64 KiB cap of the guard.
-        "Prefer": 'outlook.timezone="UTC", odata.maxpagesize=10',
+        # A text body is smaller than HTML. Graph ignores $select on delta.
+        "Prefer": (
+            'outlook.timezone="UTC", outlook.body-content-type="text", '
+            f"odata.maxpagesize={int(page_size)}"
+        ),
     }
 
 

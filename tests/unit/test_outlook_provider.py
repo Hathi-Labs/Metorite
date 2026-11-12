@@ -96,13 +96,23 @@ def test_refresh_keeps_the_rotated_refresh_token_and_dead_grant_reconnects():
         run(prov(dead).refresh(cred()))
 
 
-def test_exchange_refuses_a_grant_that_holds_mail_scope():
+def test_exchange_keeps_a_grant_that_holds_mail_scope_because_entra_unions_scopes():
     h = FakeHttp([("POST", "/token", 200, json.dumps(
         {"access_token": "a", "refresh_token": "r",
-         "scope": "Calendars.ReadWrite Mail.Read User.Read"}).encode())])
+         "scope": "Calendars.ReadWrite Mail.Read MailboxSettings.ReadWrite User.Read"}).encode())])
+    got = run(prov(h).exchange_code("c"))
+    assert got.refresh_token == "r"
+
+
+def test_exchange_accepts_calendars_read_and_refuses_a_grant_with_no_calendar_scope():
+    ok = FakeHttp([("POST", "/token", 200, json.dumps(
+        {"access_token": "a", "refresh_token": "r", "scope": "Calendars.Read User.Read"}).encode())])
+    assert run(prov(ok).exchange_code("c")).access_token == "a"
+    bad = FakeHttp([("POST", "/token", 200, json.dumps(
+        {"access_token": "a", "refresh_token": "r", "scope": "Mail.Read User.Read"}).encode())])
     with pytest.raises(ProviderError) as e:
-        run(prov(h).exchange_code("c"))
-    assert e.value.code == "scope_extra"
+        run(prov(bad).exchange_code("c"))
+    assert e.value.code == "scope_missing"
 
 
 def test_a_truncated_reply_fails_closed_and_no_default_calendar_fails_not_prunes():
@@ -128,6 +138,74 @@ def test_every_graph_and_token_request_sends_identity_encoding():
     h.get = spy
     run(prov(h).list_calendars(cred()))
     assert seen["Accept-Encoding"] == "identity"
+
+
+def test_the_token_call_sends_identity_encoding():
+    seen = {}
+    class Spy(FakeHttp):
+        async def post_form(self, url, *, form, headers=None):
+            seen.update(headers or {})
+            return await super().post_form(url, form=form, headers=headers)
+    h = Spy([("POST", "/token", 200, json.dumps(
+        {"access_token": "a", "refresh_token": "r", "scope": "Calendars.ReadWrite"}).encode())])
+    run(prov(h).exchange_code("c"))
+    assert seen["Accept-Encoding"] == "identity"
+
+
+def _delta_pages(n_pages, per=1):
+    pages = []
+    for i in range(n_pages):
+        last = i == n_pages - 1
+        body = {"value": [{"id": f"E{i}-{k}", "subject": "x", "showAs": "busy",
+                           "start": {"dateTime": "2026-11-13T10:00:00", "timeZone": "UTC"},
+                           "end": {"dateTime": "2026-11-13T11:00:00", "timeZone": "UTC"}}
+                          for k in range(per)]}
+        if last:
+            body["@odata.deltaLink"] = outlook.g.GRAPH_BASE + "/me/calendars/A/calendarView/delta?$deltatoken=T"
+        else:
+            body["@odata.nextLink"] = outlook.g.GRAPH_BASE + f"/me/calendars/A/calendarView/delta?$skiptoken=P{i + 1}"
+        pages.append(body)
+    return pages
+
+
+class _Scripted(FakeHttp):
+    """Answers delta GETs from a script. ``cut`` sizes make a cut reply."""
+
+    def __init__(self, pages, cut_above=None):
+        super().__init__([])
+        self.pages, self.cut_above, self.sizes = pages, cut_above, []
+
+    async def get(self, url, *, params=None, headers=None):
+        if "/me/calendars?" in url or url.endswith("/me/calendars"):
+            return HttpAnswer(status_code=200, body=json.dumps(
+                {"value": [{"id": "A", "name": "Calendar", "isDefaultCalendar": True}]}).encode())
+        size = int(headers["Prefer"].split("odata.maxpagesize=")[1].split(",")[0])
+        self.sizes.append(size)
+        if self.cut_above is not None and size > self.cut_above:
+            return HttpAnswer(status_code=200, body=b'{"value":[', truncated=True)
+        idx = int(url.split("$skiptoken=P")[1]) if "$skiptoken=P" in url else 0
+        return HttpAnswer(status_code=200, body=json.dumps(self.pages[idx]).encode())
+
+
+def test_a_cut_page_is_asked_again_with_fewer_events_down_to_one():
+    h = _Scripted(_delta_pages(2), cut_above=3)
+    res = run(prov(h).sync(cred(), None, Window.around(NOW)))
+    assert len(res.changes) == 2
+    assert h.sizes[:4] == [50, 25, 12, 6] and 3 in h.sizes
+    cut_all = _Scripted(_delta_pages(1), cut_above=0)
+    with pytest.raises(ProviderError) as e:
+        run(prov(cut_all).sync(cred(), None, Window.around(NOW)))
+    assert e.value.code == "response_too_large" and cut_all.sizes[-1] == 1
+
+
+def test_a_full_read_of_a_busy_calendar_is_not_cut_at_100_pages():
+    h = _Scripted(_delta_pages(150))
+    res = run(prov(h).sync(cred(), None, Window.around(NOW)))
+    assert len(res.changes) == 150
+    h = _Scripted(_delta_pages(401))
+    with pytest.raises(ProviderError) as e:
+        run(prov(h).sync(cred(), None, Window.around(NOW)))
+    assert e.value.code == "delta_paging"
 
 
 def test_first_sync_is_full_skips_metorite_calendar_and_returns_cursor_map():

@@ -66,13 +66,15 @@ SCOPES: tuple[str, ...] = (
     "https://graph.microsoft.com/User.Read",
     "https://graph.microsoft.com/Calendars.ReadWrite",
 )
-_NEEDED_SCOPE = "calendars.readwrite"
+_NEEDED_SCOPES = frozenset({"calendars.read", "calendars.readwrite"})
 
 META_ACCOUNT_EMAIL = "account_email"
 META_ACCOUNT_ID = "account_id"
 
 _EXPIRY_SKEW = timedelta(minutes=5)
 _MAX_PAGES = 100
+#: A full read of a busy calendar: 400 pages of up to 50 events.
+_MAX_EVENT_PAGES = 400
 _RECONNECT = frozenset({"invalid_grant", "interaction_required"})
 
 Clock = Callable[[], datetime]
@@ -100,6 +102,13 @@ def _graph_code(body: object) -> str:
 
 def _short_scope(scope: str) -> str:
     return scope.rsplit("/", 1)[-1].lower()
+
+
+class PageTooLarge(ProviderError):
+    """The guard cut the reply at its size cap. The caller asks for fewer events."""
+
+    def __init__(self) -> None:
+        super().__init__("response_too_large")
 
 
 class OutlookProvider:
@@ -169,9 +178,10 @@ class OutlookProvider:
             "redirect_uri": self._redirect_uri,
         })
         scopes = self._scopes(body)
-        if any(_short_scope(s).startswith("mail") for s in scopes):
-            raise ProviderError("scope_extra")  # never keep a mail token here
-        if _NEEDED_SCOPE not in {_short_scope(s) for s in scopes}:
+        # Entra ID returns every scope the member consented for this client id,
+        # so a grant that holds Mail scopes is normal: refusing it would lock
+        # out every member who connected Outlook mail. Keep the whole grant.
+        if not _NEEDED_SCOPES & {_short_scope(s) for s in scopes}:
             raise ProviderError("scope_missing")
         if not body.get("refresh_token"):
             raise ProviderError("no_refresh_token")
@@ -204,16 +214,16 @@ class OutlookProvider:
 
     async def _graph(
         self, method: str, url: str, cred: SourceCredential, *, body: Any = None,
-        ok_missing: bool = False,
+        ok_missing: bool = False, page_size: int = g.PAGE_SIZE,
     ) -> Any:
-        headers = g.read_headers(cred.access_token)
+        headers = g.read_headers(cred.access_token, page_size)
         if method == "GET":
             answer = await self._http.get(url, headers=headers)
         else:
             answer = await self._http.send_json(method, url, body=body, headers=headers)
         status = answer.status_code
         if getattr(answer, "truncated", False):
-            raise ProviderError("response_too_large")  # fail closed, never a cut body
+            raise PageTooLarge()  # fail closed, never a cut body
         if status in (200, 201, 202):
             return answer.json()
         if status == 204:
@@ -307,18 +317,23 @@ class OutlookProvider:
     async def _read_calendar(self, cred: SourceCredential, first_url: str) -> g.DeltaResult:
         pages: list[g.DeltaPage] = []
         url: str | None = first_url
-        for _ in range(_MAX_PAGES):
-            if url is None:
-                break
-            data = await self._graph("GET", url, cred)
+        size = g.PAGE_SIZE
+        while url is not None:
+            if len(pages) >= _MAX_EVENT_PAGES:
+                raise ProviderError("delta_paging")
+            try:
+                data = await self._graph("GET", url, cred, page_size=size)
+            except PageTooLarge:
+                if size <= g.MIN_PAGE_SIZE:
+                    raise
+                size = max(g.MIN_PAGE_SIZE, size // 2)
+                continue  # the same page again, with fewer events
             try:
                 page = g.parse_delta_page(data if isinstance(data, Mapping) else {})
             except g.GraphParseError:
                 raise ProviderError("bad_reply") from None
             pages.append(page)
             url = g.next_delta_link(page)
-        else:
-            raise ProviderError("delta_paging")
         return g.merge_pages(pages)
 
     @staticmethod

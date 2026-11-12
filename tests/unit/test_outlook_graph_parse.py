@@ -1,6 +1,7 @@
 """CE-10b: the Graph calendar parser, pure functions, recorded replies."""
 import json
 import sys
+import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -107,7 +108,37 @@ def test_delta_expired():
 
 def test_every_request_asks_for_identity_encoding_and_a_small_page():
     h = g.read_headers("t")
-    assert h["Accept-Encoding"] == "identity" and "maxpagesize=10" in h["Prefer"]
+    assert h["Accept-Encoding"] == "identity"
+    assert re.search(r"odata\.maxpagesize=50(?!\d)", h["Prefer"])
+    assert re.search(r"odata\.maxpagesize=1(?!\d)", g.read_headers("t", 1)["Prefer"])
+    assert 'outlook.timezone="UTC"' in h["Prefer"]
+
+
+@pytest.mark.parametrize("zone,hours", [
+    ("Pacific/Auckland", 13), ("Pacific/Tongatapu", 13), ("Pacific/Kiritimati", 14),
+    ("Etc/GMT+12", -12), ("Pacific/Pago_Pago", -11), ("Asia/Kolkata", 5.5),
+    ("America/Los_Angeles", -8), ("Pacific/Chatham", 13.75),
+])
+def test_all_day_event_keeps_its_day_in_every_zone_by_original_zone(zone, hours):
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo(zone)
+    s = datetime(2026, 11, 20, tzinfo=tz).astimezone(timezone.utc)
+    e = datetime(2026, 11, 21, tzinfo=tz).astimezone(timezone.utc)
+    ev = {"id": "x", "isAllDay": True, "originalStartTimeZone": zone,
+          "start": {"dateTime": s.strftime("%Y-%m-%dT%H:%M:%S.0000000"), "timeZone": "UTC"},
+          "end": {"dateTime": e.strftime("%Y-%m-%dT%H:%M:%S.0000000"), "timeZone": "UTC"}}
+    p = g.parse_event(ev)
+    assert (p.start_date, p.end_date) == (date(2026, 11, 20), date(2026, 11, 21))
+
+
+def test_all_day_event_with_a_windows_zone_name_and_with_no_zone():
+    ev = {"id": "x", "isAllDay": True, "originalStartTimeZone": "New Zealand Standard Time",
+          "start": {"dateTime": "2026-11-19T11:00:00", "timeZone": "UTC"},
+          "end": {"dateTime": "2026-11-20T11:00:00", "timeZone": "UTC"}}
+    assert g.parse_event(ev).start_date == date(2026, 11, 20)
+    ev["originalStartTimeZone"] = "Not A Zone"  # falls back to the +12 h bias
+    ev["start"]["dateTime"], ev["end"]["dateTime"] = "2026-11-19T18:30:00", "2026-11-20T18:30:00"
+    assert g.parse_event(ev).start_date == date(2026, 11, 20)
 
 
 def test_all_day_event_converted_from_another_zone_keeps_its_day():

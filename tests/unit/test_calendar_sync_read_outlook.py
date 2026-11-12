@@ -10,8 +10,10 @@ Mutations (R7), each turns the named test red:
 
 * M1. ``outlook.py`` ``_to_changes``: drop the ``@removed`` ids.
   ``test_r8_outlook_second_sync_updates_and_a_removed_event_goes``.
-* M2. ``outlook.py`` ``pick_calendar_ids`` use: read the "Metorite" calendar.
-  ``test_r8_outlook_never_reads_the_metorite_calendar``.
+* M2. ``outlook_graph.py`` ``pick_calendar_ids``: flip the default-calendar
+  and name check, so the "Metorite" calendar is read. Every sync then fails
+  ``no_calendar``. ``test_calendar_picking_leaves_out_metorite_calendar`` and
+  the R8 org tests.
 * M3. ``outlook_graph.py`` ``_status_and_busy``: ignore ``showAs=free``.
   ``test_r8_outlook_first_sync_writes_each_instance_once``.
 """
