@@ -29,12 +29,13 @@ import Button from "@/components/ui/Button";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { useToast } from "@/components/ui/Toast";
-import { useCachedResource } from "@/lib/useCachedResource";
 
-import { safeConsentUrl } from "../lib/calendarIds";
+import AlsoSyncCalendar from "./AlsoSyncCalendar";
+import { useCalendarConnections, useConnect } from "../lib/useCalendarConnect";
+
+export { useCalendarConnections, useConnect };
 
 import {
-  CONNECTIONS_KEY,
   CONNECT_LABEL,
   PROVIDER_NAME,
   cleanedHref,
@@ -44,17 +45,15 @@ import {
   disconnectCopy,
   errorCopy,
   hasSyncError,
-  getConnections,
   isEnabled,
   lastSyncLine,
   reconnectLine,
   recallStarted,
-  rememberStarted,
   refreshConnections,
   returnNotice,
   rowState,
   showsPrompt,
-  startConnect,
+  visibleOffers,
   syncNow,
   syncResultLine,
   wantsSettings,
@@ -65,6 +64,8 @@ import {
 } from "../lib/calendarConnections";
 import {
   ADMIN_NOTE,
+  ALSO_SYNC_STEPS,
+  ALSO_SYNC_TITLE,
   FULL_GUIDE_LINE,
   GUIDE_LISTS,
   SYNC_NOTES,
@@ -73,11 +74,6 @@ import {
 
 const SECTION_CLS =
   "mb-1.5 mt-3 border-t border-border pt-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/80";
-
-/** The list, read through the cache. `null` data means "not enabled". */
-export function useCalendarConnections() {
-  return useCachedResource<ConnectionsList | null>(CONNECTIONS_KEY, () => getConnections());
-}
 
 // ── The How to connect panel ────────────────────────────────────────────────
 
@@ -123,6 +119,14 @@ export function HowToConnectPanel({ defaultOpen = false }: { defaultOpen?: boole
               <li key={n}>{n}</li>
             ))}
           </ul>
+        </div>
+        <div>
+          <p className="mb-0.5 font-medium text-foreground">{ALSO_SYNC_TITLE}</p>
+          <ol className="list-decimal space-y-0.5 pl-4">
+            {ALSO_SYNC_STEPS.map((n) => (
+              <li key={n}>{n}</li>
+            ))}
+          </ol>
         </div>
         <p className="text-[10px]">{FULL_GUIDE_LINE}</p>
       </div>
@@ -307,6 +311,7 @@ export function ConnectedCalendarsView(p: SectionViewProps) {
           Bring your Google or Outlook events into Calendar. Metorite writes your timed tasks to a calendar named Metorite.
         </p>
       )}
+      <AlsoSyncCalendar className="mb-2" />
       <div className="mb-2">
         <ConnectButtons
           providers={offer.filter((pr) => !list.connections.some((r) => r.provider === pr))}
@@ -320,32 +325,6 @@ export function ConnectedCalendarsView(p: SectionViewProps) {
 }
 
 // ── The shared wiring ───────────────────────────────────────────────────────
-
-/** The Connect press: ask for the consent URL, then send the browser there. */
-export function useConnect() {
-  const [connecting, setConnecting] = useState<Provider | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const inFlight = useRef(false);
-  async function connect(p: Provider) {
-    // One press at a time: a double click sends one POST and assigns the location once.
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setConnecting(p);
-    setError(null);
-    const r = await startConnect(p);
-    // The server checks the host too. The client checks the same allowlist before it leaves.
-    const url = r.kind === "ok" ? safeConsentUrl(p, r.url) : null;
-    if (url) {
-      rememberStarted(p);
-      window.location.assign(url);
-      return;
-    }
-    setError(r.kind === "error" ? r.message : "Connecting did not work. Try again.");
-    setConnecting(null);
-    inFlight.current = false;
-  }
-  return { connecting, error, connect };
-}
 
 /** The "Connected calendars" section of the settings sheet. */
 export function ConnectedCalendarsSection({
@@ -428,15 +407,29 @@ export function ConnectedCalendarsSection({
   );
 }
 
-/** The offer on the Calendar page: the same buttons, only when enabled and nothing is connected. */
+/**
+ * The offer on the Calendar page: the same buttons, only when enabled and nothing is connected.
+ * A provider with a mailbox offer shows the offer (CE-10d) and not the generic prompt.
+ */
 export function CalendarConnectPrompt({ onOpenGuide }: { onOpenGuide?: () => void }) {
   const res = useCalendarConnections();
   const { connecting, error, connect } = useConnect();
   if (!showsPrompt(res.data)) return null;
+  const offered = new Set(visibleOffers(res.data).map((o) => o.provider));
+  const generic = connectable(res.data).filter((p) => !offered.has(p));
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-xs text-muted-foreground">
-      <span className="min-w-0 flex-1 basis-48">Bring your Google or Outlook events into Calendar.</span>
-      <ConnectButtons providers={connectable(res.data)} connecting={connecting} onConnect={(p) => void connect(p)} />
+      <AlsoSyncCalendar className="basis-full" />
+      {generic.length > 0 && (
+        <>
+          <span className="min-w-0 flex-1 basis-48">
+            {offered.size > 0
+              ? `Bring your ${generic.map((p) => PROVIDER_NAME[p]).join(" or ")} events into Calendar.`
+              : "Bring your Google or Outlook events into Calendar."}
+          </span>
+          <ConnectButtons providers={generic} connecting={connecting} onConnect={(p) => void connect(p)} />
+        </>
+      )}
       {onOpenGuide && (
         <Button type="button" variant="text" size="sm" onClick={onOpenGuide}>
           How to connect

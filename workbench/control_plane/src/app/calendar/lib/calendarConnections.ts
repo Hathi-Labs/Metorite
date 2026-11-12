@@ -14,7 +14,7 @@
  */
 import { invalidate } from "@/lib/dataCache";
 
-import type { Provider } from "./calendarIds";
+import { isPlausibleAddress, type Provider } from "./calendarIds";
 export type { Provider };
 export type RowStatus = "connected" | "needs_reconnect" | "disconnected";
 
@@ -29,10 +29,51 @@ export interface CalendarConnection {
   entry_count: number;
 }
 
+/** A connected mailbox of the member that has no calendar connection yet (CE-10d). */
+export interface MailboxOffer {
+  provider: Provider;
+  address: string;
+}
+
 export interface ConnectionsList {
   enabled: boolean;
   providers: Record<Provider, { available: boolean }>;
   connections: CalendarConnection[];
+  /** Absent from an old server: read it as an empty list. */
+  mailbox_offers?: MailboxOffer[];
+}
+
+export const MAX_OFFERS = 10;
+
+/** The line of one offer. The button names the provider. */
+export function offerLine(offer: Pick<MailboxOffer, "address">): string {
+  return `Your mailbox ${offer.address} is connected. Also sync its calendar?`;
+}
+
+export const OFFER_BUTTON = "Sync its calendar";
+
+/** The spoken name of the button: it names the provider and the mailbox. */
+export function offerButtonLabel(offer: MailboxOffer): string {
+  return `Sync the ${PROVIDER_NAME[offer.provider]} calendar of ${offer.address}`;
+}
+export const UNKNOWN_MAILBOX_LINE = "That mailbox is not connected to your account. Reload the page.";
+
+/** The offers to draw: the feature is on, and the provider can connect. */
+export function visibleOffers(list: ConnectionsList | null | undefined): MailboxOffer[] {
+  if (!list || !list.enabled) return [];
+  return (list.mailbox_offers ?? []).filter((o) => list.providers[o.provider]?.available);
+}
+
+/** Read the offers of the wire. Garbage, a missing key and a wrong type give an empty list. */
+export function parseOffers(v: unknown): MailboxOffer[] {
+  if (!Array.isArray(v)) return [];
+  const out: MailboxOffer[] = [];
+  for (const o of v) {
+    if (out.length >= MAX_OFFERS) break;
+    if (!isObject(o) || !isProvider(o.provider) || !isPlausibleAddress(o.address)) continue;
+    out.push({ provider: o.provider, address: o.address });
+  }
+  return out;
 }
 
 export interface SyncResult {
@@ -279,6 +320,7 @@ export function parseList(body: unknown): ConnectionsList | null {
     enabled: body.enabled,
     providers: { google: { available: avail("google") }, outlook: { available: avail("outlook") } },
     connections: rows.map(parseRow).filter((r): r is CalendarConnection => !!r && r.status !== "disconnected"),
+    mailbox_offers: parseOffers(body.mailbox_offers),
   };
 }
 
@@ -302,11 +344,28 @@ export const OFFLINE_LINE = "The request did not go through. Check your connecti
 const SYNC_FAILED_LINE = "The sync did not work. Try again in a minute.";
 const DISCONNECT_FAILED_LINE = "Disconnect did not work. Try again.";
 
-/** Ask for the consent URL. The caller sends the browser there. */
-export async function startConnect(provider: Provider, fetchImpl: typeof fetch = fetch): Promise<StartResult> {
+/**
+ * Ask for the consent URL. The caller sends the browser there. A `loginHint` is the address of
+ * one of the member's own mailboxes (CE-10d). The gateway refuses any other with `unknown_mailbox`.
+ */
+export async function startConnect(
+  provider: Provider,
+  fetchImpl: typeof fetch = fetch,
+  loginHint?: string,
+): Promise<StartResult> {
   try {
-    const res = await fetchImpl(`/api/calendar/connections/${provider}/connect`, { method: "POST" });
-    if (!res.ok) return { kind: "error", message: CONNECT_FAILED_LINE };
+    const init: RequestInit = { method: "POST" };
+    if (loginHint !== undefined) {
+      init.headers = { "Content-Type": "application/json" };
+      init.body = JSON.stringify({ login_hint: loginHint });
+    }
+    const res = await fetchImpl(`/api/calendar/connections/${provider}/connect`, init);
+    if (!res.ok) {
+      const err: unknown = await res.json().catch(() => null);
+      const code = isObject(err) && typeof err.detail === "string" ? err.detail : "";
+      if (code === "unknown_mailbox") return { kind: "error", message: UNKNOWN_MAILBOX_LINE };
+      return { kind: "error", message: CODE.test(code) ? errorCopy(code, provider).text : CONNECT_FAILED_LINE };
+    }
     const body: unknown = await res.json().catch(() => null);
     const url = isObject(body) && typeof body.url === "string" ? body.url : "";
     return url ? { kind: "ok", url } : { kind: "error", message: CONNECT_FAILED_LINE };
