@@ -25,6 +25,11 @@ import {
 const page = readFileSync(new URL("./page.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 describe("/studio/package-preview", () => {
+  it("draws the end-date bar of the package (PKG-10e-2)", () => {
+    expect(page).toContain('import PackageLifetimeBar from "@/components/studio/PackageLifetimeBar"');
+    expect(page).toContain("<PackageLifetimeBar pkg={pkg} />");
+  });
+
   it("is gated by the feature of /studio", () => {
     const studio = featureForPath("/studio");
     expect(studio).toBeTruthy();
