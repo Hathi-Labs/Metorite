@@ -21,16 +21,6 @@ export function isProvider(v: unknown): v is Provider {
   return v === "google" || v === "outlook";
 }
 
-/**
- * The gateway word for the provider word of the browser path. Microsoft's word in the browser
- * path is `microsoft`, and the gateway word is `outlook`. Anything else gives null.
- */
-export function gatewayProviderOf(browserWord: unknown): Provider | null {
-  if (browserWord === "google") return "google";
-  if (browserWord === "microsoft") return "outlook";
-  return null;
-}
-
 /** The one host each provider may send a browser to for consent. Nothing else. */
 export const CONSENT_HOST: Record<Provider, string> = {
   google: "accounts.google.com",

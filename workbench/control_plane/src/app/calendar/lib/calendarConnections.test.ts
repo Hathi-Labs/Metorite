@@ -11,7 +11,6 @@ import {
   disconnect,
   disconnectCopy,
   errorCopy,
-  gatewayProviderOf,
   getConnections,
   isConnectionId,
   isProvider,
@@ -65,12 +64,6 @@ describe("id and provider checks", () => {
     expect(isProvider("google")).toBe(true);
     expect(isProvider("outlook")).toBe(true);
     for (const bad of ["microsoft", "Google", "", "google/", null]) expect(isProvider(bad)).toBe(false);
-  });
-  it("maps the browser word microsoft to outlook", () => {
-    expect(gatewayProviderOf("google")).toBe("google");
-    expect(gatewayProviderOf("microsoft")).toBe("outlook");
-    expect(gatewayProviderOf("outlook")).toBeNull();
-    expect(gatewayProviderOf("..")).toBeNull();
   });
 });
 
