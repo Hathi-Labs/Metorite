@@ -83,18 +83,18 @@ class TestTheEdge:
     @pytest.mark.parametrize("data,mime", [
         (TINY_PNG, "image/png"), (JPEG, "image/jpeg"), (GIF, "image/gif"), (WEBP, "image/webp"),
     ])
-    async def test_each_image_goes_out_with_the_type_of_its_bytes(self, gw, data, mime):
+    async def test_each_image_goes_out_with_the_type_of_its_bytes(self, gw, data, mime):  # noqa: F811 — a fixture
         result = await _upload(data, name="image.bin")
         assert result["isError"] is False, result
         (sent,) = gw.uploads()
         (part,) = parts(sent.body, sent.headers["content-type"])
         assert part["type"] == mime and part["data"] == data
 
-    async def test_t1_an_exe_with_a_png_name_is_refused_with_no_request(self, gw):
+    async def test_t1_an_exe_with_a_png_name_is_refused_with_no_request(self, gw):  # noqa: F811 — a fixture
         assert _text(await _upload(EXE, name="setup.png")) == tools.TEXT_IMAGE_TYPE
         assert gw.requests == []
 
-    async def test_t1_a_jpeg_body_named_png_goes_out_as_jpeg(self, gw):
+    async def test_t1_a_jpeg_body_named_png_goes_out_as_jpeg(self, gw):  # noqa: F811 — a fixture
         result = await _upload(JPEG, name="shot.png")
         assert result["isError"] is False, result
         (sent,) = gw.uploads()
@@ -104,12 +104,12 @@ class TestTheEdge:
     @pytest.mark.parametrize("data,name", [
         (SVG, "logo.png"), (SVG_XML, "logo.png"), (TINY_PNG, "logo.svg"), (TINY_PNG, "logo.SVGZ"),
     ], ids=["svg_bytes", "svg_xml_bytes", "svg_name", "svgz_name"])
-    async def test_t3_an_svg_by_its_bytes_is_refused_at_both_halves(self, gw, data, name):
+    async def test_t3_an_svg_by_its_bytes_is_refused_at_both_halves(self, gw, data, name):  # noqa: F811 — a fixture
         assert _text(await _upload(data, name=name)) == tools.TEXT_IMAGE_SVG
         assert gw.requests == []
 
     @pytest.mark.parametrize("data", [HTML, WAV, PDF], ids=["html", "wav", "pdf"])
-    async def test_any_other_file_is_refused_with_no_request(self, gw, data):
+    async def test_any_other_file_is_refused_with_no_request(self, gw, data):  # noqa: F811 — a fixture
         assert _text(await _upload(data)) == tools.TEXT_IMAGE_TYPE
         assert gw.requests == []
 

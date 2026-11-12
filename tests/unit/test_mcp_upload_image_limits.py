@@ -44,14 +44,13 @@ pytest.importorskip("sqlalchemy")
 from acb_auth import agent_oauth, agent_signing
 from agent_edge import gateway_client, mcp, tools
 
-from tests.unit.test_mcp_edge_attachment import GIF, JPEG, TINY_PNG, WEBP
+from tests.unit.test_mcp_edge_attachment import JPEG, TINY_PNG
 from tests.unit.test_mcp_edge_task_writes import edge, redis_fake  # noqa: F401 — fixtures
 from tests.unit.test_mcp_edge_writes import (
     GOOD,
     ISSUER,
     TASK,
     _call,
-    _post,
     _text,
     _tool,
     _uuid,
