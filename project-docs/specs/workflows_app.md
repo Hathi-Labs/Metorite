@@ -531,6 +531,10 @@ Two things to carry: the **session must be visible as a task activity** the inst
 
 What is *not* yet adopted, and should bind any future agent-facing tool in this app: per-item outcomes on batch payloads, lenient removes, no internal UUIDs in the agent-facing contract, and permission-filtered tool listing. **Record it here so the next tool surface starts from the collapsed design rather than rediscovering it at 16 tools.**
 
+#### U9 — A Studio write node (`studio_write`) 🔨 **BUILT, dark 2026-11-11** · *`ai_studio.md` row B2c-2d, task 1867*
+
+The node type `studio_write` writes one record of a Studio package. `ai_studio.md` row B2c-2d owns its scope, its refusals and its fence. The node must follow an `approval` node directly, and one approval clears one write. It runs only in a schedule run that the decided scan of AUTO-7b resumed, after a yes of the workflow owner. The editor palette does not offer it yet. Fence: `tests/unit/test_studio_workflow_write_r8.py`.
+
 ### 13.4 What is deliberately refused
 
 Not oversights — decisions, so a future reader does not "fix" them:
@@ -610,8 +614,26 @@ The default expiry is the expiry of the ask: the due date of the task plus 7 day
 | OTW-8 | 3019 | 2 | The thread match, and the reply read | R8 tests of the match, and an eval case with a hostile reply |
 | OTW-9 | 3020 | 3 | The expiry choice | R8 tests of the three choices |
 | OTW-10 | 3021 | 3 | A Waiting kind, chat reads and the MCP door | R8 tests of the kind and the door op |
+| OTW-0b | 3026 | 1 | §14.8 and D214 points 9 and 10 | `tests/unit/test_doc_names_resolve.py`, `tests/unit/test_decision_ids.py` |
+| OTW-11 | 3027 | 1 | The auto-archive and the Archived view | R8 tests of each end and of no run when archived, a vitest and the visual review |
+| OTW-12 | 3028 | 3 | The retention period and the daily delete job (HIGH) | R8 tests of the period, "Keep", the org boundary and the audit row |
 
 The demo tasks are 3022 (rung 1), 3023 (rung 2) and 3024 (rung 3).
+
+### 14.8 Archive and retention (owner, 2026-11-12, D214 points 9 and 10)
+
+The owner asked for three things. A one-time workflow goes to the archive by itself. The archive shows somewhere. A schedule deletes old archived workflows, so that the archive stays small.
+
+1. **The auto-archive.** A one-time workflow archives itself when it ends. The reasons are `ran` (its run finished), `expired` (the asker closed it at the expiry) and `cancelled`. Cards that still wait in "Needs you" stay there, and the archived row says how many wait.
+2. **Archive by hand.** Any workflow can be archived. An archived workflow never runs. Its triggers do not fire, and the engine refuses a manual run with one plain sentence.
+3. **The Archived view.** The workflow app has an "Archived" view. It follows the read-only archive pattern of Projects (`project_management_app.md` §9b.6). It has a bar on top and no edit, and the run history opens. Each row shows what the workflow waited for, its outcome, its dates and its delete date.
+4. **Restore and "Ask again".** Restore brings a normal workflow back as disabled, so that it never runs by surprise. A one-time workflow has "Ask again" instead. It opens a new ask with the same text.
+5. **The retention period.** An org setting holds the period: 30, 90, 180 or 365 days, or "Keep". The default is 90 days. An admin changes it in the workflow settings or from chat.
+6. **The daily job.** One job for each org runs each day on the durable job queue, bound to that org. The run ledger (`gateway/jobs/unattended.py`) makes it run at most once for each org and day. It deletes each workflow that was archived longer ago than the period, with its versions, triggers, runs and pauses. A workflow that is not archived is never in scope.
+7. **An audit record stays.** The job writes one audit row for each delete. The row holds the workflow id, the name, the owner, the outcome and three dates: creation, archive and delete. The record changes of its runs stay, and so do the cards in their own stores.
+8. **Delete now.** The owner of a workflow or an admin can delete an archived workflow at once. A confirm step of the design system says that the delete cannot be undone. No browser dialog shows.
+
+Slices: OTW-11 (task 3027, rung 1) and OTW-12 (task 3028, rung 3).
 
 ---
 

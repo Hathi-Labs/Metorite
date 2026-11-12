@@ -105,8 +105,15 @@ from typing import Any
 #     no scan resumes that run.
 # A replayed webhook delivery starts no second run (`delivery_key`, migration
 # 420). Fence: `tests/unit/test_workflows_triggers_r8.py`.
+#
+# STU-B2c-2d: the Studio write node (`_studio_writer`). It runs only in a
+# schedule run of an org on all four lists (`WORKFLOW_UNATTENDED_ORGS`,
+# `AUTO_PARK_ORGS`, `DECISIONS_ORGS`, `STUDIO_ORGS`), resumed by the decided
+# scan. The org is the run row's, the member is the workflow owner, and the
+# parked decision is re-read in `_tenant_session(org)` before the write.
+# Fence: `tests/unit/test_studio_workflow_write_r8.py`.
 from acb_common.db import TenantUnbound, bind_tenant, release_tenant
-from gateway.routes.workflows import unattended
+from gateway.routes.workflows import park, unattended
 from gateway.routes.workflows.core import (
     _get_db,
     _log,
@@ -531,8 +538,148 @@ def _tool_runner(workflow_id: str, organization_id: str | None) -> Any:
     return _run
 
 
+@dataclass(frozen=True, slots=True)
+class ParkedApproval:
+    """The parked decision that ONE resume of the decided scan carries
+    (STU-B2c-2d). Only ``scheduler.scan_decided_pauses`` makes one, through
+    ``resume_run(decided=True)``. Each value comes from the stored pause row."""
+
+    decision_id: str
+    pause_id: str
+    gate: str
+
+
+#: The refusal codes of a Studio write node. Each names no package and no
+#: record, because the run row stores the error.
+STUDIO_NO_ORG = "no_org"
+STUDIO_NOT_SCHEDULED = "not_scheduled"
+STUDIO_UNMARKED = "unmarked"
+STUDIO_NO_DECISION = "no_decision"
+STUDIO_FLAG_OFF = "flag_off"
+STUDIO_BAD_GATE = "bad_gate"
+STUDIO_SPENT = "spent"
+STUDIO_NOT_APPROVED = "not_approved"
+
+
+def _studio_refusal(
+    org: str,
+    trigger_kind: str,
+    parked: ParkedApproval | None,
+    serialized: dict[str, Any],
+    node_id: str,
+) -> str | None:
+    """Why a Studio write node may not run, or None (STU-B2c-2d).
+
+    Only the unattended parked path passes: a schedule run of a listed org,
+    marked with no person present, resumed by the decided scan at the
+    approval node directly above this node. So a run with no org (an event,
+    a webhook or a manual run, H-328 part (c)), a manual or ``api`` run, the
+    broker door and the wait scan each refuse here.
+    """
+    from acb_common.no_person import no_person_present
+    from gateway.routes.studio import flags as studio_flags
+    from gateway.routes.workflows.engine.graph import runtime_gate_of
+
+    if not org:
+        return STUDIO_NO_ORG
+    if trigger_kind != "schedule":
+        return STUDIO_NOT_SCHEDULED
+    if not no_person_present():
+        return STUDIO_UNMARKED
+    if parked is None:
+        return STUDIO_NO_DECISION
+    if not (unattended.org_allowed(org) and park.park_allowed(org)
+            and studio_flags.studio_allowed(org)):
+        return STUDIO_FLAG_OFF
+    if runtime_gate_of(serialized, node_id) != parked.gate:
+        return STUDIO_BAD_GATE
+    return None
+
+
+def _pinned_config(serialized: dict[str, Any], node_id: str) -> dict[str, Any]:
+    """The config of *node_id* in the run's pinned graph (fix round 1)."""
+    for block in serialized.get("blocks") or []:
+        if str(block.get("id")) == node_id and isinstance(block.get("config"), dict):
+            return dict(block["config"])
+    return {}
+
+
+def _studio_writer(
+    *,
+    run_id: str,
+    workflow_id: str,
+    organization_id: str | None,
+    trigger_kind: str,
+    serialized: dict[str, Any] | None,
+    parked: ParkedApproval | None,
+) -> Any:
+    """The Studio write node's seam, with the run's facts bound in (B2c-2d).
+
+    The org is the org of the run row, and the member is the workflow owner,
+    ``workflows.owner_email``, read in that org. The owner is the decider of
+    the parked decision. The node re-reads that decision with
+    ``park.approved_write_digest`` in the run's org, and the write runs only
+    on its yes. Then ``studio.invoke.run_workflow_write`` runs the write with
+    no second card, and only when the write has the digest that the decision
+    bound at the park (fix round 1). The config is read from the run's own
+    pinned graph (*serialized*, the snapshot of the published version), never
+    from the live draft. ONE decision clears ONE write: the seam spends the gate
+    before the write, so a second call in this execution refuses. A replay
+    never calls the seam, because the runner passes a stored ``ok`` output
+    through (``precomputed``).
+    """
+    spent: set[str] = set()
+
+    async def _write(node_id: str, config: dict[str, Any]) -> dict[str, Any]:
+        from gateway.routes.studio.invoke import run_workflow_write
+
+        org = str(organization_id or "").strip()
+        refused = _studio_refusal(org, trigger_kind, parked, serialized or {}, node_id)
+        if refused is None and parked is not None and parked.gate in spent:
+            refused = STUDIO_SPENT
+        if refused is None and parked is not None:
+            spent.add(parked.gate)
+            _, owner = await _workflow_owner(workflow_id, org)
+            async with _tenant_session(org) as db:
+                digest = await park.approved_write_digest(
+                    db, organization_id=org, owner=owner, decision_id=parked.decision_id,
+                    run_id=run_id, pause_id=parked.pause_id,
+                )
+            if digest is None:
+                refused = STUDIO_NOT_APPROVED
+        if refused is not None or parked is None:
+            _log.warning("workflows.studio_write_refused", run_id=run_id, reason=refused)
+            raise NodeExecutionError(f"the Studio write did not run ({refused})")
+        pinned = _pinned_config(serialized or {}, node_id)
+        token = bind_tenant(org)
+        try:
+            result = await run_workflow_write(
+                organization_id=org, member=owner,
+                package_id=str(pinned.get("package_id") or ""),
+                action=str(pinned.get("action") or ""), data=pinned.get("data"),
+                record_id=pinned.get("record_id"), run_id=run_id, node_id=node_id,
+                expected_digest=digest, decision_id=parked.decision_id,
+            )
+        finally:
+            release_tenant(token)
+        if not result.get("ok"):
+            raise NodeExecutionError(
+                f"the Studio write did not run ({result.get('code') or result.get('outcome')})"
+            )
+        return result
+
+    return _write
+
+
 def build_node_services(
-    actor: str, workflow_id: str, organization_id: str | None,
+    actor: str,
+    workflow_id: str,
+    organization_id: str | None,
+    *,
+    run_id: str = "",
+    trigger_kind: str = "",
+    serialized: dict[str, Any] | None = None,
+    parked: ParkedApproval | None = None,
 ) -> NodeServices:
     """The node seams of one run, bound to the run's organization.
 
@@ -544,6 +691,11 @@ def build_node_services(
     The module node reads ``organization_id`` too: ``run_module_code`` runs
     the code of a module only for an org on ``MODULE_RUN_ORGS``, and never
     for a run with no org (STU-Q15a).
+
+    The Studio write node (STU-B2c-2d) reads *run_id*, *trigger_kind*,
+    *serialized* and *parked*, each from the run (:func:`_execute_run`). Its
+    defaults refuse each write: no kind is ``schedule``, and no decision is
+    parked.
     """
     return NodeServices(
         run_agent=_agent_runner(workflow_id),
@@ -552,6 +704,10 @@ def build_node_services(
         actor=actor,
         update_task=_pm_task_updater(workflow_id, organization_id),
         run_lifecycle_sweep=_pm_lifecycle_sweeper(workflow_id, organization_id),
+        studio_write=_studio_writer(
+            run_id=run_id, workflow_id=workflow_id, organization_id=organization_id,
+            trigger_kind=trigger_kind, serialized=serialized, parked=parked,
+        ),
         organization_id=organization_id,
     )
 
@@ -889,6 +1045,7 @@ async def _execute_run(
     resolved_approvals: set[str] | None = None,
     elapsed_waits: set[str] | None = None,
     organization_id: str | None = None,
+    parked: ParkedApproval | None = None,
 ) -> None:
     global _ACTIVE_TOTAL
     actor = f"workflow:{workflow_name or workflow_id}"
@@ -941,7 +1098,10 @@ async def _execute_run(
         outcome = await execute_workflow(
             serialized,
             trigger_payload,
-            build_node_services(actor, workflow_id, organization_id),
+            build_node_services(
+                actor, workflow_id, organization_id, run_id=run_id,
+                trigger_kind=trigger_kind, serialized=serialized, parked=parked,
+            ),
             variables=variables,
             emit=emit,
             precomputed=precomputed,
@@ -1382,6 +1542,29 @@ def _pause_snapshot(
     }
 
 
+#: The error of a run whose gate clears a Studio write that does not resolve.
+_WRITE_UNRESOLVED_ERROR = (
+    "The approval step clears a Studio write that its owner cannot run: the app, "
+    "the action or the owner's access is missing. Nothing was written."
+)
+
+
+async def _fail_unresolved_write(run_id: str, organization_id: str) -> None:
+    """End a paused run as ``failed`` before any pause row or card exists
+    (fix round 2). The guard on ``paused`` changes no other state."""
+    try:
+        async with _run_session(organization_id) as db:
+            await db.execute(
+                text(
+                    "UPDATE workflow_runs SET status = 'failed', error = :error, "
+                    "finished_at = now() WHERE id = :id AND status = 'paused'"
+                ),
+                {"id": run_id, "error": _WRITE_UNRESOLVED_ERROR},
+            )
+    except Exception as exc:  # pragma: no cover - best effort persistence
+        _log.warning("workflows.unresolved_fail_failed", run_id=run_id, error=str(exc)[:160])
+
+
 async def _park_with_decision(
     *,
     run_id: str,
@@ -1441,6 +1624,12 @@ async def _park_with_decision(
             run_id=run_id,
             reason=str(getattr(exc, "reason", "") or type(exc).__name__)[:80],
         )
+        if getattr(exc, "reason", "") == park.WRITE_UNRESOLVED:
+            # STU-B2c-2d fix round 2: the gate clears a Studio write that the
+            # owner cannot run. A broker card could only end in a failed
+            # write, so the run fails here and files no card.
+            await _fail_unresolved_write(run_id, organization_id)
+            return True
         return False
     _log.info("workflows.parked", run_id=run_id, decision_id=parked["decision_id"])
     # After the commit: the subject task sent no event, so move the owner's
@@ -1455,6 +1644,7 @@ async def resume_run(
     resumed_by: str = "approver",
     organization_id: str | None = None,
     pause_id: str | None = None,
+    decided: bool = False,
 ) -> dict[str, Any]:
     """Resume a paused run: replay completed nodes from stored outputs and
     let the gate node through.
@@ -1494,6 +1684,13 @@ async def resume_run(
     run takes its org from the run row. So an approver who clears a run that
     paused before RLS now runs its module and notify nodes. A person approved
     that run, and nothing wakes without one.
+
+    ⚠️ **Only the decided scan carries the decision (STU-B2c-2d).** With
+    *decided* and *pause_id*, an approval pause gives its decision id
+    (``park.decision_id_of(snapshot)``) to :func:`_execute_run` as a
+    :class:`ParkedApproval`. ``scheduler.scan_decided_pauses`` alone passes
+    *decided*. The broker door and the wait scan pass nothing, so a Studio
+    write node in a run that they resume refuses.
 
     ⚠️ **A resume never reaches a task write.** A node of
     :func:`_member_blind_write_nodes` that has not run closes the run as
@@ -1594,6 +1791,12 @@ async def resume_run(
 
     gate_node = str(pause.node_id)
     is_wait = str(getattr(pause, "reason", "approval") or "approval") == "wait"
+    decision_id = park.decision_id_of(snapshot) if decided and pause_id is not None else None
+    parked = (
+        ParkedApproval(decision_id=decision_id, pause_id=str(pause.id), gate=gate_node)
+        if decision_id is not None and not is_wait
+        else None
+    )
     workflow_id = str(snapshot.get("workflow_id") or run.workflow_id)
     workflow_name = str(snapshot.get("workflow_name") or run.workflow_name)
     run_org = getattr(run, "organization_id", None)
@@ -1630,6 +1833,7 @@ async def resume_run(
             resolved_approvals=set() if is_wait else {gate_node},
             elapsed_waits={gate_node} if is_wait else set(),
             organization_id=str(run_org) if run_org else None,
+            parked=parked,
         ),
         name=f"workflow-resume:{run_id}",
     )
