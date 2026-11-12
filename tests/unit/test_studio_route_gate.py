@@ -482,9 +482,9 @@ def test_a_second_read_of_the_admin_right_fails() -> None:
     sources = _studio_sources()
     share = "    if not user.has_permission(SHARE_RIGHT):\n"
     text = sources["packages.py"].replace("\r\n", "\n")
-    assert text.count(share) == 1, "non-vacuity: the share check of the install"
+    assert text.count(share) == 2, "non-vacuity: the share checks of the install and the uninstall"
     mutated = {**sources, "packages.py": text.replace(
-        share, "    if not (user.has_permission(SHARE_RIGHT) or user.has_permission(ADMIN_RIGHT)):\n")}
+        share, "    if not (user.has_permission(SHARE_RIGHT) or user.has_permission(ADMIN_RIGHT)):\n", 1)}
     assert admin_right_reads(mutated) == sorted(
         [*_ADMIN_READS, ("packages.py", "install_package", "Load")])
     other = {**sources, "skills.py": sources["skills.py"] + (
