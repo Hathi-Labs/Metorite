@@ -151,10 +151,14 @@ async def _own(db: Any, org: str, me: str, connection_id: str) -> store.Connecti
     return conn
 
 
-async def _own_mailboxes(db: Any, me: str) -> list[tuple[str, str]]:
-    """``(provider word, lower-case address)`` of the member's private mailboxes."""
+async def _own_mailboxes(db: Any, uid: str) -> list[tuple[str, str]]:
+    """``(provider word, lower-case address)`` of the member's private mailboxes.
+
+    *uid* is the session address AS WRITTEN (``user.email`` stripped), as the
+    email package binds it: ``email_accounts.user_id`` keeps the case.
+    """
     out: set[tuple[str, str]] = set()
-    for row in (await db.execute(text(_OWN_MAILBOXES_SQL), {"uid": me})).fetchall():
+    for row in (await db.execute(text(_OWN_MAILBOXES_SQL), {"uid": uid})).fetchall():
         word = MAIL_PROVIDER_WORD.get(row[0])
         address = (row[1] or "").strip().lower()
         if word and address:
@@ -169,12 +173,13 @@ async def list_connections(user: UserContext = Depends(get_current_user)) -> dic
         rows = [c for c in await connections.member_connections(db, org, me)
                 if c.status != store.STATUS_DISCONNECTED]
         counts = await connections.entry_counts(db, org, [c.id for c in rows])
-        # A needs_reconnect row counts as connected: it is in `rows`.
-        have = {(connections.PROVIDER_WORDS.get(c.provider, c.provider),
-                 str(c.provider_meta.get(connections.META_ACCOUNT_EMAIL) or "").strip().lower())
-                for c in rows}
+        # One calendar connection row exists for each member and provider, so a
+        # connected or needs_reconnect row hides EVERY offer of its provider.
+        # A press on another account would swap it and delete its entries.
+        have = {connections.PROVIDER_WORDS.get(c.provider, c.provider) for c in rows}
         offers = [{"provider": w, "address": a}
-                  for w, a in await _own_mailboxes(db, me) if (w, a) not in have]
+                  for w, a in await _own_mailboxes(db, (user.email or "").strip())
+                  if w not in have]
     available: dict[str, dict[str, bool]] = {}
     for word, row in ROWS.items():
         factory = PROVIDERS.get(row)
@@ -203,7 +208,8 @@ async def connect(
 
     ``login_hint`` must be the address of one of the member's own private
     mailboxes of this provider, else 422 ``unknown_mailbox``, with no provider
-    call and no state signed. Mail and calendar stay separate grants (D215).
+    call and no state signed. A provider with a live calendar connection
+    answers 409 ``already_connected``. Mail and calendar stay separate grants (D215).
     """
     org, me = _scope(user)
     hint = me
@@ -212,9 +218,14 @@ async def connect(
         if not _EMAIL.match(want):
             raise HTTPException(status_code=422, detail="unknown_mailbox")
         async with _tenant_session() as db:
-            mine = await _own_mailboxes(db, me)
-        if (provider, want) not in mine:
-            raise HTTPException(status_code=422, detail="unknown_mailbox")
+            mine = await _own_mailboxes(db, (user.email or "").strip())
+            if (provider, want) not in mine:
+                raise HTTPException(status_code=422, detail="unknown_mailbox")
+            live = [c for c in await connections.member_connections(db, org, me)
+                    if c.status != store.STATUS_DISCONNECTED
+                    and connections.PROVIDER_WORDS.get(c.provider, c.provider) == provider]
+        if live:
+            raise HTTPException(status_code=409, detail="already_connected")
         hint = want
     word, prov = _provider(provider)
     try:

@@ -27,6 +27,14 @@ scratch database as the non-privileged app role (FORCE RLS binds), two orgs::
 * M3. ``list_connections``: drop the ``(w, a) not in have`` filter. A
   connected account was offered again.
   ``test_r8_the_offers_are_the_private_mailboxes_of_the_member_only``.
+* M5. Bind the lower-cased uid in the two ``_own_mailboxes`` calls. A member
+  whose ``user_id`` has capitals saw no offer and got 422.
+  ``test_r8_a_mixed_case_user_id_gets_offers_and_a_hint_in_any_case``.
+* M6. ``list_connections``: hide by (provider, address) again. A second Gmail
+  mailbox was offered while Gmail had a calendar.
+  ``test_r8_a_calendar_on_one_gmail_mailbox_hides_every_gmail_offer``.
+* M7. ``connect``: drop the ``already_connected`` check.
+  ``test_a_hint_for_a_provider_with_a_live_calendar_is_409_and_signs_nothing``.
 * M4. ``connect``: drop the ``(provider, want) not in mine`` check. A foreign
   hint reached the consent URL.
   ``test_a_hint_that_is_not_the_members_own_mailbox_is_422_and_signs_nothing``.
@@ -102,6 +110,12 @@ def unit(monkeypatch):
         return "STATE"
 
     monkeypatch.setattr(cal, "sign_state", sign)
+    live: list[Any] = []
+
+    async def member_connections(db: Any, org: str, me: str) -> list[Any]:
+        return live
+
+    monkeypatch.setattr(cal.connections, "member_connections", member_connections)
     boxes = [("gmail", "Ana@Gmail.test"), ("microsoft", "ana@corp.test")]
 
     @asynccontextmanager
@@ -109,7 +123,7 @@ def unit(monkeypatch):
         yield FakeDb(boxes)
 
     monkeypatch.setattr(cal, "_tenant_session", session)
-    return SimpleNamespace(prov=prov, signed=signed)
+    return SimpleNamespace(prov=prov, signed=signed, live=live)
 
 
 async def _post(path: str, **kw: Any) -> Any:
@@ -155,6 +169,21 @@ async def test_a_hint_that_is_not_the_members_own_mailbox_is_422_and_signs_nothi
                        json={"login_hint": hint})
     assert resp.status_code == 422
     assert unit.signed == [] and unit.prov.hints == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["connected", "needs_reconnect"])
+async def test_a_hint_for_a_provider_with_a_live_calendar_is_409_and_signs_nothing(
+        unit, status) -> None:
+    unit.live.append(SimpleNamespace(provider="google_calendar", status=status))
+    resp = await _post("/tasks/calendar/connections/google/connect",
+                       json={"login_hint": "ana@gmail.test"})
+    assert (resp.status_code, resp.json()["detail"]) == (409, "already_connected")
+    assert unit.signed == [] and unit.prov.hints == []
+    # Outlook has no calendar row, so its hint still works.
+    ok = await _post("/tasks/calendar/connections/outlook/connect",
+                     json={"login_hint": "ana@corp.test"})
+    assert ok.status_code == 200
 
 
 @pytest.mark.asyncio
@@ -269,14 +298,14 @@ async def test_r8_the_offers_are_the_private_mailboxes_of_the_member_only(world)
     assert _offers(await _call(world, world.a, A2)) == [("google", "a2@gmail.offers-r8.test")]
     # Org B sees its own box and none of org A's, though the address is the same.
     assert _offers(await _call(world, world.b, B1)) == [("google", SAME)]
-    # A connected calendar account hides its offer and keeps the other one.
+    # A connected calendar hides the offers of its provider, and keeps the other.
     _calendar_row(world, A1, "google_calendar", SAME.upper())
     assert _offers(await _call(world, world.a, A1)) == [("outlook", CORP)]
 
 
 @pytest.mark.asyncio
 @_DB_GATE
-async def test_r8_a_needs_reconnect_row_hides_the_offer_and_a_disconnected_one_does_not(
+async def test_r8_a_needs_reconnect_row_hides_the_provider_and_a_disconnected_one_does_not(
         world) -> None:
     _calendar_row(world, A1, "google_calendar", SAME, status="disconnected")
     assert ("google", SAME) in _offers(await _call(world, world.a, A1))
@@ -313,3 +342,40 @@ async def test_r8_the_connect_accepts_only_the_own_private_mailbox_as_a_hint(
         bad = await _call(world, world.a, who, url, json={"login_hint": hint})
         assert (bad.status_code, bad.json()["detail"]) == (422, "unknown_mailbox")
     assert prov.hints == [SAME]
+
+
+@pytest.mark.asyncio
+@_DB_GATE
+async def test_r8_a_calendar_on_one_gmail_mailbox_hides_every_gmail_offer(world) -> None:
+    other = "a1-second@gmail.offers-r8.test"
+    _box(world, world.a, A1, "gmail", other)
+    _calendar_row(world, A1, "google_calendar", SAME)
+    assert _offers(await _call(world, world.a, A1)) == [("outlook", CORP)]
+    # The connect refuses a hint for Gmail, so a stale page swaps nothing.
+    bad = await _call(world, world.a, A1, "/tasks/calendar/connections/google/connect",
+                      json={"login_hint": other})
+    assert (bad.status_code, bad.json()["detail"]) == (409, "already_connected")
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE integration_connections SET status = 'disconnected' "
+                       "WHERE member_email = :m"), {"m": A1})
+    assert _offers(await _call(world, world.a, A1)) == [
+        ("google", other), ("google", SAME), ("outlook", CORP)]
+
+
+@pytest.mark.asyncio
+@_DB_GATE
+async def test_r8_a_mixed_case_user_id_gets_offers_and_a_hint_in_any_case(
+        world, monkeypatch) -> None:
+    from gateway.calendar_sync import scheduler
+
+    mixed = "Ana.Silva@Contoso.offers-r8.test"
+    PEOPLE.append(mixed)  # cleaned by the fixture
+    _box(world, world.a, mixed, "microsoft", "Ana.Silva@Contoso.offers-r8.test")
+    assert _offers(await _call(world, world.a, mixed)) == [
+        ("outlook", "ana.silva@contoso.offers-r8.test")]
+    prov = FakeProv()
+    monkeypatch.setitem(scheduler.PROVIDERS, "outlook_calendar", lambda: prov)
+    monkeypatch.setattr(cal, "sign_state", lambda **kw: "STATE")
+    ok = await _call(world, world.a, mixed, "/tasks/calendar/connections/outlook/connect",
+                     json={"login_hint": "ANA.SILVA@contoso.offers-r8.test"})
+    assert ok.status_code == 200 and prov.hints == ["ana.silva@contoso.offers-r8.test"]
