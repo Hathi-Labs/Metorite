@@ -24,6 +24,12 @@ it does not change who may flip it. The flip stays OWNER-GATE
 `gateway.routes.shell.waiting.waiting_allowed`. A reload applies a change. The
 flip stays OWNER-GATE (`enforcement-flip`).
 
+`AGENTS_VIEW_ORGS` opens the member view of agents in Projects
+(`agents_view.md` §6, AGA-6). Off, `GET /projects/agents/overview` answers
+404. Its one reader is
+`gateway.routes.projects.agent_summary.agents_view_allowed`. A reload applies
+a change. The flip stays OWNER-GATE (`enforcement-flip`).
+
 `GITHUB_APP_ORGS` turns the Metorite GitHub App on for each named org
 (`agent_coordination.md` SW-53). `GITHUB_APP_ENABLED` stays the master, and a
 reload does not apply the master. With the master on, an empty list turns
@@ -33,6 +39,13 @@ connect routes, the poll and `github.installation_of` ask it, so the lazy
 readers follow the list too. A reload applies a change, and the flip stays
 OWNER-GATE (`enforcement-flip`).
 
+`WORKFLOW_STUDIO_GATE_ORGS` turns on the authoring gate of `/workflows`
+(`ai_studio.md` §14 J1-3). For each listed org, a workflow write needs
+`feature:studio` on top of `feature:workflows`. `*` lists every org. Its one
+reader is `gateway.routes.workflows.core.author_gate_on`, and each request
+asks it. A reload applies a change, and the flip stays OWNER-GATE
+(`enforcement-flip`).
+
 `AGENT_WRITE_CAP` and `AGENT_WRITE_WINDOW_S` set the write cap of each agent
 connection (`external_agent_access.md` §9.2, MCP-G20). The defaults are 120
 writes in 600 s. They are not `*_ORGS` or `*_MODES` keys, so a reload does
@@ -40,6 +53,13 @@ NOT apply them. The gateway counts the writes, and the agent edge names the
 numbers in each write tool. Set both units to the same value. Then restart
 `acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
 (`enforcement-flip`).
+
+`PACKAGE_HOST_ORGS` opens `GET /shell/manifest` (`package_host.md` §10). It
+also selects the orgs where the daily expiry tick may delete installs
+(PKG-10b). A reload that widens it to `*` widens the delete to every org at
+the next tick. The owner must treat a change of this list as part of the
+expiry decision. `PACKAGE_EXPIRY_ENABLED` does not reload. Only a restart
+changes it.
 
 A reload does NOT apply any other key. The log names each one under
 `restart`. That includes:

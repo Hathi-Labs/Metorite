@@ -10,9 +10,11 @@ import {
   type AgentStartBody,
   type AgentStartResult,
   type AgentState,
+  type AgentWaiting,
   type ArchiveApprovalBody,
   type ArchiveApprovalResult,
   type AgentSummary,
+  type ReplaceBody,
   type WithdrawBody,
   agentRunRows,
   normalizeRunDetail,
@@ -33,6 +35,7 @@ import {
   attentionPage,
   resumeBody,
 } from "./needsAttention";
+import { type AgentsOverview, parseOverview } from "./agentsAtWork";
 import type { Rule as RecurrenceRule } from "./recurrence";
 import { taskVersions } from "./taskUndo";
 
@@ -1864,6 +1867,11 @@ export interface TaskRow {
    */
   agent_note?: string | null;
   /**
+   * Task 1045a (`agent_coordination.md` §3.2) — the wait of a run that reads
+   * `waiting`: what it waits on and when the wait ends. Null in any other state.
+   */
+  agent_waiting?: Pick<AgentWaiting, "on" | "until"> | null;
+  /**
    * WS-55 EA-13d (EA3-48) — the ONE pull request that the gateway picked for
    * the task, with its CI. `lib/taskCard.pullRequestChip` draws it.
    */
@@ -3356,6 +3364,17 @@ export const agentRunsApi = {
     ),
 
   /**
+   * SW-43b. The run's member swaps an answer that no agent has read for a new
+   * one, in one write. The same 404, 403 and 409 as the withdraw, and 422 for
+   * an id that is not an option. A retry with the same key writes once.
+   */
+  replaceAnswer: (runId: string, body: ReplaceBody) =>
+    call<{ run: AgentRun; activity: AgentActivity; replaced: boolean }>(
+      `agent-runs/${encodeURIComponent(runId)}/answer/replace`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  /**
    * EA-6g (EA3-40). The run's member approves or declines an agent's
    * archive request. An approve archives the task, never its subtasks. Any
    * other member gets 403, and a request past its expiry gets 409.
@@ -3400,6 +3419,26 @@ export const agentRunsApi = {
    */
   summary: (projectId: string) =>
     call<AgentSummary>(`${encodeURIComponent(projectId)}/agent-summary`),
+};
+
+/**
+ * WS-AGA AGA-8 — Agents at work. One read of every agent the member may see
+ * (`GET /projects/agents/overview`, AGA-7). `null` means the feature is dark
+ * for this member (404, 401 or 403), and the section then draws nothing.
+ */
+export const agentsOverviewApi = {
+  read: async (): Promise<AgentsOverview | null> => {
+    try {
+      const overview = parseOverview(await call<unknown>("agents/overview"));
+      if (!overview) {
+        throw new ProjectsApiError("The agents answer could not be read.", 200);
+      }
+      return overview;
+    } catch (err) {
+      if (err instanceof ProjectsApiError && [401, 403, 404].includes(err.status)) return null;
+      throw err;
+    }
+  },
 };
 
 /**

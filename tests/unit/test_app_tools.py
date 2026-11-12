@@ -513,7 +513,7 @@ def _patch_publish(
     monkeypatch.setattr(publish, "get_app_or_404", _fake_get_app_or_404)
     monkeypatch.setattr(publish, "_tenant_session", _tenant_session)
     monkeypatch.setattr(publish, "sync_workspace_best_effort", _noop)
-    monkeypatch.setattr(publish, "record_app_audit", _noop)
+    monkeypatch.setattr(publish, "record_app_audit_bound", _noop)
     monkeypatch.setattr(publish, "publish_app_activity", lambda *a, **k: None)
 
     proposed: list[dict[str, Any]] = []

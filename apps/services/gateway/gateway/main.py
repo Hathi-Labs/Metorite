@@ -583,6 +583,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.agent_run_sweep_skipped", error=str(exc))
 
+    # Start the daily expiry of the package host (gateway/package_host/
+    # expiry_loop.py; spec package_host.md section 6.2, WS-PKG PKG-10b). Each
+    # day it archives each due install, and it deletes each install that
+    # stayed 30 days in the archive. Dark by default: with
+    # PACKAGE_EXPIRY_ENABLED off it starts no task and logs once. The gate
+    # lives inside the start function. A flip on production is the owner's.
+    try:
+        from gateway.package_host.expiry_loop import start_package_expiry
+        package_expiry_started = await start_package_expiry()
+        _log.info("gateway.package_expiry", started=package_expiry_started)
+    except Exception as exc:
+        _log.warning("gateway.package_expiry_skipped", error=str(exc))
+
     # Chat-run liveness (incident 2026-10-09). This process beats a heartbeat
     # key, so a run it holds reads as alive and a run of a dead process reads
     # as dead. The loop also sweeps: each run a dead process left is closed,
@@ -734,6 +747,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.agent_run_sweep import stop_agent_run_sweep
         await stop_agent_run_sweep()
+    except Exception:
+        pass
+
+    # Stop the daily expiry of the package host and wait for a tick in progress.
+    try:
+        from gateway.package_host.expiry_loop import stop_package_expiry
+        await stop_package_expiry()
     except Exception:
         pass
 
@@ -2211,6 +2231,23 @@ try:
     from gateway.routes.agent_guidance import router as _agent_guidance_router
 
     app.include_router(_agent_guidance_router)
+except Exception:  # pragma: no cover
+    pass
+
+# KIT-4a — the download of the agent kit (orchestration_playbook.md §6a).
+# Dark: 404 while `PLAYBOOK_ORGS` does not hold the caller's org. A plain
+# import, so a real import error stops the start and does not hide.
+from gateway.routes.agent_kit import router as _agent_kit_router  # noqa: E402
+
+app.include_router(_agent_kit_router)
+
+try:
+    # WS-MCP SW-94 — one policy store for agent work (agent_coordination.md
+    # §3.11.5 and SW-94): the save of a policy row. Ships dark: 404 while
+    # `AGENT_POLICY_ORGS` does not hold the caller's org.
+    from gateway.routes.agent_policies import router as _agent_policies_router
+
+    app.include_router(_agent_policies_router)
 except Exception:  # pragma: no cover
     pass
 

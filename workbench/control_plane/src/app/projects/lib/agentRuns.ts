@@ -36,6 +36,7 @@ import type { ElicitationAnswers, ElicitationQuestion } from "@/lib/elicitationA
 export type AgentState =
   | "queued"
   | "working"
+  | "waiting"
   | "awaiting"
   | "answered"
   | "stopping"
@@ -45,6 +46,7 @@ export type AgentState =
 export const AGENT_STATE_VALUES: readonly AgentState[] = [
   "queued",
   "working",
+  "waiting",
   "awaiting",
   "answered",
   "stopping",
@@ -100,6 +102,8 @@ export interface AgentOption {
   label: string;
   description?: string | null;
   recommended?: boolean;
+  /** SW-43b. A costly choice: the card asks "Are you sure?" before it sends it. */
+  confirm?: boolean;
 }
 
 export interface AgentActivity {
@@ -120,6 +124,13 @@ export interface AgentActivity {
     withdrawn?: { at?: string | null; by?: string | null } | null;
     /** SW-43. On the marker prompt of a withdraw: the id of the answer it took back. */
     withdraws?: string | null;
+    /** SW-24. On a `response`: the note of an agent that stops. */
+    handoff?: {
+      done?: string | null;
+      left?: string | null;
+      evidence?: string | null;
+      next?: string | null;
+    } | null;
   };
   /**
    * The server's own facts. EA-6g: an archive request carries `request`.
@@ -194,6 +205,54 @@ export interface AgentRun {
    * every member who sees the task may answer, and the panel reads it as true.
    */
   can_answer?: boolean;
+  /**
+   * Task 1045a (`agent_coordination.md` §3.2). The wait of a run that reads
+   * `waiting`, else null. A gateway before 1045a does not send it.
+   */
+  waiting?: AgentWaiting | null;
+}
+
+/**
+ * What a `waiting` run waits on (the CHECK of the gateway migration). Each is
+ * work that is not the agent's own. While its own sub-agents work, the run is
+ * working (owner, 2026-11-07). `agent` is another (external) agent.
+ */
+export type AgentWaitingOn = "ci" | "review" | "deploy" | "member" | "agent";
+
+/** The wait of a run (task 1045a): what, until when, and the agent's note. */
+export interface AgentWaiting {
+  on: AgentWaitingOn;
+  /** ISO time when the wait ends. */
+  until?: string | null;
+  note?: string | null;
+}
+
+/** The words for each `on`, for "waiting on CI". */
+export const WAITING_ON_LABELS: Readonly<Record<AgentWaitingOn, string>> = {
+  ci: "CI",
+  review: "a review",
+  deploy: "a deploy",
+  member: "a person",
+  agent: "another agent",
+};
+
+/**
+ * "waiting on CI · about 25 min", from the wait of a run. The minutes round
+ * up, so a wait of 30 seconds still reads "about 1 min". With no wait, or an
+ * `on` the client does not know, it reads "waiting".
+ */
+export function waitingText(
+  waiting?: Pick<AgentWaiting, "on" | "until"> | null,
+  nowMs: number = Date.now(),
+): string {
+  const label = waiting && Object.prototype.hasOwnProperty.call(WAITING_ON_LABELS, waiting.on)
+    ? WAITING_ON_LABELS[waiting.on]
+    : null;
+  if (!label) return "waiting";
+  const until = Date.parse(waiting?.until ?? "");
+  if (Number.isNaN(until)) return `waiting on ${label}`;
+  const minutes = Math.max(1, Math.ceil((until - nowMs) / 60_000));
+  return `waiting on ${label} · about ${minutes} min`;
 }
 
 /** What `GET /projects/agent-runs/{run_id}` gives, after `normalizeRunDetail`. */
@@ -432,6 +491,10 @@ export interface AgentPillFacts {
    */
   viewerEmail?: string | null;
   labels?: ReadonlyMap<string, string>;
+  /** Task 1045a. The wait of a `waiting` run: `agent_waiting` of the row. */
+  waiting?: Pick<AgentWaiting, "on" | "until"> | null;
+  /** The clock for the minutes of a wait. Tests pass it. */
+  nowMs?: number;
 }
 
 export interface AgentPillText {
@@ -492,6 +555,12 @@ function pillText(
       return {
         text: `${client} working`,
         title: facts.thought?.trim() || `${client} works on this task`,
+      };
+    case "waiting":
+      // Task 1045a: the agent said that it waits, so the run is not idle.
+      return {
+        text: `${client} waiting`,
+        title: `${client} ${waitingText(facts.waiting, facts.nowMs)}`,
       };
     case "queued":
       return {
@@ -647,6 +716,54 @@ export function cardQuestion(elicitation: AgentActivity): ElicitationQuestion {
       recommended: Boolean(o.recommended),
     })),
   };
+}
+
+/** SW-43b. The words of the second step, before a costly option goes out. */
+export const ARE_YOU_SURE = "Are you sure?";
+
+function pickedOf(answers: ElicitationAnswers): { selected?: string[]; freeform?: string } {
+  return answers.Question ?? Object.values(answers)[0] ?? {};
+}
+
+/**
+ * SW-43b. The labels of the picked options that carry `confirm: true`. The
+ * panel asks "Are you sure?" while this list is not empty, and sends nothing.
+ */
+export function confirmLabels(
+  elicitation: AgentActivity,
+  answers: ElicitationAnswers,
+): string[] {
+  const options = elicitation.signal_metadata?.options ?? [];
+  return (pickedOf(answers).selected ?? []).filter((label) =>
+    options.some((o) => o.label === label && o.confirm === true),
+  );
+}
+
+/** SW-43b. The body of a replace: the answer to swap, the new options and a fresh key. */
+export interface ReplaceBody {
+  answer_id: string;
+  selected?: string[];
+  body?: string;
+  idempotency_key: string;
+}
+
+export function replacePayload(
+  answerId: string,
+  elicitation: AgentActivity,
+  answers: ElicitationAnswers,
+  idempotencyKey: string = newIdempotencyKey(),
+): ReplaceBody | null {
+  const prompt = answerPayload(elicitation, answers, idempotencyKey);
+  if (!prompt.selected?.length && !prompt.body) return null;
+  const out: ReplaceBody = { answer_id: answerId, idempotency_key: idempotencyKey };
+  if (prompt.selected?.length) out.selected = prompt.selected;
+  if (prompt.body) out.body = prompt.body;
+  return out;
+}
+
+/** SW-43b. True when any option of the question needs the "Are you sure?" step. */
+export function hasConfirmOption(elicitation: AgentActivity | null | undefined): boolean {
+  return (elicitation?.signal_metadata?.options ?? []).some((o) => o.confirm === true);
 }
 
 /**
@@ -891,7 +1008,7 @@ export function stripVisible(summary?: AgentSummary | null): boolean {
 }
 
 /** The states that read as "working" on the strip and on the filter. */
-const WORKING_AGENT_STATES: readonly string[] = ["working", "answered", "stale"];
+const WORKING_AGENT_STATES: readonly string[] = ["working", "answered", "stale", "waiting"];
 
 /** The row facts that the oversight filters read. */
 export interface AgentOversightFacts extends AgentRowFacts {
@@ -943,6 +1060,7 @@ export const AGENT_LANES: readonly { key: string; label: string }[] = [
   { key: "awaiting", label: "Needs you" },
   { key: "answered", label: "Answered" },
   { key: "working", label: "Working" },
+  { key: "waiting", label: "Waiting" },
   { key: "queued", label: "Queued" },
   { key: "stale", label: "Idle" },
   { key: "stopping", label: "Stopping" },
@@ -1064,8 +1182,18 @@ export function runHolderFree(run: Pick<AgentRun, "holder_free" | "lease_expired
 }
 
 /**
+ * H-409 item 2 (task 748). The permission that lets a person release the
+ * run of another member. It is the slug of the gateway's
+ * `agent_runs.RELEASE_ADMIN_PERMISSION`, and a Python fence holds the two
+ * equal. Ending a run is a write, so `admin:members:read` does not give it
+ * (owner, Q5 of `agent_coordination.md` §8).
+ */
+export const RELEASE_ADMIN_PERMISSION = "admin:members:manage";
+
+/**
  * May the caller release this run? The run's member, an assignee of the
- * task, or an admin, as the gateway checks. The server decides in the end.
+ * task, or a holder of `RELEASE_ADMIN_PERMISSION` (`isAdmin`), as the
+ * gateway checks. The server decides in the end.
  */
 export function canReleaseRun(
   run: Pick<AgentRun, "member_email" | "status">,

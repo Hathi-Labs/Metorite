@@ -46,16 +46,22 @@ import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { Textarea } from "@/components/ui/Input";
 import { useAccess } from "@/components/AccessProvider";
+import { hasCapability } from "@/lib/access";
+import ElicitationCard from "@/components/ElicitationCard";
 import type { ElicitationAnswers } from "@/lib/elicitationAnswer";
 
 import { ProjectsApiError, type TaskRow, agentRunsApi } from "../lib/api";
 import {
+  cardQuestion,
   type AgentActivity,
   type AgentRun,
   type AgentStartResult,
   type AgentState,
+  ARE_YOU_SURE,
   answerPayload,
   answerHeldLine,
+  confirmLabels,
+  replacePayload,
   answerTo,
   archiveApprovalPayload,
   archiveExpired,
@@ -63,6 +69,7 @@ import {
   canReleaseRun,
   clientName,
   heldByLine,
+  RELEASE_ADMIN_PERMISSION,
   RELEASE_COPY,
   releaseBody,
   STALE_HOLD_TEXT,
@@ -83,10 +90,12 @@ import {
   withdrawTarget,
   writeFailure,
 } from "../lib/agentRuns";
+import { newestHandoff } from "../lib/agentHandoff";
 import { ASK_COPY, hasOpenRunOf } from "../lib/askAgent";
 import { AgentPill } from "./AgentPill";
 import { AGENT_SUBMIT_HINT, AgentQuestionCard } from "./AgentQuestionCard";
 import { AskAgentDialog } from "./AskAgentDialog";
+import { HandoffCard } from "./HandoffCard";
 
 /** How often the open run is read again. */
 export const AGENT_RUN_POLL_MS = 5_000;
@@ -134,12 +143,24 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmStop, setConfirmStop] = useState(false);
+  // SW-43b. The member changes the answer, or has picked a costly option and
+  // is asked "Are you sure?" before it goes out.
+  const [changing, setChanging] = useState(false);
+  // The card fires Submit once for each mount, so a new number remounts it.
+  const [cardNonce, setCardNonce] = useState(0);
+  const [pendingAnswer, setPendingAnswer] = useState<{
+    answers: ElicitationAnswers;
+    labels: string[];
+    change: boolean;
+  } | null>(null);
   const [confirmRelease, setConfirmRelease] = useState(false);
   /** The caller has an open run on this task that the panel does not show. */
   const [otherOpenMine, setOtherOpenMine] = useState(false);
   const [asking, setAsking] = useState(false);
   /** Failed sends of the question card's own answer. A bump gives the card a new exit gate. */
   const [retryToken, setRetryToken] = useState(0);
+  /** SW-24. The newest handoff note of a task that has no open run. */
+  const [idleNote, setIdleNote] = useState<AgentActivity | null>(null);
 
   // The newest values, for the poll's closure.
   const runRef = useRef<AgentRun | null>(null);
@@ -171,8 +192,11 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     setSent(null);
     setReply("");
     setError(null);
+    setChanging(false);
+    setPendingAnswer(null);
     setOtherOpenMine(false);
     setAsking(false);
+    setIdleNote(null);
     void (async () => {
       try {
         const runs = await agentRunsApi.list(task.id);
@@ -184,7 +208,15 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
         setEnabled(true);
         const shown = runToShow(runs);
         setOtherOpenMine(hasOpenRunOf(runs.filter((r) => r.id !== shown?.id), meRef.current));
-        if (!shown) return;
+        if (!shown) {
+          // SW-24. No open run: the newest finished run may hold a note.
+          const last = runs[0];
+          if (last && !isOpenRun(last)) {
+            const past = await agentRunsApi.get(last.id);
+            if (live) setIdleNote(newestHandoff(past.activities));
+          }
+          return;
+        }
         runRef.current = shown;
         setRun(shown);
         const detail = await agentRunsApi.get(shown.id);
@@ -288,13 +320,24 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     </Button>
   ) : null;
 
+  // SW-24. The newest handoff note, above the run card and the comments.
+  const noteActivity = run ? newestHandoff(activities) : idleNote;
+  const noteCard = noteActivity ? (
+    <HandoffCard activity={noteActivity} labels={personLabels} />
+  ) : null;
+
   if (!run) {
-    if (!canAsk) return null;
+    if (!canAsk && !noteCard) return null;
     return (
-      <div className="mb-3 flex items-center" data-ask-agent-row="">
-        {askButton}
-        {askDialog}
-      </div>
+      <>
+        {noteCard}
+        {canAsk ? (
+          <div className="mb-3 flex items-center" data-ask-agent-row="">
+            {askButton}
+            {askDialog}
+          </div>
+        ) : null}
+      </>
     );
   }
 
@@ -316,11 +359,12 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   const archiveStale = archiveRequest !== null && archiveExpired(archiveRequest);
   const canStop = STOPPABLE.has(run.status);
   // EA-14a: one AI for each task. The card says who holds the task, and the
-  // run's member, an assignee or an admin may release it.
+  // run's member, an assignee or an admin may release it. H-409 item 2: the
+  // admin is a holder of the gateway's release permission, not `is_admin`.
   const holding = isOpenRun(run);
   const canRelease = canReleaseRun(run, {
     me,
-    isAdmin: access.is_admin,
+    isAdmin: hasCapability(access, RELEASE_ADMIN_PERMISSION),
     assignees: task.assignees,
   });
   const canReply = REPLYABLE.has(run.status) && (!cardOpen || archiveStale);
@@ -352,6 +396,45 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     } finally {
       setBusy(false);
     }
+  }
+
+  /** SW-43b. A costly option asks "Are you sure?" first. Nothing is sent yet. */
+  function askBeforeSending(answers: ElicitationAnswers, change: boolean) {
+    if (!elicitation) return;
+    const labels = confirmLabels(elicitation, answers);
+    if (labels.length) {
+      setPendingAnswer({ answers, labels, change });
+      setCardNonce((n) => n + 1);
+      return;
+    }
+    void (change ? submitChange(answers) : submitAnswer(answers));
+  }
+
+  /** SW-43b. Swap an answer that no agent has read, in one write. */
+  async function submitChange(answers: ElicitationAnswers) {
+    if (!elicitation) return;
+    const target = run ? withdrawTarget(run) : null;
+    const body = target ? replacePayload(target, elicitation, answers) : null;
+    if (!body) {
+      setError("Pick an option or type an answer.");
+      setCardNonce((n) => n + 1);
+      return;
+    }
+    const ok = await write(
+      () => agentRunsApi.replaceAnswer(shownRunId, body),
+      "answered",
+      "Could not change the answer.",
+    );
+    if (!ok) return;
+    setChanging(false);
+    setSent({
+      id: `local:${body.idempotency_key}`,
+      seq: Number.MAX_SAFE_INTEGER,
+      type: "prompt",
+      content: { body: body.body ?? null, selected: body.selected ?? [] },
+      actor: me || null,
+      in_reply_to: elicitation.id,
+    });
   }
 
   async function submitAnswer(answers: ElicitationAnswers) {
@@ -448,6 +531,8 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   }
 
   return (
+    <>
+    {noteCard}
     <section
       aria-label={`Agent run of ${client}`}
       data-agent-run-panel={run.status}
@@ -555,7 +640,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
       {elicitation ? (
         // EA-18b: the answer part is ONE component, shared with the Questions list.
         <AgentQuestionCard
-          key={elicitation.id}
+          key={`${elicitation.id}:${cardNonce}`}
           retryToken={retryToken}
           elicitation={elicitation}
           run={run}
@@ -566,23 +651,80 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
           archiveMine={archiveMine}
           busy={busy}
           personLabels={personLabels}
-          onAnswer={(answers) => void submitAnswer(answers)}
+          onAnswer={(answers) => askBeforeSending(answers, false)}
           onDecision={(decision) => void sendDecision(decision)}
         />
       ) : null}
 
-      {withdrawShown(run, answer, archiveMine, canReply) ? (
-        run.answer?.changeable ? (
-          <div className="flex items-center" data-agent-withdraw="">
+      {pendingAnswer ? (
+        <div
+          data-agent-confirm=""
+          className="space-y-1.5 rounded-md border border-border p-2 text-xs"
+        >
+          <p className="text-foreground">
+            <strong>{ARE_YOU_SURE}</strong> You picked: {pendingAnswer.labels.join(", ")}
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              icon="Check"
+              disabled={busy}
+              data-agent-confirm-yes=""
+              onClick={() => {
+                const next = pendingAnswer;
+                setPendingAnswer(null);
+                void (next.change ? submitChange(next.answers) : submitAnswer(next.answers));
+              }}
+            >
+              Yes, send it
+            </Button>
             <Button
               size="sm"
               variant="secondary"
-              icon="Undo2"
+              icon="X"
               disabled={busy}
-              onClick={() => void withdraw()}
+              onClick={() => setPendingAnswer(null)}
             >
-              Withdraw my answer
+              Go back
             </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {withdrawShown(run, answer, archiveMine, canReply) ? (
+        run.answer?.changeable ? (
+          <div className="space-y-1.5" data-agent-withdraw="">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                icon="Pencil"
+                disabled={busy}
+                data-agent-change=""
+                onClick={() => setChanging((open) => !open)}
+              >
+                {changing ? "Keep my answer" : "Change"}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                icon="Undo2"
+                disabled={busy}
+                onClick={() => void withdraw()}
+              >
+                Withdraw my answer
+              </Button>
+            </div>
+            {changing && elicitation ? (
+              <ElicitationCard
+                key={`change-${cardNonce}`}
+                id={`agent-run-change:${elicitation.id}`}
+                questions={[cardQuestion(elicitation)]}
+                onSubmit={(answers) => askBeforeSending(answers, true)}
+                disabled={busy}
+                hint={AGENT_SUBMIT_HINT}
+              />
+            ) : null}
           </div>
         ) : (
           <p className="text-xs text-muted-foreground" data-agent-held="">
@@ -647,5 +789,6 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
         onCancel={() => setConfirmStop(false)}
       />
     </section>
+    </>
   );
 }

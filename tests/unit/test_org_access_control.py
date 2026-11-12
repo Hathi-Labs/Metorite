@@ -602,8 +602,9 @@ def test_studio_publish_is_a_capability_that_no_feature_grants() -> None:
     feature grant does not.
 
     The owner holds it through `*`. `feature:*` (member, manager, admin)
-    must not reach it, and neither must `feature:studio`. The admin seed is
-    J1-2 (task 1707), so no role but the owner holds it by default.
+    must not reach it, and neither must `feature:studio`. The admin holds it
+    by an explicit row, the seed of J1-2 (task 1707), and
+    `test_studio_publish_seed_r8.py` proves that row on a real database.
     """
     assert "studio:publish" in CAPABILITIES
     assert "studio:publish" not in FEATURES
