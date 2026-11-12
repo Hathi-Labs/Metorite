@@ -93,6 +93,9 @@ class FakeProvider:
     provider: str = "google_calendar"
     source: str = "google"
     client_id_is_event_id = True  # Google; Outlook says False
+    dedupes_by_client_id = False  # Outlook: a repeat transactionId returns the first event
+    lose_answer_once: bool = False  # the create reaches the provider, the answer is lost
+    by_cid: dict = field(default_factory=dict)
     revives: list = field(default_factory=list)
     calls: list[tuple] = field(default_factory=list)
     fail_with: Exception | None = None
@@ -125,8 +128,15 @@ class FakeProvider:
         if self.fail_with is not None:
             raise self.fail_with
         if external_id is None:
+            if self.dedupes_by_client_id and event.client_id in self.by_cid:
+                return OutResult(external_id=self.by_cid[event.client_id], etag='"dup"')
             self._n += 1
             external_id = f"ev{self._n}"
+            if event.client_id:
+                self.by_cid[event.client_id] = external_id
+            if self.lose_answer_once:
+                self.lose_answer_once = False
+                raise ProviderError("timeout")
         return OutResult(external_id=external_id, etag=f'"e{len(self.calls)}"')
 
     async def delete_event(self, cred, calendar_id, external_id):
@@ -1161,3 +1171,75 @@ async def test_r8_a_pull_that_stops_before_the_identity_check_still_holds_the_pu
         n = len(fake.sends())
         s = await task_out.run_pass(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
     assert s.skipped == "pull_incomplete" and len(fake.sends()) == n
+
+
+# ── CE-13c: the Outlook gaps and the idle flag (task 3067) ────────────────
+#
+# * M36. ``task_out.py`` ``_pull``: drop the ``identity == BOUND and any_linked``
+#   clause. An event that the member deleted while disconnected comes back.
+#   ``test_r8_an_event_deleted_in_the_gap_is_swept_on_a_reconnect_when_the_list_is_our_calendar``.
+# * M37. ``task_out.py`` the remove path: drop the ``dedupes_by_client_id`` branch.
+#   A lost create followed by a cleared block leaves an orphan event.
+#   ``test_r8_a_lost_outlook_create_then_a_cleared_block_leaves_no_orphan``.
+# * M38. ``task_out.py`` ``run_pass``: drop the ``write_allowed`` return. The idle
+#   pass opens database sessions.
+#   ``test_r8_with_the_write_flag_off_a_pass_opens_no_session``.
+
+
+@pytest.mark.asyncio
+async def test_r8_an_event_deleted_in_the_gap_is_swept_on_a_reconnect_when_the_list_is_our_calendar(world):
+    from gateway.calendar_sync.provider import CalendarInfo
+
+    fake = FakeProvider(provider="outlook_calendar", source="outlook")
+    fake.client_id_is_event_id = False
+    fake.dedupes_by_client_id = True
+    async with _in(world, world.org_a):
+        gone = await _task(world.org_a, ALICE, "Deleted in the gap", T0)
+        kept = await _task(world.org_a, ALICE, "Still there", T0 + timedelta(hours=3))
+        await _pass(world, world.org_a, world.conn["a"], fake)  # two events are out
+        ext = {str(l.task_id): l.external_id for l in _links(world, world.org_a)}  # the push order is free
+        gone_ev, kept_ev = ext[gone], ext[kept]
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE calendar_task_links SET updated_at = now() - interval '1 hour'"))
+        _reconnect(world)
+        fake.listed = [CalendarInfo(id="cal-metorite", name="Metorite", primary=False, writable=True)]
+        # A Graph delta lists LIVE events only: the deleted event is simply absent.
+        fake.feed = SyncResult(changes=[RemoteEvent(external_id=kept_ev, etag='"x"')],
+                               next_cursor="c1", full=True)
+        u0 = len([c for c in fake.calls if c[0] == "upsert"])
+        await task_out.run_pass(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
+        assert (await _block(world.org_a, ALICE, gone)).scheduled_start is None  # unscheduled
+        assert (await _block(world.org_a, ALICE, kept)).scheduled_start == T0 + timedelta(hours=3)
+    # No PATCH and no create brought ev1 back; only the kept link was re-verified.
+    later = [c for c in fake.calls if c[0] == "upsert"][u0:]
+    assert all(c[5] != gone_ev for c in later)
+    assert [l.external_id for l in _links(world, world.org_a)] == [kept_ev]
+
+
+@pytest.mark.asyncio
+async def test_r8_a_lost_outlook_create_then_a_cleared_block_leaves_no_orphan(world):
+    fake = FakeProvider(provider="outlook_calendar", source="outlook")
+    fake.client_id_is_event_id = False
+    fake.dedupes_by_client_id = True
+    fake.lose_answer_once = True
+    async with _in(world, world.org_a):
+        tid = await _task(world.org_a, ALICE, "Lost answer", T0)
+        s = await _pass(world, world.org_a, world.conn["a"], fake)
+        assert s.failed == 1 and fake._n == 1  # the event exists at the provider, the link has no id
+        await _move(world.org_a, ALICE, tid, None)  # cleared before the retry
+        s = await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=10))
+    assert s.deleted == 1 and ("delete", "cal-metorite", "ev1") in fake.calls  # the orphan is gone
+    assert fake._n == 1 and _links(world, world.org_a) == []  # no second event was left behind
+
+
+@pytest.mark.asyncio
+async def test_r8_with_the_write_flag_off_a_pass_opens_no_session(world, monkeypatch):
+    fake = FakeProvider()
+    world.flag["on"] = False
+
+    def boom(*a, **k):
+        raise AssertionError("a pass with the write flag off must not open a session")
+
+    monkeypatch.setattr(task_out, "tenant_session", boom)
+    s = await task_out.run_pass(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
+    assert s.skipped == "flag_off" and fake.calls == []

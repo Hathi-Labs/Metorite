@@ -186,6 +186,26 @@ async def _unschedule(db: Any, task_id: str, me: str) -> None:
     await _upsert_personal(db, task_id, me, {"scheduled_start": None, "scheduled_end": None})
 
 
+async def any_linked(db: Any, org: str, conn: Any, live_ids: set[str]) -> bool:
+    """True when at least one live event of the list is the event of a link of
+    this connection and member. That proves the list is the calendar the links
+    were made in, so an event that is MISSING from it was deleted, not moved
+    away with a new calendar."""
+    if not live_ids:
+        return False
+    row = (await db.execute(
+        text(
+            "SELECT 1 FROM calendar_task_links "
+            "WHERE organization_id = CAST(:org AS uuid) "
+            "AND connection_id = CAST(:cid AS uuid) AND member_email = :me "
+            "AND external_id = ANY(:ids) LIMIT 1"
+        ),
+        {"org": org, "cid": str(conn.id), "me": str(conn.member_email).lower(),
+         "ids": sorted(live_ids)},
+    )).fetchone()
+    return row is not None
+
+
 async def unschedule_missing(
     db: Any, org: str, conn: Any, live_ids: set[str], start: datetime, end: datetime,
 ) -> int:

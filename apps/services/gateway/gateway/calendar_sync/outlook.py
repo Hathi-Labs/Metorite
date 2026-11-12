@@ -118,6 +118,9 @@ class OutlookProvider:
     #: Graph takes the client id as a ``transactionId``, NOT as the event id. The
     #: writer must not adopt or delete an Outlook event by it.
     client_id_is_event_id = False
+    #: Graph dedupes a create on the transactionId: a repeat with the same value
+    #: answers with the event that the first create made (see task_out, CE-13c).
+    dedupes_by_client_id = True
 
     def __init__(
         self, http: Http, *, client_id: str, client_secret: str, redirect_uri: str,

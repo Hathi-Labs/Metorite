@@ -330,8 +330,15 @@ async def reconcile_task_blocks(
             # A create whose answer was lost left no id, but the event may exist
             # under our client id. 404 is success, so this is always safe.
             ident = link.external_id
+            cid = client_event_id(link.task_id, str(conn.id), link.created_at)
             if not ident and getattr(provider, "client_id_is_event_id", False):
-                ident = client_event_id(link.task_id, str(conn.id), link.created_at)
+                ident = cid
+            elif not ident and getattr(provider, "dedupes_by_client_id", False):
+                # Outlook: the client id is a transactionId, not the event id. A
+                # create with the SAME transactionId hands back the event that the
+                # lost answer made (or makes a throwaway), and we delete it.
+                ident = (await provider.upsert_event(
+                    cred, cal_id, replace(_resolve_event(t0), client_id=cid), None)).external_id
             if ident:
                 await provider.delete_event(cred, cal_id, ident)
         except NeedsReconnect:
@@ -350,6 +357,14 @@ async def reconcile_task_blocks(
                 {"org": org, "cid": str(conn.id), "tid": link.task_id, "me": me})
         stats.deleted += 1
     return stats
+
+
+def _resolve_event(t: datetime) -> Any:
+    """A placeholder body for the create that finds the event of a lost answer.
+    The provider dedupes on the client id and ignores the body of a repeat."""
+    from gateway.calendar_sync.provider import OutEvent
+
+    return OutEvent(title="Metorite", starts_at=t + timedelta(hours=1), ends_at=t + timedelta(hours=2))
 
 
 async def _calendar_missing(provider: Any, cred: Any, cal_id: str) -> bool:
@@ -616,8 +631,14 @@ async def _pull(
                 continue
             routed += outcome != task_links.IGNORED
         live = {e.external_id for e in result.changes if not e.deleted}
-        # An empty full list is not proof of a delete: never act on it.
-        if cursor is None and result.full and live and identity == SAME:
+        # An empty full list is not proof of a delete: never act on it. On a reconnect
+        # (BOUND) the list may come from another calendar, so it counts only when it
+        # holds at least one event of our links (the same calendar): then a linked
+        # event that it lacks was deleted in the gap (an Outlook delta lists live
+        # events only, so this is the only place an Outlook gap delete is seen).
+        proven = identity == SAME or (
+            identity == BOUND and await task_links.any_linked(db, org, locked, live))
+        if cursor is None and result.full and live and proven:
             routed += await task_links.unschedule_missing(
                 db, org, locked, live, window.start, window.end)
         if identity != SAME:
@@ -658,11 +679,15 @@ async def run_pass(
     reconnect, a new calendar) skips the push: the push would send an update
     that revives an event the member deleted in the gap.
 
-    ⚠️ This hold fully works on Google only. A Google full list carries
-    ``showDeleted``, so the pull reads the gap delete as cancelled and unschedules
-    the block BEFORE the push. A Graph delta round lists live events only, so
-    an event the member deleted in the gap on Outlook is not seen: its PATCH
-    answers 404, ``_reset_event`` runs, and the event is made again."""
+    A Google full list carries ``showDeleted``, so the pull reads a gap delete as
+    cancelled. A Graph delta round lists live events only, so on a reconnect the
+    pull sweeps instead: a link whose event the full list lacks, when the list
+    holds another event of our links (the same calendar), was deleted in the gap
+    and its block is unscheduled BEFORE the push (CE-13c)."""
+    from gateway.calendar_sync import flags
+
+    if not flags.write_allowed(org):
+        return PassStats(skipped="flag_off")  # no session, no request, no cost
     state: dict[str, bool] = {}
     try:
         await _pull(org, connection_id, provider=provider, now=now, state=state)
