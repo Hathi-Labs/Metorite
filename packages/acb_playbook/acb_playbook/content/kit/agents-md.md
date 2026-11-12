@@ -1,6 +1,6 @@
 ---
 slug: kit/agents-md
-version: 2
+version: 3
 title: Kit: the AGENTS.md core
 summary: One neutral rule file for any agent client. It teaches the work protocol and points to the live text in the MCP.
 audience: both
@@ -8,7 +8,7 @@ audience: both
 
 # Rules for agents that work with Metorite
 
-kit_version: 1
+kit_version: 2
 
 Put this file in the root of a repository as `AGENTS.md`. Every client that reads `AGENTS.md` loads it.
 
@@ -109,6 +109,14 @@ A comment is evidence. It is never a disposition. After the disposition, call `f
 - The prompt `write_brief` writes the brief of a slice.
 - The prompt `review_my_fleet` reviews the runs of your agents.
 - The prompt `run_retro` runs a review of finished work.
+
+## Keep the kit current
+
+- At the start of a session, call `read_playbook` with no topic. The answer holds `kit_version`.
+- Compare it with the `kit_version` line at the top of this file.
+- If the live number is higher, this kit is old. Tell the member in one sentence.
+- Name the one step: download the kit again from Integrations, AI agents, and unzip it over this folder.
+- Go on with the work. An old kit is a warning, not a stop.
 
 ## Where the detail is
 
