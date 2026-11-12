@@ -1343,11 +1343,10 @@ async def discover_api(
     The returned definition can be reviewed, then saved via
     POST /integrations/custom and credentials entered via
     POST /integrations/configure.
+
+    The model call goes through the Console (``acb_llm.client.complete``),
+    never to a vendor directly (task 2449 A6, D90 clause 3).
     """
-    import json as _json  # noqa: PLC0415
-
-    import litellm as _litellm  # noqa: PLC0415
-
     if not req.query.strip():
         raise HTTPException(status_code=400, detail="query cannot be empty")
 
@@ -1415,65 +1414,96 @@ Each item in the array must have EXACTLY these fields:
 - Return ONLY the JSON array, no markdown fences, no extra text"""
     )
 
-    # 3. Call LLM — try models in order of preference
-    _models = [
-        "deepseek/deepseek-chat",
-        "openai/gpt-4o-mini",
-        "gpt-4o-mini",
-        "anthropic/claude-haiku-20240307",
-    ]
-    last_err: Exception | None = None
-    for model in _models:
-        try:
-            resp = await _litellm.acompletion(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_tokens=2400,
-            )
-            content = (resp.choices[0].message.content or "").strip()
-            # Strip markdown code fences if present
-            if "```" in content:
-                content = "\n".join(
-                    ln for ln in content.splitlines()
-                    if not ln.strip().startswith("```")
-                ).strip()
-            parsed = _json.loads(content)
-            # Accept both array and single-object responses
-            if isinstance(parsed, dict):
-                parsed = [parsed]
-            if not isinstance(parsed, list) or not parsed:
-                raise ValueError("Expected a non-empty JSON array")
-            # Validate each item
-            results: list[dict[str, Any]] = []
-            for item in parsed:
-                if item.get("service_id") and item.get("label") and item.get("env_vars"):
-                    results.append(item)
-            if not results:
-                raise ValueError("No valid API definitions in response")
-            _log.info(
-                "integrations.discover",
-                query=query,
-                count=len(results),
-                service_ids=[r.get("service_id") for r in results],
-                model=model,
-                actor=user.email,
-            )
-            return {
-                "ok": True,
-                "results": results,
-                "query": query,
-                "web_enhanced": bool(web_context),
-                "model": model,
-            }
-        except (_json.JSONDecodeError, ValueError):
-            continue
-        except Exception as exc:
-            last_err = exc
-            continue
+    # 3. Call the model through the Console (task 2449 A6).
+    #
+    # 🔴 This was a direct `litellm.acompletion` loop over four hard-coded
+    # models. The tenant plane holds no provider key (owner rule, 2026-11-08),
+    # so all four failed, and the member read the vendor's raw 401: "x-api-key
+    # header is required". `complete` sends the TIER to the Console, which
+    # owns the keys, the failover across models and the bill.
+    from acb_llm.client import LLMTier, complete
+    from acb_llm.run_errors import classify_run_error, run_ref
 
-    err_detail = str(last_err) if last_err else "No LLM model available"
-    raise HTTPException(status_code=500, detail=f"Discovery failed: {err_detail}")
+    try:
+        content = await complete(
+            tier=LLMTier.TIER_2,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=2400,
+            job="structured",
+        )
+    except Exception as exc:
+        # ⚠️ The vendor text goes to the log, never to the member. `ref` lets
+        # an operator find this line from what the member reads out.
+        ref = run_ref()
+        _log.warning(
+            "integrations.discover_failed",
+            ref=ref,
+            code=classify_run_error(exc),
+            error=str(exc)[:500],
+            query=query,
+            actor=user.email,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "AI discovery could not reach the AI model just now. "
+                f"Try again in a minute. Reference: {ref}."
+            ),
+        ) from exc
+
+    results = _discovered_definitions(content)
+    if not results:
+        _log.warning(
+            "integrations.discover_unreadable",
+            query=query,
+            answer_head=(content or "")[:200],
+            actor=user.email,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "AI discovery could not make an API list for that name. "
+                "Try again, or type the product name, such as \"Salesforce CRM\"."
+            ),
+        )
+    _log.info(
+        "integrations.discover",
+        query=query,
+        count=len(results),
+        service_ids=[r.get("service_id") for r in results],
+        actor=user.email,
+    )
+    return {
+        "ok": True,
+        "results": results,
+        "query": query,
+        "web_enhanced": bool(web_context),
+    }
+
+
+def _discovered_definitions(content: str) -> list[dict[str, Any]]:
+    """The model's answer as a list of API definitions. Empty when unreadable.
+
+    The model may wrap the JSON in a markdown fence, and it may answer one
+    object in place of an array. An item without ``service_id``, ``label``
+    and ``env_vars`` is dropped.
+    """
+    body = "\n".join(
+        ln for ln in (content or "").splitlines() if not ln.strip().startswith("```")
+    ).strip()
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(parsed, dict):
+        parsed = [parsed]
+    if not isinstance(parsed, list):
+        return []
+    return [
+        item for item in parsed
+        if isinstance(item, dict)
+        and item.get("service_id") and item.get("label") and item.get("env_vars")
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -410,6 +410,7 @@ The Claude pack is SW-82 (task 1927) in `agent_coordination.md`. It follows this
 - **Scope.** The `kit_version` fence of §6a, and a doctor check that flags a stale kit.
 - **Done when.** A change to a kit file with no version change fails the test. A stale kit raises one doctor row.
 - **Fence.** `tests/unit/test_kit_version.py` (new), `test_agent_doctor_r8.py` (extended).
+- **Built (KIT-5a, 2026-11-12).** The MCP serves `kit_version` and the version of each client in the `read_playbook` index and in the resource `metorite://playbook/kit-version`. The core has the section "Keep the kit current". `test_kit_version.py` pins a digest of every shipped file to its version. **Not built:** the doctor row, because PB-7 (task 1953) does not exist yet.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** KIT-4, PB-7.
 
 #### KIT-6 · The conformance matrix

@@ -1341,6 +1341,7 @@ def agent_state_sql(task_filter: str) -> str:
     return f"""
 SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
        r.client_via, r.member_email, r.status AS run_status, {_AGENT_NOTE_SQL} AS note,
+       r.agent_label,
        r.waiting_on, r.waiting_until,
        COALESCE(r.started_at, r.created_at) AS held_since,
        r.last_activity_at AS held_last,
@@ -1467,7 +1468,8 @@ def waiting_of(state: Any, on: Any, until: Any) -> dict[str, Any] | None:
 
 async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Fill each row's ``agent_state``, ``agent_client_via``,
-    ``agent_member_email`` and ``agent_note``, mutating and returning the list.
+    ``agent_member_email``, ``agent_note`` and ``agent_label`` (SW-7b, the
+    display name of the agent's session), mutating and returning the list.
 
     ``queued``, ``working``, ``waiting``, ``awaiting``, ``answered``,
     ``stopping``, ``stale`` or ``failed``. ``None`` for a task with no open
@@ -1485,7 +1487,7 @@ async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[s
     """
     for row in rows:
         row.update(agent_state=None, agent_client_via=None, agent_member_email=None,
-                   agent_note=None, agent_waiting=None, held_by=None)
+                   agent_note=None, agent_label=None, agent_waiting=None, held_by=None)
     ids = [str(r["id"]) for r in rows if r.get("id")]
     if ids and agent_runs_enabled():
         found = (await db.execute(text(_AGENT_STATE_SQL), {"ids": ids})).fetchall()
@@ -1497,6 +1499,7 @@ async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[s
                 row.update(agent_state=hit.state, agent_client_via=hit.client_via,
                            agent_member_email=hit.member_email,
                            agent_note=note[:AGENT_NOTE_MAX] or None,
+                           agent_label=getattr(hit, "agent_label", None),
                            agent_waiting=waiting_of(
                                hit.state, getattr(hit, "waiting_on", None),
                                getattr(hit, "waiting_until", None)))
