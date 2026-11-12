@@ -29,13 +29,14 @@ writes longer, and at most :data:`MAX_MANIFEST_BYTES` bytes. So no manifest
 reaches a statement that the CHECK ``apps_manifest_package`` refuses. Each
 refusal raises one :class:`PackageStoreError` that carries every path.
 
-**The slug.** ``apps.slug`` is UNIQUE for all orgs. The slug of a package is
-``<manifest id>-<8 hex digits of the new id>``. So a slug that org A holds
-never blocks a package of org B. When the slug is taken anyway, the INSERT
-writes nothing (``ON CONFLICT (slug) DO NOTHING``), and the store tries a new
-id. No refusal names the slug of another org. The slug never changes after
-the INSERT, and so the manifest id never changes either:
-:func:`update_manifest` refuses a new id.
+**The slug.** ``apps.slug`` is UNIQUE for all orgs until WS-STU A3b-2. The
+slug of a package is ``<manifest id>-<8 hex digits of the new id>``. So a slug
+that org A holds never blocks a package of org B. When the slug is taken
+anyway, the INSERT writes nothing (``ON CONFLICT DO NOTHING``), and the store
+tries a new id. The clause names no column, so it holds with
+``apps_slug_key`` and with ``apps_org_slug_key`` (A3b-1). No refusal names
+the slug of another org. The slug never changes after the INSERT, and so the
+manifest id never changes either: :func:`update_manifest` refuses a new id.
 
 **Private and a draft.** A new package has ``visibility = 'private'``,
 ``status = 'draft'`` and ``workspace_path = ''``, because it has no files. No
@@ -75,14 +76,30 @@ contributions, the grants, the files, the pins and the data. So the store
 still holds no statement that updates or deletes a version row.
 ``app_audit`` has no foreign key, so its rows stay.
 
+**The admin path of a delete (A5c-2).** :func:`delete_preview`,
+:func:`delete_package` and :func:`record_partial` take ``as_admin``. The
+route sets it, never a body: only for a holder of ``admin:members:manage``
+who does not own the package. With ``as_admin`` the store reads the package
+of ANY owner in the bound org (:data:`_ADMIN_GET_SQL`). Then it checks that
+the owner has no active ``app_user`` row in the bound org
+(:data:`_OWNER_ACTIVE_SQL`), under the row lock of each step. An active
+owner raises :class:`OwnerActive` on the preview and on the first step of a
+call, and nothing changes. A later step ends the call with the partial row
+(``owner_active``). The owner filter of each other statement holds the owner
+of the row, so the counts, the purge and the ``DELETE FROM apps`` are those
+of A5c-1. Each audit row names the admin as ``user_email``, with ``by:
+"admin"``, ``admin`` and ``owner`` in the detail. :func:`admin_may_delete`
+is the precheck of the route: a read with no lock.
+
 **The lock of an install (PKG-8b).** :func:`lock_for_install` holds the
 package row ``FOR KEY SHARE`` and reads ``live_version``. The install route
 of WS-PKG calls it before the install store, so its lock order is the order
 of a publish: the ``apps`` row, then the org lock of the install store.
 
 **Not here.** No UI. Install is WS-PKG. The routes are
-``routes/studio/packages.py`` (A5 and A5c-1), which runs no SQL of its own.
-The admin path of a delete and its chat tool are A5c-2.
+``routes/studio/packages.py`` (A5, A5c-1 and A5c-2), which runs no SQL of
+its own. The chat tool of a delete is ``acb_skills.studio_tools``
+(``studio_delete_package``, A5c-2).
 """
 
 from __future__ import annotations
@@ -130,9 +147,22 @@ _CREATE_SQL = (
     "status, manifest, workspace_path, format) "
     "VALUES (CAST(:id AS uuid), :slug, :name, :desc, :m, 'private', 'draft', "
     "CAST(:manifest AS jsonb), '', 'manifest') "
-    "ON CONFLICT (slug) DO NOTHING "
+    "ON CONFLICT DO NOTHING "
     f"RETURNING {_PACKAGE_COLUMNS}"
 )
+
+#: The lock of one create from a template (STU-K1a): the bound org, the
+#: member and the manifest id, until the transaction ends. The idiom of
+#: ``objects_store._ORG_LOCK_SQL``. The first column is false when no tenant
+#: is bound, and then the lock key is NULL and Postgres takes no lock.
+_CREATE_LOCK_SQL = (
+    f"SELECT {_BOUND_ORG} IS NOT NULL, pg_advisory_xact_lock(hashtextextended("
+    f"'studio_package_create:' || CAST({_BOUND_ORG} AS text) || ':' || :m || ':' || :mid, 0))"
+)
+
+#: The longest wait for the create lock, in milliseconds. It covers one
+#: publish of a template. Past it the caller gets ``StoreBusy`` (503).
+CREATE_LOCK_WAIT_MS = 5_000
 
 _GET_SQL = (
     f"SELECT {_PACKAGE_COLUMNS} FROM apps "
@@ -318,6 +348,32 @@ _DELETE_SQL = (
     f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
     "AND owner_email = :m AND id = CAST(:id AS uuid) RETURNING id::text"
 )
+
+#: The package *id* of ANY owner in the bound org (A5c-2). Only the admin path
+#: of a delete reads it: the route passes ``as_admin`` for a holder of
+#: ``admin:members:manage`` who does not own the package, and each read checks
+#: the owner with :data:`_OWNER_ACTIVE_SQL` before any count or write. An App
+#: Workshop app is not a package, so it answers no row.
+_ADMIN_GET_SQL = (
+    f"SELECT {_PACKAGE_COLUMNS} FROM apps "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND id = CAST(:id AS uuid)"
+)
+
+#: True when the owner *owner* has an active ``app_user`` row in the bound
+#: org (A5c-2). An invited, suspended or removed row, and no row, are not
+#: active. ``app_user`` keeps one row for each person and org, matched by
+#: ``lower(email)``.
+_OWNER_ACTIVE_SQL = (
+    "SELECT EXISTS (SELECT 1 FROM app_user "
+    f"WHERE organization_id = {_BOUND_ORG} AND lower(email) = :owner "
+    "AND status = 'active')"
+)
+
+#: The refusal of the admin path for the package of an active owner (A5c-2).
+#: The route answers 403 ``owner_active`` with it.
+OWNER_ACTIVE_TEXT = ("The owner of this app is an active member, so only the owner can "
+                     "delete it. Nothing was deleted.")
 
 
 class PackageStoreError(ValueError):
@@ -544,6 +600,24 @@ async def create_package(db: Any, member: str, manifest: dict[str, Any]) -> Pack
             return _package(row)
     # The text names no slug, so it tells nothing of a package of another org.
     raise PackageStoreError("No free name is left for this package. Try again.")
+
+
+async def lock_create(db: Any, member: str, manifest_id: str) -> None:
+    """Take the advisory lock of one create of *member* with *manifest_id* in
+    the bound org, until the transaction ends (STU-K1a).
+
+    The template route takes it first in its create session and first in its
+    publish session. So two calls of one member for one template run one
+    after the other, and the second one reads the package of the first. The
+    wait stops at :data:`CREATE_LOCK_WAIT_MS` with ``objects_store.StoreBusy``.
+    The key holds the org, so a lock of org A never blocks org B."""
+    m = _member(member)
+    if not isinstance(manifest_id, str) or not manifest_id:
+        raise PackageStoreError("manifest_id must be a non-empty string")
+    async with objects_store.bounded_wait(db, CREATE_LOCK_WAIT_MS):
+        bound = (await db.execute(text(_CREATE_LOCK_SQL), {"m": m, "mid": manifest_id})).first()
+    if bound is None or not bound[0]:
+        raise PackageStoreError("A create needs a session bound to a tenant")
 
 
 async def get_package(db: Any, member: str, package_id: str, *,
@@ -928,7 +1002,8 @@ class DeleteStep:
     hold (409). ``busy`` is True when a later step got ``StoreBusy``, or when
     the preview of the end was busy: then ``left`` can be None. ``gone`` is
     True when another call deleted the package between two steps of this
-    call (404)."""
+    call (404). ``owner_active`` is True when a later step of the admin path
+    found that the owner is an active member again (403, A5c-2)."""
 
     deleted: bool
     removed: int
@@ -937,6 +1012,7 @@ class DeleteStep:
     changed: bool = False
     busy: bool = False
     gone: bool = False
+    owner_active: bool = False
 
 
 class CountsChanged(Exception):
@@ -947,6 +1023,15 @@ class CountsChanged(Exception):
     def __init__(self, preview: DeletePreview) -> None:
         super().__init__(COUNTS_CHANGED_TEXT)
         self.preview = preview
+
+
+class OwnerActive(Exception):
+    """The admin path refuses the package of an owner who is an active member
+    of the bound org (A5c-2). Nothing was read past the owner and nothing
+    changed. The route answers 403 ``owner_active``."""
+
+    def __init__(self) -> None:
+        super().__init__(OWNER_ACTIVE_TEXT)
 
 
 def confirm_token(package_id: str, objects: Sequence[objects_store.ObjectCount],
@@ -985,12 +1070,14 @@ def _names(names: object) -> frozenset[str]:
     return frozenset(names)
 
 
-async def _preview(db: Any, m: str, current: Package) -> DeletePreview | None:
+async def _preview(db: Any, current: Package) -> DeletePreview | None:
     """The preview of *current*, or None when its row is gone. A delete by
     another call can commit between the read of the package and this count.
-    That is a 404, not a 500."""
+    That is a 404, not a 500. The counts filter on the owner of the row, so
+    the admin path (A5c-2) counts the same rows as the owner."""
     objects = await objects_store.package_counts(db, current.id)
-    row = (await db.execute(text(_DELETE_COUNTS_SQL), {"m": m, "id": current.id})).first()
+    row = (await db.execute(text(_DELETE_COUNTS_SQL), {
+        "m": current.owner_email, "id": current.id})).first()
     if row is None:
         return None
     versions, installs, other, own = (int(v) for v in row)
@@ -1001,59 +1088,112 @@ async def _preview(db: Any, m: str, current: Package) -> DeletePreview | None:
         confirm=confirm_token(current.id, found, versions, installs, other), own_entries=own)
 
 
-async def delete_preview(db: Any, member: str, package_id: str) -> DeletePreview | None:
+async def _admin_package(db: Any, pid: str, *, for_update: bool = False) -> Package | None:
+    """The package *pid* of any owner in the bound org, or None (A5c-2). Only
+    the admin path reads it, and each caller checks the owner next."""
+    sql = _ADMIN_GET_SQL + " FOR UPDATE" if for_update else _ADMIN_GET_SQL
+    row = (await db.execute(text(sql), {"id": pid})).first()
+    return None if row is None else _package(row)
+
+
+async def _owner_active(db: Any, owner: str) -> bool:
+    """True when *owner* has an active ``app_user`` row in the bound org. A
+    fault of the read raises, so the admin path never reads it as "left"."""
+    return bool((await db.execute(text(_OWNER_ACTIVE_SQL), {
+        "owner": _member(owner)})).scalar_one())
+
+
+async def admin_may_delete(db: Any, package_id: str) -> bool:
+    """The precheck of the admin path (A5c-2). False when no package of the
+    bound org has the id. :class:`OwnerActive` raises when its owner is an
+    active member. True when the owner has no active row. A read: it takes no
+    lock. Each step of the delete checks the owner again under the row lock.
+
+    ⚠️ The caller checks ``admin:members:manage`` first. The store does not
+    authenticate."""
+    current = await _admin_package(db, _package_id(package_id))
+    if current is None:
+        return False
+    if await _owner_active(db, current.owner_email):
+        raise OwnerActive()
+    return True
+
+
+async def delete_preview(db: Any, member: str, package_id: str, *,
+                         as_admin: bool = False) -> DeletePreview | None:
     """The preview of a delete of the package *package_id* of *member*, or
     None. A package of another member or org, an App Workshop app, and a
     package that a concurrent delete removes answer None. A read: it takes no
     lock. The record counts run under the 5 s deadline of the object store,
-    and a timeout raises ``StoreBusy``."""
+    and a timeout raises ``StoreBusy``.
+
+    With *as_admin* (A5c-2) the package of any owner in the bound org
+    answers, and :class:`OwnerActive` raises before any count when its owner
+    is an active member. Only the route sets *as_admin*."""
     m = _member(member)
-    current = await get_package(db, m, _package_id(package_id))
-    return None if current is None else await _preview(db, m, current)
+    pid = _package_id(package_id)
+    if not as_admin:
+        current = await get_package(db, m, pid)
+    else:
+        current = await _admin_package(db, pid)
+        if current is not None and await _owner_active(db, current.owner_email):
+            raise OwnerActive()
+    return None if current is None else await _preview(db, current)
 
 
-def _who(current: Package) -> dict[str, Any]:
-    return {"by": "owner", "owner": current.owner_email, "name": current.name,
-            "slug": current.slug}
+def _who(current: Package, admin: str | None = None) -> dict[str, Any]:
+    """Who deletes: the owner, or an admin of the bound org (A5c-2)."""
+    if admin is None:
+        return {"by": "owner", "owner": current.owner_email, "name": current.name,
+                "slug": current.slug}
+    return {"by": "admin", "admin": admin, "owner": current.owner_email,
+            "name": current.name, "slug": current.slug}
 
 
 async def record_partial(db: Any, member: str, package_id: str, this_call: int,
-                         reason: str) -> None:
+                         reason: str, *, as_admin: bool = False) -> None:
     """The partial audit row of a call whose step could not read the package:
     another call deleted it (``gone``), or its row wait was busy (``busy``).
     ``app_audit`` has no foreign key, so the row can name a package that is
     gone. It names the member, the package id and the records of the earlier
     steps of this call, which committed. The route calls it for a busy row
     wait in a new session, because that wait ended the transaction of its
-    step."""
+    step. With *as_admin* (A5c-2) the row names the admin as ``user_email``
+    and ``by: "admin"``. The step could not read the row, so it names no
+    owner: the earlier rows of the call name the owner."""
     m = _member(member)
     pid = _package_id(package_id)
     count = _count(this_call, "this_call", 0)
+    who: dict[str, Any] = {"by": "admin", "admin": m} if as_admin else {"by": "owner", "owner": m}
     await _audit(db, m, pid, None, "action", {
-        "op": PARTIAL_OP, "by": "owner", "owner": m, "records_this_call": count,
-        "reason": reason})
+        "op": PARTIAL_OP, **who, "records_this_call": count, "reason": reason})
 
 
-async def _read_for_delete(db: Any, m: str, pid: str) -> Package | None:
+async def _read_for_delete(db: Any, m: str, pid: str, as_admin: bool = False) -> Package | None:
     """The package row ``FOR UPDATE``, with a wait of at most
     :data:`ROW_LOCK_WAIT_MS`. A publish or another delete can hold the row.
-    Past the bound it raises ``StoreBusy``, and the transaction is over."""
+    Past the bound it raises ``StoreBusy``, and the transaction is over. The
+    admin path (A5c-2) reads the row of any owner in the bound org."""
     async with objects_store.bounded_wait(db, ROW_LOCK_WAIT_MS):
+        if as_admin:
+            return await _admin_package(db, pid, for_update=True)
         return await get_package(db, m, pid, for_update=True)
 
 
 async def _end_call(db: Any, m: str, current: Package, seen: frozenset[str], this_call: int,
-                    reason: str, *, removed: int = 0) -> DeleteStep:
+                    reason: str, *, removed: int = 0, admin: bool = False) -> DeleteStep:
     """The end of a call that leaves records: the partial audit row, in the
     transaction of this step, and the preview of now for the token of a 202.
 
     The audit row comes first. A failed insert rolls back this step, its
     purge too. A busy preview leaves the row in place and gives no token, so
-    the route answers 503 and the caller reads the preview again."""
+    the route answers 503 and the caller reads the preview again. *m* is
+    the caller: the owner, or the admin when *admin* (A5c-2)."""
     await _audit(db, m, current.id, current.live_version, "action", {
-        "op": PARTIAL_OP, **_who(current), "records_this_call": this_call, "reason": reason})
+        "op": PARTIAL_OP, **_who(current, m if admin else None), "records_this_call": this_call,
+        "reason": reason})
     try:
-        left = await _preview(db, m, current)
+        left = await _preview(db, current)
     except objects_store.StoreBusy:
         left = None
     return DeleteStep(deleted=False, removed=removed, names=tuple(sorted(seen)), left=left,
@@ -1061,7 +1201,8 @@ async def _end_call(db: Any, m: str, current: Package, seen: frozenset[str], thi
 
 
 async def _finish_delete(db: Any, m: str, current: Package, seen: frozenset[str],
-                         before: int, gone: int, *, first: bool) -> DeleteStep | None:
+                         before: int, gone: int, *, first: bool,
+                         admin: bool = False) -> DeleteStep | None:
     """The last step of a delete: no record is left, because the org lock
     keeps each record writer out. It deletes the ``apps`` row (the one
     ``DELETE FROM apps`` of a package, and the cascade takes the rest) and
@@ -1071,23 +1212,28 @@ async def _finish_delete(db: Any, m: str, current: Package, seen: frozenset[str]
     The counts of the final row can be busy. On the first step of a call
     ``StoreBusy`` raises, and the step rolls back. On a later step the
     earlier steps and this purge hold, so the call ends with the partial row
-    (reason ``busy``), and the next call deletes the package."""
+    (reason ``busy``), and the next call deletes the package.
+
+    The ``DELETE FROM apps`` filters on the owner of the row, and the audit
+    row names *m*, the caller: the owner, or the admin when *admin*."""
     pid = current.id
     try:
-        left = await _preview(db, m, current)
+        left = await _preview(db, current)
     except objects_store.StoreBusy:
         if first:
             raise
-        return await _end_call(db, m, current, seen, before + gone, "busy", removed=gone)
+        return await _end_call(db, m, current, seen, before + gone, "busy", removed=gone,
+                               admin=admin)
     if left is None:  # pragma: no cover - the row lock holds the row
         return None
     earlier = int((await db.execute(text(_PARTIAL_TOTAL_SQL), {
         "id": pid, "op": PARTIAL_OP})).scalar_one())
-    row = (await db.execute(text(_DELETE_SQL), {"m": m, "id": pid})).first()
+    row = (await db.execute(text(_DELETE_SQL), {"m": current.owner_email, "id": pid})).first()
     if row is None:  # pragma: no cover - the row lock holds the row
         raise PackageStoreError("The package was not deleted.")
     await _audit(db, m, pid, current.live_version, "action", {
-        "op": DELETE_OP, **_who(current), "objects": len(left.objects), "fields": left.fields,
+        "op": DELETE_OP, **_who(current, m if admin else None), "objects": len(left.objects),
+        "fields": left.fields,
         "records_this_call": before + gone, "records_total": earlier + before + gone,
         "versions": left.versions, "installs": left.installs,
         "other_member_installs": left.other_member_installs})
@@ -1097,7 +1243,8 @@ async def _finish_delete(db: Any, m: str, current: Package, seen: frozenset[str]
 async def delete_package(db: Any, member: str, package_id: str, *,
                          confirm: str | None = None, names: Any = None,
                          chunk: int | None = None, removed: int = 0,
-                         end_at: float | None = None) -> DeleteStep | None:
+                         end_at: float | None = None,
+                         as_admin: bool = False) -> DeleteStep | None:
     """One step of the delete of the package *package_id* of *member*, in the
     caller's transaction (A5c-1). Answers None when no package of the member
     has the id: then nothing changes.
@@ -1142,6 +1289,14 @@ async def delete_package(db: Any, member: str, package_id: str, *,
     *removed* is the records that the earlier steps of this call removed.
     ``records_this_call`` counts this call only. ``records_total`` adds the
     partial rows of the earlier calls.
+
+    **The admin path (A5c-2).** With *as_admin*, *member* is the admin, and
+    the step reads the row of any owner in the bound org. Under the row lock
+    it checks that the owner has no active ``app_user`` row. An active owner
+    raises :class:`OwnerActive` on the first step, before any other read. On
+    a later step it ends the call with the partial row (reason
+    ``owner_active``) and ``owner_active``, so the earlier steps keep their
+    row. Each audit row names the admin. Only the route sets *as_admin*.
     """
     m = _member(member)
     pid = _package_id(package_id)
@@ -1151,15 +1306,22 @@ async def delete_package(db: Any, member: str, package_id: str, *,
     seen: frozenset[str] = frozenset() if names is None else _names(names)
     size = _count(DELETE_CHUNK if chunk is None else chunk, "chunk", 1)
     before = _count(removed, "removed", 0)
-    current = await _read_for_delete(db, m, pid)
+    current = await _read_for_delete(db, m, pid, as_admin)
     if current is None:
         if token is None and before > 0:
-            await record_partial(db, m, pid, before, "gone")
+            await record_partial(db, m, pid, before, "gone", as_admin=as_admin)
             return DeleteStep(deleted=False, removed=0, names=tuple(sorted(seen)), gone=True)
         return None
+    if as_admin and await _owner_active(db, current.owner_email):
+        if token is not None:
+            raise OwnerActive()
+        await _audit(db, m, pid, current.live_version, "action", {
+            "op": PARTIAL_OP, **_who(current, m), "records_this_call": before,
+            "reason": "owner_active"})
+        return DeleteStep(deleted=False, removed=0, names=tuple(sorted(seen)), owner_active=True)
     if token is not None:
         await objects_store.lock_org(db)
-        now = await _preview(db, m, current)
+        now = await _preview(db, current)
         if now is None:  # pragma: no cover - the row lock holds the row
             return None
         if now.confirm != token:
@@ -1170,17 +1332,19 @@ async def delete_package(db: Any, member: str, package_id: str, *,
             await objects_store.lock_org(db)
             found = await objects_store.object_names(db, pid)
         except objects_store.StoreBusy:
-            return await _end_call(db, m, current, seen, before, "busy")
+            return await _end_call(db, m, current, seen, before, "busy", admin=as_admin)
         if not set(found) <= seen:
-            return await _end_call(db, m, current, seen, before, "changed")
+            return await _end_call(db, m, current, seen, before, "changed", admin=as_admin)
     try:
         gone = await objects_store.purge_records(db, pid, limit=size, deadline=end_at)
     except objects_store.StoreBusy:
         if token is not None:
             raise
-        return await _end_call(db, m, current, seen, before, "busy")
+        return await _end_call(db, m, current, seen, before, "busy", admin=as_admin)
     if gone >= size:
         if end_at is not None and objects_store._clock() + STEP_SECONDS > end_at:
-            return await _end_call(db, m, current, seen, before + gone, "budget", removed=gone)
+            return await _end_call(db, m, current, seen, before + gone, "budget", removed=gone,
+                                   admin=as_admin)
         return DeleteStep(deleted=False, removed=gone, names=tuple(sorted(seen)))
-    return await _finish_delete(db, m, current, seen, before, gone, first=token is not None)
+    return await _finish_delete(db, m, current, seen, before, gone, first=token is not None,
+                                admin=as_admin)

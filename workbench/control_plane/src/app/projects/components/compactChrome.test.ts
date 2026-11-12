@@ -71,6 +71,9 @@ function barProps(over: Partial<CompactFilterBarProps> = {}): CompactFilterBarPr
     onExport: async () => {},
     waitingOnMe: false,
     onWaitingOnMe: noop,
+    epic: "",
+    epics: [{ value: "e1", label: "#7 Launch" }],
+    onEpic: noop,
     agentWork: false,
     onAgentWork: noop,
     phone: false,
@@ -303,5 +306,35 @@ describe("the phone board and the touch card", () => {
       { id: "task.select" },
     ];
     expect(touchQuickActions(items)).toEqual([{ id: "task.markDone" }]);
+  });
+});
+
+// WS-55 EA-18b — Questions is an app page, so the project chrome stays away.
+describe("EA-18b: the Questions pane takes none of the project chrome", () => {
+  const page = readFileSync(join(__dirname, "..", "page.tsx"), "utf8");
+
+  it("leaves the filter bar, the archive bar and the project header actions off", () => {
+    const chrome = page.match(/const noProjectChrome =([\s\S]*?);/)?.[1] ?? "";
+    expect(chrome).toContain('app === "questions"');
+    const onApp = page.match(/const onAppPage =([\s\S]*?);/)?.[1] ?? "";
+    expect(onApp).toContain('app === "questions"');
+  });
+
+  it("an app page never draws the tool row", () => {
+    // `chromeKind` is the tool row's rule. The pane sits in the app branch of
+    // the page, before the FilterChrome branch.
+    const at = page.indexOf('app === "questions" ? (');
+    const chromeAt = page.indexOf("chromeKind({ overview");
+    expect(at).toBeGreaterThan(-1);
+    expect(at).toBeLessThan(chromeAt);
+  });
+
+  it("both sidebars, the rail and the phone drawer, get the same entry", () => {
+    expect(page.match(/questionsOn=\{questions\.on === true\}/g)?.length).toBe(2);
+  });
+
+  it("the phone's view sheet is unchanged by the new entry", () => {
+    const sheet = renderToStaticMarkup(createElement(ViewSheetBody, { ...barProps() }));
+    expect(sheet).not.toContain("Questions");
   });
 });

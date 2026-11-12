@@ -676,6 +676,81 @@ class TestAgentRunsOverMcp:
                           run_id=started["run"]["id"], idempotency_key=key)
         assert first["run"]["status"] == again["run"]["status"] == "completed"
 
+    async def test_sw24_a_release_with_work_left_and_no_next_is_422_with_the_reason(self, runs):
+        """SW-24. The run stays open, the edge says why, and the gateway's own
+        422 names the rule. Mutation: ``_handoff_of`` drops the ``next`` check."""
+        task = runs.task(runs.team, runs.s.doing, "handoff 422")
+        started = await _ok(runs, "write", "start_agent_run", task_id=task,
+                            idempotency_key=_key())
+        run_id = started["run"]["id"]
+        refused = await _tool_r8(runs, "write", "release_task", run_id=run_id,
+                                 handoff={"done": "Built it.", "left": "The tests."})
+        assert refused["isError"] is True
+        assert _text(refused) == tools.TEXT_HANDOFF_NEEDS_NEXT
+        direct = await _person(runs, "POST", f"/projects/agent-runs/{run_id}/release",
+                               {"handoff": {"left": "The tests."}})
+        assert direct.status_code == 422, direct.text
+        assert direct.json()["detail"] == "A handoff with work left needs a next step."
+        finish = await _tool_r8(runs, "write", "finish_agent_run", run_id=run_id,
+                                idempotency_key=_key(), handoff={"left": "x"})
+        assert _text(finish) == tools.TEXT_HANDOFF_NEEDS_NEXT
+        status = runs.seeder.one(
+            "SELECT status FROM pm_agent_runs WHERE id = CAST(:r AS uuid)", r=run_id)
+        assert status == "in_progress"
+
+    async def test_sw24_a_release_with_a_note_leads_the_next_context(self, runs):
+        """SW-24. One ``response`` with ``content.handoff``, written with the
+        release, and the next ``get_task_context`` starts with it, wrapped as
+        untrusted text. Mutation: the context drops the key, or a text leaves
+        bare."""
+        task = runs.task(runs.team, runs.s.doing, "handoff context")
+        started = await _ok(runs, "write", "start_agent_run", task_id=task,
+                            idempotency_key=_key())
+        run_id = started["run"]["id"]
+        note = {"done": "Built the API.", "left": "The UI.", "evidence": "PR 12, tests green.",
+                "next": "Add the card."}
+        released = await _ok(runs, "write", "release_task", run_id=run_id, handoff=note)
+        assert released["run"]["status"] == "released"
+        count = runs.seeder.one(
+            "SELECT count(*) FROM pm_agent_run_activities"
+            " WHERE run_id = CAST(:r AS uuid) AND type = 'response'"
+            " AND content -> 'handoff' IS NOT NULL", r=run_id)
+        assert count == 1
+        stored = runs.seeder.one(
+            "SELECT content FROM pm_agent_run_activities"
+            " WHERE run_id = CAST(:r AS uuid) AND type = 'response'"
+            " AND content -> 'handoff' IS NOT NULL", r=run_id)
+        assert stored["handoff"] == note
+        context = await _ok(runs, "write", "get_task_context", task_id=task)
+        assert next(iter(context)) == "handoff"
+        shown = context["handoff"]
+        assert shown["done"] == {"untrusted_text": "Built the API."}
+        assert shown["next"] == {"untrusted_text": "Add the card."}
+        assert shown["run_id"] == run_id and shown["client"]
+        assert not [s for s in _bare_strings(shown) if s in note.values()]
+
+    async def test_sw24_a_release_with_no_note_still_works(self, runs):
+        """An old client sends no handoff, and the context has no note."""
+        task = runs.task(runs.team, runs.s.doing, "handoff none")
+        started = await _ok(runs, "write", "start_agent_run", task_id=task,
+                            idempotency_key=_key())
+        released = await _ok(runs, "write", "release_task", run_id=started["run"]["id"])
+        assert released["run"]["status"] == "released"
+        context = await _ok(runs, "write", "get_task_context", task_id=task)
+        assert "handoff" not in context
+
+    async def test_sw24_a_finish_with_only_a_note_writes_it_and_completes(self, runs):
+        task = runs.task(runs.team, runs.s.doing, "handoff finish")
+        started = await _ok(runs, "write", "start_agent_run", task_id=task,
+                            idempotency_key=_key())
+        done = await _ok(runs, "write", "finish_agent_run", run_id=started["run"]["id"],
+                         idempotency_key=_key(),
+                         handoff={"done": "All of it.", "evidence": "Tests green."})
+        assert done["run"]["status"] == "completed"
+        context = await _ok(runs, "write", "get_task_context", task_id=task)
+        assert context["handoff"]["evidence"] == {"untrusted_text": "Tests green."}
+        assert context["handoff"]["left"] is None
+
     async def test_get_task_shows_the_open_question(self, runs):
         task = runs.task(runs.team, runs.s.doing, "get_task")
         await _ok(runs, "write", "ask_on_task", task_id=task, question="Which?",
@@ -746,6 +821,39 @@ class TestTheAnswerChangeAtTheEdge:
         assert prompts.ANSWER_RULE.strip() in text
         assert prompts.ANSWER_RULE.strip() in steps
         assert "delet" not in prompts.ANSWER_RULE
+
+    def test_the_thought_step_shows_by_default(self, monkeypatch):
+        """SW-43c: "the agent text on by default". With the runs flag alone,
+        the work steps tell the agent to post a thought that names the answer
+        id before it acts. The reason (the member may withdraw it) shows only
+        with the flag, because only then is it true. The instructions do not
+        grow (task 1803). Mutation: gate the step on the flag again -> red."""
+        from agent_edge import mcp, prompts
+
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+        monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", True)
+        monkeypatch.setattr(get_settings(), "agent_answer_change_enabled", False)
+        steps = prompts._work_steps(runs=True)
+        assert prompts.ANSWER_THOUGHT_RULE in steps
+        assert "withdraw" not in "\n".join(steps)
+        assert prompts.ANSWER_THOUGHT_RULE not in mcp.instructions(
+            ("projects:read", "projects:write"))
+        monkeypatch.setattr(get_settings(), "agent_answer_change_enabled", True)
+        steps = prompts._work_steps(runs=True)
+        assert prompts.ANSWER_RULE.strip() in steps
+        assert prompts.ANSWER_THOUGHT_RULE not in steps
+        # The flag form says the same act, and gives the reason.
+        assert prompts.ANSWER_RULE.strip().startswith(prompts.ANSWER_THOUGHT_RULE.rstrip("."))
+        assert "names the answer id" in prompts.ANSWER_THOUGHT_RULE
+        assert prompts.ANSWER_THOUGHT_RULE not in "\n".join(prompts._work_steps(runs=False))
+
+    def test_the_read_of_a_run_tells_the_agent_to_post_the_thought(self):
+        """SW-43c. The description of ``get_agent_run`` is where the edge says
+        how to read an answer, and it shows with the runs flag alone. One
+        sentence more. Mutation: drop the sentence -> red."""
+        description = tools.TOOLS["get_agent_run"].description
+        assert "Before you act on the answer, post a thought that names its id." in description
+        assert description.index("names its id") < description.index("stopping")
 
     def test_the_sentence_needs_the_runs_flag(self, monkeypatch):
         from agent_edge import mcp, prompts

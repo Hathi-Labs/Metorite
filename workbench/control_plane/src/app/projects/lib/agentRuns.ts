@@ -124,6 +124,13 @@ export interface AgentActivity {
     withdrawn?: { at?: string | null; by?: string | null } | null;
     /** SW-43. On the marker prompt of a withdraw: the id of the answer it took back. */
     withdraws?: string | null;
+    /** SW-24. On a `response`: the note of an agent that stops. */
+    handoff?: {
+      done?: string | null;
+      left?: string | null;
+      evidence?: string | null;
+      next?: string | null;
+    } | null;
   };
   /**
    * The server's own facts. EA-6g: an archive request carries `request`.
@@ -191,6 +198,13 @@ export interface AgentRun {
    * take it back. The key is there only while the gateway flag is on.
    */
   answer?: { id: string; seq: number; changeable: boolean } | null;
+  /**
+   * EA-18b. May the reader answer the open question? The server's answer, from
+   * `may_answer_run` (D-EA-14), on the one-run read. The key is there only
+   * while `AGENT_QUESTIONS_ORGS` holds the org. Absent means the old rule, so
+   * every member who sees the task may answer, and the panel reads it as true.
+   */
+  can_answer?: boolean;
   /**
    * Task 1045a (`agent_coordination.md` §3.2). The wait of a run that reads
    * `waiting`, else null. A gateway before 1045a does not send it.
@@ -1168,8 +1182,18 @@ export function runHolderFree(run: Pick<AgentRun, "holder_free" | "lease_expired
 }
 
 /**
+ * H-409 item 2 (task 748). The permission that lets a person release the
+ * run of another member. It is the slug of the gateway's
+ * `agent_runs.RELEASE_ADMIN_PERMISSION`, and a Python fence holds the two
+ * equal. Ending a run is a write, so `admin:members:read` does not give it
+ * (owner, Q5 of `agent_coordination.md` §8).
+ */
+export const RELEASE_ADMIN_PERMISSION = "admin:members:manage";
+
+/**
  * May the caller release this run? The run's member, an assignee of the
- * task, or an admin, as the gateway checks. The server decides in the end.
+ * task, or a holder of `RELEASE_ADMIN_PERMISSION` (`isAdmin`), as the
+ * gateway checks. The server decides in the end.
  */
 export function canReleaseRun(
   run: Pick<AgentRun, "member_email" | "status">,

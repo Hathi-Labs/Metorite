@@ -579,7 +579,7 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          Remove this access any time in <strong className="font-semibold">Integrations → AI agents</strong>.
+          Change or remove this access any time in <strong className="font-semibold">Integrations → AI agents</strong>.
         </p>
       </div>
     </Frame>
