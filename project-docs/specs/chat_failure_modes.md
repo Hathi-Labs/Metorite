@@ -1,9 +1,9 @@
 # Chat failure modes: what goes wrong in the chat, and what we build against it
 
-**Status: PROPOSED, 2026-11-12. Nothing is built.** Owner ask of 2026-11-12,
+**Status: ACCEPTED, 2026-11-12 (D217). Nothing is merged yet.** Owner ask of 2026-11-12,
 in chat. Epic task 2978 (project AI Chat Interface). It is part of WS-CHAT.
 
-HRD-0 is task 2979. The decisions D-HRD-1 to D-HRD-6 of §8 wait on the owner.
+HRD-0 is task 2979. The owner accepted D-HRD-1 to D-HRD-6 of §8 as D217.
 
 It owns the catalogue of chat failure classes, the contract of §7 for every
 chat tool, and the slices HRD-1 to HRD-19. Each fix lands in the seam that
@@ -197,9 +197,11 @@ fences of rules 1 to 3. Until those land, the rules are advisory (R7).
    does not.
 7. **A date argument reads the member's day** from `acb_common.today`.
 
-## 8. Decisions for the owner
+## 8. Decisions
 
-| # | Question | Default |
+The owner accepted each default on 2026-11-11 21:28 UTC on epic 2978, and confirmed it in chat on 2026-11-12. They are recorded as **D217**.
+
+| # | Question | Decision |
 |---|---|---|
 | **D-HRD-1** | When the model calls a tool of a pack that is not loaded, may the turn load that pack? | Yes, when the member may use that pack. The answer says so |
 | **D-HRD-2** | When no task has all the words, may a search show tasks with most of them? | Yes, with the line "No task has all the words. These have most of them" |
