@@ -1,0 +1,10 @@
+# CIV-28: run the merge bot every 2 minutes. The owner installs this timer, see the service file.
+[Unit]
+Description=Metorite merge bot every 2 minutes (CIV-28)
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=2min
+
+[Install]
+WantedBy=timers.target
