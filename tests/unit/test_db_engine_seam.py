@@ -780,6 +780,13 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "blind. It runs only when `KNOWLEDGE_EMBED` names an org, and every "
         "chunk read and write after it binds one organization with "
         "`tenant_session`",
+    ("apps/services/gateway/gateway/calendar_sync/scheduler.py",
+     "_organization_ids"):
+        "WS-CAL CE-10: which organizations the calendar sync loop looks at. "
+        "It lists the RLS-EXEMPT `organization` table, so it does not go "
+        "blind. It keeps the orgs that `CALENDAR_SYNC_READ` names, and every "
+        "connection read and write after it binds one organization with "
+        "`tenant_session`",
     ("apps/services/gateway/gateway/kb_sync/scheduler.py",
      "_organization_ids"):
         "WS-61 KC-3: which organizations the Knowledge sync loop looks at. It "

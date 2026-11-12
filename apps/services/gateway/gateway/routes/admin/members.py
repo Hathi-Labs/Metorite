@@ -1236,6 +1236,10 @@ async def purge_member_rows(
     # WS-61 KB-9a: the member's address in the Knowledge gaps. KC-1a: the
     # member's Drive sources, with their token and their tree.
     revokes = await purge_knowledge_member(db, org_id, addr)
+    # WS-CAL CE-10: the member's calendar connections go AFTER their entries
+    # (the list above), because calendar_entries.connection_id has no cascade.
+    from gateway.calendar_sync.connections import purge_calendar_member
+    await purge_calendar_member(db, org_id, addr)
     if knowledge_revokes is not None:
         knowledge_revokes.extend(revokes)
     # WS-63 PZ-9: the settings row went above, so the executor must read the
