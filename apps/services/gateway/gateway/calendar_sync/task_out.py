@@ -333,7 +333,7 @@ async def _calendar_missing(provider: Any, cred: Any, cal_id: str) -> bool:
 
 async def _forget_calendar(org: str, connection_id: str) -> None:
     """The member deleted the calendar "Metorite". Drop the cached id, so the
-    next pass makes a new calendar. ``calendar_identity`` then drops the links."""
+    next pass makes a new calendar. ``calendar_identity`` then binds or drops the links."""
     from gateway.calendar_sync.connections import META_CALENDAR_ID
     from gateway.connections import store
 
@@ -382,40 +382,52 @@ META_TASK_CURSOR = "task_cursor"
 META_TASK_CALENDAR_ID = "task_calendar_id"
 
 
+SAME = "same"  # the links belong to this calendar
+BOUND = "bound"  # no stored id (first pass, or a reconnect): the links are kept
+CHANGED = "changed"  # another calendar id: the old events went with the old calendar
+
+
 async def calendar_identity(org: str, connection_id: str, me: str, cal_id: str,
-                            meta: dict[str, Any]) -> bool:
+                            meta: dict[str, Any]) -> str:
     """Bind the links to the calendar they were made in.
 
-    Returns True when the calendar is NOT the one the links were made in: a
-    new id (the member deleted "Metorite" and the provider made another), or NO
-    stored id (a reconnect replaces ``provider_meta`` and drops it, so the
-    origin of the links is unknown). Then every link of this connection and
-    member is dropped WITHOUT touching a block, and the cursor resets. The next
-    push creates each event again under the same client id: a calendar that
-    still holds it answers 409 and the writer adopts it, so nothing doubles. A
-    full list from a new calendar must never read as "the member deleted every
-    event".
+    * ``SAME``: the stored id is this calendar. Nothing to do.
+    * ``CHANGED``: the stored id differs (the member deleted "Metorite" and the
+      provider made another). The old events are gone. Every link of this
+      connection and member is dropped WITHOUT touching a block, and the cursor
+      resets. The next push creates each event again.
+    * ``BOUND``: no stored id. A reconnect REPLACES ``provider_meta``
+      (``save_credential``), so the origin of the links is unknown. The links
+      are KEPT: a remove that waited for the reconnect must still run. Each
+      link is marked for re-verification (its hash is cleared), so the next push
+      updates the event, and a 404 makes it again (``_reset_event``). The cursor
+      resets, and the caller must NOT sweep for missing events on the one full
+      list that follows, because the list may come from a new calendar.
     """
     from gateway.connections import store
 
     stored = meta.get(META_TASK_CALENDAR_ID)
     if stored == cal_id:
-        return False
-    changed = True
+        return SAME
+    outcome = CHANGED if stored else BOUND
     async with tenant_session(org) as db:
         locked = await store.lock_by_id(db, org, connection_id)
         if locked is None:
-            return False
-        if changed:
+            return SAME
+        if outcome == CHANGED:
             await db.execute(text(
                 "DELETE FROM calendar_task_links WHERE organization_id = CAST(:org AS uuid) "
                 "AND connection_id = CAST(:cid AS uuid) AND member_email = :me"),
                 {"org": org, "cid": connection_id, "me": me})
-            await store.merge_provider_meta(
-                db, org, connection_id, {META_TASK_CALENDAR_ID: cal_id, META_TASK_CURSOR: ""})
         else:
-            await store.merge_provider_meta(db, org, connection_id, {META_TASK_CALENDAR_ID: cal_id})
-    return changed
+            await db.execute(text(
+                "UPDATE calendar_task_links SET synced_block_hash = NULL, next_attempt_at = NULL "
+                "WHERE organization_id = CAST(:org AS uuid) AND connection_id = CAST(:cid AS uuid) "
+                "AND member_email = :me AND external_id IS NOT NULL"),
+                {"org": org, "cid": connection_id, "me": me})
+        await store.merge_provider_meta(
+            db, org, connection_id, {META_TASK_CALENDAR_ID: cal_id, META_TASK_CURSOR: ""})
+    return outcome
 
 
 async def pull_remote_changes(
@@ -466,7 +478,8 @@ async def pull_remote_changes(
             return 0
     raw = conn.provider_meta.get(META_TASK_CURSOR)
     cursor = raw if isinstance(raw, str) and raw else None
-    if await calendar_identity(org, str(conn.id), me, cal_id, conn.provider_meta):
+    identity = await calendar_identity(org, str(conn.id), me, cal_id, conn.provider_meta)
+    if identity != SAME:
         cursor = None
     t = now()
     window = Window.around(t)
@@ -501,7 +514,7 @@ async def pull_remote_changes(
             routed += outcome != task_links.IGNORED
         live = {e.external_id for e in result.changes if not e.deleted}
         # An empty full list is not proof of a delete: never act on it.
-        if cursor is None and result.full and live:
+        if cursor is None and result.full and live and identity != BOUND:
             routed += await task_links.unschedule_missing(
                 db, org, locked, live, window.start, window.end)
         await store.merge_provider_meta(

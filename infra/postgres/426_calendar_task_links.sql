@@ -28,8 +28,8 @@
 -- no task, and deletes the event). The connection key CASCADES on a row DELETE
 -- (a purged member). `disconnect_connection` only sets the row `disconnected`
 -- and KEEPS the links. A reconnect drops the stored calendar id, so
--- `task_out.calendar_identity` drops the links then, and the next push adopts
--- each event by its client id. The provider events stay in the "Metorite"
+-- `task_out.calendar_identity` BINDS the links to the calendar (it keeps them,
+-- so a pending remove still runs) and marks each for one re-verify push. The provider events stay in the "Metorite"
 -- calendar of the member, who owns that calendar.
 --
 -- ⚠️ RLS covers the org only. The member is a second axis: every read and

@@ -723,13 +723,13 @@ async def test_r8_a_disconnect_keeps_the_links_and_a_reconnect_makes_no_second_e
                            "provider_meta = CAST(:m AS jsonb) WHERE id = CAST(:i AS uuid)"),
                       {"i": world.conn["a"], "m": '{"account_email": "alice@task-out.test"}'})
         fake.listed = [CalendarInfo(id="cal-metorite", name="Metorite", primary=False, writable=True)]
-        fake.exists_once = True
         s = await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=5))
-    assert s.created == 1 and s.failed == 0
+    # The links were KEPT and marked for one re-verify: a PATCH of the SAME event.
+    assert s.created == 0 and s.updated == 1 and s.failed == 0
     ups = [c for c in fake.calls if c[0] == "upsert"]
-    assert [u[5] for u in ups][-2:] == [None, tid_cid(world, ups)]  # the 409, then the adopt by id
+    assert ups[-1][5] == "ev1" and len(ups) == 2
     (link,) = _links(world, world.org_a)
-    assert link.sync_state == "sent" and link.external_id == tid_cid(world, ups)  # ONE event
+    assert link.sync_state == "sent" and link.external_id == "ev1"  # ONE event
 
 
 @pytest.mark.asyncio
@@ -850,9 +850,11 @@ async def test_r8_deleting_the_connection_row_deletes_its_links(world):
 
 # ── Opus round 3 ──────────────────────────────────────────────────────────
 #
-# * M12. ``task_out.py`` ``calendar_identity``: ``changed = bool(stored)``. A
-#   reconnect (no stored id) keeps the old links and a full list clears blocks.
+# * M12. ``task_out.py`` ``pull_remote_changes``: drop ``and identity != BOUND``. A
+#   reconnect's first full list clears blocks.
 #   ``test_r8_a_reconnect_that_lost_the_stored_calendar_clears_no_block``.
+# * M15. ``calendar_identity``: BOUND deletes the links. A pending remove is lost.
+#   ``test_r8_a_task_closed_during_the_gap_still_deletes_its_event_after_a_reconnect``.
 # * M13. ``task_out.py`` the remove path: ``if link.external_id:`` back. A
 #   create with a lost answer leaves its event behind.
 #   ``test_r8_a_closed_task_deletes_the_event_of_a_create_whose_answer_was_lost``.
@@ -880,8 +882,27 @@ async def test_r8_a_reconnect_that_lost_the_stored_calendar_clears_no_block(worl
                                next_cursor="c1", full=True)
         s = await task_out.run_pass(world.org_a, world.conn["a"], provider=fake)
         assert (await _block(world.org_a, ALICE, tid)).scheduled_start == T0  # untouched
-    assert s.created == 1
+    # The link is kept and re-verified in the new calendar (a 404 there would make it again).
+    assert s.updated == 1 and len(_links(world, world.org_a)) == 1
     assert [c[1] for c in fake.calls if c[0] == "upsert"][-1] == "cal-fresh"
+
+
+@pytest.mark.asyncio
+async def test_r8_a_task_closed_during_the_gap_still_deletes_its_event_after_a_reconnect(world):
+    from gateway.calendar_sync.provider import CalendarInfo
+
+    fake = FakeProvider()
+    async with _in(world, world.org_a):
+        tid = await _task(world.org_a, ALICE, "Done in the gap", T0)
+        await _pass(world, world.org_a, world.conn["a"], fake)
+        await _close(world.org_a, tid)  # the connection is down: the pass is skipped
+        with world.p.admin_engine.begin() as c:  # the reconnect REPLACED provider_meta
+            c.execute(text("UPDATE integration_connections SET provider_meta = '{}'::jsonb "
+                           "WHERE id = CAST(:i AS uuid)"), {"i": world.conn["a"]})
+        fake.listed = [CalendarInfo(id="cal-metorite", name="Metorite", primary=False, writable=True)]
+        s = await task_out.run_pass(world.org_a, world.conn["a"], provider=fake)
+    assert s.deleted == 1 and ("delete", "cal-metorite", "ev1") in fake.calls
+    assert _links(world, world.org_a) == []
 
 
 @pytest.mark.asyncio
