@@ -11,6 +11,8 @@ import {
 } from "@/app/tasks/lib/api";
 import { DEFAULT_PLANNING_PROMPT, hourLabel } from "./shared";
 import { zoneOptions } from "../lib/zoneChoices";
+import type { ReturnNotice } from "../lib/calendarConnections";
+import { ConnectedCalendarsSection } from "./CalendarConnections";
 
 const DOW_LABELS = ["S", "M", "T", "W", "T", "F", "S"]; // 0=Sun … 6=Sat
 
@@ -52,10 +54,15 @@ export function CalendarSettings({
   settings,
   onChange,
   onClose,
+  connectNotice = null,
+  onDismissConnectNotice = () => {},
 }: {
   settings: TaskSettings;
   onChange: (patch: Partial<TaskSettings>) => void;
   onClose: () => void;
+  /** What the consent redirect said (CE-10c). Drawn in the Connected calendars section. */
+  connectNotice?: ReturnNotice | null;
+  onDismissConnectNotice?: () => void;
 }) {
   const wins = settings.energyWindows ?? [];
   const [showDefault, setShowDefault] = useState(false);
@@ -155,6 +162,9 @@ export function CalendarSettings({
               </p>
             )}
           </div>
+
+          {/* Connected calendars (CE-10c): draws nothing until the gateway says it is on. */}
+          <ConnectedCalendarsSection notice={connectNotice} onDismissNotice={onDismissConnectNotice} />
 
           <p className={sectionCls}>When you work</p>
           <div className="mb-1 flex items-center justify-between gap-2">
