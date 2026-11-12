@@ -1212,14 +1212,26 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SHARD: ${{ matrix.shard }}
+        # ⚠️ Trust only a nightly that this repo started: a schedule or a
+        # dispatch. The repo is public, and a fork PR from its own `main` also
+        # has head branch `main`, so `--branch main` alone lets a fork plant a
+        # result in which every test "fails" (Opus review, 2026-11-12). A fork
+        # cannot make a schedule or a dispatch event here.
+        # All three shards are read and joined, because a spec file can move
+        # to another shard when the test count changes.
         run: |
-          mkdir -p ../../.e2e-main
-          run_id=$(gh run list --workflow e2e-nightly.yml --branch main --status completed --limit 10 \
-            --json databaseId,conclusion --jq '[.[] | select(.conclusion == "success" or .conclusion == "failure")][0].databaseId' || true)
+          rm -rf ../../.e2e-main && mkdir -p ../../.e2e-main
+          run_id=$(gh run list --workflow e2e-nightly.yml --branch main --status completed --limit 20 \
+            --json databaseId,conclusion,event --jq '[.[] | select((.event == "schedule" or .event == "workflow_dispatch") and (.conclusion == "success" or .conclusion == "failure"))][0].databaseId' || true)
+          mains=()
           if [ -n "$run_id" ]; then
-            gh run download "$run_id" --name "e2e-nightly-result-$SHARD" --dir ../../.e2e-main || true
+            for s in 1 2 3; do
+              gh run download "$run_id" --name "e2e-nightly-result-$s" --dir "../../.e2e-main/$s" || true
+              [ -f "../../.e2e-main/$s/e2e-result.json" ] && mains+=(--main "../../.e2e-main/$s/e2e-result.json")
+            done
           fi
-          python3 ../../scripts/e2e_inherited.py --pr e2e-result.json --main ../../.e2e-main/e2e-result.json \
+          echo "Shard $SHARD compares with nightly run ${run_id:-none} (${#mains[@]} report args)."
+          python3 ../../scripts/e2e_inherited.py --pr e2e-result.json "${mains[@]}" \
             --exit-code "${{ steps.suite.outputs.code }}" --summary "$GITHUB_STEP_SUMMARY"
 
       # ⚠️ Without this a red run is a wall of text and no screenshot, and an
