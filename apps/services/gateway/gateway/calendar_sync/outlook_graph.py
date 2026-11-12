@@ -20,6 +20,8 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Mapping, Optional
 from urllib.parse import quote, urlencode
 
+from gateway.calendar_sync.provider import RemoteEvent, OutEvent, clean_title
+
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 #: Calendar scopes added by incremental consent. ``Calendars.ReadWrite``
@@ -36,7 +38,6 @@ WINDOW_AHEAD_DAYS = 180
 METORITE_CALENDAR_NAME = "Metorite"
 
 _TITLE_MAX = 200
-_NO_TITLE = "(No title)"
 _ERROR_MAX = 500
 
 
@@ -48,52 +49,10 @@ class GraphParseError(ValueError):
 
 
 @dataclass(frozen=True)
-class ParsedEvent:
-    """One live event, as ``calendar_entries`` columns (no org, owner, conn)."""
-
-    external_id: str
-    title: str
-    status: str  # confirmed | tentative | cancelled
-    busy: bool
-    starts_at: Optional[datetime]
-    ends_at: Optional[datetime]
-    start_date: Optional[date]
-    end_date: Optional[date]
-    tz: Optional[str]
-    location: Optional[str]
-    notes: Optional[str]
-    conference_url: Optional[str]
-    external_series_id: Optional[str]
-    original_start: Optional[datetime]
-    etag: Optional[str]
-    external_url: Optional[str]
-
-    def as_columns(self) -> dict[str, Any]:
-        return {
-            "external_id": self.external_id,
-            "title": self.title,
-            "status": self.status,
-            "busy": self.busy,
-            "starts_at": self.starts_at,
-            "ends_at": self.ends_at,
-            "start_date": self.start_date,
-            "end_date": self.end_date,
-            "tz": self.tz,
-            "location": self.location,
-            "notes": self.notes,
-            "conference_url": self.conference_url,
-            "external_series_id": self.external_series_id,
-            "original_start": self.original_start,
-            "etag": self.etag,
-            "external_url": self.external_url,
-        }
-
-
-@dataclass(frozen=True)
 class DeltaPage:
     """One parsed page of a ``calendarView/delta`` reply."""
 
-    events: tuple[ParsedEvent, ...] = ()
+    events: tuple[RemoteEvent, ...] = ()
     removed_ids: tuple[str, ...] = ()
     next_link: Optional[str] = None
     delta_link: Optional[str] = None
@@ -104,7 +63,7 @@ class DeltaPage:
 class DeltaResult:
     """All pages of one sync of one calendar."""
 
-    events: list[ParsedEvent] = field(default_factory=list)
+    events: list[RemoteEvent] = field(default_factory=list)
     removed_ids: list[str] = field(default_factory=list)
     delta_link: Optional[str] = None
     skipped: int = 0
@@ -142,13 +101,6 @@ def _parse_dt(value: Mapping[str, Any] | None) -> Optional[datetime]:
     return parsed.astimezone(timezone.utc)
 
 
-def _clean_title(subject: Any) -> str:
-    text = subject.strip() if isinstance(subject, str) else ""
-    if not text:
-        return _NO_TITLE
-    return text[:_TITLE_MAX]
-
-
 def _status_and_busy(ev: Mapping[str, Any]) -> tuple[str, bool]:
     if ev.get("isCancelled") is True:
         status = "cancelled"
@@ -174,7 +126,7 @@ def _conference_url(ev: Mapping[str, Any]) -> Optional[str]:
     return url if isinstance(url, str) and url else None
 
 
-def parse_event(ev: Mapping[str, Any]) -> Optional[ParsedEvent]:
+def parse_event(ev: Mapping[str, Any]) -> Optional[RemoteEvent]:
     """Map one Graph event to column values, or None when it is unusable.
 
     ``@removed`` items do not come here: ``parse_delta_page`` sorts them out.
@@ -207,9 +159,9 @@ def parse_event(ev: Mapping[str, Any]) -> Optional[ParsedEvent]:
     location = loc.get("displayName") if isinstance(loc, Mapping) else None
     preview = ev.get("bodyPreview")
     master = ev.get("seriesMasterId")
-    return ParsedEvent(
+    return RemoteEvent(
         external_id=ext_id,
-        title=_clean_title(ev.get("subject")),
+        title=clean_title(ev.get("subject") if isinstance(ev.get("subject"), str) else None),
         status=status,
         busy=busy,
         starts_at=starts_at,
@@ -222,8 +174,9 @@ def parse_event(ev: Mapping[str, Any]) -> Optional[ParsedEvent]:
         conference_url=_conference_url(ev),
         external_series_id=master if isinstance(master, str) and master else None,
         original_start=None,
+        original_start_date=None,
         etag=ev.get("@odata.etag") if isinstance(ev.get("@odata.etag"), str) else None,
-        external_url=ev.get("webLink") if isinstance(ev.get("webLink"), str) else None,
+        url=ev.get("webLink") if isinstance(ev.get("webLink"), str) else None,
     )
 
 
@@ -234,7 +187,7 @@ def parse_delta_page(page: Mapping[str, Any]) -> DeltaPage:
     value = page.get("value")
     if not isinstance(value, list):
         raise GraphParseError("page has no value list")
-    events: list[ParsedEvent] = []
+    events: list[RemoteEvent] = []
     removed: list[str] = []
     skipped = 0
     for item in value:
@@ -270,7 +223,7 @@ def merge_pages(pages: list[DeltaPage]) -> DeltaResult:
     An id that a later page removes drops out of ``events``, and an id that
     a later page re-adds drops out of ``removed_ids``.
     """
-    by_id: dict[str, ParsedEvent] = {}
+    by_id: dict[str, RemoteEvent] = {}
     removed: dict[str, None] = {}
     out = DeltaResult()
     for pg in pages:
@@ -297,7 +250,7 @@ def next_delta_link(page: DeltaPage) -> Optional[str]:
 
 
 def skip_series_instance(
-    ev: ParsedEvent, metorite_series_external_ids: set[str]
+    ev: RemoteEvent, metorite_series_external_ids: set[str]
 ) -> bool:
     """§8.1 item 5: skip an instance of a series that Metorite wrote out.
 
@@ -383,6 +336,18 @@ def event_payload(
     return body
 
 
+def out_event_payload(ev: OutEvent) -> dict[str, Any]:
+    """``OutEvent`` of CE-13 to a Graph body. A task link goes in the notes."""
+    notes = ev.notes or ""
+    if ev.task_url:
+        notes = f"{notes}\n\n{ev.task_url}".strip()
+    return event_payload(
+        title=ev.title, starts_at=ev.starts_at, ends_at=ev.ends_at,
+        start_date=ev.start_date, end_date=ev.end_date, notes=notes or None,
+        location=ev.location, busy=ev.busy,
+    )
+
+
 def pick_calendar_ids(calendars_reply: Mapping[str, Any]) -> list[str]:
     """Ids of the calendars to read: every calendar except the "Metorite" one
     that CE-13 writes (its rows are ours already)."""
@@ -427,88 +392,3 @@ def delta_expired(status: int, body: Any) -> bool:
         and isinstance(body.get("error"), Mapping)
         and "syncState" in str(body["error"].get("code", ""))
     )
-
-
-# -------------------------------------------------------------------- client
-
-
-class GraphCalendarError(RuntimeError):
-    def __init__(self, status: int, reason: str, *, retry_after: float | None = None):
-        super().__init__(reason)
-        self.status = status
-        self.reason = reason
-        self.retry_after = retry_after
-
-
-class GraphCalendar:
-    """Thin Graph calendar client. The caller owns the ``httpx.AsyncClient``
-    and the access token (the shared core refreshes it)."""
-
-    def __init__(self, http: Any, access_token: str):
-        self._http = http
-        self._token = access_token
-
-    async def _send(self, method: str, url: str, **kw: Any) -> Any:
-        headers = read_headers(self._token)
-        resp = await self._http.request(method, url, headers=headers, **kw)
-        status = resp.status_code
-        if status == 204:
-            return None
-        try:
-            data = resp.json()
-        except ValueError:
-            data = None
-        if status >= 400:
-            ra = resp.headers.get("Retry-After") if hasattr(resp, "headers") else None
-            try:
-                retry = float(ra) if ra is not None else None
-            except ValueError:
-                retry = None
-            raise GraphCalendarError(status, short_error(status, data), retry_after=retry)
-        return data
-
-    async def list_calendars(self) -> list[dict[str, Any]]:
-        out: list[dict[str, Any]] = []
-        url: Optional[str] = calendars_url()
-        while url:
-            data = await self._send("GET", url)
-            out.extend(c for c in (data or {}).get("value", []) if isinstance(c, dict))
-            url = (data or {}).get("@odata.nextLink")
-        return out
-
-    async def create_calendar(self, name: str = METORITE_CALENDAR_NAME) -> dict[str, Any]:
-        return await self._send("POST", calendars_url(), json={"name": name})
-
-    async def fetch_delta(self, first_url: str, *, max_pages: int = 50) -> DeltaResult:
-        """Follow ``@odata.nextLink`` until a ``deltaLink`` arrives."""
-        pages: list[DeltaPage] = []
-        url: Optional[str] = first_url
-        for _ in range(max_pages):
-            if url is None:
-                break
-            page = parse_delta_page(await self._send("GET", url))
-            pages.append(page)
-            url = next_delta_link(page)
-        else:
-            raise GraphCalendarError(0, "delta paging did not end")
-        result = merge_pages(pages)
-        if result.delta_link is None:
-            raise GraphCalendarError(0, "delta reply had no deltaLink")
-        return result
-
-    async def upsert_event(
-        self, calendar_id: str, payload: Mapping[str, Any], event_id: Optional[str] = None
-    ) -> dict[str, Any]:
-        base = f"{GRAPH_BASE}/me/calendars/{quote(calendar_id, safe='')}/events"
-        if event_id is None:
-            return await self._send("POST", base, json=dict(payload))
-        return await self._send(
-            "PATCH", f"{GRAPH_BASE}/me/events/{quote(event_id, safe='')}", json=dict(payload)
-        )
-
-    async def delete_event(self, event_id: str) -> None:
-        try:
-            await self._send("DELETE", f"{GRAPH_BASE}/me/events/{quote(event_id, safe='')}")
-        except GraphCalendarError as exc:
-            if exc.status != 404:  # already gone is a success
-                raise
