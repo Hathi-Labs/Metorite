@@ -601,6 +601,15 @@ class Settings(BaseSettings):
     # send mail or WhatsApp and spend credits, so a flip is the owner's. Fence:
     # tests/unit/test_workflows_unattended_flag.py.
     workflow_unattended_orgs: str = ""
+    # STU-J1-3 (ai_studio.md section 14 J1-3): the orgs where a workflow write
+    # needs `feature:studio` on top of `feature:workflows`. A write is a
+    # create, a duplicate, an edit, a delete, a Copilot turn or a test run of
+    # the draft. `*` is every org. Empty, the default, keeps the rule before
+    # J1-3. The one reader is
+    # `gateway.routes.workflows.core.author_gate_on`. A flip is gate
+    # `enforcement-flip`, and a SIGHUP reload applies it. Fences:
+    # tests/unit/test_workflows_author_gate.py, test_workflows_author_gate_r8.py.
+    workflow_studio_gate_orgs: str = ""
 
     reach_enabled: bool = False
     reach_orgs: str = ""
@@ -688,6 +697,15 @@ class Settings(BaseSettings):
     # none. Reader: `gateway.routes.studio.flags.studio_allowed`. Spec:
     # ai_studio.md section 3.2.
     studio_orgs: str = ""
+    # STU-J10: STUDIO_RESIDENCY_ORGS lists the org ids whose health data
+    # stays in India. `*` opens every org. Empty opens none (no change for
+    # any org). It only adds refusals: a listed org's health app may use a
+    # store or a vendor only when `acb_common.studio_residency` records the
+    # region as India. NO CALLER READS IT YET: the guard `require_path` is not
+    # wired into any send path, so flipping it changes nothing today.
+    # Reader: `acb_common.studio_residency.residency_on`.
+    # The flip is the owner's (`enforcement-flip`). Spec: ai_studio.md J10.
+    studio_residency_orgs: str = ""
     # WS-OB GD-5a: GUIDE_ORGS lists the org ids whose members see the entries
     # of the guide's tour (the welcome button and the account menu row). `*`
     # opens every org. Empty opens none. Reader: `acb_common.guide_flags.
@@ -700,6 +718,15 @@ class Settings(BaseSettings):
     # `gateway.package_host.flags.package_host_allowed`. Spec:
     # package_host.md section 10.
     package_host_orgs: str = ""
+    # WS-PKG PKG-10b: PACKAGE_EXPIRY_ENABLED starts the daily expiry loop of
+    # package_host.md section 6.2. Default OFF. While it is false, the gateway
+    # starts no loop task, and a tick reads nothing. When it is on, the tick
+    # archives each due install, and it DELETES each install that stayed 30
+    # days in the archive. The delete is one-way. Reader:
+    # `gateway.package_host.flags.package_expiry_enabled`.
+    # 🔴 OWNER-GATE: a flip on production is the owner's act only (gate
+    # `enforcement-flip`), because the tick deletes member data.
+    package_expiry_enabled: bool = False
     vapid_public_key: str = ""
     vapid_private_key: str = ""
     vapid_subject: str = ""
@@ -962,6 +989,17 @@ class Settings(BaseSettings):
     # a change (`gateway/flag_reload.py`). Fence:
     # tests/unit/test_agent_guidance.py.
     agent_guidance_orgs: str = ""
+    # ── The policy store of agent work (WS-MCP SW-94, agent_coordination.md
+    #    §3.11.5 and SW-94) ───────────────────────────────────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `POST /agent-policies` answers 404, and `policy_for`
+    # and `policy_for_actor` give the shipped default under the master flag of
+    # each key. The one reader is
+    # `gateway.routes.agent_policies.policies_allowed`. A SIGHUP reload applies
+    # a change (`gateway/flag_reload.py`). Fence:
+    # tests/unit/test_agent_policies_r8.py.
+    agent_policy_orgs: str = ""
     # SW-68a (agent_coordination.md SW-68): the organizations where `my_work`
     # (MCP and chat) ranks the tasks under an epic by the plan engine. Comma
     # list of organization ids, or `*`. Empty: off, and `my_work` keeps its old
@@ -1012,6 +1050,16 @@ class Settings(BaseSettings):
     # reload applies a change. Fence: tests/unit/test_pm_project_updates_r8.py.
     projects_updates_orgs: str = ""
 
+    # ── The contract of an epic (SP-8a, project_management_app.md §13.3) ────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `GET` and `PUT /projects/tasks/{id}/epic-contract`
+    # answer 404, `get_task` carries `epic_contract: null`, a create with a
+    # contract makes no task, and the chat tool makes no card. The one reader
+    # is `gateway.routes.projects.epic_contract.epic_contracts_allowed`. A
+    # SIGHUP reload applies a change. Fence: tests/unit/test_epic_contract_r8.py.
+    epic_contract_orgs: str = ""
+
     # ── Questions for me (WS-55 EA-18a, external_agent_access.md §12.8) ──────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -1032,6 +1080,16 @@ class Settings(BaseSettings):
     # a change. A flip is OWNER-GATE (`enforcement-flip`).
     # Fence: tests/unit/test_waiting_seam_r8.py.
     waiting_orgs: str = ""
+
+    # ── Agents: the member view in Projects (WS-AGA AGA-6) ──────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, every route of `agents_view.md` answers 404, today
+    # `GET /projects/agents/overview` (AGA-7). The one reader is
+    # `gateway.routes.projects.agent_summary.agents_view_allowed`. A SIGHUP
+    # reload applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_agents_overview_r8.py.
+    agents_view_orgs: str = ""
 
     # ── The status-set guard in chat (WS-42 PST-4, projects_settings.md §7.1) ──
     #
@@ -1088,6 +1146,19 @@ class Settings(BaseSettings):
     # `enforcement-flip` grant, after MCP-P1b-2 or STU-B2c-2 can ask. Fence:
     # tests/unit/test_app_requests_r8.py.
     app_requests_orgs: str = ""
+
+    # ── Member code runs on the box (WS-STU STU-Q15a) ──────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, a code module of Module Studio runs for no org: the
+    # two test routes answer 403 `module_runs_off`, a workflow module node
+    # fails with the same message, and `/studio` shows no Module Studio tab.
+    # D127.2 keeps member code off the box, and the runner is not a sandbox
+    # (`ai_studio.md` §12 STU-Q15). The one reader is
+    # `gateway.module_runs.module_runs_allowed`. A SIGHUP reload applies a
+    # change. Only the owner flips it, after the owner answers STU-Q15.
+    # Fence: tests/unit/test_module_runs_off.py.
+    module_run_orgs: str = ""
 
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #
@@ -1771,6 +1842,15 @@ class Settings(BaseSettings):
     # gateway.routes.apps.t2_vendor_dir().
     custom_apps_t2_vendor_dir: str = ""
 
+    # Task 2464: the HOST build route (`POST /apps/{slug}/build`, `files.py`)
+    # runs build_t2.mjs on the gateway box, beside every org's app dir. It
+    # ships dark. Off (the default), the route builds nothing and tells the
+    # member to ask the builder, whose sandbox build sees only its own app.
+    # Only the owner sets CUSTOM_APPS_HOST_BUILD: `env_guard` refuses every
+    # `CUSTOM_APPS_` name on a tenant write. Fence:
+    # tests/unit/test_app_builder_t2_containment.py.
+    custom_apps_host_build: bool = False
+
     # -- Bot git identity (written into every local clone via git config) --
     # Commits and PRs opened by Self_Mutation_Node carry this identity.
     # Create a dedicated GitHub machine user (or use the GitHub App's identity).
@@ -2261,6 +2341,14 @@ class Settings(BaseSettings):
     # (`docs/flag_reload.md`). `acb_auth.agent_oauth.change_access_allowed`
     # is the one reader. 🔴 A change on a box is gate `enforcement-flip`.
     agent_change_access_orgs: str = ""
+    # PB-2 (D186, `orchestration_playbook.md` §5, §7): the organizations where
+    # the edge lists the playbook prompts (`set_up_agent_team`, `plan_slices`,
+    # `write_brief`, `review_my_fleet`, `run_retro`). The same shape as
+    # `agent_access_orgs`: ids with a comma between them, or `*`. Empty, the
+    # default, keeps them dark. The edge and the gateway read it, at each call, through
+    # `acb_auth.agent_oauth.playbook_allowed`. 🔴 A change on a box is gate
+    # `enforcement-flip`.
+    playbook_orgs: str = ""
     # EA-6a (EA3-29, spec §6.1 and §9.2): the second switch, for the WRITE
     # tools. Default OFF. While it is false, branch 0 refuses every method
     # other than GET with 401, so the read tools work and no write lands.
@@ -2281,6 +2369,15 @@ class Settings(BaseSettings):
     # has no `answer` field. `acb_auth.agent_oauth.answer_change_enabled` is
     # the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
     agent_answer_change_enabled: bool = False
+    # SW-23 (spec agent_coordination.md SW-23): a task carries a Check, a
+    # read-only command that an agent runs. Default OFF. While it is false,
+    # `POST /projects/tasks/{id}/check-result` answers 404, a task write that
+    # sends `check_text` gets 422, the task rows carry no `check` key, and the
+    # edge leaves `report_check` and the `check` input out of `tools/list`.
+    # Both units read it, so both need the same value.
+    # `acb_auth.agent_oauth.task_checks_enabled` is the one reader. 🔴 A flip
+    # on a box is gate `enforcement-flip`.
+    agent_task_checks_enabled: bool = False
     # SW-7 (spec §12.5): MCP sessions at the edge. Default OFF. While it is
     # false, `initialize` answers no `Mcp-Session-Id`, an id that a client
     # still sends is read as no session (never a 404), and no

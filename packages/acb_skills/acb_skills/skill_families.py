@@ -520,7 +520,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "It holds the five analytics reads, the team's capacity, who "
             "fits a task, plan conflicts, the task table, the "
             "timeline, a plan from a goal, links between tasks, repeat "
-            "rules, and a new project with its settings. The reports are in "
+            "rules, and a new project with its settings. It also lists the "
+            "agent requests that wait for the member, and it takes back or "
+            "changes the member's answer to an agent. The reports are in "
             "projects-reports. A run loads a pack "
             "only where tool packs are on, so until then this switch has no "
             "effect."
@@ -532,6 +534,10 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "analytics_outlook",
             "analytics_stuck",
             "analytics_throughput",
+            # SW-43c: the member takes back or changes an answer to an agent,
+            # beside the list of the agent requests. It takes the last room of
+            # the pack in the sticky-pack case (test_projects_packs.py).
+            "change_agent_answer",
             "create_project",
             "edit_project",
             "find_conflicts",
@@ -733,11 +739,15 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # the reminders and bulk packs must fit under MAX_REQUEST_TOOLS in their
     # measured turns. WS-39 LP-1a adds the two tools of a project update here,
     # for the same reason: the reports pack fills the room of a measured turn.
+    # SP-8a: the contract of an epic joins it too. The plan pack has one tool
+    # of room in the sticky-pack case of test_pack_room.py.
     "projects-authority": {
         "label": "Projects authority page and updates",
         "summary": (
-            "The authority page and the updates of a project: read the pinned "
-            "pages, pin or unpin one, and read, post or delete an update."
+            "The authority page and the updates of a project, and the "
+            "contract of an epic: read the pinned pages, pin or unpin one, "
+            "read, post or delete an update, set the contract of an epic, and "
+            "list or answer the questions that agents put to the member."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for the "
@@ -746,17 +756,20 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "tools to read the pins of a project, to pin a page and to "
             "remove a pin. It also holds the tools to read the updates of a "
             "project, to post one with the health that the member picks, and "
-            "to delete one. "
+            "to delete one, and the tool that sets the contract of an epic. "
             "Each change asks the member first. A run loads a pack only "
             "where tool packs are on, so until then this switch has no "
             "effect."
         ),
         "tools": (
+            "agent_questions",
+            "answer_agent_question",
             "delete_project_update",
             "list_project_updates",
             "pin_authority",
             "post_project_update",
             "project_authorities",
+            "set_epic_contract",
             "unpin_authority",
         ),
         "owner": "projects-assistant",
@@ -808,24 +821,56 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # WS-39 SP-5a (task 964): the cycles (sprints) of a project. Own pack, because
+    # the other Projects packs are full in their measured turns.
+    "projects-cycles": {
+        "label": "Projects cycles",
+        "summary": (
+            "The cycles (sprints) of a project: list them, read one, plan one, "
+            "add or remove tasks, then start or close it."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools for the cycles "
+            "of a project, for the main assistant to load when a turn names "
+            "a cycle or a sprint. The pack holds the tools to list the "
+            "cycles of a project and to read one with its tasks. It also "
+            "holds the tools to plan a cycle, to add tasks to it or take "
+            "them out, to start it and to close it. Each change asks the "
+            "member first. A run loads a pack only where tool packs are on, "
+            "so until then this switch has no effect."
+        ),
+        "tools": (
+            "close_cycle",
+            "create_cycle",
+            "cycle_detail",
+            "list_cycles",
+            "plan_cycle",
+            "start_cycle",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     # STU-G1 (ai_studio.md section 6.2): the AI Studio builder tools, for the
     # one assistant to hold in a Studio turn. The owner is `studio-builder`,
     # which is NOT a second assistant. Eight stateless builder tools (G1b added the describe tool,
-    # G2 the interview and the plan card), three skill tools (F2d) and two package tools (G1c:
-    # save and publish over the A5 routes). A run loads a pack only where tool packs are on, and the pack
-    # builds nothing for an org that STUDIO_ORGS does not hold.
+    # G2 the interview and the plan card), three skill tools (F2d) and three package tools (G1c:
+    # save and publish over the A5 routes; A5c-2: delete over the A5c-1 routes, after one card).
+    # A run loads a pack only where tool packs are on, and the pack builds nothing for an org that
+    # STUDIO_ORGS does not hold.
     "studio": {
         "label": "AI Studio builder",
         "summary": (
             "Build an AI Studio app: draft a manifest from a brief, patch it, "
-            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save and publish the app, save, publish, pause and list your skills, and read the records of a package."
+            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save, publish and delete the app, save, publish, pause and list your skills, and read the records of a package."
         ),
         "description": (
             "A tool pack: the builder tools of AI Studio, for the main "
             "assistant to load in a Studio turn. It holds the tools to draft "
             "an app manifest, patch it, validate it, outline it and list the "
             "actions an app may use. It also holds the package tools: save "
-            "an app as a draft and publish it. It also holds the skill tools: save, "
+            "an app as a draft, publish it, and delete it after one card. It also holds the skill tools: save, "
             "publish, pause and list the skills of a member. Two read tools list the "
             "packages of a member and read the records of an object. Three write tools add, "
             "change and delete a record, and each asks the member first. The tools keep no "
@@ -846,6 +891,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "studio_skill_state",
             "studio_save",
             "studio_publish",
+            "studio_delete_package",
             "studio_package_get",
             "studio_record_list",
             "studio_record_create",

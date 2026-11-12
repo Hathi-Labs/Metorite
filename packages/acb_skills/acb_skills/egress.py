@@ -1103,8 +1103,8 @@ def _register_platform_callable(fn: Any, name: str | None = None) -> Any:
 def _register_platform_wrapper(original: Any, wrapper: Any) -> Any:
     """Trust *wrapper* exactly as far as *original* is trusted. Returns it.
 
-    Our own wrappers call this: the permission gate, the steer wrap of a
-    sandbox tool. A wrapper that another repo made does not, so it stays
+    Our own wrappers call this, for example the permission gate. A wrapper
+    that another repo made does not, so it stays
     untrusted whatever it wraps. A call from outside
     :data:`_PLATFORM_PACKAGES` registers nothing.
     """
@@ -1397,6 +1397,7 @@ CARD_WRITE_KEY = "card_write"
 HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     # The Projects core pack.
     "add_subtasks": _pin("task_id titles"),
+    "answer_agent_question": _pin("run_id answer option_ids"),
     "assign": _pin("task_id assignees"),
     "comment": _pin("task_id body reply_to"),
     "complete": _pin("task_id include_subtasks"),
@@ -1439,6 +1440,10 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     # the project, the health and the exact text, and the post writes the
     # one row. It tells nobody and reaches no other system.
     "post_project_update": _pin("project_id health body"),
+    # WS-39 SP-5a: plan a cycle, and put tasks in it or take them out. The card
+    # shows the exact tasks. Both change rows that the app changes back.
+    "create_cycle": _pin("project_id name starts_on ends_on goal"),
+    "plan_cycle": _pin("cycle_id add_task_ids remove_task_ids"),
     "set_recurrence": _pin(
         "task_id freq interval weekdays day_of_month month_of_year anchor until "
         "max_occurrences stop"),
@@ -1480,6 +1485,11 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "reopen_reminder": _pin("reminder_id"),
     "reschedule_reminder": _pin("reminder_id at in_minutes snooze"),
     "promote_reminder": _pin("reminder_id"),
+    # SP-8a: the class B tool of projects-authority. Its card shows each part
+    # of the contract, and it changes no field of the task row.
+    "set_epic_contract": _pin(
+        "task_id acceptance outcome out_of_scope risk_tier appetite_credits "
+        "appetite_review_hours workstream spec_link"),
     # The CRM record writes.
     "create_lead": _pin("lead_name email phone organization_name description"),
     "update_deal_status": _pin("deal_id stage lost_reason"),

@@ -79,6 +79,7 @@ from gateway.routes.projects.core import (
     status_owner_id,
     task_visibility_clause,
     touch_task,
+    transient_as_409,
     update_row,
 )
 from gateway.routes.projects.due_day import (
@@ -2319,6 +2320,7 @@ async def in_my_tree(db: Any, email: str, task: Any) -> bool:
 
 
 @router.delete("/my/tasks/{task_id}")
+@transient_as_409
 async def purge_my_task(
     task_id: str, user: UserContext = Depends(get_current_user),
 ) -> DeleteResponse:

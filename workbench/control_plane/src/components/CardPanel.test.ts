@@ -105,6 +105,16 @@ describe("a docked card leaves the page usable", () => {
     expect(sideCardFits(edge, 0, 16)).toBe(false);
   });
 
+  it("takes a host's own page minimum, and the default when it names none (PK-1)", () => {
+    // My Day keeps 36 rem beside the card: at 1024 its row is about 744 px,
+    // which docks with the default and stands over the page with 36.
+    expect(sideCardFits(744, 0, rem)).toBe(true);
+    expect(sideCardFits(744, 0, rem, 36)).toBe(false);
+    const edge = 24 * rem + 36 * rem;
+    expect(sideCardFits(edge, 0, rem, 36)).toBe(true);
+    expect(sideCardFits(edge - 1, 0, rem, 36)).toBe(false);
+  });
+
   it("an unmeasured row says yes", () => {
     expect(sideCardFits(0, 0, rem)).toBe(true);
   });

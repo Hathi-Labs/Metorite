@@ -68,6 +68,7 @@ def test_run_script_env_holds_no_github_token_even_when_github_is_declared(
 async def test_the_workflow_module_runner_gets_an_empty_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from acb_common import get_settings
     from gateway.routes.workflows.engine import modules
 
     seen: list[Any] = []
@@ -78,8 +79,12 @@ async def test_the_workflow_module_runner_gets_an_empty_env(
         return await real(*args, **kwargs)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
+    # The runner is dark by org (STU-Q15a). This test is about the env only.
+    monkeypatch.setattr(get_settings(), "module_run_orgs", "*", raising=False)
     try:
-        await modules.run_module_code("def run(inputs):\n    return {}\n", {})
+        await modules.run_module_code(
+            "def run(inputs):\n    return {}\n", {}, organization_id="org-env",
+        )
     except Exception:  # the harness may fail on this host. Only the env matters.
         pass
     assert seen == [{}]

@@ -12,9 +12,24 @@
 > only task store, and `routes/projects/personal.py` is the lens Tasks renders.
 
 > **Product:** Metorite · **Feature:** Projects (the primary work-management
-> module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-11-09**
+> module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-11-11**
+> 🟢 **SP-8a BUILT 2026-11-08, not merged** (§13.3, §13.6 row SP-8, migration 402, branch
+> `mt-1cb9f2de-sp8-epic-contract`). An epic has a contract: the store, the routes, `epic_contract`
+> in `get_task` and `get_task_context`, the MCP block and the chat tool `set_epic_contract`.
+> It ships dark behind `EPIC_CONTRACT_ORGS` (repair round 1, 2026-11-09).
+> SP-8b, the form in the app, is open.
+> 🟢 **WS-39 T-7 BUILT 2026-11-11, not merged** (§14.9, task 2538). The isolation fence of teams,
+> `tests/unit/test_team_scope_isolation_r8.py`, binds rules 2 and 4 for the surfaces that it lists, on a real database.
+> It does not cover all of rule 4. Its docstring names the reads that it leaves out as follow-up. No table and no flag.
 > 🟢 **WS-39 LP-1a BUILT 2026-11-08, not merged** (§14.2a, migration 383, task 988). A member posts a project update
 > with a health that the author picks. The Overview shows the newest one. Dark behind `PROJECTS_UPDATES_ORGS`.
+> 🟢 **WS-39 SP-5a BUILT 2026-11-09, dark, not merged** (§13.2, task 964, branch
+> `mt-555bb0d6-sp5a-cycle-chat`). Six chat tools in `skill_projects/cycles.py`: `list_cycles` and
+> `cycle_detail` (A), `create_cycle` and `plan_cycle` (B), `start_cycle` and `close_cycle` (C). They
+> sit in the new pack `projects-cycles`. `get_task` and `get_task_context` show the open cycle of a
+> task. The key is null while `PROJECTS_SPRINTS_ORGS` leaves the org out. **Deferred:** the MCP
+> writes (SP-5b: a class C act needs a preview and a confirm step, EA3-53). Also `update_cycle` and
+> `delete_cycle` in the chat. Also the capacity, the cooldown and the credit budget as tool fields.
 > 🟢 **WS-39 SP-1 BUILT 2026-11-08, merged 2026-11-09** (§13.2a, migration 372, task 960). The cycle
 > store: four tables and nine routes, dark behind `PROJECTS_SPRINTS_ORGS`. No UI and no chat tool.
 > Fix round 2 (2026-11-08): a task that leaves the node of its open cycle also leaves the cycle.
@@ -8969,6 +8984,8 @@ A **block** is a part that a project can show or hide. Examples are WIP limits, 
 4. **The critical path and baselines are decided.** They are in scope. WM-3 reads the one engine of `project_planning.md` §3.4 (PJP-6) and keeps no maths of its own (§13.4). Before D195, the Timeline slice of §9 named them "a separate decision". Fence: the module tests of PJP-6 (`tests/unit/test_planning_module.py`, new).
 5. **WIP limits warn by default.** A project can set a limit as a hard stop. Fence: advisory until WM-1 lands.
 6. **Story points stay refused.** Q2 of the design sets capacity in review hours and credits, so points do not reopen P-31. Work stays sized in hours from `estimate_mins`. Fence: advisory.
+7. **The ladder is a block (D211 point 9).** The gratification ladder of `orchestration_playbook.md` §6d is one block of this catalogue: rungs that each end in a demo task. It is on by default in Flow, Sprints or Cycles, Shape Up and Personal. It is off by default in Plan-driven. In Sprints, the review of a cycle is the demo of a rung. In Shape Up, a shipped bet is a rung. A project owner can switch it for one project, and an org admin sets the default for new projects. A switch that differs from the style's default makes the style "Custom" (rule 1). Slice: LAD-5 (task 2942). Fence: advisory until LAD-5 lands.
+8. **The order of work follows the style.** Where the ladder is on, agents take the lowest open rung first. Inside it, they take the least slack to its demo, then the priority. Where it is off, they take the order of the style. For Plan-driven, that is the least slack on the critical path (D195.6). For Flow with the ladder off, it is the priority and then the age of the card. Fence: advisory until LAD-4 (task 2891) lands.
 
 ### 13.2 The cycle calls (SP-0, task 959)
 
@@ -9076,7 +9093,22 @@ A **cycle** and a **sprint** are one record. Copy for a Scrum team says "sprint"
 | `POST /projects/cycles/{cycle_id}/start` | The cycle needs a goal. The start stores both snapshots. A negative estimate goes into the snapshot as no estimate (NULL). A second active cycle on the node answers 409. The answer gives the caller's own count and `hidden` |
 | `POST /projects/cycles/{cycle_id}/close` | One choice for each unfinished task: `next` with a cycle id, or `backlog`. The close moves the membership, writes the log and sets `closed_at`. A finished task and an archived task stay in the closed cycle |
 
-**The chat and the MCP.** Each route has a row in `skill_projects/manifest.py`. Each tool is in `PLANNED` for SP-5 (task 964). The fields are gap G26 of `projects_agent_parity.md` §3.3.
+**The chat and the MCP.** Each route has a row in `skill_projects/manifest.py`. **SP-5a (task 964) built six of the tools** in `skill_projects/cycles.py`. `update_cycle` and `delete_cycle` stay in `PLANNED`. The fields that SP-5a sends are in `SENDS`. The edit, the cooldown, the credit budget and the capacity stay in `FIELD_PLANNED` (gap G26 of `projects_agent_parity.md` §3.3).
+
+| Tool | Class | What it does |
+|---|---|---|
+| `list_cycles(project_id)` | A | The cycles of a node, newest first, with the state, the dates and the task count |
+| `cycle_detail(cycle_id)` | A | The status of one cycle: goal, dates, the committed list, the capacity and its tasks |
+| `create_cycle(project_id, name, starts_on, ends_on, goal)` | B | Plans a cycle. One card |
+| `plan_cycle(cycle_id, add_task_ids, remove_task_ids)` | B | Puts up to 50 tasks in a cycle or takes them out. ONE card lists every task. The adds go in id order, one route call each. A 409 stops the run, and the answer says how many went in |
+| `start_cycle(cycle_id, goal)` | C | Starts a planned cycle. The card shows the counts and the goal. A start needs a goal |
+| `close_cycle(cycle_id, carry_over)` | C | Closes an active cycle. `carry_over` is `backlog` or the id of the next cycle. With none, the tool asks. The card shows the counts and the place |
+
+Each tool reads before its card, so a flag that is off shows "Cycles are not on for this organization yet." and no card. A move of one task from cycle to cycle is `plan_cycle` twice: remove it, then add it. The tools are in the pack `projects-cycles` (6 tools, after `projects-authority`, on wherever the core pack is on). WhatsApp reaches the reads through the same packs, because a channel changes the delivery and not the function. A WhatsApp card parks for a write that is in `whatsapp_acts.ALLOWED_ACTS`, and the cycle writes are not there yet.
+
+**The MCP (SP-5a, reads only).** `GET /projects/tasks/{id}` carries `cycle` (id, name, state, dates) while `PROJECTS_SPRINTS_ORGS` holds the org, and `null` when the task sits in no open cycle. The key is also `null` when the reader cannot see the node of the cycle. `get_task` and `get_task_context` pass it on as `cycle`. It is `null` while the flag is off.
+
+The name is `untrusted_text`. The MCP has no cycle write in SP-5a.
 
 ### 13.3 The plan model (design §4)
 
@@ -9095,10 +9127,25 @@ The model has five records. Each lives in the one task store (D52) or beside it.
 | Outcome | One sentence: what is true when the epic is done | The lead, drafted by Mira |
 | Acceptance | 3 to 7 checks that a reviewer can tick | The lead, drafted by Mira |
 | Out of scope | What this epic does not do | The lead |
-| Risk tier | LOW, STANDARD or HIGH. It sets the review depth | Code proposes it from the paths. The lead confirms |
+| Risk tier | LOW, STANDARD or HIGH. It sets the review depth | The lead sets it. No code proposes a tier yet (SP-8a) |
 | Appetite | Credits and review hours that the epic may spend | The lead |
 | Workstream | The track that owns it | The lead |
 | Spec link | A Knowledge page or a repository file | Anyone |
+
+**How SP-8a stores the contract (2026-11-08, Metorite task 2291).** These rules bind the build. The column "Who writes it" names a role. It is not a permission check.
+
+1. **A table of its own, not the custom-field store.** `pm_epic_contracts` (migration 402) holds one row for each epic, keyed by `task_id`. The custom-field store has no list type for the checks and no scope for epics only. Each project would also have to define the seven fields by hand. The table is tenant-scoped with FORCE ROW LEVEL SECURITY (R5). A guard refuses a row whose task is in another organization. Each column is nullable (R6).
+2. **3 to 7 checks on each save.** The code refuses a save with fewer than 3 or more than 7 checks, so the store keeps no draft. The chat card holds a draft until the member approves it. Each check has a text of 1 to 300 characters, and two checks may not have one text. A check that comes with no id gets an id from its text. So a save of the same text keeps the id. Fence: `tests/unit/test_epic_contract_r8.py`.
+3. **The lead sets the risk tier.** The tier is LOW, STANDARD or HIGH, and a CHECK in the database holds it. No code proposes a tier from the paths in SP-8a. A later slice can add the proposal.
+4. **Only an epic takes a contract.** A write on a task that is not an epic answers 422 with `core.NOT_EPIC_DETAIL`. That text says what happened. It also says the next step: make the task an epic first. A read of such a task gives `epic_contract: null`. `core.assert_task_is_epic` uses the predicate of the Epic-root rule (`core.is_epic_type`).
+5. **A change of type keeps the row.** When the type of a task stops being an epic, the row stays and every read ignores it. A change back to an epic shows the contract again. Nothing deletes a contract except the delete of its task.
+6. **A save replaces the whole contract.** `PUT /projects/tasks/{id}/epic-contract` takes the whole contract under the key `epic_contract`, and a part that the body leaves out is cleared. The MCP block of `update_task` and the chat tool `set_epic_contract` send the whole contract too. `POST /projects/tasks` takes the same block for a task of an epic type.
+7. **The version is the version of the task.** `If-Match` carries `pm_tasks.updated_at`. The match is strict for each caller that sends it (`core.require_exact_version`), because a save replaces the whole contract. A save writes one `field_change` activity, which moves the version, so a second writer with an old read gets 412. An agent must send the header. A member without it writes, as D-PM-20 allows. The app form of SP-8b will send it.
+8. **Who may write.** The rule of the task: a member who can see the task can write its contract. A pinned agent connection reaches only the epics inside its pin.
+9. **The record.** A save that changes something writes one `field_change` row. It names each part that changed (`epic_outcome`, `epic_acceptance` and the others), and the timeline prints "Edited Epic outcome". Only the tier and the two appetite numbers carry the old and new values. No long text goes into the record. `meta.via` comes from the actor seam.
+10. **The workstream is text until SW-67.** It holds a project id or the name of a track, as the lead writes it, at most 120 characters. SW-67 adds the lane record, and a later slice can then keep the lane id. Text now keeps the field useful with no record that does not exist yet.
+11. **Dark behind `EPIC_CONTRACT_ORGS`.** The list is empty by default, and a reload applies a change. Off, `GET` and `PUT /projects/tasks/{id}/epic-contract` answer 404 with "Epic contracts are not on for this organization." `get_task` and `get_task_context` carry `epic_contract: null`. A create with a contract answers the same 404 and makes no task. The chat tool answers with one sentence and makes no card. The table stays, and it is harmless while the flag is off. Fence: `tests/unit/test_epic_contract_r8.py` (`TestTheFlag`).
+12. **The chat card shows what changes.** The card holds one `impact` row, then the parts that change, then one row for each check that is added, removed or changed. A count stands for the checks that stay. So a tick of one check of a full contract fits on one card. A whole number shows as 40, not 40.0. Fence: `tests/unit/test_epic_contract_r8.py` (`TestTheCard`).
 
 **Roll-ups.** An epic computes these values from all of its descendants. Today it counts only its direct children.
 
@@ -9145,13 +9192,13 @@ Each row has one Metorite task. The rows SP-1 to SP-5 keep the scope of the boar
 | Row | Task | Scope | Done when | Risk | Depends on |
 |---|---|---|---|---|---|
 | **SP-1** | 960 | The cycle store (§13.2a): a cycle table, a membership table with one open cycle for each task, the committed snapshot and the capacity snapshot. Each is tenant-scoped with FORCE ROW LEVEL SECURITY (R5), and expand only (R6). Nine routes: list the cycles of a node, read one, plan, edit (`If-Match`), delete a planned cycle, add a task, remove a task, start and close. Start needs a goal and stores the committed scope and its total. Close takes a choice for each unfinished task and logs each move. The flag `PROJECTS_SPRINTS` (`PROJECTS_SPRINTS_ORGS`) is OFF by default. **BUILT 2026-11-08, not merged** (migration 372) | R8 tests prove one cycle for a task, no read across organizations, one active cycle for each node, a logged move for each carry-over, a start total that a carry-over does not change, the visible count and `hidden`, FORCE RLS on each table, and 404 on each route with the flag off. Fix round 2 adds proofs that a move out of the node frees the row, and that an archived task needs no choice. It also proves that a negative estimate starts, and that two closes cannot deadlock. Verify: `TENANT_LADDER_DATABASE_URL=<scratch> uv run pytest tests/unit/test_sprint_store_r8.py -rs` (no skip), and `uv run pytest tests/unit/test_projects_migration.py tests/unit/test_projects_chat_coverage.py tests/unit/test_tenant_coverage.py` | HIGH | SP-0 |
-| **SP-2** | 961 | A seeded Story type. An epic filter in the Backlog and on the Board. Epics as bars on the Timeline. "Suggest stories" with Mira, and nothing is written before the accept. The progress of an epic moves to SP-9 | An epic with 5 children and 2 done shows "2 of 5". "Suggest stories" creates no task before the accept. Visual review at 1440 px and 390 px | STANDARD | SP-0 |
+| **SP-2** | 961 | The owner dropped the Story type (D199, task 961, 2026-11-11). An epic holds tasks. **SP-2a (task 2936) is built:** an Epic filter on the Board, and the epic line "2 of 5 done". Later: Timeline bars from child dates, a done-when checklist, "Suggest tasks" with Mira (nothing is written before the accept), and the Backlog epic filter after SP-3a. The progress of an epic stays with SP-9 | An epic with 5 children and 2 done shows "2 of 5 done". "Suggest tasks" creates no task before the accept. Visual review at 1440 px and 390 px | STANDARD | SP-0 |
 | **SP-3** | 962 | The style picker (§13.1) with the Sprints or Cycles style. A Backlog canvas in the tab row (OP-12, task 839): planned cycles above, the backlog below. Drag, or "Move to sprint" on the phone. Each cycle shows its count and its hours against its capacity: the review hours of named people, plus credits. Over capacity warns and never blocks | Four-capture visual review at 1440 px and 390 px. A drag and its Undo both work | STANDARD | SP-1 |
 | **SP-4** | 963 | Start and close dialogs. The default length is one week, and the goal is required. The Board opens on the active cycle. Reports: committed, added, done and carried over. A burndown that shows each change of scope. Throughput by count and by hours, with no points | R8 tests prove the report numbers after a carry-over. Visual review on desktop and phone | STANDARD | SP-1, SP-3 |
-| **SP-5** | 964 | Cycles in the chat, on WhatsApp and over the MCP, through the one manifest (D136): list, status, create, plan, start, close and move. A bulk move and a close show the payload on one approve card (D124.2). External agents see the cycle of a task in `get_task` and `get_task_context` | The manifest fence passes with each route in its class. One chat run plans a cycle and starts it | STANDARD | SP-1 |
+| **SP-5** | 964 | Cycles in the chat, on WhatsApp and over the MCP, through the one manifest (D136): list, status, create, plan, start, close and move. A bulk move and a close show the payload on one approve card (D124.2). External agents see the cycle of a task in `get_task` and `get_task_context` | The manifest fence passes with each route in its class. One chat run plans a cycle and starts it. **SP-5a BUILT 2026-11-09, dark, not merged:** the six chat tools and the MCP reads. **Deferred:** MCP writes (SP-5b, EA3-53), `update_cycle`, `delete_cycle`, the WhatsApp `ALLOWED_ACTS` line | STANDARD | SP-1 |
 | **SP-6** | 2289 | A type control on the task page and the row menu, and a command "Make it an epic". The Epic-root rule still holds: an Epic has no parent, or only a Goal parent after WM-5. Chat sets the type on one card. `update_task` takes `type_id`, with a parity row in `skill_projects/manifest.py` (**built 2026-11-08, items 3 and 4: the MCP `type_id` and the chat card. The type control in the app is open.**) | A member sets the type in the app and in chat. An agent sets it with `update_task`. A type change that breaks the Epic-root rule is refused with a reason | STANDARD | SP-0 |
 | **SP-7** | 2290 | A script moves each top-level task tagged "Epic" that has no epic type to the Epic type of its project. The tag stays. A task with a parent is skipped and listed. Each change goes in the task timeline. A dry run comes first, with a count for each organization | The dry-run counts are on the task. After the run, no top-level task tagged "Epic" lacks an epic type. Run it on HathiLabs first. A customer organization needs the owner's OK on the count | HIGH (a data write in live organizations) | SP-6 |
-| **SP-8** | 2291 | The seven fields of the epic contract (§13.3). The chat drafts the outcome and the checks. The MCP reads and writes them. A field on a task that is not an epic is refused. The custom-field store makes it STANDARD. A migration makes it HIGH, and the builder states which | A member fills the contract in the app and in chat. An agent reads it in `get_task_context` | STANDARD with the custom-field store, HIGH with a migration | SP-0, SP-6 |
+| **SP-8** | 2291 | The seven fields of the epic contract (§13.3). The chat drafts the outcome and the checks. The MCP reads and writes them. A field on a task that is not an epic is refused. The builder chose a migration, so the row is HIGH (§13.3, "How SP-8a stores the contract"). **SP-8a is built (2026-11-08, migration 399, not merged): the table `pm_epic_contracts`, `GET` and `PUT /projects/tasks/{id}/epic-contract`, `epic_contract` in `get_task` and `get_task_context`, the `epic_contract` block of the MCP tools `update_task` and `create_task`, and the chat tool `set_epic_contract`. SP-8b is open: the form in the app, with the D145 owner preview** | A member fills the contract in the app and in chat. An agent reads it in `get_task_context`. SP-8a: R8 proves the 422 on a task that is not an epic, the count of 3 to 7 checks, the tier CHECK, the read over the real edge, the pin, and no read or write across tenants | HIGH (a migration) | SP-0, SP-6 |
 | **SP-9** | 2292 | One read that computes, for an epic, progress, spend and waits over every descendant that the reader can see. It leaves room for forecast, health and hill position. A hidden descendant is left out and counted in `hidden` (**built 2026-11-08: `rollup.py` adds `rollup` to `GET /projects/tasks/{id}` for an epic, the MCP `get_task` passes it, and the task panel shows one line. `spend`, `forecast`, `health` and `hill` are null until SP-8 and PJP-6. Fence: `tests/unit/test_epic_rollup_r8.py`.**) | R8: an epic with slices at depth 1, 2 and 3 counts all of them. A hidden descendant is counted in `hidden`. The direct-child count of today stays correct | STANDARD (read only) | SP-0. Spend needs SP-8 |
 | **SP-10** | 2293 | The epic page (§13.3). The graph shows the links and no path until the engine ships. On the phone the graph becomes an ordered list. The one look applies (`DESIGN_SYSTEM.md`, `statusAccent.ts`). D145 owner preview | The page renders for an epic with 3 levels of slices, in light and dark, at compact density and at phone width. The captures are on the task | STANDARD | SP-8, SP-9. The graph needs SW-16 (task 347) |
 | **SP-11** | 2294 | The spec merge of §13.4. This change closes it | Three rows name one owner. The two doc tests pass | LOW | SP-0 |
@@ -9731,7 +9778,7 @@ The apply is quiet, as the file import is (§6.10 of `project_import.md`). It em
 
 ### 14.9 Teams (epic E7, task 2530, replan 2026-11-09)
 
-Proposed, owner review in this pull request. A team is a group (`group:<slug>`, D12). There is no team object (D87, D49). A member sees two words: Team and Space.
+Decided 2026-11-10: the owner approved this on task 2531 (scope value, flag `TEAMS_ORGS`, and who is a team). PX-2 (task 967) is folded in as T-2. A team is a group (`group:<slug>`, D12). There is no team object (D87, D49). A member sees two words: Team and Space.
 
 1. **One team has many spaces.** A grant of a space to a group in `pm_project_grants` makes the space part of that team's view.
 2. **A space shared with no team of the member is hidden from that team's view.**
@@ -9739,7 +9786,7 @@ Proposed, owner review in this pull request. A team is a group (`group:<slug>`, 
 4. **A hidden space is never named and never counted.** This holds in a list, a count, a search, `board_stats`, an assistant answer and an MCP read. A direct link answers "not found".
 5. **A scope never grants.** The team scope narrows a view. It opens nothing that the member could not already open.
 
-Fence: `tests/unit/test_team_scope_isolation_r8.py` (new, T-7) binds rules 2 and 4. Until T-7 lands, the rules are advisory (R7).
+Fence: `tests/unit/test_team_scope_isolation_r8.py` (T-7, task 2538) binds rules 2 and 4 on a real database (R8), for the surfaces that it drives. These are the tree, the board, `board_stats`, My tasks, search, the CSV export, the delta feed, the direct link, six chat tools and six MCP tools. The MCP tools run with an OAuth token and with a box token. The fence does not cover all of rule 4. Its docstring lists each read that it does not drive, and that list is follow-up work. Rule 4 stays advisory for those reads (R7). Rules 3 and 5 stay advisory until the T-4 fence lands (R7).
 
 | Row | Task | Scope | Done when | Fence | Risk | Flag (default OFF) | Depends on |
 |---|---|---|---|---|---|---|---|
@@ -9750,7 +9797,7 @@ Fence: `tests/unit/test_team_scope_isolation_r8.py` (new, T-7) binds rules 2 and
 | **T-4** | 2535 | The team scope in the shell. One contract of one value: a team slug or "all" (`navigation_shell.md` §4.2a) | The shell holds one scope value, and every app reads it | `src/lib/shell/teamScope.test.ts` (new) | STANDARD | `TEAMS_ORGS` | T-2, T-3, T-7 |
 | **T-5** | 2536 | Apps adopt the scope. One task for each app. Planning only | Each app has a task that names its adopt step | Advisory | LOW | none | T-4 |
 | **T-6** | 2537 | Chat and MCP through the app door. A write shows an approve card | A chat read and an MCP read of a hidden space answer "not found" | The R8 test of T-7 | STANDARD | `TEAMS_ORGS` | T-3, the MCP-G24 decision |
-| **T-7** | 2538 | The isolation fence: two teams, three spaces and every surface | Each surface of rule 4 passes with a hidden space. `tests/unit/test_team_scope_isolation_r8.py` (new) | R8, full loop | HIGH | none | T-1 |
+| **T-7** | 2538 | The isolation fence: two teams, three spaces and the surfaces that the fence lists. **Built 2026-11-11 for those surfaces, not merged.** The reads that its docstring names as not driven are follow-up | Each listed surface of rule 4 passes with a hidden space. `tests/unit/test_team_scope_isolation_r8.py` | R8, full loop | HIGH | none | T-1 |
 
 **Order.** T-0, then T-1. Then T-2, T-3 and T-7. Then T-4, then T-5. T-6 follows T-3 and the MCP-G24 decision. The flag name `TEAMS_ORGS` is a proposal, and the build task confirms it.
 

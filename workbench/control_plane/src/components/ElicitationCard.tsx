@@ -137,6 +137,12 @@ interface ElicitationCardProps {
    * still reads "Answered".
    */
   title?: string;
+  /**
+   * The host bumps this after a failed send of THIS card's answer. The card
+   * then makes a new exit gate, so Submit works again. The typed text and the
+   * picks stay: the card does not remount.
+   */
+  retryToken?: number;
 }
 
 export default function ElicitationCard({
@@ -149,6 +155,7 @@ export default function ElicitationCard({
   id,
   hint = SUBMIT_HINT,
   title: openTitle,
+  retryToken = 0,
 }: ElicitationCardProps) {
   const [answers, setAnswers] = useState<ElicitationAnswers>({});
   const [freeformTexts, setFreeformTexts] = useState<Record<string, string>>({});
@@ -162,7 +169,7 @@ export default function ElicitationCard({
   const exit = useRef(cardExit());
   useEffect(() => {
     if (!closed) exit.current = cardExit();
-  }, [closed]);
+  }, [closed, retryToken]);
 
   const toggleOption = useCallback(
     (header: string, label: string, multi: boolean) => {

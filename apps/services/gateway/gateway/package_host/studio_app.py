@@ -8,10 +8,15 @@ session of the publish, after ``sync_objects``, and only while
 ``flags.package_host_allowed`` holds the org.
 
 **One install for the owner.** The first publish writes one private install
-for the owner, with ``version`` the published number and no end date. Each
-later publish moves that install to the new version and replaces its claims
+for the owner, with ``version`` the published number. Each later publish
+moves that install to the new version and replaces its claims
 (``store.set_version``). So a publish never writes a second row and never
 answers 409 ``already_installed``.
+
+**The end date (PKG-12).** The route gives ``ends_at``. A publish from chat
+gives now plus ``store.CHAT_ENDS``, and a publish from the IDE gives None.
+Only the first publish writes it. ``set_version`` keeps the end date that
+the install holds, so a later publish never moves it.
 
 **Jobs (PKG-8c).** Each ``shell.jobs`` item with a verb and a view adds a
 ``jobs`` claim, keyed ``<app id>:<view>``. See :func:`_job_claims`.
@@ -37,6 +42,11 @@ install at the scope when it exists, and writes it when it does not, with
 the claims of :func:`claims_of`. A later publish moves only the private
 install, so the holder approves a new version by a new call.
 
+**The uninstall (PKG-8e).** The route ``DELETE /studio/packages/{id}/install``
+calls :func:`install_scope` on the body, checks ``studio:publish``, and then
+calls :func:`remove_scope_install`. That function finds the install at the
+scope and removes it through ``store.remove_install``.
+
 This module runs no SQL. The store is the one writer, and the route is the
 one place that decides who may call this.
 """
@@ -45,6 +55,7 @@ from __future__ import annotations
 
 import unicodedata
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any
 
 from acb_auth.permissions import normalize_grant_subject
@@ -150,6 +161,7 @@ async def keep_private_install(
     version: int,
     owner: str,
     manifest: Mapping[str, Any],
+    ends_at: datetime | None,
 ) -> Install:
     """Keep the private install of *owner* at *version*, with its claims.
 
@@ -158,6 +170,9 @@ async def keep_private_install(
     exists, and writes it when it does not. A refusal of the store raises an
     :class:`store.InstallError`, and the route answers with its
     ``detail_for`` of the member.
+
+    *ends_at* is the end date of a new install (PKG-12). A move keeps the
+    end date that the install holds, so a move ignores *ends_at*.
     """
     claims = claims_of(app_id, manifest)
     moved = await store.set_version(
@@ -167,7 +182,7 @@ async def keep_private_install(
         return moved
     return await store.install(
         db, app_id=app_id, version=version, scope_subject=owner, scope_kind="private",
-        installed_by=owner, ends_at=None, contributions=claims)
+        installed_by=owner, ends_at=ends_at, contributions=claims)
 
 
 #: The scopes of the install route (PKG-8b). A private install comes with the
@@ -237,3 +252,43 @@ async def keep_scope_install(
         db, app_id=app_id, version=version, scope_subject=scope_subject, scope_kind=scope_kind,
         installed_by=member, ends_at=None, contributions=claims)
     return made, True
+
+
+#: The refusal when the app has no install at the scope of the call (PKG-8e).
+NO_INSTALL_AT_SCOPE = ("This app has no install at this scope, so nothing was removed. "
+                       "Check the scope, then try again.")
+
+
+async def remove_scope_install(
+    db: Any,
+    *,
+    app_id: str,
+    scope_kind: str,
+    scope_subject: str,
+) -> Install:
+    """Remove the install of *app_id* at an org or a group scope (PKG-8e).
+
+    *db* is the session of the route. The function finds the install with
+    ``store.install_at_scope``, which takes the org lock first. Then it calls
+    ``store.remove_install``, the one path of §5.3. Answers the install that
+    went, with no claims.
+
+    **What goes, in one transaction.** The DELETE of the install row, and
+    two FK cascades of it: each claim in ``package_contribution`` and each
+    extension value in ``package_field_value`` (PKG-13). So the nav entry
+    and each job leave every member in scope at the next read. A private
+    install of another app that the wider claim hid shows again (PKG-Q6).
+    ⚠️ A snapshot of the claims or the values (MKT-7) goes between the find
+    and the removal, in this transaction.
+
+    An app with no install at the scope raises ``store.InstallNotFound``
+    (404). A private scope raises ``store.ScopeRefused`` (422).
+    """
+    if scope_kind not in ROUTE_KINDS:
+        raise store.ScopeRefused("bad_scope", BAD_SCOPE)
+    found = await store.install_at_scope(
+        db, app_id=app_id, scope_kind=scope_kind, scope_subject=scope_subject)
+    if found is None:
+        raise store.InstallNotFound("install_not_found", NO_INSTALL_AT_SCOPE)
+    await store.remove_install(db, install_id=found.id)
+    return found

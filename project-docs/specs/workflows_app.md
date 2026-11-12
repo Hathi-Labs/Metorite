@@ -1,10 +1,11 @@
 # Workflows App — Project Plan (deterministic automation over the agent fleet)
 
-> **Product:** Metorite · **Feature:** Workflows app (`/workflows`) · **Updated:** 2026-11-03 · **Version:** 0.3 · **verified against code on 2026-08-03**
+> **Product:** Metorite · **Feature:** Workflows app (`/workflows`) · **Updated:** 2026-11-11 · **Version:** 0.3 · **verified against code on 2026-08-03**
 > **Status:** 🔄 Slices 1+2 built — data model (migration 132) + gateway API + MAF compiler/engine + `/workflows` visual editor + Module Studio + **Workflow Copilot (F14)** + **keyword capability search (F15; semantic → BO‑22)** + **event triggers (F10)** + **approval node with pause/resume via the Action Broker inbox (F11)** + **workflows as agent tools (F13)** + **run-history drill-in (F9 complete: a history row replays its recorded node results onto the canvas)** + **F1/F6 complete (gallery search + duplicate/delete, version rollback via the status-badge popover)** + **F3's logic vocabulary complete (wait node — inline under a minute, durable pause above it; approval and wait now both in the catalog/palette)**. All five trigger kinds live: manual, api, webhook, schedule, event. Engine semantics are locked by a golden trajectory eval (`evals/trajectories/test_workflow_engine_trajectory.py`, CI-blocking); orphaned `running` rows are swept to `failed` at gateway startup (paused runs survive — resume rebuilds from the pause snapshot). **R2 is mitigated (migration 134):** a published workflow whose unattended runs fail `AUTO_DISABLE_AFTER` times consecutively disables itself with a recorded reason, and `POST /{id}/enable` is the one-click way back.
 > **F13 is tenant-bound (2026-10-15).** In production the agent tools saw no workflow. The service read `workflows` without a tenant, and FORCE RLS returned zero rows. Now each tool passes the org of the agent run. The service binds that org for the list, the run row, the pause row and the status read. An approval resumes the run in the approver's org. With no org, a tool refuses. An agent cannot start a workflow with a wait that can pause, because no scan resumes a run with no org. The health check and the manual, schedule, webhook and event runs stay unbound until H4 slice 6c (HANDOFF H-328). Fence: `tests/unit/test_workflows_tool_rls_r8.py`.
 > **H4 slice 6c part (a) is built (2026-11-02, HANDOFF H-328).** A run that carries an org now binds that org in its nodes. `build_node_services(actor, workflow_id, organization_id)` takes the org from the run. The module read, the `pm_task` write, the lifecycle sweep and the `notify.whatsapp` owner read each use it. Fence: `tests/unit/test_workflows_lifecycle_rls_r8.py`.
 > **H4 slice 6c part (b) is built (2026-11-03, HANDOFF H-328).** The schedule scan, the wait scan and the startup sweeps loop over the orgs. They bind each org that `WORKFLOW_UNATTENDED_ORGS` lists, and the list ships empty. An empty list starts no run, writes no run row and sends nothing. The flip is OWNER-GATE. Fences: `tests/unit/test_workflows_lifecycle_rls_r8.py` section 9, `tests/unit/test_workflows_unattended_flag.py`, `tests/unit/test_workflows_start_run_org_fence.py`. A workflow with a task node on an untaken branch ran before part (a), and now it refuses. The schedule scan of a listed org refuses a workflow with a task node too, because a schedule has no member to check. The claimed tick leaves a `cancelled` run row with the reason. The wait scan resumes a run with the no-person mark (AUTO-7a), whatever the kind of the run. Part (c) still owns `triggers.py`, `hooks.py`, the manual Run, and the long-wait refusal.
+> **STB-5 R8 evidence of part (c) (2026-11-11, task 2133).** `tests/unit/test_workflows_triggers_r8.py` proves under FORCE RLS that no start door starts a run in another org. Four strict `xfail` cases hold the findings. The event and webhook doors read unbound, and the manual Run cannot write its run row. A webhook replay starts a second run. Part (c) owns each fix, and `WORKFLOW_UNATTENDED_ORGS` stays empty until it lands.
 > **Part (a) acceptance.** A module node and a Projects node run to the end under FORCE RLS in the run's org. Org B's run never reads org A's module or task.
 > **What part (a) does not do.** It changes no start path. Only the F13 runs and their approval resumes carry an org. A run with no org keeps the old path, so its module, task, sweep and notify nodes fail under FORCE RLS.
 > **The one thing part (a) wakes.** An approver can clear a run that paused before RLS, whatever started that run. The approval door opens the run in the approver's org, and RLS makes that org equal the stored org. The resumed nodes take the org from the run row, so the module and notify nodes of that run now work. A person approved that run, and nothing wakes without one.
@@ -213,7 +214,9 @@ Modules are the "programmatic modules generated via a conversational interface" 
 
 - `POST /workflows/{id}/disable` · `POST /workflows/{id}/enable` — take a workflow off its triggers / put it back on the version it already has (R2). Enable is not publish: when the auto-disable policy trips on a transient outage the graph is fine, and minting a version would be noise. 409 if the workflow was never published; idempotent when it is already live
 
-All under `require_authenticated` + the `workflows` feature check; the hook route is the one deliberate exemption (token *is* the credential), rate-limited and audited. **Publish, rollback, disable, and enable additionally require the `workflows:publish` capability** (Q3, migration 133) — everything else in the list is open to any member holding the feature.
+All under `require_authenticated` + the `workflows` feature check. The hook route is the one deliberate exemption (token *is* the credential), rate-limited and audited. **Publish, rollback, disable, and enable additionally require the `workflows:publish` capability** (Q3, migration 133).
+
+**The writes also need `feature:studio` (STU-J1-3, `ai_studio.md` §14 J1-3).** A create, a duplicate, an edit, a delete, a Copilot turn and a test run of the draft need `feature:studio` on top of the `workflows` feature. The reads, a run of the published version, the module routes and the four live routes add no Studio right. The gate is dark behind `WORKFLOW_STUDIO_GATE_ORGS`. Until the flag lists an org, everything in the list except the four live routes stays open there to any member holding the feature.
 
 ---
 
@@ -334,7 +337,7 @@ Anything in Slice 4 that looks reachable today is reachable only because its dep
 
 - **Q1** — MAF Workflows API stability at the pinned version: spike passed (build/run/conditional edges/fan-out), but checkpoint-storage backends for pause/resume (F11) need their own spike before Slice 2.
 - **Q2** — Engine placement: gateway package now; move into orchestrator process if agent-node fan-out or isolation demands it. Transport-free module boundary keeps the move cheap.
-- **Q3 — RESOLVED (implemented).** Any `workflows`-granted member may draft, validate, Test-run, and duplicate; **publish, rollback, and disable require `workflows:publish`** (`acb_auth` capability; migration 133 seeds it to owner/admin/manager — `member`/`guest` drop to draft-and-test, and an admin can hand it back per-user with an override). The line is drawn at *arming*: a draft fires no triggers and its writes are still broker-held, while publishing starts webhooks/cron/events running it unattended. `/auth/me` now returns resolved `capabilities` so the editor greys out Publish with an explanation instead of surfacing a bare 403. Still worth validating against real usage: whether `manager` is the right default tier.
+- **Q3 — RESOLVED (implemented), and narrowed by STU-J1-3.** Where `WORKFLOW_STUDIO_GATE_ORGS` lists the org, a draft, an edit, a duplicate, a delete, a Copilot turn and a Test-run also need `feature:studio`. Validate is a read and needs only the `workflows` feature. A run of the published version is use and needs only the `workflows` feature too (`ai_studio.md` §14 J1-3). The rest of this item is the rule before J1-3, and it holds where the flag does not list the org. Any `workflows`-granted member may draft, validate, Test-run, and duplicate. **Publish, rollback, and disable require `workflows:publish`** (an `acb_auth` capability. Migration 133 seeds it to owner/admin/manager — `member`/`guest` drop to draft-and-test, and an admin can hand it back per-user with an override). The line is drawn at *arming*: a draft fires no triggers and its writes are still broker-held, while publishing starts webhooks/cron/events running it unattended. `/auth/me` now returns resolved `capabilities` so the editor greys out Publish with an explanation instead of surfacing a bare 403. Still worth validating against real usage: whether `manager` is the right default tier.
 - **Q4** — Event-trigger volume before BO‑20: in-process runs are honest-but-lossy on restart; cap per-workflow concurrency and surface "missed while down" in run history, or hold F10 GA until BO‑20?
 - **Q5** — Module review policy: is generator + validator + test-before-save enough, or should `ready` status require a second human (approver) before a module is usable in published workflows? **Sharpened by F14:** copilot-created modules save as `ready` immediately (provenance `auto_created: true` makes them auditable and filterable); if review-before-ready is adopted, the copilot path should queue them as `draft` and say so in its reply.
 - **R1** — *Scope creep toward n8n*: the catalog makes it tempting to add generic SaaS nodes. Rule: a node exists only if the Integration Registry has the integration — the registry is the roadmap. **Scope clarified by owner decision 2026-08-03 (§8.3c): R1 governs the node *catalog*, not the control-flow *vocabulary*.** Loops are approved and R1 is not a blocker on them; the engine-complexity cost was stated and accepted in §8.3c. R1 continues to bind unchanged everywhere else — a generic-SaaS node with no registry entry is still refused.
@@ -542,6 +545,90 @@ Not oversights — decisions, so a future reader does not "fix" them:
 ### 13.5 Where the numbers are
 
 Effort-shaped grouping for whoever picks this up, so the section can be sequenced without re-reading it: **U1 is WS-27f's first half and the only item anything is waiting on. U7 is its second half.** U2 and U3 are self-contained engine work with no cross-app dependency — U3 is the one that closes a promise §1.2 G6 and §2 F9 already make in writing, which arguably ranks it first of the two. U4 waits on U1 by construction. U5 waits on §8.3b by decision. U6 is independent and is the highest-value *new trigger*. U8 is guidance that binds the next tool surface and consumes no ticket.
+
+---
+
+## 14. One-time workflows (WS-OTW, D214, 2026-11-12)
+
+**Status: PLANNED.** Epic task 3010. Planning task 3009 wrote this section. No slice is built.
+
+**The owner's ask (2026-11-12).** Ask a teammate for an update on the quote of a sale. Then update the CRM or the project with the answer. The ask goes out. When that one answer arrives, a workflow runs once for it and updates the right records. Then it retires.
+
+### 14.1 The shape
+
+1. **One engine.** A one-time workflow is a workflow of this engine. "Once" is a property of its trigger. It adds no scheduler, no watcher and no store (`building_blocks.md` §4.6).
+2. **The trigger fields.** An expand-only migration adds to `workflow_triggers`: `max_runs` (null means no limit), `runs_started`, `match` (jsonb), `expires_at` and `retired_at`. A one-time trigger has `max_runs` 1.
+3. **At most once.** `dispatch_event` starts a run only when the event payload holds every key of `match` with the same value. One conditional update claims the trigger (`runs_started < max_runs` and `retired_at is null`), as the schedule CAS on `last_fired_at` does. Two matching events start one run. A replay starts nothing.
+4. **The state.** The state of a one-time workflow is one of these: `waiting`, `ran`, `expired` or `cancelled`. A retired trigger never fires again.
+5. **The run proposes, and a person confirms.** The graph is one Mira step, the shape of AUTO-1 (`proactive_agent.md` §3). The step is a capped headless Mira turn for the asker on the durable job queue (AUTO-8a). Mira reads the answer and the records that the asker named. She posts each write as a held card in the asker's "Needs you". The asker approves, and the write runs in the asker's own session, through the one action door. So the run makes no unattended write.
+6. **Mira treats the answer as untrusted data.** An instruction inside it changes no other record.
+
+### 14.2 The match, by rung
+
+| Rung | The event | The match |
+|---|---|---|
+| 1 | `projects` / `decision.answered`: the answer to one person ask (AP-8a), emitted after the commit with its org | The decision id |
+| 2 | `email` / `message.received`: one inbound message, with the org, the account, the thread, the sender and the message id, and no body | The thread id and the expected sender |
+| Later | Any core-app event of STU-E12 (task 2379) | Any field of the payload |
+
+The rung 1 event starts its run bound to the org of the answer, from the bound session of the answer route. The general fix of every unbound event run stays H-328 part (c) (task 856).
+
+### 14.3 The entry points
+
+- **Chat.** `ask_person` takes an optional `on_answer`: the instruction and the records it names. One card shows the ask, the person, what happens on the answer and the expiry. On Approve, the ask and the trigger commit in one transaction.
+- **A mail ask.** Mira drafts the mail. The asker approves the send from their own mailbox, and the trigger arms on the thread and the expected sender. A person outside the org can be the recipient.
+- **The app.** The ask form on a task gets "When they answer, …". The workflow list gets a "One-time" filter.
+- **The MCP.** A connected agent can arm a one-time workflow for its own ask through the action door. It cannot approve the writes of its own run.
+
+### 14.4 The expiry
+
+The default expiry is the expiry of the ask: the due date of the task plus 7 days, or 14 days with no date. At the expiry the asker gets one card: Chase, Wait 3 more days, or Close. Nothing drops in silence. The card counts in the Reach budget. The general chase is AUTO-9 (task 1393), and OTW-9 reuses it when it exists.
+
+### 14.5 Flags
+
+`ONE_TIME_WORKFLOWS_ORGS`, default empty. A rung 1 demo also needs `WAITING_ORGS` and `DECISIONS_ORGS` for the pilot org, because the person ask uses both flags. A flag flip is the `enforcement-flip` act.
+
+### 14.6 Not in this section
+
+- A "Run once" switch on any trigger in the editor, with a match on any field. It waits for STU-E12.
+- Auto-apply of the writes with no card. It waits for STU-E5 action nodes and H-328 part (c), and the member must turn it on for one workflow.
+- A quote object on a deal. Quotes come with CRX (D205.4). Until then, a quote update is a deal note and the deal amount.
+
+### 14.7 The slices
+
+| Slice | Task | Rung | What it does | Fence |
+|---|---|---|---|---|
+| OTW-0 | 3011 | 1 | This section and D214 | `tests/unit/test_doc_names_resolve.py`, `tests/unit/test_decision_ids.py` |
+| OTW-1 | 3012 | 1 | The trigger fields, the claim, the retire and the expiry sweep (HIGH, migration) | R8 tests of one run from two events, no run after expiry or cancel |
+| OTW-2 | 3013 | 1 | The answer to a person ask is an event, bound to its org (HIGH) | R8 tests of the org and a second org, and the tenancy boundary test |
+| OTW-3 | 3014 | 1 | The Mira step proposes and never writes | R8 test of no write before an approval, and an eval case |
+| OTW-4 | 3015 | 1 | `ask_person` with `on_answer`, and the app form | Chat parity rows, and an R8 test of one transaction |
+| OTW-5 | 3016 | 1 | The "One-time" list, the run view and Cancel | A vitest and the visual review |
+| OTW-6 | 3017 | 2 | `email` / `message.received` (HIGH) | R8 tests of one event per message and the org |
+| OTW-7 | 3018 | 2 | Ask by email | Chat parity rows, and an R8 test of one transaction |
+| OTW-8 | 3019 | 2 | The thread match, and the reply read | R8 tests of the match, and an eval case with a hostile reply |
+| OTW-9 | 3020 | 3 | The expiry choice | R8 tests of the three choices |
+| OTW-10 | 3021 | 3 | A Waiting kind, chat reads and the MCP door | R8 tests of the kind and the door op |
+| OTW-0b | 3026 | 1 | §14.8 and D214 points 9 and 10 | `tests/unit/test_doc_names_resolve.py`, `tests/unit/test_decision_ids.py` |
+| OTW-11 | 3027 | 1 | The auto-archive and the Archived view | R8 tests of each end and of no run when archived, a vitest and the visual review |
+| OTW-12 | 3028 | 3 | The retention period and the daily delete job (HIGH) | R8 tests of the period, "Keep", the org boundary and the audit row |
+
+The demo tasks are 3022 (rung 1), 3023 (rung 2) and 3024 (rung 3).
+
+### 14.8 Archive and retention (owner, 2026-11-12, D214 points 9 and 10)
+
+The owner asked for three things. A one-time workflow goes to the archive by itself. The archive shows somewhere. A schedule deletes old archived workflows, so that the archive stays small.
+
+1. **The auto-archive.** A one-time workflow archives itself when it ends. The reasons are `ran` (its run finished), `expired` (the asker closed it at the expiry) and `cancelled`. Cards that still wait in "Needs you" stay there, and the archived row says how many wait.
+2. **Archive by hand.** Any workflow can be archived. An archived workflow never runs. Its triggers do not fire, and the engine refuses a manual run with one plain sentence.
+3. **The Archived view.** The workflow app has an "Archived" view. It follows the read-only archive pattern of Projects (`project_management_app.md` §9b.6). It has a bar on top and no edit, and the run history opens. Each row shows what the workflow waited for, its outcome, its dates and its delete date.
+4. **Restore and "Ask again".** Restore brings a normal workflow back as disabled, so that it never runs by surprise. A one-time workflow has "Ask again" instead. It opens a new ask with the same text.
+5. **The retention period.** An org setting holds the period: 30, 90, 180 or 365 days, or "Keep". The default is 90 days. An admin changes it in the workflow settings or from chat.
+6. **The daily job.** One job for each org runs each day on the durable job queue, bound to that org. The run ledger (`gateway/jobs/unattended.py`) makes it run at most once for each org and day. It deletes each workflow that was archived longer ago than the period, with its versions, triggers, runs and pauses. A workflow that is not archived is never in scope.
+7. **An audit record stays.** The job writes one audit row for each delete. The row holds the workflow id, the name, the owner, the outcome and three dates: creation, archive and delete. The record changes of its runs stay, and so do the cards in their own stores.
+8. **Delete now.** The owner of a workflow or an admin can delete an archived workflow at once. A confirm step of the design system says that the delete cannot be undone. No browser dialog shows.
+
+Slices: OTW-11 (task 3027, rung 1) and OTW-12 (task 3028, rung 3).
 
 ---
 

@@ -22,6 +22,8 @@ dependencies = [
     "acb-llm",
     "acb-stt",
     "acb-auth",
+    # PB-5. The default guidance block reads a topic of the playbook package.
+    "acb-playbook",
     "orchestrator",
     "email-ingestion",
     "whatsapp-ingestion",

@@ -9,6 +9,14 @@ Spec: ``project-docs/specs/projects_ai_chat.md``.
 tool that is not exported is in ``manifest.PLANNED`` with its slice.
 """
 
+from skill_projects.cycles import (
+    close_cycle,
+    create_cycle,
+    cycle_detail,
+    list_cycles,
+    plan_cycle,
+    start_cycle,
+)
 from skill_projects.forms import (
     create_tags,
     create_tasks,
@@ -24,6 +32,7 @@ from skill_projects.guarded import (
     archive_task,
     attach_to_task,
     bulk_update,
+    change_agent_answer,
     convert_folder_to_project,
     create_project_from_template,
     delete_area,
@@ -77,7 +86,9 @@ from skill_projects.inbox import (
     watchers,
 )
 from skill_projects.nav import open_in_app, show_view
+from skill_projects.question_answers import answer_agent_question
 from skill_projects.reads import (
+    agent_questions,
     analytics_finished,
     analytics_load,
     analytics_outlook,
@@ -138,6 +149,7 @@ from skill_projects.writes import (
     report_save,
     reschedule_reminder,
     resolve_reminder,
+    set_epic_contract,
     set_my_overlay,
     set_recurrence,
     set_reminder,
@@ -175,6 +187,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "waiting_agent_requests",
     # Class A — WS-55 SW-11a, what needs a person (spec §12.7)
     "needs_attention",
+    # Class A — WS-55 EA-18d, the agent questions that wait on the member (spec §12.8)
+    "agent_questions",
     # Class A — the two reads S2b needed
     "my_task",
     "recurrence",
@@ -204,6 +218,9 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "list_project_updates",
     # Class A — WS-39 TPL-1a, the templates of the organization
     "list_templates",
+    # Class A — WS-39 SP-5a, the cycles (sprints) of a node and one cycle's status
+    "list_cycles",
+    "cycle_detail",
     # Class A — navigation (S6)
     "open_in_app",
     "show_view",
@@ -234,6 +251,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "update_task",
     "update_tasks",
     "watch",
+    # Class B — WS-55 EA-18d, the member answers one agent question (spec §12.8)
+    "answer_agent_question",
     # Class B — the rest: vocabulary, a comment of one's own, the repeat
     # rule, the private capture and the overlay (S2b)
     "create_field",
@@ -264,6 +283,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "file_tasks",
     # Class B — several links between tasks, one card (2026-10-19)
     "link_tasks_batch",
+    # Class B — the contract of an epic, one card (SP-8a)
+    "set_epic_contract",
     # Class B — WS-64 OP-6a, a new area of the member's own
     "create_area",
     # Class B — the rest of the writes (S5)
@@ -280,6 +301,9 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "reschedule_reminder",
     # Class B — WS-39 LP-1a, an update of a project with its health, one card
     "post_project_update",
+    # Class B — WS-39 SP-5a, plan a cycle and plan its tasks, one card each
+    "create_cycle",
+    "plan_cycle",
     # Class C — hard to undo, one act one card, the impact first (S3)
     "archive_project",
     "archive_task",
@@ -307,6 +331,9 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "report_delete",
     "revoke_access",
     "unpin_authority",
+    # Class C — WS-39 SP-5a, a cycle starts and a cycle closes, one card each
+    "start_cycle",
+    "close_cycle",
     # Class C — WS-39 LP-1a, the delete of a project update, one card
     "delete_project_update",
     "add_report_recipient",
@@ -320,4 +347,6 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     # Class C — WS-39 TPL-1a: an org-wide template, and a project made from one
     "save_as_template",
     "create_project_from_template",
+    # Class C — SW-43c: the member takes back or changes an answer to an agent
+    "change_agent_answer",
 ]

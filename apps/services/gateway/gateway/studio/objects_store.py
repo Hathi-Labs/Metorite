@@ -83,6 +83,17 @@ comparison is LEAKPROOF (``docs/rls_and_indexes.md``). So a number filter
 reads the hot rows of its field. A sort on a number still reads the index in
 order.
 
+**The aggregate (C2b).** :func:`aggregate_records` groups the records of one
+object by one hot field and takes a count, a sum or an average of each group.
+``studio_query.parse_aggregate`` checks the input, and :func:`build_aggregate`
+is pure. It reuses the candidates, the guard, the deadline and the check of the
+hot fields of C2a, in one statement. The candidates come in no order, because
+an order with no LIMIT made the planner sort the whole object. Each candidate
+reads the hot row of the group field and of each measure field by its key.
+The 50 groups with the most records stay, and one row ``other`` holds the rest.
+A money sum reads the currency of each amount from ``data`` in the same
+statement, and two currencies refuse the sum.
+
 **The batch (C1b).** :func:`apply_writes` is the one path of a record write.
 :func:`create_record`, :func:`update_record` and :func:`delete_record` are a
 batch of one, with the same signatures and answers, so no single call skips
@@ -156,6 +167,15 @@ the writes. A record of another package or another org is not found, so the
 line is refused. :func:`_find_lines` reads the relations after the org lock,
 and a relation that no longer fits its line object refuses the batch.
 
+**The hierarchy (C18).** A rule of kind ``hierarchy`` makes the records of one
+object a tree, through one hot relation field that points to the same object.
+After the writes of a batch, :func:`_check_trees` walks up and down from each
+record that got a new parent, in one statement for each object. It refuses a
+cycle, a parent that is no record of this object, and a tree of more than
+:data:`~acb_common.studio_rules.MAX_TREE_DEPTH` levels. :func:`read_tree` reads
+a tree or the whole forest, to that depth, in one recursive statement.
+``tests/unit/test_studio_hierarchy_r8.py`` runs both on a real Postgres.
+
 **The sync of a manifest (A5).** :func:`sync_objects` brings the rows of one
 package to the ``objects`` of a published manifest, and the publish route is
 its one caller. It adds an object (:func:`define_object`, whose one caller it
@@ -219,7 +239,7 @@ import json
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from dataclasses import field as dc_field
@@ -255,8 +275,10 @@ from acb_common.studio_fields import (
 from acb_common.studio_query import Condition, Query, QueryError, parse_query
 from acb_common.studio_rules import (
     FORMULA,
+    HIERARCHY,
     MAX_ROLLUP_PARENTS,
     MAX_ROLLUP_STATEMENTS,
+    MAX_TREE_DEPTH,
     MAX_WRITES_PER_BATCH,
     RANGE,
     ROLLUP,
@@ -278,6 +300,7 @@ from acb_common.studio_rules import (
     check_rollups,
     check_rule_is_hot,
     check_rules_fit,
+    check_tree,
     check_unique_count,
     floor_holds_at_zero,
     key_filter,
@@ -290,6 +313,7 @@ from acb_common.studio_rules import (
     run_formulas,
     stored_rules,
     touched_keys,
+    tree_moves,
     where_filter,
     with_initial,
     with_rollup_zero,
@@ -2023,16 +2047,22 @@ def _q_where(conditions: Sequence[Condition], params: dict[str, Any], rid: str,
     return " AND ".join(parts)
 
 
-def _q_source(conditions: Sequence[Condition], params: dict[str, Any]) -> tuple[str, int | None]:
+def _q_source(conditions: Sequence[Condition], params: dict[str, Any],
+              ordered: bool = True) -> tuple[str, int | None]:
     """The candidates ``c`` of a part, and the condition that they meet
-    already: the hot rows of the best condition, or the records of the object."""
+    already: the hot rows of the best condition, or the records of the object.
+    *ordered* False drops the order of the records, for a read of each
+    candidate with no LIMIT (an aggregate of C2b)."""
     ranked = sorted((rank, j) for j, cond in enumerate(conditions)
                     if (rank := _drive_rank(cond)) is not None)
     if not ranked:
         # In the order of the id: the records index `(org, object, id)` gives
-        # it, so a LIMIT stops on the index and no plan scans the table.
+        # it, so a LIMIT stops on the index and no plan scans the table. With
+        # no LIMIT, that order made the planner pick a Seq Scan and a Sort of
+        # an object of 50,000 records (C2b), so an aggregate reads no order.
+        order = " ORDER BY r0.id" if ordered else ""
         return (f"(SELECT r0.id FROM studio_records r0 "
-                f"WHERE r0.{_OF_ORG} AND r0.{_OF_OBJECT} ORDER BY r0.id) c"), None
+                f"WHERE r0.{_OF_ORG} AND r0.{_OF_OBJECT}{order}) c"), None
     j = ranked[0][1]
     cond = conditions[j]
     params[f"fk{j}"] = cond.field.key
@@ -2043,10 +2073,11 @@ def _q_source(conditions: Sequence[Condition], params: dict[str, Any]) -> tuple[
 
 
 def _q_filtered(conditions: Sequence[Condition], params: dict[str, Any], what: str,
-                only_hot: bool = False, gate: str = "TRUE") -> str:
+                only_hot: bool = False, gate: str = "TRUE", ordered: bool = True) -> str:
     """``SELECT what`` from the candidates ``c`` that meet each condition.
-    *gate* is a test of the whole statement, as the guard of ``m``."""
-    source, skip = _q_source(conditions, params)
+    *gate* is a test of the whole statement, as the guard of ``m``. *ordered*
+    goes to :func:`_q_source`."""
+    source, skip = _q_source(conditions, params, ordered)
     used = [c for c in conditions if c.field.hot or not only_hot]
     lookup = f" {_q_lookup('c.id')}" if any(_needs_row(c) for c in used) else ""
     where = _q_where(conditions, params, "c.id", skip, only_hot)
@@ -2295,6 +2326,343 @@ async def query_records(db: Any, *, package_id: str, object_id: str, filter: Any
     return RecordPage(records=records, total=count if exact else None,
                       total_at_least=None if exact else count, offset=start, limit=size,
                       line=line)
+
+
+# --- the aggregate (C2b) ----------------------------------------------------
+#
+# ⚠️ The f-string fence of C2a binds each `_q_agg_*` and `build_aggregate` too.
+#
+# The shape of one aggregate statement (one snapshot serves the groups, the
+# total and the check of the currency):
+#
+#   g, m  (a filter on a field that is not hot) the guard and the candidates,
+#         as in a page
+#   v     the count of the fields that the aggregate reads as hot and that are
+#         hot now
+#   x     one row for each candidate: the key of its group, and the hot value
+#         of each field that a measure reads. Each read is a lookup of one hot
+#         row by its primary key. A money field also reads its currency from
+#         `data`, by the primary key of the record, for a record with a value
+#   a     one row for each group: the records, and the sum and the count of
+#         the values of each field. A money field also keeps its lowest and
+#         its highest currency
+#   w     the count of the groups, the total over every group, and the lowest
+#         and the highest currency of each money field
+#   r, p  (a group) the rank of each group, by its records and then its key.
+#         `p` holds the groups of rank 1 to `:groups`, then one row `other`
+#         for the rest
+#
+# The candidates are those of a page: the hot rows of one hot condition, or
+# the records of the object by the records index. A record with no value of
+# the group field has the key NULL, so it joins the group with no value. A
+# checkbox has two states, so a record with no value joins `false`.
+
+#: The hot row of the group field, for each candidate.
+_GROUP_ROW = (
+    "LEFT JOIN LATERAL (SELECT gk.v_text, gk.v_num, gk.v_ts, gk.v_bool FROM studio_record_hot gk "
+    f"WHERE gk.{_OF_ORG} AND gk.{_OF_OBJECT} AND gk.field_key = CAST(:gk AS text) "
+    "AND gk.record_id = c.id OFFSET 0) gk ON true"
+)
+
+#: The key of a text group. `v_text` holds the first 256 characters, so a
+#: value of 256 characters reads the whole text from `data`, as `eq` does.
+_TEXT_KEY = (
+    f"(CASE WHEN gk.v_text IS NULL OR char_length(gk.v_text) < {HOT_TEXT_CHARS} THEN gk.v_text "
+    "ELSE (SELECT gr.data ->> CAST(:gk AS text) FROM studio_records gr "
+    f"WHERE gr.{_OF_ORG} AND gr.{_OF_OBJECT} AND gr.id = c.id) END)"
+)
+
+#: The key of each type of a group with no bucket.
+_GROUP_KEY: Mapping[str, str] = {
+    "text": _TEXT_KEY, "email": "gk.v_text", "select": "gk.v_text", "relation": "gk.v_text",
+    "number": "gk.v_num", "checkbox": "coalesce(gk.v_bool, false)",
+}
+
+#: The key of a date or a datetime group: the day or the month in UTC.
+_BUCKET_KEY: Mapping[str, str] = {
+    "day": "date_trunc('day', gk.v_ts AT TIME ZONE 'UTC')",
+    "month": "date_trunc('month', gk.v_ts AT TIME ZONE 'UTC')",
+}
+
+#: The key of an aggregate with no group: one group for every record.
+_NO_GROUP_KEY = "CAST(NULL AS text)"
+assert set(_GROUP_KEY) | {"date", "datetime"} == studio_query.GROUP_TYPES, \
+    "each type of a group has a key"
+
+_CURRENCY_MESSAGE = ("Field `{key}` holds amounts in more than one currency, or an amount with no "
+                     "currency. A sum never adds two currencies. Narrow the filter.")
+
+
+@dataclass(frozen=True)
+class AggregateGroup:
+    """One group of an aggregate (C2b)."""
+
+    #: The key: a text, a number, a bool, or the day (``YYYY-MM-DD``) or the
+    #: month (``YYYY-MM``) in UTC. None for the records with no value, for
+    #: ``other`` and for the total.
+    key: Any
+    #: The records of the group.
+    count: int
+    #: One value for each measure, in the order of the measures. A count is an
+    #: ``int``. A sum of a number is a ``Decimal``, and a sum of money is an
+    #: ``int`` of minor units. A sum with no value is 0. An average is a
+    #: ``Decimal``, or None with no value.
+    values: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
+class AggregateResult:
+    """The groups of an aggregate (C2b)."""
+
+    measures: tuple[studio_query.Measure, ...]
+    #: For each measure: the one currency of a money sum, or None.
+    currencies: tuple[str | None, ...]
+    #: The groups with the most records, at most
+    #: :data:`~acb_common.studio_query.MAX_GROUPS`, in the order of the key.
+    #: A select is in the order of its options. The group with no value comes
+    #: last. Empty with no group.
+    groups: tuple[AggregateGroup, ...]
+    #: The groups past the cap, folded into one. None when none fold.
+    other: AggregateGroup | None
+    #: The count of the groups in :attr:`other`.
+    folded: int
+    #: The measures over every record that the filter keeps.
+    total: AggregateGroup
+
+
+def _q_agg_key(agg: studio_query.Aggregate, params: dict[str, Any]) -> tuple[str, str]:
+    """The key of the group of each candidate, and the join of its hot row."""
+    if agg.group is None:
+        return _NO_GROUP_KEY, ""
+    params["gk"] = agg.group.field.key
+    if agg.group.bucket is not None:
+        key = _BUCKET_KEY[agg.group.bucket]
+    else:
+        key = _GROUP_KEY[agg.group.field.type]
+    return key, f" {_GROUP_ROW}"
+
+
+def _q_agg_value(j: int) -> str:
+    """The hot row of the field *j* of the measures, for each candidate."""
+    return (f"LEFT JOIN LATERAL (SELECT mv{j}.v_num FROM studio_record_hot mv{j} "
+            f"WHERE mv{j}.{_OF_ORG} AND mv{j}.{_OF_OBJECT} AND mv{j}.field_key = CAST(:mk{j} AS text) "
+            f"AND mv{j}.record_id = c.id OFFSET 0) mv{j} ON true")
+
+
+def _q_agg_currency(j: int) -> str:
+    """The currency of the money field *j*, from ``data``, for a candidate
+    with a value. An amount with no currency reads as ``''``, so the check
+    fails closed."""
+    return (f"(CASE WHEN mv{j}.v_num IS NOT NULL THEN coalesce((SELECT "
+            f"mc{j}.data -> CAST(:mk{j} AS text) ->> 'currency' FROM studio_records mc{j} "
+            f"WHERE mc{j}.{_OF_ORG} AND mc{j}.{_OF_OBJECT} AND mc{j}.id = c.id), '') END)")
+
+
+def build_aggregate(agg: studio_query.Aggregate, *, object_id: str,
+                    package_id: str) -> tuple[str, dict[str, Any]]:
+    """The one statement of the aggregate *agg*: its SQL and its binds. Pure.
+
+    The first row holds the count of the fields that are still hot (``v.n``),
+    the count of the guard (or NULL with no filter on a field that is not
+    hot), and then the columns of ``w``: the count of the groups, the records,
+    and for each field of the measures its sum and its count of values. A
+    money field adds its lowest and its highest currency. With a group, each
+    row then holds the columns of ``p``: the part (0 for a kept group, 1 for
+    ``other``), the rank, the key, the records, and the sum and the count of
+    each field. With no group in the result, the row holds NULL there.
+    """
+    params: dict[str, Any] = {"oid": object_id, "pid": package_id,
+                              "hk": list(agg.hot_keys()), "groups": studio_query.MAX_GROUPS}
+    conditions = agg.conditions
+    guard = "CAST(NULL AS bigint)"
+    if agg.query().cold():
+        params["small"] = studio_query.SMALL_OBJECT
+        count_hot = _q_count(conditions, params, _GUARD_CAP, only_hot=True)
+        found = _q_filtered(conditions, params, "c.id AS id", gate=_GUARD_GATE, ordered=False)
+        with_sql = f"WITH g AS ({count_hot}), m AS MATERIALIZED ({found}), "
+        guard = "(SELECT g.n FROM g)"
+        cands = "m c"
+    else:
+        ids = _q_filtered(conditions, params, "c.id AS id", ordered=False)
+        with_sql = "WITH "
+        cands = f"({ids}) c"
+    key, joins = _q_agg_key(agg, params)
+    cols = sums = totals = keep = rest = ""
+    for j, field in enumerate(agg.measure_fields()):
+        params[f"mk{j}"] = field.key
+        joins += f" {_q_agg_value(j)}"
+        cols += f", mv{j}.v_num AS n{j}"
+        sums += f", sum(x.n{j}) AS s{j}, count(x.n{j}) AS c{j}"
+        totals += f", sum(a.s{j}) AS ts{j}, sum(a.c{j}) AS tc{j}"
+        keep += f", r.s{j}, r.c{j}"
+        rest += f", sum(r.s{j}), sum(r.c{j})"
+        if field.type == "money":
+            cur = _q_agg_currency(j)
+            cols += f", {cur} AS q{j}"
+            sums += f", min(x.q{j}) AS lo{j}, max(x.q{j}) AS hi{j}"
+            totals += f", min(a.lo{j}) AS tlo{j}, max(a.hi{j}) AS thi{j}"
+    head = (f"{with_sql}v AS ({_STILL_HOT_SQL}), "
+            f"x AS (SELECT {key} AS k{cols} FROM {cands}{joins}), "
+            f"a AS (SELECT x.k, count(*) AS n{sums} FROM x GROUP BY x.k), "
+            f"w AS (SELECT count(*) AS groups, coalesce(sum(a.n), 0) AS n{totals} FROM a)")
+    if agg.group is None:
+        return f"{head} SELECT v.n, {guard}, w.* FROM v CROSS JOIN w", params
+    ranks = "SELECT a.*, row_number() OVER (ORDER BY a.n DESC, a.k ASC NULLS LAST) AS rk FROM a"
+    kept = f"SELECT 0 AS part, r.rk, r.k, r.n{keep} FROM r WHERE r.rk <= :groups"
+    folded = f"SELECT 1, NULL, NULL, sum(r.n){rest} FROM r WHERE r.rk > :groups HAVING count(*) > 0"
+    return (f"{head}, r AS ({ranks}), p AS (({kept}) UNION ALL ({folded})) "
+            f"SELECT v.n, {guard}, w.*, p.* FROM v CROSS JOIN w LEFT JOIN p ON true "
+            "ORDER BY p.part, p.rk"), params
+
+
+def _plain_number(value: Decimal) -> Decimal:
+    """A number key in one form: ``1`` and ``1.0`` are one group, so the key
+    of a whole number has no decimal places."""
+    if value == value.to_integral_value():
+        return value.quantize(Decimal(1))
+    return value.normalize()
+
+
+def _group_key(group: studio_query.GroupBy, raw: Any) -> Any:
+    if raw is None:
+        return None
+    if group.bucket == "day":
+        return raw.date().isoformat()
+    if group.bucket == "month":
+        return f"{raw.year:04d}-{raw.month:02d}"
+    if group.field.type == "number":
+        return _plain_number(Decimal(raw))
+    if group.field.type == "checkbox":
+        return bool(raw)
+    return str(raw)
+
+
+def _group_order(group: studio_query.GroupBy) -> Callable[[AggregateGroup], tuple[Any, ...]]:
+    """The order of the kept groups: the key, a select in the order of its
+    options, and the group with no value last."""
+    options = {o: i for i, o in enumerate(group.field.options or ())}
+
+    def order(g: AggregateGroup) -> tuple[Any, ...]:
+        if g.key is None:
+            return (2,)
+        if group.field.type == "select":
+            return (0, options[g.key], "") if g.key in options else (1, 0, str(g.key))
+        return (0, g.key)
+    return order
+
+
+def _one_currency(field: FieldSpec, low: Any, high: Any) -> str | None:
+    """The one currency of a money sum, or None when no record holds an
+    amount. Two currencies, or an amount with no currency, refuse the sum."""
+    if low is None and high is None:
+        return None
+    if low != high or not low:
+        raise QueryError(studio_query.OP_NOT_ALLOWED, _CURRENCY_MESSAGE.format(key=field.key),
+                         field.key)
+    return str(low)
+
+
+def _measure_values(agg: studio_query.Aggregate, count: int,
+                    sums: Mapping[str, tuple[Any, Any]]) -> tuple[Any, ...]:
+    """The value of each measure of one group, from its records and the sum
+    and the count of the values of each field."""
+    out: list[Any] = []
+    for measure in agg.measures:
+        if measure.field is None:
+            out.append(count)
+            continue
+        total, values = sums[measure.field.key]
+        if measure.op == "average":
+            out.append(None if not values else Decimal(total) / Decimal(values))
+        elif measure.field.type == "money":
+            out.append(int(total or 0))
+        else:
+            out.append(Decimal(total or 0))
+    return tuple(out)
+
+
+def _aggregate_result(agg: studio_query.Aggregate, rows: Sequence[Any]) -> AggregateResult:
+    """The result of the rows of :func:`build_aggregate`. A money sum of two
+    currencies raises :class:`QueryError` here, before any value leaves."""
+    fields = agg.measure_fields()
+    first = rows[0]
+    at = 2
+    n_groups, n_records = int(first[at]), int(first[at + 1])
+    at += 2
+    totals: dict[str, tuple[Any, Any]] = {}
+    currency: dict[str, str | None] = {}
+    for field in fields:
+        totals[field.key] = (first[at], int(first[at + 1] or 0))
+        at += 2
+        if field.type == "money":
+            currency[field.key] = _one_currency(field, first[at], first[at + 1])
+            at += 2
+    currencies = tuple(currency.get(m.field.key) if m.field is not None and m.op == "sum" else None
+                       for m in agg.measures)
+    total = AggregateGroup(None, n_records, _measure_values(agg, n_records, totals))
+    if agg.group is None:
+        return AggregateResult(agg.measures, currencies, (), None, 0, total)
+    kept: list[AggregateGroup] = []
+    other: AggregateGroup | None = None
+    for row in rows:
+        part = row[at]
+        if part is None:
+            continue  # no record, so no group
+        count = int(row[at + 3])
+        sums = {f.key: (row[at + 4 + 2 * i], int(row[at + 5 + 2 * i] or 0))
+                for i, f in enumerate(fields)}
+        values = _measure_values(agg, count, sums)
+        if int(part) == 0:
+            kept.append(AggregateGroup(_group_key(agg.group, row[at + 2]), count, values))
+        else:
+            other = AggregateGroup(None, count, values)
+    kept.sort(key=_group_order(agg.group))
+    return AggregateResult(agg.measures, currencies, tuple(kept), other,
+                           max(0, n_groups - studio_query.MAX_GROUPS), total)
+
+
+async def _read_aggregate(timed: _Timed, oid: str, pid: str, filter: Any, group_by: Any,
+                          measures: Any) -> tuple[studio_query.Aggregate, list[Any]]:
+    """The fields, then the aggregate statement. A field that turned cold
+    after the store read the fields has lost its hot rows, so the store reads
+    the fields and runs the aggregate once more, as :func:`_read_page` does."""
+    for _ in range(2):
+        agg = studio_query.parse_aggregate(await _fields(timed, oid), filter, group_by, measures)
+        sql, params = build_aggregate(agg, object_id=oid, package_id=pid)
+        rows = (await timed.execute(text(sql), params)).all()
+        if int(rows[0][0]) == len(agg.hot_keys()):
+            _check_hot_or_small(rows, agg.query())
+            return agg, rows
+    raise QueryError(studio_query.TIMEOUT, _CHANGED_MESSAGE)
+
+
+async def aggregate_records(db: Any, *, package_id: str, object_id: str, filter: Any = None,
+                            group_by: Any = None,
+                            measures: Any = None) -> AggregateResult | None:
+    """Group the records of the object *object_id* of the package
+    *package_id*, and take a count, a sum or an average of each group (C2b).
+    Answers None when the bound org holds no such object in that package.
+
+    ``acb_common.studio_query.parse_aggregate`` checks the input: the filter of
+    C2a, one group and the measures, each on a hot field. A refusal raises
+    :class:`~acb_common.studio_query.QueryError`, and the session stays usable.
+    One statement reads the groups, the total and the currency of a money sum,
+    under the one deadline of :data:`~acb_common.studio_query.TIMEOUT_MS` and
+    the guard ``hot_or_small``. A money sum is refused unless the ``data`` of
+    each record that it adds holds one currency, as the CRM does (HANDOFF
+    H-333). The :data:`~acb_common.studio_query.MAX_GROUPS` groups with the
+    most records stay, and the rest fold into :attr:`AggregateResult.other`.
+    """
+    deadline = _clock() + studio_query.TIMEOUT_MS / 1000
+    oid = _uuid(object_id, "object_id")
+    pid = _uuid(package_id, "package_id")
+    studio_query.check_aggregate_shape(filter, group_by, measures)
+    async with _time_limit(db, deadline) as timed:
+        found = await timed.execute(text(_QUERY_OBJECT_SQL), {"oid": oid, "pid": pid})
+        if found.first() is None:
+            return None
+        agg, rows = await _read_aggregate(timed, oid, pid, filter, group_by, measures)
+    return _aggregate_result(agg, rows)
 
 
 # --- the batch (C1b) --------------------------------------------------------
@@ -2998,7 +3366,11 @@ async def _run_steps(db: Any, batch: _Batch) -> list[Record | bool]:
     deadline = _clock() + studio_query.TIMEOUT_MS / 1000
     await _check_line_parents(db, batch, deadline)
     await _recompute_parents(db, batch, deadline)
-    await _check_keys(db, batch, _check_records(batch), deadline)
+    keys = _check_records(batch)
+    # C18: the walk of each record that got a new parent, after the checks
+    # with no SQL, so a parent field that is not hot fails closed there first.
+    await _check_trees(db, batch, deadline)
+    await _check_keys(db, batch, keys, deadline)
     return answers
 
 
@@ -3047,3 +3419,233 @@ async def _one_write(db: Any, who: str, package_id: str, write: Write) -> Record
         if isinstance(exc.cause, RecordNotFound):
             return None
         raise exc.cause from None
+
+
+# --- the hierarchy (C18) ------------------------------------------------------
+#
+# A rule of kind `hierarchy` makes the records of one object a tree. Each record
+# names its parent in one hot relation field of the same object. A record with
+# no value is a root, and a root is level 1. Two statements use the hot rows of
+# that field: the primary key finds the parent of a record, and the text index
+# finds its children.
+#
+#   4c. `_check_trees` runs after the writes of a batch, in the same SAVEPOINT
+#       and under the org lock. So it reads the tree as the batch leaves it. One
+#       statement for each object walks up from each record that got a new
+#       parent, and down to its children. The walk up refuses a cycle and a
+#       parent that is no record of this object. Its level plus the levels
+#       below it must be at most MAX_TREE_DEPTH. A new cycle and a new long path
+#       each hold a record that got a new parent, so this check finds each one.
+#   The read. `read_tree` reads a tree, or the whole forest, to a depth of at
+#       most MAX_TREE_DEPTH levels in ONE recursive statement.
+#
+# Each walk carries its path and stops at a record that it saw, so an old cycle
+# (raw SQL, or a rule declared over old data) cannot make a walk run forever.
+# ⚠️ A declaration does not check old data (C1b). A rule binds each later write.
+
+#: The most nodes of one read of a tree. The tree block (D18) opens a tree of
+#: 2,000 nodes in one read.
+MAX_TREE_NODES = 2_000
+
+#: The parent of a record, by the primary key of the hot row. A parent id that
+#: is no UUID, or that names no record of this object, ends the walk.
+_TREE_PARENT = (
+    "JOIN studio_record_hot h ON h.organization_id = " + _BOUND_ORG + " "
+    "AND h.object_id = CAST(:oid AS uuid) AND h.record_id = u.id "
+    "AND h.field_key = CAST(:fk AS text) "
+    "JOIN studio_records p ON p.organization_id = " + _BOUND_ORG + " "
+    "AND p.object_id = CAST(:oid AS uuid) "
+    "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
+)
+
+#: The children of a record, by the text index of the hot rows.
+_TREE_CHILDREN = (
+    "JOIN studio_record_hot h ON h.organization_id = " + _BOUND_ORG + " "
+    "AND h.object_id = CAST(:oid AS uuid) AND h.field_key = CAST(:fk AS text) "
+    "AND h.v_text = CAST(t.id AS text) "
+)
+
+#: The walk of each record of `:rids` (C18): its level (the walk up, which stops
+#: one past the cap), a cycle, the levels below it (the walk down, to the cap),
+#: and whether its parent is a record of this object.
+_TREE_CHECK_SQL = (
+    "WITH RECURSIVE s AS (SELECT DISTINCT x.id FROM unnest(CAST(:rids AS uuid[])) AS x(id) "
+    "WHERE " + _IN_PACKAGE + "), "
+    "up(start, id, depth, path, cyc) AS ("
+    "SELECT s.id, s.id, 1, ARRAY[s.id], false FROM s "
+    "UNION ALL "
+    "SELECT u.start, p.id, u.depth + 1, u.path || p.id, p.id = u.start FROM up u "
+    + _TREE_PARENT +
+    "WHERE NOT u.cyc AND u.depth <= CAST(:cap AS int) "
+    "AND (p.id = u.start OR NOT p.id = ANY(u.path))), "
+    "down(start, id, depth, path) AS ("
+    "SELECT s.id, s.id, 0, ARRAY[s.id] FROM s "
+    "UNION ALL "
+    "SELECT t.start, h.record_id, t.depth + 1, t.path || h.record_id FROM down t "
+    + _TREE_CHILDREN +
+    "WHERE t.depth < CAST(:cap AS int) AND NOT h.record_id = ANY(t.path)) "
+    "SELECT s.id::text, "
+    "(SELECT max(u.depth) FROM up u WHERE u.start = s.id), "
+    "(SELECT bool_or(u.cyc) FROM up u WHERE u.start = s.id), "
+    "(SELECT max(d.depth) FROM down d WHERE d.start = s.id), "
+    "EXISTS (SELECT 1 FROM up u WHERE u.start = s.id AND u.depth = 2) "
+    "FROM s"
+)
+
+#: The object of a tree read, with its rules, of the package that the caller
+#: names. No lock.
+_TREE_OBJECT_SQL = (
+    "SELECT name, constraints FROM studio_objects "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) "
+    "AND package_id = CAST(:pid AS uuid)"
+)
+
+#: The roots of a read of the whole forest: each record of the object with no
+#: parent record of this object. A record whose parent is gone is a root too.
+_TREE_ALL_ROOTS = (
+    "SELECT r.id FROM studio_records r "
+    f"WHERE r.{_OF_ORG} AND r.{_OF_OBJECT} AND NOT EXISTS ("
+    "SELECT 1 FROM studio_record_hot h "
+    "JOIN studio_records p ON p.organization_id = " + _BOUND_ORG + " "
+    "AND p.object_id = CAST(:oid AS uuid) "
+    "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
+    f"WHERE h.{_OF_ORG} AND h.{_OF_OBJECT} AND h.record_id = r.id "
+    "AND h.field_key = CAST(:fk AS text))"
+)
+
+#: The root of a read of one tree: the record `:root` of the object.
+_TREE_ONE_ROOT = (
+    "SELECT r.id FROM studio_records r "
+    f"WHERE r.{_OF_ORG} AND r.{_OF_OBJECT} AND r.id = CAST(:root AS uuid)"
+)
+
+
+def _tree_read_sql(roots: str) -> str:
+    """The one statement of a tree read, from the SQL of its *roots* (one of
+    the two constants above). Each node comes once, with its level and the id
+    of its parent in the read. The order is by level, then by parent, then by
+    the time of the create. The statement reads one node past the limit, so
+    the store knows that the read is cut."""
+    return (
+        "WITH RECURSIVE roots AS (" + roots + " AND " + _IN_PACKAGE + "), "
+        "tree(id, parent, depth, path) AS ("
+        "SELECT roots.id, CAST(NULL AS uuid), 1, ARRAY[roots.id] FROM roots "
+        "UNION ALL "
+        "SELECT h.record_id, t.id, t.depth + 1, t.path || h.record_id FROM tree t "
+        + _TREE_CHILDREN +
+        "WHERE t.depth < CAST(:depth AS int) AND NOT h.record_id = ANY(t.path)) "
+        "SELECT t.depth, t.parent::text, " + _QUERY_COLUMNS + " FROM tree t "
+        "JOIN studio_records r ON r." + _OF_ORG + " AND r." + _OF_OBJECT + " AND r.id = t.id "
+        "ORDER BY t.depth, t.parent NULLS FIRST, r.created_at, r.id "
+        "LIMIT CAST(:limit AS int) + 1"
+    )
+
+
+_TREE_ALL_SQL = _tree_read_sql(_TREE_ALL_ROOTS)
+_TREE_ROOT_SQL = _tree_read_sql(_TREE_ONE_ROOT)
+
+
+@dataclass(frozen=True)
+class TreeNode:
+    """One record of a tree read (C18)."""
+
+    record: Record
+    #: The level in the read: 1 for each root of the read.
+    level: int
+    #: The id of the parent in the read, or None for a root of the read.
+    parent_id: str | None
+
+
+@dataclass(frozen=True)
+class TreePage:
+    """The nodes of one tree read (C18), level by level."""
+
+    nodes: tuple[TreeNode, ...]
+    #: True when the tree holds more nodes than the limit, so the read is cut.
+    truncated: bool
+
+
+def _tree_rule(rules: Sequence[Rule]) -> Rule | None:
+    return next((r for r in rules if r.kind == HIERARCHY), None)
+
+
+def _no_tree_parent(rule: Rule, name: str) -> FieldError:
+    key = str(rule.field)
+    return FieldError(key, f"Field `{key}` names no `{name}` record of this app. "
+                      f"Pick a record of `{name}` in this app.")
+
+
+async def _check_trees(db: Any, batch: _Batch, deadline: float) -> None:
+    """Step 4c (C18). For each object of the batch with a hierarchy, walk each
+    record that got a new parent, in one statement, under the one deadline of
+    the batch. A refusal names the first write of the record."""
+    work: dict[str, dict[str, int]] = {}
+    for (oid, rid), mark in batch.marks.items():
+        rule = _tree_rule(batch.objects[oid].rules)
+        if rule is not None and tree_moves(rule, mark.before, mark.after) is not None:
+            work.setdefault(oid, {})[rid] = mark.index
+    if not work:
+        return
+    async with _time_limit(db, deadline, _RULE_TIMEOUT_MESSAGE) as timed:
+        for oid, starts in sorted(work.items()):
+            held = batch.objects[oid]
+            rule = _tree_rule(held.rules)
+            assert rule is not None
+            rows = (await timed.execute(text(_TREE_CHECK_SQL), {
+                "oid": oid, "pid": batch.pid, "fk": str(rule.field), "rids": sorted(starts),
+                "cap": MAX_TREE_DEPTH})).all()
+            for row in sorted(rows, key=lambda r: starts[str(r[0])]):
+                batch.index = starts[str(row[0])]
+                if not row[4]:
+                    raise _no_tree_parent(rule, held.name)
+                check_tree(rule, held.name, cycle=bool(row[2]),
+                           depth=int(row[1]) + int(row[3] or 0))
+
+
+def _tree_bound(value: Any, what: str, most: int) -> int:
+    if type(value) is not int or not 1 <= value <= most:
+        raise ObjectStoreError(f"{what} is a whole number from 1 to {most}.")
+    return value
+
+
+async def read_tree(db: Any, *, package_id: str, object_id: str, root_id: str | None = None,
+                    depth: Any = MAX_TREE_DEPTH, limit: Any = MAX_TREE_NODES) -> TreePage | None:
+    """The tree of the object *object_id* of the package *package_id* (C18), in
+    ONE statement. Answers None when the bound org holds no such object in that
+    package.
+
+    *root_id* names the record at the top of the read. None reads the whole
+    forest: each record with no parent record of this object is a root. *depth*
+    is the most levels to read, from 1 to
+    :data:`~acb_common.studio_rules.MAX_TREE_DEPTH`, and *limit* is the most
+    nodes, from 1 to :data:`MAX_TREE_NODES`. A root id that names no record of
+    the object gives no nodes. An object with no hierarchy, or with a parent
+    field that is not hot, raises :class:`ObjectStoreError`. The whole call has
+    the deadline of :data:`~acb_common.studio_query.TIMEOUT_MS`.
+    """
+    deadline = _clock() + studio_query.TIMEOUT_MS / 1000
+    oid = _uuid(object_id, "object_id")
+    pid = _uuid(package_id, "package_id")
+    root = None if root_id is None else _uuid(root_id, "root_id")
+    levels = _tree_bound(depth, "depth", MAX_TREE_DEPTH)
+    size = _tree_bound(limit, "limit", MAX_TREE_NODES)
+    async with _time_limit(db, deadline) as timed:
+        found = (await timed.execute(text(_TREE_OBJECT_SQL), {"oid": oid, "pid": pid})).first()
+        if found is None:
+            return None
+        rule = _tree_rule(stored_rules(_json(found[1])))
+        if rule is None:
+            raise ObjectStoreError(f"Object `{found[0]}` holds no hierarchy rule.")
+        hot = {f.key for f in await _fields(timed, oid) if f.hot}
+        if str(rule.field) not in hot:
+            raise ObjectStoreError(f"Field `{rule.field}` is not hot, so the tree cannot be read.")
+        binds: dict[str, Any] = {"oid": oid, "pid": pid, "fk": str(rule.field),
+                                 "depth": levels, "limit": size}
+        if root is not None:
+            binds["root"] = root
+        rows = (await timed.execute(
+            text(_TREE_ALL_SQL if root is None else _TREE_ROOT_SQL), binds)).all()
+    nodes = tuple(TreeNode(record=_record(row[2:]), level=int(row[0]),
+                           parent_id=None if row[1] is None else str(row[1]))
+                  for row in rows[:size])
+    return TreePage(nodes=nodes, truncated=len(rows) > size)

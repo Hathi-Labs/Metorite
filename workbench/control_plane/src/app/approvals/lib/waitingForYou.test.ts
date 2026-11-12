@@ -91,4 +91,16 @@ describe("answersInPlace", () => {
     });
     expect(answersInPlace(archive)).toBe(false);
   });
+
+  it("is false for a question with a costly option, which only the task card confirms", () => {
+    const costly = run("c", "2026-11-01T10:00:00Z", {
+      open_elicitation: ask("2026-11-01T10:00:00Z", {
+        signal: "select",
+        signal_metadata: {
+          options: [{ id: "go", label: "Restart it now", confirm: true }, { id: "no", label: "No" }],
+        },
+      } as Partial<AgentActivity>),
+    });
+    expect(answersInPlace(costly)).toBe(false);
+  });
 });
