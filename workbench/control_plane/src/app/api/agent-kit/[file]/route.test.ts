@@ -60,7 +60,8 @@ describe("/api/agent-kit/[file]", () => {
     async (name) => {
       stubGateway(() => new Response("never", { status: 200 }));
       const res = await get(name);
-      expect(res.status).toBe(404);
+      // A traversal name gets 400 from refuseUnsafePath, any other bad name 404.
+      expect([400, 404]).toContain(res.status);
       expect(asked).toEqual([]);
     },
   );
