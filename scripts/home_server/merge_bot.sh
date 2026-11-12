@@ -55,7 +55,18 @@ fi
 record() {  # record <line>: one result line in the log. A dry run only prints it.
   if [ "$DRY" = 1 ]; then say "DRY RUN would log: $*"; else printf '%s\n' "$*" >> "$LOG"; fi
 }
-in_log() { [ -f "$LOG" ] && grep -qE "^(DONE|BACK) $1( |$)" "$LOG"; }
+# A PR is pending when the queue holds more hand-over lines of it than the log
+# holds result lines (DONE or BACK). The nth hand-over gets the nth result, so a
+# lane can hand a PR over again after a BACK. A DONE ends the PR for good: a stray
+# later hand-over line of a merged PR is skipped, and it never gets a second merge.
+pending() {
+  local q r
+  if [ -f "$LOG" ] && grep -qE "^DONE $1( |$)" "$LOG"; then return 1; fi
+  q="$(awk -F'	' -v p="$1" '$1==p' "$QUEUE" | wc -l)"
+  r=0
+  [ -f "$LOG" ] && r="$(grep -cE "^(DONE|BACK) $1( |$)" "$LOG")"
+  [ "$q" -gt "$r" ]
+}
 
 required=""
 load_required() {
@@ -156,10 +167,13 @@ handle() {
   else record "BACK $pr merge failed: $(one_line <<< "$out")"; fi
 }
 
+seen=""
 while IFS=$'\t' read -r pr task wt lane note <&3; do
   case "$pr" in ''|'#'*) continue ;; esac
   case "$pr" in *[!0-9]*) say "bad queue line: $pr"; continue ;; esac
-  in_log "$pr" && continue
+  case " $seen " in *" $pr "*) continue ;; esac
+  seen="$seen $pr"
+  pending "$pr" || continue
   say "PR $pr (task $task, $lane)"
   handle "$pr"
 done 3< "$QUEUE"

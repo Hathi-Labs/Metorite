@@ -267,3 +267,36 @@ def test_a_gh_error_that_hid_a_merge_still_logs_done(env):
     env.pr(5)
     env.run(FAKE_MERGE_FAIL="1")
     assert env.log == "DONE 5 abc123\n"
+
+
+def _queue_again(env, n):
+    with (env.tmp / "queue.tsv").open("a", encoding="utf-8", newline="\n") as f:
+        f.write(f"{n}\t99\t/x\tlane-x\tagain\n")
+
+
+def test_a_second_hand_over_after_a_back_is_handled_again(env):
+    env.pr(5, checks={n: "pass" for n in REQUIRED} | {"Lint": "fail"})
+    env.run()
+    assert env.log == "BACK 5 red: Lint\n"
+    env.checks(5)
+    _queue_again(env, 5)
+    env.run()
+    assert env.log == "BACK 5 red: Lint\nDONE 5 abc123\n"
+
+
+def test_a_back_with_no_new_hand_over_is_skipped(env):
+    env.pr(5, checks={n: "pass" for n in REQUIRED} | {"Lint": "fail"})
+    env.run()
+    env.checks(5)
+    env.run()
+    assert env.log == "BACK 5 red: Lint\n" and "pr merge" not in env.calls
+
+
+def test_a_stray_hand_over_after_done_is_skipped(env):
+    env.pr(5)
+    env.run()
+    assert env.log == "DONE 5 abc123\n"
+    _queue_again(env, 5)
+    env.run()
+    merges = [c for c in env.calls.splitlines() if c.startswith("pr merge")]
+    assert env.log == "DONE 5 abc123\n" and len(merges) == 1
