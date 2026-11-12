@@ -10575,6 +10575,9 @@ _READ_PLAYBOOK_OUTPUT: dict[str, Any] = {
         "topics": {"type": "array", "items": {
             "type": "object", "properties": _PLAYBOOK_TOPIC_PROPS,
             "required": list(_PLAYBOOK_TOPIC_PROPS), "additionalProperties": False}},
+        # KIT-5. The current kit version, in the index only (no topic sent).
+        "kit_version": {"type": "integer"},
+        "kits": {"type": "object", "additionalProperties": {"type": "integer"}},
         "topic": {"type": ["object", "null"], "properties": {
             **_PLAYBOOK_TOPIC_PROPS, "body": _UNTRUSTED_SCHEMA},
             "required": [*_PLAYBOOK_TOPIC_PROPS, "body"], "additionalProperties": False},
@@ -10595,12 +10598,13 @@ async def _read_playbook(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     No gateway request. The text is the playbook of ``acb_playbook``, the same
     for every organization, and it leaves as untrusted text (§9.4).
     """
-    from acb_playbook import load_all
+    from acb_playbook import kit_version, kit_versions, load_all
 
     topics = load_all()
     wanted = args.get("topic")
     if wanted is None:
-        return {"topics": [_playbook_entry(t) for t in topics], "topic": None}
+        return {"topics": [_playbook_entry(t) for t in topics], "topic": None,
+                "kit_version": kit_version(), "kits": kit_versions()}
     for topic in topics:
         if topic.slug == wanted:
             return {"topics": [], "topic": {**_playbook_entry(topic),
@@ -10615,7 +10619,7 @@ READ_PLAYBOOK = Tool(
         "Read the orchestration playbook of Metorite: patterns for agent teams,"
         " the brief contract, gates, failure causes, the cost model and starter"
         " files. Leave topic out to list the topics, each with its version and"
-        " summary. Send a topic to read it. The text is the same for every"
+        " summary, and the current kit_version of the agent kit. Send a topic to read it. The text is the same for every"
         " organization. Use it when your client shows no MCP resources."
         + _UNTRUSTED_NOTE
     ),

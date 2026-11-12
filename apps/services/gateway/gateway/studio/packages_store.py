@@ -19,7 +19,8 @@ bound tenant, and each statement filters on ``_BOUND_ORG`` too.
 every statement filters on ``owner_email``. In A3 a member reads and writes
 only the packages that the member owns. ⚠️ The store does not authenticate.
 It only scopes. The caller resolves the member from the session, never from
-request input (R5, contract R11).
+request input (R5, contract R11). The one exception is the kill switch of
+J3a (below): it takes the *actor* and finds any package of the bound org.
 
 **Validate before write.** :func:`create_package` and
 :func:`update_manifest` run :func:`acb_common.studio_manifest.validate_manifest`
@@ -96,6 +97,18 @@ package row ``FOR KEY SHARE`` and reads ``live_version``. The install route
 of WS-PKG calls it before the install store, so its lock order is the order
 of a publish: the ``apps`` row, then the org lock of the install store.
 
+**The kill switch (J3a).** :func:`pause_package` and :func:`resume_package`
+hold the only writes of ``apps.paused_at`` and ``apps.paused_by`` (the file
+that adds them is 412 at build). Each locks the ``apps`` row ``FOR UPDATE``,
+then moves each install of the package through the install store
+(``package_host/store.pause_install`` and ``resume_install``), then writes
+its ``app_audit`` row through :func:`_audit`, all in the caller's
+transaction. A pause is not a status: the draft, the versions and
+``apps.status`` stay, and a publish keeps the pause. ⚠️ The two functions
+find a package of any member of the bound org, because an admin stops a
+package (``ai_studio.md`` §9 item 7). The store does not decide who may
+call. No route calls them yet.
+
 **Not here.** No UI. Install is WS-PKG. The routes are
 ``routes/studio/packages.py`` (A5, A5c-1 and A5c-2), which runs no SQL of
 its own. The chat tool of a delete is ``acb_skills.studio_tools``
@@ -138,7 +151,7 @@ _BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
 
 _PACKAGE_COLUMNS = (
     "id::text, slug, name, description, owner_email, visibility, status, "
-    "manifest, live_version, created_at, updated_at"
+    "manifest, live_version, created_at, updated_at, paused_at, paused_by"
 )
 
 #: A taken slug makes no row. The store then tries a new id.
@@ -422,6 +435,11 @@ class Package:
     live_version: int | None
     created_at: datetime
     updated_at: datetime
+    #: J3a. When the package was paused, or None when it runs. The action
+    #: door refuses each action of a paused package.
+    paused_at: datetime | None = None
+    #: J3a. The member who paused the package, or None.
+    paused_by: str | None = None
 
 
 @dataclass(frozen=True)
@@ -576,7 +594,8 @@ def _package(row: Any) -> Package:
         id=str(row[0]), slug=str(row[1]), name=str(row[2]), description=str(row[3] or ""),
         owner_email=str(row[4]), visibility=str(row[5]), status=str(row[6]),
         manifest=dict(manifest), live_version=None if row[8] is None else int(row[8]),
-        created_at=row[9], updated_at=row[10])
+        created_at=row[9], updated_at=row[10], paused_at=row[11],
+        paused_by=None if row[12] is None else str(row[12]))
 
 
 async def create_package(db: Any, member: str, manifest: dict[str, Any]) -> Package:
@@ -947,6 +966,148 @@ async def lock_for_install(db: Any, member: str, package_id: str) -> InstallTarg
     if row is None:
         return None
     return InstallTarget(package_id=pid, live_version=None if row[0] is None else int(row[0]))
+
+
+# --- the kill switch of a package (J3a) --------------------------------------
+
+#: The op of the audit row of a pause, and of a resume (J3a).
+PAUSE_OP = "package.pause"
+RESUME_OP = "package.resume"
+
+#: The package row of a pause or a resume, ``FOR UPDATE``. ⚠️ It names the
+#: bound org and the format, and NOT ``owner_email``: an admin stops a
+#: package of another member (``ai_studio.md`` §9 item 7). The caller decides
+#: who may call.
+_STOP_ROW_SQL = (
+    "SELECT paused_at, live_version FROM apps "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND id = CAST(:id AS uuid) FOR UPDATE"
+)
+
+#: A pause stamps the time and the actor once. A publish and a rollback name
+#: neither column, so a publish keeps the pause.
+_PAUSE_SQL = (
+    "UPDATE apps SET paused_at = now(), paused_by = :by "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND id = CAST(:id AS uuid) AND paused_at IS NULL"
+)
+
+_RESUME_SQL = (
+    "UPDATE apps SET paused_at = NULL, paused_by = NULL "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND id = CAST(:id AS uuid) AND paused_at IS NOT NULL"
+)
+
+#: The installs of one package in one state, in id order. A read only: the
+#: install store holds each write of an install.
+_INSTALLS_IN_STATE_SQL = (
+    "SELECT CAST(id AS text) FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = CAST(:id AS uuid) "
+    "AND state = :state ORDER BY id"
+)
+
+
+@dataclass(frozen=True)
+class PackageStop:
+    """The answer of :func:`pause_package` and :func:`resume_package` (J3a).
+
+    ``paused`` is the state of the package after the call. ``changed`` is
+    True when the call moved the package row or an install, and only then
+    does the call write an audit row. ``installs`` counts the installs that
+    the call moved."""
+
+    package_id: str
+    paused: bool
+    changed: bool
+    installs: int
+
+
+async def _move_installs(db: Any, pid: str, was: str, pause: bool) -> int:
+    """Move each install of the package *pid* that is in the state *was*,
+    through the install store. Answers the count that moved.
+
+    The caller holds the ``apps`` row ``FOR UPDATE``, so the lock order is the
+    order of a publish: the row, then the org lock of the install store
+    (``package_host.md`` §5.5). Each move takes that lock and the row lock of
+    the install. The expiry job or the member purge can move an install after
+    the read. The store then raises ``StateRefused`` or ``InstallNotFound``
+    before any write, so the session stays usable and the install needs no
+    move."""
+    # A lazy import: the install store imports this module (``first_bad_value``).
+    from gateway.package_host import store as install_store
+
+    move = install_store.pause_install if pause else install_store.resume_install
+    rows = (await db.execute(text(_INSTALLS_IN_STATE_SQL), {"id": pid, "state": was})).all()
+    moved = 0
+    for row in rows:
+        try:
+            if await move(db, install_id=str(row[0])):
+                moved += 1
+        except (install_store.InstallNotFound, install_store.StateRefused):
+            continue
+    return moved
+
+
+async def pause_package(db: Any, actor: str, package_id: str) -> PackageStop | None:
+    """Pause the package *package_id* of the bound org, for each member (J3a).
+
+    The kill switch of ``ai_studio.md`` §9 item 7. In one transaction it
+    locks the ``apps`` row ``FOR UPDATE``, stamps ``paused_at`` and
+    ``paused_by`` (*actor*, the session member), moves each ``active`` install
+    of the package to ``paused`` (``package_host/store.pause_install``), and
+    writes one ``app_audit`` row (op :data:`PAUSE_OP`). The action door then
+    refuses each action of the package (``package_paused``), and the resolve
+    shows no install of it. The draft, the versions and the status stay.
+
+    ⚠️ The store does not decide who may pause. It finds any package of the
+    bound org, so a package of another org answers None and writes nothing.
+    The route of J3 checks that *actor* is the owner or an admin.
+
+    A pause of a paused package stamps nothing again, and it still pauses an
+    active install, such as the one of a first publish during the pause.
+    A call that moves nothing writes no audit row.
+    """
+    m = _member(actor)
+    pid = _package_id(package_id)
+    row = (await db.execute(text(_STOP_ROW_SQL), {"id": pid})).first()
+    if row is None:
+        return None
+    stamped = row[0] is None
+    if stamped:
+        await db.execute(text(_PAUSE_SQL), {"id": pid, "by": m})
+    moved = await _move_installs(db, pid, "active", pause=True)
+    changed = stamped or moved > 0
+    if changed:
+        await _audit(db, m, pid, None if row[1] is None else int(row[1]), "action",
+                     {"op": PAUSE_OP, "installs": moved})
+    return PackageStop(package_id=pid, paused=True, changed=changed, installs=moved)
+
+
+async def resume_package(db: Any, actor: str, package_id: str) -> PackageStop | None:
+    """Resume the paused package *package_id* of the bound org (J3a).
+
+    The twin of :func:`pause_package`, with the same lock order and the same
+    rule of who may call. It clears ``paused_at`` and ``paused_by``, moves
+    each ``paused`` install of the package to ``active``
+    (``package_host/store.resume_install``), and writes one ``app_audit`` row
+    (op :data:`RESUME_OP`).
+
+    A package that is not paused changes nothing: the call moves no install
+    and writes no audit row. No route pauses one install yet, so each paused
+    install of a paused package is a pause of the package.
+    """
+    m = _member(actor)
+    pid = _package_id(package_id)
+    row = (await db.execute(text(_STOP_ROW_SQL), {"id": pid})).first()
+    if row is None:
+        return None
+    if row[0] is None:
+        return PackageStop(package_id=pid, paused=False, changed=False, installs=0)
+    await db.execute(text(_RESUME_SQL), {"id": pid})
+    moved = await _move_installs(db, pid, "paused", pause=False)
+    await _audit(db, m, pid, None if row[1] is None else int(row[1]), "action",
+                 {"op": RESUME_OP, "installs": moved})
+    return PackageStop(package_id=pid, paused=False, changed=True, installs=moved)
 
 
 # --- the delete of a package (A5c-1) ----------------------------------------
