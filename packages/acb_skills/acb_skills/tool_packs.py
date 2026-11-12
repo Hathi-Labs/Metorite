@@ -472,6 +472,9 @@ No Projects agent exists to hand a task to.
 - A repeating task: recurrence reads the rule and set_recurrence sets it.
 - create_project makes a space, a folder, a project or a subproject. Its card
   names the parent. update_project and edit_project change a project.
+- Until an agent reads the member's answer, change_agent_answer changes it, or
+  takes it back with withdraw true. It takes the task. Never answer a question
+  that waits: the member answers it on the task card.
 - Each write shows a card. The card is the question: do not ask in text before
   it. Say that a change happened only after the receipt says so.
 - Never invent a task, a person, a number or a date. If no tool gave it, you
@@ -796,6 +799,9 @@ _PROJECTS_PLAN_WORDS = (
     "task references", "reference link", "reference to the task",
     "reference from the task", "task dataset", "dataset of all the tasks",
     "dataset of the tasks", "agent requests", "agent request",
+    # SW-43c: the member takes back or changes an answer to an agent.
+    "answer to the agent", "answered the agent", "withdraw my answer",
+    "take back my answer", "change my answer",
 )
 _PROJECTS_STRUCTURE_WORDS = (
     "task status", "task statuses", "status set", "task type", "task types",
@@ -954,6 +960,12 @@ No Studio agent exists to hand a task to.
   is gone. Show a new plan card before you publish. When a save or a publish
   says that the draft changed, read the result of the other save, and save or
   plan again.
+- DELETE AN APP. studio_delete_package deletes an app for good: its tables,
+  records, versions and installs. Send the package id only. It always shows
+  one card with the counts, in every chat. Only approved deletes. For the
+  other decisions, nothing was deleted: say so. An admin can delete the app of
+  a member who left. When the result gives remaining, call it again. It shows
+  a new card.
 - SKILLS. studio_skill_list lists the skills of the member, or reads one by its
   id. studio_skill_save makes a skill, or adds a version to one. studio_skill_state
   publishes, resumes or pauses one. Each tool acts as the member of this chat.
@@ -1082,7 +1094,8 @@ PACKS: dict[str, Pack] = {
     ),
     "projects-plan": Pack(
         slug="projects-plan",
-        when="Load for team load, capacity, a timeline, a plan from a goal, task links, repeats or new projects.",
+        when=("Load for team load, capacity, a timeline, a plan from a goal, task links, repeats, "
+              "new projects or an answer to an agent."),
         rules=_PROJECTS_PLAN_RULES,
         words=_PROJECTS_PLAN_WORDS,
         replaces_core="projects",
@@ -2733,6 +2746,8 @@ _KIND_TOOLS: dict[str, tuple[str, ...]] = {
     "reminder.update": ("update_reminder", "reschedule_reminder", "resolve_reminder",
                         "reopen_reminder"),
     "decision": ("answer_decision",),
+    # SW-43c: the member's own answer to an agent, taken back or changed.
+    "agent.answer": ("change_agent_answer",),
     "project.create": ("create_project", "propose_plan", "convert_folder_to_project",
                        "create_project_from_template"),
     "project.update": ("update_project", "edit_project", "move_project", "archive_project",

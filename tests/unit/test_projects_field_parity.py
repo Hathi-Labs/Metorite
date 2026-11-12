@@ -380,9 +380,15 @@ _BASE: dict[str, dict[str, Any]] = {
     # WS-39 TPL-1a: the fake org holds one template, `UUID`.
     "save_as_template": {"project_id": UUID, "name": "Office move"},
     "create_project_from_template": {"template_id": UUID, "parent_id": UUID},
+    # SW-43c: the fake run of `UUID` holds the member's live answer. A witness
+    # names the argument that picks the route: `withdraw`, `option` or `answer`.
+    "change_agent_answer": {"task_id": UUID},
 }
 _SAMPLE: dict[str, Any] = {
     "all_unread": True,
+    # SW-43c: an option of the fake question (tw.QUESTION), and the withdraw.
+    "option": "Not now",
+    "withdraw": True,
     # WS-39 SP-5a: the witnesses of the cycle fields.
     "add_task_ids": UUID,
     "carry_over": "backlog",

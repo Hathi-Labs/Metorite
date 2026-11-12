@@ -698,6 +698,17 @@ class TestTheFlag:
         assert r.status_code == 404, r.text
         assert live.b.row(cid)["scopes"] == [READ]
 
+    async def test_the_list_says_whether_change_access_is_on(self, live, monkeypatch):
+        """EA-17c-2. The view shows "Change access" only when the list says so."""
+        cid, _ = live.a.connection(MEMBER)
+        body = (await _as(live, MEMBER, "GET", LIST)).json()
+        assert body["change_access"] is True
+        assert cid in {c["id"] for c in body["connections"]}
+        monkeypatch.setattr(get_settings(), "agent_change_access_orgs", "")
+        body = (await _as(live, MEMBER, "GET", LIST)).json()
+        assert body["change_access"] is False
+        assert cid in {c["id"] for c in body["connections"]}
+
     async def test_agent_access_off_gives_404(self, live, monkeypatch):
         cid, _ = live.a.connection(MEMBER)
         monkeypatch.setattr(get_settings(), "agent_access_enabled", False)
@@ -1035,6 +1046,18 @@ class TestTheCeiling:
         assert r.json()["ceiling_scopes"] == [READ]
         row = live.a.row(cid)
         assert row["pins"] == [live.p["team"]] and row["scopes"] == [READ, WRITE]
+
+    async def test_a_held_unknown_write_does_not_cover_a_known_read(self, live):
+        """EA-17c-1 verifier fix 1. The row holds ``context:write``, a scope
+        that the server does not know. It must not cover its known read twin
+        ``context:read``, so a turn-on of the read above the ceiling is 422."""
+        cid, _ = live.a.connection(MEMBER, scopes=(READ, "context:write"),
+                                   tokens=("projects:read",))
+        before = live.a.row(cid)
+        r = await _patch(live, MEMBER, cid, _grant([READ, CONTEXT]))
+        assert r.status_code == 422, r.text
+        assert _error(r) == "scope_above_ceiling"
+        assert live.a.row(cid) == before
 
     @pytest.mark.parametrize("state", ["used", "revoked", "expired"])
     async def test_only_dead_tokens_give_an_empty_ceiling(self, live, state):

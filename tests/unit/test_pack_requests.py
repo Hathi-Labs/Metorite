@@ -166,6 +166,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "unlink_tasks": ("unlink these two tasks",),
     "update_project": ("change the project deadline",),
     "waiting_agent_requests": ("which agent requests are waiting for me?",),
+    # SW-43c: the member's own answer to an agent.
+    "change_agent_answer": ("change my answer to the agent to Not now",),
     # -- projects-structure --
     "capture_intake": ("capture this into the intake queue",),
     "create_area": ("create an area called Health",),
@@ -263,6 +265,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     # -- studio packages (STU-G1c) --
     "studio_save": ("save my studio app",),
     "studio_publish": ("publish my studio app",),
+    # -- studio package delete (STU-A5c-2) --
+    "studio_delete_package": ("delete my studio app", "delete the studio package of Ravi, who left"),
     # -- studio records (STU-D2b) --
     "studio_package_get": ("list my studio packages",),
     "studio_record_list": ("show the records of my studio package",),

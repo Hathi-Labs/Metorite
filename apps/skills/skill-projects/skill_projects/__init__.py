@@ -32,6 +32,7 @@ from skill_projects.guarded import (
     archive_task,
     attach_to_task,
     bulk_update,
+    change_agent_answer,
     convert_folder_to_project,
     create_project_from_template,
     delete_area,
@@ -340,4 +341,6 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     # Class C — WS-39 TPL-1a: an org-wide template, and a project made from one
     "save_as_template",
     "create_project_from_template",
+    # Class C — SW-43c: the member takes back or changes an answer to an agent
+    "change_agent_answer",
 ]

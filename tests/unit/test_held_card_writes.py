@@ -106,6 +106,9 @@ OFF_PROJECTS = frozenset({
     "start_cycle", "close_cycle",
     # WS-39 TPL-1a: an org-wide template, and a project made from one.
     "save_as_template", "create_project_from_template",
+    # SW-43c: the member's own answer to an agent. Mail that a held chat read
+    # must not steer the answer that an agent acts on.
+    "change_agent_answer",
 })
 
 #: The class A Projects tools that write a file of the chat. They stay.

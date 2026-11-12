@@ -2,12 +2,17 @@
 
 Code: ``gateway/routes/apps/lifecycle.py``, ``create_app`` and ``fork_app``.
 
-The slug of an app is unique over all orgs (``apps_slug_key``). The folder of
-each app is ``apps_root()/<slug>``, and all folders are siblings. FORCE RLS
-shows a member only the rows of their own org. Before this fix, a member of
-org B who chose the name of an app of org A wrote ``app.json`` and
-``index.html`` into the folder of org A. Only then did the INSERT fail on the
-unique key.
+The slug of an app is unique over all orgs (``apps_slug_key``) until WS-STU
+A3b-2. Before task 2429, the folder of each app was ``apps_root()/<slug>``,
+and all folders were siblings. FORCE RLS shows a member only the rows of
+their own org. A member of org B who chose the name of an app of org A wrote
+``app.json`` and ``index.html`` into the folder of org A. Only then did the
+INSERT fail on the unique key.
+
+Since A3b-1 (task 1310), the folder of a new app is ``apps_root()/<app id>``.
+A folder on disk never changes the slug, and a slug never names a folder.
+``tests/unit/test_apps_slug_per_org_r8.py`` holds the A3b-1 checks of the
+folder and of the cross-org clash.
 
 The suite runs on a phase-4 promoted scratch database, as the non-privileged
 app role, so FORCE RLS binds. Two organizations, two members.
@@ -28,57 +33,44 @@ a. Org B creates an app with the name of an app of org A. The folder of org A
    rebuilds later). Org B gets a new slug and its own folder.
 b. The same for a fork: org B forks its own app to a name whose slug org A
    holds.
-c. A folder on disk with no row is never written. The new app takes the next
-   slug.
+c. A folder on disk with no row is never written. The new app keeps its
+   slug, and its folder is ``apps_root()/<app id>``.
 d. A failed file write removes the folder that the request made, and writes
    no row. Every other folder stays the same, byte for byte.
-e. A folder that another writer made after the check is never written or
-   removed. The request gives its row back and takes the next slug, with no
-   409.
-f. After 10 sequential slugs, the create takes a slug with a random suffix.
-   When those are taken too, it answers 409 with a next step.
-g. A broken link at the slug path counts as taken, and is never claimed.
+e. A folder at the path of the new id that another writer made is never
+   written or removed. The request gives its row back and takes the next
+   slug with a new id, with no 409.
+f. After 10 sequential slugs that another org holds, the create takes a slug
+   with a random suffix. When those are taken too, it answers 409 with a
+   next step.
+g. A broken link at the path of the new id counts as taken, and is never
+   claimed.
 
 **The mutations (R7).** Commit before each, and restore with git after.
-Before the fix, 8 of the first 9 tests were red on the old code. The ninth
-checks the CI lists. Each result below is from the fix round, on 2026-11-09,
-with the 12 tests of this suite.
+The list below is of the task 2429 round, on 2026-11-09, with the 12 tests of
+this suite. A3b-1 (2026-11-11) removed ``_folder_free``, so its old M7 and M9
+have no place now. A3b-1 moved the folder to the app id, and its own
+mutations are in ``test_apps_slug_per_org_r8.py``.
 
 * M1. ``create_app``: write the folder BEFORE the reserve (the old order).
-  9 go red, both cases of ``test_r8_create_never_writes_the_folder_of_another_org``
-  among them.
-* M2. ``_discard_new_folder``: remove nothing (drop the rollback).
-  ``test_r8_a_failed_write_removes_the_new_folder_and_the_row`` goes red, both
-  cases.
-* M3. ``fork_app``: write the folder BEFORE the reserve. Both cases of
-  ``test_r8_fork_never_writes_the_folder_of_another_org`` and the fork case of
-  the rollback test go red.
+* M2. ``_NewFolder.discard``: remove nothing (drop the rollback).
+  ``test_r8_a_failed_write_removes_the_new_folder_and_the_row`` goes red.
+* M3. ``fork_app``: write the folder BEFORE the reserve.
 * M4. ``_claim_folder``: ``mkdir(exist_ok=True)``.
   ``test_r8_a_late_folder_is_never_written_or_removed`` goes red.
-* M6. ``_RESERVE_SQL``: drop ``ON CONFLICT (slug) DO NOTHING``. The
-  ``off_disk`` case of the create test and of the fork test go red.
-* M7. ``_folder_free``: answer True.
-  ``test_r8_a_broken_link_at_the_slug_path_counts_as_taken`` goes red. A folder
-  with no row is also caught by the claim, so the orphan test stays green.
-* MV2. ``_discard_new_folder``: remove ``workspace.parent``, so every app of
+* M6. ``_RESERVE_SQL``: drop ``ON CONFLICT DO NOTHING``. A cross-org clash
+  then raises a unique violation.
+* MV2. ``_NewFolder.discard``: remove ``workspace.parent``, so every app of
   every org goes. Both cases of the rollback test go red on the snapshot.
 * M8. ``_reserve_app``: keep the row of a folder that another writer took.
   ``test_r8_a_late_folder_is_never_written_or_removed`` goes red.
-* M9. ``_folder_free``: drop the broken-link clause.
-  ``test_r8_a_broken_link_at_the_slug_path_counts_as_taken`` goes red.
 * M10. ``HEX_TRIES = 0``.
   ``test_r8_after_ten_slugs_the_create_takes_a_random_suffix`` goes red.
 * MU1. ``_UNRESERVE_SQL``: ``DELETE FROM apps WHERE CAST(:id AS uuid) IS NOT
   NULL``, so only RLS binds it. ``test_r8_a_late_folder_is_never_written_or_removed``
-  goes red. It names the lost rows of org A: the two fixture rows and the
-  Keep app.
-* ST9. ``SLUG_TRIES = 9``.
+  goes red.
+* ST9 and ST11. ``SLUG_TRIES = 9`` or ``11``.
   ``test_r8_after_ten_slugs_the_create_takes_a_random_suffix`` goes red.
-* ST11. ``SLUG_TRIES = 11``. The same test and
-  ``test_r8_an_unfree_name_answers_409_with_a_next_step`` go red.
-
-The first version's M5 (``made`` set before the claim) has no place now: the
-claim moved into ``_reserve_app``.
 """
 
 from __future__ import annotations
@@ -184,10 +176,22 @@ def _all_rows(world: Any) -> set[tuple[str, str]]:
             "SELECT slug, organization_id::text FROM apps"))}
 
 
+def _folder(world: Any, slug: str) -> Path:
+    """The stored folder of the app *slug* of this suite, as the superuser.
+    Since A3b-1 it is ``apps_root()/<app id>``."""
+    with world.p.admin_engine.connect() as c:
+        app_id, path = c.execute(text(
+            "SELECT id::text, workspace_path FROM apps "
+            "WHERE slug = :s AND owner_email LIKE :t"), {"s": slug, "t": _LIKE}).one()
+    assert path == str(world.root / app_id), (
+        f"the folder of {slug} is not apps_root()/<app id>: {path}")
+    return Path(path)
+
+
 def _keep_org_a_folder(world: Any, slug: str, on_disk: bool) -> Path:
     """Write the secret of org A into its folder. Off disk, move the folder
     away, as after a disk loss. The store then rebuilds it on the next read."""
-    folder = world.root / slug
+    folder = _folder(world, slug)
     (folder / "index.html").write_text(SECRET, encoding="utf-8")
     if not on_disk:
         folder.rename(world.tmp / f"moved-{slug}")
@@ -221,11 +225,13 @@ def test_r8_create_never_writes_the_folder_of_another_org(world, on_disk: bool) 
 
     _assert_org_a_folder_kept(world, folder, on_disk, first.slug)
     assert isinstance(second, lifecycle.AppDetail), second
+    # Until A3b-2 drops apps_slug_key, org B still takes the next slug.
     assert second.slug != first.slug
-    mine = world.root / second.slug
+    mine = _folder(world, second.slug)
+    assert mine != folder
     assert json.loads((mine / "app.json").read_text(encoding="utf-8"))["slug"] == second.slug
     assert _rows(world) == [
-        (first.slug, a, str(world.root / first.slug)),
+        (first.slug, a, str(folder)),
         (second.slug, b, str(mine)),
     ]
 
@@ -249,7 +255,8 @@ def test_r8_fork_never_writes_the_folder_of_another_org(world, on_disk: bool) ->
     _assert_org_a_folder_kept(world, folder, on_disk, taken.slug)
     assert isinstance(fork, lifecycle.AppDetail), fork
     assert fork.slug not in (taken.slug, source.slug)
-    mine = world.root / fork.slug
+    mine = _folder(world, fork.slug)
+    assert mine not in (folder, _folder(world, source.slug))
     assert json.loads((mine / "app.json").read_text(encoding="utf-8"))["slug"] == fork.slug
     assert [(s, o) for s, o, _ in _rows(world)] == [
         (source.slug, b), (taken.slug, a), (fork.slug, b)]
@@ -258,7 +265,10 @@ def test_r8_fork_never_writes_the_folder_of_another_org(world, on_disk: bool) ->
 # ── c. A folder with no row ───────────────────────────────────────────────
 
 
-def test_r8_create_skips_a_folder_with_no_row(world) -> None:
+def test_r8_create_never_writes_a_folder_with_no_row(world) -> None:
+    """A folder on disk at the slug path is not the folder of the new app
+    (A3b-1). The create takes the slug, never writes that folder, and writes
+    its own ``apps_root()/<app id>``."""
     a = world.p.org_a
     orphan = world.root / f"orphan-{TAG}"
     orphan.mkdir(parents=True)
@@ -270,7 +280,8 @@ def test_r8_create_skips_a_folder_with_no_row(world) -> None:
         "the create wrote into a folder that it did not make")
     assert (orphan / "keep.txt").read_text(encoding="utf-8") == SECRET
     assert isinstance(out, lifecycle.AppDetail), out
-    assert out.slug == f"orphan-{TAG}-2"
+    assert out.slug == f"orphan-{TAG}"
+    assert _folder(world, out.slug) != orphan
     assert [s for s, _, _ in _rows(world)] == [out.slug]
 
 
@@ -299,38 +310,45 @@ def test_r8_a_failed_write_removes_the_new_folder_and_the_row(
     a, b = world.p.org_a, world.p.org_b
     other = _create(world, a, f"Other {TAG}", ANA)
     assert isinstance(other, lifecycle.AppDetail), other
-    (world.root / other.slug / "index.html").write_text(SECRET, encoding="utf-8")
+    (_folder(world, other.slug) / "index.html").write_text(SECRET, encoding="utf-8")
     source = _create(world, b, f"Source {TAG}", BEN)
     assert isinstance(source, lifecycle.AppDetail), source
     before = _tree(world.root)
-    assert f"{other.slug}/index.html" in before and f"{source.slug}/app.json" in before
+    names_before = sorted(p.name for p in world.root.iterdir())
+    other_id = _folder(world, other.slug).name
+    source_id = _folder(world, source.slug).name
+    assert f"{other_id}/index.html" in before and f"{source_id}/app.json" in before
     if route == "create":
         monkeypatch.setattr(lifecycle, "_scaffold_workspace", _failing_write)
         out = _create(world, b, f"Broken {TAG}", BEN)
-        new = world.root / f"broken-{TAG}"
     else:
         monkeypatch.setattr(lifecycle, "_fork_workspace", _failing_write)
         out = _fork(world, b, source.slug, BEN)
-        new = world.root / f"source-{TAG}-fork"
 
     assert isinstance(out, OSError), out
-    assert not new.exists(), "the failed write left its folder"
+    assert sorted(p.name for p in world.root.iterdir()) == names_before, (
+        "the failed write left its folder")
     assert _tree(world.root) == before, (
         "the failed write changed or removed a folder that it did not make")
     assert [s for s, _, _ in _rows(world)] == [other.slug, source.slug], (
         "the failed write left its row")
 
 
-# ── e. A folder that appears after the check ──────────────────────────────
+# ── e. A folder that appears before the claim ─────────────────────────────
+
+
+def _ids(*values: str) -> Any:
+    """A stand-in for ``_new_app_id`` that answers *values* in order, then
+    new random ids."""
+    queue = [uuid.UUID(v) for v in values]
+    return lambda: queue.pop(0) if queue else uuid.uuid4()
 
 
 def test_r8_a_late_folder_is_never_written_or_removed(
         world, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The forced order: the check says the slug path is free, the INSERT
-    succeeds, and the folder is there all the same. That is the case when
-    another request failed after its claim, rolled its row back, and has not
-    yet removed its folder. The request never writes or removes that folder.
-    It deletes its own row, and takes the next slug with no 409.
+    """The forced order: the INSERT succeeds, and the folder of the new id is
+    there all the same. The request never writes or removes that folder. It
+    deletes its own row, and takes the next slug with a new id, with no 409.
 
     The give-back deletes ONLY that row. A committed app of the same org and
     one of the other org stay, and so do the rows that the fixture seeded.
@@ -344,10 +362,11 @@ def test_r8_a_late_folder_is_never_written_or_removed(
     before = _all_rows(world)
     assert {(keep_a.slug, a), (keep_b.slug, b)} <= before
     assert sum(1 for _, o in before if o == a) >= 2, "org A needs a row besides the new one"
-    late = world.root / f"late-{TAG}"
+    late_id = str(uuid.uuid4())
+    late = world.root / late_id
     late.mkdir(parents=True)
     (late / "keep.txt").write_text(SECRET, encoding="utf-8")
-    monkeypatch.setattr(lifecycle, "_folder_free", lambda folder: True)
+    monkeypatch.setattr(lifecycle, "_new_app_id", _ids(late_id))
 
     out = _create(world, a, f"Late {TAG}", ANA)
 
@@ -359,57 +378,64 @@ def test_r8_a_late_folder_is_never_written_or_removed(
     after = _all_rows(world)
     assert not before - after, f"the give-back deleted rows it did not make: {sorted(before - after)}"
     assert after == before | {(out.slug, a)}, "the row of the taken folder stayed"
-    assert _rows(world)[-1] == (out.slug, a, str(world.root / out.slug))
+    assert _rows(world)[-1] == (out.slug, a, str(_folder(world, out.slug)))
+    assert _folder(world, out.slug) != late
 
 
 # ── f. A common name never runs out ───────────────────────────────────────
 
 
-def _busy_folders(world: Any, extra: tuple[str, ...] = ()) -> list[Path]:
-    """Empty folders at ``busy-<tag>``, ``busy-<tag>-2`` … ``busy-<tag>-10``,
-    and at ``busy-<tag>-<x>`` for each *x* in *extra*."""
+def _hold_in_org_b(world: Any, extra: tuple[str, ...] = ()) -> list[str]:
+    """Rows of org B, as the superuser, at ``busy-<tag>``, ``busy-<tag>-2`` …
+    ``busy-<tag>-10``, and at ``busy-<tag>-<x>`` for each *x* in *extra*.
+    Until A3b-2, each one blocks the same slug for org A."""
     names = [f"busy-{TAG}"] + [f"busy-{TAG}-{i}" for i in range(2, 11)]
     names += [f"busy-{TAG}-{x}" for x in extra]
-    folders = [world.root / n for n in names]
-    for f in folders:
-        f.mkdir(parents=True)
-    return folders
+    with world.p.admin_engine.begin() as c:
+        for n in names:
+            c.execute(text(
+                "INSERT INTO apps (slug, name, owner_email, workspace_path, organization_id) "
+                "VALUES (:s, :s, :m, '', CAST(:o AS uuid))"),
+                {"s": n, "m": BEN, "o": world.p.org_b})
+    return names
 
 
 def test_r8_after_ten_slugs_the_create_takes_a_random_suffix(
         world, monkeypatch: pytest.MonkeyPatch) -> None:
     """Exactly 10 sequential slugs come first, then the random suffix. A
     ``SLUG_TRIES`` of 9 skips ``busy-<tag>-10``, and 11 takes ``busy-<tag>-11``.
-    Both go red here."""
+    Both go red here. The slugs that block are of org B, which org A cannot
+    see, so each costs one try."""
     a = world.p.org_a
-    busy = _busy_folders(world, ("aaaaaaaa",))
+    _hold_in_org_b(world, ("aaaaaaaa",))
     hexes = iter(["aaaaaaaa", "bbbbbbbb", "cccccccc"])
     monkeypatch.setattr(lifecycle, "_random_hex", lambda: next(hexes))
-    checked: list[str] = []
-    real_free = lifecycle._folder_free
+    tried: list[str] = []
+    real_candidates = lifecycle._slug_candidates
 
-    def spy(folder: Path) -> bool:
-        checked.append(folder.name)
-        return real_free(folder)
+    def spy(name: str, taken: set[str]) -> Any:
+        for slug in real_candidates(name, taken):
+            tried.append(slug)
+            yield slug
 
-    monkeypatch.setattr(lifecycle, "_folder_free", spy)
+    monkeypatch.setattr(lifecycle, "_slug_candidates", spy)
 
     out = _create(world, a, f"Busy {TAG}", ANA)
 
     sequential = [f"busy-{TAG}"] + [f"busy-{TAG}-{i}" for i in range(2, 11)]
-    assert checked == [*sequential, f"busy-{TAG}-aaaaaaaa", f"busy-{TAG}-bbbbbbbb"], checked
+    assert tried == [*sequential, f"busy-{TAG}-aaaaaaaa", f"busy-{TAG}-bbbbbbbb"], tried
     assert isinstance(out, lifecycle.AppDetail), out
     assert out.slug == f"busy-{TAG}-bbbbbbbb"
-    assert all(not any(f.iterdir()) for f in busy), "the create wrote a busy folder"
-    assert [s for s, _, _ in _rows(world)] == [out.slug]
+    assert [(s, o) for s, o, _ in _rows(world) if o == a] == [(out.slug, a)]
 
 
 def test_r8_an_unfree_name_answers_409_with_a_next_step(
         world, monkeypatch: pytest.MonkeyPatch) -> None:
     a = world.p.org_a
-    _busy_folders(world, ("aaaaaaaa", "bbbbbbbb", "cccccccc"))
+    _hold_in_org_b(world, ("aaaaaaaa", "bbbbbbbb", "cccccccc"))
     hexes = iter(["aaaaaaaa", "bbbbbbbb", "cccccccc"])
     monkeypatch.setattr(lifecycle, "_random_hex", lambda: next(hexes))
+    names_before = sorted(p.name for p in world.root.iterdir()) if world.root.exists() else []
 
     out = _create(world, a, f"Busy {TAG}", ANA)
 
@@ -417,40 +443,38 @@ def test_r8_an_unfree_name_answers_409_with_a_next_step(
     assert out.detail == (
         "Could not pick a free short name for this app. "
         "Try a slightly different name.")
-    assert _rows(world) == []
+    assert [o for _, o, _ in _rows(world) if o == a] == []
+    assert sorted(p.name for p in world.root.iterdir()) == names_before, (
+        "the 409 left a folder")
 
 
 # ── g. A broken link ──────────────────────────────────────────────────────
 
 
-def test_r8_a_broken_link_at_the_slug_path_counts_as_taken(
+def test_r8_a_broken_link_at_the_folder_path_counts_as_taken(
         world, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A broken link at ``apps_root()/<new id>`` is never followed. The claim
+    fails, and the create takes the next slug with a new id."""
     a = world.p.org_a
     world.root.mkdir(parents=True, exist_ok=True)
-    link = world.root / f"link-{TAG}"
+    link_id = str(uuid.uuid4())
+    link = world.root / link_id
     target = world.tmp / f"nowhere-{TAG}"
     try:
         os.symlink(target, link, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"this host cannot make a symlink: {exc}")
-    claimed: list[Path] = []
-    real_claim = lifecycle._claim_folder
-
-    def spy(workspace: Path) -> bool:
-        claimed.append(workspace)
-        return real_claim(workspace)
-
-    monkeypatch.setattr(lifecycle, "_claim_folder", spy)
+    monkeypatch.setattr(lifecycle, "_new_app_id", _ids(link_id))
 
     out = _create(world, a, f"Link {TAG}", ANA)
 
-    assert link not in claimed, "the create tried to claim a broken link"
     # Windows answers the target with a "\\?\" prefix.
     points_to = Path(os.readlink(link)).as_posix().removeprefix("//?/")
     assert link.is_symlink() and points_to == target.as_posix()
     assert not target.exists(), "the create made the target of the link"
     assert isinstance(out, lifecycle.AppDetail), out
     assert out.slug == f"link-{TAG}-2"
+    assert _folder(world, out.slug) != link
     assert [s for s, _, _ in _rows(world)] == [out.slug]
 
 
