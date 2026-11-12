@@ -36,7 +36,7 @@ const withSub = () =>
     entry(hostHref(), { package: "zz-host" }, { source: "system", install_id: null }),
     entry("sub", { href: "/zz-sub", label: "Sub", extends: "zz-host" }),
   ]);
-const stars = (pins: string[], known: string[]) => ({ pins, known });
+const stars = (pins: string[] | null, known: string[] | null) => ({ pins, known });
 const rail = (m: ReturnType<typeof manifest>, s: ReturnType<typeof stars> | null) => {
   const h = held();
   return mergeStarredInstallNav(h, shellSidebar(h, s), installNavPanes(m), s);
