@@ -12,9 +12,13 @@ Rules that bind this module:
   ``calendar.app.created`` lets Metorite make its own "Metorite" calendar
   (CE-13) and write only inside calendars that it made. Metorite never writes
   to the calendars of the member.
-* **No incremental grant.** The consent URL never sends
-  ``include_granted_scopes``, so the calendar token holds the calendar scopes
-  only and never the Gmail scopes of the same account.
+* **Incremental consent (D215 point 1).** The consent URL sends
+  ``include_granted_scopes=true``, so the calendar grant adds to the Gmail
+  grant of the same account. The grant may then list other scopes. The check
+  needs the read scope and a refresh token.
+* **One redirect URI (D215 point 2).** The flow reuses the mail redirect URI
+  ``<workbench>/api/email/oauth/gmail/callback``. The mail callback hands a
+  calendar state over to ``routes/tasks/calendar_connections.finish_consent``.
 * **The primary calendar only** (audit G4).
 * **A sync token cannot go with a time window** (audit G3). The first read
   lists the window (30 days back, 180 ahead) with ``timeMin`` and ``timeMax``.
@@ -103,8 +107,6 @@ def grant_refusal(cred: SourceCredential) -> str | None:
     granted = set(cred.scopes)
     if SCOPE_READ not in granted:
         return "scope_missing"
-    if granted - ALLOWED_SCOPES:
-        return "scope_extra"
     if not cred.refresh_token:
         return "no_refresh_token"
     return None
@@ -237,6 +239,7 @@ class GoogleCalendar:
             "scope": " ".join(SCOPES),
             "access_type": "offline",
             "prompt": "consent",  # a new refresh token on each consent
+            "include_granted_scopes": "true",
             "state": state,
         }
         if login_hint:
@@ -427,11 +430,11 @@ def factory() -> GoogleCalendar | None:
     """The provider on the one Google client, or ``None`` when it is unset."""
     from email_ingestion.providers.app_credentials import oauth_app
 
-    from gateway.routes.email.transport.oauth import _workbench_public_url
+    from gateway.routes.email.transport.oauth import _build_redirect_uri
 
     app = oauth_app("gmail")
     if not app.configured:
         return None
     return GoogleCalendar(OAuthClientConfig(
         client_id=app.client_id, client_secret=app.client_secret,
-        redirect_uri=f"{_workbench_public_url()}/api/calendar/oauth/google/callback"))
+        redirect_uri=_build_redirect_uri("gmail")))

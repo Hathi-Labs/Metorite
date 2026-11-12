@@ -199,6 +199,11 @@ async def purge_calendar_member(db: Any, org: str, email: str) -> int:
         return 0
     count = 0
     for conn in await member_connections(db, org, me):
+        # The row lock a sync takes before it writes, then the external rows
+        # (a sync may have added some since the entries went), then the row.
+        # Same order as the disconnect (Opus review P2).
+        await store.lock_by_id(db, org, conn.id)
+        await db.execute(text(_DELETE_EXTERNAL_SQL), {"org": org, "id": conn.id})
         await db.execute(text(_CLEAR_OWN_SQL), {"org": org, "id": conn.id})
         await store.delete(db, org, conn.provider, OWNING_APP,
                            scope_kind=store.SCOPE_MEMBER, member_email=conn.member_email)

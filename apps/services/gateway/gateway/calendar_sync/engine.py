@@ -169,7 +169,9 @@ async def _write(
 async def _record_error(org: str, connection_id: str, code: str) -> None:
     try:
         async with tenant_session(org) as db:
-            row = await store.get_by_id(db, org, connection_id)
+            # Lock first: a disconnect in flight must finish before the status
+            # is read, or this write would revive a disconnected row.
+            row = await store.lock_by_id(db, org, connection_id)
             if row is not None and row.status == store.STATUS_CONNECTED:
                 await store.set_status(db, org, connection_id, store.STATUS_CONNECTED, code)
                 await store.merge_provider_meta(db, org, connection_id, {

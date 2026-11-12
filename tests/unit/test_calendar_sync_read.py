@@ -72,7 +72,7 @@ from gateway.kb_sources.http import HttpAnswer
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "calendar_sync"
 CLIENT = OAuthClientConfig(
     client_id="cid.apps.googleusercontent.com", client_secret="r8-secret",
-    redirect_uri="https://app.test/api/calendar/oauth/google/callback")
+    redirect_uri="https://app.test/api/email/oauth/gmail/callback")
 WINDOW = Window(datetime(2026, 10, 15, tzinfo=UTC), datetime(2027, 5, 15, tzinfo=UTC))
 NOW = datetime(2026, 11, 12, 12, 0, tzinfo=UTC)
 
@@ -144,19 +144,22 @@ def provider(http: FakeHttp) -> google.GoogleCalendar:
 # ── Unit: no database ──────────────────────────────────────────────────────
 
 
-def test_the_consent_asks_the_calendar_scopes_and_never_an_incremental_grant() -> None:
+def test_the_consent_asks_the_calendar_scopes_with_incremental_consent() -> None:
     url = provider(FakeHttp()).consent_url(state="S", login_hint="ana@example.test")
-    assert "include_granted_scopes" not in url
     for scope in ("calendar.readonly", "calendar.app.created"):
         assert scope in url
-    assert "gmail" not in url and "drive" not in url
+    assert "gmail.readonly" not in url and "drive" not in url
     assert "access_type=offline" in url and "prompt=consent" in url
+    # D215 point 1: incremental consent, and the mail redirect URI (point 2).
+    assert "include_granted_scopes=true" in url
+    assert "redirect_uri=https%3A%2F%2Fapp.test%2Fapi%2Femail%2Foauth%2Fgmail%2Fcallback" in url
 
 
-def test_a_grant_without_the_read_scope_a_refresh_token_or_with_extra_scope_is_refused() -> None:
+def test_a_grant_without_the_read_scope_or_a_refresh_token_is_refused() -> None:
     assert google.grant_refusal(cred()) is None
     assert google.grant_refusal(cred(scopes=("openid",))) == "scope_missing"
-    assert google.grant_refusal(cred(scopes=(*google.SCOPES, "https://mail.google.com/"))) == "scope_extra"
+    # An incremental grant lists the Gmail scopes too (D215 point 1).
+    assert google.grant_refusal(cred(scopes=(*google.SCOPES, "https://mail.google.com/"))) is None
     bare = SourceCredential(access_token="a", refresh_token="", expires_at=NOW, scopes=google.SCOPES)
     assert google.grant_refusal(bare) == "no_refresh_token"
 
@@ -274,6 +277,25 @@ async def test_the_door_refuses_a_host_off_the_list_before_any_request() -> None
         await door.send_json("GET", "https://www.googleapis.com/x")
 
 
+@pytest.mark.asyncio
+async def test_the_door_asks_for_plain_bytes(monkeypatch) -> None:
+    """The guard keeps raw bytes, so a gzip answer would read as an empty feed
+    (Opus review P0). The door must send ``Accept-Encoding: identity``."""
+    from types import SimpleNamespace
+
+    from gateway.calendar_sync import http as door_mod
+    seen: dict[str, Any] = {}
+
+    async def fake(method, url, *, headers=None, content=None, json=None):
+        seen["headers"] = dict(headers or {})
+        return SimpleNamespace(status_code=200, body=b"{}")
+
+    monkeypatch.setattr(door_mod.outbound_guard, "request_https", fake)
+    await CalendarHttp(google.HOSTS).get("https://www.googleapis.com/calendar/v3/x",
+                                         headers={"Accept-Encoding": "gzip"})
+    assert seen["headers"]["Accept-Encoding"] == "identity"
+
+
 def test_the_calendar_connection_is_in_the_purge_after_the_entries() -> None:
     src = (Path(__file__).resolve().parents[2] / "apps" / "services" / "gateway" / "gateway"
            / "routes" / "admin" / "members.py").read_text(encoding="utf-8")
@@ -286,7 +308,7 @@ def test_the_calendar_connection_is_in_the_purge_after_the_entries() -> None:
 import httpx  # noqa: E402
 from acb_auth import UserContext, UserRole, build_access, get_current_user  # noqa: E402
 from acb_common.db import bind_tenant, release_tenant  # noqa: E402
-from fastapi import FastAPI, Request  # noqa: E402
+from fastapi import FastAPI, HTTPException, Request  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
 from tests.unit._tenant_ladder import tenant_engine_scope  # noqa: E402
@@ -625,7 +647,6 @@ async def test_r8_every_calendar_route_is_a_404_with_the_flag_off(world, monkeyp
     async with _scope(world) as _:
         for method, path in (("GET", "/tasks/calendar/connections"),
                              ("POST", "/tasks/calendar/connections/google/connect"),
-                             ("GET", "/tasks/calendar/connections/google/callback"),
                              ("POST", f"/tasks/calendar/connections/{cid}/sync"),
                              ("DELETE", f"/tasks/calendar/connections/{cid}")):
             resp = await _call(world, method, path, ANA)
@@ -638,22 +659,30 @@ async def test_r8_every_calendar_route_is_a_404_with_the_flag_off(world, monkeyp
 async def test_r8_connect_signs_a_state_and_the_callback_refuses_a_forged_one(world) -> None:
     async with _scope(world) as _:
         url = (await _call(world, "POST", "/tasks/calendar/connections/google/connect", ANA)).json()["url"]
-        assert url.startswith("https://accounts.google.com/") and "include_granted_scopes" not in url
+        assert url.startswith("https://accounts.google.com/")
         from urllib.parse import parse_qs, urlsplit
         state = parse_qs(urlsplit(url).query)["state"][0]
-        bad = await _call(world, "GET", "/tasks/calendar/connections/google/callback?code=c&state=zzz", ANA)
-        assert bad.status_code == 400
+        from gateway.routes.tasks import calendar_connections as cal
+        ana, bob = _user(world, ANA), _user(world, BOB)
+        # The mail callback asks this first. A forged state is not calendar.
+        assert not cal.is_calendar_state("zzz", "google", ana)
+        with pytest.raises(HTTPException) as bad:
+            await cal.finish_consent(ana, "google", "c", "zzz", None)
+        assert bad.value.status_code == 400
         # A state for ANOTHER member is refused, and Google is never called.
-        other = await _call(world, "GET",
-                            f"/tasks/calendar/connections/google/callback?code=c&state={state}", BOB)
-        assert other.status_code == 400
-        # A state signed for the mail flow does not verify here.
+        assert not cal.is_calendar_state(state, "google", bob)
+        with pytest.raises(HTTPException) as other:
+            await cal.finish_consent(bob, "google", "c", state, None)
+        assert other.value.status_code == 400
+        # A calendar state is not an Outlook state.
+        assert not cal.is_calendar_state(state, "outlook", ana)
         assert world.http.calls == []
         # The good path: the code is exchanged, the row saved, the browser sent back.
+        assert cal.is_calendar_state(state, "google", ana)
         world.http.on("POST", "/token", answer(fixture("google_token.json")))
-        good = await _call(world, "GET",
-                           f"/tasks/calendar/connections/google/callback?code=c&state={state}", ANA)
-    assert good.status_code == 302 and good.headers["location"] == "/calendar?calendar_connected=google"
+        good = await cal.finish_consent(ana, "google", "c", state, None, base="https://app.test")
+    assert good.status_code == 302
+    assert good.headers["location"] == "https://app.test/calendar?calendar_connected=google"
     with world.p.admin_engine.connect() as c:
         row = c.execute(text(
             "SELECT owning_app, scope_kind, member_email, status, provider_meta, scopes "
@@ -681,6 +710,11 @@ async def test_r8_a_leaver_purge_deletes_the_connection_after_the_entries(world)
     with world.p.admin_engine.connect() as c:
         assert c.execute(text("SELECT count(*) FROM integration_connections WHERE id = "
                               "CAST(:i AS uuid)"), {"i": cid}).scalar_one() == 0
+
+
+def _user(w: Any, member: str) -> UserContext:
+    return UserContext(email=member, role=UserRole.EMPLOYEE,
+                       access=build_access(["feature:tasks"]), organization_id=w.org)
 
 
 async def _call(w: Any, method: str, path: str, member: str) -> Any:

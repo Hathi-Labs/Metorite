@@ -483,6 +483,13 @@ async def oauth_callback(
             f"{callback_page}?{urlencode(query)}", status_code=302,
         )
 
+    # WS-CAL CE-10a (D215 point 2): the calendar flow shares this redirect URI.
+    # A valid calendar state of this session's member goes to the calendar
+    # module. Anything else runs the mail path below, unchanged.
+    handed = await _calendar_handover(provider, state, code, error, user)
+    if handed is not None:
+        return handed
+
     if provider == "gmail" and not gmail_connect_allowed(user):
         _log.info("email.oauth_gmail_dark", leg="callback")
         return _bounce("provider_unavailable")
@@ -859,6 +866,23 @@ def _workbench_public_url() -> str:
         else:
             workbench_url = gateway_public
     return workbench_url.rstrip("/")
+
+
+async def _calendar_handover(
+    provider: str, state: str | None, code: str | None, error: str | None,
+    user: UserContext,
+) -> RedirectResponse | None:
+    """The calendar module's answer for a calendar state, else ``None``.
+
+    Never writes a mailbox for a calendar state (spec §8.1a item 3).
+    """
+    from gateway.routes.tasks import calendar_connections as cal
+
+    word = cal.MAIL_PROVIDER_WORD.get(provider)
+    if word is None or not cal.is_calendar_state(state, word, user):
+        return None
+    return await cal.finish_consent(
+        user, word, code, state, error, base=_workbench_public_url())
 
 
 def _build_redirect_uri(provider: str) -> str:
