@@ -145,6 +145,8 @@ from gateway.routes.projects.filters import (
     live_answer_sql,
     open_recovery_sql,
     open_strand_sql,
+    run_idle_s_sql,
+    run_life_at_sql,
     strand_fits_sql,
     task_closed_sql,
     waiting_of,
@@ -780,7 +782,8 @@ _NEEDS_AGENT_REASON_SQL = (
 _NEEDS_AGENT_SQL = f"({_NEEDS_AGENT_REASON_SQL} IS NOT NULL)"
 
 #: EA-14a: every read of a run also carries ``idle_s`` (the seconds since its
-#: last activity, for the lease) and the display name of its member. SW-10a:
+#: life clock, ``filters.run_idle_s_sql``, for the lease) and the display
+#: name of its member. SW-10a:
 #: and ``needs_agent``, the reason it waits for an agent.
 #:
 #: H-409 item 3 (task 748): the join to the org of the bound session
@@ -790,7 +793,7 @@ _NEEDS_AGENT_SQL = f"({_NEEDS_AGENT_REASON_SQL} IS NOT NULL)"
 _RUN_SELECT = (
     f"SELECT r.*, {AGENT_RUN_STATE_SQL} AS state, "
     f" {_NEEDS_AGENT_REASON_SQL} AS needs_agent, "
-    " EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s, "
+    f" {run_idle_s_sql('r')} AS idle_s, "
     f" {connection_gone_sql('r')} AS connection_gone, "
     " (SELECT u.display_name FROM app_user u"
     "   WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name "
@@ -1778,7 +1781,7 @@ def _handoff_out(row: Any) -> dict[str, Any] | None:
 #: (``filters.BOUND_ORG_SQL``), as defence in depth beside FORCE RLS.
 _HOLDER_SQL = (
     f"SELECT r.*, {AGENT_RUN_STATE_SQL} AS state, "
-    " EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s, "
+    f" {run_idle_s_sql('r')} AS idle_s, "
     f" {connection_gone_sql('r')} AS connection_gone, "
     " (SELECT u.display_name FROM app_user u"
     "   WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name "
@@ -1885,7 +1888,8 @@ async def _take_over(db: Any, holder: Any, *, me: str, via: str | None) -> bool:
     """Move a run whose lease ended to ``abandoned``, and write the line
     "Taken over by <member>/<client>". False when the run moved in the
     meantime: a heartbeat changes ``last_activity_at``, so the guard misses
-    and the caller reads the holder again.
+    and the caller reads the holder again. Task 1045b: a linked event renews
+    the lease too, so the guard holds ``last_signal_at`` as well.
 
     AP-BUG-3. This is the one move out of ``awaiting`` that does not go
     through :func:`_move_run`, so it closes the question bells itself."""
@@ -1895,10 +1899,13 @@ async def _take_over(db: Any, holder: Any, *, me: str, via: str | None) -> bool:
         text(
             "UPDATE pm_agent_runs SET status = :to, ended_at = :ts, session_key = NULL "
             " WHERE id = CAST(:rid AS uuid) AND status = ANY(:open) "
-            "   AND last_activity_at = :seen RETURNING id"
+            "   AND last_activity_at = :seen"
+            "   AND last_signal_at IS NOT DISTINCT FROM CAST(:signal AS timestamptz)"
+            " RETURNING id"
         ),
         {"to": to, "ts": ts, "rid": str(holder.id),
-         "open": list(AGENT_RUN_OPEN_STATUSES), "seen": holder.last_activity_at},
+         "open": list(AGENT_RUN_OPEN_STATUSES), "seen": holder.last_activity_at,
+         "signal": getattr(holder, "last_signal_at", None)},
     )).fetchone()
     if moved is None:
         return False
@@ -3189,7 +3196,7 @@ _ARCHIVE_APPLIED_SQL = (
     "   AND (SELECT a.content->>'archived' FROM pm_agent_run_activities a"
     "         WHERE a.run_id = r.id AND a.type = 'prompt'"
     "         ORDER BY a.seq DESC LIMIT 1) = 'true'"
-    " ORDER BY r.last_activity_at, r.id LIMIT :n FOR UPDATE OF r SKIP LOCKED"
+    f" ORDER BY {run_life_at_sql('r')}, r.id LIMIT :n FOR UPDATE OF r SKIP LOCKED"
 )
 
 
@@ -3233,7 +3240,7 @@ def _closed_task_runs_sql() -> str:
         " WHERE r.status = 'in_progress' AND r.task_id IS NOT NULL"
         f"   AND {holder_free_sql('r')}"
         f"   AND {task_closed_sql('r')}"
-        " ORDER BY r.last_activity_at, r.id LIMIT :n FOR UPDATE OF r SKIP LOCKED"
+        f" ORDER BY {run_life_at_sql('r')}, r.id LIMIT :n FOR UPDATE OF r SKIP LOCKED"
     )
 
 
@@ -4085,6 +4092,90 @@ def _outside_labels(question: Any, selected: list[str] | None) -> list[str]:
         raise _refusal(422, OUTSIDE_SELECTED, str(exc.detail)) from None
 
 
+# ── Task 1045b: linked events count as life (agent_coordination.md) ─────────
+
+#: The words of the one line that a linked event writes on each run. The
+#: webhook picks a key, and only the pull request number goes in. So the
+#: line holds fixed words and a number, and never text from the payload.
+LINKED_EVENT_LINES: dict[str, str] = {
+    "push": "New commits on PR {pr}.",
+    "ci_started": "CI started on PR {pr}.",
+    "ci_passed": "CI passed on PR {pr}.",
+    "ci_failed": "CI failed on PR {pr}.",
+    "ci_ended": "CI ended on PR {pr}.",
+}
+
+#: The match of a linked event on ``pm_task_refs``: the pull request by its
+#: reference (a push), or by its head commit (a check event).
+_LINKED_MATCH: dict[str, str] = {
+    "ref": "f.ref = :key",
+    "head_sha": "f.head_sha = :key",
+}
+
+
+def _signal_sql(match: str) -> str:
+    """Move ``last_signal_at`` of each ``in_progress`` run of a task that a
+    GitHub pull request reference links, and return each run once with the
+    number of that pull request. ``last_activity_at`` and
+    ``last_agent_activity_at`` stay, so the answered rule does not change
+    (1045b item 4). The org arm is defence in depth beside FORCE RLS."""
+    return (
+        "UPDATE pm_agent_runs r SET last_signal_at = clock_timestamp()"
+        "  FROM (SELECT DISTINCT ON (lr.id) lr.id, f.ref"
+        "          FROM pm_task_refs f"
+        "          JOIN pm_agent_runs lr ON lr.task_id = f.task_id"
+        "           AND lr.organization_id = f.organization_id"
+        "         WHERE f.organization_id = CAST(:org AS uuid)"
+        "           AND f.provider = 'github' AND f.kind = 'pull_request'"
+        f"          AND {_LINKED_MATCH[match]}"
+        "           AND lr.status = 'in_progress' AND lr.task_id IS NOT NULL"
+        "         ORDER BY lr.id, f.ref) hit"
+        " WHERE r.id = hit.id AND r.status = 'in_progress'"
+        " RETURNING r.id, r.task_id, r.member_email, hit.ref"
+    )
+
+
+_NEWEST_BODY_SQL = (
+    "SELECT a.content->>'body' AS body, (a.content->>'system') = 'true' AS system"
+    "  FROM pm_agent_run_activities a WHERE a.run_id = CAST(:rid AS uuid)"
+    " ORDER BY a.seq DESC LIMIT 1"
+)
+
+
+def _pr_number(ref: Any) -> int | None:
+    """The number of the pull request reference ``owner/repo#<n>``, or None."""
+    tail = str(ref or "").rpartition("#")[2]
+    return int(tail) if tail.isdigit() and len(tail) <= 9 else None
+
+
+async def signal_linked_runs(db: Any, org: str, *, match: str, key: str,
+                             event: str) -> int:
+    """Task 1045b. A linked event counts as life for each ``in_progress``
+    run of a task that references the pull request. *match* is ``ref`` (a
+    push, ``owner/repo#<n>``) or ``head_sha`` (a check event). *event* is a
+    key of :data:`LINKED_EVENT_LINES`.
+
+    Each run gets ``last_signal_at`` set to now, which renews the lease and
+    the stale band (``filters.run_life_at_sql``). Each run also gets ONE
+    system line through :func:`_system_activity`, unless its newest
+    activity is the same system line, so a burst of check events writes one
+    line. Returns the number of runs. Runs in the caller's bound tenant
+    session (R5)."""
+    words = LINKED_EVENT_LINES[event]
+    hits = (await db.execute(text(_signal_sql(match)),
+                             {"org": org, "key": key})).fetchall()
+    for hit in hits:
+        number = _pr_number(hit.ref)
+        if number is None:
+            continue
+        body = words.format(pr=number)
+        newest = (await db.execute(text(_NEWEST_BODY_SQL), {"rid": str(hit.id)})).first()
+        if newest is not None and newest.system and newest.body == body:
+            continue
+        await _system_activity(db, hit, actor_email=hit.member_email, via=None, body=body)
+    return len(hits)
+
+
 __all__ = [
     "ACTIVITY_TYPES",
     "ARCHIVE_APPROVE",
@@ -4096,6 +4187,7 @@ __all__ = [
     "CLOSED_TASK_BODIES",
     "DECIDED_ELSEWHERE",
     "EPHEMERAL_CAP",
+    "LINKED_EVENT_LINES",
     "MAX_WAIT_S",
     "OUTSIDE_CODES",
     "OUTSIDE_NOT_AWAITING",
@@ -4127,6 +4219,7 @@ __all__ = [
     "outside_comment",
     "record_outside_decision",
     "reopen_run_of_reopened_task",
+    "signal_linked_runs",
     "transition",
     "typed_question",
     "write_strand_line",
