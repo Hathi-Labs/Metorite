@@ -77,7 +77,7 @@ PAGE_SIZE = 100
 MIN_PAGE_SIZE = 10
 #: Only the fields the mapper reads, so a page is small.
 EVENT_FIELDS = (
-    "nextPageToken,nextSyncToken,items(id,etag,status,htmlLink,summary,"
+    "nextPageToken,nextSyncToken,items(id,etag,updated,status,htmlLink,summary,"
     "description,location,start,end,transparency,eventType,recurringEventId,"
     "originalStartTime,hangoutLink,conferenceData/entryPoints(entryPointType,uri))")
 #: A safety stop: 100 pages of up to 100 events in one read.
@@ -136,6 +136,13 @@ def _conference(item: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _updated(value: Any) -> datetime | None:
+    try:
+        return _utc(str(value)) if value else None
+    except (ValueError, TypeError):
+        return None
+
+
 def map_event(item: Mapping[str, Any]) -> RemoteEvent | None:
     """One Google event as a :class:`RemoteEvent`, or ``None`` to skip it.
 
@@ -162,6 +169,7 @@ def map_event(item: Mapping[str, Any]) -> RemoteEvent | None:
                 else "tentative" if item.get("status") == "tentative" else "confirmed"),
         conference_url=_conference(item),
         external_series_id=_text(item.get("recurringEventId"), 1024),
+        updated=_updated(item.get("updated")),
     )
     original = item.get("originalStartTime")
     try:
@@ -316,7 +324,9 @@ class GoogleCalendar:
 
     async def sync(
         self, cred: SourceCredential, cursor: str | None, window: Window,
+        *, calendar_id: str | None = None,
     ) -> SyncResult:
+        cal = quote(calendar_id, safe="") if calendar_id else "primary"
         base: dict[str, str] = {
             "singleEvents": "true", "showDeleted": "true", "fields": EVENT_FIELDS}
         if cursor:
@@ -333,7 +343,7 @@ class GoogleCalendar:
             if page:
                 params["pageToken"] = page
             try:
-                body = await self._call(cred, "GET", "calendars/primary/events", params=params)
+                body = await self._call(cred, "GET", f"calendars/{cal}/events", params=params)
             except PageTooLarge:
                 if size <= MIN_PAGE_SIZE:
                     raise

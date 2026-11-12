@@ -28,8 +28,8 @@ from urllib.parse import urlencode
 import httpx
 
 from gateway import outbound_guard
-from gateway.kb_sources.http import HttpAnswer, check_host
 from gateway.calendar_sync.provider import ProviderError
+from gateway.kb_sources.http import HttpAnswer, check_host
 
 _CURSOR = re.compile(
     r"((?:sync|delta|page|skip)token=|\$deltatoken=|\$skiptoken=)[^&\s\"']+",

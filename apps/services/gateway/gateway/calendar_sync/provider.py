@@ -106,6 +106,7 @@ class RemoteEvent:
     original_start: datetime | None = None
     original_start_date: date | None = None
     deleted: bool = False
+    updated: datetime | None = None  # provider last-change instant, UTC aware
 
 
 @dataclass(frozen=True)
@@ -161,6 +162,7 @@ class CalendarProvider(Protocol):
 
     async def sync(
         self, cred: SourceCredential, cursor: str | None, window: Window,
+        *, calendar_id: str | None = None,
     ) -> SyncResult: ...
 
     async def create_calendar(self, cred: SourceCredential, name: str) -> str: ...
@@ -186,8 +188,21 @@ def clean_title(raw: str | None) -> str:
 
 
 __all__ = [
-    "AccountIdentity", "CalendarInfo", "CalendarProvider", "CursorExpired",
-    "METORITE_CALENDAR_NAME", "NeedsReconnect", "OWNING_APP", "OutEvent",
-    "OutResult", "ProviderError", "RateLimited", "RemoteEvent", "SyncResult",
-    "TITLE_MAX", "UNTITLED", "Window", "clean_title",
+    "METORITE_CALENDAR_NAME",
+    "OWNING_APP",
+    "TITLE_MAX",
+    "UNTITLED",
+    "AccountIdentity",
+    "CalendarInfo",
+    "CalendarProvider",
+    "CursorExpired",
+    "NeedsReconnect",
+    "OutEvent",
+    "OutResult",
+    "ProviderError",
+    "RateLimited",
+    "RemoteEvent",
+    "SyncResult",
+    "Window",
+    "clean_title",
 ]

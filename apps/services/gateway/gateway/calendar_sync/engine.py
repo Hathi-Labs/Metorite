@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from acb_common import get_logger
 from acb_common.db import tenant_session
@@ -60,6 +61,9 @@ class SyncOutcome:
     updated: int = 0
     removed: int = 0
     code: str | None = None
+
+
+ERROR_BACKOFF = timedelta(minutes=5)
 
 
 def _now() -> datetime:
@@ -121,6 +125,27 @@ async def _sync(
         return SyncOutcome("error", code=code)
     except asyncio.CancelledError:
         raise
+    try:
+        outcome = await _write(org, connection_id, provider, conn, result,
+                               start_cursor, full, now)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # a write failure is an outcome, not a 500
+        _log.warning("calendar_sync.write_failed", organization_id=org,
+                     error=type(exc).__name__)
+        await _record_error(org, connection_id, "write_failed")
+        return SyncOutcome("error", code="write_failed")
+    if outcome.status == "ok":
+        _log.info("calendar_sync.ok", organization_id=org, added=outcome.added,
+                  updated=outcome.updated, removed=outcome.removed, full=full)
+    return outcome
+
+
+async def _write(
+    org: str, connection_id: str, provider: CalendarProvider,
+    conn: store.Connection, result: Any, start_cursor: str | None,
+    full: bool, now: datetime,
+) -> SyncOutcome:
     async with tenant_session(org) as db:
         locked = await store.lock_by_id(db, org, connection_id)
         if locked is None or locked.status != store.STATUS_CONNECTED:
@@ -134,10 +159,10 @@ async def _sync(
         await connections.save_cursor(
             db, org, connection_id, result.next_cursor,
             full_at=now if full else None)
+        await store.merge_provider_meta(
+            db, org, connection_id, {connections.META_RETRY_AT: ""})
         await store.set_status(db, org, connection_id, store.STATUS_CONNECTED, None)
         await store.mark_synced(db, org, connection_id)
-    _log.info("calendar_sync.ok", organization_id=org, added=stats.added,
-              updated=stats.updated, removed=stats.removed, full=full)
     return SyncOutcome("ok", stats.added, stats.updated, stats.removed)
 
 
@@ -147,6 +172,9 @@ async def _record_error(org: str, connection_id: str, code: str) -> None:
             row = await store.get_by_id(db, org, connection_id)
             if row is not None and row.status == store.STATUS_CONNECTED:
                 await store.set_status(db, org, connection_id, store.STATUS_CONNECTED, code)
+                await store.merge_provider_meta(db, org, connection_id, {
+                    connections.META_RETRY_AT:
+                        (_now() + ERROR_BACKOFF).isoformat()})
     except Exception as exc:  # the record never hides the sync error
         _log.warning("calendar_sync.error_record_failed", error=type(exc).__name__)
 

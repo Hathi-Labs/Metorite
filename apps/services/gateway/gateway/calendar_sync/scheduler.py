@@ -77,6 +77,9 @@ def is_due(conn: store.Connection, db_now: datetime) -> bool:
         return False
     if not flags.read_allowed(conn.organization_id, conn.member_email):
         return False
+    retry = connections.retry_at(conn)
+    if retry is not None and db_now < retry:
+        return False  # backing off after an error
     last = conn.last_sync_at
     return last is None or (db_now - last).total_seconds() >= INTERVAL_SECONDS
 

@@ -534,7 +534,7 @@ async def test_r8_a_sync_that_lost_the_race_writes_nothing(world, monkeypatch) -
 @_DB_GATE
 async def test_r8_a_dead_refresh_token_marks_the_row_and_is_not_retried(world, monkeypatch) -> None:
     cid = await _connect(world, ANA)
-    with world.p.admin_engine.begin() as c:  # an expired access token forces a refresh
+    with world.p.admin_engine.begin():  # an expired access token forces a refresh
         pass
     async def dead(self: Any, c: Any) -> Any:
         raise NeedsReconnect("revoked")
@@ -673,12 +673,11 @@ async def test_r8_a_leaver_purge_deletes_the_connection_after_the_entries(world)
     cid = await _connect(world, ANA)
     await _sync(world, cid)
     _seed_own(world, ANA, cid)
-    async with tenant_engine_scope(_dsn(world.p)):
-        async with tenant_session(world.org) as db:
-            # The purge list deletes the member's entries first.
-            await db.execute(text(
-                "DELETE FROM calendar_entries WHERE lower(owner_email) = :e"), {"e": ANA})
-            assert await purge_calendar_member(db, world.org, ANA) == 1
+    async with tenant_engine_scope(_dsn(world.p)), tenant_session(world.org) as db:
+        # The purge list deletes the member's entries first.
+        await db.execute(text(
+            "DELETE FROM calendar_entries WHERE lower(owner_email) = :e"), {"e": ANA})
+        assert await purge_calendar_member(db, world.org, ANA) == 1
     with world.p.admin_engine.connect() as c:
         assert c.execute(text("SELECT count(*) FROM integration_connections WHERE id = "
                               "CAST(:i AS uuid)"), {"i": cid}).scalar_one() == 0
