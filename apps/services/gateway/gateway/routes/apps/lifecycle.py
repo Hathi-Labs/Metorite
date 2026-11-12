@@ -36,6 +36,7 @@ from acb_auth import UserContext
 from acb_skills import safe_open
 from fastapi import Depends, HTTPException
 from gateway.routes.apps._common import (
+    _BOUND_ORG,
     _log,
     _tenant_session,
     _uid,
@@ -332,7 +333,7 @@ async def _reserve_app(
     root = apps_root()
     taken = {
         r.slug for r in (await db.execute(
-            text("SELECT slug FROM apps"),
+            text("SELECT slug FROM apps WHERE organization_id = " + _BOUND_ORG),
         )).fetchall()
     }
     for slug in _slug_candidates(name, taken):

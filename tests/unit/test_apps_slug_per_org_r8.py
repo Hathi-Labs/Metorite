@@ -227,6 +227,18 @@ def test_the_contract_is_one_file_and_drops_only_the_global_key() -> None:
     assert "%" not in code, "psycopg reads a per-cent sign as a placeholder"
 
 
+def test_the_taken_slug_read_names_the_org_not_only_rls() -> None:
+    """The create reads the slugs that are taken. On a database whose ``apps``
+    has no RLS policy (the H3 promotion is not enacted), a read with no org
+    filter holds every org's slugs, and org B would still get ``foo-2``."""
+    body = (_ROOT / "apps/services/gateway/gateway/routes/apps/lifecycle.py"
+            ).read_text(encoding="utf-8")
+    reads = re.findall(r'text\("SELECT slug FROM apps[^)]*\)', body)
+    assert reads, "the taken-slug read moved: update this fence"
+    for r in reads:
+        assert "organization_id" in r and "_BOUND_ORG" in r, r
+
+
 def test_no_reader_finds_an_app_by_slug_without_the_org() -> None:
     """Since A3b-2 two orgs may hold one slug. A statement that reads or
     writes ``apps`` by ``slug`` must name ``organization_id`` too."""
