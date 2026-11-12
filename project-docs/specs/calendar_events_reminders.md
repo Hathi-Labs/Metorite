@@ -1680,6 +1680,61 @@ gate.
 6. **Conflicts.** `block_overlap` and MD-11's `meeting_overlap` read the busy
    external entries. The day planner treats them as fixed.
 
+### 8.1a The build decisions (D215, 2026-11-12)
+
+The owner asked on 2026-11-12 for Google and Outlook sync in both
+directions, with the least work for the member. These points bind CE-10,
+CE-11 and CE-13.
+
+1. **Scopes, read.** Google: `https://www.googleapis.com/auth/calendar.events`
+   covers read and write of events, so one scope serves CE-10 and CE-11.
+   The read leg asks `calendar.events.readonly` until the write flag is on.
+   Add `calendar.calendarlist.readonly`, so the member sees the list of
+   calendars. Microsoft: `Calendars.Read` for CE-10, and `Calendars.ReadWrite`
+   for CE-11. `offline_access` and `User.Read` are already in
+   `GRAPH_SCOPES`. Never ask a mail scope in the calendar leg.
+2. **Incremental consent.** Google: send `include_granted_scopes=true`. The
+   calendar grant adds to the Gmail grant. Microsoft: the new grant lists the
+   calendar scopes only. The refresh token covers the union.
+3. **One redirect URI.** The calendar flow reuses
+   `_build_redirect_uri(provider)` in `routes/email/transport/oauth.py`,
+   that is `<workbench>/api/email/oauth/{provider}/callback`. The owner
+   adds no URI in either console. The state carries its own purpose,
+   `calendar.connect`, through the caller-purpose MAC of `signing.py`
+   (the precedent is `crm.zoho.connect`). The email callback verifies the
+   email state first. When that fails, it verifies the calendar state and
+   hands over to the calendar module. It never writes a mailbox for a
+   calendar state. The email functions stay unchanged.
+4. **A scope check.** The calendar callback refuses a grant that lacks the
+   calendar scope, or that has no refresh token. It then redirects with
+   `error=scope_missing`.
+5. **The connection row.** `integration_connections`, `owning_app =
+   'calendar'`, `scope_kind = 'member'`. One row for each member and
+   provider. A reconnect updates the row. The sync cursor and the chosen
+   calendars live in `provider_meta`.
+6. **Which calendars.** The default reads the primary calendar only. The
+   member may add more calendars in settings. This keeps a first sync short.
+7. **Task blocks out (CE-13).** The provider event id of a task block lives
+   on the overlay `pm_task_personal`, in new nullable columns
+   `ext_connection_id`, `ext_event_id` and `ext_etag`. It does NOT live in
+   `calendar_entries`: a task block is not an entry (§0). The key is
+   `(organization_id, ext_connection_id, ext_event_id)`. The sync of CE-10
+   skips a provider event whose id matches one of these, so a task block
+   returns no `external` copy. A new migration adds the columns (R6).
+8. **Two ways for tasks.** A change in Metorite updates the provider
+   event. A change at the provider (time, title, delete) updates the block
+   when its id matches. The newer `updated` time wins. A delete at the
+   provider unschedules the block and keeps the task. Metorite never
+   deletes a task because of a provider change.
+9. **Defaults of the connect flow.** Connect is a button in the Calendar
+   settings and on a first-run card. The write switch (CE-11) is on by
+   default when the grant has the write scope. A member who connects for
+   read first sees one more consent step when they turn the write switch
+   on. The first sync starts at once and shows "Syncing…" until it ends.
+   A revoked token shows "Reconnect" and stops the loop for that row.
+10. **The guide.** `docs/calendar_connect.md` holds the member steps and the
+    admin steps (CE-14). The panel "How to connect" shows the same steps.
+
 ### 8.2 Write with read (CE-11)
 
 D138 (2026-10-29): CE-11 ships beside CE-10, and both providers ship
@@ -1702,11 +1757,12 @@ together. The owner gates of §8.3 still bind the live flips.
 
 | Gate | Who | Why |
 |---|---|---|
-| Add `calendar.readonly` to the Google consent screen, and pass Google's review of a sensitive scope | Owner | Our OAuth app, and our name on the review |
-| Add `Calendars.Read` to the Azure app | Owner | Same |
-| Put the client secrets on the box with `scripts/secrets.sh` | Owner | Live credentials |
+| Add the scopes of §8.1a point 1 to the Google consent screen, and pass Google's review of a sensitive scope | Owner | Our OAuth app, and our name on the review. Task 3036 holds the steps |
+| Add `Calendars.Read` and `Calendars.ReadWrite` to the Azure app | Owner | Same |
+| Enable the Google Calendar API in the Google Cloud project | Owner | Without it every call answers 403 |
+| Put the client secrets on the box with `scripts/secrets.sh` | Owner | Live credentials. They exist for mail already |
 | Turn `CALENDAR_SYNC_READ` on for a real member | Owner | D54.6 |
-| Add the write scopes, and turn `CALENDAR_SYNC_WRITE` on | Owner | The provider sends mail to real people (CLAUDE.md §3a rule 3) |
+| Turn `CALENDAR_SYNC_WRITE` on | Owner | The provider sends mail to real people (CLAUDE.md §3a rule 3) |
 
 ## 9. Flags
 
@@ -1744,6 +1800,8 @@ needs no decision change.
 | **CE-8** Repeat rules | AGENT-SAFE after CE-4 | `recurrence`, `series_id`, `original_start`, expanded in the window. "This event" or "all events" on a change | A weekly 09:00 event in `Asia/Kolkata` stays at 09:00 in that zone. A cancelled instance does not show | `tests/unit/test_calendar_recurrence.py` (new), with a zone that changes its clock |
 | **CE-9** Colleagues on an event | AGENT-SAFE after CE-0 Q2, CE-4 | Attendee input: the rows with `member_email` and the guest rows. CE-4 writes only the organizer row, and its read already applies the rule of §4.1. `event_invite` with RSVP in place (D101) | An attendee sees the event. A colleague who is not one does not. Decline writes `rsvp` and mutes the entry | `test_calendar_entries_r8.py`, the visibility cases |
 | **CE-10** Read Google and Outlook | 🔴 OWNER-GATE for §8.3. The code is AGENT-SAFE after CE-0 Q1, Q6, CE-4 | §8.1, and the provider of MD-11 | With recorded replies, a sync writes each instance once, and a second sync adds nothing. A disconnect deletes the rows of that connection | `tests/unit/test_calendar_sync_read.py` (R8, new) and the loop in `test_db_engine_seam.py` |
+| **CE-13** Tasks out, two ways | 🔴 OWNER-GATE (§8.3). After CE-10 | §8.1a points 7 and 8: the columns on `pm_task_personal`, the writer, and the return path | A scheduled task block makes one provider event. A move at the provider moves the block. A delete at the provider unschedules the block and keeps the task. The flag off sends no request | `tests/unit/test_calendar_sync_tasks.py` (R8, new) |
+| **CE-14** The setup guide | AGENT-SAFE | `docs/calendar_connect.md` (§8.1a point 10) | A member can connect each of the four account types from the text alone | `ste-lint` on the file |
 | **CE-11** Write events to the provider | 🔴 OWNER-GATE (§8.3). After CE-10 | §8.2 | The flag off sends no request. One event makes one provider event, and the next sync makes no copy | `tests/unit/test_calendar_sync_write.py` (new) |
 | **CE-12** Notes meetings | AGENT-SAFE after CE-4 | `meeting_id`. **Prepare notes** and **Send notetaker**. The "Coming up" band reads entries | Prepare notes twice opens one `meeting` row. A moved event moves the band | `tests/unit/test_calendar_meeting_link.py` (new) |
 
