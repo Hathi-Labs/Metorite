@@ -17,6 +17,11 @@ at 05:30, 13:30 and 21:30 UTC. The owner installs the new timer.
 **D218 (2026-11-12):** §8 adds the rule "merge to main as fast as we build".
 Its slices are CIV-26 to CIV-38 (tasks 3051 to 3066). None is built yet.
 
+**CIV-30 is BUILT on 2026-11-13** (task 3055, branch
+`civ30-green-pointer-mt-b1b2dd41`). HIGH tier. When the batch of a push
+passes, it moves `green/main`. Each release slot ships that commit. §8.7
+holds the design.
+
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
 **Owning spec** for how much CI runs, and where. `engineering_practice.md` §7a
@@ -941,3 +946,34 @@ at `medium` for coding, and Fable at `high`. Each dispatch posts its model and
 effort. The weekly review counts first-pass verify and CI rounds for each
 model and tier. Until CIV-37 merges, `CLAUDE.md` §4 and `next-ticket.md`
 step 1c keep the old table.
+
+### 8.7 CIV-30 as built: the green pointer (2026-11-13)
+
+`.github/workflows/deploy.yml` holds it. The fence is
+`tests/unit/test_green_pointer.py`.
+
+- **Mark.** The job `mark-green` runs after a push batch. When `lint` and
+  `test` pass, it moves `green/main` to the commit that `test` tested. That
+  is the tip of main when the batch started. It moves forward only. It does
+  not move to a commit that is off main or that does not contain the current
+  pointer. A folded, cancelled, failed or skipped `test` does not move it. It
+  has `contents: write` on that one job, and it never pushes to `main`.
+- **Ship.** The job `release-commit` runs first in each run. On a slot run (a
+  schedule run, or a dispatch with `nightly=true`), it reads the head of
+  `green/main`. Each job that builds, tests, gates or deploys the release
+  checks out that one commit: `lint`, `test`, `r8-suite`, `r8-gate`,
+  `publish-release`, `deploy`, `pull-delivery` and `chat-smoke`. The box
+  applies it as `DEPLOY_REF`. A push and a plain dispatch use their own
+  commit, as before.
+- **Fallback.** When `green/main` does not exist, a slot ships the tip of main,
+  as before, and the run summary says so. Any other read failure holds the
+  release.
+- **A red tip holds no release.** The run summary names the release commit.
+  It lists the commits on main that the release leaves out.
+- **Release never moves back.** A plain dispatch can ship the tip. When a
+  later slot finds `green/main` older than `release`, it publishes nothing,
+  and the deploy skips.
+- **A known limit.** The workflow file of a run comes from the tip of main,
+  so the R8 guard lists come from the tip. When an R8 suite lands after
+  `green/main`, the guard does not find it in the release tree. The slot then
+  holds, and the next slot ships.
