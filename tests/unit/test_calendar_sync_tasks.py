@@ -96,6 +96,7 @@ class FakeProvider:
     dedupes_by_client_id = False  # Outlook: a repeat transactionId returns the first event
     lose_answer_once: bool = False  # the create reaches the provider, the answer is lost
     by_cid: dict = field(default_factory=dict)
+    sent_events: list = field(default_factory=list)
     revives: list = field(default_factory=list)
     calls: list[tuple] = field(default_factory=list)
     fail_with: Exception | None = None
@@ -122,6 +123,7 @@ class FakeProvider:
                            event.ends_at, external_id, event.task_url))
         self.client_ids.append((external_id, event.client_id))
         self.revives.append(event.revive)
+        self.sent_events.append(event)
         if self.exists_once and external_id is None:
             self.exists_once = False
             raise ProviderError("exists")
@@ -1230,6 +1232,9 @@ async def test_r8_a_lost_outlook_create_then_a_cleared_block_leaves_no_orphan(wo
         s = await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=10))
     assert s.deleted == 1 and ("delete", "cal-metorite", "ev1") in fake.calls  # the orphan is gone
     assert fake._n == 1 and _links(world, world.org_a) == []  # no second event was left behind
+    # The find-by-create body is in the PAST and free: no busy time, no reminder.
+    probe = fake.sent_events[-1]
+    assert probe.busy is False and probe.starts_at < NOW and probe.client_id
 
 
 @pytest.mark.asyncio
@@ -1243,3 +1248,79 @@ async def test_r8_with_the_write_flag_off_a_pass_opens_no_session(world, monkeyp
     monkeypatch.setattr(task_out, "tenant_session", boom)
     s = await task_out.run_pass(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
     assert s.skipped == "flag_off" and fake.calls == []
+
+
+# ── CE-13c, Opus round 1 ──────────────────────────────────────────────────
+#
+# * M39. ``task_links.py`` ``unschedule_missing``: drop the ``synced_block_hash``
+#   comparison. A block that Metorite moved while the connection was down is
+#   cleared. ``test_r8_a_block_moved_in_metorite_during_the_gap_is_not_swept``.
+# * M40. ``task_out.py`` the resolve create: ``busy=False`` and the past time of
+#   ``_resolve_event`` back to a busy event in the future. Same test as M37.
+# * M41. ``task_out.py`` the resolve create: drop the ``exists`` handler.
+#   ``test_r8_an_exists_answer_to_the_find_by_create_drops_the_link``.
+# * M42. ``task_out.py`` ``RESOLVE_MAX_ATTEMPTS``: no cap.
+#   ``test_r8_a_removal_that_cannot_find_its_event_gives_up_after_the_cap``.
+
+
+def _outlook_fake(**kw: Any) -> FakeProvider:
+    fake = FakeProvider(provider="outlook_calendar", source="outlook", **kw)
+    fake.client_id_is_event_id = False
+    fake.dedupes_by_client_id = True
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_r8_a_block_moved_in_metorite_during_the_gap_is_not_swept(world):
+    from gateway.calendar_sync.provider import CalendarInfo
+
+    fake = _outlook_fake()
+    far = T0 + timedelta(days=200)  # outside the window of the list
+    async with _in(world, world.org_a):
+        moved = await _task(world.org_a, ALICE, "Moved during the gap", far)
+        kept = await _task(world.org_a, ALICE, "Live in the list", T0 + timedelta(hours=3))
+        await _pass(world, world.org_a, world.conn["a"], fake)
+        ext = {str(l.task_id): l.external_id for l in _links(world, world.org_a)}
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE calendar_task_links SET updated_at = now() - interval '1 hour'"))
+        _reconnect(world)
+        # The member moves the far block INTO the window while the connection is down.
+        await _move(world.org_a, ALICE, moved, T0 + timedelta(days=3))
+        fake.listed = [CalendarInfo(id="cal-metorite", name="Metorite", primary=False, writable=True)]
+        fake.feed = SyncResult(changes=[RemoteEvent(external_id=ext[kept], etag='"x"')],
+                               next_cursor="c1", full=True)
+        await task_out.run_pass(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
+        assert (await _block(world.org_a, ALICE, moved)).scheduled_start == T0 + timedelta(days=3)
+    ups = [c for c in fake.calls if c[0] == "upsert"]
+    assert any(c[5] == ext[moved] for c in ups)  # the push MOVED the old event, it was not orphaned
+    assert {l.external_id for l in _links(world, world.org_a)} == {ext[moved], ext[kept]}
+
+
+@pytest.mark.asyncio
+async def test_r8_an_exists_answer_to_the_find_by_create_drops_the_link(world):
+    fake = _outlook_fake()
+    fake.lose_answer_once = True
+    async with _in(world, world.org_a):
+        tid = await _task(world.org_a, ALICE, "Exists", T0)
+        await _pass(world, world.org_a, world.conn["a"], fake)  # lost answer, no id
+        await _move(world.org_a, ALICE, tid, None)
+        fake.exists_once = True  # the find-by-create is answered with 409
+        s = await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=10))
+    assert s.deleted == 1 and s.failed == 0 and _links(world, world.org_a) == []
+
+
+@pytest.mark.asyncio
+async def test_r8_a_removal_that_cannot_find_its_event_gives_up_after_the_cap(world):
+    fake = _outlook_fake()
+    fake.lose_answer_once = True
+    async with _in(world, world.org_a):
+        tid = await _task(world.org_a, ALICE, "Gives up", T0)
+        await _pass(world, world.org_a, world.conn["a"], fake)
+        await _move(world.org_a, ALICE, tid, None)
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE calendar_task_links SET attempts = :n, next_attempt_at = NULL"),
+                      {"n": task_out.RESOLVE_MAX_ATTEMPTS})
+        n = len([c for c in fake.calls if c[0] == "upsert"])
+        s = await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=10))
+    assert s.deleted == 1 and _links(world, world.org_a) == []  # the link is gone ...
+    assert len([c for c in fake.calls if c[0] == "upsert"]) == n  # ... with no further request

@@ -246,8 +246,9 @@ class OutlookProvider:
         if status in (429, 503, 504):
             raise ProviderError(f"rate_limited_{status}")
         # The writer (CE-13) speaks one vocabulary: a missing calendar or event is
-        # ``not_found`` (Graph says ErrorItemNotFound), a taken transactionId is
-        # ``exists``. The Graph code stays for every other failure.
+        # ``not_found`` (Graph says ErrorItemNotFound), and a 409 is ``exists``. (A
+        # repeat of a transactionId normally answers with the first event, not 409.)
+        # The Graph code stays for every other failure.
         if status == 404 or reason == "ErrorItemNotFound":
             raise ProviderError("not_found")
         if status == 409:

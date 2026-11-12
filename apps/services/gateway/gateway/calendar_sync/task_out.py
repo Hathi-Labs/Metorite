@@ -333,12 +333,19 @@ async def reconcile_task_blocks(
             cid = client_event_id(link.task_id, str(conn.id), link.created_at)
             if not ident and getattr(provider, "client_id_is_event_id", False):
                 ident = cid
-            elif not ident and getattr(provider, "dedupes_by_client_id", False):
+            elif (not ident and getattr(provider, "dedupes_by_client_id", False)
+                    and int(link.attempts or 0) < RESOLVE_MAX_ATTEMPTS):
                 # Outlook: the client id is a transactionId, not the event id. A
                 # create with the SAME transactionId hands back the event that the
-                # lost answer made (or makes a throwaway), and we delete it.
-                ident = (await provider.upsert_event(
-                    cred, cal_id, replace(_resolve_event(t0), client_id=cid), None)).external_id
+                # lost answer made (or makes a throwaway), and we delete it. After
+                # RESOLVE_MAX_ATTEMPTS failures the link goes without it.
+                try:
+                    ident = (await provider.upsert_event(
+                        cred, cal_id, replace(_resolve_event(t0), client_id=cid), None)).external_id
+                except ProviderError as exc:
+                    if getattr(exc, "code", "") != "exists":
+                        raise
+                    ident = None  # the id is taken and cannot be read back: drop the link
             if ident:
                 await provider.delete_event(cred, cal_id, ident)
         except NeedsReconnect:
@@ -364,7 +371,11 @@ def _resolve_event(t: datetime) -> Any:
     The provider dedupes on the client id and ignores the body of a repeat."""
     from gateway.calendar_sync.provider import OutEvent
 
-    return OutEvent(title="Metorite", starts_at=t + timedelta(hours=1), ends_at=t + timedelta(hours=2))
+    # In the PAST and free: if the create makes a throwaway (the first one never
+    # reached the provider), it neither shows as busy time nor rings a reminder
+    # before the delete that follows it.
+    return OutEvent(title="Metorite", starts_at=t - timedelta(days=2),
+                    ends_at=t - timedelta(days=2) + timedelta(hours=1), busy=False)
 
 
 async def _calendar_missing(provider: Any, cred: Any, cal_id: str) -> bool:
@@ -426,6 +437,9 @@ def _task_url_builder() -> Callable[[str], str | None]:
 
 META_TASK_CURSOR = "task_cursor"
 META_TASK_CALENDAR_ID = "task_calendar_id"
+#: How often a removal tries to find the event of a lost create before the link
+#: is dropped without it (a throwaway or an orphan is better than a link that never ends).
+RESOLVE_MAX_ATTEMPTS = 6
 #: When the calendar "Metorite" could not be found or made (a grant without
 #: ``calendar.app.created`` answers 403), no request is made before this time.
 META_TASK_RETRY_AT = "task_calendar_retry_at"
@@ -480,8 +494,8 @@ async def calendar_identity(org: str, connection_id: str, me: str, cal_id: str,
     * ``CHANGED``: the stored id differs. See :func:`_bind`.
     * ``BOUND``: no stored id. A reconnect REPLACES ``provider_meta``
       (``save_credential``), so the origin of the links is unknown. The caller
-      must NOT sweep for missing events on the one full list that follows,
-      because the list may come from a new calendar.
+      sweep for missing events on the one full list that follows ONLY when the list
+      holds an event of our links (the same calendar), see ``_pull``.
 
     The pull passes ``commit=False`` and binds only after its first full list
     succeeded, so a failed read leaves the state as it was and the push waits.
