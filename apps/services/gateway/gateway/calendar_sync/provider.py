@@ -133,6 +133,7 @@ class OutEvent:
     tz: str | None = None
     busy: bool = True
     task_url: str | None = None
+    client_id: str | None = None  # id to send on insert, so a lost answer can retry
 
 
 @dataclass(frozen=True)

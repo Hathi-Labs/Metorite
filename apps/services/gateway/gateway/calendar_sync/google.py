@@ -297,6 +297,8 @@ class GoogleCalendar:
             raise exc
         if status == 404:
             raise ProviderError("not_found")
+        if status == 409:
+            raise ProviderError("exists")
         if status == 403:
             raise ProviderError("forbidden")
         raise ProviderError("server_error" if status >= 500 else "bad_request")
@@ -387,8 +389,11 @@ class GoogleCalendar:
             path, method = f"calendars/{cal}/events/{quote(external_id, safe='')}", "PATCH"
         else:
             path, method = f"calendars/{cal}/events", "POST"
+        out = _out_body(event)
+        if not external_id and event.client_id:
+            out["id"] = event.client_id  # a 409 on a retry means the create landed
         body = await self._call(
-            cred, method, path, params={"sendUpdates": "none"}, body=_out_body(event))
+            cred, method, path, params={"sendUpdates": "none"}, body=out)
         new_id = str(body.get("id") or "") if isinstance(body, Mapping) else ""
         if not new_id:
             raise ProviderError("no_event_id")

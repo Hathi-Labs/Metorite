@@ -764,3 +764,23 @@ async def test_a_last_page_without_a_sync_token_is_not_a_finished_read() -> None
     http = FakeHttp().on("GET", "/events", HttpAnswer(status_code=200, body=b"<html>"))
     with pytest.raises(ProviderError):
         await provider(http).sync(cred(), None, WINDOW)
+
+
+@pytest.mark.asyncio
+async def test_an_insert_sends_the_client_id_and_a_409_is_exists() -> None:
+    """CE-13: a lost create answer retries with the same id (task 62 ask)."""
+    from gateway.calendar_sync.provider import OutEvent
+
+    http = FakeHttp()
+    http.on("POST", "/calendars/cal1/events", answer({"id": "abc123", "etag": "e"}))
+    prov = provider(http)
+    ev = OutEvent(title="t", starts_at=NOW, ends_at=NOW, client_id="abc123")
+    out = await prov.upsert_event(cred(), "cal1", ev, None)
+    assert out.external_id == "abc123"
+    sent = http.calls[-1]
+    assert sent[3]["id"] == "abc123"
+    http2 = FakeHttp()
+    http2.on("POST", "/calendars/cal1/events", answer({}, 409))
+    with pytest.raises(ProviderError) as exc:
+        await provider(http2).upsert_event(cred(), "cal1", ev, None)
+    assert exc.value.code == "exists"
