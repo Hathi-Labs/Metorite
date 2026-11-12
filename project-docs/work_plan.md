@@ -6170,6 +6170,8 @@ The owner asked in chat on 2026-11-12: a workflow that runs only once. The examp
 6. **Nothing drops in silence.** At the expiry, the asker chooses Chase, Wait or Close.
 7. **The rung 1 event binds its own org** from the bound session of the answer route. H-328 part (c) (task 856) stays the general fix.
 8. **Ship dark.** `ONE_TIME_WORKFLOWS_ORGS`, default empty.
+9. **The auto-archive** (owner, in chat, 2026-11-12). A one-time workflow archives itself when it ends: it ran, it closed at the expiry, or someone cancelled it. The workflow app has a read-only "Archived" view. Any workflow can be archived by hand, and an archived workflow never runs. Restore brings a normal workflow back as disabled. A one-time workflow offers "Ask again".
+10. **Retention** (owner, in chat, 2026-11-12). A daily job of each org deletes the workflows that were archived longer ago than the org's period. The period is 30, 90, 180 or 365 days, or "Keep", and the default is 90 days. An audit row keeps the name, the owner, the dates and the outcome of each delete. The record changes of its runs stay. The owner or an admin can delete one at once.
 
 Fence: each slice in `workflows_app.md` §14.7 names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D214 entries merge. **Re-check this number at merge.** On 2026-11-12, main held D213 at most, and no open branch held D214.
 
