@@ -21,6 +21,7 @@ import SelectButton from "@/components/ui/SelectButton";
 import {
   type Draft, isLines, labelOf, manyUnsupported,
 } from "@/lib/studio/blocks";
+import { MAX_QR_CHARS, ratingRange } from "@/lib/studio/fieldCheck";
 import type { StudioDataDoor } from "@/lib/studio/dataDoor";
 import type { FieldSpec } from "@/lib/studio/fieldCheck";
 import {
@@ -46,7 +47,24 @@ const HINTS: Partial<Record<FieldSpec["type"], string>> = {
   file: "The id of an uploaded file",
   money: "An amount and a currency code, as 1999.50 INR",
   geo: "Latitude from -90 to 90, longitude from -180 to 180",
+  richText: "Markdown: # heading, **bold**, - list. HTML tags are not allowed",
+  duration: "Hours, minutes and seconds, as 1h 30m, 45m or 1:30:00",
+  percent: "A percent with up to 2 decimals, as 12.5",
 };
+
+/** The hint under a field. A rating and a barcode state their own rule. */
+function hintOf(f: FieldSpec): string | undefined {
+  if (f.type === "rating") {
+    const [lo, hi] = ratingRange(f);
+    return `A whole number from ${lo} to ${hi}`;
+  }
+  if (f.type === "barcode") {
+    return f.format === "ean13" ? "13 digits, the last one a check digit"
+      : f.format === "code128" ? "Printable ASCII characters, up to 80"
+      : `Any text, up to ${MAX_QR_CHARS.toLocaleString("en-US")} characters`;
+  }
+  return HINTS[f.type];
+}
 
 function Control({ field, draft, id, errorId, onChange, onBlur }: ControlProps) {
   const bad = errorId ? { "aria-invalid": true as const, "aria-describedby": errorId } : {};
@@ -109,6 +127,38 @@ function Control({ field, draft, id, errorId, onChange, onBlur }: ControlProps) 
         </div>
       );
     }
+    case "richText":
+      return <Textarea {...common} rows={5} value={String(draft)} onChange={(e) => onChange(e.target.value)} />;
+    case "rating":
+    case "percent":
+      return (
+        <Input {...common} inputMode={field.type === "percent" ? "decimal" : "numeric"} value={String(draft)}
+          className={field.type === "rating" ? "w-24" : "w-32"} onChange={(e) => onChange(e.target.value)} />
+      );
+    case "duration":
+      return (
+        <Input {...common} value={String(draft)} placeholder="1h 30m" className="w-40"
+          onChange={(e) => onChange(e.target.value)} />
+      );
+    case "barcode":
+      return (
+        <Input {...common} inputMode={field.format === "ean13" ? "numeric" : undefined} value={String(draft)}
+          className="font-mono" onChange={(e) => onChange(e.target.value)} />
+      );
+    case "quantity": {
+      const p = (draft ?? {}) as Parts;
+      return (
+        <div className="flex gap-2">
+          <Input {...common} inputMode="decimal" value={p.value ?? ""} placeholder="0"
+            aria-label={`${labelOf(field)} value`} className="min-w-0 flex-1"
+            onChange={(e) => onChange({ ...p, value: e.target.value })} />
+          <SelectButton label={`${labelOf(field)} unit`} value={p.unit ?? ""} prompt="Unit"
+            widthClass="w-24" invalid={errorId !== undefined}
+            options={(field.units ?? []).map((u) => ({ value: u, label: u }))}
+            onChange={(unit) => onChange({ ...p, unit })} />
+        </div>
+      );
+    }
     case "geo": {
       const p = (draft ?? {}) as Parts;
       return (
@@ -166,7 +216,7 @@ export function FormView({
         const id = controlId(formId, f.key);
         const message = errors[f.key];
         const errorId = message ? errorIdOf(formId, f.key) : undefined;
-        const hint = HINTS[f.type];
+        const hint = hintOf(f);
         return (
           <div key={f.key} className="space-y-1" data-field={f.key} data-type={f.type}>
             <label htmlFor={id} className="block text-xs font-medium text-foreground">

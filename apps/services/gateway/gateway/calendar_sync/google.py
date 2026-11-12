@@ -12,9 +12,13 @@ Rules that bind this module:
   ``calendar.app.created`` lets Metorite make its own "Metorite" calendar
   (CE-13) and write only inside calendars that it made. Metorite never writes
   to the calendars of the member.
-* **No incremental grant.** The consent URL never sends
-  ``include_granted_scopes``, so the calendar token holds the calendar scopes
-  only and never the Gmail scopes of the same account.
+* **Incremental consent (D215 point 1).** The consent URL sends
+  ``include_granted_scopes=true``, so the calendar grant adds to the Gmail
+  grant of the same account. The grant may then list other scopes. The check
+  needs the read scope and a refresh token.
+* **One redirect URI (D215 point 2).** The flow reuses the mail redirect URI
+  ``<workbench>/api/email/oauth/gmail/callback``. The mail callback hands a
+  calendar state over to ``routes/tasks/calendar_connections.finish_consent``.
 * **The primary calendar only** (audit G4).
 * **A sync token cannot go with a time window** (audit G3). The first read
   lists the window (30 days back, 180 ahead) with ``timeMin`` and ``timeMax``.
@@ -77,7 +81,7 @@ PAGE_SIZE = 100
 MIN_PAGE_SIZE = 10
 #: Only the fields the mapper reads, so a page is small.
 EVENT_FIELDS = (
-    "nextPageToken,nextSyncToken,items(id,etag,status,htmlLink,summary,"
+    "nextPageToken,nextSyncToken,items(id,etag,updated,status,htmlLink,summary,"
     "description,location,start,end,transparency,eventType,recurringEventId,"
     "originalStartTime,hangoutLink,conferenceData/entryPoints(entryPointType,uri))")
 #: A safety stop: 100 pages of up to 100 events in one read.
@@ -103,8 +107,6 @@ def grant_refusal(cred: SourceCredential) -> str | None:
     granted = set(cred.scopes)
     if SCOPE_READ not in granted:
         return "scope_missing"
-    if granted - ALLOWED_SCOPES:
-        return "scope_extra"
     if not cred.refresh_token:
         return "no_refresh_token"
     return None
@@ -136,6 +138,13 @@ def _conference(item: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _updated(value: Any) -> datetime | None:
+    try:
+        return _utc(str(value)) if value else None
+    except (ValueError, TypeError):
+        return None
+
+
 def map_event(item: Mapping[str, Any]) -> RemoteEvent | None:
     """One Google event as a :class:`RemoteEvent`, or ``None`` to skip it.
 
@@ -162,6 +171,7 @@ def map_event(item: Mapping[str, Any]) -> RemoteEvent | None:
                 else "tentative" if item.get("status") == "tentative" else "confirmed"),
         conference_url=_conference(item),
         external_series_id=_text(item.get("recurringEventId"), 1024),
+        updated=_updated(item.get("updated")),
     )
     original = item.get("originalStartTime")
     try:
@@ -229,6 +239,7 @@ class GoogleCalendar:
             "scope": " ".join(SCOPES),
             "access_type": "offline",
             "prompt": "consent",  # a new refresh token on each consent
+            "include_granted_scopes": "true",
             "state": state,
         }
         if login_hint:
@@ -286,6 +297,8 @@ class GoogleCalendar:
             raise exc
         if status == 404:
             raise ProviderError("not_found")
+        if status == 409:
+            raise ProviderError("exists")
         if status == 403:
             raise ProviderError("forbidden")
         raise ProviderError("server_error" if status >= 500 else "bad_request")
@@ -316,7 +329,9 @@ class GoogleCalendar:
 
     async def sync(
         self, cred: SourceCredential, cursor: str | None, window: Window,
+        *, calendar_id: str | None = None,
     ) -> SyncResult:
+        cal = quote(calendar_id, safe="") if calendar_id else "primary"
         base: dict[str, str] = {
             "singleEvents": "true", "showDeleted": "true", "fields": EVENT_FIELDS}
         if cursor:
@@ -333,7 +348,7 @@ class GoogleCalendar:
             if page:
                 params["pageToken"] = page
             try:
-                body = await self._call(cred, "GET", "calendars/primary/events", params=params)
+                body = await self._call(cred, "GET", f"calendars/{cal}/events", params=params)
             except PageTooLarge:
                 if size <= MIN_PAGE_SIZE:
                     raise
@@ -374,8 +389,11 @@ class GoogleCalendar:
             path, method = f"calendars/{cal}/events/{quote(external_id, safe='')}", "PATCH"
         else:
             path, method = f"calendars/{cal}/events", "POST"
+        out = _out_body(event)
+        if not external_id and event.client_id:
+            out["id"] = event.client_id  # a 409 on a retry means the create landed
         body = await self._call(
-            cred, method, path, params={"sendUpdates": "none"}, body=_out_body(event))
+            cred, method, path, params={"sendUpdates": "none"}, body=out)
         new_id = str(body.get("id") or "") if isinstance(body, Mapping) else ""
         if not new_id:
             raise ProviderError("no_event_id")
@@ -417,11 +435,11 @@ def factory() -> GoogleCalendar | None:
     """The provider on the one Google client, or ``None`` when it is unset."""
     from email_ingestion.providers.app_credentials import oauth_app
 
-    from gateway.routes.email.transport.oauth import _workbench_public_url
+    from gateway.routes.email.transport.oauth import _build_redirect_uri
 
     app = oauth_app("gmail")
     if not app.configured:
         return None
     return GoogleCalendar(OAuthClientConfig(
         client_id=app.client_id, client_secret=app.client_secret,
-        redirect_uri=f"{_workbench_public_url()}/api/calendar/oauth/google/callback"))
+        redirect_uri=_build_redirect_uri("gmail")))

@@ -4,14 +4,13 @@ Spec: ``project-docs/specs/calendar_events_reminders.md`` §8.1.
 
     GET     /tasks/calendar/connections                    the member's accounts
     POST    /tasks/calendar/connections/{provider}/connect the consent URL
-    GET     /tasks/calendar/connections/{provider}/callback finish the consent
     POST    /tasks/calendar/connections/{id}/sync          sync now
     DELETE  /tasks/calendar/connections/{id}               disconnect
 
-``{provider}`` is ``google`` or ``outlook``. The browser reaches the callback
-through the workbench route ``/api/calendar/oauth/{google|microsoft}/callback``,
-which attaches the session and forwards here. That path is the redirect URI in
-the provider console (task OWN-CAL).
+``{provider}`` is ``google`` or ``outlook``. There is no calendar callback
+route: the flow shares the MAIL redirect URI (D215 point 2). The mail callback
+(``routes/email/transport/oauth.py``) asks ``is_calendar_state`` and hands a
+calendar state to ``finish_consent``.
 
 ⚠️ **Dark.** Every route answers 404 unless ``CALENDAR_SYNC_READ`` names the
 org (and ``CALENDAR_SYNC_MEMBERS`` the member, if set). Off sends no request.
@@ -35,10 +34,8 @@ from dataclasses import replace
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException, Query
+from fastapi import Depends, HTTPException
 from fastapi.responses import RedirectResponse
-from sqlalchemy import text
-
 from gateway.calendar_sync import connections, engine, flags
 from gateway.calendar_sync.provider import (
     OWNING_APP,
@@ -53,6 +50,7 @@ from gateway.routes.email.transport.signing import (
     verify_state,
 )
 from gateway.routes.tasks.core import _tenant_session, router
+from sqlalchemy import text
 
 #: The purpose of each signed state. A value signed for one never verifies for
 #: another (``signing.py``).
@@ -101,10 +99,10 @@ def _provider(word: str) -> tuple[str, CalendarProvider]:
     return word, prov
 
 
-def _failed(code: str) -> RedirectResponse:
+def _failed(code: str, base: str = "") -> RedirectResponse:
     raw = (code or "").strip().lower()
     safe = raw if _CODE.match(raw) else "failed"
-    return RedirectResponse(f"{RETURN_FAILED}{safe}", status_code=302)
+    return RedirectResponse(f"{base}{RETURN_FAILED}{safe}", status_code=302)
 
 
 def _connection_id(value: str) -> str:
@@ -172,33 +170,57 @@ async def connect(
     return {"url": prov.consent_url(state=state, login_hint=me)}
 
 
-@router.get("/calendar/connections/{provider}/callback", dependencies=_ON)
-async def callback(
-    provider: Literal["google", "outlook"],
-    code: str | None = Query(default=None, max_length=2048),
-    state: str | None = Query(default=None, max_length=4096),
-    error: str | None = Query(default=None, max_length=200),
-    user: UserContext = Depends(get_current_user),
+#: The word of the mail callback path -> the calendar provider word. The
+#: mail callback is the one redirect URI (D215 point 2).
+MAIL_PROVIDER_WORD = {"gmail": "google", "microsoft": "outlook"}
+
+
+def is_calendar_state(state: str | None, provider_word: str, user: UserContext) -> bool:
+    """True when *state* is a valid calendar state of THIS session's member.
+
+    The mail callback asks this first. A false answer leaves the mail path to
+    run as before, and it never reveals why (no oracle). The flag is checked
+    here, so a flag-off org never reaches the calendar code.
+    """
+    if provider_word not in STATE_PURPOSE or not state:
+        return False
+    if not user.organization_id or not (user.email or "").strip():
+        return False
+    if not flags.read_allowed(str(user.organization_id), user.email):
+        return False
+    payload = verify_state(state, purpose=STATE_PURPOSE[provider_word])
+    return (payload is not None and payload["org"] == str(user.organization_id)
+            and payload["member"] == (user.email or "").strip().lower())
+
+
+async def finish_consent(
+    user: UserContext, provider: str, code: str | None, state: str | None,
+    error: str | None, *, base: str = "",
 ) -> RedirectResponse:
-    """Finish the consent and save the token. The sync loop reads the rest."""
+    """Finish the consent and save the token. The sync loop reads the rest.
+
+    The mail callback calls this for a calendar state (``is_calendar_state``
+    was true). *base* is the workbench origin, so the Location is absolute and
+    the mail BFF route can check its origin.
+    """
     org, me = _scope(user)
     # 1. The state, before any other work. Every refusal is the same 400.
     payload = verify_state(state, purpose=STATE_PURPOSE[provider])
     if payload is None or payload["org"] != org or payload["member"] != me:
         raise HTTPException(status_code=400, detail="invalid_state")
     if error:
-        return _failed(error if error != "access_denied" else "consent_declined")
+        return _failed(error if error != "access_denied" else "consent_declined", base)
     if not code:
-        return _failed("no_code")
+        return _failed("no_code", base)
     word, prov = _provider(provider)
     # 2. The code for tokens, and the grant check. No session is open.
     try:
         cred = await prov.exchange_code(code)
         who = await prov.account_identity(cred)
     except ProviderError as exc:
-        return _failed(exc.code or "exchange_failed")
+        return _failed(exc.code or "exchange_failed", base)
     except Exception:  # a transport or token failure
-        return _failed("exchange_failed")
+        return _failed("exchange_failed", base)
     meta = {**dict(cred.provider_meta),
             connections.META_ACCOUNT_EMAIL: who.email,
             connections.META_ACCOUNT_ID: who.account_id}
@@ -220,7 +242,7 @@ async def callback(
         await store.save_credential(
             db, org, prov.provider, OWNING_APP, cred, connected_by=me,
             scope_kind=store.SCOPE_MEMBER, member_email=me, scopes=cred.scopes)
-    return RedirectResponse(f"{RETURN_OK}{word}", status_code=302)
+    return RedirectResponse(f"{base}{RETURN_OK}{word}", status_code=302)
 
 
 @router.post("/calendar/connections/{connection_id}/sync", dependencies=_ON)

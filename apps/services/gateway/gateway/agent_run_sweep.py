@@ -80,6 +80,8 @@ from gateway.routes.projects.filters import (
     STRAND_REASON_SQL,
     agent_run_lease_s,
     agent_runs_enabled,
+    run_idle_s_sql,
+    run_life_at_sql,
     stranded_clause,
 )
 from gateway.routes.projects.notifications import excerpt_of, notify
@@ -141,9 +143,16 @@ async def _organization_ids() -> list[str]:
 
 # ── The SQL ─────────────────────────────────────────────────────────────────
 
+#: Task 1045b. The life clock of the run ``r``: the newer of its last
+#: activity and its last linked event. ``seen_activity_at`` of a strand holds
+#: this value at the first miss, so a linked event ends the fit, as an
+#: activity does.
+_LIFE = run_life_at_sql("r")
+
 #: Step 2. Clear each open strand that no longer fits its run: an activity
 #: after the first miss (``new_activity``), or a run that left ``in_progress``
 #: (``run_moved``). The same fit as ``filters.strand_fits_sql``, negated.
+#: Task 1045b: a linked event is an activity here (``new_activity``).
 _CLEAR_SQL = (
     "UPDATE pm_agent_run_strands s SET cleared_at = clock_timestamp(),"
     " cleared_reason = CASE WHEN r.status <> 'in_progress' THEN 'run_moved'"
@@ -151,7 +160,7 @@ _CLEAR_SQL = (
     "  FROM pm_agent_runs r"
     " WHERE r.id = s.run_id AND r.organization_id = s.organization_id"
     "   AND r.task_id IS NOT NULL AND s.cleared_at IS NULL"
-    "   AND (r.status <> 'in_progress' OR r.last_activity_at <> s.seen_activity_at)"
+    f"   AND (r.status <> 'in_progress' OR {_LIFE} <> s.seen_activity_at)"
     " RETURNING s.id"
 )
 
@@ -169,8 +178,9 @@ def _stranded_sql() -> str:
     return (
         "SELECT r.id, r.task_id, r.member_email, r.client_via, r.connection_id,"
         "       r.status, r.last_activity_at, r.last_agent_activity_at,"
+        f"      {_LIFE} AS life_at,"
         f"      {STRAND_REASON_SQL} AS reason,"
-        "       EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s,"
+        f"      {run_idle_s_sql('r')} AS idle_s,"
         "       t.task_number, s.id AS strand_id, s.recovered_at,"
         "       (s.nudged_at < now() - make_interval(secs => :window)) AS window_passed"
         "  FROM pm_agent_runs r"
@@ -178,25 +188,26 @@ def _stranded_sql() -> str:
         "  LEFT JOIN pm_agent_run_strands s"
         "    ON s.run_id = r.id AND s.organization_id = r.organization_id"
         f"   AND s.cleared_at IS NULL AND s.reason = {STRAND_REASON_SQL}"
-        "   AND s.seen_activity_at = r.last_activity_at"
+        f"   AND s.seen_activity_at = {_LIFE}"
         f" WHERE {stranded_clause()}"
         "   AND r.task_id IS NOT NULL"
         "   AND (s.id IS NULL OR s.recovered_at IS NULL)"
-        " ORDER BY r.last_activity_at, r.id"
+        f" ORDER BY {_LIFE}, r.id"
         " LIMIT :n"
     )
 
 
 #: The first miss: the fingerprint. ``seen_activity_at`` is copied from the
 #: run in SQL, so the fit test of ``filters.strand_fits_sql`` compares two
-#: values that came from one column. ``ON CONFLICT DO NOTHING`` on the
-#: partial unique index: a second process finds the row and sends no bell.
+#: values that came from one expression, the life clock (task 1045b).
+#: ``ON CONFLICT DO NOTHING`` on the partial unique index: a second process
+#: finds the row and sends no bell.
 _FIRST_MISS_SQL = (
     "INSERT INTO pm_agent_run_strands"
     " (run_id, task_id, member_email, reason, seen_activity_at)"
-    " SELECT r.id, r.task_id, r.member_email, :reason, r.last_activity_at"
+    f" SELECT r.id, r.task_id, r.member_email, :reason, {_LIFE}"
     "   FROM pm_agent_runs r"
-    "  WHERE r.id = CAST(:rid AS uuid) AND r.last_activity_at = :seen"
+    f"  WHERE r.id = CAST(:rid AS uuid) AND {_LIFE} = :seen"
     "    AND r.task_id IS NOT NULL AND r.status = 'in_progress'"
     " ON CONFLICT (organization_id, run_id, reason) WHERE cleared_at IS NULL"
     " DO NOTHING RETURNING id"
@@ -270,7 +281,7 @@ async def _first_miss(db: Any, row: Any) -> bool:
     """Record the fingerprint and send ONE bell. False when another process
     won the insert, or the run moved since the read."""
     made = (await db.execute(text(_FIRST_MISS_SQL), {
-        "rid": str(row.id), "reason": row.reason, "seen": row.last_activity_at,
+        "rid": str(row.id), "reason": row.reason, "seen": row.life_at,
     })).fetchone()
     if made is None:
         return False

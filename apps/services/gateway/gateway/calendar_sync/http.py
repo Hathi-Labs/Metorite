@@ -28,8 +28,8 @@ from urllib.parse import urlencode
 import httpx
 
 from gateway import outbound_guard
-from gateway.kb_sources.http import HttpAnswer, check_host
 from gateway.calendar_sync.provider import ProviderError
+from gateway.kb_sources.http import HttpAnswer, check_host
 
 _CURSOR = re.compile(
     r"((?:sync|delta|page|skip)token=|\$deltatoken=|\$skiptoken=)[^&\s\"']+",
@@ -97,9 +97,12 @@ class CalendarHttp:
         content: bytes | None = None, json: Any = None,
     ) -> HttpAnswer:
         host = check_host(url, self._allowed)
+        # The guard keeps the raw bytes of an answer and decodes nothing, so a
+        # gzip body reads as an empty feed. Ask for plain bytes (Opus review P0).
+        sent = {**dict(headers or {}), "Accept-Encoding": "identity"}
         try:
             answer = await outbound_guard.request_https(
-                method, url, headers=dict(headers or {}), content=content, json=json)
+                method, url, headers=sent, content=content, json=json)
         except outbound_guard.OutboundRefused as exc:
             raise ProviderError("guard_refused", f"the guard refused {host}: {exc.reason}") from None
         except (TimeoutError, httpx.HTTPError) as exc:
