@@ -202,11 +202,6 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # the chat greets on the day. It adds a line to each turn, so only the
     # operator writes it.
     "CELEBRATIONS_ORGS",
-    # WS-CAL CE-10 and CE-11: the orgs and members where the calendar sync
-    # reads from, and writes to, a member's Google or Outlook calendar. A flip
-    # starts calls to a third party with member tokens, so only the operator
-    # writes it.
-    "CALENDAR_SYNC_READ", "CALENDAR_SYNC_WRITE", "CALENDAR_SYNC_MEMBERS",
     # WS-63 PZ-40: the orgs where the name question offers forms of address
     # and the block keeps the chosen form as written. It adds a line to each
     # turn, so only the operator writes it.
@@ -458,6 +453,10 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # WS-CAL CE-4: events. CALENDAR_EVENTS is the switch of the event store,
     # so a tenant that set it could turn it on for every org.
     "CALENDAR_EVENTS",
+    # WS-CAL CE-10, CE-11: the calendar sync. CALENDAR_SYNC_READ and
+    # CALENDAR_SYNC_WRITE are the switches, and CALENDAR_SYNC_MEMBERS narrows
+    # them. A tenant that set one could start the sync for every org.
+    "CALENDAR_SYNC_",
     # WS-BRIEF BR-1a: the shared job queue. JOB_QUEUE is the switch of the job
     # worker, so a tenant that set it could start the worker for every org.
     "JOB_QUEUE",

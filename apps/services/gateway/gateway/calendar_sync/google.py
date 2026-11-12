@@ -62,6 +62,14 @@ SCOPE_READ = "https://www.googleapis.com/auth/calendar.readonly"
 SCOPE_APP = "https://www.googleapis.com/auth/calendar.app.created"
 SCOPES: tuple[str, ...] = ("openid", "email", SCOPE_READ, SCOPE_APP)
 
+#: The scopes a calendar grant is expected to carry. The check refuses a grant
+#: only for a missing read scope or refresh token (D215 point 1 allows more).
+ALLOWED_SCOPES: frozenset[str] = frozenset({
+    SCOPE_READ, SCOPE_APP, "openid", "email", "profile",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+})
+
 HOSTS: frozenset[str] = frozenset({
     "accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com"})
 

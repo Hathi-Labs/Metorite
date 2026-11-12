@@ -125,27 +125,34 @@ DRIVE_SCOPE_NAMES = ("DRIVE_READONLY", "ALLOWED_SCOPES")
 DRIVE_SCOPE_URLS = 3
 
 
-#: WS-CAL CE-10a (D215): the calendar leg asks two calendar scopes on the one
-#: Google client. They live in the calendar module only, in these two
-#: assignments. The mail flow keeps exactly its two Gmail scopes (D-EM-31):
-#: ``GMAIL_SCOPES`` above is unchanged, and no calendar scope may appear in it.
-CALENDAR_SCOPE_FILE = (REPO / "apps" / "services" / "gateway" / "gateway"
-                       / "calendar_sync" / "google.py")
-CALENDAR_SCOPE_NAMES = ("SCOPE_READ", "SCOPE_APP")
-CALENDAR_SCOPE_URLS = 2
+#: WS-CAL CE-10a (D215): the calendar uses the one Google client too, under its
+#: own purpose. Its two calendar scopes and its allow list live in
+#: ``calendar_sync/google.py`` and nowhere else. The mail scopes stay the two.
+CALENDAR_SCOPE_FILE = (REPO / "apps" / "services" / "gateway" / "gateway" / "calendar_sync"
+                       / "google.py")
+CALENDAR_SCOPE_NAMES = ("SCOPE_READ", "SCOPE_APP", "ALLOWED_SCOPES")
+#: calendar.readonly, calendar.app.created and the two userinfo URL forms.
+CALENDAR_SCOPE_URLS = 4
+
+
+def _scope_lines_in(path: Path, names: tuple[str, ...]) -> set[int]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    lines: set[int] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets: list[ast.expr] = list(node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id in names for t in targets):
+            lines.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    assert lines, f"the scope lists moved out of {path.name}"
+    return lines
 
 
 def _calendar_scope_lines() -> set[int]:
-    """The lines of the two calendar scope assignments."""
-    tree = ast.parse(CALENDAR_SCOPE_FILE.read_text(encoding="utf-8"))
-    lines: set[int] = set()
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id in CALENDAR_SCOPE_NAMES for t in node.targets
-        ):
-            lines.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
-    assert lines, "the calendar scopes moved out of calendar_sync/google.py"
-    return lines
+    return _scope_lines_in(CALENDAR_SCOPE_FILE, CALENDAR_SCOPE_NAMES)
 
 
 def _drive_scope_lines() -> set[int]:
