@@ -14,8 +14,8 @@
  * keeps its date for every member. `end_date` is EXCLUSIVE.
  *
  * **What is dropped.** A cancelled entry. Any kind but `external` (Metorite
- * events are another slice). An external entry with a `task_id`, which is the
- * copy of a task block, and the task block shows once, as the task.
+ * events are another slice). An external entry with a `task_id` stays: the id
+ * is a link ("Make a task from this"), not a copy (§3.3).
  *
  * Fence (R7): `externalEntries.test.ts` beside this file.
  */
@@ -65,7 +65,6 @@ export function readExternal(value: unknown): ExternalView | null {
   const v = value as Record<string, unknown>;
   if (v.kind !== "external") return null;
   if (v.status === "cancelled") return null;
-  if (v.task_id != null && v.task_id !== "") return null;
   const id = str(v.id);
   const source: ExternalSource | null = v.source === "google" || v.source === "outlook" ? v.source : null;
   if (!id || !source) return null;
@@ -133,20 +132,65 @@ export const MIN_SEGMENT_MINS = 15;
  */
 export function segmentsForDay(views: readonly ExternalView[], day: Date, zone: string): DaySegment[] {
   const col = dayNumber(day.getFullYear(), day.getMonth() + 1, day.getDate());
-  const out: DaySegment[] = [];
+  return segmentIndex(views, zone).get(col) ?? NO_SEGMENTS;
+}
+
+const NO_SEGMENTS: DaySegment[] = [];
+/** The longest span, in days, that the index spreads over. */
+const MAX_SPAN_DAYS = 62;
+/** One index per entries array and zone, so a render does not redo the wall clock. */
+const INDEX = new WeakMap<readonly ExternalView[], Map<string, Map<number, DaySegment[]>>>();
+
+function segmentIndex(views: readonly ExternalView[], zone: string): Map<number, DaySegment[]> {
+  let byZone = INDEX.get(views);
+  if (!byZone) INDEX.set(views, (byZone = new Map()));
+  const hit = byZone.get(zone);
+  if (hit) return hit;
+  const index = new Map<number, DaySegment[]>();
   for (const entry of views) {
     if (entry.allDay) continue;
     const s = wallParts(entry.startMs, zone);
     const e = wallParts(entry.endMs, zone);
     const first = dayNumber(s.year, s.month, s.day);
-    const last = dayNumber(e.year, e.month, e.day);
-    if (col < first || col > last) continue;
-    const startMin = col === first ? s.hour * 60 + s.minute : 0;
-    const endMin = col === last ? e.hour * 60 + e.minute : 1440;
-    if (last > first && col === last && endMin === 0) continue;
-    out.push({ entry, startMin, endMin: Math.min(1440, Math.max(endMin, startMin + MIN_SEGMENT_MINS)) });
+    const last = Math.min(dayNumber(e.year, e.month, e.day), first + MAX_SPAN_DAYS);
+    for (let col = first; col <= last; col++) {
+      const startMin = col === first ? s.hour * 60 + s.minute : 0;
+      const endMin = col === last ? e.hour * 60 + e.minute : 1440;
+      if (last > first && col === last && endMin === 0) continue;
+      const seg = { entry, startMin, endMin: Math.min(1440, Math.max(endMin, startMin + MIN_SEGMENT_MINS)) };
+      const list = index.get(col);
+      if (list) list.push(seg);
+      else index.set(col, [seg]);
+    }
   }
-  return out.sort((a, b) => a.startMin - b.startMin || a.endMin - b.endMin);
+  for (const list of index.values()) list.sort((a, b) => a.startMin - b.startMin || a.endMin - b.endMin);
+  byZone.set(zone, index);
+  return index;
+}
+
+/**
+ * Splits a column's segments by the task blocks. A segment that shares time
+ * with a task goes `beside`, and the grid draws it in a strip above the cards,
+ * so the task never hides it. The rest keep the full column.
+ */
+export function splitByTasks(
+  segs: readonly DaySegment[],
+  tasks: ReadonlyArray<{ start: number; end: number }>,
+): { clear: DaySegment[]; beside: DaySegment[] } {
+  const clear: DaySegment[] = [];
+  const beside: DaySegment[] = [];
+  for (const seg of segs) {
+    const hit = tasks.some((t) => t.start < seg.endMin && seg.startMin < t.end);
+    (hit ? beside : clear).push(seg);
+  }
+  return { clear, beside };
+}
+
+/** The line above the grid when the read of events failed (CE-5a). */
+export const READ_FAILED_WORDS = "Could not read your Google and Outlook events. Try again in a minute.";
+
+export function externalReadNote(error: string | null | undefined): string | null {
+  return error ? READ_FAILED_WORDS : null;
 }
 
 /** Lanes for the segments of one column, so two that overlap sit side by side. */

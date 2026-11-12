@@ -62,6 +62,13 @@ export function MonthGrid({
           const blocks = blocksForDay(items, day);
           const deadlines = deadlinesForDay(items, day);
           const chips = [
+            ...externalChips(externals, day, reminderZone).map((x) => ({
+              id: x.id,
+              title: x.title,
+              kind: "external" as const,
+              time: x.time,
+              look: externalLook(x),
+            })),
             ...blocks.map((b) => ({ id: b.item.id, title: b.item.title, kind: "block" as const, time: "" })),
             ...deadlines.map((d) => ({ id: d.id, title: d.title, kind: "deadline" as const, time: "" })),
             ...monthChips(reminders, day, reminderZone).map((r) => ({
@@ -69,13 +76,6 @@ export function MonthGrid({
               title: r.label,
               kind: "reminder" as const,
               time: r.time,
-            })),
-            ...externalChips(externals, day, reminderZone).map((x) => ({
-              id: x.id,
-              title: x.title,
-              kind: "external" as const,
-              time: x.time,
-              look: externalLook(x),
             })),
           ];
           const today = sameDay(day, now);

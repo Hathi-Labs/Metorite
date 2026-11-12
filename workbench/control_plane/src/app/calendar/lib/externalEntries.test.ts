@@ -8,6 +8,10 @@ import {
   externalChips,
   externalViews,
   laneSegments,
+  splitByTasks,
+  externalReadNote,
+  READ_FAILED_WORDS,
+  segmentsForDay as segs,
   readExternal,
   safeHttps,
   segmentsForDay,
@@ -43,8 +47,8 @@ describe("what the grid draws", () => {
     expect(readExternal(row({ kind: "event" }))).toBeNull();
     expect(readExternal(row({}))).not.toBeNull();
   });
-  it("shows a task block once, as the task", () => {
-    expect(readExternal(row({ task_id: "t-1" }))).toBeNull();
+  it("keeps an entry that links a task, because task_id is a link", () => {
+    expect(readExternal(row({ task_id: "t-1" }))).not.toBeNull();
   });
   it("marks busy=false as free and tentative as tentative", () => {
     expect(view({ busy: false }).free).toBe(true);
@@ -232,5 +236,51 @@ describe("the flag off", () => {
   it("lets only the Calendar read the entries", () => {
     expect(src("../components/TodayCard.tsx")).not.toContain("lensFetchCalendar");
     expect(src("../../tasks/lib/lens.ts")).not.toContain("externalEntries");
+  });
+});
+
+describe("an event beside a task", () => {
+  it("takes the strip when a task shares its time, and the column when none does", () => {
+    const meet = view({ id: "m", starts_at: "2026-11-12T10:00:00Z", ends_at: "2026-11-12T11:00:00Z" });
+    const lone = view({ id: "l", starts_at: "2026-11-12T14:00:00Z", ends_at: "2026-11-12T15:00:00Z" });
+    const list = segmentsForDay([meet, lone], day(2026, 11, 12), "UTC");
+    const { clear, beside } = splitByTasks(list, [{ start: 600, end: 660 }]);
+    expect(beside.map((x) => x.entry.id)).toEqual(["m"]);
+    expect(clear.map((x) => x.entry.id)).toEqual(["l"]);
+    // A task that only touches the end does not overlap.
+    expect(splitByTasks(list, [{ start: 660, end: 700 }]).beside).toHaveLength(0);
+    expect(splitByTasks(list, []).clear).toHaveLength(2);
+  });
+  it("draws the strip above the cards in the grid", () => {
+    const grid = readFileSync(new URL("../components/TimeGrid.tsx", import.meta.url), "utf8");
+    expect(grid).toContain("splitByTasks(");
+    expect(grid).toContain('strip ? "z-10"');
+  });
+});
+
+describe("the read error", () => {
+  it("says one short line on a failed read, and nothing otherwise", () => {
+    expect(externalReadNote("HTTP 503")).toBe(READ_FAILED_WORDS);
+    expect(READ_FAILED_WORDS).toBe("Could not read your Google and Outlook events. Try again in a minute.");
+    expect(externalReadNote(null)).toBeNull();
+  });
+  it("keeps the last good list and shows the line in the Calendar", () => {
+    const src = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8");
+    expect(src("./useExternalEntries.ts")).toContain("last.current");
+    expect(src("../CalendarView.tsx")).toContain("externalNote");
+  });
+});
+
+describe("the day index", () => {
+  it("gives the same segments on a second call, from one index", () => {
+    const list = [view({})];
+    expect(segs(list, day(2026, 11, 12), "UTC")).toBe(segs(list, day(2026, 11, 12), "UTC"));
+  });
+});
+
+describe("Month order", () => {
+  it("puts the external chips first in the cell", () => {
+    const grid = readFileSync(new URL("../components/MonthGrid.tsx", import.meta.url), "utf8");
+    expect(grid.indexOf("externalChips(")).toBeLessThan(grid.indexOf("...blocks.map"));
   });
 });

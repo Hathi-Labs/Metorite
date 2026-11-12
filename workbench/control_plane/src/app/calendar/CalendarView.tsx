@@ -82,6 +82,7 @@ import {
   type MoveBack,
   type ZonedTime,
 } from "./lib/reminders";
+import { calendarEventsOn } from "@/lib/shell/calendarEventsFlag";
 import { ExternalSheet } from "./components/ExternalSheet";
 import { useExternalEntries, visibleWindow } from "./lib/useExternalEntries";
 import { runReminderAct } from "@/lib/shell/reminderOpen";
@@ -137,7 +138,7 @@ export function CalendarView() {
   const remZone = gridZone(browserTimeZone());
   // Google and Outlook events (CE-5a). Flag off: no read, an empty list.
   const [externalId, setExternalId] = useState<string | null>(null);
-  const externals = useExternalEntries(
+  const { views: externals, note: externalNote } = useExternalEntries(
     mode === "month"
       ? visibleWindow(startOfMonthGrid(anchor), addDays(startOfMonthGrid(anchor), 42))
       : mode === "week"
@@ -814,6 +815,12 @@ export function CalendarView() {
         </div>
       )}
 
+      {externalNote && (
+        <div role="status" className="border-b border-border px-4 py-1.5 text-xs text-muted-foreground">
+          {externalNote}
+        </div>
+      )}
+
       {overdueCount > 0 && (
         <div className="flex items-center gap-2 border-b border-warning/40 bg-warning/10 px-4 py-2 text-xs glass:mx-3 glass:mt-2 glass:rounded-xl glass:border-0">
           <Icon name="AlertTriangle" className="h-4 w-4 shrink-0 text-warning" />
@@ -888,6 +895,7 @@ export function CalendarView() {
               onPickReminderMove={(id) => setRemForm({ mode: "move", id })}
               onResolveReminder={(id, action) => void resolveReminderAs(id, action)}
               externals={externals}
+              reserveAllDay={calendarEventsOn()}
               onOpenExternal={setExternalId}
             />
           )}

@@ -55,7 +55,7 @@ import {
   type CalReminder,
   type ZonedTime,
 } from "../lib/reminders";
-import { allDayRow, laneSegments, segmentsForDay, type ExternalView } from "../lib/externalEntries";
+import { allDayRow, laneSegments, segmentsForDay, splitByTasks, type ExternalView } from "../lib/externalEntries";
 import { ExternalAllDayRow } from "./ExternalAllDayRow";
 import { externalLook } from "./externalLook";
 
@@ -146,6 +146,7 @@ export function TimeGrid({
   onResolveReminder,
   externals = [],
   onOpenExternal,
+  reserveAllDay = false,
 }: {
   days: Date[];
   items: MyTask[];
@@ -200,9 +201,11 @@ export function TimeGrid({
   /** Google and Outlook events (CE-5a). Read only: no handle, no lane of a task. */
   externals?: ExternalView[];
   onOpenExternal?: (id: string) => void;
+  /** Flag on: keep the all-day row's height, so the body does not jump on a load. */
+  reserveAllDay?: boolean;
 }) {
   const allDay = allDayRow(externals, days);
-  const hasAllDay = allDay.bars.length > 0 || allDay.more.some(Boolean);
+  const hasAllDay = allDay.bars.length > 0 || allDay.more.some(Boolean) || reserveAllDay;
   const hours = Array.from({ length: dayEnd - dayStart }, (_, i) => dayStart + i);
   const gridHeight = hours.length * HOUR_PX;
   // Where the time pill sits in the gutter: day view, today, inside the grid.
@@ -672,33 +675,49 @@ export function TimeGrid({
                   They come before the task cards in the DOM, so a card draws
                   over one. A click opens the sheet and stops here, so it does
                   not open the schedule-here sheet. */}
-              {laneSegments(segmentsForDay(externals, day, reminderZone)).map(({ seg, lane, lanes }) => {
-                const top = ((seg.startMin - dayStart * 60) / 60) * HOUR_PX;
-                const height = Math.max(20, ((seg.endMin - seg.startMin) / 60) * HOUR_PX - 2);
-                if (top + height < 0 || top > gridHeight) return null;
-                const x = seg.entry;
+              {(() => {
+                // A task at the same time would cover an event, so an event that
+                // shares time with a task takes a strip on the right edge, above
+                // the cards (z-10, under the pins). The rest keep the column.
+                const { clear, beside } = splitByTasks(segmentsForDay(externals, day, reminderZone), spans);
+                const draw = (laid: ReturnType<typeof laneSegments>, strip: boolean) =>
+                  laid.map(({ seg, lane, lanes }) => {
+                    const top = ((seg.startMin - dayStart * 60) / 60) * HOUR_PX;
+                    const height = Math.max(20, ((seg.endMin - seg.startMin) / 60) * HOUR_PX - 2);
+                    if (top + height < 0 || top > gridHeight) return null;
+                    const x = seg.entry;
+                    const from = strip ? 70 : 0;
+                    const span = strip ? 30 : 100;
+                    return (
+                      <button
+                        key={`ex-${x.id}-${seg.startMin}`}
+                        type="button"
+                        data-external-strip={strip ? "" : undefined}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenExternal?.(x.id);
+                        }}
+                        title={x.title}
+                        aria-label={`${x.source === "google" ? "Google" : "Outlook"} event: ${x.title}`}
+                        className={`absolute overflow-hidden rounded-md px-1.5 py-0.5 text-left text-[11px] leading-tight focus-visible:ring-2 focus-visible:ring-ring ${strip ? "z-10" : ""} ${externalLook(x)}`}
+                        style={{
+                          top: Math.max(0, top) + 1,
+                          height,
+                          left: `calc(${from + (lane / lanes) * span}% + 2px)`,
+                          width: `calc(${span / lanes}% - 4px)`,
+                        }}
+                      >
+                        <span className="block truncate font-medium">{x.title}</span>
+                      </button>
+                    );
+                  });
                 return (
-                  <button
-                    key={`ex-${x.id}-${seg.startMin}`}
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onOpenExternal?.(x.id);
-                    }}
-                    title={x.title}
-                    aria-label={`${x.source === "google" ? "Google" : "Outlook"} event: ${x.title}`}
-                    className={`absolute overflow-hidden rounded-md px-1.5 py-0.5 text-left text-[11px] leading-tight focus-visible:ring-2 focus-visible:ring-ring ${externalLook(x)}`}
-                    style={{
-                      top: Math.max(0, top) + 1,
-                      height,
-                      left: `calc(${(lane / lanes) * 100}% + 2px)`,
-                      width: `calc(${100 / lanes}% - 4px)`,
-                    }}
-                  >
-                    <span className="block truncate font-medium">{x.title}</span>
-                  </button>
+                  <>
+                    {draw(laneSegments(clear), false)}
+                    {draw(laneSegments(beside), true)}
+                  </>
                 );
-              })}
+              })()}
 
               {/* reminder pins (WS-66 RM-5) — a line with no height at the
                   minute of the reminder. Not a block: no lane, no capacity.

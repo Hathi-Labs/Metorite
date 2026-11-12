@@ -25,7 +25,7 @@ export function ExternalAllDayRow({
   const lanes = Math.max(1, row.laneCount);
   return (
     <div
-      className="grid gap-y-0.5 border-b border-border py-0.5"
+      className={`grid min-h-6 gap-y-0.5 border-b border-border py-0.5 ${open ? "max-h-24 overflow-y-auto" : ""}`}
       style={{ gridTemplateColumns: `3.5rem repeat(${days.length}, minmax(96px, 1fr))` }}
     >
       <span className="row-start-1 self-center pr-1 text-right text-[9px] uppercase text-muted-foreground" style={{ gridColumn: 1, gridRow: 1 }}>
