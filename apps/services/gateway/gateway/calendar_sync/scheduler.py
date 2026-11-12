@@ -103,6 +103,20 @@ async def due_work() -> list[tuple[str, str, str]]:
     return work
 
 
+async def _task_pass(org: str, connection_id: str, provider: CalendarProvider) -> None:
+    """CE-13: Metorite task blocks out and back. Dark behind CALENDAR_SYNC_WRITE.
+    A failure here never fails the read."""
+    try:
+        from gateway.calendar_sync import task_out
+
+        await task_out.run_pass(org, connection_id, provider=provider)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("calendar_sync.task_pass_failed", organization_id=org,
+                     error=type(exc).__name__)
+
+
 async def _run_one(org: str, connection_id: str, provider: CalendarProvider,
                    gate: asyncio.Semaphore) -> int:
     async with gate:
@@ -116,6 +130,8 @@ async def _run_one(org: str, connection_id: str, provider: CalendarProvider,
             _log.warning("calendar_sync.tick_failed", organization_id=org,
                          error=type(exc).__name__)
             return 0
+        if outcome.status == "ok":
+            await _task_pass(org, connection_id, provider)
         return 1 if outcome.status == "ok" else 0
 
 

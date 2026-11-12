@@ -84,7 +84,9 @@ async def route_remote_change(db: Any, org: str, conn: Any, ev: Any) -> str:
 
     gone = bool(getattr(ev, "deleted", False)) or getattr(ev, "status", "") == "cancelled"
     if gone:
-        await _unschedule(db, link.task_id, me)
+        # Metorite may have deleted the task already: then only the link goes.
+        if await _block_exists(db, link.task_id, me):
+            await _unschedule(db, link.task_id, me)
         await db.execute(
             text(
                 "DELETE FROM calendar_task_links "
@@ -167,6 +169,12 @@ async def _move_block(db: Any, task_id: str, me: str, starts: datetime, ends: da
     await _upsert_personal(db, task_id, me, {"scheduled_start": starts, "scheduled_end": ends})
 
 
+async def _block_exists(db: Any, task_id: str, me: str) -> bool:
+    return (await db.execute(
+        text("SELECT 1 FROM pm_task_personal WHERE task_id = CAST(:t AS uuid) "
+             "AND lower(member_email) = :me"), {"t": task_id, "me": me})).fetchone() is not None
+
+
 async def _unschedule(db: Any, task_id: str, me: str) -> None:
     """Clear MY block. The task stays."""
     from gateway.routes.projects.personal import _upsert_personal
@@ -189,6 +197,8 @@ async def unschedule_missing(
             "WHERE l.organization_id = CAST(:org AS uuid) "
             "AND l.connection_id = CAST(:cid AS uuid) AND l.member_email = :me "
             "AND l.external_id IS NOT NULL AND l.sync_state = 'sent' "
+            # A push of another worker may be in flight: young links are left.
+            "AND l.updated_at < now() - interval '5 minutes' "
             "AND p.scheduled_start >= :s AND p.scheduled_start < :e"
         ),
         {"org": org, "cid": str(conn.id), "me": me, "s": start, "e": end},

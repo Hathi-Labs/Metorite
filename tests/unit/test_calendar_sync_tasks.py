@@ -94,6 +94,7 @@ class FakeProvider:
     calls: list[tuple] = field(default_factory=list)
     fail_with: Exception | None = None
     _n: int = 0
+    client_ids: list[tuple] = field(default_factory=list)
 
     async def list_calendars(self, cred):
         return []
@@ -105,6 +106,7 @@ class FakeProvider:
     async def upsert_event(self, cred, calendar_id, event, external_id):
         self.calls.append(("upsert", calendar_id, event.title, event.starts_at,
                            event.ends_at, external_id, event.task_url))
+        self.client_ids.append((external_id, event.client_id))
         if self.fail_with is not None:
             raise self.fail_with
         if external_id is None:
@@ -418,6 +420,8 @@ async def test_r8_the_pull_reads_only_the_metorite_calendar_and_moves_and_unsche
         with world.p.admin_engine.begin() as c:
             c.execute(text("UPDATE integration_connections SET provider_meta = provider_meta - 'task_cursor' "
                            "WHERE id = CAST(:i AS uuid)"), {"i": world.conn["a"]})
+        with world.p.admin_engine.begin() as c:  # the links are old enough (P2: the 5-minute age)
+            c.execute(text("UPDATE calendar_task_links SET updated_at = now() - interval '1 hour'"))
         fake.feed = SyncResult(changes=[RemoteEvent(external_id="ev1", etag='"n1"')], next_cursor="c3", full=True)
         await task_out.pull_remote_changes(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
         b = await _block(world.org_a, ALICE, lost)
@@ -508,3 +512,188 @@ def test_the_migration_is_tenant_scoped_and_has_no_key_to_tasks():
     assert "organization_id" in sql and "app.tenant_id" in sql
     assert "REFERENCES pm_tasks" not in sql  # a deleted task must leave its link
     assert "char_length(sync_error) <= 500" in sql
+
+
+# ── Opus review fixes (P1/P2) ─────────────────────────────────────────────
+#
+# * M6. ``task_out.py`` ``_lease``: drop the ``external_id IS NULL AND
+#   sync_state <> 'sent'`` guard. Two workers both create.
+#   ``test_r8_a_create_lease_is_refused_when_an_event_exists``.
+# * M7. ``task_out.py`` ``calendar_identity``: return False at once. A new
+#   calendar unschedules every block.
+#   ``test_r8_a_new_metorite_calendar_drops_the_links_and_unschedules_nothing``.
+# * M8. ``task_out.py`` ``pull_remote_changes``: drop the ``and live`` test.
+#   ``test_r8_an_empty_full_list_unschedules_nothing``.
+# * M9. ``task_links.py`` ``route_remote_change``: drop ``_block_exists``.
+#   ``test_r8_a_provider_delete_for_a_deleted_task_drops_the_link_and_goes_on``.
+# * M10. ``task_out.py`` ``_DESIRED``: drop the ``pm_projects`` line.
+#   ``test_r8_a_task_in_an_archived_project_goes_out_no_more``.
+# * M11. ``task_out.py`` ``reconcile_task_blocks``: drop ``client_event_id``.
+#   ``test_r8_a_create_carries_a_stable_client_id_and_an_update_does_not``.
+
+
+@pytest.mark.asyncio
+async def test_r8_a_create_lease_is_refused_when_an_event_exists(world):
+    fake = FakeProvider()
+    async with _in(world, world.org_a):
+        tid = await _task(world.org_a, ALICE, "Leased", T0)
+        await _pass(world, world.org_a, world.conn["a"], fake)  # ev1, state sent
+        later = lambda: NOW + timedelta(hours=1)  # noqa: E731
+        async with tenant_session(world.org_a) as db:
+            # A second worker that still thinks "no link" must not create.
+            assert not await task_out._lease(
+                db, world.org_a, world.conn["a"], ALICE, tid, later, create=True)
+            # An update lease on a free link is fine.
+            assert await task_out._lease(
+                db, world.org_a, world.conn["a"], ALICE, tid, later, create=False)
+
+
+@pytest.mark.asyncio
+async def test_r8_a_create_carries_a_stable_client_id_and_an_update_does_not(world):
+    fake = FakeProvider()
+    async with _in(world, world.org_a):
+        tid = await _task(world.org_a, ALICE, "Retry safe", T0)
+        await _pass(world, world.org_a, world.conn["a"], fake)
+        await _move(world.org_a, ALICE, tid, T0 + timedelta(hours=1))
+        await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=1))
+    (first, second) = fake.client_ids
+    assert first[0] is None and first[1] == task_out.client_event_id(tid, world.conn["a"])
+    assert second == ("ev1", None)
+    cid = first[1]
+    assert 5 <= len(cid) <= 1024 and set(cid) <= set("0123456789abcdefghijklmnopqrstuv")
+
+
+@pytest.mark.asyncio
+async def test_r8_a_new_metorite_calendar_drops_the_links_and_unschedules_nothing(world):
+    fake = FakeProvider()
+    async with _in(world, world.org_a):
+        tid = await _task(world.org_a, ALICE, "Survives", T0)
+        await _pass(world, world.org_a, world.conn["a"], fake)
+        fake.feed = SyncResult(changes=[], next_cursor="c1", full=False)
+        await task_out.pull_remote_changes(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
+        # The member deletes the calendar. The provider made a NEW one.
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE integration_connections SET provider_meta = provider_meta || "
+                           "CAST(:m AS jsonb) WHERE id = CAST(:i AS uuid)"),
+                      {"i": world.conn["a"], "m": '{"metorite_calendar_id": "cal-new"}'})
+            c.execute(text("UPDATE calendar_task_links SET updated_at = now() - interval '1 hour'"))
+        # A full list of the new calendar holds a stranger only.
+        fake.feed = SyncResult(changes=[RemoteEvent(external_id="other", etag="o")],
+                               next_cursor="c9", full=True)
+        await task_out.pull_remote_changes(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
+        b = await _block(world.org_a, ALICE, tid)
+        assert b.scheduled_start == T0  # the block is untouched
+        assert _links(world, world.org_a) == []
+        # The next push makes a new event in the new calendar.
+        s = await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=1))
+    assert s.created == 1
+    assert [c[1] for c in fake.calls if c[0] == "upsert"][-1] == "cal-new"
+
+
+@pytest.mark.asyncio
+async def test_r8_an_empty_full_list_unschedules_nothing(world):
+    fake = FakeProvider()
+    async with _in(world, world.org_a):
+        tid = await _task(world.org_a, ALICE, "Kept", T0)
+        await _pass(world, world.org_a, world.conn["a"], fake)
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE calendar_task_links SET updated_at = now() - interval '1 hour'"))
+        fake.feed = SyncResult(changes=[], next_cursor="c1", full=True)
+        await task_out.pull_remote_changes(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
+        assert (await _block(world.org_a, ALICE, tid)).scheduled_start == T0
+    assert len(_links(world, world.org_a)) == 1
+
+
+@pytest.mark.asyncio
+async def test_r8_a_provider_delete_for_a_deleted_task_drops_the_link_and_goes_on(world):
+    fake = FakeProvider()
+    async with _in(world, world.org_a):
+        gone = await _task(world.org_a, ALICE, "Deleted here first", T0)
+        moved = await _task(world.org_a, ALICE, "Still moves", T0 + timedelta(hours=3))
+        await _pass(world, world.org_a, world.conn["a"], fake)
+        async with tenant_session(world.org_a) as db:
+            await db.execute(text("DELETE FROM pm_tasks WHERE id = CAST(:t AS uuid)"), {"t": gone})
+        new = T0 + timedelta(days=3)
+        fake.feed = SyncResult(changes=[
+            RemoteEvent(external_id="ev1", deleted=True),
+            RemoteEvent(external_id="ev2", etag='"n"', starts_at=new, ends_at=new + timedelta(hours=1),
+                        updated=datetime.now(UTC) + timedelta(minutes=5)),
+        ], next_cursor="c1", full=False)
+        n = await task_out.pull_remote_changes(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
+        assert n == 2
+        assert (await _block(world.org_a, ALICE, moved)).scheduled_start == new
+    assert [l.external_id for l in _links(world, world.org_a)] == ["ev2"]
+
+
+@pytest.mark.asyncio
+async def test_r8_one_bad_event_does_not_hold_the_cursor(world, monkeypatch):
+    fake = FakeProvider()
+    real = task_links.route_remote_change
+
+    async def flaky(db, org, conn, ev):
+        if ev.external_id == "ev1":
+            raise RuntimeError("boom")
+        return await real(db, org, conn, ev)
+
+    monkeypatch.setattr(task_links, "route_remote_change", flaky)
+    async with _in(world, world.org_a):
+        await _task(world.org_a, ALICE, "Bad", T0)
+        moved = await _task(world.org_a, ALICE, "Good", T0 + timedelta(hours=3))
+        await _pass(world, world.org_a, world.conn["a"], fake)
+        new = T0 + timedelta(days=3)
+        fake.feed = SyncResult(changes=[
+            RemoteEvent(external_id="ev1", etag="x"),
+            RemoteEvent(external_id="ev2", etag='"n"', starts_at=new, ends_at=new + timedelta(hours=1),
+                        updated=datetime.now(UTC) + timedelta(minutes=5)),
+        ], next_cursor="c7", full=False)
+        await task_out.pull_remote_changes(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
+        assert (await _block(world.org_a, ALICE, moved)).scheduled_start == new
+    with world.p.admin_engine.connect() as c:
+        cur = c.execute(text("SELECT provider_meta->>'task_cursor' FROM integration_connections "
+                             "WHERE id = CAST(:i AS uuid)"), {"i": world.conn["a"]}).scalar()
+    assert cur == "c7"
+
+
+@pytest.mark.asyncio
+async def test_r8_a_task_in_an_archived_project_goes_out_no_more(world):
+    fake = FakeProvider()
+    async with _in(world, world.org_a):
+        await _task(world.org_a, ALICE, "In an archived project", T0)
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE pm_projects SET archived_at = now() "
+                           "WHERE lower(personal_owner) = :m"), {"m": ALICE})
+        s = await _pass(world, world.org_a, world.conn["a"], fake)
+    assert s.skipped == "nothing_to_do" and fake.sends() == []
+
+
+@pytest.mark.asyncio
+async def test_r8_a_young_link_is_not_unscheduled_by_a_full_list(world):
+    fake = FakeProvider()
+    async with _in(world, world.org_a):
+        tid = await _task(world.org_a, ALICE, "Just pushed", T0)
+        await _pass(world, world.org_a, world.conn["a"], fake)  # the link is seconds old
+        fake.feed = SyncResult(changes=[RemoteEvent(external_id="stranger", etag="s")],
+                               next_cursor="c1", full=True)
+        await task_out.pull_remote_changes(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
+        assert (await _block(world.org_a, ALICE, tid)).scheduled_start == T0
+
+
+@pytest.mark.asyncio
+async def test_r8_disconnect_deletes_the_links_and_the_task_keys(world):
+    fake = FakeProvider()
+    async with _in(world, world.org_a):
+        await _task(world.org_a, ALICE, "Linked", T0)
+        await _pass(world, world.org_a, world.conn["a"], fake)
+        fake.feed = SyncResult(changes=[], next_cursor="c1", full=False)
+        await task_out.pull_remote_changes(world.org_a, world.conn["a"], provider=fake, now=lambda: NOW)
+        assert len(_links(world, world.org_a)) == 1
+        from gateway.connections import store
+
+        async with tenant_session(world.org_a) as db:
+            conn = await store.lock_by_id(db, world.org_a, world.conn["a"])
+            await connections.disconnect_connection(db, world.org_a, conn)
+    assert _links(world, world.org_a) == []
+    with world.p.admin_engine.connect() as c:
+        meta = c.execute(text("SELECT provider_meta FROM integration_connections "
+                              "WHERE id = CAST(:i AS uuid)"), {"i": world.conn["a"]}).scalar()
+    assert "task_cursor" not in meta and "task_calendar_id" not in meta

@@ -32,6 +32,8 @@ connection decides which blocks go out, never an argument.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -86,6 +88,8 @@ SELECT p.task_id::text AS task_id, t.title, p.scheduled_start, p.scheduled_end
    AND p.scheduled_start IS NOT NULL AND p.scheduled_end IS NOT NULL
    AND s.category NOT IN ('done', 'cancelled', 'triage')
    AND t.archived_at IS NULL
+   AND NOT EXISTS (SELECT 1 FROM pm_projects pr
+                    WHERE pr.id = t.project_id AND pr.archived_at IS NOT NULL)
 """
 
 _LINKS = """
@@ -124,8 +128,15 @@ async def plan(db: Any, org: str, connection_id: str, me: str, now: datetime) ->
 
 
 async def _lease(db: Any, org: str, connection_id: str, me: str, task_id: str,
-                 now: datetime, *, create: bool) -> bool:
-    """Take the link for one send. False when another worker holds it."""
+                 clock: Callable[[], datetime], *, create: bool) -> bool:
+    """Take the link for one send. False when another worker holds it.
+
+    The time comes from a FRESH ``clock()`` call, not from the start of the
+    pass: a pass that runs long must not see a lease that has already ended.
+    A create takes a row only when no event exists yet (``external_id IS NULL``
+    and the state is not ``sent``), so two workers cannot both create.
+    """
+    now = clock()
     params = {"org": org, "cid": connection_id, "me": me, "tid": task_id,
               "until": now + LEASE, "now": now}
     if create:
@@ -140,7 +151,8 @@ async def _lease(db: Any, org: str, connection_id: str, me: str, task_id: str,
         "UPDATE calendar_task_links SET next_attempt_at = :until "
         "WHERE organization_id = CAST(:org AS uuid) AND connection_id = CAST(:cid AS uuid) "
         "AND task_id = CAST(:tid AS uuid) AND member_email = :me "
-        "AND (next_attempt_at IS NULL OR next_attempt_at <= :now) RETURNING task_id"), params)
+        + ("AND external_id IS NULL AND sync_state <> 'sent' " if create else "")
+        + "AND (next_attempt_at IS NULL OR next_attempt_at <= :now) RETURNING task_id"), params)
     return r.fetchone() is not None
 
 
@@ -156,7 +168,18 @@ async def _mark_failed(org: str, connection_id: str, me: str, task_id: str,
              "org": org, "cid": connection_id, "tid": task_id, "me": me})
 
 
-def out_event(row: Any, task_url: str | None) -> Any:
+def client_event_id(task_id: str, connection_id: str) -> str:
+    """A stable id for the INSERT of one block on one connection.
+
+    Base32hex, lower case, 32 characters: legal for a Google event ``id`` and
+    for a Graph ``transactionId``. A retry after a timeout then names the same
+    event, and the provider answers "exists" instead of making a second one.
+    """
+    digest = hashlib.sha256(f"metorite-task{task_id}{connection_id}".encode()).digest()[:20]
+    return base64.b32hexencode(digest).decode("ascii").lower().rstrip("=")
+
+
+def out_event(row: Any, task_url: str | None, client_id: str | None = None) -> Any:
     """The provider-neutral event of a block. No attendees: no mail goes out."""
     from gateway.calendar_sync.provider import OutEvent
 
@@ -164,6 +187,7 @@ def out_event(row: Any, task_url: str | None) -> Any:
         title=(row.title or "(No title)")[:200], notes=None, location=None,
         starts_at=row.scheduled_start, ends_at=row.scheduled_end,
         start_date=None, end_date=None, tz=None, busy=True, task_url=task_url,
+        client_id=client_id,
     )
 
 
@@ -207,17 +231,24 @@ async def reconcile_task_blocks(
         return stats
     async with tenant_session(org) as db:
         cal_id = await connections.ensure_metorite_calendar(db, org, conn, provider, cred)
+    if await calendar_identity(org, str(conn.id), me, cal_id, conn.provider_meta):
+        # The member removed the calendar and it came back with a new id: the
+        # old events went with it. The links went too, so plan again.
+        async with tenant_session(org) as db:
+            work = await plan(db, org, str(conn.id), me, t0)
     task_url_for = _task_url_builder()
 
     for d, link in work["push"]:
         creating = link is None
         async with tenant_session(org) as db:
-            if not await _lease(db, org, str(conn.id), me, d.task_id, t0, create=creating):
+            if not await _lease(db, org, str(conn.id), me, d.task_id, now, create=creating):
                 continue
         attempts = 0 if link is None else int(link.attempts or 0)
         try:
             res = await provider.upsert_event(
-                cred, cal_id, out_event(d, task_url_for(d.task_id)),
+                cred, cal_id,
+                out_event(d, task_url_for(d.task_id),
+                          client_event_id(d.task_id, str(conn.id)) if not (link and link.external_id) else None),
                 None if link is None else link.external_id)
         except NeedsReconnect:
             stats.skipped = "needs_reconnect"
@@ -242,7 +273,7 @@ async def reconcile_task_blocks(
 
     for link in work["remove"]:
         async with tenant_session(org) as db:
-            if not await _lease(db, org, str(conn.id), me, link.task_id, t0, create=False):
+            if not await _lease(db, org, str(conn.id), me, link.task_id, now, create=False):
                 continue
         try:
             if link.external_id:
@@ -291,6 +322,39 @@ def _task_url_builder() -> Callable[[str], str | None]:
 # ── The return path: read the calendar "Metorite" ──────────────────────────
 
 META_TASK_CURSOR = "task_cursor"
+META_TASK_CALENDAR_ID = "task_calendar_id"
+
+
+async def calendar_identity(org: str, connection_id: str, me: str, cal_id: str,
+                            meta: dict[str, Any]) -> bool:
+    """Bind the links to the calendar they were made in.
+
+    Returns True when the calendar CHANGED since the links were made (the
+    member deleted "Metorite" and the provider made a new one). Then every
+    link of this connection and member is dropped WITHOUT touching a block, and
+    the cursor resets: the next push makes new events. A full list from a new
+    calendar must never read as "the member deleted every event".
+    """
+    from gateway.connections import store
+
+    stored = meta.get(META_TASK_CALENDAR_ID)
+    if stored == cal_id:
+        return False
+    changed = bool(stored)
+    async with tenant_session(org) as db:
+        locked = await store.lock_by_id(db, org, connection_id)
+        if locked is None:
+            return False
+        if changed:
+            await db.execute(text(
+                "DELETE FROM calendar_task_links WHERE organization_id = CAST(:org AS uuid) "
+                "AND connection_id = CAST(:cid AS uuid) AND member_email = :me"),
+                {"org": org, "cid": connection_id, "me": me})
+            await store.merge_provider_meta(
+                db, org, connection_id, {META_TASK_CALENDAR_ID: cal_id, META_TASK_CURSOR: ""})
+        else:
+            await store.merge_provider_meta(db, org, connection_id, {META_TASK_CALENDAR_ID: cal_id})
+    return changed
 
 
 async def pull_remote_changes(
@@ -328,6 +392,8 @@ async def pull_remote_changes(
         return 0
     raw = conn.provider_meta.get(META_TASK_CURSOR)
     cursor = raw if isinstance(raw, str) and raw else None
+    if await calendar_identity(org, str(conn.id), me, cal_id, conn.provider_meta):
+        cursor = None
     t = now()
     window = Window.around(t)
     cred = await connections.fresh_credential(org, conn, provider)
@@ -351,12 +417,20 @@ async def pull_remote_changes(
         if locked is None or locked.status != "connected":
             return 0
         for ev in result.changes:
-            outcome = await task_links.route_remote_change(db, org, locked, ev)
+            try:
+                # A savepoint: one bad event must not hold the cursor.
+                async with db.begin_nested():
+                    outcome = await task_links.route_remote_change(db, org, locked, ev)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("calendar_sync.task_route_failed", organization_id=org,
+                             error=type(exc).__name__)
+                continue
             routed += outcome != task_links.IGNORED
-        if cursor is None and result.full:
+        live = {e.external_id for e in result.changes if not e.deleted}
+        # An empty full list is not proof of a delete: never act on it.
+        if cursor is None and result.full and live:
             routed += await task_links.unschedule_missing(
-                db, org, locked, {e.external_id for e in result.changes if not e.deleted},
-                window.start, window.end)
+                db, org, locked, live, window.start, window.end)
         await store.merge_provider_meta(
             db, org, connection_id, {META_TASK_CURSOR: result.next_cursor or ""})
     return routed
