@@ -94,7 +94,7 @@ from typing import Any
 
 from acb_auth import agent_oauth
 from acb_common import app_manifests, get_logger, get_settings
-from acb_common.image_probe import looks_like_svg, sniff_image_mime
+from acb_common.image_probe import RASTER_MIMES, looks_like_svg, sniff_image_mime
 from acb_common.priority import importance_for
 
 from agent_edge import cursor as cursor_mod
@@ -1188,6 +1188,34 @@ CHECK_TEXTS: Mapping[str, tuple[str, str]] = {
 }
 
 
+#: CIV-14b fix round 1. The input of a question or a line that names images.
+IMAGES_INPUT = "attachment_ids"
+
+#: CIV-14b fix round 1. The image sentences of a tool text, each filled at
+#: ``tools/list`` by ``agent_oauth.image_upload_allowed`` of the caller's
+#: organization (:meth:`Tool.describe`). While the organization is off
+#: ``mcp_image_upload_orgs``, an agent reads no image sentence and no
+#: :data:`IMAGES_INPUT`, and :func:`offered` hides ``upload_task_image``.
+IMAGE_TEXTS: Mapping[str, tuple[str, str]] = {
+    "[[ASK_IMAGES]]": (
+        " To show a capture, upload it with upload_task_image and send its id in"
+        " attachment_ids.", ""),
+    "[[LINE_IMAGES]]": (
+        " attachment_ids shows up to 4 images of upload_task_image with a"
+        " thought, an action or an elicitation, and never with a response or an"
+        " error.", ""),
+}
+
+
+def image_text(text: str, organization_id: object) -> str:
+    """*text* with each marker of :data:`IMAGE_TEXTS` filled for the
+    organization (CIV-14b fix round 1)."""
+    on = agent_oauth.image_upload_allowed(organization_id)
+    for mark, (yes, no) in IMAGE_TEXTS.items():
+        text = text.replace(mark, yes if on else no)
+    return text
+
+
 def session_text(text: str) -> str:
     """*text* with each marker of :data:`SESSION_TEXTS` filled by the
     session flag (SW-7), then each marker of :data:`CHECK_TEXTS` filled by
@@ -1275,35 +1303,44 @@ class Tool:
     #: ``agent_task_checks_enabled`` is on, read through
     #: ``agent_oauth.task_checks_enabled``.
     checks: bool = False
+    #: CIV-14b fix round 1. True for ``upload_task_image``. It shows only for
+    #: an organization of ``agent_oauth.image_upload_allowed`` (:func:`offered`).
+    images: bool = False
 
-    def describe(self) -> dict[str, Any]:
+    def describe(self, organization_id: object = None) -> dict[str, Any]:
         """The ``tools/list`` entry of this tool. SW-23: while the Check flag
-        is off, the ``check`` input of a task write is not listed."""
+        is off, the ``check`` input of a task write is not listed. CIV-14b
+        fix round 1: for an organization off ``mcp_image_upload_orgs``,
+        :data:`IMAGES_INPUT` and the image sentences are not listed."""
+        images = agent_oauth.image_upload_allowed(organization_id)
         return {
             "name": self.name,
             "title": self.title,
-            "description": session_text(self.description + (
+            "description": session_text(image_text(self.description, organization_id) + (
                 write_limit_line() if self.method != "GET" else "")),
-            "inputSchema": shown_inputs(self.input_schema),
+            "inputSchema": shown_inputs(self.input_schema, images=images),
             "outputSchema": dict(self.output_schema),
             "annotations": {"title": self.title, **self.annotations},
         }
 
 
-def shown_inputs(schema: Mapping[str, Any]) -> dict[str, Any]:
+def shown_inputs(schema: Mapping[str, Any], *, images: bool = True) -> dict[str, Any]:
     """*schema* as ``tools/list`` shows it (SW-23). While the Check flag is
     off, the :data:`CHECK_INPUT` input is left out, at the top and in the
     items of ``updates`` (``update_tasks``). The static schema keeps it, so a
-    call that still sends it gets :data:`TEXT_CHECKS_OFF` from the tool."""
-    if agent_oauth.task_checks_enabled():
-        return dict(schema)
+    call that still sends it gets :data:`TEXT_CHECKS_OFF` from the tool.
+    CIV-14b fix round 1: with *images* false, :data:`IMAGES_INPUT` is left
+    out too, and a call that still sends it gets the refusal of the gateway."""
+    hidden = set() if agent_oauth.task_checks_enabled() else {CHECK_INPUT}
+    if not images:
+        hidden.add(IMAGES_INPUT)
     properties = schema.get("properties")
-    if not isinstance(properties, Mapping):
+    if not hidden or not isinstance(properties, Mapping):
         return dict(schema)
-    kept: dict[str, Any] = {k: v for k, v in properties.items() if k != CHECK_INPUT}
+    kept: dict[str, Any] = {k: v for k, v in properties.items() if k not in hidden}
     updates = kept.get("updates")
     if isinstance(updates, Mapping) and isinstance(updates.get("items"), Mapping):
-        kept["updates"] = {**updates, "items": shown_inputs(updates["items"])}
+        kept["updates"] = {**updates, "items": shown_inputs(updates["items"], images=images)}
     return {**schema, "properties": kept}
 
 
@@ -5260,8 +5297,11 @@ async def _post_image(ctx: Context, task_id: str, filename: str, data: bytes, mi
         raise ToolError(TEXT_BUSY) from None
     except RouteRefused:
         raise ToolError(TEXT_BAD_REQUEST) from None
+    # Fix round 1: the 413 of the agent cap has its own code and text. Any
+    # other 413 of the route is the budget of 10 MB for each task.
     _, row = _written(answer, TEXT_TASK_NOT_FOUND,
-                      details={(404, agent_oauth.IMAGE_UPLOAD_OFF): TEXT_IMAGES_OFF},
+                      details={(404, agent_oauth.IMAGE_UPLOAD_OFF): TEXT_IMAGES_OFF,
+                               (413, agent_oauth.AGENT_IMAGE_TOO_LARGE): TEXT_IMAGE_TOO_LARGE},
                       texts={400: TEXT_IMAGE_NAME, 409: TEXT_UPLOAD_RACE,
                              413: TEXT_IMAGE_BUDGET, 415: TEXT_IMAGE_TYPE})
     if not isinstance(row, dict) or _id(row.get("attachment_id")) is None:
@@ -5336,6 +5376,7 @@ UPLOAD_TASK_IMAGE = Tool(
     annotations=dict(WRITE_ANNOTATIONS),
     routes=(ATTACHMENTS_ROUTE,),
     edge_inputs=frozenset({"idempotency_key"}),
+    images=True,
 )
 
 
@@ -9286,10 +9327,16 @@ WAITING_TEXTS: Mapping[str, str] = {
 #: ``test_mcp_upload_image_limits.py``.
 ATTACHMENT_NOT_ON_TASK_CODE = "attachment_not_on_task"
 ATTACHMENT_NOT_IMAGE_CODE = "attachment_not_image"
+#: Fix round 1: a copy of ``agent_runs.ATTACHMENTS_NOT_ON_TYPE``, pinned the
+#: same way.
+ATTACHMENTS_NOT_ON_TYPE_CODE = "attachments_not_on_type"
 TEXT_ATTACHMENT_NOT_ON_TASK = (
     "Each attachment_id must be a file of this task. Upload the image to this"
     " task with upload_task_image first.")
 TEXT_ATTACHMENT_NOT_IMAGE = "Each attachment_id must be a PNG, JPEG, GIF or WebP image."
+TEXT_ATTACHMENTS_NOT_ON_TYPE = (
+    "Only a thought, an action or an elicitation takes attachment_ids. A response"
+    " or an error becomes a comment, and a comment shows no image.")
 #: The fixed text of each coded 422 of the activity route: the wait, and the
 #: images of CIV-14b.
 ACTIVITY_TEXTS: Mapping[str, str] = {
@@ -9297,11 +9344,13 @@ ACTIVITY_TEXTS: Mapping[str, str] = {
     agent_oauth.IMAGE_UPLOAD_OFF: TEXT_IMAGES_OFF,
     ATTACHMENT_NOT_ON_TASK_CODE: TEXT_ATTACHMENT_NOT_ON_TASK,
     ATTACHMENT_NOT_IMAGE_CODE: TEXT_ATTACHMENT_NOT_IMAGE,
+    ATTACHMENTS_NOT_ON_TYPE_CODE: TEXT_ATTACHMENTS_NOT_ON_TYPE,
 }
 _ATTACHMENT_IDS_INPUT: dict[str, Any] = {
     "type": "array", "minItems": 1, "maxItems": agent_oauth.ACTIVITY_IMAGES_MAX,
     "items": {"type": "string", "pattern": _UUID_PATTERN},
-    "description": "Up to 4 images to show with this line or question: the"
+    "description": "Up to 4 images to show with a thought, an action or a"
+                   " question, and never with a response or an error: the"
                    " attachment_id of each, from upload_task_image on this task."}
 
 _POST_ACTIVITY_INPUT: dict[str, Any] = {
@@ -9344,6 +9393,9 @@ def _activity_payload(args: Mapping[str, Any]) -> dict[str, Any]:
         raise ToolError(f"The input 'body' is required for type {kind}.")
     if "waiting" in args and kind not in WAITING_TYPES:
         raise ToolError("Only an activity of type thought, action or response takes waiting.")
+    if IMAGES_INPUT in args and kind not in agent_oauth.IMAGE_ACTIVITY_TYPES:
+        # CIV-14b fix round 1: the gateway refuses it too.
+        raise ToolError(TEXT_ATTACHMENTS_NOT_ON_TYPE)
     _check_options(args.get("options"))
     payload: dict[str, Any] = {"type": kind, "idempotency_key": str(args["idempotency_key"])}
     for name in ("body", "options", "allow_multiple", "action", "parameters", "waiting"):
@@ -9383,8 +9435,7 @@ POST_AGENT_ACTIVITY = Tool(
         " stays working. Before a wait of more than 2 minutes on CI, a review,"
         " a deploy, a member or another agent, add waiting with on and"
         " until_minutes (at most 120). The run then reads waiting, not idle. A wait on a person for longer than 120"
-        " minutes is a question: use ask_on_task. attachment_ids shows up to 4"
-        " images of upload_task_image with the line." + _UNTRUSTED_NOTE
+        " minutes is a question: use ask_on_task.[[LINE_IMAGES]]" + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_POST_ACTIVITY_INPUT,
@@ -9420,12 +9471,36 @@ _ASK_INPUT: dict[str, Any] = {
 }
 
 
+async def _question_images(ctx: Context, task_id: str, ids: list[str]) -> None:
+    """The checks of ``attachment_ids`` of a question, BEFORE the run starts
+    (CIV-14b fix round 1). Without them, a question that the gateway refuses
+    for its images left an empty run open on the task.
+
+    The flag of the organization, then one read of the list of the task: each
+    id must be a file of THIS task, and a PNG, JPEG, GIF or WebP image. The
+    gateway runs the same checks again when it writes the question."""
+    if not agent_oauth.image_upload_allowed(ctx.caller.lookup.organization_id):
+        raise ToolError(TEXT_IMAGES_OFF)
+    listed = await _get(ctx, ATTACHMENTS_ROUTE, TEXT_TASK_NOT_FOUND,
+                        path_params={"task_id": task_id})
+    for attachment_id in ids:
+        row = _row_of(listed, attachment_id)
+        if row is None:
+            raise ToolError(TEXT_ATTACHMENT_NOT_ON_TASK)
+        if str(row.get("mime") or "").split(";")[0].strip().lower() not in RASTER_MIMES:
+            raise ToolError(TEXT_ATTACHMENT_NOT_IMAGE)
+
+
 async def _ask_on_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     """Start or reuse the open run of this member and client on the task,
     then write the question (§12.1). The two writes share the key, so a
-    second call with the same key returns the same run and question."""
+    second call with the same key returns the same run and question.
+    CIV-14b fix round 1: the images are checked before the start."""
     _check_options(args.get("options"))
     key = str(args["idempotency_key"])
+    if IMAGES_INPUT in args:
+        await _question_images(ctx, str(args["task_id"]),
+                               [str(i).lower() for i in args[IMAGES_INPUT]])
     _, run = await _start(ctx, str(args["task_id"]), key,
                           _str_or_none(args.get("external_link")))
     run_id = _id(run.get("id"))
@@ -9460,8 +9535,7 @@ ASK_ON_TASK = Tool(
         " The my_work text holds the rule."
         " Send external_link, an https link to your session, when you have one."
         " When the member answers in another place, such as your chat, call"
-        " record_outside_decision at once. To show a capture, upload it with"
-        " upload_task_image and send its id in attachment_ids." + _UNTRUSTED_NOTE
+        " record_outside_decision at once.[[ASK_IMAGES]]" + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_ASK_INPUT,
@@ -9475,6 +9549,9 @@ ASK_ON_TASK = Tool(
     method="POST",
     annotations=dict(WRITE_ANNOTATIONS),
     runs=True,
+    # CIV-14b fix round 1: the list of the files of the task, read for the
+    # images before the start.
+    routes=(ATTACHMENTS_ROUTE,),
     prior_writes=(TASK_RUNS_ROUTE,),
 )
 
@@ -10959,7 +11036,8 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     ADD_COMMENT, UPDATE_COMMENT, DELETE_COMMENT, CLAIM_TASK, SET_ASSIGNEES,
     ADD_TASK_LINK, REMOVE_TASK_LINK,
     CREATE_PROJECT, UPDATE_PROJECT, PREVIEW_MOVE_TASKS, MOVE_TASKS, POST_PROJECT_UPDATE,
-    # CIV-14b: one image onto a task. The gateway reads its flag.
+    # CIV-14b: one image onto a task. It shows only for an organization of
+    # `mcp_image_upload_orgs`, and the gateway reads the flag too.
     UPLOAD_TASK_IMAGE,
     # SW-23: shows only while the Check flag is on.
     REPORT_CHECK,
@@ -10977,10 +11055,15 @@ def offered(tool: Tool, organization_id: object = None) -> bool:
     agent-run tool only while the runs flag is on too (EA-12b), read through
     the ONE reader, ``agent_oauth.runs_enabled``. A tool of the app door only
     while ``agent_oauth.door_apps`` names an app (MCP-P1a, AD-15). The playbook
-    tool only for an organization that ``playbook_orgs`` names (PB-3a)."""
+    tool only for an organization that ``playbook_orgs`` names (PB-3a).
+    ``upload_task_image`` only for an organization that
+    ``mcp_image_upload_orgs`` names (CIV-14b fix round 1). The gateway
+    refuses the upload of any other organization too."""
     if tool.door and not agent_oauth.door_apps():
         return False
     if tool.playbook and not agent_oauth.playbook_allowed(organization_id):
+        return False
+    if tool.images and not agent_oauth.image_upload_allowed(organization_id):
         return False
     if tool.runs and not agent_oauth.runs_enabled():
         return False
@@ -11012,7 +11095,7 @@ def listed(scopes: frozenset[str], *, delete_on: bool = False,
     agent-run tool only while the runs flag is on (EA-12b). ``delete_task``
     shows only with *delete_on*, the member's switch (EA-6h)."""
     return [
-        t.describe() for t in TOOLS.values()
+        t.describe(organization_id) for t in TOOLS.values()
         if _covered(t, scopes, organization_id) and (delete_on or not t.switch)
     ]
 
@@ -11065,6 +11148,9 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
     if not offered(tool, ctx.caller.lookup.organization_id):
         if tool.playbook and not agent_oauth.playbook_allowed(ctx.caller.lookup.organization_id):
             return error_result(TEXT_PLAYBOOK_OFF)
+        if tool.images and not agent_oauth.image_upload_allowed(
+                ctx.caller.lookup.organization_id):
+            return error_result(TEXT_IMAGES_OFF)
         if tool.door and not agent_oauth.door_apps():
             return error_result(TEXT_APPS_OFF)
         if tool.runs and not agent_oauth.runs_enabled():
@@ -11119,6 +11205,7 @@ __all__ = [
     "ASSIGNEE_PERSONAL_CODE",
     "ASSIGNEE_REFUSED_CODE",
     "ASSIGN_ANNOTATIONS",
+    "ATTACHMENTS_NOT_ON_TYPE_CODE",
     "ATTACHMENTS_ROUTE",
     "ATTACHMENTS_TRUNCATED_KEY",
     "ATTACHMENT_BYTES_ROUTE",
@@ -11223,8 +11310,10 @@ __all__ = [
     "GUIDANCE_REF_KEY",
     "GUIDANCE_ROUTE",
     "HELD_STATE",
+    "IMAGES_INPUT",
     "IMAGE_MAGIC",
     "IMAGE_MAX_BYTES",
+    "IMAGE_TEXTS",
     "IMPORTANCE_VALUES",
     "LINKS_ROUTE",
     "LINK_CHAIN_DETAIL",
@@ -11324,6 +11413,7 @@ __all__ = [
     "TEXT_ARCHIVE_CONFLICT",
     "TEXT_ASSIGNEES_PERSONAL",
     "TEXT_ASSIGNEES_REFUSED",
+    "TEXT_ATTACHMENTS_NOT_ON_TYPE",
     "TEXT_ATTACHMENT_NOT_FOUND",
     "TEXT_ATTACHMENT_NOT_IMAGE",
     "TEXT_ATTACHMENT_NOT_ON_TASK",
@@ -11509,6 +11599,7 @@ __all__ = [
     "field_value",
     "image_bytes_match",
     "image_result",
+    "image_text",
     "image_type",
     "is_text_file",
     "listed",

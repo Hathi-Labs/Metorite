@@ -10,8 +10,8 @@ NON-privileged role on a promoted catalog of their own, so FORCE RLS binds
 every read and write. Organization A holds:
 
 * MEMBER, with a connection of ``projects:read projects:write``;
-* a team project with the tasks ``mine``, ``other``, ``flagless`` and
-  ``thought``, a PNG on ``other`` and a PDF on ``mine``;
+* a team project with the tasks ``mine``, ``other``, ``flagless``,
+  ``thought`` and ``norun``, a PNG on ``other`` and a PDF on ``mine``;
 * OWNER's personal tree, SEALED as D63 stamps it, with a stray grant to
   MEMBER and one task.
 
@@ -25,10 +25,17 @@ hold the edge rules with a fake gateway. The gate is
     eval "$(bash scripts/dev_db.sh --export)"
     uv run pytest tests/unit/test_mcp_upload_image_tenant_r8.py -v -rs
 
-**The mutation (R7).** Drop the task filter of ``agent_runs._TASK_IMAGES_SQL``
-(``ta.task_id = CAST(:tid AS uuid)``), and
-``test_r3_an_image_of_another_task_on_the_question_is_refused`` turns red:
-the question takes a file of another task.
+**The mutations (R7).**
+
+* Drop the task filter of ``agent_runs._TASK_IMAGES_SQL``
+  (``ta.task_id = CAST(:tid AS uuid)``), and
+  ``test_r3_an_image_of_another_task_on_the_question_is_refused`` turns red:
+  the question takes a file of another task.
+* Fix round 1, item 8. Drop the ``_question_images`` call of
+  ``tools._ask_on_task``, and ``test_r3_a_refused_question_opens_no_run``
+  turns red: the run starts before the gateway refuses the question.
+* Fix round 1, item 4. Keep the copy of ``agent_upload_body.py`` at the
+  first part, and ``test_r8_a_signed_form_in_many_parts_lands`` turns red.
 """
 from __future__ import annotations
 
@@ -153,7 +160,8 @@ def world():
     a.member(MEMBER, ["feature:projects"])
     team = a.project("Team", in_space=True)
     todo = a.status(team, "To do", "todo", 0)
-    t = {key: a.task(team, todo, key) for key in ("mine", "other", "flagless", "thought")}
+    t = {key: a.task(team, todo, key)
+         for key in ("mine", "other", "flagless", "thought", "norun")}
     f = {
         "other": _attach(a, folder, t["other"], "other.png", "image/png", TINY_PNG),
         "pdf": _attach(a, folder, t["mine"], "spec.pdf", "application/pdf", PDF),
@@ -264,6 +272,13 @@ def _files_of(world, task: str) -> list[Any]:
             {"t": world.t[task]}).fetchall()
 
 
+def _runs_of(world, task: str) -> int:
+    with world.admin.begin() as c:
+        return int(c.execute(text(
+            "SELECT count(*) FROM pm_agent_runs WHERE task_id = CAST(:t AS uuid)"),
+            {"t": world.t[task]}).scalar())
+
+
 def _questions_of(world, task: str) -> list[Any]:
     with world.admin.begin() as c:
         return c.execute(text(
@@ -343,7 +358,21 @@ class TestAnImageOnAQuestion:
         asked = await _ask(live, "thought", [aid])
         assert asked["isError"] is False, asked
         run_id = asked["structuredContent"]["run"]["id"]
-        answer = await _person(live, "POST", f"/projects/agent-runs/{run_id}/activities",
+        activities = f"/projects/agent-runs/{run_id}/activities"
+        # Fix round 1, item 5: a prompt takes no images, and the gateway
+        # refuses them with its code. So does a signed response, which the
+        # edge refuses before it sends one.
+        refused = await _person(live, "POST", activities, json={
+            "type": "prompt", "idempotency_key": _key(), "selected": ["yes"],
+            "attachment_ids": [aid]})
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["detail"]["error"] == "attachments_not_on_type"
+        signed = await tw._send(live, "POST", activities, body={
+            "type": "response", "idempotency_key": _key(), "body": "Done.",
+            "attachment_ids": [aid]})
+        assert signed.status_code == 422, signed.text
+        assert signed.json()["detail"]["error"] == "attachments_not_on_type"
+        answer = await _person(live, "POST", activities,
                                json={"type": "prompt", "idempotency_key": _key(),
                                      "selected": ["yes"]})
         assert answer.status_code in (200, 201), answer.text
@@ -367,6 +396,20 @@ class TestAnImageOnAQuestion:
     async def test_r3_a_file_that_is_not_an_image_is_refused(self, live):
         result = await _ask(live, "mine", [live.f["pdf"]])
         assert result["content"][0]["text"] == tools.TEXT_ATTACHMENT_NOT_IMAGE
+
+    async def test_r3_a_refused_question_opens_no_run(self, live):
+        """Fix round 1, item 8. ``norun`` has no run. A question with an image
+        of another task is refused before the start, so the task still has
+        no run. A good question then starts one."""
+        assert _runs_of(live, "norun") == 0
+        result = await _ask(live, "norun", [live.f["other"]])
+        assert result["content"][0]["text"] == tools.TEXT_ATTACHMENT_NOT_ON_TASK
+        assert _runs_of(live, "norun") == 0
+        up = await _upload(live, "norun", TINY_PNG)
+        aid = up["structuredContent"]["attachment"]["attachment_id"]
+        asked = await _ask(live, "norun", [aid])
+        assert asked["isError"] is False, asked
+        assert _runs_of(live, "norun") == 1
 
 
 class TestTheReachOfAnUpload:
@@ -412,6 +455,7 @@ class TestTheFlag:
         assert len(_files_of(live, "flagless")) == before
         asked = await _ask(live, "flagless", [live.f["other"]])
         assert asked["content"][0]["text"] == tools.TEXT_IMAGES_OFF
+        assert _runs_of(live, "flagless") == 0
 
     async def test_r6_the_flag_names_one_organization(self, live, monkeypatch):
         monkeypatch.setattr(get_settings(), "mcp_image_upload_orgs", live.org)
@@ -467,6 +511,57 @@ class TestTheSignedForm:
                                          headers={**headers, "Content-Type": kind})
         forged = await tw._in_scope(live, lambda: go(sent[0], sent[1]))
         assert forged.status_code == 401, forged.text
+        assert len(_files_of(live, "mine")) == before
+
+    async def _parts(self, live, body: bytes, kind: str,
+                     headers: dict[str, str]) -> httpx.Response:
+        """One signed POST whose body goes as many ASGI messages."""
+        from gateway.main import app as gateway_app
+
+        path = f"/projects/tasks/{live.t['mine']}/attachments"
+
+        async def chunks():
+            for start in range(0, len(body), 4096):
+                yield body[start:start + 4096]
+
+        async def go() -> httpx.Response:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=gateway_app),
+                                         base_url="http://gateway.test") as client:
+                return await client.post(path, content=chunks(),
+                                         headers={**headers, "Content-Type": kind})
+        return await tw._in_scope(live, go)
+
+    def _signed(self, live, body: bytes) -> dict[str, str]:
+        return agent_signing.signed_headers(
+            tw.KEY, organization_id=live.org, connection_id=live.c["write"],
+            actor_via=tw.R8_VIA, method="POST",
+            path=f"/projects/tasks/{live.t['mine']}/attachments", query="", body=body)
+
+    async def test_r8_a_signed_form_in_many_parts_lands(self, live):
+        """Fix round 1, item 4: the wrapper keeps every part, so branch 0
+        checks the signature over the whole body."""
+        body, kind = gateway_client._form("parts.png", PNG, "image/png")
+        assert len(body) > 4 * 4096
+        before = len(_files_of(live, "mine"))
+        r = await self._parts(live, body, kind, self._signed(live, body))
+        assert r.status_code == 201, r.text
+        rows = _files_of(live, "mine")
+        assert len(rows) == before + 1
+        with open(rows[-1].path, "rb") as fh:
+            assert fh.read() == PNG
+
+    @pytest.mark.parametrize("signed_part", ["whole_body", "first_part"])
+    async def test_r8_a_later_part_changed_after_signing_is_refused(self, live, signed_part):
+        """A part after the first changes once the edge signed. Branch 0
+        refuses it with the signature of the whole first body, and with a
+        signature of the first part only (the mutation above passes that)."""
+        body, kind = gateway_client._form("parts.png", PNG, "image/png")
+        headers = self._signed(live, body if signed_part == "whole_body" else body[:4096])
+        at = 3 * 4096 + 17
+        changed = body[:at] + bytes([body[at] ^ 0x01]) + body[at + 1:]
+        before = len(_files_of(live, "mine"))
+        r = await self._parts(live, changed, kind, headers)
+        assert r.status_code == 401, r.text
         assert len(_files_of(live, "mine")) == before
 
     async def test_r8_parallel_signed_uploads_each_verify(self, live):

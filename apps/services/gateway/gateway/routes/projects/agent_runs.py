@@ -317,6 +317,9 @@ WAITING_TOO_LONG = "waiting_too_long"
 #: jpeg, gif or webp image. The edge maps each code to a fixed text.
 ATTACHMENT_NOT_ON_TASK = "attachment_not_on_task"
 ATTACHMENT_NOT_IMAGE = "attachment_not_image"
+#: CIV-14b fix round 1. The code of a 422 of ``attachment_ids`` on a type
+#: outside ``agent_oauth.IMAGE_ACTIVITY_TYPES``.
+ATTACHMENTS_NOT_ON_TYPE = "attachments_not_on_type"
 
 
 class WaitingIn(BaseModel):
@@ -1094,9 +1097,15 @@ def _validate_fields(payload: ActivityIn) -> None:
         raise HTTPException(status_code=422, detail="Only a prompt carries selected.")
     if (payload.action is not None or payload.parameters is not None) and kind != "action":
         raise HTTPException(status_code=422, detail="Only an action carries action and parameters.")
-    if payload.attachment_ids is not None and kind == "prompt":
-        # CIV-14b: the images of an agent. A person attaches in the Files tab.
-        raise HTTPException(status_code=422, detail="A prompt carries no attachment_ids.")
+    if payload.attachment_ids is not None and kind not in agent_oauth.IMAGE_ACTIVITY_TYPES:
+        # CIV-14b: the card draws images on a question and on the line of the
+        # newest thought or action only. A response or an error becomes a
+        # comment, which draws no image, so it would store images that no one
+        # sees. A person attaches in the Files tab, so a prompt takes none.
+        raise HTTPException(status_code=422, detail={
+            "error": ATTACHMENTS_NOT_ON_TYPE,
+            "message": "Only a thought, an action or an elicitation carries attachment_ids.",
+        })
     if payload.waiting is not None:
         _validate_waiting(payload)
 

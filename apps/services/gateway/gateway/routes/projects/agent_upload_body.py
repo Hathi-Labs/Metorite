@@ -39,7 +39,9 @@ _UPLOAD_PATH = re.compile(r"/projects/tasks/[^/]+/attachments")
 #: The signature header, as ASGI carries it.
 _SIGNATURE = agent_signing.HEADER_SIGNATURE.lower().encode("latin-1")
 
-_TOO_LARGE = "The image is larger than an agent can upload."
+#: The detail of the 413: the code of the agent cap, which the edge maps to
+#: its own text (fix round 1). Only a signed agent meets it.
+_TOO_LARGE = agent_oauth.AGENT_IMAGE_TOO_LARGE
 _REFUSAL = json.dumps({"detail": _TOO_LARGE}).encode("utf-8")
 
 

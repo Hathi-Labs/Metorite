@@ -548,10 +548,24 @@ IMAGE_UPLOAD_OFF = "image_upload_off"
 #: (``attachment_ids``). The gateway body model and the edge schema read it.
 ACTIVITY_IMAGES_MAX = 4
 
+#: CIV-14b fix round 1. The activity types that take ``attachment_ids``. The
+#: card draws the images of a question (``elicitation``) and of the line of
+#: the newest ``thought`` or ``action``. A ``response`` or an ``error``
+#: becomes a comment, which draws no image, and a ``prompt`` is a person's.
+#: The gateway refuses every other type with 422, and the edge refuses it
+#: before it sends the call.
+IMAGE_ACTIVITY_TYPES: tuple[str, ...] = ("thought", "action", "elicitation")
+
 #: CIV-14b. The largest image that a signed agent uploads: 3.75 MiB, the cap
 #: of the read of IMG-3 too. The edge refuses a larger file before it sends
 #: one byte, and the upload route refuses it for a signed agent.
 AGENT_IMAGE_MAX_BYTES = 3_932_160
+
+#: CIV-14b fix round 1. The ``detail`` of the 413 of a signed agent upload
+#: over :data:`AGENT_IMAGE_MAX_BYTES`: of the upload route, and of the body
+#: wrapper of branch 0. The edge maps it to its own text, which is not the
+#: text of the budget of 10 MB for each task.
+AGENT_IMAGE_TOO_LARGE = "agent_image_too_large"
 
 
 def playbook_allowed(organization_id: object) -> bool:
@@ -1462,6 +1476,7 @@ __all__ = [
     "ACTIVITY_IMAGES_MAX",
     "ACTOR_VIA_PATTERN",
     "AGENT_IMAGE_MAX_BYTES",
+    "AGENT_IMAGE_TOO_LARGE",
     "ALL_ORGS",
     "APPROVAL_REQUIRED_CODE",
     "APP_OFF_CODE",
@@ -1479,6 +1494,7 @@ __all__ = [
     "DOOR_READ_WINDOW_S",
     "DOOR_WRITES_OFF_CODE",
     "FIXED_RESOURCE_SCOPES",
+    "IMAGE_ACTIVITY_TYPES",
     "IMAGE_UPLOAD_OFF",
     "MAX_SCOPE_CHARS",
     "MAX_URL_CHARS",

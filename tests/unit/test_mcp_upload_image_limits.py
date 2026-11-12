@@ -26,6 +26,14 @@ Run::
   ``test_l4_a_fifth_large_body_at_once_is_503``.
 * L5. ``gateway/routes/projects/agent_upload_body.py``: no copy in the
   scope. ``test_l5_the_wrapper_keeps_the_signed_body_for_branch_0``.
+* L6 (fix round 1, item 4). ``agent_upload_body.py``: keep the copy at the
+  first part. ``test_l6_a_signed_form_in_many_parts_verifies_over_every_part``.
+
+Fix round 1 adds the classes ``TestALargeBodyWaitsForItsToken`` (item 1),
+``TestALargeBodyIsCountedBeforeTheParse`` (item 2),
+``TestTheTypesThatTakeImages`` (item 5), ``TestTheFlagHidesTheImages``
+(item 7) and ``TestAQuestionChecksItsImagesFirst`` (item 8). Each test names
+the mutation that turns it red.
 """
 from __future__ import annotations
 
@@ -57,6 +65,7 @@ from tests.unit.test_mcp_edge_writes import (
 )
 
 UPLOAD_PATH = f"/projects/tasks/{TASK}/attachments"
+START_PATH = f"/projects/tasks/{TASK}/agent-runs"
 RUN = _uuid(7701)
 IMG_A, IMG_B = _uuid(9801), _uuid(9802)
 
@@ -127,6 +136,9 @@ class _Upload:
                 status, payload = 201, row
         elif scope["method"] == "GET" and scope["path"] == UPLOAD_PATH:
             status, payload = 200, {"rows": self.rows, "total": len(self.rows)}
+        elif scope["method"] == "POST" and scope["path"] == START_PATH:
+            # The start of the run of `ask_on_task` (fix round 1, item 8).
+            status, payload = 201, {"run": _run_row(), "created": True}
         elif scope["method"] == "POST" and scope["path"] == f"/projects/agent-runs/{RUN}/activities":
             sent = json.loads(body)
             activity = {"id": _uuid(7801), "run_id": RUN, "task_id": TASK, "seq": 2,
@@ -136,11 +148,7 @@ class _Upload:
                         "actor_via": "mcp:client.example:meta", "in_reply_to": None,
                         "pm_activity_id": None, "idempotency_key": sent["idempotency_key"],
                         "created_at": "2026-11-12T00:00:00+00:00"}
-            run = {"id": RUN, "task_id": TASK, "status": "in_progress",
-                   "member_email": "agent-member@mcpwrites.test",
-                   "client_via": "mcp:client.example:meta", "started_at": None,
-                   "updated_at": None}
-            status, payload = self.activity_status, {"activity": activity, "run": run,
+            status, payload = self.activity_status, {"activity": activity, "run": _run_row(),
                                                      "created": True}
             if self.answer is not None:
                 status, payload = self.answer
@@ -152,6 +160,16 @@ class _Upload:
     def uploads(self) -> list[SimpleNamespace]:
         return [r for r in self.requests if r.method == "POST" and r.path == UPLOAD_PATH]
 
+    def starts(self) -> list[SimpleNamespace]:
+        return [r for r in self.requests if r.method == "POST" and r.path == START_PATH]
+
+
+def _run_row() -> dict[str, Any]:
+    return {"id": RUN, "task_id": TASK, "status": "in_progress",
+            "member_email": "agent-member@mcpwrites.test",
+            "client_via": "mcp:client.example:meta", "started_at": None,
+            "updated_at": None}
+
 
 @pytest.fixture
 def gw(edge, monkeypatch):  # noqa: F811 — a fixture
@@ -159,6 +177,9 @@ def gw(edge, monkeypatch):  # noqa: F811 — a fixture
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+    # Fix round 1, item 7: the edge offers the images only to an organization
+    # of the flag. The gateway reads it too, and the R8 files hold that half.
+    monkeypatch.setattr(get_settings(), "mcp_image_upload_orgs", "*")
     fake = _Upload()
     with gateway_client.use_transport(httpx.ASGITransport(app=fake)):
         yield fake
@@ -317,11 +338,14 @@ class TestTheGatewayRefusals:
         (404, agent_oauth.IMAGE_UPLOAD_OFF, tools.TEXT_IMAGES_OFF),
         (404, "Task not found", tools.TEXT_TASK_NOT_FOUND),
         (413, "This task's attachments would reach 11.0 MB", tools.TEXT_IMAGE_BUDGET),
+        # Fix round 1, item 9. Mutation: drop the `(413, AGENT_IMAGE_TOO_LARGE)`
+        # entry of `tools._post_image`, and this reads the budget text.
+        (413, agent_oauth.AGENT_IMAGE_TOO_LARGE, tools.TEXT_IMAGE_TOO_LARGE),
         (415, "SECRET", tools.TEXT_IMAGE_TYPE),
         (400, "File type not allowed: a.exe", tools.TEXT_IMAGE_NAME),
         (409, "Someone else changed these tasks at the same moment. Try again.",
          tools.TEXT_UPLOAD_RACE),
-    ], ids=["flag_off", "hidden_task", "budget", "type", "name", "race"])
+    ], ids=["flag_off", "hidden_task", "budget", "agent_cap", "type", "name", "race"])
     async def test_each_refusal_and_then_the_key_is_free(self, gw, status, detail, text_):
         gw.answer = (status, {"detail": detail})
         result = await _upload(_args(TINY_PNG))
@@ -364,16 +388,39 @@ class TestTheImagesOfAnActivity:
 
     async def test_the_ids_go_out_in_lower_case(self, gw):
         result = await _tool("post_agent_activity", {
-            "run_id": RUN, "type": "response", "body": "Two captures.",
+            "run_id": RUN, "type": "thought", "body": "Two captures.",
             "idempotency_key": "a-2", "attachment_ids": [IMG_A.upper(), IMG_B]})
         assert result["isError"] is False, result
         (sent,) = [r for r in gw.requests if r.path.endswith("/activities")]
         assert json.loads(sent.body)["attachment_ids"] == [IMG_A, IMG_B]
 
+    @pytest.mark.parametrize("kind", ["response", "error"])
+    async def test_a_response_or_an_error_takes_no_images(self, gw, kind):
+        """Fix round 1, item 5: a response or an error becomes a comment, and
+        a comment draws no image. Mutation: drop the type check of
+        ``tools._activity_payload``, and the call goes out."""
+        result = await _tool("post_agent_activity", {
+            "run_id": RUN, "type": kind, "body": "Done.", "idempotency_key": "a-5",
+            "attachment_ids": [IMG_A]})
+        assert _text(result) == tools.TEXT_ATTACHMENTS_NOT_ON_TYPE
+        assert gw.requests == []
+
+    @pytest.mark.parametrize("kind,extra", [
+        ("thought", {}), ("action", {"action": "run_tests"}),
+        ("elicitation", {"options": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}]}),
+    ])
+    async def test_a_thought_an_action_or_an_elicitation_takes_images(self, gw, kind, extra):
+        body = {} if kind == "action" else {"body": "Look"}
+        result = await _tool("post_agent_activity", {
+            "run_id": RUN, "type": kind, "idempotency_key": f"a-6-{kind}",
+            "attachment_ids": [IMG_A], **body, **extra})
+        assert result["isError"] is False, result
+
     @pytest.mark.parametrize("code,text_", [
         (agent_oauth.IMAGE_UPLOAD_OFF, tools.TEXT_IMAGES_OFF),
         ("attachment_not_on_task", tools.TEXT_ATTACHMENT_NOT_ON_TASK),
         ("attachment_not_image", tools.TEXT_ATTACHMENT_NOT_IMAGE),
+        ("attachments_not_on_type", tools.TEXT_ATTACHMENTS_NOT_ON_TYPE),
     ])
     async def test_each_coded_422_has_a_fixed_text(self, gw, code, text_):
         gw.answer = (422, {"detail": {"error": code, "message": "SECRET"}})
@@ -388,6 +435,141 @@ class TestTheImagesOfAnActivity:
 
         assert tools.ATTACHMENT_NOT_ON_TASK_CODE == agent_runs.ATTACHMENT_NOT_ON_TASK
         assert tools.ATTACHMENT_NOT_IMAGE_CODE == agent_runs.ATTACHMENT_NOT_IMAGE
+        assert tools.ATTACHMENTS_NOT_ON_TYPE_CODE == agent_runs.ATTACHMENTS_NOT_ON_TYPE
+
+
+class TestTheTypesThatTakeImages:
+    """Fix round 1, item 5: the gateway half. Only a thought, an action or an
+    elicitation carries ``attachment_ids``, because the card draws no image
+    of a response, an error or a prompt."""
+
+    @staticmethod
+    def _payload(kind: str) -> Any:
+        from gateway.routes.projects.agent_runs import ActivityIn
+
+        extra: dict[str, Any] = {"action": "run_tests"} if kind == "action" else {}
+        return ActivityIn(type=kind, idempotency_key="k", body="b",
+                          attachment_ids=[IMG_A], **extra)
+
+    @pytest.mark.parametrize("kind", ["response", "error", "prompt"])
+    def test_each_other_type_is_a_coded_422(self, kind):
+        """Mutation: make the rule of ``agent_runs._validate_fields`` read
+        ``kind == "prompt"`` again, and the response and the error pass. Drop
+        it, and the prompt passes too."""
+        from fastapi import HTTPException
+        from gateway.routes.projects import agent_runs
+
+        with pytest.raises(HTTPException) as refused:
+            agent_runs._validate_fields(self._payload(kind))
+        assert refused.value.status_code == 422
+        assert refused.value.detail["error"] == agent_runs.ATTACHMENTS_NOT_ON_TYPE
+
+    @pytest.mark.parametrize("kind", agent_oauth.IMAGE_ACTIVITY_TYPES)
+    def test_a_thought_an_action_and_an_elicitation_pass(self, kind):
+        from gateway.routes.projects import agent_runs
+
+        agent_runs._validate_fields(self._payload(kind))
+
+    def test_the_types_are_the_ones_the_card_draws(self):
+        assert agent_oauth.IMAGE_ACTIVITY_TYPES == ("thought", "action", "elicitation")
+
+
+class TestTheFlagHidesTheImages:
+    """Fix round 1, item 7. The edge offers ``upload_task_image`` and the
+    images input only to an organization of ``mcp_image_upload_orgs``. The
+    gateway refusal stays the second wall (the R8 file holds it)."""
+
+    async def _listed(self) -> dict[str, Any]:
+        r = await _post_raw(json.dumps({"jsonrpc": "2.0", "id": 1,
+                                        "method": "tools/list"}).encode())
+        assert r.status_code == 200, r.text
+        return {t["name"]: t for t in r.json()["result"]["tools"]}
+
+    @pytest.mark.parametrize("orgs", ["", "99999999-2222-4333-8444-555555555555"],
+                             ids=["empty", "another_org"])
+    async def test_off_the_flag_no_tool_no_input_and_no_sentence(self, gw, monkeypatch, orgs):
+        """Mutation: drop the ``tool.images`` check of ``tools.offered``, and
+        the tool shows. Make ``Tool.describe`` ignore the organization, and
+        the input shows."""
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "mcp_image_upload_orgs", orgs)
+        listed = await self._listed()
+        assert "upload_task_image" not in listed
+        for name in ("ask_on_task", "post_agent_activity"):
+            assert "attachment_ids" not in listed[name]["inputSchema"]["properties"], name
+            assert "upload_task_image" not in listed[name]["description"], name
+            assert "attachment_ids" not in listed[name]["description"], name
+            assert "[[" not in listed[name]["description"], name
+        # The list read the member's delete switch. The call sends nothing.
+        before = len(gw.requests)
+        result = await _upload(_args(TINY_PNG))
+        assert _text(result) == tools.TEXT_IMAGES_OFF
+        assert len(gw.requests) == before
+
+    async def test_on_the_flag_the_tool_the_input_and_the_sentence_show(self, gw, monkeypatch):
+        from acb_common import get_settings
+
+        from tests.unit.test_mcp_edge_writes import ORG
+
+        monkeypatch.setattr(get_settings(), "mcp_image_upload_orgs", ORG)
+        listed = await self._listed()
+        assert "upload_task_image" in listed
+        for name in ("ask_on_task", "post_agent_activity"):
+            assert "attachment_ids" in listed[name]["inputSchema"]["properties"], name
+            assert "upload_task_image" in listed[name]["description"], name
+            assert "[[" not in listed[name]["description"], name
+        assert "never with a response or an error" in listed["post_agent_activity"]["description"]
+
+
+class TestAQuestionChecksItsImagesFirst:
+    """Fix round 1, item 8. ``ask_on_task`` checks the images before it
+    starts a run, so a refused question leaves no empty run on the task."""
+
+    async def _ask(self, ids: list[str]) -> dict[str, Any]:
+        return await _tool("ask_on_task", {
+            "task_id": TASK, "question": "Approve this layout?", "idempotency_key": "q-1",
+            "attachment_ids": ids})
+
+    async def test_an_id_of_another_task_starts_no_run(self, gw):
+        """Mutation: drop the ``_question_images`` call of
+        ``tools._ask_on_task``, and the start goes out first."""
+        result = await self._ask([IMG_A])
+        assert _text(result) == tools.TEXT_ATTACHMENT_NOT_ON_TASK
+        assert gw.starts() == []
+        assert not [r for r in gw.requests if r.path.endswith("/activities")]
+
+    async def test_a_file_that_is_not_an_image_starts_no_run(self, gw):
+        gw.rows.append({"attachment_id": IMG_A, "name": "spec.pdf", "mime": "application/pdf",
+                        "size": 10, "added_by": "x@mcpwrites.test", "kind": "file",
+                        "url": "/api/projects/attachments/x/spec.pdf",
+                        "created_at": "2026-11-12T00:00:00+00:00"})
+        result = await self._ask([IMG_A])
+        assert _text(result) == tools.TEXT_ATTACHMENT_NOT_IMAGE
+        assert gw.starts() == []
+
+    async def test_with_the_flag_off_nothing_goes_out(self, gw, monkeypatch):
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "mcp_image_upload_orgs", "")
+        result = await self._ask([IMG_A])
+        assert _text(result) == tools.TEXT_IMAGES_OFF
+        assert gw.requests == []
+
+    async def test_an_image_of_the_task_starts_the_run_and_asks(self, gw):
+        up = await _upload(_args(TINY_PNG))
+        aid = up["structuredContent"]["attachment"]["attachment_id"]
+        result = await self._ask([aid.upper()])
+        assert result["isError"] is False, result
+        assert len(gw.starts()) == 1
+        (sent,) = [r for r in gw.requests if r.path.endswith("/activities")]
+        assert json.loads(sent.body)["attachment_ids"] == [aid]
+
+    async def test_a_question_with_no_images_reads_no_list(self, gw):
+        result = await _tool("ask_on_task", {
+            "task_id": TASK, "question": "Go on?", "idempotency_key": "q-2"})
+        assert result["isError"] is False, result
+        assert not [r for r in gw.requests if r.method == "GET"]
 
 
 class TestTheBodyCapOfMcp:
@@ -432,15 +614,210 @@ class TestTheBodyCapOfMcp:
         assert mcp._LARGE_BODIES[0] == before
 
 
-async def _post_raw(raw: bytes) -> httpx.Response:
+async def _post_raw(raw: bytes | Any, *, token: str = GOOD) -> httpx.Response:
     from agent_edge import app as edge_app_module
 
     async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=edge_app_module.create_app()),
             base_url=ISSUER) as client:
         return await client.post("/mcp", content=raw, headers={
-            "authorization": f"Bearer {GOOD}", "content-type": "application/json",
+            "authorization": f"Bearer {token}", "content-type": "application/json",
             "mcp-protocol-version": "2025-11-25"})
+
+
+def _upload_raw(size: int = 2 * 1024 * 1024, key: str = "img-key-0001") -> bytes:
+    """The body of one ``tools/call`` of ``upload_task_image``, over 1 MiB."""
+    return json.dumps(_call("upload_task_image", _args(png_of(size), key=key))).encode()
+
+
+async def _asgi(headers: dict[str, str], receive: Any) -> tuple[int, bytes]:
+    """One POST to ``/mcp`` on the edge app, with the ASGI *receive* of the
+    test. So a test can send a body slowly, in parts, or never."""
+    from agent_edge import app as edge_app_module
+
+    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+             "method": "POST", "scheme": "https", "path": "/mcp", "raw_path": b"/mcp",
+             "query_string": b"", "root_path": "",
+             "headers": [(k.encode("latin-1"), v.encode("latin-1"))
+                         for k, v in {"host": "mcp.metorite.com",
+                                      "content-type": "application/json",
+                                      "mcp-protocol-version": "2025-11-25",
+                                      **headers}.items()],
+             "client": ("203.0.113.9", 50000), "server": ("mcp.metorite.com", 443)}
+    sent: list[dict[str, Any]] = []
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    await edge_app_module.create_app()(scope, receive, send)
+    (start,) = [m for m in sent if m["type"] == "http.response.start"]
+    return start["status"], b"".join(m.get("body", b"") for m in sent
+                                      if m["type"] == "http.response.body")
+
+
+def _stalls(first: bytes = b"", *, then: str = "wait") -> Any:
+    """An ASGI *receive* that sends *first* (if any) and then waits forever,
+    or, with ``then="leave"``, says that the client went away."""
+    parts: list[dict[str, Any]] = []
+    if first:
+        parts.append({"type": "http.request", "body": first, "more_body": True})
+    never = asyncio.Event()
+
+    async def receive() -> dict[str, Any]:
+        if parts:
+            return parts.pop(0)
+        if then == "leave":
+            return {"type": "http.disconnect"}
+        await never.wait()
+        raise AssertionError("unreachable")
+
+    return receive
+
+
+def _bearer(token: str) -> dict[str, str]:
+    return {"authorization": f"Bearer {token}"}
+
+
+def _slots_free() -> bool:
+    return mcp._LARGE_BODIES == [0] and mcp._LARGE_BY_CONNECTION == {}
+
+
+async def _until(ready: Any, seconds: float = 3.0) -> None:
+    """Wait until *ready()* is true, for *seconds* at most."""
+    async with asyncio.timeout(seconds):
+        while not ready():
+            await asyncio.sleep(0.01)
+
+
+class TestALargeBodyWaitsForItsToken:
+    """Fix round 1 of CIV-14b, item 1 (§9.6 "The body size"). A large body
+    runs the token check from the headers first. Only then does it take a
+    slot of the edge and of its connection, and the read has a deadline."""
+
+    @pytest.mark.parametrize("token", [None, "wrong-token"], ids=["no_token", "bad_token"])
+    async def test_m1_slow_bodies_with_no_good_token_block_no_upload(self, gw, token):
+        """The attack of the review: four POSTs that declare 6,000,000 bytes
+        and send none. Before the fix they held every slot, and each upload
+        in each organization got 503. Mutation: take the slot before
+        ``_caller_of`` in ``mcp._serve_large``, and the upload here gets 503."""
+        headers = {"content-length": "6000000", **(_bearer(token) if token else {})}
+        stalled = [asyncio.create_task(_asgi(headers, _stalls()))
+                   for _ in range(mcp.LARGE_BODIES_AT_ONCE)]
+        try:
+            # Each slow POST is answered, or (before the fix) holds a slot.
+            await _until(lambda: all(t.done() for t in stalled)
+                         or mcp._LARGE_BODIES[0] >= mcp.LARGE_BODIES_AT_ONCE)
+            r = await _post_raw(_upload_raw())
+            assert r.status_code == 200, r.text
+            assert r.json()["result"]["isError"] is False
+            answers = await asyncio.wait_for(asyncio.gather(*stalled), timeout=5)
+        finally:
+            for task in stalled:
+                task.cancel()
+        assert [status for status, _ in answers] == [401] * mcp.LARGE_BODIES_AT_ONCE
+        assert all(json.loads(body)["id"] is None for _, body in answers)
+        assert _slots_free()
+
+    async def test_m1_a_large_body_with_no_declared_length_is_413(self, gw):
+        """A body over 1 MiB must declare its length. Mutation: read an
+        undeclared body up to 6 MiB, and this upload passes."""
+        raw = _upload_raw()
+
+        async def parts():
+            for start in range(0, len(raw), 256 * 1024):
+                yield raw[start:start + 256 * 1024]
+
+        r = await _post_raw(parts())
+        assert r.status_code == 413, r.text
+        assert r.json()["id"] is None
+        assert gw.requests == []
+        assert _slots_free()
+
+    async def test_m1_a_slow_large_body_is_408_and_gives_its_slot_back(self, gw, monkeypatch):
+        """Mutation: drop the deadline of ``mcp._read_large``, and the read
+        waits forever (the ``wait_for`` here fails)."""
+        monkeypatch.setattr(mcp, "LARGE_BODY_READ_TIMEOUT_S", 0.2)
+        status, body = await asyncio.wait_for(
+            _asgi({"content-length": str(2 * 1024 * 1024), **_bearer(GOOD)},
+                  _stalls(b"{" + b" " * 1000)), timeout=5)
+        assert status == 408
+        assert json.loads(body)["id"] is None
+        assert _slots_free()
+        assert gw.requests == []
+
+    async def test_m1_a_client_that_goes_away_gives_its_slot_back(self, gw):
+        """Mutation: drop ``except ClientDisconnect`` of ``_serve_large``,
+        and the edge raises a 500 out of the app."""
+        status, _ = await asyncio.wait_for(
+            _asgi({"content-length": str(2 * 1024 * 1024), **_bearer(GOOD)},
+                  _stalls(b"{" + b" " * 1000, then="leave")), timeout=5)
+        assert status == 400
+        assert _slots_free()
+
+    async def test_m1_one_connection_holds_two_slots_at_most(self, gw, edge):  # noqa: F811
+        """Mutation: drop the count of each connection in ``_large_slot``,
+        and the third upload of one connection is read."""
+        import dataclasses
+
+        other = "other-good-token"
+        edge.tokens[other] = dataclasses.replace(
+            edge.tokens[GOOD], connection_id="aaaaaaaa-bbbb-4ccc-8ddd-000000000002")
+        headers = {"content-length": str(2 * 1024 * 1024), **_bearer(GOOD)}
+        held = [asyncio.create_task(_asgi(headers, _stalls(b"{")))
+                for _ in range(mcp.LARGE_BODIES_PER_CONNECTION)]
+        try:
+            await _until(lambda: mcp._LARGE_BODIES[0] == mcp.LARGE_BODIES_PER_CONNECTION)
+            third = await _post_raw(_upload_raw(key="img-key-0003"))
+            assert third.status_code == 503
+            assert third.headers["retry-after"] == str(mcp.LARGE_BODY_RETRY_AFTER_S)
+            theirs = await _post_raw(_upload_raw(key="img-key-0004"), token=other)
+            assert theirs.status_code == 200, theirs.text
+            assert theirs.json()["result"]["isError"] is False
+        finally:
+            for task in held:
+                task.cancel()
+            await asyncio.gather(*held, return_exceptions=True)
+        assert _slots_free()
+        assert len(gw.uploads()) == 1
+
+
+class TestALargeBodyIsCountedBeforeTheParse:
+    """Fix round 1 of CIV-14b, item 2. The edge counts the shape bytes of a
+    large body before ``json.loads``, so a body of many small values never
+    builds millions of objects."""
+
+    @pytest.mark.parametrize("raw", [
+        b"[" + b"{}," * 1_500_000 + b"{}]",
+        b"[" + b"1000," * 1_000_000 + b"1]",
+        b'["' + b'a","' * 1_000_000 + b'a"]',
+        b'{"a":' * 200_000 + b"1" + b"}" * 200_000,
+    ], ids=["objects", "numbers", "strings", "nested"])
+    async def test_m2_a_body_of_many_small_values_is_413_with_no_parse(self, gw, monkeypatch,
+                                                                       raw):
+        """Mutation: drop the ``_shape_allows_upload`` check of
+        ``mcp._serve_large``, and the parse runs (the spy fails)."""
+        assert mcp.MAX_BODY_BYTES < len(raw) <= mcp.MAX_UPLOAD_BODY_BYTES
+
+        def no_parse(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("the edge parsed a body of many small values")
+
+        monkeypatch.setattr(mcp, "json", SimpleNamespace(loads=no_parse, dumps=json.dumps))
+        r = await _post_raw(raw)
+        assert r.status_code == 413
+        assert gw.requests == []
+        assert _slots_free()
+
+    def test_m2_the_largest_upload_passes_the_count_with_room(self):
+        encoded = _b64(png_of(tools.UPLOAD_IMAGE_MAX_BYTES))
+        wrapped = "\r\n".join(encoded[i:i + 64] for i in range(0, len(encoded), 64))
+        message = _call("upload_task_image", _args(b"", raw=wrapped,
+                                                   name="layout final v2.png"))
+        message["params"]["_meta"] = {"progressToken": 7}
+        raw = json.dumps(message).encode()
+        assert mcp.MAX_BODY_BYTES < len(raw) <= mcp.MAX_UPLOAD_BODY_BYTES
+        assert mcp._shape_allows_upload(raw)
+        assert raw.count(b"{") + raw.count(b"[") <= mcp.LARGE_BODY_MAX_BRACKETS // 2
+        assert raw.count(b",") <= mcp.LARGE_BODY_MAX_COMMAS // 2
 
 
 class TestTheGatewayKeepsTheSignedBody:
@@ -492,7 +869,99 @@ class TestTheGatewayKeepsTheSignedBody:
         seen: list[Any] = []
         r = await self._send(self._app(seen), body=b"x" * (LIMIT_BYTES + 1))
         assert r.status_code == 413
+        # Fix round 1, item 9: the code of the agent cap, not the budget.
+        assert r.json() == {"detail": agent_oauth.AGENT_IMAGE_TOO_LARGE}
         assert seen == []
+
+    @staticmethod
+    def _branch_0_app(seen: list[Any]) -> Any:
+        """The wrapper round an app that does what FastAPI and branch 0 do: it
+        parses the form first, so the stream is gone, and then it checks the
+        signature over the body that ``deps._signed_body`` gives."""
+        from acb_auth import deps
+        from gateway.routes.projects.agent_upload_body import AgentUploadBody
+        from starlette.requests import Request
+
+        async def inner(scope, receive, send) -> None:
+            request = Request(scope, receive)
+            form = await request.form()
+            data = await form["file"].read()
+            body = await deps._signed_body(request)
+            verdict = deps._verify_signed_request(
+                request, agent_signing.usable_keys(), body,
+                request.headers.get(agent_signing.HEADER_NONCE))
+            seen.append((verdict, data))
+            status = 204 if isinstance(verdict, tuple) else 401
+            await send({"type": "http.response.start", "status": status, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+        return AgentUploadBody(inner)
+
+    @staticmethod
+    async def _send_parts(app: Any, headers: dict[str, str], chunks: list[bytes]) -> int:
+        """One POST whose body comes as one ``http.request`` message for each
+        chunk, as a proxy or a slow client sends it."""
+        messages = [{"type": "http.request", "body": c, "more_body": i < len(chunks) - 1}
+                    for i, c in enumerate(chunks)]
+        sent: list[dict[str, Any]] = []
+
+        async def receive() -> dict[str, Any]:
+            return messages.pop(0)
+
+        async def send(message: dict[str, Any]) -> None:
+            sent.append(message)
+
+        scope = {"type": "http", "method": "POST", "path": UPLOAD_PATH, "query_string": b"",
+                 "headers": [(k.lower().encode("latin-1"), v.encode("latin-1"))
+                             for k, v in headers.items()]}
+        await app(scope, receive, send)
+        assert messages == [], "the app did not read every part"
+        return next(m["status"] for m in sent if m["type"] == "http.response.start")
+
+    @staticmethod
+    def _signed(body: bytes, content_type: str) -> dict[str, str]:
+        from tests.unit.test_mcp_edge_writes import CONN, KEY, ORG, R8_VIA
+
+        return {**agent_signing.signed_headers(
+            KEY, organization_id=ORG, connection_id=CONN, actor_via=R8_VIA,
+            method="POST", path=UPLOAD_PATH, query="", body=body),
+            "Content-Type": content_type}
+
+    @staticmethod
+    def _chunks(body: bytes, size: int = 4096) -> list[bytes]:
+        return [body[i:i + size] for i in range(0, len(body), size)]
+
+    async def test_l6_a_signed_form_in_many_parts_verifies_over_every_part(self, edge):  # noqa: F811
+        """Fix round 1, item 4. Mutation: at ``agent_upload_body.py`` keep the
+        copy at the FIRST part (``if KEY not in scope:`` in place of the
+        ``more_body`` check), and branch 0 checks the signature over the
+        first part only: this signed upload is refused."""
+        data = png_of(50_000)
+        body, kind = gateway_client._form("shot.png", data, "image/png")
+        chunks = self._chunks(body)
+        assert len(chunks) > 10
+        seen: list[Any] = []
+        status = await self._send_parts(self._branch_0_app(seen), self._signed(body, kind),
+                                        chunks)
+        assert status == 204
+        ((verdict, stored),) = seen
+        assert isinstance(verdict, tuple) and stored == data
+
+    @pytest.mark.parametrize("signed_part", ["whole_body", "first_part"])
+    async def test_l6_a_later_part_changed_after_signing_is_refused(self, edge, signed_part):  # noqa: F811
+        """A middle part changes after the edge signed. With the signature of
+        the whole first body, or of the first part alone, branch 0 refuses
+        it. The ``first_part`` case fails under the mutation of l6 above."""
+        body, kind = gateway_client._form("shot.png", png_of(50_000), "image/png")
+        chunks = self._chunks(body)
+        headers = self._signed(body if signed_part == "whole_body" else chunks[0], kind)
+        middle = len(chunks) // 2
+        chunks[middle] = bytes([chunks[middle][0] ^ 0x01]) + chunks[middle][1:]
+        seen: list[Any] = []
+        status = await self._send_parts(self._branch_0_app(seen), headers, chunks)
+        assert status == 401
+        ((verdict, _),) = seen
+        assert verdict == "signature"
 
     async def test_branch_0_reads_the_kept_copy_after_a_form_parse(self):
         from acb_auth import deps

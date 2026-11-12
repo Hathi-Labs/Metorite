@@ -155,7 +155,9 @@ NOT_THE_DECLARED_TYPE = (
 )
 #: CIV-14b. The refusal of a signed agent upload that is not a raster image.
 AGENT_IMAGE_ONLY = "An agent can attach only a PNG, JPEG, GIF or WebP image."
-AGENT_IMAGE_TOO_LARGE = "An agent can attach an image of 3.75 MB at most."
+#: The 413 of a signed agent upload over 3.75 MB carries the code
+#: ``agent_oauth.AGENT_IMAGE_TOO_LARGE``, so the edge tells it apart from the
+#: 413 of the budget of each task (fix round 1).
 
 
 def stored_type(name: str, declared: str | None, content: bytes) -> str:
@@ -205,7 +207,7 @@ def _agent_image_refusal(user: UserContext, mime: str, size: int) -> None:
     if getattr(user, "agent", None) is None:
         return
     if size > agent_oauth.AGENT_IMAGE_MAX_BYTES:
-        raise HTTPException(status_code=413, detail=AGENT_IMAGE_TOO_LARGE)
+        raise HTTPException(status_code=413, detail=agent_oauth.AGENT_IMAGE_TOO_LARGE)
     if mime not in RASTER_MIMES:
         raise HTTPException(status_code=415, detail=AGENT_IMAGE_ONLY)
 
