@@ -1,13 +1,13 @@
 -- ============================================================================
--- 406_agent_run_label.sql - the display label of an agent session (WS-MCP
+-- 418_agent_run_label.sql - the display label of an agent session (WS-MCP
 -- SW-7b, Metorite task 2858)
 -- ============================================================================
 -- Spec: project-docs/specs/agent_coordination.md §3.7 item 2 and SW-7b · R1 ·
 --   R5 · R6.
 --
--- R1: main held 404 on 2026-11-11 when this file took 406. Open branches
---   and worktrees held 396, 398 to 405. Later that day main reached 414, so
---   check the number again at merge (scripts/premerge.sh).
+-- R1: this file took 406 on 2026-11-11, when main held 404. Main reached 415 and
+--   open pull requests held 416 and 417 on 2026-11-12, so it is 418 now. Check
+--   the number again at merge (scripts/premerge.sh).
 --
 -- Why: two agent sessions of one member and one client read as one name on
 --   the board ("Claude Code"). An agent may now name its own session, for

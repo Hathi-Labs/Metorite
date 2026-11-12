@@ -243,7 +243,10 @@ def test_a_store_refusal_is_its_detail_for_the_member_and_never_the_holder() -> 
 def test_the_switch_of_the_package_host_decides_and_the_install_follows_the_sync() -> None:
     keep = ast.unparse(_function("_keep_install"))
     assert "package_host_allowed(user.organization_id)" in keep
-    publish = _function("publish")
+    # The publish body lives in `_publish_draft`, which the publish route and
+    # the template route both call (one publish path).
+    assert "_publish_draft(" in ast.unparse(_function("publish"))
+    publish = _function("_publish_draft")
     lines = {ast.unparse(n.func): n.lineno for n in ast.walk(publish) if isinstance(n, ast.Call)}
     assert lines["objects_store.sync_objects"] < lines["_keep_install"]
     assert lines["store.publish_version"] < lines["_keep_install"]
@@ -346,7 +349,7 @@ def test_an_ide_publish_gives_no_end_date(monkeypatch) -> None:
 def test_the_publish_reads_the_origin_from_the_body_and_no_date_org_or_member() -> None:
     publish = ast.unparse(_function("publish"))
     assert '_origin(body.get(\'origin\'))' in publish
-    assert "_keep_install(db, user, pid, version, origin)" in publish
+    assert "_keep_install(db, user, pid, version, origin)" in ast.unparse(_function("_publish_draft"))
     keys = {n.args[0].value for n in ast.walk(_function("publish"))
             if isinstance(n, ast.Call) and ast.unparse(n.func) == "body.get"
             and n.args and isinstance(n.args[0], ast.Constant)}

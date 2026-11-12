@@ -105,3 +105,24 @@ describe("check 3: the stable regions are equal before and after the band", () =
     expect(before.cards).toEqual(["today", "needs", "next"]);
   });
 });
+
+describe("check 4: the pin suggestion code imports nothing that writes the arrangement (PKG-19a-1)", () => {
+  // D111: the rule proposes. Only a member action, in PKG-19a-2, writes a pin.
+  const FILES = ["pinSuggest.ts", "pinSuggestStore.ts"];
+  const FORBIDDEN: [string, RegExp][] = [
+    ["the shell prefs route", /api\/auth\/me\/shell|SHELL_PREFS_PATH/],
+    ["a shell prefs module", /["']\.\/shellPrefs["']|["']\.\/shellCache["']|["']\.\/sidebarFolds["']/],
+    ["a shell prefs setter", /\b(saveShellPrefs|markTourSeen|markChatFirstMessage|markAsked|setHelloPending|markBuddyHello|writeFolds|clearSidebarFolds)\b/],
+    ["the sidebar order", /["']\.\/shellNav["']|\bshellSidebar\b|\bstarredHrefs\b/],
+    ["a network call", /\bfetch\s*\(|\bmethod\s*:\s*["'](PUT|POST|PATCH|DELETE)["']/],
+  ];
+  for (const file of FILES) {
+    it(`${file} imports nothing that writes the arrangement`, () => {
+      const code = source(file);
+      for (const [what, re] of FORBIDDEN) expect(code, `${file}: ${what}`).not.toMatch(re);
+    });
+  }
+  it("the rule file touches no browser store", () => {
+    expect(source("pinSuggest.ts")).not.toMatch(/\b(localStorage|sessionStorage)\b/);
+  });
+});

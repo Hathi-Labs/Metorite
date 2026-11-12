@@ -24,6 +24,12 @@ it does not change who may flip it. The flip stays OWNER-GATE
 `gateway.routes.shell.waiting.waiting_allowed`. A reload applies a change. The
 flip stays OWNER-GATE (`enforcement-flip`).
 
+`AGENTS_VIEW_ORGS` opens the member view of agents in Projects
+(`agents_view.md` §6, AGA-6). Off, `GET /projects/agents/overview` answers
+404. Its one reader is
+`gateway.routes.projects.agent_summary.agents_view_allowed`. A reload applies
+a change. The flip stays OWNER-GATE (`enforcement-flip`).
+
 `GITHUB_APP_ORGS` turns the Metorite GitHub App on for each named org
 (`agent_coordination.md` SW-53). `GITHUB_APP_ENABLED` stays the master, and a
 reload does not apply the master. With the master on, an empty list turns

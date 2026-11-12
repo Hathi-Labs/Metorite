@@ -3588,12 +3588,43 @@ def rollup(raw: Any) -> dict[str, Any] | None:
     }
 
 
+#: The open cycle of a task (WS-39 SP-5a): ``null`` when the task is in no open
+#: cycle, or while ``PROJECTS_SPRINTS_ORGS`` leaves the org out, or when the
+#: member cannot see the node of the cycle. The name is text that people wrote.
+CYCLE_KEYS: tuple[str, ...] = ("id", "name", "state", "starts_on", "ends_on")
+CYCLE_STATES: tuple[str, ...] = ("planned", "active", "closed")
+_CYCLE_SCHEMA: dict[str, Any] = {"anyOf": [
+    {"type": "null"},
+    _object({
+        "id": {"type": "string"}, "name": _UNTRUSTED_SCHEMA,
+        "state": {"type": "string", "enum": list(CYCLE_STATES)},
+        "starts_on": _NULLABLE_STRING, "ends_on": _NULLABLE_STRING,
+    }),
+]}
+
+
+def cycle_of(raw: Any) -> dict[str, Any] | None:
+    """The cycle of a task, the pinned keys and no other, or ``None``. The
+    gateway sends the key only while the flag holds the org, so ``None`` also
+    means "off". A state that is not one of :data:`CYCLE_STATES` drops it."""
+    if not isinstance(raw, dict) or raw.get("state") not in CYCLE_STATES:
+        return None
+    return {
+        "id": str(raw.get("id")),
+        "name": untrusted(raw.get("name") or ""),
+        "state": str(raw["state"]),
+        "starts_on": _str_or_none(raw.get("starts_on")),
+        "ends_on": _str_or_none(raw.get("ends_on")),
+    }
+
+
 _GET_TASK_OUTPUT: dict[str, Any] = _object({
     "task": _TASK_SCHEMA,
     "subtasks": {"type": "array", "items": _SUBTASK_SCHEMA},
     "links": {"type": "array", "items": _LINK_SCHEMA},
     "refs": {"type": "array", "items": _REF_SCHEMA},
     "agent_runs": {"type": "array", "items": _RUN_SCHEMA},
+    "cycle": _CYCLE_SCHEMA,
     # SP-8a: the contract of an epic, or null.
     "epic_contract": _EPIC_CONTRACT_SCHEMA,
     "rollup": _ROLLUP_SCHEMA,
@@ -3723,6 +3754,8 @@ async def _get_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         if isinstance(links, list) else [],
         "refs": [reference(r) for r in _rows_of(refs)],
         "agent_runs": runs,
+        # WS-39 SP-5a: the open cycle, or null (off, none, or out of sight).
+        "cycle": cycle_of(row.get("cycle")),
         # SP-8a: from the task row itself, so no request more.
         "epic_contract": epic_contract(row.get("epic_contract")),
     }
@@ -3751,7 +3784,10 @@ GET_TASK = Tool(
         " short form for a branch name. For an epic, rollup counts the slices and"
         " the estimate done and total over every level below it, lists the"
         " questions that wait on a person, and gives hidden, the number of"
-        " tasks left out because this member cannot see them. Put url in the"
+        " tasks left out because this member cannot see them. cycle is the open"
+        " cycle (sprint) of the task, with its id, name, state and dates. It is"
+        " null when the task is in no open cycle, or when cycles are not on for"
+        " this organization. Put url in the"
         " description of each pull"
         " request, and short_id in the branch name, so that the pull request"
         " links itself to the task. epic_contract is the contract of an epic:"
@@ -4001,7 +4037,7 @@ ANCESTOR_KEYS: tuple[str, ...] = ("id", "task_number", "title", "status", "descr
 #: The keys of the result of ``get_task_context`` (§12.4).
 CONTEXT_KEYS: tuple[str, ...] = (
     "task", "ancestors", "project", "blocked_by", "blocks", "subtasks", "agent_runs",
-    "held_by", "refs", "recent_comments", "attachments", "images",
+    "held_by", "cycle", "refs", "recent_comments", "attachments", "images",
     # SP-8a: the contract of an epic, or null.
     "epic_contract",
 )
@@ -4112,12 +4148,16 @@ GUIDANCE_LEVELS: tuple[str, ...] = ("project", "space", "company", "default")
 #: only for an organization on ``agent_protocol_orgs``. Fence:
 #: ``test_mcp_edge_context.py`` ``TestTheProtocolBlock``.
 PROTOCOL_KEY = "protocol"
-PROTOCOL_VERSION = 1
+#: SW-43c raised the version to 2: the second line names the thought before an
+#: act on an answer (agent_coordination.md §3.9, "Protocol"). The sixth line
+#: stays free for the park of SW-60.
+PROTOCOL_VERSION = 2
 PROTOCOL_LINES_MAX = 6
 PROTOCOL_LINE_MAX = 120
 PROTOCOL_LINES: tuple[str, ...] = (
     "Claim the slice, not the epic.",
-    "Post a thought with post_agent_activity each minute.",
+    "Post a thought with post_agent_activity each minute. Before you act on an answer,"
+    " post one that names its id.",
     "When you are blocked, ask with ask_on_task. Never ask only in the terminal.",
     "End each turn with one result: review or done, a question, or release_task.",
     "Hand off with evidence: what is done, what is left, and the proof.",
@@ -4451,6 +4491,7 @@ _CONTEXT_OUTPUT: dict[str, Any] = _optional(_object({
     "subtasks": {"type": "array", "items": _SUBTASK_SCHEMA},
     "agent_runs": {"type": "array", "items": _RUN_SCHEMA},
     "held_by": _HELD_BY_SCHEMA,
+    "cycle": _CYCLE_SCHEMA,
     "refs": {"type": "array", "items": _REF_SCHEMA},
     "recent_comments": {"type": "array", "items": _TIMELINE_OUTPUT["properties"][
         "activities"]["items"]},
@@ -4743,6 +4784,8 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
         if isinstance(subtasks, list) else [],
         "agent_runs": runs,
         "held_by": task["held_by"],
+        # WS-39 SP-5a: the open cycle, or null (off, none, or out of sight).
+        "cycle": cycle_of(row.get("cycle")),
         "refs": [reference(r) for r in _rows_of(refs)],
         "recent_comments": comments,
         "attachments": files[0],
@@ -4786,6 +4829,8 @@ GET_TASK_CONTEXT = Tool(
         " see shows as {\"hidden\": true}, and the parents above it do not"
         " show. Each parent has the first 500 characters of its description."
         " A parent in another project shows its status category only."
+        " cycle is the open cycle (sprint) of the task, with its id, name, state"
+        " and dates, or null when there is none or cycles are not on."
         " When the organization turned on guidance, the result also has"
         " guidance: the organization's written rules for this work. Its blocks"
         " go from the nearest (the project) to the farthest (the organization)."
@@ -9508,7 +9553,8 @@ GET_AGENT_RUN = Tool(
         " person. Its selected holds the chosen option ids, labels holds their"
         " labels, and body holds any text the member wrote. The state is"
         " answered until your next activity, which tells the member that you"
-        " have the answer. If the state is stopping, a person asked you to"
+        " have the answer. Before you act on the answer, post a thought that"
+        " names its id. If the state is stopping, a person asked you to"
         " stop. Stop the work at once. Call finish_agent_run with a summary of"
         " what you did and what is left, and post no activity before it. An"
         " activity on a stopping run ends the run, and the finish then fails."

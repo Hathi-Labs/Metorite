@@ -7,9 +7,12 @@ best-effort audit + activity writers. Mirrors ``routes/tasks/core.py`` (the
 leaf module: it imports nothing from siblings).
 
 Canonical store: the ``apps`` / ``app_*`` tables from
-``infra/postgres/114_custom_apps.sql`` (RFC §4.9). App workspaces live at
-``apps_root()/{slug}`` — git-inited folders holding ``app.json`` (the
-manifest, RFC §4.1) plus the app's source files.
+``infra/postgres/114_custom_apps.sql`` (RFC §4.9). App workspaces live under
+``apps_root()`` — git-inited folders holding ``app.json`` (the
+manifest, RFC §4.1) plus the app's source files. The folder of a new app is
+``apps_root()/{app id}`` (WS-STU A3b-1). An older app keeps its folder at
+``apps_root()/{slug}``. Each reader takes the stored ``apps.workspace_path``,
+never a path that it builds from the slug.
 """
 
 from __future__ import annotations
@@ -167,7 +170,7 @@ def _uid(user: UserContext | None) -> str:
 # ── Workspace root ───────────────────────────────────────────────────────────
 
 def apps_root() -> Path:
-    """The Custom Apps workspace root (one subfolder per app slug), created
+    """The Custom Apps workspace root (one subfolder per app), created
     on demand. ``CUSTOM_APPS_ROOT`` overrides; empty falls back to
     ``{agents_clone_dir}/custom_apps`` (the reboot-safe clone home)."""
     settings = get_settings()

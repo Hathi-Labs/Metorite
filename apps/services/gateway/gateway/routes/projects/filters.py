@@ -1003,6 +1003,17 @@ AGENT_RUN_QUESTION_LEASE_FACTOR = 3
 #: The environment variable that overrides the lease, in seconds.
 AGENT_RUN_LEASE_ENV = "AGENT_RUN_LEASE_SECONDS"
 
+#: H-409 item 3 (task 748). The org of the bound tenant session, in SQL. The
+#: seam (``acb_common.db.tenant_session``) sets ``app.tenant_id`` in each
+#: transaction, so this is the session's org and never request input (R5).
+#: An unbound session reads NULL, and a compare with NULL matches no row, so
+#: the predicate fails closed. It is defence in depth beside FORCE RLS: the
+#: holder reads of a run (``agent_runs._HOLDER_SQL`` and ``_RUN_SELECT``) and
+#: the pill (:func:`agent_state_sql`) name the org themselves. The reads over
+#: a task alias (:func:`unheld_clause`, :func:`holder_sql`) derive it from
+#: the task row instead.
+BOUND_ORG_SQL = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
+
 
 def agent_run_lease_s() -> int:
     """The lease in seconds. The default is two hours. A value that is not a
@@ -1259,11 +1270,16 @@ def unheld_clause() -> str:
     a run whose connection is revoked or expired (:func:`holder_free`). The
     lease is read when the clause is built, never at import, so the
     environment override works in a running process.
+
+    H-409 item 3: the run must be of the task's own org
+    (``h.organization_id = t.organization_id``), as defence in depth beside
+    FORCE RLS.
     """
     open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
     return (
         "NOT EXISTS (SELECT 1 FROM pm_agent_runs h"
         " WHERE h.task_id = t.id AND h.task_id IS NOT NULL"
+        "   AND h.organization_id = t.organization_id"
         f"   AND h.status IN ({open_list})"
         f"   AND {lease_held_sql('h')}"
         f"   AND NOT {connection_gone_sql('h')})"
@@ -1273,11 +1289,13 @@ def unheld_clause() -> str:
 def holder_sql() -> str:
     """The member who holds the task now, or null for a free task. The same
     open-run, lease and connection rules as :func:`unheld_clause`, so
-    ``holder`` is null exactly where ``unheld`` is true."""
+    ``holder`` is null exactly where ``unheld`` is true. The org arm is the
+    one of :func:`unheld_clause` (H-409 item 3)."""
     open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
     return (
         "(SELECT lower(h.member_email) FROM pm_agent_runs h"
         " WHERE h.task_id IS NOT NULL AND h.task_id = t.id"
+        "   AND h.organization_id = t.organization_id"
         f"   AND h.status IN ({open_list})"
         f"   AND {lease_held_sql('h')}"
         f"   AND NOT {connection_gone_sql('h')}"
@@ -1315,6 +1333,10 @@ def agent_state_sql(task_filter: str) -> str:
     A task with no open run shows a `failed` run that is the newest run of its
     task (EA12-12: the pill stays until a newer run exists). One query for the
     page, as `_ASSIGNEES_SQL` does.
+
+    H-409 item 3: ``held_by`` comes from this text, so it names the org of
+    the bound session (:data:`BOUND_ORG_SQL`), and the newer-run test stays
+    in the org of the run. Defence in depth beside FORCE RLS.
     """
     return f"""
 SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
@@ -1330,10 +1352,12 @@ SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
   FROM pm_agent_runs r
  WHERE {task_filter}
    AND r.task_id IS NOT NULL
+   AND r.organization_id = {BOUND_ORG_SQL}
    AND (r.status IN ({_OPEN_LIST})
         OR (r.status = 'failed'
             AND NOT EXISTS (SELECT 1 FROM pm_agent_runs n
                              WHERE n.task_id = r.task_id
+                               AND n.organization_id = r.organization_id
                                AND (n.created_at, n.id) > (r.created_at, r.id))))
  ORDER BY r.task_id, (r.status IN ({_OPEN_LIST})) DESC,
           CASE {AGENT_RUN_STATE_SQL} WHEN 'awaiting' THEN 0 WHEN 'answered' THEN 1
