@@ -548,6 +548,72 @@ Effort-shaped grouping for whoever picks this up, so the section can be sequence
 
 ---
 
+## 14. One-time workflows (WS-OTW, D214, 2026-11-12)
+
+**Status: PLANNED.** Epic task 3010. Planning task 3009 wrote this section. No slice is built.
+
+**The owner's ask (2026-11-12).** Ask a teammate for an update on the quote of a sale. Then update the CRM or the project with the answer. The ask goes out. When that one answer arrives, a workflow runs once for it and updates the right records. Then it retires.
+
+### 14.1 The shape
+
+1. **One engine.** A one-time workflow is a workflow of this engine. "Once" is a property of its trigger. It adds no scheduler, no watcher and no store (`building_blocks.md` §4.6).
+2. **The trigger fields.** An expand-only migration adds to `workflow_triggers`: `max_runs` (null means no limit), `runs_started`, `match` (jsonb), `expires_at` and `retired_at`. A one-time trigger has `max_runs` 1.
+3. **At most once.** `dispatch_event` starts a run only when the event payload holds every key of `match` with the same value. One conditional update claims the trigger (`runs_started < max_runs` and `retired_at is null`), as the schedule CAS on `last_fired_at` does. Two matching events start one run. A replay starts nothing.
+4. **The state.** The state of a one-time workflow is one of these: `waiting`, `ran`, `expired` or `cancelled`. A retired trigger never fires again.
+5. **The run proposes, and a person confirms.** The graph is one Mira step, the shape of AUTO-1 (`proactive_agent.md` §3). The step is a capped headless Mira turn for the asker on the durable job queue (AUTO-8a). Mira reads the answer and the records that the asker named. She posts each write as a held card in the asker's "Needs you". The asker approves, and the write runs in the asker's own session, through the one action door. So the run makes no unattended write.
+6. **Mira treats the answer as untrusted data.** An instruction inside it changes no other record.
+
+### 14.2 The match, by rung
+
+| Rung | The event | The match |
+|---|---|---|
+| 1 | `projects` / `decision.answered`: the answer to one person ask (AP-8a), emitted after the commit with its org | The decision id |
+| 2 | `email` / `message.received`: one inbound message, with the org, the account, the thread, the sender and the message id, and no body | The thread id and the expected sender |
+| Later | Any core-app event of STU-E12 (task 2379) | Any field of the payload |
+
+The rung 1 event starts its run bound to the org of the answer, from the bound session of the answer route. The general fix of every unbound event run stays H-328 part (c) (task 856).
+
+### 14.3 The entry points
+
+- **Chat.** `ask_person` takes an optional `on_answer`: the instruction and the records it names. One card shows the ask, the person, what happens on the answer and the expiry. On Approve, the ask and the trigger commit in one transaction.
+- **A mail ask.** Mira drafts the mail. The asker approves the send from their own mailbox, and the trigger arms on the thread and the expected sender. A person outside the org can be the recipient.
+- **The app.** The ask form on a task gets "When they answer, …". The workflow list gets a "One-time" filter.
+- **The MCP.** A connected agent can arm a one-time workflow for its own ask through the action door. It cannot approve the writes of its own run.
+
+### 14.4 The expiry
+
+The default expiry is the expiry of the ask: the due date of the task plus 7 days, or 14 days with no date. At the expiry the asker gets one card: Chase, Wait 3 more days, or Close. Nothing drops in silence. The card counts in the Reach budget. The general chase is AUTO-9 (task 1393), and OTW-9 reuses it when it exists.
+
+### 14.5 Flags
+
+`ONE_TIME_WORKFLOWS_ORGS`, default empty. A rung 1 demo also needs `WAITING_ORGS` and `DECISIONS_ORGS` for the pilot org, because the person ask uses both flags. A flag flip is the `enforcement-flip` act.
+
+### 14.6 Not in this section
+
+- A "Run once" switch on any trigger in the editor, with a match on any field. It waits for STU-E12.
+- Auto-apply of the writes with no card. It waits for STU-E5 action nodes and H-328 part (c), and the member must turn it on for one workflow.
+- A quote object on a deal. Quotes come with CRX (D205.4). Until then, a quote update is a deal note and the deal amount.
+
+### 14.7 The slices
+
+| Slice | Task | Rung | What it does | Fence |
+|---|---|---|---|---|
+| OTW-0 | 3011 | 1 | This section and D214 | `tests/unit/test_doc_names_resolve.py`, `tests/unit/test_decision_ids.py` |
+| OTW-1 | 3012 | 1 | The trigger fields, the claim, the retire and the expiry sweep (HIGH, migration) | R8 tests of one run from two events, no run after expiry or cancel |
+| OTW-2 | 3013 | 1 | The answer to a person ask is an event, bound to its org (HIGH) | R8 tests of the org and a second org, and the tenancy boundary test |
+| OTW-3 | 3014 | 1 | The Mira step proposes and never writes | R8 test of no write before an approval, and an eval case |
+| OTW-4 | 3015 | 1 | `ask_person` with `on_answer`, and the app form | Chat parity rows, and an R8 test of one transaction |
+| OTW-5 | 3016 | 1 | The "One-time" list, the run view and Cancel | A vitest and the visual review |
+| OTW-6 | 3017 | 2 | `email` / `message.received` (HIGH) | R8 tests of one event per message and the org |
+| OTW-7 | 3018 | 2 | Ask by email | Chat parity rows, and an R8 test of one transaction |
+| OTW-8 | 3019 | 2 | The thread match, and the reply read | R8 tests of the match, and an eval case with a hostile reply |
+| OTW-9 | 3020 | 3 | The expiry choice | R8 tests of the three choices |
+| OTW-10 | 3021 | 3 | A Waiting kind, chat reads and the MCP door | R8 tests of the kind and the door op |
+
+The demo tasks are 3022 (rung 1), 3023 (rung 2) and 3024 (rung 3).
+
+---
+
 ## Board record (2026-08-09) — moved from work_plan.md §2
 
 > Moved here in the 2026-08-09 consolidation (work_plan.md D18): board rows now
