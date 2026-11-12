@@ -10,9 +10,10 @@ the rows through ``gateway.studio.skills_store`` and calls :func:`build`.
 
 * ``tools``: the chat tools that its actions name. :func:`action_tool` is
   the ONE map from a catalog action to a chat tool. An action with no chat
-  tool yet (an integration tool, an object action, a named package action)
-  makes the skill fail to load, so Mira never reads a rule for a tool that
-  she does not hold. F10 adds those tools.
+  tool yet (an integration tool, an object ``get``, a door op without a tool
+  name) makes the skill fail to load, so Mira never reads a rule for a tool
+  that she does not hold. An object list, create, update or delete maps to
+  its record tool since F10a.
 * ``rules``: the text that goes after the persona, after the rules of the
   code packs. :func:`rules_text` is the ONE text.
 * ``token_cost``: an estimate of the tokens of ``rules`` (4 characters a
@@ -44,10 +45,12 @@ from acb_skills.hidden_text import strip_hidden
 __all__ = [
     "MAX_RULES_TOKENS",
     "MIN_NAME_CHARS",
+    "OBJECT_VERB_TOOLS",
     "SKILL_PREFIX",
     "SkillPack",
     "action_tool",
     "build",
+    "button_tools",
     "estimate_tokens",
     "is_skill_slug",
     "matches",
@@ -129,8 +132,11 @@ def action_tool(action_id: object) -> str | None:
     if action.startswith("workflow:") and len(action) > len("workflow:"):
         return "run_workflow"
     if action.startswith("object:"):
-        name, dot, verb = action[len("object:"):].partition(".")
-        return OBJECT_VERB_TOOLS.get(verb) if name and dot else None
+        # The ONE grammar of a uses string is ``studio_manifest.parse_uses``.
+        from acb_common.studio_manifest import parse_uses
+
+        ref = parse_uses(action)
+        return OBJECT_VERB_TOOLS.get(ref.op or "") if ref is not None else None
     if ":" in action or action.count(".") != 1:
         return None
     app_id, op = action.split(".", 1)

@@ -72,6 +72,8 @@ def _turn(words: str = "", skills: tuple[Any, ...] = ()) -> tp.PackTurn:
     ("object:items.get", None),  # no get tool exists
     ("object:items", None),
     ("object:.list", None),
+    ("object:Items.list", None),  # the manifest grammar refuses an upper-case name
+    ("object:a b.list", None),
     ("workflow:", None),
     ("projects.create_task", None),  # Projects is a tool app, no door op
     (42, None),
