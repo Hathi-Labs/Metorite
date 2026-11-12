@@ -27,7 +27,15 @@ import ChatTaskRef from "@/components/ChatTaskRef";
 import { FencedName } from "@/components/FencedText";
 import { ControlLink } from "@/components/ControlLink";
 import MarkdownImage from "@/components/MarkdownImage";
-import { markdownUrlTransform } from "@/lib/markdownMedia";
+import Badge from "@/components/ui/Badge";
+import Button from "@/components/ui/Button";
+import {
+  LOCAL_FILE_ATTR,
+  LOCAL_FILE_TIP,
+  localFileName,
+  markdownUrlTransform,
+  remarkLocalFiles,
+} from "@/lib/markdownMedia";
 import { stripDsmlMarkup } from "@/lib/dsmlMarkup";
 import rehypeStreamCaret from "@/lib/streamCaret";
 import EntityPill, { isInAppPath } from "@/components/ui/EntityPill";
@@ -328,6 +336,39 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
   );
 }
 
+// ─── A file on the agent's computer ─────────────────────────────────────────
+//
+// A `file:///` URL or a `C:\…` / `/c/…` path is not a link: a browser never
+// opens it from this page. It draws as one chip with the file name and a Copy
+// path button (task 3031). An image path draws the same chip and nothing more.
+
+const IMAGE_FILE = /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i;
+
+function LocalFileChip({ path }: { path: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard?.writeText(path).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {});
+  };
+  return (
+    <span
+      data-local-file-chip=""
+      title={LOCAL_FILE_TIP}
+      className="inline-flex max-w-full items-center gap-0.5 align-middle"
+    >
+      <Badge size="md" icon={IMAGE_FILE.test(path) ? "Image" : "FileText"} title={LOCAL_FILE_TIP}
+        className="min-w-0 max-w-full">
+        <span className="min-w-0 truncate">{localFileName(path)}</span>
+        <span className="shrink-0 text-muted-foreground">local file</span>
+      </Badge>
+      <Button variant="ghost" size="icon-xs" icon={copied ? "Check" : "Copy"}
+        aria-label="Copy path" title={LOCAL_FILE_TIP} onClick={copy} />
+    </span>
+  );
+}
+
 // ─── The Markdown body ─────────────────────────────────────────────────────
 //
 // The ONE Markdown renderer for chat content: GFM, the token-styled
@@ -441,7 +482,7 @@ export function MarkdownBody({
             : refsOnly
               ? [remarkGfm, [remarkEntityPills, { names: false, emails: false, taskRefs: true }]]
               : [remarkGfm]) as NonNullable<MarkdownOptions["remarkPlugins"]>,
-        ...(textOnly ? [remarkTextOnly] : []),
+        ...(textOnly ? [remarkTextOnly] : [remarkLocalFiles]),
       ]}
       rehypePlugins={caret ? [rehypeStreamCaret] : []}
       urlTransform={markdownUrlTransform}
@@ -453,6 +494,9 @@ export function MarkdownBody({
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         span: ({ node: _node, children, ...rest }) => {
           const attrs = rest as Record<string, unknown>;
+          if (typeof attrs[LOCAL_FILE_ATTR] === "string") {
+            return <LocalFileChip path={attrs[LOCAL_FILE_ATTR] as string} />;
+          }
           if ((refs || refsOnly) && typeof attrs[TASK_REF_ATTR] === "string") {
             return (
               <ChatTaskRef refText={attrs[TASK_REF_ATTR] as string}
