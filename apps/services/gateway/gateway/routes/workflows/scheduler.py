@@ -35,7 +35,7 @@ from typing import Any
 # that one org with `_tenant_session(org)` for each step. A step never holds a
 # session across a commit, because a commit drops the bound tenant. The org of
 # a run or a workflow comes from the row, never from the ambient context.
-from gateway.routes.workflows import park, unattended
+from gateway.routes.workflows import human_step, park, unattended
 from gateway.routes.workflows.core import (
     _log,
     _tenant_session,
@@ -335,6 +335,16 @@ async def scan_due_waits(now: float | None = None) -> int:
                 error=type(exc).__name__,
             )
         try:
+            resumed += await scan_done_tasks(org)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # one org must not hide the others
+            _log.warning(
+                "workflows.task_org_failed",
+                organization_id=org,
+                error=type(exc).__name__,
+            )
+        try:
             async with _tenant_session(org) as db:
                 rows = (
                     await db.execute(
@@ -478,6 +488,90 @@ async def scan_decided_pauses(org: str) -> int:
                 phase="end",
                 run_id=run_id,
                 status="cancelled",
+                reason=reason,
+                organization_id=org,
+            )
+    return settled
+
+
+async def scan_done_tasks(org: str) -> int:
+    """Settle the human steps of ONE org from their task rows (STU-E4).
+
+    Only the org loop of :func:`scan_due_waits` calls this, after its list
+    check. So the org comes from the loop's own enumeration, never from a
+    request, a payload or the ambient tenant. Each step opens its own
+    ``_tenant_session(org)``, and the task is read in that session only.
+
+    The task id comes from the stored pause row. ``human_step.read_task``
+    reads the task only when its origin names THIS run and THIS node. The
+    status stage of that row alone decides:
+
+    * done: ``resume_run`` with ``task_done=True``. Its compare-and-set lets
+      exactly one caller start the run, so a second scan resumes nothing.
+    * cancelled, or the task is gone: the pause ``rejected`` and the run
+      ``failed`` with a plain message, with the same compare-and-set.
+    * any other stage: the run stays paused.
+
+    Returns the number of settled steps.
+    """
+    async with _tenant_session(org) as db:
+        rows = (await db.execute(text(human_step.PENDING_SQL), {"org": org})).fetchall()
+    settled = 0
+    for row in rows:
+        if str(getattr(row, "organization_id", "")).lower() != org.lower():
+            continue  # the row names another org: never settle it under this one
+        snapshot = parse_jsonb(row.snapshot, {}) or {}
+        task_id = human_step.task_id_of(snapshot)
+        if task_id is None:
+            continue
+        run_id = str(row.run_id)
+        try:
+            async with _tenant_session(org) as db:
+                task = await human_step.read_task(db, task_id, run_id, str(row.node_id))
+            outcome = human_step.task_outcome(task)
+            if outcome == human_step.WAIT:
+                continue
+            if outcome == human_step.RESUME:
+                result = await resume_run(
+                    run_id,
+                    resumed_by="scheduler:task",
+                    organization_id=str(row.organization_id),
+                    pause_id=str(row.id),
+                    task_done=True,
+                )
+                if result.get("ok"):
+                    settled += 1
+                continue
+            try:
+                async with _tenant_session(org) as db:
+                    ended = await human_step.end_step(
+                        db, pause_id=str(row.id), run_id=run_id, outcome=outcome,
+                    )
+            except park.ParkLost:
+                ended = False
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # one bad run must not stall the rest
+            _log.warning(
+                "workflows.task_settle_failed",
+                run_id=run_id,
+                error=type(exc).__name__,
+            )
+            continue
+        if ended:
+            settled += 1
+            reason = (
+                human_step.CANCELLED_ERROR
+                if outcome == human_step.CANCELLED
+                else human_step.GONE_ERROR
+            )
+            _log.info("workflows.human_step_ended", run_id=run_id, reason=reason)
+            publish_workflow_activity(
+                str(row.workflow_id),
+                str(row.workflow_name or ""),
+                phase="end",
+                run_id=run_id,
+                status="failed",
                 reason=reason,
                 organization_id=org,
             )
