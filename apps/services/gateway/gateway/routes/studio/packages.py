@@ -19,6 +19,8 @@ router of ``actions.py``, as ``skills.py`` and ``invoke.py`` do, so
 ``DELETE /packages/{id}``                delete the package (200 or 202)
 ``POST /packages/{id}/install``          an org or group install (201 or 200)
 ``DELETE /packages/{id}/install``        remove an org or group install (200)
+``PUT /packages/{id}/install/run-as``    name the member of a run with no
+                                         viewer, or clear it (200)
 ``POST /packages/{id}/keep``             keep the private install (200)
 ``POST /packages/{id}/restore``          restore the private install (200)
 ``GET /packages/{id}/lifetime``          the lifetime of the private install
@@ -126,6 +128,32 @@ the same transaction, with one ``app_audit`` row (op ``package.uninstall``).
 No install at the scope is 404 ``install_not_found``. The answer is 200
 ``{install, removed: true}``. The route takes no ``apps`` row lock, because
 no statement of it checks a foreign key to ``apps``.
+
+**The member of a run with no viewer (WS-STU B6a, ``ai_studio.md`` B6a).**
+``PUT /packages/{id}/install/run-as`` with the body ``{"scope": "org" or
+"group:<slug>", "run_as": <address> or null}``. The install at the scope
+then names that member, and ``invoke.run_as_read`` reads as that member.
+``null`` clears the value, and a body with no ``run_as`` is 422. The order
+is that of the uninstall: the two switches (each 404 with no session), the
+id, the raw body, the owner read (404), the scope (422), the shape of the
+address (422 ``bad_run_as``), then ``studio:publish`` (403 ``forbidden``).
+The right that installs the app names its member (D180.3).
+
+* The member must hold ``feature:studio`` and be an active member of the
+  bound org (``invoke.may_run_as``), and must see the install now
+  (``resolve.install_seen_by``). Each miss is the same 422
+  ``run_as_refused`` with one text, so the answer says nothing about another
+  org. A clear asks none of them.
+* One session finds the install at the scope under the org lock
+  (``host_store.install_at_scope``, 404 ``install_not_found`` when none),
+  checks the sight of the member, writes the value with
+  ``host_store.set_run_as``, and writes one ``app_audit`` row (op
+  ``package.run_as``, with the old value) in the same transaction. The
+  route takes no ``apps`` row lock, because the UPDATE changes no key that a
+  foreign key reads.
+* The org and the caller come from the session. A key such as
+  ``organization_id`` in the body changes nothing. No chat tool and no MCP
+  pair reaches the route.
 
 **Keep and Restore (WS-PKG PKG-10d, ``package_host.md`` §6.2).**
 ``POST /packages/{id}/keep`` clears the end date of the private install of
@@ -263,11 +291,12 @@ from acb_common.studio_manifest import manifest_hash
 from acb_skills.studio_tools import complete_record_actions
 from fastapi import Depends, HTTPException, Request, Response
 from gateway.db import tenant_session as _tenant_session
+from gateway.package_host import resolve as host_resolve
 from gateway.package_host import store as host_store
 from gateway.package_host import studio_app, viewer
 from gateway.package_host.flags import package_host_allowed
 from gateway.routes.apps._common import record_app_audit_bound, record_app_audit_in
-from gateway.routes.studio import actions, flags
+from gateway.routes.studio import actions, flags, invoke
 from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store
 from gateway.studio import packages_store as store
@@ -361,6 +390,18 @@ LIVE_MOVED = ("The live version of this app changed after your read, so nothing 
               "installed. Read the live version, then install it again.")
 NOT_LIVE = ("This app has no published version, so nothing can be installed. Publish it "
             "first, then install it again.")
+#: B6a: the one refusal of each member that cannot be the member of a run
+#: with no viewer. One code and one text, so the answer says nothing about
+#: another org.
+RUN_AS_REFUSED = "run_as_refused"
+NO_RUN_AS_MEMBER = ("The member must be an active member of your organization who holds "
+                    "feature:studio and sees this install now. Name another member, or send "
+                    "null to clear it.")
+NO_RUN_AS_KEY = "Send run_as: the address of a member, or null to clear it."
+NO_RUN_AS_RIGHT = ("Only a holder of studio:publish names the member that an app runs as. "
+                   "Ask the owner of your organization for that right.")
+NO_INSTALL_FOR_RUN_AS = ("This app has no install at this scope, so nothing changed. Check "
+                         "the scope, then try again.")
 #: The refusal of a Keep or a Restore when the owner has no private install
 #: of the app (PKG-10d). It names the rule.
 PRIVATE_ONLY = "private_only"
@@ -1228,6 +1269,76 @@ async def uninstall_package(
     _log.info("studio.packages.uninstalled", package_id=pid, scope_kind=kind,
               version=gone.version)
     return {"install": _install_out(gone), "removed": True}
+
+
+# ── The member of a run with no viewer (WS-STU B6a) ─────────────────────────
+
+
+def _run_as_refused() -> HTTPException:
+    """The one refusal of a member that cannot run the install (B6a)."""
+    return HTTPException(status_code=422, detail={
+        "code": RUN_AS_REFUSED, "message": NO_RUN_AS_MEMBER})
+
+
+@router.put("/packages/{package_id}/install/run-as")
+async def set_install_run_as(
+    package_id: str,
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Name the member that a run with no viewer of the org or group install
+    of a package of the caller runs as, or clear it (``ai_studio.md`` B6a).
+
+    The body is ``{"scope": "org" or "group:<slug>", "run_as": <address> or
+    null}``. The caller needs ``studio:publish`` (D180.3). The member must
+    hold ``feature:studio``, be an active member of the org and see the
+    install now. 200 with the install and the new value."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not package_host_allowed(user.organization_id):
+        raise _not_found()
+    pid = _package_id(package_id)
+    raw = await _raw_body(request, MAX_INSTALL_BODY_BYTES)
+    await _require_owned(user.email, pid)
+    body = _parse_json(raw)
+    try:
+        kind, subject = studio_app.install_scope(body.get("scope"))
+    except host_store.InstallError as exc:
+        raise _refused(user, exc) from None
+    if "run_as" not in body:
+        raise _unprocessable(NO_RUN_AS_KEY, [{"path": "$.run_as", "message": NO_RUN_AS_KEY}])
+    try:
+        member = None if body["run_as"] is None else host_store.run_as_member(body["run_as"])
+    except host_store.InstallError as exc:
+        raise _refused(user, exc) from None
+    # D180.3: the right that installs the app names its member. Fail closed.
+    if not user.has_permission(SHARE_RIGHT):
+        raise _forbidden(NO_RUN_AS_RIGHT)
+    # Each read of the access opens its own session, so it runs before ours.
+    if member is not None and not await invoke.may_run_as(
+            member, str(user.organization_id or "")):
+        raise _run_as_refused()
+    async with _tenant_session() as db:
+        try:
+            found = await host_store.install_at_scope(
+                db, app_id=pid, scope_kind=kind, scope_subject=subject)
+            if found is None:
+                raise host_store.InstallNotFound("install_not_found", NO_INSTALL_FOR_RUN_AS)
+            if member is not None and await host_resolve.install_seen_by(
+                    db, viewer=member, install_id=found.id) is None:
+                raise _run_as_refused()
+            was = await host_store.set_run_as(
+                db, install_id=found.id, run_as=member, set_by=user.email or "")
+        except host_store.InstallError as exc:
+            raise _refused(user, exc) from None
+        # The audit row commits with the change, or neither does.
+        await record_app_audit_in(
+            db, app_id=pid, user_email=user.email, kind="action", app_version=found.version,
+            detail={"op": "package.run_as", "scope_kind": kind, "scope": subject,
+                    "install_id": found.id, "run_as": member, "was": was})
+    _log.info("studio.packages.run_as", package_id=pid, scope_kind=kind,
+              cleared=member is None)
+    return {"install": _install_out(found), "run_as": member}
 
 
 # ── Keep and Restore of the private install (WS-PKG PKG-10d) ───────────────

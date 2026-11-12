@@ -119,6 +119,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/studio/packages/{package_id}/install"),
     # WS-PKG PKG-8e, the org and group uninstall.
     ("DELETE", "/studio/packages/{package_id}/install"),
+    # WS-STU B6a, the member of a run with no viewer.
+    ("PUT", "/studio/packages/{package_id}/install/run-as"),
     # WS-PKG PKG-10d, Keep and Restore of the private install.
     ("POST", "/studio/packages/{package_id}/keep"),
     ("POST", "/studio/packages/{package_id}/restore"),
@@ -357,7 +359,8 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
     member's own app needs `feature:studio` and ownership (STU-Q4b). The one
     readers in `routes/studio` are the org and group install of PKG-8b, a
     share to others (D180.3, `package_host.md` §6.1), and its uninstall of
-    PKG-8e.
+    PKG-8e. WS-STU B6a adds the third reader: `set_install_run_as`, because the
+    right that installs the app names the member of a run with no viewer.
 
     J2a (the read of a viewer, `ai_studio.md` §14 J2a) adds no reader. A
     viewer reads through an install that a holder of the verb made, and the
@@ -367,7 +370,7 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
     The check reads the syntax tree, so the quote style does not matter. The
     string constant `studio:publish` occurs once in `routes/studio`: the
     definition of `packages.SHARE_RIGHT`. The name `SHARE_RIGHT` is read in
-    `install_package` and `uninstall_package`, each with one
+    `install_package`, `uninstall_package` and `set_install_run_as`, each with one
     `user.has_permission(SHARE_RIGHT)`, and, since A5c-2,
     `user.has_permission(ADMIN_RIGHT)` in `_delete_mode`: the admin
     path of a delete, which reads `admin:members:manage` (the seam of
@@ -405,9 +408,12 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
     assert verbs == [("packages.py", "<module>", "constant")], verbs
     assert sorted(names) == [("packages.py", "<module>", "Store"),
                              ("packages.py", "install_package", "Load"),
+                             ("packages.py", "set_install_run_as", "Load"),
                              ("packages.py", "uninstall_package", "Load")], names
     assert sorted(calls) == [("packages.py", "_delete_mode", "user.has_permission(ADMIN_RIGHT)"),
                              ("packages.py", "install_package",
+                              "user.has_permission(SHARE_RIGHT)"),
+                             ("packages.py", "set_install_run_as",
                               "user.has_permission(SHARE_RIGHT)"),
                              ("packages.py", "uninstall_package",
                               "user.has_permission(SHARE_RIGHT)")], calls
@@ -482,7 +488,8 @@ def test_a_second_read_of_the_admin_right_fails() -> None:
     sources = _studio_sources()
     share = "    if not user.has_permission(SHARE_RIGHT):\n"
     text = sources["packages.py"].replace("\r\n", "\n")
-    assert text.count(share) == 2, "non-vacuity: the share checks of the install and the uninstall"
+    assert text.count(share) == 3, (
+        "non-vacuity: the share checks of the install, the uninstall and the run_as (B6a)")
     mutated = {**sources, "packages.py": text.replace(
         share, "    if not (user.has_permission(SHARE_RIGHT) or user.has_permission(ADMIN_RIGHT)):\n", 1)}
     assert admin_right_reads(mutated) == sorted(

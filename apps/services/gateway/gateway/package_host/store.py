@@ -15,9 +15,20 @@ and the delete of an install: :func:`remove_install`, :func:`pause_install`
 and :func:`resume_install`. :func:`set_version` (PKG-8a) holds the UPDATE of
 ``version`` and the DELETE of the claims of one install. The lifetime of
 §6.2 (PKG-10a) holds the other UPDATE statements: :func:`keep_install`,
-:func:`restore_install` and :func:`expire_due`. The hermetic suite scans
-``apps/`` and ``packages/`` for a write outside this module. The member
+:func:`restore_install` and :func:`expire_due`. :func:`set_run_as` (WS-STU
+B6a) holds the UPDATE of the three ``run_as`` columns. The hermetic suite
+scans ``apps/`` and ``packages/`` for a write outside this module. The member
 purge deletes rows, and that stays legal.
+
+**The member of a run with no viewer (WS-STU B6a, ``ai_studio.md`` B6a).**
+:func:`set_run_as` writes ``run_as``, ``run_as_set_by`` and
+``run_as_set_at`` of one install under the org lock, and answers the old
+``run_as``. :func:`read_run_as` reads them with no lock. NULL means no run
+with no viewer. :func:`run_as_member` is the one shape check of the address:
+a lower-case address, with no ``system:`` or ``group:`` prefix, as the CHECK
+``package_install_run_as_member`` holds. The store does not check that the
+member may run the app. The route ``PUT /studio/packages/{id}/install/run-as``
+and ``routes/studio/invoke.run_as_read`` own that check.
 
 **The disposal.** Each of the three takes the org lock of :func:`install`
 and its two guards, and finds the install in the bound org only. An id of
@@ -1100,6 +1111,102 @@ async def read_lifetime(db: Any, *, install_id: str) -> Lifetime | None:
     if row is None:
         return None
     return Lifetime(state=str(row[0]), ends_at=row[1], archived_at=row[2])
+
+
+# ── The member of a run with no viewer (WS-STU B6a) ─────────────────────────
+
+#: The old ``run_as`` of one install of the bound org, with the row lock.
+_RUN_AS_LOCK_SQL = (
+    "SELECT run_as FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid) FOR UPDATE"
+)
+
+#: The new ``run_as`` of one install of the bound org, with its stamp. A clear
+#: (``:run_as`` NULL) stamps too, so the row names who cleared it.
+_SET_RUN_AS_SQL = (
+    "UPDATE package_install SET run_as = :run_as, run_as_set_by = :by, "
+    "run_as_set_at = now(), updated_at = now() "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid)"
+)
+
+#: The member of a run with no viewer of one install of the bound org. A plain
+#: read: no lock and no write.
+_READ_RUN_AS_SQL = (
+    "SELECT CAST(app_id AS text), run_as, state FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid)"
+)
+
+
+@dataclass(frozen=True)
+class RunAs:
+    """The member that a run of one install runs as, or None (B6a).
+
+    ``state`` is the state of the install. The run does not trust it: it
+    reads the install again through the resolve, which shows an active
+    install only."""
+
+    install_id: str
+    app_id: str
+    run_as: str | None
+    state: str
+
+
+def run_as_member(value: object) -> str:
+    """The address *value* as ``run_as`` holds it, or :class:`ScopeRefused`.
+
+    The one shape check of the column (B6a). It folds the address to lower
+    case, and it refuses ``org``, a ``group:`` subject, a ``system:`` actor
+    and each value that is not an address. So no value reaches the CHECK
+    ``package_install_run_as_member``. It does not check that the address
+    names a member: the route and the run own that check."""
+    refused = ScopeRefused(
+        "bad_run_as", "run_as must be the address of a member, or null to clear it.")
+    if not _plain(value, limit=MAX_SUBJECT_BYTES):
+        raise refused
+    try:
+        member = normalize_grant_subject(str(value))
+    except ValueError as exc:
+        raise refused from exc
+    if "@" not in member or member.startswith(("group:", "system:")):
+        raise refused
+    return member
+
+
+async def set_run_as(db: Any, *, install_id: str, run_as: str | None, set_by: str) -> str | None:
+    """Set the member of a run with no viewer of the install *install_id*.
+
+    *db* is a session that the caller opened with ``tenant_session(org)``.
+    *run_as* None clears the value. *set_by* is the session member. The
+    function checks both addresses before the first statement, then takes the
+    org lock and the row lock, then writes the value and its stamp. An id
+    that no install of the bound org has raises :class:`InstallNotFound` and
+    writes nothing. Answers the old ``run_as``.
+
+    The store does not check that the member may run the app, or that the
+    caller may name the member. The route owns both checks."""
+    install = _install_id(install_id)
+    member = None if run_as is None else run_as_member(run_as)
+    by = _member(set_by)
+    await _lock_org(db, "a run_as change")
+    row = (await db.execute(text(_RUN_AS_LOCK_SQL), {"install": install})).first()
+    if row is None:
+        raise InstallNotFound("install_not_found", "No install has this id.")
+    await db.execute(text(_SET_RUN_AS_SQL), {"install": install, "run_as": member, "by": by})
+    return None if row[0] is None else str(row[0])
+
+
+async def read_run_as(db: Any, *, install_id: str) -> RunAs | None:
+    """The member of a run with no viewer of the install *install_id* of the
+    bound org, or None when the bound org has no install with this id (B6a).
+
+    A plain read: no lock and no write. An install of another org gives
+    None, as a missing id does. A bad id raises :class:`InstallError`."""
+    install = _install_id(install_id)
+    row = (await db.execute(text(_READ_RUN_AS_SQL), {"install": install})).first()
+    if row is None:
+        return None
+    return RunAs(install_id=install, app_id=str(row[0]),
+                 run_as=None if row[1] is None else str(row[1]), state=str(row[2]))
 
 
 def notice_times(ends_at: datetime | None,
