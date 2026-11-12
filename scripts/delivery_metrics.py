@@ -176,6 +176,63 @@ def _selection_misses(gh, batch_runs, pr_runs):
     return {"batch_red_after_pr_green": misses, "red_batches": len(red), "matched": matched}
 
 
+SLOTS = ((5, 30), (13, 30), (21, 30))  # release slots, UTC (D194)
+SLOT_GRACE_MIN = 45
+MERGED_PAGES = 10
+
+
+def _is_revert(pr):
+    body = pr.get("body") or ""
+    return (str(pr.get("title") or "").startswith("Revert ")
+            or "This reverts commit" in body or "Auto-Revert:" in body)
+
+
+def _merged_prs(gh, start):
+    """Merged PRs of the window, newest update first, read from closed PRs."""
+    out = []
+    for page in range(1, MERGED_PAGES + 1):
+        batch = gh(f"repos/{REPO}/pulls?state=closed&sort=updated&direction=desc"
+                   f"&per_page=100&page={page}")
+        if not batch:
+            break
+        out += [p for p in batch if p.get("merged_at") and _t(p["merged_at"]) >= start]
+        if all(_t(p["updated_at"]) < start for p in batch):
+            break
+    return out
+
+
+def _red_main_minutes_per_day(batch, start, now, days):
+    """Red stretches: from a red run's completion to the next green run's
+    completion, clipped to the window. A run before the window is not read, so
+    a stretch that began earlier counts only from the first run inside it."""
+    red_since, total = None, 0.0
+    for r in sorted(batch, key=lambda r: r["updated_at"]):
+        done = _t(r["updated_at"])
+        if r["conclusion"] in RED:
+            if red_since is None:
+                red_since = done
+        elif red_since is not None:
+            total += (min(done, now) - max(red_since, start)).total_seconds() / 60
+            red_since = None
+    if red_since is not None:
+        total += (now - max(red_since, start)).total_seconds() / 60
+    return round(max(total, 0.0) / days, 2)
+
+
+def _in_slot(run):
+    t = _t(run["run_started_at"])
+    for h, m in SLOTS:
+        slot = t.replace(hour=h, minute=m, second=0)
+        if timedelta(0) <= t - slot <= timedelta(minutes=SLOT_GRACE_MIN):
+            return True
+    return False
+
+
+def _hotfix_ids(gh, since, max_runs, trunc):
+    runs = _fetch_runs(gh, BATCH_WORKFLOW, "&event=workflow_dispatch", since, max_runs, trunc=trunc)
+    return [r["id"] for r in runs if r.get("run_started_at") and not _in_slot(r)]
+
+
 def _slowest(path):
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     files = Counter()
@@ -205,12 +262,13 @@ def collect(gh, days=7, max_runs=200, now=None, durations=None):
     errors: list[str] = []
     out: dict = {"generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "days": days}
 
-    def guard(key, fn):
+    def guard(key, fn, into=None, label=None):
+        target = out if into is None else into
         try:
-            out[key] = fn()
+            target[key] = fn()
         except Exception as e:
-            out[key] = None
-            errors.append(f"{key}: {e}")
+            target[key] = None
+            errors.append(f"{label or key}: {e}")
 
     trunc: list[str] = []
     pr_runs = None
@@ -252,6 +310,37 @@ def collect(gh, days=7, max_runs=200, now=None, durations=None):
     else:
         out["selection_misses"] = None
         errors.append("selection_misses: needs both the pr-check and batch runs")
+    start = now - timedelta(days=days)
+    q: dict = {}
+    out["quality"] = q
+
+    def qguard(key, fn):
+        guard(key, fn, into=q, label=f"quality.{key}")
+
+    merged: dict = {}
+
+    def read_merged():
+        merged["prs"] = _merged_prs(gh, start)
+        return len(merged["prs"])
+
+    qguard("merged_prs", read_merged)
+    q["reverts"] = sum(1 for p in merged["prs"] if _is_revert(p)) if "prs" in merged else None
+    q["revert_share"] = round(q["reverts"] / q["merged_prs"], 4) if q["merged_prs"] else None
+    if batch is not None:
+        qguard("red_main_minutes_per_day",
+               lambda: _red_main_minutes_per_day(batch, start, now, days))
+    else:
+        q["red_main_minutes_per_day"] = None
+        errors.append("quality.red_main_minutes_per_day: needs the batch runs")
+    ids: dict = {}
+
+    def read_hotfix():
+        ids["ids"] = _hotfix_ids(gh, since, max_runs, trunc)
+        return len(ids["ids"])
+
+    qguard("hotfix_releases", read_hotfix)
+    q["hotfix_run_ids"] = ids.get("ids")
+    q["selection_misses"] = "selection_misses.batch_red_after_pr_green"  # not counted twice
     out["truncated"] = trunc
     out["errors"] = errors
     return out
