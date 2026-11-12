@@ -807,3 +807,18 @@ async def test_r8_a_failed_create_with_no_event_id_takes_the_create_lease(world)
         s = await _pass(world, world.org_a, world.conn["a"], fake, NOW + timedelta(minutes=10))
     assert s.created == 1
     assert fake.client_ids[-1] == (None, task_out.client_event_id(tid, world.conn["a"]))  # still a create
+
+
+@pytest.mark.asyncio
+async def test_r8_deleting_the_connection_row_deletes_its_links(world):
+    """The purge of a leaver deletes the connection row (``purge_calendar_member``).
+    The composite foreign key cascades, so no link outlives its member."""
+    fake = FakeProvider()
+    async with _in(world, world.org_a):
+        await _task(world.org_a, ALICE, "Leaver's block", T0)
+        await _pass(world, world.org_a, world.conn["a"], fake)
+    assert len(_links(world, world.org_a)) == 1
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM integration_connections WHERE id = CAST(:i AS uuid)"),
+                  {"i": world.conn["a"]})
+    assert _links(world, world.org_a) == []
