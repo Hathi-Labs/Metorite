@@ -44,6 +44,28 @@ After you handle a line, append one line to `~/lanes/merge-queue.log`:
 `DONE <pull request> <merge sha>` or `BACK <pull request> <reason>`. A line
 that is in the log is handled.
 
+## The bot and your part
+
+A script does steps a, d and e below (D218, 2026-11-12, task 3053). The
+script is `scripts/home_server/merge_bot.sh`, and a timer runs it every
+2 minutes. It uses no model and no Metorite credential.
+
+The bot waits for the required checks. Then it runs the trial merge and
+`premerge.sh`. Last, it runs `gh pr merge --squash`. It writes one line to
+`~/lanes/merge-queue.log` for each result. While the timer runs, do not merge
+a pull request by hand.
+
+Your part is the Metorite side. Read `~/lanes/merge-queue.log` in each loop.
+
+- A new `DONE <pull request> <sha>` line: do step f.
+- A new `BACK <pull request> <reason>` line: comment the reason on the task,
+  and release the task. Do not fix it. The lane that owns it fixes it and
+  hands it over again with a new queue line.
+
+Keep a note of the last log line that you handled. Then you never repeat one.
+The steps a to e stay here as the rule of the bot. They are also the manual
+fallback when the timer is off.
+
 ## For each pull request
 
 a. **Read the checks first**, with `gh pr checks <n>`. You need no claim to
@@ -82,7 +104,7 @@ f. **Close it.** Move the task to Done with `set_task_status`, using the
    status whose category is done. Comment the pull request URL and the merge
    SHA, then call `finish_agent_run`. Remove the worktree with
    `bash scripts/worktree.sh remove <slug>`. The slug is the folder name
-   without `wt-`. Append `DONE <pull request> <sha>` to the log.
+   without `wt-`. The bot appends `DONE <pull request> <sha>` to the log.
 g. **Watch `main`.** Every 3 merges, or every 30 minutes, read
    `gh run list --branch main --limit 10`. When a required job of a `main` run
    is red, find the merged pull request that caused it. Comment on that task.
@@ -92,7 +114,7 @@ g. **Watch `main`.** Every 3 merges, or every 30 minutes, read
 
 ## The loop
 
-Go through the list, then the queue. When no pull request is ready, wait
+Read the log, then the list of your start note. When nothing is new, wait
 10 minutes with one `sleep 600`, and look again. Post a thought on the task
 that you work on at least once a minute. While you wait with no task claimed,
 post nothing.

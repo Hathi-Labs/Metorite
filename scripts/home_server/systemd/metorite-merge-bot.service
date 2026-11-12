@@ -1,0 +1,19 @@
+# CIV-28: one pass of the merge bot. A user unit of `dev`.
+# The owner installs it. The agent that built it did not.
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/home_server/systemd/metorite-merge-bot.* ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now metorite-merge-bot.timer
+# Logs: journalctl --user -u metorite-merge-bot.service
+# The result lines are in ~/lanes/merge-queue.log.
+[Unit]
+Description=Metorite merge bot: merge the green PRs of the queue (CIV-28)
+
+[Service]
+Type=oneshot
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:%h/.local/bin
+WorkingDirectory=%h/Metorite
+ExecStart=%h/Metorite/scripts/home_server/merge_bot.sh
+# A pass runs premerge.sh up to 3 times per PR, at 15 minutes each.
+TimeoutStartSec=2h

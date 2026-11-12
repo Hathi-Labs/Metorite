@@ -209,6 +209,24 @@ A lane hands over a pull request only after three steps. The verifier passed,
 the review of its risk tier passed, and the owner approved its preview when
 it needed one.
 
+**The merge bot** (D218, task 3053). `scripts/home_server/merge_bot.sh` merges
+the queued pull requests with no model and no Metorite credential. One pass
+reads the queue, and skips each pull request that has a line in the log. It
+waits for the seven required checks of `main` (a missing or pending one means
+not ready), and reruns a cancelled job once.
+
+It then runs the trial merge with
+`origin/main` and `scripts/premerge.sh`, and runs `gh pr merge --squash`. A
+branch behind `main` still merges when the trial merge is clean. It never
+pushes, and never passes `--admin` or `--auto`. `MERGE_BOT_DRY_RUN=1` prints
+the actions and calls no write command.
+
+The units are
+`scripts/home_server/systemd/metorite-merge-bot.service` and `.timer`, every
+2 minutes, user `dev`. The owner installs them (see the header of the service
+file). `lane-merge` reads the log and closes or returns each task. A hand-over
+needs no box run since D218, because GitHub pr-check is the gate.
+
 ### 3.9 End of a delegation
 
 1. Each lane ends its task with one disposition (lane rule 12). That is Done,
