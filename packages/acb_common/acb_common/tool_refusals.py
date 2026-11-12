@@ -66,6 +66,7 @@ __all__ = [
     "response_body",
     "route_template",
     "safe_detail",
+    "strip_kind_prefix",
 ]
 
 #: The first word of every refusal the model reads. The instructions name it.
@@ -110,6 +111,36 @@ class GatewayRefusal(RuntimeError):
         self.fields = fields
         self.fixable = fixable
         self.route = route
+
+
+#: The kinds that ``search_company`` prints before a colon in a ``full_id``
+#: line (``task:<id>``). ``gateway/retrieval/sources.py`` makes them.
+SEARCH_KINDS = frozenset(
+    {"task", "email", "person", "lead", "deal", "contact", "company",
+     "artifact", "whatsapp", "page"}
+)
+
+
+def strip_kind_prefix(value: Any, *own: str, read_tool: str = "search_company") -> str:
+    """*value* without a known ``kind:`` prefix of the tool's own kind (HRD-2).
+
+    ``search_company`` prints ``full_id: task:<id>`` and the model copies the
+    whole line. A prefix that matches one of *own* is cut. A known prefix of
+    another kind is a refusal that names the kind and a read tool. Any other
+    text comes back as it is, trimmed, for the caller's own id check.
+    """
+    raw = str(value or "").strip()
+    head, sep, rest = raw.partition(":")
+    kind = head.strip().lower()
+    if not sep or kind not in SEARCH_KINDS:
+        return raw
+    if kind in own:
+        return rest.strip()
+    takes = f"a {own[0]} id" if own else "another kind of id"
+    raise GatewayRefusal(
+        f"{raw[:60]!r} is the id of a {kind}, and this tool takes {takes}. "
+        f"Get the right id from {read_tool}."
+    )
 
 
 def data(value: Any) -> str:

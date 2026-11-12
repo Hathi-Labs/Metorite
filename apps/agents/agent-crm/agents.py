@@ -66,6 +66,7 @@ from acb_common.tool_refusals import (
     response_body,
     route_template,
     safe_detail,
+    strip_kind_prefix,
 )
 
 # WS-53 CRM-C7: the twelve CRM read tools have ONE implementation, in
@@ -373,12 +374,18 @@ def _record_uuid(record_id: str) -> str:
     normalises every one of them to 36 characters that cannot hold a path
     separator or a dot segment.
     """
+    # HRD-2: `search_company` prints `deal:<id>`. A CRM kind is cut. Another
+    # kind (`task:`, `email:`) is refused with its name.
+    cut = strip_kind_prefix(
+        record_id, "lead", "deal", "contact", "company", read_tool="search_crm or get_pipeline"
+    )
     try:
-        return str(UUID(str(record_id).strip()))
+        return str(UUID(cut))
     except (AttributeError, TypeError, ValueError):
         raise GatewayRefusal(
             f"Invalid CRM record id {record_id!r}. A CRM id is a UUID — use the "
-            "id returned by search_crm or get_pipeline, not a name or a code."
+            "id returned by search_crm or get_pipeline, not a name or a code. "
+            "A task's activity_id comes from get_timeline."
         ) from None
 
 
@@ -646,6 +653,8 @@ async def get_timeline(entity: str, record_id: str, limit: int = 20,
         out.append(
             f"• {when}{inherited} — {act.get('type') or entry.get('kind')}: "
             f"{act.get('subject') or '(no subject)'}"
+            # HRD-2: the id that crm_update_task takes.
+            + (f" (activity id {act['id']})" if act.get("id") else "")
             + (f" — {body[:160]}" if body else "")
             + (f" (by {act['created_by']})" if act.get("created_by") else "")
         )

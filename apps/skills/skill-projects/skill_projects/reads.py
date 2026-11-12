@@ -494,7 +494,16 @@ async def _attachments_block(task_id: str) -> list[str]:
     files = (attachments or {}).get("rows") or []
     if not files:
         return []
-    return [f"Attachments ({len(files)}): " + ", ".join(data(f.get("name")) for f in files)]
+    # HRD-2: the id delete_attachment takes. A name alone left the model no id.
+    return [
+        f"Attachments ({len(files)}): "
+        + ", ".join(
+            data(f.get("name"))
+            + (f" (attachment id {f.get('attachment_id') or f.get('id')})"
+               if (f.get("attachment_id") or f.get("id")) else "")
+            for f in files
+        )
+    ]
 
 
 async def _refs_block(task_id: str) -> list[str]:
@@ -539,6 +548,12 @@ async def _timeline_block(task_id: str) -> list[str]:
         body = ev.get("body") or ""
         meta = ev.get("meta") or {}
         line = f"- {_day(ev.get('created_at'))} {ev.get('type')} by {data(ev.get('created_by') or '?')}"
+        if ev.get("id"):
+            # HRD-2: the id that edit_comment, delete_comment, comment(reply_to)
+            # and revert_activity take. A comment row is a comment id, any
+            # other row is an activity id.
+            label = "comment id" if ev.get("type") == "comment" else "activity id"
+            line += f" ({label} {ev['id']})"
         if body:
             line += f": {data(str(body)[:300])}"
         elif meta.get("field"):

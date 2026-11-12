@@ -37,11 +37,14 @@ from __future__ import annotations
 
 import difflib
 import functools
+import inspect
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 from acb_common import tool_refusals as _shared
 from acb_common.tool_refusals import REFUSED, WRAPPED_ATTR, GatewayRefusal, RefusalVoice
+
+from skill_projects.client import resolve_task_refs
 
 __all__ = [
     "PROJECTS_VOICE",
@@ -86,6 +89,38 @@ class CardClosedByChat(Exception):
     """
 
 
+def _task_ref_params(fn: Callable[..., Any]) -> tuple[str, ...]:
+    """The parameters of *fn* that hold a task id or a list of them."""
+    try:
+        names = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return ()
+    return tuple(n for n in names if n.endswith(("task_id", "task_ids")))
+
+
+async def _resolve_task_numbers(
+    fn: Callable[..., Any],
+    params: tuple[str, ...],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    """The call with each task number swapped for its id (HRD-2, B3).
+
+    ``uuid_of`` is the one gate of about 120 call sites, and it is
+    synchronous. The model gives ``244`` or ``#244`` because it reads task
+    numbers on every line. This step is the one place that resolves them, in
+    the member's org, through the search route that ``find_tasks`` uses.
+    """
+    try:
+        bound = inspect.signature(fn).bind_partial(*args, **kwargs)
+    except TypeError:
+        return args, kwargs  # the call is malformed. The tool itself refuses it.
+    for name in params:
+        if name in bound.arguments:
+            bound.arguments[name] = await resolve_task_refs(bound.arguments[name])
+    return bound.args, bound.kwargs
+
+
 def refusals_as_text(
     fn: Callable[..., Awaitable[Any]],
 ) -> Callable[..., Awaitable[Any]]:
@@ -100,9 +135,13 @@ def refusals_as_text(
     if getattr(fn, WRAPPED_ATTR, False):
         return fn
 
+    task_params = _task_ref_params(fn)
+
     @functools.wraps(fn)
     async def closed_card_as_text(*args: Any, **kwargs: Any) -> Any:
         try:
+            if task_params:
+                args, kwargs = await _resolve_task_numbers(fn, task_params, args, kwargs)
             return await fn(*args, **kwargs)
         except CardClosedByChat as closed:
             return str(closed)
