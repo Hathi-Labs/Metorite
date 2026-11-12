@@ -43,7 +43,9 @@ from acb_common import get_logger
 from acb_common.db import tenant_session
 from sqlalchemy import text
 
+from gateway.calendar_sync.provider import ProviderError
 from gateway.calendar_sync.task_links import block_hash
+from gateway.routes.projects.personal import MY_TASKS_FROM, my_tasks_binds
 
 _log = get_logger("calendar_sync.task_out")
 
@@ -79,18 +81,16 @@ def _code(exc: BaseException) -> str:
     return str(code)[:ERROR_MAX]
 
 
-_DESIRED = """
-SELECT p.task_id::text AS task_id, t.title, p.scheduled_start, p.scheduled_end
-  FROM pm_task_personal p
-  JOIN pm_tasks t ON t.id = p.task_id
-  JOIN pm_task_statuses s ON s.id = t.status_id
- WHERE lower(p.member_email) = :me
-   AND p.scheduled_start IS NOT NULL AND p.scheduled_end IS NOT NULL
-   AND s.category NOT IN ('done', 'cancelled', 'triage')
-   AND t.archived_at IS NULL
-   AND NOT EXISTS (SELECT 1 FROM pm_projects pr
-                    WHERE pr.id = t.project_id AND pr.archived_at IS NOT NULL)
-"""
+# The member's own timed blocks, through the ONE definition of "mine"
+# (``personal.MY_TASKS_FROM``): the overlay narrows a grant and never widens
+# it, so a block on a task the member lost access to stops going out. The
+# fragment drops archived tasks and archived projects.
+_DESIRED = (
+    "SELECT t.id::text AS task_id, t.title, p.scheduled_start, p.scheduled_end "
+    + MY_TASKS_FROM
+    + "  AND p.scheduled_start IS NOT NULL AND p.scheduled_end IS NOT NULL\n"
+    + "  AND s.category NOT IN ('done', 'cancelled', 'triage')\n"
+)
 
 _LINKS = """
 SELECT task_id::text AS task_id, external_id, synced_block_hash, attempts,
@@ -103,7 +103,8 @@ SELECT task_id::text AS task_id, external_id, synced_block_hash, attempts,
 
 async def plan(db: Any, org: str, connection_id: str, me: str, now: datetime) -> dict[str, list]:
     """Read the gap. Pure reads. Returns ``push`` and ``remove`` lists."""
-    desired = (await db.execute(text(_DESIRED), {"me": me})).fetchall()
+    binds = await my_tasks_binds(db, me, archived=False)
+    desired = (await db.execute(text(_DESIRED), binds)).fetchall()
     links = {r.task_id: r for r in (await db.execute(
         text(_LINKS), {"org": org, "cid": connection_id, "me": me})).fetchall()}
     horizon = now - timedelta(days=HISTORY_DAYS)
@@ -239,22 +240,39 @@ async def reconcile_task_blocks(
     task_url_for = _task_url_builder()
 
     for d, link in work["push"]:
-        creating = link is None
+        creating = link is None or not link.external_id
         async with tenant_session(org) as db:
             if not await _lease(db, org, str(conn.id), me, d.task_id, now, create=creating):
                 continue
         attempts = 0 if link is None else int(link.attempts or 0)
+        cid = client_event_id(d.task_id, str(conn.id))
+        ev_out = out_event(d, task_url_for(d.task_id), cid if creating else None)
         try:
-            res = await provider.upsert_event(
-                cred, cal_id,
-                out_event(d, task_url_for(d.task_id),
-                          client_event_id(d.task_id, str(conn.id)) if not (link and link.external_id) else None),
-                None if link is None else link.external_id)
+            try:
+                res = await provider.upsert_event(
+                    cred, cal_id, ev_out, None if creating else link.external_id)
+            except ProviderError as exc:
+                if creating and getattr(exc, "code", "") == "exists":
+                    # An earlier create reached the provider and its answer
+                    # was lost. The event holds our client id: adopt it.
+                    res = await provider.upsert_event(cred, cal_id, ev_out, cid)
+                else:
+                    raise
         except NeedsReconnect:
             stats.skipped = "needs_reconnect"
             await _release(org, str(conn.id), me, d.task_id)
             return stats
-        except SourceError as exc:
+        except Exception as exc:  # noqa: BLE001 - any failure marks the link, never leaks
+            if _code(exc) == "not_found":
+                if await _calendar_missing(provider, cred, cal_id):
+                    await _forget_calendar(org, str(conn.id))
+                    await _release(org, str(conn.id), me, d.task_id)
+                    stats.skipped = "calendar_gone"
+                    return stats
+                if not creating:
+                    # The event is gone at the provider: make it again.
+                    await _reset_event(org, str(conn.id), me, d.task_id)
+                    continue
             stats.failed += 1
             await _mark_failed(org, str(conn.id), me, d.task_id, exc, attempts, t0)
             continue
@@ -268,8 +286,8 @@ async def reconcile_task_blocks(
                 {"eid": res.external_id, "etag": res.etag, "upd": None,
                  "h": block_hash(d.title, d.scheduled_start, d.scheduled_end),
                  "org": org, "cid": str(conn.id), "tid": d.task_id, "me": me})
-        stats.created += 1 if creating or not link.external_id else 0
-        stats.updated += 0 if creating or not link.external_id else 1
+        stats.created += 1 if creating else 0
+        stats.updated += 0 if creating else 1
 
     for link in work["remove"]:
         async with tenant_session(org) as db:
@@ -282,7 +300,7 @@ async def reconcile_task_blocks(
             stats.skipped = "needs_reconnect"
             await _release(org, str(conn.id), me, link.task_id)
             return stats
-        except SourceError as exc:
+        except Exception as exc:  # noqa: BLE001
             stats.failed += 1
             await _mark_failed(org, str(conn.id), me, link.task_id, exc, int(link.attempts or 0), t0)
             continue
@@ -294,6 +312,38 @@ async def reconcile_task_blocks(
                 {"org": org, "cid": str(conn.id), "tid": link.task_id, "me": me})
         stats.deleted += 1
     return stats
+
+
+async def _calendar_missing(provider: Any, cred: Any, cal_id: str) -> bool:
+    """True only when the provider LISTS calendars and "Metorite" is not there.
+    A failed or empty list proves nothing."""
+    try:
+        listed = await provider.list_calendars(cred)
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(listed) and all(getattr(c, "id", None) != cal_id for c in listed)
+
+
+async def _forget_calendar(org: str, connection_id: str) -> None:
+    """The member deleted the calendar "Metorite". Drop the cached id, so the
+    next pass makes a new calendar. ``calendar_identity`` then drops the links."""
+    from gateway.calendar_sync.connections import META_CALENDAR_ID
+    from gateway.connections import store
+
+    async with tenant_session(org) as db:
+        await store.remove_meta_keys(db, org, connection_id, (META_CALENDAR_ID,))
+
+
+async def _reset_event(org: str, connection_id: str, me: str, task_id: str) -> None:
+    """The event is gone at the provider while its block lives: forget the id,
+    so the next pass creates it again."""
+    async with tenant_session(org) as db:
+        await db.execute(text(
+            "UPDATE calendar_task_links SET external_id = NULL, etag = NULL, "
+            "sync_state = 'pending', next_attempt_at = NULL, updated_at = now() "
+            "WHERE organization_id = CAST(:org AS uuid) AND connection_id = CAST(:cid AS uuid) "
+            "AND task_id = CAST(:tid AS uuid) AND member_email = :me"),
+            {"org": org, "cid": connection_id, "tid": task_id, "me": me})
 
 
 async def _release(org: str, connection_id: str, me: str, task_id: str) -> None:
@@ -409,6 +459,8 @@ async def pull_remote_changes(
         return 0
     except SourceError as exc:
         _log.warning("calendar_sync.task_pull_failed", organization_id=org, code=_code(exc))
+        if _code(exc) == "not_found" and await _calendar_missing(provider, cred, cal_id):
+            await _forget_calendar(org, str(conn.id))
         return 0
 
     routed = 0
