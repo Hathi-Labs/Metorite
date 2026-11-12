@@ -322,11 +322,15 @@ class TestAnImageOnAQuestion:
         run = await _person(live, "GET", f"/projects/agent-runs/{run_id}")
         assert run.status_code == 200, run.text
         (shown,) = [a for a in run.json()["activities"] if a["type"] == "elicitation"]
-        assert shown["content"]["attachments"][0]["attachment_id"] == aid
+        # The row stores no url. Each read adds the cookie serve route.
+        assert "url" not in content["attachments"][0]
+        served = f"/api/projects/attachments/{aid}/shot.png"
+        assert shown["content"]["attachments"][0] == {**content["attachments"][0],
+                                                      "url": served}
         listed = await _person(live, "GET", "/projects/agent-questions")
         assert listed.status_code == 200, listed.text
         (row,) = [r for r in listed.json()["rows"] if r["run_id"] == run_id]
-        assert row["question"]["attachments"][0]["attachment_id"] == aid
+        assert row["question"]["attachments"] == [{**content["attachments"][0], "url": served}]
         # The cookie serve route of the card serves the bytes inline.
         served = await _person(live, "GET", f"/projects/attachments/{aid}/shot.png")
         assert served.status_code == 200 and served.content == TINY_PNG

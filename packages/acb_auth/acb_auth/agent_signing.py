@@ -114,9 +114,10 @@ NONCE_NAMESPACE = "agent_nonce"
 #: CIV-14b (spec §12.9). The ASGI scope key where the gateway keeps a copy of
 #: the raw body of a signed multipart write. FastAPI parses a form body before
 #: any dependency runs, so branch 0 reads the bytes that it signs from here.
-#: The value is ``{"body": bytearray, "complete": bool}``. Only the gateway
-#: wrapper ``routes/projects/agent_upload_body.py`` sets it. A client cannot
-#: set a scope key.
+#: The value is the whole body as ``bytes``, set only once the last chunk came.
+#: Only the gateway wrapper ``routes/projects/agent_upload_body.py`` sets it,
+#: and ``deps._signed_body`` reads it by this literal, because the branch-0
+#: scan accepts only a literal scope key. A client cannot set a scope key.
 SIGNED_BODY_SCOPE_KEY = "acb.agent_signed_body"
 
 _KID = re.compile(r"[0-9a-f]{8}")

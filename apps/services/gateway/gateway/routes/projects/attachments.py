@@ -211,6 +211,13 @@ def _agent_image_refusal(user: UserContext, mime: str, size: int) -> None:
 
 
 
+def served_url(attachment_id: object, name: str) -> str:
+    """The cookie serve route of a file, as the UI loads it through the BFF
+    proxy. ONE builder: the descriptor, the upload answer and the images of an
+    agent question (CIV-14b) all read it. The route ignores the name."""
+    return f"/api/projects/attachments/{attachment_id}/{name}"
+
+
 def descriptor(row: Any) -> dict[str, Any]:
     """The shape the UI renders — the same field names the capture flow uses."""
     mime = getattr(row, "mime", None) or "application/octet-stream"
@@ -225,7 +232,7 @@ def descriptor(row: Any) -> dict[str, Any]:
         "created_at": (
             row.created_at.isoformat() if getattr(row, "created_at", None) else None
         ),
-        "url": f"/api/projects/attachments/{row.id}/{name}",
+        "url": served_url(row.id, name),
     }
 
 
@@ -380,7 +387,7 @@ async def attach_file(
             "attachment_id": att_id, "name": name, "mime": mime,
             "size": len(content), "added_by": email,
             "kind": "image" if mime in _IMAGE_MIMES else "file",
-            "url": f"/api/projects/attachments/{att_id}/{name}",
+            "url": served_url(att_id, name),
         }
         project_id = str(task.project_id)
 

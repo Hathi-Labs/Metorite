@@ -22,6 +22,12 @@
  *   (`canAnswer` false);
  * - after the answer, one line: "Answered by <name>: <labels>".
  *
+ * CIV-14b (`external_agent_access.md` §12.9). An open question draws the
+ * images that the agent put on it, above the card, as small pictures from the
+ * cookie serve route (`AgentImageStrip`). A click opens one at full size. The
+ * read-only question draws them too. The answered line and an archive request
+ * draw none.
+ *
  * ⚠️ **It decides no rule.** `canAnswer` is the server's (`can_answer`, from
  * `may_answer_run`). `kind` is the server's too. The host owns the writes, the
  * busy flag and the error line.
@@ -42,6 +48,7 @@ import {
   type AgentActivity,
   type AgentRun,
   type ArchiveDecision,
+  activityImages,
   answeredLine,
   archiveCardQuestion,
   archiveDecisionOf,
@@ -52,6 +59,7 @@ import {
   firstName,
 } from "../lib/agentRuns";
 import { readOnlyLine } from "../lib/agentQuestions";
+import { AgentImageStrip } from "./AgentImageStrip";
 
 /** The line beside the card's Submit. The chat's own line names "the assistant". */
 export const AGENT_SUBMIT_HINT = "The agent reads your answer at its next step.";
@@ -128,6 +136,7 @@ export function AgentQuestionCard({
   if (!open) return null;
 
   if (!archive) {
+    const images = activityImages(elicitation);
     if (!canAnswer) {
       const who = firstName(run.member_email, personLabels) || "The member of this run";
       return (
@@ -138,13 +147,14 @@ export function AgentQuestionCard({
           <p className="min-w-0 whitespace-pre-wrap break-words text-foreground">
             {elicitation.content.body?.trim() || "The agent asks a question."}
           </p>
+          <AgentImageStrip images={images} agentLabel={clientLabel} />
           <p className="text-muted-foreground" data-agent-question-readonly="">
             {readOnlyLine(who)}
           </p>
         </div>
       );
     }
-    return (
+    const card = (
       <ElicitationCard
         id={`agent-run:${elicitation.id}`}
         questions={[cardQuestion(elicitation)]}
@@ -153,6 +163,13 @@ export function AgentQuestionCard({
         hint={AGENT_SUBMIT_HINT}
         retryToken={retryToken}
       />
+    );
+    if (images.length === 0) return card;
+    return (
+      <div className="space-y-1.5" data-agent-question-images="">
+        <AgentImageStrip images={images} agentLabel={clientLabel} />
+        {card}
+      </div>
     );
   }
 

@@ -48,6 +48,7 @@ from gateway.routes.projects.agent_runs import (
     listed_question_sql,
     person_may_answer_sql,
     question_reason_sql,
+    with_image_urls,
 )
 from gateway.routes.projects.analytics import scope_clause, scope_params
 from gateway.routes.projects.core import (
@@ -165,10 +166,10 @@ def question_row(
     out, and "Everyone" answers 403."""
     via = run.client_via
     meta = from_jsonb(question.signal_metadata) or {}
-    content = from_jsonb(question.content) or {}
+    content = with_image_urls(from_jsonb(question.content) or {})
     request = archive_request_of(question)
-    # CIV-14b (spec §12.9): the images of the question, as the activity row
-    # holds them. Absent on a question with none.
+    # CIV-14b (spec §12.9): the images of the question, with the url of the
+    # cookie serve route, as the run read gives them. Absent with none.
     images = content.get("attachments") if isinstance(content, dict) else None
     return {
         "run_id": str(run.run_id),

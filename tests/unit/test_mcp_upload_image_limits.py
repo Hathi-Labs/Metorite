@@ -475,7 +475,7 @@ class TestTheGatewayKeepsTheSignedBody:
         r = await self._send(self._app(seen))
         assert r.status_code == 204
         ((kept, body),) = seen
-        assert kept == {"body": bytearray(b"form-bytes"), "complete": True}
+        assert kept == b"form-bytes" and type(kept) is bytes
         assert body == b"form-bytes"
 
     @pytest.mark.parametrize("over", [
@@ -500,15 +500,16 @@ class TestTheGatewayKeepsTheSignedBody:
         from starlette.requests import Request
 
         scope = {"type": "http", "method": "POST", "path": UPLOAD_PATH, "headers": [],
-                 agent_signing.SIGNED_BODY_SCOPE_KEY: {"body": bytearray(b"abc"),
-                                                       "complete": True}}
+                 agent_signing.SIGNED_BODY_SCOPE_KEY: b"abc"}
 
         async def receive():  # the form parser read the stream already
             raise AssertionError("the stream is gone")
 
-        request = Request(scope, receive)
-        assert await deps._signed_body(request) == b"abc"
-        scope[agent_signing.SIGNED_BODY_SCOPE_KEY]["complete"] = False
+        assert await deps._signed_body(Request(scope, receive)) == b"abc"
+        # A value that is not the whole body as bytes is no copy.
+        scope[agent_signing.SIGNED_BODY_SCOPE_KEY] = bytearray(b"abc")
         request = Request(scope, receive)
         request._stream_consumed = True
         assert await deps._signed_body(request) is None
+        # ... and branch 0 refuses it as `body` before it reads a header.
+        assert deps._verify_signed_request(request, {}, None, "n" * 22) == "body"

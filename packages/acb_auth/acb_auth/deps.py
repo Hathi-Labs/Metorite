@@ -421,7 +421,7 @@ def _refuse_agent(reason: str, **ids: str) -> UserContext:
 
 
 def _verify_signed_request(
-    request: Request, keys: dict[str, str], body: bytes, nonce: str | None,
+    request: Request, keys: dict[str, str], body: bytes | None, nonce: str | None,
 ) -> tuple[str, str, str, str | None] | str:
     """Step 2 of branch 0: ``(organization, connection, actor stamp,
     session key)`` of a well-signed, fresh request, or the reason to
@@ -433,8 +433,12 @@ def _verify_signed_request(
     header, never from a body or a query.
 
     A GET passes ``b""`` and no *nonce*. A write (EA-6a) passes the body that
-    ``_agent_user`` read and the nonce it checked, and both are signed.
+    ``_signed_body`` read and the nonce it checked, and both are signed.
+    CIV-14b: a write whose body ``_signed_body`` could not give (``None``) is
+    the refusal ``body``.
     """
+    if body is None:
+        return "body"
     # 2. The four headers, once each. The HMAC under a usable `kid`. The time.
     connection_header = _one_header(request, agent_signing.HEADER_CONNECTION)
     timestamp = _one_header(request, agent_signing.HEADER_TIMESTAMP)
@@ -758,34 +762,21 @@ async def _door_gate(
     return refused
 
 
-async def _write_parts(request: Request) -> tuple[str, bytes] | str:
-    """``(nonce, body)`` of a write, or the reason of a refusal: ``nonce``
-    for a nonce that is not well formed, which is checked BEFORE the body is
-    read, and ``body`` for a body that :func:`_signed_body` cannot give."""
-    nonce = _one_header(request, agent_signing.HEADER_NONCE)
-    if nonce is None or not agent_signing.nonce_is_well_formed(nonce):
-        return "nonce"
-    body = await _signed_body(request)
-    if body is None:
-        return "body"
-    return nonce, body
-
-
 async def _signed_body(request: Request) -> bytes | None:
     """The body bytes that the signature of a write covers, or ``None``.
 
-    A JSON route reads its body with ``request.body()``, which keeps the
-    bytes. A form route parses a multipart body BEFORE any dependency runs,
-    so the stream is gone here. For the upload of ``upload_task_image``
-    (CIV-14b), the gateway keeps a copy in the scope under
-    ``agent_signing.SIGNED_BODY_SCOPE_KEY``, and this reads it. A consumed
-    stream with no whole copy gives ``None``, which branch 0 refuses.
+    EA-6a: the ONE reader of the body in branch 0. A JSON route reads its body
+    with ``request.body()``, which keeps the bytes. CIV-14b: a form route
+    parses a multipart body BEFORE any dependency runs, so the stream is gone
+    here. For the upload of ``upload_task_image``, the gateway wrapper
+    ``AgentUploadBody`` puts the whole body in the scope, as ``bytes``, under
+    the key ``agent_signing.SIGNED_BODY_SCOPE_KEY``, and this reads it. A
+    client cannot set a scope key. A consumed stream with no copy gives
+    ``None``, and :func:`_verify_signed_request` refuses it as ``body``.
     """
-    kept = request.scope.get(agent_signing.SIGNED_BODY_SCOPE_KEY)
-    if isinstance(kept, dict) and kept.get("complete") is True:
-        held = kept.get("body")
-        if isinstance(held, bytes | bytearray):
-            return bytes(held)
+    kept = request.scope.get("acb.agent_signed_body")
+    if isinstance(kept, bytes):
+        return kept
     try:
         return await request.body()
     except RuntimeError:  # "Stream consumed": a form route with no copy
@@ -860,10 +851,10 @@ async def _agent_user(request: Request) -> UserContext:
     if method != "GET":
         if pair not in agent_oauth.MCP_WRITE_ROUTES and door is None:
             return _refuse_agent("method")
-        read = await _write_parts(request)
-        if isinstance(read, str):
-            return _refuse_agent(read)
-        nonce, body = read
+        nonce = _one_header(request, agent_signing.HEADER_NONCE)
+        if not agent_signing.nonce_is_well_formed(nonce):
+            return _refuse_agent("nonce")
+        body = await _signed_body(request)
 
     # 2. The four headers, once each. The HMAC under a usable `kid`. The time.
     signed = _verify_signed_request(request, keys, body, nonce)

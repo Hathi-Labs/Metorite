@@ -82,21 +82,21 @@ class AgentUploadBody:
             await _refuse(send)
             return
 
-        kept: dict[str, Any] = {"body": bytearray(), "complete": False}
-        scope[agent_signing.SIGNED_BODY_SCOPE_KEY] = kept
+        held = bytearray()
 
         async def copied() -> Any:
             message = await receive()
             if message["type"] == "http.request":
-                kept["body"] += message.get("body", b"")
-                if len(kept["body"]) > self.limit:
+                held.extend(message.get("body", b""))
+                if len(held) > self.limit:
                     # FastAPI reads the form inside the app, and it raises an
                     # HTTPException again as it is. Any other error there
                     # becomes its 400 "There was an error parsing the body".
-                    kept["body"] = bytearray()
+                    held.clear()
                     raise HTTPException(status_code=413, detail=_TOO_LARGE)
                 if not message.get("more_body", False):
-                    kept["complete"] = True
+                    # The whole body, once. Branch 0 reads only `bytes`.
+                    scope[agent_signing.SIGNED_BODY_SCOPE_KEY] = bytes(held)
             return message
 
         await self.app(scope, copied, send)

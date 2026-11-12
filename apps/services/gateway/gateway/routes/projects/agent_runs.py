@@ -119,6 +119,7 @@ from acb_common import get_logger
 from acb_common.image_probe import RASTER_MIMES
 from acb_common.no_person import NO_PERSON_PRESENT, NO_PERSON_TEXT, no_person_present
 from fastapi import Depends, HTTPException, Query, Response
+from gateway.routes.projects.attachments import served_url
 from gateway.routes.projects.core import (
     TaskModel,
     _tenant_session,
@@ -750,6 +751,22 @@ def _jsonb(value: Any) -> str | None:
     return None if value is None else json.dumps(value, ensure_ascii=False)
 
 
+def with_image_urls(content: Any) -> Any:
+    """*content* of an activity with the ``url`` of each image (CIV-14b).
+
+    The row keeps the id, the name, the type and the size of each image, and
+    no url. The url is the cookie serve route (``attachments.served_url``),
+    built at each read, so the path of the BFF never sits in the database.
+    Any other content comes back as it is."""
+    images = content.get("attachments") if isinstance(content, dict) else None
+    if not isinstance(images, list):
+        return content
+    return {**content, "attachments": [
+        {**item, "url": served_url(item.get("attachment_id"), str(item.get("name") or "image"))}
+        for item in images if isinstance(item, dict)
+    ]}
+
+
 def _activity_out(row: Any) -> dict[str, Any]:
     return {
         "id": str(row.id),
@@ -757,7 +774,7 @@ def _activity_out(row: Any) -> dict[str, Any]:
         "task_id": str(row.task_id),
         "seq": int(row.seq),
         "type": row.type,
-        "content": from_jsonb(row.content) or {},
+        "content": with_image_urls(from_jsonb(row.content) or {}),
         "content_metadata": from_jsonb(row.content_metadata),
         "ephemeral": bool(row.ephemeral),
         "signal": row.signal,

@@ -46,6 +46,15 @@ reader is `gateway.routes.workflows.core.author_gate_on`, and each request
 asks it. A reload applies a change, and the flip stays OWNER-GATE
 (`enforcement-flip`).
 
+`MCP_IMAGE_UPLOAD_ORGS` lets an outside agent upload an image to a task and
+put images on a question (`external_agent_access.md` §12.9, CIV-14b). Off, the
+upload of a signed agent answers 404 and `attachment_ids` answers 422, and the
+MCP edge maps both to one fixed text (`tools.TEXT_IMAGES_OFF`). A person's upload
+in the app does not read it. Its one reader is
+`acb_auth.agent_oauth.image_upload_allowed`, and only the gateway asks it, so
+a reload applies a change. The edge needs no restart. The flip stays
+OWNER-GATE (`enforcement-flip`).
+
 `AGENT_WRITE_CAP` and `AGENT_WRITE_WINDOW_S` set the write cap of each agent
 connection (`external_agent_access.md` §9.2, MCP-G20). The defaults are 120
 writes in 600 s. They are not `*_ORGS` or `*_MODES` keys, so a reload does
