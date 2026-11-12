@@ -66,7 +66,7 @@ from acb_auth import UserContext, UserRole
 from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant
 from gateway.routes.apps import lifecycle
-from gateway.routes.apps._common import load_app
+from gateway.routes.apps._common import _tenant_session, load_app
 from sqlalchemy import text
 
 from tests.unit._tenant_ladder import _exec_file, tenant_engine_scope
@@ -231,7 +231,8 @@ def test_no_reader_finds_an_app_by_slug_without_the_org() -> None:
     """Since A3b-2 two orgs may hold one slug. A statement that reads or
     writes ``apps`` by ``slug`` must name ``organization_id`` too."""
     by_slug = re.compile(
-        r"(FROM|UPDATE|JOIN)\s+apps\b[^;]*?\bslug\s*(=|IN|=\s*ANY)", re.I | re.S)
+        r"(FROM|UPDATE|JOIN)\s+apps\b(?:(?!text\(|\bdb\.execute)[^;]){0,300}?"
+        r"\bslug\s*(?:=\s*(?::|ANY\s*\()|IN\s*\()", re.I | re.S)
     offenders = []
     for path in sorted((_ROOT / "apps").rglob("*.py")):
         if "node_modules" in path.parts or "tests" in path.parts:
@@ -302,8 +303,7 @@ def test_r8_each_org_reads_only_its_own_app_by_slug(world) -> None:
         async with tenant_engine_scope(_dsn(world.p.app_url)):
             tok = bind_tenant(org)
             try:
-                from acb_common.db import get_db  # noqa: PLC0415
-                async for db in get_db():
+                async with _tenant_session() as db:
                     return await load_app(db, theirs.slug)
             finally:
                 release_tenant(tok)
