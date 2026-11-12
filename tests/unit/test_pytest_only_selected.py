@@ -13,12 +13,12 @@ def _run(tmp: Path, listed: list[str] | None, *extra: str) -> str:
     import os
 
     env = {**os.environ, "PYTHONPATH": str(_ROOT / "scripts")}
-    env.pop("CI_SELECTED_FILES", None)
+    env.pop("SHARD_SELECTED_FILES", None)
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     (tmp / "pytest.ini").write_text("[pytest]" + chr(10), encoding="utf-8")
     if listed is not None:
         sel.write_text("\n".join(listed), encoding="utf-8")
-        env["CI_SELECTED_FILES"] = str(sel)
+        env["SHARD_SELECTED_FILES"] = str(sel)
     out = subprocess.run(
         [sys.executable, "-m", "pytest", "tests/unit", "--collect-only", "-q",
          "-p", "pytest_only_selected", "-p", "no:cacheprovider", *extra],
@@ -71,3 +71,31 @@ def test_conftest_and_package_init_are_never_ignored(tmp_path: Path) -> None:
 def test_plugin_source_never_ignores_directories() -> None:
     src = (_ROOT / "scripts" / "pytest_only_selected.py").read_text(encoding="utf-8")
     assert 'collection_path.suffix != ".py"' in src
+
+
+def test_the_plugin_takes_its_variables_out_of_the_environment(tmp_path):
+    """A subprocess that a test starts must not inherit the shard-only variables
+    (the SHARD_-only rule of PR 1749, and the Opus review of PR 2192)."""
+    import os
+
+    unit = tmp_path / "tests" / "unit"
+    unit.mkdir(parents=True)
+    scripts = str(_ROOT / "scripts")
+    (unit / "test_env.py").write_text(
+        "import os\n"
+        "def test_env():\n"
+        "    assert 'SHARD_SELECTED_FILES' not in os.environ\n"
+        f"    assert {scripts!r} not in os.environ.get('PYTHONPATH', '')\n",
+        encoding="utf-8",
+    )
+    sel = tmp_path / "sel.txt"
+    sel.write_text("tests/unit/test_env.py", encoding="utf-8")
+    (tmp_path / "pytest.ini").write_text("[pytest]" + chr(10), encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": scripts, "SHARD_SELECTED_FILES": str(sel),
+           "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
+    out = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/unit", "-q",
+         "-p", "pytest_only_selected", "-p", "no:cacheprovider"],
+        cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", timeout=120,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr

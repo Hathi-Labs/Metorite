@@ -508,7 +508,7 @@ jobs:
           if [ "$SHARD_MODE" = "selection" ] && ! echo $SHARD_TARGETS | tr ' ' '\012' | grep -qv '^tests/unit/'; then
             SELECTED="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/selected.txt"
             echo $SHARD_TARGETS > "$SELECTED"
-            export CI_SELECTED_FILES="$SELECTED"
+            export SHARD_SELECTED_FILES="$SELECTED"
             export PYTHONPATH="$PWD/scripts${PYTHONPATH:+:$PYTHONPATH}"
             PLUGIN="-p pytest_only_selected"
             SHARD_TARGETS="tests/unit/"
