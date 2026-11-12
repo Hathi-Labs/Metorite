@@ -53,14 +53,14 @@ have no place now. A3b-1 moved the folder to the app id, and its own
 mutations are in ``test_apps_slug_per_org_r8.py``.
 
 * M1. ``create_app``: write the folder BEFORE the reserve (the old order).
-* M2. ``_discard_new_folder``: remove nothing (drop the rollback).
+* M2. ``_NewFolder.discard``: remove nothing (drop the rollback).
   ``test_r8_a_failed_write_removes_the_new_folder_and_the_row`` goes red.
 * M3. ``fork_app``: write the folder BEFORE the reserve.
 * M4. ``_claim_folder``: ``mkdir(exist_ok=True)``.
   ``test_r8_a_late_folder_is_never_written_or_removed`` goes red.
 * M6. ``_RESERVE_SQL``: drop ``ON CONFLICT DO NOTHING``. A cross-org clash
   then raises a unique violation.
-* MV2. ``_discard_new_folder``: remove ``workspace.parent``, so every app of
+* MV2. ``_NewFolder.discard``: remove ``workspace.parent``, so every app of
   every org goes. Both cases of the rollback test go red on the snapshot.
 * M8. ``_reserve_app``: keep the row of a folder that another writer took.
   ``test_r8_a_late_folder_is_never_written_or_removed`` goes red.

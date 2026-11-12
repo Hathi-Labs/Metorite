@@ -38,6 +38,12 @@
  * `NEXT_PUBLIC_TODAY_BAND` (`todayBandOn`). With the feed on, it sits above
  * the feed column and shows the top five cards with their reasons. It reads
  * the same feed answer as the column. `showTodayBand` is its one gate.
+ *
+ * **The panel** (`my_day_feed.md` §11.5, PK-1, D213) is a fifth flag,
+ * `NEXT_PUBLIC_MY_DAY_PEEK` (`myDayPeekOn`). With it on, a plain click on a
+ * task row opens the task in a panel at the right of the page, or in a full
+ * sheet on a phone, and the path stays `/`. `useMyDayPeek` is its one seam.
+ * Off, a row opens Projects, as before.
  */
 import Link from "next/link";
 import { useSession } from "next-auth/react";
@@ -68,6 +74,13 @@ import { myDayFeedOn, myDayFeedOnServer } from "./myDayFlag";
 import { BUILT_CARDS } from "./presets";
 import TodayBand from "./TodayBand";
 import { showTodayBand, todayBandOn, todayBandOnServer } from "./todayBandFlag";
+import { useMyDayPeek } from "./useMyDayPeek";
+import { rereadFeed } from "./feedState";
+import { needsKey } from "./needs";
+import { CARD_PAGE_ATTR, CARD_PAGE_COLUMN_ATTR } from "@/components/CardPanel";
+import { invalidate } from "@/lib/dataCache";
+import { MyDayPeekContext } from "./myDayGo";
+import { myDayPeekOn, myDayPeekOnServer } from "./myDayPeekFlag";
 import { homePane } from "./shellNav";
 import AiWaitingCard, { useAiWaiting } from "./AiWaitingCard";
 import { publishMyDayCount } from "./myDayCount";
@@ -121,6 +134,7 @@ export default function MyDay() {
   const feedOn = useSyncExternalStore(noSubscribe, myDayFeedOn, myDayFeedOnServer);
   const briefOn = useSyncExternalStore(noSubscribe, briefCardOn, briefCardOnServer);
   const bandOn = useSyncExternalStore(noSubscribe, todayBandOn, todayBandOnServer);
+  const peekOn = useSyncExternalStore(noSubscribe, myDayPeekOn, myDayPeekOnServer);
   // The brief read is the page's, so the grid waits for it and paints once.
   // Off, the key is null: no read, and the brief never gates the page. A
   // cache hit has data at once, so a later visit is instant.
@@ -188,13 +202,43 @@ export default function MyDay() {
     if (pageCount !== null) publishMyDayCount(pageCount);
   }, [pageCount]);
 
+  // PK-1: a row opens its task in the panel. After a panel that wrote
+  // something closes, the reads that drew the rows go out again, so the row
+  // shows the change. ⚠️ A DROPPED key, never `refresh`: a forced read joins a
+  // read already in flight (`dataCache.read`), and that read may predate the
+  // write. A dropped key makes the next read a new one. A Projects write
+  // already drops the Projects reads (Today, Next actions).
+  const peek = useMyDayPeek(peekOn, {
+    me: session?.user?.email ?? undefined,
+    onSettled: () => {
+      rereadFeed();
+      invalidate(needsKey());
+      today.refresh();
+    },
+  });
+  // The grid below steps by the WINDOW width (`xl:`). With the card docked
+  // beside it, the page column is 384 px narrower, and at 1280 three grid
+  // columns left a feed title two letters long (PK-1 visual review). So while
+  // the card is docked, the cards stand in one column and Today goes last.
+  // Over the page, and closed, every class is as before.
+  const wide = (classes: string) => (peek.docked ? "" : classes);
+
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <MyDayPeekContext.Provider value={peek.peek}>
+    {/* The page root of the record card (`CardPanel`): a key from inside it
+        reaches the card's Escape, and over the page the rest goes inert. */}
+    <div {...{ [CARD_PAGE_ATTR]: "" }} className="flex h-full min-h-0 flex-col">
     {/* The compact bar on a phone (AppTopBar decides), so the page keeps
         its one h1 there too. */}
     <AppTopBar title={home.label} icon={home.icon} />
-    <div className="min-h-0 flex-1 overflow-auto">
-    <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-10 xl:max-w-6xl" data-guide="home.my-day" data-testid="my-day">
+    {/* One row: the page column and the card beside it while a task is
+        docked (PK-1), as the CRM's row holds its record card. The card
+        measures this row. With the flag off the row holds the column alone.
+        The column is a `div` with the column mark, not a second main: the
+        shell already draws the one main landmark of the page. */}
+    <div className="flex min-h-0 flex-1">
+    <div ref={peek.columnRef} {...{ [CARD_PAGE_COLUMN_ATTR]: "" }} className="min-h-0 min-w-0 flex-1 overflow-auto" onClickCapture={peek.onClickCapture}>
+    <div className={`mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-10 ${wide("xl:max-w-6xl")}`} data-guide="home.my-day" data-testid="my-day">
       <div>
         {now ? (
           // The one page header (`pageHeading.test.ts`): the same title
@@ -255,9 +299,13 @@ export default function MyDay() {
         // start classes place each one at `xl`, whatever the order.
         <>
         {showTodayBand(bandOn, feedOn, cards.needs) ? <TodayBand feed={feed} visit={feedVisit} className="mt-6" /> : null}
-        <div className="mt-6 grid grid-cols-1 items-start gap-4 xl:grid-cols-3">
+        <div className={`mt-6 grid grid-cols-1 items-start gap-4 ${wide("xl:grid-cols-3")}`}>
           {cards.today ? (
-            <TodayCard today={today} now={now} className="xl:sticky xl:top-4 xl:col-start-3 xl:row-start-1" />
+            <TodayCard
+              today={today}
+              now={now}
+              className={peek.docked ? "order-last" : "xl:sticky xl:top-4 xl:col-start-3 xl:row-start-1"}
+            />
           ) : null}
           {cards.needs ? (
             <FeedColumn
@@ -265,14 +313,14 @@ export default function MyDay() {
               now={now}
               ai={aiWaiting}
               onTakeNew={() => setFeedVisit((n) => n + 1)}
-              className="xl:col-span-2 xl:col-start-1 xl:row-start-1" />
+              className={wide("xl:col-span-2 xl:col-start-1 xl:row-start-1")} />
           ) : null}
         </div>
         </>
       ) : (
         // One column in the order of the question. From `xl`, Today is a
         // right rail that spans both rows, and the other two stack left.
-        <div className="mt-6 grid grid-cols-1 items-start gap-4 xl:grid-cols-3">
+        <div className={`mt-6 grid grid-cols-1 items-start gap-4 ${wide("xl:grid-cols-3")}`}>
           {/* Each card keeps its place in the grid at `xl`: Today is the right
               rail whatever its order. The order sets the one column, and
               the order of the two cards on the left. */}
@@ -283,17 +331,22 @@ export default function MyDay() {
                 needs={needs}
                 now={now}
                 first={shell.enabled ? shell.layout.needsFirst : undefined}
-                className="xl:col-span-2"
+                className={wide("xl:col-span-2")}
               />
             ) : key === "today" ? (
-              <TodayCard key={key} today={today} now={now} className="xl:col-start-3 xl:row-span-2 xl:row-start-1" />
+              <TodayCard
+                key={key}
+                today={today}
+                now={now}
+                className={peek.docked ? "order-last" : "xl:col-start-3 xl:row-span-2 xl:row-start-1"}
+              />
             ) : key === "next" ? (
               <NextActionsCard
                 key={key}
                 enabled
                 needs={needs.items ?? []}
                 needsSettled={!cards.needs || needs.items !== undefined || !needs.loading}
-                className="xl:col-span-2"
+                className={wide("xl:col-span-2")}
               />
             ) : null,
           )}
@@ -318,6 +371,10 @@ export default function MyDay() {
       />
     </div>
     </div>
+    {peek.panel}
     </div>
+    {peek.reader}
+    </div>
+    </MyDayPeekContext.Provider>
   );
 }
