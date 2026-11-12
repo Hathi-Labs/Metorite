@@ -410,8 +410,8 @@ describe("J2a: a viewer reads and writes nothing", () => {
       expect(packageAccess({ access: value })).toBe("viewer");
     }
   });
-  it("readActions keeps the list and the get, and drops each write", () => {
-    expect(readActions(ACTIONS).map((a) => a.id)).toEqual(["find", "peek"]);
+  it("readActions keeps the list, the get and the aggregate, and drops each write", () => {
+    expect(readActions(ACTIONS).map((a) => a.id)).toEqual(["find", "peek", "tally"]);
     expect(readActions(undefined)).toEqual([]);
   });
   it("a door built on readActions sends no write to the network", async () => {
