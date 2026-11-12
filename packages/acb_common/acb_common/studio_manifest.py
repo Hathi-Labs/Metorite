@@ -184,12 +184,15 @@ class UsesRef:
 
     ``source`` is ``object``, ``manifest`` (an ``<app>.<op>`` door op),
     ``integration`` or ``workflow``, the source names of the B1 catalog.
-    ``object`` and ``op`` are set for an ``object:`` value only.
+    ``object`` and ``op`` are set for an ``object:`` value. ``app`` and
+    ``op`` are set for a door op (STU-B2b-2b): ``op`` then holds the door op
+    name of that app. An integration and a workflow set none of them.
     """
 
     source: Literal["object", "manifest", "integration", "workflow"]
     object: str | None = None
     op: str | None = None
+    app: str | None = None
 
 
 def parse_uses(uses: object) -> UsesRef | None:
@@ -205,7 +208,7 @@ def parse_uses(uses: object) -> UsesRef | None:
         return UsesRef(source="integration")
     if m.group("wf"):
         return UsesRef(source="workflow")
-    return UsesRef(source="manifest")
+    return UsesRef(source="manifest", app=m.group("app"), op=m.group("appop"))
 
 
 # --- the schema ------------------------------------------------------------

@@ -118,6 +118,9 @@ class OutlookProvider:
     #: Graph takes the client id as a ``transactionId``, NOT as the event id. The
     #: writer must not adopt or delete an Outlook event by it.
     client_id_is_event_id = False
+    #: Graph dedupes a create on the transactionId: a repeat with the same value
+    #: answers with the event that the first create made (see task_out, CE-13c).
+    dedupes_by_client_id = True
 
     def __init__(
         self, http: Http, *, client_id: str, client_secret: str, redirect_uri: str,
@@ -243,8 +246,9 @@ class OutlookProvider:
         if status in (429, 503, 504):
             raise ProviderError(f"rate_limited_{status}")
         # The writer (CE-13) speaks one vocabulary: a missing calendar or event is
-        # ``not_found`` (Graph says ErrorItemNotFound), a taken transactionId is
-        # ``exists``. The Graph code stays for every other failure.
+        # ``not_found`` (Graph says ErrorItemNotFound), and a 409 is ``exists``. (A
+        # repeat of a transactionId normally answers with the first event, not 409.)
+        # The Graph code stays for every other failure.
         if status == 404 or reason == "ErrorItemNotFound":
             raise ProviderError("not_found")
         if status == 409:
