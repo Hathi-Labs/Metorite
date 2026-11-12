@@ -342,6 +342,8 @@ def test_r8_an_overlapping_claim_of_another_app_is_taken_and_nothing_is_written(
     mine = _install(world, "a1", ANA, [_claim(_k("c1"))])
     cats = _install(world, "a3", CAT, [_claim(_k("c1"))])
     assert isinstance(cats, store.Install), cats
+    bens_private = _install(world, "a4", BEN, [_claim(_k("c1"))])
+    assert isinstance(bens_private, store.Install), bens_private
     bens = _install(world, "a2", OPS, [_claim(_k("c1"))])
     assert isinstance(mine, store.Install) and isinstance(bens, store.Install), (mine, bens)
     before, claims = _row(world, mine.id), _claim_rows(world, mine.id)
