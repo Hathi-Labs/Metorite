@@ -1,7 +1,7 @@
 """The link between a task block and its provider event (CE-13, D215).
 
 Spec: ``project-docs/specs/calendar_events_reminders.md`` §8.1a points 7 and 8.
-Table: ``calendar_task_links`` (migration 419). One row for each task, member
+Table: ``calendar_task_links`` (migration 425). One row for each task, member
 and connection. The provider event id lives there, and nowhere else.
 
 This module holds the pure rules and the two reads that the read loop needs:
