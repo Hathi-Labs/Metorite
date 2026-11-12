@@ -229,6 +229,27 @@ def test_a_read_stops_part_way_when_the_token_runs_low():
     assert 0 < len(h.sizes) < 10  # some pages were read, then it stopped
 
 
+def test_sync_with_a_calendar_id_reads_that_one_calendar_and_lists_none():
+    class One(_Scripted):
+        async def get(self, url, *, params=None, headers=None):
+            assert "/me/calendars/CCC/calendarView/delta" in url or "skiptoken" in url, url
+            return await super().get(url, params=params, headers=headers)
+    pages = _delta_pages(1)
+    pages[0]["@odata.deltaLink"] = outlook.g.GRAPH_BASE + "/me/calendars/CCC/calendarView/delta?$deltatoken=Z"
+    res = run(prov(One(pages)).sync(cred(), None, Window.around(NOW), calendar_id="CCC"))
+    assert json.loads(res.next_cursor) == {"CCC": pages[0]["@odata.deltaLink"]} and len(res.changes) == 1
+
+
+def test_an_event_carries_its_last_modified_instant():
+    from gateway.calendar_sync import outlook_graph as gg
+    ev = {"id": "x", "subject": "s", "lastModifiedDateTime": "2026-11-12T10:00:00.1234567Z",
+          "start": {"dateTime": "2026-11-13T10:00:00", "timeZone": "UTC"},
+          "end": {"dateTime": "2026-11-13T11:00:00", "timeZone": "UTC"}}
+    assert gg.parse_event(ev).updated == datetime(2026, 11, 12, 10, 0, 0, 123456, tzinfo=UTC)
+    ev["lastModifiedDateTime"] = "junk"
+    assert gg.parse_event(ev).updated is None
+
+
 def test_first_sync_is_full_skips_metorite_calendar_and_returns_cursor_map():
     h = FakeHttp([
         ("GET", "skiptoken=", 200, fx("delta_page2.json")),

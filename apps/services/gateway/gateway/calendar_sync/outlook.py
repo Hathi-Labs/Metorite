@@ -292,13 +292,18 @@ class OutlookProvider:
 
     async def sync(
         self, cred: SourceCredential, cursor: str | None, window: Window,
+        *, calendar_id: str | None = None,
     ) -> SyncResult:
-        """One read of every calendar but "Metorite". ``cursor`` None lists the
-        whole window (``full``). A dead delta link raises
-        :class:`CursorExpired`, and the engine lists again."""
+        """One read of the default calendar (never "Metorite"). ``cursor`` None
+        lists the whole window (``full``). A dead delta link raises
+        :class:`CursorExpired`, and the engine lists again. ``calendar_id``
+        reads that ONE calendar (CE-13 reads the "Metorite" calendar so)."""
         links = self._load_cursor(cursor)
         full = not links
-        cals = g.pick_calendar_ids({"value": await self._all_calendars(cred)})
+        if calendar_id:
+            cals = [calendar_id]
+        else:
+            cals = g.pick_calendar_ids({"value": await self._all_calendars(cred)})
         if not cals:
             # An empty list on a full read would prune every row. Fail instead.
             raise ProviderError("no_calendar")
@@ -390,7 +395,7 @@ def factory() -> OutlookProvider | None:
     from email_ingestion.providers.app_credentials import oauth_app
 
     from gateway.calendar_sync.http import CalendarHttp
-    from gateway.routes.email.transport.oauth import _workbench_public_url
+    from gateway.routes.email.transport.oauth import _build_redirect_uri
 
     app = oauth_app("microsoft")
     if not app.configured:
@@ -398,7 +403,7 @@ def factory() -> OutlookProvider | None:
     return OutlookProvider(
         CalendarHttp(OUTLOOK_HOSTS), client_id=app.client_id,
         client_secret=app.client_secret,
-        redirect_uri=f"{_workbench_public_url()}/api/calendar/oauth/microsoft/callback",
+        redirect_uri=_build_redirect_uri("microsoft"),
     )
 
 

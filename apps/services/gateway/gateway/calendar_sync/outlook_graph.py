@@ -161,6 +161,19 @@ def _all_day_date(instant: datetime, zone: Optional[ZoneInfo]) -> date:
     return (instant + timedelta(hours=12)).date()
 
 
+def _parse_updated(value: Any) -> Optional[datetime]:
+    """``lastModifiedDateTime`` (``2026-11-12T10:00:00.1234567Z``) as UTC."""
+    if not isinstance(value, str) or not value:
+        return None
+    text = value.strip().rstrip("Z")
+    head, dot, frac = text.partition(".")
+    text = head + (dot + frac[:6] if dot else "")
+    try:
+        return datetime.fromisoformat(text).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
 def parse_event(ev: Mapping[str, Any]) -> Optional[RemoteEvent]:
     """Map one Graph event to column values, or None when it is unusable.
 
@@ -198,6 +211,7 @@ def parse_event(ev: Mapping[str, Any]) -> Optional[RemoteEvent]:
     preview = ev.get("bodyPreview")
     master = ev.get("seriesMasterId")
     return RemoteEvent(
+        updated=_parse_updated(ev.get("lastModifiedDateTime")),
         external_id=ext_id,
         title=clean_title(ev.get("subject") if isinstance(ev.get("subject"), str) else None),
         status=status,
