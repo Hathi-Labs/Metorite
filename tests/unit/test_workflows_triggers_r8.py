@@ -160,6 +160,8 @@ _WORKFLOWS: dict[str, tuple[str, str, dict]] = {
                                   "filter": {"package_id": "pkg-claims", "object": "claim"}}),
     "Invoice in A": ("A", "event", {"source": "studio", "event_type": "studio.record.created",
                                     "filter": {"package_id": "pkg-claims", "object": "invoice"}}),
+    "Claim 2 in A": ("A", "event", {"source": "studio", "event_type": "studio.record.created",
+                                    "filter": {"object": "claim"}}),
     "Claim in B": ("B", "event", {"source": "studio", "event_type": "studio.record.created",
                                   "filter": {"package_id": "pkg-claims", "object": "claim"}}),
 }
@@ -679,7 +681,8 @@ def test_a_record_event_starts_only_the_matching_trigger_of_the_bound_org(promot
     org and the claim workflow of org B (both listed) start nothing."""
     _list_orgs(monkeypatch, promoted.org_a, promoted.org_b)
     started = _emit_record(promoted, promoted.org_a)
-    assert [s["workflow_id"] for s in started] == [promoted.wf["Claim in A"]]
+    assert {s["workflow_id"] for s in started} == {
+        promoted.wf["Claim in A"], promoted.wf["Claim 2 in A"]}
     (row,) = _runs_of(promoted, "Claim in A")
     assert (row.trigger_kind, row.org, row.started_by) == (
         "event", promoted.org_a, "event:studio")
@@ -710,7 +713,8 @@ def test_two_matching_triggers_of_one_workflow_start_one_run(promoted, monkeypat
              "c": json.dumps({"source": "studio", "event_type": "studio.record.created"})})
     try:
         started = _emit_record(promoted, promoted.org_a)
-        assert [s["workflow_id"] for s in started] == [promoted.wf["Claim in A"]]
+        ids = [s["workflow_id"] for s in started]
+        assert sorted(ids) == sorted([promoted.wf["Claim in A"], promoted.wf["Claim 2 in A"]])
         assert len(_runs_of(promoted, "Claim in A")) == 1
     finally:
         with promoted.admin_engine.begin() as c:

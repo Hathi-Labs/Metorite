@@ -422,8 +422,12 @@ def _validate_event_filter(config: dict[str, Any]) -> None:
     for key, val in flt.items():
         if key not in RECORD_FILTER_KEYS:
             raise HTTPException(status_code=422, detail=f"Unknown trigger filter key '{key}'")
-        if not isinstance(val, str) or not val.strip():
+        if not isinstance(val, str) or not val.strip() or val != val.strip():
             raise HTTPException(status_code=422, detail=f"Trigger filter '{key}' must be a text")
+        if key == "op" and val not in ("create", "update", "delete"):
+            raise HTTPException(
+                status_code=422, detail="Trigger filter 'op' is create, update or delete"
+            )
 
 
 def _cron_is_valid(expr: str, timezone: str = "UTC") -> bool:

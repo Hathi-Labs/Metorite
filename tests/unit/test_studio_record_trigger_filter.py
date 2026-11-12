@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 from fastapi import HTTPException
-from gateway.routes.workflows.crud import _validate_event_filter
+from gateway.routes.workflows.crud import TriggerSpec, _validate_event_filter, _validate_trigger_specs
 from gateway.routes.workflows.triggers import event_trigger_matches
 
 _PAYLOAD = {"package_id": "p1", "object": "claim", "op": "create", "record_id": "r1"}
@@ -52,8 +52,21 @@ def test_validate_accepts_a_good_filter() -> None:
     {"source": "studio", "filter": {"record_id": "r"}},
     {"source": "studio", "filter": {"object": 5}},
     {"source": "studio", "filter": "claim"},
+    {"source": "studio", "filter": {"op": "created"}},
+    {"source": "studio", "filter": {"op": "Create"}},
+    {"source": "studio", "filter": {"object": "claim "}},
 ])
 def test_validate_refuses_a_bad_filter(config) -> None:
     with pytest.raises(HTTPException) as exc:
         _validate_event_filter(config)
+    assert exc.value.status_code == 422
+
+
+@pytest.mark.parametrize("flt", [{}, {"object": " "}, {"op": "created"}])
+def test_the_save_path_refuses_a_bad_filter(flt) -> None:
+    """The route calls ``_validate_trigger_specs``, so a bad filter is a 422
+    there. An empty filter would otherwise read as no filter."""
+    with pytest.raises(HTTPException) as exc:
+        _validate_trigger_specs(
+            [TriggerSpec(kind="event", config={"source": "studio", "filter": flt})])
     assert exc.value.status_code == 422
