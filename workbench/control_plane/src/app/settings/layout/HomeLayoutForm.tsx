@@ -113,7 +113,7 @@ export function HomeLayoutView(p: ViewProps) {
           <section key={role} className="flex flex-col gap-3 rounded-xl border border-border p-4 sm:p-5">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-sm font-semibold text-foreground">{ROLE_LABEL[role]}</h2>
-              <span className="ml-auto flex items-center gap-2">
+              <span className="ml-auto flex flex-wrap items-center justify-end gap-2">
                 <SelectButton
                   label={`Preset for ${ROLE_LABEL[role]}`}
                   value={presetOf(p.draft, role) ?? ""}
