@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
 import { useSession, signOut } from "next-auth/react";
 import { forgetThisDevice } from "@/lib/push";
-import { useInstallNav } from "@/lib/shell/packageManifest";
+import { useHeldWithInstalls, useInstallNav } from "@/lib/shell/packageManifest";
 import { NAV_SECTIONS, visibleSections, type NavPane, type NavSection } from "@/lib/nav";
 import { useAccess } from "@/components/AccessProvider";
 import { shouldPollWorkspace } from "@/lib/access";
@@ -153,7 +153,14 @@ export default function Sidebar() {
   const railBase = shellNav
     ? shellSidebar(sections, shell.loading ? undefined : shell.layout)
     : sections;
-  const railSections = useInstallNav(railBase, access.features);
+  const railSections = useInstallNav(
+    railBase,
+    access.features,
+    shellNav ? { held: sections, layout: shell.loading ? undefined : shell.layout } : undefined,
+  );
+  // PKG-6c-2: the stars run over what the member holds WITH the installs, so a
+  // hide on an install row writes the install href.
+  const heldAll = useHeldWithInstalls(sections, access.features);
   useEffect(() => {
     window.clearTimeout(peekTimer.current);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- the peek ends when the fold or the page changes
@@ -229,7 +236,7 @@ export default function Sidebar() {
   const canHide = shellNav && shell.enabled && shell.stored !== undefined;
   const flipStar = (href: string) => {
     const base = starBase({ ...EMPTY_SHELL, ...(latestShell() ?? shell.stored) }, shell.layout);
-    return saveShellPrefs({ ...base, ...toggleStar(base, sections, href) });
+    return saveShellPrefs({ ...base, ...toggleStar(base, heldAll, href) });
   };
   const hideFromSidebar = (pane: NavPane) => {
     // Undo puts back the layout from BEFORE the hide, exactly. A second
@@ -900,7 +907,7 @@ type RowMenuOpen = (
   at: { x: number; y: number; keyboard: boolean; trigger: HTMLElement | null },
 ) => void;
 
-function NavSectionBlock({
+export function NavSectionBlock({
   section,
   pathname,
   collapsed,
@@ -990,8 +997,16 @@ function NavSectionBlock({
   // A folded section keeps showing the item you are ON — the current location
   // must never vanish from the nav. With the shell nav, the category of the
   // current route is never folded at all (`isFolded`).
+  // A sub-entry (PKG-15b) stays in view while its host is current, and the
+  // host stays in view while a sub-entry is current.
+  const on = (href: string) => pathname?.startsWith(href) ?? false;
   const items = folded
-    ? section.items.filter((p) => pathname?.startsWith(p.href))
+    ? section.items.filter(
+        (p) =>
+          on(p.href) ||
+          (p.parent !== undefined && on(p.parent)) ||
+          section.items.some((c) => c.parent === p.href && on(c.href)),
+      )
     : section.items;
 
   return (
@@ -1024,21 +1039,34 @@ function NavSectionBlock({
       {/* Section items */}
       {items.length > 0 && (
         <div className="flex flex-col gap-0.5">
-          {items.map((p) => (
-            <NavLink
-              key={p.href}
-              pane={p}
-              pathname={pathname}
-              onNavigate={onNavigate}
-              {...badgeFor(p.href)}
-              needs={appNeeds[p.href]}
-              needsFloor={appFloors?.has(p.href)}
-              pinnedApps={p.href === "/studio" ? pinnedApps : undefined}
-              shellNav={shellNav}
-              onRowMenu={onRowMenu}
-              menuOpen={menuHref === p.href}
-            />
-          ))}
+          {items.map((p) => {
+            const link = (
+              <NavLink
+                key={p.href}
+                pane={p}
+                pathname={pathname}
+                onNavigate={onNavigate}
+                {...badgeFor(p.href)}
+                needs={appNeeds[p.href]}
+                needsFloor={appFloors?.has(p.href)}
+                pinnedApps={p.href === "/studio" ? pinnedApps : undefined}
+                shellNav={shellNav}
+                onRowMenu={onRowMenu}
+                menuOpen={menuHref === p.href}
+              />
+            );
+            // A sub-app sits under its host: the same row, one step in, with
+            // the house rule line (PKG-15b, `package_host.md` §8.2). The
+            // wrapper is a flex column, so the row is a flex item as in the
+            // section list. A plain block would leave the link inline.
+            return p.parent === undefined ? (
+              link
+            ) : (
+              <div key={p.href} data-nav-sub={p.parent} className="flex flex-col ml-4 border-l border-sidebar-border pl-1">
+                {link}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -1210,8 +1238,8 @@ export function NavLink({
         className={`rounded-lg glass:rounded-row tech-transition px-3 py-2 text-sm ${onRowMenu ? "min-w-0 flex-1" : tone}`}
       >
         <div className="flex items-center gap-2.5">
-          <Icon name={pane.icon} size={16} strokeWidth={active ? 2.5 : 2} className={active ? "glass:text-sidebar-foreground" : "glass:text-muted-foreground"} />
-          <span className="font-medium text-[13px] glass:text-subhead">{pane.label}</span>
+          <Icon name={pane.icon} size={16} strokeWidth={active ? 2.5 : 2} className={`shrink-0 ${active ? "glass:text-sidebar-foreground" : "glass:text-muted-foreground"}`} />
+          <span className="min-w-0 truncate font-medium text-[13px] glass:text-subhead">{pane.label}</span>
           {/* With a menu, the badge gives its place to the "···" on hover or
               focus, as a `RailRow` count does (`rail-row-meta`). It is
               hidden from sight only, so it stays in the link's name. The

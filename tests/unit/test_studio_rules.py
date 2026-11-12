@@ -475,7 +475,9 @@ def test_every_record_write_path_runs_the_checks() -> None:
         want = ["_apply_write", "_derive_parent"] if statement == "_UPDATE_RECORD_SQL"             else ["_apply_write"]
         assert users == want, (statement, users)
     derive = _calls(funcs["_derive_parent"])
-    assert {"run_formulas", "validate_record", "record_json", "_hot_rows"} <= derive
+    # Fix round 3/4: the formulas go through `_formulas` (frozen targets) and the size
+    # check through `_record_text`.
+    assert {"_formulas", "validate_record", "_record_text", "_hot_rows"} <= derive
     assert {"_recompute_parents", "_find_rollups"} <= _calls(steps)
 
 
@@ -1464,7 +1466,9 @@ def test_the_store_runs_the_formulas_in_the_write_and_checks_the_plan_once() -> 
     funcs = _functions()
     write = ast.unparse(funcs["_apply_write"])
     assert "refuse_computed_keys" in write and "run_formulas" in write
-    assert write.count("run_formulas") == 2 and write.count("refuse_computed_keys") == 2
+    # Fix round 3: a create runs `run_formulas`, a change runs `_formulas` (frozen targets).
+    assert write.count("run_formulas") == 1 and "_formulas(held" in write
+    assert write.count("refuse_computed_keys") == 2
     assert write.index("validate_record") < write.index("_CREATE_RECORD_SQL")
     assert "plan_formulas" in _calls(funcs["_lock_objects"])
     assert "_check_formulas_first" in _calls(funcs["set_constraints"])
@@ -1931,7 +1935,7 @@ def test_the_derived_write_is_a_store_write_that_checks_and_names_the_member() -
     takes a member, the delete too, so a batch always has one."""
     funcs = _functions()
     src = ast.unparse(funcs["_derive_parent"])
-    assert "run_formulas" in src and "validate_record" in src and "_hot_rows" in src
+    assert "_formulas(" in src and "validate_record" in src and "_hot_rows" in src
     assert "'actor': batch.who," in src and "updated_by" not in src
     assert "INSERT" not in src and "_CREATE_RECORD_SQL" not in src  # a derived write adds no row
     for name in ("create_record", "update_record", "delete_record"):

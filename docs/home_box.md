@@ -202,12 +202,35 @@ merges it. The other lanes keep building. Its role is in
 
 | File on the box | What it holds |
 |---|---|
-| `~/lanes/merge-queue.tsv` | One line for each hand-over: pull request, task, worktree, lane, note. Tabs between the fields. |
-| `~/lanes/merge-queue.log` | One line for each result: `DONE <pull request> <sha>` or `BACK <pull request> <reason>`. |
+| `~/lanes/merge-bot-queue.tsv` | One line for each hand-over: pull request, task, worktree, lane, head SHA, tier, note. Tabs between the fields, under a `#` header line. Only `lane_handover.sh` writes it. |
+| `~/lanes/merge-bot.log` | One line for each result: `DONE <pull request> <sha>` or `BACK <pull request> <reason>`. Only the merge bot writes it. |
+| `~/lanes/merge-queue.tsv`, `~/lanes/merge-queue.log` | History of the lane-merge session, with HOLD, RED and NOTE lines that people wrote. Nothing reads them now. |
 
 A lane hands over a pull request only after three steps. The verifier passed,
 the review of its risk tier passed, and the owner approved its preview when
 it needed one.
+
+**The merge bot** (D218, task 3053). `scripts/home_server/merge_bot.sh` merges
+the queued pull requests with no model and no Metorite credential. One pass
+reads the queue, and handles each hand-over that has no result line yet. It
+never merges a `HIGH` tier slice, and it needs a PR body line that starts with
+`VERIFY: PASS`. It logs a BACK when the PR head moved after the hand-over. It
+waits for the seven required checks of `main` (a missing or pending one means
+not ready, and only the newest row of a check counts), and reruns a cancelled
+job once.
+
+It then runs the trial merge with
+`origin/main` and `scripts/premerge.sh` on the pinned SHA, and runs
+`gh pr merge --squash --match-head-commit <sha>`. A
+branch behind `main` still merges when the trial merge is clean. It never
+pushes, and never passes `--admin` or `--auto`. `MERGE_BOT_DRY_RUN=1` prints
+the actions and calls no write command.
+
+The units are
+`scripts/home_server/systemd/metorite-merge-bot.service` and `.timer`, every
+2 minutes, user `dev`. The owner installs them (see the header of the service
+file). `lane-merge` reads the log and closes or returns each task. A hand-over
+needs no box run since D218, because GitHub pr-check is the gate.
 
 ### 3.9 End of a delegation
 
@@ -292,7 +315,8 @@ second lane. The script's header and `engineering_practice.md` §7a own the
 details. On 2026-11-06 a full suite peaked at about 10.7 GB of memory and
 took about 41 minutes (task 1907). So run one full suite at a time on the box.
 
-Before each push, run the tests that the diff can affect:
+GitHub `pr-check` is the gate (D218), so `ci_local` is optional. Before each
+push, run the tests that the diff can affect:
 `timeout 2400 uv run python scripts/affected_tests.py --run`.
 
 ### 6.2 Merge and release

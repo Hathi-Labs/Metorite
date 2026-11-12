@@ -469,8 +469,9 @@ each under its own category.
 **The storage.** `shell_prefs.pins` now holds the starred apps. The field
 keeps its NS-7 name, so no row and no migration changes (R6). A new field,
 `known`, holds the apps that the member could see at their last save. The
-gateway accepts the `nav.ts` hrefs only, and it caps `known` as it caps
-`pins`.
+gateway accepts the `nav.ts` hrefs, and the install hrefs of the viewer's
+own resolved manifest while `PACKAGE_HOST_ORGS` holds the org
+(`package_host.md` PKG-6c-1). It caps `known` as it caps `pins`.
 
 **Four rules for what shows** (`starredHrefs` in `presets.ts`):
 
@@ -850,6 +851,12 @@ a card and the AI that prepares one. **D101 (owner, 2026-10-13) widens the
 acts in the table above for that feed:** a card acts in place, unless the act
 needs more context. `my_day_feed.md` §11 holds the rule. This spec keeps the
 page frame, the bell, the manifest and the flags.
+
+**D213 (owner, 2026-11-09) changes "A longer act opens the owning app" for
+each link to a task.** Behind `NEXT_PUBLIC_MY_DAY_PEEK`, a row's link or an
+act's link opens the task in a panel on My Day, and the member stays on My
+Day. An act with its own button runs in place. "Open in Projects" and a
+Ctrl-click still open the app. `my_day_feed.md` §11.5 holds the rule.
 
 ### 4.4 Cards
 

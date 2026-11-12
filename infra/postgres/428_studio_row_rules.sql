@@ -1,5 +1,5 @@
 -- ============================================================================
--- 411_studio_row_rules.sql — app roles and row rules of a Studio object
+-- 428_studio_row_rules.sql — app roles and row rules of a Studio object
 -- (WS-STU C8a).
 --
 -- What: two expand-only changes, and no new table.
@@ -33,6 +33,7 @@
 -- Tenant-scoped (R5): no new table. RLS and the policy of 323 cover both
 -- tables, and `access` holds no tenant id.
 --
+-- R1 re-check 2026-11-13: origin/main holds up to 426, so this file is 428.
 -- The number is taken at build time (R1). On 2026-11-11 origin/main held 401,
 -- and open branches held 396 and 398 to 408 (405 to 408 came during the
 -- build). Check it again at merge. Pinned by tests/unit/test_studio_objects_r8.py and

@@ -453,6 +453,10 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # WS-CAL CE-4: events. CALENDAR_EVENTS is the switch of the event store,
     # so a tenant that set it could turn it on for every org.
     "CALENDAR_EVENTS",
+    # WS-CAL CE-10, CE-11: the calendar sync. CALENDAR_SYNC_READ and
+    # CALENDAR_SYNC_WRITE are the switches, and CALENDAR_SYNC_MEMBERS narrows
+    # them. A tenant that set one could start the sync for every org.
+    "CALENDAR_SYNC_",
     # WS-BRIEF BR-1a: the shared job queue. JOB_QUEUE is the switch of the job
     # worker, so a tenant that set it could start the worker for every org.
     "JOB_QUEUE",

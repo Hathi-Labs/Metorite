@@ -2,17 +2,19 @@
 
 > **Dated 2026-11-11, price (D204.9).** Seat tiers are final. The flat ₹500 seat ends when PLN-0 merges. Until then the code sells the flat seat. Read each line that says the flat seat as the seat of D152 after PLN-0. Lines: 474 and 724.
 
-**Status: ACTIVE (SW-0, 2026-10-30). SW-68a (the plan order of `my_work`) is built, 2026-11-08. The rest of SW-68 is open. The replan of 2026-11-09 (task 2518) sets the queue order, the lane scope and pull start (SW-100, new). It parks SW-17, SW-20, SW-22, SW-69, SW-74, SW-75, SW-89, SW-90 and SW-92. SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b (change an answer) is built and dark, 2026-11-11. SW-43c is open. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
+**Status: ACTIVE (SW-0, 2026-10-30). SW-68a (the plan order of `my_work`) is built, 2026-11-08. The rest of SW-68 is open. The replan of 2026-11-09 (task 2518) sets the queue order, the lane scope and pull start (SW-100, new). It parks SW-17, SW-20, SW-22, SW-69, SW-74, SW-75, SW-89, SW-90 and SW-92. SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b (change an answer) is built and dark, 2026-11-11. SW-43c (the chat tools and the agent text) is built, 2026-11-11, and the flag can go on. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
 
 **SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
 
 **SW-23 (a task carries a Check) is built and dark, 2026-11-11.**
 
+**SW-7b (a display label for each session) is built, 2026-11-11 (task 2858). migration 418.**
+
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. The backend of SW-94 (the policy store) is built and dark, 2026-11-08. Its Settings tab is not built. No other P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
 
-**1045a (the `waiting` state, migration 403) is built, 2026-11-06. It also carries SW-4 item 2. The owner's change of 2026-11-07 is built: own sub-agents keep a run working, and `agent` is a wait on another agent. 1045b and 1045c are open.**
+**1045a (the `waiting` state, migration 403) is built, 2026-11-06. It also carries SW-4 item 2. The owner's change of 2026-11-07 is built: own sub-agents keep a run working, and `agent` is a wait on another agent. 1045b (linked events count as life, migration 421) is built, 2026-11-12. 1045c is open.**
 
 This spec gates every SW slice (D135.4). The decisions are **D140** in `work_plan.md` §3.
 
@@ -216,7 +218,7 @@ The delegate (SW-29a) stores this reference. It names the member and the stamp, 
 
 | Limit | Fence |
 |---|---|
-| A label never reaches an authorization check | SW-7b: a structural test that no module of `acb_auth` and no visibility seam reads `agent_label` |
+| A label never reaches an authorization check | SW-7b: a structural test that no module of `acb_auth` and no visibility seam reads `agent_label` (`tests/unit/test_agent_label_fence.py`) |
 | A delegate never widens what an agent can see | SW-29a: an R8 test that a delegate on a task the agent's member cannot see gives the agent nothing |
 | The session key comes only from the signed header | Built: `test_mcp_edge_signing.py` |
 | Guidance never overrides the server's rules | SW-31: a prompt fence in `test_mcp_edge_prompts.py` |
@@ -251,7 +253,7 @@ The source is the Linear research of 2026-10-30, the comment on epic 321. Append
 - **Race.** The route takes the same `FOR UPDATE` lock of the run as an agent post. The check runs under the lock. So one write wins. When the agent wins, the member gets 409 "The agent already has your answer. Send a comment instead."
 - **Protocol.** An agent posts a thought that names the answer id before it acts on an answer. The thought ends the window.
 - **Flag.** `agent_answer_change_enabled`, default off. Off: the route answers 404 and the run wire has no `answer` field. No migration.
-- **Slices.** SW-43a withdraw (built dark). SW-43b a replace route, with the option `confirm: true` and the card text "Are you sure?", and a Change button (built dark, 2026-11-11). SW-43c the chat tool, the agent text on by default, and the flag on.
+- **Slices.** SW-43a withdraw (built dark). SW-43b a replace route, with the option `confirm: true` and the card text "Are you sure?", and a Change button (built dark, 2026-11-11). SW-43c the chat tool, the agent text on by default, and the flag on (built, 2026-11-11, and the flag can go on).
 
 ### 3.10 Many people, each with their own agents (P9, D183)
 
@@ -307,7 +309,7 @@ SW-18 names the project lead as a last-resort reviewer.
 - **D-EA-14 and EA-18** (`external_agent_access.md` §12.8, tasks 1788 and 1806 to 1808, 1832). One list of the questions that wait on a person. The task creator, the assignees, the run's member and the roles owner, admin and manager see and answer. Each answer names its author. Task 1806 is built, dark and not merged on 2026-11-06. It holds `person_may_answer_sql` and `may_answer_run`, behind `AGENT_QUESTIONS_ORGS`.
 - **The Waiting spec** (PR 1772, accepted on 2026-11-06). It owns the list at `/waiting`. It also owns the **addressee ladder** of §4.5 (AP-15, task 1875). The ladder runs: the run's member, the assignees and watchers, the project lead (with the `authority.py` walk), and last the holders of `data:org:read`. The ladder stores no addressee column. An owned wait opens to its circle after 24 hours (AP-Q9). AP-16 (task 1876, AP-Q10, open) lets an agent name one person of the circle. AP-14 (forward) got "not now".
 - **Task 1750 (CIV-14k, PR 1741).** The first "Waiting for you" list. AP-2 moves it.
-- **SW-43 (§3.9).** Withdraw (SW-43a, built dark). Change and `confirm: true` (SW-43b, task 1801). The chat tool (SW-43c, task 1802).
+- **SW-43 (§3.9).** Withdraw (SW-43a, built dark). Change and `confirm: true` (SW-43b, task 1801, built dark). The chat tool (SW-43c, task 1802, built).
 - **SW-18.** A named reviewer, or the project lead, accepts agent work.
 - **Task 1731 (CIV-14f, no spec).** An answer watcher on the home box wakes the session that asked. **MCP-G4** (merged, #1742): an answer reaches only the session that asked.
 
@@ -862,6 +864,13 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-7b · A display label for each session
 
+- **Built (task 2858), 2026-11-11.** migration 418 adds `pm_agent_runs.agent_label`, with a CHECK of 1 to 40 characters.
+  - `agent_runs.clean_agent_label` applies the rules of `_clean_body`. It also drops each control and format character, and it keeps one space for each run of white space.
+  - A person's body that names a label gets 422 (`agent_runs.agent_label_of`). A call with no label keeps the old one.
+  - The runs wire and the task row carry `agent_label`. The edge sends it as untrusted text.
+  - The card line, the run pill and the held-by line read "Claude Code (backend-worker-3)" (`agentRuns.withAgentLabel`).
+  - No flag. The label is display data on the runs, and `agent_runs_enabled` already gates the runs.
+  - The roster (SW-8) is not built. The runs wire carries the label for it.
 - **Scope.** `claim_task` and `start_agent_run` take an optional `agent_label`. The gateway cleans it and caps it at 40 characters. Migration, expand only: `pm_agent_runs.agent_label TEXT NULL`. The card, the run panel and the roster show it beside the client name.
 - **Done when.** Two sessions with two labels show two names on the board.
 - **Fence.** The structural test of §3.7. An edge schema test for the argument.
@@ -902,6 +911,8 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE.
 
 #### 1045b · Linked events count as life
+
+**Status: built, 2026-11-12 (migration 421).** The webhook calls `agent_runs.signal_linked_runs`. A burst of check events with the same words writes one line.
 
 - **Scope.**
   1. The GitHub webhook handles two events in `webhook.py`: `_on_pull_request` with the action `synchronize`, and `_on_checks`. For each event, it finds each `in_progress` run of a task that references that pull request.
@@ -1222,6 +1233,11 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 #### SW-43c · Chat tool and flag on
 
 - **Scope.** The chat tools `withdraw_agent_answer` and a change tool. The agent text on by default. The flag on.
+- **Built (task 1802). The flag can go on.** The Projects skill has ONE chat tool for the two routes, `change_agent_answer` in `guarded.py`. With `withdraw` true it takes the answer back. Else it sends a new option, a text, or both. It takes the task, and it reads the runs of the task and the one run. It shows one card with the question and the answer. A costly option puts "Are you sure?" on the card. Before any card, it refuses a run with no person present and an answer that an agent read. It also refuses the run of another member and the answer to an archive request (D-OP-13).
+- **One tool, class C.** The manifest rows of the two routes name the one tool, class C, as `answer_decision` is. An agent acts on an answer when it reads it, so the change is hard to undo. A held chat holds the tool off (RX-1). The tool is in the pack `projects-plan`, beside `waiting_agent_requests`. The pack had room for one tool more, so the slice builds one tool and not two (`test_projects_packs.py`).
+- **The agent text.** With the runs flag alone, the `work_on_task` steps tell the agent to post a thought first. The thought names the answer id, and it comes before the agent acts on the answer. The reason ("the member may withdraw it") shows only with the flag. The description of `get_agent_run` and line 2 of the SW-56 block say the same (protocol version 2). The server instructions do not grow (task 1803).
+- **The flag** `agent_answer_change_enabled` stays off in code. The turn-on is OWNER-GATE `enforcement-flip`.
+- **Fence.** `test_agent_answer_tools.py`, `test_agent_answer_chat_r8.py` (R8: a second session of the member after the agent read, and a chat change before it), `test_mcp_edge_agent_runs.py` (`TestTheAnswerChangeAtTheEdge`).
 - **Depends on.** SW-43a and SW-43b.
 
 #### CIV-14a · A claim and an ask carry the session link
@@ -1312,7 +1328,7 @@ They keep their own gates.
 #### SW-48 · The lead acts on the runs of their apps
 
 - **Metorite task.** 1881.
-- **Scope.** Edit `person_may_end_sql` in `agent_runs.py`, the one text. `may_end_run` and `needs_attention.py` read it. So the button and the route agree. Add one branch with the public lead-walk SQL of `authority.py`. The app lead of the run's task may Release and Resume the run. Today the org-wide case uses `RELEASE_ADMIN_PERMISSION = "admin:members:read"`. Q5 recommends `admin:members:manage` and is still open. The lead does not answer by this rule (SW-46).
+- **Scope.** Edit `person_may_end_sql` in `agent_runs.py`, the one text. `may_end_run` and `needs_attention.py` read it. So the button and the route agree. Add one branch with the public lead-walk SQL of `authority.py`. The app lead of the run's task may Release and Resume the run. The org-wide case uses `RELEASE_ADMIN_PERMISSION = "admin:members:manage"`. The owner decided Q5 on 2026-11-06, and H-409 built it (task 748). The lead does not answer by this rule (SW-46).
 - **Done when.** R8: the lead of the app gets 200 on Release and Resume. A member who is not the run's member and not the lead gets 403. A lead of another app gets 403. `can_act` on Needs attention agrees with the route.
 - **Fence.** `test_agent_runs_r8.py`, `test_agent_run_exclusive.py` and `test_needs_attention_r8.py`.
 - **Risk.** HIGH (a write authority rule). **Gate.** AGENT-SAFE. **Depends on.** SW-44. Q5 and Q9.
@@ -1883,7 +1899,7 @@ Read at `9d41f51d4` on 2026-10-30. Line numbers move. Find each symbol by name a
 | `app/projects/components/AskAgentDialog.tsx` | "Ask an agent" (SW-30a) |
 | `app/connect/authorize/consent.ts:106` | `SCOPE_COPY` of the consent page. `scopeRows` is at :133 and `grantedScopes` at :150 (SW-34b) |
 
-**SW-43a** (find each symbol by name): `withdraw_agent_answer` and `_MOVES["member_withdraw"]` in `agent_runs.py`. `answer_changeable_sql` and `live_answer_sql` in `filters.py`. `answer_change_enabled` in `agent_oauth.py`. `agent_answer_change_enabled` in `settings.py`. `ANSWER_RULE` in `agent_edge/prompts.py`. `withdrawPayload` in `agentRuns.ts`.
+**SW-43a** (find each symbol by name): the route `withdraw_agent_answer` and `_MOVES["member_withdraw"]` in `agent_runs.py`. **SW-43c**: `change_agent_answer` and `_live_answer` in `skill_projects/guarded.py`, `answer_thought_rule` in `agent_edge/prompts.py`. `answer_changeable_sql` and `live_answer_sql` in `filters.py`. `answer_change_enabled` in `agent_oauth.py`. `agent_answer_change_enabled` in `settings.py`. `ANSWER_RULE` in `agent_edge/prompts.py`. `withdrawPayload` in `agentRuns.ts`.
 
 **P9** (read on 2026-11-06 at `f504698bd`). Find each symbol by name. `pm_projects.lead` in `infra/postgres/146_projects.sql`. `may_end_run` in `routes/projects/agent_runs.py`. `pm_agent_runs.connection_id` in `267_pm_agent_runs.sql`.
 
@@ -1958,6 +1974,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-35 | `uv run pytest -q -p no:cacheprovider tests/unit/test_triage_suggestions.py` (new) |
 | SW-36 | `uv run pytest -q -p no:cacheprovider tests/unit/test_project_update_draft.py` (new) |
 | SW-43a | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_runs_r8.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_ui_actions.py tests/unit/test_mcp_edge_agent_runs.py`, and `npx vitest run src/app/projects/lib/agentRuns.test.ts` |
+| SW-43c | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_answer_tools.py tests/unit/test_agent_answer_chat_r8.py tests/unit/test_chat_parity.py tests/unit/test_mcp_edge_agent_runs.py`, and `npx vitest run src/lib/chatPlacement.test.ts` |
 | SW-44 | `uv run pytest -q -p no:cacheprovider tests/unit/test_needs_attention_r8.py` |
 | SW-45 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_claim_scope_r8.py` (new) `tests/unit/test_agent_label_fence.py` |
 | SW-46 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_questions_r8.py tests/unit/test_agent_approver_r8.py` (new) `tests/unit/test_mcp_edge_prompts.py tests/unit/test_tenant_coverage.py` |
@@ -2051,7 +2068,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 ## 9. What this spec could not settle
 
 - **The column names of the delegate.** SW-29a fixes them at dispatch, under the rules of §3.7 and Q1.
-- **The `push` event.** It is not known whether the GitHub App subscribes to `push` (1045b).
+- **The `push` event.** Settled by 1045b. The GitHub App does not subscribe to `push`. `EVENTS` in `scripts/github_app_manifest.py` lists `pull_request`, `check_suite`, `check_run` and `status` only. So a push to a branch with no pull request sends no event.
 - **The board half of SW-5.** EA-13g may already draw part of the holder line. Read it at dispatch.
 - **The production flags.** This spec uses the reading of 2026-10-29. Read the env files of the box again before SW-7a and SW-10b.
 - **The read-only door.** SW-34b settled it. The path is the mode, and one token works on both paths. An MCP client usually keeps one token for each server entry (SW-34b, "As built").

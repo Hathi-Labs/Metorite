@@ -57,12 +57,26 @@ jobs:
         if: ${{ runner.environment != 'github-hosted' }}
         run: npx playwright install chromium
 
+      # CIV-29a (D218): the JSON report is what a PR run reads to tell a failure
+      # that main already has from a new one (scripts/e2e_inherited.py).
       - name: Browser suite
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: e2e-result.json
         run: |
-          npx playwright test --project=ci --shard=${{ matrix.shard }}/3 &
+          npx playwright test --project=ci --reporter=list,json --shard=${{ matrix.shard }}/3 &
           pw=$!
           bash ../../scripts/e2e_watchdog.sh http://127.0.0.1:3101/chat "$pw" &
           wait "$pw"
+
+      # On every run, pass or fail. The name is stable: a PR run downloads it.
+      - name: Keep the result for the PR runs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-nightly-result-${{ matrix.shard }}
+          path: workbench/control_plane/e2e-result.json
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Keep the report when it fails
         if: failure()

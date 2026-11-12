@@ -1163,7 +1163,11 @@ def test_no_package_tool_takes_an_identity_or_confirm_argument() -> None:
               "member_email", "user", "user_email", "email", "actor", "as_user", "owner",
               "owner_email", "visibility", "confirm", "confirmed", "approve", "approved", "force",
               "plan", "approval"}
-    assert [fn.__name__ for fn in st.STUDIO_PACKAGE_TOOLS] == ["studio_save", "studio_publish"]
+    assert [fn.__name__ for fn in st.STUDIO_PACKAGE_TOOLS] == [
+        "studio_save", "studio_publish", "studio_delete_package"]
+    # A5c-2: the delete takes the package id only. The route decides the admin path.
+    assert list(inspect.signature(st.studio_delete_package).parameters) == ["package_id"]
+    banned |= {"as_admin", "admin", "token", "records"}
     for fn in (*st.STUDIO_PACKAGE_TOOLS, st.studio_list_actions):
         params = set(inspect.signature(fn).parameters)
         assert not params & banned, (fn.__name__, params)
@@ -1358,3 +1362,312 @@ async def test_a_stale_hash_from_the_page_facts_is_refused_and_writes_nothing(gw
     assert "apply the change again" in st._PKG_STALE and "page facts" in st._PKG_STALE
     assert gw.writes() == []
     assert gw.packages[x_id]["manifest"] == before
+
+
+# -- 14. The delete of a package (STU-A5c-2) -------------------------------------------
+#
+# ``studio_delete_package`` over the two delete routes of A5c-1. The fake serves
+# them with the REAL preview shape (``packages._preview_out``), the REAL token
+# (``store.confirm_token``) and the REAL parse of the token (``packages._confirm``).
+# Each DELETE call removes ``chunk`` records, and a call that leaves records
+# answers 202 with a new token, as the route does.
+#
+# The mutations (R7). Each ran alone on 2026-11-11, and each test named went red:
+#
+# * D1, show the card only in a held chat (``if await _must_ask():`` around the
+#   card): ``always_shows_one_card_with_the_counts[False]``.
+# * D2, delete on revised, stopped or no_card: ``deletes_nothing_without_approved``
+#   (3 cases).
+# * D3, skip the second read: ``reads_the_preview_twice_then_deletes``,
+#   ``change_under_the_card_deletes_nothing``.
+# * D4, no bound on the 202 loop (``while True``): ``202_loop_has_a_bound``.
+# * D5, send the first token on each call of the loop:
+#   ``follows_each_202_with_its_new_token``.
+
+
+class DeleteGateway(Gateway):
+    """The delete routes of A5c-1, in memory, behind the real shapes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: dict[str, int] = {}
+        self.chunk = 500
+        self.admins: set[str] = set()
+        self.active: set[str] = set()
+        self.answers: list[tuple[int, Any]] = []  # canned DELETE answers, in order
+
+    def seed_app(self, records: int = 10, owner: str = MEMBER,
+                 tables: tuple[str, ...] = ("visit",), name: str = "Install visits") -> str:
+        pid = self.seed(_visit(name=name), owner)
+        self.records[pid] = records
+        self.tables[pid] = list(tables)
+        return pid
+
+    def preview(self, pid: str) -> store.DeletePreview:
+        objs = tuple(objects_store.ObjectCount(
+            name=n, fields=3, records=self.records[pid] if i == 0 else 0, capped=False)
+            for i, n in enumerate(self.tables[pid]))
+        p = self.packages[pid]
+        return store.DeletePreview(
+            id=pid, name=str(p["manifest"]["name"]), slug=f"visits-{pid[:8]}", objects=objs,
+            versions=1, installs=1, other_member_installs=0,
+            confirm=store.confirm_token(pid, objs, 1, 1, 0))
+
+    def deletes(self) -> list[Any]:
+        return [b for m, _p, b, _h in self.calls if m == "DELETE"]
+
+    def _serve(self, method: str, path: str, body: Any, member: str,
+               args: dict[str, str]) -> httpx.Response:
+        parts = path.strip("/").split("/")
+        delete = method == "DELETE" and len(parts) == 3
+        preview = method == "GET" and parts[3:] == ["delete-preview"]
+        if not (delete or preview):
+            return super()._serve(method, path, body, member, args)
+        pid = packages._package_id(parts[2])
+        p = self.packages.get(pid)
+        if p is None or (p["owner"] != member and member not in self.admins):
+            raise HTTPException(404, "Not found")
+        if p["owner"] != member and p["owner"] in self.active:
+            raise HTTPException(403, {"code": packages.OWNER_ACTIVE,
+                                      "message": store.OWNER_ACTIVE_TEXT, "records_removed": 0})
+        if preview:
+            return self._r(200, packages._preview_out(self.preview(pid)))
+        raw = b"" if body is None else json.dumps(body).encode("utf-8")
+        token = packages._confirm(packages._parse_json(raw, empty_ok=True))
+        if self.answers:
+            status, data = self.answers.pop(0)
+            return self._r(status, data)
+        now = self.preview(pid)
+        if token != now.confirm:
+            raise HTTPException(409, {"code": packages.COUNTS_CHANGED,
+                                      "message": store.COUNTS_CHANGED_TEXT, "records_removed": 0,
+                                      "preview": packages._preview_out(now)})
+        take = min(self.chunk, self.records[pid])
+        self.records[pid] -= take
+        if take < self.chunk:
+            del self.packages[pid]
+            return self._r(200, {"deleted": True, "package_id": pid, "records_removed": take})
+        left = self.preview(pid)
+        return self._r(202, {"deleted": False, "package_id": pid,
+                             "remaining": self.records[pid], "remaining_capped": False,
+                             "records_removed": take, "confirm": left.confirm})
+
+
+@pytest.fixture
+def dgw(monkeypatch, mark, card, redis, who):
+    gateway = DeleteGateway()
+    monkeypatch.setattr(st.httpx, "AsyncClient", lambda **kw: _Client(gateway))
+    return gateway
+
+
+def _verbs(gw: Gateway) -> list[tuple[str, str]]:
+    return [(m, re.sub(r"[0-9a-f-]{36}", "{}", p)) for m, p, _b, _h in gw.calls]
+
+
+_PREVIEW = ("GET", "/studio/packages/{}/delete-preview")
+_DELETE = ("DELETE", "/studio/packages/{}")
+
+
+@pytest.mark.parametrize("held_chat", [False, True])
+async def test_the_delete_always_shows_one_card_with_the_counts(
+        dgw, mark, card, held_chat: bool) -> None:
+    """Criterion: the card always shows, in a clear chat too, and the delete
+    comes only after it."""
+    mark.held = held_chat
+    pid = dgw.seed_app(records=10)
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] and out["deleted"] and out["decision"] == "approved", out
+    assert out["records_removed"] == 10 and pid not in dgw.packages
+    [shown] = card.shown
+    assert shown["title"] == "Delete the app «Install visits»?"
+    assert shown["detail"] == "10 records go for good. Nothing can bring them back."
+    context = str(shown["context"])
+    assert context.startswith(st._DEL_NOTE)
+    for line in ("App: «Install visits»", "- «visit»: 10 records, 3 fields",
+                 "Records: 10 records in 1 table", "Versions: 1",
+                 "Installs: 1, and 0 of them reach other members"):
+        assert line in context, line
+    assert shown["non_interactive_default"] == "deny" and shown["responder"] == MEMBER
+
+
+async def test_the_tool_reads_the_preview_twice_then_deletes(dgw, card) -> None:
+    pid = dgw.seed_app(records=10)
+    token = dgw.preview(pid).confirm
+    await st.studio_delete_package(pid)
+    assert _verbs(dgw) == [_PREVIEW, _PREVIEW, _DELETE]
+    assert dgw.deletes() == [{"confirm": token}]
+
+
+@pytest.mark.parametrize("answer,open_,decision", [
+    (ask_tools.REVISED, True, "revised"), (False, True, "stopped"), (False, False, "no_card")])
+async def test_the_delete_deletes_nothing_without_approved(
+        dgw, card, answer: Any, open_: bool, decision: str) -> None:
+    """Criterion: a run with no card deletes nothing, and so do a stop and a
+    revise. Reject deletes nothing."""
+    card.answer, card.open = answer, open_
+    pid = dgw.seed_app(records=10)
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and out["decision"] == decision
+    assert _msg(out).startswith("Nothing was deleted.")
+    assert dgw.deletes() == [] and dgw.records[pid] == 10 and pid in dgw.packages
+    assert _verbs(dgw) == [_PREVIEW]
+    if decision == "no_card":
+        assert "App: «Install visits»" in out["context"]
+
+
+async def test_a_change_under_the_card_deletes_nothing(dgw, card) -> None:
+    """Criterion: the tool reads the preview a second time, and a count that
+    moved while the card was open sends no DELETE."""
+    pid = dgw.seed_app(records=10)
+
+    def grow() -> None:
+        dgw.records[pid] += 1
+
+    card.between = grow
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and _msg(out) == st._DEL_MOVED and out["decision"] == "approved"
+    assert dgw.deletes() == [] and dgw.records[pid] == 11
+
+
+async def test_the_delete_follows_each_202_with_its_new_token(dgw, card) -> None:
+    pid = dgw.seed_app(records=1200)
+    first = dgw.preview(pid).confirm
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] and out["deleted"] and out["records_removed"] == 1200
+    tokens = [b["confirm"] for b in dgw.deletes()]
+    assert len(tokens) == 3 and tokens[0] == first and len(set(tokens)) == 3
+    assert len(card.shown) == 1
+
+
+async def test_a_503_after_a_202_keeps_the_true_total(dgw, card) -> None:
+    """A5c-2 fix round 1: a 503 of a later call names the records that the call
+    removed before it, so the total of the result counts them."""
+    pid = dgw.seed_app(records=1200)
+    dgw.answers = [(202, {"deleted": False, "package_id": pid, "remaining": 700,
+                          "remaining_capped": False, "records_removed": 500,
+                          "confirm": "b" * 64}),
+                   (503, {"detail": {"code": "store_busy", "message": "busy",
+                                     "records_removed": 300}})]
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and out["status"] == 503 and _msg(out) == st._DEL_BUSY
+    assert out["records_removed"] == 800
+
+
+async def test_the_202_loop_has_a_bound(dgw, card) -> None:
+    """Criterion: the loop stops after ``MAX_DELETE_CALLS`` calls, and the
+    result says what is left. The next call shows a new card."""
+    dgw.chunk = 1
+    pid = dgw.seed_app(records=1000)
+    out = await st.studio_delete_package(pid)
+    assert len(dgw.deletes()) == st.MAX_DELETE_CALLS
+    assert out["ok"] is False and out["status"] == 202
+    assert out["records_removed"] == st.MAX_DELETE_CALLS
+    assert out["remaining"] == 1000 - st.MAX_DELETE_CALLS
+    assert str(1000 - st.MAX_DELETE_CALLS) in _msg(out) and pid in dgw.packages
+
+
+def test_the_bound_of_the_loop_ends_under_the_tool_limit_of_the_run() -> None:
+    """Each call ends before the client timeout of ``_send``. The loop ends
+    within 3 minutes, under the 300 s tool limit of the run watchdog."""
+    from tests.unit.test_studio_package_delete import _client_timeout
+
+    assert st.MAX_DELETE_CALLS * _client_timeout() <= 180 < 300
+
+
+async def test_a_409_during_the_delete_stops_the_loop(dgw, card) -> None:
+    pid = dgw.seed_app(records=1200)
+    dgw.answers = [(202, {"deleted": False, "package_id": pid, "remaining": 700,
+                          "remaining_capped": False, "records_removed": 500,
+                          "confirm": "b" * 64}),
+                   (409, {"detail": {"code": packages.COUNTS_CHANGED, "records_removed": 0,
+                                     "message": "changed"}})]
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and out["status"] == 409 and out["code"] == "counts_changed"
+    assert _msg(out) == st._DEL_CHANGED and out["records_removed"] == 500
+    assert len(dgw.deletes()) == 2
+
+
+async def test_an_owner_who_is_active_again_stops_the_loop(dgw, card) -> None:
+    pid = dgw.seed_app(records=1200)
+    dgw.answers = [(403, {"detail": {"code": packages.OWNER_ACTIVE, "records_removed": 500,
+                                     "message": store.OWNER_ACTIVE_TEXT}})]
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and out["code"] == "owner_active" and out["records_removed"] == 500
+    assert _msg(out) == st._DEL_OWNER_BACK
+
+
+@pytest.mark.parametrize("status,want", [(503, "_DEL_BUSY"), (404, "_DEL_GONE")])
+async def test_a_busy_or_gone_package_stops_the_loop(dgw, card, status: int, want: str) -> None:
+    pid = dgw.seed_app(records=10)
+    dgw.answers = [(status, {"detail": {"code": "store_busy", "message": "busy"}})]
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and out["status"] == status and _msg(out) == getattr(st, want)
+    assert len(dgw.deletes()) == 1
+
+
+async def test_a_network_miss_on_the_delete_says_it_may_have_removed_records(dgw, card) -> None:
+    pid = dgw.seed_app(records=10)
+    dgw.error, dgw.error_verb = httpx.ConnectError("down"), "DELETE"
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and _msg(out) == st._DEL_MAYBE and out["decision"] == "approved"
+
+
+async def test_an_admin_gets_the_owner_active_answer_and_no_card(dgw, card) -> None:
+    pid = dgw.seed_app(owner=BEN)
+    dgw.admins, dgw.active = {MEMBER}, {BEN}
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and out["status"] == 403 and out["code"] == "owner_active"
+    assert _msg(out) == st._DEL_OWNER_ACTIVE
+    assert card.shown == [] and dgw.deletes() == []
+
+
+async def test_an_admin_deletes_the_app_of_a_member_who_left_with_the_same_calls(
+        dgw, card) -> None:
+    """The route decides the admin path from the session. The tool sends the
+    same calls, with no identity in a body."""
+    pid = dgw.seed_app(owner=BEN, records=10)
+    dgw.admins = {MEMBER}
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] and out["deleted"]
+    assert _verbs(dgw) == [_PREVIEW, _PREVIEW, _DELETE]
+    assert [set(b) for b in dgw.deletes()] == [{"confirm"}]
+
+
+async def test_a_package_that_is_not_yours_shows_no_card(dgw, card) -> None:
+    pid = dgw.seed_app(owner=BEN)
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and out["status"] == 404 and _msg(out) == st._DEL_NOT_FOUND
+    assert card.shown == [] and dgw.deletes() == []
+
+
+@pytest.mark.parametrize("bad", ["", "nope", "../x", None, 7])
+async def test_a_bad_id_of_a_delete_is_refused_before_a_call(dgw, card, bad: Any) -> None:
+    out = await st.studio_delete_package(bad)
+    assert out["ok"] is False and dgw.calls == [] and card.shown == []
+
+
+async def test_a_preview_in_a_shape_that_the_tool_cannot_read_shows_no_card(
+        dgw, card, monkeypatch) -> None:
+    pid = dgw.seed_app()
+    monkeypatch.setattr(packages, "_preview_out", lambda found: {"package": {}, "confirm": "x"})
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and _msg(out) == st._PKG_SHAPE and card.shown == []
+
+
+async def test_the_card_fences_each_name_and_counts_the_tables_that_it_does_not_name(
+        dgw, card) -> None:
+    tables = tuple(f"t{i}" for i in range(15))
+    pid = dgw.seed_app(records=3, tables=tables, name="Visits​ «x» app")
+    await st.studio_delete_package(pid)
+    context = str(card.shown[0]["context"])
+    assert "App: «Visits x app»" in context and "​" not in context
+    assert context.count("\n- «t") == st.MAX_DELETE_CARD_TABLES
+    assert "and 5 more tables" in context
+    assert "Records: 3 records in 15 tables" in context
+
+
+def test_the_delete_tool_copies_match_the_route() -> None:
+    assert st._COUNTS_CHANGED == packages.COUNTS_CHANGED
+    assert st._OWNER_ACTIVE == packages.OWNER_ACTIVE
+    risk = st.studio_delete_package.__tool_risk__
+    assert risk["read_only"] is False and risk["open_world"] is False

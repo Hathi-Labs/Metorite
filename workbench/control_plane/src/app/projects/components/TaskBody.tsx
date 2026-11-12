@@ -318,9 +318,10 @@ export function Entry({
         </span>
       </p>
       {/* WS-57 TR-4 — a comment is Markdown, so an image pasted into it
-          draws inline. Every other entry is a sentence the app wrote, and
-          stays plain text. The byline above is the same for both. */}
-      {activity.type === "comment" ? (
+          draws inline. An agent run's outcome is Markdown too (task 3031: a
+          bare URL or a local file path in it). Every other entry is a sentence
+          the app wrote, and stays plain text. The byline above is the same for both. */}
+      {activity.type === "comment" || (activity.type === "agent_run" && !attribution.reason) ? (
         <div className="min-w-0 break-words text-foreground">
           <MarkdownBody
             content={keepLineBreaks(describeActivity(activity, fields))}

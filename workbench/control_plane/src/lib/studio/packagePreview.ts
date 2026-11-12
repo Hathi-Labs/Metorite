@@ -6,13 +6,34 @@
  * no view to a node and reads no page of the manifest (PKG-8 owns that).
  */
 import type { FieldSpec } from "./fieldCheck";
-import { FIELD_TYPE_LIST } from "./blocks";
+import { FIELD_TYPE_LIST, extrasOf } from "./blocks";
 import { boardBlock, MAX_CARD_FIELDS } from "./boardModel";
 import type { FieldType } from "./manifest";
-import type { ObjectRow } from "./realDoor";
+import { readActions, type DeclaredAction, type ObjectRow, type PackageAccess } from "./realDoor";
 
 /** The most columns that the Table draws. The Form and the Detail show every field. */
 export const MAX_TABLE_COLUMNS = 8;
+
+/**
+ * What the page offers to who reads it (J2a). The owner gets every control, as
+ * before. A viewer reads an app that another member owns, through an install, and
+ * gets only the reads: no cell edit, no drag, no form, no record delete, no IDE and
+ * no app delete. The door of a viewer holds the read actions only.
+ */
+export interface PreviewControls {
+  /** The owner's controls: the Form, Edit in form, Delete record, the IDE and Delete app. */
+  owner: boolean;
+  /** The actions that the door of the page holds. */
+  actions: DeclaredAction[];
+}
+
+export function previewControls(access: PackageAccess, actions: readonly DeclaredAction[] | undefined): PreviewControls {
+  if (access === "owner") return { owner: true, actions: [...(actions ?? [])] };
+  return { owner: false, actions: readActions(actions) };
+}
+
+/** The empty state of a viewer when the installed version has no object. */
+export const VIEWER_NO_OBJECT = "This app has no object to show yet. Its owner adds one in Studio.";
 
 /** The fields of an object row of the gateway, as the blocks read them. */
 export function fieldSpecs(object: Pick<ObjectRow, "fields">): FieldSpec[] {
@@ -27,6 +48,7 @@ export function fieldSpecs(object: Pick<ObjectRow, "fields">): FieldSpec[] {
       many: f.many === true,
       options: Array.isArray(f.options) ? f.options : undefined,
       to: f.to ?? undefined,
+      ...extrasOf(f as unknown as Record<string, unknown>),
       ...(typeof f.lines === "string" ? { lines: f.lines } : {}),
     });
   }

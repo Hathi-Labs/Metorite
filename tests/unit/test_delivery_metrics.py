@@ -59,7 +59,10 @@ def _job(name, conclusion, wait_s):
 class FakeGh:
     """Serves runs for pr-check and deploy, jobs per run, pulls per commit."""
 
-    def __init__(self, pr_runs, jobs, batch_runs=(), commit_pulls=None, open_prs=(), fail=()):
+    def __init__(self, pr_runs, jobs, batch_runs=(), commit_pulls=None, open_prs=(), fail=(),
+                 dispatch_runs=(), merged_prs=()):
+        self.dispatch_runs = list(dispatch_runs)
+        self.merged_prs = list(merged_prs)
         self.pr_runs = list(pr_runs)
         self.batch_runs = list(batch_runs)
         self.jobs = jobs
@@ -84,8 +87,12 @@ class FakeGh:
         if "workflows/pr-check.yml/runs" in path:
             return serve(self.pr_runs)
         if "workflows/deploy.yml/runs" in path:
+            if "event=workflow_dispatch" in path:
+                return serve(self.dispatch_runs)
             assert "event=push" in path and "branch=main" in path
             return serve(self.batch_runs)
+        if "pulls?state=closed" in path:
+            return self.merged_prs if re.search(r"page=1(?!\d)", path) else []
         m = re.search(r"actions/runs/(\d+)/jobs", path)
         if m:
             return {"jobs": self.jobs.get(int(m.group(1)), [])}
@@ -315,3 +322,112 @@ def test_the_cap_is_reported_as_truncated(dm, tmp_path):
 def test_a_negative_wait_counts_as_zero(dm):
     job = {"created_at": "2026-11-07T10:00:10Z", "started_at": "2026-11-07T10:00:00Z", "status": "completed"}
     assert dm._queue_wait({1: [job]}, NOW)["max_min"] == 0.0
+
+
+# CIV-38 (D218): the quality block.
+def _merged(n, title="Add x", body="", days_ago=2):
+    t = _iso(NOW - timedelta(days=days_ago))
+    return {"number": n, "title": title, "body": body, "merged_at": t, "updated_at": t}
+
+
+def _push(rid, start, minutes, conclusion):
+    s = {"id": rid, "status": "completed", "conclusion": conclusion, "event": "push",
+         "head_sha": f"b{rid}", "run_started_at": _iso(start), "created_at": _iso(start),
+         "updated_at": _iso(start + timedelta(minutes=minutes))}
+    return s
+
+
+def _dispatch(rid, start):
+    return {"id": rid, "status": "completed", "conclusion": "success", "event": "workflow_dispatch",
+            "head_sha": f"d{rid}", "run_started_at": _iso(start), "created_at": _iso(start),
+            "updated_at": _iso(start + timedelta(minutes=30))}
+
+
+def _quality(dm, tmp_path, **kw):
+    runs, jobs = _pr_fixture()
+    gh = FakeGh(runs, jobs, **kw)
+    return dm.collect(gh, days=7, max_runs=200, now=NOW, durations=_durations_file(tmp_path, {}))
+
+
+def test_revert_share(dm, tmp_path):
+    prs = [_merged(i) for i in range(1, 19)]
+    prs += [_merged(30, title="Revert: Add x"), _merged(31, body="This reverts commit abc123.")]
+    prs.append(_merged(99, days_ago=30))  # outside the window
+    q = _quality(dm, tmp_path, merged_prs=prs)["quality"]
+    assert (q["reverts"], q["merged_prs"], q["revert_share"]) == (1, 20, 0.05)
+    prs = [_merged(i) for i in range(1, 18)]
+    prs += [_merged(30, title="Revert x"), _merged(31, body="This reverts commit 1"),
+            _merged(32, body="Auto-Revert: red main")]
+    q = _quality(dm, tmp_path, merged_prs=prs)["quality"]
+    assert (q["reverts"], q["merged_prs"], q["revert_share"]) == (3, 20, 0.15)
+    prs = [_merged(i) for i in range(1, 19)] + [_merged(30, title="Revert x"),
+                                                _merged(31, body="This reverts commit 1")]
+    q = _quality(dm, tmp_path, merged_prs=prs)["quality"]
+    assert (q["reverts"], q["merged_prs"], q["revert_share"]) == (2, 20, 0.1)
+
+
+def test_red_main_minutes_per_day_clips_to_the_window(dm, tmp_path):
+    start = NOW - timedelta(days=7)
+    runs = [
+        # red completes 60 min before the window start, green 60 min after it: 60 red minutes
+        _push(1, start - timedelta(minutes=90), 30, "failure"),
+        _push(2, start + timedelta(minutes=30), 30, "success"),
+        # red then red then green: one stretch of 110 minutes
+        _push(3, NOW - timedelta(days=3), 10, "failure"),
+        _push(4, NOW - timedelta(days=3) + timedelta(minutes=30), 10, "failure"),
+        _push(5, NOW - timedelta(days=3) + timedelta(minutes=110), 10, "success"),
+        # red that never turns green: red until NOW, here 300 minutes
+        _push(6, NOW - timedelta(minutes=310), 10, "failure"),
+    ]
+    q = _quality(dm, tmp_path, batch_runs=runs)["quality"]
+    assert q["red_main_minutes_per_day"] == round((60 + 110 + 300) / 7, 2)
+
+
+def test_a_cancelled_run_does_not_end_a_red_stretch(dm):
+    """Red, cancelled, green: main stays red until the green run completes."""
+    start = NOW - timedelta(days=7)
+    runs = [_push(1, NOW - timedelta(days=2), 10, "failure"),
+            _push(2, NOW - timedelta(days=2) + timedelta(minutes=20), 10, "cancelled"),
+            _push(3, NOW - timedelta(days=2) + timedelta(minutes=100), 10, "success")]
+    assert dm._red_main_minutes_per_day(runs, start, NOW, 7) == round(100 / 7, 2)
+
+
+def test_no_batch_run_is_no_data_not_zero(dm, tmp_path):
+    out = _quality(dm, tmp_path, batch_runs=[])
+    assert out["quality"]["red_main_minutes_per_day"] is None
+    assert any(e.startswith("quality.red_main_minutes_per_day") for e in out["errors"])
+
+
+def test_a_capped_merged_read_says_so(dm):
+    old = _iso(NOW - timedelta(hours=1))
+    page = [{"number": i, "title": "Add x", "body": "", "merged_at": old, "updated_at": old}
+            for i in range(100)]
+    trunc: list[str] = []
+    prs = dm._merged_prs(lambda path: page, NOW - timedelta(days=7), trunc)
+    assert len(prs) == 100 * dm.MERGED_PAGES
+    assert trunc and "merged_prs" in trunc[0]
+
+
+def test_hotfix_releases_skip_the_slots(dm, tmp_path):
+    day = datetime(2026, 11, 6, tzinfo=UTC)
+    disp = [_dispatch(11, day + timedelta(hours=5, minutes=40)),   # slot 05:30 + 10 min
+            _dispatch(12, day + timedelta(hours=9)),               # hotfix
+            _dispatch(13, day + timedelta(hours=21, minutes=31))]  # slot
+    q = _quality(dm, tmp_path, dispatch_runs=disp)["quality"]
+    assert q["hotfix_releases"] == 1
+    assert q["hotfix_run_ids"] == [12]
+    assert q["selection_misses"] == "selection_misses.batch_red_after_pr_green"
+
+
+def test_a_failing_quality_call_gives_null_and_an_error(dm, tmp_path):
+    out = _quality(dm, tmp_path, fail=("pulls?state=closed",))
+    q = out["quality"]
+    assert q["revert_share"] is None and q["reverts"] is None and q["merged_prs"] is None
+    assert q["hotfix_releases"] == 0
+    assert any(e.startswith("quality.merged_prs") for e in out["errors"])
+
+
+def test_delta_covers_the_quality_numbers(dm):
+    d = dm.compute_delta({"quality": {"revert_share": 0.1, "hotfix_run_ids": [1]}},
+                         {"quality": {"revert_share": 0.04}})
+    assert d == {"quality": {"revert_share": 0.06}}

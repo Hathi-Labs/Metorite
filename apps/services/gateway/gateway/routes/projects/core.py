@@ -943,6 +943,10 @@ class TaskModel(BaseModel):
     #: `response` or `elicitation` of that run, at most 140 characters, for the
     #: hover of the pill. Filled by ``attach_agent_state``, as the three above.
     agent_note: str | None = None
+    #: WS-MCP SW-7b. The display label that the agent gave its session, at
+    #: most 40 characters, for "Claude Code (backend-worker-3)" on the card.
+    #: Display data only. Filled by ``attach_agent_state``, as the four above.
+    agent_label: str | None = None
     #: WS-55 EA-13d (EA3-48). The ONE pull request chip of the task:
     #: ``{repo, number, state, checks_state, checks_summary, url, title,
     #: merged_at, more}``, or ``None``. ``filters.attach_pr_chip`` fills it in
@@ -3675,6 +3679,7 @@ def _checked_completed_at(task: Any, when: datetime) -> datetime:
 async def apply_status_transition(
     db: Any, task: Any, new_status_id: str, *, created_by: str,
     automation: bool = False, completed_at: datetime | None = None,
+    closer: Any | None = None,
 ) -> dict[str, Any]:
     """Move a task to a new status. **Three effects, one helper.**
 
@@ -3693,6 +3698,17 @@ async def apply_status_transition(
     closing category: Undo of a Reopen passes the date the task held. It may
     not be in the future or before ``task.created_at`` (422). Every other
     caller leaves it ``None`` and gets the stamp ``now()``.
+
+    ``closer`` (H-409 item 1, task 748) is the caller of a member door, the
+    PATCH today. On the crossing INTO a closing category it ends each open
+    agent run of the task in this transaction
+    (``agent_runs.end_runs_of_closed_task``), and the result carries
+    ``runs_cleared``. A caller that passes no closer ends no run: the sweep
+    closes such a run after its lease (spec §12.6). Fix round 1: on the
+    crossing OUT of a closing category (an Undo, a reopen) on a task that
+    is not archived, the same caller puts back the run that the close
+    ended, inside the undo window
+    (``agent_runs.reopen_run_of_reopened_task``).
     """
     old_status = await require_row(
         db, "pm_task_statuses", str(task.status_id), "Status",
@@ -3746,10 +3762,43 @@ async def apply_status_transition(
 
         successor = await spawn_successor(db, row, actor_id=created_by)
 
+    runs_cleared = (
+        await _runs_follow_the_task(db, row, old_status, new_status, closer)
+        if closer is not None and was_closed != is_closed else []
+    )
+
     return {
         "row": row, "from": old_status, "to": new_status,
-        "recurred_to": successor,
+        "recurred_to": successor, "runs_cleared": runs_cleared,
     }
+
+
+async def _runs_follow_the_task(
+    db: Any, row: Any, old_status: Any, new_status: Any, closer: Any,
+) -> list[str]:
+    """H-409 item 1 and fix round 1 (task 748). The agent run follows a
+    member door's crossing, in the caller's transaction. INTO a closing
+    category: the task's open run ends (``end_runs_of_closed_task``). OUT of
+    one: the run that the close ended comes back inside the undo window
+    (``reopen_run_of_reopened_task``). Imported here for the reason of
+    ``spawn_successor`` above. It returns the members whose question bells
+    moved, so the caller moves their My Day after its commit."""
+    from gateway.routes.projects.agent_runs import (
+        end_runs_of_closed_task,
+        reopen_run_of_reopened_task,
+    )
+
+    if new_status.category in CLOSING_CATEGORIES:
+        return await end_runs_of_closed_task(
+            db, str(row.id), str(new_status.category), closer,
+            status_id=str(new_status.id),
+        )
+    # Fix round 2: the marker decides. A task that stays archived is not
+    # open, so a matching close waits for its unarchive.
+    return await reopen_run_of_reopened_task(
+        db, str(row.id), status_id=str(old_status.id),
+        task_open=getattr(row, "archived_at", None) is None,
+    )
 
 
 # ── The task row lock of a claim (WS-55 EA-6b) ──────────────────────────────

@@ -5,8 +5,10 @@ Code: ``gateway/routes/apps/lifecycle.py`` ``delete_app``,
 ``_session_workspace_override``, and ``orchestrator/sandbox_broker.py``
 ``_mount_source_for``.
 
-The slug of an app is unique over all orgs, and each folder is
-``apps_root()/<slug>``. A chat of the App Workshop stores its folder in
+The slug of an app is unique over all orgs. Before WS-STU A3b-1, each folder
+was ``apps_root()/<slug>``. Since A3b-1, the folder of a new app is
+``apps_root()/<app id>``, so step 3 below gives org B a new folder. The
+checks stay, because an app made before A3b-1 keeps its slug folder. A chat of the App Workshop stores its folder in
 ``chat_session.workspace_path``. Before this fix, the hard delete left that
 path in place, and the executor and the broker checked only that the path lay
 under the root. So:
@@ -38,6 +40,11 @@ b. A chat of org A whose path names the folder that org B took never runs
    of org B on its own folder still runs there.
 c. The owner check answers for the run's org only, with the
    ``ACB_GRAPH_TENANT_BIND`` flag OFF, also for a role that bypasses RLS.
+d. The delete of an app made before A3b-1 (its folder is
+   ``apps_root()/<slug>``) never removes a folder that another org put at
+   that path after the commit. The folder moves to a tombstone before the
+   commit, and only the tombstone goes after it. A rename that fails keeps
+   the row, and a delete that does not commit puts the folder back.
 
 **The mutations (R7).**
 
@@ -49,6 +56,10 @@ c. The owner check answers for the run's org only, with the
   red.
 * M4. ``_ORG_APP_FOLDERS_SQL``: drop the ``organization_id`` filter. The
   superuser case of test c goes red.
+* M5. ``delete_app``: remove ``apps_root()/<slug>`` after the commit (the
+  old order, the code before this fix). The race case of test d goes red.
+* M6. ``delete_app``: no ``_restore_tombstone`` on a failure. The rollback
+  case of test d goes red.
 """
 
 from __future__ import annotations
@@ -56,6 +67,7 @@ from __future__ import annotations
 import asyncio
 import re
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -190,13 +202,14 @@ def test_r8_the_hard_delete_unbinds_every_chat_of_the_org(world) -> None:
     # A sibling whose slug starts with the slug of foo.
     sib = _create(world, a, f"Foo {TAG} x", ANA)
     assert sib.slug.startswith(foo.slug)
-    folder = (world.root / foo.slug).resolve()
+    folder = Path(foo.workspace_path).resolve()
     (folder / "src").mkdir()
     chat_ana = _chat(world, a, ANA, folder)
     chat_bob = _chat(world, a, BOB, folder)
     chat_sub = _chat(world, a, BOB, folder / "src")
-    chat_raw = _chat(world, a, ANA, world.root / foo.slug)
-    chat_sib = _chat(world, a, ANA, (world.root / sib.slug).resolve())
+    chat_raw = _chat(world, a, ANA, Path(foo.workspace_path))
+    sib_folder = Path(sib.workspace_path).resolve()
+    chat_sib = _chat(world, a, ANA, sib_folder)
     chat_none = _chat(world, a, ANA, None)
 
     archived = _delete(world, a, foo.slug, ANA)
@@ -209,7 +222,7 @@ def test_r8_the_hard_delete_unbinds_every_chat_of_the_org(world) -> None:
     assert not folder.exists()
     for sid in (chat_ana, chat_bob, chat_sub, chat_raw):
         assert _path_of(world, sid) is None, f"the delete left chat {sid} bound to the folder"
-    assert _path_of(world, chat_sib) == str((world.root / sib.slug).resolve()), (
+    assert _path_of(world, chat_sib) == str(sib_folder), (
         "the delete unbound the chat of a sibling app")
     assert _path_of(world, chat_none) is None
 
@@ -222,18 +235,22 @@ def test_r8_a_stale_chat_never_runs_in_the_folder_that_another_org_took(world) -
 
     a, b = world.p.org_a, world.p.org_b
     foo = _create(world, a, f"Bar {TAG}", ANA)
-    folder = (world.root / foo.slug).resolve()
-    chat_a = _chat(world, a, ANA, folder)
-    assert _override(chat_a, a) == str(folder), "org A cannot run in its own app"
+    old = Path(foo.workspace_path).resolve()
+    chat_a = _chat(world, a, ANA, old)
+    assert _override(chat_a, a) == str(old), "org A cannot run in its own app"
     assert _delete(world, a, foo.slug, ANA)["status"] == "archived"
     assert _delete(world, a, foo.slug, ANA)["deleted"] is True
 
     took = _create(world, b, f"Bar {TAG}", CAT)
     assert took.slug == foo.slug, "org B did not get the freed slug"
-    assert (world.root / took.slug).resolve() == folder
+    # A3b-1: the folder is the app id, so org B never gets the old folder.
+    folder = Path(took.workspace_path).resolve()
+    assert folder != old, "org B got the folder of the deleted app of org A"
     (folder / "index.html").write_text(SECRET, encoding="utf-8")
     chat_b = _chat(world, b, CAT, folder)
-    # The path that a chat of org A held before this fix shipped.
+    # A stale path of org A that names a folder of org B. Before A3b-1 the
+    # folder of a freed slug was the same folder, and an app made before
+    # A3b-1 keeps it.
     _set_path(world, chat_a, folder)
 
     assert _override(chat_a, a) is None, "the run of org A works in the folder of org B"
@@ -267,7 +284,7 @@ def test_r8_the_owner_check_answers_for_the_run_org_only(
 
     a, b = world.p.org_a, world.p.org_b
     mine = _create(world, b, f"Baz {TAG}", CAT)
-    folder = (world.root / mine.slug).resolve()
+    folder = Path(mine.workspace_path).resolve()
     if role == "superuser":
         admin = sessionmaker(bind=world.p.admin_engine, expire_on_commit=False, future=True)
         monkeypatch.setattr(graph_db, "_session_factory", lambda: admin)
@@ -278,6 +295,127 @@ def test_r8_the_owner_check_answers_for_the_run_org_only(
     assert executor._app_workspace_of_org(folder, a) is False
     assert executor._app_workspace_of_org(folder, None) is False
     assert executor._app_workspace_of_org(world.root.resolve(), b) is False
+
+
+# ── d. The delete of an old-path app never removes the folder of org B ──
+
+
+def _old_path_app(world: Any, org: str, name: str, member: str) -> tuple[Any, Path]:
+    """An app of *org* with its folder at ``apps_root()/<slug>``, as before A3b-1."""
+    app = _create(world, org, name, member)
+    old = world.root / app.slug
+    Path(app.workspace_path).rename(old)
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE apps SET workspace_path = :p WHERE slug = :s"),
+                  {"p": str(old), "s": app.slug})
+    (old / "index.html").write_text("<p>org A</p>\n", encoding="utf-8")
+    return app, old.resolve()
+
+
+def _row_count(world: Any, slug: str) -> int:
+    with world.p.admin_engine.connect() as c:
+        return c.execute(text("SELECT count(*) FROM apps WHERE slug = :s"),
+                         {"s": slug}).scalar()
+
+
+def test_r8_the_delete_never_removes_the_folder_that_org_b_put_at_the_old_path(
+        world, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Org B reserves the freed slug between the commit and the removal, and
+    puts its folder at ``apps_root()/<slug>``. Its folder must stay."""
+    a, b = world.p.org_a, world.p.org_b
+    foo, old = _old_path_app(world, a, f"Qux {TAG}", ANA)
+    assert _delete(world, a, foo.slug, ANA)["status"] == "archived"
+    seen: list[str] = []
+
+    def org_b_takes_the_slug() -> None:
+        # The DELETE of org A committed: the slug is free now.
+        assert _row_count(world, foo.slug) == 0, "the hook ran before the commit"
+        with world.p.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO apps (id, slug, name, owner_email, workspace_path, "
+                "organization_id) VALUES (CAST(:id AS uuid), :s, 'B', :o, :p, :org)"),
+                {"id": str(uuid.uuid4()), "s": foo.slug, "o": CAT, "p": str(old), "org": b})
+        # Before this fix the folder of org A is still there now, and only
+        # the late removal below takes it away.
+        old.mkdir(exist_ok=True)
+        (old / "index.html").write_text(SECRET, encoding="utf-8")
+        seen.append(foo.slug)
+
+    def hook(real: Any) -> Any:
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            if not seen:
+                org_b_takes_the_slug()
+            return real(*args, **kwargs)
+        return wrapped
+
+    # The step after the commit: ``_remove_tombstone`` now, and
+    # ``safe_open.remove_tree`` in the code before this fix.
+    if hasattr(lifecycle, "_remove_tombstone"):
+        monkeypatch.setattr(lifecycle, "_remove_tombstone", hook(lifecycle._remove_tombstone))
+    monkeypatch.setattr(lifecycle.safe_open, "remove_tree", hook(lifecycle.safe_open.remove_tree))
+
+    assert _delete(world, a, foo.slug, ANA) == {"slug": foo.slug, "deleted": True}
+
+    assert seen, "the hook never ran"
+    assert (old / "index.html").read_text(encoding="utf-8") == SECRET, (
+        "the late removal of org A removed the folder of org B")
+    assert [p.name for p in world.root.iterdir() if p.name.startswith(".deleted-")] == [], (
+        "the tombstone of org A stayed")
+
+
+def test_r8_a_failed_rename_keeps_the_row_and_the_folder(
+        world, monkeypatch: pytest.MonkeyPatch) -> None:
+    a = world.p.org_a
+    foo, old = _old_path_app(world, a, f"Quux {TAG}", ANA)
+    assert _delete(world, a, foo.slug, ANA)["status"] == "archived"
+    real_rename = lifecycle.os.rename
+
+    def refuse(src: Any, dst: Any) -> None:
+        if Path(dst).name.startswith(".deleted-"):
+            raise PermissionError("busy")
+        real_rename(src, dst)
+
+    monkeypatch.setattr(lifecycle.os, "rename", refuse)
+    out = _delete(world, a, foo.slug, ANA)
+
+    assert getattr(out, "status_code", None) == 500, out
+    assert _row_count(world, foo.slug) == 1, "the row went, and the folder stayed"
+    assert (old / "index.html").exists()
+
+
+def test_r8_a_delete_that_does_not_commit_puts_the_folder_back(
+        world, monkeypatch: pytest.MonkeyPatch) -> None:
+    a = world.p.org_a
+    foo, old = _old_path_app(world, a, f"Corge {TAG}", ANA)
+    assert _delete(world, a, foo.slug, ANA)["status"] == "archived"
+    real_move = lifecycle._move_to_tombstone
+    real_session = lifecycle._tenant_session
+    moved: list[Path] = []
+
+    def move(workspace: Path, tomb: Path) -> bool:
+        assert real_move(workspace, tomb)
+        moved.append(tomb)
+        return True
+
+    @asynccontextmanager
+    async def session_that_does_not_commit() -> Any:
+        # The DELETE and the rename ran. The session then fails before its
+        # commit, as a lost connection or a cancel would.
+        async with real_session() as db:
+            yield db
+            if moved:
+                raise RuntimeError("the commit fails")
+
+    monkeypatch.setattr(lifecycle, "_move_to_tombstone", move)
+    monkeypatch.setattr(lifecycle, "_tenant_session", session_that_does_not_commit)
+    out = _delete(world, a, foo.slug, ANA)
+
+    assert isinstance(out, RuntimeError), out
+    assert moved, "the folder never moved to a tombstone"
+    assert _row_count(world, foo.slug) == 1, "the DELETE committed"
+    assert (old / "index.html").read_text(encoding="utf-8") == "<p>org A</p>\n", (
+        "the folder did not come back")
+    assert [p.name for p in world.root.iterdir() if p.name.startswith(".deleted-")] == []
 
 
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:

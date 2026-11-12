@@ -3784,10 +3784,11 @@ _ORG_APP_FOLDERS_SQL = (
 def _app_workspace_of_org(resolved: Path, org: str | None) -> bool:
     """True when *resolved* lies in the folder of an app of *org* (task 2462).
 
-    The slug of an app is unique over all orgs, and each app folder is
-    ``apps_root()/<slug>``. So a folder of a deleted app of org A can become
-    the folder of a new app of org B. A path check under the root is not
-    enough. The run's org must own an ``apps`` row whose folder holds the path.
+    The folder of an app made before WS-STU A3b-1 is ``apps_root()/<slug>``.
+    So a stale path to a folder of a deleted app of org A can point at a
+    folder that another app uses later. A new app has its folder at
+    ``apps_root()/<app id>``. A path check under the root is not enough. The
+    run's org must own an ``apps`` row whose folder holds the path.
 
     It fails closed: no org, a read error or no matching row answers False.
     *org* comes from the run binding, never from input (R5). The read always
