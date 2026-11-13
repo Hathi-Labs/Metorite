@@ -65,6 +65,12 @@ NODE_TYPES = frozenset(
         # named person, and a pause until that task is done. Its config is
         # literal (`HUMAN_STEP_KEYS`), and `human_step.py` owns the rest.
         "human_step",
+        # STU-E8b (`ai_studio.md` §14 E8b) — a frozen list of writes of one
+        # action of a Studio package, run in chunks of 50 under ONE approval.
+        # It follows an `approval` node directly, and that approval leads to
+        # it alone. Its config is literal (`STUDIO_BATCH_KEYS`), and
+        # `routes/workflows/batch.py` owns the rest.
+        "studio_batch",
     }
 )
 
@@ -76,6 +82,24 @@ HUMAN_STEP_KEYS = frozenset({"assignee", "title", "description"})
 #: The config keys of a ``studio_write`` node, and no other (STU-B2c-2d).
 STUDIO_WRITE_KEYS = frozenset({"package_id", "action", "data", "record_id"})
 _ACTION_ID = re.compile(OP_PATTERN)
+
+#: The config keys of a ``studio_batch`` node, and no other (STU-E8b). The list
+#: is ``items``, a literal of the graph, so the list that the owner approves is
+#: the list that runs, and no run can change it.
+STUDIO_BATCH_KEYS = frozenset({"package_id", "action", "items"})
+#: The keys of one item: its ``key`` (an id or a row number, never pay data),
+#: its ``data``, and the ``record_id`` of an update.
+STUDIO_BATCH_ITEM_KEYS = frozenset({"key", "data", "record_id"})
+#: The most items of one batch. **Deliberately a copy** of
+#: ``gateway.studio.batch_store.MAX_BATCH_ITEMS``: the engine takes no import
+#: edge into a store to check a graph. ``test_studio_workflow_batch.py`` fails
+#: when the two differ.
+MAX_BATCH_ITEMS = 1000
+#: The longest item key, a copy of ``batch_store.MAX_KEY_CHARS`` (same fence).
+MAX_BATCH_KEY_CHARS = 120
+
+#: The node types that write a Studio package under ONE approval.
+STUDIO_WRITE_NODES = frozenset({"studio_write", "studio_batch"})
 
 #: Node types whose outgoing edges carry branch handles.
 BRANCHING_TYPES = frozenset({"condition"})
@@ -396,22 +420,41 @@ def _validate_studio_writes(
     write two steps down, or a second write under the same approval, would run
     on an answer that did not name it. ``runtime_gate_of`` checks the same
     shape again at run time, because a draft run never passes this check.
+
+    A ``studio_batch`` node (STU-E8b) follows the same two rules, and one more:
+    its approval node leads to the batch ALONE. A resumed run starts at the
+    batch and replays every node before it, so no other step may hang off the
+    gate and run again after a stop.
     """
     parents: dict[str, list[str]] = {}
+    children: dict[str, list[str]] = {}
     writes_of: dict[str, list[str]] = {}
     for src, tgt, _handle in sorted(edge_keys):
         parents.setdefault(tgt, []).append(src)
-        if _node_type(parsed.nodes[tgt]) == "studio_write":
+        children.setdefault(src, []).append(tgt)
+        if _node_type(parsed.nodes[tgt]) in STUDIO_WRITE_NODES:
             writes_of.setdefault(src, []).append(tgt)
     for nid, node in parsed.nodes.items():
-        if _node_type(node) != "studio_write":
+        ntype = _node_type(node)
+        if ntype not in STUDIO_WRITE_NODES:
             continue
         above = parents.get(nid, [])
         if len(above) != 1 or _node_type(parsed.nodes[above[0]]) != "approval":
             issues.append(
                 GraphIssue(
                     "studio_write_without_approval",
-                    "a Studio write node must follow a Human approval node directly",
+                    "a Studio write node must follow a Human approval node directly"
+                    if ntype == "studio_write"
+                    else "a Studio batch node must follow a Human approval node directly",
+                    nid,
+                )
+            )
+        elif ntype == "studio_batch" and children.get(above[0]) != [nid]:
+            issues.append(
+                GraphIssue(
+                    "approval_leads_to_the_batch_only",
+                    "the Human approval node of a Studio batch leads to the batch only — "
+                    "put each other step after the batch",
                     nid,
                 )
             )
@@ -429,25 +472,30 @@ def _validate_studio_writes(
 
 
 def runtime_gate_of(serialized: dict[str, Any], node_id: str) -> str | None:
-    """The approval node that clears the ``studio_write`` *node_id* of a
-    compiled run-model, or None when the shape is wrong (STU-B2c-2d).
+    """The approval node that clears the ``studio_write`` or ``studio_batch``
+    *node_id* of a compiled run-model, or None when the shape is wrong
+    (STU-B2c-2d, STU-E8b).
 
     The run-time twin of :func:`_validate_studio_writes`. It reads the
-    connections of the run's own snapshot, never node input.
+    connections of the run's own snapshot, never node input. The gate of a
+    batch must lead to the batch alone.
     """
     types = {str(b.get("id")): str(b.get("type") or "") for b in serialized.get("blocks") or []}
-    if types.get(node_id) != "studio_write":
+    ntype = types.get(node_id)
+    if ntype not in STUDIO_WRITE_NODES:
         return None
     conns = serialized.get("connections") or []
     above = [str(c.get("source")) for c in conns if str(c.get("target")) == node_id]
     if len(above) != 1 or types.get(above[0]) != "approval":
         return None
     gate = above[0]
-    writes = [
-        c for c in conns
-        if str(c.get("source")) == gate and types.get(str(c.get("target"))) == "studio_write"
-    ]
-    return gate if len(writes) == 1 else None
+    below = [str(c.get("target")) for c in conns if str(c.get("source")) == gate]
+    writes = [t for t in below if types.get(t) in STUDIO_WRITE_NODES]
+    if len(writes) != 1:
+        return None
+    if ntype == "studio_batch" and below != [node_id]:
+        return None
+    return gate
 
 
 def _validate_studio_write_config(
@@ -487,6 +535,73 @@ def _validate_studio_write_config(
         issues.append(GraphIssue(
             "missing_config", "Studio write node record id must be a UUID", nid,
         ))
+
+
+def _validate_studio_batch_config(
+    nid: str, config: dict[str, Any], issues: list[GraphIssue]
+) -> None:
+    """A Studio batch names a package, a declared action and a literal list
+    (STU-E8b).
+
+    Only :data:`STUDIO_BATCH_KEYS`. ``items`` holds 1 to :data:`MAX_BATCH_ITEMS`
+    items, each an object of :data:`STUDIO_BATCH_ITEM_KEYS` with a unique
+    ``key``. No value holds a ``{{ref}}``, so the approved list is the list that
+    runs. The park checks the rest against the package: the verb of the
+    action (create or update, never delete) and the keys that each verb takes.
+    """
+    unknown = sorted(k for k in config if k not in STUDIO_BATCH_KEYS)
+    if unknown:
+        issues.append(GraphIssue(
+            "unknown_field",
+            f"Studio batch node cannot set {unknown} — one of {sorted(STUDIO_BATCH_KEYS)}",
+            nid,
+        ))
+    if any("{{" in s for s in _flatten_strings(config)):
+        issues.append(GraphIssue(
+            "templated_config", "a Studio batch node takes literal values only", nid,
+        ))
+    if not _is_uuid(config.get("package_id")):
+        issues.append(GraphIssue("missing_config", "Studio batch node needs a package id", nid))
+    if not isinstance(config.get("action"), str) or not _ACTION_ID.fullmatch(config["action"]):
+        issues.append(GraphIssue(
+            "missing_config", "Studio batch node needs an action id of the package", nid,
+        ))
+    items = config.get("items")
+    if not isinstance(items, list) or not 1 <= len(items) <= MAX_BATCH_ITEMS:
+        issues.append(GraphIssue(
+            "missing_config",
+            f"Studio batch node needs a list of 1 to {MAX_BATCH_ITEMS} items",
+            nid,
+        ))
+        return
+    bad = _first_bad_item(items)
+    if bad is not None:
+        issues.append(GraphIssue(
+            "missing_config",
+            f"Studio batch item {bad + 1} needs a unique text key of 1 to "
+            f"{MAX_BATCH_KEY_CHARS} characters, an object of data and a UUID record id, "
+            "and no other key",
+            nid,
+        ))
+
+
+def _first_bad_item(items: list[Any]) -> int | None:
+    """The place of the first item of a batch that breaks the item shape, or
+    None. One issue names the first one, so 1,000 items give one issue."""
+    seen: set[str] = set()
+    for place, item in enumerate(items):
+        if not isinstance(item, dict) or any(k not in STUDIO_BATCH_ITEM_KEYS for k in item):
+            return place
+        key = item.get("key")
+        if (not isinstance(key, str) or not key or key != key.strip()
+                or len(key) > MAX_BATCH_KEY_CHARS or key in seen):
+            return place
+        seen.add(key)
+        if "data" in item and not isinstance(item["data"], dict):
+            return place
+        if "record_id" in item and not _is_uuid(item["record_id"]):
+            return place
+    return None
 
 
 def _is_uuid(value: Any) -> bool:
@@ -698,6 +813,7 @@ _INTERNAL_VALIDATORS = {
     "pm_task": _validate_pm_task_config,
     "studio_write": _validate_studio_write_config,
     "human_step": _validate_human_step_config,
+    "studio_batch": _validate_studio_batch_config,
 }
 
 

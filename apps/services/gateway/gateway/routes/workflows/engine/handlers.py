@@ -44,6 +44,11 @@ NODE_TIMEOUTS: dict[str, float] = {
     "pm_lifecycle": 300.0,
     # One Studio record write in one transaction (STU-B2c-2d).
     "studio_write": 30.0,
+    # A frozen list of at most 1,000 items, in chunks of 50 writes, each chunk
+    # its own transaction (STU-E8b). Under RUN_TIMEOUT_SECS of the runner. A
+    # node that runs out of time leaves the batch open, and the batch scan
+    # starts a new run that goes on from the first pending item.
+    "studio_batch": 600.0,
 }
 DEFAULT_NODE_TIMEOUT = 60.0
 
@@ -88,6 +93,12 @@ class NodeServices:
     #: kind and its parked decision. The engine passes the node id and the
     #: literal config only, so no node input names an org or a member.
     studio_write: Callable[
+        [str, dict[str, Any]], Awaitable[dict[str, Any]]
+    ] | None = None
+    #: ``studio_batch(node_id, config)`` → the counts of the batch (STU-E8b).
+    #: The wiring (``service._studio_batcher``) binds the run, its org, its
+    #: kind and its parked decision, as for ``studio_write``.
+    studio_batch: Callable[
         [str, dict[str, Any]], Awaitable[dict[str, Any]]
     ] | None = None
     actor: str = "workflow"
@@ -336,6 +347,17 @@ async def _execute_studio_write(
     return await services.studio_write(str(block.get("id") or ""), dict(config))
 
 
+async def _execute_studio_batch(
+    block: dict[str, Any], state: dict[str, Any], services: NodeServices,
+) -> dict[str, Any]:
+    """The Studio batch node (STU-E8b). Its config is literal, so nothing
+    resolves here. The seam decides whether the batch may run at all."""
+    if services.studio_batch is None:
+        raise NodeExecutionError("a Studio batch cannot run in this run")
+    config = block.get("config") if isinstance(block.get("config"), dict) else {}
+    return await services.studio_batch(str(block.get("id") or ""), dict(config))
+
+
 async def _execute_human_step(
     block: dict[str, Any], state: dict[str, Any], services: NodeServices,
 ) -> dict[str, Any]:
@@ -354,4 +376,5 @@ _INTERNAL_HANDLERS: dict[
     "pm_lifecycle": _execute_pm_lifecycle,
     "studio_write": _execute_studio_write,
     "human_step": _execute_human_step,
+    "studio_batch": _execute_studio_batch,
 }

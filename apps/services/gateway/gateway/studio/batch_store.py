@@ -1,9 +1,11 @@
-"""The ledger of a batch run (WS-STU E8a, task 3095).
+"""The ledger of a batch run (WS-STU E8a, task 3095, and E8b, task 3096).
 
-Spec: ``project-docs/specs/ai_studio.md`` §14 E8a. Tables: ``studio_batches``
-and ``studio_batch_items`` (migration 438). This module is the ONE writer of
-both. It is the store level only: no route, no workflow node, no flag. E8b
-puts a node on top of it.
+Spec: ``project-docs/specs/ai_studio.md`` §14 E8a and E8b. Tables:
+``studio_batches`` and ``studio_batch_items`` (migration 438, and the resume
+count of migration 440). This module is the ONE writer of both. It holds no
+route and no flag. The ``studio_batch`` node of E8b
+(``routes/workflows/batch.py`` and ``routes/studio/invoke.run_workflow_batch``)
+drives it.
 
 **What it does.** :func:`open_batch` freezes a list of items. One item is one
 record, with its lines (C13), as a list of :class:`~gateway.studio.objects_store.Write`.
@@ -35,19 +37,29 @@ the caller and must be an id or a row number, never pay data.
 caller and opens no connection of its own. A driver of many chunks opens one
 session for each chunk, one after the other, and never holds two at once.
 
-**Known limits (E8b must handle them).**
+**Known limits (E8b handles them).**
 
 * The delete of a package takes the org lock and then deletes the ``apps`` row,
   which cascades onto a batch row. A driver holds that row ``FOR UPDATE`` and
   then waits for the org lock. In a narrow window that is a deadlock (40P01).
   The member can retry the delete step. A driver retries a chunk.
 * ``StoreBusy`` from the wait for the batch row aborts the transaction
-  (``bounded_wait`` opens no SAVEPOINT), so the caller rolls back. ``StoreBusy``
-  from ``apply_writes`` leaves the transaction usable. Both mark no item.
+  (``bounded_wait`` opens no SAVEPOINT), so the caller rolls back. A busy store
+  INSIDE the chunk (the org lock, or one item that times out alone) raises
+  :class:`ChunkBusy`, a ``StoreBusy``. It leaves the transaction usable, and it
+  names the items that the earlier groups wrote, so E8b commits them. Then the
+  item that blocks is the first pending item. No busy signal marks an item.
 * The digest is type sensitive: ``1`` and ``1.0`` differ, and ``1e16`` comes
-  back from JSONB as an int. So E8b must keep the writes lossless, and pass
-  the same Python values that it froze.
+  back from JSONB as an int. So E8b builds the writes from the run's pinned
+  graph each time, and that graph went through JSONB before the park.
 * ``_result`` never moves a batch that is not ``open`` back to ``open``.
+
+**The calls of E8b (task 3096).** :func:`run_chunk` takes the *viewer* of the
+member (C8a) and the *via* of the change history (C4a-1). :func:`batch_of_run`
+reads the batch of a run and a node. :func:`rebind_run` is the compare-and-set
+of a resume: it moves ``run_id`` from the failed run to the new run, and adds 1
+to ``resumes`` under a bound. :func:`end_stuck_item` marks the first pending
+item ``failed`` with a code of :data:`END_CODES`, and ends the batch ``failed``.
 
 **Locks.** :func:`run_chunk` locks the batch row ``FOR UPDATE`` first, with the
 bound of :func:`~gateway.studio.objects_store.bounded_wait`. Then the write
@@ -70,6 +82,7 @@ Fence: ``tests/unit/test_studio_batch.py`` and ``test_studio_batch_r8.py``.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import uuid
@@ -78,6 +91,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from acb_common import studio_query
+from acb_common.studio_access import Viewer
 from acb_common.studio_query import QueryError
 from acb_common.studio_rules import MAX_WRITES_PER_BATCH, RuleViolation
 from sqlalchemy import text
@@ -101,6 +115,12 @@ STATUS_OPEN = "open"
 STATUS_DONE = "done"
 STATUS_FAILED = "failed"
 
+#: The codes that :func:`end_stuck_item` writes on the item that blocks. A
+#: closed set, so a caller cannot write a message there (E8b).
+STUCK = "query_timeout"
+MISMATCH = "write_mismatch"
+END_CODES = (STUCK, MISMATCH)
+
 _BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
 
 
@@ -115,6 +135,20 @@ class BatchNotFound(BatchStoreError):
 class DigestMismatch(BatchStoreError):
     """The writes that the caller passed are not the writes that were frozen.
     The call wrote nothing."""
+
+
+class ChunkBusy(StoreBusy):
+    """A busy store INSIDE a chunk: the org lock, or one item whose write
+    timed out alone (E8b). The SAVEPOINT of ``apply_writes`` rolled back, so
+    the caller's transaction stays usable. ``written`` and ``failed`` name what
+    the earlier groups of the chunk did in it, and the caller may commit them.
+    The wait for the batch row raises a plain ``StoreBusy``, because that wait
+    aborts the transaction."""
+
+    def __init__(self, message: str, written: dict[str, str], failed: dict[str, str]) -> None:
+        super().__init__(message)
+        self.written = written
+        self.failed = failed
 
 
 @dataclass(frozen=True)
@@ -140,6 +174,8 @@ class Batch:
     pending: int = 0
     done: int = 0
     failed: int = 0
+    #: The new runs that the batch scan started for it (E8b, migration 440).
+    resumes: int = 0
 
 
 @dataclass(frozen=True)
@@ -273,8 +309,17 @@ _SET_STATUS_SQL = (
     f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:bid AS uuid)"
 )
 _GET_BATCH_SQL = (
-    "SELECT id, package_id, action, list_digest, total, status, run_id, node_id, created_by "
-    f"FROM studio_batches WHERE organization_id = {_BOUND_ORG} AND id = CAST(:bid AS uuid)"
+    "SELECT id, package_id, action, list_digest, total, status, run_id, node_id, created_by, "
+    f"resumes FROM studio_batches WHERE organization_id = {_BOUND_ORG} AND id = CAST(:bid AS uuid)"
+)
+_BATCH_OF_RUN_SQL = (
+    "SELECT id FROM studio_batches "
+    f"WHERE organization_id = {_BOUND_ORG} AND run_id = CAST(:run AS uuid) AND node_id = :node"
+)
+_REBIND_SQL = (
+    "UPDATE studio_batches SET run_id = CAST(:new AS uuid), resumes = resumes + 1, "
+    f"updated_at = now() WHERE organization_id = {_BOUND_ORG} AND id = CAST(:bid AS uuid) "
+    "AND run_id = CAST(:old AS uuid) AND status = 'open' AND resumes < :cap RETURNING resumes"
 )
 _LIST_ITEMS_SQL = (
     "SELECT item_key, position, op, write_count, status, record_id, error_code, item_digest "
@@ -346,7 +391,32 @@ async def get_batch(db: Any, batch_id: str) -> Batch | None:
                  list_digest=str(row[3]), total=int(row[4]), status=str(row[5]),
                  run_id=None if row[6] is None else str(row[6]),
                  node_id=None if row[7] is None else str(row[7]), created_by=str(row[8]),
-                 pending=int(counts[0]), done=int(counts[1]), failed=int(counts[2]))
+                 pending=int(counts[0]), done=int(counts[1]), failed=int(counts[2]),
+                 resumes=int(row[9]))
+
+
+async def batch_of_run(db: Any, run_id: str, node_id: str) -> Batch | None:
+    """The batch that the node *node_id* of the run *run_id* drives, or None
+    (E8b). One pair names one batch (the unique key of migration 438)."""
+    run = _uuid(run_id, "run_id")
+    found = (await db.execute(text(_BATCH_OF_RUN_SQL),
+                              {"run": run, "node": str(node_id)})).first()
+    return None if found is None else await get_batch(db, str(found[0]))
+
+
+async def rebind_run(db: Any, batch_id: str, *, old_run_id: str, new_run_id: str,
+                     max_resumes: int) -> int | None:
+    """The compare-and-set of a resume (E8b). It moves ``run_id`` from
+    *old_run_id* to *new_run_id* and adds 1 to ``resumes``, only while the
+    batch is ``open``, still names *old_run_id*, and has fewer than
+    *max_resumes* resumes. It returns the new count, or None when no row
+    matched. Two scans read the same failed run, and the second UPDATE waits
+    for the row lock of the first and then matches no row. So one failed run
+    gets at most one new run. It does not commit."""
+    found = (await db.execute(text(_REBIND_SQL), {
+        "bid": _uuid(batch_id, "batch_id"), "old": _uuid(old_run_id, "old_run_id"),
+        "new": _uuid(new_run_id, "new_run_id"), "cap": int(max_resumes)})).first()
+    return None if found is None else int(found[0])
 
 
 async def list_items(db: Any, batch_id: str, *, status: str | None = None) -> list[ItemRow]:
@@ -400,8 +470,32 @@ def _is_item_refusal(cause: BaseException) -> bool:
     return isinstance(cause, ValueError) and not isinstance(cause, StoreBusy)
 
 
+@dataclass(frozen=True)
+class _Call:
+    """The fixed facts of one chunk: the actor, the package, the batch, the
+    viewer of C8a and the via of C4a-1."""
+
+    who: str
+    pid: str
+    bid: str
+    viewer: Viewer
+    via: tuple[str, str] | None
+
+
+async def _lock(db: Any, bid: str) -> tuple[str, str]:
+    """Lock the row of the batch, with the bound. Returns the package and the
+    status. A wait past the bound raises a plain ``StoreBusy``: it aborts the
+    transaction, so the caller rolls back."""
+    async with objects_store.bounded_wait(db, BATCH_LOCK_WAIT_MS):
+        held = (await db.execute(text(_LOCK_BATCH_SQL), {"bid": bid})).first()
+    if held is None:
+        raise BatchNotFound("No such batch.")
+    return str(held[0]), str(held[1])
+
+
 async def run_chunk(db: Any, actor: str, batch_id: str,
-                    writes_by_key: Mapping[str, Sequence[Write]]) -> ChunkResult:
+                    writes_by_key: Mapping[str, Sequence[Write]], *, viewer: Viewer,
+                    via: tuple[str, str] | None = None) -> ChunkResult:
     """Run the next chunk of the batch, as ONE transaction (the caller's).
 
     It locks the batch row, reads the pending items in place order, and takes
@@ -412,19 +506,22 @@ async def run_chunk(db: Any, actor: str, batch_id: str,
     The chunk then runs as one ``apply_writes`` call, and each item is marked
     ``done`` with its record id in the same transaction.
 
+    *viewer* is the viewer of the member (C8a), which the caller builds from
+    its session, and *via* names the run of the change history (C4a-1). Both go
+    to ``apply_writes`` unchanged.
+
     A refused chunk is split in halves until a single item is refused. That
-    item is marked ``failed``, and no other. :class:`~gateway.studio.objects_store.StoreBusy` is a retry
-    signal: it marks nothing. The caller commits after the call, or rolls back
-    when it raises, and each call is one transaction, so the org lock is free
-    between chunks.
+    item is marked ``failed``, and no other. A busy store is a retry signal:
+    it marks nothing. The wait for the batch row raises
+    :class:`~gateway.studio.objects_store.StoreBusy`, and the caller rolls back.
+    A busy store inside the chunk raises :class:`ChunkBusy`, and the caller may
+    commit what the earlier groups wrote. Each call is one transaction, so the
+    org lock is free between chunks.
     """
     bid = _uuid(batch_id, "batch_id")
-    who = objects_store._actor(actor)
-    async with objects_store.bounded_wait(db, BATCH_LOCK_WAIT_MS):
-        held = (await db.execute(text(_LOCK_BATCH_SQL), {"bid": bid})).first()
-    if held is None:
-        raise BatchNotFound("No such batch.")
-    pid, status = str(held[0]), str(held[1])
+    call = _Call(objects_store._actor(actor), "", bid, viewer, via)
+    pid, status = await _lock(db, bid)
+    call = dataclasses.replace(call, pid=pid)
     if status != STATUS_OPEN:
         return await _result(db, bid, {}, {}, status)
     pending = (await db.execute(text(_PENDING_SQL), {"bid": bid, "lim": CHUNK_WRITES})).all()
@@ -437,11 +534,41 @@ async def run_chunk(db: Any, actor: str, batch_id: str,
             raise DigestMismatch("The writes of an item are not the frozen writes.")
     written: dict[str, str] = {}
     failed: dict[str, str] = {}
-    await _run_group(db, who, pid, bid, taken, writes_by_key, written, failed)
+    try:
+        await _run_group(db, call, taken, writes_by_key, written, failed)
+    except StoreBusy as exc:
+        # Inside apply_writes: its SAVEPOINT rolled back, and the earlier
+        # groups of this chunk stay in the caller's transaction (E8b).
+        raise ChunkBusy(str(exc), dict(written), dict(failed)) from None
     return await _result(db, bid, written, failed, status)
 
 
-async def _run_group(db: Any, who: str, pid: str, bid: str, rows: Sequence[Any],
+async def end_stuck_item(db: Any, batch_id: str, *, code: str = STUCK) -> ChunkResult:
+    """End the batch at the item that blocks it (E8b). It does not commit.
+
+    It locks the batch row, marks the FIRST pending item ``failed`` with
+    *code* (one of :data:`END_CODES`, never a message), and sets the batch
+    ``failed``. The items after it stay ``pending``, and no scan picks the batch
+    up again, because it is not ``open``. A batch that is not ``open`` keeps its
+    status, and nothing changes. E8b commits the earlier groups of a busy chunk
+    first (:class:`ChunkBusy`), so the first pending item is the one that
+    timed out."""
+    if code not in END_CODES:
+        raise BatchStoreError("code is one of the end codes")
+    bid = _uuid(batch_id, "batch_id")
+    _pid, status = await _lock(db, bid)
+    if status != STATUS_OPEN:
+        return await _result(db, bid, {}, {}, status)
+    first = (await db.execute(text(_PENDING_SQL), {"bid": bid, "lim": 1})).first()
+    failed: dict[str, str] = {}
+    if first is not None:
+        failed[str(first[0])] = code
+        await db.execute(text(_FAILED_SQL), {"bid": bid, "key": str(first[0]), "code": code})
+    await db.execute(text(_SET_STATUS_SQL), {"bid": bid, "status": STATUS_FAILED})
+    return await _result(db, bid, {}, failed, STATUS_FAILED)
+
+
+async def _run_group(db: Any, call: _Call, rows: Sequence[Any],
                      writes_by_key: Mapping[str, Sequence[Write]], written: dict[str, str],
                      failed: dict[str, str]) -> None:
     """Write the items *rows* as one ``apply_writes`` call, and when the call
@@ -469,7 +596,8 @@ async def _run_group(db: Any, who: str, pid: str, bid: str, rows: Sequence[Any],
         starts.append(len(flat))
         flat.extend(_shift(writes_by_key[str(row[0])], len(flat)))
     try:
-        answers = await objects_store.apply_writes(db, who, package_id=pid, writes=flat)
+        answers = await objects_store.apply_writes(db, call.who, package_id=call.pid, writes=flat,
+                                                   viewer=call.viewer, via=call.via)
     except BatchError as exc:
         if _is_busy(exc):
             raise StoreBusy(str(exc.cause)) from None
@@ -477,22 +605,22 @@ async def _run_group(db: Any, who: str, pid: str, bid: str, rows: Sequence[Any],
             raise
         if len(rows) > 1:
             half = len(rows) // 2
-            await _run_group(db, who, pid, bid, rows[:half], writes_by_key, written, failed)
-            await _run_group(db, who, pid, bid, rows[half:], writes_by_key, written, failed)
+            await _run_group(db, call, rows[:half], writes_by_key, written, failed)
+            await _run_group(db, call, rows[half:], writes_by_key, written, failed)
             return
         if isinstance(exc.cause, QueryError) and exc.cause.code == studio_query.TIMEOUT:
             # A deadline is load, not a verdict on the item: a retry signal.
             raise StoreBusy(str(exc.cause)) from None
         key = str(rows[0][0])
         failed[key] = _code(exc.cause)
-        await db.execute(text(_FAILED_SQL), {"bid": bid, "key": key, "code": failed[key]})
+        await db.execute(text(_FAILED_SQL), {"bid": call.bid, "key": key, "code": failed[key]})
         return
     for row, start in zip(rows, starts, strict=True):
         record = answers[start]
         if not isinstance(record, objects_store.Record):
             raise BatchStoreError("A write of an item gave no record.")
         written[str(row[0])] = record.id
-        await db.execute(text(_DONE_SQL), {"bid": bid, "key": str(row[0]), "rid": record.id})
+        await db.execute(text(_DONE_SQL), {"bid": call.bid, "key": str(row[0]), "rid": record.id})
 
 
 async def _result(db: Any, bid: str, written: dict[str, str], failed: dict[str, str],
