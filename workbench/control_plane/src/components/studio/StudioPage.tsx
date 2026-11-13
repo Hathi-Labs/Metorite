@@ -24,8 +24,8 @@ import { AppTopBar, type AppTopBarBack } from "@/components/AppTopBar";
 import Tabs from "@/components/Tabs";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
-import type { PageDef, ViewDef } from "@/lib/studio/manifest";
-import { buildPage } from "@/lib/studio/pageModel";
+import type { ViewDef } from "@/lib/studio/manifest";
+import { buildPage, type PageManifest } from "@/lib/studio/pageModel";
 import type { PageState } from "@/lib/studio/pageState";
 
 /**
@@ -75,7 +75,7 @@ export interface StudioPageProps {
   subtitle?: ReactNode;
   back?: AppTopBarBack;
   /** The manifest parts that a page reads. */
-  manifest: { views?: readonly ViewDef[] | null; pages?: readonly PageDef[] | null };
+  manifest: PageManifest;
   /** The page to show. The first page when it is missing. */
   pageId?: string | null;
   /** The page state that the URL holds. */

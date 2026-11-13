@@ -911,7 +911,7 @@ Each rung ends in a demo (D211). Each slice of a rung blocks its demo task.
 | CIV-26 | 3051 | – | LOW | This section and D218 |
 | CIV-27 | 3052 | 0 | LOW | `ci_local.sh` is optional. A lane pushes once per round |
 | CIV-28 | 3053 | 0 | STANDARD | The merge bot |
-| CIV-29 | 3054 | 0 | STANDARD | Browser suite: inherited failures, the specs of the changed area, the full suite after merge |
+| CIV-29 | 3054 | 0 | STANDARD | Browser suite: inherited failures, the specs of the changed area, the full suite after merge. CIV-29a BUILT. CIV-29b BUILT 2026-11-14 (tasks 3054 and 3145): the diff of `changes` is `HEAD^1..HEAD` on the merge ref. So a later change on main no longer starts the suite. The unit gate (`--gate --base`) reads the same range. The Visual review step reads the same range (CIV-39). The map from a path to its specs is the next step. |
 | CIV-36 | 3061 | 0 | LOW | The preview gates the flag |
 | CIV-37 | 3062 | 0 | LOW | Model routing by job |
 | CIV-38 | 3063 | 0 | LOW | The quality numbers and the rollback rule |
