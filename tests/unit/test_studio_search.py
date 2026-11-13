@@ -45,7 +45,8 @@ def package(pid: str, search_objects: list[str], paused: bool = False) -> Any:
 
 
 def record(rid: str, data: dict[str, Any]) -> Any:
-    return SimpleNamespace(id=rid, data=data, updated_at=NOW)
+    return objects_store.Record(id=rid, object_id="o", data=data, created_by="w@x.test",
+                                updated_by="w@x.test", created_at=NOW, updated_at=NOW)
 
 
 class World:
@@ -65,7 +66,9 @@ class World:
 
     async def get_object_by_name(self, db: Any, name: str, *, package_id: str) -> Any:
         self.objects_read.append(name)
-        return SimpleNamespace(id=f"obj-{name}", name=name, fields=tuple(self.fields.get(name, ())))
+        return objects_store.StudioObject(
+            id=f"obj-{name}", package_id=package_id, name=name, label=None, created_by="o@x.test",
+            created_at=NOW, updated_at=NOW, fields=tuple(self.fields.get(name, ())))
 
     async def query_records(self, db: Any, *, package_id: str, object_id: str,
                             viewer: Any, filter: Any = None, limit: Any = None,
