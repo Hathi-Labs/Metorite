@@ -420,6 +420,16 @@ _QUESTIONS_SHAPE_HINT = (
 _QUESTIONS_SHAPE_ERROR = "Error: questions is not valid JSON of the expected shape. " + _QUESTIONS_SHAPE_HINT
 
 
+def _member_waits() -> None:
+    """Tell the line of a slow tool (HRD-6) that this call now waits for the
+    member on a card (``progress_notice.member_wait``). Never raises."""
+    try:
+        from acb_skills.progress_notice import member_wait
+    except Exception:  # pragma: no cover — ships with the package
+        return
+    member_wait()
+
+
 async def ask_questions(questions: str) -> str:
     """Ask the user one or more clarifying questions before proceeding.
 
@@ -547,6 +557,10 @@ async def ask_questions(questions: str) -> str:
         if crm_card_tag(q):
             entry["crm_question"] = crm_card_tag(q)
         cleaned.append(entry)
+
+    # HRD-6: a card is the sign of a wait for the member. A tool call that
+    # asks here gets no "Please wait" line, and a line that shows goes.
+    _member_waits()
 
     # ── Emit elicitation event ──────────────────────────────────────────
     # Two paths, unified on the same _pending_user_input mechanism as the
@@ -1750,6 +1764,9 @@ async def request_confirmation(
         if _with_answer:
             return None
         return frozenset() if _rows is not None else False
+    # HRD-6: the card is the sign of the wait. The tool call that shows it
+    # gets no "Please wait" line, and a line that shows goes.
+    _member_waits()
     _offered = frozenset(r["id"] for r in _rows or [])
     _steer_closes = (_reply is not None) if close_on_steer is None else bool(close_on_steer)
     #: The member whose answer alone counts (PZ-32), or "" to bind none.
