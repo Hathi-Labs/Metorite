@@ -204,6 +204,23 @@ def test_a_failed_or_slow_package_is_skipped_and_the_next_is_read(world, error) 
     assert [h.id for h in find()] == ["p1/note/r1", "p3/note/r3"]
 
 
+def test_a_package_that_raises_outside_a_statement_never_fails_the_search(
+        world, monkeypatch) -> None:
+    """The package-level guard: the next package is read (continue, not break)."""
+    world.packages = [package(f"p{i}", ["note"]) for i in (1, 2, 3)]
+    for i in (1, 3):
+        world.rows[(f"p{i}", "note", "title")] = [record(f"r{i}", {"title": "Acme"})]
+    real = search._read_package
+
+    async def boom(db: Any, pkg: Any, *a: Any) -> Any:
+        if pkg.id == "p2":
+            raise RuntimeError("bad manifest")
+        return await real(db, pkg, *a)
+
+    monkeypatch.setattr(search, "_read_package", boom)
+    assert [h.id for h in find()] == ["p1/note/r1", "p3/note/r3"]
+
+
 def test_each_statement_gets_the_time_left_as_its_deadline(world) -> None:
     world.packages = [package("p1", ["note"])]
     find()
