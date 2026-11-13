@@ -1067,12 +1067,14 @@ async def _emit_record_event(out: _Outcome, org: str) -> None:
 
 
 async def _do_object_write(db: Any, member: str, package: packages_store.Package,
-                           ref: UsesRef, raw: bytes, out: _Outcome) -> None:
+                           ref: UsesRef, raw: bytes, out: _Outcome, *,
+                           via: tuple[str, str] | None = None) -> None:
     """Run one create, update or delete as *member*, through ONE
     ``apply_writes`` call. The record is the first write, and each of its
     lines (C13) follows it, so the record and its lines are saved all or none.
     It sets *out* and never raises an ``HTTPException``. The caller writes the
-    audit row."""
+    audit row. *via* goes to the change history of the store (C4a-1). Only
+    :func:`run_workflow_write` sets it, from its own arguments."""
     op = str(ref.op)
     body = _write_input(op, raw)
     if body is None:
@@ -1098,9 +1100,11 @@ async def _do_object_write(db: Any, member: str, package: packages_store.Package
         out.object_missing = True
         return
     write = objects_store.Write(op=op, object_id=obj.id, record_id=body.get("id"), data=data)
+    # C4a-1: a direct or delegated write names no via, so its call stays as it was.
+    how: dict[str, Any] = {} if via is None else {"via": via}
     try:
         answers = await objects_store.apply_writes(
-            db, member, package_id=package.id, writes=[write, *line_writes])
+            db, member, package_id=package.id, writes=[write, *line_writes], **how)
     except objects_store.BatchError as exc:
         # The SAVEPOINT of the batch rolled back, so the session is usable.
         line = lines[exc.index - 1] if 0 < exc.index <= len(lines) else None
@@ -1324,6 +1328,9 @@ async def _run_spend(db: Any, org: str, member: str, package: packages_store.Pac
 
 #: The ``via`` of the audit row of a write that a workflow node ran (B2c-2d).
 WORKFLOW_VIA = "workflow"
+#: The kind of ``via`` of a history row of that write (C4a-1). The id is the
+#: run id that the caller binds from the run row, never node input.
+WORKFLOW_RUN_VIA = "workflow_run"
 #: The codes of a refused write of a workflow node.
 WORKFLOW_NO_ORG = "no_org"
 WORKFLOW_STUDIO_OFF = "studio_off"
@@ -1470,7 +1477,8 @@ async def run_workflow_write(*, organization_id: str, member: str, package_id: s
                     out.refusal = WORKFLOW_MISMATCH
                 if out.refusal is None and ref is not None:
                     await _do_object_write(db, member, package, ref,
-                                           _workflow_body(data, record_id), out)
+                                           _workflow_body(data, record_id), out,
+                                           via=(WORKFLOW_RUN_VIA, str(run_id)))
                 detail = {**_audit_detail(out), "via": WORKFLOW_VIA,
                           "run_id": _cap(str(run_id)), "node_id": _cap(str(node_id)),
                           "decision_id": _cap(str(decision_id)), "approver": _cap(member)}

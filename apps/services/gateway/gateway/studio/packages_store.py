@@ -64,7 +64,9 @@ the org lock of the object store (``objects_store.lock_org``), the one lock
 order of a publish. The first step of a call checks the token under both
 locks, and raises :class:`CountsChanged` for a stale one. Each later step
 checks the object names of that preview. Then the step purges at most one
-chunk of records (``objects_store.purge_records``), and the purge stops at
+chunk of change history (``objects_store.purge_record_changes``, C4a-1),
+and then at most one chunk of records (``objects_store.purge_records``). A
+full chunk of history keeps the package for a next step. The purge stops at
 the end of the call. A full chunk ends the step, and the caller commits, so
 no lock stays between two steps. The last step of a call that leaves
 records writes a partial audit row (op :data:`PARTIAL_OP`) in its own
@@ -1497,12 +1499,17 @@ async def delete_package(db: Any, member: str, package_id: str, *,
         if not set(found) <= seen:
             return await _end_call(db, m, current, seen, before, "changed", admin=as_admin)
     try:
+        # C4a-1: each step also purges one chunk of the change history of the
+        # package, first. A full chunk of history keeps the package for a
+        # next step, so the last step leaves no history to the cascade.
+        history = await objects_store.purge_record_changes(db, pid, limit=size,
+                                                           deadline=end_at)
         gone = await objects_store.purge_records(db, pid, limit=size, deadline=end_at)
     except objects_store.StoreBusy:
         if token is not None:
             raise
         return await _end_call(db, m, current, seen, before, "busy", admin=as_admin)
-    if gone >= size:
+    if history >= size or gone >= size:
         if end_at is not None and objects_store._clock() + STEP_SECONDS > end_at:
             return await _end_call(db, m, current, seen, before + gone, "budget", removed=gone,
                                    admin=as_admin)
