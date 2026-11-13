@@ -695,7 +695,8 @@ async def test_a_row_that_does_not_fit_alone_leaves_the_others_listed(world: _Wo
     """Review P2 (b) and (c). A quote-heavy manifest under the cut escapes to
     more than the list holds, even alone. The list shows the other rows, and
     its note says that some are not listed. The approve of that row gives the
-    left-out sentence, no card and no POST. A reject of it still works."""
+    too-long sentence, because it cannot fit even alone, with no card and no
+    POST. A reject of it still works."""
     [big], rest = _ids(0x10, 1), _ids(0x20, 3)
     world.store.state = {(pid, 1): "pending" for pid in (big, *rest)}
     world.store.manifests = {big: _manifest('"' * 2_900)}
@@ -707,12 +708,35 @@ async def test_a_row_that_does_not_fit_alone_leaves_the_others_listed(world: _Wo
     every, shown = st._shown_approvals([{"package_id": big, "version": 1,
                                          "manifest": world.store.manifests[big]}])
     assert every[0]["manifest_cut"] is False and shown == [], "non-vacuity: not cut, no room"
+    # Review P3: a row that cannot fit even alone is never listed, so the
+    # approve gives the too-long sentence, never "list again". Mutation -> red.
     out = await st.studio_approve(big, 1)
-    assert out["ok"] is False and _msg(out) == st._APV_LEFT_OUT, out
+    assert out["ok"] is False and _msg(out) == st._APV_TOO_LONG, out
     assert world.card.shown == [] and _APPROVE not in _sent(world)
     assert (await st.studio_approve(rest[0], 1))["ok"]
     assert (await st.studio_reject(big, 1))["ok"]
     assert world.store.state[(big, 1)] == "rejected"
+
+
+async def test_a_list_that_shows_no_row_says_how_to_go_on(world: _World) -> None:
+    """Review P3. One row that cannot fit even alone: the list shows nothing,
+    and its note says to review the manifest outside the chat or reject it."""
+    [big] = _ids(0x10, 1)
+    world.store.state = {(big, 1): "pending"}
+    world.store.manifests = {big: _manifest('"' * 2_900)}
+    world.as_(ADA)
+    listed = await st.studio_list_approvals()
+    assert listed["count"] == 0 and listed["truncated"] is True, listed
+    assert st._APV_LIST_NONE.strip() in listed["note"]
+    out = await st.studio_approve(big, 1)
+    assert _msg(out) == st._APV_TOO_LONG and world.card.shown == [], out
+
+
+async def test_a_list_that_shows_rows_has_no_none_sentence(world: _World) -> None:
+    assert (await st.studio_request_approval(world.store.pid, 1))["ok"]
+    world.as_(ADA)
+    listed = await st.studio_list_approvals()
+    assert listed["count"] == 1 and st._APV_LIST_NONE.strip() not in listed["note"]
 
 
 async def test_a_cut_manifest_gets_the_too_long_sentence(world: _World) -> None:

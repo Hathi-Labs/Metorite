@@ -4258,6 +4258,8 @@ _APV_LIST_NOTE = ("Each row is a version that waits for an approval for the orga
 _APV_LIST_CUT = (" Some versions are not in this list, because it has no room for them. Approve "
                  "or reject the listed versions first. Then list again. A version that is "
                  "approved or rejected leaves the list.")
+_APV_LIST_NONE = (" No version fits in this chat. Review each manifest outside the chat, or "
+                  "reject the version.")
 _APV_LEFT_OUT = ("This version is not in the list that this chat can show, so no card shows and "
                  "nothing was approved. Approve or reject the listed versions first. Then list "
                  "again.")
@@ -4408,7 +4410,8 @@ async def studio_list_approvals() -> dict[str, Any]:
     frame = UntrustedFrame.new()
     return _result(True, [], [], count=len(shown), truncated=cut,
                    approvals=frame.wrap("STUDIO APPROVALS", _approvals_text(shown)),
-                   note=frame.note(_APV_LIST_NOTE + (_APV_LIST_CUT if cut else "")))
+                   note=frame.note(_APV_LIST_NOTE + (_APV_LIST_CUT if cut else "")
+                                   + (_APV_LIST_NONE if every and not shown else "")))
 
 
 async def _move_card(pid: str, version: int, move: str) -> dict[str, Any] | None:
@@ -4432,7 +4435,10 @@ async def _move_card(pid: str, version: int, move: str) -> dict[str, Any] | None
     if move == "approve" and every[at]["manifest_cut"]:
         return _refusal(_APV_TOO_LONG)
     if move == "approve" and not any(r is every[at] for r in shown):
-        return _refusal(_APV_LEFT_OUT)
+        # A row that cannot fit even alone is never listed, so "list again" would
+        # loop. Its manifest must be reviewed outside the chat (review P3).
+        alone = _shown_approvals([rows[at]])[1]
+        return _refusal(_APV_LEFT_OUT if alone else _APV_TOO_LONG)
     row = rows[at]
     name = _title_name(row.get("name", "?"))
     card = [("app", f"App: {name}"), ("version", f"Version: {version}"),
