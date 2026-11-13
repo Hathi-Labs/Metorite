@@ -44,7 +44,8 @@ from sqlalchemy import text
 
 #: The payload keys that a Studio record trigger may filter on (STU-E3). The
 #: payload of ``studio.record.*`` holds ids and names, never a field value.
-RECORD_FILTER_KEYS = ("package_id", "object", "op")
+#: ``name`` is the id of a form view or of a pressed action (E3 part 2).
+RECORD_FILTER_KEYS = ("package_id", "object", "op", "name")
 
 
 def event_trigger_matches(

@@ -235,6 +235,7 @@ from gateway.routes.apps._common import record_app_audit_bound, record_app_audit
 from gateway.routes.studio import actions, door_op, flags
 from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store, packages_store
+from gateway.studio.events import press_event
 from gateway.studio.preview import emit_record_event, preview_scope
 
 __all__ = [
@@ -550,6 +551,9 @@ class _Outcome:
     #: C3: the record event of a write that ran, as ``(event_type, payload)``.
     #: The door emits it after the session commits, and never in a preview.
     event: tuple[str, dict[str, Any]] | None = None
+    #: E3 part 2: the form or button event of the same write, in the same shape.
+    #: Only a direct call of a person sets it. A workflow write clears it.
+    press: tuple[str, dict[str, Any]] | None = None
     #: G4: True when the call is a preview write or a preview send. Its audit
     #: row says ``simulated`` and holds ``preview``.
     preview: bool = False
@@ -1064,6 +1068,13 @@ async def _emit_record_event(out: _Outcome, org: str) -> None:
         await emit_record_event(event_type, {**payload, "organization_id": org})
     except Exception as exc:
         _log.warning("studio.invoke.record_event_failed", error=type(exc).__name__)
+    if out.press is None:
+        return
+    press_type, press_payload = out.press
+    try:
+        await emit_record_event(press_type, {**press_payload, "organization_id": org})
+    except Exception as exc:
+        _log.warning("studio.invoke.press_event_failed", error=type(exc).__name__)
 
 
 async def _do_object_write(db: Any, member: str, package: packages_store.Package,
@@ -1129,6 +1140,11 @@ async def _do_object_write(db: Any, member: str, package: packages_store.Package
             # the sum that the batch committed.
             out.record = await objects_store.get_record(
                 db, obj.id, done.id, package_id=package.id) or done
+    if out.event is not None:
+        # E3 part 2: the form or button that this action is, by the manifest.
+        out.press = press_event(
+            package.manifest, out.action, package_id=package.id, object_name=str(obj.name),
+            record_id=str(out.event[1]["record_id"]), member=member)
 
 
 async def _run_object_write(db: Any, member: str, package: packages_store.Package,
@@ -1471,6 +1487,7 @@ async def run_workflow_write(*, organization_id: str, member: str, package_id: s
                 if out.refusal is None and ref is not None:
                     await _do_object_write(db, member, package, ref,
                                            _workflow_body(data, record_id), out)
+                    out.press = None  # a workflow write is no press: no loop (E3)
                 detail = {**_audit_detail(out), "via": WORKFLOW_VIA,
                           "run_id": _cap(str(run_id)), "node_id": _cap(str(node_id)),
                           "decision_id": _cap(str(decision_id)), "approver": _cap(member)}

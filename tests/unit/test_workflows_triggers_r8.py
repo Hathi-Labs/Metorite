@@ -165,6 +165,17 @@ _WORKFLOWS: dict[str, tuple[str, str, dict]] = {
     "Claim in B": ("B", "event", {"source": "studio", "event_type": "studio.record.created",
                                   "filter": {"package_id": "pkg-claims", "object": "claim"}}),
 }
+# STU-E3 part 2: a form submit and a button press.
+_WORKFLOWS.update({
+    "Form in A": ("A", "event", {"source": "studio", "event_type": "studio.form.submitted",
+                                 "filter": {"package_id": "pkg-claims", "name": "check-in"}}),
+    "Form 2 in A": ("A", "event", {"source": "studio", "event_type": "studio.form.submitted",
+                                   "filter": {"name": "check-in"}}),
+    "Button in A": ("A", "event", {"source": "studio", "event_type": "studio.action.pressed",
+                                   "filter": {"package_id": "pkg-claims", "name": "remove"}}),
+    "Form in B": ("B", "event", {"source": "studio", "event_type": "studio.form.submitted",
+                                 "filter": {"package_id": "pkg-claims", "name": "check-in"}}),
+})
 _TICKERS = ("Tick in A", "Tick in B")
 
 #: name -> the run-model of a workflow that is not trivial.
@@ -721,3 +732,76 @@ def test_two_matching_triggers_of_one_workflow_start_one_run(promoted, monkeypat
             c.execute(text(
                 "DELETE FROM workflow_triggers WHERE workflow_id = CAST(:w AS uuid) "
                 "AND NOT (config ? 'filter')"), {"w": promoted.wf["Claim in A"]})
+
+
+# ── STU-E3 part 2: a form submit and a button press start one run ───────────
+
+_FORM = {"package_id": "pkg-claims", "name": "check-in", "action": "change",
+         "object": "claim", "record_id": "r1", "actor": "m@a.test"}
+_PRESS = {**_FORM, "name": "remove", "action": "remove"}
+
+
+def _emit_type(promoted, ambient: str | None, event_type: str, payload: dict):
+    return _on_app_role(promoted, ambient, lambda: triggers.dispatch_event(
+        "studio", event_type, dict(payload)))
+
+
+def test_a_form_submit_starts_one_run_of_each_matching_workflow(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_a, promoted.org_b)
+    started = _emit_type(promoted, promoted.org_a, "studio.form.submitted", _FORM)
+    assert sorted(s["workflow_id"] for s in started) == sorted(
+        [promoted.wf["Form in A"], promoted.wf["Form 2 in A"]])
+    (row,) = _runs_of(promoted, "Form in A")
+    assert (row.trigger_kind, row.org, row.started_by) == (
+        "event", promoted.org_a, "event:studio")
+    assert _runs_of(promoted, "Form in B") == []
+    assert _runs_of(promoted, "Button in A") == []
+    assert _runs_of(promoted, "Claim in A") == []  # a record trigger ignores a form event
+
+
+def test_a_button_press_starts_only_the_button_workflow(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_a, promoted.org_b)
+    started = _emit_type(promoted, promoted.org_a, "studio.action.pressed", _PRESS)
+    assert [s["workflow_id"] for s in started] == [promoted.wf["Button in A"]]
+    assert _runs_of(promoted, "Form in A") == []
+
+
+def test_an_event_bound_to_org_b_never_starts_a_run_in_org_a_for_a_form(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_a, promoted.org_b)
+    started = _emit_type(promoted, promoted.org_b, "studio.form.submitted", _FORM)
+    assert [s["workflow_id"] for s in started] == [promoted.wf["Form in B"]]
+    assert _runs_of(promoted, "Form in A") == []
+    assert [r.org for r in _runs_of(promoted, "Form in B")] == [promoted.org_b]
+
+
+def test_a_form_event_with_no_org_or_an_unlisted_org_starts_nothing(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_a)
+    assert _emit_type(promoted, None, "studio.form.submitted",
+                      {**_FORM, "organization_id": promoted.org_a}) == []
+    _list_orgs(monkeypatch, promoted.org_b)
+    assert _emit_type(promoted, promoted.org_a, "studio.form.submitted", _FORM) == []
+    assert _runs_of(promoted, "Form in A") == []
+
+
+@pytest.mark.parametrize("drop", ["name", "package_id"])
+def test_a_form_event_missing_a_filter_key_fails_closed(promoted, monkeypatch, drop):
+    _list_orgs(monkeypatch, promoted.org_a)
+    payload = {k: v for k, v in _FORM.items() if k != drop}
+    started = _emit_type(promoted, promoted.org_a, "studio.form.submitted", payload)
+    assert promoted.wf["Form in A"] not in {s["workflow_id"] for s in started}
+    assert _runs_of(promoted, "Form in A") == []
+
+
+def test_a_form_filter_on_another_form_name_starts_nothing(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_a)
+    assert _emit_type(promoted, promoted.org_a, "studio.form.submitted",
+                      {**_FORM, "name": "other"}) == []
+
+
+def test_the_name_filter_key_is_accepted_and_an_unknown_key_is_not():
+    from fastapi import HTTPException
+    from gateway.routes.workflows.crud import _validate_event_filter
+
+    _validate_event_filter({"source": "studio", "filter": {"name": "check-in"}})
+    with pytest.raises(HTTPException):
+        _validate_event_filter({"source": "studio", "filter": {"field": "x"}})
