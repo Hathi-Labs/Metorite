@@ -6242,6 +6242,19 @@ The owner asked in chat on 2026-11-14 for Studio apps, workflows and skills that
 
 Fence: each slice in `ai_studio.md` §14 Group I and `integrations_console.md` §7.2 names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D220 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D219 at most.
 
+### D221 — The focus coach: grounded help at the start and at the check-in, steps as subtasks, and help from people that the member can already see (2026-11-14)
+
+The owner asked in chat on 2026-11-14 for a Focus mode that breaks a task into steps, shows how to do it, motivates, uses the context of every app, and names whom to ask when the member is stuck. Planning task 3177. Owner text: `my_day_command_centre.md` §4a.
+
+1. **Two moments only.** The coach speaks when a session starts and at the check-in when it ends. During the session it shows the steps and the facts, so it does not break the focus.
+2. **Grounded, or silent.** Each sentence cites the task or a source from the knowledge graph (D128), opened again as the viewer. The coach gives no general how-to advice from the model alone.
+3. **Steps are subtasks** in the one task store, accepted once, with one Undo.
+4. **Help from people, inside what the member can see.** No workload, hours or absence reason, which stay admin-only. The member sends each ask. The coach never assigns (D-PC-13) and never tells a manager by itself. "Blocked" comes only from the member's own answer.
+5. **Motivation is facts:** why the work matters, and how far it got. "Facts only" is the default tone. The orchestrator chose this default, and the owner may overrule it.
+6. **The order.** Rung 4 of the My Day ladder, demo task 3178. The later rungs move up by one.
+
+Fence: each slice of `my_day_command_centre.md` §9 (CC-12 to CC-16) names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D221 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D220 at most (PR 2241, merged).
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
