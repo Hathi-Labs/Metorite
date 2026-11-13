@@ -209,3 +209,77 @@ describe("the block nodes", () => {
     expect(chart.props.data).toEqual({ type: "donut", title: "Deals" });
   });
 });
+
+// --- STU-D4c: the mapper from a manifest view -------------------------------
+
+import { chartViewBlock, statViewBlock, aggregateSourceOf } from "./aggregateModel";
+
+describe("the mapper from a manifest view (D4c)", () => {
+  const ctx = { actions: [{ id: "deals-agg", uses: "object:deal.aggregate" }, { id: "deals-list", uses: "object:deal.list" }] };
+  const args = { group_by: { field: "stage" }, measures: [{ op: "count" }], filter: { all: [] } };
+  const view = (a: Record<string, unknown> = {}, extra: object = {}) => ({
+    id: "v1", title: "Deals", source: { action: "deals-agg", args: { ...args, ...a } }, ...extra,
+  });
+
+  it("maps a chart view of each of the 13 kinds to a chart node bound to the aggregate", () => {
+    for (const kind of CHART_KINDS) {
+      const out = chartViewBlock(view({ kind }), ctx);
+      expect(out.ok).toBe(true);
+      if (!out.ok) continue;
+      expect(out.node.props.name).toBe("chart");
+      expect((out.node.props.data as { type: string; title: string }).type).toBe(kind);
+      expect(out.node.props.source).toEqual({ action: "object:deal.aggregate", args });
+      expect(bindsSource("template", out.node.props)).toBe(true);
+    }
+  });
+
+  it("keeps kind, measure and good away from the door args", () => {
+    const out = chartViewBlock(view({ kind: "bar", good: "up", measure: 0 }), ctx);
+    expect(out.ok && (out.node.props.source as { args: object }).args).toEqual(args);
+  });
+
+  it("reads a view that names only source.object as the aggregate of that object", () => {
+    const out = chartViewBlock({ id: "c", source: { object: "deal", args: { kind: "line" } } });
+    expect(out.ok && (out.node.props.source as { action: string }).action).toBe("object:deal.aggregate");
+  });
+
+  it("refuses a bad kind with a plain sentence", () => {
+    const bad = chartViewBlock(view({ kind: "pie" }), ctx);
+    expect(bad).toEqual({ ok: false, reason: `“pie” is not a chart kind. Set source.args.kind to one of: ${CHART_KINDS.join(", ")}.` });
+    const none = chartViewBlock(view(), ctx);
+    expect(!none.ok && none.reason).toContain("names no chart kind");
+    expect(chartViewBlock(view({ kind: 3 }), ctx).ok).toBe(false);
+  });
+
+  it("refuses a missing, an unknown and a non-aggregate action", () => {
+    const k = { kind: "bar" };
+    const missing = chartViewBlock({ id: "v", source: { args: k } }, ctx);
+    expect(!missing.ok && missing.reason).toBe("“v” has no source. Name an action that uses object:<name>.aggregate.");
+    const ghost = chartViewBlock({ id: "v", source: { action: "ghost", args: k } }, ctx);
+    expect(!ghost.ok && ghost.reason).toContain("no action has that id");
+    const list = chartViewBlock({ id: "v", source: { action: "deals-list", args: k } }, ctx);
+    expect(!list.ok && list.reason).toContain("reads an object:<name>.aggregate action");
+    expect(chartViewBlock({ id: "v", source: null }, ctx).ok).toBe(false);
+  });
+
+  it("maps a stat view with and without a date group, and carries measure and good", () => {
+    const flat = statViewBlock(view(), ctx);
+    expect(flat.ok && flat.node.props.name).toBe("sparkTrend");
+    expect(flat.ok && flat.node.props.data).toEqual({ label: "Deals", measure: 0, good: "up" });
+    const dated = statViewBlock(
+      view({ group_by: { field: "closed_on", bucket: "month" }, measures: [{ op: "count" }, { op: "sum", field: "amount" }], measure: 1, good: "down" }), ctx);
+    expect(dated.ok && dated.node.props.data).toEqual({ label: "Deals", measure: 1, good: "down" });
+    expect(dated.ok && (dated.node.props.source as { args: { group_by: object } }).args.group_by).toEqual({ field: "closed_on", bucket: "month" });
+  });
+
+  it("refuses a stat with a measure out of range, a bad good, or no action", () => {
+    expect(statViewBlock(view({ measure: 2 }), ctx)).toEqual({ ok: false, reason: "“Deals” sets measure to 2. Use a number from 0 to 0." });
+    expect(statViewBlock(view({ good: "left" }), ctx)).toEqual({ ok: false, reason: "“Deals” sets good to \"left\". Use up or down." });
+    expect(statViewBlock({ id: "s", source: {} }, ctx).ok).toBe(false);
+  });
+
+  it("falls back to the view id when a view has no title", () => {
+    const out = aggregateSourceOf({ id: "plain" });
+    expect(!out.ok && out.reason).toContain("“plain”");
+  });
+});
