@@ -1242,6 +1242,8 @@ CHILD_TOOLS: dict[str, frozenset[str]] = {
     "projects-cycles": frozenset({"cycle_detail", "list_cycles"}),  # WS-39 SP-5a
     # STU-G1: STUDIO_ORGS holds no org here, so the pack builds no tool.
     "studio": frozenset(),
+    # STU-J2b-3a: the follow pack of studio. STUDIO_ORGS holds no org here either.
+    "studio-approvals": frozenset(),
 }
 
 #: The calls that put an event on the run's stream: a card, a page move, a

@@ -289,9 +289,12 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "studio_record_delete": ("delete a record from my studio package",),
     # -- studio door read (STU-B2b-2c) --
     "studio_app_read": ("read a knowledge page through my studio app",),
-    # -- studio approval for the org (STU-J2b-3a) --
+    # -- studio workflow read (STB-6a) --
+    "studio_workflow_read": ("list my studio workflows",
+                             "read the studio workflow that chases invoices"),
+    # -- studio-approvals, the follow pack of studio (STU-J2b-3a) --
     "studio_request_approval": ("ask for the org approval of my studio app",),
-    "studio_list_approvals": ("which studio app versions wait for my approval?",),
+    "studio_list_approvals": ("list the pending approvals of studio apps",),
     "studio_approve": ("approve version 2 of the studio app for the org",),
     "studio_reject": ("reject version 2 of the studio app",),
     # -- projects-reminders --

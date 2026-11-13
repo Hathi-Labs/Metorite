@@ -125,6 +125,35 @@ A second implementation of any rule below is a defect (CLAUDE.md §4, "Respect t
 
 ---
 
+## 4a. The focus coach (D221)
+
+The owner asked on 2026-11-14 (task 3177). Focus mode helps the member do the task in front of them. It breaks the task into steps, shows how to start, uses the context from Email, WhatsApp, the CRM and Projects, gives a reason to keep going, and names who can help when the member is stuck. The review of task 3177 keeps the core and cuts the parts that hurt focus.
+
+**What the coach does, and when.** A coach that talks during a session breaks the focus that the session protects. So the coach speaks at two moments only: when the session starts, and at the check-in when it ends. During the session, the dock shows the steps and the facts, and nothing more.
+
+| Moment | What the member sees | Slice |
+|---|---|---|
+| The start (▶) | One brief before the timer: why the task matters, what is done, the next step, and its sources. One tap skips it | CC-12 |
+| The start, on a large task | "Plan the steps": 3 to 7 steps with estimates. One accept makes them subtasks | CC-13 |
+| During the session | The checklist of steps, and one line of facts: steps done, minutes against the estimate, who waits | CC-15 |
+| The check-in, "Blocked" | Up to 3 people who can help, each with a reason, a drafted ask, and "Waiting for" | CC-14 |
+| Chat | "Help me with this task", "break this down", "who can help with this?" | CC-16 |
+
+**The rules.** Each rule binds when its slice merges, and until then it is advisory (R7).
+
+1. **Grounded, or silent.** Each sentence of the brief cites the task or a source. Where no source says how to do the work, the coach gives the steps and no general advice. A how-to essay from the model alone is the part of the request that the review cut: it is often wrong, and an expert finds it slow. Fence: the CC-12 eval.
+2. **The context comes from the knowledge graph.** The sources of a task are its one-hop neighbours in `kb_links` (`knowledge_graph.md`, D128): the email or WhatsApp message that it came from, a linked CRM record, a Knowledge page and related tasks. The seam opens each one again as the viewer. The coach adds no second link type and no second retrieval path. Fence: the CC-12 R8 test.
+3. **Steps are subtasks.** An accepted step is a subtask in the one task store (D52 to D54), with one Undo. For a company task, the card says that the team sees the new subtasks. One new function proposes the steps. "Split into sessions?" of `calendar_focus_os.md` §4.8 (F3) uses the same function. `propose()` and `propose_with_llm()` in `routes/tasks/ai.py` stay eval-locked.
+4. **"Who can help" reads only what the member can see.** The signals are tasks and records that the member can open, the profiles that the directory shows the member, and `manager_id`. The coach shows no workload, no hours and no absence reason. The capability search of `people_center_app.md` §5.5 shows those, and it stays admin-only. Fence: the CC-14 R8 test.
+5. **The member asks, and the coach never does.** The coach drafts the ask. The member edits it and sends it. It never assigns (D-PC-13), it never tells a manager by itself, and it never reads that a member is stuck from their activity. "Blocked" comes only from the member's own answer at the check-in (CC-5).
+6. **Cost.** A brief is one model call through the one router. The answer is kept for the task version and the source versions, so a second ▶ on an unchanged task makes no call. A member gets at most 20 briefs in a day. The setting "Brief before focus" is "tasks over 30 minutes" by default, "always" or "never".
+7. **Motivation is facts.** The coach says why the work matters and how far it got: "Step 3 of 5 done. Ravi's dispatch can start." The setting "Coach tone" is "facts only" by default, "encouraging" or "off". The coach shows no streak to lose, no guilt copy, and nothing that another member sees.
+8. **Chat parity.** Each coach act works from the chat with the same card (CC-16).
+
+**Ideas for later, with no slice yet.** Do the first step with Mira, such as a draft reply from the email of the task. Learn estimates for each step from the focus log (CC-5). Focus Shield of `calendar_focus_os.md` §4.1 holds the notifications while a session runs.
+
+---
+
 ## 5. The phases of My Day
 
 ### 5.1 The three phases
@@ -212,6 +241,11 @@ Each slice ships alone, dark where it changes behavior, through the preview, the
 | **CC-9** | 1977 | The phone layout | At 390 px and 360 px, the session, capture and plan work with one hand | MEDIUM |
 | **CC-10** | 1978 | Chat parity: capture, start and stop focus, plan and close the day (with CAL-1) | Each verb works from the chat with one card | HIGH (chat tools) |
 | **CC-11** | 1973 | The "Needs you" tabs (D-MD-9) | One tab for each app with a provider shows its count. A tab filters the one feed | MEDIUM |
+| **CC-12** | 3179 | The brief at the start of focus, with up to 5 sources from the knowledge graph (§4a rules 1, 2 and 6) | R8: a source that the viewer cannot open never shows. An eval of 20 real tasks: each sentence cites the task or a source. A second ▶ on an unchanged task makes no model call | HIGH (reads other apps) |
+| **CC-13** | 3180 | Plan the steps: 3 to 7 steps with estimates, accepted once as subtasks, with one Undo (§4a rule 3) | The focus checklist shows the steps. An eval of 20 real tasks: no step names a fact that is not in the task or a source | MEDIUM |
+| **CC-14** | 3181 | Who can help, when the member answers "Blocked": up to 3 people with a reason, a drafted ask, and "Waiting for" (§4a rules 4 and 5) | R8: no person or reason from a record that the viewer cannot open. No workload, hours or absence reason. Nothing goes out until the member sends it | HIGH (people data) |
+| **CC-15** | 3182 | Progress and why it matters: the dock line, the end line, and the "Coach tone" setting (§4a rule 7) | The dock line drops each missing fact. "Off" hides the end line | LOW |
+| **CC-16** | 3183 | The coach in chat (§4a rule 8) | Each of the three asks gives its card in a scripted chat test | HIGH (chat tools) |
 
 ### 9.1 Order and dependencies
 
@@ -222,6 +256,7 @@ Each slice ships alone, dark where it changes behavior, through the preview, the
 5. **CC-8 needs CC-5.**
 6. CC-9 follows CC-3. CC-10 follows CC-4, CC-5 and CAL-1.
 7. **CC-11 waits on PR 1789.** That PR changes `FeedCard.tsx`. CC-11 starts after it merges.
+8. **The coach (D221).** CC-12 needs CC-4. CC-13 needs CC-12. CC-14 needs CC-5. CC-15 needs CC-13. CC-16 needs CC-12, CC-13 and CC-14. The My Day ladder puts all five in rung 4 (demo task 3178).
 
 ### 9.2 CC-2 in detail: one Today rule and the today's-focus mark
 

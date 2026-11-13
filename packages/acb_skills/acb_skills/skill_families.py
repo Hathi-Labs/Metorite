@@ -857,14 +857,17 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # which is NOT a second assistant. Eight stateless builder tools (G1b added the describe tool,
     # G2 the interview and the plan card), three skill tools (F2d) and three package tools (G1c:
     # save and publish over the A5 routes; A5c-2: delete over the A5c-1 routes, after one card).
-    # J2b-3a adds the four approval tools over the J2b-1 routes: ask, list, approve and reject.
+    # STB-6a (E13a) adds ONE workflow read over the Workflows routes, as the member. No write.
+    # With it the pack holds 23 tools and is at its room limit: a Studio turn that also loads
+    # the email pack sends 110 tools (MAX_REQUEST_TOOLS). STB-6b needs a follow pack or room.
+    # STU-J2b-3a took the follow pack route: the approval tools are `studio-approvals` below.
     # A run loads a pack only where tool packs are on, and the pack builds nothing for an org that
     # STUDIO_ORGS does not hold.
     "studio": {
         "label": "AI Studio builder",
         "summary": (
             "Build an AI Studio app: draft a manifest from a brief, patch it, "
-            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save, publish and delete the app, start from a ready app, save, publish, pause and list your skills, read the records of a package, and ask for, list, approve and reject the approval of an app for the organization."
+            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save, publish and delete the app, start from a ready app, save, publish, pause and list your skills, read the records of a package, and list and read the organisation's workflows."
         ),
         "description": (
             "A tool pack: the builder tools of AI Studio, for the main "
@@ -874,9 +877,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "an app as a draft, publish it, and delete it after one card. It also holds the skill tools: save, "
             "publish, pause and list the skills of a member. Two read tools list the "
             "packages of a member and read the records of an object. Three write tools add, "
-            "change and delete a record, and each asks the member first. Four approval tools "
-            "ask for the approval of an app version for the organization, list the versions that "
-            "wait, and approve or reject one. The tools keep no "
+            "change and delete a record, and each asks the member first. One read tool lists the "
+            "workflows of the organization or reads one. The tools keep no "
             "draft: the chat holds the manifest. A run loads a pack only where tool packs are on, "
             "so until then this switch has no effect."
         ),
@@ -903,6 +905,31 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "studio_record_update",
             "studio_record_delete",
             "studio_app_read",
+            "studio_workflow_read",
+        ),
+        "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # STU-J2b-3a (task 3090): the four approval tools of the org share, as a pack that
+    # FOLLOWS `studio`. The studio family is at its room limit (23 tools, STB-6a), so the
+    # approval tools live in their own pack. It loads by its own words only, never by the
+    # Studio surface, so a Studio turn that also loads the email pack keeps its room.
+    "studio-approvals": {
+        "label": "AI Studio approvals",
+        "summary": (
+            "Ask for the approval of an app version for the organization, list the versions "
+            "that wait, and approve or reject one."
+        ),
+        "description": (
+            "A tool pack: the approval tools of AI Studio, for the main assistant to load "
+            "when a turn names an approval for the organization. The owner of an app asks for "
+            "the approval of one version. A holder of studio:publish lists the versions that "
+            "wait, and approves or rejects one after one card. A run loads a pack only where "
+            "tool packs are on, so until then this switch has no effect."
+        ),
+        "tools": (
             "studio_request_approval",
             "studio_list_approvals",
             "studio_approve",

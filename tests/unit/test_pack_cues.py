@@ -58,9 +58,9 @@ WHEN = {
     "calendar-day": (
         "Load to rebuild the day, start or close it, block time, set the One Thing, roll over, or change calendar settings and day rules."),
     # STU-G1: the Studio builder pack. STU-B2c-2b adds the record write tools,
-    # so the line says "read and change".
+    # so the line says "read and change". STB-6a adds the workflow reads.
     "studio": (
-        "Load for AI Studio: build an app (manifest, actions), manage your skills, "
+        "Load for AI Studio: build an app (manifest, actions), manage skills, read workflows, "
         "or read and change the records of a package."),
 }
 

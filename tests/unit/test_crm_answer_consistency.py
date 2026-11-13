@@ -685,7 +685,9 @@ def test_the_text_filter_is_one_bound_list_in_any_case() -> None:
         "Circle": field_sql.FieldRef(key="Circle", type="text", label="Circle")})
     where = field_sql.module_where(scope, "Invoices", [("Circle", "Mumbai")], zone="UTC",
                                    matches={0: ["Mumbai", "MUM", "MUMBAI"]})
-    assert "lower(btrim(fields ->> :agf_k0)) = ANY(CAST(:agf_v0 AS text[]))" in where.sql
+    # Task 3127: a module filter reads the one detoasted copy of the row.
+    assert ("lower(btrim(agf_d.agf_fields ->> :agf_k0)) = ANY(CAST(:agf_v0 AS text[]))"
+            in where.sql)
     assert where.params["agf_v0"] == ["mum", "mumbai"]
     assert "Mumbai" not in where.sql  # every value is bound
 

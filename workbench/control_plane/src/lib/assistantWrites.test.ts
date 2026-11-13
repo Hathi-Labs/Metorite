@@ -12,6 +12,8 @@ import { APP_REQUESTS_KEY, requestKey } from "@/app/integrations/lib/appRequests
 import { LIVE_PANES } from "@/lib/nav";
 import { PLACEMENT } from "@/lib/chatPlacement";
 import { clearAll, peek, put } from "@/lib/dataCache";
+import { sourceKey } from "@/lib/studio/dataDoor";
+import { createRealDoor, isLiveDoorKey } from "@/lib/studio/realDoor";
 import { STUDIO_CARD_TOOLS } from "@/lib/studio/studioCardState";
 
 import {
@@ -271,6 +273,50 @@ describe("a record write of Mira reads the approval cards again (STU-B2c-2c)", (
       noteToolStart(`r-${tool}`, tool);
       noteToolEnd(`r-${tool}`, undefined, ok);
       expect(peek(requestKey(RID)), tool).toBeDefined();
+    }
+    clearAll();
+  });
+});
+
+describe("a record write of Mira reads the records again (STU-F5a)", () => {
+  // The review's P1: a records card in the chat kept its old rows after Mira
+  // wrote a record in the same chat. The write seam now drops the reads of
+  // every live door. Mutation: drop `invalidate(isLiveDoorKey)` in
+  // announceAssistantWrite -> "a saved record write drops ..." goes red.
+  const PKG = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
+  const door = createRealDoor({ packageId: PKG, actions: [{ id: "find", uses: "object:visit.list" }] });
+  const LIVE = sourceKey(door, { action: "object:visit.list", args: { limit: 25 } });
+  const OTHER = "studio:records-card:pkg:" + PKG;
+  const seed = () => {
+    clearAll();
+    put(LIVE, [{ id: "a", title: "Old" }]);
+    put(OTHER, { id: PKG });
+  };
+
+  it("names the key of a live door, and no other key", () => {
+    expect(isLiveDoorKey(LIVE)).toBe(true);
+    expect(isLiveDoorKey(OTHER)).toBe(false);
+    expect(isLiveDoorKey("studio:sample:draft:object:visit.list:{}")).toBe(false);
+  });
+
+  it("a saved record write drops the reads of each live door, and keeps the package read", () => {
+    for (const tool of STUDIO_CARD_TOOLS) {
+      seed();
+      noteToolStart(`l-${tool}`, tool);
+      noteToolEnd(`l-${tool}`, undefined, true);
+      expect(peek(LIVE), tool).toBeUndefined();
+      expect(peek(OTHER), tool).toBeDefined();
+    }
+    clearAll();
+  });
+
+  it("a read, another studio write and a failed call keep the rows", () => {
+    for (const [tool, ok] of [["studio_record_list", true], ["studio_save", true],
+      ["studio_record_update", false]] as const) {
+      seed();
+      noteToolStart(`k-${tool}`, tool);
+      noteToolEnd(`k-${tool}`, undefined, ok);
+      expect(peek(LIVE), tool).toBeDefined();
     }
     clearAll();
   });
