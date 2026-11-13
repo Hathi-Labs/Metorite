@@ -50,15 +50,27 @@ result of each was run on 2026-11-13.
   The same test goes red, because the lines of the second order name the first.
 * E5. ``run_chunk``: skip the digest check.
   ``test_r8_a_digest_mismatch_writes_nothing`` goes red.
-* E6. ``run_chunk``: mark every item of the chunk ``failed`` on a ``BatchError``.
-  ``test_r8_a_range_refusal_fails_one_item_and_the_store_writes_the_other_49`` goes red.
-* E7. ``run_chunk``: do not rerun the other items after a refusal (re-raise).
-  The same test goes red.
+* E6. ``_run_group``: fail ``rows[0]`` on a refusal, with no split (the old
+  loop). ``test_r8_a_range_refusal_fails_one_item_and_the_store_writes_the_other_49``,
+  ``test_r8_fifty_creates_under_three_rollups_all_end_done_in_smaller_chunks`` and
+  ``test_r8_a_timeout_of_a_big_group_splits_and_all_items_end_done`` go red.
+* E7. ``_run_group``: re-raise a refusal of a group of one item. The range test goes red.
 * E8. Drop ``_BOUND_ORG`` from ``_GET_BATCH_SQL``. RLS still hides the row from
   org B, so only the source fence
   ``test_each_select_and_update_names_the_org`` in ``test_studio_batch.py`` goes red.
-* E9. ``run_chunk``: treat ``StoreBusy`` as a refusal of the item.
-  ``test_r8_a_busy_org_is_a_retry_signal_and_marks_no_item`` goes red.
+* E9. ``_is_item_refusal`` and the busy branch: treat ``StoreBusy`` as a
+  refusal of the item. ``test_r8_a_busy_org_is_a_retry_signal_and_marks_no_item`` goes red.
+* E10. ``_is_item_refusal``: ``return True``.
+  ``test_r8_a_cause_that_is_no_value_error_is_raised_and_marks_nothing`` and the
+  pure ``test_an_item_error_is_a_value_error_and_a_fault_is_not`` go red.
+* E11. ``_run_group``: drop the single-item timeout branch.
+  ``test_r8_a_timeout_marks_nothing_and_a_retry_finishes`` goes red.
+* E12. ``_clean_items``: drop the check of the parent of the record write.
+  The pure ``test_the_record_write_has_no_parent_and_a_line_names_an_earlier_write`` goes red.
+  A bad parent of a line (``test_a_bad_parent_of_a_line_is_refused``) goes red when
+  the range check goes.
+* E13. ``_result``: always compute the status (drop the ``held`` guard).
+  ``test_r8_a_batch_that_is_not_open_is_never_moved_back_to_open`` goes red.
 """
 
 from __future__ import annotations
