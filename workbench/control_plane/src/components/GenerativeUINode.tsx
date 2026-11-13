@@ -58,6 +58,8 @@ import StudioTable from "@/components/studio/StudioTable";
 import StudioBoard from "@/components/studio/StudioBoard";
 import StudioChart from "@/components/studio/StudioChart";
 import StudioStat from "@/components/studio/StudioStat";
+import StudioFlow from "@/components/studio/StudioFlow";
+import { isFlowNode, parseFlowSource } from "@/lib/studio/flowModel";
 import { parseAggregate } from "@/lib/studio/aggregateModel";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { TypedActionButton } from "@/lib/studio/TypedActionButton";
@@ -249,6 +251,10 @@ function Node({
   const props = (node.props ?? {}) as Record<string, unknown>;
   // With a door, a bound node draws its loading, empty and error states, so
   // it is not "empty" for want of rows.
+  // The Process flow reads a workflow, not a package object, so it does not go through the door
+  // (STU-D8). It draws on a Studio page only: chat has no door.
+  const flowSource = door && isFlowNode(type, props) ? parseFlowSource(props.source) : null;
+  if (flowSource) return <StudioFlow source={flowSource} />;
   if (door && bindsSource(type, props)) {
     return (
       <BoundSource node={node} door={door} onAction={onAction} answered={answered}
