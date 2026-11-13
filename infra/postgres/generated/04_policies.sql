@@ -1559,6 +1559,13 @@ CREATE POLICY studio_record_hot_tenant_isolation ON studio_record_hot
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE studio_org_usage ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studio_org_usage FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS studio_org_usage_tenant_isolation ON studio_org_usage;
+CREATE POLICY studio_org_usage_tenant_isolation ON studio_org_usage
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE goal_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE goal_records FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS goal_records_tenant_isolation ON goal_records;

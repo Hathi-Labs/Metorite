@@ -88,6 +88,11 @@ MAX_RECORD_BYTES = 65_536
 MAX_FIELDS_PER_OBJECT = 60
 MAX_OBJECTS_PER_PACKAGE = 50
 MAX_OBJECTS_PER_ORG = 200
+#: C10a. The records of one org, and the JSON text of those records in bytes.
+#: The gauge ``studio_org_usage`` counts both, and the store refuses a batch
+#: that takes the org past a cap. History rows do not count.
+MAX_RECORDS_PER_ORG = 1_000_000
+MAX_RECORD_BYTES_PER_ORG = 2 * 1024**3
 #: The index budget. The trigger ``studio_object_fields_hot_budget`` holds both.
 MAX_HOT_PER_OBJECT = 8
 MAX_HOT_PER_ORG = 24
