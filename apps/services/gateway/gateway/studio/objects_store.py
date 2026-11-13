@@ -81,7 +81,11 @@ caller's transaction stays usable, and the old timeout comes back.
 ⚠️ ``v_num`` takes no index condition as the app role, because no ``numeric``
 comparison is LEAKPROOF (``docs/rls_and_indexes.md``). So a number filter
 reads the hot rows of its field. A sort on a number still reads the index in
-order.
+order. **C2c** adds ``v_num_f8``, a float8 copy that a trigger fills
+(migration 429). For an org on ``STUDIO_NUM_F8_ORGS`` (default OFF), a number
+filter adds a float8 test with the non-strict operator beside the exact
+``numeric`` test, so the app role reads the index ``studio_record_hot_num_f8_idx``.
+The exact test stays as the filter, so the records do not change.
 
 **The aggregate (C2b).** :func:`aggregate_records` groups the records of one
 object by one hot field and takes a count, a sum or an average of each group.
@@ -1879,6 +1883,31 @@ def _needs_row(cond: Condition) -> bool:
     return False
 
 
+def _f8_on() -> bool:
+    """True when the bound tenant is on ``STUDIO_NUM_F8_ORGS`` (C2c). The org
+    comes from the tenant seam, never from request input (R5). No tenant
+    bound gives False, so the SQL is then the one of C2a."""
+    from acb_common.db import current_tenant
+
+    from gateway.routes.studio.flags import num_f8_allowed
+
+    return num_f8_allowed(current_tenant())
+
+
+def _q_num_f8(hcol: str, i: int, cond: Condition) -> str:
+    """The float8 test that goes IN ADDITION to the exact test of a number
+    filter (C2c). It reads ``v_num_f8``, whose comparisons are LEAKPROOF.
+    Three rules keep the records the same. The operator is the non-strict one
+    of the op, because float8 can round two numerics to one value. The bound is
+    the same numeric cast to float8, with no column in it, so it is a
+    constant. The exact test stays beside it as the filter."""
+    hcol = hcol.rsplit(".", 1)[0] + ".v_num_f8"
+    if cond.op == "in":
+        return f"{hcol} = ANY(CAST(CAST(:v{i} AS numeric[]) AS float8[]))"
+    cmp = _F8_CMP[cond.op]
+    return f"{hcol} {cmp} CAST(CAST(:v{i} AS numeric) AS float8)"
+
+
 def _drive_rank(cond: Condition) -> int | None:
     """How well the hot rows of *cond* serve as the candidates: 0 for an
     index condition (a text match, a time), 1 for a scan of the field, 2 for
@@ -1895,6 +1924,8 @@ def _drive_rank(cond: Condition) -> int | None:
     col = _HOT_COLUMN[cond.field.type]
     if col == "v_ts" or (col == "v_text" and cond.op in ("eq", "in")):
         return 0
+    if col == "v_num" and _f8_on():
+        return 0  # the float8 test is an index condition (C2c); `ne` returned above
     return 1
 
 
@@ -1931,6 +1962,11 @@ def _q_data(kind: str, i: int) -> str:
                 f"THEN CAST(r.data ->> {kref} AS timestamptz) END)")
     return (f"(CASE WHEN jsonb_typeof(r.data -> {kref}) = 'boolean' "
             f"THEN CAST(r.data ->> {kref} AS boolean) END)")
+
+
+#: The number ops that get the float8 test (C2c), with its NON-STRICT operator.
+#: `ne` and `is_empty` do not get one. `in` tests with `= ANY`.
+_F8_CMP: Mapping[str, str] = {"eq": "=", "in": "=", "lt": "<=", "lte": "<=", "gt": ">=", "gte": ">="}
 
 
 def _q_compare(expr: str, i: int, cond: Condition, params: dict[str, Any]) -> str:
@@ -1993,7 +2029,10 @@ def _q_frag(h: str, i: int, cond: Condition, params: dict[str, Any]) -> str:
     if cond.op == "contains":
         return _q_contains(h, i, cond.value, params)
     hcol = f"{h}.{col}"
-    return _q_compare(hcol, i, cond, params)
+    frag = _q_compare(hcol, i, cond, params)
+    if col == "v_num" and cond.op in _F8_CMP and _f8_on():
+        return f"{_q_num_f8(hcol, i, cond)} AND {frag}"
+    return frag
 
 
 def _q_hot(i: int, cond: Condition, params: dict[str, Any], rid: str) -> str:
@@ -3649,3 +3688,57 @@ async def read_tree(db: Any, *, package_id: str, object_id: str, root_id: str | 
                            parent_id=None if row[1] is None else str(row[1]))
                   for row in rows[:size])
     return TreePage(nodes=nodes, truncated=len(rows) > size)
+
+
+# ── The backfill of v_num_f8 (C2c) ──────────────────────────────────────────
+
+_NUM_F8_BATCH = (
+    "WITH b AS (SELECT h.record_id, h.field_key FROM studio_record_hot h "
+    f"WHERE h.{_OF_ORG} AND h.v_num IS NOT NULL AND h.v_num_f8 IS NULL "
+    "AND (h.record_id, h.field_key) > (CAST(:last_rid AS uuid), CAST(:last_fk AS text)) "
+    "ORDER BY h.record_id, h.field_key LIMIT :n FOR UPDATE) "
+    "UPDATE studio_record_hot h SET v_num_f8 = h.v_num::float8 FROM b "
+    f"WHERE h.{_OF_ORG} AND h.record_id = b.record_id AND h.field_key = b.field_key "
+    "RETURNING h.record_id, h.field_key"
+)
+_NUM_F8_LEFT = (
+    f"SELECT count(*) FROM studio_record_hot h WHERE h.{_OF_ORG} "
+    "AND h.v_num IS NOT NULL AND h.v_num_f8 IS NULL"
+)
+_NO_UUID = "00000000-0000-0000-0000-000000000000"
+
+
+async def backfill_num_f8(org: str, *, batch: int = 1000, pause_s: float = 0.2,
+                          max_batches: int | None = None) -> dict[str, int]:
+    """Fill ``studio_record_hot.v_num_f8`` of *org* for each row that has a
+    ``v_num`` and no float8 copy (C2c, migration 429).
+
+    Each batch is one short transaction through the tenant seam, so FORCE RLS
+    binds *org*. The batches walk the primary key, so a batch never reads a row
+    twice. The UPDATE sets only ``v_num_f8``, so the trigger of 429 does not
+    fire. A second run finds nothing to fill. A run that stops keeps its
+    committed batches. Returns ``batches``, ``filled`` and ``remaining``, the
+    count of rows that still have no copy. Turn on ``STUDIO_NUM_F8_ORGS`` only
+    when ``remaining`` is 0.
+    """
+    import asyncio
+
+    from acb_common.db import tenant_session
+
+    counts = {"batches": 0, "filled": 0, "remaining": 0}
+    last_rid, last_fk = _NO_UUID, ""
+    while max_batches is None or counts["batches"] < max_batches:
+        async with tenant_session(org) as db:
+            rows = (await db.execute(text(_NUM_F8_BATCH),
+                                     {"last_rid": last_rid, "last_fk": last_fk,
+                                      "n": batch})).all()
+        if not rows:
+            break
+        counts["batches"] += 1
+        counts["filled"] += len(rows)
+        last_rid, last_fk = max((str(r[0]), str(r[1])) for r in rows)
+        if pause_s > 0:
+            await asyncio.sleep(pause_s)
+    async with tenant_session(org) as db:
+        counts["remaining"] = int((await db.execute(text(_NUM_F8_LEFT))).scalar_one())
+    return counts

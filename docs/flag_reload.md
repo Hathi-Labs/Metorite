@@ -54,6 +54,14 @@ org, and the default is empty. Its one reader is
 door also needs `STUDIO_ORGS`. A reload applies a change, and the flip stays
 OWNER-GATE (`enforcement-flip`).
 
+`STUDIO_NUM_F8_ORGS` adds the float8 test to a number filter of the Studio
+object query (`ai_studio.md` §14 C2c). For each listed org, the query tests
+`studio_record_hot.v_num_f8` beside the exact `v_num` test, so the app role
+can use the index. `*` lists every org, and the default is empty. Its one
+reader is `gateway.routes.studio.flags.num_f8_allowed`, and each query asks
+it. Turn it on only after migration 429 and the backfill report no NULL row.
+A reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
+
 `AGENT_WRITE_CAP` and `AGENT_WRITE_WINDOW_S` set the write cap of each agent
 connection (`external_agent_access.md` §9.2, MCP-G20). The defaults are 120
 writes in 600 s. They are not `*_ORGS` or `*_MODES` keys, so a reload does

@@ -8,6 +8,9 @@ reload of the settings (SIGHUP) takes effect with no restart.
 It opens the door op of the action door: a class A ``<app>.<op>`` action of a
 package runs the op of that app as the caller. :func:`door_ops_allowed` is
 its one reader. A flip in production is the gate ``enforcement-flip``.
+
+``STUDIO_NUM_F8_ORGS`` (C2c) has the same grammar and the same default. It
+adds the float8 test of a number filter (``num_f8_allowed``).
 """
 
 from __future__ import annotations
@@ -45,4 +48,14 @@ def door_ops_allowed(organization_id: str | None) -> bool:
     if not organization_id:
         return False
     listed = _parse_orgs(str(getattr(get_settings(), "studio_door_ops_orgs", "") or ""))
+    return "*" in listed or str(organization_id).strip().lower() in listed
+
+
+def num_f8_allowed(organization_id: str | None) -> bool:
+    """True when ``STUDIO_NUM_F8_ORGS`` holds the org, or holds ``*`` (C2c).
+    Default OFF. The one reader of the setting. The org comes from the bound
+    tenant, never from request input (R5)."""
+    if not organization_id:
+        return False
+    listed = _parse_orgs(str(getattr(get_settings(), "studio_num_f8_orgs", "") or ""))
     return "*" in listed or str(organization_id).strip().lower() in listed

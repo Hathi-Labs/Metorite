@@ -826,10 +826,10 @@ def test_r8_a_text_eq_reads_the_text_index(world) -> None:
 ])
 def test_r8_a_number_or_checkbox_filter_is_bounded_to_its_field(world, key: str, op: str,
                                                                  value: Any) -> None:
-    """The known gap. No `numeric` comparison is LEAKPROOF, and `v_bool` has
-    no index. So the app role reads the hot rows of the one field, through
-    the field prefix of a hot index, and no more. The page and its total read
-    them in one statement, so the bound is twice the field."""
+    """With the flag OFF, the known gap. No `numeric` comparison is LEAKPROOF,
+    and `v_bool` has no index. So the app role reads the hot rows of the one
+    field, through the field prefix of a hot index, and no more. The page and
+    its total read them in one statement, so the bound is twice the field."""
     nodes = _page_plan(world, filter=[{"field": key, "op": op, "value": value}])
     _no_seq_scan(nodes)
     scans = _hot_scans(nodes)
@@ -837,6 +837,146 @@ def test_r8_a_number_or_checkbox_filter_is_bounded_to_its_field(world, key: str,
                          if n["Node Type"] != "Bitmap Heap Scan"), scans
     assert _rows_read(nodes) <= 2 * BIG
     assert _records_read(nodes) <= _PAGE
+
+
+@pytest.mark.parametrize(("op", "value", "bound"), [
+    ("lte", 500, 2 * 500),
+    ("eq", 123, 2 * 2),
+    ("in", [5, 6, 7], 2 * 3),
+    ("gte", 49_990, 2 * 11),
+])
+def test_r8_c2c_a_number_filter_reads_the_float8_index_when_the_flag_is_on(
+        world, monkeypatch, op: str, value: Any, bound: int) -> None:
+    """C2c. With the flag ON, `v_num_f8` takes the index condition as the app
+    role, because the float8 comparisons are LEAKPROOF. `lte 500` reads at
+    most twice its 450 rows (the page and its total), not the 45,000 of the
+    field. The exact `v_num` test stays as a filter."""
+    monkeypatch.setattr(store, "_f8_on", lambda: True)
+    nodes = _page_plan(world, filter=[{"field": "n", "op": op, "value": value}])
+    _no_seq_scan(nodes)
+    assert _uses(nodes, "studio_record_hot_num_f8_idx", "v_num_f8"), \
+        [(n["Node Type"], n.get("Index Name")) for n in nodes]
+    assert _rows_read(nodes) <= max(bound, 2 * 500)
+    assert _records_read(nodes) <= _PAGE
+
+
+def test_r8_c2c_the_count_reads_the_float8_index_too(world, monkeypatch) -> None:
+    monkeypatch.setattr(store, "_f8_on", lambda: True)
+    nodes = _count_plan(world, [{"field": "n", "op": "lte", "value": 500}], studio_query.TOTAL_CAP)
+    _no_seq_scan(nodes)
+    assert _uses(nodes, "studio_record_hot_num_f8_idx", "v_num_f8")
+    assert _rows_read(nodes) <= 500
+
+
+_EDGE_VALUES: list[Any] = [0, -1, 1, 0.0001, 0.1, 0.3, 0.30000000000000004, 500,
+                           999999999999999, 999999999999999.9]
+#: Exact numerics that one float8 holds for two values. They are written with
+#: SQL, because a JSON number would be rounded to a float first.
+_COLLIDING = ["0.1000000000000000001", "0.0999999999999999999", "0.3000000000000000001"]
+_EDGE_QUERY_VALUES: list[Any] = [0, -1, 1, 0.0001, 0.1, 0.3, 0.30000000000000004, 500,
+                                 999999999999999, 999999999999999.9]
+
+
+def _edge_filters() -> list[list[dict[str, Any]]]:
+    out: list[list[dict[str, Any]]] = []
+    for v in _EDGE_QUERY_VALUES:
+        for op in ("eq", "ne", "lt", "lte", "gt", "gte"):
+            out.append([{"field": "x", "op": op, "value": v}])
+        out.append([{"field": "x", "op": "gte", "value": v}, {"field": "x", "op": "lte", "value": v}])
+    out.append([{"field": "x", "op": "in", "value": [0.1, 0.3, 1]}])
+    out.append([{"field": "x", "op": "in", "value": [0, 999999999999999, 999999999999999.9]}])
+    out.append([{"field": "x", "op": "gte", "value": 0.0001}, {"field": "x", "op": "lte", "value": 0.3}])
+    out.append([{"field": "x", "op": "gt", "value": -1}, {"field": "x", "op": "lt", "value": 1}])
+    return out
+
+
+def _holds(op: str, stored: Decimal, value: Any) -> bool:
+    bound = Decimal(repr(value)) if isinstance(value, float) else Decimal(value)
+    return {"eq": stored == bound, "ne": stored != bound, "lt": stored < bound,
+            "lte": stored <= bound, "gt": stored > bound, "gte": stored >= bound}[op]
+
+
+def test_r8_c2c_the_flag_off_and_on_give_the_same_records(world, monkeypatch) -> None:
+    """C2c. Each op, on edge values and on numerics that one float8 holds for
+    two values, gives the same records with the float8 test off and on, and
+    the records that Python finds on the stored numerics."""
+    async def seed() -> tuple[store.StudioObject, dict[str, Decimal]]:
+        obj = await _define(world.a, world.pkg_a, "edge", [{"key": "x", "type": "number", "hot": True}])
+        rows: dict[str, dict[str, Any]] = {f"v{i}": {"x": v} for i, v in enumerate(_EDGE_VALUES)}
+        rows.update({f"c{i}": {"x": 1} for i in range(len(_COLLIDING))})
+        rows["none"] = {}
+        ids = await _create(world.a, obj, rows)
+        async with tenant_session(world.a) as db:
+            for i, v in enumerate(_COLLIDING):
+                await db.execute(text(
+                    "UPDATE studio_record_hot SET v_num = CAST(:v AS numeric) "
+                    "WHERE record_id = CAST(:r AS uuid) AND field_key = 'x'"), {"v": v, "r": ids[f"c{i}"]})
+            got = (await db.execute(text(
+                "SELECT record_id, v_num, v_num_f8 FROM studio_record_hot "
+                "WHERE object_id = CAST(:o AS uuid) AND field_key = 'x'"), {"o": obj.id})).all()
+        # The trigger filled the float8 copy of each row, also after the UPDATE.
+        assert got and all(r[2] is not None and r[2] == float(r[1]) for r in got)
+        return obj, {str(r[0]): r[1] for r in got}
+
+    async def ids_of(obj: store.StudioObject, flt: list[dict[str, Any]]) -> set[str]:
+        page = await _query(world.a, obj, filter=flt, limit=100)
+        assert page is not None
+        return {r.id for r in page.records}
+
+    async def go() -> list[str]:
+        obj, stored = await seed()
+        wrong: list[str] = []
+        proper_subset = False
+        for flt in _edge_filters():
+            monkeypatch.setattr(store, "_f8_on", lambda: False)
+            off = await ids_of(obj, flt)
+            monkeypatch.setattr(store, "_f8_on", lambda: True)
+            on = await ids_of(obj, flt)
+            want = {rid for rid, v in stored.items() if all(
+                (c["value"] is not None) and (
+                    any(_holds("eq", v, x) for x in c["value"]) if c["op"] == "in"
+                    else _holds(c["op"], v, c["value"])) for c in flt)}
+            if off != on or on != want:
+                wrong.append(f"{flt}: off={len(off)} on={len(on)} want={len(want)}")
+            proper_subset = proper_subset or 0 < len(on) < len(stored)
+        assert proper_subset
+        return wrong
+
+    assert _run(world.p.app_url, go) == []
+
+
+def test_r8_c2c_the_trigger_and_the_backfill_fill_the_float8_copy(world) -> None:
+    """The backfill fills a row with no copy, reports 0 remaining, and fills
+    no row of another org. A second run fills nothing."""
+    # The admin engine is sync, and it skips FORCE RLS, so it can null the copies.
+    obj_other: dict[str, Any] = {}
+
+    async def seed() -> None:
+        obj_other["obj"] = await _define(world.a, world.pkg_a, "fill",
+                                         [{"key": "x", "type": "number", "hot": True}])
+        await _create(world.a, obj_other["obj"], {f"r{i}": {"x": i} for i in range(7)})
+        other = await _define(world.b, world.pkg_b, "fill", [{"key": "x", "type": "number", "hot": True}])
+        await _create(world.b, other, {"o": {"x": 9}})
+        obj_other["other"] = other
+
+    _run(world.p.app_url, seed)
+    oid, bid = obj_other["obj"].id, obj_other["other"].id
+    with world.p.admin_engine.begin() as c:
+        # A column list that skips v_num: the trigger does not fire.
+        c.execute(text("UPDATE studio_record_hot SET v_num_f8 = NULL WHERE object_id IN "
+                       "(CAST(:a AS uuid), CAST(:b AS uuid))"), {"a": oid, "b": bid})
+
+    first = _run(world.p.app_url, lambda: store.backfill_num_f8(
+        world.a, batch=3, pause_s=0))
+    second = _run(world.p.app_url, lambda: store.backfill_num_f8(world.a, batch=3, pause_s=0))
+    with world.p.admin_engine.begin() as c:
+        mine = c.execute(text("SELECT count(*) FROM studio_record_hot WHERE object_id = "
+                              "CAST(:o AS uuid) AND v_num_f8 IS NULL"), {"o": oid}).scalar_one()
+        theirs = c.execute(text("SELECT count(*) FROM studio_record_hot WHERE object_id = "
+                                "CAST(:o AS uuid) AND v_num_f8 IS NULL"), {"o": bid}).scalar_one()
+    assert first == {"batches": 3, "filled": 7, "remaining": 0}
+    assert second == {"batches": 0, "filled": 0, "remaining": 0}
+    assert mine == 0 and theirs == 1
 
 
 @pytest.mark.parametrize(("filter", "cap"), [
