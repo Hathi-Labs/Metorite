@@ -774,9 +774,10 @@ async def scan_due_timers(org: str) -> int:
     Only the org loop of :func:`scan_due_waits` calls this, through
     :func:`_scan_studio_timers`, after ``unattended.org_allowed(org)`` and
     ``routes/studio/flags.studio_allowed``. So the org comes from the loop's
-    own enumeration, never from a request, a payload or the ambient tenant. This scan binds no tenant, and it never calls
-    ``triggers.dispatch_event``: only a member request binds the tenant of an
-    event (H-328 part (c)). It calls ``start_run`` itself, as ``_scan_org`` does.
+    own enumeration, never from a request, a payload or the ambient tenant.
+    This scan binds no tenant, and it never calls ``triggers.dispatch_event``:
+    only a member request binds the tenant of an event (H-328 part (c)). It
+    calls ``start_run`` itself, as ``_scan_org`` does.
 
     * A timer trigger is an ``event`` trigger with source ``studio`` and a
       filter of ``package_id``, ``object``, ``op = breach`` and ``timer``.
