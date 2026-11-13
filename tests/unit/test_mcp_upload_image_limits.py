@@ -35,7 +35,8 @@ Fix round 1 adds the classes ``TestALargeBodyWaitsForItsToken`` (item 1),
 (item 7) and ``TestAQuestionChecksItsImagesFirst`` (item 8). Each test names
 the mutation that turns it red.
 
-Fix round 2 adds the class ``TestAnOrgOffTheFlagKeepsTheOldCap`` (item A).
+Fix round 2 adds the classes ``TestAnOrgOffTheFlagKeepsTheOldCap`` (item A)
+and ``TestARefusedQuestionLeavesNoOpenRun`` (item B).
 """
 from __future__ import annotations
 
@@ -69,6 +70,7 @@ from tests.unit.test_mcp_edge_writes import (
 UPLOAD_PATH = f"/projects/tasks/{TASK}/attachments"
 START_PATH = f"/projects/tasks/{TASK}/agent-runs"
 RUN = _uuid(7701)
+RELEASE_PATH = f"/projects/agent-runs/{RUN}/release"
 IMG_A, IMG_B = _uuid(9801), _uuid(9802)
 
 
@@ -111,6 +113,11 @@ class _Upload:
         self.answer: tuple[int, Any] | None = None
         self.rows: list[dict[str, Any]] = []
         self.activity_status = 201
+        # Fix round 2, item B: the start of `ask_on_task` found an open run
+        # (False), and the answer of the release.
+        self.start_created = True
+        self.release_answer: tuple[int, Any] = (
+            200, {"run": {**_run_row(), "status": "released"}, "released": True})
 
     async def __call__(self, scope, receive, send) -> None:
         body = b""
@@ -140,7 +147,10 @@ class _Upload:
             status, payload = 200, {"rows": self.rows, "total": len(self.rows)}
         elif scope["method"] == "POST" and scope["path"] == START_PATH:
             # The start of the run of `ask_on_task` (fix round 1, item 8).
-            status, payload = 201, {"run": _run_row(), "created": True}
+            status, payload = ((201, {"run": _run_row(), "created": True}) if self.start_created
+                               else (200, {"run": _run_row(), "created": False}))
+        elif scope["method"] == "POST" and scope["path"] == RELEASE_PATH:
+            status, payload = self.release_answer
         elif scope["method"] == "POST" and scope["path"] == f"/projects/agent-runs/{RUN}/activities":
             sent = json.loads(body)
             activity = {"id": _uuid(7801), "run_id": RUN, "task_id": TASK, "seq": 2,
@@ -164,6 +174,9 @@ class _Upload:
 
     def starts(self) -> list[SimpleNamespace]:
         return [r for r in self.requests if r.method == "POST" and r.path == START_PATH]
+
+    def releases(self) -> list[SimpleNamespace]:
+        return [r for r in self.requests if r.method == "POST" and r.path == RELEASE_PATH]
 
 
 def _run_row() -> dict[str, Any]:
@@ -572,6 +585,83 @@ class TestAQuestionChecksItsImagesFirst:
             "task_id": TASK, "question": "Go on?", "idempotency_key": "q-2"})
         assert result["isError"] is False, result
         assert not [r for r in gw.requests if r.method == "GET"]
+
+
+class TestARefusedQuestionLeavesNoOpenRun:
+    """Fix round 2, item B. The checks of the edge pass and the run starts.
+    Then the gateway refuses the question: its flag is off, or a member
+    removed the image after the list read. The call then releases the run
+    that it started, so no empty run stays open on the task. It never ends
+    a run that it did not start."""
+
+    async def _ask(self, gw: _Upload, answer: tuple[int, Any] | None) -> dict[str, Any]:
+        up = await _upload(_args(TINY_PNG))
+        aid = up["structuredContent"]["attachment"]["attachment_id"]
+        gw.answer = answer
+        return await _tool("ask_on_task", {
+            "task_id": TASK, "question": "Approve this layout?", "idempotency_key": "q-3",
+            "attachment_ids": [aid]})
+
+    @pytest.mark.parametrize("answer,text_", [
+        ((422, {"detail": {"error": agent_oauth.IMAGE_UPLOAD_OFF, "message": "SECRET"}}),
+         tools.TEXT_IMAGES_OFF),
+        ((422, {"detail": {"error": "attachment_not_on_task", "message": "SECRET"}}),
+         tools.TEXT_ATTACHMENT_NOT_ON_TASK),
+        ((422, {"detail": {"error": "attachment_not_image", "message": "SECRET"}}),
+         tools.TEXT_ATTACHMENT_NOT_IMAGE),
+        ((403, {"detail": "SECRET"}), tools.TEXT_WRITE_FORBIDDEN),
+        ((404, {"detail": "Agent run not found"}), tools.TEXT_RUN_NOT_FOUND),
+        ((409, {"detail": "SECRET"}), tools.TEXT_RUN_CONFLICT),
+        ((429, {"detail": "SECRET"}), tools.TEXT_CAP),
+    ], ids=["flag_off", "image_removed", "not_an_image", "forbidden", "run_gone",
+            "conflict", "cap"])
+    async def test_b1_a_refused_question_releases_the_run_that_it_started(
+            self, gw, answer, text_):
+        """The probe of the verifier: the edge flag is on, and the gateway
+        answers 422 ``image_upload_off``. Mutation: drop the release of
+        ``tools._ask_on_task``, and the run that the call started stays open
+        (no release goes out)."""
+        result = await self._ask(gw, answer)
+        assert _text(result) == text_
+        assert "SECRET" not in json.dumps(result)
+        assert len(gw.starts()) == 1
+        (release,) = gw.releases()
+        assert json.loads(release.body) == {}
+        assert release.headers.get("x-agent-nonce")
+
+    async def test_b2_a_busy_answer_keeps_the_run(self, gw):
+        """A busy answer may come after the question landed. So the call
+        ends no run, and a retry with the same key finds the run and the
+        question. Mutation: release on each tool error, and a release goes
+        out here."""
+        result = await self._ask(gw, (503, {"detail": "busy"}))
+        assert _text(result) == tools.TEXT_BUSY
+        assert len(gw.starts()) == 1
+        assert gw.releases() == []
+
+    async def test_b3_an_open_run_that_the_call_did_not_start_stays_open(self, gw):
+        """``_start`` gave the open run of this session (``created`` false).
+        Mutation: release with no check of ``created``, and the run of the
+        session ends."""
+        gw.start_created = False
+        result = await self._ask(gw, (422, {"detail": {"error": agent_oauth.IMAGE_UPLOAD_OFF}}))
+        assert _text(result) == tools.TEXT_IMAGES_OFF
+        assert len(gw.starts()) == 1
+        assert gw.releases() == []
+
+    @pytest.mark.parametrize("release_answer", [(503, {"detail": "busy"}),
+                                                (409, {"detail": "SECRET"})],
+                             ids=["busy", "conflict"])
+    async def test_b4_a_failed_release_still_gives_the_refusal(self, gw, release_answer):
+        gw.release_answer = release_answer
+        result = await self._ask(gw, (422, {"detail": {"error": agent_oauth.IMAGE_UPLOAD_OFF}}))
+        assert _text(result) == tools.TEXT_IMAGES_OFF
+        assert len(gw.releases()) == 1
+
+    async def test_b5_an_answered_question_releases_nothing(self, gw):
+        result = await self._ask(gw, None)
+        assert result["isError"] is False, result
+        assert gw.releases() == []
 
 
 class TestTheBodyCapOfMcp:

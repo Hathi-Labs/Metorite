@@ -9491,18 +9491,30 @@ async def _question_images(ctx: Context, task_id: str, ids: list[str]) -> None:
             raise ToolError(TEXT_ATTACHMENT_NOT_IMAGE)
 
 
+def _refused(error: ToolError) -> bool:
+    """True when the gateway refused a write, so it wrote nothing: every
+    tool error but the busy text, and a write that never left the edge. A
+    busy answer can come after the write landed (CIV-14b fix round 2)."""
+    return isinstance(error, _NotSent) or error.text != TEXT_BUSY
+
+
 async def _ask_on_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     """Start or reuse the open run of this member and client on the task,
     then write the question (§12.1). The two writes share the key, so a
     second call with the same key returns the same run and question.
-    CIV-14b fix round 1: the images are checked before the start."""
+    CIV-14b fix round 1: the images are checked before the start.
+
+    CIV-14b fix round 2: when the gateway refuses the question, the call
+    releases the run that IT started, so no empty run stays open on the
+    task. A run that the start found open (``created`` false) stays as it
+    is, and so does each run after a busy answer."""
     _check_options(args.get("options"))
     key = str(args["idempotency_key"])
     if IMAGES_INPUT in args:
         await _question_images(ctx, str(args["task_id"]),
                                [str(i).lower() for i in args[IMAGES_INPUT]])
-    _, run = await _start(ctx, str(args["task_id"]), key,
-                          _str_or_none(args.get("external_link")))
+    created, run = await _start(ctx, str(args["task_id"]), key,
+                                _str_or_none(args.get("external_link")))
     run_id = _id(run.get("id"))
     if run_id is None:
         raise ToolError(TEXT_BUSY)
@@ -9513,8 +9525,15 @@ async def _ask_on_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
             payload[name] = args[name]
     _add_images(payload, args)
     waits = run.get("status") == "awaiting"
-    return await _post_activity(
-        ctx, run_id, payload, conflict=TEXT_QUESTION_WAITS if waits else TEXT_RUN_CONFLICT)
+    try:
+        return await _post_activity(
+            ctx, run_id, payload, conflict=TEXT_QUESTION_WAITS if waits else TEXT_RUN_CONFLICT)
+    except ToolError as error:
+        if created and _refused(error):
+            # The release route of `release_task`. A failed release still
+            # gives the refusal of the question.
+            await _after_write(lambda: _release_task(ctx, {"run_id": run_id}), {})
+        raise
 
 
 ASK_ON_TASK = Tool(

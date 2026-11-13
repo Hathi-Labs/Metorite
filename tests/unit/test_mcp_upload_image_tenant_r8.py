@@ -11,7 +11,8 @@ every read and write. Organization A holds:
 
 * MEMBER, with a connection of ``projects:read projects:write``;
 * a team project with the tasks ``mine``, ``other``, ``flagless``,
-  ``thought`` and ``norun``, a PNG on ``other`` and a PDF on ``mine``;
+  ``thought``, ``norun``, ``flipped`` and ``gone``, a PNG on ``other`` and a
+  PDF on ``mine``;
 * OWNER's personal tree, SEALED as D63 stamps it, with a stray grant to
   MEMBER and one task.
 
@@ -36,6 +37,9 @@ hold the edge rules with a fake gateway. The gate is
   turns red: the run starts before the gateway refuses the question.
 * Fix round 1, item 4. Keep the copy of ``agent_upload_body.py`` at the
   first part, and ``test_r8_a_signed_form_in_many_parts_lands`` turns red.
+* Fix round 2, item B. Drop the release of ``tools._ask_on_task``, and
+  ``test_r9_a_question_that_the_gateway_refuses_leaves_no_open_run`` turns
+  red: the run that the call started stays ``in_progress``.
 """
 from __future__ import annotations
 
@@ -161,7 +165,7 @@ def world():
     team = a.project("Team", in_space=True)
     todo = a.status(team, "To do", "todo", 0)
     t = {key: a.task(team, todo, key)
-         for key in ("mine", "other", "flagless", "thought", "norun")}
+         for key in ("mine", "other", "flagless", "thought", "norun", "flipped", "gone")}
     f = {
         "other": _attach(a, folder, t["other"], "other.png", "image/png", TINY_PNG),
         "pdf": _attach(a, folder, t["mine"], "spec.pdf", "application/pdf", PDF),
@@ -277,6 +281,13 @@ def _runs_of(world, task: str) -> int:
         return int(c.execute(text(
             "SELECT count(*) FROM pm_agent_runs WHERE task_id = CAST(:t AS uuid)"),
             {"t": world.t[task]}).scalar())
+
+
+def _run_statuses(world, task: str) -> list[str]:
+    with world.admin.begin() as c:
+        return [str(s) for s in c.execute(text(
+            "SELECT status FROM pm_agent_runs WHERE task_id = CAST(:t AS uuid)"
+            " ORDER BY created_at"), {"t": world.t[task]}).scalars()]
 
 
 def _questions_of(world, task: str) -> list[Any]:
@@ -410,6 +421,37 @@ class TestAnImageOnAQuestion:
         asked = await _ask(live, "norun", [aid])
         assert asked["isError"] is False, asked
         assert _runs_of(live, "norun") == 1
+
+    @pytest.mark.parametrize("task,change,text_", [
+        ("flipped", "flag", tools.TEXT_IMAGES_OFF),
+        ("gone", "remove", tools.TEXT_ATTACHMENT_NOT_ON_TASK),
+    ], ids=["flag_off_at_the_gateway", "image_removed"])
+    async def test_r9_a_question_that_the_gateway_refuses_leaves_no_open_run(
+            self, live, monkeypatch, task, change, text_):
+        """Fix round 2, item B, the probe of the verifier on a real gateway.
+        The checks of the edge pass. Then the gateway reads the flag off, or
+        a member removes the image before the write. The call releases the
+        run that it started. Mutation: drop the release of
+        ``tools._ask_on_task``, and the run stays ``in_progress``."""
+        up = await _upload(live, task, TINY_PNG)
+        aid = up["structuredContent"]["attachment"]["attachment_id"]
+        checked = tools._question_images
+
+        async def then_change(ctx: Any, task_id: str, ids: list[str]) -> None:
+            await checked(ctx, task_id, ids)
+            if change == "flag":
+                monkeypatch.setattr(get_settings(), "mcp_image_upload_orgs", "")
+            else:
+                with live.admin.begin() as c:
+                    c.execute(text("DELETE FROM pm_task_attachments"
+                                   " WHERE attachment_id = CAST(:a AS uuid)"), {"a": aid})
+
+        monkeypatch.setattr(tools, "_question_images", then_change)
+        assert _runs_of(live, task) == 0
+        result = await _ask(live, task, [aid])
+        assert result["content"][0]["text"] == text_
+        assert _run_statuses(live, task) == ["released"]
+        assert _questions_of(live, task) == []
 
 
 class TestTheReachOfAnUpload:
