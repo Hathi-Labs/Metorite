@@ -36,8 +36,9 @@ Each rule names the mutation that turns it red (R7):
 4. Match by title, or let a card with another key or with no key take the
    place of a closed card -> ``test_a_card_of_another_act_leaves_the_line``
    and ``test_a_card_with_no_key_takes_the_place_of_none``.
-4b. Drop the identity arguments of a call with no object id ->
-    ``test_a_new_object_keys_on_its_identity`` and
+4b. Drop the identity arguments of a call with no object id, or read a
+    place id as an object id -> ``test_a_new_object_keys_on_its_identity``,
+    ``test_a_place_id_is_not_an_object_id`` and
     ``test_two_new_mails_to_one_person_are_two_acts``.
 4c. Let a batch card take the place of a closed card that its items do not
     hold, or split the families ->
@@ -460,6 +461,25 @@ def test_a_new_object_keys_on_its_identity(tool: str, title: str, first: tuple, 
     act = ask_tools.card_act(title)
     assert _in_run(another) == f"Not done: «{act}». {TAIL_ONE}"
     assert _in_run(again) == ""
+
+
+async def grant_access(project_id: str, subject: str) -> str:
+    """Give one person or group access to a project (a tool that creates
+    nothing, with a place id only)."""
+    return "ok"
+
+
+def test_a_place_id_is_not_an_object_id():
+    """``project_id`` names a place. A grant to the sales group and a grant
+    to Kim in one project are two acts, so the line stays."""
+
+    async def body() -> None:
+        await _card("Change who can see this project?", "steer",
+                    call=(grant_access, {"project_id": "P1", "subject": "group:sales"}))
+        await _card("Change who can see this project?", "APPROVE",
+                    call=(grant_access, {"project_id": "P1", "subject": "kim@acme.test"}))
+
+    assert _in_run(body) == f"Not done: «change who can see this project». {TAIL_ONE}"
 
 
 def test_two_new_mails_to_one_person_are_two_acts():
