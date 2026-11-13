@@ -28,6 +28,7 @@
     "make_report"
   ],
   "own_tool_scope": [
+    "studio_app_read",
     "studio_delete_package",
     "studio_describe",
     "studio_draft",

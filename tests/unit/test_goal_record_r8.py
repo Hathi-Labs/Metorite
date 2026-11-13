@@ -72,6 +72,11 @@ g. The member purge deletes the member's goals of the bound org only.
 * M8. ``goal_store._LIST_SQL``: drop ``organization_id = {_BOUND_ORG} AND``.
   ``test_r8_the_store_filters_on_the_bound_org_without_rls`` and
   ``test_the_migration_holds_the_checks_the_rls_and_the_trigger`` go red.
+* M9 (WS-AUTO AUTO-8b-2a). ``goal_store.record_round``: send ``"clear":
+  False`` in place of ``clear_job_id``.
+  ``test_r8_a_round_can_clear_the_mark_in_the_same_write`` goes red, and so
+  does ``test_r8_a_normal_round_clears_the_mark`` of
+  ``test_headless_turn_r8.py``.
 """
 
 from __future__ import annotations
@@ -735,6 +740,39 @@ def test_r8_a_round_that_meets_the_cost_cap_exactly_stops_the_job(world) -> None
 
     got = _go(world, go)
     assert got is not None and (got.state, got.block_code) == ("blocked", "cap_reached")
+
+
+def test_r8_a_round_can_clear_the_mark_in_the_same_write(world) -> None:
+    """WS-AUTO AUTO-8b-2a: ``record_round(..., clear_job_id=True)`` clears
+    ``job_id`` in the write of the round, with one version step. The default
+    keeps ``job_id``. A value that is not a bool is refused before the
+    database. Org B's goal with a mark does not change."""
+    a, b = world.p.org_a, world.p.org_b
+    mark = str(uuid.uuid4())
+
+    async def go() -> dict[str, Any]:
+        cleared = await _create(a, job_id=mark)
+        kept = await _create(a, job_id=mark)
+        other = await _create(b, member=BEN, job_id=mark)
+        out: dict[str, Any] = {"cleared_id": cleared.id, "other_id": other.id}
+        async with tenant_session(a) as db:
+            out["cleared"] = await store.record_round(
+                db, ANA, cleared.id, 1, Decimal("2"), clear_job_id=True)
+            out["kept"] = await store.record_round(db, ANA, kept.id, 1, Decimal("2"))
+            for bad in (1, "yes", None):
+                with pytest.raises(store.GoalStoreError):
+                    await store.record_round(db, ANA, kept.id, 2, 1, clear_job_id=bad)
+        return out
+
+    out = _go(world, go)
+    cleared, kept = out["cleared"], out["kept"]
+    assert (cleared.job_id, cleared.version, cleared.round_count) == (None, 2, 1)
+    assert cleared.cost_used_credits == Decimal("2")
+    assert (kept.job_id, kept.version) == (mark, 2)
+    row = _row(world, out["cleared_id"])
+    assert (row["job_id"], row["version"], row["round_count"]) == (None, 2, 1)
+    other = _row(world, out["other_id"])
+    assert (str(other["job_id"]), other["version"], other["round_count"]) == (mark, 1, 0)
 
 
 def test_r8_a_capped_goal_resumes_only_under_a_raised_cap(world) -> None:
