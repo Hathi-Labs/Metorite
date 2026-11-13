@@ -192,8 +192,11 @@ describe("the shell seam", () => {
 describe("the wiring", () => {
   const src = readFileSync(new URL("./CalendarConnections.tsx", import.meta.url), "utf8");
   it("checks the consent host in the client, and guards a second Connect press", () => {
-    expect(src).toContain("safeConsentUrl(p, r.url)");
-    expect(src).toContain("if (inFlight.current) return;");
+    // CE-10d moved the hook to ../lib/useCalendarConnect.ts, shared with AlsoSyncCalendar.
+    const hook = readFileSync(new URL("../lib/useCalendarConnect.ts", import.meta.url), "utf8");
+    expect(hook).toContain("safeConsentUrl(p, r.url)");
+    expect(hook).toContain("if (inFlight.current) return;");
+    expect(src).toContain("useConnect");
   });
   it("clears the connected banner after a successful disconnect", () => {
     const at = src.indexOf("The \"is connected\" banner would contradict the toast.");
