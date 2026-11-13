@@ -11,6 +11,11 @@ export interface PageState {
   filters: Record<string, string>;
   /** The active tab, or `null`. */
   tab: string | null;
+  /**
+   * The id of the page of the app, or absent (STU-AF1). The key is `page`. The state keeps any plain id.
+   * A page id that the manifest does not declare is not an error here: `buildPage` falls back to the first page.
+   */
+  page?: string;
 }
 
 export const EMPTY_PAGE_STATE: PageState = { selected: null, filters: {}, tab: null };
@@ -47,6 +52,7 @@ export function encodePageState(state: PageState): string {
   const p = new URLSearchParams();
   if (state.selected) p.set("sel", state.selected);
   if (state.tab) p.set("tab", state.tab);
+  if (state.page) p.set("page", state.page);
   for (const k of Object.keys(state.filters).sort()) {
     const v = state.filters[k];
     if (k && v) p.set(FILTER_PREFIX + k, v);
@@ -70,6 +76,7 @@ export function boundPageState(state: PageState, page?: PageTabs): PageState {
     if (typeof sel === "string" && sel && sel.length <= PAGE_STATE_LIMITS.sel && !CONTROL.test(sel)) {
       out.selected = sel;
     }
+    if (typeof state.page === "string" && TAB_ID.test(state.page)) out.page = state.page;
     const tab = state.tab;
     if (typeof tab === "string" && TAB_ID.test(tab)) {
       const declared = page ? (page.tabs ?? []).some((t) => t.id === tab) : true;
@@ -109,7 +116,7 @@ export function decodePageState(
         filters[k.slice(FILTER_PREFIX.length)] = v;
       }
     }
-    return boundPageState({ selected: p.get("sel") || null, filters, tab: p.get("tab") || null }, page);
+    return boundPageState({ selected: p.get("sel") || null, filters, tab: p.get("tab") || null, page: p.get("page") || undefined }, page);
   } catch {
     return emptyState();
   }
