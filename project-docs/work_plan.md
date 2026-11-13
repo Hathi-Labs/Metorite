@@ -6241,6 +6241,7 @@ The owner asked in chat on 2026-11-14 for Studio apps, workflows and skills that
 6. **The order.** Rung 7 of the AI Studio ladder, demo task 3167. Mail merge (I3) moves to rung 9.
 
 Fence: each slice in `ai_studio.md` §14 Group I and `integrations_console.md` §7.2 names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D220 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D219 at most.
+
 ### D221 — The focus coach: grounded help at the start and at the check-in, steps as subtasks, and help from people that the member can already see (2026-11-14)
 
 The owner asked in chat on 2026-11-14 for a Focus mode that breaks a task into steps, shows how to do it, motivates, uses the context of every app, and names whom to ask when the member is stuck. Planning task 3177. Owner text: `my_day_command_centre.md` §4a.
