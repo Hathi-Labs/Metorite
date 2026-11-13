@@ -918,15 +918,15 @@ Each rung ends in a demo (D211). Each slice of a rung blocks its demo task.
 |---|---|---|---|---|
 | CIV-26 | 3051 | – | LOW | This section and D218 |
 | CIV-27 | 3052 | 0 | LOW | `ci_local.sh` is optional. A lane pushes once per round |
-| CIV-28 | 3053 | 0 | STANDARD | The merge bot |
-| CIV-29 | 3054 | 0 | STANDARD | Browser suite: inherited failures, the specs of the changed area, the full suite after merge |
+| CIV-28 | 3053 | 0 | STANDARD | The merge bot. CIV-28b (task 3070): a tier floor from the diff, a retry on "Base branch was modified", and BACK after a second cancel |
+| CIV-29 | 3054 | 0 | STANDARD | Browser suite: inherited failures, the specs of the changed area, the full suite after merge. CIV-29a BUILT. CIV-29b BUILT 2026-11-14 (tasks 3054 and 3145): the diff of `changes` is `HEAD^1..HEAD` on the merge ref. So a later change on main no longer starts the suite. The unit gate (`--gate --base`) reads the same range. The Visual review step reads the same range (CIV-39). The map from a path to its specs is the next step. |
 | CIV-36 | 3061 | 0 | LOW | The preview gates the flag |
 | CIV-37 | 3062 | 0 | LOW | Model routing by job |
 | CIV-38 | 3063 | 0 | LOW | The quality numbers and the rollback rule |
 | CIV-30 | 3055 | 1 | HIGH | The green pointer. A release ships green |
 | CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first. **BUILT 2026-11-14**, dark (code default `off`, unit `dry`). §8.8 holds the design |
 | CIV-32 | 3057 | 2 | STANDARD | **BUILT 2026-11-13.** A repair round tests what failed and what the fix reaches (`ci_unit_guard.py repair`) |
-| CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py`. CIV-33d BUILT 2026-11-13 (task 3074): the scan fences of six large files moved to `*_scan.py` files, and `test_scanner_budget.py` caps a scanner file at 30 s. The scanner set costs 1,748 s, down from 2,333 s. `test_affected_tests.py` (381 s) waits for PR 2205 |
+| CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py`. CIV-33d BUILT 2026-11-13 (task 3074): the scan fences of six large files moved to `*_scan.py` files, and `test_scanner_budget.py` caps a scanner file at 30 s. The scanner set costs 1,748 s, down from 2,333 s. `test_affected_tests.py` (381 s) waits for PR 2205. CIV-33c-1 BUILT 2026-11-13 (task 3073): a hub selects its importers up to 20% of the test files, a flag-only diff of `settings.py` or `env_guard.py` selects the tests that name the flag, and `scripts/replay_gate.py` measures the FULL share. For a hub or a flag diff, an app entry, or a test helper that builds an app, selects its test importers. The closure over test imports starts from the import picks, not from the scanners or the SAFETY fences. CIV-33c-2 (the `.github/` rule) is open |
 | CIV-34 | 3059 | 2 | STANDARD | Conflict rules in the merge bot, tested on the merged tree |
 | CIV-35 | 3060 | 2 | LOW | A proposal: review depth by file class. It needs an owner decision |
 
