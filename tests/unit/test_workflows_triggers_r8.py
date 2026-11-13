@@ -189,6 +189,9 @@ _WORKFLOWS.update({
 })
 #: The author of a workflow when it is not the owner of its org.
 _AUTHOR = {"Private by M2": M2, "Org package by M2": M2, "Shared package by M2": M2}
+_WORKFLOWS["Org package in B"] = (
+    "B", "event", {"source": "studio", "event_type": "studio.record.created",
+                   "filter": {"package_id": PKG_ORG}})
 _TICKERS = ("Tick in A", "Tick in B")
 
 #: name -> the run-model of a workflow that is not trivial.
@@ -337,6 +340,13 @@ def _clean(promoted, monkeypatch):
             {"ids": list(promoted.wf.values())})
     _list_orgs(monkeypatch)
     hooks._RATE.clear()
+
+
+@pytest.fixture(autouse=True)
+def _every_author_may_use_studio(monkeypatch):
+    """The default access of the author check: each address of the seed is an
+    active member with ``feature:studio``. One case swaps it per address."""
+    _set_access(monkeypatch, {m.lower(): {} for m in (*_OWNERS.values(), M2)})
 
 
 async def _drain_runs() -> None:
@@ -857,23 +867,190 @@ def test_a_record_event_without_a_readable_package_starts_nothing(
 
 
 def test_an_event_bound_to_org_b_never_reads_a_package_of_org_a(promoted, monkeypatch):
+    """PKG_ORG is an org install of org A, so every address sees it in A. The
+    author of 'Org package in B' is in org B. The read is bound to org B, so
+    the package is unknown there and the workflow does not start."""
     _list_orgs(monkeypatch, promoted.org_a, promoted.org_b)
     _host_on(monkeypatch, promoted.org_a, promoted.org_b)
-    assert _emit_record(promoted, promoted.org_b) == []
-    assert _runs_of(promoted, "Claim in B") == []
-    assert _runs_of(promoted, "Claim in A") == []
+    payload = {**_REC, "package_id": PKG_ORG}
+    assert _emit_record(promoted, promoted.org_b, payload) == []
+    assert _runs_of(promoted, "Org package in B") == []
+    assert _runs_of(promoted, "Org package by M1") == []
 
 
-def test_a_read_error_starts_nothing(promoted, monkeypatch):
+def test_a_read_error_in_one_check_starts_no_run_of_that_workflow_only(promoted, monkeypatch):
+    """The first read dies with a REAL SQL error. Without the savepoint it
+    poisons the transaction and the second workflow fails too. Without the
+    except, the error ends the whole dispatch."""
     from gateway.studio import packages_store
 
     _list_orgs(monkeypatch, promoted.org_a)
+    _host_on(monkeypatch, promoted.org_a)
+    real, calls = packages_store.get_package, []
 
-    async def boom(*a, **k):
-        raise RuntimeError("store down")
+    async def first_dies(db, *a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            await db.execute(text("SELECT 1 / 0"))
+        return await real(db, *a, **k)
 
-    monkeypatch.setattr(packages_store, "get_package", boom)
-    assert _emit_record(promoted, promoted.org_a) == []
+    monkeypatch.setattr(packages_store, "get_package", first_dies)
+    started = _emit_record(promoted, promoted.org_a, {**_REC, "package_id": PKG_ORG})
+    # Three workflows hear this event: 'Org package by M1', 'Org package by M2'
+    # and 'Claim 2 in A'. One check died, so exactly the other two start.
+    assert len(calls) == 3, calls
+    assert len(started) == 2, started
+
+
+def test_a_refused_workflow_is_logged_once(promoted, monkeypatch):
+    """'Private by M2' has two matching triggers. One refusal line, not two."""
+    from gateway.routes.workflows import triggers as trig_mod
+
+    _list_orgs(monkeypatch, promoted.org_a)
+    _host_on(monkeypatch, promoted.org_a)
+    lines = []
+    monkeypatch.setattr(trig_mod._log, "warning",
+                        lambda event, **kw: lines.append((event, kw.get("workflow_id"))))
+    with promoted.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO workflow_triggers (workflow_id, kind, config, enabled, "
+            "organization_id) VALUES (CAST(:w AS uuid), 'event', CAST(:c AS jsonb), "
+            "true, CAST(:o AS uuid))"),
+            {"w": promoted.wf["Private by M2"], "o": promoted.org_a,
+             "c": json.dumps({"source": "studio", "event_type": "studio.record.created"})})
+    try:
+        _emit_record(promoted, promoted.org_a)
+    finally:
+        with promoted.admin_engine.begin() as c:
+            c.execute(text(
+                "DELETE FROM workflow_triggers WHERE workflow_id = CAST(:w AS uuid) "
+                "AND NOT (config ? 'filter')"), {"w": promoted.wf["Private by M2"]})
+    refused = [wid for ev, wid in lines
+               if ev == "workflows.event_run_refused_package_access"
+               and wid == promoted.wf["Private by M2"]]
+    assert len(refused) == 1, lines
+
+
+def _set_access(monkeypatch, table: dict):
+    """The access of each address in the org, as ``resolve_access_in_org``."""
+    import acb_auth.access as acc
+    from acb_auth.permissions import build_access
+
+    async def _in_org(email, org):
+        spec = table.get(str(email or "").lower())
+        if spec is None:
+            return build_access([], is_active=False)
+        return build_access(spec.get("perms", ["feature:studio"]),
+                            spec.get("overrides", ()), is_active=spec.get("active", True))
+
+    monkeypatch.setattr(acc, "resolve_access_in_org", _in_org)
+
+
+def test_an_author_who_is_not_active_or_lost_studio_starts_no_run(promoted, monkeypatch):
+    """P2: the HTTP door needs an active member with feature:studio. So does
+    the author of a workflow that an event starts."""
+    _list_orgs(monkeypatch, promoted.org_a)
+    _host_on(monkeypatch, promoted.org_a)
+    payload = {**_REC, "package_id": PKG_SHARED}
+    owner = _OWNERS["A"].lower()
+    cases = {
+        "active with studio": ({owner: {}, M2: {}}, True),
+        "suspended": ({owner: {}, M2: {"active": False}}, False),
+        "no studio role": ({owner: {}, M2: {"perms": []}}, False),
+        "studio denied": ({owner: {}, M2: {"overrides": [("feature:studio", "deny")]}}, False),
+        "no row": ({owner: {}}, False),
+    }
+    for label, (table, starts) in cases.items():
+        _set_access(monkeypatch, table)
+        started = _emit_record(promoted, promoted.org_a, payload)
+        got = "Shared package by M2" in _started_names(promoted, started)
+        assert got is starts, label
+
+
+def _edit(promoted, name: str, who: str, triggers: list):
+    from gateway.routes.workflows import crud
+
+    user = SimpleNamespace(email=who)
+
+    async def go():
+        try:
+            return await crud.update_workflow(
+                promoted.wf[name], crud.WorkflowUpdate(triggers=triggers), user=user)
+        except HTTPException as exc:
+            return exc
+
+    return _on_app_role(promoted, promoted.org_a, go)
+
+
+def _spec(**cfg):
+    from gateway.routes.workflows.crud import TriggerSpec
+
+    kind = cfg.pop("kind", "event")
+    return TriggerSpec(kind=kind, config=cfg)
+
+
+_STUDIO_NEW = {"source": "studio", "event_type": "studio.record.created",
+               "filter": {"package_id": PKG_CLAIMS}}
+_STUDIO_OLD = {"source": "studio", "event_type": "studio.record.created",
+               "filter": {"package_id": PKG_ORG}}
+
+
+def _trigger_configs(promoted, name):
+    with promoted.admin_engine.connect() as c:
+        return [r[0] for r in c.execute(text(
+            "SELECT config FROM workflow_triggers WHERE workflow_id = CAST(:w AS uuid)"),
+            {"w": promoted.wf[name]}).fetchall()]
+
+
+def _restore_m1_trigger(promoted):
+    with promoted.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM workflow_triggers WHERE workflow_id = CAST(:w AS uuid)"),
+                  {"w": promoted.wf["Org package by M1"]})
+        c.execute(text(
+            "INSERT INTO workflow_triggers (workflow_id, kind, config, enabled, "
+            "organization_id) VALUES (CAST(:w AS uuid), 'event', CAST(:c AS jsonb), "
+            "true, CAST(:o AS uuid))"),
+            {"w": promoted.wf["Org package by M1"], "o": promoted.org_a,
+             "c": json.dumps(_STUDIO_OLD)})
+
+
+def test_another_member_cannot_add_a_studio_trigger_to_a_workflow_of_the_author(promoted):
+    """P1: M2 cannot read PKG_CLAIMS. M2 points the workflow of M1 at it."""
+    try:
+        result = _edit(promoted, "Org package by M1", M2,
+                       [_spec(**_STUDIO_OLD), _spec(**_STUDIO_NEW)])
+        assert isinstance(result, HTTPException) and result.status_code == 403, result
+        assert _trigger_configs(promoted, "Org package by M1") == [_STUDIO_OLD]
+        changed = _edit(promoted, "Org package by M1", M2, [_spec(**_STUDIO_NEW)])
+        assert isinstance(changed, HTTPException) and changed.status_code == 403
+        assert _trigger_configs(promoted, "Org package by M1") == [_STUDIO_OLD]
+    finally:
+        _restore_m1_trigger(promoted)
+
+
+def test_the_author_may_add_a_studio_trigger_to_the_own_workflow(promoted):
+    try:
+        result = _edit(promoted, "Org package by M1", _OWNERS["A"].upper(),
+                       [_spec(**_STUDIO_NEW)])  # the owner check ignores case
+        assert isinstance(result, dict), result
+        assert _trigger_configs(promoted, "Org package by M1") == [_STUDIO_NEW]
+    finally:
+        _restore_m1_trigger(promoted)
+
+
+def test_another_member_may_keep_or_remove_a_studio_trigger_and_edit_other_kinds(promoted):
+    """No new Studio trigger: the save works as before."""
+    try:
+        kept = _edit(promoted, "Org package by M1", M2,
+                     [_spec(**_STUDIO_OLD), _spec(kind="webhook")])
+        assert isinstance(kept, dict), kept
+        other = _edit(promoted, "Org package by M1", M2,
+                      [_spec(**_STUDIO_OLD), _spec(source=_SOURCE, event_type=_EVENT)])
+        assert isinstance(other, dict), other
+        removed = _edit(promoted, "Org package by M1", M2, [_spec(kind="webhook")])
+        assert isinstance(removed, dict), removed
+    finally:
+        _restore_m1_trigger(promoted)
 
 
 def test_other_event_sources_skip_the_package_check(promoted, monkeypatch):

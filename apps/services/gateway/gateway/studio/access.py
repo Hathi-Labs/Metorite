@@ -23,6 +23,21 @@ from acb_common import get_logger
 _log = get_logger("gateway.studio.access")
 
 
+async def _holds_studio(member: str, org: str) -> bool:
+    """True when *member* is an active member of *org* with ``feature:studio``.
+    Same rule as ``routes/studio/invoke.py`` ``_holds_studio``. Fails closed."""
+    from acb_auth.access import resolve_access_in_org
+
+    if not org:
+        return False
+    try:
+        access = await resolve_access_in_org(member, org)
+    except Exception as exc:
+        _log.warning("studio.access.feature_check_failed", error=type(exc).__name__)
+        return False
+    return bool(access.is_active and access.can_use_feature("studio"))
+
+
 async def member_reads_package(
     db: Any, *, member: str, package_id: object, organization_id: str | None,
 ) -> bool:
@@ -36,6 +51,11 @@ async def member_reads_package(
     try:
         pid = str(uuid.UUID(str(package_id)))
         if "@" not in who:
+            return False
+        # The HTTP door holds feature:studio, and the run door holds it through
+        # the same resolver. An author who is not active, or who lost the
+        # feature, reads nothing here.
+        if not await _holds_studio(who, str(organization_id or "")):
             return False
         # A savepoint: a failed read must not poison the caller's transaction.
         async with db.begin_nested():

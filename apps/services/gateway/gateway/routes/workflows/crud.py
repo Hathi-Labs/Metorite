@@ -251,6 +251,10 @@ async def update_workflow(
         _validate_trigger_specs(body.triggers)
     async with _tenant_session() as db:
         row = await load_workflow_or_404(db, workflow_id)
+        if body.triggers is not None and str(row.owner_email or "").strip().lower() != (
+            str(_uid(user) or "").strip().lower()
+        ):
+            await _refuse_foreign_studio_trigger(db, workflow_id, body.triggers)
         sets, params = [], {"id": workflow_id}
         if body.name is not None:
             sets.append("name = :name")
@@ -365,6 +369,45 @@ async def validate_workflow(
         tool_schemas=tool_arg_schemas(),
     )
     return {"ok": not issues, "issues": [i.as_dict() for i in issues]}
+
+
+def _studio_event_keys(triggers: list[tuple[str, dict[str, Any], bool]]) -> set[str]:
+    """The enabled Studio record-event triggers, one canonical key each."""
+    from gateway.studio.preview import RECORD_EVENT_SOURCE
+
+    return {
+        json.dumps(cfg, sort_keys=True, default=str)
+        for kind, cfg, enabled in triggers
+        if enabled and kind == "event" and str(cfg.get("source") or "").strip() == RECORD_EVENT_SOURCE
+    }
+
+
+async def _refuse_foreign_studio_trigger(
+    db: Any, workflow_id: str, new: list[Any]
+) -> None:
+    """403 when a member who is not the workflow author ADDS or CHANGES a Studio
+    record-event trigger (STU-E3 fix, task 3076).
+
+    A record event starts the workflow when its AUTHOR can read the package.
+    The run shows the payload to every member who reads runs. So another
+    member must not point the author's workflow at a package they cannot read.
+    Removing a trigger, or any other trigger kind, is unchanged.
+    """
+    old_rows = (
+        await db.execute(
+            text("SELECT kind, config, enabled FROM workflow_triggers WHERE workflow_id = :id"),
+            {"id": workflow_id},
+        )
+    ).fetchall()
+    old = _studio_event_keys(
+        [(r.kind, parse_jsonb(r.config, {}) or {}, bool(r.enabled)) for r in old_rows]
+    )
+    added = _studio_event_keys([(t.kind, t.config, t.enabled) for t in new]) - old
+    if added:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the author of this workflow can add or change a Studio record trigger.",
+        )
 
 
 def _trigger_identity(kind: str, config: dict[str, Any]) -> tuple[str, str]:

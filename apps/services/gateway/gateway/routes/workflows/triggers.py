@@ -127,6 +127,7 @@ async def dispatch_event(
     try:
         matches: list[tuple[Any, dict[str, Any]]] = []
         seen: set[str] = set()
+        refused: set[str] = set()
         async with _tenant_session(org) as db:
             rows = (
                 await db.execute(
@@ -149,7 +150,10 @@ async def dispatch_event(
                     # One event starts one run of a workflow, even when two
                     # of its triggers match (STU-E3).
                     continue
+                if str(row.workflow_id) in refused:
+                    continue
                 if not await _author_may_hear(db, row, source, payload, org):
+                    refused.add(str(row.workflow_id))
                     continue
                 serialized = await load_version_serialized(
                     db, str(row.workflow_id), int(row.latest_version)
