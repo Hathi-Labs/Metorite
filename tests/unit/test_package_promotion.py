@@ -20,7 +20,9 @@ d. Every statement names the bound org. ``promotion.py`` writes
    of the sharer. The one write of ``app_grants`` in ``store.py`` is the
    DELETE of the share rows of an install. The promotion and the removal
    of a private install run it, under the org lock, before the DELETE of
-   the install.
+   the install. ``promotion.py`` also holds the per-person unshare of
+   WS-STU J2b-5: one DELETE of the share row of one person, under the same
+   locks, in any state of a private install.
 e. The R8 twin is in the ``--must-run`` lists of pr-check.yml and
    deploy.yml.
 """
@@ -432,6 +434,94 @@ def test_a_person_outside_the_org_is_refused() -> None:
     assert "zed" not in str(exc.value)
 
 
+# ── c2. The per-person unshare (WS-STU J2b-5) ──────────────────────────────
+
+
+def _unshare(db: _FakeDb, email: Any = BEN, sharer: str = ANA) -> Any:
+    return _run(promotion.unshare_person(db, install_id=INSTALL, email=email, sharer=sharer))
+
+
+def test_the_unshare_reads_under_the_same_locks_then_deletes_once() -> None:
+    db = _FakeDb()
+    assert _unshare(db, email=" Ben@X.test ", sharer="ANA@x.test") is False
+    order = ["SELECT CAST(CAST(NULLIF", "SELECT pg_advisory_xact_lock(",
+             store._INSTALL_FOR_UPDATE_SQL, promotion._UNSHARE_PERSON_SQL]
+    assert len(db.calls) == len(order)
+    for (sql, _), head in zip(db.calls, order, strict=True):
+        assert sql.startswith(head), (head, sql)
+    assert db.calls[1][1] == {"key": f"package_install:{ORG}"}
+    assert db.calls[3][1] == {"install": INSTALL, "person": BEN, "sharer": ANA}
+    assert _writes(db) == [promotion._UNSHARE_PERSON_SQL]
+
+
+@pytest.mark.parametrize(("email", "code"), [
+    ("not an address", "bad_people"), (None, "bad_people"), ("group:ops", "not_a_person"),
+    ("org", "not_a_person"), (" Ana@X.test ", "own_address"),
+])
+def test_a_bad_address_to_unshare_is_refused_before_the_database(email: Any,
+                                                                  code: str) -> None:
+    db = _FakeDb()
+    with pytest.raises(ShareRefused) as exc:
+        _unshare(db, email=email)
+    assert (exc.value.code, exc.value.status) == (code, 422)
+    assert db.calls == []
+
+
+def test_an_unshare_by_another_member_is_refused() -> None:
+    db = _FakeDb()
+    with pytest.raises(NotTheOwner) as exc:
+        _unshare(db, email="cat@x.test", sharer=BEN)
+    assert (exc.value.code, exc.value.status) == ("not_owner", 403)
+    assert _writes(db) == []
+
+
+@pytest.mark.parametrize("row", [(APP, 1, "group", OPS, ANA, None, "active"),
+                                 (APP, 1, "org", "org", ANA, None, "active")])
+def test_an_unshare_of_an_install_that_is_not_private_is_refused(
+        row: tuple[Any, ...]) -> None:
+    db = _FakeDb(row=row)
+    with pytest.raises(PromotionRefused) as exc:
+        _unshare(db)
+    assert (exc.value.code, exc.value.status) == ("not_private", 409)
+    assert _writes(db) == []
+
+
+@pytest.mark.parametrize("row", [
+    (APP, 1, "private", ANA, ANA, None, "paused"),
+    (APP, 1, "private", ANA, ANA, None, "archived"),
+    (APP, None, "private", ANA, ANA, None, "active"),
+    (APP, 1, "private", ANA, ANA, _LATER, "active"),
+])
+def test_an_unshare_runs_in_every_state_of_a_private_install(row: tuple[Any, ...]) -> None:
+    """A pause, an archive, a draft and an end date never block the owner
+    from taking a share back."""
+    db = _FakeDb(row=row)
+    _unshare(db)
+    assert _writes(db) == [promotion._UNSHARE_PERSON_SQL]
+
+
+def test_an_unshare_of_a_missing_install_or_an_unbound_session_writes_nothing() -> None:
+    db = _FakeDb(row=())
+    with pytest.raises(InstallNotFound):
+        _unshare(db)
+    assert _writes(db) == []
+    db = _FakeDb(org=None)
+    with pytest.raises(TenantUnbound):
+        _unshare(db)
+    assert len(db.calls) == 1
+
+
+def test_the_unshare_answers_true_when_a_row_went() -> None:
+    class _Gone(_FakeDb):
+        async def execute(self, stmt: Any, params: Any = None) -> _Result:
+            if str(stmt) == promotion._UNSHARE_PERSON_SQL:
+                self.calls.append((str(stmt), params))
+                return _Result([(BEN,)])
+            return await super().execute(stmt, params)
+
+    assert _unshare(_Gone()) is True
+
+
 # ── d. The fences ──────────────────────────────────────────────────────────
 
 
@@ -444,6 +534,7 @@ def test_every_statement_names_the_bound_org() -> None:
     # groups. The DELETE names it for both tables.
     assert store._GRANTEE_OUTSIDE_SQL.count(BOUND) == 4
     assert store._UNSHARE_SQL.count(BOUND) == 2
+    assert promotion._UNSHARE_PERSON_SQL.count(BOUND) == 2
     assert "FOR UPDATE" in promotion._MET_ROWS_SQL
     assert "FOR UPDATE" in store._INSTALL_FOR_UPDATE_SQL
     assert "organization_id" not in promotion._SHARE_SQL.split("ON CONFLICT")[0]
@@ -457,6 +548,12 @@ def test_the_grantee_read_is_the_one_share_rule() -> None:
     # the share rule.
     assert store._UNSHARE_SQL.startswith("DELETE FROM app_grants AS g USING package_install ")
     assert store._UNSHARE_SQL.endswith(f"AND {sharing.SHARE_ROW}")
+    # The per-person unshare of J2b-5 takes one of those rows: the person's,
+    # and only when this sharer made it.
+    one = promotion._UNSHARE_PERSON_SQL
+    assert one.startswith("DELETE FROM app_grants AS g USING package_install ")
+    assert "AND lower(g.subject) = :person AND lower(g.granted_by) = :sharer " in one
+    assert one.endswith(f"AND {sharing.SHARE_ROW} RETURNING g.subject")
     assert store._groups_of("shared.who") in store._GRANTEE_OUTSIDE_SQL
     assert store._groups_of(":by") in store._MEMBER_IN_GROUP_SQL
 

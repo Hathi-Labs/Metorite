@@ -205,8 +205,18 @@ member, and no body key names the sharer, the org or the install (R5). A
 store refusal is its ``detail_for`` of the member: 422 for a bad list, 409
 for an install that is not private, active and kept, 403 ``not_owner`` and
 404 ``install_not_found``. ``shared_by_another_owner`` is 409, because the
-list is good and the state of the org refuses it. No route removes one
-person: the store has no per-person writer.
+list is good and the state of the org refuses it.
+
+**The per-person unshare (WS-STU J2b-5, ``ai_studio.md`` §14 J2b-5).**
+``DELETE /packages/{id}/share/{email}`` takes the share back from one
+person, through ``promotion.unshare_person``. The order is the order of the
+share: the two switches, the id, ``studio:publish`` (403 with no session),
+then the address (422 with no session). Then one session, in which
+``_owned_private_install`` comes first. The store takes the org lock and
+the row lock, and deletes only the share row that the owner made for that
+person. A pause or an end date never blocks it. One ``app_audit`` row (op
+``package.unshare``, the install, the person and ``removed``) commits with
+it. The answer is 200 ``{removed: bool}``, and ``false`` is no error.
 
 **The answers.** 422 holds ``{message, errors: [{path, message}]}`` with at
 most :data:`MAX_PROBLEMS` errors. 409 holds ``{code, message, ...}``:
@@ -1426,6 +1436,59 @@ async def share_package(
                     "count": len(people), "people": list(people)})
     _log.info("studio.packages.shared", package_id=pid, count=len(people))
     return {"people": list(people)}
+
+
+# ── The per-person unshare (WS-STU J2b-5) ──────────────────────────────────
+
+NO_UNSHARE_RIGHT = ("Only a holder of studio:publish takes a share back from a person. "
+                    "Ask the owner of your organization for that right.")
+
+
+@router.delete("/packages/{package_id}/share/{email}")
+async def unshare_package(
+    package_id: str,
+    email: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Take the share of the private install of a package of the caller back
+    from one person (``ai_studio.md`` §14 J2b-5).
+
+    The right is ``studio:publish`` (D180.3), as for the share. Only the
+    share row that the caller made for that person goes. A consent row and
+    a share of another member stay. A pause never blocks it. 200 with
+    ``{removed: bool}``: ``false`` when the person had no share row."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not package_host_allowed(user.organization_id):
+        raise _not_found()
+    pid = _package_id(package_id)
+    # D180.3: the share verb gates each share to others. Fail closed, before a session.
+    if not user.has_permission(SHARE_RIGHT):
+        raise _forbidden(NO_UNSHARE_RIGHT)
+    try:
+        person = promotion.person_address(email, user.email or "")
+    except host_store.InstallError as exc:
+        raise _share_refused(user, exc) from None
+    async with _tenant_session() as db:
+        # The apps row FOR KEY SHARE first, then the org lock of the unshare:
+        # the lock order of a publish (``package_host.md`` §5.5).
+        install_id = await _owned_private_install(db, user, pid)
+        if install_id is None:
+            raise HTTPException(status_code=409, detail={
+                "code": PRIVATE_ONLY, "message": NO_PRIVATE_SHARE})
+        try:
+            removed = await promotion.unshare_person(
+                db, install_id=install_id, email=person, sharer=user.email or "")
+        except host_store.InstallError as exc:
+            raise _share_refused(user, exc) from None
+        # The audit row commits with the unshare, or neither does. It holds
+        # the address and the result, and no manifest or record value.
+        await record_app_audit_in(
+            db, app_id=pid, user_email=user.email, kind="action",
+            detail={"op": "package.unshare", "install_id": install_id,
+                    "removed": removed, "person": person})
+    _log.info("studio.packages.unshared", package_id=pid, removed=removed)
+    return {"removed": removed}
 
 
 # ── Keep and Restore of the private install (WS-PKG PKG-10d) ───────────────
