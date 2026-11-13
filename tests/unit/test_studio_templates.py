@@ -69,14 +69,39 @@ def test_the_files_equal_the_registry() -> None:
     assert files == set(IDS)
 
 
-def test_field_visits_holds_board_form_table_and_detail() -> None:
-    blocks = {v["block"] for v in _doc("field-visits")["views"]}
-    assert {"board", "form", "table", "detail"} <= blocks
-    # What is not built stays out: D5 calendar, D10 map, the workflow, tell_customer.
-    assert not blocks & {"calendar", "map"}
-    doc = _doc("field-visits")
+#: The views that each template holds. Only built blocks: no calendar (D5), no map (D10).
+EXPECTED_BLOCKS: dict[str, set[str]] = {
+    "field-visits": {"board", "form", "table", "detail"},
+    "support-desk": {"board", "form", "table", "detail"},
+    "purchase-requests": {"board", "form", "table", "detail"},
+    "expense-claims": {"board", "form", "table", "detail"},
+    "hiring": {"board", "form", "table", "detail"},
+    "spares": {"board", "form", "table", "detail"},
+}
+
+
+def test_every_template_has_an_expected_block_row() -> None:
+    assert set(EXPECTED_BLOCKS) == set(IDS)
+
+
+@pytest.mark.parametrize("tid", IDS)
+def test_each_template_holds_its_blocks_and_nothing_unbuilt(tid: str) -> None:
+    doc = _doc(tid)
+    blocks = {v["block"] for v in doc["views"]}
+    assert blocks == EXPECTED_BLOCKS[tid]
+    # What is not built stays out: D5 calendar, D10 map, workflows, connections.
+    assert not blocks & {"calendar", "map", "timeline", "mindMap", "processFlow", "custom", "code"}
     assert "workflows" not in doc and "connections" not in doc
     assert "tell_customer" not in {a["id"] for a in doc["actions"]}
+    assert all(a["uses"].startswith("object:") for a in doc["actions"])
+
+
+def test_every_registered_template_is_listed_and_served_fresh() -> None:
+    assert [t["id"] for t in reg.list_templates()] == IDS
+    for tid in IDS:
+        a = _doc(tid)
+        a["name"] = "changed"
+        assert _doc(tid)["name"] != "changed"
 
 
 @pytest.mark.parametrize("tid", IDS)

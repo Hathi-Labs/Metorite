@@ -1764,10 +1764,14 @@ def test_only_delete_package_deletes_a_package() -> None:
 
 
 def test_the_versions_go_by_the_cascade_and_no_statement_names_them() -> None:
-    """The A4 fence stays as it is: the store has no DELETE or UPDATE of
-    ``app_versions``. The cascade from ``apps`` removes the versions."""
+    """The store has no DELETE of ``app_versions``. The cascade from ``apps``
+    removes the versions. Its one UPDATE of ``app_versions`` is the review
+    move of J2 (owner, task 2174, 2026-11-07). It sets ``review_status``
+    only, and it is not a delete path."""
     source = _STORE_PY.read_text(encoding="utf-8")
-    assert not re.search(r"DELETE\s+FROM\s+app_versions|UPDATE\s+app_versions", source, re.I)
+    assert not re.search(r"DELETE\s+FROM\s+app_versions", source, re.I)
+    assert len(re.findall(r"UPDATE\s+app_versions", source, re.I)) == 1
+    assert store._REVIEW_MOVE_SQL.startswith("UPDATE app_versions SET review_status = :to WHERE ")
     assert store._DELETE_SQL.startswith("DELETE FROM apps ")
     assert "app_versions" not in store._DELETE_SQL
 
@@ -1818,9 +1822,10 @@ def test_the_route_runs_one_session_for_each_step() -> None:
 
 
 def _client_timeout() -> float:
-    """The timeout of the gateway client of the chat tools, read from the
-    source of ``studio_tools._send``: the ``timeout`` of its
-    ``httpx.AsyncClient``."""
+    """The default timeout of the gateway client of the chat tools, read from
+    the source of ``studio_tools._send``: the default of its ``timeout``
+    argument (the one the delete loop uses). ``studio_app_read`` passes a
+    longer one for its own call only (B2b-2c)."""
     import acb_skills.studio_tools as tools
     tree = ast.parse(inspect.getsource(tools))
     [send] = [n for n in ast.walk(tree)
@@ -1828,7 +1833,11 @@ def _client_timeout() -> float:
     [call] = [n for n in ast.walk(send) if isinstance(n, ast.Call)
               and ast.unparse(n.func) == "httpx.AsyncClient"]
     [kw] = [k for k in call.keywords if k.arg == "timeout"]
-    return float(ast.literal_eval(kw.value))
+    assert ast.unparse(kw.value) == "timeout"
+    args = send.args
+    names = [a.arg for a in args.args + args.kwonlyargs]
+    defaults = [None] * (len(args.args) - len(args.defaults)) + list(args.defaults)         + list(args.kw_defaults)
+    return float(ast.literal_eval(defaults[names.index("timeout")]))
 
 
 def test_the_worst_call_ends_before_the_chat_tool_gives_up() -> None:

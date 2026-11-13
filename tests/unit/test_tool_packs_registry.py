@@ -665,9 +665,10 @@ STUDIO_TOOLS = ("studio_describe", "studio_draft", "studio_interview",
                 "studio_validate", "studio_skill_list", "studio_skill_save",
                 "studio_skill_state", "studio_save", "studio_publish", "studio_delete_package",
                 "studio_package_get", "studio_record_list", "studio_record_create",
-                "studio_record_update", "studio_record_delete")
-#: The five record tools: the two reads, then the three writes.
+                "studio_record_update", "studio_record_delete", "studio_app_read")
+#: The six record tools: the two reads, the three writes, then the door read (B2b-2c).
 RECORD_READS = ("studio_package_get", "studio_record_list")
+DOOR_READ = ("studio_app_read",)
 RECORD_WRITES = ("studio_record_create", "studio_record_update", "studio_record_delete")
 
 
@@ -682,7 +683,7 @@ def test_the_studio_family_equals_the_owners_own_tool_scope_and_fits_the_cap() -
     assert family["owner"] == STUDIO and sf.is_pack("studio") and family["core"] is False
     assert tuple(family["tools"]) == STUDIO_TOOLS
     assert set(family["tools"]) == _studio_scope()
-    assert len(family["tools"]) == 19 <= tp.MAX_PACK_TOOLS == 35
+    assert len(family["tools"]) == 20 <= tp.MAX_PACK_TOOLS == 35
 
 
 def test_the_studio_owner_is_in_no_registry_list() -> None:
@@ -876,7 +877,8 @@ def test_the_filter_reads_the_one_list_of_record_writes() -> None:
     from acb_skills import studio_tools as st
 
     assert frozenset(RECORD_WRITES) == st.STUDIO_RECORD_WRITES
-    assert tuple(fn.__name__ for fn in st.STUDIO_RECORD_TOOLS) == RECORD_READS + RECORD_WRITES
+    assert tuple(fn.__name__ for fn in st.STUDIO_RECORD_TOOLS) == (
+        RECORD_READS + RECORD_WRITES + DOOR_READ)
 
 
 def test_the_studio_rules_tell_the_dark_and_the_lit_record_writes() -> None:

@@ -1,0 +1,175 @@
+{
+  "studio": 1,
+  "id": "expense-claims",
+  "name": "Expense claims",
+  "purpose": "Claim an expense with its receipt and follow it to payment.",
+  "team": "finance",
+  "objects": [
+    {
+      "name": "claim",
+      "fields": [
+        {
+          "key": "title",
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "claimant",
+          "type": "person"
+        },
+        {
+          "key": "spent_on",
+          "type": "date"
+        },
+        {
+          "key": "category",
+          "type": "select",
+          "options": [
+            "travel",
+            "meals",
+            "supplies",
+            "other"
+          ]
+        },
+        {
+          "key": "amount",
+          "type": "number"
+        },
+        {
+          "key": "status",
+          "type": "select",
+          "options": [
+            "draft",
+            "submitted",
+            "approved",
+            "rejected",
+            "paid"
+          ]
+        },
+        {
+          "key": "receipt",
+          "type": "file",
+          "many": true
+        },
+        {
+          "key": "notes",
+          "type": "longText"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "find",
+      "uses": "object:claim.list"
+    },
+    {
+      "id": "claim_get",
+      "uses": "object:claim.get"
+    },
+    {
+      "id": "claim_create",
+      "uses": "object:claim.create"
+    },
+    {
+      "id": "claim_update",
+      "uses": "object:claim.update"
+    },
+    {
+      "id": "claim_delete",
+      "uses": "object:claim.delete"
+    }
+  ],
+  "views": [
+    {
+      "id": "board",
+      "block": "board",
+      "source": {
+        "object": "claim"
+      },
+      "group_by": "status",
+      "card": {
+        "title": "title",
+        "meta": [
+          "claimant",
+          "amount"
+        ]
+      }
+    },
+    {
+      "id": "list",
+      "block": "table",
+      "source": {
+        "object": "claim"
+      },
+      "columns": [
+        "title",
+        "claimant",
+        "spent_on",
+        "category",
+        "amount",
+        "status"
+      ]
+    },
+    {
+      "id": "claim_page",
+      "block": "detail",
+      "object": "claim",
+      "fields": [
+        "title",
+        "claimant",
+        "spent_on",
+        "category",
+        "amount",
+        "status",
+        "receipt",
+        "notes"
+      ]
+    },
+    {
+      "id": "new",
+      "block": "form",
+      "object": "claim",
+      "fields": [
+        "title",
+        "spent_on",
+        "category",
+        "amount",
+        "receipt",
+        "notes"
+      ],
+      "submit": "claim_create"
+    }
+  ],
+  "skill": {
+    "description": "Use for expense claims: file one, attach a receipt, find one.",
+    "instructions": "Ask for the title, the amount and the receipt first. Show the board card. Do not change the status for the member.",
+    "actions": [
+      "object:claim.create"
+    ],
+    "cards": [
+      "board",
+      "new"
+    ]
+  },
+  "shell": {
+    "jobs": [
+      {
+        "verb": "File an expense claim",
+        "view": "new"
+      }
+    ],
+    "needs": [
+      {
+        "object": "claim",
+        "where": {
+          "claimant": "$me",
+          "status": "draft"
+        }
+      }
+    ],
+    "search": [
+      "claim"
+    ]
+  }
+}
