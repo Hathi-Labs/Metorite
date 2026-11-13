@@ -381,6 +381,11 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "PATCH /api/studio/skills/{}/state": "studio_skill_state",
     "POST /api/studio/skills": "studio_skill_save",
     "POST /api/studio/skills/{}/versions": "studio_skill_save",
+    # ── Workflows (STB-6a, ai_studio.md E13a) ──
+    # The two reads of the Workflows app, as the member, in ONE tool (no id: the list).
+    # The read of one workflow drops the webhook token, and shows the steps as a count by type.
+    "GET /api/workflows": "studio_workflow_read",
+    "GET /api/workflows/{}": "studio_workflow_read",
 }
 
 #: A covered action that more than one chat tool sends -> the other tools.
@@ -853,13 +858,11 @@ DEBT: dict[str, str] = {
     # ── Workflows ──
     "DELETE /api/workflows/modules/{}": "P-6",
     "DELETE /api/workflows/{}": "P-6",
-    "GET /api/workflows": "P-6",
     "GET /api/workflows/catalog": "P-6",
     "GET /api/workflows/catalog/search": "P-6",
     "GET /api/workflows/modules": "P-6",
     "GET /api/workflows/modules/{}": "P-6",
     "GET /api/workflows/runs/{}": "P-6",
-    "GET /api/workflows/{}": "P-6",
     "GET /api/workflows/{}/runs": "P-6",
     "POST /api/workflows": "P-6",
     "POST /api/workflows/modules": "P-6",
@@ -1085,7 +1088,7 @@ DEBT_CEILING: dict[str, int] = {
     "people": 19,
     "knowledge": 19,  # 17 planned rows + POST and PATCH /knowledge/spaces (KB-2q, owner 2026-11-05); P-5 pays them.
     "memory": 5,
-    "workflows": 24,
+    "workflows": 22,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22).
     "apps": 28,
     "agents": 20,
     "chat": 25,

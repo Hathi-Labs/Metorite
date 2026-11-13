@@ -11,7 +11,9 @@ cached block.
 **PZ-51 BUILT 2026-11-09** (task 2500, no flag). Every chat turn carries one
 language rule (§5.3). The assistant answers in the member's language and
 saves every record in English. The style line names the language. Fence:
-`tests/unit/test_assistant_profile_language.py`.
+`tests/unit/test_assistant_profile_language.py`. **Task 3131 BUILT
+2026-11-13** (no flag): a member's order about the answer language is saved
+in `style.language_fixed` and holds (§5.3).
 
 **PZ-39 MERGED 2026-11-08** (task 1823, 5ba0e3147, no flag). One
 greeting table (`acb_common.today.GREETING_TABLE`) is mirrored in `myDay.ts`.
@@ -336,6 +338,7 @@ for per-member preference.
 | `address.greeting` | `none`, `brief`, `warm` | — |
 | `style.length` | `short`, `default`, `detailed` | — |
 | `style.language` | A BCP 47 tag | 16 characters |
+| `style.language_fixed` | `true`, or absent. Needs `style.language` | — |
 | `style.notes` | A list of free text | 5 items, 200 characters each |
 | `aliases` | `{id, alias, email}`. `email` must be a member or a person of the org | 50 items, alias 60 characters |
 | `facts` | `{id, text, kind, source, at}`. `kind` is `about`, `routine`, `preference`, `work` or `relationship`. `source` is `chat`, `whatsapp` or `settings` | 40 items, 300 characters each |
@@ -519,6 +522,36 @@ languages of `LANGUAGES` in `settings/assistant/lib/profile.ts`, and a tag
 outside the map stays bare. `block_language` still returns the tag.
 Fence: `tests/unit/test_assistant_profile_language.py` pins the rule text,
 the line, the round trip and the equality of the two maps.
+
+**The member's order about the answer language (task 3131, 2026-11-13).**
+On 2026-11-13 a member wrote in Hindi and asked for the answers in English.
+The chat obeyed in that chat only. It saved nothing, so the next chat
+answered in Hindi again. The owner rule above (the message wins over the
+profile language) is the default, and it stays. A member's own order is not
+a guess, so it wins over the default.
+
+When a member says which language the answers must use, the chat calls
+`profile_set` at once with `style.language` and `style.language_fixed: true`.
+This is an own write of D-CF-5. It acts at once and offers Undo. The rule
+that tells the model to do this sits in the profile tool list of
+`orchestrator/agents.py`.
+
+The mark needs the member's own typed words of this turn. Those words must
+name the language and hold an order word about answers or replies. The name
+is the English name or the member's own name for it. A mail or a
+page cannot set the mark, and the call saves nothing for it. The refusal is
+`LANGUAGE_FIXED_REFUSED` in `profile_tools.py`.
+
+The marked style line reads as follows.
+`Language: en-IN. Answer in English, even when the member writes in Hindi or
+another language.` For other languages, the line ends with "writes in another
+language". Without the mark, the line stays as above. `LANGUAGE_RULE_LINE`
+says that this profile line wins.
+
+A member clears the mark with a null `language_fixed`, or by Undo. Settings
+keeps the mark when the member changes the language. Settings drops the mark
+when the member clears the language. Fence:
+`tests/unit/test_assistant_profile_language.py`.
 
 **Open owner question (PZ-51).** The Email app's automatic reply drafts
 (`gateway/routes/email/automation/drafting.py`) "match the language of the

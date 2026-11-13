@@ -421,6 +421,9 @@ def test_only_the_store_writes_an_install_or_a_claim() -> None:
         assert _WRITE.search(sql), sql
     for sql in (store._LIFE_SQL, store._DUE_SQL, store._SPENT_SQL):
         assert "FOR UPDATE" in sql, sql
+    # And the UPDATE of the member of a run with no viewer (WS-STU B6a).
+    assert _WRITE.search(store._SET_RUN_AS_SQL)
+    assert "FOR UPDATE" in store._RUN_AS_LOCK_SQL
 
 
 def test_the_store_reads_apps_and_never_writes_it() -> None:
