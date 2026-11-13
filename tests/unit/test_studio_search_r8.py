@@ -16,14 +16,12 @@ Run (a PRIVATE ladder database, one R8 suite at a time)::
 
 Without the database every test here SKIPS, and the run reads green.
 
-**The mutations (R7).** Commit before each, and restore with git after.
-
-* M1. ``search._candidates``: skip the ``package_host_allowed`` test. The test of
-  the flag off for installs goes red.
-* M2. ``search._read_package``: read ``obj.fields`` before ``package.project``.
-  The test of the fields of a newer version goes red.
-* M3. ``search.search_records``: drop the ``search_allowed`` test. The test of
-  the flag off goes red.
+**The mutations (R7).** Each was run with a temporary edit, then restored with
+git. The results are in the report of the slice. Layers: ``search_records``
+checks ``studio_allowed`` and ``search_allowed`` itself, so the direct test in
+``test_studio_search.py`` fences each flag alone. ``package.project`` limits
+the fields of a viewer. ``_reads_declared`` limits the objects of a viewer.
+``package_host_allowed`` in ``_candidates`` closes the installs.
 """
 
 from __future__ import annotations
@@ -45,7 +43,7 @@ from acb_common.studio_access import Viewer
 from fastapi import HTTPException, Response
 from gateway.retrieval import sources
 from gateway.routes.studio import packages
-from gateway.studio import objects_store
+from gateway.studio import objects_store, search
 from sqlalchemy import text
 
 from tests.unit._tenant_ladder import tenant_engine_scope
@@ -91,7 +89,7 @@ def _user(org: str, email: str, grants: tuple[str, ...] = STUDIO) -> UserContext
                        access=build_access(list(grants)), organization_id=org)
 
 
-def _manifest(mid: str, extra_field: bool = False) -> dict[str, Any]:
+def _manifest(mid: str, extra_field: bool = False, ledger_read: bool = False) -> dict[str, Any]:
     note_fields = [{"key": "title", "type": "text"}, {"key": "body", "type": "text"}]
     if extra_field:
         note_fields.append({"key": "memo", "type": "text"})
@@ -100,11 +98,14 @@ def _manifest(mid: str, extra_field: bool = False) -> dict[str, Any]:
         "objects": [
             {"name": "note", "fields": note_fields},
             {"name": "draft", "fields": [{"key": "title", "type": "text"}]},
+            {"name": "ledger", "fields": [{"key": "title", "type": "text"}]},
             {"name": "slip", "fields": [{"key": "title", "type": "text"},
                                         {"key": "employee", "type": "person", "hot": True}]},
         ],
-        "shell": {"search": ["note", "slip"]},
-        "actions": [{"id": "find", "uses": "object:note.list"}],
+        "shell": {"search": ["note", "slip", "ledger"]},
+        "actions": [{"id": "find", "uses": "object:note.list"},
+                    {"id": "slips", "uses": "object:slip.list"},
+                    *([{"id": "book", "uses": "object:ledger.list"}] if ledger_read else [])],
     }
 
 
@@ -130,9 +131,11 @@ async def _call(route: str, org: str, email: str, pid: str | None = None,
         release_tenant(token)
 
 
-async def _live(org: str, owner: str, extra_field: bool = False) -> str:
+async def _live(org: str, owner: str, extra_field: bool = False,
+                ledger_read: bool = False) -> str:
     mid = f"c5a{TAG}-app{next(_COUNTER)}"
-    status, got = await _call("create_package", org, owner, payload=_manifest(mid, extra_field))
+    status, got = await _call("create_package", org, owner,
+                              payload=_manifest(mid, extra_field, ledger_read))
     assert status == 200, got
     pid = str(got["package"]["id"])
     _MIDS[pid] = mid
@@ -348,3 +351,57 @@ def test_r8_the_package_host_off_hides_the_installs(world, monkeypatch) -> None:
 
     on, off, owner = _run(world, go)
     assert len(on) == 1 and off == [] and len(owner) == 1
+
+
+def test_r8_a_viewer_finds_an_object_only_with_a_declared_read_action(world) -> None:
+    async def go() -> Any:
+        closed = await _live(world.a, OWEN)
+        opened = await _live(world.a, OWEN, ledger_read=True)
+        for pid in (closed, opened):
+            await _write(world.a, OWEN, pid, "ledger", {"title": f"Book {WORD}"})
+            status, got = await _call("install_package", world.a, OWEN, pid,
+                                      payload={"scope": OPS}, grants=PUBLISHER)
+            assert status == 201, got
+        return closed, opened, await _search(world.a, ANA), await _search(world.a, OWEN)
+
+    closed, opened, ana, owen = _run(world, go)
+    assert {h.id.split("/")[0] for h in ana} == {opened}
+    # The owner path stays the door's owner path: no declared action is needed.
+    assert {h.id.split("/")[0] for h in owen} == {closed, opened}
+
+
+@pytest.mark.parametrize("failure", ["SELECT pg_sleep(5)", "SELECT 1/0"])
+def test_r8_a_slow_or_failing_package_keeps_the_hits_and_the_session(
+        world, monkeypatch, failure) -> None:
+    """The statement runs inside the store, as the verifier's spy did. The
+    earlier package's hit comes back, nothing raises and the session commits."""
+    real = objects_store._read_page
+    slow: list[str] = []
+
+    async def spy(timed: Any, oid: str, pid: str, *a: Any, **kw: Any) -> Any:
+        if pid == slow[0]:
+            await timed.execute(text(failure), {})
+        return await real(timed, oid, pid, *a, **kw)
+
+    async def go() -> Any:
+        import time
+
+        bad = await _live(world.a, OWEN)
+        good = await _live(world.a, OWEN)  # the newest package is read first
+        slow.append(bad)
+        rid = await _write(world.a, OWEN, good, "note", {"title": f"Fast {WORD}"})
+        await _write(world.a, OWEN, bad, "note", {"title": f"Slow {WORD}"})
+        monkeypatch.setattr(objects_store, "_read_page", spy)
+        monkeypatch.setattr(search, "BUDGET_S", 0.8)
+        started = time.monotonic()
+        hits = await _search(world.a, OWEN)
+        took = time.monotonic() - started
+        monkeypatch.setattr(objects_store, "_read_page", real)
+        monkeypatch.setattr(search, "BUDGET_S", 1.2)
+        return good, rid, hits, took, await _search(world.a, OWEN)
+
+    good, rid, hits, took, after = _run(world, go)
+    assert [h.id for h in hits] == [f"{good}/note/{rid}"]
+    assert took < 3.0
+    assert len(after) == 2  # the session pool is healthy, and both packages answer
+

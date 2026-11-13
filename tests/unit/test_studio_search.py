@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import time
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -58,7 +57,7 @@ class World:
         self.fields: dict[str, list[Any]] = {"note": [field("title"), field("body")]}
         self.queries: list[dict[str, Any]] = []
         self.objects_read: list[str] = []
-        self.delay: dict[str, float] = {}
+        self.fail: dict[str, BaseException] = {}
         self.refuse: set[str] = set()
 
     async def list_packages(self, db: Any, who: str) -> list[Any]:
@@ -69,10 +68,12 @@ class World:
         return SimpleNamespace(id=f"obj-{name}", name=name, fields=tuple(self.fields.get(name, ())))
 
     async def query_records(self, db: Any, *, package_id: str, object_id: str,
-                            viewer: Any, filter: Any = None, limit: Any = None, **_: Any) -> Any:
+                            viewer: Any, filter: Any = None, limit: Any = None,
+                            budget_s: Any = None, **_: Any) -> Any:
         self.queries.append({"package": package_id, "object": object_id, "viewer": viewer,
-                             "filter": filter, "limit": limit})
-        await asyncio.sleep(self.delay.get(package_id, 0))
+                             "filter": filter, "limit": limit, "budget_s": budget_s})
+        if package_id in self.fail:
+            raise self.fail[package_id]
         [cond] = filter
         if cond["field"] in self.refuse:
             raise QueryError("query_field_unknown", "no")
@@ -191,16 +192,114 @@ def test_caps_for_each_package_and_in_all(world) -> None:
     assert len(find(k=7)) == 7
 
 
-def test_a_slow_package_is_skipped_within_the_budget(world, monkeypatch) -> None:
-    monkeypatch.setattr(search, "BUDGET_S", 0.2)
-    world.packages = [package("p1", ["note"]), package("p2", ["note"])]
-    world.rows[("p1", "note", "title")] = [record("a", {"title": "Acme"})]
-    world.rows[("p2", "note", "title")] = [record("b", {"title": "Acme"})]
-    world.delay = {"p2": 5.0}
-    started = time.monotonic()
-    hits = find()
-    assert [h.id for h in hits] == ["p1/note/a"]
-    assert time.monotonic() - started < 2.0
+@pytest.mark.parametrize("error", [QueryError("query_timeout", "slow"), RuntimeError("db down")])
+def test_a_failed_or_slow_package_is_skipped_and_the_next_is_read(world, error) -> None:
+    world.packages = [package(f"p{i}", ["note"]) for i in (1, 2, 3)]
+    for i in (1, 3):
+        world.rows[(f"p{i}", "note", "title")] = [record(f"r{i}", {"title": "Acme"})]
+    world.fail = {"p2": error}
+    assert [h.id for h in find()] == ["p1/note/r1", "p3/note/r3"]
+
+
+def test_each_statement_gets_the_time_left_as_its_deadline(world) -> None:
+    world.packages = [package("p1", ["note"])]
+    find()
+    assert world.queries
+    for q in world.queries:
+        assert 0 < q["budget_s"] <= search.BUDGET_S
+
+
+def test_an_spent_clock_reads_no_statement(world, monkeypatch) -> None:
+    monkeypatch.setattr(search, "BUDGET_S", 0.0)
+    world.packages = [package("p1", ["note"])]
+    assert find() == [] and world.queries == []
+
+
+def test_the_search_calls_no_wait_for() -> None:
+    """A statement is never cancelled from outside: the store holds the deadline."""
+    import inspect
+
+    assert "wait_for" not in inspect.getsource(search)
+    assert "budget_s" in inspect.signature(objects_store.query_records).parameters
+
+
+def test_the_flag_layers_each_close_search_records_itself(world, monkeypatch) -> None:
+    """Fences ``search_records`` on its own, not through the source gate."""
+    world.packages = [package("p1", ["note"])]
+    world.rows[("p1", "note", "title")] = [record("r1", {"title": "Acme"})]
+    assert len(asyncio.run(search.search_records(member(), "acme", 5))) == 1
+    for key in ("studio_search_orgs", "studio_orgs"):
+        monkeypatch.setattr(get_settings(), key, "")
+        n = len(world.queries)
+        assert asyncio.run(search.search_records(member(), "acme", 5)) == []
+        assert len(world.queries) == n
+        monkeypatch.setattr(get_settings(), key, ORG)
+
+
+def _install(app_id: str, manifest: dict[str, Any]) -> Any:
+    from gateway.package_host import resolve
+
+    return resolve.InstallRow(id=f"i-{app_id}", app_id=app_id, scope_kind="org",
+                              scope_subject="", created_at=NOW, manifest=manifest, version=1)
+
+
+def _installed_world(world: World, monkeypatch, rows: list[Any]) -> None:
+    from gateway.package_host import resolve
+
+    async def visible(db: Any, *, viewer: str) -> list[Any]:
+        return rows
+
+    monkeypatch.setattr(resolve, "visible_installs", visible)
+    monkeypatch.setattr(get_settings(), "package_host_orgs", ORG, raising=False)
+
+
+def _manifest(actions: list[str], fields: list[str] | None = None) -> dict[str, Any]:
+    return {"name": "Notes app", "shell": {"search": ["note"]},
+            "objects": [{"name": "note", "fields": [
+                {"key": k, "type": "text"} for k in (fields or ["title", "body"])]}],
+            "actions": [{"id": f"a{i}", "uses": u} for i, u in enumerate(actions)]}
+
+
+@pytest.mark.parametrize("actions,found", [
+    ([], False), (["object:note.create"], False), (["object:other.list"], False),
+    (["object:note.list"], True), (["object:note.get"], True)])
+def test_a_viewer_searches_an_object_only_with_a_declared_read_action(
+        world, monkeypatch, actions, found) -> None:
+    _installed_world(world, monkeypatch, [_install("app1", _manifest(actions))])
+    world.rows[("app1", "note", "title")] = [record("r1", {"title": "Acme"})]
+    assert (len(find()) == 1) is found
+    assert bool(world.queries) is found
+
+
+def test_a_viewer_snippet_holds_installed_fields_only(world, monkeypatch) -> None:
+    """The project() layer. The store row holds a field of a newer version."""
+    _installed_world(world, monkeypatch,
+                     [_install("app1", _manifest(["object:note.list"], ["title", "body"]))])
+    world.fields["note"] = [field("title"), field("body"), field("memo")]
+    world.rows[("app1", "note", "title")] = [record("r1", {
+        "title": "Acme", "body": "shown", "memo": "SECRET"})]
+    [hit] = find()
+    assert hit.snippet == "shown" and "SECRET" not in repr(hit)
+    assert {c["filter"][0]["field"] for c in world.queries} == {"title", "body"}
+
+
+def test_owned_and_installed_packages_share_the_cap(world, monkeypatch) -> None:
+    world.packages = [package(f"p{i}", ["note"]) for i in range(12)]
+    rows = [_install(f"app{i}", _manifest(["object:note.list"])) for i in range(2)]
+    _installed_world(world, monkeypatch, rows)
+    for pid in [f"p{i}" for i in range(12)] + ["app0", "app1"]:
+        world.rows[(pid, "note", "title")] = [record(f"r-{pid}", {"title": "Acme"})]
+    ids = {h.id.split("/")[0] for h in find(k=100)}
+    assert {"app0", "app1"} <= ids
+    assert len(ids) == search.MAX_PACKAGES
+
+
+def test_the_clock_starts_before_the_packages_load(world, monkeypatch) -> None:
+    clock = iter([0.0, 0.0, 99.0, 99.0, 99.0, 99.0, 99.0, 99.0])
+    monkeypatch.setattr(search, "time", SimpleNamespace(monotonic=lambda: next(clock, 99.0)))
+    world.packages = [package("p1", ["note"])]
+    world.rows[("p1", "note", "title")] = [record("r1", {"title": "Acme"})]
+    assert find() == [] and world.queries == []
 
 
 def test_an_empty_word_reads_nothing(world) -> None:

@@ -29,15 +29,33 @@ come only from the fields that the installed version declares
 manifest that names a sensitive text field in a searched object puts its value
 in the snippet. Row rules and hidden keys of C8a still apply.
 
-**Limits.** At most :data:`PER_PACKAGE` records for each package, and at most
-*k* in all. A package that is too slow ends the search, with a log line, and
-the hits so far are returned. The source has 1.5 s in the route, so
-:data:`BUDGET_S` is lower.
+**A viewer reads only what the door lets it read.** For an installed app, an
+object is searched only when the INSTALLED manifest declares a read action on
+it: ``object:<name>.list`` or ``object:<name>.get``. Without one, the door
+refuses the read (``not_declared``), so the search shows no record of it.
+
+**Limits.** At most :data:`PER_PACKAGE` records for each package, at most
+*k* in all, and at most :data:`MAX_PACKAGES` packages. The owner gets at most
+:data:`MAX_PACKAGES` minus :data:`INSTALLED_SHARE` of them when installs
+exist, so an owner of many apps still reaches the installs.
+
+**Time.** One clock of :data:`BUDGET_S` starts BEFORE the packages load.
+It is lower than the 1.5 s that the route gives a source. The route gives a
+source ``min(1.5 s, time left)``. When less than :data:`BUDGET_S` is left,
+the route cancels the source and the source answers nothing. This module
+cannot read that time, because the ``Source`` contract does not pass it.
+
+**A slow or failed read never cancels a statement from outside.** Each
+statement passes the time that is left to ``query_records`` (``budget_s``),
+and the store sets the ``statement_timeout`` of that statement. A timeout
+ends in a SAVEPOINT, so the session stays usable and its commit succeeds.
+Any error of one statement or one package is logged (the type only), that
+read is skipped, and the hits found so far come back. One package never
+fails the search.
 """
 
 from __future__ import annotations
 
-import asyncio
 import re
 import time
 from dataclasses import dataclass
@@ -46,7 +64,8 @@ from typing import Any
 
 from acb_common import get_logger
 from acb_common.studio_access import Viewer
-from acb_common.studio_query import QueryError
+from acb_common.studio_manifest import parse_uses
+from acb_common.studio_query import TIMEOUT as QUERY_TIMEOUT
 
 from gateway.db import tenant_session as _tenant_session
 from gateway.studio import objects_store, packages_store
@@ -57,6 +76,8 @@ _log = get_logger("gateway.studio.search")
 PER_PACKAGE = 5
 #: The most packages that one search reads.
 MAX_PACKAGES = 10
+#: Places kept for installed apps when the member has any. The owner takes the rest.
+INSTALLED_SHARE = 4
 #: The most objects of one package that one search reads.
 MAX_OBJECTS = 3
 #: The most text fields of one object that one search asks.
@@ -98,41 +119,66 @@ def _flat(value: Any) -> str:
     return _SPACE.sub(" ", str(value or "")).strip()
 
 
+def _reads_declared(manifest: Any, object_name: str) -> bool:
+    """True when *manifest* declares a read action on *object_name*:
+    ``object:<name>.list`` or ``.get``. The door refuses a read with none
+    (``not_declared``). It uses the one grammar, ``parse_uses``."""
+    actions = manifest.get("actions") if isinstance(manifest, dict) else None
+    if not isinstance(actions, list):
+        return False
+    for entry in actions:
+        ref = parse_uses(entry.get("uses")) if isinstance(entry, dict) else None
+        if ref is not None and ref.source == "object" and ref.object == object_name \
+                and ref.op in ("list", "get"):
+            return True
+    return False
+
+
 async def _candidates(db: Any, member: str, org: str | None) -> list[tuple[Any, bool]]:
-    """The packages that *member* reads, as ``(package, is_viewer)``. The owner
-    comes first and wins over an install of the same app, as in the door."""
+    """The packages that *member* reads, as ``(package, is_viewer)``, at most
+    :data:`MAX_PACKAGES`. The owner wins over an install of the same app, as
+    in the door. Installs keep up to :data:`INSTALLED_SHARE` places."""
     from gateway.package_host import resolve, viewer
     from gateway.package_host.flags import package_host_allowed
 
-    out: list[tuple[Any, bool]] = []
+    owned: list[tuple[Any, bool]] = []
     seen: set[str] = set()
     for pkg in await packages_store.list_packages(db, member):
         seen.add(str(pkg.id))
         if pkg.paused_at is None and _names(pkg.manifest):
-            out.append((pkg, False))
+            owned.append((pkg, False))
+    installed: list[tuple[Any, bool]] = []
     if package_host_allowed(org):
         for row in await resolve.visible_installs(db, viewer=member):
             if row.app_id in seen:
                 continue
             app = viewer.installed([row], row.app_id)
             if app is not None and _names(app.manifest):
-                out.append((app, True))
-    return out[:MAX_PACKAGES]
+                installed.append((app, True))
+    take_owned = min(len(owned), MAX_PACKAGES - min(len(installed), INSTALLED_SHARE))
+    take_installed = min(len(installed), MAX_PACKAGES - take_owned)
+    return owned[:take_owned] + installed[:take_installed]
 
 
 async def _read_package(db: Any, package: Any, is_viewer: bool, who: Viewer,
-                        words: str, room: int) -> list[Found]:
-    """Up to *room* records of the searched objects of one package."""
+                        words: str, room: int, deadline: float) -> list[Found]:
+    """Up to *room* records of the searched objects of one package. Each
+    statement runs in a SAVEPOINT with the time left as its deadline. An error
+    of one statement skips it, and the records found so far stay."""
     found: dict[tuple[str, str], Found] = {}
     name = str(getattr(package, "name", "") or "")
     for object_name in _names(package.manifest):
-        if len(found) >= room:
+        if len(found) >= room or deadline - time.monotonic() <= 0:
             break
-        if is_viewer and object_name not in package.object_names:
+        if is_viewer and (object_name not in package.object_names
+                          or not _reads_declared(package.manifest, object_name)):
             continue
         try:
-            obj = await objects_store.get_object_by_name(db, object_name, package_id=package.id)
-        except objects_store.ObjectStoreError:
+            async with db.begin_nested():
+                obj = await objects_store.get_object_by_name(
+                    db, object_name, package_id=package.id)
+        except Exception as exc:  # skip the object, keep the hits
+            _log.warning("studio.search.object_failed", error=type(exc).__name__)
             continue
         if obj is None:
             continue
@@ -140,15 +186,19 @@ async def _read_package(db: Any, package: Any, is_viewer: bool, who: Viewer,
             obj = package.project(obj)
         fields = [f for f in obj.fields if f.type in TEXT_TYPES and not f.many][:MAX_FIELDS]
         for field in fields:
-            if len(found) >= room:
+            left = deadline - time.monotonic()
+            if len(found) >= room or left <= 0:
                 break
             try:
                 async with db.begin_nested():
                     page = await objects_store.query_records(
                         db, package_id=package.id, object_id=obj.id, viewer=who,
                         filter=[{"field": field.key, "op": "contains", "value": words}],
-                        limit=room)
-            except (QueryError, objects_store.ObjectStoreError):
+                        limit=room, budget_s=left)
+            except Exception as exc:  # a timeout, a refusal or a database error
+                code = getattr(exc, "code", None)
+                _log.warning("studio.search.read_failed", error=type(exc).__name__,
+                             timeout=code == QUERY_TIMEOUT)
                 continue
             if page is None:
                 continue
@@ -184,21 +234,20 @@ async def search_records(user: Any, q: str, k: int) -> list[Found]:
     deadline = time.monotonic() + BUDGET_S
     hits: list[Found] = []
     async with _tenant_session() as db:
-        for package, is_viewer in await _candidates(db, member, org):
+        try:
+            async with db.begin_nested():
+                candidates = await _candidates(db, member, org)
+        except Exception as exc:
+            _log.warning("studio.search.candidates_failed", error=type(exc).__name__)
+            return []
+        for package, is_viewer in candidates:
             room = min(PER_PACKAGE, total - len(hits))
-            if room <= 0:
+            if room <= 0 or deadline - time.monotonic() <= 0:
                 break
-            left = deadline - time.monotonic()
             try:
-                if left <= 0:
-                    raise TimeoutError
-                hits += await asyncio.wait_for(
-                    _read_package(db, package, is_viewer, who, words, room), left)
-            except TimeoutError:
-                _log.warning("studio.search.slow", package=str(package.id), found=len(hits))
-                break
+                hits += await _read_package(db, package, is_viewer, who, words, room, deadline)
             except Exception as exc:  # one package never fails the search
                 _log.warning("studio.search.package_failed", package=str(package.id),
                              error=type(exc).__name__)
-                break
+                continue
     return hits[:total]
