@@ -70,6 +70,9 @@ export interface ObjectDef {
   fields?: FieldDef[];
   // The constraints and state machines of the object (C6).
   rules?: Record<string, unknown>[];
+  // C8a. The grant of each role: read "all" or { where: "<person field> = $me" },
+  // write "all", and hide. No access means an open object.
+  access?: Record<string, unknown>[] | null;
 }
 
 export interface ActionDef {
@@ -209,6 +212,8 @@ export interface StudioManifest {
   purpose?: string | null;
   team?: string | null;
   connections?: string[];
+  // C8a. The roles of the app. An install maps each one to members (C8b).
+  roles?: string[];
   objects?: ObjectDef[];
   actions?: ActionDef[];
   views?: ViewDef[];

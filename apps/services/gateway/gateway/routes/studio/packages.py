@@ -642,6 +642,8 @@ def _sync_out(result: objects_store.SyncResult) -> dict[str, Any]:
         "fields_added": [list(pair) for pair in result.fields_added],
         "hot_changed": [list(row) for row in result.hot_changed],
         "rules_set": list(result.rules_set),
+        # C8a: the objects whose grants changed.
+        "access_set": list(result.access_set),
     }
 
 
@@ -675,6 +677,8 @@ def _sync_audit(version: int, result: objects_store.SyncResult) -> dict[str, Any
         "fields": [f"{o}.{k}" for o, k in result.fields_added][:MAX_AUDIT_NAMES],
         "hot_changed": len(result.hot_changed),
         "rules": list(result.rules_set)[:MAX_AUDIT_NAMES],
+        # C8a: a change of who reads what is a change that the audit names.
+        "access": list(result.access_set)[:MAX_AUDIT_NAMES],
     }
 
 
