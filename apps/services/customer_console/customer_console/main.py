@@ -61,7 +61,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as day_time
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from typing import Annotated, Any, Literal, NoReturn
 from zoneinfo import ZoneInfo
 
@@ -12237,6 +12237,71 @@ def usage_members_for_member(
             conn, req, caller, permits=_can_use_ai
         )
     return _member_spend_view(org_id)
+
+
+# ── AUTO-8b-2d · the spend of ONE run, for the headless turn's meter ────────
+#
+# The headless turn (`gateway/jobs/headless_turn.py`) reads the credits of the
+# run of each round before the call and after it, and the change is the cost
+# of the round (`proactive_agent.md` §4.4). This door is the one reader. It is
+# the sum that the Router's own `RunCeiling` reads (`store.run_spend`), so the
+# meter and the ceiling see one number.
+#
+# The org comes from the deployment key and the acting member, the way the
+# Router metered the call on the deployment arm (R11). The body can never name
+# an org: `org_slug` is 400 (`_admin_scheme_for_deployment`), and any other
+# field is 422. An unknown run reads "0.0000". The door writes nothing.
+#
+# ⚠️ Not a browser door. The gateway calls it from the job worker only
+# (`console_resolve.run_spend_on_console`), so it is not in
+# `BILLING_READ_DOORS` and has no `/billing/*` route.
+
+
+class RunSpendRequest(AdminSchemeRequest):
+    """The body of the run spend read: the acting member and the run id.
+
+    ``extra: forbid``. ``run_id`` must be a UUID, so a bad id is 422. The
+    door sums the run id in its canonical form (lower case, with hyphens),
+    the form ``str(uuid.uuid4())`` gives the turn.
+    """
+
+    run_id: uuid.UUID
+
+    model_config = {"extra": "forbid"}
+
+
+class RunSpendView(BaseModel):
+    """The credits of one run in the actor's org, as a string with 4 places."""
+
+    credits: str
+
+
+def _four_places(amount: Decimal) -> str:
+    """*amount* as a string with exactly 4 places, never in E notation.
+
+    ``usage_event.billed_credits`` is ``NUMERIC(14, 4)``, so the sum has 4
+    places already. A sum with more places rounds UP, so a reader of money
+    never sees less than was spent.
+    """
+    return format(amount.quantize(Decimal("0.0001"), rounding=ROUND_CEILING), "f")
+
+
+@app.post("/registry/usage/run")
+def usage_run_for_member(
+    req: RunSpendRequest, caller: BillingReadCaller
+) -> RunSpendView:
+    """The credits that run ``run_id`` spent in the actor's org (AUTO-8b-2d).
+
+    The same gate as the other spend doors: ``billing_read``, the operator arm
+    refused, the org derived from placement and membership, and ``can_use_ai``.
+    Read-only: it sums ``usage_event`` and writes no row.
+    """
+    with get_engine().begin() as conn:
+        org_id, _actor = _billing_member_context(
+            conn, req, caller, permits=_can_use_ai
+        )
+        spent = store.run_spend(conn, org_id=org_id, run_id=str(req.run_id))
+    return RunSpendView(credits=_four_places(spent))
 
 
 @app.get("/admin/usage/breakdown")
