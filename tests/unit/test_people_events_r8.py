@@ -210,3 +210,22 @@ def test_an_org_off_the_unattended_list_starts_no_run(promoted, monkeypatch):
     _listen(monkeypatch, unattended_orgs=(promoted.org_b,), core="*")
     assert _emit(promoted, promoted.org_a) is True
     assert _runs(promoted, "A") == [] and _runs(promoted, "B") == []
+
+
+def test_an_edit_with_no_changed_directory_key_starts_no_run(promoted, monkeypatch):
+    """`update_person` hands over only the keys whose value changed. An empty
+    list, or an HR key, emits nothing and starts no run."""
+    _listen(monkeypatch, unattended_orgs=(promoted.org_a, promoted.org_b), core="*")
+
+    async def _go(names):
+        async with tenant_engine_scope(promoted.app_dsn):
+            token = bind_tenant(promoted.org_a)
+            try:
+                return await core_events.emit_person_updated(_PERSON, _ACTOR, names)
+            finally:
+                await _drain_runs()
+                release_tenant(token)
+
+    assert asyncio.run(_go([])) is False
+    assert asyncio.run(_go(["skills"])) is False
+    assert _runs(promoted, "A") == [] and _runs(promoted, "B") == []

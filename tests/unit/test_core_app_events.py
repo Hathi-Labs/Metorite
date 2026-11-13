@@ -217,3 +217,67 @@ def test_a_registered_sink_that_raises_never_fails_the_write(db, on):
         assert _patch("tasks", title="Lead") is not None
     finally:
         event_hooks.clear_event_sinks()
+
+
+# ── `changed` holds the keys whose value changed (round 2) ──────────────────
+
+#: The eight keys that the People editor always sends (`buildWriteBody`), with
+#: the values of the stored row.
+def _form(**over):
+    body = {"name": PERSON.name, "email": PERSON.email, "role": PERSON.role,
+            "title": PERSON.title, "department": PERSON.department, "team": PERSON.team,
+            "manager_id": PERSON.manager_id, "status": PERSON.status}
+    body.update(over)
+    return body
+
+
+def test_a_skills_only_save_of_the_full_form_emits_nothing(db, seen, on):
+    _patch("tasks", **_form(skills=["new-skill"]))
+    assert seen == []
+
+
+def test_a_title_change_of_the_full_form_lists_only_title(db, seen, on):
+    _patch("tasks", **_form(title="Lead"))
+    (_, _, payload), = seen
+    assert payload["changed"] == ["title"]
+
+
+def test_a_no_op_save_emits_nothing(db, seen, on):
+    _patch("tasks", **_form())
+    assert seen == []
+
+
+def test_a_key_set_to_the_same_value_is_not_listed(db, seen, on):
+    _patch("tasks", **_form(role=PERSON.role, team="Hardware"))
+    (_, _, payload), = seen
+    assert payload["changed"] == ["team"]
+
+
+def test_none_and_blank_are_the_same_value(db, seen, on):
+    _patch("tasks", **_form(title="", manager_id=""))
+    assert seen == []
+
+
+def test_none_to_a_value_is_listed(db, seen, on):
+    _patch("tasks", **_form(reports_to="Ravi"))
+    (_, _, payload), = seen
+    assert payload["changed"] == ["reports_to"]
+
+
+def test_a_case_or_whitespace_change_is_a_change_as_the_store_saves_it(db, seen, on):
+    _patch("tasks", **_form(team="firmware ", role="engineer"))
+    (_, _, payload), = seen
+    assert payload["changed"] == ["role", "team"]
+
+
+@pytest.mark.parametrize("door", ["tasks", "profile", "me"])
+def test_each_door_calls_the_emit_once_on_a_real_change(door, db, on, monkeypatch):
+    calls: list[Any] = []
+
+    async def _spy(person_id, actor, names):
+        calls.append((person_id, actor, list(names)))
+        return True
+
+    monkeypatch.setattr(core_events, "emit_person_updated", _spy)
+    _patch(door, title="Lead")
+    assert calls == [(PERSON.id, ADMIN.email, ["title"])]

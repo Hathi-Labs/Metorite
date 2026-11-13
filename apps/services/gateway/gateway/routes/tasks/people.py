@@ -185,6 +185,32 @@ DIRECTORY_FIELDS: tuple[str, ...] = (
 NON_EVENT_FIELDS: tuple[str, ...] = ("clickup_user_id",)
 
 
+def _same_value(old: Any, new: Any) -> bool:
+    """Is a submitted value the stored one? None and '' are the same blank. A
+    UUID equals its text. A JSON column may come back as text. The store writes
+    a string as sent, so a case or whitespace change is a real change."""
+    def norm(v: Any) -> Any:
+        if v is None or v == "" or v == [] or v == {}:
+            return None
+        if isinstance(v, str):
+            parsed = _jsonb(v) if v.lstrip().startswith("{") else None
+            return parsed if parsed is not None else v
+        if isinstance(v, (list, tuple)):
+            return [norm(i) for i in v]
+        if isinstance(v, (dict, int, float, bool)):
+            return v
+        return str(v)
+    return norm(old) == norm(new)
+
+
+def changed_directory_keys(fields: dict[str, Any], row: Any) -> list[str]:
+    """The directory-tier keys of *fields* whose value differs from *row*."""
+    return sorted(
+        k for k in fields
+        if k in DIRECTORY_FIELDS and not _same_value(getattr(row, k, None), fields[k])
+    )
+
+
 def _blank_hr() -> dict[str, Any]:
     """A fresh empty value per HR field — the projected-away form.
 
@@ -867,6 +893,10 @@ async def update_person(
                 raise HTTPException(
                     status_code=409, detail=f"{fields['email']} already belongs to {holder}."
                 )
+        # STU-E12a: the keys whose value differs from the row, read BEFORE the
+        # UPDATE. The editor sends its whole form, so a submitted key is not a
+        # changed key.
+        moved = changed_directory_keys(fields, row)
         set_parts, params = build_person_update(fields, row, actor=_uid(user))
         params["id"] = person_id
         await db.execute(
@@ -890,7 +920,7 @@ async def update_person(
     # raises, and it names directory-tier keys only.
     from gateway.core_events import emit_person_updated
 
-    await emit_person_updated(person_id, _uid(user), fields)
+    await emit_person_updated(person_id, _uid(user), moved)
     # The route gate already proved this caller holds
     # `admin:members:manage`, which is the private tier's key (D-PC-3).
     return _row_to_person(person, include_hr=True, include_private=True)
