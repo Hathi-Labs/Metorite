@@ -81,7 +81,11 @@ caller's transaction stays usable, and the old timeout comes back.
 ⚠️ ``v_num`` takes no index condition as the app role, because no ``numeric``
 comparison is LEAKPROOF (``docs/rls_and_indexes.md``). So a number filter
 reads the hot rows of its field. A sort on a number still reads the index in
-order.
+order. **C2c** adds ``v_num_f8``, a float8 copy that a trigger fills
+(migration 433). For an org on ``STUDIO_NUM_F8_ORGS`` (default OFF), a number
+filter adds a float8 test with the non-strict operator beside the exact
+``numeric`` test, so the app role reads the index ``studio_record_hot_num_f8_idx``.
+The exact test stays as the filter, so the records do not change.
 
 **The aggregate (C2b).** :func:`aggregate_records` groups the records of one
 object by one hot field and takes a count, a sum or an average of each group.
@@ -202,6 +206,16 @@ from ``apps`` deletes the objects, the fields and each hot row that is left.
 :func:`package_counts` counts the objects, the fields and the records (up to
 :data:`COUNT_CAP` for each object) for the preview.
 
+**The change history (C4a-1).** Migration ``studio_record_changes`` (431 at
+build) adds the fifth table. :func:`_apply_write` writes one row for each
+create, update and delete, in the SAVEPOINT of the batch, so a refused batch
+writes no row. A row holds the actor, the ``via`` of the batch and only the
+keys that changed, each as ``{"old": ..., "new": ...}``. An update that
+changes no value writes no row. A delete holds each old value. A derived
+write of a roll-up parent writes no row. ``app_audit`` still holds no value.
+:func:`purge_record_changes` deletes the rows of a package in chunks, before
+:func:`purge_records`. No reader exists yet (C4a-2).
+
 **On a floor of 0 or less, a write that does not lower a group never reads
 the group.** The store adds up the net change of the batch on each key of
 ``group_sum_min``, in exact ``Decimal``, from the values that it read under
@@ -272,6 +286,7 @@ from acb_common.studio_fields import (
     stored_field,
     validate_record,
 )
+from acb_common.studio_flags import num_f8_org
 from acb_common.studio_query import Condition, Query, QueryError, parse_query
 from acb_common.studio_rules import (
     FORMULA,
@@ -617,6 +632,21 @@ _DELETE_RECORD_SQL = (
     f"AND id = CAST(:rid AS uuid) AND {_IN_PACKAGE} RETURNING id"
 )
 
+#: One row of the change history (C4a-1). The DEFAULT of the column gives the
+#: org. :func:`_record_change` is its one caller.
+_CHANGE_SQL = (
+    "INSERT INTO studio_record_changes "
+    "(object_id, record_id, op, actor, via_kind, via_id, changes) "
+    "VALUES (CAST(:oid AS uuid), CAST(:rid AS uuid), :op, :actor, :via_kind, :via_id, "
+    "CAST(:changes AS jsonb))"
+)
+
+#: The kinds of a ``via`` (C4a-1). The CHECK ``studio_record_changes_via_kind``
+#: holds the same two.
+VIA_KINDS = ("workflow_run", "agent")
+#: The longest ``via`` id. The CHECK ``studio_record_changes_via_id`` holds it.
+MAX_VIA_ID_CHARS = 200
+
 
 class ObjectStoreError(ValueError):
     """A registry write that the store refuses before it reaches the database."""
@@ -721,6 +751,37 @@ def _actor(actor: object) -> str:
     if not isinstance(actor, str) or not actor.strip() or not storable_text(actor):
         raise ObjectStoreError("actor must be a non-empty string")
     return actor.strip().lower()
+
+
+def _via(via: object) -> tuple[str, str] | None:
+    """The way a batch came, as ``(kind, id)``, or None (C4a-1).
+
+    The caller sets it from the session, never from request input (R5). The
+    kind is one of :data:`VIA_KINDS`. The id is a non-empty string of at most
+    :data:`MAX_VIA_ID_CHARS` characters."""
+    if via is None:
+        return None
+    if not isinstance(via, tuple) or len(via) != 2:
+        raise ObjectStoreError("via is a pair (kind, id)")
+    kind, ident = via
+    if kind not in VIA_KINDS:
+        raise ObjectStoreError(f"The kind of via is one of {', '.join(VIA_KINDS)}.")
+    if (not isinstance(ident, str) or not ident.strip()
+            or len(ident.strip()) > MAX_VIA_ID_CHARS or not storable_text(ident)):
+        raise ObjectStoreError(
+            f"The id of via is a non-empty string of at most {MAX_VIA_ID_CHARS} characters.")
+    return str(kind), ident.strip()
+
+
+def _changes(old: Mapping[str, Any] | None,
+             new: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """The keys whose value differs between *old* and *new*, each as
+    ``{"old": ..., "new": ...}`` (C4a-1). A key that is absent holds None. So a
+    create gives each key with ``old`` None, and a delete each key with
+    ``new`` None."""
+    before, after = old or {}, new or {}
+    return {k: {"old": before.get(k), "new": after.get(k)}
+            for k in sorted(set(before) | set(after)) if before.get(k) != after.get(k)}
 
 
 def _uuid(value: object, what: str) -> str:
@@ -1579,6 +1640,17 @@ _PURGE_SQL = (
     "ORDER BY id LIMIT :n))"
 )
 
+#: At most ``:n`` history rows of one object (C4a-1), by key as in
+#: :data:`_PURGE_SQL`. The subselect needs no order, because each row goes.
+#: The index ``(organization_id, object_id, record_id, id)`` serves it.
+_PURGE_CHANGES_SQL = (
+    "DELETE FROM studio_record_changes "
+    f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
+    "AND id = ANY(ARRAY(SELECT id FROM studio_record_changes "
+    f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
+    "LIMIT :n))"
+)
+
 
 @dataclass(frozen=True)
 class ObjectCount:
@@ -1693,6 +1765,35 @@ async def purge_records(db: Any, package_id: str, *, limit: int = PURGE_CHUNK,
                 if left <= 0:
                     break
                 gone = await timed.execute(text(_PURGE_SQL), {"oid": str(oid), "n": left})
+                left -= int(gone.rowcount or 0)
+    except QueryError:
+        raise StoreBusy(_BUSY_MESSAGE) from None
+    return limit - left
+
+
+async def purge_record_changes(db: Any, package_id: str, *, limit: int = PURGE_CHUNK,
+                               deadline: float | None = None) -> int:
+    """Delete at most *limit* rows of the change history of the package
+    *package_id* (C4a-1). Answers the number of rows deleted.
+
+    The delete of a package calls it before :func:`purge_records`, under the
+    same locks, so no value of the package stays. The foreign key of the
+    table to its object cascades too, but a chunk keeps each step inside its
+    budget. An answer below *limit* means that the package holds no history
+    row now. The deadline and a timeout work as in :func:`purge_records`."""
+    pid = _uuid(package_id, "package_id")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ObjectStoreError("limit must be a whole number from 1")
+    left = limit
+    try:
+        async with _time_limit(db, _deadline(PURGE_TIMEOUT_MS, deadline),
+                               _BUSY_MESSAGE) as timed:
+            found = (await timed.execute(text(_PACKAGE_OBJECT_IDS_SQL), {"pid": pid})).all()
+            for (oid,) in found:
+                if left <= 0:
+                    break
+                gone = await timed.execute(text(_PURGE_CHANGES_SQL),
+                                           {"oid": str(oid), "n": left})
                 left -= int(gone.rowcount or 0)
     except QueryError:
         raise StoreBusy(_BUSY_MESSAGE) from None
@@ -1879,6 +1980,92 @@ def _needs_row(cond: Condition) -> bool:
     return False
 
 
+#: The org -> (ready, when it was read) of the float8 copy (C2c). Per process.
+_F8_READY: dict[str, tuple[bool, float]] = {}
+#: How long a "ready" and a "not ready" answer holds, in seconds.
+_F8_TTL_READY, _F8_TTL_NOT_READY = 600.0, 30.0
+#: The longest that the guard may take, in seconds. It never takes more than
+#: what is left of the call's deadline. A slow guard fails closed.
+_F8_GUARD_CAP_S = 1.0
+#: It answers the org that it counts (the GUC of the session) and whether that
+#: org has no row without its copy.
+_F8_READY_SQL = (
+    "SELECT current_setting('app.tenant_id', true), "
+    "NOT EXISTS (SELECT 1 FROM studio_record_hot h "
+    f"WHERE h.{_OF_ORG} AND h.v_num IS NOT NULL AND h.v_num_f8 IS NULL)"
+)
+
+
+def _f8_fresh(org: str) -> tuple[bool, bool]:
+    """``(known, ready)`` for *org* from the cache."""
+    got = _F8_READY.get(org)
+    if got is None:
+        return False, False
+    ttl = _F8_TTL_READY if got[0] else _F8_TTL_NOT_READY
+    if time.monotonic() - got[1] > ttl:
+        return False, False
+    return True, got[0]
+
+
+def _f8_on() -> bool:
+    """True when the bound tenant is on ``STUDIO_NUM_F8_ORGS`` (C2c) AND the
+    float8 copy of its hot rows is complete. A row with a NULL copy would drop
+    out of a float8 test, and a test of ``IS NULL`` beside it made the planner
+    skip the index (a hot table holds NULL copies for every other type). So the
+    store asks once for each org, with :func:`_warm_f8`, and keeps the answer
+    for a short time. A cold or stale cache gives False, which is the SQL of
+    C2a. The org comes from the tenant seam, never from request input (R5)."""
+    org = num_f8_org()
+    if org is None:
+        return False
+    known, ready = _f8_fresh(org)
+    return known and ready
+
+
+async def _warm_f8(db: Any, deadline: float) -> None:
+    """Fill the cache of :func:`_f8_on` for the bound tenant, when it is on the
+    flag and the cache is cold or stale. One cheap statement: the partial index
+    ``studio_record_hot_num_f8_todo_idx`` holds only the rows that lack a copy.
+
+    The guard runs inside the call's *deadline*, and it gets at most
+    :data:`_F8_GUARD_CAP_S` of what is left, so it never eats the query's
+    budget. A slow or failed guard is cached as "not ready" for the short
+    time of a not-ready answer, and the query then uses the exact SQL. The
+    answer is stored under the org that the statement itself counted (the GUC),
+    and only when that equals the org of the tenant seam. Otherwise nothing is
+    cached."""
+    org = num_f8_org()
+    if org is None or _f8_fresh(org)[0]:
+        return
+    limit = min(deadline - _clock(), _F8_GUARD_CAP_S)
+    if limit <= 0:
+        return
+    try:
+        async with _time_limit(db, _clock() + limit) as timed:
+            row = (await timed.execute(text(_F8_READY_SQL), {})).one()
+    except (DBAPIError, QueryError):
+        _F8_READY[org] = (False, time.monotonic())
+        return
+    if str(row[0] or "").strip().lower() != org:
+        return
+    _F8_READY[org] = (bool(row[1]), time.monotonic())
+
+
+def _q_num_f8(hcol: str, i: int, cond: Condition) -> str:
+    """The float8 test that goes IN ADDITION to the exact test of a number
+    filter (C2c). It reads ``v_num_f8``, whose comparisons are LEAKPROOF.
+    Three rules keep the records the same. The operator is the non-strict one
+    of the op, because float8 can round two numerics to one value. The bound is
+    the same numeric cast to float8, with no column in it, so it is a
+    constant. The exact test stays beside it as the filter. A row with no copy
+    would drop out, so :func:`_f8_on` is False until the copy is complete."""
+    hcol = hcol.rsplit(".", 1)[0] + ".v_num_f8"
+    if cond.op == "in":
+        return f"{hcol} = ANY(CAST(CAST(:v{i} AS numeric[]) AS float8[]))"
+    cmp = _F8_CMP[cond.op]
+    return f"{hcol} {cmp} CAST(CAST(:v{i} AS numeric) AS float8)"
+
+
 def _drive_rank(cond: Condition) -> int | None:
     """How well the hot rows of *cond* serve as the candidates: 0 for an
     index condition (a text match, a time), 1 for a scan of the field, 2 for
@@ -1895,6 +2082,8 @@ def _drive_rank(cond: Condition) -> int | None:
     col = _HOT_COLUMN[cond.field.type]
     if col == "v_ts" or (col == "v_text" and cond.op in ("eq", "in")):
         return 0
+    if col == "v_num" and _f8_on():
+        return 0  # the float8 test is an index condition (C2c); `ne` returned above
     return 1
 
 
@@ -1931,6 +2120,11 @@ def _q_data(kind: str, i: int) -> str:
                 f"THEN CAST(r.data ->> {kref} AS timestamptz) END)")
     return (f"(CASE WHEN jsonb_typeof(r.data -> {kref}) = 'boolean' "
             f"THEN CAST(r.data ->> {kref} AS boolean) END)")
+
+
+#: The number ops that get the float8 test (C2c), with its NON-STRICT operator.
+#: `ne` and `is_empty` do not get one. `in` tests with `= ANY`.
+_F8_CMP: Mapping[str, str] = {"eq": "=", "in": "=", "lt": "<=", "lte": "<=", "gt": ">=", "gte": ">="}
 
 
 def _q_compare(expr: str, i: int, cond: Condition, params: dict[str, Any]) -> str:
@@ -1993,7 +2187,10 @@ def _q_frag(h: str, i: int, cond: Condition, params: dict[str, Any]) -> str:
     if cond.op == "contains":
         return _q_contains(h, i, cond.value, params)
     hcol = f"{h}.{col}"
-    return _q_compare(hcol, i, cond, params)
+    frag = _q_compare(hcol, i, cond, params)
+    if col == "v_num" and cond.op in _F8_CMP and _f8_on():
+        return f"{_q_num_f8(hcol, i, cond)} AND {frag}"
+    return frag
 
 
 def _q_hot(i: int, cond: Condition, params: dict[str, Any], rid: str) -> str:
@@ -2309,6 +2506,7 @@ async def query_records(db: Any, *, package_id: str, object_id: str, filter: Any
     pid = _uuid(package_id, "package_id")
     start, size = studio_query.page_bounds(offset, limit)
     studio_query.check_shape(filter, sort)
+    await _warm_f8(db, deadline)
     async with _time_limit(db, deadline) as timed:
         found = await timed.execute(text(_QUERY_OBJECT_SQL), {"oid": oid, "pid": pid})
         if found.first() is None:
@@ -2660,6 +2858,7 @@ async def aggregate_records(db: Any, *, package_id: str, object_id: str, filter:
     oid = _uuid(object_id, "object_id")
     pid = _uuid(package_id, "package_id")
     studio_query.check_aggregate_shape(filter, group_by, measures)
+    await _warm_f8(db, deadline)
     async with _time_limit(db, deadline) as timed:
         found = await timed.execute(text(_QUERY_OBJECT_SQL), {"oid": oid, "pid": pid})
         if found.first() is None:
@@ -2718,10 +2917,14 @@ class _Batch:
     """The state of one batch. ``index`` names the write that runs now, so an
     error gets its place in the list."""
 
-    def __init__(self, who: str, pid: str, steps: Sequence[Write]) -> None:
+    def __init__(self, who: str, pid: str, steps: Sequence[Write],
+                 via: tuple[str, str] | None = None) -> None:
         self.who = who
         self.pid = pid
         self.steps = steps
+        #: The way the batch came (C4a-1), checked by :func:`_via`. Each
+        #: history row of the batch names it.
+        self.via = via
         self.objects: dict[str, _Held] = {}
         self.marks: dict[tuple[str, str], _Mark] = {}
         self.index = 0
@@ -3045,6 +3248,7 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
             "oid": oid, "data": record_json(clean), "actor": batch.who,
             "hot": _hot_rows(held.fields, clean)})).one()
         made = _record(row)
+        await _record_change(db, batch, "create", oid, made.id, _changes(None, clean))
         batch.marks[(oid, made.id)] = _Mark(oid, batch.index, None, clean)
         batch.made[batch.index] = made.id
         if moves:
@@ -3057,6 +3261,8 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     binds = {"oid": oid, "rid": step.record_id, "pid": batch.pid}
     if step.op == "delete":
         await db.execute(text(_DELETE_RECORD_SQL), binds)
+        await _record_change(db, batch, "delete", oid, str(step.record_id),
+                             _changes(mark.after, None))
         mark.after = None
         return True
     changes = dict(step.data or {})
@@ -3068,8 +3274,26 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     row = (await db.execute(text(_UPDATE_RECORD_SQL), {
         **binds, "data": record_json(clean), "actor": batch.who,
         "hot": _hot_rows(held.fields, clean)})).one()
+    diff = _changes(mark.after, clean)
+    if diff:
+        # C4a-1: an update that changes no value writes no history row.
+        await _record_change(db, batch, "update", oid, str(step.record_id), diff)
     mark.after = clean
     return _record(row)
+
+
+async def _record_change(db: Any, batch: _Batch, op: str, oid: str, rid: str,
+                         changes: Mapping[str, Any]) -> None:
+    """Step 4, the history row of one write (C4a-1). It runs in the SAVEPOINT of
+    the batch, after the write statement, so a refused or rolled back batch
+    writes no row. The row holds the values, and ``app_audit`` holds none.
+    Its one caller is :func:`_apply_write`. A derived write of a roll-up
+    parent (:func:`_derive_parent`) writes no row."""
+    kind, ident = batch.via if batch.via is not None else (None, None)
+    await db.execute(text(_CHANGE_SQL), {
+        "oid": oid, "rid": rid, "op": op, "actor": batch.who, "via_kind": kind,
+        "via_id": ident,
+        "changes": json.dumps(dict(changes), ensure_ascii=False, allow_nan=False)})
 
 
 def _derived_moves(rule: Rule, mark: _Mark) -> bool:
@@ -3377,13 +3601,14 @@ async def _run_steps(db: Any, batch: _Batch) -> list[Record | bool]:
     return answers
 
 
-async def _apply_batch(db: Any, who: str, pid: str, steps: list[Write]) -> list[Record | bool]:
+async def _apply_batch(db: Any, who: str, pid: str, steps: list[Write],
+                       via: tuple[str, str] | None = None) -> list[Record | bool]:
     """The one path of a record write. An error rolls back the SAVEPOINT as it
     leaves the block, so the batch writes nothing and the caller's earlier work
     stays."""
     if not steps:
         return []
-    batch = _Batch(who, pid, steps)
+    batch = _Batch(who, pid, steps, via)
     try:
         async with db.begin_nested():
             answers = await _run_steps(db, batch)
@@ -3393,7 +3618,8 @@ async def _apply_batch(db: Any, who: str, pid: str, steps: list[Write]) -> list[
 
 
 async def apply_writes(db: Any, actor: str, *, package_id: str,
-                       writes: Sequence[Write]) -> list[Record | bool]:
+                       writes: Sequence[Write],
+                       via: tuple[str, str] | None = None) -> list[Record | bool]:
     """Apply *writes* to the package *package_id*, all or none (C1b).
 
     Answers one item for each write: the :class:`Record` of a create or an
@@ -3406,10 +3632,17 @@ async def apply_writes(db: Any, actor: str, *, package_id: str,
     write that names no such object or record is a :class:`RecordNotFound`.
     A timeout in a check gives ``query_timeout``. The caller's transaction
     stays usable with its earlier work.
+
+    Each write gives one row of the change history (C4a-1), and an update
+    that changes no value gives none. *via* names the way the batch came, as
+    ``(kind, id)`` with a kind of :data:`VIA_KINDS`. The caller takes it from
+    the session, never from request input (R5). A bad *via* raises
+    :class:`ObjectStoreError` before any statement.
     """
     who = _actor(actor)
     pid = _uuid(package_id, "package_id")
-    return await _apply_batch(db, who, pid, _clean_writes(writes))
+    how = _via(via)
+    return await _apply_batch(db, who, pid, _clean_writes(writes), how)
 
 
 async def _one_write(db: Any, who: str, package_id: str, write: Write) -> Record | bool | None:
@@ -3652,3 +3885,42 @@ async def read_tree(db: Any, *, package_id: str, object_id: str, root_id: str | 
                            parent_id=None if row[1] is None else str(row[1]))
                   for row in rows[:size])
     return TreePage(nodes=nodes, truncated=len(rows) > size)
+
+
+# ── The backfill of v_num_f8 (C2c) ──────────────────────────────────────────
+
+_NUM_F8_BATCH = (
+    "WITH b AS (SELECT h.record_id, h.field_key FROM studio_record_hot h "
+    f"WHERE h.{_OF_ORG} AND h.v_num IS NOT NULL AND h.v_num_f8 IS NULL "
+    "AND (h.record_id, h.field_key) > (CAST(:last_rid AS uuid), CAST(:last_fk AS text)) "
+    "ORDER BY h.record_id, h.field_key LIMIT :n FOR UPDATE) "
+    "UPDATE studio_record_hot h SET v_num_f8 = CASE WHEN h.v_num > 1e300 THEN 'Infinity'::float8 WHEN h.v_num < -1e300 THEN '-Infinity'::float8 WHEN abs(h.v_num) < 1e-300 THEN 0.0::float8 "
+    "ELSE h.v_num::float8 END FROM b "
+    f"WHERE h.{_OF_ORG} AND h.record_id = b.record_id AND h.field_key = b.field_key "
+    "RETURNING h.record_id, h.field_key"
+)
+_NUM_F8_LEFT = (
+    f"SELECT count(*) FROM studio_record_hot h WHERE h.{_OF_ORG} "
+    "AND h.v_num IS NOT NULL AND h.v_num_f8 IS NULL"
+)
+_NO_UUID = "00000000-0000-0000-0000-000000000000"
+NUM_F8_START = (_NO_UUID, "")
+
+
+async def fill_num_f8_batch(db: Any, after: tuple[str, str], n: int) -> list[tuple[str, str]]:
+    """Fill ``studio_record_hot.v_num_f8`` for at most *n* rows of the bound
+    tenant that have a ``v_num`` and no float8 copy, after the key *after*
+    (``(record_id, field_key)``, start at :data:`NUM_F8_START`). Answers the
+    keys that it filled. The caller owns the transaction and binds the tenant
+    (C2c, migration 433). The UPDATE sets only ``v_num_f8``, so the trigger
+    does not fire. A value beyond 1e300 takes the float8 infinity of its sign, and a value
+    with |v| < 1e-300 takes 0.0, as the trigger does, because the cast would
+    raise. Both maps are non-decreasing, and only direct SQL reaches them."""
+    rows = (await db.execute(text(_NUM_F8_BATCH),
+                             {"last_rid": after[0], "last_fk": after[1], "n": n})).all()
+    return [(str(r[0]), str(r[1])) for r in rows]
+
+
+async def count_num_f8_left(db: Any) -> int:
+    """The rows of the bound tenant that have a ``v_num`` and no float8 copy."""
+    return int((await db.execute(text(_NUM_F8_LEFT))).scalar_one())

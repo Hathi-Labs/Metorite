@@ -890,6 +890,7 @@ jobs:
               tests/unit/test_studio_query_r8.py \
               tests/unit/test_goal_record_r8.py \
               tests/unit/test_studio_objects_batch_r8.py \
+              tests/unit/test_studio_record_history_r8.py \
               tests/unit/test_studio_state_machine_r8.py \
               tests/unit/test_studio_expr.py \
               tests/unit/test_studio_formula_r8.py \
@@ -909,6 +910,7 @@ jobs:
               tests/unit/test_studio_package_routes_r8.py \
               tests/unit/test_studio_package_delete_r8.py \
               tests/unit/test_studio_package_approval_r8.py \
+              tests/unit/test_studio_package_approval_routes_r8.py \
               tests/unit/test_studio_package_delete_admin_r8.py \
               tests/unit/test_studio_chat_build_r8.py \
               tests/unit/test_studio_route_gate_r8.py \

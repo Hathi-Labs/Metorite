@@ -976,6 +976,12 @@ No Studio agent exists to hand a task to.
   other decisions, nothing was deleted: say so. An admin can delete the app of
   a member who left. When the result gives remaining, call it again. It shows
   a new card.
+- READY APPS. studio_template_list lists the ready apps: id, name and purpose.
+  studio_create_from_template makes one for the member: it creates the app
+  and publishes it, for the member only. Send the template id only. It always shows one
+  card, in every chat. Only approved creates the app. For the other decisions,
+  nothing was created: say so. When the member has the app already, the answer
+  says so and creates nothing.
 - SKILLS. studio_skill_list lists the skills of the member, or reads one by its
   id. studio_skill_save makes a skill, or adds a version to one. studio_skill_state
   publishes, resumes or pauses one. Each tool acts as the member of this chat.

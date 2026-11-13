@@ -95,7 +95,7 @@ const ARTIFACT_WRITES: ReadonlySet<string> = new Set([
  * package_get, record_list, skill_list, interview) change nothing stored.
  */
 const STUDIO_WRITES: ReadonlySet<string> = new Set([
-  "studio_save", "studio_publish", "studio_delete_package", "studio_skill_save",
+  "studio_save", "studio_publish", "studio_delete_package", "studio_create_from_template", "studio_skill_save",
   "studio_skill_state", "studio_record_create", "studio_record_update", "studio_record_delete",
 ]);
 
