@@ -78,6 +78,7 @@ pytest.importorskip("sqlalchemy")
 from acb_auth import UserContext, UserRole, build_access
 from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant, tenant_session
+from acb_common.studio_access import Viewer
 from fastapi import HTTPException, Response
 from gateway.routes.studio import packages
 from gateway.studio import objects_store, packages_store
@@ -259,7 +260,7 @@ async def _fill(org: str, email: str, pid: str, n: int) -> None:
         async with tenant_session(org) as db:
             await objects_store.apply_writes(db, email, package_id=pid, writes=[
                 objects_store.Write("create", oid, data={"site": f"s{i}", "status": "planned"})
-                for i in range(size)])
+                for i in range(size)], viewer=Viewer(email))
         left -= size
 
 

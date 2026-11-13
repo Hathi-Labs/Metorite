@@ -57,6 +57,7 @@ import pytest
 pytest.importorskip("sqlalchemy")
 
 from acb_common.db import tenant_session
+from acb_common.studio_access import Viewer
 from gateway.studio import objects_store as store
 from gateway.studio import packages_store
 from gateway.studio.objects_store import BatchError, Write
@@ -127,7 +128,7 @@ async def _put(org: str, obj: store.StudioObject, *writes: Write,
                via: tuple[str, str] | None = None) -> list[Any]:
     async with tenant_session(org) as db:
         return await store.apply_writes(db, ANA, package_id=obj.package_id,
-                                        writes=list(writes), via=via)
+                                        writes=list(writes), viewer=Viewer(ANA), via=via)
 
 
 def _history(world: Any, org: str, record_id: str) -> list[dict[str, Any]]:
@@ -204,7 +205,8 @@ def test_r8_a_refused_batch_leaves_no_row(world: Any) -> None:
         with pytest.raises(RuntimeError):
             async with tenant_session(world.a) as db:
                 await store.apply_writes(db, ANA, package_id=obj.package_id,
-                                         writes=[Write("create", obj.id, data={"title": "x"})])
+                                         writes=[Write("create", obj.id, data={"title": "x"})],
+                                         viewer=Viewer(ANA))
                 raise RuntimeError("roll back")
         return obj.id
 
@@ -218,7 +220,8 @@ def test_r8_a_delete_keeps_the_old_values(world: Any) -> None:
         [made] = await _put(world.a, obj, Write("create", obj.id, data={"title": "a", "qty": 4}))
         await _put(world.a, obj, Write("delete", obj.id, made.id))
         async with tenant_session(world.a) as db:
-            left = await store.get_record(db, obj.id, made.id, package_id=obj.package_id)
+            left = await store.get_record(db, obj.id, made.id, package_id=obj.package_id,
+                                         viewer=Viewer(ANA))
         return made.id, left
 
     rid, left = _go(world, run)
