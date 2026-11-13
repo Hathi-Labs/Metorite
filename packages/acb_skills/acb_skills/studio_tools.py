@@ -3120,20 +3120,23 @@ _TEMPLATE_ID = r"[a-z][a-z0-9-]{0,47}"
 MAX_TEMPLATE_ROWS = 30
 
 _TPL_OFF = "AI Studio is not open for this organization. Nothing was done."
+_TPL_UNREAD = "The ready apps could not be read. Nothing was changed. Try again."
 _TPL_NO_ID = ("The template id is lower case letters, digits and hyphens. Call "
               "studio_template_list for the ids. Nothing was created.")
 _TPL_UNKNOWN = ("No ready app has this id. Call studio_template_list for the ids. "
                 "Nothing was created.")
 _TPL_SHAPE = "The ready apps answered in a shape that this tool cannot read."
-_TPL_NOTE = ("Approve to create this app for you. It is published and installed for you only. "
+_TPL_NOTE = ("Approve to create this app for you. It is published for you only. "
              "Reject to create nothing.")
 _TPL_WONT_FIT = "This app does not fit on one card, so nothing was created. Use Studio."
 _TPL_MAYBE = ("The app may have been created. Call studio_package_get to check before you try "
               "again. A second call makes no second app.")
-_TPL_HAVE = "You have this app already: {name}. Its package id is {pid}. Nothing was created."
-_TPL_HAVE_NO_ID = "You have this app already: {name}. Nothing was created."
-_TPL_RETRY = "A new call finishes the app and makes no second one."
-_TPL_DONE = "The app is created, published and installed for you."
+_TPL_HAVE = ("You have an app with the id {tid} already. Its package id is {pid}. "
+             "Nothing was created.")
+_TPL_HAVE_NO_ID = "You have an app with the id {tid} already. Nothing was created."
+_TPL_PART = ("The app may be part made. A new call finishes it and makes no second one. "
+             "Call studio_package_get to see it.")
+_TPL_DONE = "The app is created and published for you."
 
 
 def _template_rows(data: Any) -> list[dict[str, Any]] | None:
@@ -3164,7 +3167,7 @@ async def studio_template_list() -> dict[str, Any]:
     A list that is empty means that no ready app is open to you.
     """
     try:
-        reply = await _get("/studio/templates")
+        reply = await _send("GET", "/studio/templates", None, miss=_TPL_UNREAD)
     except _Refused as exc:
         return _refusal(str(exc))
     if not reply.ok:
@@ -3182,7 +3185,7 @@ async def studio_template_list() -> dict[str, Any]:
 
 @annotate(read_only=False, idempotent=False, open_world=False)
 async def studio_create_from_template(template: str) -> dict[str, Any]:
-    """Create a ready app for you: create it, publish it and install it.
+    """Create a ready app for you: create it and publish it, for you only.
 
     Give a template id from studio_template_list. It always shows ONE card
     with the app, in every chat, and waits. The answer has a "decision":
@@ -3194,7 +3197,7 @@ async def studio_create_from_template(template: str) -> dict[str, Any]:
     if not isinstance(template, str) or not re.fullmatch(_TEMPLATE_ID, template):
         return _refusal(_TPL_NO_ID)
     try:
-        listed = await _get("/studio/templates")
+        listed = await _send("GET", "/studio/templates", None, miss=_TPL_UNREAD)
         if not listed.ok:
             return _template_fail(listed, "read")
         rows = _template_rows(listed.data)
@@ -3207,7 +3210,7 @@ async def studio_create_from_template(template: str) -> dict[str, Any]:
                  ("purpose", f"Purpose: {_shown(found['purpose'])}")]
         context = await _card(_TPL_NOTE, shown, _TPL_WONT_FIT)
         decision = await _decide(f"Create the app {_title_name(found['name'])}?",
-                                 "It is published and installed for you only.", context)
+                                 "It is published for you only.", context)
         if decision != "approved":
             return _pkg_not_done("Nothing was created.", decision, context, shown)
         # The path is a literal, so the chat-parity fence reads the route (STU-K1d).
@@ -3219,13 +3222,14 @@ async def studio_create_from_template(template: str) -> dict[str, Any]:
     if reply.status == 409 and _code(reply) == _PACKAGE_EXISTS:
         detail = _detail(reply)
         pid = _skill_path(detail.get("package_id")) if isinstance(detail, dict) else None
-        text = (_TPL_HAVE.format(name=name, pid=pid) if pid
-                else _TPL_HAVE_NO_ID.format(name=name))
+        text = (_TPL_HAVE.format(tid=template, pid=pid) if pid
+                else _TPL_HAVE_NO_ID.format(tid=template))
         return _refusal(text, status=409, code=_PACKAGE_EXISTS, decision=decision,
                         **({"package_id": pid} if pid else {}))
     if not reply.ok:
-        extra: dict[str, Any] = {"note": _TPL_RETRY} if reply.status >= 500 else {}
-        return _template_fail(reply, "created", decision=decision, **extra)
+        if reply.status >= 500:
+            return _refusal(_TPL_PART, status=reply.status, decision=decision)
+        return _template_fail(reply, "created", decision=decision)
     data: dict[str, Any] = reply.data if isinstance(reply.data, dict) else {}
     package = data.get("package") if isinstance(data.get("package"), dict) else {}
     version = data.get("version") if isinstance(data.get("version"), dict) else {}

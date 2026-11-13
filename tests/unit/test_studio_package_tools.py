@@ -1790,7 +1790,7 @@ async def test_a_create_for_an_app_that_the_member_has_is_a_plain_answer(tgw, ca
     done = await st.studio_create_from_template(first["id"])
     again = await st.studio_create_from_template(first["id"])
     assert again["ok"] is False and again["status"] == 409 and again["code"] == "package_exists"
-    assert done["package_id"] in _msg(again) and first["name"] in _msg(again)
+    assert done["package_id"] in _msg(again) and first["id"] in _msg(again)
     assert again["package_id"] == done["package_id"]
     assert len(tgw.posts()) == 2 and len(tgw.packages) == 1
     assert len(card.shown) == 2  # one card for each call, and no second card for the 409
@@ -1827,7 +1827,7 @@ async def test_a_post_that_answers_404_after_the_card_says_that_studio_is_off(tg
 async def test_a_catalog_that_is_down_is_a_refusal_with_a_retry_note(tgw) -> None:
     tgw.status = (503, {"code": "catalog_unavailable", "message": "The catalog is down."})
     out = await st.studio_create_from_template(_first_template()["id"])
-    assert out["ok"] is False and out["status"] == 503 and out["note"] == st._TPL_RETRY
+    assert out["ok"] is False and out["status"] == 503 and _msg(out) == st._TPL_PART
 
 
 def test_the_template_tools_take_the_template_id_only_and_copy_the_route() -> None:
