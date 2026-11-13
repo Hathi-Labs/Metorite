@@ -517,7 +517,9 @@ test.describe("the assistant opens, closes and goes full screen as one element",
     await expect(menu).toBeVisible();
     await expect(menu.getByRole("menuitem", { name: "Share this conversation" })).toBeVisible();
     await expect(menu.getByRole("menuitem", { name: "This chat's files" })).toBeVisible();
-    await expect(menu.getByRole("menuitem", { name: /^Auto/ })).toBeVisible();
+    // Two "Auto" rows: the model ("Auto (the assistant picks) Change the model") and the thinking mode ("Auto Let the model decide").
+    await expect(menu.getByRole("menuitem", { name: "Auto (the assistant picks) Change the model", exact: true })).toBeVisible();
+    await expect(menu.getByRole("menuitem", { name: "Auto Let the model decide", exact: true })).toBeVisible();
     await expect(menu.locator("[data-chat-more-context]")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(menu).toHaveCount(0);

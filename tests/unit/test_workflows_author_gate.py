@@ -131,6 +131,9 @@ EXPECTED_ROUTES: dict[tuple[str, str], str] = {
     ("POST", "/workflows/{workflow_id}/versions/{version}/rollback"): LIVE,
     ("POST", "/workflows/{workflow_id}/disable"): LIVE,
     ("POST", "/workflows/{workflow_id}/enable"): LIVE,
+    # STB-6c: arm or disarm one trigger. The owner decision of 2026-11-13 puts
+    # it in the live class: `workflows:publish` and no Studio right.
+    ("POST", "/workflows/{workflow_id}/triggers/{kind}/state"): LIVE,
     # Module Studio stays out of J1-3 until STU-Q15 has a decision.
     ("GET", "/workflows/modules"): MODULE,
     ("POST", "/workflows/modules"): MODULE,
@@ -162,6 +165,7 @@ _PARAMS = {
     "module_id": str(uuid.uuid4()),
     "version": "1",
     "hook_token": "t" * 32,
+    "kind": "schedule",
 }
 
 GUEST = ["feature:chat", "apps:use:*"]

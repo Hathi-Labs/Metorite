@@ -3,7 +3,7 @@
 // Pure, so the vitest setup (no DOM) tests every rule. `components/FilterBar.tsx`
 // draws what this file decides.
 
-import { coalesce } from "@/lib/useCachedResource";
+import { ANY, setCustom, setRange } from "@/lib/filterModel";
 
 import { isDateValue, toWire } from "./fieldLayout";
 import type { FieldDef } from "./fields";
@@ -11,7 +11,21 @@ import { fieldOptions, pickable } from "./fields";
 import type { EntitySlug } from "./types";
 import { RANGE_KEYS, type CrmView, type RangeKey } from "./urlState";
 
-export const ANY = "";
+// The pure model lives in `@/lib/filterModel` (AF-4). The CRM re-exports the
+// names its components and tests import, so no import line changes.
+export {
+  ANY,
+  SEARCH_DELAY_MS,
+  searchBoxStart,
+  searchBoxSync,
+  searchBoxWrote,
+  searchChanges,
+  searchCommitter,
+  setCustom,
+  setRange,
+} from "@/lib/filterModel";
+export type { SearchBoxState } from "@/lib/filterModel";
+
 /** The owner option that means the caller. The gateway resolves it from the session. */
 export const ME = "me";
 
@@ -72,65 +86,6 @@ export function ownerOptions(
     out.push({ value: chosen, label: chosen });
   }
   return [{ value: ANY, label: "Anyone" }, { value: ME, label: "Me" }, ...out];
-}
-
-/**
- * The search box's text, and what it knows about the URL (CRM-X1).
- *
- * `seen` is the last `?q=` the box reconciled. `mine` is the last query the
- * box wrote itself, as the URL holds it, or null.
- */
-export type SearchBoxState = { draft: string; seen: string; mine: string | null };
-
-export function searchBoxStart(value: string): SearchBoxState {
-  return { draft: value, seen: value, mine: null };
-}
-
-/**
- * The URL's `?q=` is now `value`. A value that the box did not write (Back,
- * Clear, a saved view) replaces the text. The box's own write does not, so a
- * key typed while the URL catches up is never lost.
- */
-export function searchBoxSync(state: SearchBoxState, value: string): SearchBoxState {
-  if (value === state.seen) return state;
-  return { draft: value === state.mine ? state.draft : value, seen: value, mine: null };
-}
-
-/**
- * The box wrote `q`. It remembers the write trimmed, because the URL holds it
- * trimmed (`serializeView`). Untrimmed, a pause after a space read as a write
- * from outside and ate the space: "printer order" became "printerorder".
- */
-export function searchBoxWrote(state: SearchBoxState, q: string): SearchBoxState {
-  return { ...state, mine: q.trim() };
-}
-
-/** Does writing `q` change the URL, which holds `current`? */
-export function searchChanges(q: string, current: string): boolean {
-  return q.trim() !== current.trim();
-}
-
-/** How long the search box waits after the last key before it writes `?q=`. */
-export const SEARCH_DELAY_MS = 300;
-
-/**
- * The search box's timer (CRM-X1). Each key calls `type`, and `commit` runs
- * once, with the last text, `ms` after the last key. It is the shared
- * trailing coalescer, so the box adds no second debounce.
- */
-export function searchCommitter(
-  commit: (q: string) => void,
-  ms = SEARCH_DELAY_MS,
-): { type: (q: string) => void; cancel: () => void } {
-  let latest = "";
-  const timer = coalesce(() => commit(latest), ms);
-  return {
-    type(q: string) {
-      latest = q;
-      timer.trigger();
-    },
-    cancel: timer.cancel,
-  };
 }
 
 /**
@@ -228,22 +183,6 @@ export function dateFilterValue(text: string): string | null {
   const day = text.trim();
   if (day === "") return ANY;
   return isDateValue(day) ? day : null;
-}
-
-/** Choose one option of a picklist, or none. Other fields stay as they are. */
-export function setCustom(view: CrmView, key: string, value: string): CrmView {
-  const custom = { ...view.custom };
-  if (value) custom[key] = [value];
-  else delete custom[key];
-  return { ...view, custom };
-}
-
-/** Set or clear one end of a date range. An empty or invalid value clears it. */
-export function setRange(view: CrmView, key: RangeKey, value: string): CrmView {
-  const ranges = { ...view.ranges };
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) ranges[key] = value;
-  else delete ranges[key];
-  return { ...view, ranges };
 }
 
 /** How many of the bar's filters are in force. */
