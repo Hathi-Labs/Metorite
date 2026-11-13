@@ -114,6 +114,8 @@ def export_skill(name: str, body: Mapping[str, Any]) -> dict[str, str]:
     """The folder of a skill: ``{relative path: text}``, in a stable order."""
     if not isinstance(name, str):
         raise _bad_body("The name must be a text.")
+    if not isinstance(body, Mapping):
+        raise _bad_body("The body must be a map.")
     slug = slug_from_name(_clean(name))
     if not slug:
         raise SkillMdError("name_not_slug", "The name gives no slug of letters and digits.")
@@ -345,6 +347,12 @@ def import_skill(
     max_actions: int = MAX_PACK_TOOLS,
 ) -> ImportResult:
     """Read a skill folder. Raise ``SkillMdError`` on any unsafe input."""
+    if not isinstance(files, Mapping):
+        raise SkillMdError("bad_file", "The folder must be a map of paths to texts.")
+    if not isinstance(known, (set, frozenset, list, tuple)):
+        raise SkillMdError("bad_body", "The known actions must be a list of ids.")
+    if type(max_actions) is not int:
+        raise SkillMdError("bad_body", "The action cap must be a whole number.")
     texts = _read_files(files)
     raw, instructions = _split_frontmatter(texts[_SKILL])
     name, description, warnings = _frontmatter(raw)

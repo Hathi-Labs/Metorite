@@ -285,3 +285,28 @@ def test_store_check_body_can_still_refuse_a_near_limit_import():
     res = import_skill({"SKILL.md": f"---\n{OK}\n---\n{text}"}, KNOWN)
     with pytest.raises(skills_store.SkillStoreError):
         skills_store.check_body(res.body)
+
+
+@pytest.mark.parametrize(
+    "files, known, cap",
+    [
+        (None, frozenset(), 35),
+        ([], frozenset(), 35),
+        ("x", frozenset(), 35),
+        (5, frozenset(), 35),
+        ({"SKILL.md": "x"}, 5, 35),
+        ({"SKILL.md": "x"}, None, 35),
+        ({"SKILL.md": "x"}, frozenset(), None),
+        ({"SKILL.md": "x"}, frozenset(), "x"),
+    ],
+)
+def test_a_wrong_typed_argument_raises_skill_md_error(files, known, cap):
+    """Round 3. Only SkillMdError escapes, even for a whole argument of the wrong type."""
+    with pytest.raises(SkillMdError):
+        import_skill(files, known, cap)
+
+
+@pytest.mark.parametrize("body", [None, [], "x", 5])
+def test_an_export_of_a_body_that_is_not_a_map_raises_skill_md_error(body):
+    with pytest.raises(SkillMdError):
+        export_skill("ok", body)
