@@ -331,7 +331,8 @@ jobs:
   #
   # Refresh the timings when the split drifts (one shard much longer than the
   # rest): download the `test-durations` artifact of a green run and commit it
-  # as `.test_durations`.
+  # as `.test_durations`. CIV-33b: `scripts/refresh_test_durations.py --pr` does this,
+  # from a box timer. A selected file with no entry gets a warning in the pick step.
   #
   # CIV-3: a PR runs only the tests its diff can affect. The `changes` job
   # exports `needs.changes.outputs.full` and `.files`. The shard selects only
@@ -760,6 +761,7 @@ jobs:
               tests/unit/test_auth_me_install_features_r8.py \
               tests/unit/test_shell_layout_r8.py \
               tests/unit/test_package_disposal_r8.py \
+              tests/unit/test_package_promotion_r8.py \
               tests/unit/test_auth_me_shell_install_r8.py \
               tests/unit/test_auth_me_appearance_r8.py \
               tests/unit/test_package_lifetime_r8.py \

@@ -645,6 +645,21 @@ def file_seconds(path: Path | None = None) -> dict[str, float] | None:
         return None
 
 
+def missing_timing_warnings(paths: list[str], seconds: dict[str, float] | None) -> list[str]:
+    """CIV-33b: one ``::warning::`` line that names each selected file with no
+    entry in `.test_durations`, and their count. The shard cut then counts
+    DEFAULT_FILE_S for each. A gap is visible in the job log, and never fails."""
+    if not seconds:
+        return []
+    gap = sorted(p for p in paths if p not in seconds)
+    if not gap:
+        return []
+    return [
+        f"::warning::{len(gap)} selected test files have no entry in .test_durations, "
+        f"so the shard cut counts {DEFAULT_FILE_S:g} s for each: {' '.join(gap)}"
+    ]
+
+
 def shard_count(mode: str, paths: list[str], seconds: dict[str, float] | None = None) -> int:
     """The shards that ``mode`` (from ``select_shard``) needs: 0 for an empty
     selection, ALL_SHARDS for a full run. A selection takes one shard for each
@@ -807,7 +822,10 @@ def main(argv: list[str] | None = None) -> int:
         mode, paths = select_shard(args.full, args.files, args.ignored, args.changes_result)
         print(f"mode={mode}")
         print(f"paths={' '.join(paths)}")
-        print(f"splits={shard_count(mode, paths, file_seconds()) or ALL_SHARDS}")
+        secs = file_seconds()
+        for line in missing_timing_warnings(paths, secs):
+            print(line, file=sys.stderr, flush=True)
+        print(f"splits={shard_count(mode, paths, secs) or ALL_SHARDS}")
         return 0
     if args.cmd == "empty-report":
         print("wrote an empty report" if empty_report(args.out) else "report exists")
