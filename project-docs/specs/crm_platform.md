@@ -76,6 +76,11 @@
 > **Built later:** CRM-Q26, labels on CRM notes on the decide tier, dark
 > (2026-10-16, migration 278). See §18.11.
 >
+> **Built later, not merged:** CRM-Q25e, large reads (2026-11-13, branch
+> `mt-51634ef0-crm-large-reads`, no migration). Parts 1 to 4 are live when
+> it merges. The long read of part 5 is dark behind `CRM_LONG_READ_ORGS`.
+> See §18.11.
+>
 > **Built later, merged (#1111, `d72f92184`):** Batch I, from the branch
 > `crm-batch-i` (2026-10-16, a fix round on 2026-10-17). CRM-Q24, a short read and the
 > lost activities on Sync health (§18.10, no migration). CRM-Q25b, one
@@ -3872,6 +3877,7 @@ each value. Embeddings help the model find text. They never make a number.
 | CRM-Q28 | A weekly digest on the powerful tier | AGENT-SAFE | M | CRM-Q25 |
 | CRM-Q25b | One time zone for each month bucket of the aggregate | AGENT-SAFE | S | CRM-Q25 |
 | CRM-Q25c | A NUL byte in a list query answers 422 | AGENT-SAFE | S | — |
+| CRM-Q25e | Large reads: one read of each record, a split in one statement, a lookup by a Metorite id, a note when one day holds most records, and the long read (tasks 3127, 3128, 3129, 2985 HRD-6) | AGENT-SAFE, dark behind `CRM_LONG_READ_ORGS` | M | CRM-Q25, CRM-Q25c |
 | CRM-Q29 | The CRM assistant never misquotes a number | AGENT-SAFE | M | CRM-Q25 |
 | CRM-Q30 | A founder question set for CRM insights | AGENT-SAFE | M | CRM-Q25, CRM-Q27 |
 | CRM-Q30b | The read tools say when Zoho holds more than the connected user can read | AGENT-SAFE | S | CRM-Q24, CRM-Q30 |
@@ -4183,6 +4189,91 @@ null. A group with no value beside groups with values still gives 0 for
 and `weighted`, because they read no field. The fence is
 `test_a_field_that_every_row_leaves_empty_has_no_total` in
 `test_crm_aggregate_fields_r8.py`.
+
+**CRM-Q25e · Large reads (2026-11-13, tasks 3127, 3128, 3129 and 2985
+HRD-6).** The production evidence is from DEWiN, a Zoho Mirror org, on
+2026-11-13. The module `Invoices` holds 31,590 records, and `fields` holds
+about 3 KB of TOASTed jsonb for each record. A member asked the chat for
+sales totals. `crm_aggregate` answered 503 `aggregate_timeout` 24 times and
+422 6 times. The run then spent its `AGGREGATE_BUDGET` of 8, and the chat
+stopped. Done when:
+
+1. **Each record is read once.** Postgres decompresses the jsonb again for
+   each `fields -> key` on the stored row. A total read it up to 17 times a
+   row. Every field expression of a module statement now reads the one
+   detoasted copy of `field_sql.DETOAST_JOIN`: the measure, the group key,
+   the date bucket and each filter. The value read of a text filter
+   (`value_counts`) reads each row once too. A core entity keeps its
+   `custom` column and its SQL of before, because that column is small.
+2. **A split in one statement.** `fields=a,b,c` names 2 to 5 number
+   fields. ONE statement gives the total of each. The answer carries
+   `split`, one `{field, label, type, total, values}` for each field. Each
+   group carries `split`, each field with its value. `field` and `total`
+   are those of the first field. A call gives `field` or `fields`, not both.
+   A core entity with an overlay refuses a split with 422, and names its
+   module.
+   The tool takes `fields` as a list, and its text tells the model to ask
+   for a split in one call.
+3. **A lookup filter by a Metorite id.** The chat finds a record with
+   `crm_list_module_records`, and it sends the Metorite id of that record.
+   The stored lookup holds the Zoho id, so the filter matched no record.
+   Now, when the value has the shape of a uuid, one read by primary key
+   finds the `ext_id` of that record. The module of that read comes from
+   `lookup_module` of the field definition, and the org from the session.
+   The filter then matches that Zoho id too. A Zoho id and a name match as
+   before. A uuid of another module or another org matches nothing.
+4. **A note when one day holds most records, and a display value.** The
+   rule lives in `acb_common/number_sense.py`, which is pure. Other apps
+   can use it for their own checks. A bucket concentrates the answer when
+   all of these hold: the answer has 2 or more buckets, the bucket holds 20
+   or more records, it holds 30 % or more of the records, and it holds more
+   than 5 times the median records of the other buckets. The route reads
+   the days of one date field in the SAME scan, as a second grouping set.
+   The date field is the field of the group, else the field of the first
+   date range filter, else `@date`. An answer by a date bucket or a month
+   also checks its own groups. Each finding carries `kind`, `key`,
+   `records`, `share`, `value_share` and one `sentence`. The tool puts each
+   finding first, as a line that starts with "FIRST". The tool also adds a
+   `Display` line to a total of one lakh (or one million) and more. That
+   line formats the total in the number system of the run, through
+   `acb_common.number_system`, and it tells the model to quote it.
+5. **The long read, dark.** For an org on `CRM_LONG_READ_ORGS`, the 503 of
+   a total past 10 s carries `long_read: true`. The tool then calls ONCE
+   more with `long_read=true`. Its httpx limit is 200 s. The route runs that
+   read with a LOCAL `statement_timeout` of up to 180 s. A guard holds one
+   long read for each org, and 2 in the gateway process. A second long read
+   waits inside its own budget of 180 s, before it opens a session. Past
+   the budget it answers 503 `aggregate_busy`. The pool of one process is
+   `db_pool_size` 7 and `db_max_overflow` 2, so 9 connections. Background
+   work may hold 4 of them. 2 long reads leave 3 connections for pages. A
+   long read that runs out of time does not count against
+   `AGGREGATE_BUDGET`. It still counts against `READ_BUDGET`. With the list
+   empty, no 503 offers the long read, and the tool calls once, as before. `CRM_LONG_READ_ORGS` is an `*_ORGS` key, so a SIGHUP reload
+   applies a flip (`docs/flag_reload.md`). A name in the list spends
+   nothing, so its flip is gate `enforcement-flip`.
+
+Not in scope: a typed key column or any migration (a later HIGH slice).
+The generic "please wait" notice of the chat is another slice of task 2985.
+
+Fences: `tests/unit/test_crm_large_reads.py`, `tests/unit/test_number_sense.py`,
+the large-read tests of `tests/unit/test_crm_aggregate_fields_r8.py` (R8),
+and `test_every_module_field_reads_the_detoasted_row_once` in
+`tests/unit/test_crm_aggregate.py`.
+
+**Built as (2026-11-13).** No migration. Measured on a private scratch
+database through the route, the best of three runs. The module held 31,000
+records of 3.1 KB each, and 40 % of them on one Invoice_Date.
+
+| Read | Before | After |
+|---|---|---|
+| A six-month total by month | 1.96 s | 0.65 s |
+| A one-month total | 1.26 s | 0.60 s |
+| A split of 4 fields | 5.11 s in 4 calls | 0.62 s in 1 call |
+
+The check of one day is in the "After" column. It cost 0.05 s on the
+six-month total and 0.14 s on the one-month total. Each total of "After" is
+the total of "Before", to the paisa. Each statement that reads a field
+joins the detoasted copy once.
 
 **CRM-Q27 · Search of note text by meaning.**
 
