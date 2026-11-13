@@ -16,6 +16,14 @@ name. ``tests/unit/test_coding_sandbox_packages.py`` holds it equal to
 
 :func:`scan_imports` is pure. It parses with ``ast`` and never runs the code.
 No live caller exists yet. The logic slices B4 and B5 call it.
+
+**What the scan does not catch.** It is an early error for the author, not a
+fence. It reads ``import`` and ``from ... import`` statements only. It does not
+see ``__import__``, ``importlib.import_module`` or ``exec``. A relative import
+passes. The whole standard library is allowed, so ``socket``, ``subprocess`` and
+``ctypes`` pass too. The sandbox is the real fence: it has no network and it
+holds the limits (``ai_studio.md`` section 19.3). Never rely on this scan to
+keep code safe.
 """
 
 from __future__ import annotations
