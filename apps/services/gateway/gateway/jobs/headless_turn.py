@@ -70,6 +70,9 @@ e. The mark (:meth:`HeadlessTurn._mark`): the job id in ``job_id`` of the
    came first ends the turn (``stale``), with no call and no mark.
 f. One call of the runner under ``asyncio.timeout`` of the time left, with a
    new run id. No time left after the meter: no call, and the turn stops.
+   The call runs inside ``acb_llm.attribution.run_ceiling_scope`` of
+   :func:`round_ceiling` (AUTO-8b-2b). So each chat completion of the round sends
+   ``X-CC-Run-Ceiling``: the cap minus the credits used, with 4 places.
    No time left after the mark: the turn clears the mark, makes no call and
    stops. A clear that fails keeps the mark, so a later turn blocks the goal.
 g. The meter again. The cost of the round is the change. A meter that
@@ -150,6 +153,16 @@ keeps no counter of its own.
   ``customer_console.credits.RunCeiling`` is a fixed tripwire of 500 credits
   for each run, checked before each model call. It does not stop a turn at
   the goal cap.
+* The ceiling of a round (AUTO-8b-2b, dark). The round sends
+  :func:`round_ceiling` as ``X-CC-Run-Ceiling``, and the Router takes the
+  lower of it and 500. So a model call of the round starts only while the
+  run is under the rest of the goal's budget. One call can still go past it.
+  The ceiling is inert until the owner turns on
+  ``CUSTOMER_CONSOLE_SPEND_GATE``. Known gap (older than this slice): the tool
+  ``crm_search_notes`` embeds a query through a billed Console call that carries
+  no run id, so neither the ceiling nor the meter sees it (AUTO-8b-2d).
+  Fences: ``tests/unit/test_run_ceiling_header.py``
+  and ``tests/unit/test_customer_console_router.py`` (R8).
 * A round whose cost does not reach the goal row keeps its mark, so the
   next turn charges the rest of the budget (AUTO-8b-2a, "The mark"). A lost
   round never gives a later turn more room than the goal has left.
@@ -217,6 +230,7 @@ from acb_common import (
     run_attribution_scope,
 )
 from acb_common.db import tenant_session
+from acb_llm.attribution import run_ceiling_scope
 
 from gateway.jobs import queue, unattended, worker
 
@@ -488,6 +502,18 @@ def _credits_of(value: Any) -> Decimal | None:
     return amount
 
 
+def round_ceiling(goal: goal_store.Goal) -> Decimal:
+    """The ceiling of one round's run: the credits that *goal* has left.
+
+    That is the cap minus the credits used, and never below 0. The turn reads
+    it from the goal at the start of each round, and
+    ``acb_llm.attribution.run_ceiling_scope`` sends it as
+    ``X-CC-Run-Ceiling`` with 4 places, rounded down (AUTO-8b-2b). The Router
+    takes the lower of it and its own 500. Each round has a new run id, so
+    each run starts at 0 credits spent."""
+    return max(goal.cost_cap_credits - goal.cost_used_credits, Decimal(0))
+
+
 def _answer(result: Any) -> str:
     if isinstance(result, Mapping):
         return str(result.get("answer") or "")[:PREVIOUS_CHARS]
@@ -712,10 +738,14 @@ class HeadlessTurn:
             scope = asyncio.timeout(left)
             calls += 1
             try:
+                # AUTO-8b-2b: each chat completion of the round sends the rest of
+                # the goal's budget as `X-CC-Run-Ceiling`, and the Router
+                # stops the run there, or at its own 500, the lower one.
                 async with scope:
-                    result = await self._runner(
-                        _message(goal, number, previous), run_id=run_id, org=org,
-                        member=member, tools=headless_tools(self._tools))
+                    with run_ceiling_scope(round_ceiling(goal)):
+                        result = await self._runner(
+                            _message(goal, number, previous), run_id=run_id, org=org,
+                            member=member, tools=headless_tools(self._tools))
             except Exception as exc:
                 if scope.expired():
                     timed_out = True
