@@ -1340,6 +1340,8 @@ def _with_field(key: str) -> dict:
 @pytest.mark.parametrize("key", [
     "api_key", "apikey", "client_secret", "access_token", "refresh_token", "private_key",
     "password", "db_passwd", "zoho_api_key", "secret_key", "auth_token", "bearer_token",
+    "api_secret", "app_secret", "webhook_secret", "signing_secret", "consumer_secret",
+    "access_key", "api_token", "aws_secret_access_key",
 ])
 def test_a_field_key_that_names_a_secret_is_refused_with_its_path(key):
     from acb_common.studio_manifest import SECRET_FIELD

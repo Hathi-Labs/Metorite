@@ -109,6 +109,8 @@ def is_secret_key(name: object) -> bool:
 SECRET_FIELD_NAMES: tuple[str, ...] = (
     "api_key", "apikey", "password", "passwd", "client_secret", "access_token",
     "refresh_token", "private_key", "secret_key", "auth_token", "bearer_token",
+    "api_secret", "app_secret", "webhook_secret", "signing_secret", "consumer_secret",
+    "access_key", "api_token",
 )  # fmt: skip
 
 _CAMEL_STEP = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
