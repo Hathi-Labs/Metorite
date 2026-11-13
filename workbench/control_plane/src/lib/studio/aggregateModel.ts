@@ -346,3 +346,84 @@ export function statBlock(
 ): { type: "template"; props: Record<string, unknown> } {
   return { type: "template", props: { name: "sparkTrend", source, data: { label: title, measure, good } } };
 }
+
+// --- the mapper from a manifest view ---------------------------------------
+
+/** The part of a manifest that the mapper reads: the declared actions, to turn an id into its op. */
+export interface ViewContext {
+  actions?: readonly { id: string; uses: string }[] | null;
+}
+
+/** The view parts that the mapper reads. `StudioManifest["views"][number]` fits. */
+export interface AggregateView {
+  id: string;
+  title?: string | null;
+  source?: { object?: string | null; action?: string | null; args?: Record<string, unknown> | null } | null;
+}
+
+export type ViewBlock =
+  | { ok: true; node: ReturnType<typeof chartBlock> }
+  | { ok: false; reason: string };
+
+/** The keys of `source.args` that the door reads. The mapper adds `kind`, `measure` and `good`, and the door never sees them. */
+const DOOR_ARGS = ["filter", "group_by", "measures"] as const;
+const AGGREGATE_OP = /^object:[a-z][a-z0-9_]{0,47}\.aggregate$/;
+
+/**
+ * The aggregate source of a view: the op that the door runs, and the args that the door reads.
+ * A view names an action id, and that action uses `object:<name>.aggregate`. A view that names
+ * only `source.object` reads the aggregate of that object. Each other source gets a sentence.
+ */
+export function aggregateSourceOf(
+  view: AggregateView, ctx: ViewContext = {},
+): { ok: true; source: AggregateSource } | { ok: false; reason: string } {
+  const s = view.source;
+  const label = view.title?.trim() || view.id;
+  let op: string | null = null;
+  if (s?.action) {
+    const uses = ctx.actions?.find((a) => a.id === s.action)?.uses;
+    if (!uses) return { ok: false, reason: `“${label}” reads the action “${s.action}”, and no action has that id. Declare it in actions.` };
+    op = uses;
+  } else if (s?.object) {
+    op = `object:${s.object}.aggregate`;
+  } else {
+    return { ok: false, reason: `“${label}” has no source. Name an action that uses object:<name>.aggregate.` };
+  }
+  if (!AGGREGATE_OP.test(op)) {
+    return { ok: false, reason: `“${label}” reads ${op}. A chart or a stat reads an object:<name>.aggregate action.` };
+  }
+  const args: Record<string, unknown> = {};
+  for (const k of DOOR_ARGS) if (s?.args && s.args[k] !== undefined) args[k] = s.args[k];
+  return { ok: true, source: { action: op, args } };
+}
+
+/** The node of a manifest `chart` view. `source.args.kind` is one of the 13 kinds. A bad view gets a plain sentence. */
+export function chartViewBlock(view: AggregateView, ctx: ViewContext = {}): ViewBlock {
+  const label = view.title?.trim() || view.id;
+  const kind = view.source?.args?.kind;
+  if (typeof kind !== "string" || !(CHART_KINDS as readonly string[]).includes(kind)) {
+    const got = typeof kind === "string" ? `“${kind}” is not a chart kind.` : `“${label}” names no chart kind.`;
+    return { ok: false, reason: `${got} Set source.args.kind to one of: ${CHART_KINDS.join(", ")}.` };
+  }
+  const src = aggregateSourceOf(view, ctx);
+  if (!src.ok) return src;
+  return { ok: true, node: chartBlock(kind as ChartKind, src.source, view.title ?? undefined) };
+}
+
+/** The node of a manifest `stat` view. `source.args.measure` is the index of the measure, and `good` is `up` or `down`. */
+export function statViewBlock(view: AggregateView, ctx: ViewContext = {}): ViewBlock {
+  const label = view.title?.trim() || view.id;
+  const a = view.source?.args ?? {};
+  const src = aggregateSourceOf(view, ctx);
+  if (!src.ok) return src;
+  const measures = Array.isArray(a.measures) ? a.measures.length : 1;
+  const measure = a.measure === undefined ? 0 : a.measure;
+  if (typeof measure !== "number" || !Number.isInteger(measure) || measure < 0 || measure >= measures) {
+    return { ok: false, reason: `“${label}” sets measure to ${JSON.stringify(measure)}. Use a number from 0 to ${measures - 1}.` };
+  }
+  const good = a.good === undefined ? "up" : a.good;
+  if (good !== "up" && good !== "down") {
+    return { ok: false, reason: `“${label}” sets good to ${JSON.stringify(good)}. Use up or down.` };
+  }
+  return { ok: true, node: statBlock(src.source, view.title ?? undefined, measure, good) };
+}
