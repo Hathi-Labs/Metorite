@@ -1,7 +1,7 @@
 # Chat failure modes: what goes wrong in the chat, and what we build against it
 
 **Status: ACCEPTED, 2026-11-12 (D217). HRD-6 part 1 (the line of a slow tool) is BUILT
-dark on a branch, 2026-11-13, and not merged. Nothing else is built.** Owner ask of 2026-11-12,
+dark, 2026-11-13 (PR 2238). Nothing else is built.** Owner ask of 2026-11-12,
 in chat. Epic task 2978 (project AI Chat Interface). It is part of WS-CHAT.
 
 HRD-0 is task 2979. The owner accepted D-HRD-1 to D-HRD-6 of §8 as D217.
