@@ -143,6 +143,7 @@ from acb_common.assistant_profile import (
     FACT_KINDS,
     FACT_MAX,
     INTERVIEW_STATES,
+    LANGUAGE_NAMES,
     NO_ANSWER,
     NO_ANSWER_TEXT,
     NOT_YOUR_WORDS,
@@ -1192,6 +1193,41 @@ def _free_text(key: str, value: dict[str, Any], prior: dict[str, Any]) -> list[A
     return [n for n in notes if isinstance(n, str) and n not in held]
 
 
+#: The member's own name of each language, for the order about the answer
+#: language (task 3131). The English name and the tag come from
+#: ``LANGUAGE_NAMES``.
+_NATIVE_NAMES: dict[str, tuple[str, ...]] = {
+    "hi": ("हिंदी", "हिन्दी"), "kn": ("ಕನ್ನಡ",), "ta": ("தமிழ்",), "te": ("తెలుగు",),
+    "mr": ("मराठी",), "bn": ("বাংলা",), "gu": ("ગુજરાતી",), "ml": ("മലയാളം",),
+}
+#: Words that make a sentence an order about answers or replies.
+_ORDER_WORDS = ("answer", "reply", "replies", "respond", "response", "जवाब", "उत्तर",
+                "ಉತ್ತರ", "பதில்", "సమాధానం", "উত্তর", "જવાબ", "ഉത്തരം")
+#: The refusal of a language mark that the member's words do not hold.
+LANGUAGE_FIXED_REFUSED = (
+    "The language mark is not saved. The member must say in this message which "
+    "language the answers use. Nothing is saved for the mark.")
+
+
+def _language_order_typed(language: str) -> bool:
+    """True when the member's typed words of this turn name *language* and
+    hold an order word about answers or replies. The words come from
+    :func:`_member_words`, the one typed-words source."""
+    words = unicodedata.normalize("NFC", _member_words()).casefold()
+    if not words.strip():
+        return False
+    tag = language.strip()
+    base = tag.lower().split("-")[0]
+    names = {tag.casefold(), base}
+    english = LANGUAGE_NAMES.get(base)
+    if english:
+        names.add(english.casefold())
+    names.update(n.casefold() for n in _NATIVE_NAMES.get(base, ()))
+    tokens = set(re.findall(r"[\w-]+", words))
+    named = any(n in tokens or (not n.isascii() and n in words) for n in names)
+    return named and any(w.casefold() in words for w in _ORDER_WORDS)
+
+
 @_write_tool
 async def profile_set(key: Literal["address", "style", "celebrations"], value: dict[str, Any],
                       sensitive: bool = False) -> str:
@@ -1228,6 +1264,12 @@ async def profile_set(key: Literal["address", "style", "celebrations"], value: d
     headers = await _write_gate()
     profile = await _profile(headers)
     prior = profile.get(key) if isinstance(profile.get(key), dict) else {}
+    if key == "style" and value.get("language_fixed") is True and not _confirming():
+        # Task 3131: the mark is an order of the member, so their own typed
+        # words of this turn must hold it. A mail or a page cannot set it.
+        language = value.get("language") or prior.get("language") or ""
+        if not language or not _language_order_typed(str(language)):
+            raise _Refused(LANGUAGE_FIXED_REFUSED, "not_your_words")
     free = _free_text(key, value, prior)
     # A style note goes into every later block, so only the typed words
     # ground it, never a card (PZ-32 repair, P2-6b). A name may ask a card.

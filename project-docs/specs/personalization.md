@@ -534,11 +534,24 @@ When a member says which language the answers must use, the chat calls
 `profile_set` at once with `style.language` and `style.language_fixed: true`.
 This is an own write of D-CF-5. It acts at once and offers Undo. The rule
 that tells the model to do this sits in the profile tool list of
-`orchestrator/agents.py`. With the mark, the style line reads: `Language:
-en-IN. Answer in English, even when the member writes in Hindi or another
-language.` Without the mark, the line stays as above. `LANGUAGE_RULE_LINE`
-says that this profile line wins. A member clears the mark with a null
-`language_fixed`, or by Undo. Fence: `tests/unit/test_assistant_profile_language.py`.
+`orchestrator/agents.py`.
+
+The mark needs the member's own typed words of this turn. Those words must
+name the language and hold an order word about answers or replies. The name
+is the English name, the member's own name for it, or the tag. A mail or a
+page cannot set the mark, and the call saves nothing for it. The refusal is
+`LANGUAGE_FIXED_REFUSED` in `profile_tools.py`.
+
+The marked style line reads as follows.
+`Language: en-IN. Answer in English, even when the member writes in Hindi or
+another language.` For other languages, the line ends "even when the member
+writes in another language". Without the mark, the line stays as above. `LANGUAGE_RULE_LINE`
+says that this profile line wins.
+
+A member clears the mark with a null `language_fixed`, or by Undo. Settings
+keeps the mark when the member changes the language. Settings drops the mark
+when the member clears the language. Fence:
+`tests/unit/test_assistant_profile_language.py`.
 
 **Open owner question (PZ-51).** The Email app's automatic reply drafts
 (`gateway/routes/email/automation/drafting.py`) "match the language of the

@@ -2003,9 +2003,14 @@ def _style_line(style: dict[str, Any], notes: list[str]) -> str:
             # The member ordered this language (personalization.md 5.3). It
             # holds when they write in another one.
             answer = LANGUAGE_NAMES.get(tag.lower().split("-")[0], label)
-            other = "English" if answer == "Hindi" else "Hindi"
+            if answer == "English":
+                tail = "writes in Hindi or another language"
+            elif answer == "Hindi":
+                tail = "writes in English or another language"
+            else:
+                tail = "writes in another language"
             bits.append(f"Language: {label}. Answer in {answer}, even when "
-                        f"the member writes in {other} or another language.")
+                        f"the member {tail}.")
         else:
             bits.append(f"Language: {label}. Answer in it, "
                         "unless they write in another language.")

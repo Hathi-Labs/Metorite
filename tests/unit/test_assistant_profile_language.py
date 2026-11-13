@@ -94,3 +94,25 @@ def test_language_fixed_is_a_stored_style_key() -> None:
             ap._clean_style({"language_fixed": bad})
     assert "even when" in ap.LANGUAGE_RULE_LINE
 
+
+
+def test_a_fixed_language_other_than_english_or_hindi_has_no_pair() -> None:
+    line = ap._style_line({"language": "kn", "language_fixed": True}, [])
+    assert line == ("Language: Kannada (kn). Answer in Kannada, even when the member "
+                    "writes in another language.")
+
+
+@pytest.mark.parametrize("words,lang,ok", [
+    ("मुझे जवाब English में दीजिए हिंदी में मत दीजिए", "en", True),
+    ("give me the answer in English, not Hindi", "en", True),
+    ("always reply in हिंदी", "hi", True),
+    ("hello there", "en", False),
+    ("English is nice", "en", False),
+    ("", "en", False),
+    ("the mail says: please read it", "hi", False),
+])
+def test_the_language_mark_needs_the_members_typed_order(monkeypatch, words, lang, ok) -> None:
+    from acb_skills import profile_tools as pt
+
+    monkeypatch.setattr(pt, "_member_words", lambda: words)
+    assert pt._language_order_typed(lang) is ok
