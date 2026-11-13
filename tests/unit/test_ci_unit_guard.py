@@ -681,6 +681,31 @@ def test_gate_output_uses_the_timings_and_agrees_with_the_pick_step(tmp_path: Pa
     assert dict(x.split("=", 1) for x in guard.gate_output(tmp_path / "absent.json"))["shards"] == "[1,2,3,4,5,6]"
 
 
+def test_missing_timing_entries_are_named_in_a_warning() -> None:
+    # CIV-33b: a selected file with no `.test_durations` entry is a visible gap.
+    warns = guard.missing_timing_warnings(
+        ["tests/unit/test_a.py", "tests/unit/test_new.py", "tests/unit/test_new2.py"],
+        {"tests/unit/test_a.py": 3.0},
+    )
+    assert warns[0].startswith("::warning::") and "2 " in warns[0]
+    assert "tests/unit/test_new.py" in warns[0] and "tests/unit/test_new2.py" in warns[0]
+    assert "tests/unit/test_a.py" not in warns[0]
+    assert guard.missing_timing_warnings(["tests/unit/test_a.py"], {"tests/unit/test_a.py": 1.0}) == []
+    assert guard.missing_timing_warnings(["tests/unit/test_a.py"], None) == []
+
+
+def test_select_prints_the_warning_and_still_exits_zero(tmp_path: Path, monkeypatch, capsys) -> None:
+    durations = tmp_path / ".test_durations"
+    durations.write_text(json.dumps({"tests/unit/test_a.py::t": 1.0}), encoding="utf-8")
+    monkeypatch.setattr(guard, "DURATIONS_PATH", durations)
+    rc = guard.main(["select", "--full", "false", "--files", "tests/unit/test_a.py tests/unit/test_b.py",
+                     "--changes-result", "success"])
+    assert rc == 0
+    out = capsys.readouterr()
+    assert "tests/unit/test_b.py" in out.err  # stderr: stdout is tee-d into GITHUB_OUTPUT
+    assert "::warning::" not in out.out
+
+
 # ── CIV-32 (D218): a repair round re-tests what failed and what the fix reaches ──
 
 _SAFETY = ["tests/unit/test_safety_one.py", "tests/unit/test_safety_two.py"]
