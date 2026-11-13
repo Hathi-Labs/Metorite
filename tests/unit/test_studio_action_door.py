@@ -1360,6 +1360,7 @@ class TestTheTables:
                     "object_missing": invoke.NO_OBJECT, "bad_input": invoke.BAD_RECORD_ID,
                     "bad_list": invoke.BAD_LIST_INPUT, "body_too_large": invoke.BODY_OVER_CAP,
                     "bad_aggregate": invoke.BAD_AGGREGATE_INPUT,
+                    "bad_history": invoke.BAD_HISTORY_INPUT,
                     "request_refused": invoke.ASK_AGAIN,
                     "approval_ask": invoke.APPROVAL_ASK,
                     "read_busy": invoke.READ_BUSY_MESSAGE,

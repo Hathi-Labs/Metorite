@@ -40,7 +40,7 @@ f. The door answers the history to the owner, writes one audit row with no
 
 * RR1. ``objects_store._CHANGES_PAGE_SQL``: ``ORDER BY id DESC``.
   ``test_r8_the_owner_reads_the_history_oldest_first_in_pages`` goes red.
-* RR2. ``objects_store.list_record_changes``: read with ``_GET_RECORD_SQL``
+* RR2. ``objects_store._read_record``: read with ``_GET_RECORD_SQL``
   always (no row rule). ``test_r8_a_viewer_whose_row_rule_does_not_read_the_record_gets_none``
   goes red.
 * RR3. ``objects_store.list_record_changes``: drop ``and not view.owner``.

@@ -417,7 +417,7 @@ REFUSALS: dict[str, str] = {
         "This action writes data and needs an approval, which this door cannot ask for yet."),
     SOURCE_NOT_OPEN: (
         "This door runs the get, list, aggregate, history, create, update and delete of an "
-        "object, and a read of another app where Metorite turned that on."),
+        "object, and a read of another app that Metorite allows."),
     NO_PERSON: "This run has no person present, so it cannot ask a member to approve a write.",
     READ_ONLY: "This app is shared with you to read, so you cannot change its records.",
     OUTSIDE_AGENT: (
