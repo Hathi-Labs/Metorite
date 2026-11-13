@@ -104,6 +104,15 @@ elif verb == "pr checks":
     buckets = {r["bucket"] for r in rows}
     sys.exit(1 if "fail" in buckets else 8 if "pending" in buckets else 0)
 elif verb == "pr merge":
+    left = os.path.join(fix, "base_modified")
+    if os.path.exists(left):
+        with open(left, encoding="utf-8") as f:
+            k = int(f.read() or "0")
+        if k > 0:
+            with open(left, "w", encoding="utf-8") as f:
+                f.write(str(k - 1))
+            sys.stderr.write("GraphQL: Base branch was modified. Review and try the merge again.\n")
+            sys.exit(1)
     view = load(f"view_{n}.json")
     want = opt("--match-head-commit")
     if want and want != view["headRefOid"]:
@@ -166,6 +175,7 @@ class Env:
         self.premerge("0")
 
     def commit(self, path, text, msg):
+        (self.seed / path).parent.mkdir(parents=True, exist_ok=True)
         (self.seed / path).write_text(text, encoding="utf-8")
         git(self.seed, "add", "-A")
         git(self.seed, "commit", "-qm", msg)
@@ -684,3 +694,48 @@ def test_p2d_a_fresh_mkdir_lock_stops_the_pass(env):
     (env.tmp / "state" / "lock.d").mkdir(parents=True)
     r = env.run(MERGE_BOT_LOCK="mkdir")
     assert "another pass runs" in r.stderr and env.calls == ""
+
+
+def test_civ28b_the_diff_sets_a_tier_floor(env):
+    """A lane that queues a migration as STANDARD is wrong: the diff is HIGH."""
+    env.pr(5, path="infra/postgres/999_x.sql", tier="STANDARD")
+    env.pr(6, path="apps/services/gateway/gateway/routes/billing.py", tier="LOW")
+    env.pr(7, path="deploy/run.sh", tier="STANDARD")
+    env.pr(8, path="ok/feature.txt", tier="STANDARD")
+    env.run()
+    lines = env.log.splitlines()
+    assert len(lines) == 4
+    for line, n in zip(lines[:3], (5, 6, 7), strict=True):
+        assert line.startswith(f"BACK {n} tier floor HIGH, queued as ")
+    assert lines[3] == "DONE 8 abc123"
+    assert len(env.merges) == 1 and env.premerge_runs == 1
+
+
+def test_civ28b_base_branch_was_modified_retries_then_merges(env):
+    sha = env.pr(5)
+    (env.fix / "base_modified").write_text("2", encoding="utf-8")
+    env.run(MERGE_BASE_RETRY_WAIT="0")
+    assert env.log == "DONE 5 abc123\n"
+    assert env.merges == [f"pr merge 5 --squash --match-head-commit {sha}"] * 3
+
+
+def test_civ28b_base_branch_modified_every_time_is_a_skip_not_a_back(env):
+    env.pr(5)
+    (env.fix / "base_modified").write_text("99", encoding="utf-8")
+    env.run(MERGE_BASE_RETRY_WAIT="0")
+    assert env.log == ""
+    (env.fix / "base_modified").write_text("0", encoding="utf-8")
+    env.run(MERGE_BASE_RETRY_WAIT="0")
+    assert env.log == "DONE 5 abc123\n"
+
+
+def test_civ28b_a_run_cancelled_a_second_time_goes_back(env):
+    rows = [(n, "pass", "2026-11-13T10:00:00Z") for n in REQUIRED if n != "Unit tests"]
+    env.pr(5, checks=[*rows, ("Unit tests", "cancel", "2026-11-13T10:00:00Z")])
+    env.run()
+    env.run()
+    assert env.log == ""  # the same attempt: the rerun has not started
+    env.checks(5, [*rows, ("Unit tests", "cancel", "2026-11-13T10:30:00Z")])
+    env.run()
+    assert env.log == "BACK 5 cancelled twice: run 706\n"
+    assert len([c for c in env.calls.splitlines() if c.startswith("run rerun")]) == 1
