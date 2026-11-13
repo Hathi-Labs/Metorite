@@ -103,13 +103,16 @@ export const WORKFLOW_STARTED = "Started workflow '";
  * or when the waited run ended `succeeded`. `_describe` writes
  * "Run <id> ('<name>'): <status>." and then, in order, the paused note,
  * " Error: ..." and " Output: ...". The name, the error and the output are
- * text of other people, so: no " Error: " at all, the status part ends at the
- * first " Output: ", and that part must END with "'): succeeded.". A status
- * that is not final ("running", "paused") or not good ends otherwise.
+ * text of other people, so: "'): " exactly once (a name, an error or an
+ * output that holds it again is refused, because it could forge the status),
+ * no " Error: " at all, the status part ends at the first " Output: ", and
+ * that part must END with "'): succeeded.". A status that is not final
+ * ("running", "paused") or not good ends otherwise. Each rule fails closed.
  */
 export function workflowSucceeded(answer: string): boolean {
   if (answer.startsWith(WORKFLOW_STARTED)) return true;
-  if (!/^Run [0-9a-fA-F-]{36} \('/.test(answer) || answer.includes(" Error: ")) return false;
+  if (!/^Run [0-9a-fA-F-]{36} \('/.test(answer) || answer.split("'): ").length !== 2) return false;
+  if (answer.includes(" Error: ")) return false;
   const cut = answer.indexOf(" Output: ");
   const head = (cut >= 0 ? answer.slice(0, cut) : answer).trimEnd();
   return head.endsWith("'): succeeded.");
@@ -411,6 +414,11 @@ export interface OfferError {
   text: string;
 }
 
+/** The words of a 429: a retry can pass after a wait. */
+export const SAVE_LATER = "Too many saves at once. Wait a moment, then press Save again.";
+/** The words of a 401: the session ended. The words of the Studio door (`realDoor.SIGN_IN_SENTENCE`). */
+export const SIGN_IN_AGAIN = "Your session ended. Sign in again.";
+
 /** The skill creator of Studio (`app/studio/skills/new`). */
 export const STUDIO_NEW_SKILL = "/studio/skills/new";
 /** The words of a save that the chat cannot repair. */
@@ -429,6 +437,10 @@ export function offerFailure(status: number, detail: string): OfferError {
   if (placed.place === "action" || placed.place === "picker") return { place: "stale", text: STALE_CATALOG };
   // No answer, or a fault of the server: the same Save can pass later.
   if (status === 0 || status >= 500) return { place: "form", text: placed.text || NOT_SAVED };
+  // Too many calls, or a session that ended: a retry can pass after a wait,
+  // or after the member signs in again. The offer stays open.
+  if (status === 429) return { place: "form", text: SAVE_LATER };
+  if (status === 401) return { place: "form", text: SIGN_IN_AGAIN };
   // A refusal of the description or the instructions (a hidden character, a
   // character that Python refuses), or any other refusal. The card holds no
   // box for that text, so a repeat sends the same body: hand it to Studio.
