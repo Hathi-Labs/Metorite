@@ -89,6 +89,7 @@ pytest.importorskip("sqlalchemy")
 
 from acb_common import studio_query
 from acb_common.db import tenant_session
+from acb_common.studio_access import Viewer
 from gateway.studio import batch_store as bs
 from gateway.studio import objects_store as store
 from gateway.studio.batch_store import BatchItem
@@ -209,7 +210,7 @@ async def _open(org: str, pkg: str, items: list[BatchItem], **kw: Any) -> bs.Bat
 async def _chunk(org: str, bid: str, wbk: dict[str, Any]) -> bs.ChunkResult:
     """ONE chunk, ONE session, ONE transaction."""
     async with tenant_session(org) as db:
-        return await bs.run_chunk(db, ANA, bid, wbk)
+        return await bs.run_chunk(db, ANA, bid, wbk, viewer=Viewer(ANA))
 
 
 async def _drive(org: str, bid: str, wbk: dict[str, Any]) -> list[bs.ChunkResult]:
@@ -265,8 +266,9 @@ def test_r8_a_fault_in_chunk_3_leaves_100_records_and_a_second_drive_ends_at_300
     hit = {"left": 1}
     real_apply, real_result = store.apply_writes, bs._result
 
-    async def apply_then_fall(db: Any, actor: str, *, package_id: str, writes: Any) -> Any:
-        out = await real_apply(db, actor, package_id=package_id, writes=writes)
+    async def apply_then_fall(db: Any, actor: str, *, package_id: str, writes: Any,
+                    viewer: Any) -> Any:
+        out = await real_apply(db, actor, package_id=package_id, writes=writes, viewer=viewer)
         if hit["left"] and any(x.data["sku"] == "s0120" for x in writes):
             hit["left"] -= 1
             raise RuntimeError("the process died after the write")
@@ -567,7 +569,7 @@ def test_r8_fifty_creates_under_three_rollups_all_end_done_in_smaller_chunks(wor
             rules = [{"name": f"r{n}", "kind": "rollup", "target": f"t{n}", "source": "invoice",
                       "via": "customer", "agg": "sum", "field": "amt"} for n in (1, 2, 3)]
             assert await store.set_constraints(db, cust.id, rules, package_id=w.pkg_a)
-            made = await store.apply_writes(db, ANA, package_id=w.pkg_a, writes=[
+            made = await store.apply_writes(db, ANA, package_id=w.pkg_a, viewer=Viewer(ANA), writes=[
                 Write("create", cust.id, data={"name": f"c{i}"}) for i in range(50)])
         items = [BatchItem(f"i{i:02d}", (Write("create", inv.id, data={
             "customer": {"id": made[i].id}, "amt": 2}),)) for i in range(50)]
@@ -596,10 +598,11 @@ def test_r8_a_timeout_marks_nothing_and_a_retry_finishes(world, monkeypatch) -> 
     real = store.apply_writes
     mode = {"on": True}
 
-    async def slow(db: Any, actor: str, *, package_id: str, writes: Any) -> Any:
+    async def slow(db: Any, actor: str, *, package_id: str, writes: Any,
+                    viewer: Any) -> Any:
         if mode["on"]:
             raise store.BatchError(0, studio_query.QueryError(studio_query.TIMEOUT, "too slow"))
-        return await real(db, actor, package_id=package_id, writes=writes)
+        return await real(db, actor, package_id=package_id, writes=writes, viewer=viewer)
 
     async def go() -> str:
         batch = await _open(w.a, w.pkg_a, items)
@@ -625,11 +628,12 @@ def test_r8_a_timeout_of_a_big_group_splits_and_all_items_end_done(world, monkey
     wbk = _by_key(items)
     real = store.apply_writes
 
-    async def slow_when_big(db: Any, actor: str, *, package_id: str, writes: Any) -> Any:
+    async def slow_when_big(db: Any, actor: str, *, package_id: str, writes: Any,
+                    viewer: Any) -> Any:
         if len(writes) > 2:
             raise store.BatchError(len(writes) - 1,
                                    studio_query.QueryError(studio_query.TIMEOUT, "too slow"))
-        return await real(db, actor, package_id=package_id, writes=writes)
+        return await real(db, actor, package_id=package_id, writes=writes, viewer=viewer)
 
     async def go() -> bs.ChunkResult:
         batch = await _open(w.a, w.pkg_a, items)
@@ -645,7 +649,8 @@ def test_r8_a_cause_that_is_no_value_error_is_raised_and_marks_nothing(world, mo
     items = _items(w.ledger, 3)
     wbk = _by_key(items)
 
-    async def boom(db: Any, actor: str, *, package_id: str, writes: Any) -> Any:
+    async def boom(db: Any, actor: str, *, package_id: str, writes: Any,
+                    viewer: Any) -> Any:
         raise store.BatchError(1, RuntimeError("a database fault"))
 
     async def go() -> str:
@@ -719,3 +724,31 @@ def test_this_suite_is_named_in_both_ci_skip_guards() -> None:
         assert block, f"{name}: the --must-run argument list is missing"
         assert re.search(r"^[ \t]+tests/unit/test_studio_batch_r8\.py(?: \\)?$",
                          block.group(1), re.M), name
+
+
+def test_r8_the_viewer_reaches_every_apply_writes_call(world, monkeypatch) -> None:
+    """C8a: ``run_chunk`` passes the caller's viewer to each ``apply_writes``
+    call, the halves of a split too, and builds none of its own. Mutation: a
+    call without the viewer raises ``TypeError`` (main went red that way), and
+    a viewer built inside the store shows as another object here."""
+    w = world
+    items = _items(w.ledger, 6)
+    seen: list[Any] = []
+    real = store.apply_writes
+    mine = Viewer(ANA)
+
+    async def spy(db: Any, actor: str, *, package_id: str, writes: Any, viewer: Any) -> Any:
+        seen.append(viewer)
+        if len(writes) > 2:
+            raise store.BatchError(0, ValueError("too many for one call"))
+        return await real(db, actor, package_id=package_id, writes=writes, viewer=viewer)
+
+    async def go() -> bs.ChunkResult:
+        batch = await _open(w.a, w.pkg_a, items)
+        monkeypatch.setattr(store, "apply_writes", spy)
+        async with tenant_session(w.a) as db:
+            return await bs.run_chunk(db, ANA, batch.id, _by_key(items), viewer=mine)
+
+    res = _go(w, go)
+    assert res.written and len(seen) > 1, "the chunk split, so more than one call"
+    assert all(v is mine for v in seen)
