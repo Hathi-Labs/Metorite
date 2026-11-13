@@ -625,6 +625,38 @@ def _is_foreign_key_error(exc: BaseException) -> bool:
     return isinstance(exc, IntegrityError) and "foreign key" in str(exc).lower()
 
 
+def add_closing_line(turn: SessionTurn, line: str) -> bool:
+    """End the run's last answer in the session with *line* (task 3130).
+
+    The server sends the "Not done" line after the model's answer, so MAF's
+    response does not hold it. This puts it in the stored session too, as
+    the stored message holds it. The last message is the answer: the line
+    joins it as one more text part. A session with no answer gets a new
+    answer that holds only the line. True when the line went in. Never
+    raises, and a fault leaves the session as it was."""
+    if not line or not turn.usable:
+        return False
+    try:
+        from agent_framework import Content
+
+        state = turn.session.state.get(HISTORY_SOURCE_ID)
+        messages = state.get("messages") if isinstance(state, dict) else None
+        if not isinstance(messages, list):
+            return False
+        text = f"\n\n{line}"
+        last = messages[-1] if messages else None
+        role = getattr(getattr(last, "role", None), "value", getattr(last, "role", None))
+        if last is not None and str(role) == "assistant" and isinstance(
+                getattr(last, "contents", None), list):
+            last.contents.append(Content.from_text(text))
+        else:
+            messages.append(Message("assistant", [text]))
+        return True
+    except Exception as exc:
+        _log.warning("native_session.closing_line_failed", error=str(exc)[:200])
+        return False
+
+
 async def finish_turn(turn: SessionTurn, *, token_budget: int) -> str:
     """Compact, bound and save the session of a run that succeeded.
 
