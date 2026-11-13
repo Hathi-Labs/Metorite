@@ -29,11 +29,14 @@ Workflows router serves each request.
 
 **Mutations this half catches** (each was run, see the PR for the record):
 
-* U1. ``runs._one_step``: drop ``mine and`` from the ``task_id`` line (F3 red).
-* U2. ``human_step.step_state``: read a ``resolved`` pause as ``pending``
-  (F1 and F5 red).
-* U3. ``human_step.walk_order``: return the block list order (F1 red).
-* U4. ``runs.get_run_steps``: drop the UUID check (F4 red, the session opens).
+* U1. ``runs._one_step``: drop ``mine and`` from the ``task_id`` line (both
+  F3 cases red, and R3 of the R8 half).
+* U2. ``human_step.step_state``: drop ``pause_status == "resolved" or``, so a
+  resolved pause reads by its task alone (the F5 table red).
+* U3. ``human_step.walk_order``: return the block list order (F1 and the walk
+  case red).
+* U4. ``runs.get_run_steps``: drop the UUID check (each F4 bad id case red,
+  because the session opens).
 """
 from __future__ import annotations
 

@@ -28,10 +28,19 @@ the auth layer binds it.
 
 **Mutations this suite catches** (each was run on 2026-11-13, see the PR):
 
-* M1. ``runs._one_step``: drop ``mine and`` from the ``task_id`` line. R3 red.
+* M1. ``runs._one_step``: drop ``mine and`` from the ``task_id`` line. R3 red
+  (the person of s1 gets the id of the task of s2).
 * M2. ``runs.get_run_steps``: bind the session to the org of the run that the
   id names, found by a probe of each org, and not to the org of the caller.
-  R1 and R2 red.
+  R1 red: a member of A reads the run of B, with its title. R2 stays green,
+  because each R2 run is a run of A, and M2 binds A for it too.
+* M2a. ``runs.get_run_steps``: read with the unbound ``_get_db()`` session.
+  R1 red: the person of B gets 404, because the read fails closed.
+* U4 of the hermetic half: drop the UUID check. The bad id case of R1 is red,
+  because the database refuses the cast and the route answers 500.
+
+R2 has no mutation of its own here. It holds the RLS of the pause read and the
+task read: a row of B that names a run of A stays out of each answer.
 
 Run (a PRIVATE database, one R8 suite at a time, because the fixture drops
 ``<db>_runsteps``)::
