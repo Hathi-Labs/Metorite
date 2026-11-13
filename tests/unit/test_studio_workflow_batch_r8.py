@@ -59,6 +59,29 @@ Review round 1 (2026-11-13):
 * M15. ``crud.update_workflow``: drop the call of ``_refuse_foreign_studio_batch``.
   ``test_studio_workflow_batch.py::test_a_member_who_is_not_the_owner_may_not_add_or_change_a_batch``
   goes red.
+
+Review round 2 (2026-11-14), each on the committed tree 05fa70ccd:
+
+* M16. ``invoke._studio_access``: take a member who is not active as a deny.
+  ``test_r8_an_access_read_with_no_verdict_keeps_the_batch_open[inactive]`` and
+  the ``inactive`` case of ``test_only_an_active_member_gives_a_verdict_on_the_access``
+  go red.
+* M17. ``invoke._studio_access``: take a resolver fault as a deny.
+  ``test_r8_an_access_read_with_no_verdict_keeps_the_batch_open[timeout]`` goes red.
+* M18. ``batch.OPEN_SQL``: drop ``AND a.paused_at IS NULL``.
+  ``test_r8_a_stopped_batch_of_a_paused_package_waits`` goes red.
+* M19. ``scheduler._resume_batch``: leave a batch with no yes open.
+  ``test_r8_the_scan_ends_a_batch_whose_yes_is_gone`` and
+  ``test_r8_a_failed_run_with_no_yes_is_never_resumed`` go red.
+* M20. ``crud.update_workflow``: drop the save rule.
+  ``test_r8_only_the_owner_may_add_or_change_a_batch_node_at_save`` goes red.
+* M21. ``batch._item_line``: show the raw key.
+  ``test_studio_workflow_batch.py::test_a_key_with_a_line_break_cannot_fake_another_item_line``
+  goes red.
+* M22. ``batch.batch_detail``: always say "The first 10 records".
+  ``test_studio_workflow_batch.py::test_the_card_never_drops_an_item_in_silence`` goes red.
+* M23. ``service._hold_at_gate``: report a refused park as paused.
+  ``test_studio_workflow_batch.py::test_a_refused_park_reports_failed_to_the_hub`` goes red.
 """
 
 from __future__ import annotations
