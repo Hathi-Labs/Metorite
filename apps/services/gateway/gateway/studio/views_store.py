@@ -26,9 +26,12 @@ resolves the member from the session, never from request input, and the
 caller decides who may share (the route holds the rules of AF-10a).
 
 **The caps.** :data:`MAX_PRIVATE` private views of one member, and
-:data:`MAX_SHARED` shared views, on one object of one package. A create and a
-move between private and shared take the advisory lock of the object first,
-then count, then write. So two writers at once cannot pass the cap.
+:data:`MAX_SHARED` shared views, on one object of one package. A second wall
+holds for the package: :data:`MAX_PACKAGE_PRIVATE` private views of one member
+and :data:`MAX_PACKAGE_SHARED` shared views. The route also refuses an object
+that the app does not hold. A create and a move between private and shared
+take the advisory lock of the package first, then count, then write. So two
+writers at once cannot pass a cap.
 """
 
 from __future__ import annotations
@@ -49,6 +52,10 @@ from sqlalchemy.exc import DBAPIError
 MAX_PRIVATE = 50
 #: The most shared views on one object of one package.
 MAX_SHARED = 50
+#: The most private views of one member on all objects of one package.
+MAX_PACKAGE_PRIVATE = 200
+#: The most shared views on all objects of one package.
+MAX_PACKAGE_SHARED = 200
 #: The most characters of the name of a view.
 MAX_NAME = 120
 #: The bound of the CHECK ``studio_saved_views_spec``, in bytes of JSON text.
@@ -63,12 +70,12 @@ _COLUMNS = (
     "position, created_at, updated_at"
 )
 
-#: The lock of one object of one package, until the transaction ends. The
+#: The lock of one package, until the transaction ends. The
 #: first column is false when no tenant is bound, and then the key is NULL
 #: and Postgres takes no lock. The idiom of ``packages_store._CREATE_LOCK_SQL``.
 _LOCK_SQL = (
     f"SELECT {_BOUND_ORG} IS NOT NULL, pg_advisory_xact_lock(hashtextextended("
-    f"'studio_saved_views:' || CAST({_BOUND_ORG} AS text) || ':' || :pid || ':' || :obj, 0))"
+    f"'studio_saved_views:' || CAST({_BOUND_ORG} AS text) || ':' || :pid, 0))"
 )
 
 _LIST_SQL = (
@@ -94,6 +101,18 @@ _COUNT_SHARED_SQL = (
     "SELECT count(*) FROM studio_saved_views "
     f"WHERE organization_id = {_BOUND_ORG} AND package_id = CAST(:pid AS uuid) "
     "AND object_name = :obj AND shared"
+)
+
+_COUNT_PACKAGE_PRIVATE_SQL = (
+    "SELECT count(*) FROM studio_saved_views "
+    f"WHERE organization_id = {_BOUND_ORG} AND package_id = CAST(:pid AS uuid) "
+    "AND NOT shared AND owner_email = :owner"
+)
+
+_COUNT_PACKAGE_SHARED_SQL = (
+    "SELECT count(*) FROM studio_saved_views "
+    f"WHERE organization_id = {_BOUND_ORG} AND package_id = CAST(:pid AS uuid) "
+    "AND shared"
 )
 
 _INSERT_SQL = (
@@ -127,14 +146,20 @@ class ViewStoreError(ValueError):
 
 
 class ViewCapReached(ViewStoreError):
-    """The cap of private or of shared views of the object is reached."""
+    """The cap of private or of shared views of the object, or of the
+    package, is reached."""
 
-    def __init__(self, shared: bool) -> None:
-        cap = MAX_SHARED if shared else MAX_PRIVATE
+    def __init__(self, shared: bool, package: bool = False) -> None:
+        if package:
+            cap = MAX_PACKAGE_SHARED if shared else MAX_PACKAGE_PRIVATE
+        else:
+            cap = MAX_SHARED if shared else MAX_PRIVATE
         kind = "shared views" if shared else "private views of one member"
-        super().__init__(f"An object holds at most {cap} {kind}. Delete a view, then "
+        where = "An app" if package else "An object"
+        super().__init__(f"{where} holds at most {cap} {kind}. Delete a view, then "
                          "save again.")
         self.shared = shared
+        self.package = package
 
 
 class ViewNameTaken(ViewStoreError):
@@ -224,8 +249,8 @@ def _sqlstate(exc: DBAPIError) -> str | None:
     return None if code is None else str(code)
 
 
-async def _lock(db: Any, pid: str, obj: str) -> None:
-    row = (await db.execute(text(_LOCK_SQL), {"pid": pid, "obj": obj})).first()
+async def _lock(db: Any, pid: str) -> None:
+    row = (await db.execute(text(_LOCK_SQL), {"pid": pid})).first()
     if row is None or not row[0]:
         raise ViewStoreError("No tenant is bound.")
 
@@ -236,6 +261,11 @@ async def _check_cap(db: Any, pid: str, obj: str, *, shared: bool, owner: str) -
     held = int((await db.execute(text(sql), binds)).scalar_one())
     if held >= (MAX_SHARED if shared else MAX_PRIVATE):
         raise ViewCapReached(shared)
+    sql, binds = ((_COUNT_PACKAGE_SHARED_SQL, {"pid": pid}) if shared
+                  else (_COUNT_PACKAGE_PRIVATE_SQL, {"pid": pid, "owner": owner}))
+    held = int((await db.execute(text(sql), binds)).scalar_one())
+    if held >= (MAX_PACKAGE_SHARED if shared else MAX_PACKAGE_PRIVATE):
+        raise ViewCapReached(shared, package=True)
 
 
 async def _write(db: Any, sql: str, binds: dict[str, Any]) -> Any:
@@ -276,12 +306,13 @@ async def get_view(db: Any, member: str, *, package_id: str, view_id: str,
 async def create_view(db: Any, member: str, *, package_id: str, object_name: str,
                       name: str, shared: bool, spec: Mapping[str, Any],
                       position: int = 0) -> SavedView:
-    """Write a new view of *member*. It takes the lock of the object, checks
-    the cap of its kind, then writes. Raises :class:`ViewCapReached`,
+    """Write a new view of *member*. It takes the lock of the package, checks
+    the caps of its kind, then writes. The caller checks that the app holds
+    the object *object_name*. Raises :class:`ViewCapReached`,
     :class:`ViewNameTaken` or :class:`ViewStoreError`."""
     me, pid = _member(member), _id(package_id, "package_id")
     body = spec_text(spec)
-    await _lock(db, pid, object_name)
+    await _lock(db, pid)
     await _check_cap(db, pid, object_name, shared=shared, owner=me)
     row = await _write(db, _INSERT_SQL, {
         "pid": pid, "obj": object_name, "me": me, "name": name, "shared": bool(shared),
@@ -301,7 +332,7 @@ async def update_view(db: Any, member: str, current: SavedView, *, name: str,
     pid = _id(current.package_id, "package_id")
     body = spec_text(spec)
     if bool(shared) != current.shared or owner != current.owner_email:
-        await _lock(db, pid, current.object_name)
+        await _lock(db, pid)
         await _check_cap(db, pid, current.object_name, shared=bool(shared), owner=owner)
     row = await _write(db, _UPDATE_SQL, {
         "pid": pid, "vid": _id(current.id, "view_id"), "name": name, "shared": bool(shared),

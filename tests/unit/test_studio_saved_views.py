@@ -96,10 +96,11 @@ def sessions(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 def audits(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
-    async def _record(**kwargs: Any) -> None:
+    async def _record(db: Any, **kwargs: Any) -> None:
+        assert db is not None, "the audit row needs the open session of the write"
         rows.append(kwargs)
 
-    monkeypatch.setattr(views, "record_app_audit_bound", _record)
+    monkeypatch.setattr(views, "record_app_audit_in", _record)
     return rows
 
 
@@ -220,7 +221,11 @@ def test_the_member_comes_from_the_session(sessions: list[str], audits: list[dic
         seen.append(member)
         return _saved(name=kwargs["name"])
 
+    async def _holds(*_a: Any) -> bool:
+        return True
+
     monkeypatch.setattr(views, "_reach", _reach)
+    monkeypatch.setattr(views, "_holds_object", _holds)
     monkeypatch.setattr(views.store, "create_view", _create)
     status, got = _status(views.create_view(PID, request=_Request(_GOOD), user=_user()))
     assert status == 200 and got["view"]["mine"] is True
@@ -289,6 +294,150 @@ def test_a_spec_with_no_parts_drops_nothing() -> None:
     assert views.project_spec({}, frozenset()) == ({}, 0)
 
 
+def test_a_view_of_an_object_that_the_app_lacks_is_422(
+        sessions: list[str], audits: list[dict[str, Any]],
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """P1 of the review: a made-up object name would open a new cap of 50."""
+    async def _reach(db: Any, user: UserContext, pid: str) -> None:
+        return None
+
+    async def _no_object(db: Any, name: str, *, package_id: str) -> None:
+        assert (name, package_id) == ("visit", PID)
+
+    async def _create(*_a: Any, **_k: Any) -> None:
+        raise AssertionError("the store ran")
+
+    monkeypatch.setattr(views, "_reach", _reach)
+    monkeypatch.setattr(views.objects_store, "get_object_by_name", _no_object)
+    monkeypatch.setattr(views.store, "create_view", _create)
+    status, detail = _status(views.create_view(PID, request=_Request(_GOOD), user=_user()))
+    assert status == 422 and detail == {"code": "view_invalid", "message": views.NO_OBJECT}
+    assert audits == []
+
+
+def test_a_viewer_names_only_an_object_of_the_installed_version() -> None:
+    from gateway.package_host.viewer import InstalledApp
+
+    async def go() -> bool:
+        app = InstalledApp(id=PID, version=1, manifest={"objects": [{"name": "visit"}]})
+        # The object row is never read, because the version lacks the name.
+        return await views._holds_object(None, app, PID, "invoice")
+
+    assert asyncio.run(go()) is False
+
+
+def test_a_failed_audit_row_fails_the_write(sessions: list[str],
+                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    """The audit row runs in the session of the write. A failed row raises out
+    of the session, which rolls the write back."""
+    async def _reach(db: Any, user: UserContext, pid: str) -> None:
+        return None
+
+    async def _holds(*_a: Any) -> bool:
+        return True
+
+    async def _create(db: Any, member: str, **kwargs: Any) -> views_store.SavedView:
+        return _saved(shared=True)
+
+    async def _broken(db: Any, **_k: Any) -> None:
+        raise RuntimeError("audit down")
+
+    monkeypatch.setattr(views, "_reach", _reach)
+    monkeypatch.setattr(views, "_holds_object", _holds)
+    monkeypatch.setattr(views.store, "create_view", _create)
+    monkeypatch.setattr(views, "record_app_audit_in", _broken)
+    with pytest.raises(RuntimeError, match="audit down"):
+        asyncio.run(views.create_view(PID, request=_Request({**_GOOD, "shared": True}),
+                                      user=_user()))
+
+
+@pytest.mark.parametrize("name", ["create_view", "update_view", "delete_view"])
+def test_each_write_audits_inside_its_session(name: str) -> None:
+    """The audit call sits inside the ``async with _tenant_session()`` block,
+    so a share, an unshare and a delete of a shared view commit with it."""
+    tree = ast.parse(_ROUTES.read_text(encoding="utf-8"))
+    [fn] = [n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == name]
+    [block] = [n for n in ast.walk(fn) if isinstance(n, ast.AsyncWith)]
+    inside = [n for n in ast.walk(block) if isinstance(n, ast.Call)
+              and isinstance(n.func, ast.Name) and n.func.id == "_audit"]
+    every = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Name) and n.func.id == "_audit"]
+    assert len(inside) == len(every) == 1
+    assert isinstance(inside[0].args[0], ast.Name) and inside[0].args[0].id == "db"
+    assert "record_app_audit_bound" not in _ROUTES.read_text(encoding="utf-8")
+
+
+# ── f2. The allowlist of the viewer read ──────────────────────────────────
+
+
+def test_the_projection_names_each_key_of_a_spec() -> None:
+    """``project_spec`` is an allowlist. A key that a later slice adds to
+    ``SPEC_KEYS`` (AF-4 adds ``group``) fails here until the projection reads
+    it."""
+    assert views.SPEC_KEYS == views.PROJECTED_KEYS
+    full = {"filter": [{"field": "a", "op": "eq", "value": 1}], "sort": {"field": "a"},
+            "layout": "board", "columns": ["a"]}
+    assert set(full) == set(views.SPEC_KEYS)
+    out, dropped = views.project_spec(full, frozenset({"a"}))
+    assert out == full and dropped == 0
+
+
+def test_the_projection_drops_a_key_that_it_does_not_name() -> None:
+    spec = {"filter": [{"field": "a", "op": "eq", "value": 1, "note": "x"}],
+            "sort": {"field": "a", "dir": "asc", "why": "x"}, "group": "salary",
+            "q": "SECRET", "layout": "gallery"}
+    out, _ = views.project_spec(spec, frozenset({"a"}))
+    assert out == {"filter": [{"field": "a", "op": "eq", "value": 1}],
+                   "sort": {"field": "a", "dir": "asc"}}
+    assert "SECRET" not in json.dumps(out) and "salary" not in json.dumps(out)
+
+
+# ── f3. The hidden keys of the object store ───────────────────────────────
+
+
+class _HiddenDB:
+    """The two statements of ``query_hidden_keys``: the object and its
+    package, then the fields when the viewer reads no record."""
+
+    def __init__(self, row: Any, fields: list[tuple[str, str, Any, bool]]) -> None:
+        self.row, self.fields = row, fields
+
+    async def execute(self, stmt: Any, params: Any = None) -> Any:
+        from gateway.studio import objects_store as os_
+
+        sql = str(stmt)
+        rows = ([self.row] if self.row is not None else []) if sql == os_._VIEW_SQL else (
+            self.fields if sql == os_._FIELDS_SQL else None)
+        assert rows is not None, sql
+        return type("R", (), {"first": lambda _s: rows[0] if rows else None,
+                              "all": lambda _s: rows})()
+
+
+_FIELDS = [("site", "text", {}, False), ("status", "text", {}, False)]
+_ACCESS = [{"role": "boss", "read": "all", "hide": ["status"]}]
+
+
+@pytest.mark.parametrize("row,viewer,want", [
+    (None, ("ana@x.test", ()), None),
+    ([None, _ACCESS, "owen@x.test"], ("owen@x.test", ()), frozenset()),
+    ([None, None, "owen@x.test"], ("ana@x.test", ()), frozenset()),
+    ([None, _ACCESS, "owen@x.test"], ("ana@x.test", ("boss",)), frozenset({"status"})),
+    ([None, _ACCESS, "owen@x.test"], ("ana@x.test", ()), frozenset({"site", "status"})),
+])
+def test_the_hidden_keys_of_a_viewer(row: Any, viewer: tuple[str, tuple[str, ...]],
+                                     want: Any) -> None:
+    """None for a missing object. Nothing for the owner and for an open
+    object. ``maybe_hidden`` for a viewer with a role. Each key for a viewer
+    whose roles read no record."""
+    from acb_common.studio_access import Viewer
+    from gateway.studio import objects_store
+
+    db = _HiddenDB(row, _FIELDS)
+    got = asyncio.run(objects_store.query_hidden_keys(
+        db, package_id=PID, object_id=VID, viewer=Viewer(viewer[0], frozenset(viewer[1]))))
+    assert got == want
+
+
 # ── g. The migration and the fences ───────────────────────────────────────
 
 
@@ -318,6 +467,7 @@ def test_the_caps_of_the_store_match_the_checks_of_the_table() -> None:
     assert f"<= {views_store.MAX_SPEC_BYTES})" in sql
     assert f"BETWEEN 1 AND {views_store.MAX_NAME})" in sql
     assert views_store.MAX_PRIVATE == 50 and views_store.MAX_SHARED == 50
+    assert views_store.MAX_PACKAGE_PRIVATE == 200 and views_store.MAX_PACKAGE_SHARED == 200
 
 
 #: SQL that names the table: a statement verb before it.
@@ -345,6 +495,7 @@ def test_the_route_module_runs_no_sql() -> None:
 
 def test_each_statement_of_the_store_names_the_bound_org() -> None:
     for name in ("_LIST_SQL", "_GET_SQL", "_COUNT_PRIVATE_SQL", "_COUNT_SHARED_SQL",
+                 "_COUNT_PACKAGE_PRIVATE_SQL", "_COUNT_PACKAGE_SHARED_SQL",
                  "_UPDATE_SQL", "_DELETE_SQL"):
         sql = getattr(views_store, name)
         assert f"organization_id = {views_store._BOUND_ORG}" in sql, name

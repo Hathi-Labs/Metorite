@@ -15,8 +15,10 @@ router and the gate ``require_feature_router("studio")`` holds (J1).
 **The order of the checks.** The switch ``STUDIO_ORGS`` (404, no session),
 then the ids (404), then the body, read with a cap of :data:`MAX_BODY_BYTES`
 (413), then the shape of the body and of the spec (422). All of this runs
-before any session. Then ONE session reads the app and writes. The audit row
-goes after that session closes (``record_app_audit_bound``).
+before any session. Then ONE session reads the app, checks that the app holds
+the object of a new view (422), writes, and writes the audit row in the same
+transaction (``record_app_audit_in``). A failed audit row rolls the write
+back, because a share and an unshare change who reads a view.
 
 **Who reaches the app.** The member is ``user.email``, never request input.
 The owner reads the package through ``packages_store.get_package``. Each other
@@ -36,8 +38,10 @@ neither gets 404.
 3. A viewer saves, changes and deletes their own private views. A saved view
    is state of the screen, not a write through the door.
 4. The caps of the store: 50 private views of one member and 50 shared views
-   on one object (409 ``view_cap``). A name holds 1 to 120 characters, and a
-   spec at most 8000 bytes (422 ``view_invalid``).
+   on one object, and 200 of each on one app (409 ``view_cap``). A new view
+   names an object that the app holds: the object row for the owner, and the
+   installed version too for a viewer (422 ``view_invalid``). A name holds 1
+   to 120 characters, and a spec at most 8000 bytes (422 ``view_invalid``).
 5. A viewer reads each view with each part dropped that names a key the
    viewer may not read: a key that the roles of the viewer hide
    (``objects_store.query_hidden_keys``), a key of a field that the installed
@@ -67,13 +71,14 @@ from fastapi import Depends, HTTPException, Query, Request
 from gateway.db import tenant_session as _tenant_session
 from gateway.package_host import viewer as _viewer
 from gateway.package_host.flags import package_host_allowed
-from gateway.routes.apps._common import record_app_audit_bound
+from gateway.routes.apps._common import record_app_audit_in
 from gateway.routes.studio import flags
 from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store, packages_store
 from gateway.studio import views_store as store
 
-__all__ = ["MAX_BODY_BYTES", "MAX_COLUMNS", "SPEC_KEYS", "project_spec", "router"]
+__all__ = ["MAX_BODY_BYTES", "MAX_COLUMNS", "PROJECTED_KEYS", "SPEC_KEYS", "project_spec",
+           "router"]
 
 #: The most bytes of one body (16 KiB). A spec holds 8000 bytes at most.
 MAX_BODY_BYTES = 16 * 1024
@@ -85,6 +90,9 @@ MAX_POSITION = 10_000
 SPEC_KEYS = frozenset({"filter", "sort", "layout", "columns"})
 #: The layouts of a view (AF-4): a table and a board.
 LAYOUTS = ("table", "board")
+#: The keys of a spec that :func:`project_spec` names. A test keeps it equal to
+#: :data:`SPEC_KEYS`, so a new key of a spec needs a rule of the viewer read.
+PROJECTED_KEYS = frozenset({"filter", "sort", "layout", "columns"})
 _CREATE_KEYS = frozenset({"object", "name", "shared", "spec", "position"})
 _PATCH_KEYS = frozenset({"name", "shared", "spec", "position"})
 _NAME = re.compile(NAME_PATTERN, re.ASCII)
@@ -110,6 +118,7 @@ BAD_POSITION = f"position is a whole number from 0 to {MAX_POSITION}."
 BAD_SPEC = "spec is an object."
 BAD_SPEC_KEYS = "spec takes filter, sort, layout and columns, and no other key."
 BAD_LAYOUT = "layout is table or board."
+NO_OBJECT = "The app holds no object of this name. Send the name of an object of the app."
 BAD_COLUMNS = (f"columns is a list of at most {MAX_COLUMNS} field keys, each once: "
                "lower-case letters, digits and _.")
 
@@ -217,19 +226,26 @@ def project_spec(spec: Mapping[str, Any], readable: frozenset[str]) -> tuple[dic
     it, and the count of the parts that it drops. Pure.
 
     It drops each condition, the sort and each column that names another key.
-    A dropped condition leaves with its value. Each other key of the spec
-    stays."""
-    out = dict(spec)
+    A dropped condition leaves with its value. It is an allowlist: the answer
+    holds only the keys that it names (:data:`PROJECTED_KEYS`), so a key that
+    a later slice adds stays out until this function reads it."""
+    out: dict[str, Any] = {}
     dropped = 0
+    if spec.get("layout") in LAYOUTS:
+        out["layout"] = spec["layout"]
     if "filter" in spec:
         items = spec["filter"] if isinstance(spec["filter"], list) else []
-        kept = [c for c in items if isinstance(c, Mapping) and c.get("field") in readable]
+        kept = [{k: c[k] for k in ("field", "op", "value") if k in c} for c in items
+                if isinstance(c, Mapping) and c.get("field") in readable]
         dropped += len(items) - len(kept)
         out["filter"] = kept
-    sort = spec.get("sort")
-    if sort is not None and not (isinstance(sort, Mapping) and sort.get("field") in readable):
-        out["sort"] = None
-        dropped += 1
+    if "sort" in spec:
+        sort = spec["sort"]
+        if isinstance(sort, Mapping) and sort.get("field") in readable:
+            out["sort"] = {k: sort[k] for k in ("field", "dir") if k in sort}
+        else:
+            out["sort"] = None
+            dropped += sort is not None
     if "columns" in spec:
         cols = spec["columns"] if isinstance(spec["columns"], list) else []
         kept_cols = [c for c in cols if c in readable]
@@ -297,11 +313,22 @@ def _store_refusal(exc: store.ViewStoreError) -> HTTPException:
     return _invalid(str(exc))
 
 
-async def _audit(user: UserContext, pid: str, op: str, shared: bool) -> None:
-    """One ``app_audit`` row, after the session closes. It names the op and
-    the share flag only: no name, no filter and no value."""
-    await record_app_audit_bound(app_id=pid, user_email=user.email, kind="action",
-                                 detail={"op": op, "shared": shared})
+async def _audit(db: Any, user: UserContext, pid: str, op: str, shared: bool) -> None:
+    """One ``app_audit`` row in the open session *db*, so the write and its row
+    commit together, and a failed row rolls the write back. It names the op
+    and the share flag only: no name, no filter and no value."""
+    await record_app_audit_in(db, app_id=pid, user_email=user.email, kind="action",
+                              detail={"op": op, "shared": shared})
+
+
+async def _holds_object(db: Any, app: _viewer.InstalledApp | None, pid: str,
+                        object_name: str) -> bool:
+    """True when the app holds the object *object_name*: an object row of the
+    package, and for a viewer an object of the installed version too. So a
+    member cannot open a cap of 50 views for each name that they make up."""
+    if app is not None and object_name not in app.object_names:
+        return False
+    return await objects_store.get_object_by_name(db, object_name, package_id=pid) is not None
 
 
 @router.get("/packages/{package_id}/views")
@@ -353,13 +380,15 @@ async def create_view(
         app = await _reach(db, user, pid)
         if shared and app is not None:
             raise _read_only()
+        if not await _holds_object(db, app, pid, obj):
+            raise _invalid(NO_OBJECT)
         try:
             view = await store.create_view(db, user.email, package_id=pid, object_name=obj,
                                            name=name, shared=shared, spec=spec,
                                            position=position)
         except store.ViewStoreError as exc:
             raise _store_refusal(exc) from None
-    await _audit(user, pid, "view_create", view.shared)
+        await _audit(db, user, pid, "view_create", view.shared)
     return {"view": _out(view, user.email)}
 
 
@@ -413,7 +442,7 @@ async def update_view(
             raise _store_refusal(exc) from None
         if view is None:
             raise _not_found()
-    await _audit(user, pid, _op(current.shared, view.shared), view.shared)
+        await _audit(db, user, pid, _op(current.shared, view.shared), view.shared)
     return {"view": _out(view, user.email)}
 
 
@@ -438,5 +467,5 @@ async def delete_view(
             raise _read_only()
         if not await store.delete_view(db, user.email, current):
             raise _not_found()
-    await _audit(user, pid, "view_delete", current.shared)
+        await _audit(db, user, pid, "view_delete", current.shared)
     return {"deleted": True, "id": current.id}

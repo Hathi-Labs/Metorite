@@ -34,6 +34,20 @@ is not a pass.
 * M4. ``members._PURGE_DELETES``: drop ``NOT`` from the clause of
   ``studio_private_views``. ``test_r8_a_member_purge_deletes_the_private_views_only``
   goes red.
+
+Fix round 1 (2026-11-13). Each mutation below ran, and each named test went red.
+
+* M1a. ``_LIST_SQL`` without the read filter: the private-view test and the
+  owner-only test (2 failed). M1b. ``_GET_SQL`` without it: the 404 test of
+  patch and delete (1 failed).
+* M5. ``_GET_SQL`` without the package filter:
+  ``test_r8_a_view_of_another_package_is_404_on_this_path`` (1 failed).
+* M8. ``objects_store.query_hidden_keys`` returns ``frozenset()``: the roles
+  probe here and two hermetic cases (3 failed).
+* M9. The object check of a create removed: two cases here and one hermetic
+  case (3 failed).
+* M10 and M11 (hermetic). ``project_spec`` starts from ``dict(spec)``, and the
+  audit of a change leaves the session: one hermetic test each.
 """
 
 from __future__ import annotations
@@ -87,13 +101,16 @@ NOT_FOUND = "Not found"
 #: version 1 may not read. It must never reach that viewer.
 SECRET = 98765
 _COST = {"key": "cost", "type": "number"}
+#: An object of version 2 only. A viewer of version 1 does not read it.
+_INVOICE = {"name": "invoice", "fields": [{"key": "amount", "type": "number"}]}
 
 
 def _manifest(mid: str, cost: bool = False) -> dict[str, Any]:
     fields = [{"key": "site", "type": "text"}, {"key": "status", "type": "text"}]
     return {
         "studio": 1, "id": mid, "name": "Site visits", "purpose": "Track the visits to a site.",
-        "objects": [{"name": "visit", "fields": [*fields, *([_COST] if cost else [])]}],
+        "objects": [{"name": "visit", "fields": [*fields, *([_COST] if cost else [])]},
+                    *([_INVOICE] if cost else [])],
         "actions": [{"id": "find", "uses": "object:visit.list"}],
     }
 
@@ -391,18 +408,94 @@ def test_r8_a_viewer_reads_a_shared_view_with_the_hidden_parts_dropped(world) ->
 
 
 def test_r8_a_view_of_an_object_that_the_version_lacks_drops_everything(world) -> None:
-    async def go() -> tuple[int, Any]:
+    """``invoice`` is an object of version 2. Owen shares a view of it. Ana,
+    at version 1, reads it with each part dropped, and cannot save a view of
+    it herself."""
+    async def go() -> dict[str, Any]:
         status, made = await _create(world.a, OWEN, world.pid, {
-            "object": "ghost", "name": "Ghost", "shared": True,
-            "spec": {"filter": [{"field": "site", "op": "eq", "value": "x"}],
-                     "columns": ["site"]}})
+            "object": "invoice", "name": "Big invoices", "shared": True,
+            "spec": {"filter": [{"field": "amount", "op": "gt", "value": SECRET}],
+                     "columns": ["amount"]}})
         assert status == 201, made
-        return await _list(world.a, ANA, world.pid, obj="ghost")
+        return {"list": await _list(world.a, ANA, world.pid, obj="invoice"),
+                "save": await _create(world.a, ANA, world.pid, {"object": "invoice",
+                                                                "name": "Mine"})}
 
-    status, got = _run(world, go)
+    got = _run(world, go)
+    status, listed = got["list"]
     assert status == 200
-    [view] = got["views"]
+    [view] = listed["views"]
     assert view["dropped"] == 2 and view["spec"] == {"filter": [], "columns": []}
+    assert str(SECRET) not in json.dumps(listed)
+    status, detail = got["save"]
+    assert status == 422 and detail["code"] == "view_invalid", detail
+
+
+def test_r8_a_view_of_an_object_that_the_app_lacks_is_refused(world) -> None:
+    """P1 of the review: each made-up name would open a new cap of 50."""
+    async def go() -> list[tuple[int, Any]]:
+        return [await _create(world.a, who, world.pid, {"object": "ghost", "name": "Ghost"})
+                for who in (OWEN, ANA)]
+
+    for status, detail in _run(world, go):
+        assert status == 422 and detail["code"] == "view_invalid", detail
+    assert [r["name"] for r in _rows(world, world.pid)] == ["Big visits"]
+
+
+def test_r8_a_view_of_another_package_is_404_on_this_path(world) -> None:
+    """A view of package Q never reads, changes or goes through the path of
+    package P, also for the owner of both."""
+    async def go() -> dict[str, Any]:
+        other = await _app(world)
+        status, made = await _create(world.a, OWEN, other, {
+            "object": "visit", "name": "Other app", "shared": True})
+        assert status == 201, made
+        vid = made["view"]["id"]
+        return {"other": other, "list": await _list(world.a, OWEN, world.pid),
+                "patch": await _patch(world.a, OWEN, world.pid, vid, {"name": "Moved"}),
+                "delete": await _delete(world.a, OWEN, world.pid, vid)}
+
+    got = _run(world, go)
+    assert _names(got["list"][1]) == ["Big visits"]
+    assert got["patch"] == (404, NOT_FOUND) and got["delete"] == (404, NOT_FOUND)
+    assert [r["name"] for r in _rows(world, got["other"])] == ["Other app"]
+
+
+def test_r8_a_view_drops_the_keys_that_the_roles_of_a_viewer_hide(world) -> None:
+    """The verifier's probe (M8). The object grants the role ``boss`` a read
+    that hides ``status``. Ana holds no role, so her roles read no record of
+    the object, and each part of the shared view is dropped. The value that
+    Owen typed never reaches her."""
+    mid = _mid()
+    manifest = _manifest(mid)
+    manifest["roles"] = ["boss"]
+    manifest["objects"][0]["access"] = [{"role": "boss", "read": "all", "hide": ["status"]}]
+
+    async def go() -> dict[str, Any]:
+        status, got = await _pkg("create_package", world.a, OWEN, payload=manifest)
+        assert status == 200, got
+        pid = str(got["package"]["id"])
+        assert (await _pkg("publish", world.a, OWEN, pid, payload={}))[0] == 200
+        status, got = await _pkg("install_package", world.a, OWEN, pid,
+                                 payload={"scope": OPS}, grants=PUBLISHER)
+        assert status == 200, got
+        status, made = await _create(world.a, OWEN, pid, {
+            "object": "visit", "name": "Secret site", "shared": True,
+            "spec": {"filter": [{"field": "site", "op": "eq", "value": "SECRETSITE"}],
+                     "sort": {"field": "status", "dir": "asc"},
+                     "columns": ["site", "status"]}})
+        assert status == 201, made
+        return {"ana": await _list(world.a, ANA, pid), "owen": await _list(world.a, OWEN, pid)}
+
+    got = _run(world, go)
+    status, ana = got["ana"]
+    assert status == 200, ana
+    [view] = ana["views"]
+    assert view["dropped"] == 4
+    assert view["spec"] == {"filter": [], "sort": None, "columns": []}
+    assert "SECRETSITE" not in json.dumps(ana)
+    [whole] = got["owen"][1]["views"]
+    assert whole["dropped"] == 0 and whole["spec"]["filter"][0]["value"] == "SECRETSITE"
 
 
 def test_r8_only_the_owner_changes_a_shared_view(world) -> None:
@@ -476,6 +569,30 @@ def test_r8_the_cap_refuses_view_51(world) -> None:
     rows = _rows(world, world.pid)
     assert sum(1 for r in rows if r["owner"] == ANA_LOW) == views_store.MAX_PRIVATE
     assert sum(1 for r in rows if r["shared"]) == views_store.MAX_SHARED
+
+
+def test_r8_the_cap_of_the_app_holds_across_objects(world, monkeypatch) -> None:
+    """The second wall: a cap for each member on the whole app, and one for
+    the shared views of the app. The test lowers both to 2."""
+    monkeypatch.setattr(views_store, "MAX_PACKAGE_PRIVATE", 2)
+    monkeypatch.setattr(views_store, "MAX_PACKAGE_SHARED", 2)
+
+    async def go() -> dict[str, Any]:
+        out = {"p1": await _create(world.a, OWEN, world.pid, {"object": "visit", "name": "a"}),
+               "p2": await _create(world.a, OWEN, world.pid, {"object": "invoice", "name": "b"}),
+               "p3": await _create(world.a, OWEN, world.pid, {"object": "invoice", "name": "c"}),
+               "s2": await _create(world.a, OWEN, world.pid, {"object": "invoice", "name": "d",
+                                                               "shared": True}),
+               "s3": await _create(world.a, OWEN, world.pid, {"object": "visit", "name": "e",
+                                                               "shared": True})}
+        return out
+
+    got = _run(world, go)
+    assert [got[k][0] for k in ("p1", "p2", "s2")] == [201, 201, 201]
+    for case in ("p3", "s3"):
+        status, detail = got[case]
+        assert status == 409 and detail["code"] == "view_cap", (case, detail)
+        assert "An app holds at most 2" in detail["message"], detail
 
 
 # ── The package delete and the member purge ───────────────────────────────
