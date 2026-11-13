@@ -20,6 +20,9 @@ or a key.
 Metorite never deletes a task because of a change in your calendar. A
 sync takes about one minute.
 
+You can turn off sending your tasks in the row of the connection. Turning it
+off deletes nothing in Google or Outlook.
+
 ## Members
 
 ### Google (personal Gmail or Workspace)

@@ -17,7 +17,7 @@ vi.mock("@/lib/gateway", () => ({
   },
 }));
 
-import { DELETE } from "./route";
+import { DELETE, PATCH } from "./route";
 
 const ID = "3f1c2a9e-1b2d-4c3e-8f4a-5b6c7d8e9f01";
 const del = (id: string, sameSite = true) =>
@@ -56,5 +56,50 @@ describe("DELETE /api/calendar/connections/[id]", () => {
   it("passes a 404 through", async () => {
     seam.status = 404;
     expect((await del(ID)).status).toBe(404);
+  });
+});
+
+const patch = (id: string, body: string, sameSite = true) =>
+  PATCH(
+    new NextRequest("http://localhost/api/calendar/connections/x", {
+      method: "PATCH",
+      headers: sameSite ? { "sec-fetch-site": "same-origin" } : {},
+      body,
+    }),
+    { params: Promise.resolve({ id }) },
+  );
+
+describe("PATCH /api/calendar/connections/[id]", () => {
+  it("forwards a strict boolean to the gateway path", async () => {
+    const res = await patch(ID, '{"push_tasks":false}');
+    expect(res.status).toBe(200);
+    expect(seam.calls).toHaveLength(1);
+    expect(seam.calls[0].path).toBe(`/tasks/calendar/connections/${ID}`);
+    expect(seam.calls[0].init?.method).toBe("PATCH");
+    expect(seam.calls[0].init?.body).toBe('{"push_tasks":false}');
+  });
+
+  it("refuses an extra key, a non-boolean, a bad body and a large body", async () => {
+    for (const bad of [
+      '{"push_tasks":true,"x":1}', '{"push_tasks":"true"}', '{"push_tasks":1}', '{"push_tasks":null}',
+      "{}", "[]", "null", "not json", "", `{"push_tasks":true,"pad":"${"a".repeat(300)}"}`,
+    ]) {
+      expect((await patch(ID, bad)).status, bad.slice(0, 40)).toBe(400);
+    }
+    expect(seam.calls).toEqual([]);
+  });
+
+  it("refuses a bad id and a request from another site", async () => {
+    expect((await patch("..", '{"push_tasks":true}')).status).toBe(400);
+    expect((await patch(`${ID}/sync`, '{"push_tasks":true}')).status).toBe(400);
+    expect((await patch(ID, '{"push_tasks":true}', false)).status).toBe(403);
+    expect(seam.calls).toEqual([]);
+  });
+
+  it("passes a 404 and a 422 through", async () => {
+    seam.status = 404;
+    expect((await patch(ID, '{"push_tasks":true}')).status).toBe(404);
+    seam.status = 422;
+    expect((await patch(ID, '{"push_tasks":true}')).status).toBe(422);
   });
 });

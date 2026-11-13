@@ -17,7 +17,7 @@ describe("the connect guide", () => {
   it("holds the four lists, each with steps", () => {
     expect(GUIDE_LISTS.map((l) => l.id)).toEqual(["google-personal", "google-workspace", "outlook-personal", "microsoft-365"]);
     for (const l of GUIDE_LISTS) expect(l.steps.length).toBeGreaterThan(0);
-    expect(SYNC_NOTES.length).toBe(4);
+    expect(SYNC_NOTES.length).toBe(5);
   });
 
   it("keeps every sentence under 20 words", () => {
