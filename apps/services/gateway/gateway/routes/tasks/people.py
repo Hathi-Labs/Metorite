@@ -34,6 +34,7 @@ from typing import Any
 from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
+from acb_common import get_logger
 from fastapi import Depends, HTTPException, UploadFile
 from gateway.routes.tasks.attachments import _safe_name, _storage_dir
 from gateway.routes.tasks.core import (
@@ -51,6 +52,8 @@ from sqlalchemy import text
 
 _RESUME_MAX_BYTES = 15 * 1024 * 1024  # 15 MB
 _RESUME_EXT = {".pdf", ".docx", ".txt", ".md"}
+
+_log = get_logger("gateway.people")
 
 
 class OrgPersonModel(BaseModel):
@@ -896,7 +899,11 @@ async def update_person(
         # STU-E12a: the keys whose value differs from the row, read BEFORE the
         # UPDATE. The editor sends its whole form, so a submitted key is not a
         # changed key.
-        moved = changed_directory_keys(fields, row)
+        try:
+            moved = changed_directory_keys(fields, row)
+        except Exception:  # an event is never worth a failed write
+            _log.warning("people.changed_keys_failed")
+            moved = []
         set_parts, params = build_person_update(fields, row, actor=_uid(user))
         params["id"] = person_id
         await db.execute(
