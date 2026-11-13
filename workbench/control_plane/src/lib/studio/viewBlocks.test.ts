@@ -3,6 +3,9 @@
  * stat read through the `aggregate` op, a kind that is not built gives null, and a source that
  * names an undeclared action is refused with the sentence of the door guard.
  */
+import { readdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import type { ViewDef } from "./manifest";
@@ -122,9 +125,9 @@ describe("mapView: form and detail", () => {
     expect(m).toEqual({ kind: "problem", reason: READ_ONLY_SENTENCE });
   });
 
-  it("refuses a form that submits to an action that does not create", () => {
+  it("gives null for a form whose declared submit is not a create, so the not-built card shows", () => {
     const m = mapView(view({ id: "f", block: "form", object: "visit", submit: "update_visit" }), ctx());
-    expect(m).toMatchObject({ kind: "problem" });
+    expect(m).toBeNull();
   });
 
   it("gives the detail the list that holds its record", () => {
@@ -155,5 +158,40 @@ describe("mapView: kinds that are not built, and the door guard", () => {
   it("refuses a list when the manifest declares no list action", () => {
     const m = mapView(view({ id: "v", block: "table", object: "visit" }), ctx({ actions: [] }));
     expect(m).toEqual({ kind: "problem", reason: NOT_DECLARED_SENTENCE });
+  });
+});
+
+describe("the ready apps map with no problem view", () => {
+  const dir = resolve(__dirname, "../../../../../packages/acb_common/acb_common/studio_templates");
+  const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+
+  it("finds the six ready apps", () => {
+    expect(files.sort()).toEqual([
+      "expense_claims.json", "field_visits.json", "hiring.json", "purchase_requests.json", "spares.json", "support_desk.json",
+    ]);
+  });
+
+  for (const file of files) {
+    it(`${file}: no view gives a problem, for the owner and for a viewer`, () => {
+      const m = JSON.parse(readFileSync(resolve(dir, file), "utf-8"));
+      const objects = (m.objects ?? []).map((o: Record<string, unknown>) => ({ rules: [], ...o }));
+      const actions: DeclaredAction[] = m.actions ?? [];
+      for (const owner of [true, false]) {
+        const acts = owner ? actions : actions.filter((a) => /\.(list|get|aggregate)$/.test(a.uses));
+        for (const v of m.views as ViewDef[]) {
+          const out = mapView(v, { actions: acts, objects, owner });
+          // A viewer sees the read-only sentence in place of a form, and that is the one allowed problem.
+          const allowed = !owner && v.block === "form";
+          if (!allowed) expect(out?.kind, `${file} ${v.id} owner=${owner}`).not.toBe("problem");
+        }
+      }
+    });
+  }
+
+  it("field visits: the check_in form with an update submit is not built yet", () => {
+    const m = JSON.parse(readFileSync(resolve(dir, "field_visits.json"), "utf-8"));
+    const v = (m.views as ViewDef[]).find((x) => x.id === "check_in") as ViewDef;
+    const objects = (m.objects ?? []).map((o: Record<string, unknown>) => ({ rules: [], ...o }));
+    expect(mapView(v, { actions: m.actions, objects, owner: true })).toBeNull();
   });
 });

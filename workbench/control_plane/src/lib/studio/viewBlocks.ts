@@ -120,9 +120,9 @@ export function mapView(view: ViewDef, ctx: ViewMapContext): ViewModel | null {
     case "form": {
       if (!ctx.owner) return problem(READ_ONLY_SENTENCE);
       const submit = view.submit ? ctx.actions.find((a) => a.id === view.submit)?.uses : `object:${name}.create`;
-      if (!submit || !WRITE_CREATE.test(submit)) {
-        return problem(`“${label}” submits to ${submit ?? "nothing"}. A form submits to an object:<name>.create action.`);
-      }
+      // A declared submit that is not a create needs a chosen record. It is not built yet, so the
+      // member sees the "not built yet" card and no door text.
+      if (!submit || !WRITE_CREATE.test(submit)) return null;
       return { kind: "form", fields: formFields(shown, computed), action: submit, title: view.title ?? `New ${object.label ?? object.name}` };
     }
     default:
