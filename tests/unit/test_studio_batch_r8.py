@@ -674,6 +674,29 @@ def test_r8_a_duplicate_unique_key_in_one_chunk_fails_the_later_item_at_any_edge
     assert _go(w, go) == [["x0:done", "y0:failed"], ["x49:done", "y49:failed"]]
 
 
+def test_r8_a_batch_that_is_not_open_is_never_moved_back_to_open(world) -> None:
+    w = world
+    items = _items(w.ledger, 3)
+    wbk = _by_key(items)
+
+    async def go() -> str:
+        return (await _open(w.a, w.pkg_a, items)).id
+
+    bid = _go(w, go)
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE studio_batches SET status = 'failed' WHERE id = CAST(:b AS uuid)"),
+                  {"b": bid})
+
+    async def again() -> bs.ChunkResult:
+        return await _chunk(w.a, bid, wbk)
+
+    res = _go(w, again)
+    assert res.written == {} and res.status == "failed" and res.pending == 3
+    assert _count(w, "SELECT count(*) FROM studio_batches WHERE id = CAST(:b AS uuid) "
+                     "AND status = 'failed'", b=bid) == 1
+    assert len(_records(w, w.ledger)) == 0
+
+
 # -- the CI guard ------------------------------------------------------------
 
 
