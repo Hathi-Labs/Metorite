@@ -526,6 +526,20 @@ def test_the_studio_object_tables_are_tenant_scoped(table: str) -> None:
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_studio_org_gauge_is_tenant_scoped() -> None:
+    """WS-STU C10a (``ai_studio.md`` §3.1). ``studio_org_usage`` holds the count
+    of the records of one org and their bytes. It may not be exempt, and the
+    committed policy phase must carry it (R5)."""
+    gen = _generator()
+    assert "studio_org_usage" in gen.discover_tables()
+    assert "studio_org_usage" not in gen.EXEMPT
+    assert "studio_org_usage" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE studio_org_usage FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_the_goal_record_table_is_tenant_scoped() -> None:
     """WS-WEB WEB-10 (``web_research.md`` §6). A goal record holds the
     objective of one member of one organization. The table may not be

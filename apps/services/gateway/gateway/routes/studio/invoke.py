@@ -494,6 +494,8 @@ FIELD_INVALID = "field_invalid"
 RULE_REFUSED = "rule_refused"
 RECORD_INVALID = "record_invalid"
 BAD_INPUT = "bad_input"
+#: C10a. A write that takes the org past a cap of its records or their bytes.
+ORG_CAP_REACHED = objects_store.OrgCapReached.code
 
 BUSY_MESSAGE = "This app is busy now, so try the write again in a moment."
 #: J2a: the 503 of a viewer read past the cap of :data:`READERS_PER_ORG`.
@@ -996,7 +998,9 @@ def _set_write_error(out: _Outcome, exc: Exception, line: _Line | None = None) -
 
     ⚠️ The order is load-bearing. ``StoreBusy`` is a subclass of
     ``ObjectStoreError``, so it comes first. A busy org is a 503 that can work
-    later, and not a refused write."""
+    later, and not a refused write. ``OrgCapReached`` (C10a) is a subclass of
+    ``ObjectStoreError`` too, so it comes before that branch. Its sentence
+    names the cap, and it is never of one line."""
     if isinstance(exc, objects_store.StoreBusy):
         out.fail = _busy()
     elif isinstance(exc, objects_store.RecordNotFound) and line is None:
@@ -1017,6 +1021,8 @@ def _set_write_error(out: _Outcome, exc: Exception, line: _Line | None = None) -
                          _query_refusal(exc))
     elif isinstance(exc, RecordError):
         out.fail = _refused(RECORD_INVALID, _at(line, str(exc)))
+    elif isinstance(exc, objects_store.OrgCapReached):
+        out.fail = _refused(ORG_CAP_REACHED, str(exc))
     elif isinstance(exc, objects_store.ObjectStoreError):
         out.fail = _refused(RECORD_INVALID, _at(line, STORE_REFUSED))
     else:

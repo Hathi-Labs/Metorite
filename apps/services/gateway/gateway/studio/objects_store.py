@@ -206,6 +206,15 @@ from ``apps`` deletes the objects, the fields and each hot row that is left.
 :func:`package_counts` counts the objects, the fields and the records (up to
 :data:`COUNT_CAP` for each object) for the preview.
 
+**The org caps (C10a).** An org holds at most
+:data:`~acb_common.studio_fields.MAX_RECORDS_PER_ORG` records and
+:data:`~acb_common.studio_fields.MAX_RECORD_BYTES_PER_ORG` bytes of record
+JSON. The gauge ``studio_org_usage`` holds both counts for each org. Three
+statement triggers on ``studio_records`` keep it exact for every writer: this
+store, the purge, a cascade and raw SQL. This module only reads it, in
+:func:`_run_steps`, under the org lock. A batch past a cap that raised the
+count raises :class:`OrgCapReached`.
+
 **The change history (C4a-1).** Migration ``studio_record_changes`` (431 at
 build) adds the fifth table. :func:`_apply_write` writes one row for each
 create, update and delete, in the SAVEPOINT of the batch, so a refused batch
@@ -272,6 +281,8 @@ from acb_common.studio_fields import (
     MAX_LABEL_CHARS,
     MAX_OBJECTS_PER_ORG,
     MAX_OBJECTS_PER_PACKAGE,
+    MAX_RECORD_BYTES_PER_ORG,
+    MAX_RECORDS_PER_ORG,
     NAME_PATTERN,
     FieldError,
     FieldSpec,
@@ -390,6 +401,14 @@ _OBJECT_COUNTS_SQL = (
 _ORG_HOT_SQL = (
     "SELECT count(*) FROM studio_object_fields "
     f"WHERE organization_id = {_BOUND_ORG} AND hot"
+)
+
+#: C10a. The gauge of the bound org: its records and the bytes of their JSON
+#: text. Triggers on ``studio_records`` keep it exact, so a batch reads one row
+#: and never counts. An org with no row holds nothing.
+_ORG_USAGE_SQL = (
+    "SELECT records, bytes FROM studio_org_usage "
+    f"WHERE organization_id = {_BOUND_ORG}"
 )
 
 #: The object and its fields, in one statement. A name that the package
@@ -662,6 +681,14 @@ class FieldKeyTaken(ObjectStoreError):
 
 class BudgetExceeded(ObjectStoreError):
     """A cap: hot fields, fields, objects, the backfill size, or the size of a batch."""
+
+
+class OrgCapReached(BudgetExceeded):
+    """C10a. The batch takes the org past a cap of its records or of their
+    bytes. The SAVEPOINT of the batch rolled back, so it wrote nothing. A
+    delete and an update that makes a record smaller always pass."""
+
+    code = "org_cap_reached"
 
 
 class RecordNotFound(ObjectStoreError):
@@ -3574,10 +3601,46 @@ async def _recompute_parents(db: Any, batch: _Batch, deadline: float) -> None:
             await _derive_parent(timed, batch, key, data)
 
 
+async def _org_usage(db: Any) -> tuple[int, int]:
+    """C10a. The records and the bytes of the bound org, from the gauge."""
+    row = (await db.execute(text(_ORG_USAGE_SQL))).first()
+    return (0, 0) if row is None else (int(row[0]), int(row[1]))
+
+
+def _size_words(size: int) -> str:
+    """A byte cap in words: ``2 GiB``, or a count of bytes."""
+    gib = 1024**3
+    return f"{size // gib} GiB" if size % gib == 0 else f"{size:,} bytes"
+
+
+def _check_org_caps(batch: _Batch, before: tuple[int, int], after: tuple[int, int]) -> None:
+    """C10a. Refuse the batch when the org is past a cap and this batch raised
+    that count. So a delete and an update that makes a record smaller always
+    pass, also past a cap (the D108.5 idiom). The refusal names the whole
+    batch, so its index is 0."""
+    (records_were, bytes_were), (records, size) = before, after
+    if records > MAX_RECORDS_PER_ORG and records > records_were:
+        batch.index = 0
+        raise OrgCapReached(
+            f"This organization holds {MAX_RECORDS_PER_ORG:,} records, the most it can hold, "
+            "so delete records that you do not use.")
+    if size > MAX_RECORD_BYTES_PER_ORG and size > bytes_were:
+        batch.index = 0
+        raise OrgCapReached(
+            f"This organization holds {_size_words(MAX_RECORD_BYTES_PER_ORG)} of records, "
+            "the most it can hold, so delete records that you do not use.")
+
+
 async def _run_steps(db: Any, batch: _Batch) -> list[Record | bool]:
     """The six steps, in their order, with the roll-up steps (C7b) between them.
-    The caller holds the SAVEPOINT."""
+    The caller holds the SAVEPOINT.
+
+    C10a. The gauge of the org is read under the org lock before the writes,
+    and again after the writes and the derived writes of the roll-ups. A batch
+    that takes the org past a cap raises :class:`OrgCapReached` before the
+    rule checks, and the SAVEPOINT writes nothing."""
     await _lock_org(db)
+    usage = await _org_usage(db)
     await _find_rollups(db, batch)
     await _find_lines(db, batch)
     await _lock_objects(db, batch)
@@ -3593,6 +3656,7 @@ async def _run_steps(db: Any, batch: _Batch) -> list[Record | bool]:
     deadline = _clock() + studio_query.TIMEOUT_MS / 1000
     await _check_line_parents(db, batch, deadline)
     await _recompute_parents(db, batch, deadline)
+    _check_org_caps(batch, usage, await _org_usage(db))
     keys = _check_records(batch)
     # C18: the walk of each record that got a new parent, after the checks
     # with no SQL, so a parent field that is not hot fails closed there first.

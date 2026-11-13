@@ -55,6 +55,11 @@ k. After the org wins, Ana still publishes her app: the key that her install
    kept stays hers, and the resolve shows the wider claim. A new key that an
    org claim holds is still 409.
 
+**WS-STU J2b-1 (path A).** An org install needs the live version approved.
+So ``_install`` first asks and approves the live version for an org scope,
+through the one writer, with Ben as the approver (``_studio_approval.approve_live``). The
+gate itself is fenced in ``test_studio_package_approval_routes_r8.py``.
+
 **R7: red first, then mutate.** Each mutation ran on 2026-11-07 or
 2026-11-08, and the build report of task 1963 holds the counts.
 
@@ -96,6 +101,7 @@ from gateway.routes.studio import packages
 from sqlalchemy import text
 from starlette.requests import Request
 
+from tests.unit._studio_approval import approve_live
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -206,10 +212,12 @@ async def _live(org: str, email: str, name: str = "Site visits",
 
 async def _install(org: str, email: str, pid: str, scope: Any,
                    grants: tuple[str, ...] = PUBLISHER,
-                   version: int | None = None) -> tuple[int, Any]:
+                   version: int | None = None, approve: bool = True) -> tuple[int, Any]:
     payload: dict[str, Any] = {"scope": scope}
     if version is not None:
         payload["version"] = version
+    if approve and isinstance(scope, str) and scope.strip().lower() == "org":
+        await approve_live(org, email, pid, BEN)
     return await _call("install_package", org, email, pid, payload=payload, grants=grants)
 
 

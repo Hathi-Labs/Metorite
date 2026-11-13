@@ -22,6 +22,8 @@ Note: `config.json` names the app `workflows` because the `/studio` pane is not 
 - `studio_save` saves a manifest as the draft of a package.
 - `studio_publish` publishes the stored draft of a package. Its objects become tables.
 - `studio_delete_package` deletes a package for good. It always shows one card with the counts first.
+- `studio_template_list` lists the ready apps: id, name and purpose.
+- `studio_create_from_template` creates a ready app for the member and publishes it, for the member only. It always shows one card first.
 - `studio_package_get` lists the packages of the member, or reads one with its objects and actions.
 - `studio_record_list` reads one page of the records of an object of a package.
 - `studio_record_create`, `studio_record_update` and `studio_record_delete` add, change and delete a record. Each asks the member first.
