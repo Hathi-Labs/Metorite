@@ -39,6 +39,12 @@ is not a pass.
 10. The version is stable, a match is a 304, and only the viewer's own
     entries move it.
 11. A duplicate claim still raises (``test_package_host_store_r8.py``).
+12. WS-STU I1a. A name of ``connections`` with no live row gives
+    ``needs_setup: true``. An org row ``connected`` meets it for each member,
+    and a member row meets it for that member only. ``needs_reconnect``,
+    ``needs_reset`` and ``disconnected`` meet nothing. A row of org B never
+    meets a need of org A. An install with no connection costs no statement
+    more, and an install with one costs one read of the registry.
 
 **R7: red first, then mutate.** Each mutation ran on 2026-11-04.
 
@@ -55,6 +61,17 @@ is not a pass.
   J2a): pass ``groups=[]``.
   ``test_r8_a_group_install_shows_to_its_members_only``, the widest test and
   the winner test go red.
+
+**The mutations of I1a.** Each ran on 2026-11-14, on the cases of section 12.
+
+* M5. ``connections/store._MET_SQL``: drop ``AND member_email = :member``.
+  ``test_r8_a_member_row_meets_the_need_of_that_member_only`` goes red: the
+  row of Ben meets the need of Cat.
+* M6. ``connections/store._MET_SQL``: drop ``AND status = 'connected'``.
+  ``test_r8_a_row_that_is_not_connected_meets_nothing`` goes red.
+* M7. ``connections/store._MET_SQL``: drop ``organization_id = CAST(:org AS
+  uuid) AND``. No case goes red, because FORCE RLS still binds the read to
+  the bound org. The R8 run as the app role is what proves the wall.
 """
 
 from __future__ import annotations
@@ -520,3 +537,173 @@ def test_r8_an_org_off_the_list_gets_404(world, monkeypatch) -> None:
         _view(world, ANA)
     assert exc.value.status_code == 404
     assert _view(world, ZED, org="b").status == 200
+
+
+
+# ── 12. The connections (WS-STU I1a) ───────────────────────────────────────
+
+#: A provider of the registry that no other suite names.
+TALLY = f"mcp:tally-{TAG}"
+
+
+@pytest.fixture
+def conns(world):
+    """The rows of the registry that a case writes, as the superuser. The
+    reads go through the app role, so FORCE RLS binds them."""
+    yield world
+    _admin(world, "DELETE FROM integration_connections WHERE provider LIKE :p",
+           {"p": f"%{TAG}%"})
+
+
+def _connections(world: Any, app: str, names: Any) -> None:
+    man = json.dumps({"studio": 1, "id": _mid(app), "name": "P", "purpose": "T",
+                      "connections": names})
+    _admin(world, "UPDATE app_versions SET manifest = CAST(:m AS jsonb) "
+                  "WHERE app_id = CAST(:a AS uuid)", {"m": man, "a": world.apps[app]})
+    _admin(world, "UPDATE apps SET manifest = CAST(:m AS jsonb) WHERE id = CAST(:a AS uuid)",
+           {"m": man, "a": world.apps[app]})
+
+
+def _row(world: Any, provider: str = TALLY, *, org: str = "a", member: str | None = None,
+         status: str = "connected") -> str:
+    with world.p.admin_engine.begin() as c:
+        return str(c.execute(text(
+            "INSERT INTO integration_connections (organization_id, provider, owning_app, "
+            "scope_kind, member_email, status) VALUES (CAST(:o AS uuid), :p, 'integrations', "
+            ":k, :m, :s) RETURNING id"),
+            {"o": _org(world, org), "p": provider, "k": "member" if member else "org",
+             "m": member.lower() if member else None, "s": status}).scalar_one())
+
+
+def _setup_of(world: Any, who: str, key: str, **kw: Any) -> bool:
+    return _mine(_view(world, who, **kw).body)[key]["needs_setup"]
+
+
+def test_r8_a_missing_connection_needs_setup_until_an_org_row_connects(conns) -> None:
+    world = conns
+    _connections(world, "a1", [TALLY])
+    _install(world, "a1", "org", [_claim(_k("c1"))])
+    assert [_setup_of(world, w, _k("c1")) for w in _ALL_A] == [True] * len(_ALL_A)
+    _row(world)
+    assert [_setup_of(world, w, _k("c1")) for w in _ALL_A] == [False] * len(_ALL_A)
+
+
+def test_r8_a_row_that_is_not_connected_meets_nothing(conns) -> None:
+    world = conns
+    _connections(world, "a1", [TALLY])
+    _install(world, "a1", "org", [_claim(_k("c2"))])
+    rid = _row(world, status="needs_reconnect")
+    assert _setup_of(world, BEN, _k("c2")) is True
+    for status in ("needs_reset", "disconnected"):
+        _admin(world, "UPDATE integration_connections SET status = :s "
+                      "WHERE id = CAST(:i AS uuid)", {"s": status, "i": rid})
+        assert _setup_of(world, BEN, _k("c2")) is True, status
+    _admin(world, "UPDATE integration_connections SET status = 'connected' "
+                  "WHERE id = CAST(:i AS uuid)", {"i": rid})
+    assert _setup_of(world, BEN, _k("c2")) is False
+
+
+def test_r8_a_member_row_meets_the_need_of_that_member_only(conns) -> None:
+    world = conns
+    _connections(world, "a1", [TALLY])
+    _install(world, "a1", "org", [_claim(_k("c3"))])
+    _row(world, member=BEN)
+    _row(world, member=DAN)                 # mixed case in app_user, lower in the row
+    seen = {w: _setup_of(world, w, _k("c3")) for w in _ALL_A}
+    assert seen == {ANA: True, BEN: False, CAT: True, DAN: False, EVE: True}
+
+
+def test_r8_a_row_of_another_org_never_meets_the_need(conns) -> None:
+    world = conns
+    _connections(world, "a1", [TALLY])
+    _connections(world, "b1", [TALLY])
+    _install(world, "a1", "org", [_claim(_k("c4a"))])
+    _install(world, "b1", "org", [_claim(_k("c4b"))], org="b", by=ZED)
+    _row(world, org="b")
+    _row(world, org="b", member=BEN)        # the address of Ben, in org B
+    assert _setup_of(world, BEN, _k("c4a")) is True
+    assert _setup_of(world, ZED, _k("c4b"), org="b") is False
+    _row(world, org="a")
+    assert _setup_of(world, BEN, _k("c4a")) is False
+
+
+def test_r8_each_name_must_be_met(conns) -> None:
+    world = conns
+    _connections(world, "a1", [TALLY, f"zoho{TAG}"])
+    _install(world, "a1", "org", [_claim(_k("c5"))])
+    _row(world)
+    assert _setup_of(world, BEN, _k("c5")) is True
+    _row(world, f"zoho{TAG}")
+    assert _setup_of(world, BEN, _k("c5")) is False
+
+
+def _view_statements(world: Any, who: str) -> tuple[dict[str, Any], list[str]]:
+    """Call the real handler as *who* in org A, and record each statement
+    that the app role's engine sends."""
+    from acb_common.db import get_engine
+    from sqlalchemy import event
+
+    seen: list[str] = []
+    user = UserContext(email=who, role=UserRole.EMPLOYEE, access=build_access(["feature:*"]),
+                       organization_id=world.p.org_a)
+    req = Request({"type": "http", "method": "GET", "path": "/shell/manifest", "headers": []})
+
+    def _record(_c: Any, _cur: Any, statement: str, *_rest: Any) -> None:
+        seen.append(statement)
+
+    async def go() -> Any:
+        async with tenant_engine_scope(_dsn(world.p.app_url)):
+            event.listen(get_engine().sync_engine, "before_cursor_execute", _record)
+            token = bind_tenant(world.p.org_a)
+            try:
+                return await manifest.shell_manifest(req, user)
+            finally:
+                release_tenant(token)
+
+    resp = asyncio.run(go())
+    return json.loads(resp.body), seen
+
+
+def test_r8_an_install_with_no_connection_costs_no_statement_more(conns) -> None:
+    """``/auth/me`` and ``GET /shell/manifest`` call the same ``resolve_for``."""
+    world = conns
+    _install(world, "a1", "org", [_claim(_k("c6"))])
+    body, seen = _view_statements(world, BEN)
+    assert _mine(body)[_k("c6")]["needs_setup"] is False
+    assert not [s for s in seen if "integration_connections" in s]
+    assert not [s for s in seen if "app.tenant_id', true), '') AS uuid) AS text)" in s]
+    _connections(world, "a2", [TALLY])
+    _install(world, "a2", "org", [_claim(_k("c7"))])
+    _connections(world, "a3", [TALLY])
+    _install(world, "a3", "org", [_claim(_k("c8"))])
+    body, seen = _view_statements(world, BEN)
+    assert len([s for s in seen if "integration_connections" in s]) == 1
+    assert (_mine(body)[_k("c7")]["needs_setup"], _mine(body)[_k("c8")]["needs_setup"]) == (
+        True, True)
+
+
+def test_r8_the_store_reads_the_providers_of_the_member(conns) -> None:
+    """``connections/store.met_providers`` as the app role: the org rows and
+    the member's own rows that are ``connected``, and nothing of org B."""
+    from gateway.connections import store as connections
+
+    world = conns
+    _row(world)
+    _row(world, f"zoho{TAG}", member=BEN)
+    _row(world, f"github{TAG}", member=CAT)
+    _row(world, f"drive{TAG}", status="needs_reconnect")
+    _row(world, f"bonly{TAG}", org="b")
+
+    async def go(org: str, who: str, bound: str | None = None) -> frozenset[str]:
+        async with (tenant_engine_scope(_dsn(world.p.app_url)),
+                    tenant_session(bound or org) as db):
+            got = await connections.met_providers(db, org, who)
+        return frozenset(x for x in got if TAG in x)
+
+    a, b = world.p.org_a, world.p.org_b
+    assert asyncio.run(go(a, BEN.upper())) == {TALLY, f"zoho{TAG}"}
+    assert asyncio.run(go(a, CAT)) == {TALLY, f"github{TAG}"}
+    assert asyncio.run(go(a, EVE)) == {TALLY}
+    assert asyncio.run(go(b, ZED)) == {f"bonly{TAG}"}
+    # An org that the session does not bind: FORCE RLS gives nothing.
+    assert asyncio.run(go(b, ZED, bound=a)) == frozenset()

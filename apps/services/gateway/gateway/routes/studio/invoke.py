@@ -25,6 +25,12 @@ package declares. The route registers on the router of ``actions.py``, as
    gets 423 ``package_paused`` for each action, before the declaration. The
    row of the call holds the code. A viewer of a paused package reads no
    install of it, so a viewer gets the same 404.
+   I1a: a manifest that names a connection that the caller does not have
+   now gets 409 ``needs_connection`` for each action, before the
+   declaration. The draft decides for the owner, and the installed version
+   for a viewer. The connections are the org rows of the bound org and the
+   caller's own member rows (``package_host/resolve.met_connections``). A
+   ``preview=1`` object action stays open. The row of the call holds the code.
 4. The declaration. The path names an ``actions[].id`` of the manifest. An
    id that the manifest does not declare gets 403 ``not_declared``.
 5. The class. An ``object:<name>.<op>`` action takes its class from
@@ -232,7 +238,9 @@ through that install. The order:
 4. In one session, under a reader slot: the member is the same, and the
    member sees THIS install now (``resolve.install_seen_by``). A paused or
    an archived install, a paused app and a group that the member left each
-   give ``run_as_lost``.
+   give ``run_as_lost``. A pinned manifest that names a connection that the
+   member does not have gives ``needs_connection`` (I1a). The connections
+   are the member's, never a caller's.
 5. The declaration and the class come from the manifest of the version that
    the install pins (``viewer.installed`` on that row), NEVER from the draft
    of the owner. :func:`_check` reads the draft for the owner, so the run does
@@ -296,6 +304,8 @@ from gateway.studio.preview import emit_record_event, preview_scope
 __all__ = [
     "AGGREGATE_INPUT_KEYS",
     "ASK_MARKER",
+    "CONNECTION_STATUS",
+    "CONNECTION_TEXT",
     "DELEGATED_EXECUTORS",
     "DIRECT_EXECUTORS",
     "DOOR_OP",
@@ -303,6 +313,7 @@ __all__ = [
     "LIST_INPUT_KEYS",
     "MAX_AUDIT_TEXT",
     "MAX_BODY_BYTES",
+    "NEEDS_CONNECTION",
     "OPEN_EXECUTORS",
     "PACKAGE_PAUSED",
     "PAUSED_STATUS",
@@ -469,6 +480,25 @@ REPEATED_HEADERS = "Send each identity header of this request once, so the app r
 PACKAGE_PAUSED = "package_paused"
 PAUSED_STATUS = 423
 PAUSED_TEXT = "This app is paused, so it runs no action until someone resumes it."
+
+#: WS-STU I1a: the one code of an action of a package whose manifest names a
+#: connection that the caller does not have, its status and its one sentence.
+#: The door refuses each action and each class with it, before the
+#: declaration. A ``preview=1`` object action is the one exception, so the IDE
+#: works while the member connects. 409 is not a 403, because no right of the
+#: caller is missing: a setup step of the app is.
+NEEDS_CONNECTION = "needs_connection"
+CONNECTION_STATUS = 409
+CONNECTION_TEXT = (
+    "This app needs a connection that you do not have, so it runs no action until "
+    "someone connects it.")
+
+#: The two refusals that are not a 403 (J3a and I1a): the status and the one
+#: sentence of each code. Neither code is in :data:`REFUSALS`.
+_NOT_A_403: dict[str, tuple[int, str]] = {
+    PACKAGE_PAUSED: (PAUSED_STATUS, PAUSED_TEXT),
+    NEEDS_CONNECTION: (CONNECTION_STATUS, CONNECTION_TEXT),
+}
 
 #: The text of ``approval_required`` for a write of an object while
 #: ``APP_REQUESTS_ORGS`` holds the org (fix round 2): an ask works there.
@@ -931,6 +961,33 @@ async def _run_object_aggregate(db: Any, package: _App, ref: UsesRef,
 _READS = {"get": _run_object_get, "list": _run_object_list, "aggregate": _run_object_aggregate}
 
 
+def _object_action(manifest: dict[str, Any], action: str) -> bool:
+    """True when *manifest* declares *action* as an ``object:`` action."""
+    entry = _declared(manifest, action)
+    ref = None if entry is None else parse_uses(entry.get("uses"))
+    return ref is not None and ref.source == "object"
+
+
+async def _needs_connection(db: Any, member: str, manifest: dict[str, Any], action: str,
+                            preview: bool = False) -> bool:
+    """True when *manifest* names a connection that *member* does not have now
+    (WS-STU I1a): the refusal :data:`NEEDS_CONNECTION`.
+
+    The rule is ``resolve.connections_met``, the one rule of the resolve too.
+    The met set comes from ``resolve.met_connections``: the org rows of the
+    bound org and the member rows of *member*, never of another member. A
+    manifest with no connection reads nothing, and a ``connections`` value
+    that is not a list of text fails closed with no read. A *preview* of an
+    object action stays open, so the IDE works while the member connects."""
+    names = _resolve.connection_names(manifest)
+    if names == () or (preview and _object_action(manifest, action)):
+        return False
+    if names is None:
+        return True
+    met = await _resolve.met_connections(db, viewer=member)
+    return not _resolve.connections_met(manifest, met)
+
+
 async def _check(db: Any, member: str, pid: str, action: str, out: _Outcome,
                  direct: bool = False, delegated: bool = False,
                  preview: bool = False, *,
@@ -952,6 +1009,12 @@ async def _check(db: Any, member: str, pid: str, action: str, out: _Outcome,
     J3a: a paused package of *member* refuses each action with
     :data:`PACKAGE_PAUSED`, before the declaration, at each run. The answer
     names no ``uses``, so no later step of the door reads a class for it.
+
+    I1a: a manifest that names a connection that *member* does not have now
+    refuses each action with :data:`NEEDS_CONNECTION`, before the declaration,
+    at each run (:func:`_needs_connection`). The manifest is the draft for
+    the owner, and the installed version for a viewer. A *preview* of an
+    object action stays open.
     """
     out.uses, out.cls, out.refusal = None, None, None
     out.viewer, out.version = False, None
@@ -966,6 +1029,9 @@ async def _check(db: Any, member: str, pid: str, action: str, out: _Outcome,
             out.viewer, out.version = True, package.version
     if package is None:
         raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if await _needs_connection(db, member, package.manifest, action, preview):
+        out.refusal = NEEDS_CONNECTION
+        return package, None
     entry = _declared(package.manifest, action)
     ref = None if entry is None else parse_uses(entry.get("uses"))
     if entry is None or ref is None:
@@ -1727,6 +1793,10 @@ async def _run_as_session(db: Any, *, member: str, install_id: str, action: str,
         out.refusal = RUN_AS_LOST
         return
     out.version = app.version
+    if await _needs_connection(db, member, app.manifest, action):
+        # I1a: the connections of the run_as member, never of a caller.
+        out.refusal = NEEDS_CONNECTION
+        return
     entry = _declared(app.manifest, action)
     ref = None if entry is None else parse_uses(entry.get("uses"))
     if entry is None or ref is None:
@@ -2130,9 +2200,9 @@ def _answer(out: _Outcome) -> dict[str, Any] | Response:
     if out.catalog_down:
         raise HTTPException(status_code=503, detail={
             "code": CATALOG_UNAVAILABLE, "message": CATALOG_DOWN})
-    if out.refusal == PACKAGE_PAUSED:
-        raise HTTPException(status_code=PAUSED_STATUS, detail={
-            "code": PACKAGE_PAUSED, "message": PAUSED_TEXT})
+    if out.refusal in _NOT_A_403:
+        status, message = _NOT_A_403[out.refusal]
+        raise HTTPException(status_code=status, detail={"code": out.refusal, "message": message})
     if out.refusal is not None:
         ask = out.refusal == APPROVAL_REQUIRED and out.can_ask
         raise HTTPException(status_code=403, detail={

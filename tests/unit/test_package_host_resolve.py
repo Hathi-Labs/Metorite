@@ -33,6 +33,17 @@ h. The SQL reads the one share rule and the one group read, and keeps no
 * M4. ``resolve.system_package_ids``: drop the ``feature_ok`` check.
   ``test_a_gated_system_host_is_missing_when_the_viewer_cannot_use_it`` goes
   red.
+
+i. WS-STU I1a. Each name of ``connections`` is one more need, met only by the
+   set of the viewer. A value that is not a list of text fails closed.
+   ``resolve_for`` reads the set ONCE, and only when a kept install names a
+   connection, so an install with none costs no statement. The MCP name rule
+   of the manifest equals the rule of the registry.
+
+* M5 (I1a). ``resolve.needs_met``: drop the ``connections_met`` check.
+  ``test_needs_setup_follows_the_connections`` goes red.
+* M6 (I1a). ``resolve.resolve_for``: read the set for each call.
+  ``test_an_install_with_no_connection_costs_no_statement`` goes red.
 """
 
 from __future__ import annotations
@@ -452,3 +463,150 @@ def test_the_route_module_runs_no_sql() -> None:
     names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
     assert "text" not in names
     assert not re.search(r"\bSELECT\b", inspect.getsource(manifest))
+
+
+
+# ── i. The connections (WS-STU I1a) ────────────────────────────────────────
+
+
+@pytest.mark.parametrize(("manifest", "names"), [
+    ({"id": "m"}, ()),
+    ({"id": "m", "connections": []}, ()),
+    ({"id": "m", "connections": ["mcp:tally", "zoho"]}, ("mcp:tally", "zoho")),
+    ({"id": "m", "connections": "zoho"}, None),
+    ({"id": "m", "connections": ["zoho", 3]}, None),
+    ({"id": "m", "connections": None}, None),
+    ({"id": "m", "connections": {"zoho": True}}, None),
+    ("not an object", ()),
+])
+def test_connection_names(manifest: Any, names: Any) -> None:
+    assert resolve.connection_names(manifest) == names
+
+
+@pytest.mark.parametrize(("connections", "met", "setup"), [
+    ([], frozenset(), False),
+    (["mcp:tally"], frozenset(), True),
+    (["mcp:tally"], frozenset({"mcp:tally"}), False),
+    (["mcp:tally", "zoho"], frozenset({"mcp:tally"}), True),
+    (["mcp:tally", "zoho"], frozenset({"zoho", "mcp:tally", "github"}), False),
+    ("mcp:tally", frozenset({"mcp:tally"}), True),
+    ([None], frozenset({"mcp:tally"}), True),
+])
+def test_needs_setup_follows_the_connections(connections: Any, met: frozenset[str],
+                                             setup: bool) -> None:
+    installs = [_inst("o", "a", manifest={"id": "m", "connections": connections})]
+    out = resolve.resolve({}, installs, [_claim("o", "k")], _all, met)
+    assert out["jobs"][0]["needs_setup"] is setup
+
+
+def test_a_connection_need_never_lives_in_needs() -> None:
+    """``connections`` is the one place of a connection need. ``needs`` keeps
+    its two kinds, so ``{"connection": ...}`` there still fails closed."""
+    assert frozenset({"feature", "package"}) == resolve.NEED_KINDS
+    manifest = {"id": "m", "needs": [{"connection": "zoho"}]}
+    assert resolve.needs_met(manifest, _all, set(), frozenset({"zoho"})) is False
+
+
+def test_the_connections_add_to_the_other_needs() -> None:
+    manifest = {"id": "m", "needs": [{"feature": "hr"}], "connections": ["zoho"]}
+    assert resolve.needs_met(manifest, _all, set(), {"zoho"}) is True
+    assert resolve.needs_met(manifest, _none, set(), {"zoho"}) is False
+    assert resolve.needs_met(manifest, _all, set(), set()) is False
+
+
+class _Answer:
+    def __init__(self, value: Any) -> None:
+        self._value = value
+
+    def scalar(self) -> Any:
+        return self._value
+
+    def all(self) -> Any:
+        return self._value
+
+
+class _CountingDb:
+    """A session that answers the two statements of the one read, and counts
+    each statement. The installs and the claims are patched."""
+
+    def __init__(self, bound: str | None = ORG, providers: tuple[str, ...] = ()) -> None:
+        self.bound = bound
+        self.providers = providers
+        self.statements: list[tuple[str, dict[str, Any]]] = []
+
+    async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> Any:
+        from gateway.connections import store as connections
+
+        sql = str(stmt)
+        self.statements.append((sql, dict(params or {})))
+        if sql == resolve.BOUND_ORG_SQL:
+            return _Answer(self.bound)
+        assert sql == connections._MET_SQL, sql[:80]
+        return _Answer([(p,) for p in self.providers])
+
+
+def _resolve_for(monkeypatch, db: _CountingDb, installs: list[InstallRow]) -> dict[str, Any]:
+    async def _visible(_db: Any, *, viewer: str) -> list[InstallRow]:
+        return resolve.widest_per_app(installs)
+
+    async def _claims(_db: Any, ids: Any) -> list[ClaimRow]:
+        return [_claim(i, f"k-{i}") for i in ids]
+
+    monkeypatch.setattr(resolve, "visible_installs", _visible)
+    monkeypatch.setattr(resolve, "read_claims", _claims)
+    monkeypatch.setattr(resolve, "system_contributions", lambda: {})
+    return asyncio.run(resolve.resolve_for(db, viewer="Ana@Pkg.Test", can_use=_all))
+
+
+def test_an_install_with_no_connection_costs_no_statement(monkeypatch) -> None:
+    """``/auth/me`` calls ``resolve_for`` (``routes/admin/me.py``). An app
+    with no connection must add no statement to it."""
+    db = _CountingDb()
+    body = _resolve_for(monkeypatch, db, [
+        _inst("o", "a", manifest={"id": "a"}),
+        _inst("p", "b", manifest={"id": "b", "connections": []})])
+    assert db.statements == []
+    assert {e["needs_setup"] for e in body["contributions"]["jobs"]} == {False}
+
+
+def test_the_set_is_read_once_for_the_viewer_in_the_bound_org(monkeypatch) -> None:
+    from gateway.connections import store as connections
+
+    db = _CountingDb(providers=("mcp:tally",))
+    body = _resolve_for(monkeypatch, db, [
+        _inst("o", "a", manifest={"id": "a", "connections": ["mcp:tally"]}),
+        _inst("p", "b", manifest={"id": "b", "connections": ["zoho"]}),
+        _inst("q", "c", manifest={"id": "c"})])
+    assert [s for s, _ in db.statements] == [resolve.BOUND_ORG_SQL, connections._MET_SQL]
+    assert db.statements[1][1] == {"org": ORG, "member": "ana@pkg.test"}
+    setup = {e["install_id"]: e["needs_setup"] for e in body["contributions"]["jobs"]}
+    assert setup == {"o": False, "p": True, "q": False}
+
+
+def test_a_session_with_no_bound_org_meets_no_connection(monkeypatch) -> None:
+    db = _CountingDb(bound=None, providers=("mcp:tally",))
+    body = _resolve_for(monkeypatch, db, [
+        _inst("o", "a", manifest={"id": "a", "connections": ["mcp:tally"]})])
+    assert [s for s, _ in db.statements] == [resolve.BOUND_ORG_SQL]
+    assert body["contributions"]["jobs"][0]["needs_setup"] is True
+
+
+def test_the_mcp_name_rule_of_the_manifest_is_the_registry_rule() -> None:
+    from acb_common.studio_manifest import CONNECTION_NAME_RE, MCP_SERVER_NAME
+    from gateway.connections import mcp
+
+    assert mcp.NAME_RE.pattern == f"^{MCP_SERVER_NAME}$"
+    assert mcp.PREFIX == "mcp:"
+    assert CONNECTION_NAME_RE.fullmatch(mcp.provider_for("tally-erp"))
+
+
+def test_the_met_read_names_no_blob_and_no_other_member() -> None:
+    """The one read of the registry. It reads the provider column only, and a
+    member row counts only for the member of the read (the R8 twin proves it)."""
+    from gateway.connections import store as connections
+
+    sql = connections._MET_SQL
+    assert sql.startswith("SELECT DISTINCT provider FROM integration_connections")
+    assert "credentials" not in sql
+    assert "status = 'connected'" in sql
+    assert "member_email = :member" in sql and "organization_id = CAST(:org AS uuid)" in sql

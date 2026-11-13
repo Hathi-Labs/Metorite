@@ -568,6 +568,53 @@ def test_a_run_past_the_reader_cap_opens_no_read_session(run: _Run, monkeypatch)
     assert run.calls == [f"session:{ORG}", "read_run_as", f"may:{MIA}:{ORG}"]
 
 
+
+# ── 3b. A connection that the member does not have (WS-STU I1a) ────────────
+#
+# R7. Mutation, run on 2026-11-14: ``_run_as_session``: drop the call of
+# ``_needs_connection``. ``test_a_pinned_connection_that_the_member_lacks_is_refused``
+# goes red, and so does case p of the R8 twin.
+
+
+@pytest.fixture
+def met(run: _Run, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    state: dict[str, Any] = {"set": frozenset(), "reads": []}
+
+    async def _met(db: Any, *, viewer: str) -> frozenset[str]:
+        run.calls.append(f"met:{viewer}")
+        state["reads"].append(viewer)
+        return state["set"]
+
+    monkeypatch.setattr(resolve, "met_connections", _met)
+    return state
+
+
+def test_a_pinned_connection_that_the_member_lacks_is_refused(run: _Run, met) -> None:
+    run.row = _row({**_PINNED, "connections": ["mcp:tally"]})
+    got = _read("find", {"limit": 5})
+    assert (got["ok"], got["outcome"], got["code"]) == (False, "refused",
+                                                         invoke.NEEDS_CONNECTION)
+    assert not any(c.startswith(("list:", "get:")) for c in run.calls)
+    # The set of the run_as member, never of a caller.
+    assert met["reads"] == [MIA]
+    (row,) = run.audits
+    assert row["detail"]["reason"] == invoke.NEEDS_CONNECTION
+    assert row["detail"]["run_as"] == MIA
+
+
+def test_a_pinned_connection_that_the_member_has_runs_the_read(run: _Run, met) -> None:
+    run.row = _row({**_PINNED, "connections": ["mcp:tally"]})
+    met["set"] = frozenset({"mcp:tally"})
+    got = _read("find", {"limit": 5})
+    assert (got["outcome"], got["code"]) == ("ran", None)
+    assert met["reads"] == [MIA]
+
+
+def test_a_pinned_manifest_with_no_connection_reads_no_set(run: _Run, met) -> None:
+    assert _read("find")["outcome"] == "ran"
+    assert met["reads"] == []
+
+
 # ── 4. The fences ──────────────────────────────────────────────────────────
 
 
