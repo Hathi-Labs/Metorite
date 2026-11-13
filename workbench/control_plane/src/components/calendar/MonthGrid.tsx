@@ -1,45 +1,32 @@
 "use client";
 
-import { MyTask } from "@/app/tasks/lib/types";
-import {
-  addDays,
-  sameDay,
-  blocksForDay,
-} from "@/app/tasks/lib/scheduling";
-import {
-  DOW,
-  startOfMonthGrid,
-  deadlinesForDay,
-} from "./shared";
 import Icon from "@/components/Icon";
-import { monthChips, type CalReminder } from "../lib/reminders";
-import { externalChips, type ExternalView } from "../lib/externalEntries";
-import { externalLook } from "./externalLook";
+import { addDays, sameDay } from "@/app/tasks/lib/scheduling";
+import { DOW, startOfMonthGrid } from "@/app/calendar/components/shared";
+import type { GridEvent, GridTone } from "./types";
 
+// The date helpers are the ones the Calendar already uses. A second copy
+// would drift.
+
+const TONE: Record<Exclude<GridTone, "custom">, string> = {
+  primary: "bg-primary/10 text-primary",
+  destructive: "bg-destructive/10 text-destructive",
+  muted: "text-muted-foreground",
+};
 
 // ── Month grid ───────────────────────────────────────────────────────────────
+// Six weeks of day cells. The caller says which events fall on a day.
 export function MonthGrid({
   anchor,
-  items,
+  eventsForDay,
   onPickDay,
-  onOpen,
-  reminders = [],
-  reminderZone = "UTC",
-  onOpenReminder,
-  externals = [],
-  onOpenExternal,
+  onOpenEvent,
 }: {
   anchor: Date;
-  items: MyTask[];
+  /** The events to draw in one cell, in the order to draw them. */
+  eventsForDay: (day: Date) => GridEvent[];
   onPickDay: (d: Date) => void;
-  onOpen: (id: string) => void;
-  /** The open reminders (WS-66 RM-5): a bell, a time and a title. */
-  reminders?: CalReminder[];
-  reminderZone?: string;
-  onOpenReminder?: (id: string) => void;
-  /** Google and Outlook events (CE-5a): a hatched chip, all-day first. */
-  externals?: ExternalView[];
-  onOpenExternal?: (id: string) => void;
+  onOpenEvent: (e: GridEvent) => void;
 }) {
   const gridStart = startOfMonthGrid(anchor);
   const cells = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
@@ -59,25 +46,7 @@ export function MonthGrid({
       <div className="grid flex-1 grid-cols-7 grid-rows-6">
         {cells.map((day) => {
           const inMonth = day.getMonth() === anchor.getMonth();
-          const blocks = blocksForDay(items, day);
-          const deadlines = deadlinesForDay(items, day);
-          const chips = [
-            ...externalChips(externals, day, reminderZone).map((x) => ({
-              id: x.id,
-              title: x.title,
-              kind: "external" as const,
-              time: x.time,
-              look: externalLook(x),
-            })),
-            ...blocks.map((b) => ({ id: b.item.id, title: b.item.title, kind: "block" as const, time: "" })),
-            ...deadlines.map((d) => ({ id: d.id, title: d.title, kind: "deadline" as const, time: "" })),
-            ...monthChips(reminders, day, reminderZone).map((r) => ({
-              id: r.id,
-              title: r.label,
-              kind: "reminder" as const,
-              time: r.time,
-            })),
-          ];
+          const chips = eventsForDay(day);
           const today = sameDay(day, now);
           return (
             <button
@@ -107,26 +76,18 @@ export function MonthGrid({
                     key={c.id}
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (c.kind === "reminder") onOpenReminder?.(c.id);
-                      else if (c.kind === "external") onOpenExternal?.(c.id);
-                      else onOpen(c.id);
+                      onOpenEvent(c);
                     }}
                     className={[
                       "truncate rounded px-1 text-[9px]",
-                      c.kind === "deadline"
-                        ? "bg-destructive/10 text-destructive"
-                        : c.kind === "reminder"
-                          ? "text-muted-foreground"
-                          : c.kind === "external"
-                            ? c.look
-                            : "bg-primary/10 text-primary",
+                      c.tone === "custom" ? (c.look ?? "") : TONE[c.tone],
                     ].join(" ")}
                   >
-                    {c.kind === "deadline" ? "⚑ " : ""}
-                    {c.kind === "reminder" && (
+                    {c.glyph === "flag" ? "⚑ " : ""}
+                    {c.glyph === "bell" && (
                       <Icon name="Bell" className="mr-0.5 inline h-2.5 w-2.5 align-[-1px]" />
                     )}
-                    {c.kind === "reminder" || c.kind === "external" ? (c.time ? `${c.time} ` : "") : ""}
+                    {c.time ? `${c.time} ` : ""}
                     {c.title}
                   </span>
                 ))}

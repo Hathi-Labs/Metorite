@@ -63,6 +63,7 @@ pytest.importorskip("sqlalchemy")
 
 from acb_common import studio_rules as sr
 from acb_common.db import tenant_session
+from acb_common.studio_access import Viewer
 from acb_common.studio_rules import (
     ConstraintError,
     ConstraintViolation,
@@ -84,6 +85,9 @@ pytestmark = _DB_GATE
 
 TAG = uuid.uuid4().hex[:8]
 ANA = f"ana.{TAG}@stuc7a.test"
+#: C8a. The store takes a viewer. No object of this suite declares `access`,
+#: so each object is open and any member reads and writes it.
+_VIEWER = Viewer(ANA)
 
 _FIELDS: list[dict[str, Any]] = [
     {"key": "qty", "type": "number"},
@@ -169,7 +173,7 @@ async def _line(org: str, pkg: str, rules: list[dict[str, Any]] | None = None,
 
 async def _put(org: str, obj: store.StudioObject, *writes: Write) -> list[Any]:
     async with tenant_session(org) as db:
-        return await store.apply_writes(db, ANA, package_id=obj.package_id, writes=list(writes))
+        return await store.apply_writes(db, ANA, package_id=obj.package_id, writes=list(writes), viewer=_VIEWER)
 
 
 async def _refused(org: str, obj: store.StudioObject, *writes: Write) -> BatchError:
@@ -406,14 +410,14 @@ def test_r8_a_zero_divisor_refuses_the_batch_and_the_session_stays_usable(world)
         obj = await _line(world.a, world.pkg_a, [_RATIO])
         async with tenant_session(world.a) as db:
             first = await store.create_record(db, ANA, obj.id, {"need": "o", "qty": 1, "price": 4},
-                                              package_id=obj.package_id)
+                                              package_id=obj.package_id, viewer=_VIEWER)
             with pytest.raises(BatchError) as failed:
                 await store.apply_writes(db, ANA, package_id=obj.package_id, writes=[
                     Write("create", obj.id, data={"need": "a", "qty": 1, "price": 2}),
-                    Write("create", obj.id, data={"need": "b", "qty": 1, "price": 0})])
-            kept = await store.get_record(db, obj.id, first.id, package_id=obj.package_id)
+                    Write("create", obj.id, data={"need": "b", "qty": 1, "price": 0})], viewer=_VIEWER)
+            kept = await store.get_record(db, obj.id, first.id, package_id=obj.package_id, viewer=_VIEWER)
             after = await store.create_record(db, ANA, obj.id, {"need": "z", "qty": 3, "price": 4},
-                                              package_id=obj.package_id)
+                                              package_id=obj.package_id, viewer=_VIEWER)
         return obj, failed.value, kept, after
 
     obj, failed, kept, after = _go(world, go)
@@ -640,7 +644,7 @@ def test_r8_a_formula_queues_no_key_check(world) -> None:
 
             db.execute = spy  # type: ignore[method-assign]
             await store.apply_writes(db, ANA, package_id=obj.package_id, writes=[
-                Write("create", obj.id, data={"need": "x", "qty": 1, "price": 1})])
+                Write("create", obj.id, data={"need": "x", "qty": 1, "price": 1})], viewer=_VIEWER)
         return seen
 
     seen = _go(world, go)
@@ -660,13 +664,13 @@ def test_r8_a_hot_target_filters_and_sorts_through_the_query(world) -> None:
                 return [r.data["total"] for r in page.records]
 
             up = await store.query_records(db, package_id=obj.package_id, object_id=obj.id,
-                                           sort={"field": "total", "dir": "asc"})
+                                           sort={"field": "total", "dir": "asc"}, viewer=_VIEWER)
             down = await store.query_records(db, package_id=obj.package_id, object_id=obj.id,
-                                             sort={"field": "total", "dir": "desc"})
+                                             sort={"field": "total", "dir": "desc"}, viewer=_VIEWER)
             big = await store.query_records(
                 db, package_id=obj.package_id, object_id=obj.id,
                 filter=[{"field": "total", "op": "gte", "value": 25}],
-                sort={"field": "total", "dir": "asc"})
+                sort={"field": "total", "dir": "asc"}, viewer=_VIEWER)
         return totals(up), totals(down), totals(big)
 
     up, down, big = _go(world, go)
@@ -832,7 +836,7 @@ def test_r8_org_b_is_not_bound_by_the_formula_of_org_a(world) -> None:
         free = await _make(world.b, b_obj, qty=2, price=3, total=500)
         in_a = await _make(world.a, a, qty=2, price=3)
         async with tenant_session(world.b) as db:
-            seen = await store.get_record(db, a.id, in_a.id, package_id=world.pkg_a)
+            seen = await store.get_record(db, a.id, in_a.id, package_id=world.pkg_a, viewer=_VIEWER)
             declared = await store.set_constraints(db, a.id, [_TAX], package_id=world.pkg_a)
         refused = await _refused(world.a, a, Write("create", a.id, data={
             "need": "x", "total": 500}))

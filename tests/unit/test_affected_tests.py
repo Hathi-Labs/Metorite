@@ -157,8 +157,14 @@ def test_gate_full_on_underscore_helper_under_tests(tmp_path: Path) -> None:
 
 def test_gate_full_on_shared_config_and_timings(tmp_path: Path) -> None:
     root = _gate_repo(tmp_path)
-    for path in ("pyproject.toml", "uv.lock", ".test_durations"):
+    for path in ("pyproject.toml", "uv.lock"):
         assert sel.gate([path], root)["full"] is True, path
+
+
+def test_timings_refresh_is_not_a_full_run(tmp_path: Path) -> None:
+    # CIV-33b: a refresh PR changes only `.test_durations`, so it runs a small selection.
+    root = _gate_repo(tmp_path)
+    assert sel.gate([".test_durations"], root)["full"] is False
 
 
 def test_gate_full_on_ci_and_selector_paths(tmp_path: Path) -> None:
@@ -847,9 +853,9 @@ def test_the_real_folder_scanners_are_picked() -> None:
     cases = {
         "apps/skills/skill-projects/skill_projects/guarded.py": "test_projects_agent_grants.py",
         "apps/services/gateway/gateway/routes/tasks/ai.py": "test_tasks_ai_no_thinking.py",
-        "apps/services/gateway/gateway/routes/crm/auto_lead.py": "test_crm_mirror_readonly.py",
-        "apps/services/gateway/gateway/routes/crm/reports.py": "test_crm_mirror_readonly.py",
-        "apps/services/gateway/gateway/routes/crm/terms.py": "test_crm_mirror_readonly.py",
+        "apps/services/gateway/gateway/routes/crm/auto_lead.py": "test_crm_mirror_readonly_scan.py",
+        "apps/services/gateway/gateway/routes/crm/reports.py": "test_crm_mirror_readonly_scan.py",
+        "apps/services/gateway/gateway/routes/crm/terms.py": "test_crm_mirror_readonly_scan.py",
         "apps/services/gateway/gateway/routes/email/automation/held_card.py": (
             "test_email_automation_tenancy.py"
         ),
@@ -1150,5 +1156,6 @@ def test_the_sql_glob_files_of_the_real_tree_are_no_longer_scanners() -> None:
     # Before CIV-3d 146 R8 files were scanners. The ones that only glob data files are not.
     assert len(scanners & r8) < 100, len(scanners & r8)
     # The scanners that read Python stay.
-    for must in ("tests/unit/test_data_engine.py", "tests/unit/test_crm_mirror_readonly.py"):
+    # CIV-33d moved the CRM route scan into test_crm_mirror_readonly_scan.py.
+    for must in ("tests/unit/test_data_engine.py", "tests/unit/test_crm_mirror_readonly_scan.py"):
         assert must in scanners, must

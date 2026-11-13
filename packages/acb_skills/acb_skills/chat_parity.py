@@ -371,12 +371,21 @@ COVERED: dict[str, str | tuple[str, str]] = {
     # that studio_delete_package sends, after its one card.
     "GET /api/studio/packages/{}/delete-preview": "studio_delete_package",
     "DELETE /api/studio/packages/{}": "studio_delete_package",
+    # STU-K1d (task 2967): the "Start from a ready app" section lists the templates and makes one.
+    # studio_template_list sends the GET. studio_create_from_template sends the POST after its one card.
+    "GET /api/studio/templates": "studio_template_list",
+    "POST /api/studio/packages/from-template": "studio_create_from_template",
     "POST /api/studio/apps/{}/actions/{}": "studio_record_list",
     "GET /api/studio/skills": "studio_skill_list",
     "GET /api/studio/skills/{}": "studio_skill_list",
     "PATCH /api/studio/skills/{}/state": "studio_skill_state",
     "POST /api/studio/skills": "studio_skill_save",
     "POST /api/studio/skills/{}/versions": "studio_skill_save",
+    # ── Workflows (STB-6a, ai_studio.md E13a) ──
+    # The two reads of the Workflows app, as the member, in ONE tool (no id: the list).
+    # The read of one workflow drops the webhook token, and shows the steps as a count by type.
+    "GET /api/workflows": "studio_workflow_read",
+    "GET /api/workflows/{}": "studio_workflow_read",
 }
 
 #: A covered action that more than one chat tool sends -> the other tools.
@@ -390,6 +399,8 @@ ALSO: dict[str, tuple[str, ...]] = {
         "studio_record_create",
         "studio_record_update",
         "studio_record_delete",
+        # STU-B2b-2c: a read of a door op (<app>.<op>) through the same route.
+        "studio_app_read",
     ),
 }
 
@@ -720,6 +731,8 @@ DEBT: dict[str, str] = {
     "DELETE /api/calendar/connections/{}": "P-1",
     "GET /api/calendar/connections": "P-1",
     "GET /api/tasks/calendar/day-state": "P-1",
+    # The switch of CE-10c follow-up (task 66): Show my Metorite tasks in Google Calendar or Outlook.
+    "PATCH /api/calendar/connections/{}": "P-1",
     "POST /api/calendar/connections/{}/sync": "P-1",
     # ── Email ──
     "DELETE /api/email/messages/{}": "P-2",
@@ -845,13 +858,11 @@ DEBT: dict[str, str] = {
     # ── Workflows ──
     "DELETE /api/workflows/modules/{}": "P-6",
     "DELETE /api/workflows/{}": "P-6",
-    "GET /api/workflows": "P-6",
     "GET /api/workflows/catalog": "P-6",
     "GET /api/workflows/catalog/search": "P-6",
     "GET /api/workflows/modules": "P-6",
     "GET /api/workflows/modules/{}": "P-6",
     "GET /api/workflows/runs/{}": "P-6",
-    "GET /api/workflows/{}": "P-6",
     "GET /api/workflows/{}/runs": "P-6",
     "POST /api/workflows": "P-6",
     "POST /api/workflows/modules": "P-6",
@@ -1069,7 +1080,7 @@ DEBT: dict[str, str] = {
 DEBT_CEILING: dict[str, int] = {
     "projects": 7,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43c (task 1802) built the chat tools of agentRunsApi.withdrawAnswer and agentRunsApi.replaceAnswer (9 to 7).
     "tasks": 9,
-    "calendar": 4,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4).
+    "calendar": 5,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4). The switch of CE-10c follow-up (task 66) added the PATCH, paid by P-1 (5).
     "email": 14,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182).
     "crm": 72,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72).
     "notes": 51,
@@ -1077,7 +1088,7 @@ DEBT_CEILING: dict[str, int] = {
     "people": 19,
     "knowledge": 19,  # 17 planned rows + POST and PATCH /knowledge/spaces (KB-2q, owner 2026-11-05); P-5 pays them.
     "memory": 5,
-    "workflows": 24,
+    "workflows": 22,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22).
     "apps": 28,
     "agents": 20,
     "chat": 25,
@@ -1085,7 +1096,7 @@ DEBT_CEILING: dict[str, int] = {
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write.
     "admin": 36,
     "integrations": 22,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access.
-    "studio": 3,  # PKG-10e-2 added Keep and Restore of the end-date bar (task 2971), paid by P-9 (1 to 3). G5 adds the version read. A5c-2 paid the two delete requests of BETA-1. B2c-2b adds no debt: its writes are ALSO rows of the door route.
+    "studio": 3,  # PKG-10e-2 added Keep and Restore of the end-date bar (task 2971), paid by P-9 (1 to 3). G5 adds the version read. A5c-2 paid the two delete requests of BETA-1. B2c-2b adds no debt: its writes are ALSO rows of the door route. STU-K1a-ui (task 1203) added the template list and the one-step install, which STU-K1d (task 2967) paid with studio_template_list and studio_create_from_template (5 to 3).
 }
 
 #: A UI file -> the most requests in it that the fence cannot read. A new

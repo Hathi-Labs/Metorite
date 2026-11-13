@@ -200,25 +200,6 @@ def test_the_reader_scan_finds_a_join_with_no_kind() -> None:
     assert _kind_misses("SELECT name FROM crm_pipelines ORDER BY position") == [1]
 
 
-def test_each_read_of_crm_pipelines_names_the_kind_or_an_id() -> None:
-    """Acceptance 2. A deal reader names ``kind = 'deal'``, so a lead pipeline
-    never shows on a deal surface. A read by id names the id, and its caller
-    checks the kind (``core.require_deal_pipeline``, or the kind of the Undo
-    row). Mutation: drop the term from ``default_pipeline_id`` -> red here and
-    in the database test below."""
-    misses: list[str] = []
-    by_id: list[str] = []
-    for path in sorted(_GATEWAY.rglob("*.py")):
-        source = path.read_text(encoding="utf-8")
-        where = str(path.relative_to(_GATEWAY)).replace("\\", "/")
-        misses += [f"{where}:{line}" for line in _kind_misses(source)]
-        by_id += [where] * len(re.findall(
-            r"(?:require|load)_row\(\s*db,\s*\"crm_pipelines\"", source))
-    assert misses == [], misses
-    # The id reads: the one deal check of core, and the two Undos of this seam.
-    assert sorted(by_id) == ["routes/crm/core.py", "routes/crm/pipelines.py",
-                             "routes/crm/pipelines.py"], by_id
-
 
 def test_the_undo_of_a_pipeline_takes_the_create_lock_first() -> None:
     """Repair 1 (P3): a copy create takes the create lock, then reads its

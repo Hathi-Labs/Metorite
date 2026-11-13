@@ -499,7 +499,6 @@ def select(
 GATE_FULL_NAMES = {
     "pyproject.toml",
     "uv.lock",
-    ".test_durations",
     "scripts/affected_tests.py",
     "scripts/fences.py",
     "scripts/ci_unit_guard.py",

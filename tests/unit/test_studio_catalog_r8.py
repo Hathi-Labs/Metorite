@@ -193,7 +193,8 @@ def test_r8_an_unbound_session_sees_no_workflow(world):
 
 ANA = f"ana.{TAG}@stub1c.test"
 BEN = f"ben.{TAG}@stub1c.test"
-_VERBS = {"list": "A", "get": "A", "create": "B", "update": "B", "delete": "C"}
+#: The class of each object op. STU-D4b adds the aggregate, a read.
+_VERBS = {"list": "A", "get": "A", "create": "B", "update": "B", "delete": "C", "aggregate": "A"}
 
 
 def _manifest(mid: str, wf_a: str, wf_b: str, objects: list[str]) -> dict:
@@ -330,7 +331,8 @@ def test_r8_a_member_with_no_package_and_org_b_see_none(pworld):
 def test_r8_the_app_filter_narrows_to_one_package(pworld):
     rows = _list(pworld, pworld.a, ANA, app=pworld.p2)
     assert {r["app"] for r in rows} == {pworld.p2}
-    assert len([r for r in rows if r["id"].startswith("object:")]) == 5
+    # The five record verbs and the aggregate (STU-D4b).
+    assert len([r for r in rows if r["id"].startswith("object:")]) == 6
     # The package of another member and of org B give nothing.
     assert _list(pworld, pworld.a, ANA, app=pworld.p_ben) == []
     assert _list(pworld, pworld.a, ANA, app=pworld.p_b) == []

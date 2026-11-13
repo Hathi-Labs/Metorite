@@ -1,4 +1,4 @@
-"""The action door of AI Studio (STU-B2a, B2b-1, B2b-2b, B2c-1 and B2c-2a, ``ai_studio.md`` §3.2).
+"""The action door of AI Studio (STU-B2a, B2b-1, B2b-2b, B2c-1, B2c-2a and D4b, ``ai_studio.md`` §3.2).
 
 ``POST /studio/apps/{app_id}/actions/{action}`` runs one action that a Studio
 package declares. The route registers on the router of ``actions.py``, as
@@ -62,8 +62,9 @@ package declares. The route registers on the router of ``actions.py``, as
    slot of :data:`READERS_PER_ORG` before this session, and a call past the
    cap gets 503 ``store_busy`` with ``Retry-After`` and opens no session. A
    read of the owner takes no slot.
-9. The executor, in that session. The door opens two: ``object:<name>.get``
-   (B2a) and ``object:<name>.list`` (B2b-1). For a direct call it also runs
+9. The executor, in that session. The door opens three reads:
+   ``object:<name>.get`` (B2a), ``object:<name>.list`` (B2b-1) and
+   ``object:<name>.aggregate`` (D4b). For a direct call it also runs
    the create, the update and the delete of an object (B2c-1). Each one
    parses the body here, and only here. An object name that the package does not hold gets 404
    ``object_missing``, and a record id that names nothing gets 404 ``Not
@@ -91,6 +92,23 @@ So a refused body reads nothing, and ``Infinity`` never reaches
 :class:`~acb_common.studio_query.QueryError` gets 422 ``{code, message,
 field}``. ``query_timeout`` gets 503 with ``Retry-After``. The store leaves
 the session usable after each refusal.
+
+**The aggregate (D4b).** It is one more class A read, so it takes each check
+above and the same audit row. An empty body means ``{}``. The door accepts
+only the keys of :data:`AGGREGATE_INPUT_KEYS`: ``filter``, ``group_by`` and
+``measures``. Then it runs ``studio_query.check_aggregate_shape`` BEFORE it
+reads the object, so a bad key, a bad op and too many measures read nothing.
+``objects_store.aggregate_records`` is the one reader, and it applies the
+rest: the type of each field, the hot rule, the cap of 50 groups and the
+currency of a money sum. Its errors map as the list maps them. The answer is
+the one row that ``aggregateModel.parseAggregate`` reads: ``measures`` (each
+``{op, field}``, the field as its key), ``currencies``, ``groups``, ``other``,
+``folded`` and ``total``. Each group is ``{key, count, values}``. A
+``Decimal`` goes on the wire as exact text with no exponent, and a money sum
+is an ``int`` of minor units with its currency. The grammar refuses an
+average of money with ``query_op_not_allowed`` (C2b). The store sends the
+currency of a money average too, so no average of money can reach the
+client without its unit.
 
 **Tenancy and the member (R5).** The org is the bound session
 (``_tenant_session()``), and the member is ``user.email``. No check reads an
@@ -198,6 +216,40 @@ owner in the run's org, and it writes only when the write has the digest that
 the decision bound at the park (:func:`workflow_write_digest`). The audit row
 names the run, the node, the decision and the approver. Fence:
 ``tests/unit/test_studio_workflow_write_r8.py``.
+
+**A run with no viewer (B6a, ``ai_studio.md`` B6a).** :func:`run_as_read`
+is the one internal path of a scheduled or an event run of an install, and
+the HTTP route does not reach it. It reads only. The install names one
+member in ``package_install.run_as``, and the run reads as that member,
+through that install. The order:
+
+1. The org of the caller is present, and both switches hold it
+   (``STUDIO_ORGS`` and ``PACKAGE_HOST_ORGS``).
+2. The install is an install of that org with a member (``no_run_as`` else).
+3. The member holds ``feature:studio`` and is an active member of the org
+   (:func:`may_run_as`). Each call checks it again, so a run stops at its next
+   call when the member leaves (``run_as_lost``).
+4. In one session, under a reader slot: the member is the same, and the
+   member sees THIS install now (``resolve.install_seen_by``). A paused or
+   an archived install, a paused app and a group that the member left each
+   give ``run_as_lost``.
+5. The declaration and the class come from the manifest of the version that
+   the install pins (``viewer.installed`` on that row), NEVER from the draft
+   of the owner. :func:`_check` reads the draft for the owner, so the run does
+   not call it. Only the object ``get`` and ``list`` run
+   (:data:`RUN_AS_EXECUTORS`). A class B or C action gets ``reads_only``,
+   and each other source gets ``source_not_open``.
+6. The read takes the viewer of the member (``_row_viewer(member)``), so the
+   row rules and the hidden keys of C8a bind the run as they bind that member.
+
+The whole run sits inside ``no_person_scope``, so ``no_person_present()``
+holds, and no seam that approves or asks lets it pass. The audit row goes in
+the session of the read, through ``record_app_audit_in``. Its
+``user_email`` is ``system:package:<package id>`` (:func:`run_as_actor`), and
+its ``detail`` names the member, the install, the run and the outcome. A
+refusal that reaches the install writes its row too. No production code
+calls this path yet: E3 is the first caller. Fences:
+``tests/unit/test_studio_run_as_r8.py`` and ``tests/unit/test_studio_run_as.py``.
 """
 
 from __future__ import annotations
@@ -209,6 +261,7 @@ import json
 import re
 import uuid
 from collections.abc import Iterator
+from decimal import Decimal
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -216,7 +269,8 @@ from acb_auth import app_requests as store
 from acb_auth import direct_proof as _direct_proof
 from acb_common import app_manifests, get_logger, studio_query
 from acb_common.app_manifests.base import OP_PATTERN, DoorOp
-from acb_common.no_person import no_person_present
+from acb_common.no_person import no_person_present, no_person_scope
+from acb_common.studio_access import Viewer
 from acb_common.studio_fields import FieldError, FieldSpec, RecordError
 from acb_common.studio_manifest import OBJECT_OP_CLASSES, UsesRef, parse_uses
 from acb_common.studio_rules import (
@@ -229,6 +283,8 @@ from fastapi import Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from gateway import app_requests
 from gateway.db import tenant_session as _tenant_session
+from gateway.package_host import resolve as _resolve
+from gateway.package_host import store as host_store
 from gateway.package_host import viewer as _viewer
 from gateway.package_host.flags import package_host_allowed
 from gateway.routes.apps._common import record_app_audit_bound, record_app_audit_in
@@ -238,6 +294,7 @@ from gateway.studio import objects_store, packages_store
 from gateway.studio.preview import emit_record_event, preview_scope
 
 __all__ = [
+    "AGGREGATE_INPUT_KEYS",
     "ASK_MARKER",
     "DELEGATED_EXECUTORS",
     "DIRECT_EXECUTORS",
@@ -256,12 +313,17 @@ __all__ = [
     "REFUSALS",
     "REQUEST_APP",
     "REQUEST_VIA",
+    "RUN_AS_EXECUTORS",
+    "RUN_AS_VIA",
     "SPEND_REFUSALS",
     "WORKFLOW_VIA",
     "WRITERS_PER_ORG",
     "WRITERS_TOTAL",
+    "may_run_as",
     "plan_workflow_write",
     "router",
+    "run_as_actor",
+    "run_as_read",
     "run_workflow_write",
     "workflow_write_digest",
 ]
@@ -274,9 +336,10 @@ _log = get_logger("gateway.studio.invoke")
 DOOR_OP: tuple[str, str | None] = ("manifest", None)
 
 #: The executors that the door opens, as (source, op): the object ``get`` of
-#: B2a, the object ``list`` of B2b-1, and the door op of B2b-2b.
+#: B2a, the object ``list`` of B2b-1, the object ``aggregate`` of D4b, and the door op of
+#: B2b-2b.
 OPEN_EXECUTORS: frozenset[tuple[str, str | None]] = frozenset(
-    {("object", "get"), ("object", "list"), DOOR_OP})
+    {("object", "get"), ("object", "list"), ("object", "aggregate"), DOOR_OP})
 
 #: The mode of :func:`_run_executor` for a door op (B2b-2b).
 DOOR_OP_MODE = "door_op"
@@ -338,6 +401,10 @@ READERS_TOTAL = 6
 #: The keys of the body of a list. The one input schema is their only source.
 LIST_INPUT_KEYS: frozenset[str] = frozenset(studio_query.list_input_schema()["properties"])
 
+#: The keys of the body of an aggregate (D4b): the one input schema of C2b.
+AGGREGATE_INPUT_KEYS: frozenset[str] = frozenset(
+    studio_query.aggregate_input_schema()["properties"])
+
 #: The A2 action id (``ActionDef.id``). A path ``action`` of another shape
 #: names nothing, so the door reads nothing for it.
 _ACTION_ID = re.compile(OP_PATTERN)
@@ -373,7 +440,7 @@ REFUSALS: dict[str, str] = {
     APPROVAL_REQUIRED: (
         "This action writes data and needs an approval, which this door cannot ask for yet."),
     SOURCE_NOT_OPEN: (
-        "This door runs the get, list, create, update and delete of an object, and a read "
+        "This door runs the get, list, aggregate, create, update and delete of an object, and a read "
         "of another app where Metorite turned that on."),
     NO_PERSON: "This run has no person present, so it cannot ask a member to approve a write.",
     READ_ONLY: "This app is shared with you to read, so you cannot change its records.",
@@ -456,6 +523,7 @@ BAD_RECORD_ID = "Send the record id as a UUID in the key id of a JSON object."
 BAD_LIST_INPUT = (
     "Send a JSON object with only filter, sort, limit and offset, "
     "and whole numbers for limit and offset.")
+BAD_AGGREGATE_INPUT = "Send a JSON object with only filter, group_by and measures."
 
 #: The header value of a 503 ``query_timeout``, in seconds.
 RETRY_AFTER = "2"
@@ -464,10 +532,14 @@ RETRY_AFTER = "2"
 BUSY_RETRY_AFTER = "1"
 
 STORE_BUSY = "store_busy"
+#: C8a. A write that the roles of the viewer do not give.
+ACCESS_DENIED = "access_denied"
 FIELD_INVALID = "field_invalid"
 RULE_REFUSED = "rule_refused"
 RECORD_INVALID = "record_invalid"
 BAD_INPUT = "bad_input"
+#: C10a. A write that takes the org past a cap of its records or their bytes.
+ORG_CAP_REACHED = objects_store.OrgCapReached.code
 
 BUSY_MESSAGE = "This app is busy now, so try the write again in a moment."
 #: J2a: the 503 of a viewer read past the cap of :data:`READERS_PER_ORG`.
@@ -513,6 +585,8 @@ class _Outcome:
     refusal: str | None = None
     record: objects_store.Record | None = None
     page: objects_store.RecordPage | None = None
+    #: The result of an aggregate (D4b).
+    aggregate: objects_store.AggregateResult | None = None
     query_error: studio_query.QueryError | None = None
     missing: bool = False
     object_missing: bool = False
@@ -709,6 +783,23 @@ def _list_input(raw: bytes) -> dict[str, Any]:
     return payload
 
 
+def _row_viewer(member: str) -> Viewer:
+    """The viewer of a call (C8a): the session's member, and never a body.
+
+    The door reaches the executors for the owner of the package and, since
+    J2a, for a viewer of an install (``InstalledApp``). The store reads the
+    owner from the ``apps`` row, and the owner passes every row rule, so the
+    owner reads and writes as before C8a. A viewer who is not the owner gets
+    no role from the role map yet, so the rules treat it as a bound viewer. C8b gives a member who is not the owner
+    the roles of the role map of the install. It resolves them here, in the
+    session of the second check, and again at a spend.
+
+    B6a: a run with no viewer (:func:`run_as_read`) calls it too, with the
+    ``run_as`` member that the install row names, so that member's rules bind
+    the run."""
+    return Viewer(member)
+
+
 def _installed_object(package: _App, name: str) -> bool:
     """True for the owner's package. For a viewer (J2a), True only when the
     installed version declares the object *name*."""
@@ -716,9 +807,9 @@ def _installed_object(package: _App, name: str) -> bool:
 
 
 async def _run_object_get(db: Any, package: _App, ref: UsesRef,
-                          raw: bytes, out: _Outcome) -> None:
+                          raw: bytes, out: _Outcome, viewer: Viewer) -> None:
     """Read one record of the object *ref* of *package*. The id comes from
-    the body, checked by the id rule of C1."""
+    the body, checked by the id rule of C1. The row rules of *viewer* bind (C8a)."""
     rid = _record_id(raw)
     if rid is None:
         out.invalid = True
@@ -731,7 +822,8 @@ async def _run_object_get(db: Any, package: _App, ref: UsesRef,
         if obj is None or not _installed_object(package, obj.name):
             out.object_missing = True
             return
-        rec = await objects_store.get_record(db, obj.id, rid, package_id=package.id)
+        rec = await objects_store.get_record(db, obj.id, rid, package_id=package.id,
+                                             viewer=viewer)
     except objects_store.ObjectStoreError:
         out.invalid = True
         return
@@ -745,9 +837,10 @@ async def _run_object_get(db: Any, package: _App, ref: UsesRef,
 
 
 async def _run_object_list(db: Any, package: _App, ref: UsesRef,
-                           raw: bytes, out: _Outcome) -> None:
+                           raw: bytes, out: _Outcome, viewer: Viewer) -> None:
     """Read one page of the records of the object *ref* of *package*. The body
-    is checked first, so a refused body reads nothing."""
+    is checked first, so a refused body reads nothing. The row rules of
+    *viewer* bind (C8a)."""
     try:
         body = _list_input(raw)
         obj = await objects_store.get_object_by_name(
@@ -765,7 +858,7 @@ async def _run_object_list(db: Any, package: _App, ref: UsesRef,
         # and a timeout rolls back its SAVEPOINT only. So a refusal here
         # leaves the session usable.
         page = await objects_store.query_records(
-            db, package_id=package.id, object_id=obj.id, filter=body.get("filter"),
+            db, package_id=package.id, object_id=obj.id, viewer=viewer, filter=body.get("filter"),
             sort=body.get("sort"), limit=body.get("limit"), offset=body.get("offset"))
         if page is not None and isinstance(package, _viewer.InstalledApp):
             page = dataclasses.replace(page, records=tuple(
@@ -783,6 +876,59 @@ async def _run_object_list(db: Any, package: _App, ref: UsesRef,
         out.object_missing = True
     else:
         out.page = page
+
+
+def _aggregate_input(raw: bytes) -> dict[str, Any]:
+    """The input of an aggregate, from the body *raw* (D4b). An empty body
+    means ``{}``. It refuses a key outside :data:`AGGREGATE_INPUT_KEYS`, then
+    runs the shape check of C2b, so a bad op or too many measures stop here.
+    The sentence of a refused key never echoes a key or a value."""
+    payload = {} if not raw else _json_object(raw)
+    if payload is None or not AGGREGATE_INPUT_KEYS.issuperset(payload):
+        raise studio_query.QueryError(studio_query.VALUE_INVALID, BAD_AGGREGATE_INPUT)
+    studio_query.check_aggregate_shape(
+        payload.get("filter"), payload.get("group_by"), payload.get("measures"))
+    return payload
+
+
+async def _run_object_aggregate(db: Any, package: _App, ref: UsesRef,
+                                raw: bytes, out: _Outcome, viewer: Viewer) -> None:
+    """Group the records of the object *ref* of *package* (D4b). The body is
+    checked first, so a refused body reads nothing. Then the path of the list:
+    the object by its name in the package, then the one reader of C2b.
+
+    Only the owner aggregates. A viewer of an install (J2a) reads no sum: the
+    reader of C2b knows neither the installed fields nor the row rules (C8a),
+    so a sum could count a value that the viewer cannot read."""
+    if isinstance(package, _viewer.InstalledApp):
+        out.refusal = SOURCE_NOT_OPEN
+        return
+    try:
+        body = _aggregate_input(raw)
+        obj = await objects_store.get_object_by_name(
+            db, str(ref.object), package_id=package.id)
+        if obj is None:
+            out.object_missing = True
+            return
+        result = await objects_store.aggregate_records(
+            db, package_id=package.id, object_id=obj.id, filter=body.get("filter"),
+            group_by=body.get("group_by"), measures=body.get("measures"))
+    except studio_query.QueryError as exc:
+        out.query_error = exc
+        return
+    except objects_store.ObjectStoreError as exc:
+        # As for a list: the body named no id, so a stored value caused it.
+        _log.warning("studio.invoke.stored_value_refused", error=type(exc).__name__)
+        out.object_missing = True
+        return
+    if result is None:
+        out.object_missing = True
+    else:
+        out.aggregate = result
+
+
+#: The executor of each open read, by its verb.
+_READS = {"get": _run_object_get, "list": _run_object_list, "aggregate": _run_object_aggregate}
 
 
 async def _check(db: Any, member: str, pid: str, action: str, out: _Outcome,
@@ -922,13 +1068,18 @@ def _set_write_error(out: _Outcome, exc: Exception, line: _Line | None = None) -
 
     ⚠️ The order is load-bearing. ``StoreBusy`` is a subclass of
     ``ObjectStoreError``, so it comes first. A busy org is a 503 that can work
-    later, and not a refused write."""
+    later, and not a refused write. ``OrgCapReached`` (C10a) is a subclass of
+    ``ObjectStoreError`` too, so it comes before that branch. Its sentence
+    names the cap, and it is never of one line."""
     if isinstance(exc, objects_store.StoreBusy):
         out.fail = _busy()
     elif isinstance(exc, objects_store.RecordNotFound) and line is None:
         out.missing = True
     elif isinstance(exc, objects_store.RecordNotFound):
         out.fail = _refused(BAD_LINES, _at(line, NO_SUCH_LINE), field=line.key)
+    elif isinstance(exc, objects_store.AccessDenied):
+        # C8a: the roles of the viewer give no such write. The owner never gets it.
+        out.fail = _refused(ACCESS_DENIED, _at(line, str(exc)))
     elif isinstance(exc, FieldError):
         out.fail = _refused(FIELD_INVALID, _at(line, exc.message),
                             field=exc.field if line is None else line.key)
@@ -943,6 +1094,8 @@ def _set_write_error(out: _Outcome, exc: Exception, line: _Line | None = None) -
                          _query_refusal(exc))
     elif isinstance(exc, RecordError):
         out.fail = _refused(RECORD_INVALID, _at(line, str(exc)))
+    elif isinstance(exc, objects_store.OrgCapReached):
+        out.fail = _refused(ORG_CAP_REACHED, str(exc))
     elif isinstance(exc, objects_store.ObjectStoreError):
         out.fail = _refused(RECORD_INVALID, _at(line, STORE_REFUSED))
     else:
@@ -1067,12 +1220,14 @@ async def _emit_record_event(out: _Outcome, org: str) -> None:
 
 
 async def _do_object_write(db: Any, member: str, package: packages_store.Package,
-                           ref: UsesRef, raw: bytes, out: _Outcome) -> None:
+                           ref: UsesRef, raw: bytes, out: _Outcome, *,
+                           via: tuple[str, str] | None = None) -> None:
     """Run one create, update or delete as *member*, through ONE
     ``apply_writes`` call. The record is the first write, and each of its
     lines (C13) follows it, so the record and its lines are saved all or none.
     It sets *out* and never raises an ``HTTPException``. The caller writes the
-    audit row."""
+    audit row. *via* goes to the change history of the store (C4a-1). Only
+    :func:`run_workflow_write` sets it, from its own arguments."""
     op = str(ref.op)
     body = _write_input(op, raw)
     if body is None:
@@ -1098,9 +1253,14 @@ async def _do_object_write(db: Any, member: str, package: packages_store.Package
         out.object_missing = True
         return
     write = objects_store.Write(op=op, object_id=obj.id, record_id=body.get("id"), data=data)
+    # C8a: the viewer comes from the session, in this session, so a spend
+    # resolves it again at its own time.
+    viewer = _row_viewer(member)
+    # C4a-1: a direct or delegated write names no via, so its call stays as it was.
+    how: dict[str, Any] = {} if via is None else {"via": via}
     try:
         answers = await objects_store.apply_writes(
-            db, member, package_id=package.id, writes=[write, *line_writes])
+            db, member, package_id=package.id, writes=[write, *line_writes], viewer=viewer, **how)
     except objects_store.BatchError as exc:
         # The SAVEPOINT of the batch rolled back, so the session is usable.
         line = lines[exc.index - 1] if 0 < exc.index <= len(lines) else None
@@ -1128,7 +1288,7 @@ async def _do_object_write(db: Any, member: str, package: packages_store.Package
             # write, in the same batch. The answer reads it once, so it shows
             # the sum that the batch committed.
             out.record = await objects_store.get_record(
-                db, obj.id, done.id, package_id=package.id) or done
+                db, obj.id, done.id, package_id=package.id, viewer=viewer) or done
 
 
 async def _run_object_write(db: Any, member: str, package: packages_store.Package,
@@ -1324,6 +1484,9 @@ async def _run_spend(db: Any, org: str, member: str, package: packages_store.Pac
 
 #: The ``via`` of the audit row of a write that a workflow node ran (B2c-2d).
 WORKFLOW_VIA = "workflow"
+#: The kind of ``via`` of a history row of that write (C4a-1). The id is the
+#: run id that the caller binds from the run row, never node input.
+WORKFLOW_RUN_VIA = "workflow_run"
 #: The codes of a refused write of a workflow node.
 WORKFLOW_NO_ORG = "no_org"
 WORKFLOW_STUDIO_OFF = "studio_off"
@@ -1470,7 +1633,8 @@ async def run_workflow_write(*, organization_id: str, member: str, package_id: s
                     out.refusal = WORKFLOW_MISMATCH
                 if out.refusal is None and ref is not None:
                     await _do_object_write(db, member, package, ref,
-                                           _workflow_body(data, record_id), out)
+                                           _workflow_body(data, record_id), out,
+                                           via=(WORKFLOW_RUN_VIA, str(run_id)))
                 detail = {**_audit_detail(out), "via": WORKFLOW_VIA,
                           "run_id": _cap(str(run_id)), "node_id": _cap(str(node_id)),
                           "decision_id": _cap(str(decision_id)), "approver": _cap(member)}
@@ -1482,6 +1646,188 @@ async def run_workflow_write(*, organization_id: str, member: str, package_id: s
     # C3: after the commit of the write, so no event names a rolled back change.
     await _emit_record_event(out, org)
     return _workflow_result(out)
+
+
+# ── A run with no viewer (B6a) ────────────────────────────────────────────
+
+
+#: The ``via`` of the audit row of a run with no viewer (B6a).
+RUN_AS_VIA = "run_as"
+#: The executors of a run with no viewer: the object ``get`` and ``list``. A
+#: run with no viewer only reads, so no write and no door op is here.
+RUN_AS_EXECUTORS: frozenset[tuple[str, str | None]] = frozenset(
+    {("object", "get"), ("object", "list")})
+#: The codes of a run with no viewer that names nothing or runs nothing.
+RUN_AS_NO_ORG = "no_org"
+RUN_AS_OFF = "studio_off"
+RUN_AS_NOT_FOUND = "not_found"
+#: The install names no member, so no run with no viewer runs. It fails closed.
+RUN_AS_NONE = "no_run_as"
+#: The member left the org, lost ``feature:studio``, or does not see the
+#: install now.
+RUN_AS_LOST = "run_as_lost"
+#: The member of the install changed during the run.
+RUN_AS_CHANGED = "run_as_changed"
+#: A class B or C action. A run with no viewer reads only.
+RUN_AS_READS_ONLY = "reads_only"
+
+
+def run_as_actor(package_id: str) -> str:
+    """The ``user_email`` of the audit row of a run with no viewer: the
+    package, never a person (``ai_studio.md`` §19.2). The member is in the
+    ``detail`` of the row."""
+    return f"system:package:{package_id}"
+
+
+async def may_run_as(member: str, org: str) -> bool:
+    """True when *member* may be the member of a run with no viewer in *org*
+    now (B6a).
+
+    The member holds ``feature:studio`` in the org (:func:`_holds_studio`),
+    and is an ACTIVE member of the org (``acb_auth.access.is_active_member``).
+    The route that names the member and the run both call this, so one rule
+    decides. Each read opens its own session, so the caller holds none. It
+    fails closed: a read that fails answers False."""
+    if not member or not org:
+        return False
+    if not await _holds_studio(member, org):
+        return False
+    from acb_auth.access import is_active_member
+
+    try:
+        return await is_active_member(member, org)
+    except Exception as exc:
+        _log.warning("studio.invoke.run_as_member_failed", error=type(exc).__name__)
+        return False
+
+
+def _run_as_body(body: Any) -> bytes | None:
+    """The body of the read as the executors read it. None is an empty body.
+    A value that is not plain JSON gives None, and the run refuses it."""
+    if body is None:
+        return b""
+    try:
+        return json.dumps(body, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, RecursionError):
+        return None
+
+
+async def _run_as_session(db: Any, *, member: str, install_id: str, action: str,
+                          raw: bytes | None, out: _Outcome) -> None:
+    """The checks and the read of one run with no viewer, in the session *db*
+    (B6a). It sets the fields of *out* that it decides, and writes nothing."""
+    again = await host_store.read_run_as(db, install_id=install_id)
+    if again is None or again.run_as != member:
+        out.refusal = RUN_AS_CHANGED
+        return
+    row = await _resolve.install_seen_by(db, viewer=member, install_id=install_id)
+    # The pinned version of THIS install, never the draft of the owner.
+    app = None if row is None else _viewer.installed([row], row.app_id)
+    if app is None:
+        out.refusal = RUN_AS_LOST
+        return
+    out.version = app.version
+    entry = _declared(app.manifest, action)
+    ref = None if entry is None else parse_uses(entry.get("uses"))
+    if entry is None or ref is None:
+        out.refusal = NOT_DECLARED
+        return
+    out.uses = str(entry["uses"])
+    if ref.source != "object":
+        # A door op, a workflow or an integration: no run with no viewer
+        # reaches another source.
+        out.refusal = SOURCE_NOT_OPEN
+        return
+    out.cls = OBJECT_OP_CLASSES.get(str(ref.op))
+    if out.cls in ("B", "C"):
+        out.refusal = RUN_AS_READS_ONLY
+    elif out.cls != "A" or (ref.source, ref.op) not in RUN_AS_EXECUTORS:
+        out.refusal = SOURCE_NOT_OPEN
+    elif raw is None:
+        out.invalid = True
+    else:
+        run = _run_object_list if ref.op == "list" else _run_object_get
+        # C8a: the row rules and the hidden keys of the run_as member bind the
+        # read. The viewer is that member, from the install row, never a caller.
+        await run(db, app, ref, raw, out, _row_viewer(member))
+
+
+def _run_as_detail(out: _Outcome, *, member: str | None, install_id: str,
+                   run_id: Any) -> dict[str, Any]:
+    """The audit row of a run with no viewer. It holds no record data."""
+    return {**_audit_detail(out), "via": RUN_AS_VIA, "run_as": _cap(member),
+            "install_id": install_id, "run_id": _cap(str(run_id)), "version": out.version}
+
+
+def _run_as_result(out: _Outcome) -> dict[str, Any]:
+    """What the caller of a run with no viewer reads back: the outcome, the
+    code and the page or the record of a read that ran."""
+    outcome, reason = _outcome(out)
+    result: dict[str, Any] | None = None
+    if outcome == "ran" and out.page is not None:
+        result = dataclasses.asdict(out.page)
+    elif outcome == "ran" and out.record is not None:
+        result = {"record": dataclasses.asdict(out.record)}
+    return {"ok": result is not None, "outcome": outcome, "code": reason, "result": result}
+
+
+def _run_as_named_nothing(code: str, outcome: str = "refused") -> dict[str, Any]:
+    return {"ok": False, "outcome": outcome, "code": code, "result": None}
+
+
+async def run_as_read(*, organization_id: str, install_id: str, action: str, body: Any,
+                      run_id: str) -> dict[str, Any]:
+    """Run ONE read of the install *install_id* as the member that it names
+    (B6a). See "A run with no viewer" in the module docstring for the order.
+
+    The caller binds the facts: *organization_id* is the org of the run, and
+    *install_id*, *action* and *run_id* come from the run. None of them is
+    request input, and no member comes from the caller: the install names it.
+    *body* is the input of the read: ``{"id": ...}`` for a get, and the list
+    input for a list. The run writes nothing but its audit row. It never
+    raises an ``HTTPException``: each answer that is not ``ok`` stops the
+    run."""
+    org = str(organization_id or "").strip()
+    if not org:
+        return _run_as_named_nothing(RUN_AS_NO_ORG)
+    if not (flags.studio_allowed(org) and package_host_allowed(org)):
+        return _run_as_named_nothing(RUN_AS_OFF)
+    iid = _uuid_or_none(str(install_id or ""))
+    if iid is None or not _ACTION_ID.fullmatch(str(action or "")):
+        return _run_as_named_nothing(RUN_AS_NOT_FOUND, "not_found")
+    out = _Outcome(action=str(action))
+    raw = _run_as_body(body)
+    with no_person_scope():
+        async with _tenant_session(org) as db:
+            first = await host_store.read_run_as(db, install_id=iid)
+        if first is None:
+            # No install of this org has the id. The answer names nothing,
+            # and no row is written.
+            return _run_as_named_nothing(RUN_AS_NOT_FOUND, "not_found")
+        member = first.run_as
+        if member is None:
+            out.refusal = RUN_AS_NONE
+        elif not await may_run_as(member, org):
+            out.refusal = RUN_AS_LOST
+        if out.refusal is not None:
+            async with _tenant_session(org) as db:
+                await record_app_audit_in(
+                    db, app_id=first.app_id, user_email=run_as_actor(first.app_id),
+                    kind="action", detail=_run_as_detail(
+                        out, member=member, install_id=iid, run_id=run_id))
+            return _run_as_result(out)
+        with _reader_slot(org, True) as admitted:
+            if not admitted:
+                # No session was opened, so no audit row is written.
+                return _run_as_named_nothing(STORE_BUSY, "failed")
+            async with _tenant_session(org) as db:
+                await _run_as_session(db, member=member, install_id=iid, action=str(action),
+                                      raw=raw, out=out)
+                await record_app_audit_in(
+                    db, app_id=first.app_id, user_email=run_as_actor(first.app_id),
+                    kind="action", app_version=out.version, detail=_run_as_detail(
+                        out, member=member, install_id=iid, run_id=run_id))
+    return _run_as_result(out)
 
 
 def _mode(first: UsesRef | None, direct: bool, delegated: bool,
@@ -1655,8 +2001,7 @@ async def _run_executor(request: Request, user: UserContext, pid: str, action: s
                 out.refusal = SOURCE_NOT_OPEN
                 return
             else:
-                run = _run_object_list if ref.op == "list" else _run_object_get
-                await run(db, package, ref, raw, out)
+                await _READS[str(ref.op)](db, package, ref, raw, out, _row_viewer(member))
                 return
         # B2b-2b: only a door op comes here. The session of the second check
         # is closed, so the door holds no connection while the app runs.
@@ -1753,6 +2098,31 @@ def _audit_detail(out: _Outcome) -> dict[str, Any]:
     return detail
 
 
+def _wire(value: Any) -> Any:
+    """A value of an aggregate on the wire. A ``Decimal`` is exact text with
+    no exponent, because a float loses digits. Each other value stays."""
+    return format(value, "f") if isinstance(value, Decimal) else value
+
+
+def _wire_group(group: objects_store.AggregateGroup) -> dict[str, Any]:
+    return {"key": _wire(group.key), "count": group.count,
+            "values": [_wire(v) for v in group.values]}
+
+
+def _aggregate_answer(result: objects_store.AggregateResult) -> dict[str, Any]:
+    """The one row of an aggregate, in the shape of ``parseAggregate`` (D4b).
+    A measure names its field by the key only, so no field spec leaves."""
+    return {
+        "measures": [{"op": m.op, "field": None if m.field is None else m.field.key}
+                     for m in result.measures],
+        "currencies": list(result.currencies),
+        "groups": [_wire_group(g) for g in result.groups],
+        "other": None if result.other is None else _wire_group(result.other),
+        "folded": result.folded,
+        "total": _wire_group(result.total),
+    }
+
+
 def _answer(out: _Outcome) -> dict[str, Any] | Response:
     """The answer of the call *out*, or the refusal that it raises. A card
     that a delegated call opened is 202 (B2c-2a). A door op answers
@@ -1794,6 +2164,8 @@ def _answer(out: _Outcome) -> dict[str, Any] | Response:
             "action": _cap(out.action), "uses": _cap(out.uses), "class": _cap(out.cls)}}
     if out.page is not None:
         return dataclasses.asdict(out.page)
+    if out.aggregate is not None:
+        return _aggregate_answer(out.aggregate)
     return _record_answer(out)
 
 
