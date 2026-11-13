@@ -54,7 +54,9 @@ in the app does not read it. Its one reader is
 `acb_auth.agent_oauth.image_upload_allowed`. The gateway asks it at each call,
 so a reload applies a change there. The agent edge asks it too (CIV-14b fix
 round 1). It hides `upload_task_image` for an org off the flag, and
-`ask_on_task` checks it before a run starts. The edge reads its flags at
+`ask_on_task` checks it before a run starts. Since fix round 2, a body over
+1 MiB of an org off the flag gets the 413 of the old cap, with no slot and no
+read. The edge reads its flags at
 start. So set the same value in the env file of both units, reload
 `acb-gateway`, and restart `acb-agent-edge`. The flip stays OWNER-GATE
 (`enforcement-flip`).

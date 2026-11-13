@@ -527,9 +527,16 @@ def image_upload_allowed(organization_id: object) -> bool:
     refuses, the upload route answers 404 with :data:`IMAGE_UPLOAD_OFF`, and
     ``attachment_ids`` of an activity answers 422 with the same code. A person
     in the app is never refused by it. The list has the shape of
-    ``agent_access_orgs`` and the same parser, and the default is empty. Only
-    the gateway reads it, at each call, so a flag reload applies a change.
-    The caller passes the organization of the session, never request input.
+    ``agent_access_orgs`` and the same parser, and the default is empty.
+
+    Two units read it. The gateway asks it at each call, so a flag reload
+    applies a change there. The agent edge asks it too (CIV-14b fix rounds 1
+    and 2): it hides the upload tool and the image inputs, checks a question
+    before its run starts, and refuses a large body of an organization off
+    the flag. The edge reads its settings at start. So a flip sets the same
+    value in the env file of the gateway and of the edge, reloads the gateway
+    and restarts the agent edge (``docs/flag_reload.md``). The caller passes
+    the organization of the session or of the token row, never request input.
     """
     org = _canonical_org(organization_id)
     if org is None:

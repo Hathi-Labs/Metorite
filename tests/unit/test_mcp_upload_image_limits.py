@@ -35,8 +35,9 @@ Fix round 1 adds the classes ``TestALargeBodyWaitsForItsToken`` (item 1),
 (item 7) and ``TestAQuestionChecksItsImagesFirst`` (item 8). Each test names
 the mutation that turns it red.
 
-Fix round 2 adds the classes ``TestAnOrgOffTheFlagKeepsTheOldCap`` (item A)
-and ``TestARefusedQuestionLeavesNoOpenRun`` (item B).
+Fix round 2 adds the classes ``TestAnOrgOffTheFlagKeepsTheOldCap`` (item A),
+``TestARefusedQuestionLeavesNoOpenRun`` (item B) and
+``TestTheFlagReaderSaysWhoReadsIt`` (item C).
 """
 from __future__ import annotations
 
@@ -535,6 +536,30 @@ class TestTheFlagHidesTheImages:
             assert "upload_task_image" in listed[name]["description"], name
             assert "[[" not in listed[name]["description"], name
         assert "never with a response or an error" in listed["post_agent_activity"]["description"]
+
+
+class TestTheFlagReaderSaysWhoReadsIt:
+    """Fix round 2, item C. Since fix round 1 the edge reads the flag too, and
+    the edge reads its settings at start. So the docstring of the one reader
+    names the edge and its restart, as ``docs/flag_reload.md`` does."""
+
+    def test_c1_the_docstring_names_both_units_and_the_edge_restart(self):
+        """Mutation: put back "Only the gateway reads it" in the docstring of
+        ``agent_oauth.image_upload_allowed``, and this test fails."""
+        import pathlib
+
+        edge_dir = pathlib.Path(tools.__file__).parent
+        readers = sorted(p.name for p in edge_dir.glob("*.py")
+                         if "agent_oauth.image_upload_allowed(" in p.read_text(encoding="utf-8"))
+        assert readers == ["mcp.py", "tools.py"]
+        doc = " ".join((agent_oauth.image_upload_allowed.__doc__ or "").split())
+        assert "Only the gateway reads it" not in doc
+        for words in ("The gateway asks it", "The agent edge asks it too",
+                      "restarts the agent edge", "docs/flag_reload.md"):
+            assert words in doc, words
+        repo = pathlib.Path(__file__).resolve().parents[2]
+        reload_doc = (repo / "docs" / "flag_reload.md").read_text(encoding="utf-8")
+        assert "restart `acb-agent-edge`" in reload_doc
 
 
 class TestAQuestionChecksItsImagesFirst:
