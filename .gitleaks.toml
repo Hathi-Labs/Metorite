@@ -61,4 +61,15 @@ regexes = [
     # test sentinel, never a key. The entry matches this exact value and no
     # other: never widen it.
     '''AKIAABCDEFGHIJKLMNOP''',
+    # CIV-33b: four more fake values in the ids of parametrized tests. They
+    # are fixtures of test_kit_docs_page.py, test_kit_packs.py and
+    # test_secret_shapes_one_list.py, and `.test_durations` lists every test
+    # id. Each is a test sentinel, never a token. Each entry matches one exact
+    # value and no other: never widen them.
+    # Written as a pattern, so this file holds no mbt_ literal
+    # (test_box_token_secret_rules.py). It still matches one value.
+    '''mbt_x{43}''',
+    '''ghp_a1B2a1B2a1B2a1B2a1B2a1B2a1B2a1B2a1B2''',
+    '''AKIAAAAAAAAAAAAAAAAA''',
+    '''ASIABBBBBBBBBBBBBBBB''',
 ]

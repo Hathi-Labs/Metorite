@@ -365,6 +365,33 @@
       "title": "PageDef",
       "type": "object"
     },
+    "RuntimeDef": {
+      "additionalProperties": false,
+      "description": "Where member code runs (STU-B7a, ai_studio.md 19.3). Four kinds. It has no\n`hosts` key on purpose, so `_Strict` refuses one.",
+      "properties": {
+        "kind": {
+          "default": "none",
+          "enum": [
+            "none",
+            "browser",
+            "sandbox",
+            "packages"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "packages": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "maxProperties": 20,
+          "title": "Packages",
+          "type": "object"
+        }
+      },
+      "title": "RuntimeDef",
+      "type": "object"
+    },
     "Shell": {
       "additionalProperties": false,
       "properties": {
@@ -980,6 +1007,17 @@
       ],
       "default": null,
       "title": "Purpose"
+    },
+    "runtime": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RuntimeDef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "shell": {
       "anyOf": [

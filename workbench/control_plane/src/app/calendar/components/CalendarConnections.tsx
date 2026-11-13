@@ -26,12 +26,16 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
+import Switch from "@/components/ui/Switch";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { useToast } from "@/components/ui/Toast";
-import { useCachedResource } from "@/lib/useCachedResource";
+import { peek, put } from "@/lib/dataCache";
 
-import { safeConsentUrl } from "../lib/calendarIds";
+import AlsoSyncCalendar from "./AlsoSyncCalendar";
+import { useCalendarConnections, useConnect } from "../lib/useCalendarConnect";
+
+export { useCalendarConnections, useConnect };
 
 import {
   CONNECTIONS_KEY,
@@ -44,17 +48,18 @@ import {
   disconnectCopy,
   errorCopy,
   hasSyncError,
-  getConnections,
+  pushSwitchLabel,
+  setPushTasks,
+  PUSH_OFF_NOTE,
   isEnabled,
   lastSyncLine,
   reconnectLine,
   recallStarted,
-  rememberStarted,
   refreshConnections,
   returnNotice,
   rowState,
   showsPrompt,
-  startConnect,
+  visibleOffers,
   syncNow,
   syncResultLine,
   wantsSettings,
@@ -65,6 +70,8 @@ import {
 } from "../lib/calendarConnections";
 import {
   ADMIN_NOTE,
+  ALSO_SYNC_STEPS,
+  ALSO_SYNC_TITLE,
   FULL_GUIDE_LINE,
   GUIDE_LISTS,
   SYNC_NOTES,
@@ -73,11 +80,6 @@ import {
 
 const SECTION_CLS =
   "mb-1.5 mt-3 border-t border-border pt-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/80";
-
-/** The list, read through the cache. `null` data means "not enabled". */
-export function useCalendarConnections() {
-  return useCachedResource<ConnectionsList | null>(CONNECTIONS_KEY, () => getConnections());
-}
 
 // ── The How to connect panel ────────────────────────────────────────────────
 
@@ -123,6 +125,14 @@ export function HowToConnectPanel({ defaultOpen = false }: { defaultOpen?: boole
               <li key={n}>{n}</li>
             ))}
           </ul>
+        </div>
+        <div>
+          <p className="mb-0.5 font-medium text-foreground">{ALSO_SYNC_TITLE}</p>
+          <ol className="list-decimal space-y-0.5 pl-4">
+            {ALSO_SYNC_STEPS.map((n) => (
+              <li key={n}>{n}</li>
+            ))}
+          </ol>
         </div>
         <p className="text-[10px]">{FULL_GUIDE_LINE}</p>
       </div>
@@ -175,6 +185,12 @@ export interface SectionViewProps {
   syncingId: string | null;
   /** The line under each row after a Sync now. */
   syncLines: Record<string, string>;
+  /** The id of the row whose switch saves now. */
+  pushingId?: string | null;
+  /** The note or failure line under each row after the switch moved. */
+  pushLines?: Record<string, string>;
+  /** The member moved the switch of a row. */
+  onTogglePush?: (row: CalendarConnection, next: boolean) => void;
   now: number;
   onConnect: (p: Provider) => void;
   onSync: (row: CalendarConnection) => void;
@@ -203,6 +219,9 @@ function Row({
   syncing,
   connecting,
   line,
+  pushing,
+  pushLine,
+  onTogglePush,
   onConnect,
   onSync,
   onAskDisconnect,
@@ -212,6 +231,9 @@ function Row({
   syncing: boolean;
   connecting: Provider | null;
   line: string | undefined;
+  pushing: boolean;
+  pushLine: string | undefined;
+  onTogglePush: ((row: CalendarConnection, next: boolean) => void) | undefined;
   onConnect: (p: Provider) => void;
   onSync: (row: CalendarConnection) => void;
   onAskDisconnect: (row: CalendarConnection) => void;
@@ -232,6 +254,17 @@ function Row({
         <p className={`mb-1 break-words text-[11px] ${failing ? "text-warning" : "text-muted-foreground"}`}>{connectedLine(row)}</p>
       )}
       <p className="mb-1.5 text-[10px] text-muted-foreground">{lastSyncLine(row, now)}</p>
+      {state !== "needs_reconnect" && onTogglePush && (
+        <div className="mb-1.5 flex items-center gap-2 text-[11px] text-foreground">
+          <Switch
+            checked={row.push_tasks}
+            disabled={pushing}
+            label={pushSwitchLabel(row.provider)}
+            onChange={(next) => onTogglePush(row, next)}
+          />
+          <span className="min-w-0 break-words">{pushSwitchLabel(row.provider)}</span>
+        </div>
+      )}
       <div className="flex flex-wrap gap-2">
         {state === "needs_reconnect" ? (
           <Button
@@ -256,6 +289,11 @@ function Row({
       {line && (
         <p role="status" className="mt-1 text-[10px] text-muted-foreground">
           {line}
+        </p>
+      )}
+      {pushLine && (
+        <p role="status" className="mt-1 text-[10px] text-muted-foreground">
+          {pushLine}
         </p>
       )}
     </li>
@@ -295,6 +333,9 @@ export function ConnectedCalendarsView(p: SectionViewProps) {
               syncing={p.syncingId === row.id}
               connecting={p.connecting}
               line={p.syncLines[row.id]}
+              pushing={p.pushingId === row.id}
+              pushLine={p.pushLines?.[row.id]}
+              onTogglePush={p.onTogglePush}
               onConnect={p.onConnect}
               onSync={p.onSync}
               onAskDisconnect={p.onAskDisconnect}
@@ -307,6 +348,7 @@ export function ConnectedCalendarsView(p: SectionViewProps) {
           Bring your Google or Outlook events into Calendar. Metorite writes your timed tasks to a calendar named Metorite.
         </p>
       )}
+      <AlsoSyncCalendar className="mb-2" />
       <div className="mb-2">
         <ConnectButtons
           providers={offer.filter((pr) => !list.connections.some((r) => r.provider === pr))}
@@ -321,30 +363,14 @@ export function ConnectedCalendarsView(p: SectionViewProps) {
 
 // ── The shared wiring ───────────────────────────────────────────────────────
 
-/** The Connect press: ask for the consent URL, then send the browser there. */
-export function useConnect() {
-  const [connecting, setConnecting] = useState<Provider | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const inFlight = useRef(false);
-  async function connect(p: Provider) {
-    // One press at a time: a double click sends one POST and assigns the location once.
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setConnecting(p);
-    setError(null);
-    const r = await startConnect(p);
-    // The server checks the host too. The client checks the same allowlist before it leaves.
-    const url = r.kind === "ok" ? safeConsentUrl(p, r.url) : null;
-    if (url) {
-      rememberStarted(p);
-      window.location.assign(url);
-      return;
-    }
-    setError(r.kind === "error" ? r.message : "Connecting did not work. Try again.");
-    setConnecting(null);
-    inFlight.current = false;
-  }
-  return { connecting, error, connect };
+/** Draw a switch value now: write it to the cached list. The refresh after the write replaces it. */
+function setPushLocal(id: string, value: boolean): void {
+  const cur = peek<ConnectionsList | null>(CONNECTIONS_KEY)?.data;
+  if (!cur) return;
+  put(CONNECTIONS_KEY, {
+    ...cur,
+    connections: cur.connections.map((r) => (r.id === id ? { ...r, push_tasks: value } : r)),
+  });
 }
 
 /** The "Connected calendars" section of the settings sheet. */
@@ -362,6 +388,9 @@ export function ConnectedCalendarsSection({
   const toast = useToast();
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncLines, setSyncLines] = useState<Record<string, string>>({});
+  const [pushingId, setPushingId] = useState<string | null>(null);
+  const [pushLines, setPushLines] = useState<Record<string, string>>({});
+  const pushInFlight = useRef(false);
   const [asking, setAsking] = useState<CalendarConnection | null>(null);
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -377,6 +406,29 @@ export function ConnectedCalendarsSection({
     setSyncLines((m) => ({ ...m, [row.id]: r.kind === "ok" ? syncResultLine(r.result) : r.message }));
     setSyncingId(null);
     setNow(Date.now());
+    refreshConnections();
+  }
+
+  async function togglePush(row: CalendarConnection, next: boolean) {
+    // One request at a time, as the Connect press does.
+    if (pushInFlight.current) return;
+    pushInFlight.current = true;
+    setPushingId(row.id);
+    setPushLines((m) => {
+      const { [row.id]: _gone, ...rest } = m;
+      return rest;
+    });
+    // Optimistic: draw the new value now, roll back when the request fails.
+    setPushLocal(row.id, next);
+    const r = await setPushTasks(row.id, next);
+    if (r.kind === "ok") {
+      if (!next) setPushLines((m) => ({ ...m, [row.id]: r.note ?? PUSH_OFF_NOTE }));
+    } else {
+      setPushLocal(row.id, !next);
+      setPushLines((m) => ({ ...m, [row.id]: r.message }));
+    }
+    setPushingId(null);
+    pushInFlight.current = false;
     refreshConnections();
   }
 
@@ -407,6 +459,9 @@ export function ConnectedCalendarsSection({
         connecting={connecting}
         syncingId={syncingId}
         syncLines={syncLines}
+        pushingId={pushingId}
+        pushLines={pushLines}
+        onTogglePush={(row, next) => void togglePush(row, next)}
         now={now}
         onConnect={(p) => void connect(p)}
         onSync={(row) => void sync(row)}
@@ -428,15 +483,29 @@ export function ConnectedCalendarsSection({
   );
 }
 
-/** The offer on the Calendar page: the same buttons, only when enabled and nothing is connected. */
+/**
+ * The offer on the Calendar page: the same buttons, only when enabled and nothing is connected.
+ * A provider with a mailbox offer shows the offer (CE-10d) and not the generic prompt.
+ */
 export function CalendarConnectPrompt({ onOpenGuide }: { onOpenGuide?: () => void }) {
   const res = useCalendarConnections();
   const { connecting, error, connect } = useConnect();
   if (!showsPrompt(res.data)) return null;
+  const offered = new Set(visibleOffers(res.data).map((o) => o.provider));
+  const generic = connectable(res.data).filter((p) => !offered.has(p));
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-xs text-muted-foreground">
-      <span className="min-w-0 flex-1 basis-48">Bring your Google or Outlook events into Calendar.</span>
-      <ConnectButtons providers={connectable(res.data)} connecting={connecting} onConnect={(p) => void connect(p)} />
+      <AlsoSyncCalendar className="basis-full" />
+      {generic.length > 0 && (
+        <>
+          <span className="min-w-0 flex-1 basis-48">
+            {offered.size > 0
+              ? `Bring your ${generic.map((p) => PROVIDER_NAME[p]).join(" or ")} events into Calendar.`
+              : "Bring your Google or Outlook events into Calendar."}
+          </span>
+          <ConnectButtons providers={generic} connecting={connecting} onConnect={(p) => void connect(p)} />
+        </>
+      )}
       {onOpenGuide && (
         <Button type="button" variant="text" size="sm" onClick={onOpenGuide}>
           How to connect

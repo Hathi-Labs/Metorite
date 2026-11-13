@@ -43,3 +43,10 @@ export function safeConsentUrl(provider: Provider, raw: unknown): string | null 
   if (url.username || url.password || url.port) return null;
   return url.toString();
 }
+
+const ADDRESS = /^[^\s@<>"']{1,64}@[^\s@<>"']+\.[^\s@<>"']+$/;
+
+/** A plausible mailbox address: one `@`, a dot in the domain, no space, at most 254 characters. */
+export function isPlausibleAddress(v: unknown): v is string {
+  return typeof v === "string" && v.length <= 254 && ADDRESS.test(v);
+}

@@ -228,6 +228,11 @@ async def reconcile_task_blocks(
         if not flags.write_allowed(org, me):
             stats.skipped = "flag_off"  # no request, no cost
             return stats
+        if not connections.push_tasks_enabled(conn):
+            # The member switched it off: no request to the provider. The events
+            # already in the calendar "Metorite" stay, and so do the links.
+            stats.skipped = "push_off"
+            return stats
         work = await plan(db, org, str(conn.id), me, t0)
     if not work["push"] and not work["remove"] and connections.metorite_calendar_id(conn):
         stats.skipped = "nothing_to_do"
@@ -330,8 +335,22 @@ async def reconcile_task_blocks(
             # A create whose answer was lost left no id, but the event may exist
             # under our client id. 404 is success, so this is always safe.
             ident = link.external_id
+            cid = client_event_id(link.task_id, str(conn.id), link.created_at)
             if not ident and getattr(provider, "client_id_is_event_id", False):
-                ident = client_event_id(link.task_id, str(conn.id), link.created_at)
+                ident = cid
+            elif (not ident and getattr(provider, "dedupes_by_client_id", False)
+                    and int(link.attempts or 0) < RESOLVE_MAX_ATTEMPTS):
+                # Outlook: the client id is a transactionId, not the event id. A
+                # create with the SAME transactionId hands back the event that the
+                # lost answer made (or makes a throwaway), and we delete it. After
+                # RESOLVE_MAX_ATTEMPTS failures the link goes without it.
+                try:
+                    ident = (await provider.upsert_event(
+                        cred, cal_id, replace(_resolve_event(t0), client_id=cid), None)).external_id
+                except ProviderError as exc:
+                    if getattr(exc, "code", "") != "exists":
+                        raise
+                    ident = None  # the id is taken and cannot be read back: drop the link
             if ident:
                 await provider.delete_event(cred, cal_id, ident)
         except NeedsReconnect:
@@ -350,6 +369,18 @@ async def reconcile_task_blocks(
                 {"org": org, "cid": str(conn.id), "tid": link.task_id, "me": me})
         stats.deleted += 1
     return stats
+
+
+def _resolve_event(t: datetime) -> Any:
+    """A placeholder body for the create that finds the event of a lost answer.
+    The provider dedupes on the client id and ignores the body of a repeat."""
+    from gateway.calendar_sync.provider import OutEvent
+
+    # In the PAST and free: if the create makes a throwaway (the first one never
+    # reached the provider), it neither shows as busy time nor rings a reminder
+    # before the delete that follows it.
+    return OutEvent(title="Metorite", starts_at=t - timedelta(days=2),
+                    ends_at=t - timedelta(days=2) + timedelta(hours=1), busy=False)
 
 
 async def _calendar_missing(provider: Any, cred: Any, cal_id: str) -> bool:
@@ -411,6 +442,9 @@ def _task_url_builder() -> Callable[[str], str | None]:
 
 META_TASK_CURSOR = "task_cursor"
 META_TASK_CALENDAR_ID = "task_calendar_id"
+#: How often a removal tries to find the event of a lost create before the link
+#: is dropped without it (a throwaway or an orphan is better than a link that never ends).
+RESOLVE_MAX_ATTEMPTS = 6
 #: When the calendar "Metorite" could not be found or made (a grant without
 #: ``calendar.app.created`` answers 403), no request is made before this time.
 META_TASK_RETRY_AT = "task_calendar_retry_at"
@@ -465,8 +499,8 @@ async def calendar_identity(org: str, connection_id: str, me: str, cal_id: str,
     * ``CHANGED``: the stored id differs. See :func:`_bind`.
     * ``BOUND``: no stored id. A reconnect REPLACES ``provider_meta``
       (``save_credential``), so the origin of the links is unknown. The caller
-      must NOT sweep for missing events on the one full list that follows,
-      because the list may come from a new calendar.
+      sweep for missing events on the one full list that follows ONLY when the list
+      holds an event of our links (the same calendar), see ``_pull``.
 
     The pull passes ``commit=False`` and binds only after its first full list
     succeeded, so a failed read leaves the state as it was and the push waits.
@@ -559,6 +593,8 @@ async def _pull(
     me = str(conn.member_email).lower()
     if not flags.write_allowed(org, me):
         return 0
+    if not connections.push_tasks_enabled(conn):
+        return 0  # switched off: not even a read of the calendar "Metorite"
     cred = await connections.fresh_credential(org, conn, provider)
     if cred is None:
         return 0
@@ -616,8 +652,14 @@ async def _pull(
                 continue
             routed += outcome != task_links.IGNORED
         live = {e.external_id for e in result.changes if not e.deleted}
-        # An empty full list is not proof of a delete: never act on it.
-        if cursor is None and result.full and live and identity == SAME:
+        # An empty full list is not proof of a delete: never act on it. On a reconnect
+        # (BOUND) the list may come from another calendar, so it counts only when it
+        # holds at least one event of our links (the same calendar): then a linked
+        # event that it lacks was deleted in the gap (an Outlook delta lists live
+        # events only, so this is the only place an Outlook gap delete is seen).
+        proven = identity == SAME or (
+            identity == BOUND and await task_links.any_linked(db, org, locked, live))
+        if cursor is None and result.full and live and proven:
             routed += await task_links.unschedule_missing(
                 db, org, locked, live, window.start, window.end)
         if identity != SAME:
@@ -658,11 +700,15 @@ async def run_pass(
     reconnect, a new calendar) skips the push: the push would send an update
     that revives an event the member deleted in the gap.
 
-    ⚠️ This hold fully works on Google only. A Google full list carries
-    ``showDeleted``, so the pull reads the gap delete as cancelled and unschedules
-    the block BEFORE the push. A Graph delta round lists live events only, so
-    an event the member deleted in the gap on Outlook is not seen: its PATCH
-    answers 404, ``_reset_event`` runs, and the event is made again."""
+    A Google full list carries ``showDeleted``, so the pull reads a gap delete as
+    cancelled. A Graph delta round lists live events only, so on a reconnect the
+    pull sweeps instead: a link whose event the full list lacks, when the list
+    holds another event of our links (the same calendar), was deleted in the gap
+    and its block is unscheduled BEFORE the push (CE-13c)."""
+    from gateway.calendar_sync import flags
+
+    if not flags.write_allowed(org):
+        return PassStats(skipped="flag_off")  # no session, no request, no cost
     state: dict[str, bool] = {}
     try:
         await _pull(org, connection_id, provider=provider, now=now, state=state)

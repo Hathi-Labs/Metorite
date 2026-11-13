@@ -186,18 +186,46 @@ async def _unschedule(db: Any, task_id: str, me: str) -> None:
     await _upsert_personal(db, task_id, me, {"scheduled_start": None, "scheduled_end": None})
 
 
+async def any_linked(db: Any, org: str, conn: Any, live_ids: set[str]) -> bool:
+    """True when at least one live event of the list is the event of a link of
+    this connection and member. That proves the list is the calendar the links
+    were made in, so an event that is MISSING from it was deleted, not moved
+    away with a new calendar."""
+    if not live_ids:
+        return False
+    row = (await db.execute(
+        text(
+            "SELECT 1 FROM calendar_task_links "
+            "WHERE organization_id = CAST(:org AS uuid) "
+            "AND connection_id = CAST(:cid AS uuid) AND member_email = :me "
+            "AND external_id = ANY(:ids) LIMIT 1"
+        ),
+        {"org": org, "cid": str(conn.id), "me": str(conn.member_email).lower(),
+         "ids": sorted(live_ids)},
+    )).fetchone()
+    return row is not None
+
+
 async def unschedule_missing(
     db: Any, org: str, conn: Any, live_ids: set[str], start: datetime, end: datetime,
 ) -> int:
     """After a FULL list: a link whose event the list no longer holds, and
     whose block starts inside the listed window, was deleted at the provider.
-    Unschedule its block and drop the link. The task stays."""
+    Unschedule its block and drop the link. The task stays.
+
+    Only a block that still equals what the link SENT (``synced_block_hash``)
+    counts. A block that Metorite moved since (a plan changed while the
+    connection was down) has an event at its OLD time, which may lie outside the
+    window of the list: its absence proves nothing, and the push moves it."""
     me = str(conn.member_email).lower()
     rows = (await db.execute(
         text(
-            "SELECT l.task_id::text AS task_id, l.external_id FROM calendar_task_links l "
+            "SELECT l.task_id::text AS task_id, l.external_id, l.synced_block_hash, "
+            "p.scheduled_start, p.scheduled_end, t.title "
+            "FROM calendar_task_links l "
             "JOIN pm_task_personal p ON p.task_id = l.task_id "
             "AND lower(p.member_email) = l.member_email "
+            "JOIN pm_tasks t ON t.id = l.task_id "
             "WHERE l.organization_id = CAST(:org AS uuid) "
             "AND l.connection_id = CAST(:cid AS uuid) AND l.member_email = :me "
             "AND l.external_id IS NOT NULL AND l.sync_state = 'sent' "
@@ -211,6 +239,9 @@ async def unschedule_missing(
     for r in rows:
         if r.external_id in live_ids:
             continue
+        if (r.synced_block_hash is None
+                or block_hash(r.title, r.scheduled_start, r.scheduled_end) != r.synced_block_hash):
+            continue  # Metorite moved the block: the event is at its old time
         await _unschedule(db, r.task_id, me)
         await db.execute(
             text(

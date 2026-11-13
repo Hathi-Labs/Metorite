@@ -91,6 +91,9 @@ class _World:
         self.moved = False
         self.refuse: host_store.InstallError | None = None
         self.audits: list[dict[str, Any]] = []
+        #: J2b-1: the review state of the live version, and the pause.
+        self.review = "approved"
+        self.paused = False
 
 
 @pytest.fixture
@@ -112,13 +115,22 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
 
     async def lock_for_install(db: Any, member: str, pid: str) -> Any:
         w.calls.append("lock")
-        return store.InstallTarget(package_id=pid, live_version=w.live)
+        return store.InstallTarget(package_id=pid, live_version=w.live, paused=w.paused)
 
     async def get_version(db: Any, member: str, pid: str, version: int) -> Any:
         w.calls.append(f"version:{version}")
         return store.PackageVersion(
             package_id=pid, version=version, manifest={"name": "Visits"}, bundle_sha256="0",
-            release_notes="", published_by=member, published_at=None, review_status="auto")
+            release_notes="", published_by=member, published_at=None, review_status=w.review)
+
+    async def request_org_approval(db: Any, member: str, pid: str, version: int) -> Any:
+        w.calls.append(f"ask:{version}")
+        if w.review in ("approved", "rejected"):
+            raise store.ApprovalConflict("decided", w.review)
+        w.review = "pending"
+        return store.PackageVersion(
+            package_id=pid, version=version, manifest=None, bundle_sha256="0",
+            release_notes="", published_by=member, published_at=None, review_status="pending")
 
     async def keep(db: Any, **kw: Any) -> tuple[host_store.Install, bool]:
         w.calls.append(f"keep:{kw['scope_kind']}:{kw['scope_subject']}:{kw['version']}")
@@ -139,6 +151,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
     monkeypatch.setattr(store, "get_package", get_package)
     monkeypatch.setattr(store, "lock_for_install", lock_for_install)
     monkeypatch.setattr(store, "get_version", get_version)
+    monkeypatch.setattr(store, "request_org_approval", request_org_approval)
     monkeypatch.setattr(host_store, "group_exists", group_exists)
     monkeypatch.setattr(studio_app, "keep_scope_install", keep)
     monkeypatch.setattr(get_settings(), "studio_orgs", "*")
@@ -356,6 +369,59 @@ def test_a_store_refusal_is_its_detail_for_the_member(world: _World) -> None:
     for secret in (BEN, secret_app, "install-9"):
         assert secret not in r.text
     assert world.audits == []
+
+
+# ── 5b. The org branch of J2b-1 (path A) ───────────────────────────────────
+
+
+@pytest.mark.parametrize("review", ["auto", "pending"])
+def test_an_org_install_without_an_approval_asks_and_installs_nothing(
+    world: _World, review: str,
+) -> None:
+    """Path A (owner, 2026-11-13): the org install needs the live version
+    approved. Else the route asks for the approval: 202, no install and no
+    install audit row. The store writes the review audit row itself."""
+    world.review = review
+    r = _install(PUBLISHER, {"scope": "org"})
+    assert r.status_code == 202, r.text
+    assert r.json() == {"install": None, "created": False, "review_status": "pending",
+                        "version": 3}
+    assert world.calls == ["owner", "lock", "version:3", "ask:3"]
+    assert world.audits == []
+
+
+def test_a_rejected_live_version_is_409_and_installs_nothing(world: _World) -> None:
+    world.review = "rejected"
+    r = _install(PUBLISHER, {"scope": "org"})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "review_conflict"
+    assert r.json()["detail"]["review_status"] == "rejected"
+    assert world.calls == ["owner", "lock", "version:3", "ask:3"]
+    assert world.audits == []
+
+
+@pytest.mark.parametrize("review", ["approved", "auto"])
+def test_a_paused_package_is_423_for_an_org_install(world: _World, review: str) -> None:
+    """An approval survives a pause, and the org install still refuses the
+    paused package, with the code of the door of J3a. It asks for nothing."""
+    world.review, world.paused = review, True
+    r = _install(PUBLISHER, {"scope": "org"})
+    assert r.status_code == 423, r.text
+    assert r.json()["detail"] == {"code": "package_paused", "message": packages.PAUSED_TEXT}
+    assert world.calls == ["owner", "lock", "version:3"]
+    assert world.audits == []
+
+
+def test_a_group_install_reads_no_review(world: _World) -> None:
+    """The group branch does not change in J2b-1."""
+    world.review = "auto"
+    r = _install(PUBLISHER, {"scope": "group:ops"})
+    assert r.status_code == 201, r.text
+    assert "ask:3" not in world.calls
+
+
+def test_the_lock_reads_the_pause() -> None:
+    assert "paused_at IS NOT NULL" in store._INSTALL_LOCK_SQL
 
 
 # ── 6. The statements ──────────────────────────────────────────────────────

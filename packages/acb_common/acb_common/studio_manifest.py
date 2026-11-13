@@ -73,19 +73,28 @@ BLOCKS: tuple[str, ...] = (
     "timeline", "mindMap", "processFlow", "checklist", "map", "markdown",
 )  # fmt: skip
 
-OBJECT_OPS: tuple[str, ...] = ("list", "get", "create", "update", "delete")
+#: The five record verbs of an object. ``studio_tools.complete_record_actions``
+#: adds an action for each of them, and ``manifestDiff.ts`` folds them.
+RECORD_OPS: tuple[str, ...] = ("list", "get", "create", "update", "delete")
+
+#: Each verb of an ``object:<name>.<op>`` action: the record verbs, and the
+#: aggregate of C2b (STU-D4b). No action is added for the aggregate by itself,
+#: so a package declares it.
+OBJECT_OPS: tuple[str, ...] = (*RECORD_OPS, "aggregate")
 
 #: The class of each object verb (STU-B2a, ``ai_studio.md`` §3.2). It is the
 #: one source of the class of an ``object:<name>.<op>`` action. The B1 catalog
-#: (``catalog_rows``) gives the class of each other source. A read is A. A
-#: create or an update is B, because the app can undo it. A delete is C.
-#: ``test_studio_action_door.py`` holds these keys equal to :data:`OBJECT_OPS`.
+#: (``catalog_rows``) gives the class of each other source. A read is A, and an
+#: aggregate is a read. A create or an update is B, because the app can undo
+#: it. A delete is C. ``test_studio_action_door.py`` holds these keys equal to
+#: :data:`OBJECT_OPS`.
 OBJECT_OP_CLASSES: dict[str, str] = {
     "list": "A",
     "get": "A",
     "create": "B",
     "update": "B",
     "delete": "C",
+    "aggregate": "A",
 }
 
 #: The head of the refusal of a view source that writes (STU-B2c-1, fix round 1).
@@ -184,12 +193,15 @@ class UsesRef:
 
     ``source`` is ``object``, ``manifest`` (an ``<app>.<op>`` door op),
     ``integration`` or ``workflow``, the source names of the B1 catalog.
-    ``object`` and ``op`` are set for an ``object:`` value only.
+    ``object`` and ``op`` are set for an ``object:`` value. ``app`` and
+    ``op`` are set for a door op (STU-B2b-2b): ``op`` then holds the door op
+    name of that app. An integration and a workflow set none of them.
     """
 
     source: Literal["object", "manifest", "integration", "workflow"]
     object: str | None = None
     op: str | None = None
+    app: str | None = None
 
 
 def parse_uses(uses: object) -> UsesRef | None:
@@ -205,7 +217,7 @@ def parse_uses(uses: object) -> UsesRef | None:
         return UsesRef(source="integration")
     if m.group("wf"):
         return UsesRef(source="workflow")
-    return UsesRef(source="manifest")
+    return UsesRef(source="manifest", app=m.group("app"), op=m.group("appop"))
 
 
 # --- the schema ------------------------------------------------------------
@@ -364,6 +376,35 @@ class Shell(_Strict):
     search: list[str] = Field(default_factory=list)
 
 
+MAX_RUNTIME_PACKAGES = 20
+_PKG_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_PKG_VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z.+!_-]{0,31}$")
+
+
+class RuntimeDef(_Strict):
+    """Where member code runs (STU-B7a, ai_studio.md 19.3). Four kinds. It has no
+    `hosts` key on purpose, so `_Strict` refuses one."""
+
+    kind: Literal["none", "browser", "sandbox", "packages"] = "none"
+    #: Package name to exact version. Only kind `packages` reads it.
+    packages: dict[str, str] = Field(default_factory=dict, max_length=MAX_RUNTIME_PACKAGES)
+
+    @field_validator("packages")
+    @classmethod
+    def _packages_are_pinned(cls, v: dict[str, str]) -> dict[str, str]:
+        for name, version in v.items():
+            if not _PKG_NAME_RE.fullmatch(name) or not _PKG_VERSION_RE.fullmatch(version):
+                raise ValueError("a package is a name and an exact version")
+        return v
+
+
+def runtime_kind(manifest: Any) -> str:
+    """The runtime kind of a manifest (model or dict). No key means `none`."""
+    rt = manifest.get("runtime") if isinstance(manifest, dict) else getattr(manifest, "runtime", None)
+    kind = rt.get("kind") if isinstance(rt, dict) else getattr(rt, "kind", None)
+    return kind if isinstance(kind, str) and kind else "none"
+
+
 class Manifest(_Strict):
     studio: Literal[1]
 
@@ -399,6 +440,8 @@ class Manifest(_Strict):
     slots: list[dict[str, Any]] = Field(default_factory=list)
     needs: list[dict[str, Any]] = Field(default_factory=list)
     overrides: list[dict[str, Any]] = Field(default_factory=list)
+    #: STU-B7a. Where member code runs. No key means kind `none`. B4 and B5 move it onto `logic[]`.
+    runtime: RuntimeDef | None = None
 
     @field_validator("contributes")
     @classmethod

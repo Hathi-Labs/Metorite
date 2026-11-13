@@ -46,6 +46,22 @@ reader is `gateway.routes.workflows.core.author_gate_on`, and each request
 asks it. A reload applies a change, and the flip stays OWNER-GATE
 (`enforcement-flip`).
 
+`STUDIO_DOOR_OPS_ORGS` opens the door op of the Studio action door
+(`ai_studio.md` §14 B2b-2). For each listed org, a class A `<app>.<op>`
+action of a package runs that op of the app, as the caller. `*` lists every
+org, and the default is empty. Its one reader is
+`gateway.routes.studio.flags.door_ops_allowed`, and each request asks it. The
+door also needs `STUDIO_ORGS`. A reload applies a change, and the flip stays
+OWNER-GATE (`enforcement-flip`).
+
+`STUDIO_NUM_F8_ORGS` adds the float8 test to a number filter of the Studio
+object query (`ai_studio.md` §14 C2c). For each listed org, the query tests
+`studio_record_hot.v_num_f8` beside the exact `v_num` test, so the app role
+can use the index. `*` lists every org, and the default is empty. Its one
+reader is `acb_common.studio_flags.num_f8_allowed`, and each query asks
+it. The query honours it for an org only after the backfill of migration 433 ends (`_warm_f8`), so the records are right at every step. Runbook: after a restore or any trigger work (`DISABLE TRIGGER`, `session_replication_role = replica`, `pg_restore --disable-triggers`), restart the gateway before you trust the flag, because a ready answer is cached for up to 600 seconds.
+A reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
+
 `AGENT_WRITE_CAP` and `AGENT_WRITE_WINDOW_S` set the write cap of each agent
 connection (`external_agent_access.md` §9.2, MCP-G20). The defaults are 120
 writes in 600 s. They are not `*_ORGS` or `*_MODES` keys, so a reload does

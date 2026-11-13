@@ -14,7 +14,7 @@
  */
 import { invalidate } from "@/lib/dataCache";
 
-import type { Provider } from "./calendarIds";
+import { isPlausibleAddress, type Provider } from "./calendarIds";
 export type { Provider };
 export type RowStatus = "connected" | "needs_reconnect" | "disconnected";
 
@@ -27,12 +27,56 @@ export interface CalendarConnection {
   last_error: string | null;
   metorite_calendar: boolean;
   entry_count: number;
+  /** Do the task blocks of the member go out to this calendar? Absent on the wire means yes. */
+  push_tasks: boolean;
+}
+
+/** A connected mailbox of the member that has no calendar connection yet (CE-10d). */
+export interface MailboxOffer {
+  provider: Provider;
+  address: string;
 }
 
 export interface ConnectionsList {
   enabled: boolean;
   providers: Record<Provider, { available: boolean }>;
   connections: CalendarConnection[];
+  /** Absent from an old server: read it as an empty list. */
+  mailbox_offers?: MailboxOffer[];
+}
+
+export const MAX_OFFERS = 10;
+
+/** The line of one offer. The button names the provider. */
+export function offerLine(offer: Pick<MailboxOffer, "address">): string {
+  return `Your mailbox ${offer.address} is connected. Also sync its calendar?`;
+}
+
+export const OFFER_BUTTON = "Sync its calendar";
+
+/** The spoken name of the button: it names the provider and the mailbox. */
+export function offerButtonLabel(offer: MailboxOffer): string {
+  return `Sync the ${PROVIDER_NAME[offer.provider]} calendar of ${offer.address}`;
+}
+export const ALREADY_CONNECTED_LINE = "This calendar is already connected. Reload the page.";
+export const UNKNOWN_MAILBOX_LINE = "That mailbox is not connected to your account. Reload the page.";
+
+/** The offers to draw: the feature is on, and the provider can connect. */
+export function visibleOffers(list: ConnectionsList | null | undefined): MailboxOffer[] {
+  if (!list || !list.enabled) return [];
+  return (list.mailbox_offers ?? []).filter((o) => list.providers[o.provider]?.available);
+}
+
+/** Read the offers of the wire. Garbage, a missing key and a wrong type give an empty list. */
+export function parseOffers(v: unknown): MailboxOffer[] {
+  if (!Array.isArray(v)) return [];
+  const out: MailboxOffer[] = [];
+  for (const o of v) {
+    if (out.length >= MAX_OFFERS) break;
+    if (!isObject(o) || !isProvider(o.provider) || !isPlausibleAddress(o.address)) continue;
+    out.push({ provider: o.provider, address: o.address });
+  }
+  return out;
 }
 
 export interface SyncResult {
@@ -84,10 +128,24 @@ export function syncFailedLine(row: CalendarConnection): string {
 export function connectedLine(row: CalendarConnection): string {
   if (hasSyncError(row)) return `Connected as ${row.account_email}. ${syncFailedLine(row)}`;
   const reading = `Reading your calendars, ${plural(row.entry_count, "event", "events")} so far.`;
-  const tasks = row.metorite_calendar
-    ? "Your tasks go to the 'Metorite' calendar."
-    : "Your tasks go to a 'Metorite' calendar when you schedule one.";
+  const tasks = !row.push_tasks
+    ? PUSH_OFF_LINE
+    : row.metorite_calendar
+      ? "Your tasks go to the 'Metorite' calendar."
+      : "Your tasks go to a 'Metorite' calendar when you schedule one.";
   return `Connected as ${row.account_email}. ${reading} ${tasks}`;
+}
+
+/** The row line while the switch is off. */
+export const PUSH_OFF_LINE = "Your tasks do not go to this calendar.";
+/** The note after the member turns the switch off. The server note wins when it sends one. */
+export const PUSH_OFF_NOTE = "Your tasks no longer go to this calendar. The events already there stay.";
+export const PUSH_NOT_AVAILABLE_LINE = "This setting is not available. Reload the page.";
+export const PUSH_FAILED_LINE = "Metorite could not save this. Try again.";
+
+/** The label of the switch of a row. It names the provider. */
+export function pushSwitchLabel(provider: Provider): string {
+  return `Show my Metorite tasks in ${provider === "google" ? "Google Calendar" : "Outlook"}`;
 }
 
 export function reconnectLine(provider: Provider): string {
@@ -123,6 +181,7 @@ export function errorCopy(
           : "A work or school account may need an administrator to allow Metorite.";
     return text(`The sign-in was cancelled or blocked. ${admin} See How to connect. Then press Connect.`);
   }
+  if (c === "already_connected") return text("This calendar is already connected. Reload the page.");
   if (c === "scope_missing") return text("The consent did not include calendar access. Press Connect and allow every box.");
   if (c === "scope_extra") {
     return text(`${who} gave Metorite more access than it asks for. Remove Metorite at ${page}, then connect again.`);
@@ -266,6 +325,7 @@ function parseRow(v: unknown): CalendarConnection | null {
     last_error: typeof v.last_error === "string" ? v.last_error : null,
     metorite_calendar: v.metorite_calendar === true,
     entry_count: typeof v.entry_count === "number" ? v.entry_count : 0,
+    push_tasks: v.push_tasks !== false,
   };
 }
 
@@ -279,6 +339,7 @@ export function parseList(body: unknown): ConnectionsList | null {
     enabled: body.enabled,
     providers: { google: { available: avail("google") }, outlook: { available: avail("outlook") } },
     connections: rows.map(parseRow).filter((r): r is CalendarConnection => !!r && r.status !== "disconnected"),
+    mailbox_offers: parseOffers(body.mailbox_offers),
   };
 }
 
@@ -302,11 +363,29 @@ export const OFFLINE_LINE = "The request did not go through. Check your connecti
 const SYNC_FAILED_LINE = "The sync did not work. Try again in a minute.";
 const DISCONNECT_FAILED_LINE = "Disconnect did not work. Try again.";
 
-/** Ask for the consent URL. The caller sends the browser there. */
-export async function startConnect(provider: Provider, fetchImpl: typeof fetch = fetch): Promise<StartResult> {
+/**
+ * Ask for the consent URL. The caller sends the browser there. A `loginHint` is the address of
+ * one of the member's own mailboxes (CE-10d). The gateway refuses any other with `unknown_mailbox`.
+ */
+export async function startConnect(
+  provider: Provider,
+  fetchImpl: typeof fetch = fetch,
+  loginHint?: string,
+): Promise<StartResult> {
   try {
-    const res = await fetchImpl(`/api/calendar/connections/${provider}/connect`, { method: "POST" });
-    if (!res.ok) return { kind: "error", message: CONNECT_FAILED_LINE };
+    const init: RequestInit = { method: "POST" };
+    if (loginHint !== undefined) {
+      init.headers = { "Content-Type": "application/json" };
+      init.body = JSON.stringify({ login_hint: loginHint });
+    }
+    const res = await fetchImpl(`/api/calendar/connections/${provider}/connect`, init);
+    if (!res.ok) {
+      const err: unknown = await res.json().catch(() => null);
+      const code = isObject(err) && typeof err.detail === "string" ? err.detail : "";
+      if (code === "already_connected") return { kind: "error", message: ALREADY_CONNECTED_LINE };
+      if (code === "unknown_mailbox") return { kind: "error", message: UNKNOWN_MAILBOX_LINE };
+      return { kind: "error", message: CODE.test(code) ? errorCopy(code, provider).text : CONNECT_FAILED_LINE };
+    }
     const body: unknown = await res.json().catch(() => null);
     const url = isObject(body) && typeof body.url === "string" ? body.url : "";
     return url ? { kind: "ok", url } : { kind: "error", message: CONNECT_FAILED_LINE };
@@ -351,6 +430,35 @@ export async function disconnect(id: string, fetchImpl: typeof fetch = fetch): P
     return { kind: "ok", removed: isObject(body) && typeof body.removed_entries === "number" ? body.removed_entries : 0 };
   } catch {
     return { kind: "error", message: OFFLINE_LINE };
+  }
+}
+
+export type PushOutcome =
+  | { kind: "ok"; connection: CalendarConnection; note: string | null }
+  | { kind: "error"; message: string };
+
+/** Turn the task write-out of one connection on or off. Reading the events is not affected. */
+export async function setPushTasks(
+  id: string,
+  value: boolean,
+  fetchImpl: typeof fetch = fetch,
+): Promise<PushOutcome> {
+  if (!isConnectionId(id)) return { kind: "error", message: PUSH_NOT_AVAILABLE_LINE };
+  try {
+    const res = await fetchImpl(`/api/calendar/connections/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ push_tasks: value }),
+    });
+    if (res.status === 404) return { kind: "error", message: PUSH_NOT_AVAILABLE_LINE };
+    if (!res.ok) return { kind: "error", message: PUSH_FAILED_LINE };
+    const body: unknown = await res.json().catch(() => null);
+    const connection = parseRow(body);
+    if (!connection) return { kind: "error", message: PUSH_FAILED_LINE };
+    const note = isObject(body) && typeof body.note === "string" && body.note ? body.note : null;
+    return { kind: "ok", connection, note };
+  } catch {
+    return { kind: "error", message: PUSH_FAILED_LINE };
   }
 }
 

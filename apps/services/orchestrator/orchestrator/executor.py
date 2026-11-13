@@ -5484,15 +5484,43 @@ def _run_member(event_payload: Any, session_user: str | None = None) -> tuple[st
     return claimed, False
 
 
+def _run_attribution() -> tuple[str, str] | None:
+    """The ``(app, agent)`` of ``acb_common.run_attribution_scope``, or None.
+
+    AUTO-8b-2c (``proactive_agent.md`` §4.4). Only server code binds the
+    scope (``gateway/jobs/headless_turn.py``), never a request. Never raises.
+    """
+    try:
+        from acb_common import run_attribution
+
+        return run_attribution()
+    except Exception:
+        return None
+
+
+def _run_agent_label(agent_name: str) -> str:
+    """The agent name that a run binds for attribution. Never raises.
+
+    The agent of the attribution scope when one is bound, else
+    ``agent_name``. Only the run context gets it, so the usage stamp and
+    each log line of the run carry it. Each other step of the run keeps
+    ``agent_name``.
+    """
+    scoped = _run_attribution()
+    return scoped[1] if scoped is not None else agent_name
+
+
 def _bind_run_app(config: Any) -> None:
     """Add the app this agent belongs to. Never raises.
 
     The app comes from ``config.json``, which is loaded after the run has
     already bound its other fields. So it is a second, additive bind, the same
-    shape as :func:`_bind_run_instance`.
+    shape as :func:`_bind_run_instance`. AUTO-8b-2c: the app of the
+    attribution scope wins over the config (:func:`_run_attribution`).
     """
     try:
-        app = str((config or {}).get("app") or "").strip()
+        scoped = _run_attribution()
+        app = scoped[0] if scoped is not None else str((config or {}).get("app") or "").strip()
         if app:
             from acb_common import bind_run_context
             bind_run_context(app=app)
@@ -5825,7 +5853,7 @@ async def _run_agent_inner(
         from acb_common import bind_run_context
         _batch_user, _batch_verified = _run_member(event_payload, session_user)
         bind_run_context(
-            run_id=run_id, thread_id=thread_id, agent=agent_name,
+            run_id=run_id, thread_id=thread_id, agent=_run_agent_label(agent_name),
             user=_batch_user or None,
             source=(
                 str(event_payload.get("source") or "").strip() or None
@@ -6780,7 +6808,7 @@ async def run_agent_stream(
             _corr_source = str(event_payload.get("source") or "").strip() or "chat"
         bind_run_context(
             run_id=run_id, thread_id=thread_id,
-            agent=agent_name, user=_corr_user or None, source=_corr_source,
+            agent=_run_agent_label(agent_name), user=_corr_user or None, source=_corr_source,
             member_verified=_corr_verified,
         )
     except Exception:
