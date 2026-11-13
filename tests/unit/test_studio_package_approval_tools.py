@@ -96,6 +96,7 @@ class _Store:
         self.busy = False
         self.more = False
         self.meta: dict[str, tuple[str, str]] = {}  # a package id -> its name and its owner
+        self.manifests: dict[str, dict[str, Any]] = {}  # a package id -> its own manifest
 
     def _check(self) -> None:
         if self.busy:
@@ -148,7 +149,8 @@ class _Store:
             name, owner = self.meta.get(pid, ("Site visits", self.owner))
             rows.append(store.PendingVersion(
                 package_id=pid, name=name, owner_email=owner, version=v,
-                published_by=owner, published_at=WHEN, manifest=self.manifest,
+                published_by=owner, published_at=WHEN,
+                manifest=self.manifests.get(pid, self.manifest),
                 requested_by=owner, requested_at=WHEN))
         return rows, self.more
 
@@ -623,8 +625,9 @@ async def test_twenty_rows_stay_under_the_cap(world: _World) -> None:
 async def test_an_approve_of_a_short_row_that_the_list_leaves_out_is_refused(
         world: _World) -> None:
     """Review F3. Short manifests, so no row is cut, and more rows than the
-    list holds. A row that the list leaves out is refused with no card and no
-    POST, because the approver never read it. Mutation M2c -> red."""
+    list holds. A row that the list leaves out is refused with its own
+    sentence, no card and no POST, because the approver never read it.
+    Mutations M2c and (ii) -> red."""
     world.store.state = {(str(uuid.uuid4()), 1): "pending" for _ in range(28)}
     world.as_(ADA)
     listed = await st.studio_list_approvals()
@@ -635,7 +638,8 @@ async def test_an_approve_of_a_short_row_that_the_list_leaves_out_is_refused(
     left = [pid for (pid, _v) in sorted(world.store.state) if pid not in shown]
     assert left, "non-vacuity: a row is left out"
     out = await st.studio_approve(left[0], 1)
-    assert out["ok"] is False and _msg(out) == st._APV_TOO_LONG, out
+    assert out["ok"] is False and _msg(out) == st._APV_LEFT_OUT, out
+    assert "too long" not in _msg(out) and "page" not in _msg(out)
     assert world.card.shown == [] and _APPROVE not in _sent(world)
     # A row that the list shows whole is approved after its card.
     assert (await st.studio_approve(rows[0]["package_id"], 1))["ok"]
@@ -659,6 +663,67 @@ async def test_the_cut_of_a_manifest_does_not_depend_on_the_count_of_rows(
     assert listed["count"] == pending and listed["truncated"] is False, listed
     assert not any(r["manifest_cut"] for r in _rows(listed))
     assert (await st.studio_approve(first, 1))["ok"]
+
+
+def _ids(prefix: int, count: int) -> list[str]:
+    """*count* package ids that sort in the order of *prefix*."""
+    return [f"{prefix:02x}{i:06x}-0000-4000-8000-000000000000" for i in range(count)]
+
+
+async def test_cut_rows_at_the_head_do_not_hide_the_short_rows_after_them(
+        world: _World) -> None:
+    """Review P2 (a). Two cut rows come first and five short rows follow. The
+    list skips what does not fit and shows each short row. The short rows are
+    approvable, and the cut rows refuse. Mutation (i) -> red."""
+    heads, short = _ids(0x10, 2), _ids(0x20, 5)
+    world.store.state = {(pid, 1): "pending" for pid in (*heads, *short)}
+    world.store.manifests = {pid: _manifest("w" * 30_000) for pid in heads}
+    world.as_(ADA)
+    listed = await st.studio_list_approvals()
+    shown = {r["package_id"] for r in _rows(listed)}
+    assert set(short) <= shown and listed["truncated"] is True, listed
+    for pid in heads:
+        out = await st.studio_approve(pid, 1)
+        assert _msg(out) == st._APV_TOO_LONG, out
+    assert world.card.shown == [] and _APPROVE not in _sent(world)
+    for pid in short:
+        assert (await st.studio_approve(pid, 1))["ok"]
+    assert len(world.card.shown) == 5
+
+
+async def test_a_row_that_does_not_fit_alone_leaves_the_others_listed(world: _World) -> None:
+    """Review P2 (b) and (c). A quote-heavy manifest under the cut escapes to
+    more than the list holds, even alone. The list shows the other rows, and
+    its note says that some are not listed. The approve of that row gives the
+    left-out sentence, no card and no POST. A reject of it still works."""
+    [big], rest = _ids(0x10, 1), _ids(0x20, 3)
+    world.store.state = {(pid, 1): "pending" for pid in (big, *rest)}
+    world.store.manifests = {big: _manifest('"' * 2_900)}
+    world.as_(ADA)
+    listed = await st.studio_list_approvals()
+    assert [r["package_id"] for r in _rows(listed)] == rest, listed
+    assert listed["count"] == 3 and listed["truncated"] is True
+    assert st._APV_LIST_CUT.strip() in listed["note"]
+    every, shown = st._shown_approvals([{"package_id": big, "version": 1,
+                                         "manifest": world.store.manifests[big]}])
+    assert every[0]["manifest_cut"] is False and shown == [], "non-vacuity: not cut, no room"
+    out = await st.studio_approve(big, 1)
+    assert out["ok"] is False and _msg(out) == st._APV_LEFT_OUT, out
+    assert world.card.shown == [] and _APPROVE not in _sent(world)
+    assert (await st.studio_approve(rest[0], 1))["ok"]
+    assert (await st.studio_reject(big, 1))["ok"]
+    assert world.store.state[(big, 1)] == "rejected"
+
+
+async def test_a_cut_manifest_gets_the_too_long_sentence(world: _World) -> None:
+    """Review P1. Only a cut manifest gets the too-long sentence."""
+    pid = world.store.pid
+    world.store.manifest = _manifest("q" * (st.APPROVAL_MANIFEST_CHARS + 10))
+    assert (await st.studio_request_approval(pid, 1))["ok"]
+    world.as_(ADA)
+    out = await st.studio_approve(pid, 1)
+    assert (out["ok"], _msg(out)) == (False, st._APV_TOO_LONG), out
+    assert world.card.shown == [] and _APPROVE not in _sent(world)
 
 
 # ── 7. The copies match the route ─────────────────────────────────────────
