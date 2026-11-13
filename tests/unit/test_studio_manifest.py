@@ -7,6 +7,7 @@ Each refusal has one test. It asserts a JSON path and one sentence of at most
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 import time
@@ -1208,3 +1209,58 @@ def test_a_package_cannot_extend_itself():
     errors = validate_manifest(bad)
     assert [e.path for e in errors] == ["$.extends"]
     assert "cannot extend itself" in errors[0].message
+
+
+# -- STU-B7a: the runtime key ------------------------------------------------
+
+
+def _with_runtime(rt: object) -> dict:
+    return {**EXAMPLE, "runtime": rt}
+
+
+def test_no_runtime_key_means_kind_none_and_validates() -> None:
+    from acb_common.studio_manifest import runtime_kind
+
+    assert "runtime" not in EXAMPLE
+    assert validate_manifest(EXAMPLE) == []
+    assert runtime_kind(EXAMPLE) == "none"
+    assert runtime_kind(Manifest.model_validate(EXAMPLE)) == "none"
+    assert runtime_kind({**EXAMPLE, "runtime": {}}) == "none"
+
+
+@pytest.mark.parametrize("kind", ["none", "browser", "sandbox", "packages"])
+def test_each_runtime_kind_is_accepted(kind: str) -> None:
+    from acb_common.studio_manifest import runtime_kind
+
+    doc = _with_runtime({"kind": kind})
+    assert validate_manifest(doc) == []
+    assert runtime_kind(doc) == kind
+
+
+def test_a_bad_runtime_kind_is_refused_with_a_path() -> None:
+    errs = validate_manifest(_with_runtime({"kind": "gpu"}))
+    assert [e.path for e in errs] == ["$.runtime.kind"]
+
+
+def test_runtime_has_no_hosts_key() -> None:
+    errs = validate_manifest(_with_runtime({"kind": "sandbox", "hosts": ["a.example"]}))
+    assert [e.path for e in errs] == ["$.runtime.hosts"]
+
+
+def test_runtime_packages_are_pinned_and_bounded() -> None:
+    assert validate_manifest(_with_runtime({"kind": "packages", "packages": {"rich": "13.7.1"}})) == []
+    bad = validate_manifest(_with_runtime({"kind": "packages", "packages": {"rich": ">=13"}}))
+    assert [e.path for e in bad] == ["$.runtime.packages"]
+    many = {f"p{i}": "1.0" for i in range(21)}
+    assert validate_manifest(_with_runtime({"kind": "packages", "packages": many}))
+
+
+def test_a_manifest_without_runtime_hashes_as_before() -> None:
+    """Pin: the hash of a stored manifest without the key. A new optional key must not move it."""
+    from acb_common.studio_manifest import manifest_hash
+
+    doc = {"studio": 1, "id": "pin", "name": "Pin", "purpose": "Hold the hash."}
+    assert manifest_hash(doc) == hashlib.sha256(
+        b'{"id":"pin","name":"Pin","purpose":"Hold the hash.","studio":1}'
+    ).hexdigest()
+    assert validate_manifest(doc) == []

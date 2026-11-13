@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 194
+-- Tables in this phase: 196
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -2594,6 +2594,30 @@ ALTER TABLE studio_objects ADD CONSTRAINT studio_objects_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS studio_objects_org_idx ON studio_objects (organization_id);
 
+-- studio_batch_items
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM studio_batch_items WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: studio_batch_items still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE studio_batch_items ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE studio_batch_items ADD CONSTRAINT studio_batch_items_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS studio_batch_items_org_idx ON studio_batch_items (organization_id);
+
+-- studio_batches
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM studio_batches WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: studio_batches still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE studio_batches ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE studio_batches ADD CONSTRAINT studio_batches_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS studio_batches_org_idx ON studio_batches (organization_id);
+
 -- studio_object_fields
 DO $$
 BEGIN
@@ -2641,6 +2665,18 @@ ALTER TABLE studio_record_hot ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE studio_record_hot ADD CONSTRAINT studio_record_hot_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS studio_record_hot_org_idx ON studio_record_hot (organization_id);
+
+-- studio_org_usage
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM studio_org_usage WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: studio_org_usage still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE studio_org_usage ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE studio_org_usage ADD CONSTRAINT studio_org_usage_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS studio_org_usage_org_idx ON studio_org_usage (organization_id);
 
 -- goal_records
 DO $$

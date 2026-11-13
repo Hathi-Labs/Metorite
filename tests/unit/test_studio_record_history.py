@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from acb_common.studio_access import Viewer
 
 pytest.importorskip("sqlalchemy")
 
@@ -82,7 +83,7 @@ class _DB:
 
 def _batch(steps: list[store.Write], via: tuple[str, str] | None = None,
            data: dict[str, Any] | None = None) -> Any:
-    batch = store._Batch(ANA, PID, steps, via)
+    batch = store._Batch(ANA, PID, steps, Viewer(ANA), via)
     batch.objects[OID] = store._Held("thing", store._check_fields(_FIELDS), ())
     if data is not None:
         batch.marks[(OID, RID)] = store._Mark(OID, 0, dict(data), dict(data))
@@ -195,7 +196,8 @@ def test_a_bad_via_is_refused_before_any_statement(bad: Any) -> None:
 
     with pytest.raises(store.ObjectStoreError, match="via"):
         asyncio.run(store.apply_writes(_NoSQL(), ANA, package_id=PID,
-                                       writes=[store.Write("create", OID, data={})], via=bad))
+                                       writes=[store.Write("create", OID, data={})],
+                                       viewer=Viewer(ANA), via=bad))
 
 
 def test_via_is_absent_by_default_and_takes_the_two_kinds() -> None:
@@ -240,7 +242,7 @@ def test_only_the_workflow_write_sets_via() -> None:
         "run_workflow_write"]
     do_write = ast.unparse(funcs["_do_object_write"])
     assert "{} if via is None else {'via': via}" in do_write
-    assert "writes=[write, *line_writes], **how)" in do_write
+    assert "viewer=viewer, **how)" in do_write
     src = ast.unparse(funcs["run_workflow_write"])
     assert "via=(WORKFLOW_RUN_VIA, str(run_id))" in src
     # Inside _do_object_write, `via` is only its keyword parameter: no line

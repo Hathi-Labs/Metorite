@@ -217,6 +217,7 @@ pytest.importorskip("sqlalchemy")
 from acb_auth import UserContext, UserRole, build_access
 from acb_common import get_settings, studio_query
 from acb_common.db import bind_tenant, release_tenant, tenant_session
+from acb_common.studio_access import Viewer
 from acb_common.studio_query import QueryError
 from fastapi import HTTPException
 from gateway.routes.studio import invoke
@@ -235,6 +236,9 @@ pytestmark = _DB_GATE
 
 TAG = uuid.uuid4().hex[:8]
 ANA = f"ana.{TAG}@stub2a.test"
+#: C8a. The store takes a viewer. No object of this suite declares `access`,
+#: so each object is open and any member reads and writes it.
+_VIEWER = Viewer(ANA)
 BEN = f"ben.{TAG}@stub2a.test"
 NOT_FOUND = "Not found"
 
@@ -353,7 +357,7 @@ async def _object_with_record(org: str, pid: str) -> tuple[str, str]:
         obj = await objects_store.define_object(db, ANA, package_id=pid, name="visit",
                                                 fields=_FIELDS)
         assert obj is not None
-        rec = await objects_store.create_record(db, ANA, obj.id, _DATA, package_id=pid)
+        rec = await objects_store.create_record(db, ANA, obj.id, _DATA, package_id=pid, viewer=_VIEWER)
         assert rec is not None
     return obj.id, rec.id
 
@@ -658,7 +662,7 @@ async def _add_records(org: str, oid: str, pid: str, rows: list[tuple[str, str]]
     async with tenant_session(org) as db:
         for site, status in rows:
             rec = await objects_store.create_record(
-                db, ANA, oid, {"site": site, "status": status, "notes": "x"}, package_id=pid)
+                db, ANA, oid, {"site": site, "status": status, "notes": "x"}, package_id=pid, viewer=_VIEWER)
             assert rec is not None
             ids.append(rec.id)
     return ids
@@ -1238,7 +1242,7 @@ async def _with_rules(w: Any, formula: bool = False) -> None:
         await objects_store.set_field_hot(db, w.obj, "site", True)
         if formula:
             # A formula is declared before the first record (C7a).
-            assert await objects_store.delete_record(db, ANA, w.obj, w.rec, package_id=w.pkg)
+            assert await objects_store.delete_record(db, ANA, w.obj, w.rec, package_id=w.pkg, viewer=_VIEWER)
         rules = _RULES if formula else _RULES[:3]
         await objects_store.set_constraints(db, w.obj, rules, package_id=w.pkg)
 
@@ -2556,7 +2560,8 @@ async def _add_tallied(org: str, oid: str, pid: str,
             data: dict[str, Any] = {"site": "Plant", "status": status, "hours": hours}
             if minor is not None:
                 data["fee"] = {"minor": minor, "currency": currency}
-            rec = await objects_store.create_record(db, ANA, oid, data, package_id=pid)
+            rec = await objects_store.create_record(db, ANA, oid, data, package_id=pid,
+                                                  viewer=_VIEWER)
             assert rec is not None
             ids.append(rec.id)
     return ids
