@@ -278,8 +278,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     # -- studio package delete (STU-A5c-2) --
     "studio_delete_package": ("delete my studio app", "delete the studio package of Ravi, who left"),
     # -- studio ready apps (STU-K1d) --
-    "studio_template_list": ("list the ready apps in studio",),
-    "studio_create_from_template": ("create a ready app from a template in studio",),
+    "studio_template_list": ("list my studio app templates",),
+    "studio_create_from_template": ("create my studio app from a template",),
     # -- studio records (STU-D2b) --
     "studio_package_get": ("list my studio packages",),
     "studio_record_list": ("show the records of my studio package",),
