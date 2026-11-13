@@ -29,7 +29,7 @@
 import { APP_REQUESTS_KEY } from "@/app/integrations/lib/appRequests";
 import { placementOf } from "@/lib/chatPlacement";
 import { invalidate } from "@/lib/dataCache";
-import { isLiveDoorKey } from "@/lib/studio/realDoor";
+import { isLiveDoorKey } from "@/lib/studio/liveKey";
 import { bareToolName } from "@/lib/toolSteps";
 
 /** The window event name. */

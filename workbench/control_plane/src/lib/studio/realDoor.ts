@@ -399,16 +399,9 @@ async function getJson(url: string, fetchImpl: typeof fetch = fetch): Promise<un
   return res.json().catch(() => ({}));
 }
 
-/**
- * The cache keys of the reads of every live door: `doorPrefix` of a door that
- * `createRealDoor` made, whose scope is `<package id>:live`. A record write of
- * Mira drops them (`lib/assistantWrites.ts`), so a records card in the chat and
- * an open app page read the records again (STU-F5a).
- */
-const LIVE_DOOR_KEY = /^studio:[0-9a-fA-F-]{36}:live:/;
-export function isLiveDoorKey(key: string): boolean {
-  return LIVE_DOOR_KEY.test(key);
-}
+// The key rule of the live doors lives in `./liveKey` (no import, so the shell
+// can reach it through `lib/assistantWrites.ts`). It stays exported from here.
+export { isLiveDoorKey } from "./liveKey";
 
 export async function listPackages(fetchImpl: typeof fetch = fetch): Promise<PackageSummary[]> {
   const body = await getJson("/api/studio/packages", fetchImpl);
