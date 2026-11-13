@@ -44,13 +44,15 @@ from gateway.calendar_sync.provider import (
 )
 from gateway.calendar_sync.scheduler import PROVIDERS
 from gateway.connections import store
+from gateway.routes.email.mailbox_access import private_predicate
 from gateway.routes.email.transport.signing import (
     SigningUnavailable,
     sign_state,
     verify_state,
 )
 from gateway.routes.tasks.core import _tenant_session, router
-from pydantic import BaseModel, ConfigDict, StrictBool
+from gateway.routes.tasks.settings import _BOUND_ORG
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from sqlalchemy import text
 
 #: The purpose of each signed state. A value signed for one never verifies for
@@ -75,6 +77,18 @@ async def _require_on(user: UserContext = Depends(get_current_user)) -> None:
 
 
 _ON = [Depends(_require_on)]
+
+#: The most offers one answer holds (CE-10d).
+MAX_OFFERS = 10
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+$")
+
+#: The member's PRIVATE mail boxes only (CE-10d). Never reads a credential.
+#: ``private_predicate`` is the one rule of "mine", and the org is bound too,
+#: so the read holds for a role that bypasses RLS.
+_OWN_MAILBOXES_SQL = (
+    "SELECT provider, email_address FROM email_accounts "
+    f"WHERE {private_predicate()} AND organization_id = {_BOUND_ORG} "
+    "AND provider IN ('gmail', 'microsoft')")
 
 
 def _scope(user: UserContext) -> tuple[str, str]:
@@ -138,6 +152,21 @@ async def _own(db: Any, org: str, me: str, connection_id: str) -> store.Connecti
     return conn
 
 
+async def _own_mailboxes(db: Any, uid: str) -> list[tuple[str, str]]:
+    """``(provider word, lower-case address)`` of the member's private mailboxes.
+
+    *uid* is the session address AS WRITTEN (``user.email`` stripped), as the
+    email package binds it: ``email_accounts.user_id`` keeps the case.
+    """
+    out: set[tuple[str, str]] = set()
+    for row in (await db.execute(text(_OWN_MAILBOXES_SQL), {"uid": uid})).fetchall():
+        word = MAIL_PROVIDER_WORD.get(row[0])
+        address = (row[1] or "").strip().lower()
+        if word and address:
+            out.add((word, address))
+    return sorted(out)
+
+
 @router.get("/calendar/connections", dependencies=_ON)
 async def list_connections(user: UserContext = Depends(get_current_user)) -> dict[str, Any]:
     org, me = _scope(user)
@@ -145,6 +174,13 @@ async def list_connections(user: UserContext = Depends(get_current_user)) -> dic
         rows = [c for c in await connections.member_connections(db, org, me)
                 if c.status != store.STATUS_DISCONNECTED]
         counts = await connections.entry_counts(db, org, [c.id for c in rows])
+        # One calendar connection row exists for each member and provider, so a
+        # connected or needs_reconnect row hides EVERY offer of its provider.
+        # A press on another account would swap it and delete its entries.
+        have = {connections.PROVIDER_WORDS.get(c.provider, c.provider) for c in rows}
+        offers = [{"provider": w, "address": a}
+                  for w, a in await _own_mailboxes(db, (user.email or "").strip())
+                  if w not in have]
     available: dict[str, dict[str, bool]] = {}
     for word, row in ROWS.items():
         factory = PROVIDERS.get(row)
@@ -153,15 +189,45 @@ async def list_connections(user: UserContext = Depends(get_current_user)) -> dic
         except Exception:
             available[word] = {"available": False}
     return {"enabled": True, "providers": available,
-            "connections": [connection_dict(c, counts.get(c.id, 0)) for c in rows]}
+            "connections": [connection_dict(c, counts.get(c.id, 0)) for c in rows],
+            "mailbox_offers": offers[:MAX_OFFERS]}
+
+
+class ConnectBody(BaseModel):
+    """The optional body of a connect. A hint names one OWN mailbox (CE-10d)."""
+
+    model_config = ConfigDict(extra="forbid")
+    login_hint: str | None = Field(default=None, max_length=254)
 
 
 @router.post("/calendar/connections/{provider}/connect", dependencies=_ON)
 async def connect(
-    provider: Literal["google", "outlook"], user: UserContext = Depends(get_current_user),
+    provider: Literal["google", "outlook"], body: ConnectBody | None = None,
+    user: UserContext = Depends(get_current_user),
 ) -> dict[str, str]:
-    """The consent URL, with a signed state. The member follows it."""
+    """The consent URL, with a signed state. The member follows it.
+
+    ``login_hint`` must be the address of one of the member's own private
+    mailboxes of this provider, else 422 ``unknown_mailbox``, with no provider
+    call and no state signed. A provider with a live calendar connection
+    answers 409 ``already_connected``. Mail and calendar stay separate grants (D215).
+    """
     org, me = _scope(user)
+    hint = me
+    if body is not None and body.login_hint is not None:
+        want = body.login_hint.strip().lower()
+        if not _EMAIL.match(want):
+            raise HTTPException(status_code=422, detail="unknown_mailbox")
+        async with _tenant_session() as db:
+            mine = await _own_mailboxes(db, (user.email or "").strip())
+            if (provider, want) not in mine:
+                raise HTTPException(status_code=422, detail="unknown_mailbox")
+            live = [c for c in await connections.member_connections(db, org, me)
+                    if c.status != store.STATUS_DISCONNECTED
+                    and connections.PROVIDER_WORDS.get(c.provider, c.provider) == provider]
+        if live:
+            raise HTTPException(status_code=409, detail="already_connected")
+        hint = want
     word, prov = _provider(provider)
     try:
         state = sign_state(purpose=STATE_PURPOSE[word], org=org, member=me)
@@ -169,7 +235,7 @@ async def connect(
         raise HTTPException(status_code=503, detail="signing_unavailable") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="invalid_member") from exc
-    return {"url": prov.consent_url(state=state, login_hint=me)}
+    return {"url": prov.consent_url(state=state, login_hint=hint)}
 
 
 #: The word of the mail callback path -> the calendar provider word. The

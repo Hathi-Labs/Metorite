@@ -27,7 +27,7 @@ import { clearAll, invalidate, read as cacheRead } from "@/lib/dataCache";
 import { sourceKey } from "./dataDoor";
 import {
   APPROVAL_SENTENCE, WAITING_SENTENCE, DoorReadError, STUDIO_OFF, createRealDoor, flattenRecords, getPackage, isReadSource,
-  listPackages, mapAnswer, ownMessage, createDoorKeeper, verbMap,
+  listOrgPackages, listPackages, mapAnswer, ownMessage, createDoorKeeper, verbMap,
   NOT_OPEN_SENTENCE, READ_ONLY_SENTENCE, packageAccess, readActions,
 } from "./realDoor";
 import { canRetryRead } from "./dataDoor";
@@ -232,6 +232,26 @@ describe("a write", () => {
   });
   it("scopes its cache keys by the package id and ':live'", () => {
     expect(createRealDoor({ packageId: PKG, actions: ACTIONS }).scope).toBe(`${PKG}:live`);
+  });
+});
+
+describe("the admin list of packages (J4)", () => {
+  it("asks for the org scope and reads the gateway's admin flag", async () => {
+    const row = { id: PKG, name: "Visits", status: "published", live_version: 2, owner_email: "ben@x.in", mine: false,
+      action_calls: 4, action_calls_capped: false, last_error: { action: "close", outcome: "failed", at: "2026-11-11T10:00:00Z", reason: "x" } };
+    const f = fakeFetch(200, { admin: true, truncated: true, packages: [row] });
+    const got = await listOrgPackages(f.impl);
+    expect(f.calls[0].url).toBe("/api/studio/packages?scope=org");
+    expect(got.admin).toBe(true);
+    expect(got.truncated).toBe(true);
+    expect(got.packages[0].owner_email).toBe("ben@x.in");
+    expect(got.packages[0].last_error).toEqual({ action: "close", outcome: "failed", at: "2026-11-11T10:00:00Z" });
+  });
+  it("a member answer holds no admin flag, so the view has no rows", async () => {
+    const f = fakeFetch(200, { admin: false, packages: [{ id: PKG, name: "Mine", status: "draft", live_version: null }] });
+    await expect(listOrgPackages(f.impl)).resolves.toEqual({ admin: false, packages: [], truncated: false });
+    const none = fakeFetch(200, { packages: [] });
+    expect((await listOrgPackages(none.impl)).admin).toBe(false);
   });
 });
 
