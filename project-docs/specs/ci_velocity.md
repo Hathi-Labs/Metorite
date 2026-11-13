@@ -20,7 +20,8 @@ Its slices are CIV-26 to CIV-38 (tasks 3051 to 3066). None is built yet.
 **CIV-30 is BUILT on 2026-11-13** (task 3055, branch
 `civ30-green-pointer-mt-b1b2dd41`). HIGH tier. When the batch of a push
 passes, it moves `green/main`. Each release slot ships that commit. §8.7
-holds the design.
+holds the design. A repair round after the verifier, on 2026-11-13, makes the
+R8 guard read the lists of the release commit.
 
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
@@ -973,7 +974,22 @@ step 1c keep the old table.
 - **Release never moves back.** A plain dispatch can ship the tip. When a
   later slot finds `green/main` older than `release`, it publishes nothing,
   and the deploy skips.
-- **A known limit.** The workflow file of a run comes from the tip of main,
-  so the R8 guard lists come from the tip. When an R8 suite lands after
-  `green/main`, the guard does not find it in the release tree. The slot then
-  holds, and the next slot ships.
+- **The R8 guard reads the lists of the release commit.** GitHub runs the
+  workflow file of the tip of main. So `r8-gate` does not use the lists on its
+  own command line. It reads the same step in the release commit's copy of
+  `deploy.yml` (`git show`), and `ci_unit_guard.py check --lists-from` uses
+  those lists. An R8 suite that lands after `green/main` does not hold the
+  slot. A copy that the guard cannot read fails the gate.
+- **A bad read of `green/main` holds the release.** Only exit 2 of
+  `git ls-remote` (no such ref) falls back to the tip. Exit 0 with no line for
+  `refs/heads/green/main` fails the job.
+- **A known limit: the steps and the scripts come from two commits.** The tip
+  gives the steps, and the release commit gives the scripts that they call.
+  A merge after `green/main` can change a step and its script together. The
+  tip's step then calls the old script, the release fails closed, and a later
+  slot ships.
+- **A known limit: a publish that moves nothing still counts.** A slot run can
+  publish nothing, because `release` already holds a newer commit from a plain
+  dispatch. The step `once` still counts that run as the ship of its slot. So
+  a later nightly run in the same window does not ship a newer `green/main`.
+  The next slot ships it.

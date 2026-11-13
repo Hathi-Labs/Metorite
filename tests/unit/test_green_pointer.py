@@ -21,6 +21,11 @@ What this file fences, in ``.github/workflows/deploy.yml``:
    the release.
 4. A red tip holds no release. The summary lists the commits that the
    release leaves out.
+5. The R8 guard reads its lists from the release commit's own copy of
+   ``deploy.yml``, not from the tip's copy that GitHub runs. A suite that
+   lands after ``green/main`` does not hold the slot. A release commit whose
+   own list names a missing suite still fails. A list that the guard cannot
+   read fails closed.
 
 The steps run for real in bash. A shell function stands in for ``git``, so
 the step's own text runs unchanged, as in ``test_deploy_pipeline.py``.
@@ -31,16 +36,22 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from tests.unit.test_daily_release import _eval
-from tests.unit.test_deploy_pipeline import _gh_eval
+from tests.unit.test_deploy_pipeline import _gh_eval, _guard_args
 
 yaml = pytest.importorskip("yaml")
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "deploy.yml"
+_SCRIPTS = WORKFLOW.parents[2] / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+import ci_unit_guard as guard  # noqa: E402  scripts/ci_unit_guard.py
 
 #: The one expression that names the release commit.
 RESOLVED = "${{ needs.release-commit.outputs.sha }}"
@@ -96,7 +107,8 @@ needs_bash = pytest.mark.skipif(_BASH is None, reason="no bash on this machine")
 _MAIN, _NEWER, _TESTED, _OLD, _OFF, _GHSHA = (c * 40 for c in "fedcba")
 
 # A fake `git`. Each call goes to $GIT_LOG. `ls-remote` answers from the
-# next line of $GREEN_SEQ: a sha, ABSENT (exit 2) or ERR (exit 128).
+# next line of $GREEN_SEQ: a sha, ABSENT (exit 2) or ERR (exit 128). EMPTY
+# gives exit 0 and no line. OTHERREF gives exit 0 and a line for another ref.
 # `merge-base --is-ancestor A B` passes when A is B, or when "A:B" is in $ANC.
 # `push` fails while $PUSH_FAIL is above 0. `log` prints $LEFT_COUNT lines.
 _FAKE_GIT = r"""
@@ -122,6 +134,8 @@ git() {
       case "$line" in
         ABSENT) return 2 ;;
         ERR) return 128 ;;
+        EMPTY) return 0 ;;
+        OTHERREF) printf '%s\t%s\n' "$MAIN" "${@: -1}-old" ;;
         *) printf '%s\t%s\n' "$line" "${@: -1}" ;;
       esac ;;
     merge-base)
@@ -509,3 +523,229 @@ def test_publish_refuses_a_bad_release_commit(parsed: dict, tmp_path: Path, sha:
     code, out, calls = _publish(parsed, tmp_path, sha=sha, release=_OLD, anc="")
     assert code == 1, out
     assert calls == []
+
+
+# ── 5. A bad read of green/main holds the release ────────────────────────────
+
+
+@needs_bash
+@pytest.mark.parametrize("answer", ["EMPTY", "OTHERREF"])
+def test_a_read_with_no_exact_green_main_line_holds_the_release(
+        parsed: dict, tmp_path: Path, answer: str) -> None:
+    """`git ls-remote` exits 0, so the ref is there. A missing line for it
+    is a bad read, not "no green/main yet". Only exit 2 falls back."""
+    code, out, output, text, _ = _pick(parsed, tmp_path, green=[answer])
+    assert code == 1, out
+    assert output == "", "no release commit, so no job of the release runs"
+    assert "::error title=green/main unreadable::" in out
+    assert "FALLBACK" not in text
+
+
+# ── 6. The R8 guard reads the lists of the release commit ────────────────────
+#
+# GitHub runs the workflow file of the tip of main on a schedule or a
+# dispatch. So the lists on the guard's own command line are the tip's. The
+# R8 reports and the tree are the release commit's. A suite that lands after
+# green/main is in the tip's list and not in the release tree. The guard
+# step reads the lists from the release commit's copy of deploy.yml.
+
+GUARD_JOB = "r8-gate"
+GUARD_STEP = "The R8 suites ran, and no fence skipped"
+#: A suite in the tip's list. The release commit lacks it: it landed later.
+_LATE = "tests/unit/test_team_scope_isolation_r8.py"
+#: A suite in the release commit's own list, and not in its tree.
+_GONE = "tests/unit/test_gone_after_green_r8.py"
+
+# A fake `git` that serves the release commit's deploy.yml for one exact
+# `git show`, and fails every other call. `python3` is this interpreter.
+_FAKE_SHOW = r"""
+git() {
+  printf '%s\n' "git $*" >> "$GIT_LOG"
+  if [ "$1" = show ] && [ "$#" = 2 ] && [ "$2" = "${RELEASE_SHA}:.github/workflows/deploy.yml" ] \
+     && [ -f "$RELEASE_WORKFLOW" ]; then
+    cat "$RELEASE_WORKFLOW"
+    return 0
+  fi
+  echo "fatal: bad object" >&2
+  return 128
+}
+python3() { "$PYTHON" "$@"; }
+"""
+
+
+@pytest.fixture(scope="module")
+def raw() -> str:
+    return WORKFLOW.read_text(encoding="utf-8")
+
+
+def _lists(workflow: str) -> dict[str, list[str]]:
+    """The guard's flags in a copy of deploy.yml, read the way the fence of
+    test_deploy_pipeline.py reads them."""
+    return _guard_args(_step(yaml.safe_load(workflow), GUARD_JOB, GUARD_STEP)["run"])
+
+
+def _named(workflow: str) -> list[str]:
+    flags = _lists(workflow)
+    return sorted(set(flags["--must-run"]) | set(flags["--never-skip"]))
+
+
+def _must_run_edit(raw: str, *, drop: str = "", add: str = "", empty: bool = False) -> str:
+    """deploy.yml as another commit holds it: the guard's must-run list
+    without `drop`, with `add` first, or with no file at all."""
+    lines = raw.splitlines(keepends=True)
+    heads = [i for i, ln in enumerate(lines) if ln.strip() == "--must-run \\"]
+    assert len(heads) == 1, "one --must-run list in deploy.yml"
+    head = heads[0]
+    if drop:
+        hits = [i for i in range(head + 1, len(lines)) if lines[i].strip() == f"{drop} \\"]
+        assert len(hits) == 1, drop
+        del lines[hits[0]]
+    if add:
+        first = lines[head + 1]
+        lines.insert(head + 1, first[: len(first) - len(first.lstrip())] + f"{add} \\\n")
+    if empty:
+        end = head + 1
+        while lines[end].strip().startswith("tests/unit/"):
+            end += 1
+            if not lines[end - 1].rstrip().endswith("\\"):
+                break
+        lines[head : end] = [lines[head].replace("--must-run \\", "--must-run")]
+    return "".join(lines)
+
+
+def _release_tree(tmp_path: Path, files: list[str], *, ran: list[str] | None = None) -> None:
+    """The checkout of the release commit: its files, its guard script, and
+    one R8 report with a passing test for each file in `ran`."""
+    for p in files:
+        f = tmp_path / p
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("", encoding="utf-8")
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    shutil.copy(_SCRIPTS / "ci_unit_guard.py", tmp_path / "scripts" / "ci_unit_guard.py")
+    cases = "".join(
+        f'<testcase classname="{p[:-3].replace("/", ".")}" name="test_ok" file="{p}" time="0.1"/>'
+        for p in (files if ran is None else ran)
+    )
+    (tmp_path / "junit").mkdir(exist_ok=True)
+    (tmp_path / "junit" / "r8-shard-1.xml").write_text(
+        '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest">'
+        f"{cases}</testsuite></testsuites>", encoding="utf-8")
+
+
+def _run_guard(parsed: dict, tmp_path: Path, *, release: str | None, tree: list[str],
+               ran: list[str] | None = None, sha: str = _TESTED) -> tuple[int, str, list[str]]:
+    """Run the tip's guard step in bash, in the checkout of the release."""
+    run = _step(parsed, GUARD_JOB, GUARD_STEP)["run"]
+    assert "${{" not in run
+    served = tmp_path / "served" / "deploy.yml"
+    served.parent.mkdir()
+    if release is not None:
+        served.write_text(release, encoding="utf-8", newline="\n")
+    _release_tree(tmp_path, tree, ran=ran)
+    (tmp_path / "runner_temp").mkdir()
+    log = tmp_path / "git.log"
+    env = {**os.environ, "RELEASE_SHA": sha, "RELEASE_WORKFLOW": served.as_posix(),
+           "GIT_LOG": log.as_posix(), "PYTHON": Path(sys.executable).as_posix(),
+           "RUNNER_TEMP": (tmp_path / "runner_temp").as_posix()}
+    done = subprocess.run(
+        [_BASH, "--noprofile", "--norc", "-eo", "pipefail", "-c", _FAKE_SHOW + run],
+        env=env, capture_output=True, text=True, timeout=120, cwd=tmp_path,
+    )
+    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    return done.returncode, done.stdout + done.stderr, calls
+
+
+def test_the_guard_step_reads_the_release_commits_own_copy(parsed: dict) -> None:
+    step = _step(parsed, GUARD_JOB, GUARD_STEP)
+    assert step["env"]["RELEASE_SHA"] == RESOLVED
+    run = step["run"]
+    assert 'git show "${RELEASE_SHA}:.github/workflows/deploy.yml" > "$RUNNER_TEMP/release_deploy.yml"' in run
+    flags = _guard_args(run)
+    assert flags["--lists-from"] == ["$RUNNER_TEMP/release_deploy.yml"]
+    assert flags["--lists-step"] == [GUARD_STEP], "the release commit's copy of THIS step"
+    # The flags of a release: no selection (CIV-3 belongs to pr-check).
+    assert "--only-selected" not in flags and "--tree-root" not in flags
+
+
+def test_with_the_tip_as_the_release_the_lists_are_todays(raw: str) -> None:
+    """RELEASE_SHA equals the tip: the guard reads the lists it reads today."""
+    got = guard.guard_lists(raw, GUARD_STEP)
+    today = _lists(raw)
+    for flag in ("--disarmed", "--never-skip", "--must-run"):
+        assert got[flag] == today[flag], flag
+    assert len(got["--must-run"]) > 50
+
+
+@needs_bash
+def test_a_suite_that_landed_after_green_does_not_hold_the_slot(
+        parsed: dict, raw: str, tmp_path: Path) -> None:
+    """P1. The tip's list names `_LATE`. The release commit has neither the
+    file nor its line. The release commit's own lists apply."""
+    release = _must_run_edit(raw, drop=_LATE)
+    assert _LATE in _named(raw) and _LATE not in _named(release)
+    code, out, calls = _run_guard(parsed, tmp_path, release=release, tree=_named(release))
+    assert code == 0, out
+    assert calls == [f"git show {_TESTED}:.github/workflows/deploy.yml"]
+    assert _LATE in out, "the run says which tip file the release commit does not name"
+
+
+@needs_bash
+def test_a_release_commit_whose_own_list_names_a_missing_suite_fails(
+        parsed: dict, raw: str, tmp_path: Path) -> None:
+    """The release commit lists `_GONE`, and its tree lacks it. Its own gate
+    is red, so the slot holds. The tip's list does not name it."""
+    release = _must_run_edit(raw, add=_GONE)
+    assert _GONE not in _named(raw)
+    tree = [p for p in _named(release) if p != _GONE]
+    code, out, _ = _run_guard(parsed, tmp_path, release=release, tree=tree)
+    assert code == 1, out
+    assert f"a --must-run file is not in the tree: {_GONE}" in out
+
+
+@needs_bash
+@pytest.mark.parametrize("missed", [False, True])
+def test_with_the_tip_as_the_release_the_guard_is_todays_guard(
+        parsed: dict, raw: str, tmp_path: Path, missed: bool) -> None:
+    files = _named(raw)
+    ran = [p for p in files if p != _LATE] if missed else None
+    code, out, _ = _run_guard(parsed, tmp_path, release=raw, tree=files, ran=ran)
+    if missed:
+        assert code == 1 and f"no shard ran {_LATE}" in out, out
+    else:
+        assert code == 0, out
+
+
+@needs_bash
+@pytest.mark.parametrize("case", ["no-step", "empty-must-run", "show-fails", "bad-sha"])
+def test_the_guard_fails_closed_when_it_cannot_read_the_release_lists(
+        parsed: dict, raw: str, tmp_path: Path, case: str) -> None:
+    """Never an empty list, and never the tip's list in its place."""
+    release: str | None = raw
+    sha = _TESTED
+    if case == "no-step":
+        release = raw.replace(f"- name: {GUARD_STEP}", "- name: The R8 guard, renamed")
+    elif case == "empty-must-run":
+        release = _must_run_edit(raw, empty=True)
+        assert _lists(release)["--must-run"] == []
+    elif case == "show-fails":
+        release = None
+    else:
+        sha = ""
+    # The tree and the report hold every file of the tip: only the read fails.
+    code, out, calls = _run_guard(parsed, tmp_path, release=release, tree=_named(raw), sha=sha)
+    assert code == 1, out
+    assert "checked " not in out, "the guard never runs on lists that it could not read"
+    if case == "bad-sha":
+        assert calls == [], "no read of a commit with no name"
+
+
+def test_the_list_reader_fails_closed(raw: str) -> None:
+    for text, why in [
+        ("", "steps named"),
+        (raw.replace(f"- name: {GUARD_STEP}", "- name: Other"), "steps named"),
+        (_must_run_edit(raw, empty=True), "--must-run"),
+        (raw.replace("--never-skip \\", "--never-skip-x \\"), "--never-skip"),
+        (_must_run_edit(raw, add="tests/unit/$(evil).py"), "not a test path"),
+    ]:
+        with pytest.raises(guard.GuardListError, match=re.escape(why)):
+            guard.guard_lists(text, GUARD_STEP)

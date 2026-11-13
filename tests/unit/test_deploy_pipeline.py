@@ -924,7 +924,11 @@ def test_the_r8_gate_reads_every_shard_and_runs_the_guard(parsed: dict) -> None:
     assert len(downloads) == 1
     assert downloads[0]["with"] == {"pattern": "r8-junit-shard-*", "path": "junit", "merge-multiple": True}
     guard = _job_step(parsed, R8_GATE, R8_GUARD)["run"]
-    assert guard.lstrip().startswith("python3 scripts/ci_unit_guard.py check --junit junit")
+    # CIV-30: the step first reads the release commit's copy of deploy.yml.
+    # test_green_pointer.py fences that part.
+    starts = [ln for ln in guard.splitlines()
+              if ln.startswith("python3 scripts/ci_unit_guard.py check --junit junit")]
+    assert len(starts) == 1, "one guard command, at the start of its line"
 
 
 def test_the_guard_lists_are_pr_checks_lists(parsed: dict, pr_check: dict) -> None:
@@ -942,7 +946,9 @@ def test_the_guard_lists_are_pr_checks_lists(parsed: dict, pr_check: dict) -> No
         )
     assert len(ours["--must-run"]) > 50
     # A release runs every R8 suite. A filter (CIV-3) belongs to pr-check.
-    assert set(ours) == {"--junit", "--disarmed", "--never-skip", "--must-run"}
+    # CIV-30: `--lists-from` and `--lists-step` read these lists from the
+    # release commit's copy of deploy.yml (test_green_pointer.py).
+    assert set(ours) == {"--junit", "--lists-from", "--lists-step", "--disarmed", "--never-skip", "--must-run"}
 
 
 def test_every_file_that_the_guard_names_runs_in_an_r8_shard(

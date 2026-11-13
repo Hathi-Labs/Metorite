@@ -147,7 +147,9 @@ jobs:
   # ⚠️ ONE COMMIT. Each job that builds, tests, gates or deploys the release
   # reads `needs.release-commit.outputs.sha` and checks out that commit. A
   # run that tests one commit and deploys another is the worst defect this
-  # file can have. The workflow file itself still comes from GITHUB_SHA.
+  # file can have. The workflow file itself still comes from GITHUB_SHA. So
+  # `r8-gate` reads its guard lists from the release commit's copy of this
+  # file. The steps of this file call the scripts of the release commit.
   #
   # FALLBACK: no `green/main` yet means "ship GITHUB_SHA, as before", and
   # the run summary says so. Any OTHER failure to read `green/main` fails
@@ -193,10 +195,17 @@ jobs:
           else
             tmp="$(mktemp -d)"
             # --exit-code: 0 when the ref is there, 2 when it is not.
+            # Exit 2 is the only fallback. Exit 0 with no exact line for the
+            # ref is a bad read, and it holds the release.
             rc=0
             git ls-remote --exit-code origin refs/heads/green/main > "$tmp/green.txt" || rc=$?
             case "$rc" in
-              0) green="$(awk '$2 == "refs/heads/green/main" { print $1 }' "$tmp/green.txt")" ;;
+              0)
+                green="$(awk '$2 == "refs/heads/green/main" { print $1 }' "$tmp/green.txt")"
+                if [ -z "$green" ]; then
+                  echo "::error title=green/main unreadable::git ls-remote found green/main but gave no line for refs/heads/green/main. No release in this run."
+                  exit 1
+                fi ;;
               2) green="" ;;
               *)
                 echo "::error title=green/main unknown::git ls-remote failed (exit ${rc}), so this run cannot tell which commit passed the full suite. No release in this run."
@@ -755,11 +764,16 @@ jobs:
   # reads this job's result, and a skip passes only on a `skip_tests`
   # dispatch.
   #
-  # ⚠️ CIV-30: the lists below come from the workflow file of GITHUB_SHA,
-  # the tip of main. The reports come from the release commit. A new R8
-  # suite that lands after `green/main` is in the list and not in the tree,
-  # so the guard fails and the slot holds. That fails closed, and the next
-  # slot ships.
+  # ⚠️ CIV-30: GitHub runs THIS file from the tip of main, and the reports
+  # and the tree come from the release commit (`green/main`). A new R8 suite
+  # that lands after `green/main` is in the tip's list and not in the
+  # release tree. So the guard does not use the lists on its own command
+  # line. `--lists-from` reads the same step in the release commit's copy of
+  # this file, and the guard uses those lists. The run log names each file
+  # where the two copies differ. A copy that the guard cannot read fails the
+  # job. It never falls back to the tip's list or to an empty list. When the
+  # release commit is the tip, the two copies are the same.
+  # Fence: tests/unit/test_green_pointer.py.
   r8-gate:
     name: "R8 gate (a release needs it)"
     runs-on: ubuntu-24.04
@@ -781,9 +795,24 @@ jobs:
           path: junit
           merge-multiple: true
 
+      # CIV-30: the lists below are THIS commit's. A later release whose
+      # release commit is this commit reads them, through `--lists-from`.
       - name: The R8 suites ran, and no fence skipped
+        env:
+          RELEASE_SHA: ${{ needs.release-commit.outputs.sha }}
         run: |
+          set -euo pipefail
+          if ! [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=No release commit::'${RELEASE_SHA}' is not a full commit sha. The R8 gate cannot read its lists."
+            exit 1
+          fi
+          if ! git show "${RELEASE_SHA}:.github/workflows/deploy.yml" > "$RUNNER_TEMP/release_deploy.yml"; then
+            echo "::error title=R8 guard lists unknown::git show cannot read deploy.yml of the release commit ${RELEASE_SHA:0:12}. The R8 gate fails closed."
+            exit 1
+          fi
           python3 scripts/ci_unit_guard.py check --junit junit \
+            --lists-from "$RUNNER_TEMP/release_deploy.yml" \
+            --lists-step "The R8 suites ran, and no fence skipped" \
             --disarmed "CUSTOMER_CONSOLE_DATABASE_URL unset" \
             --disarmed "TENANT_LADDER_DATABASE_URL unset" \
             --never-skip \
