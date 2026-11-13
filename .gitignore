@@ -167,6 +167,8 @@ dump.rdb
 evals/coding_engine/results/
 # WS-46 P3: the results of the Projects operations eval (evals/projects_ops/run.py)
 evals/projects_ops/results/
+# Task 2976: the results of the email-to-Projects eval (evals/email_to_projects/run.py)
+evals/email_to_projects/results/
 
 # scripts/dev_up.sh: per-worktree state, logs and the local token
 .dev_up/
