@@ -68,9 +68,10 @@ is not a pass.
 
 * M5. ``connections/store._MET_SQL``: drop ``AND member_email = :member``.
   ``test_r8_a_member_row_meets_the_need_of_that_member_only`` goes red: the
-  row of Ben meets the need of Cat.
+  row of Ben meets the need of Cat. The store case goes red too.
 * M6. ``connections/store._MET_SQL``: drop ``AND status = 'connected'``.
-  ``test_r8_a_row_that_is_not_connected_meets_nothing`` goes red.
+  ``test_r8_a_row_that_is_not_connected_meets_nothing`` and the store case
+  go red.
 * M7. ``connections/store._MET_SQL``: drop ``organization_id = CAST(:org AS
   uuid) AND``. ``test_r8_the_store_reads_the_providers_of_the_member`` goes
   red: a call that names org B in a session of org A reads the org row of
