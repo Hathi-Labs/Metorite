@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Backfill the float8 copy of each Studio number (WS-STU STU-C2c).
 
-Spec: ``project-docs/specs/ai_studio.md`` §14, row C2c. Migration 430 adds
+Spec: ``project-docs/specs/ai_studio.md`` §14, row C2c. Migration 432 adds
 ``studio_record_hot.v_num_f8`` and a trigger that fills it for each new row and
-each changed ``v_num``. A row from before 430 keeps NULL until this script
-fills it. Turn on ``STUDIO_NUM_F8_ORGS`` for an org when this script
-reports ``remaining=0`` for it, because a row with no copy is read by a scan.
+each changed ``v_num``. A row from before 432 keeps NULL until this script
+fills it. The store honours ``STUDIO_NUM_F8_ORGS`` for an org only when the
+org has no row without its copy. So the flag does nothing for an org until this
+script reports ``remaining=0`` for it. The records are right at every step.
 
 It fills one batch for each organization in one short transaction through
 ``tenant_session(org)``, with :func:`gateway.studio.objects_store.fill_num_f8_batch`,
-then sleeps. A query keeps a row with no float8 copy, so the flag is correct
-at any time, and the backfill is a speed step. A second run changes nothing. A stopped
+then sleeps. A second run changes nothing. A stopped
 run keeps its committed batches, and the next run takes the rest.
 
     uv run python scripts/backfill_studio_num_f8.py --org <uuid>

@@ -25,7 +25,7 @@ from typing import Any
 import pytest
 from acb_common import studio_fields as sf
 from acb_common import studio_query as sq
-from gateway.routes.studio.flags import num_f8_allowed
+from acb_common.studio_flags import num_f8_allowed
 from gateway.studio import objects_store as store
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -78,7 +78,9 @@ def test_the_trigger_guards_the_float8_range_and_the_index_build_lifts_lock_time
     code = _code(_migration())
     assert "WHEN NEW.v_num > 1e300 THEN 'Infinity'::float8" in code
     assert "WHEN NEW.v_num < -1e300 THEN '-Infinity'::float8" in code
-    lift = code.index("SET lock_timeout = 0;")
+    assert "WHEN abs(NEW.v_num) < 1e-300 THEN 0.0::float8" in code
+    assert "lock_timeout = 0" not in code
+    lift = code.index("SET lock_timeout = '10min';")  # finite, never 0
     assert lift < code.index("CREATE INDEX CONCURRENTLY") < code.index("RESET lock_timeout;")
     assert code.count("CREATE INDEX CONCURRENTLY") == 2
     assert "ON studio_record_hot (organization_id) WHERE v_num IS NOT NULL AND v_num_f8 IS NULL;" in code
@@ -213,3 +215,20 @@ def test_a_cold_or_not_ready_cache_gives_the_sql_of_c2a(monkeypatch: pytest.Monk
     store._F8_READY.clear()
     monkeypatch.setattr(store, "num_f8_org", lambda: None)
     assert store._f8_on() is False
+
+
+def test_the_backfill_sql_clamps_as_the_trigger_does() -> None:
+    sql = store._NUM_F8_BATCH
+    assert "WHEN h.v_num > 1e300 THEN 'Infinity'::float8" in sql
+    assert "WHEN h.v_num < -1e300 THEN '-Infinity'::float8" in sql
+    assert "WHEN abs(h.v_num) < 1e-300 THEN 0.0::float8" in sql
+
+
+def test_the_guard_reads_the_org_it_counts_and_has_a_cap_inside_the_deadline() -> None:
+    assert "current_setting('app.tenant_id', true)" in store._F8_READY_SQL
+    assert 0 < store._F8_GUARD_CAP_S <= 1.0
+    src = (_ROOT / "apps/services/gateway/gateway/studio/objects_store.py").read_text(encoding="utf-8")
+    for fn in ("query_records", "aggregate_records"):
+        body = src[src.index(f"async def {fn}("):]
+        body = body[:body.index("\nasync def ", 10) if "\nasync def " in body[10:] else len(body)]
+        assert body.index("deadline = _clock()") < body.index("await _warm_f8(db, deadline)"), fn

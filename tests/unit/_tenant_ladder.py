@@ -132,7 +132,7 @@ def _without_concurrently(sql: str) -> str:
     real runner (``scripts/apply_migrations.sh``) pipes a file to psql with no
     single transaction, so it keeps the keyword. A scratch database has no
     concurrent writer, so a plain ``CREATE INDEX`` builds the same index here
-    (migration 430, WS-STU C2c).
+    (migration 432, WS-STU C2c).
     """
     return _CONCURRENTLY.sub(r"\1", sql)
 

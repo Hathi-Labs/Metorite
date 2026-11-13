@@ -82,7 +82,7 @@ caller's transaction stays usable, and the old timeout comes back.
 comparison is LEAKPROOF (``docs/rls_and_indexes.md``). So a number filter
 reads the hot rows of its field. A sort on a number still reads the index in
 order. **C2c** adds ``v_num_f8``, a float8 copy that a trigger fills
-(migration 430). For an org on ``STUDIO_NUM_F8_ORGS`` (default OFF), a number
+(migration 432). For an org on ``STUDIO_NUM_F8_ORGS`` (default OFF), a number
 filter adds a float8 test with the non-strict operator beside the exact
 ``numeric`` test, so the app role reads the index ``studio_record_hot_num_f8_idx``.
 The exact test stays as the filter, so the records do not change.
@@ -1888,8 +1888,14 @@ def _needs_row(cond: Condition) -> bool:
 _F8_READY: dict[str, tuple[bool, float]] = {}
 #: How long a "ready" and a "not ready" answer holds, in seconds.
 _F8_TTL_READY, _F8_TTL_NOT_READY = 600.0, 30.0
+#: The longest that the guard may take, in seconds. It never takes more than
+#: what is left of the call's deadline. A slow guard fails closed.
+_F8_GUARD_CAP_S = 1.0
+#: It answers the org that it counts (the GUC of the session) and whether that
+#: org has no row without its copy.
 _F8_READY_SQL = (
-    "SELECT NOT EXISTS (SELECT 1 FROM studio_record_hot h "
+    "SELECT current_setting('app.tenant_id', true), "
+    "NOT EXISTS (SELECT 1 FROM studio_record_hot h "
     f"WHERE h.{_OF_ORG} AND h.v_num IS NOT NULL AND h.v_num_f8 IS NULL)"
 )
 
@@ -1920,20 +1926,33 @@ def _f8_on() -> bool:
     return known and ready
 
 
-async def _warm_f8(db: Any) -> None:
+async def _warm_f8(db: Any, deadline: float) -> None:
     """Fill the cache of :func:`_f8_on` for the bound tenant, when it is on the
     flag and the cache is cold or stale. One cheap statement: the partial index
     ``studio_record_hot_num_f8_todo_idx`` holds only the rows that lack a copy.
-    A failed read leaves the cache as it was, so the query uses the exact SQL."""
+
+    The guard runs inside the call's *deadline*, and it gets at most
+    :data:`_F8_GUARD_CAP_S` of what is left, so it never eats the query's
+    budget. A slow or failed guard is cached as "not ready" for the short
+    time of a not-ready answer, and the query then uses the exact SQL. The
+    answer is stored under the org that the statement itself counted (the GUC),
+    and only when that equals the org of the tenant seam. Otherwise nothing is
+    cached."""
     org = num_f8_org()
     if org is None or _f8_fresh(org)[0]:
         return
-    try:
-        async with _time_limit(db, _clock() + studio_query.TIMEOUT_MS / 1000) as timed:
-            ready = bool((await timed.execute(text(_F8_READY_SQL), {})).scalar_one())
-    except (DBAPIError, QueryError):
+    limit = min(deadline - _clock(), _F8_GUARD_CAP_S)
+    if limit <= 0:
         return
-    _F8_READY[org] = (ready, time.monotonic())
+    try:
+        async with _time_limit(db, _clock() + limit) as timed:
+            row = (await timed.execute(text(_F8_READY_SQL), {})).one()
+    except (DBAPIError, QueryError):
+        _F8_READY[org] = (False, time.monotonic())
+        return
+    if str(row[0] or "").strip().lower() != org:
+        return
+    _F8_READY[org] = (bool(row[1]), time.monotonic())
 
 
 def _q_num_f8(hcol: str, i: int, cond: Condition) -> str:
@@ -2386,12 +2405,12 @@ async def query_records(db: Any, *, package_id: str, object_id: str, filter: Any
     after the records with a value. The total is exact below
     :data:`~acb_common.studio_query.TOTAL_CAP`.
     """
-    await _warm_f8(db)
     deadline = _clock() + studio_query.TIMEOUT_MS / 1000
     oid = _uuid(object_id, "object_id")
     pid = _uuid(package_id, "package_id")
     start, size = studio_query.page_bounds(offset, limit)
     studio_query.check_shape(filter, sort)
+    await _warm_f8(db, deadline)
     async with _time_limit(db, deadline) as timed:
         found = await timed.execute(text(_QUERY_OBJECT_SQL), {"oid": oid, "pid": pid})
         if found.first() is None:
@@ -2739,11 +2758,11 @@ async def aggregate_records(db: Any, *, package_id: str, object_id: str, filter:
     H-333). The :data:`~acb_common.studio_query.MAX_GROUPS` groups with the
     most records stay, and the rest fold into :attr:`AggregateResult.other`.
     """
-    await _warm_f8(db)
     deadline = _clock() + studio_query.TIMEOUT_MS / 1000
     oid = _uuid(object_id, "object_id")
     pid = _uuid(package_id, "package_id")
     studio_query.check_aggregate_shape(filter, group_by, measures)
+    await _warm_f8(db, deadline)
     async with _time_limit(db, deadline) as timed:
         found = await timed.execute(text(_QUERY_OBJECT_SQL), {"oid": oid, "pid": pid})
         if found.first() is None:
@@ -3745,7 +3764,8 @@ _NUM_F8_BATCH = (
     f"WHERE h.{_OF_ORG} AND h.v_num IS NOT NULL AND h.v_num_f8 IS NULL "
     "AND (h.record_id, h.field_key) > (CAST(:last_rid AS uuid), CAST(:last_fk AS text)) "
     "ORDER BY h.record_id, h.field_key LIMIT :n FOR UPDATE) "
-    "UPDATE studio_record_hot h SET v_num_f8 = CASE WHEN h.v_num > 1e300 THEN 'Infinity'::float8 WHEN h.v_num < -1e300 THEN '-Infinity'::float8 ELSE h.v_num::float8 END FROM b "
+    "UPDATE studio_record_hot h SET v_num_f8 = CASE WHEN h.v_num > 1e300 THEN 'Infinity'::float8 WHEN h.v_num < -1e300 THEN '-Infinity'::float8 WHEN abs(h.v_num) < 1e-300 THEN 0.0::float8 "
+    "ELSE h.v_num::float8 END FROM b "
     f"WHERE h.{_OF_ORG} AND h.record_id = b.record_id AND h.field_key = b.field_key "
     "RETURNING h.record_id, h.field_key"
 )
@@ -3762,9 +3782,10 @@ async def fill_num_f8_batch(db: Any, after: tuple[str, str], n: int) -> list[tup
     tenant that have a ``v_num`` and no float8 copy, after the key *after*
     (``(record_id, field_key)``, start at :data:`NUM_F8_START`). Answers the
     keys that it filled. The caller owns the transaction and binds the tenant
-    (C2c, migration 430). The UPDATE sets only ``v_num_f8``, so the trigger
-    does not fire. A value beyond 1e300 takes the float8 infinity of its sign, as the
-    trigger does, because the cast would raise. The mapping stays monotone."""
+    (C2c, migration 432). The UPDATE sets only ``v_num_f8``, so the trigger
+    does not fire. A value beyond 1e300 takes the float8 infinity of its sign, and a value
+    with |v| < 1e-300 takes 0.0, as the trigger does, because the cast would
+    raise. Both maps are non-decreasing, and only direct SQL reaches them."""
     rows = (await db.execute(text(_NUM_F8_BATCH),
                              {"last_rid": after[0], "last_fk": after[1], "n": n})).all()
     return [(str(r[0]), str(r[1])) for r in rows]

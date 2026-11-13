@@ -839,6 +839,20 @@ def test_r8_a_number_or_checkbox_filter_is_bounded_to_its_field(world, key: str,
     assert _records_read(nodes) <= _PAGE
 
 
+@pytest.fixture(autouse=True)
+def _c2c_scratch_objects(request):
+    """The C2c tests define small objects with a hot field. An org holds at
+    most 24 hot fields, so each such test drops its objects at the end."""
+    yield
+    if not request.node.name.startswith("test_r8_c2c") or "world" not in request.fixturenames:
+        return
+    world = request.getfixturevalue("world")
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM studio_objects WHERE name IN ('edge', 'legacy', 'tiny', 'fill') "
+                       "AND organization_id IN (CAST(:a AS uuid), CAST(:b AS uuid))"),
+                  {"a": world.a, "b": world.b})
+
+
 @pytest.mark.parametrize(("op", "value", "bound"), [
     ("lte", 500, 2 * 500),
     ("eq", 123, 2 * 2),
@@ -849,7 +863,8 @@ def test_r8_c2c_a_number_filter_reads_the_float8_index_when_the_flag_is_on(
         world, monkeypatch, op: str, value: Any, bound: int) -> None:
     """C2c. With the flag ON, `v_num_f8` takes the index condition as the app
     role, because the float8 comparisons are LEAKPROOF. `lte 500` reads at
-    most twice its 450 rows (the page and its total), not the 45,000 of the
+    most 1,000 hot rows (twice the 500 values, for the page and its total, and
+    450 rows hold a number), not the 45,000 of the
     field. The exact `v_num` test stays as a filter."""
     monkeypatch.setattr(store, "_f8_on", lambda: True)
     nodes = _page_plan(world, filter=[{"field": "n", "op": op, "value": value}])
@@ -957,9 +972,9 @@ def _backfill_script() -> Any:
     return script
 
 
-def test_r8_c2c_the_flag_waits_for_the_copy_and_a_pre_430_row_is_never_dropped(
+def test_r8_c2c_the_flag_waits_for_the_copy_and_a_pre_432_row_is_never_dropped(
         world, monkeypatch) -> None:
-    """P2b. A row from before migration 430 has a NULL copy, and a float8 test
+    """P2b. A row from before migration 432 has a NULL copy, and a float8 test
     would drop it. So the store honours the flag for an org only when no row
     lacks its copy. Before the backfill the query uses the exact SQL and
     returns the row. After it, the float8 SQL returns the same records. A
@@ -982,7 +997,7 @@ def test_r8_c2c_the_flag_waits_for_the_copy_and_a_pre_430_row_is_never_dropped(
         obj = await _define(world.a, world.pkg_a, "legacy", [{"key": "x", "type": "number", "hot": True}])
         ids = await _create(world.a, obj, {"old": {"x": 5}, "new": {"x": 6}, "big": {"x": 7}, "lo": {"x": 2}})
         async with tenant_session(world.a) as db:
-            # A column list without v_num: the trigger does not fire. This is a pre-430 row.
+            # A column list without v_num: the trigger does not fire. This is a pre-432 row.
             await db.execute(text("UPDATE studio_record_hot SET v_num_f8 = NULL "
                                   "WHERE record_id = CAST(:r AS uuid)"), {"r": ids["old"]})
             # Beyond float8 range: the trigger must not raise.
@@ -1020,6 +1035,84 @@ def test_r8_c2c_the_flag_waits_for_the_copy_and_a_pre_430_row_is_never_dropped(
     assert before["lte"] == {"old", "lo"} and before["gte"] == {"new", "big"}
     assert before["eq"] == {"old"} and before["in"] == {"old"}
     store._F8_READY.clear()
+
+
+def test_r8_c2c_a_slow_guard_stays_inside_the_deadline_and_fails_closed(
+        world, monkeypatch) -> None:
+    """P2. The guard gets at most its cap of the call's budget. A guard that
+    sleeps longer than the cap times out, is cached as not ready, and the
+    call returns the records of the exact SQL inside its one deadline."""
+    import time
+
+    monkeypatch.setattr(store, "num_f8_org", lambda: world.a)
+    monkeypatch.setattr(store, "_F8_GUARD_CAP_S", 0.2)
+    monkeypatch.setattr(store, "_F8_READY_SQL", (
+        "SELECT current_setting('app.tenant_id', true), "
+        "(SELECT count(*) FROM (SELECT pg_sleep(3)) s) >= 0"))
+    store._F8_READY.clear()
+
+    async def go() -> tuple[float, set[str], float]:
+        start = time.monotonic()
+        page = await _query(world.a, world.visit, filter=[
+            {"field": "hours", "op": "lte", "value": 5}], limit=100)
+        first = time.monotonic() - start
+        start = time.monotonic()
+        again = await _query(world.a, world.visit, filter=[
+            {"field": "hours", "op": "lte", "value": 5}], limit=100)
+        assert _labels(world, again) == _labels(world, page)
+        return first, _labels(world, page), time.monotonic() - start
+
+    first, labels, second = _run(world.p.app_url, go)
+    assert first < 2.0 and second < 1.0  # the second call pays no guard
+    assert labels == {"r1", "r2"}
+    ready, _ = store._F8_READY[world.a]
+    assert ready is False
+    store._F8_READY.clear()
+
+
+def test_r8_c2c_the_guard_caches_only_for_the_org_it_counted(world, monkeypatch) -> None:
+    """P3. The cache key is the org of the tenant seam, and the guard counts the
+    org of the session GUC. When the two differ, nothing is cached and the
+    query uses the exact SQL."""
+    monkeypatch.setattr(store, "num_f8_org", lambda: world.b)  # the session is org A
+    store._F8_READY.clear()
+
+    async def go() -> set[str]:
+        page = await _query(world.a, world.visit, filter=[
+            {"field": "hours", "op": "lte", "value": 5}], limit=100)
+        return _labels(world, page)
+
+    assert _run(world.p.app_url, go) == {"r1", "r2"}
+    assert store._F8_READY == {}
+    monkeypatch.setattr(store, "num_f8_org", lambda: world.a)  # now they agree
+    assert _run(world.p.app_url, go) == {"r1", "r2"}
+    assert store._F8_READY[world.a][0] is True
+    store._F8_READY.clear()
+
+
+def test_r8_c2c_a_value_below_float8_range_does_not_raise(world) -> None:
+    """P3. The cast of 1e-330 raises in float8. The trigger and the backfill
+    take 0.0, and the clamp is monotone (direct SQL only)."""
+    async def go() -> list[tuple[Any, ...]]:
+        obj = await _define(world.a, world.pkg_a, "tiny", [{"key": "x", "type": "number", "hot": True}])
+        ids = await _create(world.a, obj, {"a": {"x": 1}, "b": {"x": 2}})
+        async with tenant_session(world.a) as db:
+            for rid, v in ((ids["a"], "1e-330"), (ids["b"], "-1e-330")):
+                await db.execute(text("UPDATE studio_record_hot SET v_num = CAST(:v AS numeric) "
+                                      "WHERE record_id = CAST(:r AS uuid)"), {"v": v, "r": rid})
+            got = [tuple(r) for r in (await db.execute(text(
+                "SELECT v_num_f8 FROM studio_record_hot WHERE object_id = CAST(:o AS uuid)"),
+                {"o": obj.id})).all()]
+            # The backfill CASE on the same values, after the copy is cleared.
+            await db.execute(text("UPDATE studio_record_hot SET v_num_f8 = NULL "
+                                  "WHERE object_id = CAST(:o AS uuid)"), {"o": obj.id})
+            await store.fill_num_f8_batch(db, store.NUM_F8_START, 1000)
+            again = [tuple(r) for r in (await db.execute(text(
+                "SELECT v_num_f8 FROM studio_record_hot WHERE object_id = CAST(:o AS uuid)"),
+                {"o": obj.id})).all()]
+        return got + again
+
+    assert all(r == (0.0,) for r in _run(world.p.app_url, go))
 
 
 def test_r8_c2c_the_trigger_and_the_backfill_fill_the_float8_copy(world) -> None:

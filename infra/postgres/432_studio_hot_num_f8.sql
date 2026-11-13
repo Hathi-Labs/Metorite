@@ -1,5 +1,5 @@
 -- ============================================================================
--- 430_studio_hot_num_f8.sql — WS-STU STU-C2c: a float8 shadow of v_num.
+-- 432_studio_hot_num_f8.sql — WS-STU STU-C2c: a float8 shadow of v_num.
 --
 -- ⚠️ The number was taken from the directory at BUILD time (R1), and it is
 --    re-checked at merge. `tests/unit/test_studio_hot_num_f8.py`
@@ -61,12 +61,17 @@ ALTER TABLE studio_record_hot ADD COLUMN IF NOT EXISTS v_num_f8 double precision
 CREATE OR REPLACE FUNCTION studio_record_hot_num_f8_fill() RETURNS trigger
 LANGUAGE plpgsql AS $fn$
 BEGIN
-    -- A value beyond 1e300 takes the float8 infinity of its sign, because the
-    -- cast would raise. The mapping stays monotone, so a non-strict float8
-    -- test still keeps every row that the exact test keeps.
+    -- The cast of a numeric beyond the float8 range raises: above 1.8e308 it
+    -- overflows, and below 4.9e-324 it underflows. So a value above 1e300 takes
+    -- the infinity of its sign, and a value with |v| < 1e-300 takes 0.0. Each
+    -- clamp is a non-decreasing map, so x <= y gives f(x) <= f(y), and a
+    -- non-strict float8 test keeps every row that the exact test keeps.
+    -- This is out of the API range (the API caps |v| below 1e15 and takes no
+    -- exponent), so the clamp guards direct SQL only. Any other value casts.
     NEW.v_num_f8 := CASE
         WHEN NEW.v_num > 1e300 THEN 'Infinity'::float8
         WHEN NEW.v_num < -1e300 THEN '-Infinity'::float8
+        WHEN abs(NEW.v_num) < 1e-300 THEN 0.0::float8
         ELSE NEW.v_num::float8
     END;
     RETURN NEW;
@@ -98,9 +103,11 @@ $do$;
 
 -- CONCURRENTLY waits for every older transaction in the database, and that
 -- wait obeys lock_timeout. The runner sets lock_timeout to 5s, so a long open
--- transaction (an email sync block) could fail the release. Lift it for these
--- statements. psql runs with no transaction, so SET holds for the session.
-SET lock_timeout = 0;
+-- transaction (an email sync block) could fail the release. Raise it to 10
+-- minutes for these statements. It stays finite, so an idle-in-transaction
+-- session cannot stall a release forever. psql runs with no transaction, so
+-- SET holds for the session.
+SET lock_timeout = '10min';
 CREATE INDEX CONCURRENTLY IF NOT EXISTS studio_record_hot_num_f8_idx
     ON studio_record_hot (organization_id, object_id, field_key, v_num_f8);
 CREATE INDEX CONCURRENTLY IF NOT EXISTS studio_record_hot_num_f8_todo_idx
