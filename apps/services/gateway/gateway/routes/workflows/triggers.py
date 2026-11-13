@@ -41,7 +41,6 @@ from gateway.routes.workflows.service import (
 )
 from sqlalchemy import text
 
-
 #: The payload keys that a Studio record trigger may filter on (STU-E3). The
 #: payload of ``studio.record.*`` holds ids and names, never a field value.
 RECORD_FILTER_KEYS = ("package_id", "object", "op")
