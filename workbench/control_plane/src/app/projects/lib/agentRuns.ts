@@ -216,6 +216,48 @@ export interface AgentRun {
    * `waiting`, else null. A gateway before 1045a does not send it.
    */
   waiting?: AgentWaiting | null;
+  /**
+   * SW-32 (task 1049). The checklist that the agent keeps on its run, or
+   * null. Each `set_run_plan` call replaces the whole list. The text of a
+   * step is the agent's own: draw it as text and nothing else.
+   */
+  plan?: AgentPlanStep[] | null;
+}
+
+/** The four statuses of a plan step (`agent_runs.PLAN_STATUSES`). */
+export type AgentPlanStatus = "pending" | "inProgress" | "completed" | "canceled";
+
+export interface AgentPlanStep {
+  content: string;
+  status: AgentPlanStatus;
+}
+
+/**
+ * SW-32. What a task row says about a plan: the closed steps (`completed` and
+ * `canceled`), all steps, and the step in progress. `agent_plan` of the row.
+ */
+export interface AgentPlanSummary {
+  done: number;
+  total: number;
+  step: string | null;
+}
+
+/** "3 of 7", or null for no plan. A plan of no step reads as no plan. */
+export function planProgressText(plan?: Pick<AgentPlanSummary, "done" | "total"> | null): string | null {
+  if (!plan || !Number.isInteger(plan.total) || plan.total < 1) return null;
+  const done = Math.min(Math.max(Math.trunc(plan.done) || 0, 0), plan.total);
+  return `${done} of ${plan.total}`;
+}
+
+/** The summary of a plan that the run wire carries, as the gateway makes it. */
+export function planSummary(plan?: AgentPlanStep[] | null): AgentPlanSummary | null {
+  if (!plan || plan.length === 0) return null;
+  const current = plan.find((s) => s.status === "inProgress");
+  return {
+    done: plan.filter((s) => s.status === "completed" || s.status === "canceled").length,
+    total: plan.length,
+    step: current?.content.trim() || null,
+  };
 }
 
 /**
@@ -530,6 +572,8 @@ export interface AgentPillFacts {
   labels?: ReadonlyMap<string, string>;
   /** Task 1045a. The wait of a `waiting` run: `agent_waiting` of the row. */
   waiting?: Pick<AgentWaiting, "on" | "until"> | null;
+  /** SW-32. The plan of the run, as `agent_plan` of the row. */
+  plan?: AgentPlanSummary | null;
   /** The clock for the minutes of a wait. Tests pass it. */
   nowMs?: number;
 }
@@ -676,6 +720,8 @@ export function newestEphemeral(activities: readonly AgentActivity[]): string | 
     if (a.type === "thought" && a.content.body?.trim()) return a.content.body.trim();
     if (a.type === "action") {
       const name = a.content.action?.trim();
+      // SW-32: a plan write is a heartbeat, not a line to read.
+      if (name === "set_run_plan") continue;
       if (name) return `Running ${name}`;
       if (a.content.body?.trim()) return a.content.body.trim();
     }

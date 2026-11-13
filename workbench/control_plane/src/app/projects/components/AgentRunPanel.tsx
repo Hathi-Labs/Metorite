@@ -94,6 +94,7 @@ import { newestHandoff } from "../lib/agentHandoff";
 import { ASK_COPY, hasOpenRunOf } from "../lib/askAgent";
 import { AgentPill } from "./AgentPill";
 import { AGENT_SUBMIT_HINT, AgentQuestionCard } from "./AgentQuestionCard";
+import AgentRunPlan from "./AgentRunPlan";
 import { AskAgentDialog } from "./AskAgentDialog";
 import { HandoffCard } from "./HandoffCard";
 import { MarkdownBody } from "@/components/MarkdownMessage";
@@ -640,6 +641,8 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
           ) : null}
         </div>
       ) : null}
+
+      <AgentRunPlan plan={run.plan} />
 
       {elicitation ? (
         // EA-18b: the answer part is ONE component, shared with the Questions list.

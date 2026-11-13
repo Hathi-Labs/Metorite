@@ -2821,6 +2821,8 @@ ARCHIVE_REQUEST_ROUTE = "/projects/tasks/{task_id}/archive-request"
 #: WS-55 MCP-G15. The agent records a decision that its member made outside
 #: Metorite, on its own awaiting run. The gateway writes an agent response.
 OUTSIDE_DECISION_ROUTE = "/projects/agent-runs/{run_id}/outside-decision"
+#: WS-MCP SW-32 (task 1049). The agent replaces the plan of its own run here.
+RUN_PLAN_ROUTE = "/projects/agent-runs/{run_id}/plan"
 
 #: The statuses of a run (§12.1), and `abandoned` and `released` of EA-14a.
 #: The gateway's CHECK holds the same.
@@ -2891,6 +2893,17 @@ _WAITING_SCHEMA = _object({
     "until": _NULLABLE_STRING,
     "note": _UNTRUSTED_OR_NULL,
 })
+#: SW-32 (task 1049, D140.7). The plan of a run: at most 30 steps, each of at
+#: most 200 characters, with four statuses. The gateway holds the same
+#: (``agent_runs.MAX_PLAN_STEPS``, ``MAX_PLAN_STEP`` and ``PLAN_STATUSES``),
+#: and a pin test holds the copies. The text of a step is the agent's own, so (U).
+MAX_PLAN_STEPS = 30
+MAX_PLAN_STEP = 200
+PLAN_STATUSES: tuple[str, ...] = ("pending", "inProgress", "completed", "canceled")
+_PLAN_SCHEMA: dict[str, Any] = {"anyOf": [{"type": "array", "items": _object({
+    "content": _UNTRUSTED_SCHEMA,
+    "status": {"type": "string", "enum": list(PLAN_STATUSES)},
+})}, {"type": "null"}]}
 _RUN_SCHEMA = _object({
     "id": {"type": "string"}, "task_id": {"type": "string"},
     "status": _NULLABLE_STRING, "state": _NULLABLE_STRING,
@@ -2903,6 +2916,7 @@ _RUN_SCHEMA = _object({
     # SW-7b. The name that an agent gave its session. An agent wrote it, so (U).
     "agent_label": _UNTRUSTED_OR_NULL,
     "waiting": {"anyOf": [_WAITING_SCHEMA, {"type": "null"}]},
+    "plan": _PLAN_SCHEMA,
 })
 #: SW-43. The answer of the member that may still change. It is OPTIONAL: the
 #: key is there only while ``agent_answer_change_enabled`` is on, so it is not
@@ -3039,6 +3053,22 @@ def _waiting(raw: Any) -> dict[str, Any] | None:
     }
 
 
+def _plan(raw: Any) -> list[dict[str, Any]] | None:
+    """``plan`` of a run (SW-32): the steps, with the text as untrusted text.
+    ``None`` for a run with no plan. A step with an unknown status or no text
+    is left out, and so is a step past the cap."""
+    if not isinstance(raw, list):
+        return None
+    out: list[dict[str, Any]] = []
+    for step in raw[:MAX_PLAN_STEPS]:
+        if not isinstance(step, dict):
+            continue
+        content, status = step.get("content"), step.get("status")
+        if isinstance(content, str) and content and status in PLAN_STATUSES:
+            out.append({"content": untrusted(content[:MAX_PLAN_STEP]), "status": status})
+    return out
+
+
 def _member_of(value: Any) -> str | dict[str, str] | None:
     """A member address by :func:`assignee`, or ``None``."""
     return assignee(value) if isinstance(value, str) else None
@@ -3079,6 +3109,7 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
         "stranded": _stranded(row.get("stranded")),
         "agent_label": untrusted(label) if isinstance(label, str) else None,
         "waiting": _waiting(row.get("waiting")),
+        "plan": _plan(row.get("plan")),
     }
     if "answer" in row:  # only a gateway with SW-43 on sends it
         out["answer"] = _answer(row.get("answer"))
@@ -9356,6 +9387,82 @@ RECORD_OUTSIDE_DECISION = Tool(
 )
 
 
+# ── set_run_plan (WS-MCP SW-32, task 1049) ──────────────────────────────────
+
+_PLAN_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "run_id": {**_RUN_ID_INPUT, "description": "Your own run. An id from"
+                                                   " start_agent_run or my_work."},
+        "steps": {
+            "type": "array", "maxItems": MAX_PLAN_STEPS,
+            "description": ("The whole plan, in order. It replaces the plan that the"
+                            " run holds. An empty list clears the plan."),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "minLength": 1,
+                                "maxLength": MAX_PLAN_STEP,
+                                "description": "One step, in a short line."},
+                    "status": {"type": "string", "enum": list(PLAN_STATUSES),
+                               "description": "pending, inProgress, completed or canceled."},
+                },
+                "required": ["content", "status"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["run_id", "steps"],
+    "additionalProperties": False,
+}
+_PLAN_OUTPUT: dict[str, Any] = _object({
+    "activity": _RUN_ACTIVITY_SCHEMA, "run": _RUN_SCHEMA,
+})
+
+
+async def _set_run_plan(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """PUT the whole plan. The gateway replaces the list, checks the caps, and
+    writes one action activity as a heartbeat."""
+    steps = args["steps"]
+    for step in steps:
+        _refuse_nul(step, ("content",))
+    _status, body = await _write(
+        ctx, "PUT", RUN_PLAN_ROUTE, TEXT_RUN_NOT_FOUND,
+        path_params={"run_id": str(args["run_id"])}, json_body={"steps": steps},
+        texts={409: TEXT_RUN_CONFLICT})
+    activity = body.get("activity") if isinstance(body, dict) else None
+    if not isinstance(activity, dict):
+        raise ToolError(TEXT_BUSY)
+    return {"activity": run_activity(activity), "run": agent_run(_run_body(body))}
+
+
+SET_RUN_PLAN = Tool(
+    name="set_run_plan",
+    title="Set the plan of your run",
+    description=(
+        "Keep a checklist on your own run. Each call replaces the whole plan, so"
+        " send every step each time, with its new status. A step has a short"
+        " content line (at most 200 characters) and a status: pending,"
+        " inProgress, completed or canceled. A plan holds at most 30 steps. Mark"
+        " one step inProgress while you work on it. The task card then shows it,"
+        " with a count such as 3 of 7, and the run panel shows the list. Each"
+        " call also counts as a thought: it keeps the run active. It also ends"
+        " a wait, so post the wait after the plan. Send [] to"
+        " clear the plan. Use it only on your own open run." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_PLAN_INPUT,
+    output_schema=_PLAN_OUTPUT,
+    route=RUN_PLAN_ROUTE,
+    params={"run_id": "run_id", "steps": "steps"},
+    not_found=TEXT_RUN_NOT_FOUND,
+    run=_set_run_plan,
+    method="PUT",
+    annotations=dict(WRITE_ANNOTATIONS),
+    runs=True,
+)
+
+
 # ── delete_task (EA-6h, EA3-51) ─────────────────────────────────────────────
 
 AGENT_DELETE_ROUTE = "/projects/tasks/{task_id}/agent-delete"
@@ -10654,7 +10761,7 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     REPORT_CHECK,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
     ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RECORD_OUTSIDE_DECISION,
-    RELEASE_TASK, DELETE_TASK,
+    RELEASE_TASK, SET_RUN_PLAN, DELETE_TASK,
     LIST_APPS, DESCRIBE_APP, APP_READ, APP_WRITE,
     READ_PLAYBOOK,
 )}

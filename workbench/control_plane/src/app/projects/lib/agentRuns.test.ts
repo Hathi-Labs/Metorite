@@ -377,6 +377,13 @@ describe("the run panel's reads", () => {
       newestEphemeral([{ id: "x", seq: 1, type: "action", content: { action: "run_tests" } }]),
     ).toBe("Running run_tests");
   });
+
+  it("skips a plan write, so the newest thought shows (SW-32)", () => {
+    const thought: AgentActivity = { id: "t1", seq: 1, type: "thought", content: { body: "Reading" } };
+    const plan: AgentActivity = { id: "p1", seq: 2, type: "action", content: { action: "set_run_plan" } };
+    expect(newestEphemeral([thought, plan])).toBe("Reading");
+    expect(newestEphemeral([plan])).toBeNull();
+  });
 });
 
 describe("Waiting on me, and the timeline mark", () => {
