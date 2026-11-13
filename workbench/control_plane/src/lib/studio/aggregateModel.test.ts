@@ -167,6 +167,38 @@ describe("the stat tile", () => {
   });
 });
 
+describe("money on the wire of the door (STU-D4b, finding F1)", () => {
+  /** The answer of `invoke._aggregate_answer`: a field by its key, a Decimal as exact text. */
+  const door = (measures: unknown[], currencies: unknown[], total: unknown[]) => [{
+    measures, currencies, groups: [], other: null, folded: 0,
+    total: { key: null, count: 3, values: total },
+  }];
+
+  it("scales a measure only by the currency that the door sends for it", () => {
+    // The C2b grammar refuses an average of money, so the door never sends one. An average
+    // of a number has no currency and stays as it is.
+    const agg = parseAggregate(door(
+      [{ op: "sum", field: "fee" }, { op: "average", field: "hours" }], ["INR", null], [125050, "2.5"]));
+    expect(agg?.currencies).toEqual(["INR", null]);
+    expect(formatMeasure(agg!, 0, agg!.total.values[0])).toBe("₹1,250.50");
+    expect(formatMeasure(agg!, 1, agg!.total.values[1])).toBe("2.5");
+  });
+
+  it("an average that carries a currency is shown in major units, never as minor units", () => {
+    // If a later grammar opens an average of money, the door must send its currency. This
+    // pins the client half: the unit scales an average too, so 12550 minor units read 125.50.
+    const agg = parseAggregate(door([{ op: "average", field: "fee" }], ["INR"], ["12550"]));
+    expect(formatMeasure(agg!, 0, agg!.total.values[0])).toBe("₹125.50");
+    expect(statFromAggregate(agg, 0)?.value).toBe("₹125.50");
+  });
+
+  it("reads the exact Decimal text of the door, with no exponent", () => {
+    const agg = parseAggregate(door([{ op: "sum", field: "hours" }], [null], ["100.25"]));
+    expect(agg?.total.values).toEqual([100.25]);
+    expect(agg?.measures[0]).toMatchObject({ op: "sum", field: "hours", label: "Total hours" });
+  });
+});
+
 describe("the block nodes", () => {
   it("bind to a source through the one data door", () => {
     const source = { action: "object:deal.aggregate", args: { group_by: { field: "status" } } };

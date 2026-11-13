@@ -93,6 +93,7 @@ from acb_common.paging import bounds, paged
 from acb_common.studio_manifest import (
     BLOCKS,
     OBJECT_OPS,
+    RECORD_OPS,
     RESERVED_BLOCKS,
     STUDIO_VERSION,
     Manifest,
@@ -517,7 +518,9 @@ def with_record_actions(manifest: Any) -> tuple[Any, list[dict[str, str]]]:
         seen.add(name)  # a second object of this name adds nothing twice
         have = plain.get(name, set())
         writes = not have & {"create", "update", "delete"}
-        for verb in OBJECT_OPS:
+        # The record verbs only. An aggregate is a read that a package declares
+        # by itself (STU-D4b), so no object gets one by default.
+        for verb in RECORD_OPS:
             if verb in have or (verb not in ("list", "get") and not writes):
                 continue
             tail = f"_{verb}"
@@ -3214,11 +3217,44 @@ def _declared_actions(reply: _Reply) -> list[dict[str, str]]:
     return out
 
 
+_BAD_SCOPE = 'The scope is "org" for the admin view, or empty for your own packages.'
+_ORG_NOTE = ("Action calls count each call through the door of a package. They are not "
+             "workflow runs. Use is not tracked yet.")
+
+
+_ORG_CUT = " The list holds only the newest 500 packages, so the total is not the whole org."
+
+
+def _org_package_row(r: dict[str, Any]) -> dict[str, Any]:
+    """One row of the admin view. It keeps the action, the outcome and the time of the last
+    error, and no reason text, so a stored word never reaches the model."""
+    err = r.get("last_error") if isinstance(r.get("last_error"), dict) else None
+    calls = r.get("action_calls")
+    return {
+        "id": _tag(r.get("id"), 40), "name": _name(r.get("name", ""), True),
+        "owner": _tag(r.get("owner_email"), 120),
+        "state": "live" if r.get("live_version") is not None else "draft",
+        "live_version": r.get("live_version"),
+        "action_calls": calls if isinstance(calls, int) and not isinstance(calls, bool) else 0,
+        "last_error": None if err is None else {
+            "action": _tag(err.get("action"), 60), "outcome": _tag(err.get("outcome"), 20),
+            "at": _tag(err.get("at"), 40)},
+        "use": "Not tracked yet",
+    }
+
+
 @annotate(read_only=True, idempotent=True, open_world=False)
-async def studio_package_get(package_id: str = "", offset: int = 0, limit: int = 0) -> dict[str, Any]:
+async def studio_package_get(package_id: str = "", offset: int = 0, limit: int = 0,
+                             scope: str = "") -> dict[str, Any]:
     """List your Studio packages, or read one with its objects and its actions.
 
     A list page holds at most 30 packages: id, name, status and live version.
+    With scope "org" and no package id, the list is the admin view: every
+    package of the organization with its owner, its state, its action calls,
+    its last error and its use. The server checks the right. A member who
+    lacks it gets the list of their own packages, and the answer says
+    scope "own". The last error holds the action, the outcome and the time.
+    An action call is one call through the door of a package, not a workflow run.
     A read of one package gives its objects (name, label, fields and the count
     of rules) and the actions its manifest declares. The objects exist only
     after a publish. Use the object name and the package id with
@@ -3228,8 +3264,12 @@ async def studio_package_get(package_id: str = "", offset: int = 0, limit: int =
     pid = _skill_path(package_id) if str(package_id or "").strip() else ""
     if pid is None:
         return _refusal(_NO_PACKAGE_ID)
+    org = str(scope or "").strip() == "org" and not pid
+    if str(scope or "").strip() not in ("", "org"):
+        return _refusal(_BAD_SCOPE)
     try:
-        reply = await _get(f"/studio/packages/{pid}" if pid else "/studio/packages")
+        reply = await _get(f"/studio/packages/{pid}" if pid else (
+            "/studio/packages?scope=org" if org else "/studio/packages"))
     except _Refused as exc:
         return _refusal(str(exc))
     if not reply.ok:
@@ -3239,10 +3279,24 @@ async def studio_package_get(package_id: str = "", offset: int = 0, limit: int =
         rows = [r for r in (found if isinstance(found, list) else []) if isinstance(r, dict)]
         page = paged(rows, offset, limit, default=MAX_PACKAGE_ROWS, maximum=MAX_PACKAGE_ROWS,
                      noun="packages")
+        if org and isinstance(reply.data, dict) and reply.data.get("admin") is True:
+            from acb_skills.untrusted import UntrustedFrame
+
+            # The names and the owners are text of other members, so the rows sit in a frame.
+            frame = UntrustedFrame.new()
+            cut = reply.data.get("truncated") is True
+            text_rows = json.dumps([_org_package_row(r) for r in page.items],
+                                   ensure_ascii=False, separators=(",", ":"), default=repr)
+            return _result(True, [], [], scope="org",
+                           packages=frame.wrap("STUDIO PACKAGES", text_rows),
+                           total=page.total, shown=len(page.items), page=page.line,
+                           truncated=cut,
+                           note=frame.note(_ORG_NOTE + (_ORG_CUT if cut else "")))
         return _result(True, [], [], packages=[{
             "id": _tag(r.get("id"), 40), "name": _name(r.get("name", ""), True),
             "status": _tag(r.get("status"), 20), "live_version": r.get("live_version"),
-        } for r in page.items], total=page.total, shown=len(page.items), page=page.line)
+        } for r in page.items], total=page.total, shown=len(page.items), page=page.line,
+            **({"scope": "own"} if org else {}))
     data = reply.data if isinstance(reply.data, dict) else {}
     package = data.get("package") if isinstance(data.get("package"), dict) else {}
     objects = _package_objects(data.get("objects"))
