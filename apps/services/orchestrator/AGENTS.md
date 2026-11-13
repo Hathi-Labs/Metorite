@@ -103,6 +103,9 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
 22. **A run that holds a CRM tool gets the number check** (spec `crm_platform.md` §18.11.2).
    - `_tool_injection._apply_answer_check` runs at the end of `_inject_agent_tools`. Read `agents` again after injection. Do not attach the provider anywhere else.
    - Each new relay of a run queue must drop the hold beat (`_relayable`). Fences: `test_crm_answer_check.py`, `test_crm_answer_check_executor.py`.
+22a. **A slow tool call gets one line for the member** (HRD-6 part 1, spec `chat_run_continuity.md` §4.11). It ships dark behind `CHAT_PROGRESS_NOTICE_ORGS`.
+   - `_tool_injection._apply_progress_notice` runs LAST in `_inject_agent_tools`, after `_apply_answer_check`. It reads the org of the run binding only. Do not attach `acb_skills.progress_notice.ProgressNoticeProvider` anywhere else.
+   - The line is the CUSTOM `progress` event. `_is_answer_event` and `gateway.chat_fold` drop it, so no saved row holds it. Fence: `test_progress_notice.py`.
 23. **A streamed run opens ONE holder of the CRM questions that it asks.** `run_agent_stream` calls `open_asks_for_run()` and `release_asks` in the same `finally`. Never give the ContextVar a mutable default. Fences: `test_crm_questions_chat.py`, `test_crm_agent.py`.
 24. **The orchestrator's per-turn context carries the member's own profile block** (spec `personalization.md` §5.1).
    - It needs an org, `assistant_profile.enabled_for(org)`, a verified member and `_RUN_SOLO_ROOM` True. `enabled_for(org)` is the one reader.

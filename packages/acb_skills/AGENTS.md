@@ -152,6 +152,12 @@ not write a second copy of that seam. A bare test file name is under
    - `orchestrator._tool_injection._apply_tool_result_spill` is the one seam. It runs BEFORE the egress and number-check steps. So the number check reads the full text.
    - `narrow_and_read` and the delegation tools never spill.
    - Fence: `test_tool_result_spill.py`.
+5l-1b. progress_notice.py -- one line for the member while a slow tool runs (HRD-6 part 1, task 2985, spec `chat_run_continuity.md` §4.11). Dark behind `CHAT_PROGRESS_NOTICE_ORGS`.
+   - `emit_progress` is the ONE writer. The web chat gets one CUSTOM `progress` event on the run's own queue (`resolve_run_queue`). WhatsApp gets the line through `whatsapp_ui.WhatsAppRun.notify`, once in a reply. Do not add a second event channel or a second channel path.
+   - `ProgressNotice` starts a timer on each tool call and sends `LONG_READ_TEXT` after `NOTICE_AFTER_S`. Each call gets one line at most, and a tool's own line wins. While one line shows, a parallel call sends none (the mark lives on the queue).
+   - The delegation tools and the tools that wait for the member get no line.
+   - `progress_notice_on` is the ONE reader of the flag. `orchestrator._tool_injection._apply_progress_notice` is the one seam, and it runs last.
+   - Fence: `test_progress_notice.py`.
 5l-2. org_facts_tools.py -- `org_facts(app, query)` and the CRM facts block (spec `crm_platform.md` §18.14.4). It loads with the `crm` skill family only.
    - `crm_answer_question` sends a pick only when this run showed that card and the member clicked it. Fences: `test_org_facts.py`, `test_org_facts_r8.py`, `test_crm_answer_first.py`.
 5m. untrusted.py -- the ONE frame for text that a stranger wrote (spec `email_app_master_plan.md` §12.3.13.8).

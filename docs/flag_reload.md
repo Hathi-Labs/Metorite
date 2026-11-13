@@ -77,6 +77,13 @@ the next tick. The owner must treat a change of this list as part of the
 expiry decision. `PACKAGE_EXPIRY_ENABLED` does not reload. Only a restart
 changes it.
 
+`CHAT_PROGRESS_NOTICE_ORGS` turns on the line of a slow tool
+(`chat_run_continuity.md` §4.11, HRD-6). For each listed org, a tool call that
+runs past 6 s sends the member one line. `*` lists every org, and the default
+is empty. Its one reader is `acb_skills.progress_notice.progress_notice_on`.
+The injection asks it at the start of each run, so a reload applies to the
+next run. A flip stays OWNER-GATE (`enforcement-flip`).
+
 A reload does NOT apply any other key. The log names each one under
 `restart`. That includes:
 

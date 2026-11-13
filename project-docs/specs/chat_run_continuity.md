@@ -1297,10 +1297,11 @@ general caps is under 200 s, so this slice raises none.
 
 **Fences (R7).**
 
-- `tests/unit/test_progress_notice.py`: the flag, the per-run view, one line
-  for each slow call, the tool's own line, no stacked lines, the exempt tools,
-  the WhatsApp early message, the fold, and a native stream that outlives the
-  bare idle cap with the line between the tool's start and its result.
+- `tests/unit/test_progress_notice.py` tests the flag, the per-run view and
+  one line for each slow call. It tests the tool's own line, no stacked lines,
+  the exempt tools, the WhatsApp early message and the fold. A native stream
+  outlives the bare idle cap, and the line comes between the tool's start and
+  its result.
 - `src/lib/progressNotice.test.ts`: the line shows, and it goes at the end of
   its step, at answer text and at the end of the run. It draws under the
   header while the turn works, and not after it. The replay and the BFF save
