@@ -81,7 +81,21 @@ Review round 2 (2026-11-14), each on the committed tree 05fa70ccd:
 * M22. ``batch.batch_detail``: always say "The first 10 records".
   ``test_studio_workflow_batch.py::test_the_card_never_drops_an_item_in_silence`` goes red.
 * M23. ``service._hold_at_gate``: report a refused park as paused.
-  ``test_studio_workflow_batch.py::test_a_refused_park_reports_failed_to_the_hub`` goes red.
+  ``test_studio_workflow_batch.py::test_a_refused_park_reports_failed_to_the_hub`` (now ``..._its_status_to_the_hub``) goes red.
+
+Review round 3 (2026-11-14), each on the committed tree 5c351ef9b:
+
+* M24. ``service._GATE_REFUSALS``: a paused package ends the run ``failed``.
+  ``test_r8_a_paused_package_never_auto_disables_and_a_lasting_refusal_does``
+  (both cases) and the ``package_paused`` case of
+  ``test_studio_workflow_batch.py::test_a_refused_park_reports_its_status_to_the_hub`` go red.
+* M25. ``service._GATE_REFUSALS``: a switch that is off ends the run ``failed``.
+  ``test_r8_an_org_off_the_batch_flag_opens_no_batch_and_files_no_card`` and the
+  ``batch_off`` case of the hermetic test go red.
+* M26. ``invoke.plan_workflow_write`` and ``plan_workflow_batch``: take a paused
+  package as unresolved. Both cases of the paused package test go red.
+* M27. ``service._fail_unresolved_write``: write ``failed`` for each refusal.
+  Both cases of the paused package test go red.
 """
 
 from __future__ import annotations
