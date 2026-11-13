@@ -59,7 +59,9 @@ dark until the owner lists an org. :func:`org_ready` is the check of the hold.
 **The steps of a run (STU-E4b).** ``runs.get_run_steps`` lists the human steps
 of one run with :func:`step_rows`, :func:`step_state` and the task reading of
 :func:`read_task` and :func:`task_outcome`. It keeps no second reading of a
-task. The task id goes only to the person of the task.
+task. This route gives the task id only to the person of the step.
+``GET /workflows/runs/{id}`` and its stream still show the task id of a done
+step in ``node_results``. That is a known gap.
 
 Fence: ``tests/unit/test_workflows_human_step.py``,
 ``tests/unit/test_workflows_human_step_r8.py``,
@@ -164,12 +166,19 @@ def _clip(value: Any, limit: int) -> str:
 def step_person(value: Any) -> str | None:
     """The member email of a step, in lower case, or None.
 
-    The one rule of a usable person: an ``@``, at most 254 characters and no
-    ``{{ref}}``. :func:`open_step` refuses a step with None, and
-    :func:`step_rows` shows None.
+    The one rule of a usable person: exactly one ``@``, at most 254
+    characters, no ``{{ref}}``, and no white space or control character. A real
+    member email has none of those, so a sentence that a workflow author wrote
+    as the person never reaches a task or a reader. :func:`open_step` refuses a
+    step with None, and :func:`step_rows` shows None.
     """
     who = str(value or "").strip().lower()
-    if "@" not in who or len(who) > _EMAIL_MAX or "{{" in who:
+    if (
+        who.count("@") != 1
+        or len(who) > _EMAIL_MAX
+        or "{{" in who
+        or any(ch.isspace() or not ch.isprintable() for ch in who)
+    ):
         return None
     return who
 
@@ -513,10 +522,7 @@ def step_state(
     *run_status* the status of the run.
 
     * A node result ``ok`` is ``done``: the run went past the step.
-    * With a pause, the pause and the task decide. ``resolved`` is ``done``,
-      because only a done task resolves a task pause. A done task is ``done``.
-      A pending pause whose task waits, or whose snapshot holds no task, is
-      ``pending`` while the run is live. Each other case is ``cancelled``.
+    * With a pause, :func:`_pause_state` decides.
     * With no pause, a step that waits is ``pending`` while the run is live,
       because the hold has not made the task yet. A refused hold ended the
       run, so the step is ``cancelled``.
@@ -527,13 +533,36 @@ def step_state(
     if status == "ok":
         return STEP_DONE
     if pause_status is not None:
-        if pause_status == "resolved" or outcome == RESUME:
-            return STEP_DONE
-        if pause_status == "pending" and outcome in (WAIT, None) and live:
-            return STEP_PENDING
-        return STEP_CANCELLED
+        return _pause_state(pause_status, outcome, run_status, live)
     if status == "waiting":
         return STEP_PENDING if live else STEP_CANCELLED
     if status == "error":
         return STEP_CANCELLED
     return STEP_NOT_REACHED
+
+
+def _pause_state(pause_status: str, outcome: str | None, run_status: str, live: bool) -> str:
+    """The state of a step that has a ``task`` pause.
+
+    * ``resolved`` is ``done``. Only the scan resolves a task pause, and only on
+      a done task.
+    * ``rejected`` comes from one of two writers, and the task is not read.
+      :func:`end_step` ends the run ``failed`` on a cancelled or gone task, so
+      the step is ``cancelled``. ``service.resume_run`` ends the run
+      ``cancelled`` when the task was done but a member-blind write node comes
+      next, so the step is ``done``. After the run ends, a change to the
+      private task changes no answer.
+    * ``pending`` follows the task. A done task is ``done``. A task that waits,
+      or a snapshot with no task, is ``pending`` while the run is live. Each
+      other case is ``cancelled``.
+    """
+    if pause_status == "resolved":
+        return STEP_DONE
+    if pause_status == "rejected":
+        return STEP_DONE if run_status == "cancelled" else STEP_CANCELLED
+    if pause_status == "pending":
+        if outcome == RESUME:
+            return STEP_DONE
+        if outcome in (WAIT, None) and live:
+            return STEP_PENDING
+    return STEP_CANCELLED

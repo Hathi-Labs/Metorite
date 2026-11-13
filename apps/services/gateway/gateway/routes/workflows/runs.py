@@ -1,8 +1,10 @@
 """Run endpoints: start, history, detail, live SSE (spec F5, F8, F9).
 
 ``GET /runs/{run_id}/steps`` lists the human steps of one run (STU-E4b,
-``ai_studio.md`` row E4). It has the access of ``GET /runs/{run_id}``, and it
-gives a task id only to the person of that task.
+``ai_studio.md`` row E4). It has the access of ``GET /runs/{run_id}``. This
+route gives the task id only to the person of the step. ``GET /runs/{run_id}``
+and the stream still show the task id of a done step in ``node_results``. That
+is a known gap, and this route does not change it.
 
 Test runs of the unpublished draft compile on the fly (``draft: true``) so the
 editor's "Test ▸" loop needs no publish; real triggers always execute the
@@ -17,6 +19,7 @@ gate alone decides it (owner rule 1, task 1818).
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import uuid
 from typing import Any
@@ -26,6 +29,7 @@ from fastapi import Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from gateway.routes.workflows import human_step, unattended
 from gateway.routes.workflows.core import (
+    MAX_RUN_STEPS,
     MAX_RUNS_PAGE,
     _tenant_session,
     _uid,
@@ -245,10 +249,15 @@ async def get_run_steps(
     tenant session, with no other check. A run of another org, an unknown id
     and an id that is not a UUID each get the same 404.
 
-    **The task is private.** It is a task in the personal project of its
-    person. So ``task_id`` is null unless the caller IS that person and the
-    task still exists. Each other caller gets the state word and nothing else
-    of the task.
+    **This route gives the task id only to the person of the step.** The task
+    is in the personal project of that person. ``task_id`` is null unless the
+    caller IS that person and the task still exists. Each other caller gets
+    the state word and nothing else of the task. :func:`get_run` and the stream
+    still show the task id of a done step in ``node_results``. That is a known
+    gap, and this route does not change it.
+
+    **A cap.** The answer holds at most :data:`MAX_RUN_STEPS` steps, the first
+    ones in walk order, and ``truncated`` says when the run has more.
     """
     try:
         rid = str(uuid.UUID(str(run_id).strip()))
@@ -260,16 +269,19 @@ async def get_run_steps(
     # ONE session: the run, its pauses and each task are read in one
     # transaction, so a resume between two reads cannot split the answer.
     async with _tenant_session() as db:
-        steps = await _read_steps(db, rid, viewer, alive)
-    if steps is None:
+        read = await _read_steps(db, rid, viewer, alive)
+    if read is None:
         raise HTTPException(status_code=404, detail="Run not found")
-    return {"run_id": rid, "steps": steps}
+    steps, truncated = read
+    return {"run_id": rid, "steps": steps, "truncated": truncated}
 
 
 async def _read_steps(
     db: Any, run_id: str, viewer: str, alive: bool,
-) -> list[dict[str, Any]] | None:
-    """The steps of *run_id* on *db*, or None when the session sees no run."""
+) -> tuple[list[dict[str, Any]], bool] | None:
+    """The steps of *run_id* on *db* and the ``truncated`` mark, or None when
+    the session sees no run. Only the first :data:`MAX_RUN_STEPS` steps read
+    a task."""
     run = (
         await db.execute(
             text(
@@ -294,11 +306,14 @@ async def _read_steps(
         newest.setdefault(str(pause.node_id), pause)
     org = str(getattr(run, "organization_id", "") or "").strip().lower()
     serialized = await _pinned_graph(db, run)
-    return [
+    rows = human_step.step_rows(serialized)
+    shown = list(itertools.islice(rows, MAX_RUN_STEPS))
+    steps = [
         await _one_step(db, run_id, row, results.get(row["node_id"]),
                         newest.get(row["node_id"]), status, viewer, org)
-        for row in human_step.step_rows(serialized)
+        for row in shown
     ]
+    return steps, len(rows) > len(shown)
 
 
 async def _pinned_graph(db: Any, run: Any) -> dict[str, Any]:
@@ -317,8 +332,11 @@ async def _one_step(
     db: Any, run_id: str, row: dict[str, Any], result: Any, pause: Any,
     run_status: str, viewer: str, org: str,
 ) -> dict[str, Any]:
-    """One step of the answer. The task is read only when the state needs it,
-    or when the caller is its person and may get its id."""
+    """One step of the answer. The task is read only when the state needs it
+    (a pending pause), or when the caller is its person and may get its id. A
+    rejected or resolved pause decides the state with no read, so a reader who
+    is not the person never learns the live state of the private task after
+    the run ended."""
     node_id = row["node_id"]
     task_id = human_step.task_id_of({"task_id": pause.task_id}) if pause is not None else None
     output = result.get("output") if isinstance(result, dict) else None
@@ -330,9 +348,10 @@ async def _one_step(
     pause_status = str(pause.status) if pause is not None else None
     task: Any = None
     outcome: str | None = None
-    if task_id is not None and (mine or pause_status in ("pending", "rejected")):
+    if task_id is not None and (mine or pause_status == "pending"):
         task = await human_step.read_task(db, task_id, run_id, node_id, person or "", org)
-        outcome = human_step.task_outcome(task)
+        if pause_status == "pending":
+            outcome = human_step.task_outcome(task)
     return {
         "node_id": node_id,
         "title": row["title"],
@@ -340,7 +359,7 @@ async def _one_step(
         "state": human_step.step_state(
             result=result, pause_status=pause_status, outcome=outcome, run_status=run_status,
         ),
-        # The private rule: only the person of the task gets its id, and only
+        # This route gives the task id only to the person of the step, and only
         # while the task exists.
         "task_id": task_id if mine and task is not None else None,
     }

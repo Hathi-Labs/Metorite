@@ -25,6 +25,10 @@ the auth layer binds it.
   scan settles the run: ``test_r4_*``.
 * R5. A run with no human step answers an empty list, and a refused hold
   reads ``cancelled``: ``test_r5_*``.
+* R6. Two runs in ONE org: each answer reads its own pauses and its own
+  pinned graph, never the newer rows of another run: ``test_r6_*``.
+* R7. A task that the person trashed, then restored and finished after the
+  run failed, still reads ``cancelled``: ``test_r7_*``.
 
 **Mutations this suite catches** (each was run on 2026-11-13, see the PR):
 
@@ -38,6 +42,12 @@ the auth layer binds it.
   R1 red: the person of B gets 404, because the read fails closed.
 * U4 of the hermetic half: drop the UUID check. The bad id case of R1 is red,
   because the database refuses the cast and the route answers 500.
+* M3. ``human_step.RUN_PAUSES_SQL``: drop ``run_id =``. R6 red: the done run
+  takes the newer pause of the other run, and loses its own task id.
+* M4. ``human_step.PINNED_GRAPH_SQL``: drop ``run_id =``. R6 red: the run of
+  three steps reads the newer graph of one step.
+* M5. ``human_step._pause_state``: a rejected pause reads ``done`` whatever
+  the run. R7 red.
 
 R2 has no mutation of its own here. It holds the RLS of the pause read and the
 task read: a row of B that names a run of A stays out of each answer.
@@ -240,6 +250,7 @@ def _steps(w: Any, who: str, org: str, run_id: str) -> list[dict[str, Any]]:
     r = _steps_r(w, who, org, run_id)
     assert r.status_code == 200, r.text
     assert r.json()["run_id"] == run_id
+    assert r.json()["truncated"] is False
     return r.json()["steps"]
 
 
@@ -440,3 +451,54 @@ def test_r5_a_refused_hold_reads_cancelled_with_no_task(w) -> None:
     assert _steps(w, OWNER_A, w.org_a, run_id) == [{
         "node_id": "step", "title": "Wrong org", "assignee": LENA_B,
         "state": "cancelled", "task_id": None}]
+
+
+# ── R6: two runs in one org ─────────────────────────────────────────────────
+
+
+def test_r6_two_runs_of_one_workflow_each_read_their_own_pause(w) -> None:
+    """The first run is done. The second run of the SAME workflow waits on a
+    newer pause of the same node. Each answer names its own task."""
+    run_1, task_1 = _paused(w, "Step in A")
+    _stage(w, str(task_1.id), "done")
+    assert _scan(w) == 1
+    assert _run(w, run_1).status == "succeeded"
+    run_2, task_2 = _paused(w, "Step in A")
+    assert str(task_1.id) != str(task_2.id)
+    first = _steps(w, LENA_A, w.org_a, run_1)
+    second = _steps(w, LENA_A, w.org_a, run_2)
+    assert [(s["state"], s["task_id"]) for s in first] == [("done", str(task_1.id))]
+    assert [(s["state"], s["task_id"]) for s in second] == [("pending", str(task_2.id))]
+
+
+def test_r6_a_run_of_three_steps_reads_its_own_graph_beside_a_newer_run(w) -> None:
+    """The run of the one-step workflow paused later, so its snapshot is the
+    newest graph of the org. The playbook run still lists its three steps."""
+    playbook, _ = _paused(w, "Playbook in A")
+    single, _ = _paused(w, "Step in A")
+    newest = _one(w, "SELECT run_id FROM workflow_run_pauses ORDER BY created_at DESC LIMIT 1")
+    assert str(newest.run_id) == single
+    assert [s["node_id"] for s in _steps(w, OWNER_A, w.org_a, playbook)] == ["s1", "s2", "s3"]
+    assert [s["node_id"] for s in _steps(w, OWNER_A, w.org_a, single)] == ["step"]
+
+
+# ── R7: a rejected pause keeps its word ─────────────────────────────────────
+
+
+def test_r7_a_task_finished_after_the_run_failed_still_reads_cancelled(w) -> None:
+    """Trash, then the scan fails the run. Then the person restores the task
+    and finishes it. The answer stays cancelled for each reader, and the live
+    reading of the task says done."""
+    run_id, task = _paused(w, "Step in A")
+    _trash(w, task.id, LENA_A)
+    assert _scan(w) == 1
+    assert _run(w, run_id).status == "failed"
+    with w.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_task_personal SET disposition = 'NEXT' WHERE task_id = :t"),
+                  {"t": task.id})
+    _stage(w, str(task.id), "done")
+    assert _outcome(w, str(task.id), run_id) == human_step.RESUME
+    ravi = _steps(w, RAVI_A, w.org_a, run_id)
+    lena = _steps(w, LENA_A, w.org_a, run_id)
+    assert [(s["state"], s["task_id"]) for s in ravi] == [("cancelled", None)]
+    assert [(s["state"], s["task_id"]) for s in lena] == [("cancelled", str(task.id))]
