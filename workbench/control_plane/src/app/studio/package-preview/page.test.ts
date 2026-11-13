@@ -44,6 +44,33 @@ describe("/studio/package-preview", () => {
     expect(page).not.toMatch(/pageModel|buildPage|renderView|manifest\.(views|pages)/);
   });
 
+  // STU-AF1: the fence above stays whole for page.tsx. The page model sits in AppFrame.tsx only,
+  // and page.tsx reaches it under one build-time flag that is off by default.
+  it("hands the app to AppFrame only under NEXT_PUBLIC_STUDIO_APP_FRAME, off by default", () => {
+    expect(page).toContain('import AppFrame from "./AppFrame"');
+    expect(page).toContain('process.env.NEXT_PUBLIC_STUDIO_APP_FRAME === "1"');
+    expect(page).toMatch(/if \(APP_FRAME\) \{\s*return <AppFrame /);
+    // The flag-off path is the object preview: its sections are still in the page.
+    for (const section of ['aria-label="Table"', 'aria-label="Board"', 'aria-label="Form"', 'aria-label="Detail"']) {
+      expect(page).toContain(section);
+    }
+  });
+
+  it("keeps the page model in AppFrame.tsx, which draws no shell part and no rail", () => {
+    const frame = readFileSync(new URL("./AppFrame.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    expect(frame).toContain("buildPage");
+    expect(frame).toContain("<StudioPage");
+    expect(frame).toContain("mapView(");
+    expect(frame).not.toMatch(/NotificationBell|<AgentChat|keydown|CommandPalette|RailRow|<Modal/);
+  });
+
+  it("AppFrame hides the write controls from a viewer (J2a)", () => {
+    const frame = readFileSync(new URL("./AppFrame.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    expect(frame).toContain("controls.owner ? (");
+    expect(frame).toContain("READ_ONLY_SENTENCE");
+    expect(frame).toContain("owner: controls.owner");
+  });
+
   it("mounts no shell part of its own", () => {
     expect(page).not.toMatch(/NotificationBell|<AgentChat|keydown|CommandPalette/);
   });
