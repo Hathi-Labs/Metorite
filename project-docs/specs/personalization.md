@@ -544,8 +544,8 @@ page cannot set the mark, and the call saves nothing for it. The refusal is
 
 The marked style line reads as follows.
 `Language: en-IN. Answer in English, even when the member writes in Hindi or
-another language.` For other languages, the line ends "even when the member
-writes in another language". Without the mark, the line stays as above. `LANGUAGE_RULE_LINE`
+another language.` For other languages, the line ends with "writes in another
+language". Without the mark, the line stays as above. `LANGUAGE_RULE_LINE`
 says that this profile line wins.
 
 A member clears the mark with a null `language_fixed`, or by Undo. Settings
