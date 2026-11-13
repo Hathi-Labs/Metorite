@@ -428,8 +428,9 @@ def test_the_right_is_the_one_of_the_four_routes() -> None:
     """A package cannot import the gateway, so the tool keeps a copy. Mutation:
     the routes take another right -> red."""
     assert st.WORKFLOW_PUBLISH_RIGHT == publish.PUBLISH_PERMISSION == "workflows:publish"
-    source = inspect.getsource(publish)
-    assert source.count("dependencies=[require_permission(PUBLISH_PERMISSION)]") == 4
+    for fn in (publish.publish_workflow, publish.rollback_workflow, publish.disable_workflow,
+               publish.enable_workflow):
+        assert "require_permission(PUBLISH_PERMISSION)" in inspect.getsource(fn), fn.__name__
 
 
 # -- 3. The card -----------------------------------------------------------------
