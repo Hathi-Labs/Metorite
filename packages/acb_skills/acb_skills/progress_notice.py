@@ -12,27 +12,35 @@ Rules that bind:
 1. **One seam, one channel.** :func:`emit_progress` is the one writer. On the
    web chat it puts ONE ``CUSTOM`` event named :data:`EVENT` on the run's own
    queue (``executor.resolve_run_queue``), the channel that ``show_in_app``
-   and ``emit_frontend_tool`` use. On WhatsApp it sends the line through the
-   channel's early message (``whatsapp_ui.WhatsAppRun.notify``), at most once
-   in a reply. No other channel gets a line, and this module builds none.
+   and ``emit_frontend_tool`` use. The same event with an empty ``text`` takes
+   the line away. On WhatsApp the line goes as the channel's early message
+   (``whatsapp_ui.WhatsAppRun.notify``), at most once in a reply, and
+   :func:`settle_channel` lets it land before the answer goes. No other
+   channel gets a line, and this module builds none.
 2. **A timer on each tool call.** :class:`ProgressNotice` is a per-run
    function middleware. It starts a timer when a call starts. A call that has
-   not returned after :data:`NOTICE_AFTER_S` gets :data:`LONG_READ_TEXT`. The
-   end of the call cancels the timer.
+   not returned after :data:`NOTICE_AFTER_S` gets :data:`LONG_READ_TEXT` when
+   its tool is marked read-only, and :data:`SLOW_STEP_TEXT` when it is not.
+   The end of the call cancels the timer, and takes its line away.
 3. **At most one line for each call.** A tool may send its own line first
    with :func:`emit_progress`. The timer then sends nothing for that call.
 4. **Parallel calls do not stack lines.** While the line of one call shows,
-   the line of a parallel call waits. When the showing call ends, the oldest
+   the line of a parallel call waits. When the showing line goes, the oldest
    call that waits and still runs gets its line, once. A call that ends while
    it waits gets none. The marks live on the run's queue, as the mark of
    ``show_in_app`` does, so they die with the turn.
-5. **Exempt:** the delegation tools (each tool of the delegated run has its
-   own timer) and the tools that wait for the member, whose card is the sign.
+5. **A card is the sign of a wait for the member.** The delegation tools and
+   the tools that wait for the member get no timer. A tool that shows a card
+   in its body (``ask_tools.request_confirmation``, ``ask_questions``) calls
+   :func:`member_wait`: its timer stops, its line goes, and the call gets no
+   second line after the answer.
 6. **Dark.** ``CHAT_PROGRESS_NOTICE_ORGS`` (a comma list of organization ids,
    or ``*``) opens it for an org. Empty is the default. Then
    ``orchestrator._tool_injection._apply_progress_notice`` attaches nothing,
-   :func:`emit_progress` sends nothing, and each run is byte for byte as
-   before. The org is the bound tenant of the run, never request input (R5).
+   :func:`emit_progress` sends nothing, :func:`member_wait` finds no call, and
+   :func:`settle_channel` finds no task. So no run sends a byte that it did
+   not send before. The org is the bound tenant of the run, never request
+   input (R5).
 
 The event and the line hold no tool argument and no result text.
 """
@@ -57,17 +65,25 @@ SOURCE_ID = "metorite-progress-notice"
 #: The name of the CUSTOM event on the run's stream.
 EVENT = "progress"
 
-#: The line of a call that is still running after :data:`NOTICE_AFTER_S`.
+#: The line of a read-only call that still runs after :data:`NOTICE_AFTER_S`
+#: (the owner's words, 2026-11-13).
 LONG_READ_TEXT = (
     "This is a large read. It can take a few minutes to get all the data. "
     "Please wait."
 )
+
+#: The line of any other call that still runs after :data:`NOTICE_AFTER_S`.
+SLOW_STEP_TEXT = "This is taking longer than usual. Please wait."
 
 #: How long a call runs before the timer sends its line.
 NOTICE_AFTER_S = 6.0
 
 #: The longest line. One line, read at a glance.
 TEXT_MAX = 300
+
+#: How long the WhatsApp answer waits for an early message that is still on
+#: its way. Longer than the send's own bound (``bot_run._TYPING_TIMEOUT_S``).
+SETTLE_S = 6.0
 
 #: The tools that wait for the member. Their card is the sign of the wait.
 WAITS_FOR_MEMBER: frozenset[str] = frozenset({
@@ -81,8 +97,8 @@ _OPEN_ATTR = "_progress_notice_open"
 #: first, while another call's line shows.
 _WAIT_ATTR = "_progress_notice_waiting"
 
-#: The notice tasks of the WhatsApp path, kept so none is lost to the GC.
-_TASKS: set[asyncio.Task[Any]] = set()
+#: The mark on a WhatsApp run: its early messages that are still on their way.
+_CHANNEL_TASKS_ATTR = "_progress_notice_tasks"
 
 
 # ── The flag ─────────────────────────────────────────────────────────────────
@@ -128,7 +144,8 @@ class _Call:
     queue: Any = None
     #: The open WhatsApp run, read at the start of the call, or None.
     channel: Any = None
-    #: True once this call has its line: it went, or it waits (rule 4).
+    #: True once this call has its line: it went, it waits (rule 4), or the
+    #: call waited for the member (rule 5).
     sent: bool = False
     #: True once the call ended. A late timer then sends nothing.
     ended: bool = False
@@ -138,6 +155,8 @@ class _Call:
     managed: bool = False
     #: The line that waits while another call's line shows, or None.
     due_text: str | None = None
+    #: The timer of the call, or None.
+    timer: asyncio.TimerHandle | None = None
     key: str = field(default_factory=lambda: uuid.uuid4().hex)
 
 
@@ -180,6 +199,18 @@ def _clean(text: Any) -> str:
     return line[:TEXT_MAX]
 
 
+def _is_read(function: Any) -> bool:
+    """True when the tool is marked read-only (``tool_annotations``)."""
+    try:
+        from acb_skills.tool_annotations import get_annotations
+    except Exception:  # pragma: no cover — ships with the package
+        return False
+    inner = getattr(function, "func", None)
+    hints = (getattr(inner, "__tool_risk__", None) or getattr(function, "__tool_risk__", None)
+             or get_annotations(tool_name(function)))
+    return bool(isinstance(hints, dict) and hints.get("read_only"))
+
+
 # ── The writer ───────────────────────────────────────────────────────────────
 
 async def _notify(run: Any, text: str) -> bool:
@@ -196,12 +227,16 @@ async def _notify(run: Any, text: str) -> bool:
     return sent
 
 
-def _put(call: _Call, text: str, showing: set[str]) -> None:
-    """Put the line of *call* on its run's queue, and mark it as showing."""
+def _event(call: _Call, text: str) -> dict[str, Any]:
     value: dict[str, Any] = {"text": text}
     if call.call_id:
         value["tool_call_id"] = call.call_id
-    call.queue.put_nowait({"type": "CUSTOM", "name": EVENT, "value": value})
+    return {"type": "CUSTOM", "name": EVENT, "value": value}
+
+
+def _put(call: _Call, text: str, showing: set[str]) -> None:
+    """Put the line of *call* on its run's queue, and mark it as showing."""
+    call.queue.put_nowait(_event(call, text))
     if call.managed:
         showing.add(call.key)
         setattr(call.queue, _OPEN_ATTR, showing)
@@ -218,7 +253,7 @@ def _to_queue(call: _Call, text: str) -> bool:
         showing: set[str] = getattr(queue, _OPEN_ATTR, None) or set()
         if showing:
             # Another call's line shows now. Parallel calls do not stack, so
-            # this line waits until that call ends (:func:`_close`).
+            # this line waits until that line goes (:func:`_release`).
             if call.managed and not call.ended:
                 call.due_text = text
                 waiting: list[_Call] = getattr(queue, _WAIT_ATTR, None) or []
@@ -237,6 +272,8 @@ def _send_soon(call: _Call, text: str) -> bool:
     """Send the line of *call* now, from a frame that cannot await. The timer
     of :class:`ProgressNotice` calls it."""
     if call.sent or call.ended:
+        # The call has its line already, or a tool's own line waits for it
+        # (rule 3). The timer never writes over it.
         return False
     call.sent = True
     channel = call.channel
@@ -245,8 +282,10 @@ def _send_soon(call: _Call, text: str) -> bool:
             return False
         channel.notified = True  # before the send, so a second line waits
         task = asyncio.get_running_loop().create_task(_notify(channel, text))
-        _TASKS.add(task)
-        task.add_done_callback(_TASKS.discard)
+        pending: set[asyncio.Task[Any]] = getattr(channel, _CHANNEL_TASKS_ATTR, None) or set()
+        pending.add(task)
+        setattr(channel, _CHANNEL_TASKS_ATTR, pending)
+        task.add_done_callback(pending.discard)
         return True
     return _to_queue(call, text)
 
@@ -258,7 +297,7 @@ async def emit_progress(text: str) -> bool:
     This can take two minutes." The line replaces the timer's line for this
     call, because each call gets at most one line. Returns True when the line
     went now. While another call's line shows, the line waits and goes when
-    that call ends, and this returns False. Never raises.
+    that line goes, and this returns False. Never raises.
     """
     if not progress_notice_on():
         return False
@@ -289,34 +328,76 @@ async def emit_progress(text: str) -> bool:
     return _to_queue(call, line)
 
 
-def _close(call: _Call) -> None:
-    """End *call*. A call that waits gives up its place, and gets no line.
-
-    When the line of *call* showed and no other line shows now, the oldest
-    call that waits and still runs gets its line, once (rule 4).
-    """
-    call.ended = True
+def _release(call: _Call) -> None:
+    """Take the line of *call* away: one clear event for the client. Then the
+    oldest call that waits and still runs gets its line, once (rule 4)."""
     queue = call.queue
     if queue is None:
         return
+    waiting: list[_Call] = getattr(queue, _WAIT_ATTR, None) or []
+    if call in waiting:
+        waiting.remove(call)
+    if not call.shown:
+        return
+    call.shown = False
+    queue.put_nowait(_event(call, ""))
+    showing: set[str] = getattr(queue, _OPEN_ATTR, None) or set()
+    showing.discard(call.key)
+    if showing:
+        return
+    while waiting:
+        nxt = waiting.pop(0)
+        if nxt.ended or nxt.shown or not nxt.due_text:
+            continue
+        _put(nxt, nxt.due_text, showing)
+        break
+
+
+def _close(call: _Call) -> None:
+    """End *call*. A call that waits gives up its place, and gets no line."""
+    call.ended = True
     try:
-        waiting: list[_Call] = getattr(queue, _WAIT_ATTR, None) or []
-        if call in waiting:
-            waiting.remove(call)
-        if not call.shown:
-            return
-        showing: set[str] = getattr(queue, _OPEN_ATTR, None) or set()
-        showing.discard(call.key)
-        if showing:
-            return
-        while waiting:
-            nxt = waiting.pop(0)
-            if nxt.ended or nxt.shown or not nxt.due_text:
-                continue
-            _put(nxt, nxt.due_text, showing)
-            break
+        _release(call)
     except Exception as exc:  # a notice never fails the call
         _log.warning("progress_notice.close_failed", error=type(exc).__name__)
+
+
+def member_wait() -> None:
+    """The tool call on this frame now waits for the member on a card (rule 5).
+
+    ``ask_tools.request_confirmation`` and ``ask_questions`` call it before the
+    card shows. The call's timer stops, its line goes, and it gets no second
+    line after the answer. Outside a call, or with the flag off, it does
+    nothing. Never raises.
+    """
+    call = _CALL.get()
+    if call is None or call.ended:
+        return
+    try:
+        call.sent = True
+        call.due_text = None
+        if call.timer is not None:
+            call.timer.cancel()
+        _release(call)
+    except Exception as exc:  # a notice never fails the call
+        _log.warning("progress_notice.member_wait_failed", error=type(exc).__name__)
+
+
+async def settle_channel(run: Any, timeout: float = SETTLE_S) -> None:
+    """Let an early message that is on its way land before the answer goes.
+
+    ``bot_run`` awaits it after the run and before the first send, so "Please
+    wait" never follows the answer. A send that has not landed in *timeout*
+    is cancelled. With no early message on its way it returns at once.
+    """
+    pending = [t for t in (getattr(run, _CHANNEL_TASKS_ATTR, None) or ()) if not t.done()]
+    if not pending:
+        return
+    _done, late = await asyncio.wait(pending, timeout=timeout)
+    for task in late:
+        task.cancel()
+    if late:
+        _log.info("progress_notice.channel_cancelled", count=len(late))
 
 
 # ── The middleware ───────────────────────────────────────────────────────────
@@ -351,14 +432,18 @@ class ProgressNotice(FunctionMiddleware):
             # Nowhere to show a line: a batch run with no channel, a test.
             await call_next()
             return
+        try:
+            text = LONG_READ_TEXT if _is_read(function) else SLOW_STEP_TEXT
+        except Exception:
+            text = SLOW_STEP_TEXT
         token = _CALL.set(call)
-        timer = asyncio.get_running_loop().call_later(
-            self.after_s, _send_soon, call, LONG_READ_TEXT,
+        call.timer = asyncio.get_running_loop().call_later(
+            self.after_s, _send_soon, call, text,
         )
         try:
             await call_next()
         finally:
-            timer.cancel()
+            call.timer.cancel()
             _close(call)
             _CALL.reset(token)
 
@@ -366,8 +451,8 @@ class ProgressNotice(FunctionMiddleware):
 class ProgressNoticeProvider(ContextProvider):
     """Adds :class:`ProgressNotice` to ONE run of a native MAF agent.
 
-    ``orchestrator._tool_injection._apply_progress_notice`` attaches it last,
-    so its timer measures the tool and not the other middleware. It adds no
+    ``orchestrator._tool_injection._apply_progress_notice`` attaches it right
+    before the number check, so its timer wraps each tool call. It adds no
     tool and no instruction.
     """
 
@@ -385,11 +470,15 @@ __all__ = [
     "EVENT",
     "LONG_READ_TEXT",
     "NOTICE_AFTER_S",
+    "SETTLE_S",
+    "SLOW_STEP_TEXT",
     "SOURCE_ID",
     "TEXT_MAX",
     "WAITS_FOR_MEMBER",
     "ProgressNotice",
     "ProgressNoticeProvider",
     "emit_progress",
+    "member_wait",
     "progress_notice_on",
+    "settle_channel",
 ]

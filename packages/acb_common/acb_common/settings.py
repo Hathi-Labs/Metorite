@@ -982,10 +982,12 @@ class Settings(BaseSettings):
     # ── The line of a slow tool (HRD-6, chat_failure_modes.md §4 row B6) ────
     #
     # CHAT_PROGRESS_NOTICE_ORGS: a comma list of organization ids, or `*`.
-    # Empty: off, the default, and each run is as before. On, a tool call that
-    # runs for more than 6 s gets ONE line for the member ("This is a large
-    # read. It can take a few minutes …"), on the web chat and as WhatsApp's
-    # early message. The one reader is
+    # Empty: off, the default, and each run sends the bytes that it sent
+    # before. On, a tool call that runs for more than 6 s gets ONE line for the
+    # member ("This is a large read. It can take a few minutes …" for a read,
+    # "This is taking longer than usual. Please wait." for any other tool), on
+    # the web chat and as WhatsApp's early message. A WhatsApp run of a listed
+    # org also gets the long cap (`bot_run.run_timeout_for`). The one reader is
     # `acb_skills.progress_notice.progress_notice_on`. A SIGHUP reload applies a
     # change (`gateway/flag_reload.py`). It calls no model.
     # Fence: tests/unit/test_progress_notice.py.

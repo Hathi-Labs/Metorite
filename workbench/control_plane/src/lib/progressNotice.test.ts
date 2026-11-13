@@ -9,7 +9,10 @@
 //   * `progress-line-draws`: `ThinkingContainer` draws the line under its
 //     header while the turn works, with the trail closed, in one status
 //     region, and draws nothing once the turn is over.
-//   * `progress-line-not-saved`: the replay and the BFF save keep no line.
+//   * `progress-line-not-saved`: the replay and the BFF save keep no line,
+//     and `withCustomEvent` never keeps one, so no save posts it.
+//   * `progress-line-clear`: an empty line takes away the line of the step it
+//     names (that step ended, or it shows a card), and only that one.
 
 import { describe, expect, it } from "vitest";
 import { createElement } from "react";
@@ -21,6 +24,7 @@ import {
   PROGRESS_EVENT,
   applyStreamEvent,
   applySubAgentEvent,
+  withCustomEvent,
   withProgressNotice,
   type StreamFold,
 } from "@/lib/chatStream";
@@ -48,7 +52,7 @@ describe("progress-line-live", () => {
     expect(next.progressNotice).toEqual({ text: "Adding up 31 totals." });
   });
 
-  it("ignores an empty line and a value that is not an object", () => {
+  it("ignores an empty line with no line shown, and a value that is not an object", () => {
     const m = msg();
     expect(withProgressNotice(m, { text: "   " })).toBe(m);
     expect(withProgressNotice(m, null)).toBe(m);
@@ -153,3 +157,43 @@ describe("progress-line-not-saved", () => {
     expect(route).toContain('cev.name !== "progress"');
   });
 });
+
+describe("progress-line-clear", () => {
+  it("an empty line of the step takes its line away", () => {
+    const shown = withProgressNotice(msg(), { text: LINE, tool_call_id: "c1" });
+    const cleared = withProgressNotice(shown, { text: "", tool_call_id: "c1" });
+    expect(cleared.progressNotice).toBeUndefined();
+  });
+
+  it("an empty line of another step leaves the line", () => {
+    const shown = withProgressNotice(msg(), { text: LINE, tool_call_id: "c2" });
+    expect(withProgressNotice(shown, { text: "", tool_call_id: "c1" })).toBe(shown);
+  });
+
+  it("the hand-off case: the clear comes before the hand-off ends", () => {
+    let m = run(msg(), [{ type: "tool_start", id: "d1", name: "call_agent", args: {} }]);
+    m = applySubAgentEvent(m, { type: "sub_agent_tool_start", agentName: "crm", id: "s1", name: "crm_aggregate" });
+    m = withProgressNotice(m, { text: LINE, tool_call_id: "s1" });
+    // The delegated run is a batch run: its step ends report only after the
+    // whole hand-off. The clear event arrives at once.
+    m = withProgressNotice(m, { text: "", tool_call_id: "s1" });
+    expect(m.progressNotice).toBeUndefined();
+    expect(m.toolEvents?.[0].status).toBe("running");
+  });
+});
+
+describe("progress-line-not-saved (custom events)", () => {
+  it("withCustomEvent never keeps the line or its clear", () => {
+    const m = msg();
+    expect(withCustomEvent(m, PROGRESS_EVENT, { text: LINE })).toBe(m);
+    expect(withCustomEvent(m, PROGRESS_EVENT, { text: "" })).toBe(m);
+    expect(withCustomEvent(m, "navigate", { path: "/crm" }).customEvents).toHaveLength(1);
+  });
+
+  it("both loops of the hook leave the line out of customEvents", () => {
+    const hook = readFileSync(path.join(here, "../hooks/useAgentChat.ts"), "utf8");
+    const keeps = hook.match(/evtName !== GUIDE_EVENT && evtName !== PROGRESS_EVENT\) \{/g) ?? [];
+    expect(keeps).toHaveLength(2);
+  });
+});
+

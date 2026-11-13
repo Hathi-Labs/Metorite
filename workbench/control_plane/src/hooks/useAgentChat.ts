@@ -852,7 +852,7 @@ export function useAgentChat({
                 // generic "Interactive view" AG-UI panel too, a duplicate that
                 // never cleared after the user answered.  Skip persisting them;
                 // the asking already shows in the thinking stream as a tool call.
-                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT && evtName !== GUIDE_EVENT) {
+                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT && evtName !== GUIDE_EVENT && evtName !== PROGRESS_EVENT) {
                   upd((m) => withCustomEvent(m, evtName, evt.value ?? evt.data));
                 }
                 break;

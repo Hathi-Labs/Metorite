@@ -2973,12 +2973,12 @@ def _inject_agent_tools(
         _apply_chat_hold(agents, agent_name)
     # Task 2494: a member's steer reaches each native agent as a user turn.
     _apply_steer_turns(agents)
+    # HRD-6: a slow tool call gets one line for the member. Its middleware
+    # wraps each tool call, and the number check's recorder sits inside it.
+    _apply_progress_notice(agents)
     # CRM-Q29: a native MAF agent that holds a CRM tool gets the number
     # check, as a per-run view, after the H-236 step.
     _apply_answer_check(agents, agent_name)
-    # HRD-6: a slow tool call gets one line for the member. Last, so its
-    # middleware is innermost and its timer measures the tool only.
-    _apply_progress_notice(agents)
     return _run_tool_names
 
 

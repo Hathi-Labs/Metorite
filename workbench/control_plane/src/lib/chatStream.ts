@@ -223,6 +223,9 @@ export function parseReasoning(raw: string | null | undefined): string[] | undef
  * `null` for a turn with no segments.
  */
 export function withCustomEvent(m: ChatMessage, name: string, value: unknown): ChatMessage {
+  // HRD-6: the line of a slow step is live only. It is never kept on the
+  // message, so no save posts it as a custom event.
+  if (name === PROGRESS_EVENT) return m;
   const event = { name, value, segmentCutoff: m.segments?.length ?? 0 };
   return { ...m, customEvents: [...(m.customEvents ?? []), event] };
 }
@@ -238,12 +241,18 @@ export const PROGRESS_EVENT = "progress";
 const NOTICE_MAX = 300;
 
 /** Show the line of a slow tool on the message. A new line replaces the old
- *  one, so parallel steps never stack two lines. */
+ *  one, so parallel steps never stack two lines. An empty line takes away
+ *  the line of the step it names: that step ended, or it shows a card. */
 export function withProgressNotice(m: ChatMessage, value: unknown): ChatMessage {
-  const v = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  if (!value || typeof value !== "object") return m;
+  const v = value as Record<string, unknown>;
   const text = String(v.text ?? "").replace(/\s+/g, " ").trim().slice(0, NOTICE_MAX);
-  if (!text) return m;
   const toolId = typeof v.tool_call_id === "string" && v.tool_call_id ? v.tool_call_id : undefined;
+  if (!text) {
+    if (!m.progressNotice) return m;
+    if (toolId && m.progressNotice.toolId && m.progressNotice.toolId !== toolId) return m;
+    return withoutNotice(m);
+  }
   return { ...m, progressNotice: { text, ...(toolId ? { toolId } : {}) } };
 }
 

@@ -1,7 +1,7 @@
 # Chat failure modes: what goes wrong in the chat, and what we build against it
 
 **Status: ACCEPTED, 2026-11-12 (D217). HRD-6 part 1 (the line of a slow tool) is BUILT
-dark, 2026-11-13. Nothing else is built.** Owner ask of 2026-11-12,
+dark on a branch, 2026-11-13, and not merged. Nothing else is built.** Owner ask of 2026-11-12,
 in chat. Epic task 2978 (project AI Chat Interface). It is part of WS-CHAT.
 
 HRD-0 is task 2979. The owner accepted D-HRD-1 to D-HRD-6 of §8 as D217.
@@ -89,7 +89,7 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 | B3 | An id or an argument that the model cannot give | No read tool prints Projects comment, activity or attachment ids, or the CRM activity id. `uuid_of` refuses a task number and a `kind:` prefix. No layer coerces a JSON string | Each id that a tool needs is printed or resolved. One layer gives each argument the shape that its schema declares | HRD-2, HRD-3 |
 | B4 | A failure with no text that the model can act on | `refusals_as_text` covers Projects, CRM and email only. Other exceptions give "Error: Function failed." | Each pack tool answers a failure as text with a next step | HRD-3 |
 | B5 | A loop with new arguments each time | `LoopDetector` stops 5 identical calls only | After 3 empty or refused answers from one tool in a turn, the chat says what it tried and asks | HRD-5 |
-| B6 | A slow backend | `crm_aggregate` returns a 503 with "Narrow the filter". A slow tool runs with no word to the member | Owner, 2026-11-13: a large read can take minutes. The member hears so at once, and waits. A tool call that runs past 6 s sends ONE line: "This is a large read. It can take a few minutes to get all the data. Please wait." The CRM total gets a long mode, and the read finishes | HRD-6 |
+| B6 | A slow backend | `crm_aggregate` returns a 503 with "Narrow the filter". A slow tool runs with no word to the member | Owner, 2026-11-13: a large read can take minutes. The member hears so at once, and waits. A tool call that runs past 6 s sends ONE line. A read sends: "This is a large read. It can take a few minutes to get all the data. Please wait." Any other tool sends: "This is taking longer than usual. Please wait." A card is the sign of a wait for the member, so a call that shows one sends no line. The CRM total gets a long mode, and the read finishes | HRD-6 |
 
 ### 4.3 Cards that do not tell the truth (C)
 

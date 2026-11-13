@@ -79,10 +79,13 @@ changes it.
 
 `CHAT_PROGRESS_NOTICE_ORGS` turns on the line of a slow tool
 (`chat_run_continuity.md` §4.11, HRD-6). For each listed org, a tool call that
-runs past 6 s sends the member one line. `*` lists every org, and the default
-is empty. Its one reader is `acb_skills.progress_notice.progress_notice_on`.
-The injection asks it at the start of each run, so a reload applies to the
-next run. A flip stays OWNER-GATE (`enforcement-flip`).
+runs past 6 s sends the member one line. A WhatsApp run of a listed org
+also gets the long cap of 7 minutes, and its sweep waits 8 minutes
+(`bot_run.long_reads_on`). `*` lists every org, and the default is empty. Its
+one reader is `acb_skills.progress_notice.progress_notice_on`. The injection
+asks it at the start of each run, so a reload applies to the next run. A
+reload that takes an org off the list while a long WhatsApp run works gives
+that run the short stale time. A flip stays OWNER-GATE (`enforcement-flip`).
 
 A reload does NOT apply any other key. The log names each one under
 `restart`. That includes:

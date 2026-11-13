@@ -154,9 +154,11 @@ not write a second copy of that seam. A bare test file name is under
    - Fence: `test_tool_result_spill.py`.
 5l-1b. progress_notice.py -- one line for the member while a slow tool runs (HRD-6 part 1, task 2985, spec `chat_run_continuity.md` §4.11). Dark behind `CHAT_PROGRESS_NOTICE_ORGS`.
    - `emit_progress` is the ONE writer. The web chat gets one CUSTOM `progress` event on the run's own queue (`resolve_run_queue`). WhatsApp gets the line through `whatsapp_ui.WhatsAppRun.notify`, once in a reply. Do not add a second event channel or a second channel path.
-   - `ProgressNotice` starts a timer on each tool call and sends `LONG_READ_TEXT` after `NOTICE_AFTER_S`. Each call gets one line at most, and a tool's own line wins. While one line shows, a parallel call sends none (the mark lives on the queue).
-   - The delegation tools and the tools that wait for the member get no line.
-   - `progress_notice_on` is the ONE reader of the flag. `orchestrator._tool_injection._apply_progress_notice` is the one seam, and it runs last.
+   - `ProgressNotice` starts a timer on each tool call. After `NOTICE_AFTER_S` a read-only tool sends `LONG_READ_TEXT`, and any other tool sends `SLOW_STEP_TEXT`. Each call gets one line at most, and a tool's own line wins. While one line shows, the line of a parallel call waits, and it goes once when the showing line goes (the marks live on the queue).
+   - A call that ends, or that shows a card, puts one clear event (empty `text`) for its line.
+   - The delegation tools and the tools that wait for the member get no line. `ask_tools.request_confirmation` and `ask_questions` call `member_wait` before a card shows, so a tool that asks in its own body loses its timer and its line.
+   - On WhatsApp, `bot_run` awaits `settle_channel` before the answer, so an early message never follows it.
+   - `progress_notice_on` is the ONE reader of the flag. `orchestrator._tool_injection._apply_progress_notice` is the one seam, and it runs right before the number check.
    - Fence: `test_progress_notice.py`.
 5l-2. org_facts_tools.py -- `org_facts(app, query)` and the CRM facts block (spec `crm_platform.md` §18.14.4). It loads with the `crm` skill family only.
    - `crm_answer_question` sends a pick only when this run showed that card and the member clicked it. Fences: `test_org_facts.py`, `test_org_facts_r8.py`, `test_crm_answer_first.py`.
