@@ -90,6 +90,11 @@ jobs:
       # an empty selection, `[1]` for a small one, `[1,2,3,4,5,6]` for a full
       # run. The `test` matrix reads it. Empty here means `changes` failed.
       shards: ${{ steps.gate.outputs.shards }}
+    # CIV-32. `actions: read` lets the gate step find the last run of this PR
+    # and download its shard reports. A job-level block replaces the top one.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v5
         with:
@@ -102,10 +107,42 @@ jobs:
       - id: gate
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
+          # CIV-32 (D218). A repair round re-tests what failed and what the fix
+          # reaches. NEW_SHA is the PR head, not the merge commit that checkout
+          # builds. The step fails open: any doubt keeps the selection above.
+          # `gate-meta` keeps the base and the head of the merge that this run
+          # tests. The next push reads it to add the reach of main's move.
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          NEW_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          python3 scripts/ci_unit_guard.py gate-meta --out gate-meta.json
           python3 scripts/affected_tests.py --gate --base "$BASE" > gate.json || rm -f gate.json
+          mode="full selection: not a push to an open PR"
+          if [ "$EVENT" = "pull_request" ] && [ "$ACTION" = "synchronize" ] && [ -f gate.json ]; then
+            mode="$(python3 scripts/ci_unit_guard.py repair --repo "$REPO" --pr "$PR" \
+              --new-sha "$NEW_SHA" --json gate.json --meta gate-meta.json \
+              --workdir "$RUNNER_TEMP")" || mode="full selection: the repair step failed"
+          fi
+          echo "$mode"
+          echo "### Unit test selection" >> "$GITHUB_STEP_SUMMARY"
+          echo "$mode" >> "$GITHUB_STEP_SUMMARY"
           python3 scripts/ci_unit_guard.py gate-output --json gate.json \
             "--ignored=$(python3 scripts/fences.py pytest-ignore)" | tee -a "$GITHUB_OUTPUT"
+
+      # CIV-32. The next push of this PR downloads this file to find main's
+      # move between the two runs. No file (an old run) gives a full selection.
+      - name: Keep the tested merge for the next push
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-meta
+          path: gate-meta.json
+          if-no-files-found: ignore
+          retention-days: 7
 
       - id: diff
         env:
@@ -294,7 +331,8 @@ jobs:
   #
   # Refresh the timings when the split drifts (one shard much longer than the
   # rest): download the `test-durations` artifact of a green run and commit it
-  # as `.test_durations`.
+  # as `.test_durations`. CIV-33b: `scripts/refresh_test_durations.py --pr` does this,
+  # from a box timer. A selected file with no entry gets a warning in the pick step.
   #
   # CIV-3: a PR runs only the tests its diff can affect. The `changes` job
   # exports `needs.changes.outputs.full` and `.files`. The shard selects only
@@ -723,6 +761,7 @@ jobs:
               tests/unit/test_auth_me_install_features_r8.py \
               tests/unit/test_shell_layout_r8.py \
               tests/unit/test_package_disposal_r8.py \
+              tests/unit/test_package_promotion_r8.py \
               tests/unit/test_auth_me_shell_install_r8.py \
               tests/unit/test_auth_me_appearance_r8.py \
               tests/unit/test_package_lifetime_r8.py \
