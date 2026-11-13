@@ -16,7 +16,7 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 | The run cap — 5 live runs per member (D-3) | **BUILT** 2026-10-10, branch `ws51-run-cap-and-todos`, no flag |
 | §4.9 — a message sent during a run always steers it | **BUILT** 2026-10-12, branch `composer-always-steer`, no flag |
 | §4.9 — a steer is a user turn, and a Projects or CRM card closes on it (task 2494) | **BUILT** 2026-11-09, fix round 1 2026-11-11, branch `steer-redraws-card-mt-fdaefd16`, no flag |
-| §4.9 — a closed card says "Not done", and each steer gets an answer (task 3130) | **BUILT** 2026-11-13, branch `mt-e29742c6-steer-unsent-card`, no flag |
+| §4.9 — a closed card says "Not done", and each steer gets an answer (task 3130) | **BUILT** 2026-11-13, fix round 1 2026-11-13, branch `mt-e29742c6-steer-unsent-card`, no flag |
 | §4.10 — one run status in the open chat | **BUILT** 2026-10-19, branch `chat-run-status`, no flag |
 | D-1 — a separate run worker | **DEFERRED** 2026-10-29 on evidence (§5). Not built |
 
@@ -912,29 +912,49 @@ closed the card. The answer met only the last message. It did not say that
 the reply was not sent. So these rules hold:
 
 - The server ends the answer with one line, not the model. The line comes
-  when a chat message closed a write card that the member did not answer.
-- The line is "Not done: <act>. The card closed when you sent a new
-  message. Say 'do it' to get it back." The act comes from the card's own
-  title (`ask_tools.card_act`). Two closed acts share one line.
+  when a chat message closed a write card that nobody answered.
+- The line is "Not done: «<act>». The card closed when a new message came
+  in. Say 'do it' to get it back." Two closed acts share one line. The
+  words are true in a shared room, where another member can close the card.
+- The act comes from the card's own title (`ask_tools.card_act`). A title
+  can hold a name or an address that a stranger wrote. So the act is inert
+  text in one « » fence.
+- In the act, no markdown or link character stays, and no fence mark stays.
+  A line break is a space, `://` loses its slashes, and the cap is 120
+  characters.
 - Each write card of each app waits in `ask_tools.request_confirmation`, so
   one record covers email, Projects, CRM and Studio. `run_agent_stream`
   opens the record for each run (`open_closed_cards_for_run`).
-- `executor._closed_card_events` sends the line just before each
-  `RUN_FINISHED`, after the CRM note. The relay keeps it, so the stored
-  message holds it, and a reload shows it.
-- A card that the member approved or declined adds no line. A later card of
-  the same act takes the place of a closed card (`ask_tools._same_act`).
-- Two titles name the same act when the first words match. Their name words
-  must also share one, or one title has no name word.
+- A card that the member approved or declined adds no line. A later card
+  takes the place of a closed card only when both have the same act key.
+- The act key is the tool that drew the card, with the arguments that name
+  its targets: each id and the people of `to`. Free text is not in it. The
+  gate wrapper of `_tool_injection` binds the key (`ask_tools.card_call`).
+- A card with no key takes the place of no card. A delegation tool opens a
+  scope with no key. In `approve_all` mode the wrapper does not run, so no
+  card has a key, and every line stays.
+- The executor takes the line before it saves the native session, and the
+  saved session holds it (`native_session_store.add_closing_line`). Then
+  `executor._closed_card_events` sends it just before each `RUN_FINISHED`,
+  after the CRM note. The relay keeps it, so the stored message holds it.
+- A parked run (`pending_ask.park`) sends the line before its own
+  `RUN_FINISHED`.
+- No line comes when the run ends by a Stop (`stream_relay.cancel_run`), by
+  a `RUN_ERROR`, or by the dead-run finish of `run_liveness`. The member
+  then sees the card close, and no answer follows it.
 - The outcome word is "closed by your message"
   (`ask_tools.CLOSED_BY_YOUR_MESSAGE`). HRD-7 grows its one vocabulary of
   card outcomes from this word.
 - A run that takes two or more steers asks for an answer to each. The
   newest steer turn ends with `steer.steers_frame`, and a replay of two or
   more steers ends with it too. One steer gets no frame.
-- After the card closes, "do it" draws the same card again. The session
-  history keeps the call and its arguments, and the text history keeps the
-  line.
+- After the card closes, "do it" can draw the same card again. When the
+  next turn loads the native session, the session holds the call, its
+  arguments and the line. A unit test proves that path.
+- ⚠️ On the web chat after a steer, the next turn reads the text history
+  (`digest_drop`, task 2948). There the model must find the act again from
+  the line and the history. Only a live-model eval can prove that path, and
+  that eval needs the owner's OK for its cost.
 - No flag. The line only tells the truth, and the frame adds one sentence.
 - Fence: `tests/unit/test_steer_unsent_card.py`.
 

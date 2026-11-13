@@ -1415,28 +1415,31 @@ CLOSED_BY_YOUR_MESSAGE = "closed by your message"
 class ClosedCards:
     """The write cards of one run that a chat message closed (task 3130).
 
-    Each entry is a card title. A later card of the same act takes the place
-    of a closed one (:func:`_same_act`): the member then sees that card, and
-    its own answer is the outcome. A card that the member approved or
-    declined is never in the list."""
+    Each entry is a card title and the act key of the tool call that drew
+    the card (:func:`card_call`). A later card takes the place of a closed
+    one ONLY when its key is the same key: the same tool, on the same
+    targets. A card with no key takes the place of none. A card that the
+    member approved or declined is never in the list."""
 
-    __slots__ = ("titles",)
+    __slots__ = ("entries",)
 
     def __init__(self) -> None:
-        self.titles: list[str] = []
+        self.entries: list[tuple[str, tuple[Any, ...] | None]] = []
 
-    def opened(self, title: str) -> None:
-        """A card opens: it takes the place of each closed card of its act."""
-        self.titles = [t for t in self.titles if not _same_act(t, title)]
+    def opened(self, key: tuple[Any, ...] | None) -> None:
+        """A card opens: it takes the place of each closed card of its key."""
+        if key is None:
+            return
+        self.entries = [(t, k) for t, k in self.entries if k != key]
 
-    def closed(self, title: str) -> None:
-        """A chat message of the member closed the card titled *title*."""
-        self.titles.append(title)
+    def closed(self, title: str, key: tuple[Any, ...] | None) -> None:
+        """A chat message closed the card titled *title*."""
+        self.entries.append((title, key))
 
     def take(self) -> list[str]:
         """Each closed title once, in order. The list is then empty."""
-        out = list(dict.fromkeys(self.titles))
-        self.titles = []
+        out = list(dict.fromkeys(t for t, _k in self.entries))
+        self.entries = []
         return out
 
 
@@ -1464,78 +1467,166 @@ def release_closed_cards(token: _contextvars.Token[ClosedCards | None]) -> None:
         _RUN_CLOSED_CARDS.set(None)
 
 
-def _act_kind(title: str) -> str:
-    """The first word of a card title, in lower case: "reply", "create"."""
-    words = _re.findall(r"[\w'-]+", str(title or "").lower())
-    return words[0] if words else ""
+# ── The act key of a card: the tool call that drew it ────────────────────────
+#
+# Review of task 3130: a title names no act. "Update this task?" is the title
+# of each task, so a card for task 15 erased the line of task 12. The key is
+# the tool, and the arguments that name its targets: each id, and the people
+# of ``to``. Free text (a title, a body, a note) is not in it, so a redraft
+# that changes the text keeps its key.
+
+#: The arguments of a tool call that name a target and are not ids.
+_TARGET_ARGS = frozenset({"to"})
+
+_CARD_CALL: _contextvars.ContextVar[tuple[Any, ...] | None] = _contextvars.ContextVar(
+    "acb_card_call", default=None,
+)
 
 
-def _same_act(closed: str, opened: str) -> bool:
-    """True when the card titled *opened* draws the act of the card titled
-    *closed* again: a redraft after the member's message.
-
-    The first words must match ("Reply", "Create"). Then the name words of
-    the titles (:func:`_title_words`) must share one, or one title has none.
-    So "Reply to kim@a.test?" and "Reply to kim@a.test, raj@b.test?" are one
-    act, and "Reply to kim@a.test?" and "Reply to raj@b.test?" are two."""
-    if not _act_kind(closed) or _act_kind(closed) != _act_kind(opened):
-        return False
-    a, b = _title_words(closed), _title_words(opened)
-    return not a or not b or bool(a & b)
+def _is_target_arg(name: str) -> bool:
+    return name == "id" or name.endswith(("_id", "_ids")) or name in _TARGET_ARGS
 
 
-def _card_opened(title: str) -> None:
+def _key_value(value: Any) -> Any:
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return tuple(sorted(str(v).strip().lower() for v in value))
+    return str(value).strip().lower()
+
+
+def act_key(module: str, name: str, arguments: dict[str, Any]) -> tuple[Any, ...] | None:
+    """The act key of one tool call: its module, its name and its targets.
+    None when the call has no name."""
+    if not name:
+        return None
+    targets = tuple(sorted(
+        (k, _key_value(v)) for k, v in (arguments or {}).items()
+        if _is_target_arg(str(k)) and v not in (None, "", [], ())
+    ))
+    return (module, name, targets)
+
+
+@_contextlib.contextmanager
+def card_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any], *,
+              keyless: bool = False) -> _Iterator[None]:
+    """Name the tool call that a card of this call belongs to (task 3130).
+
+    ``orchestrator._tool_injection`` opens it around each tool call that it
+    gates, beside ``whatsapp_acts.tool_call``. A nested call opens its own,
+    so a card reads the innermost call. *keyless* (a delegation tool) opens
+    a scope with no key, so a card of a child run never takes the key of
+    the call that started the child. A fault gives no key. Never raises."""
+    key: tuple[Any, ...] | None = None
+    if not keyless:
+        try:
+            import inspect as _inspect
+
+            try:
+                bound = dict(_inspect.signature(fn).bind_partial(*args, **kwargs).arguments)
+            except (TypeError, ValueError):
+                bound = {} if args else dict(kwargs)
+            key = act_key(str(getattr(fn, "__module__", "") or ""),
+                          str(getattr(fn, "__name__", "") or ""), bound)
+        except Exception:
+            key = None
+    token = _CARD_CALL.set(key)
+    try:
+        yield
+    finally:
+        try:
+            _CARD_CALL.reset(token)
+        except ValueError:
+            _CARD_CALL.set(None)
+
+
+def _card_opened(key: tuple[Any, ...] | None) -> None:
     holder = _RUN_CLOSED_CARDS.get()
     if holder is not None:
-        holder.opened(title)
+        holder.opened(key)
 
 
-def _card_closed_by_message(title: str) -> None:
+def _card_closed_by_message(title: str, key: tuple[Any, ...] | None) -> None:
     holder = _RUN_CLOSED_CARDS.get()
     if holder is not None:
-        holder.closed(title)
+        holder.closed(title, key)
+
+
+#: The characters that markdown or a link reads, and the fence marks.
+_INERT_DROP = _re.compile(r"[\[\]()<>*_`#!~|\\«»]")
+
+#: The longest act in the line, in characters.
+ACT_MAX = 120
 
 
 def card_act(title: str) -> str:
-    """The act of a card, from its title: "Reply to kim@a.test?" gives
-    "reply to kim@a.test". The «marks» of a fenced title go, as the client
-    hides them. A title with no words gives "the act on the card"."""
-    text = " ".join(str(title or "").replace("«", "").replace("»", "").split())
-    text = text.rstrip("?.!:;, ").strip()
+    """The act of a card, from its title, as INERT text (task 3130).
+
+    "Reply to kim@a.test?" gives "reply to kim@a.test". A title can hold a
+    record name, a display name or an address that a stranger wrote. So no
+    markdown or link character stays, a line break is a space, ``://`` loses
+    its slashes, and no fence mark stays: the line puts the act in « ».
+    At most :data:`ACT_MAX` characters. No words give "the act on the card"."""
+    import unicodedata as _ud
+
+    text = "".join(
+        " " if ch in "\r\n\t" else ("" if _ud.category(ch) in ("Cc", "Cf") else ch)
+        for ch in str(title or "")
+    )
+    text = _INERT_DROP.sub("", text).replace("://", ":")
+    text = " ".join(text.split()).rstrip("?.:;, ").strip()
     if not text:
         return "the act on the card"
     first, _, rest = text.partition(" ")
     if first[:1].isupper() and first[1:].islower():
         # "Reply" reads as "reply". A name in capitals, such as "CRM", stays.
         first = first.lower()
-    return f"{first} {rest}".strip()
+    text = f"{first} {rest}".strip()
+    if len(text) > ACT_MAX:
+        text = text[: ACT_MAX - 1].rstrip() + "…"
+    return text
 
 
 def closed_card_line(titles: list[str]) -> str:
     """The line that ends the answer of a run whose write cards a chat message
     closed (task 3130). Empty for no title. Each act comes from the card's
-    own title (:func:`card_act`)."""
-    acts = list(dict.fromkeys(card_act(t) for t in titles or []))
+    own title (:func:`card_act`), in a « » fence. The words hold in a shared
+    room too, where another member's message can close the card."""
+    acts = list(dict.fromkeys(f"«{card_act(t)}»" for t in titles or []))
     if not acts:
         return ""
     if len(acts) == 1:
-        return (f"Not done: {acts[0]}. The card closed when you sent a new message. "
+        return (f"Not done: {acts[0]}. The card closed when a new message came in. "
                 "Say 'do it' to get it back.")
     joined = ", ".join(acts[:-1]) + f", and {acts[-1]}"
-    return (f"Not done: {joined}. The cards closed when you sent a new message. "
+    return (f"Not done: {joined}. The cards closed when a new message came in. "
             "Say 'do it' to get them back.")
 
 
 def take_closed_card_line() -> str:
     """The line of this run's closed cards, once (:func:`closed_card_line`).
 
-    The executor calls it just before ``RUN_FINISHED``, and sends the line as
-    the last text of the answer. The relay keeps it, so the stored message
-    holds it too. Empty when the run has no record, or no closed card."""
+    The executor takes it before it saves the native session, and sends it
+    as the last text of the answer, just before ``RUN_FINISHED``. A parked
+    run sends it before its own ``RUN_FINISHED`` (``pending_ask.park``).
+    Empty when the run has no record, or no closed card."""
     holder = _RUN_CLOSED_CARDS.get()
     if holder is None:
         return ""
     return closed_card_line(holder.take())
+
+
+def closed_card_text_events(line: str) -> list[dict[str, Any]]:
+    """The chat events of *line*: one text message, or none. One delta, as
+    the CRM note, so no word chunk leaves a space after the line."""
+    if not line:
+        return []
+    import uuid as _uuid
+
+    mid = _uuid.uuid4().hex
+    return [
+        {"type": "TEXT_MESSAGE_START", "messageId": mid, "role": "assistant"},
+        {"type": "TEXT_MESSAGE_CONTENT", "messageId": mid, "delta": "\n\n" + line},
+        {"type": "TEXT_MESSAGE_END", "messageId": mid},
+    ]
 
 
 class ReplyAnswer:
@@ -1986,8 +2077,10 @@ async def request_confirmation(
         _answer = "REJECT"
         _ticked: frozenset[str] | None = None
         _watch = None
-        # Task 3130: this card takes the place of a closed card of its act.
-        _card_opened(_title)
+        # Task 3130: the act key binds when the card opens. This card takes
+        # the place of a closed card with the same key, and of no other.
+        _act = _CARD_CALL.get()
+        _card_opened(_act)
         if _baseline is not None:
             # The card's id and title: a steer closes only the card it is
             # about (item 5, owner 2026-10-24).
@@ -2014,7 +2107,7 @@ async def request_confirmation(
                     await _publish(_resolved_event(_rid, _answer))
         if _answer == REVISED_ANSWER:
             # Task 3130: the run's answer ends with the "Not done" line.
-            _card_closed_by_message(_title)
+            _card_closed_by_message(_title, _act)
             if _with_answer:
                 return REVISED
             return REVISED_ROWS if _rows is not None else REVISED

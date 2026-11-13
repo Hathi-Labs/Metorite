@@ -676,8 +676,9 @@ def steers_frame(count: int) -> str:
     the last one. The other message got no answer. So the newest steer turn
     of such a run ends with this line, and a replay of two or more steers
     ends with it too (:func:`format_replayed`). One steer gets no frame, so
-    its turn is byte for byte as before."""
-    return (f"[The member added {count} messages to this reply. Answer each one. "
+    its turn is byte for byte as before. The words hold in a shared room,
+    where the messages can come from more than one member."""
+    return (f"[{count} new messages came in during this reply. Answer each one. "
             "If you leave one out, name it and say why.]")
 
 

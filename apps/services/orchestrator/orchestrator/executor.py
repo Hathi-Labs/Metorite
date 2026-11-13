@@ -6657,31 +6657,35 @@ def _crm_note_events() -> list[dict[str, Any]]:
         return []
 
 
-def _closed_card_events(run_id: str = "") -> list[dict[str, Any]]:
-    """The last line of the answer when a chat message of the member closed a
-    write card that they did not answer (task 3130). The server adds it, not
-    the model. It goes just before RUN_FINISHED, through ``_sse``, so the
-    relay keeps it and the stored message holds it. Empty in each other run.
-    Never raises."""
+def _take_card_line() -> str:
+    """The "Not done" line of this run, once (task 3130), or "".
+
+    A chat message closed a write card that nobody answered. The server adds
+    the line, not the model. Each finished run takes it BEFORE it saves the
+    native session, so the stored session holds it too
+    (:func:`_finish_native_session`). Never raises."""
     try:
-        from acb_skills.ask_tools import CLOSED_BY_YOUR_MESSAGE, take_closed_card_line
+        from acb_skills.ask_tools import take_closed_card_line
     except ImportError:
-        return []
+        return ""
     try:
-        line = take_closed_card_line()
+        return take_closed_card_line()
     except Exception:  # a run never fails on its last line
-        return []
+        return ""
+
+
+def _closed_card_events(line: str, run_id: str = "") -> list[dict[str, Any]]:
+    """The events of the "Not done" *line* (:func:`_take_card_line`). They go
+    just before RUN_FINISHED, through ``_sse``, so the relay keeps them and
+    the stored message holds the line. Empty for no line. Never raises."""
     if not line:
         return []
+    try:
+        from acb_skills.ask_tools import CLOSED_BY_YOUR_MESSAGE, closed_card_text_events
+    except ImportError:
+        return []
     _log.info("executor.card_outcome_line", run_id=run_id, outcome=CLOSED_BY_YOUR_MESSAGE)
-    # One delta, as the CRM note: the word chunks of ``_text_message_events``
-    # can leave a space after the last word.
-    mid = uuid.uuid4().hex
-    return [
-        {"type": "TEXT_MESSAGE_START", "messageId": mid, "role": "assistant"},
-        {"type": "TEXT_MESSAGE_CONTENT", "messageId": mid, "delta": "\n\n" + line},
-        {"type": "TEXT_MESSAGE_END", "messageId": mid},
-    ]
+    return closed_card_text_events(line)
 
 
 def _sse(payload: dict[str, Any]) -> str:
@@ -8140,7 +8144,9 @@ async def run_agent_stream(
                         # WS-43t2: only a run that finished saves its
                         # session, and before RUN_FINISHED, so a quick next
                         # turn finds it. The save never fails the run.
-                        await _finish_native_session(_session_turn)
+                        # Task 3130: the session holds the "Not done" line.
+                        _card_line = _take_card_line()
+                        await _finish_native_session(_session_turn, closing=_card_line)
                         # WS-53 CRM-Q33: the note of a CRM total that the
                         # answer left out goes in before the end.
                         # H-363: the one end-of-turn push step.
@@ -8152,7 +8158,7 @@ async def run_agent_stream(
                         for _note_ev in _crm_note_events():
                             yield _sse(_note_ev)
                         # Task 3130: the "Not done" line comes last.
-                        for _card_ev in _closed_card_events(run_id):
+                        for _card_ev in _closed_card_events(_card_line, run_id):
                             yield _sse(_card_ev)
                         # A loop trip already emitted its terminal RUN_ERROR
                         # inline — don't follow it with a RUN_FINISHED that
@@ -8880,7 +8886,7 @@ async def run_agent_stream(
                 for _note_ev in _crm_note_events():
                     yield _sse(_note_ev)
                 # Task 3130: the "Not done" line comes last.
-                for _card_ev in _closed_card_events(run_id):
+                for _card_ev in _closed_card_events(_take_card_line(), run_id):
                     yield _sse(_card_ev)
                 yield _sse({"type": "RUN_FINISHED", "runId": run_id, "threadId": thread_id})
 
@@ -9300,7 +9306,9 @@ async def run_agent_stream(
             except Exception as exc:
                 raise exc
             # WS-43t2: the Tier 2 run finished, so its session is saved.
-            await _finish_native_session(_session_turn)
+            # Task 3130: the session holds the "Not done" line.
+            _card_line = _take_card_line()
+            await _finish_native_session(_session_turn, closing=_card_line)
 
             # Strip integration setup tokens (same as batch path)
             setup_token_re = __import__("re").compile(r"<<<SETUP:[^>]+>>>")
@@ -9349,7 +9357,7 @@ async def run_agent_stream(
             for _note_ev in _crm_note_events():
                 yield _sse(_note_ev)
             # Task 3130: the "Not done" line comes last.
-            for _card_ev in _closed_card_events(run_id):
+            for _card_ev in _closed_card_events(_card_line, run_id):
                 yield _sse(_card_ev)
             # RUN_FINISHED must be emitted INSIDE the try block — the finally
             # below resets the relay contextvar and marks the thread inactive,
@@ -10471,13 +10479,19 @@ def _verified_run_member() -> str:
     return member.lower() if verified else ""
 
 
-async def _finish_native_session(turn: Any) -> None:
-    """Save the session of a native run that finished. Never raises."""
+async def _finish_native_session(turn: Any, closing: str = "") -> None:
+    """Save the session of a native run that finished. Never raises.
+
+    *closing* is the "Not done" line of the run (task 3130). The session's
+    last answer ends with it, as the stored message does, so the next turn
+    reads it on either path."""
     if turn is None or not getattr(turn, "usable", False):
         return
     try:
         from orchestrator import native_session_store
 
+        if closing:
+            native_session_store.add_closing_line(turn, closing)
         await native_session_store.finish_turn(
             turn, token_budget=_native_history_cap(_active_run_model.get() or ""),
         )

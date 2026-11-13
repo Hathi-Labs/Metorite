@@ -1070,6 +1070,25 @@ def _whatsapp_tool_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) 
     return tool_call(fn, args, kwargs)
 
 
+def _card_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    """``acb_skills.ask_tools.card_call`` for one tool call (task 3130).
+
+    It binds the act key of each card that the call draws: the tool, and the
+    arguments that name its targets. A later card takes the place of a card
+    that a chat message closed only when both have the same key. A
+    delegation tool opens a scope with no key, so a card of the child run
+    never takes the key of the call that started it. With no key, a card
+    takes the place of no card, so the "Not done" line stays.
+    """
+    import contextlib
+
+    try:
+        from acb_skills.ask_tools import card_call
+    except Exception:
+        return contextlib.nullcontext()
+    return card_call(fn, args, kwargs, keyless=is_delegation_tool(fn))
+
+
 def _permission_gate(
     tool_name: str, call_kwargs: dict[str, Any] | None, *, surface: str,
     facts: dict[str, Any] | None = None,
@@ -1201,8 +1220,9 @@ def _gate_injected_tool(fn: Any) -> Any:
                 if held is not None:
                     return held
             # WS-47 WAC-4: name the call for the WhatsApp card gate. A no-op
-            # outside a WhatsApp run with writes on.
-            with _whatsapp_tool_call(fn, args, kwargs):
+            # outside a WhatsApp run with writes on. Task 3130: the act key
+            # of each card that this call draws.
+            with _whatsapp_tool_call(fn, args, kwargs), _card_call(fn, args, kwargs):
                 return await fn(*args, **kwargs)
         return _register_platform_wrapper(fn, _agated)
 
