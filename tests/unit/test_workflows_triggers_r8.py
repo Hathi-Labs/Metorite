@@ -1058,3 +1058,113 @@ def test_other_event_sources_skip_the_package_check(promoted, monkeypatch):
     started = _on_app_role(promoted, promoted.org_a, lambda: triggers.dispatch_event(
         _SOURCE, _EVENT, {}))
     assert _started_names(promoted, started) == {"Event in A"}
+
+
+# ── STU-E3 pool fix: the author check holds one connection at a time ─────────
+
+import acb_auth.access as _acb_access  # noqa: E402
+
+#: The real resolver, kept before the autouse stub replaces it.
+_REAL_RESOLVE = _acb_access.resolve_access_in_org
+
+
+def _seed_members(promoted, spec: dict[str, dict]) -> None:
+    """Real ``app_user`` rows of org A for M1 and M2: a role and overrides."""
+    org = promoted.org_a
+    people = {_OWNERS["A"].lower(): spec.get("owner", {"role": "member"}),
+              M2.lower(): spec.get("m2", {"role": "member"})}
+    with promoted.admin_engine.begin() as c:
+        c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": org})
+        c.execute(text("SELECT provision_org_roles(:o)"), {"o": org})
+        roles = {str(s): str(i) for s, i in c.execute(text(
+            "SELECT slug, id FROM org_role WHERE organization_id = CAST(:o AS uuid)"),
+            {"o": org}).all()}
+        c.execute(text("DELETE FROM app_user WHERE email = ANY(:e)"),
+                  {"e": list(people)})
+        for email, one in people.items():
+            uid = c.execute(text(
+                "INSERT INTO app_user (email, display_name, role, status, organization_id) "
+                "VALUES (:e, :e, 'employee', :s, CAST(:o AS uuid)) RETURNING id"),
+                {"e": email, "s": one.get("status", "active"), "o": org}).scalar()
+            c.execute(text(
+                "INSERT INTO user_role (user_id, role_id, organization_id) "
+                "VALUES (:u, CAST(:r AS uuid), CAST(:o AS uuid))"),
+                {"u": uid, "r": roles[one["role"]], "o": org})
+            for perm, effect in one.get("overrides", ()):
+                c.execute(text(
+                    "INSERT INTO user_permission_override (user_id, permission, effect, "
+                    "reason, set_by, organization_id) VALUES (:u, :p, :x, 'E3 R8', "
+                    "'seed@wftrig.test', CAST(:o AS uuid))"),
+                    {"u": uid, "p": perm, "x": effect, "o": org})
+
+
+@pytest.fixture()
+def real_resolver(promoted, monkeypatch):
+    """The REAL ``resolve_access_in_org`` for one case. Its members are removed
+    after the case."""
+    monkeypatch.setattr(_acb_access, "resolve_access_in_org", _REAL_RESOLVE)
+    yield
+    with promoted.admin_engine.begin() as c:
+        c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": promoted.org_a})
+        c.execute(text("DELETE FROM app_user WHERE email = ANY(:e)"),
+                  {"e": [_OWNERS["A"].lower(), M2.lower()]})
+
+
+def test_the_real_resolver_decides_the_author_check(promoted, monkeypatch, real_resolver):
+    """Active with studio starts the run. A suspended author and a studio deny
+    start none. The access is read from app_user, with no stub."""
+    _list_orgs(monkeypatch, promoted.org_a)
+    _host_on(monkeypatch, promoted.org_a)
+    payload = {**_REC, "package_id": PKG_SHARED}
+    cases = {
+        "active with studio": ({}, True),
+        "suspended": ({"m2": {"role": "member", "status": "suspended"}}, False),
+        "studio denied": ({"m2": {"role": "member",
+                                  "overrides": [("feature:studio", "deny")]}}, False),
+        "guest role": ({"m2": {"role": "guest"}}, False),
+    }
+    for label, (spec, starts) in cases.items():
+        _seed_members(promoted, spec)
+        started = _emit_record(promoted, promoted.org_a, payload)
+        got = "Shared package by M2" in _started_names(promoted, started)
+        assert got is starts, label
+
+
+def test_the_author_check_never_nests_a_session_and_resolves_each_author_once(
+        promoted, monkeypatch, real_resolver):
+    """R7: three workflows of two authors match one record event. The resolver
+    runs once for each author, and never while a tenant session is open."""
+    import contextlib
+
+    _list_orgs(monkeypatch, promoted.org_a)
+    _host_on(monkeypatch, promoted.org_a)
+    _seed_members(promoted, {})
+    depth = {"open": 0}
+    resolved: list[tuple[str, int]] = []
+    opened: list[int] = []
+
+    def _count(real):
+        @contextlib.asynccontextmanager
+        async def wrapped(*a, **kw):
+            opened.append(depth["open"])
+            depth["open"] += 1
+            try:
+                async with real(*a, **kw) as s:
+                    yield s
+            finally:
+                depth["open"] -= 1
+        return wrapped
+
+    async def _resolve(email, org):
+        resolved.append((str(email), depth["open"]))
+        return await _REAL_RESOLVE(email, org)
+
+    monkeypatch.setattr(triggers, "_tenant_session", _count(triggers._tenant_session))
+    monkeypatch.setattr(_acb_access, "tenant_session", _count(_acb_access.tenant_session))
+    monkeypatch.setattr(_acb_access, "resolve_access_in_org", _resolve)
+    started = _emit_record(promoted, promoted.org_a)
+    names = _started_names(promoted, started)
+    assert {"Claim in A"} <= names and "Private by M2" not in names, names
+    assert sorted(e for e, _ in resolved) == sorted({_OWNERS["A"].lower(), M2.lower()}), resolved
+    assert all(d == 0 for _, d in resolved), ("resolve inside a session", resolved)
+    assert max(opened) == 0, ("a session opened inside a session", opened)

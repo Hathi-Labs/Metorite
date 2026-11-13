@@ -157,8 +157,14 @@ def test_gate_full_on_underscore_helper_under_tests(tmp_path: Path) -> None:
 
 def test_gate_full_on_shared_config_and_timings(tmp_path: Path) -> None:
     root = _gate_repo(tmp_path)
-    for path in ("pyproject.toml", "uv.lock", ".test_durations"):
+    for path in ("pyproject.toml", "uv.lock"):
         assert sel.gate([path], root)["full"] is True, path
+
+
+def test_timings_refresh_is_not_a_full_run(tmp_path: Path) -> None:
+    # CIV-33b: a refresh PR changes only `.test_durations`, so it runs a small selection.
+    root = _gate_repo(tmp_path)
+    assert sel.gate([".test_durations"], root)["full"] is False
 
 
 def test_gate_full_on_ci_and_selector_paths(tmp_path: Path) -> None:

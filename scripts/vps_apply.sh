@@ -544,7 +544,8 @@ else
   # apply of origin/main ships the day's untested merges to customers.
   #
   # So the target is ONE NAMED COMMIT, and never the tip of a moving branch:
-  #   • DEPLOY_REF, when a caller names one. deploy.yml sends its GITHUB_SHA,
+  #   • DEPLOY_REF, when a caller names one. deploy.yml sends its release
+  #     commit (CIV-30: `green/main` on a slot run, else its GITHUB_SHA),
   #     and vps_pull.sh sends origin/$RELEASE_REF as a sha.
   #   • origin/$RELEASE_REF otherwise (default `release`). That covers a hand
   #     run during an incident: it re-applies what production should serve.

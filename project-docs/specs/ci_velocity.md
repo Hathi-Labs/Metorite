@@ -20,6 +20,12 @@ on 2026-11-13, branch `civ32-repair-retest-mt-924c7003`. A repair round runs the
 failed files, the reach of the fix, and the reach of main's move (`gate-meta`).
 No other slice is built yet.
 
+**CIV-30 is BUILT on 2026-11-13** (task 3055, branch
+`civ30-green-pointer-mt-b1b2dd41`). HIGH tier. When the batch of a push
+passes, it moves `green/main`. Each release slot ships that commit. §8.7
+holds the design. A repair round after the verifier, on 2026-11-13, makes the
+R8 guard read the lists of the release commit.
+
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
 **Owning spec** for how much CI runs, and where. `engineering_practice.md` §7a
@@ -944,3 +950,49 @@ at `medium` for coding, and Fable at `high`. Each dispatch posts its model and
 effort. The weekly review counts first-pass verify and CI rounds for each
 model and tier. Until CIV-37 merges, `CLAUDE.md` §4 and `next-ticket.md`
 step 1c keep the old table.
+
+### 8.7 CIV-30 as built: the green pointer (2026-11-13)
+
+`.github/workflows/deploy.yml` holds it. The fence is
+`tests/unit/test_green_pointer.py`.
+
+- **Mark.** The job `mark-green` runs after a push batch. When `lint` and
+  `test` pass, it moves `green/main` to the commit that `test` tested. That
+  is the tip of main when the batch started. It moves forward only. It does
+  not move to a commit that is off main or that does not contain the current
+  pointer. A folded, cancelled, failed or skipped `test` does not move it. It
+  has `contents: write` on that one job, and it never pushes to `main`.
+- **Ship.** The job `release-commit` runs first in each run. On a slot run (a
+  schedule run, or a dispatch with `nightly=true`), it reads the head of
+  `green/main`. Each job that builds, tests, gates or deploys the release
+  checks out that one commit: `lint`, `test`, `r8-suite`, `r8-gate`,
+  `publish-release`, `deploy`, `pull-delivery` and `chat-smoke`. The box
+  applies it as `DEPLOY_REF`. A push and a plain dispatch use their own
+  commit, as before.
+- **Fallback.** When `green/main` does not exist, a slot ships the tip of main,
+  as before, and the run summary says so. Any other read failure holds the
+  release.
+- **A red tip holds no release.** The run summary names the release commit.
+  It lists the commits on main that the release leaves out.
+- **Release never moves back.** A plain dispatch can ship the tip. When a
+  later slot finds `green/main` older than `release`, it publishes nothing,
+  and the deploy skips.
+- **The R8 guard reads the lists of the release commit.** GitHub runs the
+  workflow file of the tip of main. So `r8-gate` does not use the lists on its
+  own command line. It reads the same step in the release commit's copy of
+  `deploy.yml` (`git show`), and `ci_unit_guard.py check --lists-from` uses
+  those lists. An R8 suite that lands after `green/main` does not hold the
+  slot. A copy that the guard cannot read fails the gate.
+- **A bad read of `green/main` holds the release.** Only exit 2 of
+  `git ls-remote` (no such ref) falls back to the tip. Exit 0 with no line for
+  `refs/heads/green/main` fails the job.
+- **A known limit: the steps and the scripts come from two commits.** The tip
+  gives the steps, and the release commit gives the scripts that they call.
+  A merge after `green/main` can change a step and its script together. The
+  tip's step then calls the old script, the release fails closed, and a later
+  slot ships.
+- **A known limit: a publish that moves nothing still counts.** A slot run can
+  publish nothing, because `release` already holds a newer commit from a plain
+  dispatch. The step `once` still counts that run as the ship of its slot. So
+  a later nightly run in the same window does not ship a newer `green/main`.
+  The next slot ships it.
