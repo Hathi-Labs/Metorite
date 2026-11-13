@@ -384,6 +384,12 @@ async def test_with_no_member_the_tools_refuse_and_call_nothing(monkeypatch, car
     lambda: st.studio_workflow_publish(str(uuid.uuid4()), "-1"),
     lambda: st.studio_workflow_publish(str(uuid.uuid4()), "2; drop"),
     lambda: st.studio_workflow_publish(str(uuid.uuid4()), True),  # type: ignore[arg-type]
+    # Review note: "²" is a digit that int() refuses, and "١" a digit of another
+    # script. A text past the digit limit of int() must not raise either.
+    lambda: st.studio_workflow_publish(str(uuid.uuid4()), "²"),
+    lambda: st.studio_workflow_publish(str(uuid.uuid4()), "١"),
+    lambda: st.studio_workflow_publish(str(uuid.uuid4()), "1.5"),
+    lambda: st.studio_workflow_publish(str(uuid.uuid4()), "1" * 5000),
     lambda: st.studio_workflow_live("hooks", True),
     lambda: st.studio_workflow_live(str(uuid.uuid4()), "maybe"),  # type: ignore[arg-type]
 ])
@@ -392,6 +398,18 @@ async def test_a_bad_argument_is_refused_with_no_call(gw: Gateway, card: Card, c
     assert out["ok"] is False and out["errors"][0]["message"] in (
         st._WFW_NO_ID, st._WFW_BAD_VERSION, st._WFW_BAD_LIVE)
     assert gw.calls == [] and card.shown == []
+
+
+@pytest.mark.parametrize("raw,want", [
+    ("", None), (None, None), ("  ", None), (" 2 ", 2), (2, 2), ("17", 17),
+    ("0", st._BAD), ("-1", st._BAD), ("+2", st._BAD), ("1.5", st._BAD), (0, st._BAD),
+    ("²", st._BAD), ("١", st._BAD), ("1" * 5000, st._BAD), (True, st._BAD),
+])
+def test_the_version_parse_never_raises(raw: Any, want: Any) -> None:
+    """Only ASCII digits count, up to nine. Mutation: go back to ``isdigit`` ->
+    "²" raises -> red."""
+    got = st._version_arg(raw)
+    assert got is st._BAD if want is st._BAD else got == want
 
 
 # -- 2. The right comes first ------------------------------------------------
@@ -734,6 +752,28 @@ async def test_an_act_that_changes_nothing_or_that_the_route_refuses_shows_no_ca
     else:
         assert out["ok"] is False and out["status"] == code
         assert out["errors"][0]["message"] == text
+
+
+@pytest.mark.parametrize("held", [False, True])
+@pytest.mark.parametrize("status,latest,text", [
+    ("draft", None, st._WFW_NEVER_PUBLISHED), ("draft", 3, st._WFW_NEVER_PUBLISHED),
+    ("archived", 3, st._WFW_NOT_LIVE),
+])
+async def test_a_pause_of_a_workflow_that_is_not_live_shows_no_card_and_writes_nothing(
+    gw: Gateway, card: Card, mark: Mark, held: bool, status: str, latest: Any, text: str,
+) -> None:
+    """Review P2: the route writes the status with no check, so it would pause a
+    draft, and an enable then refuses it as never published. The editor offers a
+    pause only for a published workflow. Mutation: drop the not-live check ->
+    the clear chat sends the POST, and the held chat shows a card that says
+    "Version: 0 stays" -> red."""
+    mark.held = held
+    wid = gw.add(_body(_summary(status=status, latest_version=latest)))
+    out = await st.studio_workflow_live(wid, False)
+    assert out["ok"] is False and out["errors"][0]["message"] == text
+    assert card.shown == [] and gw.posts() == []
+    assert [(c["method"], c["path"]) for c in gw.calls] == [
+        ("GET", st.ME_PATH), ("GET", f"/workflows/{wid}")]
 
 
 def test_the_route_texts_that_the_tool_copies_equal_the_routes() -> None:

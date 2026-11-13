@@ -4561,6 +4561,9 @@ _WFW_CHANGED = ("The workflow changed while the card was open, so nothing change
 _WFW_MAYBE = "The {act} may have worked. Read the workflow before you try again."
 _WFW_ALREADY_LIVE = "The workflow is live already. Nothing changed."
 _WFW_ALREADY_PAUSED = "The workflow is paused already. Nothing changed."
+_WFW_NEVER_PUBLISHED = ("This workflow was never published, so there is nothing to pause. "
+                        "Nothing changed.")
+_WFW_NOT_LIVE = "This workflow is not live, so there is nothing to pause. Nothing changed."
 _WFW_STATUS = "The workflow route answered with status {status}. Nothing changed."
 _WFW_INVALID = ("The workflow is not valid, so nothing was published. The block lists {count} "
                 "problems. Fix them in the Workflows app, then publish again.")
@@ -4613,9 +4616,15 @@ def _no_token(value: Any, token: Any) -> str:
     return text
 
 
+#: The most digits of a version in text. ``int()`` refuses a text past its own
+#: digit limit with an error, so the tool stops long before that.
+_MAX_VERSION_DIGITS = 9
+
+
 def _version_arg(raw: Any) -> Any:
     """The target version of a roll back: None for a publish, an int of 1 or
-    more, or :data:`_BAD`."""
+    more, or :data:`_BAD`. It never raises. Only ASCII digits count, so a
+    superscript ("²") or another script's digit ("١") is refused plainly."""
     if raw is None or isinstance(raw, bool):
         return None if raw is None else _BAD
     if isinstance(raw, int):
@@ -4623,7 +4632,9 @@ def _version_arg(raw: Any) -> Any:
     text = str(raw).strip()
     if not text:
         return None
-    return int(text) if text.isdigit() and int(text) >= 1 else _BAD
+    if not (text.isascii() and text.isdecimal() and len(text) <= _MAX_VERSION_DIGITS):
+        return _BAD
+    return int(text) if int(text) >= 1 else _BAD
 
 
 def _live_arg(raw: Any) -> Any:
@@ -4827,7 +4838,8 @@ async def _wf_post(act: str, wid: str, version: int | None) -> _Reply:
 
 def _before_card(act: str, data: dict[str, Any], version: int | None) -> dict[str, Any] | None:
     """The answer with no card and no write, for an act that changes nothing
-    or that the route refuses, or None. Each refusal is the text of the route."""
+    or that the route refuses, or None. A refusal is the text of the route,
+    or one plain sentence for a pause of a workflow that is not live."""
     status = data.get("status")
     latest = _version_no(data.get("latest_version")) or 0
     if act == "enable" and status == "published":
@@ -4838,6 +4850,12 @@ def _before_card(act: str, data: dict[str, Any], version: int | None) -> dict[st
     if act == "disable" and status == "disabled":
         return {"ok": True, "errors": [], "diff": [], "status": "disabled",
                 "note": _WFW_ALREADY_PAUSED}
+    if act == "disable" and status != "published":
+        # The route writes the status with no check, so it would pause a draft,
+        # and an enable then refuses it as never published. The editor offers
+        # a pause only for a published workflow, and so does the chat.
+        never = status == "draft" or not latest
+        return _refusal(_WFW_NEVER_PUBLISHED if never else _WFW_NOT_LIVE)
     if act == "rollback" and version is not None:
         if version > latest:
             return _wf_route_says(404, ROUTE_NO_VERSION.format(version=version))
