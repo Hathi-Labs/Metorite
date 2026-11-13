@@ -321,6 +321,14 @@ the two: `routes/admin/groups.py:37` holds the six Center slugs and `:65` expose
 groups. Membership is by invite, which is what the owner asked for, and it is the
 same `org_group_member` table.
 
+**The roles of a Studio app are a projection of this ladder, not a third mechanism**
+(WS-STU C8, `ai_studio.md` §19.7). An app names roles, and an install maps each role
+to subjects of the D12 grammar: an email, `group:<slug>` or `org` (C8b). A row rule
+such as `employee = $me` then narrows which records of the app a member reads.
+Tenancy stays the row (`organization_id` and RLS), and visibility stays these tiers.
+WS-PKG owns the writer of the role map in the install store, and WS-STU owns the
+grammar (`acb_common/studio_access.py`).
+
 ### 3.2 The primitive already exists — generalise it, do not reinvent it
 
 `chat_session_participant.subject` uses exactly this vocabulary today.

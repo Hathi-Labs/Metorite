@@ -136,6 +136,7 @@ pytest.importorskip("sqlalchemy")
 from acb_common import studio_fields as sf
 from acb_common import studio_query
 from acb_common.db import tenant_session
+from acb_common.studio_access import Viewer
 from acb_common.studio_query import QueryError
 from gateway.studio import objects_store as store
 from sqlalchemy import text
@@ -151,6 +152,9 @@ pytestmark = _DB_GATE
 
 TAG = uuid.uuid4().hex[:8]
 ANA = f"ana.{TAG}@stuc2.test"
+#: C8a. The store takes a viewer. No object of this suite declares `access`,
+#: so each object is open and any member reads and writes it.
+_VIEWER = Viewer(ANA)
 _TABLES = ("studio_records", "studio_record_hot")
 
 _PACKAGE_INSERT = (
@@ -292,10 +296,11 @@ _CASES: dict[str, list[tuple[str, Any, set[str]]]] = {
     ],
 }
 _KEY_OF = {f["type"]: f["key"] for f in _TYPED}
-# `relation` (C7b) is the one type outside this table. `visit` holds 8 hot fields, which is
-# the cap of an object, so a hot relation cannot join it. `test_studio_rollup_r8.py` runs each
-# op of a relation on a hot field and on a cold twin.
-assert set(_CASES) | {"relation"} == set(studio_query.OPS_BY_TYPE)
+# `relation` (C7b) and `person` (C8a) are the types outside this table. `visit` holds 8 hot
+# fields, which is the cap of an object, so neither can join it. `test_studio_rollup_r8.py`
+# runs each op of a relation on a hot field and on a cold twin, and
+# `test_studio_row_rules_r8.py` runs the ops of a hot person field.
+assert set(_CASES) | {"relation", "person"} == set(studio_query.OPS_BY_TYPE)
 
 #: The big object: 50,000 records. `n` is missing on each tenth record.
 _BIG_FIELDS: list[dict[str, Any]] = [
@@ -353,7 +358,7 @@ async def _create(org: str, obj: store.StudioObject, rows: dict[str, dict[str, A
     out: dict[str, str] = {}
     async with tenant_session(org) as db:
         for label, data in rows.items():
-            rec = await store.create_record(db, ANA, obj.id, data, package_id=obj.package_id)
+            rec = await store.create_record(db, ANA, obj.id, data, package_id=obj.package_id, viewer=_VIEWER)
             assert rec is not None
             out[label] = rec.id
     return out
@@ -416,7 +421,7 @@ def world(promoted):  # noqa: F811
 
 async def _query(org: str, obj: store.StudioObject, **kw: Any) -> store.RecordPage | None:
     async with tenant_session(org) as db:
-        return await store.query_records(db, package_id=obj.package_id, object_id=obj.id, **kw)
+        return await store.query_records(db, package_id=obj.package_id, object_id=obj.id, **kw, viewer=_VIEWER)
 
 
 def _labels(world: Any, page: store.RecordPage | None) -> set[str]:
@@ -538,8 +543,8 @@ def test_r8_a_query_names_its_package(world) -> None:
     async def go() -> list[Any]:
         async with tenant_session(world.a) as db:
             return [
-                await store.query_records(db, package_id=world.pkg_a2, object_id=world.visit.id),
-                await store.query_records(db, package_id=world.pkg_a, object_id=world.other_pkg.id),
+                await store.query_records(db, package_id=world.pkg_a2, object_id=world.visit.id, viewer=_VIEWER),
+                await store.query_records(db, package_id=world.pkg_a, object_id=world.other_pkg.id, viewer=_VIEWER),
             ]
 
     assert _run(world.p.app_url, go) == [None, None]
@@ -582,10 +587,10 @@ def test_r8_a_query_reads_its_own_object_only(world) -> None:
 def test_r8_org_b_reads_nothing_of_org_a(world) -> None:
     async def go() -> tuple[Any, Any]:
         async with tenant_session(world.b) as db:
-            theirs = await store.query_records(db, package_id=world.pkg_a, object_id=world.visit.id)
+            theirs = await store.query_records(db, package_id=world.pkg_a, object_id=world.visit.id, viewer=_VIEWER)
             mine = await store.query_records(db, package_id=world.pkg_b,
                                              object_id=world.visit_b.id, filter=[
-                {"field": "name", "op": "eq", "value": "Alpha"}])
+                {"field": "name", "op": "eq", "value": "Alpha"}], viewer=_VIEWER)
         return theirs, mine
 
     theirs, mine = _run(world.p.app_url, go)
@@ -624,9 +629,9 @@ def test_r8_the_session_stays_usable_after_a_refusal(world) -> None:
         async with tenant_session(world.b) as db:
             with pytest.raises(QueryError):
                 await store.query_records(db, package_id=world.pkg_b, object_id=world.big.id,
-                                          filter=[{"field": "cold", "op": "eq", "value": "c5"}])
+                                          filter=[{"field": "cold", "op": "eq", "value": "c5"}], viewer=_VIEWER)
             return await store.get_record(db, world.visit_b.id, world.b_ids["r2"],
-                                          package_id=world.pkg_b)
+                                          package_id=world.pkg_b, viewer=_VIEWER)
 
     rec = _run(world.p.app_url, go)
     assert rec is not None and rec.data["name"] == "beta 50% off_now"
@@ -669,9 +674,9 @@ def test_r8_a_query_past_the_timeout_stops_with_query_timeout(world, monkeypatch
             await db.execute(text("SELECT set_config('statement_timeout', '42s', true)"))
             with pytest.raises(QueryError) as stopped:
                 await store.query_records(db, package_id=world.pkg_b, object_id=world.big.id,
-                                          filter=[{"field": "t", "op": "contains", "value": "zzz"}])
+                                          filter=[{"field": "t", "op": "contains", "value": "zzz"}], viewer=_VIEWER)
             rec = await store.get_record(db, world.visit_b.id, world.b_ids["r1"],
-                                         package_id=world.pkg_b)
+                                         package_id=world.pkg_b, viewer=_VIEWER)
             return stopped.value.code, rec, await _timeout(db)
 
     code, rec, after = _run(world.p.app_url, go)
@@ -686,12 +691,12 @@ def test_r8_the_old_timeout_is_back_after_a_query(world) -> None:
     async def go() -> tuple[str, str, str]:
         async with tenant_session(world.a) as db:
             await db.execute(text("SELECT set_config('statement_timeout', '42s', true)"))
-            page = await store.query_records(db, package_id=world.pkg_a, object_id=world.visit.id)
+            page = await store.query_records(db, package_id=world.pkg_a, object_id=world.visit.id, viewer=_VIEWER)
             assert page is not None and page.total == 8
             set_before = await _timeout(db)
         async with tenant_session(world.a) as db:
             plain = await _timeout(db)
-            await store.query_records(db, package_id=world.pkg_a, object_id=world.visit.id)
+            await store.query_records(db, package_id=world.pkg_a, object_id=world.visit.id, viewer=_VIEWER)
             return set_before, plain, await _timeout(db)
 
     set_before, plain, plain_after = _run(world.p.app_url, go)
@@ -1254,12 +1259,12 @@ def test_r8_a_write_between_two_reads_never_puts_a_record_twice(world) -> None:
         async def clear_b() -> None:
             async with tenant_session(world.a) as other:
                 assert await store.update_record(other, ANA, race.id, ids["b"], {"v": None},
-                                                 package_id=race.package_id)
+                                                 package_id=race.package_id, viewer=_VIEWER)
 
         async with tenant_session(world.a) as db:
             spy = _Spy(db, clear_b)
             page = await store.query_records(spy, package_id=race.package_id, object_id=race.id,
-                                             sort={"field": "v"}, limit=10)
+                                             sort={"field": "v"}, limit=10, viewer=_VIEWER)
         return spy.fired, ids, page
 
     fired, ids, page = _run(world.p.app_url, go)
@@ -1292,7 +1297,7 @@ def test_r8_a_slow_statement_leaves_less_time_for_the_next(world, monkeypatch) -
         async with tenant_session(world.b) as db:
             spy = _Spy(db)
             page = await store.query_records(spy, package_id=world.pkg_b,
-                                             object_id=world.visit_b.id, filter=_COLD_B)
+                                             object_id=world.visit_b.id, filter=_COLD_B, viewer=_VIEWER)
         return spy.timeouts, page
 
     timeouts, page = _run(world.p.app_url, go)
@@ -1310,9 +1315,9 @@ def test_r8_a_call_with_no_time_left_runs_no_more_statements(world, monkeypatch)
             spy = _Spy(db)
             with pytest.raises(QueryError) as stopped:
                 await store.query_records(spy, package_id=world.pkg_b,
-                                          object_id=world.visit_b.id, filter=_COLD_B)
+                                          object_id=world.visit_b.id, filter=_COLD_B, viewer=_VIEWER)
             rec = await store.get_record(db, world.visit_b.id, world.b_ids["r1"],
-                                         package_id=world.pkg_b)
+                                         package_id=world.pkg_b, viewer=_VIEWER)
         return stopped.value.code, spy.statements, rec
 
     code, statements, rec = _run(world.p.app_url, go)
@@ -1383,7 +1388,7 @@ def test_r8_a_field_that_turns_cold_during_a_query_gives_the_right_page(world) -
         async with tenant_session(world.a) as db:
             spy = _Spy(db, unhot, marker="FROM studio_object_fields")
             page = await store.query_records(spy, package_id=obj.package_id, object_id=obj.id,
-                                             filter=[{"field": "status", "op": "eq", "value": "open"}])
+                                             filter=[{"field": "status", "op": "eq", "value": "open"}], viewer=_VIEWER)
         async with tenant_session(world.a) as db:
             assert await store.drop_object(db, obj.id)
         return spy.fired, page
@@ -1411,7 +1416,7 @@ def test_r8_a_sort_field_that_turns_cold_during_a_query_is_refused(world) -> Non
             spy = _Spy(db, unhot, marker="FROM studio_object_fields")
             with pytest.raises(QueryError) as stopped:
                 await store.query_records(spy, package_id=obj.package_id, object_id=obj.id,
-                                          sort={"field": "rank"})
+                                          sort={"field": "rank"}, viewer=_VIEWER)
         async with tenant_session(world.a) as db:
             assert await store.drop_object(db, obj.id)
         return spy.fired, stopped.value
@@ -1474,7 +1479,7 @@ def test_r8_a_bulk_insert_during_a_query_cannot_pass_the_guard(world) -> None:
             spy = _Spy(db, insert, marker="SELECT t.n", before=True)
             with pytest.raises(QueryError) as refused:
                 await store.query_records(spy, package_id=crowd.package_id, object_id=crowd.id,
-                                          filter=filter)
+                                          filter=filter, viewer=_VIEWER)
         async with tenant_session(world.a) as db:
             assert await store.drop_object(db, crowd.id)
         return page, spy.fired, refused.value
@@ -1607,7 +1612,7 @@ def test_r8_a_money_sum_of_two_currencies_is_refused(world) -> None:
             with pytest.raises(QueryError) as grouped:
                 await store.aggregate_records(db, package_id=world.pkg_a, object_id=world.visit.id,
                                               group_by={"field": "status"}, measures=fee)
-            rec = await store.get_record(db, world.visit.id, world.ids["r1"], package_id=world.pkg_a)
+            rec = await store.get_record(db, world.visit.id, world.ids["r1"], package_id=world.pkg_a, viewer=_VIEWER)
         return whole.value, grouped.value, rec
 
     whole, grouped, rec = _run(world.p.app_url, go)
@@ -1809,7 +1814,7 @@ def test_r8_an_aggregate_past_the_timeout_stops_with_query_timeout(world, monkey
                 await store.aggregate_records(db, package_id=world.pkg_b, object_id=world.big.id,
                                               group_by={"field": "t"})
             rec = await store.get_record(db, world.visit_b.id, world.b_ids["r1"],
-                                         package_id=world.pkg_b)
+                                         package_id=world.pkg_b, viewer=_VIEWER)
             return stopped.value.code, rec, await _timeout(db)
 
     code, rec, after = _run(world.p.app_url, go)

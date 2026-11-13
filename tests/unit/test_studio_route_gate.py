@@ -122,6 +122,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/studio/packages/{package_id}/install"),
     # WS-PKG PKG-8e, the org and group uninstall.
     ("DELETE", "/studio/packages/{package_id}/install"),
+    # WS-STU J2b-2, the share with people.
+    ("POST", "/studio/packages/{package_id}/share"),
     # WS-PKG PKG-10d, Keep and Restore of the private install.
     ("POST", "/studio/packages/{package_id}/keep"),
     ("POST", "/studio/packages/{package_id}/restore"),
@@ -372,6 +374,11 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
     read checks no right of its own. The new module `package_host/viewer.py`
     must not read the verb either, so the scan covers it too.
 
+    WS-STU J2b-2 adds one reader: `share_package`, the share with people
+    (D180.3), with one `user.has_permission(SHARE_RIGHT)`. The test takes
+    out its one entry of each list first, so the lists below stay those of
+    the install.
+
     The check reads the syntax tree, so the quote style does not matter. The
     string constant `studio:publish` occurs once in `routes/studio`: the
     definition of `packages.SHARE_RIGHT`. The name `SHARE_RIGHT` is read in
@@ -414,6 +421,13 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and \
                     node.func.attr in ("has_permission", "has"):
                 calls.append((*where, ast.unparse(node)))
+    # WS-STU J2b-2: the share with people reads the verb exactly once.
+    share_name = ("packages.py", "share_package", "Load")
+    share_call = ("packages.py", "share_package", "user.has_permission(SHARE_RIGHT)")
+    assert names.count(share_name) == 1 and calls.count(share_call) == 1, (names, calls)
+    names.remove(share_name)
+    calls.remove(share_call)
+
     assert verbs == [("packages.py", "<module>", "constant")], verbs
     assert sorted(names) == [("packages.py", "<module>", "Store"),
                              ("packages.py", "approve_approval", "Load"),
@@ -503,7 +517,8 @@ def test_a_second_read_of_the_admin_right_fails() -> None:
     sources = _studio_sources()
     share = "    if not user.has_permission(SHARE_RIGHT):\n"
     text = sources["packages.py"].replace("\r\n", "\n")
-    assert text.count(share) == 2, "non-vacuity: the share checks of the install and the uninstall"
+    assert text.count(share) == 3, (
+        "non-vacuity: the share checks of the install, the uninstall and the share of J2b-2")
     mutated = {**sources, "packages.py": text.replace(
         share, "    if not (user.has_permission(SHARE_RIGHT) or user.has_permission(ADMIN_RIGHT)):\n", 1)}
     assert admin_right_reads(mutated) == sorted(
