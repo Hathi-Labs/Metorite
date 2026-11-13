@@ -578,6 +578,10 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     ("list_projects", "text"),
     ("list_projects", "limit"),
     ("list_projects", "cursor"),
+    # MCP-G19c. `compact` of `get_project` leaves out the reads of the field
+    # definitions and the tags. `GET /projects/nodes/{project_id}` takes no
+    # such parameter.
+    ("get_project", "compact"),
     # MCP-G21. The gateway returns the whole list, and the edge pages it.
     ("list_members", "limit"),
     ("list_members", "cursor"),

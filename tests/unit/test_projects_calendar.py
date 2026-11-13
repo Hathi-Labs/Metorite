@@ -235,6 +235,9 @@ NOT_ON_THE_CALENDAR = {
     # them silently. `compact` is a row shape, not a filter.
     "has_parent", "is_epic", "assigned", "updated_before", "updated_after",
     "created_after", "title_prefix", "compact",
+    # MCP-G19c. The type filters and the task number of the agent door. The
+    # board never sends them, so the calendar cannot drop them silently.
+    "type_id", "type_name", "task_number",
 }
 
 
