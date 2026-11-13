@@ -112,8 +112,14 @@ from typing import Any
 # scan. The org is the run row's, the member is the workflow owner, and the
 # parked decision is re-read in `_tenant_session(org)` before the write.
 # Fence: `tests/unit/test_studio_workflow_write_r8.py`.
+#
+# STU-E8b: the Studio batch node (`_studio_batcher`). The same four lists plus
+# `STUDIO_BATCH_ORGS`, the same parked path, and the decision re-read by the
+# batch id (`batch.approved_batch`). A stopped batch resumes in a NEW run
+# (`start_batch_run`), which the batch scan starts with the org of the batch
+# row. Fence: `tests/unit/test_studio_workflow_batch_r8.py`.
 from acb_common.db import TenantUnbound, bind_tenant, release_tenant
-from gateway.routes.workflows import human_step, park, unattended
+from gateway.routes.workflows import batch, human_step, park, unattended
 from gateway.routes.workflows.core import (
     _get_db,
     _log,
@@ -671,6 +677,87 @@ def _studio_writer(
     return _write
 
 
+def _batch_refusal(
+    org: str, trigger_kind: str, parked: ParkedApproval | None,
+    serialized: dict[str, Any], node_id: str,
+) -> str | None:
+    """Why a Studio batch node may not run, or None (STU-E8b). The checks of
+    :func:`_studio_refusal`, then the batch flag ``STUDIO_BATCH_ORGS``."""
+    refused = _studio_refusal(org, trigger_kind, parked, serialized, node_id)
+    if refused is None and not batch.batch_allowed(org):
+        refused = STUDIO_FLAG_OFF
+    return refused
+
+
+def _studio_batcher(
+    *,
+    run_id: str,
+    workflow_id: str,
+    organization_id: str | None,
+    trigger_kind: str,
+    serialized: dict[str, Any] | None,
+    parked: ParkedApproval | None,
+) -> Any:
+    """The Studio batch node's seam, with the run's facts bound in (STU-E8b).
+
+    The same path as :func:`_studio_writer`: a schedule run of a listed org,
+    marked with no person present, with the decision of the gate directly
+    above the node. ONE decision clears ONE node, so a second call in this
+    execution refuses. The node finds its batch by the run and the node
+    (``batch_store.batch_of_run``), and reads the decision AGAIN by the batch
+    id (``batch.approved_batch``). It needs a yes of the owner that binds the
+    list digest of the batch, and it must be the parked decision of this run.
+    Then ``studio.invoke.run_workflow_batch`` runs the chunks from the pinned
+    list of the run's graph, never from the live draft. A new run that the
+    batch scan started carries the same decision, so it passes the same
+    checks and goes on from the first pending item.
+    """
+    spent: set[str] = set()
+
+    async def _batch(node_id: str, config: dict[str, Any]) -> dict[str, Any]:
+        from gateway.routes.studio.invoke import run_workflow_batch
+        from gateway.studio import batch_store
+
+        org = str(organization_id or "").strip()
+        refused = _batch_refusal(org, trigger_kind, parked, serialized or {}, node_id)
+        if refused is None and parked is not None and parked.gate in spent:
+            refused = STUDIO_SPENT
+        bound = found = None
+        owner = ""
+        if refused is None and parked is not None:
+            spent.add(parked.gate)
+            _, owner = await _workflow_owner(workflow_id, org)
+            async with _tenant_session(org) as db:
+                found = await batch_store.batch_of_run(db, run_id, node_id)
+                bound = await batch.approved_batch(
+                    db, organization_id=org, owner=owner, batch=found)
+            if bound is None or bound.decision_id != parked.decision_id:
+                refused = STUDIO_NOT_APPROVED
+        if refused is not None or parked is None or bound is None or found is None:
+            _log.warning("workflows.studio_batch_refused", run_id=run_id, reason=refused)
+            raise NodeExecutionError(f"the Studio batch did not run ({refused})")
+        pinned = _pinned_config(serialized or {}, node_id)
+        token = bind_tenant(org)
+        try:
+            result = await run_workflow_batch(
+                organization_id=org, member=owner,
+                package_id=str(pinned.get("package_id") or ""),
+                action=str(pinned.get("action") or ""), items=pinned.get("items"),
+                run_id=run_id, node_id=node_id, batch_id=found.id,
+                expected_digest=bound.list_digest, decision_id=parked.decision_id,
+            )
+        finally:
+            release_tenant(token)
+        if not result.get("ok"):
+            raise NodeExecutionError(
+                f"the Studio batch did not finish ({result.get('code') or result.get('outcome')}): "
+                f"{result.get('written', 0)} written, {result.get('failed', 0)} failed in this run"
+            )
+        return result
+
+    return _batch
+
+
 def build_node_services(
     actor: str,
     workflow_id: str,
@@ -695,8 +782,12 @@ def build_node_services(
     The Studio write node (STU-B2c-2d) reads *run_id*, *trigger_kind*,
     *serialized* and *parked*, each from the run (:func:`_execute_run`). Its
     defaults refuse each write: no kind is ``schedule``, and no decision is
-    parked.
+    parked. The Studio batch node (STU-E8b) reads the same four facts.
     """
+    facts: dict[str, Any] = {
+        "run_id": run_id, "workflow_id": workflow_id, "organization_id": organization_id,
+        "trigger_kind": trigger_kind, "serialized": serialized, "parked": parked,
+    }
     return NodeServices(
         run_agent=_agent_runner(workflow_id),
         run_tool=_tool_runner(workflow_id, organization_id),
@@ -704,10 +795,8 @@ def build_node_services(
         actor=actor,
         update_task=_pm_task_updater(workflow_id, organization_id),
         run_lifecycle_sweep=_pm_lifecycle_sweeper(workflow_id, organization_id),
-        studio_write=_studio_writer(
-            run_id=run_id, workflow_id=workflow_id, organization_id=organization_id,
-            trigger_kind=trigger_kind, serialized=serialized, parked=parked,
-        ),
+        studio_write=_studio_writer(**facts),
+        studio_batch=_studio_batcher(**facts),
         organization_id=organization_id,
     )
 
@@ -1570,9 +1659,12 @@ _WRITE_UNRESOLVED_ERROR = (
 )
 
 
-async def _fail_unresolved_write(run_id: str, organization_id: str) -> None:
+async def _fail_unresolved_write(
+    run_id: str, organization_id: str, error: str = _WRITE_UNRESOLVED_ERROR,
+) -> None:
     """End a paused run as ``failed`` before any pause row or card exists
-    (fix round 2). The guard on ``paused`` changes no other state."""
+    (fix round 2). The guard on ``paused`` changes no other state. A batch of
+    an org that is not ready (STU-E8b) passes its own *error*."""
     try:
         async with _run_session(organization_id) as db:
             await db.execute(
@@ -1580,7 +1672,7 @@ async def _fail_unresolved_write(run_id: str, organization_id: str) -> None:
                     "UPDATE workflow_runs SET status = 'failed', error = :error, "
                     "finished_at = now() WHERE id = :id AND status = 'paused'"
                 ),
-                {"id": run_id, "error": _WRITE_UNRESOLVED_ERROR},
+                {"id": run_id, "error": error},
             )
     except Exception as exc:  # pragma: no cover - best effort persistence
         _log.warning("workflows.unresolved_fail_failed", run_id=run_id, error=str(exc)[:160])
@@ -1715,6 +1807,11 @@ async def _park_with_decision(
             # owner cannot run. A broker card could only end in a failed
             # write, so the run fails here and files no card.
             await _fail_unresolved_write(run_id, organization_id)
+            return True
+        if getattr(exc, "reason", "") == batch.BATCH_OFF:
+            # STU-E8b: the gate clears a batch of an org that is not ready, so
+            # no batch opens and no card is filed.
+            await _fail_unresolved_write(run_id, organization_id, batch.BATCH_OFF_ERROR)
             return True
         return False
     _log.info("workflows.parked", run_id=run_id, decision_id=parked["decision_id"])
@@ -1934,6 +2031,94 @@ async def resume_run(
         name=f"workflow-resume:{run_id}",
     )
     return {"ok": True, "resumed": True, "run_id": run_id, "node_id": gate_node}
+
+
+class _RebindLost(Exception):
+    """The compare-and-set of a batch resume matched no row. The new run row
+    rolls back with it."""
+
+
+async def start_batch_run(
+    *,
+    organization_id: str,
+    batch_id: str,
+    old_run_id: str,
+    node_id: str,
+    version: int,
+    snapshot: dict[str, Any],
+    precomputed: dict[str, Any],
+    parked: ParkedApproval,
+) -> str | None:
+    """Start a NEW run of a stopped Studio batch (STU-E8b). Only
+    ``scheduler.scan_open_batches`` calls it, with the org of the batch row.
+
+    ONE ``_run_session(org)`` writes the new run row and moves the batch to it
+    with ``batch_store.rebind_run``: ``UPDATE ... WHERE run_id = :old``, under
+    the bound :data:`batch.MAX_RESUMES`. A pass that updates no row rolls the
+    run row back and starts nothing. So two scans of one failed run start one
+    new run. A full concurrency cap starts nothing and moves nothing, and a
+    later scan tries again.
+
+    The new run is a ``schedule`` run, so it has no person present. It runs
+    the pinned graph of the park snapshot. Each node that ran before the stop
+    passes its stored output through (*precomputed*), the gate is cleared, and
+    the batch node goes on from the first pending item. It carries the parked
+    decision, which the node reads again. Returns the new run id, or None.
+    """
+    global _ACTIVE_TOTAL
+    from gateway.studio import batch_store
+
+    org = _require_org(organization_id)
+    workflow_id = str(snapshot.get("workflow_id") or "")
+    workflow_name = str(snapshot.get("workflow_name") or "")
+    if (_ACTIVE_TOTAL >= MAX_CONCURRENT_RUNS
+            or _ACTIVE_BY_WORKFLOW.get(workflow_id, 0) >= MAX_CONCURRENT_RUNS_PER_WORKFLOW):
+        _log.warning("workflows.batch_resume_deferred", batch_id=batch_id)
+        return None
+    run_id = str(uuid.uuid4())
+    trigger_payload = snapshot.get("trigger_payload") or {}
+    try:
+        async with _run_session(org) as db:
+            await db.execute(
+                text(
+                    """INSERT INTO workflow_runs
+                       (id, workflow_id, workflow_name, version, trigger_kind,
+                        trigger_payload, status, started_by)
+                       VALUES (:id, :wid, :name, :v, 'schedule', :tp ::jsonb,
+                               'running', :by)"""
+                ),
+                {"id": run_id, "wid": workflow_id, "name": workflow_name, "v": int(version),
+                 "tp": json.dumps(trigger_payload, default=str), "by": batch.STARTED_BY},
+            )
+            moved = await batch_store.rebind_run(
+                db, batch_id, old_run_id=old_run_id, new_run_id=run_id,
+                max_resumes=batch.MAX_RESUMES)
+            if moved is None:
+                raise _RebindLost(batch_id)
+    except _RebindLost:
+        return None
+    _HUBS[run_id] = RunHub()
+    _ACTIVE_TOTAL += 1
+    _ACTIVE_BY_WORKFLOW[workflow_id] = _ACTIVE_BY_WORKFLOW.get(workflow_id, 0) + 1
+    asyncio.get_running_loop().create_task(
+        _execute_run(
+            run_id=run_id,
+            workflow_id=workflow_id,
+            workflow_name=workflow_name,
+            serialized=snapshot["serialized"],
+            trigger_payload=trigger_payload,
+            variables=snapshot.get("variables") or {},
+            started_by=batch.STARTED_BY,
+            trigger_kind="schedule",
+            precomputed=precomputed,
+            resolved_approvals={parked.gate},
+            organization_id=org,
+            parked=parked,
+        ),
+        name=f"workflow-run:{run_id}",
+    )
+    _log.info("workflows.batch_resumed", batch_id=batch_id, run_id=run_id, node_id=node_id)
+    return run_id
 
 # ── Programmatic entry points (F13: workflows as agent tools) ────────────────
 #

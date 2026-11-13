@@ -508,7 +508,11 @@ async def run_chunk(db: Any, actor: str, batch_id: str,
 
     *viewer* is the viewer of the member (C8a), which the caller builds from
     its session, and *via* names the run of the change history (C4a-1). Both go
-    to ``apply_writes`` unchanged.
+    to ``apply_writes`` unchanged, also for the halves of a split. The viewer
+    must be the member who acts: the store decides "owner" from the viewer's
+    email, and *actor* only names ``created_by`` and the history. So a viewer
+    that is not the *actor* raises :class:`BatchStoreError` before any
+    statement (fail closed, E8b review).
 
     A refused chunk is split in halves until a single item is refused. That
     item is marked ``failed``, and no other. A busy store is a retry signal:
@@ -519,7 +523,10 @@ async def run_chunk(db: Any, actor: str, batch_id: str,
     org lock is free between chunks.
     """
     bid = _uuid(batch_id, "batch_id")
-    call = _Call(objects_store._actor(actor), "", bid, viewer, via)
+    who = objects_store._actor(actor)
+    if not isinstance(viewer, Viewer) or viewer.email != who:
+        raise BatchStoreError("The viewer of a batch is the member who acts.")
+    call = _Call(who, "", bid, viewer, via)
     pid, status = await _lock(db, bid)
     call = dataclasses.replace(call, pid=pid)
     if status != STATUS_OPEN:

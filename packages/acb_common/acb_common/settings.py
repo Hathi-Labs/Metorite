@@ -719,6 +719,16 @@ class Settings(BaseSettings):
     # a change (docs/flag_reload.md). A flip in production is the gate
     # `enforcement-flip`. Spec: ai_studio.md section 14 B2b-2.
     studio_door_ops_orgs: str = ""
+    # STU-E8b: STUDIO_BATCH_ORGS lists the org ids where a workflow runs the
+    # `studio_batch` node: a frozen list of writes of a Studio package under
+    # one approval, with no person present. A comma list. Empty, the default,
+    # opens none, and `*` is not a wildcard, as for WORKFLOW_UNATTENDED_ORGS.
+    # The node and the batch scan also need WORKFLOW_UNATTENDED_ORGS,
+    # AUTO_PARK_ORGS, DECISIONS_ORGS and STUDIO_ORGS. Reader:
+    # `gateway.routes.workflows.batch.batch_allowed`. A SIGHUP reload applies
+    # a change. It writes records with no person present, so a flip is the
+    # owner's (`enforcement-flip`). Spec: ai_studio.md section 14 E8b.
+    studio_batch_orgs: str = ""
     # STU-C2c: STUDIO_NUM_F8_ORGS lists the org ids where a number filter of
     # the Studio object query adds a float8 test on `studio_record_hot.
     # v_num_f8`, so the app role can use its index (`numeric` comparisons are

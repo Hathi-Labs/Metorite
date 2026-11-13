@@ -111,6 +111,8 @@ TAG = uuid.uuid4().hex[:8]
 ANA = f"ana.{TAG}@stue8a.test"
 #: The viewer of each chunk (C8a). The member owns the package, so every rule passes.
 VIEWER = Viewer(ANA)
+#: A member of the org who does not own the package (E8b review).
+BOB = f"bob.{TAG}@stue8a.test"
 
 _LEDGER: list[dict[str, Any]] = [
     {"key": "sku", "type": "text", "hot": True},
@@ -712,6 +714,49 @@ def test_r8_a_batch_that_is_not_open_is_never_moved_back_to_open(world) -> None:
     assert res.written == {} and res.status == "failed" and res.pending == 3
     assert _count(w, "SELECT count(*) FROM studio_batches WHERE id = CAST(:b AS uuid) "
                      "AND status = 'failed'", b=bid) == 1
+    assert len(_records(w, w.ledger)) == 0
+
+
+# -- 10. the viewer (C8a, the E8b review) ------------------------------------
+
+
+def test_r8_a_viewer_who_is_not_the_owner_fails_each_item_alone(world) -> None:
+    """The store decides "owner" from the viewer. A member who does not own the
+    package holds no role, so each write is refused. The split fails each item
+    ALONE, with a short code, and the batch writes nothing."""
+    w = world
+    items = _items(w.ledger, 4)
+    wbk = _by_key(items)
+
+    async def go() -> tuple[bs.ChunkResult, str]:
+        batch = await _open(w.a, w.pkg_a, items)
+        async with tenant_session(w.a) as db:
+            return await bs.run_chunk(db, BOB, batch.id, wbk, viewer=Viewer(BOB)), batch.id
+
+    res, bid = _go(w, go)
+    assert res.written == {}
+    assert res.failed == {i.key: "AccessDenied" for i in items}
+    assert (res.pending, res.status) == (0, "failed")
+    assert len(_records(w, w.ledger)) == 0
+    assert [(r.status, r.code) for r in _item_rows(w, bid)] == [("failed", "AccessDenied")] * 4
+
+
+def test_r8_an_owner_viewer_with_another_actor_fails_closed(world) -> None:
+    """The viewer must be the member who acts. An owner viewer under another
+    actor is refused before any statement, and the items stay pending."""
+    w = world
+    items = _items(w.ledger, 3)
+    wbk = _by_key(items)
+
+    async def go() -> str:
+        batch = await _open(w.a, w.pkg_a, items)
+        with pytest.raises(bs.BatchStoreError, match="viewer"):
+            async with tenant_session(w.a) as db:
+                await bs.run_chunk(db, BOB, batch.id, wbk, viewer=VIEWER)
+        return batch.id
+
+    bid = _go(w, go)
+    assert [r.status for r in _item_rows(w, bid)] == ["pending"] * 3
     assert len(_records(w, w.ledger)) == 0
 
 

@@ -45,6 +45,11 @@ approval of that write, and the Studio door opens no second card.
 **No score for any person (ALN-Q5).** Nothing here counts, groups or ranks a
 person.
 
+**The batch (STU-E8b).** A gate that clears a ``studio_batch`` node parks the
+same way. ``batch.park_batch`` freezes the list through the E8a store in this
+transaction, and the decision payload binds the batch id and the list digest.
+The scan and the node read that decision again (``batch.approved_batch``).
+
 The flag ``AUTO_PARK_ORGS`` (default empty) has one reader,
 :func:`park_allowed`. ``DECISIONS_ORGS`` must list the org too.
 
@@ -255,6 +260,23 @@ def _write_below(serialized: Any, node_id: str) -> dict[str, Any] | None:
     return None
 
 
+async def _park_batch_below(
+    db: Any, org: str, owner: str, workflow_name: str, run_id: str,
+    snapshot: dict[str, Any], node_id: str,
+) -> tuple[str, str, dict[str, str]] | None:
+    """The question, the description and the payload keys of a gate that
+    clears a ``studio_batch`` node, or None for any other gate (STU-E8b).
+    ``batch.park_batch`` opens the batch on *db* and raises ``ParkRefused``."""
+    from gateway.routes.workflows import batch as batch_node
+
+    block = batch_node.batch_below(snapshot.get("serialized"), node_id)
+    if block is None:
+        return None
+    return await batch_node.park_batch(
+        db, organization_id=org, owner=owner, workflow_name=workflow_name, run_id=run_id,
+        block=block)
+
+
 _INSERT_PAUSE = (
     "INSERT INTO workflow_run_pauses (id, run_id, node_id, snapshot, reason, status) "
     "VALUES (CAST(:id AS uuid), :run_id, :node_id, :snapshot ::jsonb, 'approval', "
@@ -326,6 +348,13 @@ async def park_with_decision(
 
     question, description, write_digest = park_question(workflow_name, node_label), \
         SUBJECT_TEXT, None
+    # STU-E8b: a gate that clears a batch freezes the list through E8a here,
+    # and the ONE decision binds the batch id and its list digest.
+    bound = await _park_batch_below(db, org, who, workflow_name, run_id, snapshot, node_id)
+    if bound is not None:
+        question, description, bound_keys = bound
+    else:
+        bound_keys = {}
     block = _write_below(snapshot.get("serialized"), node_id)
     if block is not None:
         # STU-B2c-2d fix round 1: the gate clears a Studio write, so the
@@ -366,6 +395,7 @@ async def park_with_decision(
             "node_id": node_id,
             "workflow_id": workflow_id,
             **({WRITE_DIGEST: write_digest} if write_digest else {}),
+            **bound_keys,
         },
         expires_in=PARK_LIFE,
     )

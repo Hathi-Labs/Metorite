@@ -35,7 +35,7 @@ from typing import Any
 # that one org with `_tenant_session(org)` for each step. A step never holds a
 # session across a commit, because a commit drops the bound tenant. The org of
 # a run or a workflow comes from the row, never from the ambient context.
-from gateway.routes.workflows import human_step, park, unattended
+from gateway.routes.workflows import batch, human_step, park, unattended
 from gateway.routes.workflows.core import (
     _log,
     _tenant_session,
@@ -44,12 +44,15 @@ from gateway.routes.workflows.core import (
 )
 from gateway.routes.workflows.service import (
     _MEMBER_BLIND_REASON,
+    ParkedApproval,
     RunRejected,
     _member_blind_write_nodes,
     _organization_ids,
+    _workflow_owner,
     load_version_serialized,
     record_skipped_run,
     resume_run,
+    start_batch_run,
     start_run,
 )
 from sqlalchemy import text
@@ -344,6 +347,8 @@ async def scan_due_waits(now: float | None = None) -> int:
                 organization_id=org,
                 error=type(exc).__name__,
             )
+        # STU-E8b. It catches its own faults, so one org hides no other.
+        resumed += await scan_open_batches(org)
         try:
             async with _tenant_session(org) as db:
                 rows = (
@@ -583,6 +588,82 @@ async def scan_done_tasks(org: str) -> int:
                 organization_id=org,
             )
     return settled
+
+
+async def scan_open_batches(org: str) -> int:
+    """Start a NEW run for each stopped Studio batch of ONE org (STU-E8b).
+
+    Only the org loop of :func:`scan_due_waits` calls this, after its list
+    check, so the org comes from the loop's own enumeration. The first line
+    checks the other gates of a batch (``batch.org_ready``: the batch flag,
+    the park flags and ``STUDIO_ORGS``), so an org that is not ready is never
+    read. Each step opens its own ``_tenant_session(org)``.
+
+    A batch is a candidate when it is ``open`` and its run is ``failed``.
+    That is NOT enough: :func:`_resume_batch` reads the bound decision again
+    and needs a yes of the owner. Then ``service.start_batch_run`` starts one
+    new run with the compare-and-set of the batch row. Returns the number of
+    runs started. It never raises a fault, so one org hides no other.
+    """
+    if not batch.org_ready(org):
+        return 0
+    try:
+        async with _tenant_session(org) as db:
+            rows = (await db.execute(text(batch.OPEN_SQL), {"org": org})).fetchall()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # one org must not hide the others
+        _log.warning("workflows.batch_org_failed", organization_id=org,
+                     error=type(exc).__name__)
+        return 0
+    started = 0
+    for row in rows:
+        if str(getattr(row, "organization_id", "")).lower() != org.lower():
+            continue  # the row names another org: never resume it under this one
+        try:
+            if await _resume_batch(org, row):
+                started += 1
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # one bad batch must not stall the rest
+            _log.warning("workflows.batch_resume_failed", batch_id=str(row.id),
+                         error=type(exc).__name__)
+    return started
+
+
+async def _resume_batch(org: str, row: Any) -> bool:
+    """Resume ONE stopped batch of *org*, or end it at the bound (STU-E8b).
+
+    The owner is ``workflows.owner_email``, read in the org. The yes comes
+    from the decision row only (``batch.approved_batch``), so a run that failed
+    with no yes is never resumed. At :data:`batch.MAX_RESUMES` new runs, the
+    batch ends: ``batch_store.end_stuck_item`` marks the item that blocks
+    ``query_timeout``, and the batch ends ``failed``. Else the new run takes the
+    pinned graph of the park snapshot and the stored outputs of the failed
+    run, and starts at the batch node."""
+    from gateway.routes.workflows.engine.graph import runtime_gate_of
+    from gateway.studio import batch_store
+
+    _, owner = await _workflow_owner(str(row.workflow_id), org)
+    async with _tenant_session(org) as db:
+        found = await batch_store.get_batch(db, str(row.id))
+        bound = await batch.approved_batch(db, organization_id=org, owner=owner, batch=found)
+        if found is None or bound is None:
+            return False
+        if found.resumes >= batch.MAX_RESUMES:
+            ended = await batch_store.end_stuck_item(db, found.id)
+            _log.warning("workflows.batch_ended", batch_id=found.id, failed=list(ended.failed))
+            return False
+        snapshot = await batch.park_snapshot(db, bound)
+    if snapshot is None or runtime_gate_of(snapshot["serialized"], found.node_id or "") != bound.gate:
+        return False
+    run_id = await start_batch_run(
+        organization_id=org, batch_id=found.id, old_run_id=str(row.run_id),
+        node_id=str(found.node_id), version=int(row.version), snapshot=snapshot,
+        precomputed=batch.replayed(row.node_results, str(found.node_id)),
+        parked=ParkedApproval(decision_id=bound.decision_id, pause_id=bound.pause_id,
+                              gate=bound.gate))
+    return run_id is not None
 
 
 async def _scheduler_loop() -> None:

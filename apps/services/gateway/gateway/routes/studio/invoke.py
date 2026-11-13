@@ -216,10 +216,19 @@ owner in the run's org, and it writes only when the write has the digest that
 the decision bound at the park (:func:`workflow_write_digest`). The audit row
 names the run, the node, the decision and the approver. Fence:
 ``tests/unit/test_studio_workflow_write_r8.py``.
+
+**The batch of a workflow node (E8b).** :func:`run_workflow_batch` sits beside
+:func:`run_workflow_write` and reuses its steps, in one session for each chunk
+of ``batch_store.run_chunk``. :func:`plan_workflow_batch` builds the frozen
+list at the park. Both build the writes of each item with the door's own
+rules (:func:`_split_lines` and the keys of :data:`_WRITE_KEYS`), from the
+literal list of the run's pinned graph. Fence:
+``tests/unit/test_studio_workflow_batch_r8.py``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import dataclasses
 import hashlib
@@ -254,7 +263,7 @@ from gateway.package_host.flags import package_host_allowed
 from gateway.routes.apps._common import record_app_audit_bound, record_app_audit_in
 from gateway.routes.studio import actions, door_op, flags
 from gateway.routes.studio.actions import NOT_FOUND, router
-from gateway.studio import objects_store, packages_store
+from gateway.studio import batch_store, objects_store, packages_store
 from gateway.studio.preview import emit_record_event, preview_scope
 
 __all__ = [
@@ -281,8 +290,10 @@ __all__ = [
     "WORKFLOW_VIA",
     "WRITERS_PER_ORG",
     "WRITERS_TOTAL",
+    "plan_workflow_batch",
     "plan_workflow_write",
     "router",
+    "run_workflow_batch",
     "run_workflow_write",
     "workflow_write_digest",
 ]
@@ -1167,7 +1178,12 @@ async def _emit_record_event(out: _Outcome, org: str) -> None:
     nothing, because ``emit_record_event`` checks the preview mark."""
     if out.event is None or not _wrote(out):
         return
-    event_type, payload = out.event
+    await _emit_event(*out.event, org)
+
+
+async def _emit_event(event_type: str, payload: dict[str, Any], org: str) -> None:
+    """Emit ONE record event of a write that committed (C3). It never raises.
+    The batch of a workflow node (E8b) calls it for each item that it wrote."""
     try:
         await emit_record_event(event_type, {**payload, "organization_id": org})
     except Exception as exc:
@@ -1601,6 +1617,347 @@ async def run_workflow_write(*, organization_id: str, member: str, package_id: s
     # C3: after the commit of the write, so no event names a rolled back change.
     await _emit_record_event(out, org)
     return _workflow_result(out)
+
+
+# ── The batch of a workflow node (E8b) ────────────────────────────────────
+
+
+#: The tries of one chunk inside one run while the store is busy, and the
+#: wait before each retry, in seconds. After the last try the node fails with
+#: ``store_busy``, the batch stays open, and the batch scan starts a new run.
+BATCH_CHUNK_TRIES = 3
+BATCH_RETRY_WAITS = (0.5, 1.0)
+#: E8b. The batch node finished its list, and one item or more failed.
+WORKFLOW_ITEMS_FAILED = "items_failed"
+#: E8b. The run names no open batch of this node in the run's org.
+WORKFLOW_NO_BATCH = "no_batch"
+
+
+@dataclasses.dataclass(frozen=True)
+class WorkflowBatchPlan:
+    """What a parked question names about a batch, and the frozen list (E8b).
+    ``items`` holds the writes of each item, which the park passes to
+    ``batch_store.open_batch``. The store keeps their digests only."""
+
+    package_id: str
+    package_name: str
+    object: str
+    op: str
+    uses: str
+    items: tuple[batch_store.BatchItem, ...]
+    list_digest: str
+
+
+async def _batch_line_writes(db: Any, package: packages_store.Package, lines: list[_Line],
+                             ids: dict[str, str]) -> list[objects_store.Write] | None:
+    """The writes of the lines of one item, as :func:`_line_writes` builds
+    them. *ids* keeps the object id of each lines target for the whole list,
+    so a list of 1,000 items reads each target once."""
+    writes: list[objects_store.Write] = []
+    for line in lines:
+        if line.to not in ids:
+            try:
+                child = await objects_store.get_object_by_name(db, line.to, package_id=package.id)
+            except objects_store.ObjectStoreError:
+                child = None
+            if child is None:
+                return None
+            ids[line.to] = child.id
+        writes.append(objects_store.Write(
+            op="create" if line.id is None else "update", object_id=ids[line.to],
+            record_id=line.id, data=line.data, parent=0))
+    return writes
+
+
+async def _batch_item_writes(db: Any, package: packages_store.Package, obj: Any, op: str,
+                             item: Any, ids: dict[str, str]) -> tuple[objects_store.Write, ...] | None:
+    """The writes of ONE item of a batch, or None. The item takes the keys of a
+    door write of its verb (:data:`_WRITE_KEYS`): ``data`` for a create, and
+    ``record_id`` and ``data`` for an update. Its lines (C13) split out as the
+    door splits them. So an item writes what the door would write."""
+    if not isinstance(item, dict) or not isinstance(item.get("key"), str):
+        return None
+    body: dict[str, Any] = {"data": item["data"]} if "data" in item else {}
+    if "record_id" in item:
+        body["id"] = item["record_id"]
+    if (set(body) != _WRITE_KEYS[op] or not isinstance(body.get("data"), dict)
+            or not isinstance(body.get("id", ""), str)):
+        return None
+    split = _split_lines(op, obj, body)
+    if isinstance(split, _Fail):
+        return None
+    data, lines = split
+    line_writes = await _batch_line_writes(db, package, lines, ids)
+    if line_writes is None:
+        return None
+    first = objects_store.Write(op=op, object_id=obj.id, record_id=body.get("id"), data=data)
+    return (first, *line_writes)
+
+
+async def _batch_items(db: Any, package: packages_store.Package, ref: UsesRef,
+                       items: Any) -> tuple[Any, list[batch_store.BatchItem]] | None:
+    """The object of the action and the items of the list as the store
+    freezes them, or None (E8b). The park and each chunk call it on the run's
+    pinned list, so the two build the same writes and the same digests."""
+    op = str(ref.op)
+    if op not in batch_store.BATCH_OPS or not isinstance(items, list) or not items:
+        return None
+    try:
+        obj = await objects_store.get_object_by_name(db, str(ref.object), package_id=package.id)
+    except objects_store.ObjectStoreError:
+        obj = None
+    if obj is None:
+        return None
+    ids: dict[str, str] = {}
+    out: list[batch_store.BatchItem] = []
+    for item in items:
+        writes = await _batch_item_writes(db, package, obj, op, item, ids)
+        if writes is None:
+            return None
+        out.append(batch_store.BatchItem(str(item["key"]), writes))
+    return obj, out
+
+
+async def plan_workflow_batch(db: Any, *, member: str, package_id: Any, action: Any,
+                              items: Any) -> WorkflowBatchPlan | None:
+    """The plan of the batch of a workflow node, read at the park, or None (E8b).
+
+    It runs :func:`_check` as *member* on the caller's session, which binds the
+    run's org. None when the package is not the member's, the action is not
+    declared, the action is no create or update of an object of
+    :data:`DELEGATED_EXECUTORS`, or an item does not take the keys of its verb.
+    It writes nothing."""
+    pid = _uuid_or_none(str(package_id or ""))
+    if pid is None or not _ACTION_ID.fullmatch(str(action or "")):
+        return None
+    out = _Outcome(action=str(action))
+    try:
+        package, ref = await _check(db, member, pid, str(action), out, delegated=True)
+    except HTTPException:
+        return None
+    if out.refusal is not None or ref is None or (ref.source, ref.op) not in DELEGATED_EXECUTORS:
+        return None
+    made = await _batch_items(db, package, ref, items)
+    if made is None:
+        return None
+    _obj, built = made
+    return WorkflowBatchPlan(
+        package_id=pid, package_name=str(package.name), object=str(ref.object), op=str(ref.op),
+        uses=str(out.uses), items=tuple(built),
+        list_digest=batch_store.list_digest(pid, str(action), built))
+
+
+@dataclasses.dataclass(frozen=True)
+class _BatchRun:
+    """The facts of one batch node of one run. The caller binds each one from
+    the run row, the owner and the decision, never from node input."""
+
+    org: str
+    member: str
+    pid: str
+    action: str
+    items: Any
+    run_id: str
+    node_id: str
+    batch_id: str
+    expected_digest: str
+    decision_id: str
+
+
+@dataclasses.dataclass
+class _Step:
+    """What one chunk did: the keys written (with their record ids) and
+    failed, the batch after it, the events to emit, and a code when the node
+    must stop."""
+
+    written: dict[str, str] = dataclasses.field(default_factory=dict)
+    failed: dict[str, str] = dataclasses.field(default_factory=dict)
+    status: str = batch_store.STATUS_OPEN
+    pending: int = 0
+    busy: bool = False
+    code: str | None = None
+    events: list[tuple[str, dict[str, Any]]] = dataclasses.field(default_factory=list)
+
+
+async def _end_for_mismatch(db: Any, run: _BatchRun, out: _Outcome) -> None:
+    """A list that is not the approved list writes nothing, and the batch ends
+    ``failed`` for good (E8b), so no scan starts it again."""
+    out.refusal = WORKFLOW_MISMATCH
+    with contextlib.suppress(batch_store.BatchNotFound):
+        await batch_store.end_stuck_item(db, run.batch_id, code=batch_store.MISMATCH)
+
+
+async def _batch_checked(db: Any, run: _BatchRun, package: _App, ref: UsesRef | None,
+                         out: _Outcome) -> tuple[Any, list[batch_store.BatchItem]] | None:
+    """The checks of one chunk after :func:`_check`: the class of a write of
+    :data:`DELEGATED_EXECUTORS` (create or update), the list built again from
+    the pinned items, and its digest against the one that the owner approved.
+    None when a check refuses, with the code in *out*."""
+    if out.refusal is None and (ref is None or (ref.source, ref.op) not in DELEGATED_EXECUTORS
+                                or ref.op not in batch_store.BATCH_OPS):
+        out.refusal = SOURCE_NOT_OPEN
+    if out.refusal is not None or ref is None:
+        return None
+    made = await _batch_items(db, package, ref, run.items)
+    if made is None:
+        out.object_missing = True
+        return None
+    if batch_store.list_digest(run.pid, run.action, made[1]) != run.expected_digest:
+        await _end_for_mismatch(db, run, out)
+        return None
+    return made
+
+
+async def _batch_drive(db: Any, run: _BatchRun, package: _App, made: tuple[Any, list[Any]],
+                       out: _Outcome, step: _Step) -> None:
+    """Run ONE chunk of the batch on *db*, and fill *step*. A busy store inside
+    the chunk keeps the earlier groups, so the session commits them (E8b). The
+    wait for the batch row raises a plain ``StoreBusy``, which leaves here."""
+    obj, built = made
+    try:
+        res = await batch_store.run_chunk(
+            db, run.member, run.batch_id, {i.key: i.writes for i in built},
+            viewer=_row_viewer(run.member), via=(WORKFLOW_RUN_VIA, run.run_id))
+    except batch_store.DigestMismatch:
+        await _end_for_mismatch(db, run, out)
+        return
+    except batch_store.BatchNotFound:
+        out.refusal = WORKFLOW_NO_BATCH
+        return
+    except batch_store.ChunkBusy as busy:
+        step.busy, step.written, step.failed = True, busy.written, busy.failed
+        out.fail = _busy()
+    else:
+        step.written, step.failed = res.written, res.failed
+        step.status, step.pending = res.status, res.pending
+    # Each item of a batch has the verb of the action. The payload holds the
+    # keys of the changed fields and no value (C3).
+    op = str(built[0].writes[0].op)
+    changed = {i.key: sorted(i.writes[0].data or {}) for i in built}
+    for key, rid in step.written.items():
+        step.events.append((RECORD_EVENT_TYPES[op],
+                            _record_payload(package, obj, op, rid, run.member, changed[key])))
+
+
+def _batch_audit(out: _Outcome, run: _BatchRun, step: _Step) -> dict[str, Any]:
+    """The audit row of one chunk: the action, the run, the node, the decision,
+    the approver, the batch and the counts. It holds no record data."""
+    return {**_audit_detail(out), "via": WORKFLOW_VIA, "run_id": _cap(run.run_id),
+            "node_id": _cap(run.node_id), "decision_id": _cap(run.decision_id),
+            "approver": _cap(run.member), "batch_id": _cap(run.batch_id),
+            "written": len(step.written), "failed": len(step.failed)}
+
+
+async def _batch_chunk(run: _BatchRun) -> _Step:
+    """ONE chunk in ONE ``_tenant_session(org)``: :func:`_check` as the owner,
+    the class check, the digest compare, the chunk of the store and the audit
+    row. A failed audit rolls the chunk back. The events wait for the commit."""
+    out = _Outcome(action=run.action)
+    step = _Step()
+    try:
+        async with _tenant_session(run.org) as db:
+            package, ref = await _check(db, run.member, run.pid, run.action, out, delegated=True)
+            made = await _batch_checked(db, run, package, ref, out)
+            if made is not None:
+                await _batch_drive(db, run, package, made, out, step)
+            await record_app_audit_in(db, app_id=package.id, user_email=run.member,
+                                      kind="action", detail=_batch_audit(out, run, step))
+    except objects_store.StoreBusy:
+        # The wait for the batch row: the session rolled back, and nothing ran.
+        return _Step(busy=True)
+    except HTTPException:
+        # The package is not the member's in this org. A 404 writes no row.
+        return _Step(code=WORKFLOW_NO_PACKAGE)
+    if out.refusal is not None:
+        step.code = out.refusal
+    elif out.object_missing:
+        step.code = OBJECT_MISSING
+    return step
+
+
+async def _batch_chunk_with_tries(run: _BatchRun, tally: dict[str, int]) -> _Step:
+    """One chunk, tried again while the store is busy, at most
+    :data:`BATCH_CHUNK_TRIES` times (E8b). The member must hold
+    ``feature:studio`` before each try, read with no session open. Each try
+    takes a writer slot first. The events of what committed go out after the
+    commit, also on a busy try that kept its earlier groups."""
+    for attempt in range(BATCH_CHUNK_TRIES):
+        if attempt:
+            await asyncio.sleep(BATCH_RETRY_WAITS[min(attempt, len(BATCH_RETRY_WAITS)) - 1])
+        if not await _holds_studio(run.member, run.org):
+            return _Step(code=WORKFLOW_NO_FEATURE)
+        with _writer_slot(run.org, True) as admitted:
+            step = await _batch_chunk(run) if admitted else _Step(busy=True)
+        tally["written"] += len(step.written)
+        tally["failed"] += len(step.failed)
+        for event_type, payload in step.events:
+            await _emit_event(event_type, payload, run.org)
+        if not step.busy or step.code is not None:
+            return step
+    return _Step(code=STORE_BUSY, busy=True)
+
+
+def _batch_result(ok: bool, code: str | None, run: _BatchRun, tally: dict[str, int],
+                  last: _Step | None) -> dict[str, Any]:
+    """What the node reads back: ids, counts and codes, and no record data."""
+    return {"ok": ok, "outcome": "ran" if ok else ("failed" if code in (
+        STORE_BUSY, WORKFLOW_ITEMS_FAILED) else "refused"), "code": code,
+        "batch_id": run.batch_id, "status": None if last is None else last.status,
+        "written": tally["written"], "failed": tally["failed"],
+        "pending": None if last is None else last.pending}
+
+
+async def run_workflow_batch(*, organization_id: str, member: str, package_id: str,
+                             action: str, items: Any, run_id: str, node_id: str,
+                             batch_id: str, expected_digest: str,
+                             decision_id: str) -> dict[str, Any]:
+    """Run the frozen list of a ``studio_batch`` node, chunk after chunk (E8b).
+
+    ⚠️ **The one internal path of a batch.** The caller is
+    ``workflows.service._studio_batcher`` only, after it read the parked
+    decision of the owner again and found a yes that binds the list digest of
+    the batch. That decision is the ONE approval of the whole list, so this
+    path opens no card. It reuses the steps of :func:`run_workflow_write`,
+    in ONE ``_tenant_session(org)`` for each chunk: ``feature:studio`` of the
+    member, a writer slot, :func:`_check` as the member, the class check of
+    :data:`DELEGATED_EXECUTORS`, the digest compare, ``batch_store.run_chunk``
+    and ``record_app_audit_in``. The record events go out after each commit.
+    So the org lock is free between chunks, and the node holds one
+    connection at a time.
+
+    The caller binds the facts: the org of the run row, the owner, the pinned
+    items of the run's graph, the batch of the run and node, and the digest
+    that the decision payload holds. A list that differs from that digest
+    writes nothing and ends the batch ``failed``. A busy store is tried
+    :data:`BATCH_CHUNK_TRIES` times, and then the node fails with
+    ``store_busy`` while the batch stays open for the batch scan. A batch that
+    ends with a failed item answers ``items_failed``. It never raises an
+    ``HTTPException``: the node fails on each answer that is not ``ok``.
+    """
+    org = str(organization_id or "").strip()
+    if not org:
+        return {"ok": False, "outcome": "refused", "code": WORKFLOW_NO_ORG}
+    if not flags.studio_allowed(org):
+        return {"ok": False, "outcome": "refused", "code": WORKFLOW_STUDIO_OFF}
+    pid = _uuid_or_none(package_id)
+    if pid is None or not _ACTION_ID.fullmatch(str(action or "")):
+        return {"ok": False, "outcome": "not_found", "code": WORKFLOW_NO_PACKAGE}
+    run = _BatchRun(org=org, member=member, pid=pid, action=str(action), items=items,
+                    run_id=str(run_id), node_id=str(node_id), batch_id=str(batch_id),
+                    expected_digest=str(expected_digest or ""), decision_id=str(decision_id))
+    tally = {"written": 0, "failed": 0}
+    last: _Step | None = None
+    # Each chunk ends at least one item or ends the batch, so this bound is
+    # never the reason a run stops. It keeps a fault from looping for good.
+    for _ in range(batch_store.MAX_BATCH_ITEMS + 2):
+        last = await _batch_chunk_with_tries(run, tally)
+        if last.code is not None:
+            return _batch_result(False, last.code, run, tally, last)
+        if last.status != batch_store.STATUS_OPEN:
+            break
+    if last is None or last.status != batch_store.STATUS_DONE:
+        return _batch_result(False, WORKFLOW_ITEMS_FAILED, run, tally, last)
+    return _batch_result(True, None, run, tally, last)
 
 
 def _mode(first: UsesRef | None, direct: bool, delegated: bool,

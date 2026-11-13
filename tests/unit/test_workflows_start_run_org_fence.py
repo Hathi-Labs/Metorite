@@ -26,7 +26,8 @@ _ROOT = Path(__file__).resolve().parents[2]
 _WORKFLOWS = _ROOT / "apps" / "services" / "gateway" / "gateway" / "routes" / "workflows"
 
 #: The functions that start or resume a run.
-_TARGETS = frozenset({"start_run", "resume_run"})
+#: STU-E8b adds ``start_batch_run``: the new run of a stopped Studio batch.
+_TARGETS = frozenset({"start_run", "resume_run", "start_batch_run"})
 
 #: The keyword names that carry an org.
 _ORG_KEYWORDS = frozenset({"organization_id", "organization", "org", "org_id", "tenant_id"})
@@ -67,6 +68,12 @@ ALLOWED: dict[tuple[str, str, str], str] = {
         "The manual door (H-328 part (c)). The org is the org of the WORKFLOW "
         "ROW that the member read in the member's own tenant. A person "
         "pressed Run.",
+    ("scheduler.py", "_resume_batch", "start_batch_run"):
+        "The batch scan (STU-E8b). The org is the org of the BATCH ROW and its "
+        "RUN ROW, read in that org's own session. Only `scan_open_batches` calls "
+        "it, inside the org loop of `scan_due_waits`, after the allowlist check "
+        "and the batch flags. It starts a run only on a yes of the decider that "
+        "binds the batch, read from the decision row.",
 }
 
 
