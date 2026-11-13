@@ -106,6 +106,7 @@ Metorite limits what the connection can reach. It cannot limit the shell, `git p
 
 ## Hooks and the rules file
 
+- Start from the core: `kit/agents-md` as the rules file, and the folder `kit/skill` for detail (planning, dispatch, orchestration, bulk writes, review). A client with neither takes the block of `kit/paste-in`.
 - Put the block of `kit/paste-in` in the rules file. Add your own rules below it (`kit/agents-md`).
 - A hook can check the rules that a text cannot enforce (`kit/hooks-example`). Use one to refuse a commit on the main branch, for example.
 - Metorite does not install a hook for you.
