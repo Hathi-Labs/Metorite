@@ -104,9 +104,16 @@ the shapes to the catalog.
 **Data binding (STU-D1, `ai_studio.md` §5.2).** A `table` node and the
 `dataGrid` template may carry a `source` prop: `{ action, args? }`. A Studio
 page supplies `StudioDataContext` (`lib/studio/dataDoor.tsx`). The renderer
-then reads the rows through that door. Chat supplies no door. There the
-renderer skips `source`, and the card draws from its own props. The tool
-refuses `source` in `emit_generative_ui` (`genui_refusal`).
+then reads the rows through that door. A model card in chat gets no door.
+There the renderer skips `source`, and the card draws from its own props.
+The tool still refuses `source` in `emit_generative_ui` (`genui_refusal`).
+
+One chat card has a door (STU-F5a, `ai_studio.md` §14 row F5a). The Studio
+records card (`components/studio/StudioRecordsCard.tsx`) draws a call of
+`studio_record_list` as a live table. The code of the card builds the table
+node, and the model sends no node. Its door holds the read actions of the
+package only (`cardDoor` in `lib/studio/recordsCard.ts`), for every member,
+the owner too. A write on that door makes no network call.
 
 **Typed actions (STU-D1).** A button `action` may be an object:
 `{ id, args?, message? }`. The string form does not change. On a page, the
