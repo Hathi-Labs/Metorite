@@ -53,7 +53,7 @@ RX-1 is BUILT, not merged (2026-11-02, D169, "As built, RX-1" in §4.2.3). A hel
 
 Task 1747 is BUILT, in review (2026-11-06, "As built, task 1747" in §4.2.3). A pack that this turn named, and a pack that the last member turn used, never step aside. A load by the model is sticky. The reach of the Projects owner counts a spare pack as free. A load moves out a pack that came in only by the words (D169 item 8, as amended on 2026-11-06). A turn that a sticky pack left at its start says so.
 
-TS-0 (task 3190, 2026-11-14) is a design, PROPOSED under D222, and nothing of it is built. The model finds a single tool with `find_tools`, and the run loads that tool and not its whole pack (§4.2.9). The slices are TS-1 to TS-9, tasks 3195 to 3203, and TS-1b, the Studio split, task 3207. TS-1c is optional and has no task yet. The demo tasks of rungs 1 to 4 are tasks 3208 to 3211.
+TS-0 (task 3190, 2026-11-14) is a design, PROPOSED under D222, and nothing of it is built. The model finds a single tool with `find_tools`, and the run loads that tool and not its whole pack (§4.2.9). The slices are TS-1 to TS-9, tasks 3195 to 3203, and TS-1b, the Studio split, task 3207. TS-1c is optional, task 3213. The demo tasks of rungs 1 to 4 are tasks 3208 to 3211.
 
 TS-1b is live, not dark, because it changes the Studio packs of every org. Each slice from TS-2 on ships dark behind `TOOL_SEARCH_ORGS`, and the flip is owner-only. The writer verified the anchors of TS-0 on 2026-11-14, on the branch after a merge of main at `378c65428`.
 
