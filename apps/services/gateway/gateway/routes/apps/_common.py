@@ -477,12 +477,19 @@ def check_bundle_size(data: bytes, cap: int = MAX_BUNDLE_BYTES) -> bytes:
 
 # ── Row loading + gating (shared by every feature module) ────────────────────
 
+#: The org that the session is bound to. Since A3b-2 two orgs may hold one
+#: slug, so a read by slug names the org as well as FORCE RLS (defence in
+#: depth, also for a role that bypasses RLS). An unbound session reads nothing.
+_BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
+
+
 async def load_app(db: Any, slug: str) -> Any:
-    """The App Workshop app *slug*, or None. A Studio package (format
+    """The App Workshop app *slug* of the bound org, or None. A Studio package (format
     'manifest', WS-STU A3) answers None, so each slug route gives 404 for
     it. NULL reads as code. Fence: test_studio_packages_r8.py."""
     return (await db.execute(
         text("SELECT * FROM apps WHERE slug = :slug "
+             "AND organization_id = " + _BOUND_ORG + " "
              "AND format IS DISTINCT FROM 'manifest'"),
         {"slug": slug},
     )).fetchone()

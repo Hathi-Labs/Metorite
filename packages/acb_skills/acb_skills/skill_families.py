@@ -863,7 +863,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "AI Studio builder",
         "summary": (
             "Build an AI Studio app: draft a manifest from a brief, patch it, "
-            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save, publish and delete the app, save, publish, pause and list your skills, and read the records of a package."
+            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save, publish and delete the app, start from a ready app, save, publish, pause and list your skills, and read the records of a package."
         ),
         "description": (
             "A tool pack: the builder tools of AI Studio, for the main "
@@ -892,11 +892,14 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "studio_save",
             "studio_publish",
             "studio_delete_package",
+            "studio_template_list",
+            "studio_create_from_template",
             "studio_package_get",
             "studio_record_list",
             "studio_record_create",
             "studio_record_update",
             "studio_record_delete",
+            "studio_app_read",
         ),
         "owner": "studio-builder",
         "core": False,

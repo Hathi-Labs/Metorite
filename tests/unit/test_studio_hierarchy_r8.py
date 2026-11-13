@@ -48,6 +48,7 @@ pytest.importorskip("sqlalchemy")
 
 from acb_common import studio_rules as sr
 from acb_common.db import get_engine, tenant_session
+from acb_common.studio_access import Viewer
 from acb_common.studio_fields import FieldError
 from acb_common.studio_rules import ConstraintError, TreeViolation
 from gateway.studio import objects_store as store
@@ -65,6 +66,9 @@ pytestmark = _DB_GATE
 
 TAG = uuid.uuid4().hex[:8]
 ANA = f"ana.{TAG}@stuc18.test"
+#: C8a. The store takes a viewer. No object of this suite declares `access`,
+#: so each object is open and any member reads and writes it.
+_VIEWER = Viewer(ANA)
 
 _SITE: list[dict[str, Any]] = [
     {"key": "name", "type": "text"},
@@ -123,7 +127,8 @@ async def _site(org: str, pkg: str, rules: list[dict[str, Any]] | None = None) -
 
 async def _put(org: str, obj: store.StudioObject, *writes: Write) -> list[Any]:
     async with tenant_session(org) as db:
-        return await store.apply_writes(db, ANA, package_id=obj.package_id, writes=list(writes))
+        return await store.apply_writes(db, ANA, package_id=obj.package_id, writes=list(writes),
+                                        viewer=_VIEWER)
 
 
 async def _refused(org: str, obj: store.StudioObject, *writes: Write) -> BatchError:
@@ -307,7 +312,7 @@ def test_r8_an_edit_that_keeps_the_parent_runs_no_walk(world) -> None:
 
             event.listen(eng, "before_cursor_execute", _on)
             try:
-                await store.apply_writes(db, ANA, package_id=obj.package_id, writes=[
+                await store.apply_writes(db, ANA, package_id=obj.package_id, viewer=_VIEWER, writes=[
                     Write("update", obj.id, ids[1], {"name": "renamed"})])
             finally:
                 event.remove(eng, "before_cursor_execute", _on)

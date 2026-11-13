@@ -332,7 +332,7 @@ describe("a reminder takes no capacity and no lane", () => {
   it("only task items reach the block, lane and stat functions", () => {
     // Every call takes `items` (or the `blocks` of `items`) and nothing else.
     // A spread, a cast or a reminder list in the first argument fails here.
-    for (const rel of ["../CalendarView.tsx", "../components/TimeGrid.tsx", "../components/MonthGrid.tsx"]) {
+    for (const rel of ["../CalendarView.tsx", "../components/TimeGrid.tsx", "./gridAdapter.ts"]) {
       const src = read(rel);
       for (const arg of firstArgs(src, "blocksForDay")) expect(arg, `${rel} blocksForDay`).toBe("items");
       for (const arg of firstArgs(src, "deadlinesForDay")) expect(arg, `${rel} deadlinesForDay`).toBe("items");
