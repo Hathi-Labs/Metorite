@@ -15,8 +15,9 @@ import { stubApi } from "./visual/harness";
  *   2. Flag on: the sidebar's Needs you row (the Home row) holds the
  *      feed's count, and neither My Tasks nor Projects mounts a bell.
  *   3. Phone: the Menu drawer holds the bell. The panel lists the same rows
- *      as My Day's "Needs you" card. GL-12 removed the desktop bell, so the
- *      desktop panel cases (Done and Undo, Mark read, Escape) are gone.
+ *      as My Day's "Needs you" card, Escape closes it, Done takes the row out
+ *      of both with a pressable Undo, and Mark read clears the row. GL-12
+ *      removed the desktop bell, so these cases run on the phone.
  */
 
 const MEMBER = {
@@ -115,6 +116,14 @@ async function setup(page: Page, opts: { dock: boolean; myDay?: boolean }) {
 const shellBar = (page: Page) => page.locator("[data-shell-bar]");
 const appBar = (page: Page) => page.locator('[data-app-bar="desktop"]');
 const panel = (page: Page) => page.getByRole("dialog", { name: "Needs you" });
+const card = (page: Page) => page.getByTestId("needs-you");
+/** The phone's bell: the Menu drawer holds it. `dispatchEvent`, as the phone case explains. */
+const phoneBell = async (page: Page, count: number) => {
+  await page.getByRole("button", { name: "Menu" }).dispatchEvent("click");
+  const b = page.getByRole("button", { name: `Needs you, ${count} items` });
+  await expect(b).toBeVisible();
+  return b;
+};
 /** The row titles of a list, in order. */
 const titles = (scope: ReturnType<Page["locator"]>) =>
   scope.locator("li a span.block.truncate.text-sm").allInnerTexts();
@@ -147,11 +156,6 @@ test.describe("desktop", () => {
     await expect(page.locator("[data-nav-my-day]")).toBeVisible();
     await expect(page.getByRole("button", { name: /^Notifications/ })).toHaveCount(0);
   });
-
-  // The panel cases (Escape and focus, Done and Undo, Mark read) opened the
-  // panel from the desktop bell. GL-12 removed that bell, and the sidebar row is
-  // a link to My Day, so the desktop has no trigger. The phone case below
-  // still opens the panel, and `shellBell.test.ts` fences the rows.
 });
 
 test.describe("phone", () => {
@@ -174,5 +178,50 @@ test.describe("phone", () => {
       "Priya assigned you Draft the plan",
       "Re: the supplier contract",
     ]);
+  });
+
+  test("the panel lists My Day's rows, and Escape closes it", async ({ page }) => {
+    await setup(page, { dock: true, myDay: true });
+    await page.goto("/");
+    await expect(card(page).getByText("Send the quote")).toBeVisible();
+    const cardRows = await titles(card(page));
+    expect(cardRows).toEqual(["Send the quote", "Priya assigned you Draft the plan", "Re: the supplier contract"]);
+    await (await phoneBell(page, 3)).click();
+    await expect(panel(page)).toBeVisible();
+    for (const group of ["Overdue", "From your projects", "Waiting for your reply"]) {
+      await expect(panel(page).getByRole("group", { name: group })).toBeVisible();
+    }
+    expect(await titles(panel(page))).toEqual(cardRows);
+    await expect(panel(page).getByRole("link", { name: /Open My Day/ })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(panel(page)).toHaveCount(0);
+  });
+
+  test("Done closes the panel, takes the row out of both, and its Undo is pressable", async ({ page }) => {
+    await setup(page, { dock: true, myDay: true });
+    await page.goto("/");
+    await expect(card(page).getByText("Send the quote")).toBeVisible();
+    await (await phoneBell(page, 3)).click();
+    await panel(page).getByRole("button", { name: "Mark Send the quote done" }).click();
+    await expect(panel(page)).toHaveCount(0);
+    await expect(card(page).getByText("Send the quote")).toHaveCount(0);
+    await expect(card(page).getByText("Priya assigned you Draft the plan")).toBeVisible();
+    await page.getByRole("button", { name: "Undo" }).click({ timeout: 5_000 });
+    await expect(card(page).getByText("Send the quote")).toBeVisible();
+  });
+
+  test("Mark read takes a notification out of both, through the Projects route", async ({ page }) => {
+    await setup(page, { dock: true, myDay: true });
+    const reads: string[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "POST" && req.url().includes("/api/projects/notifications/read")) reads.push(req.postData() ?? "");
+    });
+    await page.goto("/");
+    await expect(card(page).getByText("Priya assigned you Draft the plan")).toBeVisible();
+    await (await phoneBell(page, 3)).click();
+    await panel(page).getByRole("button", { name: "Mark Priya assigned you Draft the plan read" }).click();
+    await expect(panel(page).getByText("Priya assigned you Draft the plan")).toHaveCount(0);
+    await expect(card(page).getByText("Priya assigned you Draft the plan")).toHaveCount(0);
+    expect(reads).toEqual([JSON.stringify({ ids: ["n1"] })]);
   });
 });
