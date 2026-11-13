@@ -1264,3 +1264,89 @@ def test_a_manifest_without_runtime_hashes_as_before() -> None:
         b'{"id":"pin","name":"Pin","purpose":"Hold the hash.","studio":1}'
     ).hexdigest()
     assert validate_manifest(doc) == []
+
+
+# --- nav, the rail of the app (STU-AF2a) ---
+
+
+def _nav_doc(*sections: dict, pages: int = 1) -> dict:
+    ps = [_page(id=f"p{i}") for i in range(pages)]
+    return doc(pages=ps, nav=list(sections))
+
+
+def _sec(title: str = "Work", *rows: dict) -> dict:
+    return {"title": title, "rows": list(rows) or [{"page": "p0"}]}
+
+
+def test_nav_is_optional_and_defaults_to_empty():
+    assert "nav" not in EXAMPLE
+    assert validate_manifest(EXAMPLE) == []
+    assert Manifest.model_validate(EXAMPLE).nav == []
+    again = Manifest.model_validate(Manifest.model_validate(EXAMPLE).model_dump(mode="json"))
+    assert again.nav == []
+
+
+def test_valid_nav_with_an_icon_and_a_label():
+    d = _nav_doc(_sec("Work", {"page": "p0", "icon": "Home", "label": "Start"}, {"page": "p1"}), pages=2)
+    assert validate_manifest(d) == []
+    assert Manifest.model_validate(d).nav[0].rows[0].icon == "Home"
+
+
+def test_nav_section_cap_is_four():
+    ok = [_sec(f"S{i}") for i in range(4)]
+    assert validate_manifest(_nav_doc(*ok)) == []
+    one(_nav_doc(*ok, _sec("S4")), "$.nav", contains="at most 4")
+
+
+def test_nav_row_cap_is_twelve():
+    rows = [{"page": "p0"}] * 13
+    assert validate_manifest(_nav_doc(_sec("S", *rows[:12]))) == []
+    one(_nav_doc(_sec("S", *rows)), "$.nav[0].rows", contains="at most 12")
+
+
+def test_nav_row_names_a_declared_page():
+    one(_nav_doc(_sec("S", {"page": "nope"})), "$.nav[0].rows[0].page", contains="not declared")
+
+
+def test_nav_without_pages_is_refused():
+    d = doc(nav=[_sec("S")])
+    one(d, "$.nav[0].rows[0].page", contains="`pages`")
+
+
+def test_duplicate_section_titles_are_refused():
+    one(_nav_doc(_sec("Same"), _sec("Same")), "$.nav[1]", contains="used twice")
+
+
+def test_nav_icon_outside_the_list_is_refused():
+    d = _nav_doc(_sec("S", {"page": "p0", "icon": "Skull"}))
+    one(d, "$.nav[0].rows[0].icon", contains="icon list")
+
+
+def test_nav_icons_equal_the_literal_of_a_row():
+    from typing import get_args
+
+    from acb_common.studio_manifest import NAV_ICONS, NavRow
+
+    literal = [a for a in get_args(NavRow.model_fields["icon"].annotation) if a is not type(None)]
+    assert tuple(get_args(literal[0])) == NAV_ICONS
+    assert len(set(NAV_ICONS)) == len(NAV_ICONS)
+
+
+def test_nav_row_refuses_a_colour_key():
+    d = _nav_doc(_sec("S", {"page": "p0", "color": "red"}))
+    one(d, "$.nav[0].rows[0].color", contains="style")
+    d = _nav_doc(_sec("S", {"page": "p0", "label": "#ff0000"}))
+    one(d, "$.nav[0].rows[0].label", contains="colour")
+
+
+def test_nav_row_refuses_an_unknown_key_and_a_blank_title():
+    assert _at(_nav_doc(_sec("S", {"page": "p0", "badge": 3})), "$.nav[0].rows[0].badge")
+    assert _at(_nav_doc(_sec(" ")), "$.nav[0].title")
+
+
+def test_every_first_party_template_still_validates():
+    root = Path(__file__).resolve().parents[2] / "packages/acb_common/acb_common/studio_templates"
+    files = sorted(root.glob("*.json"))
+    assert files
+    for f in files:
+        assert validate_manifest(json.loads(f.read_text(encoding="utf-8"))) == [], f.name
