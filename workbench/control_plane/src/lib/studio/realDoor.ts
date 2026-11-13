@@ -12,8 +12,9 @@
  * write. So a read that reached a write action would run as the member's own click.
  * Two guards hold, and each one alone is not enough.
  *
- * 1. The client guard: `door.read` accepts only `object:<name>.list` and
- *    `object:<name>.get`, and refuses every other source with no network call. It
+ * 1. The client guard: `door.read` accepts only `object:<name>.list`,
+ *    `object:<name>.get` and `object:<name>.aggregate` (STU-D4b), and refuses every
+ *    other source with no network call. It
  *    holds for the manifest that the page read at open. The door maps a verb to the
  *    action id of that manifest. A later draft can re-point an id at a write, and the
  *    page does not know until it reads the package again.
@@ -22,6 +23,9 @@
  *    a delete (`_write_input` takes exactly the keys of the write). So a re-pointed id
  *    still cannot delete a record. A list body cannot name a delete either, because
  *    the list takes only filter, sort, limit and offset.
+ * 3. The aggregate body: the door sends only `filter`, `group_by` and `measures` of
+ *    `source.args` (`AGGREGATE_KEYS`). So an aggregate body never holds `id` or
+ *    `data`, and a re-pointed id cannot match the keys of a write.
  *
  * A page reads on mount, on focus and on refresh, and none of those may write.
  * Fence: `realDoor.test.ts`.
@@ -35,7 +39,12 @@ import { type ActionResult, type Row, type StudioDataDoor, type StudioSource, wi
 import { ACTION_FAILED } from "./TypedActionButton";
 
 /** The one shape of a source that a read may name. */
-const READ_SOURCE = /^object:[a-z][a-z0-9_]{0,47}\.(?:list|get)$/;
+const READ_SOURCE = /^object:[a-z][a-z0-9_]{0,47}\.(?:list|get|aggregate)$/;
+/**
+ * The keys of an aggregate body: the C2b input schema (`AGGREGATE_INPUT_KEYS` of
+ * `gateway/routes/studio/invoke.py`). `realDoor.test.ts` holds the two equal.
+ */
+export const AGGREGATE_KEYS = ["filter", "group_by", "measures"] as const;
 /** A write that a click may name. */
 const WRITE_ACTION = /^object:[a-z][a-z0-9_]{0,47}\.(?:create|update|delete)$/;
 /** A declared action id (A2). */
@@ -121,6 +130,13 @@ export function flattenRecords(answer: unknown): Row[] | null {
 export function flattenRecord(answer: unknown): Row | null {
   if (!isObject(answer) || !isObject(answer.record)) return null;
   return flattenRecords({ records: [answer.record] })?.[0] ?? null;
+}
+
+/** The body of an aggregate: the keys of `AGGREGATE_KEYS` of the args, and no other. */
+export function aggregateBody(args: Record<string, unknown> | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of AGGREGATE_KEYS) if (args && args[k] !== undefined) out[k] = args[k];
+  return out;
 }
 
 const text = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v : null);
@@ -246,7 +262,9 @@ export function createRealDoor(opts: RealDoorOptions): StudioDataDoor {
       if (!id) throw new DoorReadError(NOT_DECLARED_SENTENCE, 403);
       // The marker is the second guard (see the file header). Only a get carries it.
       const isGet = source.action.endsWith(".get");
-      const out = await post(id, isGet ? { ...(source.args ?? {}), read: true } : (source.args ?? {}));
+      const isAggregate = source.action.endsWith(".aggregate");
+      const out = await post(id, isGet ? { ...(source.args ?? {}), read: true }
+        : isAggregate ? aggregateBody(source.args) : (source.args ?? {}));
       if (out.status < 200 || out.status >= 300) {
         const failed = mapAnswer(out.status, out.body, out.wait);
         throw new DoorReadError(failed.message ?? ACTION_FAILED, out.status);
@@ -255,6 +273,11 @@ export function createRealDoor(opts: RealDoorOptions): StudioDataDoor {
         const one = flattenRecord(out.body);
         if (!one) throw new DoorReadError(GONE_SENTENCE, 404);
         return [one];
+      }
+      // An aggregate answers ONE row, the C2b result, as `parseAggregate` reads it.
+      if (isAggregate) {
+        if (!isObject(out.body) || !Array.isArray(out.body.measures)) throw new DoorReadError(ACTION_FAILED, 502);
+        return [out.body];
       }
       const rows = flattenRecords(out.body);
       if (!rows) throw new DoorReadError(ACTION_FAILED, 502);
@@ -372,6 +395,47 @@ export async function listPackages(fetchImpl: typeof fetch = fetch): Promise<Pac
     live_version: typeof p.live_version === "number" ? p.live_version : null,
     updated_at: typeof p.updated_at === "string" ? p.updated_at : null,
   }));
+}
+
+/** One package in the admin view (J4). The gateway names the owner, and holds no manifest and no reason text. */
+export interface OrgPackage extends PackageSummary {
+  owner_email: string;
+  mine: boolean;
+  /** Action calls through the door. It is not a workflow run. */
+  action_calls: number;
+  /** True when the count stopped at its cap, so the real number is larger. */
+  action_calls_capped: boolean;
+  last_error: { action: string | null; outcome: string; at: string | null } | null;
+}
+
+/** The answer of `GET /api/studio/packages?scope=org`. `admin` is the gateway's word, never a guess. */
+export interface OrgPackages {
+  admin: boolean;
+  packages: OrgPackage[];
+  truncated: boolean;
+}
+
+/** The admin view. A caller without the right gets `admin: false` and their own packages, so the UI shows no view. */
+export async function listOrgPackages(fetchImpl: typeof fetch = fetch): Promise<OrgPackages> {
+  const body = await getJson("/api/studio/packages?scope=org", fetchImpl);
+  const o = isObject(body) ? body : {};
+  const raw = Array.isArray(o.packages) ? o.packages : [];
+  const admin = o.admin === true;
+  const packages = !admin ? [] : raw.filter(isObject).map((p): OrgPackage => {
+    const e = isObject(p.last_error) ? p.last_error : null;
+    return {
+      id: String(p.id), name: String(p.name ?? ""), status: String(p.status ?? ""),
+      live_version: typeof p.live_version === "number" ? p.live_version : null,
+      updated_at: typeof p.updated_at === "string" ? p.updated_at : null,
+      owner_email: String(p.owner_email ?? ""), mine: p.mine === true,
+      action_calls: typeof p.action_calls === "number" ? p.action_calls : 0,
+      action_calls_capped: p.action_calls_capped === true,
+      last_error: e && typeof e.outcome === "string"
+        ? { action: typeof e.action === "string" ? e.action : null, outcome: e.outcome, at: typeof e.at === "string" ? e.at : null }
+        : null,
+    };
+  });
+  return { admin, packages, truncated: admin && o.truncated === true };
 }
 
 export async function getPackage(id: string, fetchImpl: typeof fetch = fetch): Promise<PackageDetail> {

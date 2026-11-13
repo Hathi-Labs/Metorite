@@ -36,6 +36,12 @@ META_FULL_AT = "full_sync_at"
 META_CALENDAR_ID = "metorite_calendar_id"
 META_ACCOUNT_EMAIL = "account_email"
 META_ACCOUNT_ID = "account_id"
+#: The member's switch: write the task blocks of this connection out (CE-13d).
+#: Absent means ON, so every row made before this key keeps today's behaviour
+#: (R6). It lives in the COLUMN ``provider_meta`` only, never in the token blob:
+#: the blob stringifies every value ("False"), and a token refresh merges the
+#: blob's meta back into the column.
+META_PUSH_TASKS = "push_tasks"
 META_RETRY_AT = "retry_at"
 
 #: Provider names on the connection row, and the word the API uses.
@@ -131,6 +137,17 @@ async def save_cursor(
     if full_at is not None:
         extra[META_FULL_AT] = full_at.isoformat()
     await store.merge_provider_meta(db, org, connection_id, extra)
+
+
+#: A marker that is not a value: "the row had no such key".
+ABSENT: Any = object()
+
+
+def push_tasks_enabled(conn: store.Connection) -> bool:
+    """True only for an ABSENT key or the JSON ``true``. FAIL CLOSED: any other
+    value ("False", "false", 0, null) is OFF, because this gates a write to a
+    third party and a garbled switch must never turn the write-out on."""
+    return conn.provider_meta.get(META_PUSH_TASKS, True) is True
 
 
 def metorite_calendar_id(conn: store.Connection) -> str | None:

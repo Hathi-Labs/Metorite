@@ -12,9 +12,10 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
-  NO_LIST_LINE, appBrief, changedWords, libraryCounts, mergeLibrary, noListLine, packageCard, packageShows,
+  ACTION_CALLS_LABEL, NO_ERRORS_LINE, NO_LIST_LINE, NO_RUNS_LINE, USE_NOT_TRACKED_LINE, appBrief, callsWords,
+  changedWords, effectiveFilter, libraryCounts, membersPill, mergeLibrary, noListLine, orgCard, packageCard, packageShows,
 } from "./packageLibrary";
-import type { PackageSummary } from "./realDoor";
+import type { OrgPackage, PackageSummary } from "./realDoor";
 
 const ID = "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f";
 const pkg = (over: Partial<PackageSummary> = {}): PackageSummary => ({
@@ -128,7 +129,7 @@ describe("chat first", () => {
 describe("the gallery loads both reads before it clears the skeleton", () => {
   it("waits for the packages, and drops an older answer", () => {
     expect(gallery).toContain("await packagesRead;");
-    expect(gallery.indexOf("await packagesRead;")).toBeLessThan(gallery.indexOf("setLoading(false);\n    }\n  }, []);"));
+    expect(gallery.indexOf("await packagesRead;")).toBeLessThan(gallery.indexOf("setLoading(false);\n      // The admin read starts AFTER"));
     expect(gallery).toContain("seq !== packagesSeq.current");
   });
   it("draws the state chip with the shared Badge", () => {
@@ -154,5 +155,81 @@ describe("the app page", () => {
 
   it("holds the Delete app action in the bar", () => {
     expect(page).toContain("<DeletePackageButton");
+  });
+});
+
+// --- the admin view (STU-J4) ---
+
+const org = (over: Partial<OrgPackage> = {}): OrgPackage => ({
+  ...pkg(), owner_email: "ben@x.in", mine: false, action_calls: 0, action_calls_capped: false, last_error: null, ...over,
+});
+
+describe("the admin view of packages", () => {
+  it("a package with no audit row shows the three honest empty states", () => {
+    const c = orgCard(org({ live_version: null, status: "draft" }));
+    expect(c).toMatchObject({ state: "draft", version: "No live version", calls: NO_RUNS_LINE, errorLine: NO_ERRORS_LINE, use: USE_NOT_TRACKED_LINE, error: null });
+    expect(NO_RUNS_LINE).toBe("No runs yet");
+    expect(NO_ERRORS_LINE).toBe("No errors");
+    expect(USE_NOT_TRACKED_LINE).toBe("Not tracked yet");
+  });
+
+  it("names the owner, the live version, the count and the last error", () => {
+    const now = Date.parse("2026-11-11T12:00:00Z");
+    const c = orgCard(org({
+      owner_email: "ben@x.in", live_version: 3, action_calls: 1204,
+      last_error: { action: "close_visit", outcome: "refused", at: "2026-11-11T10:00:00Z" },
+    }), now);
+    expect(c).toMatchObject({ owner: "ben@x.in", state: "live", version: "v3", calls: "1,204 action calls" });
+    expect(c.errorLine).toBe("Refused: close_visit, 2h ago");
+    expect(c.error).toEqual({ action: "close_visit", outcome: "refused", when: "2h ago" });
+  });
+
+  it("shows no reason text: the card has no field for one", () => {
+    const withReason = org({ last_error: { action: "a", outcome: "failed", at: null, reason: "secret detail" } as never });
+    expect(JSON.stringify(orgCard(withReason))).not.toContain("secret detail");
+  });
+
+  it("counts say the number, the singular and the cap", () => {
+    expect(callsWords(0, false)).toBe(NO_RUNS_LINE);
+    expect(callsWords(1, false)).toBe("1 action call");
+    expect(callsWords(10000, true)).toBe("10,000+ action calls");
+    expect(ACTION_CALLS_LABEL).toBe("Action calls");
+  });
+
+  it("the pill exists only when the gateway said admin", () => {
+    expect(membersPill(false, 5)).toBeNull();
+    expect(membersPill(true, 5)).toEqual({ id: "members", label: "All members", count: 5 });
+  });
+
+  it("the members filter shows no member package beside the admin grid", () => {
+    expect(packageShows("members", { live_version: 1 })).toBe(false);
+  });
+
+  it("the gallery reads the admin answer, and guesses nothing from the role", () => {
+    expect(gallery).toContain("listOrgPackages()");
+    expect(gallery).toContain("membersPill(orgAdmin");
+    expect(gallery).not.toMatch(/admin:members|isAdmin|role === "admin"/);
+  });
+
+  it("a chosen members filter falls back to all when the pill goes, for the grid and the pills alike", () => {
+    expect(effectiveFilter("members", true)).toBe("members");
+    expect(effectiveFilter("members", false)).toBe("all");
+    expect(effectiveFilter("drafts", false)).toBe("drafts");
+    expect(gallery).toContain("const filter = effectiveFilter(chosen, members !== null)");
+    expect(gallery).toContain("activeId={filter}");
+  });
+
+  it("the org list loads AFTER the library shows, and never holds the skeleton", () => {
+    const body = gallery.slice(gallery.indexOf("const fetchApps"));
+    const finish = body.indexOf("setLoading(false)");
+    expect(finish).toBeGreaterThan(0);
+    expect(body.indexOf("void readOrg()")).toBeGreaterThan(finish);
+    expect(body.slice(0, finish)).not.toContain("listOrgPackages");
+    expect(body.slice(0, finish)).not.toMatch(/await readOrg|await orgRead/);
+  });
+
+  it("the admin card gives the full owner address and breaks an action id at underscores", () => {
+    expect(gallery).toContain("title={card.owner}");
+    expect(gallery).toContain("breakAtUnderscores(card.errorLine)");
   });
 });
