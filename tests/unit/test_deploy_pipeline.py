@@ -342,8 +342,9 @@ def test_a_job_tests_the_tip_exactly_when_it_is_in_the_batch_group(
 ) -> None:
     """A batch job tests the tip, so a fold cannot leave the tip untested.
 
-    Every job outside the batch group tests GITHUB_SHA. The release ships
-    GITHUB_SHA, so its gate must test that commit and no other.
+    Every job outside the batch group keeps its checkout. A release checks
+    out the release commit (CIV-30, test_green_pointer.py), so its gate tests
+    the commit that it ships and no other.
     """
     github = {"event_name": event, "run_attempt": attempt, "run_id": _RUN_ID}
     in_batch = _gh_eval(parsed["jobs"]["test"]["concurrency"]["group"], github) == "main-full-suite"
@@ -363,10 +364,11 @@ def test_a_push_batch_tests_the_tip_and_a_release_tests_its_own_commit(parsed: d
     # A half-moved tree must fail the job, never test in silence.
     assert "continue-on-error" not in tip
     assert TIP_FETCH in tip["run"] and TIP_CHECKOUT in tip["run"]
-    # The checkout itself takes GITHUB_SHA. That is the release path.
-    assert steps[0]["uses"].startswith("actions/checkout@") and not steps[0].get("with"), (
-        "the checkout must take GITHUB_SHA, with no `ref:`. The release ships that commit."
-    )
+    # CIV-30: a release checks out the release commit, and a push keeps the
+    # default checkout (GITHUB_SHA on local `main`), which the tip step moves.
+    assert steps[0]["uses"].startswith("actions/checkout@") and steps[0].get("with") == {
+        "ref": "${{ github.event_name != 'push' && needs.release-commit.outputs.sha || '' }}",
+    }, "the checkout takes the release commit on a release, and the default on a push"
     assert names[1] == TIP_STEP, "the tip step comes straight after the checkout"
     assert names.index(TIP_STEP) < names.index(RANGE_STEP) < names.index("Sync deps") < names.index(
         "Run unit tests"), "move the tree first, then name it, then install and test it"
@@ -811,11 +813,12 @@ def test_the_r8_gate_runs_on_a_release_and_never_on_a_push(
 def test_the_r8_jobs_read_the_planned_conditions(parsed: dict) -> None:
     jobs = parsed["jobs"]
     assert jobs[R8_SUITE]["if"] == f"${{{{ {R8_RELEASE} }}}}"
-    assert jobs[R8_SUITE]["needs"] == "lint"
+    # CIV-30: each shard checks out the release commit.
+    assert jobs[R8_SUITE]["needs"] == ["lint", "release-commit"]
     # `always()`: a failed or skipped shard must turn the gate red. A gate
     # that skipped would read as a pass.
     assert jobs[R8_GATE]["if"] == f"${{{{ always() && ({R8_RELEASE}) }}}}"
-    assert jobs[R8_GATE]["needs"] == R8_SUITE
+    assert jobs[R8_GATE]["needs"] == [R8_SUITE, "release-commit"]
 
 
 def test_the_r8_jobs_join_no_group(parsed: dict) -> None:
@@ -921,7 +924,11 @@ def test_the_r8_gate_reads_every_shard_and_runs_the_guard(parsed: dict) -> None:
     assert len(downloads) == 1
     assert downloads[0]["with"] == {"pattern": "r8-junit-shard-*", "path": "junit", "merge-multiple": True}
     guard = _job_step(parsed, R8_GATE, R8_GUARD)["run"]
-    assert guard.lstrip().startswith("python3 scripts/ci_unit_guard.py check --junit junit")
+    # CIV-30: the step first reads the release commit's copy of deploy.yml.
+    # test_green_pointer.py fences that part.
+    starts = [ln for ln in guard.splitlines()
+              if ln.startswith("python3 scripts/ci_unit_guard.py check --junit junit")]
+    assert len(starts) == 1, "one guard command, at the start of its line"
 
 
 def test_the_guard_lists_are_pr_checks_lists(parsed: dict, pr_check: dict) -> None:
@@ -939,7 +946,9 @@ def test_the_guard_lists_are_pr_checks_lists(parsed: dict, pr_check: dict) -> No
         )
     assert len(ours["--must-run"]) > 50
     # A release runs every R8 suite. A filter (CIV-3) belongs to pr-check.
-    assert set(ours) == {"--junit", "--disarmed", "--never-skip", "--must-run"}
+    # CIV-30: `--lists-from` and `--lists-step` read these lists from the
+    # release commit's copy of deploy.yml (test_green_pointer.py).
+    assert set(ours) == {"--junit", "--lists-from", "--lists-step", "--disarmed", "--never-skip", "--must-run"}
 
 
 def test_every_file_that_the_guard_names_runs_in_an_r8_shard(
@@ -1054,7 +1063,7 @@ def test_the_r8_cover_step_runs_after_the_unit_run_and_only_on_its_success(parse
 
 def test_the_r8_cover_step_leaves_the_jobs_and_the_gate_alone(parsed: dict) -> None:
     jobs = parsed["jobs"]
-    assert jobs["test"]["needs"] == "lint"
+    assert jobs["test"]["needs"] == ["lint", "release-commit"]
     assert jobs["test"]["if"] == "${{ !inputs.skip_tests }}"
     for job in (R8_SUITE, R8_GATE):
         text = str(jobs[job])
@@ -1106,9 +1115,9 @@ def test_the_deploy_is_verified_by_the_SERVING_COMMIT(raw: str) -> None:
         "a successful deploy from a timeout-killed one that left the OLD build "
         "running and healthy."
     )
-    assert "GITHUB_SHA" in deploy_step, (
-        "verify() must compare the serving SHA against THIS RUN's commit — "
-        "reading /version without comparing it proves nothing"
+    assert "RELEASE_SHA" in deploy_step, (
+        "verify() must compare the serving SHA against THIS RUN's release "
+        "commit (CIV-30) — reading /version without comparing it proves nothing"
     )
 
 
@@ -1117,7 +1126,7 @@ def test_a_wrong_commit_fails_rather_than_warns(raw: str) -> None:
     verify = raw[raw.index("verify() {"):raw.index("hand_off_to_pull_path() {")]
     ok_line = [
         line for line in verify.splitlines()
-        if 'got_sha" = "$GITHUB_SHA' in line
+        if 'got_sha" = "$RELEASE_SHA' in line
     ]
     assert ok_line, (
         "verify()'s success condition must include the SHA equality test — if "
