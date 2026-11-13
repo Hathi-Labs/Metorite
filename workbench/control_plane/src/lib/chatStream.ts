@@ -227,6 +227,51 @@ export function withCustomEvent(m: ChatMessage, name: string, value: unknown): C
   return { ...m, customEvents: [...(m.customEvents ?? []), event] };
 }
 
+/**
+ * HRD-6 (`chat_failure_modes.md` §4 row B6): the CUSTOM event of a slow
+ * tool's line (`acb_skills.progress_notice`). The live loop shows it under
+ * the running step. The replay ignores it, and no save keeps it.
+ */
+export const PROGRESS_EVENT = "progress";
+
+/** The longest line the chat draws. The server sends one line. */
+const NOTICE_MAX = 300;
+
+/** Show the line of a slow tool on the message. A new line replaces the old
+ *  one, so parallel steps never stack two lines. */
+export function withProgressNotice(m: ChatMessage, value: unknown): ChatMessage {
+  const v = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const text = String(v.text ?? "").replace(/\s+/g, " ").trim().slice(0, NOTICE_MAX);
+  if (!text) return m;
+  const toolId = typeof v.tool_call_id === "string" && v.tool_call_id ? v.tool_call_id : undefined;
+  return { ...m, progressNotice: { text, ...(toolId ? { toolId } : {}) } };
+}
+
+/** True while a step of the message, or a step of a hand-off, still runs. */
+function anyStepRunning(m: ChatMessage): boolean {
+  return (m.toolEvents ?? []).some(
+    (t) => t.status === "running" || (t.subAgentTools ?? []).some((st) => st.status === "running"),
+  );
+}
+
+/** Take the line away when its step ended, or when no step runs. */
+function settleNotice(m: ChatMessage, endedId: string): ChatMessage {
+  const n = m.progressNotice;
+  if (!n) return m;
+  if (n.toolId === endedId || !anyStepRunning(m)) {
+    const { progressNotice: _gone, ...rest } = m;
+    return rest;
+  }
+  return m;
+}
+
+/** Take the line away, whatever step it names. */
+function withoutNotice(m: ChatMessage): ChatMessage {
+  if (!m.progressNotice) return m;
+  const { progressNotice: _gone, ...rest } = m;
+  return rest;
+}
+
 /** Per-stream fold cursor threaded through {@link applyStreamEvent}. */
 export interface StreamFold {
   /** Index of the most recently folded answer block — text that streamed as the
@@ -272,8 +317,10 @@ export function applyStreamEvent(
         else cur.push({ id: segId, text: deltaText });
         segments = cur;
       }
+      // HRD-6: answer text came, so the slow step's line goes.
+      const base = deltaText.trim() ? withoutNotice(m) : m;
       return {
-        ...m,
+        ...base,
         content: m.content + deltaText,
         segments,
         streaming: true,
@@ -358,7 +405,8 @@ export function applyStreamEvent(
     }
     case "tool_end": {
       const status: ToolEvent["status"] = evt.success ? "done" : "error";
-      return {
+      // HRD-6: the line of a slow step goes when that step ends.
+      return settleNotice({
         ...m,
         toolEvents: (m.toolEvents ?? []).map((t) =>
           t.id === String(evt.id)
@@ -375,7 +423,7 @@ export function applyStreamEvent(
               }
             : t,
         ),
-      };
+      }, String(evt.id ?? ""));
     }
     case "tool_args": {
       // The running step's arguments, once whole (route.ts). The trail then
@@ -427,7 +475,7 @@ export function applyStreamEvent(
         if (lastText.trim()) content = lastText;
       }
       return {
-        ...m,
+        ...withoutNotice(m),
         content,
         reasoningBlocks: u.reasoningBlocks,
         streaming: false,
@@ -499,7 +547,8 @@ export function applySubAgentEvent(
     }
     case "sub_agent_tool_end": {
       const stId = String(evt.id ?? "");
-      return {
+      // HRD-6: a slow step of a hand-off takes its line away when it ends.
+      return settleNotice({
         ...m,
         toolEvents: evts.map((t) => !t.subAgentTools ? t : {
           ...t,
@@ -507,7 +556,7 @@ export function applySubAgentEvent(
             st.id === stId ? { ...st, result: String(evt.result ?? ""), status: evt.success ? "done" as const : "error" as const } : st,
           ),
         }),
-      };
+      }, stId);
     }
     case "sub_agent_error": {
       const idx = [...evts].reverse().findIndex((t) => t.subAgentActive);

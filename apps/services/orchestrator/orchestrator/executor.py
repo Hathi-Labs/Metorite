@@ -10937,10 +10937,12 @@ def _is_answer_event(event: Any) -> bool:
         return isinstance(todos, list) and bool(todos)
     if kind == "CUSTOM":
         from acb_common.assistant_profile import PROFILE_USED_EVENT
+        from acb_skills.progress_notice import EVENT as PROGRESS_EVENT
 
+        # HRD-6: the line of a slow tool is live only, and the fold drops it.
         return not (
             _is_route_event(event) or _is_hold_beat(event)
-            or event.get("name") in ("frontend_tool", PROFILE_USED_EVENT)
+            or event.get("name") in ("frontend_tool", PROFILE_USED_EVENT, PROGRESS_EVENT)
         )
     return False
 

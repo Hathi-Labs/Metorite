@@ -47,7 +47,7 @@ import { emitAgentEvent } from "@/lib/agentEvents";
 import { noteToolEnd, noteToolStart } from "@/lib/assistantWrites";
 import { agentAuthor } from "@/lib/projectsAgent";
 import { applyStateSnapshot, applyStateDelta } from "@/hooks/useAgentState";
-import { applyStreamEvent, applySubAgentEvent, nanoid, parseReasoning, withCustomEvent, type StreamFold } from "@/lib/chatStream";
+import { applyStreamEvent, applySubAgentEvent, nanoid, parseReasoning, PROGRESS_EVENT, withCustomEvent, withProgressNotice, type StreamFold } from "@/lib/chatStream";
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import {
   RUN_CAP_NOTICE_ID,
@@ -840,6 +840,12 @@ export function useAgentChat({
                   const data = (evt.value ?? evt.data) as Record<string, unknown> | undefined;
                   emitAgentEvent("onGuide", { guideId: String(data?.guide_id ?? ""), threadId });
                 }
+                // HRD-6: the line of a slow step shows under that step. Live
+                // loop ONLY, and never kept on the message's custom events.
+                if (evtName === PROGRESS_EVENT) {
+                  upd((m) => withProgressNotice(m, evt.value ?? evt.data));
+                  break;
+                }
                 // HITL control events (ask_questions / ask_user / confirm) are
                 // rendered by the inline ElicitationCard — they are NOT data to
                 // display.  Storing them in customEvents made them surface in the
@@ -1354,8 +1360,9 @@ export function useAgentChat({
                   });
                 }
                 // A replayed `navigate` moves no page (WS-62 CF-3 done-when 6),
-                // and it draws nothing either.
-                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT && evtName !== GUIDE_EVENT) {
+                // and it draws nothing either. A replayed `progress` line
+                // (HRD-6) draws nothing: it was live only.
+                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT && evtName !== GUIDE_EVENT && evtName !== PROGRESS_EVENT) {
                   updLast((m) => withCustomEvent(m, evtName, evt.value ?? evt.data));
                 }
                 break;

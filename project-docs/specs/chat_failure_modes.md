@@ -1,6 +1,7 @@
 # Chat failure modes: what goes wrong in the chat, and what we build against it
 
-**Status: ACCEPTED, 2026-11-12 (D217). Nothing is merged yet.** Owner ask of 2026-11-12,
+**Status: ACCEPTED, 2026-11-12 (D217). HRD-6 part 1 (the line of a slow tool) is BUILT
+dark, 2026-11-13. Nothing else is built.** Owner ask of 2026-11-12,
 in chat. Epic task 2978 (project AI Chat Interface). It is part of WS-CHAT.
 
 HRD-0 is task 2979. The owner accepted D-HRD-1 to D-HRD-6 of §8 as D217.
@@ -88,7 +89,7 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 | B3 | An id or an argument that the model cannot give | No read tool prints Projects comment, activity or attachment ids, or the CRM activity id. `uuid_of` refuses a task number and a `kind:` prefix. No layer coerces a JSON string | Each id that a tool needs is printed or resolved. One layer gives each argument the shape that its schema declares | HRD-2, HRD-3 |
 | B4 | A failure with no text that the model can act on | `refusals_as_text` covers Projects, CRM and email only. Other exceptions give "Error: Function failed." | Each pack tool answers a failure as text with a next step | HRD-3 |
 | B5 | A loop with new arguments each time | `LoopDetector` stops 5 identical calls only | After 3 empty or refused answers from one tool in a turn, the chat says what it tried and asks | HRD-5 |
-| B6 | A slow backend | `crm_aggregate` returns a 503 with "Narrow the filter" | Retry once on a narrower range and name it, or offer two narrower choices | HRD-6 |
+| B6 | A slow backend | `crm_aggregate` returns a 503 with "Narrow the filter". A slow tool runs with no word to the member | Owner, 2026-11-13: a large read can take minutes. The member hears so at once, and waits. A tool call that runs past 6 s sends ONE line: "This is a large read. It can take a few minutes to get all the data. Please wait." The CRM total gets a long mode, and the read finishes | HRD-6 |
 
 ### 4.3 Cards that do not tell the truth (C)
 
@@ -160,7 +161,7 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 | **HRD-3** | 2982 | One wrapper on each pack tool: text for each failure, and each argument in its declared shape | `tests/unit/test_every_pack_tool_answers_text.py`, `tests/unit/test_tool_argument_shapes.py` | STANDARD |
 | **HRD-4** | 2983 | Search that finds | `tests/unit/test_search_fallback.py` | STANDARD |
 | **HRD-5** | 2984 | A per-turn budget for each tool | `tests/unit/test_tool_turn_budget.py` | STANDARD |
-| **HRD-6** | 2985 | A slow CRM total | `tests/unit/test_crm_aggregate_timeout.py` | STANDARD |
+| **HRD-6** | 2985 | A slow read tells the member to wait (owner, 2026-11-13). Part 1, BUILT dark behind `CHAT_PROGRESS_NOTICE_ORGS`: one line for each tool call past 6 s, on the web chat and as WhatsApp's early message (`chat_run_continuity.md` §4.11). Part 2: the long mode of the CRM total | `tests/unit/test_progress_notice.py` (part 1), `tests/unit/test_crm_aggregate_timeout.py` (part 2) | STANDARD |
 | **HRD-7** | 2986 | One vocabulary of card outcomes | `tests/unit/test_card_outcome_vocabulary.py` | STANDARD |
 | **HRD-8** | 2987 | A redraft keeps the act | `tests/unit/test_redraft_keeps_act.py` | STANDARD |
 | **HRD-9** | 2988 | Blast radius for tags, fields and types | `tests/unit/test_shared_vocab_guard.py` | STANDARD |
