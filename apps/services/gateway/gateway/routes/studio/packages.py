@@ -188,6 +188,26 @@ of Keep and Restore (``_owned_private_install``). An owner with no private
 install gets 200 ``{"install": null}``, not 409. The store read
 (``host_store.read_lifetime``) takes no lock and writes no audit row.
 
+**The share with people (WS-STU J2b-2, ``ai_studio.md`` §14 J2b-2).**
+``POST /packages/{id}/share`` with ``{"people": [address, ...]}`` shares the
+private install of the owner with named members of the org, through
+``promotion.share_with_people``. The order: the two switches (each 404 with
+no session), the id, then ``studio:publish`` (D180.3: 403 ``forbidden``
+with no session), then the raw body (at most
+:data:`MAX_SHARE_BODY_BYTES`). Then one session. In it,
+``_owned_private_install`` holds the ``apps`` row ``FOR KEY SHARE`` first
+(404 for each caller but the owner), and then finds the private install of
+the owner (409 ``private_only`` when there is none). The store then takes
+the org lock and the row lock of the install, and writes ``app_grants``.
+One ``app_audit`` row (kind ``action``, op ``package.share``) commits with
+the share. The answer is 200 ``{people: [...]}``. The sharer is the session
+member, and no body key names the sharer, the org or the install (R5). A
+store refusal is its ``detail_for`` of the member: 422 for a bad list, 409
+for an install that is not private, active and kept, 403 ``not_owner`` and
+404 ``install_not_found``. ``shared_by_another_owner`` is 409, because the
+list is good and the state of the org refuses it. No route removes one
+person: the store has no per-person writer.
+
 **The answers.** 422 holds ``{message, errors: [{path, message}]}`` with at
 most :data:`MAX_PROBLEMS` errors. 409 holds ``{code, message, ...}``:
 ``package_exists`` and ``package_limit`` at create, and ``objects_out_of_sync``
@@ -293,8 +313,8 @@ from acb_common.studio_manifest import manifest_hash
 from acb_skills.studio_tools import complete_record_actions
 from fastapi import Depends, HTTPException, Query, Request, Response
 from gateway.db import tenant_session as _tenant_session
+from gateway.package_host import promotion, studio_app, viewer
 from gateway.package_host import store as host_store
-from gateway.package_host import studio_app, viewer
 from gateway.package_host.flags import package_host_allowed
 from gateway.routes.apps._common import record_app_audit_bound, record_app_audit_in
 from gateway.routes.studio import actions, flags
@@ -1344,6 +1364,72 @@ async def uninstall_package(
     _log.info("studio.packages.uninstalled", package_id=pid, scope_kind=kind,
               version=gone.version)
     return {"install": _install_out(gone), "removed": True}
+
+
+# ── The share with people (WS-STU J2b-2) ───────────────────────────────────
+
+#: The most bytes of the body of a share. It holds at most
+#: ``promotion.MAX_PEOPLE`` addresses of ``host_store.MAX_SUBJECT_BYTES``.
+MAX_SHARE_BODY_BYTES = 20 * 1024
+#: The 409 of a share whose person another member shares the app with. The
+#: store raises it as a ``ShareRefused`` (422), but the list is good: the
+#: state of the org refuses it, so the route answers 409.
+SHARE_TAKEN = "shared_by_another_owner"
+NO_SHARE_PEOPLE_RIGHT = ("Only a holder of studio:publish shares an app with other people. "
+                         "Ask the owner of your organization for that right.")
+NO_PRIVATE_SHARE = ("A share with people starts from your own private install, and this app "
+                    "has none. Publish the app first.")
+
+
+def _share_refused(user: UserContext, exc: host_store.InstallError) -> HTTPException:
+    """A refusal of the share store, as :func:`_refused` answers it, with one
+    change: ``shared_by_another_owner`` is 409 and not 422."""
+    status = 409 if exc.code == SHARE_TAKEN else exc.status
+    return HTTPException(status_code=status, detail=exc.detail_for(user.email or ""))
+
+
+@router.post("/packages/{package_id}/share")
+async def share_package(
+    package_id: str,
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Share the private install of a package of the caller with named
+    members of the org (``ai_studio.md`` §14 J2b-2, ``package_host.md`` §6.2).
+
+    The body is ``{"people": [address, ...]}``. The share needs
+    ``studio:publish`` (D180.3). The install stays private, and each person
+    reads the installed version as a viewer (J2a). 200 with the addresses."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not package_host_allowed(user.organization_id):
+        raise _not_found()
+    pid = _package_id(package_id)
+    # D180.3: the share verb gates each share to others. Fail closed, before a session.
+    if not user.has_permission(SHARE_RIGHT):
+        raise _forbidden(NO_SHARE_PEOPLE_RIGHT)
+    raw = await _raw_body(request, MAX_SHARE_BODY_BYTES)
+    async with _tenant_session() as db:
+        # The apps row FOR KEY SHARE first, then the org lock of the share:
+        # the lock order of a publish (``package_host.md`` §5.5).
+        install_id = await _owned_private_install(db, user, pid)
+        body = _parse_json(raw)
+        if install_id is None:
+            raise HTTPException(status_code=409, detail={
+                "code": PRIVATE_ONLY, "message": NO_PRIVATE_SHARE})
+        try:
+            people = await promotion.share_with_people(
+                db, install_id=install_id, emails=body.get("people"), sharer=user.email or "")
+        except host_store.InstallError as exc:
+            raise _share_refused(user, exc) from None
+        # The audit row commits with the share, or neither does. It holds
+        # the addresses and their count, and no manifest or record value.
+        await record_app_audit_in(
+            db, app_id=pid, user_email=user.email, kind="action",
+            detail={"op": "package.share", "install_id": install_id,
+                    "count": len(people), "people": list(people)})
+    _log.info("studio.packages.shared", package_id=pid, count=len(people))
+    return {"people": list(people)}
 
 
 # ── Keep and Restore of the private install (WS-PKG PKG-10d) ───────────────
