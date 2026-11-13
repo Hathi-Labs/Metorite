@@ -558,6 +558,14 @@ def test_the_scan_never_reads_a_payload_and_needs_the_decision_row() -> None:
     assert "_owner_in_org" in fn
 
 
+def test_the_scan_takes_only_a_batch_of_a_schedule_run() -> None:
+    """An event or a webhook run parks too. A new run is a schedule run, so a
+    resume of its batch would skip the refusal ``not_scheduled``."""
+    for part in ("r.status = 'failed'", "r.trigger_kind = 'schedule'", "b.status = 'open'",
+                 "b.organization_id = CAST(:org AS uuid)", "r.organization_id = CAST(:org AS uuid)"):
+        assert part in batch.OPEN_SQL, part
+
+
 def test_the_new_run_moves_the_batch_in_the_transaction_of_its_row() -> None:
     src = _src("service.py")
     fn = src[src.index("async def start_batch_run"):src.index("# ── Programmatic entry points")]

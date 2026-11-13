@@ -721,17 +721,27 @@ def test_r8_a_batch_that_is_not_open_is_never_moved_back_to_open(world) -> None:
 
 
 def test_r8_a_viewer_who_is_not_the_owner_fails_each_item_alone(world) -> None:
-    """The store decides "owner" from the viewer. A member who does not own the
+    """The store decides "owner" from the viewer. The ledger declares access
+    (C8a), and only the role hr writes it. A member who does not own the
     package holds no role, so each write is refused. The split fails each item
-    ALONE, with a short code, and the batch writes nothing."""
+    ALONE, with a short code, and the batch writes nothing. (An object with no
+    access declaration stays open to each viewer, as C8a has it.)"""
     w = world
     items = _items(w.ledger, 4)
     wbk = _by_key(items)
 
     async def go() -> tuple[bs.ChunkResult, str]:
-        batch = await _open(w.a, w.pkg_a, items)
         async with tenant_session(w.a) as db:
-            return await bs.run_chunk(db, BOB, batch.id, wbk, viewer=Viewer(BOB)), batch.id
+            assert await store.set_access(db, w.ledger.id, [
+                {"role": "hr", "read": "all", "write": "all"}], package_id=w.pkg_a)
+        batch = await _open(w.a, w.pkg_a, items)
+        try:
+            async with tenant_session(w.a) as db:
+                res = await bs.run_chunk(db, BOB, batch.id, wbk, viewer=Viewer(BOB))
+        finally:
+            async with tenant_session(w.a) as db:
+                await store.set_access(db, w.ledger.id, None, package_id=w.pkg_a)
+        return res, batch.id
 
     res, bid = _go(w, go)
     assert res.written == {}

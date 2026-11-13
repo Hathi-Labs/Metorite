@@ -265,11 +265,15 @@ async def approved_batch(db: Any, *, organization_id: str, owner: str,
 
 #: The open batches of one org whose run failed. The session binds the org,
 #: and both predicates name it again.
+#: ⚠️ Only a SCHEDULE run. An event or a webhook run has no person present
+#: too, so its gate can park and open a batch, and its node then refuses
+#: (``not_scheduled``). A new run is a schedule run, so a resume of such a
+#: batch would skip that refusal. Its batch stays open and idle.
 OPEN_SQL = (
     "SELECT b.id, b.run_id, b.node_id, b.resumes, r.workflow_id, r.workflow_name, "
     "       r.version, r.node_results, r.organization_id "
     "  FROM studio_batches b JOIN workflow_runs r ON r.id = b.run_id "
-    " WHERE b.status = 'open' AND r.status = 'failed' "
+    " WHERE b.status = 'open' AND r.status = 'failed' AND r.trigger_kind = 'schedule' "
     "   AND b.organization_id = CAST(:org AS uuid) "
     "   AND r.organization_id = CAST(:org AS uuid)"
 )

@@ -17,15 +17,27 @@ Run (a PRIVATE database, because the fixture drops ``<db>_studiobatch``)::
 
 Without the database each R8 test SKIPS. A skip is not a pass.
 
-**The mutations (R7).** Each was run on 2026-11-13 against this suite, and
-each went red. The report of task 3096 names the tests that failed.
+**The mutations (R7).** Each was run on 2026-11-13 on a committed tree, and
+each named test went red.
 
 * M1. ``batch_store._REBIND_SQL``: drop ``AND run_id = CAST(:old AS uuid)``.
+  ``test_r8_two_scan_passes_start_one_run`` goes red.
 * M2. ``batch.approved_batch``: drop the check ``outcome_of(...) != RESUME``.
+  ``test_r8_a_failed_run_with_no_yes_is_never_resumed`` goes red.
 * M3. ``invoke._batch_checked``: skip the compare of the list digest.
+  ``test_r8_the_door_refuses_a_digest_that_is_not_the_frozen_one`` goes red.
 * M4. ``scheduler._resume_batch``: drop the bound (``found.resumes >= MAX_RESUMES``).
-* M5. ``invoke._batch_drive``: roll back a busy chunk (re-raise ``ChunkBusy``).
+  ``test_r8_an_item_that_always_times_out_ends_failed_after_the_bound`` goes red.
+* M5. ``invoke._batch_drive``: roll back a busy chunk (raise on ``ChunkBusy``).
+  The same test goes red, because items 0 to 4 never commit.
 * M6. ``batch.park_batch``: drop the check ``org_ready``.
+  ``test_r8_an_org_off_the_batch_flag_opens_no_batch_and_files_no_card`` goes red.
+* M7. ``batch_store.run_chunk``: drop the check that the viewer is the actor.
+  ``test_studio_batch_r8.py::test_r8_an_owner_viewer_with_another_actor_fails_closed``
+  and ``test_studio_workflow_batch.py::test_a_viewer_that_is_not_the_actor_is_refused_before_any_statement``
+  go red.
+* M8. ``batch.OPEN_SQL``: drop ``AND r.trigger_kind = 'schedule'``.
+  ``test_r8_a_batch_of_a_run_that_is_no_schedule_run_is_never_resumed`` goes red.
 """
 
 from __future__ import annotations
@@ -342,20 +354,20 @@ def _decisions_of(w: Any, run_id: str) -> list[Any]:
                    "ORDER BY created_at", r=run_id)
 
 
-def _start(w: Any, name: str) -> str:
+def _start(w: Any, name: str, kind: str = "schedule") -> str:
     wid, org, serialized = w.wf[name]
 
     async def body() -> str:
         return await service.start_run(
             workflow_id=wid, workflow_name=name, version=1, serialized=serialized,
-            trigger_kind="schedule", trigger_payload={"scheduled_at": "x"},
+            trigger_kind=kind, trigger_payload={"scheduled_at": "x"},
             started_by="scheduler", organization_id=org)
 
     return _on_app_role(w, body)
 
 
-def _park(w: Any, name: str = "Pay run in A") -> tuple[str, Any]:
-    run_id = _start(w, name)
+def _park(w: Any, name: str = "Pay run in A", kind: str = "schedule") -> tuple[str, Any]:
+    run_id = _start(w, name, kind)
     assert _run(w, run_id).status == "paused", _run(w, run_id).error
     made = _decisions_of(w, run_id)
     assert len(made) == 1, made
@@ -567,6 +579,21 @@ def test_r8_a_failed_run_with_no_yes_is_never_resumed(w):
     assert len(_runs(w)) == 1 and _records(w, w.obj_a) == []
     # A no ends nothing more: the run was failed, and still nothing resumes.
     _answer(w, w.org_a, OWNER_A, str(made.id), "no")
+    assert _scan(w) == 0
+    assert len(_runs(w)) == 1 and _records(w, w.obj_a) == []
+    assert _batch_row(w).status == "open"
+
+
+@pytest.mark.parametrize("kind", ["event", "webhook"])
+def test_r8_a_batch_of_a_run_that_is_no_schedule_run_is_never_resumed(w, kind):
+    """An event or a webhook run has no person present, so its gate parks and
+    opens a batch. Its node refuses after the yes, and the scan never turns it
+    into a schedule run."""
+    run_id, made = _park(w, "Small batch in A", kind=kind)
+    _answer(w, w.org_a, OWNER_A, str(made.id), "yes")
+    assert _decide(w, w.org_a) == 1
+    run = _run(w, run_id)
+    assert run.status == "failed" and f"({service.STUDIO_NOT_SCHEDULED})" in run.error
     assert _scan(w) == 0
     assert len(_runs(w)) == 1 and _records(w, w.obj_a) == []
     assert _batch_row(w).status == "open"
