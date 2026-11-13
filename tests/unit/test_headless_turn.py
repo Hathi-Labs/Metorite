@@ -1552,3 +1552,43 @@ def test_the_module_takes_no_member_from_the_payload() -> None:
         assert not _PAYLOAD_MEMBER.search(fine), fine
     src = _MODULE.read_text(encoding="utf-8")
     assert not _PAYLOAD_MEMBER.search(src)
+
+
+# ── AUTO-8b-2b: the ceiling of each round ───────────────────────────────────
+
+
+class CeilingRunner(FakeRunner):
+    """A runner that records the ``X-CC-Run-Ceiling`` that a model call of the
+    round would send. It reads the stamp as ``attributed_openai`` reads it."""
+
+    def __init__(self, meter: FakeMeter, **kw: Any) -> None:
+        super().__init__(meter, **kw)
+        self.ceilings: list[str | None] = []
+
+    async def __call__(self, message: str, **kw: Any) -> dict[str, Any]:
+        from acb_llm.attribution import RUN_CEILING, attribution_headers
+
+        self.ceilings.append(attribution_headers().get(RUN_CEILING))
+        return await super().__call__(message, **kw)
+
+
+def test_each_round_sends_the_rest_of_the_budget_as_the_ceiling(world) -> None:
+    """AUTO-8b-2b: h = cap - used at the start of each round, with 4 places.
+
+    Mutation: drop ``run_ceiling_scope`` from ``_rounds``. This test goes
+    red (each ceiling reads None)."""
+    from acb_llm.attribution import RUN_CEILING, attribution_headers
+
+    goal = world.goals.add(cost_cap="10", used="2.5")
+    runner = CeilingRunner(world.meter, cost="1.25")
+    _run(_turn(world, runner, go_on=_always, rounds=3), _payload(goal))
+    assert runner.ceilings == ["7.5000", "6.2500", "5.0000"]
+    # The scope ends with the round: the frame of the turn sends nothing.
+    assert RUN_CEILING not in attribution_headers()
+
+
+def test_round_ceiling_is_the_rest_and_never_below_zero(world) -> None:
+    goal = world.goals.add(cost_cap="10", used="9.99995")
+    assert ht.round_ceiling(goal) == Decimal("0.00005")
+    over = dataclasses.replace(goal, cost_used_credits=Decimal("12"))
+    assert ht.round_ceiling(over) == Decimal(0)
