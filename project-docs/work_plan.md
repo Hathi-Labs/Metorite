@@ -6229,6 +6229,19 @@ The owner asked in chat on 2026-11-14. A Studio app needs "a left-hand sidebar s
 
 Fence: each slice in `ai_studio.md` §14 Group AF names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D219 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D218 at most.
 
+### D220 — AI Studio builds on connections: a connect in place, a stated account, a visible break, and an offer that follows the result (2026-11-14)
+
+The owner asked in chat on 2026-11-14 for Studio apps, workflows and skills that build on the company's integrations, a guided connect when an app needs one, and an offer to build after a connect. Planning task 3164. Owner text: `ai_studio.md` §8.1 and `integrations_console.md` §3.7.
+
+1. **One registry, and one connect flow for each provider.** D96 holds. Studio adds no connection store and no connect flow. It opens the flow of the owning app in place, through the `setup_href` of the registry row, with a path back (I8).
+2. **A connection need names whose account it uses: `org` or `member`.** Mail and calendar default to `member`. An `org` need is approved by an admin at install, and the install screen names the account (I9). The orchestrator chose this default, and the owner may overrule it.
+3. **A broken connection is visible where it hurts.** Each install that needs it goes to `needs_setup`, its triggers pause with a reason, and the owners get a Needs-you item (I10). A disconnect names what stops first (IN-10).
+4. **The offer after a connect follows the result.** The card says what works now first. It offers a build only for a provider whose data no built-in app shows, never as a modal, and never as an automatic build (IN-9).
+5. **Registry connections only, until IN-3.** The integration actions that read the process environment stay out of packages until IN-3 lands (task 3176, `work_plan.md` §6 gate (f)).
+6. **The order.** Rung 7 of the AI Studio ladder, demo task 3167. Mail merge (I3) moves to rung 9.
+
+Fence: each slice in `ai_studio.md` §14 Group I and `integrations_console.md` §7.2 names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D220 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D219 at most.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
