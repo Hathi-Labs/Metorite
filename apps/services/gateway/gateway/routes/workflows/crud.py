@@ -13,6 +13,7 @@ keeps the router gate only.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -418,12 +419,23 @@ def _trigger_identity(kind: str, config: dict[str, Any]) -> tuple[str, str]:
     For a schedule that is the cron expression and its timezone: change either
     and the maker meant a different schedule, so it re-arms from now rather
     than inheriting a baseline that could fire an unexpected catch-up tick.
-    Other kinds carry no scheduler state, so the kind alone is enough.
+
+    A timer trigger (STU-E9a) keeps its arm time in ``last_fired_at``. The
+    package, the object and the rule are its identity. A save that keeps them
+    keeps the arm time, so no breach is lost. A save that changes one re-arms
+    the trigger from the next scan, so a record that was due before it starts
+    no run. Other kinds carry no scheduler state, so the kind alone is enough.
     """
+    from gateway.routes.workflows.triggers import is_breach_trigger
+
     if kind == "schedule":
         cron = str(config.get("cron") or "").strip()
         timezone = str(config.get("timezone") or "UTC").strip() or "UTC"
         return (kind, f"{cron}@{timezone}")
+    if kind == "event" and is_breach_trigger(config):
+        flt = config.get("filter") or {}
+        parts = [str(flt.get(k) or "") for k in ("package_id", "object", "timer")]
+        return (kind, "timer:" + json.dumps(parts))
     return (kind, "")
 
 
@@ -452,12 +464,25 @@ def _validate_trigger_specs(triggers: list[TriggerSpec]) -> None:
             )
         if trig.kind == "event" and trig.config.get("filter") is not None:
             _validate_event_filter(trig.config)
+        if trig.kind == "event" and "timer" in trig.config:
+            # STU-E9a: the rule of a timer is `filter.timer`, never a key of
+            # its own, so no stray key reads as a timer.
+            raise HTTPException(status_code=422, detail="A timer trigger names its rule as filter.timer")
 
 
 def _validate_event_filter(config: dict[str, Any]) -> None:
     """422 on a malformed record filter (STU-E3). Only a Studio trigger has
-    one, and only the keys of ``RECORD_FILTER_KEYS``, each a non-empty string."""
-    from gateway.routes.workflows.triggers import RECORD_FILTER_KEYS
+    one, and only the keys of ``RECORD_FILTER_KEYS``, each a non-empty string.
+
+    A timer trigger (STU-E9a) has the op ``breach``. It names the package, the
+    object and the rule (``timer``), and its event type is empty or
+    ``studio.record.breached``. Only a timer trigger names a ``timer``."""
+    from acb_common.studio_fields import NAME_PATTERN
+    from gateway.routes.workflows.triggers import (
+        BREACH_EVENT_TYPE,
+        BREACH_OP,
+        RECORD_FILTER_KEYS,
+    )
     from gateway.studio.preview import RECORD_EVENT_SOURCE
 
     flt = config.get("filter")
@@ -470,10 +495,27 @@ def _validate_event_filter(config: dict[str, Any]) -> None:
             raise HTTPException(status_code=422, detail=f"Unknown trigger filter key '{key}'")
         if not isinstance(val, str) or not val.strip() or val != val.strip():
             raise HTTPException(status_code=422, detail=f"Trigger filter '{key}' must be a text")
-        if key == "op" and val not in ("create", "update", "delete"):
+        if key == "op" and val not in ("create", "update", "delete", BREACH_OP):
             raise HTTPException(
-                status_code=422, detail="Trigger filter 'op' is create, update or delete"
+                status_code=422, detail="Trigger filter 'op' is create, update, delete or breach"
             )
+    breach = flt.get("op") == BREACH_OP
+    if "timer" in flt and not breach:
+        raise HTTPException(status_code=422, detail="Only a breach trigger names a timer")
+    if not breach:
+        return
+    if not all(k in flt for k in ("package_id", "object", "timer")):
+        raise HTTPException(
+            status_code=422,
+            detail="A breach trigger names the package_id, the object and the timer",
+        )
+    if not re.fullmatch(NAME_PATTERN, flt["timer"], re.ASCII):
+        raise HTTPException(status_code=422, detail="Trigger filter 'timer' names a rule")
+    if str(config.get("event_type") or "").strip() not in ("", BREACH_EVENT_TYPE):
+        raise HTTPException(
+            status_code=422,
+            detail=f"A breach trigger has the event type {BREACH_EVENT_TYPE}",
+        )
 
 
 def _cron_is_valid(expr: str, timezone: str = "UTC") -> bool:
