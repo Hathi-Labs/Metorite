@@ -40,6 +40,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - `bind_run_context(...)` runs at the run boundary, BEFORE `load_agent`, so a load failure is still correlated. `_bind_run_instance(instance, run_id)` tops up `instance` after the load.
    - Do not "simplify" this into one bind. The single `clear_run_context()` in the `finally` unbinds every key.
    - `_run_sub_agent_streaming` does neither, so a delegated sub-run inherits the caller's `instance` (known asymmetry, WS-6a).
+   - AUTO-8b-2c: both run binds take the agent from `_run_agent_label`, and `_bind_run_app` takes the app of `acb_common.run_attribution_scope` first. Each other step keeps `agent_name`. Fence: `test_usage_attribution.py::TestTheExecutorReadsTheScope`.
 9a. **The run's artifact context is a ContextVar, never a module dict** (spec `projects_ai_chat.md` §21.16).
    - `acb_skills.write_artifact.artifact_context()` is the one reader. `_run_sub_agent_streaming` derives its OWN copy, so the parent's value never changes.
    - Every Copilot path calls `copilot_agent.carry_run_context(agent)` before the agent opens a session. With no context, every reader fails closed. Fence: `test_h201_run_context.py`.
