@@ -188,6 +188,18 @@ def test_r8_one_call_makes_a_private_published_package_and_install(world) -> Non
     assert inst[2] == "private" and inst[4] == ANA
 
 
+def test_r8_a_second_template_installs_with_its_own_object(world) -> None:
+    """STU-K1c smoke: the support desk installs the same way, with its own object."""
+    status, got = _run(world, lambda: _call("create_from_template", world.a, ANA,
+                                            {"template": "support-desk"}))
+    assert status == 200, got
+    pid = got["package"]["id"]
+    assert [o["name"] for o in got["objects"]] == ["ticket"]
+    assert _objects(world, pid) == ["ticket"]
+    (inst,) = _installs(world, pid)
+    assert inst[1] == 1 and inst[2] == "private" and inst[4] == ANA
+
+
 def test_r8_the_objects_are_synced_so_a_record_can_be_made(world) -> None:
     status, got = _run(world, lambda: _call("create_from_template", world.a, ANA,
                                             {"template": TEMPLATE}))
