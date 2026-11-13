@@ -23,9 +23,9 @@ export const KNOWN_EVENT_SOURCES = EVENT_SOURCES.map((s) => s.value);
 export const STUDIO_SOURCE = "studio";
 
 export const STUDIO_EVENT_TYPES: { value: string; label: string }[] = [
-  { value: "studio.record.created", label: "A record is created" },
-  { value: "studio.record.updated", label: "A record is updated" },
-  { value: "studio.record.deleted", label: "A record is deleted" },
+  { value: "studio.record.created", label: "Record created" },
+  { value: "studio.record.updated", label: "Record updated" },
+  { value: "studio.record.deleted", label: "Record deleted" },
 ];
 
 /** The three values the gateway accepts for the `op` filter. */
