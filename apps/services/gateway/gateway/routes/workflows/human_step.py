@@ -450,37 +450,30 @@ def _list_of(serialized: dict[str, Any], key: str) -> list[dict[str, Any]]:
 def walk_order(serialized: Any) -> list[str]:
     """The block ids of *serialized* in the order that a run walks them.
 
-    It is a stable topological order of the connections. A block comes after
-    each block that leads to it, and the block list breaks a tie. A cycle or a
-    connection to an unknown block does not raise. Each block that the walk
-    cannot place comes last, in the block list order.
+    ``acb_common.planning.analyze_plan`` is the one place that orders a graph
+    (D195 Q8), so this function calls it and keeps no order of its own. Each
+    block is one open task, and each connection between two known, different
+    blocks is one link. The waves come in turn, and the block list orders the
+    blocks of one wave. A connection to an unknown block, or from a block to
+    itself, is skipped. A graph with a cycle has no waves, so it gives the
+    block list order. Nothing here raises.
     """
-    import heapq
+    from acb_common.planning import PlanTask, analyze_plan
 
     if not isinstance(serialized, dict):
         return []
     index: dict[str, int] = {}
     for block in _list_of(serialized, "blocks"):
         index.setdefault(str(block.get("id")), len(index))
-    after: dict[str, list[str]] = {nid: [] for nid in index}
-    waits = dict.fromkeys(index, 0)
+    links: list[tuple[str, str]] = []
     for conn in _list_of(serialized, "connections"):
         src, tgt = str(conn.get("source")), str(conn.get("target"))
         if src in index and tgt in index and src != tgt:
-            after[src].append(tgt)
-            waits[tgt] += 1
-    ready = [(index[nid], nid) for nid in index if waits[nid] == 0]
-    heapq.heapify(ready)
-    order: list[str] = []
-    while ready:
-        _, nid = heapq.heappop(ready)
-        order.append(nid)
-        for tgt in after[nid]:
-            waits[tgt] -= 1
-            if waits[tgt] == 0:
-                heapq.heappush(ready, (index[tgt], tgt))
-    placed = set(order)
-    return order + [nid for nid in index if nid not in placed]
+            links.append((src, tgt))
+    plan = analyze_plan([PlanTask(id=nid, category="todo") for nid in index], links)
+    if plan.cycle is not None or not plan.waves:
+        return list(index)
+    return [nid for wave in plan.waves for nid in sorted(wave, key=index.__getitem__)]
 
 
 def step_rows(serialized: Any) -> list[dict[str, Any]]:

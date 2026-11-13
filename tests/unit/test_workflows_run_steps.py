@@ -254,6 +254,41 @@ def test_the_walk_follows_the_connections_and_the_list_breaks_a_tie() -> None:
     assert human_step.walk_order(fork) == ["start", "b", "a", "join"]
 
 
+def test_the_walk_is_the_waves_of_the_one_planner() -> None:
+    """A step of wave 2 comes before a step of wave 3, whatever the block list.
+    The order comes from ``acb_common.planning.analyze_plan`` (D195 Q8)."""
+    import inspect
+
+    branch = {
+        "blocks": [_block("start", "trigger"), _block("a", "noop"), _block("b", "noop"),
+                   _block("c", "noop")],
+        "connections": [{"source": "start", "target": "a"}, {"source": "a", "target": "b"},
+                        {"source": "start", "target": "c"}],
+    }
+    # Waves: [start], [a, c], [b]. So `c` (wave 2) comes before `b` (wave 3).
+    assert human_step.walk_order(branch) == ["start", "a", "c", "b"]
+    source = inspect.getsource(human_step.walk_order)
+    assert "analyze_plan(" in source
+
+
+def test_a_graph_with_a_cycle_gives_the_block_list_order() -> None:
+    """A cycle has no waves, so the walk is the block list, each block once.
+    A self loop and a connection to an unknown block are skipped."""
+    looped = {
+        "blocks": [_block("b", "noop"), _block("a", "noop"), _block("start", "trigger")],
+        "connections": [{"source": "start", "target": "a"}, {"source": "a", "target": "b"},
+                        {"source": "b", "target": "a"}],
+    }
+    assert human_step.walk_order(looped) == ["b", "a", "start"]
+    skipped = {
+        "blocks": [_block("y", "noop"), _block("x", "trigger")],
+        "connections": [{"source": "x", "target": "y"}, {"source": "y", "target": "y"},
+                        {"source": "x", "target": "ghost"}, {"source": "ghost", "target": "x"}],
+    }
+    assert human_step.walk_order(skipped) == ["x", "y"]
+    assert human_step.walk_order({"blocks": [], "connections": []}) == []
+
+
 def test_the_steps_are_the_human_steps_in_walk_order_with_the_literal_config() -> None:
     assert human_step.step_rows(GRAPH) == [
         {"node_id": "s1", "title": "Sign the contract", "assignee": ANA},
