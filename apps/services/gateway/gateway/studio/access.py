@@ -16,6 +16,7 @@ The session is the caller's tenant session, so the org is the bound org.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable
 from typing import Any
 
 from acb_common import get_logger
@@ -38,11 +39,33 @@ async def _holds_studio(member: str, org: str) -> bool:
     return bool(access.is_active and access.can_use_feature("studio"))
 
 
+async def members_holding_studio(members: Iterable[object], org: str) -> dict[str, bool]:
+    """One answer for each DISTINCT member, asked outside any session.
+
+    ``_holds_studio`` opens its own ``tenant_session``. A caller that holds a
+    session of its own would hold two pool connections, and a burst of such
+    callers can wait on each other until the pool times out. So a caller asks
+    here BEFORE it opens its session, once for each distinct address. The key
+    is the trimmed lower-case address. Fails closed, never raises.
+    """
+    held: dict[str, bool] = {}
+    for member in members:
+        who = str(member or "").strip().lower()
+        if who not in held:
+            held[who] = "@" in who and await _holds_studio(who, str(org or ""))
+    return held
+
+
 async def member_reads_package(
     db: Any, *, member: str, package_id: object, organization_id: str | None,
+    studio_held: bool | None = None,
 ) -> bool:
     """True when *member* may read the package *package_id* in the org bound
-    to *db*. *db* is a ``tenant_session``. Never raises."""
+    to *db*. *db* is a ``tenant_session``. Never raises.
+
+    *studio_held* is the answer of :func:`members_holding_studio` for *member*.
+    A caller that holds *db* passes it, so this call opens no second session.
+    ``None`` asks here, and that is for a caller that holds no session."""
     from gateway.package_host import viewer
     from gateway.package_host.flags import package_host_allowed
     from gateway.studio import packages_store
@@ -55,7 +78,9 @@ async def member_reads_package(
         # The HTTP door holds feature:studio, and the run door holds it through
         # the same resolver. An author who is not active, or who lost the
         # feature, reads nothing here.
-        if not await _holds_studio(who, str(organization_id or "")):
+        if studio_held is None:
+            studio_held = await _holds_studio(who, str(organization_id or ""))
+        if not studio_held:
             return False
         # A savepoint: a failed read must not poison the caller's transaction.
         async with db.begin_nested():
