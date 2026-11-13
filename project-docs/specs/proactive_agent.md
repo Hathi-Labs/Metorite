@@ -138,7 +138,7 @@ Before each round, the turn reads the flag and the goal again. So the flag is th
 
 **Read tools only.** One round is one `run_agent` run of the internal agent `worker`, with one bound job and `no_egress`. The job holds only tools that the risk registry marks `read_only` and not `open_world`. The pin of the worker refuses every other tool. The worker makes at most 4 model calls in one round (`subagent_contract.MAX_CHILD_ROUNDS`). AUTO-8a changes no code of `orchestrator/executor.py`.
 
-**The settle of a round (AUTO-8b-1).** After a call, the turn reads the meter and records the round. These two steps have `SETTLE_MARGIN_S` (60 seconds), and each step takes at most a third of it. The bound of the time cap (180 seconds) plus the margin stays inside `worker.HANDLER_TIMEOUT` (240 seconds). That stays inside the lease of the job (300 seconds). So the worker does not cancel a turn while it records a round.
+**The settle of a round (AUTO-8b-1).** After a call, the turn reads the meter and records the round. These two steps have `SETTLE_MARGIN_S` (60 seconds), and each step takes a share of it that grows with the time left (`_share`). The bound of the time cap (180 seconds) plus the margin stays inside `worker.HANDLER_TIMEOUT` (240 seconds). That stays inside the lease of the job (300 seconds). So the worker does not cancel a turn while it records a round.
 
 A meter that does not answer in time charges the rest of the budget: the cap minus the credits used. So the goal blocks with `cap_reached`. A record that does not end in time logs `headless_turn.round_unrecorded` at error, and the job gives up with `TurnFailed`.
 
