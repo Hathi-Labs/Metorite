@@ -919,7 +919,7 @@ Each rung ends in a demo (D211). Each slice of a rung blocks its demo task.
 | CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first |
 | CIV-32 | 3057 | 2 | STANDARD | **BUILT 2026-11-13.** A repair round tests what failed and what the fix reaches (`ci_unit_guard.py repair`) |
 | CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py`. CIV-33d BUILT 2026-11-13 (task 3074): the scan fences of six large files moved to `*_scan.py` files, and `test_scanner_budget.py` caps a scanner file at 30 s. The scanner set costs 1,748 s, down from 2,333 s. `test_affected_tests.py` (381 s) waits for PR 2205. CIV-33c-1 BUILT 2026-11-13 (task 3073): a hub selects its importers up to 20% of the test files, a flag-only diff of `settings.py` or `env_guard.py` selects the tests that name the flag, and `scripts/replay_gate.py` measures the FULL share. For a hub or a flag diff, an app entry, or a test helper that builds an app, selects its test importers. The closure over test imports starts from the import picks, not from the scanners or the SAFETY fences. CIV-33c-2 (the `.github/` rule) is open |
-| CIV-34 | 3059 | 2 | STANDARD | Conflict rules in the merge bot, tested on the merged tree |
+| CIV-34 | 3059 | 2 | STANDARD | Conflict rules in the merge bot, tested on the merged tree. CIV-34a BUILT 2026-11-14 (§8.8): the rules, the checks on the merged tree, and the trailer. CIV-34b (a model proposal) is open |
 | CIV-35 | 3060 | 2 | LOW | A proposal: review depth by file class. It needs an owner decision |
 
 The demo tasks: rung 0 is task 3064, rung 1 is task 3065, and rung 2 is task
@@ -996,3 +996,35 @@ step 1c keep the old table.
   dispatch. The step `once` still counts that run as the ship of its slot. So
   a later nightly run in the same window does not ship a newer `green/main`.
   The next slot ships it.
+
+### 8.8 CIV-34a as built: conflict rules in the merge bot (2026-11-14)
+
+A conflict gave 28 of 52 BACKs (CIV-25), and a conflicted PR gets no GitHub CI.
+The bot now merges `main` into the PR branch and tries six rules per hunk.
+`scripts/merge_conflict_rules.py` holds the rules. `merge_bot.sh` holds the
+steps around them.
+
+| Rule | When it applies |
+|---|---|
+| `trivial` | One side equals the base, or both sides are equal. |
+| `union` | An append-only file (INDEX, HANDOFF, CHANGELOG). In `tests/fences.json`, list arrays are united with no repeat. |
+| `table-rows` | A markdown table keyed by its first cell. Each side keeps its own rows. One row changed on both sides is not resolvable. |
+| `additions` | Both sides only added lines, in a Python test file or an import block. The file must compile, and ruff must sort its imports. |
+| `rebuild` | `infra/postgres/generated/*` is rebuilt by `scripts/gen_tenant_migration.py`. |
+| `rerere` | `git rerere` holds a stored resolution of the same conflict. |
+
+A file with one hunk that fits no rule is not resolved. The whole PR then goes
+BACK with `conflict: no rule fits <files>`. A conflict in a HIGH path, in
+`.github/workflows/`, or in `infra/postgres/` outside `generated/` always goes
+BACK.
+
+The bot commits the merge after the rules. Each resolution adds one
+`Conflict-Rule: <rule> <file>` trailer. It runs `py_compile` on the changed Python
+files and a YAML parse on the changed workflow files. It runs the tests that
+`affected_tests.py --gate` picks, with a time cap. It pushes the commit, never
+with force, only when all pass. It then logs `RESOLVED <pr> <rules>`.
+
+The push starts a new pr-check. The merge goes through `--match-head-commit`
+on the new head. A conflicted PR never gets checks. So the bot looks for a
+conflict while a PR waits on checks. CIV-34b (a model-written proposal for
+a conflict that no rule fits) is open.

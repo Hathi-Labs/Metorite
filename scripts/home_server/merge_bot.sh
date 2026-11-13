@@ -26,7 +26,14 @@
 #   a required check cancelled    -> gh run rerun --failed ONCE, then skip.
 #                                    A new attempt that is cancelled too -> BACK <pr> cancelled twice
 #   the diff touches a HIGH path (HIGH_PATHS_RE below) and the tier is lower -> BACK
-#   the trial merge conflicts     -> BACK <pr> conflict: <files>
+#   the trial merge conflicts     -> CIV-34a: merge main into the PR branch and try the
+#                                    conflict rules (scripts/merge_conflict_rules.py).
+#                                    Every file fits a rule, the checks pass on the merged
+#                                    tree, and the push works -> RESOLVED <pr> <rules>.
+#                                    The next pass waits for the new pr-check, as usual.
+#                                    Else -> BACK <pr> conflict: no rule fits <files>
+#                                    A conflict in a HIGH path, a workflow file, or
+#                                    infra/postgres/ outside generated/ is always a BACK.
 #   premerge.sh exits 1           -> BACK <pr> premerge: <tail>
 #   gh pr merge says "Base branch was modified" -> retry twice, 20 s apart, then skip
 #   else gh pr ready (if draft), gh pr merge --squash --match-head-commit <sha>,
@@ -44,6 +51,10 @@
 #   PREMERGE_CMD [timeout 900 bash scripts/premerge.sh]
 #   GH_CMD [gh]   MERGE_BOT_DRY_RUN=1: print actions, call no write command
 #   MERGE_BASE_RETRY_WAIT [20]  seconds between the in-pass merge retries
+#   CONFLICT_RULES [1]  0 turns the CIV-34a conflict rules off: a conflict is a BACK
+#   CONFLICT_GATE_CMD [python3 scripts/affected_tests.py --gate --base origin/main]
+#   CONFLICT_TEST_CMD [uv run --no-sync pytest -q -p no:cacheprovider]  gets the files
+#   CONFLICT_TEST_TIMEOUT [900]  seconds for the tests on the merged tree
 # It reads gh JSON with python3, not with gh --jq.
 # Fence: tests/unit/test_merge_bot.py.
 set -uo pipefail
@@ -58,6 +69,11 @@ GH_CMD="${GH_CMD:-gh}"
 DRY="${MERGE_BOT_DRY_RUN:-0}"
 LOCK_KIND="${MERGE_BOT_LOCK:-auto}"
 MERGE_RETRY_WAIT="${MERGE_BASE_RETRY_WAIT:-20}"
+CONFLICT_RULES="${CONFLICT_RULES:-1}"
+CONFLICT_GATE_CMD="${CONFLICT_GATE_CMD:-python3 scripts/affected_tests.py --gate --base origin/main}"
+CONFLICT_TEST_CMD="${CONFLICT_TEST_CMD:-uv run --no-sync pytest -q -p no:cacheprovider}"
+CONFLICT_TEST_TIMEOUT="${CONFLICT_TEST_TIMEOUT:-900}"
+HEADREF=""  # the PR head branch name, set by handle
 # CIV-28b: the tier floor. The tier in the queue is the claim of a lane, not
 # proof. A diff that touches one of these paths is HIGH, whatever the lane says.
 # This is the ONE place for the list. Add a path here and nowhere else.
@@ -130,7 +146,7 @@ body = d.get("body") or ""
 verified = any(line.startswith("VERIFY: PASS") for line in body.splitlines())
 merged = (d.get("mergeCommit") or {}).get("oid") or ""
 row = [d.get("state") or "", "true" if d.get("isDraft") else "false", merged,
-       d.get("headRefOid") or "", "1" if verified else "0"]
+       d.get("headRefOid") or "", "1" if verified else "0", d.get("headRefName") or ""]
 sys.stdout.buffer.write(("\t".join(row) + "\n").encode("utf-8"))
 '
 # A re-run adds a second row with the same name. Only the newest row counts.
@@ -163,8 +179,8 @@ load_required() {
   [ -n "$required" ]
 }
 
-view() {  # view <pr>: prints "STATE<TAB>isDraft<TAB>merge sha<TAB>head sha<TAB>verified 1|0"
-  gh_ pr view "$1" --json state,isDraft,mergeCommit,headRefOid,body 2>/dev/null \
+view() {  # view <pr>: prints "STATE<TAB>isDraft<TAB>merge sha<TAB>head sha<TAB>verified 1|0<TAB>head branch"
+  gh_ pr view "$1" --json state,isDraft,mergeCommit,headRefOid,body,headRefName 2>/dev/null \
     | json_ "$PY_VIEW" 2>/dev/null | tr -d '\r'
 }
 field() { cut -f"$1" <<< "$2"; }
@@ -197,11 +213,104 @@ check_status() {
   else echo ready; fi
 }
 
+# reset_to <sha>: drop a merge in progress and the merge commit, back to the PR head.
+reset_to() { git merge --abort 2>/dev/null; git reset -q --hard "$1" 2>/dev/null; }
+
+# resolve_conflict <pr> <sha> <branch>: CIV-34a. The trial merge of <sha> with main
+# conflicts. Merge main into the PR branch here, apply the rules of
+# scripts/merge_conflict_rules.py, test the merged tree, and push the merge commit.
+# Prints the rules (return 0), or a BACK reason (return 1), or a note (return 2).
+# It never force-pushes. A failed check leaves nothing on GitHub.
+resolve_conflict() {
+  local pr="$1" sha="$2" branch="$3" unmerged bad="" out rules trailers="" line f changed sel rc
+  local -a picked=()
+  git checkout -q -B "$branch" "$sha" 2>/dev/null || { echo "conflict: checkout of ${sha:0:9} failed"; return 1; }
+  # rerere reuses a stored resolution of the same conflict. -c keeps it out of the shared config.
+  git -c rerere.enabled=true -c merge.conflictstyle=diff3 merge --no-commit --no-ff -q origin/main >/dev/null 2>&1
+  unmerged="$(git diff --name-only --diff-filter=U 2>/dev/null)"
+  if [ -z "$unmerged" ]; then
+    reset_to "$sha"; echo "conflict: no rule fits (the merge shows no conflicted file)"; return 1
+  fi
+  # A HIGH path, a workflow file and infra/postgres/ (outside generated/) always go BACK.
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in
+      .github/workflows/*) bad="$bad$f " ;;
+      infra/postgres/generated/*) ;;
+      infra/postgres/*) bad="$bad$f " ;;
+      *) if grep -qE "$HIGH_PATHS_RE" <<< "$f"; then bad="$bad$f "; fi ;;
+    esac
+  done <<< "$unmerged"
+  if [ -n "$bad" ]; then
+    reset_to "$sha"
+    echo "conflict: no rule fits ${bad}(a HIGH, workflow or schema path never gets a rule)"; return 1
+  fi
+  out="$(python3 "$ROOT/scripts/merge_conflict_rules.py" resolve --high-re "$HIGH_PATHS_RE" 2>/dev/null)"; rc=$?
+  if [ "$rc" != 0 ]; then
+    bad="$(sed -n 's/^UNRESOLVED //p' <<< "$out" | tr '\n' ' ')"
+    reset_to "$sha"; echo "conflict: no rule fits ${bad:-$(tr '\n' ' ' <<< "$unmerged")}"; return 1
+  fi
+  rules="$(sed -n 's/^RULE \([^ ]*\) .*/\1/p' <<< "$out" | sort -u | tr '\n' ' ')"; rules="${rules% }"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    trailers="$trailers${trailers:+$'\n'}Conflict-Rule: ${line#RULE }"
+  done < <(grep '^RULE ' <<< "$out")
+  git -c user.name="${MERGE_BOT_GIT_NAME:-metorite-merge-bot}" -c user.email="${MERGE_BOT_GIT_EMAIL:-merge-bot@metorite.invalid}" \
+    -c rerere.enabled=true commit -q -m "Merge main into the branch of PR $pr (merge bot conflict rules)" -m "$trailers" >/dev/null 2>&1 \
+    || { reset_to "$sha"; echo "conflict: the merge commit failed after the rules ($rules)"; return 1; }
+  # The checks run on the merged tree. A failed one leaves the commit here and nowhere else.
+  changed="$(git diff --name-only --diff-filter=AM origin/main...HEAD 2>/dev/null)"
+  while IFS= read -r f; do
+    case "$f" in
+      *.py) python3 -m py_compile "$f" >/dev/null 2>&1 || bad="$bad$f " ;;
+      .github/workflows/*.yml|.github/workflows/*.yaml)
+        python3 -c 'import sys
+try:
+    import yaml
+except ImportError:
+    sys.exit(0)
+yaml.safe_load(open(sys.argv[1], encoding="utf-8"))' "$f" >/dev/null 2>&1 || bad="$bad$f " ;;
+    esac
+  done <<< "$changed"
+  if [ -n "$bad" ]; then
+    reset_to "$sha"; echo "conflict: resolved by $rules but ${bad}does not parse"; return 1
+  fi
+  sel="$(bash -c "$CONFLICT_GATE_CMD" 9>&- 2>/dev/null | json_ 'import json, sys
+d = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+print("FULL" if d.get("full") else "FILES")
+print("\n".join(d.get("files") or []))' 2>/dev/null | tr -d '\r')"
+  case "$(head -n 1 <<< "$sel")" in
+    FILES) ;;
+    FULL) reset_to "$sha"; echo "conflict: resolved by $rules but the test selection is FULL, too big to run here"; return 1 ;;
+    *) reset_to "$sha"; echo "conflict: resolved by $rules but the test selection failed"; return 1 ;;
+  esac
+  while IFS= read -r f; do [ -n "$f" ] && picked+=("$f"); done < <(sed -n '2,$p' <<< "$sel")
+  if [ "${#picked[@]}" -gt 0 ]; then
+    if ! out="$(timeout "$CONFLICT_TEST_TIMEOUT" bash -c "$CONFLICT_TEST_CMD \"\$@\"" _ "${picked[@]}" 9>&- 2>&1)"; then
+      reset_to "$sha"; echo "conflict: resolved by $rules but the tests failed: $(tail -n 3 <<< "$out" | one_line)"; return 1
+    fi
+  fi
+  if [ "$DRY" = 1 ]; then
+    reset_to "$sha"
+    say "DRY RUN would push the merge commit of PR $pr (rules: $rules) to $HEADREF"; echo "dry run: resolved by $rules"; return 2
+  fi
+  if [ -z "$HEADREF" ]; then reset_to "$sha"; echo "conflict: resolved by $rules but the PR head branch is unknown"; return 1; fi
+  # A plain push, never --force. A rejected push means the head moved or the bot has no write reach.
+  if ! out="$(git push -q origin "HEAD:refs/heads/$HEADREF" 9>&- 2>&1)"; then
+    reset_to "$sha"; echo "conflict: resolved by $rules but the push failed: $(tail -n 2 <<< "$out" | one_line)"; return 1
+  fi
+  printf '%s %s\n' "$sha" "$(git rev-parse HEAD)" > "$STATE/resolved-$pr"
+  echo "$rules"; return 0
+}
+
 # gate <pr> <sha>: trial merge of exactly <sha>, then premerge on a bot branch.
 # Returns 0 to merge. Returns 1 with the BACK reason printed. Returns 2 with a
 # note printed for a transient error: the next pass tries again.
+# Returns 3 with the rules printed: a conflict was resolved and pushed (CIV-34a).
+# A 4th argument "conflict-only" stops after the trial merge and returns 4 when
+# it is clean. A PR with a conflict gets no GitHub checks, so the bot looks early.
 gate() {
-  local changed pr="$1" sha="$2" tier="$3" branch="merge-bot/pr-$1" out files try main_before main_after tail_ top own
+  local mode="${4:-}" rules rc changed pr="$1" sha="$2" tier="$3" branch="merge-bot/pr-$1" out files try main_before main_after tail_ top own
   if [ ! -e "$WORKDIR/.git" ]; then
     git -C "$ROOT" worktree add -q --detach "$WORKDIR" >/dev/null 2>&1 || { echo "no workdir at $WORKDIR"; return 2; }
   fi
@@ -232,8 +341,13 @@ gate() {
   fi
   if ! out="$(git merge-tree --write-tree --name-only origin/main "$sha" 2>&1)"; then
     files="$(sed -n '2,$p' <<< "$out" | sed '/^$/,$d' | tr '\n' ' ')"
-    echo "conflict: ${files:-see git merge-tree}"; return 1
+    if [ "$CONFLICT_RULES" = 0 ]; then echo "conflict: ${files:-see git merge-tree}"; return 1; fi
+    rules="$(resolve_conflict "$pr" "$sha" "merge-bot/pr-$pr")"; rc=$?
+    echo "$rules"
+    [ "$rc" = 0 ] && return 3
+    return "$rc"
   fi
+  [ "$mode" = conflict-only ] && return 4
   for try in 1 2 3; do
     # premerge.sh refuses a detached HEAD, so the SHA gets a bot-owned branch.
     git checkout -q -B "$branch" "$sha" 2>/dev/null || { echo "premerge: checkout of ${sha:0:9} failed"; return 1; }
@@ -267,12 +381,26 @@ handle() {
     *) say "PR $pr: state '$state', next pass"; return ;;
   esac
   if [ "$tier" = HIGH ]; then record "BACK $pr HIGH tier: lane-merge or a person merges it"; return; fi
+  HEADREF="$(field 6 "$v")"
+  # CIV-34a: after a pushed resolution the head is the merge commit, and the hand-over holds the old SHA.
+  if [ "$(field 4 "$v")" != "$sha" ] && [ -f "$STATE/resolved-$pr" ]     && [ "$(cat "$STATE/resolved-$pr")" = "$sha $(field 4 "$v")" ]; then
+    sha="$(field 4 "$v")"
+  fi
   if [ "$(field 4 "$v")" != "$sha" ]; then record "BACK $pr head moved after the hand-over: hand over again"; return; fi
   if [ "$(field 5 "$v")" != 1 ]; then record "BACK $pr no VERIFY: PASS line in the PR body"; return; fi
   load_required || { say "PR $pr: cannot read the required checks, next pass"; return; }
   st="$(check_status "$pr")"
   case "$st" in
-    wait) say "PR $pr: required checks not ready"; return ;;
+    wait)
+      # A PR with a conflict gets no checks from GitHub, so look for a conflict now.
+      reason="$(gate "$pr" "$sha" "$tier" conflict-only)"; rc=$?
+      case "$rc" in
+        3) record "RESOLVED $pr $(one_line <<< "$reason")" ;;
+        1) record "BACK $pr $(one_line <<< "$reason")" ;;
+        2) say "PR $pr: $(one_line <<< "$reason"), next pass" ;;
+        *) say "PR $pr: required checks not ready" ;;
+      esac
+      return ;;
     red:*) record "BACK $pr $st"; return ;;
     rerun*)
       # --failed keeps the run id, so the mark holds the start time of the cancelled
@@ -290,6 +418,7 @@ handle() {
   reason="$(gate "$pr" "$sha" "$tier")"; rc=$?
   case "$rc" in
     0) ;;
+    3) record "RESOLVED $pr $(one_line <<< "$reason")"; return ;;
     2) say "PR $pr: $(one_line <<< "$reason"), next pass"; return ;;
     *) record "BACK $pr $(one_line <<< "$reason")"; return ;;
   esac

@@ -203,7 +203,7 @@ merges it. The other lanes keep building. Its role is in
 | File on the box | What it holds |
 |---|---|
 | `~/lanes/merge-bot-queue.tsv` | One line for each hand-over: pull request, task, worktree, lane, head SHA, tier, note. Tabs between the fields, under a `#` header line. Only `lane_handover.sh` writes it. |
-| `~/lanes/merge-bot.log` | One line for each result: `DONE <pull request> <sha>` or `BACK <pull request> <reason>`. Only the merge bot writes it. |
+| `~/lanes/merge-bot.log` | One line for each result: `DONE <pull request> <sha>`, `RESOLVED <pull request> <rules>` or `BACK <pull request> <reason>`. Only the merge bot writes it. |
 | `~/lanes/merge-queue.tsv`, `~/lanes/merge-queue.log` | History of the lane-merge session, with HOLD, RED and NOTE lines that people wrote. Nothing reads them now. |
 
 A lane hands over a pull request only after three steps. The verifier passed,
@@ -223,8 +223,19 @@ It then runs the trial merge with
 `origin/main` and `scripts/premerge.sh` on the pinned SHA, and runs
 `gh pr merge --squash --match-head-commit <sha>`. A
 branch behind `main` still merges when the trial merge is clean. It never
-pushes, and never passes `--admin` or `--auto`. `MERGE_BOT_DRY_RUN=1` prints
+pushes, except the merge commit of a resolved conflict. It never passes `--admin` or `--auto`. `MERGE_BOT_DRY_RUN=1` prints
 the actions and calls no write command.
+
+**Conflicts** (CIV-34a, `ci_velocity.md` §8.8). When the trial merge
+conflicts, the bot merges `main` into the PR branch. It tries the rules of
+`scripts/merge_conflict_rules.py` on each conflicted file. It tests the merged
+tree, and then pushes the merge commit to the PR branch. It never uses force.
+The log gets `RESOLVED <pull request> <rules>`, and the next pass waits for the
+new pr-check.
+
+The log gets `BACK <pull request> conflict: no rule fits <files>` in three
+cases. A file fits no rule, or the conflict is in a HIGH, workflow or schema
+path. The third case is a failed test on the merged tree.
 
 The units are
 `scripts/home_server/systemd/metorite-merge-bot.service` and `.timer`, every

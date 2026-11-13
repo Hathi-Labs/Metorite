@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -195,11 +196,26 @@ class Env:
         """A PR branch cut from the current main, published as refs/pull/<n>/head."""
         git(self.seed, "checkout", "-q", "-B", f"pr{n}", "main")
         self.commit(path, text, f"pr {n}")
-        git(self.seed, "push", "-q", "origin", f"pr{n}:refs/pull/{n}/head")
+        git(
+            self.seed,
+            "push",
+            "-q",
+            "origin",
+            f"pr{n}:refs/pull/{n}/head",
+            f"pr{n}:refs/heads/pr{n}",
+        )
         sha = git(self.seed, "rev-parse", "HEAD")
         git(self.seed, "checkout", "-q", "main")
         self.heads[n] = sha
-        self.view(n, state=state, isDraft=draft, mergeCommit=None, headRefOid=sha, body=body)
+        self.view(
+            n,
+            state=state,
+            isDraft=draft,
+            mergeCommit=None,
+            headRefOid=sha,
+            body=body,
+            headRefName=f"pr{n}",
+        )
         self.checks(n, checks)
         if queue:
             self.queue(n, sha=sha, tier=tier)
@@ -793,3 +809,172 @@ def test_civ28b_a_failed_diff_fails_closed(env, tmp_path):
     env.run(PATH=f"{shim.as_posix()}{os.pathsep}{env.tmp / 'bin'}{os.pathsep}{os.environ['PATH']}")
     assert env.log == "BACK 5 tier floor unknown: git diff failed\n"
     assert env.merges == [] and env.premerge_runs == 0
+
+
+# ── CIV-34a: the conflict rules ──────────────────────────────────────────────
+
+TABLE_BASE = (
+    "| Slice | Task |\n|---|---|\n| CIV-27 | a |\n| CIV-28 | b |\n| CIV-29 | c |\n| CIV-30 | d |\n"
+)
+TEST_BASE = "import os\n\n\ndef test_a():\n    assert os.sep\n"
+ROW28 = TABLE_BASE.replace("| CIV-28 | b |", "| CIV-28 | b built |")
+ROW29 = TABLE_BASE.replace("| CIV-29 | c |", "| CIV-29 | c built |")
+
+
+def _ruff_exe():
+    exe = Path(sys.executable)
+    for cand in (exe.with_name("ruff.exe"), exe.with_name("ruff")):
+        if cand.exists():
+            return cand.as_posix()
+    return shutil.which("ruff") or ""
+
+
+def _push_main(env, path, text, msg):
+    git(env.seed, "checkout", "-q", "main")
+    env.commit(path, text, msg)
+    git(env.seed, "push", "-q", "origin", "main")
+
+
+def conflict_pr(env, n, path, base, mine, theirs, **kw):
+    """A PR and a main that both edit `path` after one base commit."""
+    _push_main(env, path, base, "base " + path)
+    env.pr(n, path=path, text=mine, **kw)
+    _push_main(env, path, theirs, "main edit " + path)
+
+
+def run_rules(env, test_rc=0, files=("tests/unit/test_x.py",), **extra):
+    """A pass of the bot with shimmed selection and tests, and a real ruff."""
+    gate = env.fix / "gate.sh"
+    selection = json.dumps({"full": False, "files": list(files)})
+    gate.write_text(f"#!/usr/bin/env bash\necho '{selection}'\n", encoding="utf-8", newline="\n")
+    tests = env.fix / "tests.sh"
+    tests.write_text(
+        f'#!/usr/bin/env bash\necho "$@" >> "{env.fix.as_posix()}/tests.args"\n'
+        f'echo "FAILED boom" >&2\nexit {test_rc}\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    return env.run(
+        CONFLICT_GATE_CMD=f"bash {gate.as_posix()}",
+        CONFLICT_TEST_CMD=f"bash {tests.as_posix()}",
+        CONFLICT_RULES_RUFF=_ruff_exe(),
+        **extra,
+    )
+
+
+def pr_branch(env, n):
+    return git(env.origin, "rev-parse", f"refs/heads/pr{n}")
+
+
+def pr_file(env, n, path):
+    return git(env.origin, "show", f"refs/heads/pr{n}:{path}")
+
+
+def pr_message(env, n):
+    return git(env.origin, "log", "-1", "--format=%B", f"refs/heads/pr{n}")
+
+
+def test_civ34a_adjacent_table_rows_are_resolved_pushed_and_named(env):
+    # The checks are still pending: a conflicted PR gets no GitHub CI, so the bot looks early.
+    pending = dict.fromkeys(REQUIRED, "pending")
+    conflict_pr(env, 5, "spec.md", TABLE_BASE, ROW28, ROW29, checks=pending)
+    old = env.heads[5]
+    run_rules(env)
+    assert env.log == "RESOLVED 5 table-rows\n"
+    body = pr_file(env, 5, "spec.md")
+    assert "| CIV-28 | b built |" in body and "| CIV-29 | c built |" in body
+    assert pr_branch(env, 5) != old and "pr merge" not in env.calls and env.premerge_runs == 0
+    assert "Conflict-Rule: table-rows spec.md" in pr_message(env, 5).splitlines()
+    assert (env.fix / "tests.args").read_text(encoding="utf-8").strip() == "tests/unit/test_x.py"
+    # The pull ref moves, and a fresh pr-check passes. The next pass merges at the NEW head.
+    new = pr_branch(env, 5)
+    git(env.origin, "update-ref", "refs/pull/5/head", new)
+    env.view(5, headRefOid=new)
+    env.checks(5)
+    run_rules(env)
+    assert env.log == "RESOLVED 5 table-rows\nDONE 5 abc123\n"
+    assert f"--match-head-commit {new}" in env.merges[0]
+
+
+def test_civ34a_both_sides_adding_tests_keeps_both(env):
+    mine = TEST_BASE + "\n\ndef test_mine():\n    assert True\n"
+    theirs = TEST_BASE + "\n\ndef test_theirs():\n    assert True\n"
+    conflict_pr(env, 5, "tests/unit/test_x.py", TEST_BASE, mine, theirs)
+    run_rules(env)
+    assert env.log == "RESOLVED 5 additions\n"
+    body = pr_file(env, 5, "tests/unit/test_x.py")
+    assert body.index("test_mine") < body.index("test_theirs")
+    compile(body, "test_x.py", "exec")
+    assert "Conflict-Rule: additions tests/unit/test_x.py" in pr_message(env, 5)
+
+
+def test_civ34a_an_append_only_list_file_keeps_both_sides(env):
+    base = "# Handoff\n\n### H-1 first\n"
+    mine, theirs = base + "\n### H-2 mine\n", base + "\n### H-3 theirs\n"
+    conflict_pr(env, 5, "project-docs/HANDOFF.md", base, mine, theirs)
+    run_rules(env)
+    assert env.log == "RESOLVED 5 union\n"
+    body = pr_file(env, 5, "project-docs/HANDOFF.md")
+    assert "H-2 mine" in body and "H-3 theirs" in body and body.index("H-2") < body.index("H-3")
+
+
+def test_civ34a_the_same_row_on_both_sides_goes_back(env):
+    mine = TABLE_BASE.replace("| CIV-28 | b |", "| CIV-28 | mine |")
+    theirs = TABLE_BASE.replace("| CIV-28 | b |", "| CIV-28 | theirs |")
+    conflict_pr(env, 5, "spec.md", TABLE_BASE, mine, theirs)
+    old = env.heads[5]
+    run_rules(env)
+    assert env.log == "BACK 5 conflict: no rule fits spec.md\n"
+    assert pr_branch(env, 5) == old and env.premerge_runs == 0
+
+
+def test_civ34a_a_conflict_in_a_high_path_goes_back(env):
+    conflict_pr(env, 5, "infra/postgres/998_x.sql", "a\n", "b\n", "c\n")
+    old = env.heads[5]
+    run_rules(env)
+    assert env.log.startswith("BACK 5 ") and "RESOLVED" not in env.log
+    assert pr_branch(env, 5) == old and not (env.fix / "tests.args").exists()
+
+
+def test_civ34a_a_conflict_in_a_workflow_file_goes_back_even_when_a_rule_fits(env):
+    conflict_pr(env, 5, ".github/workflows/pr-check.yml", TABLE_BASE, ROW28, ROW29)
+    old = env.heads[5]
+    run_rules(env)
+    assert env.log.startswith("BACK 5 conflict: no rule fits .github/workflows/pr-check.yml")
+    assert pr_branch(env, 5) == old
+
+
+def test_civ34a_a_resolution_whose_tests_fail_is_not_pushed(env):
+    conflict_pr(env, 5, "spec.md", TABLE_BASE, ROW28, ROW29)
+    old = env.heads[5]
+    run_rules(env, test_rc=1)
+    assert env.log.startswith("BACK 5 conflict: resolved by table-rows but the tests failed")
+    assert "boom" in env.log and pr_branch(env, 5) == old and "pr merge" not in env.calls
+
+
+def test_civ34a_a_resolution_that_does_not_parse_is_not_pushed(env):
+    """Both sides add a def at the same spot, and one of them is cut in half."""
+    mine = TEST_BASE + "\n\ndef test_mine(:\n    pass\n"
+    theirs = TEST_BASE + "\n\ndef test_theirs():\n    assert True\n"
+    conflict_pr(env, 5, "tests/unit/test_x.py", TEST_BASE, mine, theirs)
+    old = env.heads[5]
+    run_rules(env)
+    assert env.log.startswith("BACK 5 conflict: no rule fits tests/unit/test_x.py")
+    assert pr_branch(env, 5) == old
+
+
+def test_civ34a_a_failed_push_goes_back_and_never_forces(env):
+    conflict_pr(env, 5, "spec.md", TABLE_BASE, ROW28, ROW29)
+    hook = env.origin / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8", newline="\n")
+    hook.chmod(0o755)
+    old = env.heads[5]
+    run_rules(env)
+    assert env.log.startswith("BACK 5 conflict: resolved by table-rows but the push failed")
+    assert pr_branch(env, 5) == old
+
+
+def test_civ34a_the_rules_can_be_turned_off(env):
+    conflict_pr(env, 5, "spec.md", TABLE_BASE, ROW28, ROW29)
+    run_rules(env, CONFLICT_RULES="0")
+    assert env.log.startswith("BACK 5 conflict: spec.md")
