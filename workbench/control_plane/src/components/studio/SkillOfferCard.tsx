@@ -8,7 +8,8 @@
  * steps. The card shows the skill that Save makes: a name that the member
  * can change, the description, the instructions and each action with its
  * class. Save makes one private draft and then links to it in Studio. Not
- * now closes the card.
+ * now closes the card. A refusal that the card cannot repair closes the
+ * offer, and the card links to the skill creator of Studio.
  *
  * Every rule lives in `lib/studio/skillOffer.ts`, and this file only draws
  * it. The card makes no model call. It reads the catalog through the one
@@ -24,7 +25,7 @@
  * `lib/chatCardConformance.test.ts`.
  */
 
-import { useState, useSyncExternalStore, type ReactNode } from "react";
+import { useSyncExternalStore, type ReactNode } from "react";
 
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import Badge from "@/components/ui/Badge";
@@ -37,15 +38,19 @@ import {
   OFFER_TITLE,
   SAVED_LINE,
   SAVE_HINT,
+  STUDIO_NEW_SKILL,
   answeredOffer,
+  boxName,
   clearOfferError,
   offerAsks,
   offerLocal,
   pressDismiss,
   pressSave,
+  setTypedName,
   skillHref,
   skillOffer,
   subscribeOffers,
+  typedName,
   type OfferLocal,
   type OfferTurn,
   type SkillOffer,
@@ -162,6 +167,26 @@ export function SkillOfferView({ offer, local, name, onName, onSave, onDismiss, 
   );
 }
 
+/**
+ * The chat cannot save this skill (`offerFailure` place `studio`): the
+ * offer is closed, and the one next step is the skill creator of Studio.
+ */
+export function SkillOfferHandoff({ messageId, text }: { messageId: string; text: string }) {
+  return (
+    <RollupCard id={`skill-offer:${messageId}`} title={OFFER_TITLE} icon="Sparkles" header="own">
+      <section aria-label={OFFER_TITLE} data-skill-offer-studio="" className={CARD_FRAME_CLASS}>
+        <RollupHeader />
+        <RollupBody className="flex flex-wrap items-center gap-2 pt-1.5">
+          <p role="alert" className="min-w-0 break-words text-xs text-muted-foreground">{text}</p>
+          <Button variant="secondary" size="sm" icon="ExternalLink" href={STUDIO_NEW_SKILL} data-skill-offer-studio-link="">
+            Make this skill in Studio
+          </Button>
+        </RollupBody>
+      </section>
+    </RollupCard>
+  );
+}
+
 /** A saved offer: one line and the link to the draft in Studio. */
 export function SkillOfferSaved({ messageId, skillId }: { messageId: string; skillId: string }) {
   return (
@@ -188,11 +213,19 @@ export default function SkillOfferCard({ turn }: { turn: OfferTurn }) {
   // The catalog is read only for a turn that asks, so the flag off and most
   // turns send no request.
   const catalog = useCachedResource(asks ? OFFER_CATALOG_KEY : null, loadOfferCatalog);
-  // The name box. Empty means "the name of the draft", so a new draft name
-  // shows until the member types.
-  const [typedName, setTypedName] = useState<string | null>(null);
+  // The name box lives in the offer store, so Save reads the typed name itself
+  // (`pressSave` reads `boxName`), and a remount keeps it.
+  const readName = () => typedName(turn.messageId);
+  useSyncExternalStore(subscribeOffers, readName, readName);
 
   if (!on) return null;
+  if (local.kind === "studio") {
+    return (
+      <div className={SLOT_CLASS}>
+        <SkillOfferHandoff messageId={turn.messageId} text={local.text} />
+      </div>
+    );
+  }
   if (local.kind === "saved") {
     return (
       <div className={SLOT_CLASS}>
@@ -202,15 +235,14 @@ export default function SkillOfferCard({ turn }: { turn: OfferTurn }) {
   }
   const offer = asks ? skillOffer(turn, catalog.data, answeredOffer(local)) : null;
   if (!offer) return null;
-  const name = typedName ?? offer.draft.name;
   return (
     <div className={SLOT_CLASS}>
       <SkillOfferView
         offer={offer}
         local={local}
-        name={name}
-        onName={setTypedName}
-        onSave={() => void pressSave(offer, name, createSkill)}
+        name={boxName(offer)}
+        onName={(next) => setTypedName(offer.messageId, next)}
+        onSave={() => void pressSave(offer, createSkill)}
         onDismiss={() => pressDismiss(offer.messageId)}
         onReload={() => {
           clearOfferError(offer.messageId);

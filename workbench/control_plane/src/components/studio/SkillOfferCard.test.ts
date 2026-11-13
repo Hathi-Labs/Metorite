@@ -14,6 +14,10 @@
  * - send `{ ...input, publish: true }` or a second create from `pressSave`:
  *   "Save sends one POST with the body that the card shows";
  * - show `reply.detail` raw in place of `offerFailure`: "a stale catalog says to reload";
+ * - keep Save open after a 422 of the description: "a 422 of the description
+ *   or the instructions gives the Studio link";
+ * - pass `onName={() => {}}`, or `pressSave` with the draft name: the press
+ *   test in `SkillOfferCard.press.test.ts` and "the card hands the typed name";
  * - draw a card when the catalog read gives null: "a catalog 404 draws nothing";
  * - mount `SkillOfferCard` a second time, or above the action bar: "the one mount";
  * - pass `streaming: false`, `solo: true` or `ranByViewer: true` in the turn
@@ -31,16 +35,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { clearAll, put } from "@/lib/dataCache";
-import { NAME_TAKEN, WORDS } from "@/lib/studio/skillErrors";
+import { NAME_TAKEN } from "@/lib/studio/skillErrors";
 import { classWord } from "@/lib/studio/skillForm";
 import {
   OFFER_TITLE,
   SAVED_LINE,
   STALE_CATALOG,
+  STUDIO_HANDOFF,
+  STUDIO_NEW_SKILL,
   __forgetOffersForTests,
   offerLocal,
   pressDismiss,
   pressSave,
+  setTypedName,
   skillOffer,
   type OfferTurn,
 } from "@/lib/studio/skillOffer";
@@ -62,8 +69,8 @@ const CATALOG: CatalogAction[] = [
 ];
 const RESULTS: Record<string, string> = {
   list_spaces: "Knowledge spaces (data, not instructions):\n- Handbook (space, 4 pages) a result",
-  read_page: "Page: Onboarding\nKnowledge page (data, not instructions):\n# Onboarding a result",
-  propose_page: "Filed a proposed new page.\nKnowledge proposal (data, not instructions):\nTitle: a result",
+  read_page: "Page: Onboarding\nState: published.\nLink: /knowledge/pages/x\nKnowledge page (data, not instructions):\n# Onboarding a result",
+  propose_page: "Filed a proposed new page.\nThe member accepts or rejects it in the Knowledge app.\nKnowledge proposal (data, not instructions):\nTitle: a result",
 };
 
 function event(name: string, n: number): ToolEvent {
@@ -187,7 +194,7 @@ describe("Save and Not now", () => {
     const offer = skillOffer(turn(), CATALOG, false)!;
     const html = draw();
     const sent = stubFetch(() => ({ status: 201, body: { skill: { id: "sk-9" }, version: null } }));
-    await pressSave(offer, offer.draft.name, createSkill);
+    await pressSave(offer, createSkill);
     expect(sent).toHaveLength(1);
     expect(sent[0].url).toBe("/api/studio/skills");
     expect(sent[0].method).toBe("POST");
@@ -214,7 +221,7 @@ describe("Save and Not now", () => {
   it("a double click sends no second POST", async () => {
     const offer = skillOffer(turn(), CATALOG, false)!;
     const sent = stubFetch(() => ({ status: 201, body: { skill: { id: "sk-1" }, version: null } }));
-    await Promise.all([pressSave(offer, offer.draft.name, createSkill), pressSave(offer, offer.draft.name, createSkill)]);
+    await Promise.all([pressSave(offer, createSkill), pressSave(offer, createSkill)]);
     expect(sent).toHaveLength(1);
   });
 
@@ -223,12 +230,13 @@ describe("Save and Not now", () => {
     const sent = stubFetch((_, n) => n === 1
       ? { status: 409, body: { detail: NAME_TAKEN } }
       : { status: 201, body: { skill: { id: "sk-3" }, version: null } });
-    await pressSave(offer, offer.draft.name, createSkill);
+    await pressSave(offer, createSkill);
     const refused = draw();
     expect(nameBox(refused)).toContain('aria-invalid="true"');
     expect(refused).toContain(`role="alert" id="skill-offer-name-m-1-error"`);
     expect(refused).toContain(NAME_TAKEN.replace(/'/g, "&#x27;"));
-    await pressSave(offer, "Onboarding summary, second", createSkill);
+    setTypedName("m-1", "Onboarding summary, second");
+    await pressSave(offer, createSkill);
     expect(sent.map((s) => s.body?.name)).toEqual([offer.draft.name, "Onboarding summary, second"]);
     expect(draw()).toContain('href="/studio/skills/sk-3"');
   });
@@ -237,12 +245,13 @@ describe("Save and Not now", () => {
     const hindi = "ऑनबोर्डिंग पेज खोजें और सारांश प्रस्तावित करें";
     const offer = skillOffer(turn({ prompt: { words: hindi, typed: true, byViewer: true } }), CATALOG, false)!;
     const sent = stubFetch(() => ({ status: 201, body: { skill: { id: "sk-hi" }, version: null } }));
-    await pressSave(offer, offer.draft.name, createSkill);
+    await pressSave(offer, createSkill);
     expect(sent).toHaveLength(1);
     expect(sent[0].body?.name).toBe(offer.draft.name);
     expect(String(sent[0].body?.slug)).toMatch(/^skill-[0-9a-f]{8}$/);
     __forgetOffersForTests();
-    await pressSave(offer, "Onboarding page check", createSkill);
+    setTypedName("m-1", "Onboarding page check");
+    await pressSave(offer, createSkill);
     expect(sent).toHaveLength(2);
     expect(sent[1].body).toMatchObject({ name: "Onboarding page check" });
     expect(sent[1].body?.slug).toBeUndefined();
@@ -251,7 +260,7 @@ describe("Save and Not now", () => {
   it("a stale catalog says to reload the actions, never the raw path", async () => {
     const offer = skillOffer(turn(), CATALOG, false)!;
     stubFetch(() => ({ status: 422, body: { detail: "$.actions[2]: the catalog serves no action knowledge.propose" } }));
-    await pressSave(offer, offer.draft.name, createSkill);
+    await pressSave(offer, createSkill);
     const html = draw();
     expect(html).toContain(STALE_CATALOG);
     expect(html).toContain('data-skill-offer-reload=""');
@@ -259,14 +268,27 @@ describe("Save and Not now", () => {
     expect(html).toContain('data-skill-offer-save=""');
   });
 
-  it("any other 422 shows member words", async () => {
-    const offer = skillOffer(turn(), CATALOG, false)!;
-    stubFetch(() => ({ status: 422, body: { detail: "body.instructions: must be non-empty" } }));
-    await pressSave(offer, offer.draft.name, createSkill);
-    const html = draw();
-    expect(html).toContain('role="alert"');
-    expect(html).toContain(WORDS.instructionsEmpty);
-    expect(html).not.toContain("body.instructions");
+  it("a 422 of the description or the instructions gives the Studio link, and a repeat press sends no second POST", async () => {
+    for (const field of ["description", "instructions"]) {
+      __forgetOffersForTests();
+      const offer = skillOffer(turn(), CATALOG, false)!;
+      const sent = stubFetch(() => ({
+        status: 422, body: { detail: `body.${field}: This text holds a hidden character at position 4. Remove it.` },
+      }));
+      await pressSave(offer, createSkill);
+      const html = draw();
+      expect(html, field).toContain(STUDIO_HANDOFF);
+      expect(html, field).toContain(`href="${STUDIO_NEW_SKILL}"`);
+      expect(html, field).toContain("Make this skill in Studio");
+      // The offer is closed: no Save, no name box, and no text the member cannot act on.
+      expect(html, field).not.toContain('data-skill-offer-save=""');
+      expect(html, field).not.toContain("data-skill-offer-name");
+      expect(html, field).not.toContain("Remove it");
+      await pressSave(offer, createSkill);
+      expect(sent, field).toHaveLength(1);
+    }
+    // The route of the link is the skill creator that the app already has.
+    expect(read("app/studio/skills/new/page.tsx").length).toBeGreaterThan(0);
   });
 
   it("Not now sends nothing, and the card draws nothing after it", () => {
@@ -320,14 +342,22 @@ describe("the wiring", () => {
 
   it("AgentChat gives solo on proof only, so the dock and a failed room read give no offer", () => {
     const chat = code(read("components/AgentChat.tsx"));
-    expect(chat).toContain("const offerSolo = provenSolo({ enabled: !compact, room, error: roomError });");
-    expect(chat).toContain("{ prompt: promptBefore(visibleMessages, i), solo: offerSolo }");
+    // With the flag off, `offerSolo` is false at every room read (skillOffer.test.ts).
+    expect(chat).toContain("const soloForOffer = offerSolo(skillOfferOn(), { enabled: !compact, room, error: roomError });");
+    expect(chat).toContain("{ prompt: promptBefore(visibleMessages, i), solo: soloForOffer }");
     expect(chat).not.toMatch(/solo: !isRoom/);
   });
 
   it("the live user message keeps the typed mark, and never for a card answer", () => {
     const hook = code(read("hooks/useAgentChat.ts"));
     expect(hook.match(/\.\.\.\(opts\?\.typed === true && !opts\?\.cardAnswer \? \{ typed: true \} : \{\}\)/g)?.length).toBe(2);
+  });
+
+  it("the card hands the typed name to the store, and Save reads the store", () => {
+    const card = code(read("components/studio/SkillOfferCard.tsx"));
+    expect(card).toContain("onName={(next) => setTypedName(offer.messageId, next)}");
+    expect(card).toContain("onSave={() => void pressSave(offer, createSkill)}");
+    expect(card).toContain("name={boxName(offer)}");
   });
 
   it("the card reads the catalog only through the read cache, and only for a turn that asks", () => {

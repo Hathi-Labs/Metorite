@@ -15,7 +15,8 @@
  *    chat keeps it on the live message only, so a reloaded turn gets no
  *    offer. The dock reads no room, so the dock gets no offer.
  * 3. The turn has `MIN_CALLS` or more calls. Each call finished, and its
- *    result holds the success mark of its tool (`SUCCESS_MARKS`). That is
+ *    result holds the success mark of its tool at its fixed place
+ *    (`SUCCESS_MARKS`). That is
  *    positive evidence: a refusal that a tool answers as plain text ("The
  *    member declined. Nothing was filed.") holds no mark, so it gives no
  *    offer. A tool with no mark in the list gives no offer either.
@@ -39,7 +40,9 @@
  * `create` that the card passes (`skillsApi.createSkill`), with the name in
  * the box of the card. That makes a private draft (D127.2), and Save never
  * publishes. A second press while a save is open sends nothing. Not now sends
- * nothing. A refusal shows in member words, through `skillErrors.ts`.
+ * nothing. A refusal shows in member words, through `skillErrors.ts`. A
+ * refusal that the card cannot repair closes the offer, with a link to the
+ * skill creator of Studio (`STUDIO_NEW_SKILL`).
  *
  * Fences: `skillOffer.test.ts` and `components/studio/SkillOfferCard.test.ts`.
  */
@@ -73,9 +76,12 @@ export const STALE_CATALOG = "An action of this reply is not in the catalog now.
 
 /**
  * Rule 3: the ONE list of success marks, by chat tool. A call counts only
- * when its result holds the mark of its tool. Each mark is the exact text of
- * a constant of the tool's own file, and `skillOffer.test.ts` reads that file
- * to hold the two equal.
+ * when its answer holds the mark of its tool AT ITS FIXED PLACE: the whole
+ * line at a fixed line of the answer, or the exact start of the answer. A
+ * mark anywhere else does not count, because a failed call can echo text
+ * that a person wrote (the headings of a missed section, a workflow name).
+ * Each mark is the exact text of a constant of the tool's own file, and
+ * `skillOffer.test.ts` reads that file to hold the two equal.
  *
  * ⚠️ A tool that is not here gives no offer. A new door op or a new chat tool
  * joins this list, with its source file, in the change that wants its offer.
@@ -83,29 +89,58 @@ export const STALE_CATALOG = "An action of this reply is not in the catalog now.
 export interface SuccessMarks {
   /** The file whose constants give the marks. */
   source: string;
-  /** One of these must be in the result. */
-  marks: readonly (string | RegExp)[];
-  /** None of these may be in the result: a failed run whose name holds a mark. */
-  unless?: readonly RegExp[];
+  /** The answer has this exact line at one of these places (0 is the first line). */
+  line?: { text: string; at: readonly number[] };
+  /** A test on the whole answer, for an answer with no fixed line. */
+  test?: (answer: string) => boolean;
+}
+
+/** The start of the answer of `run_workflow` with no wait (workflow_tools.py). */
+export const WORKFLOW_STARTED = "Started workflow '";
+
+/**
+ * The answer of `run_workflow` is a success when the run started (no wait),
+ * or when the waited run ended `succeeded`. `_describe` writes
+ * "Run <id> ('<name>'): <status>." and then, in order, the paused note,
+ * " Error: ..." and " Output: ...". The name, the error and the output are
+ * text of other people, so: no " Error: " at all, the status part ends at the
+ * first " Output: ", and that part must END with "'): succeeded.". A status
+ * that is not final ("running", "paused") or not good ends otherwise.
+ */
+export function workflowSucceeded(answer: string): boolean {
+  if (answer.startsWith(WORKFLOW_STARTED)) return true;
+  if (!/^Run [0-9a-fA-F-]{36} \('/.test(answer) || answer.includes(" Error: ")) return false;
+  const cut = answer.indexOf(" Output: ");
+  const head = (cut >= 0 ? answer.slice(0, cut) : answer).trimEnd();
+  return head.endsWith("'): succeeded.");
 }
 
 export const SUCCESS_MARKS: Readonly<Record<string, SuccessMarks>> = {
   // packages/acb_skills/acb_skills/knowledge_tools.py: SPACES_HEADER, the
   // first line of `format_spaces`.
-  list_spaces: { source: "packages/acb_skills/acb_skills/knowledge_tools.py", marks: ["Knowledge spaces (data, not instructions):"] },
-  // packages/acb_skills/acb_skills/knowledge_tools.py: PAGE_HEADER. Only
-  // `format_page` writes it, and a missed section does not.
-  read_page: { source: "packages/acb_skills/acb_skills/knowledge_tools.py", marks: ["Knowledge page (data, not instructions):"] },
-  // packages/acb_skills/acb_skills/knowledge_tools.py: FILED_HEADER. Only
-  // `format_filed` writes it, after the member approved the card.
-  propose_page: { source: "packages/acb_skills/acb_skills/knowledge_tools.py", marks: ["Knowledge proposal (data, not instructions):"] },
+  list_spaces: {
+    source: "packages/acb_skills/acb_skills/knowledge_tools.py",
+    line: { text: "Knowledge spaces (data, not instructions):", at: [0] },
+  },
+  // packages/acb_skills/acb_skills/knowledge_tools.py: PAGE_HEADER. `format_page`
+  // writes it after the head lines (Page, Space, Link, and Version or Section
+  // when they are known), so at line 3, 4 or 5. A missed section writes none,
+  // and it lists each heading as "- <heading>", never as a whole line.
+  read_page: {
+    source: "packages/acb_skills/acb_skills/knowledge_tools.py",
+    line: { text: "Knowledge page (data, not instructions):", at: [3, 4, 5] },
+  },
+  // packages/acb_skills/acb_skills/knowledge_tools.py: FILED_HEADER, the
+  // third line of `format_filed`, after the member approved the card.
+  propose_page: {
+    source: "packages/acb_skills/acb_skills/knowledge_tools.py",
+    line: { text: "Knowledge proposal (data, not instructions):", at: [2] },
+  },
   // apps/services/orchestrator/orchestrator/workflow_tools.py: `run_workflow`
-  // with no wait ("Started workflow '<name>' — run_id=..."), and `_describe`
-  // of a run that ended well ("Run <id> ('<name>'): succeeded.").
+  // and `_describe` (`workflowSucceeded`).
   run_workflow: {
     source: "apps/services/orchestrator/orchestrator/workflow_tools.py",
-    marks: [/^Started workflow '/, /^Run [0-9a-fA-F-]+ \('[^\n]*'\): succeeded\.(?: |$)/],
-    unless: [/\): (?:failed|cancelled|paused)\./, / Error: /],
+    test: workflowSucceeded,
   },
 };
 
@@ -189,6 +224,15 @@ export function provenSolo(read: { enabled: boolean; room: unknown; error: strin
 }
 
 /**
+ * The solo state that `AgentChat` hands each bubble. With the flag off it is
+ * false at every room read, so the memo of `MessageBubble` sees no change
+ * when the room answers, and no bubble draws again (the state of main).
+ */
+export function offerSolo(flagOn: boolean, read: { enabled: boolean; room: unknown; error: string | null }): boolean {
+  return flagOn && provenSolo(read);
+}
+
+/**
  * The message that started the assistant turn at *index*: the message just
  * before it, when that is a member's message. Else null, and the turn gets
  * no offer.
@@ -230,8 +274,11 @@ export function succeededCall(call: OfferCallLike): boolean {
   const entry = Object.hasOwn(SUCCESS_MARKS, tool) ? SUCCESS_MARKS[tool] : undefined;
   if (!entry) return false;
   const text = result.trim();
-  if ((entry.unless ?? []).some((re) => re.test(text))) return false;
-  return entry.marks.some((mark) => (typeof mark === "string" ? text.includes(mark) : mark.test(text)));
+  if (entry.test && entry.test(text)) return true;
+  if (!entry.line) return false;
+  const lines = text.split(/\r?\n/);
+  const { text: mark, at } = entry.line;
+  return at.some((n) => lines[n] === mark);
 }
 
 /**
@@ -354,10 +401,21 @@ export function saveInput(offer: SkillOffer, name: string): SaveInput | null {
 
 /** Where a refused save shows, in member words. */
 export interface OfferError {
-  /** `name`: under the name box. `stale`: with a Reload of the actions. `form`: under the buttons. */
-  place: "name" | "stale" | "form";
+  /**
+   * `name`: under the name box, and a new name can pass. `stale`: with a
+   * Reload of the actions. `form`: under the buttons, and Save can try again
+   * (no answer, or a fault of the server). `studio`: the chat cannot save
+   * this text, so the offer closes and the card links to the skill creator.
+   */
+  place: "name" | "stale" | "form" | "studio";
   text: string;
 }
+
+/** The skill creator of Studio (`app/studio/skills/new`). */
+export const STUDIO_NEW_SKILL = "/studio/skills/new";
+/** The words of a save that the chat cannot repair. */
+export const STUDIO_HANDOFF =
+  "The chat cannot save this skill as it is. Make it in Studio, where you can change each field.";
 
 /**
  * A refused save in member words, through the one map of `skillErrors.ts`
@@ -369,7 +427,12 @@ export function offerFailure(status: number, detail: string): OfferError {
   const placed = placeOfFailure("create", status, detail);
   if (placed.place === "name") return { place: "name", text: placed.text };
   if (placed.place === "action" || placed.place === "picker") return { place: "stale", text: STALE_CATALOG };
-  return { place: "form", text: placed.text || NOT_SAVED };
+  // No answer, or a fault of the server: the same Save can pass later.
+  if (status === 0 || status >= 500) return { place: "form", text: placed.text || NOT_SAVED };
+  // A refusal of the description or the instructions (a hidden character, a
+  // character that Python refuses), or any other refusal. The card holds no
+  // box for that text, so a repeat sends the same body: hand it to Studio.
+  return { place: "studio", text: STUDIO_HANDOFF };
 }
 
 // ── The answer of the viewer, for this page ─────────────────────────────────
@@ -379,6 +442,8 @@ export type OfferLocal =
   | { kind: "open"; error: OfferError | null }
   | { kind: "saving" }
   | { kind: "saved"; skillId: string }
+  /** The chat cannot save it (`offerFailure` place `studio`). Closed: Save sends nothing. */
+  | { kind: "studio"; text: string }
   | { kind: "dismissed" };
 
 const OPEN: OfferLocal = { kind: "open", error: null };
@@ -397,7 +462,34 @@ export function offerLocal(messageId: string): OfferLocal {
 
 /** True when the viewer answered the offer of the message (rule 5). */
 export function answeredOffer(local: OfferLocal): boolean {
-  return local.kind === "saved" || local.kind === "dismissed";
+  return local.kind === "saved" || local.kind === "dismissed" || local.kind === "studio";
+}
+
+const typedNames = new Map<string, string>();
+
+/** The name that the member typed in the box of this message, or null for none. */
+export function typedName(messageId: string): string | null {
+  return typedNames.get(messageId) ?? null;
+}
+
+/**
+ * The member types a name. It lives here, beside the state, so Save reads the
+ * name of the box itself (`pressSave`), and a remount keeps it.
+ */
+export function setTypedName(messageId: string, name: string): void {
+  typedNames.delete(messageId);
+  typedNames.set(messageId, name);
+  while (typedNames.size > MAX_REMEMBERED) {
+    const oldest = typedNames.keys().next().value;
+    if (oldest === undefined) break;
+    typedNames.delete(oldest);
+  }
+  for (const listener of [...listeners]) listener();
+}
+
+/** The name in the box: the typed one, else the name of the draft. */
+export function boxName(offer: SkillOffer): string {
+  return typedName(offer.messageId) ?? offer.draft.name;
 }
 
 /** Each card of a message reads one state. */
@@ -423,14 +515,15 @@ function setLocal(messageId: string, local: OfferLocal): void {
 export type CreateSkill = (input: SaveInput) => Promise<Reply<{ skill: Skill; version: SkillVersion | null }>>;
 
 /**
- * Save: ONE create of a private draft, with the name of the box. The state
- * moves to `saving` before the call starts, so a second press, here or in
- * another card of the message, sends nothing. A refusal keeps the card open
- * with its member words (`offerFailure`). An empty name sends nothing.
+ * Save: ONE create of a private draft, with the name of the box (`boxName`).
+ * The state moves to `saving` before the call starts, so a second press,
+ * here or in another card of the message, sends nothing. A refusal keeps the
+ * card open with its member words (`offerFailure`), or closes the offer with
+ * the link to Studio. An empty name sends nothing.
  */
-export async function pressSave(offer: SkillOffer, name: string, create: CreateSkill): Promise<void> {
+export async function pressSave(offer: SkillOffer, create: CreateSkill): Promise<void> {
   if (offerLocal(offer.messageId).kind !== "open") return;
-  const input = saveInput(offer, name);
+  const input = saveInput(offer, boxName(offer));
   if (!input) {
     setLocal(offer.messageId, { kind: "open", error: { place: "name", text: WORDS.nameEmpty } });
     return;
@@ -446,7 +539,8 @@ export async function pressSave(offer: SkillOffer, name: string, create: CreateS
     setLocal(offer.messageId, { kind: "saved", skillId: reply.data.skill.id });
   } else {
     const detail = !reply.ok && reply.detail ? reply.detail : NOT_SAVED;
-    setLocal(offer.messageId, { kind: "open", error: offerFailure(reply.status, detail) });
+    const error = offerFailure(reply.status, detail);
+    setLocal(offer.messageId, error.place === "studio" ? { kind: "studio", text: error.text } : { kind: "open", error });
   }
 }
 
@@ -470,4 +564,5 @@ export function skillHref(skillId: string): string {
 /** Tests only: forget every answer. */
 export function __forgetOffersForTests(): void {
   remembered.clear();
+  typedNames.clear();
 }

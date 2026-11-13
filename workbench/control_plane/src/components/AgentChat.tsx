@@ -153,7 +153,8 @@ import { buildFrontendToolsAddendum, runFrontendToolEvent } from "@/hooks/useFro
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import { missingAgentIntegrations, missingIntegrationsText } from "@/lib/missingIntegrations";
 import { EMPTY_BOX, composerTyped, edited, filled, type ComposerMark } from "@/lib/typedMark";
-import { promptBefore, provenSolo } from "@/lib/studio/skillOffer";
+import { offerSolo, promptBefore } from "@/lib/studio/skillOffer";
+import { skillOfferOn } from "@/lib/studio/skillOfferFlag";
 import type { AskOutcome } from "@/lib/shell/assistant";
 import {
   composerControls,
@@ -2418,9 +2419,10 @@ export default function AgentChat({
   const { room, shared: isRoom, presence, timeline, refresh: refreshRoom, error: roomError } =
     useRoom(sessionId, viewerEmail, { enabled: !compact });
   // STU-F6a: the skill offer needs proof of a chat of one member. The dock
-  // reads no room (`compact`), and a failed read falls back to a room of
-  // one, so both count as "could be shared" (`provenSolo`).
-  const offerSolo = provenSolo({ enabled: !compact, room, error: roomError });
+  // form reads no room (`compact`), and a failed read falls back to a room
+  // of one, so both count as "could be shared" (`provenSolo`). With the flag
+  // off the value stays false, so no bubble draws again when the room answers.
+  const soloForOffer = offerSolo(skillOfferOn(), { enabled: !compact, room, error: roomError });
   // The member's own assistant, not a room: the push prompt asks only here (OB-8).
   const ownAssistantChat = isOrchestrator && !isRoom;
   // A blocking generative-UI card whose answer went as a new message after a
@@ -2734,7 +2736,7 @@ export default function AgentChat({
                   // The skill offer of the turn (STU-F6a): its prompt, and
                   // whether the chat is solo. `skillOffer.ts` decides.
                   skillOfferOf={msg.role === "assistant"
-                    ? { prompt: promptBefore(visibleMessages, i), solo: offerSolo }
+                    ? { prompt: promptBefore(visibleMessages, i), solo: soloForOffer }
                     : undefined}
                   onRetryMessage={prevUserMsg ? handleRetryMessage : undefined} />
                 {/* Mailbox switch — everything below this line is about a

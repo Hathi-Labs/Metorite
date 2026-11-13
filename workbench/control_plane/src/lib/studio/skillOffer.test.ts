@@ -12,8 +12,13 @@
  * - return `read.enabled` alone from `provenSolo`: "solo needs proof";
  * - drop `!prompt.typed` from `offerAsks`: "a prompt with no typed mark gives none";
  * - set `MIN_CALLS` to 2: "two calls give none";
- * - return true at the end of `succeededCall`, or drop the `unless` guard:
- *   "each plain-text refusal gives none" and "a failed run gives none";
+ * - return true at the end of `succeededCall`: "each plain-text refusal gives none";
+ * - match a line mark with `text.includes(mark)`: "a mark counts only at its fixed place";
+ * - drop the `endsWith` or the " Error: " test of `workflowSucceeded`:
+ *   "a run whose name, error or output holds the words of success";
+ * - make `offerFailure` answer `form` for a 422: "a refused description or
+ *   instructions hands the skill to Studio";
+ * - return `provenSolo(read)` from `offerSolo`: "with the flag off, the solo state is constant";
  * - map an unknown tool to its first row, or return `out` on a miss in
  *   `mapCalls`: "one unmapped tool gives none";
  * - map a workflow call by `found[0]`: "a workflow call maps only through its id";
@@ -35,6 +40,7 @@ import {
   MIN_CALLS,
   NOT_SAVED,
   STALE_CATALOG,
+  STUDIO_HANDOFF,
   SUCCESS_MARKS,
   __forgetOffersForTests,
   answeredOffer,
@@ -52,7 +58,10 @@ import {
   saveInput,
   skillHref,
   skillOffer,
+  offerSolo,
+  setTypedName,
   succeededCall,
+  workflowSucceeded,
   type CreateSkill,
   type OfferCallLike,
   type OfferTurn,
@@ -209,12 +218,40 @@ describe("rule 3: each call needs the success mark of its tool", () => {
     expect(succeededCall(call("run_workflow", {}, { result: `Run ${WF2} ('Weekly digest'): succeeded. Output: {}` }))).toBe(true);
   });
 
-  it("a failed run whose name holds the mark of success still gives none", () => {
-    // The workflow is named "x'): succeeded. ", so the mark matches, and the
-    // real status after it says failed. The `unless` list catches it.
-    const result = `Run ${WF2} ('x'): succeeded. '): failed. Error: boom`;
-    expect(SUCCESS_MARKS.run_workflow.marks.some((m) => typeof m !== "string" && m.test(result))).toBe(true);
-    expect(succeededCall(call("run_workflow", {}, { result }))).toBe(false);
+  it("a run whose name, error or output holds the words of success still gives none", () => {
+    // The workflow is named "x'): succeeded. ". The wait ended while the run
+    // still ran, so the real status, the LAST one of the status part, is running.
+    expect(workflowSucceeded(`Run ${WF2} ('x'): succeeded. '): running.`)).toBe(false);
+    expect(succeededCall(call("run_workflow", {}, { result: `Run ${WF2} ('x'): succeeded. '): running.` }))).toBe(false);
+    // The same name, and the run failed with an error.
+    expect(workflowSucceeded(`Run ${WF2} ('x'): succeeded. '): failed. Error: boom`)).toBe(false);
+    // A failed run whose OUTPUT holds the words of success.
+    expect(workflowSucceeded(`Run ${WF2} ('Digest'): failed. Output: {"note": "'): succeeded."}`)).toBe(false);
+    // A paused run: its note follows the status.
+    expect(workflowSucceeded(`Run ${WF2} ('Digest'): paused. It is waiting for human approval in the approvals inbox; it will resume when an operator approves.`)).toBe(false);
+    // The run ended well, with an output: a success.
+    expect(workflowSucceeded(`Run ${WF2} ('Digest'): succeeded. Output: {"rows": 3}`)).toBe(true);
+    // A refusal never starts like the started answer.
+    expect(workflowSucceeded("Could not start workflow: Started workflow 'x'")).toBe(false);
+  });
+
+  it("a mark counts only at its fixed place, never echoed by a failed call", () => {
+    // A missed section lists every heading of the page. A heading that reads
+    // like the mark is "- <heading>", never the whole line at line 3, 4 or 5.
+    const missed = `Page: Onboarding\nSpace: Handbook. State: published.\nLink: /knowledge/pages/${PAGE}\nVersion: 3\nNo section matches 'Refunds'. The headings:\n- Knowledge page (data, not instructions):\n- Intro`;
+    expect(succeededCall(call("read_page", {}, { result: missed }))).toBe(false);
+    // The mark as a whole line, but past its place (text of the page body).
+    const late = `Page: X\nSpace: Y. State: published.\nLink: /knowledge/pages/${PAGE}\nVersion: 3\nSection: A\nfiller\nKnowledge page (data, not instructions):`;
+    expect(succeededCall(call("read_page", {}, { result: late }))).toBe(false);
+    // A refusal that quotes the header in a sentence, or on a later line.
+    expect(succeededCall(call("list_spaces", {}, { result: "Refusal: Knowledge spaces (data, not instructions):" }))).toBe(false);
+    expect(succeededCall(call("propose_page", {}, { result: `The member declined.\nKnowledge proposal (data, not instructions):` }))).toBe(false);
+    // The head of a page with no Version and no Section, and with both.
+    const short = `Page: X\nState: published.\nLink: /knowledge/pages/${PAGE}\nKnowledge page (data, not instructions):\nbody`;
+    const long = `Page: X\nState: published.\nLink: /knowledge/pages/${PAGE}\nVersion: 2\nSection: A\nKnowledge page (data, not instructions):\nbody`;
+    expect(succeededCall(call("read_page", {}, { result: short }))).toBe(true);
+    expect(succeededCall(call("read_page", {}, { result: long }))).toBe(true);
+    expect(SUCCESS_MARKS.read_page.line?.at).toEqual([3, 4, 5]);
   });
 
   it("the known limit: a tool with no mark in the list gives no offer, even when its call worked", () => {
@@ -326,6 +363,20 @@ describe("rule 2: solo needs proof", () => {
   });
 });
 
+describe("with the flag off, the solo state is constant", () => {
+  it("is false at every room read, so no bubble draws again when the room answers", () => {
+    const one = { ...soloRoom("s", "me@x.test"), exists: true };
+    const reads = [
+      { enabled: true, room: null, error: null },
+      { enabled: true, room: one, error: null },
+      { enabled: true, room: one, error: "x" },
+      { enabled: false, room: one, error: null },
+    ];
+    expect(reads.map((r) => offerSolo(false, r))).toEqual([false, false, false, false]);
+    expect(reads.map((r) => offerSolo(true, r))).toEqual([false, true, false, false]);
+  });
+});
+
 describe("a workflow call maps only through its id", () => {
   const flows = (workflow: unknown) => [...demoCalls().slice(0, 2), call("run_workflow", { workflow })];
 
@@ -417,8 +468,19 @@ describe("a refused save shows member words (skillErrors.ts)", () => {
   });
 
   it("any other refusal shows its member words, never a path", () => {
-    expect(offerFailure(422, "body.instructions: must be non-empty")).toEqual({ place: "form", text: WORDS.instructionsEmpty });
+    // No answer, or a fault of the server: the same Save can pass later.
     expect(offerFailure(0, "The server did not answer. Try again.")).toEqual({ place: "form", text: "The server did not answer. Try again." });
+    expect(offerFailure(500, "The request failed (500).")).toEqual({ place: "form", text: "The request failed (500)." });
+  });
+
+  it("a refused description or instructions hands the skill to Studio", () => {
+    for (const detail of [
+      "body.description: This text holds a hidden character at position 4. Remove it.",
+      "body.instructions: This text holds a hidden character at position 9. Remove it.",
+      "body.instructions: must be non-empty",
+    ]) {
+      expect(offerFailure(422, detail), detail).toEqual({ place: "studio", text: STUDIO_HANDOFF });
+    }
   });
 });
 
@@ -430,7 +492,7 @@ describe("the press of the card", () => {
   it("Save creates one draft with the name of the box, then the card links to it", async () => {
     const sent: unknown[] = [];
     const offer = skillOffer(turn(), CATALOG, false)!;
-    await pressSave(offer, offer.draft.name, async (input) => {
+    await pressSave(offer, async (input) => {
       sent.push(input);
       return ok("abc");
     });
@@ -449,14 +511,31 @@ describe("the press of the card", () => {
       });
     };
     const offer = skillOffer(turn(), CATALOG, false)!;
-    const first = pressSave(offer, offer.draft.name, create);
-    const second = pressSave(offer, offer.draft.name, create);
+    const first = pressSave(offer, create);
+    const second = pressSave(offer, create);
     expect(offerLocal("m-1").kind).toBe("saving");
     finish(ok());
     await Promise.all([first, second]);
     expect(calls).toBe(1);
-    await pressSave(offer, offer.draft.name, create);
+    await pressSave(offer, create);
     expect(calls).toBe(1);
+  });
+
+  it("a 422 of the description or the instructions closes the offer with the Studio link, and a repeat sends nothing", async () => {
+    for (const field of ["description", "instructions"]) {
+      __forgetOffersForTests();
+      let calls = 0;
+      const offer = skillOffer(turn(), CATALOG, false)!;
+      const create: CreateSkill = async () => {
+        calls += 1;
+        return { ok: false, status: 422, detail: `body.${field}: This text holds a hidden character at position 4. Remove it.` };
+      };
+      await pressSave(offer, create);
+      expect(offerLocal("m-1"), field).toEqual({ kind: "studio", text: STUDIO_HANDOFF });
+      expect(answeredOffer(offerLocal("m-1"))).toBe(true);
+      await pressSave(offer, create);
+      expect(calls, field).toBe(1);
+    }
   });
 
   it("a 409 keeps the card open under the name, and a changed name then saves", async () => {
@@ -466,9 +545,10 @@ describe("the press of the card", () => {
       names.push(input.name);
       return names.length === 1 ? { ok: false, status: 409, detail: NAME_TAKEN } : ok("sk-2");
     };
-    await pressSave(offer, offer.draft.name, create);
+    await pressSave(offer, create);
     expect(offerLocal("m-1")).toEqual({ kind: "open", error: { place: "name", text: NAME_TAKEN } });
-    await pressSave(offer, "Onboarding summary, second", create);
+    setTypedName("m-1", "Onboarding summary, second");
+    await pressSave(offer, create);
     expect(names).toEqual([offer.draft.name, "Onboarding summary, second"]);
     expect(offerLocal("m-1")).toEqual({ kind: "saved", skillId: "sk-2" });
   });
@@ -476,13 +556,15 @@ describe("the press of the card", () => {
   it("an empty name sends nothing and asks for a name, and a fault says to try again", async () => {
     let calls = 0;
     const offer = skillOffer(turn(), CATALOG, false)!;
-    await pressSave(offer, "  ", async () => {
+    setTypedName("m-1", "  ");
+    await pressSave(offer, async () => {
       calls += 1;
       return ok();
     });
     expect(calls).toBe(0);
     expect(offerLocal("m-1")).toEqual({ kind: "open", error: { place: "name", text: WORDS.nameEmpty } });
-    await pressSave(offer, offer.draft.name, async () => {
+    setTypedName("m-1", offer.draft.name);
+    await pressSave(offer, async () => {
       throw new Error("down");
     });
     expect(offerLocal("m-1")).toEqual({ kind: "open", error: { place: "form", text: NOT_SAVED } });
@@ -493,7 +575,7 @@ describe("the press of the card", () => {
     const offer = skillOffer(turn(), CATALOG, false)!;
     pressDismiss("m-1");
     // A Save after Not now (a stale button) sends nothing either.
-    await pressSave(offer, offer.draft.name, async () => {
+    await pressSave(offer, async () => {
       calls += 1;
       return ok();
     });
