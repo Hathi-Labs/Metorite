@@ -272,8 +272,9 @@ def test_the_flag_reader_is_per_call(monkeypatch):
 
 PKG_A = str(uuid.uuid4())
 PKG_B = str(uuid.uuid4())
-#: The class of each object op. STU-D4b adds the aggregate, a read.
-VERBS = {"list": "A", "get": "A", "create": "B", "update": "B", "delete": "C", "aggregate": "A"}
+#: The class of each object op. STU-D4b adds the aggregate, and C4a-2 the history, both reads.
+VERBS = {"list": "A", "get": "A", "create": "B", "update": "B", "delete": "C", "aggregate": "A",
+         "history": "A"}
 
 
 def _pkg(pid, objects=(), actions=()):
@@ -349,8 +350,9 @@ class TestThePackageRows:
         _open(monkeypatch, "*")
         body = _client().get(URL, params={"app": PKG_B.upper()}).json()["actions"]
         assert {r["app"] for r in body} == {PKG_B}
-        # The five record verbs and the aggregate (STU-D4b): one row for each object op.
-        assert len(body) == 6
+        # The five record verbs, the aggregate (STU-D4b) and the history (C4a-2): one
+        # row for each object op.
+        assert len(body) == 7
         assert db.package_calls[-1][1] == PKG_B
 
     def test_a_bad_app_filter_is_422_and_reads_nothing(self, monkeypatch, db):

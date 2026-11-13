@@ -223,7 +223,9 @@ keys that changed, each as ``{"old": ..., "new": ...}``. An update that
 changes no value writes no row. A delete holds each old value. A derived
 write of a roll-up parent writes no row. ``app_audit`` still holds no value.
 :func:`purge_record_changes` deletes the rows of a package in chunks, before
-:func:`purge_records`. No reader exists yet (C4a-2).
+:func:`purge_records`. :func:`list_record_changes` is the one reader
+(C4a-2). It reads through the gate of a get, and it drops each key that the
+viewer may not read, so the store keeps each value and the reader hides.
 
 **On a floor of 0 or less, a write that does not lower a group never reads
 the group.** The store adds up the net change of the batch on each key of
@@ -293,7 +295,7 @@ from decimal import Decimal
 from typing import Any
 
 from acb_common import studio_query
-from acb_common.paging import page_line
+from acb_common.paging import PAGE_MAX, page_line
 from acb_common.studio_access import (
     AccessError,
     Grant,
@@ -311,6 +313,8 @@ from acb_common.studio_access import (
     with_formulas,
 )
 from acb_common.studio_fields import (
+    HISTORY_DECISION,
+    HISTORY_VALUES,
     HOT_TEXT_CHARS,
     MAX_FIELDS_PER_OBJECT,
     MAX_HOT_BACKFILL,
@@ -758,6 +762,16 @@ _CHANGE_SQL = (
     "(object_id, record_id, op, actor, via_kind, via_id, changes) "
     "VALUES (CAST(:oid AS uuid), CAST(:rid AS uuid), :op, :actor, :via_kind, :via_id, "
     "CAST(:changes AS jsonb))"
+)
+
+#: C4a-2. One page of the change history of one record, oldest first, by key:
+#: the index ``(organization_id, object_id, record_id, id)`` serves it. The
+#: bound org filters it beside RLS. ``:n`` is one past the page, so the reader
+#: knows whether a next page exists.
+_CHANGES_PAGE_SQL = (
+    "SELECT id, op, actor, via_kind, via_id, changes, at FROM studio_record_changes "
+    f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
+    "AND record_id = CAST(:rid AS uuid) AND id > :after ORDER BY id LIMIT :n"
 )
 
 #: The kinds of a ``via`` (C4a-1). The CHECK ``studio_record_changes_via_kind``
@@ -2066,6 +2080,9 @@ class _View:
     scope: Scope
     rules: tuple[Rule, ...] = ()
     tainted: frozenset[str] = frozenset()
+    #: C4a-2. True when the viewer is the owner of the package, from the
+    #: ``apps`` row. ``scope.open`` is True for an open object too.
+    owner: bool = False
 
     def hidden(self, data: Mapping[str, Any]) -> frozenset[str]:
         """The keys hidden on the record *data*, with each formula that reads one."""
@@ -2111,7 +2128,7 @@ async def _view(db: Any, oid: str, pid: str, viewer: Viewer) -> _View | None:
     owner = row[2] is not None and str(row[2]) == viewer.email
     rules = stored_rules(_json(row[0]))
     scope = scope_for(stored_access(_json(row[1])), viewer, owner=owner, rules=rules)
-    return _View(scope, rules, await _tainted(db, pid, rules, viewer, owner))
+    return _View(scope, rules, await _tainted(db, pid, rules, viewer, owner), owner)
 
 
 def _scoped(sql: str, scoped_sql: str, scope: Scope, binds: dict[str, Any]) -> str:
@@ -2131,16 +2148,136 @@ async def get_record(db: Any, object_id: str, record_id: str, *,
 
     C8a: a record that the row rule of *viewer* does not read answers None, as
     a record that is not there does, and each hidden key leaves the answer."""
+    view, rec = await _read_record(db, object_id, record_id, package_id=package_id,
+                                   viewer=viewer)
+    return None if view is None or rec is None else view.shown(rec)
+
+
+async def _read_record(db: Any, object_id: str, record_id: str, *, package_id: str,
+                       viewer: Viewer) -> tuple[_View | None, Record | None]:
+    """The one gate of a record read (C8a): the view of *viewer*, and the
+    record with each value, or None when the row rule of *viewer* does not
+    read it or it is not there. The view is None when the package holds no
+    such object, or when the viewer reads no record of it. The caller hides
+    the keys. :func:`get_record` and :func:`list_record_changes` call it."""
     who = _check_viewer(viewer)
     oid = _uuid(object_id, "object_id")
     binds = {"oid": oid, "rid": _uuid(record_id, "record_id"),
              "pid": _uuid(package_id, "package_id")}
     view = await _view(db, oid, binds["pid"], who)
     if view is None or not view.scope.reads:
-        return None
+        return None, None
     sql = _scoped(_GET_RECORD_SQL, _GET_RECORD_SCOPED_SQL, view.scope, binds)
     row = (await db.execute(text(sql), binds)).first()
-    return None if row is None else view.shown(_record(row))
+    return view, None if row is None else _record(row)
+
+
+@dataclass(frozen=True)
+class RecordChange:
+    """One row of the change history of a record, as a viewer reads it (C4a-2).
+
+    ``changes`` holds ``{key: {"old": ..., "new": ...}}`` with only the keys
+    that the viewer may read. ``actor`` is the address of the member who
+    wrote, or None for a viewer of an install."""
+
+    id: int
+    op: str
+    actor: str | None
+    via_kind: str | None
+    via_id: str | None
+    changes: dict[str, Any]
+    at: datetime
+
+
+@dataclass(frozen=True)
+class ChangePage:
+    """One page of the change history of a record, oldest first (C4a-2).
+    ``next`` is the id to send as ``after`` for the next page, or None when
+    the page holds the last row."""
+
+    changes: tuple[RecordChange, ...]
+    next: int | None
+
+    def only(self, keys: Collection[str]) -> ChangePage:
+        """The page with only the values of *keys* (J2a: the fields of the
+        installed version). The actor and the ``via`` id leave, as
+        ``InstalledApp.project_record`` drops the writer. An update with no
+        key left leaves the page, because it would show that a key that the
+        viewer cannot read changed."""
+        kept = frozenset(keys)
+        out = []
+        for row in self.changes:
+            changes = {k: v for k, v in row.changes.items() if k in kept}
+            if row.op == "update" and not changes:
+                continue
+            out.append(replace(row, actor=None, via_id=None, changes=changes))
+        return ChangePage(tuple(out), self.next)
+
+
+def _history_bound(value: Any, what: str, low: int, high: int) -> int:
+    """*value* as a whole number from *low* to *high*. A bool is no number."""
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise ObjectStoreError(f"{what} must be a whole number from {low} to {high}")
+    return value
+
+
+def _history_shown(fields: Sequence[FieldSpec], hidden: frozenset[str]) -> frozenset[str]:
+    """The keys of the history that a viewer reads (C4a-2): each field of the
+    object that *hidden* does not hold and whose type
+    ``studio_fields.HISTORY_DECISION`` shows. A key with no field now, or a
+    type with no decision, is dropped (fail closed)."""
+    return frozenset(f.key for f in fields if f.key not in hidden
+                     and HISTORY_DECISION.get(f.type) == HISTORY_VALUES)
+
+
+async def list_record_changes(db: Any, object_id: str, record_id: str, *, package_id: str,
+                              viewer: Viewer, limit: int | None = None,
+                              after: int | None = None) -> ChangePage | None:
+    """The change history of the record *record_id*, oldest first, one page of
+    at most *limit* rows with an id past *after* (C4a-2). Answers None when
+    the viewer may not read the history.
+
+    **The gate is the gate of a get.** :func:`_read_record` decides, with the
+    row rule of *viewer*. A record that the viewer cannot read answers None,
+    as :func:`get_record` does. **A deleted record** has no row, so no row
+    rule can run on it. Only the owner of the package reads its history, and
+    each other viewer gets None (fail closed).
+
+    **The hide.** The store keeps each value, and this reader drops each key
+    that some grant of the viewer may hide (``maybe_hidden``) or that the
+    record hides now, with each formula that reads one. An old value can come
+    from a time when other grants read the record, so the reader takes the
+    wider set, and it can hide more than a get. It drops too each key with no
+    field now, and each type that ``HISTORY_DECISION`` does not show. An
+    update with no key left leaves the page. ``next`` still moves past it."""
+    size = _history_bound(studio_query.DEFAULT_LIMIT if limit is None else limit,
+                          "limit", 1, PAGE_MAX)
+    start = _history_bound(0 if after is None else after, "after", 0, 2**63 - 1)
+    view, rec = await _read_record(db, object_id, record_id, package_id=package_id,
+                                   viewer=viewer)
+    if view is None or (rec is None and not view.owner):
+        return None
+    oid, rid = _uuid(object_id, "object_id"), _uuid(record_id, "record_id")
+    hidden = view.maybe_hidden() | (frozenset() if rec is None else view.hidden(rec.data))
+    shown = _history_shown(await _fields(db, oid), hidden)
+    rows = (await db.execute(text(_CHANGES_PAGE_SQL), {
+        "oid": oid, "rid": rid, "after": start, "n": size + 1})).all()
+    if rec is None and not rows and start == 0:
+        # The owner names a record that never had a change: not found.
+        return None
+    page = rows[:size]
+    out = []
+    for r in page:
+        changes = {k: v for k, v in (_json(r[5]) or {}).items() if k in shown}
+        if str(r[1]) == "update" and not changes:
+            continue
+        out.append(RecordChange(int(r[0]), str(r[1]), str(r[2]), _opt(r[3]), _opt(r[4]),
+                                changes, r[6]))
+    return ChangePage(tuple(out), int(page[-1][0]) if len(rows) > size else None)
+
+
+def _opt(value: Any) -> str | None:
+    return None if value is None else str(value)
 
 
 async def update_record(db: Any, actor: str, object_id: str, record_id: str,

@@ -56,6 +56,24 @@ FIELD_TYPES: tuple[str, ...] = (
     "phone", "geo", "richText", "rating", "duration", "quantity", "percent", "barcode",
 )  # fmt: skip
 
+#: C4a-2. What the reader of the change history shows of a field of each type:
+#: ``values`` (the old and the new value) or ``drop`` (no key and no value).
+#: The store keeps each value. The reader applies this table and the hide list
+#: of C8a. Today each type shows its values. A new type needs a decision here,
+#: and ``test_studio_record_history_read.py`` fails until it has one.
+HISTORY_VALUES = "values"
+HISTORY_DROP = "drop"
+HISTORY_DECISION: Mapping[str, str] = {
+    "text": HISTORY_VALUES, "longText": HISTORY_VALUES, "number": HISTORY_VALUES,
+    "money": HISTORY_VALUES, "date": HISTORY_VALUES, "datetime": HISTORY_VALUES,
+    "checkbox": HISTORY_VALUES, "select": HISTORY_VALUES, "multiSelect": HISTORY_VALUES,
+    "person": HISTORY_VALUES, "relation": HISTORY_VALUES, "file": HISTORY_VALUES,
+    "url": HISTORY_VALUES, "email": HISTORY_VALUES, "phone": HISTORY_VALUES,
+    "geo": HISTORY_VALUES, "richText": HISTORY_VALUES, "rating": HISTORY_VALUES,
+    "duration": HISTORY_VALUES, "quantity": HISTORY_VALUES, "percent": HISTORY_VALUES,
+    "barcode": HISTORY_VALUES,
+}  # fmt: skip
+
 #: The types that a hot field may have. Each maps to one value column of
 #: ``studio_record_hot`` (see :func:`hot_value`). C8a adds ``person``, because
 #: a row rule (``studio_access.py``) reads the hot row of a person field.
