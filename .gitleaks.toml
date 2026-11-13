@@ -66,7 +66,9 @@ regexes = [
     # test_secret_shapes_one_list.py, and `.test_durations` lists every test
     # id. Each is a test sentinel, never a token. Each entry matches one exact
     # value and no other: never widen them.
-    '''mbt_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx''',
+    # Written as a pattern, so this file holds no mbt_ literal
+    # (test_box_token_secret_rules.py). It still matches one value.
+    '''mbt_x{43}''',
     '''ghp_a1B2a1B2a1B2a1B2a1B2a1B2a1B2a1B2a1B2''',
     '''AKIAAAAAAAAAAAAAAAAA''',
     '''ASIABBBBBBBBBBBBBBBB''',
