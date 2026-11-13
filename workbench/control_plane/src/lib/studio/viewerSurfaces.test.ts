@@ -103,6 +103,9 @@ describe("each workbench caller of a package path", () => {
   it("only the app page mounts the app delete, behind the owner guard", () => {
     const users = sources(SRC).filter((f) => readFileSync(f, "utf8").includes("<DeletePackageButton"))
       .map((f) => relative(SRC, f).replace(/\\/g, "/"));
-    expect(users).toEqual(["app/studio/package-preview/page.tsx"]);
+    // STU-AF1: the app frame (behind NEXT_PUBLIC_STUDIO_APP_FRAME) mounts it too, behind the same owner guard.
+    expect(users.sort()).toEqual(["app/studio/package-preview/AppFrame.tsx", "app/studio/package-preview/page.tsx"]);
+    const frame = readFileSync(join(SRC, "app/studio/package-preview/AppFrame.tsx"), "utf8");
+    expect(frame.slice(frame.indexOf("controls.owner ? ("), frame.indexOf("<DeletePackageButton"))).not.toContain(": ");
   });
 });
