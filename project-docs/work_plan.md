@@ -6267,14 +6267,14 @@ The owner asked in chat on 2026-11-13, on task 3118. Can the chat hold many more
 3. **Our own search, on the seam of `load_skill_tools`.** `find_tools` is a sibling of `LoadSkillTools`, and it uses `context.add_tools`. It adds no second registry (D205 point 1). This decision parks the native tool search of the Claude API (TS-8). It rejects a door tool in the pattern of D136.2 for the chat.
 4. **A first pass with no model call.** Layer (a′) ranks the member's own words before the first request. `find_tools` is the fallback in the middle of a turn. D117 item 3 holds.
 5. **The cache and the cost hold the limits.** The cap of 110 tools stays, and `find_tools` and each found tool count against it. A budget of about 30 thousand schema tokens for each request joins it. Past the cap, unused found tools leave before a spare pack. Found tools come after the pack tools, in a fixed order (D117 item 4).
-6. **Studio gets room.** The `studio` family splits into a core of 10 tools and a follow pack, `studio-more` (TS-1b). So a Studio turn has room, and the search has tools to find.
+6. **Studio gets room.** The `studio` family splits into a core of 10 tools and a follow pack, `studio-more` (TS-1b, task 3207). So a Studio turn has room, and the search has tools to find.
 7. **Dark, then measured.** `TOOL_SEARCH_ORGS` is empty by default, and its flip is owner-only. The `search` arm of the OA-8e measure must be not worse than the `pack` arm before a switch.
 
 **Open for the owner.** `one_assistant_context.md` §4.2.9 lists twelve points. They include the stickiness of a found tool, the threshold of the first pass and the budget. They also include the eval spend, the Studio split and Studio as the spike.
 
 **Revisit.** Only the owner confirms or reopens this. D117 names the owner as the one who reopens it.
 
-Fence: each slice of `one_assistant_context.md` §4.2.9 (TS-1 to TS-9, tasks 3195 to 3203, and TS-1b, no task yet) names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D222 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D221 at most, and no open PR or local worktree held D222 or higher.
+Fence: each slice of `one_assistant_context.md` §4.2.9 (TS-1 to TS-9, tasks 3195 to 3203, and TS-1b, task 3207) names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D222 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D221 at most, and no open PR or local worktree held D222 or higher.
 
 ## 4. Single-owner registry (who owns duplicated work)
 

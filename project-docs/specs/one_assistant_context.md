@@ -53,7 +53,7 @@ RX-1 is BUILT, not merged (2026-11-02, D169, "As built, RX-1" in §4.2.3). A hel
 
 Task 1747 is BUILT, in review (2026-11-06, "As built, task 1747" in §4.2.3). A pack that this turn named, and a pack that the last member turn used, never step aside. A load by the model is sticky. The reach of the Projects owner counts a spare pack as free. A load moves out a pack that came in only by the words (D169 item 8, as amended on 2026-11-06). A turn that a sticky pack left at its start says so.
 
-TS-0 (task 3190, 2026-11-14) is a design, PROPOSED under D222, and nothing of it is built. The model finds a single tool with `find_tools`, and the run loads that tool and not its whole pack (§4.2.9). The slices are TS-1 to TS-9, tasks 3195 to 3203, and TS-1b, the Studio split, which has no task yet. Each ships dark behind `TOOL_SEARCH_ORGS`, and the flip is owner-only. The writer verified its anchors against code on 2026-11-14 at `32546664f`.
+TS-0 (task 3190, 2026-11-14) is a design, PROPOSED under D222, and nothing of it is built. The model finds a single tool with `find_tools`, and the run loads that tool and not its whole pack (§4.2.9). The slices are TS-1 to TS-9, tasks 3195 to 3203, and TS-1b, the Studio split, task 3207. The demo tasks of rungs 1 to 4 are tasks 3208 to 3211. Each ships dark behind `TOOL_SEARCH_ORGS`, and the flip is owner-only. The writer verified its anchors against code on 2026-11-14 at `32546664f`.
 
 OA-7e is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7e"
 below, PR #1389). It adds layer (b), the meta tool `load_skill_tools`.
@@ -1697,16 +1697,16 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one, so 
 - The Router branch of `routes/v1_compat.py` returns at `:805-812`, before `apply_prompt_caching` at `:886-891`. This spec did not check whether the Router marks the cache itself. If it does not, a Claude tier through the Router gets no cache mark. The `search` arm of TS-7 reads the cache share, so the measure shows the fact.
 - MAF already discloses MCP tools step by step (`use_progressive_disclosure`, `_maf_mcp.py:725-745`). TS-9 decides how that meets `find_tools`.
 
-**The ladder (R10).** Each rung below is a rung of this feature, and each ends in a demo on production. One demo task for each rung follows under task 3190, and this text gets their numbers then.
-- **Rung 1.** In a test org, a Studio chat finds a tool that the surface did not load, and uses it in the same turn.
-- **Rung 2.** That chat holds the found tool in its next turn with no search round. A turn whose words name a tool starts with that tool.
-- **Rung 3.** After the measure and the owner's switch, a chat on any app finds and uses a tool of a pack that it did not load.
-- **Rung 4.** The chat finds and uses an MCP tool and a published skill, and each description shows as untrusted.
+**The ladder (R10).** Each rung below is a rung of this feature, and each ends in a demo on production. Each rung has one demo task under task 3190.
+- **Rung 1 (demo task 3208).** In a test org, a Studio chat finds a tool that the surface did not load, and uses it in the same turn.
+- **Rung 2 (demo task 3209).** That chat holds the found tool in its next turn with no search round. A turn whose words name a tool starts with that tool.
+- **Rung 3 (demo task 3210).** After the measure and the owner's switch, a chat on any app finds and uses a tool of a pack that it did not load.
+- **Rung 4 (demo task 3211).** The chat finds and uses an MCP tool and a published skill, and each description shows as untrusted.
 
 | Slice | Task | What | Tier | Gate | Rung | After |
 |---|---|---|---|---|---|---|
 | TS-1 | 3195 | The index and the lexical ranker | STD | AGENT-SAFE | 1 | none |
-| TS-1b | none yet | The Studio split: a core of 10 tools and the follow pack `studio-more` | STD, shared seam, Opus builder | AGENT-SAFE. The owner confirms the split before the merge | 1 | TS-1 |
+| TS-1b | 3207 | The Studio split: a core of 10 tools and the follow pack `studio-more` | STD, shared seam, Opus builder | AGENT-SAFE. The owner confirms the split before the merge | 1 | TS-1 |
 | TS-2 | 3196 | The spike: `find_tools` for the two Studio packs | HIGH | AGENT-SAFE, dark. The flip is OWNER-GATE | 1 | TS-1b |
 | TS-3 | 3197 | Layer (a′) | STD, shared seam, Opus builder | AGENT-SAFE, dark | 2 | TS-2 |
 | TS-4 | 3198 | Sticky state for each tool, its line, the unknown-name line, the room order and the budget | STD, shared seam, Opus builder (D218) | AGENT-SAFE, dark | 2 | TS-2 |
@@ -1725,7 +1725,7 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one, so 
   - The index holds first-party text only.
 - **Fence.** `tests/unit/test_tool_search_index.py`.
 
-**TS-1b. The Studio split (no task yet).**
+**TS-1b. The Studio split (task 3207).**
 - **Files.** `acb_skills/skill_families.py` (the two families), `acb_skills/tool_packs.py` (the `Pack` entry, `FOLLOWS`, the two rules blocks and the surface rule), `tests/unit/test_tool_packs_registry.py` and `tests/unit/test_studio_workflow_tools.py`.
 - **Acceptance.**
   - The two Studio families hold the 23 tools of today, and no tool is in both.
