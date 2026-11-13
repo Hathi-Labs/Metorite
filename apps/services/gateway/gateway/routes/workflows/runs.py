@@ -19,7 +19,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from gateway.routes.workflows import unattended
+from gateway.routes.workflows import human_step, unattended
 from gateway.routes.workflows.core import (
     MAX_RUNS_PAGE,
     _tenant_session,
@@ -110,6 +110,14 @@ async def run_workflow(
             status_code=409,
             detail=f"This workflow can change Projects tasks, so it cannot run "
             f"yet. {_MEMBER_BLIND_REASON} Nothing ran.",
+        )
+    if human_step.human_step_nodes(serialized) and not human_step.org_ready(org):
+        # Only the task scan resumes a human step, and it acts only for a
+        # listed org, so the run could stay paused for good (STU-E4).
+        raise HTTPException(
+            status_code=409,
+            detail="This workflow has a human step, and human steps are not "
+            "turned on for this organization yet, so it cannot run. Nothing ran.",
         )
     long_waits = _long_wait_nodes(serialized)
     if long_waits and not unattended.org_allowed(org):
