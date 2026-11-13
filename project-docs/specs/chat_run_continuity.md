@@ -17,6 +17,7 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 | §4.9 — a message sent during a run always steers it | **BUILT** 2026-10-12, branch `composer-always-steer`, no flag |
 | §4.9 — a steer is a user turn, and a Projects or CRM card closes on it (task 2494) | **BUILT** 2026-11-09, fix round 1 2026-11-11, branch `steer-redraws-card-mt-fdaefd16`, no flag |
 | §4.10 — one run status in the open chat | **BUILT** 2026-10-19, branch `chat-run-status`, no flag |
+| §4.11 — the line of a slow tool (HRD-6 part 1, task 2985) | **BUILT** 2026-11-13, branch `mt-83488e2c-long-reads`, dark behind `CHAT_PROGRESS_NOTICE_ORGS` |
 | D-1 — a separate run worker | **DEFERRED** 2026-10-29 on evidence (§5). Not built |
 
 **This spec owns** how a member sees and resumes an assistant run that they
@@ -1224,6 +1225,118 @@ asks for the list again at once, so the dot clears with "Done".
 - After a full reload, a run that ended while the page was away reads as
   `idle`, not `done`, because no tab saw it run. The reply shows from the
   saved row.
+
+### §4.11 — the line of a slow tool (HRD-6 part 1, BUILT 2026-11-13, dark)
+
+**The owner's rule (2026-11-13, task 2985).** "Large CRM queries or other
+queries might take even minutes. In that case inform the user that such a
+query is going to take a while to get all the data. Please wait." Before this
+slice, a slow tool ran with no word, or it failed at its cap.
+`chat_failure_modes.md` §4 row B6 holds the class.
+
+**The rule.**
+
+1. A tool call that runs past 6 s sends ONE line. A tool marked read-only
+   (`tool_annotations`) sends the owner's words: "This is a large read. It can
+   take a few minutes to get all the data. Please wait." Any other tool sends
+   "This is taking longer than usual. Please wait."
+2. A tool can send its own line first through
+   `acb_skills.progress_notice.emit_progress`. The timer then sends nothing for
+   that call. Each call gets one line at most.
+3. While the line of one call shows, the line of a parallel call waits.
+   When the showing line goes, the oldest call that waits and still runs gets
+   its line, once. A call that ends while it waits gets no line. So two lines
+   never show at once.
+4. A card is the sign of a wait for the member. A delegation tool sends no
+   line, because each tool of the delegated run has its own timer. A tool that
+   waits for the member sends no line. Some tools show a card in their own
+   body, for example a Projects, CRM or email write (`request_confirmation`,
+   `ask_questions`). Such a tool stops its timer at the card. Its line goes,
+   and the call gets no second line after the answer.
+
+**The event.** The line is one `CUSTOM` event on the run's own queue, the
+channel of `navigate`:
+`{"type": "CUSTOM", "name": "progress", "value": {"text": ..., "tool_call_id": ...}}`.
+The same event with an empty `text` takes the line of that call away. It goes
+when the call ends or shows a card. So the line of a delegated read goes when
+that read ends, not when the whole hand-off ends. No tool argument and no
+result text goes in either event.
+
+**The seam.** `acb_skills/progress_notice.py` holds the writer, the per-run
+function middleware, `member_wait`, `settle_channel` and the flag reader
+`progress_notice_on`. `orchestrator._tool_injection._apply_progress_notice`
+attaches the middleware to each native MAF agent of the run. It runs right
+before `_apply_answer_check`, which stays last, so the timer wraps each tool
+call and the number check's recorder sits inside it. A Copilot SDK agent gets
+no timer.
+
+**What the member sees.**
+
+- **The web chat.** The live loop of `useAgentChat` keeps the line on the
+  message (`progressNotice`). `ThinkingContainer` draws it under its header,
+  which names the running step, so the member sees it with the trail closed.
+  The clear event, the end of that step, answer text or the end of the run
+  takes it away (`lib/chatStream.ts`). The attach loop replays the run, and
+  then it follows the run live. It applies each line and each clear in order.
+  So after a reload, in a second tab or back in the chat, the line is true. A
+  step that still runs shows its line. A line that ended or went to a card is
+  gone. No loop keeps it in `customEvents`. `withCustomEvent`, the BFF save and the gateway fold
+  (`chat_fold.py`) never keep it, so a stored chat never holds it.
+- **The screen reader.** The `role="status"` region mounts with the trail and
+  stays empty until a line comes, so a reader announces the line.
+- **WhatsApp.** The line goes as the channel's early message
+  (`whatsapp_ui.WhatsAppRun.notify`), once in a reply. The channel's own 20 s
+  line (`REPLY_WORKING`) then stays quiet. Before the answer or the failure
+  text goes, `bot_run` awaits `settle_channel`. An early message on its way
+  lands first, and `settle_channel` cancels one that has not landed in 6 seconds.
+  So "Please wait" never follows the answer. A run with no WhatsApp profile has no early
+  message, and this slice builds none.
+
+**The flag.** `CHAT_PROGRESS_NOTICE_ORGS`, a comma list of org ids or `*`.
+Empty is the default. Then the seam attaches nothing, the hook of the card
+finds no call, `settle_channel` finds no early message, and each WhatsApp cap
+is as before. So each run sends exactly the bytes that it sent before. A
+SIGHUP reload applies a change (`docs/flag_reload.md`), and a production flip
+is gate `enforcement-flip`.
+
+**The caps on the path of a long tool call** (2026-11-13). None of the
+general caps is under 200 s. The WhatsApp run's cap holds the whole run. So
+a long-read org gets a longer cap, and its sweep gets a longer stale time. A
+long-read org is one that `CHAT_PROGRESS_NOTICE_ORGS` or `CRM_LONG_READ_ORGS`
+names (`bot_run.long_reads_on`). Every other org keeps 240 s and 300 s.
+`whatsapp_assistant_channel.md` §5.4 holds that rule.
+
+| Cap | Where | Value | On a 3-minute tool |
+|---|---|---|---|
+| Native idle watchdog, no tool open | `orchestrator/watchdog.py:45` | 120 s | Does not apply while a tool is open |
+| Native idle watchdog, a tool open | `orchestrator/watchdog.py:46` | 600 s | Holds |
+| Idle watchdog, a card waits | `orchestrator/watchdog.py:47` | 3600 s | Holds |
+| One tool call, Tier 1.5 and Tier 2 shim | `orchestrator/watchdog.py:49` | 300 s | Holds |
+| A delegated run | `acb_skills/agent_tools.py:65` | 900 s | Holds |
+| The relay subscriber read | `orchestrator/stream_relay.py:283` | 30 s, then it reads again | Holds |
+| The relay stream and the active flag | `orchestrator/stream_relay.py:86` | 3600 s, renewed on each event | Holds |
+| The BFF fetch of the run stream | `src/app/api/agent/chat/route.ts:908` | 310 s, then up to 6 reattaches (`:611`) | Holds |
+| Node `fetch` (undici) body gap | library default | 300 s with no byte | Holds |
+| Caddy `reverse_proxy` | `deploy/hostinger/caddy/Caddyfile:85` | No read or write timeout | Holds |
+| Process heartbeat | `orchestrator/run_liveness.py:91` | 30 s | Holds while the event loop turns. A tool that blocks the loop fails it |
+| WhatsApp run | `whatsapp_channel/bot_run.py` `run_timeout_for` | 420 s for a long-read org, 240 s for any other | Holds one 180 s read and its model calls in a long-read org |
+| WhatsApp sweep stale time | `whatsapp_channel/bot_run.py` `stale_for` | 480 s for a long-read org, 300 s for any other. Always longer than the run's cap | A run that still works is never taken |
+| The CRM tool's HTTP read | `acb_skills/crm_tools.py:320` | 30 s | Under 200 s. The CRM long mode (HRD-6 part 2) owns it |
+| The CRM total's statement | `gateway/routes/crm/aggregate.py:254` | 10 s | Under 200 s. HRD-6 part 2 owns it |
+
+**Fences (R7).**
+
+- `tests/unit/test_progress_notice.py` tests the flag, the seam order and the
+  per-run view. It tests one line and one clear for each slow call, the two
+  texts, the tool's own line, no stacked lines and the exempt tools. It tests
+  a card in the body of a tool, and the WhatsApp early message and its
+  settle. It tests the WhatsApp caps of each org, and the fold. A native stream outlives the
+  bare idle cap, and the line comes between the tool's start and its result.
+- `src/lib/progressNotice.test.ts`: the line shows. It goes at its clear
+  event, at the end of its step, at answer text and at the end of the run. It
+  draws under the header while the turn works, and not after it. The attach
+  loop ends with the true line: none after a clear, the line with no clear
+  yet. No loop, `withCustomEvent` or the BFF save keeps it.
 
 ---
 
