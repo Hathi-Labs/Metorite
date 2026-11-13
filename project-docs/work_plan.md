@@ -6216,6 +6216,45 @@ The owner asked in chat on 2026-11-12 to "push code as fast as we develop it". T
 
 Each point binds when its slice merges. Until then the old rule holds. Fence: each slice in `ci_velocity.md` §8.5 names its test in its task. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D218 entries merge. Re-check this number at merge.
 
+### D219 — Studio apps get the app frame: a left sidebar of pages and views, tabs, record pages and dialogs (2026-11-14)
+
+The owner asked in chat on 2026-11-14. A Studio app needs "a left-hand sidebar similar to the other standard apps of Metorite", tabs and the other standard parts, so that a company can build rich screens. Planning task 3146, epic 3147. Owner text: `ai_studio.md` §5.5.
+
+1. **One frame, from the parts that exist.** A Studio app opens with `AppTopBar`, a rail of `RailRow`s, `StudioPage`, `Tabs`, `Modal` and `ConfirmDialog`. It adds no second rail, tab bar, dialog or filter bar.
+2. **The rail belongs to the app.** The shell sidebar keeps one entry for the installed app (H1, PKG-8). The rail of pages and views sits inside the app, as the CRM rail does.
+3. **The manifest declares the frame.** `nav`, `record`, `header`, `sections` and the view parts join the A2 model. Each part has a default, so an app that was built before D219 gets the frame with no edit.
+4. **It looks like the CRM.** Each frame slice passes a visual review beside the CRM, at four widths, in light mode, at compact density and under a changed accent.
+5. **The order.** Rung 4 of the AI Studio ladder holds AF-1 to AF-6, AF-8 and AF-9 (demo task 3148). The old rungs 4 to 9 move up by one. AF-7 and AF-10 join rung 6, and AF-11 joins rung 8.
+6. **Ship dark.** AF-1 puts the frame behind `NEXT_PUBLIC_STUDIO_APP_FRAME`, default off. The flag goes on for the rung 4 demo.
+
+Fence: each slice in `ai_studio.md` §14 Group AF names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D219 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D218 at most.
+
+### D220 — AI Studio builds on connections: a connect in place, a stated account, a visible break, and an offer that follows the result (2026-11-14)
+
+The owner asked in chat on 2026-11-14 for Studio apps, workflows and skills that build on the company's integrations, a guided connect when an app needs one, and an offer to build after a connect. Planning task 3164. Owner text: `ai_studio.md` §8.1 and `integrations_console.md` §3.7.
+
+1. **One registry, and one connect flow for each provider.** D96 holds. Studio adds no connection store and no connect flow. It opens the flow of the owning app in place, through the `setup_href` of the registry row, with a path back (I8).
+2. **A connection need names whose account it uses: `org` or `member`.** Mail and calendar default to `member`. An `org` need is approved by an admin at install, and the install screen names the account (I9). The orchestrator chose this default, and the owner may overrule it.
+3. **A broken connection is visible where it hurts.** Each install that needs it goes to `needs_setup`, its triggers pause with a reason, and the owners get a Needs-you item (I10). A disconnect names what stops first (IN-10).
+4. **The offer after a connect follows the result.** The card says what works now first. It offers a build only for a provider whose data no built-in app shows, never as a modal, and never as an automatic build (IN-9).
+5. **Registry connections only, until IN-3.** The integration actions that read the process environment stay out of packages until IN-3 lands (task 3176, `work_plan.md` §6 gate (f)).
+6. **The order.** Rung 7 of the AI Studio ladder, demo task 3167. Mail merge (I3) moves to rung 9.
+
+Fence: each slice in `ai_studio.md` §14 Group I and `integrations_console.md` §7.2 names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D220 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D219 at most.
+
+### D221 — The focus coach: grounded help at the start and at the check-in, steps as subtasks, and help from people that the member can already see (2026-11-14)
+
+The owner asked in chat on 2026-11-14 for a Focus mode that breaks a task into steps, shows how to do it, motivates, uses the context of every app, and names whom to ask when the member is stuck. Planning task 3177. Owner text: `my_day_command_centre.md` §4a.
+
+1. **Two moments only.** The coach speaks when a session starts and at the check-in when it ends. During the session it shows the steps and the facts, so it does not break the focus.
+2. **Grounded, or silent.** Each sentence cites the task or a source from the knowledge graph (D128), opened again as the viewer. The coach gives no general how-to advice from the model alone.
+3. **Steps are subtasks** in the one task store, accepted once, with one Undo.
+4. **Help from people, inside what the member can see.** No workload, hours or absence reason, which stay admin-only. The member sends each ask. The coach never assigns (D-PC-13) and never tells a manager by itself. "Blocked" comes only from the member's own answer.
+5. **Motivation is facts:** why the work matters, and how far it got. "Facts only" is the default tone. The orchestrator chose this default, and the owner may overrule it.
+6. **The order.** Rung 4 of the My Day ladder, demo task 3178. The later rungs move up by one.
+
+Fence: each slice of `my_day_command_centre.md` §9 (CC-12 to CC-16) names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D221 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D220 at most (PR 2241, merged).
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 

@@ -77,6 +77,10 @@ const ANSWER: readonly string[] = [
   "my_tasks_plan_day",
   "my_tasks_replan_day",
   "my_tasks_rollover",
+  // AI Studio (STU-F5a): a read of the records draws a live table, a view of
+  // the read like `render_tasks`. Its text result is for the model, and its
+  // card (`components/studio/StudioRecordsCard.tsx`) never writes.
+  "studio_record_list",
 ];
 
 /** Reads. Projects names are manifest class A (held by the Python fence). */
