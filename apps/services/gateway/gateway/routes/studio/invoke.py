@@ -239,6 +239,8 @@ through that install. The order:
    not call it. Only the object ``get`` and ``list`` run
    (:data:`RUN_AS_EXECUTORS`). A class B or C action gets ``reads_only``,
    and each other source gets ``source_not_open``.
+6. The read takes the viewer of the member (``_row_viewer(member)``), so the
+   row rules and the hidden keys of C8a bind the run as they bind that member.
 
 The whole run sits inside ``no_person_scope``, so ``no_person_present()``
 holds, and no seam that approves or asks lets it pass. The audit row goes in
@@ -268,6 +270,7 @@ from acb_auth import direct_proof as _direct_proof
 from acb_common import app_manifests, get_logger, studio_query
 from acb_common.app_manifests.base import OP_PATTERN, DoorOp
 from acb_common.no_person import no_person_present, no_person_scope
+from acb_common.studio_access import Viewer
 from acb_common.studio_fields import FieldError, FieldSpec, RecordError
 from acb_common.studio_manifest import OBJECT_OP_CLASSES, UsesRef, parse_uses
 from acb_common.studio_rules import (
@@ -529,10 +532,14 @@ RETRY_AFTER = "2"
 BUSY_RETRY_AFTER = "1"
 
 STORE_BUSY = "store_busy"
+#: C8a. A write that the roles of the viewer do not give.
+ACCESS_DENIED = "access_denied"
 FIELD_INVALID = "field_invalid"
 RULE_REFUSED = "rule_refused"
 RECORD_INVALID = "record_invalid"
 BAD_INPUT = "bad_input"
+#: C10a. A write that takes the org past a cap of its records or their bytes.
+ORG_CAP_REACHED = objects_store.OrgCapReached.code
 
 BUSY_MESSAGE = "This app is busy now, so try the write again in a moment."
 #: J2a: the 503 of a viewer read past the cap of :data:`READERS_PER_ORG`.
@@ -776,6 +783,23 @@ def _list_input(raw: bytes) -> dict[str, Any]:
     return payload
 
 
+def _row_viewer(member: str) -> Viewer:
+    """The viewer of a call (C8a): the session's member, and never a body.
+
+    The door reaches the executors for the owner of the package and, since
+    J2a, for a viewer of an install (``InstalledApp``). The store reads the
+    owner from the ``apps`` row, and the owner passes every row rule, so the
+    owner reads and writes as before C8a. A viewer who is not the owner gets
+    no role from the role map yet, so the rules treat it as a bound viewer. C8b gives a member who is not the owner
+    the roles of the role map of the install. It resolves them here, in the
+    session of the second check, and again at a spend.
+
+    B6a: a run with no viewer (:func:`run_as_read`) calls it too, with the
+    ``run_as`` member that the install row names, so that member's rules bind
+    the run."""
+    return Viewer(member)
+
+
 def _installed_object(package: _App, name: str) -> bool:
     """True for the owner's package. For a viewer (J2a), True only when the
     installed version declares the object *name*."""
@@ -783,9 +807,9 @@ def _installed_object(package: _App, name: str) -> bool:
 
 
 async def _run_object_get(db: Any, package: _App, ref: UsesRef,
-                          raw: bytes, out: _Outcome) -> None:
+                          raw: bytes, out: _Outcome, viewer: Viewer) -> None:
     """Read one record of the object *ref* of *package*. The id comes from
-    the body, checked by the id rule of C1."""
+    the body, checked by the id rule of C1. The row rules of *viewer* bind (C8a)."""
     rid = _record_id(raw)
     if rid is None:
         out.invalid = True
@@ -798,7 +822,8 @@ async def _run_object_get(db: Any, package: _App, ref: UsesRef,
         if obj is None or not _installed_object(package, obj.name):
             out.object_missing = True
             return
-        rec = await objects_store.get_record(db, obj.id, rid, package_id=package.id)
+        rec = await objects_store.get_record(db, obj.id, rid, package_id=package.id,
+                                             viewer=viewer)
     except objects_store.ObjectStoreError:
         out.invalid = True
         return
@@ -812,9 +837,10 @@ async def _run_object_get(db: Any, package: _App, ref: UsesRef,
 
 
 async def _run_object_list(db: Any, package: _App, ref: UsesRef,
-                           raw: bytes, out: _Outcome) -> None:
+                           raw: bytes, out: _Outcome, viewer: Viewer) -> None:
     """Read one page of the records of the object *ref* of *package*. The body
-    is checked first, so a refused body reads nothing."""
+    is checked first, so a refused body reads nothing. The row rules of
+    *viewer* bind (C8a)."""
     try:
         body = _list_input(raw)
         obj = await objects_store.get_object_by_name(
@@ -832,7 +858,7 @@ async def _run_object_list(db: Any, package: _App, ref: UsesRef,
         # and a timeout rolls back its SAVEPOINT only. So a refusal here
         # leaves the session usable.
         page = await objects_store.query_records(
-            db, package_id=package.id, object_id=obj.id, filter=body.get("filter"),
+            db, package_id=package.id, object_id=obj.id, viewer=viewer, filter=body.get("filter"),
             sort=body.get("sort"), limit=body.get("limit"), offset=body.get("offset"))
         if page is not None and isinstance(package, _viewer.InstalledApp):
             page = dataclasses.replace(page, records=tuple(
@@ -865,11 +891,18 @@ def _aggregate_input(raw: bytes) -> dict[str, Any]:
     return payload
 
 
-async def _run_object_aggregate(db: Any, package: packages_store.Package, ref: UsesRef,
-                                raw: bytes, out: _Outcome) -> None:
+async def _run_object_aggregate(db: Any, package: _App, ref: UsesRef,
+                                raw: bytes, out: _Outcome, viewer: Viewer) -> None:
     """Group the records of the object *ref* of *package* (D4b). The body is
     checked first, so a refused body reads nothing. Then the path of the list:
-    the object by its name in the package, then the one reader of C2b."""
+    the object by its name in the package, then the one reader of C2b.
+
+    Only the owner aggregates. A viewer of an install (J2a) reads no sum: the
+    reader of C2b knows neither the installed fields nor the row rules (C8a),
+    so a sum could count a value that the viewer cannot read."""
+    if isinstance(package, _viewer.InstalledApp):
+        out.refusal = SOURCE_NOT_OPEN
+        return
     try:
         body = _aggregate_input(raw)
         obj = await objects_store.get_object_by_name(
@@ -1035,13 +1068,18 @@ def _set_write_error(out: _Outcome, exc: Exception, line: _Line | None = None) -
 
     ⚠️ The order is load-bearing. ``StoreBusy`` is a subclass of
     ``ObjectStoreError``, so it comes first. A busy org is a 503 that can work
-    later, and not a refused write."""
+    later, and not a refused write. ``OrgCapReached`` (C10a) is a subclass of
+    ``ObjectStoreError`` too, so it comes before that branch. Its sentence
+    names the cap, and it is never of one line."""
     if isinstance(exc, objects_store.StoreBusy):
         out.fail = _busy()
     elif isinstance(exc, objects_store.RecordNotFound) and line is None:
         out.missing = True
     elif isinstance(exc, objects_store.RecordNotFound):
         out.fail = _refused(BAD_LINES, _at(line, NO_SUCH_LINE), field=line.key)
+    elif isinstance(exc, objects_store.AccessDenied):
+        # C8a: the roles of the viewer give no such write. The owner never gets it.
+        out.fail = _refused(ACCESS_DENIED, _at(line, str(exc)))
     elif isinstance(exc, FieldError):
         out.fail = _refused(FIELD_INVALID, _at(line, exc.message),
                             field=exc.field if line is None else line.key)
@@ -1056,6 +1094,8 @@ def _set_write_error(out: _Outcome, exc: Exception, line: _Line | None = None) -
                          _query_refusal(exc))
     elif isinstance(exc, RecordError):
         out.fail = _refused(RECORD_INVALID, _at(line, str(exc)))
+    elif isinstance(exc, objects_store.OrgCapReached):
+        out.fail = _refused(ORG_CAP_REACHED, str(exc))
     elif isinstance(exc, objects_store.ObjectStoreError):
         out.fail = _refused(RECORD_INVALID, _at(line, STORE_REFUSED))
     else:
@@ -1180,12 +1220,14 @@ async def _emit_record_event(out: _Outcome, org: str) -> None:
 
 
 async def _do_object_write(db: Any, member: str, package: packages_store.Package,
-                           ref: UsesRef, raw: bytes, out: _Outcome) -> None:
+                           ref: UsesRef, raw: bytes, out: _Outcome, *,
+                           via: tuple[str, str] | None = None) -> None:
     """Run one create, update or delete as *member*, through ONE
     ``apply_writes`` call. The record is the first write, and each of its
     lines (C13) follows it, so the record and its lines are saved all or none.
     It sets *out* and never raises an ``HTTPException``. The caller writes the
-    audit row."""
+    audit row. *via* goes to the change history of the store (C4a-1). Only
+    :func:`run_workflow_write` sets it, from its own arguments."""
     op = str(ref.op)
     body = _write_input(op, raw)
     if body is None:
@@ -1211,9 +1253,14 @@ async def _do_object_write(db: Any, member: str, package: packages_store.Package
         out.object_missing = True
         return
     write = objects_store.Write(op=op, object_id=obj.id, record_id=body.get("id"), data=data)
+    # C8a: the viewer comes from the session, in this session, so a spend
+    # resolves it again at its own time.
+    viewer = _row_viewer(member)
+    # C4a-1: a direct or delegated write names no via, so its call stays as it was.
+    how: dict[str, Any] = {} if via is None else {"via": via}
     try:
         answers = await objects_store.apply_writes(
-            db, member, package_id=package.id, writes=[write, *line_writes])
+            db, member, package_id=package.id, writes=[write, *line_writes], viewer=viewer, **how)
     except objects_store.BatchError as exc:
         # The SAVEPOINT of the batch rolled back, so the session is usable.
         line = lines[exc.index - 1] if 0 < exc.index <= len(lines) else None
@@ -1241,7 +1288,7 @@ async def _do_object_write(db: Any, member: str, package: packages_store.Package
             # write, in the same batch. The answer reads it once, so it shows
             # the sum that the batch committed.
             out.record = await objects_store.get_record(
-                db, obj.id, done.id, package_id=package.id) or done
+                db, obj.id, done.id, package_id=package.id, viewer=viewer) or done
 
 
 async def _run_object_write(db: Any, member: str, package: packages_store.Package,
@@ -1437,6 +1484,9 @@ async def _run_spend(db: Any, org: str, member: str, package: packages_store.Pac
 
 #: The ``via`` of the audit row of a write that a workflow node ran (B2c-2d).
 WORKFLOW_VIA = "workflow"
+#: The kind of ``via`` of a history row of that write (C4a-1). The id is the
+#: run id that the caller binds from the run row, never node input.
+WORKFLOW_RUN_VIA = "workflow_run"
 #: The codes of a refused write of a workflow node.
 WORKFLOW_NO_ORG = "no_org"
 WORKFLOW_STUDIO_OFF = "studio_off"
@@ -1583,7 +1633,8 @@ async def run_workflow_write(*, organization_id: str, member: str, package_id: s
                     out.refusal = WORKFLOW_MISMATCH
                 if out.refusal is None and ref is not None:
                     await _do_object_write(db, member, package, ref,
-                                           _workflow_body(data, record_id), out)
+                                           _workflow_body(data, record_id), out,
+                                           via=(WORKFLOW_RUN_VIA, str(run_id)))
                 detail = {**_audit_detail(out), "via": WORKFLOW_VIA,
                           "run_id": _cap(str(run_id)), "node_id": _cap(str(node_id)),
                           "decision_id": _cap(str(decision_id)), "approver": _cap(member)}
@@ -1696,7 +1747,9 @@ async def _run_as_session(db: Any, *, member: str, install_id: str, action: str,
         out.invalid = True
     else:
         run = _run_object_list if ref.op == "list" else _run_object_get
-        await run(db, app, ref, raw, out)
+        # C8a: the row rules and the hidden keys of the run_as member bind the
+        # read. The viewer is that member, from the install row, never a caller.
+        await run(db, app, ref, raw, out, _row_viewer(member))
 
 
 def _run_as_detail(out: _Outcome, *, member: str | None, install_id: str,
@@ -1948,7 +2001,7 @@ async def _run_executor(request: Request, user: UserContext, pid: str, action: s
                 out.refusal = SOURCE_NOT_OPEN
                 return
             else:
-                await _READS[str(ref.op)](db, package, ref, raw, out)
+                await _READS[str(ref.op)](db, package, ref, raw, out, _row_viewer(member))
                 return
         # B2b-2b: only a door op comes here. The session of the second check
         # is closed, so the door holds no connection while the app runs.

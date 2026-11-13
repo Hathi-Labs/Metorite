@@ -1,13 +1,13 @@
 -- ============================================================================
--- 434_package_install_run_as.sql - the member that a run with no viewer runs
+-- 439_package_install_run_as.sql - the member that a run with no viewer runs
 -- as (WS-STU B6a, Metorite task 1413)
 -- ============================================================================
 -- Spec: project-docs/specs/ai_studio.md §14 B6 and B6a, §19.2 and §19.10 row
 --   10 · package_host.md §5.1 · R1 · R5 · R6.
 --
--- R1: this file took 434 on 2026-11-13 (429 at first; the orchestrator fixed the order 431, 432, 433, 434 on 2026-11-13), when main held 426 and open branches
---   held 423, 424, 427 and 428. Check the number again at merge
---   (scripts/premerge.sh).
+-- R1: this file took 429 first, then 434, on 2026-11-13. Main then took 435
+--   (C10a), 436 (C8a) and 438 (PR 2224), and the orchestrator booked 439
+--   for this file. Check the number again at merge (scripts/premerge.sh).
 --
 -- Why: a scheduled or an event run of a Studio app has no viewer. B6 makes
 --   the install name one member, and the run reads with the rights of that

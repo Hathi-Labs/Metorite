@@ -58,6 +58,7 @@ pytest.importorskip("sqlalchemy")
 from acb_auth import UserContext, UserRole, build_access
 from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant, tenant_session
+from acb_common.studio_access import Viewer
 from fastapi import HTTPException, Response
 from fastapi.responses import JSONResponse
 from gateway import app_requests
@@ -143,7 +144,8 @@ async def _call(route: str, org: str, email: str, pid: str | None = None,
     kwargs: dict[str, Any] = {"user": _user(org, email, grants)}
     if pid is not None:
         kwargs["package_id"] = pid
-    if route in ("create_package", "save_draft", "publish", "install_package"):
+    if route in ("create_package", "save_draft", "publish", "install_package",
+                 "uninstall_package"):
         kwargs["request"] = _Request(payload)
     response = Response()
     response.status_code = None  # type: ignore[assignment]
@@ -225,7 +227,8 @@ def world(promoted, monkeypatch):  # noqa: F811
         async with tenant_session(w.a) as db:
             obj = await objects_store.get_object_by_name(db, "visit", package_id=w.pid)
             assert obj is not None
-            rec = await objects_store.create_record(db, OWEN, obj.id, _DATA, package_id=w.pid)
+            rec = await objects_store.create_record(db, OWEN, obj.id, _DATA, package_id=w.pid,
+                                                  viewer=Viewer(OWEN))
             assert rec is not None
         w.obj, w.rec = obj.id, rec.id
         status, got = await _call("install_package", w.a, OWEN, w.pid,
@@ -415,10 +418,23 @@ def test_r8_a_publish_keeps_the_pause(world) -> None:
 
 
 def test_r8_a_viewer_gets_404_also_through_an_install_made_during_the_pause(world) -> None:
+    """WS-STU J2b-1 (path A): the org install refuses a paused package, even
+    with an approval (423). So the install made during the pause is a group
+    install. The setup install of ``ops`` goes first, so the new one is new."""
     async def go() -> list[Any]:
+        gone = await _call("uninstall_package", world.a, OWEN, world.pid,
+                           payload={"scope": OPS}, grants=PUBLISHER)
+        assert gone[0] == 200, gone
+        async with tenant_session(world.a) as db:
+            await packages_store.request_org_approval(db, OWEN, world.pid, 1)
+        async with tenant_session(world.a) as db:
+            await packages_store.approve_version(db, ADA, world.pid, 1, can_publish=True)
         await _stop(world.a, "pause", ADA, world.pid)
+        org = await _call("install_package", world.a, OWEN, world.pid,
+                          payload={"scope": "org"}, grants=PUBLISHER)
+        assert org == (423, PAUSED), org
         made = await _call("install_package", world.a, OWEN, world.pid,
-                           payload={"scope": "org"}, grants=PUBLISHER)
+                           payload={"scope": OPS}, grants=PUBLISHER)
         return [made, await _door(world.a, ANA, world.pid, "find", {}),
                 await _door(world.a, ANA, world.pid, "peek", {"id": world.rec}),
                 await _call("get_package", world.a, ANA, world.pid)]

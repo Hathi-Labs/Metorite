@@ -1,7 +1,7 @@
 """WS-STU B6a — the reads of a run with no viewer, on a real database (R8).
 
 Spec: ``project-docs/specs/ai_studio.md`` §14 B6 and B6a, §19.2 and §19.10
-row 10, and ``package_host.md`` §5.1. Code: migration 434 (at build, found
+row 10, and ``package_host.md`` §5.1. Code: migration 439 (at build, found
 here by content), ``package_host/store.py`` (``set_run_as``, ``read_run_as``),
 ``resolve.install_seen_by``, the route ``PUT
 /studio/packages/{id}/install/run-as`` (``routes/studio/packages.py``) and
@@ -44,8 +44,17 @@ j. A paused install and a paused package are refused.
 k. An install of org B is not found from org A, and writes no row.
 l. An install with no member is refused, and a clear stops the run.
 m. ``no_person_present()`` holds during the read, and not after it.
-n. Migration 434: three nullable columns with no default, and the CHECKs
+n. Migration 439: three nullable columns with no default, and the CHECKs
    refuse a system actor and an address in upper case.
+o. C8a: each read takes the viewer of the member (``invoke._row_viewer``).
+   With no role (before C8b), Mia reads no slip of app R, and Owen, the
+   owner, reads each one. With the roles of one map, Mia reads her own slip
+   with ``bank_account`` hidden and cannot filter on it, and Ned (``hr``)
+   reads both. Ned's grant and Owen's scope never reach Mia's run.
+
+**J2b-1 (path A).** An org install needs an approved live version, so
+``_install`` asks and approves it first, with Amy as the approver
+(``_studio_approval.approve_live``).
 
 **R7: red first, then mutate.** Each mutation ran on 2026-11-13, on this file
 and its hermetic twin together (85 tests), on the private ladder database.
@@ -56,6 +65,17 @@ and its hermetic twin together (85 tests), on the private ladder database.
 * M2. ``invoke._run_as_session``: read the declaration from the draft of the
   owner (``packages_store.get_package``) in place of the pinned version.
   Case i goes red, and 9 tests of the twin (10 failed of 85).
+
+Case o (C8a) ran its mutations on 2026-11-13, on this file and its twin
+(89 tests), after the merge of C8a and the move to migration 439.
+
+* M3. ``invoke._run_as_session``: give the read the viewer of the package
+  owner, who passes every rule. Both case o tests go red: Mia reads both
+  slips. 4 tests of the twin go red too, because the fake session runs no
+  SQL (6 failed of 89).
+* M4. ``invoke._run_as_session``: give the read the member with every role
+  of the manifest. Both case o tests go red: Mia reads both slips (2 failed
+  of 89). The twin stays green, because its pinned manifest has no roles.
 """
 
 from __future__ import annotations
@@ -76,12 +96,14 @@ from acb_auth import UserContext, UserRole, build_access
 from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant, tenant_session
 from acb_common.no_person import no_person_present
+from acb_common.studio_access import Viewer
 from fastapi import HTTPException, Response
 from gateway.routes.studio import invoke, packages
 from gateway.studio import objects_store
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
+from tests.unit._studio_approval import approve_live
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -100,6 +122,8 @@ MIA_LOW = MIA.lower()
 NED = f"ned.{TAG}@b6a.test"
 ZED = f"zed.{TAG}@b6a.test"
 NOBODY = f"nobody.{TAG}@b6a.test"
+#: J2b-1 (path A): the approver of each org install. Not the owner.
+AMY = f"amy.{TAG}@b6a.test"
 OPS = f"group:ops{TAG}"
 ENG = f"group:eng{TAG}"
 EXT = f"group:ext{TAG}"
@@ -194,9 +218,11 @@ def _run(world: Any, fn: Callable[[], Awaitable[Any]]) -> Any:
     return asyncio.run(go())
 
 
-async def _live(org: str, email: str, mid: str) -> str:
+async def _live(org: str, email: str, mid: str,
+                manifest: dict[str, Any] | None = None) -> str:
     """A new package of *email*, published once."""
-    status, got = await _call("create_package", org, email, payload=_manifest(mid))
+    status, got = await _call("create_package", org, email,
+                              payload=manifest or _manifest(mid))
     assert status == 200, got
     pid = str(got["package"]["id"])
     status, got = await _call("publish", org, email, pid, payload={})
@@ -204,16 +230,22 @@ async def _live(org: str, email: str, mid: str) -> str:
     return pid
 
 
-async def _record(org: str, pid: str, data: dict[str, Any]) -> str:
+async def _record(org: str, pid: str, data: dict[str, Any], name: str = "visit") -> str:
+    """One record of the object *name*, written by Owen. C8a: the owner passes
+    each row rule, so his viewer writes each record."""
     async with tenant_session(org) as db:
-        obj = await objects_store.get_object_by_name(db, "visit", package_id=pid)
+        obj = await objects_store.get_object_by_name(db, name, package_id=pid)
         assert obj is not None
-        rec = await objects_store.create_record(db, OWEN, obj.id, data, package_id=pid)
+        rec = await objects_store.create_record(db, OWEN, obj.id, data, package_id=pid,
+                                                viewer=Viewer(OWEN))
         assert rec is not None
     return rec.id
 
 
 async def _install(org: str, email: str, pid: str, scope: str) -> str:
+    if scope == "org":
+        # J2b-1 (path A): an org install needs an approved live version.
+        await approve_live(org, email, pid, AMY)
     status, got = await _call("install_package", org, email, pid, payload={"scope": scope},
                               grants=PUBLISHER)
     assert status == 201, got
@@ -579,7 +611,138 @@ def test_r8_the_run_has_no_person_present(world, monkeypatch) -> None:
     assert after is False
 
 
-# ── n. Migration 434 ───────────────────────────────────────────────────────
+# ── o. The row rules of C8a bind the run as they bind its member ───────────
+
+
+def _slips(mid: str) -> dict[str, Any]:
+    """App R: a ``slip`` names its ``employee``. ``hr`` reads all, and
+    ``employee`` reads the slips where ``employee = $me``, with
+    ``bank_account`` hidden."""
+    return {
+        "studio": 1, "id": mid, "name": "Pay slips", "purpose": "Hold the pay slip of each person.",
+        "roles": ["hr", "employee"],
+        "objects": [{"name": "slip", "fields": [
+            {"key": "site", "type": "text"},
+            {"key": "employee", "type": "person", "hot": True},
+            {"key": "bank_account", "type": "text"}],
+            "access": [
+                {"role": "hr", "read": "all"},
+                {"role": "employee", "read": {"where": "employee = $me"},
+                 "hide": ["bank_account"]}]}],
+        "actions": [{"id": "peek", "uses": "object:slip.get"},
+                    {"id": "find", "uses": "object:slip.list"}],
+    }
+
+
+@pytest.fixture
+def ruled(world):
+    """Owen publishes app R (:func:`_slips`) with one slip of Mia and one of
+    Ned, and installs it for ``ops`` and for the org. Mia runs the ``ops``
+    install. Ned runs the org install."""
+    async def setup() -> SimpleNamespace:
+        r = SimpleNamespace()
+        mid = f"b6a{TAG}-app{next(_COUNTER)}"
+        r.pid = await _live(world.a, OWEN, mid, _slips(mid))
+        r.mia = await _record(world.a, r.pid, {"site": "Plant 4, Hosur", "employee": MIA_LOW,
+                                               "bank_account": "IN-1111"}, "slip")
+        r.ned = await _record(world.a, r.pid, {"site": "Plant 7, Pune", "employee": NED,
+                                               "bank_account": "IN-2222"}, "slip")
+        r.ops = await _install(world.a, OWEN, r.pid, OPS)
+        r.org = await _install(world.a, OWEN, r.pid, "org")
+        for scope, member in ((OPS, MIA), ("org", NED)):
+            status, got = await _set(world, scope, member, pid=r.pid)
+            assert status == 200, got
+        return r
+
+    return _run(world, setup)
+
+
+def _sites(got: dict[str, Any]) -> list[str]:
+    assert got["ok"] is True and got["outcome"] == "ran", got
+    return sorted(r["data"]["site"] for r in got["result"]["records"])
+
+
+def _keys(got: dict[str, Any]) -> set[str]:
+    return {k for r in got["result"]["records"] for k in r["data"]}
+
+
+def test_r8_the_run_reads_with_the_scope_of_its_member_and_never_the_owner(world,
+                                                                          ruled) -> None:
+    """C8b gives a member the roles of the install, so until then Mia holds
+    no role, and the grants of app R give her nothing. The run reads as Mia:
+    no slip, also her own. Owen owns app R and passes every rule, and his
+    scope does not leak into her run (M3, M4)."""
+    async def go() -> list[dict[str, Any]]:
+        return [await _read(world.a, ruled.ops, "find", {}),
+                await _read(world.a, ruled.ops, "peek", {"id": ruled.mia}),
+                await _set(world, "org", OWEN, pid=ruled.pid),
+                await _read(world.a, ruled.org, "find", {}),
+                await _read(world.a, ruled.ops, "find", {})]
+
+    mia, mia_own, named, owen, mia_again = _run(world, go)
+    assert _sites(mia) == [] and mia["result"]["total"] == 0, mia
+    assert (mia_own["ok"], mia_own["outcome"], mia_own["result"]) == (False, "not_found", None)
+    assert named[0] == 200, named
+    assert _sites(owen) == ["Plant 4, Hosur", "Plant 7, Pune"]
+    assert "bank_account" in _keys(owen)
+    assert _sites(mia_again) == []
+    rows = _audits(world, ruled.pid, invoke.run_as_actor(ruled.pid))
+    assert [(r["run_as"], r["outcome"]) for r in rows] == [
+        (MIA_LOW, "ran"), (MIA_LOW, "not_found"), (OWEN, "ran"), (MIA_LOW, "ran")]
+    assert "IN-1111" not in json.dumps(rows) and "IN-2222" not in json.dumps(rows)
+
+
+def test_r8_the_run_applies_the_row_rules_and_the_hides_of_its_member(world, ruled,
+                                                                      monkeypatch) -> None:
+    """The roles of C8b, given here by one map over ``_row_viewer``: Mia holds
+    ``employee`` and Ned holds ``hr``. Mia's run reads her slip only, with
+    ``bank_account`` hidden, and cannot filter on it. Ned's run reads both
+    slips. His grant never reaches Mia's run, and the run never asks for the
+    viewer of Owen, who named both members (M3, M4). When Mia loses the
+    role, her next run reads nothing."""
+    roles: dict[str, frozenset[str]] = {MIA_LOW: frozenset({"employee"}),
+                                        NED: frozenset({"hr"})}
+    asked: list[str] = []
+    real = invoke._row_viewer
+
+    def row_viewer(member: str) -> Viewer:
+        asked.append(member)
+        return Viewer(real(member).email, roles.get(member, frozenset()))
+
+    monkeypatch.setattr(invoke, "_row_viewer", row_viewer)
+    hidden = {"filter": [{"field": "bank_account", "op": "eq", "value": "IN-2222"}]}
+
+    async def go() -> list[dict[str, Any]]:
+        return [await _read(world.a, ruled.ops, "find", {}),
+                await _read(world.a, ruled.ops, "peek", {"id": ruled.mia}),
+                await _read(world.a, ruled.ops, "peek", {"id": ruled.ned}),
+                await _read(world.a, ruled.ops, "find", hidden),
+                await _read(world.a, ruled.org, "find", {}),
+                await _read(world.a, ruled.org, "find", hidden),
+                await _read(world.a, ruled.ops, "find", {})]
+
+    mia, own, other, probe, ned, ned_probe, mia_again = _run(world, go)
+    assert _sites(mia) == ["Plant 4, Hosur"]
+    assert _keys(mia) == {"site", "employee"}
+    assert own["ok"] is True and own["result"]["record"]["id"] == ruled.mia
+    assert "bank_account" not in own["result"]["record"]["data"]
+    assert (other["ok"], other["outcome"], other["result"]) == (False, "not_found", None)
+    assert (probe["ok"], probe["outcome"]) == (False, "refused"), probe
+    assert _sites(ned) == ["Plant 4, Hosur", "Plant 7, Pune"]
+    assert _keys(ned) == {"site", "employee", "bank_account"}
+    assert _sites(ned_probe) == ["Plant 7, Pune"]
+    assert _sites(mia_again) == ["Plant 4, Hosur"]
+    assert asked == [MIA_LOW, MIA_LOW, MIA_LOW, MIA_LOW, NED, NED, MIA_LOW]
+    assert OWEN not in asked
+
+    roles[MIA_LOW] = frozenset()
+    lost = _run(world, lambda: _read(world.a, ruled.ops, "find", {}))
+    assert _sites(lost) == []
+    rows = _audits(world, ruled.pid, invoke.run_as_actor(ruled.pid))
+    assert "IN-1111" not in json.dumps(rows) and "IN-2222" not in json.dumps(rows)
+
+
+# ── n. Migration 439 ───────────────────────────────────────────────────────
 
 
 def _migration() -> Path:

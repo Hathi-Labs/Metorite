@@ -27,6 +27,12 @@ The checks here:
 **R7.** The two mutations of the R8 twin also turn this suite red: M1 (skip
 ``may_run_as``) fails ``test_a_member_who_lost_access_is_refused_with_a_row``,
 and M2 (the draft of the owner) fails ``test_the_run_never_reads_the_draft``.
+``test_each_read_takes_the_viewer_of_the_member_of_the_install`` fences the
+viewer of C8a: each read gets ``Viewer`` of the member of the install, never
+a body value. M5 (the read takes ``body["viewer"]`` when the body names one)
+turns both cases red (2 failed of 64, run on 2026-11-13). M3 of the twin (the
+viewer of the owner) turns it red too, because the fake session runs no SQL.
+M4 (every role of the manifest) needs the twin.
 """
 
 from __future__ import annotations
@@ -48,6 +54,7 @@ pytest.importorskip("sqlalchemy")
 from acb_auth import UserContext, UserRole, build_access, get_current_user
 from acb_common import get_settings
 from acb_common.no_person import no_person_present
+from acb_common.studio_access import Viewer
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from gateway.package_host import resolve
@@ -370,6 +377,8 @@ class _Run:
         self.row: resolve.InstallRow | None = _row(_PINNED)
         self.audits: list[dict[str, Any]] = []
         self.marks: list[bool] = []
+        #: C8a: the viewer that each read got.
+        self.viewers: list[Viewer] = []
 
 
 @pytest.fixture
@@ -399,12 +408,16 @@ def run(monkeypatch: pytest.MonkeyPatch) -> _Run:
         r.calls.append(f"seen:{viewer}:{install_id}")
         return r.row
 
-    async def object_list(db: Any, package: Any, ref: Any, raw: bytes, out: Any) -> None:
+    async def object_list(db: Any, package: Any, ref: Any, raw: bytes, out: Any,
+                          viewer: Viewer) -> None:
         r.calls.append(f"list:{package.id}:{package.version}:{raw.decode()}")
+        r.viewers.append(viewer)
         r.marks.append(no_person_present())
 
-    async def object_get(db: Any, package: Any, ref: Any, raw: bytes, out: Any) -> None:
+    async def object_get(db: Any, package: Any, ref: Any, raw: bytes, out: Any,
+                         viewer: Viewer) -> None:
         r.calls.append(f"get:{raw.decode()}")
+        r.viewers.append(viewer)
 
     async def audit_in(db: Any, **kw: Any) -> None:
         r.calls.append("audit")
@@ -442,6 +455,8 @@ def test_a_read_runs_as_the_member_of_the_install_with_no_person_present(run: _R
                          f'list:{PID}:1:{{"limit": 5}}', "audit"]
     assert run.marks == [True, True, True, True]
     assert no_person_present() is False
+    # C8a: the read took the viewer of the member, with no role yet (C8b).
+    assert run.viewers == [Viewer(MIA)]
     (row,) = run.audits
     assert (row["app_id"], row["user_email"], row["kind"], row["app_version"]) == (
         PID, f"system:package:{PID}", "action", 1)
@@ -453,6 +468,19 @@ def test_a_read_runs_as_the_member_of_the_install_with_no_person_present(run: _R
 def test_a_get_reads_the_body_id(run: _Run) -> None:
     _read("peek", {"id": "r-1"})
     assert '|'.join(run.calls).count('get:{"id": "r-1"}') == 1
+    assert run.viewers == [Viewer(MIA)]
+
+
+@pytest.mark.parametrize("action", ["find", "peek"])
+def test_each_read_takes_the_viewer_of_the_member_of_the_install(run: _Run,
+                                                                 action: str) -> None:
+    """C8a: the read gets the viewer of the ``run_as`` member, from the
+    install row. No caller and no body names it (R5). A body that names
+    another member changes nothing (M3 of the R8 twin)."""
+    run.member = run.again = "ned@b6a.test"
+    _read(action, {"id": "r-1", "viewer": OWEN, "run_as": OWEN, "email": OWEN})
+    assert run.viewers == [Viewer("ned@b6a.test")]
+    assert run.viewers[0].roles == frozenset()
 
 
 @pytest.mark.parametrize(("org", "install", "action", "code"), [

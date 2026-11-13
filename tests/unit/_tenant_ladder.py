@@ -121,6 +121,22 @@ def ladder() -> tuple[str, ...]:
     return tuple(path for _, path in sorted(found))
 
 
+_CONCURRENTLY = re.compile(r"(?i)\b(CREATE\s+(?:UNIQUE\s+)?INDEX)\s+CONCURRENTLY\b")
+
+
+def _without_concurrently(sql: str) -> str:
+    """Drop ``CONCURRENTLY`` from a ``CREATE INDEX``.
+
+    ``CREATE INDEX CONCURRENTLY`` cannot run inside a transaction block, and
+    each caller of :func:`apply_ladder` holds one (``engine.begin()``). The
+    real runner (``scripts/apply_migrations.sh``) pipes a file to psql with no
+    single transaction, so it keeps the keyword. A scratch database has no
+    concurrent writer, so a plain ``CREATE INDEX`` builds the same index here
+    (migration 433, WS-STU C2c).
+    """
+    return _CONCURRENTLY.sub(r"\1", sql)
+
+
 def _exec_file(conn, path: str) -> None:
     """Run one migration file verbatim on *conn*'s underlying DBAPI cursor.
 
@@ -143,7 +159,7 @@ def _exec_file(conn, path: str) -> None:
     still runs inside the caller's transaction.
     """
     with open(path, encoding="utf-8") as fh:
-        sql = fh.read()
+        sql = _without_concurrently(fh.read())
     with conn.connection.dbapi_connection.cursor() as cur:
         cur.execute(sql)
 
