@@ -738,6 +738,7 @@ jobs:
               tests/unit/test_studio_expr.py \
               tests/unit/test_studio_formula_r8.py \
               tests/unit/test_studio_rollup_r8.py \
+              tests/unit/test_studio_row_rules_r8.py \
               tests/unit/test_studio_lines_r8.py \
               tests/unit/test_no_person_present_r8.py \
               tests/unit/test_studio_packages_r8.py \
@@ -786,6 +787,7 @@ jobs:
               tests/unit/test_auto_park.py \
               tests/unit/test_workflows_human_step_r8.py \
               tests/unit/test_studio_workflow_write_r8.py \
+              tests/unit/test_studio_batch_r8.py \
               tests/unit/test_headless_turn_r8.py \
               tests/unit/test_projects_status_set_read_r8.py \
               tests/unit/test_email_signature_images_r8.py \

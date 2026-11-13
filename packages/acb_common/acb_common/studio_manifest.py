@@ -42,6 +42,7 @@ from acb_common.app_manifests.base import APP_ID_PATTERN, CLASSES, OP_PATTERN, U
 from acb_common.app_manifests.shell_manifest import _CONTRIBUTES_KEYS as _P0_POINTS
 from acb_common.app_manifests.shell_manifest import SHELL_DIR
 from acb_common.secret_shapes import SECRET_SHAPES, is_secret_key
+from acb_common.studio_access import AccessError, check_access_fit, parse_access, parse_roles
 from acb_common.studio_fields import (
     FIELD_TYPES,
     MAX_FIELDS_PER_OBJECT,
@@ -258,6 +259,9 @@ class ObjectDef(_Strict):
     #: The constraints and state machines of the object (C6). The one parser is
     #: `studio_rules.parse_rules`, and `_check_objects` calls it.
     rules: list[dict[str, Any]] = Field(default_factory=list)
+    #: C8a. The grant of each role on this object. None means an open object. The
+    #: one parser is `studio_access.parse_access`, and `_check_access` calls it.
+    access: list[dict[str, Any]] | None = None
 
 
 class ActionDef(_Strict):
@@ -423,6 +427,9 @@ class Manifest(_Strict):
     purpose: str | None = None
     team: str | None = None
     connections: list[str] = Field(default_factory=list)
+    #: C8a. The roles of the app. An install maps each one to members (C8b).
+    #: `studio_access.parse_roles` is the one check.
+    roles: list[str] = Field(default_factory=list)
     objects: list[ObjectDef] = Field(default_factory=list)
     actions: list[ActionDef] = Field(default_factory=list)
     views: list[ViewDef] = Field(default_factory=list)
@@ -833,6 +840,57 @@ def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[Manifest
                 out.append(_err(f"{base}[{fi}].{problem.path}", problem.message + tail))
         _check_rules(o, f"$.objects[{oi}].rules", out, m.objects)
     _check_lines(m, out)
+    _check_access(m, out)
+
+
+def _check_access(m: Manifest, out: list[ManifestError]) -> None:
+    """C8a. The roles and the grants run through the one parser of the object
+    store (`studio_access`). A grant names a declared role, a `where` names a
+    hot person field, and `hide` names fields of the object."""
+    try:
+        roles = parse_roles(m.roles)
+    except AccessError as exc:
+        out.append(_err(f"$.roles{exc.path}", exc.message))
+        return
+    # Fix round 4 (rule 19): the field of each line object that links a line to
+    # its record. A grant of the line object cannot hide it.
+    vias: dict[str, set[str]] = {}
+    for o in m.objects:
+        for f in o.fields:
+            if isinstance(f.lines, str) and isinstance(f.to, str):
+                vias.setdefault(f.to, set()).add(f.lines)
+    for oi, o in enumerate(m.objects):
+        if o.access is None:
+            continue
+        path = f"$.objects[{oi}].access"
+        try:
+            grants = parse_access(o.access, roles)
+            specs = _parsed_fields(o)
+            if specs is not None:
+                check_access_fit(grants, specs, vias.get(o.name, set()))
+        except AccessError as exc:
+            out.append(_err(f"{path}{exc.path}", exc.message))
+    _check_open_lines(m, out)
+
+
+def _check_open_lines(m: Manifest, out: list[ManifestError]) -> None:
+    """C8a fix round 1. The lines of a table with `access` hold its data too, so
+    an object that is the lines of such a table needs its own `access`. Else
+    each member would read the lines of a record that the row rule hides."""
+    index = {o.name: i for i, o in enumerate(m.objects)}
+    flagged: set[str] = set()
+    for o in m.objects:
+        if o.access is None:
+            continue
+        for f in o.fields:
+            child = f.to if f.lines is not None and isinstance(f.to, str) else None
+            if child is None or child not in index or child in flagged:
+                continue
+            if m.objects[index[child]].access is None:
+                flagged.add(child)
+                out.append(_err(f"$.objects[{index[child]}]",
+                                f"Object `{child}` is the lines of `{o.name}`, which has `access`. "
+                                "Give it `access` too."))
 
 
 def _parsed_fields(o: ObjectDef) -> list[FieldSpec] | None:
