@@ -23,6 +23,11 @@ def must_run() -> list[str]:
     return _r8()["must_run"]
 
 
+def disarmed() -> list[str]:
+    """The skip reasons that mean an R8 gate is off."""
+    return _r8()["disarmed"]
+
+
 def never_skip() -> list[str]:
     """The files that the R8 guard needs to run with no skip."""
     return _r8()["never_skip"]

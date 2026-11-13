@@ -457,6 +457,83 @@ def test_the_real_fences_hold_a_readable_r8_key() -> None:
     assert not missing, missing
 
 
+# ── CIV-33c-2: no test reads a workflow for an R8-listed path ──────────────
+
+# These files hold the guard itself. They name listed paths in fixtures.
+_READS_WORKFLOWS_OK = {
+    "test_ci_unit_guard.py",
+    "test_green_pointer.py",
+    "test_deploy_pipeline.py",
+    "test_affected_tests.py",
+    "test_fence_lists.py",
+}
+_WORKFLOW_WORDS = ("workflows", "pr-check.yml", "deploy.yml")
+
+
+def _function_nodes(tree):
+    import ast
+
+    return [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)]
+
+
+def workflow_readers_of_listed_paths(files: list[Path], listed: set[str]) -> list[str]:
+    """`file::function` for each function that reads a workflow file and names
+    a listed path in a string. The lists left the workflow text in CIV-33c-2, so
+    such a check looks for a line that is gone. It reads `tests/unit/_r8_lists.py`."""
+    import ast
+
+    found: list[str] = []
+    for path in files:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if "tests/unit/" not in text or not any(w in text for w in _WORKFLOW_WORDS):
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        for fn in _function_nodes(tree):
+            reads = any(
+                isinstance(c, ast.Call)
+                and isinstance(c.func, ast.Attribute)
+                and c.func.attr in ("read_text", "read_bytes", "open")
+                and any(w in (ast.get_source_segment(text, c) or "") for w in _WORKFLOW_WORDS)
+                for c in ast.walk(fn)
+            )
+            if not reads:
+                continue
+            for c in ast.walk(fn):
+                if isinstance(c, ast.Constant) and isinstance(c.value, str):
+                    plain = c.value.replace(chr(92) * 2 + ".", ".").replace(chr(92) + ".", ".")
+                    if any(p in plain for p in listed):
+                        found.append(f"{path.name}::{fn.name}")
+                        break
+    return found
+
+
+def test_no_test_reads_a_workflow_for_a_path_of_the_r8_lists(tmp_path: Path) -> None:
+    lists = guard.fence_lists((_ROOT / "tests/fences.json").read_text(encoding="utf-8"))
+    listed = set(lists["--must-run"]) | set(lists["--never-skip"])
+    files = [p for p in sorted((_ROOT / "tests/unit").glob("test_*.py")) if p.name not in _READS_WORKFLOWS_OK]
+    bad = workflow_readers_of_listed_paths(files, listed)
+    assert not bad, f"these read a workflow for an R8 path, and use tests/unit/_r8_lists.py instead: {bad}"
+    # The scan itself finds the old shape.
+    old = tmp_path / "test_old_shape.py"
+    old.write_text(
+        "import re\n"
+        "def test_x():\n"
+        "    wf = (ROOT / '.github' / 'workflows' / 'pr-check.yml').read_text()\n"
+        "    assert re.search('tests/unit/test_auto_park.py', wf)\n",
+        encoding="utf-8",
+    )
+    assert workflow_readers_of_listed_paths([old], listed) == ["test_old_shape.py::test_x"]
+    ok = tmp_path / "test_new_shape.py"
+    ok.write_text(
+        "def test_x():\n    assert 'tests/unit/test_auto_park.py' in r8_lists.must_run()  # pr-check.yml\n",
+        encoding="utf-8",
+    )
+    assert workflow_readers_of_listed_paths([ok], listed) == []
+
+
 def test_a_failed_changes_job_means_a_full_run() -> None:
     assert guard.select_shard("false", SEL[0], "", "success") == ("selection", [SEL[0]])
     for result in ("failure", "skipped", "cancelled", ""):

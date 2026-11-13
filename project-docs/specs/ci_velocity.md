@@ -199,7 +199,7 @@ scanners, so the heuristics are gone.
   themselves read that key through `tests/unit/_r8_lists.py`. A new
   case in `tests/unit/test_ci_unit_guard.py` covers the filter.
   deploy.yml's R8 gate keeps the full list, with no `--only-selected`.
-  `test_deploy_pipeline.py` fails when the two lists differ.
+  `test_deploy_pipeline.py` fails when a workflow carries a list of its own.
 - The guard still finds a JUnit report for each shard. A skipped pytest step
   must not leave it with none.
 - The step that writes the measured timings runs only on a FULL run. A
@@ -344,9 +344,10 @@ nowhere before production.
 - The `test` job, its group, its tip step and its timeout do not change. It
   keeps `-x`.
 
-**The 35 files that check for their own name** read pr-check.yml only, so a
-second list does not break them. `test_deploy_pipeline.py` fails when the
-two lists differ. Add a new R8 suite to both files.
+**The files that check for their own name** read the `r8` key of
+`tests/fences.json` through `tests/unit/_r8_lists.py` (CIV-33c-2). Both
+workflows read that one key, so no second list exists. Add a new R8 suite
+there. `test_ci_unit_guard.py` fails when a test reads a workflow for a listed path.
 
 **Fence:** `tests/unit/test_deploy_pipeline.py` covers the triggers, the
 needs chain, the `skip_tests` rule, the services, the variables, the assert

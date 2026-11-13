@@ -251,14 +251,24 @@ def test_gate_a_fences_edit_selects_the_added_file_and_the_guard_tests(tmp_path:
     assert "tests/unit/test_old.py" not in out["files"]
 
 
-def test_gate_a_fences_edit_that_removes_or_comments_adds_no_suite(tmp_path: Path) -> None:
+def test_gate_a_fences_edit_that_removes_selects_the_suite_and_a_comment_adds_none(tmp_path: Path) -> None:
     root = _fences_repo(tmp_path)
     base = _fences(["tests/unit/test_new_r8.py", "tests/unit/test_old.py"])
-    for head in (_fences(["tests/unit/test_old.py"]), _fences(base_list(), comment="new words")):
-        out = _fences_gate(root, base, head)
-        assert out["full"] is False, out["reasons"]
-        assert "tests/unit/test_new_r8.py" not in out["files"]
-        assert set(sel.FENCE_GUARD_TESTS) <= set(out["files"])
+    # A removal selects the suite that left the list (it still exists).
+    out = _fences_gate(root, base, _fences(["tests/unit/test_old.py"]))
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_new_r8.py" in out["files"]
+    assert "tests/unit/test_old.py" not in out["files"]  # still listed, and no file
+    assert set(sel.FENCE_GUARD_TESTS) <= set(out["files"])
+    # A removal of an entry whose file is gone selects the guard tests only.
+    out = _fences_gate(root, base, _fences(["tests/unit/test_new_r8.py"]))
+    assert out["full"] is False and "tests/unit/test_old.py" not in out["files"]
+    assert set(sel.FENCE_GUARD_TESTS) <= set(out["files"])
+    # A comment edit adds and removes no path.
+    out = _fences_gate(root, base, _fences(base_list(), comment="new words"))
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_new_r8.py" not in out["files"]
+    assert set(sel.FENCE_GUARD_TESTS) <= set(out["files"])
 
 
 def base_list() -> list[str]:

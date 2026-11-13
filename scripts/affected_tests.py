@@ -508,7 +508,8 @@ GATE_FULL_NAMES = {
 }
 # CIV-33c-2. A workflow (or a composite action) can change how every test runs,
 # so it stays FULL. Any other file under .github/ (ISSUE_TEMPLATE, CODEOWNERS,
-# dependabot.yml) runs no test, so it is no longer FULL.
+# dependabot.yml) runs no test, so it is no longer FULL. `.github/prompts` and
+# `.github/skills` feed the root agents.py, and no test imports it today.
 GATE_FULL_PREFIXES = (
     ".github/workflows/",
     ".github/actions/",
@@ -669,7 +670,7 @@ def _fence_entries(text: str) -> set[tuple[str, str]]:
 def fence_change(changed: list[str], texts: dict | None) -> tuple[list[str], set[str]]:
     """(FULL reasons, test files to select) for an edit of tests/fences.json.
 
-    A parsed edit selects each Python path that it adds to a list, and the
+    A parsed edit selects each Python path that it adds to or removes from a list, and the
     guard's own tests (FENCE_GUARD_TESTS). Fail closed: a file that does not
     parse, a shape that this rule cannot read, or no base text gives a reason."""
     if FENCES_JSON not in changed:
@@ -679,8 +680,11 @@ def fence_change(changed: list[str], texts: dict | None) -> tuple[list[str], set
         before, after = _fence_entries(base), _fence_entries(head)
     except (KeyError, TypeError, ValueError) as exc:
         return [f"{FENCES_JSON}: cannot read the change ({exc!r})"], set()
-    added = {s for _, s in after - before if s.endswith(".py")}
-    return [], added | set(FENCE_GUARD_TESTS)
+    # A removal selects the file too. It is still on disk, and the release R8
+    # gate would fail on a suite that left a list but still runs there. A file
+    # that is gone drops out later, and the guard's tests stay.
+    moved = {s for _, s in after ^ before if s.endswith(".py")}
+    return [], moved | set(FENCE_GUARD_TESTS)
 
 
 _LITERAL_OPS = (ast.Add, ast.Sub, ast.Mult, ast.USub, ast.UAdd)
