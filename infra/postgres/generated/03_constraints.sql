@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 196
+-- Tables in this phase: 197
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -2617,6 +2617,18 @@ ALTER TABLE studio_batches ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE studio_batches ADD CONSTRAINT studio_batches_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS studio_batches_org_idx ON studio_batches (organization_id);
+
+-- studio_saved_views
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM studio_saved_views WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: studio_saved_views still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE studio_saved_views ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE studio_saved_views ADD CONSTRAINT studio_saved_views_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS studio_saved_views_org_idx ON studio_saved_views (organization_id);
 
 -- studio_object_fields
 DO $$
