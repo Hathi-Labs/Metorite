@@ -27,6 +27,8 @@ const CARD_FILES = [
   "components/projects/ProjectToolCards.tsx",
   "components/tasks/TaskToolCards.tsx",
   "components/crm/CrmEvidence.tsx",
+  // STU-F5a: the live records card of a Studio read.
+  "components/studio/StudioRecordsCard.tsx",
 ];
 
 /** A class string that caps a height and scrolls inside it. */

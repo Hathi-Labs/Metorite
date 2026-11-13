@@ -354,6 +354,17 @@ class Settings(BaseSettings):
     # flip on a box is gate `enforcement-flip`. Fence:
     # tests/unit/test_crm_answer_first.py.
     crm_answer_first_orgs: str = ""
+    # `crm_long_read_orgs` (WS-53 CRM-Q25e part 5, task 2985 HRD-6,
+    # 2026-11-13) lists the organization ids whose CRM totals may take a
+    # long read of up to 180 s (`crm_platform.md` §18.11, CRM-Q25e), in the
+    # grammar of `crm_orgs`. Default empty means NO organization: a total
+    # that runs past 10 s answers 503 `aggregate_timeout`, as before, and
+    # the chat tool makes no second call. The one reader is
+    # `gateway.routes.crm.flags`. A `*_ORGS` key, so a SIGHUP reload applies
+    # it (`docs/flag_reload.md`). A name in the list spends nothing, so a
+    # flip on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_crm_large_reads.py.
+    crm_long_read_orgs: str = ""
     # `crm_digest_orgs` (WS-53 CRM-Q28, 2026-10-17) lists the organization
     # ids that get the weekly CRM digest on the powerful tier
     # (`crm_platform.md` §18.11.2), in the grammar of `crm_orgs`. Default
@@ -985,6 +996,20 @@ class Settings(BaseSettings):
     # a change (`gateway/flag_reload.py`). It calls no model.
     # Fences: tests/unit/test_honorifics.py.
     address_forms_orgs: str = ""
+
+    # ── The line of a slow tool (HRD-6, chat_failure_modes.md §4 row B6) ────
+    #
+    # CHAT_PROGRESS_NOTICE_ORGS: a comma list of organization ids, or `*`.
+    # Empty: off, the default, and each run sends the bytes that it sent
+    # before. On, a tool call that runs for more than 6 s gets ONE line for the
+    # member ("This is a large read. It can take a few minutes …" for a read,
+    # "This is taking longer than usual. Please wait." for any other tool), on
+    # the web chat and as WhatsApp's early message. A WhatsApp run of a listed
+    # org also gets the long cap (`bot_run.run_timeout_for`). The one reader is
+    # `acb_skills.progress_notice.progress_notice_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_progress_notice.py.
+    chat_progress_notice_orgs: str = ""
 
     # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
     #
