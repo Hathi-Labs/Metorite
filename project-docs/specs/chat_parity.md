@@ -114,5 +114,7 @@ a stale row, a false claim, a bad exemption and a new debt.
 epic sets the order of the waves after it. Each wave moves its rows from
 `DEBT` to `COVERED`, and lowers the ceiling of its app.
 
+P-6 (Workflows) pays its parity rows through `ai_studio.md` rows E13a (ceiling 24 to 22), E13b (22 to 18) and E13c (STB-6, task 2134).
+
 **A new UI action needs a chat tool, or a row in the parity table.**
 `workbench/control_plane/AGENTS.md` carries this rule to UI work.
