@@ -96,6 +96,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - The session history stores each steer turn after its tool result (`native_session_store.SessionHistoryProvider.after_run`, `steer.with_steer_turns`).
    - ⚠️ On the web chat, the next turn does not load that session yet. The gateway saves the steer as a user row, and the save digest does not hold it, so the next load gives `digest_drop`. The next turn then reads the member's words from the text history. Task 2948 owns the fix.
    - A Copilot SDK agent (`GitHubCopilotAgent`) gets no steer turn during its run. `steer.return_unconsumed` gives the steer back at the run end, and the follow-up turn answers it.
+   - Task 3130: `run_agent_stream` opens one `ask_tools.ClosedCards` record and releases it in its `finally`. `_closed_card_events` sends the "Not done" line just before each `RUN_FINISHED`, after the CRM note. A run with two or more steers ends its newest steer turn with `steer.steers_frame`. Fence: `test_steer_unsent_card.py`.
 20b. **Each turn carries today's date.** `_context_preamble_parts` adds `acb_common.today.today_line()` LAST. Fence: `test_crm_answer_consistency.py`.
 21. **The orchestrator's per-turn context carries the Knowledge index block** (spec `knowledge_base.md` §6.5).
    - Only the agent `orchestrator` gets it, behind `COMPANY_SEARCH_ENABLED`, `KNOWLEDGE_ENABLED` and `KNOWLEDGE_ORGS`. The org comes from `_current_run_org()` and the member from `_verified_run_member()`, never from the payload.

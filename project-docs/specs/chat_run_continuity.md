@@ -16,6 +16,7 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 | The run cap — 5 live runs per member (D-3) | **BUILT** 2026-10-10, branch `ws51-run-cap-and-todos`, no flag |
 | §4.9 — a message sent during a run always steers it | **BUILT** 2026-10-12, branch `composer-always-steer`, no flag |
 | §4.9 — a steer is a user turn, and a Projects or CRM card closes on it (task 2494) | **BUILT** 2026-11-09, fix round 1 2026-11-11, branch `steer-redraws-card-mt-fdaefd16`, no flag |
+| §4.9 — a closed card says "Not done", and each steer gets an answer (task 3130) | **BUILT** 2026-11-13, branch `mt-e29742c6-steer-unsent-card`, no flag |
 | §4.10 — one run status in the open chat | **BUILT** 2026-10-19, branch `chat-run-status`, no flag |
 | D-1 — a separate run worker | **DEFERRED** 2026-10-29 on evidence (§5). Not built |
 
@@ -904,6 +905,39 @@ steer. So these rules hold:
   and the follow-up below answers it.
 - Fence: `tests/unit/test_steer_user_turn.py`.
 
+**A closed card says so, and each steer gets an answer (task 3130,
+2026-11-13).** In production, a member asked for an email reply, and the
+reply card opened. The member typed two more messages, and the first one
+closed the card. The answer met only the last message. It did not say that
+the reply was not sent. So these rules hold:
+
+- The server ends the answer with one line, not the model. The line comes
+  when a chat message closed a write card that the member did not answer.
+- The line is "Not done: <act>. The card closed when you sent a new
+  message. Say 'do it' to get it back." The act comes from the card's own
+  title (`ask_tools.card_act`). Two closed acts share one line.
+- Each write card of each app waits in `ask_tools.request_confirmation`, so
+  one record covers email, Projects, CRM and Studio. `run_agent_stream`
+  opens the record for each run (`open_closed_cards_for_run`).
+- `executor._closed_card_events` sends the line just before each
+  `RUN_FINISHED`, after the CRM note. The relay keeps it, so the stored
+  message holds it, and a reload shows it.
+- A card that the member approved or declined adds no line. A later card of
+  the same act takes the place of a closed card (`ask_tools._same_act`).
+- Two titles name the same act when the first words match. Their name words
+  must also share one, or one title has no name word.
+- The outcome word is "closed by your message"
+  (`ask_tools.CLOSED_BY_YOUR_MESSAGE`). HRD-7 grows its one vocabulary of
+  card outcomes from this word.
+- A run that takes two or more steers asks for an answer to each. The
+  newest steer turn ends with `steer.steers_frame`, and a replay of two or
+  more steers ends with it too. One steer gets no frame.
+- After the card closes, "do it" draws the same card again. The session
+  history keeps the call and its arguments, and the text history keeps the
+  line.
+- No flag. The line only tells the truth, and the frame adds one sentence.
+- Fence: `tests/unit/test_steer_unsent_card.py`.
+
 **A steer after the last tool call.** Before 2026-10-12 such a steer was
 lost. The applier had discarded its durable copy, and the next run start
 cleared the buffer. Now three steps answer it:
@@ -1311,6 +1345,7 @@ For §4.9, from `workbench/control_plane`, then from the repo root:
 npx vitest run src/lib/chatSteer.test.ts src/components/chatEditComposer.test.ts
 npx playwright test e2e/chat-steer.spec.ts --project=ci
 uv run pytest tests/unit/test_steer_routing.py tests/unit/test_steer_follow_up.py
+uv run pytest tests/unit/test_steer_user_turn.py tests/unit/test_steer_unsent_card.py
 ```
 
 For §4.10, from `workbench/control_plane`, then from the repo root:

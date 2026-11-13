@@ -1394,6 +1394,150 @@ async def _close_on_new_steer(fut: Any, thread_id: str, before: frozenset[int],
             _steer_forget(thread_id, rid)
 
 
+# ── A card that the member's chat message closed (task 3130) ─────────────────
+#
+# Production, 2026-11-13: a member asked for an email reply, and the reply
+# card opened. The member typed two more messages, and the first one closed
+# the card (``close_on_steer``). The answer of the turn met only the last
+# message, and it never said that the reply was not sent. So the SERVER, not
+# the model, ends that answer with one line (:func:`take_closed_card_line`).
+# Every app's write card closes in :func:`request_confirmation`, so this one
+# record covers email, Projects, CRM, Studio and each later app.
+
+#: The outcome of a card that a chat message of the member closed before the
+#: member answered it. HRD-7 (``chat_failure_modes.md`` C1) grows ONE
+#: vocabulary of card outcomes from this word: approved, declined, closed by
+#: your message, timed out, parked, changed since. Add each outcome here, and
+#: never start a second list.
+CLOSED_BY_YOUR_MESSAGE = "closed by your message"
+
+
+class ClosedCards:
+    """The write cards of one run that a chat message closed (task 3130).
+
+    Each entry is a card title. A later card of the same act takes the place
+    of a closed one (:func:`_same_act`): the member then sees that card, and
+    its own answer is the outcome. A card that the member approved or
+    declined is never in the list."""
+
+    __slots__ = ("titles",)
+
+    def __init__(self) -> None:
+        self.titles: list[str] = []
+
+    def opened(self, title: str) -> None:
+        """A card opens: it takes the place of each closed card of its act."""
+        self.titles = [t for t in self.titles if not _same_act(t, title)]
+
+    def closed(self, title: str) -> None:
+        """A chat message of the member closed the card titled *title*."""
+        self.titles.append(title)
+
+    def take(self) -> list[str]:
+        """Each closed title once, in order. The list is then empty."""
+        out = list(dict.fromkeys(self.titles))
+        self.titles = []
+        return out
+
+
+# ⚠️ The default is None, never a mutable object. A module-level object would
+# be shared by each run and each org (orchestrator ``AGENTS.md`` rule 23).
+_RUN_CLOSED_CARDS: _contextvars.ContextVar[ClosedCards | None] = _contextvars.ContextVar(
+    "acb_closed_cards", default=None,
+)
+
+
+def open_closed_cards_for_run() -> _contextvars.Token[ClosedCards | None]:
+    """Open a fresh record for the run that starts now. ``run_agent_stream``
+    calls it beside ``crm_tools.open_asks_for_run``, and gives the token to
+    :func:`release_closed_cards` in the same ``finally``. One object for the
+    run, so a tool call in its own copy of the context still records."""
+    return _RUN_CLOSED_CARDS.set(ClosedCards())
+
+
+def release_closed_cards(token: _contextvars.Token[ClosedCards | None]) -> None:
+    """Undo :func:`open_closed_cards_for_run`. A token of another context sets
+    the default, so a record never leaks into the next run on this task."""
+    try:
+        _RUN_CLOSED_CARDS.reset(token)
+    except ValueError:
+        _RUN_CLOSED_CARDS.set(None)
+
+
+def _act_kind(title: str) -> str:
+    """The first word of a card title, in lower case: "reply", "create"."""
+    words = _re.findall(r"[\w'-]+", str(title or "").lower())
+    return words[0] if words else ""
+
+
+def _same_act(closed: str, opened: str) -> bool:
+    """True when the card titled *opened* draws the act of the card titled
+    *closed* again: a redraft after the member's message.
+
+    The first words must match ("Reply", "Create"). Then the name words of
+    the titles (:func:`_title_words`) must share one, or one title has none.
+    So "Reply to kim@a.test?" and "Reply to kim@a.test, raj@b.test?" are one
+    act, and "Reply to kim@a.test?" and "Reply to raj@b.test?" are two."""
+    if not _act_kind(closed) or _act_kind(closed) != _act_kind(opened):
+        return False
+    a, b = _title_words(closed), _title_words(opened)
+    return not a or not b or bool(a & b)
+
+
+def _card_opened(title: str) -> None:
+    holder = _RUN_CLOSED_CARDS.get()
+    if holder is not None:
+        holder.opened(title)
+
+
+def _card_closed_by_message(title: str) -> None:
+    holder = _RUN_CLOSED_CARDS.get()
+    if holder is not None:
+        holder.closed(title)
+
+
+def card_act(title: str) -> str:
+    """The act of a card, from its title: "Reply to kim@a.test?" gives
+    "reply to kim@a.test". The «marks» of a fenced title go, as the client
+    hides them. A title with no words gives "the act on the card"."""
+    text = " ".join(str(title or "").replace("«", "").replace("»", "").split())
+    text = text.rstrip("?.!:;, ").strip()
+    if not text:
+        return "the act on the card"
+    first, _, rest = text.partition(" ")
+    if first[:1].isupper() and first[1:].islower():
+        # "Reply" reads as "reply". A name in capitals, such as "CRM", stays.
+        first = first.lower()
+    return f"{first} {rest}".strip()
+
+
+def closed_card_line(titles: list[str]) -> str:
+    """The line that ends the answer of a run whose write cards a chat message
+    closed (task 3130). Empty for no title. Each act comes from the card's
+    own title (:func:`card_act`)."""
+    acts = list(dict.fromkeys(card_act(t) for t in titles or []))
+    if not acts:
+        return ""
+    if len(acts) == 1:
+        return (f"Not done: {acts[0]}. The card closed when you sent a new message. "
+                "Say 'do it' to get it back.")
+    joined = ", ".join(acts[:-1]) + f", and {acts[-1]}"
+    return (f"Not done: {joined}. The cards closed when you sent a new message. "
+            "Say 'do it' to get them back.")
+
+
+def take_closed_card_line() -> str:
+    """The line of this run's closed cards, once (:func:`closed_card_line`).
+
+    The executor calls it just before ``RUN_FINISHED``, and sends the line as
+    the last text of the answer. The relay keeps it, so the stored message
+    holds it too. Empty when the run has no record, or no closed card."""
+    holder = _RUN_CLOSED_CARDS.get()
+    if holder is None:
+        return ""
+    return closed_card_line(holder.take())
+
+
 class ReplyAnswer:
     """The member's answer to a reply card: the exact text, and its parse.
 
@@ -1842,6 +1986,8 @@ async def request_confirmation(
         _answer = "REJECT"
         _ticked: frozenset[str] | None = None
         _watch = None
+        # Task 3130: this card takes the place of a closed card of its act.
+        _card_opened(_title)
         if _baseline is not None:
             # The card's id and title: a steer closes only the card it is
             # about (item 5, owner 2026-10-24).
@@ -1867,6 +2013,8 @@ async def request_confirmation(
                 if not _was_parked(_rid):
                     await _publish(_resolved_event(_rid, _answer))
         if _answer == REVISED_ANSWER:
+            # Task 3130: the run's answer ends with the "Not done" line.
+            _card_closed_by_message(_title)
             if _with_answer:
                 return REVISED
             return REVISED_ROWS if _rows is not None else REVISED

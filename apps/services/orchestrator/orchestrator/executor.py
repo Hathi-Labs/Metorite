@@ -6657,6 +6657,33 @@ def _crm_note_events() -> list[dict[str, Any]]:
         return []
 
 
+def _closed_card_events(run_id: str = "") -> list[dict[str, Any]]:
+    """The last line of the answer when a chat message of the member closed a
+    write card that they did not answer (task 3130). The server adds it, not
+    the model. It goes just before RUN_FINISHED, through ``_sse``, so the
+    relay keeps it and the stored message holds it. Empty in each other run.
+    Never raises."""
+    try:
+        from acb_skills.ask_tools import CLOSED_BY_YOUR_MESSAGE, take_closed_card_line
+    except ImportError:
+        return []
+    try:
+        line = take_closed_card_line()
+    except Exception:  # a run never fails on its last line
+        return []
+    if not line:
+        return []
+    _log.info("executor.card_outcome_line", run_id=run_id, outcome=CLOSED_BY_YOUR_MESSAGE)
+    # One delta, as the CRM note: the word chunks of ``_text_message_events``
+    # can leave a space after the last word.
+    mid = uuid.uuid4().hex
+    return [
+        {"type": "TEXT_MESSAGE_START", "messageId": mid, "role": "assistant"},
+        {"type": "TEXT_MESSAGE_CONTENT", "messageId": mid, "delta": "\n\n" + line},
+        {"type": "TEXT_MESSAGE_END", "messageId": mid},
+    ]
+
+
 def _sse(payload: dict[str, Any]) -> str:
     """Return a single SSE frame as a string.
 
@@ -6917,6 +6944,10 @@ async def run_agent_stream(
     # context still counts. Released in the same finally.
     from acb_skills.crm_tools import open_asks_for_run, release_asks
     _asks_token = open_asks_for_run()
+    # Task 3130: the write cards that a chat message of the member closed.
+    # Released in the same finally.
+    from acb_skills.ask_tools import open_closed_cards_for_run, release_closed_cards
+    _closed_cards_token = open_closed_cards_for_run()
     # H-201 (§21.16): this run's artifact context lives in this token's scope.
     from acb_skills.write_artifact import (
         artifact_context,
@@ -8120,6 +8151,9 @@ async def run_agent_stream(
                             yield _sse(_push_ev)
                         for _note_ev in _crm_note_events():
                             yield _sse(_note_ev)
+                        # Task 3130: the "Not done" line comes last.
+                        for _card_ev in _closed_card_events(run_id):
+                            yield _sse(_card_ev)
                         # A loop trip already emitted its terminal RUN_ERROR
                         # inline — don't follow it with a RUN_FINISHED that
                         # would make the client render the run as successful.
@@ -8845,6 +8879,9 @@ async def run_agent_stream(
                     yield _sse(_push_ev)
                 for _note_ev in _crm_note_events():
                     yield _sse(_note_ev)
+                # Task 3130: the "Not done" line comes last.
+                for _card_ev in _closed_card_events(run_id):
+                    yield _sse(_card_ev)
                 yield _sse({"type": "RUN_FINISHED", "runId": run_id, "threadId": thread_id})
 
                 await _detect_agent_commits(
@@ -9311,6 +9348,9 @@ async def run_agent_stream(
                 yield _sse(_push_ev)
             for _note_ev in _crm_note_events():
                 yield _sse(_note_ev)
+            # Task 3130: the "Not done" line comes last.
+            for _card_ev in _closed_card_events(run_id):
+                yield _sse(_card_ev)
             # RUN_FINISHED must be emitted INSIDE the try block — the finally
             # below resets the relay contextvar and marks the thread inactive,
             # so a later yield would never reach Redis (reconnecting clients
@@ -9380,6 +9420,7 @@ async def run_agent_stream(
             _stream_relay_thread_id.reset(_relay_token)
             release_cards_switch(_cards_token)
             release_asks(_asks_token)
+            release_closed_cards(_closed_cards_token)
             _active_run_model.reset(_model_token)
             _release_profile_writes(_writes_token)
             _release_solo_room(_solo_token)
