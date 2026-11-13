@@ -658,12 +658,13 @@ def test_no_crm_pack_tool_takes_an_organization_or_a_member_argument() -> None:
 STUDIO = "studio-builder"
 STUDIO_DIR = "apps/agents/agent-studio-builder"
 #: The eight read-only tools, the three skill tools (STU-F2d), the three
-#: package tools (STU-G1c save and publish, STU-A5c-2 delete), the two record
+#: package tools (STU-G1c save and publish, STU-A5c-2 delete, STU-K1d ready apps), the two record
 #: reads (STU-D2b), then the three record writes (STU-B2c-2b).
 STUDIO_TOOLS = ("studio_describe", "studio_draft", "studio_interview",
                 "studio_list_actions", "studio_outline", "studio_patch", "studio_plan",
                 "studio_validate", "studio_skill_list", "studio_skill_save",
                 "studio_skill_state", "studio_save", "studio_publish", "studio_delete_package",
+                "studio_template_list", "studio_create_from_template",
                 "studio_package_get", "studio_record_list", "studio_record_create",
                 "studio_record_update", "studio_record_delete", "studio_app_read")
 #: The six record tools: the two reads, the three writes, then the door read (B2b-2c).
