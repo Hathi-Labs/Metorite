@@ -8,6 +8,10 @@ A write (create, duplicate, edit, delete) also carries ``AUTHOR_GATE``: it
 needs ``feature:studio`` where ``WORKFLOW_STUDIO_GATE_ORGS`` holds the org
 (STU-J1-3, ``core.py``). ``validate`` writes nothing, so it is a read and
 keeps the router gate only.
+
+A Save of a PUBLISHED workflow that arms a schedule, webhook or event trigger
+also needs ``workflows:publish`` (STB-6c, owner decision of 2026-11-13):
+``publish.refuse_live_arming``. A Save that arms nothing is unchanged.
 """
 
 from __future__ import annotations
@@ -32,6 +36,10 @@ from gateway.routes.workflows.core import (
     router,
 )
 from gateway.routes.workflows.engine.graph import validate_graph
+
+# `__init__` imports publish before crud, so this import keeps the order in
+# which the routes register.
+from gateway.routes.workflows.publish import refuse_live_arming
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -251,10 +259,30 @@ async def update_workflow(
         _validate_trigger_specs(body.triggers)
     async with _tenant_session() as db:
         row = await load_workflow_or_404(db, workflow_id)
-        if body.triggers is not None and str(row.owner_email or "").strip().lower() != (
-            str(_uid(user) or "").strip().lower()
-        ):
-            await _refuse_foreign_studio_trigger(db, workflow_id, body.triggers)
+        old_triggers: list[Any] = []
+        if body.triggers is not None:
+            # Lock the triggers before any check reads them. The trigger state
+            # route (publish.py) locks them first too, so a Save cannot judge
+            # an old state while that route changes it.
+            old_triggers = (
+                await db.execute(
+                    text(
+                        "SELECT kind, config, enabled, last_fired_at "
+                        "FROM workflow_triggers WHERE workflow_id = :id "
+                        "ORDER BY created_at, id FOR UPDATE"
+                    ),
+                    {"id": workflow_id},
+                )
+            ).fetchall()
+            if not _is_author(row, user):
+                await _refuse_foreign_studio_trigger(db, workflow_id, body.triggers)
+            # STB-6c: a Save that arms a live trigger needs workflows:publish.
+            refuse_live_arming(
+                user,
+                row.status,
+                [(r.kind, parse_jsonb(r.config, {}) or {}, bool(r.enabled)) for r in old_triggers],
+                [(t.kind, t.config, t.enabled) for t in body.triggers],
+            )
         sets, params = [], {"id": workflow_id}
         if body.name is not None:
             sets.append("name = :name")
@@ -285,15 +313,7 @@ async def update_workflow(
             # was edited is deliberately re-armed from now.
             previous = {
                 _trigger_identity(r.kind, parse_jsonb(r.config, {}) or {}): r.last_fired_at
-                for r in (
-                    await db.execute(
-                        text(
-                            "SELECT kind, config, last_fired_at "
-                            "FROM workflow_triggers WHERE workflow_id = :id"
-                        ),
-                        {"id": workflow_id},
-                    )
-                ).fetchall()
+                for r in old_triggers
             }
             await db.execute(
                 text("DELETE FROM workflow_triggers WHERE workflow_id = :id"),
@@ -369,6 +389,12 @@ async def validate_workflow(
         tool_schemas=tool_arg_schemas(),
     )
     return {"ok": not issues, "issues": [i.as_dict() for i in issues]}
+
+
+def _is_author(row: Any, user: Any) -> bool:
+    """True when the caller is the author (``owner_email``) of the workflow.
+    The compare ignores case and outer spaces."""
+    return str(row.owner_email or "").strip().lower() == str(_uid(user) or "").strip().lower()
 
 
 def _studio_event_keys(triggers: list[tuple[str, dict[str, Any], bool]]) -> set[str]:
