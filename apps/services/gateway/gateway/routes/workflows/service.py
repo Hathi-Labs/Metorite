@@ -1570,7 +1570,7 @@ async def _hold_at_gate(
             organization_id=organization_id,
         )
     is_wait = resume_at is not None
-    if not is_wait and await _park_with_decision(
+    held = False if is_wait else await _park_with_decision(
         run_id=run_id,
         workflow_id=workflow_id,
         workflow_name=workflow_name,
@@ -1588,8 +1588,13 @@ async def _hold_at_gate(
         ),
         organization_id=organization_id,
         trigger_kind=trigger_kind,
-    ):
-        return
+    )
+    if isinstance(held, tuple):
+        # STU-E8b review round 2: the park refused the gate and ended the run
+        # `failed`. The hub, the feed and the health streak say the same.
+        return held
+    if held:
+        return None
     action_id: str | None = None
     if not is_wait:
         try:
@@ -1762,8 +1767,11 @@ async def _hold_at_human_step(
     return None
 
 
-#: The plain error of each refusal of a batch at the park (STU-E8b).
-_BATCH_PARK_ERRORS = {
+#: The plain error of each refusal at the park that ends the run with no card:
+#: a Studio write that does not resolve (B2c-2d fix round 2), and a batch of
+#: an org that is not ready or of a run that is no schedule run (STU-E8b).
+_GATE_REFUSALS = {
+    park.WRITE_UNRESOLVED: _WRITE_UNRESOLVED_ERROR,
     batch.BATCH_OFF: batch.BATCH_OFF_ERROR,
     batch.BATCH_NOT_SCHEDULED: batch.BATCH_NOT_SCHEDULED_ERROR,
 }
@@ -1779,12 +1787,14 @@ async def _park_with_decision(
     snapshot: dict[str, Any],
     organization_id: str | None,
     trigger_kind: str = "",
-) -> bool:
+) -> bool | tuple[str, str]:
     """AUTO-7b: park a marked run's approval gate on ONE decision of its owner.
 
     True when the subject task, the decision and the pause row committed in
     one ``_run_session(org)``. False when nothing was written, and then the
-    caller files the broker proposal of AUTO-7a. Four facts must hold first:
+    caller files the broker proposal of AUTO-7a. ``("failed", error)`` when a
+    refusal of :data:`_GATE_REFUSALS` ended the run with no card, so the caller
+    reports that status (STU-E8b review round 2). Four facts must hold first:
     the run is marked (``no_person_present``), it carries an org,
     ``park.park_allowed(org)`` is true, and the owner resolves.
 
@@ -1830,19 +1840,15 @@ async def _park_with_decision(
             run_id=run_id,
             reason=str(getattr(exc, "reason", "") or type(exc).__name__)[:80],
         )
-        if getattr(exc, "reason", "") == park.WRITE_UNRESOLVED:
+        error = _GATE_REFUSALS.get(str(getattr(exc, "reason", "") or ""))
+        if error is not None:
             # STU-B2c-2d fix round 2: the gate clears a Studio write that the
-            # owner cannot run. A broker card could only end in a failed
-            # write, so the run fails here and files no card.
-            await _fail_unresolved_write(run_id, organization_id)
-            return True
-        batch_error = _BATCH_PARK_ERRORS.get(str(getattr(exc, "reason", "") or ""))
-        if batch_error is not None:
-            # STU-E8b: the gate clears a batch of an org that is not ready, or
-            # of a run that is no schedule run. No batch opens and no card is
-            # filed, and the run fails with plain words.
-            await _fail_unresolved_write(run_id, organization_id, batch_error)
-            return True
+            # owner cannot run, so a broker card could only end in a failed
+            # write. STU-E8b: the gate clears a batch of an org that is not
+            # ready, or of a run that is no schedule run. In each case the run
+            # fails here with plain words, and no card is filed.
+            await _fail_unresolved_write(run_id, organization_id, error)
+            return "failed", error
         return False
     _log.info("workflows.parked", run_id=run_id, decision_id=parked["decision_id"])
     # After the commit: the subject task sent no event, so move the owner's

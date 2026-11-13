@@ -636,7 +636,10 @@ async def _resume_batch(org: str, row: Any) -> bool:
 
     The owner is ``workflows.owner_email``, read in the org. The yes comes
     from the decision row only (``batch.approved_batch``), so a run that failed
-    with no yes is never resumed. At :data:`batch.MAX_RESUMES` new runs, the
+    with no yes is never resumed. Review round 2: the scan then ENDS that batch
+    with ``not_approved``, in the same session, as the node does
+    (``service._bound_batch``). An old yes can then never wake it, and the
+    batch says why it stopped. At :data:`batch.MAX_RESUMES` new runs, the
     batch ends: ``batch_store.end_stuck_item`` marks the item that blocks
     ``query_timeout``, and the batch ends ``failed``. Else the new run takes the
     pinned graph of the park snapshot and the stored outputs of the failed
@@ -648,7 +651,11 @@ async def _resume_batch(org: str, row: Any) -> bool:
     async with _tenant_session(org) as db:
         found = await batch_store.get_batch(db, str(row.id))
         bound = await batch.approved_batch(db, organization_id=org, owner=owner, batch=found)
-        if found is None or bound is None:
+        if found is None:
+            return False
+        if bound is None:
+            ended = await batch_store.end_stuck_item(db, found.id, code=batch.NOT_APPROVED)
+            _log.warning("workflows.batch_ended", batch_id=found.id, failed=list(ended.failed))
             return False
         if found.resumes >= batch.MAX_RESUMES:
             ended = await batch_store.end_stuck_item(db, found.id)

@@ -465,10 +465,21 @@ def test_the_card_hides_a_secret_value_and_counts_what_does_not_fit() -> None:
     card = _card(items, op="update")
     assert "s3cr3t" not in card and "1234" not in card
     assert "api_token: (hidden)" in card and "pin: (hidden)" in card
-    assert "1. k1 (a change of a record)" in card
+    # Round 2: an update names its record. A record id is no secret.
+    assert "1. k1 (a change of record 33333333-3333-4333-8333-333333333333)" in card
     line = next(x for x in card.splitlines() if x.startswith("2. k2"))
     assert len(line) <= 200 and "more fields)" in line
-    assert "33333333" not in card
+
+
+def test_a_key_with_a_line_break_cannot_fake_another_item_line() -> None:
+    """Round 2: each key goes through ``park._clip``, as the card of a single
+    write does, so its line break becomes a space."""
+    fake = "note" + chr(10) + "2. evil: amount: 1"
+    card = _card([{"key": "k1", "data": {fake: "x"}}])
+    lines = card.splitlines()
+    assert not any(x.startswith("2. evil") for x in lines)
+    assert "1. k1: note 2. evil: amount: 1:" in card
+    assert "The first 1 records:" in card
 
 
 def test_the_card_never_drops_an_item_in_silence() -> None:
@@ -480,6 +491,8 @@ def test_the_card_never_drops_an_item_in_silence() -> None:
     assert len(card) <= 1500
     assert 0 < len(shown) < 10
     assert f"{10 - len(shown)} more records are not shown here." in card
+    # Round 2: the head line names the count that the card really shows.
+    assert f"The first {len(shown)} records:" in card and "The first 10 records:" not in card
 
 
 # ── The store calls of E8b ──────────────────────────────────────────────────
@@ -623,6 +636,75 @@ def test_each_refusal_of_the_door_that_time_does_not_fix_has_an_end_code() -> No
     assert "await _end_batch(run, last.code)" in loop
 
 
+@pytest.mark.parametrize(("answer", "verdict"), [
+    ("raise", "unknown"), ("inactive", "unknown"), ("no_feature", "deny"), ("studio", "allow"),
+])
+def test_only_an_active_member_gives_a_verdict_on_the_access(monkeypatch, answer: str,
+                                                             verdict: str) -> None:
+    """Round 2: a pool timeout or a read error of the resolver is no deny. It
+    gives ``unknown``, which the batch takes as a busy try. Only an ACTIVE
+    member without ``feature:studio`` is a deny that ends the batch."""
+    import acb_auth.access as access_mod
+    from acb_auth.permissions import EffectiveAccess, build_access
+
+    async def resolve(_member: str, _org: str) -> Any:
+        if answer == "raise":
+            raise access_mod.IdentityUnavailable("the pool timed out")
+        if answer == "inactive":
+            return EffectiveAccess(is_active=False)
+        return build_access(["feature:studio"] if answer == "studio" else ["feature:projects"])
+
+    monkeypatch.setattr(access_mod, "resolve_access_in_org", resolve)
+    got = asyncio.run(invoke._studio_access("o@a.test", ORG))
+    assert got == verdict
+    assert asyncio.run(invoke._holds_studio("o@a.test", ORG)) is (verdict == "allow")
+
+
+def test_a_refused_park_reports_failed_to_the_hub(monkeypatch) -> None:
+    """Round 2: a park that the batch rules refuse ends the run ``failed``, and
+    ``_hold_at_gate`` answers that status, so the hub and the feed agree."""
+    from gateway.routes.workflows import park
+
+    _all_flags(monkeypatch)
+    failed: list[str] = []
+
+    async def _owner(*_a: Any) -> tuple[str, str]:
+        return ORG, "owner@a.test"
+
+    @contextlib.asynccontextmanager
+    async def _session(_org: Any):
+        yield SimpleNamespace()
+
+    async def _refuse(_db: Any, **_k: Any) -> Any:
+        raise park.ParkRefused(batch.BATCH_NOT_SCHEDULED)
+
+    async def _fail(run_id: str, org: Any, error: str = "") -> None:
+        failed.append(error)
+
+    monkeypatch.setattr(service, "_workflow_owner", _owner)
+    monkeypatch.setattr(service, "_run_session", _session)
+    monkeypatch.setattr(park, "park_with_decision", _refuse)
+    monkeypatch.setattr(service, "_fail_unresolved_write", _fail)
+
+    async def hold() -> Any:
+        with no_person_scope():
+            return await service._hold_at_gate(
+                run_id="r-1", workflow_id="w-1", workflow_name="W", node_id="gate",
+                serialized=compile_graph(_graph()), trigger_payload={}, variables={},
+                started_by="scheduler", organization_id=ORG, trigger_kind="event")
+
+    assert asyncio.run(hold()) == ("failed", batch.BATCH_NOT_SCHEDULED_ERROR)
+    assert failed == [batch.BATCH_NOT_SCHEDULED_ERROR]
+
+
+def test_the_scan_and_the_node_end_with_the_same_code() -> None:
+    assert batch.NOT_APPROVED == service.STUDIO_NOT_APPROVED
+    assert batch.NOT_APPROVED in batch_store.END_CODES
+    src = _src("scheduler.py")
+    fn = src[src.index("async def _resume_batch"):src.index("async def _scheduler_loop")]
+    assert fn.index("if bound is None:") < fn.index("end_stuck_item(db, found.id, code=batch.NOT_APPROVED)")
+
+
 def test_the_replay_set_round_trips_through_the_row() -> None:
     precomputed = {"start": {"scheduled_at": "x"}, "prep": {"month": "11"}}
     rows = batch.replay_results(precomputed)
@@ -668,6 +750,7 @@ def test_the_scan_takes_only_a_batch_of_a_schedule_run() -> None:
     resume of its batch would skip the refusal ``not_scheduled``."""
     for part in ("r.status = 'failed'", "r.trigger_kind = 'schedule'", "b.status = 'open'",
                  "w.status = 'published'", "w.organization_id = CAST(:org AS uuid)",
+                 "a.paused_at IS NULL", "a.organization_id = CAST(:org AS uuid)",
                  "b.organization_id = CAST(:org AS uuid)", "r.organization_id = CAST(:org AS uuid)"):
         assert part in batch.OPEN_SQL, part
 

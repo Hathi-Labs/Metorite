@@ -71,6 +71,9 @@ BATCH_ID = "batch_id"
 LIST_DIGEST = "list_digest"
 #: The ``started_by`` of a run that the batch scan starts.
 STARTED_BY = "scheduler:batch"
+#: The end code of a batch whose yes is gone. The same text as
+#: ``service.STUDIO_NOT_APPROVED``, which the node writes.
+NOT_APPROVED = "not_approved"
 
 #: Why a park refused a batch of an org that is not ready. The gate then fails
 #: the run and files no broker card, as for an unresolved write.
@@ -179,14 +182,17 @@ def batch_question(workflow_name: str, plan: Any) -> str:
 
 def _item_line(place: int, item: Any) -> str:
     """One item of the card: its key and each field with its value. A field
-    whose key looks like a secret shows no value (``park._shown``). Fields past
-    :data:`_ITEM_MAX` are counted, never dropped in silence."""
+    whose key looks like a secret shows no value (``park._shown``). Each key
+    goes through ``park._clip`` first, as the card of a single write does, so
+    a key with a line break cannot fake another item line (review round 2).
+    An update names its record id. Fields past :data:`_ITEM_MAX` are counted,
+    never dropped in silence."""
     item = item if isinstance(item, dict) else {}
     data = item.get("data") if isinstance(item.get("data"), dict) else {}
     head = f"{place}. {_clip(item.get('key'), 40)}"
     if item.get("record_id"):
-        head += " (a change of a record)"
-    parts = [park._shown(str(k), v)[2:] for k, v in data.items()]
+        head += f" (a change of record {_clip(item.get('record_id'), 36)})"
+    parts = [park._shown(park._clip(str(k), park._KEY_MAX), v)[2:] for k, v in data.items()]
     shown: list[str] = []
     for part in parts:
         if len(head) + len(", ".join([*shown, part])) + 26 > _ITEM_MAX:
@@ -216,19 +222,21 @@ def batch_detail(plan: Any, items: Any) -> str:
         f'The run will {verb} {len(rows)} records of {_clip(plan.object, _OBJECT_MAX)} in the '
         f'app "{_clip(plan.package_name, _PACKAGE_MAX)}", at most 50 changes at a time.',
         f"List fingerprint: {str(plan.list_digest)[:_FINGERPRINT]}",
-        f"The first {min(len(rows), CARD_ITEMS)} records:",
     ]
-    used = len("\n".join(lines))
-    shown = 0
+    # The head line names the count that the card really shows (round 2), so
+    # its room is kept before the item lines.
+    used = len("\n".join(lines)) + len("The first 10 records:") + 1
+    items: list[str] = []
     for place, item in enumerate(rows[:CARD_ITEMS], start=1):
         line = _item_line(place, item)
         if used + len(line) + 1 > park._DETAIL_MAX - 60:
             break
-        lines.append(line)
+        items.append(line)
         used += len(line) + 1
-        shown += 1
-    if len(rows) > shown:
-        lines.append(f"{len(rows) - shown} more records are not shown here.")
+    lines.append(f"The first {len(items)} records:" if items else "No record is shown here.")
+    lines.extend(items)
+    if len(rows) > len(items):
+        lines.append(f"{len(rows) - len(items)} more records are not shown here.")
     return "\n".join(lines)
 
 
@@ -369,16 +377,21 @@ async def approved_batch(db: Any, *, organization_id: str, owner: str,
 #: batch would skip that refusal. The park refuses such a run too.
 #: ⚠️ Only a PUBLISHED workflow (E8b review). A workflow that its owner or the
 #: health policy disabled resumes nothing, and its batch waits.
+#: ⚠️ Only a package that no admin paused (review round 2). A paused package
+#: refuses each action, so a resume would only spend a try and count a failed
+#: schedule run. Its batch waits until someone resumes the package.
 OPEN_SQL = (
     "SELECT b.id, b.run_id, b.node_id, b.resumes, r.workflow_id, r.workflow_name, "
     "       r.version, r.node_results, r.organization_id "
     "  FROM studio_batches b JOIN workflow_runs r ON r.id = b.run_id "
     "  JOIN workflows w ON w.id = r.workflow_id "
+    "  JOIN apps a ON a.id = b.package_id "
     " WHERE b.status = 'open' AND r.status = 'failed' AND r.trigger_kind = 'schedule' "
-    "   AND w.status = 'published' "
+    "   AND w.status = 'published' AND a.paused_at IS NULL "
     "   AND b.organization_id = CAST(:org AS uuid) "
     "   AND r.organization_id = CAST(:org AS uuid) "
-    "   AND w.organization_id = CAST(:org AS uuid)"
+    "   AND w.organization_id = CAST(:org AS uuid) "
+    "   AND a.organization_id = CAST(:org AS uuid)"
 )
 
 #: The pause row of the park, which holds the snapshot of the first run.

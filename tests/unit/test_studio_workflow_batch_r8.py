@@ -109,6 +109,8 @@ _APP_PW = "studiobatch_scratch_pw"
 
 OWNER_A = "owner@a.studiobatch.test"
 OWNER_B = "owner@b.studiobatch.test"
+#: A second member of org A, who does not own the workflows (review round 2).
+MEMBER_A2 = "member@a.studiobatch.test"
 _FIELDS: list[dict[str, Any]] = [
     {"key": "emp", "type": "text"},
     {"key": "amount", "type": "number"},
@@ -266,6 +268,7 @@ def world():
                 {"id": oid, "s": slug})
         _seed_member(conn, ns.org_a, OWNER_A)
         _seed_member(conn, ns.org_b, OWNER_B)
+        _seed_member(conn, ns.org_a, MEMBER_A2)
 
     async def packages() -> None:
         ns.pkg_a, ns.obj_a, ns.obj2_a = await _make_package(ns.org_a, OWNER_A)
@@ -598,6 +601,8 @@ def test_r8_two_scan_passes_start_one_run(w, monkeypatch):
 
 
 def test_r8_a_failed_run_with_no_yes_is_never_resumed(w):
+    """Round 2: the scan also ENDS such a batch with ``not_approved``, as the
+    node does, so a late yes can never wake it."""
     run_id, made = _park(w)
     # A path that sets a parked run failed with no answer.
     with w.admin_engine.begin() as c:
@@ -605,11 +610,152 @@ def test_r8_a_failed_run_with_no_yes_is_never_resumed(w):
                   {"r": run_id})
     assert _scan(w) == 0
     assert len(_runs(w)) == 1 and _records(w, w.obj_a) == []
-    # A no ends nothing more: the run was failed, and still nothing resumes.
-    _answer(w, w.org_a, OWNER_A, str(made.id), "no")
+    row = _batch_row(w)
+    assert (row.status, row.resumes) == ("failed", 0)
+    first = _items_of(w, row.id)[0]
+    assert (first.status, first.error_code) == ("failed", "not_approved")
+    # A late yes wakes nothing: the run is not paused, and the batch is not open.
+    _answer(w, w.org_a, OWNER_A, str(made.id), "yes")
     assert _scan(w) == 0
     assert len(_runs(w)) == 1 and _records(w, w.obj_a) == []
-    assert _batch_row(w).status == "open"
+
+
+def test_r8_the_scan_ends_a_batch_whose_yes_is_gone(w, monkeypatch):
+    """Round 2: a stop, then the owner leaves. The scan ends the batch with
+    ``not_approved`` at once. When the owner comes back, the old yes wakes
+    nothing."""
+    _stop_after_two_chunks(w, monkeypatch)
+    with w.admin_engine.begin() as c:
+        c.execute(text("UPDATE app_user SET status = 'suspended' WHERE email = :e"),
+                  {"e": OWNER_A})
+    try:
+        assert _scan(w) == 0
+    finally:
+        with w.admin_engine.begin() as c:
+            c.execute(text("UPDATE app_user SET status = 'active' WHERE email = :e"),
+                      {"e": OWNER_A})
+    row = _batch_row(w)
+    assert (row.status, row.resumes) == ("failed", 0)
+    items = _items_of(w, row.id)
+    assert (items[100].status, items[100].error_code) == ("failed", "not_approved")
+    assert _scan(w) == 0
+    assert len(_runs(w)) == 1 and len(_records(w, w.obj_a)) == 100
+
+
+def test_r8_a_stopped_batch_of_a_paused_package_waits(w, monkeypatch):
+    """Round 2: an admin paused the package. No resume spends a try on it, and
+    no failed schedule run counts toward the health streak."""
+    _stop_after_two_chunks(w, monkeypatch)
+    with w.admin_engine.begin() as c:
+        c.execute(text("UPDATE apps SET paused_at = now() WHERE id = CAST(:p AS uuid)"),
+                  {"p": w.pkg_a})
+    try:
+        assert _scan(w) == 0
+        assert _scan(w) == 0
+        row = _batch_row(w)
+        assert (row.status, row.resumes) == ("open", 0) and len(_runs(w)) == 1
+    finally:
+        with w.admin_engine.begin() as c:
+            c.execute(text("UPDATE apps SET paused_at = NULL WHERE id = CAST(:p AS uuid)"),
+                      {"p": w.pkg_a})
+    assert _scan(w) == 1 and len(_records(w, w.obj_a)) == 300
+
+
+@pytest.mark.parametrize("fault", ["timeout", "inactive"])
+def test_r8_an_access_read_with_no_verdict_keeps_the_batch_open(w, monkeypatch, fault):
+    """Round 2: the resolver times out (``IdentityUnavailable``), or gives no
+    active member (its answer to a read error too), at each try of chunk 2.
+    That is no deny: the batch stays open with no code on any item, and a later
+    run finishes it with no record twice."""
+    import acb_auth.access as access_mod
+    from acb_auth.permissions import EffectiveAccess
+
+    real = access_mod.resolve_access_in_org
+    calls = {"n": 0}
+
+    async def flaky(member: str, org: str) -> Any:
+        calls["n"] += 1
+        if 2 <= calls["n"] <= 1 + invoke.BATCH_CHUNK_TRIES:
+            if fault == "timeout":
+                raise access_mod.IdentityUnavailable("the pool timed out")
+            return EffectiveAccess(is_active=False)
+        return await real(member, org)
+
+    run_id, made = _park(w, "Prep then pay in A")
+    _answer(w, w.org_a, OWNER_A, str(made.id), "yes")
+    monkeypatch.setattr(access_mod, "resolve_access_in_org", flaky)
+    assert _decide(w, w.org_a) == 1
+    run = _run(w, run_id)
+    assert run.status == "failed" and f"({invoke.STORE_BUSY})" in run.error, run.error
+    row = _batch_row(w)
+    assert (row.status, row.resumes) == ("open", 0)
+    assert [i.error_code for i in _items_of(w, row.id)] == [None] * 150
+    assert len(_records(w, w.obj_a)) == 50
+    assert _scan(w) == 1
+    emps = [r.data["emp"] for r in _records(w, w.obj_a)]
+    assert len(emps) == 150 and len(set(emps)) == 150
+    assert _batch_row(w).status == "done"
+
+
+def _draft(w: Any, name: str, graph: Any) -> None:
+    with w.admin_engine.begin() as c:
+        c.execute(text("UPDATE workflows SET graph = CAST(:g AS jsonb) "
+                       "WHERE id = CAST(:w AS uuid)"),
+                  {"g": json.dumps(graph), "w": w.wf[name][0]})
+
+
+def _save(w: Any, name: str, who: str, graph: Any) -> Any:
+    """``PUT /workflows/{id}`` as *who*, through the route function, in org A."""
+    from acb_common.db import bind_tenant, release_tenant
+    from fastapi import HTTPException
+    from gateway.routes.workflows import crud
+
+    async def go() -> Any:
+        token = bind_tenant(w.org_a)
+        try:
+            return await crud.update_workflow(
+                w.wf[name][0], crud.WorkflowUpdate(graph=graph), user=SimpleNamespace(email=who))
+        except HTTPException as exc:
+            return exc
+        finally:
+            release_tenant(token)
+
+    return _on_app_role(w, go)
+
+
+def _status(result: Any) -> int:
+    return int(getattr(result, "status_code", 200))
+
+
+def test_r8_only_the_owner_may_add_or_change_a_batch_node_at_save(w):
+    """Round 2, the save route: another member gets 403 for an added or a
+    changed batch node, and 200 for a change of any other node. The owner gets
+    200. An old draft of ``{}`` or JSON null refuses no save without a batch."""
+    name = "Small batch in A"
+    base = _graph(w.pkg_a, 10)
+    changed = json.loads(json.dumps(base))
+    next(n for n in changed["nodes"] if n["id"] == "batch")["data"]["config"]["items"][0][
+        "data"]["amount"] = 999999
+    other = json.loads(json.dumps(base))
+    next(n for n in other["nodes"] if n["id"] == "done")["data"]["config"]["value"] = "changed"
+    no_batch = {"nodes": [n for n in base["nodes"] if n["type"] != "studio_batch"],
+                "edges": []}
+    try:
+        _draft(w, name, no_batch)
+        assert _status(_save(w, name, MEMBER_A2, base)) == 403  # adds a batch node
+        _draft(w, name, base)
+        assert _status(_save(w, name, MEMBER_A2, changed)) == 403  # changes its items
+        assert _status(_save(w, name, MEMBER_A2, other)) == 200  # another node only
+        assert _status(_save(w, name, MEMBER_A2, no_batch)) == 200  # removes it
+        _draft(w, name, base)
+        assert _status(_save(w, name, OWNER_A, changed)) == 200  # the owner
+        assert _status(_save(w, name, OWNER_A.upper(), base)) == 200  # case blind
+        for empty in ({}, None):
+            _draft(w, name, empty)
+            assert _status(_save(w, name, MEMBER_A2, no_batch)) == 200, empty
+            assert _status(_save(w, name, MEMBER_A2, base)) == 403, empty
+    finally:
+        _draft(w, name, {"nodes": [], "edges": []})
 
 
 @pytest.mark.parametrize("kind", ["event", "webhook"])

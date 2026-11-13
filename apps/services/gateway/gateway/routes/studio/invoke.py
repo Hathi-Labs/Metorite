@@ -1528,14 +1528,36 @@ async def _holds_studio(member: str, org: str) -> bool:
     run has no request, so this reads the member's access in the run's org
     through ``acb_auth.access.resolve_access_in_org``, the one resolver for a
     member who is not the caller. It fails closed."""
+    return await _studio_access(member, org) == ACCESS_ALLOW
+
+
+#: The three answers of :func:`_studio_access` (E8b review round 2).
+ACCESS_ALLOW = "allow"
+ACCESS_DENY = "deny"
+ACCESS_UNKNOWN = "unknown"
+
+
+async def _studio_access(member: str, org: str) -> str:
+    """Whether *member* holds ``feature:studio`` in *org* now, in three
+    answers (E8b review round 2).
+
+    ``allow`` and ``deny`` are verdicts: the resolver read an ACTIVE member,
+    who holds the feature or does not. ``unknown`` is each other answer: the
+    resolver raised (a pool timeout raises ``IdentityUnavailable``), or it gave
+    a member who is not active. The resolver gives that answer for a read
+    error too, so it is no verdict. The write of a workflow node refuses on
+    each answer that is not ``allow``. A batch ends only on ``deny``, and
+    takes ``unknown`` as a busy store, which a later try or run repeats."""
     from acb_auth.access import resolve_access_in_org
 
     try:
         access = await resolve_access_in_org(member, org)
     except Exception as exc:
         _log.warning("studio.invoke.workflow_access_failed", error=type(exc).__name__)
-        return False
-    return bool(access.is_active and access.can_use_feature("studio"))
+        return ACCESS_UNKNOWN
+    if not access.is_active:
+        return ACCESS_UNKNOWN
+    return ACCESS_ALLOW if access.can_use_feature("studio") else ACCESS_DENY
 
 
 def _workflow_body(data: Any, record_id: Any) -> bytes:
@@ -1883,16 +1905,21 @@ async def _batch_chunk(run: _BatchRun) -> _Step:
 async def _batch_chunk_with_tries(run: _BatchRun, tally: dict[str, int]) -> _Step:
     """One chunk, tried again while the store is busy, at most
     :data:`BATCH_CHUNK_TRIES` times (E8b). The member must hold
-    ``feature:studio`` before each try, read with no session open. Each try
-    takes a writer slot first. The events of what committed go out after the
+    ``feature:studio`` before each try, read with no session open. A deny
+    stops the batch, and a read with no verdict counts as a busy try
+    (:func:`_studio_access`). Each try takes a writer slot first. The events of what committed go out after the
     commit, also on a busy try that kept its earlier groups."""
     for attempt in range(BATCH_CHUNK_TRIES):
         if attempt:
             await asyncio.sleep(BATCH_RETRY_WAITS[min(attempt, len(BATCH_RETRY_WAITS)) - 1])
-        if not await _holds_studio(run.member, run.org):
+        verdict = await _studio_access(run.member, run.org)
+        if verdict == ACCESS_DENY:
             return _Step(code=WORKFLOW_NO_FEATURE)
         with _writer_slot(run.org, True) as admitted:
-            step = await _batch_chunk(run) if admitted else _Step(busy=True)
+            # E8b review round 2: an access read that gave no verdict is a
+            # busy try, never a deny that would end the batch.
+            ready = admitted and verdict == ACCESS_ALLOW
+            step = await _batch_chunk(run) if ready else _Step(busy=True)
         tally["written"] += len(step.written)
         tally["failed"] += len(step.failed)
         for event_type, payload in step.events:
