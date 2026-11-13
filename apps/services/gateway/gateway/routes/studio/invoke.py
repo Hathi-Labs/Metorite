@@ -1,4 +1,4 @@
-"""The action door of AI Studio (STU-B2a, B2b-1, B2b-2b, B2c-1 and B2c-2a, ``ai_studio.md`` §3.2).
+"""The action door of AI Studio (STU-B2a, B2b-1, B2b-2b, B2c-1, B2c-2a and D4b, ``ai_studio.md`` §3.2).
 
 ``POST /studio/apps/{app_id}/actions/{action}`` runs one action that a Studio
 package declares. The route registers on the router of ``actions.py``, as
@@ -62,8 +62,9 @@ package declares. The route registers on the router of ``actions.py``, as
    slot of :data:`READERS_PER_ORG` before this session, and a call past the
    cap gets 503 ``store_busy`` with ``Retry-After`` and opens no session. A
    read of the owner takes no slot.
-9. The executor, in that session. The door opens two: ``object:<name>.get``
-   (B2a) and ``object:<name>.list`` (B2b-1). For a direct call it also runs
+9. The executor, in that session. The door opens three reads:
+   ``object:<name>.get`` (B2a), ``object:<name>.list`` (B2b-1) and
+   ``object:<name>.aggregate`` (D4b). For a direct call it also runs
    the create, the update and the delete of an object (B2c-1). Each one
    parses the body here, and only here. An object name that the package does not hold gets 404
    ``object_missing``, and a record id that names nothing gets 404 ``Not
@@ -91,6 +92,23 @@ So a refused body reads nothing, and ``Infinity`` never reaches
 :class:`~acb_common.studio_query.QueryError` gets 422 ``{code, message,
 field}``. ``query_timeout`` gets 503 with ``Retry-After``. The store leaves
 the session usable after each refusal.
+
+**The aggregate (D4b).** It is one more class A read, so it takes each check
+above and the same audit row. An empty body means ``{}``. The door accepts
+only the keys of :data:`AGGREGATE_INPUT_KEYS`: ``filter``, ``group_by`` and
+``measures``. Then it runs ``studio_query.check_aggregate_shape`` BEFORE it
+reads the object, so a bad key, a bad op and too many measures read nothing.
+``objects_store.aggregate_records`` is the one reader, and it applies the
+rest: the type of each field, the hot rule, the cap of 50 groups and the
+currency of a money sum. Its errors map as the list maps them. The answer is
+the one row that ``aggregateModel.parseAggregate`` reads: ``measures`` (each
+``{op, field}``, the field as its key), ``currencies``, ``groups``, ``other``,
+``folded`` and ``total``. Each group is ``{key, count, values}``. A
+``Decimal`` goes on the wire as exact text with no exponent, and a money sum
+is an ``int`` of minor units with its currency. The grammar refuses an
+average of money with ``query_op_not_allowed`` (C2b). The store sends the
+currency of a money average too, so no average of money can reach the
+client without its unit.
 
 **Tenancy and the member (R5).** The org is the bound session
 (``_tenant_session()``), and the member is ``user.email``. No check reads an
@@ -209,6 +227,7 @@ import json
 import re
 import uuid
 from collections.abc import Iterator
+from decimal import Decimal
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -239,6 +258,7 @@ from gateway.studio import objects_store, packages_store
 from gateway.studio.preview import emit_record_event, preview_scope
 
 __all__ = [
+    "AGGREGATE_INPUT_KEYS",
     "ASK_MARKER",
     "DELEGATED_EXECUTORS",
     "DIRECT_EXECUTORS",
@@ -275,9 +295,10 @@ _log = get_logger("gateway.studio.invoke")
 DOOR_OP: tuple[str, str | None] = ("manifest", None)
 
 #: The executors that the door opens, as (source, op): the object ``get`` of
-#: B2a, the object ``list`` of B2b-1, and the door op of B2b-2b.
+#: B2a, the object ``list`` of B2b-1, the object ``aggregate`` of D4b, and the door op of
+#: B2b-2b.
 OPEN_EXECUTORS: frozenset[tuple[str, str | None]] = frozenset(
-    {("object", "get"), ("object", "list"), DOOR_OP})
+    {("object", "get"), ("object", "list"), ("object", "aggregate"), DOOR_OP})
 
 #: The mode of :func:`_run_executor` for a door op (B2b-2b).
 DOOR_OP_MODE = "door_op"
@@ -339,6 +360,10 @@ READERS_TOTAL = 6
 #: The keys of the body of a list. The one input schema is their only source.
 LIST_INPUT_KEYS: frozenset[str] = frozenset(studio_query.list_input_schema()["properties"])
 
+#: The keys of the body of an aggregate (D4b): the one input schema of C2b.
+AGGREGATE_INPUT_KEYS: frozenset[str] = frozenset(
+    studio_query.aggregate_input_schema()["properties"])
+
 #: The A2 action id (``ActionDef.id``). A path ``action`` of another shape
 #: names nothing, so the door reads nothing for it.
 _ACTION_ID = re.compile(OP_PATTERN)
@@ -374,7 +399,7 @@ REFUSALS: dict[str, str] = {
     APPROVAL_REQUIRED: (
         "This action writes data and needs an approval, which this door cannot ask for yet."),
     SOURCE_NOT_OPEN: (
-        "This door runs the get, list, create, update and delete of an object, and a read "
+        "This door runs the get, list, aggregate, create, update and delete of an object, and a read "
         "of another app where Metorite turned that on."),
     NO_PERSON: "This run has no person present, so it cannot ask a member to approve a write.",
     READ_ONLY: "This app is shared with you to read, so you cannot change its records.",
@@ -457,6 +482,7 @@ BAD_RECORD_ID = "Send the record id as a UUID in the key id of a JSON object."
 BAD_LIST_INPUT = (
     "Send a JSON object with only filter, sort, limit and offset, "
     "and whole numbers for limit and offset.")
+BAD_AGGREGATE_INPUT = "Send a JSON object with only filter, group_by and measures."
 
 #: The header value of a 503 ``query_timeout``, in seconds.
 RETRY_AFTER = "2"
@@ -516,6 +542,8 @@ class _Outcome:
     refusal: str | None = None
     record: objects_store.Record | None = None
     page: objects_store.RecordPage | None = None
+    #: The result of an aggregate (D4b).
+    aggregate: objects_store.AggregateResult | None = None
     query_error: studio_query.QueryError | None = None
     missing: bool = False
     object_missing: bool = False
@@ -801,6 +829,59 @@ async def _run_object_list(db: Any, package: _App, ref: UsesRef,
         out.object_missing = True
     else:
         out.page = page
+
+
+def _aggregate_input(raw: bytes) -> dict[str, Any]:
+    """The input of an aggregate, from the body *raw* (D4b). An empty body
+    means ``{}``. It refuses a key outside :data:`AGGREGATE_INPUT_KEYS`, then
+    runs the shape check of C2b, so a bad op or too many measures stop here.
+    The sentence of a refused key never echoes a key or a value."""
+    payload = {} if not raw else _json_object(raw)
+    if payload is None or not AGGREGATE_INPUT_KEYS.issuperset(payload):
+        raise studio_query.QueryError(studio_query.VALUE_INVALID, BAD_AGGREGATE_INPUT)
+    studio_query.check_aggregate_shape(
+        payload.get("filter"), payload.get("group_by"), payload.get("measures"))
+    return payload
+
+
+async def _run_object_aggregate(db: Any, package: _App, ref: UsesRef,
+                                raw: bytes, out: _Outcome, viewer: Viewer) -> None:
+    """Group the records of the object *ref* of *package* (D4b). The body is
+    checked first, so a refused body reads nothing. Then the path of the list:
+    the object by its name in the package, then the one reader of C2b.
+
+    Only the owner aggregates. A viewer of an install (J2a) reads no sum: the
+    reader of C2b knows neither the installed fields nor the row rules (C8a),
+    so a sum could count a value that the viewer cannot read."""
+    if isinstance(package, _viewer.InstalledApp):
+        out.refusal = SOURCE_NOT_OPEN
+        return
+    try:
+        body = _aggregate_input(raw)
+        obj = await objects_store.get_object_by_name(
+            db, str(ref.object), package_id=package.id)
+        if obj is None:
+            out.object_missing = True
+            return
+        result = await objects_store.aggregate_records(
+            db, package_id=package.id, object_id=obj.id, filter=body.get("filter"),
+            group_by=body.get("group_by"), measures=body.get("measures"))
+    except studio_query.QueryError as exc:
+        out.query_error = exc
+        return
+    except objects_store.ObjectStoreError as exc:
+        # As for a list: the body named no id, so a stored value caused it.
+        _log.warning("studio.invoke.stored_value_refused", error=type(exc).__name__)
+        out.object_missing = True
+        return
+    if result is None:
+        out.object_missing = True
+    else:
+        out.aggregate = result
+
+
+#: The executor of each open read, by its verb.
+_READS = {"get": _run_object_get, "list": _run_object_list, "aggregate": _run_object_aggregate}
 
 
 async def _check(db: Any, member: str, pid: str, action: str, out: _Outcome,
@@ -1679,8 +1760,7 @@ async def _run_executor(request: Request, user: UserContext, pid: str, action: s
                 out.refusal = SOURCE_NOT_OPEN
                 return
             else:
-                run = _run_object_list if ref.op == "list" else _run_object_get
-                await run(db, package, ref, raw, out, _row_viewer(member))
+                await _READS[str(ref.op)](db, package, ref, raw, out, _row_viewer(member))
                 return
         # B2b-2b: only a door op comes here. The session of the second check
         # is closed, so the door holds no connection while the app runs.
@@ -1777,6 +1857,31 @@ def _audit_detail(out: _Outcome) -> dict[str, Any]:
     return detail
 
 
+def _wire(value: Any) -> Any:
+    """A value of an aggregate on the wire. A ``Decimal`` is exact text with
+    no exponent, because a float loses digits. Each other value stays."""
+    return format(value, "f") if isinstance(value, Decimal) else value
+
+
+def _wire_group(group: objects_store.AggregateGroup) -> dict[str, Any]:
+    return {"key": _wire(group.key), "count": group.count,
+            "values": [_wire(v) for v in group.values]}
+
+
+def _aggregate_answer(result: objects_store.AggregateResult) -> dict[str, Any]:
+    """The one row of an aggregate, in the shape of ``parseAggregate`` (D4b).
+    A measure names its field by the key only, so no field spec leaves."""
+    return {
+        "measures": [{"op": m.op, "field": None if m.field is None else m.field.key}
+                     for m in result.measures],
+        "currencies": list(result.currencies),
+        "groups": [_wire_group(g) for g in result.groups],
+        "other": None if result.other is None else _wire_group(result.other),
+        "folded": result.folded,
+        "total": _wire_group(result.total),
+    }
+
+
 def _answer(out: _Outcome) -> dict[str, Any] | Response:
     """The answer of the call *out*, or the refusal that it raises. A card
     that a delegated call opened is 202 (B2c-2a). A door op answers
@@ -1818,6 +1923,8 @@ def _answer(out: _Outcome) -> dict[str, Any] | Response:
             "action": _cap(out.action), "uses": _cap(out.uses), "class": _cap(out.cls)}}
     if out.page is not None:
         return dataclasses.asdict(out.page)
+    if out.aggregate is not None:
+        return _aggregate_answer(out.aggregate)
     return _record_answer(out)
 
 

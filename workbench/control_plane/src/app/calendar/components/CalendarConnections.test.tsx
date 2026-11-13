@@ -23,6 +23,7 @@ function row(over: Partial<CalendarConnection> = {}): CalendarConnection {
     last_error: null,
     metorite_calendar: true,
     entry_count: 12,
+    push_tasks: true,
     ...over,
   };
 }
@@ -202,5 +203,45 @@ describe("the wiring", () => {
     const at = src.indexOf("The \"is connected\" banner would contradict the toast.");
     expect(at).toBeGreaterThan(0);
     expect(src.slice(at, at + 120)).toContain("onDismissNotice();");
+  });
+});
+
+describe("the task switch of a row (CE-10c follow-up)", () => {
+  const withRows = (rows: CalendarConnection[], over: Partial<SectionViewProps> = {}) =>
+    buttons(draw({ list: list(rows), onTogglePush: noop, ...over }));
+
+  it("draws the switch on, named for the provider", () => {
+    const html = withRows([row()]);
+    expect(html).toContain('role="switch"');
+    expect(html).toContain('aria-checked="true"');
+    expect(html).toContain("Show my Metorite tasks in Google Calendar");
+    expect(withRows([row({ provider: "outlook" })])).toContain("Show my Metorite tasks in Outlook");
+  });
+
+  it("draws the switch off, with the changed sentence and the note", () => {
+    const html = withRows([row({ push_tasks: false })], {
+      pushLines: { [ID]: "Your tasks no longer go to this calendar. The events already there stay." },
+    });
+    expect(html).toContain('aria-checked="false"');
+    expect(html).toContain("Your tasks do not go to this calendar.");
+    expect(html).not.toContain("go to the &#x27;Metorite&#x27; calendar");
+    expect(html).toContain("Your tasks no longer go to this calendar. The events already there stay.");
+  });
+
+  it("draws no switch on a row that needs a sign-in", () => {
+    const html = withRows([row({ status: "needs_reconnect", push_tasks: false })]);
+    expect(html).not.toContain('role="switch"');
+    expect(html).toContain("Reconnect");
+  });
+
+  it("disables the switch while the request runs", () => {
+    expect(withRows([row()], { pushingId: ID })).toMatch(/role="switch"[^>]* disabled=""/);
+    expect(withRows([row()])).not.toMatch(/role="switch"[^>]* disabled=""/);
+  });
+
+  it("guards one request at a time and rolls back on failure", () => {
+    const src = readFileSync(new URL("./CalendarConnections.tsx", import.meta.url), "utf8");
+    expect(src).toContain("if (pushInFlight.current) return;");
+    expect(src).toContain("setPushLocal(row.id, !next);");
   });
 });

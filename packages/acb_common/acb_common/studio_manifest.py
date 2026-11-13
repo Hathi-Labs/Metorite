@@ -74,19 +74,28 @@ BLOCKS: tuple[str, ...] = (
     "timeline", "mindMap", "processFlow", "checklist", "map", "markdown",
 )  # fmt: skip
 
-OBJECT_OPS: tuple[str, ...] = ("list", "get", "create", "update", "delete")
+#: The five record verbs of an object. ``studio_tools.complete_record_actions``
+#: adds an action for each of them, and ``manifestDiff.ts`` folds them.
+RECORD_OPS: tuple[str, ...] = ("list", "get", "create", "update", "delete")
+
+#: Each verb of an ``object:<name>.<op>`` action: the record verbs, and the
+#: aggregate of C2b (STU-D4b). No action is added for the aggregate by itself,
+#: so a package declares it.
+OBJECT_OPS: tuple[str, ...] = (*RECORD_OPS, "aggregate")
 
 #: The class of each object verb (STU-B2a, ``ai_studio.md`` §3.2). It is the
 #: one source of the class of an ``object:<name>.<op>`` action. The B1 catalog
-#: (``catalog_rows``) gives the class of each other source. A read is A. A
-#: create or an update is B, because the app can undo it. A delete is C.
-#: ``test_studio_action_door.py`` holds these keys equal to :data:`OBJECT_OPS`.
+#: (``catalog_rows``) gives the class of each other source. A read is A, and an
+#: aggregate is a read. A create or an update is B, because the app can undo
+#: it. A delete is C. ``test_studio_action_door.py`` holds these keys equal to
+#: :data:`OBJECT_OPS`.
 OBJECT_OP_CLASSES: dict[str, str] = {
     "list": "A",
     "get": "A",
     "create": "B",
     "update": "B",
     "delete": "C",
+    "aggregate": "A",
 }
 
 #: The head of the refusal of a view source that writes (STU-B2c-1, fix round 1).

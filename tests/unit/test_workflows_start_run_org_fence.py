@@ -47,6 +47,11 @@ ALLOWED: dict[tuple[str, str, str], str] = {
         "that org's own session. Only the org loop of `scan_due_waits` calls it, "
         "after the allowlist check. It resumes only on a yes of the decider, "
         "read from the decision row.",
+    ("scheduler.py", "scan_done_tasks", "resume_run"):
+        "The human step scan (STU-E4). The org is the org of the RUN ROW, read in "
+        "that org's own session. Only the org loop of `scan_due_waits` calls it, "
+        "after the allowlist check. It resumes only when the task of the pause "
+        "row is done, read in that org, and it names the pause.",
     ("broker_handlers.py", "_resume_run_handler", "resume_run"):
         "The approval door. The org is the approver's bound tenant, which RLS "
         "makes equal to the org of the run row. A person approved the run.",

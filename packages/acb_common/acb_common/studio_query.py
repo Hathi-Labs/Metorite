@@ -683,5 +683,5 @@ _AGGREGATE_INPUT_SCHEMA: dict[str, Any] = {
 
 def aggregate_input_schema() -> dict[str, Any]:
     """The JSON Schema of the input of an aggregate (C2b): filter, group_by
-    and measures. No door reads it yet. A new copy on each call."""
+    and measures. The action door reads it for object:<name>.aggregate (D4b). A new copy on each call."""
     return copy.deepcopy(_AGGREGATE_INPUT_SCHEMA)

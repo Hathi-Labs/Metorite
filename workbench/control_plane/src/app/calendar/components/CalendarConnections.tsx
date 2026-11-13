@@ -26,9 +26,11 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
+import Switch from "@/components/ui/Switch";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { useToast } from "@/components/ui/Toast";
+import { peek, put } from "@/lib/dataCache";
 
 import AlsoSyncCalendar from "./AlsoSyncCalendar";
 import { useCalendarConnections, useConnect } from "../lib/useCalendarConnect";
@@ -36,6 +38,7 @@ import { useCalendarConnections, useConnect } from "../lib/useCalendarConnect";
 export { useCalendarConnections, useConnect };
 
 import {
+  CONNECTIONS_KEY,
   CONNECT_LABEL,
   PROVIDER_NAME,
   cleanedHref,
@@ -45,6 +48,9 @@ import {
   disconnectCopy,
   errorCopy,
   hasSyncError,
+  pushSwitchLabel,
+  setPushTasks,
+  PUSH_OFF_NOTE,
   isEnabled,
   lastSyncLine,
   reconnectLine,
@@ -179,6 +185,12 @@ export interface SectionViewProps {
   syncingId: string | null;
   /** The line under each row after a Sync now. */
   syncLines: Record<string, string>;
+  /** The id of the row whose switch saves now. */
+  pushingId?: string | null;
+  /** The note or failure line under each row after the switch moved. */
+  pushLines?: Record<string, string>;
+  /** The member moved the switch of a row. */
+  onTogglePush?: (row: CalendarConnection, next: boolean) => void;
   now: number;
   onConnect: (p: Provider) => void;
   onSync: (row: CalendarConnection) => void;
@@ -207,6 +219,9 @@ function Row({
   syncing,
   connecting,
   line,
+  pushing,
+  pushLine,
+  onTogglePush,
   onConnect,
   onSync,
   onAskDisconnect,
@@ -216,6 +231,9 @@ function Row({
   syncing: boolean;
   connecting: Provider | null;
   line: string | undefined;
+  pushing: boolean;
+  pushLine: string | undefined;
+  onTogglePush: ((row: CalendarConnection, next: boolean) => void) | undefined;
   onConnect: (p: Provider) => void;
   onSync: (row: CalendarConnection) => void;
   onAskDisconnect: (row: CalendarConnection) => void;
@@ -236,6 +254,17 @@ function Row({
         <p className={`mb-1 break-words text-[11px] ${failing ? "text-warning" : "text-muted-foreground"}`}>{connectedLine(row)}</p>
       )}
       <p className="mb-1.5 text-[10px] text-muted-foreground">{lastSyncLine(row, now)}</p>
+      {state !== "needs_reconnect" && onTogglePush && (
+        <div className="mb-1.5 flex items-center gap-2 text-[11px] text-foreground">
+          <Switch
+            checked={row.push_tasks}
+            disabled={pushing}
+            label={pushSwitchLabel(row.provider)}
+            onChange={(next) => onTogglePush(row, next)}
+          />
+          <span className="min-w-0 break-words">{pushSwitchLabel(row.provider)}</span>
+        </div>
+      )}
       <div className="flex flex-wrap gap-2">
         {state === "needs_reconnect" ? (
           <Button
@@ -260,6 +289,11 @@ function Row({
       {line && (
         <p role="status" className="mt-1 text-[10px] text-muted-foreground">
           {line}
+        </p>
+      )}
+      {pushLine && (
+        <p role="status" className="mt-1 text-[10px] text-muted-foreground">
+          {pushLine}
         </p>
       )}
     </li>
@@ -299,6 +333,9 @@ export function ConnectedCalendarsView(p: SectionViewProps) {
               syncing={p.syncingId === row.id}
               connecting={p.connecting}
               line={p.syncLines[row.id]}
+              pushing={p.pushingId === row.id}
+              pushLine={p.pushLines?.[row.id]}
+              onTogglePush={p.onTogglePush}
               onConnect={p.onConnect}
               onSync={p.onSync}
               onAskDisconnect={p.onAskDisconnect}
@@ -326,6 +363,16 @@ export function ConnectedCalendarsView(p: SectionViewProps) {
 
 // ── The shared wiring ───────────────────────────────────────────────────────
 
+/** Draw a switch value now: write it to the cached list. The refresh after the write replaces it. */
+function setPushLocal(id: string, value: boolean): void {
+  const cur = peek<ConnectionsList | null>(CONNECTIONS_KEY)?.data;
+  if (!cur) return;
+  put(CONNECTIONS_KEY, {
+    ...cur,
+    connections: cur.connections.map((r) => (r.id === id ? { ...r, push_tasks: value } : r)),
+  });
+}
+
 /** The "Connected calendars" section of the settings sheet. */
 export function ConnectedCalendarsSection({
   notice,
@@ -341,6 +388,9 @@ export function ConnectedCalendarsSection({
   const toast = useToast();
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncLines, setSyncLines] = useState<Record<string, string>>({});
+  const [pushingId, setPushingId] = useState<string | null>(null);
+  const [pushLines, setPushLines] = useState<Record<string, string>>({});
+  const pushInFlight = useRef(false);
   const [asking, setAsking] = useState<CalendarConnection | null>(null);
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -356,6 +406,29 @@ export function ConnectedCalendarsSection({
     setSyncLines((m) => ({ ...m, [row.id]: r.kind === "ok" ? syncResultLine(r.result) : r.message }));
     setSyncingId(null);
     setNow(Date.now());
+    refreshConnections();
+  }
+
+  async function togglePush(row: CalendarConnection, next: boolean) {
+    // One request at a time, as the Connect press does.
+    if (pushInFlight.current) return;
+    pushInFlight.current = true;
+    setPushingId(row.id);
+    setPushLines((m) => {
+      const { [row.id]: _gone, ...rest } = m;
+      return rest;
+    });
+    // Optimistic: draw the new value now, roll back when the request fails.
+    setPushLocal(row.id, next);
+    const r = await setPushTasks(row.id, next);
+    if (r.kind === "ok") {
+      if (!next) setPushLines((m) => ({ ...m, [row.id]: r.note ?? PUSH_OFF_NOTE }));
+    } else {
+      setPushLocal(row.id, !next);
+      setPushLines((m) => ({ ...m, [row.id]: r.message }));
+    }
+    setPushingId(null);
+    pushInFlight.current = false;
     refreshConnections();
   }
 
@@ -386,6 +459,9 @@ export function ConnectedCalendarsSection({
         connecting={connecting}
         syncingId={syncingId}
         syncLines={syncLines}
+        pushingId={pushingId}
+        pushLines={pushLines}
+        onTogglePush={(row, next) => void togglePush(row, next)}
         now={now}
         onConnect={(p) => void connect(p)}
         onSync={(row) => void sync(row)}
