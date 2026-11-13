@@ -8,8 +8,9 @@ beside the large file. This test blocks a new slow scanner.
 
 The cost of a file is the sum of its entries in ``.test_durations``.
 ``OVER_BUDGET`` lists the files that exceed the budget today and that no
-slice has fixed yet. A file that is in the list and is no longer over budget
-fails this test, so the list only shrinks.
+slice has fixed yet. A listed file that falls under ``LEAVE_BELOW_S`` fails
+this test, so the list only shrinks. The gap between 20 s and 30 s stops a
+file near the line from turning main red at each timing refresh.
 """
 
 from __future__ import annotations
@@ -26,6 +27,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import affected_tests  # noqa: E402
 
 BUDGET_S = 30.0
+#: A listed file must leave the list only below this cost. The margin
+#: absorbs the normal drift between two timing refreshes.
+LEAVE_BELOW_S = 20.0
 
 #: Scanner files over the budget, dated 2026-11-13. Each names its task.
 #: ``test_affected_tests.py`` waits for CIV-33c-1 (PR 2205) to merge.
@@ -73,10 +77,21 @@ def test_no_new_scanner_file_costs_more_than_the_budget() -> None:
     )
 
 
+def stale_entries(durations: dict[str, float], listed: set[str]) -> set[str]:
+    cost = file_costs(durations)
+    return {f for f in listed if cost[f] < LEAVE_BELOW_S}
+
+
 def test_a_listed_file_that_is_back_under_the_budget_leaves_the_list() -> None:
-    over = over_budget(_durations(), scanner_files())
-    stale = sorted(set(OVER_BUDGET) - over)
-    assert not stale, f"Remove these files from OVER_BUDGET, they are under budget: {stale}"
+    stale = sorted(stale_entries(_durations(), set(OVER_BUDGET)))
+    assert not stale, (
+        f"Remove these files from OVER_BUDGET, they cost less than {LEAVE_BELOW_S:.0f} s: {stale}"
+    )
+
+
+def test_a_listed_file_near_the_budget_stays_listed() -> None:
+    durations = {"tests/unit/a.py::t": 28.0, "tests/unit/b.py::t": 19.0}
+    assert stale_entries(durations, {"tests/unit/a.py", "tests/unit/b.py"}) == {"tests/unit/b.py"}
 
 
 def test_every_listed_file_exists_and_names_a_task() -> None:
