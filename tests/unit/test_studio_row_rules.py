@@ -624,7 +624,16 @@ def test_no_code_calls_a_reader_that_takes_no_viewer(name: str) -> None:
         text = path.read_text(encoding="utf-8")
         if re.search(rf"\b{name}\s*\(", text):
             found.append(path.relative_to(_ROOT).as_posix())
-    assert found == []
+    if name == "aggregate_records":
+        # D4b: the one caller is the door, and only for the owner. A viewer of an
+        # install is refused before the store (a sum would ignore the installed
+        # fields and the row rules). The first viewer aggregate adds a viewer here.
+        assert found == ["apps/services/gateway/gateway/routes/studio/invoke.py"]
+        guard = inspect.getsource(invoke._run_object_aggregate)
+        assert "InstalledApp" in guard and "SOURCE_NOT_OPEN" in guard
+        assert guard.index("SOURCE_NOT_OPEN") < guard.index("aggregate_records")
+    else:
+        assert found == []
 
 
 def test_the_door_builds_the_viewer_from_the_session_member_only() -> None:

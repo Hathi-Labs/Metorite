@@ -302,7 +302,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
     async def by_name(db: Any, name: str, *, package_id: str) -> Any:
         return _object(name) if package_id == PID and name in ("visit", "secret") else None
 
-    async def get_record(db: Any, oid: str, rid: str, *, package_id: str) -> Any:
+    async def get_record(db: Any, oid: str, rid: str, *, package_id: str, **_: Any) -> Any:
         w.reads.append(("get", oid, rid))
         return objects_store.Record(rid, oid, dict(ROW_DATA), OWEN, OWEN, NOW, NOW)
 
