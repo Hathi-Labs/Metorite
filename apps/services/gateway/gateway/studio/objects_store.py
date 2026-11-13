@@ -2114,6 +2114,26 @@ async def _view(db: Any, oid: str, pid: str, viewer: Viewer) -> _View | None:
     return _View(scope, rules, await _tainted(db, pid, rules, viewer, owner))
 
 
+async def query_hidden_keys(db: Any, *, package_id: str, object_id: str,
+                            viewer: Viewer) -> frozenset[str] | None:
+    """C8a, for a saved view (AF-10a). The keys of the object *object_id*
+    that *viewer* may not name in a filter, a sort or a column: the keys that
+    a filter of the store refuses (``_View.maybe_hidden``). A viewer whose
+    roles read no record of the object gets each key of the object. Answers
+    None when the package holds no such object. The owner gets an empty set.
+
+    It reads no record. Its caller is ``routes/studio/views.py``, which drops
+    each part of a saved view that names one of these keys."""
+    who = _check_viewer(viewer)
+    oid, pid = _uuid(object_id, "object_id"), _uuid(package_id, "package_id")
+    view = await _view(db, oid, pid, who)
+    if view is None:
+        return None
+    if not view.scope.reads:
+        return frozenset(f.key for f in await _fields(db, oid))
+    return view.maybe_hidden()
+
+
 def _scoped(sql: str, scoped_sql: str, scope: Scope, binds: dict[str, Any]) -> str:
     """*scoped_sql* with the binds of the row rule when one binds *scope*,
     else *sql*."""
