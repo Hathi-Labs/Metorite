@@ -202,7 +202,7 @@ from ``apps`` deletes the objects, the fields and each hot row that is left.
 :func:`package_counts` counts the objects, the fields and the records (up to
 :data:`COUNT_CAP` for each object) for the preview.
 
-**The change history (C4a-1).** Migration ``studio_record_changes`` (430 at
+**The change history (C4a-1).** Migration ``studio_record_changes`` (431 at
 build) adds the fifth table. :func:`_apply_write` writes one row for each
 create, update and delete, in the SAVEPOINT of the batch, so a refused batch
 writes no row. A row holds the actor, the ``via`` of the batch and only the

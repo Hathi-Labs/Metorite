@@ -4,7 +4,7 @@ Spec: ``project-docs/specs/ai_studio.md`` §14 C4a-1. Code:
 ``gateway/studio/objects_store._apply_write``, ``_record_change``, ``_changes``,
 ``_via`` and ``purge_record_changes``, and ``routes/studio/invoke.py``
 (``run_workflow_write``). Migration: the file that creates
-``studio_record_changes`` (430 at build), found by its content (R1).
+``studio_record_changes`` (431 at build), found by its content (R1).
 ``test_studio_record_history_r8.py`` runs the SQL on a real Postgres.
 
 **The mutations (R7).** Commit before each, and restore with git after.

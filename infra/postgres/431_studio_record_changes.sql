@@ -1,5 +1,5 @@
 -- ============================================================================
--- 430_studio_record_changes.sql — the change history of Studio records
+-- 431_studio_record_changes.sql — the change history of Studio records
 -- (WS-STU C4a-1).
 --
 -- What: one new table, `studio_record_changes`. A row holds one create, one

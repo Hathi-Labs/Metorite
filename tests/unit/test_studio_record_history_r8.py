@@ -3,7 +3,7 @@
 Spec: ``project-docs/specs/ai_studio.md`` §14 C4a-1. Code:
 ``gateway/studio/objects_store._apply_write``, ``_record_change`` and
 ``purge_record_changes``, and ``packages_store.delete_package``. Migration: the
-file that creates ``studio_record_changes`` (430 at build).
+file that creates ``studio_record_changes`` (431 at build).
 ``test_studio_record_history.py`` holds the hermetic half.
 
 The store runs on a phase-4 promoted scratch database, as the app role with no
