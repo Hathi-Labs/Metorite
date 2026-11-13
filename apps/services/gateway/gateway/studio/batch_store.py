@@ -1,7 +1,7 @@
 """The ledger of a batch run (WS-STU E8a, task 3095).
 
 Spec: ``project-docs/specs/ai_studio.md`` §14 E8a. Tables: ``studio_batches``
-and ``studio_batch_items`` (migration 431). This module is the ONE writer of
+and ``studio_batch_items`` (migration 435). This module is the ONE writer of
 both. It is the store level only: no route, no workflow node, no flag. E8b
 puts a node on top of it.
 
