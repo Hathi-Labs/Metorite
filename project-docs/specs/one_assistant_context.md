@@ -53,6 +53,8 @@ RX-1 is BUILT, not merged (2026-11-02, D169, "As built, RX-1" in §4.2.3). A hel
 
 Task 1747 is BUILT, in review (2026-11-06, "As built, task 1747" in §4.2.3). A pack that this turn named, and a pack that the last member turn used, never step aside. A load by the model is sticky. The reach of the Projects owner counts a spare pack as free. A load moves out a pack that came in only by the words (D169 item 8, as amended on 2026-11-06). A turn that a sticky pack left at its start says so.
 
+TS-0 (task 3190, 2026-11-14) is a design, PROPOSED under D222, and nothing of it is built. The model finds a single tool with `find_tools`, and the run loads that tool and not its whole pack (§4.2.9). The slices are TS-1 to TS-9, tasks 3195 to 3203. Each ships dark behind `TOOL_SEARCH_ORGS`, and the flip is owner-only. The writer verified its anchors against code on 2026-11-14 at `32546664f`.
+
 OA-7e is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7e"
 below, PR #1389). It adds layer (b), the meta tool `load_skill_tools`.
 
@@ -1120,7 +1122,7 @@ Three layers choose the packs, in the order that D117 item 3 sets. Layer (a) dec
 
 **Layer (b): the meta tool `load_skill_tools(family)`.** `skills_scope_out.md` §7.5 designed this tool and did not build it (`:265-309`). Its description lists the index line of each pack that is not loaded. A call adds the tools of the pack to the live run, and returns the rules block of the pack as its text. A load is monotonic: no tool leaves during a run.
 
-**The MAF hook.** MAF 1.x has `FunctionInvocationContext.add_tools` (`agent_framework/_middleware.py:470`). It is an experimental feature, `PROGRESSIVE_TOOLS`. The model sees the run-local tool list on its next request (`agent_framework/_tools.py:5449-5454`). A `FunctionMiddleware` on the view of the run catches the call and adds the tools. `ToolHintRecorder` already sees each call in this way (`acb_skills/tier_policy.py:715`).
+**The MAF hook.** MAF 1.x has `FunctionInvocationContext.add_tools` (`agent_framework/_middleware.py:470`). It is an experimental feature, `PROGRESSIVE_TOOLS`. The model sees the run-local tool list on its next request (`agent_framework/_tools.py:5449-5454`). A `FunctionMiddleware` on the view of the run catches the call and adds the tools. `ToolHintRecorder` already sees each call in this way (`acb_skills/tier_policy.py:949`, re-found on 2026-11-14. It was at `:715`).
 
 **Layer (c): the turn-kind question that already runs.** `tier_policy.turn_kind` sends one System-1 request with one or two items (`acb_skills/tier_policy.py:514-523`). System 1 takes up to 20 items in one request (`acb_skills/system_one.py:65`). OA-7f adds one `yes_no` item for each allowed pack that layer (a) did not load.
 
@@ -1137,6 +1139,11 @@ The question already starts early, beside setup (`orchestrator/executor.py:5768-
 
 A move of the whole question to `tier-decide` is a WS-45 decision, not an OA-7 one.
 
+**Layer (a′) and `find_tools` (TS-0, PROPOSED, D222).** Two more ways load a single tool, not a whole pack. §4.2.9 holds the design.
+- **Layer (a′): a search with no model call.** It runs in setup, after layer (a), on `sent_words()`. It loads the best tools at or above a threshold (TS-3).
+- **`find_tools(query)`: the fallback in the middle of a turn.** It is a sibling of layer (b). It adds the matched tools of a pack to the live run, and the next request carries their schemas (TS-2).
+- Layers (a), (b) and (c) do not change. They stay the first pass.
+
 **Added latency, by layer.**
 
 | Layer | When it acts | Added wait on the critical path |
@@ -1144,6 +1151,8 @@ A move of the whole question to `tier-decide` is a WS-45 decision, not an OA-7 o
 | (a) | Each turn with the flag on | One Redis read beside setup, and a regex. A few milliseconds (estimate). |
 | (c) | Only when the turn-kind question already goes out | No extra request. A few more answer tokens, inside the existing wait (estimate). |
 | (b) | Only when layers (a) and (c) both missed | One more model round of about 3.8 s (report `:121`), and one cold request. |
+| (a′), PROPOSED | Each turn with `TOOL_SEARCH_ORGS` on | One lexical rank in memory. No request (estimate). |
+| `find_tools`, PROPOSED | Only when the first pass missed | One more model round, as for layer (b), and one cold request. |
 
 The first build of a pack in a process imports the owner module once. A delegation pays this cost each time today (`executor.load_agent_ms`, `orchestrator/executor.py:1982-2009`). The builder caches the module for each process.
 
@@ -1155,6 +1164,7 @@ The first build of a pack in a process imports the owner module once. A delegati
 - At the start of a turn, a load past the cap first drops the least recently used pack.
 - In the middle of a turn, a load past the cap first moves a sticky pack out, the least recently used first (D169). Then it moves a pack that came in only by the words, the last one first (D169 item 8, as amended). A pack of the surface or of a reference stays, and so does a sticky pack that the member named in this turn. A pack with a tool that ran or started in this run stays too. With no such pack, `load_skill_tools` refuses. Its answer names `spawn_subagents` with that pack (§6), or the hand-off (`LOAD_NO_PATH`) for an owner that the loader reached.
 - A sticky pack leaves at the start of a turn when the chat did not use it in the last 8 member turns. A tool of it that ran counts as a use, and so does a load by the model (task 1747).
+- **With tool search (TS-4, PROPOSED, D222).** `MAX_REQUEST_TOOLS` stays 110, and a found tool counts against it. A request also keeps a budget of schema tokens, about 30 thousand. `_maf_mcp.schema_tokens` measures it, as it measures `RUN_SCHEMA_TOKENS` for MCP (`_maf_mcp.py:142`, `:539`). A search adds at most 5 tools. A turn makes at most 3 searches and holds at most 15 found tools. A load past a limit refuses, and its answer says which limit. §4.2.9 holds the reasons.
 
 **Typical tool counts.** These are estimates from the OA-5 base of 53 tools (report `:118`).
 
@@ -1170,6 +1180,7 @@ The first build of a pack in a process imports the owner module once. A delegati
 - Sticky packs keep their first-load order. Pack tools always come after the core tools.
 - A load at turn start changes the tools and the persona in one request. That request pays one miss.
 - A load in the middle of a turn makes the next request miss. The next turn moves its rules into the persona, and that costs one more miss.
+- `find_tools` (PROPOSED, D222) has the same cost. A miss on a request of 30 thousand tokens costs about USD 0.019, 2 to 3 times a warm pack turn (audit of 2026-11-14). Layer (a′) exists for this reason: it moves most loads to the start of the turn. Found tools come after the pack tools, in their first-load order, so the list stays byte-stable.
 - A turn keeps one tier (`acb_skills/tier_policy.py:24-29`), so a load never changes the model.
 - On an Anthropic tier, the cache mark sits on the last tool (`llm_caching_memory.md:33`). DeepSeek caches a prefix with no mark (`:46`).
 
@@ -1222,6 +1233,7 @@ The tools of OA-4 have the same scope (the "As built, OA-4" notes at the top of 
 - **The reach on a promise (task 1747).** For an owner of `SPECIALIST_STAYS_UNTIL_REACHED`, the reach counts a spare pack as free too. This reverses the old note "*spare* widens the offer only". Two Projects packs fill a request, and a specialist that stays brings the hand-off of 2026-11-02 back. The trade: the specialist and the route line leave on a promise. When the promise breaks in the turn, the load refuses, `via_failed` opens the hand-off, and `LOAD_NO_PATH` names it. The reach of each other owner does not change.
 - **After a pack leaves.** `PackRun.holds` leaves it out, so `note_used` writes nothing for it and `PackRun.refusal` reads the rest. A hand-off to its owner opens if the loader was the only path. The persona keeps its rules until the next turn. A pack that left is not on offer again in this turn.
 - **Layer (c) moves no pack.** MAF copies the tool list before `before_run`, so a move there cannot reach the request. The model can load in its first step.
+- **The same limit binds tool search (TS-0, PROPOSED, D222).** Layer (a′) must run in `_apply_tool_packs`, before the run starts, and never in a `before_run`. `find_tools` adds tools only through `context.add_tools`, as `LoadSkillTools` does. A found tool is a tool of the `_pack_tools` build, so it keeps each guard of this section. §4.2.9 lists them.
 - **Fences.** `tests/unit/test_held_card_writes.py` holds the table, the fail-closed cases, MCP, the card door, the pack path and the reader. `tests/unit/test_pack_room.py` holds the room rule, with two real stream runs.
 
 **As built, task 1747 (2026-11-06, in review).** The production thread a398b43e failed on 2026-11-05 UTC. The member saw 'Function "create_task" not found', and the same text for five other Projects tools. `choose` picks the packs again at the start of each member turn. A pack that held the tool left, and the model's history still showed the tool. Nothing told the model.
@@ -1309,6 +1321,10 @@ OA-5 §7 named OA-4 as the home of the rule (report `:324-326`). The owner chose
 - **CAL-3: day rules in the `calendar-day` pack** (BUILT, 2026-11-07, task 1677). The pack holds fourteen tools now. The four new ones are `my_tasks_list_day_rules` (read only, numbered "1. Mon-Fri 8-11 focus 'Deep work'"), `my_tasks_add_day_rule`, `my_tasks_edit_day_rule` and `my_tasks_delete_day_rule`. They read and write `day_templates` of `/tasks/settings`. Each write proposes first (`confirmed=False` writes nothing and shows "Version: <token>"), applies only with that version (no version: refused, changed list: refused with nothing written, because a rule number is valid only for the list the member saw), checks the rule as the server normaliser does and refuses in text instead of dropping it, and edits by the number shown in the list. A write saves the whole list, so `PUT /tasks/settings` takes an optional `If-Match` header. The token is the sha256 hex of the canonical JSON (sorted keys) of the normalised list, and `GET` and `PUT` return it in `ETag`. With `If-Match` the server locks the member's row in the same transaction and answers 412 with nothing written when the token differs. With no header the write is as before, so the Calendar sheet is unchanged. The tool answers a 412 with "The day rules changed since I read them. Read the list again." `REACH_MIN_TOOLS` stays 11, and `tool_packs.REACH_NOT_WORK` names `calendar-day`, because a count cannot tell a pack of 14 tools from `projects-reports` with 11. In a held chat the pack holds off ten writes and keeps four reads. Fences: `tests/unit/test_day_rules_tools.py` and `tests/unit/test_day_rules_if_match_r8.py`.
 - **CAL-4: the two day flows in the `calendar-day` pack** (BUILT, 2026-11-07, task 1678). The pack holds sixteen tools now. The two new ones are `my_tasks_start_my_day(energy_note)` and `my_tasks_close_my_day()`. Each gathers the steps of the Calendar app in ONE reply and changes nothing, because it calls only `GET` routes and the `apply=False` proposals. Start my day follows `StartupRitual.tsx`: the digest of today (`GET /tasks/calendar/day-summary`), a rollover proposal (`rollover-today`), the unscheduled next actions to pick the One Thing from (`GET /projects/my/inbox`) and a rebuild proposal (`plan-today` with the energy note). Close my day follows `EndOfDayReview.tsx`: what got done and what did not (`day-summary`), the rollover proposal, and the tasks to seed tomorrow with. A step that fails shows "The rollover proposal is not available now: <reason>" and the other steps stay. Each reply ends with the next steps: the tools the model calls after the member agrees (`my_tasks_rollover`, `my_tasks_plan_day` and `my_tasks_set_one_thing`). The server keeps ONE pending proposal for the day, so the model proposes again before it applies. **Limit.** The planner tools plan TODAY only (`my_tasks_plan_day` has no date), so Close my day cannot fit tomorrow. It says so and offers the One Thing for tomorrow (`my_tasks_set_one_thing` with tomorrow's date). Both tools sit in `egress.HELD_OFF_PACK_WRITES`: the propose calls store a pending plan on the server. `REACH_MIN_TOOLS` stays 11. Fences: `tests/unit/test_day_flows_tools.py` and the rows of `test_calendar_day_pack.py`, `test_calendar_day_held.py` and `test_pack_requests.py`.
 - **The gate** is OWNER-GATE in production, and `work_plan.md` §6 D4 names it. The flag moves the guards and the spend.
+- **`TOOL_SEARCH_ORGS`** (TS-2, PROPOSED, D222) lists the organization ids that get `find_tools` and layer (a′), or `*`. It is empty by default. It acts only where `packs_on` allows packs, and it searches only those packs.
+  - **One reader**, in the pattern of `packs_on`. It fails closed. The name ends in `_ORGS`, so a SIGHUP reloads it with no deploy (`docs/flag_reload.md`).
+  - **The flip is owner-only.** It moves which tools a run holds, and it spends model tokens. TS-2 adds the flag to `work_plan.md` §6 D4, beside `TOOL_PACKS`, in the same PR.
+  - **Off leaves each item of the list below byte-identical**, and the run reads and writes no state of a found tool. The fence is `tests/unit/test_tool_search_off.py`, in the pattern of `test_tool_packs_off.py`.
 
 **Off leaves these byte-identical:**
 - the tool names of the orchestrator, their order and each specialist tool
@@ -1510,6 +1526,227 @@ Each slice merges alone, in this order.
 
 OA-7h is the gate before the flag turns on for any organization.
 
+#### 4.2.9 Tool search: load a tool, not a whole pack (TS-0, PROPOSED)
+
+**Status.** PROPOSED, 2026-11-14, task 3190. D222 records the decision, and it binds only after the owner confirms it. Nothing is built. Each slice ships dark behind `TOOL_SEARCH_ORGS`, and the flip is owner-only.
+
+**Inputs.** An Opus audit of 2026-11-14 (read only, at `e61d9368d`) is the input. The writer checked each anchor again at `32546664f`. The lock pins `agent-framework-core` 1.19.0 and `litellm` 1.103.0 (`uv.lock`).
+
+**The owner question (2026-11-13, on task 3118).** Can the chat hold many more tools, load each one when a turn needs it, and keep a small context?
+
+**The answer.** Yes. Build our own `find_tools` on the seam of `load_skill_tools`. The tool becomes the unit of a load. The pack stays the unit of the guards and of the state. A new need adds no second registry (D205 point 1, `building_blocks.md`).
+
+**Why the packs alone do not reach this.**
+- **The cap is full.** The `studio` pack holds 23 tools, its room limit beside the `email` pack (`tool_packs.py:1214-1216`). New Studio tools (STB-6b, task 3118) have no room.
+- **The model seldom loads a pack itself.** In OA-8e run 1, it loaded a pack that it lacked in 3 of 70 app turns, and never in the miss chats.
+- **A pack is coarse.** A turn that needs one tool of `projects-structure` gets all 27 schemas.
+
+**What a tool costs (audit of 2026-11-14).**
+- A tool adds about 265 tokens to each request of the turn.
+- The 13 packs list 254 tools in `SKILL_FAMILIES`. The audit built 253 of them, at 67,004 tokens of schema.
+- A request at the cap of 110 tools carries about 27 to 29 thousand tokens of schema. All tools at once would carry about 80 thousand.
+
+**The four options.**
+
+| Option | What it is | Verdict |
+|---|---|---|
+| (a) | Our own `find_tools`, a sibling of `LoadSkillTools` | **Recommended** |
+| (b) | The native tool search of the Claude API, with `defer_loading` | Parked (TS-8) |
+| (c) | A cap higher than 110 tools | Not recommended |
+| (d) | One door tool that calls any tool by name, as the MCP doors of D136.2 do | Rejected |
+
+**Why we park (b).** Each of these four facts blocks it alone.
+1. The seed binds `tier-balanced` to `deepseek/deepseek-v4-pro` (`infra/customer_console/002_seed_catalog.sql:90`), not to a Claude model.
+2. litellm 1.103.0 turns a `server_tool_use` block into an OpenAI tool call (`litellm/llms/anthropic/chat/transformation.py:2158`). MAF would then try to run it. litellm also drops `tool_search_tool_result` (`:2166-2168`).
+3. A failover chain of the Router can mix vendors. A tool type that only Anthropic knows gets a 400 from a step that is not Claude.
+4. `FunctionTool.to_json_schema_spec` sends the name, the description and the parameters only (`agent_framework/_tools.py:1303-1316`). So `additional_properties` never reaches the wire, and `defer_loading` needs a subclass or a dict tool.
+
+**Why not (c).** Each tool costs its schema tokens in every request of the turn, also when the turn does not use it. The cap of 110 tools already carries about 29 thousand tokens.
+
+**Why we reject (d).** `RefuseTools` (`acb_skills/tool_guard.py:68`), `LoadSkillTools`, the OA-8i refusal and the card-bound pin each key on `context.function`. A door tool hides the real tool from each of them. D136.2 serves the outside agents over the MCP, and there the route manifest is the guard.
+
+**How `find_tools` works (TS-2).**
+1. **The tool.** `find_tools(query)` is a `FunctionTool` with `approval_mode="never_require"`. Its description lists the index line of each pack that the run may search.
+2. **The middleware.** A `FunctionMiddleware`, a sibling of `LoadSkillTools` (`tool_packs.py:3428-3686`), takes the call. A `ContextProvider` attaches it beside `_offer_pack_loader` (`_tool_injection.py:4392`).
+3. **The rank.** It ranks the query with the ranker of TS-1, over the candidates of this run only ("Tenants and members", below).
+4. **The build.** It builds the pack of each matched tool with `_pack_tools` (`_tool_injection.py:3369`). It passes the names of the live list as `holds`. The process cache of the owner module holds, so a build imports nothing.
+5. **The filter.** It keeps only the matched names that the build returned. A name that the build dropped never shows.
+6. **The add.** It calls `context.add_tools(subset)` (`agent_framework/_middleware.py:469-504`). The next request of the same run carries the full schemas.
+7. **The answer.** It returns one line for each found tool: its name and the first line of its description. With no match it says so, and it names `load_skill_tools`.
+
+**The MAF facts under it (pinned 1.19.0).**
+- `FunctionInvocationContext.tools` is the live tool list of the run. `add_tools` and `remove_tools` change it in place. Both are experimental (`PROGRESSIVE_TOOLS`).
+- The docstring of `add_tools` says: "Added tools become available to the model on the next iteration of the function-calling loop". A call that the model asked for in the same batch does not see them.
+- `add_tools` with a name that the list holds does nothing for the same object. It raises `ValueError` for another object. So each build passes `holds`.
+- A change to `agent.default_options["tools"]` after the run started does not reach the run.
+- `max_iterations` is 40 (`DEFAULT_MAX_ITERATIONS`, `agent_framework/_tools.py:104`). Each search takes one iteration, about 3.8 s.
+- A call to a tool that the run does not hold gives an error result, `Function "<name>" not found` (task 1747).
+
+**The guards stay those of the pack.** A found tool is an object of the `_pack_tools` build. So each guard of §4.2.3 holds with no new code:
+- the held drops of the pack (`_is_egress`, `is_held_off_write`) and the rules of D169
+- the scope of the owner, outermost, with the permission gate inside it (`_gate_injected_tool` at `_tool_injection.py:1136`, `_permission_gate` at `:1073`)
+- the prefilters of the owner. For Studio they are `STUDIO_ORGS`, `feature:studio`, and `APP_REQUESTS_ORGS` for the writes (`_tool_injection.py:3497-3560`)
+- each card, because the card is inside the tool body
+- the MCP rule: a pack of an owner that reads stranger text never joins a run with an MCP tool (`_beside_mcp`, `tool_packs.py:3375`)
+
+**The pack stays the unit of state.**
+- A found tool does not put its pack in `PackRun.holds`. So a partial load never counts as "the run holds every pack of the owner" (OA-7i). A found tool never removes a specialist tool, and it never refuses a hand-off.
+- A found tool that ran or started counts as a tool of its pack for `PackRun.ran`, `PackRun.spare` and OA-8i.
+- A later load of the whole pack passes the found names as `holds`, so `add_tools` never meets a duplicate name.
+- Until TS-6 decides, `find_tools` is no path for `plan_loader`, and the reach of `SPECIALIST_STAYS_UNTIL_REACHED` does not count it.
+- Until TS-6 decides, a sub-agent gets no found tool through `_child_pack_tools` (`acb_skills/agent_tools.py:675`).
+
+**Layer (a′): the first pass, with no model call (TS-3).**
+- It runs in `_apply_tool_packs` (`_tool_injection.py:3973`), after layer (a) and before the first request.
+- It ranks `assistant_profile.sent_words()` (`acb_common/assistant_profile.py:1105`), the words that the member typed or tapped. It never reads mail or other outside text.
+- It loads the best tools at or above a threshold, at most 5. The log names the layer `search`.
+- It skips a tool of a pack that layer (a) loaded.
+- A load by layer (a′) is not sticky until one of its tools runs, as for layer (c).
+
+**Sticky state for each found tool (TS-4).** This closes the fault of task 1747 for found tools.
+- A found tool is sticky in the same Redis hash as the packs, `cc:<org>:tool-packs:<session>`, beside the record of `note_used` (`tool_packs.py:2422`).
+- It keeps its first-load order. It leaves after `DECAY_TURNS` (8) member turns with no use.
+- A load by `find_tools` is sticky at once, as a load by `load_skill_tools` is (task 1747).
+- A found tool that leaves gets its own line from `left_line` (`tool_packs.py:3304`). The line tells the model to call `find_tools` first.
+- The answer to an unknown name tells the model to search. It does not say that the tool does not exist.
+
+**The budget (TS-4).**
+- `MAX_REQUEST_TOOLS` stays 110. A found tool counts against it.
+- A new limit holds the schema tokens of each request at about 30 thousand. `_maf_mcp.schema_tokens` (`_maf_mcp.py:539`) measures them, as it does for `RUN_SCHEMA_TOKENS` (4000, `:142`).
+- A search adds at most 5 tools. A turn makes at most 3 searches and holds at most 15 found tools.
+- Found tools come after the pack tools, in their first-load order, so the prompt cache holds.
+
+**Tenants and members.** The index holds first-party text from the code only. It holds no tenant data, so one index serves the process (R5).
+- The candidates of a run are the tools of `loadable(allow)` (`tool_packs.py:3064`). `allow` is `packs_on(org)` after the S2 toggles and `with_followers`.
+- The `_pack_tools` build then drops what the owner prefilters drop. The answer names only the tools that the build returned.
+- So a member without `feature:studio` never sees the name of a Studio tool. An org that `STUDIO_ORGS` does not name gets none.
+
+**The index and the ranker (TS-1).**
+- It is a pure function in `acb_skills`: a new `tool_search.py`, or a part of `tool_packs.py`. It reuses `_plain` and `_word_re` (`tool_packs.py:1913-1928`).
+- The text of each tool is its name and the first line of its description. The label and `summary` of its family in `SKILL_FAMILIES` and `Pack.when` add to it.
+- The ranker is lexical first. The repo has no BM25, and TS-1 adds no dependency and no second seam.
+- Embeddings come later, only through the one embed door (`gateway/kb_index/embed.py`, behind `KNOWLEDGE_EMBED`).
+- The index holds first-party text only until TS-9. A description from an MCP server, and a skill text that a member wrote, can carry a prompt injection. TS-9 adds them with untrusted framing and a cap.
+
+**Failure modes and their answers.**
+
+| Failure | Answer |
+|---|---|
+| The model never searches | Layer (a′) loads the tools before the first request. Stop result 12 of §4.3.3 fails the run. The answer to an unknown name tells the model to search |
+| A search returns too much | The limit of 5 tools, and the token budget |
+| A tool loads, and the next turn loses it | Sticky state for each tool, and its line from `left_line` |
+| A load in the middle of a turn misses the cache | About USD 0.019 for 30 thousand tokens. Layer (a′) moves the loads to the start of the turn |
+| A tool of another tenant or member shows | The rank reads the candidates of the run only. The answer names built tools only |
+| A partial load breaks a record of a pack | A found tool never joins `PackRun.holds`. TS-6 decides the reach and the sub-agents |
+
+**Open, not verified.**
+- The Router branch of `routes/v1_compat.py` returns at `:805-812`, before `apply_prompt_caching` at `:886-891`. This spec did not check whether the Router marks the cache itself. If it does not, a Claude tier through the Router gets no cache mark. The `search` arm of TS-7 reads the cache share, so the measure shows the fact.
+- MAF already discloses MCP tools step by step (`use_progressive_disclosure`, `_maf_mcp.py:725-745`). TS-9 decides how that meets `find_tools`.
+
+**The ladder (R10).** Each rung below is a rung of this feature. The board holds no demo task for them yet.
+- **Rung 1.** In a test org on production, a Studio chat finds a Studio tool that the pack could not hold, and uses it in the same turn.
+- **Rung 2.** The next Studio chat starts with that tool loaded, with no search round, and the tool stays in the next turn.
+- **Rung 3.** The measure shows that the `search` arm is not worse, the owner switches it on, and every pack is open to the search.
+- **Rung 4.** The search finds MCP tools and published skills too.
+
+| Slice | Task | What | Tier | Gate | Rung | After |
+|---|---|---|---|---|---|---|
+| TS-1 | 3195 | The index and the lexical ranker | STD | AGENT-SAFE | 1 | none |
+| TS-2 | 3196 | The spike: `find_tools` for the `studio` pack | HIGH | AGENT-SAFE, dark. The flip is OWNER-GATE | 1 | TS-1 |
+| TS-3 | 3197 | Layer (a′) | STD, shared seam, Opus builder | AGENT-SAFE, dark | 2 | TS-2 |
+| TS-4 | 3198 | Sticky state for each tool, its line and the budget | STD | AGENT-SAFE, dark | 2 | TS-2 |
+| TS-5 | 3199 | The `search` arm of the harness, scripted only | LOW | AGENT-SAFE | 3 | TS-2 |
+| TS-7 | 3201 | The live measure | LOW | OWNER-GATE (spend) | 3 | TS-5 |
+| TS-6 | 3200 | Search over every pack | HIGH | AGENT-SAFE, dark. The flip is OWNER-GATE | 3 | TS-2 to TS-5, and the TS-7 result |
+| TS-9 | 3203 | MCP tools and published skills in the index | HIGH | AGENT-SAFE, dark. The flip is OWNER-GATE | 4 | TS-6 |
+| TS-8 | 3202 | Native `defer_loading` for a Claude tier | HIGH | Parked until the owner asks | none | the blocks of option (b) |
+
+**TS-1. The index and the lexical ranker (task 3195).**
+- **Files.** `acb_skills/tool_search.py` (new), or a part of `acb_skills/tool_packs.py`.
+- **Acceptance.**
+  - The index holds each pack tool once.
+  - Golden queries from the OA-8e miss chats rank the right tool in the top 5.
+  - The ranker is pure. It reads no I/O, and the same input gives the same order.
+  - The index holds first-party text only.
+- **Fence.** `tests/unit/test_tool_search_index.py`.
+
+**TS-2. The spike: `find_tools` for the `studio` pack (task 3196).**
+- **Why Studio.** `studio-builder` is a pack-only owner (`PACK_ONLY_OWNERS`, `tool_packs.py:2651`). It has no specialist tool, so no hand-off record and no reach move. Its pack is full, so it gains the most.
+- **Files.** `acb_skills/tool_packs.py` (the tool, its middleware and the flag reader), `orchestrator/_tool_injection.py` (the provider beside `_offer_pack_loader`), `acb_common/settings.py` (`TOOL_SEARCH_ORGS`) and `work_plan.md` §6 D4 (the gate).
+- **Acceptance.**
+  - In one run, a scripted model calls `find_tools`. The next request holds the found Studio schemas.
+  - The Studio prefilters hold: `STUDIO_ORGS`, `feature:studio`, and `APP_REQUESTS_ORGS` for the writes.
+  - The held drops, the permission gate and each card hold for a found tool.
+  - A found tool equals its `_pack_tools` build. A dropped or held tool never shows.
+  - With the flag off, the run is byte-identical.
+- **Fences.** `tests/unit/test_find_tools_guards.py`, `tests/unit/test_find_tools_maf_loop.py` and `tests/unit/test_tool_search_off.py`. The loop test runs a real `FunctionInvocationLayer` with a fake client. It fails when MAF changes `add_tools`.
+- **Keep green.** `test_pack_guards.py`, `test_load_skill_tools.py`, `test_pack_room.py`, `test_held_card_writes.py`, `test_no_egress_tool_audit.py` and `test_tool_schema_diet.py`.
+
+**TS-3. Layer (a′) (task 3197).**
+- **Files.** `orchestrator/_tool_injection.py` (`_apply_tool_packs`) and `acb_skills/tool_packs.py` (the layer `search`).
+- **Acceptance.**
+  - A turn whose words match a Studio tool starts with that tool loaded, with no `find_tools` round.
+  - Below the threshold, nothing loads.
+  - The log shows the layer `search`.
+  - The layer reads `sent_words()` only.
+- **Fence.** A new section of `tests/unit/test_tool_packs_choice.py` for layer (a′).
+
+**TS-4. Sticky state, its line and the budget (task 3198).**
+- **Files.** `acb_skills/tool_packs.py` (the state, `left_line` and the limits), and `orchestrator/_maf_mcp.py` (`schema_tokens`, reused, not copied).
+- **Acceptance.**
+  - A tool that `find_tools` loaded in a turn is on offer in the next turn.
+  - After 8 member turns with no use, the tool leaves, and the line of the turn names it.
+  - A load past any limit refuses, and its answer names the limit.
+  - Over two turns, the found tools keep their place after the pack tools, byte for byte.
+- **Fences.** `tests/unit/test_find_tools_sticky.py` and `tests/unit/test_find_tools_budget.py`.
+
+**TS-5. The `search` arm, scripted (task 3199).**
+- **Files.** `evals/one_assistant_measure/run.py`, `checks.py` and `scenarios_work.py`.
+- **Acceptance.** `--scripted` passes on the `pack` and the `search` arms. The arm reports the numbers of §4.3.3. No live run: an eval over USD 0.50 needs the owner (TS-7).
+- **Fence.** `tests/unit/test_one_assistant_measure_search.py`.
+
+**TS-6. Search over every pack (task 3200).**
+- **Why HIGH.** The `email` pack reads stranger text, and the MCP rule and the held sets move with it. The bookkeeping by pack must hold: the hand-off refusal, the reach of a specialist and OA-8i.
+- **Decides.** What a sub-agent gets through `_child_pack_tools`, and whether `find_tools` is a path for `plan_loader`.
+- **Acceptance.** A partial load never counts as "the run holds every pack of the owner".
+- **Fences.** The keep-green list of TS-2 stays green.
+
+**TS-7. The live measure (task 3201).** OWNER-GATE: an eval over USD 0.50 needs the owner's OK.
+- **Cost (harness count).** A pilot of about 14 turns on two arms costs about USD 0.37. The full run of about 53 turns, two arms and 3 repeats costs about USD 4.2, with `--budget-usd 6`.
+- **The bill.** On 2026-10-30 the Router billed 2.75 times the harness count. So the bills can be about USD 1.0 and USD 11.6.
+- **Command.** `uv run python -m evals.one_assistant_measure.run --live --arms pack,search --scenarios <set> --repeat 3 --timeout 200 --budget-usd 6 --spent-before-from <chunks> --out chunk_ts_a.json`. It needs the tunnel and the `deploy` grant (the harness README).
+- **Report.** The right tool, the latency, the cost and the tokens of each turn, against the stop results of §4.3.3. A switch needs the result "not worse" of §4.3.3, and the owner.
+
+**TS-8. Native `defer_loading` (task 3202).** Parked until the owner asks. It stays blocked until three things are true. A tier is bound to Claude. The Router filters the tools for each step of a failover chain. litellm handles `server_tool_use` and `tool_search_tool_result`, or we add a shim.
+
+**TS-9. MCP tools and published skills in the index (task 3203).** HIGH, because the text comes from third parties. A description enters the index only with untrusted framing and a cap. TS-9 also decides how `use_progressive_disclosure` meets `find_tools`.
+
+**Fences (R7).** Each fence binds when its slice merges. Until then, its rule is advisory.
+
+| Fence | It fails when |
+|---|---|
+| `tests/unit/test_tool_search_index.py` | A pack tool is not in the index, or is in it twice. A golden query misses its top 5 |
+| `tests/unit/test_tool_search_off.py` | The flag is off and a tool list, the persona, a request body or the per-turn context changes |
+| `tests/unit/test_find_tools_guards.py` | A found tool differs from its build. A dropped or held tool shows. A tool of another tenant or member shows |
+| `tests/unit/test_find_tools_maf_loop.py` | The second request of the run lacks the found schemas. MAF changes `add_tools` |
+| `tests/unit/test_find_tools_budget.py` | A request passes the token budget, a search passes 5 tools, or a turn passes 3 searches or 15 found tools |
+| `tests/unit/test_find_tools_sticky.py` | A found tool is lost in the next turn, outlives 8 turns, or leaves with no line |
+| `tests/unit/test_one_assistant_measure_search.py` | The scripted `search` arm fails |
+
+**Verify.** `uv run pytest tests/unit/test_tool_search_index.py tests/unit/test_tool_search_off.py tests/unit/test_find_tools_guards.py tests/unit/test_find_tools_maf_loop.py tests/unit/test_find_tools_budget.py tests/unit/test_find_tools_sticky.py tests/unit/test_one_assistant_measure_search.py tests/unit/test_tool_packs_choice.py tests/unit/test_pack_guards.py tests/unit/test_load_skill_tools.py tests/unit/test_pack_room.py tests/unit/test_held_card_writes.py tests/unit/test_no_egress_tool_audit.py tests/unit/test_tool_schema_diet.py -q`. Each slice runs the files that exist at its merge.
+
+**Open owner decisions.** The owner answers these before TS-2 merges. Each line is the proposal.
+1. **The words of D222.** D117 item 2 "loaded per turn" becomes "loaded per turn, or per tool". The pack stays the unit of the guards and the state.
+2. **Sticky tools.** A found tool is sticky, and it leaves after 8 member turns with no use.
+3. **Layer (a′).** A first pass with no model call. TS-1 proposes its threshold from the golden queries.
+4. **Native search.** Park option (b) as TS-8 until the owner asks.
+5. **The ranker.** Lexical first. Embeddings later, through the one embed door.
+6. **The index.** First-party text only until TS-9.
+7. **The budget.** About 30 thousand schema tokens for each request, 5 tools a search, and 3 searches and 15 found tools a turn.
+8. **The spend.** The TS-7 pilot and full run, at the costs above.
+9. **The spike.** Studio first.
+10. **The test "not worse".** The four conditions of §4.3.3.
+
 ### 4.3 OA-8: every other app
 
 #### 4.3.1 Each specialist: a pack or a sub-agent
@@ -1582,7 +1819,7 @@ The orchestrator offers each registry agent as a tool (`orchestrator/agents.py:7
 - **Verify.** `uv run pytest tests/unit/test_projects_packs.py tests/unit/test_tool_packs_registry.py tests/unit/test_tool_packs_choice.py tests/unit/test_skills_registry.py tests/unit/test_tool_packs_off.py tests/unit/test_load_skill_tools.py tests/unit/test_turn_kind_pack_items.py tests/unit/test_pack_guards.py tests/unit/test_projects_agent.py tests/unit/test_projects_agent_refusals.py tests/unit/test_no_egress_tool_audit.py tests/unit/test_delegation_no_egress.py -q`, and `npx vitest run src/lib/shell/surface.test.ts` in `workbench/control_plane`.
 
 **As built, OA-8b (2026-10-28).**
-- **Changed by PJP-2 (2026-11-02).** The pack sizes above are old. `projects-plan` is 24, `projects-structure` is 24, `projects-reminders` is 19, `projects-bulk` is 22, and the new pack `projects-reports` is 11. See `project_planning.md` §3.3. `projects-reports` is on wherever `projects-plan` is on (§4.2.7), so `TOOL_PACKS` need not name it.
+- **Changed by PJP-2 (2026-11-02).** The pack sizes above are old. `projects-plan` is 26, `projects-structure` is 27, `projects-reminders` is 19, `projects-bulk` is 22, and the new pack `projects-reports` is 11. See `project_planning.md` §3.3. `projects-reports` is on wherever `projects-plan` is on (§4.2.7), so `TOOL_PACKS` need not name it. Task 3190 counted the `tools` of each family in `SKILL_FAMILIES` again on 2026-11-14 (`_tool_count` reads them). This note said 24 and 24 before.
 - There are 120 tools, not 113. The four families are `projects` (23 tools), `projects-plan` (35), `projects-structure` (34) and `projects-bulk` (28). No tool is in two packs. The union is `skill_projects.__all__` and the `own_tool_scope` of the owner.
 - The core pack holds 23 tools, not 27. The base is 55 tools, because it counts the four specialist tools. The request also carries `load_skill_tools` (1) and the `email` pack (31). That leaves 23 for the core pack, and the total is 110, the cap. `choose` does not credit the specialist tool that a pack removes, so a larger core pack would drop out beside `email`. The fence is `test_the_core_pack_loads_beside_the_email_pack_at_the_measured_base`. It fails when the base grows or when the core pack grows. `edit_task`, `watch`, `create_project`, `needs_attention`, `show_view` and `my_led_projects` moved out of the core pack, and the summary of its new family names each one.
 - The owner builds `FunctionTool` objects of the class `_StrictTool`. The old builder skipped every tool that was no coroutine function, so each Projects pack was empty. `_pack_func` reads `fn.func`. `_pack_call` returns a shallow copy of the tool with `func` swapped, as `_gate_own_maf_tools` does. The class and the input model stay, so the schema keeps `additionalProperties: false`. `_as_agent_tools` already keeps a `FunctionTool` as it is. `owner_tools` and the catalog price read the name through `tool_guard.tool_name`.
@@ -1723,6 +1960,13 @@ Extend `evals/one_assistant_measure`. Do not build a second harness (§7 item 2)
 8. A request carries more tools than the cap allows.
 9. `packs+spawn` is slower than `packs` on the chat of multi-step research.
 10. The main agent spawns on more than 1 in 9 `not_spawned` turns.
+11. A hand-off on a packed app is the choice of the model. The harness already checks it (`evals/one_assistant_measure/run.py`, `stop_results`). This list did not name it until 2026-11-14.
+
+**The `search` arm (TS-5 and TS-7, PROPOSED, D222).** A fourth arm, `search`, runs with `TOOL_SEARCH_ORGS` on. It runs Studio chats, the two miss chats (`crm_miss` and `pm_miss`) and the `general` set. On 2026-11-14 the harness held no Studio chat and no `general` set, so TS-5 writes both.
+- **New checks.** `found_tool`: a found tool of the right pack ran. `search_round`: one counted round of `find_tools`. `schema_tokens`: each request stays within the budget of §4.2.9.
+- **New numbers.** The searches per turn, the found tools per turn, the layer of each found tool, and the schema tokens per request.
+- **Stop result 12.** `find_tools` runs on more than 15 percent of app turns. It is the twin of stop result 5.
+- **Not worse.** The `search` arm is not worse than `packs` when all four hold. No guard check fails. Its pass rate on app turns is at most 2 points below. Its median first text is at most 15 percent slower. Its warm cost per turn is not higher. A switch needs this result and the owner.
 
 #### 4.3.4 OA-10: retire conversational delegation
 
@@ -2041,6 +2285,7 @@ context has no live tool list. The decorator emits `ExperimentalWarning`.
 - **OA-9c.** A child with the `email` pack gets the same held or open set as the main assistant, read tools only. A pack of an owner that reads stranger text builds held for a child (§4.5, "As built, OA-9c"). Fence: `tests/unit/test_pack_guards.py`.
 - **OA-9d.** Three children that write show one card with three rows. A rejected row writes nothing, and Stop writes nothing. Fence: a test in the style of `tests/unit/test_delegated_confirmation_card.py`.
 - **OA-9e.** The persona lines of §6.3 show with the flag on, and not with it off. In OA-8e, the main assistant spawns for jobs that read long material (OA-9f), and not for light reads, one task or three searches.
+- **TS-1 to TS-9 (PROPOSED, D222).** §4.2.9 holds the acceptance and the fence of each slice. Each rule stays advisory until its slice merges.
 
 ## 6. Dynamic sub-agents and the sub-agent contract (OA-9)
 

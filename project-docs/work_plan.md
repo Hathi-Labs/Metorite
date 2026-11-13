@@ -6255,6 +6255,25 @@ The owner asked in chat on 2026-11-14 for a Focus mode that breaks a task into s
 
 Fence: each slice of `my_day_command_centre.md` §9 (CC-12 to CC-16) names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D221 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D220 at most (PR 2241, merged).
 
+### D222 — The chat loads a single tool by search, and the pack stays the unit of the guards and the state. It amends D117 item 2 (PROPOSED, 2026-11-14)
+
+**Status: PROPOSED.** It binds only after the owner confirms it. Until then D117 item 2 stands as written. Board: **WS-67**, task 3190 (TS-0). Owning spec: **`specs/one_assistant_context.md`** §4.2.9.
+
+The owner asked in chat on 2026-11-13, on task 3118. Can the chat hold many more tools, load each one when it needs it, and keep a small context? The `studio` pack is full at 23 tools, and new Studio tools have no room under the cap of 110 tools. In OA-8e run 1 the model loaded a pack that it lacked in 3 of 70 app turns.
+
+1. **D117 item 2 becomes "Tool packs, loaded per turn or per tool".** A pack still loads whole when a turn needs it. A single tool of a pack can also load by search.
+2. **The pack stays the unit of the guards and the state.** A found tool comes from the guarded build of its pack (`_pack_tools`). So it keeps the held set, the scope of the owner, the permission gate, the cards and D169. A partial load never counts as a whole pack for a hand-off or a reach.
+3. **Our own search, on the seam of `load_skill_tools`.** `find_tools` is a sibling of `LoadSkillTools`, and it uses `context.add_tools`. It adds no second registry (D205 point 1). This decision parks the native tool search of the Claude API (TS-8). It rejects a door tool in the pattern of D136.2 for the chat.
+4. **A first pass with no model call.** Layer (a′) ranks the member's own words before the first request. `find_tools` is the fallback in the middle of a turn. D117 item 3 holds.
+5. **The cache and the cost hold the limits.** The cap of 110 tools stays. A budget of about 30 thousand schema tokens for each request joins it. Found tools come after the pack tools, in a fixed order (D117 item 4).
+6. **Dark, then measured.** `TOOL_SEARCH_ORGS` is empty by default, and its flip is owner-only. The `search` arm of the OA-8e measure must be not worse than packs before a switch.
+
+**Open for the owner.** `one_assistant_context.md` §4.2.9 lists ten points. They include the stickiness of a found tool, the threshold of the first pass, the budget, the eval spend and Studio as the spike.
+
+**Revisit.** Only the owner confirms or reopens this. D117 names the owner as the one who reopens it.
+
+Fence: each slice of `one_assistant_context.md` §4.2.9 (TS-1 to TS-9, tasks 3195 to 3203) names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D222 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D221 at most, and no open PR or local worktree held D222 or higher.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
