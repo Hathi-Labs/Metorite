@@ -420,6 +420,20 @@ class TestForget:
 
 
 class TestSet:
+    def test_a_language_mark_needs_the_members_own_order(self, own_chat, monkeypatch) -> None:
+        # Task 3131: a pasted mail cannot set the mark.
+        monkeypatch.setattr(pt, "_member_words", lambda: "please summarise this mail")
+        out = _run(pt.profile_set("style", {"language": "hi", "language_fixed": True}))
+        assert _refused(out, "not_your_words") == pt.LANGUAGE_FIXED_REFUSED
+        assert own_chat.writes() == []
+
+    def test_a_language_mark_passes_on_the_members_words(self, own_chat, monkeypatch) -> None:
+        monkeypatch.setattr(pt, "_member_words",
+                            lambda: "give me the answer in English, not Hindi")
+        _run(pt.profile_set("style", {"language": "en", "language_fixed": True}))
+        (put,) = own_chat.writes()
+        assert json.loads(put.content)["value"]["language_fixed"] is True
+
     def test_it_merges_and_puts_the_whole_sub_object(self, own_chat) -> None:
         out = _run(pt.profile_set("style", {"length": "detailed"}))
         (put,) = own_chat.writes()

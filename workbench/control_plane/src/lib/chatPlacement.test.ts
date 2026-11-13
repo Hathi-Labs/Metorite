@@ -38,6 +38,7 @@ import ProjectToolCards, { PROJECT_CARD_TOOLS, projectEvidence } from "@/compone
 import TaskToolCards, { TASK_CARD_TOOLS, taskEvidence } from "@/components/tasks/TaskToolCards";
 import { PROFILE_CARD_TOOLS } from "@/components/profile/ProfileToolCards";
 import { STUDIO_CARD_TOOLS } from "@/lib/studio/studioCardState";
+import { RECORDS_CARD_TOOLS } from "@/lib/studio/recordsCard";
 import { ToolStepRow, TrailStartsOpen } from "@/components/ThinkingContainer";
 import {
   CACHED_SEGMENTS_MAX_CHARS,
@@ -62,13 +63,17 @@ describe("one map classifies every tool a card file draws", () => {
   it("every tool a card file draws is classified", () => {
     const unnamed = [
       ...PROJECT_CARD_TOOLS, ...TASK_CARD_TOOLS, ...EMAIL_CARD_TOOLS, ...CRM_CARD_TOOLS, ...PROFILE_CARD_TOOLS,
-      ...STUDIO_CARD_TOOLS,
+      ...STUDIO_CARD_TOOLS, ...RECORDS_CARD_TOOLS,
     ].filter((n) => placementOf(n) === undefined);
     expect(unnamed).toEqual([]);
   });
 
   it("a Studio record write asks the member: its card waits (STU-B2c-2c)", () => {
     for (const n of STUDIO_CARD_TOOLS) expect(placementOf(n), n).toBe("ask");
+  });
+
+  it("a Studio records read draws its live table as an answer card (STU-F5a)", () => {
+    for (const n of RECORDS_CARD_TOOLS) expect(placementOf(n), n).toBe("answer");
   });
 
   it("every skill-projects tool is classified", () => {
