@@ -1,6 +1,6 @@
 """The skill routes of AI Studio (STU-F2a, ``ai_studio.md`` §7 and §14 F2a).
 
-Six routes over the F1 store, ``gateway/studio/skills_store.py``. They
+Eight routes over the F1 store, ``gateway/studio/skills_store.py``. They
 register on the router of ``actions.py``, as ``workflows/copilot.py`` does on
 the router of ``workflows/core.py``. So ``main.py`` mounts no second router,
 and the gate ``require_feature_router("studio")`` (J1) and the prefix
@@ -27,7 +27,8 @@ and each refusal is 422:
    holds at most :data:`MAX_ACTIONS` (the WS-67 pack cap). Class B and C
    actions are legal in a draft.
 
-All three run BEFORE the store session opens. The catalog read opens its own
+All three run BEFORE the store session opens (the undo runs them inside its
+session, after the row lock, because it must check the version it just read). The catalog read opens its own
 session (``actions.catalog_rows``), so a request never holds two.
 
 **The states.** :data:`TRANSITIONS` holds each legal move. A move to the
@@ -107,6 +108,10 @@ class _NewSkill(BaseModel):
 
 class _NewVersion(BaseModel):
     body: dict[str, Any]
+
+
+class _Undo(BaseModel):
+    expected_version: int
 
 
 class _NewState(BaseModel):
@@ -209,9 +214,9 @@ def _actions_of(body: dict[str, Any]) -> list[str]:
     return [str(a) for a in found] if isinstance(found, list) else []
 
 
-async def _check_body(body: dict[str, Any]) -> None:
-    """The three checks of a version body, in order. Each refusal is 422.
-    Run it before the store session opens."""
+def _precheck(body: dict[str, Any]) -> list[str]:
+    """The depth, store and count checks of a version body, in order. Each
+    refusal is 422. They need no catalog. Answers the action ids."""
     if _too_deep(body, MAX_DEPTH):
         raise _deep_body()
     try:
@@ -222,10 +227,23 @@ async def _check_body(body: dict[str, Any]) -> None:
         raise _deep_body() from None
     ids = _actions_of(body)
     problem = _count_problem(ids)
-    if problem is None and ids:
-        problem = _catalog_problem(ids, await _catalog_ids())
     if problem is not None:
         raise _refuse(422, problem)
+    return ids
+
+
+def _catalog_check(ids: list[str], known: frozenset[str]) -> None:
+    problem = _catalog_problem(ids, known) if ids else None
+    if problem is not None:
+        raise _refuse(422, problem)
+
+
+async def _check_body(body: dict[str, Any]) -> None:
+    """The three checks of a version body, in order. Each refusal is 422.
+    Run it before the store session opens."""
+    ids = _precheck(body)
+    if ids:
+        _catalog_check(ids, await _catalog_ids())
 
 
 @contextlib.contextmanager
@@ -253,6 +271,16 @@ def _skill_out(skill: store.Skill) -> dict[str, Any]:
         "current_version": skill.current_version,
         "created_at": skill.created_at,
         "updated_at": skill.updated_at,
+    }
+
+
+def _history_out(info: store.VersionInfo) -> dict[str, Any]:
+    """One row of the history: no body, and the member who made it."""
+    return {
+        "version": info.version,
+        "created_by": info.created_by,
+        "created_at": info.created_at,
+        "content_hash": info.content_hash,
     }
 
 
@@ -341,6 +369,25 @@ async def get_skill_version(
     return {"version": _version_out(found)}
 
 
+@router.get("/skills/{skill_id}/versions")
+async def list_skill_versions(
+    skill_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The history of a skill of the caller, newest first. A row holds the
+    version, who made it, when, and the content hash. It holds no body."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    sid = _skill_id(skill_id)
+    async with _tenant_session() as db:
+        with _store_errors():
+            skill = await store.get_skill(db, user.email, sid)
+            if skill is None:
+                raise HTTPException(status_code=404, detail=NOT_FOUND)
+            found = await store.list_versions(db, user.email, sid)
+    return {"versions": [_history_out(v) for v in found]}
+
+
 @router.post("/skills/{skill_id}/versions", status_code=201)
 async def add_skill_version(
     skill_id: str,
@@ -368,6 +415,53 @@ async def add_skill_version(
                 await store.set_state(db, user.email, sid, "draft")
                 skill = await store.get_skill(db, user.email, sid) or skill
     return {"skill": _skill_out(skill), "version": _version_out(stored)}
+
+
+NOTHING_TO_UNDO = "Nothing to undo"
+
+
+@router.post("/skills/{skill_id}/undo", status_code=201)
+async def undo_skill_version(
+    skill_id: str,
+    payload: Any = Body(None),
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """One step back. The route writes version N+1 as a copy of version N-1,
+    so the history stays append-only. The caller sends the version that it
+    sees, ``expected_version`` N. A published skill returns to ``draft``."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    sid = _skill_id(skill_id)
+    expected = _parse(_Undo, payload).expected_version
+    # The catalog read opens its own session, so it runs before the store one.
+    known = await _catalog_ids()
+    async with _tenant_session() as db:
+        with _store_errors():
+            # The row lock holds until the commit. A second undo waits here,
+            # then reads the version that this undo wrote, and gets 409.
+            skill = await store.get_skill(db, user.email, sid, for_update=True)
+            if skill is None:
+                raise HTTPException(status_code=404, detail=NOT_FOUND)
+            if (skill.current_version or 0) != expected:
+                raise _refuse(409, CHANGED)
+            if not skill.current_version or skill.current_version < 2:
+                raise _refuse(409, NOTHING_TO_UNDO)
+            previous = await store.get_version(db, user.email, sid, skill.current_version - 1)
+            if previous is None:
+                raise _refuse(409, NOTHING_TO_UNDO)
+            # The same checks as a new version. A version that is refused now
+            # writes nothing.
+            _catalog_check(_precheck(previous.body), known)
+            stored = await store.add_version(db, user.email, sid, previous.body)
+            if stored is None:
+                raise HTTPException(status_code=404, detail=NOT_FOUND)
+            after = await store.get_skill(db, user.email, sid)
+            if after is None:
+                raise HTTPException(status_code=404, detail=NOT_FOUND)
+            if after.state == "published":
+                await store.set_state(db, user.email, sid, "draft")
+                after = await store.get_skill(db, user.email, sid) or after
+    return {"skill": _skill_out(after), "version": _version_out(stored)}
 
 
 @router.patch("/skills/{skill_id}/state")
