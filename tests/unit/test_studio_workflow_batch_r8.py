@@ -167,6 +167,17 @@ def _graph(pkg: str, n: int, *, prep: bool = False) -> dict:
             "edges": [{"id": f"{a}->{b}", "source": a, "target": b} for a, b in pairs]}
 
 
+def _write_graph(pkg: str) -> dict:
+    """trigger -> gate -> one Studio write (B2c-2d) -> done."""
+    nodes = [_node("start", "trigger", {"kind": "schedule"}), _node("gate", "approval"),
+             _node("write", "studio_write", {"package_id": pkg, "action": "pay",
+                                             "data": {"emp": "w1", "amount": 1}}),
+             _node("done", "output", {"value": "end"})]
+    pairs = itertools.pairwise(["start", "gate", "write", "done"])
+    return {"nodes": nodes,
+            "edges": [{"id": f"{a}->{b}", "source": a, "target": b} for a, b in pairs]}
+
+
 def _manifest() -> dict[str, Any]:
     return {
         "studio": 1,
@@ -305,6 +316,7 @@ def world():
             ("Prep then pay in A", ns.org_a, OWNER_A,
              compile_graph(_graph(ns.pkg_a, 150, prep=True))),
             ("Pay run in B", ns.org_b, OWNER_B, compile_graph(_graph(ns.pkg_b, 4))),
+            ("Single write in A", ns.org_a, OWNER_A, compile_graph(_write_graph(ns.pkg_a))),
         ):
             ns.wf[name] = (_seed_workflow(conn, org, owner, name, serialized), org, serialized)
     yield ns
@@ -1016,7 +1028,9 @@ def test_r8_an_org_off_the_batch_flag_opens_no_batch_and_files_no_card(w, monkey
     monkeypatch.setattr(get_settings(), "studio_batch_orgs", w.org_b)
     run_id = _start(w, "Small batch in A")
     run = _run(w, run_id)
-    assert (run.status, run.error) == ("failed", batch.BATCH_OFF_ERROR)
+    # Round 3: a switch that is off is a temporary cause, so the run ends
+    # `cancelled`, which the health policy never counts.
+    assert (run.status, run.error) == ("cancelled", batch.BATCH_OFF_ERROR)
     assert _all(w, "SELECT id FROM studio_batches") == []
     assert _decisions_of(w, run_id) == [] and w.proposals == []
     assert _all(w, "SELECT id FROM workflow_run_pauses") == []
@@ -1093,3 +1107,52 @@ def test_r8_a_run_of_org_b_writes_in_org_b_only(w):
     assert _run(w, run_id).status == "succeeded", _run(w, run_id).error
     assert (len(_records(w, w.obj_b)), len(_records(w, w.obj_a))) == (4, 0)
     assert {(a["org"], a["user"]) for a in _audit(w)} == {(w.org_b, OWNER_B)}
+
+
+
+def _workflow_status(w: Any, name: str) -> str:
+    return str(_one(w, "SELECT status FROM workflows WHERE id = CAST(:wid AS uuid)",
+                    wid=w.wf[name][0]).status)
+
+
+@pytest.mark.parametrize("name", ["Single write in A", "Small batch in A"])
+def test_r8_a_paused_package_never_auto_disables_and_a_lasting_refusal_does(
+        w, monkeypatch, name):
+    """Round 3: an admin pauses the package (J3a). Five schedule runs reach the
+    gate, and the park refuses each for the pause: a TEMPORARY cause. Each run
+    ends `cancelled`, the feed says `cancelled`, and the workflow stays
+    published after the pause. Five refusals that last (event runs, which may
+    not park a write or a batch) still auto-disable it, by the old rule."""
+    seen: list[tuple[str, str]] = []
+
+    def _feed(_wid: str, _name: str, **kw: Any) -> None:
+        if kw.get("phase") == "end":
+            seen.append((str(kw.get("run_id")), str(kw.get("status"))))
+
+    monkeypatch.setattr(service, "publish_workflow_activity", _feed)
+    with w.admin_engine.begin() as c:
+        c.execute(text("UPDATE apps SET paused_at = now() WHERE id = CAST(:p AS uuid)"),
+                  {"p": w.pkg_a})
+    try:
+        paused = [_start(w, name) for _ in range(service.AUTO_DISABLE_AFTER)]
+        for run_id in paused:
+            run = _run(w, run_id)
+            assert (run.status, run.error) == ("cancelled", service._PACKAGE_PAUSED_ERROR)
+            assert (run_id, "cancelled") in seen
+        assert _workflow_status(w, name) == "published"
+        assert w.proposals == [] and _all(w, "SELECT id FROM pm_decisions") == []
+        with w.admin_engine.begin() as c:
+            c.execute(text("UPDATE apps SET paused_at = NULL WHERE id = CAST(:p AS uuid)"),
+                      {"p": w.pkg_a})
+        if name == "Small batch in A":
+            lasting = [_start(w, name, "event") for _ in range(service.AUTO_DISABLE_AFTER)]
+            assert all(_run(w, r).status == "failed" for r in lasting)
+            assert all((r, "failed") in seen for r in lasting)
+            assert _workflow_status(w, name) == "disabled"
+    finally:
+        with w.admin_engine.begin() as c:
+            c.execute(text("UPDATE apps SET paused_at = NULL WHERE id = CAST(:p AS uuid)"),
+                      {"p": w.pkg_a})
+            c.execute(text("UPDATE workflows SET status = 'published', disabled_reason = NULL, "
+                           "disabled_at = NULL WHERE id = CAST(:w AS uuid)"),
+                      {"w": w.wf[name][0]})

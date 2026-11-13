@@ -1242,8 +1242,9 @@ async def _execute_run(
                 trigger_kind=trigger_kind,
             )
             if held is not None:
-                # A refused hold ended the run `failed` in the row. The hub, the
-                # activity feed and the health streak must say the same (STU-E4).
+                # A refused hold ended the run `failed` in the row (STU-E4), or
+                # `cancelled` for a temporary refusal of the park (STU-E8b).
+                # The hub, the activity feed and the health streak say the same.
                 status, error = held
     except Exception as exc:  # engine bugs must still close the run out
         error = f"{type(exc).__name__}: {exc}"[:500]
@@ -1590,8 +1591,9 @@ async def _hold_at_gate(
         trigger_kind=trigger_kind,
     )
     if isinstance(held, tuple):
-        # STU-E8b review round 2: the park refused the gate and ended the run
-        # `failed`. The hub, the feed and the health streak say the same.
+        # STU-E8b review rounds 2 and 3: the park refused the gate and ended
+        # the run `failed` or, for a temporary cause, `cancelled`. The hub, the
+        # feed and the health streak say the same status as the row.
         return held
     if held:
         return None
@@ -1685,18 +1687,23 @@ _WRITE_UNRESOLVED_ERROR = (
 
 async def _fail_unresolved_write(
     run_id: str, organization_id: str, error: str = _WRITE_UNRESOLVED_ERROR,
+    status: str = "failed",
 ) -> None:
-    """End a paused run as ``failed`` before any pause row or card exists
-    (fix round 2). The guard on ``paused`` changes no other state. A batch of
-    an org that is not ready (STU-E8b) passes its own *error*."""
+    """End a paused run before any pause row or card exists (fix round 2).
+    The guard on ``paused`` changes no other state. A refusal of the park of
+    STU-E8b passes its own *error*, and its *status*: ``failed`` for a cause
+    that lasts, and ``cancelled`` for a TEMPORARY cause, which the health of
+    the workflow does not count (:data:`_GATE_REFUSALS`)."""
+    if status not in ("failed", "cancelled"):
+        raise ValueError("status is failed or cancelled")
     try:
         async with _run_session(organization_id) as db:
             await db.execute(
                 text(
-                    "UPDATE workflow_runs SET status = 'failed', error = :error, "
+                    "UPDATE workflow_runs SET status = :status, error = :error, "
                     "finished_at = now() WHERE id = :id AND status = 'paused'"
                 ),
-                {"id": run_id, "error": error},
+                {"id": run_id, "error": error, "status": status},
             )
     except Exception as exc:  # pragma: no cover - best effort persistence
         _log.warning("workflows.unresolved_fail_failed", run_id=run_id, error=str(exc)[:160])
@@ -1767,13 +1774,26 @@ async def _hold_at_human_step(
     return None
 
 
-#: The plain error of each refusal at the park that ends the run with no card:
-#: a Studio write that does not resolve (B2c-2d fix round 2), and a batch of
-#: an org that is not ready or of a run that is no schedule run (STU-E8b).
-_GATE_REFUSALS = {
-    park.WRITE_UNRESOLVED: _WRITE_UNRESOLVED_ERROR,
-    batch.BATCH_OFF: batch.BATCH_OFF_ERROR,
-    batch.BATCH_NOT_SCHEDULED: batch.BATCH_NOT_SCHEDULED_ERROR,
+#: The error of a run whose gate clears a write or a batch of a paused package.
+_PACKAGE_PAUSED_ERROR = (
+    "The approval step clears a Studio write or batch of an app that an admin "
+    "paused, so the run stopped. Nothing was written, and the next run tries again."
+)
+
+#: Each refusal at the park that ends the run with no card, as its status and
+#: its plain error (STU-E8b review round 3). A cause that lasts ends the run
+#: ``failed``, and the health policy counts it: a Studio write that the owner
+#: cannot run (B2c-2d fix round 2), and a batch of a run that is no schedule
+#: run. A TEMPORARY cause ends the run ``cancelled``, as
+#: :func:`record_skipped_run` does, because the platform declined the run and
+#: the workflow did not break: a package that an admin paused, and a batch of
+#: an org whose switches are off. So a pause never auto-disables a workflow,
+#: and a cancelled row also breaks a streak of failures.
+_GATE_REFUSALS: dict[str, tuple[str, str]] = {
+    park.WRITE_UNRESOLVED: ("failed", _WRITE_UNRESOLVED_ERROR),
+    batch.BATCH_NOT_SCHEDULED: ("failed", batch.BATCH_NOT_SCHEDULED_ERROR),
+    park.PACKAGE_PAUSED: ("cancelled", _PACKAGE_PAUSED_ERROR),
+    batch.BATCH_OFF: ("cancelled", batch.BATCH_OFF_ERROR),
 }
 
 
@@ -1792,9 +1812,10 @@ async def _park_with_decision(
 
     True when the subject task, the decision and the pause row committed in
     one ``_run_session(org)``. False when nothing was written, and then the
-    caller files the broker proposal of AUTO-7a. ``("failed", error)`` when a
-    refusal of :data:`_GATE_REFUSALS` ended the run with no card, so the caller
-    reports that status (STU-E8b review round 2). Four facts must hold first:
+    caller files the broker proposal of AUTO-7a. ``(status, error)`` when a
+    refusal of :data:`_GATE_REFUSALS` ended the run with no card, so the
+    caller reports that status: ``failed`` for a cause that lasts, and
+    ``cancelled`` for a temporary one (STU-E8b review rounds 2 and 3). Four facts must hold first:
     the run is marked (``no_person_present``), it carries an org,
     ``park.park_allowed(org)`` is true, and the owner resolves.
 
@@ -1840,15 +1861,16 @@ async def _park_with_decision(
             run_id=run_id,
             reason=str(getattr(exc, "reason", "") or type(exc).__name__)[:80],
         )
-        error = _GATE_REFUSALS.get(str(getattr(exc, "reason", "") or ""))
-        if error is not None:
+        refused = _GATE_REFUSALS.get(str(getattr(exc, "reason", "") or ""))
+        if refused is not None:
             # STU-B2c-2d fix round 2: the gate clears a Studio write that the
             # owner cannot run, so a broker card could only end in a failed
-            # write. STU-E8b: the gate clears a batch of an org that is not
-            # ready, or of a run that is no schedule run. In each case the run
-            # fails here with plain words, and no card is filed.
-            await _fail_unresolved_write(run_id, organization_id, error)
-            return "failed", error
+            # write. STU-E8b: the gate clears a batch that cannot run, or a
+            # write or batch of a paused package. In each case the run ends
+            # here with plain words and its status, and no card is filed.
+            status, error = refused
+            await _fail_unresolved_write(run_id, organization_id, error, status)
+            return status, error
         return False
     _log.info("workflows.parked", run_id=run_id, decision_id=parked["decision_id"])
     # After the commit: the subject task sent no event, so move the owner's

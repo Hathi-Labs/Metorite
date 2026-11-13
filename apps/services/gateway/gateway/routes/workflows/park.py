@@ -157,6 +157,10 @@ def asker(workflow_id: str) -> str:
 #: Why a park refused a gate whose Studio write does not resolve. The gate
 #: then fails the run and files no broker card (fix round 2).
 WRITE_UNRESOLVED = "write_unresolved"
+#: Why a park refused a gate whose Studio write or batch names a package
+#: that an admin paused (E8b review round 3). The refusal is TEMPORARY: the
+#: run ends ``cancelled``, which the health of the workflow does not count.
+PACKAGE_PAUSED = "package_paused"
 #: The key of the write digest in the decision payload (fix round 1).
 WRITE_DIGEST = "write_digest"
 _PACKAGE_MAX = 32
@@ -363,13 +367,16 @@ async def park_with_decision(
     if block is not None:
         # STU-B2c-2d fix round 1: the gate clears a Studio write, so the
         # question names it, and the decision binds its digest.
-        from gateway.routes.studio.invoke import plan_workflow_write
+        from gateway.routes.studio.invoke import PackagePaused, plan_workflow_write
 
         config = block.get("config") if isinstance(block.get("config"), dict) else {}
-        plan = await plan_workflow_write(
-            db, member=who, package_id=config.get("package_id"),
-            action=config.get("action"), data=config.get("data"),
-            record_id=config.get("record_id"))
+        try:
+            plan = await plan_workflow_write(
+                db, member=who, package_id=config.get("package_id"),
+                action=config.get("action"), data=config.get("data"),
+                record_id=config.get("record_id"))
+        except PackagePaused:
+            raise ParkRefused(PACKAGE_PAUSED) from None
         if plan is None:
             raise ParkRefused(WRITE_UNRESOLVED)
         question = park_write_question(workflow_name, plan)

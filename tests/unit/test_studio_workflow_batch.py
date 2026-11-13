@@ -660,13 +660,23 @@ def test_only_an_active_member_gives_a_verdict_on_the_access(monkeypatch, answer
     assert asyncio.run(invoke._holds_studio("o@a.test", ORG)) is (verdict == "allow")
 
 
-def test_a_refused_park_reports_failed_to_the_hub(monkeypatch) -> None:
-    """Round 2: a park that the batch rules refuse ends the run ``failed``, and
-    ``_hold_at_gate`` answers that status, so the hub and the feed agree."""
+@pytest.mark.parametrize(("reason", "status"), [
+    ("batch_not_scheduled", "failed"), ("write_unresolved", "failed"),
+    ("package_paused", "cancelled"), ("batch_off", "cancelled"),
+])
+def test_a_refused_park_reports_its_status_to_the_hub(monkeypatch, reason: str,
+                                                      status: str) -> None:
+    """Rounds 2 and 3: a refused park ends the run with no card, and
+    ``_hold_at_gate`` answers the status of the row, so the hub and the feed
+    agree. A cause that lasts is ``failed``. A temporary cause (a paused
+    package, a switch that is off) is ``cancelled``, which the health policy
+    never counts."""
     from gateway.routes.workflows import park
 
     _all_flags(monkeypatch)
-    failed: list[str] = []
+    failed: list[tuple[str, str]] = []
+    assert {park.WRITE_UNRESOLVED, park.PACKAGE_PAUSED, batch.BATCH_OFF,
+            batch.BATCH_NOT_SCHEDULED} == set(service._GATE_REFUSALS)
 
     async def _owner(*_a: Any) -> tuple[str, str]:
         return ORG, "owner@a.test"
@@ -676,10 +686,10 @@ def test_a_refused_park_reports_failed_to_the_hub(monkeypatch) -> None:
         yield SimpleNamespace()
 
     async def _refuse(_db: Any, **_k: Any) -> Any:
-        raise park.ParkRefused(batch.BATCH_NOT_SCHEDULED)
+        raise park.ParkRefused(reason)
 
-    async def _fail(run_id: str, org: Any, error: str = "") -> None:
-        failed.append(error)
+    async def _fail(run_id: str, org: Any, error: str = "", status: str = "failed") -> None:
+        failed.append((status, error))
 
     monkeypatch.setattr(service, "_workflow_owner", _owner)
     monkeypatch.setattr(service, "_run_session", _session)
@@ -693,8 +703,9 @@ def test_a_refused_park_reports_failed_to_the_hub(monkeypatch) -> None:
                 serialized=compile_graph(_graph()), trigger_payload={}, variables={},
                 started_by="scheduler", organization_id=ORG, trigger_kind="event")
 
-    assert asyncio.run(hold()) == ("failed", batch.BATCH_NOT_SCHEDULED_ERROR)
-    assert failed == [batch.BATCH_NOT_SCHEDULED_ERROR]
+    error = service._GATE_REFUSALS[reason][1]
+    assert asyncio.run(hold()) == (status, error)
+    assert failed == [(status, error)]
 
 
 def test_the_scan_and_the_node_end_with_the_same_code() -> None:

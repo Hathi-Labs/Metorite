@@ -1485,6 +1485,13 @@ def workflow_write_digest(*, package_id: str, action: str, uses: str, record_id:
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
 
+class PackagePaused(Exception):
+    """The plan of a workflow write or batch met a package that an admin
+    paused (J3a). The pause ends when someone resumes the package, so the park
+    takes it as a TEMPORARY refusal, which the health of the workflow does not
+    count (E8b review round 3)."""
+
+
 @dataclasses.dataclass(frozen=True)
 class WorkflowWritePlan:
     """What a parked question names about its write (fix round 1)."""
@@ -1503,7 +1510,8 @@ async def plan_workflow_write(db: Any, *, member: str, package_id: Any, action: 
     It runs :func:`_check` as *member* on the caller's session, which binds
     the run's org. None when the package is not the member's, the action is
     not declared, or the action is no object write of
-    :data:`DELEGATED_EXECUTORS`. It writes nothing."""
+    :data:`DELEGATED_EXECUTORS`. A paused package raises :class:`PackagePaused`.
+    It writes nothing."""
     pid = _uuid_or_none(str(package_id or ""))
     if pid is None or not _ACTION_ID.fullmatch(str(action or "")):
         return None
@@ -1512,6 +1520,8 @@ async def plan_workflow_write(db: Any, *, member: str, package_id: Any, action: 
         package, ref = await _check(db, member, pid, str(action), out, delegated=True)
     except HTTPException:
         return None
+    if out.refusal == PACKAGE_PAUSED:
+        raise PackagePaused
     if out.refusal is not None or ref is None or (ref.source, ref.op) not in DELEGATED_EXECUTORS:
         return None
     uses = str(out.uses)
@@ -1762,6 +1772,8 @@ async def plan_workflow_batch(db: Any, *, member: str, package_id: Any, action: 
         package, ref = await _check(db, member, pid, str(action), out, delegated=True)
     except HTTPException:
         return None
+    if out.refusal == PACKAGE_PAUSED:
+        raise PackagePaused
     if out.refusal is not None or ref is None or (ref.source, ref.op) not in DELEGATED_EXECUTORS:
         return None
     made = await _batch_items(db, package, ref, items)

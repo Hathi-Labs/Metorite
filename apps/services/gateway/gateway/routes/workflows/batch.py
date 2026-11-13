@@ -226,17 +226,18 @@ def batch_detail(plan: Any, items: Any) -> str:
     # The head line names the count that the card really shows (round 2), so
     # its room is kept before the item lines.
     used = len("\n".join(lines)) + len("The first 10 records:") + 1
-    items: list[str] = []
+    item_lines: list[str] = []
     for place, item in enumerate(rows[:CARD_ITEMS], start=1):
         line = _item_line(place, item)
         if used + len(line) + 1 > park._DETAIL_MAX - 60:
             break
-        items.append(line)
+        item_lines.append(line)
         used += len(line) + 1
-    lines.append(f"The first {len(items)} records:" if items else "No record is shown here.")
-    lines.extend(items)
-    if len(rows) > len(items):
-        lines.append(f"{len(rows) - len(items)} more records are not shown here.")
+    lines.append(f"The first {len(item_lines)} records:" if item_lines
+                 else "No record is shown here.")
+    lines.extend(item_lines)
+    if len(rows) > len(item_lines):
+        lines.append(f"{len(rows) - len(item_lines)} more records are not shown here.")
     return "\n".join(lines)
 
 
@@ -254,7 +255,7 @@ async def park_batch(db: Any, *, organization_id: str, owner: str, workflow_name
     that the store refuses. The caller's rollback then removes every row of
     the park.
     """
-    from gateway.routes.studio.invoke import plan_workflow_batch
+    from gateway.routes.studio.invoke import PackagePaused, plan_workflow_batch
     from gateway.studio import batch_store
 
     if trigger_kind != "schedule":
@@ -262,9 +263,12 @@ async def park_batch(db: Any, *, organization_id: str, owner: str, workflow_name
     if not org_ready(organization_id):
         raise park.ParkRefused(BATCH_OFF)
     config = block.get("config") if isinstance(block.get("config"), dict) else {}
-    plan = await plan_workflow_batch(
-        db, member=owner, package_id=config.get("package_id"), action=config.get("action"),
-        items=config.get("items"))
+    try:
+        plan = await plan_workflow_batch(
+            db, member=owner, package_id=config.get("package_id"),
+            action=config.get("action"), items=config.get("items"))
+    except PackagePaused:
+        raise park.ParkRefused(park.PACKAGE_PAUSED) from None
     if plan is None:
         raise park.ParkRefused(park.WRITE_UNRESOLVED)
     try:
