@@ -2757,10 +2757,12 @@ def test_r8_bd_the_store_refuses_and_the_session_stays_usable(
 # ── I1a. A connection that the caller does not have (WS-STU I1a) ───────────
 #
 # R7. Mutations, run on 2026-11-14 on this section and its hermetic twin:
-# * D1. ``invoke._check``: drop the call of ``_needs_connection``. Both cases
-#   go red.
-# * D2. ``connections/store._MET_SQL``: drop ``AND member_email = :member``.
+# * I1-D1. ``invoke._check``: drop the call of ``_needs_connection``. Both
+#   refusal cases go red.
+# * I1-D2. ``connections/store._MET_SQL``: drop ``AND member_email = :member``.
 #   ``test_r8_only_the_callers_own_row_and_a_connected_row_meet_it`` goes red.
+# * I1-D3 (the review fix). ``invoke._needs_connection``: drop the check of
+#   ``connection_gate_on``. ``test_r8_the_gate_off_changes_nothing_off`` goes red.
 
 #: A provider of the registry that no other suite names.
 TALLY = f"mcp:tally-{TAG}"
@@ -2787,8 +2789,10 @@ def _connect(world: Any, org: str, *, member: str | None = None,
 
 
 @pytest.fixture
-def tally(world):
+def tally(world, monkeypatch):
+    """The draft of Ana's package names ``TALLY``, and the gate is on for org A."""
     _needs_tally(world, world.pkg)
+    monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", world.a)
     yield world
     with world.p.admin_engine.begin() as c:
         c.execute(text("DELETE FROM integration_connections WHERE provider = :p"),
@@ -2846,3 +2850,22 @@ def test_r8_only_the_callers_own_row_and_a_connected_row_meet_it(tally) -> None:
     status, got = _run(world, lambda: _call(world.a, BEN, world.pkg_ben, "peek",
                                             {"id": world.rec_ben}))
     assert status == 200
+
+
+def test_r8_the_gate_off_changes_nothing_off(tally, monkeypatch) -> None:
+    """``STUDIO_CONNECTION_GATE_ORGS`` empty, or naming org B only: the door of
+    org A is as before I1a. No row exists, and each action answers as it did."""
+    world = tally
+    for listed in ("", world.b):
+        monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", listed)
+
+        async def go() -> list[tuple[int, Any]]:
+            return [await _call(world.a, ANA, world.pkg, a, {"id": world.rec})
+                    for a in ("peek", "add", "no_such_action")]
+
+        (peek_s, peek), (add_s, add), (none_s, none) = _run(world, go)
+        assert peek_s == 200 and peek["record"]["id"] == world.rec, (listed, peek)
+        assert (add_s, add["code"]) == (403, "approval_required"), listed
+        assert (none_s, none["code"]) == (403, "not_declared"), listed
+    reasons = [r[3].get("reason") for r in _audits(world, world.pkg)]
+    assert invoke.NEEDS_CONNECTION not in reasons

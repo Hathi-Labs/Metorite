@@ -358,8 +358,9 @@ _DELETE_SQL = (
 #: another member never counts. It reads the provider only, never the blob.
 _MET_SQL = (
     "SELECT DISTINCT provider FROM integration_connections "
-    "WHERE organization_id = CAST(:org AS uuid) AND status = 'connected' "
-    "AND (scope_kind = 'org' OR (scope_kind = 'member' AND member_email = :member))"
+    f"WHERE organization_id = CAST(:org AS uuid) AND status = '{STATUS_CONNECTED}' "
+    f"AND (scope_kind = '{SCOPE_ORG}' OR (scope_kind = '{SCOPE_MEMBER}' "
+    "AND member_email = :member))"
 )
 
 

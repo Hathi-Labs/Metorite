@@ -586,7 +586,19 @@ def met(run: _Run, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         return state["set"]
 
     monkeypatch.setattr(resolve, "met_connections", _met)
+    # The gate names the org of the run only.
+    monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", ORG)
     return state
+
+
+def test_the_gate_off_for_the_org_of_the_run_changes_nothing_off(run: _Run, met,
+                                                                monkeypatch) -> None:
+    """``STUDIO_CONNECTION_GATE_ORGS`` without the org of the run: the run is
+    as before I1a, and it reads no set (mutation R2 drops the gate check)."""
+    monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", OTHER_ORG)
+    run.row = _row({**_PINNED, "connections": ["mcp:tally"]})
+    assert _read("find", {"limit": 5})["outcome"] == "ran"
+    assert met["reads"] == []
 
 
 def test_a_pinned_connection_that_the_member_lacks_is_refused(run: _Run, met) -> None:

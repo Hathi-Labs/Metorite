@@ -1273,8 +1273,11 @@ def test_a_manifest_without_runtime_hashes_as_before() -> None:
 #   name, the duplicate and the cap tests go red.
 # * N2. `CONNECTION_NAME_RE`: accept any text after `mcp:`. The `mcp:x`,
 #   `mcp:` and `mcp:Tally` cases go red.
-# * N3. `_check_objects`: drop the `is_secret_key` check. The secret field
-#   key tests go red.
+# * N3. `_check_objects`: drop the `is_secret_field_key` check. The secret
+#   field key tests go red.
+# * N4. `_check_objects`: call the wide `is_secret_key` in its place (the rule
+#   before the review). `token_number`, `secretary`, `credential_expiry`,
+#   `token` and `tokens_used` go red.
 
 
 def _with_connections(names: object) -> dict:
@@ -1335,8 +1338,8 @@ def _with_field(key: str) -> dict:
 
 
 @pytest.mark.parametrize("key", [
-    "api_key", "apikey", "token", "client_secret", "password", "db_passwd", "private_key",
-    "credentials", "refresh_token",
+    "api_key", "apikey", "client_secret", "access_token", "refresh_token", "private_key",
+    "password", "db_passwd", "zoho_api_key", "secret_key", "auth_token", "bearer_token",
 ])
 def test_a_field_key_that_names_a_secret_is_refused_with_its_path(key):
     from acb_common.studio_manifest import SECRET_FIELD
@@ -1347,6 +1350,31 @@ def test_a_field_key_that_names_a_secret_is_refused_with_its_path(key):
     assert [x.path for x in validate_manifest(d)] == ["$.objects[0].fields[6].key"]
 
 
-@pytest.mark.parametrize("key", ["site_code", "notes", "visit_count", "key_account"])
+@pytest.mark.parametrize("key", ["apiKey", "x-api-key"])
+def test_a_secret_key_that_breaks_the_field_grammar_is_refused_with_its_path(key):
+    """A field key is snake case, so the grammar refuses these at the same path."""
+    assert [x.path for x in validate_manifest(_with_field(key))] == [
+        "$.objects[0].fields[6].key"]
+
+
+@pytest.mark.parametrize("key", [
+    "site_code", "notes", "visit_count", "key_account", "token_number", "secretary",
+    "credential_expiry", "token", "tokens_used",
+])
 def test_a_field_key_that_names_no_secret_passes(key):
+    """P2-1 of the I1a review: a clinic queue token, a housing society secretary
+    and the expiry of a credential are member data. Only a whole secret name
+    counts (``secret_shapes.is_secret_field_key``)."""
     assert validate_manifest(_with_field(key)) == []
+
+
+def test_the_field_rule_is_narrower_than_the_key_rule_of_the_scan():
+    """``is_secret_key`` keeps its wide rule for its other callers (the scan of
+    a value under a secret-named key)."""
+    from acb_common.secret_shapes import is_secret_field_key, is_secret_key
+
+    for key in ("token_number", "secretary", "credential_expiry"):
+        assert is_secret_key(key) and not is_secret_field_key(key), key
+    for key in ("api_key", "apiKey", "x-api-key", "X-Api-Key", "client_secret", "APIKey",
+                "old_password_hint"):
+        assert is_secret_field_key(key), key

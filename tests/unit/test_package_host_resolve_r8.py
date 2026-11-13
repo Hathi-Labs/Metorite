@@ -44,7 +44,9 @@ is not a pass.
     and a member row meets it for that member only. ``needs_reconnect``,
     ``needs_reset`` and ``disconnected`` meet nothing. A row of org B never
     meets a need of org A. An install with no connection costs no statement
-    more, and an install with one costs one read of the registry.
+    more, and an install with one costs one read of the registry. Each case
+    sets ``STUDIO_CONNECTION_GATE_ORGS``. With the gate off for org A,
+    nothing changes and nothing reads the registry.
 
 **R7: red first, then mutate.** Each mutation ran on 2026-11-04.
 
@@ -70,8 +72,13 @@ is not a pass.
 * M6. ``connections/store._MET_SQL``: drop ``AND status = 'connected'``.
   ``test_r8_a_row_that_is_not_connected_meets_nothing`` goes red.
 * M7. ``connections/store._MET_SQL``: drop ``organization_id = CAST(:org AS
-  uuid) AND``. No case goes red, because FORCE RLS still binds the read to
-  the bound org. The R8 run as the app role is what proves the wall.
+  uuid) AND``. ``test_r8_the_store_reads_the_providers_of_the_member`` goes
+  red: a call that names org B in a session of org A reads the org row of
+  org A. The cases of the resolve stay green, because FORCE RLS still binds
+  the read to the bound org.
+* M8 (the review fix). ``resolve.resolve_for``: drop the check of
+  ``connection_gate_on``. ``test_r8_the_gate_off_changes_nothing_off`` goes
+  red.
 """
 
 from __future__ import annotations
@@ -547,9 +554,11 @@ TALLY = f"mcp:tally-{TAG}"
 
 
 @pytest.fixture
-def conns(world):
-    """The rows of the registry that a case writes, as the superuser. The
-    reads go through the app role, so FORCE RLS binds them."""
+def conns(world, monkeypatch):
+    """The gate ``STUDIO_CONNECTION_GATE_ORGS`` on for every org, and the rows
+    of the registry that a case writes, as the superuser. The reads go
+    through the app role, so FORCE RLS binds them."""
+    monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", "*")
     yield world
     _admin(world, "DELETE FROM integration_connections WHERE provider LIKE :p",
            {"p": f"%{TAG}%"})
@@ -680,6 +689,23 @@ def test_r8_an_install_with_no_connection_costs_no_statement_more(conns) -> None
     assert len([s for s in seen if "integration_connections" in s]) == 1
     assert (_mine(body)[_k("c7")]["needs_setup"], _mine(body)[_k("c8")]["needs_setup"]) == (
         True, True)
+
+
+def test_r8_the_gate_off_changes_nothing_off(conns, monkeypatch) -> None:
+    """``STUDIO_CONNECTION_GATE_ORGS`` empty, or naming org B only: org A is as
+    before I1a. A missing connection makes no need, and nothing reads the
+    registry or the bound org."""
+    world = conns
+    _connections(world, "a1", [TALLY, "mailbox"])
+    _install(world, "a1", "org", [_claim(_k("c9"))])
+    for listed in ("", world.p.org_b):
+        monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", listed)
+        body, seen = _view_statements(world, BEN)
+        assert _mine(body)[_k("c9")]["needs_setup"] is False, listed
+        assert not [s for s in seen if "integration_connections" in s], listed
+        assert not [s for s in seen if "AS uuid) AS text)" in s], listed
+    monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", world.p.org_a)
+    assert _mine(_view_statements(world, BEN)[0])[_k("c9")]["needs_setup"] is True
 
 
 def test_r8_the_store_reads_the_providers_of_the_member(conns) -> None:

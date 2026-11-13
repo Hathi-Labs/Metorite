@@ -2685,9 +2685,9 @@ NEEDS_TALLY: dict[str, Any] = {**MANIFEST, "connections": ["mcp:tally"]}
 
 @pytest.fixture
 def cw(world, monkeypatch):
-    """The world of the door, with the one read of the connections patched.
-    ``met`` is the set that the read answers, and ``met_reads`` holds the
-    viewer of each read."""
+    """The world of the door, with the gate on for every org and the one read
+    of the connections patched. ``met`` is the set that the read answers, and
+    ``met_reads`` holds the viewer of each read."""
     world.met = frozenset()
     world.met_reads = []
 
@@ -2697,6 +2697,7 @@ def cw(world, monkeypatch):
         return world.met
 
     monkeypatch.setattr(invoke._resolve, "met_connections", _met)
+    monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", "*")
     return world
 
 
@@ -2713,7 +2714,26 @@ class TestTheConnections:
       red.
     * C3. ``_needs_connection``: drop the preview exception.
       ``test_a_preview_of_an_object_action_stays_open`` goes red.
+    * C4. ``_needs_connection``: drop the check of ``connection_gate_on``.
+      Both cases of ``test_the_gate_off_changes_nothing_off`` go red.
     """
+
+    @pytest.mark.parametrize("listed", ["", OTHER])
+    def test_the_gate_off_changes_nothing_off(self, cw, monkeypatch, listed):
+        """``STUDIO_CONNECTION_GATE_ORGS`` empty, or naming another org: the
+        door is as before I1a. Each action of an app with a missing connection
+        runs as it did, and nothing reads the registry."""
+        monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", listed)
+        pid = _package(cw, manifest=NEEDS_TALLY)
+        rid = _record(cw, _object(cw, pid))
+        r = _call(_client(cw), pid, "peek", {"id": rid})
+        assert r.status_code == 200, r.text
+        r = _call(_client(cw), pid, "add", {"data": {"site": "x"}})
+        assert (r.status_code, _code(r)) == (403, "approval_required")
+        r = _call(_client(cw), pid, "no_such_action", {})
+        assert (r.status_code, _code(r)) == (403, "not_declared")
+        assert cw.met_reads == []
+        assert invoke.NEEDS_CONNECTION not in {a["detail"].get("reason") for a in cw.audits}
 
     def test_an_app_with_no_connection_reads_no_connection(self, cw):
         pid, _, rid = _setup(cw)

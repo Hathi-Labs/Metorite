@@ -54,6 +54,8 @@ o. C8a: each read takes the viewer of the member (``invoke._row_viewer``).
 p. WS-STU I1a: the pinned version names a connection. The run of Mia is
    refused with ``needs_connection`` while only Owen holds a row, or while
    her own row is ``needs_reconnect``. Her own ``connected`` row runs it.
+   With ``STUDIO_CONNECTION_GATE_ORGS`` off for org A, the run reads as
+   before I1a.
 
 **J2b-1 (path A).** An org install needs an approved live version, so
 ``_install`` asks and approves it first, with Amy as the approver
@@ -750,7 +752,8 @@ def test_r8_the_run_applies_the_row_rules_and_the_hides_of_its_member(world, rul
 #
 # R7. Mutation R1, run on 2026-11-14: ``invoke._run_as_session``: drop the
 # call of ``_needs_connection``. This case goes red, and so does section 3b
-# of the hermetic twin.
+# of the hermetic twin. R2 (the review fix): ``invoke._needs_connection``:
+# drop the check of ``connection_gate_on``. Run ``run-p0`` goes red.
 
 #: A provider of the registry that no other suite names.
 TALLY = f"mcp:tally-{TAG}"
@@ -771,7 +774,7 @@ def tally(world):
     _admin(world, "DELETE FROM integration_connections WHERE provider = :p", p=TALLY)
 
 
-def test_r8_a_connection_that_the_member_lacks_refuses_the_run(tally) -> None:
+def test_r8_a_connection_that_the_member_lacks_refuses_the_run(tally, monkeypatch) -> None:
     world = tally
     _admin(world, "UPDATE app_versions SET manifest = manifest || CAST(:m AS jsonb) "
                   "WHERE app_id = CAST(:p AS uuid) AND version = 1",
@@ -782,6 +785,10 @@ def test_r8_a_connection_that_the_member_lacks_refuses_the_run(tally) -> None:
 
     named = _run(world, lambda: _set(world, OPS, MIA))
     assert named[0] == 200, named
+    # The gate off for org A: the run is as before I1a (mutation R2 drops it).
+    monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", world.b)
+    assert find("run-p0")["outcome"] == "ran"
+    monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", world.a)
     assert find("run-p1")["code"] == invoke.NEEDS_CONNECTION
     _connect(world, OWEN)                         # the owner holds it, Mia does not
     assert find("run-p2")["code"] == invoke.NEEDS_CONNECTION
@@ -792,7 +799,7 @@ def test_r8_a_connection_that_the_member_lacks_refuses_the_run(tally) -> None:
     ran = find("run-p4")
     assert (ran["ok"], ran["outcome"]) == (True, "ran"), ran
     rows = [r for r in _runs(world) if r["run_id"].startswith("run-p")]
-    assert [r.get("reason") for r in rows] == [invoke.NEEDS_CONNECTION] * 3 + [None]
+    assert [r.get("reason") for r in rows] == [None] + [invoke.NEEDS_CONNECTION] * 3 + [None]
     assert {r["run_as"] for r in rows} == {MIA_LOW}
 
 

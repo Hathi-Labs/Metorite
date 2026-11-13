@@ -41,7 +41,7 @@ from pydantic_core import PydanticCustomError
 from acb_common.app_manifests.base import APP_ID_PATTERN, CLASSES, OP_PATTERN, UUID_PATTERN
 from acb_common.app_manifests.shell_manifest import _CONTRIBUTES_KEYS as _P0_POINTS
 from acb_common.app_manifests.shell_manifest import SHELL_DIR
-from acb_common.secret_shapes import SECRET_SHAPES, is_secret_key
+from acb_common.secret_shapes import SECRET_SHAPES, is_secret_field_key, is_secret_key
 from acb_common.studio_access import AccessError, check_access_fit, parse_access, parse_roles
 from acb_common.studio_fields import (
     FIELD_TYPES,
@@ -178,7 +178,8 @@ MCP_SERVER_NAME = r"[a-z0-9][a-z0-9-]{0,48}[a-z0-9]"
 #: the grammar only. IN-11 adds the check that the connector list holds it.
 CONNECTION_NAME_RE = re.compile(rf"mcp:{MCP_SERVER_NAME}|{_NAME}")
 #: STU-I1a. The refusal of a field whose key names a secret
-#: (``secret_shapes.is_secret_key``). A test reads this text, so keep it stable.
+#: (``secret_shapes.is_secret_field_key``: a whole secret name, so
+#: ``token_number`` passes). A test reads this text, so keep it stable.
 SECRET_FIELD = (
     "A field must not hold a secret. Name the provider in `connections`, "
     "and the registry keeps its key."
@@ -857,9 +858,10 @@ def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[Manifest
             for problem in validate_field_spec(f.model_dump(), objects=objects):
                 tail = "" if problem.got is None else _got(problem.got)
                 out.append(_err(f"{base}[{fi}].{problem.path}", problem.message + tail))
-            if is_secret_key(f.key):
+            if is_secret_field_key(f.key):
                 # STU-I1a: a key goes to the registry through a connection,
-                # never into a form of the app.
+                # never into a form of the app. The narrow rule, because a
+                # field such as `token_number` holds member data.
                 out.append(_err(f"{base}[{fi}].key", SECRET_FIELD + _got(f.key)))
         _check_rules(o, f"$.objects[{oi}].rules", out, m.objects)
     _check_lines(m, out)

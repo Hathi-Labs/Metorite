@@ -38,12 +38,17 @@ i. WS-STU I1a. Each name of ``connections`` is one more need, met only by the
    set of the viewer. A value that is not a list of text fails closed.
    ``resolve_for`` reads the set ONCE, and only when a kept install names a
    connection, so an install with none costs no statement. The MCP name rule
-   of the manifest equals the rule of the registry.
+   of the manifest equals the rule of the registry. With
+   ``STUDIO_CONNECTION_GATE_ORGS`` off for the org, ``connections`` makes no
+   need, and nothing reads the registry.
 
 * M5 (I1a). ``resolve.needs_met``: drop the ``connections_met`` check.
   ``test_needs_setup_follows_the_connections`` goes red.
 * M6 (I1a). ``resolve.resolve_for``: read the set for each call.
   ``test_an_install_with_no_connection_costs_no_statement`` goes red.
+* M7 (I1a). ``resolve.resolve_for``: drop the check of
+  ``connection_gate_on``. Both cases of ``test_the_gate_off_changes_nothing_off``
+  go red.
 """
 
 from __future__ import annotations
@@ -545,17 +550,53 @@ class _CountingDb:
         return _Answer([(p,) for p in self.providers])
 
 
-def _resolve_for(monkeypatch, db: _CountingDb, installs: list[InstallRow]) -> dict[str, Any]:
+def _resolve_for(monkeypatch, db: _CountingDb, installs: list[InstallRow],
+                 gate: str = "*") -> dict[str, Any]:
+    """``resolve_for`` with the org bound as the auth layer binds it, and the
+    gate ``STUDIO_CONNECTION_GATE_ORGS`` set to *gate*."""
+    from acb_common.db import bind_tenant, release_tenant
+
     async def _visible(_db: Any, *, viewer: str) -> list[InstallRow]:
         return resolve.widest_per_app(installs)
 
     async def _claims(_db: Any, ids: Any) -> list[ClaimRow]:
         return [_claim(i, f"k-{i}") for i in ids]
 
+    async def go() -> dict[str, Any]:
+        token = bind_tenant(ORG)
+        try:
+            return await resolve.resolve_for(db, viewer="Ana@Pkg.Test", can_use=_all)
+        finally:
+            release_tenant(token)
+
     monkeypatch.setattr(resolve, "visible_installs", _visible)
     monkeypatch.setattr(resolve, "read_claims", _claims)
     monkeypatch.setattr(resolve, "system_contributions", lambda: {})
-    return asyncio.run(resolve.resolve_for(db, viewer="Ana@Pkg.Test", can_use=_all))
+    monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", gate)
+    return asyncio.run(go())
+
+
+@pytest.mark.parametrize("gate", ["", "99999999-2222-3333-4444-555555555555"])
+def test_the_gate_off_changes_nothing_off(monkeypatch, gate: str) -> None:
+    """``STUDIO_CONNECTION_GATE_ORGS`` empty, or naming another org: the
+    resolve is as before I1a. ``connections`` makes no need, and nothing
+    reads the registry (mutation M7 drops the gate)."""
+    db = _CountingDb(providers=())
+    body = _resolve_for(monkeypatch, db, [
+        _inst("o", "a", manifest={"id": "a", "connections": ["mcp:tally"]}),
+        _inst("p", "b", manifest={"id": "b", "connections": "not a list"})], gate=gate)
+    assert db.statements == []
+    assert {e["needs_setup"] for e in body["contributions"]["jobs"]} == {False}
+
+
+def test_with_no_set_the_connections_make_no_need() -> None:
+    """The pure part: ``met`` None is the gate off, and it is the default."""
+    manifest = {"id": "m", "connections": ["mcp:tally"]}
+    assert resolve.needs_met(manifest, _all, set()) is True
+    assert resolve.needs_met(manifest, _all, set(), None) is True
+    assert resolve.needs_met(manifest, _all, set(), frozenset()) is False
+    out = resolve.resolve({}, [_inst("o", "a", manifest=manifest)], [_claim("o", "k")], _all)
+    assert out["jobs"][0]["needs_setup"] is False
 
 
 def test_an_install_with_no_connection_costs_no_statement(monkeypatch) -> None:

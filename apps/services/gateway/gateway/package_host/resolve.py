@@ -43,11 +43,14 @@ PKG-5b row of §10. The route is ``GET /shell/manifest`` in
    of a sub-app (§8.2, PKG-15a) is one more package need. A host that is
    missing, paused, not text or the sub-app itself leaves the need unmet.
    Each entry of an install with ``extends`` carries ``"extends": <host>``.
-   WS-STU I1a: each name of the manifest's ``connections`` is one more need
-   (:func:`connections_met`). It is met by a ``connected`` row of the
-   registry for the bound org: an org row, or a member row of THIS viewer
-   (:func:`met_connections`). A ``connections`` value that is not a list of
-   text fails closed. ``needs`` holds no connection need (``NEED_KINDS``).
+   WS-STU I1a: while ``STUDIO_CONNECTION_GATE_ORGS`` holds the bound org
+   (``acb_common.studio_flags.connection_gate_on``), each name of the
+   manifest's ``connections`` is one more need (:func:`connections_met`). It
+   is met by a ``connected`` row of the registry for the bound org: an org
+   row, or a member row of THIS viewer (:func:`met_connections`). A
+   ``connections`` value that is not a list of text fails closed. With the
+   org off the list, ``connections`` makes no need, as before I1a. ``needs``
+   holds no connection need (``NEED_KINDS``).
 5. The arrangement of §9 is not in PKG-5b.
 
 **One app.** A viewer can see one app at two scopes (§4 lets them both
@@ -90,6 +93,8 @@ from functools import cache
 from typing import Any
 
 from acb_common.app_manifests.shell_manifest import SystemContribution, load_contributes
+from acb_common.db import current_tenant
+from acb_common.studio_flags import connection_gate_on
 from sqlalchemy import text
 
 from gateway.package_host.sharing import SHARE_ROW
@@ -221,21 +226,23 @@ def connections_met(manifest: Any, met: frozenset[str] | set[str]) -> bool:
 
 
 def needs_met(manifest: Any, can_use: CanUse, packages: frozenset[str] | set[str],
-              met: frozenset[str] | set[str] = frozenset()) -> bool:
+              met: frozenset[str] | set[str] | None = None) -> bool:
     """True when each need of *manifest* is met (§5.2 step 4).
 
     A manifest that is not an object, a ``needs`` that is not a list, and a
     need of any other shape are unmet. A need is an object with one key,
     ``feature`` or ``package``, and a text value that is not empty. The
     ``extends`` of the manifest adds one package need (:func:`host_met`).
-    Each name of ``connections`` adds one connection need, and *met* holds
-    the connections of the viewer (:func:`connections_met`, WS-STU I1a).
+    WS-STU I1a: when *met* is a set, each name of ``connections`` adds one
+    connection need, and *met* holds the connections of the viewer
+    (:func:`connections_met`). None, the default, is the gate off:
+    ``connections`` then makes no need, as before I1a.
     """
     if not isinstance(manifest, Mapping):
         return False
     if not host_met(manifest, packages):
         return False
-    if not connections_met(manifest, met):
+    if met is not None and not connections_met(manifest, met):
         return False
     needs = manifest.get("needs", [])
     if not isinstance(needs, list):
@@ -285,13 +292,14 @@ def resolve(
     installs: Iterable[InstallRow],
     claims: Iterable[ClaimRow],
     can_use: CanUse,
-    met: frozenset[str] | set[str] = frozenset(),
+    met: frozenset[str] | set[str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """The entries of each point for one viewer, in order (§5.2 steps 1 to 4).
 
     *installs* are the installs that the viewer sees. *claims* are their
     claims. *can_use* is ``user.can_use_feature`` of the viewer. *met* holds
-    the connections of the viewer (WS-STU I1a, :func:`met_connections`).
+    the connections of the viewer (WS-STU I1a, :func:`met_connections`), or
+    None while the gate is off for the org (:func:`needs_met`).
     """
     kept = widest_per_app(installs)
     by_id = {i.id: i for i in kept}
@@ -557,13 +565,17 @@ async def resolve_for(db: Any, *, viewer: str, can_use: CanUse) -> dict[str, Any
     *viewer* is the address of the session member, never request input.
     *can_use* is ``user.can_use_feature`` of that member.
 
-    WS-STU I1a: it reads the connections of the viewer ONCE, and only when a
-    kept install names one. ``/auth/me`` calls this function, so an install
-    with no connection costs no statement more.
+    WS-STU I1a: while ``STUDIO_CONNECTION_GATE_ORGS`` holds the bound tenant,
+    it reads the connections of the viewer ONCE, and only when a kept install
+    names one. ``/auth/me`` calls this function, so an install with no
+    connection costs no statement more. With the org off the list, nothing
+    reads the registry and ``connections`` makes no need.
     """
     kept = await visible_installs(db, viewer=viewer)
     claims = await read_claims(db, [i.id for i in kept])
-    met: frozenset[str] = frozenset()
-    if any(connection_names(i.manifest) for i in kept):
-        met = await met_connections(db, viewer=viewer)
+    met: frozenset[str] | None = None
+    if connection_gate_on(current_tenant()):
+        met = frozenset()
+        if any(connection_names(i.manifest) for i in kept):
+            met = await met_connections(db, viewer=viewer)
     return manifest_body(resolve(system_contributions(), kept, claims, can_use, met))
