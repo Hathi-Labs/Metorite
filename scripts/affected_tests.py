@@ -182,7 +182,7 @@ def imports(body: str, module: str | None = None, is_package: bool = False) -> s
     return set(_imports_cached(body, module, is_package))
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _imports_cached(body: str, module: str | None, is_package: bool) -> frozenset[str]:
     names: set[str] = set(_DOTTED_STRING.findall(body))
     try:
@@ -348,7 +348,7 @@ _SCAN_GLOB_CALL = re.compile(r"\.r?glob\(|\bi?glob\(")
 _DATA_GLOB = re.compile(r"\.(?:sql|json|md|ts|tsx|js|mjs|cjs|css|ya?ml|toml|txt|sh|html|csv|lock|conf|ini)$")
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _is_scanner(body: str) -> bool:
     """True when the test may list Python files. Fails to True.
 
@@ -439,8 +439,13 @@ def _source_files(root: Path) -> list[Path]:
     return files
 
 
-def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str], list[str]]:
-    """Return (test files, reasons for a full run, frontend files)."""
+def select(
+    changed: list[str], root: Path = ROOT, scanners: bool = True
+) -> tuple[list[str], list[str], list[str]]:
+    """Return (test files, reasons for a full run, frontend files).
+
+    ``scanners=False`` leaves out the tests that only a scan idiom picks. The
+    gate adds them itself, and does not close over their imports."""
     tests = _texts(sorted((root / TESTS).glob("test_*.py")), root)
     sources = _texts(_source_files(root), root)
     full = sorted(c for c in changed if c in FULL_SUITE)
@@ -450,7 +455,7 @@ def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str],
     changed_mods = {m for c in changed for m in module_names(c, root)}
     src_users, test_users = _import_index(changed_mods, sources, tests, root)
 
-    if any(c.endswith(".py") for c in changed):
+    if scanners and any(c.endswith(".py") for c in changed):
         picked |= scanning_tests(tests)
 
     for path in changed:
@@ -607,15 +612,58 @@ def gate_flag_texts(base: str, root: Path = ROOT, head: str = "HEAD") -> dict[st
     }
 
 
-def _settings_fields(text: str) -> dict[str, tuple[int, int]]:
-    """Field name -> (first line, last line) of each annotated assignment that sits
-    directly in the body of ``class Settings``."""
-    out: dict[str, tuple[int, int]] = {}
+_LITERAL_OPS = (ast.Add, ast.Sub, ast.Mult, ast.USub, ast.UAdd)
+# An annotation of a plain field: `str`, `int | None`, `Literal["a", "b"]`. No call.
+_TYPE_NODES = (
+    ast.Name, ast.Attribute, ast.Subscript, ast.Constant, ast.Tuple, ast.List,
+    ast.BinOp, ast.BitOr, ast.Load,
+)
+
+
+def _literal(node: ast.expr | None) -> bool:
+    """True for a constant, a signed number, constant arithmetic (``2 * 1024``),
+    or a list, tuple, set or dict of these. Such a value runs no code."""
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.UnaryOp):
+        return isinstance(node.op, _LITERAL_OPS) and _literal(node.operand)
+    if isinstance(node, ast.BinOp):
+        return isinstance(node.op, _LITERAL_OPS) and _literal(node.left) and _literal(node.right)
+    if isinstance(node, ast.List | ast.Tuple | ast.Set):
+        return all(_literal(e) for e in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(_literal(k) for k in node.keys) and all(_literal(v) for v in node.values)
+    return False
+
+
+def _plain_field(st: ast.AnnAssign) -> bool:
+    """True when a new field runs no code (CIV-33c-1 review round 2, P3).
+
+    The default is a literal, or ``Field(...)`` with literal arguments only.
+    ``Settings()`` fails for a field with no default when its variable is
+    unset. The annotation is a plain type, with no call in it."""
+    v = st.value
+    if v is None or not all(isinstance(n, _TYPE_NODES) for n in ast.walk(st.annotation)):
+        return False
+    if isinstance(v, ast.Call):
+        return (
+            isinstance(v.func, ast.Name)
+            and v.func.id == "Field"
+            and all(_literal(a) for a in v.args)
+            and all(k.arg is not None and _literal(k.value) for k in v.keywords)
+        )
+    return _literal(v)
+
+
+def _settings_fields(text: str) -> dict[str, tuple[int, int, bool]]:
+    """Field name -> (first line, last line, plain) of each annotated assignment
+    that sits directly in the body of ``class Settings``. See `_plain_field`."""
+    out: dict[str, tuple[int, int, bool]] = {}
     for node in ast.parse(text).body:
         if isinstance(node, ast.ClassDef) and node.name == "Settings":
             for st in node.body:
                 if isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name):
-                    out[st.target.id] = (st.lineno, st.end_lineno or st.lineno)
+                    out[st.target.id] = (st.lineno, st.end_lineno or st.lineno, _plain_field(st))
     return out
 
 
@@ -664,9 +712,10 @@ def _check_settings(added: list[tuple[int, str]], base: str, head: str) -> list[
     for no, body in added:
         if not body.strip() or body.lstrip().startswith("#"):
             continue
-        owner = [n for n, (lo, hi) in new.items() if lo <= no <= hi]
-        # A new field only: not a field of the base file, and not model_config.
-        if not owner or owner[0] in old or owner[0] == "model_config":
+        owner = [n for n, (lo, hi, _) in new.items() if lo <= no <= hi]
+        # A new field only: not a field of the base file, not model_config, and
+        # with a default that runs no code.
+        if not owner or owner[0] in old or owner[0] == "model_config" or not new[owner[0]][2]:
             return None
         needles.append(owner[0])
     return sorted(set(needles))
@@ -779,37 +828,56 @@ def app_entry_tests(
 ) -> set[str]:
     """Tests that import an app entry module (one with a FastAPI app) that reaches a
     changed module. They drive the real app, so a change below it can break them,
-    however many levels it sits down. `select` expands one level only."""
+    however many levels it sits down. `select` expands one level only.
+
+    Review round 2. A test helper that builds an app (``_crm_app.crm_app()``) is an
+    entry too. A test can import an entry by its leaf (``from gateway import main``),
+    so the match reads the imports of the test, not its text."""
     modmap: dict[str, tuple[str, bool]] = {}
-    entries: list[str] = []
+    entries: dict[str, set[str]] = {}  # entry -> each name a test can import it by
     for path, body in sources.items():
         name = module_name(path, root)
-        if not name or name.startswith("tests"):
+        if not name:
             continue
         modmap[name] = (body, path.endswith("__init__.py"))
         if _APP_ENTRY.search(body):
-            entries.append(name)
-    hit = [e for e in entries if mods & _forward_closure(e, modmap)]
-    out: set[str] = set()
-    for t, body in tests.items():
-        if any(e in body for e in hit) and imports(body) & set(hit):
-            out.add(t)
-    return out
+            entries[name] = {name, *module_names(path, root)}
+    hit = {n for e, names in entries.items() if mods & _forward_closure(e, modmap) for n in names}
+    leaves = {n.rsplit(".", 1)[-1] for n in hit}
+    # Every import of `a.b.leaf` spells "leaf", so the text test drops no importer.
+    return {
+        t for t, body in tests.items() if any(lf in body for lf in leaves) and imports(body) & hit
+    }
 
 
-def close_over_test_imports(picked: set[str], tests: dict[str, str]) -> set[str]:
+# `from test_x import y` or `import _helper`, after a test puts tests/unit on sys.path.
+_BARE_IMPORT = re.compile(r"^\s*(?:from|import)\s+(?:test_|_\w)", re.MULTILINE)
+
+
+def close_over_test_imports(
+    picked: set[str], tests: dict[str, str], helpers: dict[str, str] | None = None
+) -> set[str]:
     """Add each test file that imports a picked test file, until nothing new joins.
 
-    A test module that holds fixtures is imported by other tests, and those by more."""
-    names = {t: ".".join(Path(t).with_suffix("").parts) for t in tests}
-    by_name = {n: t for t, n in names.items()}
+    A test module that holds fixtures is imported by other tests, and those by more.
+    Review round 2. A test helper (``tests/unit/_x.py``) can sit between two tests,
+    so the walk passes through it, and only test files come out. A test can put
+    tests/unit on sys.path and import another by its bare stem (``from test_x
+    import y``), so the stem is a name too."""
+    helpers = helpers or {}
+    files = {**helpers, **tests}
+    by_name: dict[str, str] = {}
+    for f in files:
+        by_name[".".join(Path(f).with_suffix("").parts)] = f
+        by_name[Path(f).stem] = f
     users: dict[str, set[str]] = {}
-    for t, body in tests.items():
-        if "tests.unit" not in body:
+    for f, body in files.items():
+        if "tests.unit" not in body and not _BARE_IMPORT.search(body):
             continue
         for n in imports(body):
-            if n in by_name and by_name[n] != t:
-                users.setdefault(by_name[n], set()).add(t)
+            u = by_name.get(n)
+            if u and u != f:
+                users.setdefault(u, set()).add(f)
     out = set(picked)
     todo = list(picked)
     while todo:
@@ -817,7 +885,7 @@ def close_over_test_imports(picked: set[str], tests: dict[str, str]) -> set[str]
             if u not in out:
                 out.add(u)
                 todo.append(u)
-    return out
+    return out - set(helpers)
 
 
 def static_reasons(changed: list[str], needles: list[str] | None) -> list[str]:
@@ -848,7 +916,15 @@ def _gate(
     needles = _flag_additions(changed, diff, texts)
     reasons = static_reasons(changed, needles)
     tests = _texts(sorted((root / TESTS).glob("test_*.py")), root)
-    picked: set[str] = set(_safety_fences(root))
+    # The floor: each SAFETY fence, and each scanner for a Python change. A
+    # Python file in a Next app skips `select`, but a scanner still reads it.
+    # Review round 2, P1: the floor is not a seed of the closure over test
+    # imports. With the floor as a seed, that closure picked 784 of 1751 files
+    # for a change that two tests import.
+    floor = set(_safety_fences(root))
+    if any(c.endswith(".py") for c in changed):
+        floor |= scanning_tests(tests)
+    picked: set[str] = set()
     if needles is not None:
         # The two files stay out of `select`: their 150 importers are not
         # affected by a new flag. The tests that name a flag are.
@@ -877,18 +953,19 @@ def _gate(
             and any(n in body.lower() for n in lows)
         )
     other = [c for c in changed if c not in py]
-    # A Python file in a Next app skips `select`, but a scanner still reads it.
-    if any(c.endswith(".py") for c in changed):
-        picked |= scanning_tests(tests)
     if py:
-        picked |= set(select(py, root)[0])
+        picked |= set(select(py, root, scanners=False)[0])
         # A hub (more than HUB_LIMIT importers) selects its importers, and
         # `select` has done so. It goes FULL only above HUB_CEILING_SHARE.
         sources = sources or _texts(_source_files(root), root)
         mods = {m for c in py for m in module_names(c, root)}
         _, test_users = _import_index(mods, sources, tests, root)
         reasons += hub_reasons(mods, test_users, len(tests))
-        picked |= app_entry_tests(mods, sources, tests, root)
+        # The app-entry rule replaces a FULL run of main's rules: a hub, or a
+        # flag diff. Elsewhere main's rules select already, and the rule added
+        # about 1,000 s to each such diff (24 main commits, 2026-11-13).
+        if needles is not None or any(len(test_users.get(m, ())) > HUB_LIMIT for m in mods):
+            picked |= app_entry_tests(mods, sources, tests, root)
     # A file that is not Python: tests that name its path. No import tracing.
     for path in other:
         picked |= {t for t, body in tests.items() if path in body}
@@ -905,7 +982,8 @@ def _gate(
             if t.rsplit("/", 1)[-1].startswith("test_customer_console_")
             or any(m in body for m in CONSOLE_R8_MARKS)
         }
-    picked = close_over_test_imports(picked, tests)
+    helpers = _texts(sorted((root / TESTS).glob("_*.py")), root)
+    picked = close_over_test_imports(picked, tests, helpers) | floor
     files = sorted(p for p in picked if (root / p).is_file())
     return {"full": bool(reasons), "files": files, "reasons": reasons}
 
