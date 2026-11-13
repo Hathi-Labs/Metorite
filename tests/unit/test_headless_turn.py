@@ -1418,7 +1418,7 @@ def test_the_default_runner_names_the_turn_on_the_wire(world, monkeypatch, tmp_p
     route_worker_runs(monkeypatch, tmp_path, wire)
     asked: list[str] = []
 
-    async def meter(org: str, run_id: str) -> Decimal:
+    async def meter(org: str, member: str, run_id: str) -> Decimal:
         asked.append(run_id)
         return Decimal(0)
 
