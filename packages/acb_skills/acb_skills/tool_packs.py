@@ -1211,7 +1211,7 @@ PACKS: dict[str, Pack] = {
     # whole words. A bare "app" or "build an app" is out: the surface loads it in Studio.
     "studio": Pack(
         slug="studio",
-        when="Load for AI Studio: build an app (manifest, actions), manage your skills, read and change the records of a package, or list the steps of a playbook run.",
+        when="Load for AI Studio: build an app (manifest, actions), manage your skills, or read and change the records of a package.",
         rules=_STUDIO_RULES,
         words=("ai studio", "app manifest", "studio app", "studio skill", "studio skills", "studio package", "studio packages", "studio records"),
         delegation_refusal=_STUDIO_DELEGATION_REFUSED,

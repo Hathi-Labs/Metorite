@@ -99,8 +99,8 @@ _URL = os.environ.get("TENANT_LADDER_DATABASE_URL", "").strip()
 _DB_GATE = pytest.mark.skipif(
     not _URL,
     reason=(
-        "TENANT_LADDER_DATABASE_URL unset — R8 requires a REAL Postgres with "
-        "pgvector. A skip here is not a pass; CI must set it. Do NOT export "
+        "TENANT_LADDER_DATABASE_URL is not set. R8 needs a REAL Postgres with "
+        "pgvector. A skip here is not a pass, and CI must set it. Do NOT export "
         "it as DATABASE_URL."
     ),
 )
