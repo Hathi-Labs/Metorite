@@ -155,6 +155,15 @@ _WORKFLOWS: dict[str, tuple[str, str, dict]] = {
     "Wait manual in A": ("A", "manual", {}),
     "Task hook in A": ("A", "webhook", {}),
     "Task event in A": ("A", "event", {"source": _SOURCE, "event_type": _TASK_EVENT}),
+    # STU-E3: Studio record triggers, filtered by package and object.
+    "Claim in A": ("A", "event", {"source": "studio", "event_type": "studio.record.created",
+                                  "filter": {"package_id": "pkg-claims", "object": "claim"}}),
+    "Invoice in A": ("A", "event", {"source": "studio", "event_type": "studio.record.created",
+                                    "filter": {"package_id": "pkg-claims", "object": "invoice"}}),
+    "Claim 2 in A": ("A", "event", {"source": "studio", "event_type": "studio.record.created",
+                                    "filter": {"object": "claim"}}),
+    "Claim in B": ("B", "event", {"source": "studio", "event_type": "studio.record.created",
+                                  "filter": {"package_id": "pkg-claims", "object": "claim"}}),
 }
 _TICKERS = ("Tick in A", "Tick in B")
 
@@ -655,3 +664,60 @@ def test_this_suite_is_named_in_the_ci_skip_guard():
     for wf in ("pr-check.yml", "deploy.yml"):
         workflow = (_ROOT / ".github" / "workflows" / wf).read_text(encoding="utf-8")
         assert "tests/unit/test_workflows_triggers_r8.py" in workflow, wf
+
+
+# ── STU-E3: the Studio record trigger ────────────────────────────────────────
+
+_REC = {"package_id": "pkg-claims", "object": "claim", "op": "create", "record_id": "r1"}
+
+
+def _emit_record(promoted, ambient: str | None, payload: dict | None = None):
+    return _on_app_role(promoted, ambient, lambda: triggers.dispatch_event(
+        "studio", "studio.record.created", {**(payload or _REC)}))
+
+
+def test_a_record_event_starts_only_the_matching_trigger_of_the_bound_org(promoted, monkeypatch):
+    """The filter picks the claim workflow. The invoice workflow of the same
+    org and the claim workflow of org B (both listed) start nothing."""
+    _list_orgs(monkeypatch, promoted.org_a, promoted.org_b)
+    started = _emit_record(promoted, promoted.org_a)
+    assert {s["workflow_id"] for s in started} == {
+        promoted.wf["Claim in A"], promoted.wf["Claim 2 in A"]}
+    (row,) = _runs_of(promoted, "Claim in A")
+    assert (row.trigger_kind, row.org, row.started_by) == (
+        "event", promoted.org_a, "event:studio")
+    assert _runs_of(promoted, "Invoice in A") == []
+    assert _runs_of(promoted, "Claim in B") == []
+
+
+def test_a_record_event_with_no_bound_org_starts_nothing(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_a, promoted.org_b)
+    assert _emit_record(promoted, None, {**_REC, "organization_id": promoted.org_a}) == []
+    assert _runs_of(promoted, "Claim in A") == []
+
+
+def test_a_record_event_of_an_unlisted_org_starts_nothing(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_b)
+    assert _emit_record(promoted, promoted.org_a) == []
+    assert _runs_of(promoted, "Claim in A") == []
+
+
+def test_two_matching_triggers_of_one_workflow_start_one_run(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_a)
+    with promoted.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO workflow_triggers (workflow_id, kind, config, enabled, "
+            "organization_id) VALUES (CAST(:w AS uuid), 'event', CAST(:c AS jsonb), "
+            "true, CAST(:o AS uuid))"),
+            {"w": promoted.wf["Claim in A"], "o": promoted.org_a,
+             "c": json.dumps({"source": "studio", "event_type": "studio.record.created"})})
+    try:
+        started = _emit_record(promoted, promoted.org_a)
+        ids = [s["workflow_id"] for s in started]
+        assert sorted(ids) == sorted([promoted.wf["Claim in A"], promoted.wf["Claim 2 in A"]])
+        assert len(_runs_of(promoted, "Claim in A")) == 1
+    finally:
+        with promoted.admin_engine.begin() as c:
+            c.execute(text(
+                "DELETE FROM workflow_triggers WHERE workflow_id = CAST(:w AS uuid) "
+                "AND NOT (config ? 'filter')"), {"w": promoted.wf["Claim in A"]})

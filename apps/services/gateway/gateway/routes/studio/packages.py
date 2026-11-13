@@ -289,7 +289,7 @@ from acb_common import get_logger
 from acb_common import studio_templates as templates
 from acb_common.studio_manifest import manifest_hash
 from acb_skills.studio_tools import complete_record_actions
-from fastapi import Depends, HTTPException, Request, Response
+from fastapi import Depends, HTTPException, Query, Request, Response
 from gateway.db import tenant_session as _tenant_session
 from gateway.package_host import resolve as host_resolve
 from gateway.package_host import store as host_store
@@ -299,6 +299,7 @@ from gateway.routes.apps._common import record_app_audit_bound, record_app_audit
 from gateway.routes.studio import actions, flags, invoke
 from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store
+from gateway.studio import packages_admin_list as admin_list
 from gateway.studio import packages_store as store
 
 __all__ = ["ADMIN_RIGHT", "COUNTS_CHANGED", "DELETE_BUDGET_SECONDS", "DRAFT_CHANGED",
@@ -751,14 +752,27 @@ async def create_from_template(
 
 
 @router.get("/packages")
-async def list_packages(user: UserContext = Depends(get_current_user)) -> dict[str, Any]:
+async def list_packages(
+    scope: str | None = Query(default=None, pattern="^org$"),
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
     """The packages of the caller in the bound org, newest change first. The
-    answer holds no manifest."""
+    answer holds no manifest. With ``scope=org`` a holder of the admin right
+    gets every package of the org with its owner, runs and last error, and
+    ``admin`` is true (J4). Any other caller gets the same list as without the
+    scope, and ``admin`` is false."""
     if not flags.studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     async with _tenant_session() as db:
+        if scope == "org" and admin_list.holds_admin_right(user):
+            rows, more = await admin_list.list_org_packages(db)
+            return {"packages": [admin_list.row_out(r, user.email) for r in rows],
+                    "admin": True, "truncated": more}
         found = await store.list_summaries(db, user.email)
-    return {"packages": [_summary_out(f) for f in found]}
+    out: dict[str, Any] = {"packages": [_summary_out(f) for f in found]}
+    if scope == "org":
+        out["admin"] = False
+    return out
 
 
 def _viewer_out(app: viewer.InstalledApp) -> dict[str, Any]:
