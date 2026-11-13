@@ -354,6 +354,17 @@ class Settings(BaseSettings):
     # flip on a box is gate `enforcement-flip`. Fence:
     # tests/unit/test_crm_answer_first.py.
     crm_answer_first_orgs: str = ""
+    # `crm_long_read_orgs` (WS-53 CRM-Q25e part 5, task 2985 HRD-6,
+    # 2026-11-13) lists the organization ids whose CRM totals may take a
+    # long read of up to 180 s (`crm_platform.md` §18.11, CRM-Q25e), in the
+    # grammar of `crm_orgs`. Default empty means NO organization: a total
+    # that runs past 10 s answers 503 `aggregate_timeout`, as before, and
+    # the chat tool makes no second call. The one reader is
+    # `gateway.routes.crm.flags`. A `*_ORGS` key, so a SIGHUP reload applies
+    # it (`docs/flag_reload.md`). A name in the list spends nothing, so a
+    # flip on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_crm_large_reads.py.
+    crm_long_read_orgs: str = ""
     # `crm_digest_orgs` (WS-53 CRM-Q28, 2026-10-17) lists the organization
     # ids that get the weekly CRM digest on the powerful tier
     # (`crm_platform.md` §18.11.2), in the grammar of `crm_orgs`. Default
