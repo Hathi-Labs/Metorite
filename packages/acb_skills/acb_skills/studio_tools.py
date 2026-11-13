@@ -4206,8 +4206,9 @@ async def studio_app_read(
 # the orchestrator (``workflow_tools.py``) stay as they are.
 #
 # * The tool has no flag of its own. It reaches each member who holds
-#   ``feature:studio`` in an org of ``STUDIO_ORGS``, where ``TOOL_PACKS`` holds
-#   the ``studio`` pack. Production holds both, so the next release ships it.
+#   ``feature:studio`` in an org of ``STUDIO_ORGS``, where the tool-pack flag
+#   (``tool_packs.packs_on``) holds the ``studio`` pack. Production holds
+#   both, so the next release ships it.
 # * Each text that a member wrote (a name, a description, a reason, the cron or
 #   the event of a trigger, a publisher) sits in ONE ``UntrustedFrame`` block,
 #   with each hidden character left out (``hidden_text.strip_hidden``, F1b).
@@ -4495,7 +4496,7 @@ async def studio_workflow_read(
 #: email specialist) = 110 tools, which is ``MAX_REQUEST_TOOLS``. One more
 #: tool makes the cap drop the studio pack. So the two writes of STB-6b
 #: (publish and live) do not fit. They need a follow pack (the ALN-4 pattern,
-#: with an owner ``TOOL_PACKS`` line) or room made in the pack. Fence:
+#: with an owner line in the tool-pack flag) or room made in the pack. Fence:
 #: ``test_studio_workflow_tools.py::test_a_studio_turn_that_loads_the_email_pack_keeps_the_studio_pack``.
 STUDIO_WORKFLOW_TOOLS = (studio_workflow_read,)
 
