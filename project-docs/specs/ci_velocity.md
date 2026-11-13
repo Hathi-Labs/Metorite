@@ -26,6 +26,12 @@ passes, it moves `green/main`. Each release slot ships that commit. §8.7
 holds the design. A repair round after the verifier, on 2026-11-13, makes the
 R8 guard read the lists of the release commit.
 
+**CIV-31 is BUILT on 2026-11-14** (task 3056, branch
+`civ31-auto-revert-mt-7191b0bd`). HIGH tier, and dark. The code default of
+`AUTO_REVERT_MODE` is `off`. The unit file sets `dry` for the one-week dry
+run (D218). It is not live until the orchestrator installs the unit. §8.8
+holds the design.
+
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
 **Owning spec** for how much CI runs, and where. `engineering_practice.md` §7a
@@ -442,11 +448,11 @@ Set `BISECT_TEST_CMD` to reuse a prepared lane or venv. `BISECT_TIMEOUT_S` and
 - Install the timer (steps in the service file).
 - A lane session reads the `BISECT_RESULT` line in the journal and posts it on
   a Metorite task. The script has no Metorite credentials.
-- Known gap: the push batch job writes no JUnit file. Only the R8 shards
-  upload one (`r8-junit-shard-N`). The poller reads an artifact named
-  `unit-junit` (`BISECT_ARTIFACT`). A later slice must add
-  `--junitxml` and an upload step to `test` in `deploy.yml`. Until then the
-  poller records a red run with "no failed test id".
+- The JUnit report is there (CIV-5b). The `test` job of `deploy.yml` runs
+  pytest with `--junitxml=junit/test.xml`. It uploads the file as
+  `unit-junit` on every run, a red run too. The poller reads that artifact
+  (`BISECT_ARTIFACT`). It records a run with no failed test as "no failed
+  test id". CIV-31 (§8.8) runs this poller and acts on its result.
 
 ### CIV-6 · Local tier: the affected tests by default, several runs at once on the box
 
@@ -916,7 +922,7 @@ Each rung ends in a demo (D211). Each slice of a rung blocks its demo task.
 | CIV-37 | 3062 | 0 | LOW | Model routing by job |
 | CIV-38 | 3063 | 0 | LOW | The quality numbers and the rollback rule |
 | CIV-30 | 3055 | 1 | HIGH | The green pointer. A release ships green |
-| CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first |
+| CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first. **BUILT 2026-11-14**, dark (code default `off`, unit `dry`). §8.8 holds the design |
 | CIV-32 | 3057 | 2 | STANDARD | **BUILT 2026-11-13.** A repair round tests what failed and what the fix reaches (`ci_unit_guard.py repair`) |
 | CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py`. CIV-33d BUILT 2026-11-13 (task 3074): the scan fences of six large files moved to `*_scan.py` files, and `test_scanner_budget.py` caps a scanner file at 30 s. The scanner set costs 1,748 s, down from 2,333 s. `test_affected_tests.py` (381 s) waits for PR 2205 |
 | CIV-34 | 3059 | 2 | STANDARD | Conflict rules in the merge bot, tested on the merged tree |
@@ -996,3 +1002,52 @@ step 1c keep the old table.
   dispatch. The step `once` still counts that run as the ship of its slot. So
   a later nightly run in the same window does not ship a newer `green/main`.
   The next slot ships it.
+
+### 8.8 CIV-31 as built: the automatic revert (2026-11-14)
+
+`scripts/home_server/auto_revert.py` holds it. The fence is
+`tests/unit/test_auto_revert.py`. A user timer of `dev` on the home box runs
+one pass every 5 minutes (`scripts/home_server/systemd/metorite-auto-revert.*`).
+That unit takes the place of `metorite-bisect-poll`, so install only one.
+
+- **The flag.** `AUTO_REVERT_MODE` is `off`, `dry` or `on`. When it is
+  unset, empty or unknown, the pass acts as `off` and does nothing. `dry` does
+  every check and the local revert. It writes one line in
+  `~/lanes/auto-revert.log` and one report in `~/lanes/auto-revert/`. It
+  writes nothing to GitHub and nothing to `main`. The unit file sets `dry`.
+- **The pass.** It runs the CIV-5 poller. When the poller names the first bad
+  commit of a red push batch, the pass checks that commit. It runs the failed
+  tests once more on the tip of `main`, on the culprit and on its parent. It
+  makes the revert on the tip in a temp worktree. The failed tests must pass
+  on that revert tree.
+- **`on`.** The pass pushes the branch `auto-revert/<sha>`. It opens a PR with
+  the title `Revert "<subject>"` and the trailer `Auto-Revert: <sha>` in the
+  commit and the body. The body has a `VERIFY: PASS` line, because the revert
+  tree passed the failed tests. `lane_handover.sh` hands the PR to the merge
+  bot as STANDARD. Then the pass comments on the culprit's PR with the failed
+  tests and the task.
+- **The brakes.** The log counts the reverts, and a fourth in one hour stops.
+  A culprit that is a revert is never reverted. A second red run of the same
+  culprit opens no second PR. `scripts/premerge.sh` refuses a branch with the
+  same patch as a commit that a trailer names. So a reverted commit cannot
+  merge again unchanged, and a revert of the revert cannot merge either.
+- **Fail closed.** Each doubt stops the revert, and the pass writes a `PERSON`
+  line for a person. These are the doubts:
+  - The poller names no single commit, or no failed test.
+  - The culprit is a merge commit, is not on `main`, or `main` holds its revert.
+  - A re-run gives another answer, or a probe cannot judge.
+  - The revert does not apply cleanly, or the failed tests fail on it.
+  - A step of `on` fails.
+  - The merge bot sends the revert PR back (`BACK`). The next pass reads it.
+- **Never.** The pass never pushes to `main` and never force-pushes. It never
+  merges and never dispatches a workflow. The merge bot merges the revert PR.
+- **A known limit: no task reopen.** The box has no Metorite write credential.
+  So the pass does not open the culprit's task again. The log line and the
+  report name the task, and a person or a lane session opens it.
+- **A known limit: the bad commit.** The poller takes the head sha of the red
+  run as the bad commit. The batch tests the tip of `main`, which can be
+  newer. Then the bisect can exit 3, and the pass writes a `PERSON` line.
+- **A known limit: the speed.** The merge bot merges a revert PR only after
+  pr-check passes on it, with a median of 32 minutes (§8.2).
+- **Go `on`.** After the week of `dry`, read the log and the reports. CIV-38
+  lands first (§8.5). Then set `AUTO_REVERT_MODE=on` in the unit and reload it.
