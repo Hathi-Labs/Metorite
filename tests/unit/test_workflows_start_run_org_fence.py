@@ -60,8 +60,8 @@ ALLOWED: dict[tuple[str, str, str], str] = {
         "and `STUDIO_ORGS`. It binds no tenant and never calls `dispatch_event`. "
         "The author of the workflow must OWN the package, and a trigger is armed "
         "only after each check passed. The delivery key holds one run for each "
-        "breach. The payload holds ids, names and `due_at`, the value of the due "
-        "field, which the owner reads.",
+        "breach. The payload holds ids and names, and no field value: each member "
+        "who reads the runs reads it, past the row rules.",
     ("broker_handlers.py", "_resume_run_handler", "resume_run"):
         "The approval door. The org is the approver's bound tenant, which RLS "
         "makes equal to the org of the run row. A person approved the run.",

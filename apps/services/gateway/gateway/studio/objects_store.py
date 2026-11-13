@@ -4881,11 +4881,10 @@ async def due_timer_records(db: Any, timer: Timer, *, armed_at: datetime, workfl
 
 
 def timer_print(rule: Rule) -> dict[str, Any]:
-    """What makes the breaches of a timer different (E9a): its due field and
-    its pause, with the pause values sorted. The workflow scan keeps it beside
-    the arm time, and a new print arms the trigger again, so a changed field
-    never starts runs for the records that were already overdue."""
-    pause = None
-    if rule.pause is not None:
-        pause = {"field": rule.pause.field, "in": sorted(str(v) for v in rule.pause.value)}
-    return {"field": str(rule.field), "pause": pause}
+    """What makes a breach a new one (E9a): the due field of the timer, and
+    nothing else. The workflow scan keeps it beside the arm time, and a new
+    print arms the trigger again, so a changed field never starts runs for the
+    records that were already overdue. The pause is not in it on purpose. A
+    new pause value only stops breaches, and an arm at that time would drop
+    the breach of a record that was overdue in a pause and then leaves it."""
+    return {"field": str(rule.field)}

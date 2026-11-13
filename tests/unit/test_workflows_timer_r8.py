@@ -35,13 +35,18 @@ select ``state`` and the timer ``sla`` that pauses while ``state`` is
 * T11. The scan holds one session at a time: ``test_t11_*``.
 * T12. A record event never starts a timer trigger: ``test_t12_*``.
 * T13 to T15 and T19 (review round 1, P1). A trigger is armed only when it is
-  live, and its print (field and pause) sits beside the arm. A late rule, a
+  live, and its print (the due field) sits beside the arm. A late rule, a
   late grant, a changed field, a disabled trigger and a timer that comes back
   start no run for a record that was already overdue.
 * T16. A timer with no pause breaches whatever the state: ``test_t16_*``.
 * T17 (P2). A slow read meets the LOCAL deadline, and the scan goes on.
 * T18 (P2). Only the owner of the package hears a breach, not a viewer.
 * T20. A save keeps the arm and its print, and drops a forged print.
+* T21 (review round 2). The stored payload holds no due value and no field
+  value.
+* T22. A new pause value arms nothing, and a paused record still breaches.
+* T23. A true no of the owner disarms, and its return starts no catch-up.
+* T24. A fault of the access read keeps the arm and drops no breach.
 
 **Mutations this suite catches** (each was run before the commit):
 
@@ -64,6 +69,10 @@ select ``state`` and the timer ``sla`` that pauses while ``state`` is
 * M12. ``due_timer_records`` drops ``_time_limit``: T17 red.
 * M13. ``_timer_breaches`` asks ``member_reads_package`` again: T18 red.
 * M14. ``crud.update_workflow`` keeps the body's ``timer_arm``: T20 red.
+* M15. The payload holds ``due_at`` again: T1 and T21 red.
+* M16. ``timer_print`` holds the pause too: T22 red.
+* M17. A true no of the owner keeps the arm: T23 red.
+* M18. A fault of the owner check disarms: T24 red.
 
 Run (a PRIVATE database, because the fixture drops ``<db>_wftimer``)::
 
@@ -147,7 +156,7 @@ _OBJECTS: dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]] = {
     "visit": (_FIELDS, [_NO_PAUSE_RULE]),
 }
 #: The payload of a breach run: ids and names, never a field value.
-_PAYLOAD_KEYS = {"source", "event_type", "package_id", "object", "record_id", "rule", "due_at"}
+_PAYLOAD_KEYS = {"source", "event_type", "package_id", "object", "record_id", "rule"}
 
 
 def _node(nid: str, ntype: str, label: str | None = None, config: dict | None = None) -> dict:
@@ -489,7 +498,7 @@ def test_t1_a_breach_starts_one_run_for_each_listening_workflow(w) -> None:
         assert payload["event_type"] == "studio.record.breached"
         assert (payload["record_id"], payload["rule"], payload["object"]) == (rid, "sla", "claim")
         assert payload["package_id"] == w.pkg["A"].id
-        assert payload["due_at"] == due
+        assert "due_at" not in payload  # the due value is a field value
         assert run.delivery_key == f"timer:sla:{rid}:{due}"
         assert "Late claim" not in json.dumps(payload)  # no field value leaves the store
 
@@ -790,7 +799,7 @@ def test_t11_the_scan_holds_one_session_at_a_time(w, monkeypatch) -> None:
                 depth[task] -= 1
         return wrapped
 
-    real_held, real_start = access.members_holding_studio, scheduler.start_run
+    real_held, real_start = access.members_studio_state, scheduler.start_run
 
     async def held(members: Any, org: str) -> Any:
         at["resolve"].append(_here())
@@ -802,7 +811,7 @@ def test_t11_the_scan_holds_one_session_at_a_time(w, monkeypatch) -> None:
 
     monkeypatch.setattr(scheduler, "_tenant_session", _count(scheduler._tenant_session))
     monkeypatch.setattr(acc, "tenant_session", _count(acc.tenant_session))
-    monkeypatch.setattr(access, "members_holding_studio", held)
+    monkeypatch.setattr(access, "members_studio_state", held)
     monkeypatch.setattr(scheduler, "start_run", start)
     _scan(w)
     assert len(_runs(w, "Listen A")) == 1 and _runs(w, "M2 A") == []
@@ -885,17 +894,17 @@ def test_t14_a_late_grant_starts_no_run_for_records_already_overdue(w, monkeypat
     starts no run."""
     from gateway.studio import access
 
-    real = access.members_holding_studio
+    real = access.members_studio_state
 
-    async def nobody(members: Any, org: str) -> dict[str, bool]:
+    async def nobody(members: Any, org: str) -> dict[str, bool | None]:
         return {str(m).strip().lower(): False for m in members}
 
-    monkeypatch.setattr(access, "members_holding_studio", nobody)
+    monkeypatch.setattr(access, "members_studio_state", nobody)
     _listen(w, "Listen A", armed=None)
     _scan(w)
     assert _armed_at(w, "Listen A") is None, "a refused author's trigger was armed"
     _create(w, "A", due=_db_iso(w, "0 seconds"))
-    monkeypatch.setattr(access, "members_holding_studio", real)  # the grant
+    monkeypatch.setattr(access, "members_studio_state", real)  # the grant
     _scan(w)
     assert _armed_at(w, "Listen A") is not None
     _scan(w)
@@ -1079,3 +1088,97 @@ def test_t20_a_save_keeps_the_arm_and_its_print_and_drops_a_forged_one(w) -> Non
     assert (_armed_at(w, "Listen A"), _arm_print(w, "Listen A")) == before
     assert isinstance(save(_config(w, "A", rule="sla2")), dict)
     assert (_armed_at(w, "Listen A"), _arm_print(w, "Listen A")) == (None, None)
+
+
+# ── Review round 2: no field value, the pause print, a no and a fault ───────
+
+
+def test_t21_the_stored_payload_holds_no_due_value_and_no_field_value(w) -> None:
+    """Each member who reads the runs of the workflow reads `trigger_payload`,
+    past the row rules and `hide`. So it holds the record id and names only.
+    The due time stays in the delivery key, which no route answers with."""
+    _listen(w, "Listen A")
+    due = _db_iso(w, "-1 minute")
+    rid = _create(w, "A", due=due)
+    _scan(w)
+    (run,) = _runs(w, "Listen A")
+    with w.admin_engine.connect() as c:
+        raw = str(c.execute(text(
+            "SELECT trigger_payload::text FROM workflow_runs WHERE id = CAST(:r AS uuid)"),
+            {"r": run.id}).scalar())
+    stored = json.loads(raw)
+    assert set(stored) == _PAYLOAD_KEYS, stored
+    assert stored["record_id"] == rid
+    for value in (due, due[:10], due[11:19], "Late claim", "open"):
+        assert value not in raw, value
+    assert run.delivery_key == f"timer:sla:{rid}:{due}"
+
+
+def test_t22_a_new_pause_value_keeps_the_breach_of_a_record_that_leaves_the_pause(w) -> None:
+    """The owner adds a pause value while an overdue record sits in a pause. A
+    new pause value only stops breaches, so the scan arms nothing again, and
+    the record breaches when it leaves the pause."""
+    wider = {**_TIMER_RULE, "pause": {"field": "state", "in": ["waiting", "closed"]}}
+    _listen(w, "Listen A")
+    rid = _create(w, "A", due=_db_iso(w, "-1 minute"), state="waiting")
+    _scan(w)
+    assert _runs(w, "Listen A") == []
+    armed = _armed_at(w, "Listen A")
+    _set_rules(w, "A", "claim", [wider])
+    try:
+        _scan(w)
+        assert _armed_at(w, "Listen A") == armed, "a new pause value armed the trigger again"
+        _update(w, "A", rid, state="open")
+        _scan(w)
+        (run,) = _runs(w, "Listen A")
+        assert _payload(run)["record_id"] == rid
+    finally:
+        _set_rules(w, "A", "claim", [_TIMER_RULE])
+
+
+def _owner_status(w: Any, status: str) -> None:
+    with w.admin_engine.begin() as c:
+        c.execute(text("UPDATE app_user SET status = :s WHERE email = :e"),
+                  {"s": status, "e": OWNER_A})
+
+
+def test_t23_a_true_no_of_the_owner_disarms_and_its_return_starts_no_catch_up(w) -> None:
+    """The owner is suspended: the real resolver answers a true no. The scan
+    disarms the trigger. When the owner is active again, the scan arms it at
+    that time, so a record that fell due in between starts no run."""
+    _listen(w, "Listen A")
+    _owner_status(w, "suspended")
+    try:
+        _scan(w)
+        assert _armed_at(w, "Listen A") is None, "a true no kept the arm"
+        _create(w, "A", due=_db_iso(w, "0 seconds"))
+    finally:
+        _owner_status(w, "active")
+    _scan(w)
+    assert _armed_at(w, "Listen A") is not None
+    _scan(w)
+    assert _runs(w, "Listen A") == []
+
+
+def test_t24_a_fault_of_the_access_read_keeps_the_arm_and_drops_no_breach(w, monkeypatch) -> None:
+    """The resolver fails (a fault, not a no). The scan starts nothing and
+    keeps the arm. When the read works again, the breach of the fault period
+    starts its run."""
+    import acb_auth.access as acc
+
+    real = acc.resolve_access_in_org
+
+    async def broken(email: Any, org: Any, *, strict: bool = False) -> Any:
+        raise acc.IdentityUnavailable("access_in_org")
+
+    _listen(w, "Listen A")
+    armed = _armed_at(w, "Listen A")
+    rid = _create(w, "A", due=_db_iso(w, "-1 minute"))
+    monkeypatch.setattr(acc, "resolve_access_in_org", broken)
+    _scan(w)
+    assert _runs(w, "Listen A") == []
+    assert _armed_at(w, "Listen A") == armed, "a fault moved the arm"
+    monkeypatch.setattr(acc, "resolve_access_in_org", real)
+    _scan(w)
+    (run,) = _runs(w, "Listen A")
+    assert _payload(run)["record_id"] == rid

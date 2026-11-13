@@ -350,7 +350,7 @@ def _wire(monkeypatch, rows: list[Any], due: list[Any], *,
 
     monkeypatch.setattr(scheduler, "_tenant_session", session)
     monkeypatch.setattr(scheduler, "_timer_triggers", _triggers)
-    monkeypatch.setattr(access, "members_holding_studio", _held)
+    monkeypatch.setattr(access, "members_studio_state", _held)
     monkeypatch.setattr(scheduler, "_timer_breaches", _breaches)
     monkeypatch.setattr(scheduler, "start_run", _start)
     return seen
@@ -360,10 +360,10 @@ _DUE = [objects_store.TimerDue("r1", "2026-11-13T09:00:00.000000Z"),
         objects_store.TimerDue("r2", "2026-11-13T09:05:00.000000Z")]
 
 
-def test_the_payload_holds_ids_names_and_the_due_time_only_and_a_duplicate_starts_nothing(
-        monkeypatch) -> None:
-    """The payload holds ids and names, and `due_at`, the value of the due field.
-    The author owns the package, so the author reads that value."""
+def test_the_payload_holds_no_field_value_and_a_duplicate_starts_nothing(monkeypatch) -> None:
+    """The payload holds ids and names, never a field value. Each member who
+    reads the runs reads it, past the row rules, so the due value stays in the
+    delivery key only (review round 2)."""
     seen = _wire(monkeypatch, [_row("t1", ORG_A)], _DUE,
                  refuse={"r2": DuplicateDelivery("run-0")})
     assert asyncio.run(scheduler.scan_due_timers(ORG_A)) == 1
@@ -371,8 +371,7 @@ def test_the_payload_holds_ids_names_and_the_due_time_only_and_a_duplicate_start
     first = seen.starts[0]
     assert first["trigger_payload"] == {
         "source": "studio", "event_type": "studio.record.breached", "package_id": PKG,
-        "object": "claim", "record_id": "r1", "rule": "sla",
-        "due_at": "2026-11-13T09:00:00.000000Z"}
+        "object": "claim", "record_id": "r1", "rule": "sla"}
     assert first["delivery_key"] == "timer:sla:r1:2026-11-13T09:00:00.000000Z"
     assert (first["trigger_kind"], first["started_by"], first["organization_id"]) == (
         "event", "scheduler:timer", ORG_A)
@@ -404,21 +403,21 @@ def test_the_row_read_arms_nothing_and_disarms_a_trigger_that_is_not_live(monkey
     assert not any("now()" in sql for sql, _ in seen.sql), "the row read armed a trigger"
 
 
-def test_the_print_of_a_timer_names_its_field_and_its_sorted_pause() -> None:
+def test_the_print_of_a_timer_names_its_due_field_only() -> None:
+    """A new pause value only stops breaches, so it must not arm the trigger
+    again (review round 2, P2(a)). A new due field does."""
     from acb_common import studio_rules as sr
 
     base = sr.parse_rule({"name": "sla", "kind": "timer", "field": "due",
-                          "pause": {"field": "state", "in": ["waiting", "hold"]}})
-    assert objects_store.timer_print(base) == {
-        "field": "due", "pause": {"field": "state", "in": ["hold", "waiting"]}}
-    same = sr.parse_rule({"name": "sla", "kind": "timer", "field": "due",
-                          "pause": {"field": "state", "in": ["hold", "waiting"]}})
-    assert objects_store.timer_print(same) == objects_store.timer_print(base)
+                          "pause": {"field": "state", "in": ["waiting"]}})
+    wider = sr.parse_rule({"name": "sla", "kind": "timer", "field": "due",
+                           "pause": {"field": "state", "in": ["waiting", "hold"]}})
     bare = sr.parse_rule({"name": "sla", "kind": "timer", "field": "due"})
     moved = sr.parse_rule({"name": "sla", "kind": "timer", "field": "deadline"})
-    assert objects_store.timer_print(bare) == {"field": "due", "pause": None}
-    assert len({json.dumps(objects_store.timer_print(r), sort_keys=True)
-                for r in (base, bare, moved)}) == 3
+    assert objects_store.timer_print(base) == {"field": "due"}
+    assert objects_store.timer_print(wider) == objects_store.timer_print(base)
+    assert objects_store.timer_print(bare) == objects_store.timer_print(base)
+    assert objects_store.timer_print(moved) == {"field": "deadline"}
 
 
 def test_the_breach_read_has_a_deadline_and_a_lookback() -> None:
@@ -447,6 +446,113 @@ def test_the_owner_check_fails_closed_with_no_statement(member: Any, package_id:
 
     assert asyncio.run(member_owns_package(
         _NoDb(), member=member, package_id=package_id, studio_held=held)) is False
+
+
+class _Nested:
+    """A fake session with a savepoint that does nothing."""
+
+    def begin_nested(self) -> Any:
+        return _AsyncNull()
+
+
+class _AsyncNull:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: Any) -> bool:
+        return False
+
+
+@pytest.mark.parametrize(("held", "read", "answer"), [
+    (None, "never", None),        # the feature answer was a fault
+    (True, "raise", None),        # the package read failed: a fault
+    (True, "none", False),        # a true no: not the owner
+    (True, "pkg", True),
+])
+def test_the_owner_check_tells_a_fault_from_a_no(monkeypatch, held: Any, read: str,
+                                                 answer: Any) -> None:
+    """Review round 2: a fault answers None and keeps the arm, and a true no
+    answers False and disarms. The R8 halves are T23 and T24."""
+    from gateway.studio import access, packages_store
+
+    async def get_package(db: Any, member: str, pid: str) -> Any:
+        if read == "never":
+            raise AssertionError("no read after a fault of the feature answer")
+        if read == "raise":
+            raise RuntimeError("connection lost")
+        return None if read == "none" else object()
+
+    monkeypatch.setattr(packages_store, "get_package", get_package)
+    assert asyncio.run(access.member_owns_package(
+        _Nested(), member="owner@a.test", package_id=PKG, studio_held=held)) is answer
+
+
+@pytest.mark.parametrize(("outcome", "state", "holds"), [
+    ("raise", None, False), ("inactive", False, False), ("studio", True, True),
+])
+def test_the_feature_state_tells_a_fault_from_a_no(monkeypatch, outcome: str, state: Any,
+                                                   holds: bool) -> None:
+    """`members_studio_state` keeps a fault apart (None), and asks the resolver
+    in strict mode. `members_holding_studio`, the answer of E3, stays fail
+    closed: a fault is False there."""
+    import acb_auth.access as acc
+    from acb_auth.permissions import build_access
+    from gateway.studio import access
+
+    calls: list[bool] = []
+
+    async def resolve(email: Any, org: Any, *, strict: bool = False) -> Any:
+        calls.append(strict)
+        if outcome == "raise":
+            raise acc.IdentityUnavailable("access_in_org")
+        if outcome == "inactive":
+            return build_access([], is_active=False)
+        return build_access(["feature:studio"], is_active=True)
+
+    monkeypatch.setattr(acc, "resolve_access_in_org", resolve)
+    got = asyncio.run(access.members_studio_state(["Owner@A.test", "no-address"], ORG_A))
+    assert got == {"owner@a.test": state, "no-address": False}
+    assert calls == [True]
+    held = asyncio.run(access.members_holding_studio(["owner@a.test"], ORG_A))
+    assert held == {"owner@a.test": holds} and calls == [True, False]
+
+
+def test_the_strict_resolver_raises_on_a_read_error(monkeypatch) -> None:
+    """`resolve_access_in_org(strict=True)` raises IdentityUnavailable on a read
+    error, so a caller can tell a fault from a no. The default still answers
+    no access."""
+    import acb_auth.access as acc
+
+    class _Broken:
+        async def __aenter__(self) -> Any:
+            raise RuntimeError("relation does not exist")
+
+        async def __aexit__(self, *exc: Any) -> bool:
+            return False
+
+    monkeypatch.setattr(acc, "tenant_session", lambda org: _Broken())
+    monkeypatch.setattr(acc.db_busy, "is_db_timeout", lambda exc: False)
+    refused = asyncio.run(acc.resolve_access_in_org("a@x.test", ORG_A))
+    assert refused.is_active is False
+    with pytest.raises(acc.IdentityUnavailable):
+        asyncio.run(acc.resolve_access_in_org("a@x.test", ORG_A, strict=True))
+
+
+def test_a_refusal_logs_once_for_each_trigger_in_its_window(monkeypatch) -> None:
+    lines: list[str] = []
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(scheduler._log, "warning", lambda event, **kw: lines.append(event))
+    monkeypatch.setattr(scheduler.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(scheduler, "_timer_warned", {})
+    one, two = SimpleNamespace(trigger_id="t1"), SimpleNamespace(trigger_id="t2")
+    for _ in range(3):
+        scheduler._warn_timer(one, "workflows.timer_refused_package_owner", "wf1")
+    scheduler._warn_timer(two, "workflows.timer_refused_package_owner", "wf2")
+    scheduler._warn_timer(one, "workflows.timer_not_found", "wf1")
+    assert len(lines) == 3
+    clock["now"] += scheduler.TIMER_WARN_EVERY_S + 1
+    scheduler._warn_timer(one, "workflows.timer_refused_package_owner", "wf1")
+    assert len(lines) == 4
 
 
 def test_a_full_page_of_triggers_moves_the_cursor(monkeypatch) -> None:

@@ -399,6 +399,23 @@ async def _timer_triggers(org: str) -> list[Any]:
     return list(rows)
 
 
+#: STU-E9a. A refusal of one trigger logs at most once in this many seconds.
+#: A refused trigger is read again on each pass, every 30 seconds.
+TIMER_WARN_EVERY_S = 600.0
+_timer_warned: dict[tuple[str, str], float] = {}
+
+
+def _warn_timer(row: Any, event: str, workflow_id: str) -> None:
+    """Log *event* for the trigger of *row*, at most once in
+    :data:`TIMER_WARN_EVERY_S` seconds. The line names the workflow only."""
+    key, now = (str(row.trigger_id), event), time.monotonic()
+    last = _timer_warned.get(key)
+    if last is not None and now - last < TIMER_WARN_EVERY_S:
+        return
+    _timer_warned[key] = now
+    _log.warning(event, workflow_id=workflow_id)
+
+
 async def _disarm(db: Any, row: Any, workflow_id: str, why: str) -> None:
     """Clear the arm of one trigger that a read proved not live, and log once."""
     if row.last_fired_at is not None:
@@ -407,7 +424,7 @@ async def _disarm(db: Any, row: Any, workflow_id: str, why: str) -> None:
 
 
 async def _timer_breaches(
-    org: str, row: Any, timer_ref: tuple[str, str, str], studio_held: dict[str, bool],
+    org: str, row: Any, timer_ref: tuple[str, str, str], studio_state: dict[str, bool | None],
 ) -> tuple[dict[str, Any], Any, list[Any]] | None:
     """The version, the timer and the breaches of one LIVE, armed trigger, or
     None. ONE ``_tenant_session(org)``, and no second one inside it.
@@ -417,18 +434,21 @@ async def _timer_breaches(
 
     * The author of the workflow must OWN the package and hold
       ``feature:studio`` (``studio.access.member_owns_package``). The scan
-      reads past the row rules, and only the owner passes them. *studio_held*
-      is asked before, outside any session. A refusal starts nothing and keeps
-      the arm, because a fault of the access read also refuses.
+      reads past the row rules, and only the owner passes them.
+      *studio_state* is asked before, outside any session
+      (``studio.access.members_studio_state``). A true no disarms the trigger.
+      A fault of either read keeps the arm, so a fault drops no breach.
     * A workflow with a node of ``_member_blind_write_nodes`` starts nothing.
     * The timer must be there and fit (``objects_store.timer_of``).
 
-    A task node and a missing timer disarm the trigger. Then the print of the
-    timer (``objects_store.timer_print``) must equal the print of the arm. An
-    unarmed trigger, or one whose field or pause changed, is armed at the DB
-    clock, and this pass starts nothing for it. A read past the deadline logs
-    one line and starts nothing. Each refusal names the workflow and holds no
-    record content.
+    A true no of the owner, a task node and a missing timer disarm the
+    trigger. Then the print of the timer (``objects_store.timer_print``, its
+    due field only) must equal the print of the arm. An unarmed trigger, or
+    one whose due field changed, is armed at the DB clock, and this pass
+    starts nothing for it. A new pause value only stops breaches, so it never
+    arms again. A read past the deadline logs one line and starts nothing.
+    Each refusal logs at most once in :data:`TIMER_WARN_EVERY_S` seconds,
+    names the workflow and holds no record content.
     """
     from gateway.studio import objects_store
     from gateway.studio.access import member_owns_package
@@ -437,24 +457,29 @@ async def _timer_breaches(
     workflow_id = str(row.workflow_id)
     owner = str(row.owner_email or "").strip().lower()
     async with _tenant_session(org) as db:
-        if not await member_owns_package(
+        owned = await member_owns_package(
             db, member=owner, package_id=package_id,
-            studio_held=bool(studio_held.get(owner, False)),
-        ):
-            _log.warning("workflows.timer_refused_package_owner", workflow_id=workflow_id)
+            studio_held=studio_state.get(owner, False),
+        )
+        if owned is None:
+            _warn_timer(row, "workflows.timer_owner_check_failed", workflow_id)
+            return None
+        if not owned:
+            _warn_timer(row, "workflows.timer_refused_package_owner", workflow_id)
+            await _disarm(db, row, workflow_id, "not_owner")
             return None
         serialized = await load_version_serialized(db, workflow_id, int(row.latest_version))
         if serialized is None:
             return None
         if _member_blind_write_nodes(serialized):
-            _log.warning("workflows.timer_refused_task_node", workflow_id=workflow_id)
+            _warn_timer(row, "workflows.timer_refused_task_node", workflow_id)
             await _disarm(db, row, workflow_id, "task_node")
             return None
         timer = await objects_store.timer_of(
             db, package_id=package_id, object_name=object_name, rule_name=rule,
         )
         if timer is None:
-            _log.warning("workflows.timer_not_found", workflow_id=workflow_id)
+            _warn_timer(row, "workflows.timer_not_found", workflow_id)
             await _disarm(db, row, workflow_id, "timer_not_found")
             return None
         stamp = objects_store.timer_print(timer.rule)
@@ -541,7 +566,7 @@ async def scan_due_timers(org: str) -> int:
     * The scan ARMS a trigger only when it is live: enabled, published, its
       author owns the package, no task node, and its timer is there. The arm
       time is the DB clock, and ``config.timer_arm`` keeps the print of the
-      timer (field and pause). A new print arms it again. A record due at or
+      timer (its due field). A new print arms it again. A record due at or
       before the arm time never breaches, so a late rule, a late grant, a
       removed task node or a changed field starts no catch-up storm. A trigger
       that a read proves not live is disarmed (``_DISARM_TIMER_SQL``).
@@ -556,10 +581,12 @@ async def scan_due_timers(org: str) -> int:
       ``TIMER_BREACHES_PER_TRIGGER`` breaches of each one, oldest due first.
     * Each step holds one session, and no session is open at ``start_run``.
 
-    The payload holds ids and names, and ``due_at``, which is the value of the
-    due field. The author owns the package, so the author reads that value.
+    The payload holds ids and names, never a field value. Each member who
+    reads the runs of the workflow reads it, past the row rules and ``hide``,
+    so the due value stays out of it. Only the delivery key holds the due
+    time, and no route answers with a delivery key.
     """
-    from gateway.studio.access import members_holding_studio
+    from gateway.studio.access import members_studio_state
     from gateway.studio.preview import RECORD_EVENT_SOURCE
 
     armed = await _timer_rows(org)
@@ -567,12 +594,12 @@ async def scan_due_timers(org: str) -> int:
         return 0
     # The access of each DISTINCT author, outside any session: the resolver
     # opens a session of its own (the STU-E3 pool fix).
-    studio_held = await members_holding_studio((r.owner_email for r, _ in armed), org)
+    studio_state = await members_studio_state((r.owner_email for r, _ in armed), org)
     started = 0
     for row, timer_ref in armed:
         workflow_id = str(row.workflow_id)
         try:
-            found = await _timer_breaches(org, row, timer_ref, studio_held)
+            found = await _timer_breaches(org, row, timer_ref, studio_state)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # one trigger must not hide the others
@@ -600,7 +627,6 @@ async def scan_due_timers(org: str) -> int:
                         "object": timer.object_name,
                         "record_id": item.record_id,
                         "rule": rule,
-                        "due_at": item.due_at,
                     },
                     variables=parse_jsonb(row.variables, {}),
                     started_by=TIMER_STARTED_BY,
