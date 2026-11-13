@@ -81,7 +81,11 @@ caller's transaction stays usable, and the old timeout comes back.
 ⚠️ ``v_num`` takes no index condition as the app role, because no ``numeric``
 comparison is LEAKPROOF (``docs/rls_and_indexes.md``). So a number filter
 reads the hot rows of its field. A sort on a number still reads the index in
-order.
+order. **C2c** adds ``v_num_f8``, a float8 copy that a trigger fills
+(migration 433). For an org on ``STUDIO_NUM_F8_ORGS`` (default OFF), a number
+filter adds a float8 test with the non-strict operator beside the exact
+``numeric`` test, so the app role reads the index ``studio_record_hot_num_f8_idx``.
+The exact test stays as the filter, so the records do not change.
 
 **The aggregate (C2b).** :func:`aggregate_records` groups the records of one
 object by one hot field and takes a count, a sum or an average of each group.
@@ -282,6 +286,7 @@ from acb_common.studio_fields import (
     stored_field,
     validate_record,
 )
+from acb_common.studio_flags import num_f8_org
 from acb_common.studio_query import Condition, Query, QueryError, parse_query
 from acb_common.studio_rules import (
     FORMULA,
@@ -1975,6 +1980,92 @@ def _needs_row(cond: Condition) -> bool:
     return False
 
 
+#: The org -> (ready, when it was read) of the float8 copy (C2c). Per process.
+_F8_READY: dict[str, tuple[bool, float]] = {}
+#: How long a "ready" and a "not ready" answer holds, in seconds.
+_F8_TTL_READY, _F8_TTL_NOT_READY = 600.0, 30.0
+#: The longest that the guard may take, in seconds. It never takes more than
+#: what is left of the call's deadline. A slow guard fails closed.
+_F8_GUARD_CAP_S = 1.0
+#: It answers the org that it counts (the GUC of the session) and whether that
+#: org has no row without its copy.
+_F8_READY_SQL = (
+    "SELECT current_setting('app.tenant_id', true), "
+    "NOT EXISTS (SELECT 1 FROM studio_record_hot h "
+    f"WHERE h.{_OF_ORG} AND h.v_num IS NOT NULL AND h.v_num_f8 IS NULL)"
+)
+
+
+def _f8_fresh(org: str) -> tuple[bool, bool]:
+    """``(known, ready)`` for *org* from the cache."""
+    got = _F8_READY.get(org)
+    if got is None:
+        return False, False
+    ttl = _F8_TTL_READY if got[0] else _F8_TTL_NOT_READY
+    if time.monotonic() - got[1] > ttl:
+        return False, False
+    return True, got[0]
+
+
+def _f8_on() -> bool:
+    """True when the bound tenant is on ``STUDIO_NUM_F8_ORGS`` (C2c) AND the
+    float8 copy of its hot rows is complete. A row with a NULL copy would drop
+    out of a float8 test, and a test of ``IS NULL`` beside it made the planner
+    skip the index (a hot table holds NULL copies for every other type). So the
+    store asks once for each org, with :func:`_warm_f8`, and keeps the answer
+    for a short time. A cold or stale cache gives False, which is the SQL of
+    C2a. The org comes from the tenant seam, never from request input (R5)."""
+    org = num_f8_org()
+    if org is None:
+        return False
+    known, ready = _f8_fresh(org)
+    return known and ready
+
+
+async def _warm_f8(db: Any, deadline: float) -> None:
+    """Fill the cache of :func:`_f8_on` for the bound tenant, when it is on the
+    flag and the cache is cold or stale. One cheap statement: the partial index
+    ``studio_record_hot_num_f8_todo_idx`` holds only the rows that lack a copy.
+
+    The guard runs inside the call's *deadline*, and it gets at most
+    :data:`_F8_GUARD_CAP_S` of what is left, so it never eats the query's
+    budget. A slow or failed guard is cached as "not ready" for the short
+    time of a not-ready answer, and the query then uses the exact SQL. The
+    answer is stored under the org that the statement itself counted (the GUC),
+    and only when that equals the org of the tenant seam. Otherwise nothing is
+    cached."""
+    org = num_f8_org()
+    if org is None or _f8_fresh(org)[0]:
+        return
+    limit = min(deadline - _clock(), _F8_GUARD_CAP_S)
+    if limit <= 0:
+        return
+    try:
+        async with _time_limit(db, _clock() + limit) as timed:
+            row = (await timed.execute(text(_F8_READY_SQL), {})).one()
+    except (DBAPIError, QueryError):
+        _F8_READY[org] = (False, time.monotonic())
+        return
+    if str(row[0] or "").strip().lower() != org:
+        return
+    _F8_READY[org] = (bool(row[1]), time.monotonic())
+
+
+def _q_num_f8(hcol: str, i: int, cond: Condition) -> str:
+    """The float8 test that goes IN ADDITION to the exact test of a number
+    filter (C2c). It reads ``v_num_f8``, whose comparisons are LEAKPROOF.
+    Three rules keep the records the same. The operator is the non-strict one
+    of the op, because float8 can round two numerics to one value. The bound is
+    the same numeric cast to float8, with no column in it, so it is a
+    constant. The exact test stays beside it as the filter. A row with no copy
+    would drop out, so :func:`_f8_on` is False until the copy is complete."""
+    hcol = hcol.rsplit(".", 1)[0] + ".v_num_f8"
+    if cond.op == "in":
+        return f"{hcol} = ANY(CAST(CAST(:v{i} AS numeric[]) AS float8[]))"
+    cmp = _F8_CMP[cond.op]
+    return f"{hcol} {cmp} CAST(CAST(:v{i} AS numeric) AS float8)"
+
+
 def _drive_rank(cond: Condition) -> int | None:
     """How well the hot rows of *cond* serve as the candidates: 0 for an
     index condition (a text match, a time), 1 for a scan of the field, 2 for
@@ -1991,6 +2082,8 @@ def _drive_rank(cond: Condition) -> int | None:
     col = _HOT_COLUMN[cond.field.type]
     if col == "v_ts" or (col == "v_text" and cond.op in ("eq", "in")):
         return 0
+    if col == "v_num" and _f8_on():
+        return 0  # the float8 test is an index condition (C2c); `ne` returned above
     return 1
 
 
@@ -2027,6 +2120,11 @@ def _q_data(kind: str, i: int) -> str:
                 f"THEN CAST(r.data ->> {kref} AS timestamptz) END)")
     return (f"(CASE WHEN jsonb_typeof(r.data -> {kref}) = 'boolean' "
             f"THEN CAST(r.data ->> {kref} AS boolean) END)")
+
+
+#: The number ops that get the float8 test (C2c), with its NON-STRICT operator.
+#: `ne` and `is_empty` do not get one. `in` tests with `= ANY`.
+_F8_CMP: Mapping[str, str] = {"eq": "=", "in": "=", "lt": "<=", "lte": "<=", "gt": ">=", "gte": ">="}
 
 
 def _q_compare(expr: str, i: int, cond: Condition, params: dict[str, Any]) -> str:
@@ -2089,7 +2187,10 @@ def _q_frag(h: str, i: int, cond: Condition, params: dict[str, Any]) -> str:
     if cond.op == "contains":
         return _q_contains(h, i, cond.value, params)
     hcol = f"{h}.{col}"
-    return _q_compare(hcol, i, cond, params)
+    frag = _q_compare(hcol, i, cond, params)
+    if col == "v_num" and cond.op in _F8_CMP and _f8_on():
+        return f"{_q_num_f8(hcol, i, cond)} AND {frag}"
+    return frag
 
 
 def _q_hot(i: int, cond: Condition, params: dict[str, Any], rid: str) -> str:
@@ -2405,6 +2506,7 @@ async def query_records(db: Any, *, package_id: str, object_id: str, filter: Any
     pid = _uuid(package_id, "package_id")
     start, size = studio_query.page_bounds(offset, limit)
     studio_query.check_shape(filter, sort)
+    await _warm_f8(db, deadline)
     async with _time_limit(db, deadline) as timed:
         found = await timed.execute(text(_QUERY_OBJECT_SQL), {"oid": oid, "pid": pid})
         if found.first() is None:
@@ -2756,6 +2858,7 @@ async def aggregate_records(db: Any, *, package_id: str, object_id: str, filter:
     oid = _uuid(object_id, "object_id")
     pid = _uuid(package_id, "package_id")
     studio_query.check_aggregate_shape(filter, group_by, measures)
+    await _warm_f8(db, deadline)
     async with _time_limit(db, deadline) as timed:
         found = await timed.execute(text(_QUERY_OBJECT_SQL), {"oid": oid, "pid": pid})
         if found.first() is None:
@@ -3782,3 +3885,42 @@ async def read_tree(db: Any, *, package_id: str, object_id: str, root_id: str | 
                            parent_id=None if row[1] is None else str(row[1]))
                   for row in rows[:size])
     return TreePage(nodes=nodes, truncated=len(rows) > size)
+
+
+# ── The backfill of v_num_f8 (C2c) ──────────────────────────────────────────
+
+_NUM_F8_BATCH = (
+    "WITH b AS (SELECT h.record_id, h.field_key FROM studio_record_hot h "
+    f"WHERE h.{_OF_ORG} AND h.v_num IS NOT NULL AND h.v_num_f8 IS NULL "
+    "AND (h.record_id, h.field_key) > (CAST(:last_rid AS uuid), CAST(:last_fk AS text)) "
+    "ORDER BY h.record_id, h.field_key LIMIT :n FOR UPDATE) "
+    "UPDATE studio_record_hot h SET v_num_f8 = CASE WHEN h.v_num > 1e300 THEN 'Infinity'::float8 WHEN h.v_num < -1e300 THEN '-Infinity'::float8 WHEN abs(h.v_num) < 1e-300 THEN 0.0::float8 "
+    "ELSE h.v_num::float8 END FROM b "
+    f"WHERE h.{_OF_ORG} AND h.record_id = b.record_id AND h.field_key = b.field_key "
+    "RETURNING h.record_id, h.field_key"
+)
+_NUM_F8_LEFT = (
+    f"SELECT count(*) FROM studio_record_hot h WHERE h.{_OF_ORG} "
+    "AND h.v_num IS NOT NULL AND h.v_num_f8 IS NULL"
+)
+_NO_UUID = "00000000-0000-0000-0000-000000000000"
+NUM_F8_START = (_NO_UUID, "")
+
+
+async def fill_num_f8_batch(db: Any, after: tuple[str, str], n: int) -> list[tuple[str, str]]:
+    """Fill ``studio_record_hot.v_num_f8`` for at most *n* rows of the bound
+    tenant that have a ``v_num`` and no float8 copy, after the key *after*
+    (``(record_id, field_key)``, start at :data:`NUM_F8_START`). Answers the
+    keys that it filled. The caller owns the transaction and binds the tenant
+    (C2c, migration 433). The UPDATE sets only ``v_num_f8``, so the trigger
+    does not fire. A value beyond 1e300 takes the float8 infinity of its sign, and a value
+    with |v| < 1e-300 takes 0.0, as the trigger does, because the cast would
+    raise. Both maps are non-decreasing, and only direct SQL reaches them."""
+    rows = (await db.execute(text(_NUM_F8_BATCH),
+                             {"last_rid": after[0], "last_fk": after[1], "n": n})).all()
+    return [(str(r[0]), str(r[1])) for r in rows]
+
+
+async def count_num_f8_left(db: Any) -> int:
+    """The rows of the bound tenant that have a ``v_num`` and no float8 copy."""
+    return int((await db.execute(text(_NUM_F8_LEFT))).scalar_one())
