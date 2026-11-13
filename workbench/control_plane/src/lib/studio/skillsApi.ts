@@ -38,6 +38,9 @@ export interface CatalogAction {
   title: string;
   source: string;
   class: string;
+  /** The chat tool of the action, from `skill_packs.action_tool`, or null
+   *  (STU-F6a). The skill offer maps a call of a turn to a row through it. */
+  tool?: string | null;
   [key: string]: unknown;
 }
 

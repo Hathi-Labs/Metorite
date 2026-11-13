@@ -153,6 +153,7 @@ import { buildFrontendToolsAddendum, runFrontendToolEvent } from "@/hooks/useFro
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import { missingAgentIntegrations, missingIntegrationsText } from "@/lib/missingIntegrations";
 import { EMPTY_BOX, composerTyped, edited, filled, type ComposerMark } from "@/lib/typedMark";
+import { promptBefore } from "@/lib/studio/skillOffer";
 import type { AskOutcome } from "@/lib/shell/assistant";
 import {
   composerControls,
@@ -2726,6 +2727,11 @@ export default function AgentChat({
                   entityPills={currentAgentName === PROJECTS_AGENT}
                   // Bare `#171` task links, for the task agents (2026-10-13).
                   taskRefAgent={currentAgentName}
+                  // The skill offer of the turn (STU-F6a): its prompt, and
+                  // whether the chat is solo. `skillOffer.ts` decides.
+                  skillOfferOf={msg.role === "assistant"
+                    ? { prompt: promptBefore(visibleMessages, i), solo: !isRoom }
+                    : undefined}
                   onRetryMessage={prevUserMsg ? handleRetryMessage : undefined} />
                 {/* Mailbox switch — everything below this line is about a
                     different inbox, and the assistant's per-account

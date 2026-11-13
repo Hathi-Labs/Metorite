@@ -206,7 +206,8 @@ describe("the wiring", () => {
   it("MessageBubble mounts the card beside the other tool cards", () => {
     const bubble = read("components/MessageBubble.tsx");
     expect(bubble).toContain('import StudioToolCards from "@/components/studio/StudioToolCards";');
-    expect(bubble).toContain("<StudioToolCards toolEvents={dedupedToolEvents} sessionId={sessionId} />");
+    // STU-F6a split the mount over lines, to hand it the turn of the skill offer.
+    expect(bubble).toMatch(/<StudioToolCards\s+toolEvents=\{dedupedToolEvents\}\s+sessionId=\{sessionId\}\s/);
   });
 
   it("the client reads one request through the BFF of MCP-P1b-1, and a 404 is no card", () => {

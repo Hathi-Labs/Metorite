@@ -43,6 +43,7 @@ import { pillsForTurn, taskRefModeForTurn } from "@/lib/projectsAgent";
 import { useRevalidateOnTools } from "@/lib/taskRefs";
 import AnswerDetails from "@/components/AnswerDetails";
 import { profileMarkShown, ranByViewer } from "@/lib/profileMark";
+import { offerPrompt } from "@/lib/studio/skillOffer";
 import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
 import { isEdited } from "@/lib/chatEdit";
 import { cardAnswerOf, cardAnswerText } from "@/lib/cardAnswer";
@@ -154,6 +155,7 @@ function MessageBubble({
   sessionAgentName,
   entityPills = false,
   taskRefAgent,
+  skillOfferOf,
 }: {
   message: ChatMessage;
   sessionId: string;
@@ -188,6 +190,10 @@ function MessageBubble({
   /** The thread's agent, for the bare `#171` task links (owner report,
    *  2026-10-13). `taskRefsForTurn` decides, by the agent of each turn. */
   taskRefAgent?: string;
+  /** The skill offer of an assistant turn (STU-F6a): the member's message
+   *  just before it (`promptBefore`), and whether the chat is solo.
+   *  `AgentChat` passes it, and `lib/studio/skillOffer.ts` decides. */
+  skillOfferOf?: { prompt: ChatMessage | null; solo: boolean };
 }) {
   // Whether a document may open in the side panel here (`lib/sidePanelFit.ts`).
   const panelFits = useSidePanelFits();
@@ -845,7 +851,21 @@ function MessageBubble({
       <ProjectToolCards toolEvents={dedupedToolEvents} mine={ranByViewer(message, viewerEmail)} />
       {/* The approval card of a Studio record change (STU-B2c-2c). Inert
           unless the message holds an ask of a studio_record_* write tool. */}
-      <StudioToolCards toolEvents={dedupedToolEvents} sessionId={sessionId} />
+      {/* Last, the skill offer of the turn (STU-F6a), dark behind
+          NEXT_PUBLIC_SKILL_OFFER. It reads only the typed words and the
+          catalog, never a tool argument or a tool result. */}
+      <StudioToolCards
+        toolEvents={dedupedToolEvents}
+        sessionId={sessionId}
+        offer={skillOfferOf ? {
+          messageId: message.id,
+          streaming: !!message.streaming,
+          solo: skillOfferOf.solo,
+          ranByViewer: ranByViewer(message, viewerEmail),
+          prompt: offerPrompt(skillOfferOf.prompt, viewerEmail),
+          calls: dedupedToolEvents,
+        } : undefined}
+      />
       {/* The receipts of the assistant profile writes, each with Undo (WS-63
           PZ-6a). Inert unless the message holds a profile_* tool call. */}
       <ProfileToolCards toolEvents={dedupedToolEvents} />
@@ -935,5 +955,9 @@ export default React.memo(MessageBubble, (a, b) =>
   a.sessionAgentName === b.sessionAgentName &&
   a.entityPills === b.entityPills &&
   a.taskRefAgent === b.taskRefAgent &&
+  // The skill offer (STU-F6a): AgentChat derives the object inline, so it
+  // is compared field-wise. The prompt is a store message, kept by identity.
+  a.skillOfferOf?.prompt === b.skillOfferOf?.prompt &&
+  a.skillOfferOf?.solo === b.skillOfferOf?.solo &&
   sameParticipants(a.participants, b.participants),
 );

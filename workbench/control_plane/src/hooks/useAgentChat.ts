@@ -447,6 +447,8 @@ export function useAgentChat({
           id: nanoid(), role: "user", content: text, timestamp: Date.now(), pendingDelivery: true,
           // A card answer keeps its answered card while it waits.
           ...(opts?.cardAnswer ? { customEvents: [cardAnswerMarker(opts.cardAnswer)] } : {}),
+          // The typed mark, live only, for the skill offer (STU-F6a).
+          ...(opts?.typed === true && !opts?.cardAnswer ? { typed: true } : {}),
           // A held send has not reached the server either, so it carries the
           // same mark: a later run-cap refusal must leave no row (review of
           // #821). The retry spreads the bubble, so the mark travels with it.
@@ -481,6 +483,9 @@ export function useAgentChat({
           // envelope the model reads, and the bubble draws this marker. It
           // persists in `custom_events`, so a reload draws it too.
           ...(opts?.cardAnswer ? { customEvents: [cardAnswerMarker(opts.cardAnswer)] } : {}),
+          // The typed mark, live only (never saved), for the skill offer
+          // (STU-F6a, `lib/studio/skillOffer.ts`). A card answer is never typed.
+          ...(opts?.typed === true && !opts?.cardAnswer ? { typed: true } : {}),
           // WS-51 D-3: on the gateway path the server saves this turn at run
           // start (S4). The chat saves it only once the server answers, so a
           // send the run cap refuses leaves no row behind.

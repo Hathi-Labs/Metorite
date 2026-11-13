@@ -32,6 +32,11 @@
  * card for each read of `studio_record_list` (`StudioRecordsCard.tsx`). Its
  * rules live in `lib/studio/recordsCard.ts`, and its door is read-only for
  * every member.
+ *
+ * STU-F6a: last, this file draws the skill offer of the turn
+ * (`SkillOfferCard.tsx`), "Save this as a skill?". Its rules live in
+ * `lib/studio/skillOffer.ts`, and `MessageBubble` hands it the turn. It is
+ * dark behind `NEXT_PUBLIC_SKILL_OFFER`.
  */
 
 import { useCallback, useRef, useState } from "react";
@@ -40,6 +45,7 @@ import { APP_REQUESTS_KEY, decideRequest, readRequest, requestKey } from "@/app/
 import AppRequestCard from "@/components/AppRequestCard";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
+import SkillOfferCard from "@/components/studio/SkillOfferCard";
 import { StudioRecordsCard } from "@/components/studio/StudioRecordsCard";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import Button from "@/components/ui/Button";
@@ -48,6 +54,8 @@ import { REQUEST_TITLE, type AppRequestDecision } from "@/lib/appRequest";
 import { invalidate } from "@/lib/dataCache";
 import { openAssistant, useAskOutcome } from "@/lib/shell/assistant";
 import { recordsCalls } from "@/lib/studio/recordsCard";
+import type { OfferTurn } from "@/lib/studio/skillOffer";
+import { skillOfferOn } from "@/lib/studio/skillOfferFlag";
 import {
   TELL_LABEL,
   askedRequestIds,
@@ -153,13 +161,20 @@ export function StudioRequestCard({ requestId, sessionId }: { requestId: string;
 /**
  * The Studio cards of one turn: one approval card for each request that a
  * record write tool asked for, then one records card for each read of the
- * records (STU-F5a). Null when the turn has neither, so it is inert for every
- * other tool.
+ * records (STU-F5a), then the skill offer of the turn (STU-F6a). Null when
+ * the turn has none of them, so it is inert for every other tool.
  */
-export default function StudioToolCards({ toolEvents, sessionId }: { toolEvents?: ToolEvent[]; sessionId?: string }) {
+export default function StudioToolCards({ toolEvents, sessionId, offer }: {
+  toolEvents?: ToolEvent[];
+  sessionId?: string;
+  /** The turn, for the skill offer. `MessageBubble` passes it for each assistant turn of `AgentChat`. */
+  offer?: OfferTurn;
+}) {
   const ids = askedRequestIds(toolEvents);
   const reads = recordsCalls(toolEvents);
-  if (ids.length === 0 && reads.length === 0) return null;
+  // With the flag off, no offer card mounts, so a turn reads nothing for it.
+  const offered = offer && skillOfferOn() ? offer : null;
+  if (ids.length === 0 && reads.length === 0 && !offered) return null;
   // Each card holds its own space, so a request with no card leaves none.
   return (
     <>
@@ -169,6 +184,7 @@ export default function StudioToolCards({ toolEvents, sessionId }: { toolEvents?
       {reads.map((call) => (
         <StudioRecordsCard key={call.key} call={call} />
       ))}
+      {offered && <SkillOfferCard key={`skill-offer:${offered.messageId}`} turn={offered} />}
     </>
   );
 }
