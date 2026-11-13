@@ -2560,7 +2560,8 @@ async def _add_tallied(org: str, oid: str, pid: str,
             data: dict[str, Any] = {"site": "Plant", "status": status, "hours": hours}
             if minor is not None:
                 data["fee"] = {"minor": minor, "currency": currency}
-            rec = await objects_store.create_record(db, ANA, oid, data, package_id=pid)
+            rec = await objects_store.create_record(db, ANA, oid, data, package_id=pid,
+                                                  viewer=_VIEWER)
             assert rec is not None
             ids.append(rec.id)
     return ids
