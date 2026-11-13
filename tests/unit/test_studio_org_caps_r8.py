@@ -65,6 +65,7 @@ pytest.importorskip("sqlalchemy")
 
 from acb_auth import UserContext, UserRole, build_access, direct_proof
 from acb_common import get_settings
+from acb_common.studio_access import Viewer
 from acb_common.db import bind_tenant, release_tenant, tenant_session
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
@@ -218,7 +219,8 @@ def _count(w: Any, oid: str) -> int:
 
 async def _put(org: str, obj: store.StudioObject, *writes: Write) -> list[Any]:
     async with tenant_session(org) as db:
-        return await store.apply_writes(db, ANA, package_id=obj.package_id, writes=list(writes))
+        return await store.apply_writes(db, ANA, package_id=obj.package_id, writes=list(writes),
+                                        viewer=Viewer(ANA))
 
 
 def _create(obj: store.StudioObject, qty: int = 1, title: str = "x") -> Write:
@@ -431,7 +433,8 @@ def test_r8_two_writers_at_the_cap_cannot_both_pass(world, monkeypatch) -> None:
 
         async def first() -> str:
             async with tenant_session(w.a) as db:
-                await store.apply_writes(db, ANA, package_id=w.pkg, writes=[_create(w.obj)])
+                await store.apply_writes(db, ANA, package_id=w.pkg, writes=[_create(w.obj)],
+                                         viewer=Viewer(ANA))
                 first_wrote.set()
                 # Hold the org lock while the second writer starts.
                 await asyncio.sleep(0.4)
@@ -440,7 +443,8 @@ def test_r8_two_writers_at_the_cap_cannot_both_pass(world, monkeypatch) -> None:
         async def second() -> str:
             await first_wrote.wait()
             async with tenant_session(w.a) as db:
-                await store.apply_writes(db, ANA, package_id=w.pkg2, writes=[_create(w.obj2)])
+                await store.apply_writes(db, ANA, package_id=w.pkg2, writes=[_create(w.obj2)],
+                                         viewer=Viewer(ANA))
             return "ok"
 
         return await asyncio.gather(first(), second(), return_exceptions=True)

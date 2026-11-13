@@ -83,6 +83,7 @@ pytest.importorskip("sqlalchemy")
 from acb_auth import UserContext, UserRole, build_access
 from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant, tenant_session
+from acb_common.studio_access import Viewer
 from fastapi import HTTPException, Response
 from gateway.routes.studio import actions, invoke, packages
 from gateway.studio import objects_store, packages_store
@@ -100,6 +101,9 @@ pytestmark = _DB_GATE
 
 TAG = uuid.uuid4().hex[:8]
 ANA = f"ana.{TAG}@stua5c.test"
+#: C8a. The store takes a viewer. No object of this suite declares `access`,
+#: so each object is open and any member reads and writes it.
+_VIEWER = Viewer(ANA)
 BEN = f"ben.{TAG}@stua5c.test"
 NOT_FOUND = "Not found"
 _COUNTER = iter(range(10_000))
@@ -352,7 +356,7 @@ async def _fill(org: str, email: str, pid: str, n: int, name: str = "visit") -> 
         async with tenant_session(org) as db:
             await objects_store.apply_writes(db, email, package_id=pid, writes=[
                 objects_store.Write("create", oid, data={"site": f"s{i}", "status": "planned"})
-                for i in range(size)])
+                for i in range(size)], viewer=_VIEWER)
         left -= size
 
 
@@ -443,11 +447,11 @@ def test_r8_every_row_of_the_package_goes_and_the_audit_rows_stay(world) -> None
             line = await objects_store.get_object_by_name(db, "line", package_id=pid)
             assert order is not None and line is not None
             made = await objects_store.create_record(db, ANA, order.id, {"code": "PO-1"},
-                                                     package_id=pid)
+                                                     package_id=pid, viewer=_VIEWER)
             assert made is not None
             for amount in (3, 4):
                 await objects_store.create_record(
-                    db, ANA, line.id, {"order_ref": {"id": made.id}, "amount": amount}, package_id=pid)
+                    db, ANA, line.id, {"order_ref": {"id": made.id}, "amount": amount}, package_id=pid, viewer=_VIEWER)
         other = await _live(world.a, ANA, _manifest(_mid("keep")))
         return pid, other
 
@@ -819,7 +823,7 @@ def test_r8_a_delete_a_record_write_and_a_publish_of_one_package_leave_no_orphan
             try:
                 async with tenant_session(world.a) as db:
                     got = await objects_store.create_record(
-                        db, ANA, oid, {"site": f"w{i}"}, package_id=pid)
+                        db, ANA, oid, {"site": f"w{i}"}, package_id=pid, viewer=_VIEWER)
                 out.append("ok" if got is not None else "gone")
             except objects_store.StoreBusy:
                 out.append("busy")

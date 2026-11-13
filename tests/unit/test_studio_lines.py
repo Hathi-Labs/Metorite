@@ -36,6 +36,7 @@ import pytest
 pytest.importorskip("sqlalchemy")
 
 from acb_common import studio_fields as sf
+from acb_common.studio_access import Viewer
 from acb_common.studio_fields import FieldError
 from acb_common.studio_manifest import validate_manifest
 from acb_common.studio_rules import MAX_LINES_PER_SAVE, MAX_WRITES_PER_BATCH
@@ -253,6 +254,9 @@ class _NoSQL:
 
 OID = "00000000-0000-0000-0000-00000000000a"
 PID = "00000000-0000-0000-0000-00000000000b"
+#: C8a. The store takes a viewer. No object of this suite declares `access`,
+#: so each object is open and any member reads and writes it.
+_VIEWER = Viewer("ana@x.test")
 
 
 @pytest.mark.parametrize("writes,index", [
@@ -268,7 +272,7 @@ def test_a_bad_link_is_refused_before_any_statement(writes, index) -> None:
 
     db = _NoSQL()
     with pytest.raises(BatchError) as refused:
-        asyncio.run(store.apply_writes(db, "ana@x.test", package_id=PID, writes=writes))
+        asyncio.run(store.apply_writes(db, "ana@x.test", package_id=PID, writes=writes, viewer=_VIEWER))
     assert refused.value.index == index and db.statements == 0
 
 
