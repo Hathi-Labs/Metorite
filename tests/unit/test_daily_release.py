@@ -215,7 +215,8 @@ def test_the_tests_gate_the_release(deploy: dict) -> None:
 
 def test_release_is_fast_forward_only(deploy: dict) -> None:
     body = "\n".join(s.get("run", "") for s in deploy["jobs"]["publish-release"]["steps"])
-    assert 'git push origin "${GITHUB_SHA}:refs/heads/release"' in body
+    # CIV-30: the release commit, which is green/main on a slot run.
+    assert 'git push origin "${RELEASE_SHA}:refs/heads/release"' in body
     assert "--force" not in body and " -f " not in body
 
 
@@ -243,7 +244,7 @@ def test_a_held_day_says_so(deploy: dict) -> None:
 
 def test_the_deploy_sends_its_own_sha(deploy: dict) -> None:
     raw = _DEPLOY.read_text(encoding="utf-8")
-    assert '"DEPLOY_REF=${GITHUB_SHA} DEPLOY_FORCE=' in raw
+    assert '"DEPLOY_REF=${RELEASE_SHA} DEPLOY_FORCE=' in raw
 
 
 # ── 5. A late schedule run waits for the next slot ──────────────────────────
@@ -737,7 +738,7 @@ def test_a_stale_rerun_does_not_roll_production_back(deploy: dict) -> None:
     ids = [s.get("id") for s in steps]
     assert ids.index("stale") < ids.index("deploy"), "check before the ssh opens"
     stale = steps[ids.index("stale")]["run"]
-    assert 'git merge-base --is-ancestor "$GITHUB_SHA" "$rel"' in stale
+    assert 'git merge-base --is-ancestor "$RELEASE_SHA" "$rel"' in stale
     assert steps[ids.index("deploy")]["if"] == "${{ steps.stale.outputs.stale != 'true' }}"
 
 

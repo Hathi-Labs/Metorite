@@ -2,9 +2,19 @@
 #
 # Trigger: push to main, the DAILY RELEASE, or manual dispatch.
 # Flow on a push:     lint → test (a signal) → publish `staging`. NO deploy.
-# Flow on a release:  lint → test + r8-gate (GATES) → publish `release` →
-#                     SSH to VPS → apply that exact commit → verify by the
-#                     serving SHA. `r8-gate` runs only on a release (CIV-4b).
+#                     A green `test` moves `green/main` to the commit that it
+#                     tested (CIV-30, D218). Fast-forward only.
+# Flow on a release:  release-commit → lint → test + r8-gate (GATES) →
+#                     publish `release` → SSH to VPS → apply that exact
+#                     commit → verify by the serving SHA. `r8-gate` runs only
+#                     on a release (CIV-4b).
+#
+# ⚠️ CIV-30 (D218 point 3), 2026-11-13: a SLOT release ships `green/main`,
+# the newest commit that passed the full suite of a push batch. It does not
+# ship the tip of main. A red tip of main holds no release. The job
+# `release-commit` picks the commit, and every job that builds, tests, gates
+# or deploys the release checks out that ONE commit. A plain dispatch (a
+# hotfix) still ships its own commit. Fence: tests/unit/test_green_pointer.py.
 #
 # ⚠️ WS-38 (project-docs/specs/staging_and_daily_release.md), 2026-10-16.
 # Until then every merge deployed to production: 36 gateway starts in one
@@ -90,7 +100,8 @@ on:
     - cron: "30 13 * * *"
     - cron: "30 21 * * *"
   # A hotfix, or a release outside the clock: run this workflow on `main`.
-  # It ships the tip of main, as the schedule does. There is no second lane
+  # It ships the tip of main. Since CIV-30 a slot ships `green/main`, and a
+  # plain dispatch is the way to ship the tip. There is no second lane
   # and no cherry-pick (D55.4). RELEASE_HOLD does not stop a PLAIN dispatch.
   # `nightly=true` is for the home box's timer only (CIV-13).
   workflow_dispatch:
@@ -124,12 +135,139 @@ permissions:
   contents: read
 
 jobs:
+  # ── The ONE commit that this run builds, tests and ships (CIV-30) ──────
+  #
+  # D218 point 3: "Each release slot ships the newest commit that passed the
+  # full suite. A red tip of main holds no release. The R8 gate still runs."
+  # A green push batch moves `green/main` (the job `mark-green`). A SLOT run
+  # (a schedule run, or a dispatch with `nightly=true`) ships the head of
+  # `green/main`. Every other run (a push, a plain dispatch, a hotfix) uses
+  # its own commit, GITHUB_SHA, as before.
+  #
+  # ⚠️ ONE COMMIT. Each job that builds, tests, gates or deploys the release
+  # reads `needs.release-commit.outputs.sha` and checks out that commit. A
+  # run that tests one commit and deploys another is the worst defect this
+  # file can have. The workflow file itself still comes from GITHUB_SHA. So
+  # `r8-gate` reads its guard lists from the release commit's copy of this
+  # file. The steps of this file call the scripts of the release commit.
+  #
+  # FALLBACK: no `green/main` yet means "ship GITHUB_SHA, as before", and
+  # the run summary says so. Any OTHER failure to read `green/main` fails
+  # this job, and then no job of the release runs. A held slot is safe. The
+  # next slot ships (spec staging_and_daily_release.md §4.2).
+  #
+  # It runs on EVERY event, because `lint` and `test` need it. On a push it
+  # only writes GITHUB_SHA and touches no network. No group: nothing may
+  # cancel the first job of a release.
+  # Fence: tests/unit/test_green_pointer.py.
+  release-commit:
+    name: "Release commit"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.pick.outputs.sha }}
+    steps:
+      # A slot run only. Full history, for the list of the commits that the
+      # release leaves out. This job builds nothing from the checkout.
+      - uses: actions/checkout@v5
+        if: ${{ github.event_name == 'schedule' || inputs.nightly }}
+        with:
+          fetch-depth: 0
+
+      - name: Pick the release commit
+        id: pick
+        env:
+          SLOT: ${{ (github.event_name == 'schedule' || inputs.nightly) && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          is_sha() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
+          pick="$GITHUB_SHA"
+          if [ "$SLOT" != true ]; then
+            echo "Not a slot release, so this run builds, tests and ships its own commit ${GITHUB_SHA:0:12}."
+            if [ "$GITHUB_EVENT_NAME" != push ]; then
+              {
+                echo "### Release commit"
+                echo "- \`${GITHUB_SHA:0:12}\`, this run's own commit. A plain dispatch ships its own commit. Only a slot release ships \`green/main\` (CIV-30)."
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            tmp="$(mktemp -d)"
+            # --exit-code: 0 when the ref is there, 2 when it is not.
+            # Exit 2 is the only fallback. Exit 0 with no exact line for the
+            # ref is a bad read, and it holds the release.
+            rc=0
+            git ls-remote --exit-code origin refs/heads/green/main > "$tmp/green.txt" || rc=$?
+            case "$rc" in
+              0)
+                green="$(awk '$2 == "refs/heads/green/main" { print $1 }' "$tmp/green.txt")"
+                if [ -z "$green" ]; then
+                  echo "::error title=green/main unreadable::git ls-remote found green/main but gave no line for refs/heads/green/main. No release in this run."
+                  exit 1
+                fi ;;
+              2) green="" ;;
+              *)
+                echo "::error title=green/main unknown::git ls-remote failed (exit ${rc}), so this run cannot tell which commit passed the full suite. No release in this run."
+                exit 1 ;;
+            esac
+            git fetch --no-tags -q origin +refs/heads/main:refs/remotes/origin/main
+            tip="$(git rev-parse refs/remotes/origin/main)"
+            if [ -z "$green" ]; then
+              # FALLBACK (CIV-30): the behaviour before green/main existed.
+              echo "::warning title=No green/main yet::green/main does not exist, so this release ships the tip of main ${GITHUB_SHA:0:12}, as before CIV-30. The first green push batch makes green/main."
+              {
+                echo "### Release commit"
+                echo "- \`${GITHUB_SHA:0:12}\`, the tip of main. FALLBACK: \`green/main\` does not exist yet, so this release ships the tip, as before CIV-30."
+              } >> "$GITHUB_STEP_SUMMARY"
+            else
+              if ! is_sha "$green"; then
+                echo "::error title=green/main unreadable::git ls-remote gave '${green}' for green/main. No release in this run."
+                exit 1
+              fi
+              git fetch --no-tags -q origin +refs/heads/green/main:refs/remotes/origin/green/main
+              # green/main moves only to a tested commit of main. A head that
+              # is not on main is a fault. Hold the release, never guess.
+              if ! git merge-base --is-ancestor "$green" "$tip"; then
+                echo "::error title=green/main is not on main::green/main ${green:0:12} is not an ancestor of main ${tip:0:12}. No release in this run. Move green/main to a commit of main that passed the full suite."
+                exit 1
+              fi
+              pick="$green"
+              git log --oneline --no-decorate "${green}..${tip}" > "$tmp/left.txt"
+              left="$(grep -c . "$tmp/left.txt" || true)"
+              echo "This release ships green/main ${green:0:12}. It leaves out ${left} commit(s) on main after it."
+              {
+                echo "### Release commit"
+                echo "- \`${green:0:12}\`, the head of \`green/main\`: the newest commit that passed the full suite of a push batch (CIV-30, D218)."
+                if [ "$left" = 0 ]; then
+                  echo "- It leaves out no commit. The tip of main \`${tip:0:12}\` is green."
+                else
+                  echo "- It leaves out ${left} commit(s) on main after it (\`git log --oneline ${green:0:12}..origin/main\`). A later slot ships them when a push batch passes:"
+                  echo ""
+                  echo '```'
+                  head -n 50 "$tmp/left.txt"
+                  if [ "$left" -gt 50 ]; then echo "... and $(( left - 50 )) more"; fi
+                  echo '```'
+                fi
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          if ! is_sha "$pick"; then
+            echo "::error title=No release commit::'${pick}' is not a full commit sha. No release in this run."
+            exit 1
+          fi
+          echo "sha=${pick}" >> "$GITHUB_OUTPUT"
+
   # ── Gate 1: Lint + Type Check ──────────────────────────────────────────
+  # CIV-30: it lints the release commit. On a push that is GITHUB_SHA.
   lint:
     name: "Lint & type-check"
     runs-on: ubuntu-latest
+    needs: release-commit
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-commit.outputs.sha }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.3.0
@@ -205,11 +343,17 @@ jobs:
   # the annotation "The job has exceeded the maximum execution time". That is
   # a HUNG batch, and it is red. On a release, `publish-release` then reads
   # `cancelled` and skips, so production stays on its current release.
-  # Fence: tests/unit/test_deploy_pipeline.py.
+  #
+  # ── CIV-30: a green push batch marks its tested commit ─────────────────
+  # The output `tested` names the commit that the job tested: the tip on a
+  # batch, GITHUB_SHA on a rerun. `mark-green` moves `green/main` to it when
+  # the job passed. On a slot run the job checks out `green/main` (the job
+  # `release-commit`), so the gate tests the commit that the slot ships.
+  # Fence: tests/unit/test_deploy_pipeline.py, tests/unit/test_green_pointer.py.
   test:
     name: "Unit tests (a signal on a push, a gate on a release)"
     runs-on: ubuntu-latest
-    needs: lint
+    needs: [lint, release-commit]
     if: ${{ !inputs.skip_tests }}
     timeout-minutes: 90
     concurrency:
@@ -222,14 +366,23 @@ jobs:
       contents: read
       actions: read
       checks: read
+    outputs:
+      # The tip on a push batch. Else the checkout: GITHUB_SHA on a rerun of
+      # a push (release-commit gives GITHUB_SHA on every push), the release
+      # commit on a release run.
+      tested: ${{ steps.tip.outputs.sha || needs.release-commit.outputs.sha }}
     steps:
-      # GITHUB_SHA. The release, a dispatch and a rerun test this commit.
+      # A release run and a dispatch test the release commit (CIV-30). A
+      # push keeps the default checkout, GITHUB_SHA on local `main`, which
+      # the batch then moves to the tip. A rerun of a push tests GITHUB_SHA.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name != 'push' && needs.release-commit.outputs.sha || '' }}
 
       # ── A push batch tests the TIP of main (CIV-4) ─────────────────────
       # The condition is the push term of the group, so only a job in the
-      # batch group moves. The release, a dispatch and a rerun keep
-      # GITHUB_SHA, because they ship it or check it again. The step leaves
+      # batch group moves. The release, a dispatch and a rerun keep their
+      # checkout, because they ship it or check it again. The step leaves
       # the state that actions/checkout leaves on a push: local `main` at
       # `origin/main`, both at the tested commit. Its notice names that
       # commit, and the next batch reads it as the start of its range. If the
@@ -462,7 +615,7 @@ jobs:
   r8-suite:
     name: "R8 suites (release gate, shard ${{ matrix.shard }}/6)"
     runs-on: ubuntu-24.04
-    needs: lint
+    needs: [lint, release-commit]
     if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.skip_tests) }}
     timeout-minutes: 60
     # One run reports the failures of every shard.
@@ -511,8 +664,10 @@ jobs:
       # in this workflow.
       TENANT_LADDER_DATABASE_URL: postgresql+psycopg://acb:acb@127.0.0.1:5434/acb_tenant
     steps:
-      # GITHUB_SHA, the commit that the release ships.
+      # The commit that the release ships (CIV-30).
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-commit.outputs.sha }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.3.0
@@ -608,10 +763,21 @@ jobs:
   # `always()`, so a failed shard turns this job red. `publish-release`
   # reads this job's result, and a skip passes only on a `skip_tests`
   # dispatch.
+  #
+  # ⚠️ CIV-30: GitHub runs THIS file from the tip of main, and the reports
+  # and the tree come from the release commit (`green/main`). A new R8 suite
+  # that lands after `green/main` is in the tip's list and not in the
+  # release tree. So the guard does not use the lists on its own command
+  # line. `--lists-from` reads the same step in the release commit's copy of
+  # this file, and the guard uses those lists. The run log names each file
+  # where the two copies differ. A copy that the guard cannot read fails the
+  # job. It never falls back to the tip's list or to an empty list. When the
+  # release commit is the tip, the two copies are the same.
+  # Fence: tests/unit/test_green_pointer.py.
   r8-gate:
     name: "R8 gate (a release needs it)"
     runs-on: ubuntu-24.04
-    needs: r8-suite
+    needs: [r8-suite, release-commit]
     if: ${{ always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.skip_tests)) }}
     steps:
       - name: Every R8 shard passed
@@ -620,6 +786,8 @@ jobs:
           [ "${{ needs.r8-suite.result }}" = "success" ] || exit 1
 
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-commit.outputs.sha }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -627,9 +795,24 @@ jobs:
           path: junit
           merge-multiple: true
 
+      # CIV-30: the lists below are THIS commit's. A later release whose
+      # release commit is this commit reads them, through `--lists-from`.
       - name: The R8 suites ran, and no fence skipped
+        env:
+          RELEASE_SHA: ${{ needs.release-commit.outputs.sha }}
         run: |
+          set -euo pipefail
+          if ! [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=No release commit::'${RELEASE_SHA}' is not a full commit sha. The R8 gate cannot read its lists."
+            exit 1
+          fi
+          if ! git show "${RELEASE_SHA}:.github/workflows/deploy.yml" > "$RUNNER_TEMP/release_deploy.yml"; then
+            echo "::error title=R8 guard lists unknown::git show cannot read deploy.yml of the release commit ${RELEASE_SHA:0:12}. The R8 gate fails closed."
+            exit 1
+          fi
           python3 scripts/ci_unit_guard.py check --junit junit \
+            --lists-from "$RUNNER_TEMP/release_deploy.yml" \
+            --lists-step "The R8 suites ran, and no fence skipped" \
             --disarmed "CUSTOMER_CONSOLE_DATABASE_URL unset" \
             --disarmed "TENANT_LADDER_DATABASE_URL unset" \
             --never-skip \
@@ -797,6 +980,109 @@ jobs:
           echo "publishing ${GITHUB_SHA} to refs/heads/staging"
           git push origin "${GITHUB_SHA}:refs/heads/staging"
 
+  # ── A green push batch marks its commit (CIV-30, D218 point 3) ─────────
+  # `green/main` is the newest commit of main that passed the full suite of
+  # a push batch. A slot release ships it (the job `release-commit`), so a
+  # red tip of main holds no release.
+  #
+  # It moves to the commit that `test` TESTED (`needs.test.outputs.tested`),
+  # never to GITHUB_SHA: a batch tests the tip, which can hold several
+  # merges after this run's push (CIV-4).
+  #
+  # ⚠️ FORWARD ONLY. It moves only when the tested commit is on main and
+  # contains the current `green/main`. An older batch or a rerun of an old
+  # push can pass after a newer batch. Its commit is not a descendant, so the
+  # pointer stays, and the step says why. The push has no `--force` and no
+  # `+`, so git also refuses a push that is not a fast-forward.
+  #
+  # ⚠️ A FOLDED, CANCELLED, FAILED OR SKIPPED `test` never moves it. The
+  # condition reads `needs.test.result == 'success'`. `always()` is there
+  # because the jobs after `test` must not read a bare `success()`
+  # (test_daily_release.py). The result test does the gating.
+  #
+  # The only job with `contents: write` for `green/main`. It never pushes to
+  # `main`. No group: a group named for a ref can meet the suite group, and
+  # two marks that race are safe (the step reads the ref again).
+  # Fence: tests/unit/test_green_pointer.py.
+  mark-green:
+    name: "Mark green/main"
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    if: >-
+      ${{ always()
+      && github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
+      && needs.lint.result == 'success'
+      && needs.test.result == 'success' }}
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # Full history, for the ancestry tests and the client-side
+      # fast-forward test of `git push` (the note on publish-release).
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Move green/main forward to the tested commit
+        env:
+          TESTED: ${{ needs.test.outputs.tested }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$TESTED" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=No tested commit::The test job named '${TESTED}', which is not a full commit sha. green/main stays."
+            exit 1
+          fi
+          git fetch --no-tags -q origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$TESTED" refs/remotes/origin/main; then
+            echo "::warning title=green/main stays::${TESTED:0:12} is not on main, so it does not move green/main."
+            echo "green/main STAYS: \`${TESTED:0:12}\` is not on main." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          tmp="$(mktemp -d)"
+          for attempt in 1 2 3; do
+            # --exit-code: 0 when the ref is there, 2 when it is not.
+            rc=0
+            git ls-remote --exit-code origin refs/heads/green/main > "$tmp/green.txt" || rc=$?
+            case "$rc" in
+              0) current="$(awk '$2 == "refs/heads/green/main" { print $1 }' "$tmp/green.txt")" ;;
+              2) current="" ;;
+              *)
+                echo "::error title=green/main unknown::git ls-remote failed (exit ${rc}). green/main stays."
+                exit 1 ;;
+            esac
+            if [ -n "$current" ]; then
+              if [ "$current" = "$TESTED" ]; then
+                echo "green/main is already at ${TESTED:0:12}."
+                echo "green/main is already at \`${TESTED:0:12}\`." >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+              git fetch --no-tags -q origin +refs/heads/green/main:refs/remotes/origin/green/main
+              arc=0
+              git merge-base --is-ancestor "$current" "$TESTED" || arc=$?
+              if [ "$arc" = 1 ]; then
+                echo "::notice title=green/main stays::green/main is at ${current:0:12}, and ${TESTED:0:12} does not contain it. An older batch or a rerun passed. green/main moves forward only."
+                echo "green/main STAYS at \`${current:0:12}\`: \`${TESTED:0:12}\` does not contain it. It moves forward only." >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              elif [ "$arc" != 0 ]; then
+                echo "::error title=green/main unknown::git merge-base failed (exit ${arc}). green/main stays."
+                exit 1
+              fi
+            fi
+            # Fast-forward only: no force flag and no plus sign. Never main.
+            if git push origin "${TESTED}:refs/heads/green/main"; then
+              echo "::notice title=green/main moved::green/main is now ${TESTED}, the commit that this batch tested."
+              echo "green/main MOVED from \`${current:-none}\` to \`${TESTED:0:12}\`, the commit that this batch tested. The next slot ships it." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            # Another mark moved green/main between the read and the push.
+            # Read it again.
+            echo "git refused the push (attempt ${attempt} of 3). green/main moved under this job. It reads the ref again."
+            sleep $(( attempt * 5 ))
+          done
+          echo "::error title=green/main stays::git refused the push 3 times. green/main stays."
+          exit 1
+
   # ── A held slot says so (WS-38, spec §4.3) ─────────────────────────────
   # A nightly run is a schedule run or a nightly dispatch (CIV-13).
   release-hold:
@@ -822,7 +1108,7 @@ jobs:
   # windows do not overlap. This job runs after the tests, just before
   # `publish-release`, so the clock it reads is the clock of the restart,
   # about 5 min later. Outside a window, production stays on its current
-  # release, and the next slot ships the tip of main. A skipped slot is a
+  # release, and the next slot ships `green/main` (CIV-30). A skipped slot is a
   # safe result (spec §4.2). After 30 h, `vps-health.yml` reports it as
   # "The daily release did not run".
   #
@@ -897,7 +1183,7 @@ jobs:
             echo "The release window is open at ${hm} UTC."
           else
             echo "open=false" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Release waits for the next slot::GitHub started this run late. At ${hm} UTC no release window is open, so production stays on its current release. The next slot ships the tip of main. To release now, re-run this workflow."
+            echo "::warning title=Release waits for the next slot::GitHub started this run late. At ${hm} UTC no release window is open, so production stays on its current release. The next slot ships green/main. To release now, re-run this workflow."
             echo "Release WAITS: the run reached the window at ${hm} UTC, outside 21:00 to 02:00, 05:00 to 10:00 and 13:00 to 18:00 UTC. Production did not move. The next slot ships." >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -1051,7 +1337,9 @@ jobs:
   publish-release:
     name: "Publish release ref"
     runs-on: ubuntu-latest
-    needs: [lint, test, r8-gate, release-window]
+    # CIV-30: `lint` needs `release-commit`, so a green `lint` means the
+    # release commit was picked. The step checks the sha again.
+    needs: [lint, test, r8-gate, release-window, release-commit]
     if: >-
       ${{ always()
       && github.ref == 'refs/heads/main'
@@ -1074,19 +1362,47 @@ jobs:
       # and the box's pull path had nothing new to converge on.
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.release-commit.outputs.sha }}
           fetch-depth: 0
 
-      - name: Fast-forward release to this commit
+      # CIV-30: the release commit, never GITHUB_SHA. On a slot run it is
+      # `green/main`. A plain dispatch can ship the tip of main, and then a
+      # slot finds `green/main` OLDER than `release`. That slot ships
+      # nothing: `release` already holds it, and a push would rewind
+      # nothing (git refuses it). The deploy's stale step then skips.
+      - name: Fast-forward release to the release commit
         run: |
           set -euo pipefail
-          echo "publishing ${GITHUB_SHA} to refs/heads/release"
-          git push origin "${GITHUB_SHA}:refs/heads/release"
+          if ! [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=No release commit::'${RELEASE_SHA}' is not a full commit sha. release stays."
+            exit 1
+          fi
+          rc=0
+          git ls-remote --exit-code origin refs/heads/release > /dev/null || rc=$?
+          if [ "$rc" = 0 ]; then
+            git fetch --no-tags -q origin +refs/heads/release:refs/remotes/origin/release
+            rel="$(git rev-parse refs/remotes/origin/release)"
+            if [ "$rel" != "$RELEASE_SHA" ] && git merge-base --is-ancestor "$RELEASE_SHA" "$rel"; then
+              echo "::notice title=Nothing newer to release::release ${rel:0:12} already contains ${RELEASE_SHA:0:12}. No newer commit passed the full suite, so release stays."
+              {
+                echo "### Release stays at ${rel:0:12}"
+                echo "- \`${RELEASE_SHA:0:12}\` is older than \`release\`. No newer commit passed the full suite."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          elif [ "$rc" != 2 ]; then
+            echo "::error title=release unknown::git ls-remote failed (exit ${rc}). release stays."
+            exit 1
+          fi
+          echo "publishing ${RELEASE_SHA} to refs/heads/release"
+          git push origin "${RELEASE_SHA}:refs/heads/release"
           {
-            echo "### Release ${GITHUB_SHA:0:12}"
+            echo "### Release ${RELEASE_SHA:0:12}"
             echo "- trigger: ${{ github.event_name }}"
             if [ -n "${REASON}" ]; then echo "- reason: ${REASON}"; fi
           } >> "$GITHUB_STEP_SUMMARY"
         env:
+          RELEASE_SHA: ${{ needs.release-commit.outputs.sha }}
           REASON: ${{ inputs.reason }}
 
   # ── Gate 3: Build & Deploy to Hostinger ────────────────────────────────
@@ -1144,7 +1460,8 @@ jobs:
     # beside publish-release. If the deploy shipped a sha that `release` then
     # failed to reach, the box's own pull timer would read `release` five
     # minutes later and apply the OLDER commit: a rollback that nobody chose.
-    needs: [lint, publish-release]
+    # CIV-30: `release-commit` names the commit that `release` moved to.
+    needs: [lint, publish-release, release-commit]
     # `always()` keeps the old hotfix lesson: a dependent guarded by plain
     # success() is skipped when an ancestor is skipped, and the deploy then
     # silently does nothing. `test` and `release-window` are ancestors through
@@ -1158,6 +1475,9 @@ jobs:
       # (see the deploy step's rationale).
       GATEWAY_URL: https://api.metorite.com
       WORKBENCH_URL: https://app.metorite.com
+      # CIV-30: the commit that this run ships. On a slot run it is
+      # `green/main`, not GITHUB_SHA. Every step below reads this one.
+      RELEASE_SHA: ${{ needs.release-commit.outputs.sha }}
     # `reach=unreachable` when ssh never connected from this runner (H-142).
     # The `pull-delivery` job reads it. Empty on every other path.
     outputs:
@@ -1182,11 +1502,14 @@ jobs:
         # ⚠️ FULL history, for the ancestry test in `verify()` below.
         # The default shallow clone holds one commit, so `merge-base`
         # cannot answer whether the serving commit contains this one.
+        # CIV-30: the release commit, so the apply script that goes to the
+        # box is the one of the commit that it applies.
         with:
+          ref: ${{ needs.release-commit.outputs.sha }}
           fetch-depth: 0
 
       # ── NEVER DEPLOY A COMMIT OLDER THAN `release` (WS-38) ─────────────
-      # A rerun of an OLD release run keeps its GITHUB_SHA, skips the
+      # A rerun of an OLD release run keeps its release commit, skips the
       # publish-release that already passed, and sends DEPLOY_FORCE=1. Its
       # deploy would then reset the box BACK from a newer release, and the
       # pull timer would move it forward again five minutes later: two
@@ -1197,11 +1520,15 @@ jobs:
         id: stale
         run: |
           set -euo pipefail
+          if ! [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=No release commit::'${RELEASE_SHA}' is not a full commit sha. Nothing is deployed."
+            exit 1
+          fi
           git fetch -q origin release
           rel="$(git rev-parse origin/release)"
-          if [ "$rel" != "$GITHUB_SHA" ] && git merge-base --is-ancestor "$GITHUB_SHA" "$rel"; then
-            echo "::notice title=Deploy skipped::${GITHUB_SHA:0:12} is older than release ${rel:0:12}. Deploying it would roll production back."
-            echo "Deploy SKIPPED: ${GITHUB_SHA:0:12} is older than release ${rel:0:12}." >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rel" != "$RELEASE_SHA" ] && git merge-base --is-ancestor "$RELEASE_SHA" "$rel"; then
+            echo "::notice title=Deploy skipped::${RELEASE_SHA:0:12} is older than release ${rel:0:12}. Deploying it would roll production back."
+            echo "Deploy SKIPPED: ${RELEASE_SHA:0:12} is older than release ${rel:0:12}." >> "$GITHUB_STEP_SUMMARY"
             echo "stale=true" >> "$GITHUB_OUTPUT"
           else
             echo "stale=false" >> "$GITHUB_OUTPUT"
@@ -1279,7 +1606,7 @@ jobs:
             # the host-key pin (H-200), ConnectTimeout, the ServerAlive
             # keepalive and BatchMode.
             timeout -k 30 1800 ssh "${CI_SSH_OPTS[@]}" \
-              "$SSH_USER@$SSH_HOST" "DEPLOY_REF=${GITHUB_SHA} DEPLOY_FORCE=${DEPLOY_FORCE:-0} DEPLOY_REINSTALL=${DEPLOY_REINSTALL:-0} bash -s" < /tmp/deploy_remote.sh
+              "$SSH_USER@$SSH_HOST" "DEPLOY_REF=${RELEASE_SHA} DEPLOY_FORCE=${DEPLOY_FORCE:-0} DEPLOY_REINSTALL=${DEPLOY_REINSTALL:-0} bash -s" < /tmp/deploy_remote.sh
           }
 
           # The apply script's own last line. `vps_apply.sh` prints it and
@@ -1419,7 +1746,7 @@ jobs:
             # about 'the deploy happened'" — and this is the check that finally
             # says something about it.
             echo "── Verifying: gateway health + public workbench + DEPLOYED SHA ──"
-            echo "   want sha: $GITHUB_SHA"
+            echo "   want sha: $RELEASE_SHA"
             # H-142: a WALL-CLOCK bound of 240 s. One poll is four curls of up
             # to 10 s, a git fetch and a 10 s nap, so 24 polls could take
             # 1200 s when packets drop. That broke the job's timeout
@@ -1444,9 +1771,9 @@ jobs:
               sha_note=""
               sha_ok=0
               if [ -n "$got_sha" ]; then
-                if [ "$got_sha" = "$GITHUB_SHA" ]; then
+                if [ "$got_sha" = "$RELEASE_SHA" ]; then
                   sha_ok=1
-                elif timeout 20 git fetch -q --no-tags origin main 2>/dev/null && git merge-base --is-ancestor "$GITHUB_SHA" "$got_sha" 2>/dev/null; then
+                elif timeout 20 git fetch -q --no-tags origin main 2>/dev/null && git merge-base --is-ancestor "$RELEASE_SHA" "$got_sha" 2>/dev/null; then
                   # ⚠️ SUPERSEDED, and that is a PASS. The box holds a
                   # LATER commit that CONTAINS this one, so every change
                   # this run merged is serving. See the note on verify().
@@ -1465,7 +1792,7 @@ jobs:
             echo "  ── verification failed ──"
             echo "     gateway_ok=$gw_ok  workbench=$wb_code"
             echo "     serving: ${got_sha:-<no /version response>}"
-            echo "     wanted:  $GITHUB_SHA"
+            echo "     wanted:  $RELEASE_SHA"
             if [ -n "${got_sha:-}" ] && [ "$sha_ok" != 1 ]; then
               echo "     ⚠️  The app is UP but on an OLDER commit. The deploy did not"
               echo "         land — do not read the healthy app as a successful deploy."
@@ -1609,7 +1936,7 @@ jobs:
   pull-delivery:
     name: "Confirm delivery by the pull path"
     runs-on: ubuntu-latest
-    needs: deploy
+    needs: [deploy, release-commit]
     # ⚠️ `always()` is load-bearing. Without it GitHub adds `success()`, and
     # `success()` is FALSE when any ancestor was SKIPPED. A `skip_tests`
     # dispatch skips `test`, so this job would be skipped too, and a deploy
@@ -1627,10 +1954,13 @@ jobs:
     env:
       GATEWAY_URL: https://api.metorite.com
       WORKBENCH_URL: https://app.metorite.com
+      # CIV-30: the commit that the deploy shipped.
+      RELEASE_SHA: ${{ needs.release-commit.outputs.sha }}
     steps:
       # FULL history, for the ancestry test in `commit_contains`.
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.release-commit.outputs.sha }}
           fetch-depth: 0
 
       - name: Wait for the box to serve this commit
@@ -1654,15 +1984,15 @@ jobs:
           fi
 
           rc=0
-          await_pull_delivery "$GITHUB_SHA" || rc=$?
+          await_pull_delivery "$RELEASE_SHA" || rc=$?
           case "$rc" in
             0)
               # ⚠️ It names no path. A push apply from round 1 can finish
               # before the runner loses the box, and the marker cannot tell
               # which path wrote it. The served SHA is the evidence.
-              echo "::warning title=Delivered, confirmed by the served SHA::The deploy runner lost ssh to the box. The box serves ${GITHUB_SHA:0:12} with a complete apply behind it, proved by /version sha and applied_sha. The push path failed on this run."
+              echo "::warning title=Delivered, confirmed by the served SHA::The deploy runner lost ssh to the box. The box serves ${RELEASE_SHA:0:12} with a complete apply behind it, proved by /version sha and applied_sha. The push path failed on this run."
               echo "### Delivered, confirmed by the served SHA (H-142)" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
-              echo "The deploy runner lost ssh to the box. The box serves \`${GITHUB_SHA:0:12}\` with a complete apply behind it." >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+              echo "The deploy runner lost ssh to the box. The box serves \`${RELEASE_SHA:0:12}\` with a complete apply behind it." >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
               exit 0
               ;;
             3)
@@ -1675,10 +2005,10 @@ jobs:
               ;;
             *)
               echo "❌ NOT DELIVERED. The deploy runner could not reach the box over ssh,"
-              echo "   and the box did not deliver ${GITHUB_SHA:0:12} by itself within ${PULL_WAIT}s."
+              echo "   and the box did not deliver ${RELEASE_SHA:0:12} by itself within ${PULL_WAIT}s."
               echo "   Check the pull path on the box: systemctl status acb-pull.service,"
               echo "   and journalctl -u acb-pull for 'apply FAILED' or the give-up line."
-              echo "::error title=Not delivered::The runner could not reach the box, and the box did not self-deliver ${GITHUB_SHA:0:12}."
+              echo "::error title=Not delivered::The runner could not reach the box, and the box did not self-deliver ${RELEASE_SHA:0:12}."
               exit 1
               ;;
           esac
@@ -1712,7 +2042,7 @@ jobs:
   chat-smoke:
     name: "Chat saves (smoke)"
     runs-on: ubuntu-latest
-    needs: [deploy, pull-delivery]
+    needs: [deploy, pull-delivery, release-commit]
     # `always()`, for the reason the `pull-delivery` job records. A skipped
     # `pull-delivery` is the NORMAL case, when the push path reached the box.
     if: >-
@@ -1728,7 +2058,10 @@ jobs:
     # A timeout of one ssh never retries (below), so a real run is far shorter.
     timeout-minutes: 60
     steps:
+      # CIV-30: the smoke script of the commit that the deploy shipped.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-commit.outputs.sha }}
 
       - name: Save one chat message on the box and read it back
         shell: bash
@@ -1837,7 +2170,7 @@ jobs:
   smoke:
     name: "Smoke test"
     runs-on: ubuntu-latest
-    needs: deploy
+    needs: [deploy, release-commit]
     # `always()`, because `success()` is FALSE when any ancestor job SKIPPED.
     # `release-window` skips on every dispatch, so a bare `success()` skipped
     # this probe on each manual release (run 40888027282, 2026-10-29).
@@ -1859,6 +2192,8 @@ jobs:
         # answering, without SSH access and without the box still being in that
         # state.
         continue-on-error: true
+        env:
+          RELEASE_SHA: ${{ needs.release-commit.outputs.sha }}
         run: |
           GATEWAY_URL="${GATEWAY_URL:-https://api.metorite.com}"
           echo "Hitting $GATEWAY_URL/health (with retries for cold start)..."
@@ -1872,7 +2207,7 @@ jobs:
               echo "Gateway is healthy (attempt $attempt)"
               serving=$(curl -fsS --max-time 10 "$GATEWAY_URL/version" 2>/dev/null                 | python3 -c 'import json,sys; print(json.load(sys.stdin).get("sha",""))'                 2>/dev/null)
               echo "Serving commit: ${serving:-<no /version response>}"
-              echo "This run's commit: $GITHUB_SHA"
+              echo "This run's commit: $RELEASE_SHA"
               exit 0
             fi
             echo "attempt $attempt/30 failed — retrying in 10s..."
