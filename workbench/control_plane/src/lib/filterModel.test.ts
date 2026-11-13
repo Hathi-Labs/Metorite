@@ -27,12 +27,26 @@ const MOVED = [
 
 describe("the CRM imports the shared model", () => {
   const src = readFileSync(join(__dirname, "../app/crm/lib/filterBar.ts"), "utf-8");
-  it("re-exports from @/lib/filterModel", () => {
-    expect(src).toContain('from "@/lib/filterModel"');
+  const reexport = /export\s*\{([^}]*)\}\s*from\s*"@\/lib\/filterModel"/.exec(src);
+  const exported = (reexport?.[1] ?? "").split(",").map((n) => n.trim()).filter(Boolean);
+  it("re-exports every moved name from @/lib/filterModel", () => {
+    expect(reexport).not.toBeNull();
+    for (const name of ["ANY", "SEARCH_DELAY_MS", ...MOVED]) expect(exported).toContain(name);
+  });
+  it("re-exports the SearchBoxState type from @/lib/filterModel", () => {
+    expect(src).toMatch(/export\s+type\s*\{\s*SearchBoxState\s*\}\s*from\s*"@\/lib\/filterModel"/);
+  });
+  it("imports the names it uses itself", () => {
+    const imp = /import\s*\{([^}]*)\}\s*from\s*"@\/lib\/filterModel"/.exec(src);
+    expect(imp).not.toBeNull();
+    const names = (imp?.[1] ?? "").split(",").map((n) => n.trim());
+    for (const name of ["ANY", "setCustom", "setRange"]) expect(names).toContain(name);
   });
   it("defines none of the moved names itself", () => {
-    for (const name of MOVED) expect(src).not.toMatch(new RegExp(`export function ${name}\b`));
-    expect(src).not.toMatch(/export const (ANY|SEARCH_DELAY_MS)\b/);
+    for (const name of ["ANY", "SEARCH_DELAY_MS", ...MOVED]) {
+      expect(src).not.toMatch(new RegExp(String.raw`export\s+(function|const|let|class)\s+${name}\b`));
+    }
+    expect(src).not.toMatch(/(export\s+)?(type|interface)\s+SearchBoxState\s*[={]/);
   });
 });
 
