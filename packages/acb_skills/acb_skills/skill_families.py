@@ -897,6 +897,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "studio_record_create",
             "studio_record_update",
             "studio_record_delete",
+            "studio_app_read",
         ),
         "owner": "studio-builder",
         "core": False,
