@@ -144,6 +144,22 @@ def test_workflow_studio_gate_orgs_reloads_and_its_reader_follows(env, monkeypat
     assert not author_gate_on("globex")
 
 
+def test_studio_door_ops_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU B2b-2b, ai_studio.md §14 B2b-2. The reload list holds the key, and
+    the one reader of the door op switch sees a change with no restart."""
+    from gateway.routes.studio.flags import door_ops_allowed
+
+    assert fr.reloadable("STUDIO_DOOR_OPS_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("STUDIO_DOOR_OPS_ORGS", "")
+    get_settings.cache_clear()
+    assert not door_ops_allowed("acme")
+    env(**{**_START, "STUDIO_DOOR_OPS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_DOOR_OPS_ORGS",)
+    assert door_ops_allowed("acme")
+    assert not door_ops_allowed("globex")
+
+
 def test_each_reloadable_field_is_named_by_its_env_key() -> None:
     """The reload maps ``CRM_ORGS`` to the field ``crm_orgs``. An alias would
     break that map, and ``str`` keeps every value valid."""

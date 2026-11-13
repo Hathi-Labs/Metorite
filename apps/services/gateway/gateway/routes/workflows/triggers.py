@@ -42,12 +42,38 @@ from gateway.routes.workflows.service import (
 from sqlalchemy import text
 
 
-def event_trigger_matches(config: dict[str, Any], source: str, event_type: str) -> bool:
-    """Pure matcher: source must equal; empty event_type matches all."""
+#: The payload keys that a Studio record trigger may filter on (STU-E3). The
+#: payload of ``studio.record.*`` holds ids and names, never a field value.
+RECORD_FILTER_KEYS = ("package_id", "object", "op")
+
+
+def event_trigger_matches(
+    config: dict[str, Any],
+    source: str,
+    event_type: str,
+    payload: dict[str, Any] | None = None,
+) -> bool:
+    """Pure matcher: source must equal; empty event_type matches all.
+
+    An optional ``filter`` (STU-E3) narrows a trigger to one package, one
+    object or one op. It fails closed: a key that the payload does not hold,
+    or holds with another value, is no match.
+    """
     if str(config.get("source") or "").strip() != source:
         return False
     wanted = str(config.get("event_type") or "").strip()
-    return not wanted or wanted == event_type
+    if wanted and wanted != event_type:
+        return False
+    flt = config.get("filter")
+    if not flt:
+        return True
+    if not isinstance(flt, dict):
+        return False
+    data = payload or {}
+    return all(
+        k in RECORD_FILTER_KEYS and str(data.get(k) or "") == str(v) and str(v) != ""
+        for k, v in flt.items()
+    )
 
 
 async def dispatch_event(
@@ -71,6 +97,7 @@ async def dispatch_event(
         return started
     try:
         matches: list[tuple[Any, dict[str, Any]]] = []
+        seen: set[str] = set()
         async with _tenant_session(org) as db:
             rows = (
                 await db.execute(
@@ -87,7 +114,11 @@ async def dispatch_event(
             ).fetchall()
             for row in rows:
                 config = parse_jsonb(row.config, {}) or {}
-                if not event_trigger_matches(config, source, event_type):
+                if not event_trigger_matches(config, source, event_type, payload):
+                    continue
+                if str(row.workflow_id) in seen:
+                    # One event starts one run of a workflow, even when two
+                    # of its triggers match (STU-E3).
                     continue
                 serialized = await load_version_serialized(
                     db, str(row.workflow_id), int(row.latest_version)
@@ -102,6 +133,7 @@ async def dispatch_event(
                         workflow_id=str(row.workflow_id),
                     )
                     continue
+                seen.add(str(row.workflow_id))
                 matches.append((row, serialized))
         # The session is closed before `start_run`: the run opens its own.
         for row, serialized in matches:
