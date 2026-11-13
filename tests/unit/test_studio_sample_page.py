@@ -32,7 +32,7 @@ def test_sample_page_shows_what_the_preview_claims():
     assert page.side is not None
     assert any(c.span and c.span > 1 for t in page.tabs for c in t.cells)
     blocks = {v.block for v in m.views}
-    assert {"table", "form", "detail", "board"} <= blocks
+    assert {"table", "form", "detail", "board", "chart", "stat"} <= blocks
 
 
 def test_a_drifted_sample_is_refused():
