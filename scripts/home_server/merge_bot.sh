@@ -79,8 +79,9 @@ HIGH_PATHS_RE+='|workbench/[^/]+/src/app/.*/(auth|billing|credits)/'
 HIGH_PATHS_RE+=')'
 # Any file named for auth, billing, credits, RLS or entitlements, in any folder.
 HIGH_PATHS_RE+='|(^|/)(auth|billing|credits|rls|entitle)[^/]*\.(py|ts|tsx|sql)$'
-# Any file with a tenant_guard or rls part in its name.
-HIGH_PATHS_RE+='|(^|/)[^/]*(tenant_guard|_rls)[^/]*$'
+# Any file named tenant* (the tenancy seams: tenant_redis, tenant_guard,
+# tenant_file_store, tenantDoor), or with an rls part in its name.
+HIGH_PATHS_RE+='|(^|/)(tenant|[^/]*_rls)[^/]*$'
 STALE_LOCK_MIN=180  # The service stops a pass at 2 hours, so a 3-hour lock is dead.
 
 say() { echo "merge_bot: $*" >&2; }

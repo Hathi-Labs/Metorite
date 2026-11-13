@@ -748,10 +748,12 @@ def test_civ28b_the_floor_covers_the_auth_package_billing_routes_and_the_migrati
     env.pr(8, path="workbench/control_plane/src/app/api/auth/session/route.ts")
     env.pr(9, path="packages/acb_memory/acb_memory/tenant_guard.py")
     env.pr(10, path="workbench/operator_console/src/app/api/operator/credits/route.ts")
+    env.pr(11, path="packages/acb_skills/acb_skills/tenant_file_store.py")
+    env.pr(12, path="workbench/operator_console/src/lib/tenantDoor.ts")
     env.run()
     lines = env.log.splitlines()
-    assert len(lines) == 6
-    for line, n in zip(lines, (5, 6, 7, 8, 9, 10), strict=True):
+    assert len(lines) == 8
+    for line, n in zip(lines, (5, 6, 7, 8, 9, 10, 11, 12), strict=True):
         assert line.startswith(f"BACK {n} tier floor HIGH, queued as ")
     assert env.merges == [] and env.premerge_runs == 0
 
