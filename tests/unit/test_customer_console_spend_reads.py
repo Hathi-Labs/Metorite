@@ -26,8 +26,9 @@ SRC = pathlib.Path(__file__).resolve().parents[2] / "apps/services/customer_cons
 STORE = SRC / "store.py"
 MAIN = SRC / "main.py"
 
-#: The two reads D66 (a) and (b) are served by. Both are customer-facing.
-SPEND_READS = ("usage_by_activity", "usage_by_member", "usage_by_app")
+#: The reads D66 (a) and (b) are served by, and the run spend of AUTO-8b-2d.
+#: Each one reaches a customer or a customer box.
+SPEND_READS = ("usage_by_activity", "usage_by_member", "usage_by_app", "run_spend")
 
 #: Column names that would put a model, a provider or a tier on a customer's
 #: screen. `tier` is here too: D32.7 lets a customer NAME a tier when calling,
@@ -132,7 +133,11 @@ class TestNoModelReachesTheCustomer:
         functions = {
             n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
         }
-        allowed_views = {"ActivitySpendView", "MemberSpendView", "AppSpendView"}
+        allowed_views = {
+            "ActivitySpendView", "MemberSpendView", "AppSpendView",
+            # AUTO-8b-2d: the spend of one run, a credits string only.
+            "RunSpendView",
+        }
         cost_readers = {"usage_cost_by", "realised_margin"}
 
         def route_path(fn: ast.FunctionDef) -> str:
@@ -150,8 +155,9 @@ class TestNoModelReachesTheCustomer:
             name: fn for name, fn in functions.items()
             if route_path(fn).startswith(("/my/usage/", "/registry/usage/"))
         }
-        # Non-vacuity: three org-key doors and three deployment-key twins.
-        assert len(doors) == 6, sorted(doors)
+        # Non-vacuity: three org-key doors, three deployment-key twins and
+        # the run spend door of the headless turn's meter (AUTO-8b-2d).
+        assert len(doors) == 7, sorted(doors)
 
         for name, fn in doors.items():
             returns = ast.unparse(fn.returns) if fn.returns else ""
@@ -179,7 +185,7 @@ class TestNoModelReachesTheCustomer:
                         seen.add(called)
                         stack.append(functions[called])
 
-    @pytest.mark.parametrize("view", ("ActivitySpendRow", "MemberSpendRow"))
+    @pytest.mark.parametrize("view", ("ActivitySpendRow", "MemberSpendRow", "RunSpendView"))
     def test_the_wire_shape_has_no_model_field(self, view):
         """The other door. A field on the response model is how it ships even
         when the SQL is clean."""
