@@ -380,6 +380,35 @@ class Shell(_Strict):
     search: list[str] = Field(default_factory=list)
 
 
+MAX_RUNTIME_PACKAGES = 20
+_PKG_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_PKG_VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z.+!_-]{0,31}$")
+
+
+class RuntimeDef(_Strict):
+    """Where member code runs (STU-B7a, ai_studio.md 19.3). Four kinds. It has no
+    `hosts` key on purpose, so `_Strict` refuses one."""
+
+    kind: Literal["none", "browser", "sandbox", "packages"] = "none"
+    #: Package name to exact version. Only kind `packages` reads it.
+    packages: dict[str, str] = Field(default_factory=dict, max_length=MAX_RUNTIME_PACKAGES)
+
+    @field_validator("packages")
+    @classmethod
+    def _packages_are_pinned(cls, v: dict[str, str]) -> dict[str, str]:
+        for name, version in v.items():
+            if not _PKG_NAME_RE.fullmatch(name) or not _PKG_VERSION_RE.fullmatch(version):
+                raise ValueError("a package is a name and an exact version")
+        return v
+
+
+def runtime_kind(manifest: Any) -> str:
+    """The runtime kind of a manifest (model or dict). No key means `none`."""
+    rt = manifest.get("runtime") if isinstance(manifest, dict) else getattr(manifest, "runtime", None)
+    kind = rt.get("kind") if isinstance(rt, dict) else getattr(rt, "kind", None)
+    return kind if isinstance(kind, str) and kind else "none"
+
+
 class Manifest(_Strict):
     studio: Literal[1]
 
@@ -418,6 +447,8 @@ class Manifest(_Strict):
     slots: list[dict[str, Any]] = Field(default_factory=list)
     needs: list[dict[str, Any]] = Field(default_factory=list)
     overrides: list[dict[str, Any]] = Field(default_factory=list)
+    #: STU-B7a. Where member code runs. No key means kind `none`. B4 and B5 move it onto `logic[]`.
+    runtime: RuntimeDef | None = None
 
     @field_validator("contributes")
     @classmethod

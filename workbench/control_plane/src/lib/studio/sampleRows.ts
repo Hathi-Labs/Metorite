@@ -3,16 +3,18 @@
  *
  * Object rows exist only after a publish, so the Studio IDE draws a draft on sample rows.
  * `sampleRowsFor` is pure and fixed: the same fields always give the same rows, so the
- * preview does not flicker at each refresh. `makeDraftDoor` reads those rows and refuses
- * every write. No call reaches app data. The pattern is `sampleDoor.ts`, which holds one
+ * preview does not flicker at each refresh. `makeDraftDoor` reads those rows and keeps
+ * each write in memory (G4b). No call reaches app data. The pattern is `sampleDoor.ts`, which holds one
  * fixed object for the block preview.
  */
-import type { Row, StudioDataDoor } from "./dataDoor";
+import type { ActionResult, Row, StudioDataDoor } from "./dataDoor";
 import type { FieldSpec } from "./fieldCheck";
+import { validateRecord } from "./fieldCheck";
 
 export const SAMPLE_COUNT = 5;
-export const SAMPLE_LABEL = "Sample data. Nothing is saved.";
+export const SAMPLE_LABEL = "Sample data. Changes stay in this session only.";
 export const SAMPLE_REFUSAL = "This is a sample. Nothing is saved.";
+export const PREVIEW_KEPT = "Kept in this preview only. Nothing is saved.";
 
 const PEOPLE = ["asha@example.com", "ravi@example.com", "meera@example.com"];
 
@@ -66,19 +68,70 @@ export function listedObject(action: string): string | null {
   return m ? m[1] : null;
 }
 
-/** A door over the sample rows of each object. `read` lists. `run` refuses with a sentence. */
+/** The object name in `object:<name>.create`, `.update` or `.delete`, with its verb, or null. */
+export function writtenObject(action: string): { name: string; verb: "create" | "update" | "delete" } | null {
+  const m = /^object:([^.]+)\.(create|update|delete)$/.exec(action);
+  return m ? { name: m[1], verb: m[2] as "create" | "update" | "delete" } : null;
+}
+
+const isPlain = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+/**
+ * A door over the sample rows of each object. `read` lists. `run` creates, updates and deletes
+ * in an in-memory preview store that this door instance owns (slice G4b). The store lives in the
+ * closure only: no network call, no browser storage, and a reload brings the sample rows back.
+ * A record passes `validateRecord` first, and a refusal gives the validator's sentence.
+ */
 export function makeDraftDoor(
   scope: string, objects: Readonly<Record<string, readonly FieldSpec[]>>,
 ): StudioDataDoor {
+  const stores = new Map<string, { rows: Row[]; next: number }>();
+  const storeOf = (name: string) => {
+    let s = stores.get(name);
+    if (!s) {
+      const rows = sampleRowsFor(objects[name]);
+      s = { rows, next: rows.length + 1 };
+      stores.set(name, s);
+    }
+    return s;
+  };
   return {
     scope: `sample:${scope}`,
     async read(source) {
       const name = listedObject(source.action);
-      const fields = name ? objects[name] : undefined;
-      return fields ? sampleRowsFor(fields) : [];
+      if (!name || !objects[name]) return [];
+      return storeOf(name).rows.map((r) => ({ ...r }));
     },
-    async run() {
-      return { ok: false, message: SAMPLE_REFUSAL };
+    async run(action, args): Promise<ActionResult> {
+      const w = writtenObject(action);
+      const fields = w ? objects[w.name] : undefined;
+      if (!w || !fields) return { ok: false, message: SAMPLE_REFUSAL };
+      const store = storeOf(w.name);
+      if (w.verb === "delete") {
+        const at = store.rows.findIndex((r) => r.id === args?.id);
+        if (at < 0) return { ok: false, message: "That record is gone." };
+        store.rows.splice(at, 1);
+        return { ok: true, message: PREVIEW_KEPT };
+      }
+      const at = w.verb === "update" ? store.rows.findIndex((r) => r.id === args?.id) : -1;
+      if (w.verb === "update" && at < 0) return { ok: false, message: "That record is gone." };
+      let data: unknown = args?.data;
+      if (at >= 0 && isPlain(data)) {
+        // A patch joins the stored record before the check, and a null clears the field.
+        const { id: _id, ...rest } = store.rows[at];
+        void _id;
+        const joined: Record<string, unknown> = { ...rest, ...data };
+        for (const k of Object.keys(joined)) if (joined[k] === null) delete joined[k];
+        data = joined;
+      }
+      const checked = validateRecord(fields, data);
+      if (!checked.ok) {
+        const fieldErrors = Object.fromEntries(checked.problems.map((p) => [p.field, p.message]));
+        return { ok: false, message: checked.problems[0]?.message ?? "Fix the marked fields.", data: { fieldErrors } };
+      }
+      if (at >= 0) store.rows[at] = { id: store.rows[at].id, ...checked.value };
+      else store.rows.push({ id: `s${store.next++}`, ...checked.value });
+      return { ok: true, message: PREVIEW_KEPT };
     },
   };
 }

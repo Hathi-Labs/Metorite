@@ -102,9 +102,11 @@ from acb_common.studio_manifest import (
     ManifestError,
     manifest_hash,
     parse_uses,
+    runtime_kind,
     validate_manifest,
 )
 from acb_common.studio_patch import PatchError, apply_patch
+from acb_common.studio_runtime import RUNTIME_KINDS, SANDBOX_MODULES
 
 from acb_skills.hidden_text import body_hidden_problem, find_hidden, hidden_problem, strip_hidden
 from acb_skills.tool_annotations import annotate
@@ -858,6 +860,17 @@ def structure_line(manifest: Any) -> str:
     return f"Fields: {fields} ({hot} hot, {required} required). Rules: {rules}{tail}."
 
 
+def runtime_line(manifest: Any) -> str:
+    """One short line: the runtime kind of the manifest and its cost (STU-B7a).
+
+    Pure. It reads any value and never raises. No key means kind `none`. The
+    sandbox is not priced yet, so the line holds no number."""
+    kind = runtime_kind(manifest)
+    cost = ("runs on the sandbox, not priced yet" if kind in ("sandbox", "packages")
+            else "no server cost")
+    return f"Runtime: {kind}, {cost}."
+
+
 def plan_card_text(manifest: Any, held: bool = False,
                    added: list[dict[str, str]] | None = None,
                    skipped: list[str] | None = None) -> str:
@@ -875,6 +888,7 @@ def plan_card_text(manifest: Any, held: bool = False,
         outline_text(manifest, fence=True),
         f"Parts: {parts_count(manifest)}",
         structure_line(manifest),
+        runtime_line(manifest),
         *([note] if note else []),
         COST_LINE,
         PLAN_APPROVE_HELD if held else PLAN_APPROVE_CLEAR,
@@ -985,7 +999,7 @@ async def studio_list_actions(
 
 
 #: The parts that :func:`studio_describe` serves, in the order it names them.
-DESCRIBE_PARTS = ("manifest", "fields", "blocks")
+DESCRIBE_PARTS = ("manifest", "fields", "blocks", "runtime")
 
 
 def _describe_fields() -> dict[str, Any]:
@@ -1057,15 +1071,36 @@ def _describe_blocks() -> dict[str, Any]:
     }
 
 
+def _describe_runtime() -> dict[str, Any]:
+    """The four runtime kinds (STU-B7a). The sandbox runs no code in this release."""
+    return {
+        "kinds": {
+            "none": "The platform runs the app, and no member code exists.",
+            "browser": "Member code runs in the viewer's browser, in the sandboxed frame, with no network.",
+            "sandbox": "Member Python runs in a sandbox with no network, on the standard image.",
+            "packages": "The same sandbox, plus one frozen package layer that `runtime.packages` names.",
+        },
+        "order": list(RUNTIME_KINDS),
+        "rules": [
+            "No `runtime` key means kind `none`.",
+            "Pick the lowest kind that works.",
+            "A `runtime` has no `hosts` key.",
+        ],
+        "lock_packages": sorted(SANDBOX_MODULES),
+    }
+
+
 @annotate(read_only=True, idempotent=True, open_world=False)
 async def studio_describe(part: str = "manifest") -> dict[str, Any]:
-    """Read the live manifest schema (manifest), the field types (fields) or the block tokens (blocks)."""
+    """Read the live manifest schema (manifest), the field types (fields) the block tokens (blocks) or the runtime kinds (runtime)."""
     if part == "manifest":
         body: dict[str, Any] = {"schema": Manifest.model_json_schema()}
     elif part == "fields":
         body = {"fields": _describe_fields()}
     elif part == "blocks":
         body = {"blocks": _describe_blocks()}
+    elif part == "runtime":
+        body = {"runtime": _describe_runtime()}
     else:
         return _result(False, _sentence(
             "The part is not known. Use one of: " + ", ".join(DESCRIBE_PARTS) + "."), [])
@@ -4216,6 +4251,7 @@ __all__ = [
     "outline_text",
     "parts_count",
     "plan_card_text",
+    "runtime_line",
     "structure_line",
     "studio_app_read",
     "studio_create_from_template",

@@ -902,6 +902,7 @@ jobs:
               tests/unit/test_studio_publish_install_r8.py \
               tests/unit/test_studio_package_install_r8.py \
               tests/unit/test_studio_package_viewer_r8.py \
+              tests/unit/test_studio_org_caps_r8.py \
               tests/unit/test_studio_package_uninstall_r8.py \
               tests/unit/test_studio_package_pause_r8.py \
               tests/unit/test_studio_action_door_r8.py \
