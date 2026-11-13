@@ -43,6 +43,8 @@ export interface Address {
 export interface Style {
   length?: Length;
   language?: string;
+  /** The member ordered this answer language (personalization.md 5.3). */
+  language_fixed?: boolean;
   notes?: string[];
 }
 // ── The interview (PZ-26, PZ-27, `personalization.md` §14.3 and §14.4) ────

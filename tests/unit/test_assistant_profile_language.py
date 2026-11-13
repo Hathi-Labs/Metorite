@@ -66,3 +66,31 @@ def test_every_turn_carries_the_rule_without_a_profile_block() -> None:
     for agent in ("orchestrator", "email-assistant", ""):
         parts = ex._context_preamble_parts({}, {}, agent)
         assert parts.count(ap.LANGUAGE_RULE_LINE) == 1
+
+
+def test_a_fixed_language_holds_when_the_member_writes_in_another() -> None:
+    line = ap._style_line({"language": "en-IN", "language_fixed": True}, [])
+    assert line == ("Language: en-IN. Answer in English, even when the member "
+                    "writes in Hindi or another language.")
+    assert ap.block_language(line) == "en-IN"
+    hindi = ap._style_line({"language": "hi", "language_fixed": True}, [])
+    assert hindi == ("Language: Hindi (hi). Answer in Hindi, even when the member "
+                     "writes in English or another language.")
+    assert ap.block_language(hindi) == "hi"
+
+
+def test_without_the_mark_the_line_is_unchanged() -> None:
+    plain = "Language: en-IN. Answer in it, unless they write in another language."
+    assert ap._style_line({"language": "en-IN"}, []) == plain
+    assert ap._style_line({"language": "en-IN", "language_fixed": None}, []) == plain
+    assert ap._style_line({"language_fixed": True}, []) == ""
+
+
+def test_language_fixed_is_a_stored_style_key() -> None:
+    assert ap._clean_style({"language": "en", "language_fixed": True}) == {
+        "language": "en", "language_fixed": True}
+    for bad in (False, "yes", 1):
+        with pytest.raises(ValueError):
+            ap._clean_style({"language_fixed": bad})
+    assert "even when" in ap.LANGUAGE_RULE_LINE
+

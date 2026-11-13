@@ -1201,7 +1201,8 @@ async def profile_set(key: Literal["address", "style", "celebrations"], value: d
     to call them, how formal to be, how to greet (key ``address``: name,
     formality casual|neutral|formal, greeting none|brief|warm), or how long
     and in which language to answer (key ``style``: length
-    short|default|detailed, language as a BCP 47 tag, notes as up to 5
+    short|default|detailed, language as a BCP 47 tag, language_fixed true
+    when the member orders the answer language, notes as up to 5
     lines). Give only the fields that change. A field set to null clears it.
     A name or a note must be in the member's own words of this message. A
     name that is not may ask the member to approve it on a card. A note
