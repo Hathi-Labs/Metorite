@@ -243,8 +243,8 @@ def _message(out: dict[str, Any]) -> str:
 def test_the_three_writes_follow_the_two_reads_in_the_record_tools() -> None:
     names = tuple(fn.__name__ for fn in st.STUDIO_RECORD_TOOLS)
     assert names == ("studio_package_get", "studio_record_list", "studio_record_create",
-                     "studio_record_update", "studio_record_delete")
-    assert frozenset(names[2:]) == st.STUDIO_RECORD_WRITES
+                     "studio_record_update", "studio_record_delete", "studio_app_read")
+    assert frozenset(names[2:5]) == st.STUDIO_RECORD_WRITES
     assert tuple(TOOLS) == st.WRITE_VERBS
 
 

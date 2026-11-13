@@ -1,7 +1,7 @@
 """WS-STU B6a — the reads of a run with no viewer, on a real database (R8).
 
 Spec: ``project-docs/specs/ai_studio.md`` §14 B6 and B6a, §19.2 and §19.10
-row 10, and ``package_host.md`` §5.1. Code: migration 429 (at build, found
+row 10, and ``package_host.md`` §5.1. Code: migration 434 (at build, found
 here by content), ``package_host/store.py`` (``set_run_as``, ``read_run_as``),
 ``resolve.install_seen_by``, the route ``PUT
 /studio/packages/{id}/install/run-as`` (``routes/studio/packages.py``) and
@@ -44,7 +44,7 @@ j. A paused install and a paused package are refused.
 k. An install of org B is not found from org A, and writes no row.
 l. An install with no member is refused, and a clear stops the run.
 m. ``no_person_present()`` holds during the read, and not after it.
-n. Migration 429: three nullable columns with no default, and the CHECKs
+n. Migration 434: three nullable columns with no default, and the CHECKs
    refuse a system actor and an address in upper case.
 
 **R7: red first, then mutate.** Each mutation ran on 2026-11-13, on this file
@@ -579,7 +579,7 @@ def test_r8_the_run_has_no_person_present(world, monkeypatch) -> None:
     assert after is False
 
 
-# ── n. Migration 429 ───────────────────────────────────────────────────────
+# ── n. Migration 434 ───────────────────────────────────────────────────────
 
 
 def _migration() -> Path:

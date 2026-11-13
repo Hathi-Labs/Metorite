@@ -23,9 +23,11 @@ from decimal import Decimal
 import pytest
 from customer_console.credits import (
     CREDIT_QUANTUM,
+    RUN_CEILING_INVALID,
     OverdraftPolicy,
     RateCard,
     RunCeiling,
+    RunCeilingInvalid,
     TokenUsage,
     UnpricedModel,
     UsagePartitionError,
@@ -33,8 +35,10 @@ from customer_console.credits import (
     decide_member_cap,
     decide_run_ceiling,
     decide_spend,
+    parse_run_ceiling,
     quantize_credits,
     rate_call,
+    run_ceiling_for,
 )
 
 #: ⚠️ `pricing_mode="priced"` is REQUIRED as of CP-10 slice 2 (D61, G-4).
@@ -366,6 +370,87 @@ class TestThePerRunCircuitBreaker:
         # for the first one's spend. That is what makes it a tripwire on a loop
         # rather than a budget on the customer.
         assert decide_run_ceiling(Decimal(0)).allowed is True
+
+
+# ── AUTO-8b-2b: the ceiling of one turn (`X-CC-Run-Ceiling`) ────────────────
+
+
+class TestTheTurnCeiling:
+    """``proactive_agent.md`` §4.4 and the §9 row AUTO-8b-2b (task 3081).
+
+    The header can only LOWER the fixed tripwire. A value that does not parse
+    is refused and never falls back to 500.
+
+    Mutations (R7), each run by hand on 2026-11-13:
+
+    * ``run_ceiling_for`` returns the header in place of the min: the tests
+      ``test_a_header_above_500_keeps_500`` and
+      ``test_the_header_never_raises_the_ceiling`` go red.
+    * ``parse_run_ceiling`` returns ``None`` for a bad value (the default):
+      ``test_a_malformed_value_is_refused_never_defaulted`` goes red.
+    """
+
+    def test_no_header_is_the_fixed_tripwire(self):
+        assert parse_run_ceiling(None) is None
+        assert run_ceiling_for(None) == RunCeiling()
+        assert run_ceiling_for(None).max_credits == Decimal(500)
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("5", Decimal("5")),
+            ("0", Decimal("0")),
+            ("42.5", Decimal("42.5")),
+            ("42.5000", Decimal("42.5000")),
+            ("0.0001", Decimal("0.0001")),
+            ("007", Decimal("7")),
+            ("900", Decimal("900")),
+            ("999999999999.9999", Decimal("999999999999.9999")),
+        ],
+    )
+    def test_a_well_formed_value_parses(self, raw, expected):
+        assert parse_run_ceiling(raw) == expected
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "", "abc", "-1", "+5", "NaN", "nan", "Infinity", "inf", "-0",
+            "1e3", "5.00001", "5.", ".5", " 5", "5 ", "5,0", "0x10",
+            # A FULLWIDTH and an ARABIC-INDIC five: `Decimal` reads both.
+            "1_000", chr(0xFF15), chr(0x0665), "1000000000000",
+        ],
+    )
+    def test_a_malformed_value_is_refused_never_defaulted(self, raw):
+        with pytest.raises(RunCeilingInvalid):
+            parse_run_ceiling(raw)
+
+    def test_a_header_below_500_lowers_the_ceiling(self):
+        ceiling = run_ceiling_for(Decimal("5"))
+        assert ceiling.max_credits == Decimal("5")
+        # A run at 7 is past a ceiling of 5, and far under the 500.
+        assert decide_run_ceiling(Decimal("7"), ceiling=ceiling).allowed is False
+        assert decide_run_ceiling(Decimal("4.9999"), ceiling=ceiling).allowed is True
+
+    def test_a_header_above_500_keeps_500(self):
+        assert run_ceiling_for(Decimal("900")).max_credits == Decimal(500)
+        assert decide_run_ceiling(
+            Decimal("500"), ceiling=run_ceiling_for(Decimal("900"))).allowed is False
+
+    @pytest.mark.parametrize("raw", ["0", "5", "499.9999", "500", "500.0001", "900",
+                                     "999999999999.9999"])
+    def test_the_header_never_raises_the_ceiling(self, raw):
+        ceiling = run_ceiling_for(parse_run_ceiling(raw))
+        assert ceiling.max_credits <= RunCeiling().max_credits
+        assert ceiling.max_credits == min(Decimal(raw), Decimal(500))
+
+    def test_a_zero_ceiling_stops_the_first_call(self):
+        # A goal with nothing left sends 0. The run has spent 0, so the call
+        # is refused: fail closed for money.
+        assert decide_run_ceiling(
+            Decimal(0), ceiling=run_ceiling_for(Decimal(0))).allowed is False
+
+    def test_the_refusal_word_is_named_once(self):
+        assert RUN_CEILING_INVALID == "run_ceiling_invalid"
 
 
 # ── R7: the structural fence (CP-6 acceptance clause 1) ─────────────────────
