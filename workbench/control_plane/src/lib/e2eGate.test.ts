@@ -95,7 +95,7 @@ describe("the browser gate CI runs", () => {
 
   it("is covered in full every night on main (CIV-24, D203)", () => {
     const nightly = readFileSync(HERE("../../../../.github/workflows/e2e-nightly.yml"), "utf8").replace(/\r\n/g, "\n");
-    expect(nightly).toMatch(/playwright test --project=ci --shard=\$\{\{ matrix\.shard \}\}\/3/);
+    expect(nightly).toMatch(/playwright test --project=ci (?:--reporter=list,json )?--shard=\$\{\{ matrix\.shard \}\}\/3/);
     expect(nightly).toMatch(/shard: \[1, 2, 3\]/);
     // Same project as the PR gate, so the quarantine register is the same.
     // No --grep and no --ignore flag: every spec of the project runs.
@@ -202,5 +202,43 @@ describe("the quarantine register", () => {
     ]) {
       expect(gated, `${must} was green on 2026-09-22 and must stay gated`).toContain(must);
     }
+  });
+});
+
+describe("the inherited-failure compare (CIV-29a, D218)", () => {
+  const nightly = readFileSync(HERE("../../../../.github/workflows/e2e-nightly.yml"), "utf8").replace(/\r\n/g, "\n");
+  const job = () => {
+    const j = LF.slice(LF.indexOf("\n  e2e:"));
+    return j.slice(0, j.indexOf("\n  caddy:"));
+  };
+
+  it("runs the compare script after the suite, and the suite step does not end the job itself", () => {
+    const j = job();
+    expect(j).toMatch(/scripts\/e2e_inherited\.py/);
+    expect(j.indexOf("e2e_inherited.py")).toBeGreaterThan(j.indexOf("npx playwright test --project=ci"));
+    // The suite step hands its exit code on. The compare step then decides.
+    expect(j).toMatch(/--exit-code "\$\{\{ steps\.suite\.outputs\.code \}\}"/);
+    expect(j).not.toMatch(/continue-on-error:\s*true/);
+  });
+
+  it("reads main's newest nightly result, and the job may read runs", () => {
+    const j = job();
+    expect(j).toMatch(/gh run list --workflow e2e-nightly\.yml --branch main/);
+    expect(j).toMatch(/gh run download/);
+    expect(j).toMatch(/actions: read/);
+  });
+
+  it("states that the browser suite does not block", () => {
+    expect(job()).toMatch(/The browser suite is not a required check/);
+  });
+
+  it("is fed by a per-shard result that the nightly uploads on every run", () => {
+    expect(nightly).toMatch(/--reporter=list,json/);
+    expect(nightly).toMatch(/if:\s*always\(\)[\s\S]*upload-artifact[\s\S]*e2e-nightly-result-\$\{\{ matrix\.shard \}\}/);
+  });
+
+  it("keeps the job name and adds no push trigger", () => {
+    expect(job()).toMatch(/name: "Browser suite \(e2e\) \$\{\{ matrix\.shard \}\}\/3"/);
+    expect(LF).not.toMatch(/^ {2}push:$/m);
   });
 });

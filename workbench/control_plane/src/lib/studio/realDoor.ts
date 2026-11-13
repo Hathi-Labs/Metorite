@@ -397,6 +397,47 @@ export async function listPackages(fetchImpl: typeof fetch = fetch): Promise<Pac
   }));
 }
 
+/** One package in the admin view (J4). The gateway names the owner, and holds no manifest and no reason text. */
+export interface OrgPackage extends PackageSummary {
+  owner_email: string;
+  mine: boolean;
+  /** Action calls through the door. It is not a workflow run. */
+  action_calls: number;
+  /** True when the count stopped at its cap, so the real number is larger. */
+  action_calls_capped: boolean;
+  last_error: { action: string | null; outcome: string; at: string | null } | null;
+}
+
+/** The answer of `GET /api/studio/packages?scope=org`. `admin` is the gateway's word, never a guess. */
+export interface OrgPackages {
+  admin: boolean;
+  packages: OrgPackage[];
+  truncated: boolean;
+}
+
+/** The admin view. A caller without the right gets `admin: false` and their own packages, so the UI shows no view. */
+export async function listOrgPackages(fetchImpl: typeof fetch = fetch): Promise<OrgPackages> {
+  const body = await getJson("/api/studio/packages?scope=org", fetchImpl);
+  const o = isObject(body) ? body : {};
+  const raw = Array.isArray(o.packages) ? o.packages : [];
+  const admin = o.admin === true;
+  const packages = !admin ? [] : raw.filter(isObject).map((p): OrgPackage => {
+    const e = isObject(p.last_error) ? p.last_error : null;
+    return {
+      id: String(p.id), name: String(p.name ?? ""), status: String(p.status ?? ""),
+      live_version: typeof p.live_version === "number" ? p.live_version : null,
+      updated_at: typeof p.updated_at === "string" ? p.updated_at : null,
+      owner_email: String(p.owner_email ?? ""), mine: p.mine === true,
+      action_calls: typeof p.action_calls === "number" ? p.action_calls : 0,
+      action_calls_capped: p.action_calls_capped === true,
+      last_error: e && typeof e.outcome === "string"
+        ? { action: typeof e.action === "string" ? e.action : null, outcome: e.outcome, at: typeof e.at === "string" ? e.at : null }
+        : null,
+    };
+  });
+  return { admin, packages, truncated: admin && o.truncated === true };
+}
+
 export async function getPackage(id: string, fetchImpl: typeof fetch = fetch): Promise<PackageDetail> {
   if (!PACKAGE_ID.test(id)) throw new StudioOff();
   const body = await getJson(`/api/studio/packages/${id}`, fetchImpl);

@@ -47,6 +47,16 @@ steps below.
 A work account can show "Need admin approval". Send your admin the admin
 steps below.
 
+### Already connected your email?
+
+1. Open **Calendar**, then **Settings**.
+2. Find the row that says your mailbox is connected, and press **Sync its calendar**.
+3. The provider asks you to allow calendar access for the same account.
+4. A Microsoft 365 work account may need an admin to approve Metorite once.
+5. Mail and calendar stay separate. Disconnect one and the other stays connected.
+
+You find the same button under your accounts in **Email**.
+
 ### Choose what syncs
 
 Metorite reads every calendar that you own. To stop one, open **Calendar**,
@@ -76,6 +86,47 @@ then **Settings**, then your connected account. Untick it. To hide the
    `offline_access` and `User.Read`.
 
 Every member of the tenant can then connect with no more approval.
+
+## Operators: the live check before the write flag
+
+Two facts about the write-out cannot be proved with recorded replies. Check
+them once with a real account, before you turn on `CALENDAR_SYNC_WRITE`:
+
+- **Google.** A create with a client id that a deleted event holds answers
+  HTTP 409. A PATCH with `status: confirmed` brings that cancelled event
+  back. A plain PATCH must not.
+- **Outlook.** A repeat create with the same `transactionId` answers with the
+  event that the first create made. No second event exists.
+
+Use a test account that has a connected calendar and a calendar called
+**Metorite**. Run one task pass with the write flag on for a test
+organization first, so that the calendar exists. The script makes no
+calendar.
+
+```
+uv run python scripts/calendar_live_check.py --live --org <org id> --connection <connection id>
+```
+
+The script does these things, and nothing else:
+
+- It runs only with `--live`, `--org` and `--connection`. Without them, it
+  prints why and stops.
+- It never turns a flag on and never prints a token. It may refresh the
+  access token and store it, as the sync does.
+- It writes events only into that **Metorite** calendar. Each event has no
+  attendees, so the provider sends no mail. Each event is free time, two
+  days ahead, and is deleted at the end, also when a check fails.
+
+It prints one table with a result for each check:
+
+| Result | Meaning |
+|---|---|
+| `PASS` | The provider did what the writer expects. |
+| `FAIL` | The provider did something else. Do not turn the flag on for that provider. Write the line on task 3036. |
+| `info` | A fact with no verdict. Read it, and note it on task 3036. |
+
+The exit code is 0 when every check passes, 1 when a check fails, and 2
+when the script refuses or cannot start.
 
 ## Troubleshooting
 
