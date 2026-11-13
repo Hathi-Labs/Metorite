@@ -1562,3 +1562,38 @@ async def test_the_long_read_on_and_off_the_list(mods, app_engine, monkeypatch) 
     # Org B is not on the list, so its 503 offers nothing.
     other = await _call(mods, _admin(mods.org_b), "GET", _path(**query))
     assert other.status_code == 503 and "long_read" not in other.json()["detail"]
+
+
+async def test_a_read_that_reads_no_field_joins_no_detoast(keyed, app_engine) -> None:
+    """Review P2: the check of one day never adds a detoast of each row to
+    a read that reads no field: a plain count, a count by owner and a fixed
+    month. A sum of the amount reads the copy anyway, so it takes the day
+    set of ``@date`` in the same scan."""
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    a = keyed.org_a
+    seen: list[str] = []
+
+    def _record_sql(_conn, _cursor, statement, *_args) -> None:
+        seen.append(statement)
+
+    def totals() -> list[str]:
+        return [s for s in seen if "crm_module_records" in s and " AS value" in s]
+
+    event.listen(Engine, "before_cursor_execute", _record_sql)
+    try:
+        for query in ({"measure": "count"}, {"measure": "count", "group_by": "owner"},
+                      {"measure": "count", "group_by": "created_month"}):
+            seen.clear()
+            body = await _agg(keyed, a, entity="module:Invoices", **query)
+            assert body["records"] == 3, query
+            assert totals() and all("LATERAL" not in s and "GROUPING" not in s
+                                    for s in totals()), query
+        seen.clear()
+        summed = await _agg(keyed, a, entity="module:Invoices", measure="sum_amount")
+        assert summed["total"] == 1550.5
+        assert totals() and all("GROUPING SETS" in s and s.count("CROSS JOIN LATERAL") == 1
+                                for s in totals())
+    finally:
+        event.remove(Engine, "before_cursor_execute", _record_sql)

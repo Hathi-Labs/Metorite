@@ -781,6 +781,11 @@ def test_every_module_field_reads_the_detoasted_row_once() -> None:
         group = fs.group_sql(module, refs[key], bucket, zone="UTC")
         assert group.source == fs.DETOAST_JOIN, key
         pieces.append(f"{group.key} {group.label}")
+    # CRM-Q25e part 4: the day key of the check of one day reads the copy too.
+    for key in ("Day", "At"):
+        day = fs.day_sql(module, refs[key], zone="UTC")
+        assert day.source == fs.DETOAST_JOIN and f"{fs.DETOAST_COLUMN} ->" in day.key, key
+        pieces.append(day.key)
     for sql in pieces:
         # The stored column is read by no expression: each `->` reads the copy.
         assert not re.search(r"(?<![.\w])fields ->", sql), sql

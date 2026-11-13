@@ -298,8 +298,12 @@ LONG_READ_SLOTS = 2
 #: What a member reads when a long read runs past its budget.
 LONG_TIMEOUT_DETAIL = {
     "code": "aggregate_timeout",
-    "message": "The total took longer than 3 minutes, even as a long read. Narrow the filter.",
+    "message": "The total took longer than 3 minutes, so the CRM stopped it. Narrow the "
+               "date range, or split it into shorter ranges.",
 }
+#: The fewest seconds that a long read starts with. A read that waited for
+#: the guard past this point gets 503 ``aggregate_busy``, never a timeout.
+LONG_READ_MIN_SECONDS = 30
 #: What a member reads when the long reads of the org or of the gateway took
 #: the whole budget of this one.
 BUSY_DETAIL = {
@@ -337,7 +341,10 @@ async def _take(lock: Any, start: float, budget: float) -> None:
 async def long_read_slot(org: str, budget: float) -> AsyncIterator[float]:
     """Hold the ONE long read of *org* and one slot of the process, and give
     the seconds left of *budget* for the statements. A second long read of
-    the same org waits inside its own budget, before it opens a session."""
+    the same org waits inside its own budget, before it opens a session. A
+    read that the wait left with less than :data:`LONG_READ_MIN_SECONDS`
+    (or half of a small budget) gets 503 ``aggregate_busy``: the wait took
+    its time, not the total."""
     start = time.monotonic()
     slots, orgs = _long_gate()
     lock = orgs.setdefault(org, asyncio.Lock())
@@ -345,7 +352,10 @@ async def long_read_slot(org: str, budget: float) -> AsyncIterator[float]:
     try:
         await _take(slots, start, budget)
         try:
-            yield max(1.0, budget - (time.monotonic() - start))
+            left = budget - (time.monotonic() - start)
+            if left < min(LONG_READ_MIN_SECONDS, budget / 2):
+                raise HTTPException(status_code=503, detail=BUSY_DETAIL)
+            yield left
         finally:
             slots.release()
     finally:
@@ -404,6 +414,8 @@ class SplitTotal(BaseModel):
     total: float | None
     #: The count of values that the measure read.
     values: int
+    #: The measure of this field over the groups past :data:`MAX_GROUPS`.
+    other: float | None = 0
 
 
 class AggregateResponse(BaseModel):
@@ -660,10 +672,11 @@ def _key(value: Any) -> str | None:
 
 async def _weighted(
     db: Any, key_sql: str, label_sql: str, where: str, params: dict[str, Any],
-    group_clause: str = " GROUP BY 1",
+    group_clause: str = " GROUP BY 1", *, deadline: float | None = None,
 ) -> dict[str | None, _Acc]:
     """Weighted ₹ for each key, one statement per open or ongoing lane.
-    With no group, *group_clause* is empty and each lane gives one row."""
+    With no group, *group_clause* is empty and each lane gives one row. A
+    long read gives its one *deadline* (:func:`_keep_deadline`)."""
     lanes = (await db.execute(
         text("SELECT id, type, probability FROM crm_deal_statuses"), {},
     )).fetchall()
@@ -671,6 +684,7 @@ async def _weighted(
     for lane in lanes:
         if getattr(lane, "type", "open") not in WEIGHTED_TYPES:
             continue
+        await _keep_deadline(db, deadline)
         rows = (await db.execute(
             text(
                 f"SELECT {key_sql} AS key, {label_sql} AS label, {WEIGHTED_SQL} "
@@ -802,13 +816,25 @@ def _split_columns(scope: FieldScope | None, split: list[FieldRef], measure: str
     return more, source
 
 
+async def _keep_deadline(db: Any, deadline: float | None) -> None:
+    """A long read has ONE deadline for all its statements (CRM-Q25e). Before
+    each heavy statement, the LOCAL ``statement_timeout`` takes the time
+    left, at least 1 ms. A normal read (*deadline* None) keeps the 10 s of
+    each statement, as before."""
+    if deadline is not None:
+        left_ms = max(1, int((deadline - time.monotonic()) * 1000))
+        await db.execute(text(_TIMEOUT_SQL), {"ms": str(left_ms)})
+
+
 def _day_of(scope: FieldScope | None, module: str | None, grouped: FieldRef | None,
-            pairs: list[tuple[str, str]], zone: str,
-            bound: dict[str, Any]) -> tuple[FieldRef | None, str, str]:
+            pairs: list[tuple[str, str]], zone: str, bound: dict[str, Any], *,
+            reads: bool) -> tuple[FieldRef | None, str, str]:
     """CRM-Q25e part 4: the date field of the check of one day, its day key
     and its FROM text (``field_sql.day_field`` and ``day_sql``), or no field.
-    A core entity has none."""
-    day = day_field(scope, grouped, pairs) if module is not None else None
+    A core entity has none. *reads* says that the statement reads the
+    detoasted copy already. With no such read (a plain count, a count by
+    owner, a fixed month) the check adds no detoast, so it adds nothing."""
+    day = day_field(scope, grouped, pairs) if module is not None and reads else None
     if day is None or scope is None:
         return None, "", ""
     sql = day_sql(scope, day, zone=zone)
@@ -853,8 +879,10 @@ async def _read(
 ) -> _Read:
     """Every statement of one aggregate, in the caller's tenant session.
     *fields* is the comma list of a split (CRM-Q25e part 2), and
-    *timeout_ms* the LOCAL ``statement_timeout`` (a long read gives more)."""
+    *timeout_ms* the budget of a long read: ONE deadline for all its
+    statements (:func:`_keep_deadline`)."""
     ms = STATEMENT_TIMEOUT_MS if timeout_ms is None else timeout_ms
+    deadline = None if timeout_ms is None else time.monotonic() + timeout_ms / 1000
     await db.execute(text(_TIMEOUT_SQL), {"ms": str(ms)})
     scope: FieldScope | None = None
     zone = ""
@@ -923,10 +951,14 @@ async def _read(
         bound.update(sql.params)
         source = from_source(source, sql.source)
     more, more_source = _split_columns(scope, split, field_measure, bound)
+    source = from_source(source, more_source)
     # CRM-Q25e part 4: the days of one date field come from the SAME scan, as
-    # a second grouping set. A module only, and never a money read of deals.
-    day, day_key, day_source = _day_of(scope, module, grouped, pairs, zone, bound)
-    source = from_source(source, more_source, day_source)
+    # a second grouping set. A module only, never a money read of deals, and
+    # only when the statement reads the detoasted copy already: a count with
+    # no field read never pays for a detoast of each row.
+    day, day_key, day_source = _day_of(scope, module, grouped, pairs, zone, bound,
+                                       reads=bool(source))
+    source = from_source(source, day_source)
     days: list[tuple[Any, Any, int]] = []
     # One scan, two groupings: the answer's own, and the day. With no group,
     # the empty set gives its one row even when no record matches, as the
@@ -938,6 +970,7 @@ async def _read(
     grouping = f", {day_key} AS agf_day, GROUPING({day_key}) AS agf_gd" if day_key else ""
 
     async def fetch(where_sql: str, args: dict[str, Any]) -> dict[str | None, _Acc]:
+        await _keep_deadline(db, deadline)
         rows = (await db.execute(
             text(
                 f"SELECT {key_sql} AS key, {label_sql} AS label, "
@@ -955,12 +988,14 @@ async def _read(
             scoped = _and(where_sql, f"{CURRENCY_SQL} = :agg_currency")
             args = {**bound, "agg_currency": code}
             per[code] = (
-                await _weighted(db, key_sql, label_sql, scoped, args, group_clause)
+                await _weighted(db, key_sql, label_sql, scoped, args, group_clause,
+                                deadline=deadline)
                 if measure == "weighted" else await fetch(scoped, args)
             )
         values, currency, codes = split_currencies(per)
     elif measure == "weighted":
-        values = await _weighted(db, key_sql, label_sql, where_sql, bound, group_clause)
+        values = await _weighted(db, key_sql, label_sql, where_sql, bound, group_clause,
+                                 deadline=deadline)
     else:
         values = await fetch(where_sql, bound)
     labels = await _labels(db, found, group_by) if found and group_by else {}
@@ -1026,6 +1061,7 @@ async def _read_overlay(
             "overlay_unfit", f"{found.label}s come from the module {overlay.module}, "
             f"which has no {group_by}. Group by another key.")
     ms = STATEMENT_TIMEOUT_MS if timeout_ms is None else timeout_ms
+    deadline = None if timeout_ms is None else time.monotonic() + timeout_ms / 1000
     await db.execute(text(_TIMEOUT_SQL), {"ms": str(ms)})
     scope = await module_scope(db, overlay.module)
     zone = await crm_zone(db, current_tenant())
@@ -1078,6 +1114,7 @@ async def _read_overlay(
     else:
         key_sql, group_clause = "NULL", ""
     bound[ZONE_PARAM] = zone
+    await _keep_deadline(db, deadline)
     rows = (await db.execute(
         text(
             f"SELECT {key_sql} AS key, {label_sql} AS label, "
@@ -1323,8 +1360,11 @@ async def _compute(
         ),
         overlay=read.overlay,
         matched=read.matched or None,
-        split=_split_totals(read, measure, total, values, empty),
-        findings=_findings(read, measure, bucketed or group_by in MONTH_GROUPS),
+        split=_split_totals(read, measure, total, values, empty, [acc for _g, acc in rest]),
+        findings=_findings(
+            read, measure,
+            (bucket or "month") if bucketed else ("month" if group_by in MONTH_GROUPS else None),
+            group_by),
     )
 
 
@@ -1341,30 +1381,44 @@ def _group_split(split: list[FieldRef], acc: _Acc, empty: list[bool]) -> dict[st
 
 
 def _split_totals(read: _Read, measure: str, total: float | None, values: int | None,
-                  empty: list[bool]) -> list[SplitTotal]:
+                  empty: list[bool], rest: list[_Acc]) -> list[SplitTotal]:
     """CRM-Q25e part 2: the total of each field of a split, from the one
-    statement. The first is the answer's own ``total``."""
+    statement, and its ``other``: the measure over the groups past
+    :data:`MAX_GROUPS` (*rest*). The first is the answer's own ``total``."""
     if not read.split:
         return []
     first = read.split[0]
-    out = [SplitTotal(field=first.key, label=first.label, type=first.type, total=total,
-                      values=int(values or 0))]
+    out = [SplitTotal(
+        field=first.key, label=first.label, type=first.type, total=total,
+        values=int(values or 0),
+        other=(None if total is None else _rounded(_combine(measure, rest))) if rest else 0,
+    )]
     accs = list(read.values.values())
     for i, ref in enumerate(read.split[1:]):
         parts = [a.parts[i] for a in accs if i < len(a.parts)]
-        count = sum(p.n for p in parts)
+        past = [a.parts[i] for a in rest if i < len(a.parts)]
         out.append(SplitTotal(
-            field=ref.key, label=ref.label, type=ref.type, values=count,
+            field=ref.key, label=ref.label, type=ref.type, values=sum(p.n for p in parts),
             total=None if empty[i] else _rounded(_combine(measure, parts)),
+            other=(None if empty[i] else _rounded(_combine(measure, past))) if rest else 0,
         ))
     return out
 
 
-def _findings(read: _Read, measure: str, dated: bool) -> list[dict[str, Any]]:
+#: The words of a fixed month group in a finding: "one month of the created date".
+_MONTH_LABELS: dict[str, str] = {
+    "created_month": "the created date", "updated_month": "the modified date",
+    "close_month": "the close date",
+}
+
+
+def _findings(read: _Read, measure: str, bucket: str | None,
+              group_by: str | None) -> list[dict[str, Any]]:
     """CRM-Q25e part 4: what the reader must know before the total
     (``acb_common.number_sense``, the one rule). First the days of the date
     field, from the same statement. Else, for an answer by a date bucket or
-    a month, its own groups. The thresholds live in ``number_sense``."""
+    a month (*bucket* is its word), its own groups, each named as a bucket
+    and never as a day. The thresholds live in ``number_sense``."""
     summed = measure in SUMMING_MEASURES and not read.codes
     if read.day is not None and read.days:
         found = number_findings(
@@ -1372,13 +1426,14 @@ def _findings(read: _Read, measure: str, dated: bool) -> list[dict[str, Any]]:
             label=read.day.label, summed=summed)
         if found:
             return [f.wire() for f in found]
-    if dated:
-        label = read.grouped.label if read.grouped is not None else "month"
-        found = number_findings(
-            [(key, acc.value, acc.rows) for key, acc in read.values.items()],
-            label=label, summed=summed)
-        return [f.wire() for f in found]
-    return []
+    if bucket is None:
+        return []
+    label = (read.grouped.label if read.grouped is not None
+             else _MONTH_LABELS.get(group_by or "", "the date"))
+    found = number_findings(
+        [(key, acc.value, acc.rows) for key, acc in read.values.items()],
+        label=label, summed=summed, bucket=bucket)
+    return [f.wire() for f in found]
 
 
 # ── Stage dwell (the read half of CRM-I1) ───────────────────────────────────

@@ -169,21 +169,148 @@ async def test_with_the_flag_empty_a_503_is_the_refusal_of_before(monkeypatch) -
     assert len(calls) == 1 and "10 seconds" in out
 
 
-async def test_a_long_read_that_runs_out_of_time_spends_no_aggregate_budget(monkeypatch) -> None:
+async def test_a_long_read_keeps_its_count_even_when_it_runs_out_of_time(monkeypatch) -> None:
+    """Review item 6: a long read that runs out of time spends its count, and
+    its refusal asks for a narrower read, never for the same read again."""
     import acb_skills.crm_tools as tools
 
     reads = tools.RunReads()
     monkeypatch.setattr(tools, "_run_reads", lambda: reads)
     calls: list[tuple[dict, float]] = []
-    _fake_gateway(monkeypatch, [_timeout(True), _timeout(False)] * 9, calls)
+    long_timeout = _Resp(503, {"detail": {
+        "code": "aggregate_timeout",
+        "message": "The total took longer than 3 minutes, so the CRM stopped it. Narrow "
+                   "the date range, or split it into shorter ranges."}})
+    _fake_gateway(monkeypatch, [_timeout(True), long_timeout] * 9, calls)
+    outs = [await tools.crm_aggregate("module:Invoices", measure="sum", field="Grand_Total")
+            for _ in range(9)]
+    # Eight calls ran a long read and spent the budget, so the ninth reads nothing.
+    assert len(calls) == 16 and reads.aggregates == tools.AGGREGATE_BUDGET
+    assert outs[-1].startswith("BUDGET:")
+    assert "shorter ranges" in outs[0] and "ask again" not in outs[0].lower()
+
+
+async def test_a_10_s_timeout_with_no_long_read_spends_no_count(monkeypatch) -> None:
+    """The 10 s read ran out of time, and the call could take no long read
+    (here: a headless turn). It read nothing, so it spends no count."""
+    import acb_skills.crm_tools as tools
+
+    reads = tools.RunReads()
+    monkeypatch.setattr(tools, "_run_reads", lambda: reads)
+    monkeypatch.setattr(tools, "_headless_turn", lambda: True)
+    calls: list[tuple[dict, float]] = []
+    _fake_gateway(monkeypatch, [_timeout(True)] * 9, calls)
     for _ in range(9):
         await tools.crm_aggregate("module:Invoices", measure="sum", field="Grand_Total")
-    # Nine reads past the aggregate budget of 8, and none was refused.
-    assert len(calls) == 18 and reads.aggregates == 0 and reads.total == 9
-    # A read that answers still counts.
-    _fake_gateway(monkeypatch, [_Resp(200, _total(total=5))], calls)
-    await tools.crm_aggregate("module:Invoices", measure="sum", field="Grand_Total")
-    assert reads.aggregates == 1
+    # No long read in a headless turn, and no call spent a count.
+    assert [c[0].get("long_read") for c in calls] == [None] * 9
+    assert reads.aggregates == 0 and reads.total == 9
+
+
+async def test_a_headless_turn_takes_no_long_read() -> None:
+    """The run ceiling marks the headless turn (``acb_llm.attribution``)."""
+    from decimal import Decimal
+
+    import acb_skills.crm_tools as tools
+    from acb_llm.attribution import run_ceiling_scope
+
+    assert not tools._headless_turn()
+    with run_ceiling_scope(Decimal("5")):
+        assert tools._headless_turn()
+        call = tools._ToolCall(deadline=tools.time.monotonic() + tools.TOOL_CALL_SECONDS)
+        assert not tools._long_read_open(call)
+
+
+async def test_one_tool_call_takes_at_most_one_long_read(monkeypatch) -> None:
+    """A term total or an answer-first total makes several reads in ONE call.
+    Only the first may escalate, so the call stays under its deadline."""
+    import acb_skills.crm_tools as tools
+
+    calls: list[tuple[dict, float]] = []
+    _fake_gateway(monkeypatch, [_timeout(True), _Resp(200, _total(total=7)), _timeout(True)],
+                  calls)
+    token = tools._CALL.set(tools._ToolCall(
+        deadline=tools.time.monotonic() + tools.TOOL_CALL_SECONDS))
+    try:
+        first = await tools._aggregate_read({"entity": "module:Invoices"})
+        with pytest.raises(tools._GatewayError) as exc:
+            await tools._aggregate_read({"entity": "module:Invoices"})
+    finally:
+        tools._CALL.reset(token)
+    assert first["total"] == 7 and exc.value.code == "aggregate_timeout"
+    assert [c[0].get("long_read") for c in calls] == [None, "true", None]
+
+
+async def test_every_read_of_a_call_ends_by_its_deadline(monkeypatch) -> None:
+    import acb_skills.crm_tools as tools
+
+    calls: list[tuple[dict, float]] = []
+    _fake_gateway(monkeypatch, [_timeout(True), _Resp(200, _total(total=7))], calls)
+    # 150 s left: the 10 s read gets 30 s, and no long read fits.
+    token = tools._CALL.set(tools._ToolCall(deadline=tools.time.monotonic() + 150))
+    try:
+        with pytest.raises(tools._GatewayError):
+            await tools._aggregate_read({"entity": "module:Invoices"})
+    finally:
+        tools._CALL.reset(token)
+    assert [c[0].get("long_read") for c in calls] == [None]
+    # The real _get cuts each httpx limit to the time that the call has left.
+    token = tools._CALL.set(tools._ToolCall(deadline=tools.time.monotonic() + 12))
+    try:
+        assert 11 < tools._within_call(30.0, "/crm/aggregate") <= 12
+    finally:
+        tools._CALL.reset(token)
+    assert tools._within_call(30.0, "/crm/aggregate") == 30.0  # outside a call
+    # A call with its time used reads nothing more.
+    token = tools._CALL.set(tools._ToolCall(deadline=tools.time.monotonic() + 0.5))
+    try:
+        with pytest.raises(tools._GatewayError) as exc:
+            tools._within_call(30.0, "/crm/aggregate")
+    finally:
+        tools._CALL.reset(token)
+    assert exc.value.code == "call_deadline" and tools.CALL_DEADLINE_LINE in exc.value.detail
+
+
+def test_the_deadline_of_a_call_stays_under_the_tool_limit() -> None:
+    """The orchestrator stops a tool at 300 s (COPILOT_TOOL_TIMEOUT_SECONDS).
+    A call holds one 10 s read (30 s of httpx) and one long read (200 s)."""
+    import acb_skills.crm_tools as tools
+
+    assert tools.TOOL_CALL_SECONDS < 300
+    assert tools.TOOL_CALL_SECONDS >= 30 + tools.LONG_READ_TIMEOUT_S
+
+
+async def test_the_display_names_each_currency_and_never_adds_them(monkeypatch) -> None:
+    """Review item 1: INR and USD deals give one display entry for each."""
+    import acb_skills.crm_tools as tools
+
+    async def _get(path: str, params: dict | None = None, timeout: float = 30.0) -> dict:
+        return {"entity": "deals", "measure": "sum_amount", "groups": [], "total": 1_234_567,
+                "currency": "INR", "others": [{"currency": "USD", "total": 4500, "other": 0}],
+                "other": 0, "omitted": 0, "records": 4}
+
+    monkeypatch.setattr(tools, "_get", _get)
+    out = await tools.crm_aggregate("deals", measure="sum_amount")
+    [line] = [x for x in out.splitlines() if x.startswith("Display:")]
+    assert line == ("Display: ₹12,34,567 (₹12.3\xa0L) and USD 4,500 (USD 4.5K). Quote each "
+                    "display value with its currency, as written. Never add two currencies "
+                    "together.")
+
+
+def test_a_split_groups_its_values_in_the_number_system_of_the_run(monkeypatch) -> None:
+    import importlib
+
+    import acb_skills.crm_tools as tools
+
+    split = [{"field": "Rent", "label": "Rent", "type": "currency", "total": 1_234_567,
+              "other": 150_000},
+             {"field": "Units", "label": "Units", "type": "number", "total": 123456.5,
+              "other": 2}]
+    assert tools._split_text(split, None, "sum") == "Rent INR 12,34,567; Units 1,23,456.5"
+    assert tools._split_text(split, None, "sum", key="other") == "Rent INR 1,50,000; Units 2"
+    artifact = importlib.import_module("acb_skills.write_artifact")
+    monkeypatch.setattr(artifact, "run_numbering", lambda: "international")
+    assert tools._split_text(split, None, "sum") == "Rent INR 1,234,567; Units 123,456.5"
 
 
 async def test_a_timeout_with_the_flag_empty_still_spends_the_budget(monkeypatch) -> None:
@@ -350,3 +477,47 @@ def test_the_aggregate_holds_the_grouping_sets_and_the_split_in_one_statement() 
               / "gateway" / "routes" / "crm" / "aggregate.py").read_text(encoding="utf-8")
     assert source.count("GROUP BY GROUPING SETS") == 1
     assert "count(*) AS c{more}{grouping} FROM {table}{source}{where_sql}{sets}" in source
+
+
+# ── The fences of the review (item 8) ────────────────────────────────────────
+
+
+async def test_the_lookup_read_names_the_org_and_binds_every_value() -> None:
+    """M2: the read of the Zoho id names the org beside RLS, and binds the
+    org, the module and the id. None of them reaches the SQL text."""
+    from gateway.routes.crm import field_sql as fs
+
+    assert "organization_id = CAST(:agf_org AS uuid)" in fs._LOOKUP_ID_SQL
+    ident = "77309599-0000-4000-8000-000000000001"
+    seen: list[tuple[str, dict]] = []
+
+    class _Row:
+        def scalar(self) -> str:
+            return "4567000001"
+
+    class _DB:
+        async def execute(self, statement: Any, params: dict) -> _Row:
+            seen.append((str(statement), dict(params)))
+            return _Row()
+
+    found = await fs.lookup_ids(_DB(), "org-a", _scope(), [("Operators", ident)])
+    assert found == {0: "4567000001"}
+    [(sql, params)] = seen
+    assert params == {"agf_org": "org-a", "agf_module": "Operators", "agf_id": ident}
+    assert ident not in sql and "org-a" not in sql and "Operators" not in sql
+
+
+def test_a_read_that_reads_no_field_gets_no_day_set() -> None:
+    """Review P2: the day check adds no detoast to a read with no field read
+    (a plain count, a count by owner, a fixed month)."""
+    from gateway.routes.crm import aggregate as agg
+    from gateway.routes.crm import field_sql as fs
+
+    day = fs.FieldRef(key="Invoice_Date", type="date", label="Invoice Date")
+    scope = fs.FieldScope(column="fields", owner="module:Invoices",
+                          fields={"Invoice_Date": day, "@date": day})
+    bound: dict = {}
+    assert agg._day_of(scope, "Invoices", None, [], "UTC", bound, reads=False) == (None, "", "")
+    assert bound == {}
+    found, key, source = agg._day_of(scope, "Invoices", None, [], "UTC", bound, reads=True)
+    assert found is day and key and source == fs.DETOAST_JOIN
