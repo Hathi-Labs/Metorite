@@ -1094,9 +1094,11 @@ async def delete_package(
                 "message": store.COUNTS_CHANGED_LATER_TEXT.format(removed=removed),
                 "records_removed": removed, "preview": _preview_out(step.left)})
         response.status_code = 202
+        # C4a-1: ``history_left`` says that change history is left, also when
+        # ``remaining`` is 0. The client sends the token again to go on.
         return {"deleted": False, "package_id": pid, "remaining": step.left.records,
                 "remaining_capped": step.left.capped, "records_removed": removed,
-                "confirm": step.left.confirm}
+                "confirm": step.left.confirm, "history_left": step.history_left}
 
 
 # ── The org and group install (WS-PKG PKG-8b) ──────────────────────────────
