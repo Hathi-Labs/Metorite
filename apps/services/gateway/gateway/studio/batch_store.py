@@ -78,6 +78,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from acb_common import studio_query
+from acb_common.studio_access import Viewer
 from acb_common.studio_query import QueryError
 from acb_common.studio_rules import MAX_WRITES_PER_BATCH, RuleViolation
 from sqlalchemy import text
@@ -401,7 +402,8 @@ def _is_item_refusal(cause: BaseException) -> bool:
 
 
 async def run_chunk(db: Any, actor: str, batch_id: str,
-                    writes_by_key: Mapping[str, Sequence[Write]]) -> ChunkResult:
+                    writes_by_key: Mapping[str, Sequence[Write]], *,
+                    viewer: Viewer) -> ChunkResult:
     """Run the next chunk of the batch, as ONE transaction (the caller's).
 
     It locks the batch row, reads the pending items in place order, and takes
@@ -417,6 +419,12 @@ async def run_chunk(db: Any, actor: str, batch_id: str,
     signal: it marks nothing. The caller commits after the call, or rolls back
     when it raises, and each call is one transaction, so the org lock is free
     between chunks.
+
+    *viewer* is required (C8a). The caller resolves it in the session of the
+    chunk, as the door does with ``_row_viewer(member)``, and the store never
+    builds one. So the row rules bind a batch write exactly as they bind a
+    single write. The store passes it on to every ``apply_writes`` call,
+    including the halves of a split.
     """
     bid = _uuid(batch_id, "batch_id")
     who = objects_store._actor(actor)
@@ -437,13 +445,13 @@ async def run_chunk(db: Any, actor: str, batch_id: str,
             raise DigestMismatch("The writes of an item are not the frozen writes.")
     written: dict[str, str] = {}
     failed: dict[str, str] = {}
-    await _run_group(db, who, pid, bid, taken, writes_by_key, written, failed)
+    await _run_group(db, who, pid, bid, taken, writes_by_key, written, failed, viewer)
     return await _result(db, bid, written, failed, status)
 
 
 async def _run_group(db: Any, who: str, pid: str, bid: str, rows: Sequence[Any],
                      writes_by_key: Mapping[str, Sequence[Write]], written: dict[str, str],
-                     failed: dict[str, str]) -> None:
+                     failed: dict[str, str], viewer: Viewer) -> None:
     """Write the items *rows* as one ``apply_writes`` call, and when the call
     refuses, split the group in two halves and run each half. A group of ONE
     item that the store refuses fails that item, and no other. So a refusal
@@ -469,7 +477,8 @@ async def _run_group(db: Any, who: str, pid: str, bid: str, rows: Sequence[Any],
         starts.append(len(flat))
         flat.extend(_shift(writes_by_key[str(row[0])], len(flat)))
     try:
-        answers = await objects_store.apply_writes(db, who, package_id=pid, writes=flat)
+        answers = await objects_store.apply_writes(
+            db, who, package_id=pid, writes=flat, viewer=viewer)
     except BatchError as exc:
         if _is_busy(exc):
             raise StoreBusy(str(exc.cause)) from None
@@ -477,8 +486,10 @@ async def _run_group(db: Any, who: str, pid: str, bid: str, rows: Sequence[Any],
             raise
         if len(rows) > 1:
             half = len(rows) // 2
-            await _run_group(db, who, pid, bid, rows[:half], writes_by_key, written, failed)
-            await _run_group(db, who, pid, bid, rows[half:], writes_by_key, written, failed)
+            await _run_group(db, who, pid, bid, rows[:half], writes_by_key, written, failed,
+                             viewer)
+            await _run_group(db, who, pid, bid, rows[half:], writes_by_key, written, failed,
+                             viewer)
             return
         if isinstance(exc.cause, QueryError) and exc.cause.code == studio_query.TIMEOUT:
             # A deadline is load, not a verdict on the item: a retry signal.
