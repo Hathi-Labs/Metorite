@@ -2,10 +2,10 @@
 
 > **Dated 2026-11-11, price (D204.9).** Seat tiers are final. The flat ₹500 seat ends when PLN-0 merges. Until then the code sells the flat seat. Read each line that says the flat seat as the seat of D152 after PLN-0. Line: 783 (STU-Q7).
 
-> **Product:** Metorite · **Feature:** AI Studio (`/studio`) · **Updated:** 2026-11-13 · **Owner:** vjvarada
+> **Product:** Metorite · **Feature:** AI Studio (`/studio`) · **Updated:** 2026-11-14 · **Owner:** vjvarada
 > **Status:** 🔨 **In build.** §14 holds the state of each slice, and a built row starts with 🔨 **BUILT**. Every built slice is dark behind `STUDIO_ORGS`, which is empty on every box, and no org has the `studio` tool pack. The `/studio` pane (A1, E1) is live in the nav for the beta since 2026-11-05 (D179), and its routes still need `STUDIO_ORGS`. An org that the flag does not list sees a "not open yet" state. §15 holds the stages, and §20 holds the plan for apps that serve people outside the org. A slice never edits this line.
 > **Verified against code on 2026-11-08 at `4439b200f`** (main). A script checked that each of the 114 paths that §16 names exists on that commit.
-> **Board:** WS-STU in `work_plan.md` §2. **Decisions:** D127 (one app, three kinds) and D139 (one coding harness). **D141**: Studio starts now, and a skill creator replaces the agent creator. **D146**: the owner's answers of 2026-10-31, with layered apps, a typed object store and first-party templates. **D193**: the Studio IDE. **D202**: the full web IDE, the UI kit, the sandbox for each org and person, and the new blocks. D124, D130, D131 and D136 bind it too.
+> **Board:** WS-STU in `work_plan.md` §2. **Decisions:** D127 (one app, three kinds) and D139 (one coding harness). **D141**: Studio starts now, and a skill creator replaces the agent creator. **D146**: the owner's answers of 2026-10-31, with layered apps, a typed object store and first-party templates. **D193**: the Studio IDE. **D202**: the full web IDE, the UI kit, the sandbox for each org and person, and the new blocks. **D219**: the app frame, with a left sidebar, tabs and record pages (§5.5). D124, D130, D131 and D136 bind it too.
 > **Metorite:** project "AI Studio", umbrella epic #491, this spec task #1135. Each group of §14 has its own epic under #491.
 > **Gate summary:** every slice is AGENT-SAFE unless §14 says otherwise. The owner answered STU-Q1, Q2, Q3, Q5 and Q6 and the template question on 2026-10-31 (D146). The owner answered STU-Q4 on 2026-11-04 and STU-Q4b on 2026-11-05 (D180). Eight questions stay open: Q7, Q8, Q9 and Q11 to Q15 (§12).
 
@@ -353,6 +353,7 @@ A package joins the one shell. It builds no shell of its own (`navigation_shell.
 |---|---|---|
 | **Sidebar** | An entry for an installed app (H1) | `NavPane`, per-org entries. STU-Q3 sets where |
 | **Page** | Its views, under `AppTopBar` | The one renderer (D1) |
+| **The app's own rail** | Its pages and views, in a left rail under its app bar (§5.5) | `RailRow` and the `rail` prop of `AppTopBar` (AF-2) |
 | **Chat** | Its skill, and its views as cards | WS-67 tool packs, `emit_generative_ui` |
 | **Assistant dock** | The skill loads when the app page is open | `pane.agent` in `lib/shell/assistant.ts` |
 | **⌘K** | Its jobs (verbs) and its records in Find | `lib/shell/registry.ts` `JOBS`, `/api/shell/search` |
@@ -416,7 +417,7 @@ The renderer is `components/GenerativeUINode.tsx`, grown, not a second one. Toda
 
 ### 5.3 Layout
 
-A page is a grid of blocks, with tabs and an optional side panel. At 390 px the grid becomes one column, and a block may name a phone form of itself (a board becomes a grouped list).
+A page is a grid of blocks, with tabs and an optional side panel. At 390 px the grid becomes one column, and a block may name a phone form of itself (a board becomes a grouped list). §5.5 puts the pages in the app frame: a left rail of pages and views, tabs, record pages and dialogs.
 
 ### 5.4 The code block: custom screens from the UI kit (D202)
 
@@ -430,6 +431,41 @@ Some needs no block covers: a custom chart, a scanner, a bespoke calculator, a 3
 - **One React.** Today the app runs React 19.2.4. The artifact frame runs `preact/compat`, and the T2 vendor cache holds React 18.3.1 (§19.4). L4 picks one runtime for the kit and the frame, and a test holds them equal.
 
 Slice L1 makes this path **one block inside a package**. The App Workshop path (`SandboxedHtml`, `SandboxedReact`) is its base, not a second frame. Server code is a logic module (B5). It runs on the off-box sandbox only, after SBX-9 (D127.2).
+
+### 5.5 The app frame: the left sidebar, tabs, record pages and dialogs (D219)
+
+The owner asked for this on 2026-11-14 (task 3146). A Studio app opens in the same frame as a built-in app, such as the CRM or Knowledge. It has an app bar, its own left sidebar, pages, tabs, record pages and dialogs. The manifest declares the frame, and the app writes no frame code. The frame adds no second component of any kind.
+
+**The left sidebar is the app's own rail, not the shell sidebar.** The shell sidebar holds one entry for the installed app (H1, PKG-8). The rail of the app sits under its app bar, as `CrmRail` does in the CRM.
+
+| Part | What a member sees | What the manifest says | What it reuses |
+|---|---|---|---|
+| **App bar** | The icon and the name of the app, the scope line, the actions of the app ("New visit") and the rail toggle | `title`, `icon`, and the actions of the app or of a page | `AppTopBar` and its `rail` prop (`components/AppTopBar.tsx`) |
+| **Rail** | Sections of rows. A row opens a page or a saved view, with an icon and a muted count | `nav`: sections, each with a title and its rows. A row names a page, or a view with a filter | `RailRow` (`components/ui/RailRow.tsx`) and `useMobileDrawer` (`components/AppShell.tsx`). `app/crm/components/CrmRail.tsx` is the model |
+| **Page** | A grid of blocks, with an optional side panel on the right | `pages` (D11a) | `StudioPage` (D11b) |
+| **Tabs** | Underline tabs over the cells of a page | The `tabs` of a page (D11a) | `Tabs` (`components/Tabs.tsx`) |
+| **Filter bar and layout switch** | Search, filters, sort and group over a table or a board. A switch between the layouts that a view allows | The `filters`, `sort`, `group` and `layouts` of a view | The pure model of the CRM filter bar (`app/crm/lib/filterBar.ts`), which AF-4 lifts to a shared module. `ViewTabs` of Projects is the model of the switch |
+| **Record page** | A record opens in the side panel or as a full page, with its own tabs: Details, Related, Files, and later Activity | The `record` of an object: its tabs and its related lists | The Detail block (D2). `app/crm/components/RecordShell.tsx` and `RelatedLists.tsx` are the model. The activity feed (D22) when it is built |
+| **Dialogs** | "New visit" opens the form in a dialog. A delete asks once | A typed action (D1) that opens a form | `Modal` and `ConfirmDialog` (`components/ui/`), and the Form block (D2) |
+| **Sections** | A page header with one sentence and a count. Groups of cells that fold | The `header` and the `sections` of a page | `PageHeader` and `Collapsible` (`components/ui/Collapsible.tsx`) |
+| **Views that a member saves** | A member saves a filter as a view, and the view shows in the rail | Nothing. The member makes it | The shared seam `lib/savedViews` and `components/ViewChips.tsx`. The Studio store is new (AF-10) |
+| **Phone** | The rail opens in the drawer. The tabs scroll in one row. The side panel is a bottom sheet | Nothing more | `useMobileDrawer`, `ScrollStrip`, and the `Modal` sheet of D11b |
+
+**The rules.** Each rule binds when its slice merges, and until then it is advisory (R7).
+
+1. **One frame, from the parts that exist.** `components/studio/StudioAppFrame.tsx` composes `AppTopBar`, `RailRow`, `StudioPage` and `useMobileDrawer`. It adds no second rail, tab bar, dialog or filter bar. Fences: `src/lib/railRows.test.ts` (the new rail joins `RAILS`), `src/lib/shell/appBar.test.ts` and the conformance suite (AF-2).
+2. **The manifest declares, and the app draws nothing of its own.** `nav`, `record`, `header`, `sections` and the view parts join the A2 model. The validator refuses a colour, a pixel size and an icon outside the icon list (D12). Fence: `tests/unit/test_studio_manifest.py` (AF-2).
+3. **Each part has a default.** A manifest with no `pages` gets one page for each object, and a dashboard page when it holds a chart or a stat view. A manifest with no `nav` gets one rail row for each page. An object with no `record` gets Details, a Related tab for each `relation` field that points to it, and Files when it has a `file` field. So an app that was built before D219 gets the frame with no edit. Fences: `pageModel.test.ts` (AF-1) and the rail model test (AF-2).
+4. **The URL holds the state.** The page, the tab, the record, the filters and the layout live in the URL (`lib/studio/pageState.ts`). A link opens the same place, and Back works. Fence: `usePageState.test.ts` (AF-1).
+5. **The rail shows only what the viewer can open.** A row stays hidden when its page reads no object that the viewer can read (C8). The door still checks each read (B2), so the rail is display only. Fence: the rail model test (AF-3).
+6. **A count costs one bounded read.** A rail row may show a count. The count comes from the aggregate query (C2b), with its cost guard. `RailRow` draws the count in muted text. A count of items that wait for the member takes the attention tone of `RailRow`. Fence: the validator caps the counts (AF-3).
+7. **A custom screen sits inside the frame.** A code screen (L1) fills a cell of a page. It never draws its own rail or app bar. Fence: the L1 tests.
+8. **Mira writes the frame.** `studio_describe` and the G1 skeleton know `nav`, `pages`, `record` and the view parts. The IDE edits them in a Pages branch of the Explorer (AF-8).
+9. **It looks like the CRM.** The visual review of each frame slice puts the app beside the CRM. The rail width, the toggle, the app bar and the drawer match at 1440, 1024, 768 and 390 px. The review uses light mode, compact density and a changed accent.
+
+**The caps.** 8 pages (D11a), 4 rail sections, 12 rows in a section, 8 tabs on a page, 6 tabs on a record, 4 related lists on a record, and 8 counts on a rail. `pageModel.ts` and the `maxItems` of the schema hold the same numbers.
+
+**Where the blocks are.** The frame holds the blocks of §5.1. The rich blocks (calendar, timeline, gallery, tree, editable grid, diagram, 3D and the rest) stay rows D5 to D31. The frame adds none.
 
 ---
 
@@ -958,6 +994,24 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **D30** | **The queue board** (task 2374). Wave 2 (task 2327). Tokens by counter or by doctor, on a TV and on the phone. A token is an auto-number for each day and each counter (C15) | Two desks that call at once call two tokens. The TV view shows the token only, never a name. Visual review at TV width and at 390 px | STD | AGENT-SAFE, with the UI gate. After C15 |
 | **D31** | **The DICOM viewer** (task 2375). Wave 2, health only (D202.8). OHIF, under MIT, embedded over an outside DICOMweb archive: the system of the imaging centre. The archive is a connection, so its credential stays in `integration_connections` | A test study opens from a test archive. No image file goes into the storage of Metorite. The viewer reads with the connection of its own org only | HIGH | AGENT-SAFE (D202.8). Real patient data waits on WS-37 and a lawyer (D174.6). No AI reads an image for a diagnosis |
 
+### Group AF — The app frame (D219, §5.5)
+
+Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 and AF-9. AF-7 and AF-10 join rung 6 (more blocks), and AF-11 joins rung 8 (the IDE grows). Each frame slice carries the UI gate: four captures, a `Visual review:` line, and the CRM beside the app (§5.5 rule 9).
+
+| Id | What | Done when | Tier | Gate |
+|---|---|---|---|---|
+| **AF-1** | **The frame on the live app page** (task 3149). Rung 4. The app page (`/apps/<id>`, which opens `/studio/package-preview?pkg=<id>` today) draws the manifest pages through `StudioPage`, on live data. A mapper turns each view into its block for the blocks that are built: table, form, detail, board, chart and stat. It reuses the block builders of `lib/studio/packagePreview.ts` and the chart mapper of D4c (task 2955). §5.5 rule 3 gives the default pages. The page id lives in the URL. **Non-goals:** the rail (AF-2), a block that is not built (it shows the "not built yet" card of D11b) | A template app opens each of its pages from the URL. A manifest with no `pages` shows one page for each object, and a dashboard page when it has a chart or a stat view. A viewer sees the read-only page of J2a. `pageModel.test.ts`, `StudioPage.test.ts` and `usePageState.test.ts` hold the new cases. The `nav`, `seams` and conformance tests pass with no edit. Visual review in four contexts. Owner preview (D145) | STD | AGENT-SAFE. Behind `NEXT_PUBLIC_STUDIO_APP_FRAME`, default off (D219.6). After D4c (task 2955) |
+| **AF-2** | **The rail of the app** (task 3150). Rung 4. `nav` joins the A2 model, the schema and `lib/studio/manifest.ts`: up to 4 sections, each with a title and up to 12 rows. A row names a page, an icon from the icon list and an optional label. `components/studio/StudioAppFrame.tsx` draws the rail of `RailRow`s under `AppTopBar`, with the toggle in the bar. A phone opens the rail in the drawer of `useMobileDrawer`. §5.5 rule 3 gives the default rail | `test_studio_manifest.py` holds the `nav` cases and the caps. `test_studio_manifest_ts_parity.py` and the stale-schema test pass. `railRows.test.ts` lists the new rail in `RAILS`. `appBar.test.ts` passes. An e2e spec opens a template app at 1440 and 390 px: one `<h1>`, one app bar, the toggle hides and shows the rail, and on a phone the rail opens in the drawer. Visual review beside the CRM | STD | AGENT-SAFE. After AF-1 |
+| **AF-3** | **Views in the rail, with counts** (task 3151). Rung 4. A rail row may name a view of an object with a filter and a sort, such as "Open visits", "My visits" (the `me` token) or "Due this week". A row may show a count (§5.5 rule 6). A row whose page the viewer cannot read stays hidden (rule 5) | A row opens its view with its filter in the URL. A count equals the rows of its view under the row rules of the viewer (C8). A rail with 9 counts fails to validate. Each count read goes through the C2b cost guard. The rail model test holds rule 5 | STD | AGENT-SAFE. After AF-2 |
+| **AF-4** | **The filter bar and the layout switch** (task 3152). Rung 4. Over a table or a board: search, filter chips by field type, sort and group. A switch moves the same rows between the layouts that a view allows: table and board now, gallery and calendar when D19 and D5 are built. AF-4 lifts the pure model of the CRM filter bar (`app/crm/lib/filterBar.ts`) to a shared module, and the CRM imports it from there. It adds no third filter bar. As for D5 and D6, the lift changes no behaviour of the CRM | The CRM filter tests pass with no change, and a visual review of the CRM list shows no change. A filter, a sort and a layout survive a reload through the URL. A field type with no filter shows no chip. Visual review in four contexts | STD | AGENT-SAFE. After AF-1 |
+| **AF-5** | **The record page** (task 3153). Rung 4. A record opens in the side panel. "Open full page" gives it its own URL (`?rec=`). Its tabs come from `record`, or from §5.5 rule 3: Details (the Detail block), Related (a table for each `relation` field that points to the object, with a "New" that fills the link), and Files (the `file` fields). The Activity tab joins when D22 is built. `RecordShell.tsx` and `RelatedLists.tsx` of the CRM are the model, and no CRM file changes | A record link opens the same record and tab after a reload. A related table shows only the children that the viewer can read. "New" on a related table makes a child with the link filled. At 390 px the record page is one column. Visual review in four contexts | STD | AGENT-SAFE. After AF-1 |
+| **AF-6** | **Dialogs to add, edit and delete** (task 3154). Rung 4. A typed action (D1) that opens a form puts a button in the app bar or on a page. The button opens the Form block in a `Modal`, which is a sheet on a phone. Edit opens the same form from the record page. A delete asks once through `ConfirmDialog`. Each write goes through the door as the viewer (B2) | "New visit" makes one record on a double press. A 422 shows under its field. Esc closes the dialog, and the focus goes back to the button. A viewer with no write right sees no button (J2a). Visual review in four contexts | STD | AGENT-SAFE. After AF-1 |
+| **AF-7** | **Page headers and sections that fold** (task 3155). Rung 6. `header` gives a page one sentence and a count, through `PageHeader`. `sections` put cells in groups, and each group folds through `Collapsible` | A folded section stays folded after a reload. A page with no `header` draws no `PageHeader`. `test_studio_manifest.py` holds the caps. Visual review | LOW | AGENT-SAFE. After AF-1 |
+| **AF-8** | **Mira and the IDE write the frame** (task 3156). Rung 4. `studio_describe` (G1b) and the G1 skeleton write `nav`, `pages`, `record` and the view parts. The Explorer of the IDE gets a Pages branch. A form there adds, orders and renames the pages and the rail rows, and puts a view in a cell. The build eval (G6) gains three frame prompts | From one chat turn, Mira adds a rail row and a page, and the preview shows them. The Pages branch saves through the draft route with `based_on`. The describe test holds the new parts. The three frame prompts pass on the WEB-12 harness | STD | AGENT-SAFE. After AF-2 |
+| **AF-9** | **The templates get a frame** (task 3157). Rung 4. The K1 templates declare a rail, record tabs and views. Field visits gets Dashboard, All visits, My visits, Open visits with a count, and Board. The other two templates get the same shape | Each template installs and opens with its rail. The K1 template tests pass. Visual review of one template beside the CRM | LOW | AGENT-SAFE. After AF-3 |
+| **AF-10** | **A member saves a view** (task 3158). Rung 6. A member saves the filters of a list as a view. A private view shows in the rail of that member. A member with the write right of the app shares a view with every viewer. The front end uses the shared seam `lib/savedViews` and `ViewChips`. The store is one new table, scoped by tenant under FORCE RLS (R5, R6), with the number at build time (R1) | R8: a view of one tenant never reads in another tenant. A member reads only their own views and the shared views. `lib/savedViews/index.test.ts` passes with no change | HIGH | AGENT-SAFE. After AF-3 |
+| **AF-11** | **Place blocks on a page by drag** (task 3159). Rung 8. The Pages branch gets a canvas. A member drags a view into a cell, changes its span and moves a cell to another tab. It writes the same `pages` that AF-8 writes | A drag writes one draft change, with the one-step undo of G5. The keyboard does each move too. Visual review in four contexts | STD | AGENT-SAFE. After AF-8 |
+
 ### Group E — Workflows in Studio
 
 | Id | What | Done when | Tier | Gate |
@@ -1176,6 +1230,8 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **3 · Code and extension** | The full code IDE with the UI kit and custom screens, the diagram canvas, 3D scenes, then server code after SBX-9 | Stage 4 | L3 first, then J7, L4, G8, G16, L1, L5, L6, G9, G10, G11, G12, G13, G15, G18, G19, G20 to G26, D15, D28, D29. After SBX-9: B5, B8, L7, B16, G7 | L3 passes. If L3 fails, every code row waits for SBX-9 (D202.4) |
 
 **Rows outside the waves.** B18, I7 and K10 serve HR, and the owner put them later on 2026-11-08 (D202.7). G27, the VS Code extension, comes later too (D202.10). `package_host.md` PKG-14c is the slot row of D202.7, in Phase P3 of that spec.
+
+**The app frame (D219).** Group AF sits outside the three waves. The ladder puts AF-1 to AF-6, AF-8 and AF-9 in rung 4, after the approval workflow of rung 3. AF-7 and AF-10 join rung 6, and AF-11 joins rung 8. AF-1 waits on D4c (task 2955).
 
 **The first dispatchable slice is B1.** It waits on no owner question, writes nothing, and every later group reads it.
 
