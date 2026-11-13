@@ -110,6 +110,10 @@ Fence: ``tests/unit/test_feed_crm_kinds_r8.py``.
 
 from __future__ import annotations
 
+import asyncio
+import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from datetime import datetime
@@ -118,6 +122,7 @@ from zoneinfo import ZoneInfo
 
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
+from acb_common.number_sense import findings as number_findings
 from fastapi import Depends, HTTPException, Query, Request
 from gateway.routes.crm.core import (
     CLOSING_TYPES,
@@ -143,11 +148,15 @@ from gateway.routes.crm.field_sql import (
     FieldScope,
     check_group,
     check_measure,
+    check_split,
     core_scope,
     crm_zone,
+    day_field,
+    day_sql,
     field_pairs,
     from_source,
     group_sql,
+    lookup_ids,
     measure_sql,
     module_measure,
     module_scope,
@@ -160,10 +169,12 @@ from gateway.routes.crm.field_sql import (
     overlay_stage,
     overlay_weighted,
     overlay_where,
+    split_sql,
     text_matches,
     used_keys,
     zoned,
 )
+from gateway.routes.crm.flags import long_read_allowed
 from gateway.routes.crm.modules import _require_module, mirrored_modules
 from gateway.routes.crm.overlay import (
     SLOT_OF,
@@ -238,7 +249,7 @@ MODULE_PREFIX = "module:"
 #: list filter on a module is a 422, never ignored.
 MODULE_PARAMS = frozenset({
     "entity", "measure", "group_by", "group_field", "field", "bucket",
-    "page", "page_size", "sort", "dir",
+    "page", "page_size", "sort", "dir", "fields", "long_read",
 })
 
 #: The groups that only a deal has.
@@ -265,6 +276,80 @@ TIMEOUT_DETAIL = {
     "code": "aggregate_timeout",
     "message": "The total took longer than 10 seconds. Narrow the filter.",
 }
+
+# ── The long read (CRM-Q25e part 5, task 2985 HRD-6) ────────────────────────
+#
+# Owner, 2026-11-13: "large CRM queries might take even minutes". For an org
+# on CRM_LONG_READ_ORGS, the 503 of a timed-out total offers ONE long read
+# (``long_read: true`` in the detail), and the chat tool asks for it with
+# ``long_read=true``. The guard keeps long statements from filling the pool:
+# one long statement for each org at a time, and LONG_READ_SLOTS in one
+# process. The gateway runs one process (``acb-gateway.service``). Its pool
+# is db_pool_size 7 + db_max_overflow 2 = 9 connections, and background work
+# may hold 4 of them (db_background_max). 2 long reads leave 3 for pages.
+# With the list empty, no 503 offers it and no statement runs past 10 s.
+
+#: The whole budget of one long read, in seconds: the wait for the guard and
+#: the LOCAL ``statement_timeout`` of its statements together.
+LONG_READ_SECONDS = 180
+#: The most long statements that one gateway process runs at one time.
+LONG_READ_SLOTS = 2
+
+#: What a member reads when a long read runs past its budget.
+LONG_TIMEOUT_DETAIL = {
+    "code": "aggregate_timeout",
+    "message": "The total took longer than 3 minutes, even as a long read. Narrow the filter.",
+}
+#: What a member reads when the long reads of the org or of the gateway took
+#: the whole budget of this one.
+BUSY_DETAIL = {
+    "code": "aggregate_busy",
+    "message": "Other long totals took the whole wait. Ask again in a few minutes, "
+               "or narrow the filter.",
+}
+
+#: The guard of each event loop: the slots of the process, and one lock for
+#: each org. Only an org on CRM_LONG_READ_ORGS adds a lock, so the map stays
+#: as small as that list. It holds no tenant data.
+_LONG_GATES: dict[Any, tuple[asyncio.Semaphore, dict[str, asyncio.Lock]]] = {}
+
+
+def _long_gate() -> tuple[asyncio.Semaphore, dict[str, asyncio.Lock]]:
+    loop = asyncio.get_running_loop()
+    gate = _LONG_GATES.get(loop)
+    if gate is None:
+        _LONG_GATES.clear()  # a loop that ended (tests) never returns
+        gate = _LONG_GATES[loop] = (asyncio.Semaphore(LONG_READ_SLOTS), {})
+    return gate
+
+
+async def _take(lock: Any, start: float, budget: float) -> None:
+    """Take *lock* inside what is left of *budget*, or 503 ``aggregate_busy``.
+    Waiting holds no connection, because the session opens after."""
+    left = budget - (time.monotonic() - start)
+    try:
+        await asyncio.wait_for(lock.acquire(), timeout=max(0.001, left))
+    except TimeoutError:
+        raise HTTPException(status_code=503, detail=BUSY_DETAIL) from None
+
+
+@asynccontextmanager
+async def long_read_slot(org: str, budget: float) -> AsyncIterator[float]:
+    """Hold the ONE long read of *org* and one slot of the process, and give
+    the seconds left of *budget* for the statements. A second long read of
+    the same org waits inside its own budget, before it opens a session."""
+    start = time.monotonic()
+    slots, orgs = _long_gate()
+    lock = orgs.setdefault(org, asyncio.Lock())
+    await _take(lock, start, budget)
+    try:
+        await _take(slots, start, budget)
+        try:
+            yield max(1.0, budget - (time.monotonic() - start))
+        finally:
+            slots.release()
+    finally:
+        lock.release()
 
 #: What a Mirror org gets from the dwell route.
 MIRROR_DWELL_REASON = (
@@ -303,6 +388,22 @@ class AggregateGroup(BaseModel):
     #: Absent with one currency (task 888).
     others: list[CurrencyValue] = Field(
         default_factory=list, exclude_if=lambda value: not value)
+    #: CRM-Q25e part 2: each field of a split → its value in this group.
+    #: Absent with no split.
+    split: dict[str, float | None] = Field(
+        default_factory=dict, exclude_if=lambda value: not value)
+
+
+class SplitTotal(BaseModel):
+    """CRM-Q25e part 2: the total of ONE field of a split."""
+
+    field: str
+    label: str
+    type: str
+    #: None when no record holds a value of the field (CRM-Q25c item 3).
+    total: float | None
+    #: The count of values that the measure read.
+    values: int
 
 
 class AggregateResponse(BaseModel):
@@ -356,6 +457,15 @@ class AggregateResponse(BaseModel):
     #: can say which ones. Absent with no text filter.
     matched: dict[str, list[str]] | None = Field(
         default=None, exclude_if=lambda value: value is None)
+    #: CRM-Q25e part 2: the total of each field of ``fields``, in order. The
+    #: first one is also ``field`` and ``total``. Absent with no split.
+    split: list[SplitTotal] = Field(default_factory=list, exclude_if=lambda value: not value)
+    #: CRM-Q25e part 4: what the reader must know before the total
+    #: (``acb_common.number_sense``), for example one day that holds most
+    #: records. Each has ``kind``, ``key``, ``records``, ``share`` and one
+    #: ``sentence``. Absent with none.
+    findings: list[dict[str, Any]] = Field(
+        default_factory=list, exclude_if=lambda value: not value)
 
 
 class StageDwell(BaseModel):
@@ -393,12 +503,27 @@ def _refuse(detail: str) -> HTTPException:
     return HTTPException(status_code=422, detail=detail)
 
 
+def _check_fields(measure: str, field: str | None, fields: str | None) -> str | None:
+    """The field that :func:`_check` checks: *fields* of a split (CRM-Q25e
+    part 2) stands for it. A split goes with a field measure, never with
+    ``field`` too. Each key is checked later, in ``field_sql.check_split``."""
+    if fields is None:
+        return field
+    if field:
+        raise _refuse("Give field or fields, not both.")
+    if measure not in FIELD_MEASURES:
+        raise _refuse(f"'fields' goes with {list(FIELD_MEASURES)}, not with '{measure}'.")
+    return fields
+
+
 def _check(
     entity: str, measure: str, group_by: str | None, group_field: str | None,
-    field: str | None, bucket: str | None,
+    field: str | None, bucket: str | None, fields: str | None = None,
 ) -> tuple[Entity | None, str | None]:
     """The core entity or the module name, or a 422 for an unknown or unfit
-    value. A field name is checked later, against the field definitions."""
+    value. A field name is checked later, against the field definitions.
+    *fields* is the comma list of a split (CRM-Q25e part 2)."""
+    field = _check_fields(measure, field, fields)
     module: str | None = None
     found: Entity | None = None
     if entity.startswith(MODULE_PREFIX):
@@ -525,6 +650,8 @@ class _Acc:
     rows: int = 0
     #: The value in each currency that is not the primary one (task 888).
     others: dict[str, float] = dc_field(default_factory=dict)
+    #: CRM-Q25e part 2: the group of each field of a split after the first.
+    parts: list[_Acc] = dc_field(default_factory=list)
 
 
 def _key(value: Any) -> str | None:
@@ -645,6 +772,12 @@ class _Read:
     #: the other currencies that the accs hold in ``others``.
     currency: str | None = None
     codes: list[str] = dc_field(default_factory=list)
+    #: CRM-Q25e part 2: each field of a split, the first one ``measured``.
+    split: list[FieldRef] = dc_field(default_factory=list)
+    #: CRM-Q25e part 4: the date field of the check of one day, and its
+    #: ``(day, value, records)`` rows from the same statement.
+    day: FieldRef | None = None
+    days: list[tuple[Any, Any, int]] = dc_field(default_factory=list)
 
 
 def _is_timeout(exc: DBAPIError) -> bool:
@@ -654,14 +787,75 @@ def _is_timeout(exc: DBAPIError) -> bool:
     return code == _QUERY_CANCELED or "statement timeout" in str(exc)
 
 
+def _split_columns(scope: FieldScope | None, split: list[FieldRef], measure: str,
+                   bound: dict[str, Any]) -> tuple[str, str]:
+    """CRM-Q25e part 2: the more columns of each field of a split after the
+    first (``v1, s1, n1`` ...), and their FROM text. The SQL is the one of
+    ``field_sql.split_sql``. Each key goes into *bound*."""
+    more, source = "", ""
+    if scope is None or len(split) < 2:
+        return more, source
+    for i, part in enumerate(split_sql(scope, split[1:], measure), start=1):
+        more += f", {part.value} AS v{i}, {part.sum} AS s{i}, {part.count} AS n{i}"
+        bound.update(part.params)
+        source = from_source(source, part.source)
+    return more, source
+
+
+def _day_of(scope: FieldScope | None, module: str | None, grouped: FieldRef | None,
+            pairs: list[tuple[str, str]], zone: str,
+            bound: dict[str, Any]) -> tuple[FieldRef | None, str, str]:
+    """CRM-Q25e part 4: the date field of the check of one day, its day key
+    and its FROM text (``field_sql.day_field`` and ``day_sql``), or no field.
+    A core entity has none."""
+    day = day_field(scope, grouped, pairs) if module is not None else None
+    if day is None or scope is None:
+        return None, "", ""
+    sql = day_sql(scope, day, zone=zone)
+    bound.update(sql.params)
+    return day, sql.key, sql.source
+
+
+def _acc_of(r: Any, fields: int) -> _Acc:
+    """One group of a row, with the part of each other field of a split."""
+    acc = _Acc(
+        value=None if r.value is None else float(r.value),
+        s=float(r.s or 0), n=int(r.n or 0), name=r.label,
+        rows=int(getattr(r, "c", 0) or 0),
+    )
+    for i in range(1, fields):
+        v = getattr(r, f"v{i}", None)
+        acc.parts.append(_Acc(value=None if v is None else float(v),
+                              s=float(getattr(r, f"s{i}", 0) or 0),
+                              n=int(getattr(r, f"n{i}", 0) or 0)))
+    return acc
+
+
+def _rows_of(rows: Any, fields: int, days: list[tuple[Any, Any, int]],
+             ) -> dict[str | None, _Acc]:
+    """The groups of the rows of one statement. A row of the day set
+    (``GROUPING()`` is 0 there) goes to *days* as ``(day, value, records)``."""
+    out: dict[str | None, _Acc] = {}
+    for r in rows:
+        if int(getattr(r, "agf_gd", 1) or 0) == 0:
+            days.append((r.agf_day, r.value, int(r.c or 0)))
+        else:
+            out[_key(r.key)] = _acc_of(r, fields)
+    return out
+
+
 async def _read(
     db: Any, found: Entity | None, module: str | None, *,
     measure: str, group_by: str | None, field: str | None,
     group_field: str | None, bucket: str | None,
     pairs: list[tuple[str, str]], params: ListParams, user: UserContext | None,
+    fields: str | None = None, timeout_ms: int | None = None,
 ) -> _Read:
-    """Every statement of one aggregate, in the caller's tenant session."""
-    await db.execute(text(_TIMEOUT_SQL), {"ms": str(STATEMENT_TIMEOUT_MS)})
+    """Every statement of one aggregate, in the caller's tenant session.
+    *fields* is the comma list of a split (CRM-Q25e part 2), and
+    *timeout_ms* the LOCAL ``statement_timeout`` (a long read gives more)."""
+    ms = STATEMENT_TIMEOUT_MS if timeout_ms is None else timeout_ms
+    await db.execute(text(_TIMEOUT_SQL), {"ms": str(ms)})
     scope: FieldScope | None = None
     zone = ""
     field_measure = measure
@@ -673,7 +867,9 @@ async def _read(
         zone = await crm_zone(db, current_tenant())
         # §18.16 part 6: a text filter counts each case and short form.
         matches = await text_matches(db, str(current_tenant()), scope, module, pairs)
-        where = module_where(scope, module, pairs, zone=zone, matches=matches)
+        # Task 3128: a lookup filter by a Metorite id also matches its Zoho id.
+        ids = await lookup_ids(db, str(current_tenant()), scope, pairs)
+        where = module_where(scope, module, pairs, zone=zone, matches=matches, ids=ids)
         table, where_sql, bound = MODULE_TABLE, where.sql, dict(where.params)
         source = where.source
         matched = {pairs[i][0]: list(found) for i, found in matches.items()}
@@ -691,10 +887,15 @@ async def _read(
         query = await list_query(db, found, params, user)
         table, where_sql, bound = found.table, query.where, dict(query.params)
         source = ""
-        if field or group_field:
+        if field or group_field or fields:
             scope = await core_scope(db, found.slug)
         zone = await crm_zone(db, current_tenant())
-    measured = check_measure(scope, field) if field and scope else None
+    # CRM-Q25e part 2: a split reads its first field as `field`, and the
+    # rest as more columns of the same statement.
+    split = check_split(scope, fields) if fields and scope else []
+    if split:
+        field = split[0].key
+    measured = (split[0] if split else check_measure(scope, field)) if field and scope else None
     grouped = check_group(scope, group_field, bucket) if group_field and scope else None
     # No group: one row over every filtered record. The statement then has
     # no GROUP BY, so an empty set still gives its one row (a count of 0).
@@ -721,24 +922,31 @@ async def _read(
         value_sql, sum_sql, count_sql = sql.value, sql.sum, sql.count
         bound.update(sql.params)
         source = from_source(source, sql.source)
+    more, more_source = _split_columns(scope, split, field_measure, bound)
+    # CRM-Q25e part 4: the days of one date field come from the SAME scan, as
+    # a second grouping set. A module only, and never a money read of deals.
+    day, day_key, day_source = _day_of(scope, module, grouped, pairs, zone, bound)
+    source = from_source(source, more_source, day_source)
+    days: list[tuple[Any, Any, int]] = []
+    # One scan, two groupings: the answer's own, and the day. With no group,
+    # the empty set gives its one row even when no record matches, as the
+    # plain statement does.
+    sets = (
+        f" GROUP BY GROUPING SETS ({f'({key_sql})' if group_clause else '()'}, ({day_key}))"
+        if day_key else group_clause
+    )
+    grouping = f", {day_key} AS agf_day, GROUPING({day_key}) AS agf_gd" if day_key else ""
 
     async def fetch(where_sql: str, args: dict[str, Any]) -> dict[str | None, _Acc]:
         rows = (await db.execute(
             text(
                 f"SELECT {key_sql} AS key, {label_sql} AS label, "
                 f"{value_sql} AS value, {sum_sql} AS s, {count_sql} AS n, "
-                f"count(*) AS c FROM {table}{source}{where_sql}{group_clause}"
+                f"count(*) AS c{more}{grouping} FROM {table}{source}{where_sql}{sets}"
             ),
             args,
         )).fetchall()
-        return {
-            _key(r.key): _Acc(
-                value=None if r.value is None else float(r.value),
-                s=float(r.s or 0), n=int(r.n or 0), name=r.label,
-                rows=int(getattr(r, "c", 0) or 0),
-            )
-            for r in rows
-        }
+        return _rows_of(rows, len(split), days)
 
     if money:
         # Task 888: one read for each currency. Never one sum over all of them.
@@ -760,11 +968,12 @@ async def _read(
         await _status_order(db, found) if found and group_by == "status" else {}
     )
     keys = (
-        used_keys(scope, [field, group_field, *(name for name, _value in pairs)])
+        used_keys(scope, [field, group_field, *(r.key for r in split[1:]),
+                          *(name for name, _value in pairs)])
         if module is not None and scope is not None else {}
     )
     return _Read(values, labels, order, measured, grouped, zone, keys, matched=matched,
-                 currency=currency, codes=codes)
+                 currency=currency, codes=codes, split=split, day=day, days=days)
 
 
 async def _seed_aliases(db: Any, module: str, pairs: list[tuple[str, str]],
@@ -807,6 +1016,7 @@ async def _read_overlay(
     measure: str, group_by: str | None, field: str | None,
     group_field: str | None, bucket: str | None,
     pairs: list[tuple[str, str]], params: ListParams, user: UserContext,
+    timeout_ms: int | None = None,
 ) -> _Read:
     """Every statement of one aggregate of an overlaid core entity, in the
     caller's tenant session (§18.13.5, the projection table)."""
@@ -815,11 +1025,14 @@ async def _read_overlay(
         raise overlay_refusal(
             "overlay_unfit", f"{found.label}s come from the module {overlay.module}, "
             f"which has no {group_by}. Group by another key.")
-    await db.execute(text(_TIMEOUT_SQL), {"ms": str(STATEMENT_TIMEOUT_MS)})
+    ms = STATEMENT_TIMEOUT_MS if timeout_ms is None else timeout_ms
+    await db.execute(text(_TIMEOUT_SQL), {"ms": str(ms)})
     scope = await module_scope(db, overlay.module)
     zone = await crm_zone(db, current_tenant())
+    # Task 3128: a lookup filter by a Metorite id also matches its Zoho id.
+    ids = await lookup_ids(db, str(current_tenant()), scope, pairs)
     where = overlay_where(scope, overlay, pairs, zone=zone,
-                          owner=resolve_owner(params.owner, user), params=params)
+                          owner=resolve_owner(params.owner, user), params=params, ids=ids)
     bound = dict(where.params)
     measured: FieldRef | None = None
     value_sql, sum_sql, count_sql = MEASURES["count"], "0", "0"
@@ -912,11 +1125,17 @@ async def aggregate(
     field: str | None = None,
     group_field: str | None = None,
     bucket: str | None = None,
+    fields: str | None = None,
+    long_read: bool = False,
     params: ListParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> AggregateResponse:
     """One measure of one entity or module, by one group or over every
     record, over the filters.
+
+    ``fields=a,b,c`` reads 2 to 5 number fields in ONE statement (CRM-Q25e
+    part 2). ``long_read=true`` asks for the long read of an org on
+    ``CRM_LONG_READ_ORGS`` (part 5). Off the list it changes nothing.
 
     The NUL guard of CRM-Q25c runs in ``ListParams``, which this route takes,
     before this body runs. A second call here would be a copy."""
@@ -924,7 +1143,8 @@ async def aggregate(
     # (CRM-Q25 fix round). `group_field=` alone is then "no group": one total.
     group_by, field = group_by or None, field or None
     group_field, bucket = group_field or None, bucket or None
-    _found, module = _check(entity, measure, group_by, group_field, field, bucket)
+    fields = fields or None
+    _found, module = _check(entity, measure, group_by, group_field, field, bucket, fields)
     # CRM-Q20-3a: a core entity passes its field.<key> filters on. With an
     # overlay they filter the module. With none, compute refuses them.
     pairs = (field_pairs(request.query_params) if module is None
@@ -932,6 +1152,7 @@ async def aggregate(
     return await compute(
         entity, measure=measure, group_by=group_by, field=field,
         group_field=group_field, bucket=bucket, pairs=pairs, params=params, user=user,
+        fields=fields, long_read=long_read,
     )
 
 
@@ -940,6 +1161,7 @@ async def compute(
     field: str | None = None, group_field: str | None = None,
     bucket: str | None = None, pairs: list[tuple[str, str]] | None = None,
     params: ListParams, user: UserContext | None = None,
+    fields: str | None = None, long_read: bool = False,
 ) -> AggregateResponse:
     """The ONE body of an aggregate. ``GET /crm/aggregate`` calls it, and so
     does the weekly digest of CRM-Q28 (``crm_sync/digest.py``), so a digest
@@ -949,10 +1171,43 @@ async def compute(
     the session, and the digest step binds the org of its run. A caller never
     names an org here (R5). ``pairs`` are the checked ``field.<key>``
     filters of a module. Each refusal is an ``HTTPException``: 422 for a bad
-    name, 503 ``aggregate_timeout`` past the timeout."""
+    name, 503 ``aggregate_timeout`` past the timeout, and 503
+    ``aggregate_busy`` when a long read waited past its budget.
+
+    CRM-Q25e part 5: for an org on ``CRM_LONG_READ_ORGS``, the 503 of the
+    10 s read carries ``long_read: true``, and a call with *long_read* runs
+    under :func:`long_read_slot` with up to :data:`LONG_READ_SECONDS`."""
+    org = current_tenant()
+    allowed = bool(org) and long_read_allowed(str(org))
+    if long_read and allowed:
+        async with long_read_slot(str(org), LONG_READ_SECONDS) as left:
+            return await _compute(
+                entity, measure=measure, group_by=group_by, field=field,
+                group_field=group_field, bucket=bucket, pairs=pairs, params=params,
+                user=user, fields=fields, timeout_ms=int(left * 1000),
+                timed_out=LONG_TIMEOUT_DETAIL,
+            )
+    return await _compute(
+        entity, measure=measure, group_by=group_by, field=field, group_field=group_field,
+        bucket=bucket, pairs=pairs, params=params, user=user, fields=fields,
+        timeout_ms=None,
+        timed_out={**TIMEOUT_DETAIL, "long_read": True} if allowed else TIMEOUT_DETAIL,
+    )
+
+
+async def _compute(
+    entity: str, *, measure: str, group_by: str | None, field: str | None,
+    group_field: str | None, bucket: str | None, pairs: list[tuple[str, str]] | None,
+    params: ListParams, user: UserContext | None, fields: str | None,
+    timeout_ms: int | None, timed_out: dict[str, Any],
+) -> AggregateResponse:
+    """The body of :func:`compute`, with the statement timeout of the read
+    (None for the 10 s of :data:`STATEMENT_TIMEOUT_MS`) and the detail of
+    its 503."""
     group_by, field = group_by or None, field or None
     group_field, bucket = group_field or None, bucket or None
-    found, module = _check(entity, measure, group_by, group_field, field, bucket)
+    fields = fields or None
+    found, module = _check(entity, measure, group_by, group_field, field, bucket, fields)
     pairs = list(pairs or [])
     try:
         async with _tenant_session() as db:
@@ -963,10 +1218,14 @@ async def compute(
                 if found is not None else None
             )
             if overlay is not None and found is not None:
+                if fields:
+                    raise _refuse(
+                        f"{found.label}s come from the module {overlay.module}. A split "
+                        f"takes the module: give entity 'module:{overlay.module}'.")
                 read = await _read_overlay(
                     db, found, overlay, measure=measure, group_by=group_by,
                     field=field, group_field=group_field, bucket=bucket,
-                    pairs=pairs, params=params, user=user,
+                    pairs=pairs, params=params, user=user, timeout_ms=timeout_ms,
                 )
             else:
                 if module is None and pairs:
@@ -974,11 +1233,12 @@ async def compute(
                 read = await _read(
                     db, found, module, measure=measure, group_by=group_by,
                     field=field, group_field=group_field, bucket=bucket,
-                    pairs=pairs, params=params, user=user,
+                    pairs=pairs, params=params, user=user, fields=fields,
+                    timeout_ms=timeout_ms,
                 )
     except DBAPIError as exc:
         if _is_timeout(exc):
-            raise HTTPException(status_code=503, detail=TIMEOUT_DETAIL) from None
+            raise HTTPException(status_code=503, detail=timed_out) from None
         raise
     measured, grouped = read.measured, read.grouped
     overall = group_by is None and group_field is None
@@ -991,6 +1251,11 @@ async def compute(
     if values == 0:
         for acc in read.values.values():
             acc.value = None
+    # CRM-Q25e part 2: the same rule for each other field of a split.
+    empty = [
+        sum(acc.parts[i].n for acc in read.values.values() if i < len(acc.parts)) == 0
+        for i in range(len(read.split) - 1)
+    ]
     groups = [
         (
             AggregateGroup(
@@ -1005,6 +1270,7 @@ async def compute(
                     CurrencyValue(currency=code, value=_rounded(acc.others[code]))
                     for code in read.codes if code in acc.others
                 ],
+                split=_group_split(read.split, acc, empty),
             ),
             acc,
         )
@@ -1019,6 +1285,7 @@ async def compute(
         shown.sort(key=lambda g: (read.order.get(g.key or "", 1 << 30), g.label))
     elif bucketed or group_by in MONTH_GROUPS:
         shown.sort(key=lambda g: (g.key is None, g.key or ""))
+    total = None if values == 0 else _rounded(_combine(measure, [acc for _g, acc in groups]))
     return AggregateResponse(
         entity=found.slug if found is not None else f"{MODULE_PREFIX}{module}",
         measure=measure, group_by=group_by, group_field=group_field,
@@ -1030,10 +1297,7 @@ async def compute(
         group_field_type=grouped.type if grouped is not None else None,
         bucket=bucket if bucketed else None,
         groups=shown,
-        total=(
-            None if values == 0
-            else _rounded(_combine(measure, [acc for _g, acc in groups]))
-        ),
+        total=total,
         other=(
             (None if values == 0 else _rounded(_combine(measure, [acc for _g, acc in rest])))
             if rest else 0
@@ -1059,7 +1323,62 @@ async def compute(
         ),
         overlay=read.overlay,
         matched=read.matched or None,
+        split=_split_totals(read, measure, total, values, empty),
+        findings=_findings(read, measure, bucketed or group_by in MONTH_GROUPS),
     )
+
+
+def _group_split(split: list[FieldRef], acc: _Acc, empty: list[bool]) -> dict[str, float | None]:
+    """CRM-Q25e part 2: each field of a split → its value in the group of
+    *acc*. Empty with no split. A field that no record fills is None."""
+    if not split:
+        return {}
+    out: dict[str, float | None] = {split[0].key: _rounded(acc.value)}
+    for i, ref in enumerate(split[1:]):
+        part = acc.parts[i] if i < len(acc.parts) else _Acc(value=None)
+        out[ref.key] = None if empty[i] else _rounded(part.value)
+    return out
+
+
+def _split_totals(read: _Read, measure: str, total: float | None, values: int | None,
+                  empty: list[bool]) -> list[SplitTotal]:
+    """CRM-Q25e part 2: the total of each field of a split, from the one
+    statement. The first is the answer's own ``total``."""
+    if not read.split:
+        return []
+    first = read.split[0]
+    out = [SplitTotal(field=first.key, label=first.label, type=first.type, total=total,
+                      values=int(values or 0))]
+    accs = list(read.values.values())
+    for i, ref in enumerate(read.split[1:]):
+        parts = [a.parts[i] for a in accs if i < len(a.parts)]
+        count = sum(p.n for p in parts)
+        out.append(SplitTotal(
+            field=ref.key, label=ref.label, type=ref.type, values=count,
+            total=None if empty[i] else _rounded(_combine(measure, parts)),
+        ))
+    return out
+
+
+def _findings(read: _Read, measure: str, dated: bool) -> list[dict[str, Any]]:
+    """CRM-Q25e part 4: what the reader must know before the total
+    (``acb_common.number_sense``, the one rule). First the days of the date
+    field, from the same statement. Else, for an answer by a date bucket or
+    a month, its own groups. The thresholds live in ``number_sense``."""
+    summed = measure in SUMMING_MEASURES and not read.codes
+    if read.day is not None and read.days:
+        found = number_findings(
+            [(None if d is None else str(d), v, c) for d, v, c in read.days],
+            label=read.day.label, summed=summed)
+        if found:
+            return [f.wire() for f in found]
+    if dated:
+        label = read.grouped.label if read.grouped is not None else "month"
+        found = number_findings(
+            [(key, acc.value, acc.rows) for key, acc in read.values.items()],
+            label=label, summed=summed)
+        return [f.wire() for f in found]
+    return []
 
 
 # ── Stage dwell (the read half of CRM-I1) ───────────────────────────────────

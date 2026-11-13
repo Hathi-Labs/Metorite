@@ -203,13 +203,17 @@ class _GatewayError(GatewayRefusal):
     def __init__(self, message: str, code: str | None = None, *,
                  detail: str = "", status: int = 0,
                  fields: tuple[str, ...] = (), route: str = "",
-                 href: str | None = None, question: str | None = None) -> None:
+                 href: str | None = None, question: str | None = None,
+                 long_read: bool = False) -> None:
         super().__init__(message, status=status or None, detail=detail,
                          fields=fields, route=route)
         self.code = code
         self.href = href
         #: CRM-Q32-8: the id of the open question that the gateway named.
         self.question = question
+        #: CRM-Q25e part 5: the 503 of a timed-out total offers ONE long read.
+        #: Only an org on ``CRM_LONG_READ_ORGS`` gets the offer.
+        self.long_read = long_read
 
 
 # ── Transport ───────────────────────────────────────────────────────────────
@@ -302,6 +306,17 @@ def _detail_question(resp: Any) -> str | None:
     return str(found) if isinstance(found, str) and _QUESTION_ID.match(found) else None
 
 
+def _detail_long_read(resp: Any) -> bool:
+    """True when the answer offers the long read (CRM-Q25e part 5): a 503
+    ``aggregate_timeout`` of an org on ``CRM_LONG_READ_ORGS``."""
+    try:
+        body = resp.json()
+    except Exception:
+        return False
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return isinstance(detail, dict) and detail.get("long_read") is True
+
+
 def _detail(resp: Any) -> str:
     try:
         body = resp.json()
@@ -315,9 +330,12 @@ def _detail(resp: Any) -> str:
     return ""
 
 
-async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
-    """One GET as the member. Every tool but one speaks only this verb."""
-    async with httpx.AsyncClient(timeout=30.0) as client:
+async def _get(path: str, params: dict[str, Any] | None = None,
+               timeout: float = 30.0) -> Any:
+    """One GET as the member. Every tool but one speaks only this verb.
+    Only the long read of a total (:func:`_aggregate_read`) gives a longer
+    *timeout*."""
+    async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.request(
             "GET", f"{_gateway_url()}{path}", headers=_headers(),
             params={k: v for k, v in (params or {}).items() if v is not None},
@@ -360,7 +378,7 @@ def _answer_of(resp: Any, path: str, method: str) -> Any:
         f"CRM {method} {path} failed ({status})" + (f": {detail}" if detail else ""),
         _detail_code(resp), detail=safe, status=status, fields=fields,
         route=route_template(path), href=_detail_href(resp),
-        question=_detail_question(resp),
+        question=_detail_question(resp), long_read=_detail_long_read(resp),
     )
 
 
@@ -428,6 +446,20 @@ class RunReads:
             self.aggregates += 1
         return None
 
+    def spare(self, tool: str) -> None:
+        """Give back the ``crm_aggregate`` count of one read that ran out of
+        time in long mode (CRM-Q25e part 5). It still counts in ``total``,
+        so :data:`READ_BUDGET` still stops a run that only times out."""
+        if tool == "crm_aggregate" and self.aggregates > 0:
+            self.aggregates -= 1
+
+
+#: CRM-Q25e part 5: True when a long read of this tool call ran out of time.
+#: :func:`_budgeted` clears it before the call and reads it after, so one
+#: tool call gives back at most the one count that it spent.
+_LONG_READ_TIMED_OUT: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "crm_long_read_timed_out", default=False)
+
 
 def _run_reads() -> RunReads | None:
     """The reads of this run, or None when the run opened no holder."""
@@ -465,7 +497,15 @@ def _budgeted(name: str, fn: Callable[..., Awaitable[str]]) -> Callable[..., Awa
         over = reads.spend(name)
         if over is not None:
             return over
-        out = await fn(*args, **kwargs)
+        timed_out = _LONG_READ_TIMED_OUT.set(False)
+        try:
+            out = await fn(*args, **kwargs)
+            if _LONG_READ_TIMED_OUT.get():
+                # CRM-Q25e part 5: a read that ran out of time read nothing,
+                # so it does not spend the aggregate budget.
+                reads.spare(name)
+        finally:
+            _LONG_READ_TIMED_OUT.reset(timed_out)
         if key is not None and isinstance(out, str) and not out.startswith("Refused"):
             reads.fields[key] = out
         return out
@@ -542,6 +582,47 @@ async def _overlay_status(slug: str, status: str | None) -> str | None:
             "and field_filters {'@status': '<value>'}.")
 
 
+#: CRM-Q25e part 5 (task 2985 HRD-6): the httpx limit of the ONE long read of
+#: a total. It covers the long budget of the route
+#: (``routes/crm/aggregate.LONG_READ_SECONDS``, 180 s), the wait for the guard
+#: inside that budget, and the answer. Fence:
+#: ``tests/unit/test_crm_large_reads.py``.
+LONG_READ_TIMEOUT_S = 200.0
+#: The codes of a total that ran out of time, or waited past its budget for
+#: another long total of the org.
+_TIMED_OUT = frozenset({"aggregate_timeout", "aggregate_busy"})
+#: What the model reads when the long read itself ran out of time.
+LONG_READ_TIMEOUT_LINE = (
+    "The total took longer than the long read allows, even after a wait. "
+    "Narrow the filter (a shorter date range, or one value of a field), and ask again."
+)
+
+
+async def _aggregate_read(params: dict[str, Any]) -> dict[str, Any]:
+    """``GET /crm/aggregate`` as today. On a 503 that offers the long read
+    (an org on ``CRM_LONG_READ_ORGS``), ONE more call in long mode, with an
+    httpx limit that covers it. A long read that runs out of time marks the
+    tool call, so it does not spend the aggregate budget. With the flag
+    empty, no 503 offers it, and the read is the read of before."""
+    try:
+        return await _get("/crm/aggregate", params) or {}
+    except _GatewayError as exc:
+        if exc.code not in _TIMED_OUT or not exc.long_read or params.get("long_read"):
+            raise
+    try:
+        return await _get("/crm/aggregate", {**params, "long_read": "true"},
+                          timeout=LONG_READ_TIMEOUT_S) or {}
+    except _GatewayError as exc:
+        if exc.code in _TIMED_OUT:
+            _LONG_READ_TIMED_OUT.set(True)
+        raise
+    except httpx.TimeoutException:
+        _LONG_READ_TIMED_OUT.set(True)
+        raise _GatewayError("CRM GET /crm/aggregate timed out in long mode",
+                            "aggregate_timeout", detail=LONG_READ_TIMEOUT_LINE,
+                            status=503, route="/crm/aggregate") from None
+
+
 async def _aggregate_or_refusal(
     params: dict[str, Any],
 ) -> tuple[dict[str, Any], str | None, str | None]:
@@ -551,7 +632,7 @@ async def _aggregate_or_refusal(
     the gateway gave. CRM-Q32-8: the third value is the id of that open
     question, so the tool can ask it first."""
     try:
-        return (await _get("/crm/aggregate", params) or {}), None, None
+        return (await _aggregate_read(params)), None, None
     except _GatewayError as exc:
         if (exc.code or "").startswith(_OVERLAY_CODE) and exc.detail:
             return {}, exc.detail, None
@@ -1515,6 +1596,86 @@ def _one_total(lead: str, data: dict[str, Any], measured: Any, measure: str,
     return f"{lead}: {fmt(data.get('total'))} across {int(records):,} matching {noun}."
 
 
+def _split_value(value: Any, ftype: Any, measure: str) -> str:
+    """One value of a split (CRM-Q25e part 2): rupees for a currency field,
+    else the number. A module amount has no currency column, so it is INR."""
+    if value is None:
+        return "no value"
+    if ftype == "currency" and measure != "count":
+        return f"INR {float(value):,.0f}"
+    return _number(float(value))
+
+
+def _split_text(split: list[Any], values: dict[str, Any] | None, measure: str) -> str:
+    """Each field of a split with its value: "Rent INR 4,500; IP INR 300".
+    *values* maps each key to its value in one group, or is None for the
+    totals."""
+    parts = []
+    for one in split:
+        if not isinstance(one, dict):
+            continue
+        key = str(one.get("field") or "")
+        value = one.get("total") if values is None else values.get(key)
+        parts.append(f"{one.get('label') or key} {_split_value(value, one.get('type'), measure)}")
+    return "; ".join(parts)
+
+
+def _group_lines(items: list[Any], data: dict[str, Any], split: list[Any], measure: str,
+                 fmt_with: Callable[..., str]) -> list[str]:
+    """One line for each group, then the total line. A split (CRM-Q25e
+    part 2) names each field in each line."""
+    total = _OVERALL.get(measure, "Total")
+    if split:
+        return [*(f"- {g['label']}: {_split_text(split, g.get('split') or {}, measure)}"
+                  for g in items),
+                f"{total}: {_split_text(split, None, measure)}."]
+    return [*(f"- {g['label']}: {fmt_with(g.get('value'), g.get('others'), 'value', group=True)}"
+              for g in items),
+            f"{total}: {fmt_with(data.get('total'), data.get('others'), 'total')}."]
+
+
+def _split_head(plural: str, measure: str, data: dict[str, Any], split: list[Any]) -> str:
+    """The one line of a split with no group (CRM-Q25e part 2): one total
+    for each field, and the count of records that the filters matched."""
+    records = data.get("records")
+    tail = f", across {int(records):,} matching records." if records is not None else "."
+    return f"{plural}, {measure} of each field: {_split_text(split, None, measure)}{tail}"
+
+
+def _first_lines(data: dict[str, Any]) -> list[str]:
+    """CRM-Q25e part 4: the findings of the route (``acb_common.number_sense``)
+    as lines that the model says before the total. Empty with none."""
+    out = []
+    for found in data.get("findings") or []:
+        sentence = found.get("sentence") if isinstance(found, dict) else None
+        if sentence:
+            out.append(f"FIRST, tell the member: {sentence} A bulk update in the source CRM "
+                       "can do this, so check that date before you rely on the total.")
+    return out
+
+
+def _display_line(value: Any, *, money: bool, code: str) -> str | None:
+    """CRM-Q25e part 4: the total in the number system of the run
+    (``acb_common.number_system``, the one formatter), for the model to quote.
+    None below the size where the systems start to differ (a lakh, or a
+    million), and for no value."""
+    if value is None:
+        return None
+    from acb_common.number_system import big_band, compact_number, group
+
+    from acb_skills.write_artifact import run_numbering
+
+    system = run_numbering()
+    amount = float(value)
+    if abs(amount) < big_band(system):
+        return None
+    sign = "-" if amount < 0 else ""
+    unit = ("₹" if code == "INR" else f"{code} ") if money else ""
+    whole = f"{sign}{unit}{group(abs(amount), system)}"
+    short = f"{sign}{unit}{compact_number(abs(amount), system)}"
+    return f"Display: {whole} ({short}). Quote this display value for the total, as written."
+
+
 async def _total_tail(head: str, slug: str, data: dict[str, Any],
                       overlay: dict[str, Any] | None) -> list[str]:
     """*head*, then the overlay line (CRM-Q20-3a) or the empty core line
@@ -1551,9 +1712,14 @@ async def crm_aggregate(
     field_filters: dict[str, str] | None = None,
     term: str | None = None,
     page: int = 1,
+    fields: list[str] | None = None,
 ) -> str:
     """Count, sum or average CRM records, as one total or by one group. The
-    server computes every number: report them as given. entity is 'leads',
+    server computes every number: report them as given. To split a total over
+    2 to 5 number fields (for example rent, IP and electricity), give fields
+    with every key in ONE call, never one call for each field. Quote the
+    Display value of a total as written. When the answer starts with FIRST,
+    tell the member that line before the total. entity is 'leads',
     'deals', 'contacts', 'organizations' or 'module:<api_name>'
     (crm_list_modules). measure is 'count', 'sum_amount' or 'weighted'
     (deals: amount times the effective probability, open and ongoing stages
@@ -1593,6 +1759,10 @@ async def crm_aggregate(
         entity=slug, group_by=group_by, measure=measure, field=field,
         group_field=group_field, bucket=bucket,
     )
+    if fields:
+        # CRM-Q25e part 2: one statement reads each field. The route checks
+        # each key and the count (2 to 5).
+        params["fields"] = ",".join(str(f).strip() for f in fields if str(f).strip())
     if term and str(term).strip():
         return await _term_total(slug, params, page, str(term).strip())
     return await _aggregate_text(slug, params, page)
@@ -1665,29 +1835,34 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     filters = [line for line in (filters_line(params, data),) if line]
     overlay = data.get("overlay") if isinstance(data.get("overlay"), dict) else None
     mine = [chosen] if chosen else []
+    # CRM-Q25e part 4: a finding goes first, and the total gets its display.
+    first = _first_lines(data)
+    split = [s for s in data.get("split") or [] if isinstance(s, dict)]
+    display = None if split else _display_line(data.get("total"), money=money, code=code)
     if not group_by and not group_field:
         # One total over every filtered record: one line.
-        head = _one_total(f"{plural}, {what}", data, field or data.get("field"),
-                          measure, lambda v: fmt_with(v, data.get("others"), "total"))
+        head = _split_head(plural, measure, data, split) if split else _one_total(
+            f"{plural}, {what}", data, field or data.get("field"), measure,
+            lambda v: fmt_with(v, data.get("others"), "total"))
         lines = await _total_tail(head, slug, data, overlay)
+        if display:
+            lines.insert(1, display)
         lines.extend([*filters, *mine, *await _revenue_lines(slug, measure, box)])
-        return "\n".join(lines) + note
+        return "\n".join([*first, *lines]) + note
     grouped = data.get("group_field_label") or group_field
     by = group_by or f"{grouped}" + (f" ({bucket})" if bucket else "")
     shown = _page_of(groups, page, "groups")
-    if (field or data.get("field")) and data.get("values") == 0:
+    if (field or data.get("field")) and data.get("values") == 0 and not split:
         # CRM-Q25c item 3: an empty field has no total, and 0 would be false.
         return f"{plural}, {what} by {by}: no values recorded for {field or data.get('field')}.{note}"
-    lines = [f"{plural}, {what} by {by}:"]
+    lines = [*first, f"{plural}, {measure} of each field by {by}:" if split
+             else f"{plural}, {what} by {by}:"]
     if overlay and slug in ENTITY_LABELS:
         # CRM-Q20-3a: the route read the module that plays the slot.
         lines.append(_from_module(slug, str(overlay.get("module"))))
-    lines.extend(
-        f"- {g['label']}: {fmt_with(g.get('value'), g.get('others'), 'value', group=True)}"
-        for g in shown.items
-    )
-    lines.append(f"{_OVERALL.get(measure, 'Total')}: "
-                 f"{fmt_with(data.get('total'), data.get('others'), 'total')}.")
+    lines.extend(_group_lines(shown.items, data, split, measure, fmt_with))
+    if display:
+        lines.append(display)
     if shown.line:
         lines.append(shown.line)
     omitted = int(data.get("omitted") or 0)
