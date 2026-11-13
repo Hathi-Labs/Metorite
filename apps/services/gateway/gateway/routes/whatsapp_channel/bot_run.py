@@ -825,20 +825,35 @@ def _listed(raw: str, org: str | None) -> bool:
     return "*" in entries or (bool(org) and str(org).strip().lower() in entries)
 
 
+def _crm_long_reads(org: str | None, settings: Any) -> bool:
+    """True when the CRM long mode (HRD-6 part 2) is on for *org*.
+
+    The CRM's own reader, ``gateway.routes.crm.flags.long_read_allowed``, wins
+    when it exists, because it holds the CRM switch too. A build before the
+    CRM long mode has no such reader, and then ``CRM_LONG_READ_ORGS`` is read
+    as a plain list (empty when the setting does not exist). Fails closed."""
+    try:
+        from gateway.routes.crm.flags import long_read_allowed
+    except ImportError:
+        return _listed(getattr(settings, "crm_long_read_orgs", "") or "", org)
+    try:
+        return bool(long_read_allowed(org))
+    except Exception:
+        return False
+
+
 def long_reads_on(org: str | None) -> bool:
     """True when *org* may run a long read (HRD-6). ``CHAT_PROGRESS_NOTICE_ORGS``
-    or ``CRM_LONG_READ_ORGS`` names it, or holds ``*``. Both empty, the
-    default, gives False, and each cap stays as it was. Fails closed.
-
-    ``CRM_LONG_READ_ORGS`` belongs to the CRM long mode (HRD-6 part 2). A
-    build without that setting reads it as empty. *org* is the org of the
-    link row or of the sweep's binding, never message input."""
+    names it or holds ``*``, or the CRM long mode is on for it
+    (:func:`_crm_long_reads`). Both off, the default, gives False, and each
+    cap stays as it was. Fails closed. *org* is the org of the link row or of
+    the sweep's binding, never message input."""
     try:
         from acb_common import get_settings
 
         settings = get_settings()
         return (_listed(getattr(settings, "chat_progress_notice_orgs", "") or "", org)
-                or _listed(getattr(settings, "crm_long_read_orgs", "") or "", org))
+                or _crm_long_reads(org, settings))
     except Exception:
         return False
 
@@ -851,10 +866,16 @@ def run_timeout_for(org: str | None) -> float:
 
 def stale_for(org: str | None) -> float:
     """The stale time of a row of *org*: ``LONG_STALE_S`` for a long-read org,
-    else ``STALE_S`` as before. Always longer than :func:`run_timeout_for`.
+    else ``STALE_S`` as before. For one reading of the flags it is longer than
+    :func:`run_timeout_for`.
 
     Each sweep pass binds ONE org, and FORCE RLS keeps every row of the pass
-    in that org, so the time of the org is the time of each row."""
+    in that org, so the time of the org is the time of each row.
+
+    A flag flip in the middle of a long run can give that run's row the short
+    stale time. In this process ``_LIVE_ROWS`` is the real guard: the sweep
+    and the exhausted and unconfirmed closes skip a live row. Only a row that
+    another process runs depends on the order of the two caps."""
     return LONG_STALE_S if long_reads_on(org) else STALE_S
 
 

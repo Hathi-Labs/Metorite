@@ -1359,9 +1359,15 @@ export function useAgentChat({
                     quiet: isQuietArtifact(data),
                   });
                 }
+                // HRD-6: this loop replays the run, then follows it LIVE. The
+                // replay brings each line and its clear in order, so the end
+                // state is the true one: a line that still runs shows, and a
+                // line that ended or went to a card is gone. Never saved.
+                if (evtName === PROGRESS_EVENT) {
+                  updLast((m) => withProgressNotice(m, evt.value ?? evt.data));
+                }
                 // A replayed `navigate` moves no page (WS-62 CF-3 done-when 6),
-                // and it draws nothing either. A replayed `progress` line
-                // (HRD-6) draws nothing: it was live only.
+                // and it draws nothing either.
                 if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT && evtName !== GUIDE_EVENT && evtName !== PROGRESS_EVENT) {
                   updLast((m) => withCustomEvent(m, evtName, evt.value ?? evt.data));
                 }

@@ -1733,7 +1733,7 @@ member, a restart and an outage look the same.
 1. **Which failures.** Some codes mean that Metorite's AI path did not
    answer. One is `connection`: a 502 or 503 from the Router, or a refused
    connection. The other is `timeout` from a call: a 504, or a read timeout. The run's
-   OWN 4-minute limit counts too, but only when the Router failed during that
+   OWN limit (4 minutes, 7 in a long-read org) counts too, but only when the Router failed during that
    run: `v1_compat` stamps each `ConsoleRouterUnavailable`. A long job that
    meets the limit with the Router up keeps the general text.
 2. **Hold.** The message goes back to wait (`received`), with the code
@@ -1742,7 +1742,8 @@ member, a restart and an outage look the same.
    ends after 3 tries with the general text, once. The member hears
    `REPLY_UPDATING` once, on the first hold of that message.
 3. **Back.** The sweep runs a held message again only when the AI path is
-   back. Both of these must be true:
+   back, and no sooner than its stale time after the hold: 5 minutes, or 8
+   minutes in a long-read org (§5.4). Both of these must be true:
    - The Router's `/health` answers. The sweep reads it once.
    - Either a model run succeeded after the last failure, or 5 minutes passed
      with no new failure on any phone.

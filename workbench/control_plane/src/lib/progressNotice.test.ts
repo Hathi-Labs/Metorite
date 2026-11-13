@@ -8,9 +8,14 @@
 //     The end of ANOTHER step leaves it while its own step runs.
 //   * `progress-line-draws`: `ThinkingContainer` draws the line under its
 //     header while the turn works, with the trail closed, in one status
-//     region, and draws nothing once the turn is over.
-//   * `progress-line-not-saved`: the replay and the BFF save keep no line,
-//     and `withCustomEvent` never keeps one, so no save posts it.
+//     region that is mounted before the line comes, and draws nothing once
+//     the turn is over.
+//   * `progress-line-attach`: the attach loop replays the run and then
+//     follows it live, so it applies each line and each clear in order. A
+//     line with its clear ends with no line. A line with no clear yet shows.
+//   * `progress-line-not-saved`: no loop keeps the line in `customEvents`, the
+//     BFF save drops it, and `withCustomEvent` never keeps one, so no save
+//     posts it.
 //   * `progress-line-clear`: an empty line takes away the line of the step it
 //     names (that step ended, or it shows a card), and only that one.
 
@@ -140,6 +145,18 @@ describe("progress-line-draws", () => {
     expect(none).not.toContain("data-trail-notice");
   });
 
+  it("mounts the status region before the line comes, so a reader announces it", () => {
+    const none = renderToStaticMarkup(
+      createElement(ThinkingContainer, { toolEvents: steps, progressLines: [], isActive: true }),
+    );
+    expect(none).toMatch(/<div role="status" aria-live="polite" data-trail-status=""><\/div>/);
+    const shown = renderToStaticMarkup(
+      createElement(ThinkingContainer, { toolEvents: steps, progressLines: [], isActive: true, notice: LINE }),
+    );
+    const region = shown.slice(shown.indexOf('data-trail-status=""'));
+    expect(region.indexOf("data-trail-notice")).toBeGreaterThan(0);
+  });
+
   it("uses the design system's ink, not a colour of its own", () => {
     const src = readFileSync(path.join(here, "../components/ThinkingContainer.tsx"), "utf8");
     const block = src.slice(src.indexOf("data-trail-notice"), src.indexOf("Pre-content working indicator"));
@@ -149,12 +166,54 @@ describe("progress-line-draws", () => {
 });
 
 describe("progress-line-not-saved", () => {
-  it("the replay loop and the BFF save leave the line out", () => {
+  it("no loop keeps the line in customEvents, and the BFF save drops it", () => {
     const hook = readFileSync(path.join(here, "../hooks/useAgentChat.ts"), "utf8");
     expect(hook).toContain("evtName !== PROGRESS_EVENT) {");
     expect(PROGRESS_EVENT).toBe("progress");
     const route = readFileSync(path.join(here, "../app/api/agent/chat/route.ts"), "utf8");
     expect(route).toContain('cev.name !== "progress"');
+  });
+});
+
+/** What the attach loop of `useAgentChat` does with a replayed run: the
+ *  stream events go through `applyStreamEvent`, and a `progress` event goes
+ *  through `withProgressNotice`, in the order of the stream. */
+function attach(m: ChatMessage, events: Record<string, unknown>[]): ChatMessage {
+  const fold: StreamFold = { foldedAnswerIdx: -1 };
+  return events.reduce((acc, e) => (
+    e.type === "custom" && e.name === PROGRESS_EVENT
+      ? withProgressNotice(acc, e.value)
+      : applyStreamEvent(acc, e, fold)
+  ), m);
+}
+
+describe("progress-line-attach", () => {
+  const start = { type: "tool_start", id: "c1", name: "request_confirmation_write", args: {} };
+  const line = { type: "custom", name: PROGRESS_EVENT, value: { text: LINE, tool_call_id: "c1" } };
+  const clear = { type: "custom", name: PROGRESS_EVENT, value: { text: "", tool_call_id: "c1" } };
+
+  it("a replayed line and its clear end with no line (a card, or the step ended)", () => {
+    const m = attach(msg(), [start, line, clear]);
+    expect(m.progressNotice).toBeUndefined();
+    expect(m.customEvents ?? []).toEqual([]);
+  });
+
+  it("a replayed line with no clear yet shows: the step still runs", () => {
+    const m = attach(msg(), [start, line]);
+    expect(m.progressNotice).toEqual({ text: LINE, toolId: "c1" });
+  });
+
+  it("a later line that comes live after the replay shows too", () => {
+    const later = { type: "custom", name: PROGRESS_EVENT, value: { text: LINE, tool_call_id: "c2" } };
+    const m = attach(msg(), [start, line, clear, { type: "tool_start", id: "c2", name: "crm_aggregate", args: {} }, later]);
+    expect(m.progressNotice?.toolId).toBe("c2");
+  });
+
+  it("the attach loop of the hook applies the line, and keeps it out of customEvents", () => {
+    const hook = readFileSync(path.join(here, "../hooks/useAgentChat.ts"), "utf8");
+    // Both loops: the live loop through `upd`, the attach loop through `updLast`.
+    expect(hook).toContain("upd((m) => withProgressNotice(m, evt.value ?? evt.data));");
+    expect(hook).toContain("updLast((m) => withProgressNotice(m, evt.value ?? evt.data));");
   });
 });
 

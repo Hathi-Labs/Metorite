@@ -1276,9 +1276,14 @@ no timer.
   message (`progressNotice`). `ThinkingContainer` draws it under its header,
   which names the running step, so the member sees it with the trail closed.
   The clear event, the end of that step, answer text or the end of the run
-  takes it away (`lib/chatStream.ts`). The replay draws nothing for it.
-  `withCustomEvent`, the BFF save and the gateway fold (`chat_fold.py`) never
-  keep it, so a stored chat never holds it.
+  takes it away (`lib/chatStream.ts`). The attach loop replays the run, and
+  then it follows the run live. It applies each line and each clear in order.
+  So after a reload, in a second tab or back in the chat, the line is true. A
+  step that still runs shows its line. A line that ended or went to a card is
+  gone. No loop keeps it in `customEvents`. `withCustomEvent`, the BFF save and the gateway fold
+  (`chat_fold.py`) never keep it, so a stored chat never holds it.
+- **The screen reader.** The `role="status"` region mounts with the trail and
+  stays empty until a line comes, so a reader announces the line.
 - **WhatsApp.** The line goes as the channel's early message
   (`whatsapp_ui.WhatsAppRun.notify`), once in a reply. The channel's own 20 s
   line (`REPLY_WORKING`) then stays quiet. Before the answer or the failure
@@ -1329,8 +1334,9 @@ names (`bot_run.long_reads_on`). Every other org keeps 240 s and 300 s.
   bare idle cap, and the line comes between the tool's start and its result.
 - `src/lib/progressNotice.test.ts`: the line shows. It goes at its clear
   event, at the end of its step, at answer text and at the end of the run. It
-  draws under the header while the turn works, and not after it. The replay,
-  `withCustomEvent` and the BFF save keep no line.
+  draws under the header while the turn works, and not after it. The attach
+  loop ends with the true line: none after a clear, the line with no clear
+  yet. No loop, `withCustomEvent` or the BFF save keeps it.
 
 ---
 

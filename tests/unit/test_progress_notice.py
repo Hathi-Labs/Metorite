@@ -585,9 +585,14 @@ def test_bot_run_settles_the_early_message_before_any_send():
     assert src.index('kind="answer"', run_at) > settle_at
 
 
-def _settings(monkeypatch, **orgs: str) -> None:
+def _settings(monkeypatch, *, crm_reader: bool = False, **orgs: str) -> None:
+    """Settings that hold only the two lists. Unless *crm_reader*, the build
+    has no CRM long mode yet, so ``CRM_LONG_READ_ORGS`` is read as a list."""
     import acb_common
+    from gateway.routes.crm import flags as crm_flags
 
+    if not crm_reader:
+        monkeypatch.delattr(crm_flags, "long_read_allowed", raising=False)
     values = {"chat_progress_notice_orgs": "", "crm_long_read_orgs": "", **orgs}
     monkeypatch.setattr(acb_common, "get_settings", lambda: SimpleNamespace(**values))
 
@@ -613,10 +618,53 @@ def test_the_whatsapp_caps_are_per_org(monkeypatch, orgs, org, caps):
     assert bot_run.run_timeout_for(org) >= 180 + 4 * 60 or caps == (240, 300)
 
 
-def test_a_settings_build_with_no_crm_list_reads_it_as_empty(monkeypatch):
-    import acb_common
+def test_the_crm_reader_wins_when_the_crm_long_mode_is_merged(monkeypatch):
+    """After the CRM branch merges, ``crm.flags.long_read_allowed`` holds the
+    CRM switch too, so it decides, and the raw list does not."""
+    from gateway.routes.crm import flags as crm_flags
     from gateway.routes.whatsapp_channel import bot_run
 
+    asked: list[Any] = []
+
+    def long_read_allowed(org: Any) -> bool:
+        asked.append(org)
+        return org == ORG
+
+    monkeypatch.setattr(crm_flags, "long_read_allowed", long_read_allowed, raising=False)
+    _settings(monkeypatch, crm_reader=True, crm_long_read_orgs="org-other")
+    assert bot_run.long_reads_on(ORG) is True
+    assert bot_run.long_reads_on("org-other") is False, "the switch wins over the list"
+    assert asked == [ORG, "org-other"]
+
+
+def test_before_the_crm_long_mode_the_raw_list_is_read(monkeypatch):
+    from gateway.routes.crm import flags as crm_flags
+    from gateway.routes.whatsapp_channel import bot_run
+
+    _settings(monkeypatch, crm_long_read_orgs=ORG)
+    assert not hasattr(crm_flags, "long_read_allowed")
+    assert bot_run.long_reads_on(ORG) is True
+    assert bot_run.long_reads_on("org-other") is False
+
+
+def test_a_crm_reader_that_fails_reads_as_off(monkeypatch):
+    from gateway.routes.crm import flags as crm_flags
+    from gateway.routes.whatsapp_channel import bot_run
+
+    def long_read_allowed(org: Any) -> bool:
+        raise RuntimeError("settings fault")
+
+    monkeypatch.setattr(crm_flags, "long_read_allowed", long_read_allowed, raising=False)
+    _settings(monkeypatch, crm_reader=True)
+    assert bot_run.long_reads_on(ORG) is False
+
+
+def test_a_settings_build_with_no_crm_list_reads_it_as_empty(monkeypatch):
+    import acb_common
+    from gateway.routes.crm import flags as crm_flags
+    from gateway.routes.whatsapp_channel import bot_run
+
+    monkeypatch.delattr(crm_flags, "long_read_allowed", raising=False)
     monkeypatch.setattr(acb_common, "get_settings",
                         lambda: SimpleNamespace(chat_progress_notice_orgs=""))
     assert (bot_run.run_timeout_for(ORG), bot_run.stale_for(ORG)) == (240, 300)
