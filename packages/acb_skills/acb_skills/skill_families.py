@@ -857,13 +857,16 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # which is NOT a second assistant. Eight stateless builder tools (G1b added the describe tool,
     # G2 the interview and the plan card), three skill tools (F2d) and three package tools (G1c:
     # save and publish over the A5 routes; A5c-2: delete over the A5c-1 routes, after one card).
+    # STB-6a (E13a) adds ONE workflow read over the Workflows routes, as the member. No write.
+    # With it the pack holds 23 tools and is at its room limit: a Studio turn that also loads
+    # the email pack sends 110 tools (MAX_REQUEST_TOOLS). STB-6b needs a follow pack or room.
     # A run loads a pack only where tool packs are on, and the pack builds nothing for an org that
     # STUDIO_ORGS does not hold.
     "studio": {
         "label": "AI Studio builder",
         "summary": (
             "Build an AI Studio app: draft a manifest from a brief, patch it, "
-            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save, publish and delete the app, start from a ready app, save, publish, pause and list your skills, read the records of a package, and list the steps of a playbook run."
+            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save, publish and delete the app, start from a ready app, save, publish, pause and list your skills, read the records of a package, and list and read the organisation's workflows and the steps of a run."
         ),
         "description": (
             "A tool pack: the builder tools of AI Studio, for the main "
@@ -873,8 +876,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "an app as a draft, publish it, and delete it after one card. It also holds the skill tools: save, "
             "publish, pause and list the skills of a member. Two read tools list the "
             "packages of a member and read the records of an object. Three write tools add, "
-            "change and delete a record, and each asks the member first. One read tool lists "
-            "the human steps of a workflow run, such as a playbook. The tools keep no "
+            "change and delete a record, and each asks the member first. One read tool lists the "
+            "workflows of the organization, reads one, or lists the human steps of one run. The tools keep no "
             "draft: the chat holds the manifest. A run loads a pack only where tool packs are on, "
             "so until then this switch has no effect."
         ),
@@ -901,8 +904,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "studio_record_update",
             "studio_record_delete",
             "studio_app_read",
-            # STU-E4b: the human steps of one workflow run (a playbook), a read.
-            "workflow_run_steps",
+            "studio_workflow_read",
         ),
         "owner": "studio-builder",
         "core": False,

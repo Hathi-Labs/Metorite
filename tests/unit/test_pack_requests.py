@@ -289,8 +289,11 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "studio_record_delete": ("delete a record from my studio package",),
     # -- studio door read (STU-B2b-2c) --
     "studio_app_read": ("read a knowledge page through my studio app",),
-    # -- the steps of a playbook run (STU-E4b) --
-    "workflow_run_steps": ("list the steps of the playbook run in my studio app",),
+    # -- studio workflow read (STB-6a) --
+    "studio_workflow_read": ("list my studio workflows",
+                             "read the studio workflow that chases invoices",
+                             # STU-E4b: the run id mode, the steps of a run.
+                             "list the steps of the playbook run in my studio app"),
     # -- projects-reminders --
     "list_reminders": ("what reminders do I have?",),
     "promote_reminder": ("turn the reminder into a task",),
