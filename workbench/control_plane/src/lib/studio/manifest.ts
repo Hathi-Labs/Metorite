@@ -70,6 +70,9 @@ export interface ObjectDef {
   fields?: FieldDef[];
   // The constraints and state machines of the object (C6).
   rules?: Record<string, unknown>[];
+  // C8a. The grant of each role: read "all" or { where: "<person field> = $me" },
+  // write "all", and hide. No access means an open object.
+  access?: Record<string, unknown>[] | null;
 }
 
 export interface ActionDef {
@@ -192,6 +195,14 @@ export type NeedDecl = Record<string, unknown>;
 
 export type OverrideDecl = Record<string, unknown>;
 
+// STU-B7a (ai_studio.md 19.3). Where member code runs. It has no `hosts` key.
+export type RuntimeKind = "none" | "browser" | "sandbox" | "packages";
+
+export interface RuntimeDef {
+  kind?: RuntimeKind;
+  packages?: Record<string, string>;
+}
+
 export interface StudioManifest {
   studio: StudioVersion;
   kind?: ManifestKind;
@@ -201,6 +212,8 @@ export interface StudioManifest {
   purpose?: string | null;
   team?: string | null;
   connections?: string[];
+  // C8a. The roles of the app. An install maps each one to members (C8b).
+  roles?: string[];
   objects?: ObjectDef[];
   actions?: ActionDef[];
   views?: ViewDef[];
@@ -213,6 +226,7 @@ export interface StudioManifest {
   slots?: SlotDecl[];
   needs?: NeedDecl[];
   overrides?: OverrideDecl[];
+  runtime?: RuntimeDef | null;
 }
 
 // One refusal of the validator: a JSON path and one sentence.
