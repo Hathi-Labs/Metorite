@@ -33,6 +33,8 @@ c. A hidden key leaves ``changes`` for the employee, and the owner and ``hr``
    read it. The store keeps the value.
 d. Org B reads nothing of org A.
 e. Only the owner reads the history of a deleted record.
+e2. Fix round 1. An update of only hidden keys is not in a page and does not
+   move ``next``. A viewer who got a record by a move reads from the move on.
 f. The door answers the history to the owner, writes one audit row with no
    value, and answers 404 to another member and to org B.
 
@@ -45,6 +47,11 @@ f. The door answers the history to the owner, writes one audit row with no
   goes red.
 * RR3. ``objects_store.list_record_changes``: drop ``and not view.owner``.
   ``test_r8_only_the_owner_reads_the_history_of_a_deleted_record`` goes red.
+* RR4. ``objects_store._CHANGES_PAGE_SQL``: drop the ``jsonb_exists_any``
+  filter. ``test_r8_a_walk_never_shows_a_hidden_only_update`` goes red.
+* RR5. ``objects_store.list_record_changes``: drop the scope start.
+  ``test_r8_a_viewer_who_got_a_record_by_a_move_never_reads_the_time_before``
+  goes red.
 """
 
 from __future__ import annotations
@@ -162,8 +169,19 @@ def world(promoted):  # noqa: F811
             await put(Write("update", slip.id, s1.id, {"note": "paid"}),
                       via=("workflow_run", f"run-{TAG}"))
             await put(Write("delete", slip.id, gone.id))
+            # Fix round 1. ``twin`` has the history of ``s1`` with no change of
+            # ``bonus``. ``moved`` was E2's, and HR (here the owner) moved it to E1.
+            twin, moved = await put(
+                Write("create", slip.id, data={"employee": E1, "amount": 100, "bonus": 10}),
+                Write("create", slip.id, data={"employee": E2, "amount": 10, "bonus": 1,
+                                               "note": "e2 secret"}))
+            await put(Write("update", slip.id, twin.id, {"amount": 150}))
+            await put(Write("update", slip.id, twin.id, {"note": "paid"}))
+            await put(Write("update", slip.id, moved.id, {"amount": 20}))
+            await put(Write("update", slip.id, moved.id, {"employee": E1, "amount": 25}))
+            await put(Write("update", slip.id, moved.id, {"note": "moved"}))
         return SimpleNamespace(p=p, a=p.org_a, b=p.org_b, pkg=pkg, pkg_b=ids["b"], slip=slip,
-                               s1=s1.id, s2=s2.id, gone=gone.id)
+                               s1=s1.id, s2=s2.id, gone=gone.id, twin=twin.id, moved=moved.id)
 
     w = _run(p, build)
     yield w
@@ -243,6 +261,61 @@ def test_r8_a_hidden_key_leaves_changes_and_the_owner_and_hr_read_it(world) -> N
             "ORDER BY id"), {"r": world.s1}).scalars().all()
     stored = [r if isinstance(r, dict) else json.loads(r) for r in rows]
     assert stored[2]["bonus"] == {"old": 10, "new": 30}
+
+
+def _walk(w: Any, viewer: Viewer, rid: str) -> list[tuple[list[str], bool]]:
+    """Each page of the history of *rid* for *viewer*, with a limit of 1: the
+    ops of the page, and whether ``next`` is the id of the row of the page."""
+    out: list[tuple[list[str], bool]] = []
+    after = None
+    while True:
+        page = _read(w, viewer, rid, limit=1, after=after)
+        assert page is not None
+        out.append(([c.op for c in page.changes],
+                    page.next is None or page.next == page.changes[-1].id))
+        if page.next is None:
+            return out
+        after = page.next
+
+
+def test_r8_a_walk_never_shows_a_hidden_only_update(world) -> None:
+    """Fix round 1 (P1). ``s1`` holds a change of only ``bonus``, and ``twin``
+    holds the same history without it. A walk with a limit of 1 gives one
+    visible change on each page, ``next`` is always the row of the page, and
+    the two walks are the same. So no page and no ``next`` shows that a hidden
+    key changed, or when."""
+    walk = _walk(world, AS_E1, world.s1)
+    assert walk == _walk(world, AS_E1, world.twin)
+    assert walk == [(["create"], True), (["update"], True), (["update"], True)]
+    # The owner reads the change of the bonus in the same walk.
+    assert len(_walk(world, AS_OWNER, world.s1)) == 4
+
+
+# ── The scope start (fix round 1) ───────────────────────────────────────────
+
+
+def test_r8_a_viewer_who_got_a_record_by_a_move_never_reads_the_time_before(world) -> None:
+    """``moved`` was E2's. E1 reads from the move on, and the row of the move
+    shows only the new values. E2 now reads nothing, and the owner and ``hr``
+    read the whole history."""
+    mine = _read(world, AS_E1, world.moved)
+    assert mine is not None
+    assert [c.op for c in mine.changes] == ["update", "update"]
+    assert mine.changes[0].changes == {"employee": {"new": E1}, "amount": {"new": 25}}
+    # The note held this value when the record came to E1, so E1 read it then.
+    assert mine.changes[1].changes == {"note": {"old": "e2 secret", "new": "moved"}}
+    text_of = json.dumps([c.changes for c in mine.changes])
+    for before in (E2, '"old": 10', '"old": 20'):
+        assert before not in text_of, before
+    # An after of 0 does not reach the rows before the move.
+    first = _read(world, AS_E1, world.moved, after=0, limit=1)
+    assert first is not None and first.changes[0].changes["employee"] == {"new": E1}
+    assert _read(world, AS_E2, world.moved) is None
+    for viewer in (AS_OWNER, AS_HR):
+        full = _read(world, viewer, world.moved)
+        assert full is not None
+        assert [c.op for c in full.changes] == ["create", "update", "update", "update"]
+        assert full.changes[2].changes["employee"] == {"old": E2, "new": E1}
 
 
 # ── d. The wall of the org ──────────────────────────────────────────────────

@@ -764,14 +764,31 @@ _CHANGE_SQL = (
     "CAST(:changes AS jsonb))"
 )
 
-#: C4a-2. One page of the change history of one record, oldest first, by key:
-#: the index ``(organization_id, object_id, record_id, id)`` serves it. The
-#: bound org filters it beside RLS. ``:n`` is one past the page, so the reader
-#: knows whether a next page exists.
+#: C4a-2. The rows of the change history of one record. The index
+#: ``(organization_id, object_id, record_id, id)`` serves each statement below.
+#: The bound org filters it beside RLS.
+_CHANGES_OF_RECORD = (
+    f"FROM studio_record_changes WHERE organization_id = {_BOUND_ORG} "
+    "AND object_id = CAST(:oid AS uuid) AND record_id = CAST(:rid AS uuid)"
+)
+
+#: C4a-2. One page of the history, oldest first, by key. ``:keys`` are the keys
+#: that the viewer reads. An update that changed none of them is not in the
+#: statement, so the page and ``next`` never show that a hidden key changed
+#: (fix round 1). ``jsonb_exists_any`` and not ``?|``, so no driver reads a
+#: ``?`` as a bind. ``:n`` is one past the page, so the reader knows whether
+#: a next page exists.
 _CHANGES_PAGE_SQL = (
-    "SELECT id, op, actor, via_kind, via_id, changes, at FROM studio_record_changes "
-    f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
-    "AND record_id = CAST(:rid AS uuid) AND id > :after ORDER BY id LIMIT :n"
+    f"SELECT id, op, actor, via_kind, via_id, changes, at {_CHANGES_OF_RECORD} "
+    "AND id > :after AND (op <> 'update' OR jsonb_exists_any(changes, CAST(:keys AS text[]))) "
+    "ORDER BY id LIMIT :n"
+)
+
+#: C4a-2 fix round 1. The last change of a key that a row rule of the viewer
+#: reads: the change that brought the record into the scope of the viewer.
+_CHANGES_SCOPE_START_SQL = (
+    f"SELECT max(id) {_CHANGES_OF_RECORD} "
+    "AND jsonb_exists_any(changes, CAST(:wkeys AS text[]))"
 )
 
 #: The kinds of a ``via`` (C4a-1). The CHECK ``studio_record_changes_via_kind``
@@ -2198,20 +2215,11 @@ class ChangePage:
     changes: tuple[RecordChange, ...]
     next: int | None
 
-    def only(self, keys: Collection[str]) -> ChangePage:
-        """The page with only the values of *keys* (J2a: the fields of the
-        installed version). The actor and the ``via`` id leave, as
-        ``InstalledApp.project_record`` drops the writer. An update with no
-        key left leaves the page, because it would show that a key that the
-        viewer cannot read changed."""
-        kept = frozenset(keys)
-        out = []
-        for row in self.changes:
-            changes = {k: v for k, v in row.changes.items() if k in kept}
-            if row.op == "update" and not changes:
-                continue
-            out.append(replace(row, actor=None, via_id=None, changes=changes))
-        return ChangePage(tuple(out), self.next)
+    def without_writer(self) -> ChangePage:
+        """The page with no actor and no ``via`` (J2a: a viewer of an install),
+        as ``InstalledApp.project_record`` drops the writer."""
+        return ChangePage(tuple(replace(r, actor=None, via_kind=None, via_id=None)
+                                for r in self.changes), self.next)
 
 
 def _history_bound(value: Any, what: str, low: int, high: int) -> int:
@@ -2230,12 +2238,38 @@ def _history_shown(fields: Sequence[FieldSpec], hidden: frozenset[str]) -> froze
                      and HISTORY_DECISION.get(f.type) == HISTORY_VALUES)
 
 
+async def _scope_start(db: Any, view: _View, oid: str, rid: str) -> int | None:
+    """C4a-2 fix round 1. For a viewer that a row rule binds, the id of the
+    last change of a key that its row rules read, or None. Before that change
+    the record may have been in the rows of another person, so the viewer
+    reads the history from that change on. Each other viewer gets None."""
+    if not view.scope.row_bound:
+        return None
+    found = (await db.execute(text(_CHANGES_SCOPE_START_SQL), {
+        "oid": oid, "rid": rid, "wkeys": list(view.scope.where_keys)})).first()
+    return None if found is None or found[0] is None else int(found[0])
+
+
+def _change(row: Any, shown: frozenset[str], boundary: int | None) -> RecordChange:
+    """One row of the page with only the keys of *shown*. An update of the id
+    *boundary* shows only the new values: the old ones are of the time before
+    the record came into the scope of the viewer. A create has no old value."""
+    changes = {k: v for k, v in (_json(row[5]) or {}).items() if k in shown}
+    if boundary is not None and int(row[0]) == boundary and str(row[1]) == "update":
+        changes = {k: {"new": v.get("new") if isinstance(v, dict) else None}
+                   for k, v in changes.items()}
+    return RecordChange(int(row[0]), str(row[1]), str(row[2]), _opt(row[3]), _opt(row[4]),
+                        changes, row[6])
+
+
 async def list_record_changes(db: Any, object_id: str, record_id: str, *, package_id: str,
                               viewer: Viewer, limit: int | None = None,
-                              after: int | None = None) -> ChangePage | None:
+                              after: int | None = None,
+                              only: Collection[str] | None = None) -> ChangePage | None:
     """The change history of the record *record_id*, oldest first, one page of
     at most *limit* rows with an id past *after* (C4a-2). Answers None when
-    the viewer may not read the history.
+    the viewer may not read the history. *only* narrows the keys further (J2a:
+    the fields of the installed version).
 
     **The gate is the gate of a get.** :func:`_read_record` decides, with the
     row rule of *viewer*. A record that the viewer cannot read answers None,
@@ -2248,8 +2282,18 @@ async def list_record_changes(db: Any, object_id: str, record_id: str, *, packag
     record hides now, with each formula that reads one. An old value can come
     from a time when other grants read the record, so the reader takes the
     wider set, and it can hide more than a get. It drops too each key with no
-    field now, and each type that ``HISTORY_DECISION`` does not show. An
-    update with no key left leaves the page. ``next`` still moves past it."""
+    field now, and each type that ``HISTORY_DECISION`` does not show. **The
+    statement** leaves out each update that changed no shown key, so the page
+    holds *limit* rows until the history ends, and ``next`` is always the id
+    of a row of the page. A create or a delete stays, also with no shown key:
+    it shows only that the record exists, and the viewer reads the record or
+    owns the package.
+
+    **The scope start (fix round 1).** A viewer that a row rule binds reads
+    from the last change of a key that its row rules read, and that row shows
+    only the new values. So a viewer who got a record by a move never reads
+    the values of the time before the move. The owner and a viewer who reads
+    each record read the whole history."""
     size = _history_bound(studio_query.DEFAULT_LIMIT if limit is None else limit,
                           "limit", 1, PAGE_MAX)
     start = _history_bound(0 if after is None else after, "after", 0, 2**63 - 1)
@@ -2260,20 +2304,19 @@ async def list_record_changes(db: Any, object_id: str, record_id: str, *, packag
     oid, rid = _uuid(object_id, "object_id"), _uuid(record_id, "record_id")
     hidden = view.maybe_hidden() | (frozenset() if rec is None else view.hidden(rec.data))
     shown = _history_shown(await _fields(db, oid), hidden)
+    if only is not None:
+        shown &= frozenset(only)
+    boundary = await _scope_start(db, view, oid, rid)
+    if boundary is not None:
+        start = max(start, boundary - 1)
     rows = (await db.execute(text(_CHANGES_PAGE_SQL), {
-        "oid": oid, "rid": rid, "after": start, "n": size + 1})).all()
+        "oid": oid, "rid": rid, "after": start, "keys": sorted(shown), "n": size + 1})).all()
     if rec is None and not rows and start == 0:
         # The owner names a record that never had a change: not found.
         return None
     page = rows[:size]
-    out = []
-    for r in page:
-        changes = {k: v for k, v in (_json(r[5]) or {}).items() if k in shown}
-        if str(r[1]) == "update" and not changes:
-            continue
-        out.append(RecordChange(int(r[0]), str(r[1]), str(r[2]), _opt(r[3]), _opt(r[4]),
-                                changes, r[6]))
-    return ChangePage(tuple(out), int(page[-1][0]) if len(rows) > size else None)
+    return ChangePage(tuple(_change(r, shown, boundary) for r in page),
+                      int(page[-1][0]) if len(rows) > size else None)
 
 
 def _opt(value: Any) -> str | None:

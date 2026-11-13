@@ -17,8 +17,11 @@ with the reader patched.
   ``test_only_the_owner_reads_the_history_of_a_deleted_record`` goes red.
 * HR2. ``list_record_changes``: build ``shown`` with no ``hidden``.
   ``test_a_hidden_key_leaves_changes_and_the_store_keeps_it`` goes red.
-* HR3. ``list_record_changes``: keep an update with no key left.
-  ``test_an_update_of_only_hidden_keys_leaves_the_page`` goes red.
+* HR3. ``_CHANGES_PAGE_SQL``: drop the ``jsonb_exists_any`` filter. The fake
+  session reads the same filter, so the R8 twin
+  ``test_r8_a_walk_never_shows_a_hidden_only_update`` is its fence.
+* HR6. ``list_record_changes``: drop the scope start (``boundary``).
+  ``test_a_viewer_who_got_a_record_by_a_move_reads_from_the_move_on`` goes red.
 * HR4. ``_history_input``: accept a bool. The bool cases of
   ``test_a_bad_page_value_is_422_and_reads_nothing`` go red.
 * HR5. ``OPEN_EXECUTORS``: drop the history. ``test_a_history_is_class_a_and_it_runs``
@@ -122,8 +125,13 @@ class _DB:
         if sql == store._FIELDS_SQL:
             return _Result([(k, t, {}, k == "employee") for k, t in _FIELDS])
         if sql == store._CHANGES_PAGE_SQL:
-            rows = [r for r in self.history if r[0] > p["after"]]
+            # The filter of the statement: an update must name a shown key.
+            rows = [r for r in self.history if r[0] > p["after"] and (
+                r[1] != "update" or set(json.loads(r[5])) & set(p["keys"]))]
             return _Result(rows[: p["n"]])
+        if sql == store._CHANGES_SCOPE_START_SQL:
+            ids = [r[0] for r in self.history if set(json.loads(r[5])) & set(p["wkeys"])]
+            return _Result([(max(ids) if ids else None,)])
         raise AssertionError(f"an unexpected statement: {sql[:80]}")
 
     def page_reads(self) -> list[dict[str, Any]]:
@@ -206,11 +214,15 @@ def test_a_hidden_key_leaves_changes_and_the_store_keeps_it() -> None:
 
 
 def test_an_update_of_only_hidden_keys_leaves_the_page() -> None:
-    """Row 2 changed only ``bonus`` and ``total``. An employee does not see
-    that it was there, as a get does not show a hidden key."""
-    page = _read(_DB(record=_STORED, history=_HISTORY), AS_E1)
+    """Row 2 changed only ``bonus`` and ``total``. The statement leaves it
+    out, so an employee does not see that it was there, as a get does not
+    show a hidden key. The keys of the statement are the shown keys."""
+    db = _DB(record=_STORED, history=_HISTORY)
+    page = _read(db, AS_E1)
     assert page is not None
     assert [c.id for c in page.changes] == [1, 3]
+    [read] = db.page_reads()
+    assert read["keys"] == ["amount", "employee", "note"]
 
 
 def test_only_the_owner_reads_the_history_of_a_deleted_record() -> None:
@@ -243,11 +255,27 @@ def test_a_page_by_id_names_the_next_after() -> None:
     assert [p["after"] for p in db.page_reads()] == [0, 2]
 
 
-def test_next_moves_past_a_dropped_row() -> None:
-    """An employee reads a page of two: row 1, and row 2 that it does not see.
-    ``next`` is 2, so the next page starts at row 3."""
-    page = _read(_DB(record=_STORED, history=_HISTORY), AS_E1, limit=2)
-    assert page is not None and [c.id for c in page.changes] == [1] and page.next == 2
+def _walk(history: list[tuple[Any, ...]], viewer: Viewer) -> list[tuple[list[int], Any]]:
+    """Each page of *history* for *viewer*, with a limit of 1."""
+    out: list[tuple[list[int], Any]] = []
+    after = None
+    while True:
+        page = _read(_DB(record=_STORED, history=history), viewer, limit=1, after=after)
+        assert page is not None
+        out.append(([c.id for c in page.changes], page.next))
+        if page.next is None:
+            return out
+        after = page.next
+
+
+def test_a_hidden_only_update_never_moves_next_or_shortens_a_page() -> None:
+    """Fix round 1. A walk with a limit of 1 gives one visible change on each
+    page, and ``next`` is never the id of a row that the viewer cannot see. The
+    walk is the same with and without the hidden update in the history."""
+    seen = _walk(_HISTORY, AS_E1)
+    assert seen == [([1], 1), ([3], None)]
+    without = [r for r in _HISTORY if r[0] != 2]
+    assert _walk(without, AS_E1) == seen
 
 
 @pytest.mark.parametrize("kw", [{"limit": 0}, {"limit": PAGE_MAX + 1}, {"limit": True},
@@ -264,8 +292,13 @@ def test_the_page_sql_reads_one_record_by_key_in_the_bound_org() -> None:
     sql = store._CHANGES_PAGE_SQL
     assert f"organization_id = {store._BOUND_ORG}" in sql
     assert "object_id = CAST(:oid AS uuid)" in sql and "record_id = CAST(:rid AS uuid)" in sql
-    assert "id > :after ORDER BY id LIMIT :n" in sql
-    assert "DESC" not in sql
+    assert "id > :after AND " in sql and sql.endswith("ORDER BY id LIMIT :n")
+    assert "(op <> 'update' OR jsonb_exists_any(changes, CAST(:keys AS text[])))" in sql
+    assert "DESC" not in sql and "?" not in sql
+    start = store._CHANGES_SCOPE_START_SQL
+    assert f"organization_id = {store._BOUND_ORG}" in start and "?" not in start
+    assert "record_id = CAST(:rid AS uuid)" in start
+    assert "jsonb_exists_any(changes, CAST(:wkeys AS text[]))" in start
 
 
 def test_the_reader_takes_viewer_as_a_required_keyword() -> None:
@@ -298,19 +331,65 @@ def test_one_function_reads_the_history() -> None:
     assert users == ["list_record_changes"]
 
 
-def test_a_viewer_of_an_install_reads_no_actor_and_only_the_installed_keys() -> None:
-    page = store.ChangePage((
-        store.RecordChange(1, "create", OWNER, None, None,
-                           {"amount": {"old": None, "new": 1}, "late": {"old": None, "new": 2}},
-                           NOW),
-        store.RecordChange(2, "update", OWNER, "workflow_run", "run-1",
-                           {"late": {"old": 2, "new": 3}}, NOW),
-    ), 2)
-    only = page.only({"amount"})
-    assert [c.id for c in only.changes] == [1]
-    assert only.changes[0].changes == {"amount": {"old": None, "new": 1}}
-    assert only.changes[0].actor is None and only.changes[0].via_id is None
-    assert only.next == 2
+def test_only_narrows_the_keys_in_the_statement() -> None:
+    """J2a: the installed keys narrow the shown keys in the statement, so an
+    update of a key that the version does not hold is not in the page."""
+    db = _DB(record=_STORED, history=_HISTORY)
+    page = _read(db, AS_OWNER, only={"amount", "bonus"})
+    assert page is not None and [c.id for c in page.changes] == [1, 2]
+    assert db.page_reads()[0]["keys"] == ["amount", "bonus"]
+    assert set(page.changes[0].changes) == {"amount", "bonus"}
+
+
+def test_a_viewer_of_an_install_reads_no_writer() -> None:
+    page = store.ChangePage((store.RecordChange(
+        2, "update", OWNER, "workflow_run", "run-1", {"late": {"old": 2, "new": 3}}, NOW),), 2)
+    out = page.without_writer()
+    assert (out.changes[0].actor, out.changes[0].via_kind, out.changes[0].via_id) == (
+        None, None, None)
+    assert out.changes[0].changes == {"late": {"old": 2, "new": 3}} and out.next == 2
+
+
+# ── The scope start (fix round 1) ───────────────────────────────────────────
+
+#: A slip of E2 that HR moved to E1 at row 3.
+_MOVED = [
+    _row(1, "create", {"employee": {"old": None, "new": "e2@x.test"},
+                       "amount": {"old": None, "new": 10}}),
+    _row(2, "update", {"amount": {"old": 10, "new": 20}}),
+    _row(3, "update", {"employee": {"old": "e2@x.test", "new": "e1@x.test"},
+                       "amount": {"old": 20, "new": 25}}),
+    _row(4, "update", {"note": {"old": None, "new": "moved"}}),
+]
+_MOVED_NOW = {"employee": "e1@x.test", "amount": 25, "note": "moved"}
+
+
+def test_a_viewer_who_got_a_record_by_a_move_reads_from_the_move_on() -> None:
+    page = _read(_DB(record=_MOVED_NOW, history=_MOVED), AS_E1)
+    assert page is not None and [c.id for c in page.changes] == [3, 4]
+    # The row of the move shows only the new values.
+    assert page.changes[0].changes == {"employee": {"new": "e1@x.test"}, "amount": {"new": 25}}
+    for change in page.changes:
+        assert "e2@x.test" not in json.dumps(change.changes)
+        assert 10 not in [v.get("old") for v in change.changes.values()]
+    # An after before the move does not reach the rows before it.
+    early = _read(_DB(record=_MOVED_NOW, history=_MOVED), AS_E1, after=0, limit=1)
+    assert early is not None and [c.id for c in early.changes] == [3]
+
+
+def test_the_owner_and_a_reader_of_all_read_the_whole_history() -> None:
+    for viewer in (AS_OWNER, AS_HR):
+        db = _DB(record=_MOVED_NOW, history=_MOVED)
+        page = _read(db, viewer)
+        assert page is not None and [c.id for c in page.changes] == [1, 2, 3, 4]
+        assert page.changes[2].changes["employee"] == {"old": "e2@x.test", "new": "e1@x.test"}
+        assert not [s for s, _ in db.calls if s == store._CHANGES_SCOPE_START_SQL]
+
+
+def test_a_viewer_who_held_the_record_from_its_create_reads_all() -> None:
+    page = _read(_DB(record=_STORED, history=_HISTORY), AS_E1)
+    assert page is not None and page.changes[0].id == 1
+    assert page.changes[0].changes["amount"] == {"old": None, "new": 10}
 
 
 # ── The door ────────────────────────────────────────────────────────────────
@@ -339,10 +418,11 @@ def hw(world: Any, monkeypatch: Any) -> Any:  # noqa: F811
         7, "update", ANA, None, None, {"site": {"old": "a", "new": "b"}}, NOW),), None)
 
     async def _reader(db: Any, object_id: str, record_id: str, *, package_id: str,
-                      viewer: Any, limit: Any = None, after: Any = None) -> Any:
+                      viewer: Any, limit: Any = None, after: Any = None,
+                      only: Any = None) -> Any:
         world.history_calls.append({"object_id": object_id, "record_id": record_id,
                                     "package_id": package_id, "viewer": viewer,
-                                    "limit": limit, "after": after})
+                                    "limit": limit, "after": after, "only": only})
         store._uuid(record_id, "record_id")
         return world.history_page
 
@@ -368,7 +448,7 @@ def test_a_history_is_class_a_and_it_runs(hw: Any) -> None:
                    "changes": {"site": {"old": "a", "new": "b"}}}
     [call] = hw.history_calls
     assert call == {"object_id": oid, "record_id": rid, "package_id": pid,
-                    "viewer": Viewer(ANA), "limit": 2, "after": 3}
+                    "viewer": Viewer(ANA), "limit": 2, "after": 3, "only": None}
     assert hw.audits[0]["detail"] == {**_H_OUTCOME, "outcome": "ran"}
 
 
@@ -430,4 +510,5 @@ def test_each_record_id_of_the_body_is_bound_to_a_uuid(hw: Any) -> None:
 def test_the_reader_of_the_door_is_new_and_named_once() -> None:
     src = inspect.getsource(invoke._run_object_history)
     assert "list_record_changes" in src and "viewer=viewer" in src
-    assert "only(package.field_keys(obj.name))" in src
+    assert "only=package.field_keys(obj.name) if installed else None" in src
+    assert "page.without_writer() if installed else page" in src

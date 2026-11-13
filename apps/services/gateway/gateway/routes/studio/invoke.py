@@ -118,7 +118,7 @@ be an ``int``, and a bad body is 422 ``query_value_invalid``.
 gate of a get, so a record that the viewer cannot read is 404, as a get is.
 Only the owner reads the history of a deleted record. Each key that the
 viewer may not read leaves ``changes``. A viewer of an install (J2a) reads
-only the keys of the installed version, with no actor and no ``via`` id. The
+only the keys of the installed version, with no actor and no ``via``. The
 answer is ``{history: [{id, op, actor, via_kind, via_id, changes, at}],
 next}``, oldest first. ``next`` is the ``after`` of the next page, or None.
 
@@ -926,7 +926,8 @@ async def _run_object_history(db: Any, package: _App, ref: UsesRef,
     """Read one page of the change history of one record of the object *ref*
     (C4a-2). The body is checked first. The store reads through the gate of a
     get, with the row rules of *viewer*. A viewer of an install (J2a) reads
-    only the keys of the installed version, and no actor."""
+    only the keys of the installed version, and no writer."""
+    installed = isinstance(package, _viewer.InstalledApp)
     try:
         found = _history_input(raw)
         if found is None:
@@ -939,7 +940,8 @@ async def _run_object_history(db: Any, package: _App, ref: UsesRef,
             out.object_missing = True
             return
         page = await objects_store.list_record_changes(
-            db, obj.id, rid, package_id=package.id, viewer=viewer, limit=limit, after=after)
+            db, obj.id, rid, package_id=package.id, viewer=viewer, limit=limit, after=after,
+            only=package.field_keys(obj.name) if installed else None)
     except studio_query.QueryError as exc:
         out.query_error = exc
         return
@@ -950,10 +952,10 @@ async def _run_object_history(db: Any, package: _App, ref: UsesRef,
         return
     if page is None:
         out.missing = True
-    elif isinstance(package, _viewer.InstalledApp):
-        out.history = page.only(package.field_keys(obj.name))
     else:
-        out.history = page
+        # J2a: the store read only the installed keys. A viewer of an install
+        # reads no writer, as ``project_record`` drops it.
+        out.history = page.without_writer() if installed else page
 
 
 #: The executor of each open read, by its verb.
