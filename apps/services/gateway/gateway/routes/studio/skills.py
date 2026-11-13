@@ -1,6 +1,6 @@
 """The skill routes of AI Studio (STU-F2a, ``ai_studio.md`` §7 and §14 F2a).
 
-Six routes over the F1 store, ``gateway/studio/skills_store.py``. They
+Eight routes over the F1 store, ``gateway/studio/skills_store.py``. They
 register on the router of ``actions.py``, as ``workflows/copilot.py`` does on
 the router of ``workflows/core.py``. So ``main.py`` mounts no second router,
 and the gate ``require_feature_router("studio")`` (J1) and the prefix
@@ -27,7 +27,8 @@ and each refusal is 422:
    holds at most :data:`MAX_ACTIONS` (the WS-67 pack cap). Class B and C
    actions are legal in a draft.
 
-All three run BEFORE the store session opens. The catalog read opens its own
+All three run BEFORE the store session opens (the undo runs them inside its
+session, after the row lock, because it must check the version it just read). The catalog read opens its own
 session (``actions.catalog_rows``), so a request never holds two.
 
 **The states.** :data:`TRANSITIONS` holds each legal move. A move to the
