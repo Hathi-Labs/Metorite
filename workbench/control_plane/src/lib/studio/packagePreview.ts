@@ -126,6 +126,8 @@ export function objectBoardBlock(
   canUpdate = true,
   /** The lane field that the member picked in the list bar (AF-4). */
   groupKey: string | null = null,
+  /** The start of the record link of a card (STU-AF5). */
+  openBase?: string,
 ): ReturnType<typeof boardBlock> | null {
   const groupBy = boardGroupKey(fields, computed, groupKey);
   if (!groupBy) return null;
@@ -136,6 +138,7 @@ export function objectBoardBlock(
   return boardBlock({
     fields, groupBy, ...(titleKey ? { titleField: titleKey } : {}), cardFields,
     ...(canUpdate ? { update: `object:${object.name}.update` } : {}), title: object.label ?? object.name,
+    ...(openBase ? { openBase } : {}),
   }, source);
 }
 

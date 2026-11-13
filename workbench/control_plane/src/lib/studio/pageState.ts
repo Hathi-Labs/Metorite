@@ -24,6 +24,14 @@ export interface PageState {
   sort?: string;
   layout?: "table" | "board";
   group?: string;
+  /**
+   * The record page (STU-AF5): the record id `rec`, its object `ro`, its tab `rtab` and the full
+   * page `full`. `rec` and `ro` stand or fall together. `rtab` and `full` need a record.
+   */
+  rec?: string;
+  ro?: string;
+  rtab?: string;
+  full?: boolean;
 }
 
 export const EMPTY_PAGE_STATE: PageState = { selected: null, filters: {}, tab: null };
@@ -41,6 +49,7 @@ const FILTER_PREFIX = "f.";
 const TAB_ID = /^[a-z][a-z0-9_-]{0,47}$/;
 const SORT_VALUE = /^-?[a-z][a-z0-9_]{0,47}$/;
 const FILTER_NAME = /^[a-z][a-z0-9_]{0,47}$/;
+const RECORD_ID = /^[A-Za-z0-9._:-]{1,64}$/;
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 // eslint-disable-next-line no-control-regex
@@ -66,6 +75,12 @@ export function encodePageState(state: PageState): string {
   if (state.sort) p.set("sort", state.sort);
   if (state.layout) p.set("layout", state.layout);
   if (state.group) p.set("group", state.group);
+  if (state.rec && state.ro) {
+    p.set("rec", state.rec);
+    p.set("ro", state.ro);
+    if (state.rtab) p.set("rtab", state.rtab);
+    if (state.full) p.set("full", "1");
+  }
   for (const k of Object.keys(state.filters).sort()) {
     const v = state.filters[k];
     if (k && v) p.set(FILTER_PREFIX + k, v);
@@ -95,6 +110,13 @@ export function boundPageState(state: PageState, page?: PageTabs): PageState {
     if (typeof state.sort === "string" && SORT_VALUE.test(state.sort)) out.sort = state.sort;
     if (state.layout === "table" || state.layout === "board") out.layout = state.layout;
     if (typeof state.group === "string" && FILTER_NAME.test(state.group)) out.group = state.group;
+    // The record page: an id and an object together, or no record at all.
+    if (typeof state.rec === "string" && RECORD_ID.test(state.rec) && typeof state.ro === "string" && FILTER_NAME.test(state.ro)) {
+      out.rec = state.rec;
+      out.ro = state.ro;
+      if (typeof state.rtab === "string" && TAB_ID.test(state.rtab)) out.rtab = state.rtab;
+      if (state.full === true) out.full = true;
+    }
     const tab = state.tab;
     if (typeof tab === "string" && TAB_ID.test(tab)) {
       const declared = page ? (page.tabs ?? []).some((t) => t.id === tab) : true;
@@ -117,6 +139,7 @@ export function boundPageState(state: PageState, page?: PageTabs): PageState {
     if (encodePageState(out).length > PAGE_STATE_LIMITS.encoded) out.filters = Object.create(null);
     // The filters left, and the encoded string is still too long: the bar keys leave too.
     if (encodePageState(out).length > PAGE_STATE_LIMITS.encoded) { delete out.q; delete out.sort; delete out.layout; delete out.group; }
+    if (encodePageState(out).length > PAGE_STATE_LIMITS.encoded) { delete out.rec; delete out.ro; delete out.rtab; delete out.full; }
   } catch {
     return emptyState();
   }
@@ -138,7 +161,8 @@ export function decodePageState(
     }
     return boundPageState({ selected: p.get("sel") || null, filters, tab: p.get("tab") || null, page: p.get("page") || undefined,
       q: p.get("q") || undefined, sort: p.get("sort") || undefined,
-      layout: (p.get("layout") || undefined) as PageState["layout"], group: p.get("group") || undefined }, page);
+      layout: (p.get("layout") || undefined) as PageState["layout"], group: p.get("group") || undefined,
+      rec: p.get("rec") || undefined, ro: p.get("ro") || undefined, rtab: p.get("rtab") || undefined, full: p.get("full") === "1" }, page);
   } catch {
     return emptyState();
   }
