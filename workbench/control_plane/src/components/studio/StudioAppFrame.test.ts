@@ -46,4 +46,11 @@ describe("StudioAppFrame", () => {
     expect(page).toContain("bare = false");
     expect(read("../../app/studio/page-preview/page.tsx")).not.toContain("bare");
   });
+
+  it("keeps the owner verbs out of the phone bar", () => {
+    const app = read("../../app/studio/package-preview/AppFrame.tsx");
+    expect(app).toContain("useViewMode");
+    expect(app).toContain("const actions = isMobile ? undefined : ownerBar;");
+    expect(app).toContain("{isMobile ? ownerBar : null}");
+  });
 });
