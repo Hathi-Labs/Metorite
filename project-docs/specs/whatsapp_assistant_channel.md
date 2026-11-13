@@ -498,8 +498,12 @@ before the first part of its reply goes out, and nothing runs it again.
 - **The sweep.** Every minute, a sweep binds each org of
   `WHATSAPP_ASSISTANT_ORGS` in turn, so it needs no new SECURITY DEFINER
   function. It runs a row again when the row stayed `received` or `running` for
-  more than 5 minutes, for at most 3 tries. A row older than 24 hours becomes
+  more than 8 minutes (`STALE_S`), for at most 3 tries. A row older than 24 hours becomes
   `expired` and gets no reply, because the reply window has closed.
+- **The run's cap.** One run has 7 minutes at most (`RUN_TIMEOUT_S`). That
+  holds one long read of up to 180 s and its model calls (HRD-6, 2026-11-13).
+  The cap stays shorter than `STALE_S`, so the sweep never takes a run that
+  still works. Before 2026-11-13 the two caps were 4 and 5 minutes.
 
 **Link redemption, as WAC-2 builds it** *(set 2026-10-09 from the WAC-2 audit)*:
 

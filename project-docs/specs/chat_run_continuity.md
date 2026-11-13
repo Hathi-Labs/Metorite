@@ -1241,7 +1241,10 @@ slice, a slow tool ran with no word, or it failed at its cap.
 2. A tool can send its own line first through
    `acb_skills.progress_notice.emit_progress`. The timer then sends nothing for
    that call. Each call gets one line at most.
-3. While the line of one call shows, a parallel call sends no line.
+3. While the line of one call shows, the line of a parallel call waits.
+   When the showing call ends, the oldest call that waits and still runs gets
+   its line, once. A call that ends while it waits gets no line. So two lines
+   never show at once.
 4. A delegation tool sends no line, because each tool of the delegated run
    has its own timer. A tool that waits for the member sends no line, because
    its card is the sign.
@@ -1276,7 +1279,9 @@ reload applies a change (`docs/flag_reload.md`). A production flip is gate
 `enforcement-flip`.
 
 **The caps on the path of a long tool call** (2026-11-13). None of the
-general caps is under 200 s, so this slice raises none.
+general caps is under 200 s. The WhatsApp run's cap holds the whole run, so
+this slice raises it together with the stale time of its sweep.
+`whatsapp_assistant_channel.md` §5.4 holds that rule.
 
 | Cap | Where | Value | On a 3-minute tool |
 |---|---|---|---|
@@ -1291,7 +1296,8 @@ general caps is under 200 s, so this slice raises none.
 | Node `fetch` (undici) body gap | library default | 300 s with no byte | Holds |
 | Caddy `reverse_proxy` | `deploy/hostinger/caddy/Caddyfile:85` | No read or write timeout | Holds |
 | Process heartbeat | `orchestrator/run_liveness.py:91` | 30 s | Holds while the event loop turns. A tool that blocks the loop fails it |
-| WhatsApp run | `whatsapp_channel/bot_run.py:299` | 240 s for the whole run | At risk: a 180 s read and its model calls come near it |
+| WhatsApp run | `whatsapp_channel/bot_run.py:302` | 420 s for the whole run (was 240 s) | Holds one 180 s read and its model calls |
+| WhatsApp sweep stale time | `whatsapp_channel/bot_run.py:292` | 480 s (was 300 s), longer than the run's cap | A run that still works is never taken |
 | The CRM tool's HTTP read | `acb_skills/crm_tools.py:320` | 30 s | Under 200 s. The CRM long mode (HRD-6 part 2) owns it |
 | The CRM total's statement | `gateway/routes/crm/aggregate.py:254` | 10 s | Under 200 s. HRD-6 part 2 owns it |
 

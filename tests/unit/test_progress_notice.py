@@ -235,18 +235,84 @@ def test_a_tool_line_first_stops_the_timer_line(flag_on):
     assert lines[0]["value"]["tool_call_id"] == "c1-0"
 
 
-def test_parallel_slow_calls_do_not_stack_lines(flag_on):
+class _TimelineQueue(asyncio.Queue):
+    """A run queue that writes each line into a shared timeline, with the
+    number of lines that showed when it went."""
+
+    def __init__(self, timeline: list[Any]) -> None:
+        super().__init__()
+        self.timeline = timeline
+
+    def put_nowait(self, item: Any) -> None:
+        showing = len(getattr(self, "_progress_notice_open", None) or ())
+        self.timeline.append(("line", item["value"].get("tool_call_id"),
+                              item["value"]["text"], showing))
+        super().put_nowait(item)
+
+
+def _parallel(waits: dict[str, float], own: dict[str, str] | None = None) -> list[Any]:
+    """Run one model turn that calls ``slow_read`` once for each part, in
+    parallel. Each call waits its own time. Returns the shared timeline."""
+    timeline: list[Any] = []
+    own = own or {}
+
     async def slow_read(part: str) -> str:
         """A slow read."""
-        await asyncio.sleep(FAST * 6)
+        if part in own:
+            await asyncio.sleep(FAST * 2)  # past the timer of a parallel call
+            timeline.append(("own", part, await pn.emit_progress(own[part])))
+        await asyncio.sleep(waits[part])
+        timeline.append(("end", part))
         return part
 
     client = ScriptedClient([
-        ("calls", [("slow_read", {"part": "a"}), ("slow_read", {"part": "b"})]),
+        ("calls", [("slow_read", {"part": p}) for p in waits]),
         ("text", "Done."),
     ])
     view = _view(Agent(client=client, name="probe", tools=[slow_read]))
-    assert len(_lines(asyncio.run(_run_with_queue(view)))) == 1
+
+    async def run() -> None:
+        queue = _TimelineQueue(timeline)
+        token = executor._active_run_queue.set(queue)
+        try:
+            await view.run("hi")
+        finally:
+            executor._active_run_queue.reset(token)
+
+    asyncio.run(run())
+    return timeline
+
+
+def test_parallel_slow_calls_do_not_stack_lines(flag_on):
+    """A ends while B still runs: B gets ONE line, and only after A ended."""
+    timeline = _parallel({"a": FAST * 6, "b": FAST * 14})
+    lines = [t for t in timeline if t[0] == "line"]
+    assert [t[1] for t in lines] == ["c1-0", "c1-1"], "one line for each call"
+    assert all(t[3] == 0 for t in lines), "no line goes while another shows"
+    assert timeline.index(("end", "a")) < timeline.index(lines[1])
+    assert timeline.index(lines[1]) < timeline.index(("end", "b"))
+
+
+def test_a_call_that_ends_before_the_timer_never_gets_a_line(flag_on):
+    timeline = _parallel({"a": FAST * 6, "b": FAST / 5})
+    assert [t[1] for t in timeline if t[0] == "line"] == ["c1-0"]
+
+
+def test_a_call_that_ends_while_it_waits_gets_no_line(flag_on):
+    """B's timer fired while A's line showed, and B ended before A did."""
+    timeline = _parallel({"a": FAST * 14, "b": FAST * 4})
+    assert [t[1] for t in timeline if t[0] == "line"] == ["c1-0"]
+
+
+def test_a_waiting_tool_line_keeps_its_own_words(flag_on):
+    timeline = _parallel({"a": FAST * 6, "b": FAST * 14},
+                         own={"b": "Adding up 31 totals. This can take two minutes."})
+    assert ("own", "b", False) in timeline, "it waits while A's line shows"
+    lines = [t for t in timeline if t[0] == "line"]
+    assert [(t[1], t[2]) for t in lines] == [
+        ("c1-0", pn.LONG_READ_TEXT),
+        ("c1-1", "Adding up 31 totals. This can take two minutes."),
+    ]
 
 
 def test_a_later_slow_call_gets_its_own_line(flag_on):
@@ -323,6 +389,17 @@ def test_whatsapp_gets_the_line_as_its_early_message_once(flag_on):
     wa = asyncio.run(run())
     assert sent == [pn.LONG_READ_TEXT], "one early message in a reply"
     assert wa.notified is True, "the channel's own 20 s line then stays quiet"
+
+
+def test_the_whatsapp_run_holds_a_long_read_and_the_sweep_never_takes_it():
+    """HRD-6: one run holds a 180 s read and its model calls. The sweep's
+    stale time stays longer than the run's cap, so it never takes a run that
+    still works (``bot_run.py``, ``whatsapp_assistant_channel.md`` §5.4)."""
+    from gateway.routes.whatsapp_channel import bot_run
+
+    assert bot_run.RUN_TIMEOUT_S >= 180 + 4 * 60
+    assert bot_run.RUN_TIMEOUT_S < bot_run.STALE_S
+    assert (bot_run.RUN_TIMEOUT_S, bot_run.STALE_S) == (7 * 60, 8 * 60)
 
 
 # ── 7. The fold and the profile mark ────────────────────────────────────────

@@ -22,8 +22,10 @@ Rules that bind:
 3. **At most one line for each call.** A tool may send its own line first
    with :func:`emit_progress`. The timer then sends nothing for that call.
 4. **Parallel calls do not stack lines.** While the line of one call shows,
-   the line of a parallel call is not sent. The mark lives on the run's queue,
-   as the mark of ``show_in_app`` does, so it dies with the turn.
+   the line of a parallel call waits. When the showing call ends, the oldest
+   call that waits and still runs gets its line, once. A call that ends while
+   it waits gets none. The marks live on the run's queue, as the mark of
+   ``show_in_app`` does, so they die with the turn.
 5. **Exempt:** the delegation tools (each tool of the delegated run has its
    own timer) and the tools that wait for the member, whose card is the sign.
 6. **Dark.** ``CHAT_PROGRESS_NOTICE_ORGS`` (a comma list of organization ids,
@@ -75,6 +77,10 @@ WAITS_FOR_MEMBER: frozenset[str] = frozenset({
 #: The mark on the run's queue: the keys of the calls whose line shows now.
 _OPEN_ATTR = "_progress_notice_open"
 
+#: The second mark on the run's queue: the calls whose line waits, oldest
+#: first, while another call's line shows.
+_WAIT_ATTR = "_progress_notice_waiting"
+
 #: The notice tasks of the WhatsApp path, kept so none is lost to the GC.
 _TASKS: set[asyncio.Task[Any]] = set()
 
@@ -112,7 +118,7 @@ def progress_notice_on(org: object = None) -> bool:
 
 # ── The state of one call ────────────────────────────────────────────────────
 
-@dataclass
+@dataclass(eq=False)
 class _Call:
     """One tool call, from its start to its end."""
 
@@ -122,7 +128,7 @@ class _Call:
     queue: Any = None
     #: The open WhatsApp run, read at the start of the call, or None.
     channel: Any = None
-    #: True once a line went for this call, or a line of another call showed.
+    #: True once this call has its line: it went, or it waits (rule 4).
     sent: bool = False
     #: True once the call ended. A late timer then sends nothing.
     ended: bool = False
@@ -130,6 +136,8 @@ class _Call:
     shown: bool = False
     #: True when :class:`ProgressNotice` made this state, and so closes it.
     managed: bool = False
+    #: The line that waits while another call's line shows, or None.
+    due_text: str | None = None
     key: str = field(default_factory=lambda: uuid.uuid4().hex)
 
 
@@ -188,24 +196,37 @@ async def _notify(run: Any, text: str) -> bool:
     return sent
 
 
+def _put(call: _Call, text: str, showing: set[str]) -> None:
+    """Put the line of *call* on its run's queue, and mark it as showing."""
+    value: dict[str, Any] = {"text": text}
+    if call.call_id:
+        value["tool_call_id"] = call.call_id
+    call.queue.put_nowait({"type": "CUSTOM", "name": EVENT, "value": value})
+    if call.managed:
+        showing.add(call.key)
+        setattr(call.queue, _OPEN_ATTR, showing)
+        call.shown = True
+
+
 def _to_queue(call: _Call, text: str) -> bool:
-    """Put the line of *call* on the run's queue, unless another line shows."""
+    """Put the line of *call* on the run's queue now. While another call's
+    line shows, a managed call waits instead (rule 4), and this returns False."""
     queue = call.queue
     if queue is None:
         return False
     try:
         showing: set[str] = getattr(queue, _OPEN_ATTR, None) or set()
         if showing:
-            # Another call's line shows now. Parallel calls do not stack.
+            # Another call's line shows now. Parallel calls do not stack, so
+            # this line waits until that call ends (:func:`_close`).
+            if call.managed and not call.ended:
+                call.due_text = text
+                waiting: list[_Call] = getattr(queue, _WAIT_ATTR, None) or []
+                if call not in waiting:
+                    waiting.append(call)
+                setattr(queue, _WAIT_ATTR, waiting)
             return False
-        value: dict[str, Any] = {"text": text}
-        if call.call_id:
-            value["tool_call_id"] = call.call_id
-        queue.put_nowait({"type": "CUSTOM", "name": EVENT, "value": value})
-        if call.managed:
-            showing.add(call.key)
-            setattr(queue, _OPEN_ATTR, showing)
-            call.shown = True
+        _put(call, text, showing)
     except Exception as exc:  # a notice never fails the call
         _log.warning("progress_notice.queue_failed", error=type(exc).__name__)
         return False
@@ -236,7 +257,8 @@ async def emit_progress(text: str) -> bool:
     A tool calls it before a long wait, for example "Adding up 31 totals.
     This can take two minutes." The line replaces the timer's line for this
     call, because each call gets at most one line. Returns True when the line
-    went. Never raises.
+    went now. While another call's line shows, the line waits and goes when
+    that call ends, and this returns False. Never raises.
     """
     if not progress_notice_on():
         return False
@@ -248,7 +270,13 @@ async def emit_progress(text: str) -> bool:
         # No middleware on this run (a Copilot SDK agent, a direct call): a
         # call of its own, which no timer follows.
         call = _new_call(None, managed=False)
-    if call.sent or call.ended:
+    if call.ended:
+        return False
+    if call.sent:
+        if call.due_text and not call.shown:
+            # The timer's line waits behind another call's line. It has not
+            # shown, so the tool's own words take its place.
+            call.due_text = line
         return False
     channel = call.channel
     if channel is not None:
@@ -262,16 +290,33 @@ async def emit_progress(text: str) -> bool:
 
 
 def _close(call: _Call) -> None:
-    """End *call*: its line no longer blocks the line of a parallel call."""
+    """End *call*. A call that waits gives up its place, and gets no line.
+
+    When the line of *call* showed and no other line shows now, the oldest
+    call that waits and still runs gets its line, once (rule 4).
+    """
     call.ended = True
-    if not call.shown or call.queue is None:
+    queue = call.queue
+    if queue is None:
         return
     try:
-        showing = getattr(call.queue, _OPEN_ATTR, None)
+        waiting: list[_Call] = getattr(queue, _WAIT_ATTR, None) or []
+        if call in waiting:
+            waiting.remove(call)
+        if not call.shown:
+            return
+        showing: set[str] = getattr(queue, _OPEN_ATTR, None) or set()
+        showing.discard(call.key)
         if showing:
-            showing.discard(call.key)
-    except Exception:
-        pass
+            return
+        while waiting:
+            nxt = waiting.pop(0)
+            if nxt.ended or nxt.shown or not nxt.due_text:
+                continue
+            _put(nxt, nxt.due_text, showing)
+            break
+    except Exception as exc:  # a notice never fails the call
+        _log.warning("progress_notice.close_failed", error=type(exc).__name__)
 
 
 # ── The middleware ───────────────────────────────────────────────────────────

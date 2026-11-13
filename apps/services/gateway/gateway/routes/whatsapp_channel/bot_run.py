@@ -28,7 +28,7 @@ The path of one text from a linked phone:
    most 4096 characters.
 4. **The sweep** (:func:`sweep_once`, every minute). It binds each org of the
    allowlist in turn and takes the oldest waiting row of each thread. A row
-   that stayed ``received`` or ``running`` for 5 minutes runs again, at most 3
+   that stayed ``received`` or ``running`` for 8 minutes runs again, at most 3
    times. A row that used its 3 tries gets the general failure text once. A
    row older than 24 hours becomes ``expired`` and gets no reply.
 
@@ -36,7 +36,7 @@ The path of one text from a linked phone:
 Just before the first part of a reply goes out, the row becomes ``sending``,
 in the database. Nothing runs a ``sending`` row again, and nothing sends it
 the general text: the sweep closes it as ``replied`` (``send_unconfirmed``)
-after 5 minutes. A crash in the middle of a long reply can lose its tail, and
+after 8 minutes. A crash in the middle of a long reply can lose its tail, and
 it never sends a part twice. A failure BEFORE ``sending`` gives the row back
 as ``received`` with its try counted, so the sweep runs it again. A first part
 that SURELY did not reach the member (Meta answered 4xx, or the connection
@@ -287,16 +287,19 @@ DOCUMENTS_RULE = (
 
 #: WhatsApp's limit for one text message.
 MAX_CHARS = 4096
-#: A row that waits this long gets a run again from the sweep.
-STALE_S = 5 * 60
+#: A row that waits this long gets a run again from the sweep. Longer than
+#: ``RUN_TIMEOUT_S``, so the sweep never takes a run that still works.
+STALE_S = 8 * 60
 #: The most runs one message gets.
 MAX_TRIES = 3
 #: The reply window. An older row gets no reply.
 EXPIRE_S = 24 * 3600
 #: A message this long after the thread's last activity starts a new thread.
 THREAD_IDLE_S = 24 * 3600
-#: Shorter than ``STALE_S``, so the sweep never takes a run that still works.
-RUN_TIMEOUT_S = 4 * 60
+#: The cap of one whole run. Shorter than ``STALE_S``, so the sweep never takes
+#: a run that still works. It holds one long read of up to 180 s and the model
+#: calls around it (HRD-6, ``chat_run_continuity.md`` §4.11).
+RUN_TIMEOUT_S = 7 * 60
 #: The prior turns that the run sees.
 HISTORY_TURNS = 20
 SWEEP_EVERY_S = 60
