@@ -56,11 +56,11 @@ c. The time left of the turn, from the clock of step 2. None left: the turn
    stops.
 d. The meter for the new run id, BEFORE the call, inside
    :func:`_settle_limit`. The default meter is :func:`console_meter`
-   (AUTO-8b-2d, see "The meter"). A door error raises
-   :class:`CostReadFailed`: the turn makes NO model call, gives up with
-   ``CostReadFailed`` and logs ``headless_turn.cost_read_failed`` at error.
-   A meter that does not answer in time, or answers no number, raises
-   :class:`NoCostReader`: no call, ``NoCostReader``, and
+   (AUTO-8b-2d, see "The meter"). A door error or a bad answer of the door
+   raises :class:`CostReadFailed`: the turn makes NO model call, gives up
+   with ``CostReadFailed`` and logs ``headless_turn.cost_read_failed`` at
+   error. A meter that does not answer in time, or returns a value that is
+   not a number, raises :class:`NoCostReader`: no call, ``NoCostReader``, and
    ``headless_turn.no_cost_reader`` at error. After an earlier round made a
    call, each of those failures gives up with ``MeterFailed`` and logs
    ``headless_turn.meter_failed``, because a reader did answer before.
@@ -76,6 +76,15 @@ g. The meter again. The cost of the round is the change. A meter that
    fails after the call, does not answer in time or answers no number
    charges the rest of the goal's budget (the cap minus the credits used).
    So the goal blocks with ``cap_reached``: fail closed for money.
+   ⚠️ A round that the time cap cut, or whose call raised, reads NO meter
+   and charges the rest too (AUTO-8b-2d), and logs
+   ``headless_turn.round_cut``. The Console route of a call is a sync route
+   in a thread pool, so a cancel here does not stop it. It can finish the
+   provider call and write its usage row AFTER a read, and a later turn
+   would then get room that the goal does not have. The trade-off: a cut
+   turn gives up the rest of that goal's budget. The member who owns the
+   goal can raise its cap. A round whose call raised still gives up with
+   ``TurnFailed``, after the charge and the report.
 h. ``goal_store.record_round(..., clear_job_id=True)``: the round and the
    end of the mark are ONE write. A ``StaleGoal`` reads the goal again and
    records the round once on the new version, so its cost is not lost. An
@@ -481,6 +490,28 @@ def _proven(member: str) -> bool:
             and bound == str(member or "").strip().lower())
 
 
+_HTTP_STATUS = re.compile(r"HTTP ([1-5])[0-9]{2}")
+
+
+def _outage_code(message: str) -> str:
+    """A short code of an outage of the door: ``Unwired``, ``Unavailable
+    HTTP <status>`` (5xx, 401, 408 or 429) or ``Unreachable`` (the network).
+    It keeps the status only, never a body or an address."""
+    head = message.strip()
+    if head == "unwired":
+        return "Unwired"
+    found = _HTTP_STATUS.fullmatch(head)
+    return f"Unavailable {found.group(0)}" if found else "Unreachable"
+
+
+def status_class(code: str) -> str:
+    """The HTTP status class in the code of a :class:`CostReadFailed`
+    (``4xx`` or ``5xx``), or ``none``. So a 403 (a key with no
+    ``billing_read``) and an outage read differently in the log."""
+    found = _HTTP_STATUS.search(code)
+    return f"{found.group(1)}xx" if found else "none"
+
+
 async def console_meter(org: str, member: str, run_id: str) -> Decimal:
     """The default meter (AUTO-8b-2d): the credits that run *run_id* spent,
     read at the Console door ``POST /registry/usage/run`` as *member*.
@@ -494,15 +525,16 @@ async def console_meter(org: str, member: str, run_id: str) -> Decimal:
     Each door error raises :class:`CostReadFailed`: no proven member, an
     unwired box, a status with no answer, a refusal (400, 403, 409 or 422),
     and an answer that is not a string with 4 places. A failure never reads
-    as 0, so no call runs free."""
+    as 0, so no call runs free. The code of the error names the HTTP status,
+    never the body (:func:`_outage_code`)."""
     from acb_auth.console_resolve import ConsoleBillingUnavailable, run_spend_on_console
 
     if not _proven(member):
         raise CostReadFailed("NoProvenMember")
     try:
         status, body = await run_spend_on_console(actor_email=member, run_id=run_id)
-    except ConsoleBillingUnavailable:
-        raise CostReadFailed("ConsoleUnavailable") from None
+    except ConsoleBillingUnavailable as exc:
+        raise CostReadFailed(_outage_code(str(exc))) from None
     if status != 200:
         raise CostReadFailed(f"HTTP {status}")
     raw = body.get("credits")
@@ -747,7 +779,8 @@ class HeadlessTurn:
             await _give_up(org, claim, NO_READER)
             return
         except CostReadFailed as exc:
-            _log.error("headless_turn.cost_read_failed", error=str(exc))
+            _log.error("headless_turn.cost_read_failed", error=str(exc),
+                       status_class=status_class(str(exc)))
             await _give_up(org, claim, COST_READ_FAILED)
             return
         except MeterFailed:
@@ -799,11 +832,19 @@ class HeadlessTurn:
                 else:
                     failure = exc
             guard.progress()
-            cost = await self._cost(org, member, run_id, before, goal, deadline)
+            if timed_out or failure is not None:
+                # AUTO-8b-2d: a cut or failed call can still write its usage
+                # row AFTER a read, so the round charges the rest (cost None).
+                _log.warning("headless_turn.round_cut", goal_id=goal.id,
+                             error="TimeCap" if timed_out else type(failure).__name__)
+                cost = None
+            else:
+                cost = await self._cost(org, member, run_id, before, goal, deadline)
             recorded, stale = await self._record(org, member, goal, cost, deadline)
             if recorded is not None and recorded.block_code == "cap_reached":
                 await self._tell(org, member, recorded)
-                return TurnEnd("cap_reached", calls)
+                if failure is None:
+                    return TurnEnd("cap_reached", calls)
             if failure is not None:
                 raise TurnFailed(type(failure).__name__) from failure
             if stale:

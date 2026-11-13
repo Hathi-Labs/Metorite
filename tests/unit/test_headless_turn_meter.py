@@ -239,28 +239,35 @@ def test_the_meter_reads_only_for_the_proven_member(world, monkeypatch, how) -> 
         asyncio.run(go())
 
 
-#: A Console answer, and the code of the ``CostReadFailed`` that it gives.
+#: A Console answer, the code of the ``CostReadFailed`` that it gives, and
+#: the status class that the log line names. The code holds the status only,
+#: never the body, so a 403 (a key with no ``billing_read``) and an outage
+#: read differently.
 _DOOR_ERRORS = {
-    "org_slug_400": ((400, {"detail": "may not name an organization"}), "HTTP 400"),
-    "not_a_member_403": ((403, {"detail": "not an admin on this deployment"}), "HTTP 403"),
-    "two_orgs_409": ((409, {"detail": "more than one organization"}), "HTTP 409"),
-    "bad_body_422": ((422, {"detail": []}), "HTTP 422"),
-    "outage_503": ((503, {}), "ConsoleUnavailable"),
-    "network": (httpx.ConnectError("refused"), "ConsoleUnavailable"),
-    "a_float": ((200, {"credits": 7.5}), "BadAnswer"),
-    "a_negative": (_credits("-1.0000"), "BadAnswer"),
-    "two_places": (_credits("7.50"), "BadAnswer"),
-    "no_credits": ((200, {}), "BadAnswer"),
+    "org_slug_400": ((400, {"detail": "may not name an organization"}), "HTTP 400", "4xx"),
+    "not_a_member_403": ((403, {"detail": "not an admin on this deployment"}), "HTTP 403",
+                         "4xx"),
+    "two_orgs_409": ((409, {"detail": "more than one organization"}), "HTTP 409", "4xx"),
+    "bad_body_422": ((422, {"detail": []}), "HTTP 422", "4xx"),
+    "outage_503": ((503, {"detail": "a secret"}), "Unavailable HTTP 503", "5xx"),
+    "bad_key_401": ((401, {}), "Unavailable HTTP 401", "4xx"),
+    "network": (httpx.ConnectError("refused"), "Unreachable", "none"),
+    "a_float": ((200, {"credits": 7.5}), "BadAnswer", "none"),
+    "a_negative": (_credits("-1.0000"), "BadAnswer", "none"),
+    "two_places": (_credits("7.50"), "BadAnswer", "none"),
+    "no_credits": ((200, {}), "BadAnswer", "none"),
 }
 
 
 @pytest.mark.parametrize("case", sorted(_DOOR_ERRORS))
 def test_each_door_error_raises_and_never_reads_as_zero(world, monkeypatch, case) -> None:
-    answer, code = _DOOR_ERRORS[case]
+    answer, code, klass = _DOOR_ERRORS[case]
     _wire(monkeypatch, Console(answer))
     with pytest.raises(ht.CostReadFailed) as caught:
         _as(ANA, lambda: ht.console_meter("org-1", ANA, str(uuid.uuid4())))
     assert str(caught.value) == code
+    assert ht.status_class(code) == klass
+    assert "secret" not in code
 
 
 # ── The turn with the real meter ────────────────────────────────────────────
@@ -273,8 +280,10 @@ def test_a_door_error_before_the_call_makes_no_call(world, monkeypatch, case) ->
     if case == "unwired":
         monkeypatch.setattr(world.settings, "customer_console_deployment_key", "")
         _no_client(monkeypatch)
+        code, klass = "Unwired", "none"
     else:
         _wire(monkeypatch, Console(_DOOR_ERRORS[case][0]))
+        code, klass = _DOOR_ERRORS[case][1:]
     goal = world.goals.add()
     runner = QuietRunner()
     with structlog.testing.capture_logs() as caps:
@@ -284,8 +293,9 @@ def test_a_door_error_before_the_call_makes_no_call(world, monkeypatch, case) ->
     assert world.jobs.given_up == [(claim.id, ht.COST_READ_FAILED)]
     assert ht.COST_READ_FAILED.startswith("CostReadFailed:")
     assert ht.COST_READ_FAILED not in (ht.NO_READER, ht.METER_FAILED)
-    lines = [c["log_level"] for c in caps if c["event"] == "headless_turn.cost_read_failed"]
-    assert lines == ["error"]
+    lines = [(c["log_level"], c["error"], c["status_class"]) for c in caps
+             if c["event"] == "headless_turn.cost_read_failed"]
+    assert lines == [("error", code, klass)]
 
 
 def test_a_door_error_before_a_later_round_gives_meter_failed(world, monkeypatch) -> None:
@@ -322,6 +332,42 @@ def test_a_door_error_after_the_call_charges_the_rest(world, monkeypatch, after)
     lines = [(c["log_level"], c["error"]) for c in caps
              if c["event"] == "headless_turn.cost_unknown"]
     assert lines == [("error", "CostReadFailed")]
+
+
+class CutRunner:
+    """A call that the time cap cuts. It records its run id and never ends."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def __call__(self, message: str, *, run_id: str, org: str, member: str,
+                       tools: tuple[str, ...]) -> dict[str, Any]:
+        self.calls.append(run_id)
+        await asyncio.sleep(30)
+        return {"answer": "never"}
+
+
+def test_a_cut_call_reads_no_door_and_charges_the_rest(world, monkeypatch) -> None:
+    """The P1 of the AUTO-8b-2d review, with the REAL meter. The time cap cuts
+    the call. The Console route runs on in its thread pool and writes the row
+    later, so the door at the cut still says "0.0000" and a later read says
+    "4.0000". The round must not read the door: it charges the rest of the
+    budget, and the goal blocks with ``cap_reached``.
+
+    Mutation M13 (read the meter after a cut) turns this red: the round then
+    reads "0.0000" and records 0, and the goal stays active."""
+    console = Console(_credits("0.0000"), _credits("0.0000"), _credits("4.0000"))
+    _wire(monkeypatch, console)
+    goal = world.goals.add(cost_cap="10", used="3")
+    runner, reports = CutRunner(), Reports()
+    claim = _run(_turn(world, runner, report=reports, go_on=_always, time_cap_s=0.3,
+                       clock=lambda: 0.0), _payload(goal))
+    done = world.goals.rows[goal.id]
+    assert len(runner.calls) == 1
+    assert len(console.seen) == 1, "the round read the door after the cut"
+    assert (done.block_code, done.cost_used_credits, done.job_id) == (
+        "cap_reached", Decimal("10"), None)
+    assert len(reports.seen) == 1 and world.jobs.done == [claim.id]
 
 
 def test_a_round_records_the_number_of_the_door(world, monkeypatch) -> None:

@@ -590,7 +590,9 @@ goal, with no person present. `proactive_agent.md` §4.4 holds the design.
   before the first call makes no call: the job gives up with
   `CostReadFailed`, and `headless_turn.cost_read_failed` logs at error. A
   meter that does not answer in time gives up with `NoCostReader`. A door
-  error after a call charges the rest of the budget.
+  error after a call charges the rest of the budget. A round that the time
+  cap cut, or whose call raised, reads no meter and charges the rest too,
+  because the Console can write the row of that call after a read.
 
 | Event | Level | When |
 |---|---|---|
@@ -598,7 +600,8 @@ goal, with no person present. `proactive_agent.md` §4.4 holds the design.
 | `headless_turn.ended` | info | A turn ended, with its outcome and its count of rounds |
 | `headless_turn.cap_reached` | info | A round moved the goal to its cap. One line for each goal |
 | `headless_turn.no_cost_reader` | error | The meter did not answer in time, or answered no number, before the first call. So the turn made no model call |
-| `headless_turn.cost_read_failed` | error | The Console spend door failed before the first call: no proven member, no wiring, no answer, a refusal or a bad answer. The turn made no model call, and the job gives up with `CostReadFailed` |
+| `headless_turn.cost_read_failed` | error | The Console spend door failed before the first call: no proven member, no wiring, no answer, a refusal or a bad answer. The line names the code and `status_class` (`4xx`, `5xx` or `none`), never the body. The turn made no model call, and the job gives up with `CostReadFailed` |
+| `headless_turn.round_cut` | warning | The time cap cut the call of a round (`TimeCap`), or the call raised. The round read no meter and counts as the rest of the budget |
 | `headless_turn.cost_unknown` | error | The meter failed or timed out (`MeterTimeout`) after a call, so the round counts as the rest of the budget |
 | `headless_turn.round_unrecorded` | warning | The turn did not record a round, because the goal changed twice or is not active now |
 | `headless_turn.round_unrecorded` | error | The record of a round timed out (`RecordTimeout`). The cost of that round does not reach the goal, and the job gives up with `TurnFailed`. The mark stays on the goal, so the next turn blocks |
