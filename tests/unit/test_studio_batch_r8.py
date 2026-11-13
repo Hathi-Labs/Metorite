@@ -1,7 +1,7 @@
 """WS-STU E8a: the batch ledger on a real database (R8, task 3095).
 
 Spec: ``project-docs/specs/ai_studio.md`` §14 E8a. Code:
-``gateway/studio/batch_store.py`` and migration 435 (``studio_batches`` and
+``gateway/studio/batch_store.py`` and migration 436 (``studio_batches`` and
 ``studio_batch_items``). ``test_studio_batch.py`` holds the hermetic half.
 
 The store runs on a phase-4 promoted scratch database, as the app role with no

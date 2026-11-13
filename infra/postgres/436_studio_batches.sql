@@ -1,5 +1,5 @@
 -- ============================================================================
--- 435_studio_batches.sql — the ledger of a batch run (WS-STU E8a, task 3095).
+-- 436_studio_batches.sql — the ledger of a batch run (WS-STU E8a, task 3095).
 --
 -- What: two new tables. `studio_batches` holds one frozen list of one
 --       package: the action, the list digest, the item count and the status.
