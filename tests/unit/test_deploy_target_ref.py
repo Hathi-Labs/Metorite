@@ -51,9 +51,9 @@ def test_the_pull_path_names_the_release_commit() -> None:
 
 def test_the_push_path_names_the_commit_it_tested() -> None:
     body = _DEPLOY_YML.read_text(encoding="utf-8")
-    assert "DEPLOY_REF=${GITHUB_SHA}" in body, (
-        "deploy.yml must send its own GITHUB_SHA. Without it the apply falls "
-        "back to origin/release, which is right only after publish-release ran."
+    assert "DEPLOY_REF=${RELEASE_SHA}" in body, (
+        "deploy.yml must send its release commit (CIV-30). Without it the apply "
+        "falls back to origin/release, which is right only after publish-release ran."
     )
 
 

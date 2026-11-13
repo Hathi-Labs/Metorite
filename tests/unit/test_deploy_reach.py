@@ -189,7 +189,8 @@ class TestThePullPathFallback:
 
     def test_the_fallback_runs_on_a_fresh_runner(self, jobs: dict) -> None:
         job = jobs["pull-delivery"]
-        assert job["needs"] == "deploy"
+        # CIV-30: `release-commit` names the commit that the deploy shipped.
+        assert job["needs"] == ["deploy", "release-commit"]
         cond = " ".join(job["if"].split())
         assert "needs.deploy.outputs.reach == 'unreachable'" in cond
         assert "needs.deploy.result == 'success'" in cond
@@ -204,7 +205,7 @@ class TestThePullPathFallback:
 
     def test_the_fallback_goes_red_unless_proved(self, jobs: dict) -> None:
         run = jobs["pull-delivery"]["steps"][1]["run"]
-        assert 'await_pull_delivery "$GITHUB_SHA" || rc=$?' in run
+        assert 'await_pull_delivery "$RELEASE_SHA" || rc=$?' in run
         green = run[run.index("0)"):run.index("3)")]
         assert "exit 0" in green and "::warning" in green
         rest = run[run.index("3)"):]
@@ -362,7 +363,7 @@ def box(tmp_path: Path):
         e.update(
             PATH=f"{binr}{os.pathsep}{e.get('PATH', '')}",
             FAKE=fake.as_posix(), HOME=home.as_posix(),
-            GITHUB_SHA=shas["want"], GITHUB_OUTPUT=out.as_posix(),
+            GITHUB_SHA=shas["want"], RELEASE_SHA=shas["want"], GITHUB_OUTPUT=out.as_posix(),
             GITHUB_STEP_SUMMARY=(tmp_path / "summary").as_posix(),
             GATEWAY_URL="https://gw.test", WORKBENCH_URL="https://wb.test",
             SSH_HOST="10.0.0.1", SSH_USER="acb", SSH_PORT="22", SSH_KEY="k",

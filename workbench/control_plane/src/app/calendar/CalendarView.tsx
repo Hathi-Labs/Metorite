@@ -64,7 +64,8 @@ import { CalendarSettings } from "./components/CalendarSettings";
 import { CalendarConnectPrompt, CalendarConnectReturn } from "./components/CalendarConnections";
 import type { ReturnNotice } from "./lib/calendarConnections";
 import { TimeGrid } from "./components/TimeGrid";
-import { MonthGrid } from "./components/MonthGrid";
+import { MonthGrid } from "@/components/calendar/MonthGrid";
+import { monthEventsForDay, openMonthEvent } from "./lib/gridAdapter";
 import { UnscheduledRail } from "./components/UnscheduledRail";
 import { CalendarDeepLink } from "./components/CalendarDeepLink";
 import { scrollTopFor, type CalendarLink, type ClockTime } from "./lib/calendarLink";
@@ -867,17 +868,20 @@ export function CalendarView() {
           {mode === "month" ? (
             <MonthGrid
               anchor={anchor}
-              items={items}
+              eventsForDay={(day) =>
+                monthEventsForDay(day, items, remShown ? remList.rows : [], remZone, externals)
+              }
               onPickDay={(d) => {
                 pickAnchor(d);
                 setMode("day");
               }}
-              onOpen={openFocus}
-              reminders={remShown ? remList.rows : []}
-              reminderZone={remZone}
-              onOpenReminder={openReminder}
-              externals={externals}
-              onOpenExternal={setExternalId}
+              onOpenEvent={(e) =>
+                openMonthEvent(e, {
+                  onOpen: openFocus,
+                  onOpenReminder: openReminder,
+                  onOpenExternal: setExternalId,
+                })
+              }
             />
           ) : (
             <TimeGrid

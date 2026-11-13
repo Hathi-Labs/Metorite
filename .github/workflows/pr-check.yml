@@ -733,16 +733,19 @@ jobs:
               tests/unit/test_studio_query_r8.py \
               tests/unit/test_goal_record_r8.py \
               tests/unit/test_studio_objects_batch_r8.py \
+              tests/unit/test_studio_record_history_r8.py \
               tests/unit/test_studio_state_machine_r8.py \
               tests/unit/test_studio_expr.py \
               tests/unit/test_studio_formula_r8.py \
               tests/unit/test_studio_rollup_r8.py \
+              tests/unit/test_studio_row_rules_r8.py \
               tests/unit/test_studio_lines_r8.py \
               tests/unit/test_no_person_present_r8.py \
               tests/unit/test_studio_packages_r8.py \
               tests/unit/test_studio_publish_install_r8.py \
               tests/unit/test_studio_package_install_r8.py \
               tests/unit/test_studio_package_viewer_r8.py \
+              tests/unit/test_studio_org_caps_r8.py \
               tests/unit/test_studio_package_uninstall_r8.py \
               tests/unit/test_studio_package_pause_r8.py \
               tests/unit/test_studio_action_door_r8.py \
@@ -752,6 +755,7 @@ jobs:
               tests/unit/test_studio_package_routes_r8.py \
               tests/unit/test_studio_package_delete_r8.py \
               tests/unit/test_studio_package_approval_r8.py \
+              tests/unit/test_studio_package_approval_routes_r8.py \
               tests/unit/test_studio_package_delete_admin_r8.py \
               tests/unit/test_studio_chat_build_r8.py \
               tests/unit/test_studio_route_gate_r8.py \
@@ -762,6 +766,7 @@ jobs:
               tests/unit/test_shell_layout_r8.py \
               tests/unit/test_package_disposal_r8.py \
               tests/unit/test_package_promotion_r8.py \
+              tests/unit/test_studio_package_share_routes_r8.py \
               tests/unit/test_auth_me_shell_install_r8.py \
               tests/unit/test_auth_me_appearance_r8.py \
               tests/unit/test_package_lifetime_r8.py \
@@ -782,6 +787,7 @@ jobs:
               tests/unit/test_auto_park.py \
               tests/unit/test_workflows_human_step_r8.py \
               tests/unit/test_studio_workflow_write_r8.py \
+              tests/unit/test_studio_batch_r8.py \
               tests/unit/test_headless_turn_r8.py \
               tests/unit/test_projects_status_set_read_r8.py \
               tests/unit/test_email_signature_images_r8.py \

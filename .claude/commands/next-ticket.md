@@ -241,8 +241,9 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
   release of each slot until you clear it. `specs/staging_and_daily_release.md` owns the design.
 - Watch the job `Unit tests (a signal on a push, a gate on a release)` in that
   same `deploy` run to its end. On a push it does not gate, so two PRs that
-  pass alone and fail together can land on `main`. A red `main` also blocks
-  that night's release. If the job is red, fix forward or revert at once, and
+  pass alone and fail together can land on `main`. A red `main` does not hold
+  the release (D218). Each slot ships `green/main`, the newest commit that
+  passed the full suite (CIV-30). If the job is red, fix forward or revert at once, and
   say so in the report. (No merge queue. Owner decision, 2026-10-16.)
   - If that job shows as cancelled and never started, another run took your
     merge into its batch. That run can be older or newer than yours. Find the

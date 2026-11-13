@@ -508,11 +508,13 @@ def test_the_package_field_value_table_is_tenant_scoped() -> None:
 
 
 @pytest.mark.parametrize(
-    "table", ["studio_objects", "studio_object_fields", "studio_records", "studio_record_hot"],
+    "table", ["studio_objects", "studio_object_fields", "studio_records", "studio_record_hot",
+              "studio_record_changes", "studio_batches", "studio_batch_items"],
 )
 def test_the_studio_object_tables_are_tenant_scoped(table: str) -> None:
-    """WS-STU C1 (``ai_studio.md`` §3.1). An object, its fields, its records
-    and their hot rows hold the data of one organization's apps. The tables
+    """WS-STU C1 (``ai_studio.md`` §3.1). An object, its fields, its records,
+    their hot rows and their change history (C4a-1) hold the data of one
+    organization's apps. The tables
     may not be exempt, and the committed policy phase must carry each (R5)."""
     gen = _generator()
     assert table in gen.discover_tables()
@@ -522,6 +524,20 @@ def test_the_studio_object_tables_are_tenant_scoped(table: str) -> None:
         encoding="utf-8",
     )
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_the_studio_org_gauge_is_tenant_scoped() -> None:
+    """WS-STU C10a (``ai_studio.md`` §3.1). ``studio_org_usage`` holds the count
+    of the records of one org and their bytes. It may not be exempt, and the
+    committed policy phase must carry it (R5)."""
+    gen = _generator()
+    assert "studio_org_usage" in gen.discover_tables()
+    assert "studio_org_usage" not in gen.EXEMPT
+    assert "studio_org_usage" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE studio_org_usage FORCE  ROW LEVEL SECURITY" in policies
 
 
 def test_the_goal_record_table_is_tenant_scoped() -> None:

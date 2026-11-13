@@ -81,6 +81,8 @@ def test_the_op_table_of_each_type() -> None:
         "datetime": {"eq", "lt", "lte", "gt", "gte", "is_empty"},
         "checkbox": {"eq", "ne", "is_empty"},
         "relation": {"eq", "ne", "in", "is_empty"},
+        # C8a: a person has the ops of a relation, and no order.
+        "person": {"eq", "ne", "in", "is_empty"},
     }
     # The op table holds the hot types, so each op can use the side table.
     assert set(sq.OPS_BY_TYPE) == set(sf.HOT_TYPES)
@@ -95,7 +97,8 @@ def test_the_caps() -> None:
 @pytest.mark.parametrize(("field", "op"), [
     ("name", "lt"), ("name", "gte"), ("mail", "gt"), ("status", "contains"),
     ("hours", "contains"), ("day", "ne"), ("day", "in"), ("paid", "in"),
-    ("paid", "lt"), ("body", "eq"), ("tags", "eq"), ("owner", "eq"),
+    # C8a: a person takes eq, ne, in and is_empty, and no order op.
+    ("paid", "lt"), ("body", "eq"), ("tags", "eq"), ("owner", "lt"),
 ])
 def test_an_op_outside_the_table_is_refused(field: str, op: str) -> None:
     """A range op on text is refused, and so is any op on a type outside the
@@ -589,7 +592,8 @@ def _agg_refused(code: str, filter: Any = None, group_by: Any = None,
 def test_the_aggregate_caps_and_tables() -> None:
     assert (sq.MAX_GROUPS, sq.MAX_MEASURES) == (50, 4)
     assert sq.MEASURE_OPS == ("count", "sum", "average") and sq.BUCKETS == ("day", "month")
-    assert set(sq.OPS_BY_TYPE) - {"money"} == sq.GROUP_TYPES
+    # C8a: a person is no group key while the aggregate takes no viewer.
+    assert set(sq.OPS_BY_TYPE) - {"money", "person"} == sq.GROUP_TYPES
     assert dict(sq.MEASURE_TYPES) == {"sum": {"number", "money"}, "average": {"number"}}
 
 
