@@ -160,6 +160,21 @@ def test_studio_door_ops_orgs_reloads_and_its_reader_follows(env, monkeypatch) -
     assert not door_ops_allowed("globex")
 
 
+def test_studio_search_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU C5a, ai_studio.md §14 C5a. The reload list holds the key, and
+    the one reader of the search switch sees a change with no restart."""
+    from gateway.routes.studio.flags import search_allowed
+
+    assert fr.reloadable("STUDIO_SEARCH_ORGS")
+    monkeypatch.setenv("STUDIO_SEARCH_ORGS", "")
+    get_settings.cache_clear()
+    assert not search_allowed("acme")
+    env(**{**_START, "STUDIO_SEARCH_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_SEARCH_ORGS",)
+    assert search_allowed("acme")
+    assert not search_allowed("globex")
+
+
 def test_studio_num_f8_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-STU C2c, ai_studio.md §14 C2c. The reload list holds the key, and
     the one reader of the float8 switch sees a change with no restart."""

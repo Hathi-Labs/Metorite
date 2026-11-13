@@ -54,6 +54,14 @@ org, and the default is empty. Its one reader is
 door also needs `STUDIO_ORGS`. A reload applies a change, and the flip stays
 OWNER-GATE (`enforcement-flip`).
 
+`STUDIO_SEARCH_ORGS` opens the `studio` source of company search
+(`ai_studio.md` §14 C5a). For each listed org, `search_company` reads the
+objects that a package names in `shell.search`, for the packages that the
+member owns or has installed. `*` lists every org, and the default is empty.
+Its one reader is `gateway.routes.studio.flags.search_allowed`, and each search
+asks it. The source also needs `STUDIO_ORGS`. A reload applies a change, and
+the flip stays OWNER-GATE (`enforcement-flip`).
+
 `STUDIO_NUM_F8_ORGS` adds the float8 test to a number filter of the Studio
 object query (`ai_studio.md` §14 C2c). For each listed org, the query tests
 `studio_record_hot.v_num_f8` beside the exact `v_num` test, so the app role

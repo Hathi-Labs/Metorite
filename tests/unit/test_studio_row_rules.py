@@ -600,9 +600,12 @@ def test_each_call_of_the_six_passes_a_viewer() -> None:
             if not has:
                 missing.append(f"{rel}:{line} {name}")
     assert missing == []
-    # Each reader path of the records today. Chat tools, search (C5) and
-    # workflows (B6) reach the records through the door only.
-    assert readers == {"apps/services/gateway/gateway/routes/studio/invoke.py"}
+    # Each reader path of the records today. Chat tools and workflows (B6)
+    # reach the records through the door only. C5a listed the search reader.
+    assert readers == {
+        "apps/services/gateway/gateway/routes/studio/invoke.py",
+        "apps/services/gateway/gateway/studio/search.py",
+    }
 
 
 def test_the_six_take_viewer_as_a_required_keyword() -> None:

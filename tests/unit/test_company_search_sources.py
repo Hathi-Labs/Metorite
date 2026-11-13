@@ -69,6 +69,7 @@ FEATURES = {
     "artifacts": "artifacts",
     "whatsapp": "whatsapp",
     "knowledge": "knowledge",
+    "studio": "studio",
 }
 
 #: The REAL route signatures, read at import time, before any fixture swaps them.
@@ -93,7 +94,7 @@ ALL = tuple(FEATURES.values())
 
 
 class Apps:
-    """Stand-ins for the seven app functions. They record who called and when."""
+    """Stand-ins for the eight app functions. They record who called and when."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, object, dict]] = []
@@ -172,6 +173,14 @@ class Apps:
              "chat_name": None, "body_text": "", "transcript_text": "voice words"},
         ]
 
+    async def studio(self, user, q, k):
+        await self._enter("studio", user, {"q": q, "limit": k})
+        from gateway.studio.search import Found
+
+        return [Found(package_id="p-1", package_name="Field notes", object_name="note",
+                      record_id="r-1", title="Visit Acme", snippet="Plant 4",
+                      updated_at=None)]
+
     async def knowledge(self, **kw):
         await self._enter("knowledge", kw["user"], kw)
         return {"query": kw["q"], "degraded": True, "hits": [
@@ -199,6 +208,7 @@ def apps(monkeypatch) -> Apps:
     import gateway.routes.people.directory as directory
     import gateway.routes.projects.search as projects_search
     import gateway.routes.whatsapp.transport.messages as wa_messages
+    import gateway.studio.search as studio_search
     from acb_common import get_settings
     from gateway.routes.crm import access, records
 
@@ -212,11 +222,14 @@ def apps(monkeypatch) -> Apps:
     monkeypatch.setattr(registry, "enabled", lambda: True)
     monkeypatch.setattr(wa_messages, "search_messages", f.whatsapp)
     monkeypatch.setattr(kb_search, "search_knowledge", f.knowledge)
+    monkeypatch.setattr(studio_search, "search_records", f.studio)
     settings = get_settings()
     monkeypatch.setattr(settings, "crm_enabled", True, raising=False)
     monkeypatch.setattr(settings, "crm_orgs", ORG, raising=False)
     monkeypatch.setattr(settings, "knowledge_enabled", True, raising=False)
     monkeypatch.setattr(settings, "knowledge_orgs", ORG, raising=False)
+    monkeypatch.setattr(settings, "studio_orgs", ORG, raising=False)
+    monkeypatch.setattr(settings, "studio_search_orgs", ORG, raising=False)
     return f
 
 
@@ -231,7 +244,7 @@ def run(user: UserContext, q: str = "acme", apps: str | None = None, k: int = 5)
 # ── The registry ────────────────────────────────────────────────────────────
 
 class TestTheRegistry:
-    def test_seven_sources_each_with_its_routers_feature(self):
+    def test_eight_sources_each_with_its_routers_feature(self):
         assert {k: s.feature for k, s in sources.REGISTRY.items()} == FEATURES
         assert list(sources.REGISTRY) == list(FEATURES)
         for key, source in sources.REGISTRY.items():
@@ -450,10 +463,11 @@ class TestTheAnswer:
 
     def test_the_hits_interleave_by_rank(self, apps):
         order = [(h["app"], h["id"]) for h in run(member(*ALL))["hits"]]
-        firsts = order[:7]
+        firsts = order[:8]
         assert [a for a, _ in firsts] == list(FEATURES)
-        assert [i for _, i in firsts] == ["t-1", "m-1", "p-1", "d-1", "a-1", "w-1", "k-1"]
-        assert [a for a, _ in order[7:]] == [
+        assert [i for _, i in firsts] == [
+            "t-1", "m-1", "p-1", "d-1", "a-1", "w-1", "k-1", "p-1/note/r-1"]
+        assert [a for a, _ in order[8:]] == [
             "tasks", "email", "crm", "artifacts", "whatsapp", "knowledge"]
 
     def test_a_named_app_goes_first(self, apps):
@@ -476,7 +490,7 @@ class TestTheAnswer:
 
     def test_k_caps_each_app(self, apps):
         hits = run(member(*ALL), k=1)["hits"]
-        assert len(hits) == 7
+        assert len(hits) == 8
         assert [kw.get("limit") for n, _, kw in apps.calls if n == "tasks"] == [1]
 
     def test_the_sources_never_overlap(self, apps):
