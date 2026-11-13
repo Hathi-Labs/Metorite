@@ -254,8 +254,9 @@ def _load_app_details(
 
         with tenant_session(organization_id) as s:
             rows = s.execute(
-                text("SELECT slug, name, icon FROM apps WHERE slug = ANY(:slugs)"),
-                {"slugs": slugs},
+                text("SELECT slug, name, icon FROM apps WHERE slug = ANY(:slugs) "
+                     "AND organization_id = CAST(:org AS uuid)"),
+                {"slugs": slugs, "org": str(organization_id)},
             ).fetchall()
         return {r.slug: {"name": r.name, "icon": r.icon or ""} for r in rows}
     except Exception as exc:  # noqa: BLE001

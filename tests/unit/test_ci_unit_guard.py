@@ -679,3 +679,569 @@ def test_gate_output_uses_the_timings_and_agrees_with_the_pick_step(tmp_path: Pa
     gate.write_text(json.dumps({"full": False, "files": []}), encoding="utf-8")
     assert dict(x.split("=", 1) for x in guard.gate_output(gate))["shards"] == "[]"
     assert dict(x.split("=", 1) for x in guard.gate_output(tmp_path / "absent.json"))["shards"] == "[1,2,3,4,5,6]"
+
+
+def test_missing_timing_entries_are_named_in_a_warning() -> None:
+    # CIV-33b: a selected file with no `.test_durations` entry is a visible gap.
+    warns = guard.missing_timing_warnings(
+        ["tests/unit/test_a.py", "tests/unit/test_new.py", "tests/unit/test_new2.py"],
+        {"tests/unit/test_a.py": 3.0},
+    )
+    assert warns[0].startswith("::warning::") and "2 " in warns[0]
+    assert "tests/unit/test_new.py" in warns[0] and "tests/unit/test_new2.py" in warns[0]
+    assert "tests/unit/test_a.py" not in warns[0]
+    assert guard.missing_timing_warnings(["tests/unit/test_a.py"], {"tests/unit/test_a.py": 1.0}) == []
+    assert guard.missing_timing_warnings(["tests/unit/test_a.py"], None) == []
+
+
+def test_select_prints_the_warning_and_still_exits_zero(tmp_path: Path, monkeypatch, capsys) -> None:
+    durations = tmp_path / ".test_durations"
+    durations.write_text(json.dumps({"tests/unit/test_a.py::t": 1.0}), encoding="utf-8")
+    monkeypatch.setattr(guard, "DURATIONS_PATH", durations)
+    rc = guard.main(["select", "--full", "false", "--files", "tests/unit/test_a.py tests/unit/test_b.py",
+                     "--changes-result", "success"])
+    assert rc == 0
+    out = capsys.readouterr()
+    assert "tests/unit/test_b.py" in out.err  # stderr: stdout is tee-d into GITHUB_OUTPUT
+    assert "::warning::" not in out.out
+
+
+# ── CIV-32 (D218): a repair round re-tests what failed and what the fix reaches ──
+
+_SAFETY = ["tests/unit/test_safety_one.py", "tests/unit/test_safety_two.py"]
+_NO_MOVE = {"full": False, "files": [], "reasons": []}
+
+
+def _repair_case(file: str, name: str, outcome: str | None = None, reason: str = "x") -> str:
+    inner = f'<{outcome} message="{reason}">boom</{outcome}>' if outcome else ""
+    mod = file[: -len(".py")].replace("/", ".")
+    return f'<testcase classname="{mod}" name="{name}" file="{file}" time="0.1">{inner}</testcase>'
+
+
+def _write_report(d: Path, name: str, *cases: str) -> None:
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text(
+        f'<testsuites><testsuite name="pytest">{"".join(cases)}</testsuite></testsuites>',
+        encoding="utf-8",
+    )
+
+
+def _shard(junit: Path, n: int, *cases: str) -> None:
+    """The layout of `gh run download -p junit-shard-*`: one folder per artifact."""
+    _write_report(junit / f"junit-shard-{n}", f"shard-{n}.xml", *cases)
+
+
+def _job(n: int, conclusion: str = "success") -> dict:
+    return {"name": f"Unit tests (shard {n})", "status": "completed", "conclusion": conclusion}
+
+
+def _gate_result(files: list[str], full: bool = False) -> dict:
+    return {"full": full, "files": sorted({*files, *_SAFETY})}
+
+
+def test_repair_selects_the_failed_files_plus_the_reach_of_the_fix(tmp_path: Path) -> None:
+    _shard(
+        tmp_path,
+        1,
+        _repair_case("tests/unit/test_a.py", "t1", "failure"),
+        _repair_case("tests/unit/test_b.py", "t1"),
+        _repair_case("tests/unit/test_c.py", "t1", "error"),
+    )
+    failed, why = guard.old_failures([_job(1, "failure")], tmp_path)
+    assert (failed, why) == (["tests/unit/test_a.py", "tests/unit/test_c.py"], "")
+    out = guard.repair_decision(failed, [], True, _gate_result(["tests/unit/test_d.py"]), _NO_MOVE)
+    assert out["mode"] == "repair"
+    assert out["files"] == sorted(
+        ["tests/unit/test_a.py", "tests/unit/test_c.py", "tests/unit/test_d.py", *_SAFETY]
+    )
+    assert "failed in the old run" in out["reason"]
+    assert "test_b.py" not in " ".join(out["files"])  # a passing file of the old run stays out
+
+
+def test_the_reach_of_mains_move_joins_the_selection() -> None:
+    main = {"full": False, "files": ["tests/unit/test_main.py", *_SAFETY], "reasons": []}
+    out = guard.repair_decision([], [], True, _gate_result([]), main)
+    assert out["mode"] == "repair" and "tests/unit/test_main.py" in out["files"]
+    # main's move selects the full suite, or nobody knows it: the normal selection.
+    whole = guard.repair_decision([], [], True, _gate_result([]), {"full": True, "files": []})
+    assert whole["mode"] == "full" and "main" in whole["reason"]
+    unknown = guard.repair_decision([], [], True, _gate_result([]), None)
+    assert unknown["mode"] == "full" and "main" in unknown["reason"]
+
+
+def test_the_decision_takes_no_always_list() -> None:
+    """P2: the must-run and SAFETY lists reach a repair selection as they reach
+    any selection: the gate adds SAFETY, and `check --only-selected` reads it."""
+    import inspect
+
+    assert "always" not in inspect.signature(guard.repair_decision).parameters
+
+
+def test_a_merge_of_main_in_the_delta_gives_the_normal_selection() -> None:
+    out = guard.repair_decision(["tests/unit/test_a.py"], ["abc123"], True, _gate_result([]), _NO_MOVE)
+    assert out["mode"] == "full" and out["files"] == []
+    assert "merge" in out["reason"]
+
+
+def test_a_missing_or_broken_old_report_gives_the_normal_selection(tmp_path: Path) -> None:
+    assert guard.old_failures([_job(1)], tmp_path / "absent")[0] is None
+    _write_report(tmp_path / "junit-shard-1", "shard-1.xml")
+    (tmp_path / "junit-shard-1" / "shard-1.xml").write_text("<testsuites><oops", encoding="utf-8")
+    failed, why = guard.old_failures([_job(1)], tmp_path)
+    assert failed is None and "parse" in why
+    assert guard.repair_decision(None, [], True, _gate_result([]), _NO_MOVE)["mode"] == "full"
+
+
+def test_a_shard_that_ran_no_test_is_not_trusted(tmp_path: Path) -> None:
+    """P0-2. A shard can fail before pytest (uv sync, the DB check). Then the
+    empty-report step writes a zero-test report, and the job reads `failure`."""
+    _shard(tmp_path, 1, _repair_case("tests/unit/test_a.py", "t"))
+    _shard(tmp_path, 2)  # what `empty-report` writes
+    for conclusion in ("failure", "success"):
+        failed, why = guard.old_failures([_job(1), _job(2, conclusion)], tmp_path)
+        assert failed is None and "shard 2" in why and "no test" in why
+
+
+def test_a_failed_shard_with_no_failed_case_is_not_trusted(tmp_path: Path) -> None:
+    """P0-2. The job failed, but its report says every test passed: pytest
+    crashed after it wrote part of the report, or a later step failed."""
+    _shard(tmp_path, 1, _repair_case("tests/unit/test_a.py", "t"))
+    failed, why = guard.old_failures([_job(1, "failure")], tmp_path)
+    assert failed is None and "shard 1 failed" in why
+
+
+def test_a_collection_error_in_the_old_run_is_not_a_baseline(tmp_path: Path) -> None:
+    """Opus re-review (2026-11-12): an ImportError in test_b stops each shard at
+    collection, so test_a and test_c never ran. pytest 9.1.1 with xunit1 writes
+    ONE case: an empty classname, the module as the name, the file, and
+    `<error message="collection failure">`. Trusting it would re-test only B."""
+    junit = tmp_path / "junit-shard-1"
+    junit.mkdir(parents=True)
+    (junit / "shard-1.xml").write_text(
+        '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" '
+        'errors="1" failures="0" skipped="0" tests="1"><testcase classname="" '
+        'name="tests.unit.test_b" file="tests/unit/test_b.py">'
+        '<error message="collection failure">ImportError: No module named nope_missing'
+        "</error></testcase></testsuite></testsuites>",
+        encoding="utf-8",
+    )
+    failed, why = guard.old_failures([_job(1, "failure")], tmp_path)
+    assert failed is None and "collection error" in why and "test_b.py" in why
+
+
+def test_an_interrupt_after_a_real_failure_is_not_a_baseline(tmp_path: Path) -> None:
+    """Opus re-review P2 (2026-11-12): test_a fails, then test_b raises
+    KeyboardInterrupt, so test_c never runs. pytest 9.1.1 with xunit1 writes the
+    failure of test_a and an empty case with no name. Trusting the report
+    would re-test only test_a."""
+    junit = tmp_path / "junit-shard-1"
+    junit.mkdir(parents=True)
+    (junit / "shard-1.xml").write_text(
+        '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" '
+        'errors="0" failures="1" skipped="0" tests="2"><testcase classname="tests.unit.test_a" '
+        'name="test_x" file="tests/unit/test_a.py"><failure message="assert False">E</failure>'
+        '</testcase><testcase time="0.000" /></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    failed, why = guard.old_failures([_job(1, "failure")], tmp_path)
+    assert failed is None and "interrupt" in why
+
+
+def test_each_shard_job_is_paired_with_its_own_report(tmp_path: Path) -> None:
+    ok = _repair_case("tests/unit/test_a.py", "t")
+    _shard(tmp_path, 1, ok)
+    assert guard.old_failures([_job(1)], tmp_path) == ([], "")
+    # Shard 2 left no report. The count of reports no longer hides it.
+    assert "shard 2 left no report" in guard.old_failures([_job(1), _job(2)], tmp_path)[1]
+    # A report that no shard job owns.
+    _shard(tmp_path, 3, ok)
+    assert "no shard job" in guard.old_failures([_job(1)], tmp_path)[1]
+    # A shard with no verdict, a shard with no number, no shard at all.
+    assert guard.old_failures([_job(1, "cancelled")], tmp_path)[0] is None
+    skipped = {"name": "Unit tests (shard ${{ matrix.shard }})", "conclusion": "skipped"}
+    assert guard.old_failures([skipped], tmp_path)[0] is None
+    assert guard.old_failures([{"name": "Unit tests", "conclusion": "success"}], tmp_path)[0] is None
+
+
+def test_a_disarmed_r8_skip_counts_as_not_passed(tmp_path: Path) -> None:
+    """A shard failure stops the old guard before it reads skips. So a file that
+    skipped for a disarmed R8 reason was never judged, and it runs again."""
+    _shard(
+        tmp_path,
+        1,
+        _repair_case("tests/unit/test_a.py", "t", "failure"),
+        _repair_case("tests/unit/test_r8.py", "t", "skipped", "TENANT_LADDER_DATABASE_URL unset"),
+        _repair_case("tests/unit/test_win.py", "t", "skipped", "windows only"),
+    )
+    failed, _ = guard.old_failures([_job(1, "failure")], tmp_path)
+    assert failed == ["tests/unit/test_a.py", "tests/unit/test_r8.py"]
+
+
+def test_a_collection_error_with_no_file_gives_the_normal_selection(tmp_path: Path) -> None:
+    _shard(tmp_path, 1, '<testcase classname="" name="x"><error/></testcase>')
+    assert guard.old_failures([_job(1, "failure")], tmp_path)[0] is None
+
+
+def test_a_force_push_gives_the_normal_selection() -> None:
+    out = guard.repair_decision(["tests/unit/test_a.py"], None, False, None, _NO_MOVE)
+    assert out["mode"] == "full" and "force-push" in out["reason"]
+
+
+def test_a_delta_that_selects_the_full_suite_gives_the_normal_selection() -> None:
+    whole = {"full": True, "files": [], "reasons": ["conftest"]}
+    out = guard.repair_decision([], [], True, whole, _NO_MOVE)
+    assert out["mode"] == "full" and out["files"] == []
+
+
+def test_a_delta_with_no_answer_gives_the_normal_selection() -> None:
+    assert guard.repair_decision([], [], True, None, _NO_MOVE)["mode"] == "full"
+    assert guard.repair_decision([], [], True, {"files": []}, _NO_MOVE)["mode"] == "full"
+
+
+def test_no_failure_and_no_reach_keeps_the_minimum_set_and_never_goes_empty() -> None:
+    out = guard.repair_decision([], [], True, _gate_result([]), _NO_MOVE)
+    assert out["mode"] == "repair"
+    assert out["files"] == sorted(_SAFETY)
+    # Even a gate with no file at all must not hand pytest an empty list.
+    bare = guard.repair_decision([], [], True, {"full": False, "files": []}, _NO_MOVE)
+    assert bare["mode"] == "full" and bare["files"] == []
+
+
+def test_a_failed_file_that_the_fix_deleted_leaves_the_selection() -> None:
+    gone = {"tests/unit/test_gone.py"}
+    out = guard.repair_decision(
+        ["tests/unit/test_gone.py"], [], True, _gate_result([]), _NO_MOVE,
+        exists=lambda p: p not in gone,
+    )  # fmt: skip
+    assert "tests/unit/test_gone.py" not in out["files"]
+
+
+def test_a_path_outside_the_safe_shape_never_reaches_pytest() -> None:
+    out = guard.repair_decision(["-evil.py"], [], True, _gate_result([]), _NO_MOVE)
+    assert "-evil.py" not in out["files"]
+
+
+def test_a_repair_selection_goes_through_the_same_shard_count_as_any_other(tmp_path: Path) -> None:
+    out = guard.repair_decision(["tests/unit/test_a.py"], [], True, _gate_result([]), _NO_MOVE)
+    gate_json = tmp_path / "gate.json"
+    gate_json.write_text(json.dumps({"full": False, "files": out["files"]}), encoding="utf-8")
+    lines = guard.gate_output(gate_json)
+    assert lines[0] == "full=false" and lines[2] == "shards=[1]"
+
+
+def _run(**over) -> dict:
+    run = {
+        "id": 10,
+        "status": "completed",
+        "conclusion": "failure",
+        "head_sha": "old",
+        "created_at": "2026-11-13T10:00:00Z",
+        "head_repository": {"full_name": "o/r"},
+        "pull_requests": [{"number": 7}],
+    }
+    return {**run, **over}
+
+
+def test_the_old_run_is_the_newest_finished_run_of_this_pr_for_an_earlier_head() -> None:
+    runs = [
+        _run(id=1, created_at="2026-11-13T09:00:00Z", head_sha="older"),
+        _run(id=2),
+        _run(id=3, created_at="2026-11-13T11:00:00Z", conclusion="cancelled"),
+        _run(id=4, created_at="2026-11-13T12:00:00Z", status="in_progress", conclusion=None),
+        _run(id=5, created_at="2026-11-13T12:30:00Z", head_sha="new"),
+        _run(id=6, created_at="2026-11-13T12:40:00Z", head_repository={"full_name": "fork/r"}),
+        _run(id=7, created_at="2026-11-13T12:50:00Z", pull_requests=[{"number": 8}]),
+    ]
+    got = guard.find_old_run(runs, "o/r", 7, "new")
+    assert got is not None and got["id"] == 2
+    assert guard.find_old_run([], "o/r", 7, "new") is None
+
+
+def _git_repo(tmp_path: Path):
+    def git(*a: str) -> str:
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *a],
+            cwd=tmp_path, capture_output=True, text=True, check=True,
+        ).stdout.strip()  # fmt: skip
+
+    git("init", "-q", "-b", "main")
+    return git
+
+
+def _commit(root: Path, git, files: dict[str, str], msg: str) -> str:
+    for rel, body in files.items():
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body, encoding="utf-8")
+        git("add", rel)
+    git("commit", "-q", "-m", msg)
+    return git("rev-parse", "HEAD")
+
+
+def test_git_delta_reads_descent_merges_and_changed_files(tmp_path: Path, monkeypatch) -> None:
+    git = _git_repo(tmp_path)
+
+    def commit(name: str) -> str:
+        return _commit(tmp_path, git, {name: name}, name)
+
+    base = commit("base.txt")
+    git("switch", "-q", "-c", "pr")
+    old = commit("a.txt")
+    new = commit("b.txt")
+    monkeypatch.chdir(tmp_path)
+    assert guard.git_delta(old, new) == (True, [], ["b.txt"])
+    # A merge of main: main moves on, and the PR merges it.
+    git("switch", "-q", "main")
+    commit("m.txt")
+    git("switch", "-q", "pr")
+    git("merge", "-q", "--no-ff", "-m", "merge main", "main")
+    merged = git("rev-parse", "HEAD")
+    descends, merges, _ = guard.git_delta(new, merged)
+    assert descends and merges == [merged]
+    # gate-meta reads the two parents of the checked-out merge, first parent
+    # first. GitHub's pull/N/merge has main first and the PR head second.
+    assert guard.gate_meta() == {"base": new, "head": git("rev-parse", "main")}
+    # A force-push: the new head does not contain the old head.
+    git("switch", "-q", "-c", "rewrite", base)
+    other = commit("c.txt")
+    assert guard.git_delta(old, other) == (False, None, None)
+    assert guard.git_delta("0" * 40, other)[0] is False
+    assert guard.gate_meta() is None  # not a merge commit
+    assert guard.have_commit(other) and not guard.have_commit("f" * 40)
+
+
+def test_read_meta_takes_only_two_full_shas(tmp_path: Path) -> None:
+    p = tmp_path / "gate-meta.json"
+    sha = "a" * 40
+    p.write_text(json.dumps({"base": sha, "head": sha}), encoding="utf-8")
+    assert guard.read_meta(p) == {"base": sha, "head": sha}
+    for bad in ({"base": sha}, {"base": "main", "head": sha}, [sha, sha]):
+        p.write_text(json.dumps(bad), encoding="utf-8")
+        assert guard.read_meta(p) is None
+    assert guard.read_meta(tmp_path / "absent.json") is None
+
+
+class _FakeGh:
+    """GitHub, as `gh` sees it. An `api` call with no `-X GET` and a `-f`
+    field is a POST, and GitHub answers a POST to a read endpoint with 404."""
+
+    def __init__(self, real, runs: list[dict], jobs: list[dict], meta: dict, shards: dict) -> None:
+        self.real, self.runs, self.jobs, self.meta, self.shards = real, runs, jobs, meta, shards
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv, *a, **k):
+        if argv[0] != "gh":
+            return self.real(argv, *a, **k)
+        self.calls.append(list(argv))
+        ok = lambda out="": subprocess.CompletedProcess(argv, 0, out, "")  # noqa: E731
+        if argv[1] == "api":
+            is_get = "-X" in argv and argv[argv.index("-X") + 1] == "GET"
+            if "-f" in argv and not is_get:
+                return subprocess.CompletedProcess(argv, 1, '{"message": "Not Found"}', "HTTP 404")
+            path = next(x for x in argv[2:] if x.startswith("repos/"))
+            if path.endswith("/runs"):
+                return ok(json.dumps({"workflow_runs": self.runs}))
+            if path.endswith("/jobs"):
+                return ok(json.dumps({"jobs": self.jobs}))
+        if argv[1:3] == ["run", "download"]:
+            pattern, dest = argv[argv.index("-p") + 1], Path(argv[argv.index("-D") + 1])
+            if pattern == "gate-meta" and getattr(self, "no_meta", False):
+                return subprocess.CompletedProcess(argv, 1, "", "no artifact matches")
+            if pattern == "gate-meta":
+                (dest / "gate-meta").mkdir(parents=True)
+                (dest / "gate-meta" / "gate-meta.json").write_text(json.dumps(self.meta), encoding="utf-8")
+            else:
+                for n, cases in self.shards.items():
+                    _shard(dest, n, *cases)
+            return ok()
+        return subprocess.CompletedProcess(argv, 1, "", "unknown gh call")
+
+
+def _pr_tree(tmp_path: Path):
+    """A repo where main moves under an open PR. Returns the git helper and the SHAs."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    git = _git_repo(root)
+    base0 = _commit(
+        root, git,
+        {
+            "packages/pkg/pkg/__init__.py": "",
+            "packages/pkg/pkg/leaf.py": "X = 1\n",
+            "packages/pkg/pkg/other.py": "Y = 1\n",
+            "tests/fences.json": '{"python": {"safety": ["tests/unit/test_safe.py"], "process": []}}',
+            "tests/unit/test_safe.py": "import os\n",
+            "tests/unit/test_other.py": "from pkg.other import Y\n",
+        },
+        "main 0",
+    )  # fmt: skip
+    git("switch", "-q", "-c", "pr")
+    old_head = _commit(root, git, {"tests/unit/test_pr.py": "from pkg.leaf import X\n"}, "pr 1")
+    new_head = _commit(root, git, {"docs/fix.md": "a fix\n"}, "pr 2: the fix")
+    return root, git, base0, old_head, new_head
+
+
+def _drive(tmp_path: Path, monkeypatch, root: Path, git, base0: str, old_head: str, new_head: str):
+    """Check out the new merge, as pull_request does, and run the repair step."""
+    git("switch", "-q", "--detach", "main")
+    git("merge", "-q", "--no-ff", "-m", "merge", new_head)
+    monkeypatch.chdir(root)
+    meta = root.parent / "gate-meta.json"
+    meta.write_text(json.dumps(guard.gate_meta()), encoding="utf-8")
+    gate_json = root.parent / "gate.json"
+    gate_json.write_text('{"full": true, "files": []}', encoding="utf-8")
+    passing = [_repair_case(t, "t") for t in ("tests/unit/test_pr.py", "tests/unit/test_safe.py")]
+    fake = _FakeGh(
+        subprocess.run,
+        runs=[_run(id=99, head_sha=old_head)],
+        jobs=[_job(1)],
+        meta={"base": base0, "head": old_head},
+        shards={1: passing},
+    )
+    monkeypatch.setattr(guard.subprocess, "run", fake)
+    line = guard.repair("o/r", 7, new_head, gate_json, root.parent / "work", root, meta)
+    monkeypatch.undo()
+    return line, json.loads(gate_json.read_text(encoding="utf-8")), fake
+
+
+def test_a_move_of_main_selects_the_pr_tests_that_import_what_main_changed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """P1. The old run tested the PR on main 0. main then changed pkg.leaf,
+    which the PR's own test imports. The fix touches only a doc, so the PR's
+    delta reaches nothing. main's move still selects the test."""
+    root, git, base0, old_head, new_head = _pr_tree(tmp_path)
+    git("switch", "-q", "main")
+    _commit(root, git, {"packages/pkg/pkg/leaf.py": "X = 2\n"}, "main 1: leaf moves")
+    line, gate, fake = _drive(tmp_path, monkeypatch, root, git, base0, old_head, new_head)
+    assert line.startswith("repair mode:"), line
+    assert gate["full"] is False
+    assert "tests/unit/test_pr.py" in gate["files"]
+    assert "tests/unit/test_safe.py" in gate["files"]  # SAFETY, from the gate
+    assert "tests/unit/test_other.py" not in gate["files"]
+    # P0-1: every read of the API names GET.
+    api = [c for c in fake.calls if c[1] == "api"]
+    assert len(api) == 2 and all(c[2:4] == ["-X", "GET"] for c in api), api
+
+
+def test_with_main_still_the_pr_test_stays_out(tmp_path: Path, monkeypatch) -> None:
+    root, git, base0, old_head, new_head = _pr_tree(tmp_path)
+    line, gate, _ = _drive(tmp_path, monkeypatch, root, git, base0, old_head, new_head)
+    assert line.startswith("repair mode:"), line
+    assert gate["files"] == ["tests/unit/test_safe.py"]
+
+
+def test_a_move_of_main_that_needs_the_full_suite_gives_the_normal_selection(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, git, base0, old_head, new_head = _pr_tree(tmp_path)
+    git("switch", "-q", "main")
+    _commit(root, git, {"tests/conftest.py": "\n"}, "main 1: a conftest")
+    line, gate, _ = _drive(tmp_path, monkeypatch, root, git, base0, old_head, new_head)
+    assert line.startswith("full selection:") and "main" in line, line
+    assert gate == {"full": True, "files": []}
+
+
+def test_a_run_with_no_gate_meta_gives_the_normal_selection(tmp_path: Path, monkeypatch) -> None:
+    """An old run from before CIV-32, or a run whose meta step failed."""
+    root, _git, base0, old_head, new_head = _pr_tree(tmp_path)
+    runs = {"workflow_runs": [_run(id=99, head_sha=old_head)]}
+    monkeypatch.setattr(guard, "_gh_json", lambda *a: runs)
+    gate_json = tmp_path / "gate.json"
+    gate_json.write_text('{"full": true, "files": []}', encoding="utf-8")
+    # This run wrote no meta.
+    line = guard.repair("o/r", 7, new_head, gate_json, tmp_path / "w", root, tmp_path / "absent.json")
+    assert line.startswith("full selection:") and "did not record" in line, line
+    # The old run kept no gate-meta artifact: the download fails.
+    meta = tmp_path / "gate-meta.json"
+    meta.write_text(json.dumps({"base": base0, "head": new_head}), encoding="utf-8")
+    fake = _FakeGh(subprocess.run, runs=runs["workflow_runs"], jobs=[], meta={}, shards={})
+    fake.no_meta = True
+    monkeypatch.setattr(guard.subprocess, "run", fake)
+    line = guard.repair("o/r", 7, new_head, gate_json, tmp_path / "w", root, meta)
+    monkeypatch.undo()
+    assert line.startswith("full selection:") and "gate-meta" in line, line
+    assert json.loads(gate_json.read_text(encoding="utf-8")) == {"full": True, "files": []}
+
+
+def test_the_repair_step_fails_open_to_the_normal_selection(tmp_path: Path, monkeypatch) -> None:
+    gate_json = tmp_path / "gate.json"
+    gate_json.write_text('{"full": false, "files": ["tests/unit/test_a.py"]}', encoding="utf-8")
+    meta = tmp_path / "gate-meta.json"
+    monkeypatch.setattr(guard, "_gh_json", lambda *a: None)
+    assert guard.repair("o/r", 7, "new", gate_json, tmp_path, tmp_path, meta).startswith("full selection:")
+
+    def boom(*a):
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(guard, "_gh_json", boom)
+    assert guard.repair("o/r", 7, "new", gate_json, tmp_path, tmp_path, meta).startswith("full selection:")
+    assert json.loads(gate_json.read_text(encoding="utf-8"))["files"] == ["tests/unit/test_a.py"]
+
+
+def test_the_changes_job_runs_the_repair_step_only_on_a_synchronize_push() -> None:
+    job = _jobs()["changes"]
+    assert job["permissions"] == {"contents": "read", "actions": "read"}
+    gate = next(s for s in job["steps"] if s.get("id") == "gate")
+    run = gate["run"]
+    assert "ci_unit_guard.py repair" in run
+    assert "synchronize" in run and "pull_request" in run
+    assert "GITHUB_STEP_SUMMARY" in run
+    # The meta comes first, the repair runs AFTER the normal gate wrote
+    # gate.json, and gate-output reads the result.
+    order = ("ci_unit_guard.py gate-meta", "--gate --base", "ci_unit_guard.py repair", "gate-output")
+    assert [run.index(s) for s in order] == sorted(run.index(s) for s in order)
+    assert "--meta gate-meta.json" in run
+    assert gate["env"]["GH_TOKEN"] == "${{ github.token }}"
+    # The head SHA of the PR, not the synthetic merge commit that checkout builds.
+    assert gate["env"]["NEW_SHA"] == "${{ github.event.pull_request.head.sha }}"
+    assert "uv " not in run
+
+
+def test_the_changes_job_keeps_the_tested_merge_for_the_next_push() -> None:
+    steps = _jobs()["changes"]["steps"]
+    ids = [s.get("id") for s in steps]
+    keep = next(i for i, s in enumerate(steps) if "upload-artifact" in str(s.get("uses", "")))
+    assert ids.index("gate") < keep < ids.index("diff") == len(steps) - 1
+    up = steps[keep]
+    assert up["with"]["name"] == guard.GATE_META_ARTIFACT == "gate-meta"
+    assert up["with"]["path"] == guard.GATE_META
+    assert up["with"]["if-no-files-found"] == "ignore"
+    assert up["if"] == "${{ !cancelled() }}"
+    # The merge ref needs both parents and main's history.
+    assert steps[0]["with"]["fetch-depth"] == 0
+
+
+def test_a_selection_passes_tests_unit_once_with_the_plugin() -> None:
+    """CIV-33a: pytest 9.1 re-lists tests/unit for each path argument, so a
+    selection run hands pytest `tests/unit/` once and the plugin drops the rest."""
+    steps = _jobs()["test"]["steps"]
+    run = next(s["run"] for s in steps if s.get("name") == "Run unit tests (this shard)")
+    assert "-p pytest_only_selected" in run
+    assert "SHARD_SELECTED_FILES=" in run
+    assert 'PLUGIN="-p pytest_only_selected"' in run
+    # The selection branch resets the targets to the one directory.
+    assert run.count('SHARD_TARGETS="tests/unit/"') == 2
+    assert "python -m pytest $SHARD_TARGETS $PLUGIN " in run
+    assert (_ROOT / "scripts/pytest_only_selected.py").is_file()
+
+
+def test_a_selection_with_no_case_at_all_fails(tmp_path: Path) -> None:
+    """CIV-33a (Opus review of PR 2192): with one tests/unit argument and the
+    plugin, a broken path match collects nothing in every shard, and each shard
+    exits 5 as "drew no test". The guard must turn that red."""
+    out = tmp_path / "junit" / "shard-1.xml"
+    assert guard.empty_report(out) is True
+    problems = guard.check(out.parent, [], [], only_selected=["tests/unit/test_x.py"])
+    assert any("no shard reported a single test case" in p for p in problems), problems
+    # An empty selection, and a selection of process fences only, stay green.
+    assert guard.check(out.parent, [], [], only_selected=[]) == []
+    fence = sorted(guard._process_fences())
+    if fence:
+        assert guard.check(out.parent, [], [], only_selected=[fence[0]]) == []
+    # A selection that reported cases is not touched by this rule.
+    (tmp_path / "ok").mkdir()
+    junit = _report(tmp_path / "ok")
+    assert not any(
+        "no shard reported" in p
+        for p in guard.check(junit, [], [], only_selected=["tests/unit/test_x.py"])
+    )

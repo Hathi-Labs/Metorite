@@ -27,6 +27,8 @@ export interface CalendarConnection {
   last_error: string | null;
   metorite_calendar: boolean;
   entry_count: number;
+  /** Do the task blocks of the member go out to this calendar? Absent on the wire means yes. */
+  push_tasks: boolean;
 }
 
 /** A connected mailbox of the member that has no calendar connection yet (CE-10d). */
@@ -126,10 +128,24 @@ export function syncFailedLine(row: CalendarConnection): string {
 export function connectedLine(row: CalendarConnection): string {
   if (hasSyncError(row)) return `Connected as ${row.account_email}. ${syncFailedLine(row)}`;
   const reading = `Reading your calendars, ${plural(row.entry_count, "event", "events")} so far.`;
-  const tasks = row.metorite_calendar
-    ? "Your tasks go to the 'Metorite' calendar."
-    : "Your tasks go to a 'Metorite' calendar when you schedule one.";
+  const tasks = !row.push_tasks
+    ? PUSH_OFF_LINE
+    : row.metorite_calendar
+      ? "Your tasks go to the 'Metorite' calendar."
+      : "Your tasks go to a 'Metorite' calendar when you schedule one.";
   return `Connected as ${row.account_email}. ${reading} ${tasks}`;
+}
+
+/** The row line while the switch is off. */
+export const PUSH_OFF_LINE = "Your tasks do not go to this calendar.";
+/** The note after the member turns the switch off. The server note wins when it sends one. */
+export const PUSH_OFF_NOTE = "Your tasks no longer go to this calendar. The events already there stay.";
+export const PUSH_NOT_AVAILABLE_LINE = "This setting is not available. Reload the page.";
+export const PUSH_FAILED_LINE = "Metorite could not save this. Try again.";
+
+/** The label of the switch of a row. It names the provider. */
+export function pushSwitchLabel(provider: Provider): string {
+  return `Show my Metorite tasks in ${provider === "google" ? "Google Calendar" : "Outlook"}`;
 }
 
 export function reconnectLine(provider: Provider): string {
@@ -309,6 +325,7 @@ function parseRow(v: unknown): CalendarConnection | null {
     last_error: typeof v.last_error === "string" ? v.last_error : null,
     metorite_calendar: v.metorite_calendar === true,
     entry_count: typeof v.entry_count === "number" ? v.entry_count : 0,
+    push_tasks: v.push_tasks !== false,
   };
 }
 
@@ -413,6 +430,35 @@ export async function disconnect(id: string, fetchImpl: typeof fetch = fetch): P
     return { kind: "ok", removed: isObject(body) && typeof body.removed_entries === "number" ? body.removed_entries : 0 };
   } catch {
     return { kind: "error", message: OFFLINE_LINE };
+  }
+}
+
+export type PushOutcome =
+  | { kind: "ok"; connection: CalendarConnection; note: string | null }
+  | { kind: "error"; message: string };
+
+/** Turn the task write-out of one connection on or off. Reading the events is not affected. */
+export async function setPushTasks(
+  id: string,
+  value: boolean,
+  fetchImpl: typeof fetch = fetch,
+): Promise<PushOutcome> {
+  if (!isConnectionId(id)) return { kind: "error", message: PUSH_NOT_AVAILABLE_LINE };
+  try {
+    const res = await fetchImpl(`/api/calendar/connections/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ push_tasks: value }),
+    });
+    if (res.status === 404) return { kind: "error", message: PUSH_NOT_AVAILABLE_LINE };
+    if (!res.ok) return { kind: "error", message: PUSH_FAILED_LINE };
+    const body: unknown = await res.json().catch(() => null);
+    const connection = parseRow(body);
+    if (!connection) return { kind: "error", message: PUSH_FAILED_LINE };
+    const note = isObject(body) && typeof body.note === "string" && body.note ? body.note : null;
+    return { kind: "ok", connection, note };
+  } catch {
+    return { kind: "error", message: PUSH_FAILED_LINE };
   }
 }
 
