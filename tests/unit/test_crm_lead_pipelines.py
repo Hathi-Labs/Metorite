@@ -797,14 +797,20 @@ def test_the_status_undo_and_delete_take_the_create_lock_first() -> None:
     change-log row, then a status or pipeline row. Each Undo takes the lock
     before it locks its own change-log row (``undo_change``). The status Undo
     and the delete helper take it before the status row, and the routes that
-    put a stage in a pipeline or take it out take it first. Mutation: move
-    any of these locks after the row read -> red."""
+    put a stage in a pipeline or take it out take it first. CRM-M3b repair
+    3: the status PATCH of a deal stage takes it before the stage row, because
+    it locks the memberships of the stage after that row. The R8 proof is
+    ``test_crm_pipelines_native.py::test_a_status_patch_and_a_pipeline_copy_at_one_moment_never_deadlock``.
+    Mutation: move any of these locks after the row read -> red."""
     import inspect
 
     from gateway.routes.crm import admin, change_log, pipelines
 
     undo_change = inspect.getsource(change_log.undo_change)
     assert undo_change.index("lock_pipeline_creates(") < undo_change.index("FOR UPDATE")
+    patch = inspect.getsource(admin.patch_status_in)
+    assert patch.index("lock_pipeline_creates(") < patch.index("require_row(")
+    assert patch.index("require_row(") < patch.index("update_row(")
     for write in (pipelines.add_stage_in, pipelines.remove_stage_in):
         source = inspect.getsource(write)
         assert source.index("lock_pipeline_creates(") < source.index("_native_pipeline("), write
@@ -1301,6 +1307,17 @@ _DEAL_ORDERS: tuple[tuple[str, ...], ...] = (
     ("take_out", "rename", "hide", "undo_s", "delete_s", "undo_p"),
     ("undo_take_out", "undo_s"),
     ("delete_s", "take_out", "undo_take_out", "undo_s"),
+    # CRM-M3b: the win chance of S in P (`edit_chance`). The edit row holds
+    # no status, so the Undo of S or P never waits on it. Its own Undo
+    # answers 409 `gone` while S is out of P, and works again after the
+    # Undo of the take-out.
+    ("edit_chance", "undo_s", "undo_p"),
+    ("edit_chance", "take_out", "undo_edit_chance", "undo_take_out", "undo_p"),
+    ("edit_chance", "undo_p", "undo_edit_chance"),
+    ("take_out", "edit_chance", "undo_take_out", "edit_chance", "delete_s", "undo_p"),
+    # CRM-M3b round 2 (P2): the old route sets the value that P holds, so it
+    # writes no membership. Its Undo never fans out, so the edit still undoes.
+    ("edit_chance", "chance_all", "undo_chance_all", "undo_edit_chance", "undo_p"),
 )
 _LEAD_ORDERS: tuple[tuple[str, ...], ...] = (
     ("undo_s", "undo_p"),
@@ -1354,11 +1371,19 @@ async def _run_order(p: Any, admin: Any, kind: str, how: str, ops: tuple[str, ..
     #: The Undo of each kind of op: the area and the action of its row.
     undoes = {"undo_s": (_area(kind), "create"), "undo_p": ("pipeline", "create"),
               "undo_take_out": ("pipeline_stage", "delete"),
-              "undo_rename": ("pipeline", "change"), "undo_hide": (_area(kind), "change")}
+              "undo_rename": ("pipeline", "change"), "undo_hide": (_area(kind), "change"),
+              "undo_edit_chance": ("pipeline_stage", "change"),
+              "undo_chance_all": (_area(kind), "change")}
     writes = {"delete_s": ("DELETE", f"/crm/statuses/{kind}/{sid}", None),
               "take_out": ("DELETE", f"/crm/pipelines/{pid}/stages/{sid}", None),
               "rename": ("PATCH", f"/crm/pipelines/{pid}", {"name": f"{p_name} 2"}),
-              "hide": ("PATCH", f"/crm/statuses/{kind}/{sid}", {"hidden": True})}
+              "hide": ("PATCH", f"/crm/statuses/{kind}/{sid}", {"hidden": True}),
+              # CRM-M3b: the win chance of S in P only (deal orders).
+              "edit_chance": ("PATCH", f"/crm/pipelines/{pid}/stages/{sid}",
+                              {"probability": 35, "max_dwell_days": 6}),
+              # The old route, for every pipeline of S (deal orders).
+              "chance_all": ("PATCH", f"/crm/statuses/{kind}/{sid}",
+                             {"probability": 35, "max_dwell_days": 6})}
     for op in ops:
         if op in writes:
             method, path, payload = writes[op]

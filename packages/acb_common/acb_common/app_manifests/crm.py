@@ -269,6 +269,10 @@ CRM = App(
               planned="CRM-M2j", off_door=_SETUP),
         Route("DELETE", "/crm/pipelines/{pipeline_id}/stages/{status_id}", "", "C",
               planned="CRM-M2j", off_door=_SETUP),
+        # CRM-M3b: the win chance and the warning days of a stage in one
+        # pipeline. It ships dark with no UI, and CRM-M2j gives the chat its tool.
+        Route("PATCH", "/crm/pipelines/{pipeline_id}/stages/{status_id}", "", "B",
+              planned="CRM-M2j", off_door=_SETUP),
         # ── source-profile ──
         Route("GET", "/crm/source-profile", "", "A", planned="CRM-M2l", off_door=_DOOR_READ),
         # ── questions ──

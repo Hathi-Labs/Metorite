@@ -8,13 +8,34 @@ Spec: ``project-docs/specs/crm_platform.md`` §18.3 and §18.5.
     GET    /crm/pipelines/preview                      what a create would make; it reads only
     PATCH  /crm/pipelines/{id}                         rename (Native mode, admin)
     POST   /crm/pipelines/{id}/stages                  add a stage (Native mode, admin)
+    PATCH  /crm/pipelines/{id}/stages/{status_id}      the win chance and the warning
+                                                       days in one pipeline (CRM-M3b)
     DELETE /crm/pipelines/{id}/stages/{status_id}      remove a stage (Native mode, admin)
     GET    /crm/source-profile                         the shape of the customer's Zoho
 
 **A pipeline is not an object in Zoho.** It is an ordered list of deal stages.
 A stage (``crm_deal_statuses``) stays one global list, and
 ``crm_pipeline_stages`` says which stages sit in which pipeline, in what order.
-So the same stage can sit in two pipelines, and the stage keeps one probability.
+So the same stage can sit in two pipelines.
+
+**The win chance and the warning days of a stage in a pipeline** (WS-CRM
+CRM-M3b, D166, migration 410). They sit on the membership row
+(``crm_pipeline_stages.probability`` and ``max_dwell_days``), and NULL there
+reads the stage row. So a win chance edited in one pipeline does not change
+the other. ``PATCH /crm/pipelines/{id}/stages/{status_id}`` sets them, Native
+mode and an admin only, behind ``CRM_PIPELINES_ORGS``, with the clamp of
+D-CRM-10. It logs one ``pipeline_stage`` row with the action ``change``, and
+its Undo puts the old values back. The old route
+``PATCH /crm/statuses/deal/{id}`` sets a value for every pipeline: it writes
+the stage row and each membership (``core.fan_out_stage_values``). Each new
+membership copies the values: of the copied pipeline on a copy, else of the
+stage row. A take-out keeps them in its row, and its Undo puts them back.
+Each copied or restored value must pass the rules of the stage now, else it
+is NULL (``core.fitted_value_sql``), so no pipeline shows a ``won`` stage
+below 100. A type change gives NULL to each membership value that the new
+type does not take (``core.clamp_stage_memberships``). So the Undo of an edit
+or of a stage add counts a NULL that the clamp wrote as its own value, and
+never refuses for the clamp (CRM-M3b round 2).
 
 **Who may do what.** ``GET /crm/pipelines`` is open to each member the CRM access
 rule admits, because every board needs it. The three writes need
@@ -90,7 +111,6 @@ from gateway.routes.crm import change_log
 from gateway.routes.crm.access import ADMIN_PERMISSION
 from gateway.routes.crm.admin import (
     _NAME_INDEX,
-    CLAMPED_PROBABILITY,
     STATUS_AREAS,
     STATUS_LOG_KEYS,
     _violates,
@@ -100,28 +120,34 @@ from gateway.routes.crm.admin import (
 )
 from gateway.routes.crm.change_log import Change, Logged, log_change, quoted
 from gateway.routes.crm.core import (
+    CLAMPED_PROBABILITY,
     EFFECTIVE_STATUS_COLUMNS,
+    MEMBERSHIP_COLUMNS,
+    PIPELINE_STAGE_COLUMNS,
     STATUS_TYPES,
     WEIGHTED_TYPES,
     _tenant_session,
     assert_writable,
     checked_uuid,
+    copied_values_sql,
     current_tenant,
     default_pipeline_id,
+    fit_member_values,
     insert_row,
     load_row,
     lock_pipeline_creates,
     pipelines_holding,
     provider_link_context,
     require_deal_pipeline,
-    require_row,
+    restored_values_sql,
     router,
     update_row,
 )
 from gateway.routes.crm.flags import require_crm_mirror, require_crm_pipelines
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from gateway.routes.projects.core import is_transient
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, TypeAdapter, ValidationError
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 ADMIN_ONLY = [require_permission(ADMIN_PERMISSION)]
 
@@ -134,8 +160,12 @@ class PipelineStageModel(BaseModel):
     name: str
     position: int = 0
     type: str = "open"
+    #: CRM-M3b: the win chance of the stage in THIS pipeline (D166).
     probability: int | None = None
     forecast_category: str | None = None
+    #: CRM-M3b: the warning days of the stage in THIS pipeline. ``None``: the
+    #: stage never shows the warning. A lead status has none.
+    max_dwell_days: int | None = None
 
 
 class PipelineModel(BaseModel):
@@ -317,6 +347,8 @@ _PIPELINES_SQL = (
 #: CRM-C3: the stage columns come from the one SELECT list, so
 #: ``probability`` is the effective value (§20.6 item 6). CRM-C7 reads this.
 #: CRM-M4a: one statement for each kind, over its own two tables.
+#: CRM-M3b: a deal stage reads the values of its membership ``ps``
+#: (``core.PIPELINE_STAGE_COLUMNS``), so one pipeline shows its own win chance.
 _STAGES_SQL = (
     "SELECT ps.pipeline_id, ps.position AS stage_position, "
     "{columns} "
@@ -326,9 +358,12 @@ _STAGES_SQL = (
 
 
 def _stages_sql(kind: PipelineKind) -> str:
+    columns = (
+        PIPELINE_STAGE_COLUMNS if kind.status_kind == "deal"
+        else EFFECTIVE_STATUS_COLUMNS[kind.status_table]
+    )
     return _STAGES_SQL.format(
-        columns=EFFECTIVE_STATUS_COLUMNS[kind.status_table],
-        stages=kind.stages_table, table=kind.status_table,
+        columns=columns, stages=kind.stages_table, table=kind.status_table,
     )
 
 
@@ -340,6 +375,7 @@ def _stage(row: Any) -> PipelineStageModel:
         type=getattr(row, "type", "open") or "open",
         probability=getattr(row, "probability", None),
         forecast_category=getattr(row, "forecast_category", None),
+        max_dwell_days=getattr(row, "max_dwell_days", None),
     )
 
 
@@ -867,7 +903,19 @@ async def create_pipeline_in(
             )) from None
         made.append(_Planned(str(row.id), str(row.name), str(row.type), stage.source))
     await assert_writable(db, current_tenant(), kind.stages_table, creating=True)
+    source = checked_uuid(payload.copy_from, "copy_from") if payload.copy_from else None
     for place, stage in enumerate(made):
+        if kind.status_kind == "deal":
+            # CRM-M3b: a deal membership takes the win chance and the warning
+            # days of the copied pipeline, else of the stage row.
+            await db.execute(text(
+                "INSERT INTO crm_pipeline_stages (pipeline_id, status_id, position, "
+                f"probability, max_dwell_days) SELECT CAST(:p AS uuid), s.id, :pos, "
+                f"{copied_values_sql('src')} FROM crm_deal_statuses s "
+                "LEFT JOIN crm_pipeline_stages src ON src.status_id = s.id "
+                "AND src.pipeline_id = CAST(:src AS uuid) WHERE s.id = CAST(:s AS uuid)"
+            ), {"p": str(pipeline.id), "s": stage.id, "pos": place, "src": source})
+            continue
         await db.execute(text(
             f"INSERT INTO {kind.stages_table} (pipeline_id, status_id, position) "
             "VALUES (CAST(:p AS uuid), CAST(:s AS uuid), :pos)"
@@ -1111,7 +1159,7 @@ _PLACE_SQL = (
 
 async def add_stage_in(
     db: Any, user: Any, pipeline_id: str, status_id: str, position: int | None,
-    *, undoes: str | None = None,
+    *, undoes: str | None = None, restore: dict[str, Any] | None = None,
 ) -> bool:
     """The write of ``POST /crm/pipelines/{id}/stages``, in the caller's
     transaction. The route and the Undo of a removal both call it. It logs
@@ -1119,10 +1167,27 @@ async def add_stage_in(
     returns whether it did. A write of another request that put the stage
     there first, between the check and the INSERT, makes the INSERT do
     nothing, so no row is logged. It takes the pipeline create lock first
-    (CRM-M4a repair 3), because it changes who holds the stage."""
+    (CRM-M4a repair 3), because it changes who holds the stage.
+
+    CRM-M3b: the new membership copies the win chance and the warning days
+    of the stage row. *restore* holds the values of a membership that the
+    Undo of a take-out puts back, as the take-out row stored them.
+
+    Repair 1: each value must pass the rules of the stage NOW
+    (``core.fitted_value_sql``), else it is NULL and reads the stage row. A
+    stage that became ``won`` after the take-out comes back at 100, never at
+    its old win chance. The stage row is read ``FOR SHARE``, so a type change
+    of another request waits for this INSERT, or this INSERT reads the new
+    type. ``FOR SHARE`` lets a deal write keep its key lock on the stage."""
     await lock_pipeline_creates(db)
     pipeline = await _native_pipeline(db, pipeline_id)
-    stage = await require_row(db, "crm_deal_statuses", status_id, "Status")
+    stage = (await db.execute(
+        text("SELECT id, name, type FROM crm_deal_statuses "
+             "WHERE id = CAST(:s AS uuid) FOR SHARE"),
+        {"s": status_id},
+    )).fetchone()
+    if stage is None:
+        raise HTTPException(status_code=404, detail="Status not found")
     await assert_writable(db, current_tenant(), "crm_pipeline_stages")
     if (await db.execute(text(_PLACE_SQL), {"p": pipeline_id, "s": status_id})).first():
         return False  # It sits there already, and keeps its place.
@@ -1134,13 +1199,20 @@ async def add_stage_in(
             ),
             {"p": pipeline_id},
         )).scalar() or 1)
+    if restore is None:
+        values_sql, kept = copied_values_sql(), {}
+    else:
+        values_sql = restored_values_sql()
+        kept = {c: restore.get(c) for c in MEMBERSHIP_COLUMNS}
     inserted = (await db.execute(
         text(
-            "INSERT INTO crm_pipeline_stages (pipeline_id, status_id, position) "
-            "VALUES (CAST(:p AS uuid), CAST(:s AS uuid), :pos) "
-            "ON CONFLICT (pipeline_id, status_id) DO NOTHING RETURNING position"
+            "INSERT INTO crm_pipeline_stages (pipeline_id, status_id, position, "
+            f"probability, max_dwell_days) SELECT CAST(:p AS uuid), s.id, :pos, {values_sql} "
+            "FROM crm_deal_statuses s WHERE s.id = CAST(:s AS uuid) "
+            "ON CONFLICT (pipeline_id, status_id) DO NOTHING "
+            "RETURNING position, probability, max_dwell_days"
         ),
-        {"p": pipeline_id, "s": status_id, "pos": position},
+        {"p": pipeline_id, "s": status_id, "pos": position, **kept},
     )).first()
     if inserted is None:
         return False  # Another write put it there first. This one changed nothing.
@@ -1151,7 +1223,8 @@ async def add_stage_in(
             f"{quoted(pipeline.name)}"
         ),
         ladder=change_log.TEAM, entity_id=str(pipeline_id),
-        after={"status_id": status_id, "position": position, "stage": stage.name},
+        after={"status_id": status_id, "position": position, "stage": stage.name,
+               **{c: getattr(inserted, c, None) for c in MEMBERSHIP_COLUMNS}},
     ), undoes=undoes)
     return True
 
@@ -1211,7 +1284,7 @@ async def remove_stage_in(
     place = (await db.execute(
         text(
             "DELETE FROM crm_pipeline_stages WHERE pipeline_id = CAST(:p AS uuid) "
-            "AND status_id = CAST(:s AS uuid) RETURNING position"
+            "AND status_id = CAST(:s AS uuid) RETURNING position, probability, max_dwell_days"
         ),
         {"p": pipeline_id, "s": status_id},
     )).first()
@@ -1219,13 +1292,244 @@ async def remove_stage_in(
         return False  # It was not there, or another write took it. Nothing changed here.
     stage = await load_row(db, "crm_deal_statuses", status_id)
     name = getattr(stage, "name", None) or "a stage"
+    # CRM-M3b: "before" keeps the win chance and the warning days of the
+    # membership, so the Undo puts them back.
     await log_change(db, user, Change(
         area="pipeline_stage", action=change_log.DELETE,
         summary=f"Took the stage {quoted(name)} out of the pipeline {quoted(pipeline.name)}",
         ladder=change_log.TEAM, entity_id=str(pipeline_id),
-        before={"status_id": status_id, "position": int(place.position or 0), "stage": name},
+        before={"status_id": status_id, "position": int(place.position or 0), "stage": name,
+                **{c: getattr(place, c, None) for c in MEMBERSHIP_COLUMNS}},
     ), undoes=undoes)
     return True
+
+
+# ── The win chance and the warning days of a stage in a pipeline (CRM-M3b) ──
+
+
+class StageValuesIn(BaseModel):
+    """``PATCH /crm/pipelines/{id}/stages/{status_id}``: one value or both.
+
+    Whole numbers only, so ``"40"``, ``40.0`` and ``true`` each give 422. No
+    other key: the actor, the tenant and ``via`` never come from the body
+    (R11)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: The win chance of the stage in this pipeline, 0 to 100.
+    probability: StrictInt | None = None
+    #: The days before the warning, 1 to 32767. ``null`` turns it off.
+    max_dwell_days: StrictInt | None = None
+
+
+#: The words of each value in a summary.
+_VALUE_WORDS: dict[str, str] = {"probability": "win chance", "max_dwell_days": "warning days"}
+
+#: The membership of one stage in one pipeline, locked until the write.
+_MEMBERSHIP_SQL = (
+    "SELECT position, probability, max_dwell_days FROM crm_pipeline_stages "
+    "WHERE pipeline_id = CAST(:p AS uuid) AND status_id = CAST(:s AS uuid) FOR UPDATE"
+)
+
+#: The words of a membership that is gone. The status code is 404 for the
+#: route and 409 for an Undo.
+_NOT_IN_PIPELINE = (
+    "The stage {stage} is not in the pipeline {pipeline}. Add the stage to the "
+    "pipeline first, or pick a stage that the pipeline lists."
+)
+
+
+def _check_stage_values(values: dict[str, Any], stage: Any, *, undo: bool = False) -> None:
+    """422 for a value that the route does not take, with words that say what
+    to do. The clamp of D-CRM-10 judges the state that the write leaves: a
+    ``won`` stage forecasts 100 and a ``lost`` stage 0, in each pipeline.
+
+    With *undo*, NULL passes for each value: the Undo of an edit puts back a
+    membership that followed the stage row, and the old route keeps that row
+    clamped (repair 3). A number gets every check of the route."""
+    if not values:
+        raise HTTPException(status_code=422, detail=(
+            "Send the win chance (probability), the warning days (max_dwell_days), "
+            "or both."
+        ))
+    if undo:
+        values = {c: v for c, v in values.items() if v is not None}
+    if "probability" in values:
+        chance = values["probability"]
+        if chance is None or not 0 <= int(chance) <= 100:
+            raise HTTPException(status_code=422, detail=(
+                "A win chance is a whole number from 0 to 100. Send a number in "
+                "that range."
+            ))
+        pinned = CLAMPED_PROBABILITY.get(str(getattr(stage, "type", "") or ""))
+        if pinned is not None and int(chance) != pinned:
+            raise HTTPException(status_code=422, detail=(
+                f"A '{stage.type}' stage always forecasts {pinned}%, in every "
+                f"pipeline. Set the win chance to {pinned}, or give the stage "
+                "another type first (D-CRM-10)."
+            ))
+    if "max_dwell_days" in values:
+        days = values["max_dwell_days"]
+        if days is not None and not 1 <= int(days) <= 32767:
+            raise HTTPException(status_code=422, detail=(
+                "'max_dwell_days' is a whole number of days from 1 to 32767, or "
+                "null for a stage that never shows the warning."
+            ))
+        limit = getattr(stage, "max_dwell_days", None)
+        if days is None and limit is not None:
+            # NULL on a membership reads the stage row (migration 410), so it
+            # cannot mean "never" while the stage row holds a limit.
+            raise HTTPException(status_code=422, detail=(
+                f"The stage {quoted(stage.name)} shows the warning after {limit} "
+                "days in each pipeline, so one pipeline cannot turn it off yet. Set "
+                "a number of days for this pipeline, or turn the warning off for "
+                "the stage in CRM settings."
+            ))
+
+
+@router.patch(
+    "/pipelines/{pipeline_id}/stages/{status_id}", response_model=PipelineModel,
+    dependencies=[Depends(require_crm_pipelines), *ADMIN_ONLY],
+)
+async def set_pipeline_stage_values(
+    pipeline_id: str, status_id: str, payload: StageValuesIn, request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> PipelineModel:
+    """Set the win chance or the warning days of one stage in ONE deal
+    pipeline (CRM-M3b, D166). Each other pipeline that holds the stage keeps
+    its own values. Native mode and an admin only, behind
+    ``CRM_PIPELINES_ORGS``. Mirror mode answers 409, because Zoho owns the
+    stages. A lead pipeline, or a stage that the pipeline does not list,
+    answers 404. A lock that another write holds answers 409, and the words
+    say to try again."""
+    wanted = checked_uuid(pipeline_id, "pipeline_id")
+    stage = checked_uuid(status_id, "status_id")
+    values = payload.model_dump(exclude_unset=True)
+    via = await change_log.via_of(request)
+    try:
+        async with _tenant_session() as db:
+            await set_stage_values_in(db, user, wanted, stage, values, via=via)
+            return await _one(db, wanted)
+    except DBAPIError as exc:
+        if not is_transient(exc):
+            raise
+        raise _refuse(409, "try_again", (
+            "Someone changed this pipeline at the same moment, so nothing changed. "
+            "Try again."
+        )) from exc
+
+
+async def set_stage_values_in(
+    db: Any, user: Any, pipeline_id: str, status_id: str, values: dict[str, Any],
+    *, undoes: str | None = None, via: str = change_log.VIA_UI,
+) -> bool:
+    """The write of ``PATCH /crm/pipelines/{id}/stages/{status_id}``, in the
+    caller's transaction. The route and the Undo of the change both call it,
+    so an Undo meets every check of the route. It logs one ``pipeline_stage``
+    row when a value changes, and returns whether one did.
+
+    The lock order of CRM-M4a: the pipeline create lock, then the membership
+    row ``FOR UPDATE``, then the read of the stage row. A type change of the
+    stage locks the memberships too, so the clamp of D-CRM-10 reads one state.
+    Ids compare as canonical UUIDs (:func:`checked_uuid`).
+
+    Repair 3: "before" holds the STORED value of the membership, and NULL
+    there means "follow the stage row". So the Undo puts NULL back, and the
+    pipeline follows the stage row again. A value that the pipeline shows
+    already changes nothing and logs nothing. "after" names no ``stage``, so
+    Change history shows only the values that changed (repair 8)."""
+    await lock_pipeline_creates(db)
+    try:
+        pipeline = await _native_pipeline(db, pipeline_id)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        raise _refuse(404, "no_pipeline", (
+            "There is no deal pipeline with that id. Pick a deal pipeline in CRM "
+            "settings. A lead pipeline has no win chance for each status."
+        )) from None
+    await assert_writable(db, current_tenant(), "crm_pipeline_stages", values)
+    member = (await db.execute(
+        text(_MEMBERSHIP_SQL), {"p": pipeline_id, "s": status_id},
+    )).first()
+    stage = await load_row(db, "crm_deal_statuses", status_id)
+    if stage is None:
+        raise _refuse(404, "no_stage", (
+            "There is no deal stage with that id. Pick a stage of the pipeline."
+        ))
+    if member is None:
+        raise _refuse(404, "stage_not_in_pipeline", _NOT_IN_PIPELINE.format(
+            stage=quoted(stage.name), pipeline=quoted(pipeline.name)))
+    _check_stage_values(values, stage, undo=undoes is not None)
+    stored = {c: getattr(member, c, None) for c in values}
+    changed = [c for c in values if _changes_value(c, stored[c], values[c], stage)]
+    if not changed:
+        return False
+    await db.execute(
+        text(
+            "UPDATE crm_pipeline_stages SET "
+            + ", ".join(f"{c} = :{c}" for c in changed)
+            + " WHERE pipeline_id = CAST(:p AS uuid) AND status_id = CAST(:s AS uuid)"
+        ),
+        {**{c: values[c] for c in changed}, "p": pipeline_id, "s": status_id},
+    )
+    await log_change(db, user, _values_change(
+        pipeline_id, pipeline, stage, status_id,
+        {c: stored[c] for c in changed}, {c: values[c] for c in changed},
+    ), undoes=undoes, via=via)
+    return True
+
+
+def _values_change(
+    pipeline_id: str, pipeline: Any, stage: Any, status_id: str,
+    stored: dict[str, Any], written: dict[str, Any],
+) -> Change:
+    """The ``pipeline_stage`` row of a value edit in one pipeline: *stored*
+    is the value of each column before, *written* the value after."""
+    words = ", ".join(_VALUE_WORDS[c] for c in written)
+    return Change(
+        area="pipeline_stage", action=change_log.CHANGE,
+        summary=(
+            f"Changed the stage {quoted(stage.name)} in the pipeline "
+            f"{quoted(pipeline.name)}: {words}"
+        ),
+        ladder=change_log.TEAM, entity_id=str(pipeline_id),
+        # The name of the stage sits in "before" only, for the words of the Undo.
+        before={"status_id": status_id, "stage": stage.name, **stored},
+        after={"status_id": status_id, **written},
+    )
+
+
+async def _still_holds(
+    db: Any, status_id: str, stored: dict[str, Any], logged: dict[str, Any],
+) -> bool:
+    """True when each membership value of *logged* still sits in *stored*,
+    or the clamp took it (CRM-M3b round 2).
+
+    The clamp took a value when the membership holds NULL and the logged
+    value fails the rules of the stage NOW (``core.fitted_value_sql``). Only
+    a write that fits a value to the clamp puts NULL there in its place. So
+    the Undo of an edit or of a stage add never refuses for the clamp. A
+    value that changed for another reason still refuses."""
+    fitted = await fit_member_values(db, status_id, logged)
+    return all(
+        stored.get(c) == v or (stored.get(c) is None and fitted.get(c) is None)
+        for c, v in logged.items()
+    )
+
+
+def _changes_value(column: str, stored: Any, wanted: Any, stage: Any) -> bool:
+    """True when writing *wanted* over the *stored* value of a membership
+    changes what the pipeline holds (repair 3).
+
+    A number changes it when the pipeline shows another value: its own, else
+    the value of the stage row. NULL (an Undo only) changes it when the
+    membership holds a number, because the pipeline then follows the stage
+    row again."""
+    if wanted is None:
+        return stored is not None
+    shown = stored if stored is not None else getattr(stage, column, None)
+    return shown != wanted
 
 
 # ── The Undo of a change (CRM-M1) ───────────────────────────────────────────
@@ -1278,28 +1582,45 @@ async def _undo_pipeline(db: Any, user: Any, logged: Logged) -> None:
     )
 
 
+#: The keys of an added stage that its Undo checks. The win chance and the
+#: warning days are there since CRM-M3b, so an edit after the add must be
+#: undone first. A row from before CRM-M3b names neither, and is checked on
+#: the place alone.
+_ADDED_KEYS: tuple[str, ...] = ("status_id", "position", *MEMBERSHIP_COLUMNS)
+
+
 @change_log.undoes("pipeline_stage")
 async def _undo_stage(db: Any, user: Any, logged: Logged) -> None:
-    """An added stage goes out. A removed stage goes back at its old place.
-    The pipeline row and the place of the stage are locked first."""
+    """An added stage goes out. A removed stage goes back at its old place,
+    with its win chance and its warning days. A changed value goes back
+    (CRM-M3b). The pipeline row and the place of the stage are locked first."""
     pipeline_id = str(logged.entity_id or "")
-    if await load_row(db, "crm_pipelines", pipeline_id, lock=True) is None:
+    pipeline = await load_row(db, "crm_pipelines", pipeline_id, lock=True)
+    if pipeline is None:
         raise change_log.gone(logged.area)
     if logged.action == change_log.CREATE:
         after = logged.after or {}
         status_id = str(after.get("status_id") or "")
         place = (await db.execute(
-            text(_PLACE_SQL + " FOR UPDATE"), {"p": pipeline_id, "s": status_id},
+            text(_MEMBERSHIP_SQL), {"p": pipeline_id, "s": status_id},
         )).first()
         # The stage must still sit in the pipeline at the place of this
         # change. The name of the stage in "after" is for the reader only.
+        # Round 2: a value that the clamp took since counts as still there
+        # (:func:`_still_holds`).
+        logged_values = {c: after[c] for c in MEMBERSHIP_COLUMNS if c in after}
         if place is None or not change_log.same_values(
             {"status_id": status_id, "position": int(place.position or 0)},
-            {k: after[k] for k in ("status_id", "position") if k in after},
+            {k: after[k] for k in _ADDED_KEYS if k in after and k not in logged_values},
+        ) or not await _still_holds(
+            db, status_id, {c: getattr(place, c, None) for c in logged_values}, logged_values,
         ):
             raise change_log.changed_since()
         if not await remove_stage_in(db, user, pipeline_id, status_id, undoes=logged.id):
             raise change_log.changed_since()
+        return
+    if logged.action == change_log.CHANGE:
+        await _undo_stage_values(db, user, pipeline_id, pipeline, logged)
         return
     before = logged.before or {}
     status_id = str(before.get("status_id") or "")
@@ -1308,13 +1629,131 @@ async def _undo_stage(db: Any, user: Any, logged: Logged) -> None:
         raise change_log.gone("deal_stage")
     if (await db.execute(text(_PLACE_SQL), {"p": pipeline_id, "s": status_id})).first():
         raise change_log.changed_since()
+    # CRM-M3b: the stored values go back, each only if it passes the rules
+    # of the stage now (repair 1, ``core.fitted_value_sql``). A value that
+    # fails goes back as NULL, so the Undo never stays stuck. A row from
+    # before CRM-M3b names none, and the stage copies the values of its
+    # stage row.
+    restore = (
+        {c: before[c] for c in MEMBERSHIP_COLUMNS}
+        if all(c in before for c in MEMBERSHIP_COLUMNS) else None
+    )
     # False: another request put the stage back between the check and the
     # INSERT. That is a change since, and not an Undo with no row.
     if not await add_stage_in(
         db, user, pipeline_id, status_id, int(before.get("position") or 0),
-        undoes=logged.id,
+        undoes=logged.id, restore=restore,
     ):
         raise change_log.changed_since()
+
+
+async def _undo_stage_values(
+    db: Any, user: Any, pipeline_id: str, pipeline: Any, logged: Logged,
+) -> None:
+    """The Undo of a win chance or warning days edit in one pipeline (CRM-M3b).
+
+    The membership must still hold the values of "after", or NULL where the
+    clamp took a value (:func:`_still_holds`), else 409 ``changed_since``.
+    "before" holds the stored values (repair 3), so the Undo puts NULL back
+    where the membership followed the stage row. A stage that is deleted
+    answers 409 ``gone``, and the words say that the change cannot come back.
+    A membership that is gone answers 409 ``gone`` too, and the change stays
+    open: the Undo of the take-out puts the stage back, and then this Undo
+    works. It goes back through :func:`set_stage_values_in`, the helper of
+    the route.
+
+    Round 2: the Undo never refuses for the clamp. A stored value that
+    fails the rules of the stage NOW goes back as NULL
+    (``core.fit_member_values``), as each other Undo does. A stage repair
+    (``stage_metadata.apply_repair``) changes a type with no change row, so a
+    refusal there would stay for ever. When the pipeline shows already what
+    the Undo puts back, the Undo writes nothing and logs its row.
+
+    Repair 3: an Undo out of order can meet a NULL that the clamp wrote while
+    the stage had another type, after the type came back. It still refuses,
+    and the words say that the type change replaced the value
+    (:func:`_clamp_replaced`), not "Undo the newer change first"."""
+    before, after = logged.before or {}, logged.after or {}
+    status_id = str(after.get("status_id") or before.get("status_id") or "")
+    columns = [c for c in MEMBERSHIP_COLUMNS if c in after]
+    name = quoted(before.get("stage") or after.get("stage") or "a stage")
+    # The stage row before its membership: the order of a stage edit
+    # (``admin.patch_status_in``) and of its Undo, so none waits in a cycle.
+    stage = await load_row(db, "crm_deal_statuses", status_id, lock=True)
+    if stage is None:
+        # A status delete removes each membership of the stage too, so no
+        # take-out is left to undo (repair 7).
+        raise _refuse(409, "gone", (
+            f"The stage {name} was deleted, so this change cannot come back."
+        ))
+    member = (await db.execute(
+        text(_MEMBERSHIP_SQL), {"p": pipeline_id, "s": status_id},
+    )).first()
+    if member is None:
+        raise _refuse(409, "gone", (
+            f"The stage {name} is not in this pipeline now, so this change cannot "
+            "be undone. Undo the change that took it out first, and then undo this."
+        ))
+    stored = {c: getattr(member, c, None) for c in columns}
+    logged_values = {c: after[c] for c in columns}
+    if not await _still_holds(db, status_id, stored, logged_values):
+        if _clamp_replaced(stored, logged_values):
+            raise _refuse(409, "changed_since", (
+                f"A change of the stage type replaced the win chance of {name} in the "
+                f"pipeline {quoted(pipeline.name)}, so this change cannot come back. "
+                "Set the win chance again in that pipeline."
+            ))
+        raise change_log.changed_since()
+    back = await fit_member_values(db, status_id, {c: before.get(c) for c in columns})
+    try:
+        done = await set_stage_values_in(
+            db, user, pipeline_id, status_id, back, undoes=logged.id,
+        )
+    except HTTPException as exc:
+        if exc.status_code != 422:
+            raise
+        raise change_log.changed_since() from None
+    if not done:
+        # The clamp took the value of the edit, and the pipeline shows what
+        # the Undo puts back. Nothing to write: the row records the Undo.
+        await log_change(db, user, _unchanged_values(
+            pipeline_id, pipeline, stage, status_id, columns,
+        ), undoes=logged.id)
+
+
+def _clamp_replaced(stored: dict[str, Any], logged: dict[str, Any]) -> bool:
+    """True when the membership holds NULL in place of the logged win chance,
+    and each other logged value still holds (CRM-M3b repair 3).
+
+    No route writes a NULL win chance. Only the clamp of a stage type puts
+    NULL there in place of a value (``core.fitted_value_sql``). When the type
+    changed back since, the logged value fits again, so :func:`_still_holds`
+    refuses. No open change holds the old value, so "Undo the newer change
+    first" would send the member to a step that does not exist."""
+    return (
+        logged.get("probability") is not None and stored.get("probability") is None
+        and all(stored.get(c) == v for c, v in logged.items() if c != "probability")
+    )
+
+
+def _unchanged_values(
+    pipeline_id: str, pipeline: Any, stage: Any, status_id: str, columns: list[str],
+) -> Change:
+    """The ``pipeline_stage`` row of an edit Undo that wrote nothing (CRM-M3b
+    repair 3). It names no value, because no value changed. So Change
+    history shows no "None → None" line. "before" keeps the stage name, as
+    each row of :func:`_values_change` does."""
+    words = ", ".join(_VALUE_WORDS[c] for c in columns)
+    return Change(
+        area="pipeline_stage", action=change_log.CHANGE,
+        summary=(
+            f"Nothing changed: the stage {quoted(stage.name)} in the pipeline "
+            f"{quoted(pipeline.name)} already has the {words} that this Undo puts back"
+        ),
+        ladder=change_log.TEAM, entity_id=str(pipeline_id),
+        before={"status_id": status_id, "stage": stage.name},
+        after={"status_id": status_id},
+    )
 
 
 @router.get(

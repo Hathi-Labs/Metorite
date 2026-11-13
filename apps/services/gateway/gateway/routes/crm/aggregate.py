@@ -129,7 +129,9 @@ from gateway.routes.crm.core import (
     Entity,
     _tenant_session,
     current_tenant,
+    default_deal_pipeline_sql,
     is_mirror_mode,
+    read_deal_stages,
     resolve_owner,
     router,
 )
@@ -533,13 +535,16 @@ def _key(value: Any) -> str | None:
 
 async def _weighted(
     db: Any, key_sql: str, label_sql: str, where: str, params: dict[str, Any],
-    group_clause: str = " GROUP BY 1",
+    group_clause: str = " GROUP BY 1", *, pipeline_id: str | None = None,
 ) -> dict[str | None, _Acc]:
     """Weighted ₹ for each key, one statement per open or ongoing lane.
-    With no group, *group_clause* is empty and each lane gives one row."""
-    lanes = (await db.execute(
-        text("SELECT id, type, probability FROM crm_deal_statuses"), {},
-    )).fetchall()
+    With no group, *group_clause* is empty and each lane gives one row.
+
+    CRM-M3b (D166): a deal with no win chance of its own takes the win
+    chance of its stage in the pipeline of the filter, else in the default
+    deal pipeline (``core.read_deal_stages``). The board and the reports read
+    the same lanes, so the three give one number for one deal."""
+    lanes = await read_deal_stages(db, pipeline_id)
     out: dict[str | None, _Acc] = {}
     for lane in lanes:
         if getattr(lane, "type", "open") not in WEIGHTED_TYPES:
@@ -711,6 +716,8 @@ async def _read(
     # The fixed month groups read the zone too. A bound value, never text.
     bound[ZONE_PARAM] = zone
     money = module is None and found is not None and measure in DEAL_MEASURES
+    # CRM-M3b: the weighted lanes read the pipeline of the filter, as the board does.
+    lanes_of = params.pipeline_id if module is None else None
     codes: list[str] = []
     currency: str | None = None
     value_sql, sum_sql, count_sql = MEASURES.get(measure, ""), "0", "0"
@@ -745,12 +752,14 @@ async def _read(
             scoped = _and(where_sql, f"{CURRENCY_SQL} = :agg_currency")
             args = {**bound, "agg_currency": code}
             per[code] = (
-                await _weighted(db, key_sql, label_sql, scoped, args, group_clause)
+                await _weighted(db, key_sql, label_sql, scoped, args, group_clause,
+                                pipeline_id=lanes_of)
                 if measure == "weighted" else await fetch(scoped, args)
             )
         values, currency, codes = split_currencies(per)
     elif measure == "weighted":
-        values = await _weighted(db, key_sql, label_sql, where_sql, bound, group_clause)
+        values = await _weighted(db, key_sql, label_sql, where_sql, bound, group_clause,
+                                 pipeline_id=lanes_of)
     else:
         values = await fetch(where_sql, bound)
     labels = await _labels(db, found, group_by) if found and group_by else {}
@@ -1072,23 +1081,36 @@ _DWELL_SQL = (
     "AND dwell_seconds IS NOT NULL GROUP BY from_status"
 )
 
+#: CRM-M3b (D166): the warning days of the deal's stage in the deal's own
+#: pipeline, else in the default deal pipeline for a deal with none, else the
+#: stage row. The join names the org of the deal on each side, so a read under
+#: a role that row level security does not bind joins no row of another org.
+_STAGE_LIMIT = "COALESCE(ps.max_dwell_days, s.max_dwell_days)"
+_MEMBERSHIP_JOIN = (
+    "LEFT JOIN crm_pipeline_stages ps ON ps.status_id = d.status_id "
+    "AND ps.organization_id = d.organization_id "
+    "AND ps.pipeline_id = COALESCE(d.pipeline_id, "
+    f"{default_deal_pipeline_sql('d.organization_id')}) "
+)
+
 #: The open deals past their limit. ``:days`` replaces each stage's
 #: ``max_dwell_days`` when the caller gives it. A stage with no limit, and a
 #: deal with no stage clock, is never overdue (``board.ts`` rule).
 _OVERDUE_FROM = (
     "FROM crm_deals d JOIN crm_deal_statuses s ON s.id = d.status_id "
+    f"{_MEMBERSHIP_JOIN}"
     "WHERE s.type <> ALL(CAST(:closing AS text[])) "
     "AND d.status_changed_at IS NOT NULL "
-    "AND COALESCE(CAST(:days AS int), CAST(s.max_dwell_days AS int)) IS NOT NULL "
+    f"AND COALESCE(CAST(:days AS int), CAST({_STAGE_LIMIT} AS int)) IS NOT NULL "
     "AND d.status_changed_at < now() - make_interval(days => "
-    "COALESCE(CAST(:days AS int), CAST(s.max_dwell_days AS int)))"
+    f"COALESCE(CAST(:days AS int), CAST({_STAGE_LIMIT} AS int)))"
 )
 
 _OVERDUE_SQL = (
     "SELECT d.id, d.name, d.owner_email, d.amount, d.currency, "
     "s.name AS stage, "
     "EXTRACT(EPOCH FROM (now() - d.status_changed_at)) / 86400.0 AS days_in, "
-    "COALESCE(CAST(:days AS int), CAST(s.max_dwell_days AS int)) AS limit_days "
+    f"COALESCE(CAST(:days AS int), CAST({_STAGE_LIMIT} AS int)) AS limit_days "
     f"{_OVERDUE_FROM} "
     "ORDER BY d.status_changed_at ASC, d.id LIMIT :limit OFFSET :offset"
 )
@@ -1119,7 +1141,7 @@ _MINE = (
 #: no ``:days`` override, so a stage with no limit never fires.
 _MY_OVERDUE_SQL = (
     "SELECT d.id, d.name, s.name AS stage, d.status_changed_at, "
-    "CAST(s.max_dwell_days AS int) AS limit_days "
+    f"CAST({_STAGE_LIMIT} AS int) AS limit_days "
     f"{_OVERDUE_FROM}{_MINE} "
     "ORDER BY d.status_changed_at ASC, d.id LIMIT :limit"
 )
@@ -1246,8 +1268,18 @@ async def stage_dwell(
                 stages=[], overdue=[], overdue_total=0,
                 reason=MIRROR_DWELL_REASON,
             )
+        # CRM-M3b: each stage reads the warning days of the default deal
+        # pipeline, as the overdue rule does for a deal with no pipeline.
         lanes = (await db.execute(
-            text("SELECT * FROM crm_deal_statuses ORDER BY position, name"), {},
+            text(
+                f"SELECT s.id, s.name, s.type, {_STAGE_LIMIT} AS max_dwell_days "
+                "FROM crm_deal_statuses s LEFT JOIN crm_pipeline_stages ps "
+                "ON ps.status_id = s.id AND ps.organization_id = s.organization_id "
+                "AND ps.pipeline_id = "
+                f"{default_deal_pipeline_sql('s.organization_id')} "
+                "ORDER BY s.position, s.name"
+            ),
+            {},
         )).fetchall()
         measured = {
             str(r.name): r

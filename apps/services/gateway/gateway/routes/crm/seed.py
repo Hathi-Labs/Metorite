@@ -82,11 +82,23 @@ _PIPELINE_SQL = (
     "VALUES (CAST(:organization_id AS uuid), :name, 0, true) RETURNING id"
 )
 
+#: CRM-M3b (migration 410): each membership copies the win chance and the
+#: warning days of its stage row. The text of ``core.copied_values_sql()``,
+#: kept here because this module is a leaf. ``test_crm_pipelines_native.py``
+#: holds the two equal. A value that breaks a CHECK of migration 410, or the
+#: clamp of D-CRM-10 for the type of the stage, stays NULL (repair 1).
+COPIED_VALUES = (
+    "CASE WHEN s.probability BETWEEN 0 AND 100 AND (CASE s.type "
+    "WHEN 'lost' THEN s.probability = 0 WHEN 'won' THEN s.probability = 100 "
+    "ELSE true END) THEN s.probability END, "
+    "CASE WHEN s.max_dwell_days >= 1 THEN s.max_dwell_days END"
+)
+
 _PIPELINE_STAGES_SQL = (
     "INSERT INTO crm_pipeline_stages "
-    "(organization_id, pipeline_id, status_id, position) "
+    "(organization_id, pipeline_id, status_id, position, probability, max_dwell_days) "
     "SELECT CAST(:organization_id AS uuid), CAST(:pipeline_id AS uuid), s.id, "
-    "s.position FROM crm_deal_statuses s "
+    f"s.position, {COPIED_VALUES} FROM crm_deal_statuses s "
     "WHERE s.organization_id = CAST(:organization_id AS uuid)"
 )
 

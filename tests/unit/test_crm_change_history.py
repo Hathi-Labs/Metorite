@@ -78,6 +78,10 @@ LOGGED: dict[str, str] = {
     "POST /crm/pipelines/{pipeline_id}/stages": "a stage into a pipeline (team)",
     "DELETE /crm/pipelines/{pipeline_id}/stages/{status_id}":
         "a stage out of a pipeline (team); Undo puts it back",
+    # WS-CRM CRM-M3b: the win chance or the warning days of a stage in one
+    # pipeline (team). Undo puts the old values back.
+    "PATCH /crm/pipelines/{pipeline_id}/stages/{status_id}":
+        "a stage value in one pipeline (team); Undo puts it back",
     "POST /crm/views": "a saved view (own)",
     "PATCH /crm/views/{view_id}": "a saved view edit (own)",
     "DELETE /crm/views/{view_id}": "a saved view delete (own); Undo brings it back",

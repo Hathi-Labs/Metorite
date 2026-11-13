@@ -60,6 +60,7 @@ from gateway.routes.crm.core import (
     current_tenant,
     custom_pairs,
     default_pipeline_id,
+    entry_probability,
     extra_filters,
     from_jsonb,
     has_column,
@@ -371,7 +372,10 @@ async def _resolve_status(
     values["status_id"] = str(status.id)
     if has_column(entity, "probability") and values.get("probability") is None:
         # §3.4 — a deal with no stated probability inherits its stage's default.
-        values["probability"] = getattr(status, "probability", None)
+        # CRM-M3b: the default of the stage in the deal's pipeline.
+        values["probability"] = await entry_probability(
+            db, status, values.get("pipeline_id"),
+        )
     if (
         status.type in CLOSING_TYPES
         and has_column(entity, "closed_at")

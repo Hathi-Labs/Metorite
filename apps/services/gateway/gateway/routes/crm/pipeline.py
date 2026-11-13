@@ -40,6 +40,7 @@ from gateway.routes.crm.core import (
     NEXT_ACTIVITY_SQL,
     NEXT_AT_SQL,
     ORGANIZATIONS,
+    PIPELINE_STAGE_COLUMNS,
     WEIGHTED_SQL,
     WEIGHTED_TYPES,
     DealModel,
@@ -55,6 +56,7 @@ from gateway.routes.crm.core import (
     current_tenant,
     custom_pairs,
     default_pipeline_id,
+    entry_probability,
     extra_filters,
     has_column,
     insert_row,
@@ -65,7 +67,7 @@ from gateway.routes.crm.core import (
     pipeline_scope_sql,
     pipeline_takes_unset,
     project_joined,
-    read_statuses,
+    read_deal_stages,
     record_activity,
     require_deal_pipeline,
     require_row,
@@ -195,8 +197,13 @@ async def apply_status_transition(
         updates["closed_at"] = changed_at
     if has_column(entity, "probability"):
         chosen = patch.get("probability", getattr(record, "probability", None))
-        if chosen is None and getattr(status, "probability", None) is not None:
-            updates["probability"] = status.probability
+        if chosen is None:
+            # CRM-M3b: the win chance of the stage in the deal's pipeline.
+            inherited = await entry_probability(
+                db, status, patch.get("pipeline_id", getattr(record, "pipeline_id", None)),
+            )
+            if inherited is not None:
+                updates["probability"] = inherited
     return updates
 
 
@@ -440,6 +447,7 @@ _NEXT_AT_COLUMN = (
 
 #: The lane rows carry the effective and the source values (CRM-C3, §20.6
 #: item 6). So ``stage_probability`` below binds the effective probability.
+#: A held stage, which the pipeline does not list, reads its stage row.
 _STAGE_COLUMNS = EFFECTIVE_STATUS_COLUMNS["crm_deal_statuses"]
 
 
@@ -460,12 +468,16 @@ async def _board_lanes(
     must already hold EVERY filter, because the held read rebinds its lane
     predicate to the stage row and keeps the rest with the same binds.
     Without a pipeline: every stage.
+
+    CRM-M3b: a listed stage carries the win chance and the warning days of
+    its membership of the pipeline. Without a pipeline, each stage carries
+    those of the default deal pipeline (``core.read_deal_stages``).
     """
     if not pipeline_id:
-        return await read_statuses(db, "crm_deal_statuses")
+        return await read_deal_stages(db)
     listed = (await db.execute(
         text(
-            f"SELECT {_STAGE_COLUMNS}, ps.position AS pipeline_position "
+            f"SELECT {PIPELINE_STAGE_COLUMNS}, ps.position AS pipeline_position "
             "FROM crm_deal_statuses s "
             "JOIN crm_pipeline_stages ps ON ps.status_id = s.id "
             "WHERE ps.pipeline_id = CAST(:pipeline_id AS uuid) "
@@ -920,7 +932,8 @@ async def _create_deal(
         "status_id": str(status.id),
         "amount": wanted.amount,
         "currency": wanted.currency or "INR",
-        "probability": getattr(status, "probability", None),
+        # CRM-M3b: the win chance of the start stage in this pipeline.
+        "probability": await entry_probability(db, status, pipeline_id),
         "expected_close_date": wanted.expected_close_date,
         "next_step": wanted.next_step,
         "description": wanted.description,
