@@ -3,7 +3,7 @@
 Spec: ``project-docs/specs/ai_studio.md`` §14 C10a. Code:
 ``gateway/studio/objects_store._run_steps`` and ``_check_org_caps``, the door
 ``gateway/routes/studio/invoke._set_write_error``, and the migration that
-creates ``studio_org_usage`` (432 at build), with its three triggers and its
+creates ``studio_org_usage`` (435 at build), with its three triggers and its
 backfill. ``test_studio_org_caps.py`` holds the hermetic half.
 
 The store and the door run on a phase-4 promoted scratch database, as the app

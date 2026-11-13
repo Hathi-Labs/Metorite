@@ -1,5 +1,5 @@
 -- ============================================================================
--- 432_studio_org_usage.sql — the gauge of the Studio records of each org
+-- 435_studio_org_usage.sql — the gauge of the Studio records of each org
 -- (WS-STU C10a).
 --
 -- What: one new table, `studio_org_usage`, with one row for each org. It
@@ -75,7 +75,7 @@
 -- The number is taken at build time (R1). On 2026-11-13 origin/main held 427,
 -- and merged PR 2158 took 430 after that. Open pull requests held 423, 424,
 -- 428 and 429. PR 2209 (C4a-1) moved from 430 to 431. This file took 431
--- first, and moved to 432 the same day. Check it again at merge
+-- first, and moved to 432 the same day, then to 435 behind PRs 2107 (432), 2217 (433) and 2203 (434). Check it again at merge
 -- (scripts/premerge.sh).
 -- Pinned by tests/unit/test_studio_org_caps_r8.py and
 -- tests/unit/test_studio_org_caps.py, which find this file by CONTENT, never

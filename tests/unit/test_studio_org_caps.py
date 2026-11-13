@@ -4,7 +4,7 @@ Spec: ``project-docs/specs/ai_studio.md`` §14 C10a and §3.1. Code:
 ``acb_common/studio_fields.py`` (the two caps), ``gateway/studio/objects_store.py``
 (``_org_usage``, ``_check_org_caps``, ``OrgCapReached`` and ``_run_steps``) and
 ``gateway/routes/studio/invoke.py`` (``_set_write_error``). The migration
-that creates ``studio_org_usage`` (432 at build) holds the gauge and its three
+that creates ``studio_org_usage`` (435 at build) holds the gauge and its three
 triggers. ``test_studio_org_caps_r8.py`` holds the R8 half.
 
 **The mutations (R7).** Commit before each, and restore with git after.
