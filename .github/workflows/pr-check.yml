@@ -120,7 +120,12 @@ jobs:
           NEW_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           python3 scripts/ci_unit_guard.py gate-meta --out gate-meta.json
-          python3 scripts/affected_tests.py --gate --base "$BASE" > gate.json || rm -f gate.json
+          # CIV-29b (D218). On a merge ref the PR's own change is HEAD^1..HEAD. The
+          # range from the event base also holds what main gained since, and a
+          # main change to a FULL path then made a PR run FULL. Not a merge: $BASE.
+          gate_base="$BASE"
+          git rev-parse -q --verify HEAD^2 >/dev/null 2>&1 && gate_base="HEAD^1"
+          python3 scripts/affected_tests.py --gate --base "$gate_base" > gate.json || rm -f gate.json
           mode="full selection: not a push to an open PR"
           if [ "$EVENT" = "pull_request" ] && [ "$ACTION" = "synchronize" ] && [ -f gate.json ]; then
             mode="$(python3 scripts/ci_unit_guard.py repair --repo "$REPO" --pr "$PR" \

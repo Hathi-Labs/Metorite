@@ -328,3 +328,14 @@ def _run_changes_diff(tmp_path: Path, **kw):
 ])
 def test_the_changes_job_frontend_output(tmp_path, kw, frontend):
     assert _run_changes_diff(tmp_path, **kw)["frontend"] == frontend
+
+
+def test_the_gate_step_diffs_against_the_first_parent_on_a_merge_ref():
+    """CIV-29b. `--gate --base` gets HEAD^1 on a merge ref, so main's later
+    change cannot widen the unit selection. No merge commit keeps $BASE."""
+    step = next(s for s in _jobs()["changes"]["steps"] if s.get("id") == "gate")
+    run = step["run"]
+    assert 'gate_base="$BASE"' in run
+    assert 'git rev-parse -q --verify HEAD^2' in run and 'gate_base="HEAD^1"' in run
+    assert '--gate --base "$gate_base"' in run
+    assert '--gate --base "$BASE"' not in run
