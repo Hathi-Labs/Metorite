@@ -43,7 +43,13 @@ describe("/studio/page-preview", () => {
     expect(b.page.tabs).toHaveLength(2);
     expect(b.page.side).toBe("visit-detail");
     expect(b.cells.some((c) => c.span > 1)).toBe(true);
-    expect(buildPage(m, null, "plan").cells.map((c) => c.view)).toEqual(["visit-board"]);
+    expect(buildPage(m, null, "plan").cells.map((c) => c.view)).toEqual(["visit-board", "visit-stat", "visit-chart"]);
+  });
+
+  it("draws the chart and the stat views through the one mapper, and the sample door gives their aggregate", () => {
+    expect(SRC).toContain("chartViewBlock(view, MANIFEST)");
+    expect(SRC).toContain("statViewBlock(view, MANIFEST)");
+    expect(SRC).toMatch(/\.aggregate"\)\) return base\.read\(source\)/);
   });
 
   it("shows the load and error states of the records, with a Retry", () => {
