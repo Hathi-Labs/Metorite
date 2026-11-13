@@ -271,6 +271,7 @@ def test_a_card_with_no_key_takes_the_place_of_none():
         await _card("Update this task?", "steer", call=(update_task, {"task_id": "12"}))
         await _card("Update this task?", "APPROVE")
         await _card("Create this task?", "steer")
+        await _card("Create this task?", "APPROVE")
         await _card("Create this task?", "APPROVE", call=(create_task, {"title": "x"}))
 
     assert _in_run(body) == (
@@ -511,9 +512,10 @@ def test_the_executor_ends_each_finished_run_with_the_line():
     saves = [m.start() for m in re.finditer(r"await _finish_native_session\(", body)]
     assert len(saves) == 2
     for at in saves:
-        assert body[at:at + 80].startswith(
-            "await _finish_native_session(_session_turn, closing=_card_line)")
-        assert "_card_line = _take_card_line()" in body[max(0, at - 200):at]
+        before = body[max(0, at - 160):at]
+        assert "_card_line = _take_card_line()" in before
+        assert before.rstrip().endswith("_close_native_session(_session_turn, _card_line)"), (
+            "the line goes into the session right before the save")
     assert body.count("_closed_card_events(_card_line, run_id)") == 2
     assert body.count("_closed_card_events(_take_card_line(), run_id)") == 1
     assert body.count("_closed_cards_token = open_closed_cards_for_run()") == 1
@@ -544,8 +546,14 @@ def test_the_native_session_holds_the_line(monkeypatch):
             outcome=store.HIT, session=session, history=store.SessionHistoryProvider(),
             fingerprint="", save_digest="")
 
-    asyncio.run(executor._finish_native_session(turn(), closing=ONE_LINE))
-    asyncio.run(executor._finish_native_session(turn()))
+    async def save(line: str) -> None:
+        # The order of each finished run: the line, then the save.
+        session_turn = turn()
+        executor._close_native_session(session_turn, line)
+        await executor._finish_native_session(session_turn)
+
+    asyncio.run(save(ONE_LINE))
+    asyncio.run(save(""))
     with_line, without = saved
     assert len(with_line) == 2, "the line joins the answer, as one more text part"
     assert with_line[-1].text.endswith(f"\n\n{ONE_LINE}")

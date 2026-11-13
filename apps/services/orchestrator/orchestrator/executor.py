@@ -8146,7 +8146,8 @@ async def run_agent_stream(
                         # turn finds it. The save never fails the run.
                         # Task 3130: the session holds the "Not done" line.
                         _card_line = _take_card_line()
-                        await _finish_native_session(_session_turn, closing=_card_line)
+                        _close_native_session(_session_turn, _card_line)
+                        await _finish_native_session(_session_turn)
                         # WS-53 CRM-Q33: the note of a CRM total that the
                         # answer left out goes in before the end.
                         # H-363: the one end-of-turn push step.
@@ -9308,7 +9309,8 @@ async def run_agent_stream(
             # WS-43t2: the Tier 2 run finished, so its session is saved.
             # Task 3130: the session holds the "Not done" line.
             _card_line = _take_card_line()
-            await _finish_native_session(_session_turn, closing=_card_line)
+            _close_native_session(_session_turn, _card_line)
+            await _finish_native_session(_session_turn)
 
             # Strip integration setup tokens (same as batch path)
             setup_token_re = __import__("re").compile(r"<<<SETUP:[^>]+>>>")
@@ -10479,19 +10481,29 @@ def _verified_run_member() -> str:
     return member.lower() if verified else ""
 
 
-async def _finish_native_session(turn: Any, closing: str = "") -> None:
-    """Save the session of a native run that finished. Never raises.
+def _close_native_session(turn: Any, line: str) -> None:
+    """End the session's last answer with the "Not done" *line* (task 3130).
 
-    *closing* is the "Not done" line of the run (task 3130). The session's
-    last answer ends with it, as the stored message does, so the next turn
-    reads it on either path."""
+    Each finished run calls it just before :func:`_finish_native_session`,
+    so the saved session holds the line, as the stored message does. No
+    line, or no usable session, changes nothing. Never raises."""
+    if not line or turn is None or not getattr(turn, "usable", False):
+        return
+    try:
+        from orchestrator import native_session_store
+
+        native_session_store.add_closing_line(turn, line)
+    except Exception as exc:
+        _log.warning("native_session.closing_line_failed", error=str(exc)[:200])
+
+
+async def _finish_native_session(turn: Any) -> None:
+    """Save the session of a native run that finished. Never raises."""
     if turn is None or not getattr(turn, "usable", False):
         return
     try:
         from orchestrator import native_session_store
 
-        if closing:
-            native_session_store.add_closing_line(turn, closing)
         await native_session_store.finish_turn(
             turn, token_budget=_native_history_cap(_active_run_model.get() or ""),
         )
