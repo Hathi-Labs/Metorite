@@ -4624,7 +4624,7 @@ _MAX_VERSION_DIGITS = 9
 def _version_arg(raw: Any) -> Any:
     """The target version of a roll back: None for a publish, an int of 1 or
     more, or :data:`_BAD`. It never raises. Only ASCII digits count, so a
-    superscript ("²") or another script's digit ("١") is refused plainly."""
+    superscript two or an Arabic-Indic digit is refused plainly."""
     if raw is None or isinstance(raw, bool):
         return None if raw is None else _BAD
     if isinstance(raw, int):

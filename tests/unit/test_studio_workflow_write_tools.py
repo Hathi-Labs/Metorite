@@ -384,10 +384,10 @@ async def test_with_no_member_the_tools_refuse_and_call_nothing(monkeypatch, car
     lambda: st.studio_workflow_publish(str(uuid.uuid4()), "-1"),
     lambda: st.studio_workflow_publish(str(uuid.uuid4()), "2; drop"),
     lambda: st.studio_workflow_publish(str(uuid.uuid4()), True),  # type: ignore[arg-type]
-    # Review note: "²" is a digit that int() refuses, and "١" a digit of another
+    # Review note: a superscript two is a digit that int() refuses, and an Arabic-Indic one a digit of another
     # script. A text past the digit limit of int() must not raise either.
-    lambda: st.studio_workflow_publish(str(uuid.uuid4()), "²"),
-    lambda: st.studio_workflow_publish(str(uuid.uuid4()), "١"),
+    lambda: st.studio_workflow_publish(str(uuid.uuid4()), chr(0xB2)),
+    lambda: st.studio_workflow_publish(str(uuid.uuid4()), chr(0x661)),
     lambda: st.studio_workflow_publish(str(uuid.uuid4()), "1.5"),
     lambda: st.studio_workflow_publish(str(uuid.uuid4()), "1" * 5000),
     lambda: st.studio_workflow_live("hooks", True),
@@ -403,11 +403,11 @@ async def test_a_bad_argument_is_refused_with_no_call(gw: Gateway, card: Card, c
 @pytest.mark.parametrize("raw,want", [
     ("", None), (None, None), ("  ", None), (" 2 ", 2), (2, 2), ("17", 17),
     ("0", st._BAD), ("-1", st._BAD), ("+2", st._BAD), ("1.5", st._BAD), (0, st._BAD),
-    ("²", st._BAD), ("١", st._BAD), ("1" * 5000, st._BAD), (True, st._BAD),
+    (chr(0xB2), st._BAD), (chr(0x661), st._BAD), ("1" * 5000, st._BAD), (True, st._BAD),
 ])
 def test_the_version_parse_never_raises(raw: Any, want: Any) -> None:
     """Only ASCII digits count, up to nine. Mutation: go back to ``isdigit`` ->
-    "²" raises -> red."""
+    chr(0xB2) raises -> red."""
     got = st._version_arg(raw)
     assert got is st._BAD if want is st._BAD else got == want
 
