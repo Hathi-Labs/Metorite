@@ -393,6 +393,9 @@ async def _refuse_foreign_studio_trigger(
     member must not point the author's workflow at a package they cannot read.
     Removing a trigger, or any other trigger kind, is unchanged.
     """
+    wanted = _studio_event_keys([(t.kind, t.config, t.enabled) for t in new])
+    if not wanted:
+        return
     old_rows = (
         await db.execute(
             text("SELECT kind, config, enabled FROM workflow_triggers WHERE workflow_id = :id"),
@@ -402,8 +405,7 @@ async def _refuse_foreign_studio_trigger(
     old = _studio_event_keys(
         [(r.kind, parse_jsonb(r.config, {}) or {}, bool(r.enabled)) for r in old_rows]
     )
-    added = _studio_event_keys([(t.kind, t.config, t.enabled) for t in new]) - old
-    if added:
+    if wanted - old:
         raise HTTPException(
             status_code=403,
             detail="Only the author of this workflow can add or change a Studio record trigger.",
