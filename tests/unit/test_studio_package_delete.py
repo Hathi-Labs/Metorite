@@ -1721,9 +1721,10 @@ def test_the_route_runs_one_session_for_each_step() -> None:
 
 
 def _client_timeout() -> float:
-    """The timeout of the gateway client of the chat tools, read from the
-    source of ``studio_tools._send``: the ``timeout`` of its
-    ``httpx.AsyncClient``."""
+    """The default timeout of the gateway client of the chat tools, read from
+    the source of ``studio_tools._send``: the default of its ``timeout``
+    argument (the one the delete loop uses). ``studio_app_read`` passes a
+    longer one for its own call only (B2b-2c)."""
     import acb_skills.studio_tools as tools
     tree = ast.parse(inspect.getsource(tools))
     [send] = [n for n in ast.walk(tree)
@@ -1731,7 +1732,11 @@ def _client_timeout() -> float:
     [call] = [n for n in ast.walk(send) if isinstance(n, ast.Call)
               and ast.unparse(n.func) == "httpx.AsyncClient"]
     [kw] = [k for k in call.keywords if k.arg == "timeout"]
-    return float(ast.literal_eval(kw.value))
+    assert ast.unparse(kw.value) == "timeout"
+    args = send.args
+    names = [a.arg for a in args.args + args.kwonlyargs]
+    defaults = [None] * (len(args.args) - len(args.defaults)) + list(args.defaults)         + list(args.kw_defaults)
+    return float(ast.literal_eval(defaults[names.index("timeout")]))
 
 
 def test_the_worst_call_ends_before_the_chat_tool_gives_up() -> None:
