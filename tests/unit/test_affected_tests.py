@@ -178,14 +178,128 @@ def test_gate_full_on_ci_and_selector_paths(tmp_path: Path) -> None:
 def test_gate_full_when_a_hub_module_has_too_many_test_importers(
     tmp_path: Path, monkeypatch
 ) -> None:
+    # CIV-33c-1. A hub goes FULL only above the ceiling share of the test files.
     root = _gate_repo(tmp_path)
     monkeypatch.setattr(sel, "HUB_LIMIT", 1)  # test_leaf and test_patch import leaf
+    monkeypatch.setattr(sel, "HUB_CEILING_SHARE", 0.1, raising=False)  # 0 of 9 files
     out = sel.gate(["packages/pkg/pkg/leaf.py"], root)
     assert out["full"] is True
     assert any("leaf" in r for r in out["reasons"])
 
 
-def test_gate_not_full_for_a_module_under_the_hub_limit(tmp_path: Path) -> None:
+def test_gate_a_hub_below_the_ceiling_selects_its_importers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = _gate_repo(tmp_path)
+    monkeypatch.setattr(sel, "HUB_LIMIT", 1)  # leaf is a hub: two test importers
+    monkeypatch.setattr(sel, "HUB_CEILING_SHARE", 0.9, raising=False)
+    out = sel.gate(["packages/pkg/pkg/leaf.py"], root)
+    assert out["full"] is False
+    assert {"tests/unit/test_leaf.py", "tests/unit/test_patch.py"} <= set(out["files"])
+    assert "tests/unit/test_other.py" in out["files"]  # the SAFETY fence stays
+
+
+# ── CIV-33c-1: a flag-only diff of settings.py or env_guard.py ──────────────
+_SETTINGS = "packages/acb_common/acb_common/settings.py"
+_GUARD = "packages/acb_common/acb_common/env_guard.py"
+
+
+def _flag_repo(tmp_path: Path) -> Path:
+    root = _gate_repo(tmp_path)
+    _write(root, _SETTINGS, "class Settings:\n    old_flag: str = ''\n")
+    _write(root, _GUARD, 'NAMES = (\n    "OLD_FLAG",\n)\n')
+    _write(root, "tests/unit/test_flag_reader.py", 'monkeypatch.setenv("NEW_THING_ORGS", "*")\n')
+    _write(root, "tests/unit/test_settings_x.py", "import acb_common.settings\n")
+    _write(root, "tests/unit/test_hardening.py", "from acb_common import env_guard\n")
+    _write(root, "tests/unit/test_unrelated.py", "import acb_common.settings\n")
+    return root
+
+
+def _added(path: str, *lines: str) -> str:
+    body = "".join(f"+{ln}\n" for ln in lines)
+    return f"diff --git a/{path} b/{path}\nindex 1..2 100644\n--- a/{path}\n+++ b/{path}\n@@ -9,0 +10 @@\n{body}"
+
+
+_FLAG_DIFF = _added(_SETTINGS, "    # a comment", "    new_thing_orgs: str = \"\"")
+
+
+def test_gate_a_flag_only_diff_selects_the_tests_that_name_the_flag(tmp_path: Path) -> None:
+    root = _flag_repo(tmp_path)
+    out = sel.gate([_SETTINGS], root, diff=_FLAG_DIFF)
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_flag_reader.py" in out["files"]  # names NEW_THING_ORGS
+    assert "tests/unit/test_settings_x.py" in out["files"]  # a settings test, by name
+    assert "tests/unit/test_hardening.py" in out["files"]  # imports env_guard
+    assert "tests/unit/test_other.py" in out["files"]  # the SAFETY fence stays
+    assert "tests/unit/test_unrelated.py" not in out["files"]
+
+
+def test_gate_an_env_guard_name_added_is_a_flag_only_diff(tmp_path: Path) -> None:
+    root = _flag_repo(tmp_path)
+    diff = _added(_GUARD, '    "NEW_THING_ORGS",')
+    out = sel.gate([_GUARD], root, diff=diff)
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_flag_reader.py" in out["files"]
+
+
+def test_gate_a_modified_line_in_settings_is_full(tmp_path: Path) -> None:
+    root = _flag_repo(tmp_path)
+    diff = _FLAG_DIFF.replace("@@ -9,0 +10 @@\n", "@@ -9 +10 @@\n-    old_flag: str = ''\n")
+    out = sel.gate([_SETTINGS], root, diff=diff)
+    assert out["full"] is True
+    assert any("settings.py" in r for r in out["reasons"])
+
+
+def test_gate_a_line_that_is_not_a_flag_is_full(tmp_path: Path) -> None:
+    root = _flag_repo(tmp_path)
+    diff = _added(_SETTINGS, "    def helper(self): return 1")
+    assert sel.gate([_SETTINGS], root, diff=diff)["full"] is True
+
+
+def test_gate_a_flag_addition_plus_another_acb_common_file_is_full(tmp_path: Path) -> None:
+    root = _flag_repo(tmp_path)
+    other = "packages/acb_common/acb_common/db.py"
+    out = sel.gate([_SETTINGS, other], root, diff=_FLAG_DIFF)
+    assert out["full"] is True
+    assert any("db.py" in r for r in out["reasons"])
+
+
+def test_gate_a_flag_diff_keeps_the_github_reason(tmp_path: Path) -> None:
+    root = _flag_repo(tmp_path)
+    out = sel.gate([_SETTINGS, ".github/workflows/pr-check.yml"], root, diff=_FLAG_DIFF)
+    assert out["full"] is True
+    assert any(".github/" in r for r in out["reasons"])
+
+
+def test_gate_with_no_diff_keeps_the_acb_common_prefix_full(tmp_path: Path) -> None:
+    assert sel.gate([_SETTINGS], _flag_repo(tmp_path))["full"] is True
+
+
+def test_gate_diff_reads_the_flag_files_between_two_commits(tmp_path: Path) -> None:
+    import subprocess
+
+    root = _flag_repo(tmp_path)
+
+    def git(*a: str) -> str:
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *a],
+            cwd=root, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-qm", "a")
+    base = git("rev-parse", "HEAD")
+    p = root / _SETTINGS
+    p.write_text(p.read_text(encoding="utf-8") + "    new_thing_orgs: str = ''\n", encoding="utf-8")
+    git("commit", "-qam", "b")
+    out = sel.gate([_SETTINGS], root, diff=sel.gate_diff(base, root))
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_flag_reader.py" in out["files"]
+
+
+def test_gate_not_full_for_a_module_under_the_hub_limit(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(sel, "HUB_CEILING_SHARE", 0.9)  # a 9-file repo has a tiny ceiling
     out = sel.gate(["packages/pkg/pkg/leaf.py"], _gate_repo(tmp_path))
     assert out["full"] is False
     assert "tests/unit/test_leaf.py" in out["files"]
