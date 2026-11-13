@@ -479,6 +479,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     "DUE_PUSH_",
     # STU-B1: STUDIO_ORGS opens the AI Studio catalog for an org.
     "STUDIO_",
+    # STU-E12a: CORE_EVENTS_ORGS opens the core app events for an org, so a
+    # tenant that set it could open them for every org on the box.
+    "CORE_",
     # WS-OB GD-5a: GUIDE_ORGS opens the tour's entries for an org, so a
     # tenant that set it could open them for every org on the box.
     "GUIDE_",

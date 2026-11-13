@@ -154,6 +154,37 @@ PRIVATE_FIELDS: tuple[str, ...] = (
 )
 
 
+#: The directory tier of a WRITABLE person field (STU-E12a): what any holder of
+#: the feature reads. It is the writable set less :data:`HR_FIELDS`, less
+#: :data:`PRIVATE_FIELDS`, and less `clickup_user_id` (an outside id, not a
+#: directory fact). `people.person.updated` names only these keys.
+#: `test_core_app_events.py` pins that every `PersonWrite` field is in exactly
+#: one of the four sets.
+DIRECTORY_FIELDS: tuple[str, ...] = (
+    "name",
+    "email",
+    "role",
+    "title",
+    "department",
+    "team",
+    "reports_to",
+    "manager_id",
+    "status",
+    "domain",
+    "preferred_name",
+    "pronouns",
+    "location",
+    "timezone",
+    "working_hours",
+    "bio",
+    "links",
+    "languages",
+)
+
+#: Writable, and in no event: an outside id.
+NON_EVENT_FIELDS: tuple[str, ...] = ("clickup_user_id",)
+
+
 def _blank_hr() -> dict[str, Any]:
     """A fresh empty value per HR field — the projected-away form.
 
@@ -855,6 +886,11 @@ async def update_person(
     # own transaction (best-effort; H2 restructure).
     async with _tenant_session() as db:
         await _reembed_capability(db, person_id)
+    # After the commit, one event for the whole PATCH (STU-E12a). It never
+    # raises, and it names directory-tier keys only.
+    from gateway.core_events import emit_person_updated
+
+    await emit_person_updated(person_id, _uid(user), fields)
     # The route gate already proved this caller holds
     # `admin:members:manage`, which is the private tier's key (D-PC-3).
     return _row_to_person(person, include_hr=True, include_private=True)
