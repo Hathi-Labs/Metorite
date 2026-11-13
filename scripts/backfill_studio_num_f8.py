@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Backfill the float8 copy of each Studio number (WS-STU STU-C2c).
 
-Spec: ``project-docs/specs/ai_studio.md`` §14, row C2c. Migration 429 adds
+Spec: ``project-docs/specs/ai_studio.md`` §14, row C2c. Migration 430 adds
 ``studio_record_hot.v_num_f8`` and a trigger that fills it for each new row and
-each changed ``v_num``. A row from before 429 keeps NULL until this script
-fills it. Turn on ``STUDIO_NUM_F8_ORGS`` for an org only when this script
-reports ``remaining=0`` for it.
+each changed ``v_num``. A row from before 430 keeps NULL until this script
+fills it. Turn on ``STUDIO_NUM_F8_ORGS`` for an org when this script
+reports ``remaining=0`` for it, because a row with no copy is read by a scan.
 
-It runs :func:`gateway.studio.objects_store.backfill_num_f8` for each
-organization. That function fills one batch in one short transaction through
-``tenant_session(org)``, then sleeps. A second run changes nothing. A stopped
+It fills one batch for each organization in one short transaction through
+``tenant_session(org)``, with :func:`gateway.studio.objects_store.fill_num_f8_batch`,
+then sleeps. A query keeps a row with no float8 copy, so the flag is correct
+at any time, and the backfill is a speed step. A second run changes nothing. A stopped
 run keeps its committed batches, and the next run takes the rest.
 
     uv run python scripts/backfill_studio_num_f8.py --org <uuid>
@@ -40,12 +41,31 @@ def _orgs(all_orgs: bool, org: str | None) -> list[str]:
     return [str(r[0]) for r in rows]
 
 
-async def _run(orgs: list[str], batch: int, pause_s: float) -> dict[str, int]:
-    from gateway.studio.objects_store import backfill_num_f8
+async def _fill(org: str, batch: int, pause_s: float) -> dict[str, int]:
+    from acb_common.db import tenant_session
+    from gateway.studio import objects_store as store
 
+    got = {"batches": 0, "filled": 0, "remaining": 0}
+    after = store.NUM_F8_START
+    while True:
+        async with tenant_session(org) as db:
+            keys = await store.fill_num_f8_batch(db, after, batch)
+        if not keys:
+            break
+        got["batches"] += 1
+        got["filled"] += len(keys)
+        after = max(keys)
+        if pause_s > 0:
+            await asyncio.sleep(pause_s)
+    async with tenant_session(org) as db:
+        got["remaining"] = await store.count_num_f8_left(db)
+    return got
+
+
+async def _run(orgs: list[str], batch: int, pause_s: float) -> dict[str, int]:
     total = {"batches": 0, "filled": 0, "remaining": 0}
     for org in orgs:
-        got = await backfill_num_f8(org, batch=batch, pause_s=pause_s)
+        got = await _fill(org, batch, pause_s)
         print(f"{org}: " + " ".join(f"{k}={v}" for k, v in got.items()), flush=True)
         for k, v in got.items():
             total[k] += v

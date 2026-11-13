@@ -58,8 +58,8 @@ OWNER-GATE (`enforcement-flip`).
 object query (`ai_studio.md` §14 C2c). For each listed org, the query tests
 `studio_record_hot.v_num_f8` beside the exact `v_num` test, so the app role
 can use the index. `*` lists every org, and the default is empty. Its one
-reader is `gateway.routes.studio.flags.num_f8_allowed`, and each query asks
-it. Turn it on only after migration 429 and the backfill report no NULL row.
+reader is `acb_common.studio_flags.num_f8_allowed`, and each query asks
+it. The query honours it for an org only after the backfill of migration 430 ends (`_warm_f8`), so the records are right at every step.
 A reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
 
 `AGENT_WRITE_CAP` and `AGENT_WRITE_WINDOW_S` set the write cap of each agent

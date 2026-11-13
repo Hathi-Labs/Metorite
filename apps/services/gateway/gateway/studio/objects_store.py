@@ -82,7 +82,7 @@ caller's transaction stays usable, and the old timeout comes back.
 comparison is LEAKPROOF (``docs/rls_and_indexes.md``). So a number filter
 reads the hot rows of its field. A sort on a number still reads the index in
 order. **C2c** adds ``v_num_f8``, a float8 copy that a trigger fills
-(migration 429). For an org on ``STUDIO_NUM_F8_ORGS`` (default OFF), a number
+(migration 430). For an org on ``STUDIO_NUM_F8_ORGS`` (default OFF), a number
 filter adds a float8 test with the non-strict operator beside the exact
 ``numeric`` test, so the app role reads the index ``studio_record_hot_num_f8_idx``.
 The exact test stays as the filter, so the records do not change.
@@ -276,6 +276,7 @@ from acb_common.studio_fields import (
     stored_field,
     validate_record,
 )
+from acb_common.studio_flags import num_f8_org
 from acb_common.studio_query import Condition, Query, QueryError, parse_query
 from acb_common.studio_rules import (
     FORMULA,
@@ -1883,15 +1884,56 @@ def _needs_row(cond: Condition) -> bool:
     return False
 
 
+#: The org -> (ready, when it was read) of the float8 copy (C2c). Per process.
+_F8_READY: dict[str, tuple[bool, float]] = {}
+#: How long a "ready" and a "not ready" answer holds, in seconds.
+_F8_TTL_READY, _F8_TTL_NOT_READY = 600.0, 30.0
+_F8_READY_SQL = (
+    "SELECT NOT EXISTS (SELECT 1 FROM studio_record_hot h "
+    f"WHERE h.{_OF_ORG} AND h.v_num IS NOT NULL AND h.v_num_f8 IS NULL)"
+)
+
+
+def _f8_fresh(org: str) -> tuple[bool, bool]:
+    """``(known, ready)`` for *org* from the cache."""
+    got = _F8_READY.get(org)
+    if got is None:
+        return False, False
+    ttl = _F8_TTL_READY if got[0] else _F8_TTL_NOT_READY
+    if time.monotonic() - got[1] > ttl:
+        return False, False
+    return True, got[0]
+
+
 def _f8_on() -> bool:
-    """True when the bound tenant is on ``STUDIO_NUM_F8_ORGS`` (C2c). The org
-    comes from the tenant seam, never from request input (R5). No tenant
-    bound gives False, so the SQL is then the one of C2a."""
-    from acb_common.db import current_tenant
+    """True when the bound tenant is on ``STUDIO_NUM_F8_ORGS`` (C2c) AND the
+    float8 copy of its hot rows is complete. A row with a NULL copy would drop
+    out of a float8 test, and a test of ``IS NULL`` beside it made the planner
+    skip the index (a hot table holds NULL copies for every other type). So the
+    store asks once for each org, with :func:`_warm_f8`, and keeps the answer
+    for a short time. A cold or stale cache gives False, which is the SQL of
+    C2a. The org comes from the tenant seam, never from request input (R5)."""
+    org = num_f8_org()
+    if org is None:
+        return False
+    known, ready = _f8_fresh(org)
+    return known and ready
 
-    from gateway.routes.studio.flags import num_f8_allowed
 
-    return num_f8_allowed(current_tenant())
+async def _warm_f8(db: Any) -> None:
+    """Fill the cache of :func:`_f8_on` for the bound tenant, when it is on the
+    flag and the cache is cold or stale. One cheap statement: the partial index
+    ``studio_record_hot_num_f8_todo_idx`` holds only the rows that lack a copy.
+    A failed read leaves the cache as it was, so the query uses the exact SQL."""
+    org = num_f8_org()
+    if org is None or _f8_fresh(org)[0]:
+        return
+    try:
+        async with _time_limit(db, _clock() + studio_query.TIMEOUT_MS / 1000) as timed:
+            ready = bool((await timed.execute(text(_F8_READY_SQL), {})).scalar_one())
+    except (DBAPIError, QueryError):
+        return
+    _F8_READY[org] = (ready, time.monotonic())
 
 
 def _q_num_f8(hcol: str, i: int, cond: Condition) -> str:
@@ -1900,7 +1942,8 @@ def _q_num_f8(hcol: str, i: int, cond: Condition) -> str:
     Three rules keep the records the same. The operator is the non-strict one
     of the op, because float8 can round two numerics to one value. The bound is
     the same numeric cast to float8, with no column in it, so it is a
-    constant. The exact test stays beside it as the filter."""
+    constant. The exact test stays beside it as the filter. A row with no copy
+    would drop out, so :func:`_f8_on` is False until the copy is complete."""
     hcol = hcol.rsplit(".", 1)[0] + ".v_num_f8"
     if cond.op == "in":
         return f"{hcol} = ANY(CAST(CAST(:v{i} AS numeric[]) AS float8[]))"
@@ -2343,6 +2386,7 @@ async def query_records(db: Any, *, package_id: str, object_id: str, filter: Any
     after the records with a value. The total is exact below
     :data:`~acb_common.studio_query.TOTAL_CAP`.
     """
+    await _warm_f8(db)
     deadline = _clock() + studio_query.TIMEOUT_MS / 1000
     oid = _uuid(object_id, "object_id")
     pid = _uuid(package_id, "package_id")
@@ -2454,7 +2498,10 @@ class AggregateResult:
     """The groups of an aggregate (C2b)."""
 
     measures: tuple[studio_query.Measure, ...]
-    #: For each measure: the one currency of a money sum, or None.
+    #: For each measure: the one currency of a money sum or a money average,
+    #: or None. The grammar refuses an average of money today. If a later
+    #: slice opens one, its currency comes with it, so a client never shows
+    #: minor units as major units (STU-D4b, finding F1).
     currencies: tuple[str | None, ...]
     #: The groups with the most records, at most
     #: :data:`~acb_common.studio_query.MAX_GROUPS`, in the order of the key.
@@ -2636,8 +2683,8 @@ def _aggregate_result(agg: studio_query.Aggregate, rows: Sequence[Any]) -> Aggre
         if field.type == "money":
             currency[field.key] = _one_currency(field, first[at], first[at + 1])
             at += 2
-    currencies = tuple(currency.get(m.field.key) if m.field is not None and m.op == "sum" else None
-                       for m in agg.measures)
+    currencies = tuple(currency.get(m.field.key) if m.field is not None
+                       and m.op in ("sum", "average") else None for m in agg.measures)
     total = AggregateGroup(None, n_records, _measure_values(agg, n_records, totals))
     if agg.group is None:
         return AggregateResult(agg.measures, currencies, (), None, 0, total)
@@ -2692,6 +2739,7 @@ async def aggregate_records(db: Any, *, package_id: str, object_id: str, filter:
     H-333). The :data:`~acb_common.studio_query.MAX_GROUPS` groups with the
     most records stay, and the rest fold into :attr:`AggregateResult.other`.
     """
+    await _warm_f8(db)
     deadline = _clock() + studio_query.TIMEOUT_MS / 1000
     oid = _uuid(object_id, "object_id")
     pid = _uuid(package_id, "package_id")
@@ -3697,7 +3745,7 @@ _NUM_F8_BATCH = (
     f"WHERE h.{_OF_ORG} AND h.v_num IS NOT NULL AND h.v_num_f8 IS NULL "
     "AND (h.record_id, h.field_key) > (CAST(:last_rid AS uuid), CAST(:last_fk AS text)) "
     "ORDER BY h.record_id, h.field_key LIMIT :n FOR UPDATE) "
-    "UPDATE studio_record_hot h SET v_num_f8 = h.v_num::float8 FROM b "
+    "UPDATE studio_record_hot h SET v_num_f8 = CASE WHEN h.v_num > 1e300 THEN 'Infinity'::float8 WHEN h.v_num < -1e300 THEN '-Infinity'::float8 ELSE h.v_num::float8 END FROM b "
     f"WHERE h.{_OF_ORG} AND h.record_id = b.record_id AND h.field_key = b.field_key "
     "RETURNING h.record_id, h.field_key"
 )
@@ -3706,39 +3754,22 @@ _NUM_F8_LEFT = (
     "AND h.v_num IS NOT NULL AND h.v_num_f8 IS NULL"
 )
 _NO_UUID = "00000000-0000-0000-0000-000000000000"
+NUM_F8_START = (_NO_UUID, "")
 
 
-async def backfill_num_f8(org: str, *, batch: int = 1000, pause_s: float = 0.2,
-                          max_batches: int | None = None) -> dict[str, int]:
-    """Fill ``studio_record_hot.v_num_f8`` of *org* for each row that has a
-    ``v_num`` and no float8 copy (C2c, migration 429).
+async def fill_num_f8_batch(db: Any, after: tuple[str, str], n: int) -> list[tuple[str, str]]:
+    """Fill ``studio_record_hot.v_num_f8`` for at most *n* rows of the bound
+    tenant that have a ``v_num`` and no float8 copy, after the key *after*
+    (``(record_id, field_key)``, start at :data:`NUM_F8_START`). Answers the
+    keys that it filled. The caller owns the transaction and binds the tenant
+    (C2c, migration 430). The UPDATE sets only ``v_num_f8``, so the trigger
+    does not fire. A value beyond 1e300 takes the float8 infinity of its sign, as the
+    trigger does, because the cast would raise. The mapping stays monotone."""
+    rows = (await db.execute(text(_NUM_F8_BATCH),
+                             {"last_rid": after[0], "last_fk": after[1], "n": n})).all()
+    return [(str(r[0]), str(r[1])) for r in rows]
 
-    Each batch is one short transaction through the tenant seam, so FORCE RLS
-    binds *org*. The batches walk the primary key, so a batch never reads a row
-    twice. The UPDATE sets only ``v_num_f8``, so the trigger of 429 does not
-    fire. A second run finds nothing to fill. A run that stops keeps its
-    committed batches. Returns ``batches``, ``filled`` and ``remaining``, the
-    count of rows that still have no copy. Turn on ``STUDIO_NUM_F8_ORGS`` only
-    when ``remaining`` is 0.
-    """
-    import asyncio
 
-    from acb_common.db import tenant_session
-
-    counts = {"batches": 0, "filled": 0, "remaining": 0}
-    last_rid, last_fk = _NO_UUID, ""
-    while max_batches is None or counts["batches"] < max_batches:
-        async with tenant_session(org) as db:
-            rows = (await db.execute(text(_NUM_F8_BATCH),
-                                     {"last_rid": last_rid, "last_fk": last_fk,
-                                      "n": batch})).all()
-        if not rows:
-            break
-        counts["batches"] += 1
-        counts["filled"] += len(rows)
-        last_rid, last_fk = max((str(r[0]), str(r[1])) for r in rows)
-        if pause_s > 0:
-            await asyncio.sleep(pause_s)
-    async with tenant_session(org) as db:
-        counts["remaining"] = int((await db.execute(text(_NUM_F8_LEFT))).scalar_one())
-    return counts
+async def count_num_f8_left(db: Any) -> int:
+    """The rows of the bound tenant that have a ``v_num`` and no float8 copy."""
+    return int((await db.execute(text(_NUM_F8_LEFT))).scalar_one())

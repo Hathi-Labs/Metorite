@@ -152,7 +152,7 @@ function diffViews(out: Change[], before: unknown, after: unknown): void {
 
 /**
  * The record actions of a record type: the ones that `complete_record_actions` adds
- * (`packages/acb_skills/acb_skills/studio_tools.py`, `OBJECT_OPS`). Each has `uses` of the form
+ * (`packages/acb_skills/acb_skills/studio_tools.py`, `RECORD_OPS`). Each has `uses` of the form
  * `object:<record>.<verb>`. The match reads `uses`, never the id, so a renamed id still folds.
  */
 export const RECORD_VERBS = ["list", "get", "create", "update", "delete"] as const;

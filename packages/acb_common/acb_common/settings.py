@@ -723,9 +723,10 @@ class Settings(BaseSettings):
     # the Studio object query adds a float8 test on `studio_record_hot.
     # v_num_f8`, so the app role can use its index (`numeric` comparisons are
     # not LEAKPROOF). `*` opens every org. Empty opens none, and the SQL is
-    # then the same as before. Turn it on only after migration 429 and the
-    # backfill (`scripts/backfill_studio_num_f8.py`) report no NULL row.
-    # Reader: `gateway.routes.studio.flags.num_f8_allowed`. A SIGHUP reload
+    # then the same as before. The query honours it for an org only after the
+    # backfill (`scripts/backfill_studio_num_f8.py`) ends, so the records are
+    # right at every step.
+    # Reader: `acb_common.studio_flags.num_f8_allowed`. A SIGHUP reload
     # applies a change (docs/flag_reload.md). Spec: ai_studio.md section 14 C2c.
     studio_num_f8_orgs: str = ""
     # STU-J10: STUDIO_RESIDENCY_ORGS lists the org ids whose health data

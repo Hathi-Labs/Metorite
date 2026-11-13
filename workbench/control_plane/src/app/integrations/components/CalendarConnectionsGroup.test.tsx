@@ -16,6 +16,7 @@ const row = (over: Partial<CalendarConnection> = {}): CalendarConnection => ({
   last_error: null,
   metorite_calendar: true,
   entry_count: 2,
+  push_tasks: true,
   ...over,
 });
 

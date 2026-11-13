@@ -18,6 +18,7 @@ from __future__ import annotations
 import functools
 
 from acb_common import get_settings
+from acb_common.studio_flags import num_f8_allowed as _num_f8_allowed
 
 
 @functools.lru_cache(maxsize=16)
@@ -52,10 +53,6 @@ def door_ops_allowed(organization_id: str | None) -> bool:
 
 
 def num_f8_allowed(organization_id: str | None) -> bool:
-    """True when ``STUDIO_NUM_F8_ORGS`` holds the org, or holds ``*`` (C2c).
-    Default OFF. The one reader of the setting. The org comes from the bound
-    tenant, never from request input (R5)."""
-    if not organization_id:
-        return False
-    listed = _parse_orgs(str(getattr(get_settings(), "studio_num_f8_orgs", "") or ""))
-    return "*" in listed or str(organization_id).strip().lower() in listed
+    """``STUDIO_NUM_F8_ORGS`` (C2c). The store reads the same flag through
+    ``acb_common.studio_flags``, its one reader."""
+    return _num_f8_allowed(organization_id)

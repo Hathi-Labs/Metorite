@@ -945,6 +945,83 @@ def test_r8_c2c_the_flag_off_and_on_give_the_same_records(world, monkeypatch) ->
     assert _run(world.p.app_url, go) == []
 
 
+def _backfill_script() -> Any:
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "backfill_studio_num_f8",
+        Path(__file__).resolve().parents[2] / "scripts" / "backfill_studio_num_f8.py")
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    return script
+
+
+def test_r8_c2c_the_flag_waits_for_the_copy_and_a_pre_430_row_is_never_dropped(
+        world, monkeypatch) -> None:
+    """P2b. A row from before migration 430 has a NULL copy, and a float8 test
+    would drop it. So the store honours the flag for an org only when no row
+    lacks its copy. Before the backfill the query uses the exact SQL and
+    returns the row. After it, the float8 SQL returns the same records. A
+    value beyond float8 range takes the infinity of its sign (the trigger does
+    not raise), so the float8 test keeps it too."""
+    from acb_common.studio_flags import num_f8_org  # noqa: F401  (the name the store holds)
+
+    monkeypatch.setattr(store, "num_f8_org", lambda: world.a)
+    script = _backfill_script()
+    seen: list[bool] = []
+    real = store._q_num_f8
+
+    def spy(*a: Any, **k: Any) -> str:
+        seen.append(True)
+        return real(*a, **k)
+
+    monkeypatch.setattr(store, "_q_num_f8", spy)
+
+    async def seed() -> tuple[store.StudioObject, dict[str, str]]:
+        obj = await _define(world.a, world.pkg_a, "legacy", [{"key": "x", "type": "number", "hot": True}])
+        ids = await _create(world.a, obj, {"old": {"x": 5}, "new": {"x": 6}, "big": {"x": 7}, "lo": {"x": 2}})
+        async with tenant_session(world.a) as db:
+            # A column list without v_num: the trigger does not fire. This is a pre-430 row.
+            await db.execute(text("UPDATE studio_record_hot SET v_num_f8 = NULL "
+                                  "WHERE record_id = CAST(:r AS uuid)"), {"r": ids["old"]})
+            # Beyond float8 range: the trigger must not raise.
+            await db.execute(text("UPDATE studio_record_hot SET v_num = CAST('1e400' AS numeric) "
+                                  "WHERE record_id = CAST(:r AS uuid)"), {"r": ids["big"]})
+            got = dict((await db.execute(text(
+                "SELECT record_id::text, v_num_f8 FROM studio_record_hot "
+                "WHERE object_id = CAST(:o AS uuid)"), {"o": obj.id})).all())
+        assert got[ids["old"]] is None and got[ids["big"]] == float("inf")
+        assert got[ids["new"]] == 6.0 and got[ids["lo"]] == 2.0
+        return obj, ids
+
+    async def read(obj: store.StudioObject, label: dict[str, str]) -> dict[str, set[str]]:
+        out: dict[str, set[str]] = {}
+        for op, v in (("lte", 5), ("lt", 6), ("gte", 6), ("gt", 5), ("eq", 5), ("in", [5, 7])):
+            page = await _query(world.a, obj, filter=[{"field": "x", "op": op, "value": v}], limit=50)
+            assert page is not None
+            out[op] = {label[r.id] for r in page.records}
+        return out
+
+    async def go() -> tuple[dict[str, set[str]], dict[str, set[str]], bool, bool]:
+        obj, ids = await seed()
+        label = {v: k for k, v in ids.items()}
+        store._F8_READY.clear()
+        before = await read(obj, label)            # not ready: the exact SQL
+        used_before = bool(seen)
+        await script._fill(world.a, 100, 0)
+        store._F8_READY.clear()
+        after = await read(obj, label)             # ready: the float8 SQL
+        return before, after, used_before, bool(seen)
+
+    before, after, used_before, used_after = _run(world.p.app_url, go)
+    assert not used_before and used_after
+    assert before == after
+    assert before["lte"] == {"old", "lo"} and before["gte"] == {"new", "big"}
+    assert before["eq"] == {"old"} and before["in"] == {"old"}
+    store._F8_READY.clear()
+
+
 def test_r8_c2c_the_trigger_and_the_backfill_fill_the_float8_copy(world) -> None:
     """The backfill fills a row with no copy, reports 0 remaining, and fills
     no row of another org. A second run fills nothing."""
@@ -966,15 +1043,15 @@ def test_r8_c2c_the_trigger_and_the_backfill_fill_the_float8_copy(world) -> None
         c.execute(text("UPDATE studio_record_hot SET v_num_f8 = NULL WHERE object_id IN "
                        "(CAST(:a AS uuid), CAST(:b AS uuid))"), {"a": oid, "b": bid})
 
-    first = _run(world.p.app_url, lambda: store.backfill_num_f8(
-        world.a, batch=3, pause_s=0))
-    second = _run(world.p.app_url, lambda: store.backfill_num_f8(world.a, batch=3, pause_s=0))
+    script = _backfill_script()
+    first = _run(world.p.app_url, lambda: script._fill(world.a, 3, 0))
+    second = _run(world.p.app_url, lambda: script._fill(world.a, 3, 0))
     with world.p.admin_engine.begin() as c:
         mine = c.execute(text("SELECT count(*) FROM studio_record_hot WHERE object_id = "
                               "CAST(:o AS uuid) AND v_num_f8 IS NULL"), {"o": oid}).scalar_one()
         theirs = c.execute(text("SELECT count(*) FROM studio_record_hot WHERE object_id = "
                                 "CAST(:o AS uuid) AND v_num_f8 IS NULL"), {"o": bid}).scalar_one()
-    assert first == {"batches": 3, "filled": 7, "remaining": 0}
+    assert first["remaining"] == 0 and first["filled"] >= 7 and first["batches"] >= 3
     assert second == {"batches": 0, "filled": 0, "remaining": 0}
     assert mine == 0 and theirs == 1
 

@@ -113,7 +113,7 @@ from typing import Any
 # parked decision is re-read in `_tenant_session(org)` before the write.
 # Fence: `tests/unit/test_studio_workflow_write_r8.py`.
 from acb_common.db import TenantUnbound, bind_tenant, release_tenant
-from gateway.routes.workflows import park, unattended
+from gateway.routes.workflows import human_step, park, unattended
 from gateway.routes.workflows.core import (
     _get_db,
     _log,
@@ -1046,6 +1046,7 @@ async def _execute_run(
     elapsed_waits: set[str] | None = None,
     organization_id: str | None = None,
     parked: ParkedApproval | None = None,
+    done_human_steps: dict[str, str] | None = None,
 ) -> None:
     global _ACTIVE_TOTAL
     actor = f"workflow:{workflow_name or workflow_id}"
@@ -1084,7 +1085,8 @@ async def _execute_run(
     # An elapsed wait has no person present either, whatever the kind: the wait
     # scan resumes it, and nobody decides anything (H-328 part (b)). The wait
     # comes from the `reason` of the stored pause row (`resume_run`).
-    if trigger_kind in UNATTENDED_TRIGGERS or elapsed_waits:
+    # A done human step is the same: the task scan resumes it (STU-E4).
+    if trigger_kind in UNATTENDED_TRIGGERS or elapsed_waits or done_human_steps:
         member_scope.enter_context(no_person_scope())
     billing_member = await _workflow_billing_member(workflow_id)
     if billing_member:
@@ -1107,6 +1109,7 @@ async def _execute_run(
             precomputed=precomputed,
             resolved_approvals=resolved_approvals,
             elapsed_waits=elapsed_waits,
+            done_human_steps=done_human_steps,
         )
         status, error = outcome.status, outcome.error
         await _finish_run(
@@ -1120,7 +1123,7 @@ async def _execute_run(
         )
         if status == "paused" and outcome.paused_nodes:
             node_id = outcome.paused_nodes[0]
-            await _hold_at_gate(
+            held = await _hold_at_gate(
                 run_id=run_id,
                 workflow_id=workflow_id,
                 workflow_name=workflow_name,
@@ -1132,6 +1135,10 @@ async def _execute_run(
                 resume_at=outcome.wait_until.get(node_id),
                 organization_id=organization_id,
             )
+            if held is not None:
+                # A refused hold ended the run `failed` in the row. The hub, the
+                # activity feed and the health streak must say the same (STU-E4).
+                status, error = held
     except Exception as exc:  # engine bugs must still close the run out
         error = f"{type(exc).__name__}: {exc}"[:500]
         _log.warning("workflows.run_crashed", run_id=run_id, error=error)
@@ -1413,7 +1420,7 @@ async def _hold_at_gate(
     started_by: str,
     resume_at: float | None = None,
     organization_id: str | None = None,
-) -> None:
+) -> tuple[str, str] | None:
     """Persist the pause; for an APPROVAL gate, also file the inbox proposal.
 
     Approval (``resume_at`` is None): the proposal (action
@@ -1441,6 +1448,20 @@ async def _hold_at_gate(
         ),
         node_id,
     )
+    if human_step.is_human_step(serialized, node_id):
+        # STU-E4: a task for a person, and a pause until it is done. No broker
+        # card and no decision: the task scan resumes the run.
+        return await _hold_at_human_step(
+            run_id=run_id, workflow_id=workflow_id, workflow_name=workflow_name,
+            node_id=node_id,
+            snapshot=_pause_snapshot(
+                serialized=serialized, trigger_payload=trigger_payload,
+                variables=variables, workflow_id=workflow_id,
+                workflow_name=workflow_name, started_by=started_by,
+                action_id=None, resume_at=None,
+            ),
+            organization_id=organization_id,
+        )
     is_wait = resume_at is not None
     if not is_wait and await _park_with_decision(
         run_id=run_id,
@@ -1565,6 +1586,71 @@ async def _fail_unresolved_write(run_id: str, organization_id: str) -> None:
         _log.warning("workflows.unresolved_fail_failed", run_id=run_id, error=str(exc)[:160])
 
 
+async def _fail_paused_run(run_id: str, organization_id: str | None, error: str) -> None:
+    """End a paused run as ``failed`` with a plain *error* (STU-E4). The guard
+    on ``paused`` changes no other state."""
+    try:
+        async with _run_session(organization_id) as db:
+            await db.execute(
+                text(
+                    "UPDATE workflow_runs SET status = 'failed', error = :error, "
+                    "finished_at = now() WHERE id = CAST(:id AS uuid) AND status = 'paused'"
+                ),
+                {"id": run_id, "error": error[:500]},
+            )
+    except Exception as exc:  # pragma: no cover - best effort persistence
+        _log.warning("workflows.paused_fail_failed", run_id=run_id, error=str(exc)[:160])
+
+
+async def _hold_at_human_step(
+    *,
+    run_id: str,
+    workflow_id: str,
+    workflow_name: str,
+    node_id: str,
+    snapshot: dict[str, Any],
+    organization_id: str | None,
+) -> tuple[str, str] | None:
+    """STU-E4: make the task of a human step and pause the run on it.
+
+    The task and the pause row commit in ONE ``_run_session(org)``
+    (:func:`human_step.open_step`). The run needs an org that
+    ``WORKFLOW_UNATTENDED_ORGS`` lists, because only the task scan resumes it.
+    Without one, or when the step is refused or any write fails, nothing
+    commits and the run ends ``failed`` with a plain message. After the commit
+    it bumps the assignee's My Day version, because the task sends no event.
+
+    Returns ``("failed", error)`` when the hold ended the run, so the caller
+    reports that status, and None when the run is paused on its task.
+    """
+    error: str | None = None
+    made: dict[str, str] = {}
+    if not organization_id or not human_step.org_ready(organization_id):
+        error = human_step.NOT_READY_ERROR
+    else:
+        try:
+            async with _run_session(organization_id) as db:
+                made = await human_step.open_step(
+                    db, organization_id=organization_id, workflow_id=workflow_id,
+                    workflow_name=workflow_name, run_id=run_id, node_id=node_id,
+                    snapshot=snapshot,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # nothing committed: the run ends failed
+            _log.warning(
+                "workflows.human_step_refused", run_id=run_id,
+                reason=str(getattr(exc, "reason", "") or type(exc).__name__)[:80],
+            )
+            error = human_step.REFUSED_ERROR
+    if error is not None:
+        await _fail_paused_run(run_id, organization_id, error)
+        return "failed", error
+    _log.info("workflows.human_step_opened", run_id=run_id, task_id=made["task_id"])
+    await park.bump_owner_my_day(str(organization_id), made["assignee"])
+    return None
+
+
 async def _park_with_decision(
     *,
     run_id: str,
@@ -1645,6 +1731,7 @@ async def resume_run(
     organization_id: str | None = None,
     pause_id: str | None = None,
     decided: bool = False,
+    task_done: bool = False,
 ) -> dict[str, Any]:
     """Resume a paused run: replay completed nodes from stored outputs and
     let the gate node through.
@@ -1734,6 +1821,9 @@ async def resume_run(
                     text(
                         "SELECT * FROM workflow_run_pauses "
                         "WHERE run_id = :id AND status = 'pending' "
+                        # A human step pause (STU-E4) is never the "newest
+                        # pending pause" of an approval card.
+                        "AND reason <> 'task' "
                         "ORDER BY created_at DESC LIMIT 1"
                     ),
                     {"id": run_id},
@@ -1742,6 +1832,11 @@ async def resume_run(
         if pause is None:
             return {"ok": False, "error": f"run {run_id} has no pending pause"}
         snapshot = parse_jsonb(pause.snapshot, {}) or {}
+        is_task = str(getattr(pause, "reason", "approval") or "approval") == human_step.REASON
+        task_id = human_step.task_id_of(snapshot) if is_task else None
+        if is_task != task_done or (is_task and task_id is None):
+            # Only the task scan resumes a human step, and it resumes nothing else.
+            return {"ok": False, "error": f"run {run_id} has no pending pause"}
         serialized = snapshot.get("serialized") or {}
         node_results = parse_jsonb(run.node_results, {}) or {}
         precomputed = {
@@ -1830,10 +1925,11 @@ async def resume_run(
             # counts toward the health streak like any other.
             trigger_kind=str(getattr(run, "trigger_kind", "manual") or "manual"),
             precomputed=precomputed,
-            resolved_approvals=set() if is_wait else {gate_node},
+            resolved_approvals=set() if (is_wait or is_task) else {gate_node},
             elapsed_waits={gate_node} if is_wait else set(),
             organization_id=str(run_org) if run_org else None,
             parked=parked,
+            done_human_steps={gate_node: task_id} if is_task and task_id else None,
         ),
         name=f"workflow-resume:{run_id}",
     )
@@ -1913,6 +2009,12 @@ async def run_published_workflow(
         return {
             "error": f"workflow '{row.name}' can change Projects tasks, so an "
             f"agent cannot start it yet. {_MEMBER_BLIND_REASON} Nothing ran."
+        }
+    if human_step.human_step_nodes(serialized) and not human_step.org_ready(org):
+        return {
+            "error": f"workflow '{row.name}' has a human step, and human steps are "
+            "not turned on for this organization yet, so an agent cannot start "
+            "it. Nothing ran."
         }
     long_waits = _long_wait_nodes(serialized)
     if long_waits:

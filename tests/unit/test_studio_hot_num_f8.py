@@ -54,7 +54,7 @@ def test_the_migration_adds_the_column_the_trigger_and_the_concurrent_index() ->
     code = _code(_migration())
     assert re.search(r"ALTER TABLE studio_record_hot ADD COLUMN IF NOT EXISTS v_num_f8 "
                      r"double precision;", code)
-    assert "NEW.v_num_f8 := NEW.v_num::float8" in code
+    assert "NEW.v_num_f8 := CASE" in code and "ELSE NEW.v_num::float8" in code
     assert re.search(r"CREATE TRIGGER studio_record_hot_num_f8_fill\s+"
                      r"BEFORE INSERT OR UPDATE OF v_num\b", code)
     assert "DROP TRIGGER IF EXISTS studio_record_hot_num_f8_fill" in code
@@ -70,8 +70,23 @@ def test_the_migration_holds_no_transaction_and_drops_an_invalid_index_first() -
     outside = re.sub(r"(?s)\$(\w*)\$.*?\$\1\$", "", code)  # a function body has its own BEGIN
     assert not re.search(r"(?im)^\s*(BEGIN|START TRANSACTION|COMMIT)\b", outside)
     drop = code.index("NOT i.indisvalid")
-    assert "DROP INDEX studio_record_hot_num_f8_idx" in code
+    assert "DROP INDEX %I" in code and "studio_record_hot_num_f8_todo_idx" in code
     assert drop < code.index("CREATE INDEX CONCURRENTLY")
+
+
+def test_the_trigger_guards_the_float8_range_and_the_index_build_lifts_lock_timeout() -> None:
+    code = _code(_migration())
+    assert "WHEN NEW.v_num > 1e300 THEN 'Infinity'::float8" in code
+    assert "WHEN NEW.v_num < -1e300 THEN '-Infinity'::float8" in code
+    lift = code.index("SET lock_timeout = 0;")
+    assert lift < code.index("CREATE INDEX CONCURRENTLY") < code.index("RESET lock_timeout;")
+    assert code.count("CREATE INDEX CONCURRENTLY") == 2
+    assert "ON studio_record_hot (organization_id) WHERE v_num IS NOT NULL AND v_num_f8 IS NULL;" in code
+
+
+def test_the_store_imports_no_routes_layer() -> None:
+    src = (_ROOT / "apps/services/gateway/gateway/studio/objects_store.py").read_text(encoding="utf-8")
+    assert "gateway.routes" not in src and "acb_common.studio_flags" in src
 
 
 def test_the_migration_is_expand_only() -> None:
@@ -178,4 +193,23 @@ def test_the_flag_reader_takes_the_org_list_and_defaults_off(monkeypatch: pytest
 
 
 def test_no_tenant_bound_means_the_flag_is_off() -> None:
+    assert store._f8_on() is False
+
+
+def test_a_cold_or_not_ready_cache_gives_the_sql_of_c2a(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The flag alone does not turn the float8 test on. The org must also be
+    ready: no row with a `v_num` and a NULL copy."""
+    import time
+
+    monkeypatch.setattr(store, "num_f8_org", lambda: "acme")
+    store._F8_READY.clear()
+    assert store._f8_on() is False
+    store._F8_READY["acme"] = (False, time.monotonic())
+    assert store._f8_on() is False
+    store._F8_READY["acme"] = (True, time.monotonic())
+    assert store._f8_on() is True
+    store._F8_READY["acme"] = (True, time.monotonic() - store._F8_TTL_READY - 1)
+    assert store._f8_on() is False  # stale
+    store._F8_READY.clear()
+    monkeypatch.setattr(store, "num_f8_org", lambda: None)
     assert store._f8_on() is False
