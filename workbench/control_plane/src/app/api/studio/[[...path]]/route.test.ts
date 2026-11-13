@@ -233,6 +233,30 @@ POST
     expect(await res.json()).toEqual({ detail: { code: "store_busy" } });
   });
 
+  it("maps the ready-app routes: paths, codes and Retry-After (STU-K1b)", async () => {
+    reply = () => new Response(JSON.stringify({ templates: [] }), { status: 200 });
+    await GET(req("http://x/api/studio/templates"), ctx(["templates"]));
+    expect(seen[0].url).toBe("http://gw.test/studio/templates");
+    reply = () => new Response(JSON.stringify({ detail: "Not found" }), { status: 404 });
+    expect((await GET(req("http://x/api/studio/templates"), ctx(["templates"]))).status).toBe(404);
+    const make = (status: number, headers?: Record<string, string>) => {
+      reply = () => new Response(JSON.stringify({ detail: { code: "x" } }), { status, headers });
+      return POST(
+        req("http://x/api/studio/packages/from-template", { method: "POST", body: JSON.stringify({ template: "t" }) }),
+        ctx(["packages", "from-template"]),
+      );
+    };
+    const created = await make(201);
+    expect(created.status).toBe(201);
+    expect(seen.at(-1)!.url).toBe("http://gw.test/studio/packages/from-template");
+    expect(seen.at(-1)!.init.body).toBe(JSON.stringify({ template: "t" }));
+    expect((await make(409)).status).toBe(409);
+    expect((await make(422)).status).toBe(422);
+    const busy = await make(503, { "Retry-After": "2" });
+    expect(busy.status).toBe(503);
+    expect(busy.headers.get("Retry-After")).toBe("2");
+  });
+
   it("sends no Retry-After when the gateway sends none", async () => {
     const res = await GET(req("http://x/api/studio/skills"), ctx(["skills"]));
     expect(res.headers.get("Retry-After")).toBeNull();
