@@ -61,8 +61,17 @@ NODE_TYPES = frozenset(
         # clears at most one such node (`_validate_studio_writes`). Its config is
         # literal: a `{{ref}}` never reaches the write.
         "studio_write",
+        # STU-E4 (`ai_studio.md` §3.3) — a task in the one task store for a
+        # named person, and a pause until that task is done. Its config is
+        # literal (`HUMAN_STEP_KEYS`), and `human_step.py` owns the rest.
+        "human_step",
     }
 )
+
+#: The config keys of a ``human_step`` node, and no other (STU-E4). The
+#: assignee is a member email in the graph, never a ``{{ref}}``, so a trigger
+#: payload cannot choose who gets the task.
+HUMAN_STEP_KEYS = frozenset({"assignee", "title", "description"})
 
 #: The config keys of a ``studio_write`` node, and no other (STU-B2c-2d).
 STUDIO_WRITE_KEYS = frozenset({"package_id", "action", "data", "record_id"})
@@ -572,10 +581,45 @@ def _validate_node_config(
         issues.append(GraphIssue("missing_config", "set node needs assignments", nid))
     elif ntype == "wait":
         _validate_wait_config(nid, config, issues)
-    elif ntype == "pm_task":
-        _validate_pm_task_config(nid, config, issues)
-    elif ntype == "studio_write":
-        _validate_studio_write_config(nid, config, issues)
+    else:
+        # The nodes of an internal app, one table (keeps this under the ceiling).
+        check = _INTERNAL_VALIDATORS.get(ntype)
+        if check is not None:
+            check(nid, config, issues)
+
+
+def _validate_human_step_config(
+    nid: str, config: dict[str, Any], issues: list[GraphIssue]
+) -> None:
+    """A human step needs a person and a title, both literal (STU-E4).
+
+    The person is a member email. A ``{{ref}}`` is refused, so a trigger payload
+    never picks who gets the task. Publish refuses a key outside
+    :data:`HUMAN_STEP_KEYS`. The org check of the member happens at run time,
+    because only the run knows its org.
+    """
+    unknown = sorted(k for k in config if k not in HUMAN_STEP_KEYS)
+    if unknown:
+        issues.append(
+            GraphIssue(
+                "unknown_field",
+                f"human step cannot set {unknown} — one of {sorted(HUMAN_STEP_KEYS)}",
+                nid,
+            )
+        )
+    who = config.get("assignee")
+    if not isinstance(who, str) or "@" not in who or "{{" in who or len(who.strip()) > 254:
+        issues.append(
+            GraphIssue("missing_config", "human step needs a person: write a member email", nid)
+        )
+    title = config.get("title")
+    if not isinstance(title, str) or not title.strip() or "{{" in title:
+        issues.append(GraphIssue("missing_config", "human step needs a title", nid))
+    description = config.get("description")
+    if description is not None and (not isinstance(description, str) or "{{" in description):
+        issues.append(
+            GraphIssue("unknown_field", "human step text must be plain text", nid)
+        )
 
 
 def _validate_pm_task_config(
@@ -647,6 +691,14 @@ def _flatten_strings(value: Any) -> list[str]:
     if isinstance(value, list):
         return [s for v in value for s in _flatten_strings(v)]
     return []
+
+
+#: The config checks of the nodes that act on an internal app.
+_INTERNAL_VALIDATORS = {
+    "pm_task": _validate_pm_task_config,
+    "studio_write": _validate_studio_write_config,
+    "human_step": _validate_human_step_config,
+}
 
 
 def compile_graph(
