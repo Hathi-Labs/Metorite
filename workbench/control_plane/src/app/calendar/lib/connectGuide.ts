@@ -77,6 +77,7 @@ export const SYNC_NOTES: string[] = [
   "Metorite tasks with a time go out to a calendar named Metorite.",
   "Move one of those events there, and the task moves here.",
   "Disconnect removes the copied events. Your tasks stay.",
+  "You can turn off sending your tasks in the row of the connection. Turning it off deletes nothing in Google or Outlook.",
 ];
 
 export const ALSO_SYNC_TITLE = "Already connected your email?";
