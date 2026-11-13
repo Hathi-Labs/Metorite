@@ -744,23 +744,53 @@ def test_eleven_filters_and_a_sum_of_five_bind_no_name_twice() -> None:
 # ── CRM-Q32-9a fix round: a sum reads each row once, detoasted ─────────────
 
 
-def test_a_plain_field_keeps_its_sql_and_a_sum_reads_the_detoasted_row() -> None:
-    """Fix round P1: each ``fields -> :key`` on the stored row reads the
-    whole TOASTed jsonb again. A sum reads the one detoasted copy of
-    ``DETOAST_JOIN``. A plain field keeps the SQL text of before, so an org
-    with no sum runs the same statement."""
+def test_every_module_field_reads_the_detoasted_row_once() -> None:
+    """Fix round P1 and task 3127: each ``fields -> :key`` on the stored row
+    reads the whole TOASTed jsonb again. So every field expression of a
+    module (a measure, a group key, a date bucket and each filter) reads the
+    one detoasted copy of ``DETOAST_JOIN``. A core record keeps ``custom``
+    and the SQL of before."""
     from gateway.routes.crm import field_sql as fs
 
     scope, _keys = _sum_scope(5)
     plain = fs.FieldRef(key="Grand_Total", type="currency", label="Grand Total")
     measure = fs.measure_sql(scope, plain, "sum")
-    number = fs._number("fields", "agf_m_0")
+    number = fs._number(fs.DETOAST_COLUMN, "agf_m_0")
     assert (measure.value, measure.sum, measure.count, measure.source) == (
-        f"COALESCE(SUM({number}), 0)", f"SUM({number})", f"COUNT({number})", "")
-    where = fs.module_where(fs.FieldScope(column="fields", owner="module:X",
-                                          fields={"Grand_Total": plain}),
-                            "X", [("Grand_Total", "5")], zone="UTC")
-    assert where.source == "" and "agf_d" not in where.sql
+        f"COALESCE(SUM({number}), 0)", f"SUM({number})", f"COUNT({number})",
+        fs.DETOAST_JOIN)
+    refs = {
+        "Grand_Total": plain,
+        "Day": fs.FieldRef(key="Day", type="date", label="Day"),
+        "At": fs.FieldRef(key="At", type="datetime", label="At"),
+        "Stage": fs.FieldRef(key="Stage", type="select", label="Stage"),
+        "Flag": fs.FieldRef(key="Flag", type="boolean", label="Flag"),
+        "Vendor": fs.FieldRef(key="Vendor", type="lookup", label="Vendor"),
+        "Tags": fs.FieldRef(key="Tags", type="multiselect", label="Tags"),
+    }
+    module = fs.FieldScope(column="fields", owner="module:X", fields=refs)
+    where = fs.module_where(module, "X", [
+        ("Grand_Total", "5"), ("Day.from", "2026-01-01"), ("Day", "2026-01-02"),
+        ("At.to", "2026-02-01"), ("Stage", "Won"), ("Flag", "true"),
+        ("Vendor", "Acme"), ("Tags", "Red"),
+    ], zone="UTC")
+    assert where.source == fs.DETOAST_JOIN and f"{fs.DETOAST_COLUMN} ->" in where.sql
+    pieces = [where.sql]
+    for key, bucket in (("Day", "month"), ("At", "quarter"), ("Stage", None),
+                        ("Vendor", None), ("Flag", None)):
+        group = fs.group_sql(module, refs[key], bucket, zone="UTC")
+        assert group.source == fs.DETOAST_JOIN, key
+        pieces.append(f"{group.key} {group.label}")
+    for sql in pieces:
+        # The stored column is read by no expression: each `->` reads the copy.
+        assert not re.search(r"(?<![.\w])fields ->", sql), sql
+    core = fs.FieldScope(column="custom", owner="deals", fields=refs)
+    core_measure = fs.measure_sql(core, plain, "sum")
+    assert core_measure.source == "" and fs.DETOAST_COLUMN not in core_measure.value
+    assert fs.group_sql(core, refs["Stage"], None, zone="UTC").source == ""
+    # The value read of a text filter reads each row once too.
+    assert fs.DETOAST_JOIN in fs._VALUE_COUNTS_SQL
+    assert not re.search(r"(?<![.\w])fields ->", fs._VALUE_COUNTS_SQL)
     summed = fs.measure_sql(scope, scope.fields["@amount"], "sum")
     assert summed.source == fs.DETOAST_JOIN
     # The stored column is read by no part: each `->` reads the copy.

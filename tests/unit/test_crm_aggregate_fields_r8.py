@@ -29,6 +29,7 @@ without the database.
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from typing import Any
@@ -1412,10 +1413,11 @@ async def test_a_sum_of_five_over_toasted_rows_costs_about_one_field(
           {name: round(seconds, 3) for name, (_b, seconds) in timed.items()})
     assert plain_body["total"] == 10_521_000
     assert (sum_body["total"], sum_body["values"]) == (18_023_894, _TOASTED)
-    # The driver gets $n placeholders, so the alias names a read of a sum.
+    # The driver gets $n placeholders. Task 3127: every total that reads a
+    # field reads the one detoasted copy, the plain field too, and joins it once.
     totals = [s for s in seen if "crm_module_records" in s and " AS value" in s]
-    summed_reads = [s for s in totals if "agf_d.agf_fields" in s]
-    assert summed_reads and all(s.count("CROSS JOIN LATERAL") == 1 for s in summed_reads)
-    assert any("LATERAL" not in s for s in totals), "the plain field joins nothing"
+    assert totals and all(s.count("CROSS JOIN LATERAL") == 1 for s in totals)
+    assert all("agf_d.agf_fields" in s for s in totals)
+    assert not any(re.search(r"(?<![.\w])fields ->", s) for s in totals)
     assert sum_s < SUM_BOUND_S, sum_s
     assert sum_s < SUM_RATIO_BOUND * plain_s, (sum_s, plain_s)

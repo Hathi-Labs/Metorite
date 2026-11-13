@@ -42,6 +42,13 @@ functions pick the field of each word of the core entity, or give the 422
 that the projection table of §18.13.5 names. The SQL stays here, so
 ``aggregate.py`` still holds no jsonb operator.
 
+**Each module record is read ONCE** (task 3127). Postgres decompresses a
+TOASTed jsonb value again for each ``fields -> :key`` on the stored row, and
+an aggregate of a module reads up to 17 of them a row. So every expression
+over a module record reads the one detoasted copy of :data:`DETOAST_JOIN`
+(:func:`_reads`), and each builder gives that join as its FROM text. A core
+entity keeps its ``custom`` column, which is small, and its SQL of before.
+
 **One zone for each month** (CRM-Q25b). :func:`crm_zone` gives the CRM zone,
 the zone of the Zoho org, or UTC. A ``datetime`` field and the fixed month
 groups of ``aggregate.py`` take their month on that clock, through
@@ -304,6 +311,8 @@ class GroupSql:
     key: str
     label: str
     params: dict[str, Any]
+    #: Task 3127: the FROM text of a module group (:data:`DETOAST_JOIN`).
+    source: str = ""
 
 
 @dataclass(frozen=True)
@@ -317,10 +326,12 @@ class WhereSql:
 #: CRM-Q32-9a fix round: the detoasted jsonb of a module record. Each
 #: ``fields -> :key`` on the stored row reads the whole TOASTed value again,
 #: and a sum of 5 parts reads it 40 times a row (7.1 s over 30,000 rows of
-#: 2.5 KB, measured). The LATERAL reads it ONCE for each row that passed
-#: the WHERE clause, and ``OFFSET 0`` stops the planner from folding it back
-#: in. The parts of a sum then read the copy in memory. A plain field keeps
-#: its SQL text, so the statement of an org with no sum does not change.
+#: 2.5 KB, measured). The LATERAL reads it ONCE for each row of the module,
+#: and ``OFFSET 0`` stops the planner from folding it back in. Task 3127:
+#: every field expression of a module statement (a measure, a group key, a
+#: date bucket and each filter) reads this copy, through :func:`_reads`.
+#: Production, 2026-11-13: a six-month total over 31,590 invoices of 3 KB
+#: took 7.7 s as built and 3.7 s with one detoast.
 DETOAST_ALIAS = "agf_d"
 DETOAST_COLUMN = f"{DETOAST_ALIAS}.agf_fields"
 DETOAST_JOIN = (
@@ -331,9 +342,22 @@ DETOAST_JOIN = (
 
 def from_source(*sources: str) -> str:
     """The FROM text that a statement adds after its table: the one
-    :data:`DETOAST_JOIN` when any part of the statement reads a sum, else
-    empty. A statement never joins it twice."""
+    :data:`DETOAST_JOIN` when any part of the statement reads a field of a
+    module, else empty. A statement never joins it twice."""
     return DETOAST_JOIN if any(sources) else ""
+
+
+def _reads(column: str) -> str:
+    """The jsonb that an expression over *column* reads (task 3127). A module
+    record reads its one detoasted copy, :data:`DETOAST_COLUMN`. A core
+    record reads its ``custom`` column, as before."""
+    return DETOAST_COLUMN if column == MODULE_COLUMN else column
+
+
+def _source_of(column: str) -> str:
+    """The FROM text of an expression over *column*: :data:`DETOAST_JOIN`
+    for a module record, else empty."""
+    return DETOAST_JOIN if column == MODULE_COLUMN else ""
 
 
 def _options(raw: Any) -> dict[str, str]:
@@ -551,20 +575,19 @@ def _amount(column: str, ref: FieldRef, prefix: str) -> tuple[str, dict[str, Any
     part is set, so ``COUNT`` does not count the record. Else it is the sum
     of the parts that are set, each NULL part taken as 0.
 
-    Returns the SQL, the bound keys and the FROM text. A sum over the
-    module column reads :data:`DETOAST_COLUMN`, so its FROM text is
-    :data:`DETOAST_JOIN`. A plain field has no FROM text."""
-    summed = bool(ref.parts) and column == MODULE_COLUMN
-    numbers = _numbers(DETOAST_COLUMN if summed else column, ref, prefix)
+    Returns the SQL, the bound keys and the FROM text. A field of a module
+    reads :data:`DETOAST_COLUMN`, so its FROM text is :data:`DETOAST_JOIN`
+    (task 3127). A field of a core record has no FROM text."""
+    numbers = _numbers(_reads(column), ref, prefix)
+    source = _source_of(column)
     params: dict[str, Any] = {}
     for _sql, bound in numbers:
         params.update(bound)
     if len(numbers) == 1:
-        return numbers[0][0], params, ""
+        return numbers[0][0], params, source
     unset = " AND ".join(f"{n} IS NULL" for n, _b in numbers)
     total = " + ".join(f"COALESCE({n}, 0)" for n, _b in numbers)
-    return (f"(CASE WHEN {unset} THEN NULL ELSE {total} END)", params,
-            DETOAST_JOIN if summed else "")
+    return f"(CASE WHEN {unset} THEN NULL ELSE {total} END)", params, source
 
 
 def _date(column: str, p: str) -> str:
@@ -704,17 +727,16 @@ def group_sql(
 
     A ``date`` keeps the day that Zoho wrote. A ``datetime`` reads the whole
     value with its offset, and takes its bucket on the clock of *zone*, the
-    CRM zone (CRM-Q25b). So it agrees with ``created_month``.
+    CRM zone (CRM-Q25b). So it agrees with ``created_month``. A module
+    group reads the detoasted copy (task 3127).
     """
-    column, p = scope.column, _GROUP_KEY
+    column, p = _reads(scope.column), _GROUP_KEY
+    source = _source_of(scope.column)
     if ref.type in DATE_TYPES:
         unit, fmt = BUCKETS[bucket or ""]
-        when = (
-            zoned(_instant(column, p)) if ref.type == "datetime"
-            else f"CAST({_date(column, p)} AS timestamp)"
-        )
-        key = f"to_char(date_trunc('{unit}', {when}), '{fmt}')"
-        return GroupSql(key=key, label="NULL", params={p: ref.key, ZONE_PARAM: zone})
+        key = f"to_char(date_trunc('{unit}', {_when(column, ref, p)}), '{fmt}')"
+        return GroupSql(key=key, label="NULL", params={p: ref.key, ZONE_PARAM: zone},
+                        source=source)
     if ref.type == "lookup":
         return GroupSql(
             key=_lookup_id(column, p),
@@ -723,8 +745,19 @@ def group_sql(
                 f"THEN {column} -> :{p} ->> 'name' END)"
             ),
             params={p: ref.key},
+            source=source,
         )
-    return GroupSql(key=f"{column} ->> :{p}", label="NULL", params={p: ref.key})
+    return GroupSql(key=f"{column} ->> :{p}", label="NULL", params={p: ref.key},
+                    source=source)
+
+
+def _when(column: str, ref: FieldRef, p: str) -> str:
+    """The value of a date or a datetime field as a ``timestamp``. A
+    ``date`` keeps the day that Zoho wrote. A ``datetime`` takes its time on
+    the clock of the CRM zone (CRM-Q25b)."""
+    if ref.type == "datetime":
+        return zoned(_instant(column, p))
+    return f"CAST({_date(column, p)} AS timestamp)"
 
 
 def field_pairs(query_params: Any) -> list[tuple[str, str]]:
@@ -765,15 +798,15 @@ def _filter(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
     if ref.type in MEASURE_TYPES and end is None:
         number, keys, source = _amount(scope.column, ref, k)
         return f"{number} = {clause}", bound, keys, source
-    return clause, bound, {k: ref.key}, ""
+    return clause, bound, {k: ref.key}, _source_of(scope.column)
 
 
 def _filter_value(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
                   value: str, also: Sequence[str] = ()) -> tuple[str, Any]:
     """One filter clause and its bound value. A number gives only the right
     side of its clause: :func:`_filter` puts the number of :func:`_amount`
-    on the left."""
-    column = scope.column
+    on the left. A module filter reads the detoasted copy (task 3127)."""
+    column = _reads(scope.column)
     if end is not None:
         if ref.type not in DATE_TYPES:
             raise _refuse(
@@ -1023,12 +1056,12 @@ def overlay_weighted(
     column = scope.column
     a, a_keys, a_source = _amount(column, amount, "agf_wa")
     w, w_keys, w_source = _amount(column, probability, "agf_wp")
-    weight = (f"(CASE WHEN {column} ->> :agf_ws = ANY(CAST(:agf_open AS text[])) "
+    weight = (f"(CASE WHEN {_reads(column)} ->> :agf_ws = ANY(CAST(:agf_open AS text[])) "
               f"THEN {a} * {w} / 100.0 END)")
     return MeasureSql(
         value=f"COALESCE(SUM({weight}), 0)", sum=f"SUM({weight})", count=f"COUNT({weight})",
         params={**a_keys, **w_keys, "agf_ws": stage.key, "agf_open": list(open_values)},
-        source=from_source(a_source, w_source),
+        source=from_source(a_source, w_source, _source_of(column)),
     )
 
 
@@ -1039,13 +1072,15 @@ def overlay_weighted(
 #: bound, so no name reaches the SQL text.
 #: Fix round: each value is trimmed as ``mapping.text_value`` trims it, the
 #: rule of the executor, so " Won " counts as "Won" and never shows as a value
-#: with no entry. An object or a list is no value, as there.
-_TRIMMED = f"btrim({MODULE_COLUMN} ->> :{_GROUP_KEY}, E' \\t\\r\\n\\f\\x0b')"
+#: with no entry. An object or a list is no value, as there. Task 3127: the
+#: three reads of the field read the detoasted copy, so a row is read once.
+_TRIMMED = f"btrim({DETOAST_COLUMN} ->> :{_GROUP_KEY}, E' \\t\\r\\n\\f\\x0b')"
 _VALUE_COUNTS_SQL = (
     f"SELECT {_TRIMMED} AS v, count(*) AS n "
-    "FROM crm_module_records WHERE organization_id = CAST(:agf_org AS uuid) "
+    f"FROM crm_module_records{DETOAST_JOIN} "
+    "WHERE organization_id = CAST(:agf_org AS uuid) "
     f"AND module = :{_MODULE} AND ext_source = 'zoho' "
-    f"AND jsonb_typeof({MODULE_COLUMN} -> :{_GROUP_KEY}) IN ('string', 'number') "
+    f"AND jsonb_typeof({DETOAST_COLUMN} -> :{_GROUP_KEY}) IN ('string', 'number') "
     f"AND coalesce({_TRIMMED}, '') <> '' "
     "GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT :agf_limit"
 )

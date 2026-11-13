@@ -703,6 +703,8 @@ async def _read(
         group = group_sql(scope, grouped, bucket, zone=zone)
         key_sql, label_sql = group.key, group.label
         bound.update(group.params)
+        # Task 3127: a module group reads the one detoasted copy too.
+        source = from_source(source, group.source)
     elif group_by is not None:
         key_sql = (MODULE_GROUPS if module is not None else GROUPS)[group_by]
         label_sql = "NULL"
@@ -857,6 +859,7 @@ async def _read_overlay(
     if group is not None:
         key_sql, label_sql = group.key, group.label
         bound.update(group.params)
+        source = from_source(source, group.source)
     elif group_by is not None:
         key_sql = MODULE_GROUPS[group_by]
     else:
