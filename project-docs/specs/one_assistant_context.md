@@ -1751,7 +1751,7 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one, so 
 |---|---|---|---|---|---|---|
 | TS-1 | 3195 | The index and the lexical ranker | STD | AGENT-SAFE | 1 | none |
 | TS-1b | 3207 | The Studio split: a core of 10 tools and the follow pack `studio-more`, which takes a place of `MAX_PACKS` | STD, shared seam, Opus builder | AGENT-SAFE. LIVE, not dark: it changes every Studio org. The owner answers decision 11 before the merge. Needs its own spec audit (spec-auditor, Opus) before dispatch. | 1 | TS-1 |
-| TS-1c | no task yet | `studio-more` alone takes no place of `MAX_PACKS` (item 7 of the split) | STD, shared seam, Opus builder | LIVE. Only if decision 11 asks for it. Needs its own spec audit (spec-auditor, Opus) before dispatch. | none | TS-1b |
+| TS-1c | task 3213 | `studio-more` alone takes no place of `MAX_PACKS` (item 7 of the split) | STD, shared seam, Opus builder | LIVE. Only if decision 11 asks for it. Needs its own spec audit (spec-auditor, Opus) before dispatch. | none | TS-1b |
 | TS-2 | 3196 | The spike: `find_tools` for the two Studio packs | HIGH | AGENT-SAFE, dark. The flip is OWNER-GATE. Needs its own spec audit (spec-auditor, Opus) before dispatch. | 1 | TS-1b |
 | TS-3 | 3197 | Layer (a′) | STD, shared seam, Opus builder | AGENT-SAFE, dark. Needs its own spec audit (spec-auditor, Opus) before dispatch. | 2 | TS-2 |
 | TS-4 | 3198 | Sticky state for each tool, its line, the unknown-name line, the room order and the budget | STD, shared seam, Opus builder (D218) | AGENT-SAFE, dark. Needs its own spec audit (spec-auditor, Opus) before dispatch. | 2 | TS-2 |
@@ -1789,7 +1789,7 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one, so 
   - The owner answered decision 11 before the merge, and the slice follows that answer.
 - **Fences.** `tests/unit/test_tool_packs_registry.py`: the split, and the pin of 23 becomes 10 and 13. `tests/unit/test_studio_workflow_tools.py`: the pin at `:548`, and the room test of section 11. `tests/unit/test_tool_packs_choice.py` and `tests/unit/test_pack_cues.py`: the order and the catalog lines with `studio-more`.
 
-**TS-1c. `studio-more` takes no place of `MAX_PACKS` (no task yet).** Optional. It follows only if decision 11 asks for it. Needs its own spec audit (spec-auditor, Opus) before dispatch.
+**TS-1c. `studio-more` takes no place of `MAX_PACKS` (task 3213).** Optional. It follows only if decision 11 asks for it. Needs its own spec audit (spec-auditor, Opus) before dispatch.
 - **Files.** `acb_skills/tool_packs.py` (`choose`, the step-aside, the skill room, `plan_loader` and `_room_for`) and `orchestrator/_tool_injection.py` (`:4361`).
 - **Acceptance.** The seven sites of item 7 give the same answer for `studio-more`. Each other pack of `FOLLOWS` still takes a place.
 - **Fence.** A new section of `tests/unit/test_tool_packs_choice.py`, with one case for each answer to decision 11.
