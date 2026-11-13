@@ -24,7 +24,7 @@
  *   - `TodayBand.tsx` imports `saveShellPrefs` from `./shellPrefs`: "imports
  *     nothing that writes the arrangement" fails.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -103,5 +103,36 @@ describe("check 3: the stable regions are equal before and after the band", () =
     expect(after).toEqual(before);
     expect(before.sidebar.length).toBeGreaterThan(0);
     expect(before.cards).toEqual(["today", "needs", "next"]);
+  });
+});
+
+describe("check 4: the pin suggestion code imports nothing that writes the arrangement (PKG-19a-1)", () => {
+  // D111: the rule proposes. Only a member's Yes writes a pin, and only in
+  // `pinSuggestAccept.ts` (PKG-19a-2). The hook, the counter and the flag file
+  // hold no writer.
+  const FILES = ["pinSuggest.ts", "pinSuggestStore.ts", "pinSuggestFlag.ts", "pinSuggestCard.ts", "usePinOpenCount.ts"];
+  const FORBIDDEN: [string, RegExp][] = [
+    ["the shell prefs route", /api\/auth\/me\/shell|SHELL_PREFS_PATH/],
+    ["a shell prefs module", /["']\.\/shellPrefs["']|["']\.\/shellCache["']|["']\.\/sidebarFolds["']/],
+    ["a shell prefs setter", /\b(saveShellPrefs|markTourSeen|markChatFirstMessage|markAsked|setHelloPending|markBuddyHello|writeFolds|clearSidebarFolds)\b/],
+    ["the sidebar order", /["']\.\/shellNav["']|\bshellSidebar\b|\bstarredHrefs\b/],
+    ["a network call", /\bfetch\s*\(|\bmethod\s*:\s*["'](PUT|POST|PATCH|DELETE)["']/],
+  ];
+  for (const file of FILES) {
+    it(`${file} imports nothing that writes the arrangement`, () => {
+      const code = source(file);
+      for (const [what, re] of FORBIDDEN) expect(code, `${file}: ${what}`).not.toMatch(re);
+    });
+  }
+  it("pinSuggestAccept.ts is the only writer: it calls saveShellPrefs, and no other pin file does", () => {
+    expect(source("pinSuggestAccept.ts")).toMatch(/\bsaveShellPrefs\b/);
+    const others = readdirSync(here).filter(
+      (f) => /^[Pp]inSuggest|^usePinOpenCount/.test(f) && !/\.test\./.test(f) && f !== "pinSuggestAccept.ts",
+    );
+    expect(others.length).toBeGreaterThan(3);
+    for (const f of others) expect(source(f), f).not.toMatch(/\b(saveShellPrefs|PUT)\b/);
+  });
+  it("the rule file touches no browser store", () => {
+    expect(source("pinSuggest.ts")).not.toMatch(/\b(localStorage|sessionStorage)\b/);
   });
 });

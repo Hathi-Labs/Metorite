@@ -19,6 +19,11 @@
  *    write waits for an approval card, and nothing is written yet. So the
  *    blocks must not show it as saved.
  *    Mutation: drop the 202 branch of `mapAnswer`. "a 202 waits" turns red.
+ * 6. The aggregate (STU-D4b). `door.read` sends `object:<name>.aggregate` with only
+ *    the keys of `AGGREGATE_KEYS`, and answers the one row of the C2b result.
+ *    Mutation: post `source.args` whole for an aggregate. "an aggregate body holds
+ *    only" turns red. Mutation: drop `aggregate` from `READ_SOURCE`. "an aggregate
+ *    reads one row" turns red.
  */
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,8 +31,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { clearAll, invalidate, read as cacheRead } from "@/lib/dataCache";
 import { sourceKey } from "./dataDoor";
 import {
-  APPROVAL_SENTENCE, WAITING_SENTENCE, DoorReadError, STUDIO_OFF, createRealDoor, flattenRecords, getPackage, isReadSource,
-  listPackages, mapAnswer, ownMessage, createDoorKeeper, verbMap,
+  AGGREGATE_KEYS, aggregateBody, APPROVAL_SENTENCE, WAITING_SENTENCE, DoorReadError, STUDIO_OFF, createRealDoor, flattenRecords, getPackage, isReadSource,
+  listOrgPackages, listPackages, mapAnswer, ownMessage, createDoorKeeper, verbMap,
+  NOT_OPEN_SENTENCE, READ_ONLY_SENTENCE, packageAccess, readActions,
 } from "./realDoor";
 import { canRetryRead } from "./dataDoor";
 import { readRefusal } from "./formModel";
@@ -42,6 +48,7 @@ const ACTIONS = [
   { id: "change", uses: "object:visit.update" },
   { id: "remove", uses: "object:visit.delete" },
   { id: "close_visit", uses: "object:visit.update", set: { status: "done" } },
+  { id: "tally", uses: "object:visit.aggregate" },
 ];
 
 interface Call { url: string; body: unknown }
@@ -91,6 +98,8 @@ describe("the read guard", () => {
   it("tests the shape alone", () => {
     expect(isReadSource("object:visit.list")).toBe(true);
     expect(isReadSource("object:visit.get")).toBe(true);
+    expect(isReadSource("object:visit.aggregate")).toBe(true);
+    expect(isReadSource("object:visit.aggregates")).toBe(false);
     expect(isReadSource("object:visit.update")).toBe(false);
     expect(isReadSource(null)).toBe(false);
   });
@@ -234,6 +243,26 @@ describe("a write", () => {
   });
 });
 
+describe("the admin list of packages (J4)", () => {
+  it("asks for the org scope and reads the gateway's admin flag", async () => {
+    const row = { id: PKG, name: "Visits", status: "published", live_version: 2, owner_email: "ben@x.in", mine: false,
+      action_calls: 4, action_calls_capped: false, last_error: { action: "close", outcome: "failed", at: "2026-11-11T10:00:00Z", reason: "x" } };
+    const f = fakeFetch(200, { admin: true, truncated: true, packages: [row] });
+    const got = await listOrgPackages(f.impl);
+    expect(f.calls[0].url).toBe("/api/studio/packages?scope=org");
+    expect(got.admin).toBe(true);
+    expect(got.truncated).toBe(true);
+    expect(got.packages[0].owner_email).toBe("ben@x.in");
+    expect(got.packages[0].last_error).toEqual({ action: "close", outcome: "failed", at: "2026-11-11T10:00:00Z" });
+  });
+  it("a member answer holds no admin flag, so the view has no rows", async () => {
+    const f = fakeFetch(200, { admin: false, packages: [{ id: PKG, name: "Mine", status: "draft", live_version: null }] });
+    await expect(listOrgPackages(f.impl)).resolves.toEqual({ admin: false, packages: [], truncated: false });
+    const none = fakeFetch(200, { packages: [] });
+    expect((await listOrgPackages(none.impl)).admin).toBe(false);
+  });
+});
+
 describe("the package routes", () => {
   it("an org outside STUDIO_ORGS gets 404, and the page reads it as off, not as an error", async () => {
     const { impl } = fakeFetch(404, { detail: "Not found" });
@@ -316,5 +345,105 @@ describe("fix round 1: the body marker, the generic 500, the rule words, the kep
     expect(canRetryRead(mapAnswer(403, { detail: { code: "not_declared" } }).message)).toBe(false);
     expect(canRetryRead(mapAnswer(401, {}).message)).toBe(false);
     expect(canRetryRead(null)).toBe(true);
+  });
+});
+
+describe("the aggregate (STU-D4b)", () => {
+  const RESULT = {
+    measures: [{ op: "count", field: null }, { op: "sum", field: "fee" }],
+    currencies: [null, "INR"],
+    groups: [{ key: "planned", count: 2, values: [2, 12550] }],
+    other: null, folded: 0,
+    total: { key: null, count: 2, values: [2, 12550] },
+  };
+
+  it("an aggregate reads one row, the C2b result, from the declared id", async () => {
+    const { impl, calls } = fakeFetch(200, RESULT);
+    const door = createRealDoor({ packageId: PKG, actions: ACTIONS, fetchImpl: impl });
+    const rows = await door.read({ action: "object:visit.aggregate", args: { measures: [{ op: "count" }] } });
+    expect(rows).toEqual([RESULT]);
+    expect(calls[0]).toEqual({ url: `/api/studio/apps/${PKG}/actions/tally`, body: { measures: [{ op: "count" }] } });
+  });
+
+  it("an aggregate body holds only filter, group_by and measures, so it never matches a write", async () => {
+    const { impl, calls } = fakeFetch(200, RESULT);
+    const door = createRealDoor({ packageId: PKG, actions: ACTIONS, fetchImpl: impl });
+    const args = { id: "x", data: { a: 1 }, kind: "bar", group_by: { field: "status" }, filter: [] };
+    await door.read({ action: "object:visit.aggregate", args });
+    expect(calls[0].body).toEqual({ group_by: { field: "status" }, filter: [] });
+    expect(aggregateBody(undefined)).toEqual({});
+    expect([...AGGREGATE_KEYS]).toEqual(["filter", "group_by", "measures"]);
+  });
+
+  it("the keys equal AGGREGATE_INPUT_KEYS of the gateway door", () => {
+    const root = "../../../../../";
+    const src = readFileSync(new URL(`${root}apps/services/gateway/gateway/routes/studio/invoke.py`, import.meta.url), "utf8");
+    expect(src).toContain('studio_query.aggregate_input_schema()["properties"]');
+    const schema = readFileSync(new URL(`${root}packages/acb_common/acb_common/studio_query.py`, import.meta.url), "utf8")
+      .replace(/\r\n/g, "\n");
+    const block = /_AGGREGATE_INPUT_SCHEMA[\s\S]*?"properties": \{([\s\S]*?)\n {4}\},\n\}/.exec(schema);
+    expect(block).not.toBeNull();
+    const keys = [...block![1].matchAll(/^ {8}"([a-z_]+)":/gm)].map((m) => m[1]);
+    expect(keys).toEqual([...AGGREGATE_KEYS]);
+  });
+
+  it("an answer that is no aggregate fails with a plain sentence", async () => {
+    const { impl } = fakeFetch(200, { records: [] });
+    const door = createRealDoor({ packageId: PKG, actions: ACTIONS, fetchImpl: impl });
+    await expect(door.read({ action: "object:visit.aggregate" })).rejects.toThrow("That did not work. Try again.");
+  });
+
+  it("a refused aggregate shows the sentence of the door, never the raw text", async () => {
+    const { impl } = fakeFetch(422, { detail: { code: "query_op_not_allowed", message: "Field `fee` is a money field.", field: "fee" } });
+    const door = createRealDoor({ packageId: PKG, actions: ACTIONS, fetchImpl: impl });
+    await expect(door.read({ action: "object:visit.aggregate" })).rejects.toThrow("Field `fee` is a money field.");
+  });
+
+  it("an aggregate the package does not declare makes no call", async () => {
+    const { impl, spy } = fakeFetch(200, RESULT);
+    const door = createRealDoor({ packageId: PKG, actions: ACTIONS.slice(0, 2), fetchImpl: impl });
+    await expect(door.read({ action: "object:visit.aggregate" })).rejects.toThrow(/does not declare/);
+    expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+describe("J2a: a viewer reads and writes nothing", () => {
+  it("a 403 read_only has its own plain sentence, and never says the action is not open", () => {
+    const res = mapAnswer(403, { detail: { code: "read_only", message: "server words" } });
+    expect(res).toEqual({ ok: false, message: READ_ONLY_SENTENCE });
+    expect(READ_ONLY_SENTENCE).not.toBe(NOT_OPEN_SENTENCE);
+    expect(READ_ONLY_SENTENCE).toMatch(/can read/);
+    expect(READ_ONLY_SENTENCE).toMatch(/owner/);
+  });
+  it("getPackage keeps the access: no key is the owner, viewer is a viewer", async () => {
+    const owner = fakeFetch(200, { package: { id: PKG, name: "Visits", manifest: { actions: ACTIONS } }, objects: [] });
+    expect((await getPackage(PKG, owner.impl)).access).toBe("owner");
+    const viewer = fakeFetch(200, {
+      package: { id: PKG, name: "Visits", access: "viewer", version: 1, manifest: { actions: ACTIONS } }, objects: [],
+    });
+    expect((await getPackage(PKG, viewer.impl)).access).toBe("viewer");
+  });
+  it("an access value that the page does not know reads as a viewer, so it offers no write", () => {
+    expect(packageAccess({})).toBe("owner");
+    expect(packageAccess({ access: "owner" })).toBe("owner");
+    for (const value of ["viewer", "editor", "", null, 1]) {
+      expect(packageAccess({ access: value })).toBe("viewer");
+    }
+  });
+  it("readActions keeps the list, the get and the aggregate, and drops each write", () => {
+    expect(readActions(ACTIONS).map((a) => a.id)).toEqual(["find", "peek", "tally"]);
+    expect(readActions(undefined)).toEqual([]);
+  });
+  it("a door built on readActions sends no write to the network", async () => {
+    const { impl, spy } = fakeFetch();
+    const door = createRealDoor({ packageId: PKG, actions: readActions(ACTIONS), fetchImpl: impl });
+    for (const verb of ["create", "update", "delete"]) {
+      const res = await door.run(`object:visit.${verb}`, { id: "x", data: {} });
+      expect(res.ok).toBe(false);
+    }
+    expect(await door.run("close_visit", {})).toEqual({ ok: false, message: NOT_OPEN_SENTENCE });
+    expect(spy).not.toHaveBeenCalled();
+    await door.read({ action: "object:visit.list" });
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 });

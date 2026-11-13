@@ -500,12 +500,25 @@ jobs:
           set -f
           [ "$SHARD_MODE" = "selection" ] || SHARD_TARGETS="tests/unit/"
           rc=0
+          # CIV-33a (task 3071). pytest 9.1 lists tests/unit again for EACH file path,
+          # so 341 paths cost 272 s of 310 s. A selection of tests/unit files passes
+          # tests/unit ONCE, and scripts/pytest_only_selected.py drops the others.
+          # A full run, and a selection with a path outside tests/unit, are unchanged.
+          PLUGIN=""
+          if [ "$SHARD_MODE" = "selection" ] && ! echo $SHARD_TARGETS | tr ' ' '\012' | grep -qv '^tests/unit/'; then
+            SELECTED="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/selected.txt"
+            echo $SHARD_TARGETS > "$SELECTED"
+            export SHARD_SELECTED_FILES="$SELECTED"
+            export PYTHONPATH="$PWD/scripts${PYTHONPATH:+:$PYTHONPATH}"
+            PLUGIN="-p pytest_only_selected"
+            SHARD_TARGETS="tests/unit/"
+          fi
           # CIV-8k (task 2191). Shard 1 hung for 25 to 39 minutes in 6 red runs, always
           # right after tests/unit/test_adaptive_tier.py::test_a_long_thread_drafts_on_powerful
           # [...-False-tier-fast], and the log shows no cause. `faulthandler_timeout`
           # prints the stack of every thread when one test runs over 900 s. It kills
           # nothing, and no test takes more than 260 s.
-          uv run python -m pytest $SHARD_TARGETS -v -rs --reruns 1 \
+          uv run python -m pytest $SHARD_TARGETS $PLUGIN -v -rs --reruns 1 \
             $(python3 scripts/fences.py pytest-ignore) \
             --splits ${{ steps.pick.outputs.splits }} --group ${{ matrix.shard }} \
             --splitting-algorithm duration_based_chunks \
@@ -691,11 +704,17 @@ jobs:
               tests/unit/test_studio_packages_r8.py \
               tests/unit/test_studio_publish_install_r8.py \
               tests/unit/test_studio_package_install_r8.py \
+              tests/unit/test_studio_package_viewer_r8.py \
+              tests/unit/test_studio_package_uninstall_r8.py \
+              tests/unit/test_studio_package_pause_r8.py \
               tests/unit/test_studio_action_door_r8.py \
+              tests/unit/test_studio_door_op_r8.py \
               tests/unit/test_studio_catalog_r8.py \
               tests/unit/test_studio_packages_versions_r8.py \
               tests/unit/test_studio_package_routes_r8.py \
               tests/unit/test_studio_package_delete_r8.py \
+              tests/unit/test_studio_package_approval_r8.py \
+              tests/unit/test_studio_package_delete_admin_r8.py \
               tests/unit/test_studio_chat_build_r8.py \
               tests/unit/test_studio_route_gate_r8.py \
               tests/unit/test_studio_publish_seed_r8.py \
@@ -704,18 +723,26 @@ jobs:
               tests/unit/test_auth_me_install_features_r8.py \
               tests/unit/test_shell_layout_r8.py \
               tests/unit/test_package_disposal_r8.py \
+              tests/unit/test_auth_me_shell_install_r8.py \
+              tests/unit/test_auth_me_appearance_r8.py \
               tests/unit/test_package_lifetime_r8.py \
+              tests/unit/test_package_keep_restore_r8.py \
+              tests/unit/test_package_lifetime_read_r8.py \
               tests/unit/test_package_field_values_r8.py \
               tests/unit/test_agent_policies_r8.py \
+              tests/unit/test_observability_two_org_r8.py \
               tests/unit/test_package_expiry_loop_r8.py \
               tests/unit/test_app_requests_r8.py \
               tests/unit/test_workflows_lifecycle_rls_r8.py \
+              tests/unit/test_workflows_triggers_r8.py \
               tests/unit/test_project_rules.py \
               tests/unit/test_project_rules_propose.py \
               tests/unit/test_crm_change_history.py \
               tests/unit/test_crm_pipelines_native.py \
               tests/unit/test_crm_lead_pipelines.py \
               tests/unit/test_auto_park.py \
+              tests/unit/test_workflows_human_step_r8.py \
+              tests/unit/test_studio_workflow_write_r8.py \
               tests/unit/test_headless_turn_r8.py \
               tests/unit/test_projects_status_set_read_r8.py \
               tests/unit/test_email_signature_images_r8.py \
@@ -725,6 +752,7 @@ jobs:
               tests/unit/test_projects_status_slot_r8.py \
               tests/unit/test_pm_project_updates_r8.py \
               tests/unit/test_task_check_r8.py \
+              tests/unit/test_agent_label_fence.py \
               tests/unit/test_app_create_slug_r8.py \
               tests/unit/test_apps_slug_per_org_r8.py \
               tests/unit/test_app_audit_bound_r8.py \
@@ -1141,11 +1169,22 @@ jobs:
     # 40 is about twice the measured job. A suite that keeps growing will
     # reach it again. Then split the suite, or raise the cap with a new count.
     timeout-minutes: 40
+    # CIV-29a: `actions: read` lets the compare step list and download main's nightly result.
+    permissions:
+      contents: read
+      actions: read
     defaults:
       run:
         working-directory: workbench/control_plane
     steps:
       - uses: actions/checkout@v5
+
+      # ⚠️ After the checkout, never before it: the job's default folder
+      # (workbench/control_plane) exists only after the checkout, and a run
+      # step before it fails the whole shard in one second (PR 2181, first run).
+      - name: What blocks a merge
+        run: |
+          echo "The browser suite is not a required check. Required checks: see Lint, Unit tests, Backup/restore rehearsal, Migration ladder replay, Frontend, Operator console, Secret scan." >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/setup-node@v4
         with:
@@ -1170,13 +1209,49 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Browser suite
+        id: suite
         # The watchdog ends a run whose dev server stops answering. See the
-        # header of scripts/e2e_watchdog.sh. The run's exit code passes through.
+        # header of scripts/e2e_watchdog.sh. CIV-29a (D218): this step hands the
+        # run's exit code to the next step, which fails the job on a NEW failure.
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: e2e-result.json
         run: |
-          npx playwright test --project=ci --shard=${{ matrix.shard }}/3 &
+          npx playwright test --project=ci --reporter=list,json --shard=${{ matrix.shard }}/3 &
           pw=$!
           bash ../../scripts/e2e_watchdog.sh http://127.0.0.1:3101/chat "$pw" &
-          wait "$pw"
+          code=0
+          wait "$pw" || code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+      # CIV-29a (D218): 36 of 70 red runs failed ONLY this suite, and it is not a
+      # required check. A failure that the newest nightly on main also has is
+      # inherited, and it does not fail the PR. A NEW failure still fails the job.
+      # No readable main result keeps the old rule: any failure fails.
+      - name: Compare with main's newest nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHARD: ${{ matrix.shard }}
+        # ⚠️ Trust only a nightly that this repo started: a schedule or a
+        # dispatch. The repo is public, and a fork PR from its own `main` also
+        # has head branch `main`, so `--branch main` alone lets a fork plant a
+        # result in which every test "fails" (Opus review, 2026-11-12). A fork
+        # cannot make a schedule or a dispatch event here.
+        # All three shards are read and joined, because a spec file can move
+        # to another shard when the test count changes.
+        run: |
+          rm -rf ../../.e2e-main && mkdir -p ../../.e2e-main
+          run_id=$(gh run list --workflow e2e-nightly.yml --branch main --status completed --limit 20 \
+            --json databaseId,conclusion,event --jq '[.[] | select((.event == "schedule" or .event == "workflow_dispatch") and (.conclusion == "success" or .conclusion == "failure"))][0].databaseId' || true)
+          mains=()
+          if [ -n "$run_id" ]; then
+            for s in 1 2 3; do
+              gh run download "$run_id" --name "e2e-nightly-result-$s" --dir "../../.e2e-main/$s" || true
+              [ -f "../../.e2e-main/$s/e2e-result.json" ] && mains+=(--main "../../.e2e-main/$s/e2e-result.json")
+            done
+          fi
+          echo "Shard $SHARD compares with nightly run ${run_id:-none} (${#mains[@]} report args)."
+          python3 ../../scripts/e2e_inherited.py --pr e2e-result.json "${mains[@]}" \
+            --exit-code "${{ steps.suite.outputs.code }}" --summary "$GITHUB_STEP_SUMMARY"
 
       # ⚠️ Without this a red run is a wall of text and no screenshot, and an
       # undiagnosable gate is one somebody deletes. The report carries the

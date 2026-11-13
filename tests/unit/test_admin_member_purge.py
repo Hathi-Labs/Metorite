@@ -1249,6 +1249,7 @@ def test_every_person_keyed_cascade_child_is_reported_on_one_side_or_other(
 _PURGED_THROUGH_THE_REGISTRY = {
     "integration_connections": "sources.purge_member_sources (store.delete)",
     "kb_sources": "the cascade of that delete (migration 300)",
+    "calendar_task_links": "the cascade of that delete (migration 426, CE-13)",
 }
 
 

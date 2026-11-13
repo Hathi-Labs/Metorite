@@ -37,12 +37,27 @@ at the same gateway app.
   nothing. A real change writes one audit row with the grant before and
   after. A body that equals the row writes nothing, logs nothing and audits
   nothing. A copy of an id drops out.
+* **C7, the mint at the requested scopes (EA-17c-3).** ``approve`` mints the
+  token at every scope that the agent asked for, and the connection holds
+  the grant. A scope that the member cleared at the connect is refused by
+  each reader of the token scope before the change: the bearer check of
+  ``tools/call``, ``tools/list``, ``whoami``, ``prompts/list``, the
+  read-only door, the token answer, the scope check of a refresh, the
+  refreshed pair and branch 0. Then a PATCH turns it on, and the very next
+  call with the SAME token uses it. A connection from before EA-17c-3 (a
+  token at the grant) still needs a reconnect. A cleared ``offline_access``
+  gives no refresh token.
 
 Named mutations that turn this file red (spec §10.8): a scope above the
 token's scope, a change to the connection of another member, a write that
 skips the project check, and a route that answers with the flag off. The
 fifth, a missing ``sameOrigin`` check, is red in
 ``workbench/control_plane/src/app/api/agent-access/connections/relay.test.ts``.
+EA-17c-3 adds these (C7): a bearer check that reads the token scope alone,
+a token answer or a refresh check that reads the token scope alone, a
+refresh token with no ``offline_access`` on the connection, an approve that
+mints at the grant, an approve that mints ``offline_access`` from the
+request, and a ceiling that drops the requested bound or the tokens.
 
 The gate is ``TENANT_LADDER_DATABASE_URL``. A skip is not a pass. Run::
 
@@ -57,6 +72,7 @@ import os
 import uuid
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
@@ -78,6 +94,7 @@ from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant
 from acb_common.env_guard import is_platform_env
 from acb_common.settings import Settings
+from acb_common.tenant_redis import TenantRedis, organization_scope
 from agent_edge import app as edge_app_module
 from agent_edge import gateway_client
 from fastapi import HTTPException
@@ -514,6 +531,88 @@ class TestTheShapes:
     def test_the_ceiling_is_the_intersection_with_the_cover_rule(self, tokens, ceiling):
         assert agent_tokens.ceiling_of(tokens) == ceiling
 
+    @pytest.mark.parametrize("tokens,requested,ceiling", [
+        # EA-17c-3: a token at the requested scopes gives the request.
+        (["projects:read projects:write context:read"], (READ, WRITE, CONTEXT),
+         (READ, WRITE, CONTEXT)),
+        # A token wider than the request never lifts the ceiling past it.
+        (["projects:read projects:write context:read"], (CONTEXT,), (CONTEXT,)),
+        (["projects:write"], (READ,), (READ,)),
+        # A connection from before EA-17c-3: the token at the grant binds.
+        (["context:read"], (READ, CONTEXT), (CONTEXT,)),
+        ([], (READ, CONTEXT), ()),
+        (["projects:read"], (OFFLINE,), ()),
+        (["projects:read"], (), ()),
+    ])
+    def test_the_ceiling_stays_inside_the_requested_scopes(self, tokens, requested, ceiling):
+        """C7. The ceiling of a turn-on is the live tokens AND the request."""
+        assert agent_tokens.ceiling_of(tokens, requested) == ceiling
+
+    @pytest.mark.parametrize("token,connection,granted", [
+        # A token at the grant names the grant, as before EA-17c-3.
+        ("projects:read offline_access", [READ, OFFLINE], "projects:read offline_access"),
+        ("projects:write", [WRITE], "projects:write"),
+        ("projects:read projects:write", [READ, WRITE], "projects:read projects:write"),
+        # EA-17c-3: a token wider than the grant names the grant only.
+        ("projects:read projects:write context:read offline_access",
+         [CONTEXT, OFFLINE], "context:read offline_access"),
+        ("projects:read projects:write", [WRITE], "projects:write"),
+        ("projects:read projects:write context:read", [READ], "projects:read"),
+        # offline_access needs both sides.
+        ("projects:read offline_access", [READ], "projects:read"),
+        ("projects:read", [READ, OFFLINE], "projects:read"),
+        # A narrower token names what it covers of the grant.
+        ("projects:read", [WRITE], "projects:read"),
+        ("projects:read", [CONTEXT], ""),
+        (None, [READ], ""),
+        ("bad\x01token", [READ, OFFLINE], ""),
+    ])
+    def test_the_granted_scope_never_names_a_cleared_scope(self, token, connection, granted):
+        """C7. The token answer and the refresh check read this string."""
+        assert agent_oauth.granted_scope(token, connection) == granted
+        named = agent_oauth.parse_scope(granted)
+        assert agent_oauth.covered_scopes(named) == set(
+            agent_oauth.effective_scopes(token, connection))
+
+    @pytest.mark.parametrize("requested,granted,minted", [
+        ((READ, WRITE, CONTEXT, OFFLINE), (CONTEXT, OFFLINE),
+         "projects:read projects:write context:read offline_access"),
+        ((READ, WRITE, OFFLINE), (READ,), "projects:read projects:write"),
+        ((READ, OFFLINE), (READ, OFFLINE), "projects:read offline_access"),
+        ((READ,), (READ, WRITE), "projects:read"),
+        ((OFFLINE,), (OFFLINE,), "offline_access"),
+    ])
+    def test_the_mint_is_the_request_and_the_members_offline_choice(
+            self, requested, granted, minted):
+        """C7. Every requested resource scope, and ``offline_access`` only
+        when the member granted it. Nothing outside the request."""
+        assert agent_oauth.mint_scope(requested, granted) == minted
+
+    def test_every_reader_of_the_token_scope_takes_the_intersection(self):
+        """C7. The two edge readers of ``lookup.scope`` call the one rule.
+        No edge module reads ``.scope`` of a lookup anywhere else."""
+        import inspect
+        import re
+
+        from agent_edge import bearer, mcp, prompts, resources, token_endpoint, tools
+
+        bearer_src = inspect.getsource(bearer.authenticate)
+        assert "effective_scopes(found.scope, found.scopes)" in bearer_src
+        assert "agent_oauth.effective_scopes(token_scope, connection_scopes)" in (
+            inspect.getsource(bearer.effective_scopes))
+        check = inspect.getsource(token_endpoint._check_refresh_scope)
+        assert "granted_scope(found.scope, found.scopes)" in check
+        # A new read of a token scope must join this count, and the audit
+        # table of spec §10.8 must name it.
+        reads = re.compile(r"\b(?:found|grant|lookup|caller\.lookup)\.scope\b")
+        sites = {}
+        for module in (bearer, mcp, prompts, resources, token_endpoint, tools):
+            sites[module.__name__] = len(reads.findall(inspect.getsource(module)))
+        assert sites == {
+            "agent_edge.bearer": 1, "agent_edge.mcp": 0, "agent_edge.prompts": 0,
+            "agent_edge.resources": 0, "agent_edge.token_endpoint": 2,
+            "agent_edge.tools": 0}, sites
+
     def test_the_scoped_write_names_the_member_and_the_organization(self):
         """C6. Both statements of the change name the id, the organization
         and the member, with no NULL arm for the member."""
@@ -598,6 +697,17 @@ class TestTheFlag:
         r = await _patch(live, MEMBER_B, cid, _grant())
         assert r.status_code == 404, r.text
         assert live.b.row(cid)["scopes"] == [READ]
+
+    async def test_the_list_says_whether_change_access_is_on(self, live, monkeypatch):
+        """EA-17c-2. The view shows "Change access" only when the list says so."""
+        cid, _ = live.a.connection(MEMBER)
+        body = (await _as(live, MEMBER, "GET", LIST)).json()
+        assert body["change_access"] is True
+        assert cid in {c["id"] for c in body["connections"]}
+        monkeypatch.setattr(get_settings(), "agent_change_access_orgs", "")
+        body = (await _as(live, MEMBER, "GET", LIST)).json()
+        assert body["change_access"] is False
+        assert cid in {c["id"] for c in body["connections"]}
 
     async def test_agent_access_off_gives_404(self, live, monkeypatch):
         cid, _ = live.a.connection(MEMBER)
@@ -937,6 +1047,18 @@ class TestTheCeiling:
         row = live.a.row(cid)
         assert row["pins"] == [live.p["team"]] and row["scopes"] == [READ, WRITE]
 
+    async def test_a_held_unknown_write_does_not_cover_a_known_read(self, live):
+        """EA-17c-1 verifier fix 1. The row holds ``context:write``, a scope
+        that the server does not know. It must not cover its known read twin
+        ``context:read``, so a turn-on of the read above the ceiling is 422."""
+        cid, _ = live.a.connection(MEMBER, scopes=(READ, "context:write"),
+                                   tokens=("projects:read",))
+        before = live.a.row(cid)
+        r = await _patch(live, MEMBER, cid, _grant([READ, CONTEXT]))
+        assert r.status_code == 422, r.text
+        assert _error(r) == "scope_above_ceiling"
+        assert live.a.row(cid) == before
+
     @pytest.mark.parametrize("state", ["used", "revoked", "expired"])
     async def test_only_dead_tokens_give_an_empty_ceiling(self, live, state):
         """Verifier F1. A spent, revoked or expired token plays no part."""
@@ -1143,3 +1265,306 @@ class TestTheStoreAndTheLog:
         row = live.a.row(cid)
         assert row["pins"] == [other, team]
         assert row["left_out"] == [live.p["team_child"]]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R8, EA-17c-3: the token carries what the agent asked for (C7)
+# ═══════════════════════════════════════════════════════════════════════════
+
+REDIRECT = "http://127.0.0.1:33418/callback"
+VERIFIER = "v1-" + "m" * 50
+CHALLENGE = agent_oauth.s256(VERIFIER)
+
+#: Everything that the agent asks for in C7, and what the member keeps. The
+#: member clears ``projects:read`` and ``projects:write``.
+ASKED = "projects:read projects:write context:read offline_access"
+KEPT = [CONTEXT, OFFLINE]
+
+
+class _Tickets:
+    """The raw client under the REAL ``TenantRedis`` wrapper, for the
+    consent ticket of ``approve`` (rule 10). It keeps a value until a
+    ``GETDEL`` takes it."""
+
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+
+    async def setex(self, name: str, seconds: int, value: str) -> bool:
+        self.store[name] = value
+        return True
+
+    async def getdel(self, name: str) -> str | None:
+        return self.store.pop(name, None)
+
+
+@pytest.fixture
+def consent(live, monkeypatch):
+    """``approve`` on the real gateway: the client is in the cache, and the
+    ticket store is a fake under the real wrapper."""
+    document = {
+        "client_id": CLIENT, "client_name": "Client", "redirect_uris": [REDIRECT],
+        "token_endpoint_auth_method": "none"}
+    with live.admin.begin() as c:
+        c.execute(text(
+            "INSERT INTO agent_client (client_id, registered_via, metadata, expires_at)"
+            " VALUES (:c, 'cimd', CAST(:m AS jsonb), now() + interval '1 day')"
+            " ON CONFLICT (client_id) DO UPDATE SET metadata = EXCLUDED.metadata,"
+            " expires_at = EXCLUDED.expires_at"),
+            {"c": CLIENT, "m": json.dumps(document)})
+    tickets = _Tickets()
+    monkeypatch.setattr(agent_access, "get_tenant_redis", lambda **_: TenantRedis(tickets))
+    return SimpleNamespace(world=live, tickets=tickets)
+
+
+def _authorize_body(scope: str) -> dict[str, Any]:
+    return {
+        "client_id": CLIENT, "redirect_uri": REDIRECT, "response_type": "code",
+        "code_challenge": CHALLENGE, "code_challenge_method": "S256",
+        "resource": RESOURCE, "scope": scope, "state": "st-ea17c3"}
+
+
+async def _approve_and_exchange(consent, *, asked: str = ASKED,
+                                kept: list[str] | None = None) -> SimpleNamespace:
+    """One connect, as the consent page and the client make it: ``approve``
+    with a planted ticket, then the code for tokens at the REAL edge."""
+    world = consent.world
+    body = _authorize_body(asked)
+    request = agent_access.AuthorizeRequest(**body)
+    ticket = f"planted-{uuid.uuid4().hex}"
+    with organization_scope(world.org_a):
+        name = agent_access._ticket_key(ticket).value
+    consent.tickets.store[name] = json.dumps(
+        list(agent_access._binding(request, MEMBER, world.org_a)))
+    r = await _as(world, MEMBER, "POST", "/agent-access/authorize/approve",
+                  {**body, "scopes": KEPT if kept is None else kept,
+                   "consent_ticket": ticket})
+    assert r.status_code == 200, r.text
+    code = parse_qs(urlsplit(r.json()["redirect_to"]).query)["code"][0]
+    connection_id = str(world.a.one(
+        "SELECT connection_id FROM agent_token WHERE token_hash = :h",
+        h=agent_tokens.hash_token(code)))
+    code_scope = world.a.one(
+        "SELECT scope FROM agent_token WHERE token_hash = :h",
+        h=agent_tokens.hash_token(code))
+    issued = await _token(world, {
+        "grant_type": "authorization_code", "code": code, "redirect_uri": REDIRECT,
+        "code_verifier": VERIFIER, "client_id": CLIENT, "resource": RESOURCE})
+    assert issued.status_code == 200, issued.text
+    return SimpleNamespace(id=connection_id, code_scope=code_scope, **issued.json())
+
+
+async def _token(world, form: dict[str, str]) -> httpx.Response:
+    """One request of the REAL edge token endpoint."""
+    async def go() -> httpx.Response:
+        async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=edge_app_module.create_app()),
+                base_url=ISSUER) as client:
+            return await client.post("/oauth/token", data=form)
+    return await _in_scope(world, go)
+
+
+async def _rpc(world, token: str, method: str, params: dict[str, Any] | None = None,
+               *, path: str = "/mcp") -> httpx.Response:
+    """One JSON-RPC call of the REAL edge app."""
+    async def go() -> httpx.Response:
+        async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=edge_app_module.create_app()),
+                base_url=ISSUER) as client:
+            return await client.post(
+                path,
+                content=json.dumps({"jsonrpc": "2.0", "id": 1, "method": method,
+                                    "params": params or {}}),
+                headers={"authorization": f"Bearer {token}",
+                         "content-type": "application/json",
+                         "mcp-protocol-version": "2025-11-25"})
+    return await _in_scope(world, go)
+
+
+def _refused_for_scope(r: httpx.Response) -> bool:
+    return (r.status_code == 403
+            and 'error="insufficient_scope"' in r.headers.get("www-authenticate", ""))
+
+
+async def _signed_write(world, token: str) -> int:
+    """A signed write from an edge that skipped check 8: branch 0 alone
+    must refuse a write that the grant does not hold."""
+    async def go() -> int:
+        found = await agent_tokens.lookup_token(token)
+        assert found is not None
+        answer = await gateway_client.write(
+            KEY, found, "POST", "/projects/tasks",
+            json_body={"title": "never", "project_id": world.p["team"]})
+        return answer.status
+    return await _in_scope(world, go)
+
+
+@_DB_GATE
+class TestTheMintAtTheRequestedScopes:
+    """C7: ``approve`` mints at the request, and the grant narrows it."""
+
+    async def test_the_token_carries_the_request_and_the_row_the_grant(self, consent):
+        made = await _approve_and_exchange(consent)
+        assert made.code_scope == ASKED, "the code carries the request"
+        row = consent.world.a.row(made.id)
+        assert row["scopes"] == KEPT
+        assert row["requested"] == [READ, WRITE, CONTEXT, OFFLINE]
+        # The token answer names the grant, never the cleared scopes.
+        assert made.scope == "context:read offline_access"
+        assert made.refresh_token
+        listed = await _listed(consent.world, made.id)
+        assert listed["ceiling_scopes"] == [READ, WRITE, CONTEXT]
+
+    async def test_each_reader_refuses_a_cleared_scope_before_the_change(self, consent):
+        """C7, the negative case of each reader of the audit."""
+        world = consent.world
+        made = await _approve_and_exchange(consent)
+        token = made.access_token
+
+        # The bearer check, check 8 of tools/call.
+        assert _refused_for_scope(await _mcp(world, token, "list_tasks"))
+        assert _refused_for_scope(await _mcp(world, token, "create_task", {
+            "project_id": world.p["team"], "title": "never"}))
+        # The read-only door narrows the same caller.
+        assert _refused_for_scope(await _rpc(
+            world, token, "tools/call", {"name": "list_tasks", "arguments": {}},
+            path="/mcp/readonly"))
+        # tools/list shows no tool of a cleared scope.
+        listed = await _rpc(world, token, "tools/list")
+        assert listed.status_code == 200, listed.text
+        names = {tool["name"] for tool in listed.json()["result"]["tools"]}
+        assert "whoami" in names
+        assert not names & {"list_tasks", "get_task", "create_task", "my_work"}, names
+        # whoami names the grant.
+        who = await _mcp(world, token, "whoami")
+        assert who.status_code == 200, who.text
+        assert who.json()["result"]["structuredContent"]["scopes"] == [CONTEXT]
+        # No prompt needs only context:read.
+        prompts = await _rpc(world, token, "prompts/list")
+        assert prompts.status_code == 200, prompts.text
+        assert prompts.json()["result"]["prompts"] == []
+        # Branch 0 holds the grant on its own: a signed write is a 401.
+        assert await _signed_write(world, token) == 401
+        # The scope check of a refresh reads the grant.
+        wide = await _token(world, {
+            "grant_type": "refresh_token", "client_id": CLIENT,
+            "refresh_token": made.refresh_token, "scope": "projects:read"})
+        assert wide.status_code == 400 and wide.json()["error"] == "invalid_scope", wide.text
+        # The refreshed pair keeps the request, and its answer names the grant.
+        fresh = await _token(world, {
+            "grant_type": "refresh_token", "client_id": CLIENT,
+            "refresh_token": made.refresh_token})
+        assert fresh.status_code == 200, fresh.text
+        assert fresh.json()["scope"] == "context:read offline_access"
+        assert _refused_for_scope(await _mcp(world, fresh.json()["access_token"]))
+        assert world.a.one(
+            "SELECT scope FROM agent_token WHERE token_hash = :h",
+            h=agent_tokens.hash_token(fresh.json()["access_token"])) == ASKED
+
+    async def test_a_cleared_scope_turns_on_and_is_live_on_the_next_call(self, consent):
+        """C7, the acceptance case. The SAME token, no reconnect."""
+        world = consent.world
+        made = await _approve_and_exchange(consent)
+        token = made.access_token
+        assert _refused_for_scope(await _mcp(world, token, "list_tasks"))
+
+        r = await _patch(world, MEMBER, made.id, _grant([READ, CONTEXT, OFFLINE]))
+        assert r.status_code == 200, r.text
+        assert r.json()["scopes"] == [READ, CONTEXT, OFFLINE]
+
+        titles = await _task_titles(world, token)
+        assert {"team task", "child task", "other team task"} <= titles
+        who = await _mcp(world, token, "whoami")
+        assert who.json()["result"]["structuredContent"]["scopes"] == sorted([READ, CONTEXT])
+        # Only what the member turned on: write stays off at both doors.
+        assert _refused_for_scope(await _mcp(world, token, "create_task", {
+            "project_id": world.p["team"], "title": "never"}))
+        assert await _signed_write(world, token) == 401
+        # A refresh after the change names the new grant.
+        fresh = await _token(world, {
+            "grant_type": "refresh_token", "client_id": CLIENT,
+            "refresh_token": made.refresh_token, "scope": "projects:read"})
+        assert fresh.status_code == 200, fresh.text
+        assert fresh.json()["scope"] == "projects:read context:read offline_access"
+
+        # And off again on the next call (D-EA-13 rule 1).
+        r = await _patch(world, MEMBER, made.id, _grant([CONTEXT, OFFLINE]))
+        assert r.status_code == 200, r.text
+        assert _refused_for_scope(await _mcp(world, token, "list_tasks"))
+
+    async def test_a_connection_from_before_ea17c3_still_needs_a_reconnect(self, live):
+        """C7. The token of an older connect carries the grant only, so the
+        ceiling refuses the turn-on and the next call is still refused."""
+        cid, tokens = live.a.connection(
+            MEMBER, scopes=(CONTEXT,), tokens=("context:read",),
+            requested=(READ, WRITE, CONTEXT))
+        assert _refused_for_scope(await _mcp(live, tokens[0], "list_tasks"))
+        assert (await _listed(live, cid))["ceiling_scopes"] == [CONTEXT]
+        r = await _patch(live, MEMBER, cid, _grant([READ, CONTEXT]))
+        assert _error(r) == "scope_above_ceiling"
+        assert r.json()["detail"]["scopes"] == [READ]
+        assert live.a.row(cid)["scopes"] == [CONTEXT]
+        assert _refused_for_scope(await _mcp(live, tokens[0], "list_tasks"))
+
+    async def test_the_request_bounds_the_ceiling_of_a_wide_token(self, live):
+        """C7. A token wider than ``requested_scopes`` turns on nothing past
+        the request."""
+        cid, tokens = live.a.connection(
+            MEMBER, scopes=(CONTEXT,), tokens=("projects:read context:read",),
+            requested=(CONTEXT,))
+        r = await _patch(live, MEMBER, cid, _grant([READ, CONTEXT]))
+        assert _error(r) == "scope_above_ceiling"
+        assert live.a.row(cid)["scopes"] == [CONTEXT]
+        assert _refused_for_scope(await _mcp(live, tokens[0], "list_tasks"))
+
+    async def test_a_cleared_offline_access_gives_no_refresh_token(self, consent):
+        """C7. ``offline_access`` stays the member's choice: no refresh token,
+        and the code does not carry it."""
+        made = await _approve_and_exchange(consent, kept=[CONTEXT])
+        assert made.code_scope == "projects:read projects:write context:read"
+        assert made.scope == "context:read"
+        assert "refresh_token" not in vars(made)
+        assert consent.world.a.row(made.id)["scopes"] == [CONTEXT]
+
+    async def test_the_store_gives_no_refresh_token_off_the_grant(self, live):
+        """C7, the store side. A code that names ``offline_access`` on a
+        connection that does not hold it gives no refresh token."""
+        cid, _ = live.a.connection(MEMBER, scopes=(READ,), tokens=())
+
+        async def go() -> Any:
+            token = bind_tenant(live.org_a)
+            try:
+                raw = await agent_tokens.mint_code(
+                    cid, client_id=CLIENT, code_challenge=CHALLENGE,
+                    redirect_uri=REDIRECT, resource=RESOURCE,
+                    scope="projects:read offline_access")
+            finally:
+                release_tenant(token)
+            grant = await agent_tokens.consume_code(
+                raw, client_id=CLIENT, redirect_uri=REDIRECT,
+                code_challenge=CHALLENGE, resource=RESOURCE)
+            assert grant is not None
+            return await agent_tokens.issue_tokens(grant, with_refresh=True)
+        issued = await _in_scope(live, go)
+        assert isinstance(issued, agent_tokens.IssuedTokens), issued
+        assert issued.refresh_token is None
+        assert issued.scope == "projects:read"
+
+    async def test_a_box_keeps_null_requested_scopes_and_no_change(self, live, monkeypatch):
+        """C7. A box token carries its scopes, its row holds NULL
+        ``requested_scopes``, and Change access refuses it."""
+        monkeypatch.setattr(get_settings(), "agent_box_tokens_enabled", True)
+
+        async def go() -> Any:
+            token = bind_tenant(live.org_a)
+            try:
+                return await agent_tokens.create_box_connection(
+                    MEMBER, "ea17c3-box", scopes=[CONTEXT])
+            finally:
+                release_tenant(token)
+        made = await _in_scope(live, go)
+        assert isinstance(made, agent_tokens.BoxToken), made
+        assert made.scope == "context:read"
+        assert live.a.row(made.connection_id)["requested"] is None
+        r = await _patch(live, MEMBER, made.connection_id, _grant([READ, CONTEXT]))
+        assert r.status_code == 404, r.text
+        assert _refused_for_scope(await _mcp(live, made.token, "list_tasks"))

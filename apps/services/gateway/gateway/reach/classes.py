@@ -44,6 +44,7 @@ REACH_CLASS: dict[str, str] = {
     "unblocked": "brief",
     "colleague_out": "brief",
     "agent_asks": "interrupt",
+    "agent_questions": "interrupt",
     # §4.2 names no class for these three. Each one is a thing to know, not a
     # thing to act on now, so each one goes in the brief and interrupts nobody.
     "waiting_quiet": "brief",

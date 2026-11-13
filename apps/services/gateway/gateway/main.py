@@ -424,6 +424,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.kb_sync_skipped", error=str(exc))
 
+    # Start the calendar sync loop (gateway/calendar_sync/scheduler.py; spec
+    # calendar_events_reminders.md §8.1, WS-CAL CE-10). It READS Google (and
+    # later Outlook) events into calendar_entries. Dark by default: with
+    # CALENDAR_SYNC_READ empty it starts no task and logs once. The gate lives
+    # inside the start function.
+    try:
+        from gateway.calendar_sync.scheduler import start_calendar_sync
+        calendar_sync_started = await start_calendar_sync()
+        _log.info("gateway.calendar_sync", started=calendar_sync_started)
+    except Exception as exc:
+        _log.warning("gateway.calendar_sync_skipped", error=str(exc))
+
     # Start the My Day loop (gateway/my_day_loop.py; spec my_day_feed.md §8.4,
     # WS-58 MD-5b). It trims the active set of each org and sweeps old card
     # state once a day. Dark by default: with MY_DAY_LOOP_ENABLED off it
@@ -677,6 +689,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.kb_sync.scheduler import stop_kb_sync
         await stop_kb_sync()
+    except Exception:
+        pass
+
+    # Stop the calendar sync loop. Unconditional, like the Knowledge stop.
+    try:
+        from gateway.calendar_sync.scheduler import stop_calendar_sync
+        await stop_calendar_sync()
     except Exception:
         pass
 
@@ -2233,6 +2252,13 @@ try:
     app.include_router(_agent_guidance_router)
 except Exception:  # pragma: no cover
     pass
+
+# KIT-4a — the download of the agent kit (orchestration_playbook.md §6a).
+# Dark: 404 while `PLAYBOOK_ORGS` does not hold the caller's org. A plain
+# import, so a real import error stops the start and does not hide.
+from gateway.routes.agent_kit import router as _agent_kit_router  # noqa: E402
+
+app.include_router(_agent_kit_router)
 
 try:
     # WS-MCP SW-94 — one policy store for agent work (agent_coordination.md

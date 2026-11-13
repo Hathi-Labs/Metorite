@@ -25,6 +25,32 @@ This file proves:
   versions go by the cascade, the audit is in the store, and the R8 suite is
   in the ``--must-run`` list.
 
+**A5c-2, the admin path.** Group a2 holds the store: a step reads the row of
+any owner, checks the owner under the row lock and before the org lock, and
+names the admin in each audit row. Group c2 holds the routes: the route sets
+``as_admin`` in ``_delete_mode`` only, a plain member gets 404 with no admin
+read, an admin gets 403 ``owner_active`` for an active owner, and an admin
+of org B gets 404. The R8 half is ``test_studio_package_delete_admin_r8.py``.
+
+Each mutation below ran alone on 2026-11-11, and each named test went red.
+
+* M25. Take ``as_admin`` from the body (``body.get("as_admin")``) in place of
+  ``_delete_mode``. Red here: ``test_only_the_mode_helper_sets_the_admin_switch``,
+  ``test_a_plain_member_gets_404_with_no_admin_read`` and
+  ``test_a_stranger_with_a_bad_body_gets_404_and_not_422``.
+* M26. Check the owner on the first step only. Red here:
+  ``test_an_owner_who_is_active_again_ends_a_later_step_with_the_partial_row``.
+* M27. Write the owner as the actor of an admin audit row, in ``_end_call``
+  and ``_finish_delete``. Red here:
+  ``test_the_last_admin_step_deletes_the_row_of_the_owner_and_names_the_admin``
+  and ``test_an_admin_partial_row_of_a_budget_end_names_the_admin``.
+* M28. Drop ``status = 'active'`` from ``_OWNER_ACTIVE_SQL``, or drop the org
+  filter of ``_ADMIN_GET_SQL``. Red here:
+  ``test_the_admin_statements_bind_the_org_and_the_active_status``.
+* M29. Drop the ``ADMIN_RIGHT`` check of ``_delete_mode``. Red here:
+  ``test_a_plain_member_gets_404_with_no_admin_read``, and
+  ``test_studio_route_gate.py::test_the_share_verb_is_read_by_the_install_only``.
+
 **The mutations (R7).** Each was run on 2026-11-05 against both halves, one
 at a time, and each turned the tests below red. The R8 half holds the ones
 that need a database. The R8 failure of each was read, and each failed for
@@ -620,13 +646,193 @@ def test_the_token_is_the_hash_of_the_id_the_names_and_the_counts() -> None:
     assert token not in changed and len(set(changed)) == len(changed)
 
 
-def test_the_store_signatures_hold_no_admin_switch() -> None:
-    """A5c-1 has no admin path: no store function takes a flag that drops the
-    owner filter, and the route passes only the member of the session."""
-    assert list(inspect.signature(store.delete_package).parameters) == [
-        "db", "member", "package_id", "confirm", "names", "chunk", "removed", "end_at"]
-    assert list(inspect.signature(store.delete_preview).parameters) == [
-        "db", "member", "package_id"]
+def test_the_admin_switch_is_keyword_only_and_off_by_default() -> None:
+    """A5c-2: the one flag that drops the owner filter is ``as_admin``. It is
+    keyword only and False by default, so a caller that names no path gets
+    the owner path of A5c-1. The route sets it (``_delete_mode``)."""
+    for fn, head in ((store.delete_package, ["db", "member", "package_id", "confirm", "names",
+                                             "chunk", "removed", "end_at", "as_admin"]),
+                     (store.delete_preview, ["db", "member", "package_id", "as_admin"]),
+                     (store.record_partial, ["db", "member", "package_id", "this_call", "reason",
+                                             "as_admin"])):
+        params = inspect.signature(fn).parameters
+        assert list(params) == head, fn.__name__
+        assert params["as_admin"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert params["as_admin"].default is False
+
+
+# ── a2. The admin path of the store (A5c-2) ────────────────────────────────
+
+
+class _AdminDb(_StoreDb):
+    """A store step of the admin path: it also answers the read of a package
+    of any owner and the read of the owner's ``app_user`` row."""
+
+    def __init__(self, log: list[str], pid: str, *, owner: str = ANA, active: bool = False,
+                 active_from: int | None = None, **kw: Any) -> None:
+        super().__init__(log, **kw)
+        self.pid, self.owner, self.active, self.active_from = pid, owner, active, active_from
+        self.owner_reads: list[str] = []
+        self.gone = False
+
+    async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> _Res:
+        sql, p = str(stmt), dict(params or {})
+        if sql in (store._ADMIN_GET_SQL, store._ADMIN_GET_SQL + " FOR UPDATE"):
+            self.log.append(f"admin_get(for_update={sql.endswith('FOR UPDATE')})")
+            if self.gone or p["id"] != self.pid:
+                return _Res()
+            row = _package(self.pid, self.owner)
+            return _Res([(row.id, row.slug, row.name, row.description, row.owner_email,
+                          row.visibility, row.status, row.manifest, row.live_version,
+                          row.created_at, row.updated_at, row.paused_at, row.paused_by)])
+        if sql == store._OWNER_ACTIVE_SQL:
+            self.log.append("owner_active")
+            self.owner_reads.append(p["owner"])
+            late = self.active_from is not None and len(self.owner_reads) >= self.active_from
+            return _Res([(self.active or late,)])
+        if sql == store._DELETE_SQL:
+            assert p["m"] == self.owner, "the DELETE names the owner of the row"
+        if sql == store._DELETE_COUNTS_SQL:
+            assert p["m"] == self.owner, "the counts name the owner of the row"
+        return await super().execute(stmt, params)
+
+
+def test_an_admin_step_reads_any_owner_and_checks_the_owner_before_the_org_lock(
+        step: SimpleNamespace) -> None:
+    db = _AdminDb(step.log, step.pid, owner=BEN)
+    got = _run(store.delete_package(db, ANA, step.pid, confirm=_token(step), as_admin=True))
+    assert got == store.DeleteStep(deleted=False, removed=500, names=_NAMES)
+    assert step.log == ["admin_get(for_update=True)", "owner_active", "lock_org",
+                        "package_counts", "counts", "purge(500)"]
+    assert db.owner_reads == [BEN]
+
+
+def test_an_admin_with_no_switch_reads_only_their_own_package(step: SimpleNamespace) -> None:
+    """With ``as_admin`` False, the store reads with the owner filter of A5c-1,
+    so the package of Ben answers None and nothing locks."""
+    db = _AdminDb(step.log, step.pid, owner=BEN)
+    assert _run(store.delete_package(db, BEN, step.pid, confirm=_token(step))) is None
+    assert step.log == ["get(for_update=True)"] and db.owner_reads == []
+
+
+def test_an_active_owner_raises_on_the_first_step_before_any_lock(step: SimpleNamespace) -> None:
+    db = _AdminDb(step.log, step.pid, owner=BEN, active=True)
+    with pytest.raises(store.OwnerActive) as caught:
+        _run(store.delete_package(db, ANA, step.pid, confirm=_token(step), as_admin=True))
+    assert str(caught.value) == store.OWNER_ACTIVE_TEXT
+    assert step.log == ["admin_get(for_update=True)", "owner_active"]
+    assert db.audits == [] and step.records == {"visit": 700, "site": 300}
+
+
+def test_an_owner_who_is_active_again_ends_a_later_step_with_the_partial_row(
+        step: SimpleNamespace) -> None:
+    db = _AdminDb(step.log, step.pid, owner=BEN, active=True)
+    got = _run(store.delete_package(db, ANA, step.pid, names=_NAMES, removed=500,
+                                    as_admin=True))
+    assert got == store.DeleteStep(deleted=False, removed=0, names=_NAMES, owner_active=True)
+    assert step.log == ["admin_get(for_update=True)", "owner_active", "audit"]
+    [row] = db.audits
+    assert row["m"] == ANA
+    assert row["detail"] == {"op": store.PARTIAL_OP, "by": "admin", "admin": ANA, "owner": BEN,
+                             "name": "Visits", "slug": f"visits-{step.pid[:8]}",
+                             "records_this_call": 500, "reason": "owner_active"}
+
+
+def test_the_last_admin_step_deletes_the_row_of_the_owner_and_names_the_admin(
+        step: SimpleNamespace) -> None:
+    step.records = {"visit": 10, "site": 5}
+    db = _AdminDb(step.log, step.pid, owner=BEN)
+    got = _run(store.delete_package(db, ANA, step.pid, confirm=_token(step), as_admin=True))
+    assert got is not None and got.deleted
+    [row] = db.audits
+    assert row["m"] == ANA, "the audit row names the admin as the actor"
+    detail = row["detail"]
+    assert (detail["op"], detail["by"], detail["admin"], detail["owner"]) == (
+        store.DELETE_OP, "admin", ANA, BEN)
+    assert "delete" in step.log and db.owner_reads == [BEN]
+
+
+def test_an_admin_partial_row_of_a_budget_end_names_the_admin(step: SimpleNamespace) -> None:
+    step.now = 100.0
+    db = _AdminDb(step.log, step.pid, owner=BEN)
+    got = _run(store.delete_package(db, ANA, step.pid, confirm=_token(step), as_admin=True,
+                                    end_at=100.0 + store.STEP_SECONDS / 2))
+    assert got is not None and got.left is not None
+    [row] = db.audits
+    assert row["m"] == ANA and row["detail"]["by"] == "admin" and row["detail"]["owner"] == BEN
+
+
+def test_an_admin_record_partial_names_the_admin_and_no_owner() -> None:
+    log: list[str] = []
+    db = _StoreDb(log)
+    pid = str(uuid.uuid4())
+    _run(store.record_partial(db, ANA, pid, 500, "busy", as_admin=True))
+    [row] = db.audits
+    assert row["m"] == ANA
+    assert row["detail"] == {"op": store.PARTIAL_OP, "by": "admin", "admin": ANA,
+                             "records_this_call": 500, "reason": "busy"}
+
+
+def test_the_admin_preview_counts_the_rows_of_the_owner(step: SimpleNamespace) -> None:
+    db = _AdminDb(step.log, step.pid, owner=BEN)
+    found = _run(store.delete_preview(db, ANA, step.pid, as_admin=True))
+    assert found is not None and found.id == step.pid
+    assert step.log == ["admin_get(for_update=False)", "owner_active", "package_counts",
+                        "counts"]
+
+
+def test_the_admin_preview_of_an_active_owner_raises_before_any_count(
+        step: SimpleNamespace) -> None:
+    db = _AdminDb(step.log, step.pid, owner=BEN, active=True)
+    with pytest.raises(store.OwnerActive):
+        _run(store.delete_preview(db, ANA, step.pid, as_admin=True))
+    assert step.log == ["admin_get(for_update=False)", "owner_active"]
+
+
+@pytest.mark.parametrize("active,gone,want", [(False, False, True), (False, True, False),
+                                              (True, False, "raises")])
+def test_admin_may_delete_is_a_read_with_no_lock(
+        step: SimpleNamespace, active: bool, gone: bool, want: Any) -> None:
+    db = _AdminDb(step.log, step.pid, owner=BEN, active=active)
+    db.gone = gone
+    if want == "raises":
+        with pytest.raises(store.OwnerActive):
+            _run(store.admin_may_delete(db, step.pid))
+    else:
+        assert _run(store.admin_may_delete(db, step.pid)) is want
+    assert step.log[0] == "admin_get(for_update=False)"
+    assert "lock_org" not in step.log and "audit" not in step.log
+
+
+def test_the_admin_statements_bind_the_org_and_the_active_status() -> None:
+    bound = f"organization_id = {store._BOUND_ORG}"
+    assert store._ADMIN_GET_SQL.count(bound) == 1
+    assert "format = 'manifest'" in store._ADMIN_GET_SQL
+    assert "owner_email" not in store._ADMIN_GET_SQL.split("WHERE", 1)[1]
+    assert store._OWNER_ACTIVE_SQL.count(bound) == 1
+    assert "FROM app_user" in store._OWNER_ACTIVE_SQL
+    assert "status = 'active'" in store._OWNER_ACTIVE_SQL
+    assert "lower(email) = :owner" in store._OWNER_ACTIVE_SQL
+
+
+def test_only_the_admin_helpers_read_the_admin_statement() -> None:
+    """The read with no owner filter has one reader, and every caller of it
+    checks the owner next. Mutation: read ``_ADMIN_GET_SQL`` in
+    ``get_package`` -> red."""
+    tree = _tree(_STORE_PY)
+    readers = sorted(fn.name for fn in ast.walk(tree)
+                     if isinstance(fn, ast.AsyncFunctionDef | ast.FunctionDef)
+                     and any(isinstance(n, ast.Name) and n.id == "_ADMIN_GET_SQL"
+                             for n in ast.walk(fn)))
+    assert readers == ["_admin_package"]
+    callers = sorted(fn.name for fn in ast.walk(tree)
+                     if isinstance(fn, ast.AsyncFunctionDef | ast.FunctionDef)
+                     and any(isinstance(n, ast.Call) and ast.unparse(n.func) == "_admin_package"
+                             for n in ast.walk(fn)))
+    assert callers == ["_read_for_delete", "admin_may_delete", "delete_preview"]
+    for name in ("admin_may_delete", "delete_preview", "delete_package"):
+        assert "_owner_active(db, current.owner_email)" in inspect.getsource(
+            getattr(store, name)), name
 
 
 # ── b. The object store ────────────────────────────────────────────────────
@@ -783,7 +989,8 @@ def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:  # noqa: C901 - o
     """A fake store of packages with records. Each step removes at most
     ``chunk`` records, and a session rolls the world back on an error."""
     w = SimpleNamespace(packages={}, org=None, sessions=0, steps=[], busy_steps=set(),
-                        row_busy_steps=set(),
+                        row_busy_steps=set(), active=set(), active_from_step=None,
+                        admin_reads=[],
                         chunk=500, audits=[], preview_busy=False, clock=0.0, tick=0.0)
 
     def add(owner: str = ANA, org: str = ORG, records: int = 1200) -> str:
@@ -798,6 +1005,28 @@ def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:  # noqa: C901 - o
         if row and row["org"] == db.org and row["owner"] == member.strip().lower():
             return row
         return None
+
+    def target(db: _DB, member: str, pid: str, as_admin: bool) -> dict[str, Any] | None:
+        """A5c-2: the admin path reads the package of any owner in the bound org."""
+        if not as_admin:
+            return mine(db, member, pid)
+        row = w.packages.get(pid)
+        return row if row and row["org"] == db.org else None
+
+    def active(owner: str) -> bool:
+        late = w.active_from_step is not None and len(w.steps) >= w.active_from_step
+        return owner in w.active or late
+
+    async def admin_may_delete(db: _DB, pid: str) -> bool:
+        w.admin_reads.append(pid)
+        row = target(db, "", pid, True)
+        if row is None:
+            return False
+        if row["owner"] in w.active:
+            raise store.OwnerActive()
+        return True
+
+    monkeypatch.setattr(store, "admin_may_delete", admin_may_delete)
 
     def preview(pid: str, row: dict[str, Any]) -> store.DeletePreview:
         objs = tuple(_counts({"visit": row["records"], **dict.fromkeys(row.get("extra", []), 0)}))
@@ -822,34 +1051,45 @@ def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:  # noqa: C901 - o
         row = mine(db, member, pid)
         return None if row is None else _package(pid, row["owner"])
 
-    async def delete_preview(db: _DB, member: str, pid: str) -> Any:
+    async def delete_preview(db: _DB, member: str, pid: str, *, as_admin: bool = False) -> Any:
         if w.preview_busy:
             raise objects_store.StoreBusy("This app is busy. Try again in a moment.")
-        row = mine(db, member, pid)
+        row = target(db, member, pid, as_admin)
+        if row is not None and as_admin and active(row["owner"]):
+            raise store.OwnerActive()
         return None if row is None else preview(pid, row)
 
     async def delete_package(db: _DB, member: str, pid: str, *, confirm: str | None = None,
                              names: Any = None, chunk: int | None = None, removed: int = 0,
-                             end_at: float | None = None) -> Any:
+                             end_at: float | None = None, as_admin: bool = False) -> Any:
         """The contract of ``store.delete_package``, on the fake world."""
         w.steps.append({"member": member, "confirm": confirm, "names": names,
-                        "removed": removed, "session": w.sessions, "end_at": end_at})
+                        "removed": removed, "session": w.sessions, "end_at": end_at,
+                        "as_admin": as_admin})
+        by = {"as_admin": True} if as_admin else {}
         assert (confirm is None) != (names is None)
         if names is not None and len(w.steps) in w.row_busy_steps:
             raise objects_store.StoreBusy("This app is busy. Try again in a moment.")
-        row = mine(db, member, pid)
+        row = target(db, member, pid, as_admin)
         if row is None:
             if names is not None and removed > 0:
                 w.audits.append({"op": store.PARTIAL_OP, "member": member,
-                                 "records_this_call": removed, "reason": "gone"})
+                                 "records_this_call": removed, "reason": "gone", **by})
                 return store.DeleteStep(deleted=False, removed=0, names=tuple(names), gone=True)
             return None
+        if as_admin and active(row["owner"]):
+            if confirm is not None:
+                raise store.OwnerActive()
+            w.audits.append({"op": store.PARTIAL_OP, "member": member,
+                             "records_this_call": removed, "reason": "owner_active", **by})
+            return store.DeleteStep(deleted=False, removed=0, names=tuple(names),
+                                    owner_active=True)
         now = preview(pid, row)
         seen = tuple(sorted(o.name for o in now.objects)) if names is None else tuple(names)
 
         def end(this_call: int, reason: str, gone: int = 0) -> store.DeleteStep:
             w.audits.append({"op": store.PARTIAL_OP, "member": member,
-                             "records_this_call": this_call, "reason": reason})
+                             "records_this_call": this_call, "reason": reason, **by})
             left = None if w.preview_busy else preview(pid, row)
             return store.DeleteStep(deleted=False, removed=gone, names=seen, left=left,
                                     changed=reason == "changed",
@@ -874,7 +1114,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:  # noqa: C901 - o
             return store.DeleteStep(deleted=False, removed=gone, names=seen)
         del w.packages[pid]
         w.audits.append({"op": store.DELETE_OP, "member": member,
-                         "records_this_call": removed + gone})
+                         "records_this_call": removed + gone, **by})
         return store.DeleteStep(deleted=True, removed=gone, names=seen)
 
     monkeypatch.setattr(packages, "_tenant_session", _session)
@@ -884,23 +1124,25 @@ def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:  # noqa: C901 - o
     monkeypatch.setattr(store, "delete_package", delete_package)
 
     async def record_partial(db: _DB, member: str, pid: str, this_call: int,
-                             reason: str) -> None:
+                             reason: str, *, as_admin: bool = False) -> None:
         w.audits.append({"op": store.PARTIAL_OP, "member": member,
-                         "records_this_call": this_call, "reason": reason, "session": w.sessions})
+                         "records_this_call": this_call, "reason": reason, "session": w.sessions,
+                         **({"as_admin": True} if as_admin else {})})
 
     monkeypatch.setattr(store, "record_partial", record_partial)
     monkeypatch.setattr(get_settings(), "studio_orgs", "*")
     return w
 
 
-def _client(world: SimpleNamespace, org: str | None = ORG, email: str = ANA) -> TestClient:
+def _client(world: SimpleNamespace, org: str | None = ORG, email: str = ANA,
+            grants: tuple[str, ...] = ("feature:studio",)) -> TestClient:
     app = FastAPI()
     app.include_router(actions.router)
 
     def _user() -> UserContext:
         world.org = org
         return UserContext(email=email, role=UserRole.EMPLOYEE,
-                           access=build_access(["feature:studio"]), organization_id=org)
+                           access=build_access(list(grants)), organization_id=org)
 
     app.dependency_overrides[get_current_user] = _user
     return TestClient(app)
@@ -1083,6 +1325,7 @@ def test_store_busy_on_the_first_step_is_503_with_retry_after(world: SimpleNames
     world.busy_steps = {1}
     r = _delete(_client(world), pid, {"confirm": world.preview(pid).confirm})
     assert r.status_code == 503 and r.json()["detail"]["code"] == "store_busy"
+    assert r.json()["detail"]["records_removed"] == 0
     assert r.headers["Retry-After"] == packages.RETRY_AFTER
     assert world.packages[pid]["records"] == 1200
 
@@ -1122,7 +1365,8 @@ def test_a_call_that_ends_with_records_left_writes_one_partial_row_and_logs_it(
     assert world.audits == [{"op": store.PARTIAL_OP, "member": ANA, "records_this_call": 500,
                              "reason": "budget"}]
     assert lines == [("studio.packages.delete_partial",
-                      {"package_id": pid, "records": 500, "changed": False, "busy": False})]
+                      {"package_id": pid, "records": 500, "changed": False, "busy": False,
+                       "as_admin": False})]
 
 
 def test_a_new_object_between_two_steps_is_409_with_the_new_preview(
@@ -1162,6 +1406,8 @@ def test_a_busy_preview_at_the_end_of_a_call_is_503_and_the_partial_row_stays(
     world.preview_busy = True
     r = _delete(_client(world), pid, {"confirm": token})
     assert r.status_code == 503 and r.json()["detail"]["code"] == "store_busy"
+    # A5c-2 fix round 1: the 503 names the records of the call, for the chat total.
+    assert r.json()["detail"]["records_removed"] == 500
     assert world.audits[0]["op"] == store.PARTIAL_OP
     assert world.packages[pid]["records"] == 700
 
@@ -1200,6 +1446,7 @@ def test_a_busy_row_wait_of_a_later_step_is_503_and_writes_the_partial_row(
     world.row_busy_steps = {2}
     r = _delete(_client(world), pid, {"confirm": world.preview(pid).confirm})
     assert r.status_code == 503 and r.json()["detail"]["code"] == "store_busy"
+    assert r.json()["detail"]["records_removed"] == 500
     assert r.headers["Retry-After"] == packages.RETRY_AFTER
     [row] = world.audits
     assert (row["records_this_call"], row["reason"]) == (500, "busy")
@@ -1226,6 +1473,132 @@ def test_a_body_that_names_another_owner_or_org_changes_nothing(world: SimpleNam
     r = _delete(_client(world), pid, {**body, "owner_email": BEN})
     assert r.status_code == 200
     assert {s["member"] for s in world.steps} == {ANA}
+    assert {s["as_admin"] for s in world.steps} == {False}
+
+
+# ── c2. The admin path of the routes (A5c-2) ───────────────────────────────
+
+ADMIN = ("feature:studio", "admin:members:manage")
+CARA = "cara@example.test"
+
+
+def _admin(world: SimpleNamespace, org: str | None = ORG) -> TestClient:
+    return _client(world, org=org, email=CARA, grants=ADMIN)
+
+
+def test_an_admin_previews_and_deletes_the_package_of_an_owner_who_left(
+        world: SimpleNamespace) -> None:
+    pid = world.add(owner=BEN, records=1200)
+    c = _admin(world)
+    r = c.get(f"/studio/packages/{pid}/delete-preview")
+    assert r.status_code == 200, r.text
+    assert r.json()["confirm"] == world.preview(pid).confirm
+    r = _delete(c, pid, {"confirm": r.json()["confirm"]})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"deleted": True, "package_id": pid, "records_removed": 1200}
+    assert pid not in world.packages
+    assert {s["member"] for s in world.steps} == {CARA}
+    assert {s["as_admin"] for s in world.steps} == {True}
+    assert world.audits[-1] == {"op": store.DELETE_OP, "member": CARA,
+                                "records_this_call": 1200, "as_admin": True}
+
+
+def test_an_admin_gets_403_owner_active_for_an_active_owner_on_both_routes(
+        world: SimpleNamespace) -> None:
+    pid = world.add(owner=BEN)
+    world.active = {BEN}
+    c = _admin(world)
+    for r in (c.get(f"/studio/packages/{pid}/delete-preview"),
+              _delete(c, pid, {"confirm": world.preview(pid).confirm})):
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"] == {"code": "owner_active",
+                                      "message": store.OWNER_ACTIVE_TEXT, "records_removed": 0}
+    assert world.steps == [] and world.packages[pid]["records"] == 1200 and world.audits == []
+
+
+def test_a_plain_member_gets_404_with_no_admin_read(world: SimpleNamespace) -> None:
+    pid = world.add(owner=BEN)
+    c = _client(world, email=CARA)
+    assert c.get(f"/studio/packages/{pid}/delete-preview").status_code == 404
+    r = _delete(c, pid, {"confirm": world.preview(pid).confirm, "as_admin": True})
+    assert (r.status_code, r.json()) == (404, NOT_FOUND)
+    assert world.admin_reads == [] and world.steps == []
+    assert world.packages[pid]["records"] == 1200
+
+
+def test_an_admin_of_org_b_gets_404(world: SimpleNamespace) -> None:
+    pid = world.add(owner=BEN, org=ORG)
+    c = _admin(world, org=OTHER)
+    assert c.get(f"/studio/packages/{pid}/delete-preview").status_code == 404
+    r = _delete(c, pid, {"confirm": world.preview(pid).confirm})
+    assert (r.status_code, r.json()) == (404, NOT_FOUND)
+    assert world.steps == [] and world.packages[pid]["records"] == 1200
+
+
+def test_an_admin_deletes_their_own_package_as_its_owner(world: SimpleNamespace) -> None:
+    """The owner read comes first, so an admin who owns the package takes the
+    owner path, and the admin read never runs."""
+    pid = world.add(owner=CARA)
+    world.active = {CARA}
+    r = _delete(_admin(world), pid, {"confirm": world.preview(pid).confirm})
+    assert r.status_code == 200, r.text
+    assert world.admin_reads == [] and {s["as_admin"] for s in world.steps} == {False}
+
+
+def test_the_admin_path_takes_the_mode_before_the_parse_and_a_stranger_gets_404(
+        world: SimpleNamespace) -> None:
+    """A bad body of an admin is 422 after the mode read, and the same body of a
+    plain member is 404: the parse never tells a stranger that the package
+    exists."""
+    pid = world.add(owner=BEN)
+    assert _delete(_client(world, email=CARA), pid, raw=b"{not json").status_code == 404
+    assert _delete(_admin(world), pid, raw=b"{not json").status_code == 422
+    assert world.steps == []
+
+
+def test_an_owner_active_again_during_a_call_is_403_with_the_records_removed(
+        world: SimpleNamespace) -> None:
+    pid = world.add(owner=BEN, records=1200)
+    world.active_from_step = 2
+    r = _delete(_admin(world), pid, {"confirm": world.preview(pid).confirm})
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["code"] == "owner_active"
+    assert r.json()["detail"]["records_removed"] == 500
+    assert world.packages[pid]["records"] == 700
+    assert world.audits == [{"op": store.PARTIAL_OP, "member": CARA, "records_this_call": 500,
+                             "reason": "owner_active", "as_admin": True}]
+
+
+def test_a_busy_row_wait_of_an_admin_writes_the_partial_row_as_the_admin(
+        world: SimpleNamespace) -> None:
+    pid = world.add(owner=BEN, records=1200)
+    world.row_busy_steps = {2}
+    r = _delete(_admin(world), pid, {"confirm": world.preview(pid).confirm})
+    assert r.status_code == 503
+    [row] = world.audits
+    assert (row["member"], row["reason"], row.get("as_admin")) == (CARA, "busy", True)
+
+
+def test_only_the_mode_helper_sets_the_admin_switch() -> None:
+    """The route sets ``as_admin`` from ``_delete_mode`` only. Mutation: read
+    ``body.get("as_admin")`` in the route -> red here and in
+    ``test_a_plain_member_gets_404_with_no_admin_read``."""
+    tree = _tree(_PACKAGES_PY)
+    for name in ("delete_preview", "delete_package"):
+        fn = _function(tree, name)
+        sets = [ast.unparse(n) for n in ast.walk(fn) if isinstance(n, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "as_admin" for t in n.targets)]
+        assert sets == ["as_admin = await _delete_mode(db, user, pid)"], (name, sets)
+        assert "body.get('as_admin')" not in ast.unparse(fn)
+    mode = ast.unparse(_function(tree, "_delete_mode"))
+    marks = ["store.get_package(db, user.email, pid)", "user.has_permission(ADMIN_RIGHT)",
+             "store.admin_may_delete(db, pid)"]
+    where = [mode.find(m) for m in marks]
+    assert -1 not in where and where == sorted(where), dict(zip(marks, where, strict=True))
+    assert packages.ADMIN_RIGHT == "admin:members:manage"
+    from gateway.routes.admin import members
+
+    assert 'require_permission("admin:members:manage")' in inspect.getsource(members)
 
 
 # ── d. The fences (R7) ─────────────────────────────────────────────────────
@@ -1298,10 +1671,14 @@ def test_only_delete_package_deletes_a_package() -> None:
 
 
 def test_the_versions_go_by_the_cascade_and_no_statement_names_them() -> None:
-    """The A4 fence stays as it is: the store has no DELETE or UPDATE of
-    ``app_versions``. The cascade from ``apps`` removes the versions."""
+    """The store has no DELETE of ``app_versions``. The cascade from ``apps``
+    removes the versions. Its one UPDATE of ``app_versions`` is the review
+    move of J2 (owner, task 2174, 2026-11-07). It sets ``review_status``
+    only, and it is not a delete path."""
     source = _STORE_PY.read_text(encoding="utf-8")
-    assert not re.search(r"DELETE\s+FROM\s+app_versions|UPDATE\s+app_versions", source, re.I)
+    assert not re.search(r"DELETE\s+FROM\s+app_versions", source, re.I)
+    assert len(re.findall(r"UPDATE\s+app_versions", source, re.I)) == 1
+    assert store._REVIEW_MOVE_SQL.startswith("UPDATE app_versions SET review_status = :to WHERE ")
     assert store._DELETE_SQL.startswith("DELETE FROM apps ")
     assert "app_versions" not in store._DELETE_SQL
 
@@ -1310,13 +1687,16 @@ def test_the_lock_order_is_in_the_source() -> None:
     """The ``apps`` row FOR UPDATE, then the org lock, then the purge, then the
     DELETE, then the audit, in one function and so one session."""
     src = inspect.getsource(store.delete_package)
-    marks = ["_read_for_delete(db, m, pid)", "objects_store.lock_org(db)",
-             "objects_store.purge_records(", "_finish_delete("]
+    # A5c-2: the owner check of the admin path sits between the row lock and
+    # the org lock.
+    marks = ["_read_for_delete(db, m, pid, as_admin)", "_owner_active(db, current.owner_email)",
+             "objects_store.lock_org(db)", "objects_store.purge_records(", "_finish_delete("]
     where = [src.find(m) for m in marks]
     assert -1 not in where and where == sorted(where), dict(zip(marks, where, strict=True))
     read = inspect.getsource(store._read_for_delete)
     assert "bounded_wait(db, ROW_LOCK_WAIT_MS)" in read
     assert "get_package(db, m, pid, for_update=True)" in read
+    assert "_admin_package(db, pid, for_update=True)" in read
     finish = inspect.getsource(store._finish_delete)
     assert -1 < finish.find("text(_DELETE_SQL)") < finish.find("await _audit(")
 
@@ -1345,9 +1725,10 @@ def test_the_route_runs_one_session_for_each_step() -> None:
 
 
 def _client_timeout() -> float:
-    """The timeout of the gateway client of the chat tools, read from the
-    source of ``studio_tools._send``: the ``timeout`` of its
-    ``httpx.AsyncClient``."""
+    """The default timeout of the gateway client of the chat tools, read from
+    the source of ``studio_tools._send``: the default of its ``timeout``
+    argument (the one the delete loop uses). ``studio_app_read`` passes a
+    longer one for its own call only (B2b-2c)."""
     import acb_skills.studio_tools as tools
     tree = ast.parse(inspect.getsource(tools))
     [send] = [n for n in ast.walk(tree)
@@ -1355,7 +1736,11 @@ def _client_timeout() -> float:
     [call] = [n for n in ast.walk(send) if isinstance(n, ast.Call)
               and ast.unparse(n.func) == "httpx.AsyncClient"]
     [kw] = [k for k in call.keywords if k.arg == "timeout"]
-    return float(ast.literal_eval(kw.value))
+    assert ast.unparse(kw.value) == "timeout"
+    args = send.args
+    names = [a.arg for a in args.args + args.kwonlyargs]
+    defaults = [None] * (len(args.args) - len(args.defaults)) + list(args.defaults)         + list(args.kw_defaults)
+    return float(ast.literal_eval(defaults[names.index("timeout")]))
 
 
 def test_the_worst_call_ends_before_the_chat_tool_gives_up() -> None:
@@ -1390,3 +1775,10 @@ def test_the_r8_suite_is_named_in_the_ci_skip_guard() -> None:
     assert block, "the --must-run argument list is missing"
     assert re.search(r"^[ \t]+tests/unit/test_studio_package_delete_r8\.py(?: \\)?$",
                      block.group(1), re.M)
+    # A5c-2: the R8 half of the admin path, in pr-check and in deploy
+    # (``test_deploy_pipeline.py`` holds the two lists equal).
+    assert re.search(r"^[ \t]+tests/unit/test_studio_package_delete_admin_r8\.py(?: \\)?$",
+                     block.group(1), re.M)
+    admin_r8 = (_ROOT / "tests/unit/test_studio_package_delete_admin_r8.py").read_text(
+        encoding="utf-8")
+    assert "pytestmark = _DB_GATE" in admin_r8

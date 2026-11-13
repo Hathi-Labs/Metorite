@@ -134,6 +134,11 @@
   --violet: hsl(268 80% 70%);
   --violet-foreground: hsl(220 13% 8%);
 
+  /* The stripe of an external event's hatch on the Calendar (CE-5a). A
+     translucent ink over --muted, drawn by a repeating-linear-gradient. A
+     texture, never text. Mirrored in themes.ts; themes.test.ts holds the two. */
+  --hatch-stripe: hsl(215 20% 65% / 0.3);
+
   /* Categorical ramp — eight mutually distinguishable hues for sets whose
      members have no ranking and no meaning (@contexts, tags, custom-field
      options). NOT semantic: use --success/--warning/--destructive for state.
@@ -243,6 +248,7 @@
 
   --violet: hsl(268 70% 50%);
   --violet-foreground: hsl(210 40% 98%);
+  --hatch-stripe: hsl(215 16% 47% / 0.24);
 
   /* Categorical ramp — light mode. Deeper than the dark-mode values because
      these have to clear AA against a white card, not a near-black one. */
@@ -1427,6 +1433,13 @@ html[data-look="glass"] .cc-control:is(input, textarea) {
    sees it. Fences: `askBarClearance.test.ts`, `e2e/askbar-clearance.spec.ts`. */
 [data-askbar-clear] {
   padding-bottom: calc(var(--askbar-pb, 0px) + var(--askbar-extra, 0px));
+}
+/* The row of My Day whose task is open in the panel (PK-1, D213).
+   `useMyDayPeek.tsx` marks it from one place, so each card keeps its markup.
+   The house selected tint, `bg-primary/10` (AGENTS.md rule 6). Unlayered, so
+   it holds over a row's hover fill. Fence: `myDayPeek.test.ts`. */
+[data-peek-open] {
+  background-color: color-mix(in srgb, var(--primary) 10%, transparent);
 }
 /* Where the page column itself takes the room (Email Cleaner's fixed last
    row), the panes stop above the bar and their vertical lines ended in mid-air
