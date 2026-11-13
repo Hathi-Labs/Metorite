@@ -18,10 +18,11 @@ c. A holder of ``feature:studio`` passes the gate on each route. With the
    org outside ``STUDIO_ORGS``, each route answers 404, and no handler reads
    a store.
 d. The router carries one feature gate, ``feature:studio``. No route adds a
-   second gate. Only the org and group install of WS-PKG PKG-8b and its
-   uninstall of PKG-8e read ``studio:publish``, in their handlers, because
-   such an install is a share to others (D180.3, ``package_host.md`` §6.1).
-   No other route reads it (J2 owns the review of a share). The fence reads the syntax tree, so a second read
+   second gate. Only the org and group install of WS-PKG PKG-8b, its
+   uninstall of PKG-8e, and the list, the approve and the reject of WS-STU
+   J2b-1 read ``studio:publish``, in their handlers. Such an install is a
+   share to others (D180.3, ``package_host.md`` §6.1), and J2b-1 is its
+   review. No other route reads it. The fence reads the syntax tree, so a second read
    in another quote style fails too.
 e. ``EXPECTED_ROUTES`` pins the routes. A new route fails here until a person
    adds it, and so adds its 403 case.
@@ -124,6 +125,11 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/studio/packages/{package_id}/restore"),
     # WS-PKG PKG-10e-1, the lifetime read of the private install.
     ("GET", "/studio/packages/{package_id}/lifetime"),
+    # WS-STU J2b-1, the approval for the org.
+    ("POST", "/studio/packages/{package_id}/versions/{version}/approval"),
+    ("GET", "/studio/approvals"),
+    ("POST", "/studio/packages/{package_id}/versions/{version}/approval/approve"),
+    ("POST", "/studio/packages/{package_id}/versions/{version}/approval/reject"),
     # B2a to B2c, the action door.
     ("POST", "/studio/apps/{app_id}/actions/{action}"),
 )
@@ -368,7 +374,11 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
     string constant `studio:publish` occurs once in `routes/studio`: the
     definition of `packages.SHARE_RIGHT`. The name `SHARE_RIGHT` is read in
     `install_package` and `uninstall_package`, each with one
-    `user.has_permission(SHARE_RIGHT)`, and, since A5c-2,
+    `user.has_permission(SHARE_RIGHT)`. WS-STU J2b-1 adds three readers, each
+    with one `user.has_permission(SHARE_RIGHT)`: `list_approvals` (the list
+    of an approver, 403 for each other caller), and `approve_approval` and
+    `reject_approval`, which pass the answer to the store as `can_publish`.
+    The ask of the owner (`request_approval`) reads no right. Since A5c-2,
     `user.has_permission(ADMIN_RIGHT)` in `_delete_mode`: the admin
     path of a delete, which reads `admin:members:manage` (the seam of
     `routes/admin/members.py`) and no other right. No route gains a
@@ -404,10 +414,19 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
                 calls.append((*where, ast.unparse(node)))
     assert verbs == [("packages.py", "<module>", "constant")], verbs
     assert sorted(names) == [("packages.py", "<module>", "Store"),
+                             ("packages.py", "approve_approval", "Load"),
                              ("packages.py", "install_package", "Load"),
+                             ("packages.py", "list_approvals", "Load"),
+                             ("packages.py", "reject_approval", "Load"),
                              ("packages.py", "uninstall_package", "Load")], names
     assert sorted(calls) == [("packages.py", "_delete_mode", "user.has_permission(ADMIN_RIGHT)"),
+                             ("packages.py", "approve_approval",
+                              "user.has_permission(SHARE_RIGHT)"),
                              ("packages.py", "install_package",
+                              "user.has_permission(SHARE_RIGHT)"),
+                             ("packages.py", "list_approvals",
+                              "user.has_permission(SHARE_RIGHT)"),
+                             ("packages.py", "reject_approval",
                               "user.has_permission(SHARE_RIGHT)"),
                              ("packages.py", "uninstall_package",
                               "user.has_permission(SHARE_RIGHT)")], calls

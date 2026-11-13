@@ -55,6 +55,11 @@ k. After the org wins, Ana still publishes her app: the key that her install
    kept stays hers, and the resolve shows the wider claim. A new key that an
    org claim holds is still 409.
 
+**WS-STU J2b-1 (path A).** An org install needs the live version approved.
+So ``_install`` first asks and approves the live version for an org scope,
+through the one writer, with Ben as the approver (``_approve_live``). The
+gate itself is fenced in ``test_studio_package_approval_routes_r8.py``.
+
 **R7: red first, then mutate.** Each mutation ran on 2026-11-07 or
 2026-11-08, and the build report of task 1963 holds the counts.
 
@@ -93,6 +98,7 @@ from fastapi import HTTPException, Response
 from gateway.package_host import store
 from gateway.routes.shell import manifest as shell_manifest
 from gateway.routes.studio import packages
+from gateway.studio import packages_store
 from sqlalchemy import text
 from starlette.requests import Request
 
@@ -204,12 +210,32 @@ async def _live(org: str, email: str, name: str = "Site visits",
     return pid
 
 
+async def _approve_live(org: str, email: str, pid: str) -> None:
+    """J2b-1, path A: an org install needs the live version approved. The
+    owner *email* asks, and Ben, another holder, approves, through the one
+    writer. A package that *email* does not own, or a draft, is left as it
+    is, so the route answers as before."""
+    async with tenant_session(org) as db:
+        found = await packages_store.get_package(db, email, pid)
+        live = None if found is None else found.live_version
+        if live is None:
+            return
+        current = await packages_store.get_version(db, email, pid, live)
+        if current is None or current.review_status != "auto":
+            return
+        await packages_store.request_org_approval(db, email, pid, live)
+    async with tenant_session(org) as db:
+        await packages_store.approve_version(db, BEN, pid, live, can_publish=True)
+
+
 async def _install(org: str, email: str, pid: str, scope: Any,
                    grants: tuple[str, ...] = PUBLISHER,
-                   version: int | None = None) -> tuple[int, Any]:
+                   version: int | None = None, approve: bool = True) -> tuple[int, Any]:
     payload: dict[str, Any] = {"scope": scope}
     if version is not None:
         payload["version"] = version
+    if approve and isinstance(scope, str) and scope.strip().lower() == "org":
+        await _approve_live(org, email, pid)
     return await _call("install_package", org, email, pid, payload=payload, grants=grants)
 
 

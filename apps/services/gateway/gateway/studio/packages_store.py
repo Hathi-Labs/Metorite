@@ -73,8 +73,11 @@ row, or :class:`ApprovalConflict` raises. Each move writes ONE ``app_audit``
 row (op :data:`REVIEW_OP`) in the same transaction. The owner of the package
 asks. The publisher of the version and the owner of the package cannot
 approve it (PKG-Q10). The caller passes ``can_publish``, the check of
-``studio:publish`` that the future route makes, because a store does not
-read rights. A route, its flags and its chat twin are not built. The App
+``studio:publish`` that the route makes, because a store does not read
+rights. The routes of J2b-1 (``routes/studio/packages.py``) call the three
+moves, and :func:`list_pending_versions` is the read of an approver: the
+``pending`` versions of the bound org, each with its full manifest, with no
+member filter. The chat twins are not built (J2b-3). The App
 Workshop review (``routes/apps/publish.py``, ``routes/apps/tools.py``) is a
 separate path for a ``code`` app, and this store does not reuse it.
 
@@ -114,7 +117,8 @@ of A5c-1. Each audit row names the admin as ``user_email``, with ``by:
 is the precheck of the route: a read with no lock.
 
 **The lock of an install (PKG-8b).** :func:`lock_for_install` holds the
-package row ``FOR KEY SHARE`` and reads ``live_version``. The install route
+package row ``FOR KEY SHARE`` and reads ``live_version`` and the pause
+(``paused``, J2b-1). The install route
 of WS-PKG calls it before the install store, so its lock order is the order
 of a publish: the ``apps`` row, then the org lock of the install store.
 
@@ -333,6 +337,28 @@ _REVIEW_REQUESTER_SQL = (
     f"WHERE organization_id = {_BOUND_ORG} AND app_id = CAST(:id AS uuid) "
     "AND app_version = :v AND kind = 'action' AND detail->>'op' = :op "
     "AND detail->>'review' = 'pending' ORDER BY id DESC LIMIT 1"
+)
+
+#: The most pending versions in one read of :func:`list_pending_versions`.
+#: Each row holds a manifest of at most 256 KiB, so the page stays small.
+MAX_PENDING_PAGE = 20
+
+#: The pending versions of the bound org, for a holder of ``studio:publish``
+#: (J2b-1). ⚠️ The ONE read of a version that does not filter on the member,
+#: because the approver is not the owner. RLS and the bound org scope it, and
+#: only a ``pending`` version shows: a private ``auto`` version never shows.
+#: The newest request row gives who asked and when. A read only: no lock.
+_PENDING_SQL = (
+    "SELECT a.id::text, a.name, a.owner_email, v.version, v.published_by, v.published_at, "
+    "v.manifest, r.user_email, r.at "
+    "FROM app_versions v JOIN apps a ON a.id = v.app_id "
+    "LEFT JOIN LATERAL (SELECT user_email, at FROM app_audit "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = v.app_id "
+    "AND app_version = v.version AND kind = 'action' AND detail->>'op' = :op "
+    "AND detail->>'review' = 'pending' ORDER BY id DESC LIMIT 1) r ON true "
+    f"WHERE a.organization_id = {_BOUND_ORG} AND v.organization_id = {_BOUND_ORG} "
+    "AND a.format = 'manifest' AND v.review_status = 'pending' "
+    "ORDER BY v.published_at, a.id, v.version LIMIT :limit"
 )
 
 #: The longest release note, in characters.
@@ -1122,13 +1148,61 @@ async def reject_version(db: Any, rejecter: str, package_id: str, version: int, 
     return await _move_review(db, r, pid, current, "reject", await _requester(db, pid, current))
 
 
+@dataclass(frozen=True)
+class PendingVersion:
+    """One version that waits for the approval for the org (J2b-1).
+
+    ``manifest`` is the FULL manifest of the version. A two-version diff is a
+    later slice. ``requested_by`` and ``requested_at`` come from the newest
+    request row. With no such row, ``requested_by`` is the owner and
+    ``requested_at`` is None."""
+
+    package_id: str
+    name: str
+    owner_email: str
+    version: int
+    published_by: str
+    published_at: datetime
+    manifest: dict[str, Any]
+    requested_by: str
+    requested_at: datetime | None
+
+
+def _pending(row: Any) -> PendingVersion:
+    manifest = row[6]
+    if isinstance(manifest, str | bytes):
+        manifest = json.loads(manifest)
+    owner = str(row[2])
+    return PendingVersion(
+        package_id=str(row[0]), name=str(row[1]), owner_email=owner, version=int(row[3]),
+        published_by=str(row[4]), published_at=row[5], manifest=dict(manifest or {}),
+        requested_by=owner if row[7] is None else str(row[7]), requested_at=row[8])
+
+
+async def list_pending_versions(db: Any, *, can_publish: bool,
+                                limit: int = MAX_PENDING_PAGE) -> tuple[list[PendingVersion], bool]:
+    """The ``pending`` versions of each package of the bound org, oldest
+    first, at most *limit* (1 to :data:`MAX_PENDING_PAGE`). The second value
+    is True when more rows wait past the page.
+
+    *can_publish* is the check of ``studio:publish`` that the caller made.
+    Anything but ``True`` raises :class:`ApprovalRefused` before any
+    statement. A version in another state never shows, so the read names no
+    private package. The read takes no lock and writes nothing."""
+    _right(can_publish)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_PENDING_PAGE:
+        raise PackageStoreError(f"limit must be an integer from 1 to {MAX_PENDING_PAGE}")
+    rows = (await db.execute(text(_PENDING_SQL), {"op": REVIEW_OP, "limit": limit + 1})).all()
+    return [_pending(r) for r in rows[:limit]], len(rows) > limit
+
+
 # --- the lock of an install (WS-PKG PKG-8b) ---------------------------------
 
 #: The row of a package that the install route holds, ``FOR KEY SHARE``. A
 #: publish takes ``FOR UPDATE`` on the same row, so the two wait for each
 #: other here, before either takes the org lock of the install store.
 _INSTALL_LOCK_SQL = (
-    "SELECT live_version FROM apps "
+    "SELECT live_version, paused_at IS NOT NULL FROM apps "
     f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
     "AND owner_email = :m AND id = CAST(:id AS uuid) AND status <> 'archived' "
     "FOR KEY SHARE"
@@ -1141,10 +1215,13 @@ class InstallTarget:
 
     ``live_version`` is ``apps.live_version``: the version that an org or a
     group install runs. None means that the package has no published version.
+    ``paused`` is True when the kill switch of J3a holds the package. The org
+    install of J2b-1 refuses a paused package.
     """
 
     package_id: str
     live_version: int | None
+    paused: bool = False
 
 
 async def lock_for_install(db: Any, member: str, package_id: str) -> InstallTarget | None:
@@ -1165,7 +1242,8 @@ async def lock_for_install(db: Any, member: str, package_id: str) -> InstallTarg
     row = (await db.execute(text(_INSTALL_LOCK_SQL), {"m": _member(member), "id": pid})).first()
     if row is None:
         return None
-    return InstallTarget(package_id=pid, live_version=None if row[0] is None else int(row[0]))
+    return InstallTarget(package_id=pid, live_version=None if row[0] is None else int(row[0]),
+                         paused=bool(row[1]))
 
 
 # --- the kill switch of a package (J3a) --------------------------------------
