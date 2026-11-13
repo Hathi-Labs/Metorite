@@ -51,7 +51,6 @@ from __future__ import annotations
 
 import contextlib
 import re
-import unicodedata
 import uuid
 from collections.abc import Iterator, Sequence
 from typing import Any
@@ -59,6 +58,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from acb_common.studio_manifest import MAX_DEPTH
 from acb_skills.hidden_text import body_hidden_problem, hidden_problem
+from acb_skills.skill_slug import slug_from_name  # the one shared slug (STU-F8a)
 from acb_skills.tool_packs import MAX_PACK_TOOLS
 from fastapi import Body, Depends, HTTPException
 from gateway.db import tenant_session as _tenant_session
@@ -93,7 +93,6 @@ def _cannot_move(state: str, target: str) -> str:
     cannot move to published." """
     return f"The skill is {_STATE_WORDS.get(state, state)}. It cannot move to {target}."
 
-_NOT_SLUG = re.compile(r"[^a-z0-9]+")
 _NUMBER = re.compile(r"[0-9]{1,9}")
 _SHORT = 80
 
@@ -164,15 +163,6 @@ def _number(raw: str) -> int:
     if not _NUMBER.fullmatch(raw) or int(raw) < 1:
         raise _refuse(422, "The version must be a whole number of 1 or more")
     return int(raw)
-
-
-def slug_from_name(name: str) -> str:
-    """The slug of *name*: lower case, a hyphen between the parts, at most
-    ``MAX_SLUG_CHARS`` characters. An accent drops to its letter. A name with
-    no ASCII letter or digit gives the empty string."""
-    folded = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
-    slug = _NOT_SLUG.sub("-", folded.lower()).strip("-")
-    return slug[: store.MAX_SLUG_CHARS].rstrip("-")
 
 
 def _short(value: str) -> str:

@@ -81,6 +81,7 @@ from datetime import datetime
 from typing import Any
 
 from acb_skills.hidden_text import body_hidden_problem, hidden_problem
+from acb_skills.skill_slug import MAX_SLUG_CHARS  # defined once, in acb_skills
 from sqlalchemy import text
 
 #: The four states, as the CHECK ``studio_skills_state`` holds them.
@@ -96,7 +97,6 @@ MAX_FLOAT = 1e15
 #: The bounds of the CHECKs ``studio_skills_name``, ``studio_skills_slug`` and
 #: ``studio_skills_description``.
 MAX_NAME_CHARS = 120
-MAX_SLUG_CHARS = 64
 MAX_DESCRIPTION_CHARS = 1024
 #: The slug shape, as the CHECK ``studio_skills_slug`` holds it.
 _SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
