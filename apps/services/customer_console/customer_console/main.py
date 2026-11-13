@@ -128,7 +128,6 @@ from customer_console.credits import (
     LEDGER_REASON_PURCHASE,
     LEDGER_REASONS,
     OverdraftPolicy,
-    RunCeiling,
     TokenUsage,
     UnpricedModel,
     UsagePartitionError,
@@ -139,6 +138,7 @@ from customer_console.credits import (
     floor_charge,
     quantize_credits,
     rate_call,
+    run_ceiling_for,
 )
 from customer_console.db import get_engine
 from customer_console.decide import (
@@ -1654,13 +1654,21 @@ def _spend_refusal(conn, caller: Caller) -> HTTPException | None:
     # runaway loop, and only that run is stopped — a second run for the same
     # organization is unaffected, because the ceiling is a tripwire on one
     # loop, not a budget on the customer.
+    #
+    # AUTO-8b-2b: `X-CC-Run-Ceiling` can only LOWER the tripwire.
+    # `run_ceiling_for` takes the min, and the auth arms refused a bad value
+    # with 400 before this ran. The sum keys on the org of the credential, so
+    # a header lowers the ceiling of the caller's own run and no other.
     if caller.run_id:
         spent = store.run_spend(conn, org_id=caller.organization_id, run_id=caller.run_id)
-        ceiling = RunCeiling()
+        ceiling = run_ceiling_for(caller.run_ceiling)
         if not decide_run_ceiling(spent, ceiling=ceiling).allowed:
             _log.warning(
                 "router.run_ceiling_tripped",
-                extra={"cc_run_id": caller.run_id},
+                extra={
+                    "cc_run_id": caller.run_id,
+                    "cc_ceiling_credits": str(ceiling.max_credits),
+                },
             )
             return HTTPException(
                 status_code=403,
