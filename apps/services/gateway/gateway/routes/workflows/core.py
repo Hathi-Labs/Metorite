@@ -124,6 +124,7 @@ MAX_GRAPH_BYTES = 512 * 1024  # one edit-model document
 MAX_TRIGGER_PAYLOAD_BYTES = 256 * 1024  # inbound webhook/API trigger body
 MAX_RUNS_PAGE = 100
 MAX_RUN_STEPS = 200  # human steps in one answer of GET /runs/{run_id}/steps (STU-E4b)
+MAX_WALK_BLOCKS = 500  # over this, human_step.walk_order gives the block-list order (STU-E4b)
 HOOK_RATE_LIMIT_PER_MINUTE = 60  # per hook token
 
 # ── DB (the one shared gateway engine — gateway/db.py, BO-10) ────────────────

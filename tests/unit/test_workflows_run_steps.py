@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import itertools
 import json
 import uuid
 from contextlib import asynccontextmanager
@@ -287,6 +288,69 @@ def test_a_graph_with_a_cycle_gives_the_block_list_order() -> None:
     }
     assert human_step.walk_order(skipped) == ["x", "y"]
     assert human_step.walk_order({"blocks": [], "connections": []}) == []
+
+
+def _chain_graph(count: int, *, loop: bool = False) -> dict:
+    """A chain of *count* blocks, listed in REVERSE, so the block-list order
+    and the walk order differ. With *loop*, the first two blocks form a cycle
+    and the rest is a tail after it."""
+    ids = [f"n{i:04d}" for i in range(count)]
+    connections = [{"source": a, "target": b} for a, b in itertools.pairwise(ids)]
+    if loop:
+        connections.append({"source": ids[1], "target": ids[0]})
+    return {"blocks": [_block(n, "noop") for n in reversed(ids)], "connections": connections}
+
+
+def test_a_graph_over_the_cap_gives_the_block_list_order_and_no_plan(monkeypatch) -> None:
+    """Over ``MAX_WALK_BLOCKS`` blocks, the planner does not run. Mutation: drop
+    the cap check -> the planner runs -> red."""
+    from acb_common import planning
+    from gateway.routes.workflows.core import MAX_WALK_BLOCKS
+
+    def _boom(*a: Any, **k: Any) -> Any:
+        raise AssertionError("analyze_plan ran over the cap")
+
+    monkeypatch.setattr(planning, "analyze_plan", _boom)
+    graph = _chain_graph(MAX_WALK_BLOCKS + 1)
+    assert MAX_WALK_BLOCKS == 500
+    assert human_step.walk_order(graph) == [b["id"] for b in graph["blocks"]]
+
+
+def test_a_graph_at_the_cap_still_calls_the_planner(monkeypatch) -> None:
+    from acb_common import planning
+    from gateway.routes.workflows.core import MAX_WALK_BLOCKS
+
+    calls: list[int] = []
+    real = planning.analyze_plan
+
+    def _spy(tasks: Any, links: Any, **k: Any) -> Any:
+        tasks = list(tasks)
+        calls.append(len(tasks))
+        return real(tasks, links, **k)
+
+    monkeypatch.setattr(planning, "analyze_plan", _spy)
+    graph = _chain_graph(MAX_WALK_BLOCKS)
+    # The planner walks the chain, so the order is the chain and not the list.
+    assert human_step.walk_order(graph) == sorted(b["id"] for b in graph["blocks"])
+    assert calls == [MAX_WALK_BLOCKS]
+
+
+@pytest.mark.parametrize("loop", [False, True], ids=["chain", "cycle"])
+def test_a_graph_at_the_cap_orders_in_time(loop: bool) -> None:
+    """A generous bound, so that a slow path shows. A cycle plus a long tail is
+    the slow case of the planner."""
+    import time
+
+    from gateway.routes.workflows.core import MAX_WALK_BLOCKS
+
+    graph = _chain_graph(MAX_WALK_BLOCKS, loop=loop)
+    started = time.perf_counter()
+    order = human_step.walk_order(graph)
+    took = time.perf_counter() - started
+    assert len(order) == MAX_WALK_BLOCKS
+    if loop:
+        assert order == [b["id"] for b in graph["blocks"]]
+    assert took < 2.0, took
 
 
 def test_the_steps_are_the_human_steps_in_walk_order_with_the_literal_config() -> None:

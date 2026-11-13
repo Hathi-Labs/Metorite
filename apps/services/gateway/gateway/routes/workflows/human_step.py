@@ -77,6 +77,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from gateway.routes.workflows import park, unattended
+from gateway.routes.workflows.core import MAX_WALK_BLOCKS
 from sqlalchemy import text
 
 #: The ``workflow_run_pauses.reason`` of a human step (migration 427).
@@ -457,6 +458,11 @@ def walk_order(serialized: Any) -> list[str]:
     blocks of one wave. A connection to an unknown block, or from a block to
     itself, is skipped. A graph with a cycle has no waves, so it gives the
     block list order. Nothing here raises.
+
+    **A cap.** A graph over :data:`MAX_WALK_BLOCKS` (500) blocks gives the
+    block-list order, and ``analyze_plan`` does not run. The planner costs more
+    than linear time on a large bad snapshot, so a read never stalls on one. A
+    saved graph has no cycle, and a real workflow has tens of blocks.
     """
     from acb_common.planning import PlanTask, analyze_plan
 
@@ -465,6 +471,8 @@ def walk_order(serialized: Any) -> list[str]:
     index: dict[str, int] = {}
     for block in _list_of(serialized, "blocks"):
         index.setdefault(str(block.get("id")), len(index))
+    if len(index) > MAX_WALK_BLOCKS:
+        return list(index)
     links: list[tuple[str, str]] = []
     for conn in _list_of(serialized, "connections"):
         src, tgt = str(conn.get("source")), str(conn.get("target"))
