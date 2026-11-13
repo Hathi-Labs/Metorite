@@ -544,6 +544,20 @@ def test_one_writer_of_the_four_tables() -> None:
     assert hits == ["apps/services/gateway/gateway/studio/objects_store.py"], hits
 
 
+#: SQL that names the gauge of the org caps (C10a).
+_GAUGE_SQL = re.compile(r"\b(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+studio_org_usage\b", re.IGNORECASE)
+
+
+def test_one_reader_of_the_org_gauge() -> None:
+    """C10a widens the one-writer fence to `studio_org_usage`. The triggers of
+    its migration are its only writer, and `objects_store.py` is the only
+    Python that runs SQL on it. A separate test keeps the list of the four
+    tables above as it is, so the C4a-1 widening merges in either order."""
+    hits = sorted({p.relative_to(_ROOT).as_posix() for p in _python_files()
+                   if _GAUGE_SQL.search(p.read_text(encoding="utf-8", errors="replace"))})
+    assert hits == ["apps/services/gateway/gateway/studio/objects_store.py"], hits
+
+
 def test_the_r8_suite_is_named_in_the_ci_skip_guard() -> None:
     """A fence that never runs is no fence. The `--must-run` list names the
     pytest ARGUMENT, so a mention in a comment does not count."""

@@ -871,6 +871,18 @@ def test_the_records_of_studio_objects_stay() -> None:
     assert cascade_closure("apps") >= _STUDIO_OBJECT_TABLES
 
 
+def test_the_gauge_of_studio_records_stays() -> None:
+    """WS-STU C10a: ``studio_org_usage`` counts the records of the org. The
+    records stay at a member purge, so the gauge stays too. It holds no
+    address, and its one foreign key names ``organization``.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+
+    named = {r.table for r in (*_PURGE_DELETES, *_PURGE_KEEPS)}
+    assert "studio_org_usage" not in named
+    assert "studio_org_usage" not in _blast_radius()
+
+
 def test_the_goals_of_this_org_go_and_no_other() -> None:
     """WS-WEB WEB-10: the purge deletes the member's goal records.
 
