@@ -725,6 +725,7 @@ jobs:
               tests/unit/test_studio_packages_versions_r8.py \
               tests/unit/test_studio_package_routes_r8.py \
               tests/unit/test_studio_package_delete_r8.py \
+              tests/unit/test_studio_package_approval_r8.py \
               tests/unit/test_studio_package_delete_admin_r8.py \
               tests/unit/test_studio_chat_build_r8.py \
               tests/unit/test_studio_route_gate_r8.py \
@@ -752,6 +753,7 @@ jobs:
               tests/unit/test_crm_pipelines_native.py \
               tests/unit/test_crm_lead_pipelines.py \
               tests/unit/test_auto_park.py \
+              tests/unit/test_workflows_human_step_r8.py \
               tests/unit/test_studio_workflow_write_r8.py \
               tests/unit/test_headless_turn_r8.py \
               tests/unit/test_projects_status_set_read_r8.py \
