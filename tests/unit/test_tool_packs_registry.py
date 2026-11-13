@@ -750,9 +750,10 @@ def test_the_studio_rules_name_only_tools_of_the_pack() -> None:
     found = tp.PACKS["studio"]
     # "no_card" is a value of the "decision" of studio_plan, and "based_on" a
     # parameter of studio_skill_save (STU-F2d review round 2). "request_id" is a
-    # parameter of the record write tools (STU-B2c-2b). None is a tool.
+    # parameter of the record write tools (STU-B2c-2b). "manifest_cut" is a key of a row of
+    # studio_list_approvals (STU-J2b-3a). None is a tool.
     named = set(re.findall(r"[a-z]+(?:_[a-z]+)+", found.rules)) - {
-        "no_card", "based_on", "request_id"}
+        "no_card", "based_on", "request_id", "manifest_cut"}
     assert named and named <= set(STUDIO_TOOLS), named - set(STUDIO_TOOLS)
     assert found.owner == STUDIO and found.delegation_refusal
     assert tp.owner_packs(STUDIO) == ("studio",)
