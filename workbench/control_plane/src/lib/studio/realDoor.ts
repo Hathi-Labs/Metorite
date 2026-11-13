@@ -380,12 +380,28 @@ export class StudioOff extends Error {
   constructor() { super(STUDIO_OFF); }
 }
 
+/**
+ * A package route answered with a status that is not 2xx and not 404. The message
+ * stays the plain sentence, and `status` lets a caller tell a refusal (401, 403)
+ * from a fault (STU-F5a: the records card draws no card on a 403).
+ */
+export class PackageReadError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "PackageReadError";
+  }
+}
+
 async function getJson(url: string, fetchImpl: typeof fetch = fetch): Promise<unknown> {
   const res = await fetchImpl(url);
   if (res.status === 404) throw new StudioOff();
-  if (!res.ok) throw new Error(ACTION_FAILED);
+  if (!res.ok) throw new PackageReadError(ACTION_FAILED, res.status);
   return res.json().catch(() => ({}));
 }
+
+// The key rule of the live doors lives in `./liveKey` (no import, so the shell
+// can reach it through `lib/assistantWrites.ts`). It stays exported from here.
+export { isLiveDoorKey } from "./liveKey";
 
 export async function listPackages(fetchImpl: typeof fetch = fetch): Promise<PackageSummary[]> {
   const body = await getJson("/api/studio/packages", fetchImpl);
