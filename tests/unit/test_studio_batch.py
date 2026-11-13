@@ -1,7 +1,7 @@
 """WS-STU E8a: the batch ledger, the hermetic half (task 3095).
 
 Spec: ``project-docs/specs/ai_studio.md`` §14 E8a. Code:
-``gateway/studio/batch_store.py`` and migration 436 (found by content, never
+``gateway/studio/batch_store.py`` and migration 438 (found by content, never
 by number, R1). ``test_studio_batch_r8.py`` holds the real-database half.
 
 These tests need no database. They pin the digests, the refusals at open, the
