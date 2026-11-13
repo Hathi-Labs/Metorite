@@ -1412,29 +1412,35 @@ async def _close_on_new_steer(fut: Any, thread_id: str, before: frozenset[int],
 CLOSED_BY_YOUR_MESSAGE = "closed by your message"
 
 
+#: The act keys of one card: one key for each act that the card can do. A
+#: single card has one key. A batch card has one key for each item.
+ActKeys = frozenset[tuple[Any, ...]]
+
+
 class ClosedCards:
     """The write cards of one run that a chat message closed (task 3130).
 
-    Each entry is a card title and the act key of the tool call that drew
+    Each entry is a card title and the act keys of the tool call that drew
     the card (:func:`card_call`). A later card takes the place of a closed
-    one ONLY when its key is the same key: the same tool, on the same
-    targets. A card with no key takes the place of none. A card that the
-    member approved or declined is never in the list."""
+    one ONLY when it holds every act key of the closed card. A card with no
+    keys takes the place of none, and a closed card with no keys is never
+    taken. A card that the member approved or declined is never in the list."""
 
     __slots__ = ("entries",)
 
     def __init__(self) -> None:
-        self.entries: list[tuple[str, tuple[Any, ...] | None]] = []
+        self.entries: list[tuple[str, ActKeys | None]] = []
 
-    def opened(self, key: tuple[Any, ...] | None) -> None:
-        """A card opens: it takes the place of each closed card of its key."""
-        if key is None:
+    def opened(self, keys: ActKeys | None) -> None:
+        """A card opens: it takes the place of each closed card whose every
+        act it draws again."""
+        if not keys:
             return
-        self.entries = [(t, k) for t, k in self.entries if k != key]
+        self.entries = [(t, k) for t, k in self.entries if not (k and k <= keys)]
 
-    def closed(self, title: str, key: tuple[Any, ...] | None) -> None:
+    def closed(self, title: str, keys: ActKeys | None) -> None:
         """A chat message closed the card titled *title*."""
-        self.entries.append((title, key))
+        self.entries.append((title, keys))
 
     def take(self) -> list[str]:
         """Each closed title once, in order. The list is then empty."""
@@ -1471,38 +1477,141 @@ def release_closed_cards(token: _contextvars.Token[ClosedCards | None]) -> None:
 #
 # Review of task 3130: a title names no act. "Update this task?" is the title
 # of each task, so a card for task 15 erased the line of task 12. The key is
-# the tool, and the arguments that name its targets: each id, and the people
-# of ``to``. Free text (a title, a body, a note) is not in it, so a redraft
-# that changes the text keeps its key.
+# the tool and the arguments that name the act:
+#
+# * Each id, and the people of ``to``, are always in the key.
+# * A call with no OBJECT id adds its identity arguments (:data:`IDENTITY_ARGS`):
+#   a new lead is "Veena" or "Raj", a new task is its title. An id names an
+#   object when the tool does not create one (:data:`_CREATE_VERBS`) and the
+#   id is not a container (:data:`CONTAINER_IDS`, such as ``project_id``).
+# * A batch tool shares its family with the single tool
+#   (:data:`ACT_FAMILIES`), and each of its items is one key.
+#
+# Each error goes to the fail-closed side: a key that differs keeps the line.
+# A renamed redraft of a new object keeps a line that is no longer true. A
+# change to an object with an id never changes its key, so two changes to one
+# task share a key, and an approved second change takes away the line of the
+# first.
 
 #: The arguments of a tool call that name a target and are not ids.
 _TARGET_ARGS = frozenset({"to"})
 
-_CARD_CALL: _contextvars.ContextVar[tuple[Any, ...] | None] = _contextvars.ContextVar(
+#: The arguments that name a NEW object: what tells "lead Veena" from "lead
+#: Raj". They count only in a call with no object id. A dict argument (a
+#: Studio ``manifest``) gives the same keys one level down.
+IDENTITY_ARGS = frozenset({
+    "title", "name", "lead_name", "subject", "deal_name", "contact_name",
+    "company_name", "account_name", "project_name", "app_name",
+})
+
+#: Ids of a place, never of the object that the act changes.
+CONTAINER_IDS = frozenset({
+    "account_id", "project_id", "parent_task_id", "parent_id", "folder_id",
+    "mailbox_id", "workspace_id", "space_id", "pipeline_id", "board_id",
+    "organization_id", "org_id",
+})
+
+#: A tool whose name holds one of these verbs makes a new object, so each of
+#: its ids is a place (``log_activity`` on ``record_id``).
+_CREATE_VERBS = frozenset({"create", "add", "log", "new", "make", "send"})
+
+#: The batch tools, by name: the single tool of the family, the argument that
+#: holds the items, and how one item reads. "json" is a JSON list of objects.
+#: "ids" is a list of ids, each one ``id_arg`` of one item.
+ACT_FAMILIES: dict[str, tuple[str, str, str, str]] = {
+    "create_tasks": ("create_task", "tasks", "json", ""),
+    "update_tasks": ("update_task", "changes", "json", ""),
+    "bulk_update": ("update_task", "task_ids", "ids", "task_id"),
+}
+
+#: The single tools that a batch tool shares a family with.
+_FAMILY_SINGLES = frozenset(f for f, _a, _k, _i in ACT_FAMILIES.values())
+
+_CARD_CALL: _contextvars.ContextVar[ActKeys | None] = _contextvars.ContextVar(
     "acb_card_call", default=None,
 )
 
 
-def _is_target_arg(name: str) -> bool:
-    return name == "id" or name.endswith(("_id", "_ids")) or name in _TARGET_ARGS
+def _is_id_arg(name: str) -> bool:
+    return name == "id" or name.endswith(("_id", "_ids"))
+
+
+def _norm(value: Any) -> str:
+    return " ".join(str(value).split()).lower()
 
 
 def _key_value(value: Any) -> Any:
     if isinstance(value, (list, tuple, set, frozenset)):
-        return tuple(sorted(str(v).strip().lower() for v in value))
-    return str(value).strip().lower()
+        return tuple(sorted(_norm(v) for v in value))
+    return _norm(value)
+
+
+def _given(value: Any) -> bool:
+    return value not in (None, "", [], (), {}) and value is not False
+
+
+def _creates(name: str) -> bool:
+    return bool(set(str(name).lower().split("_")[:2]) & _CREATE_VERBS)
+
+
+def _identity(arguments: dict[str, Any]) -> list[tuple[str, Any]]:
+    out: list[tuple[str, Any]] = []
+    for k, v in arguments.items():
+        if k in IDENTITY_ARGS and _given(v):
+            out.append((k, _norm(v)))
+        elif isinstance(v, dict):
+            out.extend((f"{k}.{ik}", _norm(iv)) for ik, iv in v.items()
+                       if ik in IDENTITY_ARGS and _given(iv))
+    return out
 
 
 def act_key(module: str, name: str, arguments: dict[str, Any]) -> tuple[Any, ...] | None:
-    """The act key of one tool call: its module, its name and its targets.
-    None when the call has no name."""
+    """The act key of one act: who does it, and its targets. None with no name.
+
+    The head is the family for a tool of :data:`ACT_FAMILIES`, else the
+    module and the tool. The targets are each id and ``to``, and, in a call
+    with no object id, the identity arguments (:data:`IDENTITY_ARGS`)."""
     if not name:
         return None
-    targets = tuple(sorted(
-        (k, _key_value(v)) for k, v in (arguments or {}).items()
-        if _is_target_arg(str(k)) and v not in (None, "", [], ())
-    ))
-    return (module, name, targets)
+    args = {str(k): v for k, v in (arguments or {}).items()}
+    targets = [(k, _key_value(v)) for k, v in args.items()
+               if (_is_id_arg(k) or k in _TARGET_ARGS) and _given(v)]
+    object_id = not _creates(name) and any(
+        _is_id_arg(k) and k not in CONTAINER_IDS and _given(v) for k, v in args.items())
+    if not object_id:
+        targets.extend(_identity(args))
+    head = ("family", name) if name in _FAMILY_SINGLES else (module, name)
+    return (*head, tuple(sorted(targets)))
+
+
+def _batch_items(spec: tuple[str, str, str, str], arguments: dict[str, Any]) -> list[dict[str, Any]]:
+    """The items of one batch call, each with the batch's own arguments. A
+    value that does not read gives no item."""
+    _family, field, kind, id_arg = spec
+    raw = arguments.get(field)
+    shared = {k: v for k, v in arguments.items() if k != field}
+    if kind == "ids":
+        values = raw if isinstance(raw, (list, tuple)) else _re.split(r"[\s,]+", str(raw or ""))
+        return [{**shared, id_arg: v} for v in values if str(v).strip()]
+    try:
+        items = _json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(items, list):
+        return []
+    return [{**shared, **item} for item in items if isinstance(item, dict)]
+
+
+def act_keys(module: str, name: str, arguments: dict[str, Any]) -> ActKeys | None:
+    """The act keys of one tool call: one key, or one key for each item of a
+    batch tool (:data:`ACT_FAMILIES`). None when no key reads."""
+    spec = ACT_FAMILIES.get(name)
+    if spec is None:
+        key = act_key(module, name, arguments)
+        return frozenset({key}) if key else None
+    keys = {act_key(module, spec[0], item) for item in _batch_items(spec, arguments)}
+    keys.discard(None)
+    return frozenset(keys) or None
 
 
 @_contextlib.contextmanager
@@ -1515,7 +1624,7 @@ def card_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any], *,
     so a card reads the innermost call. *keyless* (a delegation tool) opens
     a scope with no key, so a card of a child run never takes the key of
     the call that started the child. A fault gives no key. Never raises."""
-    key: tuple[Any, ...] | None = None
+    keys: ActKeys | None = None
     if not keyless:
         try:
             import inspect as _inspect
@@ -1524,11 +1633,11 @@ def card_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any], *,
                 bound = dict(_inspect.signature(fn).bind_partial(*args, **kwargs).arguments)
             except (TypeError, ValueError):
                 bound = {} if args else dict(kwargs)
-            key = act_key(str(getattr(fn, "__module__", "") or ""),
-                          str(getattr(fn, "__name__", "") or ""), bound)
+            keys = act_keys(str(getattr(fn, "__module__", "") or ""),
+                            str(getattr(fn, "__name__", "") or ""), bound)
         except Exception:
-            key = None
-    token = _CARD_CALL.set(key)
+            keys = None
+    token = _CARD_CALL.set(keys)
     try:
         yield
     finally:
@@ -1538,23 +1647,42 @@ def card_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any], *,
             _CARD_CALL.set(None)
 
 
-def _card_opened(key: tuple[Any, ...] | None) -> None:
+def _card_opened(keys: ActKeys | None) -> None:
     holder = _RUN_CLOSED_CARDS.get()
     if holder is not None:
-        holder.opened(key)
+        holder.opened(keys)
 
 
-def _card_closed_by_message(title: str, key: tuple[Any, ...] | None) -> None:
+def _card_closed_by_message(title: str, keys: ActKeys | None) -> None:
     holder = _RUN_CLOSED_CARDS.get()
     if holder is not None:
-        holder.closed(title, key)
+        holder.closed(title, keys)
 
 
-#: The characters that markdown or a link reads, and the fence marks.
-_INERT_DROP = _re.compile(r"[\[\]()<>*_`#!~|\\«»]")
+#: The characters that markdown or a link reads, and the fence marks. An
+#: underscore is apart (:func:`_edge_underscores`): inside a word it is part
+#: of an address, and GFM never reads it as emphasis there.
+_INERT_DROP = _re.compile(r"[\[\]()<>*`#!~|\\«»]")
+
+#: A run of slashes after a colon: "https://", "https:////".
+_SCHEME_SLASHES = _re.compile(r":/+")
+
+#: "www." that a GFM renderer links with no scheme.
+_WWW = _re.compile(r"(?i)\bwww\.")
 
 #: The longest act in the line, in characters.
 ACT_MAX = 120
+
+
+def _edge_underscores(text: str) -> str:
+    """*text* with each underscore that can open or close emphasis removed.
+    An underscore between two letters or digits stays: ``john_doe@a.test``."""
+    def keep(m: Any) -> str:
+        s, e = m.start(), m.end()
+        inside = s > 0 and e < len(text) and text[s - 1].isalnum() and text[e].isalnum()
+        return m.group(0) if inside else ""
+
+    return _re.sub(r"_+", keep, text)
 
 
 def card_act(title: str) -> str:
@@ -1562,16 +1690,19 @@ def card_act(title: str) -> str:
 
     "Reply to kim@a.test?" gives "reply to kim@a.test". A title can hold a
     record name, a display name or an address that a stranger wrote. So no
-    markdown or link character stays, a line break is a space, ``://`` loses
-    its slashes, and no fence mark stays: the line puts the act in « ».
-    At most :data:`ACT_MAX` characters. No words give "the act on the card"."""
+    markdown or link character stays, an underscore stays only inside a
+    word, a line break is a space, slashes after a colon go, "www." loses
+    its dot, and no fence mark stays: the line puts the act in « ». At most
+    :data:`ACT_MAX` characters. No words give "the act on the card"."""
     import unicodedata as _ud
 
     text = "".join(
         " " if ch in "\r\n\t" else ("" if _ud.category(ch) in ("Cc", "Cf") else ch)
         for ch in str(title or "")
     )
-    text = _INERT_DROP.sub("", text).replace("://", ":")
+    text = _INERT_DROP.sub("", text)
+    text = _edge_underscores(_SCHEME_SLASHES.sub(":", text))
+    text = _WWW.sub(lambda m: m.group(0)[:3] + " ", text)
     text = " ".join(text.split()).rstrip("?.:;, ").strip()
     if not text:
         return "the act on the card"
@@ -1596,7 +1727,8 @@ def closed_card_line(titles: list[str]) -> str:
     if len(acts) == 1:
         return (f"Not done: {acts[0]}. The card closed when a new message came in. "
                 "Say 'do it' to get it back.")
-    joined = ", ".join(acts[:-1]) + f", and {acts[-1]}"
+    joined = (f"{acts[0]} and {acts[1]}" if len(acts) == 2
+              else ", ".join(acts[:-1]) + f", and {acts[-1]}")
     return (f"Not done: {joined}. The cards closed when a new message came in. "
             "Say 'do it' to get them back.")
 

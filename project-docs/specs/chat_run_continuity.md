@@ -16,7 +16,7 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 | The run cap — 5 live runs per member (D-3) | **BUILT** 2026-10-10, branch `ws51-run-cap-and-todos`, no flag |
 | §4.9 — a message sent during a run always steers it | **BUILT** 2026-10-12, branch `composer-always-steer`, no flag |
 | §4.9 — a steer is a user turn, and a Projects or CRM card closes on it (task 2494) | **BUILT** 2026-11-09, fix round 1 2026-11-11, branch `steer-redraws-card-mt-fdaefd16`, no flag |
-| §4.9 — a closed card says "Not done", and each steer gets an answer (task 3130) | **BUILT** 2026-11-13, fix round 1 2026-11-13, branch `mt-e29742c6-steer-unsent-card`, no flag |
+| §4.9 — a closed card says "Not done", and each steer gets an answer (task 3130) | **BUILT** 2026-11-13, fix round 1 2026-11-13, fix round 2 2026-11-14, branch `mt-e29742c6-steer-unsent-card`, no flag |
 | §4.10 — one run status in the open chat | **BUILT** 2026-10-19, branch `chat-run-status`, no flag |
 | D-1 — a separate run worker | **DEFERRED** 2026-10-29 on evidence (§5). Not built |
 
@@ -914,29 +914,76 @@ the reply was not sent. So these rules hold:
 - The server ends the answer with one line, not the model. The line comes
   when a chat message closed a write card that nobody answered.
 - The line is "Not done: «<act>». The card closed when a new message came
-  in. Say 'do it' to get it back." Two closed acts share one line. The
-  words are true in a shared room, where another member can close the card.
+  in. Say 'do it' to get it back." The words are true in a shared room,
+  where another member can close the card.
+- Two closed acts read "«a» and «b»". Three or more read "«a», «b», and
+  «c»", and the line then says "cards" and "them".
 - The act comes from the card's own title (`ask_tools.card_act`). A title
   can hold a name or an address that a stranger wrote. So the act is inert
-  text in one « » fence.
+  text in one « » fence, at most 120 characters.
 - In the act, no markdown or link character stays, and no fence mark stays.
-  A line break is a space, `://` loses its slashes, and the cap is 120
-  characters.
+  A line break is a space. Each run of slashes after a colon goes, so no
+  scheme links. "www." becomes "www " with a space, so GFM does not link
+  it.
+- An underscore inside a word stays, so `john_doe@acme.test` keeps its
+  name. GFM never reads it as emphasis there. An underscore at a word edge
+  goes. The workbench's remark-gfm 4.0.1 shows no link and no emphasis in
+  any line. Only an address shows as a mail link of its own text.
 - Each write card of each app waits in `ask_tools.request_confirmation`, so
   one record covers email, Projects, CRM and Studio. `run_agent_stream`
   opens the record for each run (`open_closed_cards_for_run`).
 - A card that the member approved or declined adds no line. A later card
-  takes the place of a closed card only when both have the same act key.
-- The act key is the tool that drew the card, with the arguments that name
-  its targets: each id and the people of `to`. Free text is not in it. The
-  gate wrapper of `_tool_injection` binds the key (`ask_tools.card_call`).
+  takes the place of a closed card only when it holds every act key of the
+  closed card.
+
+**The act key** (`ask_tools.act_keys`, bound by `ask_tools.card_call` in
+the gate wrapper of `_tool_injection`):
+
+- The key is the tool, each id argument, and the people of `to`. Case and
+  spaces do not count, and free text (a body, a note) is never in it.
+- A call with no object id also adds its identity arguments: `title`,
+  `name`, `lead_name`, `subject`, `deal_name`, `contact_name`,
+  `company_name`, `account_name`, `project_name` and `app_name`. A Studio
+  `manifest` gives them one level down.
+- A call has no object id when its tool creates (the verbs create, add,
+  log, new, make and send), or when each id names a place. A place is
+  `project_id`, `account_id`, `parent_task_id` and the other
+  `CONTAINER_IDS`.
+- So lead Veena and lead Raj are two acts. Two calls of `log_activity` on
+  one record with two subjects are two acts. Two new mails to one person
+  with two subjects are two acts. `update_task` on task 12 keys on the
+  task only.
+- A batch tool shares the family of its single tool: `create_tasks` with
+  `create_task`, and `update_tasks` and `bulk_update` with `update_task`.
+  Each item of a batch is one key, with the batch's own ids.
+- A batch card takes the place of a closed single card only when one of
+  its items has the same key. A closed batch card goes only when a later
+  card holds every one of its items.
 - A card with no key takes the place of no card. A delegation tool opens a
-  scope with no key. In `approve_all` mode the wrapper does not run, so no
-  card has a key, and every line stays.
-- The executor takes the line before it saves the native session, and the
-  saved session holds it (`native_session_store.add_closing_line`). Then
-  `executor._closed_card_events` sends it just before each `RUN_FINISHED`,
-  after the CRM note. The relay keeps it, so the stored message holds it.
+  scope with no key. A batch whose items do not read has no key. In
+  `approve_all` mode the wrapper does not run, so no card has a key, and
+  every line stays.
+
+**How each class errs.**
+
+- A new object that the redraft renames gets a new key. The old line stays
+  although the act was done under the new name. That side is the safe
+  side: a line that is too careful, never a silence.
+- A change to an object with an id keeps one key whatever it changes. A
+  second approved change to the same task takes away the line of the
+  first change, although that change did not run.
+- A batch card that the member approves with the matching row unticked
+  still takes the place of the closed card. The key binds when the card
+  opens, before the answer.
+
+**The run ends.**
+
+- The executor takes the line before it saves the native session.
+  `executor._close_native_session` puts it at the end of the session's last
+  answer (`native_session_store.add_closing_line`), and then the session is
+  saved. `executor._closed_card_events` sends it just before each
+  `RUN_FINISHED`, after the CRM note. The relay keeps it, so the stored
+  message holds it.
 - A parked run (`pending_ask.park`) sends the line before its own
   `RUN_FINISHED`.
 - No line comes when the run ends by a Stop (`stream_relay.cancel_run`), by
@@ -948,9 +995,13 @@ the reply was not sent. So these rules hold:
 - A run that takes two or more steers asks for an answer to each. The
   newest steer turn ends with `steer.steers_frame`, and a replay of two or
   more steers ends with it too. One steer gets no frame.
-- After the card closes, "do it" can draw the same card again. When the
-  next turn loads the native session, the session holds the call, its
-  arguments and the line. A unit test proves that path.
+
+**"do it".**
+
+- After the card closes, "do it" can draw the same card again. A unit test
+  ends the first run through `_close_native_session`. The next turn then
+  reads the call, its arguments and the line from the session, and it draws
+  the same card on a new id. A scripted model stands in for the real one.
 - ⚠️ On the web chat after a steer, the next turn reads the text history
   (`digest_drop`, task 2948). There the model must find the act again from
   the line and the history. Only a live-model eval can prove that path, and
