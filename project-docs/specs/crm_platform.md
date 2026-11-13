@@ -4225,32 +4225,66 @@ stopped. Done when:
 4. **A note when one day holds most records, and a display value.** The
    rule lives in `acb_common/number_sense.py`, which is pure. Other apps
    can use it for their own checks. A bucket concentrates the answer when
-   all of these hold: the answer has 2 or more buckets, the bucket holds 20
-   or more records, it holds 30 % or more of the records, and it holds more
-   than 5 times the median records of the other buckets. The route reads
-   the days of one date field in the SAME scan, as a second grouping set.
-   The date field is the field of the group, else the field of the first
-   date range filter, else `@date`. An answer by a date bucket or a month
-   also checks its own groups. Each finding carries `kind`, `key`,
-   `records`, `share`, `value_share` and one `sentence`. The tool puts each
-   finding first, as a line that starts with "FIRST". The tool also adds a
-   `Display` line to a total of one lakh (or one million) and more. That
-   line formats the total in the number system of the run, through
-   `acb_common.number_system`, and it tells the model to quote it.
+   all of these hold:
+   - At least 4 OTHER buckets hold records (`CONCENTRATION_MIN_OTHERS`).
+   - The bucket holds 20 or more records (`CONCENTRATION_MIN_RECORDS`).
+   - It holds 30 % or more of the records (`CONCENTRATION_SHARE`).
+   - It holds more than 5 times the median records of the other buckets
+     (`CONCENTRATION_RATIO`).
+   - A day is not the first or the last day of its month
+     (`MONTH_EDGE_IS_NORMAL`), because rent bills on the first day and a
+     month, a quarter or a year closes on the last day.
+
+   So 95 rent invoices on 2026-10-01, a year-end batch of 400 of 550 on
+   2026-03-31, a year of 3 records beside a year of 60, and last month
+   beside the second day of this month give NO finding. DEWiN's 13,222 of
+   14,313 October records on 2026-10-17 give one. The check reads the
+   20,000 largest buckets at most (`CONCENTRATION_MAX_BUCKETS`), with one
+   sort, so 10,000 buckets take less than 50 ms on the event loop.
+
+   The route reads the days of one date field in the SAME scan, as a second
+   grouping set, and only when the statement reads the detoasted copy
+   already. A plain count, a count by owner and a fixed month read no field,
+   so they get no day set and no detoast. The date field is the field of
+   the group, else the field of the first date range filter, else `@date`.
+   An answer by a date bucket or a month also checks its own groups, and
+   its sentence names a bucket ("fall in 2026-10, one month of Invoice
+   Date"), never a day. Each finding carries `kind`, `key`, `records`,
+   `share`, `value_share` and one `sentence`. The tool puts each finding
+   first, as a line that starts with "FIRST".
+
+   The tool also adds a `Display` line to a total of one lakh (or one
+   million) and more. That line formats the total in the number system of
+   the run, through `acb_common.number_system`. Money is in whole rupees. A
+   total in two or more currencies gives one entry for each currency, and
+   the line says never to add them. The values of a split, and its "Other"
+   line, also follow the number system of the run, and each names its field.
 5. **The long read, dark.** For an org on `CRM_LONG_READ_ORGS`, the 503 of
    a total past 10 s carries `long_read: true`. The tool then calls ONCE
    more with `long_read=true`. Its httpx limit is 200 s. The route runs that
-   read with a LOCAL `statement_timeout` of up to 180 s. A guard holds one
-   long read for each org, and 2 in the gateway process. A second long read
-   waits inside its own budget of 180 s, before it opens a session. Past
-   the budget it answers 503 `aggregate_busy`. The pool of one process is
-   `db_pool_size` 7 and `db_max_overflow` 2, so 9 connections. Background
-   work may hold 4 of them. 2 long reads leave 3 connections for pages. A
-   long read that runs out of time does not count against
-   `AGGREGATE_BUDGET`. It still counts against `READ_BUDGET`. With the list
-   empty, no 503 offers the long read, and the tool calls once, as before. `CRM_LONG_READ_ORGS` is an `*_ORGS` key, so a SIGHUP reload
-   applies a flip (`docs/flag_reload.md`). A name in the list spends
-   nothing, so its flip is gate `enforcement-flip`.
+   read with ONE deadline of up to 180 s for all its statements. Before each
+   heavy statement, the LOCAL `statement_timeout` takes the time left. A
+   guard holds one long read for each org, and 2 in the gateway process. A
+   second long read waits inside its own budget of 180 s, before it opens a
+   session. A wait past the budget, or a wait that leaves less than 30 s
+   (`LONG_READ_MIN_SECONDS`), answers 503 `aggregate_busy`. The pool of one
+   process is `db_pool_size` 7 and `db_max_overflow` 2, so 9 connections.
+   Background work may hold 4 of them. 2 long reads leave 3 connections for
+   pages.
+
+   Each call of a CRM read tool has ONE deadline of 260 s
+   (`TOOL_CALL_SECONDS`), under the tool limit of 300 s of the orchestrator.
+   Every read of the call ends by it. A call takes at most ONE long read,
+   only when 200 s or more are left, and never in a headless turn (the
+   holder of `acb_llm.attribution.run_ceiling_scope`). A long read that runs
+   out of time keeps its count of `AGGREGATE_BUDGET`, and its text asks for
+   a shorter range, never for the same read again. A 10 s read that ran out
+   of time, in a call that took no long read and read nothing, spends no
+   count of `AGGREGATE_BUDGET`. Each read still counts against
+   `READ_BUDGET`. With the list empty, no 503 offers the long read, and the
+   tool calls once and counts as before. `CRM_LONG_READ_ORGS` is an `*_ORGS`
+   key, so a SIGHUP reload applies a flip (`docs/flag_reload.md`). A name in
+   the list spends nothing, so its flip is gate `enforcement-flip`.
 
 Not in scope: a typed key column or any migration (a later HIGH slice).
 The generic "please wait" notice of the chat is another slice of task 2985.
