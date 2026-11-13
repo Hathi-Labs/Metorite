@@ -65,6 +65,20 @@ describe("mergeStyle", () => {
   });
 });
 
+describe("mergeStyle language_fixed", () => {
+  it("keeps the mark when the language changes", () => {
+    expect(mergeStyle({ language: "en", language_fixed: true }, { language: "hi" })).toEqual({
+      language: "hi",
+      language_fixed: true,
+    });
+  });
+  it("drops the mark when the language is cleared", () => {
+    expect(mergeStyle({ language: "en", language_fixed: true, length: "short" }, { language: "" })).toEqual({
+      length: "short",
+    });
+  });
+});
+
 describe("errorText", () => {
   it("reads a pydantic array", () => {
     expect(errorText([{ msg: "Value error, fact too long" }, { msg: "bad kind" }], 422)).toBe(
