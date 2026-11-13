@@ -58,6 +58,7 @@ pytest.importorskip("sqlalchemy")
 from acb_auth import UserContext, UserRole, build_access
 from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant, tenant_session
+from acb_common.studio_access import Viewer
 from fastapi import HTTPException, Response
 from fastapi.responses import JSONResponse
 from gateway import app_requests
@@ -225,7 +226,8 @@ def world(promoted, monkeypatch):  # noqa: F811
         async with tenant_session(w.a) as db:
             obj = await objects_store.get_object_by_name(db, "visit", package_id=w.pid)
             assert obj is not None
-            rec = await objects_store.create_record(db, OWEN, obj.id, _DATA, package_id=w.pid)
+            rec = await objects_store.create_record(db, OWEN, obj.id, _DATA, package_id=w.pid,
+                                                  viewer=Viewer(OWEN))
             assert rec is not None
         w.obj, w.rec = obj.id, rec.id
         status, got = await _call("install_package", w.a, OWEN, w.pid,
