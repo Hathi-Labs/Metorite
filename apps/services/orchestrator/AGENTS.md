@@ -96,6 +96,8 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - The session history stores each steer turn after its tool result (`native_session_store.SessionHistoryProvider.after_run`, `steer.with_steer_turns`).
    - ⚠️ On the web chat, the next turn does not load that session yet. The gateway saves the steer as a user row, and the save digest does not hold it, so the next load gives `digest_drop`. The next turn then reads the member's words from the text history. Task 2948 owns the fix.
    - A Copilot SDK agent (`GitHubCopilotAgent`) gets no steer turn during its run. `steer.return_unconsumed` gives the steer back at the run end, and the follow-up turn answers it.
+   - Task 3130: `run_agent_stream` opens one `ask_tools.ClosedCards` record and releases it in its `finally`. `_take_card_line` takes the "Not done" line, and `_close_native_session` puts it in the native session right before the save. `_finish_native_session` keeps its one argument. `_closed_card_events` sends it just before each `RUN_FINISHED`, after the CRM note. `pending_ask.park` sends it before a parked end.
+   - The gate wrapper (`_tool_injection._card_call`) binds the act key of each card. A delegation tool gets no key. A run with two or more steers ends its newest steer turn with `steer.steers_frame`. Fence: `test_steer_unsent_card.py`.
 20b. **Each turn carries today's date.** `_context_preamble_parts` adds `acb_common.today.today_line()` LAST. Fence: `test_crm_answer_consistency.py`.
 21. **The orchestrator's per-turn context carries the Knowledge index block** (spec `knowledge_base.md` §6.5).
    - Only the agent `orchestrator` gets it, behind `COMPANY_SEARCH_ENABLED`, `KNOWLEDGE_ENABLED` and `KNOWLEDGE_ORGS`. The org comes from `_current_run_org()` and the member from `_verified_run_member()`, never from the payload.
@@ -103,6 +105,9 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
 22. **A run that holds a CRM tool gets the number check** (spec `crm_platform.md` §18.11.2).
    - `_tool_injection._apply_answer_check` runs at the end of `_inject_agent_tools`. Read `agents` again after injection. Do not attach the provider anywhere else.
    - Each new relay of a run queue must drop the hold beat (`_relayable`). Fences: `test_crm_answer_check.py`, `test_crm_answer_check_executor.py`.
+22a. **A slow tool call gets one line for the member** (HRD-6 part 1, spec `chat_run_continuity.md` §4.11). It ships dark behind `CHAT_PROGRESS_NOTICE_ORGS`.
+   - `_tool_injection._apply_progress_notice` runs right BEFORE `_apply_answer_check`, after `_apply_steer_turns`. Rule 22 keeps the number check last, so its recorder sits inside the timer, and the timer still wraps each tool call. It reads the org of the run binding only. Do not attach `acb_skills.progress_notice.ProgressNoticeProvider` anywhere else.
+   - The line is the CUSTOM `progress` event, and the same event with an empty `text` clears it. `_is_answer_event` and `gateway.chat_fold` drop both, so no saved row holds either. Fence: `test_progress_notice.py`.
 23. **A streamed run opens ONE holder of the CRM questions that it asks.** `run_agent_stream` calls `open_asks_for_run()` and `release_asks` in the same `finally`. Never give the ContextVar a mutable default. Fences: `test_crm_questions_chat.py`, `test_crm_agent.py`.
 24. **The orchestrator's per-turn context carries the member's own profile block** (spec `personalization.md` §5.1).
    - It needs an org, `assistant_profile.enabled_for(org)`, a verified member and `_RUN_SOLO_ROOM` True. `enabled_for(org)` is the one reader.

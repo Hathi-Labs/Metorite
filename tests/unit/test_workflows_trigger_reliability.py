@@ -376,6 +376,7 @@ def test_update_carries_the_baseline_onto_the_replacement_row(monkeypatch) -> No
     old = SimpleNamespace(
         kind="schedule",
         config={"cron": "0 9 * * *", "timezone": "Asia/Kolkata"},
+        enabled=True,
         last_fired_at=fired_at,
     )
     # load wf → previous triggers → DELETE → INSERT → reload wf → load triggers
