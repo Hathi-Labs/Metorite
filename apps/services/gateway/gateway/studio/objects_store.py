@@ -202,6 +202,16 @@ from ``apps`` deletes the objects, the fields and each hot row that is left.
 :func:`package_counts` counts the objects, the fields and the records (up to
 :data:`COUNT_CAP` for each object) for the preview.
 
+**The change history (C4a-1).** Migration ``studio_record_changes`` (431 at
+build) adds the fifth table. :func:`_apply_write` writes one row for each
+create, update and delete, in the SAVEPOINT of the batch, so a refused batch
+writes no row. A row holds the actor, the ``via`` of the batch and only the
+keys that changed, each as ``{"old": ..., "new": ...}``. An update that
+changes no value writes no row. A delete holds each old value. A derived
+write of a roll-up parent writes no row. ``app_audit`` still holds no value.
+:func:`purge_record_changes` deletes the rows of a package in chunks, before
+:func:`purge_records`. No reader exists yet (C4a-2).
+
 **On a floor of 0 or less, a write that does not lower a group never reads
 the group.** The store adds up the net change of the batch on each key of
 ``group_sum_min``, in exact ``Decimal``, from the values that it read under
@@ -617,6 +627,21 @@ _DELETE_RECORD_SQL = (
     f"AND id = CAST(:rid AS uuid) AND {_IN_PACKAGE} RETURNING id"
 )
 
+#: One row of the change history (C4a-1). The DEFAULT of the column gives the
+#: org. :func:`_record_change` is its one caller.
+_CHANGE_SQL = (
+    "INSERT INTO studio_record_changes "
+    "(object_id, record_id, op, actor, via_kind, via_id, changes) "
+    "VALUES (CAST(:oid AS uuid), CAST(:rid AS uuid), :op, :actor, :via_kind, :via_id, "
+    "CAST(:changes AS jsonb))"
+)
+
+#: The kinds of a ``via`` (C4a-1). The CHECK ``studio_record_changes_via_kind``
+#: holds the same two.
+VIA_KINDS = ("workflow_run", "agent")
+#: The longest ``via`` id. The CHECK ``studio_record_changes_via_id`` holds it.
+MAX_VIA_ID_CHARS = 200
+
 
 class ObjectStoreError(ValueError):
     """A registry write that the store refuses before it reaches the database."""
@@ -721,6 +746,37 @@ def _actor(actor: object) -> str:
     if not isinstance(actor, str) or not actor.strip() or not storable_text(actor):
         raise ObjectStoreError("actor must be a non-empty string")
     return actor.strip().lower()
+
+
+def _via(via: object) -> tuple[str, str] | None:
+    """The way a batch came, as ``(kind, id)``, or None (C4a-1).
+
+    The caller sets it from the session, never from request input (R5). The
+    kind is one of :data:`VIA_KINDS`. The id is a non-empty string of at most
+    :data:`MAX_VIA_ID_CHARS` characters."""
+    if via is None:
+        return None
+    if not isinstance(via, tuple) or len(via) != 2:
+        raise ObjectStoreError("via is a pair (kind, id)")
+    kind, ident = via
+    if kind not in VIA_KINDS:
+        raise ObjectStoreError(f"The kind of via is one of {', '.join(VIA_KINDS)}.")
+    if (not isinstance(ident, str) or not ident.strip()
+            or len(ident.strip()) > MAX_VIA_ID_CHARS or not storable_text(ident)):
+        raise ObjectStoreError(
+            f"The id of via is a non-empty string of at most {MAX_VIA_ID_CHARS} characters.")
+    return str(kind), ident.strip()
+
+
+def _changes(old: Mapping[str, Any] | None,
+             new: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """The keys whose value differs between *old* and *new*, each as
+    ``{"old": ..., "new": ...}`` (C4a-1). A key that is absent holds None. So a
+    create gives each key with ``old`` None, and a delete each key with
+    ``new`` None."""
+    before, after = old or {}, new or {}
+    return {k: {"old": before.get(k), "new": after.get(k)}
+            for k in sorted(set(before) | set(after)) if before.get(k) != after.get(k)}
 
 
 def _uuid(value: object, what: str) -> str:
@@ -1579,6 +1635,17 @@ _PURGE_SQL = (
     "ORDER BY id LIMIT :n))"
 )
 
+#: At most ``:n`` history rows of one object (C4a-1), by key as in
+#: :data:`_PURGE_SQL`. The subselect needs no order, because each row goes.
+#: The index ``(organization_id, object_id, record_id, id)`` serves it.
+_PURGE_CHANGES_SQL = (
+    "DELETE FROM studio_record_changes "
+    f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
+    "AND id = ANY(ARRAY(SELECT id FROM studio_record_changes "
+    f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
+    "LIMIT :n))"
+)
+
 
 @dataclass(frozen=True)
 class ObjectCount:
@@ -1693,6 +1760,35 @@ async def purge_records(db: Any, package_id: str, *, limit: int = PURGE_CHUNK,
                 if left <= 0:
                     break
                 gone = await timed.execute(text(_PURGE_SQL), {"oid": str(oid), "n": left})
+                left -= int(gone.rowcount or 0)
+    except QueryError:
+        raise StoreBusy(_BUSY_MESSAGE) from None
+    return limit - left
+
+
+async def purge_record_changes(db: Any, package_id: str, *, limit: int = PURGE_CHUNK,
+                               deadline: float | None = None) -> int:
+    """Delete at most *limit* rows of the change history of the package
+    *package_id* (C4a-1). Answers the number of rows deleted.
+
+    The delete of a package calls it before :func:`purge_records`, under the
+    same locks, so no value of the package stays. The foreign key of the
+    table to its object cascades too, but a chunk keeps each step inside its
+    budget. An answer below *limit* means that the package holds no history
+    row now. The deadline and a timeout work as in :func:`purge_records`."""
+    pid = _uuid(package_id, "package_id")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ObjectStoreError("limit must be a whole number from 1")
+    left = limit
+    try:
+        async with _time_limit(db, _deadline(PURGE_TIMEOUT_MS, deadline),
+                               _BUSY_MESSAGE) as timed:
+            found = (await timed.execute(text(_PACKAGE_OBJECT_IDS_SQL), {"pid": pid})).all()
+            for (oid,) in found:
+                if left <= 0:
+                    break
+                gone = await timed.execute(text(_PURGE_CHANGES_SQL),
+                                           {"oid": str(oid), "n": left})
                 left -= int(gone.rowcount or 0)
     except QueryError:
         raise StoreBusy(_BUSY_MESSAGE) from None
@@ -2718,10 +2814,14 @@ class _Batch:
     """The state of one batch. ``index`` names the write that runs now, so an
     error gets its place in the list."""
 
-    def __init__(self, who: str, pid: str, steps: Sequence[Write]) -> None:
+    def __init__(self, who: str, pid: str, steps: Sequence[Write],
+                 via: tuple[str, str] | None = None) -> None:
         self.who = who
         self.pid = pid
         self.steps = steps
+        #: The way the batch came (C4a-1), checked by :func:`_via`. Each
+        #: history row of the batch names it.
+        self.via = via
         self.objects: dict[str, _Held] = {}
         self.marks: dict[tuple[str, str], _Mark] = {}
         self.index = 0
@@ -3045,6 +3145,7 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
             "oid": oid, "data": record_json(clean), "actor": batch.who,
             "hot": _hot_rows(held.fields, clean)})).one()
         made = _record(row)
+        await _record_change(db, batch, "create", oid, made.id, _changes(None, clean))
         batch.marks[(oid, made.id)] = _Mark(oid, batch.index, None, clean)
         batch.made[batch.index] = made.id
         if moves:
@@ -3057,6 +3158,8 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     binds = {"oid": oid, "rid": step.record_id, "pid": batch.pid}
     if step.op == "delete":
         await db.execute(text(_DELETE_RECORD_SQL), binds)
+        await _record_change(db, batch, "delete", oid, str(step.record_id),
+                             _changes(mark.after, None))
         mark.after = None
         return True
     changes = dict(step.data or {})
@@ -3068,8 +3171,26 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     row = (await db.execute(text(_UPDATE_RECORD_SQL), {
         **binds, "data": record_json(clean), "actor": batch.who,
         "hot": _hot_rows(held.fields, clean)})).one()
+    diff = _changes(mark.after, clean)
+    if diff:
+        # C4a-1: an update that changes no value writes no history row.
+        await _record_change(db, batch, "update", oid, str(step.record_id), diff)
     mark.after = clean
     return _record(row)
+
+
+async def _record_change(db: Any, batch: _Batch, op: str, oid: str, rid: str,
+                         changes: Mapping[str, Any]) -> None:
+    """Step 4, the history row of one write (C4a-1). It runs in the SAVEPOINT of
+    the batch, after the write statement, so a refused or rolled back batch
+    writes no row. The row holds the values, and ``app_audit`` holds none.
+    Its one caller is :func:`_apply_write`. A derived write of a roll-up
+    parent (:func:`_derive_parent`) writes no row."""
+    kind, ident = batch.via if batch.via is not None else (None, None)
+    await db.execute(text(_CHANGE_SQL), {
+        "oid": oid, "rid": rid, "op": op, "actor": batch.who, "via_kind": kind,
+        "via_id": ident,
+        "changes": json.dumps(dict(changes), ensure_ascii=False, allow_nan=False)})
 
 
 def _derived_moves(rule: Rule, mark: _Mark) -> bool:
@@ -3377,13 +3498,14 @@ async def _run_steps(db: Any, batch: _Batch) -> list[Record | bool]:
     return answers
 
 
-async def _apply_batch(db: Any, who: str, pid: str, steps: list[Write]) -> list[Record | bool]:
+async def _apply_batch(db: Any, who: str, pid: str, steps: list[Write],
+                       via: tuple[str, str] | None = None) -> list[Record | bool]:
     """The one path of a record write. An error rolls back the SAVEPOINT as it
     leaves the block, so the batch writes nothing and the caller's earlier work
     stays."""
     if not steps:
         return []
-    batch = _Batch(who, pid, steps)
+    batch = _Batch(who, pid, steps, via)
     try:
         async with db.begin_nested():
             answers = await _run_steps(db, batch)
@@ -3393,7 +3515,8 @@ async def _apply_batch(db: Any, who: str, pid: str, steps: list[Write]) -> list[
 
 
 async def apply_writes(db: Any, actor: str, *, package_id: str,
-                       writes: Sequence[Write]) -> list[Record | bool]:
+                       writes: Sequence[Write],
+                       via: tuple[str, str] | None = None) -> list[Record | bool]:
     """Apply *writes* to the package *package_id*, all or none (C1b).
 
     Answers one item for each write: the :class:`Record` of a create or an
@@ -3406,10 +3529,17 @@ async def apply_writes(db: Any, actor: str, *, package_id: str,
     write that names no such object or record is a :class:`RecordNotFound`.
     A timeout in a check gives ``query_timeout``. The caller's transaction
     stays usable with its earlier work.
+
+    Each write gives one row of the change history (C4a-1), and an update
+    that changes no value gives none. *via* names the way the batch came, as
+    ``(kind, id)`` with a kind of :data:`VIA_KINDS`. The caller takes it from
+    the session, never from request input (R5). A bad *via* raises
+    :class:`ObjectStoreError` before any statement.
     """
     who = _actor(actor)
     pid = _uuid(package_id, "package_id")
-    return await _apply_batch(db, who, pid, _clean_writes(writes))
+    how = _via(via)
+    return await _apply_batch(db, who, pid, _clean_writes(writes), how)
 
 
 async def _one_write(db: Any, who: str, package_id: str, write: Write) -> Record | bool | None:
