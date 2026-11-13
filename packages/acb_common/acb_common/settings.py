@@ -719,6 +719,13 @@ class Settings(BaseSettings):
     # a change (docs/flag_reload.md). A flip in production is the gate
     # `enforcement-flip`. Spec: ai_studio.md section 14 B2b-2.
     studio_door_ops_orgs: str = ""
+    # STU-B4a: STUDIO_LOGIC_ORGS lists the org ids where the Studio action
+    # door runs a first-party logic module (`logic:<name>`). `*` opens every
+    # org. Empty opens none. Reader: `gateway.routes.studio.flags.
+    # logic_allowed`. A SIGHUP reload applies a change (docs/flag_reload.md).
+    # A flip in production is the gate `enforcement-flip`. Spec: ai_studio.md
+    # section 14 B4a.
+    studio_logic_orgs: str = ""
     # STU-C2c: STUDIO_NUM_F8_ORGS lists the org ids where a number filter of
     # the Studio object query adds a float8 test on `studio_record_hot.
     # v_num_f8`, so the app role can use its index (`numeric` comparisons are

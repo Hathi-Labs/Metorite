@@ -164,6 +164,7 @@ _USES_RE = re.compile(
     rf"(?:object:(?P<obj>{_NAME})\.(?P<op>{_OPS})"
     rf"|integration:(?P<integ>{_NAME}(?:\.{_NAME})?)"
     rf"|workflow:(?P<wf>{UUID_PATTERN})"
+    rf"|logic:(?P<logic>{_NAME})"
     rf"|(?P<app>{APP_ID_PATTERN})\.(?P<appop>{OP_PATTERN}))"
 )
 
@@ -193,16 +194,19 @@ class UsesRef:
     """The parts of one ``uses`` value of the A2 grammar (STU-B2a).
 
     ``source`` is ``object``, ``manifest`` (an ``<app>.<op>`` door op),
-    ``integration`` or ``workflow``, the source names of the B1 catalog.
+    ``integration``, ``workflow`` or ``logic`` (STU-B4a), the source names of
+    the B1 catalog. ``logic`` is a first-party logic module: ``logic`` holds
+    its name.
     ``object`` and ``op`` are set for an ``object:`` value. ``app`` and
     ``op`` are set for a door op (STU-B2b-2b): ``op`` then holds the door op
     name of that app. An integration and a workflow set none of them.
     """
 
-    source: Literal["object", "manifest", "integration", "workflow"]
+    source: Literal["object", "manifest", "integration", "workflow", "logic"]
     object: str | None = None
     op: str | None = None
     app: str | None = None
+    logic: str | None = None
 
 
 def parse_uses(uses: object) -> UsesRef | None:
@@ -218,6 +222,8 @@ def parse_uses(uses: object) -> UsesRef | None:
         return UsesRef(source="integration")
     if m.group("wf"):
         return UsesRef(source="workflow")
+    if m.group("logic"):
+        return UsesRef(source="logic", logic=m.group("logic"))
     return UsesRef(source="manifest", app=m.group("app"), op=m.group("appop"))
 
 
@@ -686,7 +692,7 @@ def _check_uses(
         return _err(
             path,
             "Not an action id. Use object:<name>.<op>, <app>.<op>, "
-            f"integration:<action> or workflow:<uuid>.{_got(a.uses)}",
+            f"integration:<action>, workflow:<uuid> or logic:<name>.{_got(a.uses)}",
         )
     if m.group("obj"):
         if m.group("obj") not in objects:
