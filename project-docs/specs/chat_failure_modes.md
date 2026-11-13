@@ -95,7 +95,7 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 
 | Id | The class | State today | The rule | Slice |
 |---|---|---|---|---|
-| C1 | The model misreports a card's outcome | Projects gives one text for a reject, a timeout and a cancel. Email has its own texts | One outcome vocabulary: approved, declined, closed by your message, timed out, parked, changed since | HRD-7 |
+| C1 | The model misreports a card's outcome | Projects gives one text for a reject, a timeout and a cancel. Email has its own texts. Task 3130: when a chat message closes a write card, the server ends the answer with a "Not done" line (`chat_run_continuity.md` §4.9) | One outcome vocabulary: approved, declined, closed by your message, timed out, parked, changed since. HRD-7 starts from `ask_tools.CLOSED_BY_YOUR_MESSAGE` | HRD-7 |
 | C2 | A redraft changes the act or the recipients | Email §18.11 links a redraft by To overlap only | A card carries its act. A changed act or changed recipients show on the new card | HRD-8 |
 | C3 | The object changed after the card was drawn | Only the email reply card and the epic contract check it | A card holds its object's version, and the write checks it | HRD-10 |
 | C4 | Two cards wait, and the member types | One card waits at a time (PAC §29.6). A steer closes the open card | No change. §29.6 stays the rule. HRD-16 covers cards parked after a restart | HRD-16 |
