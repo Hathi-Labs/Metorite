@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Backfill the float8 copy of each Studio number (WS-STU STU-C2c).
 
-Spec: ``project-docs/specs/ai_studio.md`` §14, row C2c. Migration 432 adds
+Spec: ``project-docs/specs/ai_studio.md`` §14, row C2c. Migration 433 adds
 ``studio_record_hot.v_num_f8`` and a trigger that fills it for each new row and
-each changed ``v_num``. A row from before 432 keeps NULL until this script
+each changed ``v_num``. A row from before 433 keeps NULL until this script
 fills it. The store honours ``STUDIO_NUM_F8_ORGS`` for an org only when the
 org has no row without its copy. So the flag does nothing for an org until this
 script reports ``remaining=0`` for it. The records are right at every step.

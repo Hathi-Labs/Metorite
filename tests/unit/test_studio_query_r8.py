@@ -974,7 +974,7 @@ def _backfill_script() -> Any:
 
 def test_r8_c2c_the_flag_waits_for_the_copy_and_a_pre_432_row_is_never_dropped(
         world, monkeypatch) -> None:
-    """P2b. A row from before migration 432 has a NULL copy, and a float8 test
+    """P2b. A row from before migration 433 has a NULL copy, and a float8 test
     would drop it. So the store honours the flag for an org only when no row
     lacks its copy. Before the backfill the query uses the exact SQL and
     returns the row. After it, the float8 SQL returns the same records. A
@@ -997,7 +997,7 @@ def test_r8_c2c_the_flag_waits_for_the_copy_and_a_pre_432_row_is_never_dropped(
         obj = await _define(world.a, world.pkg_a, "legacy", [{"key": "x", "type": "number", "hot": True}])
         ids = await _create(world.a, obj, {"old": {"x": 5}, "new": {"x": 6}, "big": {"x": 7}, "lo": {"x": 2}})
         async with tenant_session(world.a) as db:
-            # A column list without v_num: the trigger does not fire. This is a pre-432 row.
+            # A column list without v_num: the trigger does not fire. This is a pre-433 row.
             await db.execute(text("UPDATE studio_record_hot SET v_num_f8 = NULL "
                                   "WHERE record_id = CAST(:r AS uuid)"), {"r": ids["old"]})
             # Beyond float8 range: the trigger must not raise.

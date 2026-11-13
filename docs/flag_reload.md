@@ -59,7 +59,7 @@ object query (`ai_studio.md` §14 C2c). For each listed org, the query tests
 `studio_record_hot.v_num_f8` beside the exact `v_num` test, so the app role
 can use the index. `*` lists every org, and the default is empty. Its one
 reader is `acb_common.studio_flags.num_f8_allowed`, and each query asks
-it. The query honours it for an org only after the backfill of migration 432 ends (`_warm_f8`), so the records are right at every step. Runbook: after a restore or any trigger work (`DISABLE TRIGGER`, `session_replication_role = replica`, `pg_restore --disable-triggers`), restart the gateway before you trust the flag, because a ready answer is cached for up to 600 seconds.
+it. The query honours it for an org only after the backfill of migration 433 ends (`_warm_f8`), so the records are right at every step. Runbook: after a restore or any trigger work (`DISABLE TRIGGER`, `session_replication_role = replica`, `pg_restore --disable-triggers`), restart the gateway before you trust the flag, because a ready answer is cached for up to 600 seconds.
 A reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
 
 `AGENT_WRITE_CAP` and `AGENT_WRITE_WINDOW_S` set the write cap of each agent

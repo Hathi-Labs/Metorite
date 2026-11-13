@@ -82,7 +82,7 @@ caller's transaction stays usable, and the old timeout comes back.
 comparison is LEAKPROOF (``docs/rls_and_indexes.md``). So a number filter
 reads the hot rows of its field. A sort on a number still reads the index in
 order. **C2c** adds ``v_num_f8``, a float8 copy that a trigger fills
-(migration 432). For an org on ``STUDIO_NUM_F8_ORGS`` (default OFF), a number
+(migration 433). For an org on ``STUDIO_NUM_F8_ORGS`` (default OFF), a number
 filter adds a float8 test with the non-strict operator beside the exact
 ``numeric`` test, so the app role reads the index ``studio_record_hot_num_f8_idx``.
 The exact test stays as the filter, so the records do not change.
@@ -3782,7 +3782,7 @@ async def fill_num_f8_batch(db: Any, after: tuple[str, str], n: int) -> list[tup
     tenant that have a ``v_num`` and no float8 copy, after the key *after*
     (``(record_id, field_key)``, start at :data:`NUM_F8_START`). Answers the
     keys that it filled. The caller owns the transaction and binds the tenant
-    (C2c, migration 432). The UPDATE sets only ``v_num_f8``, so the trigger
+    (C2c, migration 433). The UPDATE sets only ``v_num_f8``, so the trigger
     does not fire. A value beyond 1e300 takes the float8 infinity of its sign, and a value
     with |v| < 1e-300 takes 0.0, as the trigger does, because the cast would
     raise. Both maps are non-decreasing, and only direct SQL reaches them."""

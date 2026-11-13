@@ -1,5 +1,5 @@
 -- ============================================================================
--- 432_studio_hot_num_f8.sql — WS-STU STU-C2c: a float8 shadow of v_num.
+-- 433_studio_hot_num_f8.sql — WS-STU STU-C2c: a float8 shadow of v_num.
 --
 -- ⚠️ The number was taken from the directory at BUILD time (R1), and it is
 --    re-checked at merge. `tests/unit/test_studio_hot_num_f8.py`
