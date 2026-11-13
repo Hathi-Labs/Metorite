@@ -503,9 +503,9 @@ def test_the_real_folder_scanners_are_picked() -> None:
     cases = {
         "apps/skills/skill-projects/skill_projects/guarded.py": "test_projects_agent_grants.py",
         "apps/services/gateway/gateway/routes/tasks/ai.py": "test_tasks_ai_no_thinking.py",
-        "apps/services/gateway/gateway/routes/crm/auto_lead.py": "test_crm_mirror_readonly.py",
-        "apps/services/gateway/gateway/routes/crm/reports.py": "test_crm_mirror_readonly.py",
-        "apps/services/gateway/gateway/routes/crm/terms.py": "test_crm_mirror_readonly.py",
+        "apps/services/gateway/gateway/routes/crm/auto_lead.py": "test_crm_mirror_readonly_scan.py",
+        "apps/services/gateway/gateway/routes/crm/reports.py": "test_crm_mirror_readonly_scan.py",
+        "apps/services/gateway/gateway/routes/crm/terms.py": "test_crm_mirror_readonly_scan.py",
         "apps/services/gateway/gateway/routes/email/automation/held_card.py": (
             "test_email_automation_tenancy.py"
         ),
@@ -806,5 +806,6 @@ def test_the_sql_glob_files_of_the_real_tree_are_no_longer_scanners() -> None:
     # Before CIV-3d 146 R8 files were scanners. The ones that only glob data files are not.
     assert len(scanners & r8) < 100, len(scanners & r8)
     # The scanners that read Python stay.
-    for must in ("tests/unit/test_data_engine.py", "tests/unit/test_crm_mirror_readonly.py"):
+    # CIV-33d moved the CRM route scan into test_crm_mirror_readonly_scan.py.
+    for must in ("tests/unit/test_data_engine.py", "tests/unit/test_crm_mirror_readonly_scan.py"):
         assert must in scanners, must

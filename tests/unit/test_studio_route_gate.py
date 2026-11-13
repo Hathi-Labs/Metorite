@@ -19,9 +19,10 @@ c. A holder of ``feature:studio`` passes the gate on each route. With the
    a store.
 d. The router carries one feature gate, ``feature:studio``. No route adds a
    second gate. Only the org and group install of WS-PKG PKG-8b, its
-   uninstall of PKG-8e, and the list, the approve and the reject of WS-STU
-   J2b-1 read ``studio:publish``, in their handlers. Such an install is a
-   share to others (D180.3, ``package_host.md`` §6.1), and J2b-1 is its
+   uninstall of PKG-8e, the member of a run with no viewer of WS-STU B6a, the
+   share with people of J2b-2, and the list, the approve and the reject of
+   WS-STU J2b-1 read ``studio:publish``, in their handlers. Such an install
+   is a share to others (D180.3, ``package_host.md`` §6.1), and J2b-1 is its
    review. No other route reads it. The fence reads the syntax tree, so a second read
    in another quote style fails too.
 e. ``EXPECTED_ROUTES`` pins the routes. A new route fails here until a person
@@ -122,6 +123,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/studio/packages/{package_id}/install"),
     # WS-PKG PKG-8e, the org and group uninstall.
     ("DELETE", "/studio/packages/{package_id}/install"),
+    # WS-STU B6a, the member of a run with no viewer.
+    ("PUT", "/studio/packages/{package_id}/install/run-as"),
     # WS-STU J2b-2, the share with people.
     ("POST", "/studio/packages/{package_id}/share"),
     # WS-STU J2b-5, the per-person unshare.
@@ -370,7 +373,8 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
     member's own app needs `feature:studio` and ownership (STU-Q4b). The one
     readers in `routes/studio` are the org and group install of PKG-8b, a
     share to others (D180.3, `package_host.md` §6.1), and its uninstall of
-    PKG-8e.
+    PKG-8e. WS-STU B6a adds the third reader: `set_install_run_as`, because the
+    right that installs the app names the member of a run with no viewer.
 
     J2a (the read of a viewer, `ai_studio.md` §14 J2a) adds no reader. A
     viewer reads through an install that a holder of the verb made, and the
@@ -386,12 +390,13 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
     The check reads the syntax tree, so the quote style does not matter. The
     string constant `studio:publish` occurs once in `routes/studio`: the
     definition of `packages.SHARE_RIGHT`. The name `SHARE_RIGHT` is read in
-    `install_package` and `uninstall_package`, each with one
-    `user.has_permission(SHARE_RIGHT)`. WS-STU J2b-1 adds three readers, each
-    with one `user.has_permission(SHARE_RIGHT)`: `list_approvals` (the list
-    of an approver, 403 for each other caller), and `approve_approval` and
-    `reject_approval`, which pass the answer to the store as `can_publish`.
-    The ask of the owner (`request_approval`) reads no right. Since A5c-2,
+    `install_package`, `uninstall_package` and `set_install_run_as` (WS-STU
+    B6a), each with one `user.has_permission(SHARE_RIGHT)`. WS-STU J2b-1 adds
+    three readers, each with one `user.has_permission(SHARE_RIGHT)`:
+    `list_approvals` (the list of an approver, 403 for each other caller), and
+    `approve_approval` and `reject_approval`, which pass the answer to the
+    store as `can_publish`. The ask of the owner (`request_approval`) reads no
+    right. Since A5c-2,
     `user.has_permission(ADMIN_RIGHT)` in `_delete_mode`: the admin
     path of a delete, which reads `admin:members:manage` (the seam of
     `routes/admin/members.py`) and no other right. No route gains a
@@ -440,6 +445,7 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
                              ("packages.py", "install_package", "Load"),
                              ("packages.py", "list_approvals", "Load"),
                              ("packages.py", "reject_approval", "Load"),
+                             ("packages.py", "set_install_run_as", "Load"),
                              ("packages.py", "uninstall_package", "Load")], names
     assert sorted(calls) == [("packages.py", "_delete_mode", "user.has_permission(ADMIN_RIGHT)"),
                              ("packages.py", "approve_approval",
@@ -449,6 +455,8 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
                              ("packages.py", "list_approvals",
                               "user.has_permission(SHARE_RIGHT)"),
                              ("packages.py", "reject_approval",
+                              "user.has_permission(SHARE_RIGHT)"),
+                             ("packages.py", "set_install_run_as",
                               "user.has_permission(SHARE_RIGHT)"),
                              ("packages.py", "uninstall_package",
                               "user.has_permission(SHARE_RIGHT)")], calls
@@ -523,9 +531,9 @@ def test_a_second_read_of_the_admin_right_fails() -> None:
     sources = _studio_sources()
     share = "    if not user.has_permission(SHARE_RIGHT):\n"
     text = sources["packages.py"].replace("\r\n", "\n")
-    assert text.count(share) == 4, (
-        "non-vacuity: the share checks of the install, the uninstall, the share of J2b-2 "
-        "and the unshare of J2b-5 (unshare_package)")
+    assert text.count(share) == 5, (
+        "non-vacuity: the share checks of the install, the uninstall, the run_as (B6a), "
+        "the share of J2b-2 and the unshare of J2b-5 (unshare_package)")
     mutated = {**sources, "packages.py": text.replace(
         share, "    if not (user.has_permission(SHARE_RIGHT) or user.has_permission(ADMIN_RIGHT)):\n", 1)}
     assert admin_right_reads(mutated) == sorted(
