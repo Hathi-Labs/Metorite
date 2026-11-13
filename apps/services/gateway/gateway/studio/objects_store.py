@@ -4765,10 +4765,18 @@ async def count_num_f8_left(db: Any) -> int:
 
 #: The most records that one read of :func:`due_timer_records` answers.
 MAX_TIMER_READ = 100
+#: A breach whose due time is older than this many days starts no run. It
+#: bounds the walk of each read: the records that fired, and the paused ones,
+#: are the oldest, so a LIMIT alone does not stop the walk over them.
+TIMER_LOOKBACK_DAYS = 7
+#: The deadline of one read of :func:`due_timer_records`, in milliseconds. It
+#: becomes the LOCAL ``statement_timeout`` (``_time_limit``), as in C2.
+TIMER_READ_TIMEOUT_MS = 2_000
+_TIMER_TIMEOUT_MESSAGE = "The breaches of this timer took too long to read."
 
 #: The breaches of one timer, oldest due first. A record breaches when its due
-#: value is after the arm time *armed* and at or before the DB clock, while its
-#: pause field holds no pause value. A breach whose run exists for the workflow
+#: value is after the arm time *armed*, inside the lookback window and at or
+#: before the DB clock, while its pause field holds no pause value. A breach whose run exists for the workflow
 #: (the delivery key of migration 420) is left out, so a fired record never
 #: holds the head of the list. The due time is the hot ``v_ts``, in UTC, with
 #: microseconds. Each table names the bound org.
@@ -4778,6 +4786,7 @@ _TIMER_DUE_SQL = (
     "'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS due_at) d "
     f"WHERE h.{_OF_ORG} AND h.object_id = CAST(:oid AS uuid) "
     "AND h.field_key = :field AND h.v_ts > CAST(:armed AS timestamptz) "
+    "AND h.v_ts > now() - make_interval(days => CAST(:lookback AS integer)) "
     "AND h.v_ts <= now() "
     "AND (CAST(:pfield AS text) IS NULL OR NOT EXISTS ("
     "SELECT 1 FROM studio_record_hot p "
@@ -4847,14 +4856,36 @@ async def due_timer_records(db: Any, timer: Timer, *, armed_at: datetime, workfl
     never breaches. The DB clock decides "due", never the app clock. The run of
     a breach holds the delivery key ``<key_prefix><record id>:<due_at>``, so a
     record that fired is left out until its due value changes. The read holds
-    no lock and writes nothing."""
+    no lock and writes nothing.
+
+    ⚠️ The walk is bounded twice. A record due more than
+    :data:`TIMER_LOOKBACK_DAYS` days ago never breaches, so the fired and the
+    paused records of the past do not grow the walk without end. The read runs
+    under :func:`_time_limit` with :data:`TIMER_READ_TIMEOUT_MS`, the LOCAL
+    ``statement_timeout`` of C2. A timeout raises ``QueryError``
+    (``query_timeout``), and the caller's transaction stays usable."""
     if type(limit) is not int or not 1 <= limit <= MAX_TIMER_READ:
         raise ObjectStoreError(f"limit is 1 to {MAX_TIMER_READ}")
     pause = timer.rule.pause
-    rows = (await db.execute(text(_TIMER_DUE_SQL), {
+    binds = {
         "oid": _uuid(timer.object_id, "object_id"), "field": str(timer.rule.field),
-        "armed": armed_at, "pfield": None if pause is None else pause.field,
+        "armed": armed_at, "lookback": TIMER_LOOKBACK_DAYS,
+        "pfield": None if pause is None else pause.field,
         "pvalues": [] if pause is None else list(pause.value),
         "wid": _uuid(workflow_id, "workflow_id"), "prefix": key_prefix, "n": limit,
-    })).all()
+    }
+    deadline = _clock() + TIMER_READ_TIMEOUT_MS / 1000
+    async with _time_limit(db, deadline, _TIMER_TIMEOUT_MESSAGE) as timed:
+        rows = (await timed.execute(text(_TIMER_DUE_SQL), binds)).all()
     return [TimerDue(record_id=str(r[0]), due_at=str(r[1])) for r in rows]
+
+
+def timer_print(rule: Rule) -> dict[str, Any]:
+    """What makes the breaches of a timer different (E9a): its due field and
+    its pause, with the pause values sorted. The workflow scan keeps it beside
+    the arm time, and a new print arms the trigger again, so a changed field
+    never starts runs for the records that were already overdue."""
+    pause = None
+    if rule.pause is not None:
+        pause = {"field": rule.pause.field, "in": sorted(str(v) for v in rule.pause.value)}
+    return {"field": str(rule.field), "pause": pause}

@@ -25,8 +25,8 @@ select ``state`` and the timer ``sla`` that pauses while ``state`` is
 * T5. A record of org B never starts a workflow of org A: ``test_t5_*``.
 * T6. An org that is not on both lists reads no trigger and starts nothing:
   ``test_t6_*``.
-* T7. An author who cannot read the package starts no run, and a workflow with
-  a task node starts none: ``test_t7_*``.
+* T7. An author who does not own the package starts no run, and a workflow
+  with a task node starts none: ``test_t7_*``.
 * T8. The demo path: the run reaches a human step, and the manager gets ONE
   task: ``test_t8_*``.
 * T9. A fired record never holds the head of the list: ``test_t9_*``.
@@ -34,6 +34,14 @@ select ``state`` and the timer ``sla`` that pauses while ``state`` is
   fields hot: ``test_t10_*``.
 * T11. The scan holds one session at a time: ``test_t11_*``.
 * T12. A record event never starts a timer trigger: ``test_t12_*``.
+* T13 to T15 and T19 (review round 1, P1). A trigger is armed only when it is
+  live, and its print (field and pause) sits beside the arm. A late rule, a
+  late grant, a changed field, a disabled trigger and a timer that comes back
+  start no run for a record that was already overdue.
+* T16. A timer with no pause breaches whatever the state: ``test_t16_*``.
+* T17 (P2). A slow read meets the LOCAL deadline, and the scan goes on.
+* T18 (P2). Only the owner of the package hears a breach, not a viewer.
+* T20. A save keeps the arm and its print, and drops a forged print.
 
 **Mutations this suite catches** (each was run before the commit):
 
@@ -50,6 +58,12 @@ select ``state`` and the timer ``sla`` that pauses while ``state`` is
   green, because the read of org A cannot see a package of org B (a second
   wall).
 * M9. ``scan_due_waits`` drops ``unattended.org_allowed``: T6 red.
+* M10. The old arm at first sight (``_timer_rows`` arms each unarmed row):
+  T13, T14 and T19 red.
+* M11. ``_timer_breaches`` ignores the print of the arm: T15 red.
+* M12. ``due_timer_records`` drops ``_time_limit``: T17 red.
+* M13. ``_timer_breaches`` asks ``member_reads_package`` again: T18 red.
+* M14. ``crud.update_workflow`` keeps the body's ``timer_arm``: T20 red.
 
 Run (a PRIVATE database, because the fixture drops ``<db>_wftimer``)::
 
@@ -118,6 +132,20 @@ _FIELDS: list[dict[str, Any]] = [
 ]
 _TIMER_RULE = {"name": "sla", "kind": "timer", "field": "due",
                "pause": {"field": "state", "in": ["waiting"]}}
+#: `shift` holds two due fields, so a test can move the timer to `deadline`.
+_SHIFT_FIELDS: list[dict[str, Any]] = [
+    *_FIELDS, {"key": "deadline", "type": "datetime", "hot": True}]
+_SHIFT_TO_DEADLINE = {**_TIMER_RULE, "field": "deadline"}
+#: `visit` has a timer with no pause.
+_NO_PAUSE_RULE = {"name": "sla", "kind": "timer", "field": "due"}
+#: object -> (fields, the rules at the start). `late` starts with no rule.
+_OBJECTS: dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]] = {
+    "claim": (_FIELDS, [_TIMER_RULE]),
+    "ticket": (_FIELDS, [_TIMER_RULE]),
+    "late": (_FIELDS, []),
+    "shift": (_SHIFT_FIELDS, [_TIMER_RULE]),
+    "visit": (_FIELDS, [_NO_PAUSE_RULE]),
+}
 #: The payload of a breach run: ids and names, never a field value.
 _PAYLOAD_KEYS = {"source", "event_type", "package_id", "object", "record_id", "rule", "due_at"}
 
@@ -150,7 +178,12 @@ _WORKFLOWS: dict[str, tuple[str, str, dict, str]] = {
     "Task node A": ("A", OWNER_A, _TASK_NODE, "A"),
     "A on B": ("A", OWNER_A, _TRIVIAL, "B"),
     "Listen B": ("B", OWNER_B, _TRIVIAL, "B"),
+    "Late A": ("A", OWNER_A, _TRIVIAL, "A"),
+    "Shift A": ("A", OWNER_A, _TRIVIAL, "A"),
+    "Visit A": ("A", OWNER_A, _TRIVIAL, "A"),
 }
+#: The object of the timer of a workflow, when it is not `claim`.
+_OBJECT_OF = {"Late A": "late", "Shift A": "shift", "Visit A": "visit"}
 
 
 def _manifest() -> dict[str, Any]:
@@ -158,8 +191,8 @@ def _manifest() -> dict[str, Any]:
     return {
         "studio": 1, "id": f"tmr-{uuid.uuid4().hex[:6]}", "name": "Claims",
         "purpose": "Chase late claims.",
-        "objects": [{"name": "claim", "fields": _FIELDS, "rules": [_TIMER_RULE]},
-                    {"name": "ticket", "fields": _FIELDS, "rules": [_TIMER_RULE]}],
+        "objects": [{"name": name, "fields": fields, "rules": rules}
+                    for name, (fields, rules) in _OBJECTS.items()],
         "actions": [{"id": "add", "uses": "object:claim.create"}],
     }
 
@@ -250,11 +283,11 @@ async def _make_package(org: str, member: str) -> SimpleNamespace:
     async with tenant_session(org) as db:
         made = await packages_store.create_package(db, member, _manifest())
         out = SimpleNamespace(id=made.id)
-        for name in ("claim", "ticket"):
+        for name, (fields, rules) in _OBJECTS.items():
             obj = await objects_store.define_object(db, member, package_id=made.id,
-                                                    name=name, fields=_FIELDS)
+                                                    name=name, fields=fields)
             assert obj is not None
-            await objects_store.set_constraints(db, obj.id, [_TIMER_RULE], package_id=made.id)
+            await objects_store.set_constraints(db, obj.id, rules, package_id=made.id)
             setattr(out, name, obj.id)
     return out
 
@@ -330,6 +363,14 @@ def w(world, monkeypatch):
     return world
 
 
+def _print_of(rule: dict[str, Any]) -> dict[str, Any]:
+    """The arm print of *rule*, as the scan stores it in `config.timer_arm`."""
+    from acb_common.studio_rules import parse_rule
+    from gateway.studio.objects_store import timer_print
+
+    return timer_print(parse_rule(rule))
+
+
 def _config(w: Any, pkg_tag: str, obj: str = "claim", rule: str = "sla") -> dict:
     return {"source": "studio", "event_type": "studio.record.breached",
             "filter": {"package_id": w.pkg[pkg_tag].id, "object": obj, "op": "breach",
@@ -337,17 +378,23 @@ def _config(w: Any, pkg_tag: str, obj: str = "claim", rule: str = "sla") -> dict
 
 
 def _listen(w: Any, *names: str, armed: str | None = "1 hour") -> None:
-    """A timer trigger for each of *names*. *armed* is how long ago the
-    trigger was armed, by the DB clock. None leaves it for the scan to arm."""
+    """A timer trigger for each of *names*. *armed* is how long ago a scan
+    armed the trigger, by the DB clock, with the print of the timer at the
+    start. None leaves it for the scan to arm."""
     with w.admin_engine.begin() as c:
         for name in names:
             tag, _author, _graph, pkg_tag = _WORKFLOWS[name]
+            obj = _OBJECT_OF.get(name, "claim")
+            config = _config(w, pkg_tag, obj)
+            rules = _OBJECTS[obj][1]
+            if armed is not None and rules:
+                config["timer_arm"] = _print_of(rules[0])
             c.execute(text(
                 "INSERT INTO workflow_triggers (workflow_id, kind, config, enabled, "
                 "last_fired_at, organization_id) VALUES (CAST(:wid AS uuid), 'event', "
                 "CAST(:cfg AS jsonb), true, CASE WHEN CAST(:ago AS text) IS NULL THEN NULL "
                 "ELSE now() - CAST(:ago AS interval) END, CAST(:org AS uuid))"),
-                {"wid": w.wf[name], "cfg": json.dumps(_config(w, pkg_tag)), "ago": armed,
+                {"wid": w.wf[name], "cfg": json.dumps(config), "ago": armed,
                  "org": w.org[tag]})
 
 
@@ -363,7 +410,8 @@ def _viewer(tag: str) -> Viewer:
     return Viewer({"A": OWNER_A, "B": OWNER_B}[tag])
 
 
-def _create(w: Any, tag: str, *, due: str, state: str = "open", obj: str = "claim") -> str:
+def _create(w: Any, tag: str, *, due: str, state: str = "open", obj: str = "claim",
+            extra: dict[str, Any] | None = None) -> str:
     """One record, through the write path of the store, as the owner."""
     from gateway.db import tenant_session
     from gateway.studio import objects_store
@@ -374,7 +422,7 @@ def _create(w: Any, tag: str, *, due: str, state: str = "open", obj: str = "clai
         async with tenant_session(w.org[tag]) as db:
             rec = await objects_store.create_record(
                 db, w.owner[tag], getattr(pkg, obj),
-                {"title": "Late claim", "due": due, "state": state},
+                {"title": "Late claim", "due": due, "state": state, **(extra or {})},
                 package_id=pkg.id, viewer=_viewer(tag))
             assert rec is not None
             return rec.id
@@ -382,7 +430,7 @@ def _create(w: Any, tag: str, *, due: str, state: str = "open", obj: str = "clai
     return _on_app_role(w, body)
 
 
-def _update(w: Any, tag: str, record_id: str, **changes: Any) -> None:
+def _update(w: Any, tag: str, record_id: str, *, obj: str = "claim", **changes: Any) -> None:
     from gateway.db import tenant_session
     from gateway.studio import objects_store
 
@@ -391,7 +439,7 @@ def _update(w: Any, tag: str, record_id: str, **changes: Any) -> None:
     async def body() -> None:
         async with tenant_session(w.org[tag]) as db:
             rec = await objects_store.update_record(
-                db, w.owner[tag], pkg.claim, record_id, changes, package_id=pkg.id,
+                db, w.owner[tag], getattr(pkg, obj), record_id, changes, package_id=pkg.id,
                 viewer=_viewer(tag))
             assert rec is not None
 
@@ -774,3 +822,260 @@ def test_t12_a_record_event_that_copies_the_filter_starts_no_timer_run(w) -> Non
         "studio", "studio.record.breached", payload), ambient=w.org["A"])
     assert started == []
     assert _runs(w, "Listen A") == []
+
+
+# ── Review round 1 (P1): a trigger is armed only when it is live ────────────
+
+
+def _set_rules(w: Any, tag: str, obj: str, rules: list[dict[str, Any]]) -> None:
+    """The rules of *obj*, as the sync of a publish writes them."""
+    from gateway.db import tenant_session
+    from gateway.studio import objects_store
+
+    pkg = w.pkg[tag]
+
+    async def body() -> None:
+        async with tenant_session(w.org[tag]) as db:
+            assert await objects_store.set_constraints(
+                db, getattr(pkg, obj), rules, package_id=pkg.id) is not None
+
+    _on_app_role(w, body)
+
+
+def _between_arm_and_now(w: Any, name: str) -> str:
+    """A due value after the arm time of *name* and before the DB clock."""
+    with w.admin_engine.connect() as c:
+        return str(c.execute(text(
+            "SELECT to_char((t.last_fired_at + (now() - t.last_fired_at) / 2) AT TIME ZONE "
+            "'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') FROM workflow_triggers t "
+            "WHERE t.workflow_id = CAST(:w AS uuid)"), {"w": w.wf[name]}).scalar())
+
+
+def _arm_print(w: Any, name: str) -> Any:
+    with w.admin_engine.connect() as c:
+        return c.execute(text(
+            "SELECT config -> 'timer_arm' FROM workflow_triggers "
+            "WHERE workflow_id = CAST(:w AS uuid)"), {"w": w.wf[name]}).scalar()
+
+
+def test_t13_a_rule_published_late_starts_no_run_for_records_already_overdue(w) -> None:
+    """The trigger exists before its rule. The scans before the publish arm
+    nothing. The first scan after it arms at the DB clock, so a record that
+    was overdue then starts no run. The old code armed at first sight, and the
+    publish brought a catch-up storm."""
+    _set_rules(w, "A", "late", [])
+    _listen(w, "Late A", armed=None)
+    try:
+        _scan(w)
+        assert _armed_at(w, "Late A") is None, "a trigger with no timer was armed"
+        _create(w, "A", due=_db_iso(w, "0 seconds"), obj="late")
+        _set_rules(w, "A", "late", [_TIMER_RULE])
+        _scan(w)
+        assert _armed_at(w, "Late A") is not None
+        assert _arm_print(w, "Late A") == _print_of(_TIMER_RULE)
+        _scan(w)
+        assert _runs(w, "Late A") == []
+    finally:
+        _set_rules(w, "A", "late", [])
+
+
+def test_t14_a_late_grant_starts_no_run_for_records_already_overdue(w, monkeypatch) -> None:
+    """The author lacks feature:studio at first, so the scan arms nothing.
+    After the grant, the first scan arms, and a record that was overdue then
+    starts no run."""
+    from gateway.studio import access
+
+    real = access.members_holding_studio
+
+    async def nobody(members: Any, org: str) -> dict[str, bool]:
+        return {str(m).strip().lower(): False for m in members}
+
+    monkeypatch.setattr(access, "members_holding_studio", nobody)
+    _listen(w, "Listen A", armed=None)
+    _scan(w)
+    assert _armed_at(w, "Listen A") is None, "a refused author's trigger was armed"
+    _create(w, "A", due=_db_iso(w, "0 seconds"))
+    monkeypatch.setattr(access, "members_holding_studio", real)  # the grant
+    _scan(w)
+    assert _armed_at(w, "Listen A") is not None
+    _scan(w)
+    assert _runs(w, "Listen A") == []
+
+
+def test_t15_a_changed_field_arms_again_and_starts_no_catch_up(w) -> None:
+    """The timer moves from `due` to `deadline` after the arm. The print of the
+    arm no longer fits, so the scan arms again and starts nothing for a
+    deadline that was already past. A deadline after the new arm breaches."""
+    _set_rules(w, "A", "shift", [_TIMER_RULE])
+    _listen(w, "Shift A", armed=None)
+    try:
+        _scan(w)
+        first = _armed_at(w, "Shift A")
+        assert first is not None and _arm_print(w, "Shift A") == _print_of(_TIMER_RULE)
+        rid = _create(w, "A", due=_db_iso(w, "1 day"), obj="shift",
+                      extra={"deadline": _db_iso(w, "0 seconds")})
+        _set_rules(w, "A", "shift", [_SHIFT_TO_DEADLINE])
+        _scan(w)
+        _scan(w)
+        assert _runs(w, "Shift A") == [], "a changed field started a catch-up run"
+        second = _armed_at(w, "Shift A")
+        assert second is not None and second > first
+        assert _arm_print(w, "Shift A") == _print_of(_SHIFT_TO_DEADLINE)
+        _update(w, "A", rid, obj="shift", deadline=_between_arm_and_now(w, "Shift A"))
+        _scan(w)
+        (run,) = _runs(w, "Shift A")
+        assert _payload(run)["record_id"] == rid
+    finally:
+        _set_rules(w, "A", "shift", [_TIMER_RULE])
+
+
+def test_t19_a_trigger_that_is_not_live_is_disarmed_and_comes_back_with_no_catch_up(w) -> None:
+    """A disabled trigger, and a timer that is gone, disarm the trigger. When it
+    is live again, the scan arms it then, and a record that fell due while it
+    was off starts no run."""
+    _listen(w, "Listen A")
+    with w.admin_engine.begin() as c:
+        c.execute(text("UPDATE workflow_triggers SET enabled = false "
+                       "WHERE workflow_id = CAST(:w AS uuid)"), {"w": w.wf["Listen A"]})
+    _scan(w)
+    assert _armed_at(w, "Listen A") is None and _arm_print(w, "Listen A") is None
+    _create(w, "A", due=_db_iso(w, "0 seconds"))
+    with w.admin_engine.begin() as c:
+        c.execute(text("UPDATE workflow_triggers SET enabled = true "
+                       "WHERE workflow_id = CAST(:w AS uuid)"), {"w": w.wf["Listen A"]})
+    _scan(w)
+    _scan(w)
+    assert _runs(w, "Listen A") == []
+    # A timer that is gone disarms too, and its return starts no catch-up.
+    _set_rules(w, "A", "late", [_TIMER_RULE])
+    _listen(w, "Late A")
+    try:
+        _set_rules(w, "A", "late", [])
+        _scan(w)
+        assert _armed_at(w, "Late A") is None
+        _create(w, "A", due=_db_iso(w, "0 seconds"), obj="late")
+        _set_rules(w, "A", "late", [_TIMER_RULE])
+        _scan(w)
+        _scan(w)
+        assert _runs(w, "Late A") == []
+    finally:
+        _set_rules(w, "A", "late", [])
+
+
+# ── Review round 1 (P2): owner only, no pause, the deadline, the save ──────
+
+
+def test_t16_a_timer_with_no_pause_breaches_whatever_the_state(w) -> None:
+    _listen(w, "Visit A")
+    rid = _create(w, "A", due=_db_iso(w, "-1 minute"), state="waiting", obj="visit")
+    _scan(w)
+    (run,) = _runs(w, "Visit A")
+    assert (_payload(run)["record_id"], _payload(run)["object"]) == (rid, "visit")
+    _scan(w)
+    assert len(_runs(w, "Visit A")) == 1
+
+
+def test_t17_a_slow_read_meets_the_deadline_and_the_scan_goes_on(w, monkeypatch) -> None:
+    """The read of `claim` sleeps past its deadline. The LOCAL
+    `statement_timeout` cancels it in Postgres, the scan logs one line and
+    starts nothing for that trigger, and the next trigger still starts."""
+    from gateway.studio import objects_store
+
+    _listen(w, "Listen A", "Visit A")
+    _create(w, "A", due=_db_iso(w, "-1 minute"))
+    _create(w, "A", due=_db_iso(w, "-1 minute"), obj="visit")
+    fast = objects_store._TIMER_DUE_SQL
+    slow = fast.replace("WHERE h.", "WHERE (SELECT true FROM pg_sleep(3)) AND h.", 1)
+    assert slow != fast
+    real_read = objects_store.due_timer_records
+
+    async def read(db: Any, timer: Any, **kw: Any) -> Any:
+        if timer.object_name != "claim":
+            return await real_read(db, timer, **kw)
+        objects_store._TIMER_DUE_SQL = slow
+        try:
+            return await real_read(db, timer, **kw)
+        finally:
+            objects_store._TIMER_DUE_SQL = fast
+
+    lines: list[str] = []
+    real_warning = scheduler._log.warning
+
+    def warning(event: str, **kw: Any) -> None:
+        lines.append(event)
+        real_warning(event, **kw)
+
+    monkeypatch.setattr(objects_store, "due_timer_records", read)
+    monkeypatch.setattr(objects_store, "TIMER_READ_TIMEOUT_MS", 300)
+    monkeypatch.setattr(scheduler._log, "warning", warning)
+    _scan(w)
+    assert _runs(w, "Listen A") == []
+    assert lines.count("workflows.timer_read_timeout") == 1, lines
+    assert len(_runs(w, "Visit A")) == 1
+
+
+def test_t18_a_viewer_through_an_install_starts_no_breach_run(w, monkeypatch) -> None:
+    """M2 reads package A through an org install, with PACKAGE_HOST_ORGS on.
+    The scan reads past the row rules, so only the workflow of the owner hears
+    a breach. The old rule (`member_reads_package`) started the run of M2."""
+    from gateway.db import tenant_session
+    from gateway.package_host import flags as host_flags
+    from gateway.studio import access
+
+    pkg, org = w.pkg["A"].id, w.org["A"]
+    monkeypatch.setattr(host_flags, "package_host_orgs", lambda: frozenset({org}))
+    with w.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO app_versions (app_id, version, manifest, bundle_html, bundle_sha256, "
+            "published_by, organization_id) VALUES (CAST(:id AS uuid), 1, "
+            "CAST('{\"studio\": 1}' AS jsonb), '', '', :o, CAST(:org AS uuid))"),
+            {"id": pkg, "o": OWNER_A, "org": org})
+        c.execute(text(
+            "INSERT INTO package_install (app_id, version, scope_kind, scope_subject, "
+            "installed_by, organization_id) VALUES (CAST(:id AS uuid), 1, 'org', 'org', :o, "
+            "CAST(:org AS uuid))"), {"id": pkg, "o": OWNER_A, "org": org})
+    try:
+        async def reads() -> bool:
+            async with tenant_session(org) as db:
+                return await access.member_reads_package(
+                    db, member=M2_A, package_id=pkg, organization_id=org, studio_held=True)
+
+        assert _on_app_role(w, reads) is True, "control: M2 reads the package"
+        _listen(w, "M2 A", "Listen A")
+        _create(w, "A", due=_db_iso(w, "-1 minute"))
+        _scan(w)
+        assert _runs(w, "M2 A") == []
+        assert len(_runs(w, "Listen A")) == 1
+    finally:
+        with w.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM package_install WHERE app_id = CAST(:id AS uuid)"),
+                      {"id": pkg})
+            c.execute(text("DELETE FROM app_versions WHERE app_id = CAST(:id AS uuid)"),
+                      {"id": pkg})
+
+
+def test_t20_a_save_keeps_the_arm_and_its_print_and_drops_a_forged_one(w) -> None:
+    """`config.timer_arm` is server state. A save that keeps the trigger keeps
+    the arm time and the print, and a print that the body sends is dropped. A
+    save that changes the rule re-arms from the next scan."""
+    from gateway.routes.workflows import crud
+
+    _listen(w, "Listen A")
+    before = (_armed_at(w, "Listen A"), _arm_print(w, "Listen A"))
+    assert before[0] is not None and before[1] == _print_of(_TIMER_RULE)
+    user = SimpleNamespace(email=OWNER_A)
+
+    def save(config: dict[str, Any]) -> Any:
+        async def go() -> Any:
+            return await crud.update_workflow(
+                w.wf["Listen A"], crud.WorkflowUpdate(
+                    triggers=[crud.TriggerSpec(kind="event", config=config)]), user=user)
+        return _on_app_role(w, go, ambient=w.org["A"])
+
+    forged = {**_config(w, "A"), "timer_arm": {"field": "title", "pause": None}}
+    assert isinstance(save(forged), dict)
+    assert (_armed_at(w, "Listen A"), _arm_print(w, "Listen A")) == before
+    assert isinstance(save(_config(w, "A")), dict)
+    assert (_armed_at(w, "Listen A"), _arm_print(w, "Listen A")) == before
+    assert isinstance(save(_config(w, "A", rule="sla2")), dict)
+    assert (_armed_at(w, "Listen A"), _arm_print(w, "Listen A")) == (None, None)

@@ -144,7 +144,7 @@ def test_only_the_org_loop_of_the_wait_scan_calls_the_timer_scan() -> None:
     assert isinstance(first.body[0], ast.Continue)
 
 
-_TIMER_FUNCTIONS = ("scan_due_timers", "_scan_studio_timers", "_armed_timers",
+_TIMER_FUNCTIONS = ("scan_due_timers", "_scan_studio_timers", "_timer_rows", "_disarm",
                     "_timer_breaches", "_timer_triggers", "_timer_of_config",
                     "_timer_key_prefix")
 
@@ -171,7 +171,9 @@ def test_the_timer_scan_reads_with_the_db_clock_only() -> None:
     """The DB clock decides due-ness and the arm time, never the app clock."""
     assert "now()" in objects_store._TIMER_DUE_SQL
     assert ":now" not in objects_store._TIMER_DUE_SQL
-    assert "now()" in scheduler._ARM_TIMER_SQL and "last_fired_at IS NULL" in scheduler._ARM_TIMER_SQL
+    assert "now()" in scheduler._ARM_TIMER_SQL
+    assert "last_fired_at IS NOT DISTINCT FROM" in scheduler._ARM_TIMER_SQL
+    assert "last_fired_at = NULL" in scheduler._DISARM_TIMER_SQL
     for name in _TIMER_FUNCTIONS:
         body = ast.unparse(_function(_tree(), name))
         assert "datetime.now" not in body and "time.time" not in body, name
@@ -304,12 +306,14 @@ class _Session:
         return SimpleNamespace(rowcount=1)
 
 
-def _row(trigger: str, org: str, *, armed: bool = True, config: dict | None = None) -> Any:
+def _row(trigger: str, org: str, *, armed: bool = True, config: dict | None = None,
+         enabled: bool = True, status: str = "published") -> Any:
     return SimpleNamespace(
         trigger_id=trigger, config=json.dumps(config or _cfg(**_BREACH)),
         last_fired_at="2026-11-13T00:00:00+00:00" if armed else None,
         workflow_id=f"wf-{trigger}", name=f"Timer {trigger}", owner_email="Owner@A.test",
-        latest_version=1, variables="{}", organization_id=org)
+        latest_version=1, variables="{}", organization_id=org, enabled=enabled,
+        status=status)
 
 
 def _wire(monkeypatch, rows: list[Any], due: list[Any], *,
@@ -356,7 +360,10 @@ _DUE = [objects_store.TimerDue("r1", "2026-11-13T09:00:00.000000Z"),
         objects_store.TimerDue("r2", "2026-11-13T09:05:00.000000Z")]
 
 
-def test_the_payload_holds_no_field_value_and_a_duplicate_starts_nothing(monkeypatch) -> None:
+def test_the_payload_holds_ids_names_and_the_due_time_only_and_a_duplicate_starts_nothing(
+        monkeypatch) -> None:
+    """The payload holds ids and names, and `due_at`, the value of the due field.
+    The author owns the package, so the author reads that value."""
     seen = _wire(monkeypatch, [_row("t1", ORG_A)], _DUE,
                  refuse={"r2": DuplicateDelivery("run-0")})
     assert asyncio.run(scheduler.scan_due_timers(ORG_A)) == 1
@@ -379,16 +386,67 @@ def test_a_run_cap_stops_the_trigger_and_keeps_the_breach_due(monkeypatch) -> No
     assert [s["trigger_payload"]["record_id"] for s in seen.starts] == ["r1"]
 
 
-def test_first_sight_arms_and_starts_nothing(monkeypatch) -> None:
-    """An unarmed trigger takes the arm time and reads no record. A row of
-    another org and a trigger that is not a timer are skipped."""
+def test_the_row_read_arms_nothing_and_disarms_a_trigger_that_is_not_live(monkeypatch) -> None:
+    """No trigger is armed before its checks (P1 of the review). The row read
+    arms nothing. It disarms an armed trigger that is disabled, or whose
+    workflow is not published. A row of another org and a trigger that is not
+    a timer are skipped, and an unarmed live trigger goes on to the checks."""
     rows = [_row("t1", ORG_A, armed=False), _row("t2", ORG_B),
-            _row("t3", ORG_A, config=_cfg(package_id=PKG, op="create"))]
-    seen = _wire(monkeypatch, rows, _DUE)
+            _row("t3", ORG_A, config=_cfg(package_id=PKG, op="create")),
+            _row("t4", ORG_A, enabled=False), _row("t5", ORG_A, status="draft"),
+            _row("t6", ORG_A, armed=False, enabled=False)]
+    seen = _wire(monkeypatch, rows, [])
     assert asyncio.run(scheduler.scan_due_timers(ORG_A)) == 0
-    assert seen.starts == [] and seen.breaches == [] and seen.held == []
-    (arm,) = seen.sql
-    assert arm[0] == " ".join(scheduler._ARM_TIMER_SQL.split()) and arm[1] == {"id": "t1"}
+    assert seen.starts == []
+    assert [b[1] for b in seen.breaches] == ["t1"]
+    disarm = " ".join(scheduler._DISARM_TIMER_SQL.split())
+    assert seen.sql == [(disarm, {"id": "t4"}), (disarm, {"id": "t5"})], seen.sql
+    assert not any("now()" in sql for sql, _ in seen.sql), "the row read armed a trigger"
+
+
+def test_the_print_of_a_timer_names_its_field_and_its_sorted_pause() -> None:
+    from acb_common import studio_rules as sr
+
+    base = sr.parse_rule({"name": "sla", "kind": "timer", "field": "due",
+                          "pause": {"field": "state", "in": ["waiting", "hold"]}})
+    assert objects_store.timer_print(base) == {
+        "field": "due", "pause": {"field": "state", "in": ["hold", "waiting"]}}
+    same = sr.parse_rule({"name": "sla", "kind": "timer", "field": "due",
+                          "pause": {"field": "state", "in": ["hold", "waiting"]}})
+    assert objects_store.timer_print(same) == objects_store.timer_print(base)
+    bare = sr.parse_rule({"name": "sla", "kind": "timer", "field": "due"})
+    moved = sr.parse_rule({"name": "sla", "kind": "timer", "field": "deadline"})
+    assert objects_store.timer_print(bare) == {"field": "due", "pause": None}
+    assert len({json.dumps(objects_store.timer_print(r), sort_keys=True)
+                for r in (base, bare, moved)}) == 3
+
+
+def test_the_breach_read_has_a_deadline_and_a_lookback() -> None:
+    """P2 of the review: the read runs under `_time_limit` (the LOCAL
+    `statement_timeout` of C2) and inside the lookback window. The R8 half is
+    `test_t17_a_slow_read_meets_the_deadline_and_the_scan_goes_on`."""
+    tree = ast.parse((_GATEWAY / "studio" / "objects_store.py").read_text(encoding="utf-8"))
+    fn = next(n for n in tree.body
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "due_timer_records")
+    body = ast.unparse(fn)
+    assert "_time_limit(db, deadline, _TIMER_TIMEOUT_MESSAGE)" in body
+    assert "timed.execute(text(_TIMER_DUE_SQL)" in body
+    assert "'lookback': TIMER_LOOKBACK_DAYS" in body
+    assert "make_interval(days => CAST(:lookback AS integer))" in objects_store._TIMER_DUE_SQL
+    assert 1 <= objects_store.TIMER_LOOKBACK_DAYS <= 31
+    assert objects_store.TIMER_READ_TIMEOUT_MS <= 5_000
+
+
+@pytest.mark.parametrize(("member", "package_id", "held"), [
+    ("owner@a.test", "not-a-uuid", True), ("owner@a.test", PKG, False),
+    ("no-address", PKG, True), (None, PKG, True),
+])
+def test_the_owner_check_fails_closed_with_no_statement(member: Any, package_id: Any,
+                                                        held: bool) -> None:
+    from gateway.studio.access import member_owns_package
+
+    assert asyncio.run(member_owns_package(
+        _NoDb(), member=member, package_id=package_id, studio_held=held)) is False
 
 
 def test_a_full_page_of_triggers_moves_the_cursor(monkeypatch) -> None:

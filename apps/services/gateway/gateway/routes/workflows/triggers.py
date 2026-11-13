@@ -52,6 +52,11 @@ RECORD_FILTER_KEYS = ("package_id", "object", "op", "timer")
 BREACH_OP = "breach"
 #: The event type of the run that a breach starts (STU-E9a).
 BREACH_EVENT_TYPE = "studio.record.breached"
+#: The server half of a timer trigger's config (STU-E9a): the print of the
+#: timer (``objects_store.timer_print``) at the arm time. Only the scan writes
+#: it. ``crud.update_workflow`` carries it across a save, as it carries
+#: ``last_fired_at``, and drops a value that the body sends.
+TIMER_ARM_KEY = "timer_arm"
 
 
 def is_breach_trigger(config: dict[str, Any]) -> bool:

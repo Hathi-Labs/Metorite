@@ -58,8 +58,10 @@ ALLOWED: dict[tuple[str, str, str], str] = {
         "in that org's own session, and a row of another org is skipped. Only "
         "the org loop of `scan_due_waits` calls it, after the allowlist check "
         "and `STUDIO_ORGS`. It binds no tenant and never calls `dispatch_event`. "
-        "The author of the workflow must read the package. The delivery key "
-        "holds one run for each breach, and the payload holds no field value.",
+        "The author of the workflow must OWN the package, and a trigger is armed "
+        "only after each check passed. The delivery key holds one run for each "
+        "breach. The payload holds ids, names and `due_at`, the value of the due "
+        "field, which the owner reads.",
     ("broker_handlers.py", "_resume_run_handler", "resume_run"):
         "The approval door. The org is the approver's bound tenant, which RLS "
         "makes equal to the org of the run row. A person approved the run.",

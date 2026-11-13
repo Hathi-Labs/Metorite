@@ -8,6 +8,10 @@ open only for an org on ``PACKAGE_HOST_ORGS``. This module asks the same two
 questions for a member who is not a caller of a request: the author of a
 workflow that a record event may start. It adds no grant and no vocabulary.
 
+:func:`member_owns_package` asks a narrower question for the timer scan of
+STU-E9a: does the member OWN the package. The scan reads past the row rules,
+and only the owner passes them.
+
 **Fail closed.** A package id that is not a UUID, an unknown package, a package
 of another org, a member that is not an address and any error answer False.
 The session is the caller's tenant session, so the org is the bound org.
@@ -54,6 +58,32 @@ async def members_holding_studio(members: Iterable[object], org: str) -> dict[st
         if who not in held:
             held[who] = "@" in who and await _holds_studio(who, str(org or ""))
     return held
+
+
+async def member_owns_package(
+    db: Any, *, member: str, package_id: object, studio_held: bool,
+) -> bool:
+    """True when *member* OWNS the package *package_id* in the org bound to
+    *db*, and holds ``feature:studio`` (*studio_held*, from
+    :func:`members_holding_studio`). Never raises, and opens no session.
+
+    The timer scan (STU-E9a) reads the record ids and the due values of each
+    record of an object, past the row rules of C8a. Only the owner passes each
+    rule, so only the owner's workflow may hear a breach. A viewer through an
+    install reads the package and still starts no breach run."""
+    from gateway.studio import packages_store
+
+    who = str(member or "").strip().lower()
+    try:
+        pid = str(uuid.UUID(str(package_id)))
+        if "@" not in who or not studio_held:
+            return False
+        # A savepoint: a failed read must not poison the caller's transaction.
+        async with db.begin_nested():
+            return await packages_store.get_package(db, who, pid) is not None
+    except Exception as exc:  # fail closed
+        _log.warning("studio.access.owner_check_failed", error=type(exc).__name__)
+        return False
 
 
 async def member_reads_package(

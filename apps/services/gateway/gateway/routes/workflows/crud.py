@@ -33,6 +33,7 @@ from gateway.routes.workflows.core import (
     router,
 )
 from gateway.routes.workflows.engine.graph import validate_graph
+from gateway.routes.workflows.triggers import TIMER_ARM_KEY
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -284,23 +285,32 @@ async def update_workflow(
             # in a state that never fires again. Carry it across for triggers
             # that did not actually change; a schedule whose cron or timezone
             # was edited is deliberately re-armed from now.
-            previous = {
-                _trigger_identity(r.kind, parse_jsonb(r.config, {}) or {}): r.last_fired_at
-                for r in (
-                    await db.execute(
-                        text(
-                            "SELECT kind, config, last_fired_at "
-                            "FROM workflow_triggers WHERE workflow_id = :id"
-                        ),
-                        {"id": workflow_id},
-                    )
-                ).fetchall()
-            }
+            # STU-E9a: a timer trigger also keeps the print of its arm in
+            # `config.timer_arm`. It is server state too, so it is carried the
+            # same way, and a value that the body sends is dropped.
+            previous: dict[tuple[str, str], tuple[Any, Any]] = {}
+            for r in (
+                await db.execute(
+                    text(
+                        "SELECT kind, config, last_fired_at "
+                        "FROM workflow_triggers WHERE workflow_id = :id"
+                    ),
+                    {"id": workflow_id},
+                )
+            ).fetchall():
+                cfg = parse_jsonb(r.config, {}) or {}
+                previous[_trigger_identity(r.kind, cfg)] = (
+                    r.last_fired_at, cfg.get(TIMER_ARM_KEY))
             await db.execute(
                 text("DELETE FROM workflow_triggers WHERE workflow_id = :id"),
                 {"id": workflow_id},
             )
             for trig in body.triggers:
+                last_fired, arm = previous.get(
+                    _trigger_identity(trig.kind, trig.config), (None, None))
+                config = {k: v for k, v in trig.config.items() if k != TIMER_ARM_KEY}
+                if arm is not None and last_fired is not None:
+                    config[TIMER_ARM_KEY] = arm
                 await db.execute(
                     text(
                         """INSERT INTO workflow_triggers
@@ -310,11 +320,9 @@ async def update_workflow(
                     {
                         "wid": workflow_id,
                         "kind": trig.kind,
-                        "config": json.dumps(trig.config, default=str),
+                        "config": json.dumps(config, default=str),
                         "enabled": trig.enabled,
-                        "last_fired": previous.get(
-                            _trigger_identity(trig.kind, trig.config)
-                        ),
+                        "last_fired": last_fired,
                     },
                 )
         # No mid-block commit: the wrapper owns the one transaction (a commit
@@ -373,11 +381,13 @@ async def validate_workflow(
 
 
 def _studio_event_keys(triggers: list[tuple[str, dict[str, Any], bool]]) -> set[str]:
-    """The enabled Studio record-event triggers, one canonical key each."""
+    """The enabled Studio record-event triggers, one canonical key each. The
+    server half of a timer (``timer_arm``) is no part of the key."""
     from gateway.studio.preview import RECORD_EVENT_SOURCE
 
     return {
-        json.dumps(cfg, sort_keys=True, default=str)
+        json.dumps({k: v for k, v in cfg.items() if k != TIMER_ARM_KEY},
+                   sort_keys=True, default=str)
         for kind, cfg, enabled in triggers
         if enabled and kind == "event" and str(cfg.get("source") or "").strip() == RECORD_EVENT_SOURCE
     }
