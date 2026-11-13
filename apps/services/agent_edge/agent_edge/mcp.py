@@ -34,7 +34,9 @@ gives the answer, and no later check runs:
 ``tools/call`` of ``upload_task_image`` may pass 1 MiB, up to
 :data:`MAX_UPLOAD_BODY_BYTES`. Such a body must declare its
 ``Content-Length``, and the checks after 4 then change order: the declared
-length (413 over 6 MiB), the token (check 6, from the headers only), a slot
+length (413 over 6 MiB), the token (check 6, from the headers only), the
+flag ``mcp_image_upload_orgs`` of the organization of the token (413, as
+before CIV-14b), a slot
 (:data:`LARGE_BODIES_AT_ONCE`, and :data:`LARGE_BODIES_PER_CONNECTION`, 503
 after that), the read within :data:`LARGE_BODY_READ_TIMEOUT_S` (408), the
 shape bytes (:func:`_shape_allows_upload`, 413), and the parse. The parsed
@@ -644,15 +646,21 @@ async def _serve_large(request: Request, key: str, declared: int, *,
                        read_only: bool) -> Response:
     """A body that declares more than :data:`MAX_BODY_BYTES` (CIV-14b).
 
-    The declared length, then the token from the headers only, then a slot,
-    then the read under its deadline, then the shape bytes, then the parse.
-    A client with no token takes no slot, and the edge reads no byte of its
-    body. The slot goes back on every path."""
+    The declared length, then the token from the headers only, then the
+    flag of the organization, then a slot, then the read under its deadline,
+    then the shape bytes, then the parse. A client with no token takes no
+    slot, and the edge reads no byte of its body. The slot goes back on every
+    path."""
     if declared > MAX_UPLOAD_BODY_BYTES:
         return _too_large()
     caller, refused = await _caller_of(request)
     if refused is not None:
         return refused
+    if not agent_oauth.image_upload_allowed(caller.lookup.organization_id):
+        # Fix round 2: an organization off the flag cannot upload. Its large
+        # body gets the 413 of the cap before CIV-14b, with no slot and no
+        # read, so it cannot fill the slots of an organization on the flag.
+        return _too_large()
     try:
         with _large_slot(str(caller.lookup.connection_id)):
             raw = await _read_large(request, declared)

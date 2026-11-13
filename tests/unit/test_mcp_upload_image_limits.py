@@ -34,6 +34,8 @@ Fix round 1 adds the classes ``TestALargeBodyWaitsForItsToken`` (item 1),
 ``TestTheTypesThatTakeImages`` (item 5), ``TestTheFlagHidesTheImages``
 (item 7) and ``TestAQuestionChecksItsImagesFirst`` (item 8). Each test names
 the mutation that turns it red.
+
+Fix round 2 adds the class ``TestAnOrgOffTheFlagKeepsTheOldCap`` (item A).
 """
 from __future__ import annotations
 
@@ -818,6 +820,152 @@ class TestALargeBodyIsCountedBeforeTheParse:
         assert mcp._shape_allows_upload(raw)
         assert raw.count(b"{") + raw.count(b"[") <= mcp.LARGE_BODY_MAX_BRACKETS // 2
         assert raw.count(b",") <= mcp.LARGE_BODY_MAX_COMMAS // 2
+
+
+#: The answer of a body over 1 MiB before CIV-14b (``git show 7da4de2e8``):
+#: HTTP 413 with this JSON-RPC error. An organization off the flag still gets
+#: exactly this answer (fix round 2, item A).
+OLD_413 = {"jsonrpc": "2.0", "id": None,
+           "error": {"code": -32600, "message": "The body is too large."}}
+OFF_ORG = "99999999-2222-4333-8444-555555555555"
+
+
+def _reads(raw: bytes) -> tuple[list[int], Any]:
+    """An ASGI *receive* that gives *raw* in one part, and the list of its calls."""
+    calls: list[int] = []
+
+    async def receive() -> dict[str, Any]:
+        calls.append(len(calls))
+        return {"type": "http.request", "body": raw, "more_body": False}
+
+    return calls, receive
+
+
+def _spy_slots(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The connection id of each slot that ``mcp._large_slot`` gives."""
+    import contextlib
+
+    taken: list[str] = []
+    real = mcp._large_slot
+
+    @contextlib.contextmanager
+    def spy(connection_id: str) -> Any:
+        taken.append(connection_id)
+        with real(connection_id):
+            yield
+
+    monkeypatch.setattr(mcp, "_large_slot", spy)
+    return taken
+
+
+def _off_flag_tokens(edge: Any, count: int) -> list[str]:  # noqa: F811 — a fixture value
+    """*count* tokens of :data:`OFF_ORG`, each of its own connection."""
+    import dataclasses
+
+    made = []
+    for n in range(count):
+        token = f"off-flag-token-{n}"
+        edge.tokens[token] = dataclasses.replace(
+            edge.tokens[GOOD], organization_id=OFF_ORG,
+            connection_id=f"aaaaaaaa-bbbb-4ccc-8ddd-00000000010{n}")
+        made.append(token)
+    return made
+
+
+class TestAnOrgOffTheFlagKeepsTheOldCap:
+    """Fix round 2 of CIV-14b, item A (§9.6 "The body size", step 3). A large
+    body of an organization off ``mcp_image_upload_orgs`` gets the old 413
+    right after the token check. It takes no slot, and the edge reads no byte
+    of it. So an organization off the flag sees no change, and it cannot fill
+    the slots of an organization on the flag."""
+
+    @pytest.mark.parametrize("orgs", ["", OFF_ORG], ids=["empty", "another_org"])
+    async def test_m3_an_org_off_the_flag_gets_the_old_413_with_no_slot_and_no_read(
+            self, gw, monkeypatch, orgs):
+        """Mutation: drop the flag check of ``mcp._serve_large``, and the body
+        takes a slot, is read and parsed, and the call answers 200."""
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "mcp_image_upload_orgs", orgs)
+        taken = _spy_slots(monkeypatch)
+        raw = _upload_raw()
+        reads, receive = _reads(raw)
+        status, body = await asyncio.wait_for(
+            _asgi({"content-length": str(len(raw)), **_bearer(GOOD)}, receive), timeout=5)
+        assert status == 413
+        assert json.loads(body) == OLD_413
+        assert taken == []
+        assert reads == []
+        assert _slots_free()
+        assert gw.requests == []
+
+    async def test_m3_bodies_of_an_org_off_the_flag_block_no_upload_of_an_org_on_it(
+            self, gw, edge, monkeypatch):  # noqa: F811
+        """The attack of the verifier: an organization off the flag uses two
+        connections and sends four bodies that declare 2 MiB and send one
+        byte. Before the fix they held every slot, and the upload of an
+        organization on the flag got 503. Mutation: drop the flag check of
+        ``mcp._serve_large``, and the upload here gets 503."""
+        from acb_common import get_settings
+
+        from tests.unit.test_mcp_edge_writes import ORG
+
+        monkeypatch.setattr(get_settings(), "mcp_image_upload_orgs", ORG)
+        stalled = [
+            asyncio.create_task(_asgi(
+                {"content-length": str(2 * 1024 * 1024), **_bearer(token)}, _stalls(b"{")))
+            for token in _off_flag_tokens(edge, 2)
+            for _ in range(mcp.LARGE_BODIES_PER_CONNECTION)]
+        try:
+            await _until(lambda: all(t.done() for t in stalled)
+                         or mcp._LARGE_BODIES[0] >= mcp.LARGE_BODIES_AT_ONCE)
+            r = await _post_raw(_upload_raw())
+            assert r.status_code == 200, r.text
+            assert r.json()["result"]["isError"] is False
+            answers = await asyncio.wait_for(asyncio.gather(*stalled), timeout=5)
+        finally:
+            for task in stalled:
+                task.cancel()
+            await asyncio.gather(*stalled, return_exceptions=True)
+        assert [status for status, _ in answers] == [413] * mcp.LARGE_BODIES_AT_ONCE
+        assert all(json.loads(body) == OLD_413 for _, body in answers)
+        assert _slots_free()
+        assert len(gw.uploads()) == 1
+
+    async def test_m3_an_org_on_the_flag_takes_the_large_path(self, gw, monkeypatch):
+        from acb_common import get_settings
+
+        from tests.unit.test_mcp_edge_writes import CONN, ORG
+
+        monkeypatch.setattr(get_settings(), "mcp_image_upload_orgs", ORG)
+        taken = _spy_slots(monkeypatch)
+        raw = _upload_raw()
+        reads, receive = _reads(raw)
+        status, body = await asyncio.wait_for(
+            _asgi({"content-length": str(len(raw)), **_bearer(GOOD)}, receive), timeout=5)
+        assert status == 200, body
+        assert json.loads(body)["result"]["isError"] is False
+        assert taken == [CONN]
+        assert reads
+        assert _slots_free()
+        assert len(gw.uploads()) == 1
+
+    @pytest.mark.parametrize("token", [None, "wrong-token"], ids=["no_token", "bad_token"])
+    async def test_m3_off_the_flag_a_bad_token_still_gets_401_first(
+            self, gw, monkeypatch, token):
+        """The order of fix round 1 holds: the token check comes before the
+        flag check, so a request with no good token gets 401, not 413."""
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "mcp_image_upload_orgs", "")
+        raw = _upload_raw()
+        reads, receive = _reads(raw)
+        status, _ = await asyncio.wait_for(
+            _asgi({"content-length": str(len(raw)), **(_bearer(token) if token else {})},
+                  receive), timeout=5)
+        assert status == 401
+        assert reads == []
+        assert _slots_free()
 
 
 class TestTheGatewayKeepsTheSignedBody:

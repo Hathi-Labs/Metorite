@@ -1166,13 +1166,14 @@ CIV-14b (§12.9) lets one `tools/call` of `upload_task_image` pass 1 MiB, up to 
 
 1. **Length.** A declared length over 6 MiB gets 413, and the edge reads no byte.
 2. **Token.** Check 6 runs here, from the headers only. A refusal answers as check 6 does: 401, or 503 for an outage. So a client with no token takes no slot, and the edge reads no byte of its body.
-3. **Slot.** The edge holds at most 4 such bodies at once, and at most 2 for one connection. One more gets 503 with `Retry-After: 5`, and the edge reads no byte of it.
-4. **Read.** The whole body must arrive in 30 seconds, or it gets 408. A body longer than its declared length gets 413.
-5. **Shape bytes.** Before the parse, the edge counts two kinds of bytes. The `{` and `[` bytes are 16 at most, and the `,` bytes are 32 at most. A body over either count gets 413, so a body of many small values never reaches the parser. An upload call is one object with one long base64 string, so it passes with room.
-6. **Parse.** The body must be JSON and one `tools/call` of `upload_task_image`, or it gets 413.
-7. **The rest.** Check 5 (the shape of the message), check 7 and check 8 then run as for any body. Check 6 does not run again, because the edge passes on the caller that it found.
+3. **Flag.** The organization of the token row must be on `MCP_IMAGE_UPLOAD_ORGS`. Otherwise the body gets the 413 of the cap before CIV-14b, and the edge reads no byte of it. So an organization off the flag sees no change, and it cannot hold a slot (fix round 2).
+4. **Slot.** The edge holds at most 4 such bodies at once, and at most 2 for one connection. One more gets 503 with `Retry-After: 5`, and the edge reads no byte of it.
+5. **Read.** The whole body must arrive in 30 seconds, or it gets 408. A body longer than its declared length gets 413.
+6. **Shape bytes.** Before the parse, the edge counts two kinds of bytes. The `{` and `[` bytes are 16 at most, and the `,` bytes are 32 at most. A body over either count gets 413, so a body of many small values never reaches the parser. An upload call is one object with one long base64 string, so it passes with room.
+7. **Parse.** The body must be JSON and one `tools/call` of `upload_task_image`, or it gets 413.
+8. **The rest.** Check 5 (the shape of the message), check 7 and check 8 then run as for any body. Check 6 does not run again, because the edge passes on the caller that it found.
 
-The slot goes back on every path: an answer, an error, a timeout and a client that goes away. `agent_edge/mcp.py` holds the numbers (`LARGE_BODIES_AT_ONCE`, `LARGE_BODIES_PER_CONNECTION`, `LARGE_BODY_READ_TIMEOUT_S`, `LARGE_BODY_MAX_BRACKETS` and `LARGE_BODY_MAX_COMMAS`). Fence: `test_mcp_upload_image_limits.py`, the classes `TestALargeBodyWaitsForItsToken` and `TestALargeBodyIsCountedBeforeTheParse`.
+The slot goes back on every path: an answer, an error, a timeout and a client that goes away. `agent_edge/mcp.py` holds the numbers (`LARGE_BODIES_AT_ONCE`, `LARGE_BODIES_PER_CONNECTION`, `LARGE_BODY_READ_TIMEOUT_S`, `LARGE_BODY_MAX_BRACKETS` and `LARGE_BODY_MAX_COMMAS`). Fence: `test_mcp_upload_image_limits.py`, the classes `TestALargeBodyWaitsForItsToken`, `TestAnOrgOffTheFlagKeepsTheOldCap` and `TestALargeBodyIsCountedBeforeTheParse`.
 
 **Authorization errors.**
 
