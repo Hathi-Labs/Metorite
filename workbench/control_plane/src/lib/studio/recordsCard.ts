@@ -27,8 +27,12 @@
  * 4. **No edit.** The table block carries no `editable`, so no cell edits.
  *    The card draws no Board, no Form, no button and no delete.
  * 5. **No card.** A 404 (Studio is off for the org, or the package is not
- *    the member's), an object that the package does not hold, and an object
- *    with no declared list draw nothing.
+ *    the member's), a 403 (the member may not use Studio), an object that the
+ *    package does not hold, and an object with no declared list draw nothing.
+ *    A 401 says to sign in, with no retry.
+ * 6. **A write of Mira reads the card again.** A record write drops the reads
+ *    of every live door (`announceAssistantWrite`, `isLiveDoorKey`), and the
+ *    card reads its rows again.
  *
  * Fence: `components/studio/StudioRecordsCard.test.ts`.
  */
@@ -39,7 +43,8 @@ import { tableBlock } from "./blocks";
 import { type Row, type StudioDataDoor, type StudioSource, stableJson, withMeta } from "./dataDoor";
 import { fieldSpecs, tableFields } from "./packagePreview";
 import {
-  type DeclaredAction, type ObjectRow, type PackageDetail, StudioOff, createRealDoor, getPackage, readActions, verbMap,
+  type DeclaredAction, type ObjectRow, type PackageDetail, PackageReadError, SIGN_IN_SENTENCE, StudioOff, createRealDoor,
+  getPackage, readActions, verbMap,
 } from "./realDoor";
 
 /** The read tool whose call draws a card. */
@@ -158,17 +163,31 @@ export function recordsCalls(events: readonly RecordsEventLike[] | undefined): R
 export const packageKey = (packageId: string): string => `studio:records-card:pkg:${packageId}`;
 
 /**
- * The package of a card. Null on a 404: Studio is off for the org, or the
- * package is not the member's (rule 5). Any other fault throws, and the card
- * says that the records did not load.
+ * The package of a card. Null on a 404 (Studio is off for the org, or the
+ * package is not the member's) and on a 403 (the member may not use Studio),
+ * so the card draws nothing (rule 5). A room sends the tool events of a run to
+ * every member, so a guest of the room sees the call of another member. A 401
+ * throws `SIGN_IN_SENTENCE`. Any other fault throws, and the card says that the
+ * records did not load.
  */
 export async function readCardPackage(packageId: string, fetchImpl?: typeof fetch): Promise<PackageDetail | null> {
   try {
     return await getPackage(packageId, fetchImpl);
   } catch (err) {
     if (err instanceof StudioOff) return null;
+    if (err instanceof PackageReadError && err.status === 403) return null;
+    if (err instanceof PackageReadError && err.status === 401) throw new Error(SIGN_IN_SENTENCE);
     throw err;
   }
+}
+
+/**
+ * The words of a package read that failed, and whether a retry can help. A
+ * 401 says to sign in, and a retry cannot pass it. Each other fault is a
+ * connection fault, and a retry can help.
+ */
+export function packageFailure(error: string | null): { sentence: string; retry: boolean } {
+  return error === SIGN_IN_SENTENCE ? { sentence: SIGN_IN_SENTENCE, retry: false } : { sentence: LOAD_FAILED, retry: true };
 }
 
 /**

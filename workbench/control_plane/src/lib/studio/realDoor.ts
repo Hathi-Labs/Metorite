@@ -380,11 +380,34 @@ export class StudioOff extends Error {
   constructor() { super(STUDIO_OFF); }
 }
 
+/**
+ * A package route answered with a status that is not 2xx and not 404. The message
+ * stays the plain sentence, and `status` lets a caller tell a refusal (401, 403)
+ * from a fault (STU-F5a: the records card draws no card on a 403).
+ */
+export class PackageReadError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "PackageReadError";
+  }
+}
+
 async function getJson(url: string, fetchImpl: typeof fetch = fetch): Promise<unknown> {
   const res = await fetchImpl(url);
   if (res.status === 404) throw new StudioOff();
-  if (!res.ok) throw new Error(ACTION_FAILED);
+  if (!res.ok) throw new PackageReadError(ACTION_FAILED, res.status);
   return res.json().catch(() => ({}));
+}
+
+/**
+ * The cache keys of the reads of every live door: `doorPrefix` of a door that
+ * `createRealDoor` made, whose scope is `<package id>:live`. A record write of
+ * Mira drops them (`lib/assistantWrites.ts`), so a records card in the chat and
+ * an open app page read the records again (STU-F5a).
+ */
+const LIVE_DOOR_KEY = /^studio:[0-9a-fA-F-]{36}:live:/;
+export function isLiveDoorKey(key: string): boolean {
+  return LIVE_DOOR_KEY.test(key);
 }
 
 export async function listPackages(fetchImpl: typeof fetch = fetch): Promise<PackageSummary[]> {

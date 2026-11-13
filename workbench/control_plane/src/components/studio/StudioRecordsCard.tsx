@@ -35,7 +35,7 @@ import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type BoundView, type Row, type StudioDataDoor, boundView, moreLine, sourceKey } from "@/lib/studio/dataDoor";
 import { createDoorKeeper } from "@/lib/studio/realDoor";
 import {
-  LOAD_FAILED, cardDoor, emptyLine, packageKey, readCardPackage, recordsNode, recordsTitle, shownObject,
+  cardDoor, emptyLine, packageFailure, packageKey, readCardPackage, recordsNode, recordsTitle, shownObject,
   type RecordsCall,
 } from "@/lib/studio/recordsCard";
 import { useCachedResource } from "@/lib/useCachedResource";
@@ -73,6 +73,31 @@ export function RecordsFrame({
   );
 }
 
+/**
+ * The frame of a package read that failed: one sentence, and "Try again" only
+ * where a retry can help. A 401 says to sign in (`packageFailure`).
+ */
+export function PackageFailedFrame({
+  id, title, error, onRetry,
+}: { id: string; title: string; error: string | null; onRetry: () => void }) {
+  const failed = packageFailure(error);
+  return (
+    <RollupCard id={id} title={title} icon={ICON} header="own">
+      <section aria-label={title} data-studio-records-state="error" className={CARD_FRAME_CLASS}>
+        <RollupHeader />
+        <RollupBody className="flex flex-wrap items-center gap-2 pt-1.5">
+          <p role="alert" className="text-xs text-destructive">{failed.sentence}</p>
+          {failed.retry ? (
+            <Button variant="secondary" size="sm" icon="RefreshCw" onClick={onRetry}>
+              Try again
+            </Button>
+          ) : null}
+        </RollupBody>
+      </section>
+    </RollupCard>
+  );
+}
+
 /** The card of ONE read of the records of a package. */
 export function StudioRecordsCard({ call }: { call: RecordsCall }) {
   const pkg = useCachedResource(packageKey(call.packageId), () => readCardPackage(call.packageId));
@@ -90,8 +115,8 @@ export function StudioRecordsCard({ call }: { call: RecordsCall }) {
   const node = object ? recordsNode(object, call.source, title) : null;
   const id = `studio-records:${call.eventId}`;
 
-  // 404: Studio is off, or the package is not the member's. No card, and no
-  // empty space in the turn.
+  // 404 or 403: Studio is off, the package is not the member's, or the member
+  // may not use Studio. No card, and no empty space in the turn.
   if (pkg.data === null) return null;
   if (pkg.data === undefined) {
     if (!pkg.error) {
@@ -103,17 +128,7 @@ export function StudioRecordsCard({ call }: { call: RecordsCall }) {
     }
     return (
       <div className={SLOT_CLASS} data-studio-records={call.key}>
-        <RollupCard id={id} title={title} icon={ICON} header="own">
-          <section aria-label={title} data-studio-records-state="error" className={CARD_FRAME_CLASS}>
-            <RollupHeader />
-            <RollupBody className="flex flex-wrap items-center gap-2 pt-1.5">
-              <p role="alert" className="text-xs text-destructive">{LOAD_FAILED}</p>
-              <Button variant="secondary" size="sm" icon="RefreshCw" onClick={pkg.refresh}>
-                Try again
-              </Button>
-            </RollupBody>
-          </section>
-        </RollupCard>
+        <PackageFailedFrame id={id} title={title} error={pkg.error} onRetry={pkg.refresh} />
       </div>
     );
   }

@@ -20,6 +20,14 @@
  *   mount draws it";
  * - drop the 404 branch of `readCardPackage`: "a 404 or Studio off draws no
  *   card and no error".
+ *
+ * Fix round 1 (review of 9ad018f2a):
+ * - drop `invalidate(isLiveDoorKey)` in `announceAssistantWrite`: "a record
+ *   write of Mira makes the card read its rows again" (P1);
+ * - drop the 403 branch of `readCardPackage`: "a 403 draws no card and no
+ *   error" (P2);
+ * - drop the 401 branch of `readCardPackage`, or let `packageFailure` always
+ *   offer a retry: "a 401 says to sign in, with no retry" (P2).
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -31,15 +39,16 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), replace: 
 
 import MessageBubble from "@/components/MessageBubble";
 import type { ToolEvent } from "@/components/MarkdownMessage";
-import { clearAll, invalidate, read as cacheRead } from "@/lib/dataCache";
+import { announceAssistantWrite } from "@/lib/assistantWrites";
+import { clearAll, invalidate, peek, read as cacheRead, subscribe } from "@/lib/dataCache";
 import { sourceKey } from "@/lib/studio/dataDoor";
-import { NOT_DECLARED_SENTENCE, NOT_OPEN_SENTENCE } from "@/lib/studio/realDoor";
+import { NOT_DECLARED_SENTENCE, NOT_OPEN_SENTENCE, SIGN_IN_SENTENCE } from "@/lib/studio/realDoor";
 import {
-  MAX_RECORD_ROWS, cardDoor, emptyLine, packageKey, parsedArg, readCardPackage, recordsCall, recordsCalls,
-  recordsNode, refusedResult, rowLimit, shownObject,
+  LOAD_FAILED, MAX_RECORD_ROWS, cardDoor, emptyLine, packageFailure, packageKey, parsedArg, readCardPackage,
+  recordsCall, recordsCalls, recordsNode, refusedResult, rowLimit, shownObject,
 } from "@/lib/studio/recordsCard";
 
-import { RecordsFrame } from "./StudioRecordsCard";
+import { PackageFailedFrame, RecordsFrame } from "./StudioRecordsCard";
 import StudioToolCards from "./StudioToolCards";
 
 const PKG = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
@@ -352,6 +361,79 @@ describe("a failed read shows the sentence of the door once", () => {
       id: "studio-records:z", title: "Visit", view: "empty", error: null, empty: emptyLine({ filtered: true }), onRetry: () => {},
     }));
     expect(html).toContain("No records match this filter.");
+  });
+});
+
+describe("a record write of Mira makes the card read its rows again (fix round 1, P1)", () => {
+  it("a record write of Mira makes the card read its rows again", async () => {
+    let stored = records("Site", 1);
+    const g = gateway({ rows: () => stored });
+    const events = [listEvent({})];
+    const before = await mount(events, g.impl);
+    expect(before).toContain(">Site-01<");
+    expect(before).toContain("Planned");
+    expect(before).not.toContain("New visit");
+
+    // The key that the hook of the card watches (`useCachedResource` subscribes to it).
+    const call = recordsCall(events[0])!;
+    const key = sourceKey(cardDoor({ id: PKG, actions: ACTIONS }), call.source);
+    let woke = 0;
+    const off = subscribe(key, () => { woke += 1; });
+    // A read of the records announces nothing, so it never wakes the card.
+    announceAssistantWrite("studio_record_list");
+    expect(woke).toBe(0);
+
+    // Mira adds a record in the same chat, and the resend of the write ends.
+    stored = [...stored, { id: "00000000-0000-4000-8000-000000000099", data: { title: "New visit", status: "Closed" } }];
+    expect(announceAssistantWrite("studio_record_create")).toEqual(["studio"]);
+    expect(woke).toBe(1);
+    expect(peek(key)).toBeUndefined();
+    off();
+
+    // The hook reads again on that wake, through the same door.
+    const door = cardDoor({ id: PKG, actions: ACTIONS });
+    await cacheRead(key, () => door.read(call.source));
+    const after = renderToStaticMarkup(createElement(StudioToolCards, { toolEvents: events }));
+    expect(after).toContain(">New visit<");
+    expect(after).toContain("Closed");
+    expect(writes(g.calls)).toEqual([]);
+  });
+});
+
+describe("a refusal of the package read (fix round 1, P2)", () => {
+  it("a 403 draws no card and no error", async () => {
+    // A guest of a room, or a member with a deny on feature:studio, sees the
+    // call of another member's run. The package read answers 403.
+    const g = gateway({ status: 403 });
+    expect(await readCardPackage(PKG, g.impl)).toBeNull();
+    clearAll();
+    const html = await mount([listEvent({})], g.impl);
+    expect(html).toBe("");
+    expect(html).not.toContain('role="alert"');
+    expect(g.calls.filter((c) => c.method === "POST")).toEqual([]);
+  });
+
+  it("a 401 says to sign in, with no retry", async () => {
+    await expect(readCardPackage(PKG, gateway({ status: 401 }).impl)).rejects.toThrow(SIGN_IN_SENTENCE);
+    expect(packageFailure(SIGN_IN_SENTENCE)).toEqual({ sentence: SIGN_IN_SENTENCE, retry: false });
+    const html = renderToStaticMarkup(createElement(PackageFailedFrame, {
+      id: "studio-records:s", title: "visit", error: SIGN_IN_SENTENCE, onRetry: () => {},
+    }));
+    expect(html).toContain(SIGN_IN_SENTENCE);
+    expect(html).not.toContain("Try again");
+    expect(html).not.toContain(LOAD_FAILED);
+  });
+
+  it("a fault of the server says to check the connection, with a retry", async () => {
+    const err = await readCardPackage(PKG, gateway({ status: 500 }).impl).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    const failed = packageFailure((err as Error).message);
+    expect(failed).toEqual({ sentence: LOAD_FAILED, retry: true });
+    const html = renderToStaticMarkup(createElement(PackageFailedFrame, {
+      id: "studio-records:f", title: "visit", error: (err as Error).message, onRetry: () => {},
+    }));
+    expect(html).toContain(LOAD_FAILED);
+    expect(html).toContain("Try again");
   });
 });
 
