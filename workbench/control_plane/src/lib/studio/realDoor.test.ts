@@ -282,6 +282,18 @@ describe("the package routes", () => {
     expect(got.objects.map((o) => o.name)).toEqual(["visit"]);
     expect(one.calls[0].url).toBe(`/api/studio/packages/${PKG}`);
   });
+  it("getPackage keeps the views and the pages of the manifest, and gives empty lists when it has none (AF-1)", async () => {
+    const views = [{ id: "all", block: "table", object: "visit" }];
+    const pages = [{ id: "main", cells: [{ view: "all" }] }];
+    const full = fakeFetch(200, { package: { id: PKG, name: "Visits", manifest: { actions: ACTIONS, views, pages } }, objects: [] });
+    const got = await getPackage(PKG, full.impl);
+    expect(got.views).toEqual(views);
+    expect(got.pages).toEqual(pages);
+    const bare = fakeFetch(200, { package: { id: PKG, name: "Visits", manifest: { actions: ACTIONS } }, objects: [] });
+    const none = await getPackage(PKG, bare.impl);
+    expect(none.views).toEqual([]);
+    expect(none.pages).toEqual([]);
+  });
   it("a package id that is no uuid makes no call", async () => {
     const { impl, spy } = fakeFetch();
     await expect(getPackage("../x", impl)).rejects.toThrow(STUDIO_OFF);

@@ -29,6 +29,7 @@ without the database.
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from typing import Any
@@ -1412,10 +1413,196 @@ async def test_a_sum_of_five_over_toasted_rows_costs_about_one_field(
           {name: round(seconds, 3) for name, (_b, seconds) in timed.items()})
     assert plain_body["total"] == 10_521_000
     assert (sum_body["total"], sum_body["values"]) == (18_023_894, _TOASTED)
-    # The driver gets $n placeholders, so the alias names a read of a sum.
+    # The driver gets $n placeholders. Task 3127: every total that reads a
+    # field reads the one detoasted copy, the plain field too, and joins it once.
     totals = [s for s in seen if "crm_module_records" in s and " AS value" in s]
-    summed_reads = [s for s in totals if "agf_d.agf_fields" in s]
-    assert summed_reads and all(s.count("CROSS JOIN LATERAL") == 1 for s in summed_reads)
-    assert any("LATERAL" not in s for s in totals), "the plain field joins nothing"
+    assert totals and all(s.count("CROSS JOIN LATERAL") == 1 for s in totals)
+    assert all("agf_d.agf_fields" in s for s in totals)
+    assert not any(re.search(r"(?<![.\w])fields ->", s) for s in totals)
     assert sum_s < SUM_BOUND_S, sum_s
     assert sum_s < SUM_RATIO_BOUND * plain_s, (sum_s, plain_s)
+
+
+# ── 12. Large reads (WS-53 CRM-Q25e, tasks 3127 to 3129, 2985 HRD-6) ────────
+#
+# Part 1: each form of a total reads each record once and gives the number of
+# a plain SQL sum over the stored jsonb. Part 2: a split is ONE statement.
+# Part 3: a lookup filter by a Metorite id matches its Zoho id, in the org and
+# the module of the lookup only. Part 4: one day that holds most records is a
+# finding. Part 5: the long read, on and off the list.
+
+#: A number that arrives as a string, as ``field_sql`` reads it.
+_PLAIN_NUMBER = r"^\s*-?[0-9]{1,30}(\.[0-9]{1,30})?\s*$"
+
+
+def _plain_sum(p: Any, org: str, key: str) -> float:
+    """The sum of the number values of *key* in the Products of *org*, read
+    by plain SQL as the superuser: the reference of each form."""
+    with p.admin_engine.begin() as c:
+        return float(c.execute(text(
+            "SELECT COALESCE(SUM(CAST(fields ->> :k AS numeric)), 0) FROM crm_module_records "
+            "WHERE organization_id = CAST(:o AS uuid) AND module = 'Products' AND "
+            "(jsonb_typeof(fields -> :k) = 'number' OR (jsonb_typeof(fields -> :k) = 'string' "
+            "AND fields ->> :k ~ :rx))"), {"o": org, "k": key, "rx": _PLAIN_NUMBER}).scalar())
+
+
+async def test_every_form_of_a_total_gives_the_same_number(mods, app_engine) -> None:
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    a = mods.org_a
+    price, qty = _plain_sum(mods, a, "Unit_Price"), _plain_sum(mods, a, "Qty")
+    assert (price, qty) == (350.5, 7.0)
+    seen: list[str] = []
+
+    def _record_sql(_conn, _cursor, statement, *_args) -> None:
+        seen.append(statement)
+
+    event.listen(Engine, "before_cursor_execute", _record_sql)
+    try:
+        split = await _agg(mods, a, entity="module:Products", measure="sum",
+                           fields="Unit_Price,Qty")
+    finally:
+        event.remove(Engine, "before_cursor_execute", _record_sql)
+    reads = [s for s in seen if "crm_module_records" in s and " AS value" in s]
+    assert len(reads) == 1 and reads[0].count("CROSS JOIN LATERAL") == 1
+    assert [(s["field"], s["total"], s["values"]) for s in split["split"]] == [
+        ("Unit_Price", price, 2), ("Qty", qty, 2)]
+    single = await _agg(mods, a, entity="module:Products", measure="sum", field="Unit_Price")
+    assert single["total"] == split["total"] == price and "split" not in single
+    ranged = await _agg(mods, a, entity="module:Products", measure="sum", field="Unit_Price",
+                        **{"field.Sales_Start.from": "2026-01-01",
+                           "field.Sales_Start.to": "2026-12-31"})
+    assert (ranged["total"], ranged["records"]) == (price, 3)
+    grouped = await _agg(mods, a, entity="module:Products", measure="sum",
+                         fields="Unit_Price,Qty", group_field="Category")
+    assert sum(g["split"]["Unit_Price"] for g in grouped["groups"]) == price
+    assert sum(g["split"]["Qty"] or 0 for g in grouped["groups"]) == qty
+    by_month = await _agg(mods, a, entity="module:Products", measure="sum",
+                          field="Unit_Price", group_field="Sales_Start", bucket="month")
+    assert sum(g["value"] or 0 for g in by_month["groups"]) == price
+    # The day set adds no group: the months of before, in time order.
+    assert _keys(by_month)[:3] == ["2026-01", "2026-02", "2026-04"]
+    # An empty match still gives one row, as the plain statement does.
+    empty = await _agg(mods, a, entity="module:Products", measure="count",
+                       **{"field.Sales_Start.from": "2030-01-01"})
+    assert (empty["total"], empty["records"]) == (0, 0)
+
+
+async def test_a_lookup_filter_by_a_metorite_id_matches_its_zoho_id(mods, app_engine) -> None:
+    a, b = mods.org_a, mods.org_b
+    with mods.admin_engine.begin() as c:
+        _record(c, a, "Vendors", "v1", None, {"Name": "Acme"})
+        _record(c, b, "Vendors", "v1", None, {"Name": "Acme"})
+        ids = {
+            (str(r.organization_id), r.module): str(r.id)
+            for r in c.execute(text(
+                "SELECT organization_id, module, id FROM crm_module_records WHERE "
+                "organization_id IN (CAST(:a AS uuid), CAST(:b AS uuid)) AND "
+                "module IN ('Vendors', 'Quotes')"), {"a": a, "b": b})
+        }
+
+    async def count(value: str) -> Any:
+        return (await _agg(mods, a, entity="module:Products",
+                           **{"field.Vendor_Name": value}))["total"]
+
+    assert await count(ids[(a, "Vendors")]) == 2
+    assert await count(ids[(a, "Vendors")].upper()) == 2
+    assert await count("v1") == 2 and await count("Acme") == 2
+    # A record of another module, or of another org, matches nothing.
+    assert await count(ids[(a, "Quotes")]) == 0
+    assert await count(ids[(b, "Vendors")]) == 0
+
+
+async def test_one_day_that_holds_most_records_is_a_finding(mods, app_engine) -> None:
+    a = mods.org_a
+    plain = await _agg(mods, a, entity="module:Products", measure="sum", field="Unit_Price",
+                       **{"field.Sales_Start.from": "2026-01-01"})
+    assert "findings" not in plain
+    with mods.admin_engine.begin() as c:
+        for i in range(60):
+            _record(c, a, "Products", f"spike{i}", None,
+                    {"Unit_Price": 10, "Sales_Start": "2026-10-17"})
+        for day in range(1, 11):
+            _record(c, a, "Products", f"day{day}", None,
+                    {"Unit_Price": 10, "Sales_Start": f"2026-10-{day:02d}"})
+    october = {"field.Sales_Start.from": "2026-10-01", "field.Sales_Start.to": "2026-10-31"}
+    body = await _agg(mods, a, entity="module:Products", measure="sum", field="Unit_Price",
+                      **october)
+    assert (body["total"], body["records"]) == (700, 70)
+    [found] = body["findings"]
+    assert (found["kind"], found["key"], found["records"], found["total_records"]) == (
+        "concentration", "2026-10-17", 60, 70)
+    assert found["sentence"].startswith("60 of the 70 records (86%) have the one Sales Start")
+    by_month = await _agg(mods, a, entity="module:Products", measure="count",
+                          group_field="Sales_Start", bucket="month")
+    assert by_month["findings"][0]["key"] == "2026-10-17"
+    assert {g["key"]: g["value"] for g in by_month["groups"]}["2026-10"] == 70
+
+
+async def test_the_long_read_on_and_off_the_list(mods, app_engine, monkeypatch) -> None:
+    from acb_common import get_settings
+    from gateway.routes.crm import aggregate as aggregate_route
+
+    a = mods.org_a
+    query = {"entity": "module:Products", "measure": "sum", "field": "Unit_Price",
+             "group_field": "Category"}
+    monkeypatch.setattr(aggregate_route, "STATEMENT_TIMEOUT_MS", 1)
+    off = await _call(mods, _admin(a), "GET", _path(**query))
+    assert off.status_code == 503 and off.json()["detail"] == aggregate_route.TIMEOUT_DETAIL
+    # Off the list, long_read changes nothing.
+    off_long = await _call(mods, _admin(a), "GET", _path(**query, long_read="true"))
+    assert off_long.status_code == 503 and "long_read" not in off_long.json()["detail"]
+    monkeypatch.setattr(get_settings(), "crm_long_read_orgs", a, raising=False)
+    offer = await _call(mods, _admin(a), "GET", _path(**query))
+    assert offer.status_code == 503 and offer.json()["detail"]["long_read"] is True
+    long = await _call(mods, _admin(a), "GET", _path(**query, long_read="true"))
+    assert long.status_code == 200, long.text
+    assert long.json()["total"] == 350.5
+    # Org B is not on the list, so it never gets the offer. Its read may
+    # also finish inside the 1 ms cap, because org B holds few Products: a
+    # fast machine answered 200 (the release gate of 2026-11-13). A 200 is
+    # no offer either, so both answers pass, and the flag reader decides it.
+    from gateway.routes.crm import flags as crm_flags
+
+    assert crm_flags.long_read_allowed(a) is True
+    assert crm_flags.long_read_allowed(mods.org_b) is False
+    other = await _call(mods, _admin(mods.org_b), "GET", _path(**query))
+    assert other.status_code in (200, 503), other.text
+    if other.status_code == 503:
+        assert "long_read" not in other.json()["detail"]
+
+
+async def test_a_read_that_reads_no_field_joins_no_detoast(keyed, app_engine) -> None:
+    """Review P2: the check of one day never adds a detoast of each row to
+    a read that reads no field: a plain count, a count by owner and a fixed
+    month. A sum of the amount reads the copy anyway, so it takes the day
+    set of ``@date`` in the same scan."""
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    a = keyed.org_a
+    seen: list[str] = []
+
+    def _record_sql(_conn, _cursor, statement, *_args) -> None:
+        seen.append(statement)
+
+    def totals() -> list[str]:
+        return [s for s in seen if "crm_module_records" in s and " AS value" in s]
+
+    event.listen(Engine, "before_cursor_execute", _record_sql)
+    try:
+        for query in ({"measure": "count"}, {"measure": "count", "group_by": "owner"},
+                      {"measure": "count", "group_by": "created_month"}):
+            seen.clear()
+            body = await _agg(keyed, a, entity="module:Invoices", **query)
+            assert body["records"] == 3, query
+            assert totals() and all("LATERAL" not in s and "GROUPING" not in s
+                                    for s in totals()), query
+        seen.clear()
+        summed = await _agg(keyed, a, entity="module:Invoices", measure="sum_amount")
+        assert summed["total"] == 1550.5
+        assert totals() and all("GROUPING SETS" in s and s.count("CROSS JOIN LATERAL") == 1
+                                for s in totals())
+    finally:
+        event.remove(Engine, "before_cursor_execute", _record_sql)

@@ -133,6 +133,8 @@ not write a second copy of that seam. A bare test file name is under
    - `refuse_cards()` is the scope of a run with no card channel. Fences: `test_wac_bot_run.py`, `test_wac_writes.py`.
    - A run with no person present (`acb_common.no_person`, AUTO-7a) denies first, before each WhatsApp path, whatever `non_interactive_default` says. `cards_refused()` reads the mark too, so each reader closes. Fence: `test_no_person_present.py`.
    - `responder=` binds a card to the run's own member. Any other answer, and an answer with no responder, is a REJECT. The gateway takes the responder from the session. Fence: `test_profile_pz32.py`.
+   - A card that a chat message closed goes into the run's `ClosedCards` record (task 3130). `take_closed_card_line` gives the "Not done" line, once, with the act as inert text in a « » fence (`card_act`). `CLOSED_BY_YOUR_MESSAGE` is the one outcome word that HRD-7 grows.
+   - A later card takes the place of a closed card only when it holds every act key of that card. `card_call` binds the keys (`act_keys`): the tool, each id, the people of `to`, and the identity arguments of a call with no object id. A batch tool keys each item in the family of its single tool (`ACT_FAMILIES`). A card with no key takes the place of none. Never give either ContextVar a mutable default. Fence: `test_steer_unsent_card.py`.
    - A reply form with `kind: "new"` is the card of a new mail (§18.10). Only `reply_card.parse_new_mail_answer` approves it, and a reply answer never does. `edit_card_channel_open` is the one test of a run that can draw a card to edit: the flag, a channel, and no WhatsApp run. `reply_card.edit_card_on` is the one reader of `EMAIL_EDIT_CARD_ORGS` (default empty, off), and it fails closed. Fence: `test_email_new_mail_card.py`.
    - A new-mail form may carry `revises` and `draft` (§18.11). Only the gateway sets them, and `clean_reply_form` refuses a bad pair. It may also carry `unticked` (rule 7), the people that start unticked because the member unticked them. `clean_reply_form` refuses a name that is not a person of the card, or that starts ticked. Fence: `test_email_redraft_snapshot.py`.
 5k. agent_site.py -- the ONE builder of an agent install (spec `box_hardening.md` §5 BH-7).
@@ -152,6 +154,14 @@ not write a second copy of that seam. A bare test file name is under
    - `orchestrator._tool_injection._apply_tool_result_spill` is the one seam. It runs BEFORE the egress and number-check steps. So the number check reads the full text.
    - `narrow_and_read` and the delegation tools never spill.
    - Fence: `test_tool_result_spill.py`.
+5l-1b. progress_notice.py -- one line for the member while a slow tool runs (HRD-6 part 1, task 2985, spec `chat_run_continuity.md` §4.11). Dark behind `CHAT_PROGRESS_NOTICE_ORGS`.
+   - `emit_progress` is the ONE writer. The web chat gets one CUSTOM `progress` event on the run's own queue (`resolve_run_queue`). WhatsApp gets the line through `whatsapp_ui.WhatsAppRun.notify`, once in a reply. Do not add a second event channel or a second channel path.
+   - `ProgressNotice` starts a timer on each tool call. After `NOTICE_AFTER_S` a read-only tool sends `LONG_READ_TEXT`, and any other tool sends `SLOW_STEP_TEXT`. Each call gets one line at most, and a tool's own line wins. While one line shows, the line of a parallel call waits, and it goes once when the showing line goes (the marks live on the queue).
+   - A call that ends, or that shows a card, puts one clear event (empty `text`) for its line.
+   - The delegation tools and the tools that wait for the member get no line. `ask_tools.request_confirmation` and `ask_questions` call `member_wait` before a card shows, so a tool that asks in its own body loses its timer and its line.
+   - On WhatsApp, `bot_run` awaits `settle_channel` before the answer, so an early message never follows it.
+   - `progress_notice_on` is the ONE reader of the flag. `orchestrator._tool_injection._apply_progress_notice` is the one seam, and it runs right before the number check.
+   - Fence: `test_progress_notice.py`.
 5l-2. org_facts_tools.py -- `org_facts(app, query)` and the CRM facts block (spec `crm_platform.md` §18.14.4). It loads with the `crm` skill family only.
    - `crm_answer_question` sends a pick only when this run showed that card and the member clicked it. Fences: `test_org_facts.py`, `test_org_facts_r8.py`, `test_crm_answer_first.py`.
 5m. untrusted.py -- the ONE frame for text that a stranger wrote (spec `email_app_master_plan.md` §12.3.13.8).

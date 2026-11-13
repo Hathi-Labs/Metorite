@@ -753,6 +753,7 @@ function MessageBubble({
         streaming={flow ? message.streaming && !!head && lastTextIdx === 0 : message.streaming}
         toolEvents={dedupedToolEvents}
         progressLines={message.progressLines}
+        progressNotice={message.progressNotice?.text}
         isThinkingActive={message.isThinkingActive}
         reasoningBlocks={message.reasoningBlocks}
         segments={flow ? (head ? [{ id: "flow-head", text: head }] : undefined) : message.segments}

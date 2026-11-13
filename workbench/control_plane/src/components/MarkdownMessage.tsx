@@ -97,6 +97,8 @@ interface MarkdownMessageProps {
   toolEvents?: ToolEvent[];
   /** Live tool-name status lines for the ThinkingContainer. */
   progressLines?: string[];
+  /** HRD-6: the line of a slow step, shown under the running step. */
+  progressNotice?: string;
   /** True while the agent run is in progress (drives shimmer/working state). */
   isThinkingActive?: boolean;
   /** Sequential reasoning blocks — each its own timeline entry. */
@@ -721,6 +723,7 @@ export default function MarkdownMessage({
   streaming,
   toolEvents,
   progressLines,
+  progressNotice,
   isThinkingActive,
   reasoningBlocks,
   segments,
@@ -786,6 +789,7 @@ export default function MarkdownMessage({
             narrationSegments={narrationSegments}
             isActive={!!isThinkingActive}
             evidenceFor={evidenceFor}
+            notice={progressNotice}
           />
         </div>
       )}
