@@ -684,7 +684,7 @@ def test_the_studio_family_equals_the_owners_own_tool_scope_and_fits_the_cap() -
     assert family["owner"] == STUDIO and sf.is_pack("studio") and family["core"] is False
     assert tuple(family["tools"]) == STUDIO_TOOLS
     assert set(family["tools"]) == _studio_scope()
-    assert len(family["tools"]) == 20 <= tp.MAX_PACK_TOOLS == 35
+    assert len(family["tools"]) == 22 <= tp.MAX_PACK_TOOLS == 35  # STU-K1d added two ready-app tools (20 to 22)
 
 
 def test_the_studio_owner_is_in_no_registry_list() -> None:
