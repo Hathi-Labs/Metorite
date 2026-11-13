@@ -4216,11 +4216,13 @@ _APV_BAD_VERSION = ("The version is a whole number from 1. Send a version that t
 _REVIEW_CONFLICT = "review_conflict"  # packages.REVIEW_CONFLICT
 
 #: The most characters of the JSON text of the approval rows, as for a page of
-#: records. The manifests share half of it, so each row shows the start of its
-#: manifest. A row that does not fit is left out, and ``truncated`` says so.
+#: records. A row that does not fit is left out, and ``truncated`` says so.
 MAX_APPROVAL_CHARS = MAX_RECORD_CHARS
-#: The least characters of the manifest text of one row.
-MIN_APPROVAL_MANIFEST_CHARS = 200
+#: The most characters of the manifest text of one row: half of the list. The
+#: cap is the same for every row, whatever the count of pending rows, so a
+#: manifest that the list cuts once is cut each time (review F2). The approve
+#: refuses a cut manifest.
+APPROVAL_MANIFEST_CHARS = MAX_APPROVAL_CHARS // 2
 
 _APV_NO_ID = ("The package id must be a UUID. Use the package_id that studio_list_approvals "
               "or studio_save gave.")
@@ -4241,8 +4243,8 @@ _APV_DONE = {"approved": ("The version is approved for the organization. Its own
              "rejected": "The version is rejected. The organization cannot install it."}
 _APV_NOTE = ("Approve to approve this version for the organization. Its owner can then "
              "install it for everyone. Reject to approve nothing.")
-_APV_REJECT_NOTE = ("Approve to reject this version for the organization. A rejected version "
-                    "stays rejected. Reject to change nothing.")
+_APV_REJECT_NOTE = ("Approve means yes: the version is rejected, and it stays rejected. "
+                    "Reject means no: nothing changes.")
 _APV_WONT_FIT = "This version does not fit on one card, so nothing was {act}."
 _APV_NOT_LISTED = ("This version is not in the list of the apps that wait for an approval, so "
                    "no card shows and nothing was approved. Call studio_list_approvals.")
@@ -4325,10 +4327,10 @@ def _approvals_text(chosen: list[dict[str, Any]]) -> str:
 def _shown_approvals(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]],
                                                           list[dict[str, Any]]]:
     """Each row of the list, and the rows that the chat shows: the first rows
-    whose JSON text fits :data:`MAX_APPROVAL_CHARS`. The manifests share half
-    of it. ``studio_list_approvals`` and the approve read this one rule."""
-    cap = max(MIN_APPROVAL_MANIFEST_CHARS, (MAX_APPROVAL_CHARS // 2) // max(1, len(rows)))
-    every = [_approval_row(r, cap) for r in rows]
+    whose JSON text fits :data:`MAX_APPROVAL_CHARS`. Each manifest is cut at
+    :data:`APPROVAL_MANIFEST_CHARS`, which does not depend on the count of
+    rows. ``studio_list_approvals`` and the approve read this one rule."""
+    every = [_approval_row(r, APPROVAL_MANIFEST_CHARS) for r in rows]
     shown = every
     while shown and len(_approvals_text(shown)) > MAX_APPROVAL_CHARS:
         shown = shown[:-1]

@@ -95,6 +95,7 @@ class _Store:
         self.calls: list[tuple[Any, ...]] = []
         self.busy = False
         self.more = False
+        self.meta: dict[str, tuple[str, str]] = {}  # a package id -> its name and its owner
 
     def _check(self) -> None:
         if self.busy:
@@ -140,11 +141,15 @@ class _Store:
     async def pending(self, db: Any, *, can_publish: Any) -> Any:
         self.calls.append(("list", can_publish))
         self._check()
-        rows = [store.PendingVersion(
-            package_id=pid, name="Site visits", owner_email=self.owner, version=v,
-            published_by=self.owner, published_at=WHEN, manifest=self.manifest,
-            requested_by=self.owner, requested_at=WHEN)
-            for (pid, v), s in sorted(self.state.items()) if s == "pending"]
+        rows = []
+        for (pid, v), s in sorted(self.state.items()):
+            if s != "pending":
+                continue
+            name, owner = self.meta.get(pid, ("Site visits", self.owner))
+            rows.append(store.PendingVersion(
+                package_id=pid, name=name, owner_email=owner, version=v,
+                published_by=owner, published_at=WHEN, manifest=self.manifest,
+                requested_by=owner, requested_at=WHEN))
         return rows, self.more
 
 
@@ -462,6 +467,9 @@ async def test_the_approve_and_the_reject_always_show_one_card(
     assert out["ok"] is True and out["decision"] == "approved", out
     assert len(world.card.shown) == 2
     assert world.card.shown[1]["title"] == "Reject the app «Site visits» for the organization?"
+    # Review F5: the card says what each of its two answers does.
+    assert world.card.shown[1]["context"].startswith(st._APV_REJECT_NOTE)
+    assert "Approve means yes" in st._APV_REJECT_NOTE and "Reject means no" in st._APV_REJECT_NOTE
     assert "Version: 2" in world.card.shown[1]["context"]
     assert _sent(world) == [_ASK, _ASK, _LIST, _LIST, _APPROVE, _LIST, _REJECT]
 
@@ -489,14 +497,21 @@ async def test_no_move_is_sent_without_approved(
 @pytest.mark.parametrize("tool", ["approve", "reject"])
 async def test_the_move_goes_to_the_row_on_the_card(world: _World, tool: str) -> None:
     """Verifier item 1: two pending rows. The card names row A, and the POST
-    goes to the real path of row A, never of row B. Mutation M6 -> red."""
-    a_pid, b_pid = world.store.pid, str(uuid.uuid4())
+    goes to the real path of row A, never of row B. Row B is first in the
+    list, with another name and another owner, so a card that reads the
+    wrong row names B (review F4). Mutations M6 and M3c -> red."""
+    b_pid = "00000000-0000-4000-8000-000000000001"
+    a_pid = "ffffffff-ffff-4fff-bfff-ffffffffffff"
     world.store.state = {(a_pid, 3): "pending", (b_pid, 7): "pending"}
+    world.store.meta = {a_pid: ("Site visits", OWEN), b_pid: ("Payroll export", "bea@j2b3a.test")}
     world.as_(ADA)
     out = await (st.studio_approve if tool == "approve" else st.studio_reject)(a_pid, 3)
     assert out["ok"] is True and (out["package_id"], out["version"]) == (a_pid, 3), out
     [shown] = world.card.shown
-    assert "Version: 3" in shown["context"] and "Version: 7" not in shown["context"]
+    text = f"{shown['title']} {shown['context']}"
+    assert "Version: 3" in text and "Version: 7" not in text
+    assert "«Site visits»" in text and f"Owner: «{OWEN}»" in text
+    assert "Payroll export" not in text and "bea@j2b3a.test" not in text
     posts = [p for m, p in world.seen if m == "POST"]
     assert posts == [f"/studio/packages/{a_pid}/versions/3/approval/{tool}"]
     moved = "approved" if tool == "approve" else "rejected"
@@ -563,13 +578,14 @@ async def test_the_list_frames_each_row_with_the_start_of_its_manifest(world: _W
     assert (await st.studio_request_approval(pid, 2))["ok"]
     world.as_(ADA)
     out = await st.studio_list_approvals()
-    assert out["ok"] is True and out["count"] == 2 and out["truncated"] is False, out
+    # Each manifest is cut at the one cap, so the second row does not fit and is left out.
+    assert out["ok"] is True and out["count"] == 1 and out["truncated"] is True, out
     rows = _rows(out)
     from acb_common.studio_manifest import manifest_hash
 
     for row in rows:
         assert row["manifest_cut"] is True
-        assert len(row["manifest"]) == (st.MAX_APPROVAL_CHARS // 2) // 2
+        assert len(row["manifest"]) == st.APPROVAL_MANIFEST_CHARS
         assert row["manifest"].startswith('{"actions":')
         assert row["manifest_hash"] == manifest_hash(world.store.manifest)
         assert (row["owner_email"], row["requested_by"]) == (OWEN, OWEN)
@@ -602,6 +618,47 @@ async def test_twenty_rows_stay_under_the_cap(world: _World) -> None:
     assert out["ok"] is True and 0 < out["count"] <= 20
     assert len(out["approvals"]) <= st.MAX_APPROVAL_CHARS + 200
     assert len(json.dumps(out)) <= st.MAX_MANIFEST_CHARS * 2
+
+
+async def test_an_approve_of_a_short_row_that_the_list_leaves_out_is_refused(
+        world: _World) -> None:
+    """Review F3. Short manifests, so no row is cut, and more rows than the
+    list holds. A row that the list leaves out is refused with no card and no
+    POST, because the approver never read it. Mutation M2c -> red."""
+    world.store.state = {(str(uuid.uuid4()), 1): "pending" for _ in range(28)}
+    world.as_(ADA)
+    listed = await st.studio_list_approvals()
+    rows = _rows(listed)
+    assert 0 < listed["count"] < 28 and listed["truncated"] is True, listed
+    assert not any(r["manifest_cut"] for r in rows)
+    shown = {r["package_id"] for r in rows}
+    left = [pid for (pid, _v) in sorted(world.store.state) if pid not in shown]
+    assert left, "non-vacuity: a row is left out"
+    out = await st.studio_approve(left[0], 1)
+    assert out["ok"] is False and _msg(out) == st._APV_TOO_LONG, out
+    assert world.card.shown == [] and _APPROVE not in _sent(world)
+    # A row that the list shows whole is approved after its card.
+    assert (await st.studio_approve(rows[0]["package_id"], 1))["ok"]
+    assert len(world.card.shown) == 1
+
+
+@pytest.mark.parametrize("pending", [1, 5])
+async def test_the_cut_of_a_manifest_does_not_depend_on_the_count_of_rows(
+        world: _World, pending: int) -> None:
+    """Review F2. One cap for each row, whatever the count of pending rows. A
+    manifest over the cap is cut and refused with one row too. A manifest
+    under it shows whole with five rows too."""
+    world.as_(ADA)
+    world.store.manifest = _manifest("z" * (st.APPROVAL_MANIFEST_CHARS + 500))
+    world.store.state = {(str(uuid.uuid4()), 1): "pending" for _ in range(pending)}
+    first = sorted(world.store.state)[0][0]
+    out = await st.studio_approve(first, 1)
+    assert _msg(out) == st._APV_TOO_LONG and world.card.shown == [], out
+    world.store.manifest = _manifest("z" * 1_200)
+    listed = await st.studio_list_approvals()
+    assert listed["count"] == pending and listed["truncated"] is False, listed
+    assert not any(r["manifest_cut"] for r in _rows(listed))
+    assert (await st.studio_approve(first, 1))["ok"]
 
 
 # ── 7. The copies match the route ─────────────────────────────────────────
