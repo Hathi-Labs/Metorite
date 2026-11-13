@@ -508,7 +508,8 @@ def test_the_package_field_value_table_is_tenant_scoped() -> None:
 
 
 @pytest.mark.parametrize(
-    "table", ["studio_objects", "studio_object_fields", "studio_records", "studio_record_hot"],
+    "table", ["studio_objects", "studio_object_fields", "studio_records", "studio_record_hot",
+              "studio_batches", "studio_batch_items"],
 )
 def test_the_studio_object_tables_are_tenant_scoped(table: str) -> None:
     """WS-STU C1 (``ai_studio.md`` §3.1). An object, its fields, its records
