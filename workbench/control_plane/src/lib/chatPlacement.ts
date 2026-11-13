@@ -179,6 +179,9 @@ const EVIDENCE: readonly string[] = [
   // `narrow_and_read` searches, picks and reads, and changes nothing. One
   // name serves the email and the WhatsApp agents.
   "narrow_and_read",
+  // ── AI Studio (the `studio` pack, `read_only=True`) ────────────────────
+  // STU-E4b: the human steps of one workflow run (a playbook).
+  "workflow_run_steps",
 ];
 
 /** Writes. Projects names are manifest class B or C. */

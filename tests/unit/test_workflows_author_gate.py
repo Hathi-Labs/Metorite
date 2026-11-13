@@ -112,6 +112,8 @@ EXPECTED_ROUTES: dict[tuple[str, str], str] = {
     ("GET", "/workflows/{workflow_id}/runs"): READ,
     ("GET", "/workflows/runs/{run_id}"): READ,
     ("GET", "/workflows/runs/{run_id}/stream"): READ,
+    # STU-E4b: the human steps of one run. A read, with the access of the run.
+    ("GET", "/workflows/runs/{run_id}/steps"): READ,
     # Validate writes nothing. It reads the draft and the module list, and
     # answers the issues of the graph. So it is a read.
     ("POST", "/workflows/{workflow_id}/validate"): READ,

@@ -56,8 +56,15 @@ person, and nothing counts or ranks one.
 The scan runs only for an org on ``WORKFLOW_UNATTENDED_ORGS``, so the node is
 dark until the owner lists an org. :func:`org_ready` is the check of the hold.
 
-Fence: ``tests/unit/test_workflows_human_step.py`` and
-``tests/unit/test_workflows_human_step_r8.py``.
+**The steps of a run (STU-E4b).** ``runs.get_run_steps`` lists the human steps
+of one run with :func:`step_rows`, :func:`step_state` and the task reading of
+:func:`read_task` and :func:`task_outcome`. It keeps no second reading of a
+task. The task id goes only to the person of the task.
+
+Fence: ``tests/unit/test_workflows_human_step.py``,
+``tests/unit/test_workflows_human_step_r8.py``,
+``tests/unit/test_workflows_run_steps.py`` and
+``tests/unit/test_workflows_run_steps_r8.py``.
 """
 
 from __future__ import annotations
@@ -154,6 +161,19 @@ def _clip(value: Any, limit: int) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
+def step_person(value: Any) -> str | None:
+    """The member email of a step, in lower case, or None.
+
+    The one rule of a usable person: an ``@``, at most 254 characters and no
+    ``{{ref}}``. :func:`open_step` refuses a step with None, and
+    :func:`step_rows` shows None.
+    """
+    who = str(value or "").strip().lower()
+    if "@" not in who or len(who) > _EMAIL_MAX or "{{" in who:
+        return None
+    return who
+
+
 def task_values(
     *, config: dict[str, Any], workflow_id: str, workflow_name: str, run_id: str,
     node_id: str,
@@ -210,8 +230,8 @@ async def open_step(
 
     org = str(organization_id or "").strip().lower()
     config = step_config(snapshot.get("serialized"), node_id)
-    who = str(config.get("assignee") or "").strip().lower()
-    if not org or "@" not in who or len(who) > _EMAIL_MAX or "{{" in who:
+    who = step_person(config.get("assignee"))
+    if not org or who is None:
         raise StepRefused("no_assignee")
     # An ACTIVE member of THIS org, before any write. A member of another org
     # resolves to that org, and the compare refuses it.
@@ -374,3 +394,146 @@ async def end_step(
     if ran is None:
         raise park.ParkLost(run_id)
     return True
+
+
+# ── The steps of one run (STU-E4b) ──────────────────────────────────────────
+#
+# ``GET /workflows/runs/{run_id}/steps`` (``runs.get_run_steps``) lists the
+# human steps of one run, for the Checklist block of a playbook (STU-D9). The
+# pure parts are here, beside the rules that they read. The route reads the
+# rows in ONE tenant session and calls them.
+
+#: The state words of a step. Nothing else names a state of a step.
+STEP_PENDING = "pending"
+STEP_DONE = "done"
+STEP_CANCELLED = "cancelled"
+STEP_NOT_REACHED = "not_reached"
+
+#: A run in one of these states can still make the task of a step.
+_LIVE_RUN = frozenset({"queued", "running", "paused"})
+
+#: The task pauses of one run, the newest first. The read takes the task id and
+#: the person from the snapshot, and never the pinned graph, so it stays small.
+RUN_PAUSES_SQL = (
+    "SELECT node_id, status, snapshot ->> 'task_id' AS task_id, "
+    "       snapshot ->> 'assignee' AS assignee "
+    "  FROM workflow_run_pauses "
+    " WHERE run_id = CAST(:run_id AS uuid) AND reason = 'task' "
+    " ORDER BY created_at DESC, id DESC"
+)
+
+#: The graph that the run pinned: the newest pause snapshot that holds one.
+#: ``resume_run`` replays this graph, so a test run of a draft reads right too.
+PINNED_GRAPH_SQL = (
+    "SELECT snapshot -> 'serialized' AS serialized FROM workflow_run_pauses "
+    " WHERE run_id = CAST(:run_id AS uuid) "
+    "   AND jsonb_typeof(snapshot -> 'serialized') = 'object' "
+    " ORDER BY created_at DESC, id DESC LIMIT 1"
+)
+
+
+def _list_of(serialized: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    """The dict entries of ``serialized[key]``. Any other shape gives none."""
+    found = serialized.get(key)
+    return [item for item in found if isinstance(item, dict)] if isinstance(found, list) else []
+
+
+def walk_order(serialized: Any) -> list[str]:
+    """The block ids of *serialized* in the order that a run walks them.
+
+    It is a stable topological order of the connections. A block comes after
+    each block that leads to it, and the block list breaks a tie. A cycle or a
+    connection to an unknown block does not raise. Each block that the walk
+    cannot place comes last, in the block list order.
+    """
+    import heapq
+
+    if not isinstance(serialized, dict):
+        return []
+    index: dict[str, int] = {}
+    for block in _list_of(serialized, "blocks"):
+        index.setdefault(str(block.get("id")), len(index))
+    after: dict[str, list[str]] = {nid: [] for nid in index}
+    waits = dict.fromkeys(index, 0)
+    for conn in _list_of(serialized, "connections"):
+        src, tgt = str(conn.get("source")), str(conn.get("target"))
+        if src in index and tgt in index and src != tgt:
+            after[src].append(tgt)
+            waits[tgt] += 1
+    ready = [(index[nid], nid) for nid in index if waits[nid] == 0]
+    heapq.heapify(ready)
+    order: list[str] = []
+    while ready:
+        _, nid = heapq.heappop(ready)
+        order.append(nid)
+        for tgt in after[nid]:
+            waits[tgt] -= 1
+            if waits[tgt] == 0:
+                heapq.heappush(ready, (index[tgt], tgt))
+    placed = set(order)
+    return order + [nid for nid in index if nid not in placed]
+
+
+def step_rows(serialized: Any) -> list[dict[str, Any]]:
+    """The human steps of *serialized* in walk order.
+
+    Each row is ``node_id``, ``title`` and ``assignee``, from the literal config
+    of the pinned graph, never from a payload. A step with no usable person
+    gives ``assignee`` None, and a step with no title gives an empty title.
+    Neither raises.
+    """
+    if not isinstance(serialized, dict):
+        return []
+    steps: dict[str, dict[str, Any]] = {}
+    for block in _list_of(serialized, "blocks"):
+        if str(block.get("type") or "") == "human_step":
+            steps.setdefault(str(block.get("id")), block)
+    rows: list[dict[str, Any]] = []
+    for nid in walk_order(serialized):
+        block = steps.get(nid)
+        if block is None:
+            continue
+        config = block.get("config") if isinstance(block.get("config"), dict) else {}
+        rows.append({
+            "node_id": nid,
+            "title": _clip(config.get("title"), _TITLE_MAX),
+            "assignee": step_person(config.get("assignee")),
+        })
+    return rows
+
+
+def step_state(
+    *, result: Any, pause_status: str | None, outcome: str | None, run_status: str,
+) -> str:
+    """The state word of one step. Nothing else decides it.
+
+    *result* is the node result of the run, *pause_status* the status of the
+    newest ``task`` pause of the step (None with no pause), *outcome* the
+    :func:`task_outcome` of its task (None when nothing read the task), and
+    *run_status* the status of the run.
+
+    * A node result ``ok`` is ``done``: the run went past the step.
+    * With a pause, the pause and the task decide. ``resolved`` is ``done``,
+      because only a done task resolves a task pause. A done task is ``done``.
+      A pending pause whose task waits, or whose snapshot holds no task, is
+      ``pending`` while the run is live. Each other case is ``cancelled``.
+    * With no pause, a step that waits is ``pending`` while the run is live,
+      because the hold has not made the task yet. A refused hold ended the
+      run, so the step is ``cancelled``.
+    * Any other step is ``not_reached``.
+    """
+    status = result.get("status") if isinstance(result, dict) else None
+    live = run_status in _LIVE_RUN
+    if status == "ok":
+        return STEP_DONE
+    if pause_status is not None:
+        if pause_status == "resolved" or outcome == RESUME:
+            return STEP_DONE
+        if pause_status == "pending" and outcome in (WAIT, None) and live:
+            return STEP_PENDING
+        return STEP_CANCELLED
+    if status == "waiting":
+        return STEP_PENDING if live else STEP_CANCELLED
+    if status == "error":
+        return STEP_CANCELLED
+    return STEP_NOT_REACHED
