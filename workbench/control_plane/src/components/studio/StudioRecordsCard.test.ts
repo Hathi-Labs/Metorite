@@ -406,9 +406,10 @@ describe("the wiring", () => {
     const g = gateway();
     vi.stubGlobal("fetch", g.impl);
     await mount([listEvent({})], g.impl);
+    const event = listEvent({});
     const message = {
       id: "a1", role: "assistant" as const, content: "Here are the visits.", timestamp: 1, streaming: false,
-      toolEvents: [listEvent({})],
+      toolEvents: [{ ...event, args: event.args ?? {} }],
     };
     const html = renderToStaticMarkup(createElement(MessageBubble, { message, sessionId: "s1" }));
     expect(cards(html)).toBe(1);
