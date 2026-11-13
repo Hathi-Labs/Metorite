@@ -24,10 +24,11 @@ c. The workflow of org B answers 404 to a member of org A, and its trigger
    stays off.
 d. The E3 rule holds: only the author turns on a Studio record trigger.
 e. A ``manual`` trigger gets 422.
-f. A draft takes the flag and answers ``live: false``.
-g. A Save of a published workflow that arms a schedule, webhook or event
-   trigger needs the right. A Save that arms nothing, and a Save of a draft,
-   need none.
+f. A draft takes the flag and answers ``live: false``. So does a published
+   workflow in an org off ``WORKFLOW_UNATTENDED_ORGS``, and its note says so.
+g. A Save of a published or a disabled workflow that arms a schedule,
+   webhook or event trigger needs the right. A Save that arms nothing, and a
+   Save of a draft that was never published, need none.
 
 Run (a PRIVATE database, one R8 suite at a time, because the ``promoted``
 fixture drops ``<db>_h3rls``)::
@@ -52,6 +53,10 @@ went red.
   Red: the same test, for each of the three people.
 * M5: drop the ``_refuse_foreign_studio_trigger`` call of the route. Red:
   ``test_only_the_author_turns_on_a_studio_record_trigger``.
+* M6 (review P2-a): the Save checks a published workflow only. Red:
+  ``test_a_save_that_arms_a_disabled_workflow_needs_the_right``.
+* M7 (review P2-b): ``live`` ignores ``unattended.org_allowed``. Red:
+  ``test_an_org_off_the_list_is_armed_but_not_live``.
 """
 
 from __future__ import annotations
@@ -73,6 +78,7 @@ from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant
 from fastapi import FastAPI, Request
 from gateway.routes.workflows import router as workflows_router
+from gateway.routes.workflows import unattended
 from gateway.routes.workflows.publish import ARMING_REFUSAL
 from sqlalchemy import text
 
@@ -113,6 +119,7 @@ WORKFLOWS: dict[str, tuple[str, str, list[tuple[str, dict, bool]]]] = {
         ("manual", {}, True),
     ]),
     "draft": ("A", "draft", [("webhook", {}, False)]),
+    "disabled": ("A", "disabled", [("webhook", {}, False)]),
     "other org": ("B", "published", [("webhook", {}, False)]),
 }
 
@@ -153,7 +160,7 @@ def world(promoted):  # noqa: F811 — a fixture
                 "latest_version, organization_id) VALUES (:n, '', :e, :t, :s, :v, "
                 "CAST(:o AS uuid)) RETURNING id"),
                 {"n": f"{name} {TAG}", "e": _email("owner"), "t": f"tok-{uuid.uuid4().hex}",
-                 "s": status, "v": 1 if status == "published" else None,
+                 "s": status, "v": None if status == "draft" else 1,
                  "o": orgs[tag]}).scalar())
     yield SimpleNamespace(p=promoted, a=a, b=b, wids=wids, orgs=orgs)
     with promoted.admin_engine.begin() as c:
@@ -191,6 +198,14 @@ def _resolver(monkeypatch: pytest.MonkeyPatch, world) -> None:
     monkeypatch.setattr(access_mod, "_tables_missing", False)
     monkeypatch.setattr(get_settings(), "workflow_studio_gate_orgs", "")
     access_mod.invalidate()
+    _list_orgs(monkeypatch, world.a)
+
+
+def _list_orgs(monkeypatch: pytest.MonkeyPatch, *orgs: str) -> None:
+    """Set ``WORKFLOW_UNATTENDED_ORGS`` for one case. Each case lists org A,
+    unless it says not."""
+    monkeypatch.setattr(unattended, "get_settings",
+                        lambda: SimpleNamespace(workflow_unattended_orgs=",".join(orgs)))
 
 
 def _app(users: dict[str, UserContext]) -> FastAPI:
@@ -425,6 +440,25 @@ def test_a_draft_takes_the_flag_and_is_not_live(world) -> None:
     assert _triggers(world, "draft") == _seeded("draft", webhook_0=True)
 
 
+def test_an_org_off_the_list_is_armed_but_not_live(world, monkeypatch) -> None:
+    """No door starts a run for an org off ``WORKFLOW_UNATTENDED_ORGS``, so the
+    answer never says live there (review P2-b)."""
+    _list_orgs(monkeypatch)  # the shipped default: no org
+
+    async def fn(call: Any) -> dict[str, Any]:
+        r = await call("manager", "POST", _state(world.wids["disabled"], "webhook"),
+                       {"enabled": True})
+        assert r.json()["live"] is False and "disabled" in r.json()["note"], r.text
+        r = await call("manager", "POST", _state(world.wids["live"], "event"), {
+            "enabled": True, "trigger_id": _id_of(world, "live", "event", _ZOHO)})
+        return r.json()
+
+    body = _run(world, fn)
+    assert (body["enabled"], body["live"], body["workflow_status"]) == (True, False, "published")
+    assert "does not run workflows without a person" in body["note"]
+    assert _triggers(world, "live") == _seeded("live", event_1=True)
+
+
 # ── g. The Save (PUT) gate ────────────────────────────────────────────────
 
 
@@ -487,3 +521,28 @@ def test_a_save_that_arms_nothing_needs_no_right(world) -> None:
     assert [on for _k, _c, on, _b in _triggers(world, "draft")] == [True]
     assert ("webhook", json.dumps({"secret": "hook-secret"}), False) in [
         (k, c, on) for k, c, on, _b in _triggers(world, "live")]
+
+
+def test_a_save_that_arms_a_disabled_workflow_needs_the_right(world) -> None:
+    """An enable writes only the status, so a trigger that a Save arms while
+    the workflow is off goes live with no second look (review P2-a). A draft
+    that was never published stays free of the rule."""
+    wid = world.wids["disabled"]
+
+    async def fn(call: Any) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        r = await call("member", "PUT", f"/workflows/{wid}",
+                       {"triggers": _doc(world, "disabled", webhook_0=True)})
+        out["member"] = (r.status_code, r.json()["detail"])
+        out["after refusal"] = _triggers(world, "disabled")
+        out["manager"] = (await call("manager", "PUT", f"/workflows/{wid}", {
+            "triggers": _doc(world, "disabled", webhook_0=True)})).status_code
+        out["draft"] = (await call("member", "PUT", f"/workflows/{world.wids['draft']}", {
+            "triggers": _doc(world, "draft", webhook_0=True)})).status_code
+        return out
+
+    got = _run(world, fn)
+    assert got["member"] == (403, ARMING_REFUSAL), got
+    assert got["after refusal"] == _seeded("disabled"), got
+    assert (got["manager"], got["draft"]) == (200, 200), got
+    assert [on for _k, _c, on, _b in _triggers(world, "disabled")] == [True]

@@ -276,10 +276,11 @@ async def update_workflow(
             ).fetchall()
             if not _is_author(row, user):
                 await _refuse_foreign_studio_trigger(db, workflow_id, body.triggers)
-            # STB-6c: a Save that arms a live trigger needs workflows:publish.
+            # STB-6c: a Save that arms a trigger of a workflow with a version
+            # (published or disabled) needs workflows:publish.
             refuse_live_arming(
                 user,
-                row.status,
+                row.latest_version,
                 [(r.kind, parse_jsonb(r.config, {}) or {}, bool(r.enabled)) for r in old_triggers],
                 [(t.kind, t.config, t.enabled) for t in body.triggers],
             )

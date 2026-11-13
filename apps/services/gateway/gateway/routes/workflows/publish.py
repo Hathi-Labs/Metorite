@@ -28,13 +28,26 @@ auto-disable policy starts counting failures from (``service.py``).
 
 * ``POST /{id}/triggers/{kind}/state`` arms or disarms ONE trigger, under the
   same gate as the four routes above.
-* A Save (``PUT /{id}``) of a PUBLISHED workflow that arms a trigger of
-  :data:`ARMABLE_KINDS` calls :func:`refuse_live_arming`. Without the right it
-  gets 403 and writes nothing. A Save that arms nothing is unchanged.
+* A Save (``PUT /{id}``) calls :func:`refuse_live_arming`. Without the right,
+  a Save that arms a trigger gets 403 and writes nothing. The rules:
 
-The scans and the hook door read ``t.enabled AND w.status = 'published'``. So
-a flag that a draft or a disabled workflow holds starts nothing until a
-publish or an enable, and each of those needs this right too.
+  1. The rule covers each workflow that has a version: a published one and a
+     disabled one. An enable writes only the status, so a trigger that a
+     Save armed while the workflow was off goes live with no second look.
+     Only a draft that was never published is free of the rule. Its first
+     publish needs the right, and the editor saves before it publishes.
+  2. A Save replaces the triggers as a whole. A schedule, webhook or event
+     trigger that is on in the Save and not on before it is armed. So an
+     add, a turn-on, and a config change of a trigger that is on (a new
+     cron, a new filter, a new or removed webhook secret) each arm.
+  3. Each copy counts. A second trigger with the same config arms.
+
+  A turn-off, a removal, a manual or api trigger, and an unchanged Save arm
+  nothing, and need no right.
+
+The scans and the hook door read ``t.enabled AND w.status = 'published'``, and
+they run only for an org on ``WORKFLOW_UNATTENDED_ORGS`` (``unattended.py``).
+So the route answers ``live: true`` only when all three hold.
 """
 
 from __future__ import annotations
@@ -47,6 +60,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user, require_permission
 from fastapi import Depends, HTTPException
+from gateway.routes.workflows import unattended
 from gateway.routes.workflows.core import (
     _log,
     _tenant_session,
@@ -73,10 +87,11 @@ PUBLISH_PERMISSION = "workflows:publish"
 #: run only when a member or an agent asks, and no door reads its flag.
 ARMABLE_KINDS = UNATTENDED_TRIGGERS
 
-#: The 403 of a Save that would arm a live trigger without the right.
+#: The 403 of a Save that would arm a trigger without the right.
 ARMING_REFUSAL = (
-    "Only a member who may publish workflows can turn on a live trigger of a "
-    "published workflow. Save it with the trigger off, or ask a publisher."
+    "Only a member who may publish workflows can turn on a trigger of a "
+    "workflow that has been published. Save it with the trigger off, or ask "
+    "a publisher."
 )
 
 
@@ -359,18 +374,22 @@ def arms_a_live_trigger(
 
 def refuse_live_arming(
     user: UserContext,
-    status: str | None,
+    latest_version: int | None,
     old: Iterable[tuple[str, Any, bool]],
     new: Iterable[tuple[str, Any, bool]],
 ) -> None:
-    """403 when a Save of a PUBLISHED workflow arms a trigger without the right.
+    """403 when a Save arms a trigger of a workflow that has a version, and the
+    caller does not hold :data:`PUBLISH_PERMISSION`.
 
-    ``crud.update_workflow`` calls it before it writes. A draft and a disabled
-    workflow pass: their flags start nothing until a publish or an enable,
-    and each of those needs :data:`PUBLISH_PERMISSION`. The check reads the
-    right only when the Save arms a trigger, so every other Save is unchanged.
+    ``crud.update_workflow`` calls it before it writes. The rule covers a
+    published AND a disabled workflow. An enable of a disabled workflow
+    writes only its status, so it would make an armed trigger live with no
+    second look. Only a draft that was never published passes. Its first
+    publish needs the right, and the editor saves before it publishes.
+    The check reads the right only when the Save arms a trigger, so every
+    other Save is unchanged.
     """
-    if status != "published" or not arms_a_live_trigger(old, new):
+    if not latest_version or not arms_a_live_trigger(old, new):
         return
     if user.has_permission(PUBLISH_PERMISSION):
         return
@@ -433,12 +452,17 @@ _ARM_SCHEDULE_SQL = (
 )
 
 
-def _state_note(enabled: bool, status: str | None) -> str:
+def _state_note(enabled: bool, status: str | None, org_listed: bool) -> str:
     """One plain sentence on what the new state does."""
     if not enabled:
         return "The trigger is off. It starts nothing."
-    if status == "published":
+    if status == "published" and org_listed:
         return "The trigger is on, and the workflow is published, so the trigger is live."
+    if status == "published":
+        return (
+            "The trigger is armed, but this organization does not run workflows "
+            "without a person yet. It starts nothing until that is turned on."
+        )
     if status == "disabled":
         return (
             "The trigger is on, but the workflow is disabled. It starts nothing "
@@ -476,6 +500,9 @@ async def set_trigger_state(
       answer says ``live: false`` with a ``note``. The scans read
       ``t.enabled AND w.status = 'published'``, so nothing starts until a
       publish or an enable.
+    * **An org off ``WORKFLOW_UNATTENDED_ORGS``.** No door starts a run there
+      (``unattended.org_allowed``, the one reader). So ``live`` is false, and
+      the ``note`` says that the org does not run workflows without a person.
     * **A schedule** that turns on loses its old ``last_fired_at``. The next
       scan sets a new baseline, as for a new schedule. So it never fires a
       catch-up tick for the time it was off.
@@ -557,6 +584,9 @@ async def set_trigger_state(
             enabled=body.enabled,
             by=_uid(user),
         )
+    # The org of the row that RLS let this session read. The doors ask the
+    # same list for the same org before they start a run.
+    org_listed = unattended.org_allowed(str(row.organization_id or ""))
     return {
         "workflow_id": workflow_id,
         "trigger_id": str(target.id),
@@ -564,6 +594,8 @@ async def set_trigger_state(
         "enabled": body.enabled,
         "changed": changed,
         "workflow_status": row.status,
-        "live": bool(body.enabled and row.status == "published" and row.latest_version),
-        "note": _state_note(body.enabled, row.status),
+        "live": bool(
+            body.enabled and row.status == "published" and row.latest_version and org_listed
+        ),
+        "note": _state_note(body.enabled, row.status, org_listed),
     }

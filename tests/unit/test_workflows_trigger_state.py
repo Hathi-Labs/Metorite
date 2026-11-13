@@ -29,6 +29,11 @@ red.
   ``test_an_id_of_another_kind_gets_404_and_writes_nothing``.
 * M5: the route skips ``_refuse_foreign_studio_trigger``. Red:
   ``test_another_member_cannot_turn_on_a_studio_trigger``.
+* M6 (review P2-a): the Save checks a published workflow only, as before the
+  review. Red: both cases of
+  ``test_a_save_that_arms_a_disabled_workflow_needs_the_right``.
+* M7 (review P2-b): ``live`` ignores ``unattended.org_allowed``. Red:
+  ``test_an_org_off_the_list_is_armed_but_not_live``.
 """
 
 from __future__ import annotations
@@ -43,12 +48,13 @@ import pytest
 from acb_auth import UserContext, UserRole, build_access, get_current_user
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
-from gateway.routes.workflows import crud, publish
+from gateway.routes.workflows import crud, publish, unattended
 from gateway.routes.workflows import router as workflows_router
 
 AUTHOR = "author@example.test"
 OTHER = "other@example.test"
 WID = str(uuid.uuid4())
+ORG = str(uuid.uuid4())
 
 MEMBER = ["feature:workflows"]
 PUBLISHER = ["feature:workflows", "workflows:publish"]
@@ -71,6 +77,7 @@ class _FakeDb:
             id=WID, name="Nightly", description="", owner_email=AUTHOR, status=status,
             latest_version=latest_version, graph={}, variables={}, hook_token="tok-secret",
             created_at=None, updated_at=None, disabled_reason=None, disabled_at=None,
+            organization_id=ORG,
         )
         self.triggers = triggers
         self.lose_update = lose_update
@@ -116,8 +123,8 @@ class _FakeDb:
 
 
 class _Sessions(list):
-    """The fakes of one test. A session opens on ``[0]``, and ``opened``
-    counts each open."""
+    """The fakes of one test. A session opens on the newest fake, and
+    ``opened`` counts each open."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -131,11 +138,23 @@ def sessions(monkeypatch: pytest.MonkeyPatch) -> _Sessions:
     @asynccontextmanager
     async def _session() -> Any:
         dbs.opened.append("open")
-        yield dbs[0]
+        yield dbs[-1]
 
     monkeypatch.setattr(publish, "_tenant_session", _session)
     monkeypatch.setattr(crud, "_tenant_session", _session)
     return dbs
+
+
+def _list_orgs(monkeypatch: pytest.MonkeyPatch, *orgs: str) -> None:
+    """Set ``WORKFLOW_UNATTENDED_ORGS`` for one case."""
+    monkeypatch.setattr(unattended, "get_settings",
+                        lambda: SimpleNamespace(workflow_unattended_orgs=",".join(orgs)))
+
+
+@pytest.fixture(autouse=True)
+def _org_runs_unattended(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each case lists the org of the fake workflow, unless it says not."""
+    _list_orgs(monkeypatch, ORG)
 
 
 def _client(grants: list[str], email: str = AUTHOR) -> TestClient:
@@ -184,18 +203,20 @@ class _NoRightRead:
         raise AssertionError("the right was read for a Save that arms nothing")
 
 
-def test_the_check_reads_the_right_only_when_a_published_save_arms() -> None:
+def test_the_check_reads_the_right_only_when_a_save_of_a_version_arms() -> None:
+    """A workflow with a version (published or disabled) is checked. A draft
+    that was never published is not."""
     arm = [("schedule", _CRON, True)]
-    publish.refuse_live_arming(_NoRightRead(), "published", arm, arm)
-    publish.refuse_live_arming(_NoRightRead(), "draft", [], arm)
-    publish.refuse_live_arming(_NoRightRead(), "disabled", [], arm)
+    publish.refuse_live_arming(_NoRightRead(), 3, arm, arm)
+    publish.refuse_live_arming(_NoRightRead(), None, [], arm)
+    publish.refuse_live_arming(_NoRightRead(), 0, [], arm)
     member = UserContext(email=OTHER, role=UserRole.EMPLOYEE, access=build_access(MEMBER))
     with pytest.raises(HTTPException) as err:
-        publish.refuse_live_arming(member, "published", [], arm)
+        publish.refuse_live_arming(member, 1, [], arm)
     assert err.value.status_code == 403
     assert err.value.detail == publish.ARMING_REFUSAL
     holder = UserContext(email=OTHER, role=UserRole.EMPLOYEE, access=build_access(PUBLISHER))
-    publish.refuse_live_arming(holder, "published", [], arm)
+    publish.refuse_live_arming(holder, 1, [], arm)
 
 
 def test_the_armable_kinds_are_the_unattended_kinds() -> None:
@@ -266,6 +287,20 @@ def test_arming_the_one_schedule_resets_its_baseline_and_hides_the_config(
     assert "last_fired_at = NULL" in update
     assert "FOR UPDATE" in next(s for s in db.statements if "FROM workflow_triggers" in s)
     assert db.writes()[-1].startswith("UPDATE workflows SET updated_at")
+
+
+def test_an_org_off_the_list_is_armed_but_not_live(
+        sessions: _Sessions, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No door starts a run for an org off ``WORKFLOW_UNATTENDED_ORGS``. So the
+    answer never says live there, and the note says why."""
+    _list_orgs(monkeypatch, str(uuid.uuid4()))
+    hook = _trigger("webhook", False)
+    sessions.append(_FakeDb("published", [hook]))
+    r = _state(_client(PUBLISHER), "webhook", {"enabled": True})
+    assert r.status_code == 200, r.text
+    assert (r.json()["enabled"], r.json()["live"]) == (True, False)
+    assert "does not run workflows without a person" in r.json()["note"]
+    assert hook.enabled is True
 
 
 def test_an_id_arms_that_trigger_and_no_other(sessions: _Sessions) -> None:
@@ -375,7 +410,7 @@ def test_another_member_turns_on_an_event_of_another_source(sessions: _Sessions)
 
 def _save(sessions: _Sessions, status: str, old: list, new: list, grants: list[str],
           **extra: Any) -> tuple[Any, _FakeDb]:
-    db = _FakeDb(status, old)
+    db = _FakeDb(status, old, latest_version=None if status == "draft" else 1)
     sessions.append(db)
     body = {"triggers": [{"kind": k, "config": c, "enabled": e} for k, c, e in new], **extra}
     return _client(grants).put(f"/workflows/{WID}", json=body), db
@@ -419,10 +454,25 @@ def test_a_save_that_arms_nothing_needs_no_right(sessions: _Sessions, old: list,
     assert r.status_code == 200, r.text
 
 
-@pytest.mark.parametrize("status", ["draft", "disabled"])
-def test_a_save_of_a_workflow_that_is_not_live_needs_no_right(
-        sessions: _Sessions, status: str) -> None:
-    r, db = _save(sessions, status, [], [("schedule", _CRON, True)], MEMBER)
+def test_a_save_of_a_draft_that_was_never_published_needs_no_right(
+        sessions: _Sessions) -> None:
+    r, db = _save(sessions, "draft", [], [("schedule", _CRON, True)], MEMBER)
+    assert r.status_code == 200, r.text
+    assert [t.enabled for t in db.triggers] == [True]
+
+
+@pytest.mark.parametrize("old,new", [
+    ([], [("schedule", _CRON, True)]),
+    ([("webhook", {}, False)], [("webhook", {}, True)]),
+])
+def test_a_save_that_arms_a_disabled_workflow_needs_the_right(
+        sessions: _Sessions, old: list, new: list) -> None:
+    """An enable writes only the status. So a trigger that a Save arms while
+    the workflow is off would go live with no second look (review P2-a)."""
+    r, db = _save(sessions, "disabled", [_trigger(k, e, c) for k, c, e in old], new, MEMBER)
+    assert r.status_code == 403 and r.json()["detail"] == publish.ARMING_REFUSAL, r.text
+    assert db.writes() == []
+    r, db = _save(sessions, "disabled", [_trigger(k, e, c) for k, c, e in old], new, PUBLISHER)
     assert r.status_code == 200, r.text
     assert [t.enabled for t in db.triggers] == [True]
 
