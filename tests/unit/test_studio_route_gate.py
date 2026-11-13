@@ -100,6 +100,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/studio/skills/{skill_id}"),
     ("GET", "/studio/skills/{skill_id}/versions/{version}"),
     ("POST", "/studio/skills/{skill_id}/versions"),
+    ("GET", "/studio/skills/{skill_id}/versions"),
+    ("POST", "/studio/skills/{skill_id}/undo"),
     ("PATCH", "/studio/skills/{skill_id}/state"),
     # A5, the package routes.
     ("POST", "/studio/packages"),
