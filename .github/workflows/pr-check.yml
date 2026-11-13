@@ -149,7 +149,13 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           set -u
-          if files="$(git diff --name-only "$BASE"...HEAD 2>/dev/null)" && [ -n "$files" ]; then :; else
+          # CIV-29b (D218). HEAD is the merge ref. Its first parent is main as GitHub
+          # merged it, so HEAD^1..HEAD holds ONLY the PR's own change. The old
+          # BASE...HEAD range also counted what main gained after the event, and
+          # that made a tests-only PR run the browser suite (PR 2213). Without a
+          # merge commit the old range stays.
+          if git rev-parse -q --verify HEAD^2 >/dev/null 2>&1; then range="HEAD^1 HEAD"; else range="$BASE...HEAD"; fi
+          if files="$(git diff --name-only $range 2>/dev/null)" && [ -n "$files" ]; then :; else
             echo "cannot read the diff, so every area runs"
             for a in frontend operator database caddy; do echo "$a=true" >> "$GITHUB_OUTPUT"; done
             exit 0
@@ -1022,7 +1028,11 @@ jobs:
       run:
         working-directory: workbench/control_plane
     steps:
+      # CIV-39. Depth 2 keeps both parents of the merge commit, so the
+      # Visual review step can diff HEAD^1 against HEAD.
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
 
       - uses: actions/setup-node@v4
         with:
@@ -1062,8 +1072,8 @@ jobs:
       # check, and "Changed areas" is not.
       # * Python reads the body and the base sha from the event FILE into
       #   variables, so no text of the body becomes shell code.
-      # * The checkout is shallow, so the step fetches the one base commit.
-      #   When the base is absent or the diff cannot be read, the line is
+      # * The checkout is shallow, so the step fetches the one first parent.
+      #   When HEAD is no merge commit or the diff cannot be read, the line is
       #   required.
       # * With no event file (the local CI on the PC) there is no body, so
       #   the step passes.
@@ -1083,11 +1093,13 @@ jobs:
           set -u
           if [ ! -f "${GITHUB_EVENT_PATH:-}" ]; then echo "no pull request event, so no body to check"; exit 0; fi
           ev() { python3 -c 'import json, os, sys; p = json.load(open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8")).get("pull_request") or {}; k = sys.argv[1]; print(((p.get("base") or {}).get("sha") if k == "base" else str(p.get("number") or "") if k == "number" else p.get("body")) or "")' "$1"; }
-          base="$(ev base)"
           frontend=true
-          if [ -n "$base" ] \
-            && { git cat-file -e "$base^{commit}" 2>/dev/null || git fetch -q --no-tags --depth=1 origin "$base" 2>/dev/null; } \
-            && files="$(git diff --name-only "$base" HEAD 2>/dev/null)"; then
+          # CIV-39 (D218). The PR's own change is HEAD^1..HEAD on the merge ref.
+          # A two-dot diff from the event base also counted what main gained
+          # after the event (PR 2213). The checkout is shallow, so the step
+          # fetches the one first parent when it is absent. A HEAD that is not
+          # a merge commit, or a failed diff, keeps the line required.
+          if parent="$(git rev-parse -q --verify HEAD^2 >/dev/null 2>&1 && git rev-parse -q --verify HEAD^1 2>/dev/null)"             && { git cat-file -e "$parent^{commit}" 2>/dev/null || git fetch -q --no-tags --depth=1 origin "$parent" 2>/dev/null; }             && files="$(git diff --name-only HEAD^1 HEAD 2>/dev/null)"; then
             grep -q '^workbench/control_plane/src/' <<< "$files" || frontend=false
           fi
           $frontend || { echo "no change under workbench/control_plane/src"; exit 0; }
