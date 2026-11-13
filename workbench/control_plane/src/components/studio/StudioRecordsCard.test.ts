@@ -453,6 +453,10 @@ describe("the wiring", () => {
     expect(card).toContain("door ? sourceKey(door, call.source) : null,");
     expect(card).toContain("() => (door as StudioDataDoor).read(call.source),");
     expect(card).toContain("<StudioDataContext.Provider value={door}>");
+    // Mutation: put back an inline frame that always offers "Try again", or pass
+    // `error={null}`. A 401 then shows a retry that can never pass, and only this
+    // pin turns red (the frame tests render PackageFailedFrame on its own).
+    expect(card).toContain("<PackageFailedFrame id={id} title={title} error={pkg.error} onRetry={pkg.refresh} />");
   });
 
   it("the card draws no Board, no Form, no button that acts, no edit and no delete", () => {
