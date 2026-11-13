@@ -899,8 +899,13 @@ def static_reasons(changed: list[str], needles: list[str] | None) -> list[str]:
 
 
 def hub_reasons(mods: set[str], test_users: dict[str, set[str]], n_tests: int) -> list[str]:
-    """A module that more than HUB_CEILING_SHARE of the test files import goes FULL."""
-    ceiling = int(n_tests * HUB_CEILING_SHARE)
+    """A module that more than HUB_CEILING_SHARE of the test files import goes FULL.
+
+    The ceiling is never below HUB_LIMIT. Below that line a module is no hub,
+    as on main. Without the floor, a small tree (a test fixture repo) has a
+    ceiling of 0, and every changed module goes FULL. The CIV-32 repair test
+    found it (PR 2205). On the real tree the ceiling is 350."""
+    ceiling = max(HUB_LIMIT, int(n_tests * HUB_CEILING_SHARE))
     return [
         f"{m}: {len(test_users.get(m, set()))} test files import it, more than {ceiling} "
         f"({HUB_CEILING_SHARE:.0%} of the test files)"

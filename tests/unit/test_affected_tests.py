@@ -193,6 +193,19 @@ def test_gate_full_when_a_hub_module_has_too_many_test_importers(
     assert any("leaf" in r for r in out["reasons"])
 
 
+def test_gate_a_module_under_the_hub_limit_is_never_full_in_a_small_tree(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # The ceiling never falls below HUB_LIMIT. In a 9-file tree, 20% is 1, and
+    # without the floor a module with 2 test importers went FULL.
+    root = _gate_repo(tmp_path)
+    monkeypatch.setattr(sel, "HUB_LIMIT", 40)
+    monkeypatch.setattr(sel, "HUB_CEILING_SHARE", 0.2, raising=False)
+    out = sel.gate(["packages/pkg/pkg/leaf.py"], root)
+    assert out["full"] is False, out["reasons"]
+    assert {"tests/unit/test_leaf.py", "tests/unit/test_patch.py"} <= set(out["files"])
+
+
 def test_gate_a_hub_below_the_ceiling_selects_its_importers(
     tmp_path: Path, monkeypatch
 ) -> None:
