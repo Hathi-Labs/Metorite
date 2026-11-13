@@ -857,13 +857,14 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # which is NOT a second assistant. Eight stateless builder tools (G1b added the describe tool,
     # G2 the interview and the plan card), three skill tools (F2d) and three package tools (G1c:
     # save and publish over the A5 routes; A5c-2: delete over the A5c-1 routes, after one card).
+    # J2b-3a adds the four approval tools over the J2b-1 routes: ask, list, approve and reject.
     # A run loads a pack only where tool packs are on, and the pack builds nothing for an org that
     # STUDIO_ORGS does not hold.
     "studio": {
         "label": "AI Studio builder",
         "summary": (
             "Build an AI Studio app: draft a manifest from a brief, patch it, "
-            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save, publish and delete the app, start from a ready app, save, publish, pause and list your skills, and read the records of a package."
+            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save, publish and delete the app, start from a ready app, save, publish, pause and list your skills, read the records of a package, and ask for, list, approve and reject the approval of an app for the organization."
         ),
         "description": (
             "A tool pack: the builder tools of AI Studio, for the main "
@@ -873,7 +874,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "an app as a draft, publish it, and delete it after one card. It also holds the skill tools: save, "
             "publish, pause and list the skills of a member. Two read tools list the "
             "packages of a member and read the records of an object. Three write tools add, "
-            "change and delete a record, and each asks the member first. The tools keep no "
+            "change and delete a record, and each asks the member first. Four approval tools "
+            "ask for the approval of an app version for the organization, list the versions that "
+            "wait, and approve or reject one. The tools keep no "
             "draft: the chat holds the manifest. A run loads a pack only where tool packs are on, "
             "so until then this switch has no effect."
         ),
@@ -900,6 +903,10 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "studio_record_update",
             "studio_record_delete",
             "studio_app_read",
+            "studio_request_approval",
+            "studio_list_approvals",
+            "studio_approve",
+            "studio_reject",
         ),
         "owner": "studio-builder",
         "core": False,

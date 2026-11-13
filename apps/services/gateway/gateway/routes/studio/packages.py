@@ -57,7 +57,9 @@ refuses the rest (403). The publisher and the owner cannot approve (403,
 PKG-Q10). A version that nobody asked for (``auto``), another org and an id
 that names nothing get 404, so a holder learns nothing of a private package.
 Another state is 409 ``review_conflict``. The store writes the audit row in
-the same transaction. No chat twin yet (J2b-3).
+the same transaction. The chat twins of these four routes are J2b-3a
+(``studio_tools.studio_request_approval``, ``studio_list_approvals``,
+``studio_approve`` and ``studio_reject``). The twin of a share is J2b-3b.
 
 **The read of a member who is not the owner (WS-STU J2a).** ``GET
 /packages/{id}`` reads the owner first, and that answer does not change.

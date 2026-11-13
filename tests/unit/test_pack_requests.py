@@ -289,6 +289,11 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "studio_record_delete": ("delete a record from my studio package",),
     # -- studio door read (STU-B2b-2c) --
     "studio_app_read": ("read a knowledge page through my studio app",),
+    # -- studio approval for the org (STU-J2b-3a) --
+    "studio_request_approval": ("ask for the org approval of my studio app",),
+    "studio_list_approvals": ("which studio app versions wait for my approval?",),
+    "studio_approve": ("approve version 2 of the studio app for the org",),
+    "studio_reject": ("reject version 2 of the studio app",),
     # -- projects-reminders --
     "list_reminders": ("what reminders do I have?",),
     "promote_reminder": ("turn the reminder into a task",),
