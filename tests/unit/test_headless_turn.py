@@ -63,8 +63,9 @@ real compare-and-set, so a round reaches ``cap_reached`` as on the database.
   ``test_the_kill_switch_stops_the_next_round`` goes red.
 * M5. ``headless_tools``: keep each name. ``test_only_read_only_tools_are_offered``
   goes red.
-* M6. ``no_cost_reader``: answer 0. ``test_the_default_meter_fails_closed``
-  goes red.
+* M6. ``console_meter``: answer 0 when the door fails.
+  ``test_the_default_meter_fails_closed`` goes red, and so do the cases of
+  ``test_headless_turn_meter.py`` (AUTO-8b-2d).
 * M7 (AUTO-8b-1). ``_cost``: charge 0 when the meter runs out of time.
   ``test_a_meter_that_hangs_after_the_call_charges_the_rest_inside_the_margin``
   and the R8 case go red.
@@ -290,9 +291,12 @@ class FakeMeter:
         self.sleep_before = 0.0
         self.sleep_after = 0.0
         self.cancelled = False
+        #: The member of each read, in order (AUTO-8b-2d).
+        self.members: list[str] = []
 
-    async def __call__(self, org: str, run_id: str) -> Decimal:
+    async def __call__(self, org: str, member: str, run_id: str) -> Decimal:
         self.reads += 1
+        self.members.append(member)
         after = run_id in self.spent
         if self.fail_after and after:
             raise ConnectionError("the Console did not answer")
@@ -452,17 +456,18 @@ def test_the_kind_registers_only_with_the_job_queue_on(monkeypatch) -> None:
     assert (entry.handler, entry.mode, entry.idempotent) == (ht.run_turn, "detached", False)
 
 
-def test_the_default_turn_has_no_reader_no_candidate_and_reads_only() -> None:
+def test_the_default_turn_has_the_console_meter_no_candidate_and_reads_only() -> None:
     """With the flag on and nothing else, no turn makes a model call: no
-    candidate check exists, and the default meter raises."""
+    candidate check exists. The default meter is the Console reader of
+    AUTO-8b-2d, and with no proven member it raises before any hop."""
     default = ht._DEFAULT
-    assert default._meter is ht.no_cost_reader
+    assert default._meter is ht.console_meter
     assert default._runner is ht.run_worker
     assert default._go_on is ht.one_round
     assert default._candidates is None and ht._CANDIDATES == {}
     assert default._tools == ht.DEFAULT_TOOLS
-    with pytest.raises(ht.NoCostReader):
-        asyncio.run(ht.no_cost_reader(ORG, "run-1"))
+    with pytest.raises(ht.CostReadFailed):
+        asyncio.run(ht.console_meter(ORG, ANA, "run-1"))
 
 
 # ── No candidate, no call ───────────────────────────────────────────────────
@@ -792,7 +797,7 @@ def test_a_timeout_of_the_meter_itself_is_not_the_settle_timeout(world) -> None:
     goal = world.goals.add()
     runner = FakeRunner(world.meter)
 
-    async def own_timeout(org: str, run_id: str) -> Any:
+    async def own_timeout(org: str, member: str, run_id: str) -> Any:
         raise TimeoutError("the meter's own HTTP timeout")
 
     claim = _run(_turn(world, runner, meter=own_timeout), _payload(goal))
@@ -848,10 +853,10 @@ def test_the_settle_never_swallows_a_cancel(world, monkeypatch, step) -> None:
 
     def call() -> Any:
         if step == "before":
-            return turn._before(ORG, run_id)
+            return turn._before(ORG, ANA, run_id)
         if step == "cost":
             world.meter.spent[run_id] = Decimal("1")
-            return turn._cost(ORG, run_id, Decimal(0), goal, 0.0)
+            return turn._cost(ORG, ANA, run_id, Decimal(0), goal, 0.0)
         return turn._record(ORG, ANA, goal, Decimal("1"), 0.0)
 
     async def main() -> None:
@@ -1156,7 +1161,7 @@ def test_a_meter_that_fails_after_a_call_gives_a_reason_of_its_own(
     goal = world.goals.add(cost_cap="10")
     reads = [0]
 
-    async def meter(org: str, run_id: str) -> Any:
+    async def meter(org: str, member: str, run_id: str) -> Any:
         reads[0] += 1
         if reads[0] == 3:  # the read before round 2
             if how == "raises":
@@ -1204,7 +1209,7 @@ def test_a_driver_that_turns_a_cancel_into_an_error_charges_the_rest(world) -> N
     run_id = str(uuid.uuid4())
     entered = asyncio.Event()
 
-    async def converts(org: str, run: str) -> Any:
+    async def converts(org: str, member: str, run: str) -> Any:
         entered.set()
         try:
             await asyncio.sleep(30)
@@ -1216,7 +1221,7 @@ def test_a_driver_that_turns_a_cancel_into_an_error_charges_the_rest(world) -> N
 
     async def main() -> Any:
         task = asyncio.get_running_loop().create_task(
-            turn._cost(ORG, run_id, Decimal(0), goal, 0.0))
+            turn._cost(ORG, ANA, run_id, Decimal(0), goal, 0.0))
         await asyncio.wait_for(entered.wait(), timeout=30)
         task.cancel()
         return await task
@@ -1300,7 +1305,9 @@ _NEVER = ("save_memory", "save_episode", "write_artifact", "make_report", "crm_p
           "crm_answer_question", "ask_questions", "request_confirmation", "share_artifact",
           "emit_generative_ui", "call_agent", "call_agents_parallel", "decide",
           "web_search", "fetch_page", "github_search", "run_script", "code_task",
-          "no_such_tool")
+          "no_such_tool",
+          # AUTO-8b-2d: a billed embed call with no run id (UNMETERED_TOOLS).
+          "crm_search_notes")
 
 
 def test_only_read_only_tools_are_offered() -> None:
@@ -1357,9 +1364,12 @@ def test_the_default_runner_holds_the_worker_to_a_read_only_job(monkeypatch) -> 
 # ── The meter fails closed ──────────────────────────────────────────────────
 
 
-def test_the_default_meter_fails_closed(world) -> None:
-    """With the flag on, a candidate and no cost reader, the turn makes NO
-    model call. It gives up with a named reason and logs it at error."""
+def test_the_default_meter_fails_closed(world, monkeypatch) -> None:
+    """With the flag on, a candidate and a box with no Console wiring, the
+    default meter cannot read. The turn makes NO model call, gives up with
+    a named reason and logs it at error (AUTO-8b-2d)."""
+    monkeypatch.setattr(world.settings, "customer_console_url", "")
+    monkeypatch.setattr(world.settings, "customer_console_deployment_key", "")
     goal = world.goals.add()
     runner = FakeRunner(world.meter)
     turn = ht.HeadlessTurn(runner=runner, candidates=world.checks, go_on=_always)
@@ -1367,16 +1377,17 @@ def test_the_default_meter_fails_closed(world) -> None:
         claim = _run(turn, _payload(goal))
     assert runner.calls == [] and world.goals.writes == 0
     assert world.goals.rows[goal.id] == goal
-    assert world.jobs.given_up == [(claim.id, ht.NO_READER)]
-    lines = [c["log_level"] for c in caps if c["event"] == "headless_turn.no_cost_reader"]
-    assert lines == ["error"]
+    assert world.jobs.given_up == [(claim.id, ht.COST_READ_FAILED)]
+    lines = [(c["log_level"], c["error"]) for c in caps
+             if c["event"] == "headless_turn.cost_read_failed"]
+    assert lines == [("error", "ConsoleUnavailable")]
 
 
 def test_a_meter_that_answers_no_number_fails_closed(world) -> None:
     goal = world.goals.add()
     runner = FakeRunner(world.meter)
 
-    async def odd(org: str, run_id: str) -> Any:
+    async def odd(org: str, member: str, run_id: str) -> Any:
         return "zero"
 
     claim = _run(_turn(world, runner, meter=odd), _payload(goal))

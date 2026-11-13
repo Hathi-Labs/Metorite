@@ -474,6 +474,190 @@ class TestTheLifecycle:
         assert r.status_code == 403, r.text
 
 
+# ── AUTO-8b-2d · the spend of ONE run, for the headless turn's meter ─────────
+
+RUN_DOOR = "/registry/usage/run"
+
+
+def _run_usage(db, org_id: str, *, email: str, run_id: str, credits: str) -> None:
+    with db.begin() as c:
+        assert store.record_usage(
+            c, org_id=org_id, request_id=f"req-{uuid.uuid4().hex}",
+            billed_credits=Decimal(credits), user_email=email, agent="worker",
+            run_id=run_id,
+        ) is True
+
+
+def _row_counts(db) -> dict[str, int]:
+    """The exact row count of every table of the Console's schema."""
+    with db.begin() as c:
+        tables = c.execute(text(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_type = 'BASE TABLE' "
+            "ORDER BY table_name")).scalars().all()
+        return {t: c.execute(text(f'SELECT count(*) FROM "{t}"')).scalar_one()
+                for t in tables}
+
+
+class TestTheRunSpendDoor:
+    """``POST /registry/usage/run`` (``proactive_agent.md`` §4.4, AUTO-8b-2d).
+
+    Two orgs on ONE box, one key, and usage rows of ONE run id in each org.
+    Mutation (a): drop ``organization_id = :org`` from ``store.run_spend``.
+    Then ``test_each_actor_reads_only_the_sum_of_its_own_org`` goes red,
+    because the owner of A reads the rows of B too.
+    """
+
+    def test_each_actor_reads_only_the_sum_of_its_own_org(self, client, db, billing_key):
+        a, b = _new_org(client), _new_org(client)
+        run = str(uuid.uuid4())
+        _run_usage(db, a["id"], email=a["owner"], run_id=run, credits="2.5")
+        _run_usage(db, a["id"], email=a["owner"], run_id=run, credits="5")
+        _run_usage(db, a["id"], email=a["owner"], run_id=str(uuid.uuid4()), credits="40")
+        _run_usage(db, b["id"], email=b["owner"], run_id=run, credits="11")
+
+        r = _post(client, billing_key, RUN_DOOR, actor_email=a["owner"], run_id=run)
+        assert r.status_code == 200, r.text
+        assert r.json() == {"credits": "7.5000"}
+        r = _post(client, billing_key, RUN_DOOR, actor_email=b["owner"], run_id=run)
+        assert r.status_code == 200, r.text
+        assert r.json() == {"credits": "11.0000"}
+
+    def test_an_unknown_run_reads_zero(self, client, billing_key):
+        org = _new_org(client)
+        r = _post(client, billing_key, RUN_DOOR, actor_email=org["owner"],
+                  run_id=str(uuid.uuid4()))
+        assert r.status_code == 200, r.text
+        assert r.json() == {"credits": "0.0000"}
+
+    def test_the_run_id_is_read_in_its_canonical_form(self, client, db, billing_key):
+        """An upper-case id names the same run: the door sums the form that
+        ``str(uuid.uuid4())`` gives, which is the form the turn sends."""
+        org = _new_org(client)
+        run = str(uuid.uuid4())
+        _run_usage(db, org["id"], email=org["owner"], run_id=run, credits="1.25")
+        r = _post(client, billing_key, RUN_DOOR, actor_email=org["owner"],
+                  run_id=run.upper())
+        assert r.json() == {"credits": "1.2500"}
+
+    def test_naming_an_org_slug_is_400(self, client, billing_key):
+        org = _new_org(client)
+        r = _post(client, billing_key, RUN_DOOR, actor_email=org["owner"],
+                  org_slug=org["slug"], run_id=str(uuid.uuid4()))
+        assert r.status_code == 400, r.text
+        assert "may not name an organization" in r.json()["detail"]
+
+    @pytest.mark.parametrize("field", ["scope", "member", "organization_id", "org_id"])
+    def test_an_extra_field_is_422(self, client, billing_key, field):
+        org = _new_org(client)
+        r = _post(client, billing_key, RUN_DOOR, actor_email=org["owner"],
+                  run_id=str(uuid.uuid4()), **{field: "x"})
+        assert r.status_code == 422, r.text
+
+    @pytest.mark.parametrize("bad", ["not-a-uuid", "", 12, None])
+    def test_a_bad_run_id_is_422(self, client, billing_key, bad):
+        org = _new_org(client)
+        r = _post(client, billing_key, RUN_DOOR, actor_email=org["owner"], run_id=bad)
+        assert r.status_code == 422, r.text
+
+    def test_a_missing_run_id_is_422(self, client, billing_key):
+        org = _new_org(client)
+        r = _post(client, billing_key, RUN_DOOR, actor_email=org["owner"])
+        assert r.status_code == 422, r.text
+
+    def test_the_operator_token_is_403(self, client):
+        org = _new_org(client)
+        r = client.post(RUN_DOOR, headers=OP,
+                        json={"org_slug": org["slug"], "run_id": str(uuid.uuid4())})
+        assert r.status_code == 403, r.text
+        assert "operator" in r.json()["detail"]
+
+    def test_a_key_without_billing_read_is_403(self, client, db):
+        org = _new_org(client)
+        narrow = _key(db, capabilities=[RESOLVE_CAPABILITY, SEAT_ADMIN_CAPABILITY])
+        r = _post(client, narrow, RUN_DOOR, actor_email=org["owner"],
+                  run_id=str(uuid.uuid4()))
+        assert r.status_code == 403, r.text
+        assert BILLING_READ_CAPABILITY in r.json()["detail"]
+
+    def test_an_unknown_member_is_403(self, client, billing_key):
+        r = _post(client, billing_key, RUN_DOOR, actor_email="ghost@nowhere.example",
+                  run_id=str(uuid.uuid4()))
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"] == "the acting member is not an admin on this deployment"
+
+    def test_a_member_of_two_orgs_is_409(self, client, db, billing_key):
+        """The actor holds a membership in A and in B on this box, so the org
+        cannot be inferred. The door never picks one."""
+        a, b = _new_org(client), _new_org(client)
+        r = _post(client, billing_key, "/registry/members",
+                  member_email=b["owner"], actor_email=a["owner"])
+        assert r.status_code == 200, r.text
+        run = str(uuid.uuid4())
+        _run_usage(db, b["id"], email=b["owner"], run_id=run, credits="3")
+        r = _post(client, billing_key, RUN_DOOR, actor_email=b["owner"], run_id=run)
+        assert r.status_code == 409, r.text
+
+    def test_an_org_that_may_not_use_ai_is_403(self, client, billing_key):
+        org = _new_org(client)
+        r = client.post("/orgs/lifecycle", headers=OP,
+                        json={"org_slug": org["slug"], "target": "suspended"})
+        assert r.status_code == 200, r.text
+        r = _post(client, billing_key, RUN_DOOR, actor_email=org["owner"],
+                  run_id=str(uuid.uuid4()))
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"] == "organization is suspended"
+
+    def test_the_door_writes_nothing(self, client, db, billing_key):
+        a, b = _new_org(client), _new_org(client)
+        run = str(uuid.uuid4())
+        _run_usage(db, a["id"], email=a["owner"], run_id=run, credits="2")
+        before = _row_counts(db)
+        for body in (
+            {"actor_email": a["owner"], "run_id": run},
+            {"actor_email": b["owner"], "run_id": run},
+            {"actor_email": a["owner"], "run_id": str(uuid.uuid4())},
+            {"actor_email": a["owner"], "run_id": run, "org_slug": a["slug"]},
+            {"actor_email": "ghost@nowhere.example", "run_id": run},
+        ):
+            client.post(RUN_DOOR, headers={"Authorization": f"Bearer {billing_key}"},
+                        json=body)
+        assert _row_counts(db) == before
+
+    def test_the_default_meter_reads_the_number_of_the_door(
+        self, client, db, billing_key, monkeypatch
+    ):
+        """End to end, with no fake on either side of the wire: the turn's
+        default meter (``console_meter``) calls the client
+        (``run_spend_on_console``), which calls this door on the real
+        database. The number is the door's, as a Decimal with 4 places."""
+        import asyncio
+
+        import httpx
+        from acb_auth import console_resolve
+        from acb_common import get_settings, job_member_scope
+        from gateway.jobs import headless_turn as ht
+
+        org = _new_org(client)
+        run = str(uuid.uuid4())
+        _run_usage(db, org["id"], email=org["owner"], run_id=run, credits="7.5")
+        settings = get_settings()
+        monkeypatch.setattr(settings, "customer_console_url", "http://console.test")
+        monkeypatch.setattr(settings, "customer_console_deployment_key", billing_key)
+        monkeypatch.setattr(
+            console_resolve, "_new_http_client",
+            lambda timeout=None: httpx.AsyncClient(transport=httpx.ASGITransport(app=app)),
+        )
+
+        async def read() -> Decimal:
+            with job_member_scope(org["owner"], app=ht.APP, agent=ht.AGENT):
+                return await ht.console_meter("tenant-org", org["owner"], run)
+
+        got = asyncio.run(read())
+        assert isinstance(got, Decimal)
+        assert got == Decimal("7.5") and str(got) == "7.5000"
+
+
 # ── The hand-lists defend themselves ─────────────────────────────────────────
 
 class TestThisSuiteIsRegistered:

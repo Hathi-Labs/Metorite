@@ -55,14 +55,15 @@ b. The goal again: active, of :data:`GOAL_KIND`, and a credit cap at most
 c. The time left of the turn, from the clock of step 2. None left: the turn
    stops.
 d. The meter for the new run id, BEFORE the call, inside
-   :func:`_settle_limit`. The default meter (:func:`no_cost_reader`) raises
-   :class:`NoCostReader`, and the turn raises it again as it is. So with no
-   cost reader, the turn makes NO model call, gives up with ``NoCostReader``
-   and logs ``headless_turn.no_cost_reader`` at error. A meter that does not
-   answer in time raises it too. After an earlier round made a call, the
-   same failure gives up with ``MeterFailed`` and logs
+   :func:`_settle_limit`. The default meter is :func:`console_meter`
+   (AUTO-8b-2d, see "The meter"). A door error raises
+   :class:`CostReadFailed`: the turn makes NO model call, gives up with
+   ``CostReadFailed`` and logs ``headless_turn.cost_read_failed`` at error.
+   A meter that does not answer in time, or answers no number, raises
+   :class:`NoCostReader`: no call, ``NoCostReader``, and
+   ``headless_turn.no_cost_reader`` at error. After an earlier round made a
+   call, each of those failures gives up with ``MeterFailed`` and logs
    ``headless_turn.meter_failed``, because a reader did answer before.
-   AUTO-8b-2 builds the reader.
 e. The mark (:meth:`HeadlessTurn._mark`): the job id in ``job_id`` of the
    goal, inside :func:`_settle_limit`. A write that fails or does not end in
    time gives up with ``MarkFailed``, and NO call runs. Another write that
@@ -121,6 +122,28 @@ earlier try that died. So the turn reads it as a lost round, and a test
 holds that. A mark write is a compare-and-set on the goal version, so a
 second turn of one goal cannot write over a live mark.
 
+**The meter** (AUTO-8b-2d). :func:`console_meter` reads the credits of the
+run of a round at the Console door ``POST /registry/usage/run``, through
+``acb_auth.console_resolve.run_spend_on_console``. It reads as the payer of
+the goal, and only when ``job_member_scope`` bound that member VERIFIED on
+the task. The Console derives the org from the deployment key and the
+member, as the Router did when it metered the call (R11). The door sums
+``usage_event.billed_credits`` for the run, the sum that the Router's
+``RunCeiling`` reads. A failure never reads as 0: before the call it makes
+no call, and after the call it charges the rest of the budget (step g).
+
+* The runner stays NON-STREAMING. ``run_worker`` calls ``run_agent``, the
+  batch path. A streamed call writes its usage row after its last frame
+  (``customer_console/router.py``, ``relay_stream``), so a read just after
+  the call could be low. The buffered path writes the row before it
+  answers. Fence: ``tests/unit/test_headless_turn_meter.py``.
+* ADVISORY (R7), no fence: the Console's ``_record_completion`` logs a write
+  fault (``router.metering_failed``) and still answers the call. Then the
+  read of that round is low. The round cap, the time cap and the goal cap
+  of each later round still bound the turn.
+* A tool that makes a billed call with no run id is not metered, so a turn
+  holds none of :data:`UNMETERED_TOOLS` (:func:`headless_tools`).
+
 **The report** (:meth:`HeadlessTurn._tell`) runs after the commit of the
 round, so it moves no money. It takes at most :func:`_report_limit`, half of
 the last part of the margin, so the ledger and the settle of the job keep
@@ -170,7 +193,8 @@ pair ``subagent_contract.child_pin`` withholds and refuses every other tool,
 the floor tools too. :func:`headless_tools` keeps a tool only when the risk
 registry says ``read_only=True`` and ``open_world=False``, and
 ``subagent_contract.child_may_hold`` passes it: no member tool, no card, no
-handoff and no extra model call. An unannotated tool fails closed. The run
+handoff and no extra model call. An unannotated tool fails closed. It also
+drops each tool of :data:`UNMETERED_TOOLS` (AUTO-8b-2d). The run
 also binds ``no_egress`` (H-236). Unattended means untrusted input, so the
 turn reaches nothing outside. ``orchestrator/executor.py`` is not changed.
 
@@ -191,7 +215,9 @@ no connection of its own and holds no Redis key.
 
 Fences: ``tests/unit/test_headless_turn.py`` (hermetic),
 ``tests/unit/test_headless_turn_r8.py`` (R8) and, for the clear of the mark,
-``tests/unit/test_goal_record_r8.py`` (R8).
+``tests/unit/test_goal_record_r8.py`` (R8). The meter of AUTO-8b-2d:
+``tests/unit/test_headless_turn_meter.py`` (hermetic) and the door's R8 case
+in ``tests/unit/test_customer_console_billing_reads.py``.
 """
 
 from __future__ import annotations
@@ -206,7 +232,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from acb_common import get_logger, get_settings, goal_store, job_member_scope
+from acb_common import get_logger, get_run_context, get_settings, goal_store, job_member_scope
 from acb_common.db import tenant_session
 
 from gateway.jobs import queue, unattended, worker
@@ -259,8 +285,17 @@ DEFAULT_TOOLS: tuple[str, ...] = (
     "crm_stage_dwell",
     "crm_list_owners",
     "crm_list_fields",
-    "crm_search_notes",
 )
+
+#: The tools that make a billed Console call with NO run id, so neither the
+#: meter of a round nor the Router's ceiling of a run sees their cost
+#: (AUTO-8b-2d). :func:`headless_tools` drops each one. ``crm_search_notes``
+#: embeds its query through ``kb_index.embed``, behind the gateway route
+#: ``GET /crm/notes/search``. A name leaves this set only when its billed call
+#: carries the run id of the round. Fence:
+#: ``tests/unit/test_headless_turn_meter.py``, which finds such a tool from
+#: the source.
+UNMETERED_TOOLS = frozenset({"crm_search_notes"})
 
 #: The named reasons of a give-up (``docs/job_queue.md`` §5a). The log line
 #: holds the text before the first colon only.
@@ -270,6 +305,7 @@ IDENTITY_FAILED = "IdentityReadFailed: the member check failed, so no model call
 CANDIDATE_FAILED = "CandidateFailed: the candidate check failed, so no model call ran"
 NO_READER = "NoCostReader: no cost reader, so the turn made no model call"
 METER_FAILED = "MeterFailed: the cost reader failed after an earlier round made a call"
+COST_READ_FAILED = "CostReadFailed: the Console spend door failed before a call, so no call ran"
 MARK_FAILED = "MarkFailed: the mark before a call was not written, so no call ran"
 LOST_ROUND = "LostRound: a round of the goal has no record, and its charge did not land"
 TURN_FAILED = "TurnFailed: a round of the turn failed"
@@ -285,8 +321,9 @@ _NAME = re.compile(r"[a-z][a-z0-9_.]{0,63}")
 
 #: ``await candidate(org, member, payload)``: True when the turn has work.
 CandidateCheck = Callable[[str, str, dict[str, Any]], Awaitable[bool]]
-#: ``await meter(org, run_id)``: the credits that the run *run_id* spent.
-Meter = Callable[[str, str], Awaitable[Any]]
+#: ``await meter(org, member, run_id)``: the credits that the run *run_id*
+#: spent. *member* is the proven payer of the goal, never a payload value.
+Meter = Callable[[str, str, str], Awaitable[Any]]
 #: ``await runner(message, run_id=, org=, member=, tools=)``: one round.
 Runner = Callable[..., Awaitable[Any]]
 #: ``await report(org, member, goal)``: tell of a goal at its cap, once.
@@ -298,7 +335,8 @@ _CANDIDATES: dict[str, CandidateCheck] = {}
 
 
 class NoCostReader(RuntimeError):
-    """No reader of the cost of a run exists, so no round may start."""
+    """The meter did not answer in time, or answered no number, before a
+    round. So no round may start."""
 
 
 class TurnFailed(RuntimeError):
@@ -308,6 +346,13 @@ class TurnFailed(RuntimeError):
 class MeterFailed(RuntimeError):
     """The meter failed BEFORE a round, after an earlier round of this turn
     made a call. The cost of each earlier round is on the goal."""
+
+
+class CostReadFailed(RuntimeError):
+    """The Console spend door gave no number (AUTO-8b-2d): no proven member,
+    an unwired box, no answer, a refusal or a bad answer. Before a call, the
+    call does not run. After a call, the round charges the rest of the
+    budget. The text is a short code of ours, never the Console's words."""
 
 
 class MarkFailed(RuntimeError):
@@ -376,14 +421,15 @@ def headless_tools(names: Iterable[str]) -> tuple[str, ...]:
     A tool stays only when the risk registry says ``read_only=True`` and
     ``open_world=False``, and ``subagent_contract.child_may_hold`` passes it.
     An unannotated tool, a web tool, a member tool, a card, a handoff and a
-    tool that makes its own model call all go (fail closed)."""
+    tool that makes its own model call all go (fail closed). A tool of
+    :data:`UNMETERED_TOOLS` goes too, because the meter cannot see its cost."""
     from acb_skills import subagent_contract as sc
     from acb_skills.tool_annotations import get_annotations
 
     kept: list[str] = []
     for raw in names:
         name = str(raw or "")
-        if not name or name in kept or name in sc.WEB_TOOLS:
+        if not name or name in kept or name in sc.WEB_TOOLS or name in UNMETERED_TOOLS:
             continue
         notes = get_annotations(name) or {}
         if notes.get("read_only") is not True or notes.get("open_world") is not False:
@@ -421,10 +467,48 @@ async def run_worker(message: str, *, run_id: str, org: str, member: str,
 # ── The meter, the report and the next round ────────────────────────────────
 
 
-async def no_cost_reader(org: str, run_id: str) -> Decimal:
-    """The default meter. It raises, so a turn with no cost reader makes no
-    model call. AUTO-8b-2 gives the reader of the Console."""
-    raise NoCostReader("no cost reader: AUTO-8b-2 builds the per-run reader")
+#: The credits that the Console door answers: a decimal string with exactly
+#: 4 places (``customer_console.main._four_places``). Any other shape fails.
+_DOOR_CREDITS = re.compile(r"[0-9]{1,10}\.[0-9]{4}")
+
+
+def _proven(member: str) -> bool:
+    """True when *member* is the member that ``job_member_scope`` bound
+    VERIFIED on this task. The meter reads for no other address."""
+    ctx = get_run_context()
+    bound = str(ctx.get("user") or "").strip().lower()
+    return (ctx.get("member_verified") == "1" and bool(bound)
+            and bound == str(member or "").strip().lower())
+
+
+async def console_meter(org: str, member: str, run_id: str) -> Decimal:
+    """The default meter (AUTO-8b-2d): the credits that run *run_id* spent,
+    read at the Console door ``POST /registry/usage/run`` as *member*.
+
+    *member* is the payer of the goal, and it must be the member that
+    ``job_member_scope`` bound VERIFIED on this task (:func:`_proven`). The
+    Console derives the org from the deployment key and the member, as the
+    Router did when it metered the call. So the body names no org (R11), and
+    *org* (the worker's org) is not sent.
+
+    Each door error raises :class:`CostReadFailed`: no proven member, an
+    unwired box, a status with no answer, a refusal (400, 403, 409 or 422),
+    and an answer that is not a string with 4 places. A failure never reads
+    as 0, so no call runs free."""
+    from acb_auth.console_resolve import ConsoleBillingUnavailable, run_spend_on_console
+
+    if not _proven(member):
+        raise CostReadFailed("NoProvenMember")
+    try:
+        status, body = await run_spend_on_console(actor_email=member, run_id=run_id)
+    except ConsoleBillingUnavailable:
+        raise CostReadFailed("ConsoleUnavailable") from None
+    if status != 200:
+        raise CostReadFailed(f"HTTP {status}")
+    raw = body.get("credits")
+    if not isinstance(raw, str) or not _DOOR_CREDITS.fullmatch(raw):
+        raise CostReadFailed("BadAnswer")
+    return Decimal(raw)
 
 
 def _settle_limit() -> float:
@@ -581,7 +665,7 @@ class HeadlessTurn:
                 0 < time_cap_s <= MAX_TIME_CAP_S):
             raise ValueError(f"time_cap_s must be more than 0 and at most {MAX_TIME_CAP_S:g}")
         self._runner: Runner = runner or run_worker
-        self._meter: Meter = meter or no_cost_reader
+        self._meter: Meter = meter or console_meter
         self._report: Report = report or log_report
         self._go_on = go_on or one_round
         self._candidates = candidates
@@ -662,6 +746,10 @@ class HeadlessTurn:
             _log.error("headless_turn.no_cost_reader")
             await _give_up(org, claim, NO_READER)
             return
+        except CostReadFailed as exc:
+            _log.error("headless_turn.cost_read_failed", error=str(exc))
+            await _give_up(org, claim, COST_READ_FAILED)
+            return
         except MeterFailed:
             _log.error("headless_turn.meter_failed")
             await _give_up(org, claim, METER_FAILED)
@@ -711,7 +799,7 @@ class HeadlessTurn:
                 else:
                     failure = exc
             guard.progress()
-            cost = await self._cost(org, run_id, before, goal, deadline)
+            cost = await self._cost(org, member, run_id, before, goal, deadline)
             recorded, stale = await self._record(org, member, goal, cost, deadline)
             if recorded is not None and recorded.block_code == "cap_reached":
                 await self._tell(org, member, recorded)
@@ -751,10 +839,10 @@ class HeadlessTurn:
         if deadline - self._clock() <= 0:
             return TurnEnd("time_cap", calls)
         run_id = str(uuid.uuid4())
-        # BEFORE the call: the default meter raises here, so no call runs.
+        # BEFORE the call: a meter that fails here makes no call.
         try:
-            before = await self._before(org, run_id)
-        except NoCostReader as exc:
+            before = await self._before(org, member, run_id)
+        except (NoCostReader, CostReadFailed) as exc:
             if calls:
                 raise MeterFailed(str(exc)) from None
             raise
@@ -770,17 +858,18 @@ class HeadlessTurn:
             return TurnEnd("time_cap", calls)
         return marked, run_id, before, left
 
-    async def _before(self, org: str, run_id: str) -> Decimal:
+    async def _before(self, org: str, member: str, run_id: str) -> Decimal:
         """The meter of *run_id* BEFORE the call, inside :func:`_settle_limit`.
 
         A :class:`NoCostReader` of the meter is raised again as it is. A read
         that does not answer in time, or answers no number, raises it too, so
-        no call runs. Another error of the meter is raised again as it is,
-        and a TimeoutError of the meter's own is such an error."""
+        no call runs. Another error of the meter is raised again as it is: a
+        :class:`CostReadFailed` of the door, and a TimeoutError of the
+        meter's own."""
         scope = asyncio.timeout(_settle_limit())
         try:
             async with scope:
-                value = await self._meter(org, run_id)
+                value = await self._meter(org, member, run_id)
         except Exception:
             if scope.expired():
                 raise NoCostReader("the meter did not answer in time") from None
@@ -865,7 +954,7 @@ class HeadlessTurn:
             await self._tell(org, member, recorded)
         return recorded
 
-    async def _cost(self, org: str, run_id: str, before: Decimal,
+    async def _cost(self, org: str, member: str, run_id: str, before: Decimal,
                     goal: goal_store.Goal, deadline: float) -> Decimal | None:
         """The credits of one round, read inside ``_share(deadline, 1)``.
         None when the cost is unknown: a meter that fails, does not answer in
@@ -878,7 +967,7 @@ class HeadlessTurn:
         scope = asyncio.timeout(self._share(deadline, 1))
         try:
             async with scope:
-                after = _credits_of(await self._meter(org, run_id))
+                after = _credits_of(await self._meter(org, member, run_id))
         except Exception as exc:
             error = "MeterTimeout" if scope.expired() else type(exc).__name__
             _log.error("headless_turn.cost_unknown", goal_id=goal.id, error=error)

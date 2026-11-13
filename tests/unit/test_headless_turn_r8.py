@@ -337,10 +337,10 @@ def test_r8_a_meter_past_the_margin_blocks_the_goal_of_a_only(world, monkeypatch
             world.meter.sleep_after = 60.0
             skew[0] = 1000.0
 
-    async def meter(org: str, run_id: str) -> Any:
+    async def meter(org: str, member: str, run_id: str) -> Any:
         # The share of this read is already set. The record gets the time left.
         skew[0] = 0.0
-        return await world.meter(org, run_id)
+        return await world.meter(org, member, run_id)
 
     real = goal_store.record_round
 
@@ -420,8 +420,12 @@ def test_r8_a_job_for_a_member_who_left_makes_no_model_call(world, monkeypatch) 
 
 
 def test_r8_the_default_meter_makes_no_model_call(world, monkeypatch) -> None:
-    """With the flag on, a candidate and no cost reader: no call, the goal
-    untouched, the job failed with a named reason."""
+    """With the flag on, a candidate and the default meter on a box with no
+    Console wiring (AUTO-8b-2d): no call, the goal untouched, the job failed
+    with a named reason."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "customer_console_url", "")
+    monkeypatch.setattr(settings, "customer_console_deployment_key", "")
     ana = _goal(world, world.p.org_a, ANA)
     runner = FakeRunner(world.meter)
     _use(monkeypatch, ht.HeadlessTurn(runner=runner, candidates=world.checks))
@@ -430,8 +434,8 @@ def test_r8_the_default_meter_makes_no_model_call(world, monkeypatch) -> None:
     assert runner.calls == []
     _assert_untouched(world, ana)
     job = _job(world, job_id)
-    assert job["state"] == "failed" and job["last_error"] == ht.NO_READER
-    want = [("failed", "NoCostReader")] if world.ledger else []
+    assert job["state"] == "failed" and job["last_error"] == ht.COST_READ_FAILED
+    want = [("failed", "CostReadFailed")] if world.ledger else []
     assert [(r["state"], r["error_class"]) for r in _ledger(world, job_id)] == want
 
 

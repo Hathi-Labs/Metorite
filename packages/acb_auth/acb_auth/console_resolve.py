@@ -172,6 +172,7 @@ __all__ = [
     "BILLING_READ_DOORS",
     "CAPABILITY_REFUSAL_PREFIX",
     "CONSOLE_UNAVAILABLE",
+    "RUN_SPEND_DOOR",
     "TRANSCRIBE_TIER",
     "WORKSPACE_CHOOSER_REQUIRED",
     "ConsoleBillingUnavailable",
@@ -199,6 +200,7 @@ __all__ = [
     "rename_org_on_console",
     "resolve_for_signin",
     "router_is_wired",
+    "run_spend_on_console",
     "seat_overview_on_console",
     "transcribe_on_console",
 ]
@@ -1123,6 +1125,38 @@ async def billing_read_on_console(
         payload["scope"] = "org" if scope == "org" else "self"
     return await _post_deployment_door(
         endpoint, payload, unavailable=ConsoleBillingUnavailable
+    )
+
+
+#: The Console door of the spend of ONE run (AUTO-8b-2d,
+#: ``proactive_agent.md`` §4.4). ⚠️ It is NOT in :data:`BILLING_READ_DOORS`,
+#: because each entry there has a browser route (``gateway/routes/billing.py``,
+#: fence ``test_billing_proxy_route.py``). Only the headless turn's meter
+#: calls this door, from the job worker.
+RUN_SPEND_DOOR = "/registry/usage/run"
+
+
+async def run_spend_on_console(
+    *, actor_email: str, run_id: str
+) -> tuple[int, dict[str, Any]]:
+    """Read the credits that run *run_id* spent, for *actor_email*'s org.
+
+    The body is ``{"actor_email", "run_id"}`` and nothing else. The Console
+    derives the org from this box's deployment key and the member (R11), the
+    way the Router metered the call. A 200 answers ``{"credits": "7.5000"}``.
+
+    The caller passes the PROVEN member of the run (``job_member_scope``),
+    never a value from a payload. Returns the Console's ``(status_code,
+    body)``. Raises :class:`ConsoleBillingUnavailable` on an unwired box or a
+    no-answer status, the transport rule of the billing reads. Non-allocating:
+    a read, and it never touches ``resolve_for_signin``.
+    """
+    if not is_wired():
+        raise ConsoleBillingUnavailable("unwired")
+    return await _post_deployment_door(
+        RUN_SPEND_DOOR,
+        {"actor_email": actor_email, "run_id": run_id},
+        unavailable=ConsoleBillingUnavailable,
     )
 
 
