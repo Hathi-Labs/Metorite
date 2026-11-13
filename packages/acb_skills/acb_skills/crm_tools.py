@@ -1661,6 +1661,8 @@ def _display_line(value: Any, *, money: bool, code: str) -> str | None:
     million), and for no value."""
     if value is None:
         return None
+    from decimal import Decimal
+
     from acb_common.number_system import big_band, compact_number, group
 
     from acb_skills.write_artifact import run_numbering
@@ -1671,7 +1673,10 @@ def _display_line(value: Any, *, money: bool, code: str) -> str | None:
         return None
     sign = "-" if amount < 0 else ""
     unit = ("₹" if code == "INR" else f"{code} ") if money else ""
-    whole = f"{sign}{unit}{group(abs(amount), system)}"
+    # Money in whole rupees, as the total line prints it. A paisa that no
+    # line printed must stay a figure with no source (CRM-Q29).
+    digits = Decimal(f"{abs(amount):.0f}") if money else Decimal(str(abs(amount)))
+    whole = f"{sign}{unit}{group(digits, system)}"
     short = f"{sign}{unit}{compact_number(abs(amount), system)}"
     return f"Display: {whole} ({short}). Quote this display value for the total, as written."
 
