@@ -1074,7 +1074,8 @@ def test_t20_a_save_keeps_the_arm_and_its_print_and_drops_a_forged_one(w) -> Non
     _listen(w, "Listen A")
     before = (_armed_at(w, "Listen A"), _arm_print(w, "Listen A"))
     assert before[0] is not None and before[1] == _print_of(_TIMER_RULE)
-    user = SimpleNamespace(email=OWNER_A)
+    # The Save of an armed trigger asks for the publish right (refuse_live_arming).
+    user = SimpleNamespace(email=OWNER_A, has_permission=lambda _perm: True)
 
     def save(config: dict[str, Any]) -> Any:
         async def go() -> Any:
