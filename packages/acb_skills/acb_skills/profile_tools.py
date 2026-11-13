@@ -1218,7 +1218,7 @@ def _language_order_typed(language: str) -> bool:
         return False
     tag = language.strip()
     base = tag.lower().split("-")[0]
-    names = {tag.casefold(), base}
+    names: set[str] = set()  # never a bare tag: "hi", "as" and "or" are words
     english = LANGUAGE_NAMES.get(base)
     if english:
         names.add(english.casefold())

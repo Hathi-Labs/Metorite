@@ -538,7 +538,7 @@ that tells the model to do this sits in the profile tool list of
 
 The mark needs the member's own typed words of this turn. Those words must
 name the language and hold an order word about answers or replies. The name
-is the English name, the member's own name for it, or the tag. A mail or a
+is the English name or the member's own name for it. A mail or a
 page cannot set the mark, and the call saves nothing for it. The refusal is
 `LANGUAGE_FIXED_REFUSED` in `profile_tools.py`.
 

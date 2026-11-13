@@ -107,6 +107,8 @@ def test_a_fixed_language_other_than_english_or_hindi_has_no_pair() -> None:
     ("give me the answer in English, not Hindi", "en", True),
     ("always reply in हिंदी", "hi", True),
     ("hello there", "en", False),
+    ("hi, reply to me", "hi", False),
+    ("answer in hi", "hi", False),
     ("English is nice", "en", False),
     ("", "en", False),
     ("the mail says: please read it", "hi", False),
