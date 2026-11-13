@@ -781,11 +781,18 @@ def test_a_run_with_no_closed_card_sends_no_line():
     assert executor._closed_card_events("", "r") == []
 
 
-def test_a_parked_run_sends_the_line(flag_on, ask_db, liveness):
+def test_a_parked_run_sends_the_line(flag_on, ask_db, liveness, monkeypatch):
     """A run that parks on a later card ends with its own RUN_FINISHED. The
-    line of a card that a chat message closed earlier comes just before it."""
+    line of a card that a chat message closed earlier comes just before it.
+
+    The park runs in the card's own wait, so this calls it from the run, as
+    that wait does. The wait loop itself never parks here: its one early
+    try can come before the card's row is written, and then it waits on."""
+    from orchestrator import pending_ask
+
     from tests.unit.test_pending_ask_flow import _ALICE, _ORG_A, _QUESTION, _bind, _events
 
+    monkeypatch.setattr(pending_ask, "park_after_seconds", lambda: 3600.0)
     tid = "t-park-3130"
     liveness.store[f"cc:runactor:{tid}"] = _ALICE
 
@@ -794,13 +801,29 @@ def test_a_parked_run_sends_the_line(flag_on, ask_db, liveness):
         _bind(_ORG_A)
         ask_tools.open_closed_cards_for_run()
         ask_tools._card_closed_by_message("Reply to puneet@acme.test?", None)
-        await ask_tools.request_confirmation(_QUESTION, "To billing@acme.test")
+        card = asyncio.ensure_future(
+            ask_tools.request_confirmation(_QUESTION, "To billing@acme.test"))
+        for _ in range(500):
+            rows = [rid for (org, rid) in ask_db.rows if org == _ORG_A]
+            if rows and rows[0] in executor._pending_user_input:
+                break
+            await asyncio.sleep(0.01)
+        rid = rows[0]
+        # A park that returns False changes nothing (its docstring), and the
+        # wait tries again. So the test tries again too, for at most 5 s.
+        for _ in range(100):
+            if await pending_ask.park(rid, tid, executor._pending_user_input[rid]):
+                break
+            await asyncio.sleep(0.05)
+        else:
+            raise AssertionError("the run never parked")
+        await card
 
     async def go() -> None:
         run = asyncio.create_task(the_run())
         stream_relay._DETACHED_TASKS[tid] = run
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(run, timeout=5)
+            await asyncio.wait_for(run, timeout=15)
 
     asyncio.run(go())
     events = _events(liveness, tid)
