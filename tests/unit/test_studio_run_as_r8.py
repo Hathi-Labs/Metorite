@@ -48,13 +48,14 @@ n. Migration 429: three nullable columns with no default, and the CHECKs
    refuse a system actor and an address in upper case.
 
 **R7: red first, then mutate.** Each mutation ran on 2026-11-13, on this file
-and its hermetic twin together.
+and its hermetic twin together (85 tests), on the private ladder database.
 
 * M1. ``invoke.run_as_read``: skip the access check (``may_run_as``). Cases f
-  and g go red.
+  and g go red, and 4 tests of the twin (6 failed of 85). Case e stays
+  green, because the sight of the group install stops that run too.
 * M2. ``invoke._run_as_session``: read the declaration from the draft of the
   owner (``packages_store.get_package``) in place of the pinned version.
-  Case i goes red.
+  Case i goes red, and 9 tests of the twin (10 failed of 85).
 """
 
 from __future__ import annotations
