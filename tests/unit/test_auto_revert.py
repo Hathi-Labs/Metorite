@@ -17,6 +17,7 @@ import datetime as dt
 import importlib.util
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -121,26 +122,54 @@ elif verb == "pr comment":
     with open(path("comment_%s.txt" % args[2]), "w", encoding="utf-8") as f:
         f.write(body)
 elif verb == "pr list":
-    print("")
+    # pr_list.json holds the open PRs that a search finds.
+    keep = opt("--json")
+    rows = load("pr_list.json") or []
+    if keep and not (opt("-q") or opt("--jq")):
+        rows = [{k: r.get(k) for k in keep.split(",")} for r in rows]
+        sys.stdout.write(json.dumps(rows) + "\n")
+    else:
+        print("")
 else:
     sys.stderr.write("unexpected gh call: %s\n" % " ".join(args))
     sys.exit(9)
 """
 
 # The probe. It logs the commit it runs on. PROBE_OVERRIDE maps a sha to an
-# exit code, so a test can make one tree flaky. A file BROKEN fails it too.
+# exit code, or to a list of exit codes for the 1st, 2nd... run, so a test
+# can make one tree flaky. A file BROKEN fails it, and a file FIXED passes it.
+# PROBE_HOOK lands one commit on main while the pass runs, on the first probe
+# of a revert tree: "fix" adds FIXED, "move" adds an unrelated file.
 PROBE_PY = r"""
 import json, os, subprocess, sys
 
 sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
 with open(os.environ["PROBE_LOG"], "a", encoding="utf-8") as f:
     f.write(sha + " " + " ".join(sys.argv[1:]) + "\n")
+hook = os.environ.get("PROBE_HOOK", "")
+mark = os.path.join(os.environ["FIX"], "hook.done")
+msg = subprocess.run(["git", "log", "-1", "--format=%B"], capture_output=True, text=True).stdout
+if hook and "Auto-Revert:" in msg and not os.path.exists(mark):
+    open(mark, "w").close()
+    seed = os.environ["SEED"]
+    name = "FIXED" if hook == "fix" else "note_108.txt"
+    with open(os.path.join(seed, name), "w", encoding="utf-8") as f:
+        f.write("108\n")
+    for args in (["add", "-A"], ["commit", "-q", "-m", hook + " lands (#108)"], ["push", "-q", "origin", "main"]):
+        subprocess.run(["git", "-C", seed, *args], check=True, capture_output=True)
 over = {}
 if os.path.exists(os.environ["PROBE_OVERRIDE"]):
     with open(os.environ["PROBE_OVERRIDE"], encoding="utf-8") as f:
         over = json.load(f)
 if sha in over:
-    sys.exit(over[sha])
+    codes = over[sha] if isinstance(over[sha], list) else [over[sha]]
+    count = os.path.join(os.environ["FIX"], "count_" + sha)
+    n = int(open(count).read()) if os.path.exists(count) else 0
+    with open(count, "w") as f:
+        f.write(str(n + 1))
+    sys.exit(codes[min(n, len(codes) - 1)])
+if os.path.exists("FIXED"):
+    sys.exit(0)
 if os.path.exists("BROKEN"):
     sys.exit(1)
 sys.path.insert(0, os.getcwd())
@@ -191,7 +220,9 @@ def load_module():
 class Box:
     """A bare origin, a seed clone that builds main, and the box clone."""
 
-    def __init__(self, tmp: Path, variant: str = "plain") -> None:
+    def __init__(
+        self, tmp: Path, variant: str = "plain", extra104: dict[str, str] | None = None
+    ) -> None:
         self.tmp = tmp
         self.fix = tmp / "fix"
         self.fix.mkdir()
@@ -211,6 +242,7 @@ class Box:
             subject = f"change number {n} (#{n})"
             if n == 104:
                 files["calc.py"] = BAD
+                files.update(extra104 or {})
                 subject = "change number 104 (task 2985) (#104)"
             if n == 105 and variant == "conflict":
                 files["calc.py"] = "def add(a, b):\n    return (a - b)\n"
@@ -251,6 +283,7 @@ class Box:
 
     def commit(self, n: int, message: str, files: dict[str, str]) -> None:
         for name, text in files.items():
+            (self.seed / name).parent.mkdir(parents=True, exist_ok=True)
             (self.seed / name).write_text(text, encoding="utf-8", newline="\n")
         git(self.seed, "add", "-A")
         git(self.seed, "commit", "-q", "-m", message)
@@ -297,6 +330,7 @@ class Box:
             "PATH": f"{self.tmp / 'bin'}{os.pathsep}{os.environ['PATH']}",
             "FIX": str(self.fix),
             "ORIGIN": str(self.origin),
+            "SEED": str(self.seed),
             "PY": PY,
             "PROBE": (self.fix / "probe.py").as_posix(),
             "PROBE_LOG": str(self.fix / "probe.log"),
@@ -354,12 +388,12 @@ class Box:
     def report(self) -> str:
         return (self.tmp / "reports" / "run-30.md").read_text(encoding="utf-8")
 
-    def assert_clean(self) -> None:
-        """No worktree, no temp dir and no lock stay behind. main never moves."""
+    def assert_clean(self, main: str | None = None) -> None:
+        """No worktree, no temp dir and no lock stay behind. The pass never moves main."""
         assert len(git(self.repo, "worktree", "list").splitlines()) == 1
         assert list(self.temp.glob("auto-revert*")) == []
         assert not (self.tmp / "state" / "lock.d").exists()
-        assert self.remote_heads()["refs/heads/main"] == self.tip
+        assert self.remote_heads()["refs/heads/main"] == (main or self.tip)
 
 
 @pytest.fixture
@@ -427,13 +461,16 @@ def test_dry_reports_the_revert_and_writes_nothing_else(box: Box) -> None:
     assert f"Auto-Revert: {box.sha[104]}" in report
     assert "VERIFY: PASS" in report
     assert "task 2985" in report and TASK_URL in report and "mt-1234abcd" in report
-    # Only one read of GitHub. No PR, no comment, no push, no hand-over.
-    assert box.gh_calls() == [["pr", "view", "104", "--json", "title,body,headRefName,url"]]
+    # GitHub reads only: the search for an open revert PR, and the culprit PR.
+    # No PR, no comment, no push, no hand-over.
+    assert box.gh_writes() == []
+    assert ["pr", "view", "104", "--json", "title,body,headRefName,url"] in box.gh_calls()
     assert list(box.remote_heads()) == ["refs/heads/main"]
     assert not box.queue.exists()
-    # Tip, culprit and parent once more, then the revert tree.
-    assert box.probes()[:3] == [box.tip, box.sha[104], box.sha[103]]
-    assert len(box.probes()) == 4
+    # Tip, culprit and parent 3 times each, then the revert tree once.
+    tip, bad, parent = box.tip, box.sha[104], box.sha[103]
+    assert box.probes()[:9] == [tip] * 3 + [bad] * 3 + [parent] * 3
+    assert len(box.probes()) == 10
     box.assert_clean()
 
 
@@ -466,8 +503,11 @@ def test_on_opens_one_revert_pr_with_the_trailer_and_hands_it_over(box: Box) -> 
     queue = box.queue.read_text(encoding="utf-8").splitlines()
     assert queue[0].startswith("# PR")
     fields = queue[1].split("\t")
-    assert fields[0] == "900" and fields[1] == "2985"
+    # P1-a: task 0, so lane-merge never closes the culprit's task on DONE.
+    # The culprit's task is in the note only.
+    assert fields[0] == "900" and fields[1] == "0"
     assert fields[3] == "auto-revert" and fields[4] == revert and fields[5] == "STANDARD"
+    assert "task 2985" in fields[6] and "never close" in fields[6]
     assert len(queue) == 2
 
     comment = (box.fix / "comment_104.txt").read_text(encoding="utf-8")
@@ -486,10 +526,14 @@ def test_on_opens_one_revert_pr_with_the_trailer_and_hands_it_over(box: Box) -> 
 @pytest.mark.parametrize(
     ("codes", "probes", "word"),
     [
-        ({"p104": 0}, 2, "on the culprit"),
+        # Each tree runs up to 3 times. The first wrong answer stops the pass.
+        ({"p104": 0}, 4, "on the culprit"),
         ({"tip": 0}, 1, "on the tip of main"),
-        ({"p103": 1}, 3, "on the parent"),
-        ({"p104": 3}, 2, "cannot judge"),
+        ({"p103": 1}, 7, "on the parent"),
+        ({"p104": 3}, 4, "cannot judge"),
+        # P3-a: a flaky culprit fails once, then passes once.
+        ({"p104": [1, 0]}, 5, "on the culprit"),
+        ({"p103": [0, 0, 1]}, 9, "on the parent"),
     ],
 )
 def test_the_flake_rerun_stops_the_revert(box: Box, codes, probes: int, word: str) -> None:
@@ -605,7 +649,7 @@ def test_a_revert_that_does_not_fix_main_goes_to_a_person(tmp_path: Path) -> Non
     got = box.run("on")
     assert got.returncode == 0, got.stderr
     assert "does not fix main" in person(box)
-    assert len(box.probes()) == 4
+    assert len(box.probes()) == 10
     assert box.gh_writes() == [] and list(box.remote_heads()) == ["refs/heads/main"]
     box.assert_clean()
 
@@ -635,6 +679,216 @@ def test_a_revert_pr_that_the_merge_bot_sends_back_goes_to_a_person(box: Box) ->
     # A second pass writes no second line for either PR.
     box.run("on")
     assert len(box.lines()) == 4
+
+
+def test_a_revert_pr_handed_over_by_a_person_still_logs_reverted(box: Box) -> None:
+    """A PERSON line of the pass (the hand-over failed) does not end the watch."""
+    box.log.write_text(
+        f"2026-11-14T00:00:00Z REVERT run=29 culprit={box.sha[104]} revert_pr=900\n"
+        f"2026-11-14T00:00:01Z PERSON mode=on run=29 culprit={box.sha[104]} revert_pr=900 "
+        "The revert stopped. The hand-over to the merge bot failed.\n",
+        encoding="utf-8",
+    )
+    box.merge_log.write_text("BACK 900 red: Unit tests\nDONE 900 abc123\n", encoding="utf-8")
+    got = box.run("on")
+    assert got.returncode == 0, got.stderr
+    new = box.lines()[2:]
+    assert len(new) == 2, new
+    assert " PERSON " in new[0] and "back=1" in new[0] and "red: Unit tests" in new[0]
+    assert " REVERTED revert_pr=900 " in new[1]
+    box.run("on")
+    assert len(box.lines()) == 4
+
+
+# ── The review round (P1 to P3) ───────────────────────────────────────────
+
+
+@pytest.mark.parametrize("hook", ["fix", "move"])
+def test_main_that_moves_during_the_pass_is_read_again(box: Box, hook: str) -> None:
+    """P1-b: a commit lands on main while the probes run. The pass reads main again.
+    A fix forward stops the revert. Another commit gets the revert on the new tip."""
+    box.result()
+    got = box.run("on", PROBE_HOOK=hook)
+    assert got.returncode == 0, got.stderr
+    new_tip = box.remote_heads()["refs/heads/main"]
+    assert new_tip != box.tip
+    report = box.report()
+    assert box.tip in report and new_tip in report
+    branch = f"refs/heads/auto-revert/{box.sha[104][:12]}"
+    if hook == "fix":
+        assert branch not in box.remote_heads()
+        assert box.gh_writes() == [] and not box.queue.exists()
+        assert any("pass on the new tip" in ln for ln in box.lines()), box.lines()
+        assert not any(" REVERT " in ln for ln in box.lines())
+    else:
+        revert = box.remote_heads()[branch]
+        git(box.repo, "fetch", "-q", "origin", branch)
+        assert git(box.repo, "rev-parse", f"{revert}^") == new_tip
+        assert box.queue.read_text(encoding="utf-8").splitlines()[1].split("\t")[4] == revert
+    box.assert_clean(main=new_tip)
+
+
+@pytest.mark.parametrize("mode", ["dry", "on"])
+@pytest.mark.parametrize(
+    ("files", "title"),
+    [
+        ({"infra/postgres/440_studio_x.sql": "CREATE TABLE x (id int);\n"}, None),
+        ({"packages/acb_auth/acb_auth/roles.py": "ROLES = 1\n"}, None),
+        ({}, "change number 104 (task 2985), HIGH tier"),
+    ],
+    ids=["migration", "auth-path", "high-title"],
+)
+def test_a_high_culprit_goes_to_a_person(tmp_path: Path, mode: str, files, title) -> None:
+    """P1-c: a revert cannot undo a migration (R6), and a HIGH path needs a person."""
+    box = Box(tmp_path, extra104=files)
+    if title:
+        box.pr_view(104, title=title, body="", headRefName="x", url="u")
+    box.result()
+    got = box.run(mode)
+    assert got.returncode == 0, got.stderr
+    assert "HIGH" in person(box)
+    assert box.probes() == [] and box.gh_writes() == []
+    assert list(box.remote_heads()) == ["refs/heads/main"]
+    box.assert_clean()
+
+
+def test_the_high_paths_equal_the_merge_bot_list() -> None:
+    """P1-c: the mirror of HIGH_PATHS_RE in scripts/home_server/merge_bot.sh (CIV-28b)."""
+    text = (ROOT / "scripts" / "home_server" / "merge_bot.sh").read_text(encoding="utf-8")
+    parts = re.findall(r"^HIGH_PATHS_RE\+?='([^']*)'\s*$", text, re.MULTILINE)
+    if not parts:
+        pytest.skip("merge_bot.sh has no HIGH_PATHS_RE until CIV-28b (PR 2253) merges")
+    assert "".join(parts) == load_module().HIGH_PATHS_RE
+
+
+def test_the_high_paths_match_as_grep_matches(tmp_path: Path) -> None:
+    """P1-c: Python reads the ERE of the merge bot the same way as grep -E."""
+    mod = load_module()
+    paths = [
+        "infra/postgres/440_x.sql",
+        "infra/customer_console/1.sql",
+        "deploy/vps.sh",
+        ".github/workflows/deploy.yml",
+        ".github/workflows/pr-check.yml",
+        "scripts/apply_migrations.sh",
+        "scripts/gen_tenant_migration.py",
+        "packages/acb_auth/acb_auth/x.py",
+        "packages/acb_common/acb_common/db.py",
+        "packages/acb_common/acb_common/dbx.py",
+        "packages/acb_memory/acb_memory/tenant_guard.py",
+        "workbench/control_plane/src/app/settings/billing/page.tsx",
+        "apps/x/auth_tokens.py",
+        "apps/x/tenant_scope.py",
+        "apps/x/my_rls.sql",
+        "apps/x/calc.py",
+        "scripts/home_server/auto_revert.py",
+    ]
+    listing = tmp_path / "paths.txt"
+    listing.write_text("\n".join(paths) + "\n", encoding="utf-8", newline="\n")
+    grep = subprocess.run(
+        [BASH, "-c", 'grep -E "$1" "$2" || true', "x", mod.HIGH_PATHS_RE, listing.as_posix()],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    by_grep = set(grep.stdout.split())
+    by_python = {p for p in paths if mod.high_paths([p])}
+    assert by_python == by_grep
+    assert "apps/x/calc.py" not in by_python and "infra/postgres/440_x.sql" in by_python
+
+
+def test_a_red_run_after_the_revert_landed_goes_to_a_person(box: Box) -> None:
+    """P2-a: main holds the revert of the culprit and is still red. That is a PERSON
+    line, not a SKIP, even when the log has the revert."""
+    box.commit(
+        108,
+        f'Revert "change number 104 (task 2985) (#104)" (#108)\n\n'
+        f"This reverts commit {box.sha[104]}.\n\nAuto-Revert: {box.sha[104]}\n",
+        {"note_108.txt": "108\n"},
+    )
+    git(box.seed, "push", "-q", "origin", "main")
+    box.log.write_text(
+        f"2026-11-14T00:00:00Z REVERT run=29 culprit={box.sha[104]} revert_pr=900\n"
+        f"2026-11-14T00:00:01Z REVERTED revert_pr=900 culprit={box.sha[104]} merge=abc\n",
+        encoding="utf-8",
+    )
+    box.result()
+    got = box.run("on")
+    assert got.returncode == 0, got.stderr
+    assert "already holds the revert" in person(box)
+    assert not any(" SKIP " in ln for ln in box.lines())
+    assert box.probes() == [] and box.gh_writes() == []
+
+
+@pytest.mark.parametrize("gh_fails", [False, True])
+def test_an_open_revert_pr_of_the_culprit_stops_a_second_one(box: Box, gh_fails: bool) -> None:
+    """P2-c: lane-merge or a person opened a revert of the culprit. The pass opens no
+    second one. When gh cannot search, the pass stops too (fail closed)."""
+    (box.fix / "pr_list.json").write_text(
+        json.dumps(
+            [
+                {"number": 776, "title": "unrelated", "body": "nothing here"},
+                {
+                    "number": 777,
+                    "title": 'Revert "change number 104 (task 2985) (#104)"',
+                    "body": f"This reverts commit {box.sha[104]}.",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    box.result()
+    got = box.run("on", **({"FAKE_GH_FAIL": "pr list"} if gh_fails else {}))
+    assert got.returncode == 0, got.stderr
+    if gh_fails:
+        assert "cannot search" in person(box)
+    else:
+        assert " SKIP " in box.lines()[-1] and "777" in box.lines()[-1]
+    assert box.probes() == [] and box.gh_writes() == []
+    assert list(box.remote_heads()) == ["refs/heads/main"]
+
+
+def test_lane_merge_defers_to_the_auto_revert() -> None:
+    """P1-a and P2-c: the lane-merge role reopens the culprit's task and never closes
+    it, and its own revert of a red main waits for the pass when the mode is on."""
+    text = (ROOT / "scripts" / "home_server" / "lanes" / "lane-merge.md").read_text(
+        encoding="utf-8"
+    )
+    lowered = " ".join(text.split()).lower()
+    assert "lane `auto-revert`" in lowered
+    assert "never close" in lowered and "open the culprit's task again" in lowered
+    assert "auto_revert_mode" in lowered and "auto-revert.log" in lowered
+
+
+def test_a_stop_signal_still_writes_a_person_line_and_a_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P3-b: systemd stops a pass with SIGTERM, and the poller already took the run.
+    The pass writes its PERSON line and its report, then ends."""
+    mod = load_module()
+    cfg = mod.Config(
+        mode="dry",
+        repo=tmp_path,
+        log=tmp_path / "a.log",
+        reports=tmp_path / "reports",
+        state=tmp_path / "state",
+        merge_log=tmp_path / "m.log",
+        poll_cmd=[],
+        handover_cmd=[],
+        gh=[],
+        test_cmd="",
+        timeout_s=1,
+    )
+
+    def stopped(*_args, **_kwargs):
+        raise SystemExit(143)
+
+    monkeypatch.setattr(mod, "decide", stopped)
+    with pytest.raises(SystemExit):
+        mod.handle(cfg, mod.Ledger(cfg.log), {"run_id": 31, "exit_code": 0, "result": ""})
+    line = cfg.log.read_text(encoding="utf-8")
+    assert " PERSON " in line and "SystemExit" in line
+    assert (tmp_path / "reports" / "run-31.md").exists()
 
 
 # ── A reverted patch does not land again unchanged (premerge.sh) ──────────
@@ -694,6 +948,26 @@ def test_premerge_refuses_a_revert_of_the_auto_revert(landed) -> None:
     got = premerge(work)
     assert got.returncode == 1, got.stdout + got.stderr
     assert "again, unchanged" in got.stderr and x[:12] in got.stderr
+
+
+def test_premerge_refuses_a_re_land_after_a_nearby_edit_on_main(landed) -> None:
+    """P2-b: main edits a line near the reverted lines. The re-land then has other
+    context lines. The patch with no context (-U0) is still the same patch."""
+    work, _, _, _, commit = landed
+    five = "# calc\ndef mul(a, b):\n    return a * b\n\n# end\n"
+    commit("add mul", {"calc2.py": five})
+    x2 = commit("break mul (#105)", {"calc2.py": five.replace("a * b", "a / b")})
+    commit(
+        f'Revert "break mul (#105)"\n\nThis reverts commit {x2}.\n\nAuto-Revert: {x2}\n',
+        {"calc2.py": five},
+    )
+    commit("a nearby edit", {"calc2.py": five.replace("# calc", "# calc, with mul")})
+    git(work, "push", "-q", "origin", "main")
+    git(work, "checkout", "-q", "-b", "again2")
+    git(work, "cherry-pick", x2)
+    got = premerge(work)
+    assert got.returncode == 1, got.stdout + got.stderr
+    assert "again, unchanged" in got.stderr and x2[:12] in got.stderr
 
 
 def test_premerge_lets_a_changed_patch_through(landed) -> None:

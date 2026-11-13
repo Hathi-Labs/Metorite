@@ -17,24 +17,35 @@ The flag AUTO_REVERT_MODE (the code ships dark):
   on   The pass also pushes the branch auto-revert/<sha>, and opens a revert
        PR with the trailer "Auto-Revert: <sha>". It hands that PR to the
        merge bot with lane_handover.sh, and comments on the culprit's PR.
-       The queue line names a temp worktree that the pass then removes.
-       The merge bot does not read that field.
+       The queue line has the task 0 and names a temp worktree that the
+       pass then removes. The culprit's task is in the note only, so
+       lane-merge never closes it (lanes/lane-merge.md).
+
+Before the probes, the pass stops when main holds a revert of the culprit,
+when the log or an open PR already has a revert of it, and at the rate brake.
 
 Fail closed. Each doubt stops the revert and writes a PERSON line:
   - The poller names no single commit, or no failed test id.
   - The culprit is not on main, is a merge commit, or is a revert.
-  - Main already holds a revert of the culprit.
+  - Main already holds a revert of the culprit, and the run is red.
+  - The culprit touches a HIGH path or a migration, or its title says HIGH.
+    A revert cannot undo a migration (R6). This stops `dry` too.
   - 3 reverts happened in the last hour (the rate brake).
-  - The failed tests pass on the tip of main, or pass on the culprit once
-    more, or fail on its parent once more. That is a flake, or a fix landed.
+  - The failed tests run 3 times on each of three trees: the tip of main
+    (want fail), the culprit (want fail) and its parent (want pass). One
+    other answer stops the revert. That is a flake, or a fix landed.
   - The revert does not apply cleanly, or the failed tests fail on it.
   - A step of `on` fails, or the merge bot sends the revert PR back.
+  - The pass ends early (SIGTERM, a crash). It writes its line, then ends.
+When main moves during the probes, the pass reads it again. When the failed
+tests pass on the new tip, a fix landed, and the pass makes no revert. Else
+it makes the revert on the new tip.
 scripts/premerge.sh refuses a PR that lands a reverted patch again unchanged.
 
 It never pushes to main, never force-pushes, never merges, and never
 dispatches a workflow. The merge bot merges the revert PR. The box has no
-Metorite write credential, so a person opens the culprit's task again. The
-log line and the report name the task and the failed tests.
+Metorite write credential. lane-merge opens the culprit's task again after
+the merge. The log line and the report name the task and the failed tests.
 
 Files (defaults in brackets):
   AUTO_REVERT_LOG [~/lanes/auto-revert.log]    one line per decision
@@ -85,6 +96,30 @@ BRANCH_PREFIX = "auto-revert/"
 #: The merge bot refuses HIGH. A revert goes in as STANDARD.
 HANDOVER_TIER = "STANDARD"
 HANDOVER_LANE = "auto-revert"
+#: The queue task of a revert. lane-merge closes the queue task on DONE, and
+#: the culprit's task must stay open. The note names the culprit's task.
+HANDOVER_TASK = "0"
+#: Each check of the flake re-run runs this many times, with one answer.
+FLAKE_RUNS = 3
+#: The HIGH paths of the merge bot: HIGH_PATHS_RE in merge_bot.sh (CIV-28b,
+#: PR 2253). This is a mirror, an extended regex. The fence
+#: test_the_high_paths_equal_the_merge_bot_list keeps the two equal.
+HIGH_PATHS_RE = "".join(
+    [
+        "^(",
+        "infra/(postgres|customer_console)/",
+        r"|deploy/|\.github/workflows/deploy\.yml$",
+        r"|scripts/(apply_[a-z_]*migrations\.sh|gen_tenant_migration\.py)$",
+        "|packages/acb_auth/",
+        r"|packages/acb_common/acb_common/(db|tenant_redis)\.py$",
+        "|packages/acb_memory/acb_memory/tenant_guard[^/]*$",
+        "|workbench/[^/]+/src/app/.*/(auth|billing|credits)/",
+        ")",
+        r"|(^|/)(auth|billing|credits|rls|entitle)[^/]*\.(py|ts|tsx|sql)$",
+        "|(^|/)(tenant|[^/]*_rls)[^/]*$",
+    ]
+)
+HIGH_WORD_RE = re.compile(r"\bHIGH\b")
 
 # The verbs of the log. A lane session reads the log, as it reads merge-bot.log.
 WOULD_REVERT = "WOULD-REVERT"  # dry: the revert that `on` would open
@@ -466,34 +501,46 @@ def make_revert(cfg: Config, tip: str, culprit: str, message: str) -> str:
 
 
 def follow_up(cfg: Config, ledger: Ledger) -> None:
-    """Read the merge bot's result for each open revert PR. A BACK goes to a person."""
+    """Read the merge bot's results for each revert PR until it merges.
+
+    Each BACK gets one PERSON line, with back=<n> for the nth BACK. A person can
+    hand the PR over again, so a PERSON line does not end the watch. Only a
+    DONE ends it, with one REVERTED line.
+    """
     opened: dict[str, str] = {}
-    closed: set[str] = set()
+    merged: set[str] = set()
+    told: set[tuple[str, str]] = set()
     for e in ledger.entries():
         pr = e.fields.get("revert_pr")
         if not pr:
             continue
         if e.verb == REVERT:
             opened[pr] = e.fields.get("culprit", "")
-        elif e.verb in (REVERTED, PERSON):
-            closed.add(pr)
-    pending = [pr for pr in opened if pr not in closed]
+        elif e.verb == REVERTED:
+            merged.add(pr)
+        elif e.verb == PERSON and "back" in e.fields:
+            told.add((pr, e.fields["back"]))
+    pending = [pr for pr in opened if pr not in merged]
     if not pending or not cfg.merge_log.exists():
         return
+    backs: dict[str, int] = {}
     for raw in cfg.merge_log.read_text(encoding="utf-8", errors="replace").splitlines():
         m = re.match(r"^(DONE|BACK) (\d+)(?: (.*))?$", raw.strip())
-        if not m or m.group(2) not in pending or m.group(2) in closed:
+        if not m or m.group(2) not in pending or m.group(2) in merged:
             continue
         pr, rest = m.group(2), m.group(3) or ""
         if m.group(1) == "DONE":
             ledger.write(REVERTED, f"revert_pr={pr} culprit={opened[pr]} merge={rest or 'unknown'}")
-        else:
-            ledger.write(
-                PERSON,
-                f"mode=on revert_pr={pr} culprit={opened[pr]} The merge bot sent the revert PR back: {rest}. "
-                "A person merges it, or closes it and fixes main.",
-            )
-        closed.add(pr)
+            merged.add(pr)
+            continue
+        backs[pr] = backs.get(pr, 0) + 1
+        if (pr, str(backs[pr])) in told:
+            continue
+        ledger.write(
+            PERSON,
+            f"mode=on revert_pr={pr} back={backs[pr]} culprit={opened[pr]} The merge bot sent the "
+            f"revert PR back: {rest}. A person merges it, or closes it and fixes main.",
+        )
 
 
 @dataclass
@@ -505,8 +552,10 @@ class Case:
     pr: str
     ids: list[str]
     tip: str = ""
+    first_tip: str = ""
     parent: str = ""
     subject: str = ""
+    title: str = ""
     task_num: str = "0"
     task_ref: str = "none found"
     revert_sha: str = ""
@@ -531,12 +580,16 @@ def handle(cfg: Config, ledger: Ledger, result: dict[str, Any]) -> int:
         ledger.write(PERSON, f"mode={cfg.mode} run={rep.run_id}{extra} {head} {stop.reason}")
         rep.write(cfg.reports, f"{head.upper()} A person reads this. {stop.reason}")
         return 0
-    except Exception as exc:  # fail closed: a crash makes no revert either
-        ledger.write(
-            PERSON, f"mode={cfg.mode} run={rep.run_id} No revert. The pass crashed: {exc!r}"
-        )
-        rep.write(cfg.reports, f"NO REVERT. The pass crashed: {exc!r}")
-        return 1
+    except BaseException as exc:
+        # Fail closed. A crash, a SIGTERM (SystemExit) or a stop of the unit ends
+        # the pass. The poller already took the run, so write the line now.
+        # A pushed branch or an open PR can exist: a person checks for them.
+        why = f"The pass ended early: {exc!r}. A person checks for a branch auto-revert/<sha>."
+        ledger.write(PERSON, f"mode={cfg.mode} run={rep.run_id} No revert. {why}")
+        rep.write(cfg.reports, f"NO REVERT. {why}")
+        if isinstance(exc, Exception):
+            return 1
+        raise
     rep.write(cfg.reports, decision)
     return 0
 
@@ -593,19 +646,8 @@ def check_culprit(cfg: Config, case: Case, rep: Report) -> None:
 def check_brakes(cfg: Config, ledger: Ledger, case: Case) -> str:
     """The brakes before any probe. Return a decision to skip, or an empty string."""
     c = case.culprit
-    verb = REVERT if cfg.mode == "on" else WOULD_REVERT
-    earlier = ledger.find(verb, "culprit", c)
-    if earlier is not None:
-        note = (
-            f"revert_pr={earlier.fields['revert_pr']}"
-            if "revert_pr" in earlier.fields
-            else f"{verb} line"
-        )
-        ledger.write(
-            SKIP,
-            f"mode={cfg.mode} run={case.run_id} culprit={c} The log has a revert of it ({note}).",
-        )
-        return f"NO NEW REVERT. The log already has a revert of {c[:12]} ({note})."
+    # First main: a revert that landed and a run that is still red is a PERSON
+    # line, also when the log has that revert (P2-a).
     on_main = git_out(
         cfg.repo, "log", case.tip, "-F", f"--grep=Auto-Revert: {c}", "--format=%H", "-n", "1"
     )
@@ -615,6 +657,18 @@ def check_brakes(cfg: Config, ledger: Ledger, case: Case) -> str:
             "The red has another cause.",
             culprit=c,
         )
+    verb = REVERT if cfg.mode == "on" else WOULD_REVERT
+    earlier = ledger.find(verb, "culprit", c)
+    if earlier is not None:
+        note = (
+            f"revert_pr={earlier.fields['revert_pr']}"
+            if "revert_pr" in earlier.fields
+            else f"{verb} line"
+        )
+        return skip(ledger, cfg, case, f"The log has a revert of it ({note}).")
+    other = open_revert_pr(cfg, case)
+    if other:
+        return skip(ledger, cfg, case, f"The open PR {other} reverts it already.")
     done = ledger.recent(verb, 3600)
     if done >= MAX_REVERTS_PER_HOUR:
         raise Stop(
@@ -624,15 +678,90 @@ def check_brakes(cfg: Config, ledger: Ledger, case: Case) -> str:
     return ""
 
 
+def skip(ledger: Ledger, cfg: Config, case: Case, why: str) -> str:
+    ledger.write(SKIP, f"mode={cfg.mode} run={case.run_id} culprit={case.culprit} {why}")
+    return f"NO NEW REVERT of {case.culprit[:12]}. {why}"
+
+
+def open_revert_pr(cfg: Config, case: Case) -> str:
+    """The number of an open PR that reverts the culprit, or an empty string (P2-c).
+
+    lane-merge or a person can open a revert with `git revert`. Its body or its
+    title names the culprit. A failed search is a doubt, so it stops the pass.
+    """
+    res = run(
+        [
+            *cfg.gh,
+            *("pr", "list", "--state", "open", "--search", case.culprit, "--limit", "50"),
+            *("--json", "number,title,body"),
+        ],
+        cwd=cfg.repo,
+    )
+    try:
+        rows = json.loads(res.stdout) if res.returncode == 0 else None
+    except ValueError:
+        rows = None
+    if not isinstance(rows, list):
+        raise Stop(
+            f"gh cannot search the open PRs for a revert of {case.culprit[:12]}: "
+            f"{one_line(res.stderr) or 'no answer'}.",
+            culprit=case.culprit,
+        )
+    title = f'Revert "{case.subject}"'
+    for row in rows:
+        text = f"{row.get('title') or ''}\n{row.get('body') or ''}"
+        if f"This reverts commit {case.culprit}" in text or (row.get("title") or "") == title:
+            return str(row.get("number"))
+    return ""
+
+
+def high_paths(paths: list[str]) -> list[str]:
+    """The paths that the merge bot calls HIGH (HIGH_PATHS_RE)."""
+    return [p for p in paths if re.search(HIGH_PATHS_RE, p)]
+
+
+def check_high(cfg: Config, case: Case, rep: Report) -> None:
+    """A HIGH culprit goes to a person, in dry too (P1-c).
+
+    A revert of a migration deletes the file, but each database that applied it
+    keeps the schema (R6: no rollback). A HIGH path needs the full loop (D218),
+    and a revert PR has only its own proof.
+    """
+    changed = git_out(cfg.repo, "diff", "--no-renames", "--name-only", case.parent, case.culprit)
+    hits = high_paths(changed.splitlines())
+    if hits:
+        rep.fact(f"HIGH paths: {' '.join(hits[:5])}.")
+        raise Stop(
+            f"The culprit {case.culprit[:12]} touches a HIGH path ({' '.join(hits[:3])}). "
+            "A revert cannot undo a migration, and a HIGH path needs a person.",
+            culprit=case.culprit,
+        )
+    for name, text in (("subject", case.subject), ("PR title", case.title)):
+        if HIGH_WORD_RE.search(text):
+            raise Stop(
+                f"The {name} of the culprit {case.culprit[:12]} says HIGH. A HIGH slice needs a person.",
+                culprit=case.culprit,
+            )
+
+
 def rerun_for_flake(cfg: Config, case: Case, rep: Report) -> None:
-    """The failed tests once more on three trees. Any other answer stops the revert."""
+    """The failed tests on three trees, FLAKE_RUNS times each (P3-a).
+
+    Every run must give the wanted answer. One other answer stops the revert.
+    """
     for name, sha, want in (
         ("the tip of main", case.tip, "fail"),
         ("the culprit", case.culprit, "fail"),
         ("the parent of the culprit", case.parent, "pass"),
     ):
+        same(cfg, case, rep, name, sha, want)
+
+
+def same(cfg: Config, case: Case, rep: Report, name: str, sha: str, want: str) -> None:
+    """Run the failed tests on `sha` FLAKE_RUNS times. Each run must give `want`."""
+    for n in range(1, FLAKE_RUNS + 1):
         got = probe(cfg, sha, case.ids)
-        rep.fact(f"Re-run on {name} {sha[:12]}: {got} (want {want}).")
+        rep.fact(f"Run {n} of {FLAKE_RUNS} on {name} {sha[:12]}: {got} (want {want}).")
         if got != want:
             why = (
                 "The pass cannot judge it."
@@ -640,9 +769,69 @@ def rerun_for_flake(cfg: Config, case: Case, rep: Report) -> None:
                 else "A flake, or a later commit fixed it."
             )
             raise Stop(
-                f"The failed tests {got} on {name} {sha[:12]}, and the pass wants {want}. {why}",
+                f"The failed tests {got} on {name} {sha[:12]} (run {n} of {FLAKE_RUNS}), "
+                f"and the pass wants {want}. {why}",
                 culprit=case.culprit,
             )
+
+
+def build_and_prove(cfg: Config, case: Case, rep: Report) -> None:
+    """Make the revert on case.tip and run the failed tests on it once."""
+    case.revert_sha = make_revert(cfg, case.tip, case.culprit, revert_message(case))
+    rep.fact(f"Revert commit: {case.revert_sha} on {case.tip[:12]}.")
+    got = probe(cfg, case.revert_sha, case.ids)
+    rep.fact(f"Proof on the revert tree {case.revert_sha[:12]}: {got} (want pass).")
+    if got != "pass":
+        raise Stop(
+            f"The failed tests {got} on the revert tree. The revert does not fix main.",
+            culprit=case.culprit,
+        )
+
+
+def read_main_again(cfg: Config, ledger: Ledger, case: Case, rep: Report) -> str:
+    """Main can move during the probes (P1-b). Read it again before the revert goes out.
+
+    When the failed tests pass on the new tip, a fix landed: no revert. Else the
+    revert is made again on the new tip. Return a decision to skip, or "".
+    """
+    fetch = git(
+        cfg.repo, "fetch", "-q", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"
+    )
+    if fetch.returncode != 0:
+        raise Stop(f"git fetch of main failed: {one_line(fetch.stderr)}.", culprit=case.culprit)
+    tip = git_out(cfg.repo, "rev-parse", "refs/remotes/origin/main")
+    if tip == case.tip:
+        rep.fact(f"Main did not move during the probes: {tip}.")
+        return ""
+    rep.fact(f"Main moved during the probes: from {case.tip} to {tip}.")
+    case.first_tip, case.tip = case.tip, tip
+    got = probe(cfg, tip, case.ids)
+    rep.fact(f"Run 1 on the new tip of main {tip[:12]}: {got} (want fail).")
+    if got == "pass":
+        return skip(
+            ledger,
+            cfg,
+            case,
+            f"The failed tests pass on the new tip {tip[:12]} (first tip {case.first_tip[:12]}). "
+            "A later commit fixed main. No revert.",
+        )
+    if got != "fail":
+        raise Stop(
+            f"The failed tests {got} on the new tip {tip[:12]}. The pass cannot judge it.",
+            culprit=case.culprit,
+        )
+    # Two more runs on the new tip, with the same answer. Then the revert again.
+    for n in range(2, FLAKE_RUNS + 1):
+        got = probe(cfg, tip, case.ids)
+        rep.fact(f"Run {n} of {FLAKE_RUNS} on the new tip of main {tip[:12]}: {got} (want fail).")
+        if got != "fail":
+            raise Stop(
+                f"The failed tests {got} on the new tip {tip[:12]} (run {n} of {FLAKE_RUNS}). "
+                "A flake, or a later commit fixed it.",
+                culprit=case.culprit,
+            )
+    build_and_prove(cfg, case, rep)
+    return ""
 
 
 def revert_message(case: Case) -> str:
@@ -661,10 +850,15 @@ def pr_body(case: Case) -> str:
         f"Auto-revert (CIV-31). The push batch run {case.run_id} of main is red. The bisect names "
         f"{case.culprit[:12]} (PR {('#' + case.pr) if case.pr else 'none'}) as the first bad commit.\n\n"
         f"Failed tests:\n{case.tests('- `{}`' + chr(10))}\n"
-        "Checks:\n"
-        f"- The failed tests fail on the tip of main {case.tip[:12]}.\n"
-        f"- They fail on {case.culprit[:12]} once more, and pass on its parent {case.parent[:12]}.\n"
-        f"- They pass on this revert tree {case.revert_sha[:12]}.\n\n"
+        f"Checks ({FLAKE_RUNS} runs of each, with one answer):\n"
+        f"- The failed tests fail on the tip of main {(case.first_tip or case.tip)[:12]}.\n"
+        f"- They fail on {case.culprit[:12]}, and pass on its parent {case.parent[:12]}.\n"
+        + (
+            f"- Main moved to {case.tip[:12]} during the checks, and they fail there too.\n"
+            if case.first_tip
+            else ""
+        )
+        + f"- They pass on this revert tree {case.revert_sha[:12]}, on {case.tip[:12]}.\n\n"
         f"Task of the reverted PR: {case.task_ref}. A person opens it again with the failed tests.\n\n"
         f"VERIFY: PASS (auto-revert: the failed tests pass on the revert tree {case.revert_sha[:12]})\n"
         "Visual review: a revert. It adds no new UI.\n\n"
@@ -685,22 +879,19 @@ def pr_comment(case: Case, revert: str) -> str:
 def decide(cfg: Config, ledger: Ledger, result: dict[str, Any], rep: Report) -> str:
     case = read_case(result, rep)
     check_culprit(cfg, case, rep)
-    skip = check_brakes(cfg, ledger, case)
-    if skip:
-        return skip
-    case.task_num, case.task_ref = task_refs(case.subject, culprit_pr(cfg, case.pr))
+    held = check_brakes(cfg, ledger, case)
+    if held:
+        return held
+    info = culprit_pr(cfg, case.pr)
+    case.title = str(info.get("title") or "")
+    case.task_num, case.task_ref = task_refs(case.subject, info)
     rep.fact(f"Task of the culprit: {case.task_ref}.")
+    check_high(cfg, case, rep)
     rerun_for_flake(cfg, case, rep)
-
-    case.revert_sha = make_revert(cfg, case.tip, case.culprit, revert_message(case))
-    rep.fact(f"Revert commit: {case.revert_sha} on {case.tip[:12]}.")
-    got = probe(cfg, case.revert_sha, case.ids)
-    rep.fact(f"Proof on the revert tree {case.revert_sha[:12]}: {got} (want pass).")
-    if got != "pass":
-        raise Stop(
-            f"The failed tests {got} on the revert tree. The revert does not fix main.",
-            culprit=case.culprit,
-        )
+    build_and_prove(cfg, case, rep)
+    held = read_main_again(cfg, ledger, case, rep)
+    if held:
+        return held
 
     if cfg.mode == "dry":
         ledger.write(
@@ -755,17 +946,22 @@ def open_revert(cfg: Config, ledger: Ledger, rep: Report, case: Case) -> str:
             revert_pr=revert_pr,
         )
 
-    note = f"Auto-Revert of {c[:12]} (run {case.run_id}). The failed tests pass on the revert tree."
+    # The queue task is 0 (P1-a): lane-merge closes the queue task on DONE, and
+    # the culprit's task must open again. The note names the culprit's task.
+    note = (
+        f"Auto-Revert of {c[:12]} (run {case.run_id}). Culprit task: {case.task_ref}. "
+        "Open it again after the merge, never close it."
+    )
     with worktree(cfg.repo, case.revert_sha) as wt:
         hand = run(
             [
                 *cfg.handover_cmd,
                 revert_pr,
-                case.task_num,
+                HANDOVER_TASK,
                 str(wt),
                 HANDOVER_LANE,
                 HANDOVER_TIER,
-                note,
+                one_line(note),
             ],
             cwd=wt,
         )

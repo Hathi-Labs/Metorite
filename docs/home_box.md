@@ -244,8 +244,12 @@ design.
 | `~/lanes/auto-revert/run-<id>.md` | One report for each red batch run: the checks, the decision, and the PR, comment and task text. |
 
 Read each new `PERSON` line. It names the doubt, the culprit and its task.
-After a `REVERT` line, open the culprit's task again by hand. The box has no
-Metorite write credential, so the pass cannot open it. The units are
+The revert PR goes to the merge bot with the task `0`, so no task closes when
+it merges. Then `lane-merge` opens the culprit's task again
+(`lanes/lane-merge.md`). The box has no Metorite write credential, so the pass
+cannot open it.
+
+The units are
 `scripts/home_server/systemd/metorite-auto-revert.service` and `.timer`, every
 5 minutes, user `dev`. They take the place of `metorite-bisect-poll`.
 

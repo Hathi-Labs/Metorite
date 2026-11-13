@@ -76,9 +76,11 @@ base="$(git merge-base HEAD "$BASE")"
 # "Auto-Revert: <sha>" on main. A branch with the same patch as such a
 # commit lands the break again. So does a revert of the revert. This check
 # runs before the early exit, because a branch that contains main can hold
-# such a patch. Any change to the patch lets it through.
+# such a patch. -U0: the patch has no context lines, so an edit near the
+# reverted lines on main does not hide a re-land. Any change to the changed
+# lines lets it through. Only a merge through this script runs the check.
 # Fence: tests/unit/test_auto_revert.py.
-patch_id() { git diff --no-color --no-ext-diff "$1" "$2" | git patch-id --stable | cut -d' ' -f1; }
+patch_id() { git diff -U0 --no-color --no-ext-diff "$1" "$2" | git patch-id --stable | cut -d' ' -f1; }
 mine="$(patch_id "$base" HEAD)"
 if [ -n "$mine" ]; then
   while IFS= read -r gone; do

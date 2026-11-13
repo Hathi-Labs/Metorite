@@ -30,7 +30,8 @@ R8 guard read the lists of the release commit.
 `civ31-auto-revert-mt-7191b0bd`). HIGH tier, and dark. The code default of
 `AUTO_REVERT_MODE` is `off`. The unit file sets `dry` for the one-week dry
 run (D218). It is not live until the orchestrator installs the unit. §8.8
-holds the design.
+holds the design. A review round on 2026-11-14 added the HIGH stop, the second
+read of `main`, 3 runs per tree and the task `0` of the hand-over.
 
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
@@ -446,8 +447,9 @@ Set `BISECT_TEST_CMD` to reuse a prepared lane or venv. `BISECT_TIMEOUT_S` and
 
 **Left for the owner.**
 - Install the timer (steps in the service file).
-- A lane session reads the `BISECT_RESULT` line in the journal and posts it on
-  a Metorite task. The script has no Metorite credentials.
+- The script has no Metorite credentials. Since CIV-31 (§8.8), the automatic
+  revert pass runs the poller and reads its `BISECT_RESULT` line. It writes
+  each decision in `~/lanes/auto-revert.log`, and a lane session reads that log.
 - The JUnit report is there (CIV-5b). The `test` job of `deploy.yml` runs
   pytest with `--junitxml=junit/test.xml`. It uploads the file as
   `unit-junit` on every run, a red run too. The poller reads that artifact
@@ -1017,33 +1019,58 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
   writes nothing to GitHub and nothing to `main`. The unit file sets `dry`.
 - **The pass.** It runs the CIV-5 poller. When the poller names the first bad
   commit of a red push batch, the pass checks that commit. It runs the failed
-  tests once more on the tip of `main`, on the culprit and on its parent. It
-  makes the revert on the tip in a temp worktree. The failed tests must pass
-  on that revert tree.
+  tests 3 times each on the tip of `main`, on the culprit and on its parent.
+  Each run must give the same answer. It makes the revert on the tip in a temp
+  worktree. The failed tests must pass on that revert tree.
+- **Main moves.** The probes can take hours, and `main` can move. Before the
+  revert goes out, the pass reads `main` again. When the failed tests pass on
+  the new tip, a fix landed, and the pass makes no revert (`SKIP`). Else it
+  makes the revert again on the new tip. The report names both tips.
 - **`on`.** The pass pushes the branch `auto-revert/<sha>`. It opens a PR with
   the title `Revert "<subject>"` and the trailer `Auto-Revert: <sha>` in the
   commit and the body. The body has a `VERIFY: PASS` line, because the revert
   tree passed the failed tests. `lane_handover.sh` hands the PR to the merge
-  bot as STANDARD. Then the pass comments on the culprit's PR with the failed
-  tests and the task.
+  bot as STANDARD, with the task `0`. The note names the culprit's task. So
+  `lane-merge` opens the culprit's task again after the merge, and never closes
+  it (`scripts/home_server/lanes/lane-merge.md`). Then the pass comments on
+  the culprit's PR with the failed tests and the task.
 - **The brakes.** The log counts the reverts, and a fourth in one hour stops.
   A culprit that is a revert is never reverted. A second red run of the same
-  culprit opens no second PR. `scripts/premerge.sh` refuses a branch with the
-  same patch as a commit that a trailer names. So a reverted commit cannot
-  merge again unchanged, and a revert of the revert cannot merge either.
+  culprit opens no second PR. An open PR that names `This reverts commit
+  <sha>` stops it too, and in mode `on` lane-merge makes no revert of its own.
+- **The re-land check.** `scripts/premerge.sh` compares the patch of a branch
+  with each commit that an `Auto-Revert:` trailer on `main` names. It refuses
+  an equal patch, and a revert of the revert has that patch too. The patch has
+  no context lines (`git diff -U0`), so an edit near the reverted lines on
+  `main` does not hide it. Any change to the changed lines lets it through.
+- **Its scope.** Only a merge through `premerge.sh` runs the check. The merge
+  bot runs it, and so does step d of `lane-merge`. A merge in the GitHub UI,
+  or with `gh pr merge` alone, skips it. No pr-check job runs it.
 - **Fail closed.** Each doubt stops the revert, and the pass writes a `PERSON`
   line for a person. These are the doubts:
   - The poller names no single commit, or no failed test.
   - The culprit is a merge commit, is not on `main`, or `main` holds its revert.
+  - The culprit touches a path of the merge bot's HIGH list (`HIGH_PATHS_RE`
+    of CIV-28b, mirrored in `auto_revert.py`), such as `infra/postgres/`. Or
+    its subject or PR title says HIGH. A revert deletes a migration file, but
+    each database that applied it keeps the schema (R6). This stops `dry` too.
+  - `gh` cannot search the open PRs.
   - A re-run gives another answer, or a probe cannot judge.
   - The revert does not apply cleanly, or the failed tests fail on it.
   - A step of `on` fails.
-  - The merge bot sends the revert PR back (`BACK`). The next pass reads it.
+  - The merge bot sends the revert PR back (`BACK`). The next pass reads it,
+    and a later `DONE` still gives a `REVERTED` line.
+  - The pass ends early: a crash, or a stop of the unit. The poller already
+    took the run, so the pass writes its line and its report first.
 - **Never.** The pass never pushes to `main` and never force-pushes. It never
   merges and never dispatches a workflow. The merge bot merges the revert PR.
-- **A known limit: no task reopen.** The box has no Metorite write credential.
-  So the pass does not open the culprit's task again. The log line and the
-  report name the task, and a person or a lane session opens it.
+- **A known limit: no task reopen by the pass.** The box has no Metorite write
+  credential. So `lane-merge` opens the culprit's task again after the merge of
+  the revert PR. The log line, the report and the queue note name the task.
+- **A known limit: the HIGH mirror.** Until CIV-28b (PR 2253) merges,
+  `merge_bot.sh` has no `HIGH_PATHS_RE`, and the fence
+  `test_the_high_paths_equal_the_merge_bot_list` skips. After the merge, it
+  holds the two lists equal.
 - **A known limit: the bad commit.** The poller takes the head sha of the red
   run as the bad commit. The batch tests the tip of `main`, which can be
   newer. Then the bisect can exit 3, and the pass writes a `PERSON` line.
