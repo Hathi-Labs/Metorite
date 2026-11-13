@@ -24,7 +24,7 @@ import { boundPageState, decodePageState, encodePageState, type PageState, type 
 /** The wait after the last filter edit, in milliseconds. */
 export const FILTER_DEBOUNCE_MS = 300;
 
-const OWNED = (key: string): boolean => key === "sel" || key === "tab" || key === "page" || key.startsWith("f.");
+const OWNED = (key: string): boolean => key === "sel" || key === "tab" || key === "page" || key === "q" || key === "sort" || key === "layout" || key === "group" || key.startsWith("f.");
 
 /** The query string that holds `state` and every foreign key of `current`. Pure. */
 export function mergePageQuery(current: string, state: PageState, page?: PageTabs): string {
@@ -52,6 +52,11 @@ export interface PageStateApi {
   setSelected: (id: string | null) => void;
   /** Set one filter. An empty value clears it. Replaces the entry, 300 ms after the last edit. */
   setFilter: (name: string, value: string) => void;
+  /**
+   * Change the state at once, with no wait (STU-AF4). The list bar uses it for a pick, a sort, a
+   * layout and a search that its own timer (`searchCommitter`) has already waited for. Replaces the entry.
+   */
+  update: (change: (s: PageState) => PageState) => void;
 }
 
 export function usePageState(page?: PageTabs): PageStateApi {
@@ -93,8 +98,8 @@ export function usePageState(page?: PageTabs): PageStateApi {
   const setPage = useCallback((page: string) => {
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
-    // The tabs and the pick of one page mean nothing on another page.
-    write((s) => ({ ...s, page, tab: null, selected: null }), "push");
+    // The tabs, the pick and the list bar of one page mean nothing on another page.
+    write((s) => ({ ...s, page, tab: null, selected: null, filters: {}, q: undefined, sort: undefined, layout: undefined, group: undefined }), "push");
   }, [write]);
 
   const setSelected = useCallback((id: string | null) => {
@@ -109,6 +114,12 @@ export function usePageState(page?: PageTabs): PageStateApi {
     timer.current = setTimeout(flush, FILTER_DEBOUNCE_MS);
   }, [flush]);
 
+  const update = useCallback((change: (s: PageState) => PageState) => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    write(change, "replace");
+  }, [write]);
+
   useEffect(() => () => {
     if (timer.current) clearTimeout(timer.current);
     // An edit typed in the last 300 ms is written now, so it is not lost.
@@ -118,6 +129,6 @@ export function usePageState(page?: PageTabs): PageStateApi {
     }
   }, [write]);
 
-  return useMemo(() => ({ state, setTab, setPage, setSelected, setFilter }),
-    [state, setTab, setPage, setSelected, setFilter]);
+  return useMemo(() => ({ state, setTab, setPage, setSelected, setFilter, update }),
+    [state, setTab, setPage, setSelected, setFilter, update]);
 }

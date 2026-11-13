@@ -19,6 +19,7 @@ import DeletePackageButton from "@/components/studio/DeletePackageButton";
 import PackageLifetimeBar from "@/components/studio/PackageLifetimeBar";
 import RecordsStatus from "@/components/studio/RecordsStatus";
 import StudioDetail from "@/components/studio/StudioDetail";
+import StudioFilterBar from "@/components/studio/StudioFilterBar";
 import StudioForm from "@/components/studio/StudioForm";
 import StudioPage, { PANEL } from "@/components/studio/StudioPage";
 import Button from "@/components/ui/Button";
@@ -26,10 +27,15 @@ import SelectButton from "@/components/ui/SelectButton";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, type StudioDataDoor, moreLine, sourceKey } from "@/lib/studio/dataDoor";
 import { buildHref } from "@/lib/studio/packageDraft";
-import { buildPage } from "@/lib/studio/pageModel";
-import { type PreviewControls, recordTitle } from "@/lib/studio/packagePreview";
+import {
+  activeCount, barOf, barTarget, chipsOf, clearedBar, layoutsFor, searchKeyOf, toListArgs, withFilter,
+  withGroup, withLayout, withQ, withSort, type BarField,
+} from "@/lib/studio/filterBarModel";
+import { computedKeys } from "@/lib/studio/inlineEdit";
+import { buildPage, viewObjectName } from "@/lib/studio/pageModel";
+import { type PreviewControls, boardGroupKeys, fieldSpecs, recordTitle } from "@/lib/studio/packagePreview";
 import { READ_ONLY_SENTENCE, type PackageDetail } from "@/lib/studio/realDoor";
-import { type ViewDetail, type ViewMapContext, mapView } from "@/lib/studio/viewBlocks";
+import { type ViewDetail, type ViewMapContext, type ViewLens, mapView } from "@/lib/studio/viewBlocks";
 import { usePageState } from "@/lib/studio/usePageState";
 import { useCachedResource } from "@/lib/useCachedResource";
 
@@ -72,10 +78,33 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted }: App
   }), [detail.views, detail.pages, detail.actions, detail.objects]);
   // An unknown page id gives the first page, and never an error (`buildPage`).
   const built = useMemo(() => buildPage(manifest, pageParam), [manifest, pageParam]);
-  const { state, setTab, setPage, setSelected } = usePageState(built.page);
+  const { state, setTab, setPage, setSelected, update } = usePageState(built.page);
+
+  // The list bar (STU-AF4) acts on the first table or board of the page. Its choices reach the door
+  // as the `filter` and `sort` of the `list` read, so the rows are the store's and not a client cut.
+  const cells = useMemo(() => buildPage(manifest, built.page.id, state.tab).cells, [manifest, built.page.id, state.tab]);
+  const target = useMemo(
+    () => barTarget(cells, detail.views, (v) => viewObjectName(v, controls.actions)),
+    [cells, detail.views, controls.actions]);
+  const bar = useMemo(() => {
+    const object = target ? detail.objects.find((o) => o.name === target.object) : undefined;
+    if (!target || !object) return null;
+    const fields = object.fields as unknown as BarField[];
+    const lanes = boardGroupKeys(fieldSpecs(object), computedKeys(object.rules))
+      .map((k) => ({ key: k, label: fields.find((f) => f.key === k)?.label || k }));
+    const layouts = layoutsFor(lanes.map((l) => l.key));
+    const own = target.view.block === "board" ? "board" : "table";
+    const layout = state.layout && layouts.includes(state.layout) ? state.layout : layouts.includes(own) ? own : "table";
+    const value = barOf(state);
+    const lens: ViewLens = {
+      view: target.view.id, layout, group: state.group,
+      args: toListArgs(fields, value),
+    };
+    return { fields, lanes, layouts, layout, value, lens };
+  }, [target, detail.objects, state]);
   const ctx: ViewMapContext = useMemo(
-    () => ({ actions: controls.actions, objects: detail.objects, owner: controls.owner }),
-    [controls.actions, controls.owner, detail.objects]);
+    () => ({ actions: controls.actions, objects: detail.objects, owner: controls.owner, lens: bar?.lens ?? null }),
+    [controls.actions, controls.owner, detail.objects, bar?.lens]);
 
   const renderView = (id: string) => {
     const view = detail.views.find((v) => v.id === id);
@@ -118,7 +147,18 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted }: App
     <StudioDataContext.Provider value={door}>
       <StudioPage title={detail.name.trim() || "App"} back={{ href: "/studio", label: "Back to Studio" }}
         manifest={manifest} pageId={built.page.id} state={state} onTab={setTab}
-        onCloseSide={() => setSelected(null)} renderView={renderView} toolbar={toolbar} />
+        onCloseSide={() => setSelected(null)} renderView={renderView} toolbar={toolbar}
+        filterBar={bar ? (
+          <StudioFilterBar fields={bar.fields} chips={chipsOf(bar.fields)} searchKey={searchKeyOf(bar.fields)}
+            bar={bar.value} layouts={bar.layouts} layout={bar.layout} lanes={bar.lanes}
+            group={state.group ?? null} active={activeCount(bar.fields, bar.value)}
+            onQ={(q) => update((s) => withQ(s, q))}
+            onFilter={(k, v) => update((s) => withFilter(s, k, v))}
+            onSort={(v) => update((s) => withSort(s, v))}
+            onLayout={(l) => update((s) => withLayout(s, l))}
+            onGroup={(g) => update((s) => withGroup(s, g))}
+            onClear={() => update(clearedBar)} />
+        ) : undefined} />
     </StudioDataContext.Provider>
   );
 }
