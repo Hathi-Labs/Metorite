@@ -2231,6 +2231,8 @@ _KIND_WORDS = {
     "rules_refused": "The store refused this rule.",
     "field_refused": "The store refused this field.",
     "store_refused": "The store refused this change.",
+    # C8a: the grants of an object (`access`).
+    "access_refused": "The store refused the access of this table.",
 }
 _FIX_LINES = {
     "object_removed": ("Put it back: a published object cannot go yet. Or create a new "
@@ -2242,6 +2244,7 @@ _FIX_LINES = {
     "field_refused": "Change this field so that the store takes it.",
     "store_refused": ("A limit stopped it. Remove an object or a field, or ask an admin to "
                       "remove a package."),
+    "access_refused": "Make each row rule name a hot person field, and hide only its fields.",
 }
 _OTHER_WORDS = "The manifest does not fit the stored tables."
 _OTHER_FIX = "Change the manifest so that it fits the stored tables."

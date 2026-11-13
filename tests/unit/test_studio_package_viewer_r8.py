@@ -82,6 +82,7 @@ pytest.importorskip("sqlalchemy")
 from acb_auth import UserContext, UserRole, build_access
 from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant, tenant_session
+from acb_common.studio_access import Viewer
 from fastapi import HTTPException, Response
 from gateway.package_host import resolve, store
 from gateway.routes.studio import invoke, packages
@@ -223,7 +224,8 @@ async def _record(org: str, pid: str) -> str:
     async with tenant_session(org) as db:
         obj = await objects_store.get_object_by_name(db, "visit", package_id=pid)
         assert obj is not None
-        rec = await objects_store.create_record(db, OWEN, obj.id, _DATA, package_id=pid)
+        rec = await objects_store.create_record(db, OWEN, obj.id, _DATA, package_id=pid,
+                                                  viewer=Viewer(OWEN))
         assert rec is not None
     return rec.id
 
@@ -529,7 +531,8 @@ def test_r8_a_field_of_a_newer_version_never_reaches_a_pinned_viewer(world) -> N
             obj = await objects_store.get_object_by_name(db, "visit", package_id=pid)
             assert obj is not None
             rec = await objects_store.create_record(
-                db, OWEN, obj.id, {"site": "Plant 4, Hosur", "cost": 42}, package_id=pid)
+                db, OWEN, obj.id, {"site": "Plant 4, Hosur", "cost": 42}, package_id=pid,
+                viewer=Viewer(OWEN))
             assert rec is not None
         return {
             "rid": rec.id,
