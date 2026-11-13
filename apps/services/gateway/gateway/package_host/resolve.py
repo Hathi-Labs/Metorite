@@ -460,6 +460,35 @@ async def visible_installs(db: Any, *, viewer: str) -> list[InstallRow]:
     return widest_per_app(await read_installs(db, member, groups))
 
 
+async def install_seen_by(db: Any, *, viewer: str, install_id: str) -> InstallRow | None:
+    """The install *install_id* when *viewer* sees it now, else None (WS-STU
+    B6a, ``ai_studio.md`` B6a).
+
+    The member of a run with no viewer reads through ONE install: the install
+    of the run. So this read keeps the install of that id, and never the
+    widest install of the app (:func:`widest_per_app`). The rule of who sees
+    an install is :data:`INSTALLS_SQL` with the groups of
+    ``routes/crm/access.my_groups``, as :func:`visible_installs` reads it. So
+    a paused, an archived or an expired install, a paused or an archived app,
+    and a group that the member left each give None. The row holds the
+    manifest of the version that the install pins.
+
+    *db* is a session that the caller opened with ``tenant_session(org)``.
+    *viewer* is the member that ``package_install.run_as`` names, never
+    request input. A viewer that is not an address reads nothing.
+    """
+    from gateway.routes.crm.access import my_groups
+
+    member = (viewer or "").strip().lower()
+    if "@" not in member:
+        return None
+    groups = sorted(await my_groups(db, member))
+    for row in await read_installs(db, member, groups):
+        if row.id == install_id:
+            return row
+    return None
+
+
 async def resolve_for(db: Any, *, viewer: str, can_use: CanUse) -> dict[str, Any]:
     """The answer of ``GET /shell/manifest`` for *viewer*.
 
