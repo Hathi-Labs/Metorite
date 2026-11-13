@@ -1164,7 +1164,8 @@ def test_no_package_tool_takes_an_identity_or_confirm_argument() -> None:
               "owner_email", "visibility", "confirm", "confirmed", "approve", "approved", "force",
               "plan", "approval"}
     assert [fn.__name__ for fn in st.STUDIO_PACKAGE_TOOLS] == [
-        "studio_save", "studio_publish", "studio_delete_package"]
+        "studio_save", "studio_publish", "studio_delete_package", "studio_template_list",
+        "studio_create_from_template"]
     # A5c-2: the delete takes the package id only. The route decides the admin path.
     assert list(inspect.signature(st.studio_delete_package).parameters) == ["package_id"]
     banned |= {"as_admin", "admin", "token", "records"}
@@ -1173,7 +1174,9 @@ def test_no_package_tool_takes_an_identity_or_confirm_argument() -> None:
         assert not params & banned, (fn.__name__, params)
         assert inspect.iscoroutinefunction(fn)
     for fn in st.STUDIO_PACKAGE_TOOLS:
-        assert fn.__tool_risk__["read_only"] is False and fn.__tool_risk__["open_world"] is False
+        # STU-K1d: the list of the ready apps is the one read tool of the family.
+        assert fn.__tool_risk__["read_only"] is (fn is st.studio_template_list)
+        assert fn.__tool_risk__["open_world"] is False
 
 
 async def test_every_call_uses_the_internal_bearer_and_the_member_of_the_run(gw) -> None:
@@ -1670,3 +1673,167 @@ def test_the_delete_tool_copies_match_the_route() -> None:
     assert st._OWNER_ACTIVE == packages.OWNER_ACTIVE
     risk = st.studio_delete_package.__tool_risk__
     assert risk["read_only"] is False and risk["open_world"] is False
+
+
+# -- 15. The ready apps (STU-K1d) ------------------------------------------------------
+#
+# ``studio_template_list`` and ``studio_create_from_template`` over the two template
+# routes of STU-K1a. The fake serves the list from the REAL registry
+# (``acb_common.studio_templates``) and the create with the answers of
+# ``create_from_template``. It checks each verb and path against the REAL router.
+#
+# The mutation (R7), run alone on 2026-11-13: take the card step (``_card`` and
+# ``_decide``) out of ``studio_create_from_template`` and send the POST at once.
+# ``test_a_create_without_approved_sends_no_post`` goes red in all 3 cases, and
+# ``test_the_create_always_shows_one_card_then_one_post`` goes red in both.
+
+from acb_common import studio_templates  # noqa: E402
+
+_TPL_POST = ("POST", "/studio/packages/from-template")
+_TPL_GET = ("GET", "/studio/templates")
+
+
+class TemplateGateway(Gateway):
+    """The template routes of STU-K1a, in memory."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.off = False  # Studio is off for the org: both routes answer 404
+        self.sent: list[Any] = []  # the body of each POST
+
+    def _serve(self, method: str, path: str, body: Any, member: str,
+               args: dict[str, str]) -> httpx.Response:
+        if path == "/studio/templates":
+            if self.off:
+                raise HTTPException(404, "Not found")
+            return self._r(200, {"templates": [dict(t) for t in studio_templates.list_templates()]})
+        if path == "/studio/packages/from-template":
+            self.sent.append(body)
+            if self.off:
+                raise HTTPException(404, "Not found")
+            if self.status:
+                raise HTTPException(*self.status)
+            manifest = studio_templates.get_template(body.get("template"))
+            if manifest is None:
+                raise HTTPException(422, {"message": "unknown_template", "errors": []})
+            for k, p in self.packages.items():
+                if p["owner"] == member and p["manifest"].get("id") == manifest["id"]:
+                    raise HTTPException(409, {"code": packages.PACKAGE_EXISTS, "package_id": k,
+                                              "message": "You have a package with this manifest id."})
+            pid = self.seed(manifest, member)
+            self.packages[pid].update(live_version=1, status="live")
+            return self._r(201, {"package": self._out(self.packages[pid]),
+                                 "version": {"version": 1, "sha256": "x", "notes": ""}})
+        return super()._serve(method, path, body, member, args)
+
+    def posts(self) -> list[tuple[str, str]]:
+        return [c for c in _verbs(self) if c[0] == "POST"]
+
+
+@pytest.fixture
+def tgw(monkeypatch, mark, card, redis, who):
+    gateway = TemplateGateway()
+    monkeypatch.setattr(st.httpx, "AsyncClient", lambda **kw: _Client(gateway))
+    return gateway
+
+
+def _first_template() -> dict[str, str]:
+    return dict(studio_templates.list_templates()[0])
+
+
+async def test_the_template_list_gives_each_ready_app(tgw) -> None:
+    out = await st.studio_template_list()
+    assert out["ok"] is True and _verbs(tgw) == [_TPL_GET]
+    first = _first_template()
+    row = out["templates"][0]
+    assert row["id"] == first["id"] and first["name"] in row["name"]
+    assert first["purpose"] in row["purpose"]
+    assert out["total"] == len(studio_templates.TEMPLATE_IDS)
+
+
+async def test_the_template_list_says_that_studio_is_off_with_one_sentence(tgw) -> None:
+    tgw.off = True
+    out = await st.studio_template_list()
+    assert out["ok"] is False and out["status"] == 404 and _msg(out) == st._TPL_OFF
+
+
+@pytest.mark.parametrize("held_chat", [False, True])
+async def test_the_create_always_shows_one_card_then_one_post(
+        tgw, card, mark, held_chat: bool) -> None:
+    mark.held = held_chat
+    first = _first_template()
+    out = await st.studio_create_from_template(first["id"])
+    assert out["ok"] is True and out["decision"] == "approved", out
+    assert first["name"] in out["name"] and out["version"] == 1
+    assert out["package_id"] in tgw.packages
+    [shown] = card.shown
+    assert shown["title"] == f"Create the app «{first['name']}»?"
+    assert f"App: «{first['name']}»" in str(shown["context"])
+    assert shown["non_interactive_default"] == "deny" and shown["responder"] == MEMBER
+    assert tgw.posts() == [_TPL_POST] and tgw.sent == [{"template": first["id"]}]
+
+
+@pytest.mark.parametrize("answer,open_,decision", [
+    (ask_tools.REVISED, True, "revised"), (False, True, "stopped"), (False, False, "no_card")])
+async def test_a_create_without_approved_sends_no_post(
+        tgw, card, answer: Any, open_: bool, decision: str) -> None:
+    card.answer, card.open = answer, open_
+    out = await st.studio_create_from_template(_first_template()["id"])
+    assert out["ok"] is False and out["decision"] == decision
+    assert _msg(out).startswith("Nothing was created.")
+    assert tgw.posts() == [] and tgw.sent == [] and tgw.packages == {}
+    assert len(card.shown) == 1
+
+
+async def test_a_create_for_an_app_that_the_member_has_is_a_plain_answer(tgw, card) -> None:
+    first = _first_template()
+    done = await st.studio_create_from_template(first["id"])
+    again = await st.studio_create_from_template(first["id"])
+    assert again["ok"] is False and again["status"] == 409 and again["code"] == "package_exists"
+    assert done["package_id"] in _msg(again) and first["id"] in _msg(again)
+    assert again["package_id"] == done["package_id"]
+    assert len(tgw.posts()) == 2 and len(tgw.packages) == 1
+    assert len(card.shown) == 2  # one card for each call, and no second card for the 409
+
+
+@pytest.mark.parametrize("bad", [None, 7, "", "Hiring", "a b", "x" * 80, ["hiring"], "../x"])
+async def test_a_template_id_of_a_bad_shape_is_refused_before_a_card_or_a_call(
+        tgw, card, bad: Any) -> None:
+    out = await st.studio_create_from_template(bad)
+    assert out["ok"] is False and _msg(out) == st._TPL_NO_ID
+    assert tgw.calls == [] and card.shown == []
+
+
+async def test_an_unknown_template_id_shows_no_card_and_sends_no_post(tgw, card) -> None:
+    out = await st.studio_create_from_template("no-such-app")
+    assert out["ok"] is False and _msg(out) == st._TPL_UNKNOWN
+    assert tgw.posts() == [] and card.shown == []
+
+
+async def test_a_create_says_that_studio_is_off_and_shows_no_card(tgw, card) -> None:
+    tgw.off = True
+    out = await st.studio_create_from_template(_first_template()["id"])
+    assert out["ok"] is False and out["status"] == 404 and _msg(out) == st._TPL_OFF
+    assert tgw.posts() == [] and card.shown == []
+
+
+async def test_a_post_that_answers_404_after_the_card_says_that_studio_is_off(tgw, card) -> None:
+    tgw.status = (404, "Not found")  # a canned answer for the POST only
+    out = await st.studio_create_from_template(_first_template()["id"])
+    assert out["ok"] is False and out["status"] == 404 and _msg(out) == st._TPL_OFF
+    assert out["decision"] == "approved"
+
+
+async def test_a_catalog_that_is_down_is_a_refusal_with_a_retry_note(tgw) -> None:
+    tgw.status = (503, {"code": "catalog_unavailable", "message": "The catalog is down."})
+    out = await st.studio_create_from_template(_first_template()["id"])
+    assert out["ok"] is False and out["status"] == 503 and _msg(out) == st._TPL_PART
+
+
+def test_the_template_tools_take_the_template_id_only_and_copy_the_route() -> None:
+    assert list(inspect.signature(st.studio_template_list).parameters) == []
+    assert list(inspect.signature(st.studio_create_from_template).parameters) == ["template"]
+    assert st.studio_template_list.__tool_risk__["read_only"] is True
+    assert st.studio_create_from_template.__tool_risk__["read_only"] is False
+    for tid in studio_templates.TEMPLATE_IDS:
+        assert re.fullmatch(st._TEMPLATE_ID, tid), tid

@@ -283,7 +283,7 @@ describe("the day index", () => {
 
 describe("Month order", () => {
   it("puts the external chips first in the cell", () => {
-    const grid = readFileSync(new URL("../components/MonthGrid.tsx", import.meta.url), "utf8");
+    const grid = readFileSync(new URL("./gridAdapter.ts", import.meta.url), "utf8");
     expect(grid.indexOf("externalChips(")).toBeLessThan(grid.indexOf("...blocks.map"));
   });
 });
