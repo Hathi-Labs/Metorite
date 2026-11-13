@@ -63,7 +63,7 @@ HUB_LIMIT = 40
 # the suite and the one-level expansion misses more. Measured 2026-11-13 on 1751
 # test files: `gateway.routes.projects` has 291 importers (17%), `gateway.main` 67
 # and `agent_edge.tools` 54. `acb_common.db` has 399 (23%) and stays FULL by its
-# prefix. A 20% share (350 files) keeps every hub that a feature slice changes
+# prefix, and its gateway re-export is named in GATE_FULL_NAMES. A 20% share (350 files) keeps every hub that a feature slice changes
 # selected, and keeps the DB seam FULL.
 HUB_CEILING_SHARE = 0.20
 FRONTEND_APPS = ("workbench/control_plane/", "workbench/operator_console/")
@@ -499,6 +499,8 @@ GATE_FULL_NAMES = {
     "scripts/fences.py",
     "scripts/ci_unit_guard.py",
     "scripts/ci_local.sh",
+    # A re-export of the DB seam (acb_common.db). 620 test files reach it.
+    "apps/services/gateway/gateway/db.py",
 }
 GATE_FULL_PREFIXES = (".github/", "scripts/ci_pc/", "packages/acb_common/")
 # CIV-33c-1. A diff that only ADDS flags to these two files selects the tests
@@ -507,8 +509,7 @@ FLAG_FILES = (
     "packages/acb_common/acb_common/settings.py",
     "packages/acb_common/acb_common/env_guard.py",
 )
-# settings.py: `    name: str = ""`. env_guard.py: `    "NAME",` or `    "A", "B",`.
-_SETTINGS_FLAG = re.compile(r"^    ([a-z][a-z0-9_]*): [\w\[\], |.]+ = .+$")
+# env_guard.py: `    "NAME",` or `    "A", "B",`. A settings.py field is read with `ast`.
 _GUARD_FLAG = re.compile(r'^    ((?:"[A-Z][A-Z0-9_]*",\s*)+)$')
 GATE_DB_MARK = "_DB_GATE"
 # An R8 suite is a test file that builds a real database from a ladder, or
@@ -582,67 +583,141 @@ def gate_changed_files(base: str, root: Path = ROOT) -> list[str]:
     return sorted(n.strip().replace("\\", "/") for n in out.stdout.splitlines() if n.strip())
 
 
-def gate_diff(base: str, root: Path = ROOT, head: str = "HEAD") -> str:
-    """The zero-context diff of the two flag files, for `_flag_additions`."""
+def _git_text(args: list[str], root: Path) -> str:
     out = subprocess.run(
-        ["git", "diff", "-U0", "--no-renames", f"{base}...{head}", "--", *FLAG_FILES],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=True,
-        encoding="utf-8",
-        errors="replace",
+        ["git", *args], cwd=root, capture_output=True, text=True, check=True,
+        encoding="utf-8", errors="replace",
     )
     return out.stdout
 
 
-def _classify_added(current: str, body: str) -> list[str] | None:
-    """The flag names of one added line, [] for a blank or comment, None if unknown."""
-    if not body.strip() or body.lstrip().startswith("#"):
-        return []
-    if current.endswith("settings.py") and (m := _SETTINGS_FLAG.match(body)):
-        return [m.group(1)]
-    if current.endswith("env_guard.py") and (m := _GUARD_FLAG.match(body)):
-        return re.findall(r'"([A-Z][A-Z0-9_]*)"', m.group(1))
-    return None
+def gate_diff(base: str, root: Path = ROOT, head: str = "HEAD") -> str:
+    """The zero-context diff of the two flag files, for `_flag_additions`."""
+    return _git_text(
+        ["diff", "-U0", "--no-renames", f"{base}...{head}", "--", *FLAG_FILES], root
+    )
 
 
-def _flag_additions(changed: list[str], diff: str | None) -> list[str] | None:
-    """The needles of a flag-only diff, or None when the diff is anything else.
+def gate_flag_texts(base: str, root: Path = ROOT, head: str = "HEAD") -> dict[str, tuple[str, str]]:
+    """Map each flag file to (text at the merge base, text at head)."""
+    mb = _git_text(["merge-base", base, head], root).strip()
+    return {
+        f: (_git_text(["show", f"{mb}:{f}"], root), _git_text(["show", f"{head}:{f}"], root))
+        for f in FLAG_FILES
+    }
 
-    A flag-only diff changes no file under packages/acb_common/ but the two of
-    FLAG_FILES, and each hunk only adds a blank line, a comment or a flag line.
-    A removed line, a new or deleted file, or a line that this rule cannot
-    classify gives None, and the caller then goes FULL as before.
-    """
-    touched = [c for c in changed if c in FLAG_FILES]
-    if not diff or not touched:
-        return None
-    if any(c.startswith("packages/acb_common/") and c not in FLAG_FILES for c in changed):
-        return None
-    needles: list[str] = []
-    seen: set[str] = set()
-    current = ""
+
+def _settings_fields(text: str) -> dict[str, tuple[int, int]]:
+    """Field name -> (first line, last line) of each annotated assignment that sits
+    directly in the body of ``class Settings``."""
+    out: dict[str, tuple[int, int]] = {}
+    for node in ast.parse(text).body:
+        if isinstance(node, ast.ClassDef) and node.name == "Settings":
+            for st in node.body:
+                if isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name):
+                    out[st.target.id] = (st.lineno, st.end_lineno or st.lineno)
+    return out
+
+
+def _guard_names(text: str) -> dict[int, list[str]]:
+    """Line -> the string literals that sit in a PLATFORM_ENV_* literal on that line."""
+    out: dict[int, list[str]] = {}
+    for node in ast.parse(text).body:
+        if isinstance(node, ast.AnnAssign | ast.Assign):
+            targets = [node.target] if isinstance(node, ast.AnnAssign) else node.targets
+            if not any(isinstance(t, ast.Name) and t.id.startswith("PLATFORM_ENV_") for t in targets):
+                continue
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                    out.setdefault(sub.lineno, []).append(sub.value)
+    return out
+
+
+def _added_lines(diff: str) -> dict[str, list[tuple[int, str]]] | None:
+    """File -> (new line number, text) of each added line. None for any other change."""
+    out: dict[str, list[tuple[int, str]]] = {}
+    current, new_no = "", 0
     for line in diff.splitlines():
         if line.startswith("diff --git"):
             current = line.rsplit(" b/", 1)[-1]
-            seen.add(current)
+            out.setdefault(current, [])
         elif line.startswith(("new file", "deleted file", "rename", "old mode", "new mode")):
             return None
-        elif line.startswith(("index ", "--- ", "+++ ", "@@")):
-            continue
-        elif line.startswith("-"):
-            return None
-        elif line.startswith("+"):
-            found = _classify_added(current, line[1:].rstrip())
-            if found is None:
+        elif line.startswith("@@"):
+            m = re.match(r"@@ -\S+ \+(\d+)", line)
+            if not m:
                 return None
-            needles += found
-        elif line.strip():
+            new_no = int(m.group(1))
+        elif line.startswith(("index ", "--- ", "+++ ")):
+            continue
+        elif line.startswith("+"):
+            out[current].append((new_no, line[1:].rstrip()))
+            new_no += 1
+        elif line.strip():  # a removed line, or text that is not a diff
             return None
-    # Every touched file must show in the diff, or the diff is not the change.
-    if set(touched) - seen:
+    return out
+
+
+def _check_settings(added: list[tuple[int, str]], base: str, head: str) -> list[str] | None:
+    old, new = _settings_fields(base), _settings_fields(head)
+    needles: list[str] = []
+    for no, body in added:
+        if not body.strip() or body.lstrip().startswith("#"):
+            continue
+        owner = [n for n, (lo, hi) in new.items() if lo <= no <= hi]
+        # A new field only: not a field of the base file, and not model_config.
+        if not owner or owner[0] in old or owner[0] == "model_config":
+            return None
+        needles.append(owner[0])
+    return sorted(set(needles))
+
+
+def _check_guard(added: list[tuple[int, str]], base: str, head: str) -> list[str] | None:
+    old = {n for names in _guard_names(base).values() for n in names}
+    new = _guard_names(head)
+    needles: list[str] = []
+    for no, body in added:
+        if not body.strip() or body.lstrip().startswith("#"):
+            continue
+        names = new.get(no, [])
+        if not names or not _GUARD_FLAG.match(body) or any(n in old for n in names):
+            return None
+        needles += names
+    return needles
+
+
+def _flag_additions(
+    changed: list[str], diff: str | None, texts: dict[str, tuple[str, str]] | None = None
+) -> list[str] | None:
+    """The needles of a flag-only diff, or None when the diff is anything else.
+
+    A flag-only diff changes no file under packages/acb_common/ but the two of
+    FLAG_FILES. In settings.py each added line is a blank line, a comment, or part
+    of a NEW field of ``class Settings`` (not ``model_config``, not a field of the
+    base file). In env_guard.py each added line is a new string literal in a
+    PLATFORM_ENV_* constant. A removed line, a new or deleted file, a line that
+    this rule cannot classify, or a missing text gives None. The caller then goes
+    FULL as before.
+    """
+    touched = [c for c in changed if c in FLAG_FILES]
+    if not diff or not touched or not texts:
         return None
+    if any(c.startswith("packages/acb_common/") and c not in FLAG_FILES for c in changed):
+        return None
+    added = _added_lines(diff)
+    if added is None or set(touched) - set(added) or set(added) - set(touched):
+        return None
+    needles: list[str] = []
+    for path, lines in added.items():
+        if path not in texts:
+            return None
+        base, head = texts[path]
+        found = (_check_settings if path.endswith("settings.py") else _check_guard)(
+            lines, base, head
+        )
+        if found is None:
+            return None
+        needles += found
     return needles
 
 
@@ -679,6 +754,72 @@ def _safety_fences(root: Path) -> list[str]:
     return [p for p in data["python"]["safety"] if (root / p).is_file()]
 
 
+_APP_ENTRY = re.compile(r"^\s*\w+ = FastAPI\(", re.MULTILINE)
+
+
+def _forward_closure(entry: str, modmap: dict[str, tuple[str, bool]]) -> set[str]:
+    """Every source module that `entry` imports, directly or not."""
+    seen = {entry}
+    todo = [entry]
+    while todo:
+        m = todo.pop()
+        body, is_pkg = modmap[m]
+        for n in imports(body, m, is_pkg):
+            parts = n.split(".")
+            for i in range(1, len(parts) + 1):
+                d = ".".join(parts[:i])
+                if d in modmap and d not in seen:
+                    seen.add(d)
+                    todo.append(d)
+    return seen
+
+
+def app_entry_tests(
+    mods: set[str], sources: dict[str, str], tests: dict[str, str], root: Path
+) -> set[str]:
+    """Tests that import an app entry module (one with a FastAPI app) that reaches a
+    changed module. They drive the real app, so a change below it can break them,
+    however many levels it sits down. `select` expands one level only."""
+    modmap: dict[str, tuple[str, bool]] = {}
+    entries: list[str] = []
+    for path, body in sources.items():
+        name = module_name(path, root)
+        if not name or name.startswith("tests"):
+            continue
+        modmap[name] = (body, path.endswith("__init__.py"))
+        if _APP_ENTRY.search(body):
+            entries.append(name)
+    hit = [e for e in entries if mods & _forward_closure(e, modmap)]
+    out: set[str] = set()
+    for t, body in tests.items():
+        if any(e in body for e in hit) and imports(body) & set(hit):
+            out.add(t)
+    return out
+
+
+def close_over_test_imports(picked: set[str], tests: dict[str, str]) -> set[str]:
+    """Add each test file that imports a picked test file, until nothing new joins.
+
+    A test module that holds fixtures is imported by other tests, and those by more."""
+    names = {t: ".".join(Path(t).with_suffix("").parts) for t in tests}
+    by_name = {n: t for t, n in names.items()}
+    users: dict[str, set[str]] = {}
+    for t, body in tests.items():
+        if "tests.unit" not in body:
+            continue
+        for n in imports(body):
+            if n in by_name and by_name[n] != t:
+                users.setdefault(by_name[n], set()).add(t)
+    out = set(picked)
+    todo = list(picked)
+    while todo:
+        for u in users.get(todo.pop(), ()):
+            if u not in out:
+                out.add(u)
+                todo.append(u)
+    return out
+
+
 def static_reasons(changed: list[str], needles: list[str] | None) -> list[str]:
     """The FULL reasons that need no import index. A flag-only diff has no reason
     for the two FLAG_FILES."""
@@ -701,8 +842,10 @@ def hub_reasons(mods: set[str], test_users: dict[str, set[str]], n_tests: int) -
     ]
 
 
-def _gate(changed: list[str], root: Path, diff: str | None = None) -> dict:
-    needles = _flag_additions(changed, diff)
+def _gate(
+    changed: list[str], root: Path, diff: str | None = None, texts: dict | None = None
+) -> dict:
+    needles = _flag_additions(changed, diff, texts)
     reasons = static_reasons(changed, needles)
     tests = _texts(sorted((root / TESTS).glob("test_*.py")), root)
     picked: set[str] = set(_safety_fences(root))
@@ -718,6 +861,21 @@ def _gate(changed: list[str], root: Path, diff: str | None = None) -> dict:
         and not c.startswith(FRONTEND_APPS)
         and not (needles is not None and c in FLAG_FILES)
     ]
+    sources = None
+    if needles:
+        # The code that reads an added flag joins the changed set, so that
+        # `select` covers it, even when it reads the flag with `getattr`.
+        sources = _texts(_source_files(root), root)
+        lows = [n.lower() for n in needles]
+        py += sorted(
+            f
+            for f, body in sources.items()
+            if f.endswith(".py")
+            and f not in FLAG_FILES
+            and not f.startswith(("tests/", *FRONTEND_APPS))
+            and f not in py
+            and any(n in body.lower() for n in lows)
+        )
     other = [c for c in changed if c not in py]
     # A Python file in a Next app skips `select`, but a scanner still reads it.
     if any(c.endswith(".py") for c in changed):
@@ -726,10 +884,11 @@ def _gate(changed: list[str], root: Path, diff: str | None = None) -> dict:
         picked |= set(select(py, root)[0])
         # A hub (more than HUB_LIMIT importers) selects its importers, and
         # `select` has done so. It goes FULL only above HUB_CEILING_SHARE.
-        sources = _texts(_source_files(root), root)
+        sources = sources or _texts(_source_files(root), root)
         mods = {m for c in py for m in module_names(c, root)}
         _, test_users = _import_index(mods, sources, tests, root)
         reasons += hub_reasons(mods, test_users, len(tests))
+        picked |= app_entry_tests(mods, sources, tests, root)
     # A file that is not Python: tests that name its path. No import tracing.
     for path in other:
         picked |= {t for t, body in tests.items() if path in body}
@@ -746,16 +905,20 @@ def _gate(changed: list[str], root: Path, diff: str | None = None) -> dict:
             if t.rsplit("/", 1)[-1].startswith("test_customer_console_")
             or any(m in body for m in CONSOLE_R8_MARKS)
         }
+    picked = close_over_test_imports(picked, tests)
     files = sorted(p for p in picked if (root / p).is_file())
     return {"full": bool(reasons), "files": files, "reasons": reasons}
 
 
-def gate(changed: list[str], root: Path = ROOT, diff: str | None = None) -> dict:
+def gate(
+    changed: list[str], root: Path = ROOT, diff: str | None = None, texts: dict | None = None
+) -> dict:
     """The PR tier's selection. Any error inside the selector gives full.
 
-    ``diff`` is the zero-context diff of FLAG_FILES. No diff means no flag rule."""
+    ``diff`` is the zero-context diff of FLAG_FILES, and ``texts`` holds the base and
+    head text of each. Without both, there is no flag rule."""
     try:
-        return _gate(changed, root, diff)
+        return _gate(changed, root, diff, texts)
     except Exception as exc:  # fail open on purpose
         return {"full": True, "files": [], "reasons": [f"selector error: {exc!r}"]}
 
@@ -804,8 +967,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.gate:
         try:
             changed = [f.replace("\\", "/") for f in args.files] or gate_changed_files(args.base)
-            diff = None if args.files else gate_diff(args.base)
-            out = gate(changed, diff=diff)
+            diff = texts = None
+            if not args.files:
+                diff, texts = gate_diff(args.base), gate_flag_texts(args.base)
+            out = gate(changed, diff=diff, texts=texts)
         except Exception as exc:  # fail open on purpose
             out = {"full": True, "files": [], "reasons": [f"selector error: {exc!r}"]}
         print(json.dumps(out))

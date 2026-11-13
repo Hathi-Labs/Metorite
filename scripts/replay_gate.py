@@ -111,7 +111,8 @@ def replay(selector, commits: list[str]) -> list[tuple[str, dict]]:
         ]
         if new:
             diff = selector.gate_diff(f"{c}^1", ROOT, c)
-            needles = selector._flag_additions(changed, diff)
+            texts = selector.gate_flag_texts(f"{c}^1", ROOT, c)
+            needles = selector._flag_additions(changed, diff, texts)
             reasons = selector.static_reasons(changed, needles)
             # A flag-only diff leaves the two flag files out of `select`.
             if needles is not None:

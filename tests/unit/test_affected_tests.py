@@ -202,12 +202,17 @@ def test_gate_a_hub_below_the_ceiling_selects_its_importers(
 # ── CIV-33c-1: a flag-only diff of settings.py or env_guard.py ──────────────
 _SETTINGS = "packages/acb_common/acb_common/settings.py"
 _GUARD = "packages/acb_common/acb_common/env_guard.py"
+_SETTINGS_BASE = (
+    "class Settings:\n    old_flag: str = ''\n    model_config = 1\n\n\n"
+    "def reader():\n    x = 1\n    return x\n"
+)
+_GUARD_BASE = 'PLATFORM_ENV_NAMES = frozenset({\n    "OLD_FLAG",\n})\n'
 
 
 def _flag_repo(tmp_path: Path) -> Path:
     root = _gate_repo(tmp_path)
-    _write(root, _SETTINGS, "class Settings:\n    old_flag: str = ''\n")
-    _write(root, _GUARD, 'NAMES = (\n    "OLD_FLAG",\n)\n')
+    _write(root, _SETTINGS, _SETTINGS_BASE)
+    _write(root, _GUARD, _GUARD_BASE)
     _write(root, "tests/unit/test_flag_reader.py", 'monkeypatch.setenv("NEW_THING_ORGS", "*")\n')
     _write(root, "tests/unit/test_settings_x.py", "import acb_common.settings\n")
     _write(root, "tests/unit/test_hardening.py", "from acb_common import env_guard\n")
@@ -215,17 +220,30 @@ def _flag_repo(tmp_path: Path) -> Path:
     return root
 
 
-def _added(path: str, *lines: str) -> str:
+def _added(path: str, base: str, after: int, *lines: str) -> tuple[str, dict]:
+    """A diff and the base and head texts of `path`, with `lines` after line `after`."""
+    rows = base.splitlines()
+    head = "\n".join([*rows[:after], *lines, *rows[after:]]) + "\n"
     body = "".join(f"+{ln}\n" for ln in lines)
-    return f"diff --git a/{path} b/{path}\nindex 1..2 100644\n--- a/{path}\n+++ b/{path}\n@@ -9,0 +10 @@\n{body}"
+    diff = (
+        f"diff --git a/{path} b/{path}\nindex 1..2 100644\n--- a/{path}\n+++ b/{path}\n"
+        f"@@ -{after},0 +{after + 1},{len(lines)} @@\n{body}"
+    )
+    return diff, {path: (base, head)}
 
 
-_FLAG_DIFF = _added(_SETTINGS, "    # a comment", "    new_thing_orgs: str = \"\"")
+def _flag_case(*lines: str, after: int = 3) -> tuple[str, dict]:
+    return _added(_SETTINGS, _SETTINGS_BASE, after, *lines)
+
+
+def _gate_flag(root: Path, changed: list[str], case: tuple[str, dict]) -> dict:
+    return sel.gate(changed, root, diff=case[0], texts=case[1])
 
 
 def test_gate_a_flag_only_diff_selects_the_tests_that_name_the_flag(tmp_path: Path) -> None:
     root = _flag_repo(tmp_path)
-    out = sel.gate([_SETTINGS], root, diff=_FLAG_DIFF)
+    case = _flag_case("    # a comment", '    new_thing_orgs: str = ""')
+    out = _gate_flag(root, [_SETTINGS], case)
     assert out["full"] is False, out["reasons"]
     assert "tests/unit/test_flag_reader.py" in out["files"]  # names NEW_THING_ORGS
     assert "tests/unit/test_settings_x.py" in out["files"]  # a settings test, by name
@@ -236,37 +254,74 @@ def test_gate_a_flag_only_diff_selects_the_tests_that_name_the_flag(tmp_path: Pa
 
 def test_gate_an_env_guard_name_added_is_a_flag_only_diff(tmp_path: Path) -> None:
     root = _flag_repo(tmp_path)
-    diff = _added(_GUARD, '    "NEW_THING_ORGS",')
-    out = sel.gate([_GUARD], root, diff=diff)
+    case = _added(_GUARD, _GUARD_BASE, 2, '    "NEW_THING_ORGS",')
+    out = _gate_flag(root, [_GUARD], case)
     assert out["full"] is False, out["reasons"]
     assert "tests/unit/test_flag_reader.py" in out["files"]
 
 
+def test_gate_an_env_guard_name_that_exists_is_full(tmp_path: Path) -> None:
+    root = _flag_repo(tmp_path)
+    case = _added(_GUARD, _GUARD_BASE, 2, '    "OLD_FLAG",')
+    assert _gate_flag(root, [_GUARD], case)["full"] is True
+
+
 def test_gate_a_modified_line_in_settings_is_full(tmp_path: Path) -> None:
     root = _flag_repo(tmp_path)
-    diff = _FLAG_DIFF.replace("@@ -9,0 +10 @@\n", "@@ -9 +10 @@\n-    old_flag: str = ''\n")
-    out = sel.gate([_SETTINGS], root, diff=diff)
+    case = _flag_case('    new_thing_orgs: str = ""')
+    diff = case[0].replace("@@ -3,0 +4,1 @@\n", "@@ -3 +4 @@\n-    model_config = 1\n")
+    out = _gate_flag(root, [_SETTINGS], (diff, case[1]))
     assert out["full"] is True
     assert any("settings.py" in r for r in out["reasons"])
 
 
-def test_gate_a_line_that_is_not_a_flag_is_full(tmp_path: Path) -> None:
+def test_gate_a_line_that_is_not_a_field_is_full(tmp_path: Path) -> None:
     root = _flag_repo(tmp_path)
-    diff = _added(_SETTINGS, "    def helper(self): return 1")
-    assert sel.gate([_SETTINGS], root, diff=diff)["full"] is True
+    case = _flag_case("    def helper(self): return 1")
+    assert _gate_flag(root, [_SETTINGS], case)["full"] is True
+
+
+def test_gate_a_field_that_exists_already_is_full(tmp_path: Path) -> None:
+    # A second `old_flag` changes the default: it is not a new flag.
+    root = _flag_repo(tmp_path)
+    case = _flag_case('    old_flag: str = "x"')
+    assert _gate_flag(root, [_SETTINGS], case)["full"] is True
+
+
+def test_gate_a_model_config_is_full(tmp_path: Path) -> None:
+    root = _flag_repo(tmp_path)
+    case = _flag_case("    model_config: int = 2")
+    assert _gate_flag(root, [_SETTINGS], case)["full"] is True
+
+
+def test_gate_an_assignment_inside_a_function_is_full(tmp_path: Path) -> None:
+    root = _flag_repo(tmp_path)
+    case = _flag_case('    raw: str = "raise"', after=7)
+    assert _gate_flag(root, [_SETTINGS], case)["full"] is True
+
+
+def test_gate_the_code_that_reads_an_added_flag_is_selected(tmp_path: Path) -> None:
+    # A reader that uses getattr names the flag in code, and a test imports it.
+    root = _flag_repo(tmp_path)
+    _write(root, "packages/pkg/pkg/reader.py", 'v = getattr(settings, "new_thing_orgs", "")\n')
+    _write(root, "tests/unit/test_reader_user.py", "import pkg.reader\n")
+    out = _gate_flag(root, [_SETTINGS], _flag_case('    new_thing_orgs: str = ""'))
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_reader_user.py" in out["files"]
 
 
 def test_gate_a_flag_addition_plus_another_acb_common_file_is_full(tmp_path: Path) -> None:
     root = _flag_repo(tmp_path)
     other = "packages/acb_common/acb_common/db.py"
-    out = sel.gate([_SETTINGS, other], root, diff=_FLAG_DIFF)
+    out = _gate_flag(root, [_SETTINGS, other], _flag_case('    new_thing_orgs: str = ""'))
     assert out["full"] is True
     assert any("db.py" in r for r in out["reasons"])
 
 
 def test_gate_a_flag_diff_keeps_the_github_reason(tmp_path: Path) -> None:
     root = _flag_repo(tmp_path)
-    out = sel.gate([_SETTINGS, ".github/workflows/pr-check.yml"], root, diff=_FLAG_DIFF)
+    changed = [_SETTINGS, ".github/workflows/pr-check.yml"]
+    out = _gate_flag(root, changed, _flag_case('    new_thing_orgs: str = ""'))
     assert out["full"] is True
     assert any(".github/" in r for r in out["reasons"])
 
@@ -291,11 +346,46 @@ def test_gate_diff_reads_the_flag_files_between_two_commits(tmp_path: Path) -> N
     git("commit", "-qm", "a")
     base = git("rev-parse", "HEAD")
     p = root / _SETTINGS
-    p.write_text(p.read_text(encoding="utf-8") + "    new_thing_orgs: str = ''\n", encoding="utf-8")
+    text = p.read_text(encoding="utf-8").replace(
+        "    model_config = 1\n", "    model_config = 1\n    new_thing_orgs: str = ''\n"
+    )
+    p.write_text(text, encoding="utf-8")
     git("commit", "-qam", "b")
-    out = sel.gate([_SETTINGS], root, diff=sel.gate_diff(base, root))
+    out = sel.gate(
+        [_SETTINGS], root, diff=sel.gate_diff(base, root), texts=sel.gate_flag_texts(base, root)
+    )
     assert out["full"] is False, out["reasons"]
     assert "tests/unit/test_flag_reader.py" in out["files"]
+
+
+# ── CIV-33c-1 review: an app entry module, the DB re-export, test fixtures ──
+def test_gate_a_change_below_an_app_entry_selects_the_tests_of_the_app(tmp_path: Path) -> None:
+    # The test imports only `pkg.main`. `low` sits two levels down, so `select`
+    # does not expand it. The app imports it, so the test can break.
+    root = _gate_repo(tmp_path)
+    app = "from fastapi import FastAPI\napp = FastAPI()\nfrom pkg import mid\n"
+    _write(root, "packages/pkg/pkg/main.py", app)
+    _write(root, "packages/pkg/pkg/mid.py", "from pkg import low\n")
+    _write(root, "packages/pkg/pkg/low.py", "X = 2\n")
+    _write(root, "tests/unit/test_app_drive.py", "from pkg.main import app\n")
+    out = sel.gate(["packages/pkg/pkg/low.py"], root)
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_app_drive.py" in out["files"]
+
+
+def test_gate_the_gateway_db_re_export_is_the_db_seam_and_full(tmp_path: Path) -> None:
+    out = sel.gate(["apps/services/gateway/gateway/db.py"], _gate_repo(tmp_path))
+    assert out["full"] is True
+
+
+def test_gate_a_changed_test_module_selects_the_users_of_its_users(tmp_path: Path) -> None:
+    root = _gate_repo(tmp_path)
+    _write(root, "tests/unit/test_fix_a.py", "def fixture_a():\n    pass\n")
+    _write(root, "tests/unit/test_fix_b.py", "from tests.unit.test_fix_a import fixture_a\n")
+    _write(root, "tests/unit/test_fix_c.py", "from tests.unit.test_fix_b import fixture_a\n")
+    out = sel.gate(["tests/unit/test_fix_a.py"], root)
+    assert out["full"] is False, out["reasons"]
+    assert {"tests/unit/test_fix_b.py", "tests/unit/test_fix_c.py"} <= set(out["files"])
 
 
 def test_gate_not_full_for_a_module_under_the_hub_limit(tmp_path: Path, monkeypatch) -> None:
