@@ -590,6 +590,8 @@ def gate_diff(base: str, root: Path = ROOT, head: str = "HEAD") -> str:
         capture_output=True,
         text=True,
         check=True,
+        encoding="utf-8",
+        errors="replace",
     )
     return out.stdout
 
@@ -677,14 +679,31 @@ def _safety_fences(root: Path) -> list[str]:
     return [p for p in data["python"]["safety"] if (root / p).is_file()]
 
 
-def _gate(changed: list[str], root: Path, diff: str | None = None) -> dict:
-    needles = _flag_additions(changed, diff)
-    reasons = [
+def static_reasons(changed: list[str], needles: list[str] | None) -> list[str]:
+    """The FULL reasons that need no import index. A flag-only diff has no reason
+    for the two FLAG_FILES."""
+    return [
         r
         for c in changed
         if needles is None or c not in FLAG_FILES
         if (r := _full_reason(c))
     ]
+
+
+def hub_reasons(mods: set[str], test_users: dict[str, set[str]], n_tests: int) -> list[str]:
+    """A module that more than HUB_CEILING_SHARE of the test files import goes FULL."""
+    ceiling = int(n_tests * HUB_CEILING_SHARE)
+    return [
+        f"{m}: {len(test_users.get(m, set()))} test files import it, more than {ceiling} "
+        f"({HUB_CEILING_SHARE:.0%} of the test files)"
+        for m in sorted(mods)
+        if len(test_users.get(m, set())) > ceiling
+    ]
+
+
+def _gate(changed: list[str], root: Path, diff: str | None = None) -> dict:
+    needles = _flag_additions(changed, diff)
+    reasons = static_reasons(changed, needles)
     tests = _texts(sorted((root / TESTS).glob("test_*.py")), root)
     picked: set[str] = set(_safety_fences(root))
     if needles is not None:
@@ -710,14 +729,7 @@ def _gate(changed: list[str], root: Path, diff: str | None = None) -> dict:
         sources = _texts(_source_files(root), root)
         mods = {m for c in py for m in module_names(c, root)}
         _, test_users = _import_index(mods, sources, tests, root)
-        ceiling = int(len(tests) * HUB_CEILING_SHARE)
-        for m in sorted(mods):
-            n = len(test_users.get(m, set()))
-            if n > ceiling:
-                reasons.append(
-                    f"{m}: {n} test files import it, more than {ceiling} "
-                    f"({HUB_CEILING_SHARE:.0%} of the test files)"
-                )
+        reasons += hub_reasons(mods, test_users, len(tests))
     # A file that is not Python: tests that name its path. No import tracing.
     for path in other:
         picked |= {t for t, body in tests.items() if path in body}

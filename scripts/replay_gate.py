@@ -4,11 +4,11 @@
     uv run python scripts/replay_gate.py --count 50
     uv run python scripts/replay_gate.py --module /path/to/old_affected_tests.py
 
-Each first-parent commit of ``--ref`` is one merged PR. The replay runs
-``affected_tests.gate`` on the files of that commit and on its flag diff.
-It reads the test files of the CURRENT tree, so a commit that touched a file
-that no longer exists is replayed on today's tests. The share is a measure,
-not a proof. ``--module`` loads another copy of the selector, so a run can
+Each first-parent commit of ``--ref`` is one merged PR. The replay decides
+FULL for the files of that commit and for its flag diff, with the selector's
+own rules. It does not pick files. It reads the test files of the CURRENT
+tree, so a commit that touched a file that no longer exists is replayed on
+today's tests. The share is a measure, not a proof. ``--module`` loads another copy of the selector, so a run can
 compare main's rules with the branch's rules.
 
 Fence: tests/unit/test_replay_gate.py.
@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import collections
 import importlib.util
-import inspect
 import re
 import subprocess
 import sys
@@ -75,16 +74,59 @@ def reason_key(reason: str) -> str:
     return path
 
 
+def _hub_index(selector) -> tuple[dict[str, set[str]], int]:
+    """Map each dotted name to its importing test files, for the current tree.
+
+    One pass over the tree. `gate` builds this index for each diff, and that
+    takes about 90 s on this PC, so a 300-commit replay would take hours."""
+    root = ROOT
+    tests = selector._texts(sorted((root / selector.TESTS).glob("test_*.py")), root)
+    sources = selector._texts(selector._source_files(root), root)
+    mods = {
+        m
+        for f in sources
+        if f.endswith(".py")
+        for m in selector.module_names(f, root)
+    }
+    _, test_users = selector._import_index(mods, sources, tests, root)
+    return test_users, len(tests)
+
+
 def replay(selector, commits: list[str]) -> list[tuple[str, dict]]:
-    takes_diff = "diff" in inspect.signature(selector.gate).parameters
+    """The FULL decision of `gate` for each commit, without the file selection.
+
+    The static rules and the hub rule are the ones that decide FULL. The replay
+    calls the selector's own `static_reasons` and `hub_reasons`. A selector that
+    lacks them (main's copy, before CIV-33c-1) is replayed on its own
+    `_full_reason` and its HUB_LIMIT."""
+    new = hasattr(selector, "hub_reasons")
+    test_users, n_tests = _hub_index(selector)
     out = []
     for c in commits:
         names = _git("diff", "--name-only", "--no-renames", f"{c}^1", c)
         changed = sorted(n.strip() for n in names.splitlines() if n.strip())
-        kwargs = {}
-        if takes_diff:
-            kwargs["diff"] = selector.gate_diff(f"{c}^1", ROOT, c)
-        out.append((c, selector.gate(changed, ROOT, **kwargs)))
+        py = [
+            f for f in changed
+            if f.endswith(".py") and not f.startswith(selector.FRONTEND_APPS)
+        ]
+        if new:
+            diff = selector.gate_diff(f"{c}^1", ROOT, c)
+            needles = selector._flag_additions(changed, diff)
+            reasons = selector.static_reasons(changed, needles)
+            # A flag-only diff leaves the two flag files out of `select`.
+            if needles is not None:
+                py = [f for f in py if f not in selector.FLAG_FILES]
+        else:
+            reasons = [r for r in (selector._full_reason(f) for f in changed) if r]
+        mods = {m for f in py for m in selector.module_names(f, ROOT)}
+        if new:
+            reasons += selector.hub_reasons(mods, test_users, n_tests)
+        else:
+            for m in sorted(mods):
+                n = len(test_users.get(m, set()))
+                if n > selector.HUB_LIMIT:
+                    reasons.append(f"{m}: {n} test files import it, more than {selector.HUB_LIMIT}")
+        out.append((c, {"full": bool(reasons), "files": [], "reasons": reasons}))
     return out
 
 
