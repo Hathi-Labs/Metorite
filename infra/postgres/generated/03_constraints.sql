@@ -2642,6 +2642,18 @@ ALTER TABLE studio_record_hot ADD CONSTRAINT studio_record_hot_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS studio_record_hot_org_idx ON studio_record_hot (organization_id);
 
+-- studio_org_usage
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM studio_org_usage WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: studio_org_usage still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE studio_org_usage ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE studio_org_usage ADD CONSTRAINT studio_org_usage_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS studio_org_usage_org_idx ON studio_org_usage (organization_id);
+
 -- goal_records
 DO $$
 BEGIN

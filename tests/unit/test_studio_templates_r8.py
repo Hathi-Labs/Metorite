@@ -57,6 +57,7 @@ from acb_auth import UserContext, UserRole, build_access
 from acb_common import get_settings
 from acb_common import studio_templates as reg
 from acb_common.db import bind_tenant, release_tenant, tenant_session
+from acb_common.studio_access import Viewer
 from fastapi import HTTPException
 from gateway.routes.studio import packages
 from gateway.studio import objects_store
@@ -211,7 +212,8 @@ def test_r8_the_objects_are_synced_so_a_record_can_be_made(world) -> None:
             obj = await objects_store.get_object_by_name(db, "visit", package_id=pid)
             assert obj is not None
             return await objects_store.create_record(
-                db, ANA, obj.id, {"status": "planned", "customer": {"id": "acme-1"}}, package_id=pid)
+                db, ANA, obj.id, {"status": "planned", "customer": {"id": "acme-1"}}, package_id=pid,
+                viewer=Viewer(ANA))
 
     rec = _run(world, make)
     assert rec is not None

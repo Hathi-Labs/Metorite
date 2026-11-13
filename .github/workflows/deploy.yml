@@ -895,12 +895,14 @@ jobs:
               tests/unit/test_studio_expr.py \
               tests/unit/test_studio_formula_r8.py \
               tests/unit/test_studio_rollup_r8.py \
+              tests/unit/test_studio_row_rules_r8.py \
               tests/unit/test_studio_lines_r8.py \
               tests/unit/test_no_person_present_r8.py \
               tests/unit/test_studio_packages_r8.py \
               tests/unit/test_studio_publish_install_r8.py \
               tests/unit/test_studio_package_install_r8.py \
               tests/unit/test_studio_package_viewer_r8.py \
+              tests/unit/test_studio_org_caps_r8.py \
               tests/unit/test_studio_package_uninstall_r8.py \
               tests/unit/test_studio_package_pause_r8.py \
               tests/unit/test_studio_action_door_r8.py \
@@ -922,6 +924,7 @@ jobs:
               tests/unit/test_shell_layout_r8.py \
               tests/unit/test_package_disposal_r8.py \
               tests/unit/test_package_promotion_r8.py \
+              tests/unit/test_studio_package_share_routes_r8.py \
               tests/unit/test_auth_me_shell_install_r8.py \
               tests/unit/test_auth_me_appearance_r8.py \
               tests/unit/test_package_lifetime_r8.py \

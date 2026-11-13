@@ -209,6 +209,7 @@ from acb_common import studio_fields as sf
 from acb_common import studio_query
 from acb_common import studio_rules as sr
 from acb_common.db import get_engine, tenant_session
+from acb_common.studio_access import Viewer
 from acb_common.studio_query import QueryError
 from acb_common.studio_rules import ConstraintError, ConstraintViolation
 from gateway.studio import objects_store as store
@@ -232,6 +233,9 @@ _MIGRATION = next(
 
 TAG = uuid.uuid4().hex[:8]
 ANA = f"ana.{TAG}@stuc1b.test"
+#: C8a. The store takes a viewer. No object of this suite declares `access`,
+#: so each object is open and any member reads and writes it.
+_VIEWER = Viewer(ANA)
 
 _LEDGER: list[dict[str, Any]] = [
     {"key": "sku", "type": "text", "hot": True},
@@ -314,7 +318,7 @@ def _move(obj: store.StudioObject, sku: str, site: str, qty: float) -> Write:
 
 async def _put(org: str, obj: store.StudioObject, *writes: Write) -> list[Any]:
     async with tenant_session(org) as db:
-        return await store.apply_writes(db, ANA, package_id=obj.package_id, writes=list(writes))
+        return await store.apply_writes(db, ANA, package_id=obj.package_id, writes=list(writes), viewer=_VIEWER)
 
 
 async def _refused(org: str, obj: store.StudioObject, *writes: Write) -> BatchError:
@@ -429,7 +433,7 @@ def test_r8_a_failed_second_write_leaves_nothing_and_the_session_usable(world, m
         obj = await _ledger(world.a, world.pkg_a)
         async with tenant_session(world.a) as db:
             first = await store.create_record(db, ANA, obj.id, {"sku": "outer", "site": "a", "qty": 1},
-                                              package_id=obj.package_id)
+                                              package_id=obj.package_id, viewer=_VIEWER)
             seen: list[Any] = []
 
             def broken(data: Any) -> str:
@@ -439,11 +443,11 @@ def test_r8_a_failed_second_write_leaves_nothing_and_the_session_usable(world, m
             monkeypatch.setattr(store, "record_json", broken)
             with pytest.raises(BatchError) as failed:
                 await store.apply_writes(db, ANA, package_id=obj.package_id, writes=[
-                    _move(obj, "s", "a", 1), _move(obj, "s", "a", 2)])
+                    _move(obj, "s", "a", 1), _move(obj, "s", "a", 2)], viewer=_VIEWER)
             monkeypatch.setattr(store, "record_json", real)
-            kept = await store.get_record(db, obj.id, first.id, package_id=obj.package_id)
+            kept = await store.get_record(db, obj.id, first.id, package_id=obj.package_id, viewer=_VIEWER)
             after = await store.create_record(db, ANA, obj.id, {"sku": "after", "site": "a", "qty": 1},
-                                              package_id=obj.package_id)
+                                              package_id=obj.package_id, viewer=_VIEWER)
         return obj, failed.value, kept, after
 
     obj, failed, kept, after = _go(world, go)
@@ -476,12 +480,12 @@ def test_r8_a_broken_rule_keeps_the_earlier_work_of_the_caller(world) -> None:
         obj = await _ledger(world.a, world.pkg_a)
         async with tenant_session(world.a) as db:
             kept = await store.apply_writes(db, ANA, package_id=obj.package_id,
-                                            writes=[_move(obj, "s", "a", 5)])
+                                            writes=[_move(obj, "s", "a", 5)], viewer=_VIEWER)
             with pytest.raises(BatchError):
                 await store.apply_writes(db, ANA, package_id=obj.package_id, writes=[
-                    _move(obj, "s", "a", 1), _move(obj, "s", "a", -7)])
+                    _move(obj, "s", "a", 1), _move(obj, "s", "a", -7)], viewer=_VIEWER)
             again = await store.apply_writes(db, ANA, package_id=obj.package_id,
-                                             writes=[_move(obj, "s", "a", -5)])
+                                             writes=[_move(obj, "s", "a", -5)], viewer=_VIEWER)
         return obj, (kept, again)
 
     obj, _ = _go(world, go)
@@ -549,21 +553,21 @@ def test_r8_each_record_function_runs_the_rules(world) -> None:
         pid = obj.package_id
         async with tenant_session(world.a) as db:
             rec = await store.create_record(db, ANA, obj.id, {"sku": "s", "site": "a", "qty": 5},
-                                            package_id=pid)
+                                            package_id=pid, viewer=_VIEWER)
         assert rec is not None
         out: dict[str, Any] = {}
         out["create"] = await refusal(lambda db: store.create_record(
-            db, ANA, obj.id, {"sku": "s", "site": "a", "qty": 101}, package_id=pid))
+            db, ANA, obj.id, {"sku": "s", "site": "a", "qty": 101}, package_id=pid, viewer=_VIEWER))
         out["update"] = await refusal(lambda db: store.update_record(
-            db, ANA, obj.id, rec.id, {"qty": 101}, package_id=pid))
+            db, ANA, obj.id, rec.id, {"qty": 101}, package_id=pid, viewer=_VIEWER))
         async with tenant_session(world.a) as db:
             out["no object"] = await store.create_record(
-                db, ANA, str(uuid.uuid4()), {}, package_id=pid)
+                db, ANA, str(uuid.uuid4()), {}, package_id=pid, viewer=_VIEWER)
             out["no record"] = await store.update_record(
-                db, ANA, obj.id, str(uuid.uuid4()), {"qty": 1}, package_id=pid)
+                db, ANA, obj.id, str(uuid.uuid4()), {"qty": 1}, package_id=pid, viewer=_VIEWER)
             out["no delete"] = await store.delete_record(
-                db, ANA, obj.id, str(uuid.uuid4()), package_id=pid)
-            out["deleted"] = await store.delete_record(db, ANA, obj.id, rec.id, package_id=pid)
+                db, ANA, obj.id, str(uuid.uuid4()), package_id=pid, viewer=_VIEWER)
+            out["deleted"] = await store.delete_record(db, ANA, obj.id, rec.id, package_id=pid, viewer=_VIEWER)
         return out
 
     out = _go(world, go)
@@ -611,7 +615,7 @@ def test_r8_two_writers_at_once_get_one_stock_move(world, round_no: int) -> None
 
         async def take(db: Any) -> Any:
             return await store.apply_writes(db, ANA, package_id=obj.package_id,
-                                            writes=[_move(obj, "s", "a", -7)])
+                                            writes=[_move(obj, "s", "a", -7)], viewer=_VIEWER)
 
         return obj, await _two_writers(world.a, take, take)
 
@@ -630,7 +634,7 @@ def test_r8_two_writers_at_once_get_one_unique_row(world, round_no: int) -> None
 
         async def make(db: Any) -> Any:
             return await store.apply_writes(db, ANA, package_id=obj.package_id,
-                                            writes=[_move(obj, "same", "a", 1)])
+                                            writes=[_move(obj, "same", "a", 1)], viewer=_VIEWER)
 
         return obj, await _two_writers(world.a, make, make)
 
@@ -654,7 +658,7 @@ def test_r8_two_writers_with_the_records_in_opposite_order_never_deadlock(
 
         async def batch(writes: list[Write]) -> Any:
             async with tenant_session(world.a) as db:
-                return await store.apply_writes(db, ANA, package_id=x.package_id, writes=writes)
+                return await store.apply_writes(db, ANA, package_id=x.package_id, writes=writes, viewer=_VIEWER)
 
         return list(await asyncio.wait_for(
             asyncio.gather(batch([ux, uy]), batch([uy, ux]), return_exceptions=True), timeout=10))
@@ -691,7 +695,7 @@ def test_r8_the_locks_come_in_one_order(world) -> None:
         writes = [Write("update", r.object_id, r.id, {"note": "x"}) for r in reversed(made)]
         async with tenant_session(world.a) as db:
             spy = _Spy(db)
-            await store.apply_writes(spy, ANA, package_id=low.package_id, writes=writes)
+            await store.apply_writes(spy, ANA, package_id=low.package_id, writes=writes, viewer=_VIEWER)
         assert len(ids) == 6
         return spy.seen, [(w.object_id, w.record_id) for w in writes]
 
@@ -763,7 +767,7 @@ def test_r8_a_waiter_past_the_bound_gets_store_busy(world) -> None:
             began = time.monotonic()
             with pytest.raises(BatchError) as busy:
                 await store.apply_writes(db, ANA, package_id=obj.package_id,
-                                         writes=[_move(obj, "s", "a", 1)])
+                                         writes=[_move(obj, "s", "a", 1)], viewer=_VIEWER)
             out["waited"] = time.monotonic() - began
             out["busy"] = busy.value
             out["setting"] = await _lock_timeout(db)
@@ -803,10 +807,10 @@ def test_r8_each_caller_of_the_org_lock_gets_the_bound(world, monkeypatch, name:
             "set_field_hot": lambda db: store.set_field_hot(db, obj.id, "note", True),
             "drop_object": lambda db: store.drop_object(db, obj.id),
             "set_constraints": lambda db: store.set_constraints(db, obj.id, [], package_id=pid),
-            "create_record": lambda db: store.create_record(db, ANA, obj.id, {}, package_id=pid),
+            "create_record": lambda db: store.create_record(db, ANA, obj.id, {}, package_id=pid, viewer=_VIEWER),
             "update_record": lambda db: store.update_record(
-                db, ANA, obj.id, rec.id, {"note": "x"}, package_id=pid),
-            "delete_record": lambda db: store.delete_record(db, ANA, obj.id, rec.id, package_id=pid),
+                db, ANA, obj.id, rec.id, {"note": "x"}, package_id=pid, viewer=_VIEWER),
+            "delete_record": lambda db: store.delete_record(db, ANA, obj.id, rec.id, package_id=pid, viewer=_VIEWER),
         }
         async with _held(world.a, most=3.0), tenant_session(world.a) as db:
             await db.execute(text("SELECT set_config('lock_timeout', '42s', true)"))
@@ -909,7 +913,7 @@ def test_r8_a_deadlock_at_the_lock_gives_store_busy(world, monkeypatch) -> None:
                 await asyncio.sleep(1.3)  # past `deadlock_timeout` of the other side
                 began = time.monotonic()
                 with pytest.raises(store.StoreBusy) as busy:
-                    await store.create_record(db, ANA, obj.id, {"sku": "s"}, package_id=pid)
+                    await store.create_record(db, ANA, obj.id, {"sku": "s"}, package_id=pid, viewer=_VIEWER)
                 out["waited"] = time.monotonic() - began
                 out["busy"] = busy.value
                 out["setting"] = await _lock_timeout(db)
@@ -982,11 +986,11 @@ def test_r8_a_delete_that_breaks_the_balance_is_refused(world) -> None:
         refused: type = object
         try:
             async with tenant_session(world.a) as db:
-                await store.delete_record(db, ANA, obj.id, plus.id, package_id=obj.package_id)
+                await store.delete_record(db, ANA, obj.id, plus.id, package_id=obj.package_id, viewer=_VIEWER)
         except ConstraintViolation as exc:
             refused = type(exc)
         async with tenant_session(world.a) as db:
-            ok = await store.delete_record(db, ANA, obj.id, minus.id, package_id=obj.package_id)
+            ok = await store.delete_record(db, ANA, obj.id, minus.id, package_id=obj.package_id, viewer=_VIEWER)
         return obj, refused, ok
 
     obj, refused, ok = _go(world, go)
@@ -1050,7 +1054,7 @@ def test_r8_a_write_that_does_not_lower_a_group_reads_no_sum(world) -> None:
     async def sums(obj: store.StudioObject, *writes: Write) -> int:
         async with tenant_session(world.a) as db:
             spy = _Spy(db)
-            await store.apply_writes(spy, ANA, package_id=obj.package_id, writes=list(writes))
+            await store.apply_writes(spy, ANA, package_id=obj.package_id, writes=list(writes), viewer=_VIEWER)
         return sum(_SUM in s for s, _ in spy.seen)
 
     async def go() -> dict[str, int]:
@@ -1086,7 +1090,7 @@ def test_r8_a_floor_above_zero_holds_from_the_first_row(world) -> None:
         async with tenant_session(world.a) as db:
             spy = _Spy(db)
             await store.apply_writes(spy, ANA, package_id=obj.package_id,
-                                     writes=[_move(obj, "one", "a", 1)])
+                                     writes=[_move(obj, "one", "a", 1)], viewer=_VIEWER)
         out["sums"] = sum(_SUM in s for s, _ in spy.seen)
         return out
 
@@ -1313,9 +1317,9 @@ def test_r8_old_duplicates_can_be_repaired_one_at_a_time(world) -> None:
                              _move(obj, "dup", "c", 1))
         async with tenant_session(world.a) as db:
             await store.set_constraints(db, obj.id, [_ONE_SKU], package_id=obj.package_id)
-            assert await store.delete_record(db, ANA, obj.id, a.id, package_id=obj.package_id) is True
+            assert await store.delete_record(db, ANA, obj.id, a.id, package_id=obj.package_id, viewer=_VIEWER) is True
             moved = await store.update_record(db, ANA, obj.id, b.id, {"sku": "new"},
-                                              package_id=obj.package_id)
+                                              package_id=obj.package_id, viewer=_VIEWER)
             assert moved is not None
         return _rows(world, obj)
 
@@ -1463,7 +1467,7 @@ def test_r8_fifty_writes_pass_and_fifty_one_run_no_statement(world) -> None:
         async with tenant_session(world.a) as db:
             spy = _Spy(db)
             with pytest.raises(store.BudgetExceeded):
-                await store.apply_writes(spy, ANA, package_id=obj.package_id, writes=[*writes, writes[0]])
+                await store.apply_writes(spy, ANA, package_id=obj.package_id, writes=[*writes, writes[0]], viewer=_VIEWER)
         return obj, len(answers), len(spy.seen)
 
     obj, answered, statements = _go(world, go)
@@ -1479,7 +1483,7 @@ def test_r8_each_key_is_checked_once(world) -> None:
         async with tenant_session(world.a) as db:
             spy = _Spy(db)
             await store.apply_writes(spy, ANA, package_id=obj.package_id,
-                                     writes=[_move(obj, "s", "a", -1) for _ in range(50)])
+                                     writes=[_move(obj, "s", "a", -1) for _ in range(50)], viewer=_VIEWER)
         return [s for s, _ in spy.seen]
 
     sqls = _go(world, go)
@@ -1523,10 +1527,10 @@ def test_r8_a_batch_of_one_package_writes_no_object_of_another(world) -> None:
         async with tenant_session(world.a) as db:
             with pytest.raises(BatchError) as other_object:
                 await store.apply_writes(db, ANA, package_id=world.pkg_a,
-                                         writes=[_move(a2, "s", "a", 1)])
+                                         writes=[_move(a2, "s", "a", 1)], viewer=_VIEWER)
             with pytest.raises(BatchError) as other_record:
                 await store.apply_writes(db, ANA, package_id=world.pkg_a, writes=[
-                    Write("delete", a2.id, rec.id)])
+                    Write("delete", a2.id, rec.id)], viewer=_VIEWER)
         return other_object.value, other_record.value, a, a2
 
     other_object, other_record, _, a2 = _go(world, go)
@@ -1545,7 +1549,7 @@ def test_r8_org_b_reads_no_rule_and_writes_nothing_of_org_a(world) -> None:
             out["set"] = await store.set_constraints(db, a.id, [], package_id=a.package_id)
             with pytest.raises(BatchError) as write:
                 await store.apply_writes(db, ANA, package_id=a.package_id,
-                                         writes=[_move(a, "s", "a", 1)])
+                                         writes=[_move(a, "s", "a", 1)], viewer=_VIEWER)
             sql, params = store.build_group_sum(
                 studio_query.parse_query(
                     [sf.parse_field_spec(f) for f in _LEDGER],
@@ -1725,7 +1729,7 @@ def test_r8_a_check_on_a_big_ledger_passes_inside_its_deadline(big) -> None:
         try:
             async with tenant_session(big.org) as db:
                 await store.apply_writes(db, ANA, package_id=obj.package_id, writes=[
-                    Write("create", obj.id, data={"sku": "sku-7", "site": "site-2", "bin": 3, "qty": -1})])
+                    Write("create", obj.id, data={"sku": "sku-7", "site": "site-2", "bin": 3, "qty": -1})], viewer=_VIEWER)
                 raise Stop
         except Stop:
             pass
@@ -1764,7 +1768,7 @@ def test_r8_a_positive_write_on_200000_rows_reads_no_sum(promoted) -> None:  # n
         async with tenant_session(p.org_b) as db:
             spy = _Spy(db)
             await store.apply_writes(spy, ANA, package_id=obj.package_id, writes=[
-                Write("create", obj.id, data={"sku": "one", "qty": qty})])
+                Write("create", obj.id, data={"sku": "one", "qty": qty})], viewer=_VIEWER)
         return sum(_SUM in s for s, _ in spy.seen)
 
     async def go() -> tuple[int, int]:
@@ -1805,11 +1809,11 @@ def test_r8_a_timeout_in_a_check_refuses_the_batch_and_keeps_the_session(big, mo
         async with tenant_session(big.org) as db:
             await db.execute(text("SELECT set_config('statement_timeout', '42s', true)"))
             kept = await store.create_record(db, ANA, plain.id, {"sku": "kept"},
-                                             package_id=plain.package_id)
+                                             package_id=plain.package_id, viewer=_VIEWER)
             with pytest.raises(BatchError) as stopped:
                 await store.apply_writes(db, ANA, package_id=obj.package_id, writes=[
-                    Write("create", obj.id, data={"sku": "t", "site": "t", "bin": 3, "qty": -1})])
-            read = await store.get_record(db, plain.id, kept.id, package_id=plain.package_id)
+                    Write("create", obj.id, data={"sku": "t", "site": "t", "bin": 3, "qty": -1})], viewer=_VIEWER)
+            read = await store.get_record(db, plain.id, kept.id, package_id=plain.package_id, viewer=_VIEWER)
             timeout = str((await db.execute(
                 text("SELECT current_setting('statement_timeout')"))).scalar_one())
             await db.execute(text("DELETE FROM studio_records WHERE id = CAST(:r AS uuid)"),

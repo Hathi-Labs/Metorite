@@ -458,3 +458,16 @@ async def test_studio_plan_shows_the_held_line_in_a_held_chat(catalog, card, mon
     monkeypatch.setattr(st, "_must_ask", held)
     await st.studio_plan(await _valid())
     assert calls[0][2].splitlines()[-1] == st.PLAN_APPROVE_HELD
+
+
+def test_the_card_names_the_runtime_kind_and_its_cost() -> None:
+    """Mutation: drop ``runtime_line`` from ``plan_card_text`` -> red (STU-B7a)."""
+    base = {"id": "orders", "name": "Orders"}
+    assert "Runtime: none, no server cost." in st.plan_card_text(base)
+    assert "Runtime: browser, no server cost." in st.plan_card_text(
+        {**base, "runtime": {"kind": "browser"}})
+    for kind in ("sandbox", "packages"):
+        text = st.plan_card_text({**base, "runtime": {"kind": kind}})
+        assert f"Runtime: {kind}, runs on the sandbox, not priced yet." in text
+        assert not re.search(r"(?i)(credit|inr|rupee|price)\D{0,20}\d", text)
+    assert st.runtime_line("not a dict") == "Runtime: none, no server cost."
