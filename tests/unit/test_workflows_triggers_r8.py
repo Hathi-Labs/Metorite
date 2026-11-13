@@ -968,9 +968,15 @@ def test_an_author_who_is_not_active_or_lost_studio_starts_no_run(promoted, monk
 
 
 def _edit(promoted, name: str, who: str, triggers: list):
+    """A Save of *who*. Since STB-6c a Save that arms a trigger of a published
+    workflow needs ``workflows:publish``, so *who* holds it here. These cases
+    test the E3 author rule, and ``test_workflows_trigger_state_r8.py`` tests
+    the right."""
+    from acb_auth import UserContext, UserRole, build_access
     from gateway.routes.workflows import crud
 
-    user = SimpleNamespace(email=who)
+    user = UserContext(email=who, role=UserRole.EMPLOYEE, organization_id=promoted.org_a,
+                       access=build_access(["feature:workflows", "workflows:publish"]))
 
     async def go():
         try:
