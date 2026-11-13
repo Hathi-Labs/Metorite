@@ -92,10 +92,17 @@ const spanDays = (w: TimelineWindow) =>
  *  module's prose is dense enough that "stays readable while it is wrong"
  *  matched a search for a `while` loop. A structural test that trips on its own
  *  documentation is a test people delete. */
-const SOURCE = readFileSync(
-  fileURLToPath(new URL("./timeline.ts", import.meta.url)),
-  "utf8",
-)
+// The generic maths moved to the timeline block (STU-D6), so the scan reads the
+// block's files first and this module last. `canLink` stays the last function.
+const SOURCE = [
+  "../../../components/timeline/scale.ts",
+  "../../../components/timeline/geometry.ts",
+  "../../../components/timeline/deps.ts",
+  "./timelineAdapter.ts",
+  "./timeline.ts",
+]
+  .map((file) => readFileSync(fileURLToPath(new URL(file, import.meta.url)), "utf8"))
+  .join(String.fromCharCode(10))
   .replace(/\/\*[\s\S]*?\*\//g, "")
   .replace(/^\s*\/\/.*$/gm, "");
 

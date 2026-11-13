@@ -946,6 +946,7 @@ jobs:
               tests/unit/test_workflows_human_step_r8.py \
               tests/unit/test_workflows_run_steps_r8.py \
               tests/unit/test_studio_workflow_write_r8.py \
+              tests/unit/test_workflows_trigger_state_r8.py \
               tests/unit/test_studio_batch_r8.py \
               tests/unit/test_headless_turn_r8.py \
               tests/unit/test_projects_status_set_read_r8.py \
