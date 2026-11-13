@@ -758,8 +758,11 @@ def _announce_offenders(root: Path) -> set[str]:
 
 def test_only_the_parked_gate_sends_no_created_event() -> None:
     """``announce=False`` takes a task out of every automation, so only the
-    parked gate may pass it. A ``**`` expansion counts as a pass too."""
+    parked gate may pass it, and the human step of STU-E4 (the same loop
+    reason: its task could start the workflow that made it). A ``**``
+    expansion counts as a pass too."""
     assert _announce_offenders(_ROOT) == {
+        "apps/services/gateway/gateway/routes/workflows/human_step.py",
         "apps/services/gateway/gateway/routes/workflows/park.py",
     }
 

@@ -500,12 +500,25 @@ jobs:
           set -f
           [ "$SHARD_MODE" = "selection" ] || SHARD_TARGETS="tests/unit/"
           rc=0
+          # CIV-33a (task 3071). pytest 9.1 lists tests/unit again for EACH file path,
+          # so 341 paths cost 272 s of 310 s. A selection of tests/unit files passes
+          # tests/unit ONCE, and scripts/pytest_only_selected.py drops the others.
+          # A full run, and a selection with a path outside tests/unit, are unchanged.
+          PLUGIN=""
+          if [ "$SHARD_MODE" = "selection" ] && ! echo $SHARD_TARGETS | tr ' ' '\012' | grep -qv '^tests/unit/'; then
+            SELECTED="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/selected.txt"
+            echo $SHARD_TARGETS > "$SELECTED"
+            export SHARD_SELECTED_FILES="$SELECTED"
+            export PYTHONPATH="$PWD/scripts${PYTHONPATH:+:$PYTHONPATH}"
+            PLUGIN="-p pytest_only_selected"
+            SHARD_TARGETS="tests/unit/"
+          fi
           # CIV-8k (task 2191). Shard 1 hung for 25 to 39 minutes in 6 red runs, always
           # right after tests/unit/test_adaptive_tier.py::test_a_long_thread_drafts_on_powerful
           # [...-False-tier-fast], and the log shows no cause. `faulthandler_timeout`
           # prints the stack of every thread when one test runs over 900 s. It kills
           # nothing, and no test takes more than 260 s.
-          uv run python -m pytest $SHARD_TARGETS -v -rs --reruns 1 \
+          uv run python -m pytest $SHARD_TARGETS $PLUGIN -v -rs --reruns 1 \
             $(python3 scripts/fences.py pytest-ignore) \
             --splits ${{ steps.pick.outputs.splits }} --group ${{ matrix.shard }} \
             --splitting-algorithm duration_based_chunks \
@@ -700,6 +713,7 @@ jobs:
               tests/unit/test_studio_packages_versions_r8.py \
               tests/unit/test_studio_package_routes_r8.py \
               tests/unit/test_studio_package_delete_r8.py \
+              tests/unit/test_studio_package_approval_r8.py \
               tests/unit/test_studio_package_delete_admin_r8.py \
               tests/unit/test_studio_chat_build_r8.py \
               tests/unit/test_studio_route_gate_r8.py \
@@ -728,6 +742,7 @@ jobs:
               tests/unit/test_crm_pipelines_native.py \
               tests/unit/test_crm_lead_pipelines.py \
               tests/unit/test_auto_park.py \
+              tests/unit/test_workflows_human_step_r8.py \
               tests/unit/test_studio_workflow_write_r8.py \
               tests/unit/test_headless_turn_r8.py \
               tests/unit/test_projects_status_set_read_r8.py \

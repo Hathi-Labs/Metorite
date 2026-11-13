@@ -2415,7 +2415,10 @@ class AggregateResult:
     """The groups of an aggregate (C2b)."""
 
     measures: tuple[studio_query.Measure, ...]
-    #: For each measure: the one currency of a money sum, or None.
+    #: For each measure: the one currency of a money sum or a money average,
+    #: or None. The grammar refuses an average of money today. If a later
+    #: slice opens one, its currency comes with it, so a client never shows
+    #: minor units as major units (STU-D4b, finding F1).
     currencies: tuple[str | None, ...]
     #: The groups with the most records, at most
     #: :data:`~acb_common.studio_query.MAX_GROUPS`, in the order of the key.
@@ -2597,8 +2600,8 @@ def _aggregate_result(agg: studio_query.Aggregate, rows: Sequence[Any]) -> Aggre
         if field.type == "money":
             currency[field.key] = _one_currency(field, first[at], first[at + 1])
             at += 2
-    currencies = tuple(currency.get(m.field.key) if m.field is not None and m.op == "sum" else None
-                       for m in agg.measures)
+    currencies = tuple(currency.get(m.field.key) if m.field is not None
+                       and m.op in ("sum", "average") else None for m in agg.measures)
     total = AggregateGroup(None, n_records, _measure_values(agg, n_records, totals))
     if agg.group is None:
         return AggregateResult(agg.measures, currencies, (), None, 0, total)
