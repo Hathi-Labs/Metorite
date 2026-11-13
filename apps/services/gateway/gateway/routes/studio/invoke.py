@@ -230,6 +230,40 @@ owner in the run's org, and it writes only when the write has the digest that
 the decision bound at the park (:func:`workflow_write_digest`). The audit row
 names the run, the node, the decision and the approver. Fence:
 ``tests/unit/test_studio_workflow_write_r8.py``.
+
+**A run with no viewer (B6a, ``ai_studio.md`` B6a).** :func:`run_as_read`
+is the one internal path of a scheduled or an event run of an install, and
+the HTTP route does not reach it. It reads only. The install names one
+member in ``package_install.run_as``, and the run reads as that member,
+through that install. The order:
+
+1. The org of the caller is present, and both switches hold it
+   (``STUDIO_ORGS`` and ``PACKAGE_HOST_ORGS``).
+2. The install is an install of that org with a member (``no_run_as`` else).
+3. The member holds ``feature:studio`` and is an active member of the org
+   (:func:`may_run_as`). Each call checks it again, so a run stops at its next
+   call when the member leaves (``run_as_lost``).
+4. In one session, under a reader slot: the member is the same, and the
+   member sees THIS install now (``resolve.install_seen_by``). A paused or
+   an archived install, a paused app and a group that the member left each
+   give ``run_as_lost``.
+5. The declaration and the class come from the manifest of the version that
+   the install pins (``viewer.installed`` on that row), NEVER from the draft
+   of the owner. :func:`_check` reads the draft for the owner, so the run does
+   not call it. Only the object ``get`` and ``list`` run
+   (:data:`RUN_AS_EXECUTORS`). A class B or C action gets ``reads_only``,
+   and each other source gets ``source_not_open``.
+6. The read takes the viewer of the member (``_row_viewer(member)``), so the
+   row rules and the hidden keys of C8a bind the run as they bind that member.
+
+The whole run sits inside ``no_person_scope``, so ``no_person_present()``
+holds, and no seam that approves or asks lets it pass. The audit row goes in
+the session of the read, through ``record_app_audit_in``. Its
+``user_email`` is ``system:package:<package id>`` (:func:`run_as_actor`), and
+its ``detail`` names the member, the install, the run and the outcome. A
+refusal that reaches the install writes its row too. No production code
+calls this path yet: E3 is the first caller. Fences:
+``tests/unit/test_studio_run_as_r8.py`` and ``tests/unit/test_studio_run_as.py``.
 """
 
 from __future__ import annotations
@@ -250,7 +284,7 @@ from acb_auth import app_requests as store
 from acb_auth import direct_proof as _direct_proof
 from acb_common import app_manifests, get_logger, studio_query
 from acb_common.app_manifests.base import OP_PATTERN, DoorOp
-from acb_common.no_person import no_person_present
+from acb_common.no_person import no_person_present, no_person_scope
 from acb_common.studio_access import Viewer
 from acb_common.studio_fields import FieldError, FieldSpec, RecordError
 from acb_common.studio_manifest import OBJECT_OP_CLASSES, UsesRef, parse_uses
@@ -264,6 +298,8 @@ from fastapi import Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from gateway import app_requests
 from gateway.db import tenant_session as _tenant_session
+from gateway.package_host import resolve as _resolve
+from gateway.package_host import store as host_store
 from gateway.package_host import viewer as _viewer
 from gateway.package_host.flags import package_host_allowed
 from gateway.routes.apps._common import record_app_audit_bound, record_app_audit_in
@@ -294,12 +330,17 @@ __all__ = [
     "REFUSALS",
     "REQUEST_APP",
     "REQUEST_VIA",
+    "RUN_AS_EXECUTORS",
+    "RUN_AS_VIA",
     "SPEND_REFUSALS",
     "WORKFLOW_VIA",
     "WRITERS_PER_ORG",
     "WRITERS_TOTAL",
+    "may_run_as",
     "plan_workflow_write",
     "router",
+    "run_as_actor",
+    "run_as_read",
     "run_workflow_write",
     "workflow_write_digest",
 ]
@@ -783,7 +824,11 @@ def _row_viewer(member: str) -> Viewer:
     owner reads and writes as before C8a. A viewer who is not the owner gets
     no role from the role map yet, so the rules treat it as a bound viewer. C8b gives a member who is not the owner
     the roles of the role map of the install. It resolves them here, in the
-    session of the second check, and again at a spend."""
+    session of the second check, and again at a spend.
+
+    B6a: a run with no viewer (:func:`run_as_read`) calls it too, with the
+    ``run_as`` member that the install row names, so that member's rules bind
+    the run."""
     return Viewer(member)
 
 
@@ -1727,6 +1772,188 @@ async def run_workflow_write(*, organization_id: str, member: str, package_id: s
     # C3: after the commit of the write, so no event names a rolled back change.
     await _emit_record_event(out, org)
     return _workflow_result(out)
+
+
+# ── A run with no viewer (B6a) ────────────────────────────────────────────
+
+
+#: The ``via`` of the audit row of a run with no viewer (B6a).
+RUN_AS_VIA = "run_as"
+#: The executors of a run with no viewer: the object ``get`` and ``list``. A
+#: run with no viewer only reads, so no write and no door op is here.
+RUN_AS_EXECUTORS: frozenset[tuple[str, str | None]] = frozenset(
+    {("object", "get"), ("object", "list")})
+#: The codes of a run with no viewer that names nothing or runs nothing.
+RUN_AS_NO_ORG = "no_org"
+RUN_AS_OFF = "studio_off"
+RUN_AS_NOT_FOUND = "not_found"
+#: The install names no member, so no run with no viewer runs. It fails closed.
+RUN_AS_NONE = "no_run_as"
+#: The member left the org, lost ``feature:studio``, or does not see the
+#: install now.
+RUN_AS_LOST = "run_as_lost"
+#: The member of the install changed during the run.
+RUN_AS_CHANGED = "run_as_changed"
+#: A class B or C action. A run with no viewer reads only.
+RUN_AS_READS_ONLY = "reads_only"
+
+
+def run_as_actor(package_id: str) -> str:
+    """The ``user_email`` of the audit row of a run with no viewer: the
+    package, never a person (``ai_studio.md`` §19.2). The member is in the
+    ``detail`` of the row."""
+    return f"system:package:{package_id}"
+
+
+async def may_run_as(member: str, org: str) -> bool:
+    """True when *member* may be the member of a run with no viewer in *org*
+    now (B6a).
+
+    The member holds ``feature:studio`` in the org (:func:`_holds_studio`),
+    and is an ACTIVE member of the org (``acb_auth.access.is_active_member``).
+    The route that names the member and the run both call this, so one rule
+    decides. Each read opens its own session, so the caller holds none. It
+    fails closed: a read that fails answers False."""
+    if not member or not org:
+        return False
+    if not await _holds_studio(member, org):
+        return False
+    from acb_auth.access import is_active_member
+
+    try:
+        return await is_active_member(member, org)
+    except Exception as exc:
+        _log.warning("studio.invoke.run_as_member_failed", error=type(exc).__name__)
+        return False
+
+
+def _run_as_body(body: Any) -> bytes | None:
+    """The body of the read as the executors read it. None is an empty body.
+    A value that is not plain JSON gives None, and the run refuses it."""
+    if body is None:
+        return b""
+    try:
+        return json.dumps(body, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, RecursionError):
+        return None
+
+
+async def _run_as_session(db: Any, *, member: str, install_id: str, action: str,
+                          raw: bytes | None, out: _Outcome) -> None:
+    """The checks and the read of one run with no viewer, in the session *db*
+    (B6a). It sets the fields of *out* that it decides, and writes nothing."""
+    again = await host_store.read_run_as(db, install_id=install_id)
+    if again is None or again.run_as != member:
+        out.refusal = RUN_AS_CHANGED
+        return
+    row = await _resolve.install_seen_by(db, viewer=member, install_id=install_id)
+    # The pinned version of THIS install, never the draft of the owner.
+    app = None if row is None else _viewer.installed([row], row.app_id)
+    if app is None:
+        out.refusal = RUN_AS_LOST
+        return
+    out.version = app.version
+    entry = _declared(app.manifest, action)
+    ref = None if entry is None else parse_uses(entry.get("uses"))
+    if entry is None or ref is None:
+        out.refusal = NOT_DECLARED
+        return
+    out.uses = str(entry["uses"])
+    if ref.source != "object":
+        # A door op, a workflow or an integration: no run with no viewer
+        # reaches another source.
+        out.refusal = SOURCE_NOT_OPEN
+        return
+    out.cls = OBJECT_OP_CLASSES.get(str(ref.op))
+    if out.cls in ("B", "C"):
+        out.refusal = RUN_AS_READS_ONLY
+    elif out.cls != "A" or (ref.source, ref.op) not in RUN_AS_EXECUTORS:
+        out.refusal = SOURCE_NOT_OPEN
+    elif raw is None:
+        out.invalid = True
+    else:
+        run = _run_object_list if ref.op == "list" else _run_object_get
+        # C8a: the row rules and the hidden keys of the run_as member bind the
+        # read. The viewer is that member, from the install row, never a caller.
+        await run(db, app, ref, raw, out, _row_viewer(member))
+
+
+def _run_as_detail(out: _Outcome, *, member: str | None, install_id: str,
+                   run_id: Any) -> dict[str, Any]:
+    """The audit row of a run with no viewer. It holds no record data."""
+    return {**_audit_detail(out), "via": RUN_AS_VIA, "run_as": _cap(member),
+            "install_id": install_id, "run_id": _cap(str(run_id)), "version": out.version}
+
+
+def _run_as_result(out: _Outcome) -> dict[str, Any]:
+    """What the caller of a run with no viewer reads back: the outcome, the
+    code and the page or the record of a read that ran."""
+    outcome, reason = _outcome(out)
+    result: dict[str, Any] | None = None
+    if outcome == "ran" and out.page is not None:
+        result = dataclasses.asdict(out.page)
+    elif outcome == "ran" and out.record is not None:
+        result = {"record": dataclasses.asdict(out.record)}
+    return {"ok": result is not None, "outcome": outcome, "code": reason, "result": result}
+
+
+def _run_as_named_nothing(code: str, outcome: str = "refused") -> dict[str, Any]:
+    return {"ok": False, "outcome": outcome, "code": code, "result": None}
+
+
+async def run_as_read(*, organization_id: str, install_id: str, action: str, body: Any,
+                      run_id: str) -> dict[str, Any]:
+    """Run ONE read of the install *install_id* as the member that it names
+    (B6a). See "A run with no viewer" in the module docstring for the order.
+
+    The caller binds the facts: *organization_id* is the org of the run, and
+    *install_id*, *action* and *run_id* come from the run. None of them is
+    request input, and no member comes from the caller: the install names it.
+    *body* is the input of the read: ``{"id": ...}`` for a get, and the list
+    input for a list. The run writes nothing but its audit row. It never
+    raises an ``HTTPException``: each answer that is not ``ok`` stops the
+    run."""
+    org = str(organization_id or "").strip()
+    if not org:
+        return _run_as_named_nothing(RUN_AS_NO_ORG)
+    if not (flags.studio_allowed(org) and package_host_allowed(org)):
+        return _run_as_named_nothing(RUN_AS_OFF)
+    iid = _uuid_or_none(str(install_id or ""))
+    if iid is None or not _ACTION_ID.fullmatch(str(action or "")):
+        return _run_as_named_nothing(RUN_AS_NOT_FOUND, "not_found")
+    out = _Outcome(action=str(action))
+    raw = _run_as_body(body)
+    with no_person_scope():
+        async with _tenant_session(org) as db:
+            first = await host_store.read_run_as(db, install_id=iid)
+        if first is None:
+            # No install of this org has the id. The answer names nothing,
+            # and no row is written.
+            return _run_as_named_nothing(RUN_AS_NOT_FOUND, "not_found")
+        member = first.run_as
+        if member is None:
+            out.refusal = RUN_AS_NONE
+        elif not await may_run_as(member, org):
+            out.refusal = RUN_AS_LOST
+        if out.refusal is not None:
+            async with _tenant_session(org) as db:
+                await record_app_audit_in(
+                    db, app_id=first.app_id, user_email=run_as_actor(first.app_id),
+                    kind="action", detail=_run_as_detail(
+                        out, member=member, install_id=iid, run_id=run_id))
+            return _run_as_result(out)
+        with _reader_slot(org, True) as admitted:
+            if not admitted:
+                # No session was opened, so no audit row is written.
+                return _run_as_named_nothing(STORE_BUSY, "failed")
+            async with _tenant_session(org) as db:
+                await _run_as_session(db, member=member, install_id=iid, action=str(action),
+                                      raw=raw, out=out)
+                await record_app_audit_in(
+                    db, app_id=first.app_id, user_email=run_as_actor(first.app_id),
+                    kind="action", app_version=out.version, detail=_run_as_detail(
+                        out, member=member, install_id=iid, run_id=run_id))
+    return _run_as_result(out)
 
 
 def _mode(first: UsesRef | None, direct: bool, delegated: bool,

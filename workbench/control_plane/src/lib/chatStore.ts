@@ -67,6 +67,10 @@ export interface ChatMessage {
   streaming?: boolean;
   toolEvents?: ToolEvent[];
   progressLines?: string[];
+  /** HRD-6: the line of a slow step ("This is a large read …"), with the id
+   *  of the step it belongs to. The live loop sets it, and the end of that
+   *  step, answer text or the run's end takes it away. Never saved. */
+  progressNotice?: { text: string; toolId?: string };
   isThinkingActive?: boolean;
   /** Sequential reasoning blocks — each displayed as a separate timeline entry. */
   reasoningBlocks?: string[];
