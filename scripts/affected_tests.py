@@ -486,7 +486,6 @@ def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str],
 GATE_FULL_NAMES = {
     "pyproject.toml",
     "uv.lock",
-    ".test_durations",
     "scripts/affected_tests.py",
     "scripts/fences.py",
     "scripts/ci_unit_guard.py",

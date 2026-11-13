@@ -50,6 +50,9 @@ real compare-and-set, so a round reaches ``cap_reached`` as on the database.
   asserts an order, not a time,
   (5) ``test_a_driver_that_turns_a_cancel_into_an_error_charges_the_rest``,
   (6) ``test_a_report_that_hangs_is_cut_and_the_job_ends``.
+* AUTO-8b-2c, the attribution scope of each round:
+  ``test_each_round_runs_inside_the_attribution_scope_and_leaves_none``,
+  ``test_the_default_runner_names_the_turn_on_the_wire``.
 
 **The mutations** (each was run on the branch, then restored):
 
@@ -85,6 +88,9 @@ real compare-and-set, so a round reaches ``cap_reached`` as on the database.
   cases go red: ``test_r8_a_normal_round_clears_the_mark`` of
   ``test_headless_turn_r8.py`` and ``test_r8_a_round_can_clear_the_mark_in_
   the_same_write`` of ``test_goal_record_r8.py``.
+* M13 (AUTO-8b-2c). ``_run_once``: drop ``run_attribution_scope``.
+  ``test_each_round_runs_inside_the_attribution_scope_and_leaves_none`` and
+  ``test_the_default_runner_names_the_turn_on_the_wire`` go red.
 
 Run::
 
@@ -1269,6 +1275,62 @@ def test_the_runner_acts_as_the_member_of_the_goal(world) -> None:
     assert runner.calls[0]["message"] == goal.objective
 
 
+@pytest.mark.parametrize("raises", [False, True], ids=["ends", "raises"])
+def test_each_round_runs_inside_the_attribution_scope_and_leaves_none(world, raises) -> None:
+    """AUTO-8b-2c: the runner reads ``("auto", "auto.headless")``, the
+    paying member is bound verified, and the frame that ran the turn holds
+    no scope after it, also when a round raises. Mutation: drop
+    ``run_attribution_scope`` from ``_run_once`` -> red."""
+    from acb_common import get_run_context, run_attribution
+
+    goal = world.goals.add()
+    runner = FakeRunner(world.meter, raises=RuntimeError("boom") if raises else None)
+    seen: list[tuple[Any, ...]] = []
+
+    def side(_n: int) -> None:
+        ctx = get_run_context()
+        seen.append((run_attribution(), ctx.get("user"), ctx.get("member_verified")))
+
+    runner.side = side
+    turn = _turn(world, runner, rounds=2, go_on=_always)
+    claim = _claim(_payload(goal))
+
+    async def main() -> Any:
+        await turn.run(ORG, _payload(goal), claim)
+        return run_attribution()
+
+    assert asyncio.run(main()) is None
+    assert run_attribution() is None
+    assert seen == [((ht.APP, ht.AGENT), ANA, "1")] * len(runner.calls)
+    assert len(runner.calls) == (1 if raises else 2)
+    assert world.jobs.given_up == ([(claim.id, ht.TURN_FAILED)] if raises else [])
+
+
+def test_the_default_runner_names_the_turn_on_the_wire(world, monkeypatch, tmp_path) -> None:
+    """AUTO-8b-2c, end to end: the default runner, the REAL ``run_agent``
+    and the REAL worker. Only the wire under the worker's client is a fake,
+    so these are the headers that the gateway's ``/v1`` gets, and the Router
+    writes the usage row from them."""
+    from tests.unit._subagent_harness import HeaderWire, route_worker_runs
+
+    wire = HeaderWire()
+    route_worker_runs(monkeypatch, tmp_path, wire)
+    asked: list[str] = []
+
+    async def meter(org: str, run_id: str) -> Decimal:
+        asked.append(run_id)
+        return Decimal(0)
+
+    goal = world.goals.add()
+    _run(_turn(world, meter=meter, tools=("remember",)), _payload(goal))
+    assert wire.headers, "the round made no model request"
+    assert len(set(asked)) == 1 and len(asked) == 2  # one round, read before and after
+    for h in wire.headers:
+        assert (h.get("x-cc-agent"), h.get("x-cc-module"), h.get("x-cc-member"),
+                h.get("x-cc-run")) == (ht.AGENT, ht.APP, ANA, asked[0])
+    assert world.goals.writes == 1 and world.jobs.given_up == []
+
+
 @pytest.mark.parametrize("case", ["missing", "other_kind", "blocked"])
 def test_a_goal_that_takes_no_round_gets_no_call(world, case) -> None:
     if case == "missing":
@@ -1445,3 +1507,43 @@ def test_the_module_takes_no_member_from_the_payload() -> None:
         assert not _PAYLOAD_MEMBER.search(fine), fine
     src = _MODULE.read_text(encoding="utf-8")
     assert not _PAYLOAD_MEMBER.search(src)
+
+
+# ── AUTO-8b-2b: the ceiling of each round ───────────────────────────────────
+
+
+class CeilingRunner(FakeRunner):
+    """A runner that records the ``X-CC-Run-Ceiling`` that a model call of the
+    round would send. It reads the stamp as ``attributed_openai`` reads it."""
+
+    def __init__(self, meter: FakeMeter, **kw: Any) -> None:
+        super().__init__(meter, **kw)
+        self.ceilings: list[str | None] = []
+
+    async def __call__(self, message: str, **kw: Any) -> dict[str, Any]:
+        from acb_llm.attribution import RUN_CEILING, attribution_headers
+
+        self.ceilings.append(attribution_headers().get(RUN_CEILING))
+        return await super().__call__(message, **kw)
+
+
+def test_each_round_sends_the_rest_of_the_budget_as_the_ceiling(world) -> None:
+    """AUTO-8b-2b: h = cap - used at the start of each round, with 4 places.
+
+    Mutation: drop ``run_ceiling_scope`` from ``_rounds``. This test goes
+    red (each ceiling reads None)."""
+    from acb_llm.attribution import RUN_CEILING, attribution_headers
+
+    goal = world.goals.add(cost_cap="10", used="2.5")
+    runner = CeilingRunner(world.meter, cost="1.25")
+    _run(_turn(world, runner, go_on=_always, rounds=3), _payload(goal))
+    assert runner.ceilings == ["7.5000", "6.2500", "5.0000"]
+    # The scope ends with the round: the frame of the turn sends nothing.
+    assert RUN_CEILING not in attribution_headers()
+
+
+def test_round_ceiling_is_the_rest_and_never_below_zero(world) -> None:
+    goal = world.goals.add(cost_cap="10", used="9.99995")
+    assert ht.round_ceiling(goal) == Decimal("0.00005")
+    over = dataclasses.replace(goal, cost_used_credits=Decimal("12"))
+    assert ht.round_ceiling(over) == Decimal(0)
