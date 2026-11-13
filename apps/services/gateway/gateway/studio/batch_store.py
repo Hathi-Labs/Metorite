@@ -35,6 +35,20 @@ the caller and must be an id or a row number, never pay data.
 caller and opens no connection of its own. A driver of many chunks opens one
 session for each chunk, one after the other, and never holds two at once.
 
+**Known limits (E8b must handle them).**
+
+* The delete of a package takes the org lock and then deletes the ``apps`` row,
+  which cascades onto a batch row. A driver holds that row ``FOR UPDATE`` and
+  then waits for the org lock. In a narrow window that is a deadlock (40P01).
+  The member can retry the delete step. A driver retries a chunk.
+* ``StoreBusy`` from the wait for the batch row aborts the transaction
+  (``bounded_wait`` opens no SAVEPOINT), so the caller rolls back. ``StoreBusy``
+  from ``apply_writes`` leaves the transaction usable. Both mark no item.
+* The digest is type sensitive: ``1`` and ``1.0`` differ, and ``1e16`` comes
+  back from JSONB as an int. So E8b must keep the writes lossless, and pass
+  the same Python values that it froze.
+* ``_result`` never moves a batch that is not ``open`` back to ``open``.
+
 **Locks.** :func:`run_chunk` locks the batch row ``FOR UPDATE`` first, with the
 bound of :func:`~gateway.studio.objects_store.bounded_wait`. Then the write
 takes the org lock. The order is always batch row, then org lock, so two
@@ -63,6 +77,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from acb_common import studio_query
 from acb_common.studio_query import QueryError
 from acb_common.studio_rules import MAX_WRITES_PER_BATCH, RuleViolation
 from sqlalchemy import text
@@ -200,6 +215,11 @@ def _clean_items(items: Any) -> list[BatchItem]:
             raise BatchStoreError("Each write of an item is a Write.")
         if any(w.op not in BATCH_OPS for w in writes):
             raise BatchStoreError("A batch holds creates and updates only. It holds no delete.")
+        if writes[0].parent is not None:
+            raise BatchStoreError("The first write of an item is the record. It has no parent.")
+        for j, w in enumerate(writes[1:], start=1):
+            if type(w.parent) is not int or not 0 <= w.parent < j:
+                raise BatchStoreError("The parent of a line is the place of an earlier write of its item.")
     return list(items)
 
 
@@ -392,8 +412,8 @@ async def run_chunk(db: Any, actor: str, batch_id: str,
     The chunk then runs as one ``apply_writes`` call, and each item is marked
     ``done`` with its record id in the same transaction.
 
-    A refused write marks that ONE item ``failed`` and the other items of the
-    chunk run again. :class:`~gateway.studio.objects_store.StoreBusy` is a retry
+    A refused chunk is split in halves until a single item is refused. That
+    item is marked ``failed``, and no other. :class:`~gateway.studio.objects_store.StoreBusy` is a retry
     signal: it marks nothing. The caller commits after the call, or rolls back
     when it raises, and each call is one transaction, so the org lock is free
     between chunks.
@@ -406,7 +426,7 @@ async def run_chunk(db: Any, actor: str, batch_id: str,
         raise BatchNotFound("No such batch.")
     pid, status = str(held[0]), str(held[1])
     if status != STATUS_OPEN:
-        return await _result(db, bid, {}, {})
+        return await _result(db, bid, {}, {}, status)
     pending = (await db.execute(text(_PENDING_SQL), {"bid": bid, "lim": CHUNK_WRITES})).all()
     taken = _take(pending)
     for row in taken:
@@ -417,42 +437,74 @@ async def run_chunk(db: Any, actor: str, batch_id: str,
             raise DigestMismatch("The writes of an item are not the frozen writes.")
     written: dict[str, str] = {}
     failed: dict[str, str] = {}
-    live = list(taken)
-    while live:
-        flat: list[Write] = []
-        starts: list[int] = []
-        for row in live:
-            starts.append(len(flat))
-            flat.extend(_shift(writes_by_key[str(row[0])], len(flat)))
-        try:
-            answers = await objects_store.apply_writes(db, who, package_id=pid, writes=flat)
-        except BatchError as exc:
-            if _is_busy(exc):
-                raise StoreBusy(str(exc.cause)) from None
-            if not _is_item_refusal(exc.cause):
-                raise
-            at = max(i for i, s in enumerate(starts) if s <= exc.index)
-            key = str(live[at][0])
-            failed[key] = _code(exc.cause)
-            await db.execute(text(_FAILED_SQL), {"bid": bid, "key": key, "code": failed[key]})
-            del live[at]
-            continue
-        for row, start in zip(live, starts, strict=True):
-            record = answers[start]
-            if not isinstance(record, objects_store.Record):
-                raise BatchStoreError("A write of an item gave no record.")
-            written[str(row[0])] = record.id
-            await db.execute(text(_DONE_SQL), {"bid": bid, "key": str(row[0]), "rid": record.id})
-        break
-    return await _result(db, bid, written, failed)
+    await _run_group(db, who, pid, bid, taken, writes_by_key, written, failed)
+    return await _result(db, bid, written, failed, status)
 
 
-async def _result(db: Any, bid: str, written: dict[str, str], failed: dict[str, str]) -> ChunkResult:
+async def _run_group(db: Any, who: str, pid: str, bid: str, rows: Sequence[Any],
+                     writes_by_key: Mapping[str, Sequence[Write]], written: dict[str, str],
+                     failed: dict[str, str]) -> None:
+    """Write the items *rows* as one ``apply_writes`` call, and when the call
+    refuses, split the group in two halves and run each half. A group of ONE
+    item that the store refuses fails that item, and no other. So a refusal
+    that the whole chunk causes (the roll-up caps, the shared check deadline)
+    never fails an item that writes fine alone. The caps are per call, so a
+    smaller group passes. A unique clash between two items of one chunk gives
+    the same outcome wherever the chunk edge falls: the earlier item writes,
+    and the later one fails alone against it.
+
+    A group of one item that times out raises ``StoreBusy`` (a retry signal),
+    because a deadline says nothing sure about the item. An item that always
+    times out blocks its batch until the driver stops, and E8b bounds the
+    retries.
+
+    A fault that is not a refusal of a write (a database error, any cause
+    that is not a ``ValueError``) and a busy org are raised, and mark nothing.
+    A refused call rolls back its own SAVEPOINT, so the earlier halves stay."""
+    if not rows:
+        return
+    flat: list[Write] = []
+    starts: list[int] = []
+    for row in rows:
+        starts.append(len(flat))
+        flat.extend(_shift(writes_by_key[str(row[0])], len(flat)))
+    try:
+        answers = await objects_store.apply_writes(db, who, package_id=pid, writes=flat)
+    except BatchError as exc:
+        if _is_busy(exc):
+            raise StoreBusy(str(exc.cause)) from None
+        if not _is_item_refusal(exc.cause):
+            raise
+        if len(rows) > 1:
+            half = len(rows) // 2
+            await _run_group(db, who, pid, bid, rows[:half], writes_by_key, written, failed)
+            await _run_group(db, who, pid, bid, rows[half:], writes_by_key, written, failed)
+            return
+        if isinstance(exc.cause, QueryError) and exc.cause.code == studio_query.TIMEOUT:
+            # A deadline is load, not a verdict on the item: a retry signal.
+            raise StoreBusy(str(exc.cause)) from None
+        key = str(rows[0][0])
+        failed[key] = _code(exc.cause)
+        await db.execute(text(_FAILED_SQL), {"bid": bid, "key": key, "code": failed[key]})
+        return
+    for row, start in zip(rows, starts, strict=True):
+        record = answers[start]
+        if not isinstance(record, objects_store.Record):
+            raise BatchStoreError("A write of an item gave no record.")
+        written[str(row[0])] = record.id
+        await db.execute(text(_DONE_SQL), {"bid": bid, "key": str(row[0]), "rid": record.id})
+
+
+async def _result(db: Any, bid: str, written: dict[str, str], failed: dict[str, str],
+                  held: str) -> ChunkResult:
     """The counts after the chunk, and the status of the batch: ``done`` when
     nothing is pending and no item failed, ``failed`` when nothing is pending
-    and one did, else ``open``."""
+    and one did, else ``open``. A batch that was not ``open`` keeps its
+    status: this never moves it back."""
     counts = (await db.execute(text(_COUNTS_SQL), {"bid": bid})).one()
     pending, bad = int(counts[0]), int(counts[2])
+    if held != STATUS_OPEN:
+        return ChunkResult(written=written, failed=failed, pending=pending, status=held)
     status = STATUS_OPEN if pending else (STATUS_FAILED if bad else STATUS_DONE)
     await db.execute(text(_SET_STATUS_SQL), {"bid": bid, "status": status})
     return ChunkResult(written=written, failed=failed, pending=pending, status=status)

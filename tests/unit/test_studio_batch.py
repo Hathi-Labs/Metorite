@@ -127,6 +127,25 @@ def test_an_item_of_more_than_the_chunk_cap_is_refused() -> None:
         bs._clean_items([bs.BatchItem("a", ())])
 
 
+@pytest.mark.parametrize("parent", [-1, 1, 2, True, "0", 1.0])
+def test_a_bad_parent_of_a_line_is_refused(parent: object) -> None:
+    bad = bs.BatchItem("a", (_w(), Write("create", _LINE, data={"q": 1}, parent=parent)))
+    with pytest.raises(bs.BatchStoreError, match="parent"):
+        bs._clean_items([bad])
+
+
+def test_the_record_write_has_no_parent_and_a_line_names_an_earlier_write() -> None:
+    with pytest.raises(bs.BatchStoreError, match="no parent"):
+        bs._clean_items([bs.BatchItem("a", (_w(parent=0),))])
+    ok = bs.BatchItem("a", (_w(), Write("create", _LINE, parent=0),
+                            Write("create", _LINE, parent=1)))
+    assert len(bs._clean_items([ok])) == 1
+
+
+def test_an_item_error_is_a_value_error_and_a_fault_is_not() -> None:
+    assert bs._is_item_refusal(ValueError("x")) and not bs._is_item_refusal(RuntimeError("x"))
+
+
 # -- the chunk rule ----------------------------------------------------------
 
 

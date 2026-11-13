@@ -75,6 +75,7 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
+from acb_common import studio_query
 from acb_common.db import tenant_session
 from gateway.studio import batch_store as bs
 from gateway.studio import objects_store as store
@@ -259,8 +260,8 @@ def test_r8_a_fault_in_chunk_3_leaves_100_records_and_a_second_drive_ends_at_300
             raise RuntimeError("the process died after the write")
         return out
 
-    async def result_then_fall(db: Any, bid: str, written: dict, failed: dict) -> Any:
-        out = await real_result(db, bid, written, failed)
+    async def result_then_fall(db: Any, bid: str, written: dict, failed: dict, held: str) -> Any:
+        out = await real_result(db, bid, written, failed, held)
         if hit["left"] and "r0120" in written:
             hit["left"] -= 1
             raise RuntimeError("the process died after the status")
@@ -532,6 +533,145 @@ def test_r8_a_busy_org_is_a_retry_signal_and_marks_no_item(world) -> None:
         return await _chunk(w.a, bid, wbk)
 
     assert len(_go(w, again).written) == 4
+
+
+# -- 9. a refusal that the whole chunk causes -------------------------------
+
+
+def test_r8_fifty_creates_under_three_rollups_all_end_done_in_smaller_chunks(world) -> None:
+    """50 invoices of 50 customers under 3 roll-ups need 150 aggregates, over
+    the cap of 100 of one call. Each invoice writes fine alone, so none fails."""
+    w = world
+
+    async def go() -> tuple[bs.ChunkResult, Any]:
+        async with tenant_session(w.a) as db:
+            cust = await store.define_object(db, ANA, package_id=w.pkg_a, name="customer", fields=[
+                {"key": "name", "type": "text"}, {"key": "t1", "type": "number"},
+                {"key": "t2", "type": "number"}, {"key": "t3", "type": "number"}])
+            inv = await store.define_object(db, ANA, package_id=w.pkg_a, name="invoice", fields=[
+                {"key": "customer", "type": "relation", "to": "customer", "hot": True},
+                {"key": "amt", "type": "number", "hot": True}])
+            assert cust and inv
+            rules = [{"name": f"r{n}", "kind": "rollup", "target": f"t{n}", "source": "invoice",
+                      "via": "customer", "agg": "sum", "field": "amt"} for n in (1, 2, 3)]
+            assert await store.set_constraints(db, cust.id, rules, package_id=w.pkg_a)
+            made = await store.apply_writes(db, ANA, package_id=w.pkg_a, writes=[
+                Write("create", cust.id, data={"name": f"c{i}"}) for i in range(50)])
+        items = [BatchItem(f"i{i:02d}", (Write("create", inv.id, data={
+            "customer": {"id": made[i].id}, "amt": 2}),)) for i in range(50)]
+        wbk = _by_key(items)
+        batch = await _open(w.a, w.pkg_a, items)
+        res = await _chunk(w.a, batch.id, wbk)
+        return res, (batch, inv, wbk)
+
+    res, (batch, inv, wbk) = _go(w, go)
+    assert res.failed == {}
+    rows = _item_rows(w, batch.id)
+    assert not [r for r in rows if r.status == "failed"]
+
+    async def rest() -> None:
+        await _drive(w.a, batch.id, wbk)
+
+    _go(w, rest)
+    assert [r.status for r in _item_rows(w, batch.id)] == ["done"] * 50
+    assert len(_records(w, inv)) == 50
+
+
+def test_r8_a_timeout_marks_nothing_and_a_retry_finishes(world, monkeypatch) -> None:
+    w = world
+    items = _items(w.ledger, 6)
+    wbk = _by_key(items)
+    real = store.apply_writes
+    mode = {"on": True}
+
+    async def slow(db: Any, actor: str, *, package_id: str, writes: Any) -> Any:
+        if mode["on"]:
+            raise store.BatchError(0, studio_query.QueryError(studio_query.TIMEOUT, "too slow"))
+        return await real(db, actor, package_id=package_id, writes=writes)
+
+    async def go() -> str:
+        batch = await _open(w.a, w.pkg_a, items)
+        monkeypatch.setattr(store, "apply_writes", slow)
+        with pytest.raises(StoreBusy):
+            await _chunk(w.a, batch.id, wbk)
+        return batch.id
+
+    bid = _go(w, go)
+    assert [(r.status, r.code) for r in _item_rows(w, bid)] == [("pending", None)] * 6
+    assert len(_records(w, w.ledger)) == 0
+    mode["on"] = False
+
+    async def again() -> bs.ChunkResult:
+        return await _chunk(w.a, bid, wbk)
+
+    assert len(_go(w, again).written) == 6
+
+
+def test_r8_a_timeout_of_a_big_group_splits_and_all_items_end_done(world, monkeypatch) -> None:
+    w = world
+    items = _items(w.ledger, 8)
+    wbk = _by_key(items)
+    real = store.apply_writes
+
+    async def slow_when_big(db: Any, actor: str, *, package_id: str, writes: Any) -> Any:
+        if len(writes) > 2:
+            raise store.BatchError(len(writes) - 1,
+                                   studio_query.QueryError(studio_query.TIMEOUT, "too slow"))
+        return await real(db, actor, package_id=package_id, writes=writes)
+
+    async def go() -> bs.ChunkResult:
+        batch = await _open(w.a, w.pkg_a, items)
+        monkeypatch.setattr(store, "apply_writes", slow_when_big)
+        return await _chunk(w.a, batch.id, wbk)
+
+    res = _go(w, go)
+    assert len(res.written) == 8 and res.failed == {} and res.status == "done"
+
+
+def test_r8_a_cause_that_is_no_value_error_is_raised_and_marks_nothing(world, monkeypatch) -> None:
+    w = world
+    items = _items(w.ledger, 3)
+    wbk = _by_key(items)
+
+    async def boom(db: Any, actor: str, *, package_id: str, writes: Any) -> Any:
+        raise store.BatchError(1, RuntimeError("a database fault"))
+
+    async def go() -> str:
+        batch = await _open(w.a, w.pkg_a, items)
+        monkeypatch.setattr(store, "apply_writes", boom)
+        with pytest.raises(store.BatchError):
+            await _chunk(w.a, batch.id, wbk)
+        return batch.id
+
+    bid = _go(w, go)
+    assert [r.status for r in _item_rows(w, bid)] == ["pending"] * 3
+
+
+def test_r8_a_duplicate_unique_key_in_one_chunk_fails_the_later_item_at_any_edge(world) -> None:
+    """The later of two items with one unique key fails alone, and the
+    earlier writes, whether they share a chunk or not."""
+    w = world
+
+    async def go() -> list[list[str]]:
+        async with tenant_session(w.a) as db:
+            obj = await store.define_object(db, ANA, package_id=w.pkg_a, name="uniq",
+                                            fields=[{"key": "code", "type": "text", "hot": True}])
+            assert obj and await store.set_constraints(
+                db, obj.id, [{"name": "one_code", "kind": "unique", "fields": ["code"]}],
+                package_id=w.pkg_a)
+        out = []
+        for filler in (0, 49):
+            items = [BatchItem(f"f{filler}-{i}", (Write("create", obj.id, data={
+                "code": f"f{filler}-{i}"}),)) for i in range(filler)]
+            items += [BatchItem(f"x{filler}", (Write("create", obj.id, data={"code": f"d{filler}"}),)),
+                      BatchItem(f"y{filler}", (Write("create", obj.id, data={"code": f"d{filler}"}),))]
+            batch = await _open(w.a, w.pkg_a, items)
+            await _drive(w.a, batch.id, _by_key(items))
+            out.append([f"{r.key}:{r.status}" for r in await _list(w.a, batch.id)
+                        if r.key[0] in "xy"])
+        return out
+
+    assert _go(w, go) == [["x0:done", "y0:failed"], ["x49:done", "y49:failed"]]
 
 
 # -- the CI guard ------------------------------------------------------------
