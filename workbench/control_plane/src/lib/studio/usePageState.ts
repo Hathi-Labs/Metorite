@@ -24,7 +24,7 @@ import { boundPageState, decodePageState, encodePageState, type PageState, type 
 /** The wait after the last filter edit, in milliseconds. */
 export const FILTER_DEBOUNCE_MS = 300;
 
-const OWNED = (key: string): boolean => key === "sel" || key === "tab" || key.startsWith("f.");
+const OWNED = (key: string): boolean => key === "sel" || key === "tab" || key === "page" || key.startsWith("f.");
 
 /** The query string that holds `state` and every foreign key of `current`. Pure. */
 export function mergePageQuery(current: string, state: PageState, page?: PageTabs): string {
@@ -46,6 +46,8 @@ export interface PageStateApi {
   state: PageState;
   /** Show a tab. Adds a history entry. */
   setTab: (tab: string) => void;
+  /** Show a page of the app. Clears the tab and the pick, and adds a history entry (STU-AF1). */
+  setPage: (page: string) => void;
   /** Open a record in the side view, or close it with `null`. Adds a history entry. */
   setSelected: (id: string | null) => void;
   /** Set one filter. An empty value clears it. Replaces the entry, 300 ms after the last edit. */
@@ -88,6 +90,13 @@ export function usePageState(page?: PageTabs): PageStateApi {
     write((s) => ({ ...s, tab }), "push");
   }, [write]);
 
+  const setPage = useCallback((page: string) => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    // The tabs and the pick of one page mean nothing on another page.
+    write((s) => ({ ...s, page, tab: null, selected: null }), "push");
+  }, [write]);
+
   const setSelected = useCallback((id: string | null) => {
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
@@ -109,5 +118,6 @@ export function usePageState(page?: PageTabs): PageStateApi {
     }
   }, [write]);
 
-  return useMemo(() => ({ state, setTab, setSelected, setFilter }), [state, setTab, setSelected, setFilter]);
+  return useMemo(() => ({ state, setTab, setPage, setSelected, setFilter }),
+    [state, setTab, setPage, setSelected, setFilter]);
 }
