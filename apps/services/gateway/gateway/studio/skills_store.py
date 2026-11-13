@@ -162,6 +162,16 @@ _GET_VERSION_SQL = (
     "AND v.version = COALESCE(CAST(:v AS integer), s.current_version)"
 )
 
+#: The history of a skill of the member, newest first, with no body (F7a).
+_LIST_VERSIONS_SQL = (
+    "SELECT v.skill_id::text, v.version, v.content_hash, v.created_by, "
+    "v.created_at FROM studio_skill_versions v "
+    "JOIN studio_skills s ON s.organization_id = v.organization_id AND s.id = v.skill_id "
+    f"WHERE v.organization_id = {_BOUND_ORG} AND s.owner_email = :m "
+    "AND v.skill_id = CAST(:id AS uuid) "
+    "ORDER BY v.version DESC"
+)
+
 
 class SkillStoreError(ValueError):
     """A write or a read that the store refuses before it reaches the database."""
@@ -198,6 +208,17 @@ class Version:
     skill_id: str
     version: int
     body: dict[str, Any]
+    content_hash: str
+    created_by: str
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class VersionInfo:
+    """One row of the history of a skill: a version with no body."""
+
+    skill_id: str
+    version: int
     content_hash: str
     created_by: str
     created_at: datetime
@@ -411,6 +432,16 @@ async def add_version(db: Any, member: str, skill_id: str,
         "m": m, "id": sid, "body": encoded,
         "hash": content_hash(json.loads(encoded))})).first()
     return None if row is None else _version(row)
+
+
+async def list_versions(db: Any, member: str, skill_id: str) -> list[VersionInfo]:
+    """The versions of the skill *skill_id* of *member*, newest first, with
+    no body. A skill of another member or of another org gives an empty
+    list, as a skill with no version does."""
+    rows = (await db.execute(text(_LIST_VERSIONS_SQL), {
+        "m": _member(member), "id": _skill_id(skill_id)})).all()
+    return [VersionInfo(skill_id=str(r[0]), version=int(r[1]), content_hash=str(r[2]),
+                        created_by=str(r[3]), created_at=r[4]) for r in rows]
 
 
 async def get_version(db: Any, member: str, skill_id: str,
