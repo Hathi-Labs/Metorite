@@ -84,6 +84,8 @@ from typing import Any
 
 import pytest
 
+from tests.unit import _r8_lists as r8_lists
+
 pytest.importorskip("sqlalchemy")
 
 import httpx
@@ -788,13 +790,6 @@ def test_r8_a_chat_ask_with_fifty_lines_opens_no_request(chat) -> None:
 
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """Its own removal from CI must fail here, in both lists."""
-    import re
-    from pathlib import Path
 
-    root = Path(__file__).resolve().parents[2]
-    for name in ("pr-check.yml", "deploy.yml"):
-        workflow = (root / ".github/workflows" / name).read_text(encoding="utf-8")
-        block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
-        assert block, name
-        assert re.search(r"^[ \t]+tests/unit/test_studio_lines_r8\.py(?: \\)?$",
-                         block.group(1), re.M), name
+    must_run = r8_lists.must_run()
+    assert "tests/unit/test_studio_lines_r8.py" in must_run

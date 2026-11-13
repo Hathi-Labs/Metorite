@@ -40,7 +40,6 @@ from __future__ import annotations
 import ast
 import asyncio
 import inspect
-import re
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -48,6 +47,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+from tests.unit import _r8_lists as r8_lists
 
 pytest.importorskip("sqlalchemy")
 
@@ -612,12 +613,9 @@ def test_the_route_reads_one_member_rule() -> None:
             "SHARE_RIGHT"} <= named
 
 
-@pytest.mark.parametrize("workflow", ["pr-check.yml", "deploy.yml"])
-def test_the_r8_twin_is_in_the_must_run_list(workflow: str) -> None:
-    text = (_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", text)
-    assert block, workflow
-    assert re.search(r"^[ \t]+tests/unit/test_studio_run_as_r8\.py \\$", block.group(1), re.M)
+def test_the_r8_twin_is_in_the_must_run_list() -> None:
+    must_run = r8_lists.must_run()
+    assert "tests/unit/test_studio_run_as_r8.py" in must_run
 
 
 def test_the_spec_names_the_fence() -> None:

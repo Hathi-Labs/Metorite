@@ -194,8 +194,9 @@ scanners, so the heuristics are gone.
   Test both cases.
 - `scripts/ci_unit_guard.py` gets `--only-selected <file list>`. With it,
   `--must-run` checks only the listed R8 files that are in the selection.
-  The literal `--must-run` list stays in pr-check.yml, because 36 test files
-  assert their own name in that text (counted 2026-11-05). A new
+  Since CIV-33c-2 the lists are the `r8` key of `tests/fences.json`, and the
+  command takes them with `--lists-from-fences`. The test files that name
+  themselves read that key through `tests/unit/_r8_lists.py`. A new
   case in `tests/unit/test_ci_unit_guard.py` covers the filter.
   deploy.yml's R8 gate keeps the full list, with no `--only-selected`.
   `test_deploy_pipeline.py` fails when the two lists differ.
@@ -325,9 +326,10 @@ nowhere before production.
   pr-check's split by duration, `--reruns 1`, no `-x`, and a JUnit report.
 - A list of fewer than 100 files stops the shard before pytest starts.
 - `r8-gate` fails when a shard failed. Then it runs
-  `ci_unit_guard.py check` over the 6 reports. It uses pr-check's full
-  `--must-run`, `--never-skip` and `--disarmed` lists, and no
-  `--only-selected`.
+  `ci_unit_guard.py check` over the 6 reports. It uses the full lists of the
+  release commit's `tests/fences.json` (`r8` key), and no `--only-selected`.
+  A release commit from before CIV-33c-2 has no such key. Then the guard
+  reads the lists in that commit's own deploy.yml.
 - `publish-release` needs `r8-gate` green. It accepts a skip only on a
   `skip_tests` dispatch, the same rule as for `test`. `release-window` reads
   the clock after `r8-gate`.
@@ -918,7 +920,7 @@ Each rung ends in a demo (D211). Each slice of a rung blocks its demo task.
 | CIV-30 | 3055 | 1 | HIGH | The green pointer. A release ships green |
 | CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first |
 | CIV-32 | 3057 | 2 | STANDARD | **BUILT 2026-11-13.** A repair round tests what failed and what the fix reaches (`ci_unit_guard.py repair`) |
-| CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py`. CIV-33d BUILT 2026-11-13 (task 3074): the scan fences of six large files moved to `*_scan.py` files, and `test_scanner_budget.py` caps a scanner file at 30 s. The scanner set costs 1,748 s, down from 2,333 s. `test_affected_tests.py` (381 s) waits for PR 2205. CIV-33c-1 BUILT 2026-11-13 (task 3073): a hub selects its importers up to 20% of the test files, a flag-only diff of `settings.py` or `env_guard.py` selects the tests that name the flag, and `scripts/replay_gate.py` measures the FULL share. For a hub or a flag diff, an app entry, or a test helper that builds an app, selects its test importers. The closure over test imports starts from the import picks, not from the scanners or the SAFETY fences. CIV-33c-2 (the `.github/` rule) is open |
+| CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py`. CIV-33d BUILT 2026-11-13 (task 3074): the scan fences of six large files moved to `*_scan.py` files, and `test_scanner_budget.py` caps a scanner file at 30 s. The scanner set costs 1,748 s, down from 2,333 s. `test_affected_tests.py` (381 s) waits for PR 2205. CIV-33c-1 BUILT 2026-11-13 (task 3073): a hub selects its importers up to 20% of the test files, a flag-only diff of `settings.py` or `env_guard.py` selects the tests that name the flag, and `scripts/replay_gate.py` measures the FULL share. For a hub or a flag diff, an app entry, or a test helper that builds an app, selects its test importers. The closure over test imports starts from the import picks, not from the scanners or the SAFETY fences. CIV-33c-2 BUILT 2026-11-14 (task 3073): the R8 must-run, never-skip and disarmed lists moved from the two workflows to the `r8` key of `tests/fences.json`. A workflow or a composite action stays FULL. Any other file under `.github/` is not FULL. An edit of `tests/fences.json` selects the files it adds to a list and the guard's own tests, and a file that does not parse is FULL. The replay of 300 main commits shows 96 FULL (32.0%), and 38 of the 43 commits whose only FULL reason was `.github/` edited a list only. With those edits in `tests/fences.json`, the projected share is 58 of 300 (19.3%). `packages/acb_common/` is the next cause (37 commits) |
 | CIV-34 | 3059 | 2 | STANDARD | Conflict rules in the merge bot, tested on the merged tree |
 | CIV-35 | 3060 | 2 | LOW | A proposal: review depth by file class. It needs an owner decision |
 

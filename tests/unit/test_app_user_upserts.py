@@ -56,6 +56,7 @@ from acb_auth.access import _BOOTSTRAP_OWNER_SQL
 from gateway.routes.admin._common import _PROVISION_MEMBER_SQL
 from sqlalchemy import create_engine, text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import apply_ladder
 
 _SNAPSHOT = os.environ.get("_ACB_TENANT_LADDER_URL_AT_LAUNCH")
@@ -244,9 +245,7 @@ class TestTheMigrationThatCausedIt:
         skips silently there without a database, and still leaves the job
         green — the exact failure that step exists to catch.
         """
-        workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(
-            encoding="utf-8")
-        assert "tests/unit/test_app_user_upserts.py" in workflow
+        assert "tests/unit/test_app_user_upserts.py" in r8_lists.must_run()
 
     def test_the_owning_spec_names_this_suite(self):
         spec = (_ROOT / "project-docs/specs/saas_multitenancy.md").read_text(

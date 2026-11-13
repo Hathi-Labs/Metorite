@@ -181,6 +181,122 @@ def test_gate_full_on_ci_and_selector_paths(tmp_path: Path) -> None:
         assert sel.gate([path], root)["full"] is True, path
 
 
+# ── CIV-33c-2: the .github/ rule, and an edit of tests/fences.json ─────────
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/ISSUE_TEMPLATE/bug.md",
+        ".github/CODEOWNERS",
+        ".github/dependabot.yml",
+        ".github/pull_request_template.md",
+    ],
+)
+def test_gate_a_github_file_that_runs_no_test_is_not_full(tmp_path: Path, path: str) -> None:
+    out = sel.gate([path], _gate_repo(tmp_path))
+    assert out["full"] is False, out["reasons"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/workflows/pr-check.yml",
+        ".github/workflows/deploy.yml",
+        ".github/workflows/anything_new.yml",
+        ".github/actions/setup/action.yml",
+    ],
+)
+def test_gate_a_workflow_or_action_stays_full(tmp_path: Path, path: str) -> None:
+    out = sel.gate([path], _gate_repo(tmp_path))
+    assert out["full"] is True
+    assert any(".github/" in r for r in out["reasons"])
+
+
+def _fences_repo(tmp_path: Path) -> Path:
+    root = _gate_repo(tmp_path)
+    for name in sel.FENCE_GUARD_TESTS:
+        _write(root, name, "import os\n")
+    _write(root, "tests/unit/test_new_r8.py", "import os\n")
+    # Every R8 self-check names the file. A path match would select all of them.
+    _write(root, "tests/unit/test_names_fences.py", 'read("tests/fences.json")\n')
+    return root
+
+
+def _fences(must_run: list[str], *, comment: str = "x") -> str:
+    import json
+
+    return json.dumps(
+        {
+            "_comment": [comment],
+            "python": {"safety": ["tests/unit/test_other.py"], "process": []},
+            "r8": {"disarmed": ["D unset"], "never_skip": ["tests/unit/a.py"], "must_run": must_run},
+        }
+    )
+
+
+def _fences_gate(root: Path, base: str, head: str) -> dict:
+    return sel.gate(["tests/fences.json"], root, texts={"tests/fences.json": (base, head)})
+
+
+def test_gate_a_fences_edit_selects_the_added_file_and_the_guard_tests(tmp_path: Path) -> None:
+    root = _fences_repo(tmp_path)
+    out = _fences_gate(
+        root, _fences(["tests/unit/test_old.py"]), _fences(["tests/unit/test_old.py", "tests/unit/test_new_r8.py"])
+    )
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_new_r8.py" in out["files"]
+    assert set(sel.FENCE_GUARD_TESTS) <= set(out["files"])
+    assert "tests/unit/test_names_fences.py" not in out["files"]
+    assert "tests/unit/test_old.py" not in out["files"]
+
+
+def test_gate_a_fences_edit_that_removes_or_comments_adds_no_suite(tmp_path: Path) -> None:
+    root = _fences_repo(tmp_path)
+    base = _fences(["tests/unit/test_new_r8.py", "tests/unit/test_old.py"])
+    for head in (_fences(["tests/unit/test_old.py"]), _fences(base_list(), comment="new words")):
+        out = _fences_gate(root, base, head)
+        assert out["full"] is False, out["reasons"]
+        assert "tests/unit/test_new_r8.py" not in out["files"]
+        assert set(sel.FENCE_GUARD_TESTS) <= set(out["files"])
+
+
+def base_list() -> list[str]:
+    return ["tests/unit/test_new_r8.py", "tests/unit/test_old.py"]
+
+
+@pytest.mark.parametrize(
+    ("base", "head"),
+    [
+        (_fences([]), "{ not json"),
+        ("{ not json", _fences([])),
+        ("", _fences([])),
+        (_fences([]), "[]"),
+        (_fences([]), '{"r8": {"must_run": 3}}'),
+        (_fences([]), '{"r8": {"must_run": [1, 2]}}'),
+    ],
+)
+def test_gate_a_fences_edit_that_cannot_be_read_is_full(tmp_path: Path, base: str, head: str) -> None:
+    out = _fences_gate(_fences_repo(tmp_path), base, head)
+    assert out["full"] is True
+    assert any("tests/fences.json" in r for r in out["reasons"])
+
+
+def test_gate_a_fences_edit_with_no_base_text_is_full(tmp_path: Path) -> None:
+    out = sel.gate(["tests/fences.json"], _fences_repo(tmp_path))
+    assert out["full"] is True
+
+
+def test_gate_a_fences_edit_beside_a_workflow_is_still_full(tmp_path: Path) -> None:
+    root = _fences_repo(tmp_path)
+    out = sel.gate(
+        ["tests/fences.json", ".github/workflows/pr-check.yml"],
+        root,
+        texts={"tests/fences.json": (_fences([]), _fences(["tests/unit/test_new_r8.py"]))},
+    )
+    assert out["full"] is True
+
+
 def test_gate_full_when_a_hub_module_has_too_many_test_importers(
     tmp_path: Path, monkeypatch
 ) -> None:
