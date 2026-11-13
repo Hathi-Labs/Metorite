@@ -1075,7 +1075,7 @@ jobs:
       # body: a line that starts "Visual review:", then the four captures or
       # "no UI change". It lives in THIS job because this job is a required
       # check, and "Changed areas" is not.
-      # * Python reads the body and the base sha from the event FILE into
+      # * Python reads the body from the event FILE into
       #   variables, so no text of the body becomes shell code.
       # * The checkout is shallow, so the step fetches the one first parent.
       #   When HEAD is no merge commit or the diff cannot be read, the line is

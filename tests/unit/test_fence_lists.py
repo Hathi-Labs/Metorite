@@ -165,6 +165,11 @@ def test_the_visual_review_line_runs_in_a_required_job():
     assert "GITHUB_EVENT_PATH" in run
     assert "git fetch" in run and "--depth=1" in run
     assert "frontend=true" in run, "an unreadable diff must require the line"
+    # Opus review of PR 2252 (P2): at depth 1, HEAD^2 does not resolve, so every PR
+    # would need the line. The step reads HEAD^1..HEAD on the merge ref.
+    checkout = _jobs()["frontend"]["steps"][0]
+    assert "actions/checkout" in checkout.get("uses", ""), checkout
+    assert checkout["with"]["fetch-depth"] == 2, checkout
     assert "^workbench/control_plane/src/" in run
     assert "^Visual review:" in run
     assert "github.event.pull_request.body" not in _PR_CHECK.read_text(encoding="utf-8")
@@ -246,7 +251,7 @@ def _run_visual_review(tmp_path: Path, *, event_body, live: str | None, token: b
     else:
         env["GITHUB_EVENT_PATH"] = str(tmp_path / "missing.json")
     run = _step("frontend", "Visual review line")["run"]
-    return subprocess.run(["bash", "-eo", "pipefail", "-c", run], cwd=repo, env=env, capture_output=True, text=True)
+    return subprocess.run([_BASH or "bash", "-eo", "pipefail", "-c", run], cwd=repo, env=env, capture_output=True, text=True)
 
 
 _LINE = "Visual review: no UI change"
@@ -311,7 +316,7 @@ def _run_changes_diff(tmp_path: Path, **kw):
     out.write_text("", encoding="utf-8")
     env = {**os.environ, "BASE": base, "GITHUB_OUTPUT": str(out)}
     run = _jobs()["changes"]["steps"][-1]["run"]
-    done = subprocess.run(["bash", "-eo", "pipefail", "-c", run], cwd=repo, env=env, capture_output=True, text=True)
+    done = subprocess.run([_BASH or "bash", "-eo", "pipefail", "-c", run], cwd=repo, env=env, capture_output=True, text=True)
     assert done.returncode == 0, done.stdout + done.stderr
     return dict(line.split("=", 1) for line in out.read_text(encoding="utf-8").splitlines() if "=" in line)
 
