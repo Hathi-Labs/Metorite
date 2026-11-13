@@ -47,6 +47,7 @@ select ``state`` and the timer ``sla`` that pauses while ``state`` is
 * T22. A new pause value arms nothing, and a paused record still breaches.
 * T23. A true no of the owner disarms, and its return starts no catch-up.
 * T24. A fault of the access read keeps the arm and drops no breach.
+* T25. A stale print arms again before any run (the compare alone).
 
 **Mutations this suite catches** (each was run before the commit):
 
@@ -73,6 +74,7 @@ select ``state`` and the timer ``sla`` that pauses while ``state`` is
 * M16. ``timer_print`` holds the pause too: T22 red.
 * M17. A true no of the owner keeps the arm: T23 red.
 * M18. A fault of the owner check disarms: T24 red.
+* M19. ``_timer_breaches`` ignores the print of the arm: T15 and T25 red.
 
 Run (a PRIVATE database, because the fixture drops ``<db>_wftimer``)::
 
@@ -1182,3 +1184,26 @@ def test_t24_a_fault_of_the_access_read_keeps_the_arm_and_drops_no_breach(w, mon
     _scan(w)
     (run,) = _runs(w, "Listen A")
     assert _payload(run)["record_id"] == rid
+
+
+def test_t25_a_stale_print_arms_again_before_any_run(w) -> None:
+    """The compare of the print, alone. The trigger was armed an hour ago with
+    the print of another due field. A record fell due a minute ago. The scan
+    must see that the print is stale, arm again at the DB clock and start no
+    run, and only then hold the new print. A scan that ignores the print keeps
+    the old arm, and the record starts a run."""
+    _listen(w, "Listen A")
+    first = _armed_at(w, "Listen A")
+    with w.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE workflow_triggers SET config = jsonb_set(config, '{timer_arm}', "
+            "CAST(:p AS jsonb)) WHERE workflow_id = CAST(:w AS uuid)"),
+            {"p": json.dumps({"field": "old_due"}), "w": w.wf["Listen A"]})
+    _create(w, "A", due=_db_iso(w, "-1 minute"))
+    _scan(w)
+    assert _runs(w, "Listen A") == [], "a stale print started a catch-up run"
+    second = _armed_at(w, "Listen A")
+    assert second is not None and second > first
+    assert _arm_print(w, "Listen A") == _print_of(_TIMER_RULE) == {"field": "due"}
+    _scan(w)
+    assert _runs(w, "Listen A") == []
