@@ -508,11 +508,13 @@ def test_the_package_field_value_table_is_tenant_scoped() -> None:
 
 
 @pytest.mark.parametrize(
-    "table", ["studio_objects", "studio_object_fields", "studio_records", "studio_record_hot"],
+    "table", ["studio_objects", "studio_object_fields", "studio_records", "studio_record_hot",
+              "studio_record_changes"],
 )
 def test_the_studio_object_tables_are_tenant_scoped(table: str) -> None:
-    """WS-STU C1 (``ai_studio.md`` §3.1). An object, its fields, its records
-    and their hot rows hold the data of one organization's apps. The tables
+    """WS-STU C1 (``ai_studio.md`` §3.1). An object, its fields, its records,
+    their hot rows and their change history (C4a-1) hold the data of one
+    organization's apps. The tables
     may not be exempt, and the committed policy phase must carry each (R5)."""
     gen = _generator()
     assert table in gen.discover_tables()

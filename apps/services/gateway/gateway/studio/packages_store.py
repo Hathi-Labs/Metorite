@@ -84,7 +84,9 @@ the org lock of the object store (``objects_store.lock_org``), the one lock
 order of a publish. The first step of a call checks the token under both
 locks, and raises :class:`CountsChanged` for a stale one. Each later step
 checks the object names of that preview. Then the step purges at most one
-chunk of records (``objects_store.purge_records``), and the purge stops at
+chunk of change history (``objects_store.purge_record_changes``, C4a-1),
+and then at most one chunk of records (``objects_store.purge_records``). A
+full chunk of history keeps the package for a next step. The purge stops at
 the end of the call. A full chunk ends the step, and the caller commits, so
 no lock stays between two steps. The last step of a call that leaves
 records writes a partial audit row (op :data:`PARTIAL_OP`) in its own
@@ -361,6 +363,12 @@ ROW_LOCK_WAIT_MS = 1_000
 #: The longest run of one step before its decision, in seconds: the wait for
 #: the ``apps`` row, the wait for the org lock and one purge. A step goes on
 #: to a next step only while one more of these fits before the end of the call.
+#: ⚠️ C4a-1: a step runs two purges, the change history and then the records,
+#: and each stops at the end of the call. Two full purges do not fit in the
+#: budget of a call of the delete route (``DELETE_BUDGET_SECONDS``). So a records
+#: purge that times out after the history purge removed rows does not end the
+#: call as busy. The step counts as a full chunk, and this budget check ends
+#: the call with a 202 (:func:`delete_package`).
 STEP_SECONDS = (ROW_LOCK_WAIT_MS + objects_store.ORG_LOCK_WAIT_MS
                 + objects_store.PURGE_TIMEOUT_MS) / 1000
 #: The refusal of a delete whose confirm token is not the token of now.
@@ -1363,7 +1371,10 @@ class DeleteStep:
     the preview of the end was busy: then ``left`` can be None. ``gone`` is
     True when another call deleted the package between two steps of this
     call (404). ``owner_active`` is True when a later step of the admin path
-    found that the owner is an active member again (403, A5c-2)."""
+    found that the owner is an active member again (403, A5c-2).
+    ``history_left`` is True when the step ended with a full chunk of change
+    history (C4a-1), so the package holds history rows still, also with no
+    record left."""
 
     deleted: bool
     removed: int
@@ -1373,6 +1384,7 @@ class DeleteStep:
     busy: bool = False
     gone: bool = False
     owner_active: bool = False
+    history_left: bool = False
 
 
 class CountsChanged(Exception):
@@ -1541,7 +1553,8 @@ async def _read_for_delete(db: Any, m: str, pid: str, as_admin: bool = False) ->
 
 
 async def _end_call(db: Any, m: str, current: Package, seen: frozenset[str], this_call: int,
-                    reason: str, *, removed: int = 0, admin: bool = False) -> DeleteStep:
+                    reason: str, *, removed: int = 0, admin: bool = False,
+                    history_left: bool = False) -> DeleteStep:
     """The end of a call that leaves records: the partial audit row, in the
     transaction of this step, and the preview of now for the token of a 202.
 
@@ -1557,7 +1570,8 @@ async def _end_call(db: Any, m: str, current: Package, seen: frozenset[str], thi
     except objects_store.StoreBusy:
         left = None
     return DeleteStep(deleted=False, removed=removed, names=tuple(sorted(seen)), left=left,
-                      changed=reason == "changed", busy=reason == "busy" or left is None)
+                      changed=reason == "changed", busy=reason == "busy" or left is None,
+                      history_left=history_left)
 
 
 async def _finish_delete(db: Any, m: str, current: Package, seen: frozenset[str],
@@ -1598,6 +1612,27 @@ async def _finish_delete(db: Any, m: str, current: Package, seen: frozenset[str]
         "versions": left.versions, "installs": left.installs,
         "other_member_installs": left.other_member_installs})
     return DeleteStep(deleted=True, removed=gone, names=tuple(sorted(seen)))
+
+
+async def _purge_chunk(db: Any, pid: str, size: int,
+                       end_at: float | None) -> tuple[int, int, bool]:
+    """One chunk of a delete step (C4a-1): at most *size* rows of change
+    history first, then at most *size* records. Answers the history rows, the
+    records and ``cut``. A full chunk of history keeps the package for a next
+    step, so the last step leaves no history to the cascade.
+
+    ``cut`` is True when the records purge ran out of time after the history
+    purge removed rows. The step made progress, so it counts as a full chunk,
+    and the budget check of :func:`delete_package` decides. Else a
+    ``StoreBusy`` of either purge raises."""
+    history = await objects_store.purge_record_changes(db, pid, limit=size, deadline=end_at)
+    try:
+        gone = await objects_store.purge_records(db, pid, limit=size, deadline=end_at)
+    except objects_store.StoreBusy:
+        if history == 0:
+            raise
+        return history, 0, True
+    return history, gone, False
 
 
 async def delete_package(db: Any, member: str, package_id: str, *,
@@ -1696,15 +1731,16 @@ async def delete_package(db: Any, member: str, package_id: str, *,
         if not set(found) <= seen:
             return await _end_call(db, m, current, seen, before, "changed", admin=as_admin)
     try:
-        gone = await objects_store.purge_records(db, pid, limit=size, deadline=end_at)
+        history, gone, cut = await _purge_chunk(db, pid, size, end_at)
     except objects_store.StoreBusy:
         if token is not None:
             raise
         return await _end_call(db, m, current, seen, before, "busy", admin=as_admin)
-    if gone >= size:
+    if history >= size or gone >= size or cut:
         if end_at is not None and objects_store._clock() + STEP_SECONDS > end_at:
             return await _end_call(db, m, current, seen, before + gone, "budget", removed=gone,
-                                   admin=as_admin)
-        return DeleteStep(deleted=False, removed=gone, names=tuple(sorted(seen)))
+                                   admin=as_admin, history_left=history >= size or cut)
+        return DeleteStep(deleted=False, removed=gone, names=tuple(sorted(seen)),
+                          history_left=history >= size or cut)
     return await _finish_delete(db, m, current, seen, before, gone, first=token is not None,
                                 admin=as_admin)

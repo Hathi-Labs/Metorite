@@ -845,14 +845,18 @@ def test_the_skills_of_this_org_go_and_their_versions_by_cascade() -> None:
 
 
 _STUDIO_OBJECT_TABLES = frozenset({
-    "studio_objects", "studio_object_fields", "studio_records", "studio_record_hot"})
+    "studio_objects", "studio_object_fields", "studio_records", "studio_record_hot",
+    "studio_record_changes"})
 
 
 def test_the_records_of_studio_objects_stay() -> None:
     """WS-STU C1: a Studio record is company data, as a `pm_tasks` row is (D63).
 
     The purge deletes no row of the four object tables, by a clause or by a
-    cascade. An email in a person field of a record stays too. The package,
+    cascade. An email in a person field of a record stays too. The change
+    history of C4a-1 (`studio_record_changes`) stays the same way. Its
+    `actor` is an address, as `studio_records.updated_by` and
+    `app_audit.user_email` are, and no code changes a history row. The package,
     an `apps` row, stays on the KEEP side, because its foreign key cascades
     to the objects and their records. A change to this rule is a decision,
     so it must change this test on purpose.

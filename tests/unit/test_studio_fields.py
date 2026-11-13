@@ -528,17 +528,21 @@ def _line_of_field_types() -> int:
     raise AssertionError("FIELD_TYPES is missing")
 
 
-#: SQL that names one of the four tables.
+#: SQL that names one of the five tables: the four of C1 and the change
+#: history of C4a-1.
 _TABLE_SQL = re.compile(
-    r"\b(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+studio_(?:objects|object_fields|records|record_hot)\b",
+    r"\b(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+"
+    r"studio_(?:objects|object_fields|records|record_hot|record_changes)\b",
     re.IGNORECASE,
 )
 
 
 def test_one_writer_of_the_four_tables() -> None:
-    """Only `gateway/studio/objects_store.py` runs SQL against the four tables.
+    """Only `gateway/studio/objects_store.py` runs SQL against the five tables.
     The query of C2a lives there too, and `acb_common/studio_query.py` holds
-    its grammar with no SQL. So the list stays one module."""
+    its grammar with no SQL. So the list stays one module. C4a-1 adds
+    `studio_record_changes` as the fifth table. The name of the test stays,
+    because other files cite it."""
     hits = sorted({p.relative_to(_ROOT).as_posix() for p in _python_files()
                    if _TABLE_SQL.search(p.read_text(encoding="utf-8", errors="replace"))})
     assert hits == ["apps/services/gateway/gateway/studio/objects_store.py"], hits
