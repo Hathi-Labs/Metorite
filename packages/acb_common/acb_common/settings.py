@@ -727,7 +727,9 @@ class Settings(BaseSettings):
     # AUTO_PARK_ORGS, DECISIONS_ORGS and STUDIO_ORGS. Reader:
     # `gateway.routes.workflows.batch.batch_allowed`. A SIGHUP reload applies
     # a change. It writes records with no person present, so a flip is the
-    # owner's (`enforcement-flip`). Spec: ai_studio.md section 14 E8b.
+    # owner's (`enforcement-flip`). The flip WAITS on E8c (the view of the
+    # exact list) and on the owner's answer to STU-Q14. Spec: ai_studio.md
+    # section 14 E8b.
     studio_batch_orgs: str = ""
     # STU-C2c: STUDIO_NUM_F8_ORGS lists the org ids where a number filter of
     # the Studio object query adds a float8 test on `studio_record_hot.

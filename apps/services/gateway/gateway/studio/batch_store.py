@@ -116,10 +116,17 @@ STATUS_DONE = "done"
 STATUS_FAILED = "failed"
 
 #: The codes that :func:`end_stuck_item` writes on the item that blocks. A
-#: closed set, so a caller cannot write a message there (E8b).
+#: closed set, so a caller cannot write a message there (E8b). ``query_timeout``
+#: ends a batch after the bound of resumes. Each other code is a refusal that
+#: time does not fix, so it ends the batch at once and keeps its reason (E8b
+#: review): the list or the package changed, the owner lost ``feature:studio``,
+#: the package or its object is gone, the action is no write of an object, or
+#: the decision no longer holds a yes of the owner.
 STUCK = "query_timeout"
 MISMATCH = "write_mismatch"
-END_CODES = (STUCK, MISMATCH)
+END_CODES = (STUCK, MISMATCH, "no_feature", "not_found", "object_missing", "source_not_open",
+             "not_declared", "not_approved", "approval_required", "read_only", "class_x",
+             "not_in_catalog")
 
 _BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
 

@@ -262,7 +262,7 @@ def _write_below(serialized: Any, node_id: str) -> dict[str, Any] | None:
 
 async def _park_batch_below(
     db: Any, org: str, owner: str, workflow_name: str, run_id: str,
-    snapshot: dict[str, Any], node_id: str,
+    snapshot: dict[str, Any], node_id: str, trigger_kind: str = "",
 ) -> tuple[str, str, dict[str, str]] | None:
     """The question, the description and the payload keys of a gate that
     clears a ``studio_batch`` node, or None for any other gate (STU-E8b).
@@ -274,7 +274,7 @@ async def _park_batch_below(
         return None
     return await batch_node.park_batch(
         db, organization_id=org, owner=owner, workflow_name=workflow_name, run_id=run_id,
-        block=block)
+        block=block, trigger_kind=trigger_kind)
 
 
 _INSERT_PAUSE = (
@@ -322,13 +322,16 @@ async def park_with_decision(
     node_id: str,
     node_label: str,
     snapshot: dict[str, Any],
+    trigger_kind: str = "",
 ) -> dict[str, str]:
     """Make the subject task, ask the owner and write the pause, on *db*.
 
     *db* is the caller's ``_run_session(org)``, and the caller binds the org
     for :func:`decisions.ask_decision`. Nothing here commits. Raises
     :class:`ParkRefused` or :class:`decisions.DecisionRefused` when a fact is
-    missing, and the caller's rollback then removes each row.
+    missing, and the caller's rollback then removes each row. *trigger_kind*
+    is the kind of the run (STU-E8b): only a schedule run parks a batch, and
+    an empty kind refuses one.
     """
     from gateway.routes.projects.core import load_default_status
     from gateway.routes.projects.decisions import ask_decision
@@ -350,7 +353,8 @@ async def park_with_decision(
         SUBJECT_TEXT, None
     # STU-E8b: a gate that clears a batch freezes the list through E8a here,
     # and the ONE decision binds the batch id and its list digest.
-    bound = await _park_batch_below(db, org, who, workflow_name, run_id, snapshot, node_id)
+    bound = await _park_batch_below(db, org, who, workflow_name, run_id, snapshot, node_id,
+                                    trigger_kind)
     if bound is not None:
         question, description, bound_keys = bound
     else:

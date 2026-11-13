@@ -1631,6 +1631,11 @@ BATCH_RETRY_WAITS = (0.5, 1.0)
 WORKFLOW_ITEMS_FAILED = "items_failed"
 #: E8b. The run names no open batch of this node in the run's org.
 WORKFLOW_NO_BATCH = "no_batch"
+#: E8b review. The codes that time can fix: a busy store, a package that an
+#: admin paused, and the Studio switch of the org. Each leaves the batch open
+#: for the batch scan. Each other code ends the batch at once and keeps its
+#: reason, so the E8c view says why (``batch_store.END_CODES``).
+BATCH_RETRY_CODES = frozenset({STORE_BUSY, PACKAGE_PAUSED, WORKFLOW_STUDIO_OFF})
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1897,6 +1902,19 @@ async def _batch_chunk_with_tries(run: _BatchRun, tally: dict[str, int]) -> _Ste
     return _Step(code=STORE_BUSY, busy=True)
 
 
+async def _end_batch(run: _BatchRun, code: str) -> None:
+    """End the batch at once with *code*, in its own session (E8b review).
+    Time does not fix this refusal, so no resume may spend its tries on it,
+    and the item that blocks keeps the true reason. A code outside
+    ``batch_store.END_CODES`` and a busy row change nothing: the batch stays
+    open, and the bound of the batch scan ends it."""
+    if code not in batch_store.END_CODES:
+        return
+    with contextlib.suppress(batch_store.BatchNotFound, objects_store.StoreBusy):
+        async with _tenant_session(run.org) as db:
+            await batch_store.end_stuck_item(db, run.batch_id, code=code)
+
+
 def _batch_result(ok: bool, code: str | None, run: _BatchRun, tally: dict[str, int],
                   last: _Step | None) -> dict[str, Any]:
     """What the node reads back: ids, counts and codes, and no record data."""
@@ -1930,9 +1948,11 @@ async def run_workflow_batch(*, organization_id: str, member: str, package_id: s
     that the decision payload holds. A list that differs from that digest
     writes nothing and ends the batch ``failed``. A busy store is tried
     :data:`BATCH_CHUNK_TRIES` times, and then the node fails with
-    ``store_busy`` while the batch stays open for the batch scan. A batch that
-    ends with a failed item answers ``items_failed``. It never raises an
-    ``HTTPException``: the node fails on each answer that is not ``ok``.
+    ``store_busy`` while the batch stays open for the batch scan. Each other
+    refusal outside :data:`BATCH_RETRY_CODES` ends the batch at once with its
+    own code (E8b review). A batch that ends with a failed item answers
+    ``items_failed``. It never raises an ``HTTPException``: the node fails on
+    each answer that is not ``ok``.
     """
     org = str(organization_id or "").strip()
     if not org:
@@ -1952,6 +1972,8 @@ async def run_workflow_batch(*, organization_id: str, member: str, package_id: s
     for _ in range(batch_store.MAX_BATCH_ITEMS + 2):
         last = await _batch_chunk_with_tries(run, tally)
         if last.code is not None:
+            if last.code not in BATCH_RETRY_CODES:
+                await _end_batch(run, last.code)
             return _batch_result(False, last.code, run, tally, last)
         if last.status != batch_store.STATUS_OPEN:
             break

@@ -251,10 +251,13 @@ async def update_workflow(
         _validate_trigger_specs(body.triggers)
     async with _tenant_session() as db:
         row = await load_workflow_or_404(db, workflow_id)
-        if body.triggers is not None and str(row.owner_email or "").strip().lower() != (
+        foreign = str(row.owner_email or "").strip().lower() != (
             str(_uid(user) or "").strip().lower()
-        ):
+        )
+        if body.triggers is not None and foreign:
             await _refuse_foreign_studio_trigger(db, workflow_id, body.triggers)
+        if body.graph is not None and foreign:
+            _refuse_foreign_studio_batch(row, body.graph)
         sets, params = [], {"id": workflow_id}
         if body.name is not None:
             sets.append("name = :name")
@@ -409,6 +412,23 @@ async def _refuse_foreign_studio_trigger(
         raise HTTPException(
             status_code=403,
             detail="Only the author of this workflow can add or change a Studio record trigger.",
+        )
+
+
+def _refuse_foreign_studio_batch(row: Any, graph: dict[str, Any]) -> None:
+    """403 when a member who is not the workflow owner ADDS a Studio batch node
+    or CHANGES its config (STU-E8b review).
+
+    The owner approves the list of a batch at the park as theirs, so another
+    member must not choose its items. A removal of a batch node, and each
+    other node, stay open to every author. The compare is by the whole config
+    of each node (``batch.foreign_batch_change``)."""
+    from gateway.routes.workflows import batch
+
+    if batch.foreign_batch_change(parse_jsonb(row.graph, {}) or {}, graph):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the owner of this workflow can add or change a Studio batch.",
         )
 
 

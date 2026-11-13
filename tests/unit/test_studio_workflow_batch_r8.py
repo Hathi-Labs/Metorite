@@ -37,7 +37,28 @@ each named test went red.
   and ``test_studio_workflow_batch.py::test_a_viewer_that_is_not_the_actor_is_refused_before_any_statement``
   go red.
 * M8. ``batch.OPEN_SQL``: drop ``AND r.trigger_kind = 'schedule'``.
-  ``test_r8_a_batch_of_a_run_that_is_no_schedule_run_is_never_resumed`` goes red.
+  ``test_r8_the_scan_skips_a_batch_whose_run_is_no_schedule_run`` goes red.
+
+Review round 1 (2026-11-13):
+
+* M9. ``service.start_batch_run``: insert the new run with ``node_results``
+  ``'{}'``. ``test_r8_a_second_stop_keeps_the_replay_set_and_no_step_runs_twice``
+  goes red, because the step before the gate runs again.
+* M10. ``batch.batch_detail``: list no item.
+  ``test_r8_the_card_lists_the_first_items_in_plain_words`` goes red.
+* M11. ``batch.OPEN_SQL``: drop ``AND w.status = 'published'``.
+  ``test_r8_a_stopped_batch_of_a_disabled_workflow_waits`` goes red.
+* M12. ``invoke.run_workflow_batch``: drop the call of ``_end_batch``.
+  ``test_r8_a_refusal_that_time_does_not_fix_ends_the_batch_at_once[effect-deny-allow-no_feature]``
+  goes red.
+* M13. ``service._bound_batch``: drop the end with ``not_approved``.
+  ``test_r8_a_refusal_that_time_does_not_fix_ends_the_batch_at_once[status-suspended-active-not_approved]``
+  goes red.
+* M14. ``batch.park_batch``: drop the check of the trigger kind.
+  ``test_r8_a_run_that_is_no_schedule_run_parks_no_batch`` goes red.
+* M15. ``crud.update_workflow``: drop the call of ``_refuse_foreign_studio_batch``.
+  ``test_studio_workflow_batch.py::test_a_member_who_is_not_the_owner_may_not_add_or_change_a_batch``
+  goes red.
 """
 
 from __future__ import annotations
@@ -104,14 +125,19 @@ def _items(n: int) -> list[dict]:
             for i in range(n)]
 
 
-def _graph(pkg: str, n: int) -> dict:
-    """trigger -> gate -> batch -> done."""
+def _graph(pkg: str, n: int, *, prep: bool = False) -> dict:
+    """trigger [-> prep] -> gate -> batch -> done. ``prep`` is a step before
+    the gate, so a test can count how often a node before the gate runs."""
     nodes = [_node("start", "trigger", {"kind": "schedule"}),
              _node("gate", "approval"),
              _node("batch", "studio_batch", {"package_id": pkg, "action": "pay",
                                              "items": _items(n)}),
              _node("done", "output", {"value": "end"})]
-    pairs = itertools.pairwise(["start", "gate", "batch", "done"])
+    chain = ["start", "gate", "batch", "done"]
+    if prep:
+        nodes.append(_node("prep", "set", {"assignments": {"month": "11"}}))
+        chain.insert(1, "prep")
+    pairs = itertools.pairwise(chain)
     return {"nodes": nodes,
             "edges": [{"id": f"{a}->{b}", "source": a, "target": b} for a, b in pairs]}
 
@@ -250,6 +276,8 @@ def world():
         for name, org, owner, serialized in (
             ("Pay run in A", ns.org_a, OWNER_A, compile_graph(_graph(ns.pkg_a, 300))),
             ("Small batch in A", ns.org_a, OWNER_A, compile_graph(_graph(ns.pkg_a, 10))),
+            ("Prep then pay in A", ns.org_a, OWNER_A,
+             compile_graph(_graph(ns.pkg_a, 150, prep=True))),
             ("Pay run in B", ns.org_b, OWNER_B, compile_graph(_graph(ns.pkg_b, 4))),
         ):
             ns.wf[name] = (_seed_workflow(conn, org, owner, name, serialized), org, serialized)
@@ -585,18 +613,166 @@ def test_r8_a_failed_run_with_no_yes_is_never_resumed(w):
 
 
 @pytest.mark.parametrize("kind", ["event", "webhook"])
-def test_r8_a_batch_of_a_run_that_is_no_schedule_run_is_never_resumed(w, kind):
-    """An event or a webhook run has no person present, so its gate parks and
-    opens a batch. Its node refuses after the yes, and the scan never turns it
-    into a schedule run."""
-    run_id, made = _park(w, "Small batch in A", kind=kind)
-    _answer(w, w.org_a, OWNER_A, str(made.id), "yes")
-    assert _decide(w, w.org_a) == 1
+def test_r8_a_run_that_is_no_schedule_run_parks_no_batch(w, kind):
+    """An event or a webhook run has no person present, so its gate would park.
+    Its node could never write (``not_scheduled``), so the park refuses: the
+    run fails at the gate with plain words, and no batch, decision or card
+    exists (E8b review)."""
+    run_id = _start(w, "Small batch in A", kind)
     run = _run(w, run_id)
-    assert run.status == "failed" and f"({service.STUDIO_NOT_SCHEDULED})" in run.error
+    assert (run.status, run.error) == ("failed", batch.BATCH_NOT_SCHEDULED_ERROR)
+    assert _all(w, "SELECT id FROM studio_batches") == []
+    assert _decisions_of(w, run_id) == [] and w.proposals == []
     assert _scan(w) == 0
     assert len(_runs(w)) == 1 and _records(w, w.obj_a) == []
-    assert _batch_row(w).status == "open"
+
+
+def test_r8_the_scan_skips_a_batch_whose_run_is_no_schedule_run(w, monkeypatch):
+    """The park refuses such a run first. This guard holds the second wall: a
+    batch whose stopped run is no schedule run never resumes as one."""
+    run_id, _made = _stop_after_two_chunks(w, monkeypatch)
+    with w.admin_engine.begin() as c:
+        c.execute(text("UPDATE workflow_runs SET trigger_kind = 'event' "
+                       "WHERE id = CAST(:r AS uuid)"), {"r": run_id})
+    assert _scan(w) == 0
+    assert len(_runs(w)) == 1 and len(_records(w, w.obj_a)) == 100
+
+
+def _count_nodes(monkeypatch) -> dict[str, int]:
+    """Count each node that RUNS (a replayed node passes through and runs
+    nothing)."""
+    from gateway.routes.workflows.engine import runner
+
+    real = runner.execute_node
+    seen: dict[str, int] = {}
+
+    async def counted(block: dict, state: dict, services: Any) -> Any:
+        seen[str(block.get("id"))] = seen.get(str(block.get("id")), 0) + 1
+        return await real(block, state, services)
+
+    monkeypatch.setattr(runner, "execute_node", counted)
+    return seen
+
+
+def _kill_next_run(w: Any, monkeypatch, chunk: int, start: Any) -> None:
+    """Start a run with *start*, and kill the process in its chunk *chunk*:
+    the chunk rolls back, and ``_finish_run`` never writes the row, as a dead
+    process leaves it. Then the startup sweep fails the run."""
+    from gateway.studio import batch_store
+
+    real_chunk, real_finish = batch_store.run_chunk, service._finish_run
+    _kill_in_chunk(monkeypatch, chunk)
+
+    async def dead(*_a: Any, **_k: Any) -> None:
+        return None
+
+    monkeypatch.setattr(service, "_finish_run", dead)
+    try:
+        start()
+    finally:
+        monkeypatch.setattr(batch_store, "run_chunk", real_chunk)
+        monkeypatch.setattr(service, "_finish_run", real_finish)
+    assert _on_app_role(w, service.reconcile_orphaned_runs) == 1
+
+
+def test_r8_a_second_stop_keeps_the_replay_set_and_no_step_runs_twice(w, monkeypatch):
+    """R1 dies in chunk 2, R2 (the resumed run) dies in its first chunk, and R3
+    ends the batch. The step before the gate ran once across R1, R2 and R3,
+    because each new run holds the replay set in its row from its insert."""
+    seen = _count_nodes(monkeypatch)
+    _run_id, made = _park(w, "Prep then pay in A")
+    _answer(w, w.org_a, OWNER_A, str(made.id), "yes")
+    _kill_next_run(w, monkeypatch, 2, lambda: _decide(w, w.org_a))
+    assert len(_records(w, w.obj_a)) == 50
+    _kill_next_run(w, monkeypatch, 1, lambda: _scan(w))
+    assert len(_records(w, w.obj_a)) == 50
+    runs = _runs(w)
+    assert len(runs) == 2 and all(r.status == "failed" for r in runs)
+    assert _scan(w) == 1
+    runs = _runs(w)
+    assert len(runs) == 3
+    last = next(r for r in runs if r.id == _batch_row(w).run_id)
+    assert last.status == "succeeded", _run(w, last.id).error
+    emps = [r.data["emp"] for r in _records(w, w.obj_a)]
+    assert len(emps) == 150 and len(set(emps)) == 150
+    assert seen["prep"] == 1, seen
+    results = _run(w, last.id).node_results
+    results = results if isinstance(results, dict) else json.loads(results)
+    assert results["prep"].get("cached") is True
+    assert _batch_row(w).resumes == 2
+
+
+def test_r8_the_card_lists_the_first_items_in_plain_words(w):
+    """The owner approves the values that will run (D131.2): the first 10
+    items with their values, the count of the rest, and a short fingerprint.
+    No internal id, no digest in full and no `uses` text."""
+    _run_id, made = _park(w)
+    task = _one(w, "SELECT description FROM pm_tasks WHERE id = :t", t=made.subject_id)
+    text_ = task.description
+    row = _batch_row(w)
+    assert "The run will add 300 records of line" in text_
+    assert f"List fingerprint: {row.list_digest[:12]}" in text_
+    for i in range(10):
+        assert f"{i + 1}. e{i:04d}: emp: \"e{i:04d}\", amount: {1000 + i}" in text_
+    assert "e0010" not in text_
+    assert "290 more records are not shown here." in text_
+    assert row.id not in text_ and row.list_digest not in text_
+    assert "object:" not in text_
+    assert len(text_) <= 1500
+
+
+def test_r8_a_stopped_batch_of_a_disabled_workflow_waits(w, monkeypatch):
+    _stop_after_two_chunks(w, monkeypatch)
+    wid = w.wf["Pay run in A"][0]
+    with w.admin_engine.begin() as c:
+        c.execute(text("UPDATE workflows SET status = 'disabled' WHERE id = CAST(:w AS uuid)"),
+                  {"w": wid})
+    try:
+        assert _scan(w) == 0
+        assert len(_runs(w)) == 1 and _batch_row(w).status == "open"
+    finally:
+        with w.admin_engine.begin() as c:
+            c.execute(text("UPDATE workflows SET status = 'published' "
+                           "WHERE id = CAST(:w AS uuid)"), {"w": wid})
+    assert _scan(w) == 1 and len(_records(w, w.obj_a)) == 300
+
+
+def _set_owner(w: Any, column: str, value: str) -> None:
+    with w.admin_engine.begin() as c:
+        if column == "status":
+            c.execute(text("UPDATE app_user SET status = :v WHERE email = :e"),
+                      {"v": value, "e": OWNER_A})
+        else:
+            c.execute(text(
+                "UPDATE user_permission_override SET effect = :v "
+                "WHERE permission = 'feature:studio' AND user_id = "
+                "(SELECT id FROM app_user WHERE email = :e)"), {"v": value, "e": OWNER_A})
+
+
+@pytest.mark.parametrize(("column", "off", "on", "code"), [
+    ("effect", "deny", "allow", "no_feature"),
+    ("status", "suspended", "active", "not_approved"),
+])
+def test_r8_a_refusal_that_time_does_not_fix_ends_the_batch_at_once(w, column, off, on, code):
+    """After the yes, the owner loses ``feature:studio``, or leaves the org.
+    The node refuses, and the batch ends at once with that code. No resume
+    spends its tries, and no item gets ``query_timeout`` (E8b review)."""
+    run_id, made = _park(w, "Small batch in A")
+    _answer(w, w.org_a, OWNER_A, str(made.id), "yes")
+    _set_owner(w, column, off)
+    try:
+        assert _decide(w, w.org_a) == 1
+        run = _run(w, run_id)
+        assert run.status == "failed" and f"({code})" in run.error, run.error
+        row = _batch_row(w)
+        assert (row.status, row.resumes) == ("failed", 0)
+        items = _items_of(w, row.id)
+        assert (items[0].status, items[0].error_code) == ("failed", code)
+        assert [i.status for i in items[1:]] == ["pending"] * 9
+        assert _scan(w) == 0 and len(_runs(w)) == 1
+    finally:
+        _set_owner(w, column, on)
+    assert _records(w, w.obj_a) == []
 
 
 def test_r8_a_declined_park_writes_nothing_and_starts_nothing(w):

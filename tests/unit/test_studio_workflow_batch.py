@@ -304,6 +304,9 @@ def _spy(monkeypatch, *, ok: bool = True) -> list[str]:
                                    origin_run_id="r", pause_id=_PARKED.pause_id,
                                    list_digest="d" * 64)
 
+    async def _end(_db: Any, _bid: str, *, code: str) -> Any:
+        seen.append(f"end:{code}")
+
     async def _door(**_k: Any) -> dict:
         seen.append("door")
         return {"ok": ok, "code": None if ok else "items_failed", "written": 3, "failed": 0}
@@ -312,6 +315,7 @@ def _spy(monkeypatch, *, ok: bool = True) -> list[str]:
     monkeypatch.setattr(service, "_tenant_session", _session)
     monkeypatch.setattr(batch_store, "batch_of_run", _batch_of_run)
     monkeypatch.setattr(batch, "approved_batch", _approved)
+    monkeypatch.setattr(batch_store, "end_stuck_item", _end)
     monkeypatch.setattr(invoke, "run_workflow_batch", _door)
     return seen
 
@@ -394,7 +398,8 @@ def test_a_decision_that_is_not_the_parked_one_refuses(monkeypatch) -> None:
     with pytest.raises(NodeExecutionError) as refused:
         asyncio.run(_call(_batcher()))
     assert f"({service.STUDIO_NOT_APPROVED})" in str(refused.value)
-    assert "door" not in seen
+    # The yes is gone, and time does not fix that: the batch ends at once.
+    assert "door" not in seen and "end:not_approved" in seen
 
 
 def test_a_batch_that_ends_with_a_failed_item_fails_the_node(monkeypatch) -> None:
@@ -430,8 +435,51 @@ def test_the_question_names_the_verb_the_count_the_object_and_the_package() -> N
     long = SimpleNamespace(package_name="P" * 200, object="o" * 200, op="update",
                            items=tuple(range(1000)), uses="object:o.update", list_digest="a")
     assert len(batch.batch_question("W" * 200, long)) <= 140
-    detail = batch.batch_detail(plan, "b1")
-    assert "300 items" in detail and "a" * 64 in detail and "object:pay_line.create" in detail
+
+
+def _card(items: list, **plan: Any) -> str:
+    base = {"package_name": "Payroll", "object": "pay_line", "op": "create",
+            "items": tuple(items), "uses": "object:pay_line.create", "list_digest": "ab12" * 16}
+    return batch.batch_detail(SimpleNamespace(**{**base, **plan}), items)
+
+
+def test_the_card_lists_the_first_ten_items_in_plain_words() -> None:
+    """D131.2: the owner reads the values that will run. No internal id, no
+    full digest and no `uses` text. The rest is counted."""
+    items = [{"key": f"emp-{i}", "data": {"name": f"N{i}", "net": 100 + i}} for i in range(300)]
+    card = _card(items)
+    assert "The run will add 300 records of pay_line" in card
+    assert "List fingerprint: ab12ab12ab12" in card and "ab12" * 16 not in card
+    assert "object:" not in card
+    for i in range(10):
+        assert f'{i + 1}. emp-{i}: name: "N{i}", net: {100 + i}' in card
+    assert "emp-10" not in card
+    assert "290 more records are not shown here." in card
+    assert len(card) <= 1500
+
+
+def test_the_card_hides_a_secret_value_and_counts_what_does_not_fit() -> None:
+    items = [{"key": "k1", "data": {"api_token": "s3cr3t", "pin": "1234", "bank": "x"},
+              "record_id": "33333333-3333-4333-8333-333333333333"},
+             {"key": "k2", "data": {f"field_{j:02d}_{'x' * 20}": "v" * 40 for j in range(12)}}]
+    card = _card(items, op="update")
+    assert "s3cr3t" not in card and "1234" not in card
+    assert "api_token: (hidden)" in card and "pin: (hidden)" in card
+    assert "1. k1 (a change of a record)" in card
+    line = next(x for x in card.splitlines() if x.startswith("2. k2"))
+    assert len(line) <= 200 and "more fields)" in line
+    assert "33333333" not in card
+
+
+def test_the_card_never_drops_an_item_in_silence() -> None:
+    """Long items stop the list before the bound, and the count line names
+    each item that the card does not show."""
+    items = [{"key": f"k{i}", "data": {f"f{j}": "v" * 39 for j in range(8)}} for i in range(10)]
+    card = _card(items)
+    shown = [x for x in card.splitlines() if x[:1].isdigit() and ". k" in x]
+    assert len(card) <= 1500
+    assert 0 < len(shown) < 10
+    assert f"{10 - len(shown)} more records are not shown here." in card
 
 
 # ── The store calls of E8b ──────────────────────────────────────────────────
@@ -441,7 +489,8 @@ _STORE = (_GATEWAY / "studio" / "batch_store.py").read_text(encoding="utf-8")
 
 
 def test_the_end_codes_are_a_closed_set() -> None:
-    assert batch_store.END_CODES == ("query_timeout", "write_mismatch")
+    assert batch_store.END_CODES[:2] == ("query_timeout", "write_mismatch")
+    assert all(re.fullmatch(r"[a-z_]{1,80}", c) for c in batch_store.END_CODES)
     with pytest.raises(batch_store.BatchStoreError):
         asyncio.run(batch_store.end_stuck_item(object(), str(uuid.uuid4()), code="some text"))
 
@@ -558,10 +607,67 @@ def test_the_scan_never_reads_a_payload_and_needs_the_decision_row() -> None:
     assert "_owner_in_org" in fn
 
 
+def test_each_refusal_of_the_door_that_time_does_not_fix_has_an_end_code() -> None:
+    """Only a busy store, a paused package and the Studio switch leave the
+    batch open. Each other refusal ends it with its own code (E8b review)."""
+    assert {invoke.STORE_BUSY, invoke.PACKAGE_PAUSED,
+                                        invoke.WORKFLOW_STUDIO_OFF} == invoke.BATCH_RETRY_CODES
+    for code in (invoke.WORKFLOW_NO_FEATURE, invoke.WORKFLOW_NO_PACKAGE, invoke.OBJECT_MISSING,
+                 invoke.SOURCE_NOT_OPEN, invoke.NOT_DECLARED, invoke.WORKFLOW_MISMATCH,
+                 invoke.APPROVAL_REQUIRED, invoke.READ_ONLY, invoke.CLASS_X,
+                 invoke.NOT_IN_CATALOG, service.STUDIO_NOT_APPROVED):
+        assert code in batch_store.END_CODES, code
+    src = (_GATEWAY / "routes" / "studio" / "invoke.py").read_text(encoding="utf-8")
+    loop = src[src.index("async def run_workflow_batch"):]
+    assert "if last.code not in BATCH_RETRY_CODES:" in loop
+    assert "await _end_batch(run, last.code)" in loop
+
+
+def test_the_replay_set_round_trips_through_the_row() -> None:
+    precomputed = {"start": {"scheduled_at": "x"}, "prep": {"month": "11"}}
+    rows = batch.replay_results(precomputed)
+    assert all(v["status"] == "ok" and v["cached"] is True for v in rows.values())
+    assert batch.replayed(rows, "batch") == precomputed
+    assert batch.replayed({**rows, "batch": {"status": "ok", "output": {}}}, "batch") == precomputed
+
+
+def test_a_member_who_is_not_the_owner_may_not_add_or_change_a_batch() -> None:
+    old = _graph()
+    assert batch.foreign_batch_change(old, old) is False
+    changed = _graph(_batch_config(items=_items(4)))
+    assert batch.foreign_batch_change(old, changed) is True
+    assert batch.foreign_batch_change({"nodes": [], "edges": []}, old) is True
+    removed = {"nodes": [n for n in old["nodes"] if n["type"] != "studio_batch"], "edges": []}
+    assert batch.foreign_batch_change(old, removed) is False
+    src = (_WORKFLOWS / "crud.py").read_text(encoding="utf-8")
+    fn = src[src.index("async def update_workflow"):src.index("def _validate_trigger_specs")]
+    assert "if body.graph is not None and foreign:" in fn
+    assert "_refuse_foreign_studio_batch(row, body.graph)" in fn
+
+
+def test_the_park_refuses_a_batch_of_a_run_that_is_no_schedule_run_before_any_read() -> None:
+    from gateway.routes.workflows import park
+
+    class _Db:
+        async def execute(self, *_a: Any, **_k: Any) -> Any:
+            raise AssertionError("a statement ran")
+
+    for kind in ("event", "webhook", "manual", "api", ""):
+        with pytest.raises(park.ParkRefused) as refused:
+            asyncio.run(batch.park_batch(
+                _Db(), organization_id=ORG, owner="o@a.test", workflow_name="W",
+                run_id=str(uuid.uuid4()), block={"id": "batch", "config": _batch_config()},
+                trigger_kind=kind))
+        assert refused.value.reason == batch.BATCH_NOT_SCHEDULED
+    src = _src("service.py")
+    assert "trigger_kind=trigger_kind," in src[src.index("held = await _hold_at_gate("):][:900]
+
+
 def test_the_scan_takes_only_a_batch_of_a_schedule_run() -> None:
     """An event or a webhook run parks too. A new run is a schedule run, so a
     resume of its batch would skip the refusal ``not_scheduled``."""
     for part in ("r.status = 'failed'", "r.trigger_kind = 'schedule'", "b.status = 'open'",
+                 "w.status = 'published'", "w.organization_id = CAST(:org AS uuid)",
                  "b.organization_id = CAST(:org AS uuid)", "r.organization_id = CAST(:org AS uuid)"):
         assert part in batch.OPEN_SQL, part
 

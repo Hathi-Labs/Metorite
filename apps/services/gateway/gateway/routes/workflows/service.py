@@ -689,6 +689,26 @@ def _batch_refusal(
     return refused
 
 
+async def _bound_batch(
+    org: str, owner: str, run_id: str, node_id: str, parked: ParkedApproval,
+) -> tuple[Any, Any]:
+    """The batch of the run and the node, and the yes that binds it, read in
+    ONE ``_tenant_session(org)`` (STU-E8b). The yes must be the parked decision
+    of this run. A batch whose yes is gone (the owner changed, left or lost
+    the answer) ends at once with ``not_approved``, in the same session, since
+    time does not fix it (E8b review). Returns ``(batch, None)`` then."""
+    from gateway.studio import batch_store
+
+    async with _tenant_session(org) as db:
+        found = await batch_store.batch_of_run(db, run_id, node_id)
+        bound = await batch.approved_batch(db, organization_id=org, owner=owner, batch=found)
+        if bound is not None and bound.decision_id != parked.decision_id:
+            bound = None
+        if found is not None and bound is None:
+            await batch_store.end_stuck_item(db, found.id, code=STUDIO_NOT_APPROVED)
+    return found, bound
+
+
 def _studio_batcher(
     *,
     run_id: str,
@@ -716,7 +736,6 @@ def _studio_batcher(
 
     async def _batch(node_id: str, config: dict[str, Any]) -> dict[str, Any]:
         from gateway.routes.studio.invoke import run_workflow_batch
-        from gateway.studio import batch_store
 
         org = str(organization_id or "").strip()
         refused = _batch_refusal(org, trigger_kind, parked, serialized or {}, node_id)
@@ -727,11 +746,8 @@ def _studio_batcher(
         if refused is None and parked is not None:
             spent.add(parked.gate)
             _, owner = await _workflow_owner(workflow_id, org)
-            async with _tenant_session(org) as db:
-                found = await batch_store.batch_of_run(db, run_id, node_id)
-                bound = await batch.approved_batch(
-                    db, organization_id=org, owner=owner, batch=found)
-            if bound is None or bound.decision_id != parked.decision_id:
+            found, bound = await _bound_batch(org, owner, run_id, node_id, parked)
+            if bound is None:
                 refused = STUDIO_NOT_APPROVED
         if refused is not None or parked is None or bound is None or found is None:
             _log.warning("workflows.studio_batch_refused", run_id=run_id, reason=refused)
@@ -1223,6 +1239,7 @@ async def _execute_run(
                 started_by=started_by,
                 resume_at=outcome.wait_until.get(node_id),
                 organization_id=organization_id,
+                trigger_kind=trigger_kind,
             )
             if held is not None:
                 # A refused hold ended the run `failed` in the row. The hub, the
@@ -1509,6 +1526,7 @@ async def _hold_at_gate(
     started_by: str,
     resume_at: float | None = None,
     organization_id: str | None = None,
+    trigger_kind: str = "",
 ) -> tuple[str, str] | None:
     """Persist the pause; for an APPROVAL gate, also file the inbox proposal.
 
@@ -1569,6 +1587,7 @@ async def _hold_at_gate(
             resume_at=None,
         ),
         organization_id=organization_id,
+        trigger_kind=trigger_kind,
     ):
         return
     action_id: str | None = None
@@ -1743,6 +1762,13 @@ async def _hold_at_human_step(
     return None
 
 
+#: The plain error of each refusal of a batch at the park (STU-E8b).
+_BATCH_PARK_ERRORS = {
+    batch.BATCH_OFF: batch.BATCH_OFF_ERROR,
+    batch.BATCH_NOT_SCHEDULED: batch.BATCH_NOT_SCHEDULED_ERROR,
+}
+
+
 async def _park_with_decision(
     *,
     run_id: str,
@@ -1752,6 +1778,7 @@ async def _park_with_decision(
     node_label: str,
     snapshot: dict[str, Any],
     organization_id: str | None,
+    trigger_kind: str = "",
 ) -> bool:
     """AUTO-7b: park a marked run's approval gate on ONE decision of its owner.
 
@@ -1791,6 +1818,7 @@ async def _park_with_decision(
                     node_id=node_id,
                     node_label=node_label,
                     snapshot=snapshot,
+                    trigger_kind=trigger_kind,
                 )
         finally:
             release_tenant(token)
@@ -1808,10 +1836,12 @@ async def _park_with_decision(
             # write, so the run fails here and files no card.
             await _fail_unresolved_write(run_id, organization_id)
             return True
-        if getattr(exc, "reason", "") == batch.BATCH_OFF:
-            # STU-E8b: the gate clears a batch of an org that is not ready, so
-            # no batch opens and no card is filed.
-            await _fail_unresolved_write(run_id, organization_id, batch.BATCH_OFF_ERROR)
+        batch_error = _BATCH_PARK_ERRORS.get(str(getattr(exc, "reason", "") or ""))
+        if batch_error is not None:
+            # STU-E8b: the gate clears a batch of an org that is not ready, or
+            # of a run that is no schedule run. No batch opens and no card is
+            # filed, and the run fails with plain words.
+            await _fail_unresolved_write(run_id, organization_id, batch_error)
             return True
         return False
     _log.info("workflows.parked", run_id=run_id, decision_id=parked["decision_id"])
@@ -2083,12 +2113,16 @@ async def start_batch_run(
                 text(
                     """INSERT INTO workflow_runs
                        (id, workflow_id, workflow_name, version, trigger_kind,
-                        trigger_payload, status, started_by)
+                        trigger_payload, status, started_by, node_results)
                        VALUES (:id, :wid, :name, :v, 'schedule', :tp ::jsonb,
-                               'running', :by)"""
+                               'running', :by, :nr ::jsonb)"""
                 ),
                 {"id": run_id, "wid": workflow_id, "name": workflow_name, "v": int(version),
-                 "tp": json.dumps(trigger_payload, default=str), "by": batch.STARTED_BY},
+                 "tp": json.dumps(trigger_payload, default=str), "by": batch.STARTED_BY,
+                 # The replay set lives in the row from its first write (E8b
+                 # review). A stop of THIS run never reaches `_finish_run`, and
+                 # the next resume reads the replay set from this row.
+                 "nr": json.dumps(batch.replay_results(precomputed), default=str)},
             )
             moved = await batch_store.rebind_run(
                 db, batch_id, old_run_id=old_run_id, new_run_id=run_id,
