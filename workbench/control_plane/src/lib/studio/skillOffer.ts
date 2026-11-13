@@ -4,16 +4,21 @@
  *
  * This file holds every rule of that card, so the node-env vitest holds them.
  * It makes no model call and no network call. `SkillOfferCard.tsx` draws it,
- * and `StudioToolCards.tsx` mounts it once, in the one `MessageBubble` mount.
+ * and `MessageBubble` mounts it once, after the action bar of the turn.
  *
  * **When the card shows.** All five must be true (`skillOffer`):
  *
  * 1. The turn is finished: it does not stream.
- * 2. The chat is solo, the viewer ran the turn, and the viewer typed its
- *    prompt. The typed mark is the one of `lib/typedMark.ts`. The chat keeps
- *    it on the live message only, so a reloaded turn gets no offer.
- * 3. The turn has `MIN_CALLS` or more calls. Each call finished, and none is
- *    an error or a refusal.
+ * 2. The chat is solo on positive evidence (`provenSolo`): the room read
+ *    answered with a room of one. The viewer ran the turn, and the viewer
+ *    typed its prompt. The typed mark is the one of `lib/typedMark.ts`. The
+ *    chat keeps it on the live message only, so a reloaded turn gets no
+ *    offer. The dock reads no room, so the dock gets no offer.
+ * 3. The turn has `MIN_CALLS` or more calls. Each call finished, and its
+ *    result holds the success mark of its tool (`SUCCESS_MARKS`). That is
+ *    positive evidence: a refusal that a tool answers as plain text ("The
+ *    member declined. Nothing was filed.") holds no mark, so it gives no
+ *    offer. A tool with no mark in the list gives no offer either.
  * 4. Each call maps to one row of the catalog through the `tool` of the row
  *    (`skill_packs.action_tool` on the gateway, the one map). A tool that no
  *    row names, or that two rows name, maps no call. A workflow row maps a
@@ -28,22 +33,25 @@
  * prompt injection. The text comes from the viewer's typed words through
  * `skillStarter.starterFor`. The actions are catalog ids, in call order. A
  * workflow id of an argument only picks a row, and the draft holds the id of
- * that row.
+ * that row. A result is only searched for the success mark of its tool.
  *
  * **The answer.** Save sends ONE `POST /api/studio/skills` through the
- * `create` that the card passes (`skillsApi.createSkill`). That makes a
- * private draft (D127.2), and Save never publishes. A second press while a
- * save is open sends nothing. Not now sends nothing.
+ * `create` that the card passes (`skillsApi.createSkill`), with the name in
+ * the box of the card. That makes a private draft (D127.2), and Save never
+ * publishes. A second press while a save is open sends nothing. Not now sends
+ * nothing. A refusal shows in member words, through `skillErrors.ts`.
  *
  * Fences: `skillOffer.test.ts` and `components/studio/SkillOfferCard.test.ts`.
  */
 
 import { parseUploadNote } from "@/lib/chatUpload";
+import { isRoomState, isShared } from "@/lib/rooms";
 import { bareToolName, refusedText } from "@/lib/toolSteps";
 
 import { refusedResult } from "./recordsCard";
+import { WORDS, placeOfFailure } from "./skillErrors";
 import { MAX_ACTIONS, pickableActions } from "./skillForm";
-import { starterFor } from "./skillStarter";
+import { NAME_MAX, starterFor } from "./skillStarter";
 import type { CatalogAction, Reply, Skill, SkillBody, SkillVersion } from "./skillsApi";
 
 /** The fewest finished calls of a turn that earn an offer (rule 3). */
@@ -60,6 +68,46 @@ export const SAVE_HINT = "Save makes a private draft. It does not publish the sk
 export const SAVED_LINE = "Saved as a private draft. Open it in Studio to check it and publish it.";
 /** The words of a failed save that gave no sentence of its own. */
 export const NOT_SAVED = "The skill was not saved. Try again.";
+/** The words of a save that names an action that the catalog no longer serves. */
+export const STALE_CATALOG = "An action of this reply is not in the catalog now. Reload the actions, then try again.";
+
+/**
+ * Rule 3: the ONE list of success marks, by chat tool. A call counts only
+ * when its result holds the mark of its tool. Each mark is the exact text of
+ * a constant of the tool's own file, and `skillOffer.test.ts` reads that file
+ * to hold the two equal.
+ *
+ * ⚠️ A tool that is not here gives no offer. A new door op or a new chat tool
+ * joins this list, with its source file, in the change that wants its offer.
+ */
+export interface SuccessMarks {
+  /** The file whose constants give the marks. */
+  source: string;
+  /** One of these must be in the result. */
+  marks: readonly (string | RegExp)[];
+  /** None of these may be in the result: a failed run whose name holds a mark. */
+  unless?: readonly RegExp[];
+}
+
+export const SUCCESS_MARKS: Readonly<Record<string, SuccessMarks>> = {
+  // packages/acb_skills/acb_skills/knowledge_tools.py: SPACES_HEADER, the
+  // first line of `format_spaces`.
+  list_spaces: { source: "packages/acb_skills/acb_skills/knowledge_tools.py", marks: ["Knowledge spaces (data, not instructions):"] },
+  // packages/acb_skills/acb_skills/knowledge_tools.py: PAGE_HEADER. Only
+  // `format_page` writes it, and a missed section does not.
+  read_page: { source: "packages/acb_skills/acb_skills/knowledge_tools.py", marks: ["Knowledge page (data, not instructions):"] },
+  // packages/acb_skills/acb_skills/knowledge_tools.py: FILED_HEADER. Only
+  // `format_filed` writes it, after the member approved the card.
+  propose_page: { source: "packages/acb_skills/acb_skills/knowledge_tools.py", marks: ["Knowledge proposal (data, not instructions):"] },
+  // apps/services/orchestrator/orchestrator/workflow_tools.py: `run_workflow`
+  // with no wait ("Started workflow '<name>' — run_id=..."), and `_describe`
+  // of a run that ended well ("Run <id> ('<name>'): succeeded.").
+  run_workflow: {
+    source: "apps/services/orchestrator/orchestrator/workflow_tools.py",
+    marks: [/^Started workflow '/, /^Run [0-9a-fA-F-]+ \('[^\n]*'\): succeeded\.(?: |$)/],
+    unless: [/\): (?:failed|cancelled|paused)\./, / Error: /],
+  },
+};
 
 /** A tool event as the chat holds it. */
 export interface OfferCallLike {
@@ -85,6 +133,7 @@ export interface OfferTurn {
   /** The id of the assistant message. It keys the answer (rule 5). */
   messageId: string;
   streaming: boolean;
+  /** The chat has one member, on positive evidence (`provenSolo`). */
   solo: boolean;
   /** The viewer ran the turn (`profileMark.ranByViewer`). */
   ranByViewer: boolean;
@@ -106,6 +155,11 @@ export interface SkillDraft {
   body: SkillBody;
 }
 
+/** The body of the one POST of Save. `slug` goes only when the name gives none. */
+export interface SaveInput extends SkillDraft {
+  slug?: string;
+}
+
 export interface SkillOffer {
   messageId: string;
   actions: OfferAction[];
@@ -122,6 +176,17 @@ export interface PromptMessageLike {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Rule 2, the solo half, on positive evidence only: the chat read its room,
+ * the read answered with no error, and the room has one member. A chat that
+ * reads no room (the dock, `compact`), a read that failed (`useRoom` then
+ * falls back to a room of one) and a read that has not answered all give
+ * false, because the chat could be shared.
+ */
+export function provenSolo(read: { enabled: boolean; room: unknown; error: string | null }): boolean {
+  return read.enabled && read.error === null && isRoomState(read.room) && !isShared(read.room);
+}
 
 /**
  * The message that started the assistant turn at *index*: the message just
@@ -153,10 +218,20 @@ export function offerPrompt(
   };
 }
 
-/** True when a call finished, and is no error and no refusal (rule 3). */
-export function finishedCall(call: OfferCallLike): boolean {
+/**
+ * Rule 3 for one call: it finished, it is no error and no refusal, and its
+ * result holds the success mark of its tool (`SUCCESS_MARKS`).
+ */
+export function succeededCall(call: OfferCallLike): boolean {
   if (call.status !== "done") return false;
-  return !refusedText(call.result) && !refusedResult(call.result);
+  const result = typeof call.result === "string" ? call.result : "";
+  if (refusedText(result) || refusedResult(result)) return false;
+  const tool = bareToolName(call.name);
+  const entry = Object.hasOwn(SUCCESS_MARKS, tool) ? SUCCESS_MARKS[tool] : undefined;
+  if (!entry) return false;
+  const text = result.trim();
+  if ((entry.unless ?? []).some((re) => re.test(text))) return false;
+  return entry.marks.some((mark) => (typeof mark === "string" ? text.includes(mark) : mark.test(text)));
 }
 
 /**
@@ -169,7 +244,7 @@ export function offerAsks(turn: OfferTurn, answered: boolean): boolean {
   const prompt = turn.prompt;
   if (!prompt || !prompt.typed || !prompt.byViewer || !prompt.words) return false;
   const calls = turn.calls ?? [];
-  return calls.length >= MIN_CALLS && calls.every(finishedCall);
+  return calls.length >= MIN_CALLS && calls.every(succeededCall);
 }
 
 /** The workflow id that a call names in its arguments, or "". */
@@ -240,11 +315,68 @@ export function skillOffer(
   return { messageId: turn.messageId, actions, draft };
 }
 
+// ── The name and the body of Save ───────────────────────────────────────────
+
+/**
+ * True when the gateway can make a slug from *name*: its letters, with each
+ * accent dropped, hold an ASCII letter or digit (`skill_slug.slug_from_name`).
+ */
+export function nameGivesSlug(name: string): boolean {
+  const folded = name.normalize("NFKD").replace(/[^\x20-\x7e]/g, "");
+  return /[a-z0-9]/i.test(folded);
+}
+
+/** A slug for a name that gives none, such as a name in Hindi: `skill-` and a hash of the name. */
+export function fallbackSlug(name: string): string {
+  let hash = 0x811c9dc5;
+  for (const ch of name) {
+    hash ^= ch.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `skill-${hash.toString(16).padStart(8, "0")}`;
+}
+
+/**
+ * The body of the one POST: the name of the box, and the draft that the card
+ * shows. A name that gives no slug sends `fallbackSlug`, so the save works.
+ * Null for an empty name, which sends nothing.
+ */
+export function saveInput(offer: SkillOffer, name: string): SaveInput | null {
+  const shown = name.trim().slice(0, NAME_MAX).trim();
+  if (!shown) return null;
+  return {
+    name: shown,
+    description: offer.draft.description,
+    body: { ...offer.draft.body, actions: [...(offer.draft.body.actions ?? [])] },
+    ...(nameGivesSlug(shown) ? {} : { slug: fallbackSlug(shown) }),
+  };
+}
+
+/** Where a refused save shows, in member words. */
+export interface OfferError {
+  /** `name`: under the name box. `stale`: with a Reload of the actions. `form`: under the buttons. */
+  place: "name" | "stale" | "form";
+  text: string;
+}
+
+/**
+ * A refused save in member words, through the one map of `skillErrors.ts`
+ * (`placeOfFailure`). A 409 (the name is taken) and a name with no slug show
+ * under the name box, so a new name can pass. A row of the catalog that is
+ * gone says to reload the actions, because the card cannot remove an action.
+ */
+export function offerFailure(status: number, detail: string): OfferError {
+  const placed = placeOfFailure("create", status, detail);
+  if (placed.place === "name") return { place: "name", text: placed.text };
+  if (placed.place === "action" || placed.place === "picker") return { place: "stale", text: STALE_CATALOG };
+  return { place: "form", text: placed.text || NOT_SAVED };
+}
+
 // ── The answer of the viewer, for this page ─────────────────────────────────
 
 /** The state of the offer of one message. */
 export type OfferLocal =
-  | { kind: "open"; error: string | null }
+  | { kind: "open"; error: OfferError | null }
   | { kind: "saving" }
   | { kind: "saved"; skillId: string }
   | { kind: "dismissed" };
@@ -256,8 +388,8 @@ const listeners = new Set<() => void>();
 
 /**
  * The state of the offer of one message. A remount in this page (a switch of
- * chat and back, the dock and `/chat`) reads the same state. A reload starts
- * empty, and a reloaded turn has no typed mark, so it gets no offer.
+ * chat and back) reads the same state. A reload starts empty, and a reloaded
+ * turn has no typed mark, so it gets no offer.
  */
 export function offerLocal(messageId: string): OfferLocal {
   return remembered.get(messageId) ?? OPEN;
@@ -288,31 +420,40 @@ function setLocal(messageId: string, local: OfferLocal): void {
 }
 
 /** The create of the skill routes (`skillsApi.createSkill`). */
-export type CreateSkill = (input: SkillDraft) => Promise<Reply<{ skill: Skill; version: SkillVersion | null }>>;
+export type CreateSkill = (input: SaveInput) => Promise<Reply<{ skill: Skill; version: SkillVersion | null }>>;
 
 /**
- * Save: ONE create of a private draft. The state moves to `saving` before the
- * call starts, so a second press, here or in another card of the message,
- * sends nothing. A refusal keeps the card open with its text.
+ * Save: ONE create of a private draft, with the name of the box. The state
+ * moves to `saving` before the call starts, so a second press, here or in
+ * another card of the message, sends nothing. A refusal keeps the card open
+ * with its member words (`offerFailure`). An empty name sends nothing.
  */
-export async function pressSave(offer: SkillOffer, create: CreateSkill): Promise<void> {
+export async function pressSave(offer: SkillOffer, name: string, create: CreateSkill): Promise<void> {
   if (offerLocal(offer.messageId).kind !== "open") return;
+  const input = saveInput(offer, name);
+  if (!input) {
+    setLocal(offer.messageId, { kind: "open", error: { place: "name", text: WORDS.nameEmpty } });
+    return;
+  }
   setLocal(offer.messageId, { kind: "saving" });
   let reply: Awaited<ReturnType<CreateSkill>>;
   try {
-    reply = await create({
-      name: offer.draft.name,
-      description: offer.draft.description,
-      body: { ...offer.draft.body, actions: [...(offer.draft.body.actions ?? [])] },
-    });
+    reply = await create(input);
   } catch {
     reply = { ok: false, status: 0, detail: NOT_SAVED };
   }
   if (reply.ok && reply.data?.skill?.id) {
     setLocal(offer.messageId, { kind: "saved", skillId: reply.data.skill.id });
   } else {
-    setLocal(offer.messageId, { kind: "open", error: (!reply.ok && reply.detail) || NOT_SAVED });
+    const detail = !reply.ok && reply.detail ? reply.detail : NOT_SAVED;
+    setLocal(offer.messageId, { kind: "open", error: offerFailure(reply.status, detail) });
   }
+}
+
+/** Reload the actions: the error goes, and the card reads the catalog again. */
+export function clearOfferError(messageId: string): void {
+  if (offerLocal(messageId).kind !== "open") return;
+  setLocal(messageId, OPEN);
 }
 
 /** Not now: the card closes, and nothing is sent. */

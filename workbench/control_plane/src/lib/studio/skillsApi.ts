@@ -88,6 +88,8 @@ export function createSkill(input: {
   name: string;
   description: string;
   body: SkillBody;
+  /** Only for a name that gives no slug (F2a makes the slug from the name). */
+  slug?: string;
 }): Promise<Reply<{ skill: Skill; version: SkillVersion | null }>> {
   return send(() =>
     fetch("/api/studio/skills", {

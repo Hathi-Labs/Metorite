@@ -19,6 +19,7 @@ import TaskToolCards, { taskEvidence } from "@/components/tasks/TaskToolCards";
 import ProjectToolCards, { projectEvidence } from "@/components/projects/ProjectToolCards";
 import ProfileToolCards from "@/components/profile/ProfileToolCards";
 import StudioToolCards from "@/components/studio/StudioToolCards";
+import SkillOfferCard from "@/components/studio/SkillOfferCard";
 import { crmEvidence } from "@/components/crm/CrmEvidence";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { genUiFlow, genUiPlacement, genUiTitle, type FlowBlock } from "@/lib/chatPlacement";
@@ -44,6 +45,7 @@ import { useRevalidateOnTools } from "@/lib/taskRefs";
 import AnswerDetails from "@/components/AnswerDetails";
 import { profileMarkShown, ranByViewer } from "@/lib/profileMark";
 import { offerPrompt } from "@/lib/studio/skillOffer";
+import { skillOfferOn } from "@/lib/studio/skillOfferFlag";
 import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
 import { isEdited } from "@/lib/chatEdit";
 import { cardAnswerOf, cardAnswerText } from "@/lib/cardAnswer";
@@ -191,8 +193,9 @@ function MessageBubble({
    *  2026-10-13). `taskRefsForTurn` decides, by the agent of each turn. */
   taskRefAgent?: string;
   /** The skill offer of an assistant turn (STU-F6a): the member's message
-   *  just before it (`promptBefore`), and whether the chat is solo.
-   *  `AgentChat` passes it, and `lib/studio/skillOffer.ts` decides. */
+   *  just before it (`promptBefore`), and whether the chat is solo on
+   *  positive evidence (`provenSolo`). `AgentChat` passes it, and
+   *  `lib/studio/skillOffer.ts` decides. */
   skillOfferOf?: { prompt: ChatMessage | null; solo: boolean };
 }) {
   // Whether a document may open in the side panel here (`lib/sidePanelFit.ts`).
@@ -851,21 +854,7 @@ function MessageBubble({
       <ProjectToolCards toolEvents={dedupedToolEvents} mine={ranByViewer(message, viewerEmail)} />
       {/* The approval card of a Studio record change (STU-B2c-2c). Inert
           unless the message holds an ask of a studio_record_* write tool. */}
-      {/* Last, the skill offer of the turn (STU-F6a), dark behind
-          NEXT_PUBLIC_SKILL_OFFER. It reads only the typed words and the
-          catalog, never a tool argument or a tool result. */}
-      <StudioToolCards
-        toolEvents={dedupedToolEvents}
-        sessionId={sessionId}
-        offer={skillOfferOf ? {
-          messageId: message.id,
-          streaming: !!message.streaming,
-          solo: skillOfferOf.solo,
-          ranByViewer: ranByViewer(message, viewerEmail),
-          prompt: offerPrompt(skillOfferOf.prompt, viewerEmail),
-          calls: dedupedToolEvents,
-        } : undefined}
-      />
+      <StudioToolCards toolEvents={dedupedToolEvents} sessionId={sessionId} />
       {/* The receipts of the assistant profile writes, each with Undo (WS-63
           PZ-6a). Inert unless the message holds a profile_* tool call. */}
       <ProfileToolCards toolEvents={dedupedToolEvents} />
@@ -903,6 +892,23 @@ function MessageBubble({
           {tierLabel && <AnswerDetails tierLabel={tierLabel} />}
           <div className="text-[10px] text-muted-foreground">{timestamp}</div>
         </div>
+      )}
+      {/* Last, the skill offer of the turn (STU-F6a), dark behind
+          NEXT_PUBLIC_SKILL_OFFER. It comes after the turn ends, so it sits
+          under the action bar and its arrival moves no part of the turn. It
+          reads only the typed words and the catalog, never a tool argument
+          or a tool result. The ONE mount of the card. */}
+      {skillOfferOf && skillOfferOn() && (
+        <SkillOfferCard
+          turn={{
+            messageId: message.id,
+            streaming: !!message.streaming,
+            solo: skillOfferOf.solo,
+            ranByViewer: ranByViewer(message, viewerEmail),
+            prompt: offerPrompt(skillOfferOf.prompt, viewerEmail),
+            calls: dedupedToolEvents,
+          }}
+        />
       )}
     </div>
     </ArtifactOpenContext.Provider>
