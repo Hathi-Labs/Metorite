@@ -447,3 +447,69 @@ def test_the_catalog_has_no_logic_row_in_production() -> None:
         assert actions._logic_rows() == []
     finally:
         release_tenant(token)
+
+
+# ── a module cannot choose the text of an answer ───────────────────────────
+
+
+def _raising(make: Any) -> logic.LogicModule:
+    async def run(inp: Any, reader: Any) -> Any:
+        raise make()
+
+    return dataclasses.replace(_module(), run=run)
+
+
+@pytest.mark.parametrize("shape", ["logic_refused", "sqlalchemy", "record_refused_cause"])
+def test_a_module_raised_error_of_any_shape_is_the_fixed_logic_failed(shape, caplog) -> None:
+    import logging
+
+    from sqlalchemy.exc import SQLAlchemyError
+
+    makers = {
+        "logic_refused": lambda: logic_apply.LogicRefused(SECRET),
+        "sqlalchemy": lambda: SQLAlchemyError(SECRET),
+        "record_refused_cause": lambda: logic_apply.LogicRefused(
+            logic_apply.RECORD_REFUSED, ValueError(SECRET)),
+    }
+    caplog.set_level(logging.DEBUG)
+    store = FakeStore()
+
+    async def go() -> Any:
+        return await logic_apply.run_module(
+            FakeDb(), module=_raising(makers[shape]), body={}, package_id="pkg-1",
+            viewer=Viewer(ANA), store=store)
+
+    with pytest.raises(logic_apply.LogicRefused) as err:
+        asyncio.run(go())
+    assert err.value.code == logic_apply.LOGIC_FAILED and err.value.cause is None
+    assert SECRET not in err.value.message and SECRET not in repr(err.value.args)
+    assert SECRET not in caplog.text
+    assert all(SECRET not in r.getMessage() and SECRET not in str(r.__dict__)
+               for r in caplog.records)
+    assert store.calls == []
+
+
+def test_an_error_that_the_reader_raised_passes_as_it_is() -> None:
+    """The reader's own refusal and a store fault keep their type, so the door
+    maps them. The module cannot forge one: it never holds the list."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    class Down(FakeStore):
+        async def query_records(self, *a: Any, **kw: Any) -> Any:
+            raise SQLAlchemyError("store down")
+
+    async def run(inp: Any, reader: Any) -> Any:
+        return await reader(inp.read)
+
+    module = dataclasses.replace(_module(), run=run)
+
+    async def go(read: str, store: FakeStore) -> Any:
+        return await logic_apply.run_module(
+            FakeDb(), module=module, body={"read": read}, package_id="pkg-1",
+            viewer=Viewer(ANA), store=store)
+
+    with pytest.raises(logic_apply.LogicRefused) as err:
+        asyncio.run(go("secret", FakeStore()))
+    assert err.value.code == logic_apply.UNDECLARED_READ
+    with pytest.raises(SQLAlchemyError):
+        asyncio.run(go("visit", Down()))

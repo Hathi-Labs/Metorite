@@ -15,8 +15,11 @@ applies the proposal in :mod:`gateway.studio.logic.apply`, all or none.
 * ``run(input, reader)`` is a coroutine. ``reader`` is the ONLY way to read.
   It is a closure over ``objects_store.query_records`` in the same session,
   with the viewer of the CALLER (C8a), so a row that the caller cannot read
-  never reaches the module. The module gets no ``db``, no engine and no HTTP
-  client, so it cannot touch a table.
+  never reaches the module. The module receives only the reader, by
+  convention. It is first-party code that Metorite engineers review, and it
+  runs in process. ⚠️ ``reader.__closure__`` holds the live session, so this is
+  no isolation boundary. B5 (member-authored code) MUST NOT reuse this closure
+  and needs a process or RPC boundary.
 
 **The registry ships EMPTY.** :data:`MODULES` holds no module in production.
 A module registers here in the slice that adds it (B4c names the MRP run).

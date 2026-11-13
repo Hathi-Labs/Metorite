@@ -362,6 +362,21 @@ def test_r8_a_viewer_gets_read_only_and_nothing_is_written(installed, monkeypatc
     assert n == 0
 
 
+def test_r8_a_signed_direct_call_of_a_viewer_is_read_only_and_the_module_runs_0_times(
+        installed, monkeypatch) -> None:
+    w = installed
+    ran = _spy_module(monkeypatch)
+    body = {"writes": [_w("create", data=_GOOD)]}
+    status, got = _run(w, lambda: _door(w.a, VIEWER, w.vpid, body, signed=True))
+    assert (status, got["code"]) == (403, "read_only"), got
+    assert ran == []
+    with w.p.admin_engine.connect() as c:
+        n = c.execute(text(
+            "SELECT count(*) FROM studio_records r JOIN studio_objects o ON o.id = r.object_id "
+            "WHERE o.package_id = CAST(:p AS uuid)"), {"p": w.vpid}).scalar_one()
+    assert n == 0
+
+
 async def pdoor_preview(org: str, email: str, pid: str, body: Any) -> tuple[int, Any]:
     request = _Request(body, path=f"/studio/apps/{pid}/actions/echo", query={"preview": "1"})
     token = bind_tenant(org)
@@ -431,6 +446,35 @@ def test_r8_a_module_that_raises_writes_nothing_and_leaks_no_text(lworld, monkey
     status, got = _run(w, lambda: _door(w.a, ANA, w.pkg, {}))
     assert (status, got["code"]) == (422, "logic_failed"), got
     assert SECRET not in json.dumps(got) and SECRET not in json.dumps(_audits(w, w.pkg))
+    assert _count(w, w.obj) == before
+
+
+@pytest.mark.parametrize("shape", ["logic_refused", "sqlalchemy", "record_refused_cause"])
+def test_r8_a_module_raised_error_of_any_shape_leaks_no_text(lworld, monkeypatch, caplog,
+                                                              shape) -> None:
+    import logging
+
+    from sqlalchemy.exc import SQLAlchemyError
+
+    w = lworld
+    makers = {
+        "logic_refused": lambda: logic_apply.LogicRefused(SECRET),
+        "sqlalchemy": lambda: SQLAlchemyError(SECRET),
+        "record_refused_cause": lambda: logic_apply.LogicRefused(
+            logic_apply.RECORD_REFUSED, ValueError(SECRET)),
+    }
+
+    async def run(inp: Any, reader: Any) -> Any:
+        raise makers[shape]()
+
+    monkeypatch.setitem(logic.MODULES, "test_echo", logic.LogicModule(
+        **{**_echo_module().__dict__, "run": run}))
+    caplog.set_level(logging.DEBUG)
+    before = _count(w, w.obj)
+    status, got = _run(w, lambda: _door(w.a, ANA, w.pkg, {}))
+    assert (status, got["code"]) == (422, "logic_failed"), got
+    assert SECRET not in json.dumps(got) and SECRET not in json.dumps(_audits(w, w.pkg))
+    assert SECRET not in caplog.text
     assert _count(w, w.obj) == before
 
 

@@ -41,7 +41,6 @@ from acb_common import get_logger
 from acb_common.studio_access import Viewer
 from acb_common.studio_rules import MAX_WRITES_PER_BATCH
 from pydantic import BaseModel, ValidationError
-from sqlalchemy.exc import SQLAlchemyError
 
 from gateway.studio import objects_store
 from gateway.studio.logic import LogicModule, ProposedWrite, Reader
@@ -107,23 +106,36 @@ class AppliedWrite:
 
 
 def _reader(db: Any, *, package_id: str, viewer: Viewer, module: LogicModule,
-            store: Any) -> Reader:
+            store: Any, own: list[BaseException]) -> Reader:
     """The reader of one run: a closure over ``query_records`` in the session
     *db*, with *viewer* of the caller. It reads only an object in the
-    ``reads`` of *module*, and only of the package *package_id*."""
+    ``reads`` of *module*, and only of the package *package_id*.
+
+    *own* is the list of the errors that THIS reader raised. :func:`run_module`
+    tells a platform error from a module error by object identity against it,
+    so a module cannot forge one: it never holds the list."""
+
+    def mine(exc: BaseException) -> BaseException:
+        own.append(exc)
+        return exc
 
     async def read(object_name: str, *, filter: Any = None, sort: Any = None,
                    limit: Any = None, offset: Any = None) -> list[dict[str, Any]]:
         if object_name not in module.reads:
-            raise LogicRefused(UNDECLARED_READ)
-        obj = await store.get_object_by_name(db, object_name, package_id=package_id)
-        if obj is None:
-            raise LogicRefused(OBJECT_MISSING)
-        page = await store.query_records(
-            db, package_id=package_id, object_id=obj.id, viewer=viewer,
-            filter=filter, sort=sort, limit=limit, offset=offset)
+            raise mine(LogicRefused(UNDECLARED_READ))
+        try:
+            obj = await store.get_object_by_name(db, object_name, package_id=package_id)
+            if obj is None:
+                raise mine(LogicRefused(OBJECT_MISSING))
+            page = await store.query_records(
+                db, package_id=package_id, object_id=obj.id, viewer=viewer,
+                filter=filter, sort=sort, limit=limit, offset=offset)
+        except LogicRefused:
+            raise
+        except Exception as exc:
+            raise mine(exc) from None
         if page is None:
-            raise LogicRefused(OBJECT_MISSING)
+            raise mine(LogicRefused(OBJECT_MISSING))
         return [{"id": r.id, "data": dict(r.data)} for r in page.records]
 
     return read
@@ -135,21 +147,26 @@ async def run_module(db: Any, *, module: LogicModule, body: Mapping[str, Any],
     what the module returned, unchecked: :func:`apply_proposed_writes` checks it.
 
     A body that the model refuses is ``bad_input``. A module that raises is
-    ``logic_failed``, and the log holds the exception type only. A database
-    fault is not a module fault: it is raised as it is, so the door answers 500
-    and the session rolls back."""
+    ``logic_failed``, and the log holds the exception type only. That holds for
+    each exception type, a ``LogicRefused`` and a database error that the module
+    raised itself too. Only an error that the reader raised (found by identity in
+    ``own``) passes as it is: a database fault of the reader gives 500 and the
+    session rolls back."""
     try:
         parsed: BaseModel = module.input_model.model_validate(dict(body))
     except ValidationError:
         raise LogicRefused(BAD_INPUT) from None
-    reader = _reader(db, package_id=package_id, viewer=viewer, module=module, store=store)
+    own: list[BaseException] = []
+    reader = _reader(db, package_id=package_id, viewer=viewer, module=module, store=store,
+                     own=own)
     try:
         return await module.run(parsed, reader)
-    except LogicRefused:
-        raise
-    except SQLAlchemyError:
-        raise
     except Exception as exc:
+        if any(exc is e for e in own):
+            # The reader raised it: a platform refusal or a store error, as it was.
+            raise
+        # Any other error is the module's, whatever its type. Its text and its
+        # cause never leave: the log holds the type name only.
         _log.warning("studio.logic.module_failed", module=module.name, error=type(exc).__name__)
         raise LogicRefused(LOGIC_FAILED) from None
 
