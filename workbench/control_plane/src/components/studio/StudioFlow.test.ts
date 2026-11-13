@@ -62,6 +62,12 @@ describe("FlowGraph", () => {
     for (const bad of ["CONFIG-SECRET", "HOOK-TOKEN-VALUE", "hook", "/hooks/abc"]) expect(html).not.toContain(bad);
   });
 
+  it("a lit wire reads the status colour, never the accent (mutation: var(--primary))", () => {
+    const html = draw({ n1: { status: "ok" }, n2: { status: "running" } });
+    expect(html).toContain("var(--info)");
+    expect(html).not.toContain("var(--primary)");
+  });
+
   it("offers no insert button on a wire", () => {
     expect(draw({})).not.toContain("Insert a block here");
   });

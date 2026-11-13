@@ -32,6 +32,7 @@ import {
   applyRunEvent, flowCanRetry, flowGraph, flowReadError, isLive, paintFlow, runState, runStatusOf,
   runWhen, stateCounts, statesFromRun,
 } from "@/lib/studio/flowModel";
+import { followRun, type StreamLike } from "@/lib/studio/flowFollow";
 import { FLOW_STATES, type FlowState, flowStateChip } from "@/lib/statusAccent";
 
 const nodeTypes = { ccNode: WorkflowNode };
@@ -55,10 +56,10 @@ export function FlowChip({ state, count }: { state: FlowState; count?: number })
   );
 }
 
-/** The wire of the editor, as the editor draws it: lit where the run flows, dashed for the no branch. */
+/** The wire of the editor, as the editor draws it, but a status never reads the accent (`--info`, not `--primary`): lit where the run flows, dashed for the no branch. */
 function edgeLook(e: FlowEdgeView): Edge {
   const { branch, hot } = e.data;
-  const stroke = hot ? "var(--primary)" : branch === "true" ? "var(--success)" : "var(--muted-foreground)";
+  const stroke = hot ? "var(--info)" : branch === "true" ? "var(--success)" : "var(--muted-foreground)";
   return {
     ...e,
     animated: hot,
@@ -76,8 +77,8 @@ function edgeLook(e: FlowEdgeView): Edge {
 export function FlowGraph({
   nodes, edges, dark = false, height,
 }: { nodes: FlowNodeView[]; edges: FlowEdgeView[]; dark?: boolean; height?: number }) {
-  // A tall graph gets a tall frame, so a card stays readable. The frame stops at 640 px.
-  const frame = height ?? Math.min(640, Math.max(280, Math.max(0, ...nodes.map((n) => n.position.y)) + 200));
+  // A tall graph gets a tall frame, so a card stays readable. The frame stops at 900 px.
+  const frame = height ?? Math.min(900, Math.max(280, Math.max(0, ...nodes.map((n) => n.position.y)) + 200));
   const rfEdges = useMemo(() => edges.map(edgeLook), [edges]);
   return (
     <div
@@ -99,7 +100,7 @@ export function FlowGraph({
         preventScrolling={false}
         colorMode={dark ? "dark" : "light"}
         fitView
-        fitViewOptions={{ padding: 0.15 }}
+        fitViewOptions={{ padding: 0.06, maxZoom: 1.1 }}
         minZoom={0.3}
         proOptions={{ hideAttribution: true }}
         defaultEdgeOptions={{ type: "ccEdge" }}
@@ -178,52 +179,34 @@ const faultOf = (e: unknown): string => flowReadError(e instanceof ApiError ? e.
 /** Reads the workflow and a run, and follows the run while it is live. */
 export function useFlowRun(source: FlowSource, retry: number): FlowLoad {
   const [load, setLoad] = useState<FlowLoad>(BLANK);
-  const esRef = useRef<EventSource | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stopRef = useRef<(() => void) | null>(null);
 
   const stop = useCallback(() => {
-    esRef.current?.close();
-    esRef.current = null;
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = null;
+    stopRef.current?.();
+    stopRef.current = null;
   }, []);
 
   useEffect(() => {
     let dead = false;
     setLoad(BLANK);
 
-    const poll = (runId: string) => {
-      if (pollRef.current) return;
-      pollRef.current = setInterval(() => {
-        getRun(runId).then((d) => {
-          if (dead) return;
-          setLoad((l) => ({ ...l, run: d, states: statesFromRun(d.node_results) }));
-          if (!isLive(d.status)) stop();
-        }).catch(() => { /* the next tick tries again */ });
-      }, POLL_MS);
-    };
-
     const follow = (runId: string) => {
-      if (typeof EventSource === "undefined") return poll(runId);
-      const es = new EventSource(`/api/workflows/runs/${encodeURIComponent(runId)}/stream`);
-      esRef.current = es;
-      es.onmessage = (m) => {
-        if (dead) return;
-        let ev: unknown;
-        try { ev = JSON.parse(m.data); } catch { return; }
-        setLoad((l) => {
-          const status = runStatusOf(ev);
-          return {
-            ...l,
-            states: applyRunEvent(l.states, ev),
-            run: status && l.run ? { ...l.run, status } : l.run,
-          };
-        });
-        const status = runStatusOf(ev);
-        if (status && !isLive(status)) stop();
-      };
-      // A dropped stream is not an error: read the run again until it ends.
-      es.onerror = () => { es.close(); esRef.current = null; if (!dead) poll(runId); };
+      stopRef.current = followRun(runId, {
+        openStream: typeof EventSource === "undefined" ? null : (url) => new EventSource(url) as unknown as StreamLike,
+        read: getRun,
+        pollMs: POLL_MS,
+        onFrame: (ev) => {
+          if (dead) return;
+          setLoad((l) => {
+            const status = runStatusOf(ev);
+            return { ...l, states: applyRunEvent(l.states, ev), run: status && l.run ? { ...l.run, status } : l.run };
+          });
+        },
+        onRead: (d) => {
+          if (dead) return;
+          setLoad((l) => ({ ...l, run: d as FlowRunFacts, states: statesFromRun(d.node_results) }));
+        },
+      });
     };
 
     (async () => {
