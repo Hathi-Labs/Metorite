@@ -24,6 +24,7 @@ import StudioForm from "@/components/studio/StudioForm";
 import StudioAppFrame from "@/components/studio/StudioAppFrame";
 import StudioPage, { PANEL } from "@/components/studio/StudioPage";
 import Button from "@/components/ui/Button";
+import { useViewMode } from "@/components/ViewModeProvider";
 import SelectButton from "@/components/ui/SelectButton";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, type StudioDataDoor, moreLine, sourceKey } from "@/lib/studio/dataDoor";
@@ -103,14 +104,22 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted }: App
 
   // The rail replaces the page picker. An app with one page draws neither (nothing to pick).
   const railed = hasRail(built.pages);
-  const toolbar = <PackageLifetimeBar pkg={pkg} />;
-  // The owner verbs sit in the app bar, which the frame owns.
-  const actions = controls.owner ? (
+  const { isMobile } = useViewMode();
+  // The owner verbs sit in the app bar on a desktop. A phone bar is too narrow, so they sit in the
+  // toolbar above the page there, as in AF-1, and the title keeps its room.
+  const ownerBar = controls.owner ? (
     <>
       <Button variant="secondary" size="sm" icon="Code" href={buildHref(pkg)}>Open in Studio IDE</Button>
       <DeletePackageButton id={pkg} onDeleted={onDeleted} />
     </>
   ) : <span role="status" className="text-xs text-muted-foreground">{READ_ONLY_SENTENCE}</span>;
+  const toolbar = (
+    <>
+      <PackageLifetimeBar pkg={pkg} />
+      {isMobile ? ownerBar : null}
+    </>
+  );
+  const actions = isMobile ? undefined : ownerBar;
 
   return (
     <StudioDataContext.Provider value={door}>
