@@ -780,3 +780,33 @@ def test_this_suite_is_named_in_both_ci_skip_guards() -> None:
         assert block, f"{name}: the --must-run argument list is missing"
         assert re.search(r"^[ \t]+tests/unit/test_studio_batch_r8\.py(?: \\)?$",
                          block.group(1), re.M), name
+
+
+def test_r8_the_viewer_reaches_every_apply_writes_call(world, monkeypatch) -> None:
+    """C8a: ``run_chunk`` passes the caller's viewer to each ``apply_writes``
+    call, the halves of a split too, and builds none of its own. Mutation: a
+    call without the viewer raises ``TypeError`` (main went red that way), and
+    a viewer built inside the store shows as another object here. The spy
+    takes ``**kw`` too, because E8b passes the ``via`` of the run."""
+    w = world
+    items = _items(w.ledger, 6)
+    seen: list[Any] = []
+    real = store.apply_writes
+    mine = Viewer(ANA)
+
+    async def spy(db: Any, actor: str, *, package_id: str, writes: Any, viewer: Any,
+                  **kw: Any) -> Any:
+        seen.append(viewer)
+        if len(writes) > 2:
+            raise store.BatchError(0, ValueError("too many for one call"))
+        return await real(db, actor, package_id=package_id, writes=writes, viewer=viewer, **kw)
+
+    async def go() -> bs.ChunkResult:
+        batch = await _open(w.a, w.pkg_a, items)
+        monkeypatch.setattr(store, "apply_writes", spy)
+        async with tenant_session(w.a) as db:
+            return await bs.run_chunk(db, ANA, batch.id, _by_key(items), viewer=mine)
+
+    res = _go(w, go)
+    assert res.written and len(seen) > 1, "the chunk split, so more than one call"
+    assert all(v is mine for v in seen)

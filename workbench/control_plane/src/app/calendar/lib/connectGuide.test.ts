@@ -1,4 +1,6 @@
 // WS-CAL CE-10c: the words of the How to connect panel (docs/style_ste.md).
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -52,5 +54,21 @@ describe("the connect guide", () => {
 
   it("names the long guide as plain text", () => {
     expect(FULL_GUIDE_PATH).toBe("docs/calendar_connect.md");
+  });
+
+  // CE-14. The long guide and the panel must not drift. The panel words live in
+  // this module. The guide must carry the admin note word for word and name each
+  // part of both admin paths. Mutation: change one word of ADMIN_NOTE, or drop
+  // "Grant admin consent" from the guide, and this test turns red.
+  it("keeps the long guide in step with the panel", () => {
+    const url = new URL("../../../../../../docs/calendar_connect.md", import.meta.url);
+    const guide = readFileSync(fileURLToPath(url), "utf-8")
+      .replace(/^> ?/gm, "")
+      .replace(/\s+/g, " ");
+    expect(guide).toContain(ADMIN_NOTE);
+    const parts = (path: string) => path.replace(/\.$/, "").split(", ").map((x) => x.replace(/^allow /, ""));
+    for (const part of [...parts(GOOGLE_ADMIN_PATH), ...parts(ENTRA_ADMIN_PATH)]) {
+      expect(guide, part).toContain(part.replace("centre", "center"));
+    }
   });
 });
