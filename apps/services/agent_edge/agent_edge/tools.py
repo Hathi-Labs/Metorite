@@ -93,6 +93,19 @@ from typing import Any
 
 from acb_auth import agent_oauth
 from acb_common import app_manifests, get_logger, get_settings
+
+# AD-10 and §9.4. The wrap rule of an answer lives in acb_common.door_values,
+# once. This module imports it, with a few private names kept, and stays the ONE mapping
+# module (EA3-9). Fence: tests/unit/test_door_values_single_copy.py.
+from acb_common.door_values import KEY_RE as _KEY_RE
+from acb_common.door_values import (
+    SECRET_WORDS,
+    door_value,
+    plain_shape,
+    untrusted,
+)
+from acb_common.door_values import compact_json as _compact
+from acb_common.door_values import is_number as _number
 from acb_common.priority import importance_for
 
 from agent_edge import cursor as cursor_mod
@@ -519,13 +532,6 @@ class GatewayUnauthorized(Exception):
     """The gateway answered 401. The transport answers the MCP 401 (§9.6)."""
 
 
-def untrusted(value: Any) -> dict[str, str] | None:
-    """``{"untrusted_text": value}``, or ``None`` for a null (§9.4)."""
-    if value is None:
-        return None
-    return {"untrusted_text": value if isinstance(value, str) else str(value)}
-
-
 def error_result(text: str, retry_after: int | None = None) -> dict[str, Any]:
     """A refusal. MCP-G10: with *retry_after* it also holds the seconds to
     wait, in ``structuredContent`` and in a second text block, so a client
@@ -806,9 +812,6 @@ def _next_cursor(ctx: Context, tool: str, args: Mapping[str, Any], *,
 
 _ID_RE = re.compile(_UUID_PATTERN)
 
-#: A key-shaped string: a field name, a category, a link type.
-_KEY_RE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
-
 #: A member address: the shape of ``acb_common/tool_refusals.py`` (``_EMAIL``),
 #: with caps. The domain has at most 4 labels (fix round 2). With
 #: :data:`MAX_ADDRESS_CHARS` it bounds what a planted address can carry. A
@@ -834,14 +837,6 @@ _PREFIX_RE = re.compile(r"[A-Za-z0-9_-]{1,16}")
 #: An IANA zone name. The API checks a zone with ``ZoneInfo``, and the column
 #: has no CHECK, so the edge checks the shape too (§9.1).
 _TIMEZONE_RE = re.compile(r"[A-Za-z0-9_+/-]{1,64}")
-
-
-def _number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
-def _compact(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _str_or_none(value: Any) -> str | None:
@@ -9913,55 +9908,10 @@ TEXT_DOOR_LIMIT = f"The input 'args.{DOOR_LIMIT_ARG}' must be a whole number."
 #: bytes of JSON. The gateway cuts a larger one to its field names (AD-9).
 DOOR_SCHEMA_MAX_BYTES = 16 * 1024
 
-#: AD-10, the second guard. A key whose name holds one of these words leaves
-#: no answer, at any depth. The first guard is that no X route is a door op.
-SECRET_WORDS: tuple[str, ...] = ("token", "secret", "password", "credential", "api_key")
-
-#: An ISO-8601 date or time, one of the plain shapes of AD-10.
-_ISO_TIME_RE = re.compile(
-    r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]{1,9})?)?"
-    r"(?:Z|[+-][0-9]{2}:?[0-9]{2})?)?")
-
 #: The names of a 422 ``loc`` that only say where a field is.
 _LOC_PLACES = frozenset({"body", "query", "path", "header", "cookie"})
 
 _DOOR_KEY_TEXTS = _KeyTexts(reused=TEXT_DOOR_KEY_REUSED, unknown=TEXT_DOOR_KEY_UNKNOWN)
-
-
-def plain_shape(value: str) -> bool:
-    """True for a plain shape of AD-10: an id, an ISO-8601 time, or a token
-    of ``[A-Za-z0-9_.:-]`` with at most 64 characters."""
-    return bool(_KEY_RE.fullmatch(value) or _ISO_TIME_RE.fullmatch(value))
-
-
-def door_value(value: Any, plain: frozenset[str], key: str | None = None) -> Any:
-    """One value of a door answer, mapped by AD-10.
-
-    Each string becomes ``{"untrusted_text": ...}``, at any depth. A string
-    under a key that *plain* names stays plain only in a plain shape. A
-    number, a boolean and null stay. A dict keeps each key of a key shape
-    (:data:`_KEY_RE`) whose name holds no word of :data:`SECRET_WORDS`, and
-    drops the others with their values. A list maps each item under the key
-    of the list.
-    """
-    if isinstance(value, dict):
-        out: dict[str, Any] = {}
-        for name, item in value.items():
-            if not isinstance(name, str) or not _KEY_RE.fullmatch(name):
-                continue
-            if any(word in name.lower() for word in SECRET_WORDS):
-                continue
-            out[name] = door_value(item, plain, name)
-        return out
-    if isinstance(value, list):
-        return [door_value(item, plain, key) for item in value]
-    if isinstance(value, str):
-        if key in plain and plain_shape(value):
-            return value
-        return untrusted(value)
-    if value is None or isinstance(value, bool) or _number(value):
-        return value
-    return untrusted(_compact(value))
 
 
 def _json_size(value: Any) -> int:

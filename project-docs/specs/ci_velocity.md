@@ -15,7 +15,10 @@ CIV-21 (D194) is BUILT on 2026-11-07 (task 2210, branch
 at 05:30, 13:30 and 21:30 UTC. The owner installs the new timer.
 
 **D218 (2026-11-12):** §8 adds the rule "merge to main as fast as we build".
-Its slices are CIV-26 to CIV-38 (tasks 3051 to 3066). None is built yet.
+Its slices are CIV-26 to CIV-38 (tasks 3051 to 3066). CIV-32 (task 3057) is BUILT
+on 2026-11-13, branch `civ32-repair-retest-mt-924c7003`. A repair round runs the
+failed files, the reach of the fix, and the reach of main's move (`gate-meta`).
+No other slice is built yet.
 
 **CIV-30 is BUILT on 2026-11-13** (task 3055, branch
 `civ30-green-pointer-mt-b1b2dd41`). HIGH tier. When the batch of a push
@@ -914,8 +917,8 @@ Each rung ends in a demo (D211). Each slice of a rung blocks its demo task.
 | CIV-38 | 3063 | 0 | LOW | The quality numbers and the rollback rule |
 | CIV-30 | 3055 | 1 | HIGH | The green pointer. A release ships green |
 | CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first |
-| CIV-32 | 3057 | 2 | STANDARD | A repair round tests what failed and what the fix reaches |
-| CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection |
+| CIV-32 | 3057 | 2 | STANDARD | **BUILT 2026-11-13.** A repair round tests what failed and what the fix reaches (`ci_unit_guard.py repair`) |
+| CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py` |
 | CIV-34 | 3059 | 2 | STANDARD | Conflict rules in the merge bot, tested on the merged tree |
 | CIV-35 | 3060 | 2 | LOW | A proposal: review depth by file class. It needs an owner decision |
 

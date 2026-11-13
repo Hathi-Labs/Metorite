@@ -1,0 +1,190 @@
+{
+  "studio": 1,
+  "id": "support-desk",
+  "name": "Support desk",
+  "purpose": "Log customer tickets, work the queue and close them.",
+  "team": "support",
+  "objects": [
+    {
+      "name": "ticket",
+      "fields": [
+        {
+          "key": "subject",
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "customer",
+          "type": "text"
+        },
+        {
+          "key": "contact_email",
+          "type": "email"
+        },
+        {
+          "key": "channel",
+          "type": "select",
+          "options": [
+            "mail",
+            "whatsapp",
+            "phone"
+          ]
+        },
+        {
+          "key": "priority",
+          "type": "select",
+          "options": [
+            "low",
+            "normal",
+            "high"
+          ]
+        },
+        {
+          "key": "assignee",
+          "type": "person"
+        },
+        {
+          "key": "due",
+          "type": "datetime"
+        },
+        {
+          "key": "status",
+          "type": "select",
+          "options": [
+            "new",
+            "open",
+            "waiting",
+            "solved"
+          ]
+        },
+        {
+          "key": "notes",
+          "type": "longText"
+        },
+        {
+          "key": "files",
+          "type": "file",
+          "many": true
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "find",
+      "uses": "object:ticket.list"
+    },
+    {
+      "id": "ticket_get",
+      "uses": "object:ticket.get"
+    },
+    {
+      "id": "ticket_create",
+      "uses": "object:ticket.create"
+    },
+    {
+      "id": "ticket_update",
+      "uses": "object:ticket.update"
+    },
+    {
+      "id": "ticket_delete",
+      "uses": "object:ticket.delete"
+    }
+  ],
+  "views": [
+    {
+      "id": "board",
+      "block": "board",
+      "source": {
+        "object": "ticket"
+      },
+      "group_by": "status",
+      "card": {
+        "title": "subject",
+        "meta": [
+          "customer",
+          "assignee"
+        ]
+      }
+    },
+    {
+      "id": "list",
+      "block": "table",
+      "source": {
+        "object": "ticket"
+      },
+      "columns": [
+        "subject",
+        "customer",
+        "priority",
+        "assignee",
+        "due",
+        "status"
+      ]
+    },
+    {
+      "id": "ticket_page",
+      "block": "detail",
+      "object": "ticket",
+      "fields": [
+        "subject",
+        "customer",
+        "contact_email",
+        "channel",
+        "priority",
+        "assignee",
+        "due",
+        "status",
+        "notes",
+        "files"
+      ]
+    },
+    {
+      "id": "new",
+      "block": "form",
+      "object": "ticket",
+      "fields": [
+        "subject",
+        "customer",
+        "contact_email",
+        "channel",
+        "priority",
+        "assignee",
+        "due",
+        "notes"
+      ],
+      "submit": "ticket_create"
+    }
+  ],
+  "skill": {
+    "description": "Use for support tickets: log one, find one, see the queue.",
+    "instructions": "Ask for the subject and the customer first. Show the board card. Change a ticket only on the member's request.",
+    "actions": [
+      "object:ticket.create"
+    ],
+    "cards": [
+      "board",
+      "new"
+    ]
+  },
+  "shell": {
+    "jobs": [
+      {
+        "verb": "Log a ticket",
+        "view": "new"
+      }
+    ],
+    "needs": [
+      {
+        "object": "ticket",
+        "where": {
+          "assignee": "$me",
+          "status": "open"
+        }
+      }
+    ],
+    "search": [
+      "ticket"
+    ]
+  }
+}

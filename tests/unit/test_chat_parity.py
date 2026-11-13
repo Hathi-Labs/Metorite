@@ -391,7 +391,8 @@ def test_every_also_tool_sends_the_route_of_its_action() -> None:
     package page, as the list tool of its ``COVERED`` row does."""
     acts, _ = _read()
     assert cp.ALSO["POST /api/studio/apps/{}/actions/{}"] == (
-        "studio_record_create", "studio_record_update", "studio_record_delete")
+        "studio_record_create", "studio_record_update", "studio_record_delete",
+        "studio_app_read")
     bad = false_also_claims(acts, _tables(), cp.ALSO)
     assert not bad, "these ALSO claims are false:\n  " + "\n  ".join(bad)
 

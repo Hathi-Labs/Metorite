@@ -251,6 +251,10 @@ async def update_workflow(
         _validate_trigger_specs(body.triggers)
     async with _tenant_session() as db:
         row = await load_workflow_or_404(db, workflow_id)
+        if body.triggers is not None and str(row.owner_email or "").strip().lower() != (
+            str(_uid(user) or "").strip().lower()
+        ):
+            await _refuse_foreign_studio_trigger(db, workflow_id, body.triggers)
         sets, params = [], {"id": workflow_id}
         if body.name is not None:
             sets.append("name = :name")
@@ -367,6 +371,47 @@ async def validate_workflow(
     return {"ok": not issues, "issues": [i.as_dict() for i in issues]}
 
 
+def _studio_event_keys(triggers: list[tuple[str, dict[str, Any], bool]]) -> set[str]:
+    """The enabled Studio record-event triggers, one canonical key each."""
+    from gateway.studio.preview import RECORD_EVENT_SOURCE
+
+    return {
+        json.dumps(cfg, sort_keys=True, default=str)
+        for kind, cfg, enabled in triggers
+        if enabled and kind == "event" and str(cfg.get("source") or "").strip() == RECORD_EVENT_SOURCE
+    }
+
+
+async def _refuse_foreign_studio_trigger(
+    db: Any, workflow_id: str, new: list[Any]
+) -> None:
+    """403 when a member who is not the workflow author ADDS or CHANGES a Studio
+    record-event trigger (STU-E3 fix, task 3076).
+
+    A record event starts the workflow when its AUTHOR can read the package.
+    The run shows the payload to every member who reads runs. So another
+    member must not point the author's workflow at a package they cannot read.
+    Removing a trigger, or any other trigger kind, is unchanged.
+    """
+    wanted = _studio_event_keys([(t.kind, t.config, t.enabled) for t in new])
+    if not wanted:
+        return
+    old_rows = (
+        await db.execute(
+            text("SELECT kind, config, enabled FROM workflow_triggers WHERE workflow_id = :id"),
+            {"id": workflow_id},
+        )
+    ).fetchall()
+    old = _studio_event_keys(
+        [(r.kind, parse_jsonb(r.config, {}) or {}, bool(r.enabled)) for r in old_rows]
+    )
+    if wanted - old:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the author of this workflow can add or change a Studio record trigger.",
+        )
+
+
 def _trigger_identity(kind: str, config: dict[str, Any]) -> tuple[str, str]:
     """What makes two saves "the same trigger" for fire-state purposes.
 
@@ -404,6 +449,30 @@ def _validate_trigger_specs(triggers: list[TriggerSpec]) -> None:
             raise HTTPException(
                 status_code=422,
                 detail="Event triggers need a source (e.g. zoho)",
+            )
+        if trig.kind == "event" and trig.config.get("filter") is not None:
+            _validate_event_filter(trig.config)
+
+
+def _validate_event_filter(config: dict[str, Any]) -> None:
+    """422 on a malformed record filter (STU-E3). Only a Studio trigger has
+    one, and only the keys of ``RECORD_FILTER_KEYS``, each a non-empty string."""
+    from gateway.routes.workflows.triggers import RECORD_FILTER_KEYS
+    from gateway.studio.preview import RECORD_EVENT_SOURCE
+
+    flt = config.get("filter")
+    if str(config.get("source") or "").strip() != RECORD_EVENT_SOURCE:
+        raise HTTPException(status_code=422, detail="Only a studio event trigger has a filter")
+    if not isinstance(flt, dict) or not flt:
+        raise HTTPException(status_code=422, detail="The trigger filter must be an object")
+    for key, val in flt.items():
+        if key not in RECORD_FILTER_KEYS:
+            raise HTTPException(status_code=422, detail=f"Unknown trigger filter key '{key}'")
+        if not isinstance(val, str) or not val.strip() or val != val.strip():
+            raise HTTPException(status_code=422, detail=f"Trigger filter '{key}' must be a text")
+        if key == "op" and val not in ("create", "update", "delete"):
+            raise HTTPException(
+                status_code=422, detail="Trigger filter 'op' is create, update or delete"
             )
 
 

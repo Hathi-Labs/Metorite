@@ -42,12 +42,67 @@ from gateway.routes.workflows.service import (
 from sqlalchemy import text
 
 
-def event_trigger_matches(config: dict[str, Any], source: str, event_type: str) -> bool:
-    """Pure matcher: source must equal; empty event_type matches all."""
+#: The payload keys that a Studio record trigger may filter on (STU-E3). The
+#: payload of ``studio.record.*`` holds ids and names, never a field value.
+RECORD_FILTER_KEYS = ("package_id", "object", "op")
+
+
+def event_trigger_matches(
+    config: dict[str, Any],
+    source: str,
+    event_type: str,
+    payload: dict[str, Any] | None = None,
+) -> bool:
+    """Pure matcher: source must equal; empty event_type matches all.
+
+    An optional ``filter`` (STU-E3) narrows a trigger to one package, one
+    object or one op. It fails closed: a key that the payload does not hold,
+    or holds with another value, is no match.
+    """
     if str(config.get("source") or "").strip() != source:
         return False
     wanted = str(config.get("event_type") or "").strip()
-    return not wanted or wanted == event_type
+    if wanted and wanted != event_type:
+        return False
+    flt = config.get("filter")
+    if not flt:
+        return True
+    if not isinstance(flt, dict):
+        return False
+    data = payload or {}
+    return all(
+        k in RECORD_FILTER_KEYS and str(data.get(k) or "") == str(v) and str(v) != ""
+        for k, v in flt.items()
+    )
+
+
+async def _author_may_hear(
+    db: Any, row: Any, source: str, payload: dict[str, Any], org: str,
+) -> bool:
+    """True when the event may start the workflow of *row* (STU-E3 fix).
+
+    Only a Studio record event is checked. Its payload names a package, and
+    the run shows the actor, the object and the record id to every member who
+    reads runs. So the workflow starts only when its AUTHOR
+    (``workflows.owner_email``, the person the run is attributed to) can READ
+    that package, by the one Studio read rule (``studio.access``). It runs in
+    the org-bound session of the door, before the version loads. It fails
+    closed: no package id, an unknown package or a read error is a refusal. The
+    log line names the workflow and holds no payload content. Other sources
+    are unchanged.
+    """
+    from gateway.studio.access import member_reads_package
+    from gateway.studio.preview import RECORD_EVENT_SOURCE
+
+    if source != RECORD_EVENT_SOURCE:
+        return True
+    if await member_reads_package(
+        db, member=str(row.owner_email or ""), package_id=payload.get("package_id"),
+        organization_id=org,
+    ):
+        return True
+    _log.warning("workflows.event_run_refused_package_access", workflow_id=str(row.workflow_id))
+    return False
 
 
 async def dispatch_event(
@@ -71,12 +126,14 @@ async def dispatch_event(
         return started
     try:
         matches: list[tuple[Any, dict[str, Any]]] = []
+        seen: set[str] = set()
+        refused: set[str] = set()
         async with _tenant_session(org) as db:
             rows = (
                 await db.execute(
                     text(
                         """SELECT t.config, w.id AS workflow_id, w.name,
-                                  w.latest_version, w.variables
+                                  w.owner_email, w.latest_version, w.variables
                              FROM workflow_triggers t
                              JOIN workflows w ON w.id = t.workflow_id
                             WHERE t.kind = 'event' AND t.enabled
@@ -87,7 +144,16 @@ async def dispatch_event(
             ).fetchall()
             for row in rows:
                 config = parse_jsonb(row.config, {}) or {}
-                if not event_trigger_matches(config, source, event_type):
+                if not event_trigger_matches(config, source, event_type, payload):
+                    continue
+                if str(row.workflow_id) in seen:
+                    # One event starts one run of a workflow, even when two
+                    # of its triggers match (STU-E3).
+                    continue
+                if str(row.workflow_id) in refused:
+                    continue
+                if not await _author_may_hear(db, row, source, payload, org):
+                    refused.add(str(row.workflow_id))
                     continue
                 serialized = await load_version_serialized(
                     db, str(row.workflow_id), int(row.latest_version)
@@ -102,6 +168,7 @@ async def dispatch_event(
                         workflow_id=str(row.workflow_id),
                     )
                     continue
+                seen.add(str(row.workflow_id))
                 matches.append((row, serialized))
         # The session is closed before `start_run`: the run opens its own.
         for row, serialized in matches:

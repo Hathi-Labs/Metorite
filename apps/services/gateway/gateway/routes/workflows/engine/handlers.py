@@ -336,6 +336,15 @@ async def _execute_studio_write(
     return await services.studio_write(str(block.get("id") or ""), dict(config))
 
 
+async def _execute_human_step(
+    block: dict[str, Any], state: dict[str, Any], services: NodeServices,
+) -> dict[str, Any]:
+    """The human step node (STU-E4). The runner pauses the node until its task
+    is done, and it reaches this handler only when the scan cleared it. So the
+    handler makes nothing and calls no seam. The runner adds the ``task_id``."""
+    return {"completed": True}
+
+
 #: The handlers of the nodes that act on an internal app. One table keeps
 #: ``execute_node`` under the complexity ceiling as the set grows.
 _INTERNAL_HANDLERS: dict[
@@ -344,4 +353,5 @@ _INTERNAL_HANDLERS: dict[
     "pm_task": _execute_pm_task_block,
     "pm_lifecycle": _execute_pm_lifecycle,
     "studio_write": _execute_studio_write,
+    "human_step": _execute_human_step,
 }

@@ -1,6 +1,7 @@
-"""The action door of AI Studio, the hermetic half (STU-B2a, B2b-1, B2c-1 and B2c-2a).
+"""The action door of AI Studio, the hermetic half (STU-B2a, B2b-1, B2b-2b, B2c-1, B2c-2a and D4b).
 
-Spec: ``project-docs/specs/ai_studio.md`` §3.2, and §14 B2a, B2b-1, B2c-1 and B2c-2a. Code:
+Spec: ``project-docs/specs/ai_studio.md`` §3.2, and §14 B2a, B2b-1, B2b-2, B2c-1 and B2c-2a.
+The door op of B2b-2b is in ``TestTheDoorOp`` at the end of this file. Code:
 ``gateway/routes/studio/invoke.py``. The R8 half, on a real Postgres, is
 ``test_studio_action_door_r8.py``. It proves the walls of the org, of the
 member and of the package, and the audit row.
@@ -34,7 +35,11 @@ This file proves:
   ``object_missing``;
 - one audit row for each call that reaches a package, with no record data
   and each text capped;
-- the object verb table holds the five verbs of the A2 grammar.
+- the object verb table holds the six verbs of the A2 grammar;
+- the aggregate (D4b) takes only the keys of the C2b schema, refuses a bad key,
+  a bad op and too many measures before any read of the object, passes its
+  input to the one reader with the package of the path, and answers the one
+  row of ``parseAggregate``.
 
 **The mutations (R7).** The R8 suite holds the full list and each result.
 These turn a test of this file red:
@@ -53,6 +58,7 @@ These turn a test of this file red:
 * L1 to L4, and L6 to L12 and L14, of B2b-1 turn a test of this file red. L5
   and L13 need the real store, so only the R8 suite sees them.
 * F1 to F11 of the fix round each turn a test of this file red.
+* A1 to A6 of D4b are in the docstring of ``TestTheAggregate``.
 """
 
 from __future__ import annotations
@@ -65,6 +71,7 @@ import re
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
@@ -72,13 +79,15 @@ import pytest
 from acb_auth import UserContext, UserRole, build_access, get_current_user
 from acb_common import get_settings, studio_query
 from acb_common.app_manifests.base import CLASSES
+from acb_common.studio_fields import FieldSpec
 from acb_common.studio_manifest import (
     OBJECT_OP_CLASSES,
     OBJECT_OPS,
+    RECORD_OPS,
     parse_uses,
     validate_manifest,
 )
-from acb_common.studio_query import QueryError, list_input_schema
+from acb_common.studio_query import QueryError, aggregate_input_schema, list_input_schema
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from gateway.routes.studio import actions, invoke
@@ -105,6 +114,7 @@ MANIFEST: dict[str, Any] = {
     "actions": [
         {"id": "peek", "uses": "object:visit.get"},
         {"id": "find", "uses": "object:visit.list"},
+        {"id": "tally", "uses": "object:visit.aggregate"},
         {"id": "add", "uses": "object:visit.create"},
         {"id": "change", "uses": "object:visit.update"},
         {"id": "remove", "uses": "object:visit.delete"},
@@ -224,7 +234,7 @@ def world(monkeypatch):
     w = SimpleNamespace(org=None, packages={}, objects=[], records=[], statements=[],
                         log=[], session_args=[], audits=[], catalog=list(CATALOG),
                         catalog_fails=False, queries=[], query_raises=None,
-                        store_says_none=False)
+                        store_says_none=False, aggregates=[])
 
     @asynccontextmanager
     async def _session(*args: Any):
@@ -264,8 +274,35 @@ def world(monkeypatch):
         return objects_store.RecordPage(tuple(rows[start:start + size]), len(rows), None,
                                         start, size, "")
 
+    async def _aggregate(db: Any, *, package_id: str, object_id: str, filter: Any = None,
+                         group_by: Any = None, measures: Any = None) -> Any:
+        """The store's aggregate on the fake session (D4b), under the real
+        shape check. It filters on the bound org, as RLS does, and answers a
+        count and a sum of money of the records of the object."""
+        w.aggregates.append({"package_id": package_id, "object_id": object_id,
+                             "filter": filter, "group_by": group_by, "measures": measures})
+        studio_query.check_aggregate_shape(filter, group_by, measures)
+        if w.query_raises is not None:
+            raise w.query_raises
+        held = [o for o in w.objects
+                if (o["id"], o["package"], o["org"]) == (object_id, package_id, db.org)]
+        if w.store_says_none or not held:
+            return None
+        n = sum(1 for r in w.records if r["object"] == object_id)
+        site = FieldSpec(key="site", type="text")
+        fee = FieldSpec(key="fee", type="money")
+        ms = (studio_query.Measure("count"), studio_query.Measure("sum", fee),
+              studio_query.Measure("average", site))
+        return objects_store.AggregateResult(
+            ms, (None, "INR", None),
+            (objects_store.AggregateGroup("Plant 4", n, (n, 12550, Decimal("2.5"))),
+             objects_store.AggregateGroup(None, 0, (0, 0, None))),
+            objects_store.AggregateGroup(None, 3, (3, 7, Decimal("1E+2"))), 4,
+            objects_store.AggregateGroup(None, n + 3, (n + 3, 12557, Decimal("0.1"))))
+
     monkeypatch.setattr(invoke, "_tenant_session", _session)
     monkeypatch.setattr(objects_store, "query_records", _query)
+    monkeypatch.setattr(objects_store, "aggregate_records", _aggregate)
     monkeypatch.setattr(actions, "catalog_rows", _catalog_rows)
     monkeypatch.setattr(invoke, "record_app_audit_bound", _audit)
     _open(monkeypatch, "*")
@@ -814,6 +851,224 @@ class TestTheList:
         assert world.log == ["open", "close", "open", "close", "audit"]
 
 
+# ── The aggregate (STU-D4b) ────────────────────────────────────────────────
+
+
+#: One input with each key of the C2b schema.
+AGG_BODY: dict[str, Any] = {
+    "filter": [{"field": "site", "op": "contains", "value": "Plant"}],
+    "group_by": {"field": "site"},
+    "measures": [{"op": "count"}, {"op": "sum", "field": "fee"}],
+}
+
+#: The three keys, each None: what the store gets for an empty input.
+NO_AGG_INPUT: dict[str, Any] = {"filter": None, "group_by": None, "measures": None}
+
+_AGG_OUTCOME = {"action": "tally", "uses": "object:visit.aggregate", "class": "A"}
+
+
+def _agg_read_nothing(world: Any) -> None:
+    """The door read the package, and no object, no record and no aggregate."""
+    assert {sql for sql, _ in world.statements} == {packages_store._GET_SQL}
+    assert world.aggregates == [] and world.queries == []
+
+
+class TestTheAggregate:
+    """``object:<name>.aggregate`` (D4b), one more class A read of the door.
+
+    **The mutations (R7).** Each was run on 2026-11-11, and each turned the
+    named tests red. The R8 suite lists A6 and F1.
+
+    * A1. ``_aggregate_input``: accept any key. Nine cases of
+      ``test_a_key_outside_the_schema_is_422_and_reads_nothing`` go red.
+    * A2. ``_aggregate_input``: drop the shape check, so the store refuses
+      after the object read. The cases of
+      ``test_a_bad_op_or_too_many_measures_is_422_and_reads_nothing`` go red.
+    * A3. ``OPEN_EXECUTORS``: drop the aggregate.
+      ``test_an_aggregate_is_class_a_and_it_runs`` goes red.
+    * A5. ``_wire``: send a ``Decimal`` as a float.
+      ``test_an_aggregate_answers_the_one_row_of_parse_aggregate`` goes red.
+    """
+
+    def test_an_aggregate_is_class_a_and_it_runs(self, world):
+        pid, _, _ = _setup(world)
+        r = _call(_client(world), pid, "tally", {})
+        assert r.status_code == 200, r.text
+        assert world.audits[0]["detail"] == {**_AGG_OUTCOME, "outcome": "ran"}
+
+    def test_an_aggregate_answers_the_one_row_of_parse_aggregate(self, world):
+        """The shape of ``aggregateModel.parseAggregate``. A measure names its
+        field by the key, a money sum is an int of minor units with its
+        currency, and a Decimal is exact text with no exponent."""
+        pid, _, _ = _setup(world)
+        got = _call(_client(world), pid, "tally", AGG_BODY).json()
+        assert set(got) == {"measures", "currencies", "groups", "other", "folded", "total"}
+        assert got["measures"] == [{"op": "count", "field": None},
+                                   {"op": "sum", "field": "fee"},
+                                   {"op": "average", "field": "site"}]
+        assert got["currencies"] == [None, "INR", None]
+        assert got["groups"] == [{"key": "Plant 4", "count": 1, "values": [1, 12550, "2.5"]},
+                                 {"key": None, "count": 0, "values": [0, 0, None]}]
+        assert got["other"] == {"key": None, "count": 3, "values": [3, 7, "100"]}
+        assert got["folded"] == 4
+        assert got["total"] == {"key": None, "count": 4, "values": [4, 12557, "0.1"]}
+
+    @pytest.mark.parametrize("content", ["", "{}"], ids=["empty", "object"])
+    def test_an_empty_body_means_one_count(self, world, content):
+        pid, oid, _ = _setup(world)
+        r = _raw(_client(world), pid, "tally", content)
+        assert r.status_code == 200, r.text
+        assert world.aggregates == [{"package_id": pid, "object_id": oid, **NO_AGG_INPUT}]
+
+    def test_an_aggregate_passes_its_input_to_the_store_with_the_package_of_the_path(
+            self, world):
+        pid, oid, _ = _setup(world)
+        other = _package(world)
+        body = {**AGG_BODY}
+        r = _client(world).post(f"/studio/apps/{pid}/actions/tally", json=body,
+                                params={"package_id": other, "organization_id": OTHER})
+        assert r.status_code == 200, r.text
+        assert world.aggregates == [{"package_id": pid, "object_id": oid, **AGG_BODY}]
+        by_name = [p for sql, p in world.statements if sql == objects_store._OBJECT_BY_NAME_SQL]
+        assert by_name == [{"pid": pid, "name": "visit"}]
+        assert world.queries == []
+
+    @pytest.mark.parametrize("key", ["package_id", "organization_id", "owner_email", "sort",
+                                     "limit", "offset", "id", "Measures", ""])
+    def test_a_key_outside_the_schema_is_422_and_reads_nothing(self, world, key):
+        """The list keys ``sort``, ``limit`` and ``offset`` are not keys of an
+        aggregate, so they are refused too."""
+        pid, _, _ = _setup(world)
+        r = _call(_client(world), pid, "tally", {"measures": [{"op": "count"}], key: "x"})
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"] == {"code": "query_value_invalid",
+                                      "message": invoke.BAD_AGGREGATE_INPUT, "field": None}
+        _agg_read_nothing(world)
+        assert world.audits[0]["detail"] == {
+            **_AGG_OUTCOME, "outcome": "refused", "reason": "query_value_invalid"}
+
+    @pytest.mark.parametrize("body,code", [
+        ({"measures": [{"op": "median", "field": "site"}]}, "query_op_not_allowed"),
+        ({"measures": [{"op": "count"}] * 5}, "query_too_big"),
+        ({"measures": []}, "query_value_invalid"),
+        ({"measures": "count"}, "query_value_invalid"),
+        ({"measures": [{"op": "count", "field": "site"}]}, "query_value_invalid"),
+        ({"measures": [{"op": "sum"}]}, "query_value_invalid"),
+        ({"measures": [{"op": "sum", "field": "fee", "x": 1}]}, "query_value_invalid"),
+        ({"group_by": "site"}, "query_value_invalid"),
+        ({"group_by": {"field": "site", "bucket": "year"}}, "query_value_invalid"),
+        ({"group_by": {"field": "site", "by": "x"}}, "query_value_invalid"),
+        ({"filter": [{"field": "site", "op": "matches"}]}, "query_op_not_allowed"),
+        ({"filter": [{"field": "site", "op": "eq", "value": 1}] * 9}, "query_too_big"),
+        ({"filter": "text"}, "query_value_invalid"),
+    ], ids=["op", "five", "none", "text", "count_field", "sum_no_field", "measure_key",
+            "group_text", "bucket", "group_key", "filter_op", "filters", "filter_text"])
+    def test_a_bad_op_or_too_many_measures_is_422_and_reads_nothing(self, world, body, code):
+        """The shape check of C2b runs in the door, before the object read. So
+        the door reads no object, no record and no aggregate for these."""
+        pid, _, _ = _setup(world)
+        r = _call(_client(world), pid, "tally", body)
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["code"] == code
+        _agg_read_nothing(world)
+        assert world.audits[0]["detail"] == {**_AGG_OUTCOME, "outcome": "refused", "reason": code}
+
+    @pytest.mark.parametrize("content", ["[]", '"text"', "7", "null", "{not json", "   ",
+                                         "[" * 20000 + "]" * 20000, b'{"measures": \xff}',
+                                         '{"measures": [{"op": "count"}], "x": Infinity}'],
+                             ids=["list", "text", "number", "null", "not_json", "blank",
+                                  "deep", "bytes", "infinity"])
+    def test_a_body_that_is_not_a_json_object_is_422_never_500(self, world, content):
+        pid, _, _ = _setup(world)
+        r = _raw(_client(world), pid, "tally", content)
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["message"] == invoke.BAD_AGGREGATE_INPUT
+        _agg_read_nothing(world)
+
+    @pytest.mark.parametrize("code", [c for c in studio_query.QUERY_ERROR_CODES
+                                      if c != studio_query.TIMEOUT])
+    def test_each_refusal_of_the_store_is_422_with_its_code(self, world, code):
+        pid, _, _ = _setup(world)
+        world.query_raises = QueryError(code, "One sentence.", "fee")
+        r = _call(_client(world), pid, "tally", {})
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"] == {"code": code, "message": "One sentence.", "field": "fee"}
+        assert world.audits[0]["detail"] == {**_AGG_OUTCOME, "outcome": "refused", "reason": code}
+
+    def test_a_timeout_is_503_with_retry_after(self, world):
+        pid, _, _ = _setup(world)
+        world.query_raises = QueryError(studio_query.TIMEOUT, "Try again.")
+        r = _call(_client(world), pid, "tally", {})
+        assert (r.status_code, r.headers["retry-after"]) == (503, "2")
+        assert world.audits[0]["detail"] == {
+            **_AGG_OUTCOME, "outcome": "failed", "reason": "query_timeout"}
+
+    def test_an_object_that_the_package_lacks_is_404_object_missing(self, world):
+        pid = _package(world)
+        r = _call(_client(world), pid, "tally", {})
+        assert r.status_code == 404
+        assert r.json()["detail"] == {"code": "object_missing", "message": invoke.NO_OBJECT}
+        assert world.aggregates == []
+        assert world.audits[0]["detail"] == {
+            **_AGG_OUTCOME, "outcome": "not_found", "reason": "object_missing"}
+
+    def test_none_from_the_store_is_404_object_missing(self, world):
+        pid, _, _ = _setup(world)
+        world.store_says_none = True
+        r = _call(_client(world), pid, "tally", {})
+        assert (r.status_code, _code(r)) == (404, "object_missing")
+
+    def test_a_package_of_another_member_or_org_is_404_for_an_aggregate(self, world):
+        for org, email in ((ORG, BEN), (OTHER, ANA)):
+            pid = _package(world, org=org, owner=email)
+            _object(world, pid, org=org)
+            r = _call(_client(world), pid, "tally", {})
+            assert (r.status_code, r.json()) == (404, NOT_FOUND)
+        assert world.aggregates == [] and world.audits == []
+
+    def test_an_org_outside_the_switch_is_404_and_reads_no_byte(self, monkeypatch, world):
+        pid, _, _ = _setup(world)
+        _open(monkeypatch, OTHER)
+        body = _Body(world, fails=True)
+        assert _direct(world, pid, "tally", body) == (404, "Not found")
+        assert body.reads == 0 and world.log == []
+
+    def test_no_session_is_open_during_the_read_and_the_check_runs_twice(self, world):
+        pid, _, _ = _setup(world)
+        status, _ = _direct(world, pid, "tally", _Body(world))
+        assert status == 200
+        assert world.log == ["open", "close", "body", "open", "close", "audit"]
+        reads = [sql for sql, _ in world.statements if sql == packages_store._GET_SQL]
+        assert len(reads) == 2
+
+    def test_a_body_past_the_cap_is_413_and_reads_nothing(self, world):
+        pid, _, _ = _setup(world)
+        body = _Body(world, b"x" * 65_536, repeat=4096)
+        status, detail = _direct(world, pid, "tally", body)
+        assert (status, detail["code"]) == (413, "body_too_large")
+        _agg_read_nothing(world)
+
+    def test_an_ask_marker_changes_nothing_for_a_read(self, world, monkeypatch):
+        """A read never asks for a card. With the org flag on, ``ask=1`` still
+        runs the aggregate, and no request opens."""
+        monkeypatch.setattr(invoke.app_requests, "requests_allowed", lambda org: True)
+        pid, _, _ = _setup(world)
+        r = _client(world).post(f"/studio/apps/{pid}/actions/tally", json={},
+                                params={"ask": "1"})
+        assert r.status_code == 200, r.text
+        assert world.audits[0]["detail"] == {**_AGG_OUTCOME, "outcome": "ran"}
+
+    def test_the_row_of_an_aggregate_holds_no_input_and_no_data(self, world):
+        pid, _, _ = _setup(world)
+        _call(_client(world), pid, "tally", {"filter": [
+            {"field": "site", "op": "eq", "value": "leaky_value"}], "leaky_key": 1})
+        _call(_client(world), pid, "tally", AGG_BODY)
+        text = json.dumps(world.audits)
+        assert "leaky" not in text and "Plant" not in text
+        for value in RECORD_DATA.values():
+            assert value not in text
+
+
 # ── The body read ──────────────────────────────────────────────────────────
 
 
@@ -997,11 +1252,13 @@ class TestTheAudit:
 
 
 class TestTheTables:
-    def test_the_object_verb_table_holds_the_five_verbs_of_the_grammar(self):
+    def test_the_object_verb_table_holds_the_six_verbs_of_the_grammar(self):
         """The class table and the A2 ``uses`` grammar list the same verbs, in
-        the same order. A verb in one and not the other fails here."""
+        the same order. A verb in one and not the other fails here. The
+        aggregate (D4b) is the sixth, after the five record verbs."""
         assert tuple(OBJECT_OP_CLASSES) == OBJECT_OPS
-        assert len(OBJECT_OPS) == 5
+        assert (*RECORD_OPS, "aggregate") == OBJECT_OPS
+        assert len(RECORD_OPS) == 5
         for verb in OBJECT_OPS:
             ref = parse_uses(f"object:visit.{verb}")
             assert ref is not None and (ref.source, ref.object, ref.op) == (
@@ -1012,7 +1269,7 @@ class TestTheTables:
     def test_each_object_class_is_a_d136_class_and_none_is_x(self):
         assert set(OBJECT_OP_CLASSES.values()) <= set(CLASSES) - {"X"}
         assert OBJECT_OP_CLASSES == {"list": "A", "get": "A", "create": "B",
-                                     "update": "B", "delete": "C"}
+                                     "update": "B", "delete": "C", "aggregate": "A"}
 
     def test_parse_uses_names_the_source_of_each_form(self):
         assert parse_uses(f"workflow:{WORKFLOW}").source == "workflow"
@@ -1021,16 +1278,30 @@ class TestTheTables:
         for bad in ("", "object:visit.get\n", "workflow:not-a-uuid", None, 7):
             assert parse_uses(bad) is None
 
-    def test_the_door_opens_the_object_get_and_the_object_list_only(self):
-        assert set(invoke.OPEN_EXECUTORS) == {("object", "get"), ("object", "list")}
+    def test_the_door_opens_the_object_get_list_aggregate_and_the_door_op(self):
+        """B2b-2b adds the door op: each class A ``<app>.<op>`` action, while
+        ``STUDIO_DOOR_OPS_ORGS`` holds the org."""
+        assert invoke.DOOR_OP == ("manifest", None)
+        assert set(invoke.OPEN_EXECUTORS) == {("object", "get"), ("object", "list"),
+                                              ("object", "aggregate"), invoke.DOOR_OP}
+        # Each open object read has one executor, and no other verb has one.
+        assert set(invoke._READS) == {str(op) for src, op in invoke.OPEN_EXECUTORS
+                                      if (src, op) != invoke.DOOR_OP}
 
     def test_the_accepted_keys_are_the_properties_of_the_input_schema(self):
         assert set(list_input_schema()["properties"]) == invoke.LIST_INPUT_KEYS
         assert {"filter", "sort", "limit", "offset"} == invoke.LIST_INPUT_KEYS
+        assert set(aggregate_input_schema()["properties"]) == invoke.AGGREGATE_INPUT_KEYS
+        assert {"filter", "group_by", "measures"} == invoke.AGGREGATE_INPUT_KEYS
 
     def test_the_refusal_text_names_each_open_verb(self):
-        for _, verb in invoke.OPEN_EXECUTORS:
-            assert str(verb) in invoke.REFUSALS["source_not_open"]
+        text = invoke.REFUSALS["source_not_open"]
+        for source, verb in invoke.OPEN_EXECUTORS:
+            if (source, verb) == invoke.DOOR_OP:
+                # B2b-2b: the door op has no verb of its own.
+                assert "a read of another app" in text
+            else:
+                assert str(verb) in text
 
     def test_the_refusal_text_names_each_direct_verb(self):
         """B2c-1 fix round 1: the door runs the direct writes too, so a text
@@ -1054,16 +1325,19 @@ class TestTheTables:
         assert src.count("_declared(package") == 1
 
     def test_each_refusal_is_one_short_sentence(self):
-        # J2a adds read_only, the write of a viewer.
+        # J2a adds read_only, the write of a viewer. B2b-2b adds outside_agent.
         assert set(invoke.REFUSALS) == {"not_declared", "class_x", "not_in_catalog",
                                         "approval_required", "source_not_open",
-                                        "no_person_present", "read_only"}
+                                        "no_person_present", "read_only", "outside_agent"}
         messages = {**invoke.REFUSALS, "catalog_unavailable": invoke.CATALOG_DOWN,
                     "object_missing": invoke.NO_OBJECT, "bad_input": invoke.BAD_RECORD_ID,
                     "bad_list": invoke.BAD_LIST_INPUT, "body_too_large": invoke.BODY_OVER_CAP,
+                    "bad_aggregate": invoke.BAD_AGGREGATE_INPUT,
                     "request_refused": invoke.ASK_AGAIN,
                     "approval_ask": invoke.APPROVAL_ASK,
-                    "read_busy": invoke.READ_BUSY_MESSAGE}
+                    "read_busy": invoke.READ_BUSY_MESSAGE,
+                    "bad_args": invoke.BAD_ARGS_TEXT, "app_unavailable": invoke.APP_DOWN,
+                    "repeated_headers": invoke.REPEATED_HEADERS}
         # B2c-2a: each refused spend has its own code and one sentence.
         messages.update({code: text for _, code, text in invoke.SPEND_REFUSALS.values()})
         for code, message in messages.items():
@@ -1884,3 +2158,476 @@ class TestTheDelegatedWrites:
         else:
             assert detail["message"] == invoke.REFUSALS["approval_required"]
             assert "ask=1" not in detail["message"]
+
+
+# ── The door op (B2b-2b) ───────────────────────────────────────────────────
+#
+# The executor of ``<app>.<op>`` (``routes/studio/door_op.py``). The test app
+# holds the Studio router and a fake Knowledge router at the paths of the
+# real Knowledge manifest. The door calls ``request.app``, so the call reaches
+# the fake, which records what it got. The R8 half is
+# ``test_studio_door_op_r8.py``: the real gateway app and the real Knowledge.
+#
+# The mutations (R7). Each ran on 2026-11-11, and each turned a named test red:
+#
+# * DO1. ``door_op.run``: await ``_send`` in the task of the door, not in a new
+#   task. ``test_no_context_var_of_the_app_returns_to_the_door``.
+# * DO2. ``_run_executor``: run the call inside the session of the second
+#   check. ``test_no_session_is_open_during_the_call``.
+# * DO3. ``door_op.forwarded``: forward a header that comes twice.
+#   ``test_a_header_sent_twice_is_not_forwarded``.
+# * DO3b. ``door_op.forwarded``: forward every inbound header.
+#   ``test_the_call_carries_exactly_the_four_identity_headers`` and two more.
+# * DO4. ``refusal_for``: drop the switch of the door op.
+#   ``test_with_the_switch_off_a_door_op_is_source_not_open_and_calls_nothing``.
+# * DO5. ``_door_op_of``: drop the ``/studio`` check.
+#   ``test_a_route_under_studio_is_refused_and_never_called``.
+# * DO6. ``_door_op_of``: drop the agent check.
+#   ``test_an_outside_agent_is_refused_and_nothing_is_called``.
+# * DO7. ``door_op._answer_of``: answer a 4xx as 503.
+#   ``test_a_4xx_of_the_app_passes_unchanged``.
+
+from contextvars import ContextVar  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from acb_common import app_manifests  # noqa: E402
+from acb_common.app_manifests import KNOWLEDGE, App, Route, door_ops  # noqa: E402
+from acb_common.db import bind_tenant, current_tenant  # noqa: E402
+from fastapi import APIRouter  # noqa: E402
+from fastapi import Request as _Request  # noqa: E402
+from fastapi.responses import JSONResponse as _JSONResponse  # noqa: E402
+from gateway.package_host import viewer as _viewer  # noqa: E402
+from gateway.routes.projects.core import ACTOR_VIA  # noqa: E402
+from gateway.routes.studio import door_op, flags  # noqa: E402
+from starlette.datastructures import Headers  # noqa: E402
+
+PAGE = str(uuid.uuid4())
+
+DOOR_MANIFEST: dict[str, Any] = {**MANIFEST, "actions": [
+    *MANIFEST["actions"],
+    {"id": "page", "uses": "knowledge.get_page"},
+    {"id": "maint", "uses": "knowledge.list_maintenance"},
+    {"id": "recent", "uses": "knowledge.list_recent"},
+    {"id": "search", "uses": "knowledge.search"},
+    {"id": "loop", "uses": "probe.loop"},
+]}
+
+#: The rows of the real door ops of Knowledge, as ``actions._manifest_rows``
+#: gives them. ``knowledge.search`` is ``off_door``, so no row names it.
+DOOR_CATALOG: list[dict[str, Any]] = [
+    {"id": f"knowledge.{name}", "class": op.route.cls, "source": "manifest"}
+    for name, op in door_ops(KNOWLEDGE).items()]
+
+#: A test app whose one door op is a route of Studio itself.
+PROBE = App(id="probe", name="Probe", reach="A test app.", pane="/probe", feature="probe",
+            router="gateway.routes.studio.actions",
+            routes=(Route("GET", "/studio/actions", "", "A", planned="a test",
+                          op="loop", title="Read the Studio catalog."),))
+
+#: The headers that httpx adds to each request by itself. None names a person.
+HTTPX_DEFAULTS = frozenset({"host", "accept", "accept-encoding", "connection", "user-agent"})
+
+#: The inbound headers of the door call. Only the first four may pass.
+INBOUND: dict[str, str] = {
+    "Authorization": "Bearer the-inbound-bearer", "X-User-Email": ANA,
+    "X-User-Role": "employee", "X-Actor-Via": "chat:mira",
+    "Cookie": "session=abc", "X-Other": "kept out", direct_proof.HEADER: "v1.1.abc",
+}
+
+_PROBE: ContextVar[str | None] = ContextVar("studio_door_op_probe", default=None)
+
+
+def _inner(w: Any) -> APIRouter:
+    """The fake Knowledge router. Each route records the call, sets three
+    ContextVars, and answers ``w.reply``."""
+    r = APIRouter()
+
+    async def _serve(request: _Request) -> _JSONResponse:
+        w.calls.append({
+            "method": request.method, "path": request.url.path,
+            "query": dict(request.query_params),
+            "headers": {k.lower(): v for k, v in request.headers.items()},
+            "body": await request.body(),
+            "open_sessions": w.log.count("open") - w.log.count("close")})
+        w.log.append("call")
+        ACTOR_VIA.set("chat:inner")
+        bind_tenant(OTHER)
+        _PROBE.set("inner")
+        status, content, headers = w.reply
+        return _JSONResponse(status_code=status, content=content, headers=headers)
+
+    r.add_api_route("/knowledge/pages/{page_id}", _serve, methods=["GET"])
+    r.add_api_route("/knowledge/maintenance", _serve, methods=["GET"])
+    # A paged op (``Page`` of ``list_recent``): its limit key is ``limit``.
+    r.add_api_route("/knowledge/recent", _serve, methods=["GET"])
+    return r
+
+
+@pytest.fixture
+def opw(world, monkeypatch):
+    """The door op world: the switch on, the real Knowledge rows in the
+    catalog, a fake app and an audit fake that reads the ContextVars."""
+    monkeypatch.setattr(get_settings(), "studio_door_ops_orgs", "*")
+    world.catalog = [*CATALOG, *DOOR_CATALOG,
+                     {"id": "probe.loop", "class": "A", "source": "manifest"}]
+    world.calls, world.seen = [], []
+    world.reply = (200, {"id": PAGE, "title": "Team plan", "body_md": "# Plan"}, None)
+
+    async def _audit(**kw: Any) -> None:
+        world.log.append("audit")
+        world.seen.append((ACTOR_VIA.get(""), current_tenant(), _PROBE.get()))
+        world.audits.append(kw)
+
+    monkeypatch.setattr(invoke, "record_app_audit_bound", _audit)
+    return world
+
+
+def _door_client(w: Any, email: str = ANA, agent: AgentScope | None = None) -> TestClient:
+    app = FastAPI()
+    app.include_router(actions.router)
+    app.include_router(_inner(w))
+
+    def _user() -> UserContext:
+        w.org = ORG
+        return UserContext(email=email, role=UserRole.EMPLOYEE,
+                           access=build_access(["feature:studio"]), organization_id=ORG,
+                           agent=agent)
+
+    app.dependency_overrides[get_current_user] = _user
+    return TestClient(app)
+
+
+def _door(w: Any, pid: str, action: str, body: Any = None, *, query: str = "",
+          headers: dict[str, str] | None = None, **kw: Any) -> Any:
+    sent = INBOUND if headers is None else headers
+    url = f"/studio/apps/{pid}/actions/{action}{query}"
+    if body is None:
+        return _door_client(w, **kw).post(url, headers=sent)
+    return _door_client(w, **kw).post(url, json=body, headers=sent)
+
+
+class TestTheDoorOp:
+    def test_parse_uses_names_the_app_and_the_op_of_a_door_op(self):
+        ref = parse_uses("knowledge.get_page")
+        assert ref is not None
+        assert (ref.source, ref.app, ref.op, ref.object) == (
+            "manifest", "knowledge", "get_page", None)
+        obj = parse_uses("object:visit.get")
+        assert obj is not None and obj.app is None
+
+    def test_the_switch_has_one_reader_and_is_off_by_default(self, monkeypatch):
+        monkeypatch.setattr(get_settings(), "studio_door_ops_orgs", "")
+        assert not flags.door_ops_allowed(ORG)
+        monkeypatch.setattr(get_settings(), "studio_door_ops_orgs", f"{OTHER}, {ORG.upper()}")
+        assert flags.door_ops_allowed(ORG) and not flags.door_ops_allowed(str(uuid.uuid4()))
+        monkeypatch.setattr(get_settings(), "studio_door_ops_orgs", "*")
+        assert flags.door_ops_allowed(ORG) and not flags.door_ops_allowed(None)
+
+    def test_the_owner_reads_a_page_through_the_app(self, opw):
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        r = _door(opw, pid, "page", {"page_id": PAGE})
+        assert r.status_code == 200, r.text
+        assert r.json() == {"result": opw.reply[1], "truncated": False}
+        [call] = opw.calls
+        assert (call["method"], call["path"], call["query"], call["body"]) == (
+            "GET", f"/knowledge/pages/{PAGE}", {}, b"")
+        # One audit row, with the status of the app and no data of its answer.
+        [row] = opw.audits
+        assert row["app_id"] == pid and row["user_email"] == ANA
+        assert row["detail"] == {"action": "page", "uses": "knowledge.get_page", "class": "A",
+                                 "outcome": "ran", "status": 200}
+        assert "Team plan" not in json.dumps(row)
+
+    def test_the_args_of_a_get_become_its_query(self, opw):
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        r = _door(opw, pid, "maint", {"reason": "stale", "limit": 5})
+        assert r.status_code == 200, r.text
+        assert opw.calls[0]["query"] == {"limit": "5", "reason": "stale"}
+
+    def test_the_call_carries_exactly_the_four_identity_headers(self, opw):
+        """Forward the inbound Authorization, X-User-Email, X-User-Role and
+        X-Actor-Via, and nothing else: no cookie, no proof, no other header,
+        and no body."""
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        assert _door(opw, pid, "page", {"page_id": PAGE}).status_code == 200
+        got = opw.calls[0]["headers"]
+        assert set(got) == HTTPX_DEFAULTS | set(door_op.FORWARDED)
+        assert {k: got[k] for k in door_op.FORWARDED} == {
+            "authorization": INBOUND["Authorization"], "x-user-email": ANA,
+            "x-user-role": "employee", "x-actor-via": "chat:mira"}
+        assert door_op.FORWARDED == ("authorization", "x-user-email", "x-user-role",
+                                     "x-actor-via")
+
+    def test_the_door_mints_no_header_from_the_session(self, opw):
+        """With no inbound identity header, the call carries none. The door
+        never builds one from the ``UserContext``."""
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        assert _door(opw, pid, "page", {"page_id": PAGE}, headers={}).status_code == 200
+        assert set(opw.calls[0]["headers"]) == HTTPX_DEFAULTS
+
+    def test_a_header_sent_twice_is_not_forwarded(self):
+        raw = [(b"authorization", b"Bearer a"), (b"authorization", b"Bearer b"),
+               (b"x-user-email", ANA.encode()), (b"cookie", b"s=1")]
+        assert door_op.forwarded(Headers(raw=raw)) == {"x-user-email": ANA}
+        assert door_op.repeated(Headers(raw=raw))
+        assert not door_op.repeated(Headers(raw=[(b"cookie", b"a"), (b"cookie", b"b")]))
+
+    @pytest.mark.parametrize("name", ["Authorization", "X-User-Email", "X-User-Role",
+                                      "X-Actor-Via"])
+    def test_an_identity_header_sent_twice_is_refused_before_the_call(self, opw, name):
+        """Review P3: two values of one identity header name no single caller,
+        so the door refuses the call. It does not send one of the two."""
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        sent = [(k, v) for k, v in INBOUND.items() if k != name]
+        sent += [(name, "first"), (name, "second")]
+        r = _door_client(opw).post(f"/studio/apps/{pid}/actions/page",
+                                   json={"page_id": PAGE}, headers=sent)
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == {"code": "bad_input", "message": invoke.REPEATED_HEADERS}
+        assert opw.calls == []
+        [row] = opw.audits
+        assert (row["detail"]["outcome"], row["detail"]["reason"]) == ("refused", "bad_input")
+
+    def test_an_error_of_the_send_is_503_with_an_audit_row(self, opw):
+        """Review P3: a header value that is not ASCII fails the send of httpx
+        (UnicodeEncodeError). The door answers 503, never a 500."""
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        sent = [(k.encode(), v.encode()) for k, v in INBOUND.items() if k != "X-User-Role"]
+        sent.append((b"X-User-Role", "employé".encode("latin-1")))
+        r = _door_client(opw).post(f"/studio/apps/{pid}/actions/page",
+                                   json={"page_id": PAGE}, headers=sent)
+        assert r.status_code == 503, r.text
+        assert r.json()["detail"] == {"code": "app_unavailable", "message": invoke.APP_DOWN}
+        assert opw.calls == []
+        [row] = opw.audits
+        assert (row["detail"]["outcome"], row["detail"]["reason"]) == (
+            "failed", "app_unavailable")
+        assert "status" not in row["detail"]
+
+    @pytest.mark.parametrize("action,args,sent,lowered", [
+        ("maint", {"limit": 100}, "50", True),
+        ("maint", {"limit": "120"}, "50", True),
+        ("maint", {"limit": 50}, "50", False),
+        ("maint", {"limit": 5}, "5", False),
+        ("recent", {"limit": 100}, "50", True),
+        ("recent", {}, "50", False),
+        ("recent", {"limit": 7}, "7", False),
+    ])
+    def test_the_row_limit_is_at_most_50_before_the_call(self, opw, action, args, sent,
+                                                          lowered):
+        """Review P2: the app reads at most 50 rows, so its cursor never skips
+        a row that the door cut. A paged op with no limit gets 50. When the
+        door lowered the limit and a list came back full, ``truncated`` holds."""
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        opw.reply = (200, {"pages": [{"id": i} for i in range(50)],
+                           "next_cursor": "after-50"}, None)
+        got = _door(opw, pid, action, args).json()
+        assert opw.calls[0]["query"]["limit"] == sent
+        assert got["result"]["next_cursor"] == "after-50"
+        assert got["truncated"] is lowered
+
+    def test_a_limit_of_another_type_goes_to_the_app(self, opw):
+        """The door lowers only a whole number. The app refuses each other
+        value with its own 422, which passes unchanged."""
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        _door(opw, pid, "maint", {"limit": True})
+        assert opw.calls[0]["query"]["limit"] == "true"
+
+    def test_no_session_is_open_during_the_call(self, opw):
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        assert _door(opw, pid, "page", {"page_id": PAGE}).status_code == 200
+        assert opw.calls[0]["open_sessions"] == 0
+        # The first check, the catalog, the second check, the call, the audit.
+        assert opw.log == ["open", "close", "catalog", "open", "close", "call", "audit"]
+
+    def test_no_context_var_of_the_app_returns_to_the_door(self, opw):
+        """The app sets ACTOR_VIA, the tenant and a probe. The door runs the
+        call in a new task, so none of them is set when the audit row runs."""
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        assert _door(opw, pid, "page", {"page_id": PAGE}).status_code == 200
+        assert opw.seen == [("", None, None)]
+
+    def test_a_4xx_of_the_app_passes_unchanged(self, opw):
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        opw.reply = (404, {"detail": "Knowledge has no such page."}, None)
+        r = _door(opw, pid, "page", {"page_id": PAGE})
+        assert (r.status_code, r.json()) == (404, {"detail": "Knowledge has no such page."})
+        opw.reply = (429, {"detail": "Slow down."}, {"Retry-After": "7"})
+        r = _door(opw, pid, "page", {"page_id": PAGE})
+        assert (r.status_code, r.headers.get("retry-after")) == (429, "7")
+        assert [a["detail"]["outcome"] for a in opw.audits] == ["refused", "refused"]
+        assert [a["detail"]["reason"] for a in opw.audits] == ["app_refused"] * 2
+        assert [a["detail"]["status"] for a in opw.audits] == [404, 429]
+
+    @pytest.mark.parametrize("status", [500, 502, 503])
+    def test_a_5xx_of_the_app_is_503_and_retry_after_passes(self, opw, status):
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        opw.reply = (status, {"detail": "secret stack text"}, {"Retry-After": "3"})
+        r = _door(opw, pid, "page", {"page_id": PAGE})
+        assert r.status_code == 503
+        assert r.json()["detail"] == {"code": "app_unavailable", "message": invoke.APP_DOWN}
+        assert r.headers.get("retry-after") == "3"
+        assert opw.audits[0]["detail"]["outcome"] == "failed"
+        assert opw.audits[0]["detail"]["status"] == status
+
+    @pytest.mark.parametrize("body,field", [
+        ({"page_id": "not-a-uuid"}, "page_id"), ({}, "page_id"),
+        ({"page_id": PAGE, "bad key": 1}, "bad key"), ([1], None), ("text", None)])
+    def test_args_that_build_call_refuses_are_422_with_the_key(self, opw, body, field):
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        r = _door(opw, pid, "page", body)
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"] == {"code": "bad_args", "message": invoke.BAD_ARGS_TEXT,
+                                      "field": field}
+        assert opw.calls == []
+        assert opw.audits[0]["detail"]["reason"] == "bad_args"
+
+    def test_a_class_b_door_op_is_approval_required(self, opw):
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        r = _door(opw, pid, "propose", {"kind": "page"})
+        assert (r.status_code, _code(r)) == (403, "approval_required")
+        assert opw.calls == []
+
+    def test_an_off_door_row_is_not_in_the_catalog(self, opw):
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        r = _door(opw, pid, "search", {})
+        assert (r.status_code, _code(r)) == (403, "not_in_catalog")
+        assert opw.calls == [] and opw.audits[0]["detail"]["class"] is None
+
+    def test_with_the_switch_off_a_door_op_is_source_not_open_and_calls_nothing(
+            self, opw, monkeypatch):
+        """With ``STUDIO_DOOR_OPS_ORGS`` empty, the door does as before B2b-2b."""
+        monkeypatch.setattr(get_settings(), "studio_door_ops_orgs", "")
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        r = _door(opw, pid, "page", {"page_id": PAGE})
+        assert (r.status_code, _code(r)) == (403, "source_not_open")
+        r = _door(opw, pid, "search", {})
+        assert (r.status_code, _code(r)) == (403, "not_in_catalog")
+        assert opw.calls == []
+
+    def test_a_route_under_studio_is_refused_and_never_called(self, opw, monkeypatch):
+        monkeypatch.setattr(app_manifests, "APPS", (KNOWLEDGE, PROBE))
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        r = _door(opw, pid, "loop", {})
+        assert (r.status_code, _code(r)) == (403, "source_not_open")
+        assert opw.log.count("catalog") == 1 and opw.calls == []
+
+    def test_an_outside_agent_is_refused_and_nothing_is_called(self, opw):
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        agent = AgentScope(connection_id=str(uuid.uuid4()), scopes=("knowledge:read",))
+        r = _door(opw, pid, "page", {"page_id": PAGE}, agent=agent)
+        assert (r.status_code, _code(r)) == (403, "outside_agent")
+        assert r.json()["detail"]["message"] == invoke.REFUSALS["outside_agent"]
+        assert opw.calls == []
+
+    def test_a_paused_package_is_423_first(self, opw):
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        opw.packages[pid]["paused_at"] = NOW
+        r = _door(opw, pid, "page", {"page_id": PAGE})
+        assert (r.status_code, _code(r)) == (423, "package_paused")
+        assert opw.calls == [] and "catalog" not in opw.log
+
+    def test_a_package_of_another_member_is_404_and_calls_nothing(self, opw):
+        pid = _package(opw, owner=BEN, manifest=DOOR_MANIFEST)
+        r = _door(opw, pid, "page", {"page_id": PAGE})
+        assert (r.status_code, r.json()) == (404, NOT_FOUND)
+        assert opw.calls == [] and opw.audits == []
+
+    def test_a_change_during_the_read_is_seen_and_calls_nothing(self, opw, monkeypatch):
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        changed = {**DOOR_MANIFEST, "actions": [
+            {"id": "page", "uses": "knowledge.list_pages"}, *MANIFEST["actions"]]}
+
+        async def _read(request: Any) -> bytes:
+            opw.packages[pid]["manifest"] = changed
+            return json.dumps({"page_id": PAGE}).encode()
+
+        monkeypatch.setattr(invoke, "_read_body", _read)
+        r = _door(opw, pid, "page", {"page_id": PAGE})
+        assert (r.status_code, _code(r)) == (403, "source_not_open")
+        assert opw.calls == []
+
+    def test_a_preview_of_a_door_read_is_a_real_read(self, opw):
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        r = _door(opw, pid, "page", {"page_id": PAGE}, query="?preview=1")
+        assert r.status_code == 200, r.text
+        assert len(opw.calls) == 1
+        assert opw.audits[0]["detail"]["outcome"] == "ran"
+        assert "preview" not in opw.audits[0]["detail"]
+
+    def test_a_viewer_reads_as_the_viewer_and_runs_no_write(self, opw, monkeypatch):
+        """J2a: a viewer's door op is a read run AS the viewer. The headers of
+        the viewer pass, and the app's own gates decide."""
+        pid = _package(opw, owner=BEN, manifest=DOOR_MANIFEST)
+
+        async def _installed(db: Any, *, viewer: str, app_id: str) -> Any:
+            return _viewer.InstalledApp(id=app_id, version=3, manifest=DOOR_MANIFEST)
+
+        monkeypatch.setattr(invoke, "package_host_allowed", lambda org: True)
+        monkeypatch.setattr(invoke._viewer, "installed_app", _installed)
+        r = _door(opw, pid, "page", {"page_id": PAGE})
+        assert r.status_code == 200, r.text
+        assert opw.calls[0]["headers"]["x-user-email"] == ANA
+        assert opw.audits[0]["detail"]["viewer"] is True
+        assert opw.audits[0]["detail"]["version"] == 3
+        r = _door(opw, pid, "propose", {"kind": "page"})
+        assert (r.status_code, _code(r)) == (403, "read_only")
+        assert len(opw.calls) == 1
+
+    def test_the_answer_holds_at_most_50_rows_and_256_kib(self, opw):
+        pid = _package(opw, manifest=DOOR_MANIFEST)
+        opw.reply = (200, {"pages": [{"id": i} for i in range(60)], "more": True}, None)
+        got = _door(opw, pid, "maint", {}).json()
+        assert len(got["result"]["pages"]) == 50 and got["truncated"] is True
+        assert got["result"]["more"] is True
+        opw.reply = (200, {"pages": [{"body": "x" * 20_000} for _ in range(40)]}, None)
+        got = _door(opw, pid, "maint", {}).json()
+        size = len(json.dumps(got["result"], separators=(",", ":")).encode())
+        assert got["truncated"] is True and 0 < len(got["result"]["pages"]) < 40
+        assert size <= door_op.MAX_ANSWER_BYTES
+
+    def test_the_cut_of_one_value_too_large_is_none(self):
+        assert door_op.cut({"body_md": "x" * (door_op.MAX_ANSWER_BYTES + 1)}) == (None, True)
+        assert door_op.cut([1, 2]) == ([1, 2], False)
+        assert door_op.MAX_ROWS == 50 and door_op.MAX_ANSWER_BYTES == 256 * 1024
+
+
+class TestTheDoorOpFences:
+    _STUDIO = Path(invoke.__file__).parent
+
+    def test_no_studio_route_file_reads_the_internal_token(self):
+        """R7 (B2b-2b): the door forwards the inbound bearer, and it never
+        reads the internal token to mint one. A read of the token in any file
+        of ``routes/studio`` fails here."""
+        pattern = re.compile(r"gateway_internal_token|_get_internal_token|internal_token",
+                             re.IGNORECASE)
+        files = sorted(self._STUDIO.glob("*.py"))
+        assert {p.name for p in files} >= {"invoke.py", "door_op.py"}
+        for path in files:
+            assert not pattern.search(path.read_text(encoding="utf-8")), path.name
+
+    def test_the_executor_reads_no_identity_of_the_session(self):
+        """``door_op.py`` takes the headers of the inbound request only. It
+        reads no field of a ``UserContext``, so it cannot mint an identity."""
+        import ast
+
+        tree = ast.parse((self._STUDIO / "door_op.py").read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute):
+                assert node.attr not in ("email", "organization_id", "role", "access",
+                                         "agent", "user_id"), ast.unparse(node)
+            if isinstance(node, ast.ImportFrom):
+                assert node.module not in ("acb_auth", "acb_auth.roles", "acb_auth.deps")
+
+    def test_the_executor_calls_the_one_builder_and_holds_no_session(self):
+        import ast
+
+        src = (self._STUDIO / "door_op.py").read_text(encoding="utf-8")
+        assert src.count("build_call(") == 1
+        assert "asyncio.create_task(" in src and "ASGITransport(" in src
+        for name in ("_tenant_session", "get_db", "tenant_session", "text("):
+            assert name not in src, name
+        run = ast.get_source_segment(src, next(
+            n for n in ast.walk(ast.parse(src))
+            if isinstance(n, ast.AsyncFunctionDef) and n.name == "run"))
+        assert run is not None and run.index("asyncio.create_task(") < run.index("wait_for(")

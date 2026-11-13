@@ -77,6 +77,17 @@ export const SYNC_NOTES: string[] = [
   "Metorite tasks with a time go out to a calendar named Metorite.",
   "Move one of those events there, and the task moves here.",
   "Disconnect removes the copied events. Your tasks stay.",
+  "You can turn off sending your tasks in the row of the connection. Turning it off deletes nothing in Google or Outlook.",
+];
+
+export const ALSO_SYNC_TITLE = "Already connected your email?";
+
+export const ALSO_SYNC_STEPS: string[] = [
+  "Open Calendar settings.",
+  "Find the row that says your mailbox is connected, and press Sync its calendar.",
+  "The provider asks you to allow calendar access for the same account.",
+  "A Microsoft 365 work account may need an administrator to approve Metorite once.",
+  "Mail and calendar stay separate. Disconnect one and the other stays connected.",
 ];
 
 export const FULL_GUIDE_PATH = "docs/calendar_connect.md";
@@ -87,6 +98,7 @@ export function guideSentences(): string[] {
   const all = [
     ...GUIDE_LISTS.flatMap((l) => l.steps),
     ...SYNC_NOTES,
+    ...ALSO_SYNC_STEPS,
     ADMIN_NOTE,
   ];
   return all.flatMap((s) => s.split(/[.!?]\s+|[.!?]$/).map((p) => p.trim()).filter(Boolean));
