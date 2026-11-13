@@ -1,7 +1,7 @@
 # Proactive agent — Mira acts for each person without being asked (WS-AUTO)
 
-> **Product:** Metorite · **Feature:** automations, standing watches and the chase, on a trust ladder · **Updated:** 2026-11-08 · **Owner:** vjvarada
-> **Status:** 📋 **SPEC, FIVE SLICES BUILT.** The first slice of AUTO-2 is merged (PR 1442, migration 313, dark): the run ledger, the incidents and the stall guard. The brief is its only caller. AUTO-3 is decided (D131). AUTO-7a is merged (PR 1615). H-328 parts (a) and (b) are merged, and part (c) is open. **AUTO-7b is built, dark behind `AUTO_PARK_ORGS` (task 1411), and waits for review** (§4.2, §9). **AUTO-8a is on main (PR 1878), dark behind `HEADLESS_TURN_ORGS` (task 1392). It has no production caller, and its tests prove it** (§4.4, §9). **AUTO-8b-1 is built, dark, and waits for review (task 2194).** The settle of a round has a time limit, and each round checks the bound of the goal cap (§4.4). AUTO-8b-2 (task 2230) waits for an owner decision. **The owner answered AUTO-Q1 on 2026-11-06** with the recommended option (D192, §12).
+> **Product:** Metorite · **Feature:** automations, standing watches and the chase, on a trust ladder · **Updated:** 2026-11-13 · **Owner:** vjvarada
+> **Status:** 📋 **SPEC, FIVE SLICES BUILT.** The first slice of AUTO-2 is merged (PR 1442, migration 313, dark): the run ledger, the incidents and the stall guard. The brief is its only caller. AUTO-3 is decided (D131). AUTO-7a is merged (PR 1615). H-328 parts (a) and (b) are merged, and part (c) is open. **AUTO-7b is built, dark behind `AUTO_PARK_ORGS` (task 1411), and waits for review** (§4.2, §9). **AUTO-8a is on main (PR 1878), dark behind `HEADLESS_TURN_ORGS` (task 1392). It has no production caller, and its tests prove it** (§4.4, §9). **AUTO-8b-1 is built, dark, and waits for review (task 2194).** The settle of a round has a time limit, and each round checks the bound of the goal cap (§4.4). The owner decided AUTO-8b-2 (task 2230) on 2026-11-08: "Build all three, dark." **AUTO-8b-2a (task 3080) is built, dark, and waits for review.** A mark on the goal before each call keeps the cost of a lost round. The slice also repairs the six P2 notes of the AUTO-8b-1 review (§4.4). **The owner answered AUTO-Q1 on 2026-11-06** with the recommended option (D192, §12).
 > **Verified against code on 2026-11-02 at `ce29836ea`.** Each path in §10 was read on that commit. The AUTO-7b paths were read again on `0591d53b3` (2026-11-04). The AUTO-8a paths were read on `2d2e71978` (2026-11-05). The AUTO-8b-1 paths were read on `6c8d48d81` (2026-11-08), the base of the branch `auto-8b-mt-57b4e62c`. The line numbers of Open Instinct come from a read on 2026-11-02, and no code of it ran.
 > **Board:** WS-AUTO in `work_plan.md` §2.1. **Decision:** D161, and D192 for the answer of §12. D75, D100, D103, D124, D129, D131, D132, D140, D145 and workflows G5 bind it.
 > **Metorite:** project "Automations", epic 807, this spec task 1396. The slices are AUTO-1 (816), AUTO-4 (817), AUTO-5 to AUTO-10 (1389 to 1394). AUTO-8a is task 1392, AUTO-8b-1 is task 2194 and AUTO-8b-2 is task 2230. AUTO-2 is task 814, AUTO-3 is task 815 and AUTO-Q1 is task 1395.
@@ -140,11 +140,21 @@ Before each round, the turn reads the flag and the goal again. So the flag is th
 
 **The settle of a round (AUTO-8b-1).** After a call, the turn reads the meter and records the round. These two steps have `SETTLE_MARGIN_S` (60 seconds), and each step takes at most a third of it. The bound of the time cap (180 seconds) plus the margin stays inside `worker.HANDLER_TIMEOUT` (240 seconds). That stays inside the lease of the job (300 seconds). So the worker does not cancel a turn while it records a round.
 
-A meter that does not answer in time charges the rest of the budget: the cap minus the credits used. So the goal blocks with `cap_reached`. A record that does not end in time logs `headless_turn.round_unrecorded` at error, and the job gives up with `TurnFailed`. The settle catches only the timeout of its own scope. It never catches a cancel.
+A meter that does not answer in time charges the rest of the budget: the cap minus the credits used. So the goal blocks with `cap_reached`. A record that does not end in time logs `headless_turn.round_unrecorded` at error, and the job gives up with `TurnFailed`.
+
+The settle catches the timeout of its own scope and the errors of its own step. A plain cancel goes through. A database driver can turn a cancel into an error of its own. Then the meter step charges the rest of the budget, so it fails closed (AUTO-8b-2a).
+
+**The settle after AUTO-8b-2a.** The meter after a call gets `max(part, deadline + part - clock())`. The record gets `max(part, deadline + 2 * part - clock())`. A part is a third of `SETTLE_MARGIN_S`.
+
+An unknown cost charges the rest of the goal version that the record writes. A meter that fails after an earlier call of the turn gives up with `MeterFailed`, not `NoCostReader`. The report has a limit of half a part, and AUTO-6 must keep a limit when the report becomes a Reach message.
 
 **Limits.** ADVISORY (R7), with no fence: no credit stop happens inside one call. The cost of a round is known only at its end, so the last round can go past the goal cap. The goal cap is the cap. The Router's `RunCeiling` is a fixed tripwire of 500 credits for each run, and the Router checks it before each model call. It does not stop a turn at the goal cap.
 
-ADVISORY (R7), with no fence: three paths lose the cost of a round, so the goal row does not get it. They are a record that times out, a stop of the worker during the call, and a stop during the settle. The release stops the worker after 30 seconds (`worker.STOP_GRACE_SECONDS`). Then the next turn of the goal starts with too much room. Today no turn can spend, because the default meter raises. AUTO-8b-2 (task 2230) must close this before the real reader. It writes a mark on the goal before each call, and the record clears the mark. A goal that still holds a mark takes the rest of its budget and blocks.
+**The mark of a call (AUTO-8b-2a, task 3080, built, dark).** Three paths lose the cost of a round. They are a record that times out, a stop of the worker during the call, and a stop during the settle. The release stops the worker after 30 seconds (`worker.STOP_GRACE_SECONDS`). So before each call, the turn writes its queue claim id in `goal_records.job_id`. The record of the round clears it in the same UPDATE (`record_round` with `clear_job_id=True`).
+
+A goal that still holds a mark had a call with no record. The next turn charges the rest of the budget, blocks with `cap_reached`, and makes no call. A failed mark write makes no call either. The turn never compares a mark with its own claim id. A later try of the same job reuses the claim id, so its mark is the mark of a try that died.
+
+Fences: `tests/unit/test_headless_turn.py`, `tests/unit/test_headless_turn_r8.py` and `tests/unit/test_goal_record_r8.py` (R8).
 
 In `run_agent`, the run binds the agent name `worker` and the app `chat`. So the usage row does not name `auto.headless` yet. AUTO-8b-2 decides that attribution.
 
@@ -360,6 +370,7 @@ Each path was read on `ce29836ea`.
 | The settle of a round ends inside `SETTLE_MARGIN_S`, and a meter that does not answer in time charges the rest of the budget | AUTO-8b-1: `tests/unit/test_headless_turn.py` and `tests/unit/test_headless_turn_r8.py` (R8) |
 | The clock of the turn starts before `unattended.recover` | AUTO-8b-1: `tests/unit/test_headless_turn.py` |
 | Each round checks the bound of the goal cap | AUTO-8b-1: `tests/unit/test_headless_turn.py` |
+| A goal that holds a mark and no record blocks with `cap_reached`, and a failed mark write makes no call | AUTO-8b-2a: `tests/unit/test_headless_turn.py`, `tests/unit/test_headless_turn_r8.py` and `tests/unit/test_goal_record_r8.py` (R8) |
 | A run happens at most once for a slot | `tests/unit/test_unattended_ledger.py` (exists) |
 | No second scheduler | New with AUTO-1: a scan that finds no new cron loop outside `routes/workflows/scheduler.py` |
 | A watch reads only what its member reads | New with AUTO-5: an R8 suite with two orgs |
