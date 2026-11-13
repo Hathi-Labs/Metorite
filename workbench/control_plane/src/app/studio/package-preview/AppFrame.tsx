@@ -6,8 +6,9 @@
  * live data through the door of the page. The page id lives in the URL (`?page=<id>`).
  *
  * The frame composes parts that exist: `StudioPage`, the mapper `lib/studio/viewBlocks.ts`,
- * `GenerativeUINode`, `StudioForm` and `StudioDetail`. It adds no rail, no tab bar and no dialog.
- * The rail is AF-2. A viewer (J2a) reads only: the door holds the reads, and the form view says so.
+ * `GenerativeUINode`, `StudioForm` and `StudioDetail`. Since AF-2b it draws into `StudioAppFrame`,
+ * which owns the app bar and the left rail of pages (`lib/studio/railModel.ts`). An app with one
+ * page has no rail. `StudioPage` draws `bare` there, with no bar of its own. A viewer (J2a) reads only: the door holds the reads, and the form view says so.
  * This is the one file of the route that holds the page model. `page.tsx` imports none.
  */
 import { useMemo } from "react";
@@ -20,6 +21,7 @@ import PackageLifetimeBar from "@/components/studio/PackageLifetimeBar";
 import RecordsStatus from "@/components/studio/RecordsStatus";
 import StudioDetail from "@/components/studio/StudioDetail";
 import StudioForm from "@/components/studio/StudioForm";
+import StudioAppFrame from "@/components/studio/StudioAppFrame";
 import StudioPage, { PANEL } from "@/components/studio/StudioPage";
 import Button from "@/components/ui/Button";
 import SelectButton from "@/components/ui/SelectButton";
@@ -27,6 +29,7 @@ import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, type StudioDataDoor, moreLine, sourceKey } from "@/lib/studio/dataDoor";
 import { buildHref } from "@/lib/studio/packageDraft";
 import { buildPage } from "@/lib/studio/pageModel";
+import { hasRail, railFor } from "@/lib/studio/railModel";
 import { type PreviewControls, recordTitle } from "@/lib/studio/packagePreview";
 import { READ_ONLY_SENTENCE, type PackageDetail } from "@/lib/studio/realDoor";
 import { type ViewDetail, type ViewMapContext, mapView } from "@/lib/studio/viewBlocks";
@@ -98,27 +101,26 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted }: App
     }
   };
 
-  const pagePicks = built.pages.map((p) => ({ value: p.id, label: p.title || p.id }));
-  const toolbar = (
+  // The rail replaces the page picker. An app with one page draws neither (nothing to pick).
+  const railed = hasRail(built.pages);
+  const toolbar = <PackageLifetimeBar pkg={pkg} />;
+  // The owner verbs sit in the app bar, which the frame owns.
+  const actions = controls.owner ? (
     <>
-      <PackageLifetimeBar pkg={pkg} />
-      {pagePicks.length > 1 ? (
-        <SelectButton label="Page" value={built.page.id} widthClass="w-48" options={pagePicks} onChange={setPage} />
-      ) : null}
-      {controls.owner ? (
-        <>
-          <Button variant="secondary" size="sm" icon="Code" href={buildHref(pkg)}>Open in Studio IDE</Button>
-          <DeletePackageButton id={pkg} onDeleted={onDeleted} />
-        </>
-      ) : <span role="status" className="text-xs text-muted-foreground">{READ_ONLY_SENTENCE}</span>}
+      <Button variant="secondary" size="sm" icon="Code" href={buildHref(pkg)}>Open in Studio IDE</Button>
+      <DeletePackageButton id={pkg} onDeleted={onDeleted} />
     </>
-  );
+  ) : <span role="status" className="text-xs text-muted-foreground">{READ_ONLY_SENTENCE}</span>;
 
   return (
     <StudioDataContext.Provider value={door}>
-      <StudioPage title={detail.name.trim() || "App"} back={{ href: "/studio", label: "Back to Studio" }}
-        manifest={manifest} pageId={built.page.id} state={state} onTab={setTab}
-        onCloseSide={() => setSelected(null)} renderView={renderView} toolbar={toolbar} />
+      <StudioAppFrame title={detail.name.trim() || "App"} back={{ href: "/studio", label: "Back to Studio" }}
+        actions={actions}
+        rail={railed ? { sections: railFor(built.pages, detail.nav), activePage: built.page.id, onPick: setPage } : undefined}>
+        <StudioPage bare title={detail.name.trim() || "App"}
+          manifest={manifest} pageId={built.page.id} state={state} onTab={setTab}
+          onCloseSide={() => setSelected(null)} renderView={renderView} toolbar={toolbar} />
+      </StudioAppFrame>
     </StudioDataContext.Provider>
   );
 }

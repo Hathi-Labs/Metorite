@@ -87,6 +87,11 @@ export interface StudioPageProps {
   renderView: (viewId: string) => ReactNode;
   /** Controls above the grid, such as a filter. */
   toolbar?: ReactNode;
+  /**
+   * Draw no app bar. The app frame (`StudioAppFrame`) owns the bar then, so the screen keeps
+   * one `<h1>` and one bar. Default false: `/studio/page-preview` draws its own bar.
+   */
+  bare?: boolean;
 }
 
 /** The member sees the title of a view, and the id only when the view has no title. */
@@ -112,7 +117,7 @@ function NotBuilt({ view, label }: { view: string; label: string }) {
 }
 
 export default function StudioPage({
-  title, subtitle, back, manifest, pageId, state, onTab, onCloseSide, renderView, toolbar,
+  title, subtitle, back, manifest, pageId, state, onTab, onCloseSide, renderView, toolbar, bare = false,
 }: StudioPageProps) {
   const built = buildPage(manifest, pageId, state.tab);
   const { page, cells } = built;
@@ -133,7 +138,7 @@ export default function StudioPage({
 
   return (
     <div className="flex h-full flex-col">
-      <AppTopBar title={title} subtitle={subtitle ?? page.title ?? undefined} back={back} />
+      {bare ? null : <AppTopBar title={title} subtitle={subtitle ?? page.title ?? undefined} back={back} />}
       {page.tabs.length > 0 && built.tab !== null && (
         <Tabs variant="underline" activeTab={built.tab} onTabChange={onTab}
           tabs={page.tabs.map((t) => ({ id: t.id, label: t.title }))} />
