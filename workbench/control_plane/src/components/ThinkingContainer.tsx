@@ -74,6 +74,12 @@ interface ThinkingContainerProps {
    * from the card files, so this component names no tool.
    */
   evidenceFor?: (event: ToolEvent) => React.ReactNode | null;
+  /**
+   * HRD-6: the line of a slow step ("This is a large read …"). It draws under
+   * the header, which names the running step, while the turn works. Open or
+   * closed, the member sees it.
+   */
+  notice?: string | null;
 }
 
 /**
@@ -645,6 +651,7 @@ export default function ThinkingContainer({
   narrationSegments,
   isActive,
   evidenceFor,
+  notice,
 }: ThinkingContainerProps) {
   const hasReasoning = !!(reasoningBlocks && reasoningBlocks.length > 0);
   const hasNarration = !!(narrationSegments && narrationSegments.length > 0);
@@ -827,6 +834,23 @@ export default function ThinkingContainer({
         )}
         </span>
       </button>
+
+      {/* ── The line of a slow step (HRD-6) ────────────────────────────
+          Under the header, in the step column, so it reads as part of the
+          running step. One status region (M9), mounted with the trail and
+          empty until a line comes, so a screen reader says the line when it
+          comes. It goes when the step ends or the answer starts
+          (`chatStream.ts`). */}
+      <div role="status" aria-live="polite" data-trail-status="">
+        {isActive && notice && (
+          <div data-trail-notice="" className="flex min-w-0 pr-3 pb-2 -mt-1">
+            <span className={TRAIL_ICON_CELL} aria-hidden />
+            <span className="flex-1 min-w-0 text-[11px] text-muted-foreground leading-relaxed break-words glass:text-caption">
+              {notice}
+            </span>
+          </div>
+        )}
+      </div>
 
       {/* ── Pre-content working indicator ──────────────────────────────
           The dead-air gap between "run started" and the first tool/reasoning
