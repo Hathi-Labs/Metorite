@@ -61,12 +61,26 @@ MERGE_RETRY_WAIT="${MERGE_BASE_RETRY_WAIT:-20}"
 # CIV-28b: the tier floor. The tier in the queue is the claim of a lane, not
 # proof. A diff that touches one of these paths is HIGH, whatever the lane says.
 # This is the ONE place for the list. Add a path here and nowhere else.
-#   infra/postgres/ and infra/customer_console/  the schema and every migration
-#   deploy/ and .github/workflows/deploy.yml     the deploy path
-#   packages/acb_common/acb_common/db.py         the tenancy and RLS seam
-#   tenant_redis.py                              the tenant key wrapper
-#   auth*, billing*, credits*, rls*, entitle*    code files in any folder
-HIGH_PATHS_RE='^(infra/(postgres|customer_console)/|deploy/|\.github/workflows/deploy\.yml$|packages/acb_common/acb_common/(db|tenant_redis)\.py$)|(^|/)(auth|billing|credits|rls|entitle)[^/]*\.(py|ts|tsx|sql)$'
+# Test files are in on purpose: a weakened auth test needs full review too.
+HIGH_PATHS_RE='^('
+# The schema and every migration.
+HIGH_PATHS_RE+='infra/(postgres|customer_console)/'
+# The deploy path.
+HIGH_PATHS_RE+='|deploy/|\.github/workflows/deploy\.yml$'
+# The scripts that apply migrations or generate tenant migrations.
+HIGH_PATHS_RE+='|scripts/(apply_[a-z_]*migrations\.sh|gen_tenant_migration\.py)$'
+# Identity, roles and permissions: the whole auth package.
+HIGH_PATHS_RE+='|packages/acb_auth/'
+# The tenancy and RLS seams: the DB seam, the Redis key wrapper, the memory tenant guard.
+HIGH_PATHS_RE+='|packages/acb_common/acb_common/(db|tenant_redis)\.py$'
+HIGH_PATHS_RE+='|packages/acb_memory/acb_memory/tenant_guard[^/]*$'
+# App routes and settings pages for auth, billing and credits, matched by folder.
+HIGH_PATHS_RE+='|workbench/[^/]+/src/app/.*/(auth|billing|credits)/'
+HIGH_PATHS_RE+=')'
+# Any file named for auth, billing, credits, RLS or entitlements, in any folder.
+HIGH_PATHS_RE+='|(^|/)(auth|billing|credits|rls|entitle)[^/]*\.(py|ts|tsx|sql)$'
+# Any file with a tenant_guard or rls part in its name.
+HIGH_PATHS_RE+='|(^|/)[^/]*(tenant_guard|_rls)[^/]*$'
 STALE_LOCK_MIN=180  # The service stops a pass at 2 hours, so a 3-hour lock is dead.
 
 say() { echo "merge_bot: $*" >&2; }
@@ -186,7 +200,7 @@ check_status() {
 # Returns 0 to merge. Returns 1 with the BACK reason printed. Returns 2 with a
 # note printed for a transient error: the next pass tries again.
 gate() {
-  local pr="$1" sha="$2" tier="$3" branch="merge-bot/pr-$1" out files try main_before main_after tail_ top own
+  local changed pr="$1" sha="$2" tier="$3" branch="merge-bot/pr-$1" out files try main_before main_after tail_ top own
   if [ ! -e "$WORKDIR/.git" ]; then
     git -C "$ROOT" worktree add -q --detach "$WORKDIR" >/dev/null 2>&1 || { echo "no workdir at $WORKDIR"; return 2; }
   fi
@@ -208,7 +222,11 @@ gate() {
   fi
   # The floor reads the diff the trial merge would land: main to the pinned SHA.
   if [ "$tier" != HIGH ]; then
-    files="$(git diff --name-only origin/main..."$sha" 2>/dev/null | grep -E "$HIGH_PATHS_RE" | head -n 3 | tr '\n' ' ')"
+    # --no-renames lists both sides of a rename, so a move out of a HIGH path shows.
+    # A failed diff is not "no HIGH path": the gate fails closed.
+    changed="$(git diff --no-renames --name-only origin/main..."$sha" 2>/dev/null)" \
+      || { echo "tier floor unknown: git diff failed"; return 1; }
+    files="$(grep -E "$HIGH_PATHS_RE" <<< "$changed" | head -n 3 | tr '\n' ' ')"
     if [ -n "$files" ]; then echo "tier floor HIGH, queued as $tier: ${files}- lane-merge or a person merges it"; return 1; fi
   fi
   if ! out="$(git merge-tree --write-tree --name-only origin/main "$sha" 2>&1)"; then

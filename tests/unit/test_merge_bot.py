@@ -739,3 +739,55 @@ def test_civ28b_a_run_cancelled_a_second_time_goes_back(env):
     env.run()
     assert env.log == "BACK 5 cancelled twice: run 706\n"
     assert len([c for c in env.calls.splitlines() if c.startswith("run rerun")]) == 1
+
+
+def test_civ28b_the_floor_covers_the_auth_package_billing_routes_and_the_migration_runner(env):
+    env.pr(5, path="packages/acb_auth/acb_auth/roles.py")
+    env.pr(6, path="workbench/control_plane/src/app/api/billing/checkout/route.ts")
+    env.pr(7, path="scripts/apply_migrations.sh")
+    env.pr(8, path="workbench/control_plane/src/app/api/auth/session/route.ts")
+    env.pr(9, path="packages/acb_memory/acb_memory/tenant_guard.py")
+    env.pr(10, path="workbench/operator_console/src/app/api/operator/credits/route.ts")
+    env.run()
+    lines = env.log.splitlines()
+    assert len(lines) == 6
+    for line, n in zip(lines, (5, 6, 7, 8, 9, 10), strict=True):
+        assert line.startswith(f"BACK {n} tier floor HIGH, queued as ")
+    assert env.merges == [] and env.premerge_runs == 0
+
+
+def test_civ28b_a_rename_out_of_a_high_path_is_seen(env):
+    env.commit("infra/postgres/998_old.sql", "select 1;\n", "a migration")
+    git(env.seed, "push", "-q", "origin", "main")
+    git(env.seed, "checkout", "-q", "-B", "pr5", "main")
+    (env.seed / "ok").mkdir()
+    git(env.seed, "mv", "infra/postgres/998_old.sql", "ok/moved.sql")
+    git(env.seed, "commit", "-qm", "rename out")
+    git(env.seed, "push", "-q", "origin", "pr5:refs/pull/5/head")
+    sha = git(env.seed, "rev-parse", "HEAD")
+    git(env.seed, "checkout", "-q", "main")
+    env.heads[5] = sha
+    env.view(5, state="OPEN", isDraft=False, mergeCommit=None, headRefOid=sha, body=VERIFY)
+    env.checks(5, None)
+    env.queue(5, sha=sha)
+    env.run()
+    assert env.log.startswith(
+        "BACK 5 tier floor HIGH, queued as STANDARD: infra/postgres/998_old.sql"
+    )
+    assert env.merges == []
+
+
+def test_civ28b_a_failed_diff_fails_closed(env, tmp_path):
+    env.pr(5)
+    shim = tmp_path / "gitshim"
+    shim.mkdir()
+    real = shutil.which("git", path=os.environ["PATH"])
+    (shim / "git").write_text(
+        f'#!/usr/bin/env bash\n[ "$1" = diff ] && exit 128\nexec "{Path(real).as_posix()}" "$@"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (shim / "git").chmod(0o755)
+    env.run(PATH=f"{shim.as_posix()}{os.pathsep}{env.tmp / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    assert env.log == "BACK 5 tier floor unknown: git diff failed\n"
+    assert env.merges == [] and env.premerge_runs == 0
