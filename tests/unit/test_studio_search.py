@@ -325,3 +325,38 @@ def test_the_clock_starts_before_the_packages_load(world, monkeypatch) -> None:
 def test_an_empty_word_reads_nothing(world) -> None:
     world.packages = [package("p1", ["note"])]
     assert find(q="   ") == [] and world.queries == []
+
+
+def test_a_cancel_that_another_error_replaced_still_stops_the_search(world, monkeypatch) -> None:
+    """Round 3. A task cancelled in the middle of a statement can see its cancel
+    replaced by an error from the ``finally`` of the store. The search must stop,
+    not swallow it and go on to the next read."""
+    world.packages = [package(f"p{i}", ["note"]) for i in (1, 2)]
+    started = asyncio.Event()
+
+    async def replaced(db: Any, **kw: Any) -> Any:
+        world.queries.append({"package": kw["package_id"]})
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        finally:
+            raise RuntimeError("PendingRollbackError stands in for the store's finally")
+
+    monkeypatch.setattr(objects_store, "query_records", replaced)
+
+    async def run() -> None:
+        task = asyncio.ensure_future(search.search_records(member(), "acme", 10))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
+
+    asyncio.run(run())
+    assert len(world.queries) == 1  # the next read never started
+
+
+def test_an_error_with_no_cancel_is_still_skipped(world) -> None:
+    world.packages = [package("p1", ["note"])]
+    world.fail = {"p1": RuntimeError("db down")}
+    assert find() == []

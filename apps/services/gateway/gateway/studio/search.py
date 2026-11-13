@@ -42,8 +42,9 @@ exist, so an owner of many apps still reaches the installs.
 **Time.** One clock of :data:`BUDGET_S` starts BEFORE the packages load.
 It is lower than the 1.5 s that the route gives a source. The route gives a
 source ``min(1.5 s, time left)``. When less than :data:`BUDGET_S` is left,
-the route cancels the source and the source answers nothing. This module
-cannot read that time, because the ``Source`` contract does not pass it.
+the route cancels the source and the source answers nothing. The ``Source``
+contract passes the time left (``budget_s``) only to a source that declares
+vectors, so this module keeps its own clock.
 
 **A slow or failed read never cancels a statement from outside.** Each
 statement passes the time that is left to ``query_records`` (``budget_s``),
@@ -56,6 +57,7 @@ fails the search.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from dataclasses import dataclass
@@ -178,6 +180,7 @@ async def _read_package(db: Any, package: Any, is_viewer: bool, who: Viewer,
                 obj = await objects_store.get_object_by_name(
                     db, object_name, package_id=package.id)
         except Exception as exc:  # skip the object, keep the hits
+            _stop_if_cancelled(exc)
             _log.warning("studio.search.object_failed", error=type(exc).__name__)
             continue
         if obj is None:
@@ -190,12 +193,16 @@ async def _read_package(db: Any, package: Any, is_viewer: bool, who: Viewer,
             if len(found) >= room or left <= 0:
                 break
             try:
+                # Advisory (R7): the store wraps each statement in its own SAVEPOINT
+                # (``_time_limit``). This outer one covers only the timeout setup and
+                # its restore. No test fails when it goes, so it is not a fence.
                 async with db.begin_nested():
                     page = await objects_store.query_records(
                         db, package_id=package.id, object_id=obj.id, viewer=who,
                         filter=[{"field": field.key, "op": "contains", "value": words}],
                         limit=room, budget_s=left)
             except Exception as exc:  # a timeout, a refusal or a database error
+                _stop_if_cancelled(exc)
                 code = getattr(exc, "code", None)
                 _log.warning("studio.search.read_failed", error=type(exc).__name__,
                              timeout=code == QUERY_TIMEOUT)
@@ -218,6 +225,18 @@ async def _read_package(db: Any, package: Any, is_viewer: bool, who: Viewer,
     return list(found.values())
 
 
+def _stop_if_cancelled(exc: BaseException) -> None:
+    """Re-raise a cancel that another error replaced.
+
+    A task that is cancelled in the middle of a statement can see its
+    ``CancelledError`` replaced by a ``PendingRollbackError`` from the
+    ``finally`` of the store. ``Task.cancelling()`` still says the task was
+    asked to stop, so the search stops too, and the cancel is not swallowed."""
+    task = asyncio.current_task()
+    if task is not None and task.cancelling():
+        raise asyncio.CancelledError() from exc
+
+
 async def search_records(user: Any, q: str, k: int) -> list[Found]:
     """The records that match *q* in the searched objects of the packages that
     *user* reads. Flag off, no member or no words: no read at all."""
@@ -238,6 +257,7 @@ async def search_records(user: Any, q: str, k: int) -> list[Found]:
             async with db.begin_nested():
                 candidates = await _candidates(db, member, org)
         except Exception as exc:
+            _stop_if_cancelled(exc)
             _log.warning("studio.search.candidates_failed", error=type(exc).__name__)
             return []
         for package, is_viewer in candidates:
@@ -247,6 +267,7 @@ async def search_records(user: Any, q: str, k: int) -> list[Found]:
             try:
                 hits += await _read_package(db, package, is_viewer, who, words, room, deadline)
             except Exception as exc:  # one package never fails the search
+                _stop_if_cancelled(exc)
                 _log.warning("studio.search.package_failed", package=str(package.id),
                              error=type(exc).__name__)
                 continue
