@@ -4203,8 +4203,10 @@ async def studio_app_read(
 # owns every right check: the tool checks no right, and it reads no owner. Each
 # tool takes a package id and a version, or nothing, and never an org, a member
 # or a confirm argument (R5). The status and the code of each refusal are the
-# route's, with the route's message. Only the approve asks on a card, and only
-# in a chat that read outside mail (``_must_ask``). The share twin is J2b-3b.
+# route's, with the route's message. The approve and the reject ALWAYS show
+# one card, in a clear chat too, because neither move can be undone and the
+# list puts text of another member in the chat. The approve refuses a version
+# whose manifest the chat cannot show whole. The share twin is J2b-3b.
 
 #: Copies of route and store values. A package cannot import the gateway, so
 #: ``test_studio_package_approval_tools.py`` reads each copy against the real value.
@@ -4222,6 +4224,8 @@ MIN_APPROVAL_MANIFEST_CHARS = 200
 
 _APV_NO_ID = ("The package id must be a UUID. Use the package_id that studio_list_approvals "
               "or studio_save gave.")
+_APV_ASK_NOT_FOUND = ("No version {version} of the package {pid} is yours to send for an "
+                      "approval, or Studio sharing is not open for your organization.")
 _APV_NOT_FOUND = ("No version with this package id and number waits for an approval that you "
                   "can make, or AI Studio is not open for this organization.")
 _APV_UNREAD = "The apps that wait for an approval could not be read. Nothing was changed. Try again."
@@ -4237,9 +4241,14 @@ _APV_DONE = {"approved": ("The version is approved for the organization. Its own
              "rejected": "The version is rejected. The organization cannot install it."}
 _APV_NOTE = ("Approve to approve this version for the organization. Its owner can then "
              "install it for everyone. Reject to approve nothing.")
-_APV_WONT_FIT = "This version does not fit on one card, so nothing was approved."
+_APV_REJECT_NOTE = ("Approve to reject this version for the organization. A rejected version "
+                    "stays rejected. Reject to change nothing.")
+_APV_WONT_FIT = "This version does not fit on one card, so nothing was {act}."
 _APV_NOT_LISTED = ("This version is not in the list of the apps that wait for an approval, so "
                    "no card shows and nothing was approved. Call studio_list_approvals.")
+_APV_TOO_LONG = ("The manifest of this version is too long to review in chat, so nothing was "
+                 "approved. The approver must review the whole manifest outside the chat. "
+                 "The page for approvals is not built yet.")
 _APV_LIST_NOTE = ("Each row is a version that waits for an approval for the organization, with "
                   "the start of its manifest as JSON text. When manifest_cut is true, the chat "
                   "shows only the start of that manifest. Tell the member so before they "
@@ -4309,6 +4318,23 @@ def _approval_row(r: dict[str, Any], cap: int) -> dict[str, Any]:
     }
 
 
+def _approvals_text(chosen: list[dict[str, Any]]) -> str:
+    return json.dumps(chosen, ensure_ascii=False, separators=(",", ":"), default=repr)
+
+
+def _shown_approvals(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]],
+                                                          list[dict[str, Any]]]:
+    """Each row of the list, and the rows that the chat shows: the first rows
+    whose JSON text fits :data:`MAX_APPROVAL_CHARS`. The manifests share half
+    of it. ``studio_list_approvals`` and the approve read this one rule."""
+    cap = max(MIN_APPROVAL_MANIFEST_CHARS, (MAX_APPROVAL_CHARS // 2) // max(1, len(rows)))
+    every = [_approval_row(r, cap) for r in rows]
+    shown = every
+    while shown and len(_approvals_text(shown)) > MAX_APPROVAL_CHARS:
+        shown = shown[:-1]
+    return every, shown
+
+
 async def _pending_rows() -> tuple[_Reply, list[dict[str, Any]] | None]:
     """The reply of ``GET /studio/approvals`` and its raw rows, or None for
     a shape that the tool cannot read."""
@@ -4342,7 +4368,7 @@ async def studio_request_approval(package_id: str, version: int) -> dict[str, An
     except _Refused as exc:
         return _refusal(str(exc))
     if not reply.ok:
-        return _review_fail(reply, "asked", _PKG_NOT_YOURS)
+        return _review_fail(reply, "asked", _APV_ASK_NOT_FOUND.format(version=version, pid=pid))
     return _reviewed(reply)
 
 
@@ -4365,61 +4391,65 @@ async def studio_list_approvals() -> dict[str, Any]:
         return _refusal(_APV_SHAPE)
     from acb_skills.untrusted import UntrustedFrame
 
-    cap = max(MIN_APPROVAL_MANIFEST_CHARS, (MAX_APPROVAL_CHARS // 2) // max(1, len(rows)))
-    every = [_approval_row(r, cap) for r in rows]
-
-    def text_of(chosen: list[dict[str, Any]]) -> str:
-        return json.dumps(chosen, ensure_ascii=False, separators=(",", ":"), default=repr)
-
-    shown = every
-    while shown and len(text_of(shown)) > MAX_APPROVAL_CHARS:
-        shown = shown[:-1]
+    every, shown = _shown_approvals(rows)
     cut = isinstance(reply.data, dict) and reply.data.get("truncated") is True
     cut = cut or len(shown) < len(every)
     # The names, the owners and the manifests are text of other members, so the rows sit in a frame.
     frame = UntrustedFrame.new()
     return _result(True, [], [], count=len(shown), truncated=cut,
-                   approvals=frame.wrap("STUDIO APPROVALS", text_of(shown)),
+                   approvals=frame.wrap("STUDIO APPROVALS", _approvals_text(shown)),
                    note=frame.note(_APV_LIST_NOTE + (_APV_LIST_CUT if cut else "")))
 
 
-async def _held_approve(pid: str, version: int) -> dict[str, Any] | None:
-    """The card of an approve in a chat that read outside mail. Return None
-    to go on and approve, or the answer. The card shows the row of the list:
-    the name, the version, the owner, who asked and the manifest hash. With
-    no such row, no card shows and nothing is approved."""
+async def _move_card(pid: str, version: int, move: str) -> dict[str, Any] | None:
+    """The ONE card of an approve or a reject (*move*), in every chat. Return
+    None to go on, or the answer. The card shows the row of the list: the
+    name, the version, the owner, who asked and the manifest hash. With no
+    such row, no card shows and nothing moves. An approve of a row whose
+    manifest the list cuts, or does not show, is refused with no card: the
+    approver could not read all that they approve."""
+    act = "approved" if move == "approve" else "rejected"
     reply, rows = await _pending_rows()
     if not reply.ok:
-        return _review_fail(reply, "approved", _APV_NOT_FOUND)
+        return _review_fail(reply, act, _APV_NOT_FOUND)
     if rows is None:
         return _refusal(_APV_SHAPE)
-    row = next((r for r in rows if _skill_path(r.get("package_id")) == pid
-                and r.get("version") == version), None)
-    if row is None:
-        return _refusal(_APV_NOT_LISTED)
+    every, shown = _shown_approvals(rows)
+    at = next((i for i, r in enumerate(every)
+               if r["package_id"] == pid and r["version"] == version), None)
+    if at is None:
+        return _refusal(_APV_NOT_LISTED.replace("approved", act))
+    if move == "approve" and (at >= len(shown) or every[at]["manifest_cut"]):
+        return _refusal(_APV_TOO_LONG)
+    row = rows[at]
     name = _title_name(row.get("name", "?"))
-    shown = [("app", f"App: {name}"), ("version", f"Version: {version}"),
-             ("owner", f"Owner: {_shown(_tag(row.get('owner_email'), 120))}"),
-             ("asked", f"Asked by: {_shown(_tag(row.get('requested_by'), 120))}"),
-             ("hash", _hash_line(str(_tag(row.get("manifest_hash"), 64) or "")))]
-    context = await _card(_APV_NOTE, shown, _APV_WONT_FIT)
-    decision = await _decide(f"Approve the app {name} for the organization?",
-                             f"Version {version}. Its owner can then install it for everyone.",
-                             context)
+    card = [("app", f"App: {name}"), ("version", f"Version: {version}"),
+            ("owner", f"Owner: {_shown(_tag(row.get('owner_email'), 120))}"),
+            ("asked", f"Asked by: {_shown(_tag(row.get('requested_by'), 120))}"),
+            ("hash", _hash_line(str(_tag(row.get("manifest_hash"), 64) or "")))]
+    if move == "approve":
+        note, title = _APV_NOTE, f"Approve the app {name} for the organization?"
+        detail = f"Version {version}. Its owner can then install it for everyone."
+    else:
+        note, title = _APV_REJECT_NOTE, f"Reject the app {name} for the organization?"
+        detail = f"Version {version}. The organization cannot install it, and it stays rejected."
+    context = await _card(note, card, _APV_WONT_FIT.format(act=act))
+    decision = await _decide(title, detail, context)
     if decision != "approved":
-        return _pkg_not_done("Nothing was approved.", decision, context, shown)
+        return _pkg_not_done(f"Nothing was {act}.", decision, context, card)
     return None
 
 
-@annotate(read_only=False, idempotent=False, open_world=False)
+@annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def studio_approve(package_id: str, version: int) -> dict[str, Any]:
     """Approve one pending app version for the whole organization. Its owner can then install it.
 
-    Send the package id and the version from studio_list_approvals. Only a
-    holder of studio:publish approves, and never the owner or the publisher
-    of the version. The server checks each right, and a refusal gives its own
-    text. In a chat that read outside mail, it shows one card first and waits
-    (decision: approved, revised, stopped or no_card).
+    Call it only when the member asks, in this chat, to approve that version.
+    Send the package id and the version from studio_list_approvals. It
+    ALWAYS shows one card, in every chat, and waits (decision: approved,
+    revised, stopped or no_card). Only approved approves, and an approval
+    cannot be undone. A manifest too long to read in chat is refused. Only a
+    holder of studio:publish approves, never the owner or the publisher.
     """
     pid = _skill_path(package_id)
     if pid is None:
@@ -4427,29 +4457,28 @@ async def studio_approve(package_id: str, version: int) -> dict[str, Any]:
     problem = _version_problem(version)
     if problem:
         return problem
-    extra: dict[str, Any] = {}
     try:
-        if await _must_ask():
-            held = await _held_approve(pid, version)
-            if held is not None:
-                return held
-            extra["decision"] = "approved"
+        held = await _move_card(pid, version, "approve")
+        if held is not None:
+            return held
         reply = await _send("POST", f"/studio/packages/{pid}/versions/{version}/approval/approve",
                             None, "approve", _APV_MAYBE.format(act="approval"))
     except _Refused as exc:
-        return _refusal(str(exc), **extra)
+        return _refusal(str(exc))
     if not reply.ok:
-        return _review_fail(reply, "approved", _APV_NOT_FOUND, **extra)
-    return _reviewed(reply, **extra)
+        return _review_fail(reply, "approved", _APV_NOT_FOUND, decision="approved")
+    return _reviewed(reply, decision="approved")
 
 
-@annotate(read_only=False, idempotent=False, open_world=False)
+@annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def studio_reject(package_id: str, version: int) -> dict[str, Any]:
-    """Reject one pending app version, so the organization cannot install it.
+    """Reject one pending app version, so the organization cannot install it. It stays rejected.
 
-    Send the package id and the version from studio_list_approvals. A holder
-    of studio:publish rejects, and the owner and the publisher may reject
-    too. The server checks each right, and a refusal gives its own text.
+    Call it only when the member asks, in this chat, to reject that version.
+    Send the package id and the version from studio_list_approvals. It
+    ALWAYS shows one card, in every chat, and waits (decision: approved,
+    revised, stopped or no_card). Only approved rejects. A holder of
+    studio:publish rejects, and the owner and the publisher may reject too.
     """
     pid = _skill_path(package_id)
     if pid is None:
@@ -4458,13 +4487,16 @@ async def studio_reject(package_id: str, version: int) -> dict[str, Any]:
     if problem:
         return problem
     try:
+        held = await _move_card(pid, version, "reject")
+        if held is not None:
+            return held
         reply = await _send("POST", f"/studio/packages/{pid}/versions/{version}/approval/reject",
                             None, "reject", _APV_MAYBE.format(act="reject"))
     except _Refused as exc:
         return _refusal(str(exc))
     if not reply.ok:
-        return _review_fail(reply, "rejected", _APV_NOT_FOUND)
-    return _reviewed(reply)
+        return _review_fail(reply, "rejected", _APV_NOT_FOUND, decision="approved")
+    return _reviewed(reply, decision="approved")
 
 
 #: The six record tools, after the skill tools: two reads, then the three

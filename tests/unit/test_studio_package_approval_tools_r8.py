@@ -32,9 +32,13 @@ is not a pass.
 a. Owen asks through the tool (202 ``pending``). Ada lists and approves
    through the tools. Exactly one version moves, and a second stays pending.
 b. Owen approving his own version gets the route's 403 text. Mel, with no
-   right, gets the route's 403 text on the approve and on the list.
-c. A version that nobody asked for gives the 404 text.
-d. Org B sees nothing of org A, and its approve is 404.
+   right, gets the 403 text of the list route on the approve, the reject and
+   the list.
+c. A version that nobody asked for shows no card and moves nothing.
+d. Org B sees nothing of org A, and its approve finds no pending row.
+
+The card answers ``approved`` for the member, as in a chat where the member
+picks Approve. Each approve and each reject shows one card (review P1).
 """
 
 from __future__ import annotations
@@ -54,7 +58,7 @@ import httpx
 from acb_auth import UserContext, UserRole, build_access, get_current_user
 from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant
-from acb_skills import egress
+from acb_skills import ask_tools, egress
 from acb_skills import studio_tools as st
 from fastapi import FastAPI, Request
 from gateway.routes.studio import packages
@@ -129,12 +133,20 @@ def world(promoted, monkeypatch):  # noqa: F811
 
     monkeypatch.setattr(egress, "write_must_show_card", clear)
     monkeypatch.setattr(egress, "chat_is_held", clear)
+    cards: list[str] = []
+
+    async def card(title, detail="", context="", **kw):
+        cards.append(title)
+        return True  # the member picks Approve
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", card)
+    monkeypatch.setattr(ask_tools, "confirmation_channel_open", lambda: True)
     with p.admin_engine.begin() as c:
         for email, org in ((OWEN, p.org_a), (ADA, p.org_a), (MEL, p.org_a), (ZED, p.org_b)):
             c.execute(text(
                 "INSERT INTO app_user (email, display_name, role, status, organization_id) "
                 "VALUES (:e, :e, 'employee', 'active', :org)"), {"e": email, "org": org})
-    yield SimpleNamespace(p=p, a=p.org_a, b=p.org_b, chat=chat)
+    yield SimpleNamespace(p=p, a=p.org_a, b=p.org_b, chat=chat, cards=cards)
     with p.admin_engine.begin() as c:
         ids = [str(r[0]) for r in c.execute(text(
             "SELECT id FROM apps WHERE owner_email LIKE :t"), {"t": _EMAIL_LIKE}).all()]
@@ -220,6 +232,7 @@ def test_r8_the_owner_asks_and_an_admin_lists_and_approves_one_version(world) ->
     assert approved["ok"] is True and approved["status"] == 200, approved
     assert (approved["package_id"], approved["version"], approved["review_status"]) == (
         pid, 1, "approved")
+    assert approved["decision"] == "approved" and len(world.cards) == 1
     # One version only: version 2 stays pending.
     assert _states(world, pid) == {1: "approved", 2: "pending"}
 
@@ -242,8 +255,10 @@ def test_r8_the_owner_and_a_member_without_the_right_get_the_route_text(world) -
     for key, out in got.items():
         assert (out["ok"], out["status"], out["code"]) == (False, 403, "forbidden"), (key, out)
     assert _msg(got["owner approves"]) == store.SELF_APPROVAL
-    assert _msg(got["member approves"]) == store.NO_PUBLISH_RIGHT
-    assert _msg(got["member rejects"]) == store.NO_PUBLISH_RIGHT
+    # The move reads the list first, and the list route refuses Mel.
+    assert _msg(got["member approves"]) == packages.NO_REVIEW_RIGHT
+    assert _msg(got["member rejects"]) == packages.NO_REVIEW_RIGHT
+    assert len(world.cards) == 1  # Owen's own approve showed its card, then the route refused
     assert _msg(got["member lists"]) == packages.NO_REVIEW_RIGHT
     assert _states(world, pid) == {1: "pending"}
 
@@ -251,7 +266,7 @@ def test_r8_the_owner_and_a_member_without_the_right_get_the_route_text(world) -
 # ── c. A version that nobody asked for ────────────────────────────────────
 
 
-def test_r8_a_version_that_nobody_asked_for_gives_the_404_text(world) -> None:
+def test_r8_a_version_that_nobody_asked_for_moves_nothing(world) -> None:
     async def go() -> tuple[str, list[dict[str, Any]]]:
         pid = await _live(world.a, OWEN)
         return pid, [await _as(world, world.a, ADA, st.studio_approve(pid, 1)),
@@ -259,7 +274,8 @@ def test_r8_a_version_that_nobody_asked_for_gives_the_404_text(world) -> None:
 
     pid, answers = _run(world, go)
     for out in answers:
-        assert (out["ok"], out["status"], _msg(out)) == (False, 404, st._APV_NOT_FOUND), out
+        assert out["ok"] is False and "is not in the list" in _msg(out), out
+    assert world.cards == []
     assert _states(world, pid) == {1: "auto"}
 
 
@@ -271,9 +287,11 @@ def test_r8_a_decided_version_gives_the_409_of_the_route(world) -> None:
         return [await _as(world, world.a, ADA, st.studio_approve(pid, 1)),
                 await _as(world, world.a, OWEN, st.studio_request_approval(pid, 1))]
 
-    for out in _run(world, go):
-        assert (out["status"], out["code"], out["review_status"]) == (
-            409, "review_conflict", "rejected"), out
+    late, asked = _run(world, go)
+    assert (asked["status"], asked["code"], asked["review_status"]) == (
+        409, "review_conflict", "rejected"), asked
+    # A rejected version is no longer pending, so the approve finds no row.
+    assert late["ok"] is False and _msg(late) == st._APV_NOT_LISTED
 
 
 # ── d. Org B ──────────────────────────────────────────────────────────────
@@ -291,6 +309,8 @@ def test_r8_org_b_sees_nothing_of_org_a(world) -> None:
 
     pid, got = _run(world, go)
     assert got["list"]["ok"] is True and pid not in json.dumps(got["list"])
-    assert (got["approve"]["status"], _msg(got["approve"])) == (404, st._APV_NOT_FOUND)
-    assert (got["ask"]["status"], _msg(got["ask"])) == (404, st._PKG_NOT_YOURS)
+    assert _msg(got["approve"]) == st._APV_NOT_LISTED
+    assert (got["ask"]["status"], _msg(got["ask"])) == (
+        404, st._APV_ASK_NOT_FOUND.format(version=1, pid=pid))
+    assert world.cards == []
     assert _states(world, pid) == {1: "pending"}
