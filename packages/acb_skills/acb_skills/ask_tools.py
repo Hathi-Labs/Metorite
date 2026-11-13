@@ -1551,7 +1551,8 @@ def _given(value: Any) -> bool:
 
 
 def _creates(name: str) -> bool:
-    return bool(set(str(name).lower().split("_")[:2]) & _CREATE_VERBS)
+    head, _, rest = str(name).lower().partition("_")
+    return bool({head, rest.partition("_")[0]} & _CREATE_VERBS)
 
 
 def _identity(arguments: dict[str, Any]) -> list[tuple[str, Any]]:
@@ -1702,17 +1703,17 @@ def card_act(title: str) -> str:
     )
     text = _INERT_DROP.sub("", text)
     text = _edge_underscores(_SCHEME_SLASHES.sub(":", text))
-    text = _WWW.sub(lambda m: m.group(0)[:3] + " ", text)
+    text = _WWW.sub(lambda m: str(m.group(0))[:3] + " ", text)
     text = " ".join(text.split()).rstrip("?.:;, ").strip()
     if not text:
         return "the act on the card"
     first, _, rest = text.partition(" ")
-    if first[:1].isupper() and first[1:].islower():
+    if str(first)[:1].isupper() and first[1:].islower():
         # "Reply" reads as "reply". A name in capitals, such as "CRM", stays.
         first = first.lower()
     text = f"{first} {rest}".strip()
     if len(text) > ACT_MAX:
-        text = text[: ACT_MAX - 1].rstrip() + "…"
+        text = str(text)[: ACT_MAX - 1].rstrip() + "…"
     return text
 
 
