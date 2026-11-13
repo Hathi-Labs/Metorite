@@ -3877,7 +3877,7 @@ each value. Embeddings help the model find text. They never make a number.
 | CRM-Q28 | A weekly digest on the powerful tier | AGENT-SAFE | M | CRM-Q25 |
 | CRM-Q25b | One time zone for each month bucket of the aggregate | AGENT-SAFE | S | CRM-Q25 |
 | CRM-Q25c | A NUL byte in a list query answers 422 | AGENT-SAFE | S | — |
-| CRM-Q25e | Large reads: one read of each record, a split in one statement, a lookup by a Metorite id, a note when one day holds most records, and the long read (tasks 3127, 3128, 3129, 2985 HRD-6) | AGENT-SAFE, dark behind `CRM_LONG_READ_ORGS` | M | CRM-Q25, CRM-Q25c |
+| CRM-Q25e | Large reads: one read of each record, a split in one statement, a lookup by a Metorite id, a note when one day holds most records, and the long read (tasks 3127, 3128, 3129, 2985 HRD-6) | AGENT-SAFE. Parts 1 to 4 go live at merge. Only part 5, the long read, is dark behind `CRM_LONG_READ_ORGS` | M | CRM-Q25, CRM-Q25c |
 | CRM-Q29 | The CRM assistant never misquotes a number | AGENT-SAFE | M | CRM-Q25 |
 | CRM-Q30 | A founder question set for CRM insights | AGENT-SAFE | M | CRM-Q25, CRM-Q27 |
 | CRM-Q30b | The read tools say when Zoho holds more than the connected user can read | AGENT-SAFE | S | CRM-Q24, CRM-Q30 |
@@ -4276,7 +4276,9 @@ stopped. Done when:
    (`TOOL_CALL_SECONDS`), under the tool limit of 300 s of the orchestrator.
    Every read of the call ends by it. A call takes at most ONE long read,
    only when 200 s or more are left, and never in a headless turn (the
-   holder of `acb_llm.attribution.run_ceiling_scope`). A long read that runs
+   holder of `acb_llm.attribution.run_ceiling_scope`). A WhatsApp or text
+   run takes none too, because its whole-run cap of 240 s (or 420 s) cannot
+   hold a read of 180 s and the model calls around it. A long read that runs
    out of time keeps its count of `AGGREGATE_BUDGET`, and its text asks for
    a shorter range, never for the same read again. A 10 s read that ran out
    of time, in a call that took no long read and read nothing, spends no

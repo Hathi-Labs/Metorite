@@ -521,3 +521,53 @@ def test_a_read_that_reads_no_field_gets_no_day_set() -> None:
     assert bound == {}
     found, key, source = agg._day_of(scope, "Invoices", None, [], "UTC", bound, reads=True)
     assert found is day and key and source == fs.DETOAST_JOIN
+
+
+# ── The last review (2026-11-14) ─────────────────────────────────────────────
+
+
+def test_a_month_edge_batch_that_the_day_set_held_back_is_no_month_finding() -> None:
+    """A fiscal-year count by month with 400 of 550 invoices on 2026-03-31.
+    The day set ran, and rule 5 held the day back. The bucket pass must not
+    bring the batch back as "408 of the 550 records fall in 2026-03"."""
+    from gateway.routes.crm import aggregate as agg
+    from gateway.routes.crm import field_sql as fs
+
+    day = fs.FieldRef(key="Invoice_Date", type="date", label="Invoice Date")
+    days = [(f"2025-{m:02d}-15", 13.0, 13) for m in range(4, 13)]
+    days += [("2026-01-15", 13.0, 13), ("2026-02-15", 13.0, 13), ("2026-03-10", 7.0, 7),
+             ("2026-03-31", 400.0, 400)]
+    months = {k[:7]: 0 for k, _v, _c in days}
+    for k, _v, c in days:
+        months[k[:7]] += c
+    assert sum(months.values()) == 550 and months["2026-03"] == 407
+    values = {k: agg._Acc(value=float(c), rows=c) for k, c in months.items()}
+    with_days = agg._Read(values, {}, {}, None, day, "UTC", {}, day=day, days=days)
+    assert agg._findings(with_days, "count", "month", None) == []
+    # With no day set, the bucket pass still reads the months.
+    no_days = agg._Read(values, {}, {}, None, day, "UTC", {})
+    [found] = agg._findings(no_days, "count", "month", None)
+    assert found["key"] == "2026-03" and "fall in 2026-03, one month of" in found["sentence"]
+
+
+async def test_a_whatsapp_or_text_run_takes_no_long_read(monkeypatch) -> None:
+    """Its whole-run cap (240 s, or 420 s) cannot hold a 180 s read."""
+    import acb_skills.crm_tools as tools
+
+    call = tools._ToolCall(deadline=tools.time.monotonic() + tools.TOOL_CALL_SECONDS)
+    assert tools._long_read_open(call)
+    token = tools.open_text_asks("whatsapp")
+    try:
+        assert tools.run_text_asks() is not None
+        assert not tools._long_read_open(call)
+    finally:
+        tools.release_text_asks(token)
+    assert tools._long_read_open(call)
+    # Through the tool: the 503 that offers the long read gives one call only.
+    reads = tools.RunReads()
+    monkeypatch.setattr(tools, "_run_reads", lambda: reads)
+    monkeypatch.setattr(tools, "run_text_asks", lambda: object())
+    calls: list[tuple[dict, float]] = []
+    _fake_gateway(monkeypatch, [_timeout(True)], calls)
+    await tools.crm_aggregate("module:Invoices", measure="sum", field="Grand_Total")
+    assert [c[0].get("long_read") for c in calls] == [None] and reads.aggregates == 0

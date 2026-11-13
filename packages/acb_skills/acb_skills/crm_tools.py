@@ -663,8 +663,11 @@ def _headless_turn() -> bool:
 
 def _long_read_open(call: _ToolCall | None) -> bool:
     """True when this tool call may take its ONE long read: it has none yet,
-    it is no headless turn, and the time left covers the long read."""
+    it is no headless turn, it is no WhatsApp or text run (the whole run has
+    a cap of 240 s, or 420 s, that cannot hold a 180 s read and the model
+    calls around it), and the time left covers the long read."""
     return (call is not None and not call.long_used and not _headless_turn()
+            and run_text_asks() is None
             and call.deadline - time.monotonic() >= LONG_READ_TIMEOUT_S)
 
 

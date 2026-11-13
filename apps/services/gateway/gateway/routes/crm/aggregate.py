@@ -1416,16 +1416,18 @@ def _findings(read: _Read, measure: str, bucket: str | None,
               group_by: str | None) -> list[dict[str, Any]]:
     """CRM-Q25e part 4: what the reader must know before the total
     (``acb_common.number_sense``, the one rule). First the days of the date
-    field, from the same statement. Else, for an answer by a date bucket or
-    a month (*bucket* is its word), its own groups, each named as a bucket
-    and never as a day. The thresholds live in ``number_sense``."""
+    field, from the same statement. When the day set ran, its answer is the
+    answer, also when it is empty: a batch on the last day of a month that
+    rule 5 held back must not come back as a month. Else, for an answer by a
+    date bucket or a month (*bucket* is its word), its own groups, each
+    named as a bucket and never as a day. The thresholds live in
+    ``number_sense``."""
     summed = measure in SUMMING_MEASURES and not read.codes
     if read.day is not None and read.days:
         found = number_findings(
             [(None if d is None else str(d), v, c) for d, v, c in read.days],
             label=read.day.label, summed=summed)
-        if found:
-            return [f.wire() for f in found]
+        return [f.wire() for f in found]
     if bucket is None:
         return []
     label = (read.grouped.label if read.grouped is not None
