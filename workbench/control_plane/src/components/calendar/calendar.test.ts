@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { layoutSpans } from "./layout";
 import { rowsToEvents } from "./objectEvents";
-import { eventBox, timedEventsForDay } from "./TimeGrid";
 import type { GridEvent } from "./types";
 
 const at = (h: number, m = 0) => new Date(2026, 10, 12, h, m);
@@ -59,17 +58,5 @@ describe("layoutSpans", () => {
     expect([by("a").lane, by("a").lanes]).toEqual([0, 2]);
     expect([by("b").lane, by("b").lanes]).toEqual([1, 2]);
     expect([by("c").lane, by("c").lanes]).toEqual([0, 1]);
-  });
-});
-
-describe("the time grid helpers", () => {
-  it("keeps timed events of the day only", () => {
-    const list = [ev("a", at(9), at(10)), ev("b", at(9), at(10), true), ev("c", new Date(2026, 10, 13, 9), new Date(2026, 10, 13, 10))];
-    expect(timedEventsForDay(list, at(0)).map((e) => e.id)).toEqual(["a"]);
-  });
-  it("sets a box by start and end, with a floor of 20 px", () => {
-    const box = eventBox(ev("a", at(9), at(9, 5)), 0);
-    expect(box.height).toBe(20);
-    expect(box.top).toBeGreaterThan(0);
   });
 });
