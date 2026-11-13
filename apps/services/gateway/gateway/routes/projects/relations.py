@@ -40,6 +40,7 @@ from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     MAX_DEPTH,
     _tenant_session,
+    actor,
     load_visible_task,
     record_activity,
     resolve_visibility,
@@ -48,9 +49,16 @@ from gateway.routes.projects.core import (
     touch_task,
     wire,
 )
+from gateway.routes.projects.filters import AGENT_RUN_OPEN_STATUSES, connection_gone_sql
 from sqlalchemy import text
 
-LINK_TYPES: tuple[str, ...] = ("blocks", "relates_to", "duplicates")
+LINK_TYPES: tuple[str, ...] = ("blocks", "relates_to", "duplicates", "affects")
+
+#: The link types that carry a note (SW-25). The note is agent text at times,
+#: so every reader of it fences it as untrusted.
+NOTE_TYPES: tuple[str, ...] = ("affects", "relates_to")
+#: The longest note, in characters. The column has the same CHECK (424).
+MAX_NOTE_CHARS = 500
 
 #: The only link type with a direction that means anything to scheduling, and so
 #: the only one a cycle can deadlock. `relates_to` and `duplicates` are
@@ -167,34 +175,55 @@ async def assert_no_block_cycle(db: Any, source_id: str, target_id: str) -> None
     )
 
 
-async def insert_task_link(
+async def insert_task_link_row(
     db: Any, source_id: str, target_id: str, link_type: str, *, by: str,
-) -> str:
-    """Write one task link inside the caller's transaction. Returns its id.
+    note: str | None = None,
+) -> tuple[str, bool]:
+    """Write one task link inside the caller's transaction.
+
+    Returns ``(id, news)``. ``news`` is true when the row is new, or when its
+    note changed (SW-25), so the caller sends the bell for a note once.
 
     The ONE insert of ``pm_task_links``. ``POST /tasks/{id}/links`` calls it
     after its checks, and so do the links from text (TR-5, ``text_links.py``).
     A new row writes the ``link`` activity on the source and bumps the target,
     because a link is readable from both ends. A link that is already there
     changes nothing: no activity and no bump, so a repeated add cannot stale
-    the ``expected_version`` that another writer holds (SW-16a). The caller
-    has checked that both tasks are visible, and the cycle rule for ``blocks``.
+    the ``expected_version`` that another writer holds (SW-16a). A repeated
+    add with a NEW note replaces the note and clears ``note_read_at``, so the
+    holder reads the new text. It writes no activity either. The caller has
+    checked that both tasks are visible, and the cycle rule for ``blocks``.
     """
+    before = (await db.execute(
+        text(
+            "SELECT note FROM pm_task_links "
+            " WHERE source_task_id = CAST(:src AS uuid) "
+            "   AND target_task_id = CAST(:tgt AS uuid) AND link_type = :kind"
+        ),
+        {"src": source_id, "tgt": target_id, "kind": link_type},
+    )).fetchone()
     row = (await db.execute(
         text(
             "INSERT INTO pm_task_links "
-            "(source_task_id, target_task_id, link_type, created_by) "
-            "VALUES (CAST(:src AS uuid), CAST(:tgt AS uuid), :kind, :who) "
+            "(source_task_id, target_task_id, link_type, created_by, note) "
+            "VALUES (CAST(:src AS uuid), CAST(:tgt AS uuid), :kind, :who, :note) "
             "ON CONFLICT (source_task_id, target_task_id, link_type) "
-            "DO UPDATE SET link_type = EXCLUDED.link_type "
+            "DO UPDATE SET link_type = EXCLUDED.link_type, "
+            "  note = COALESCE(EXCLUDED.note, pm_task_links.note), "
+            "  note_read_at = CASE WHEN EXCLUDED.note IS NOT NULL "
+            "    AND EXCLUDED.note IS DISTINCT FROM pm_task_links.note "
+            "    THEN NULL ELSE pm_task_links.note_read_at END "
             # `xmax = 0` is true for a row this statement inserted, and false
             # for a row that the conflict arm found.
             "RETURNING id, (xmax = 0) AS inserted"
         ),
-        {"src": source_id, "tgt": target_id, "kind": link_type, "who": by},
+        {"src": source_id, "tgt": target_id, "kind": link_type, "who": by,
+         "note": note},
     )).fetchone()
+    changed = note is not None and (
+        before is None or getattr(before, "note", None) != note)
     if not row.inserted:
-        return str(row.id)
+        return str(row.id), changed
     await record_activity(
         db, activity_type="link", created_by=by, task_id=source_id,
         meta={"target": target_id, "type": link_type},
@@ -204,7 +233,16 @@ async def insert_task_link(
     # the target), so the target changed too and a delta client watching
     # only the blocked task would otherwise never learn it is blocked.
     await touch_task(db, target_id)
-    return str(row.id)
+    return str(row.id), True
+
+
+async def insert_task_link(
+    db: Any, source_id: str, target_id: str, link_type: str, *, by: str,
+    note: str | None = None,
+) -> str:
+    """:func:`insert_task_link_row`, and only the id of the link."""
+    return (await insert_task_link_row(
+        db, source_id, target_id, link_type, by=by, note=note))[0]
 
 
 #: The delete of a link that a caller removes. The path may name either end.
@@ -352,7 +390,7 @@ SELECT t.id, t.title, t.task_number, t.status_id, t.completed_at,
 #: "this is waiting". A client given only one side would have to ask twice and
 #: would still not know which was which.
 _LINKS_SQL = """
-SELECT l.id, l.link_type, 'outgoing' AS direction,
+SELECT l.id, l.link_type, 'outgoing' AS direction, l.note, l.note_read_at,
        t.id AS other_id, t.title, t.task_number, t.completed_at,
        t.start_date, t.due_at,
        s.name AS status_name, s.category
@@ -361,7 +399,7 @@ SELECT l.id, l.link_type, 'outgoing' AS direction,
   JOIN pm_task_statuses s ON s.id = t.status_id
  WHERE l.source_task_id = CAST(:tid AS uuid) AND {visible}
 UNION ALL
-SELECT l.id, l.link_type, 'incoming' AS direction,
+SELECT l.id, l.link_type, 'incoming' AS direction, l.note, l.note_read_at,
        t.id AS other_id, t.title, t.task_number, t.completed_at,
        t.start_date, t.due_at,
        s.name AS status_name, s.category
@@ -383,6 +421,11 @@ def _row(row: Any) -> dict[str, Any]:
         "status_name": row.status_name,
         "category": row.category,
         "completed_at": wire(row.completed_at),
+        # SW-25: the note of an affects or relates_to link, or null. Text that
+        # an agent may have written: the edge fences it as untrusted.
+        "note": getattr(row, "note", None),
+        "note_unread": (getattr(row, "note", None) is not None
+                        and getattr(row, "note_read_at", None) is None),
         # WS-27t — the dates the schedule-conflict warning is computed from.
         # Carried here so ONE pure rule serves the timeline's red arrow and the
         # panel's sentence; two implementations of "does this start before its
@@ -395,7 +438,8 @@ def _row(row: Any) -> dict[str, Any]:
 
 @router.get("/tasks/{task_id}/relations")
 async def get_relations(
-    task_id: str, user: UserContext = Depends(get_current_user),
+    task_id: str, mark_read: bool = False,
+    user: UserContext = Depends(get_current_user),
 ) -> dict:
     """One task's subtasks and links, with enough of each to render.
 
@@ -428,6 +472,29 @@ async def get_relations(
             )).fetchall()
         ]
 
+        # SW-25: an agent that reads the context of the task has read the
+        # affects notes that point at it. `my_work` then stops listing them.
+        # Only for the signed agent session that HOLDS the task: a person who
+        # opens the panel, and an agent that only looks, marks nothing. The
+        # task version stays put: no touch, and no activity.
+        held = _session_hold_binds(user)
+        if mark_read and held is not None:
+            unread = [
+                link["link_id"] for link in links
+                if link["link_type"] == "affects" and link["direction"] == "incoming"
+                and link["note_unread"]
+            ]
+            if unread:
+                await db.execute(
+                    text(
+                        "UPDATE pm_task_links SET note_read_at = now() "
+                        " WHERE id = ANY(CAST(:ids AS uuid[])) "
+                        "   AND note_read_at IS NULL "
+                        f"  AND EXISTS ({_held_run_sql('CAST(:tid AS uuid)')})"
+                    ),
+                    {"ids": unread, "tid": task_id, **held},
+                )
+
         # "Blocked by" is the INCOMING half of `blocks`: somebody else's task
         # names this one as the thing it holds up.
         blockers = [
@@ -442,16 +509,114 @@ async def get_relations(
         }
 
 
+#: The most notes that one read answers.
+NOTES_MAX_ROWS = 50
+
+
+def _held_run_sql(task_col: str) -> str:
+    """The newest open run of the CALLER's agent session on the task
+    *task_col* (SW-25). The rule of ``agent_runs._OPEN_RUN_SQL``: this member,
+    this client stamp, this connection, and the session key of this session or
+    no key yet (SW-7). A run on a revoked or expired connection holds nothing
+    (SW-13c). The binds come from :func:`_session_hold_binds`."""
+    return (
+        "SELECT h.id FROM pm_agent_runs h"
+        f" WHERE h.task_id = {task_col} AND h.member_email = :hme"
+        "   AND h.status = ANY(:hopen) AND h.client_via = :hvia"
+        "   AND h.connection_id = CAST(:hcid AS uuid)"
+        "   AND (h.session_key IS NULL OR h.session_key = CAST(:hsk AS text))"
+        f"  AND NOT {connection_gone_sql('h')}"
+        " ORDER BY h.created_at DESC, h.id DESC LIMIT 1"
+    )
+
+
+def _session_hold_binds(user: UserContext) -> dict[str, Any] | None:
+    """The binds of :func:`_held_run_sql`, from the SIGNED agent of *user*
+    (branch 0 fills ``UserContext.agent``). Never from the request. ``None``
+    for a person, and for an agent with no client stamp or no connection."""
+    agent = getattr(user, "agent", None)
+    if agent is None:
+        return None
+    via = str(getattr(agent, "actor_via", "") or "").strip().lower()
+    connection = getattr(agent, "connection_id", None)
+    if not via.startswith("mcp:") or connection is None:
+        return None
+    return {
+        "hme": actor(user).strip().lower(), "hvia": via, "hcid": str(connection),
+        "hsk": getattr(agent, "session_key", None),
+        "hopen": list(AGENT_RUN_OPEN_STATUSES),
+    }
+
+
+#: The unread affects notes on the tasks that the caller's agent session
+#: holds (SW-25). BOTH ends pass the visibility clause of the reader, so a
+#: note from a task that the reader cannot see is never listed, and its
+#: source is never named. The run id is the open run of the session.
+_NOTES_SQL = """
+SELECT l.id, l.note, l.created_at, l.target_task_id, held.run_id,
+       s.id AS from_id, s.title AS from_title, s.task_number AS from_number
+  FROM pm_task_links l
+  JOIN pm_tasks t ON t.id = l.target_task_id
+  JOIN pm_tasks s ON s.id = l.source_task_id
+  CROSS JOIN LATERAL ({held}) held(run_id)
+ WHERE l.link_type = 'affects'
+   AND l.note IS NOT NULL AND l.note_read_at IS NULL
+   AND {visible_target}
+   AND {visible_source}
+ ORDER BY l.created_at, l.id
+ LIMIT :cap
+"""
+
+
+@router.get("/affects-notes")
+async def affects_notes(user: UserContext = Depends(get_current_user)) -> dict:
+    """The unread affects notes on the tasks that the caller's agent session
+    holds, oldest first (SW-25).
+
+    ``my_work`` calls it once. The gateway finds the held tasks from the
+    signed session, so the edge sends no task id and reads no extra runs
+    list. A person holds no task through a session, so a person reads no
+    notes here. It never marks a note read: ``get_relations`` does, for the
+    session that holds the task and reads its context.
+    """
+    held = _session_hold_binds(user)
+    if held is None:
+        return {"notes": []}
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        rows = (await db.execute(
+            text(_NOTES_SQL.format(
+                held=_held_run_sql("l.target_task_id"),
+                visible_target=task_visibility_clause(vis, "t"),
+                visible_source=task_visibility_clause(vis, "s"),
+            )),
+            {"cap": NOTES_MAX_ROWS, **held, **vis.params},
+        )).fetchall()
+    return {"notes": [
+        {
+            "link_id": str(r.id), "task_id": str(r.target_task_id),
+            "run_id": str(r.run_id),
+            "from_task_id": str(r.from_id), "from_title": r.from_title,
+            "from_task_number": r.from_number, "note": r.note,
+            "created_at": wire(r.created_at),
+        }
+        for r in rows
+    ]}
+
+
 __all__ = [
     "DIRECTED_TYPES",
     "LINK_REMOVED_BODY",
     "LINK_TYPES",
+    "MAX_NOTE_CHARS",
+    "NOTE_TYPES",
     "assert_no_block_cycle",
     "blocked_by_open",
     "canonical_task_id",
     "delete_task_link",
     "drop_unseen_link_targets",
     "insert_task_link",
+    "insert_task_link_row",
     "lock_block_graph",
     "subtask_progress",
 ]
