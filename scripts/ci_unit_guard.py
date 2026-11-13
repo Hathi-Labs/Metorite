@@ -97,6 +97,15 @@ def _collection_skipped(case: ET.Element) -> bool:
     return skipped is not None and skipped.get("message") == "collection skipped"
 
 
+def _process_fences() -> set[str]:
+    """The process fences that pr-check ignores (tests/fences.json)."""
+    lists = Path(__file__).resolve().parents[1] / "tests" / "fences.json"
+    try:
+        return set(json.loads(lists.read_text(encoding="utf-8"))["python"]["process"])
+    except (OSError, ValueError, KeyError):
+        return set()
+
+
 def check(
     junit_dir: Path,
     must_run: list[str],
@@ -121,6 +130,21 @@ def check(
         must_run = [p for p in must_run if p in chosen]
     cases = _cases(junit_dir)
     problems: list[str] = list(missing)
+    # CIV-33a (Opus review of PR 2192). With one `tests/unit` argument and the
+    # only-selected plugin, a broken path match collects nothing in EVERY shard.
+    # Each shard then exits 5, which a selection run reads as "drew no test".
+    # So a selection that names a runnable test file must report at least one
+    # case. Process fences do not count, because pr-check ignores them.
+    if only_selected is not None and not cases:
+        runnable = sorted(
+            p for p in chosen
+            if p.startswith("tests/") and p.endswith(".py") and p not in _process_fences()
+        )
+        if runnable:
+            problems.append(
+                f"the selection names {len(runnable)} test file(s) "
+                f"(first: {runnable[0]}) and no shard reported a single test case"
+            )
     ran: set[str] = set()
     for case in cases:
         path = _file(case)

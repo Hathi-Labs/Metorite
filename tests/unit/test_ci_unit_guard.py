@@ -1184,3 +1184,39 @@ def test_the_changes_job_keeps_the_tested_merge_for_the_next_push() -> None:
     assert up["if"] == "${{ !cancelled() }}"
     # The merge ref needs both parents and main's history.
     assert steps[0]["with"]["fetch-depth"] == 0
+
+
+def test_a_selection_passes_tests_unit_once_with_the_plugin() -> None:
+    """CIV-33a: pytest 9.1 re-lists tests/unit for each path argument, so a
+    selection run hands pytest `tests/unit/` once and the plugin drops the rest."""
+    steps = _jobs()["test"]["steps"]
+    run = next(s["run"] for s in steps if s.get("name") == "Run unit tests (this shard)")
+    assert "-p pytest_only_selected" in run
+    assert "SHARD_SELECTED_FILES=" in run
+    assert 'PLUGIN="-p pytest_only_selected"' in run
+    # The selection branch resets the targets to the one directory.
+    assert run.count('SHARD_TARGETS="tests/unit/"') == 2
+    assert "python -m pytest $SHARD_TARGETS $PLUGIN " in run
+    assert (_ROOT / "scripts/pytest_only_selected.py").is_file()
+
+
+def test_a_selection_with_no_case_at_all_fails(tmp_path: Path) -> None:
+    """CIV-33a (Opus review of PR 2192): with one tests/unit argument and the
+    plugin, a broken path match collects nothing in every shard, and each shard
+    exits 5 as "drew no test". The guard must turn that red."""
+    out = tmp_path / "junit" / "shard-1.xml"
+    assert guard.empty_report(out) is True
+    problems = guard.check(out.parent, [], [], only_selected=["tests/unit/test_x.py"])
+    assert any("no shard reported a single test case" in p for p in problems), problems
+    # An empty selection, and a selection of process fences only, stay green.
+    assert guard.check(out.parent, [], [], only_selected=[]) == []
+    fence = sorted(guard._process_fences())
+    if fence:
+        assert guard.check(out.parent, [], [], only_selected=[fence[0]]) == []
+    # A selection that reported cases is not touched by this rule.
+    (tmp_path / "ok").mkdir()
+    junit = _report(tmp_path / "ok")
+    assert not any(
+        "no shard reported" in p
+        for p in guard.check(junit, [], [], only_selected=["tests/unit/test_x.py"])
+    )

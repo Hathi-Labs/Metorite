@@ -912,7 +912,7 @@ Each rung ends in a demo (D211). Each slice of a rung blocks its demo task.
 | CIV-30 | 3055 | 1 | HIGH | The green pointer. A release ships green |
 | CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first |
 | CIV-32 | 3057 | 2 | STANDARD | **BUILT 2026-11-13.** A repair round tests what failed and what the fix reaches (`ci_unit_guard.py repair`) |
-| CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection |
+| CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py` |
 | CIV-34 | 3059 | 2 | STANDARD | Conflict rules in the merge bot, tested on the merged tree |
 | CIV-35 | 3060 | 2 | LOW | A proposal: review depth by file class. It needs an owner decision |
 
