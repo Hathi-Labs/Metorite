@@ -37,4 +37,18 @@ describe("StudioFilterBar", () => {
     expect(frame).toContain("StudioFilterBar");
     expect(frame).toContain("toListArgs");
   });
+
+  it("names each end of a range, in text and for assistive technology", () => {
+    expect(bar).toContain('placeholder="From"');
+    expect(bar).toContain('placeholder="To"');
+    expect(bar).toContain("`${chip.label} from`");
+    expect(bar).toContain("`${chip.label} to`");
+    expect(bar).toMatch(/text-muted-foreground">from</);
+  });
+
+  it("shows No match with a Clear action only through showNoMatch", () => {
+    expect(frame).toContain("showNoMatch");
+    expect(frame).toContain("No match");
+    expect(frame).toContain("clearedBar");
+  });
 });

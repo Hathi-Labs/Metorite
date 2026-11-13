@@ -245,3 +245,11 @@ export function barTarget<V extends { id: string; block: string }>(
   }
   return null;
 }
+
+/**
+ * Does the list show the "No match" line? Only when the bar holds a filter and the read gave no rows.
+ * With no filter the block keeps its own "No <Object> yet".
+ */
+export function showNoMatch(rows: readonly unknown[] | null | undefined, active: number): boolean {
+  return Array.isArray(rows) && rows.length === 0 && active > 0;
+}

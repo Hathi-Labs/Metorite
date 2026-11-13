@@ -24,9 +24,9 @@ import {
 } from "@/lib/studio/filterBarModel";
 
 /** A text box that writes after a pause. It is the search box of the CRM, with another label. */
-function PauseInput({ label, value, onCommit, icon, className = "w-44", type = "text", step }: {
+function PauseInput({ label, value, onCommit, icon, className = "w-44", type = "text", step, placeholder }: {
   label: string; value: string; onCommit: (text: string) => void;
-  icon?: string; className?: string; type?: "text" | "number"; step?: string;
+  icon?: string; className?: string; type?: "text" | "number"; step?: string; placeholder?: string;
 }) {
   const [state, setState] = useState(() => searchBoxStart(value));
   const synced = searchBoxSync(state, value);
@@ -42,7 +42,7 @@ function PauseInput({ label, value, onCommit, icon, className = "w-44", type = "
   }, []);
   return (
     <Input icon={icon} inputSize="sm" className={className} type={type} step={step} value={synced.draft}
-      placeholder={label} aria-label={label}
+      placeholder={placeholder ?? label} aria-label={label}
       onChange={(e) => {
         const text = e.target.value;
         setState((s) => ({ ...s, draft: text }));
@@ -84,9 +84,9 @@ function ChipControl({ chip, value, onChange }: { chip: Chip; value: string; onC
       return (
         <span className="flex items-center gap-1" role="group" aria-label={chip.label}>
           <span className="text-xs text-muted-foreground">{chip.label}</span>
-          <PauseInput label={`${chip.label} from`} type="number" step="any" className="w-24" value={r.from}
+          <PauseInput label={`${chip.label} from`} placeholder="From" type="number" step="any" className="w-24" value={r.from}
             onCommit={(t) => onChange(rangeValue(t.trim(), r.to))} />
-          <PauseInput label={`${chip.label} to`} type="number" step="any" className="w-24" value={r.to}
+          <PauseInput label={`${chip.label} to`} placeholder="To" type="number" step="any" className="w-24" value={r.to}
             onCommit={(t) => onChange(rangeValue(r.from, t.trim()))} />
         </span>
       );
@@ -96,8 +96,10 @@ function ChipControl({ chip, value, onChange }: { chip: Chip; value: string; onC
       return (
         <span className="flex items-center gap-1" role="group" aria-label={chip.label}>
           <span className="text-xs text-muted-foreground">{chip.label}</span>
+ <span className="text-xs text-muted-foreground">from</span>
           <Input type="date" inputSize="sm" className="w-36" value={r.from} aria-label={`${chip.label} from`}
             onChange={(e) => onChange(rangeValue(e.target.value, r.to))} />
+          <span className="text-xs text-muted-foreground">to</span>
           <Input type="date" inputSize="sm" className="w-36" value={r.to} aria-label={`${chip.label} to`}
             onChange={(e) => onChange(rangeValue(r.from, e.target.value))} />
         </span>

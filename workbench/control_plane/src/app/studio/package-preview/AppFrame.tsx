@@ -29,7 +29,7 @@ import { type Row, type StudioDataDoor, moreLine, sourceKey } from "@/lib/studio
 import { buildHref } from "@/lib/studio/packageDraft";
 import {
   activeCount, barOf, barTarget, chipsOf, clearedBar, layoutsFor, searchKeyOf, toListArgs, withFilter,
-  withGroup, withLayout, withQ, withSort, type BarField,
+  showNoMatch, withGroup, withLayout, withQ, withSort, type BarField,
 } from "@/lib/studio/filterBarModel";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import { buildPage, viewObjectName } from "@/lib/studio/pageModel";
@@ -67,6 +67,22 @@ function DetailCell({ model, door, selected, onPick }: {
           ? <RecordsStatus loading={false} error={rows.error} onRetry={rows.refresh} />
           : <EmptyState icon="Inbox" message="No record to show yet" />}
       {moreLine(rows.data) ? <p role="status" className="mt-2 text-xs text-muted-foreground">{moreLine(rows.data)}</p> : null}
+    </div>
+  );
+}
+
+/** The list of the bar's view. A filter that leaves no row says "No match", with the way out (AF-4). */
+function FilteredList({ source, door, active, onClear, children }: {
+  source: { action: string; args?: Record<string, unknown> }; door: StudioDataDoor;
+  active: number; onClear: () => void; children: React.ReactNode;
+}) {
+  // The same key as the block's own read, so this adds no second read.
+  const rows = useCachedResource<Row[]>(sourceKey(door, source), () => door.read(source));
+  if (!showNoMatch(rows.data, active)) return <>{children}</>;
+  return (
+    <div className={PANEL}>
+      <EmptyState icon="SearchX" message="No match" hint="No record fits the search and the filters."
+        action={{ label: "Clear filters", icon: "X", onClick: onClear }} />
     </div>
   );
 }
@@ -111,8 +127,15 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted }: App
     const model = view ? mapView(view, ctx) : null;
     if (!model) return null;
     switch (model.kind) {
-      case "node":
-        return <GenerativeUINode spec={model.node} />;
+      case "node": {
+        const node = <GenerativeUINode spec={model.node} />;
+        const src = model.node.props.source as { action: string; args?: Record<string, unknown> } | undefined;
+        if (!bar || id !== bar.lens.view || !src) return node;
+        return (
+          <FilteredList source={src} door={door} active={activeCount(bar.fields, bar.value)}
+            onClear={() => update(clearedBar)}>{node}</FilteredList>
+        );
+      }
       case "problem":
         return <p role="status" className={`${PANEL} text-sm text-muted-foreground`}>{model.reason}</p>;
       case "form":

@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import { decodePageState, encodePageState, type PageState } from "./pageState";
 import {
-  CHIP_TYPES, MAX_CONDITIONS, SORT_TYPES, activeCount, barOf, barTarget, chipFor, chipsOf, clearedBar, layoutsFor,
+  CHIP_TYPES, MAX_CONDITIONS, SORT_TYPES, activeCount, showNoMatch, barOf, barTarget, chipFor, chipsOf, clearedBar, layoutsFor,
   parseRange, rangeValue, searchKeyOf, sortOptions, toListArgs, withFilter, withGroup, withLayout, withQ, withSort,
   type BarField,
 } from "./filterBarModel";
@@ -205,5 +205,14 @@ describe("the lens of mapView", () => {
     expect(JSON.stringify(first)).toContain('"groupBy":"status"');
     const asTable = mapView({ ...table, block: "board" }, { actions, objects: [object], owner: true, lens: { view: "t", layout: "table" } });
     expect(JSON.stringify(asTable)).not.toContain("groupBy");
+  });
+});
+
+describe("the no-match line", () => {
+  it("shows only with an active filter and no rows", () => {
+    expect(showNoMatch([], 1)).toBe(true);
+    expect(showNoMatch([], 0)).toBe(false);
+    expect(showNoMatch([{ id: "a" }], 2)).toBe(false);
+    expect(showNoMatch(undefined, 1)).toBe(false);
   });
 });
