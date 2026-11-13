@@ -382,10 +382,10 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "POST /api/studio/skills": "studio_skill_save",
     "POST /api/studio/skills/{}/versions": "studio_skill_save",
     # ── Workflows (STB-6a, ai_studio.md E13a) ──
-    # The two reads of the Workflows app, as the member. The read of one workflow
-    # drops the webhook token, and shows the steps as a count by type.
-    "GET /api/workflows": "studio_workflow_list",
-    "GET /api/workflows/{}": "studio_workflow_get",
+    # The two reads of the Workflows app, as the member, in ONE tool (no id: the list).
+    # The read of one workflow drops the webhook token, and shows the steps as a count by type.
+    "GET /api/workflows": "studio_workflow_read",
+    "GET /api/workflows/{}": "studio_workflow_read",
 }
 
 #: A covered action that more than one chat tool sends -> the other tools.
