@@ -296,7 +296,8 @@ def step(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     w = SimpleNamespace(pid=pid, log=[], records={"visit": 700, "site": 300}, busy=False,
                         busy_purge=False, busy_counts=False, extra=[], now=100.0,
                         deadlines=[], gone=False, row_busy=False, row_waits=[],
-                        counts_calls=0, busy_counts_from=None)
+                        counts_calls=0, busy_counts_from=None, history=0,
+                        busy_history=False)
 
     async def get_package(db: Any, member: str, package_id: str, *,
                           for_update: bool = False) -> store.Package | None:
@@ -346,7 +347,19 @@ def step(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     monkeypatch.setattr(objects_store, "lock_org", lock_org)
     monkeypatch.setattr(objects_store, "package_counts", package_counts)
     monkeypatch.setattr(objects_store, "object_names", object_names)
+    async def purge_record_changes(db: Any, package_id: str, *, limit: int = 500,
+                                   deadline: float | None = None) -> int:
+        """C4a-1: the history of the package, ``w.history`` rows."""
+        w.log.append(f"history({limit})")
+        w.deadlines.append(deadline)
+        if w.busy_history:
+            raise objects_store.StoreBusy("This app is busy. Try again in a moment.")
+        take = min(limit, w.history)
+        w.history -= take
+        return take
+
     monkeypatch.setattr(objects_store, "purge_records", purge_records)
+    monkeypatch.setattr(objects_store, "purge_record_changes", purge_record_changes)
     monkeypatch.setattr(objects_store, "_clock", lambda: w.now)
     monkeypatch.setattr(objects_store, "bounded_wait", bounded_wait)
     return w
@@ -361,14 +374,15 @@ def test_a_step_locks_the_apps_row_then_the_org_then_purges(step: SimpleNamespac
     got = _run(store.delete_package(db, ANA, step.pid, confirm=_token(step)))
     assert got == store.DeleteStep(deleted=False, removed=500, names=_NAMES)
     assert step.log == ["get(for_update=True)", "lock_org", "package_counts", "counts",
-                        "purge(500)"]
+                        "history(500)", "purge(500)"]
 
 
 def test_a_later_step_checks_the_names_and_not_the_token(step: SimpleNamespace) -> None:
     got = _run(store.delete_package(_StoreDb(step.log), ANA, step.pid, names=_NAMES,
                                     removed=500))
     assert got == store.DeleteStep(deleted=False, removed=500, names=_NAMES)
-    assert step.log == ["get(for_update=True)", "lock_org", "object_names", "purge(500)"]
+    assert step.log == ["get(for_update=True)", "lock_org", "object_names", "history(500)",
+                        "purge(500)"]
 
 
 def test_a_full_chunk_answers_not_deleted_and_writes_nothing_else(step: SimpleNamespace) -> None:
@@ -391,7 +405,7 @@ def test_a_full_chunk_past_the_budget_ends_the_call_with_a_partial_row(
     assert got.left is not None and got.left.records == 500
     assert got.left.confirm == _token(step)
     assert step.log[-4:] == ["purge(500)", "audit", "package_counts", "counts"]
-    assert step.deadlines == [end]
+    assert step.deadlines == [end, end]
     [audit] = db.audits
     assert audit["detail"] == {
         "op": "package.delete.partial", "by": "owner", "owner": ANA, "name": "Visits",
@@ -661,6 +675,83 @@ def test_the_admin_switch_is_keyword_only_and_off_by_default() -> None:
         assert params["as_admin"].default is False
 
 
+# ── a3. The change history in a step (C4a-1) ──────────────────────────────
+
+
+def test_a_step_purges_the_history_and_then_the_records(step: SimpleNamespace) -> None:
+    """C4a-1. Each step purges one chunk of the change history first, and
+    then one chunk of records, under the same end of the call."""
+    step.history = 30
+    got = _run(store.delete_package(_StoreDb(step.log), ANA, step.pid, names=_NAMES,
+                                    end_at=step.now + 100))
+    assert got == store.DeleteStep(deleted=False, removed=500, names=_NAMES)
+    assert step.log[-2:] == ["history(500)", "purge(500)"]
+    assert step.history == 0
+    assert step.deadlines == [step.now + 100, step.now + 100]
+
+
+def test_a_full_chunk_of_history_alone_keeps_the_package(step: SimpleNamespace) -> None:
+    """C4a-1. No record is left, but a full chunk of history is. The step
+    keeps the ``apps`` row for a next step, and says ``history_left``."""
+    step.records = {"visit": 0, "site": 0}
+    step.history = 600
+    db = _StoreDb(step.log)
+    got = _run(store.delete_package(db, ANA, step.pid, names=_NAMES, end_at=step.now + 100))
+    assert got == store.DeleteStep(deleted=False, removed=0, names=_NAMES, history_left=True)
+    assert "delete" not in step.log and db.audits == []
+    # The next step finds less than a chunk of history and no record: it deletes.
+    got = _run(store.delete_package(db, ANA, step.pid, names=_NAMES, end_at=step.now + 100))
+    assert got is not None and got.deleted and step.history == 0
+    assert step.log.count("history(500)") == 2 and "delete" in step.log
+
+
+def test_a_full_chunk_of_history_past_the_budget_answers_with_history_left(
+        step: SimpleNamespace) -> None:
+    """C4a-1. The 202 of a call that leaves only history says so, so the
+    client does not read ``remaining: 0`` as done."""
+    step.records = {"visit": 0, "site": 0}
+    step.history = 600
+    db = _StoreDb(step.log, counts=(2, 1, 0, 0))
+    got = _run(store.delete_package(db, ANA, step.pid, names=_NAMES,
+                                    end_at=step.now + store.STEP_SECONDS - 0.1))
+    assert got is not None and got.history_left and not got.busy and got.left is not None
+    assert got.left.records == 0 and "delete" not in step.log
+
+
+def test_a_records_purge_out_of_time_after_history_is_no_busy_end(
+        step: SimpleNamespace) -> None:
+    """C4a-1. The history purge removed rows, and the records purge then ran
+    out of time. The step made progress, so it ends as a full chunk and the
+    budget check decides: a 202 with ``history_left``, not a 503."""
+    step.history = 10
+    step.busy_purge = True
+    db = _StoreDb(step.log)
+    got = _run(store.delete_package(db, ANA, step.pid, names=_NAMES, removed=500,
+                                    end_at=step.now + store.STEP_SECONDS - 0.1))
+    assert got is not None and not got.busy and got.history_left and got.removed == 0
+    [audit] = db.audits
+    assert audit["detail"]["reason"] == "budget"
+    # With no history removed, a busy records purge stays a busy end.
+    step.log.clear()
+    db = _StoreDb(step.log)
+    got = _run(store.delete_package(db, ANA, step.pid, names=_NAMES, removed=500,
+                                    end_at=step.now + 100))
+    assert got is not None and got.busy
+
+
+def test_the_202_body_says_when_history_is_left(world: SimpleNamespace) -> None:
+    """C4a-1. ``history_left`` joins the 202 body. The other fields stay."""
+    pid = world.add(records=1200)
+    world.tick = packages.DELETE_BUDGET_SECONDS
+    world.history_left = True
+    r = _delete(_client(world), pid, {"confirm": world.preview(pid).confirm})
+    assert r.status_code == 202, r.text
+    got = r.json()
+    assert got["history_left"] is True
+    assert set(got) == {"deleted", "package_id", "remaining", "remaining_capped",
+                        "records_removed", "confirm", "history_left"}
+
+
 # ── a2. The admin path of the store (A5c-2) ────────────────────────────────
 
 
@@ -703,7 +794,7 @@ def test_an_admin_step_reads_any_owner_and_checks_the_owner_before_the_org_lock(
     got = _run(store.delete_package(db, ANA, step.pid, confirm=_token(step), as_admin=True))
     assert got == store.DeleteStep(deleted=False, removed=500, names=_NAMES)
     assert step.log == ["admin_get(for_update=True)", "owner_active", "lock_org",
-                        "package_counts", "counts", "purge(500)"]
+                        "package_counts", "counts", "history(500)", "purge(500)"]
     assert db.owner_reads == [BEN]
 
 
@@ -991,7 +1082,8 @@ def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:  # noqa: C901 - o
     w = SimpleNamespace(packages={}, org=None, sessions=0, steps=[], busy_steps=set(),
                         row_busy_steps=set(), active=set(), active_from_step=None,
                         admin_reads=[],
-                        chunk=500, audits=[], preview_busy=False, clock=0.0, tick=0.0)
+                        chunk=500, audits=[], preview_busy=False, clock=0.0, tick=0.0,
+                        history_left=False)
 
     def add(owner: str = ANA, org: str = ORG, records: int = 1200) -> str:
         pid = str(uuid.uuid4())
@@ -1093,7 +1185,8 @@ def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:  # noqa: C901 - o
             left = None if w.preview_busy else preview(pid, row)
             return store.DeleteStep(deleted=False, removed=gone, names=seen, left=left,
                                     changed=reason == "changed",
-                                    busy=reason == "busy" or left is None)
+                                    busy=reason == "busy" or left is None,
+                                    history_left=w.history_left)
 
         if confirm is not None:
             if confirm != now.confirm:
@@ -1308,7 +1401,7 @@ def test_past_the_budget_the_call_answers_202_with_a_new_token(world: SimpleName
     got = r.json()
     assert got == {"deleted": False, "package_id": pid, "remaining": 700,
                    "remaining_capped": False, "records_removed": 500,
-                   "confirm": world.preview(pid).confirm}
+                   "confirm": world.preview(pid).confirm, "history_left": False}
     assert len(world.steps) == 1
     # The same DELETE with the new token goes on, and an old token is 409.
     assert _delete(c, pid, {"confirm": got["confirm"]}).status_code == 202
@@ -1686,9 +1779,13 @@ def test_the_lock_order_is_in_the_source() -> None:
     # A5c-2: the owner check of the admin path sits between the row lock and
     # the org lock.
     marks = ["_read_for_delete(db, m, pid, as_admin)", "_owner_active(db, current.owner_email)",
-             "objects_store.lock_org(db)", "objects_store.purge_records(", "_finish_delete("]
+             "objects_store.lock_org(db)", "_purge_chunk(", "_finish_delete("]
     where = [src.find(m) for m in marks]
     assert -1 not in where and where == sorted(where), dict(zip(marks, where, strict=True))
+    # C4a-1: the chunk purges the history first, then the records.
+    chunk = inspect.getsource(store._purge_chunk)
+    assert -1 < chunk.find("objects_store.purge_record_changes(") < chunk.find(
+        "objects_store.purge_records(")
     read = inspect.getsource(store._read_for_delete)
     assert "bounded_wait(db, ROW_LOCK_WAIT_MS)" in read
     assert "get_package(db, m, pid, for_update=True)" in read
@@ -1749,6 +1846,8 @@ def test_the_worst_call_ends_before_the_chat_tool_gives_up() -> None:
     row = store.ROW_LOCK_WAIT_MS / 1000
     assert budget + count < _client_timeout()
     # Fix round 2, item 3: a step also waits for the apps row, with a bound.
+    # C4a-1: a step also purges history, and the records purge that runs out
+    # of time after it ends the call with a 202 (no second purge budget).
     assert row + lock + objects_store.PURGE_TIMEOUT_MS / 1000 == store.STEP_SECONDS
     assert budget > store.STEP_SECONDS
     assert row + lock + count < budget

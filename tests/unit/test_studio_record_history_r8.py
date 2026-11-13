@@ -38,6 +38,9 @@ g. The table has FORCE RLS and the DEFAULT of the bound tenant.
   of the batch. ``test_r8_a_refused_batch_leaves_no_row`` goes red.
 * R3. ``objects_store._PURGE_CHANGES_SQL``: drop the object filter.
   ``test_r8_purge_removes_the_history_of_one_package_only`` goes red.
+* R4. ``packages_store.delete_package``: drop the call of
+  ``purge_record_changes``. ``test_r8_a_package_delete_purges_the_history_in_each_step``
+  goes red, because the history stays after the first step.
 """
 
 from __future__ import annotations
@@ -55,6 +58,7 @@ pytest.importorskip("sqlalchemy")
 
 from acb_common.db import tenant_session
 from gateway.studio import objects_store as store
+from gateway.studio import packages_store
 from gateway.studio.objects_store import BatchError, Write
 from sqlalchemy import create_engine, text
 
@@ -282,3 +286,49 @@ def test_r8_the_table_has_force_rls_and_the_tenant_default(world: Any) -> None:
             "AND a.attname = 'organization_id'")).scalar_one()
     assert tuple(row) == (True, True)
     assert "current_setting('app.tenant_id'" in default
+
+
+def test_r8_a_package_delete_purges_the_history_in_each_step(world: Any) -> None:
+    """The real ``delete_package``, with a chunk of 2. Each step purges two
+    history rows before its records, so the history goes down in each step,
+    and not only by the cascade at the end. 4 creates and 1 update give 5 rows."""
+    def history() -> int:
+        return _admin_count(world, "organization_id = CAST(:o AS uuid) AND object_id IN "
+                            "(SELECT id FROM studio_objects WHERE package_id = CAST(:p AS uuid))",
+                            {"o": world.a, "p": world.pkg_a})
+
+    async def fill() -> None:
+        obj = await _object(world.a, world.pkg_a)
+        made = await _put(world.a, obj, *[Write("create", obj.id, data={"qty": i})
+                                          for i in range(4)])
+        await _put(world.a, obj, Write("update", obj.id, made[0].id, {"qty": 9}))
+
+    _go(world, fill)
+    assert history() == 5
+    seen: list[tuple[int, bool, bool]] = []
+
+    async def delete() -> None:
+        async with tenant_session(world.a) as db:
+            preview = await packages_store.delete_preview(db, ANA, world.pkg_a)
+        assert preview is not None
+        names: tuple[str, ...] | None = None
+        removed = 0
+        while True:
+            async with tenant_session(world.a) as db:
+                step = await packages_store.delete_package(
+                    db, ANA, world.pkg_a, confirm=preview.confirm if names is None else None,
+                    names=names, chunk=2, removed=removed)
+            assert step is not None
+            seen.append((history(), step.deleted, step.history_left))
+            removed += step.removed
+            if step.deleted:
+                return
+            names = step.names
+
+    _go(world, delete)
+    # Step 1: 2 history rows and 2 records. Step 2: 2 and 2, so the history
+    # is a full chunk. Step 3: the last history row, and the package goes.
+    assert seen == [(3, False, True), (1, False, True), (0, True, False)]
+    with world.p.admin_engine.connect() as c:
+        assert c.execute(text("SELECT count(*) FROM apps WHERE id = CAST(:p AS uuid)"),
+                         {"p": world.pkg_a}).scalar_one() == 0

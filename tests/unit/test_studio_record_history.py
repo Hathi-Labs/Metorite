@@ -243,6 +243,21 @@ def test_only_the_workflow_write_sets_via() -> None:
     assert "writes=[write, *line_writes], **how)" in do_write
     src = ast.unparse(funcs["run_workflow_write"])
     assert "via=(WORKFLOW_RUN_VIA, str(run_id))" in src
+    # Inside _do_object_write, `via` is only its keyword parameter: no line
+    # assigns the name, and the one string "via" is the key of the dict that
+    # passes it on. So no `body["via"]` and no `payload.get("via")`.
+    fn = funcs["_do_object_write"]
+    assert isinstance(fn, ast.AsyncFunctionDef)
+    assert [a.arg for a in fn.args.kwonlyargs] == ["via"]
+    stores = [n for n in ast.walk(fn) if isinstance(n, ast.Name) and n.id == "via"
+              and isinstance(n.ctx, ast.Store)]
+    assert stores == []
+    keys = [n for n in ast.walk(fn) if isinstance(n, ast.Constant) and n.value == "via"]
+    dicts = [n for n in ast.walk(fn) if isinstance(n, ast.Dict)
+             and any(isinstance(k, ast.Constant) and k.value == "via" for k in n.keys)]
+    assert len(keys) == 1 and len(dicts) == 1, ast.unparse(fn)
+    [value] = dicts[0].values
+    assert isinstance(value, ast.Name) and value.id == "via"
 
 
 def test_the_audit_row_stays_value_free() -> None:
@@ -272,3 +287,15 @@ def test_the_migration_is_tenant_scoped_and_expand_only() -> None:
     for word in ("DROP TABLE", "DROP COLUMN", "RENAME", "ALTER COLUMN"):
         assert word not in body.upper(), word
     assert "CREATE TABLE IF NOT EXISTS" in body and "CREATE INDEX IF NOT EXISTS" in body
+
+
+def test_the_purge_of_history_names_the_bound_org_twice() -> None:
+    """The DELETE and its subselect each filter on the bound org, beside RLS,
+    as ``_PURGE_SQL`` does."""
+    sql = store._PURGE_CHANGES_SQL
+    outer, inner = sql.split("ARRAY(SELECT", 1)
+    want = f"organization_id = {store._BOUND_ORG}"
+    assert want in outer and want in inner
+    assert "object_id = CAST(:oid AS uuid)" in outer and "object_id = CAST(:oid AS uuid)" in inner
+    assert outer.startswith("DELETE FROM studio_record_changes ")
+    assert "FROM studio_record_changes " in inner and "LIMIT :n" in inner

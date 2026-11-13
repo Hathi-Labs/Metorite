@@ -43,9 +43,7 @@
 -- (gateway/routes/admin/members.py) deletes no row of this table.
 -- tests/unit/test_admin_member_purge.py pins that decision.
 --
--- The number is taken at build time (R1). On 2026-11-13 origin/main held 426,
--- and the open branches held up to 428. The worktree of another lane held
--- 429 (studio_hot_num_f8), so this file takes 430. Check it again at merge.
+-- The number is taken at build time (R1). Check it again at merge.
 -- Fences: tests/unit/test_studio_record_history.py and
 -- tests/unit/test_studio_record_history_r8.py (R8).
 -- ============================================================================
