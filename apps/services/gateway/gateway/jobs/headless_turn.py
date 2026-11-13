@@ -39,7 +39,8 @@ contract R11). ``candidate`` names a check of :data:`_CANDIDATES`.
    A check that raises gives up with ``CandidateFailed``.
 7. ``unattended.once``: ``begin``, ``run_guarded`` and ``finish``. A taken
    slot is ``done``. The rounds run inside ``job_member_scope(member,
-   app="auto", agent="auto.headless")``.
+   app="auto", agent="auto.headless")`` and ``run_attribution_scope`` of
+   the same app and agent (AUTO-8b-2c).
 8. ``hold`` and ``complete``, or ``give_up`` with a named reason.
 
 **One round** (:meth:`HeadlessTurn._rounds`):
@@ -193,10 +194,12 @@ module names neither the setter nor the reader of that no-person mark.
 
 **Money.** The handler writes no ``usage_event`` row: the Router writes it.
 The paying member is ``goal_records.member_email``, bound VERIFIED through
-``job_member_scope``. ⚠️ Inside ``run_agent``, the run binds its own agent
-name (``worker``) and the app of the worker's config (``chat``). So the
-usage row names those, not ``auto.headless``. AUTO-8b-2 decides that
-attribution.
+``job_member_scope``. AUTO-8b-2c: the rounds run inside
+``acb_common.run_attribution_scope(app="auto", agent="auto.headless")``.
+So ``run_agent`` binds ``auto.headless`` and ``auto`` in place of the
+worker's ``worker`` and ``chat``, the worker's client sends no fixed
+``X-CC-Agent``, and the usage row names the turn. This module is the one
+binder of the scope.
 
 **Tenancy (R5).** Each step opens ``tenant_session(org)`` with the org of
 the worker. No statement names an org. The module builds no engine, opens
@@ -219,7 +222,13 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from acb_common import get_logger, get_settings, goal_store, job_member_scope
+from acb_common import (
+    get_logger,
+    get_settings,
+    goal_store,
+    job_member_scope,
+    run_attribution_scope,
+)
 from acb_common.db import tenant_session
 from acb_llm.attribution import run_ceiling_scope
 
@@ -678,7 +687,9 @@ class HeadlessTurn:
     async def _run_once(self, org: str, member: str, goal_id: str, slot: str,
                         claim: queue.Claim, deadline: float) -> None:
         async def work(guard: unattended.StallGuard) -> TurnEnd:
-            with job_member_scope(member, app=APP, agent=AGENT):
+            # AUTO-8b-2c: the one binder of the attribution scope.
+            with (job_member_scope(member, app=APP, agent=AGENT),
+                  run_attribution_scope(app=APP, agent=AGENT)):
                 # The mark of each call is the claim id (the slot).
                 return await self._rounds(org, member, goal_id, slot, guard, deadline)
 

@@ -707,6 +707,9 @@ DEBT: dict[str, str] = {
     "POST /api/studio/packages/{}/restore": "P-9",
     # STU-G5: the Publish dialog reads the live version with its manifest. G1d (chat reads versions) pays it.
     "GET /api/studio/packages/{}/versions/{}": "P-9",
+    # STU-K1a-ui (task 1203): the "Start from a ready app" section lists the templates and installs one. A chat tool for both (list the ready apps, then create one behind an approval card) is a later slice. The UI path is the same one-step route that the tool will call.
+    "GET /api/studio/templates": "P-9",
+    "POST /api/studio/packages/from-template": "P-9",
     # ── Tasks ──
     "POST /api/tasks/ai/backfill-context": "P-1",
     "POST /api/tasks/capture/from-email": "P-1",
@@ -1089,7 +1092,7 @@ DEBT_CEILING: dict[str, int] = {
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write.
     "admin": 36,
     "integrations": 22,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access.
-    "studio": 3,  # PKG-10e-2 added Keep and Restore of the end-date bar (task 2971), paid by P-9 (1 to 3). G5 adds the version read. A5c-2 paid the two delete requests of BETA-1. B2c-2b adds no debt: its writes are ALSO rows of the door route.
+    "studio": 5,  # PKG-10e-2 added Keep and Restore of the end-date bar (task 2971), paid by P-9 (1 to 3). G5 adds the version read. A5c-2 paid the two delete requests of BETA-1. B2c-2b adds no debt: its writes are ALSO rows of the door route. STU-K1a-ui (task 1203) added the template list and the one-step install, which wait for their chat tool (3 to 5).
 }
 
 #: A UI file -> the most requests in it that the fence cannot read. A new
