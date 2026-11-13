@@ -78,6 +78,7 @@ def event_trigger_matches(
 
 async def _author_may_hear(
     db: Any, row: Any, source: str, payload: dict[str, Any], org: str,
+    studio_held: dict[str, bool],
 ) -> bool:
     """True when the event may start the workflow of *row* (STU-E3 fix).
 
@@ -86,7 +87,9 @@ async def _author_may_hear(
     reads runs. So the workflow starts only when its AUTHOR
     (``workflows.owner_email``, the person the run is attributed to) can READ
     that package, by the one Studio read rule (``studio.access``). It runs in
-    the org-bound session of the door, before the version loads. It fails
+    the org-bound session of the door, before the version loads. The access of
+    the author (*studio_held*) is asked BEFORE that session opens, so this
+    call opens no second session. A missing entry is a refusal. It fails
     closed: no package id, an unknown package or a read error is a refusal. The
     log line names the workflow and holds no payload content. Other sources
     are unchanged.
@@ -96,9 +99,10 @@ async def _author_may_hear(
 
     if source != RECORD_EVENT_SOURCE:
         return True
+    who = str(row.owner_email or "").strip().lower()
     if await member_reads_package(
-        db, member=str(row.owner_email or ""), package_id=payload.get("package_id"),
-        organization_id=org,
+        db, member=who, package_id=payload.get("package_id"),
+        organization_id=org, studio_held=bool(studio_held.get(who, False)),
     ):
         return True
     _log.warning("workflows.event_run_refused_package_access", workflow_id=str(row.workflow_id))
@@ -114,6 +118,9 @@ async def dispatch_event(
     Best-effort and never raises — event delivery must not break the webhook
     receivers that call it. Returns ``[{workflow_id, run_id}, …]``.
     """
+    from gateway.studio.access import members_holding_studio
+    from gateway.studio.preview import RECORD_EVENT_SOURCE
+
     started: list[dict[str, str]] = []
     org = current_tenant()
     if not org or not unattended.org_allowed(org):
@@ -126,8 +133,8 @@ async def dispatch_event(
         return started
     try:
         matches: list[tuple[Any, dict[str, Any]]] = []
-        seen: set[str] = set()
-        refused: set[str] = set()
+        # One short session reads the candidate rows and closes. It never
+        # holds a second connection (STU-E3 pool fix).
         async with _tenant_session(org) as db:
             rows = (
                 await db.execute(
@@ -142,34 +149,45 @@ async def dispatch_event(
                     ),
                 )
             ).fetchall()
-            for row in rows:
-                config = parse_jsonb(row.config, {}) or {}
-                if not event_trigger_matches(config, source, event_type, payload):
-                    continue
-                if str(row.workflow_id) in seen:
-                    # One event starts one run of a workflow, even when two
-                    # of its triggers match (STU-E3).
-                    continue
-                if str(row.workflow_id) in refused:
-                    continue
-                if not await _author_may_hear(db, row, source, payload, org):
-                    refused.add(str(row.workflow_id))
-                    continue
-                serialized = await load_version_serialized(
-                    db, str(row.workflow_id), int(row.latest_version)
-                )
-                if serialized is None:
-                    continue
-                if _member_blind_write_nodes(serialized):
-                    # A task node writes `pm_tasks` with no member check. An
-                    # event names no member to check, so the door refuses.
-                    _log.warning(
-                        "workflows.event_run_refused_task_node",
-                        workflow_id=str(row.workflow_id),
+        # One event starts one run of a workflow, even when two of its
+        # triggers match (STU-E3).
+        candidates: list[Any] = []
+        listed: set[str] = set()
+        for row in rows:
+            config = parse_jsonb(row.config, {}) or {}
+            if not event_trigger_matches(config, source, event_type, payload):
+                continue
+            if str(row.workflow_id) in listed:
+                continue
+            listed.add(str(row.workflow_id))
+            candidates.append(row)
+        # The access of each DISTINCT author, asked once and outside any
+        # session: the resolver opens a session of its own.
+        studio_held: dict[str, bool] = {}
+        if source == RECORD_EVENT_SOURCE and candidates:
+            studio_held = await members_holding_studio(
+                (r.owner_email for r in candidates), org
+            )
+        if candidates:
+            async with _tenant_session(org) as db:
+                for row in candidates:
+                    if not await _author_may_hear(db, row, source, payload, org, studio_held):
+                        continue
+                    serialized = await load_version_serialized(
+                        db, str(row.workflow_id), int(row.latest_version)
                     )
-                    continue
-                seen.add(str(row.workflow_id))
-                matches.append((row, serialized))
+                    if serialized is None:
+                        continue
+                    if _member_blind_write_nodes(serialized):
+                        # A task node writes `pm_tasks` with no member check.
+                        # An event names no member to check, so the door
+                        # refuses.
+                        _log.warning(
+                            "workflows.event_run_refused_task_node",
+                            workflow_id=str(row.workflow_id),
+                        )
+                        continue
+                    matches.append((row, serialized))
         # The session is closed before `start_run`: the run opens its own.
         for row, serialized in matches:
             try:
