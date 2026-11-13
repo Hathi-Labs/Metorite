@@ -50,7 +50,7 @@ from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant, tenant_session
 from acb_common.studio_access import Viewer
 from fastapi import HTTPException
-from gateway.routes.studio import invoke, packages
+from gateway.routes.studio import invoke
 from gateway.studio import logic, objects_store, packages_store
 from gateway.studio.logic import ProposedWrite
 from gateway.studio.logic import apply as logic_apply

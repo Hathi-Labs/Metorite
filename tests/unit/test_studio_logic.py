@@ -40,6 +40,7 @@ import asyncio
 import dataclasses
 import inspect
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -171,7 +172,7 @@ def test_the_module_package_touches_no_table_and_no_network() -> None:
     """The fence: the contract file imports no engine, no session, no SQL and
     no HTTP client. ``apply.py`` imports the exception base of the driver only."""
     for path in (logic.__file__, logic_apply.__file__):
-        text = open(path, encoding="utf-8").read()
+        text = Path(path).read_text(encoding="utf-8")
         for word in ("create_async_engine", "tenant_session", "httpx", "requests", "import text",
                      "from sqlalchemy import", "psycopg", "redis"):
             assert word not in text, (path, word)
