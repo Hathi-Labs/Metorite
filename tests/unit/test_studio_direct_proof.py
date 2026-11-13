@@ -275,8 +275,9 @@ def _rel(path: Path) -> str:
 def test_the_direct_set_is_create_update_delete_only() -> None:
     assert {("object", "create"), ("object", "update"),
             ("object", "delete")} == invoke.DIRECT_EXECUTORS
-    # B2b-2b adds the door op, a read of another app, to the open set.
-    assert {("object", "get"), ("object", "list"), invoke.DOOR_OP} == invoke.OPEN_EXECUTORS
+    # STU-D4b adds the aggregate, and B2b-2b the door op, to the open set.
+    assert {("object", "get"), ("object", "list"), ("object", "aggregate"),
+            invoke.DOOR_OP} == invoke.OPEN_EXECUTORS
     assert not invoke.DIRECT_EXECUTORS & invoke.OPEN_EXECUTORS
 
 

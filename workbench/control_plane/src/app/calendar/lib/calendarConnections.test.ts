@@ -24,6 +24,8 @@ import {
   startConnect,
   offerLine,
   parseOffers,
+  pushSwitchLabel,
+  setPushTasks,
   visibleOffers,
   MAX_OFFERS,
   syncNow,
@@ -45,6 +47,7 @@ function row(over: Partial<CalendarConnection> = {}): CalendarConnection {
     last_error: null,
     metorite_calendar: true,
     entry_count: 12,
+    push_tasks: true,
     ...over,
   };
 }
@@ -361,5 +364,68 @@ describe("mailbox offers", () => {
     }) as unknown as typeof fetch;
     await startConnect("google", f);
     expect(init).toEqual({ method: "POST" });
+  });
+});
+
+describe("the switch of the task write-out (CE-10c follow-up)", () => {
+  const ID = "3f1c2a9e-1b2d-4c3e-8f4a-5b6c7d8e9f01";
+  const wire = (extra: Record<string, unknown> = {}) => ({
+    id: ID, provider: "google", account_email: "a@b.co", status: "connected",
+    last_sync_at: null, last_error: null, metorite_calendar: false, entry_count: 0, ...extra,
+  });
+  const listOf = (extra: Record<string, unknown>) =>
+    parseList({ enabled: true, providers: {}, connections: [wire(extra)] })?.connections[0];
+  const reply = (status: number, body: unknown = {}) => async () =>
+    new Response(JSON.stringify(body), { status }) as Response;
+
+  it("reads a missing or garbage push_tasks as true, and only false as false", () => {
+    expect(listOf({})?.push_tasks).toBe(true);
+    expect(listOf({ push_tasks: "no" })?.push_tasks).toBe(true);
+    expect(listOf({ push_tasks: 0 })?.push_tasks).toBe(true);
+    expect(listOf({ push_tasks: null })?.push_tasks).toBe(true);
+    expect(listOf({ push_tasks: false })?.push_tasks).toBe(false);
+  });
+
+  it("sends a strict boolean to the BFF and returns the row and the note", async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const f = (async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ ...wire({ push_tasks: false }), note: "Server note." }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const r = await setPushTasks(ID, false, f);
+    expect(r.kind === "ok" && r.connection.push_tasks).toBe(false);
+    expect(r.kind === "ok" && r.note).toBe("Server note.");
+    expect(calls[0].url).toBe(`/api/calendar/connections/${ID}`);
+    expect(calls[0].init?.method).toBe("PATCH");
+    expect(calls[0].init?.body).toBe('{"push_tasks":false}');
+  });
+
+  it("returns a null note when the server sends none", async () => {
+    const r = await setPushTasks(ID, true, reply(200, wire()) as unknown as typeof fetch);
+    expect(r.kind === "ok" && r.note).toBeNull();
+  });
+
+  it("maps 404, 422 and a network failure to a short line", async () => {
+    const f404 = await setPushTasks(ID, true, reply(404) as unknown as typeof fetch);
+    expect(f404).toEqual({ kind: "error", message: "This setting is not available. Reload the page." });
+    const f422 = await setPushTasks(ID, true, reply(422) as unknown as typeof fetch);
+    expect(f422).toEqual({ kind: "error", message: "Metorite could not save this. Try again." });
+    const down = await setPushTasks(ID, true, (async () => { throw new Error("x"); }) as unknown as typeof fetch);
+    expect(down).toEqual({ kind: "error", message: "Metorite could not save this. Try again." });
+  });
+
+  it("refuses a bad id and sends nothing", async () => {
+    let n = 0;
+    const f = (async () => { n++; return new Response("{}"); }) as unknown as typeof fetch;
+    expect((await setPushTasks("..", true, f)).kind).toBe("error");
+    expect(n).toBe(0);
+  });
+
+  it("names the provider in the label and changes the row sentence when off", () => {
+    expect(pushSwitchLabel("google")).toBe("Show my Metorite tasks in Google Calendar");
+    expect(pushSwitchLabel("outlook")).toBe("Show my Metorite tasks in Outlook");
+    const row = listOf({ push_tasks: false })!;
+    expect(connectedLine(row)).toContain("Your tasks do not go to this calendar.");
+    expect(connectedLine(row)).not.toContain("Metorite' calendar");
   });
 });
