@@ -37,9 +37,11 @@ not a pass.
 result of each was run on 2026-11-13.
 
 * E1. ``batch_store.run_chunk``: ``await db.commit()`` right after
-  ``apply_writes`` (the status in a second transaction).
-  ``test_r8_a_fault_in_chunk_3_leaves_100_records_and_a_second_drive_ends_at_300``
-  goes red for the case ``after the status``.
+  ``apply_writes``, then bind the org again (the status in a second
+  transaction). ``test_r8_a_fault_in_chunk_3_leaves_100_records_and_a_second_drive_ends_at_300``
+  goes red for the case ``after the status``. The case ``after the write``
+  stays green, because the fault comes before the commit.
+  E4 and E5 also went red on the first run, and E2, E3, E6, E7 and E9 on the second.
 * E2. ``_LOCK_BATCH_SQL``: drop ``FOR UPDATE``.
   ``test_r8_two_drivers_write_no_item_twice`` goes red.
 * E3. ``_take``: count 1 for each item.
