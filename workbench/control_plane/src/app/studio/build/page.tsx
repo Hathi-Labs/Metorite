@@ -66,16 +66,20 @@ import CodeTab from "./components/CodeTab";
 import DataTab from "./components/DataTab";
 import EditBar from "./components/EditBar";
 import Explorer from "./components/Explorer";
+import PagesTab from "./components/PagesTab";
 import PreviewTab from "./components/PreviewTab";
 import PublishDialog from "./components/PublishDialog";
 import ChangeBar from "./components/ChangeBar";
 import ProblemsPanel from "./components/ProblemsPanel";
 import ViewsTab from "./components/ViewsTab";
 
+// AF-8b-2: the Pages tab and the Pages branch show only under the app frame flag, the same inline const as the preview page.
+const APP_FRAME = process.env.NEXT_PUBLIC_STUDIO_APP_FRAME === "1";
 const TABS = [
   { id: "preview", label: "Preview", icon: "Eye" },
   { id: "data", label: "Data", icon: "Table" },
   { id: "views", label: "Views", icon: "LayoutGrid" },
+  ...(APP_FRAME ? [{ id: "pages", label: "Pages", icon: "Layers" }] : []),
   { id: "code", label: "Code", icon: "Code" },
 ];
 const PHONE_TABS = [
@@ -131,6 +135,8 @@ function Ide({ pkg }: { pkg: string }) {
   const [phoneProblemsOpen, setPhoneProblemsOpen] = useState(true);
   const [reveal, setReveal] = useState<(Reveal & { seq: number }) | null>(null);
   const object = params.get("object");
+  // The page of the Pages tab that the Explorer put in focus. Local state, not the URL.
+  const [focusPage, setFocusPage] = useState<string | null>(null);
 
   // The editor gets the width: the app nav folds while the IDE is open, and opens again on leave.
   // The ref holds the latest fold, so the cleanup reads the state of that moment.
@@ -170,7 +176,7 @@ function Ide({ pkg }: { pkg: string }) {
   // The tabs, the Explorer and the Problems draw what the member edits. The facts below keep the STORED draft.
   const manifest = editor.shown;
   const hash = useMemo(() => draftHash(manifest), [manifest]);
-  const outline = useMemo(() => buildOutline(manifest), [manifest]);
+  const outline = useMemo(() => buildOutline(manifest, { frame: APP_FRAME }), [manifest]);
   const { server } = editor.state;
   const checked = useMemo(() => [...server, ...checkDraft(manifest)], [server, manifest]);
   // A refusal of a publish is shown in the panel too, but it never blocks the next try.
@@ -228,8 +234,9 @@ function Ide({ pkg }: { pkg: string }) {
   }
 
   const setObject = (name: string) => router.replace(buildHref(pkg, name));
-  const pick = (p: { object: string | null; tab: OutlineTab | null; reveal?: Reveal }) => {
+  const pick = (p: { object: string | null; tab: OutlineTab | null; reveal?: Reveal; page?: string }) => {
     if (p.object) setObject(p.object);
+    if (p.page) setFocusPage(p.page);
     if (p.tab) setTab(p.tab);
     if (p.reveal) setReveal({ ...p.reveal, seq: (reveal?.seq ?? 0) + 1 });
     if (isMobile) setPhoneTab("editor");
@@ -269,6 +276,7 @@ function Ide({ pkg }: { pkg: string }) {
       {tab === "preview" ? <PreviewTab manifest={manifest} hash={hash} pkg={pkg} object={object} onObject={setObject} /> : null}
       {tab === "data" ? <DataTab manifest={manifest} object={object} onObject={setObject} onChange={editor.edit} live={liveRows} locked={locked} /> : null}
       {tab === "views" ? <ViewsTab manifest={manifest} onChange={editor.edit} locked={locked} /> : null}
+      {APP_FRAME && tab === "pages" ? <PagesTab manifest={manifest} onChange={editor.edit} locked={locked} focusPage={focusPage} /> : null}
       {tab === "code" ? <CodeTab manifest={manifest} text={editor.codeText} editorKey={editor.codeKey} readOnly={editor.state.saving || change.undoing} fault={editor.state.fault} reveal={reveal}
         onText={editor.typeCode} onSave={editor.save} /> : null}
     </div>

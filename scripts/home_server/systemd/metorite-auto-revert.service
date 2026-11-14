@@ -23,9 +23,10 @@ Environment=AUTO_REVERT_MODE=dry
 WorkingDirectory=%h/Metorite
 ExecStart=/usr/bin/python3 %h/Metorite/scripts/home_server/auto_revert.py run
 # The limit of one pass. A probe stops at 30 minutes, and most take minutes.
-# A bisect holds at most 12 probes. The pass adds 10 probes (3 runs on each of
-# three trees, and the proof), and 4 for each new tip of main (at most 2).
-# A revert PR that is open adds up to 3 probes for each new tip of main.
+# A bisect holds at most 12 probes. The pass adds 12 probes (3 runs on each of
+# three trees, and 3 proof runs on the revert tree, CIV-31c), and 6 for each new
+# tip of main (at most 2). A revert PR that is open adds up to 3 probes for each
+# new tip of main. The reopen of the culprit's task stops at 180 seconds.
 # At the limit, systemd sends SIGTERM. The pass writes its PERSON line first.
 # STALE_LOCK_S in auto_revert.py (15 hours) must stay above this limit.
 TimeoutStartSec=14h

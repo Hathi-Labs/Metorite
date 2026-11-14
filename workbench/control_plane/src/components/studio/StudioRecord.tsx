@@ -8,6 +8,8 @@
  * Related draws a table for each relation field that points here, read through the door with a
  * filter on the link, so the rows are what the viewer reads. "New" opens the Form block over the
  * create action of the child, with the link filled by `linkedDoor`. Files lists the file fields.
+ * Lines draws the sheet of each `lines` field (`StudioSheet`, STU-D17a): the lines of the record edit
+ * in a buffer and save with the record in one call.
  * It reuses `Tabs`, `StudioDetail`, `StudioForm` and `GenerativeUINode`, and holds no control of
  * its own. No CRM file is imported: `RecordShell.tsx` and `RelatedLists.tsx` are the model only.
  */
@@ -19,6 +21,7 @@ import RecordsStatus from "@/components/studio/RecordsStatus";
 import StudioDetail from "@/components/studio/StudioDetail";
 import DeleteRecordButton from "@/components/studio/DeleteRecordButton";
 import StudioFormDialog from "@/components/studio/StudioFormDialog";
+import StudioSheet from "@/components/studio/StudioSheet";
 import Button from "@/components/ui/Button";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, type StudioDataDoor, moreLine, sourceKey } from "@/lib/studio/dataDoor";
@@ -27,7 +30,7 @@ import { editTitle, recordButtons } from "@/lib/studio/dialogModel";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import { detailFields, fieldSpecs, formFields, recordTitle, tableFields } from "@/lib/studio/packagePreview";
 import {
-  type RelatedList, fileFields, fileLabel, linkedDoor, newButtonState, pickRecordTab, recordTabs, relatedArgs, relatedLists,
+  type RelatedList, fileFields, fileLabel, linkedDoor, linesFields, newButtonState, pickRecordTab, recordTabs, relatedArgs, relatedLists,
 } from "@/lib/studio/recordPageModel";
 import { type DeclaredAction, type ObjectRow, verbMap } from "@/lib/studio/realDoor";
 import { useCachedResource } from "@/lib/useCachedResource";
@@ -182,6 +185,7 @@ export default function StudioRecord({ object, objects, recordId, door, actions,
   const tabs = useMemo(() => recordTabs(object, objects), [object, objects]);
   const active = pickRecordTab(tabs, tab);
   const lists = useMemo(() => relatedLists(object.name, objects), [object.name, objects]);
+  const sheets = useMemo(() => linesFields(object.name, objects), [object.name, objects]);
   // The title of the record shows on every tab, so the shell reads the record, not only Details.
   const { record } = useRecordRead(object, recordId, door, actions);
   const title = record ? recordTitle(detailFields(fieldSpecs(object)), record) : null;
@@ -193,6 +197,17 @@ export default function StudioRecord({ object, objects, recordId, door, actions,
           <Tabs variant="underline" activeTab={active} onTabChange={onTab} tabs={tabs.map((t) => ({ id: t.id, label: t.title }))} />
         ) : null}
         {active === "details" ? <Details object={object} recordId={recordId} door={door} actions={actions} owner={owner} onDeleted={onDeleted} /> : null}
+        {active === "lines" ? (
+          <div className="space-y-5">
+            {sheets.map((l) => {
+              const child = objects.find((o) => o.name === l.child);
+              return child ? (
+                <StudioSheet key={l.key} parent={object} lines={l} child={child} recordId={recordId} door={door}
+                  actions={actions} owner={owner} record={record} />
+              ) : null;
+            })}
+          </div>
+        ) : null}
         {active === "related" ? (
           lists.length ? (
             <div className="space-y-5">

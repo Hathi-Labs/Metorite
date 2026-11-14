@@ -43,6 +43,20 @@ from tests.unit.test_company_search_sources import ALL, apps, member  # noqa: F4
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
 
 
+@pytest.fixture(autouse=True)
+def _close_the_turn():
+    """Close the turn that a test here opens outside an event loop.
+
+    Such a ``begin_turn`` sets the store in the root context of the thread.
+    Left open, it leaks into each later test of the process, so a later
+    search recalls a vector and makes no embed call
+    (``test_kb_search_r8.py::test_company_search_finds_a_paraphrase_by_meaning``).
+    """
+    yield
+    turn_vector._TURN.set(None)
+    turn_vector._EMBED.set(None)
+
+
 def _hit(app: str, ident: str, stamp: str | None = None) -> Hit:
     return Hit(app=app, kind=app, id=ident, title=ident, hint=app, href=f"/{app}/{ident}",
                snippet="", when=None, stamp=stamp)
