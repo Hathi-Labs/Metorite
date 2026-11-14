@@ -153,6 +153,10 @@ export interface FieldDef {
   min?: number | null;
   max?: number | null;
   units?: string[] | null;
+  // C24a. The ranges of a quantity in its base unit, and the conversions to it.
+  normal?: { low?: string | null; high?: string | null } | null;
+  critical?: { low?: string | null; high?: string | null } | null;
+  conversions?: Array<{ from: string; to: string; factor: string }> | null;
   format?: string | null;
   // C13. A lines relation: the field of the object `to` that names this one.
   lines?: string | null;

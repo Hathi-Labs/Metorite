@@ -18,8 +18,9 @@ import { useToast } from "@/components/ui/Toast";
 import Checkbox from "@/components/ui/Checkbox";
 import { Input, Textarea } from "@/components/ui/Input";
 import SelectButton from "@/components/ui/SelectButton";
+import { accentForHue } from "@/lib/statusAccent";
 import {
-  type Draft, isLines, labelOf, manyUnsupported,
+  FLAG_HUE, type Draft, isLines, labelOf, manyUnsupported, quantityReading,
 } from "@/lib/studio/blocks";
 import { MAX_QR_CHARS, ratingRange } from "@/lib/studio/fieldCheck";
 import type { StudioDataDoor } from "@/lib/studio/dataDoor";
@@ -203,6 +204,22 @@ export interface FormViewProps {
 export const controlId = (formId: string, key: string): string => `${formId}-${key}`;
 export const errorIdOf = (formId: string, key: string): string => `${formId}-${key}-err`;
 
+/**
+ * STU-C24a. The live flag of a quantity draft, as a line of words under the input. The
+ * colour comes from `statusAccent` and the word is always there. It is advice, not a diagnosis.
+ */
+function QuantityFlagLine({ field, draft }: { field: FieldSpec; draft: Draft }) {
+  if (field.type !== "quantity" || field.many) return null;
+  const q = quantityReading(field, draft);
+  const hue = q ? FLAG_HUE[q.flag] : undefined;
+  if (!q || !q.word || !hue) return null;
+  return (
+    <p role="status" data-flag={q.flag} className={`text-xs ${accentForHue(hue).text}`}>
+      Flag: {q.word}
+    </p>
+  );
+}
+
 /** The form, drawn from props. No state, so a test can draw each case. */
 export function FormView({
   fields, drafts, errors, formId, title, submitLabel = "Save", submitting = false, status,
@@ -226,6 +243,7 @@ export function FormView({
             <Control field={f} draft={drafts[f.key]} id={id} errorId={errorId}
               onChange={(d) => onDraft(f.key, d)} onBlur={() => onBlur(f.key)} />
             {hint && !message && <p className="text-xs text-muted-foreground">{hint}</p>}
+            <QuantityFlagLine field={f} draft={drafts[f.key]} />
             {message && (
               <p id={errorId} role="alert" className="text-xs text-destructive">{message}</p>
             )}

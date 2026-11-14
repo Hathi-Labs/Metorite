@@ -867,7 +867,7 @@ def quantity_flag(f: FieldSpec, v: Mapping[str, Any]) -> str:
         if unit != f.units[0]:
             factor = next((c for a, b, c in (f.conversions or ())
                            if a == unit and b == f.units[0]), None)
-            if factor is None:
+            if factor is None or not _FACTOR_RE.fullmatch(factor) or Decimal(factor) <= 0:
                 return "unchecked"
             x = x * Decimal(factor)
         c_lo, c_hi = (Decimal(b) if b is not None else None for b in (f.critical or (None, None)))
