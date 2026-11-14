@@ -150,8 +150,9 @@ else:
 # exit code, or to a list of exit codes for the 1st, 2nd... run, so a test
 # can make one tree flaky. A file BROKEN fails it, and a file FIXED passes it.
 # PROBE_HOOK lands commits on main while the pass runs. It is a comma list:
-# the nth probe of a revert tree lands the nth entry. "fix" adds FIXED, and
-# "move" adds an unrelated file.
+# the first probe of the nth revert tree lands the nth entry. CIV-31c: each
+# revert tree has 3 proof runs, so a hook fires once per tree, not per probe.
+# "fix" adds FIXED, and "move" adds an unrelated file.
 PROBE_PY = r"""
 import json, os, subprocess, sys
 
@@ -161,8 +162,12 @@ with open(os.environ["PROBE_LOG"], "a", encoding="utf-8") as f:
 hooks = [h for h in os.environ.get("PROBE_HOOK", "").split(",") if h]
 mark = os.path.join(os.environ["FIX"], "hook.count")
 done = int(open(mark).read()) if os.path.exists(mark) else 0
+seen_file = os.path.join(os.environ["FIX"], "hook.seen")
+seen = open(seen_file).read().split() if os.path.exists(seen_file) else []
 msg = subprocess.run(["git", "log", "-1", "--format=%B"], capture_output=True, text=True).stdout
-if "Auto-Revert:" in msg and done < len(hooks):
+if "Auto-Revert:" in msg and sha not in seen and done < len(hooks):
+    with open(seen_file, "a") as f:
+        f.write(sha + " ")
     with open(mark, "w") as f:
         f.write(str(done + 1))
     hook, n = hooks[done], 108 + done
