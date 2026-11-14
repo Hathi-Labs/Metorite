@@ -324,8 +324,12 @@ default. OFF writes no row, parks no run, and reports every run as
    - **An act runs once.** Each approve of a plain card marks the act SPENT
      on its offer key, and removes its grant. That covers a live approve and
      a used grant. The mark lasts 30 minutes, and longer than the park
-     window. So a stale twin card that parked earlier writes nothing on a late
-     tap, and a twin that parks later records no offer.
+     window. So, while the mark lives, a stale twin card in the same thread
+     writes nothing on a late tap, and a twin that parks later records no
+     offer. ⚠️ Three gaps stay open, and task 3294 (HRD-22b) closes them
+     before `CHAT_LATE_APPROVE_ORGS` flips. The mark covers one thread only.
+     The mark is best effort, so a Redis stall leaves the stale offer valid.
+     After the mark expires, a new twin's offer can serve a stale tap.
    - **The new message.** When the gateway writes a grant, the late answer
      gets one more paragraph after `My answer: APPROVE`. It says that the
      member approved after the chat stopped waiting. It tells the model not
@@ -335,8 +339,10 @@ default. OFF writes no row, parks no run, and reports every run as
    - **The offer goes with its row.** A "Not now", a `REJECT` and an answer
      during the park write nothing and drop the offer. A twin of the same act
      then shows its card: the safe side. A chat delete and an edit close rows
-     in SQL and do not call Redis. Their offers then have no waiting row that
-     leads to them, and they expire with the row.
+     in SQL and do not call Redis. A closed row never parks again, so its own
+     offer is inert. After an edit, a later twin in the same thread can still
+     reach that offer by its digest, and its tap is the member's consent to
+     the same act. The offers expire with the row.
    - **No migration.** Each record lives in tenant Redis, through
      `acb_common.tenant_redis`. `chat_pending_ask` does not change (R6).
 

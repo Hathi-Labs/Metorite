@@ -225,7 +225,7 @@ the owner. It takes no D number in `work_plan.md` §3.
 
 | # | Question | Proposed default |
 |---|---|---|
-| **D-HRD-7** | Is a late tap on Approve the member's own consent? | Yes, for one use: the same card, in the same thread, by the same member, within 30 minutes. Any other card asks again. An act that already ran never runs again on a late tap |
+| **D-HRD-7** | Is a late tap on Approve the member's own consent? | Yes, for one use: the same card, in the same thread, by the same member, within 30 minutes. Any other card asks again. An act that already ran in this chat does not run again on a late tap. Across chats, and after a Redis stall, task 3294 (HRD-22b) closes the gap before the flag flips |
 
 Two limits wait for the owner, and the build keeps them as they are
 (`chat_run_continuity.md` S2 item 8). The 30 minutes start at the tap, not at
