@@ -1348,6 +1348,27 @@ def test_r8_a_manifest_with_nav_publishes_and_keeps_the_nav(world) -> None:
     assert _run(world, lambda: _save(world.a, ANA, pid, bad))[0] == 422
 
 
+def test_r8_a_counted_rail_row_publishes_and_nine_counts_are_422(world) -> None:
+    """``count`` is manifest only (STU-AF3a). A publish keeps it. A draft with 9 counts is refused."""
+    mid = _mid()
+    manifest = _manifest(mid)
+    manifest["views"] = [{"id": "all", "block": "table", "source": {"object": "visit"}}]
+    manifest["pages"] = [{"id": "home", "title": "Home", "cells": [{"view": "all"}]}]
+    manifest["nav"] = [{"title": "Work", "rows": [{"page": "home", "count": True}]}]
+
+    async def go() -> tuple[str, tuple[int, Any]]:
+        pid = await _new(world.a, ANA, manifest)
+        return pid, await _publish(world.a, ANA, pid)
+
+    pid, (status, got) = _run(world, go)
+    assert status == 200, got
+    assert _app(world, pid)[5]["nav"][0]["rows"][0]["count"] is True
+
+    nine = [{"page": "home", "count": True}] * 9
+    bad = dict(manifest, nav=[{"title": "A", "rows": nine[:5]}, {"title": "B", "rows": nine[5:]}])
+    assert _run(world, lambda: _save(world.a, ANA, pid, bad))[0] == 422
+
+
 # ── j. The caps ────────────────────────────────────────────────────────────
 
 
