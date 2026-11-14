@@ -22,6 +22,7 @@ Metorite epic 783.
 | `seed.py` | The records as SQL for one org, and `purge`. It opens no connection |
 | `score.py` | Recall, percentiles, the empty-source report, the verdict and the text of the report. No I/O |
 | `run.py` | The runner: `--check`, `--fixture` and `--live` |
+| `fixtures/misses.json` | The misses set (WS-FIND FIND-1): 20 synthetic cases that search misses today. See "The misses set" |
 
 An agent invented each name. No row comes from a real person, company or mail.
 
@@ -42,7 +43,7 @@ An agent invented each name. No row comes from a real person, company or mail.
 
 | Mode | What it does | Needs |
 |---|---|---|
-| `--check` | Checks that the synthetic set is whole: 50 questions, 10 for each source, every gold key seeded. | Nothing. CI runs it in `skill-eval.yml` |
+| `--check` | Checks that the synthetic set is whole (50 questions, 10 for each source, every gold key seeded) and that the misses set is whole (20 cases). | Nothing. CI runs it in `skill-eval.yml` |
 | `--fixture` | Seeds a fresh org in `TENANT_LADDER_DATABASE_URL`, runs the 50 questions through the route in this process, prints the score, removes the rows. | A local ladder database (`scripts/dev_db.sh`) |
 | `--live URL --as EMAIL --set PATH` | Asks a running gateway over HTTP as the member EMAIL. | `GATEWAY_INTERNAL_TOKEN` in the environment, and the real set |
 
@@ -70,6 +71,33 @@ uv run python -m evals.search_company.run --check
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run python -m evals.search_company.run --fixture
 ```
+
+## The misses set (WS-FIND FIND-1)
+
+`fixtures/misses.json` holds 20 synthetic cases. Each keeps the shape of a real
+failure of `search_company` (`project-docs/specs/find_engine.md` §1). Each case
+names three things:
+
+- `kind`: `near_name`, `words_spread`, `related_only`, `converted_lead`,
+  `past_the_cut`, `past_chat` or `outside`.
+- `rung`: the lowest rung of `find_engine.md` §3.1 that finds it.
+- `slice`: the slice that should turn it green.
+
+`--fixture` seeds the misses into a second org, so they never crowd the 50
+questions. It then prints one more block, for example
+`misses: 0/20 found in the top 5 of one call`, with the score by kind and by rung.
+A case counts when its gold record is among the first 5 hits of the whole answer.
+
+- The misses score does not gate the run. It is the number that each slice moves.
+- Each slice of `find_engine.md` §9.2 prints the score before and after in its
+  pull request. A drop does not merge. `MISSES_BASELINE` in `score.py` holds the
+  floor, and `test_the_misses_score_does_not_drop` in the R8 suite reads it.
+  A slice raises the constant to the number that it reaches.
+- The end of rung 2 scores 18 of 20 or more. The two `outside` cases wait for FIND-10.
+- The cases `past_chat` and `outside` have no seed, because no table holds a
+  past chat or an outside app yet. They miss by construction. HRD-21 and FIND-10
+  add the seed.
+- The real misses of production stay off the repo, in `~/.metorite/evals/kg1/`.
 
 ## The real set (customer data)
 

@@ -79,6 +79,7 @@ import {
 } from "@/lib/panelMotion";
 import { SidePanelFitContext } from "@/lib/sidePanelFit";
 import {
+  MadeChats,
   NO_PICK,
   carriedText,
   chatToShow,
@@ -98,7 +99,6 @@ import {
   enrichSession,
   fetchAndMergeSessionsFromDb,
   getSessions,
-  keepSession,
   renameSession,
   setSessionArchived,
   upsertSession,
@@ -208,11 +208,17 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
   // From 0, not from the store: a `/chat?do=new-chat` that asked for a new
   // chat before this mounted must still be honoured (review of 2026-10-12).
   const handledFresh = useRef(0);
-  const refresh = useCallback(() => setSessions(getSessions()), []);
   // The chats this page made. A second tab of the member shares the stored
   // list and can drop one in a racing save, so this page puts it back
-  // (`keepSession`). Without it the chat has no row, and the panel waits.
-  const madeHere = useRef(new Map<string, ChatSession>());
+  // (`MadeChats.keep`). Without it the chat has no row, and the panel waits.
+  const madeHere = useRef(new MadeChats());
+  // Each look also keeps the newest stored copy of this page's chats, so a
+  // put-back has their latest title and count (task 2459).
+  const refresh = useCallback(() => {
+    const list = getSessions();
+    madeHere.current.note(list);
+    setSessions(list);
+  }, []);
   // The newest chat this page made, for the render. A full storage can refuse
   // the list write, and then `sessions` never holds the chat. The dock shows
   // this object and never waits for storage (production bug, 2026-11-06).
@@ -223,18 +229,18 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     setLastMade({ ...pick.session });
     return pick;
   }, []);
-  const keepMine = useCallback((id: string) => {
-    const mine = madeHere.current.get(id);
-    return mine ? keepSession(mine) : false;
-  }, []);
+  const keepMine = useCallback((id: string) => madeHere.current.keep(id), []);
 
   /* eslint-disable react-hooks/set-state-in-effect */
-  // A new member or org: nothing carries over.
+  // A new member or org: nothing carries over. Only a real change counts. In
+  // development React runs this effect two times on a mount, and a reset on
+  // the second run forgot the chat that the effect below made (task 2459).
   useEffect(() => {
-    setRestoredId(null);
-    setNotice(null);
-    setLastMade(null);
-    madeHere.current.clear();
+    if (madeHere.current.bind(scope)) {
+      setRestoredId(null);
+      setNotice(null);
+      setLastMade(null);
+    }
     refresh();
   }, [scope, refresh]);
 
@@ -243,7 +249,11 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     if (!scope || !open) return;
     let cancelled = false;
     fetchAndMergeSessionsFromDb()
-      .then((merged) => { if (!cancelled) setSessions(merged); })
+      .then((merged) => {
+        if (cancelled) return;
+        madeHere.current.note(merged);
+        setSessions(merged);
+      })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [scope, open]);

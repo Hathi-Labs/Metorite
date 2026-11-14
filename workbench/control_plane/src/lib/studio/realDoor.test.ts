@@ -294,6 +294,13 @@ describe("the package routes", () => {
     expect(none.views).toEqual([]);
     expect(none.pages).toEqual([]);
   });
+  it("getPackage keeps the nav of the manifest, and gives an empty list when it has none (AF-2a)", async () => {
+    const nav = [{ title: "Work", rows: [{ page: "main", icon: "Home" }] }];
+    const full = fakeFetch(200, { package: { id: PKG, name: "Visits", manifest: { actions: ACTIONS, nav } }, objects: [] });
+    expect((await getPackage(PKG, full.impl)).nav).toEqual(nav);
+    const bare = fakeFetch(200, { package: { id: PKG, name: "Visits", manifest: { actions: ACTIONS } }, objects: [] });
+    expect((await getPackage(PKG, bare.impl)).nav).toEqual([]);
+  });
   it("a package id that is no uuid makes no call", async () => {
     const { impl, spy } = fakeFetch();
     await expect(getPackage("../x", impl)).rejects.toThrow(STUDIO_OFF);

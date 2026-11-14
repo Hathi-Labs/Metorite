@@ -2027,7 +2027,13 @@ def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
     each model request (WS-67 OA-8f, ``executor.request_tools``): the count
     actually sent and a short hash of the names, with the tools of a context
     provider and of an MCP server. Only the orchestrator, and never raises.
-    The view comes from ``agent_with_providers``, as the loader's does."""
+    The view comes from ``agent_with_providers``, as the loader's does.
+
+    HRD-1: the same view carries ``acb_skills.unknown_tool.UnknownToolProvider``,
+    the one answer to a call of a tool that the run did not load. It goes
+    after each seam of ``_inject_agent_tools``, so its chat middleware runs
+    inside the hold, steer and number-check middleware, and rewrites the
+    messages that they pass on. Only the tier policy view comes later."""
     if agent_name != _PACK_AGENT or not agents:
         return agents
     try:
@@ -2036,10 +2042,13 @@ def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
         if not isinstance(agents[0], Agent):
             return agents
         from acb_skills.tool_guard import LogRequestToolsProvider
+        from acb_skills.unknown_tool import UnknownToolProvider
 
         from orchestrator._native_run_context import agent_with_providers
 
-        agents[0] = agent_with_providers(agents[0], [LogRequestToolsProvider(agent_name)])
+        # HRD-1: the answer to an unknown tool name rides in the same view.
+        agents[0] = agent_with_providers(
+            agents[0], [LogRequestToolsProvider(agent_name), UnknownToolProvider()])
     except Exception as exc:  # a log never costs the turn
         _log.warning("executor.request_tools_log_off", error_type=type(exc).__name__)
     return agents
