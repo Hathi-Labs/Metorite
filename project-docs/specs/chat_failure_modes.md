@@ -3,15 +3,18 @@
 **Status: ACCEPTED, 2026-11-12 (D217). BUILT: HRD-6 part 1 (the line of a slow
 tool), dark, 2026-11-13 (PR 2238). HRD-1 (an unknown tool name), 2026-11-14:
 the answer is live, and the auto-load is dark behind `CHAT_TOOL_AUTOLOAD`.
-HRD-18a (names as people say them), 2026-11-14. Nothing else is built.**
+HRD-18a (names as people say them), 2026-11-14. HRD-22 (a late approve acts
+once, task 3231) is BUILT dark, 2026-11-14. Its flag is
+`CHAT_LATE_APPROVE_ORGS`.**
 
-Owner ask of 2026-11-12,
-in chat. Epic task 2978 (project AI Chat Interface). It is part of WS-CHAT.
+Owner ask of 2026-11-12, in chat. Epic task 2978 (project AI Chat Interface).
+It is part of WS-CHAT.
 
 HRD-0 is task 2979. The owner accepted D-HRD-1 to D-HRD-6 of §8 as D217.
+D-HRD-7 of §8 is PROPOSED, and the owner has not decided it.
 
 It owns the catalogue of chat failure classes, the contract of §7 for every
-chat tool, and the slices HRD-1 to HRD-19. Each fix lands in the seam that
+chat tool, and the slices HRD-1 to HRD-19 and HRD-22. Each fix lands in the seam that
 owns it, as §9 lists. This spec adds no second seam.
 
 ## 1. The owner's ask
@@ -104,6 +107,7 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 | C3 | The object changed after the card was drawn | Only the email reply card and the epic contract check it | A card holds its object's version, and the write checks it | HRD-10 |
 | C4 | Two cards wait, and the member types | One card waits at a time (PAC §29.6). A steer closes the open card | No change. §29.6 stays the rule. HRD-16 covers cards parked after a restart | HRD-16 |
 | C5 | A write reaches more than the member thinks | PST-4 guards shared statuses (on in production). Tags, custom fields and types have no guard | A shared vocabulary change says how many projects it changes | HRD-9 |
+| C6 | A late approve opens nothing | The member approves a parked card after the chat stopped waiting. The answer starts a new run, which plans again and draws a new card. On 2026-11-14 one deal move needed three approvals | A late approve is the member's own consent. It approves the same card once, in the same thread, within 30 minutes. The fix lands in `chat_run_continuity.md` S2, item 8 | HRD-22 |
 
 ### 4.4 Claims and promises (D)
 
@@ -148,7 +152,7 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 
 | Rung | Demo task | The demo | Slices |
 |---|---|---|---|
-| 0 | none (it outranks the ladder) | The failures that production shows today stop | HRD-1, HRD-2, HRD-3 |
+| 0 | none (it outranks the ladder) | The failures that production shows today stop. A member approves a parked card once on production, and the act runs (HRD-22) | HRD-1, HRD-2, HRD-3, HRD-22 |
 | 1 | 2999 | Ask for something hard to find: the chat finds it, or says what it tried | HRD-4, HRD-5, HRD-6 (and rung 0) |
 | 2 | 3000 | Every card tells the truth, and a shared change says how far it reaches | HRD-7 to HRD-10 |
 | 3 | 3001 | The chat keeps track: "mark it done", decisions, no empty promise | HRD-11 to HRD-13 |
@@ -179,6 +183,7 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 | **HRD-17** | 2996 | Offline, loading and two devices | `src/lib/chatOutbox.test.ts` | STANDARD |
 | **HRD-18** | 2997 | Names as people say them. HRD-18a, BUILT 2026-11-14: the one matcher, the CRM search word by word with its near pass (`crm_platform.md` §19.5), `resolve_person` and `find_contact`. HRD-18b: the company search and the mail sender match | `tests/unit/test_name_variants.py`, `tests/unit/test_crm_near_search_r8.py` (R8) | STANDARD |
 | **HRD-19** | 2998 | Start clean | `tests/unit/test_continue_carries.py` | STANDARD |
+| **HRD-22** | 3231 | A late approve acts once. BUILT dark behind `CHAT_LATE_APPROVE_ORGS`, 2026-11-14 (`chat_run_continuity.md` S2, item 8). The flag flip on production is OWNER-GATE (`enforcement-flip`) | `tests/unit/test_late_approve_grant.py`, `tests/unit/test_late_approve_grant_r8.py` (R8 and a private real Redis) | HIGH |
 
 An eval with a live model costs money. Each eval above USD 0.50 waits for the
 owner's OK.
@@ -214,6 +219,19 @@ The owner accepted each default on 2026-11-11 21:28 UTC on epic 2978, and confir
 | **D-HRD-4** | Is a pill, a chip or a retry that the member pressed the member's order to act? | Yes. Its words still carry no typed mark for the profile (D-PZ-37) |
 | **D-HRD-5** | Which text is a paste, framed as data? | A block of 8 lines or more, or text that matches a stored mail body |
 | **D-HRD-6** | May the claim check of HRD-13 change an answer? | No. It logs in shadow until the owner turns it on |
+
+**D-HRD-7 is PROPOSED** (HRD-22, 2026-11-14). It is not part of D217, and the
+owner has not decided it. HRD-22 builds it dark, so the flag flip waits for
+the owner. It takes no D number in `work_plan.md` §3.
+
+| # | Question | Proposed default |
+|---|---|---|
+| **D-HRD-7** | Is a late tap on Approve the member's own consent? | Yes, for one use: the same card, in the same thread, by the same member, within 30 minutes. Any other card asks again. An act that already ran in this chat does not run again on a late tap. Across chats, and after a Redis stall, task 3294 (HRD-22b) closes the gap before the flag flips |
+
+Two limits wait for the owner, and the build keeps them as they are
+(`chat_run_continuity.md` S2 item 8). The 30 minutes start at the tap, not at
+the card. A parked card stays answerable for 7 days, so a card that parked 6
+days ago can still act when its text and its act keys are still equal.
 
 ## 9. What this spec does not own
 
