@@ -32,7 +32,8 @@ def _no_sleep(monkeypatch):
 
 
 def _client(statuses: list[int], calls: list[httpx.Request],
-            headers: dict[str, str] | None = None, raises=None):
+            headers: dict[str, str] | None = None, raises=None,
+            retry_reads=True):
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
         if raises is not None:
@@ -42,7 +43,8 @@ def _client(statuses: list[int], calls: list[httpx.Request],
             status, json={"value": []}, headers=headers or {}, request=request)
 
     return _guard_client(httpx.AsyncClient(
-        base_url=GRAPH_API_BASE, transport=httpx.MockTransport(handler)))
+        base_url=GRAPH_API_BASE, transport=httpx.MockTransport(handler)),
+        retry_reads)
 
 
 def _run(coro):
@@ -164,3 +166,33 @@ def test_the_model_reads_the_words():
         GatewayRefusal("x", status=503, detail="busy"),
         RefusalVoice(app="email app", log_event="e", not_found_next="n"))
     assert "This is a fault on our side." in plain
+
+
+def test_get_is_not_retried_unless_the_caller_opts_in():
+    calls: list[httpx.Request] = []
+    flag = {"on": False}
+    client = _client([502, 200], calls, retry_reads=lambda: flag["on"])
+    assert _run(client.get("/me/messages/x")).status_code == 502
+    assert len(calls) == 1
+    flag["on"] = True
+    calls.clear()
+    assert _run(client.get("/me/messages/x")).status_code == 200
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("nan", 0.5), ("inf", 0.5), ("-5", 0.0), ("2", 2.0), ("99", 5.0)])
+def test_a_bad_retry_after_is_clamped(_no_sleep, value, expected):
+    calls: list[httpx.Request] = []
+    client = _client([503, 200], calls, headers={"Retry-After": value})
+    _run(client.get("/me/mailFolders"))
+    assert _no_sleep == [expected]
+
+
+def test_send_later_says_the_mail_may_have_gone_out():
+    from gateway.routes.email.automation import send_later
+
+    why = send_later._why(ProviderDidNotAnswer("Outlook", "send"))
+    assert "may have gone out" in why
+    assert "Check Sent" in why
+    assert "ProviderDidNotAnswer" not in why

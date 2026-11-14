@@ -35,17 +35,15 @@ from .base import (
     InlineImage,
     InlineRead,
     ProviderAttachmentFailed,
-    ProviderDidNotAnswer,
     ProviderMailTooLarge,
     RefreshingBearer,
     SyncResult,
     canonical_folder,
-    guard_client,
     find_unsubscribe_link_in_html,
+    guard_client,
     normalize_content_id,
     received_key,
 )
-
 
 GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 
@@ -237,7 +235,6 @@ def _retry_after(exc: BaseException) -> float:
     return min(max(delay, 0.0), _MAX_RETRY_AFTER_SECS)
 
 
-
 def _write_kind(request: httpx.Request) -> str | None:
     """``"send"`` or ``"draft"`` for a POST that writes mail, else None.
 
@@ -248,14 +245,20 @@ def _write_kind(request: httpx.Request) -> str | None:
     path = request.url.path.rstrip("/")
     if path.endswith(("/sendMail", "/reply", "/replyAll", "/forward", "/send")):
         return "send"
-    if path.endswith(("/createReply", "/createReplyAll", "/attachments"))             or path.endswith("/me/messages"):
+    if (path.endswith(("/createReply", "/createReplyAll", "/attachments"))
+            or path.endswith("/me/messages")):
         return "draft"
     return None
 
 
-def _guard_client(client: httpx.AsyncClient) -> httpx.AsyncClient:
-    """The Graph client with the rules of HRD-20 (``base.guard_client``)."""
-    return guard_client(client, "Outlook", _write_kind)
+def _guard_client(
+    client: httpx.AsyncClient, retry_reads: Any = True,
+) -> httpx.AsyncClient:
+    """The Graph client with the rules of HRD-20 (``base.guard_client``).
+
+    ``retry_reads`` is the opt-in of the 5xx read retry. The provider passes
+    ``lambda: self.read_retry_429``, the one flag of the read retry."""
+    return guard_client(client, "Outlook", _write_kind, retry_reads=retry_reads)
 
 
 class OutlookMailTooLarge(ProviderMailTooLarge):
@@ -824,7 +827,7 @@ class OutlookProvider(BaseEmailProvider):
                 headers={"Content-Type": "application/json"},
                 auth=RefreshingBearer(self),
                 timeout=30.0,
-            ))
+            ), lambda: self.read_retry_429)
         return self._http
 
     async def _graph_send(

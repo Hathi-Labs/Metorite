@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import re
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Generator
@@ -70,13 +71,15 @@ READ_RETRY_MAX_WAIT_SECS = 5.0
 def guard_client(
     client: httpx.AsyncClient, provider: str,
     write_kind: Callable[[httpx.Request], str | None],
-    *, retry_reads: bool = True,
+    *, retry_reads: Callable[[], bool] | bool = True,
 ) -> httpx.AsyncClient:
     """Give *client* the two rules of HRD-20 (task 3224), and return it.
 
     * A GET that gets 502, 503 or 504 is tried again, twice at most. The wait
       is ``Retry-After`` up to :data:`READ_RETRY_MAX_WAIT_SECS`, else a short
-      back-off. ``retry_reads=False`` turns this off. Gmail does that, because
+      back-off. ``retry_reads`` is a flag, or a function that gives it at each
+      request. Outlook gives ``provider.read_retry_429``, which is OFF unless
+      the caller holds no database session (H-352). Gmail gives False, because
       ``test_gmail_rate_limits.py`` fences "a 5xx is not retried" (§12.3.5.1).
     * A request for which *write_kind* gives ``"send"`` or ``"draft"`` is
       never tried again. A 502, 503 or 504, or a read timeout, raises
@@ -89,7 +92,8 @@ def guard_client(
     inner = client.send
 
     async def send(request: httpx.Request, **kwargs: Any) -> httpx.Response:
-        if request.method == "GET" and retry_reads:
+        if request.method == "GET" and (
+                retry_reads() if callable(retry_reads) else retry_reads):
             waits = list(READ_FAULT_WAITS)
             while True:
                 resp = await inner(request, **kwargs)
@@ -98,7 +102,10 @@ def guard_client(
                 wait = waits.pop(0)
                 if "Retry-After" in resp.headers:
                     with contextlib.suppress(ValueError):
-                        wait = float(resp.headers["Retry-After"])
+                        asked = float(resp.headers["Retry-After"])
+                        # nan and inf are no wait that a caller can use.
+                        if math.isfinite(asked):
+                            wait = asked
                     wait = min(max(wait, 0.0), READ_RETRY_MAX_WAIT_SECS)
                 await resp.aclose()
                 await asyncio.sleep(wait)
