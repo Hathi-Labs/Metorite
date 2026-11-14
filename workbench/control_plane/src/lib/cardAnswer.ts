@@ -137,7 +137,11 @@ export function parseCardAnswerEnvelope(text: string): CardAnswer | null {
   }
   question = question.trim().slice(0, QUESTION_MAX);
   if (/^REJECT$/i.test(answer)) return { kind: "confirmation", question, decision: "reject" };
-  if (/^APPROVE$/i.test(answer)) return { kind: "confirmation", question, decision: "approve" };
+  // HRD-22: a late approve with a grant adds one paragraph after "APPROVE"
+  // (`chat_recovery.LATE_APPROVE_NOTE`). It is still an approve.
+  if (/^APPROVE(?:\n\n[\s\S]*)?$/i.test(answer)) {
+    return { kind: "confirmation", question, decision: "approve" };
+  }
   const ids = approvedIds(answer);
   if (ids) {
     const out: CardAnswer = { kind: "confirmation", question, decision: "approve" };
