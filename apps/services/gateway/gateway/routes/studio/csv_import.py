@@ -44,7 +44,9 @@ rows that did not.
 
 **A second send.** The same list (the same digest) in the same package within
 24 hours answers 409 ``already_imported`` with the batch id, unless the body
-sets ``repeat: true``. A double click and a proxy retry write once.
+sets ``repeat: true``. A double click and a proxy retry write once. Two sends at the
+same instant can both pass the look-up (no lock): a stated limit, closed with a
+unique key in a later slice.
 
 **An import that stops.** A ``StoreBusy`` that does not clear, a fault, or the
 chunk limit leaves the batch ``open``. The rows that are done stay, and the
@@ -142,7 +144,7 @@ def _body(raw: bytes) -> dict[str, Any]:
         raise _invalid("The body must be a JSON object.") from None
     if not isinstance(body, dict) or not _KEYS.issuperset(body):
         raise _invalid(
-            "Send csv, mapping, currency, approve_digest and skip_invalid, and no other key."
+            "Send csv, mapping, currency, approve_digest, skip_invalid and repeat, and no other key."
         )
     return body
 
