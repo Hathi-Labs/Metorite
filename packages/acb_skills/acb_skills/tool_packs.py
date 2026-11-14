@@ -3985,7 +3985,13 @@ def search_packs(
     :func:`packs_on` of the bound tenant less the admin's toggles. *loaded*
     names the packs that the run holds. *owners* comes from the caller: in
     TS-2a it is :data:`PACK_ONLY_OWNERS`. *available* is the test of the
-    loader plan (``_tool_injection._plan_pack_loader``)."""
+    loader plan (``_tool_injection._plan_pack_loader``).
+
+    A pack of :data:`FOLLOWS` counts as any other pack (TS-1b). So
+    ``studio-more`` is a candidate when layer (a) loaded only ``studio``, and
+    the core is one when it loaded only ``studio-more``. ``studio-workflows``
+    follows nothing, so it is a candidate only where ``TOOL_PACKS`` names it
+    (owner-only, ``work_plan.md`` §6 D4)."""
     keep = frozenset(str(owner) for owner in owners)
     return tuple(
         slug for slug in loadable(allow, loaded)

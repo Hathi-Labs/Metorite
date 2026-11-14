@@ -3,9 +3,15 @@
 ``project-docs/specs/one_assistant_context.md`` §4.2.9 (TS-2a, D222). The
 search adds single tools of a pack in the middle of a turn. It has NO caller
 yet (PR 3 wires it), so each case builds the parts itself, with the REAL
-guarded builder (``_tool_injection._pack_tools``) and the REAL ``studio``
-pack of the owner module. Each case names, in its docstring, the mutation
-that turns it red (R7).
+guarded builder (``_tool_injection._pack_tools``) and the REAL Studio packs
+of the owner module. Each case names, in its docstring, the mutation that
+turns it red (R7).
+
+TS-1b split the Studio tools in two packs: the core ``studio`` and its follow
+pack ``studio-more`` (``FOLLOWS``). The candidates are the tools of each pack
+of ``PACK_ONLY_OWNERS`` that ``packs_on`` allows and layer (a) did not load,
+follow packs included. So a case takes the packs and the tool names from
+``SKILL_FAMILIES`` and ``FOLLOWS``, and never counts a fixed number of tools.
 
 The eight mutations of the TS-2a fence, each run once and proved red:
 
@@ -36,6 +42,13 @@ M13. ``find_candidates`` keeps a name of the live list.
 M14. ``FindTools._gather`` builds with no live names.
 M15. The size check of a pack answers with the text of the request cap.
 
+The reland after TS-1b added these:
+
+M16. A follow pack is not a candidate (``search_packs`` drops each pack of
+     ``FOLLOWS``).
+M17. ``studio-workflows`` is always a candidate (``search_packs`` adds it
+     when ``packs_on`` does not name it).
+
 Run: ``uv run pytest tests/unit/test_find_tools_guards.py -q -p no:xdist``.
 """
 
@@ -45,6 +58,7 @@ import asyncio
 import contextlib
 import inspect
 import json
+import re
 import types
 from collections.abc import Iterator
 from typing import Any
@@ -72,7 +86,16 @@ MEMBER = "jane@acme.test"
 SESSION = "chat-ts2a-1"
 STUDIO = "studio-builder"
 STUDIO_DIR = "apps/agents/agent-studio-builder"
-STUDIO_TOOLS = tuple(sf.SKILL_FAMILIES["studio"]["tools"])
+#: The Studio packs that a ``TOOL_PACKS`` line with ``studio`` turns on: the
+#: core and each pack that follows it (``studio-more``), in the order of
+#: ``PACKS``. ``studio-workflows`` is not one: it follows nothing.
+STUDIO_ON = tuple(slug for slug in tp.PACKS if slug in tp.with_followers({"studio"}))
+#: The follow pack of the core.
+MORE = next(slug for slug in STUDIO_ON if slug != "studio")
+CORE_TOOLS = tuple(sf.SKILL_FAMILIES["studio"]["tools"])
+MORE_TOOLS = tuple(sf.SKILL_FAMILIES[MORE]["tools"])
+#: Each tool of the Studio packs that production turns on.
+STUDIO_TOOLS = CORE_TOOLS + MORE_TOOLS
 RUN_KEY = "key-ts2a"
 
 
@@ -180,7 +203,7 @@ def _mcp_tool() -> Any:
 
 
 async def _setup(
-    record: tp.PackRun, live: list[Any], *, allow: frozenset[str] = frozenset({"studio"})
+    record: tp.PackRun, live: list[Any], *, allow: frozenset[str] = frozenset(STUDIO_ON)
 ) -> tp.FindCandidates:
     """The setup of PR 3: one guarded build of each pack to search, in the run."""
     ctx = {**_run_ctx(), tp.PACK_RUN_KEY: RUN_KEY, tp.PACKS_KEY: record}
@@ -228,9 +251,20 @@ async def _find(finder: tp.FindTools, query: str, live: list[Any]) -> str:
     return (await _call(finder, {"query": query}, live))[0]
 
 
-def _studio_rules(held: bool = False) -> str:
-    """The rules text of the ``LOADED`` answer of a load of ``studio``."""
-    return tp._rules_block(tp.PACKS["studio"], held, ())
+def _studio_rules(held: bool = False, slug: str = "studio") -> str:
+    """The rules text of the ``LOADED`` answer of a load of *slug*."""
+    return tp._rules_block(tp.PACKS[slug], held, ())
+
+
+def _header(slug: str) -> str:
+    """The first sentence of the rules of *slug*: ``STUDIO TOOLS.`` for the
+    core. It is in the rules block of that pack only."""
+    return tp.PACKS[slug].rules.split(".", 1)[0] + "."
+
+
+def _names_a_tool(text: str, names: tuple[str, ...]) -> list[str]:
+    """Each of *names* that *text* holds as a whole word."""
+    return [name for name in names if re.search(rf"\b{re.escape(name)}\b", text)]
 
 
 def _held_drops(monkeypatch, names: frozenset[str]) -> None:
@@ -264,23 +298,20 @@ async def test_a_crm_records_tool_is_never_a_candidate(store, studio) -> None:
     record = _record()
     live = _dummies(40)
     crm = tuple(sf.SKILL_FAMILIES["crm-records"]["tools"])
+    builds: dict[str, Any] = {"crm-records": _fake_build(crm)}
     with _in_run(record):
-        studio_build = await ti._build_pack_for_load(
-            "studio", {**_run_ctx(), tp.PACK_RUN_KEY: RUN_KEY}, frozenset(_names(live))
-        )
-    allow = frozenset({"studio", "crm-records"})
-    assert tp.search_packs(allow, (), owners=tp.PACK_ONLY_OWNERS) == ("studio",)
-    found = tp.find_candidates(
-        allow,
-        (),
-        _names(live),
-        owners=tp.PACK_ONLY_OWNERS,
-        builds={"studio": studio_build, "crm-records": _fake_build(crm)},
-    )
-    assert found.packs == ("studio",) and set(found.tools.values()) == {"studio"}
+        for slug in STUDIO_ON:
+            builds[slug] = await ti._build_pack_for_load(
+                slug, {**_run_ctx(), tp.PACK_RUN_KEY: RUN_KEY}, frozenset(_names(live))
+            )
+    allow = frozenset({*STUDIO_ON, "crm-records"})
+    assert tp.search_packs(allow, (), owners=tp.PACK_ONLY_OWNERS) == STUDIO_ON
+    found = tp.find_candidates(allow, (), _names(live), owners=tp.PACK_ONLY_OWNERS, builds=builds)
+    assert found.packs == STUDIO_ON and set(found.tools.values()) == set(STUDIO_ON)
     assert not set(crm) & set(found.tools)
     description = tp.find_tool(found.packs).description
-    assert "- crm-records:" not in description and "- studio:" in description
+    assert "- crm-records:" not in description
+    assert all(f"- {slug}:" in description for slug in STUDIO_ON)
     finder = _finder(record, found)
     assert not set(finder.rank("find the contact and its deals", live, record, 5)) & set(crm)
 
@@ -299,15 +330,16 @@ async def test_the_setup_builds_only_the_packs_to_search(store, studio) -> None:
     ctx = {**_run_ctx(), tp.PACK_RUN_KEY: RUN_KEY, tp.PACKS_KEY: record}
     with _in_run(record):
         found = await tp.setup_candidates(
-            frozenset({"studio", "crm-records", "email"}),
+            frozenset({*STUDIO_ON, "crm-records", "email"}),
             (),
             (),
             owners=tp.PACK_ONLY_OWNERS,
             build=spy,
             ctx=ctx,
         )
-    assert built == ["studio"] and found.packs == ("studio",)
+    assert built == list(STUDIO_ON) and found.packs == STUDIO_ON
     assert sorted(found.tools) == sorted(STUDIO_TOOLS)
+    assert {found.tools[name] for name in MORE_TOOLS} == {MORE}, "the follow pack owns its tools"
 
 
 @pytest.mark.parametrize("why", ["requests closed", "held drop"])
@@ -347,13 +379,16 @@ async def test_a_write_that_the_build_dropped_never_takes_a_place_of_the_rank(
 
 async def test_a_write_ranks_where_the_build_keeps_it(store, studio) -> None:
     """Non-vacuity of the case above: with the store open and a clean chat,
-    the same queries rank the writes."""
+    the same queries rank the writes. The record writes are tools of the
+    follow pack, so the setup builds both Studio packs."""
     record = _record()
     live = _dummies(40)
     with _in_run(record):
         finder = _finder(record, await _setup(record, live))
     assert finder.rank("create a record", live, record, 5)[0] == "studio_record_create"
+    assert finder.candidates.tools["studio_record_create"] == MORE
     assert "studio_publish" in finder.rank("publish the app", live, record, 5)
+    assert finder.candidates.tools["studio_publish"] == "studio"
 
 
 @pytest.mark.parametrize("why", ["no feature:studio", "STUDIO_ORGS closed"])
@@ -379,7 +414,7 @@ async def test_a_member_without_studio_sees_no_studio_line_and_no_studio_name(
         answer = await _find(finder, "draft an app", live)
     description = finder.tool.description
     assert found.packs == () and dict(found.tools) == {}
-    assert "- studio:" not in description
+    assert not any(f"- {slug}:" in description for slug in STUDIO_ON)
     assert not any(name in description or name in answer for name in STUDIO_TOOLS)
     assert answer == tp.FIND_NONE and len(live) == 40
 
@@ -394,7 +429,7 @@ async def test_the_description_is_a_pure_function_of_the_candidates(store, studi
     with _in_run(two, session_id="chat-ts2a-2"):
         second = _finder(two, await _setup(two, _dummies(7, "x")))
     assert first.tool.description == second.tool.description
-    assert first.tool.description == tp._FIND_DESCRIPTION.format(catalog=tp.catalog(("studio",)))
+    assert first.tool.description == tp._FIND_DESCRIPTION.format(catalog=tp.catalog(STUDIO_ON))
     assert first.tool.name == tp.FIND_TOOL
     assert first.tool.parameters()["required"] == ["query"]
 
@@ -423,6 +458,206 @@ def test_only_first_party_text_enters_the_index() -> None:
     assert all(planted not in entry.description for entry in finder._index)
 
 
+# ── 1a. The Studio split: follow packs are candidates (TS-1b) ───────────────
+
+#: Production's ``TOOL_PACKS`` (``test_studio_workflow_write_tools.py``).
+PRODUCTION = (
+    "email,email-setup,crm-records,projects,projects-plan,projects-structure,"
+    "projects-bulk,projects-reminders,studio"
+)
+WORKFLOWS = "studio-workflows"
+
+
+@pytest.fixture
+def flag(monkeypatch):
+    """The real ``packs_on`` over a ``TOOL_PACKS`` value, with
+    ``TOOL_PACKS_ORGS=*``."""
+    from acb_common import get_settings
+
+    def set_flag(packs: str) -> frozenset[str]:
+        monkeypatch.setattr(get_settings(), "tool_packs", packs, raising=False)
+        monkeypatch.setattr(get_settings(), "tool_packs_orgs", "*", raising=False)
+        return tp.packs_on(ORG)
+
+    return set_flag
+
+
+async def _loaded(record: tp.PackRun, slugs: tuple[str, ...]) -> list[Any]:
+    """The live list of a run whose layer (a) loaded *slugs*: 40 tools of
+    the run and the guarded build of each pack."""
+    live = _dummies(40)
+    for slug in slugs:
+        built = await ti._pack_tools(slug, {**_run_ctx(), tp.PACK_RUN_KEY: RUN_KEY})
+        live.extend(built.tools)
+    return live
+
+
+def test_the_studio_packs_come_from_the_registry() -> None:
+    """The cases take the Studio packs from ``FOLLOWS`` and the tools from
+    ``SKILL_FAMILIES``, never from a fixed count. Non-vacuity of each case of
+    the split."""
+    assert STUDIO_ON == ("studio", MORE) and tp.FOLLOWS[MORE] == "studio"
+    assert WORKFLOWS not in STUDIO_ON and WORKFLOWS not in tp.FOLLOWS
+    assert CORE_TOOLS and MORE_TOOLS and not set(CORE_TOOLS) & set(MORE_TOOLS)
+    for slug in (*STUDIO_ON, WORKFLOWS):
+        assert tp.PACKS[slug].owner == STUDIO and STUDIO in tp.PACK_ONLY_OWNERS
+
+
+async def test_the_follow_pack_is_a_candidate_when_the_turn_loaded_only_the_core(
+    store, studio, monkeypatch
+) -> None:
+    """M16. The candidates are the packs of ``PACK_ONLY_OWNERS`` that layer
+    (a) did not load, follow packs included. A turn that loaded only the core
+    finds a tool of ``studio-more``, built at call time by ``_pack_tools``
+    and added to the live list. Mutation: ``search_packs`` drops each pack of
+    ``FOLLOWS`` → no candidate and ``FIND_NONE`` → red."""
+    calls: list[str] = []
+    real = ti._pack_tools
+
+    async def spy(slug: str, run_ctx: Any, **kw: Any) -> Any:
+        calls.append(slug)
+        return await real(slug, run_ctx, **kw)
+
+    record = _record(("studio",))
+    with _in_run(record):
+        live = await _loaded(record, ("studio",))
+        found = await _setup(record, live)
+        finder = _finder(record, found)
+        monkeypatch.setattr(ti, "_pack_tools", spy)
+        answer = await _find(finder, "list my skills", live)
+    start = 40 + len(CORE_TOOLS)
+    assert _names(live[40:start]) == list(CORE_TOOLS), "non-vacuity: layer (a) holds the core"
+    assert tp.search_packs(STUDIO_ON, record.holds(), owners=tp.PACK_ONLY_OWNERS) == (MORE,)
+    assert found.packs == (MORE,) and sorted(found.tools) == sorted(MORE_TOOLS)
+    assert f"- {MORE}:" in finder.tool.description
+    assert "- studio:" not in finder.tool.description
+    added = live[start:]
+    assert answer.startswith(f"Found {tp.FIND_LIMIT} tools."), answer
+    assert len(added) == tp.FIND_LIMIT and calls == [MORE]
+    for item in added:
+        assert _name(item) in MORE_TOOLS
+        assert getattr(item.func, "__cc_gated__", False), "the guarded wrapper"
+        assert getattr(item.func, ti.PACK_OWNER_ATTR, None) == STUDIO
+        assert getattr(item.func, tp.PACK_SLUG_ATTR, None) == MORE
+    assert answer.count(_header(MORE)) == 1 and _header("studio") not in answer
+    assert record.holds() == ("studio",), "a found tool joins no pack"
+
+
+async def test_no_candidate_when_the_turn_loaded_both_studio_packs(store, studio) -> None:
+    """When layer (a) loaded the core and its follow pack, no Studio pack is
+    left to search. Mutation: ``search_packs`` skips the test of *loaded* →
+    a loaded pack is a candidate → red."""
+    record = _record(STUDIO_ON)
+    with _in_run(record):
+        live = await _loaded(record, STUDIO_ON)
+        found = await _setup(record, live)
+        finder = _finder(record, found)
+        answer = await _find(finder, "list my skills", live)
+    assert len(live) == 40 + len(STUDIO_TOOLS), "non-vacuity: both packs are live"
+    assert found.packs == () and dict(found.tools) == {}
+    assert not any(f"- {slug}:" in finder.tool.description for slug in STUDIO_ON)
+    assert answer == tp.FIND_NONE
+
+
+async def test_the_core_is_a_candidate_when_the_turn_loaded_only_the_follow_pack(
+    store, studio
+) -> None:
+    """A turn that holds ``studio-more`` alone finds tools of the core, and
+    the answer gives the core rules block once. Mutation: ``search_packs``
+    drops the parent of a loaded follow pack → ``FIND_NONE`` → red."""
+    record = _record((MORE,))
+    with _in_run(record):
+        live = await _loaded(record, (MORE,))
+        found = await _setup(record, live)
+        finder = _finder(record, found)
+        answer = await _find(finder, "publish", live)
+    added = live[40 + len(MORE_TOOLS) :]
+    assert found.packs == ("studio",) and sorted(found.tools) == sorted(CORE_TOOLS)
+    assert answer.startswith(f"Found {tp.FIND_LIMIT} tools."), answer
+    assert added and set(_names(added)) <= set(CORE_TOOLS)
+    assert answer.count(_header("studio")) == 1 and _header(MORE) not in answer
+    assert finder.ruled == {"studio": False}
+
+
+async def test_each_owning_pack_sends_its_rules_block_once(store, studio) -> None:
+    """M4 over two packs. Two searches find tools of two packs: each answer
+    gives the block of its own pack, and a third search gives none. The
+    block of ``studio-more`` names no core tool: after a 422 it names only
+    ``load_skill_tools``. Mutation: give the block on each search → the
+    third answer holds both blocks → red."""
+    record = _record()
+    live = _dummies(40)
+    with _in_run(record):
+        finder = _finder(record, await _setup(record, live))
+        owner = finder.candidates.tools
+        assert {owner[n] for n in finder.rank("publish", live, record, 5)} == {"studio"}
+        core = await _find(finder, "publish", live)
+        assert {owner[n] for n in finder.rank("list my skills", live, record, 5)} == {MORE}
+        more = await _find(finder, "list my skills", live)
+        third = await _find(finder, "draft an app", live)
+    assert core.count(_header("studio")) == 1 and _header(MORE) not in core, core
+    assert more.count(_header(MORE)) == 1 and _header("studio") not in more, more
+    assert third.startswith("Found"), third
+    assert not any(_header(slug) in third for slug in STUDIO_ON), third
+    assert _names_a_tool(more, CORE_TOOLS) == [], "the follower names no core tool"
+    assert "load_skill_tools" in more, "non-vacuity: the 422 line rides in the block"
+    assert finder.ruled == dict.fromkeys(STUDIO_ON, False)
+
+
+async def test_the_422_crossing_finds_the_core_tool_that_lists_the_actions(store, studio) -> None:
+    """One step crosses the split: after a 422 on a skill save, the member
+    needs the actions of AI Studio, and the tool that lists them is in the
+    core. A turn that holds ``studio-more`` alone finds that core tool, with
+    the core block. Mutation: no core candidate beside a loaded follow pack →
+    the search finds nothing → red."""
+    rules = tp.PACKS[MORE].rules
+    assert "422" in rules and "load_skill_tools" in rules
+    assert _names_a_tool(rules, CORE_TOOLS) == [], "the block names no core tool"
+    record = _record((MORE,))
+    with _in_run(record):
+        live = await _loaded(record, (MORE,))
+        finder = _finder(record, await _setup(record, live))
+        answer = await _find(finder, "list the actions of AI Studio", live)
+    by_name = {_name(t): t for t in live}
+    assert "studio_list_actions" in by_name, answer
+    assert getattr(by_name["studio_list_actions"].func, tp.PACK_SLUG_ATTR, None) == "studio"
+    assert answer.count(_header("studio")) == 1, answer
+
+
+def test_studio_workflows_is_no_candidate_under_the_production_list(flag) -> None:
+    """``studio-workflows`` has the owner of the Studio packs, but it follows
+    nothing. So it is a candidate only where ``TOOL_PACKS`` names it, an
+    owner-only line (``work_plan.md`` §6 D4). ``search_packs`` keys on the
+    owner and on ``packs_on``, and needs no change for it. Mutation:
+    ``search_packs`` always adds ``studio-workflows`` → red."""
+    on = flag(PRODUCTION)
+    assert set(STUDIO_ON) <= on and WORKFLOWS not in on
+    assert tp.search_packs(on, (), owners=tp.PACK_ONLY_OWNERS) == STUDIO_ON
+    assert tp.search_packs(on, ("studio",), owners=tp.PACK_ONLY_OWNERS) == (MORE,)
+    assert tp.search_packs(on, STUDIO_ON, owners=tp.PACK_ONLY_OWNERS) == ()
+    named = flag(PRODUCTION + "," + WORKFLOWS)
+    assert WORKFLOWS in named
+    assert tp.search_packs(named, (), owners=tp.PACK_ONLY_OWNERS) == (*STUDIO_ON, WORKFLOWS)
+    assert tp.search_packs(named, STUDIO_ON, owners=tp.PACK_ONLY_OWNERS) == (WORKFLOWS,)
+
+
+async def test_studio_workflows_tools_are_candidates_only_where_the_list_names_it(
+    flag, store, studio
+) -> None:
+    """The setup of the run builds ``studio-workflows`` only where
+    ``TOOL_PACKS`` names it, and then its tools are candidates. Mutation:
+    ``search_packs`` always adds it → its tools are candidates under the
+    production list → red."""
+    family = tuple(sf.SKILL_FAMILIES[WORKFLOWS]["tools"])
+    record = _record()
+    with _in_run(record):
+        dark = await _setup(record, _dummies(40), allow=flag(PRODUCTION))
+        named = await _setup(record, _dummies(40), allow=flag(PRODUCTION + "," + WORKFLOWS))
+    assert dark.packs == STUDIO_ON and not set(family) & set(dark.tools)
+    assert named.packs == (*STUDIO_ON, WORKFLOWS)
+    assert {name for name, slug in named.tools.items() if slug == WORKFLOWS} == set(family)
+
+
 # ── 2. The middleware ───────────────────────────────────────────────────────
 
 
@@ -444,18 +679,23 @@ async def test_a_found_tool_is_the_guarded_build_of_the_call(store, studio, monk
     with _in_run(record):
         finder = _finder(record, await _setup(record, live))
         answer, passed = await _call(finder, {"query": "draft an app"}, live)
-        fresh = await real("studio", {**_run_ctx(), tp.PACK_RUN_KEY: RUN_KEY})
+        fresh = [await real(slug, {**_run_ctx(), tp.PACK_RUN_KEY: RUN_KEY}) for slug in STUDIO_ON]
     assert not passed, "the middleware takes the call"
-    assert [c[0] for c in calls] == ["studio", "studio"], calls
-    assert calls[1] == ("studio", RUN_KEY, frozenset(_names(_dummies(40))))
     added = live[40:]
+    owners = {finder.candidates.tools[_name(item)] for item in added}
+    at_call = [slug for slug in STUDIO_ON if slug in owners]
+    assert at_call == list(STUDIO_ON), "non-vacuity: the query finds tools of both packs"
+    assert [c[0] for c in calls] == [*STUDIO_ON, *at_call], calls
+    names = frozenset(_names(_dummies(40)))
+    assert calls[len(STUDIO_ON) :] == [(slug, RUN_KEY, names) for slug in at_call]
     assert len(added) == tp.FIND_LIMIT and answer.startswith("Found 5 tools."), answer
     for item in added:
         assert getattr(item.func, "__cc_gated__", False), "the guarded wrapper"
         assert getattr(item.func, ti.PACK_OWNER_ATTR, None) == STUDIO
-        assert getattr(item.func, tp.PACK_SLUG_ATTR, None) == "studio"
+        slug = finder.candidates.tools[_name(item)]
+        assert getattr(item.func, tp.PACK_SLUG_ATTR, None) == slug
         assert f"- {_name(item)}: " in answer
-    by_name = {_name(t): t for t in fresh.tools}
+    by_name = {_name(t): t for build in fresh for t in build.tools}
     for item in added:
         assert inspect.unwrap(item.func) is inspect.unwrap(by_name[_name(item)]), _name(item)
     assert record.holds() == () and record.later == {}, "a found tool joins no pack"
@@ -472,11 +712,13 @@ async def test_the_answer_carries_the_rules_block_once_in_the_run(store, studio)
         finder = _finder(record, await _setup(record, live))
         first = await _find(finder, "draft an app", live)
         second = await _find(finder, "list my skills", live)
-    block = _studio_rules(False)
-    assert first.count(block) == 1 and first.count("STUDIO TOOLS.") == 1, first
-    assert second.startswith("Found") and "STUDIO TOOLS." not in second, second
-    assert first.endswith(block), "an open chat gets no hold note"
-    assert finder.ruled == {"studio": False} and len(finder.found) == 10
+    for slug in STUDIO_ON:
+        block = _studio_rules(False, slug)
+        assert first.count(block) == 1 and first.count(_header(slug)) == 1, (slug, first)
+        assert _header(slug) not in second, (slug, second)
+    assert second.startswith("Found"), second
+    assert first.endswith(_studio_rules(False, MORE)), "an open chat gets no hold note"
+    assert finder.ruled == dict.fromkeys(STUDIO_ON, False) and len(finder.found) == 10
 
 
 @pytest.mark.parametrize("when", ["before the setup", "after the setup", "between two searches"])
@@ -504,15 +746,18 @@ async def test_the_hold_note_comes_with_the_tools_of_a_held_chat(
             await eg.mark_untrusted_answer()
             second = await _find(finder, "list my skills", live)
         note = tp._hold_note(STUDIO)
-    assert note.strip() and "STUDIO TOOLS." not in note
+    assert note.strip() and not any(_header(slug) in note for slug in STUDIO_ON)
     if when == "between two searches":
         assert note not in first, "non-vacuity: open before the mark"
-        assert second.endswith(note), second
-        assert "STUDIO TOOLS." not in second, "the note alone, not a second block"
+        assert second.endswith(note) and second.count(note) == 1, second
+        assert not any(_header(slug) in second for slug in STUDIO_ON), "the note alone"
+        assert finder.ruled == {"studio": False, MORE: True}
     else:
-        assert first.endswith(_studio_rules(False) + "\n\n" + note), first
-        assert first.count("STUDIO TOOLS.") == 1
-    assert finder.ruled == {"studio": True}
+        for slug in STUDIO_ON:
+            assert first.count(_studio_rules(False, slug) + "\n\n" + note) == 1, (slug, first)
+            assert first.count(_header(slug)) == 1
+        assert first.endswith(note) and first.count(note) == len(STUDIO_ON)
+        assert finder.ruled == dict.fromkeys(STUDIO_ON, True)
 
 
 async def test_the_rank_skips_each_live_name_and_each_pack_of_the_run(store, studio) -> None:
@@ -528,6 +773,9 @@ async def test_the_rank_skips_each_live_name_and_each_pack_of_the_run(store, stu
     assert "studio_draft" in finder.rank("draft an app", live, record, 5), "non-vacuity"
     assert "studio_draft" not in finder.rank("draft an app", [*live, own], record, 5)
     record.add("studio", False)
+    left = finder.rank("draft an app", live, record, 5)
+    assert left and not set(left) & set(CORE_TOOLS), "the follow pack still ranks"
+    record.add(MORE, False)
     assert finder.rank("draft an app", live, record, 5) == []
     with _in_run(record):
         assert await _find(finder, "draft an app", live) == tp.FIND_NONE
@@ -593,7 +841,9 @@ async def test_a_mail_owner_never_joins_a_run_with_an_mcp_tool(
         answer = await _find(finder, "draft an app", live)
         clean = _dummies(30)
         ok = await _find(finder, "draft an app", clean)
-    assert answer == tp.FIND_BESIDE_MCP.format(label="AI Studio builder", owner=STUDIO), answer
+    assert answer == "\n\n".join(
+        tp.FIND_BESIDE_MCP.format(label=tp._label(slug), owner=STUDIO) for slug in STUDIO_ON
+    ), answer
     assert len(live) == 31
     assert ok.startswith("Found"), "non-vacuity: with no MCP tool it adds"
 
@@ -605,9 +855,11 @@ async def test_the_pack_size_check_of_a_load_holds(store, studio, monkeypatch) -
     live = _dummies(40)
     with _in_run(record):
         finder = _finder(record, await _setup(record, live))
-        monkeypatch.setattr(tp, "MAX_PACK_TOOLS", len(STUDIO_TOOLS) - 1)
-        answer = await _find(finder, "draft an app", live)
-    want = tp.FIND_PACK_TOO_BIG.format(label="AI Studio builder", tools=len(STUDIO_TOOLS) - 1)
+        ranked = finder.rank("publish", live, record, 5)
+        assert {finder.candidates.tools[n] for n in ranked} == {"studio"}, "core tools only"
+        monkeypatch.setattr(tp, "MAX_PACK_TOOLS", len(CORE_TOOLS) - 1)
+        answer = await _find(finder, "publish", live)
+    want = tp.FIND_PACK_TOO_BIG.format(label=tp._label("studio"), tools=len(CORE_TOOLS) - 1)
     assert answer == want and len(live) == 40, answer
     assert str(tp.MAX_REQUEST_TOOLS) not in answer, "the cause is the size of the pack"
 
@@ -650,20 +902,17 @@ async def test_the_schema_budget_counts_the_rules_block(store, studio, monkeypat
         base = _maf_mcp.schema_tokens(live)
         rules = tp._text_tokens(_studio_rules(False))
         assert 0 < base < tp.FIND_SCHEMA_TOKENS
-        found = [
-            t
-            for t in (
-                await ti._pack_tools("studio", {**_run_ctx(), tp.PACK_RUN_KEY: RUN_KEY})
-            ).tools
-        ]
-        schemas = _maf_mcp.schema_tokens(found[: tp.FIND_LIMIT * 2])
+        ranked = finder.rank("publish", live, record, tp.FIND_LIMIT)
+        assert {finder.candidates.tools[n] for n in ranked} == {"studio"}, "one block only"
+        built = await ti._pack_tools("studio", {**_run_ctx(), tp.PACK_RUN_KEY: RUN_KEY})
+        schemas = _maf_mcp.schema_tokens([t for t in built.tools if _name(t) in ranked])
         assert schemas < rules, "non-vacuity: the block outweighs the found schemas"
         budget = base + rules - 1
         monkeypatch.setattr(tp, "FIND_SCHEMA_TOKENS", budget)
-        answer = await _find(finder, "draft an app", live)
+        answer = await _find(finder, "publish", live)
         assert answer == tp.FIND_PAST_BUDGET.format(budget=budget) and len(live) == 40
         monkeypatch.setattr(tp, "FIND_SCHEMA_TOKENS", base + rules + schemas)
-        ok = await _find(finder, "draft an app", live)
+        ok = await _find(finder, "publish", live)
     assert ok.startswith("Found 5 tools."), "non-vacuity: with room for the block it adds"
 
 
@@ -771,24 +1020,31 @@ async def test_a_sub_agent_gets_no_found_tool(store, studio) -> None:
         finder = _finder(record, await _setup(record, live))
         assert (await _find(finder, "draft an app", live)).startswith("Found")
     assert agent_tools._parent_packs({tp.PACKS_KEY: record}) == frozenset()
-    assert "studio" not in record.holds()
+    assert not set(STUDIO_ON) & set(record.holds())
 
 
 async def test_a_later_load_of_the_whole_pack_skips_the_found_names(store, studio) -> None:
-    """A load of the whole pack after a search passes the live names to its
+    """A load of each Studio pack after a search passes the live names to its
     build, so it adds the rest of the pack and never meets a duplicate.
-    After it, the search finds nothing more of that pack."""
+    After both loads, the search finds nothing more."""
     record = _record()
     live = _dummies(40)
     loader = tp.LoadSkillTools(
-        offered=("studio",), run_key=RUN_KEY, record=record, build=ti._build_pack_for_load
+        offered=STUDIO_ON, run_key=RUN_KEY, record=record, build=ti._build_pack_for_load
     )
+    loaded: dict[str, str] = {}
     with _in_run(record):
         finder = _finder(record, await _setup(record, live))
         await _find(finder, "draft an app", live)
-        loaded, _ = await _call(loader, {"pack": "studio"}, live)
+        found = list(finder.found)
+        for slug in STUDIO_ON:
+            loaded[slug] = (await _call(loader, {"pack": slug}, live))[0]
         after = await _find(finder, "list my skills", live)
-    assert loaded.startswith("Loaded the AI Studio builder tools (18 tools)."), loaded
+    for slug in STUDIO_ON:
+        family = sf.SKILL_FAMILIES[slug]["tools"]
+        rest = len(family) - len([name for name in found if name in family])
+        want = f"Loaded the {tp._label(slug)} tools ({rest} tools)."
+        assert loaded[slug].startswith(want), loaded[slug]
     names = _names(live)
     assert len(names) == len(set(names)) == 40 + len(STUDIO_TOOLS)
     assert after == tp.FIND_NONE
@@ -833,8 +1089,10 @@ async def test_an_org_or_a_member_in_the_arguments_never_scopes_the_search(
     with _in_run(record):
         finder = _finder(record, await _setup(record, live))
         monkeypatch.setattr(ti, "_pack_tools", spy)
-        answer, _ = await _call(finder, {"query": "draft an app", **FOREIGN}, live)
+        answer, _ = await _call(finder, {"query": "publish", **FOREIGN}, live)
     assert answer.startswith("Found 5 tools."), answer
+    packs = {finder.candidates.tools[name] for name in finder.found}
+    assert packs == {"studio"}, "one pack, so one build at call time"
     assert len(seen) == 1
     assert seen[0]["member"] == MEMBER and seen[0]["tenant"] == ORG
     assert not {"org", "organization_id"} & set(seen[0]), sorted(seen[0])
@@ -894,7 +1152,8 @@ async def test_a_load_and_a_search_in_one_step_do_not_race(store, studio) -> Non
     """M7. MAF runs the calls of one model step as tasks. While the load
     awaits its build, the search must not add a tool of the same pack, or the
     ``add_tools`` of the load raises and the load answers
-    ``LOAD_UNAVAILABLE``. Mutation: ``FindTools`` takes a lock of its own →
+    ``LOAD_UNAVAILABLE``. After the load, the search may add tools of the
+    follow pack, never one of the core. Mutation: ``FindTools`` takes a lock of its own →
     the search adds during the build of the load → red."""
     record = _record()
     live = _dummies(40)
@@ -925,10 +1184,12 @@ async def test_a_load_and_a_search_in_one_step_do_not_race(store, studio) -> Non
         (loaded, _), (found, _) = await asyncio.gather(
             _call(loader, {}, live, load_ctx), _call(finder, {}, live, find_ctx)
         )
-    assert loaded.startswith("Loaded the AI Studio builder tools (23 tools)."), loaded
-    assert found == tp.FIND_NONE, found
+    want = f"Loaded the {tp._label('studio')} tools ({len(CORE_TOOLS)} tools)."
+    assert loaded.startswith(want), loaded
+    assert found == tp.FIND_NONE or found.startswith("Found"), found
+    assert not set(finder.found) & set(CORE_TOOLS), "the search adds no tool of the load"
     names = _names(live)
-    assert len(names) == len(set(names)) == 40 + len(STUDIO_TOOLS)
+    assert len(names) == len(set(names)) == 40 + len(CORE_TOOLS) + len(finder.found)
 
 
 # ── 4. The MAF loop, with a real FunctionInvocationLayer ────────────────────
@@ -1048,9 +1309,10 @@ async def test_the_maf_loop_holds_the_found_schemas_on_the_next_request(store, s
 
 async def test_a_load_and_a_search_in_one_model_step_both_answer(store, studio) -> None:
     """M7 in the MAF loop. One model step calls ``load_skill_tools`` and
-    ``find_tools``. With the one lock, the load adds the whole pack and the
-    search then finds nothing of it. No call answers that its tools are not
-    available, and the next request holds each name once."""
+    ``find_tools``. With the one lock, the load adds the whole core pack and
+    the search then finds nothing of it, only tools of the follow pack. No
+    call answers that its tools are not available, and the next request holds
+    each name once."""
     record = _record()
     model = _Model(
         [
@@ -1066,8 +1328,11 @@ async def test_a_load_and_a_search_in_one_model_step_both_answer(store, studio) 
         await _run_agent(model, [tp.FindToolsProvider(finder), tp.LoadSkillToolsProvider(loader)])
     second = _tool_names(model.bodies[1])
     results = _results(model.bodies[1])
-    assert results[tp.LOAD_TOOL].startswith("Loaded the AI Studio builder tools (23 tools).")
-    assert results[tp.FIND_TOOL] == tp.FIND_NONE
-    assert len(second) == len(set(second)) and set(STUDIO_TOOLS) <= set(second)
+    want = f"Loaded the {tp._label('studio')} tools ({len(CORE_TOOLS)} tools)."
+    assert results[tp.LOAD_TOOL].startswith(want), results[tp.LOAD_TOOL]
+    assert results[tp.FIND_TOOL] == tp.FIND_NONE or results[tp.FIND_TOOL].startswith("Found")
+    assert not set(finder.found) & set(CORE_TOOLS), "the search adds no tool of the load"
+    assert set(finder.found) <= set(MORE_TOOLS)
+    assert len(second) == len(set(second)) and set(CORE_TOOLS) <= set(second)
     first = _tool_names(model.bodies[0])
     assert first.index(tp.FIND_TOOL) < first.index(tp.LOAD_TOOL), "find_tools joins first"
