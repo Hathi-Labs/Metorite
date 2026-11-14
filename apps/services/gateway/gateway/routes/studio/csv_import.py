@@ -12,8 +12,13 @@ They register on the router of ``actions.py``, as the sibling modules do.
 **Dark.** Both answer 404 until ``STUDIO_ORGS`` holds the org (the one switch
 of Studio). No new flag.
 
-**Who.** The owner of the package only. Any other member gets 404, so the
-route does not tell that the package exists. The member is ``user.email`` and
+**Who.** The owner of the package only, as a DIRECT call of a member: the
+proof of the BFF (``invoke._is_direct``) must verify, as the door asks for a
+class B create. An agent, a script or a call with no proof gets 403
+``approval_required`` on the import, so no caller approves its own write. The
+preview needs no proof. Any other member gets 404, so the route does not tell
+that the package exists. The manifest must declare ``object:<name>.create``
+(403 ``not_declared``), as the door requires. The member is ``user.email`` and
 the org is the session's, never request input (R5).
 
 **The two calls are one plan.** Each call carries the CSV and the map. The
@@ -29,19 +34,27 @@ which passes ``Viewer(member)`` to ``apply_writes``. So the row rules and the
 caps bind a row as they bind a write of the door. A refused row fails ONE item
 and the import goes on. A chunk is :data:`~gateway.studio.batch_store.CHUNK_WRITES`
 writes, and each chunk is its own transaction, so the org lock is free
-between chunks.
+between chunks. The import emits no record event (C3) for its rows: a workflow
+that starts on record create does not run for imported rows. That is a stated
+limit of this slice.
 
 **Invalid rows.** A CSV with an invalid row writes nothing, unless the body
 sets ``skip_invalid: true``. Then the valid rows go in and the answer lists the
 rows that did not.
 
-**An import that stops.** A crash, or a ``StoreBusy`` that does not clear, leaves
-the batch ``open``. The rows that are done stay, and the answer says so with
-``stopped`` and ``pending``. There is no resume route yet (a later slice). The
-member removes the done rows from the CSV and sends the rest again.
+**A second send.** The same list (the same digest) in the same package within
+24 hours answers 409 ``already_imported`` with the batch id, unless the body
+sets ``repeat: true``. A double click and a proxy retry write once.
 
-**The audit.** One ``app_audit`` row for the import. It
-names the op, the row counts and the batch id, never a cell.
+**An import that stops.** A ``StoreBusy`` that does not clear, a fault, or the
+chunk limit leaves the batch ``open``. The rows that are done stay, and the
+answer says so with ``stopped``, ``written`` and ``pending``. There is no resume
+route yet (a later slice). The member removes the done rows from the CSV and
+sends the rest with ``repeat: true``.
+
+**The audit.** One ``app_audit`` row, in the same transaction that opens the
+batch. It names the op, the batch id and the row counts, never a cell. The
+end counts are on the batch rows.
 """
 
 from __future__ import annotations
@@ -53,13 +66,16 @@ import uuid
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common import get_logger
 from acb_common.studio_access import Viewer
 from acb_common.studio_fields import NAME_PATTERN
+from acb_common.studio_manifest import parse_uses
 from fastapi import Depends, HTTPException, Request
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.apps._common import record_app_audit_in
 from gateway.routes.studio import flags
 from gateway.routes.studio.actions import NOT_FOUND, router
+from gateway.routes.studio.invoke import _is_direct
 from gateway.studio import batch_store, objects_store, packages_store
 from gateway.studio import csv_import as planner
 
@@ -70,15 +86,19 @@ MAX_BODY_BYTES = planner.MAX_BYTES * 2 + 16 * 1024
 #: Tries of one chunk that answers ``StoreBusy``, and of a deadlock.
 CHUNK_TRIES = 3
 #: The most chunks of one request. 1000 rows of 1 write is 20 chunks of 50.
-MAX_CHUNKS = 25
+MAX_CHUNKS = -(-planner.MAX_ROWS // batch_store.CHUNK_WRITES) + 5
+_log = get_logger("gateway.studio.csv_import")
 
 BODY_TOO_LARGE = "body_too_large"
 IMPORT_INVALID = "import_invalid"
 APPROVAL_REQUIRED = "approval_required"
 ROWS_INVALID = "rows_invalid"
+NOT_DECLARED = "not_declared"
+NOT_DIRECT = "approval_required"
+ALREADY_IMPORTED = "already_imported"
 
 _NAME = re.compile(NAME_PATTERN, re.ASCII)
-_KEYS = frozenset({"csv", "mapping", "currency", "approve_digest", "skip_invalid"})
+_KEYS = frozenset({"csv", "mapping", "currency", "approve_digest", "skip_invalid", "repeat"})
 
 
 def _not_found() -> HTTPException:
@@ -152,16 +172,37 @@ def _plan_view(plan: planner.Plan, pid: str) -> dict[str, Any]:
     }
 
 
+def _declares_create(manifest: Any, name: str) -> bool:
+    """True when the manifest declares ``object:<name>.create``, as the door
+    asks before it runs a create (``invoke._declared``)."""
+    found = manifest.get("actions") if isinstance(manifest, dict) else None
+    for entry in found if isinstance(found, list) else []:
+        ref = parse_uses(entry.get("uses")) if isinstance(entry, dict) else None
+        if ref is not None and ref.source == "object" and ref.op == "create" and ref.object == name:
+            return True
+    return False
+
+
 async def _owned_object(
-    db: Any, user: UserContext, pid: str, name: str
+    db: Any, user: UserContext, pid: str, name: str, *, write: bool = False
 ) -> objects_store.StudioObject:
     """The object, for the owner of the package. Anyone else, and an object
-    that the package does not hold, is 404."""
-    if await packages_store.get_package(db, user.email, pid) is None:
+    that the package does not hold, is 404. For a *write*, the manifest must
+    declare the create of the object, as the door requires (403)."""
+    package = await packages_store.get_package(db, user.email, pid)
+    if package is None:
         raise _not_found()
     obj = await objects_store.get_object_by_name(db, name, package_id=pid)
     if obj is None:
         raise _not_found()
+    if write and not _declares_create(package.manifest, name):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": NOT_DECLARED,
+                "message": "This app declares no create action for this object, so it takes no import.",
+            },
+        )
     return obj
 
 
@@ -205,7 +246,7 @@ async def preview_import(
     if not _NAME.fullmatch(object_name):
         raise _not_found()
     body = _body(await _raw_body(request))
-    table, mapping, currency = _read(body)
+    table, mapping, currency = await asyncio.to_thread(_read, body)
     async with _tenant_session() as db:
         obj = await _owned_object(db, user, pid, object_name)
     suggested = planner.suggest_mapping(table.headers, obj.fields)
@@ -224,12 +265,10 @@ async def preview_import(
     }
     use = mapping if mapping is not None else suggested
     try:
-        out.update(
-            _plan_view(
-                planner.plan_import(table, obj.fields, use, object_id=obj.id, currency=currency),
-                pid,
-            )
+        plan = await asyncio.to_thread(
+            planner.plan_import, table, obj.fields, use, object_id=obj.id, currency=currency
         )
+        out.update(_plan_view(plan, pid))
     except planner.CsvImportError as exc:
         # No complete map yet: the screen shows the map and this one sentence.
         out["plan_problem"] = str(exc)
@@ -254,6 +293,17 @@ async def _run_chunk(
     raise AssertionError("unreachable")  # pragma: no cover
 
 
+def _flags(body: dict[str, Any]) -> tuple[bool, str | None, bool]:
+    """``skip_invalid``, ``approve_digest`` and ``repeat``, checked."""
+    skip, repeat = body.get("skip_invalid", False), body.get("repeat", False)
+    if not isinstance(skip, bool) or not isinstance(repeat, bool):
+        raise _invalid("skip_invalid and repeat are true or false.")
+    approve = body.get("approve_digest")
+    if approve is not None and not isinstance(approve, str):
+        raise _invalid("approve_digest is the digest of the preview.")
+    return skip, approve, repeat
+
+
 @router.post("/packages/{package_id}/objects/{object_name}/import")
 async def run_import(
     package_id: str,
@@ -267,19 +317,24 @@ async def run_import(
     pid = _uuid(package_id)
     if not _NAME.fullmatch(object_name):
         raise _not_found()
+    if not _is_direct(request, user):
+        # An agent, a script or a call with no proof of the BFF cannot approve
+        # its own write: the door gives it the same refusal (B2c).
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": NOT_DIRECT,
+                "message": "An import runs only as a direct call of a member in the app.",
+            },
+        )
     body = _body(await _raw_body(request))
-    table, mapping, currency = _read(body)
+    table, mapping, currency = await asyncio.to_thread(_read, body)
     if mapping is None:
         raise _invalid("mapping is required to import.")
-    skip = body.get("skip_invalid", False)
-    if not isinstance(skip, bool):
-        raise _invalid("skip_invalid is true or false.")
-    approve = body.get("approve_digest")
-    if approve is not None and not isinstance(approve, str):
-        raise _invalid("approve_digest is the digest of the preview.")
+    skip, approve, repeat = _flags(body)
     async with _tenant_session() as db:
-        obj = await _owned_object(db, user, pid, object_name)
-    plan = _plan(table, mapping, obj, currency)
+        obj = await _owned_object(db, user, pid, object_name, write=True)
+    plan = await asyncio.to_thread(_plan, table, mapping, obj, currency)
     view = _plan_view(plan, pid)
     if plan.errors and not skip:
         raise HTTPException(
@@ -305,6 +360,20 @@ async def run_import(
             },
         )
     async with _tenant_session() as db:
+        if not repeat:
+            before = await batch_store.find_recent_batch(
+                db, package_id=pid, action=planner.ACTION, digest=view["digest"]
+            )
+            if before is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": ALREADY_IMPORTED,
+                        "batch_id": before,
+                        "message": "This CSV was imported in the last day. Send repeat: true to "
+                        "import it again.",
+                    },
+                )
         batch = await batch_store.open_batch(
             db,
             user.email,
@@ -313,23 +382,7 @@ async def run_import(
             items=plan.items,
             expect_digest=view["digest"],
         )
-    writes = plan.writes_by_key()
-    written: dict[str, str] = {}
-    failed: dict[str, str] = {}
-    status = batch.status
-    pending = batch.total
-    stopped = None
-    try:
-        for _ in range(MAX_CHUNKS):
-            res = await _run_chunk(user, batch.id, writes)
-            written.update(res.written)
-            failed.update(res.failed)
-            status, pending = res.status, res.pending
-            if pending == 0 or status != batch_store.STATUS_OPEN:
-                break
-    except objects_store.StoreBusy:
-        stopped = "store_busy"
-    async with _tenant_session() as db:
+        # The audit row commits with the batch, so a fault later loses no audit.
         await record_app_audit_in(
             db,
             app_id=pid,
@@ -339,11 +392,33 @@ async def run_import(
                 "op": "csv_import",
                 "batch": batch.id,
                 "rows": plan.total_rows,
-                "written": len(written),
-                "failed": len(failed),
+                "planned": plan.valid_rows,
                 "skipped": plan.total_rows - plan.valid_rows,
             },
         )
+    writes = plan.writes_by_key()
+    written: dict[str, str] = {}
+    failed: dict[str, str] = {}
+    status = batch.status
+    pending = batch.total
+    stopped: str | None = None
+    try:
+        for _ in range(MAX_CHUNKS):
+            res = await _run_chunk(user, batch.id, writes)
+            written.update(res.written)
+            failed.update(res.failed)
+            status, pending = res.status, res.pending
+            if pending == 0 or status != batch_store.STATUS_OPEN:
+                break
+        else:
+            stopped = "chunk_limit"
+    except objects_store.StoreBusy:
+        stopped = "store_busy"
+    except Exception as exc:
+        # Chunks before this one are committed. The answer says what is done,
+        # so the member never has to guess. The log holds the type, no data.
+        _log.error("csv_import_chunk_fault", batch=batch.id, kind=type(exc).__name__)
+        stopped = "fault"
     return {
         "batch_id": batch.id,
         "status": status,

@@ -311,3 +311,34 @@ def test_r8_org_b_drives_no_batch_of_org_a_and_writes_no_record_of_a(world) -> N
     assert len(_records(w, w.ledger)) == 0  # the batch of A never ran
     assert len(_records(w, w.ledger_b)) == 3
     assert _total(w) == 3
+
+
+# -- 5. a second send is found, and org B does not see it -----------------------------
+
+
+def test_r8_find_recent_batch_finds_the_same_list_in_the_same_org_only(world) -> None:
+    w = world
+    plan = _plan(w.ledger, _csv(4))
+
+    async def go() -> tuple[Any, ...]:
+        before = None
+        async with tenant_session(w.a) as db:
+            before = await bs.find_recent_batch(
+                db, package_id=w.pkg_a, action=planner.ACTION, digest=plan.digest(w.pkg_a)
+            )
+        batch = await _open(w.a, w.pkg_a, plan)
+        async with tenant_session(w.a) as db:
+            same = await bs.find_recent_batch(
+                db, package_id=w.pkg_a, action=planner.ACTION, digest=plan.digest(w.pkg_a)
+            )
+            other = await bs.find_recent_batch(
+                db, package_id=w.pkg_a, action=planner.ACTION, digest="0" * 64
+            )
+        async with tenant_session(w.b) as db:
+            from_b = await bs.find_recent_batch(
+                db, package_id=w.pkg_a, action=planner.ACTION, digest=plan.digest(w.pkg_a)
+            )
+        return before, batch.id, same, other, from_b
+
+    before, bid, same, other, from_b = _go(w, go)
+    assert before is None and same == bid and other is None and from_b is None

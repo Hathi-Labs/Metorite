@@ -53,6 +53,10 @@ def _csv(n: int, bad: set[int] = frozenset()) -> str:
 class _World:
     def __init__(self) -> None:
         self.owner = True
+        self.direct = True
+        self.seen: set[str] = set()
+        self.fault = False
+        self.manifest = {"actions": [{"id": "add", "uses": "object:ledger.create"}]}
         self.sessions = 0
         self.opened: list[dict[str, Any]] = []
         self.chunks: list[str] = []
@@ -72,7 +76,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
 
     async def get_package(db: Any, member: str, pid: str) -> Any:
         assert member == ANA and pid == PKG
-        return object() if w.owner else None
+        return SimpleNamespace(manifest=w.manifest) if w.owner else None
 
     async def get_object(db: Any, name: str, *, package_id: str) -> Any:
         return SimpleNamespace(id=OBJ, fields=FIELDS) if name == "ledger" else None
@@ -88,6 +92,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
         **kw: Any,
     ) -> Any:
         w.opened.append({"actor": actor, "n": len(items), "digest": expect_digest})
+        w.seen.add(str(expect_digest))
         return batch_store.Batch(
             id=str(uuid.uuid4()),
             package_id=package_id,
@@ -103,6 +108,8 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
 
     async def run_chunk(db: Any, actor: str, bid: str, writes: Any, *, viewer: Any) -> Any:
         assert viewer.email == ANA
+        if w.fault:
+            raise RuntimeError("boom with a cell: SECRETCELL")
         if w.busy:
             w.busy -= 1
             raise objects_store.StoreBusy("busy")
@@ -116,6 +123,9 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
             status="open" if left else "done",
         )
 
+    async def find_recent(db: Any, *, package_id: str, action: str, digest: str) -> Any:
+        return "11111111-1111-1111-1111-111111111111" if digest in w.seen else None
+
     async def audit(db: Any, **kw: Any) -> None:
         w.audits.append(kw)
 
@@ -124,6 +134,8 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
     monkeypatch.setattr(route.objects_store, "get_object_by_name", get_object)
     monkeypatch.setattr(route.batch_store, "open_batch", open_batch)
     monkeypatch.setattr(route.batch_store, "run_chunk", run_chunk)
+    monkeypatch.setattr(route.batch_store, "find_recent_batch", find_recent)
+    monkeypatch.setattr(route, "_is_direct", lambda request, user: w.direct)
     monkeypatch.setattr(route, "record_app_audit_in", audit)
     monkeypatch.setattr(get_settings(), "studio_orgs", ORG)
     return w
@@ -214,7 +226,7 @@ def test_a_small_import_runs_in_one_chunk_and_audits_counts_only(world: _World) 
     assert (out["written"], out["pending"], out["status"], out["failed"]) == (3, 0, "done", [])
     assert world.opened[0]["n"] == 3 and len(world.chunks) == 1
     (a,) = world.audits
-    assert a["detail"]["op"] == "csv_import" and a["detail"]["written"] == 3
+    assert a["detail"]["op"] == "csv_import" and a["detail"]["planned"] == 3
     assert "s0" not in repr(a)
 
 
@@ -269,10 +281,10 @@ def test_a_busy_store_is_tried_again_and_a_stuck_one_is_reported(world: _World) 
     ok = _client().post(URL, json={"csv": _csv(3), "mapping": MAP})
     assert ok.status_code == 200 and ok.json()["written"] == 3
     world.busy = 99
-    stuck = _client().post(URL, json={"csv": _csv(3), "mapping": MAP})
+    stuck = _client().post(URL, json={"csv": _csv(3), "mapping": MAP, "repeat": True})
     assert stuck.status_code == 200 and stuck.json()["stopped"] == "store_busy"
     assert stuck.json()["written"] == 0 and stuck.json()["pending"] == 3
-    assert world.audits[-1]["detail"]["written"] == 0
+    assert len(world.audits) == 2
 
 
 def test_the_body_cap_is_413(world: _World) -> None:
@@ -281,3 +293,43 @@ def test_the_body_cap_is_413(world: _World) -> None:
         _client().post(URL, content=big, headers={"content-type": "application/json"}).status_code
         == 413
     )
+
+
+def test_a_call_that_is_not_direct_cannot_import_but_can_preview(world: _World) -> None:
+    world.direct = False
+    body = {"csv": _csv(120), "mapping": MAP}
+    r = _client().post(URL, json=body)
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "approval_required"
+    assert world.opened == [] and world.chunks == []
+    assert _client().post(URL + "/preview", json=body).status_code == 200
+
+
+def test_an_object_with_no_declared_create_takes_no_import(world: _World) -> None:
+    world.manifest = {
+        "actions": [
+            {"id": "x", "uses": "object:ledger.update"},
+            {"id": "y", "uses": "object:other.create"},
+        ]
+    }
+    r = _client().post(URL, json={"csv": _csv(2), "mapping": MAP})
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_declared"
+    assert world.opened == []
+    assert _client().post(URL + "/preview", json={"csv": _csv(2)}).status_code == 200
+
+
+def test_a_second_send_writes_nothing_unless_repeat(world: _World) -> None:
+    c = _client()
+    body = {"csv": _csv(3), "mapping": MAP}
+    assert c.post(URL, json=body).status_code == 200
+    again = c.post(URL, json=body)
+    assert again.status_code == 409 and again.json()["detail"]["code"] == "already_imported"
+    assert len(world.opened) == 1
+    assert c.post(URL, json=body | {"repeat": True}).status_code == 200 and len(world.opened) == 2
+
+
+def test_a_fault_in_a_chunk_answers_the_counts_and_leaks_nothing(world: _World) -> None:
+    world.fault = True
+    r = _client().post(URL, json={"csv": _csv(3), "mapping": MAP})
+    assert r.status_code == 200 and r.json()["stopped"] == "fault" and r.json()["pending"] == 3
+    assert "SECRETCELL" not in r.text
+    assert len(world.audits) == 1  # the audit row came with the batch, before the fault
