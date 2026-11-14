@@ -11,7 +11,8 @@ rehearsal (no superuser, no BYPASSRLS):
    ``crm_settings`` in the tenant session, so only a database proves it.
 5. A member of organization B never gets a record of organization A. The
    word matches in both, and only row level security keeps A's rows out.
-7. A converted lead does not show, as on the Leads list.
+7. A converted lead does not show, as on the Leads list. Its deal matches
+   the lead's name since HRD-18a, so the deal shows in its place.
 
 It also proves the §19.10 notes on a real database: each read sorts by
 ``last_activity_at`` (the default sort of leads is ``created_at``), the four
@@ -212,10 +213,16 @@ async def test_a_converted_lead_does_not_show(ns, app_engine, roomy, caplog) -> 
     with caplog.at_level(logging.INFO, logger=shell.__name__):
         answer = await _search(ns, _admin(a), word, scope="/crm")
     _no_provider_trouble(caplog)
-    assert _crm(answer) == [{
-        "kind": "lead", "title": f"Open {word}", "hint": "Lead",
-        "href": f"/crm?tab=leads&lead={open_lead}",
-    }]
+    # The converted lead never shows. Since HRD-18a a deal matches the name
+    # of its source lead, so the deal that the lead became comes back in its
+    # place (`chat_failure_modes.md` F1, `crm_platform.md` §19.5).
+    hits = sorted(_crm(answer), key=lambda hit: hit["kind"])
+    assert hits == [
+        {"kind": "deal", "title": f"Became {tag}", "hint": "Deal",
+         "href": f"/crm?tab=deals&deal={deal}"},
+        {"kind": "lead", "title": f"Open {word}", "hint": "Lead",
+         "href": f"/crm?tab=leads&lead={open_lead}"},
+    ]
     assert answer["groups"][0]["app"] == "crm"
 
 
