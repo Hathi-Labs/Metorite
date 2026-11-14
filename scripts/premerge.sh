@@ -13,6 +13,9 @@
 #   * two PRs took the same H-id (2026-09-23) and the same D-number (2026-10-25);
 #   * two PRs went green alone and red together, twice in one day (HANDOFF H-10).
 #
+# FIRST, on every branch, it refuses a patch that the automatic revert took
+# out of main, when the patch is unchanged (CIV-31, step 0 below).
+#
 # WHAT. When the branch is behind origin/main, this script:
 #   1. refuses a new migration numbered at or below main's highest (R1);
 #   2. merges origin/main into the worktree WITHOUT a commit;
@@ -66,13 +69,36 @@ fi
 git rev-parse -q --verify MERGE_HEAD >/dev/null && fail "a merge is already in progress here."
 
 [ "${PREMERGE_SKIP_FETCH:-0}" = 1 ] || git fetch -q origin "${BASE#origin/}"
+base="$(git merge-base HEAD "$BASE")"
+
+# ── 0. A reverted patch does not land again unchanged (CIV-31) ─────────────
+# The automatic revert (scripts/home_server/auto_revert.py) puts the trailer
+# "Auto-Revert: <sha>" on main. A branch with the same patch as such a
+# commit lands the break again. So does a revert of the revert. This check
+# runs before the early exit, because a branch that contains main can hold
+# such a patch. -U0: the patch has no context lines, so an edit near the
+# reverted lines on main does not hide a re-land. Any change to the changed
+# lines lets it through. Only a merge through this script runs the check.
+# Fence: tests/unit/test_auto_revert.py.
+patch_id() { git diff -U0 --no-color --no-ext-diff "$1" "$2" | git patch-id --stable | cut -d' ' -f1; }
+mine="$(patch_id "$base" HEAD)"
+if [ -n "$mine" ]; then
+  while IFS= read -r gone; do
+    [ -n "$gone" ] || continue
+    git cat-file -e "${gone}^{commit}" 2>/dev/null \
+      || fail "$BASE names the reverted commit ${gone:0:12}, and this clone does not have it. Fetch, then run this again."
+    if [ "$(patch_id "${gone}^" "$gone")" = "$mine" ]; then
+      fail "this branch lands the patch of ${gone:0:12} again, unchanged. The automatic revert took it out of $BASE because it broke tests (CIV-31). Fix the cause, change the patch, and push."
+    fi
+  done < <(git log "$BASE" --since=90.days --format=%B --grep='Auto-Revert: ' \
+    | sed -nE 's/^Auto-Revert: ([0-9a-f]{40})[[:space:]]*$/\1/p' | sort -u)
+fi
 
 behind="$(git rev-list --count "HEAD..$BASE")"
 if [ "$behind" = 0 ]; then
   say "the branch contains $BASE. pr-check tested what will land. Merge now."
   exit 0
 fi
-base="$(git merge-base HEAD "$BASE")"
 say "the branch is $behind commit(s) behind $BASE"
 
 # ── 1. Migration numbers (R1) ───────────────────────────────────────────────

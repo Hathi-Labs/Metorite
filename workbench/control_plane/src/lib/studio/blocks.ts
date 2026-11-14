@@ -226,7 +226,7 @@ export function tableBlock(
    * `editable` turns on the inline edit of a cell (STU-D2b). `computed` names
    * the fields that a formula or a roll-up fills, and these never edit.
    */
-  opts?: { editable?: boolean; computed?: readonly string[] },
+  opts?: { editable?: boolean; computed?: readonly string[]; openBase?: string },
 ): { type: "template"; props: Record<string, unknown> } {
   return {
     type: "template",
@@ -235,6 +235,8 @@ export function tableBlock(
       source,
       data: {
         title, fields, filterable: true,
+        // The record link of a row (STU-AF5): the grid appends the id of the record.
+        ...(opts?.openBase ? { openBase: opts.openBase } : {}),
         ...(opts?.editable ? { editable: true, computed: [...(opts.computed ?? [])] } : {}),
       },
     },

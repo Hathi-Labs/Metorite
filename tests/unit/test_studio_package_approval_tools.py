@@ -50,6 +50,8 @@ from typing import Any
 
 import pytest
 
+from tests.unit import _r8_lists as r8_lists
+
 pytest.importorskip("sqlalchemy")
 
 import httpx
@@ -762,9 +764,6 @@ def test_each_copy_of_a_route_value_matches_the_route() -> None:
 # ── 8. The R8 twin runs in CI ─────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("workflow", ["deploy.yml", "pr-check.yml"])
-def test_the_r8_twin_is_in_the_must_run_list(workflow: str) -> None:
-    text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", text)
-    assert block, f"{workflow}: the --must-run argument list is missing"
-    assert "tests/unit/test_studio_package_approval_tools_r8.py" in block.group(1)
+def test_the_r8_twin_is_in_the_must_run_list() -> None:
+    """The lists of the R8 guard live in ``tests/fences.json`` (CIV-33c-2)."""
+    assert "tests/unit/test_studio_package_approval_tools_r8.py" in r8_lists.must_run()

@@ -114,6 +114,8 @@ def replay(selector, commits: list[str]) -> list[tuple[str, dict]]:
             texts = selector.gate_flag_texts(f"{c}^1", ROOT, c)
             needles = selector._flag_additions(changed, diff, texts)
             reasons = selector.static_reasons(changed, needles)
+            if hasattr(selector, "fence_change"):  # CIV-33c-2
+                reasons += selector.fence_change(changed, texts)[0]
             # A flag-only diff leaves the two flag files out of `select`.
             if needles is not None:
                 py = [f for f in py if f not in selector.FLAG_FILES]

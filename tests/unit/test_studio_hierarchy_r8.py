@@ -55,6 +55,7 @@ from gateway.studio import objects_store as store
 from gateway.studio.objects_store import BatchError, Write
 from sqlalchemy import event, text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -449,9 +450,4 @@ def test_r8_a_read_of_an_object_with_no_hierarchy_is_refused(world) -> None:
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """An R8 suite that CI does not list still skips in silence when the
     database gate is disarmed. Match the argument line, not a mention."""
-    import re
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[2]
-    workflow = (root / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
-    assert re.search(r"^\s+tests/unit/test_studio_hierarchy_r8\.py \\?$", workflow, re.M)
+    assert "tests/unit/test_studio_hierarchy_r8.py" in r8_lists.must_run()

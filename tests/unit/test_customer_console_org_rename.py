@@ -39,6 +39,7 @@ from customer_console.main import app
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._customer_console_ladder import (
     apply_ladder,
     ensure_deployment,
@@ -488,11 +489,8 @@ class TestTheGatewayClientSpeaksThisDoorsWire:
 
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """``pr-check.yml``'s hand-list names the R8 suites that must RUN."""
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(
-        encoding="utf-8"
-    )
-    assert "tests/unit/test_customer_console_org_rename.py" in workflow, (
-        "this suite is not in pr-check.yml's R8 skip-guard list. Without the "
+    assert "tests/unit/test_customer_console_org_rename.py" in r8_lists.must_run(), (
+        "this suite is not in the `r8` key of tests/fences.json. Without the "
         "entry it can skip in CI while the job reports green"
     )
 
