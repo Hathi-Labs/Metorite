@@ -582,6 +582,14 @@ async def park(request_id: str, thread_id: str, fut: Any = None) -> bool:
 
         _pending_user_input.pop(request_id, None)
     with contextlib.suppress(Exception):
+        # Task 3130: a card that a chat message closed earlier in this run
+        # gets its "Not done" line before the end. The park runs in the
+        # card's own wait, so it reads the run's record.
+        from acb_skills.ask_tools import closed_card_text_events, take_closed_card_line
+
+        for event in closed_card_text_events(take_closed_card_line()):
+            await stream_relay.push_event(thread_id, event)
+    with contextlib.suppress(Exception):
         await stream_relay.push_event(thread_id, {
             "type": "RUN_FINISHED", "threadId": thread_id, "parked": True,
         })

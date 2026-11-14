@@ -737,6 +737,15 @@ class Settings(BaseSettings):
     # A flip in production is the gate `enforcement-flip`. Spec: ai_studio.md
     # section 14 B4a.
     studio_logic_orgs: str = ""
+    # STU-I1a: STUDIO_CONNECTION_GATE_ORGS lists the org ids where the
+    # `connections` of a Studio manifest bind. A missing connection then makes
+    # the install `needs_setup`, and the action door refuses each action with
+    # 409 `needs_connection`. `*` opens every org. Empty opens none, and
+    # `connections` then changes nothing, as before I1a. Reader:
+    # `acb_common.studio_flags.connection_gate_on`. A SIGHUP reload applies a
+    # change (docs/flag_reload.md). A flip in production is the gate
+    # `enforcement-flip`, after the pre-check of ai_studio.md section 14 I1a.
+    studio_connection_gate_orgs: str = ""
     # STU-C2c: STUDIO_NUM_F8_ORGS lists the org ids where a number filter of
     # the Studio object query adds a float8 test on `studio_record_hot.
     # v_num_f8`, so the app role can use its index (`numeric` comparisons are

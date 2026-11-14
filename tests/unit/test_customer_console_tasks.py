@@ -37,6 +37,7 @@ from customer_console.router import TierUnknown, resolve_invocation, resolve_rat
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._customer_console_ladder import (
     DEFAULT_DEPLOYMENT_LABEL,
     apply_ladder,
@@ -2333,5 +2334,4 @@ def test_this_suite_is_named_in_the_ci_skip_guard():
     green. That is the CP-3 failure this guard exists to catch, and the guard
     is a hand-list that nothing discovers.
     """
-    ci = (ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-    assert "tests/unit/test_customer_console_tasks.py" in ci
+    assert "tests/unit/test_customer_console_tasks.py" in r8_lists.must_run()

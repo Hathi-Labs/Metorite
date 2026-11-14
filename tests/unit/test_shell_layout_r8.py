@@ -44,6 +44,7 @@ from gateway.routes.admin import me
 from gateway.routes.shell import router
 from sqlalchemy import text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
     app_engine,
@@ -164,9 +165,4 @@ def test_r8_the_row_is_under_force_rls(world) -> None:
 
 
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[2]
-    for wf in ("pr-check.yml", "deploy.yml"):
-        text_ = (root / ".github" / "workflows" / wf).read_text(encoding="utf-8")
-        assert "tests/unit/test_shell_layout_r8.py" in text_
+    assert "tests/unit/test_shell_layout_r8.py" in r8_lists.must_run()

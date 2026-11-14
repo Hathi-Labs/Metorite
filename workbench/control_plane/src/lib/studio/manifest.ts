@@ -211,6 +211,9 @@ export interface StudioManifest {
   name?: string | null;
   purpose?: string | null;
   team?: string | null;
+  // STU-I1a. Each name is `mcp:<server>` or a provider id, once, at most 32.
+  // The server holds the check (`_check_connections`), and a missing one
+  // makes the install `needs_setup`.
   connections?: string[];
   // C8a. The roles of the app. An install maps each one to members (C8b).
   roles?: string[];

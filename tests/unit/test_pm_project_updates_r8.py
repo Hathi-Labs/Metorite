@@ -81,6 +81,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit import test_mcp_edge_delete as d
 from tests.unit import test_mcp_edge_task_writes as tw
 from tests.unit import test_mcp_edge_writes as w
@@ -247,9 +248,7 @@ def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """An R8 suite that CI does not list still skips in silence when the
     database gate is disarmed. Match the argument line, not a mention."""
     for name in ("pr-check.yml", "deploy.yml"):
-        workflow = (_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
-        assert re.search(
-            r"^\s+tests/unit/test_pm_project_updates_r8\.py \\?$", workflow, re.M), name
+        assert "tests/unit/test_pm_project_updates_r8.py" in r8_lists.must_run(), name
 
 
 async def test_the_chat_tools_say_the_feature_is_off_and_show_no_card(monkeypatch) -> None:

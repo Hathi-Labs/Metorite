@@ -51,7 +51,6 @@ test.use({
 
 const rail = (page: Page) => page.locator("aside[data-collapsed]");
 const nav = (page: Page) => rail(page).locator("nav");
-const bar = (page: Page) => page.locator("[data-shell-bar]");
 
 test.beforeEach(async ({ page }) => {
   await stubApi(page);
@@ -62,7 +61,7 @@ test.beforeEach(async ({ page }) => {
   });
   await page.goto("/settings/appearance");
   await expect(rail(page)).toHaveAttribute("data-collapsed", "false");
-  await bar(page).getByRole("button", { name: "Collapse sidebar" }).click();
+  await page.getByRole("button", { name: "Collapse sidebar" }).click();
   await expect(rail(page)).toHaveAttribute("data-collapsed", "true");
   await expect.poll(async () => (await rail(page).boundingBox())?.width).toBeLessThan(60);
 });
@@ -102,7 +101,7 @@ test("the folded rail still scrolls to its last app", async ({ page }) => {
 });
 
 test("the open rail keeps its thin scrollbar", async ({ page }) => {
-  await bar(page).getByRole("button", { name: "Expand sidebar" }).click();
+  await page.getByRole("button", { name: "Expand sidebar" }).click();
   await expect(rail(page)).toHaveAttribute("data-collapsed", "false");
   expect(await nav(page).evaluate((el) => getComputedStyle(el).scrollbarWidth)).toBe("thin");
 });

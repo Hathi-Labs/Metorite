@@ -165,6 +165,11 @@ def test_the_visual_review_line_runs_in_a_required_job():
     assert "GITHUB_EVENT_PATH" in run
     assert "git fetch" in run and "--depth=1" in run
     assert "frontend=true" in run, "an unreadable diff must require the line"
+    # Opus review of PR 2252 (P2): at depth 1, HEAD^2 does not resolve, so every PR
+    # would need the line. The step reads HEAD^1..HEAD on the merge ref.
+    checkout = _jobs()["frontend"]["steps"][0]
+    assert "actions/checkout" in checkout.get("uses", ""), checkout
+    assert checkout["with"]["fetch-depth"] == 2, checkout
     assert "^workbench/control_plane/src/" in run
     assert "^Visual review:" in run
     assert "github.event.pull_request.body" not in _PR_CHECK.read_text(encoding="utf-8")
@@ -184,9 +189,9 @@ def test_the_visual_review_line_reads_the_live_body_first():
 _BASH = shutil.which("bash")
 
 
-def _run_visual_review(tmp_path: Path, *, event_body, live: str | None, token: bool = True,
-                       touch_frontend: bool = True, event: bool = True):
-    """Run the step's script in a tiny repo, with a `gh` shim for the live body."""
+def _make_merge_repo(tmp_path: Path, *, pr_file: str, main_file: str | None = None, merge: bool = True):
+    """A repo shaped like the pull_request checkout. HEAD is a merge commit.
+    Its first parent is main, and main may be NEWER than the event base."""
     repo = tmp_path / "repo"
     repo.mkdir()
 
@@ -196,16 +201,37 @@ def _run_visual_review(tmp_path: Path, *, event_body, live: str | None, token: b
                               "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
                               "GIT_COMMITTER_EMAIL": "t@t"}).stdout.strip()
 
+    def put(rel: str) -> None:
+        f = repo / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(rel, encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-qm", rel)
+
     git("init", "-q", "-b", "main")
-    (repo / "a.txt").write_text("a", encoding="utf-8")
-    git("add", "-A")
-    git("commit", "-qm", "base")
+    put("a.txt")
     base = git("rev-parse", "HEAD")
-    target = repo / ("workbench/control_plane/src/x.ts" if touch_frontend else "docs/x.md")
-    target.parent.mkdir(parents=True)
-    target.write_text("x", encoding="utf-8")
-    git("add", "-A")
-    git("commit", "-qm", "change")
+    git("switch", "-q", "-c", "pr")
+    put(pr_file)
+    git("switch", "-q", "main")
+    if main_file:
+        put(main_file)
+    if merge:
+        git("merge", "-q", "--no-ff", "-m", "merge", "pr")
+    else:
+        git("switch", "-q", "pr")
+    return repo, base
+
+
+def _run_visual_review(tmp_path: Path, *, event_body, live: str | None, token: bool = True,
+                       touch_frontend: bool = True, event: bool = True,
+                       main_frontend: bool = False, merge: bool = True):
+    """Run the step's script in a tiny repo, with a `gh` shim for the live body."""
+    repo, base = _make_merge_repo(
+        tmp_path,
+        pr_file="workbench/control_plane/src/x.ts" if touch_frontend else "docs/x.md",
+        main_file="workbench/control_plane/src/main_only.ts" if main_frontend else "b.txt",
+        merge=merge)
     ev = tmp_path / "event.json"
     ev.write_text(json.dumps({"pull_request": {"number": 77, "body": event_body,
                                                "base": {"sha": base}}}), encoding="utf-8")
@@ -225,13 +251,14 @@ def _run_visual_review(tmp_path: Path, *, event_body, live: str | None, token: b
     else:
         env["GITHUB_EVENT_PATH"] = str(tmp_path / "missing.json")
     run = _step("frontend", "Visual review line")["run"]
-    return subprocess.run(["bash", "-eo", "pipefail", "-c", run], cwd=repo, env=env, capture_output=True, text=True)
+    return subprocess.run([_BASH or "bash", "-eo", "pipefail", "-c", run], cwd=repo, env=env, capture_output=True, text=True)
 
 
 _LINE = "Visual review: no UI change"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None or os.name == "nt", reason="needs a POSIX bash")
+@pytest.mark.skipif(shutil.which("bash") is None or (os.name == "nt" and not os.environ.get("RUN_BASH_FENCES")),
+                    reason="needs a POSIX bash")
 @pytest.mark.parametrize("kw,code,says", [
     # the live body names the review, the event body does not: pass (the fix)
     (dict(event_body="x", live=_LINE), 0, "live body"),
@@ -249,6 +276,12 @@ _LINE = "Visual review: no UI change"
     (dict(event_body="x", live="x", touch_frontend=False), 0, "no change under"),
     # no event file (the local CI): nothing to check
     (dict(event_body="x", live="x", event=False), 0, "no pull request event"),
+    # CIV-39. Main moved after the event and gained a frontend change. The PR has none.
+    (dict(event_body="x", live="x", touch_frontend=False, main_frontend=True), 0, "no change under"),
+    # CIV-39. The PR changes the frontend while main also moved: the line is still required.
+    (dict(event_body="x", live="x", main_frontend=True), 1, "no line of its body"),
+    # CIV-39. HEAD is not a merge commit: fail closed, the line is required.
+    (dict(event_body="x", live="x", touch_frontend=False, merge=False), 1, "no line of its body"),
 ])
 def test_the_visual_review_line_step_behaves(tmp_path, kw, code, says):
     got = _run_visual_review(tmp_path, **kw)
@@ -268,3 +301,46 @@ def test_ci_advisory_outside_a_pr_never_blocks(cmd, code, says):
     res = subprocess.run([_BASH, str(_ADVISORY), "a check", "--", cmd], capture_output=True, text=True, env=env)
     assert res.returncode == code
     assert says in res.stdout
+
+
+def test_the_changes_job_reads_the_pr_own_change_on_the_merge_ref():
+    """CIV-29b. The diff is HEAD^1..HEAD, so a main that moved after the event
+    adds nothing to the PR. The old BASE...HEAD range did (PR 2213)."""
+    run = _jobs()["changes"]["steps"][-1]["run"]
+    assert "HEAD^2" in run and "HEAD^1 HEAD" in run
+
+
+def _run_changes_diff(tmp_path: Path, **kw):
+    repo, base = _make_merge_repo(tmp_path, **kw)
+    out = tmp_path / "out.txt"
+    out.write_text("", encoding="utf-8")
+    env = {**os.environ, "BASE": base, "GITHUB_OUTPUT": str(out)}
+    run = _jobs()["changes"]["steps"][-1]["run"]
+    done = subprocess.run([_BASH or "bash", "-eo", "pipefail", "-c", run], cwd=repo, env=env, capture_output=True, text=True)
+    assert done.returncode == 0, done.stdout + done.stderr
+    return dict(line.split("=", 1) for line in out.read_text(encoding="utf-8").splitlines() if "=" in line)
+
+
+@pytest.mark.skipif(shutil.which("bash") is None or (os.name == "nt" and not os.environ.get("RUN_BASH_FENCES")),
+                    reason="needs a POSIX bash")
+@pytest.mark.parametrize("kw,frontend", [
+    # tests and docs only, while main gained a UI change after the event: no browser suite
+    (dict(pr_file="tests/unit/t.py", main_file="workbench/control_plane/src/m.ts"), "false"),
+    # the PR changes the UI: the browser suite runs
+    (dict(pr_file="workbench/control_plane/src/x.ts", main_file="b.txt"), "true"),
+    # HEAD is no merge commit: the old range runs, and a UI change still counts
+    (dict(pr_file="workbench/control_plane/e2e/x.spec.ts", main_file="b.txt", merge=False), "true"),
+])
+def test_the_changes_job_frontend_output(tmp_path, kw, frontend):
+    assert _run_changes_diff(tmp_path, **kw)["frontend"] == frontend
+
+
+def test_the_gate_step_diffs_against_the_first_parent_on_a_merge_ref():
+    """CIV-29b. `--gate --base` gets HEAD^1 on a merge ref, so main's later
+    change cannot widen the unit selection. No merge commit keeps $BASE."""
+    step = next(s for s in _jobs()["changes"]["steps"] if s.get("id") == "gate")
+    run = step["run"]
+    assert 'gate_base="$BASE"' in run
+    assert 'git rev-parse -q --verify HEAD^2' in run and 'gate_base="HEAD^1"' in run
+    assert '--gate --base "$gate_base"' in run
+    assert '--gate --base "$BASE"' not in run

@@ -34,6 +34,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._customer_console_ladder import (
     DEFAULT_DEPLOYMENT_LABEL,
     SECOND_PLAN,
@@ -223,10 +224,7 @@ class TestFences:
     def test_this_suite_is_named_in_the_ci_skip_guard(self):
         """The hand-list in pr-check.yml discovers nothing — a suite not named
         there skips silently without a database and leaves the job green."""
-        workflow = (Path(__file__).resolve().parents[2] /
-                    ".github/workflows/pr-check.yml").read_text(
-                        encoding="utf-8")
-        assert "tests/unit/test_customer_console_operator_list.py" in workflow
+        assert "tests/unit/test_customer_console_operator_list.py" in r8_lists.must_run()
 
     def test_the_owning_spec_names_this_suite(self):
         """The §7 command block, in the same PR that creates the file."""
