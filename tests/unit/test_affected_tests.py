@@ -888,25 +888,45 @@ def test_gate_a_data_file_that_no_source_reads_selects_the_tests_that_name_it(tm
 
 
 _CONNECTION_SITE = re.compile(
-    r"set_config\(\s*'app\.tenant_id'|create_async_engine\(|create_engine\("
-    r"|psycopg\.connect\(|asyncpg\.connect\(|\.from_url\(|\bRedis\(|ConnectionPool\("
+    r"set_config\(|SET LOCAL app\.tenant_id|current_setting\('app\.tenant_id'"
+    r"|create_async_engine\(|create_engine\(|create_pool\(|psycopg\.connect\("
+    r"|asyncpg\.connect\(|AsyncConnection\.connect\(|get_session_factory\(|get_db\("
+    r"|tenant_session\(|bind_tenant\(|\.from_url\(|\bRedis\(|StrictRedis\("
+    r"|ConnectionPool\(|from_pool\("
 )
+_AC_REAL = "packages/acb_common/acb_common/"
+# A file that the pattern finds, and that is no seam. Each one says why.
+_SITE_NOT_A_SEAM = {
+    # It names `tenant_session(` in a docstring only. It opens no connection,
+    # and the session of the caller binds the tenant.
+    _AC_REAL + "assistant_profile.py": "docstring only",
+    # It reads the binding in its SQL (`current_setting`) and binds none. Its R8
+    # suite imports it, and the import rules select that suite.
+    _AC_REAL + "goal_store.py": "reads the binding, binds none",
+}
+# A seam that holds no site of the pattern. Each one says why it is a seam.
+_SEAM_WITHOUT_SITE = {
+    _AC_REAL + "__init__.py": "every import of an acb_common module runs it",
+    _AC_REAL + "dsn.py": "the libpq DSN parser of each psycopg connection site",
+    _AC_REAL + "object_store.py": "the tenant check of each file key",
+}
 
 
 def test_the_real_acb_common_connection_sites_are_seams() -> None:
-    # R5: a module that opens a DB or Redis connection, or binds the tenant,
-    # is a seam. A new one must join ACB_COMMON_SEAMS, or the gate selects only
-    # its importers.
+    # R5: a module that opens a DB or Redis connection, opens a session of the
+    # DB seam, or binds or reads the tenant is a seam, or it is named above with
+    # a reason. Each seam holds such a site, or it is named above.
     pkg = _ROOT / "packages/acb_common/acb_common"
     sites = {
         p.relative_to(_ROOT).as_posix()
         for p in pkg.rglob("*.py")
         if _CONNECTION_SITE.search(p.read_text(encoding="utf-8"))
     }
-    assert sites, "the pattern found no connection site: it is stale"
-    assert sites <= sel.ACB_COMMON_SEAMS, sorted(sites - sel.ACB_COMMON_SEAMS)
-    assert {"packages/acb_common/acb_common/db.py", "packages/acb_common/acb_common/tenant_redis.py"} <= sites
-    gone = [p for p in sorted(sel.ACB_COMMON_SEAMS) if not (_ROOT / p).is_file()]
+    seams = sel.ACB_COMMON_SEAMS
+    assert sites - seams == set(_SITE_NOT_A_SEAM), sorted(sites - seams)
+    assert seams - sites == set(_SEAM_WITHOUT_SITE), sorted(seams - sites)
+    assert {_AC_REAL + "db.py", _AC_REAL + "tenant_redis.py", _AC_REAL + "org_settings.py"} <= sites
+    gone = [p for p in sorted(seams) if not (_ROOT / p).is_file()]
     assert not gone, f"ACB_COMMON_SEAMS names files that do not exist: {gone}"
 
 
@@ -922,6 +942,96 @@ def test_the_real_conftest_loads_the_acb_common_package() -> None:
     # name is built, because a quoted dotted name counts as an import: this
     # 380 s file would then join each selection for a change to the module.
     assert "acb_common." + "studio_rules" not in reach
+
+
+# ── CIV-33c-3 fix round 1: each test that loads the module, at any depth ────
+def _chain_repo(tmp_path: Path) -> Path:
+    """`acb_common.rules` <- `pkg.a` <- `pkg.b` <- `pkg.c`, each at the top of
+    its file. `test_c` imports `pkg.c` only, three imports up, as
+    `test_projects_grant_tools.py` imports `skill_projects`. `pkg.lazy_user`
+    imports `pkg.c` inside a def only."""
+    root = _acb_repo(tmp_path)
+    _write(root, "packages/pkg/pkg/a.py", "from acb_common import rules\n")
+    _write(root, "packages/pkg/pkg/b.py", "import pkg.a\n")
+    _write(root, "packages/pkg/pkg/c.py", "from pkg import b\n")
+    _write(root, "packages/pkg/pkg/lazy_user.py", "def go():\n    import pkg.c\n")
+    _write(root, "tests/unit/test_c.py", "from pkg.c import thing\n")
+    _write(root, "tests/unit/test_lazy_user.py", "import pkg.lazy_user\n")
+    return root
+
+
+def test_gate_a_test_that_loads_an_acb_common_module_three_imports_up_is_picked(
+    tmp_path: Path,
+) -> None:
+    root = _chain_repo(tmp_path)
+    # The one-level rule of main stops at `pkg.a`.
+    assert "tests/unit/test_c.py" not in sel.select([_AC + "rules.py"], root, scanners=False)[0]
+    out = sel.gate([_AC + "rules.py"], root)
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_c.py" in out["files"]
+    # An import inside a def runs only when the function runs.
+    assert "tests/unit/test_lazy_user.py" not in out["files"]
+
+
+def test_gate_an_acb_common_module_that_too_many_tests_load_is_full(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = _chain_repo(tmp_path)
+    for n in range(3):
+        _write(root, f"tests/unit/test_c{n}.py", "import pkg.c\n")
+    # 1 test imports `rules`. 6 load it: test_rules, test_rules_user, test_c and
+    # the three above.
+    monkeypatch.setattr(sel, "HUB_LIMIT", 3)
+    monkeypatch.setattr(sel, "HUB_CEILING_SHARE", 0.01)
+    out = sel.gate([_AC + "rules.py"], root)
+    assert out["full"] is True
+    assert "acb_common.rules: 6 test files load it, more than 3 (1% of the test files)" in out["reasons"]
+    assert not any("test files import it" in r for r in out["reasons"]), out["reasons"]
+
+
+def test_gate_the_tests_of_an_app_that_loads_the_module_at_startup_are_picked(
+    tmp_path: Path,
+) -> None:
+    # The app file imports `pkg.boot` in its lifespan only, and `pkg.boot` loads
+    # the module. A break there shows only when a test starts the app.
+    root = _chain_repo(tmp_path)
+    app = (
+        "from fastapi import FastAPI\n\n\nasync def lifespan(app):\n"
+        "    from pkg import boot\n    yield\n\n\napp = FastAPI(lifespan=lifespan)\n"
+    )
+    _write(root, "packages/pkg/pkg/server.py", app)
+    _write(root, "packages/pkg/pkg/boot.py", "from acb_common import rules\n")
+    _write(root, "tests/unit/test_server.py", "from pkg.server import app\n")
+    out = sel.gate([_AC + "rules.py"], root)
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_server.py" in out["files"]
+
+
+def test_a_sys_modules_lookup_in_a_conftest_is_no_import(tmp_path: Path) -> None:
+    # `sys.modules.get(name)` reads a module that a test loaded. It loads nothing.
+    root = _acb_repo(tmp_path)
+    look = '\n\ndef _clear():\n    import sys\n    m = sys.modules.get("acb_common.rules")\n'
+    _write(root, "tests/conftest.py", _CONFTEST + look)
+    out = sel.gate([_AC + "rules.py"], root)
+    assert not any("a conftest.py loads it" in r for r in out["reasons"]), out["reasons"]
+    _write(root, "tests/conftest.py", _CONFTEST + look + 'pytest_plugins = ["acb_common.rules"]\n')
+    out = sel.gate([_AC + "rules.py"], root)
+    assert any("a conftest.py loads it" in r for r in out["reasons"]), out["reasons"]
+
+
+@pytest.mark.parametrize(
+    ("module", "test"),
+    [
+        # The verifier, 2026-11-14: `REFUSED = "Declined:"` failed 7 tests of this
+        # file on main, through `skill_projects`, and the gate did not pick it.
+        ("tool_refusals.py", "tests/unit/test_projects_grant_tools.py"),
+        # A raise in each function of `card_body` failed 55 tests in 6 files.
+        ("card_body.py", "tests/unit/test_projects_cycle_tools.py"),
+    ],
+)
+def test_the_real_verifier_misses_are_picked_or_full(module: str, test: str) -> None:
+    out = sel.gate([_AC + module], _ROOT)
+    assert out["full"] is True or test in out["files"], out["reasons"]
 
 
 # ── --r8: the one rule for an R8 file (CIV-4b) ──────────────────────────────

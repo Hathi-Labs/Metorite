@@ -62,10 +62,11 @@ HUB_LIMIT = 40
 # test files import goes FULL, because the selection then costs about as much as
 # the suite and the one-level expansion misses more. Measured 2026-11-13 on 1751
 # test files: `gateway.routes.projects` has 291 importers (17%), `gateway.main` 67
-# and `agent_edge.tools` 54. `acb_common.db` has 399 (23%) and stays FULL by this
-# ceiling and by its name in ACB_COMMON_SEAMS (CIV-33c-3). Its gateway re-export is
-# named in GATE_FULL_NAMES. A 20% share (350 files) keeps every hub that a feature
-# slice changes selected, and keeps the DB seam FULL.
+# and `agent_edge.tools` 54. `acb_common.db` had 399 (23%) and the ceiling was 350.
+# On 2026-11-14 (1804 test files) it has 414 and the ceiling is 360. It stays FULL
+# by this ceiling and by its name in ACB_COMMON_SEAMS (CIV-33c-3). Its gateway
+# re-export is named in GATE_FULL_NAMES. A 20% share keeps every hub that a
+# feature slice changes selected, and keeps the DB seam FULL.
 HUB_CEILING_SHARE = 0.20
 FRONTEND_APPS = ("workbench/control_plane/", "workbench/operator_console/")
 # CLAUDE.md section 6: these suites hang on a local run (WS-9, WS-21). CI runs
@@ -544,10 +545,13 @@ FLAG_FILES = (
 # - A module that a conftest.py runs before each test (`conftest_reasons`).
 # - A file that the diff deletes or renames (`deleted_reasons`).
 # - A data file selects the Python files that read it (`data_readers`).
+# - Fix round 1: each test that loads the module, at any depth, and the tests
+#   of an app that loads it at startup (`load_rules`). Over the hub ceiling, FULL.
 ACB_COMMON = "packages/acb_common/"
 # A seam that a test reaches through other code, so its own test importers
 # undercount what a change can break. Fence: test_affected_tests.py checks that
-# each acb_common file with a connection site or an `app.tenant_id` binding is here.
+# each acb_common file with a connection site, a session of the DB seam or an
+# `app.tenant_id` binding is here, and that each file here holds one.
 ACB_COMMON_SEAMS = frozenset({
     # Every import of an acb_common module runs the package.
     "packages/acb_common/acb_common/__init__.py",
@@ -1020,7 +1024,8 @@ def hub_reasons(mods: set[str], test_users: dict[str, set[str]], n_tests: int) -
     The ceiling is never below HUB_LIMIT. Below that line a module is no hub,
     as on main. Without the floor, a small tree (a test fixture repo) has a
     ceiling of 0, and every changed module goes FULL. The CIV-32 repair test
-    found it (PR 2205). On the real tree the ceiling is 350."""
+    found it (PR 2205). On the real tree the ceiling is 360 (1804 test files,
+    2026-11-14)."""
     ceiling = max(HUB_LIMIT, int(n_tests * HUB_CEILING_SHARE))
     return [
         f"{m}: {len(test_users.get(m, set()))} test files import it, more than {ceiling} "
@@ -1036,13 +1041,19 @@ def _load_imports(body: str, module: str | None, is_package: bool) -> set[str]:
     An import inside a def runs only when the function runs, so it does not
     count. A class body, and an ``if`` or a ``try`` at the top, run at load, so
     they count. A file that does not parse gives every name that `imports` finds.
+    Cached by the text of the file, as `imports` is.
     """
+    return set(_load_imports_cached(body, module, is_package))
+
+
+@functools.cache
+def _load_imports_cached(body: str, module: str | None, is_package: bool) -> frozenset[str]:
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             tree = ast.parse(body.lstrip(chr(0xFEFF)))
     except (SyntaxError, ValueError):
-        return imports(body, module, is_package)
+        return frozenset(imports(body, module, is_package))
     names: set[str] = set()
     todo = list(ast.iter_child_nodes(tree))
     while todo:
@@ -1061,7 +1072,105 @@ def _load_imports(body: str, module: str | None, is_package: bool) -> set[str]:
     for n in names:
         parts = n.split(".")
         out |= {".".join(parts[: i + 1]) for i in range(len(parts))}
-    return out
+    return frozenset(out)
+
+
+@functools.cache
+def _tokens(body: str) -> frozenset[str]:
+    """Each word of a file. An import of ``a.b.leaf`` in any form holds the word
+    ``leaf``, so a file without it cannot import the module."""
+    return frozenset(re.findall(r"\w+", body))
+
+
+class LoadGraph:
+    """The imports that run when each source module loads (CIV-33c-3 fix round 1).
+
+    A file is parsed only when it holds the last name of a module that the walk
+    needs, and only once."""
+
+    def __init__(self, sources: dict[str, str], root: Path) -> None:
+        self.sources = sources
+        self.names: dict[str, tuple[str | None, set[str]]] = {}
+        for path in sources:
+            every = module_names(path, root)
+            if every:
+                self.names[path] = (module_name(path, root), every)
+        self.loads: dict[str, frozenset[str]] = {}
+
+    def reach(self, mods: set[str]) -> set[str]:
+        """``mods``, and each source module that loads one of them when it
+        loads, at any depth."""
+        reach = set(mods)
+        done: set[str] = set()
+        while True:
+            leaves = {m.rsplit(".", 1)[-1] for m in reach} - done
+            if not leaves:
+                return reach
+            done |= leaves
+            for path, body in self.sources.items():
+                if path in self.names and path not in self.loads and leaves & _tokens(body):
+                    first = self.names[path][0]
+                    self.loads[path] = _load_imports_cached(
+                        body, first, path.endswith("__init__.py")
+                    )
+            grew = True
+            while grew:
+                grew = False
+                for path, loads in self.loads.items():
+                    every = self.names[path][1]
+                    if not every <= reach and loads & reach:
+                        reach |= every
+                        grew = True
+
+    @staticmethod
+    def tests_of(reach: set[str], tests: dict[str, str]) -> set[str]:
+        """The test files that import a module of ``reach``, in any function too."""
+        leaves = {m.rsplit(".", 1)[-1] for m in reach}
+        return {t for t, body in tests.items() if leaves & _tokens(body) and imports(body) & reach}
+
+
+def load_rules(
+    mods: set[str], sources: dict[str, str], tests: dict[str, str], root: Path,
+    graph: LoadGraph | None = None,
+) -> tuple[list[str], set[str]]:
+    """(FULL reasons, test files) for the changed acb_common modules (CIV-33c-3
+    fix round 1).
+
+    The one-level expansion of `select` missed a test that loads a module
+    three or four imports up. A change to `tool_refusals.REFUSED` broke 7
+    tests of `test_projects_grant_tools.py`, through `skill_projects` (the
+    verifier, 2026-11-14). So each module of ``mods`` selects every test that
+    loads it: through the imports that run at load, at any depth. When more
+    test files load it than the hub ceiling, it goes FULL.
+
+    An app (a module with a FastAPI app) that loads the module at startup
+    adds the tests that import the app. Startup is each import of the app
+    file, inside a function too (the lifespan), and what those load.
+
+    The rule covers acb_common only."""
+    common = sorted(m for m in mods if m == "acb_common" or m.startswith("acb_common."))
+    if not common:
+        return [], set()
+    graph = graph or LoadGraph(sources, root)
+    ceiling = max(HUB_LIMIT, int(len(tests) * HUB_CEILING_SHARE))
+    entries = {
+        path: imports(body, graph.names[path][0], path.endswith("__init__.py"))
+        for path, body in sources.items()
+        if path in graph.names and _APP_ENTRY.search(body)
+    }
+    reasons: list[str] = []
+    picked: set[str] = set()
+    for m in common:
+        reach = graph.reach({m})
+        loaders = graph.tests_of(reach, tests)
+        if len(loaders) > ceiling:
+            reasons.append(
+                f"{m}: {len(loaders)} test files load it, more than {ceiling} "
+                f"({HUB_CEILING_SHARE:.0%} of the test files)"
+            )
+        apps = {n for path, names in entries.items() if names & reach for n in graph.names[path][1]}
+        picked |= loaders | graph.tests_of(apps, tests)
+    return reasons, picked
 
 
 _PLUGIN_FLAG = re.compile(r"""(?:^|[\s"'])-p\s+([A-Za-z_][\w.]*)""", re.M)
@@ -1085,16 +1194,64 @@ def _plugin_names(root: Path) -> set[str]:
     return names
 
 
+def _is_sys_modules(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "modules"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "sys"
+    )
+
+
+def _conftest_names(body: str) -> set[str]:
+    """The names that a conftest.py imports, as `imports` reads them, less each
+    name that it only looks up in ``sys.modules``.
+
+    ``sys.modules.get("acb_skills.loader")`` loads nothing. It reads a module
+    that a test loaded already. `imports` reads the quoted name as an import,
+    and the walk then went through the loader to `acb_common.db` (fix round 1).
+    Each other quoted name still counts, as a ``pytest_plugins`` entry does."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(body.lstrip(chr(0xFEFF)))
+    except (SyntaxError, ValueError):
+        return imports(body)
+    looked_up: dict[str, int] = {}
+    for node in ast.walk(tree):
+        key = None
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and _is_sys_modules(node.func.value)
+            and node.args
+        ):
+            key = node.args[0]
+        elif isinstance(node, ast.Subscript) and _is_sys_modules(node.value):
+            key = node.slice
+        if isinstance(key, ast.Constant) and isinstance(key.value, str):
+            looked_up[key.value] = looked_up.get(key.value, 0) + 1
+    for name, n in looked_up.items():
+        quoted = (f'"{name}"', f"'{name}'")
+        # Only when each quoted copy of the name is a lookup.
+        if sum(body.count(q) for q in quoted) == n:
+            body = body.replace(quoted[0], '""').replace(quoted[1], "''")
+    return imports(body)
+
+
 def conftest_reach(sources: dict[str, str], root: Path) -> set[str]:
     """The source modules that a conftest.py loads for each unit test (CIV-33c-3).
 
     The walk starts at each name that a conftest.py imports, inside a fixture
-    too, because an autouse fixture runs for each test. A test helper that a
-    conftest imports adds each name that it imports, because the fixture calls
-    it. From there the walk follows the imports that run when a module loads.
-    It does not follow an import inside a function. With those, the walk
-    reached 772 modules, 512 of them in the gateway (measured 2026-11-14).
-    A pytest plugin (`_plugin_names`) is a start too. No test imports it.
+    too, because an autouse fixture runs for each test (`_conftest_names`). A
+    test helper that a conftest imports adds each name that it imports, because
+    the fixture calls it. From there the walk follows the imports that run when
+    a module loads. It does not follow an import inside a function. On
+    2026-11-14 the walk reached 56 modules, and 13 of them were in acb_common.
+    With the imports inside functions, it reached 772, and 512 of them were in
+    the gateway. A pytest plugin (`_plugin_names`) is a start too. No test
+    imports it.
     """
     modmap: dict[str, tuple[str, bool, str]] = {}
     for path, body in sources.items():
@@ -1106,7 +1263,7 @@ def conftest_reach(sources: dict[str, str], root: Path) -> set[str]:
     for c in confs:
         if c.is_file():
             body = c.read_text(encoding="utf-8", errors="replace")
-            start |= {n for n in imports(body) if n in modmap}
+            start |= {n for n in _conftest_names(body) if n in modmap}
     helpers = [m for m in sorted(start) if modmap[m][2].startswith("tests/")]
     while helpers:
         m = helpers.pop()
@@ -1263,7 +1420,15 @@ def _gate(
         mods = {m for c in py for m in module_names(c, root)}
         _, test_users = _import_index(mods, sources, tests, root)
         reasons += hub_reasons(mods, test_users, len(tests))
-        reasons += conftest_reasons(own, sources, root)
+        loaded = conftest_reasons(own, sources, root)
+        reasons += loaded
+        # Fix round 1. The load-time rule, for each changed acb_common module
+        # that is not FULL by name or by a conftest. A FULL module needs no pick.
+        named = {m for c in py if c in ACB_COMMON_SEAMS or c in FLAG_FILES for m in module_names(c, root)}
+        rest = own - named - {r.split(":", 1)[0] for r in loaded}
+        load_full, load_picked = load_rules(rest, sources, tests, root)
+        reasons += load_full
+        picked |= load_picked
         # The app-entry rule replaces a FULL run of main's rules: a hub, or a
         # flag diff. Elsewhere main's rules select already, and the rule added
         # about 1,000 s to each such diff (24 main commits, 2026-11-13).

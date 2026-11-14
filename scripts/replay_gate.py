@@ -3,6 +3,7 @@
     uv run python scripts/replay_gate.py                 # last 300 commits
     uv run python scripts/replay_gate.py --count 50
     uv run python scripts/replay_gate.py --module /path/to/old_affected_tests.py
+    uv run python scripts/replay_gate.py --project-list-edits
 
 Each first-parent commit of ``--ref`` is one merged PR. The replay decides
 FULL for the files of that commit and for its flag diff, with the selector's
@@ -10,6 +11,11 @@ own rules. It does not pick files. It reads the test files of the CURRENT
 tree, so a commit that touched a file that no longer exists is replayed on
 today's tests. The share is a measure, not a proof. ``--module`` loads another copy of the selector, so a run can
 compare main's rules with the branch's rules.
+
+``--project-list-edits`` adds the CIV-33c-2 projection. A commit whose only
+FULL reason is ``.github/``, and whose ``.github/`` diff only adds or removes
+an R8 list line (a test path and a backslash), is not FULL in the projection.
+Since CIV-33c-2 such an edit goes to ``tests/fences.json``.
 
 Fence: tests/unit/test_replay_gate.py.
 """
@@ -68,6 +74,8 @@ def reason_key(reason: str) -> str:
     """Group the reasons: a module or a path becomes its rule."""
     if "test files import it" in reason:
         return "hub"
+    if "test files load it" in reason:  # CIV-33c-3 fix round 1
+        return "acb_common: tests that load it, over the ceiling"
     if reason.startswith("selector error"):
         return "selector error"
     # CIV-33c-3. The rules that replace the acb_common prefix.
@@ -129,7 +137,21 @@ def _acb_common_rules(
         reasons += selector.static_reasons(readers, needles)
         py = py + readers
     own = {m for f in py for m in selector.module_names(f, ROOT)}
-    reasons += selector.conftest_reasons(own, sources, ROOT)
+    loaded = selector.conftest_reasons(own, sources, ROOT)
+    reasons += loaded
+    if hasattr(selector, "load_rules"):  # CIV-33c-3 fix round 1
+        named = {
+            m
+            for f in py
+            if f in selector.ACB_COMMON_SEAMS or f in selector.FLAG_FILES
+            for m in selector.module_names(f, ROOT)
+        }
+        rest = own - named - {r.split(":", 1)[0] for r in loaded}
+        tests = selector._texts(sorted((ROOT / selector.TESTS).glob("test_*.py")), ROOT)
+        # The tree is fixed, so one graph serves every commit.
+        graph = getattr(selector, "_replay_graph", None) or selector.LoadGraph(sources, ROOT)
+        selector._replay_graph = graph
+        reasons += selector.load_rules(rest, sources, tests, ROOT, graph)[0]
     return py, reasons
 
 
@@ -200,15 +222,60 @@ def summarize(results: list[tuple[str, dict]]) -> str:
     return "\n".join(lines)
 
 
+_LIST_ENTRY = re.compile(r"^[+-]\s*(?:tests/unit/test_\w+\.py\s*\\?)?\s*$")
+
+
+def list_edit_only(diff: str) -> bool:
+    """True when each changed line of a zero-context diff adds or removes an R8
+    list line (a test path, and a backslash at the end) or a blank line."""
+    lines = [
+        ln for ln in diff.splitlines()
+        if ln.startswith(("+", "-")) and not ln.startswith(("+++", "---"))
+    ]
+    return bool(lines) and all(_LIST_ENTRY.match(ln) for ln in lines)
+
+
+def summarize_projected(results: list[tuple[str, dict]], list_only) -> str:
+    """The CIV-33c-2 projection, and its causes in rank order.
+
+    ``list_only(commit)`` says if the ``.github/`` diff of a commit only edits
+    an R8 list. Such a commit leaves FULL when ``.github/`` is its only reason.
+    Each cause also shows the commits that have no other cause."""
+    kept = []
+    for c, r in results:
+        keys = {reason_key(x) for x in r["reasons"]}
+        if r["full"] and not (keys == {".github/"} and list_only(c)):
+            kept.append(keys)
+    share = 100 * len(kept) / max(len(results), 1)
+    every = collections.Counter(k for keys in kept for k in keys)
+    alone = collections.Counter(next(iter(keys)) for keys in kept if len(keys) == 1)
+    lines = [f"projected: {len(kept)} of {len(results)} commits FULL ({share:.1f}%)"]
+    lines.append("projected commits per reason (the second number has no other reason):")
+    for k, n in every.most_common():
+        lines.append(f"  {n:4d} {alone[k]:4d}  {k}")
+    return "\n".join(lines)
+
+
+def _list_only(commit: str) -> bool:
+    return list_edit_only(_git("diff", "-U0", "--no-renames", f"{commit}^1", commit, "--", ".github/"))
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--ref", default="origin/main")
     ap.add_argument("--count", type=int, default=300)
     ap.add_argument("--module", type=Path, default=ROOT / "scripts" / "affected_tests.py")
+    ap.add_argument(
+        "--project-list-edits", action="store_true",
+        help="also print the CIV-33c-2 projection: an R8 list edit in a workflow is not FULL",
+    )
     args = ap.parse_args(argv)
     shas = _git("log", "--first-parent", f"-{args.count}", "--format=%H", args.ref).split()
     shas = [s for s in shas if re.fullmatch(r"[0-9a-f]{40}", s)]
-    print(summarize(replay(load_selector(args.module), shas)))
+    results = replay(load_selector(args.module), shas)
+    print(summarize(results))
+    if args.project_list_edits:
+        print(summarize_projected(results, _list_only))
     return 0
 
 
