@@ -71,7 +71,7 @@ const actionShown = (a: Record<string, unknown>): string => cleanName(str(a.titl
 const HANDLED = new Set(["studio", "kind", "id", "name", "purpose", "objects", "actions", "views", "pages", "workflows"]);
 const PART_WORDS: Record<string, string> = {
   connections: "connections", team: "team", skill: "skill of the app", shell: "shell settings",
-  contributes: "contributions", extends: "base app", slots: "slots", needs: "needs", overrides: "overrides",
+  contributes: "contributions", extends: "base app", slots: "slots", needs: "needs", overrides: "overrides", nav: "rail",
 };
 
 /**

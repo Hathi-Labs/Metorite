@@ -18,6 +18,10 @@ describe("diffManifests", () => {
   it("finds nothing when nothing changed", () => {
     expect(diffManifests(base(), base())).toEqual([]);
   });
+  it("says a change of the rail in words, with one article", () => {
+    const withNav = { ...base(), pages: [{ id: "a" }], nav: [{ title: "Main", rows: [{ page: "a" }] }] };
+    expect(lines(withNav, { ...withNav, nav: [{ title: "Main", rows: [] }] })).toEqual(["changes the rail"]);
+  });
   it("says an order change, because the app draws these lists in order", () => {
     expect(lines(base(), edit((m) => { m.objects.reverse(); }))).toEqual(["changes the order of the record types"]);
     expect(lines(base(), edit((m) => { m.objects[0].fields.reverse(); }))).toEqual(["changes the order of the fields of «Units»"]);
