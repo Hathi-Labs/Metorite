@@ -606,8 +606,11 @@ def test_each_call_of_the_six_passes_a_viewer() -> None:
     # workflows (B6) reach the records through the door only. The batch store
     # (E8a) is the second path: its caller passes the viewer to ``run_chunk``,
     # which passes it on to each ``apply_writes`` call. The loop above checks
-    # that this call passes it too.
+    # that this call passes it too. D13b adds the third: the file serve route
+    # reads one record with the viewer, so a file never leaves for a member who
+    # may not read its record.
     assert readers == {"apps/services/gateway/gateway/routes/studio/invoke.py",
+                       "apps/services/gateway/gateway/routes/studio/files.py",
                        "apps/services/gateway/gateway/studio/batch_store.py"}
 
 
