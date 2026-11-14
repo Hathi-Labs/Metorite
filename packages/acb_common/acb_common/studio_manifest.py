@@ -354,6 +354,48 @@ class PageDef(_Strict):
     cells: list[CellDef] = Field(default_factory=list, max_length=MAX_CELLS_PER_PAGE)
     side: SideDef | None = None
 
+#: The caps of the rail (STU-AF2a, D219). `lib/studio/manifest.ts` holds the same numbers, and
+#: `navCaps.test.ts` checks them against the `maxItems` of the schema file.
+#: This `nav` is not the `nav` contribution point of `CONTRIBUTION_POINTS`. That point
+#: (`contributes.nav`) adds a row to the shell sidebar. This `nav` lays out the rail of one app.
+MAX_NAV_SECTIONS = 4
+MAX_NAV_ROWS = 12
+
+#: The icons of a rail row (STU-AF2a). Each name is a Lucide name that `lib/icons.tsx` draws.
+#: The names come from the icons of the built-in app rails (`lib/nav.ts`, the CRM rail, the
+#: Knowledge rail and the Projects tree) and from the common names of a business app.
+#: `NAV_ICONS` in `lib/studio/manifest.ts` is the twin. `test_studio_manifest_ts_parity.py`
+#: holds the two equal.
+NAV_ICONS: tuple[str, ...] = (
+    "Home", "LayoutDashboard", "LayoutGrid", "List", "ListChecks", "Table",
+    "Kanban", "Calendar", "CalendarDays", "Clock", "Users", "User",
+    "Briefcase", "Handshake", "Inbox", "Mail", "Phone", "MessageCircle",
+    "FileText", "Files", "FolderOpen", "Tag", "Star", "Flag",
+    "Bell", "Bookmark", "Wallet", "Receipt", "Package", "Truck",
+    "MapPin", "Wrench", "Settings", "ClipboardList", "CheckSquare", "Target",
+    "Trophy", "Lightbulb", "BookOpen", "Layers", "Activity", "Sparkles",
+)  # fmt: skip
+
+
+class NavRow(_Strict):
+    #: A page of `pages`. The check that it exists is `_check_nav`.
+    page: str = Field(pattern=rf"^{_DASHED}$")
+    icon: Literal[
+        "Home", "LayoutDashboard", "LayoutGrid", "List", "ListChecks", "Table",
+        "Kanban", "Calendar", "CalendarDays", "Clock", "Users", "User",
+        "Briefcase", "Handshake", "Inbox", "Mail", "Phone", "MessageCircle",
+        "FileText", "Files", "FolderOpen", "Tag", "Star", "Flag",
+        "Bell", "Bookmark", "Wallet", "Receipt", "Package", "Truck",
+        "MapPin", "Wrench", "Settings", "ClipboardList", "CheckSquare", "Target",
+        "Trophy", "Lightbulb", "BookOpen", "Layers", "Activity", "Sparkles",
+    ] | None = None  # fmt: skip
+    label: str | None = Field(default=None, min_length=1, pattern=r"\S")
+
+
+class NavSection(_Strict):
+    title: str = Field(min_length=1, pattern=r"\S")
+    rows: list[NavRow] = Field(max_length=MAX_NAV_ROWS)
+
 
 class Trigger(_Strict):
     record: str | None = None
@@ -455,6 +497,8 @@ class Manifest(_Strict):
     views: list[ViewDef] = Field(default_factory=list)
     #: How the views sit on a page (STU-D11a). A view stays one block.
     pages: list[PageDef] = Field(default_factory=list, max_length=MAX_PAGES)
+    #: The rail of the app (STU-AF2a). Each row names a page of `pages`.
+    nav: list[NavSection] = Field(default_factory=list, max_length=MAX_NAV_SECTIONS)
     workflows: list[WorkflowDef] = Field(default_factory=list)
     skill: Skill | None = None
     # The old `shell` block stays as it is. Its job shape (`verb`, `view`) differs from the
@@ -658,6 +702,8 @@ def _structure_errors(exc: ValidationError, skip: set[str]) -> list[ManifestErro
             else:
                 msg = f"Block is unknown. Use {', '.join(BLOCKS[:-1])} or {BLOCKS[-1]}.{_got(val)}"
                 limit = 25 + len(BLOCKS)
+        elif last == "icon" and typ == "literal_error":
+            msg = f"Icon is not in the icon list. Use a name of `NAV_ICONS`.{_got(val)}"
         elif last == "type" and typ == "literal_error":
             if val == "formula":
                 msg = _FORMULA_TYPE_MESSAGE
@@ -836,6 +882,17 @@ def _check_pages(m: Manifest, view_ids: set[str], out: list[ManifestError]) -> N
         cell_errors(pg.cells, f"{p}.cells", pg.cols)
         if pg.side and pg.side.view not in view_ids:
             _undeclared(f"{p}.side.view", "View", pg.side.view, "`views`", out)
+
+
+def _check_nav(m: Manifest, out: list[ManifestError]) -> None:
+    """A rail row names a declared page. A `nav` needs `pages`, because the default
+    pages of an app with none are drawn in the client, and no row can name them."""
+    page_ids = {p.id for p in m.pages}
+    _dupes([sec.title for sec in m.nav], "$.nav", "section title", out)
+    for si, sec in enumerate(m.nav):
+        for ri, row in enumerate(sec.rows):
+            if row.page not in page_ids:
+                _undeclared(f"$.nav[{si}].rows[{ri}].page", "Page", row.page, "`pages`", out)
 
 
 def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[ManifestError]) -> None:
@@ -1105,6 +1162,7 @@ def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[Man
         _check_view(vi, v, objects, action_ids, out)
         _check_view_source(vi, v, uses_by_id, catalog, out)
     _check_pages(m, {v.id for v in m.views}, out)
+    _check_nav(m, out)
     _check_links(m, objects, catalog, out)
     if m.extends is not None and m.extends == m.id:
         out.append(_err("$.extends", "A package cannot extend itself. Name the host package."

@@ -355,7 +355,8 @@
       "tests/unit/test_staging_export.py",
       "tests/unit/test_workflows_trigger_state_r8.py",
       "tests/unit/test_workflows_timer_r8.py",
-      "tests/unit/test_studio_saved_views_r8.py"
+      "tests/unit/test_studio_saved_views_r8.py",
+      "tests/unit/test_studio_connect_in_place_r8.py"
     ]
   }
 }
