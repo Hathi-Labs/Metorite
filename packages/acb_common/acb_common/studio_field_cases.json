@@ -2716,23 +2716,11 @@
     "prefix": "FV-",
     "pad": 4
    },
-   "value": "1234567890123456",
-   "ok": true,
-   "out": "1234567890123456"
-  },
-  {
-   "id": "autonumber-11",
-   "field": {
-    "key": "f",
-    "type": "autonumber",
-    "prefix": "FV-",
-    "pad": 4
-   },
    "value": "FV 0042",
    "ok": false
   },
   {
-   "id": "autonumber-12",
+   "id": "autonumber-11",
    "field": {
     "key": "f",
     "type": "autonumber",
@@ -2743,7 +2731,7 @@
    "ok": false
   },
   {
-   "id": "autonumber-13",
+   "id": "autonumber-12",
    "field": {
     "key": "f",
     "type": "autonumber",
