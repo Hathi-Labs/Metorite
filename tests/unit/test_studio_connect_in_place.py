@@ -62,6 +62,7 @@ from acb_common import get_settings
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from gateway.connections import store as conn_store
+from gateway.package_host.resolve import Met
 from gateway.routes import integrations_connections as ic
 from gateway.routes.studio import actions, connections
 from gateway.studio import packages_store as store
@@ -197,6 +198,7 @@ class _World:
         self.owner = OWEN
         self.names: Any = ["zoho", "mcp:tally", "google_calendar"]
         self.met: frozenset[str] = frozenset({"zoho"})
+        self.met_org: frozenset[str] = frozenset()
 
 
 def _package(manifest: dict[str, Any]) -> store.Package:
@@ -224,9 +226,10 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
             manifest["connections"] = w.names
         return _package(manifest)
 
-    async def met_connections(db: Any, *, viewer: str) -> frozenset[str]:
+    async def met_connections(db: Any, *, viewer: str) -> Met:
         w.met_reads.append(viewer)
-        return w.met
+        # I9a: the real answer is a Met pair. A set here hid a merge bug once.
+        return Met(org=frozenset(w.met_org), member=frozenset(w.met))
 
     monkeypatch.setattr(connections, "_tenant_session", session)
     monkeypatch.setattr(connections.store, "get_package", get_package)
@@ -257,6 +260,14 @@ def test_the_read_answers_one_row_for_each_name_in_order(world: _World) -> None:
                        "checkable": True, "setup_href": "/calendar?settings=1", "can_connect": True}
     assert world.sessions == 1
     assert world.met_reads == [OWEN]
+
+
+def test_a_row_is_met_by_an_org_row_or_the_members_own_row(world: _World) -> None:
+    """I9a: ``met_connections`` keeps the two sets apart. The step reads both."""
+    world.met = frozenset({"zoho"})
+    world.met_org = frozenset({"mcp:tally"})
+    rows = _client(_user()).get(PATH).json()["connections"]
+    assert [x["met"] for x in rows] == [True, True, False]
 
 
 def test_an_admin_may_connect_each_row(world: _World) -> None:

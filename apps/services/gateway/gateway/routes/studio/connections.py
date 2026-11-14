@@ -143,5 +143,9 @@ async def package_connections(
         if package is None:
             raise _not_found()
         names = host_resolve.connection_names(package.manifest) or ()
-        met = await host_resolve.met_connections(db, viewer=user.email) if names else frozenset()
+        got = await host_resolve.met_connections(db, viewer=user.email) if names else None
+    # WS-STU I9a: the answer keeps org rows and the viewer's own rows apart. A
+    # row of this step says only that a connection exists for the caller now,
+    # so it takes both. The approval of an org need is the door's rule.
+    met = frozenset(got.org | got.member) if got is not None else frozenset()
     return {"connections": connection_rows(names, met, user)}

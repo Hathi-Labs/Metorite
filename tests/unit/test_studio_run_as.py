@@ -579,9 +579,9 @@ def test_a_run_past_the_reader_cap_opens_no_read_session(run: _Run, monkeypatch)
 
 @pytest.fixture
 def met(run: _Run, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    state: dict[str, Any] = {"set": frozenset(), "reads": []}
+    state: dict[str, Any] = {"set": resolve.Met(), "reads": []}
 
-    async def _met(db: Any, *, viewer: str) -> frozenset[str]:
+    async def _met(db: Any, *, viewer: str) -> resolve.Met:
         run.calls.append(f"met:{viewer}")
         state["reads"].append(viewer)
         return state["set"]
@@ -597,13 +597,18 @@ def test_the_gate_off_for_the_org_of_the_run_changes_nothing_off(run: _Run, met,
     """``STUDIO_CONNECTION_GATE_ORGS`` without the org of the run: the run is
     as before I1a, and it reads no set (mutation R2 drops the gate check)."""
     monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", OTHER_ORG)
-    run.row = _row({**_PINNED, "connections": ["mcp:tally"]})
+    run.row = _row({**_PINNED, "connections": [_MEMBER_TALLY]})
     assert _read("find", {"limit": 5})["outcome"] == "ran"
     assert met["reads"] == []
 
 
+#: I9a: a need of the member's own account. The install of these tests is a
+#: group install, which never meets an `org` need.
+_MEMBER_TALLY = {"name": "mcp:tally", "as": "member"}
+
+
 def test_a_pinned_connection_that_the_member_lacks_is_refused(run: _Run, met) -> None:
-    run.row = _row({**_PINNED, "connections": ["mcp:tally"]})
+    run.row = _row({**_PINNED, "connections": [_MEMBER_TALLY]})
     got = _read("find", {"limit": 5})
     assert (got["ok"], got["outcome"], got["code"]) == (False, "refused",
                                                          invoke.NEEDS_CONNECTION)
@@ -616,11 +621,22 @@ def test_a_pinned_connection_that_the_member_lacks_is_refused(run: _Run, met) ->
 
 
 def test_a_pinned_connection_that_the_member_has_runs_the_read(run: _Run, met) -> None:
-    run.row = _row({**_PINNED, "connections": ["mcp:tally"]})
-    met["set"] = frozenset({"mcp:tally"})
+    run.row = _row({**_PINNED, "connections": [_MEMBER_TALLY]})
+    met["set"] = resolve.Met(member=frozenset({"mcp:tally"}))
     got = _read("find", {"limit": 5})
     assert (got["outcome"], got["code"]) == ("ran", None)
     assert met["reads"] == [MIA]
+
+
+def test_an_org_need_in_a_group_install_fails_closed(run: _Run, met) -> None:
+    """I9a: the install of the run is a group install, so even an org row that
+    is connected never meets an `org` need (it waits for I9b)."""
+    run.row = _row({**_PINNED, "connections": ["mcp:tally"]})
+    met["set"] = resolve.Met(org=frozenset({"mcp:tally"}))
+    got = _read("find", {"limit": 5})
+    assert (got["ok"], got["outcome"], got["code"]) == (False, "refused",
+                                                         invoke.NEEDS_CONNECTION)
+    assert not any(c.startswith(("list:", "get:")) for c in run.calls)
 
 
 def test_a_pinned_manifest_with_no_connection_reads_no_set(run: _Run, met) -> None:

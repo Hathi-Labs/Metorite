@@ -306,6 +306,7 @@
       "tests/unit/test_studio_package_delete_r8.py",
       "tests/unit/test_studio_package_approval_r8.py",
       "tests/unit/test_studio_package_approval_routes_r8.py",
+      "tests/unit/test_studio_connections_whose_r8.py",
       "tests/unit/test_studio_package_delete_admin_r8.py",
       "tests/unit/test_studio_chat_build_r8.py",
       "tests/unit/test_studio_route_gate_r8.py",

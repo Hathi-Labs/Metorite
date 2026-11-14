@@ -2773,8 +2773,7 @@ def _needs_tally(world: Any, pid: str) -> None:
     with world.p.admin_engine.begin() as c:
         c.execute(text(
             "UPDATE apps SET manifest = manifest || CAST(:m AS jsonb) "
-            "WHERE id = CAST(:p AS uuid)"), {"m": json.dumps({"connections": [TALLY]}),
-                                            "p": pid})
+            "WHERE id = CAST(:p AS uuid)"), {"m": json.dumps({"connections": [{"name": TALLY, "as": "member"}]}), "p": pid})
 
 
 def _connect(world: Any, org: str, *, member: str | None = None,
@@ -2799,7 +2798,7 @@ def tally(world, monkeypatch):
                   {"p": TALLY})
 
 
-def test_r8_a_missing_connection_refuses_each_action_until_an_org_row_connects(tally) -> None:
+def test_r8_a_missing_connection_refuses_each_action_until_a_member_row_connects(tally) -> None:
     world = tally
     before = _record_row(world, world.rec)
     count = _record_count(world, world.obj)
@@ -2810,7 +2809,8 @@ def test_r8_a_missing_connection_refuses_each_action_until_an_org_row_connects(t
 
     for (status, detail), action in zip(_run(world, every), _EVERY_ACTION, strict=True):
         assert (status, detail) == (409, {"code": invoke.NEEDS_CONNECTION,
-                                          "message": invoke.CONNECTION_TEXT}), action
+                                          "message": invoke.CONNECTION_TEXT,
+                                          "provider": TALLY, "as": "member"}), action
     assert (_record_row(world, world.rec), _record_count(world, world.obj)) == (before, count)
     rows = _audits(world, world.pkg)
     assert [r[3]["reason"] for r in rows] == [invoke.NEEDS_CONNECTION] * len(_EVERY_ACTION)
@@ -2822,7 +2822,11 @@ def test_r8_a_missing_connection_refuses_each_action_until_an_org_row_connects(t
         {"id": world.rec}, query={"preview": "1"})))
     assert status == 200 and got["record"]["id"] == world.rec, got
 
-    _connect(world, world.a)
+    _connect(world, world.a)                     # an org row never meets a member need
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "peek",
+                                               {"id": world.rec}))
+    assert (status, detail["code"]) == (409, invoke.NEEDS_CONNECTION)
+    _connect(world, world.a, member=ANA)
     status, got = _run(world, lambda: _call(world.a, ANA, world.pkg, "peek", {"id": world.rec}))
     assert status == 200 and got["record"]["data"] == _DATA, got
     status, got = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", {}))

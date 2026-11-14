@@ -166,7 +166,7 @@ def test_the_manifests_of_this_file_are_valid() -> None:
 def test_the_read_gives_the_installed_version_of_the_app() -> None:
     other = str(uuid.uuid4())
     got = viewer.installed([_row(app=other, version=7), _row(version=1)], PID)
-    assert got == viewer.InstalledApp(id=PID, version=1, manifest=INSTALLED)
+    assert got == viewer.InstalledApp(id=PID, version=1, manifest=INSTALLED, scope_kind="org")
     assert (got.name, got.description) == ("Site visits", "Track the visits.")
     assert got.object_names == frozenset({"visit"})
 
