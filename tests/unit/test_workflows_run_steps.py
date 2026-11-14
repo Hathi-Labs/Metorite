@@ -955,14 +955,20 @@ def test_f7_the_answer_is_json() -> None:
 # ── The R8 half runs in CI ──────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("workflow", ["pr-check.yml", "deploy.yml"])
-def test_the_r8_suite_is_named_in_the_ci_must_run_lists(workflow: str) -> None:
-    """A skip of the R8 half is not a pass, so the CI skip guard must name it."""
-    import re
+def test_the_r8_suite_is_named_in_the_ci_must_run_lists() -> None:
+    """A skip of the R8 half is not a pass, so the CI skip guard must name it.
+
+    The lists are the ``r8`` key of ``tests/fences.json`` (CIV-33c-2). Mutation:
+    remove the file from ``must_run`` -> red.
+    """
+    from tests.unit import _r8_lists as r8_lists
+
+    assert "tests/unit/test_workflows_run_steps_r8.py" in r8_lists.must_run()
+
+
+def test_the_r8_half_is_gated_on_the_database() -> None:
     from pathlib import Path
 
-    root = Path(__file__).resolve().parents[2]
-    text_ = (root / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
-    assert re.search(r"^\s+tests/unit/test_workflows_run_steps_r8\.py \\?$", text_, re.M)
-    r8 = (root / "tests" / "unit" / "test_workflows_run_steps_r8.py").read_text(encoding="utf-8")
+    here = Path(__file__).resolve().parent
+    r8 = (here / "test_workflows_run_steps_r8.py").read_text(encoding="utf-8")
     assert "pytestmark = _DB_GATE" in r8
