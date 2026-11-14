@@ -209,8 +209,13 @@ def test_a_damaged_always_confirm_value_gives_b():
 def test_a_read_only_key_never_makes_a_row_a():
     """The admin's key lets a run skip the card, but the catalog takes its
     class from the hints and "always confirm" only, so it is never looser."""
-    row = _one(_tool("wipe", {"destructiveHint": True}), read_only_key=True)
-    assert row["class"] == "B"
+    # A tool with no hint, and a tool that says it reads, both stay B beside a key that is
+    # NOT set on the server only if the hints say so. With the key set, a no-hint tool is B
+    # (the key opens no catalog row), and a read-only tool is A from its hint alone.
+    assert _one(_tool("plain"), read_only_key=True)["class"] == "B"
+    assert _one(_tool("wipe", {"destructiveHint": True}), read_only_key=True)["class"] == "B"
+    assert _one(_tool("peek", {"readOnlyHint": True}), read_only_key=True)["class"] == "A"
+    assert _one(_tool("peek", {"readOnlyHint": True}), read_only_key=False)["class"] == "A"
 
 
 def test_no_mcp_row_is_class_c():
