@@ -1168,6 +1168,55 @@ async def _decisions(user: UserContext) -> Found:
                  signals=signals, next_edge=edges[0] if edges else None)
 
 
+# ── Studio: a share that waits for the member's approval (WS-STU J2b-4a) ────
+#
+# ai_studio.md §14 J2b-4. ONE needs source, for a holder of `studio:publish`.
+# It reuses the kind `approval` with app `studio` (owner answer 29514d69,
+# 2026-11-13), so KIND_ORDER and the frontend do not change. The provider
+# calls the route's OWN list (`packages.list_approvals`), so it writes no SQL.
+# The flags and the right are read here, because a bare 404 from the route
+# would read as `failed`. The list is org-wide, so the provider drops each row
+# that the store would refuse the member to approve: the owner's and the
+# publisher's. The row names no manifest. It opens the Studio library
+# (`STUDIO_HREF`). It has no feed signal, so My Day shows no card for it.
+# Fence: `tests/unit/test_shell_needs.py`, `test_shell_needs_r8.py`.
+
+STUDIO_HREF = "/studio"
+STUDIO_APPROVAL_RIGHT = "studio:publish"
+
+
+def _same_person(a: Any, b: Any) -> bool:
+    return str(a or "").strip().lower() == str(b or "").strip().lower() != ""
+
+
+async def _studio_approvals(user: UserContext) -> Found:
+    from gateway.package_host import flags as host_flags
+    from gateway.routes.studio import flags as studio_flags
+    from gateway.routes.studio import packages
+
+    org = getattr(user, "organization_id", None)
+    if not studio_flags.studio_allowed(org):
+        raise SourceAbsent("STUDIO_ORGS does not hold the org")
+    if not host_flags.package_host_allowed(org):
+        raise SourceAbsent("PACKAGE_HOST_ORGS does not hold the org")
+    answer = await packages.list_approvals(user=user, state=None)
+    me = user.email
+    out = []
+    for row in answer.get("approvals") or []:
+        if _same_person(row.get("owner_email"), me) or _same_person(row.get("published_by"), me):
+            continue
+        name = str(row.get("name") or "").strip() or "An app"
+        version = row.get("version")
+        out.append(_item(
+            id=f"studio-approval:{row.get('package_id')}:{version}", app="studio",
+            kind="approval", title="A share waits for your approval",
+            detail=f"{name}, version {version}. Asked by {_who(row.get('requested_by'))}.",
+            href=STUDIO_HREF, at=row.get("requested_at"),
+        ))
+    shown = _sort(out)[:PER_APP]
+    return Found(shown, len(shown), capped=bool(answer.get("truncated")) or len(out) > PER_APP)
+
+
 # Approvals runs LAST of the needs providers (the module note). Three of them
 # also carry a Handled read (MD-2c). Projects has none: a closed task is
 # My Tasks' row, and a read notification closed nothing.
@@ -1176,6 +1225,10 @@ register(Provider("tasks", ("projects",), _tasks, frozenset({"overdue", "due_tod
 register(Provider("projects", ("projects",), _projects, frozenset({"notification"})))
 register(Provider("email", ("email",), _email, frozenset({"needs_reply"}),
                   handled=_email_handled))
+# WS-STU J2b-4a: Studio registers before the reminders, so approvals stays last and the reminders stay beside it. The
+# right `studio:publish` gates it (`permission`), and the flags live inside.
+register(Provider("studio", ("studio",), _studio_approvals, frozenset({"approval"}),
+                  permission=STUDIO_APPROVAL_RIGHT, app="studio"))
 # WS-66 RM-2b: the reminders register before approvals, which stays last. The
 # gate is `feature:projects`, the gate of the reminder routes. It has no
 # Handled read, and the flag lives inside the provider (SourceAbsent).

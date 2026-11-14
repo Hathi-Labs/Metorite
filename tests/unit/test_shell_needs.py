@@ -345,7 +345,7 @@ class TestTheFeatureGate:
     def test_a_member_with_no_app_gets_nothing(self, fakes):
         answer = run(member())
         assert answer == {"count": 0, "total": 0, "items": [], "totals": {}, "capped": [],
-                          "sources": {"tasks": "absent", "reminders": "absent",
+                          "sources": {"tasks": "absent", "reminders": "absent", "studio": "absent",
                                       "approvals": "absent", "projects": "absent",
                                       "email": "absent"}}
         assert fakes.calls == []
@@ -565,7 +565,7 @@ class TestTheAnswer:
         answer = run(member(*ALL))
         assert answer["count"] == len(answer["items"]) == 7
         # RM-2b: `reminders` is a needs source, absent while the flag is off.
-        assert answer["sources"] == {"tasks": "ok", "reminders": "absent",
+        assert answer["sources"] == {"tasks": "ok", "reminders": "absent", "studio": "absent",
                                      "approvals": "absent", "projects": "ok",
                                      "email": "ok"}
 
@@ -831,11 +831,14 @@ class TestAFailingAppIsLeftOut:
         assert answer["items"] == []
         # `reminders` is absent while CALENDAR_REMINDERS is off (RM-2b).
         assert answer["sources"].pop("reminders") == "absent"
+        # J2b-4a: `studio` is absent for a member without `studio:publish`.
+        assert answer["sources"].pop("studio") == "absent"
         assert set(answer["sources"].values()) == {"failed"}
 
     def test_one_deadline_for_all_apps(self, fakes, monkeypatch):
         monkeypatch.setattr(shell, "TOTAL_BUDGET_S", 0.0)
         answer = run(admin(*ALL, "approvals"))
+        assert answer["sources"].pop("studio") == "absent"
         assert set(answer["sources"].values()) == {"failed"}
         assert fakes.calls == []
 
@@ -1141,3 +1144,115 @@ class TestTheReminderSource:
         ids = [i["id"] for i in cut["items"]]
         assert ids[:2] == ["reminders:r-1", "reminders:r-2"]
         assert cut["count"] == shell.DEFAULT_LIMIT and cut["total"] == 32
+
+
+class TestTheStudioApprovalSource:
+    """WS-STU J2b-4a: a share that waits for approval is ONE needs source for
+    a holder of `studio:publish`. It reuses the kind `approval` with app
+    `studio`, calls the route's own list, and drops the member's own rows."""
+
+    RIGHT = "studio:publish"
+
+    @staticmethod
+    def _holder(email: str = ME) -> UserContext:
+        return UserContext(
+            email=email, role=UserRole.EMPLOYEE, organization_id=ORG,
+            access=EffectiveAccess(role_granted=frozenset(
+                {"feature:studio", "studio:publish"})))
+
+    @staticmethod
+    def _row(pid: str, version: int, *, owner: str = OTHER, published_by: str | None = None,
+             asked_by: str | None = None) -> dict:
+        return {"package_id": pid, "name": f"App {pid}", "owner_email": owner,
+                "version": version, "published_by": published_by or owner,
+                "published_at": NOW.isoformat(), "requested_by": asked_by or owner,
+                "requested_at": (NOW - timedelta(minutes=version)).isoformat(),
+                "manifest": {"studio": 1, "secret": "SECRET-MANIFEST"},
+                "manifest_hash": "h"}
+
+    def _on(self, monkeypatch, rows: list[dict], *, studio: bool = True,
+            host: bool = True, truncated: bool = False) -> list:
+        from gateway.package_host import flags as host_flags
+        from gateway.routes.studio import flags as studio_flags
+        from gateway.routes.studio import packages
+
+        calls: list = []
+
+        async def list_approvals(user, state):
+            calls.append((user.email, state))
+            return {"state": "pending", "approvals": rows, "truncated": truncated}
+
+        monkeypatch.setattr(studio_flags, "studio_allowed", lambda org: studio)
+        monkeypatch.setattr(host_flags, "package_host_allowed", lambda org: host)
+        monkeypatch.setattr(packages, "list_approvals", list_approvals)
+        return calls
+
+    @staticmethod
+    def _mine(answer: dict) -> list[dict]:
+        return [i for i in answer["items"] if i["app"] == "studio"]
+
+    def test_a_holder_gets_one_row_for_each_pending_version(self, fakes, monkeypatch):
+        calls = self._on(monkeypatch, [self._row("p1", 1), self._row("p1", 2),
+                                       self._row("p2", 1)])
+        answer = run(self._holder())
+        rows = self._mine(answer)
+        assert sorted(r["id"] for r in rows) == [
+            "studio-approval:p1:1", "studio-approval:p1:2", "studio-approval:p2:1"]
+        assert {(r["kind"], r["href"], r["act"], r["act_ref"]) for r in rows} == {
+            ("approval", shell.STUDIO_HREF, None, None)}
+        assert shell.STUDIO_HREF == "/studio"
+        assert answer["sources"]["studio"] == "ok"
+        assert answer["totals"]["studio"] == 3
+        assert calls and calls[0][1] is None
+
+    def test_the_row_names_the_app_the_version_and_who_asked_and_no_manifest(
+        self, fakes, monkeypatch,
+    ):
+        self._on(monkeypatch, [self._row("p1", 3, asked_by="priya@customer.example")])
+        [row] = self._mine(run(self._holder()))
+        assert row["title"] == "A share waits for your approval"
+        assert row["detail"] == "App p1, version 3. Asked by priya."
+        assert "SECRET-MANIFEST" not in repr(row) and "manifest" not in row
+
+    def test_a_member_without_the_right_gets_none_and_the_route_never_runs(
+        self, fakes, monkeypatch,
+    ):
+        calls = self._on(monkeypatch, [self._row("p1", 1)])
+        user = member("studio")
+        answer = run(user)
+        assert answer["sources"]["studio"] == "absent"
+        assert not self._mine(answer)
+        assert calls == []
+
+    @pytest.mark.parametrize("which", ["studio", "host"])
+    def test_with_either_flag_off_the_source_is_absent_and_the_route_never_runs(
+        self, fakes, monkeypatch, which,
+    ):
+        calls = self._on(monkeypatch, [self._row("p1", 1)], **{which: False})
+        answer = run(self._holder())
+        assert answer["sources"]["studio"] == "absent"
+        assert not self._mine(answer)
+        assert calls == []
+
+    def test_the_members_own_rows_are_dropped_case_and_space_blind(
+        self, fakes, monkeypatch,
+    ):
+        self._on(monkeypatch, [
+            self._row("own", 1, owner=ME.upper()),
+            self._row("pub", 1, owner=OTHER, published_by=f" {ME} "),
+            self._row("theirs", 1)])
+        rows = self._mine(run(self._holder()))
+        assert [r["id"] for r in rows] == ["studio-approval:theirs:1"]
+
+    def test_a_truncated_list_marks_the_source_capped(self, fakes, monkeypatch):
+        self._on(monkeypatch, [self._row("p1", 1)], truncated=True)
+        answer = run(self._holder())
+        assert "studio" in answer["capped"]
+
+    def test_the_source_registers_before_the_reminders_and_approvals_stays_last(self):
+        provider = shell.REGISTRY["studio"]
+        assert (provider.needs, provider.gated, provider.admin) == (True, False, False)
+        assert provider.permission == self.RIGHT and provider.kinds == {"approval"}
+        order = [p.source for p in shell.needs_providers()]
+        assert order[-1] == "approvals"
+        assert order.index("studio") < order.index("reminders")
