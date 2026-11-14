@@ -10,8 +10,10 @@
  * gate of `/studio` covers it, because `featureForPath` matches the longest
  * prefix (`blocks-preview/page.test.ts` holds that).
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
+import { listWorkflows } from "@/app/workflows/lib/api";
+import type { WorkflowSummary } from "@/app/workflows/lib/types";
 import { AppTopBar } from "@/components/AppTopBar";
 import GenerativeUINode from "@/components/GenerativeUINode";
 import StudioDetail from "@/components/studio/StudioDetail";
@@ -26,6 +28,31 @@ import {
   SAMPLE_FIELDS, SAMPLE_TABLE_KEYS, makeSampleDoor,
 } from "@/lib/studio/sampleDoor";
 import { useCachedResource } from "@/lib/useCachedResource";
+
+/** The Process flow block reads a real workflow of the organization, so the member picks one. */
+function FlowPreview() {
+  const [list, setList] = useState<WorkflowSummary[] | null>(null);
+  const [picked, setPicked] = useState("");
+  useEffect(() => {
+    let dead = false;
+    listWorkflows().then((w) => { if (!dead) setList(w); }).catch(() => { if (!dead) setList([]); });
+    return () => { dead = true; };
+  }, []);
+  const id = picked || list?.[0]?.id || "";
+  const node = useMemo(
+    () => ({ type: "template", props: { name: "flow", source: { action: "workflow", args: { id } } } }),
+    [id],
+  );
+  if (list === null) return <p className="text-xs text-muted-foreground">Loading workflows</p>;
+  if (list.length === 0) return <p className="text-xs text-muted-foreground">This organization has no workflows to show.</p>;
+  return (
+    <div className="space-y-3">
+      <SelectButton label="Workflow" value={id} widthClass="w-64"
+        options={list.map((w) => ({ value: w.id, label: w.name }))} onChange={setPicked} />
+      <GenerativeUINode spec={node as never} />
+    </div>
+  );
+}
 
 const PANEL = "rounded-xl border border-border bg-card p-3 sm:p-4";
 const LIST = { action: "object:visit.list" };
@@ -47,7 +74,7 @@ export default function BlocksPreviewPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <AppTopBar title="Block preview" subtitle="Table, Board, Form and Detail on sample records"
+      <AppTopBar title="Block preview" subtitle="Table, Board, Process flow, Form and Detail on sample records"
         back={{ href: "/studio", label: "Back to Studio" }} />
       <div className="pb-askbar flex flex-1 flex-col gap-3 overflow-y-auto p-3 sm:gap-4 sm:p-4">
         <div className="flex flex-wrap items-center gap-2">
@@ -69,6 +96,14 @@ export default function BlocksPreviewPage() {
             <p className="mt-3 text-xs text-muted-foreground">
               Drag a card to another lane, or press Space on a card, then the arrow keys, then Space.
               To see a refusal of the server, move a visit that is not done into Closed.
+            </p>
+          </section>
+
+          <section aria-label="Process flow" className={PANEL}>
+            <h2 className="mb-2 text-sm font-semibold text-foreground">Process flow</h2>
+            <FlowPreview />
+            <p className="mt-3 text-xs text-muted-foreground">
+              A read-only view of a workflow and its latest run. A run that is live updates its steps as they finish.
             </p>
           </section>
 

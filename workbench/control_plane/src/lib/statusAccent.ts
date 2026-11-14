@@ -560,6 +560,42 @@ export function agentStateChip(value?: string | null): string {
   return visual?.muted ? `${accent.soft} ${accent.text}` : accent.chip;
 }
 
+/* ── Process flow state (STU-D8, `ai_studio.md` §5.1) ───────────────────────
+ *
+ * The Process flow block shows where a workflow run stands. A step and a run each
+ * read as one of these words, and this is the one place such a word becomes a hue.
+ * The glyph and the word say the state too, so colour is never the only signal.
+ */
+
+export type FlowState = "idle" | "queued" | "running" | "ok" | "failed" | "skipped" | "waiting";
+
+export interface FlowStateVisual {
+  hue: AccentHue;
+  /** The plain word for a person, never the raw status of the engine. */
+  word: string;
+  /** Lucide name for `<Icon name=… />`. */
+  icon: string;
+  /** Draw the gray `soft`+`text` pair, not the chip. */
+  muted?: boolean;
+}
+
+export const FLOW_STATES: Record<FlowState, FlowStateVisual> = {
+  idle: { hue: "gray", word: "Not run", icon: "Circle", muted: true },
+  queued: { hue: "gray", word: "Queued", icon: "CircleDashed" },
+  running: { hue: "blue", word: "Running", icon: "Loader2" },
+  ok: { hue: "green", word: "Done", icon: "CircleCheck" },
+  failed: { hue: "red", word: "Failed", icon: "CircleAlert" },
+  skipped: { hue: "gray", word: "Skipped", icon: "CircleSlash", muted: true },
+  waiting: { hue: "amber", word: "Waiting", icon: "CirclePause" },
+};
+
+/** The pill's class pair (fill and ink) for a flow state. */
+export function flowStateChip(state: FlowState): string {
+  const visual = FLOW_STATES[state];
+  const accent = ACCENTS[visual.hue];
+  return visual.muted ? `${accent.soft} ${accent.text}` : accent.chip;
+}
+
 /* ── Pull request chip (WS-55 EA-13d, `external_agent_access.md` §12.2 item 2) ──
  *
  * The chip on a card that names one pull request of the task and its CI. This
