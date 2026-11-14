@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import re
@@ -282,10 +283,8 @@ def _guard_client(client: httpx.AsyncClient) -> httpx.AsyncClient:
                     return resp
                 wait = waits.pop(0)
                 if "Retry-After" in resp.headers:
-                    try:
+                    with contextlib.suppress(ValueError):
                         wait = float(resp.headers["Retry-After"])
-                    except ValueError:
-                        pass
                     wait = min(max(wait, 0.0), _READ_RETRY_MAX_WAIT_SECS)
                 await resp.aclose()
                 await asyncio.sleep(wait)
