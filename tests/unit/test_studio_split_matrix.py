@@ -13,12 +13,20 @@ and for each value of ``HELD_CARD_WRITES_ORGS`` (off and on):
 * the answer of :func:`tool_packs.plan_loader`: the offer and the owners
   that the loader reaches.
 
-The test is pure: no database, no Redis and no model. The golden file
-``tests/unit/golden/studio_split_matrix.json`` was made on main BEFORE the
-split. Run this file as a script to write it again.
+The golden file ``tests/unit/golden/studio_split_matrix.json`` has two
+columns. ``main`` was made on main BEFORE the split (commit 803d8b26c), and
+it does not change. ``split`` is the matrix after the split. The test holds
+the code to ``split``, and it holds the difference of the two columns to the
+changes that the audit named (:data:`NAMED_CHANGES`).
+
+The sticky state of a chat from before the split has its own tests at the end.
+
+The test is pure: no database, no Redis and no model. Run this file as a
+script with ``--write-split`` to write the ``split`` column again.
 
 Run: ``uv run pytest tests/unit/test_studio_split_matrix.py -q``.
 """
+
 from __future__ import annotations
 
 import json
@@ -27,6 +35,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from acb_skills import skill_families as sf
 from acb_skills import tool_packs as tp
 
@@ -39,6 +48,7 @@ BASE = 56 + 1
 #: The specialist tools of the base, one for each owner.
 SPECIALISTS = {"projects-assistant": 1, "email-assistant": 1, "crm-assistant": 1}
 TURN = 10
+STUDIO_PACKS = frozenset({"studio", "studio-more"})
 
 
 def _sticky(slug: str, used: int, place: int) -> tp.Sticky:
@@ -57,25 +67,33 @@ CASES: dict[str, dict[str, Any]] = {
     "studio_alone": {"words": "make the form blue"},
     "studio_with_email": {"words": "check my emails"},
     "studio_with_crm_records_and_calendar_day": {
-        "words": "move the deal to won and rebuild my day"},
-    "studio_with_email_and_crm_records": {
-        "words": "add this email to the sales pipeline"},
+        "words": "move the deal to won and rebuild my day"
+    },
+    "studio_with_email_and_crm_records": {"words": "add this email to the sales pipeline"},
     "studio_with_projects_reminders": {"words": "remind me to call Ravi tomorrow"},
     "studio_with_two_sticky_packs": {
         "words": "make the form blue",
-        "sticky": (_sticky("crm-records", 8, 0), _sticky("projects-cycles", 9, 1))},
+        "sticky": (_sticky("crm-records", 8, 0), _sticky("projects-cycles", 9, 1)),
+    },
     "studio_with_a_named_skill": {
         "words": "run my weekly digest",
-        "skills": (_skill("skill-weekly-digest", "studio_record_list"),)},
+        "skills": (_skill("skill-weekly-digest", "studio_record_list"),),
+    },
     "studio_with_projects_reminders_and_a_named_skill": {
         "words": "remind me to run my weekly digest",
-        "skills": (_skill("skill-weekly-digest", "studio_record_list"),)},
+        "skills": (_skill("skill-weekly-digest", "studio_record_list"),),
+    },
     "studio_with_two_named_skills": {
         "words": "run my weekly digest and my sales digest",
-        "skills": (_skill("skill-sales-digest", "studio_record_list"),
-                   _skill("skill-weekly-digest", "studio_record_list"))},
+        "skills": (
+            _skill("skill-sales-digest", "studio_record_list"),
+            _skill("skill-weekly-digest", "studio_record_list"),
+        ),
+    },
     "studio_with_workflow_words_and_studio_workflows_on": {
-        "words": "publish the workflow", "workflows": True},
+        "words": "publish the workflow",
+        "workflows": True,
+    },
 }
 
 #: The values of ``HELD_CARD_WRITES_ORGS``: off, and on for each org.
@@ -95,9 +113,17 @@ def _allowed(workflows: bool) -> frozenset[str]:
 
 def _row(case: dict[str, Any]) -> dict[str, Any]:
     allow = _allowed(bool(case.get("workflows")))
-    turn = tp.PackTurn(ORG, SESSION, tp._member_part(MEMBER), TURN,
-                       tuple(case.get("sticky", ())), str(case["words"]), True,
-                       surface="studio", skills=tuple(case.get("skills", ())))
+    turn = tp.PackTurn(
+        ORG,
+        SESSION,
+        tp._member_part(MEMBER),
+        TURN,
+        tuple(case.get("sticky", ())),
+        str(case["words"]),
+        True,
+        surface="studio",
+        skills=tuple(case.get("skills", ())),
+    )
     choice = tp.choose(turn, allowed=allow, base_tools=BASE, specialists=SPECIALISTS)
     skills = [str(s.slug) for s in choice.skills]
     named = {name for s in choice.skills for name in s.tools}
@@ -109,9 +135,12 @@ def _row(case: dict[str, Any]) -> dict[str, Any]:
     gone = sum(SPECIALISTS.get(owner, 0) for owner in draft.replaced)
     current = BASE + sum(_size(slug) for slug in choice.slugs) - gone
     plan = tp.plan_loader(
-        allow, [*choice.slugs, *skills], current=current,
+        allow,
+        [*choice.slugs, *skills],
+        current=current,
         removable={o: n for o, n in SPECIALISTS.items() if o not in draft.replaced},
-        spare={slug: _size(slug) for slug in draft.spare()})
+        spare={slug: _size(slug) for slug in draft.spare()},
+    )
     return {
         "packs": list(choice.slugs),
         "layers": {slug: choice.layers.get(slug, "") for slug in choice.slugs},
@@ -147,20 +176,161 @@ def _golden() -> dict[str, Any]:
     return json.loads(GOLDEN.read_text(encoding="utf-8"))
 
 
-def test_the_matrix_equals_the_golden_of_main() -> None:
-    """On main, before the split, each case gives its golden row. Mutation:
-    change a pack, a word or a cap -> red."""
+def _view(row: dict[str, Any]) -> dict[str, Any]:
+    """What a turn sends and can reach, with the split itself left out: the
+    tool count, the tool names as a set, the skills, the sticky packs that
+    left, and the loader offer and reach less the two Studio packs."""
+    return {
+        "tools": row["tools"],
+        "names": sorted(row["names"]),
+        "skills": row["skills"],
+        "evicted": row["evicted"],
+        "offered": [s for s in row["offered"] if s not in STUDIO_PACKS],
+        "via_loader": row["via_loader"],
+    }
+
+
+def _both(case: str, *fields: str) -> dict[str, frozenset[str]]:
+    return {f"{case}|held={held}": frozenset(fields) for held in HELD}
+
+
+#: The changes that the audit of 2026-11-14 named (§4.2.9, the block TS-1b), as
+#: the fields of :func:`_view` that differ between ``main`` and ``split``. Every
+#: other case and field is the same. The values are in the golden file.
+NAMED_CHANGES: dict[str, frozenset[str]] = {
+    # 108 becomes 95: the turn loses studio-more, the last pack that came by
+    # the surface alone (``choose``, task 1573).
+    **_both("studio_with_crm_records_and_calendar_day", "tools", "names"),
+    # 99 becomes 109: the core now fits. With the switch off, the three packs
+    # take each place, so the loader loses its offer.
+    "studio_with_email_and_crm_records|held=off": frozenset(
+        {"tools", "names", "offered", "via_loader"}
+    ),
+    "studio_with_email_and_crm_records|held=on": frozenset({"tools", "names"}),
+    # The same tools at the start. The loader loses its third place and the
+    # reach of the Projects owner, unless HELD_CARD_WRITES_ORGS makes the word
+    # pack spare.
+    "studio_with_projects_reminders|held=off": frozenset({"offered", "via_loader"}),
+    # The older sticky pack leaves, not studio-more.
+    "studio_with_two_sticky_packs|held=off": frozenset({"tools", "names", "evicted"}),
+    "studio_with_two_sticky_packs|held=on": frozenset({"tools", "names", "evicted", "offered"}),
+    # A named published skill loses its place.
+    **_both("studio_with_projects_reminders_and_a_named_skill", "skills"),
+    **_both("studio_with_two_named_skills", "skills"),
+    # The loader loses its third place: here a skill takes it.
+    **_both("studio_with_a_named_skill", "offered", "via_loader"),
+    # The loader loses its third place: here the dark studio-workflows takes
+    # it, where the owner turned that pack on.
+    "studio_with_workflow_words_and_studio_workflows_on|held=off": frozenset(
+        {"offered", "via_loader"}
+    ),
+    "studio_with_workflow_words_and_studio_workflows_on|held=on": frozenset({"via_loader"}),
+}
+
+
+def test_the_matrix_equals_the_golden_split() -> None:
+    """After the split, each case gives its golden row. Mutation: move a core
+    tool to studio-more, drop the surface of studio-more, or drop FOLLOWS ->
+    red."""
     got = matrix()
-    want = _golden()["main"]
+    want = _golden()["split"]
     assert sorted(got) == sorted(want)
     for key in want:
         assert got[key] == want[key], key
 
 
-if __name__ == "__main__":  # write the golden of main again
-    if "--write-main" not in sys.argv:
-        raise SystemExit("usage: python tests/unit/test_studio_split_matrix.py --write-main")
-    GOLDEN.parent.mkdir(parents=True, exist_ok=True)
-    GOLDEN.write_text(json.dumps({"main": matrix()}, indent=1, sort_keys=True) + "\n",
-                      encoding="utf-8")
+def test_the_split_changes_only_the_named_cases() -> None:
+    """The fence of the audit: ``main`` and ``split`` differ only where
+    :data:`NAMED_CHANGES` says. Mutation: a ``split`` row that changes one
+    more field -> red."""
+    golden = _golden()
+    main, split = golden["main"], golden["split"]
+    assert sorted(main) == sorted(split)
+    for key in main:
+        before, after = _view(main[key]), _view(split[key])
+        differ = frozenset(f for f in before if before[f] != after[f])
+        assert differ == NAMED_CHANGES.get(key, frozenset()), (key, differ)
+
+
+def test_the_core_stays_and_comes_first() -> None:
+    """Each turn that held ``studio`` on main holds the core after the split,
+    and the core comes before studio-more. Two places of MAX_PACKS go to the
+    two Studio packs where both fit."""
+    golden = _golden()
+    for key, before in golden["main"].items():
+        after = golden["split"][key]["packs"]
+        if "studio" in before["packs"]:
+            assert "studio" in after, key
+        if "studio-more" in after:
+            assert after.index("studio") < after.index("studio-more"), key
+        assert len(after) <= tp.MAX_PACKS, key
+
+
+@pytest.mark.parametrize(
+    ("case", "before", "after"),
+    [
+        ("studio_alone", 80, 80),
+        ("studio_with_email", 110, 110),
+        ("studio_with_crm_records_and_calendar_day", 108, 95),
+        ("studio_with_email_and_crm_records", 99, 109),
+        ("studio_with_projects_reminders", 99, 99),
+        ("studio_with_two_sticky_packs", 98, 86),
+    ],
+)
+def test_the_tool_counts_of_the_audit(case: str, before: int, after: int) -> None:
+    """The numbers of the block TS-1b, to read at a glance. 57 + 31 + 10 + 13
+    - 1 = 110 beside the email pack."""
+    golden = _golden()
+    for held in HELD:
+        key = f"{case}|held={held}"
+        assert golden["main"][key]["tools"] == before, key
+        assert golden["split"][key]["tools"] == after, key
+
+
+# -- The sticky state of a chat from before the split (item 7) ---------------
+
+
+def test_a_sticky_studio_pack_from_before_the_split_loads_the_core() -> None:
+    """A chat with a sticky ``studio`` from before the merge, on no Studio
+    surface, gets the core of 10 tools only. Its history may name a tool that
+    left, for up to DECAY_TURNS turns. This is the accepted cost, with no
+    shim. Mutation: a shim that counts studio-more with a sticky studio ->
+    red."""
+    raw = {"~turn": "10", "studio": json.dumps({"first": [3, 0], "used": 8})}
+    sticky = tp._sticky_of(raw)
+    assert [entry.slug for entry in sticky] == ["studio"]
+    turn = tp.PackTurn(
+        ORG, SESSION, tp._member_part(MEMBER), TURN, sticky, "now make it blue", True
+    )
+    choice = tp.choose(turn, allowed=_allowed(False), base_tools=BASE, specialists=SPECIALISTS)
+    assert choice.slugs == ("studio",) and choice.layers == {"studio": "sticky"}
+    assert len(sf.SKILL_FAMILIES["studio"]["tools"]) == 10
+    assert tp.DECAY_TURNS == 8
+
+
+def test_an_old_reader_skips_the_new_sticky_field(monkeypatch) -> None:
+    """A process from before the split reads a state hash that a new process
+    wrote: the field ``studio-more`` names no pack there, so ``_sticky_of``
+    skips it and keeps ``studio``. Mutation: delete the skip of a field that
+    is no pack -> red."""
+    raw = {
+        "~turn": "10",
+        "studio": json.dumps({"first": [3, 0], "used": 9}),
+        "studio-more": json.dumps({"first": [3, 1], "used": 9}),
+    }
+    assert [entry.slug for entry in tp._sticky_of(raw)] == ["studio", "studio-more"]
+    # The registry of the old code. A new dict, so the order of PACKS is the
+    # same again after the test.
+    old = {slug: found for slug, found in tp.PACKS.items() if slug != "studio-more"}
+    monkeypatch.setattr(tp, "PACKS", old)
+    assert tp.pack("studio-more") is None
+    assert [entry.slug for entry in tp._sticky_of(raw)] == ["studio"]
+
+
+if __name__ == "__main__":  # write the split column again; main never changes
+    if "--write-split" not in sys.argv:
+        raise SystemExit("usage: python tests/unit/test_studio_split_matrix.py --write-split")
+    golden = _golden()
+    golden["split"] = matrix()
+    GOLDEN.write_text(json.dumps(golden, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     print(f"wrote {GOLDEN}")

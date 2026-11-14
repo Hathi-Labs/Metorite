@@ -60,6 +60,8 @@ TS-1b is live, not dark, because it changes the Studio packs of every org. Each 
 OA-7e is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7e"
 below, PR #1389). It adds layer (b), the meta tool `load_skill_tools`.
 
+TS-1b is BUILT, LIVE where Studio is on (2026-11-14, task 3207, "The Studio split" in §4.2.9). The `studio` pack is a core of 10 tools, and the follow pack `studio-more` holds the other 13. With search off, a Studio turn takes both packs, the core first. `studio-workflows` stays dark. The fence is `tests/unit/test_studio_split_matrix.py`, with a golden made on main before the split.
+
 OA-7h is PARTLY BUILT (2026-10-28): the gate is NOT met, by one turn.
 Run 4 (`docs/one_assistant_measure_2026-10-28.md`, with the OA-7j rules and 5
 repeats) passed pack 78 of 90 and delegation 79 of 90. Without the hand-off
