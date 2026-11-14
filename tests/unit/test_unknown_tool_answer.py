@@ -474,9 +474,9 @@ async def test_with_the_flag_on_a_pack_the_loader_does_not_offer_does_not_load(
 
 def test_the_executor_puts_the_answer_on_the_orchestrator_view_last() -> None:
     """The one hook: ``executor._log_request_tools_view``. It runs after each
-    seam of ``_inject_agent_tools`` (the steer turns, the progress notice and
-    the number check), so the answer is the innermost chat middleware.
-    Mutation: drop ``UnknownToolProvider`` from the view → red."""
+    seam of ``_inject_agent_tools`` (the hold, the steer turns, the progress
+    notice and the number check), so the answer runs inside their chat
+    middleware. Mutation: drop ``UnknownToolProvider`` from the view → red."""
     from orchestrator import executor as ex
 
     agent = Agent(client=_Scripted([]), name="orchestrator", tools=[_own])

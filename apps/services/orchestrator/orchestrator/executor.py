@@ -2031,8 +2031,9 @@ def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
 
     HRD-1: the same view carries ``acb_skills.unknown_tool.UnknownToolProvider``,
     the one answer to a call of a tool that the run did not load. It goes
-    last, after each seam of ``_inject_agent_tools``, so its chat middleware
-    is the innermost and rewrites the messages that the model reads."""
+    after each seam of ``_inject_agent_tools``, so its chat middleware runs
+    inside the hold, steer and number-check middleware, and rewrites the
+    messages that they pass on. Only the tier policy view comes later."""
     if agent_name != _PACK_AGENT or not agents:
         return agents
     try:
