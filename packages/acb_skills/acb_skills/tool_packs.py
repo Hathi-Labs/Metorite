@@ -3853,6 +3853,12 @@ FIND_PAST_CAP = (
     "Not added. The tools do not fit in this request: a request holds at most "
     "{tools} tools. Answer with the tools that you hold."
 )
+#: The answer when the pack of a found tool holds more than
+#: :data:`MAX_PACK_TOOLS` tools (the size check of a load).
+FIND_PACK_TOO_BIG = (
+    "Not added. The {label} pack holds more than {tools} tools, the limit of a "
+    "pack. Answer with the tools that you hold."
+)
 FIND_PAST_BUDGET = (
     "Not added. The tools do not fit in this request: the tool schemas of a "
     "request hold at most {budget} tokens. Answer with the tools that you hold."
@@ -4027,7 +4033,8 @@ def _admit_found(found: Pack, live: Sequence[Any]) -> str | None:
     :data:`MAX_PACKS`, so that cap does not apply."""
     slug = found.slug
     if _tool_count(slug) > MAX_PACK_TOOLS:
-        return _refused(slug, "find_cap_pack", FIND_PAST_CAP.format(tools=MAX_REQUEST_TOOLS))
+        return _refused(slug, "find_cap_pack", FIND_PACK_TOO_BIG.format(
+            label=_label(slug), tools=MAX_PACK_TOOLS))
     if _beside_mcp(found.owner, live):
         return _refused(slug, "find_beside_mcp", FIND_BESIDE_MCP.format(
             label=_label(slug), owner=found.owner))
@@ -4267,6 +4274,7 @@ class FindTools(FunctionMiddleware):
                   held={slug: got.held[slug] for slug in slugs}, searches=self.searches,
                   live_tools=live, found_tools=len(self.found))
         return "\n\n".join(parts)
+
 
 class FindToolsProvider(ContextProvider):
     """Adds ``find_tools`` and its middleware to ONE run (TS-2a).

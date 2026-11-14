@@ -25,6 +25,17 @@ M7. The lock is not shared (``FindTools`` takes a lock of its own), so a
 M8. A member without ``feature:studio`` sees the Studio line
     (``find_candidates`` names a pack with no candidate).
 
+The review round added these:
+
+M9. The budget measures the MCP tools of the live list too.
+M10. The budget drops the tokens of the rules text.
+M11. The tool body takes an ``org`` or a ``member`` parameter.
+M12. ``FindTools._gate`` merges the arguments of the call into the run
+     context.
+M13. ``find_candidates`` keeps a name of the live list.
+M14. ``FindTools._gather`` builds with no live names.
+M15. The size check of a pack answers with the text of the request cap.
+
 Run: ``uv run pytest tests/unit/test_find_tools_guards.py -q -p no:xdist``.
 """
 
@@ -596,7 +607,9 @@ async def test_the_pack_size_check_of_a_load_holds(store, studio, monkeypatch) -
         finder = _finder(record, await _setup(record, live))
         monkeypatch.setattr(tp, "MAX_PACK_TOOLS", len(STUDIO_TOOLS) - 1)
         answer = await _find(finder, "draft an app", live)
-    assert answer == tp.FIND_PAST_CAP.format(tools=tp.MAX_REQUEST_TOOLS) and len(live) == 40
+    want = tp.FIND_PACK_TOO_BIG.format(label="AI Studio builder", tools=len(STUDIO_TOOLS) - 1)
+    assert answer == want and len(live) == 40, answer
+    assert str(tp.MAX_REQUEST_TOOLS) not in answer, "the cause is the size of the pack"
 
 
 @pytest.mark.parametrize(("base", "added"), [(105, 5), (107, 3), (110, 0)])
@@ -624,19 +637,57 @@ async def test_a_found_tool_counts_against_the_cap_of_110(
         assert answer == cap
 
 
-async def test_the_schema_budget_holds(store, studio, monkeypatch) -> None:
+async def test_the_schema_budget_counts_the_rules_block(store, studio, monkeypatch) -> None:
     """D222 decision 7: about 30 thousand schema tokens. The measure is the
-    one of the repo (``_maf_mcp.schema_tokens``), and the rules block counts.
-    Mutation: drop the budget → the search adds past it → red."""
+    one of the repo (``_maf_mcp.schema_tokens``), and the rules block of the
+    answer counts. The budget here holds the base and the found schemas, but
+    not the rules block, so the block decides. Mutation: drop the budget, or
+    drop the count of the rules text → the search adds → red."""
     record = _record()
     live = _dummies(40)
     with _in_run(record):
         finder = _finder(record, await _setup(record, live))
         base = _maf_mcp.schema_tokens(live)
+        rules = tp._text_tokens(_studio_rules(False))
         assert 0 < base < tp.FIND_SCHEMA_TOKENS
-        monkeypatch.setattr(tp, "FIND_SCHEMA_TOKENS", base + 10)
+        found = [
+            t
+            for t in (
+                await ti._pack_tools("studio", {**_run_ctx(), tp.PACK_RUN_KEY: RUN_KEY})
+            ).tools
+        ]
+        schemas = _maf_mcp.schema_tokens(found[: tp.FIND_LIMIT * 2])
+        assert schemas < rules, "non-vacuity: the block outweighs the found schemas"
+        budget = base + rules - 1
+        monkeypatch.setattr(tp, "FIND_SCHEMA_TOKENS", budget)
         answer = await _find(finder, "draft an app", live)
-    assert answer == tp.FIND_PAST_BUDGET.format(budget=base + 10) and len(live) == 40
+        assert answer == tp.FIND_PAST_BUDGET.format(budget=budget) and len(live) == 40
+        monkeypatch.setattr(tp, "FIND_SCHEMA_TOKENS", base + rules + schemas)
+        ok = await _find(finder, "draft an app", live)
+    assert ok.startswith("Found 5 tools."), "non-vacuity: with room for the block it adds"
+
+
+async def test_the_schema_budget_leaves_out_the_mcp_tools(store, studio) -> None:
+    """MCP keeps its own budget (``RUN_SCHEMA_TOKENS``), so the budget of a
+    search counts the request less its MCP tools. Mutation: measure the
+    whole live list → a large MCP schema fills the budget and the search
+    refuses → red."""
+    big = tool(
+        lambda: "x",
+        name="notion_big",
+        description="word " * 160_000,
+        approval_mode="never_require",
+    )
+    big.additional_properties["_mcp_is_tool"] = True
+    assert eg._from_mcp(big)
+    record = _record()
+    live = [*_dummies(40), big]
+    with _in_run(record):
+        finder = _finder(record, await _setup(record, live))
+        assert _maf_mcp.schema_tokens([big]) > tp.FIND_SCHEMA_TOKENS, "non-vacuity"
+        answer = await _find(finder, "draft an app", live)
+    assert answer.startswith("Found 5 tools."), answer
+    assert len(live) == 46
 
 
 async def test_the_limits_of_a_turn(store, studio) -> None:
@@ -741,6 +792,88 @@ async def test_a_later_load_of_the_whole_pack_skips_the_found_names(store, studi
     names = _names(live)
     assert len(names) == len(set(names)) == 40 + len(STUDIO_TOOLS)
     assert after == tp.FIND_NONE
+
+
+# ── 2a. R5: the org and the member come from the run only ───────────────────
+
+#: Values that a model could put in the arguments of a call.
+FOREIGN = {
+    "org": "0b0b0b0b-0000-4000-8000-0000000000ff",
+    "organization_id": "0b0b0b0b-0000-4000-8000-0000000000ff",
+    "member": "eve@other.test",
+}
+
+
+def test_the_schema_of_find_tools_holds_the_query_only() -> None:
+    """R5. The tool takes no org, member or tenant argument. Mutation: add an
+    ``org`` or a ``member`` parameter to the tool body → red."""
+    params = tp.find_tool(("studio",)).parameters()
+    assert set(params["properties"]) == {"query"}, params
+    assert params["required"] == ["query"]
+
+
+async def test_an_org_or_a_member_in_the_arguments_never_scopes_the_search(
+    store, studio, monkeypatch
+) -> None:
+    """R5. The org and the member of the build come from the run context
+    (``_run_context``), never from the arguments of the call. Mutation: merge
+    the arguments of the call into the run context in ``FindTools._gate`` →
+    the build reads the foreign member → red."""
+    from acb_common.db import current_tenant
+
+    seen: list[dict[str, Any]] = []
+    real = ti._pack_tools
+
+    async def spy(slug: str, run_ctx: Any, **kw: Any) -> Any:
+        seen.append({**dict(run_ctx), "tenant": current_tenant()})
+        return await real(slug, run_ctx, **kw)
+
+    record = _record()
+    live = _dummies(40)
+    with _in_run(record):
+        finder = _finder(record, await _setup(record, live))
+        monkeypatch.setattr(ti, "_pack_tools", spy)
+        answer, _ = await _call(finder, {"query": "draft an app", **FOREIGN}, live)
+    assert answer.startswith("Found 5 tools."), answer
+    assert len(seen) == 1
+    assert seen[0]["member"] == MEMBER and seen[0]["tenant"] == ORG
+    assert not {"org", "organization_id"} & set(seen[0]), sorted(seen[0])
+    assert FOREIGN["member"] not in json.dumps(seen[0], default=str)
+
+
+# ── 2b. Each skip of a live name holds on its own ───────────────────────────
+
+
+def test_find_candidates_skips_a_live_name_by_itself() -> None:
+    """Defence in depth. ``find_candidates`` leaves out each name of the live
+    list, also when no rank runs. Mutation: drop the skip of *holds* in
+    ``find_candidates`` → the live name is a candidate → red."""
+    build = _fake_build(("studio_draft", "studio_patch"))
+    found = tp.find_candidates(
+        {"studio"},
+        (),
+        ("studio_draft",),
+        owners=tp.PACK_ONLY_OWNERS,
+        builds={"studio": build},
+    )
+    assert dict(found.tools) == {"studio_patch": "studio"}
+
+
+async def test_the_build_of_a_search_skips_a_live_name_by_itself(store, studio) -> None:
+    """Defence in depth. ``FindTools._gather`` passes the live names to the
+    build, so a ranked name that the live list holds never comes back, also
+    when the rank did not skip it. Mutation: build with no names → the build
+    gives a second ``studio_draft`` object → red."""
+    record = _record()
+    own = _dummies(1, "x")[0]
+    own.name = "studio_draft"
+    live = [*_dummies(40), own]
+    with _in_run(record):
+        finder = _finder(record, await _setup(record, _dummies(40)))
+        got = await finder._gather(
+            ["studio_draft", "studio_patch"], tp._run_context(), record, live
+        )
+    assert set(got.made) == {"studio_patch"}, sorted(got.made)
 
 
 # ── 3. ONE lock for find_tools and load_skill_tools ─────────────────────────
