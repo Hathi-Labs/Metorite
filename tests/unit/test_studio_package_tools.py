@@ -858,13 +858,50 @@ async def test_a_save_equal_to_the_stored_draft_writes_nothing(gw) -> None:
     assert gw.writes().count(("PUT", "/studio/packages/{}/draft")) == 1
 
 
-async def test_a_save_that_changes_the_manifest_id_shows_the_route_text(gw) -> None:
-    saved = await _save(_visit())
-    out = await st.studio_save(_visit("other-id"), saved["package_id"], saved["based_on"])
+async def test_a_save_that_changes_the_id_of_a_published_package_shows_the_route_text(gw) -> None:
+    _m, pid = await _built()
+    assert (await st.studio_publish(pid))["ok"]
+    out = await st.studio_save(_visit("other-id"), pid, st.manifest_hash(gw.packages[pid]["manifest"]))
     assert out["ok"] is False and out["status"] == 422
     assert out["errors"] == [{"path": "$", "message": store.ID_FIXED},
                              {"path": "$.id", "message": store.ID_FIXED}]
-    assert ("PUT", "/studio/packages/{}/draft") not in gw.writes()
+    assert gw.writes().count(("PUT", "/studio/packages/{}/draft")) == 0
+
+
+async def test_a_save_into_an_unpublished_draft_keeps_the_id_of_the_draft(gw) -> None:
+    """STU-FIX: the "New app" button made the draft with its own id. A save with
+    another id sets the id of the draft, and the draft keeps one id."""
+    saved = await _save(_visit("new-app-nufdl"))
+    out = await st.studio_save(_visit("event-inquiry-tracker", name="Event tracker"), saved["package_id"],
+                               saved["based_on"])
+    assert out["ok"], out
+    assert out["manifest_id"] == "new-app-nufdl" and "new-app-nufdl" in out["note"]
+    assert gw.packages[saved["package_id"]]["manifest"]["id"] == "new-app-nufdl"
+    assert gw.writes().count(("PUT", "/studio/packages/{}/draft")) == 1
+
+
+async def test_one_plan_card_covers_a_build_into_a_draft_with_another_id(gw, card, redis) -> None:
+    """STU-FIX: plan (id A), save into draft (id B), publish. One card, one publish."""
+    saved = await _save(_visit("new-app-nufdl"))
+    planned = _visit("event-inquiry-tracker", name="Event tracker")
+    await _plan(planned)
+    assert len(redis.records()) == 1
+    out = await st.studio_save(planned, saved["package_id"], saved["based_on"])
+    assert out["ok"] and "publish now" in out["note"], out
+    assert len(redis.records()) == 1  # the approval moved, and no copy stays
+    pub = await st.studio_publish(saved["package_id"])
+    assert pub["ok"] and pub["version"] == 1, pub
+    assert len(card.shown) == 1, "one approval card for one app"
+
+
+async def test_a_save_that_adopts_an_id_keeps_no_approval_the_member_never_gave(gw, card, redis) -> None:
+    saved = await _save(_visit("new-app-nufdl"))
+    out = await st.studio_save(_visit("event-inquiry-tracker", name="Event tracker"),
+                               saved["package_id"], saved["based_on"])
+    assert out["ok"] and "studio_plan" in out["note"]
+    assert redis.records() == {}
+    refused = await st.studio_publish(saved["package_id"])
+    assert refused["ok"] is False and _msg(refused) == st._NO_PLAN
 
 
 # -- 7. The cap, and no stored text -------------------------------------------------
