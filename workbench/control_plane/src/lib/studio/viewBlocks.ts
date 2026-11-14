@@ -35,6 +35,8 @@ export interface ViewMapContext {
   owner: boolean;
   /** The list bar's choices for one view. Absent when the bar is off. */
   lens?: ViewLens | null;
+  /** The start of the record link for rows of an object (STU-AF5), or null. Absent when the frame has no record page. */
+  recordBase?: ((object: string) => string | null) | null;
 }
 
 /**
@@ -124,12 +126,12 @@ export function mapView(view: ViewDef, ctx: ViewMapContext): ViewModel | null {
       return {
         kind: "node",
         node: tableBlock(tableFields(shown), list, view.title ?? object.label ?? object.name,
-          { editable: canUpdate, computed: [...computed] }),
+          { editable: canUpdate, computed: [...computed], openBase: ctx.recordBase?.(name) ?? undefined }),
       };
     }
     case "board": {
       const canUpdate = ctx.owner && verbs[`object:${name}.update`] !== undefined;
-      const node = objectBoardBlock(object, specs, computed, list, canUpdate, lens?.group ?? null);
+      const node = objectBoardBlock(object, specs, computed, list, canUpdate, lens?.group ?? null, ctx.recordBase?.(name) ?? undefined);
       return node ? { kind: "node", node } : problem(noBoardReason(specs));
     }
     case "detail":

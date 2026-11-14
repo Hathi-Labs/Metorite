@@ -184,7 +184,15 @@ function BoardView({ config, rows: given, door }: { config: BoardConfig; rows: R
                     onDragEnd={() => mover?.dragEnd()}
                   >
                     <div className="flex items-start gap-1">
-                      <TaskCardTitle>{title || "Untitled"}</TaskCardTitle>
+                      <TaskCardTitle>
+                        {id !== null && config.openBase ? (
+                          // A record link (STU-AF5). The app frame opens it in the record panel.
+                          <a href={`${config.openBase}${encodeURIComponent(id)}`} draggable={false}
+                            className="rounded-sm text-foreground outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring">
+                            {title || "Untitled"}
+                          </a>
+                        ) : (title || "Untitled")}
+                      </TaskCardTitle>
                       {movable && id !== null && !pending ? (
                         <span className="ml-auto shrink-0">
                           <Button
