@@ -36,6 +36,7 @@ import DeleteRecordButton from "@/components/studio/DeleteRecordButton";
 import RecordsStatus from "@/components/studio/RecordsStatus";
 import StudioDetail from "@/components/studio/StudioDetail";
 import StudioForm from "@/components/studio/StudioForm";
+import AppConnectCard from "@/components/studio/AppConnectCard";
 import DeletePackageButton from "@/components/studio/DeletePackageButton";
 import PackageLifetimeBar from "@/components/studio/PackageLifetimeBar";
 import Button from "@/components/ui/Button";
@@ -138,11 +139,13 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
     return <Shell><RecordsStatus loading error={null} onRetry={detail.refresh} /></Shell>;
   }
   if (APP_FRAME) {
-    return <AppFrame pkg={pkg} detail={detail.data} door={door} controls={controls} onDeleted={onDeleted} />;
+    return <AppFrame pkg={pkg} detail={detail.data} door={door} controls={controls} onDeleted={onDeleted}
+      above={controls.owner ? <AppConnectCard pkg={pkg} /> : undefined} />;
   }
   if (!object) {
     return (
       <Shell title={detail.data.name} actions={ownerBar}>
+        {controls.owner ? <AppConnectCard pkg={pkg} /> : null}
         <EmptyState icon="PackageOpen" message={controls.owner
           ? "This app has no object yet. Ask Mira to add one, then publish it." : VIEWER_NO_OBJECT} />
       </Shell>
@@ -164,6 +167,7 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
         {controls.owner ? null : <span role="status" className="text-xs text-muted-foreground">{READ_ONLY_SENTENCE}</span>}
       </>
     }>
+      {controls.owner ? <AppConnectCard pkg={pkg} /> : null}
       <PackageLifetimeBar pkg={pkg} />
       {!canList ? (
         <p role="status" className={`${PANEL} text-sm text-muted-foreground`}>{noListLine(object.label ?? object.name)}</p>
