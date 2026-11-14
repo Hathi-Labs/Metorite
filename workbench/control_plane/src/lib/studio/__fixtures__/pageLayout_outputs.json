@@ -1,0 +1,1056 @@
+[
+  {
+    "seed": 11,
+    "op": 50,
+    "manifest": {
+      "studio": 1,
+      "id": "layout-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "check_in"
+            }
+          ],
+          "side": {
+            "view": "week"
+          }
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "A",
+              "cells": [
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in",
+                  "span": 2
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "B",
+              "cells": [
+                {
+                  "view": "week"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 4,
+          "cells": [
+            {
+              "view": "check_in",
+              "span": 4
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "week"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 11,
+    "op": 100,
+    "manifest": {
+      "studio": 1,
+      "id": "layout-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "board"
+            }
+          ],
+          "side": {
+            "view": "week"
+          }
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "A",
+              "cells": [
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in",
+                  "span": 2
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "B",
+              "cells": [
+                {
+                  "view": "check_in"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 4,
+          "cells": [
+            {
+              "view": "board"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "check_in",
+              "span": 4
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 11,
+    "op": 150,
+    "manifest": {
+      "studio": 1,
+      "id": "layout-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "board"
+            }
+          ],
+          "side": {
+            "view": "week"
+          }
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "A",
+              "cells": [
+                {
+                  "view": "board"
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "B",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 4,
+          "cells": [
+            {
+              "view": "week"
+            },
+            {
+              "view": "check_in",
+              "span": 4
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "week"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 11,
+    "op": 200,
+    "manifest": {
+      "studio": 1,
+      "id": "layout-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "board"
+            }
+          ],
+          "side": {
+            "view": "week"
+          }
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "A",
+              "cells": [
+                {
+                  "view": "board",
+                  "span": 2
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "B",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 4,
+          "cells": [
+            {
+              "view": "week"
+            },
+            {
+              "view": "check_in",
+              "span": 4
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "week"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 23,
+    "op": 50,
+    "manifest": {
+      "studio": 1,
+      "id": "layout-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "check_in"
+            }
+          ],
+          "side": {
+            "view": "week"
+          }
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "A",
+              "cells": [
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in",
+                  "span": 2
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "B",
+              "cells": [
+                {
+                  "view": "week"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 4,
+          "cells": [
+            {
+              "view": "check_in",
+              "span": 4
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 23,
+    "op": 100,
+    "manifest": {
+      "studio": 1,
+      "id": "layout-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "check_in"
+            }
+          ],
+          "side": {
+            "view": "week"
+          }
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "A",
+              "cells": [
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in",
+                  "span": 2
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "B",
+              "cells": [
+                {
+                  "view": "week"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 4,
+          "cells": [
+            {
+              "view": "check_in",
+              "span": 4
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 23,
+    "op": 150,
+    "manifest": {
+      "studio": 1,
+      "id": "layout-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "check_in"
+            }
+          ],
+          "side": {
+            "view": "week"
+          }
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "A",
+              "cells": [
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in",
+                  "span": 2
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "B",
+              "cells": [
+                {
+                  "view": "week"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 4,
+          "cells": [
+            {
+              "view": "check_in",
+              "span": 4
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 23,
+    "op": 200,
+    "manifest": {
+      "studio": 1,
+      "id": "layout-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "check_in"
+            }
+          ],
+          "side": {
+            "view": "week"
+          }
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "A",
+              "cells": [
+                {
+                  "view": "check_in",
+                  "span": 2
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "B",
+              "cells": [
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 4,
+          "cells": [
+            {
+              "view": "check_in",
+              "span": 4
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 47,
+    "op": 50,
+    "manifest": {
+      "studio": 1,
+      "id": "layout-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "board"
+            }
+          ],
+          "side": {
+            "view": "week"
+          }
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "A",
+              "cells": [
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in",
+                  "span": 2
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "B",
+              "cells": [
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 4,
+          "cells": [
+            {
+              "view": "check_in",
+              "span": 4
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 47,
+    "op": 100,
+    "manifest": {
+      "studio": 1,
+      "id": "layout-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "check_in"
+            }
+          ],
+          "side": {
+            "view": "week"
+          }
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "A",
+              "cells": [
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in",
+                  "span": 2
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "B",
+              "cells": [
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 4,
+          "cells": [
+            {
+              "view": "check_in",
+              "span": 4
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 47,
+    "op": 150,
+    "manifest": {
+      "studio": 1,
+      "id": "layout-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "week"
+            }
+          ],
+          "side": {
+            "view": "week"
+          }
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "A",
+              "cells": [
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in",
+                  "span": 2
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "B",
+              "cells": [
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 4,
+          "cells": [
+            {
+              "view": "check_in",
+              "span": 4
+            },
+            {
+              "view": "board"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 47,
+    "op": 200,
+    "manifest": {
+      "studio": 1,
+      "id": "layout-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "week"
+            }
+          ],
+          "side": {
+            "view": "week"
+          }
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "A",
+              "cells": [
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in",
+                  "span": 2
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "B",
+              "cells": [
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 4,
+          "cells": [
+            {
+              "view": "board"
+            },
+            {
+              "view": "board"
+            }
+          ]
+        }
+      ]
+    }
+  }
+]
