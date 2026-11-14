@@ -4,12 +4,14 @@
  *
  * A record opens in the side panel, or as a full page with its own URL. Its tabs are Details (the
  * Detail block), Related (a table for each relation field of another object that points to this
- * object) and Files (the `file` fields). The Activity tab joins when D22 is built.
+ * object), Lines (the sheet of each `lines` field, STU-D17a) and Files (the `file` fields). The
+ * Activity tab joins when D22 is built.
  *
  * **The tabs.** An object may declare `record: { tabs: [...] }`. The tab ids it names, in its
  * order, win. The manifest schema has no `record` key yet, so no app declares one today. Without
- * it, §5.5 rule 3 gives the default: Details always, Related when a relation points here, Files
- * when the object has a file field.
+ * it, §5.5 rule 3 gives the default: Details always, Lines when the object has a `lines` field,
+ * Related when a relation points here, Files when the object has a file field. A declared Lines
+ * tab on an object with no `lines` field is dropped, because it would be empty.
  *
  * **The URL.** `rec` is the record id and `ro` is its object. `rtab` is the record tab, and `full=1`
  * is the full page. `rtab` is not `tab`: `tab` belongs to the tabs of the page. `pageState.ts` bounds
@@ -22,12 +24,13 @@
 import type { StudioDataDoor } from "./dataDoor";
 import type { PageState } from "./pageState";
 
-export type RecordTabId = "details" | "related" | "files";
+export type RecordTabId = "details" | "lines" | "related" | "files";
 
-export const RECORD_TAB_IDS: readonly RecordTabId[] = ["details", "related", "files"];
+export const RECORD_TAB_IDS: readonly RecordTabId[] = ["details", "lines", "related", "files"];
 
 export const RECORD_TAB_TITLES: Readonly<Record<RecordTabId, string>> = {
   details: "Details",
+  lines: "Lines",
   related: "Related",
   files: "Files",
 };
@@ -73,14 +76,40 @@ const text = (v: unknown, fallback: string): string => (typeof v === "string" &&
  */
 export function relatedLists(name: string, objects: readonly RecordObject[]): RelatedList[] {
   const out: RelatedList[] = [];
+  // The back-link of a lines child shows in the Lines tab. Related would show the same rows twice.
+  const backLinks = new Set(linesFields(name, objects).map((l) => `${l.child}.${l.back}`));
   for (const o of objects) {
     if (o.name === name) continue;
     for (const f of o.fields ?? []) {
       if (f.type !== "relation" || f.many === true || typeof f.lines === "string" || f.to !== name) continue;
+      if (backLinks.has(`${o.name}.${f.key}`)) continue;
       const objectLabel = text(o.label, o.name);
       const fieldLabel = text(f.label, f.key);
       out.push({ object: o.name, objectLabel, field: f.key, fieldLabel, title: `${objectLabel} by ${fieldLabel}` });
     }
+  }
+  return out;
+}
+
+/** One lines field of a parent object (C13): its sheet is one child object, joined by the back-link. */
+export interface LinesField {
+  /** The lines field of the parent. */
+  key: string;
+  label: string;
+  /** The line object. */
+  child: string;
+  /** The relation field of the line object that points back to the parent. */
+  back: string;
+}
+
+/** The lines fields of the object `name`, in field order. A target that names no object of the app is left out. */
+export function linesFields(name: string, objects: readonly RecordObject[]): LinesField[] {
+  const parent = objects.find((o) => o.name === name);
+  const out: LinesField[] = [];
+  for (const f of parent?.fields ?? []) {
+    if (f.type !== "relation" || typeof f.lines !== "string" || typeof f.to !== "string") continue;
+    if (!objects.some((o) => o.name === f.to)) continue;
+    out.push({ key: f.key, label: text(f.label, f.key), child: f.to, back: f.lines });
   }
   return out;
 }
@@ -111,10 +140,12 @@ function declared(object: RecordObject): RecordTabId[] | null {
 export function recordTabs(object: RecordObject, objects: readonly RecordObject[]): RecordTab[] {
   const ids = declared(object) ?? [
     "details" as const,
+    ...(linesFields(object.name, objects).length ? ["lines" as const] : []),
     ...(relatedLists(object.name, objects).length ? ["related" as const] : []),
     ...(fileFields(object).length ? ["files" as const] : []),
   ];
-  return ids.map((id) => ({ id, title: RECORD_TAB_TITLES[id] }));
+  const hasLines = linesFields(object.name, objects).length > 0;
+  return ids.filter((id) => id !== "lines" || hasLines).map((id) => ({ id, title: RECORD_TAB_TITLES[id] }));
 }
 
 /** The tab to show: the wanted one when the object has it, else the first. */
