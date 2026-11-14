@@ -23,9 +23,12 @@
 #   no line of the PR body starts with "VERIFY: PASS" -> BACK
 #   a required check red (its newest row) -> BACK <pr> red: <names>
 #   a required check missing or pending   -> skip, the next pass looks again
-#   a required check cancelled    -> gh run rerun --failed ONCE, then skip
+#   a required check cancelled    -> gh run rerun --failed ONCE, then skip.
+#                                    A new attempt that is cancelled too -> BACK <pr> cancelled twice
+#   the diff touches a HIGH path (HIGH_PATHS_RE below) and the tier is lower -> BACK
 #   the trial merge conflicts     -> BACK <pr> conflict: <files>
 #   premerge.sh exits 1           -> BACK <pr> premerge: <tail>
+#   gh pr merge says "Base branch was modified" -> retry twice, 20 s apart, then skip
 #   else gh pr ready (if draft), gh pr merge --squash --match-head-commit <sha>,
 #   then DONE <pr> <sha>.
 # A transient error is a skip, never a BACK: a failed git fetch, a gh network
@@ -40,6 +43,7 @@
 #   MERGE_BOT_LOCK [auto]  "mkdir" forces the mkdir lock (a test, or no flock)
 #   PREMERGE_CMD [timeout 900 bash scripts/premerge.sh]
 #   GH_CMD [gh]   MERGE_BOT_DRY_RUN=1: print actions, call no write command
+#   MERGE_BASE_RETRY_WAIT [20]  seconds between the in-pass merge retries
 # It reads gh JSON with python3, not with gh --jq.
 # Fence: tests/unit/test_merge_bot.py.
 set -uo pipefail
@@ -53,6 +57,31 @@ PREMERGE_CMD="${PREMERGE_CMD:-timeout 900 bash scripts/premerge.sh}"
 GH_CMD="${GH_CMD:-gh}"
 DRY="${MERGE_BOT_DRY_RUN:-0}"
 LOCK_KIND="${MERGE_BOT_LOCK:-auto}"
+MERGE_RETRY_WAIT="${MERGE_BASE_RETRY_WAIT:-20}"
+# CIV-28b: the tier floor. The tier in the queue is the claim of a lane, not
+# proof. A diff that touches one of these paths is HIGH, whatever the lane says.
+# This is the ONE place for the list. Add a path here and nowhere else.
+# Test files are in on purpose: a weakened auth test needs full review too.
+HIGH_PATHS_RE='^('
+# The schema and every migration.
+HIGH_PATHS_RE+='infra/(postgres|customer_console)/'
+# The deploy path.
+HIGH_PATHS_RE+='|deploy/|\.github/workflows/deploy\.yml$'
+# The scripts that apply migrations or generate tenant migrations.
+HIGH_PATHS_RE+='|scripts/(apply_[a-z_]*migrations\.sh|gen_tenant_migration\.py)$'
+# Identity, roles and permissions: the whole auth package.
+HIGH_PATHS_RE+='|packages/acb_auth/'
+# The tenancy and RLS seams: the DB seam, the Redis key wrapper, the memory tenant guard.
+HIGH_PATHS_RE+='|packages/acb_common/acb_common/(db|tenant_redis)\.py$'
+HIGH_PATHS_RE+='|packages/acb_memory/acb_memory/tenant_guard[^/]*$'
+# App routes and settings pages for auth, billing and credits, matched by folder.
+HIGH_PATHS_RE+='|workbench/[^/]+/src/app/.*/(auth|billing|credits)/'
+HIGH_PATHS_RE+=')'
+# Any file named for auth, billing, credits, RLS or entitlements, in any folder.
+HIGH_PATHS_RE+='|(^|/)(auth|billing|credits|rls|entitle)[^/]*\.(py|ts|tsx|sql)$'
+# Any file named tenant* (the tenancy seams: tenant_redis, tenant_guard,
+# tenant_file_store, tenantDoor), or with an rls part in its name.
+HIGH_PATHS_RE+='|(^|/)(tenant|[^/]*_rls)[^/]*$'
 STALE_LOCK_MIN=180  # The service stops a pass at 2 hours, so a 3-hour lock is dead.
 
 say() { echo "merge_bot: $*" >&2; }
@@ -122,7 +151,7 @@ for r in rows:
     name = r.get("name") or ""
     if name not in best or when(r) >= when(best[name]):
         best[name] = r
-out = "".join("%s\t%s\t%s\n" % (n, r.get("bucket") or "", r.get("link") or "") for n, r in best.items())
+out = "".join("%s\t%s\t%s\t%s\n" % (n, r.get("bucket") or "", r.get("link") or "", when(r)) for n, r in best.items())
 sys.stdout.buffer.write(out.encode("utf-8"))
 '
 
@@ -140,23 +169,24 @@ view() {  # view <pr>: prints "STATE<TAB>isDraft<TAB>merge sha<TAB>head sha<TAB>
 }
 field() { cut -f"$1" <<< "$2"; }
 
-# check_status <pr>: prints "ready", "wait", "red: <names>", or "rerun <run id>".
+# check_status <pr>: prints "ready", "wait", "red: <names>", or "rerun <run id> <start>".
 # A required name with no row is not ready. "skipping" counts as a pass.
 # gh pr checks exits 8 (pending) or 1 (failed) and still prints the rows, so its
 # exit code is not read. A gh error prints no rows, and that reads as "wait".
 check_status() {
-  local pr="$1" rows name bucket link bad="" pending=0 rerun=""
+  local pr="$1" rows name bucket link ts bad="" pending=0 rerun=""
   rows="$(gh_ pr checks "$pr" --json name,bucket,link,startedAt,completedAt 2>/dev/null \
     | json_ "$PY_CHECKS" 2>/dev/null | tr -d '\r')"
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     bucket="$(awk -F'\t' -v n="$name" '$1==n {print $2; exit}' <<< "$rows")"
     link="$(awk -F'\t' -v n="$name" '$1==n {print $3; exit}' <<< "$rows")"
+    ts="$(awk -F'\t' -v n="$name" '$1==n {print $4; exit}' <<< "$rows")"
     case "$bucket" in
       pass|skipping) ;;
       fail) bad="$bad${bad:+, }$name" ;;
       cancel)
-        [ -n "$rerun" ] || rerun="$(sed -nE 's#.*/runs/([0-9]+).*#\1#p' <<< "$link")"
+        [ -n "$rerun" ] || rerun="$(sed -nE 's#.*/runs/([0-9]+).*#\1#p' <<< "$link") ${ts:-none}"
         pending=1 ;;
       *) pending=1 ;;
     esac
@@ -171,7 +201,7 @@ check_status() {
 # Returns 0 to merge. Returns 1 with the BACK reason printed. Returns 2 with a
 # note printed for a transient error: the next pass tries again.
 gate() {
-  local pr="$1" sha="$2" branch="merge-bot/pr-$1" out files try main_before main_after tail_ top own
+  local changed pr="$1" sha="$2" tier="$3" branch="merge-bot/pr-$1" out files try main_before main_after tail_ top own
   if [ ! -e "$WORKDIR/.git" ]; then
     git -C "$ROOT" worktree add -q --detach "$WORKDIR" >/dev/null 2>&1 || { echo "no workdir at $WORKDIR"; return 2; }
   fi
@@ -190,6 +220,15 @@ gate() {
   if ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
     git fetch -q origin "$sha" 2>/dev/null && git cat-file -e "$sha^{commit}" 2>/dev/null \
       || { echo "the queued head ${sha:0:9} is not on GitHub: hand over again"; return 1; }
+  fi
+  # The floor reads the diff the trial merge would land: main to the pinned SHA.
+  if [ "$tier" != HIGH ]; then
+    # --no-renames lists both sides of a rename, so a move out of a HIGH path shows.
+    # A failed diff is not "no HIGH path": the gate fails closed.
+    changed="$(git diff --no-renames --name-only origin/main..."$sha" 2>/dev/null)" \
+      || { echo "tier floor unknown: git diff failed"; return 1; }
+    files="$(grep -E "$HIGH_PATHS_RE" <<< "$changed" | head -n 3 | tr '\n' ' ')"
+    if [ -n "$files" ]; then echo "tier floor HIGH, queued as $tier: ${files}- lane-merge or a person merges it"; return 1; fi
   fi
   if ! out="$(git merge-tree --write-tree --name-only origin/main "$sha" 2>&1)"; then
     files="$(sed -n '2,$p' <<< "$out" | sed '/^$/,$d' | tr '\n' ' ')"
@@ -217,7 +256,7 @@ gate() {
 transient() { grep -qiE 'error connecting|timed? ?out|unexpected EOF|connection (reset|refused)|HTTP 5[0-9][0-9]|TLS handshake|could not resolve' <<< "$1"; }
 
 handle() {
-  local pr="$1" sha="$2" tier="$3" v state st out run mark rc reason
+  local pr="$1" sha="$2" tier="$3" v state st out run ts mark rc reason try
   v="$(view "$pr")" || { say "PR $pr: gh cannot read it, next pass"; return; }
   [ -n "$v" ] || { say "PR $pr: gh cannot read it, next pass"; return; }
   state="$(field 1 "$v")"
@@ -236,14 +275,19 @@ handle() {
     wait) say "PR $pr: required checks not ready"; return ;;
     red:*) record "BACK $pr $st"; return ;;
     rerun*)
-      run="${st#rerun }"; mark="$STATE/rerun-$pr-$run"
+      # --failed keeps the run id, so the mark holds the start time of the cancelled
+      # attempt. The same time means the rerun has not started. A new time means
+      # the new attempt was cancelled too.
+      set -- $st; run="$2"; ts="${3:-none}"; mark="$STATE/rerun-$pr-$run"
       if [ ! -e "$mark" ]; then
         if [ "$DRY" = 1 ]; then say "DRY RUN would: gh run rerun $run --failed"
-        else : > "$mark"; gh_ run rerun "$run" --failed >/dev/null 2>&1 || say "PR $pr: rerun of $run failed"; fi
+        else printf '%s\n' "$ts" > "$mark"; gh_ run rerun "$run" --failed >/dev/null 2>&1 || say "PR $pr: rerun of $run failed"; fi
+      elif [ -s "$mark" ] && [ "$(cat "$mark")" != "$ts" ]; then
+        record "BACK $pr cancelled twice: run $run"
       fi
       return ;;
   esac
-  reason="$(gate "$pr" "$sha")"; rc=$?
+  reason="$(gate "$pr" "$sha" "$tier")"; rc=$?
   case "$rc" in
     0) ;;
     2) say "PR $pr: $(one_line <<< "$reason"), next pass"; return ;;
@@ -254,12 +298,17 @@ handle() {
   fi
   if [ "$(field 2 "$v")" = true ]; then gh_ pr ready "$pr" >/dev/null 2>&1; fi
   # --match-head-commit: GitHub refuses the merge when the head moved after the gate.
-  out="$(gh_ pr merge "$pr" --squash --match-head-commit "$sha" 2>&1)"
+  # "Base branch was modified": main moved during the call. A retry works.
+  for try in 1 2 3; do
+    out="$(gh_ pr merge "$pr" --squash --match-head-commit "$sha" 2>&1)" && break
+    grep -qi 'base branch was modified' <<< "$out" || break
+    [ "$try" -lt 3 ] && sleep "$MERGE_RETRY_WAIT"
+  done
   # A gh error can hide a merge that landed, so read the state again.
   v="$(view "$pr")"
   if [ -z "$v" ]; then say "PR $pr: cannot read it after the merge call, next pass"; return; fi
   if [ "$(field 1 "$v")" = MERGED ]; then record "DONE $pr $(field 3 "$v")"
-  elif transient "$out"; then say "PR $pr: the merge call failed ($(one_line <<< "$out")), next pass"
+  elif transient "$out" || grep -qi 'base branch was modified' <<< "$out"; then say "PR $pr: the merge call failed ($(one_line <<< "$out")), next pass"
   else record "BACK $pr merge failed: $(one_line <<< "$out")"; fi
 }
 
