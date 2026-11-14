@@ -329,6 +329,7 @@
       "tests/unit/test_app_requests_r8.py",
       "tests/unit/test_workflows_lifecycle_rls_r8.py",
       "tests/unit/test_workflows_triggers_r8.py",
+      "tests/unit/test_people_events_r8.py",
       "tests/unit/test_project_rules.py",
       "tests/unit/test_project_rules_propose.py",
       "tests/unit/test_crm_change_history.py",

@@ -54,6 +54,14 @@ org, and the default is empty. Its one reader is
 door also needs `STUDIO_ORGS`. A reload applies a change, and the flip stays
 OWNER-GATE (`enforcement-flip`).
 
+`CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
+(`ai_studio.md` §14 E12a). For each listed org, a person edit emits one
+`people.person.updated` event after the commit. `*` lists every org, and the
+default is empty. Its one reader is `gateway.core_events.core_events_allowed`,
+and each emit asks it. A
+workflow that listens still needs its org on `WORKFLOW_UNATTENDED_ORGS`. A
+reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
+
 `STUDIO_LOGIC_ORGS` opens the logic module of the Studio action door
 (`ai_studio.md` §14 B4a). For each listed org, a `logic:<name>` action of a
 package runs a first-party module of the gateway. `*` lists every org, and the

@@ -160,6 +160,20 @@ def test_studio_door_ops_orgs_reloads_and_its_reader_follows(env, monkeypatch) -
     assert not door_ops_allowed("globex")
 
 
+def test_core_events_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU E12a, ai_studio.md §14 E12a. The reload list holds the key, and
+    the one reader of the core events switch sees a change with no restart."""
+    from gateway.core_events import core_events_allowed
+
+    assert fr.reloadable("CORE_EVENTS_ORGS")
+    monkeypatch.setenv("CORE_EVENTS_ORGS", "")
+    get_settings.cache_clear()
+    assert not core_events_allowed("acme")
+    env(**{**_START, "CORE_EVENTS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CORE_EVENTS_ORGS",)
+    assert core_events_allowed("acme")
+    assert not core_events_allowed("globex")
+
 def test_studio_logic_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-STU B4a, ai_studio.md §14 B4a. The reload list holds the key, and
     the one reader of the logic module switch sees a change with no restart."""
