@@ -41,6 +41,8 @@ const COUNT_BLOCKS: ReadonlySet<string> = new Set(["table", "board"]);
 /**
  * The ONE adapter to the cell acts of `pageLayout.ts`. It runs `fn` on a manifest object and
  * returns the input for junk. It returns the same reference when `fn` does. The cast lives here.
+ * Warning for the UI: a bare `removeCell` through this adapter skips the rail count guard.
+ * Call `removeCellGuarded` to remove a cell, never `layoutAct(..., removeCell)`.
  */
 export function layoutAct(m: unknown, fn: (typed: StudioManifest) => StudioManifest): unknown {
   if (!isObj(m)) return m;

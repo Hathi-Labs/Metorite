@@ -302,6 +302,24 @@ describe("the count guard", () => {
     expect(countHolds(side)).toBe(true);
     expect(removeCellGuarded(side, "p", { tabId: null, index: 0 })).not.toBe(side);
   });
+  it("refuses a tab removal that would leave a counted page with no table or board, in three tabs", () => {
+    const m = deepFreeze(counted([{ id: "p", tabs: [
+      { id: "a", title: "A", cells: [{ view: "week" }] },
+      { id: "b", title: "B", cells: [{ view: "board" }] },
+      { id: "c", title: "C", cells: [{ view: "check_in" }] },
+    ] }]));
+    expect(removeTab(m, "p", "b")).toBe(m);
+    expect(removeTabWhy(m, "p", "b")).toBe(COUNT_WHY);
+    // The tabs without a table or board can go.
+    expect(removeTab(m, "p", "a")).not.toBe(m);
+    expect(removeTab(m, "p", "c")).not.toBe(m);
+    // Two table tabs: one may go.
+    const two = deepFreeze(counted([{ id: "p", tabs: [
+      { id: "a", title: "A", cells: [{ view: "list" }] },
+      { id: "b", title: "B", cells: [{ view: "board" }] },
+    ] }]));
+    expect(removeTab(two, "p", "a")).not.toBe(two);
+  });
   it("refuses the removal of the last tab when it holds the only table", () => {
     const m = deepFreeze(counted([{ id: "p", tabs: [{ id: "a", title: "A", cells: [{ view: "list" }] }] }]));
     // The last tab returns its cells to the flat list, so the table stays. This is allowed.
