@@ -55,7 +55,7 @@ Task 1747 is BUILT, in review (2026-11-06, "As built, task 1747" in §4.2.3). A 
 
 TS-0 (task 3190, 2026-11-14) is a design, DECIDED under D222. The owner adopted D222 as written on 2026-11-14. PR 2268 merged TS-1 (`20059a075`), and it has no caller. TS-2a (task 3222) is the next dispatchable slice. It is the narrowed spike, after the spec audit of TS-2 on 2026-11-14 found TS-2 as written NO-GO. The owner approved decision 11 (the Studio split) and chose "Always, in the base set" for decision 13. The model finds a single tool with `find_tools`, and the run loads that tool and not its whole pack (§4.2.9). The slices are TS-1 to TS-9, tasks 3195 to 3203, TS-2a, task 3222, and TS-1b, the Studio split, task 3207. TS-1c is optional, task 3213. The demo tasks of rungs 1 to 4 are tasks 3208 to 3211.
 
-TS-1b is live, not dark, because it changes the Studio packs of every org. Each slice from TS-2 on ships dark behind `TOOL_SEARCH_ORGS`, and the flip is owner-only. The writer verified the anchors of TS-0 on 2026-11-14, on the branch after a merge of main at `378c65428`.
+TS-1b is live, not dark, because it changes the Studio packs of every org. An Opus audit of TS-1b on 2026-11-14 (task 3207) found NO-GO as written. This text applies the seven edits that clear it: the golden matrix, the dark workflow pack, the Verify line, the pack fields, the surface owner, the sticky cost and the Files list. The writer re-verified the anchors on the merged tree of `7c5c0e595`. Each slice from TS-2 on ships dark behind `TOOL_SEARCH_ORGS`, and the flip is owner-only. The writer verified the anchors of TS-0 on 2026-11-14, on the branch after a merge of main at `378c65428`.
 
 OA-7e is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7e"
 below, PR #1389). It adds layer (b), the meta tool `load_skill_tools`.
@@ -1545,7 +1545,7 @@ It does not settle each case where layer (a′), the persona, the loader plan an
 **The answer.** Yes. Build our own `find_tools` on the seam of `load_skill_tools`. The tool becomes the unit of a load. The pack stays the unit of the guards, the rules and the state. A new need adds no second registry (D205 point 1, `building_blocks.md`).
 
 **Why the packs alone do not reach this.**
-- **The cap is full.** The `studio` pack holds 23 tools, its room limit beside the `email` pack (`tool_packs.py:1214-1216`). New Studio tools (STB-6b, task 3118) have no room.
+- **The cap is full.** The `studio` pack holds 23 tools, its room limit beside the `email` pack (`tool_packs.py:1262-1264`). STB-6b (task 3118) merged without room: it put its two workflow writes in the separate pack `studio-workflows` (`tool_packs.py:1278`), and that pack stays dark. The next Studio tool has no room.
 - **The model seldom loads a pack itself.** In OA-8e run 1, it loaded a pack that it lacked in 3 of 70 app turns, and never in the miss chats.
 - **A pack is coarse.** A turn that needs one tool of `projects-structure` gets all 27 schemas.
 
@@ -1695,30 +1695,42 @@ Two guards need new code.
 **The Studio split (TS-1b).** Without it, tool search gives Studio no room, and rung 1 has no tool to find.
 - A Studio turn loads the whole `studio` pack by its surface, and layer (a) does not change. So each Studio tool is already in the run.
 - Beside `email` that request holds 110 tools (`skill_families.py:861-862`). A found tool counts against 110, so a found tool has no room until the split.
-- The `studio` family cannot grow. `loadable` drops a family over `MAX_PACK_TOOLS` (35, `tool_packs.py:121`, `:3064-3078`). Two tests pin 23 (`test_tool_packs_registry.py:689-691`, `test_studio_workflow_tools.py:548`).
-- The note at `skill_families.py:861-862` says it: "STB-6b needs a follow pack or room."
+- The `studio` family cannot grow. `loadable` drops a family over `MAX_PACK_TOOLS` (35, `tool_packs.py:121`). Two tests pin 23 (`test_tool_packs_registry.py:689-696`, `test_studio_workflow_tools.py:548`).
+- STB-6b merged its two writes as the pack `studio-workflows`, with no room in `studio`. It is not in `FOLLOWS`, so it is dark (`tool_packs.py:1278`, `:1303`).
 
 The proposal, for the owner:
-1. **A small core.** `studio` keeps the 10 tools of a build: `studio_describe`, `studio_draft`, `studio_interview`, `studio_list_actions`, `studio_outline`, `studio_patch`, `studio_plan`, `studio_validate`, `studio_save` and `studio_publish`.
-2. **A follow pack.** A new family and `Pack` entry, `studio-more`, takes the other 13 tools. They are the three skill tools, the package delete and the two template tools. The package read, the four record tools, `studio_app_read` and `studio_workflow_read` join them. Each new Studio tool (STB-6b) joins it.
-3. **The wiring.** `FOLLOWS["studio-more"]` is `studio`, so `packs_on` adds it wherever `studio` is on. Its owner is `studio-builder`, so the owner filter and `PACK_ONLY_OWNERS` cover it. It comes last in `PACKS`, so the cap drops it first.
-4. **The rules.** `_STUDIO_RULES` splits in two. Each block names only the tools of its own pack, as the rule at `tool_packs.py:906-907` asks.
-   - One step crosses the split. After a 422 on a skill save, the rules say to call `studio_list_actions` (`:1001-1004`), and that tool stays in the core.
-   - So the block of `studio-more` says: when you do not hold the core Studio tools, load the `studio` pack with `load_skill_tools`. Then list the actions, and use only those ids.
-   - With search off the run often holds `studio` and has no load tool (`plan_loader` at `tool_packs.py:3188`, and `_offer_pack_loader` at `_tool_injection.py:4426-4428`). So the step is conditional.
-   - The pin test (`test_tool_packs_registry.py:748-759`) then runs for each Studio pack. It allows one name outside the pack, `load_skill_tools`.
-5. **The surface.** With `TOOL_SEARCH_ORGS` on, the `studio` surface loads the core only, and `find_tools` finds the rest. With it off, the surface loads both packs, the core first. The run then holds the same 23 tools as today. Until TS-2 adds the flag, search is off in every org.
-6. **The cost with search off.** TS-1b is LIVE. It merges before TS-2 adds the flag, so no flag turns it off.
-   - The two packs take two places of `MAX_PACKS` (3), so a Studio turn has room for one more pack, not two.
-   - An example from the fact-check. A Studio turn whose words match `crm-records` and `calendar-day` holds 3 packs today (57 + 23 + 13 + 16 - 1 = 108 tools).
-   - After the split, that turn needs 4 packs. `choose` drops `studio-more`, the last pack that came only by the surface (`tool_packs.py:2257-2261`). The turn loses 13 tools.
-   - The persona also holds two rules blocks in place of one.
-7. **Not in TS-1b.** In TS-1b, `studio-more` takes a place of `MAX_PACKS`, and the cost of item 6 stays.
-   - A later slice, TS-1c, can let `studio-more` alone take no place. It must not free the other packs of `FOLLOWS` (`tool_packs.py:1236-1243`), or the cap of 3 stops binding for Projects turns.
-   - Seven sites count a held pack against `MAX_PACKS`: `choose` (`:2237`, `:2244`), the step-aside (`:2113`), the skill room (`:2287`), `plan_loader` (`:3188`), `_room_for` (`:3403-3406`) and `_tool_injection.py:4361`.
+1. **A small core.** `studio` keeps 10 tools. They are `studio_describe`, `studio_draft`, `studio_interview`, `studio_list_actions`, `studio_outline`, `studio_patch`, `studio_plan`, `studio_validate`, `studio_save` and `studio_publish`.
+2. **A follow pack.** A new family and `Pack` entry, `studio-more`, takes 13 tools. They are `studio_skill_list`, `studio_skill_save`, `studio_skill_state`, `studio_delete_package`, `studio_template_list`, `studio_create_from_template`, `studio_package_get`, `studio_record_list`, `studio_record_create`, `studio_record_update`, `studio_record_delete`, `studio_app_read` and `studio_workflow_read`.
+   - **`studio-workflows` stays dark and separate.** It does NOT join `studio-more`. Its two tools are `studio_workflow_publish` and `studio_workflow_live`.
+   - A move of them into a live follow pack turns them on wherever `studio` is in `TOOL_PACKS`. That act is owner-only (`work_plan.md` §6 D4).
+   - So `FOLLOWS` does not name `studio-workflows`. The order of `PACKS` ends: `studio`, `studio-more`, `studio-workflows`.
+3. **The fields of `studio-more`.**
+   - `surface="studio"`, and the same `words` as `studio`.
+   - `delegation_refusal=_STUDIO_DELEGATION_REFUSED`.
+   - `FOLLOWS["studio-more"]` is `"studio"`, so `packs_on` adds it wherever `studio` is on.
+   - The owner stays `studio-builder`. Both packs keep `STUDIO_ORGS`, `feature:studio` and the drop of the record writes. This needs no code change, because the owner filter keys on the owner and `PACK_ONLY_OWNERS` covers it.
+4. **The rules.** The block `_STUDIO_RULES` keeps its name for the core, because `evals/trajectories/test_studio_build_trajectory.py:20,54` and `test_studio_record_actions_beta2.py:229` import it. A new block holds the rest. Each block names only the tools of its own pack, as the rule at `tool_packs.py:906-907` asks.
+   - One step crosses the split. After a 422 on a skill save, the rules say to call `studio_list_actions` (`:1006-1009`). That tool stays in the core.
+   - STU-FIX (task 3227) added lines at `:968-973`, so the line moved. The builder finds it again.
+   - The block of `studio-more` names no core tool. After a 422 it says: load the `studio` pack with `load_skill_tools`, then list the actions.
+   - With search off the run often holds `studio` and has no load tool (`plan_loader` at `tool_packs.py:3189`, and `_offer_pack_loader` at `_tool_injection.py:4429`). So the step is conditional.
+   - The pin test (`test_tool_packs_registry.py:757-769`) allows `load_skill_tools` for `studio-more` only.
+5. **The surface.** In TS-1b alone, search does not exist. A Studio turn takes both packs by its surface, the core first, as the matrix shows.
+   - The half of the rule that reads `TOOL_SEARCH_ORGS` belongs to TS-2 only. The flag does not exist before TS-2a PR 3. TS-2 owns that half, and TS-2a adds no surface rule.
+   - With search on (TS-2), the `studio` surface loads the core only, and `find_tools` finds the rest.
+6. **The cost of the cap.** TS-1b is LIVE. It merges before TS-2 adds the flag, so no flag turns it off. The two packs take two places of `MAX_PACKS` (3). A Studio turn has room for one more pack, not two. The persona holds two rules blocks in place of one. The golden matrix below lists each change.
+7. **The sticky cost, accepted. No shim.**
+   - A chat with sticky `studio` from before the merge, on another app surface, gets the core only. Its history may name tools that are gone, for up to `DECAY_TURNS` (8) turns.
+   - The model can load them with `load_skill_tools`.
+   - This is a cost. The PR body flags it for the owner.
+   - A one-release shim was considered and rejected: sticky `studio` would also count `studio-more`. It adds code to the shared seam for a few turns.
+   - A test pins it. A sticky `studio` from before the split still loads the core. The new sticky field `studio-more` is skipped by an old reader (`_sticky_of`, `tool_packs.py:2400`).
+8. **Not in TS-1b.** In TS-1b, `studio-more` takes a place of `MAX_PACKS`, and the cost of item 6 stays.
+   - A later slice, TS-1c, can let `studio-more` alone take no place. It must not free the other packs of `FOLLOWS` (`tool_packs.py:1296-1306`), or the cap of 3 stops binding for Projects turns.
+   - Seven sites count a held pack against `MAX_PACKS`: `choose` (`:2300`, `:2307`), the step-aside (`:2176`), the skill room (`:2350`), `plan_loader` (`:3251`), `_room_for` (`:3469`) and `_tool_injection.py:4378`. The builder of TS-1c re-checks each line.
    - TS-1c needs its own spec audit (spec-auditor, Opus) before dispatch. Owner decision 11 says whether it follows.
 
-The core frees 13 places of the 110. Beside `email`, `find_tools` takes one place of the base, so 12 places stay for found tools. Rung 1 then has real tools to find: the 13 tools of `studio-more`, and each STB-6b tool.
+The core frees 13 places of the 110. Beside `email`, `find_tools` takes one place of the base, so 12 places stay for found tools. Rung 1 then has real tools to find: the 13 tools of `studio-more`. The two tools of `studio-workflows` stay dark and are not candidates.
 
 **Failure modes and their answers.**
 
@@ -1772,24 +1784,44 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
   - The index holds first-party text only.
 - **Fence.** `tests/unit/test_tool_search_index.py`.
 
-**TS-1b. The Studio split (task 3207).**
+**TS-1b. The Studio split (task 3207).** ONE PR. The pins move together, and two PRs would turn main red. The builder is Opus at high effort. The verifier is Sonnet, and it re-runs the matrix and the Verify line. An Opus diff-reviewer checks the live cap cases.
 - **Files.**
-  - `acb_skills/skill_families.py`: the two families
-  - `acb_skills/tool_packs.py`: the `Pack` entry, `FOLLOWS`, the two rules blocks and the surface rule (moved here from TS-2, item 5 of the split above). The rule reads `TOOL_SEARCH_ORGS` only after PR 3 of TS-2a adds the flag.
-  - `tests/unit/test_tool_packs_registry.py`: the pack slugs (`:103-108`), the family and its pin of 23 (`:686-691`) and the rules pin (`:748-759`). Also the test that no Studio tool is in another pack (`:762-766`)
-  - `tests/unit/test_studio_workflow_tools.py`: the pin of `studio_workflow_read` (`:547-551`) and the room test of section 11 (`:606-621`)
-  - `tests/unit/test_tool_packs_choice.py`: the order of `PACKS` ends with `studio` (`:1515-1522`)
-  - `tests/unit/test_pack_cues.py`: each pack has a catalog line (`:71`)
+  - `acb_skills/skill_families.py` (`:865-942`): the two families, and the note at `:861-862`.
+  - `acb_skills/tool_packs.py`: the `Pack` entry (near `:1278`), `FOLLOWS` (`:1296`), and the two rules blocks (`_STUDIO_RULES` at `:908` keeps its name for the core). The surface rule has no `TOOL_SEARCH_ORGS` half here. TS-2 owns that half.
+  - `packages/acb_skills/AGENTS.md:217`: it says "23 ... room limit". The line changes to 10 and 13.
+  - `tests/unit/test_studio_split_matrix.py`: new, with its committed golden.
+  - `tests/unit/test_tool_packs_registry.py`: `:104-108` (the slugs), `:689-696` (the pin of 23), `:742`, `:748-755`, `:757-769` (the rules pin, which allows `load_skill_tools` for `studio-more` only), `:771-775`, `:903-924` and `:935` (the record rules move to `studio-more`), `:1019-1029` and `:1128-1131`.
+  - `tests/unit/test_studio_workflow_write_tools.py:836-837`: it pins `pack_slugs()[-2:]` and `owner_packs`.
+  - `tests/unit/test_studio_workflow_tools.py`: `:547-548` (the pin of 23) and `:617-636` (the set becomes `{email, studio, studio-more}`).
+  - `tests/unit/test_tool_packs_choice.py:1519-1523`: the order of `PACKS`.
+  - `tests/unit/test_pack_cues.py:62-66`: a new WHEN line for `studio-more`.
+  - `tests/unit/test_studio_interview_plan.py:362-366`: the tuple of the family.
+  - `tests/unit/test_studio_skill_tools.py:1245` and `:1418`: they read `rules_for("studio")` and move to the pack that holds the line.
+  - `tests/unit/test_pack_requests.py:263-293`: with no surface, "list my studio skills" goes red unless `studio-more` has words.
+  - `tests/unit/test_tool_search_index.py:110`: the core summary keeps "build", "app" and "brief".
+  - No break is expected in `tests/fences.json`, `test_no_egress_tool_audit.py`, `test_tool_schema_diet.py` or `test_pack_room.py`.
+- **The golden matrix.** The builder generates it on main BEFORE the edit. It covers `tp.choose` and `plan_loader`. It must show only these named changes.
+  - Studio alone: 80 tools, the same.
+  - Studio with email: 57 + 31 + 10 + 13 - 1 = 110, the same.
+  - Studio with `crm-records` and `calendar-day`: 108 becomes 95. The turn loses `studio-more`.
+  - Studio with email and `crm-records`: 99 becomes 109. The core now fits.
+  - Studio with one other pack: the same tools at the start. The loader loses its third place, unless `HELD_CARD_WRITES_ORGS` makes the word pack spare. Example `projects-reminders`: today 99 - 1 + 11 = 109 reaches the Projects owner. After the split it does not.
+  - Two sticky packs: the older sticky pack leaves, and not `studio-more` (`tool_packs.py:2313`).
+  - A named published skill loses its place (`:2350`).
+  - The matrix is the R7 fence of TS-1b. The test file is `tests/unit/test_studio_split_matrix.py`, and the golden is committed.
 - **Acceptance.**
-  - The two Studio families hold the 23 tools of today, and no tool is in both.
-  - With search off, a Studio turn holds the same tools as today, and the room test beside `email` passes.
+  - The two Studio families hold 10 and 13 tools, the 23 of today, and no tool is in both.
+  - `studio-workflows` stays dark. It is not in `FOLLOWS`, and the order of `PACKS` ends `studio`, `studio-more`, `studio-workflows`.
+  - The golden matrix shows only the named changes above.
   - Each rules block names only the tools of its own pack.
   - An org that `STUDIO_ORGS` does not name, and a member without `feature:studio`, get no tool of either pack.
   - `load_skill_tools` offers `studio-more` in a run that does not hold it.
-  - The block of `studio-more` names no core tool. Its step after a 422 is conditional: it loads the `studio` pack only when the run does not hold the core tools. It names only `load_skill_tools`.
+  - The block of `studio-more` names no core tool. After a 422 it names only `load_skill_tools`.
   - `studio-more` takes a place of `MAX_PACKS`, as every pack does today.
-  - The owner answered decision 11 before the merge, and the slice follows that answer.
-- **Fences.** `tests/unit/test_tool_packs_registry.py`: the split, and the pin of 23 becomes 10 and 13. `tests/unit/test_studio_workflow_tools.py`: the pin at `:548`, and the room test of section 11. `tests/unit/test_tool_packs_choice.py` and `tests/unit/test_pack_cues.py`: the order and the catalog lines with `studio-more`.
+  - The sticky test of item 7 passes.
+  - The owner answered decision 11 before the merge, and the slice follows that answer. The PR body flags the sticky cost for the owner.
+- **Verify.** `uv run pytest tests/unit/test_tool_packs_registry.py tests/unit/test_studio_workflow_write_tools.py tests/unit/test_studio_workflow_tools.py tests/unit/test_tool_packs_choice.py tests/unit/test_pack_cues.py tests/unit/test_pack_requests.py tests/unit/test_studio_interview_plan.py tests/unit/test_studio_skill_tools.py tests/unit/test_studio_pack_page_facts.py tests/unit/test_studio_record_actions_beta2.py tests/unit/test_skills_registry.py tests/unit/test_skill_index.py tests/unit/test_tool_search_index.py tests/unit/test_pack_guards.py tests/unit/test_load_skill_tools.py tests/unit/test_pack_room.py tests/unit/test_calendar_day_pack.py evals/trajectories/test_studio_build_trajectory.py -q`. Then run ruff and mypy on the changed files.
+- **Fences.** `tests/unit/test_studio_split_matrix.py` (the matrix), `tests/unit/test_tool_packs_registry.py` (the split, and the pin of 23 becomes 10 and 13), `tests/unit/test_studio_workflow_tools.py` (the pin and the room test of section 11), `tests/unit/test_tool_packs_choice.py` and `tests/unit/test_pack_cues.py` (the order and the catalog lines).
 
 **TS-1c. `studio-more` takes no place of `MAX_PACKS` (task 3213).** It follows TS-1b, as the owner approved in decision 11. Needs its own spec audit (spec-auditor, Opus) before dispatch.
 - **Files.** `acb_skills/tool_packs.py` (`choose`, the step-aside, the skill room, `plan_loader` and `_room_for`) and `orchestrator/_tool_injection.py` (`:4361`).
@@ -1839,10 +1871,10 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
 - **Why Studio.** `studio-builder` is a pack-only owner (`PACK_ONLY_OWNERS`, `tool_packs.py:2651`). It has no specialist tool, so no hand-off record and no reach move. With search on, a Studio turn loads the core only, so the follow pack holds tools to find (item 5 of the split).
 - **Files.**
   - `acb_skills/tool_packs.py`: the tool, its middleware, the answer with the rules blocks, and the flag reader
-  - `orchestrator/_tool_injection.py`: the provider beside `_offer_pack_loader` (`:4412`), the candidates and the count of `find_tools`. The surface rule moved to TS-1b, which owns the Studio split.
+  - `orchestrator/_tool_injection.py`: the provider beside `_offer_pack_loader` (`:4412`), the candidates and the count of `find_tools`. The surface rule that reads `TOOL_SEARCH_ORGS` is in this slice (TS-2). TS-1b owns the Studio split and no flag.
   - `acb_common/settings.py`: `TOOL_SEARCH_ORGS`
   - `work_plan.md` §6 D4: the gate
-- **After TS-2a.** TS-2a builds the tool, the middleware, the flag and the guards for the `studio` pack. This slice adds the second Studio pack, `studio-more`, and the surface rule of TS-1b. It needs a new spec audit.
+- **After TS-2a.** TS-2a builds the tool, the middleware, the flag and the guards for the `studio` pack. This slice adds `studio-more` to the candidates, and the surface rule that reads `TOOL_SEARCH_ORGS` (TS-2 owns it alone). It needs a new spec audit.
 - **Acceptance.**
   - In one run, a scripted model calls `find_tools`. The next request holds the found Studio schemas.
   - The answer holds the rules block of each owning pack, once in the run, and the hold note when the pack is held.
@@ -1950,9 +1982,10 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
 | Fence | It fails when |
 |---|---|
 | `tests/unit/test_tool_search_index.py` | A pack tool is not in the index, or is in it twice. A golden query misses its top 5 |
-| `tests/unit/test_tool_packs_registry.py` (TS-1b) | The two Studio families do not hold the 23 tools of today, or a tool is in both. A rules block names a tool of the other pack |
+| `tests/unit/test_studio_split_matrix.py` (TS-1b) | A Studio turn differs from the golden matrix by more than the named changes |
+| `tests/unit/test_tool_packs_registry.py` (TS-1b) | The two Studio families do not hold the 23 tools of today, or a tool is in both. A rules block names a tool of the other pack. `studio-workflows` joins `FOLLOWS` |
 | `tests/unit/test_pack_cues.py` (TS-1b) | A pack has no catalog line |
-| `tests/unit/test_studio_workflow_tools.py` (TS-1b) | With search off, a Studio turn beside `email` passes 110 tools |
+| `tests/unit/test_studio_workflow_tools.py` (TS-1b) | A Studio turn beside `email` passes 110 tools, or the pin of `{email, studio, studio-more}` breaks |
 | `tests/unit/test_tool_search_off.py` (TS-2a) | A provider attaches while the flag is empty. The flag is off and a tool list, the persona, a request body or the per-turn context changes |
 | `tests/unit/test_find_tools_guards.py` (TS-2a) | Two adds in one batch, with no shared lock, make a load answer `LOAD_UNAVAILABLE`. A found tool differs from its build. A dropped or held tool shows. The answer lacks the rules block, or the hold note of a held pack, also after a mark in the middle of the turn. A rules block comes twice. The rank offers a live name, a dropped write, a `crm-records` tool or a tool of a held pack. A `ValueError` in one batch loads no tool. The call to `_beside_mcp` is gone |
 | `tests/unit/test_find_tools_maf_loop.py` (TS-2a) | A provider attaches without its middleware, or the run skips `add_tools`. The second request of the run lacks the found schemas. MAF changes `add_tools` |
