@@ -62,6 +62,13 @@ describe("StudioRecord", () => {
     expect(read("./StudioDetail.tsx")).toContain('field.type === "file" ? fileLabel(value)');
   });
 
+  it("draws the Lines tab with the sheet of each lines field (STU-D17a)", () => {
+    expect(record).toContain('active === "lines"');
+    expect(record).toContain("linesFields(object.name, objects)");
+    expect(record).toContain('from "@/components/studio/StudioSheet"');
+    expect(model).toContain('"details" | "lines" | "related" | "files"');
+  });
+
   it("adds no flag: it hangs on the frame flag only", () => {
     for (const src of [record, page, frame, model]) {
       const flags = (src.match(/NEXT_PUBLIC_STUDIO_[A-Z_]+/g) ?? []).filter((f) => f !== "NEXT_PUBLIC_STUDIO_APP_FRAME");

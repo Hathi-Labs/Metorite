@@ -14,13 +14,11 @@
  * ⚠️ This file never calls `door.run`. Only the edit store writes, and the
  * Table reads only through `door.read` in `GenerativeUINode`.
  */
-import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 
 import { DataGrid, type GridEdit } from "@/components/genUITemplates";
-import Checkbox from "@/components/ui/Checkbox";
-import { Input } from "@/components/ui/Input";
-import SelectButton from "@/components/ui/SelectButton";
-import { labelOf, parseFields, valueToDraft } from "@/lib/studio/blocks";
+import { cellEditor } from "@/components/studio/StudioCellEditors";
+import { parseFields } from "@/lib/studio/blocks";
 import type { Row, StudioDataDoor, StudioSource } from "@/lib/studio/dataDoor";
 import { gridData } from "@/lib/studio/dataDoor";
 import type { FieldSpec } from "@/lib/studio/fieldCheck";
@@ -28,46 +26,11 @@ import { cellId, computedKeys, createEditor, type EditState } from "@/lib/studio
 
 const NO_UNSUBSCRIBE = () => {};
 const IDLE: EditState = { editing: null, shown: {}, pending: new Set(), alert: null, live: "" };
-const NO_VALUE = "";
 
 /** The update verb that pairs with a list source, or null. */
 export function updateOf(source: StudioSource | null): string | null {
   const m = source ? /^(object:[a-z][a-z0-9_]*)\.list$/.exec(source.action) : null;
   return m ? `${m[1]}.update` : null;
-}
-
-const INPUT_TYPE: Partial<Record<FieldSpec["type"], string>> = { date: "date", email: "email", url: "url", phone: "tel" };
-
-function TextEditor({ field, current, onCommit, onCancel }: {
-  field: FieldSpec; current: unknown; onCommit: (draft: string) => void; onCancel: () => void;
-}) {
-  const start = String(valueToDraft(field, current));
-  const cancelled = useRef(false);
-  return (
-    <Input
-      autoFocus
-      inputSize="sm"
-      type={INPUT_TYPE[field.type] ?? "text"}
-      inputMode={field.type === "number" ? "decimal" : undefined}
-      aria-label={`Edit ${labelOf(field)}`}
-      defaultValue={start}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          onCommit((e.target as HTMLInputElement).value);
-        } else if (e.key === "Escape") {
-          cancelled.current = true;
-          onCancel();
-        }
-      }}
-      onBlur={(e) => {
-        if (cancelled.current) return;
-        // Only a real change commits. Tabbing through a cell writes nothing.
-        if (e.target.value !== start) onCommit(e.target.value);
-        else onCancel();
-      }}
-    />
-  );
 }
 
 export interface StudioTableProps {
@@ -116,33 +79,12 @@ export default function StudioTable({ data, rows, door, source }: StudioTablePro
         if (!f) return null;
         const current = byId.get(id)?.[f.key];
         const busy = st.pending.has(cellId(id, f.key));
-        if (f.type === "checkbox") {
-          return (
-            <Checkbox
-              size="sm" aria-label={`${labelOf(f)}`} checked={current === true} disabled={busy}
-              onChange={(e) => { void editor.commit(id, f.key, e.target.checked, current); }}
-            />
-          );
-        }
-        if (st.editing?.id !== id || st.editing.key !== f.key) return null;
-        if (f.type === "select") {
-          return (
-            <SelectButton
-              autoOpen label={`Edit ${labelOf(f)}`} value={typeof current === "string" ? current : NO_VALUE}
-              widthClass="w-40"
-              options={[{ value: NO_VALUE, label: "No value" }, ...(f.options ?? []).map((o) => ({ value: o, label: o }))]}
-              onChange={(v) => { void editor.commit(id, f.key, v, current); }}
-              onClose={() => editor.cancel()}
-            />
-          );
-        }
-        return (
-          <TextEditor
-            field={f} current={current}
-            onCommit={(draft) => { void editor.commit(id, f.key, draft, current); }}
-            onCancel={() => editor.cancel()}
-          />
-        );
+        return cellEditor({
+          field: f, current, busy,
+          editing: st.editing?.id === id && st.editing.key === f.key,
+          onCommit: (draft) => { void editor.commit(id, f.key, draft, current); },
+          onCancel: () => editor.cancel(),
+        });
       },
     };
   }, [editor, fields, st.editing, st.pending, byId]);
