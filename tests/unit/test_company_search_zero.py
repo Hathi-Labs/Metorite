@@ -125,10 +125,19 @@ class World:
 
 
 def _install(monkeypatch, w: World) -> World:
+    # The world fakes the apps of its corpus. A source that it does not fake (the
+    # `studio` source of C5a) keeps its real reader and its own switch, and a
+    # member of ``ALL`` does not hold its feature, so no test here asks it.
     for key, source in list(sources.REGISTRY.items()):
-        monkeypatch.setitem(sources.REGISTRY, key,
-                            dataclasses.replace(source, read=w.reader(key), gate=None))
+        if key in w.corpus:
+            monkeypatch.setitem(sources.REGISTRY, key,
+                                dataclasses.replace(source, read=w.reader(key), gate=None))
     return w
+
+
+def _faked(world: World) -> list[str]:
+    """The sources of the registry that *world* fakes, in registry order."""
+    return [key for key in sources.REGISTRY if key in world.corpus]
 
 
 @pytest.fixture()
@@ -265,7 +274,7 @@ class TestEachWordAlone:
         assert took < 1.5, took
         for entry in answer["broadened"]:
             assert entry["hits"] == 0
-            assert entry["skipped"] == [k for k in sources.REGISTRY]
+            assert entry["skipped"] == _faked(world)
 
     def test_no_time_left_asks_no_second_pass(self, world, recency, monkeypatch):  # noqa: F811
         recency(True)
@@ -621,4 +630,4 @@ class TestFlagOffKeepsKr1:
         answer = run("Aroh Attero")
         assert answer == {"query": "Aroh Attero", "hits": [], "skipped": []}
         assert {w for _k, w, _o in world.calls} == {"Aroh Attero"}
-        assert len(world.calls) == len(sources.REGISTRY)
+        assert len(world.calls) == len(_faked(world))
