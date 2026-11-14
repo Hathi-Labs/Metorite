@@ -19,7 +19,6 @@ until the deploy it was supposed to catch.
 from __future__ import annotations
 
 import ast
-import io
 import json
 import os
 import re
@@ -40,7 +39,7 @@ WORKFLOW = (
 
 @pytest.fixture(scope="module")
 def raw() -> str:
-    return io.open(WORKFLOW, encoding="utf-8").read()
+    return open(WORKFLOW, encoding="utf-8").read()
 
 
 @pytest.fixture(scope="module")
@@ -65,7 +64,7 @@ def test_the_file_holds_no_control_bytes(raw: str) -> None:
     same "nothing happened looks like nothing to do" failure the `paths-ignore`
     comment in this workflow already records once.
     """
-    body = io.open(WORKFLOW, "rb").read()
+    body = open(WORKFLOW, "rb").read()
     bad = [i for i, c in enumerate(body) if c < 9 or 13 < c < 32]
     assert not bad, (
         f"control byte(s) at offset(s) {bad[:5]} — the workflow will not parse, "
@@ -924,31 +923,37 @@ def test_the_r8_gate_reads_every_shard_and_runs_the_guard(parsed: dict) -> None:
     assert len(downloads) == 1
     assert downloads[0]["with"] == {"pattern": "r8-junit-shard-*", "path": "junit", "merge-multiple": True}
     guard = _job_step(parsed, R8_GATE, R8_GUARD)["run"]
-    # CIV-30: the step first reads the release commit's copy of deploy.yml.
+    # CIV-30: the step first reads the release commit's tests/fences.json.
     # test_green_pointer.py fences that part.
     starts = [ln for ln in guard.splitlines()
-              if ln.startswith("python3 scripts/ci_unit_guard.py check --junit junit")]
-    assert len(starts) == 1, "one guard command, at the start of its line"
+              if ln.strip().startswith("python3 scripts/ci_unit_guard.py check --junit junit")]
+    # Two commands: the fences read, and the bootstrap read of an old release.
+    assert len(starts) == 2, "the fences read and the bootstrap read"
 
 
-def test_the_guard_lists_are_pr_checks_lists(parsed: dict, pr_check: dict) -> None:
-    """Each R8 suite checks for its own name in pr-check.yml only. So a list
-    here that drifts from pr-check's would go unseen. Add a new R8 suite to
-    both files."""
-    ours = _guard_args(_job_step(parsed, R8_GATE, R8_GUARD)["run"])
-    theirs = _guard_args(_job_step(pr_check, "unit-tests", R8_GUARD)["run"])
+def _r8_fences() -> dict[str, list[str]]:
+    """The guard's lists: the `r8` key of tests/fences.json (CIV-33c-2)."""
+    import json
+
+    return json.loads((_ROOT / "tests" / "fences.json").read_text(encoding="utf-8"))["r8"]
+
+
+def test_both_workflows_read_the_same_guard_lists(parsed: dict, pr_check: dict) -> None:
+    """CIV-33c-2. The lists are the `r8` key of tests/fences.json. Neither
+    workflow carries a list, so the two cannot drift. pr-check reads the file
+    of its own checkout. deploy.yml reads the file of the release commit."""
+    ours = _job_step(parsed, R8_GATE, R8_GUARD)["run"]
+    theirs = _job_step(pr_check, "unit-tests", R8_GUARD)["run"]
     for flag in ("--disarmed", "--never-skip", "--must-run"):
-        missing = sorted(set(theirs.get(flag, [])) - set(ours.get(flag, [])))
-        extra = sorted(set(ours.get(flag, [])) - set(theirs.get(flag, [])))
-        assert ours.get(flag) == theirs.get(flag), (
-            f"deploy.yml's {flag} list is not pr-check's: missing {missing}, extra {extra}. "
-            "Copy pr-check's list."
-        )
-    assert len(ours["--must-run"]) > 50
+        assert flag not in ours and flag not in theirs, f"{flag}: the list belongs in tests/fences.json"
+    assert _guard_args(theirs)["--lists-from-fences"] == ["tests/fences.json"]
+    assert "--lists-from-fences" in ours and "release_fences.json" in ours
+    r8 = _r8_fences()
+    assert len(r8["must_run"]) > 50
+    assert r8["never_skip"] and r8["disarmed"]
     # A release runs every R8 suite. A filter (CIV-3) belongs to pr-check.
-    # CIV-30: `--lists-from` and `--lists-step` read these lists from the
-    # release commit's copy of deploy.yml (test_green_pointer.py).
-    assert set(ours) == {"--junit", "--lists-from", "--lists-step", "--disarmed", "--never-skip", "--must-run"}
+    assert "--only-selected" not in ours
+    assert "--only-selected" in theirs
 
 
 def test_every_file_that_the_guard_names_runs_in_an_r8_shard(
@@ -958,8 +963,8 @@ def test_every_file_that_the_guard_names_runs_in_an_r8_shard(
 
     GUARD_ALSO holds the guard's files that need no database. It holds no
     other file, so it never turns into a second list of R8 suites."""
-    guard = _guard_args(_job_step(parsed, R8_GATE, R8_GUARD)["run"])
-    named = set(guard["--must-run"]) | set(guard["--never-skip"])
+    guard = _r8_fences()
+    named = set(guard["must_run"]) | set(guard["never_skip"])
     also = _guard_also(parsed)
     missing = sorted(named - set(r8_gate_files) - set(also))
     assert not missing, f"the guard names these, and no R8 shard runs them: {missing}"
@@ -1163,7 +1168,7 @@ def test_the_version_endpoint_the_pipeline_depends_on_still_exists() -> None:
         Path(__file__).resolve().parents[2]
         / "apps" / "services" / "gateway" / "gateway" / "main.py"
     )
-    body = io.open(main, encoding="utf-8").read()
+    body = open(main, encoding="utf-8").read()
     assert '"/version"' in body or "'/version'" in body, (
         "GET /version is gone, and deploy.yml's verify() depends on it. "
         "Removing it makes every deploy fail verification."

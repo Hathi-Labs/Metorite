@@ -54,6 +54,7 @@ from acb_common.provisioning import (
 )
 from sqlalchemy import create_engine, text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._customer_console_ladder import (
     apply_ladder as apply_console_ladder,
 )
@@ -97,9 +98,7 @@ class TestThisSuiteIsRegistered:
     and the owning spec's verify block, in the same PR."""
 
     def test_named_in_the_ci_skip_guard(self):
-        workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(
-            encoding="utf-8")
-        assert "tests/unit/test_signup_reconciler.py" in workflow
+        assert "tests/unit/test_signup_reconciler.py" in r8_lists.must_run()
 
     def test_named_in_the_owning_spec_verify_block(self):
         spec = (_ROOT / "project-docs/specs/customer_console.md").read_text(

@@ -94,6 +94,8 @@ from fastapi.testclient import TestClient
 from gateway.routes.studio import actions, invoke
 from gateway.studio import objects_store, packages_store
 
+from tests.unit import _r8_lists as r8_lists
+
 ORG = str(uuid.uuid4())
 OTHER = str(uuid.uuid4())
 ANA = "ana@example.test"
@@ -1381,14 +1383,9 @@ class TestTheTables:
     def test_the_r8_suite_is_named_in_the_ci_skip_guard(self):
         """A fence that never runs is no fence. The `--must-run` list names the
         pytest ARGUMENT, so a mention in a comment does not count."""
-        from pathlib import Path
 
-        root = Path(__file__).resolve().parents[2]
-        workflow = (root / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-        block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
-        assert block, "the --must-run argument list is missing"
-        assert re.search(r"^[ \t]+tests/unit/test_studio_action_door_r8\.py(?: \\)?$",
-                         block.group(1), re.M)
+        must_run = r8_lists.must_run()
+        assert "tests/unit/test_studio_action_door_r8.py" in must_run
 
 
 # ── The direct writes (STU-B2c-1) ──────────────────────────────────────────
