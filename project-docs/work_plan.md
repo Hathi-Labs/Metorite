@@ -4563,6 +4563,8 @@ Owner decision, 2026-10-25, in chat: take the recommendations. Board: **WS-67**.
 
 ### D117 — One chat for the whole app: tool packs in the one assistant, and dynamic sub-agents for parallel work (2026-10-26)
 
+> **Proposed amendment (2026-11-14):** D223 would remove "a workflow" from item 7. It binds only after the owner confirms it.
+
 Owner decision, 2026-10-26, in chat. This is the OA-6 gate of D116. Board:
 **WS-67**. Owning spec: **`specs/one_assistant_context.md`**. It amends
 **D99** item 2 for conversational work.
@@ -6289,6 +6291,24 @@ The audit of TS-2 on 2026-11-14 found it NO-GO as written. TS-2a (task 3222) is 
 **Revisit.** Only the owner confirms or reopens this. D117 names the owner as the one who reopens it.
 
 Fence: each slice of `one_assistant_context.md` §4.2.9 (TS-1 to TS-9, tasks 3195 to 3203, TS-2a, task 3222, TS-1b, task 3207, and the optional TS-1c, task 3213) names its test. Until a slice lands, its rule is advisory (R7). A count test (TS-2a) asserts that the base count rises by 1 with the flag on, and does not change with the flag off. `tests/unit/test_decision_ids.py` fails when two D222 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D221 at most, and no open PR or local worktree held D222 or higher.
+
+### D223 — A workflow offers one AI step, Ask Mira, and no specialist agent. It amends D117 item 7 for workflows (PROPOSED, 2026-11-14)
+
+**Status: PROPOSED.** It binds only after the owner confirms it on task 3256. Until then D117 item 7 stands as written. Board: task 3256 (WF-CLEAN). Owning spec: **`specs/ai_studio.md`** §14, rows WFC-0 to WFC-6.
+
+The owner asked in chat on 2026-11-14 whether the workflow elements match the modules that Metorite has today. The owner also said that the old agents should be gone from the workflows: "I see them still there... I thought we'd deleted all of them." An audit of the code found that the palette, the catalog, the search, the node inspector and the Copilot offer the static agent list of `routes/agent.py`. Production holds 2 workflows in 2 orgs. Neither is published, and neither names an agent. So no data migration is needed.
+
+1. **One AI step.** The palette, the catalog, the search and the Copilot offer one step, "Ask Mira". No specialist agent is offered.
+2. **Old graphs keep working until the owner says otherwise.** `known_agent_names()` and the `agent` node type do not change (R6 expand). A graph that names a specialist still validates, publishes and runs. The inspector shows such a node read only, with an upgrade note.
+3. **A new node type, `ask_mira`,** takes a message and a list of packs. It is read only by default, it has a credit ceiling for each node, and it runs with no egress when nobody watches. It ships dark behind `WORKFLOW_ASK_MIRA_ORGS`.
+4. **The retirement of a legacy step at run time** is a separate step, and it needs the owner's OK (WFC-5).
+5. **Amends.** D117 item 7 ("A specialist agent stays for a scheduled job, a workflow and an external agent") loses the words "a workflow". `one_assistant_context.md` OA-10 item 4 and the catalog line of `ai_studio.md` follow when the owner confirms.
+
+**Open for the owner on task 3256.** Q1 is this decision. Q2 asks for a read only default. Q3 asks which packs a node may use. Q4 asks for the credit ceiling. Q7 asks to hide the integrations that have no action.
+
+**Revisit.** Only the owner confirms or reopens this. D117 names the owner as the one who reopens it.
+
+Fence: each WFC row of `ai_studio.md` §14 names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D223 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D222 at most, and no open PR or remote branch held D223.
 
 ## 4. Single-owner registry (who owns duplicated work)
 

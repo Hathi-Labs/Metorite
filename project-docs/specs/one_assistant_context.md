@@ -944,7 +944,7 @@ moves them.
 | **OA-7** | The email tool pack: the email tools join the WS-23 registry, and the email rules become the pack's rules block. The per-turn loader of D117 item 3. Slices OA-7a to OA-7h, §4.2. OA-7g shipped live ahead of the rest. | HIGH (the egress guard moves with the tools) | an audit of §4.2 |
 | **OA-8** | The tool packs of every other app that the orchestrator delegates to in conversation (D117 item 1). Slices OA-8a to OA-8e, §4.3. | MEDIUM | OA-7 |
 | **OA-9** | Dynamic sub-agents (D117 item 5): the contract of §6, for parallel work and heavy jobs. Read first, writes after. Slices OA-9a to OA-9e, §6.7. | MEDIUM | an audit of §6 |
-| **OA-10** | Retire conversational delegation. A specialist agent stays for a scheduled job, a workflow and an external agent. The Email and Projects rails move to the one assistant, with their pack pinned. | HIGH | OA-8e passes, OA-9 |
+| **OA-10** | Retire conversational delegation. A specialist agent stays for a scheduled job, a workflow and an external agent. (Proposed change for workflows: D223 and the WFC rows of `ai_studio.md` §14.) The Email and Projects rails move to the one assistant, with their pack pinned. | HIGH | OA-8e passes, OA-9 |
 
 ### 4.1 OA-3 as built (2026-10-25)
 
