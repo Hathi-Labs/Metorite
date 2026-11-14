@@ -181,17 +181,506 @@ def test_gate_full_on_ci_and_selector_paths(tmp_path: Path) -> None:
         assert sel.gate([path], root)["full"] is True, path
 
 
+# ── CIV-33c-2: the .github/ rule, and an edit of tests/fences.json ─────────
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/ISSUE_TEMPLATE/bug.md",
+        ".github/CODEOWNERS",
+        ".github/dependabot.yml",
+        ".github/pull_request_template.md",
+    ],
+)
+def test_gate_a_github_file_that_runs_no_test_is_not_full(tmp_path: Path, path: str) -> None:
+    out = sel.gate([path], _gate_repo(tmp_path))
+    assert out["full"] is False, out["reasons"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/workflows/pr-check.yml",
+        ".github/workflows/deploy.yml",
+        ".github/workflows/anything_new.yml",
+        ".github/actions/setup/action.yml",
+    ],
+)
+def test_gate_a_workflow_or_action_stays_full(tmp_path: Path, path: str) -> None:
+    out = sel.gate([path], _gate_repo(tmp_path))
+    assert out["full"] is True
+    assert any(".github/" in r for r in out["reasons"])
+
+
+def _fences_repo(tmp_path: Path) -> Path:
+    root = _gate_repo(tmp_path)
+    for name in sel.FENCE_GUARD_TESTS:
+        _write(root, name, "import os\n")
+    _write(root, "tests/unit/test_new_r8.py", "import os\n")
+    # Every R8 self-check names the file. A path match would select all of them.
+    _write(root, "tests/unit/test_names_fences.py", 'read("tests/fences.json")\n')
+    return root
+
+
+def _fences(must_run: list[str], *, comment: str = "x") -> str:
+    import json
+
+    return json.dumps(
+        {
+            "_comment": [comment],
+            "python": {"safety": ["tests/unit/test_other.py"], "process": []},
+            "r8": {"disarmed": ["D unset"], "never_skip": ["tests/unit/a.py"], "must_run": must_run},
+        }
+    )
+
+
+def _fences_gate(root: Path, base: str, head: str) -> dict:
+    return sel.gate(["tests/fences.json"], root, texts={"tests/fences.json": (base, head)})
+
+
+def test_gate_a_fences_edit_selects_the_added_file_and_the_guard_tests(tmp_path: Path) -> None:
+    root = _fences_repo(tmp_path)
+    out = _fences_gate(
+        root, _fences(["tests/unit/test_old.py"]), _fences(["tests/unit/test_old.py", "tests/unit/test_new_r8.py"])
+    )
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_new_r8.py" in out["files"]
+    assert set(sel.FENCE_GUARD_TESTS) <= set(out["files"])
+    assert "tests/unit/test_names_fences.py" not in out["files"]
+    assert "tests/unit/test_old.py" not in out["files"]
+
+
+def test_gate_a_fences_edit_that_removes_selects_the_suite_and_a_comment_adds_none(tmp_path: Path) -> None:
+    root = _fences_repo(tmp_path)
+    base = _fences(["tests/unit/test_new_r8.py", "tests/unit/test_old.py"])
+    # A removal selects the suite that left the list (it still exists).
+    out = _fences_gate(root, base, _fences(["tests/unit/test_old.py"]))
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_new_r8.py" in out["files"]
+    assert "tests/unit/test_old.py" not in out["files"]  # still listed, and no file
+    assert set(sel.FENCE_GUARD_TESTS) <= set(out["files"])
+    # A removal of an entry whose file is gone selects the guard tests only.
+    out = _fences_gate(root, base, _fences(["tests/unit/test_new_r8.py"]))
+    assert out["full"] is False and "tests/unit/test_old.py" not in out["files"]
+    assert set(sel.FENCE_GUARD_TESTS) <= set(out["files"])
+    # A comment edit adds and removes no path.
+    out = _fences_gate(root, base, _fences(base_list(), comment="new words"))
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_new_r8.py" not in out["files"]
+    assert set(sel.FENCE_GUARD_TESTS) <= set(out["files"])
+
+
+def base_list() -> list[str]:
+    return ["tests/unit/test_new_r8.py", "tests/unit/test_old.py"]
+
+
+@pytest.mark.parametrize(
+    ("base", "head"),
+    [
+        (_fences([]), "{ not json"),
+        ("{ not json", _fences([])),
+        ("", _fences([])),
+        (_fences([]), "[]"),
+        (_fences([]), '{"r8": {"must_run": 3}}'),
+        (_fences([]), '{"r8": {"must_run": [1, 2]}}'),
+    ],
+)
+def test_gate_a_fences_edit_that_cannot_be_read_is_full(tmp_path: Path, base: str, head: str) -> None:
+    out = _fences_gate(_fences_repo(tmp_path), base, head)
+    assert out["full"] is True
+    assert any("tests/fences.json" in r for r in out["reasons"])
+
+
+def test_gate_a_fences_edit_with_no_base_text_is_full(tmp_path: Path) -> None:
+    out = sel.gate(["tests/fences.json"], _fences_repo(tmp_path))
+    assert out["full"] is True
+
+
+def test_gate_a_fences_edit_beside_a_workflow_is_still_full(tmp_path: Path) -> None:
+    root = _fences_repo(tmp_path)
+    out = sel.gate(
+        ["tests/fences.json", ".github/workflows/pr-check.yml"],
+        root,
+        texts={"tests/fences.json": (_fences([]), _fences(["tests/unit/test_new_r8.py"]))},
+    )
+    assert out["full"] is True
+
+
 def test_gate_full_when_a_hub_module_has_too_many_test_importers(
     tmp_path: Path, monkeypatch
 ) -> None:
+    # CIV-33c-1. A hub goes FULL only above the ceiling share of the test files.
     root = _gate_repo(tmp_path)
     monkeypatch.setattr(sel, "HUB_LIMIT", 1)  # test_leaf and test_patch import leaf
+    monkeypatch.setattr(sel, "HUB_CEILING_SHARE", 0.1, raising=False)  # 0 of 9 files
     out = sel.gate(["packages/pkg/pkg/leaf.py"], root)
     assert out["full"] is True
     assert any("leaf" in r for r in out["reasons"])
 
 
-def test_gate_not_full_for_a_module_under_the_hub_limit(tmp_path: Path) -> None:
+def test_gate_a_module_under_the_hub_limit_is_never_full_in_a_small_tree(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # The ceiling never falls below HUB_LIMIT. In a 9-file tree, 20% is 1, and
+    # without the floor a module with 2 test importers went FULL.
+    root = _gate_repo(tmp_path)
+    monkeypatch.setattr(sel, "HUB_LIMIT", 40)
+    monkeypatch.setattr(sel, "HUB_CEILING_SHARE", 0.2, raising=False)
+    out = sel.gate(["packages/pkg/pkg/leaf.py"], root)
+    assert out["full"] is False, out["reasons"]
+    assert {"tests/unit/test_leaf.py", "tests/unit/test_patch.py"} <= set(out["files"])
+
+
+def test_gate_a_hub_below_the_ceiling_selects_its_importers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = _gate_repo(tmp_path)
+    monkeypatch.setattr(sel, "HUB_LIMIT", 1)  # leaf is a hub: two test importers
+    monkeypatch.setattr(sel, "HUB_CEILING_SHARE", 0.9, raising=False)
+    out = sel.gate(["packages/pkg/pkg/leaf.py"], root)
+    assert out["full"] is False
+    assert {"tests/unit/test_leaf.py", "tests/unit/test_patch.py"} <= set(out["files"])
+    assert "tests/unit/test_other.py" in out["files"]  # the SAFETY fence stays
+
+
+# ── CIV-33c-1: a flag-only diff of settings.py or env_guard.py ──────────────
+_SETTINGS = "packages/acb_common/acb_common/settings.py"
+_GUARD = "packages/acb_common/acb_common/env_guard.py"
+_SETTINGS_BASE = (
+    "class Settings:\n    old_flag: str = ''\n    model_config = 1\n\n\n"
+    "def reader():\n    x = 1\n    return x\n"
+)
+_GUARD_BASE = 'PLATFORM_ENV_NAMES = frozenset({\n    "OLD_FLAG",\n})\n'
+
+
+def _flag_repo(tmp_path: Path) -> Path:
+    root = _gate_repo(tmp_path)
+    _write(root, _SETTINGS, _SETTINGS_BASE)
+    _write(root, _GUARD, _GUARD_BASE)
+    _write(root, "tests/unit/test_flag_reader.py", 'monkeypatch.setenv("NEW_THING_ORGS", "*")\n')
+    _write(root, "tests/unit/test_settings_x.py", "import acb_common.settings\n")
+    _write(root, "tests/unit/test_hardening.py", "from acb_common import env_guard\n")
+    _write(root, "tests/unit/test_unrelated.py", "import acb_common.settings\n")
+    return root
+
+
+def _added(path: str, base: str, after: int, *lines: str) -> tuple[str, dict]:
+    """A diff and the base and head texts of `path`, with `lines` after line `after`."""
+    rows = base.splitlines()
+    head = "\n".join([*rows[:after], *lines, *rows[after:]]) + "\n"
+    body = "".join(f"+{ln}\n" for ln in lines)
+    diff = (
+        f"diff --git a/{path} b/{path}\nindex 1..2 100644\n--- a/{path}\n+++ b/{path}\n"
+        f"@@ -{after},0 +{after + 1},{len(lines)} @@\n{body}"
+    )
+    return diff, {path: (base, head)}
+
+
+def _flag_case(*lines: str, after: int = 3) -> tuple[str, dict]:
+    return _added(_SETTINGS, _SETTINGS_BASE, after, *lines)
+
+
+def _gate_flag(root: Path, changed: list[str], case: tuple[str, dict]) -> dict:
+    return sel.gate(changed, root, diff=case[0], texts=case[1])
+
+
+def test_gate_a_flag_only_diff_selects_the_tests_that_name_the_flag(tmp_path: Path) -> None:
+    root = _flag_repo(tmp_path)
+    case = _flag_case("    # a comment", '    new_thing_orgs: str = ""')
+    out = _gate_flag(root, [_SETTINGS], case)
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_flag_reader.py" in out["files"]  # names NEW_THING_ORGS
+    assert "tests/unit/test_settings_x.py" in out["files"]  # a settings test, by name
+    assert "tests/unit/test_hardening.py" in out["files"]  # imports env_guard
+    assert "tests/unit/test_other.py" in out["files"]  # the SAFETY fence stays
+    assert "tests/unit/test_unrelated.py" not in out["files"]
+
+
+def test_gate_an_env_guard_name_added_is_a_flag_only_diff(tmp_path: Path) -> None:
+    root = _flag_repo(tmp_path)
+    case = _added(_GUARD, _GUARD_BASE, 2, '    "NEW_THING_ORGS",')
+    out = _gate_flag(root, [_GUARD], case)
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_flag_reader.py" in out["files"]
+
+
+def test_gate_an_env_guard_name_that_exists_is_full(tmp_path: Path) -> None:
+    root = _flag_repo(tmp_path)
+    case = _added(_GUARD, _GUARD_BASE, 2, '    "OLD_FLAG",')
+    assert _gate_flag(root, [_GUARD], case)["full"] is True
+
+
+def test_gate_a_modified_line_in_settings_is_full(tmp_path: Path) -> None:
+    root = _flag_repo(tmp_path)
+    case = _flag_case('    new_thing_orgs: str = ""')
+    diff = case[0].replace("@@ -3,0 +4,1 @@\n", "@@ -3 +4 @@\n-    model_config = 1\n")
+    out = _gate_flag(root, [_SETTINGS], (diff, case[1]))
+    assert out["full"] is True
+    assert any("settings.py" in r for r in out["reasons"])
+
+
+def test_gate_a_line_that_is_not_a_field_is_full(tmp_path: Path) -> None:
+    root = _flag_repo(tmp_path)
+    case = _flag_case("    def helper(self): return 1")
+    assert _gate_flag(root, [_SETTINGS], case)["full"] is True
+
+
+def test_gate_a_field_that_exists_already_is_full(tmp_path: Path) -> None:
+    # A second `old_flag` changes the default: it is not a new flag.
+    root = _flag_repo(tmp_path)
+    case = _flag_case('    old_flag: str = "x"')
+    assert _gate_flag(root, [_SETTINGS], case)["full"] is True
+
+
+def test_gate_a_model_config_is_full(tmp_path: Path) -> None:
+    root = _flag_repo(tmp_path)
+    case = _flag_case("    model_config: int = 2")
+    assert _gate_flag(root, [_SETTINGS], case)["full"] is True
+
+
+def test_gate_an_assignment_inside_a_function_is_full(tmp_path: Path) -> None:
+    root = _flag_repo(tmp_path)
+    case = _flag_case('    raw: str = "raise"', after=7)
+    assert _gate_flag(root, [_SETTINGS], case)["full"] is True
+
+
+def test_gate_the_code_that_reads_an_added_flag_is_selected(tmp_path: Path) -> None:
+    # A reader that uses getattr names the flag in code, and a test imports it.
+    root = _flag_repo(tmp_path)
+    _write(root, "packages/pkg/pkg/reader.py", 'v = getattr(settings, "new_thing_orgs", "")\n')
+    _write(root, "tests/unit/test_reader_user.py", "import pkg.reader\n")
+    out = _gate_flag(root, [_SETTINGS], _flag_case('    new_thing_orgs: str = ""'))
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_reader_user.py" in out["files"]
+
+
+def test_gate_a_flag_addition_plus_another_acb_common_file_is_full(tmp_path: Path) -> None:
+    root = _flag_repo(tmp_path)
+    other = "packages/acb_common/acb_common/db.py"
+    out = _gate_flag(root, [_SETTINGS, other], _flag_case('    new_thing_orgs: str = ""'))
+    assert out["full"] is True
+    assert any("db.py" in r for r in out["reasons"])
+
+
+def test_gate_a_flag_diff_keeps_the_github_reason(tmp_path: Path) -> None:
+    root = _flag_repo(tmp_path)
+    changed = [_SETTINGS, ".github/workflows/pr-check.yml"]
+    out = _gate_flag(root, changed, _flag_case('    new_thing_orgs: str = ""'))
+    assert out["full"] is True
+    assert any(".github/" in r for r in out["reasons"])
+
+
+def test_gate_with_no_diff_keeps_the_acb_common_prefix_full(tmp_path: Path) -> None:
+    assert sel.gate([_SETTINGS], _flag_repo(tmp_path))["full"] is True
+
+
+def test_gate_diff_reads_the_flag_files_between_two_commits(tmp_path: Path) -> None:
+    import subprocess
+
+    root = _flag_repo(tmp_path)
+
+    def git(*a: str) -> str:
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *a],
+            cwd=root, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-qm", "a")
+    base = git("rev-parse", "HEAD")
+    p = root / _SETTINGS
+    text = p.read_text(encoding="utf-8").replace(
+        "    model_config = 1\n", "    model_config = 1\n    new_thing_orgs: str = ''\n"
+    )
+    p.write_text(text, encoding="utf-8")
+    git("commit", "-qam", "b")
+    out = sel.gate(
+        [_SETTINGS], root, diff=sel.gate_diff(base, root), texts=sel.gate_flag_texts(base, root)
+    )
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_flag_reader.py" in out["files"]
+
+
+# ── CIV-33c-1 review: an app entry module, the DB re-export, test fixtures ──
+def _app_tree(root: Path, monkeypatch, hub: bool = True) -> Path:
+    """`pkg.main` builds an app and imports `mid`, and `mid` imports `low`. With
+    `hub`, `low` has more test importers than HUB_LIMIT: main's rules ran such a
+    change FULL, so the app-entry rule applies (review round 2)."""
+    monkeypatch.setattr(sel, "HUB_CEILING_SHARE", 0.9)
+    app = "from fastapi import FastAPI\napp = FastAPI()\nfrom pkg import mid\n"
+    _write(root, "packages/pkg/pkg/main.py", app)
+    _write(root, "packages/pkg/pkg/mid.py", "from pkg import low\n")
+    _write(root, "packages/pkg/pkg/low.py", "X = 2\n")
+    _write(root, "tests/unit/test_low.py", "from pkg.low import X\n")
+    if hub:
+        monkeypatch.setattr(sel, "HUB_LIMIT", 0)  # test_low imports low
+    return root
+
+
+def test_gate_a_change_below_an_app_entry_selects_the_tests_of_the_app(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # The test imports only `pkg.main`. `low` sits two levels down, so `select`
+    # does not expand it. The app imports it, so the test can break.
+    root = _app_tree(_gate_repo(tmp_path), monkeypatch)
+    _write(root, "tests/unit/test_app_drive.py", "from pkg.main import app\n")
+    out = sel.gate(["packages/pkg/pkg/low.py"], root)
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_app_drive.py" in out["files"]
+
+
+def test_gate_the_app_entry_rule_keeps_out_of_a_change_that_main_selects(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Review round 2. Main's rules select for a change that no hub holds, and
+    # the gate keeps that selection. The app-entry rule only replaces a FULL run.
+    root = _app_tree(_gate_repo(tmp_path), monkeypatch, hub=False)
+    _write(root, "tests/unit/test_app_drive.py", "from pkg.main import app\n")
+    out = sel.gate(["packages/pkg/pkg/low.py"], root)
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_low.py" in out["files"]
+    assert "tests/unit/test_app_drive.py" not in out["files"]
+
+
+def test_gate_the_gateway_db_re_export_is_the_db_seam_and_full(tmp_path: Path) -> None:
+    out = sel.gate(["apps/services/gateway/gateway/db.py"], _gate_repo(tmp_path))
+    assert out["full"] is True
+
+
+def test_gate_a_changed_test_module_selects_the_users_of_its_users(tmp_path: Path) -> None:
+    root = _gate_repo(tmp_path)
+    _write(root, "tests/unit/test_fix_a.py", "def fixture_a():\n    pass\n")
+    _write(root, "tests/unit/test_fix_b.py", "from tests.unit.test_fix_a import fixture_a\n")
+    _write(root, "tests/unit/test_fix_c.py", "from tests.unit.test_fix_b import fixture_a\n")
+    out = sel.gate(["tests/unit/test_fix_a.py"], root)
+    assert out["full"] is False, out["reasons"]
+    assert {"tests/unit/test_fix_b.py", "tests/unit/test_fix_c.py"} <= set(out["files"])
+
+
+# ── CIV-33c-1 review round 2: a narrow closure, app entries, a strict flag rule ──
+def _with_init(root: Path) -> Path:
+    """The real tests/ and tests/unit/ are packages. A test module is then
+    `tests.unit.test_x`, and its bare stem is not a module name."""
+    _write(root, "tests/__init__.py")
+    _write(root, "tests/unit/__init__.py")
+    return root
+
+
+def test_gate_the_closure_does_not_start_at_a_scanner_or_a_safety_fence(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # P1. Every Python change selects the scanners and the SAFETY fences. A test
+    # that imports one of them only for that reason is not affected.
+    monkeypatch.setattr(sel, "HUB_CEILING_SHARE", 0.9)
+    root = _gate_repo(tmp_path)
+    _write(root, "tests/unit/test_scan.py", "D.rglob('*.py')\nX = 1\n")
+    _write(root, "tests/unit/test_scan_user.py", "from tests.unit.test_scan import X\n")
+    _write(root, "tests/unit/test_fence_user.py", "from tests.unit.test_other import os\n")
+    _write(root, "tests/unit/test_leaf_user.py", "from tests.unit.test_leaf import X\n")
+    # A scanner that also imports the changed module still starts the closure.
+    _write(root, "tests/unit/test_scan_leaf.py", "from pkg.leaf import X\nD.rglob('*.py')\n")
+    _write(root, "tests/unit/test_scan_leaf_user.py", "from tests.unit.test_scan_leaf import X\n")
+    files = set(sel.gate(["packages/pkg/pkg/leaf.py"], root)["files"])
+    assert {"tests/unit/test_scan.py", "tests/unit/test_other.py"} <= files  # the floor stays
+    assert "tests/unit/test_leaf_user.py" in files  # test_leaf imports the changed module
+    assert "tests/unit/test_scan_leaf_user.py" in files
+    assert "tests/unit/test_scan_user.py" not in files
+    assert "tests/unit/test_fence_user.py" not in files
+
+
+def test_gate_a_test_helper_that_builds_an_app_is_an_app_entry(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # P1. `_crm_app.crm_app()` mounts the CRM router in one shared app. A change
+    # two levels below the router reaches each suite that calls the helper.
+    root = _app_tree(_with_init(_gate_repo(tmp_path)), monkeypatch)
+    helper = (
+        "def make():\n    from fastapi import FastAPI\n    from pkg import mid\n\n"
+        "    app = FastAPI()\n    return app\n"
+    )
+    _write(root, "tests/unit/_app_helper.py", helper)
+    _write(root, "tests/unit/test_helper_user.py", "from tests.unit._app_helper import make\n")
+    files = sel.gate(["packages/pkg/pkg/low.py"], root)["files"]
+    assert "tests/unit/test_helper_user.py" in files
+    assert "tests/unit/_app_helper.py" not in files
+
+
+@pytest.mark.parametrize(
+    "line", ["from pkg import main\n", "from pkg import main as app_module\n"]
+)
+def test_gate_an_app_entry_imported_by_its_leaf_selects_the_test(
+    tmp_path: Path, monkeypatch, line: str
+) -> None:
+    # P2. `from gateway import main` and `from agent_edge import app as m` do
+    # not spell the dotted entry name, and the test still drives the app.
+    root = _app_tree(_gate_repo(tmp_path), monkeypatch)
+    _write(root, "tests/unit/test_app_drive.py", line)
+    files = sel.gate(["packages/pkg/pkg/low.py"], root)["files"]
+    assert "tests/unit/test_app_drive.py" in files
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '    new_thing_x: str = __import__("os").environ.setdefault("ACB_ENV", "dev")',
+        "    new_thing_x: str = Field(default_factory=lambda: make())",
+        '    new_thing_x: str = Field(default=os.environ["X"])',
+        "    new_thing_x: str",  # no default: a required field fails each Settings()
+        '    new_thing_x: probe() = ""',
+    ],
+)
+def test_gate_a_new_field_that_runs_code_is_full(tmp_path: Path, line: str) -> None:
+    # P3. Only a literal default, or Field() with literal arguments, is a flag.
+    root = _flag_repo(tmp_path)
+    assert _gate_flag(root, [_SETTINGS], _flag_case(line))["full"] is True
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '    new_thing_orgs: str = ""',
+        "    new_thing_max: int = -1",
+        "    new_thing_bytes: int = 2 * 1024 * 1024",
+        "    new_thing_ids: list[str] = []",
+        '    new_thing_mode: Literal["a", "b"] = "a"',
+        "    new_thing_size: int | None = None",
+        '    new_thing_url: str = Field(default="x", description="y")',
+    ],
+)
+def test_gate_a_new_field_with_a_literal_default_is_a_flag(tmp_path: Path, line: str) -> None:
+    root = _flag_repo(tmp_path)
+    out = _gate_flag(root, [_SETTINGS], _flag_case(line))
+    assert out["full"] is False, out["reasons"]
+
+
+def test_gate_a_test_imported_by_its_bare_stem_brings_its_users(tmp_path: Path) -> None:
+    # P3. test_kit_core.py puts tests/unit on sys.path, then runs
+    # `from test_playbook_org_neutral import hits`.
+    root = _with_init(_gate_repo(tmp_path))
+    _write(root, "tests/unit/test_base_rule.py", "def hits():\n    return 1\n")
+    _write(root, "tests/unit/test_stem_a.py", "from test_base_rule import hits\n")
+    _write(root, "tests/unit/test_stem_b.py", "from test_stem_a import hits\n")
+    files = set(sel.gate(["tests/unit/test_base_rule.py"], root)["files"])
+    assert {"tests/unit/test_stem_a.py", "tests/unit/test_stem_b.py"} <= files
+
+
+def test_gate_the_closure_passes_through_a_test_helper(tmp_path: Path) -> None:
+    # `_agent_board_r8` imports the fixtures of `test_agent_runs_r8`, and 17
+    # suites import the helper. A change that test_agent_runs_r8 imports
+    # reaches them through the helper.
+    root = _with_init(_gate_repo(tmp_path))
+    _write(root, "tests/unit/test_runs.py", "from pkg.leaf import X\n")
+    _write(root, "tests/unit/_board.py", "from tests.unit.test_runs import X\n")
+    _write(root, "tests/unit/test_board_user.py", "from tests.unit._board import X\n")
+    files = sel.gate(["packages/pkg/pkg/leaf.py"], root)["files"]
+    assert "tests/unit/test_board_user.py" in files
+    assert "tests/unit/_board.py" not in files
+
+
+def test_gate_not_full_for_a_module_under_the_hub_limit(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(sel, "HUB_CEILING_SHARE", 0.9)  # a 9-file repo has a tiny ceiling
     out = sel.gate(["packages/pkg/pkg/leaf.py"], _gate_repo(tmp_path))
     assert out["full"] is False
     assert "tests/unit/test_leaf.py" in out["files"]

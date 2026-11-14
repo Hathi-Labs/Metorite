@@ -83,6 +83,8 @@ from fastapi.testclient import TestClient
 from gateway.routes import studio as studio_pkg
 from gateway.routes.studio import actions
 
+from tests.unit import _r8_lists as r8_lists
+
 _ROOT = Path(__file__).resolve().parents[2]
 _STUDIO_DIR = _ROOT / "apps/services/gateway/gateway/routes/studio"
 
@@ -139,6 +141,11 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/studio/approvals"),
     ("POST", "/studio/packages/{package_id}/versions/{version}/approval/approve"),
     ("POST", "/studio/packages/{package_id}/versions/{version}/approval/reject"),
+    # AF-10a, the saved views of an app.
+    ("GET", "/studio/packages/{package_id}/views"),
+    ("POST", "/studio/packages/{package_id}/views"),
+    ("PATCH", "/studio/packages/{package_id}/views/{view_id}"),
+    ("DELETE", "/studio/packages/{package_id}/views/{view_id}"),
     # B2a to B2c, the action door.
     ("POST", "/studio/apps/{app_id}/actions/{action}"),
 )
@@ -150,6 +157,7 @@ _PARAMS = {
     "version": "1",
     "action": "peek",
     "email": "ben@example.test",
+    "view_id": str(uuid.uuid4()),
 }
 
 STUDIO = ["feature:studio"]
@@ -195,9 +203,9 @@ def no_store(monkeypatch: pytest.MonkeyPatch) -> list[str]:
             raise RuntimeError(f"{name} ran")
         return _fn
 
-    from gateway.routes.studio import invoke, packages, skills
+    from gateway.routes.studio import invoke, packages, skills, views
 
-    for module in (actions, invoke, packages, skills):
+    for module in (actions, invoke, packages, skills, views):
         if hasattr(module, "_tenant_session"):
             monkeypatch.setattr(module, "_tenant_session", _trip(f"{module.__name__}.session"))
     monkeypatch.setattr(actions, "catalog_rows", _trip("catalog_rows"))
@@ -603,8 +611,5 @@ def test_a_chat_tool_of_a_holder_reaches_the_handler(
 def test_the_r8_suite_is_named_in_the_ci_skip_guard() -> None:
     """A fence that never runs is no fence. The ``--must-run`` list names the
     pytest ARGUMENT, so a mention in a comment does not count."""
-    workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
-    assert block, "the --must-run argument list is missing"
-    assert re.search(r"^[ \t]+tests/unit/test_studio_route_gate_r8\.py(?: \\)?$",
-                     block.group(1), re.M)
+    must_run = r8_lists.must_run()
+    assert "tests/unit/test_studio_route_gate_r8.py" in must_run

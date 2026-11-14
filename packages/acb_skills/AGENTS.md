@@ -83,6 +83,9 @@ not write a second copy of that seam. A bare test file name is under
    - `build` strips each hidden character first (5m-1). It refuses a `{{` or `}}`, more than `MAX_PACK_TOOLS` tools and rules over `MAX_RULES_TOKENS`.
    - `tool_packs.choose` puts the skills after the code packs, in the order of the skill id, in the places that `MAX_PACKS` leaves. `persona_for` puts their rules after the rules of the code packs. A skill pack is never sticky.
    - For each skill that loads, the run writes one `executor.skill_loaded` line, with no skill text. Fences: `test_skill_packs.py`, `test_skill_packs_r8.py` (R8).
+5a-2. tool_search.py -- the index of the pack tools and the lexical ranker (WS-67 TS-1, spec `one_assistant_context.md` §4.2.9). It has NO caller yet. TS-2 adds `find_tools`.
+   - The index holds first-party text only, and each pack tool once. `rank` is pure: no I/O, no clock, no random source, and a tie breaks by tool name. `allow` comes from the caller, and the ranker never decides permission.
+   - It imports `_plain` and `_word_re` from `tool_packs`. Do not copy them. Fence: `test_tool_search_index.py`.
 5b. decide_tools.py -- the `decide` core-floor tool (spec `customer_console.md` §6A.14). It sends no member and never logs `context`.
    - `decide_tool_enabled()` is its ONE switch. `decide_tool_for(agent_name)` is the one place that picks `system_one_decide` or the Jev `decide`.
    - Fences: `test_decide_tool.py`, `test_system_one_tool.py`.
@@ -133,6 +136,8 @@ not write a second copy of that seam. A bare test file name is under
    - `refuse_cards()` is the scope of a run with no card channel. Fences: `test_wac_bot_run.py`, `test_wac_writes.py`.
    - A run with no person present (`acb_common.no_person`, AUTO-7a) denies first, before each WhatsApp path, whatever `non_interactive_default` says. `cards_refused()` reads the mark too, so each reader closes. Fence: `test_no_person_present.py`.
    - `responder=` binds a card to the run's own member. Any other answer, and an answer with no responder, is a REJECT. The gateway takes the responder from the session. Fence: `test_profile_pz32.py`.
+   - A card that a chat message closed goes into the run's `ClosedCards` record (task 3130). `take_closed_card_line` gives the "Not done" line, once, with the act as inert text in a « » fence (`card_act`). `CLOSED_BY_YOUR_MESSAGE` is the one outcome word that HRD-7 grows.
+   - A later card takes the place of a closed card only when it holds every act key of that card. `card_call` binds the keys (`act_keys`): the tool, each id, the people of `to`, and the identity arguments of a call with no object id. A batch tool keys each item in the family of its single tool (`ACT_FAMILIES`). A card with no key takes the place of none. Never give either ContextVar a mutable default. Fence: `test_steer_unsent_card.py`.
    - A reply form with `kind: "new"` is the card of a new mail (§18.10). Only `reply_card.parse_new_mail_answer` approves it, and a reply answer never does. `edit_card_channel_open` is the one test of a run that can draw a card to edit: the flag, a channel, and no WhatsApp run. `reply_card.edit_card_on` is the one reader of `EMAIL_EDIT_CARD_ORGS` (default empty, off), and it fails closed. Fence: `test_email_new_mail_card.py`.
    - A new-mail form may carry `revises` and `draft` (§18.11). Only the gateway sets them, and `clean_reply_form` refuses a bad pair. It may also carry `unticked` (rule 7), the people that start unticked because the member unticked them. `clean_reply_form` refuses a name that is not a person of the card, or that starts ticked. Fence: `test_email_redraft_snapshot.py`.
 5k. agent_site.py -- the ONE builder of an agent install (spec `box_hardening.md` §5 BH-7).

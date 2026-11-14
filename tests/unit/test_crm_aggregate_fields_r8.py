@@ -1548,6 +1548,22 @@ async def test_the_long_read_on_and_off_the_list(mods, app_engine, monkeypatch) 
     query = {"entity": "module:Products", "measure": "sum", "field": "Unit_Price",
              "group_field": "Category"}
     monkeypatch.setattr(aggregate_route, "STATEMENT_TIMEOUT_MS", 1)
+    # A 1 ms cap alone is a race: a fast scan can finish inside it (pr-check,
+    # run 43531251343). So a read under the short cap first runs a 50 ms sleep
+    # in the same transaction. Postgres cancels that statement, and the route
+    # maps the cancel to 503 as it does for a slow aggregate. A read under the
+    # long cap (180 s) skips the sleep and still succeeds.
+    real_mirrored = aggregate_route.mirrored_modules
+
+    async def slow_under_short_cap(db: Any, *args: Any, **kwargs: Any) -> Any:
+        from sqlalchemy import text
+
+        cap = (await db.execute(text("SHOW statement_timeout"))).scalar()
+        if cap == "1ms":
+            await db.execute(text("SELECT pg_sleep(0.05)"))
+        return await real_mirrored(db, *args, **kwargs)
+
+    monkeypatch.setattr(aggregate_route, "mirrored_modules", slow_under_short_cap)
     off = await _call(mods, _admin(a), "GET", _path(**query))
     assert off.status_code == 503 and off.json()["detail"] == aggregate_route.TIMEOUT_DETAIL
     # Off the list, long_read changes nothing.
@@ -1559,9 +1575,18 @@ async def test_the_long_read_on_and_off_the_list(mods, app_engine, monkeypatch) 
     long = await _call(mods, _admin(a), "GET", _path(**query, long_read="true"))
     assert long.status_code == 200, long.text
     assert long.json()["total"] == 350.5
-    # Org B is not on the list, so its 503 offers nothing.
+    # Org B is not on the list, so it never gets the offer. Its read may
+    # also finish inside the 1 ms cap, because org B holds few Products: a
+    # fast machine answered 200 (the release gate of 2026-11-13). A 200 is
+    # no offer either, so both answers pass, and the flag reader decides it.
+    from gateway.routes.crm import flags as crm_flags
+
+    assert crm_flags.long_read_allowed(a) is True
+    assert crm_flags.long_read_allowed(mods.org_b) is False
     other = await _call(mods, _admin(mods.org_b), "GET", _path(**query))
-    assert other.status_code == 503 and "long_read" not in other.json()["detail"]
+    assert other.status_code in (200, 503), other.text
+    if other.status_code == 503:
+        assert "long_read" not in other.json()["detail"]
 
 
 async def test_a_read_that_reads_no_field_joins_no_detoast(keyed, app_engine) -> None:

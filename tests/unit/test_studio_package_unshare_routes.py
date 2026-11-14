@@ -30,13 +30,14 @@ The checks here:
 from __future__ import annotations
 
 import ast
-import re
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+from tests.unit import _r8_lists as r8_lists
 
 pytest.importorskip("sqlalchemy")
 
@@ -335,10 +336,6 @@ def test_the_delete_takes_only_the_row_of_this_sharer_for_this_person() -> None:
 # ── 10. The R8 twin runs in CI ─────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("workflow", ["pr-check.yml", "deploy.yml"])
-def test_the_r8_twin_is_in_the_must_run_list(workflow: str) -> None:
-    text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", text)
-    assert block, f"{workflow}: the --must-run argument list is missing"
-    assert re.search(r"^[ \t]+tests/unit/test_studio_package_unshare_routes_r8\.py(?: \\)?$",
-                     block.group(1), re.M), workflow
+def test_the_r8_twin_is_in_the_must_run_list() -> None:
+    """The lists of the R8 guard live in ``tests/fences.json`` (CIV-33c-2)."""
+    assert "tests/unit/test_studio_package_unshare_routes_r8.py" in r8_lists.must_run()

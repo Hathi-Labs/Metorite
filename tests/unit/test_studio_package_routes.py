@@ -78,6 +78,8 @@ from gateway.routes.studio import actions, packages
 from gateway.studio import objects_store
 from gateway.studio import packages_store as store
 
+from tests.unit import _r8_lists as r8_lists
+
 ORG = str(uuid.uuid4())
 OTHER = str(uuid.uuid4())
 ANA = "ana@example.test"
@@ -1085,11 +1087,8 @@ def test_sync_objects_has_one_route_caller():
 def test_the_r8_suite_is_named_in_the_ci_skip_guard():
     """A fence that never runs is no fence. The ``--must-run`` list names the
     pytest ARGUMENT, so a mention in a comment does not count."""
-    workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
-    assert block, "the --must-run argument list is missing"
-    assert re.search(r"^[ \t]+tests/unit/test_studio_package_routes_r8\.py(?: \\)?$",
-                     block.group(1), re.M)
+    must_run = r8_lists.must_run()
+    assert "tests/unit/test_studio_package_routes_r8.py" in must_run
 
 
 # ── The expected hash of a draft (G1c review round 1, P1) ─────────────────
