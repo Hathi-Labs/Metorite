@@ -285,10 +285,12 @@ def test_the_records_carry_the_tenant_the_member_the_thread_and_a_ttl(
 # 3. A changed card gets a normal card
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("change", ["stage", "deal", "renamed"])
+@pytest.mark.parametrize("change", ["stage", "deal", "twin", "renamed"])
 def test_a_changed_card_gets_a_normal_card(
     change, late_on, ask_db, liveness, no_persist, monkeypatch,
 ):
+    """Each change keeps one of the two parts equal: the act key ("stage",
+    "renamed") or the card text ("twin", another deal with the same title)."""
     tid = f"t-hrd22-changed-{change}"
     _park_and_approve(liveness, monkeypatch, tid)
     call = {"deal_id": "d-neuro", "stage": "Payment Complete"}
@@ -296,6 +298,9 @@ def test_a_changed_card_gets_a_normal_card(
         call["stage"] = "Lost"
     elif change == "deal":
         call["deal_id"] = "d-orbit"
+    elif change == "twin":
+        DEALS["d-twin"] = "Neuropeak"  # the same card text, another deal id
+        call["deal_id"] = "d-twin"
     else:
         DEALS["d-neuro"] = "Neuropeak Labs"  # the record changed since the card
     assert _run(liveness, tid, **call).get("parked"), "a changed card asks again"
@@ -424,20 +429,34 @@ def test_a_per_run_agent_module_reads_as_the_run_agent():
     assert late_approve.keys_wire(frozenset({one}), "") is None
 
 
-def test_an_open_row_and_a_row_with_rows_write_no_grant(late_on):
+def test_only_a_parked_plain_confirmation_row_turns_its_offer_into_a_grant(late_on):
+    """The offer waits, and only the right row and the right answer take it."""
+    rid = "a" * 32
     row = {"kind": "confirmation", "state": "parked", "thread_id": "t1",
-           "request_id": "a" * 32, "payload": {}}
+           "request_id": rid, "payload": {}}
+    deal = ("tests.unit.test_late_approve_grant", "update_deal_status", (("deal_id", "d1"),))
+    offer = f"cc:{_ORG_A}:{late_approve.OFFER_NAMESPACE}:{_ALICE}:t1:{rid}"
+    late_on.data[offer] = json.dumps({
+        "v": 1, "rid": rid, "text": "card", "keys": late_approve.keys_wire(frozenset({deal}))})
 
-    async def go(**change: Any) -> bool:
-        return await late_approve.grant_from_offer(_ORG_A, _ALICE, {**row, **change}, "APPROVE")
+    async def go(answer: str = "APPROVE", member: str = _ALICE, **change: Any) -> bool:
+        return await late_approve.grant_from_offer(_ORG_A, member, {**row, **change}, answer)
 
     assert not asyncio.run(go(state="open"))
+    assert not asyncio.run(go(state="answered"))
     assert not asyncio.run(go(kind="questions"))
     assert not asyncio.run(go(payload={"rows": [{"id": "r1"}]}))
     assert not asyncio.run(go(payload={"reply": {"kind": "new"}}))
-    # A parked plain row with no offer writes nothing either.
+    assert not asyncio.run(go(answer="REJECT"))
+    assert not asyncio.run(go(answer='APPROVE {"rows": ["r1"]}'))
+    assert not asyncio.run(go(member=_BOB))
+    assert offer in late_on.data, "no refusal touched the offer of Alice"
+    assert asyncio.run(go(answer=" approve "))
+    assert list(late_on.data) == [_grant_key(_ORG_A, _ALICE, "t1")]
+    # A second late answer finds no offer, so it writes nothing.
+    late_on.data.clear()
     assert not asyncio.run(go())
-    assert not [c for c in late_on.calls if c.startswith("set ")]
+    assert late_on.data == {}
 
 
 # ---------------------------------------------------------------------------
