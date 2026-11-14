@@ -479,8 +479,8 @@ def _slug(brief: str) -> str:
         if w in _NAME_END:
             break
         named.append(w)
-    chosen = "-".join(named[:4]) or re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-    return re.sub(r"^[^a-z]+", "", chosen)[:40].strip("-")  # "" when the brief has no Latin word
+    chosen = "-".join(w for i, w in enumerate(named) if i < 4) or re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return str(re.sub(r"^[^a-z]+", "", chosen))[:40].strip("-")  # "" when the brief has no Latin word
 
 
 #: The id rule of a manifest (``studio_manifest``), as a pattern text. No studio
@@ -492,7 +492,7 @@ _ID_TRIES = 9
 
 def _tail() -> str:
     """Four random lower-case hex digits for the end of an id."""
-    return uuid.uuid4().hex[:4]
+    return str(uuid.uuid4().hex)[:4]
 
 
 def _free_id(slug: str, taken: set[str]) -> str:
@@ -501,7 +501,7 @@ def _free_id(slug: str, taken: set[str]) -> str:
     The slug itself, then ``slug-2`` to ``slug-9``, then ``slug-<4 random
     characters>``. With no slug (a brief with no Latin word), ``app-<4 random
     characters>``."""
-    base = slug[:40].strip("-")
+    base = str(slug)[:40].strip("-")
     if base and base not in taken and re.fullmatch(_MANIFEST_ID, base):
         return base
     for n in (range(2, _ID_TRIES + 1) if base else ()):
