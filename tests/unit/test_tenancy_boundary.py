@@ -173,6 +173,9 @@ EXPECTED_SCOPED = {
     "pm_project_updates",
     # WS-39 TPL-1a (2026-11-08): the template store, keyed at CREATE time.
     "pm_templates", "pm_template_applies",
+    # WS-STU D13b (2026-11-14): migration 442, the bytes of a file of a
+    # record of a Studio app, keyed at CREATE time, FORCE RLS.
+    "studio_record_files",
 }
 
 #: ⚠️ FROZEN at 113 — it was 114 until 2026-09-21, when `people`
