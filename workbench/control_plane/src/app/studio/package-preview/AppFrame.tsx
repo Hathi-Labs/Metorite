@@ -107,12 +107,13 @@ function FilteredList({ source, door, active, onClear, children }: {
   );
 }
 
-export default function AppFrame({ pkg, detail, door, controls, onDeleted, above }: AppFrameProps) {
+export default function AppFrame({ pkg, detail, door, controls, onDeleted, above: setupCard }: AppFrameProps) {
   const params = useSearchParams();
   const pageParam = params.get("page");
   const search = params.toString();
   // STU-D23a: the parts of the frame for the floor view, or for the usual view.
   const parts = floorView(isFloor(search));
+  const above = parts.setupCard ? setupCard : undefined;
   const manifest = useMemo(() => ({
     views: detail.views, pages: detail.pages, actions: detail.actions, objects: detail.objects,
   }), [detail.views, detail.pages, detail.actions, detail.objects]);
@@ -252,7 +253,7 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
         floor={parts.floor} subtitle={floorSubtitle(parts, session?.user)}
         rail={railed && parts.rail ? { sections, activePage: built.page.id, onPick: setPage, counts } : undefined}>
       <div className="flex h-full flex-col" onClickCapture={onLinkClick}>
-      {above && parts.setupCard ? <div className="shrink-0 px-3 pt-3 sm:px-4 sm:pt-4">{above}</div> : null}
+      {above ? <div className="shrink-0 px-3 pt-3 sm:px-4 sm:pt-4">{above}</div> : null}
       <div className="min-h-0 flex-1">
       <StudioPage bare title={detail.name.trim() || "App"}
         manifest={manifest} pageId={built.page.id} state={state} onTab={setTab}
