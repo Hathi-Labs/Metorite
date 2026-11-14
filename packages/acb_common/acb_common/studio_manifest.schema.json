@@ -465,6 +465,37 @@
           "title": "Id",
           "type": "string"
         },
+        "layout": {
+          "anyOf": [
+            {
+              "enum": [
+                "table_workspace",
+                "list_detail",
+                "board",
+                "dashboard",
+                "work_queue",
+                "approval_queue"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Layout"
+        },
+        "regions": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "maxProperties": 6,
+          "title": "Regions",
+          "type": "object"
+        },
         "side": {
           "anyOf": [
             {

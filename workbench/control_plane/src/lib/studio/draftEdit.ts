@@ -14,7 +14,7 @@
  * delete, because that field is the member's data model to change.
  * What happens at publish is in `publishEffect`.
  */
-import type { FieldType } from "./manifest";
+import { PRESET_REGIONS, type FieldType, type LayoutName } from "./manifest";
 
 /** Every string inside a rule, for a scan. */
 function ruleStrings(v: unknown, out: string[] = []): string[] {
@@ -167,6 +167,15 @@ export function dropNavRows(m: Obj, gone: ReadonlySet<string>): Obj {
 }
 
 /** The references to a set of views that live outside `views`: page cells, the side view, shell jobs, skill cards. */
+/** A page with a preset holds while each required region has a view. `null` for a page with no preset. */
+function layoutHeld(p: Obj): boolean | null {
+  const layout = str(p.layout) as LayoutName;
+  const rules = PRESET_REGIONS[layout];
+  if (!rules) return null;
+  const regions = isObj(p.regions) ? p.regions : {};
+  return Object.entries(rules).every(([name, r]) => !r.required || (Array.isArray(regions[name]) && regions[name].length > 0));
+}
+
 function dropViews(m: Obj, ids: ReadonlySet<string>): Obj {
   if (ids.size === 0) return m;
   const cells = (cs: unknown) => (Array.isArray(cs) ? cs.filter((c) => !(isObj(c) && ids.has(str(c.view)))) : cs);
@@ -179,10 +188,15 @@ function dropViews(m: Obj, ids: ReadonlySet<string>): Obj {
       if ("cells" in p) next.cells = cells(p.cells);
       if (Array.isArray(p.tabs)) next.tabs = p.tabs.map((t) => (isObj(t) ? { ...t, cells: cells(t.cells) } : t));
       if (isObj(p.side) && ids.has(str(p.side.view))) delete next.side;
+      if (isObj(p.regions)) {
+        next.regions = Object.fromEntries(
+          Object.entries(p.regions).map(([k, v]) => [k, Array.isArray(v) ? v.filter((x) => !ids.has(str(x))) : v]),
+        );
+      }
       return next;
     });
     // A page that loses its last cell has no layout, and the check refuses it. It goes with its views.
-    const held = (p: unknown) => isObj(p) && ((Array.isArray(p.tabs) && p.tabs.length > 0) || (Array.isArray(p.cells) && p.cells.length > 0));
+    const held = (p: unknown) => isObj(p) && (layoutHeld(p) ?? ((Array.isArray(p.tabs) && p.tabs.length > 0) || (Array.isArray(p.cells) && p.cells.length > 0)));
     const kept = (out.pages as unknown[]).filter((p, i) => held(p) || !held((m.pages as unknown[])[i]));
     // The rail rows of a page that goes would name no page, and the check refuses that.
     const goneIds = new Set((out.pages as unknown[]).filter((p) => !kept.includes(p)).map((p) => (isObj(p) ? str(p.id) : "")));
@@ -451,6 +465,7 @@ export function viewUses(m: unknown, id: string): number {
     count(p.cells);
     if (Array.isArray(p.tabs)) p.tabs.forEach((t) => isObj(t) && count(t.cells));
     if (isObj(p.side) && str(p.side.view) === id) n++;
+    if (isObj(p.regions)) for (const v of Object.values(p.regions)) count(Array.isArray(v) ? v.map((x) => ({ view: x })) : []);
   }
   return n;
 }

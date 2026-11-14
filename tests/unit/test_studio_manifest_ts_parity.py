@@ -141,3 +141,18 @@ def test_nav_count_cap_equals_the_ts_twin():
     assert m and int(m.group(1)) == MAX_NAV_COUNTS
     schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
     assert schema["$defs"]["NavRow"]["properties"]["count"]["anyOf"][0] == {"type": "boolean"}
+
+
+def test_the_page_presets_equal_the_typescript_twin():
+    from acb_common.studio_manifest import LAYOUTS, PRESET_REGIONS
+
+    ts = TS.read_text(encoding="utf-8")
+    assert re.search(r"export const LAYOUTS = \[(.*?)\] as const", ts, re.S)
+    names = re.findall(r'"([a-z_]+)"', re.search(r"export const LAYOUTS = \[(.*?)\] as const", ts, re.S).group(1))
+    assert names == list(LAYOUTS)
+    body = ts[ts.index("export const PRESET_REGIONS") : ts.index("export const REGION_NAMES")]
+    for layout, regions in PRESET_REGIONS.items():
+        assert layout in body
+        for region, (block, cap, required) in regions.items():
+            line = f'{region}: {{ block: "{block}", cap: {cap}, required: {"true" if required else "false"} }}'
+            assert line in ts, line

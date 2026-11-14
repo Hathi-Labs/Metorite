@@ -55,6 +55,9 @@ export interface PagesView {
 }
 
 function partsOf(page: PageModel): string[] {
+  if (page.layout) {
+    return Object.entries(page.regions).filter(([, ids]) => ids.length > 0).map(([name, ids]) => `${name}: ${ids.join(", ")}`);
+  }
   if (page.tabs.length > 0) {
     return page.tabs.map((t) => `${t.title}: ${t.cells.map((c) => c.view).join(", ") || "no cell"}`);
   }
@@ -79,7 +82,7 @@ export function pagesView(manifest: unknown): PagesView {
   for (const raw of list(m.pages)) {
     const id = str(raw.id);
     if (!id) continue;
-    const page = readPage(raw) ?? { id, title: str(raw.title) || null, cols: 2, tabs: [], cells: [], side: null };
+    const page = readPage(raw) ?? { id, title: str(raw.title) || null, cols: 2, tabs: [], cells: [], side: null, layout: null, regions: {} };
     pages.push(rowOf(page, raw));
   }
   return { declared: true, pages, full: pages.length >= PAGE_CAPS.pages };
