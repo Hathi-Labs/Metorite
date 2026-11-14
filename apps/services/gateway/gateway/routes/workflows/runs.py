@@ -1,5 +1,11 @@
 """Run endpoints: start, history, detail, live SSE (spec F5, F8, F9).
 
+``GET /runs/{run_id}/steps`` lists the human steps of one run (STU-E4b,
+``ai_studio.md`` row E4). It has the access of ``GET /runs/{run_id}``. This
+route gives the task id only to the person of the step. ``GET /runs/{run_id}``
+and the stream still show the task id of a done step in ``node_results``. That
+is a known gap, and this route does not change it.
+
 Test runs of the unpublished draft compile on the fly (``draft: true``) so the
 editor's "Test ▸" loop needs no publish; real triggers always execute the
 published version.
@@ -13,7 +19,9 @@ gate alone decides it (owner rule 1, task 1818).
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
+import uuid
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -21,6 +29,7 @@ from fastapi import Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from gateway.routes.workflows import human_step, unattended
 from gateway.routes.workflows.core import (
+    MAX_RUN_STEPS,
     MAX_RUNS_PAGE,
     _tenant_session,
     _uid,
@@ -221,6 +230,138 @@ async def get_run(
         "started_by": row.started_by,
         "started_at": iso(row.started_at),
         "finished_at": iso(row.finished_at),
+    }
+
+
+@router.get("/runs/{run_id}/steps")
+async def get_run_steps(
+    run_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The human steps of one run, in walk order (STU-E4b, ``ai_studio.md`` E4).
+
+    Each step is ``node_id``, ``title``, ``assignee``, ``state`` and
+    ``task_id``. The title and the person come from the literal config of the
+    graph that the run pinned. The state comes from the node result, the
+    ``task`` pause and the task, through :func:`human_step.task_outcome`.
+
+    **Access is the access of** :func:`get_run`: the router gate and the
+    tenant session, with no other check. A run of another org, an unknown id
+    and an id that is not a UUID each get the same 404.
+
+    **This route gives the task id only to the person of the step.** The task
+    is in the personal project of that person. ``task_id`` is null unless the
+    caller IS that person and the task still exists. Each other caller gets
+    the state word and nothing else of the task. :func:`get_run` and the stream
+    still show the task id of a done step in ``node_results``. That is a known
+    gap, and this route does not change it.
+
+    **A cap.** The answer holds at most :data:`MAX_RUN_STEPS` steps, the first
+    ones in walk order, and ``truncated`` says when the run has more.
+    """
+    try:
+        rid = str(uuid.UUID(str(run_id).strip()))
+    except ValueError:
+        # Before the session: a bad id is a 404, never a database error.
+        raise HTTPException(status_code=404, detail="Run not found") from None
+    viewer = str(getattr(user, "email", "") or "").strip().lower()
+    alive = hub_for(rid) is not None
+    # ONE session: the run, its pauses and each task are read in one
+    # transaction, so a resume between two reads cannot split the answer.
+    async with _tenant_session() as db:
+        read = await _read_steps(db, rid, viewer, alive)
+    if read is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    steps, truncated = read
+    return {"run_id": rid, "steps": steps, "truncated": truncated}
+
+
+async def _read_steps(
+    db: Any, run_id: str, viewer: str, alive: bool,
+) -> tuple[list[dict[str, Any]], bool] | None:
+    """The steps of *run_id* on *db* and the ``truncated`` mark, or None when
+    the session sees no run. Only the first :data:`MAX_RUN_STEPS` steps read
+    a task."""
+    run = (
+        await db.execute(
+            text(
+                "SELECT id, workflow_id, version, status, node_results, organization_id "
+                "FROM workflow_runs WHERE id = CAST(:id AS uuid)"
+            ),
+            {"id": run_id},
+        )
+    ).fetchone()
+    if run is None:
+        return None
+    status = str(run.status or "")
+    if status == "running" and not alive:
+        status = "failed"  # the honesty rule of `get_run`
+    results = parse_jsonb(run.node_results, {})
+    results = results if isinstance(results, dict) else {}
+    pauses = (
+        await db.execute(text(human_step.RUN_PAUSES_SQL), {"run_id": run_id})
+    ).fetchall()
+    newest: dict[str, Any] = {}
+    for pause in pauses:
+        newest.setdefault(str(pause.node_id), pause)
+    org = str(getattr(run, "organization_id", "") or "").strip().lower()
+    serialized = await _pinned_graph(db, run)
+    rows = human_step.step_rows(serialized)
+    shown = list(itertools.islice(rows, MAX_RUN_STEPS))
+    steps = [
+        await _one_step(db, run_id, row, results.get(row["node_id"]),
+                        newest.get(row["node_id"]), status, viewer, org)
+        for row in shown
+    ]
+    return steps, len(rows) > len(shown)
+
+
+async def _pinned_graph(db: Any, run: Any) -> dict[str, Any]:
+    """The graph that the run pinned. The newest pause snapshot holds it, and
+    a run with no pause reads its published version."""
+    row = (
+        await db.execute(text(human_step.PINNED_GRAPH_SQL), {"run_id": str(run.id)})
+    ).fetchone()
+    found = parse_jsonb(row.serialized, None) if row is not None else None
+    if not isinstance(found, dict):
+        found = await load_version_serialized(db, str(run.workflow_id), int(run.version or 0))
+    return found if isinstance(found, dict) else {}
+
+
+async def _one_step(
+    db: Any, run_id: str, row: dict[str, Any], result: Any, pause: Any,
+    run_status: str, viewer: str, org: str,
+) -> dict[str, Any]:
+    """One step of the answer. The task is read only when the state needs it
+    (a pending pause), or when the caller is its person and may get its id. A
+    rejected or resolved pause decides the state with no read, so a reader who
+    is not the person never learns the live state of the private task after
+    the run ended."""
+    node_id = row["node_id"]
+    task_id = human_step.task_id_of({"task_id": pause.task_id}) if pause is not None else None
+    output = result.get("output") if isinstance(result, dict) else None
+    if task_id is None and isinstance(output, dict):
+        task_id = human_step.task_id_of(output)  # the runner's copy (`runner.py`)
+    person = human_step.step_person(pause.assignee) if pause is not None else None
+    person = person or row["assignee"]
+    mine = bool(viewer) and viewer == person
+    pause_status = str(pause.status) if pause is not None else None
+    task: Any = None
+    outcome: str | None = None
+    if task_id is not None and (mine or pause_status == "pending"):
+        task = await human_step.read_task(db, task_id, run_id, node_id, person or "", org)
+        if pause_status == "pending":
+            outcome = human_step.task_outcome(task)
+    return {
+        "node_id": node_id,
+        "title": row["title"],
+        "assignee": row["assignee"],
+        "state": human_step.step_state(
+            result=result, pause_status=pause_status, outcome=outcome, run_status=run_status,
+        ),
+        # This route gives the task id only to the person of the step, and only
+        # while the task exists.
+        "task_id": task_id if mine and task is not None else None,
     }
 
 

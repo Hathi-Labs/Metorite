@@ -201,9 +201,11 @@ def test_the_tool_takes_no_org_and_no_member_argument() -> None:
     assert tuple(fn.__name__ for fn in st.STUDIO_WORKFLOW_TOOLS) == ("studio_workflow_read",)
     fn = st.studio_workflow_read
     params = inspect.signature(fn).parameters
-    assert set(params) == {"workflow_id", "offset", "limit"}
+    # STU-E4b: ``run_id`` reads the steps of a run, in the same tool (the room limit).
+    assert set(params) == {"workflow_id", "offset", "limit", "run_id"}
     assert not set(params) & IDENTITY
     assert params["workflow_id"].default == "" and params["offset"].default == 0
+    assert params["run_id"].default == ""
     assert params["limit"].default == st.MAX_WORKFLOW_ROWS == 30
     assert inspect.iscoroutinefunction(fn)
     hints = fn.__tool_risk__

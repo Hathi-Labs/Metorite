@@ -8,7 +8,9 @@ embedding call goes out, because ``KNOWLEDGE_EMBED`` stays off.
   database. CI runs it (``skill-eval.yml``).
 * ``--fixture`` seeds the synthetic set into a fresh org of the database in
   ``TENANT_LADDER_DATABASE_URL``, runs the route in this process, prints the
-  score and removes the rows. The R8 suite
+  score and removes the rows. It also seeds the misses set
+  (``fixtures/misses.json``) into a second org and prints the misses score:
+  the cases found in the top 5 of one call. The R8 suite
   (``tests/unit/test_search_company_eval_r8.py``) runs the same code on the
   non-privileged role, and pr-check runs it.
 * ``--live URL --as EMAIL`` asks a running gateway over HTTP, as the member
@@ -41,8 +43,10 @@ from evals.search_company.questions import (
     SOURCES,
     Question,
     load_fixture,
+    load_misses,
     load_real,
     resolve,
+    resolve_misses,
 )
 from evals.search_company.score import EXIT_FAIL, EXIT_NO_GO, EXIT_PASS, K, Outcome
 
@@ -237,32 +241,63 @@ async def run_fixture_in(org: str) -> list[Outcome]:
             return await run_set(ask, questions)
 
 
-async def fixture_run(url: str) -> tuple[score.Summary, dict[str, str]]:
-    """Seed a fresh org, run the questions, remove the rows."""
+async def run_misses_in(org: str) -> tuple[list[Outcome], dict[str, tuple[str, int]]]:
+    """Run the 20 misses for a seeded *org*, in this process."""
+    questions = resolve_misses(load_misses(), org)
+    meta = {q.id: (q.kind, q.rung) for q in questions}
+    with switches(org):
+        async with inprocess_asker(member_of(org)) as ask:
+            return await run_set(ask, questions), meta
+
+
+async def _seed_org(org: str, fixture: Any) -> None:
     from acb_common.db import tenant_session
     from sqlalchemy import text
 
     from evals.search_company import seed
+
+    async with tenant_session(org) as db:
+        column = (await db.execute(text(
+            "SELECT 1 FROM information_schema.columns WHERE table_name = 'email_messages' "
+            "AND column_name = 'organization_id'"))).scalar()
+        plan = seed.statements(org, fixture, message_org=bool(column))
+        for sql, rows in [seed.organization(org), *plan]:
+            await db.execute(text(sql), rows)
+
+
+async def _purge_org(org: str) -> None:
+    from acb_common.db import tenant_session
+    from sqlalchemy import text
+
+    from evals.search_company import seed
+
+    async with tenant_session(org) as db:
+        for sql, rows in seed.purge(org):
+            await db.execute(text(sql), rows)
+
+
+async def fixture_run(url: str) -> tuple[score.Summary, dict[str, str], score.MissesSummary]:
+    """Seed two fresh orgs, run the questions and the misses, remove the rows.
+
+    The misses sit in their own org, so their records never crowd the 50 questions.
+    """
     from tests.unit._tenant_ladder import tenant_engine_scope
 
-    org = str(uuid.uuid4())
-    fixture = load_fixture()
+    org, misses_org = str(uuid.uuid4()), str(uuid.uuid4())
     async with tenant_engine_scope(url):
-        async with tenant_session(org) as db:
-            column = (await db.execute(text(
-                "SELECT 1 FROM information_schema.columns WHERE table_name = 'email_messages' "
-                "AND column_name = 'organization_id'"))).scalar()
-            plan = seed.statements(org, fixture, message_org=bool(column))
-            for sql, rows in [seed.organization(org), *plan]:
-                await db.execute(text(sql), rows)
+        await _seed_org(org, load_fixture())
         try:
-            outcomes = await run_fixture_in(org)
-            flags = flags_of_settings()
+            await _seed_org(misses_org, load_misses())
+            try:
+                outcomes = await run_fixture_in(org)
+                flags = flags_of_settings()
+                miss_outcomes, meta = await run_misses_in(misses_org)
+            finally:
+                await _purge_org(misses_org)
         finally:
-            async with tenant_session(org) as db:
-                for sql, rows in seed.purge(org):
-                    await db.execute(text(sql), rows)
-    return score.summarize(outcomes, registry_names()), flags
+            await _purge_org(org)
+    return (score.summarize(outcomes, registry_names()), flags,
+            score.summarize_misses(miss_outcomes, meta))
 
 
 def fixture(url: str) -> int:
@@ -273,8 +308,11 @@ def fixture(url: str) -> int:
     if not is_loopback(url.replace("+psycopg", "").replace("+asyncpg", "")):
         print("NO-GO: the database is not on this machine. The fixture seeds a local ladder only.")
         return EXIT_NO_GO
-    summary, flags = asyncio.run(fixture_run(url))
+    summary, flags, misses = asyncio.run(fixture_run(url))
     print(score.render(summary, mode="fixture", flags=flags, floor=score.FLOOR))
+    # The misses report. It is a number to move, not a gate of this run: each later
+    # slice writes it before and after, and a drop does not merge (find_engine.md 9.2).
+    print(score.render_misses(misses))
     return score.verdict(summary, score.FLOOR)
 
 
@@ -288,6 +326,12 @@ def check() -> int:
     per = {s: sum(1 for q in fx.questions if q["source"] == s) for s in SOURCES}
     print(f"synthetic set whole: {len(fx.questions)} questions ({PER_SOURCE} per source: "
           + ", ".join(f"{s} {n}" for s, n in per.items()) + f"), {len(fx.records)} records")
+    try:
+        misses = load_misses()
+    except ValueError as exc:
+        print(f"FAIL: {exc}")
+        return EXIT_FAIL
+    print(f"misses set whole: {len(misses.questions)} cases, {len(misses.records)} records")
     return EXIT_PASS
 
 
