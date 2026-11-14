@@ -203,7 +203,7 @@ merges it. The other lanes keep building. Its role is in
 | File on the box | What it holds |
 |---|---|
 | `~/lanes/merge-bot-queue.tsv` | One line for each hand-over: pull request, task, worktree, lane, head SHA, tier, note. Tabs between the fields, under a `#` header line. Only `lane_handover.sh` writes it. |
-| `~/lanes/merge-bot.log` | One line for each result: `DONE <pull request> <sha>` or `BACK <pull request> <reason>`. Only the merge bot writes it. |
+| `~/lanes/merge-bot.log` | One line for each result: `DONE <pull request> <sha>`, `RESOLVED <pull request> <rules>` or `BACK <pull request> <reason>`. Only the merge bot writes it. |
 | `~/lanes/merge-queue.tsv`, `~/lanes/merge-queue.log` | History of the lane-merge session, with HOLD, RED and NOTE lines that people wrote. Nothing reads them now. |
 
 A lane hands over a pull request only after three steps. The verifier passed,
@@ -223,8 +223,32 @@ It then runs the trial merge with
 `origin/main` and `scripts/premerge.sh` on the pinned SHA, and runs
 `gh pr merge --squash --match-head-commit <sha>`. A
 branch behind `main` still merges when the trial merge is clean. It never
-pushes, and never passes `--admin` or `--auto`. `MERGE_BOT_DRY_RUN=1` prints
+pushes, except the merge commit of a resolved conflict. It never passes `--admin` or `--auto`. `MERGE_BOT_DRY_RUN=1` prints
 the actions and calls no write command.
+
+The bot takes only a PR of this repo with base `main`. A fork, another base,
+or a head branch with a protected name (`main`, `master`, `release`,
+`release/*`, `green/*`) goes BACK before any merge work.
+
+**Conflicts** (CIV-34a, `ci_velocity.md` §8.9). When the trial merge
+conflicts, the bot merges `main` into the PR branch. It tries the rules of
+`scripts/merge_conflict_rules.py` on each conflicted file. It checks and tests
+the merged tree, and commits the merge only when all pass. It reads the head
+branch again, and pushes the merge commit only when the branch did not move.
+It never uses force, and `rerere` stays off.
+
+The log then gets `RESOLVED <pull request> <rules>`, and the next pass waits
+for the new pr-check. The lane pulls its branch after a `RESOLVED` line.
+
+The log gets `BACK <pull request> conflict: ...` in these cases:
+
+- A file fits no rule, or the conflict is in a HIGH, workflow or schema path.
+- A check or a test fails on the merged tree.
+- The tests need more time than the cap.
+- The head branch moved during the resolution.
+
+The bot runs ruff from `~/lanes/merge-bot-wt/.venv/bin`, or through
+`uv run --no-sync`. The unit PATH has no ruff.
 
 The units are
 `scripts/home_server/systemd/metorite-merge-bot.service` and `.timer`, every

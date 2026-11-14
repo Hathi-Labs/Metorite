@@ -930,7 +930,7 @@ Each rung ends in a demo (D211). Each slice of a rung blocks its demo task.
 | CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first. **BUILT 2026-11-14**, dark (code default `off`, unit `dry`). §8.8 holds the design |
 | CIV-32 | 3057 | 2 | STANDARD | **BUILT 2026-11-13.** A repair round tests what failed and what the fix reaches (`ci_unit_guard.py repair`) |
 | CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py`. CIV-33d BUILT 2026-11-13 (task 3074): the scan fences of six large files moved to `*_scan.py` files, and `test_scanner_budget.py` caps a scanner file at 30 s. The scanner set costs 1,748 s, down from 2,333 s. `test_affected_tests.py` (381 s) waits for PR 2205. CIV-33c-1 BUILT 2026-11-13 (task 3073): a hub selects its importers up to 20% of the test files, a flag-only diff of `settings.py` or `env_guard.py` selects the tests that name the flag, and `scripts/replay_gate.py` measures the FULL share. For a hub or a flag diff, an app entry, or a test helper that builds an app, selects its test importers. The closure over test imports starts from the import picks, not from the scanners or the SAFETY fences. CIV-33c-2 BUILT 2026-11-14 (task 3073): the R8 must-run, never-skip and disarmed lists moved from the two workflows to the `r8` key of `tests/fences.json`. A workflow or a composite action stays FULL. Any other file under `.github/` is not FULL. An edit of `tests/fences.json` selects the files it adds to a list and the guard's own tests, and a file that does not parse is FULL. The replay of 300 main commits shows 96 FULL (32.0%), and 38 of the 43 commits whose only FULL reason was `.github/` edited a list only. With those edits in `tests/fences.json`, the projected share is 58 of 300 (19.3%). `packages/acb_common/` is the next cause (37 commits) |
-| CIV-34 | 3059 | 2 | STANDARD | Conflict rules in the merge bot, tested on the merged tree |
+| CIV-34 | 3059 | 2 | STANDARD | Conflict rules in the merge bot, tested on the merged tree. CIV-34a BUILT 2026-11-14 (§8.9): the rules, the checks on the merged tree, and the trailer. The fix round of the PR 2266 review (same day) removed `rerere`, `rebuild` and the markdown `union`, and added the ref checks and the `ls-remote` check. CIV-34b (a model proposal) is open |
 | CIV-35 | 3060 | 2 | LOW | A proposal: review depth by file class. It needs an owner decision |
 
 The demo tasks: rung 0 is task 3064, rung 1 is task 3065, and rung 2 is task
@@ -1081,3 +1081,65 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
   pr-check passes on it, with a median of 32 minutes (§8.2).
 - **Go `on`.** After the week of `dry`, read the log and the reports. CIV-38
   lands first (§8.5). Then set `AUTO_REVERT_MODE=on` in the unit and reload it.
+
+### 8.9 CIV-34a as built: conflict rules in the merge bot (2026-11-14)
+
+A conflict gave 28 of 52 BACKs (CIV-25), and a conflicted PR gets no GitHub CI.
+The bot now merges `main` into the PR branch and tries three rules per hunk.
+`scripts/merge_conflict_rules.py` holds the rules. `merge_bot.sh` holds the
+steps around them.
+
+| Rule | When it applies |
+|---|---|
+| `trivial` | One side equals the base, or both sides are equal. |
+| `table-rows` | A markdown table (`*.md` only) keyed by its first cell. Each side keeps its own rows. The rule refuses a row that changed on both sides, a changed header or separator row, and a row whose cell count is not the header's. |
+| `additions` | Both sides only added lines, in a Python test file or an import block. Ruff must sort the imports. |
+| `union` | `tests/fences.json` only. The helper merges it as JSON, and unites the list arrays with no repeat. |
+
+Three rules of the first build are gone, because no real conflict reaches them.
+`.gitattributes` gives `INDEX.md`, `HANDOFF.md` and `.env.example` the
+`merge=union` driver, so git never stops on them, and no `CHANGELOG` file
+exists. The tier floor (CIV-28b) sends a PR that touches `infra/postgres/`
+BACK first, so `rebuild` had no case. `rerere` is off on every bot merge.
+
+The helper refuses a file when one of these is true:
+
+- A hunk fits no rule.
+- A side holds a NUL byte or is not UTF-8.
+- The path has the `binary` or `-merge` attribute.
+- The result holds a conflict marker. The helper asks `git merge-file` for
+  31-character markers and reads only those, so an RST border is text.
+- The Python result does not compile.
+- The Python result has one function or class name more often in one scope
+  than ours or theirs has it. Python keeps the last def, so a test would
+  vanish.
+
+The PR then goes BACK with `conflict: no rule fits <files>`. A conflict in a
+HIGH path, in `.github/workflows/` or in `infra/postgres/` always goes BACK.
+
+The bot takes only a PR of this repo with base `main`. The head branch must
+not have a protected name: `main`, `master`, `release`, `release/*` or
+`green/*`. The bot checks this before any merge work.
+
+The checks run on the merged tree before the commit. The bot runs `py_compile`
+on the changed Python files and a YAML parse on the changed workflow files. It
+runs only the tests that the resolution reaches: the conflicted test files,
+plus `affected_tests.select` of the resolved files with no scanners. The full
+gate is not here, because pr-check runs it on the new head. When the
+`.test_durations` time of that set is over the cap (900 s), the PR goes BACK
+with no run.
+
+Ruff comes from `.venv/bin` of the bot checkout, or from `uv run --no-sync`.
+With neither, the file is not resolved.
+
+When all checks pass, the bot commits the merge. Each resolution adds one
+`Conflict-Rule: <rule> <file>` trailer. Right before the push, the bot reads
+the head branch with `git ls-remote`. When it moved, the PR goes BACK. The
+push never uses force. The bot then logs `RESOLVED <pr> <rules>`, and the
+state file pairs the queued SHA with the new head.
+
+The push starts a new pr-check. The merge goes through `--match-head-commit`
+on the new head. A conflicted PR never gets checks. So the bot looks for a
+conflict while a PR waits on checks. A lane that reads a `RESOLVED` line pulls
+its branch before its next commit. CIV-34b (a model-written proposal for a
+conflict that no rule fits) is open.
