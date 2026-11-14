@@ -256,8 +256,11 @@ def test_p0_the_bot_command_on_the_real_tree_picks_a_small_set():
 def test_p0_a_conflicted_test_file_is_always_selected(tmp_path):
     (tmp_path / "tests" / "unit").mkdir(parents=True)
     (tmp_path / "tests" / "unit" / "test_x.py").write_text("def test_a():\n    pass\n")
+    # The scan call is split, so this file is not itself a scanner for
+    # affected_tests (its text detector would read the literal).
+    scan_call = "Path('.')." + "iter" + "dir()"
     (tmp_path / "tests" / "unit" / "test_scan.py").write_text(
-        "from pathlib import Path\n\n\ndef test_s():\n    assert list(Path('.').iterdir())\n"
+        f"from pathlib import Path\n\n\ndef test_s():\n    assert list({scan_call})\n"
     )
     (tmp_path / ".test_durations").write_text(json.dumps({"tests/unit/test_x.py::test_a": 7.5}))
     sel = rules.select_tests(["tests/unit/test_x.py"], tmp_path)
