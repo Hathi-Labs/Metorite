@@ -2057,7 +2057,7 @@ def test_r8_the_read_of_the_open_request_is_a_bounded_index_scan(rworld) -> None
         # Never a walk of the whole table, whatever the join shape.
         assert index == keep, (f"pm_agent_runs is read through {index!r}, not through {keep}", plan)
         # The window of a live request is part of the index condition: the range is bounded.
-        assert "created_at" in cond, ("the index read has no bound on created_at", plan)
+        assert "created_at >" in cond, ("the index read has no bound on created_at", plan)
 
 
 def _reads_of_table(node: dict, table: str) -> list[tuple]:
@@ -2075,8 +2075,6 @@ def _reads_of_table(node: dict, table: str) -> list[tuple]:
     for child in node.get("Plans", []):
         out.extend(_reads_of_table(child, table))
     return out
-    cond = lines[at + 1]
-    assert "Index Cond" in cond and "created_at >" in cond, plan
 
 
 # ── ap. The chat tools of B2c-2b on the real door ──────────────────────────
