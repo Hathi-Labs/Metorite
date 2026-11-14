@@ -6,7 +6,7 @@
  * live data through the door of the page. The page id lives in the URL (`?page=<id>`).
  *
  * The frame composes parts that exist: `StudioPage`, the mapper `lib/studio/viewBlocks.ts`,
- * `GenerativeUINode`, `StudioForm` and `StudioDetail`. It adds no rail, no tab bar and no dialog.
+ * `GenerativeUINode`, `StudioForm` and `StudioDetail`. It adds no rail and no tab bar. The dialogs of AF-6 are `StudioNewButton` and `StudioFormDialog`.
  * The rail is AF-2. A viewer (J2a) reads only: the door holds the reads, and the form view says so.
  * This is the one file of the route that holds the page model. `page.tsx` imports none.
  */
@@ -20,6 +20,7 @@ import PackageLifetimeBar from "@/components/studio/PackageLifetimeBar";
 import RecordsStatus from "@/components/studio/RecordsStatus";
 import StudioDetail from "@/components/studio/StudioDetail";
 import StudioFilterBar from "@/components/studio/StudioFilterBar";
+import StudioNewButton from "@/components/studio/StudioNewButton";
 import StudioForm from "@/components/studio/StudioForm";
 import StudioRecord from "@/components/studio/StudioRecord";
 import StudioPage, { PANEL } from "@/components/studio/StudioPage";
@@ -32,6 +33,7 @@ import {
   activeCount, barOf, barTarget, chipsOf, clearedBar, layoutsFor, searchKeyOf, toListArgs, withFilter,
   showNoMatch, withGroup, withLayout, withQ, withSort, type BarField,
 } from "@/lib/studio/filterBarModel";
+import { newButtons } from "@/lib/studio/dialogModel";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import { buildPage, viewObjectName } from "@/lib/studio/pageModel";
 import { type PreviewControls, boardGroupKeys, fieldSpecs, recordTitle } from "@/lib/studio/packagePreview";
@@ -175,10 +177,21 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted }: App
     }
   };
 
+  // "New <Object>" (STU-AF6): one button for each object that the page lists and the app can create.
+  const adds = useMemo(() => newButtons(
+    cells.flatMap((c) => {
+      const v = detail.views.find((x) => x.id === c.view);
+      return v && (v.block === "table" || v.block === "board") ? [viewObjectName(v, controls.actions)] : [];
+    }), detail.objects, controls.actions, controls.owner),
+  [cells, detail.views, detail.objects, controls.actions, controls.owner]);
   const pagePicks = built.pages.map((p) => ({ value: p.id, label: p.title || p.id }));
   const toolbar = (
     <>
       <PackageLifetimeBar pkg={pkg} />
+      {adds.map((b) => {
+        const o = detail.objects.find((x) => x.name === b.object);
+        return o ? <StudioNewButton key={b.object} button={b} object={o} door={door} /> : null;
+      })}
       {pagePicks.length > 1 ? (
         <SelectButton label="Page" value={built.page.id} widthClass="w-48" options={pagePicks} onChange={setPage} />
       ) : null}
@@ -206,7 +219,8 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted }: App
           body: (
             <StudioRecord object={recordObject} objects={detail.objects} recordId={opened.id} door={door}
               actions={controls.actions} owner={controls.owner} tab={opened.tab}
-              onTab={(t) => go((s) => withRecordTab(s, t))} recordBase={recordBase} onTitle={onTitle} />
+              onTab={(t) => go((s) => withRecordTab(s, t))} recordBase={recordBase} onTitle={onTitle}
+              onDeleted={() => go(closeRecord)} />
           ),
         } : null}
         filterBar={bar ? (
