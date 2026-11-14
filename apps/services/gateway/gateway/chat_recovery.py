@@ -550,15 +550,18 @@ def card_resend(
 
 #: HRD-22 (``chat_run_continuity.md`` S2 item 8): the paragraph that a late
 #: approve with a grant adds after the envelope. It is the member's own words,
-#: outside the quoted block, so the model makes the same call again and does
-#: not plan again. The card gate approves that call once
+#: outside the quoted block. The model makes the same call once, unless the
+#: call already ran in this chat (review of HRD-22, P1: a twin card that the
+#: member approved live). The card gate approves that call once
 #: (``acb_skills.late_approve``). The envelope still ends ``My answer:
 #: APPROVE`` and then this paragraph, so the display check
-#: (:func:`card_answer_agrees`) reads it as an approve.
+#: (:func:`card_answer_agrees`, and ``parseCardAnswerEnvelope`` in the chat)
+#: reads it as an approve.
 LATE_APPROVE_NOTE = (
     "I approved this card after the chat had stopped waiting for my answer. "
-    "Make the same call again, with the same values. Do not plan the work "
-    "again. My approval covers that one call only."
+    "If this call already ran in this chat, do not run it again. Otherwise "
+    "make the same call once, with the same values. My approval covers that "
+    "one call only."
 )
 
 

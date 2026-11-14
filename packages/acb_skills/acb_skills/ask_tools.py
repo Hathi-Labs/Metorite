@@ -37,6 +37,7 @@ import contextvars as _contextvars
 import json as _json
 import re as _re
 from collections.abc import Iterator as _Iterator
+from dataclasses import dataclass as _dataclass
 from typing import Any
 
 from acb_common.no_person import no_person_present as _no_person_present
@@ -1545,37 +1546,93 @@ _CARD_CALL: _contextvars.ContextVar[ActKeys | None] = _contextvars.ContextVar(
     "acb_card_call", default=None,
 )
 
-#: HRD-22: the plain card that waits on this frame. It holds the request id,
-#: the clipped title, detail and context, and the act keys. ``_block_on`` sets
-#: it around its wait, so ``orchestrator.pending_ask.park``, which runs in that
-#: wait, reads the card it parks (:func:`waiting_card`). ⚠️ The default is
+#: HRD-22: the tool of the call that a card belongs to (:func:`card_call`),
+#: so the late-approve grant tests the REAL tool and not the family head of
+#: its act key (``bulk_update`` keys as ``update_task``). ⚠️ The default is
 #: None, never a mutable object.
-_WAITING_CARD: _contextvars.ContextVar[tuple[str, str, str, str, ActKeys] | None] = (
+_CARD_TOOL: _contextvars.ContextVar[Any] = _contextvars.ContextVar(
+    "acb_card_tool", default=None,
+)
+
+
+@_dataclass(frozen=True)
+class PlainCard:
+    """A plain confirmation card, as the late-approve grant reads it (HRD-22).
+
+    The clipped title, detail and context, the facts that the tool bound
+    (``whatsapp_acts.card_facts``), the act keys and the tool of the call, and
+    *cut*: True when the gate clipped a field or the body holds a cut."""
+
+    title: str
+    detail: str
+    context: str
+    facts: dict[str, Any] | None
+    keys: ActKeys | None
+    tool: Any
+    cut: bool
+
+
+#: HRD-22: the plain card that waits on this frame, with its request id.
+#: ``_block_on`` sets it around its wait, so ``orchestrator.pending_ask.park``,
+#: which runs in that wait, reads the card it parks (:func:`waiting_card`).
+#: ⚠️ The default is None, never a mutable object.
+_WAITING_CARD: _contextvars.ContextVar[tuple[str, PlainCard] | None] = (
     _contextvars.ContextVar("acb_waiting_card", default=None))
 
 
-def waiting_card(request_id: str) -> tuple[str, str, str, ActKeys] | None:
-    """``(title, detail, context, act keys)`` of the plain card *request_id*
-    that waits on this frame, or None (HRD-22, ``acb_skills.late_approve``).
-
-    Only a plain confirmation card with act keys is held: no rows, no reply
-    form and no held send id. A card of another id gives None."""
+def waiting_card(request_id: str) -> PlainCard | None:
+    """The plain card *request_id* that waits on this frame, or None (HRD-22,
+    ``acb_skills.late_approve``). Only a plain confirmation card is held: no
+    rows, no reply form and no held send id. A card of another id gives None."""
     held = _WAITING_CARD.get()
     if held is None or held[0] != request_id:
         return None
-    return held[1], held[2], held[3], held[4]
+    return held[1]
 
 
-async def _late_approved(title: str, detail: str, context: str) -> bool:
+async def _late_approved(card: PlainCard) -> bool:
     """True when the member of this run approved this very card late, in this
     thread, and the grant is unused (HRD-22). It reads the grant once. Off, a
     miss and each fault give False, and the card shows as before."""
     try:
         from acb_skills.late_approve import take_grant
 
-        return await take_grant(title, detail, context, _CARD_CALL.get())
+        return await take_grant(card)
     except Exception:  # fail closed: the card shows
         return False
+
+
+def _take_card_facts() -> dict[str, Any] | None:
+    """The facts that the tool bound for this card
+    (``whatsapp_acts.take_card_facts``), or None. A fault gives None."""
+    try:
+        from acb_skills.whatsapp_acts import take_card_facts
+
+        return take_card_facts()
+    except Exception:
+        return None
+
+
+def _body_cut(text: Any) -> bool:
+    """True when a card body holds a cut (``card_body.is_cut``). A fault
+    reads True, so a card that cannot be read takes no grant."""
+    try:
+        from acb_common.card_body import is_cut
+
+        return bool(is_cut(text or ""))
+    except Exception:
+        return True
+
+
+async def _late_approve_spent(card: PlainCard) -> None:
+    """The member approved this card live (HRD-22): no stale twin of it may
+    act again on a late approve. Off, it does nothing. Never raises."""
+    try:
+        from acb_skills.late_approve import note_approved
+
+        await note_approved(card)
+    except Exception:  # the answer stands
+        return
 
 
 def _is_id_arg(name: str) -> bool:
@@ -1685,9 +1742,14 @@ def card_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any], *,
         except Exception:
             keys = None
     token = _CARD_CALL.set(keys)
+    tool_token = _CARD_TOOL.set(None if keyless else fn)
     try:
         yield
     finally:
+        try:
+            _CARD_TOOL.reset(tool_token)
+        except ValueError:
+            _CARD_TOOL.set(None)
         try:
             _CARD_CALL.reset(token)
         except ValueError:
@@ -2127,6 +2189,13 @@ async def request_confirmation(
     _title = str(title or "Confirm action").strip()[:120]
     _detail = str(detail or "").strip()[:500]
     _context = str(context or "").strip()[:4000]
+    #: True when a field lost text to the clip above.
+    _clipped = (len(str(title or "").strip()) > len(_title)
+                or len(str(detail or "").strip()) > len(_detail)
+                or len(str(context or "").strip()) > len(_context))
+    #: HRD-22: the ids that the tool bound for this card. Read on each card,
+    #: so they never reach a later one.
+    _facts = _take_card_facts()
     _rows = clean_card_rows(rows)
     _reply = clean_reply_form(reply)
     _with_answer = _check_card_args(request_id, with_answer, _rows)
@@ -2141,9 +2210,7 @@ async def request_confirmation(
     # goes on below, as before.
     _email = await _whatsapp_email_answer(
         _title, _detail, _context, _rows, _reply, request_id, _with_answer,
-        cut=(len(str(title or "").strip()) > len(_title)
-             or len(str(detail or "").strip()) > len(_detail)
-             or len(str(context or "").strip()) > len(_context)))
+        cut=_clipped)
     if _email is not _NOT_EMAIL:
         return _email
     if _reply is not None:
@@ -2165,9 +2232,13 @@ async def request_confirmation(
             return None
         return frozenset() if _rows is not None else False
     # HRD-22 (chat_run_continuity.md S2 item 8): a plain card only. No rows,
-    # no reply form and no held send id ever take a late approve.
+    # no reply form and no held send id ever take a late approve, and a cut
+    # card never does (the WhatsApp Confirm refuses one too).
     _plain = _rows is None and _reply is None and not _with_answer and request_id is None
-    if _plain and await _late_approved(_title, _detail, _context):
+    _card = PlainCard(
+        _title, _detail, _context, _facts, _CARD_CALL.get(), _CARD_TOOL.get(),
+        _clipped or _body_cut(context)) if _plain else None
+    if _card is not None and await _late_approved(_card):
         # The member approved this very card late, in this thread. The grant
         # is gone, so this is its one use. It shows no card, and it takes the
         # place of a closed card with the same act (task 3130).
@@ -2278,8 +2349,7 @@ async def request_confirmation(
             _watch = _asyncio.ensure_future(
                 _close_on_new_steer(_fut, *_baseline, _rid, _title))
         # HRD-22: the park reads this card in this wait, to record its offer.
-        _waiting = _WAITING_CARD.set(
-            (_rid, _title, _detail, _context, _act) if _plain and _act else None)
+        _waiting = _WAITING_CARD.set((_rid, _card) if _card is not None else None)
         try:
             from orchestrator.executor import wait_user_future  # noqa: PLC0415
             _result = await wait_user_future(_fut, 3600)
@@ -2315,6 +2385,10 @@ async def request_confirmation(
             return _rows_replied[0] if _answer == "APPROVE" and _rows_replied else None
         if _rows is not None:
             return _ticked or frozenset()
+        if _answer == "APPROVE" and _card is not None:
+            # HRD-22: the act runs now, so no stale twin of this card may run
+            # it again on a late approve.
+            await _late_approve_spent(_card)
         return _answer == "APPROVE"
 
     # ── Path A: _active_run_queue (native MAF / Tier 2 blocking) ──────────

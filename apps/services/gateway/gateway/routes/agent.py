@@ -3691,6 +3691,11 @@ async def _late_decline_from_row(
         return False
     if moved is None:
         return False
+    # HRD-22: the row left `parked` with no approve, so its late-approve
+    # offer goes too. It writes no grant, and it never raises.
+    from acb_skills.late_approve import drop_offer
+
+    await drop_offer(org, me, str(row.get("thread_id") or ""), req.request_id)
     from gateway.routes.shell import cache as feed_cache
 
     await feed_cache.bump_member_safe(org, me)

@@ -10,40 +10,49 @@ before.
 minutes late. The answer started a new run, which planned again, called the
 tool again, and drew a new card. One deal move took three approvals.
 
-**Three steps, each in the seam that owns it.**
+**The act.** A card's act is its text (:func:`card_text_of`: the
+``whatsapp_acts.card_text`` of the clipped title, detail and context, and the
+facts that the tool bound) and its act keys (``ask_tools.act_keys``). Its
+DIGEST names the records, so two cards with one act share one record, and a
+card with another act never reads, uses or removes it (:func:`act_of`).
+
+**Three steps, each in the seam that owns it.** All keys are in tenant Redis
+(``acb_common.tenant_redis``), under the member and the thread:
 
 1. **The offer** (the run). ``orchestrator.pending_ask.park`` calls
-   :func:`record_offer` before the row moves to ``parked``. It records what
-   the waiting card binds (``ask_tools.waiting_card``): the card text
-   (:func:`card_text_of`, the ``whatsapp_acts.card_text`` of the clipped
-   title, detail and context) and the act keys (``ask_tools.act_keys``).
-   ``key(OFFER_NAMESPACE, member, thread, request id)``, as long as the row.
+   :func:`record_offer` after the row moves to ``parked``, while the card's
+   Future still waits. It writes ``key(ASK_NAMESPACE, member, thread, request
+   id)`` = the digest, and ``key(OFFER_NAMESPACE, member, thread, digest)`` =
+   the act. Both live no longer than the row.
 2. **The grant** (the gateway). ``routes.agent._late_answer_from_row`` calls
    :func:`grant_from_offer` only after ``move_ask`` moved the row to
-   ``answered``. Only the answer ``APPROVE`` of a parked ``confirmation`` row
-   writes one. It takes the offer once (GETDEL) and writes
-   ``key(GRANT_NAMESPACE, member, thread)`` for :data:`GRANT_TTL_S`.
+   ``answered``. It takes the digest of the row once. Only the answer
+   ``APPROVE`` of a parked ``confirmation`` row then takes the offer and
+   writes ``key(GRANT_NAMESPACE, member, thread, digest)`` for
+   :data:`GRANT_TTL_S`. Any other answer drops the offer.
 3. **The use** (the card gate). ``ask_tools.request_confirmation`` calls
-   :func:`take_grant` before a plain card goes out. It takes the grant once
-   (GETDEL), before the tool writes, and says yes only when the org, the
-   member, the thread, the card text and the act keys are all equal.
+   :func:`take_grant` before a plain card goes out. It takes exactly the grant
+   of its own digest (GETDEL), before the tool writes, and says yes only when
+   the text and the keys are equal too.
+
+**An act runs once.** Each approve of a plain card, live or by a grant, marks
+the act as SPENT on its offer key, and removes its grant (:func:`note_approved`).
+So a stale twin card of the same act, parked earlier, never acts on a late
+approve after the act ran. A decline, a REJECT and the park race drop the offer
+(:func:`drop_offer`).
 
 **The cards that take a grant.** A plain confirmation card only: no rows, no
-reply form and no held send id (the caller checks these). Each act key must
-name a write of ``egress.HELD_CARD_WRITE_TOOLS``, a first-party write that
-stays in Metorite (:func:`keys_wire`). So an egress card, an email card, a
-card of ticked rows and a WhatsApp run never take one.
+reply form and no held send id (the gate checks these). The card is not cut:
+no field lost text to the clip, and the body holds no cut mark. The tool of the
+call passes the three tests of ``egress.is_card_write_tool``: the name is on
+``HELD_CARD_WRITE_TOOLS``, the annotation says ``card_write``, and the
+parameters are the pinned set. So ``bulk_update``, a send, an egress card, an
+email card, a card of ticked rows and a WhatsApp run never take one.
 
 **The safe side.** A missing record, a mismatch, a Redis fault, a run with no
 verified member and a run with no card channel each show the normal card. The
 org, the member and the thread come from the session, the row or the run,
-never from request input (R5, R11). Each Redis call goes through the tenant
-wrapper (``acb_common.tenant_redis``).
-
-**The key, against the audit.** The audit asked for the request id in the
-grant key. The new card has a new request id, so the gate cannot name the old
-one, and a SCAN in the card path is slow. So the OFFER key holds the request
-id, and the grant record holds it as a value.
+never from request input (R5, R11).
 
 Fences (R7): ``tests/unit/test_late_approve_grant.py`` (hermetic) and
 ``tests/unit/test_late_approve_grant_r8.py`` (R8 and a private real Redis).
@@ -51,28 +60,38 @@ Fences (R7): ``tests/unit/test_late_approve_grant.py`` (hermetic) and
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from acb_common import get_logger
 
 _log = get_logger("acb_skills.late_approve")
 
-#: The tenant Redis namespace of an offer: what a parked plain card binds.
+#: The tenant Redis namespace of an offer: the act of a parked plain card, by
+#: its digest. It also holds the SPENT mark of an act that ran.
 OFFER_NAMESPACE = "chat-late-offer"
+#: The tenant Redis namespace that leads from a parked card's request id to
+#: the digest of its act.
+ASK_NAMESPACE = "chat-late-ask"
 #: The tenant Redis namespace of a grant: one late approve, for one use.
 GRANT_NAMESPACE = "chat-late-approve"
-#: How long a grant waits for the run that uses it (30 minutes).
+#: How long a grant waits for the run that uses it (30 minutes). The time
+#: starts at the member's tap (D-HRD-7, PROPOSED).
 GRANT_TTL_S = 30 * 60
 #: The one answer that writes a grant. ``ask_tools.request_confirmation``
-#: approves a card with no rows only on this exact word.
+#: approves a card with no rows only on this word.
 APPROVE = "APPROVE"
 #: The longest wait for one Redis call. A timeout is a fault: no grant.
 _OP_TIMEOUT_S = 2.0
 #: The version of a stored record. A record of another version reads as none.
 _VERSION = 1
+#: The value of an offer key whose act ran. It reads as no offer.
+_SPENT = json.dumps({"v": _VERSION, "spent": True}, separators=(",", ":"))
 
 #: The module of an agent that the loader imports for ONE run
 #: (``acb_skills.loader``: ``_agent_<run id>_agents``). The name changes with
@@ -113,26 +132,53 @@ def late_approve_on(org: object = None) -> bool:
     return str(org or "").strip().lower() in entries
 
 
+def spent_ttl_s() -> int:
+    """How long the SPENT mark of an act stays: at least :data:`GRANT_TTL_S`,
+    and longer than the park window, so a twin card that was open at the
+    approve and parks later records no offer."""
+    try:
+        from acb_common import get_settings
+
+        park = int(getattr(get_settings(), "chat_ask_park_seconds", 600) or 600)
+    except Exception:
+        park = 600
+    return max(GRANT_TTL_S, park + 300)
+
+
 # ── The pure parts ───────────────────────────────────────────────────────────
 
-def card_text_of(title: str, detail: str, context: str) -> str:
+def card_text_of(title: str, detail: str, context: str,
+                 facts: Mapping[str, Any] | None = None) -> str:
     """The one text of a card, as the WhatsApp equal-card rule builds it
-    (``whatsapp_acts.card_text``). The offer and the use both call it with the
-    values that ``request_confirmation`` clipped, so two equal cards give one
-    text."""
+    (``whatsapp_acts.card_text``), with the facts that the tool bound
+    (``whatsapp_acts.card_facts``). The offer and the use both call it with
+    the values that ``request_confirmation`` clipped."""
     from acb_skills.whatsapp_acts import card_text
 
-    return card_text(title, detail, context)
+    return card_text(title, detail, context, dict(facts) if facts else None)
 
 
 def _granted_tools() -> frozenset[str]:
-    """The tools whose card may take a grant: the first-party writes that stay
+    """The names that an act key may carry: the first-party writes that stay
     in Metorite (``egress.HELD_CARD_WRITE_TOOLS``). A fault gives none."""
     try:
         from acb_skills.egress import HELD_CARD_WRITE_TOOLS
     except Exception:
         return frozenset()
     return frozenset(HELD_CARD_WRITE_TOOLS)
+
+
+def _tool_may_skip(tool: Any) -> bool:
+    """True when the REAL tool of the call may skip its card on a grant: the
+    three tests of ``egress.is_card_write_tool``. A fault reads False."""
+    if tool is None:
+        return False
+    try:
+        from acb_skills.egress import is_card_write_tool
+
+        return bool(is_card_write_tool(tool))
+    except Exception:
+        return False
 
 
 def _stable_key(act: Any, agent: str) -> tuple[Any, ...] | None:
@@ -149,7 +195,7 @@ def _stable_key(act: Any, agent: str) -> tuple[Any, ...] | None:
 
 def keys_wire(keys: Iterable[Any] | None, agent: str = "") -> list[str] | None:
     """The act keys of a card as sorted JSON strings, or None when no grant
-    may take them. None for no key, a key of a tool that is not a first-party
+    may take them. None for no key, a key whose name is not a first-party
     write that stays in Metorite (:func:`_granted_tools`), and a key that does
     not read. *agent* is the run's agent, for a per-run module."""
     if not keys:
@@ -168,9 +214,40 @@ def keys_wire(keys: Iterable[Any] | None, agent: str = "") -> list[str] | None:
     return sorted(out) or None
 
 
+def digest_of(text: str, keys: list[str]) -> str:
+    """The digest of one act: its text and its act keys."""
+    body = json.dumps({"keys": keys, "text": text}, ensure_ascii=False,
+                      separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:32]
+
+
+@dataclass(frozen=True)
+class Act:
+    """The act of a plain card that may take a grant."""
+
+    text: str
+    keys: list[str]
+    digest: str
+
+
+def act_of(card: Any, agent: str) -> Act | None:
+    """The act of *card* (``ask_tools.PlainCard``), or None when the card may
+    not take a grant: a cut card, a tool that fails the three tests, or keys
+    that do not read. *agent* is the run's agent."""
+    if card is None or bool(getattr(card, "cut", True)):
+        return None
+    if not _tool_may_skip(getattr(card, "tool", None)):
+        return None
+    wire = keys_wire(getattr(card, "keys", None), agent)
+    if wire is None:
+        return None
+    text = card_text_of(card.title, card.detail, card.context, card.facts)
+    return Act(text, wire, digest_of(text, wire))
+
+
 def _record(raw: Any) -> dict[str, Any] | None:
-    """A stored offer or grant, checked, or None. A record whose keys name a
-    tool that may not take a grant reads as none."""
+    """A stored offer or grant, checked, or None. A SPENT mark, and a record
+    whose keys name a tool that may not take a grant, read as none."""
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8", "replace")
     if not isinstance(raw, str) or not raw:
@@ -196,9 +273,37 @@ def _record(raw: Any) -> dict[str, Any] | None:
     return {"rid": rid, "text": text, "keys": keys}
 
 
+def _text(raw: Any) -> str:
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    return raw if isinstance(raw, str) else ""
+
+
+def _is_spent(raw: Any) -> bool:
+    return _text(raw) == _SPENT
+
+
 def _encode(rid: str, text: str, keys: list[str]) -> str:
     return json.dumps({"v": _VERSION, "rid": rid, "text": text, "keys": keys},
                       ensure_ascii=False, separators=(",", ":"))
+
+
+def _row_ttl_s(row: Mapping[str, Any], cap_s: int) -> int:
+    """The seconds until the row expires, and never more than *cap_s*. A
+    record lives no longer than its row."""
+    raw = row.get("expires_at")
+    try:
+        if isinstance(raw, str) and raw:
+            at = datetime.fromisoformat(raw)
+        elif isinstance(raw, datetime):
+            at = raw
+        else:
+            return int(cap_s)
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=UTC)
+        return min(int(cap_s), int((at - datetime.now(UTC)).total_seconds()))
+    except (TypeError, ValueError):
+        return 0
 
 
 # ── The run's own facts (never request input) ────────────────────────────────
@@ -265,44 +370,89 @@ def _short(value: str) -> str:
     return (value or "")[:12]
 
 
+async def _call(coro: Any) -> Any:
+    return await asyncio.wait_for(coro, _OP_TIMEOUT_S)
+
+
+async def _spend(redis: Any, member: str, thread: str, digest: str) -> None:
+    """Mark the act *digest* as run: no offer of it, and no grant."""
+    from acb_common.tenant_redis import key
+
+    await _call(redis.set(key(OFFER_NAMESPACE, member, thread, digest), _SPENT,
+                          ex=spent_ttl_s()))
+    await _call(redis.delete(key(GRANT_NAMESPACE, member, thread, digest)))
+
+
 # ── Step 1: the offer (the run, at the park) ─────────────────────────────────
 
-async def record_offer(org: str, thread_id: str, request_id: str, ttl_s: int) -> bool:
-    """Record what the plain card *request_id* binds, before it parks.
+async def record_offer(org: str, thread_id: str, request_id: str,
+                       row: Mapping[str, Any], cap_s: int) -> bool:
+    """Record the act of the plain card *request_id*, which just parked.
 
-    ``orchestrator.pending_ask.park`` calls it in the card's own wait, so
-    ``ask_tools.waiting_card`` reads the card of this frame. *org* and
-    *thread_id* are the run's own, and the member is the verified member of
-    the run. True when written. It never raises, and a fault records nothing.
+    ``orchestrator.pending_ask.park`` calls it in the card's own wait, after
+    the move to ``parked``, so ``ask_tools.waiting_card`` reads the card of
+    this frame. *org* and *thread_id* are the run's own, and *row* is the
+    parked row. The member is the verified member of the run, and it must be
+    the member that the row asked. The records live no longer than the row.
+    An act that ran (SPENT) gets no new offer. True when written. Never
+    raises, and a fault records nothing.
     """
     try:
         if not org or not thread_id or not late_approve_on(org):
             return False
+        if str(row.get("kind") or "") != "confirmation":
+            return False
+        member = _run_member()
+        if "@" not in member or member != str(row.get("actor_email") or "").strip().lower():
+            return False
         from acb_skills.ask_tools import waiting_card
 
-        card = waiting_card(request_id)
-        member = _run_member()
-        if card is None or "@" not in member:
+        act = act_of(waiting_card(request_id), _run_agent())
+        ttl = _row_ttl_s(row, cap_s)
+        if act is None or ttl < 60:
             return False
-        title, detail, context, keys = card
-        wire = keys_wire(keys, _run_agent())
-        if wire is None:
-            return False
-        value = _encode(request_id, card_text_of(title, detail, context), wire)
         from acb_common.tenant_redis import key, organization_scope
 
         with organization_scope(org):
-            await asyncio.wait_for(
-                _redis().set(key(OFFER_NAMESPACE, member, thread_id, request_id), value,
-                             ex=max(60, int(ttl_s))),
-                _OP_TIMEOUT_S)
+            redis = _redis()
+            await _call(redis.set(key(ASK_NAMESPACE, member, thread_id, request_id),
+                                  act.digest, ex=ttl))
+            # NX: a twin card of the same act shares the offer, and a SPENT
+            # mark (the act ran) keeps its place.
+            written = await _call(redis.set(
+                key(OFFER_NAMESPACE, member, thread_id, act.digest),
+                _encode(request_id, act.text, act.keys), ex=ttl, nx=True))
     except Exception as exc:
         _log.warning("late_approve.offer_failed", request_id=_short(request_id),
                      error_type=type(exc).__name__)
         return False
     _log.info("late_approve.offer_recorded", request_id=_short(request_id),
-              thread_id=_short(thread_id))
+              thread_id=_short(thread_id), new=bool(written))
     return True
+
+
+async def drop_offer(org: str, member: str, thread_id: str, request_id: str) -> None:
+    """Drop the offer of the card *request_id*: its row left ``parked`` with
+    no approve (a decline, a REJECT, an answer during the park). A twin card
+    of the same act loses the offer too, so it shows its card: the safe side.
+    A SPENT mark stays. Off, it does nothing. Never raises."""
+    try:
+        who = str(member or "").strip().lower()
+        if not org or "@" not in who or not thread_id or not late_approve_on(org):
+            return
+        from acb_common.tenant_redis import key, organization_scope
+
+        with organization_scope(org):
+            redis = _redis()
+            digest = _text(await _call(redis.getdel(
+                key(ASK_NAMESPACE, who, thread_id, request_id))))
+            if digest:
+                okey = key(OFFER_NAMESPACE, who, thread_id, digest)
+                if not _is_spent(await _call(redis.get(okey))):
+                    await _call(redis.delete(okey))
+    except Exception as exc:
+        _log.warning("late_approve.drop_failed", request_id=_short(request_id),
+                     error_type=type(exc).__name__)
 
 
 # ── Step 2: the grant (the gateway, after the row moved) ─────────────────────
@@ -314,15 +464,14 @@ async def grant_from_offer(org: str, member: str, row: Mapping[str, Any], answer
     calls it only after ``move_ask`` moved *row* to ``answered``. *org* and
     *member* are the session's. The thread and the request id come from
     *row*, which the route read under the session's tenant. Only the answer
-    ``APPROVE`` of a ``confirmation`` row that was ``parked`` writes. A decline
-    and a ``REJECT`` never reach a write. True when written. It never raises.
+    ``APPROVE`` of a ``confirmation`` row that was ``parked`` writes. Any
+    other answer drops the offer. An act that ran (SPENT) writes nothing. True
+    when written. It never raises.
     """
     try:
         if not org or not late_approve_on(org):
             return False
         if str(row.get("kind") or "") != "confirmation" or str(row.get("state") or "") != "parked":
-            return False
-        if str(answer or "").strip().upper() != APPROVE:
             return False
         payload = row.get("payload")
         if isinstance(payload, Mapping) and (payload.get("rows") is not None
@@ -333,19 +482,35 @@ async def grant_from_offer(org: str, member: str, row: Mapping[str, Any], answer
         rid = str(row.get("request_id") or "")
         if "@" not in who or not thread or not rid:
             return False
+        if str(answer or "").strip().upper() != APPROVE:
+            await drop_offer(org, who, thread, rid)
+            return False
         from acb_common.tenant_redis import key, organization_scope
 
         with organization_scope(org):
             redis = _redis()
-            offer = _record(await asyncio.wait_for(
-                redis.getdel(key(OFFER_NAMESPACE, who, thread, rid)), _OP_TIMEOUT_S))
-            if offer is None or offer["rid"] != rid:
+            digest = _text(await _call(redis.getdel(key(ASK_NAMESPACE, who, thread, rid))))
+            if not digest:
                 _log.info("late_approve.no_offer", request_id=_short(rid))
                 return False
-            await asyncio.wait_for(
-                redis.set(key(GRANT_NAMESPACE, who, thread),
-                          _encode(rid, offer["text"], offer["keys"]), ex=GRANT_TTL_S),
-                _OP_TIMEOUT_S)
+            okey = key(OFFER_NAMESPACE, who, thread, digest)
+            seen = await _call(redis.get(okey))
+            offer = _record(seen)
+            if offer is None or digest_of(offer["text"], offer["keys"]) != digest:
+                # No offer, or a SPENT mark: the act ran, or it never may.
+                _log.info("late_approve.no_offer", request_id=_short(rid),
+                          spent=_is_spent(seen))
+                return False
+            taken = await _call(redis.getdel(okey))
+            if _text(taken) != _text(seen):
+                # Another writer came between the two reads. A SPENT mark
+                # goes back, and nothing is granted.
+                if _is_spent(taken):
+                    await _call(redis.set(okey, _SPENT, ex=spent_ttl_s()))
+                return False
+            await _call(redis.set(key(GRANT_NAMESPACE, who, thread, digest),
+                                  _encode(rid, offer["text"], offer["keys"]),
+                                  ex=GRANT_TTL_S))
     except Exception as exc:
         _log.warning("late_approve.grant_failed", error_type=type(exc).__name__)
         return False
@@ -355,37 +520,49 @@ async def grant_from_offer(org: str, member: str, row: Mapping[str, Any], answer
 
 # ── Step 3: the use (the card gate, before the card goes out) ────────────────
 
-async def take_grant(title: str, detail: str, context: str, keys: Any) -> bool:
-    """True when this run may skip the card: the member of this run approved
-    this very card late, in this thread, and the grant is still unused.
+def _run_scope() -> tuple[str, str, str] | None:
+    """``(org, member, thread)`` of this run with the flag on, or None."""
+    org = _run_org()
+    if not org or not late_approve_on(org):
+        return None
+    member, thread = _run_member(), _run_thread()
+    if "@" not in member or not thread:
+        return None
+    return org, member, thread
 
-    ``ask_tools.request_confirmation`` calls it for a plain card only, with
-    its clipped values and the act keys of the call (``ask_tools._CARD_CALL``).
-    The org, the member and the thread are the run's own. The grant is read
-    once with GETDEL, before the tool writes, so a crash after the check never
-    lets a second use through. A grant that this card does not match is gone
-    too. A fault reads False, and the normal card shows. Never raises.
+
+async def take_grant(card: Any) -> bool:
+    """True when this run may skip *card* (``ask_tools.PlainCard``): the
+    member of this run approved this very card late, in this thread, and its
+    grant is unused.
+
+    ``ask_tools.request_confirmation`` calls it for a plain card only. The
+    org, the member and the thread are the run's own. It takes exactly the
+    grant of the card's own digest, once, with GETDEL, before the tool writes,
+    so a crash after the check never lets a second use through. A card of
+    another act never reads another card's grant. On a use, the act is SPENT.
+    A fault reads False, and the normal card shows. Never raises.
     """
     try:
-        org = _run_org()
-        if not org or not late_approve_on(org):
+        scope = _run_scope()
+        if scope is None:
             return False
-        member, thread = _run_member(), _run_thread()
-        if "@" not in member or not thread:
-            return False
-        wire = keys_wire(keys, _run_agent())
-        if wire is None or not _card_channel():
+        org, member, thread = scope
+        act = act_of(card, _run_agent())
+        if act is None or not _card_channel():
             return False
         from acb_common.tenant_redis import key, organization_scope
 
         with organization_scope(org):
-            grant = _record(await asyncio.wait_for(
-                _redis().getdel(key(GRANT_NAMESPACE, member, thread)), _OP_TIMEOUT_S))
-        if grant is None:
-            return False
-        if grant["keys"] != wire or grant["text"] != card_text_of(title, detail, context):
-            _log.info("late_approve.grant_not_this_card", request_id=_short(grant["rid"]))
-            return False
+            redis = _redis()
+            grant = _record(await _call(redis.getdel(
+                key(GRANT_NAMESPACE, member, thread, act.digest))))
+            if grant is None:
+                return False
+            if grant["keys"] != act.keys or grant["text"] != act.text:
+                _log.info("late_approve.grant_not_this_card", request_id=_short(grant["rid"]))
+                return False
+            await _spend(redis, member, thread, act.digest)
     except Exception as exc:
         _log.warning("late_approve.use_failed", error_type=type(exc).__name__)
         return False
@@ -394,15 +571,43 @@ async def take_grant(title: str, detail: str, context: str, keys: Any) -> bool:
     return True
 
 
+async def note_approved(card: Any) -> None:
+    """The member approved *card* live: its act runs now. Mark the act SPENT
+    and remove its grant, so no stale twin card of it, parked earlier, acts on
+    a late approve (review of HRD-22, P1). Off, it does nothing. Never
+    raises."""
+    try:
+        scope = _run_scope()
+        if scope is None:
+            return
+        org, member, thread = scope
+        act = act_of(card, _run_agent())
+        if act is None:
+            return
+        from acb_common.tenant_redis import organization_scope
+
+        with organization_scope(org):
+            await _spend(_redis(), member, thread, act.digest)
+    except Exception as exc:
+        _log.warning("late_approve.spend_failed", error_type=type(exc).__name__)
+
+
 __all__ = [
     "APPROVE",
+    "ASK_NAMESPACE",
     "GRANT_NAMESPACE",
     "GRANT_TTL_S",
     "OFFER_NAMESPACE",
+    "Act",
+    "act_of",
     "card_text_of",
+    "digest_of",
+    "drop_offer",
     "grant_from_offer",
     "keys_wire",
     "late_approve_on",
+    "note_approved",
     "record_offer",
+    "spent_ttl_s",
     "take_grant",
 ]

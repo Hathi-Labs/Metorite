@@ -6,9 +6,9 @@ Spec: ``project-docs/specs/chat_run_continuity.md`` S2 item 8, and
 
 The rows of ``chat_pending_ask`` run as real SQL on the phase-4 catalog of
 ``test_h3_rls_promotion_rehearsal``, as its NOSUPERUSER NOBYPASSRLS role
-(the fixtures of ``test_pending_ask_store.py``). The offer and the grant run
-on a PRIVATE real Redis, through the real ``TenantRedis`` wrapper. The run is a
-real ``request_confirmation`` that parks, and the late answer is the real
+(the fixtures of ``test_pending_ask_store.py``). The records run on a PRIVATE
+real Redis, through the real ``TenantRedis`` wrapper. The run is a real
+``request_confirmation`` that parks, and the late answer is the real
 ``respond_user_input`` route. Only the stream relay is the fake of
 ``test_chat_deploy_recovery.py``.
 
@@ -18,8 +18,11 @@ R7, each with the mutation that turns it red:
   2026-11-14 (three cards for one write). Now one card and one write, and a
   second use finds nothing. Drop the use in the card gate, or read the grant
   with GET.
+* ``test_a_stale_twin_never_writes_after_a_live_approve`` — the review P1.
+  Drop the live cleanup, and the twin writes twice.
 * ``test_a_changed_card_gets_a_normal_card`` — compare the act keys only.
-* ``test_a_late_decline_writes_nothing`` — write a grant on a decline.
+* ``test_a_late_decline_writes_nothing`` — write a grant on a decline, or keep
+  the offer after the row closed.
 * ``test_no_grant_crosses_a_thread_a_member_or_an_org`` — key the grant by
   the thread alone, or by the member alone.
 
@@ -48,7 +51,12 @@ executor = pytest.importorskip("orchestrator.executor")
 pytest.importorskip("sqlalchemy")
 
 from acb_skills import late_approve  # noqa: E402
-from acb_skills.ask_tools import act_keys, card_call, request_confirmation  # noqa: E402
+from acb_skills.ask_tools import (  # noqa: E402
+    PlainCard,
+    act_keys,
+    card_call,
+    request_confirmation,
+)
 from sqlalchemy import text  # noqa: E402
 
 # Fixtures, resolved by name. The imports are load-bearing.
@@ -82,9 +90,9 @@ WRITES: list[tuple[str, str]] = []
 DEALS: dict[str, str] = {}
 
 
-async def update_deal_status(deal_id: str, stage: str) -> str:
-    """A stand-in of ``agent-crm`` ``update_deal_status``: one card, then one
-    write on approve. The name is a write of ``egress.HELD_CARD_WRITE_TOOLS``."""
+async def update_deal_status(deal_id: str, stage: str, lost_reason: str | None = None) -> str:
+    """A stand-in of ``agent-crm`` ``update_deal_status``, with its pinned
+    parameters and its annotation: one card, then one write on approve."""
     title = DEALS[deal_id]
     ok = await request_confirmation(
         title=f"Move this deal to {stage}?",
@@ -97,9 +105,19 @@ async def update_deal_status(deal_id: str, stage: str) -> str:
     return "moved"
 
 
-def _card_args(deal_id: str, stage: str) -> tuple[str, str, str]:
+update_deal_status.__tool_risk__ = {  # type: ignore[attr-defined]
+    "read_only": False, "destructive": True, "idempotent": False,
+    "open_world": True, "card_write": True}
+
+
+def _card(deal_id: str, stage: str) -> PlainCard:
+    """The card of the stand-in call, as the gate builds it."""
     title = DEALS[deal_id]
-    return f"Move this deal to {stage}?", f"{title} → {stage}", f"deal: {title}\nstage: {stage}"
+    return PlainCard(
+        f"Move this deal to {stage}?", f"{title} → {stage}", f"deal: {title}\nstage: {stage}",
+        None, act_keys(update_deal_status.__module__, "update_deal_status",
+                       {"deal_id": deal_id, "stage": stage}),
+        update_deal_status, False)
 
 
 @pytest.fixture
@@ -137,22 +155,39 @@ def _bind_run(tid: str, org: str, member: str, *, verified: bool = True) -> None
                      thread_id=tid)
 
 
-async def _run(r, tid: str, org: str, *, member: str = _ALICE, **call: Any) -> dict[str, Any]:
-    """One chat run on *tid* that calls the stand-in tool once."""
+async def _run(r, tid: str, org: str, *, member: str = _ALICE, live: str | None = None,
+               **call: Any) -> dict[str, Any]:
+    """One chat run on *tid* that calls the stand-in tool once. With *live*,
+    the member answers the card at once, so it never parks."""
     r.store[f"cc:runactor:{tid}"] = member
     out: dict[str, Any] = {}
+    seen = len(_cards(r, tid))
 
     async def _the_run() -> None:
         _bind_run(tid, org, member)
         with card_call(update_deal_status, (), call):
             out["result"] = await update_deal_status(**call)
 
+    async def _answer_live() -> None:
+        while len(_cards(r, tid)) == seen:
+            await asyncio.sleep(0.002)
+        rid = _cards(r, tid)[-1]["request_id"]
+        executor._pending_user_input[rid].set_result({"answer": live})
+
+    saved = pending_ask.park_after_seconds
+    if live:
+        pending_ask.park_after_seconds = lambda: 30.0
     run = asyncio.create_task(_the_run())
     stream_relay._DETACHED_TASKS[tid] = run
+    helper = asyncio.create_task(_answer_live()) if live else None
     try:
         await asyncio.wait_for(run, timeout=60)
     except asyncio.CancelledError:
         out["parked"] = True
+    finally:
+        pending_ask.park_after_seconds = saved
+        if helper is not None:
+            helper.cancel()
     return out
 
 
@@ -162,9 +197,7 @@ async def _try(tid: str, org: str, member: str, *, verified: bool = True,
     and *member*, for the card of the stand-in call."""
     async def _in_run() -> bool:
         _bind_run(tid, org, member, verified=verified)
-        keys = act_keys(update_deal_status.__module__, "update_deal_status",
-                        {"deal_id": deal_id, "stage": stage})
-        return await late_approve.take_grant(*_card_args(deal_id, stage), keys)
+        return await late_approve.take_grant(_card(deal_id, stage))
 
     return await asyncio.create_task(_in_run())
 
@@ -199,12 +232,16 @@ def _row(w, org: str, rid: str) -> tuple[Any, ...]:
             {"o": org, "r": rid}).one())
 
 
-def _grant(org: str, member: str, tid: str) -> str:
-    return f"cc:{org}:{late_approve.GRANT_NAMESPACE}:{member}:{tid}"
+async def _keys(client, namespace: str) -> list[str]:
+    return sorted(await client.keys(f"cc:*:{namespace}:*"))
 
 
-def _offer(org: str, member: str, tid: str, rid: str) -> str:
-    return f"cc:{org}:{late_approve.OFFER_NAMESPACE}:{member}:{tid}:{rid}"
+async def _live_offers(client) -> list[str]:
+    out = []
+    for k in await _keys(client, late_approve.OFFER_NAMESPACE):
+        if await client.get(k) != late_approve._SPENT:
+            out.append(k)
+    return out
 
 
 async def _client():
@@ -235,28 +272,64 @@ def test_the_production_sequence_writes_once_with_one_card(scene, monkeypatch):
                                stage="Payment Complete")).get("parked")
             rid = _cards(r, tid)[0]["request_id"]
             assert _row(w, w.org_a, rid) == ("parked", None)
-            offer = _offer(w.org_a, _ALICE, tid, rid)
-            assert 0 < await client.ttl(offer) <= pending_ask._ttl_hours() * 3600
+            digest = late_approve.act_of(_card("d-neuro", "Payment Complete"),
+                                         "orchestrator").digest
+            ask = f"cc:{w.org_a}:{late_approve.ASK_NAMESPACE}:{_ALICE}:{tid}:{rid}"
+            offer = f"cc:{w.org_a}:{late_approve.OFFER_NAMESPACE}:{_ALICE}:{tid}:{digest}"
+            assert await client.get(ask) == digest
+            # The records live no longer than the row.
+            for k in (ask, offer):
+                assert 0 < await client.ttl(k) <= pending_ask._ttl_hours() * 3600
 
             # 09:32 the member taps Approve.
             exc = await _answer(tid, rid, _ALICE, w.org_a)
             assert exc.status_code == 409 and exc.detail["error"] == "run_restarted"
             assert exc.detail["resumeMessage"].endswith("\n\n" + LATE_APPROVE_NOTE)
             assert _row(w, w.org_a, rid) == ("answered", "APPROVE")
-            assert not await client.exists(offer), "the offer is taken once"
-            assert 0 < await client.ttl(_grant(w.org_a, _ALICE, tid)) <= late_approve.GRANT_TTL_S
+            assert not await client.exists(offer) and not await client.exists(ask)
+            grant = f"cc:{w.org_a}:{late_approve.GRANT_NAMESPACE}:{_ALICE}:{tid}:{digest}"
+            assert 0 < await client.ttl(grant) <= late_approve.GRANT_TTL_S
 
             # The new turn makes the same call: one write, no second card.
             out = await _run(r, tid, w.org_a, deal_id="d-neuro", stage="Payment Complete")
             assert "parked" not in out and out["result"] == "moved"
             assert WRITES == [("d-neuro", "Payment Complete")]
             assert len(_cards(r, tid)) == 1
-            assert not await client.exists(_grant(w.org_a, _ALICE, tid))
+            assert not await client.exists(grant)
 
             # A second use finds nothing: the same call asks again.
             assert (await _run(r, tid, w.org_a, deal_id="d-neuro",
                                stage="Payment Complete")).get("parked")
             assert len(_cards(r, tid)) == 2
+            assert WRITES == [("d-neuro", "Payment Complete")]
+        finally:
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+def test_a_stale_twin_never_writes_after_a_live_approve(scene, monkeypatch):
+    """Review P1, on the real rows and Redis. Card C1 parks. A twin card C2 of
+    the same act is approved live (write 1). A late tap on C1 writes nothing."""
+    w, r = scene
+    tid = w.t_alice
+    call = {"deal_id": "d-neuro", "stage": "Payment Complete"}
+
+    async def go() -> None:
+        client = await _client()
+        _use_redis(monkeypatch, client)
+        try:
+            assert (await _run(r, tid, w.org_a, **call)).get("parked")
+            c1 = _cards(r, tid)[0]["request_id"]
+            assert "parked" not in await _run(r, tid, w.org_a, live="APPROVE", **call)
+            assert WRITES == [("d-neuro", "Payment Complete")]
+            assert await _live_offers(client) == []
+            exc = await _answer(tid, c1, _ALICE, w.org_a)
+            assert exc.status_code == 409
+            assert "If this call already ran" not in exc.detail["resumeMessage"]
+            assert await _keys(client, late_approve.GRANT_NAMESPACE) == []
+            assert (await _run(r, tid, w.org_a, **call)).get("parked")
             assert WRITES == [("d-neuro", "Payment Complete")]
         finally:
             await client.flushdb()
@@ -281,8 +354,11 @@ def test_a_changed_card_gets_a_normal_card(scene, monkeypatch):
             assert (await _run(r, tid, w.org_a, deal_id="d-neuro",
                                stage="Lost")).get("parked")
             assert WRITES == []
-            assert not await client.exists(_grant(w.org_a, _ALICE, tid)), \
-                "a card that does not match takes the grant away too"
+            # Another act never takes the grant away: its own card takes it.
+            assert len(await _keys(client, late_approve.GRANT_NAMESPACE)) == 1
+            assert "parked" not in await _run(r, tid, w.org_a, deal_id="d-neuro",
+                                              stage="Payment Complete")
+            assert WRITES == [("d-neuro", "Payment Complete")]
         finally:
             await client.flushdb()
             await client.aclose()
@@ -300,13 +376,14 @@ def test_a_late_decline_writes_nothing(scene, monkeypatch):
         try:
             assert (await _run(r, tid, w.org_a, deal_id="d-neuro", stage="Won")).get("parked")
             rid = _cards(r, tid)[0]["request_id"]
+            assert await _live_offers(client)
             assert await _answer(tid, rid, _ALICE, w.org_a, answer="",
                                  declined=True) == {"ok": True, "declined": True}
             assert _row(w, w.org_a, rid)[0] == "closed"
-            assert not await client.exists(_grant(w.org_a, _ALICE, tid))
+            assert await client.keys("*") == [], "the offer goes with its row"
             # A second answer finds a closed row, so it can write nothing.
             assert (await _answer(tid, rid, _ALICE, w.org_a)).status_code == 409
-            assert not await client.exists(_grant(w.org_a, _ALICE, tid))
+            assert await _keys(client, late_approve.GRANT_NAMESPACE) == []
             assert (await _run(r, tid, w.org_a, deal_id="d-neuro", stage="Won")).get("parked")
             assert WRITES == []
         finally:
@@ -332,23 +409,23 @@ def test_no_grant_crosses_a_thread_a_member_or_an_org(scene, monkeypatch):
             carol = await _answer(tid, rid, _CAROL, w.org_b)
             assert carol.status_code == 403
             assert _row(w, w.org_a, rid) == ("parked", None)
-            assert await client.keys(f"cc:*:{late_approve.GRANT_NAMESPACE}:*") == []
+            assert await _keys(client, late_approve.GRANT_NAMESPACE) == []
 
             assert (await _answer(tid, rid, _ALICE, w.org_a)).status_code == 409
-            grant = _grant(w.org_a, _ALICE, tid)
-            assert await client.exists(grant)
+            assert len(await _keys(client, late_approve.GRANT_NAMESPACE)) == 1
 
             # Another thread, another member, another org, no verified member.
             assert not await _try(w.t_carol, w.org_a, _ALICE)
             assert not await _try(tid, w.org_a, _BOB)
             assert not await _try(tid, w.org_b, _ALICE)
             assert not await _try(tid, w.org_a, _ALICE, verified=False)
-            assert await client.exists(grant), "no cross try reads the grant"
+            assert len(await _keys(client, late_approve.GRANT_NAMESPACE)) == 1, \
+                "no cross try reads the grant"
 
             # Its own run takes it once, and a second use finds nothing.
             assert await _try(tid, w.org_a, _ALICE)
             assert not await _try(tid, w.org_a, _ALICE)
-            assert not await client.exists(grant)
+            assert await _keys(client, late_approve.GRANT_NAMESPACE) == []
         finally:
             await client.flushdb()
             await client.aclose()

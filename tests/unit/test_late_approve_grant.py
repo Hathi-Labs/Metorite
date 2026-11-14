@@ -13,21 +13,29 @@ What this file holds (R7), each with the mutation that turns it red:
 1. The production sequence (2026-11-14): a card parks, the member approves it
    late, and the new run makes the call again. One write, and no second card.
    Drop the use in ``request_confirmation`` and the second run draws a card.
+   The real ``agent-crm`` ``update_deal_status``, loaded once for each run as
+   the loader names it, does the same.
 2. A second use finds nothing. Read the grant with GET and the third run
    writes a second time.
-3. A changed card (another stage, another deal, a renamed deal) gets a normal
-   card. Compare the keys only, or the text only, and one case writes.
-4. A late decline and a late REJECT write nothing and open nothing.
-5. A grant never crosses a thread, a member or an org. Key the grant by the
-   thread alone and the cross tries write.
-6. The cards that never take a grant: rows, a tool that is not a first-party
-   write that stays in Metorite, and a call with no act key.
-7. Off is today: with the flag off, nothing is read or written, and the
+3. A changed card (another stage, another deal, a twin title, a renamed deal,
+   other facts) gets a normal card. Compare the keys only, or the text only,
+   or drop the facts, and one case writes.
+4. An act runs once. A stale twin card, parked before a live approve of the
+   same act, writes nothing on a late approve. Drop the live cleanup, and the
+   twin writes a second time. Two cards of two acts in one thread each keep
+   their own grant: key the grant by the thread alone, and one is lost.
+5. A late decline and a late REJECT write nothing and open nothing, and drop
+   the offer. So does an answer that came during the park.
+6. A grant never crosses a thread, a member or an org.
+7. The cards that never take a grant: rows, ``bulk_update`` (it keys as
+   ``update_task``), a send, a call with no act key, and a cut card. Test the
+   family head and not the real tool, and ``bulk_update`` takes one.
+8. Off is today: with the flag off, nothing is read or written, and the
    message is the same, byte for byte.
-8. A Redis fault shows the normal card.
-9. The new message reads as an approve, and only a grant adds its paragraph.
-10. The places: the grant write sits after the move of the row, and the use
-    sits before the card. Each has one caller.
+9. A Redis fault shows the normal card.
+10. The new message reads as an approve, and only a grant adds its paragraph.
+11. The places: the grant write sits after the move of the row, and the use
+    sits before the card. Each record has one writer.
 
 Run::
 
@@ -72,17 +80,22 @@ from tests.unit.test_pending_ask_flow import (  # noqa: E402, F401
 _ROOT = Path(__file__).resolve().parents[2]
 _ALICE = "alice@ask-a.test"
 _BOB = "bob@ask-a.test"
-_CAROL = "carol@ask-b.test"
 
 #: The deals of the stand-in CRM: id to title. A test renames one.
 DEALS: dict[str, str] = {}
 #: Each write that a stand-in tool made, in order.
 WRITES: list[tuple[str, ...]] = []
+#: The ids that ``assign`` resolves a name to. A test moves one.
+PEOPLE: dict[str, str] = {}
+
+#: The annotation that a first-party write carries (``tool_annotations``).
+_CARD_WRITE = {"read_only": False, "destructive": True, "idempotent": False,
+               "open_world": True, "card_write": True}
 
 
-async def update_deal_status(deal_id: str, stage: str) -> str:
-    """A stand-in of ``agent-crm`` ``update_deal_status``: one card, then one
-    write on approve. The name is a write of ``egress.HELD_CARD_WRITE_TOOLS``."""
+async def update_deal_status(deal_id: str, stage: str, lost_reason: str | None = None) -> str:
+    """A stand-in of ``agent-crm`` ``update_deal_status``, with its pinned
+    parameters and its annotation: one card, then one write on approve."""
     title = DEALS[deal_id]
     ok = await request_confirmation(
         title=f"Move this deal to {stage}?",
@@ -93,6 +106,37 @@ async def update_deal_status(deal_id: str, stage: str) -> str:
         return f"{title} was not moved to {stage}."
     WRITES.append(("deal", deal_id, stage))
     return f"{title} moved to {stage}."
+
+
+update_deal_status.__tool_risk__ = dict(_CARD_WRITE)  # type: ignore[attr-defined]
+
+
+async def assign(task_id: str, assignees: str) -> str:
+    """A stand-in of the Projects ``assign``: the card shows the name, and the
+    resolved person is a fact that it binds (WAC-4)."""
+    from acb_skills.whatsapp_acts import card_facts
+
+    card_facts(assignees=[PEOPLE[assignees]])
+    ok = await request_confirmation(title="Assign this task?",
+                                    detail=f"Task {task_id} → {assignees}")
+    if ok:
+        WRITES.append(("assign", task_id, PEOPLE[assignees]))
+    return "assigned" if ok else "not assigned"
+
+
+assign.__tool_risk__ = dict(_CARD_WRITE)  # type: ignore[attr-defined]
+
+
+async def bulk_update(task_ids: str, status: str) -> str:
+    """A stand-in of the class C ``bulk_update``. Its act keys read as the
+    family of ``update_task``, a listed write, but the tool itself is not."""
+    ok = await request_confirmation(title="Update these tasks?", detail=f"{task_ids} → {status}")
+    if ok:
+        WRITES.append(("bulk", task_ids, status))
+    return "done" if ok else "not done"
+
+
+bulk_update.__tool_risk__ = dict(_CARD_WRITE)  # type: ignore[attr-defined]
 
 
 async def send_email(to: str, subject: str) -> str:
@@ -112,6 +156,9 @@ async def update_tasks(changes: str) -> str:
     return "done" if ticked else "not done"
 
 
+update_tasks.__tool_risk__ = dict(_CARD_WRITE)  # type: ignore[attr-defined]
+
+
 class _Store:
     """The tenant Redis, by wire key. ``fail`` makes each call raise."""
 
@@ -121,20 +168,36 @@ class _Store:
         self.calls: list[str] = []
         self.fail: BaseException | None = None
 
-    async def set(self, k: Any, value: str, ex: int | None = None, **_kw: Any) -> bool:
-        self.calls.append(f"set {k.value}")
+    def _check(self, op: str, k: Any) -> None:
+        self.calls.append(f"{op} {k.value}")
         if self.fail is not None:
             raise self.fail
+
+    async def set(self, k: Any, value: str, ex: int | None = None, nx: bool = False,
+                  **_kw: Any) -> bool | None:
+        self._check("set", k)
+        if nx and k.value in self.data:
+            return None
         self.data[k.value] = value
         self.ttl[k.value] = ex
         return True
 
+    async def get(self, k: Any) -> str | None:
+        self._check("get", k)
+        return self.data.get(k.value)
+
     async def getdel(self, k: Any) -> str | None:
-        self.calls.append(f"getdel {k.value}")
-        if self.fail is not None:
-            raise self.fail
+        self._check("getdel", k)
         self.ttl.pop(k.value, None)
         return self.data.pop(k.value, None)
+
+    async def delete(self, k: Any) -> int:
+        self._check("delete", k)
+        self.ttl.pop(k.value, None)
+        return 1 if self.data.pop(k.value, None) is not None else 0
+
+    def keys(self, namespace: str) -> list[str]:
+        return sorted(k for k in self.data if f":{namespace}:" in k)
 
 
 @pytest.fixture
@@ -143,6 +206,8 @@ def store(monkeypatch):
     monkeypatch.setattr(late_approve, "_redis", lambda: s)
     DEALS.clear()
     DEALS.update({"d-neuro": "Neuropeak", "d-orbit": "Orbit"})
+    PEOPLE.clear()
+    PEOPLE.update({"Sougata": "sougata@acme.test"})
     WRITES.clear()
     return s
 
@@ -157,36 +222,57 @@ def late_on(monkeypatch, flag_on, store):
 
 def _run(r, tid: str, fn: Any = update_deal_status, *, member: str = _ALICE,
          org: str = _ORG_A, verified: bool = True, keyed: bool = True,
+         agent: str = "orchestrator", live: str | None = None,
          **kwargs: Any) -> dict[str, Any]:
     """One run on *tid* that calls *fn* once. ``parked`` when its card parked.
 
     The run binds what a chat run binds: the thread, the tenant, the verified
-    member and the agent, and (with *keyed*) the act key of the call."""
+    member and the agent, and (with *keyed*) the act key and the tool of the
+    call. With *live*, the member answers the card at once, so it never
+    parks."""
     from acb_common import bind_run_context
     from acb_common.db import bind_tenant
 
     r.store[f"cc:runactor:{tid}"] = member
     out: dict[str, Any] = {}
+    seen = len(_cards(r, tid))
 
     async def _the_run() -> None:
         executor._stream_relay_thread_id.set(tid)
         bind_tenant(org)
-        bind_run_context(user=member, member_verified=verified, agent="orchestrator",
-                         thread_id=tid)
+        bind_run_context(user=member, member_verified=verified, agent=agent, thread_id=tid)
         scope = card_call(fn, (), kwargs) if keyed else contextlib.nullcontext()
         with scope:
             out["result"] = await fn(**kwargs)
 
+    async def _answer_live() -> None:
+        while len(_cards(r, tid)) == seen:
+            await asyncio.sleep(0.002)
+        rid = _cards(r, tid)[-1]["request_id"]
+        executor._pending_user_input[rid].set_result({"answer": live})
+
     async def go() -> None:
         run = asyncio.create_task(_the_run())
         stream_relay._DETACHED_TASKS[tid] = run
+        helper = asyncio.create_task(_answer_live()) if live else None
         try:
             # The first park of a process imports the tool modules, so allow time.
             await asyncio.wait_for(run, timeout=60)
         except asyncio.CancelledError:
             out["parked"] = True
+        finally:
+            if helper is not None:
+                helper.cancel()
 
-    asyncio.run(go())
+    if live:
+        saved = pending_ask.park_after_seconds
+        pending_ask.park_after_seconds = lambda: 30.0
+        try:
+            asyncio.run(go())
+        finally:
+            pending_ask.park_after_seconds = saved
+    else:
+        asyncio.run(go())
     return out
 
 
@@ -225,8 +311,13 @@ def _park_and_approve(r, monkeypatch, tid: str, **kwargs: Any) -> str:
     return rid
 
 
-def _grant_key(org: str, member: str, tid: str) -> str:
-    return f"cc:{org}:{late_approve.GRANT_NAMESPACE}:{member}:{tid}"
+def _grants(store: _Store) -> list[str]:
+    return store.keys(late_approve.GRANT_NAMESPACE)
+
+
+def _offers(store: _Store) -> list[str]:
+    return [k for k in store.keys(late_approve.OFFER_NAMESPACE)
+            if store.data[k] != late_approve._SPENT]
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +349,7 @@ def test_the_production_sequence_writes_once_with_one_card(
     assert out["result"] == "Neuropeak moved to Payment Complete."
     assert WRITES == [("deal", "d-neuro", "Payment Complete")]
     assert len(_cards(liveness, tid)) == 1, "the member saw ONE card"
-    assert _grant_key(_ORG_A, _ALICE, tid) not in late_on.data, "the grant is used up"
+    assert _grants(late_on) == [], "the grant is used up"
 
     # A second use finds nothing: the next same call asks again.
     assert _run(liveness, tid, deal_id="d-neuro", stage="Payment Complete").get("parked")
@@ -266,26 +357,40 @@ def test_the_production_sequence_writes_once_with_one_card(
     assert WRITES == [("deal", "d-neuro", "Payment Complete")]
 
 
-def test_the_records_carry_the_tenant_the_member_the_thread_and_a_ttl(
+def test_the_records_carry_the_tenant_the_member_the_thread_and_the_act(
     late_on, ask_db, liveness, no_persist, monkeypatch,
 ):
     tid = "t-hrd22-keys"
     assert _run(liveness, tid, deal_id="d-neuro", stage="Won").get("parked")
     rid = _cards(liveness, tid)[0]["request_id"]
-    offer = f"cc:{_ORG_A}:{late_approve.OFFER_NAMESPACE}:{_ALICE}:{tid}:{rid}"
-    assert list(late_on.data) == [offer]
-    assert late_on.ttl[offer] == pending_ask._ttl_hours() * 3600
-    record = json.loads(late_on.data[offer])
-    assert record["rid"] == rid
-    assert record["text"] == late_approve.card_text_of(
+    text = late_approve.card_text_of(
         "Move this deal to Won?", "Neuropeak → Won", "deal: Neuropeak\nstage: Won")
-    assert [json.loads(k)[1] for k in record["keys"]] == ["update_deal_status"]
+    keys = late_approve.keys_wire(card_call_keys(update_deal_status, deal_id="d-neuro",
+                                                 stage="Won"), "orchestrator")
+    digest = late_approve.digest_of(text, keys)
+    ask = f"cc:{_ORG_A}:{late_approve.ASK_NAMESPACE}:{_ALICE}:{tid}:{rid}"
+    offer = f"cc:{_ORG_A}:{late_approve.OFFER_NAMESPACE}:{_ALICE}:{tid}:{digest}"
+    assert sorted(late_on.data) == sorted([ask, offer])
+    assert late_on.data[ask] == digest
+    assert late_on.ttl[ask] == late_on.ttl[offer] == pending_ask._ttl_hours() * 3600
+    record = json.loads(late_on.data[offer])
+    assert (record["rid"], record["text"], record["keys"]) == (rid, text, keys)
 
     assert _approve_late(monkeypatch, tid, rid).status_code == 409
-    grant = _grant_key(_ORG_A, _ALICE, tid)
-    assert list(late_on.data) == [grant], "the offer is taken once, and the grant replaces it"
+    grant = f"cc:{_ORG_A}:{late_approve.GRANT_NAMESPACE}:{_ALICE}:{tid}:{digest}"
+    assert list(late_on.data) == [grant], "the ask and the offer are taken once"
     assert late_on.ttl[grant] == late_approve.GRANT_TTL_S == 30 * 60
-    assert json.loads(late_on.data[grant])["rid"] == rid
+
+
+def test_a_record_lives_no_longer_than_its_row():
+    from datetime import UTC, datetime, timedelta
+
+    soon = (datetime.now(UTC) + timedelta(seconds=900)).isoformat()
+    assert 890 <= late_approve._row_ttl_s({"expires_at": soon}, 604800) <= 900
+    gone = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
+    assert late_approve._row_ttl_s({"expires_at": gone}, 604800) < 0
+    assert late_approve._row_ttl_s({"expires_at": "not a time"}, 604800) == 0
+    assert late_approve._row_ttl_s({}, 3600) == 3600
 
 
 # ---------------------------------------------------------------------------
@@ -313,30 +418,108 @@ def test_a_changed_card_gets_a_normal_card(
     assert _run(liveness, tid, **call).get("parked"), "a changed card asks again"
     assert WRITES == []
     assert len(_cards(liveness, tid)) == 2
-    # The grant is gone: the card that it named asks again too.
+    # Another act never takes the grant away: the card that it names still
+    # gets it, once.
     DEALS["d-neuro"] = "Neuropeak"
-    assert _run(liveness, tid, deal_id="d-neuro", stage="Payment Complete").get("parked")
+    assert "parked" not in _run(liveness, tid, deal_id="d-neuro", stage="Payment Complete")
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")]
+
+
+def test_other_facts_behind_the_same_words_get_a_normal_card(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """The card shows a name. The tool binds the person that the name resolved
+    to (WAC-4 facts). A name that now resolves to another person asks again."""
+    tid = "t-hrd22-facts"
+    assert _run(liveness, tid, assign, task_id="t-7", assignees="Sougata").get("parked")
+    rid = _cards(liveness, tid)[0]["request_id"]
+    offer = json.loads(late_on.data[_offers(late_on)[0]])
+    assert "sougata@acme.test" in offer["text"], "the facts are in the act"
+    assert _approve_late(monkeypatch, tid, rid).status_code == 409
+    PEOPLE["Sougata"] = "sougata.b@acme.test"
+    assert _run(liveness, tid, assign, task_id="t-7", assignees="Sougata").get("parked")
     assert WRITES == []
+    PEOPLE["Sougata"] = "sougata@acme.test"
+    assert "parked" not in _run(liveness, tid, assign, task_id="t-7", assignees="Sougata")
+    assert WRITES == [("assign", "t-7", "sougata@acme.test")]
 
 
 # ---------------------------------------------------------------------------
-# 4. A late decline and a late REJECT write nothing
+# 4. An act runs once
 # ---------------------------------------------------------------------------
 
-def test_a_late_decline_writes_nothing_and_opens_nothing(
+def test_a_stale_twin_never_writes_after_a_live_approve(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Review P1. Card C1 parks. The member writes again, the model draws C2
+    with the same act, and the member approves C2 live (write 1). A late tap
+    on C1 then writes nothing, and its message has no paragraph."""
+    tid = "t-hrd22-twin"
+    call = {"deal_id": "d-neuro", "stage": "Payment Complete"}
+    assert _run(liveness, tid, **call).get("parked")
+    c1 = _cards(liveness, tid)[0]["request_id"]
+    out = _run(liveness, tid, live="APPROVE", **call)
+    assert "parked" not in out and WRITES == [("deal", "d-neuro", "Payment Complete")]
+    assert _offers(late_on) == [], "the live approve spent the act"
+
+    res = _approve_late(monkeypatch, tid, c1)
+    assert res.status_code == 409
+    assert res.json()["detail"]["resumeMessage"] == _envelope(
+        "Move this deal to Payment Complete?"), "no grant, so no paragraph"
+    assert _grants(late_on) == []
+    assert _run(liveness, tid, **call).get("parked"), "the next same call asks again"
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")]
+
+
+def test_a_twin_that_parks_after_a_live_approve_records_no_offer(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """A twin card open at the live approve parks later. The SPENT mark keeps
+    it from an offer."""
+    tid = "t-hrd22-twin-later"
+    call = {"deal_id": "d-neuro", "stage": "Payment Complete"}
+    assert "parked" not in _run(liveness, tid, live="APPROVE", **call)
+    assert _run(liveness, tid, **call).get("parked")
+    c2 = _cards(liveness, tid)[-1]["request_id"]
+    assert _offers(late_on) == []
+    assert _approve_late(monkeypatch, tid, c2).status_code == 409
+    assert _grants(late_on) == []
+    assert _run(liveness, tid, **call).get("parked")
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")]
+
+
+def test_two_acts_in_one_thread_each_keep_their_grant(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Two cards of two acts park, and the member approves both late. Each
+    act runs once, in either order."""
+    tid = "t-hrd22-two"
+    _park_and_approve(liveness, monkeypatch, tid, stage="Payment Complete")
+    _park_and_approve(liveness, monkeypatch, tid, deal_id="d-orbit", stage="Won")
+    assert len(_grants(late_on)) == 2
+    assert "parked" not in _run(liveness, tid, deal_id="d-orbit", stage="Won")
+    assert "parked" not in _run(liveness, tid, deal_id="d-neuro", stage="Payment Complete")
+    assert WRITES == [("deal", "d-orbit", "Won"), ("deal", "d-neuro", "Payment Complete")]
+    assert _grants(late_on) == []
+
+
+# ---------------------------------------------------------------------------
+# 5. A late decline and a late REJECT write nothing, and drop the offer
+# ---------------------------------------------------------------------------
+
+def test_a_late_decline_writes_nothing_and_drops_the_offer(
     late_on, ask_db, liveness, no_persist, monkeypatch,
 ):
     tid = "t-hrd22-decline"
     assert _run(liveness, tid, deal_id="d-neuro", stage="Won").get("parked")
     rid = _cards(liveness, tid)[0]["request_id"]
+    assert _offers(late_on)
     res = _answer_client(monkeypatch, _ALICE, _ORG_A).post("/agent/respond-input", json={
         "request_id": rid, "answer": "", "thread_id": tid, "declined": True,
     })
     assert res.json() == {"ok": True, "declined": True}
     assert ask_db.rows[(_ORG_A, rid)]["state"] == "closed"
-    assert _grant_key(_ORG_A, _ALICE, tid) not in late_on.data
-    assert not [c for c in late_on.calls
-                if c.startswith("set ") and late_approve.GRANT_NAMESPACE in c]
+    assert late_on.data == {}, "the offer goes with its row"
     assert _run(liveness, tid, deal_id="d-neuro", stage="Won").get("parked")
     assert WRITES == []
 
@@ -349,13 +532,34 @@ def test_a_late_reject_writes_nothing_and_its_message_is_as_before(
     rid = _cards(liveness, tid)[0]["request_id"]
     res = _approve_late(monkeypatch, tid, rid, answer="REJECT")
     assert res.json()["detail"]["resumeMessage"] == _envelope("Move this deal to Won?", "REJECT")
-    assert _grant_key(_ORG_A, _ALICE, tid) not in late_on.data
+    assert late_on.data == {}, "the offer goes with its row"
     assert _run(liveness, tid, deal_id="d-neuro", stage="Won").get("parked")
     assert WRITES == []
 
 
+def test_an_answer_during_the_park_drops_the_offer(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """The member answers while the offer is written. The answer reaches the
+    live run, the row leaves ``parked``, and the offer goes."""
+    real = late_approve.record_offer
+
+    async def _answer_during(org, thread_id, request_id, row, cap_s):
+        written = await real(org, thread_id, request_id, row, cap_s)
+        executor._pending_user_input[request_id].set_result({"answer": "APPROVE"})
+        return written
+
+    monkeypatch.setattr(late_approve, "record_offer", _answer_during)
+    tid = "t-hrd22-race"
+    out = _run(liveness, tid, deal_id="d-neuro", stage="Won")
+    assert "parked" not in out and WRITES == [("deal", "d-neuro", "Won")]
+    rid = _cards(liveness, tid)[0]["request_id"]
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "answered"
+    assert _offers(late_on) == [] and late_on.keys(late_approve.ASK_NAMESPACE) == []
+
+
 # ---------------------------------------------------------------------------
-# 5. A grant never crosses a thread, a member or an org
+# 6. A grant never crosses a thread, a member or an org
 # ---------------------------------------------------------------------------
 
 def test_a_grant_never_crosses_a_thread_a_member_or_an_org(
@@ -375,7 +579,7 @@ def test_a_grant_never_crosses_a_thread_a_member_or_an_org(
     assert _run(liveness, tid, verified=False, **call).get("parked")
     assert WRITES == []
     # None of them read the grant, so its own run still takes it, once.
-    assert _grant_key(_ORG_A, _ALICE, tid) in late_on.data
+    assert len(_grants(late_on)) == 1
     assert "parked" not in _run(liveness, tid, **call)
     assert WRITES == [("deal", "d-neuro", "Payment Complete")]
 
@@ -389,15 +593,16 @@ def test_another_member_cannot_answer_and_so_writes_no_grant(
     res = _approve_late(monkeypatch, tid, rid, member=_BOB)
     assert res.status_code == 409 and isinstance(res.json()["detail"], str)
     assert ask_db.rows[(_ORG_A, rid)]["state"] == "parked"
-    assert not [k for k in late_on.data if late_approve.GRANT_NAMESPACE in k]
+    assert _grants(late_on) == []
 
 
 # ---------------------------------------------------------------------------
-# 6. The cards that never take a grant
+# 7. The cards that never take a grant
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("case", ["rows", "send", "no_key"])
-def test_a_card_that_is_not_plain_records_no_offer(
+@pytest.mark.parametrize("case", ["rows", "bulk", "send", "no_key", "cut_mark",
+                                  "long_context", "long_title"])
+def test_a_card_that_may_not_skip_records_no_offer(
     case, late_on, ask_db, liveness, no_persist, monkeypatch,
 ):
     tid = f"t-hrd22-plain-{case}"
@@ -407,15 +612,48 @@ def test_a_card_that_is_not_plain_records_no_offer(
         changes = json.dumps([{"task_id": "t-1", "title": "Ship it"}])
         assert late_approve.keys_wire(card_call_keys(update_tasks, changes=changes))
         out = _run(liveness, tid, update_tasks, changes=changes)
+    elif case == "bulk":
+        # Its keys read as the listed family ``update_task``. The tool is not.
+        assert late_approve.keys_wire(card_call_keys(bulk_update, task_ids="t-1 t-2",
+                                                     status="Done"))
+        out = _run(liveness, tid, bulk_update, task_ids="t-1 t-2", status="Done")
     elif case == "send":
         out = _run(liveness, tid, send_email, to="x@acme.test", subject="Hi")
-    else:
+    elif case == "no_key":
         out = _run(liveness, tid, keyed=False, deal_id="d-neuro", stage="Won")
+    elif case == "long_title":
+        # The stage is in the title, so the title loses text to the clip.
+        out = _run(liveness, tid, deal_id="d-neuro", stage="W" * 130)
+    else:
+        from acb_common.card_body import CUT_MARK
+
+        DEALS["d-neuro"] = {
+            "cut_mark": f"Neuropeak {CUT_MARK}",
+            "long_context": "N" * 4100,
+        }[case]
+        out = _run(liveness, tid, deal_id="d-neuro", stage="Won")
     assert out.get("parked")
-    assert late_on.data == {}, "no offer, so no late approve can grant"
+    assert _offers(late_on) == [], "no offer, so no late approve can grant"
     rid = _cards(liveness, tid)[0]["request_id"]
     assert _approve_late(monkeypatch, tid, rid).status_code == 409
-    assert late_on.data == {}
+    assert _grants(late_on) == []
+
+
+def test_bulk_update_never_takes_a_grant_even_with_one_in_place(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """A grant of the same digest that some writer put in place still does
+    not let ``bulk_update`` skip its card: the real tool fails the tests."""
+    from acb_common.tenant_redis import key, organization_scope
+
+    tid = "t-hrd22-bulk-grant"
+    keys = late_approve.keys_wire(card_call_keys(bulk_update, task_ids="t-1", status="Done"))
+    text = late_approve.card_text_of("Update these tasks?", "t-1 → Done", "")
+    with organization_scope(_ORG_A):
+        k = key(late_approve.GRANT_NAMESPACE, _ALICE, tid, late_approve.digest_of(text, keys))
+    late_on.data[k.value] = late_approve._encode("a" * 32, text, keys)
+    assert _run(liveness, tid, bulk_update, task_ids="t-1", status="Done").get("parked")
+    assert WRITES == []
 
 
 def test_only_a_first_party_write_that_stays_in_metorite_has_keys():
@@ -426,6 +664,29 @@ def test_only_a_first_party_write_that_stays_in_metorite_has_keys():
     assert late_approve.keys_wire(frozenset({mail})) is None
     assert late_approve.keys_wire(frozenset({deal, mail})) is None, "one bad key spoils all"
     assert late_approve.keys_wire(frozenset({deal})) is not None
+
+
+def test_the_real_tool_passes_the_three_tests_of_a_card_write():
+    from acb_skills.egress import is_card_write_tool
+
+    assert is_card_write_tool(update_deal_status)
+    assert not is_card_write_tool(bulk_update), "not on the list"
+    assert not is_card_write_tool(send_email)
+
+    async def update_deal_status_unmarked(deal_id: str, stage: str,
+                                          lost_reason: str | None = None) -> str:
+        return ""
+
+    update_deal_status_unmarked.__name__ = "update_deal_status"
+    assert not is_card_write_tool(update_deal_status_unmarked), "no annotation"
+
+    async def wider(deal_id: str, stage: str, lost_reason: str | None = None,
+                    owner: str = "") -> str:
+        return ""
+
+    wider.__name__ = "update_deal_status"
+    wider.__tool_risk__ = dict(_CARD_WRITE)  # type: ignore[attr-defined]
+    assert not is_card_write_tool(wider), "a parameter outside the pin"
 
 
 def test_a_per_run_agent_module_reads_as_the_run_agent():
@@ -440,50 +701,59 @@ def test_a_per_run_agent_module_reads_as_the_run_agent():
     assert late_approve.keys_wire(frozenset({one}), "") is None
 
 
-def test_only_a_parked_plain_confirmation_row_turns_its_offer_into_a_grant(late_on):
-    """The offer waits, and only the right row and the right answer take it."""
-    rid = "a" * 32
-    row = {"kind": "confirmation", "state": "parked", "thread_id": "t1",
-           "request_id": rid, "payload": {}}
-    deal = ("tests.unit.test_late_approve_grant", "update_deal_status", (("deal_id", "d1"),))
-    offer = f"cc:{_ORG_A}:{late_approve.OFFER_NAMESPACE}:{_ALICE}:t1:{rid}"
-    late_on.data[offer] = json.dumps({
-        "v": 1, "rid": rid, "text": "card", "keys": late_approve.keys_wire(frozenset({deal}))})
+def test_the_real_crm_tool_of_two_runs_writes_once(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Review F8: the real ``agent-crm`` ``update_deal_status``, loaded for
+    each run under the per-run module name of ``acb_skills.loader``. It parks,
+    the member approves late, and the next run's copy writes once."""
+    from tests.unit._crm_agent_fakes import fake_gateway, load_agent_module, writes
 
-    async def go(answer: str = "APPROVE", member: str = _ALICE, **change: Any) -> bool:
-        return await late_approve.grant_from_offer(_ORG_A, member, {**row, **change}, answer)
+    deal_id, won = str(uuid.uuid4()), str(uuid.uuid4())
 
-    assert not asyncio.run(go(state="open"))
-    assert not asyncio.run(go(state="answered"))
-    assert not asyncio.run(go(kind="questions"))
-    assert not asyncio.run(go(payload={"rows": [{"id": "r1"}]}))
-    assert not asyncio.run(go(payload={"reply": {"kind": "new"}}))
-    assert not asyncio.run(go(answer="REJECT"))
-    assert not asyncio.run(go(answer='APPROVE {"rows": ["r1"]}'))
-    assert not asyncio.run(go(member=_BOB))
-    assert offer in late_on.data, "no refusal touched the offer of Alice"
-    assert asyncio.run(go(answer=" approve "))
-    assert list(late_on.data) == [_grant_key(_ORG_A, _ALICE, "t1")]
-    # A second late answer finds no offer, so it writes nothing.
-    late_on.data.clear()
-    assert not asyncio.run(go())
-    assert late_on.data == {}
+    def responder(call: dict) -> Any:
+        if call["path"] == "/crm/statuses/deal":
+            return [{"id": won, "name": "Payment Complete", "type": "won"}]
+        if call["path"] == f"/crm/deals/{deal_id}":
+            return {"id": deal_id, "name": "Neuropeak", **(call["json"] or {})}
+        raise AssertionError(f"an unexpected route: {call['method']} {call['path']}")
+
+    runs = [load_agent_module(f"_agent_{uuid.uuid4().hex}_agents") for _ in range(2)]
+    calls = [fake_gateway(m, monkeypatch, responder, user=_ALICE) for m in runs]
+    assert runs[0].update_deal_status.__module__ != runs[1].update_deal_status.__module__
+    tid = "t-hrd22-real-crm"
+    assert _run(liveness, tid, runs[0].update_deal_status, agent="crm-assistant",
+                deal_id=deal_id, stage="Payment Complete").get("parked")
+    rid = _cards(liveness, tid)[0]["request_id"]
+    assert _approve_late(monkeypatch, tid, rid).status_code == 409
+    out = _run(liveness, tid, runs[1].update_deal_status, agent="crm-assistant",
+               deal_id=deal_id, stage="Payment Complete")
+    assert "parked" not in out, out
+    assert len(_cards(liveness, tid)) == 1
+    assert writes(calls[0]) == []
+    assert [(c["method"], c["path"]) for c in writes(calls[1])] == [
+        ("PATCH", f"/crm/deals/{deal_id}")]
 
 
 # ---------------------------------------------------------------------------
-# 7. Off is today
+# 8. Off is today
 # ---------------------------------------------------------------------------
 
 def test_with_the_flag_off_nothing_is_read_or_written(
     flag_on, store, ask_db, liveness, no_persist, monkeypatch,
 ):
     tid = "t-hrd22-off"
+    assert "parked" not in _run(liveness, tid, live="APPROVE", deal_id="d-neuro", stage="Won")
     assert _run(liveness, tid, deal_id="d-neuro", stage="Won").get("parked")
-    rid = _cards(liveness, tid)[0]["request_id"]
+    rid = _cards(liveness, tid)[-1]["request_id"]
     res = _approve_late(monkeypatch, tid, rid)
     assert res.json()["detail"]["resumeMessage"] == _envelope("Move this deal to Won?")
     assert _run(liveness, tid, deal_id="d-neuro", stage="Won").get("parked")
-    assert WRITES == []
+    res = _answer_client(monkeypatch, _ALICE, _ORG_A).post("/agent/respond-input", json={
+        "request_id": _cards(liveness, tid)[-1]["request_id"], "answer": "",
+        "thread_id": tid, "declined": True})
+    assert res.json() == {"ok": True, "declined": True}
+    assert WRITES == [("deal", "d-neuro", "Won")]
     assert store.calls == [], "off reads and writes no Redis"
 
 
@@ -500,7 +770,7 @@ def test_another_org_off_the_list_gets_nothing(
 
 
 # ---------------------------------------------------------------------------
-# 8. A Redis fault shows the normal card
+# 9. A Redis fault shows the normal card
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("where", ["offer", "grant", "use"])
@@ -527,7 +797,7 @@ def test_a_redis_fault_shows_the_normal_card(
 
 
 # ---------------------------------------------------------------------------
-# 9. The new message reads as an approve
+# 10. The new message reads as an approve
 # ---------------------------------------------------------------------------
 
 def test_the_new_message_reads_as_an_approve_with_its_display():
@@ -547,10 +817,11 @@ def test_the_new_message_reads_as_an_approve_with_its_display():
     assert marker is not None and marker["value"]["decision"] == "approve"
     # The paragraph is outside the quoted block: the member's own words.
     assert noted.message.index("<<<end-asked-question>>>") < noted.message.index(LATE_APPROVE_NOTE)
+    assert "If this call already ran in this chat, do not run it again." in LATE_APPROVE_NOTE
 
 
 # ---------------------------------------------------------------------------
-# 10. The places of the write and the use
+# 11. The places of the write and the use
 # ---------------------------------------------------------------------------
 
 def test_the_grant_is_written_only_after_the_row_moves():
@@ -564,15 +835,19 @@ def test_the_grant_is_written_only_after_the_row_moves():
     call = src.index("await grant_from_offer(org, me, row, req.answer)")
     assert moved < crm < call < src.index('"agent.pending_ask_answered_late"')
     assert src.count("grant_from_offer(") == 1
+    decline = inspect.getsource(agent_routes._late_decline_from_row)
+    assert decline.index("if moved is None:") < decline.index("await drop_offer(")
 
 
 def test_each_record_has_one_writer_and_one_reader():
     """``grant_from_offer`` has one caller (the late answer route),
-    ``record_offer`` one (the park) and ``take_grant`` one (the card gate).
-    No other code names a namespace of the grant."""
-    callers: dict[str, set[str]] = {"grant_from_offer(": set(), "record_offer(": set(),
-                                    "take_grant(": set(), "chat-late-approve": set(),
-                                    "chat-late-offer": set(), "GRANT_NAMESPACE": set()}
+    ``record_offer`` one (the park), ``take_grant`` and ``note_approved`` one
+    each (the card gate), and ``drop_offer`` the park and the decline. No
+    other code names a namespace of the grant."""
+    names = ("grant_from_offer(", "record_offer(", "take_grant(", "note_approved(",
+             "drop_offer(", "chat-late-approve", "chat-late-offer", "chat-late-ask",
+             "GRANT_NAMESPACE")
+    callers: dict[str, set[str]] = {n: set() for n in names}
     for top in ("apps", "packages"):
         for path in (_ROOT / top).rglob("*.py"):
             if "node_modules" in path.parts or ".venv" in path.parts:
@@ -582,10 +857,15 @@ def test_each_record_has_one_writer_and_one_reader():
                 if needle in text:
                     callers[needle].add(path.relative_to(_ROOT).as_posix())
     own = "packages/acb_skills/acb_skills/late_approve.py"
-    assert callers["grant_from_offer("] == {own, "apps/services/gateway/gateway/routes/agent.py"}
-    assert callers["record_offer("] == {own, "apps/services/orchestrator/orchestrator/pending_ask.py"}
-    assert callers["take_grant("] == {own, "packages/acb_skills/acb_skills/ask_tools.py"}
-    for name in ("chat-late-approve", "chat-late-offer", "GRANT_NAMESPACE"):
+    agent = "apps/services/gateway/gateway/routes/agent.py"
+    park = "apps/services/orchestrator/orchestrator/pending_ask.py"
+    gate = "packages/acb_skills/acb_skills/ask_tools.py"
+    assert callers["grant_from_offer("] == {own, agent}
+    assert callers["record_offer("] == {own, park}
+    assert callers["take_grant("] == {own, gate}
+    assert callers["note_approved("] == {own, gate}
+    assert callers["drop_offer("] == {own, park, agent}
+    for name in names[5:]:
         assert callers[name] == {own}, (name, callers[name])
 
 
@@ -593,9 +873,11 @@ def test_the_use_comes_before_the_card_and_reads_once():
     from acb_skills import ask_tools
 
     src = inspect.getsource(ask_tools.request_confirmation)
-    use = src.index("await _late_approved(_title, _detail, _context)")
+    use = src.index("await _late_approved(_card)")
     assert src.index("if cards_refused():") < use < src.index("_member_waits()")
     assert use < src.index("def _event(")
+    spent = src.index("await _late_approve_spent(_card)")
+    assert spent < src.index('return _answer == "APPROVE"', spent)
     take = inspect.getsource(late_approve.take_grant)
-    assert ".getdel(key(GRANT_NAMESPACE, member, thread))" in take
+    assert "redis.getdel(\n                key(GRANT_NAMESPACE, member, thread, act.digest))" in take
     assert ".get(" not in take.replace(".getdel(", ""), "a GET would leave the grant for a replay"
