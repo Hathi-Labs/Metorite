@@ -372,13 +372,18 @@ def _check_autonumber(spec: Mapping[str, Any], out: list[SpecProblem]) -> None:
         out.append(SpecProblem("reset", f"`reset` is {' or '.join(AUTONUMBER_RESETS)}."))
 
 
-def _check_extras(kind: str, spec: Mapping[str, Any], out: list[SpecProblem]) -> None:
-    """C14: ``min`` and ``max`` of a rating, ``units`` of a quantity and ``format``
-    of a barcode. Each belongs to one type. A quantity and a barcode need theirs."""
+def _check_part_owners(kind: str, spec: Mapping[str, Any], out: list[SpecProblem]) -> None:
+    """Each part of :data:`SPEC_PARTS` belongs to one type."""
     for owner, parts in SPEC_PARTS.items():
         for part in parts:
             if kind != owner and spec.get(part) is not None:
                 out.append(SpecProblem(part, f"Only a {owner} field takes `{part}`."))
+
+
+def _check_extras(kind: str, spec: Mapping[str, Any], out: list[SpecProblem]) -> None:
+    """C14: ``min`` and ``max`` of a rating, ``units`` of a quantity and ``format``
+    of a barcode. Each belongs to one type. A quantity and a barcode need theirs."""
+    _check_part_owners(kind, spec, out)
     if kind == "rating":
         lo, hi = spec.get("min"), spec.get("max")
         for name, v in (("min", lo), ("max", hi)):
