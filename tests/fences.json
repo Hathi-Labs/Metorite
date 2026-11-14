@@ -289,6 +289,7 @@
       "tests/unit/test_studio_row_rules_r8.py",
       "tests/unit/test_studio_logic_r8.py",
       "tests/unit/test_studio_lines_r8.py",
+      "tests/unit/test_studio_lines_r8_sheet.py",
       "tests/unit/test_no_person_present_r8.py",
       "tests/unit/test_studio_packages_r8.py",
       "tests/unit/test_studio_publish_install_r8.py",
