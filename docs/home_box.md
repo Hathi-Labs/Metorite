@@ -226,16 +226,29 @@ branch behind `main` still merges when the trial merge is clean. It never
 pushes, except the merge commit of a resolved conflict. It never passes `--admin` or `--auto`. `MERGE_BOT_DRY_RUN=1` prints
 the actions and calls no write command.
 
+The bot takes only a PR of this repo with base `main`. A fork, another base,
+or a head branch with a protected name (`main`, `master`, `release`,
+`release/*`, `green/*`) goes BACK before any merge work.
+
 **Conflicts** (CIV-34a, `ci_velocity.md` §8.8). When the trial merge
 conflicts, the bot merges `main` into the PR branch. It tries the rules of
-`scripts/merge_conflict_rules.py` on each conflicted file. It tests the merged
-tree, and then pushes the merge commit to the PR branch. It never uses force.
-The log gets `RESOLVED <pull request> <rules>`, and the next pass waits for the
-new pr-check.
+`scripts/merge_conflict_rules.py` on each conflicted file. It checks and tests
+the merged tree, and commits the merge only when all pass. It reads the head
+branch again, and pushes the merge commit only when the branch did not move.
+It never uses force, and `rerere` stays off.
 
-The log gets `BACK <pull request> conflict: no rule fits <files>` in three
-cases. A file fits no rule, or the conflict is in a HIGH, workflow or schema
-path. The third case is a failed test on the merged tree.
+The log then gets `RESOLVED <pull request> <rules>`, and the next pass waits
+for the new pr-check. The lane pulls its branch after a `RESOLVED` line.
+
+The log gets `BACK <pull request> conflict: ...` in these cases:
+
+- A file fits no rule, or the conflict is in a HIGH, workflow or schema path.
+- A check or a test fails on the merged tree.
+- The tests need more time than the cap.
+- The head branch moved during the resolution.
+
+The bot runs ruff from `~/lanes/merge-bot-wt/.venv/bin`, or through
+`uv run --no-sync`. The unit PATH has no ruff.
 
 The units are
 `scripts/home_server/systemd/metorite-merge-bot.service` and `.timer`, every

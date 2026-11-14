@@ -215,6 +215,8 @@ class Env:
             headRefOid=sha,
             body=body,
             headRefName=f"pr{n}",
+            isCrossRepository=False,
+            baseRefName="main",
         )
         self.checks(n, checks)
         if queue:
@@ -785,7 +787,17 @@ def test_civ28b_a_rename_out_of_a_high_path_is_seen(env):
     sha = git(env.seed, "rev-parse", "HEAD")
     git(env.seed, "checkout", "-q", "main")
     env.heads[5] = sha
-    env.view(5, state="OPEN", isDraft=False, mergeCommit=None, headRefOid=sha, body=VERIFY)
+    env.view(
+        5,
+        state="OPEN",
+        isDraft=False,
+        mergeCommit=None,
+        headRefOid=sha,
+        body=VERIFY,
+        headRefName="pr5",
+        isCrossRepository=False,
+        baseRefName="main",
+    )
     env.checks(5, None)
     env.queue(5, sha=sha)
     env.run()
@@ -842,24 +854,26 @@ def conflict_pr(env, n, path, base, mine, theirs, **kw):
     _push_main(env, path, theirs, "main edit " + path)
 
 
-def run_rules(env, test_rc=0, files=("tests/unit/test_x.py",), **extra):
-    """A pass of the bot with shimmed selection and tests, and a real ruff."""
-    gate = env.fix / "gate.sh"
-    selection = json.dumps({"full": False, "files": list(files)})
-    gate.write_text(f"#!/usr/bin/env bash\necho '{selection}'\n", encoding="utf-8", newline="\n")
+def run_rules(env, test_rc=0, during_tests="", **extra):
+    """A pass of the bot with the REAL test selection, shimmed tests and a real ruff."""
     tests = env.fix / "tests.sh"
     tests.write_text(
         f'#!/usr/bin/env bash\necho "$@" >> "{env.fix.as_posix()}/tests.args"\n'
+        f"{during_tests}\n"
         f'echo "FAILED boom" >&2\nexit {test_rc}\n',
         encoding="utf-8",
         newline="\n",
     )
     return env.run(
-        CONFLICT_GATE_CMD=f"bash {gate.as_posix()}",
         CONFLICT_TEST_CMD=f"bash {tests.as_posix()}",
         CONFLICT_RULES_RUFF=_ruff_exe(),
         **extra,
     )
+
+
+def ran_tests(env):
+    p = env.fix / "tests.args"
+    return p.read_text(encoding="utf-8").split() if p.exists() else []
 
 
 def pr_branch(env, n):
@@ -885,7 +899,8 @@ def test_civ34a_adjacent_table_rows_are_resolved_pushed_and_named(env):
     assert "| CIV-28 | b built |" in body and "| CIV-29 | c built |" in body
     assert pr_branch(env, 5) != old and "pr merge" not in env.calls and env.premerge_runs == 0
     assert "Conflict-Rule: table-rows spec.md" in pr_message(env, 5).splitlines()
-    assert (env.fix / "tests.args").read_text(encoding="utf-8").strip() == "tests/unit/test_x.py"
+    # No test names spec.md, so the resolution reaches no test.
+    assert ran_tests(env) == []
     # The pull ref moves, and a fresh pr-check passes. The next pass merges at the NEW head.
     new = pr_branch(env, 5)
     git(env.origin, "update-ref", "refs/pull/5/head", new)
@@ -908,14 +923,15 @@ def test_civ34a_both_sides_adding_tests_keeps_both(env):
     assert "Conflict-Rule: additions tests/unit/test_x.py" in pr_message(env, 5)
 
 
-def test_civ34a_an_append_only_list_file_keeps_both_sides(env):
-    base = "# Handoff\n\n### H-1 first\n"
-    mine, theirs = base + "\n### H-2 mine\n", base + "\n### H-3 theirs\n"
-    conflict_pr(env, 5, "project-docs/HANDOFF.md", base, mine, theirs)
+def test_civ34a_the_fences_list_keeps_both_sides(env):
+    base = json.dumps({"python": {"safety": ["a.py", "c.py"]}}, indent=2) + "\n"
+    mine = json.dumps({"python": {"safety": ["a.py", "b.py", "c.py"]}}, indent=2) + "\n"
+    theirs = json.dumps({"python": {"safety": ["a.py", "c.py", "d.py"]}}, indent=2) + "\n"
+    conflict_pr(env, 5, "tests/fences.json", base, mine, theirs)
     run_rules(env)
     assert env.log == "RESOLVED 5 union\n"
-    body = pr_file(env, 5, "project-docs/HANDOFF.md")
-    assert "H-2 mine" in body and "H-3 theirs" in body and body.index("H-2") < body.index("H-3")
+    got = json.loads(pr_file(env, 5, "tests/fences.json"))
+    assert got["python"]["safety"] == ["a.py", "b.py", "c.py", "d.py"]
 
 
 def test_civ34a_the_same_row_on_both_sides_goes_back(env):
@@ -944,11 +960,15 @@ def test_civ34a_a_conflict_in_a_workflow_file_goes_back_even_when_a_rule_fits(en
     assert pr_branch(env, 5) == old
 
 
+MINE = TEST_BASE + "\n\ndef test_mine():\n    assert True\n"
+THEIRS = TEST_BASE + "\n\ndef test_theirs():\n    assert True\n"
+
+
 def test_civ34a_a_resolution_whose_tests_fail_is_not_pushed(env):
-    conflict_pr(env, 5, "spec.md", TABLE_BASE, ROW28, ROW29)
+    conflict_pr(env, 5, "tests/unit/test_x.py", TEST_BASE, MINE, THEIRS)
     old = env.heads[5]
     run_rules(env, test_rc=1)
-    assert env.log.startswith("BACK 5 conflict: resolved by table-rows but the tests failed")
+    assert env.log.startswith("BACK 5 conflict: resolved by additions but the tests failed")
     assert "boom" in env.log and pr_branch(env, 5) == old and "pr merge" not in env.calls
 
 
@@ -978,3 +998,112 @@ def test_civ34a_the_rules_can_be_turned_off(env):
     conflict_pr(env, 5, "spec.md", TABLE_BASE, ROW28, ROW29)
     run_rules(env, CONFLICT_RULES="0")
     assert env.log.startswith("BACK 5 conflict: spec.md")
+
+
+# ── CIV-34a fix round (PR 2266 review) ───────────────────────────────────────
+
+
+def test_fix_p0_the_real_selection_tests_only_what_the_resolution_reaches(env):
+    """No shim: the bot's own selection runs. A scanner test is never picked."""
+    scan = "from pathlib import Path\n\n\ndef test_scan():\n    assert list(Path('.').iterdir())\n"
+    _push_main(env, "tests/unit/test_scan.py", scan, "a scanner")
+    _push_main(env, "tests/unit/test_other.py", "def test_o():\n    pass\n", "another test")
+    conflict_pr(env, 5, "tests/unit/test_x.py", TEST_BASE, MINE, THEIRS)
+    run_rules(env)
+    assert env.log == "RESOLVED 5 additions\n"
+    assert ran_tests(env) == ["tests/unit/test_x.py"]
+
+
+def test_fix_p0_a_selection_over_the_time_cap_goes_back_without_a_run(env):
+    durations = json.dumps({"tests/unit/test_x.py::test_a": 5000.0})
+    _push_main(env, ".test_durations", durations, "durations")
+    conflict_pr(env, 5, "tests/unit/test_x.py", TEST_BASE, MINE, THEIRS)
+    old = env.heads[5]
+    run_rules(env)
+    assert env.log.startswith("BACK 5 conflict: resolved by additions but the tests need ")
+    assert "over the cap of 900 s" in env.log
+    assert ran_tests(env) == [] and pr_branch(env, 5) == old
+
+
+def test_fix_p1_rerere_stays_off_even_when_the_shared_repo_has_a_cache(env):
+    """An rr-cache folder turns rerere on by itself. The bot passes rerere.enabled=false."""
+    cache = env.tmp / "work" / ".git" / "rr-cache"
+    cache.mkdir()
+    conflict_pr(env, 5, "tests/unit/test_x.py", TEST_BASE, MINE, THEIRS)
+    run_rules(env, test_rc=1)
+    assert env.log.startswith("BACK 5 ")
+    assert list(cache.iterdir()) == []
+
+
+def test_fix_p1_rerere_cache_is_never_made(env):
+    conflict_pr(env, 5, "spec.md", TABLE_BASE, ROW28, ROW29)
+    run_rules(env)
+    assert env.log == "RESOLVED 5 table-rows\n"
+    assert not (env.tmp / "work" / ".git" / "rr-cache").exists()
+
+
+def test_fix_p1_the_checks_run_before_the_merge_commit(env):
+    conflict_pr(env, 5, "tests/unit/test_x.py", TEST_BASE, MINE, THEIRS)
+    run_rules(env, test_rc=1)
+    assert env.log.startswith("BACK 5 conflict: resolved by additions but the tests failed")
+    subjects = git(env.tmp / "work", "reflog", "show", "--format=%gs", "refs/heads/merge-bot/pr-5")
+    assert not [s for s in subjects.splitlines() if s.startswith("commit")], subjects
+
+
+@pytest.mark.parametrize(
+    ("fields", "reason"),
+    [
+        ({"isCrossRepository": True}, "a fork"),
+        ({"baseRefName": "release"}, "not main"),
+        ({"headRefName": "main"}, "protected"),
+        ({"headRefName": "master"}, "protected"),
+        ({"headRefName": "release"}, "protected"),
+        ({"headRefName": "green/main"}, "protected"),
+        ({"headRefName": "green/x"}, "protected"),
+        ({"headRefName": ""}, "protected"),
+    ],
+)
+def test_fix_p1_a_fork_another_base_or_a_protected_head_goes_back_first(env, fields, reason):
+    conflict_pr(env, 5, "spec.md", TABLE_BASE, ROW28, ROW29)
+    main_before = git(env.origin, "rev-parse", "refs/heads/main")
+    old = env.heads[5]
+    env.view(5, **fields)
+    run_rules(env)
+    assert env.log.startswith("BACK 5 ") and reason in env.log, env.log
+    assert git(env.origin, "rev-parse", "refs/heads/main") == main_before
+    assert pr_branch(env, 5) == old
+    assert "pr checks" not in env.calls and env.premerge_runs == 0
+
+
+def test_fix_p2_a_second_resolution_keeps_the_queued_sha(env):
+    conflict_pr(env, 5, "spec.md", TABLE_BASE, ROW28, ROW29)
+    queued = env.heads[5]
+    run_rules(env)
+    assert env.log == "RESOLVED 5 table-rows\n"
+    new1 = pr_branch(env, 5)
+    git(env.origin, "update-ref", "refs/pull/5/head", new1)
+    env.view(5, headRefOid=new1)
+    # main moves again, next to the row that the PR changed.
+    row27 = ROW29.replace("| CIV-27 | a |", "| CIV-27 | a built |")
+    _push_main(env, "spec.md", row27, "main edit 2")
+    run_rules(env)
+    assert env.log == "RESOLVED 5 table-rows\nRESOLVED 5 table-rows\n"
+    new2 = pr_branch(env, 5)
+    assert new2 != new1
+    state = (env.tmp / "state" / "resolved-5").read_text(encoding="utf-8").split()
+    assert state == [queued, new2]
+    git(env.origin, "update-ref", "refs/pull/5/head", new2)
+    env.view(5, headRefOid=new2)
+    run_rules(env)
+    assert env.log.endswith("DONE 5 abc123\n"), env.log
+    assert f"--match-head-commit {new2}" in env.merges[0]
+
+
+def test_fix_p3_a_head_branch_that_moved_back_is_not_pushed_over(env):
+    """The author resets the branch during the tests. A plain push would still be a fast-forward."""
+    conflict_pr(env, 5, "tests/unit/test_x.py", TEST_BASE, MINE, THEIRS)
+    parent = git(env.seed, "rev-parse", "pr5~1")
+    move = f'git -C "{env.seed.as_posix()}" push -q -f origin {parent}:refs/heads/pr5'
+    run_rules(env, during_tests=move)
+    assert env.log.startswith("BACK 5 conflict: resolved by additions but the head branch moved")
+    assert pr_branch(env, 5) == parent
