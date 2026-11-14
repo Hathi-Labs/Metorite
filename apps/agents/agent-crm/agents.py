@@ -442,23 +442,33 @@ async def search_crm(
     one type, or omit it to search all four. Returns each match with the id you
     pass to get_record / get_timeline.
 
-    This is substring (ILIKE) matching over each type's own searchable columns —
-    lead name/email/company, deal name and next step, contact names and email,
-    organization name/email/website — not semantic search. Converted leads are
+    Each word of the query must match one searchable column (a substring,
+    ILIKE): lead name/email/company, deal name, next step and company, the
+    names of a deal's contacts and of its source lead, contact names and
+    email, organization name/email/website. So put the person and the thing
+    in one query ("Sharath 3D printer"). It is not semantic search. When
+    nothing matches exactly, the answer lists NEAR SPELLINGS ("Sharat" for
+    "Sharath") and says so: they are not matches. Converted leads are
     excluded, matching the app's own lead list."""
     slugs = [_entity_slug(entity)] if entity else list(ENTITY_LABELS)
     # D1 (CRM-C7): a tool answer holds at most 50 rows.
     capped = max(1, min(int(limit or 10), 50))
     sections: list[str] = []
     total = 0
+    near_only = True
     for slug in slugs:
-        data = await _get(f"/crm/{slug}", {"q": query, "page_size": capped})
+        # HRD-18a: `near` asks for the near spellings when nothing matches.
+        data = await _get(
+            f"/crm/{slug}", {"q": query, "page_size": capped, "near": "true"},
+        )
         rows = (data or {}).get("rows") or []
         found = int((data or {}).get("total") or len(rows))
         total += found
         if not rows:
             continue
-        header = f"{ENTITY_LABELS[slug]}s ({found}"
+        near = all(r.get("near") is True for r in rows)
+        near_only = near_only and near
+        header = f"{ENTITY_LABELS[slug]}s{NEAR_SECTION if near else ''} ({found}"
         header += f", showing {len(rows)})" if found > len(rows) else ")"
         sections.append(
             header + ":\n" + "\n".join(_row_line(slug, r) for r in rows)
@@ -466,7 +476,37 @@ async def search_crm(
     if not sections:
         scope = ENTITY_LABELS[slugs[0]].lower() + "s" if entity else "the CRM"
         return f"Nothing in {scope} matches '{query}'."
-    return f"Matches for '{query}' ({total}):\n\n" + "\n\n".join(sections)
+    if near_only:
+        return _near_answer(query) + "\n\n" + "\n\n".join(sections)
+    out = f"Matches for '{query}' ({total}):\n\n" + "\n\n".join(sections)
+    if any(NEAR_SECTION in s.split("\n", 1)[0] for s in sections):
+        out += "\n\n" + NEAR_NOTE
+    return out
+
+
+#: The mark of a section of near spellings (HRD-18a).
+NEAR_SECTION = ", near spellings only"
+
+#: The last line of an answer that holds exact matches and near spellings.
+NEAR_NOTE = (
+    "A section marked near spellings holds a similar spelling of the query, "
+    "not the exact one. If it matters, confirm with the member that one of "
+    "them is the record they mean."
+)
+
+
+def _near_answer(query: str) -> str:
+    """The first lines of an answer that holds near spellings only (HRD-18a).
+
+    The model must read it as: the exact spelling found nothing, these
+    records hold a near spelling, and the member confirms one when it matters.
+    """
+    asked = " ".join(str(query or "").replace("«", "").replace("»", "").split())
+    return (
+        f"No record holds «{asked}». Near spellings: the records below hold a "
+        "similar spelling, not the exact one. Do not treat one as a match. If "
+        "it matters, ask the member whether one of them is the record they mean."
+    )
 
 
 @_annotate_risk(read_only=True, idempotent=True, open_world=False)

@@ -284,6 +284,13 @@ def clean(value: Any, cap: int = NAME_CAP) -> str:
 #: speaks to the model, so the model offers the alias in its own words.
 ALIAS_HINT = "After the member picks one, offer to save it as a name with profile_alias."
 
+#: The first line of a near answer (HRD-18a, ``chat_failure_modes.md`` F1).
+#: No name equals the input, and ``acb_common.name_match`` calls these near.
+#: The model asks, even for one name, because a near spelling is no match.
+NEAR = ("Nobody is named «{asked}». Near spellings, not matches. Ask the member "
+        "whether one of them is the person they mean, and never act on one "
+        "without a yes:")
+
 #: The route read only the first rows of a large directory (PZ-5 verify, P2),
 #: so a person may be missing. One match is then not proof of one person.
 TRUNCATED = ("The directory is large, and only part of it was searched. "
@@ -305,6 +312,16 @@ def format_answer(body: Any, asked: str) -> str:
             lines.append(NO_DIRECTORY)
         if body.get("truncated") is True:
             lines.append(TRUNCATED)
+        return "\n".join(lines)
+    if body.get("near") is True:
+        # HRD-18a: one near name asks too. It is never a "Match:".
+        lines.append(NEAR.format(asked=clean(asked)))
+        lines += [f"- «{n}» <{e}>" for i, (n, e) in enumerate(people) if i < LIST_CAP]
+        if total > LIST_CAP:
+            lines.append(f"and {total - LIST_CAP} more")
+        if body.get("truncated") is True:
+            lines.append(TRUNCATED)
+        lines.append(ALIAS_HINT)
         return "\n".join(lines)
     if total == 1 and len(people) == 1:
         source = SOURCES.get(str(body.get("source") or ""), "people")
@@ -331,7 +348,8 @@ async def resolve_person(name: str) -> str:
     Call it when the member names a person ("send it to Raj") and you need
     the address. It looks in the member's saved aliases first. Then it looks
     in the People directory and the members together. One match: act on it. Several: ask the
-    member which one, and never guess. None: ask for the full name or the
+    member which one, and never guess. Near spellings only: ask the member to
+    confirm one, even when there is one. None: ask for the full name or the
     address.
 
     Args:

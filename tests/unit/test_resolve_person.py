@@ -257,7 +257,42 @@ class TestTheTiers:
 
     def test_nobody(self, fake: _FakeDB) -> None:
         assert _resolve("Nobody Here") == {"source": None, "matches": [], "total": 0,
-                                           "directory": True, "truncated": False}
+                                           "directory": True, "truncated": False,
+                                           "near": False}
+
+    def test_a_near_spelling_comes_back_marked_near(self, fake: _FakeDB) -> None:
+        """HRD-18a (production, 2026-11-11): "Swagata" found nobody, and the
+        member meant Sougata Maji. The one matcher scores the same rows."""
+        fake.people = [{"name": "Sougata Maji", "email": "sougata.maji@alpha.example"},
+                       {"name": "Sanjay Rao", "email": "sanjay@alpha.example"}]
+        fake.members = [{"display_name": "Swati K", "email": "swati@alpha.example"}]
+        out = _resolve("Swagata")
+        assert out["near"] is True and out["source"] == "people"
+        assert _emails(out) == ["sougata.maji@alpha.example"]
+        # No second read: the near tier scores the rows of the directory tier.
+        assert fake.directory_reads() == [rp.PEOPLE_SQL, rp.MEMBERS_SQL]
+
+    def test_near_spellings_come_nearest_first(self, fake: _FakeDB) -> None:
+        fake.people = [{"name": "Sarath Menon", "email": "sarath@alpha.example"}]
+        fake.members = [{"display_name": "Sharat S", "email": "sharat@alpha.example"}]
+        out = _resolve("Sharath")
+        assert out["near"] is True
+        assert _emails(out) == ["sarath@alpha.example", "sharat@alpha.example"]
+
+    def test_an_exact_name_is_never_near(self, fake: _FakeDB) -> None:
+        fake.people = [{"name": "Sougata Maji", "email": "sougata.maji@alpha.example"}]
+        out = _resolve("Sougata")
+        assert out["near"] is False and _emails(out) == ["sougata.maji@alpha.example"]
+
+    def test_an_address_never_matches_nearly(self, fake: _FakeDB) -> None:
+        fake.people = [{"name": "Sougata", "email": "sougata@alpha.example"}]
+        out = _resolve("sougatta@alpha.example")
+        assert out["near"] is False and out["matches"] == []
+
+    def test_a_far_name_stays_nobody(self, fake: _FakeDB) -> None:
+        fake.people = [{"name": "Suresh Rao", "email": "suresh@alpha.example"}]
+        out = _resolve("Sharath")
+        assert (out["near"], out["matches"]) == (False, [])
 
     def test_the_cap_and_the_count(self, fake: _FakeDB) -> None:
         fake.people = [{"name": "Ana", "email": f"ana{i}@alpha.example"} for i in range(7)]
@@ -306,7 +341,7 @@ class TestThePeopleGate:
         fake.members = [{"display_name": "Raj", "email": "raj@alpha.example"}]
         out = _resolve("Raj", _user(people=False))
         assert out == {"source": None, "matches": [], "total": 0, "directory": False,
-                       "truncated": False}
+                       "truncated": False, "near": False}
         # Not one SELECT of the directory: only the member's own profile.
         assert [s for s, _ in fake.sql if hits(s, "FROM people") or hits(s, "FROM app_user")] == []
 
@@ -351,6 +386,16 @@ class TestTheAnswer:
         assert two.splitlines()[-1] == pt.ALIAS_HINT
         assert pt.ALIAS_HINT == ("After the member picks one, offer to save it as a "
                                  "name with profile_alias.")
+
+    def test_a_near_answer_asks_even_for_one_name(self) -> None:
+        """HRD-18a: a near spelling is no match, so one near name asks."""
+        out = pt.format_answer({"source": "people", "total": 1, "near": True, "matches": [
+            {"name": "Sougata Maji", "email": "sougata.maji@a.b"}]}, "Swagata")
+        assert "Match:" not in out
+        assert out.splitlines() == [
+            pt.HEADER, pt.NEAR.format(asked="Swagata"),
+            "- «Sougata Maji» <sougata.maji@a.b>", pt.ALIAS_HINT]
+        assert out.splitlines()[1].startswith("Nobody is named «Swagata». Near spellings")
 
     def test_more_than_five_say_how_many_more(self) -> None:
         body = {"source": "people", "total": 9,

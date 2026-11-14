@@ -189,6 +189,9 @@ NOT_ON_THE_EXPORT = {
     # A page is a screen's unit. Half a filter's records in a file IS the
     # silent truncation this endpoint refuses; the cap is a refusal instead.
     "page", "page_size",
+    # HRD-18a: the near pass answers near spellings for the chat's search.
+    # A file holds the exact matches only, as the list screen shows them.
+    "near",
 }
 
 

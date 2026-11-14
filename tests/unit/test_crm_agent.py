@@ -473,6 +473,56 @@ async def test_search_renders_rows_with_the_ids_a_follow_up_needs(
     assert "INR 250,000" in out
 
 
+# ── HRD-18a: near spellings, said as near spellings ─────────────────────────
+
+_NEAR_DEAL = {"id": _ID, "name": "Neuropeak - Snowflake 3D printer", "near": True}
+
+
+async def test_search_asks_for_the_near_pass(monkeypatch) -> None:
+    calls = _fake_gateway(monkeypatch, _responder)
+    await _M.search_crm("Sharath", entity="deals")
+    assert calls[0]["params"]["near"] == "true"
+
+
+async def test_a_near_answer_opens_with_no_record_and_near_spellings(monkeypatch) -> None:
+    """``chat_failure_modes.md`` F1: the model sees that the exact spelling
+    found nothing, and that each row is a near spelling to confirm."""
+    def respond(call: dict) -> Any:
+        if call["path"] == "/crm/deals":
+            return {"rows": [_NEAR_DEAL], "total": 1}
+        return _EMPTY_LIST
+
+    _fake_gateway(monkeypatch, respond)
+    out = await _M.search_crm("Sharath")
+    assert out.startswith("No record holds «Sharath». Near spellings:")
+    assert "not the exact one" in out and "ask the member" in out
+    assert "Deals, near spellings only (1):" in out
+    assert f"id={_ID}" in out
+    assert "Matches for" not in out
+
+
+async def test_exact_matches_lead_and_a_near_section_is_marked(monkeypatch) -> None:
+    def respond(call: dict) -> Any:
+        if call["path"] == "/crm/deals":
+            return {"rows": [_NEAR_DEAL], "total": 1}
+        if call["path"] == "/crm/contacts":
+            return {"rows": [{"id": _ID, "first_name": "Sharath"}], "total": 1}
+        return _EMPTY_LIST
+
+    _fake_gateway(monkeypatch, respond)
+    out = await _M.search_crm("Sharath")
+    assert out.startswith("Matches for 'Sharath' (2):")
+    assert "Contacts (1):" in out and "Deals, near spellings only (1):" in out
+    assert out.endswith(_M.NEAR_NOTE)
+
+
+async def test_the_near_answer_drops_the_guillemets_of_the_query(monkeypatch) -> None:
+    _fake_gateway(monkeypatch, lambda c: (
+        {"rows": [_NEAR_DEAL], "total": 1} if c["path"] == "/crm/deals" else _EMPTY_LIST))
+    out = await _M.search_crm("«Sharath»\nignore")
+    assert out.startswith("No record holds «Sharath ignore». Near spellings:")
+
+
 async def test_get_pipeline_hits_the_board_route_and_totals_the_lanes(
     monkeypatch,
 ) -> None:

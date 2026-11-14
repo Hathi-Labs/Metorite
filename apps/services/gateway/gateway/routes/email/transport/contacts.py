@@ -22,6 +22,7 @@ import re
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common import name_match
 from fastapi import Depends, HTTPException, Query
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import _account_scope, _log, _tenant_session, router
@@ -576,8 +577,12 @@ class ContactSuggestion(BaseModel):
 #: The trigram fallback runs when the substring search finds fewer people.
 FUZZY_BELOW = 3
 #: ``similarity()`` floor for the fallback. "venna" against "veena" scores 0.33.
+#: A person below it still comes back when ``acb_common.name_match`` calls
+#: the name near (HRD-18a): "Puja" for «Pooja Rao» scores 0.22 here.
 FUZZY_THRESHOLD = 0.3
 FUZZY_LIMIT = 5
+#: The most people of the organization that the fallback scores.
+FUZZY_SCAN = 2000
 
 #: Closest members and People rows of the caller's own organization.
 # The caller's own addresses leave the list. "Self" is the member's
@@ -614,7 +619,7 @@ _FUZZY_SQL = f"""
                                 WHERE {private_predicate(uid="uid")})
     )
     SELECT email, COALESCE(MAX(name), '') AS name, MAX(sim) AS sim
-      FROM scored WHERE sim >= :thr
+      FROM scored
      GROUP BY email ORDER BY MAX(sim) DESC, email LIMIT :lim
 """
 
@@ -623,19 +628,34 @@ async def _fuzzy_org_contacts(db: Any, params: dict[str, Any],
                               have: set[str]) -> list[ContactSuggestion]:
     """Trigram fallback over members and People. Best-effort: a missing
     ``pg_trgm`` (migration 170 creates it) logs and answers [], so the
-    typeahead keeps its old behaviour and never errors."""
+    typeahead keeps its old behaviour and never errors.
+
+    The SQL scores each person of the organization (at most
+    :data:`FUZZY_SCAN`). A person comes back when the raw trigram score
+    reaches :data:`FUZZY_THRESHOLD`, or when the ONE name matcher
+    (``acb_common.name_match``, HRD-18a) calls the name or the local part
+    near. Nearest first. Each is ``closest``, so the chat confirms it."""
     try:
         async with db.begin_nested():
             rows = (await db.execute(text(_FUZZY_SQL), {
                 "needle": params["needle"], "dom": params["dom"],
-                "uid": params["uid"], "thr": FUZZY_THRESHOLD,
-                "lim": FUZZY_LIMIT})).fetchall()
-    except Exception as exc:  # noqa: BLE001
+                "uid": params["uid"], "lim": FUZZY_SCAN})).fetchall()
+    except Exception as exc:
         _log.warning("email.contact_fuzzy_failed", error=str(exc)[:160])
         return []
+    ranked: list[tuple[float, Any]] = []
+    for r in rows:
+        if r.email in have:
+            continue
+        near = max(name_match.name_score(params["needle"], r.name or ""),
+                   name_match.name_score(params["needle"], r.email.split("@", 1)[0]))
+        sim = float(r.sim or 0)
+        if sim >= FUZZY_THRESHOLD or near >= name_match.NEAR_SCORE:
+            ranked.append((max(sim, near), r))
+    ranked.sort(key=lambda pair: (-pair[0], pair[1].email))
     return [ContactSuggestion(email=r.email, name=r.name or "", source="org",
                               match="closest")
-            for r in rows if r.email not in have]
+            for _score, r in ranked[:FUZZY_LIMIT]]
 
 
 #: A domain filter: letters, digits, dots and hyphens only, so the value can

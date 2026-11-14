@@ -154,7 +154,7 @@ async def test_one_match_acts_and_two_of_one_name_give_a_list(db) -> None:
     single = await _resolve(db, db.org_a, me, f"arjun {tag}")
     two = await _resolve(db, db.org_a, me, f"Priya {tag}")
     assert single == {"source": "people", "total": 1, "directory": True,
-                      "truncated": False,
+                      "truncated": False, "near": False,
                       "matches": [{"name": f"Arjun {tag}", "email": one}]}
     assert two["source"] == "people" and two["total"] == 2
     assert sorted(m["email"] for m in two["matches"]) == sorted([p1, p2])
@@ -174,7 +174,7 @@ async def test_org_b_s_person_and_member_never_come_back(db) -> None:
     by_mail = await _resolve(db, db.org_a, me, b_person)
     by_login = await _resolve(db, db.org_a, me, b_login)
     assert none == {"source": None, "matches": [], "total": 0, "directory": True,
-                    "truncated": False}
+                    "truncated": False, "near": False}
     assert by_mail["matches"] == [] and by_login["matches"] == []
     # And org A's own person of that name is the one match in org A.
     a_person = _person(db, db.org_a, name)
@@ -266,7 +266,7 @@ async def test_a_member_without_feature_people_gets_the_aliases_only(db) -> None
     plain = _member(email, people=False)
     none = await _resolve(db, db.org_a, plain, f"Nina {tag}")
     assert none == {"source": None, "matches": [], "total": 0, "directory": False,
-                    "truncated": False}
+                    "truncated": False, "near": False}
     # The alias check needs no feature, and the alias tier answers.
     await _alias(db, db.org_a, plain, f"Nina {tag}", person)
     mine = await _resolve(db, db.org_a, plain, f"nina {tag}")
