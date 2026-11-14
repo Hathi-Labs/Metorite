@@ -111,6 +111,16 @@ def test_a_low_or_standard_slice_hands_over_and_a_high_slice_merges_itself():
     assert "bash scripts/hand_over.sh <PR> <task> <tier>" in hand
     assert "`waiting: {on: ci, until_minutes: 120}`" in hand
     assert "bash scripts/hand_over.sh --wait <PR>" in hand
+    # Fix round 2: exit 4 is final and goes to the HIGH path. A session never
+    # reshapes a diff to pass the floor. An unknown result goes to --status.
+    final = hand[hand.index("**Exit 4: the bot never takes this PR.**") :]
+    assert "Merge it yourself, as for HIGH" in final[:400]
+    assert "Never reshape a diff to get past the tier floor" in final[:400]
+    assert "**Exit 1: a refusal that a fix can pass.**" in hand
+    unknown = hand[hand.index("**Exit 3: the box cannot take it, or the result is unknown.**") :]
+    assert "bash scripts/hand_over.sh --status <PR>" in unknown[:500]
+    assert "Exit 5" in unknown[:500] and "run `--wait`" in unknown[:500]
+    assert "Exit 6" in unknown[:500] and "hand it over again, or merge it yourself" in unknown[:500]
     done = hand[hand.index("**DONE (exit 0).**") : hand.index("**BACK (exit 1).**")]
     assert "move the task to done" in done and "Watch the batch of `main`" in done
     assert "Remove the worktree" in done and "`finish_agent_run`" in done

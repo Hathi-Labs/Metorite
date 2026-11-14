@@ -225,21 +225,65 @@ git objects, and the trial merge reads the attributes of the PR head
 send back:
 
 - The bot timer `metorite-merge-bot.timer` is not active (exit 3).
-- The tier is HIGH, or the diff touches a path of `HIGH_PATHS_RE`.
+- The tier is HIGH, or the diff touches a path of `HIGH_PATHS_RE` (exit 4).
 - The head is in a fork, the base is not `main`, or the head branch matches
-  `PROTECTED_HEAD_RE`.
+  `PROTECTED_HEAD_RE` (exit 4).
 
-It reads both lists from the bot's own `merge_bot.sh`, so each list stays in
-one place. A refusal exits 1. Exit 3 means that the box cannot take it, or
-that the result is unknown.
+Exit 4 is final. The session merges the pull request with the full loop, and
+never changes the diff to get past the tier floor. Exit 1 is a refusal that a
+fix can pass: `VERIFY: PASS`, `Visual review:`, a conflict, or R1. Exit 3
+means that the box cannot take it, or that the result is unknown.
+
+It reads both lists from `merge_bot.sh` in the bot's checkout, the file that
+the bot runs. So each list stays in one place. A list that does not parse in
+full, or that `grep -E` rejects, stops the hand-over with exit 3. The tier
+floor never passes in silence.
 
 **The wait** (fix round 1 of PR 2294). Nothing on the box can write to
 Metorite, so the session stays the actor. It runs
 `bash scripts/hand_over.sh --wait <PR>`. Once a minute, the wait reads the
 queue and the log, with no lock. The bot gives the nth hand-over of a pull
-request the nth `DONE` or `BACK` line, so the wait skips a line of an older
-hand-over. It prints the line. Exit 0 is `DONE`, exit 1 is `BACK`, and exit 3
-means no line in `HAND_OVER_WAIT` minutes (120).
+request the nth `DONE` or `BACK` line. It prints the line. Exit 0 is `DONE`,
+exit 1 is `BACK`, and exit 3 means no line in `HAND_OVER_WAIT` minutes (120).
+
+**The number of a hand-over** (fix round 2). Before it hands over, the
+wrapper counts the hand-overs of the pull request in the queue. This
+hand-over is that count plus 1. The wrapper writes the number to
+`~/.cache/metorite-hand-over/pr-<PR>` on the machine that runs it. `--wait`
+and `--status` read the result of that number, so an old `BACK` never reads as
+the result of a new hand-over.
+
+**After an unknown result**, run `bash scripts/hand_over.sh --status <PR>`.
+It reads once, and gives one exit code for each state:
+
+| Exit | State | Next step |
+|---|---|---|
+| 0 | `DONE` | The bot merged it. |
+| 1 | `BACK` for this hand-over | Read the reason. |
+| 5 | In the queue, with no result yet | Run `--wait`. |
+| 6 | Not in the queue | Hand it over again, or merge it yourself. |
+| 3 | The box cannot be read | Merge it yourself. |
+
+**The bot's checkout** is `~/lanes/merge-bot-src`, a detached worktree of
+`~/Metorite`. The unit `metorite-merge-bot.service` runs
+`%h/lanes/merge-bot-src/scripts/home_server/merge_bot.sh` from it. The release
+timer uses `~/Metorite`, so the bot never shares that checkout. The drop-in
+`~/.config/systemd/user/metorite-merge-bot.service.d/override.conf` on the box
+sets the same two paths, and it can stay.
+
+**Move the bot's checkout forward** after a merge that changes the bot or its
+lists. Do these steps on the box as `dev`:
+
+```bash
+systemctl --user stop metorite-merge-bot.timer
+# Let a pass that runs now end. A pass can take up to 2 hours.
+while systemctl --user is-active --quiet metorite-merge-bot.service; do sleep 10; done
+cd ~/lanes/merge-bot-src && git fetch -q origin main \
+  && git -c core.fileMode=false checkout -q --detach origin/main
+systemctl --user start metorite-merge-bot.timer
+```
+
+Between the stop and the start, a hand-over stops with exit 3.
 
 **The merge bot** (D218, task 3053). `scripts/home_server/merge_bot.sh` merges
 the queued pull requests with no model and no Metorite credential. One pass

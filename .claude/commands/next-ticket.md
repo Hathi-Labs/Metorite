@@ -227,14 +227,18 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
     `bash scripts/hand_over.sh <PR> <task> <tier> "<note>"`. It runs
     `origin/main`'s hand-over script on the home box over `ssh metorite-home`.
     It needs no worktree there.
-  - The box refuses early what the bot would send back: a HIGH tier, a HIGH
-    path (the tier floor), a fork, a base that is not `main`, or a protected
-    head branch. It also checks the body lines, a trial merge with `main` and
-    the migration numbers (R1). A refusal prints its reason and exits 1. Fix
-    the cause, push, and run it again.
-  - Exit 3 means that the box cannot take it, or that the result is unknown.
-    Read the queue with `HAND_OVER_WAIT=0 bash scripts/hand_over.sh --wait <PR>`.
-    When nothing is queued, say so on the task, and merge it yourself, as for HIGH.
+  - **Exit 4: the bot never takes this PR.** The box found a HIGH tier, a
+    HIGH path (the tier floor), a fork, a base that is not `main`, or a
+    protected head branch. Merge it yourself, as for HIGH. Never reshape a
+    diff to get past the tier floor.
+  - **Exit 1: a refusal that a fix can pass.** The box checks the body lines,
+    a trial merge with `main` and the migration numbers (R1). Fix the cause,
+    push, and run it again.
+  - **Exit 3: the box cannot take it, or the result is unknown.** Run
+    `bash scripts/hand_over.sh --status <PR>`. Exit 5 means that the PR is in
+    the queue: run `--wait`. Exit 6 means that it is not in the queue: hand it
+    over again, or merge it yourself. Exit 3 again: say so on the task, and
+    merge it yourself, as for HIGH.
   - When it prints `handed over`, comment on the task: "Handed to the merge
     bot: <PR URL> at <sha>. Verify: <result>." Post a `post_agent_activity`
     thought with `waiting: {on: ci, until_minutes: 120}`. Then run

@@ -44,6 +44,11 @@ if [ -n "${FAKE_SSH_DOWN:-}" ]; then
   exit 255
 fi
 cmd="${@: -1}"
+if [ -n "${FAKE_SSH_LOSE_CALL:-}" ] && [ "$(wc -l < "$FAKE_SSH_LOG")" = "$FAKE_SSH_LOSE_CALL" ]; then
+  HOME="$FAKE_REMOTE_HOME" bash -c "$cmd" > /dev/null 2>&1
+  echo "Connection to metorite-home closed by remote host." >&2
+  exit 255
+fi
 HOME="$FAKE_REMOTE_HOME" exec bash -c "$cmd"
 """
 
@@ -178,7 +183,10 @@ def test_a_pc_session_hands_over_over_ssh(box):
     assert r.returncode == 0, r.stderr
     assert "handed over: PR 77 (task 3229)" in r.stdout
     calls = _ssh_calls(tmp)
-    assert len(calls) == 1 and "-o BatchMode=yes" in calls[0] and " metorite-home " in calls[0]
+    # Two calls: one read of the queue for the number of this hand-over, then the hand-over.
+    assert len(calls) == 2
+    assert all("-o BatchMode=yes" in c and " metorite-home " in c for c in calls)
+    assert "this is hand-over 1 of PR 77" in r.stdout
     (row,) = _queue(remote_home)
     head = git(wt, "rev-parse", "HEAD")
     assert row[0:3] == ["77", "3229", "-"] and row[4:6] == [head, "STANDARD"]
@@ -242,11 +250,21 @@ def test_the_lane_field_can_be_named(box):
 
 def test_fix1_a_lost_ssh_says_the_result_is_unknown(box):
     # ssh exit 255 can come after the box appended the line, so it never says "nothing".
+    # Fix round 2: --status then reads the truth. Here the box queued it.
+    tmp, wt, remote_home = box
+    r = _run(tmp, wt, remote_home, "77", "3229", "LOW", "n", FAKE_SSH_LOSE_CALL="2")
+    assert r.returncode == 3
+    assert "The result is unknown" in r.stderr and "--status 77" in r.stderr
+    assert "Nothing is queued" not in r.stderr and len(_queue(remote_home)) == 1
+    s = _run(tmp, wt, remote_home, "--status", "77")
+    assert s.returncode == 5 and "WAITING: hand-over 1 of PR 77" in s.stdout
+
+
+def test_fix2_a_box_that_cannot_be_read_first_hands_over_nothing(box):
     tmp, wt, remote_home = box
     r = _run(tmp, wt, remote_home, "77", "3229", "LOW", "n", FAKE_SSH_DOWN="1")
-    assert r.returncode == 3
-    assert "The result is unknown" in r.stderr and "--wait 77" in r.stderr
-    assert "Nothing is queued" not in r.stderr
+    assert r.returncode == 3 and "Nothing was handed over" in r.stderr
+    assert _queue(remote_home) == [] and len(_ssh_calls(tmp)) == 1
 
 
 def test_too_few_arguments_print_the_usage(box):
@@ -318,7 +336,7 @@ def test_fix1_the_wait_times_out_with_exit_3(box):
 def test_fix1_the_wait_needs_a_hand_over_and_a_box(box):
     tmp, wt, remote_home = box
     r = _run(tmp, wt, remote_home, "--wait", "77", HAND_OVER_WAIT="0")
-    assert r.returncode == 3 and "no hand-over of PR 77" in r.stderr
+    assert r.returncode == 3 and "no hand-over 1 of PR 77" in r.stderr
     _box_lines(remote_home, queue=[77], log=["DONE 77 abc"])
     r = _run(tmp, wt, remote_home, "--wait", "77", HAND_OVER_WAIT="0", FAKE_SSH_DOWN="1")
     assert r.returncode == 3 and "cannot read" in r.stderr and r.stdout == ""
@@ -338,3 +356,92 @@ def test_fix1_the_wait_after_a_real_hand_over(box):
     _box_lines(remote_home, log=["BACK 77 red: Unit tests"])
     r = _run(tmp, wt, remote_home, "--wait", "77", HAND_OVER_WAIT="0")
     assert r.returncode == 1 and r.stdout.strip() == "BACK 77 red: Unit tests"
+
+
+# ── Fix round 2 (PR 2294 re-review) ─────────────────────────────────────────
+
+
+def _pr78_with(wt, path):
+    """A second PR head, 78, that touches one more path."""
+    git(wt, "checkout", "-q", "feat")
+    _script(wt / path, "x\n")
+    git(wt, "add", "-A")
+    git(wt, "commit", "-qm", f"touch {path}")
+    git(wt, "push", "-q", "origin", "HEAD:refs/pull/78/head")
+    return git(wt, "rev-parse", "HEAD")
+
+
+@pytest.mark.parametrize(
+    ("args", "path", "kind"),
+    [
+        (("77", "3229", "HIGH", "n"), None, "HIGH tier"),
+        (("78", "3229", "LOW", "n"), "deploy/run.sh", "HIGH path"),
+    ],
+)
+def test_fix2_a_final_refusal_exits_4_and_says_never_change_the_diff(box, args, path, kind):
+    tmp, wt, remote_home = box
+    head = _pr78_with(wt, path) if path else git(wt, "rev-parse", "HEAD")
+    r = _run(tmp, wt, remote_home, *args, FAKE_HEAD=head)
+    assert r.returncode == 4, r.stderr
+    assert f"{kind}: merge it yourself with the full loop" in r.stderr
+    assert (
+        "Do not change the diff to pass" in r.stderr and "the bot never takes this PR" in r.stderr
+    )
+    assert _queue(remote_home) == []
+
+
+def test_fix2_status_names_each_state_with_its_own_code(box):
+    tmp, wt, remote_home = box
+    s = _run(tmp, wt, remote_home, "--status", "77")
+    assert s.returncode == 6 and "NOT QUEUED" in s.stdout
+    _box_lines(remote_home, queue=[77])
+    assert _run(tmp, wt, remote_home, "--status", "77").returncode == 5
+    _box_lines(remote_home, log=["BACK 77 red: Lint"])
+    s = _run(tmp, wt, remote_home, "--status", "77")
+    assert s.returncode == 1 and s.stdout.strip() == "BACK 77 red: Lint"
+    _box_lines(remote_home, queue=[77], log=["DONE 77 abc123"])
+    s = _run(tmp, wt, remote_home, "--status", "77")
+    assert s.returncode == 0 and s.stdout.strip() == "DONE 77 abc123"
+    s = _run(tmp, wt, remote_home, "--status", "77", FAKE_SSH_DOWN="1")
+    assert s.returncode == 3 and "cannot read" in s.stderr
+
+
+def test_fix2_an_old_back_never_reads_as_the_result_of_a_new_hand_over(box):
+    tmp, wt, remote_home = box
+    # Hand-over 1 goes BACK.
+    assert _run(tmp, wt, remote_home, "77", "3229", "LOW", "n").returncode == 0
+    _box_lines(remote_home, log=["BACK 77 red: Lint"])
+    s = _run(tmp, wt, remote_home, "--status", "77")
+    assert s.returncode == 1 and "red: Lint" in s.stdout
+    # Hand-over 2 is refused, so it is not in the queue. The old BACK is not its result.
+    r = _run(tmp, wt, remote_home, "77", "3229", "LOW", "n", FAKE_BODY="no verify line")
+    assert r.returncode == 1
+    s = _run(tmp, wt, remote_home, "--status", "77")
+    assert s.returncode == 6 and "hand-over 2 is not in it" in s.stdout, s.stdout
+    w = _run(tmp, wt, remote_home, "--wait", "77", HAND_OVER_WAIT="0")
+    assert w.returncode == 3 and w.stdout == ""
+    # Hand-over 2 lands. It waits, and the old BACK is skipped.
+    assert _run(tmp, wt, remote_home, "77", "3229", "LOW", "n").returncode == 0
+    assert _run(tmp, wt, remote_home, "--status", "77").returncode == 5
+    _box_lines(remote_home, log=["BACK 77 premerge: boom"])
+    s = _run(tmp, wt, remote_home, "--status", "77")
+    assert s.returncode == 1 and s.stdout.strip() == "BACK 77 premerge: boom"
+
+
+def test_fix2_the_unit_names_the_one_bot_checkout_and_the_doc_moves_it():
+    """The bot runs from ~/lanes/merge-bot-src, and the early refusals read its lists there."""
+    unit = (ROOT / "scripts" / "home_server" / "systemd" / "metorite-merge-bot.service").read_text(
+        encoding="utf-8"
+    )
+    assert "WorkingDirectory=%h/lanes/merge-bot-src\n" in unit
+    assert "ExecStart=%h/lanes/merge-bot-src/scripts/home_server/merge_bot.sh\n" in unit
+    assert "%h/Metorite/scripts" not in unit
+    assert 'SRC_DEFAULT="$HOME/lanes/merge-bot-src"' in WRAPPER.read_text(encoding="utf-8")
+    doc = " ".join((ROOT / "docs" / "home_box.md").read_text(encoding="utf-8").split())
+    for step in (
+        "systemctl --user stop metorite-merge-bot.timer",
+        "systemctl --user is-active --quiet metorite-merge-bot.service",
+        "git -c core.fileMode=false checkout -q --detach origin/main",
+        "systemctl --user start metorite-merge-bot.timer",
+    ):
+        assert step in doc, step

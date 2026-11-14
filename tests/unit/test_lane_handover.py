@@ -490,7 +490,12 @@ def test_civ28c_fix1_a_high_tier_is_refused_before_any_check(pr_repo):
     tmp, wt, src = pr_repo
     _commit(wt, "a.txt", "x\n")
     r = _run_pr(tmp, src, _publish(wt), tier="HIGH")
-    assert r.returncode == 1 and "never merges a HIGH slice" in r.stderr
+    # Fix round 2: exit 4 is final. No fix of the diff makes the bot take it.
+    assert r.returncode == 4 and "never merges a HIGH slice" in r.stderr
+    assert (
+        "HIGH tier: merge it yourself with the full loop" in r.stderr
+        and "Do not change the diff to pass this check." in r.stderr
+    )
     assert _queue(tmp) == ""
 
 
@@ -502,7 +507,11 @@ def test_civ28c_fix1_a_high_path_is_refused_by_the_bots_own_floor(pr_repo, path)
     tmp, wt, src = pr_repo
     _commit(wt, path, "x\n")
     r = _run_pr(tmp, src, _publish(wt), tier="LOW")
-    assert r.returncode == 1 and "touches a HIGH path" in r.stderr and path in r.stderr
+    assert r.returncode == 4 and "touches a HIGH path" in r.stderr and path in r.stderr
+    assert (
+        "HIGH path: merge it yourself with the full loop" in r.stderr
+        and "Do not change the diff to pass this check." in r.stderr
+    )
     assert _queue(tmp) == ""
 
 
@@ -519,7 +528,8 @@ def test_civ28c_fix1_a_fork_another_base_or_a_protected_head_is_refused(pr_repo,
     tmp, wt, src = pr_repo
     _commit(wt, "a.txt", "x\n")
     r = _run_pr(tmp, src, _publish(wt), **fields)
-    assert r.returncode == 1 and reason in r.stderr, r.stderr
+    assert r.returncode == 4 and reason in r.stderr, r.stderr
+    assert "Do not change the diff to pass this check." in r.stderr
     assert _queue(tmp) == ""
 
 
@@ -538,6 +548,7 @@ def test_civ28c_fix1_a_bot_file_with_no_lists_exits_3(pr_repo, tmp_path):
     empty.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     r = _run_pr(tmp, src, _publish(wt), HANDOVER_BOT=str(empty))
     assert r.returncode == 3 and "HIGH_PATHS_RE" in r.stderr
+    assert "Move ~/lanes/merge-bot-src forward, see docs/home_box.md" in r.stderr
     assert _queue(tmp) == ""
 
 
@@ -548,3 +559,45 @@ def test_civ28c_fix1_the_worktree_mode_keeps_its_old_checks(repo):
     _commit(wt, "a.txt", "x\n")
     r = _run(tmp, wt)
     assert r.returncode == 0, r.stderr
+
+
+# ── Fix round 2 (PR 2294 re-review): the floor fails closed, and exit 1 stays fixable ──
+
+
+@pytest.mark.parametrize(
+    ("text", "why"),
+    [
+        # A line in another quote form: the parse would miss part of the list.
+        (
+            "HIGH_PATHS_RE='^('\nHIGH_PATHS_RE+=\"deploy/\"\nHIGH_PATHS_RE+=')'\n",
+            "not all of the form",
+        ),
+        # A list that grep -E rejects: the floor would match nothing.
+        ("HIGH_PATHS_RE='^(deploy/'\n", "grep -E rejects"),
+        # Two protected lines: the parse cannot pick one.
+        (
+            "HIGH_PATHS_RE='^deploy/'\nPROTECTED_HEAD_RE='^main$'\nPROTECTED_HEAD_RE='^x$'\n",
+            "one PROTECTED_HEAD_RE",
+        ),
+    ],
+)
+def test_civ28c_fix2_the_floor_never_passes_in_silence(pr_repo, tmp_path, text, why):
+    tmp, wt, src = pr_repo
+    bot = tmp_path / "merge_bot.sh"
+    if "PROTECTED_HEAD_RE" not in text:
+        text += "PROTECTED_HEAD_RE='^(main|green/.*)$'\n"
+    bot.write_text(text, encoding="utf-8")
+    _commit(wt, "a.txt", "x\n")
+    r = _run_pr(tmp, src, _publish(wt), HANDOVER_BOT=str(bot))
+    assert r.returncode == 3 and why in r.stderr, r.stderr
+    assert "Move ~/lanes/merge-bot-src forward, see docs/home_box.md" in r.stderr
+    assert _queue(tmp) == ""
+
+
+def test_civ28c_fix2_a_fixable_refusal_stays_exit_1(pr_repo):
+    # VERIFY, Visual review, a conflict and R1 are fixable, so they keep exit 1.
+    tmp, wt, src = pr_repo
+    _commit(wt, "a.txt", "x\n")
+    r = _run_pr(tmp, src, _publish(wt), body="no verify line")
+    assert r.returncode == 1 and "VERIFY: PASS" in r.stderr
+    assert "Do not change the diff" not in r.stderr

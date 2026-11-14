@@ -11,12 +11,17 @@
 # gh names, and origin/main. The trial merge reads the attributes (the union
 # driver) of the PR head, as a lane worktree at that head does.
 # Before the checks, the --pr mode refuses what the bot would send back, while
-# the session still runs (fix round 1 of PR 2294):
+# the session still runs (fix rounds 1 and 2 of PR 2294):
 #   - the bot timer is not active (exit 3);
-#   - the tier is HIGH, or the diff touches a HIGH path (HIGH_PATHS_RE);
+#   - the tier is HIGH, or the diff touches a HIGH path (HIGH_PATHS_RE) (exit 4);
 #   - the head is in a fork, the base is not main, or the head branch has a
-#     protected name (PROTECTED_HEAD_RE).
-# Both lists are read from the bot's own merge_bot.sh, so each stays in one place.
+#     protected name (PROTECTED_HEAD_RE) (exit 4).
+# Exit 4 is final: no fix makes the bot take the PR, so a person or the
+# session merges it with the full loop. Never change a diff to pass the floor.
+# Both lists are read from the bot's own merge_bot.sh, in the bot's checkout
+# ~/lanes/merge-bot-src, so each stays in one place. A parse that is not
+# complete, or a list that grep -E rejects, stops with exit 3: the floor never
+# passes in silence.
 #
 # <tier> is LOW, STANDARD or HIGH: the risk tier of the slice. The bot never
 # merges HIGH (D218 keeps the full loop for it), and it logs a BACK for it.
@@ -37,7 +42,8 @@
 #      adds the same number (R1);
 #   (There is no box-run check since D218, 2026-11-12: GitHub pr-check is the gate,
 #   and scripts/home_server/merge_bot.sh waits for it.)
-# A failed check prints its reason and exits 1. Nothing is appended.
+# A failed check prints its reason and exits 1 (a fix can pass it), 4 (final,
+# --pr mode) or 3 (the box cannot check it). Nothing is appended.
 # Settings for a test: HANDOVER_BASE (default origin/main), HANDOVER_QUEUE,
 # HANDOVER_REPO (the --pr mode's repo, default this script's checkout),
 # HANDOVER_BOT (default $HANDOVER_REPO/scripts/home_server/merge_bot.sh),
@@ -63,6 +69,13 @@ BASE="${HANDOVER_BASE:-origin/main}"
 QUEUE="${HANDOVER_QUEUE:-$HOME/lanes/merge-bot-queue.tsv}"
 fail() { echo "HANDOVER REFUSED: $*" >&2; exit 1; }
 stop() { echo "HANDOVER STOPPED: $*" >&2; exit 3; }  # the bot cannot take it now
+# never <kind> <reason>: the bot never takes this PR. No fix of the diff helps.
+never() {
+  echo "HANDOVER REFUSED: $2" >&2
+  echo "$1: merge it yourself with the full loop (next-ticket.md step 7). Do not change the diff to pass this check." >&2
+  exit 4
+}
+LISTS_FIX="Move ~/lanes/merge-bot-src forward, see docs/home_box.md section 3.8."
 for v in "$PR" "$TASK"; do
   case "$v" in ''|*[!0-9]*) fail "the PR and the task are numbers: got '$PR' and '$TASK'";; esac
 done
@@ -82,12 +95,21 @@ if [ "$MODE" = pr ]; then
   REPO="$(pwd -P)"
   # The bot's own lists, so the early refusals match what the bot does.
   BOT="${HANDOVER_BOT:-$REPO/scripts/home_server/merge_bot.sh}"
-  high_re="$(sed -n "s/^HIGH_PATHS_RE+\{0,1\}='\([^']*\)'[[:space:]]*\$/\1/p" "$BOT" 2>/dev/null | tr -d '\r\n')"
-  protected_re="$(sed -n "s/^PROTECTED_HEAD_RE='\([^']*\)'[[:space:]]*\$/\1/p" "$BOT" 2>/dev/null | head -n 1 | tr -d '\r')"
-  [ -n "$high_re" ] && [ -n "$protected_re" ] \
-    || stop "cannot read HIGH_PATHS_RE and PROTECTED_HEAD_RE from $BOT"
-  [ "$TIER" != HIGH ] \
-    || fail "the merge bot never merges a HIGH slice. Merge it yourself with the full loop (next-ticket.md step 7)."
+  [ -r "$BOT" ] || stop "no merge bot at $BOT. $LISTS_FIX"
+  high_lines="$(sed -n "s/^HIGH_PATHS_RE+\{0,1\}='\([^']*\)'[[:space:]]*\$/\1/p" "$BOT" | tr -d '\r')"
+  high_re="$(tr -d '\n' <<< "$high_lines")"
+  protected_re="$(sed -n "s/^PROTECTED_HEAD_RE='\([^']*\)'[[:space:]]*\$/\1/p" "$BOT" | tr -d '\r')"
+  # Fail closed: every assignment line must parse, and grep -E must accept each list.
+  # grep exits 2 on a bad pattern, and 0 or 1 on a good one.
+  all_high="$(grep -c '^HIGH_PATHS_RE' "$BOT")"
+  [ -n "$high_re" ] && [ "$(grep -c . <<< "$high_lines")" = "$all_high" ] \
+    || stop "cannot read HIGH_PATHS_RE from $BOT ($all_high lines, not all of the form HIGH_PATHS_RE+='...'). $LISTS_FIX"
+  [ -n "$protected_re" ] && [ "$(grep -c '^PROTECTED_HEAD_RE' "$BOT")" = 1 ] \
+    || stop "cannot read one PROTECTED_HEAD_RE line from $BOT. $LISTS_FIX"
+  for rx in "$high_re" "$protected_re"; do
+    grep -qE -- "$rx" < /dev/null; [ $? -le 1 ] || stop "grep -E rejects a list of $BOT: $rx. $LISTS_FIX"
+  done
+  [ "$TIER" != HIGH ] || never "HIGH tier" "the merge bot never merges a HIGH slice."
   view="$(gh pr view "$PR" --json headRefOid,isCrossRepository,baseRefName,headRefName \
     -q '[.headRefOid, (.isCrossRepository|tostring), .baseRefName, .headRefName] | @tsv')" \
     || fail "gh cannot read PR $PR"
@@ -96,10 +118,10 @@ if [ "$MODE" = pr ]; then
   base_ref="$(cut -f3 <<< "$view")"; head_ref="$(cut -f4 <<< "$view")"
   [[ "$head_pr" =~ ^[0-9a-f]{40}$ ]] || fail "gh gave no head SHA for PR $PR (got '$head_pr')"
   [ "$cross" = false ] \
-    || fail "the head branch of PR $PR is in a fork (cross-repo: ${cross:-unknown}). The bot takes only a branch of this repo."
-  [ "$base_ref" = main ] || fail "the base of PR $PR is '$base_ref', not main. The bot merges only into main."
-  if [ -z "$head_ref" ] || grep -qE "$protected_re" <<< "$head_ref"; then
-    fail "the head branch '$head_ref' of PR $PR is protected or empty. The bot pushes only to a PR branch."
+    || never "Fork" "the head branch of PR $PR is in a fork (cross-repo: ${cross:-unknown}). The bot takes only a branch of this repo."
+  [ "$base_ref" = main ] || never "Base not main" "the base of PR $PR is '$base_ref', not main. The bot merges only into main."
+  if [ -z "$head_ref" ] || grep -qE -- "$protected_re" <<< "$head_ref"; then
+    never "Protected head" "the head branch '$head_ref' of PR $PR is protected or empty. The bot pushes only to a PR branch."
   fi
   # --no-write-fetch-head: the fetch changes no file of the repo's own checkout.
   if ! git cat-file -e "$head_pr^{commit}" 2>/dev/null; then
@@ -131,10 +153,12 @@ if [ "$MODE" = pr ]; then
   # The tier floor of the bot (CIV-28b), on the same diff: main to the pinned SHA.
   # --no-renames lists both sides of a rename. A failed diff fails closed.
   changed="$(git diff --no-renames --name-only "$BASE...$REV" 2>/dev/null)" \
-    || fail "the tier floor is unknown: git diff failed"
-  hits="$(grep -E "$high_re" <<< "$changed" | head -n 3 | tr '\n' ' ')"
-  [ -z "$hits" ] \
-    || fail "the diff touches a HIGH path: ${hits}- the bot sends it back (tier floor). Merge it yourself with the full loop (next-ticket.md step 7)."
+    || stop "the tier floor is unknown: git diff failed"
+  all_hits="$(grep -E -- "$high_re" <<< "$changed")"; rc=$?
+  [ "$rc" -le 1 ] || stop "the tier floor is unknown: grep -E failed on HIGH_PATHS_RE. $LISTS_FIX"
+  hits="$(head -n 3 <<< "$all_hits" | tr '\n' ' ')"
+  [ -z "$all_hits" ] \
+    || never "HIGH path" "the diff touches a HIGH path: ${hits}- the bot sends it back (tier floor)."
 fi
 
 # 2. The VERIFY: PASS line, and the Visual review line.
