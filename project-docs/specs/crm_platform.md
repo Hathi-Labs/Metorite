@@ -8755,13 +8755,20 @@ member asked for the order of "Sharath", and the deal named its contact
 - A deal also matches the names of its contacts and of its source lead. The
   source lead converted into the deal, or the deal names it in `lead_id`.
   `Entity.search_sql` is now `Entity.related_search`.
+- `core.related_hits` reads the companies, the contacts and the leads once
+  for a request, before the list query. The predicate then holds the hits as
+  bound `= ANY` values and no sub-select. The count, the page and each lane
+  of the board share that one read.
+- A `?q=` over 200 characters is a 422 on each reader of the predicate.
 - `?near=true` adds a near pass to a list read. The pass runs only when the
-  exact read finds no row, on page 1, for 1 to 3 words. It reads 20 rows at
-  most, nearest first.
-- In that pass, a word of 4 letters or more also matches by `pg_trgm`
-  `strict_word_similarity`. The floor is 0.5, from `acb_common.name_match`.
-  The strict form stops at the bounds of a word. The plain `word_similarity`
-  scores "Sharath" 1.0 in «Bharath Shah».
+  exact read finds no row, on page 1, for 1 to 3 words. It answers 20 rows at
+  most, nearest first, and `total` is 20 at most.
+- In that pass, a word of 4 to 40 letters can also match nearly. SQL only
+  finds candidates: `pg_trgm` `strict_word_similarity` at 0.3, 200 rows of
+  each table at most. Then `acb_common.name_match` judges each name, and a
+  near name scores 0.6 or more.
+- So SQL and the colleague lookups agree. «Bharath Shah» is not near
+  "Sharath", and «Sougata Maji» is near "Swagata".
 - Each row of the near pass carries `near: true`. When no row matches,
   the answer of `search_crm` opens with "No record holds «…». Near spellings:".
 - `?near=also` does the same, and it also reads near rows when the exact read
@@ -8772,14 +8779,21 @@ member asked for the order of "Sharath", and the deal named its contact
   lists the exact rows, then the section "Near spellings (may be the person
   you mean):" with each id. A last line tells the model to ask the member
   when the exact rows do not fit.
-- Cost: each `search_crm` call of a name runs one more read for each record
-  type. On 5,000 leads, one near read takes about 47 ms.
+- Cost: each `search_crm` call of a name runs one more near pass for each
+  record type. The seed of the verifier had 2,001 companies, 8,001 contacts,
+  5,001 deals and 4,000 leads. On it, the deal pass of `also` took 140 to
+  290 ms, against 2.7 to 8.7 s before repair round 2. The plans stay under
+  the JIT cost.
+- An exact deal read now reads three more tables, once each. On that seed it
+  took 40 to 86 ms, against 20 to 28 ms on `origin/main`. The lead and the
+  contact reads stay within 20% of `origin/main`.
 - The list screen, the export, the aggregate and the board stay exact, and
-  they get the word rule too. The command bar and the company search stay
-  exact (HRD-18b).
+  they get the word rule too. The command bar and the company search get no
+  near pass (HRD-18b). They now match a deal by the names of its contacts
+  and of its source lead, as the list does.
 
-Fences: `tests/unit/test_crm_near_search_r8.py` (R8) and
-`tests/unit/test_name_variants.py`.
+Fences: `tests/unit/test_crm_near_search_r8.py` (R8),
+`tests/unit/test_crm_near_plan.py` and `tests/unit/test_name_variants.py`.
 
 ### 19.6 CRM-X2: The CRM joins the shell (✅ built 2026-10-12)
 
