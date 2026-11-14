@@ -62,6 +62,9 @@ WHEN = {
     "studio": (
         "Load for AI Studio: build an app (manifest, actions), manage skills, read workflows, "
         "or read and change the records of a package."),
+    # STB-6b: the small pack of the workflow writes, of the studio owner.
+    "studio-workflows": (
+        "Load to publish a workflow, roll it back to a version, pause it or turn it on again."),
 }
 
 
