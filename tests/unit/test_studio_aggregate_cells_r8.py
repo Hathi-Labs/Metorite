@@ -25,11 +25,10 @@ and the named test goes red. Each result was run on 2026-11-14.
 * H1. ``build_aggregate_cells``: leave out ``params["me"]``. The scout tests go red.
 * H2. ``_refuse_hidden_aggregate``: check the first group only.
   ``test_r8_cells_a_hidden_key_is_refused_on_both_axes`` goes red.
-* H3. ``build_aggregate_cells``: count the axes over all rows (build ``x`` with no
-  row rule). ``test_r8_cells_the_cap_counts_only_the_rows_the_viewer_reads`` goes red.
+* H3. ``build_aggregate_cells``: count the axes over all rows, with no row rule. ``test_r8_cells_the_cap_counts_only_the_rows_the_viewer_reads`` goes red.
 * H4. ``_cell_rows``: leave out the cap check. The too_big tests go red.
-* H5. ``_aggregate_result``: build ``groups`` from the second key. The one-key and
-  the matrix tests go red.
+* H5. ``_aggregate_result``: sort ``groups`` the other way round.
+  ``test_r8_cells_a_5_by_5_matrix_gives_25_cells_with_the_counts_and_the_sums`` goes red.
 """
 
 from __future__ import annotations
@@ -178,6 +177,8 @@ def test_r8_cells_a_5_by_5_matrix_gives_25_cells_with_the_counts_and_the_sums(wo
     # `groups` and `total` are the groups of the first key, as for one key.
     one = _agg(world, AS_OWNER, world.deal, group_by={"field": "region"}, measures=_COUNT_SUM)
     assert one is not None and one.cells == ()
+    assert [(g.key, g.count) for g in one.groups] == [
+        ("north", 6), ("south", 5), ("east", 5), ("west", 5), ("centre", 5)]
     assert got.groups == one.groups and got.total == one.total
     assert (got.other, got.folded) == (None, 0)
 

@@ -3027,7 +3027,7 @@ _TWO_KEYS = {"group_by": [{"field": "status"}, {"field": "hours"}], "measures": 
 
 
 def test_r8_c2d_b_a_viewer_of_an_install_gets_the_cells(world, monkeypatch) -> None:
-    _installed_by_ben(world, monkeypatch)
+    _installed_by_ben(world, monkeypatch, _FIELDS)
 
     async def go() -> list[tuple[int, Any]]:
         await _add_tallied(world.a, world.obj_ben, world.pkg_ben, [
@@ -3046,7 +3046,7 @@ def test_r8_c2d_b_a_viewer_of_an_install_gets_the_cells(world, monkeypatch) -> N
 
 
 def test_r8_c2d_b_an_axis_past_20_values_is_422_and_org_b_gets_404(world, monkeypatch) -> None:
-    _installed_by_ben(world, monkeypatch)
+    _installed_by_ben(world, monkeypatch, _FIELDS)
 
     async def go() -> list[tuple[int, Any]]:
         await _add_tallied(world.a, world.obj_ben, world.pkg_ben,

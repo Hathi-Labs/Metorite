@@ -460,7 +460,7 @@ _SQL_NAMES = frozenset({
     "order", "_GROUP_ROW", "key", "cands", "joins", "cols", "sums", "totals", "keep",
     "rest", "cur", "ranks", "kept", "folded",
     # C2d-b: the second key of the cells statement.
-    "key2",
+    "key2", "_GROUP_ROW_2",
 })
 
 
