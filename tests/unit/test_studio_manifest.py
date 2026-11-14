@@ -1465,3 +1465,52 @@ def test_every_first_party_template_still_validates():
     assert files
     for f in files:
         assert validate_manifest(json.loads(f.read_text(encoding="utf-8"))) == [], f.name
+
+
+# --- record, the tabs of the record page (STU-AF5b) ---
+
+
+def _rec_doc(rec) -> dict:
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["record"] = rec
+    return d
+
+
+def test_record_is_optional_and_the_example_stays_valid():
+    assert all("record" not in o for o in EXAMPLE["objects"])
+    assert validate_manifest(EXAMPLE) == []
+    assert Manifest.model_validate(EXAMPLE).objects[0].record is None
+
+
+def test_valid_record_tabs_keep_their_order():
+    d = _rec_doc({"tabs": ["files", "details"]})
+    assert validate_manifest(d) == []
+    assert Manifest.model_validate(d).objects[0].record.tabs == ["files", "details"]
+
+
+def test_record_tabs_cap_is_six():
+    from acb_common.studio_manifest import MAX_RECORD_TABS
+
+    assert MAX_RECORD_TABS == 6
+    assert _at(_rec_doc({"tabs": ["details", "related", "files"]}), "$.objects[0].record.tabs") == []
+    assert _at(_rec_doc({"tabs": ["details"] * 6}), "$.objects[0].record.tabs[1]")  # duplicates only
+    seven = _at(_rec_doc({"tabs": ["details"] * 7}), "$.objects[0].record.tabs")
+    assert len(seven) == 1 and "at most 6" in seven[0].message
+
+
+def test_empty_record_tabs_are_refused():
+    assert _at(_rec_doc({"tabs": []}), "$.objects[0].record.tabs")
+
+
+def test_duplicate_record_tab_is_refused():
+    one(_rec_doc({"tabs": ["details", "files", "details"]}), "$.objects[0].record.tabs[2]",
+        contains="used twice")
+
+
+def test_unknown_record_tab_is_refused():
+    assert _at(_rec_doc({"tabs": ["activity"]}), "$.objects[0].record.tabs[0]")
+
+
+def test_record_refuses_a_colour_key_and_an_unknown_key():
+    one(_rec_doc({"tabs": ["details"], "color": "red"}), "$.objects[0].record.color", contains="style")
+    assert _at(_rec_doc({"tabs": ["details"], "lists": 4}), "$.objects[0].record.lists")

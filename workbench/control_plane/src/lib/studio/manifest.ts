@@ -139,6 +139,12 @@ export const NAV_ICONS: readonly NavIcon[] = [
 export const MAX_NAV_SECTIONS = 4;
 export const MAX_NAV_ROWS = 12;
 
+/** The tab ids of a record page. `recordPageModel.ts` draws them. */
+export type RecordTabName = "details" | "related" | "files";
+
+/** The cap of the tabs of a record page (STU-AF5b). `recordCaps.test.ts` holds it equal to the schema. */
+export const MAX_RECORD_TABS = 6;
+
 export interface FieldDef {
   key: string;
   type: FieldType;
@@ -158,6 +164,10 @@ export interface FieldDef {
   lines?: string | null;
 }
 
+export interface RecordDef {
+  tabs: RecordTabName[];
+}
+
 export interface ObjectDef {
   name: string;
   label?: string | null;
@@ -167,6 +177,8 @@ export interface ObjectDef {
   // C8a. The grant of each role: read "all" or { where: "<person field> = $me" },
   // write "all", and hide. No access means an open object.
   access?: Record<string, unknown>[] | null;
+  // The tabs of the record page of this object (STU-AF5b). No `record` means the defaults of §5.5 rule 3.
+  record?: RecordDef | null;
 }
 
 export interface ActionDef {
