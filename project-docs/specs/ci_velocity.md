@@ -925,7 +925,7 @@ Each rung ends in a demo (D211). Each slice of a rung blocks its demo task.
 |---|---|---|---|---|
 | CIV-26 | 3051 | – | LOW | This section and D218 |
 | CIV-27 | 3052 | 0 | LOW | `ci_local.sh` is optional. A lane pushes once per round |
-| CIV-28 | 3053 | 0 | STANDARD | The merge bot. CIV-28b (task 3070): a tier floor from the diff, a retry on "Base branch was modified", and BACK after a second cancel |
+| CIV-28 | 3053 | 0 | STANDARD | The merge bot. CIV-28b (task 3070): a tier floor from the diff, a retry on "Base branch was modified", and BACK after a second cancel. CIV-28c BUILT 2026-11-14 (task 3229): `scripts/hand_over.sh` hands a PR to the bot from any machine, and `--wait` keeps the session as the actor until the bot's DONE or BACK line. The box refuses early what the bot would send back, and the bot posts each BACK on the PR. |
 | CIV-29 | 3054 | 0 | STANDARD | Browser suite: inherited failures, the specs of the changed area, the full suite after merge. CIV-29a BUILT. CIV-29b BUILT 2026-11-14 (tasks 3054 and 3145): the diff of `changes` is `HEAD^1..HEAD` on the merge ref. So a later change on main no longer starts the suite. The unit gate (`--gate --base`) reads the same range. The Visual review step reads the same range (CIV-39). CIV-29d BUILT 2026-11-14 (task 3054): `scripts/e2e_spec_map.json` maps a changed path to its browser specs, and `scripts/e2e_select.py` picks them for the 3 shards. A shared or unknown path runs every spec, and a diff with no web code runs none. `tests/unit/test_e2e_select.py` fences it. |
 | CIV-36 | 3061 | 0 | LOW | The preview gates the flag |
 | CIV-37 | 3062 | 0 | LOW | Model routing by job |

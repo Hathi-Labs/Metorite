@@ -202,13 +202,88 @@ merges it. The other lanes keep building. Its role is in
 
 | File on the box | What it holds |
 |---|---|
-| `~/lanes/merge-bot-queue.tsv` | One line for each hand-over: pull request, task, worktree, lane, head SHA, tier, note. Tabs between the fields, under a `#` header line. Only `lane_handover.sh` writes it. |
-| `~/lanes/merge-bot.log` | One line for each result: `DONE <pull request> <sha>`, `RESOLVED <pull request> <rules>` or `BACK <pull request> <reason>`. Only the merge bot writes it. |
+| `~/lanes/merge-bot-queue.tsv` | One line for each hand-over: pull request, task, worktree, lane, head SHA, tier, note. Tabs between the fields, under a `#` header line. Only `lane_handover.sh` writes it. A hand-over by PR number writes `-` as the worktree. |
+| `~/lanes/merge-bot.log` | One line for each result: `DONE <pull request> <sha>`, `RESOLVED <pull request> <rules>` or `BACK <pull request> <reason>`. Only the merge bot writes it. The bot also posts each BACK reason on the pull request as a comment. |
 | `~/lanes/merge-queue.tsv`, `~/lanes/merge-queue.log` | History of the lane-merge session, with HOLD, RED and NOTE lines that people wrote. Nothing reads them now. |
 
 A lane hands over a pull request only after three steps. The verifier passed,
 the review of its risk tier passed, and the owner approved its preview when
 it needed one.
+
+**A hand-over from any machine** (CIV-28c, task 3229). A session on the PC has
+no worktree on the box. It runs `bash scripts/hand_over.sh <PR> <task> <tier> "<note>"`.
+Over `ssh metorite-home`, the wrapper goes to the bot's checkout
+`~/lanes/merge-bot-src` and fetches `main`. Then it runs
+`origin/main:scripts/home_server/lane_handover.sh --pr` from a temp file. So
+an old copy in the bot's checkout never runs. On the box as `dev`, it runs
+there with no ssh. A box lane can still give its own worktree to
+`lane_handover.sh`.
+
+The `--pr` mode checks out nothing. It reads the PR head and `origin/main` as
+git objects, and the trial merge reads the attributes of the PR head
+(`git --attr-source`, git 2.42 or newer). It first refuses what the bot would
+send back:
+
+- The bot timer `metorite-merge-bot.timer` is not active (exit 3).
+- The tier is HIGH, or the diff touches a path of `HIGH_PATHS_RE` (exit 4).
+- The head is in a fork, the base is not `main`, or the head branch matches
+  `PROTECTED_HEAD_RE` (exit 4).
+
+Exit 4 is final. The session merges the pull request with the full loop, and
+never changes the diff to get past the tier floor. Exit 1 is a refusal that a
+fix can pass: `VERIFY: PASS`, `Visual review:`, a conflict, or R1. Exit 3
+means that the box cannot take it, or that the result is unknown.
+
+It reads both lists from `merge_bot.sh` in the bot's checkout, the file that
+the bot runs. So each list stays in one place. A list that does not parse in
+full, or that `grep -E` rejects, stops the hand-over with exit 3. The tier
+floor never passes in silence.
+
+**The wait** (fix round 1 of PR 2294). Nothing on the box can write to
+Metorite, so the session stays the actor. It runs
+`bash scripts/hand_over.sh --wait <PR>`. Once a minute, the wait reads the
+queue and the log, with no lock. The bot gives the nth hand-over of a pull
+request the nth `DONE` or `BACK` line. It prints the line. Exit 0 is `DONE`,
+exit 1 is `BACK`, and exit 3 means no line in `HAND_OVER_WAIT` minutes (120).
+
+**The number of a hand-over** (fix round 2). Before it hands over, the
+wrapper counts the hand-overs of the pull request in the queue. This
+hand-over is that count plus 1. The wrapper writes the number to
+`~/.cache/metorite-hand-over/pr-<PR>` on the machine that runs it. `--wait`
+and `--status` read the result of that number, so an old `BACK` never reads as
+the result of a new hand-over.
+
+**After an unknown result**, run `bash scripts/hand_over.sh --status <PR>`.
+It reads once, and gives one exit code for each state:
+
+| Exit | State | Next step |
+|---|---|---|
+| 0 | `DONE` | The bot merged it. |
+| 1 | `BACK` for this hand-over | Read the reason. |
+| 5 | In the queue, with no result yet | Run `--wait`. |
+| 6 | Not in the queue | Hand it over again, or merge it yourself. |
+| 3 | The box cannot be read | Merge it yourself. |
+
+**The bot's checkout** is `~/lanes/merge-bot-src`, a detached worktree of
+`~/Metorite`. The unit `metorite-merge-bot.service` runs
+`%h/lanes/merge-bot-src/scripts/home_server/merge_bot.sh` from it. The release
+timer uses `~/Metorite`, so the bot never shares that checkout. The drop-in
+`~/.config/systemd/user/metorite-merge-bot.service.d/override.conf` on the box
+sets the same two paths, and it can stay.
+
+**Move the bot's checkout forward** after a merge that changes the bot or its
+lists. Do these steps on the box as `dev`:
+
+```bash
+systemctl --user stop metorite-merge-bot.timer
+# Let a pass that runs now end. A pass can take up to 2 hours.
+while systemctl --user is-active --quiet metorite-merge-bot.service; do sleep 10; done
+cd ~/lanes/merge-bot-src && git fetch -q origin main \
+  && git -c core.fileMode=false checkout -q --detach origin/main
+systemctl --user start metorite-merge-bot.timer
+```
+
+Between the stop and the start, a hand-over stops with exit 3.
 
 **The merge bot** (D218, task 3053). `scripts/home_server/merge_bot.sh` merges
 the queued pull requests with no model and no Metorite credential. One pass
@@ -225,6 +300,13 @@ It then runs the trial merge with
 branch behind `main` still merges when the trial merge is clean. It never
 pushes, except the merge commit of a resolved conflict. It never passes `--admin` or `--auto`. `MERGE_BOT_DRY_RUN=1` prints
 the actions and calls no write command.
+
+Each BACK line, except `BACK <pull request> closed`, also goes on the pull
+request as a comment (CIV-28c). The comment holds the reason and the
+hand-over command. The comment drops each credential shape of
+`acb_common/secret_shapes.py`. When that scrub fails, the comment holds no
+reason. A failed comment changes no log line.
+`MERGE_BOT_BACK_COMMENT=0` turns the comment off.
 
 The bot takes only a PR of this repo with base `main`. A fork, another base,
 or a head branch with a protected name (`main`, `master`, `release`,
