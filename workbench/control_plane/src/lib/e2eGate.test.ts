@@ -81,7 +81,7 @@ describe("the browser gate CI runs", () => {
     // outside the app. The `changes` job fails open: a failed `changes` job
     // RUNS the suite, and a cancelled run does not start it.
     expect(jobs().e2e).toMatch(
-      /^ {4}if: "!cancelled\(\) && github\.event_name != 'push' && \(needs\.changes\.result != 'success' \|\| needs\.changes\.outputs\.frontend == 'true'\)"$/m,
+      /^ {4}if: "!cancelled\(\) && github\.event_name != 'push' && \(needs\.changes\.result != 'success' \|\| needs\.changes\.outputs\.frontend == 'true'\) && needs\.changes\.outputs\.e2e_shards != '\[\]'"$/m,
     );
   });
 
