@@ -151,6 +151,21 @@ export function linksTo(m: unknown, name: string): string[] {
   return out;
 }
 
+/**
+ * Drop the rail rows that name a removed page (`_check_nav`: a row names a declared page). A
+ * section left with no rows stays, because the server accepts an empty section. Every other key
+ * of a section or a row stays. The same `m` comes back when no row names a page of `gone`.
+ */
+export function dropNavRows(m: Obj, gone: ReadonlySet<string>): Obj {
+  if (gone.size === 0 || !Array.isArray(m.nav)) return m;
+  const named = (r: unknown) => isObj(r) && gone.has(str(r.page));
+  if (!m.nav.some((s) => isObj(s) && Array.isArray(s.rows) && s.rows.some(named))) return m;
+  return {
+    ...m,
+    nav: m.nav.map((s) => (isObj(s) && Array.isArray(s.rows) ? { ...s, rows: s.rows.filter((r) => !named(r)) } : s)),
+  };
+}
+
 /** The references to a set of views that live outside `views`: page cells, the side view, shell jobs, skill cards. */
 function dropViews(m: Obj, ids: ReadonlySet<string>): Obj {
   if (ids.size === 0) return m;
@@ -168,7 +183,11 @@ function dropViews(m: Obj, ids: ReadonlySet<string>): Obj {
     });
     // A page that loses its last cell has no layout, and the check refuses it. It goes with its views.
     const held = (p: unknown) => isObj(p) && ((Array.isArray(p.tabs) && p.tabs.length > 0) || (Array.isArray(p.cells) && p.cells.length > 0));
-    out.pages = (out.pages as unknown[]).filter((p, i) => held(p) || !held((m.pages as unknown[])[i]));
+    const kept = (out.pages as unknown[]).filter((p, i) => held(p) || !held((m.pages as unknown[])[i]));
+    // The rail rows of a page that goes would name no page, and the check refuses that.
+    const goneIds = new Set((out.pages as unknown[]).filter((p) => !kept.includes(p)).map((p) => (isObj(p) ? str(p.id) : "")));
+    out.pages = kept;
+    Object.assign(out, dropNavRows(out, goneIds));
   }
   if (isObj(m.shell) && Array.isArray(m.shell.jobs)) {
     out.shell = { ...m.shell, jobs: m.shell.jobs.filter((j) => !(isObj(j) && ids.has(str(j.view)))) };
