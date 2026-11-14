@@ -721,11 +721,19 @@ _NOTHING_HAPPENED = re.compile(
     re.IGNORECASE | re.DOTALL)
 
 
+#: The answer of MAF to a call of a tool that is not in the request. The ``Error:
+#: Requested function ...`` form is in :data:`_NOTHING_HAPPENED`. This is the plain form
+#: that a run with the ``studio`` pack missing gave (TS-5a, a run with no ``STUDIO_ORGS``).
+_UNKNOWN_FUNCTION = re.compile(r'^Function "[^"]+" not found\.?$')
+
+
 def refused(result: str) -> bool:
     """True when *result* is the answer to a call that the run refused: it starts
-    as a refusal does, or it says that nothing was created or changed."""
-    text = str(result).lstrip()
-    return text.startswith(REFUSED_PREFIXES) or _NOTHING_HAPPENED.search(text) is not None
+    as a refusal does, it is the unknown-function answer, or it says that nothing
+    was created or changed."""
+    text = str(result).strip()
+    return (text.startswith(REFUSED_PREFIXES) or _UNKNOWN_FUNCTION.match(text) is not None
+            or _NOTHING_HAPPENED.search(text) is not None)
 
 
 def _ran_ok(calls: list[tuple[str, dict[str, Any], str]]) -> list[tuple[str, dict[str, Any], str]]:
