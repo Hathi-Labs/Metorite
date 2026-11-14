@@ -9,7 +9,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-import { StudioTreeView, TREE_EMPTY_LINE, TREE_TRUNCATED_LINE, parentOptions } from "@/components/studio/StudioTree";
+import { StudioTreeView, TREE_EMPTY_LINE, TREE_TRUNCATED_LINE, overTarget, parentOptions } from "@/components/studio/StudioTree";
 import { withMeta, type ActionResult, type Row, type StudioDataDoor } from "@/lib/studio/dataDoor";
 import { MAX_TREE_NODES, type TreeNodeIn } from "@/lib/studio/treeModel";
 import { createTreeMover, TOP_OVER } from "@/lib/studio/treeMove";
@@ -134,9 +134,77 @@ describe("who may move", () => {
     mover.dragStart("e");
     mover.dragOver("d");
     expect(html(small, model(), { mover })).toContain("ring-2 ring-primary/40");
-    mover.dragOver(TOP_OVER);
-    const out = html(small, model(), { mover });
-    expect(out).toContain("ring-2 ring-primary/40");
+    // "d" is not a root, so the top level takes it.
+    const other = createTreeMover(door, "u", "parent");
+    other.dragStart("d");
+    other.dragOver(TOP_OVER);
+    expect(html(small, model(), { mover: other })).toContain("ring-2 ring-primary/40");
+  });
+
+  it("draws no ring on a target that the drop would refuse", () => {
+    const mover = createTreeMover(door, "u", "parent");
+    mover.dragStart("a");
+    mover.dragOver("a"); // itself
+    expect(html(small, model(), { mover })).not.toContain("ring-2 ring-primary/40");
+    mover.dragOver("d"); // its own child
+    expect(html(small, model(), { mover })).not.toContain("ring-2 ring-primary/40");
+    mover.dragOver(TOP_OVER); // a is a root already
+    expect(html(small, model(), { mover })).not.toContain("ring-2 ring-primary/40");
+  });
+});
+
+describe("overTarget: the drag over a target", () => {
+  const nodes: TreeNodeIn[] = [
+    { id: "a", parentId: null }, { id: "b", parentId: "a" }, { id: "e", parentId: null },
+  ];
+  it("allows a valid target: the ring state is set and the view calls preventDefault", () => {
+    const mover = createTreeMover(door, "u", "parent");
+    mover.dragStart("b");
+    expect(overTarget(mover, nodes, "e")).toBe(true);
+    expect(mover.getState().over).toBe("e");
+    expect(overTarget(mover, nodes, null)).toBe(true);
+    expect(mover.getState().over).toBe(TOP_OVER);
+  });
+  it("refuses an invalid target: no preventDefault and the ring clears", () => {
+    const mover = createTreeMover(door, "u", "parent");
+    mover.dragStart("a");
+    expect(overTarget(mover, nodes, "e")).toBe(true);
+    expect(overTarget(mover, nodes, "b")).toBe(false); // its own child
+    expect(mover.getState().over).toBeNull();
+    expect(overTarget(mover, nodes, "a")).toBe(false); // itself
+    expect(overTarget(mover, nodes, null)).toBe(false); // a is a root already
+  });
+  it("does nothing when no drag runs", () => {
+    const mover = createTreeMover(door, "u", "parent");
+    expect(overTarget(mover, nodes, "e")).toBe(false);
+  });
+});
+
+describe("the layout rules", () => {
+  const src = readFileSync(new URL("./StudioTree.tsx", import.meta.url), "utf8");
+  it("keeps one fixed line for the alert and the status, so the tree does not jump", () => {
+    expect(src).toMatch(/const NOTICE_SLOT = "min-h-6"/);
+    expect(src).toMatch(/<div className=\{NOTICE_SLOT\}>[\s\S]*role="alert"[\s\S]*role="status"[\s\S]*<\/div>/);
+    expect(src).not.toContain("empty:hidden");
+    expect(html(small)).toMatch(/<div class="min-h-6"><p role="status"[^>]*><\/p><\/div>/);
+  });
+  it("gives the label the room, and keeps the swapped control narrow", () => {
+    expect(html(small)).toMatch(/<span class="min-w-0 flex-1 truncate text-sm text-foreground">Part a<\/span>/);
+    expect(src).toContain('const MOVE_WIDTH = "w-28"');
+    expect(src).toContain("widthClass={MOVE_WIDTH}");
+  });
+  it("gives a leaf the width of the chevron button, so the grips line up", () => {
+    expect(src).toContain('const CHEVRON_SPACER = "w-6 glass:w-7 glass:pointer-coarse:w-10"');
+    expect(html(small)).toContain("inline-block shrink-0 w-6 glass:w-7 glass:pointer-coarse:w-10");
+  });
+  it("hides the grip on a touch screen: Move to is the path there", () => {
+    expect(html(small)).toContain("lucide-grip-vertical h-3.5 w-3.5 shrink-0 cursor-grab text-muted-foreground pointer-coarse:hidden");
+    expect(src).toContain("pointer-coarse:hidden");
+  });
+  it("hangs the Move list from the right edge, and returns focus to the row when it closes", () => {
+    expect(src).toContain('align="end"');
+    expect(src).toMatch(/slots\.current\.get\(id\)\?\.querySelector\("button"\)\?\.focus\(\)/);
+    expect(src).toMatch(/\[moving\]\);/);
   });
 });
 
@@ -150,11 +218,22 @@ describe("the Move under list", () => {
     expect(opts.map((o) => o.label)).toEqual(["Top level", "A", "B", "C", "E"]);
     const by = Object.fromEntries(opts.map((o) => [o.label, o]));
     expect(by["Top level"].disabled).toBe(true);
-    expect(by["Top level"].hint).toBe("The node is already there.");
-    expect(by.A.hint).toBe("A node cannot move under itself.");
-    expect(by.C.hint).toBe("A node cannot move under one of its own children.");
+    expect(by["Top level"].description).toBe("The node is already there.");
+    expect(by.A.description).toBe("A node cannot move under itself.");
+    expect(by.C.description).toBe("A node cannot move under one of its own children.");
+    // The reason wraps. A one-line hint made the list wider than a phone.
+    expect(opts.every((o) => o.hint === undefined)).toBe(true);
     expect(by.E.disabled).toBeUndefined();
     expect(by.C.depth).toBe(2);
+  });
+  it("caps the indent and sorts the nodes by label, numbers as numbers", () => {
+    const deep: TreeNodeIn[] = [];
+    for (let i = 0; i < 9; i++) deep.push({ id: `d${i}`, parentId: i === 0 ? null : `d${i - 1}`, label: `D${i}` });
+    deep.push({ id: "x", parentId: null, label: "Top" });
+    expect(Math.max(...parentOptions(deep, "x").map((o) => o.depth ?? 0))).toBe(5);
+    const parts: TreeNodeIn[] = ["Part 10", "Part 2", "Part 1"].map((label, i) => ({ id: `p${i}`, parentId: null, label }));
+    parts.push({ id: "z", parentId: null, label: "Zed" });
+    expect(parentOptions(parts, "z").map((o) => o.label)).toEqual(["Top level", "Part 1", "Part 2", "Part 10", "Zed"]);
   });
 });
 

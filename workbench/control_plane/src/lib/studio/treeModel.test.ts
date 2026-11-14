@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
-  MAX_TREE_DEPTH, MAX_TREE_NODES, applyMove, buildTree, canMove, hierarchyField, initialExpanded, moveRefusal, movePatch,
+  MAX_TREE_DEPTH, MAX_TREE_NODES, applyMove, buildTree, canMove, compareLabels, hierarchyField, initialExpanded, moveRefusal, movePatch,
   treeRows, type TreeNodeIn,
 } from "./treeModel";
 
@@ -77,6 +77,16 @@ describe("treeRows on 2,000 nodes", () => {
     const rows = treeRows([n("b"), n("a"), n("c", "a")], new Set(["a"]), { sort: "label" });
     expect(rows.map((r) => r.id)).toEqual(["a", "c", "b"]);
     expect(treeRows([n("b"), n("a")], new Set()).map((r) => r.id)).toEqual(["b", "a"]);
+  });
+  it("sorts numbers as numbers and ignores case", () => {
+    const lab = (id: string, label: string): TreeNodeIn => ({ id, parentId: null, label });
+    const nodes = [lab("1", "Part 10"), lab("2", "part 2"), lab("3", "Module 01.10"), lab("4", "Module 01.03"), lab("5", "Part 1")];
+    const rows = treeRows(nodes, new Set(), { sort: "label" });
+    expect(rows.map((r) => r.label)).toEqual(["Module 01.03", "Module 01.10", "Part 1", "part 2", "Part 10"]);
+    // The input order stays as it is for `input`.
+    expect(treeRows(nodes, new Set()).map((r) => r.id)).toEqual(["1", "2", "3", "4", "5"]);
+    expect(compareLabels("Part 2", "Part 10")).toBeLessThan(0);
+    expect(compareLabels("A", "a")).toBe(0);
   });
 });
 

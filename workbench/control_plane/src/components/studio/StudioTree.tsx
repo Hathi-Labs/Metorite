@@ -15,7 +15,7 @@
  *
  * Only the rows that the open nodes show are drawn. A collapsed node draws none of its children.
  */
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { EmptyState } from "@/components/EmptyState";
 import Icon from "@/components/Icon";
@@ -42,6 +42,29 @@ export const TREE_EMPTY_LINE = "No records yet.";
 const NO_UNSUBSCRIBE = () => {};
 const IDLE: TreeMoveState = { placed: {}, pending: new Set<string>(), alert: null, live: "", dragId: null, over: null };
 const ROW_STEP_REM = 1.25;
+/** The deepest indent that the Move list draws. A deeper node keeps this indent, so the list stays narrow. */
+const OPTION_DEPTH_CAP = 5;
+/** The width of the swapped Move control. It is small, so the row label keeps its room. */
+const MOVE_WIDTH = "w-28";
+/** The line above the tree keeps this height whether it speaks or not, so the tree never jumps. */
+const NOTICE_SLOT = "min-h-6";
+/** The spacer of a leaf row. It has the size of the chevron button (`icon-xs`), so the grips line up. */
+const CHEVRON_SPACER = "w-6 glass:w-7 glass:pointer-coarse:w-10";
+
+/**
+ * A drag is over `target` (a node id, or null for the top level). Returns true when the drop is
+ * allowed there. Only then does the view call `preventDefault`, so the cursor says "not allowed"
+ * over any other row. An invalid target clears the ring.
+ */
+export function overTarget(mover: TreeMover, nodes: ReadonlyArray<TreeNodeIn>, target: string | null): boolean {
+  const { dragId } = mover.getState();
+  if (dragId === null) return false;
+  if (!canMove(nodes, dragId, target).ok) {
+    mover.dragLeave(true);
+    return false;
+  }
+  return mover.dragOver(target === null ? TOP_OVER : target);
+}
 
 export interface StudioTreeViewProps {
   model: ViewTree;
@@ -71,10 +94,25 @@ export function StudioTreeView({ model, rows, door, mover: given }: StudioTreeVi
   const shown = useMemo(() => placedNodes(nodes, st.placed), [nodes, st.placed]);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => initialExpanded(nodes, 1));
   const [moving, setMoving] = useState<string | null>(null);
-  const list = useMemo(() => treeRows(shown, expanded), [shown, expanded]);
+  const list = useMemo(() => treeRows(shown, expanded, { sort: "label" }), [shown, expanded]);
   const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n] as const)), [nodes]);
   const labelFor = useCallback((id: string) => byId.get(id)?.label ?? id, [byId]);
   const movable = mover !== null;
+  // The Move button of each row, so focus can return to it when the Move list closes.
+  const slots = useRef(new Map<string, HTMLElement>());
+  const lastMoving = useRef<string | null>(null);
+  useEffect(() => {
+    const id = moving ?? lastMoving.current;
+    lastMoving.current = moving;
+    if (id === null) return;
+    // Open: focus the select trigger. Closed: focus the Move button that came back.
+    slots.current.get(id)?.querySelector("button")?.focus();
+  }, [moving]);
+  // The ring shows only where the drop is allowed.
+  const ringOn = (target: string | null) => {
+    if (st.dragId === null || st.over !== (target === null ? TOP_OVER : target)) return false;
+    return canMove(shown, st.dragId, target).ok;
+  };
 
   const toggle = (id: string) => {
     const next = new Set(expanded);
@@ -92,13 +130,15 @@ export function StudioTreeView({ model, rows, door, mover: given }: StudioTreeVi
 
   return (
     <div className="space-y-2">
-      {st.alert ? (
-        <p role="alert" className="rounded-md bg-destructive/10 px-2 py-1 text-xs text-destructive">{st.alert}</p>
-      ) : null}
-      <p role="status" className="text-xs text-muted-foreground empty:hidden">{st.live}</p>
+      <div className={NOTICE_SLOT}>
+        {st.alert ? (
+          <p role="alert" className="rounded-md bg-destructive/10 px-2 py-1 text-xs text-destructive">{st.alert}</p>
+        ) : null}
+        <p role="status" className="text-xs text-muted-foreground">{st.live}</p>
+      </div>
       {movable ? (
         <div
-          onDragOver={(e) => { if (mover?.dragOver(TOP_OVER)) e.preventDefault(); }}
+          onDragOver={(e) => { if (mover && overTarget(mover, shown, null)) e.preventDefault(); }}
           onDragLeave={(e) => {
             const to = e.relatedTarget as Node | null;
             mover?.dragLeave(!!to && !e.currentTarget.contains(to));
@@ -108,7 +148,7 @@ export function StudioTreeView({ model, rows, door, mover: given }: StudioTreeVi
             const id = mover?.drop() ?? e.dataTransfer?.getData("text/plain") ?? null;
             if (id) send(id, null);
           }}
-          className={`rounded-md border border-dashed border-border px-2 py-1 text-xs text-muted-foreground ${st.over === TOP_OVER ? "ring-2 ring-primary/40" : ""}`}
+          className={`rounded-md border border-dashed border-border px-2 py-1 text-xs text-muted-foreground ${ringOn(null) ? "ring-2 ring-primary/40" : ""}`}
         >
           Top level
         </div>
@@ -117,7 +157,7 @@ export function StudioTreeView({ model, rows, door, mover: given }: StudioTreeVi
         {list.map((row) => {
           const node = byId.get(row.id);
           const pending = st.pending.has(row.id);
-          const drop = st.dragId !== null && st.over === row.id;
+          const drop = ringOn(row.id);
           return (
             <li
               key={row.id}
@@ -134,7 +174,7 @@ export function StudioTreeView({ model, rows, door, mover: given }: StudioTreeVi
                 e.dataTransfer.effectAllowed = "move";
               }}
               onDragEnd={() => mover?.dragEnd()}
-              onDragOver={movable ? (e) => { if (mover?.dragOver(row.id)) e.preventDefault(); } : undefined}
+              onDragOver={movable ? (e) => { if (mover && overTarget(mover, shown, row.id)) e.preventDefault(); } : undefined}
               onDragLeave={movable ? (e) => {
                 const to = e.relatedTarget as Node | null;
                 mover?.dragLeave(!!to && !e.currentTarget.contains(to));
@@ -153,11 +193,12 @@ export function StudioTreeView({ model, rows, door, mover: given }: StudioTreeVi
                     aria-label={`${row.expanded ? "Collapse" : "Expand"} ${row.label}`}
                     onClick={() => toggle(row.id)}
                   />
-                ) : <span aria-hidden className="inline-block w-6 shrink-0" />}
+                ) : <span aria-hidden className={`inline-block shrink-0 ${CHEVRON_SPACER}`} />}
                 {movable && !pending ? (
-                  <Icon name="GripVertical" size={14} aria-hidden className="h-3.5 w-3.5 shrink-0 cursor-grab text-muted-foreground" />
+                  // A touch screen does not fire an HTML5 drag, so the grip hides there. "Move to…" is the path on a phone.
+                  <Icon name="GripVertical" size={14} aria-hidden className="h-3.5 w-3.5 shrink-0 cursor-grab text-muted-foreground pointer-coarse:hidden" />
                 ) : null}
-                <span className="min-w-0 truncate text-sm text-foreground">{row.label}</span>
+                <span className="min-w-0 flex-1 truncate text-sm text-foreground">{row.label}</span>
                 {metaFields.map((f) => {
                   const text = displayValue(f, node?.data?.[f.key]);
                   return text === "" ? null : (
@@ -165,11 +206,14 @@ export function StudioTreeView({ model, rows, door, mover: given }: StudioTreeVi
                   );
                 })}
                 {movable && !pending ? (
-                  <span className="ml-auto shrink-0">
+                  <span
+                    className="shrink-0"
+                    ref={(el) => { if (el) slots.current.set(row.id, el); else slots.current.delete(row.id); }}
+                  >
                     {moving === row.id ? (
                       <SelectButton
                         label={`Move ${row.label} under`} prompt="Move to…" value="" autoOpen filterAbove={8}
-                        widthClass="w-44" align="end"
+                        widthClass={MOVE_WIDTH} align="end"
                         options={parentOptions(shown, row.id)}
                         onChange={(v) => send(row.id, v === TOP_OVER ? null : v)}
                         onClose={() => setMoving(null)}
@@ -195,18 +239,19 @@ export function StudioTreeView({ model, rows, door, mover: given }: StudioTreeVi
 
 /**
  * The parents that node `id` may take: "Top level", then every node in tree order. A node that the
- * move would break stays in the list, disabled, and the hint says why (the model's sentence).
+ * move would break stays in the list, disabled, and a line under it says why (the model's sentence).
+ * The line wraps (`description`), so a long sentence cannot widen the list past a phone screen.
  */
 export function parentOptions(nodes: ReadonlyArray<TreeNodeIn>, id: string): SelectOption[] {
-  const all = treeRows(nodes, new Set(nodes.map((n) => n.id)));
+  const all = treeRows(nodes, new Set(nodes.map((n) => n.id)), { sort: "label" });
   const out: SelectOption[] = [];
   const top = canMove(nodes, id, null);
-  out.push({ value: TOP_OVER, label: "Top level", ...(top.ok ? {} : { disabled: true, hint: moveRefusal(top.reason) }) });
+  out.push({ value: TOP_OVER, label: "Top level", ...(top.ok ? {} : { disabled: true, description: moveRefusal(top.reason) }) });
   for (const r of all) {
     const check = canMove(nodes, id, r.id);
     out.push({
-      value: r.id, label: r.label, depth: r.depth,
-      ...(check.ok ? {} : { disabled: true, hint: moveRefusal(check.reason) }),
+      value: r.id, label: r.label, depth: Math.min(r.depth, OPTION_DEPTH_CAP),
+      ...(check.ok ? {} : { disabled: true, description: moveRefusal(check.reason) }),
     });
   }
   return out;

@@ -121,6 +121,14 @@ function indexOf(nodes: ReadonlyArray<TreeNodeIn>): Index {
   return { byId, children };
 }
 
+/**
+ * The order of two labels: not case-sensitive, and a run of digits counts as a number.
+ * "Part 2" comes before "Part 10", and "Module 01.03" before "Module 01.10".
+ */
+export function compareLabels(a: string, b: string): number {
+  return a.localeCompare(b, "en", { numeric: true, sensitivity: "base" });
+}
+
 /** The visible rows, depth first. A collapsed node hides its children. Iterative and O(n). */
 export function treeRows(
   nodes: ReadonlyArray<TreeNodeIn>,
@@ -131,8 +139,7 @@ export function treeRows(
   const sorted = (list: TreeNodeIn[] | undefined): TreeNodeIn[] => {
     const l = list ?? [];
     if (opts?.sort !== "label") return l;
-    const key = (n: TreeNodeIn) => (n.label ?? n.id).toLowerCase();
-    return [...l].sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
+    return [...l].sort((a, b) => compareLabels(a.label ?? a.id, b.label ?? b.id));
   };
   const rows: TreeRow[] = [];
   const stack: Array<{ node: TreeNodeIn; depth: number }> = [];
