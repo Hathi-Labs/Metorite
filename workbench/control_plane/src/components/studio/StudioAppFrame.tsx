@@ -27,6 +27,8 @@ export interface StudioAppRail {
   /** The id of the page on screen. */
   activePage: string;
   onPick: (page: string) => void;
+  /** The ready text of a count, by page id (STU-AF3b). A page with no entry shows no count. */
+  counts?: ReadonlyMap<string, string>;
 }
 
 export interface StudioAppFrameProps {
@@ -54,6 +56,7 @@ function RailRows({ rail, onChoose }: { rail: StudioAppRail; onChoose: (page: st
               label={row.label}
               icon={<Icon name={row.icon} size={15} />}
               selected={row.page === rail.activePage}
+              meta={rail.counts?.get(row.page)}
               onSelect={() => onChoose(row.page)}
               buttonProps={row.page === rail.activePage ? { "aria-current": "page" } : undefined}
             />

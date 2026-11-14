@@ -195,3 +195,36 @@ describe("the ready apps map with no problem view", () => {
     expect(mapView(v, { actions: m.actions, objects, owner: true })).toBeNull();
   });
 });
+
+describe("mapView: the me token and the own filter of a view (STU-AF3b)", () => {
+  const person = { ...visit, fields: [...visit.fields, { key: "owner", type: "person", label: "Owner", required: false, many: false, options: null, to: null, hot: true }] } as unknown as ObjectRow;
+  const mine = view({ id: "v", block: "table", object: "visit", source: { action: "list_visits", args: {
+    kind: "x", filter: [{ field: "owner", op: "eq", value: "me" }], sort: { field: "status", dir: "desc" } } } });
+  const list = (m: ReturnType<typeof mapView>) => (m?.kind === "node" ? m.node.props.source : null);
+
+  it("the table source carries the email of the member, as the count of the rail does", () => {
+    expect(list(mapView(mine, ctx({ objects: [person], email: "Ann@X.io" })))).toEqual({
+      action: "object:visit.list",
+      args: { limit: VIEW_LIMIT, filter: [{ field: "owner", op: "eq", value: "ann@x.io" }], sort: { field: "status", dir: "desc" } },
+    });
+  });
+  it("the board source carries it too", () => {
+    const board = { ...mine, block: "board" as const };
+    const src = list(mapView(board, ctx({ objects: [person], email: "ann@x.io" }))) as { args: { filter: unknown[] } };
+    expect(src.args.filter).toEqual([{ field: "owner", op: "eq", value: "ann@x.io" }]);
+  });
+  it("a token on a field that is not a person stays as written", () => {
+    const text = view({ id: "v", block: "table", object: "visit", source: { action: "list_visits", args: { filter: [{ field: "title", op: "eq", value: "me" }] } } });
+    const src = list(mapView(text, ctx({ email: "ann@x.io" }))) as { args: { filter: unknown[] } };
+    expect(src.args.filter).toEqual([{ field: "title", op: "eq", value: "me" }]);
+  });
+  it("the list bar adds to the filter of the view, and its sort wins", () => {
+    const lens = { view: "v", args: { filter: [{ field: "status", op: "eq", value: "open" }], sort: { field: "title", dir: "asc" as const } } };
+    const src = list(mapView(mine, ctx({ objects: [person], email: "a@b.c", lens }))) as { args: { filter: unknown[]; sort: unknown } };
+    expect(src.args.filter).toHaveLength(2);
+    expect(src.args.sort).toEqual({ field: "title", dir: "asc" });
+  });
+  it("a view with no source args reads as before", () => {
+    expect(list(mapView(view({ id: "v", block: "table", object: "visit" }), ctx()))).toEqual({ action: "object:visit.list", args: { limit: VIEW_LIMIT } });
+  });
+});
