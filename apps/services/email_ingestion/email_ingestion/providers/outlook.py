@@ -35,6 +35,7 @@ from .base import (
     InlineImage,
     InlineRead,
     ProviderAttachmentFailed,
+    ProviderDidNotAnswer,
     ProviderMailTooLarge,
     RefreshingBearer,
     SyncResult,
@@ -233,6 +234,69 @@ def _retry_after(exc: BaseException) -> float:
     except (TypeError, ValueError):
         delay = 1.0
     return min(max(delay, 0.0), _MAX_RETRY_AFTER_SECS)
+
+
+#: A gateway fault of Graph. A read that gets one is tried again. A write that
+#: gets one is not, because the write may have landed (HRD-20).
+_GATEWAY_FAULTS = frozenset({502, 503, 504})
+#: The tries again of a read, and the waits before them.
+_READ_FAULT_WAITS = (0.5, 1.5)
+
+
+def _write_kind(request: httpx.Request) -> str | None:
+    """``"send"`` or ``"draft"`` for a POST that writes mail, else None.
+
+    A POST of any other path keeps its old path, so a label or a rule that
+    fails still raises ``HTTPStatusError`` as before."""
+    if request.method != "POST":
+        return None
+    path = request.url.path.rstrip("/")
+    if path.endswith(("/sendMail", "/reply", "/replyAll", "/forward", "/send")):
+        return "send"
+    if path.endswith(("/createReply", "/createReplyAll", "/attachments"))             or path.endswith("/me/messages"):
+        return "draft"
+    return None
+
+
+class _GraphClient(httpx.AsyncClient):
+    """The Graph client, with the two rules of HRD-20 (task 3224).
+
+    * A GET that gets 502, 503 or 504 is tried again, twice at most. The wait
+      is ``Retry-After`` up to :data:`_READ_RETRY_MAX_WAIT_SECS`, else a short
+      back-off.
+    * A POST that writes mail is never tried again. A 502, 503 or 504, or a
+      read timeout, raises :class:`ProviderDidNotAnswer`, because the write
+      may have landed.
+
+    Fence: ``tests/unit/test_outlook_gateway_faults.py``."""
+
+    async def send(self, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+        kind = _write_kind(request)
+        if request.method == "GET":
+            waits = list(_READ_FAULT_WAITS)
+            while True:
+                resp = await super().send(request, **kwargs)
+                if resp.status_code not in _GATEWAY_FAULTS or not waits:
+                    return resp
+                wait = waits.pop(0)
+                if "Retry-After" in resp.headers:
+                    try:
+                        wait = float(resp.headers["Retry-After"])
+                    except ValueError:
+                        pass
+                    wait = min(max(wait, 0.0), _READ_RETRY_MAX_WAIT_SECS)
+                await resp.aclose()
+                await asyncio.sleep(wait)
+        if kind is None:
+            return await super().send(request, **kwargs)
+        try:
+            resp = await super().send(request, **kwargs)
+        except httpx.ReadTimeout:
+            raise ProviderDidNotAnswer("Outlook", kind) from None
+        if resp.status_code in _GATEWAY_FAULTS:
+            await resp.aclose()
+            raise ProviderDidNotAnswer("Outlook", kind)
+        return resp
 
 
 class OutlookMailTooLarge(ProviderMailTooLarge):
@@ -796,7 +860,7 @@ class OutlookProvider(BaseEmailProvider):
         # token on each request, and refreshes once on a 401 (EM-T4c).
         if self._http is None:
             await self.authenticate()
-            self._http = httpx.AsyncClient(
+            self._http = _GraphClient(
                 base_url=GRAPH_API_BASE,
                 headers={"Content-Type": "application/json"},
                 auth=RefreshingBearer(self),

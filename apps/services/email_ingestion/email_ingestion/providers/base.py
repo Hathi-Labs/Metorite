@@ -33,6 +33,31 @@ class ProviderRateLimited(Exception):
     (EM-G4b review round 1, F2)."""
 
 
+class ProviderDidNotAnswer(Exception):
+    """A provider did not answer a request that writes (HRD-20, task 3224).
+
+    A 502, 503 or 504, or a read timeout, on a send, a reply or a draft write.
+    The write may have landed, so no code tries it again. It holds the name of
+    the provider and the kind of write, and nothing else. It never takes a
+    URL, a request or a response, and it never subclasses
+    ``httpx.HTTPStatusError``, whose text holds the URL. The gateway answers
+    503 with :attr:`detail` (``main._provider_did_not_answer``).
+
+    ``kind`` is ``"send"`` or ``"draft"``. The text never says that nothing
+    was written, because the provider may have done the write before the
+    failure."""
+
+    def __init__(self, provider: str, kind: str) -> None:
+        self.provider = provider
+        self.kind = kind
+        if kind == "draft":
+            tail = "It may not have saved the draft. Check Drafts before you try again."
+        else:
+            tail = "It may not have sent the mail. Check Sent before you try again."
+        self.detail = f"{provider} did not answer. {tail}"
+        super().__init__(self.detail)
+
+
 class FolderCheckIncomplete(ValueError):
     """The provider could not read the whole folder tree, so it made no
     folder. The cause may pass, so a later try can succeed (H-267)."""
