@@ -6,8 +6,10 @@
  * live data through the door of the page. The page id lives in the URL (`?page=<id>`).
  *
  * The frame composes parts that exist: `StudioPage`, the mapper `lib/studio/viewBlocks.ts`,
- * `GenerativeUINode`, `StudioForm` and `StudioDetail`. It adds no rail and no tab bar. The dialogs of AF-6 are `StudioNewButton` and `StudioFormDialog`.
- * The rail is AF-2. A viewer (J2a) reads only: the door holds the reads, and the form view says so.
+ * `GenerativeUINode`, `StudioForm` and `StudioDetail`. Since AF-2b it draws into `StudioAppFrame`,
+ * which owns the app bar and the left rail of pages (`lib/studio/railModel.ts`). An app with one
+ * page has no rail. `StudioPage` draws `bare` there, with no bar of its own. The dialogs of AF-6 are
+ * `StudioNewButton` and `StudioFormDialog`. A viewer (J2a) reads only: the door holds the reads, and the form view says so.
  * This is the one file of the route that holds the page model. `page.tsx` imports none.
  */
 import { useCallback, useMemo, useState } from "react";
@@ -23,8 +25,10 @@ import StudioFilterBar from "@/components/studio/StudioFilterBar";
 import StudioNewButton from "@/components/studio/StudioNewButton";
 import StudioForm from "@/components/studio/StudioForm";
 import StudioRecord from "@/components/studio/StudioRecord";
+import StudioAppFrame from "@/components/studio/StudioAppFrame";
 import StudioPage, { PANEL } from "@/components/studio/StudioPage";
 import Button from "@/components/ui/Button";
+import { useViewMode } from "@/components/ViewModeProvider";
 import SelectButton from "@/components/ui/SelectButton";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, type StudioDataDoor, moreLine, rowsTotal, sourceKey } from "@/lib/studio/dataDoor";
@@ -37,6 +41,7 @@ import { newButtons } from "@/lib/studio/dialogModel";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import { buildPage, viewObjectName } from "@/lib/studio/pageModel";
 import { type PreviewControls, boardGroupKeys, fieldSpecs, recordTitle } from "@/lib/studio/packagePreview";
+import { hasRail, railFor } from "@/lib/studio/railModel";
 import { READ_ONLY_SENTENCE, type PackageDetail } from "@/lib/studio/realDoor";
 import { type ViewDetail, type ViewMapContext, type ViewLens, mapView } from "@/lib/studio/viewBlocks";
 import {
@@ -192,7 +197,17 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted }: App
       return v && (v.block === "table" || v.block === "board") ? [viewObjectName(v, controls.actions)] : [];
     }), detail.objects, controls.actions, controls.owner),
   [cells, detail.views, detail.objects, controls.actions, controls.owner]);
-  const pagePicks = built.pages.map((p) => ({ value: p.id, label: p.title || p.id }));
+  // The rail replaces the page picker. An app with one page draws neither (nothing to pick).
+  const railed = hasRail(built.pages);
+  const { isMobile } = useViewMode();
+  // The owner verbs sit in the app bar on a desktop. A phone bar is too narrow, so they sit in the
+  // toolbar above the page there, and the title keeps its room.
+  const ownerBar = controls.owner ? (
+    <>
+      <Button variant="secondary" size="sm" icon="Code" href={buildHref(pkg)}>Open in Studio IDE</Button>
+      <DeletePackageButton id={pkg} onDeleted={onDeleted} />
+    </>
+  ) : <span role="status" className="text-xs text-muted-foreground">{READ_ONLY_SENTENCE}</span>;
   const toolbar = (
     <>
       <PackageLifetimeBar pkg={pkg} />
@@ -200,22 +215,17 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted }: App
         const o = detail.objects.find((x) => x.name === b.object);
         return o ? <StudioNewButton key={b.object} button={b} object={o} door={door} /> : null;
       })}
-      {pagePicks.length > 1 ? (
-        <SelectButton label="Page" value={built.page.id} widthClass="w-48" options={pagePicks} onChange={setPage} />
-      ) : null}
-      {controls.owner ? (
-        <>
-          <Button variant="secondary" size="sm" icon="Code" href={buildHref(pkg)}>Open in Studio IDE</Button>
-          <DeletePackageButton id={pkg} onDeleted={onDeleted} />
-        </>
-      ) : <span role="status" className="text-xs text-muted-foreground">{READ_ONLY_SENTENCE}</span>}
+      {isMobile ? ownerBar : null}
     </>
   );
 
   return (
     <StudioDataContext.Provider value={door}>
+      <StudioAppFrame title={detail.name.trim() || "App"} back={{ href: "/studio", label: "Back to Studio" }}
+        actions={isMobile ? undefined : ownerBar}
+        rail={railed ? { sections: railFor(built.pages, detail.nav), activePage: built.page.id, onPick: setPage } : undefined}>
       <div className="h-full" onClickCapture={onLinkClick}>
-      <StudioPage title={detail.name.trim() || "App"} back={{ href: "/studio", label: "Back to Studio" }}
+      <StudioPage bare title={detail.name.trim() || "App"}
         manifest={manifest} pageId={built.page.id} state={state} onTab={setTab} foldScope={pkg}
         renderCount={(c) => (
           <HeaderCount object={c.object} door={door}
@@ -247,6 +257,7 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted }: App
             onClear={() => update(clearedBar)} />
         ) : undefined} />
       </div>
+      </StudioAppFrame>
     </StudioDataContext.Provider>
   );
 }

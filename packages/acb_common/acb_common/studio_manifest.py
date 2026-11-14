@@ -165,6 +165,7 @@ _USES_RE = re.compile(
     rf"(?:object:(?P<obj>{_NAME})\.(?P<op>{_OPS})"
     rf"|integration:(?P<integ>{_NAME}(?:\.{_NAME})?)"
     rf"|workflow:(?P<wf>{UUID_PATTERN})"
+    rf"|logic:(?P<logic>{_NAME})"
     rf"|(?P<app>{APP_ID_PATTERN})\.(?P<appop>{OP_PATTERN}))"
 )
 
@@ -212,16 +213,19 @@ class UsesRef:
     """The parts of one ``uses`` value of the A2 grammar (STU-B2a).
 
     ``source`` is ``object``, ``manifest`` (an ``<app>.<op>`` door op),
-    ``integration`` or ``workflow``, the source names of the B1 catalog.
+    ``integration``, ``workflow`` or ``logic`` (STU-B4a), the source names of
+    the B1 catalog. ``logic`` is a first-party logic module: ``logic`` holds
+    its name.
     ``object`` and ``op`` are set for an ``object:`` value. ``app`` and
     ``op`` are set for a door op (STU-B2b-2b): ``op`` then holds the door op
     name of that app. An integration and a workflow set none of them.
     """
 
-    source: Literal["object", "manifest", "integration", "workflow"]
+    source: Literal["object", "manifest", "integration", "workflow", "logic"]
     object: str | None = None
     op: str | None = None
     app: str | None = None
+    logic: str | None = None
 
 
 def parse_uses(uses: object) -> UsesRef | None:
@@ -237,6 +241,8 @@ def parse_uses(uses: object) -> UsesRef | None:
         return UsesRef(source="integration")
     if m.group("wf"):
         return UsesRef(source="workflow")
+    if m.group("logic"):
+        return UsesRef(source="logic", logic=m.group("logic"))
     return UsesRef(source="manifest", app=m.group("app"), op=m.group("appop"))
 
 
@@ -397,6 +403,48 @@ class PageDef(_Strict):
     sections: list[SectionDef] = Field(default_factory=list, max_length=MAX_SECTIONS_PER_PAGE)
     side: SideDef | None = None
 
+#: The caps of the rail (STU-AF2a, D219). `lib/studio/manifest.ts` holds the same numbers, and
+#: `navCaps.test.ts` checks them against the `maxItems` of the schema file.
+#: This `nav` is not the `nav` contribution point of `CONTRIBUTION_POINTS`. That point
+#: (`contributes.nav`) adds a row to the shell sidebar. This `nav` lays out the rail of one app.
+MAX_NAV_SECTIONS = 4
+MAX_NAV_ROWS = 12
+
+#: The icons of a rail row (STU-AF2a). Each name is a Lucide name that `lib/icons.tsx` draws.
+#: The names come from the icons of the built-in app rails (`lib/nav.ts`, the CRM rail, the
+#: Knowledge rail and the Projects tree) and from the common names of a business app.
+#: `NAV_ICONS` in `lib/studio/manifest.ts` is the twin. `test_studio_manifest_ts_parity.py`
+#: holds the two equal.
+NAV_ICONS: tuple[str, ...] = (
+    "Home", "LayoutDashboard", "LayoutGrid", "List", "ListChecks", "Table",
+    "Kanban", "Calendar", "CalendarDays", "Clock", "Users", "User",
+    "Briefcase", "Handshake", "Inbox", "Mail", "Phone", "MessageCircle",
+    "FileText", "Files", "FolderOpen", "Tag", "Star", "Flag",
+    "Bell", "Bookmark", "Wallet", "Receipt", "Package", "Truck",
+    "MapPin", "Wrench", "Settings", "ClipboardList", "CheckSquare", "Target",
+    "Trophy", "Lightbulb", "BookOpen", "Layers", "Activity", "Sparkles",
+)  # fmt: skip
+
+
+class NavRow(_Strict):
+    #: A page of `pages`. The check that it exists is `_check_nav`.
+    page: str = Field(pattern=rf"^{_DASHED}$")
+    icon: Literal[
+        "Home", "LayoutDashboard", "LayoutGrid", "List", "ListChecks", "Table",
+        "Kanban", "Calendar", "CalendarDays", "Clock", "Users", "User",
+        "Briefcase", "Handshake", "Inbox", "Mail", "Phone", "MessageCircle",
+        "FileText", "Files", "FolderOpen", "Tag", "Star", "Flag",
+        "Bell", "Bookmark", "Wallet", "Receipt", "Package", "Truck",
+        "MapPin", "Wrench", "Settings", "ClipboardList", "CheckSquare", "Target",
+        "Trophy", "Lightbulb", "BookOpen", "Layers", "Activity", "Sparkles",
+    ] | None = None  # fmt: skip
+    label: str | None = Field(default=None, min_length=1, pattern=r"\S")
+
+
+class NavSection(_Strict):
+    title: str = Field(min_length=1, pattern=r"\S")
+    rows: list[NavRow] = Field(max_length=MAX_NAV_ROWS)
+
 
 class Trigger(_Strict):
     record: str | None = None
@@ -498,6 +546,8 @@ class Manifest(_Strict):
     views: list[ViewDef] = Field(default_factory=list)
     #: How the views sit on a page (STU-D11a). A view stays one block.
     pages: list[PageDef] = Field(default_factory=list, max_length=MAX_PAGES)
+    #: The rail of the app (STU-AF2a). Each row names a page of `pages`.
+    nav: list[NavSection] = Field(default_factory=list, max_length=MAX_NAV_SECTIONS)
     workflows: list[WorkflowDef] = Field(default_factory=list)
     skill: Skill | None = None
     # The old `shell` block stays as it is. Its job shape (`verb`, `view`) differs from the
@@ -701,6 +751,8 @@ def _structure_errors(exc: ValidationError, skip: set[str]) -> list[ManifestErro
             else:
                 msg = f"Block is unknown. Use {', '.join(BLOCKS[:-1])} or {BLOCKS[-1]}.{_got(val)}"
                 limit = 25 + len(BLOCKS)
+        elif last == "icon" and typ == "literal_error":
+            msg = f"Icon is not in the icon list. Use a name of `NAV_ICONS`.{_got(val)}"
         elif last == "type" and typ == "literal_error":
             if val == "formula":
                 msg = _FORMULA_TYPE_MESSAGE
@@ -749,7 +801,7 @@ def _check_uses(
         return _err(
             path,
             "Not an action id. Use object:<name>.<op>, <app>.<op>, "
-            f"integration:<action> or workflow:<uuid>.{_got(a.uses)}",
+            f"integration:<action>, workflow:<uuid> or logic:<name>.{_got(a.uses)}",
         )
     if m.group("obj"):
         if m.group("obj") not in objects:
@@ -888,6 +940,17 @@ def _check_pages(m: Manifest, view_ids: set[str], out: list[ManifestError]) -> N
             _undeclared(f"{p}.header.count.object", "Object", pg.header.count.object, "`objects`", out)
         if pg.side and pg.side.view not in view_ids:
             _undeclared(f"{p}.side.view", "View", pg.side.view, "`views`", out)
+
+
+def _check_nav(m: Manifest, out: list[ManifestError]) -> None:
+    """A rail row names a declared page. A `nav` needs `pages`, because the default
+    pages of an app with none are drawn in the client, and no row can name them."""
+    page_ids = {p.id for p in m.pages}
+    _dupes([sec.title for sec in m.nav], "$.nav", "section title", out)
+    for si, sec in enumerate(m.nav):
+        for ri, row in enumerate(sec.rows):
+            if row.page not in page_ids:
+                _undeclared(f"$.nav[{si}].rows[{ri}].page", "Page", row.page, "`pages`", out)
 
 
 def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[ManifestError]) -> None:
@@ -1157,6 +1220,7 @@ def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[Man
         _check_view(vi, v, objects, action_ids, out)
         _check_view_source(vi, v, uses_by_id, catalog, out)
     _check_pages(m, {v.id for v in m.views}, out)
+    _check_nav(m, out)
     _check_links(m, objects, catalog, out)
     if m.extends is not None and m.extends == m.id:
         out.append(_err("$.extends", "A package cannot extend itself. Name the host package."
