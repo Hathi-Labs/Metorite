@@ -121,6 +121,7 @@ The Knowledge app (spec `knowledge_base.md` §11.1 and §21). Only the first `GE
   - Fences: `lib/emailOtpAdapter.test.ts`, `lib/emailOtp.test.ts`, `app/signin/code/code.test.ts`.
 - `app/signup/` + `app/api/signup/route.ts`: the self-serve form. It redirects to `/signin` while `SELF_SERVE_SIGNUP_ENABLED` is not `"true"`. The hop forwards ONLY `{slug, display_name, registered_state, gstin}`. Fences: `signup.test.ts`, `tests/unit/test_signup_provision_route.py`.
 - `app/workflows/` streams a run through its own SSE relay, because the catch-all buffers bodies. `app/api/agent/chat/route.ts` sends all agents through `/agent/run/stream`.
+  - `app/workflows/lib/humanStep.ts` holds the rules of the human step form (WFC-4a-1), and `HumanStepForm.tsx` only draws them. The form writes `assignee`, `title` and `description` only, and refuses `{{`. Each type of `graph.NODE_TYPES` needs an icon and a label in `lib/nodeVisuals.ts`. Fences: `lib/humanStep.test.ts`, `lib/nodeTypes.test.ts`, `components/NodePalette.test.tsx`, `components/NodeInspector.test.tsx`.
 
 ## Conventions
 - Next.js App Router, SSE streaming for chat, AG-UI translation in route.ts
