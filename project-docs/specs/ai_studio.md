@@ -1303,7 +1303,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 
 **The app frame (D219).** Group AF sits outside the three waves. The ladder puts AF-1 to AF-6, AF-8 and AF-9 in rung 4, after the approval workflow of rung 3. AF-7, AF-10a and AF-10b join rung 6, and AF-11 joins rung 8. AF-1 waits on D4c (task 2955).
 
-**The floor view (D23a, task 3328).** The ladder puts D23a in rung 6, with AF-7 and AF-10b. It changes only how the app frame draws, so it waits on no O3. The demo of rung 6 opens an app with `?floor=1` on a tablet. D23b, the member session on a paired tablet, stays in wave 2, after O3.
+**The floor view (D23a, task 3328).** The ladder puts D23a in rung 6, with AF-7 and AF-10b. It changes only how the app frame draws, so it waits on no O3. Its part of the demo of rung 6 is an app that opens with `?floor=1` on a tablet. D23b, the member session on a paired tablet, stays in wave 2, after O3.
 
 **The first dispatchable slice is B1.** It waits on no owner question, writes nothing, and every later group reads it.
 
