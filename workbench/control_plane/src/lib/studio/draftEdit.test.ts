@@ -190,6 +190,18 @@ describe("views", () => {
     expect((updateView(base(), "visit-board", { object: "site" }) as ReturnType<typeof base>).views[1].source).toEqual({ object: "visit" });
   });
 
+  it("drops the rail rows of a page that loses its last cell", () => {
+    const m = {
+      ...base(),
+      pages: [{ id: "only", cols: 1, cells: [{ view: "visit-table" }] }, { id: "keep", cols: 1, cells: [{ view: "site-table" }] }],
+      nav: [{ title: "Main", rows: [{ page: "only", count: true }, { page: "keep", label: "Keep" }] }, { title: "Solo", rows: [{ page: "only" }] }],
+    };
+    const out = removeView(m, "visit-table") as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect(out.pages.map((p: { id: string }) => p.id)).toEqual(["keep"]);
+    expect(out.nav).toEqual([{ title: "Main", rows: [{ page: "keep", label: "Keep" }] }, { title: "Solo", rows: [] }]);
+    expect(m.nav[0].rows).toHaveLength(2);
+  });
+
   it("deletes a view and the page cells that show it", () => {
     expect(viewUses(base(), "visit-table")).toBe(2);
     const out = removeView(base(), "visit-table") as ReturnType<typeof base>;
