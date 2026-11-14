@@ -75,6 +75,12 @@ not write a second copy of that seam. A bare test file name is under
    - MCP rule: a load of a pack of an owner that reads stranger text refuses when the live list holds an MCP tool. `_beside_mcp` fails closed. Precedence differs by layer. In layer (a) the email pack wins and the MCP server stays out. In layer (b) the MCP tool wins and the pack stays out.
    - OA-7i: `plan_loader` is the ONE reachability rule of the loader in a run. Its `LoaderPlan` gives the offer and `via_loader`, the owners whose specialist leaves. A hand-off to such an owner answers `LOADER_HANDOFF_REFUSED`. Fence: `test_loader_replaces_handoff.py`.
    - `PackRun.holds()` gives each pack of the run, loads too. `PackRun.refusal` applies `_refusals_for` to them. `_rules_block` is the ONE rules text of both layers. Fence: `test_load_skill_tools.py`.
+   - WS-67 TS-2a (D222): `find_tools` adds single tools of a pack. `FindTools` is its `FunctionMiddleware`, and `FindToolsProvider` adds both to one run. It has NO caller yet. TS-2a PR 3 wires it behind `TOOL_SEARCH_ORGS`.
+   - `find_candidates` gives the candidates. They are the tools of the guarded setup build of each pack of `search_packs`, so a dropped tool never ranks. The caller passes the owners. A pack with no candidate is not in the description.
+   - `search_packs` gives each pack of the owners that the caller passes, that `packs_on` allows and that layer (a) did not load. A follow pack counts too, so `studio-more` is a candidate beside a loaded core. `studio-workflows` is one only where `TOOL_PACKS` names it.
+   - `FindTools` builds the found tools again at call time through the guarded builder, so the held answer of the call holds. A found tool never joins `PackRun.holds`.
+   - The answer gives `_rules_block` of each owning pack once in a run. A pack that becomes held later gets its hold note alone.
+   - `PackRun.lock` is the ONE lock of the live tool list. `LoadSkillTools` and `FindTools` hold it through the check, the build and `add_tools`. Do not give either a lock of its own. Fence: `test_find_tools_guards.py`.
    - `owner_scope(owner, held)` binds `no_egress` for any value of `held` but `False`. Fences: `test_tool_packs_registry.py`, `test_pack_guards.py`.
 5a-2. skill_packs.py -- a published Studio skill as a pack of one turn (WS-STU F3, spec `ai_studio.md` §14 F3). It does no I/O and never imports the orchestrator or the gateway.
    - `orchestrator._tool_injection._turn_with_skills` is the ONE reader. It runs inside `_apply_tool_packs`, so only where `packs_on` gives a pack. It also needs `STUDIO_ORGS` and `feature:studio`, and it fails closed.
@@ -83,7 +89,7 @@ not write a second copy of that seam. A bare test file name is under
    - `build` strips each hidden character first (5m-1). It refuses a `{{` or `}}`, more than `MAX_PACK_TOOLS` tools and rules over `MAX_RULES_TOKENS`.
    - `tool_packs.choose` puts the skills after the code packs, in the order of the skill id, in the places that `MAX_PACKS` leaves. `persona_for` puts their rules after the rules of the code packs. A skill pack is never sticky.
    - For each skill that loads, the run writes one `executor.skill_loaded` line, with no skill text. Fences: `test_skill_packs.py`, `test_skill_packs_r8.py` (R8).
-5a-2. tool_search.py -- the index of the pack tools and the lexical ranker (WS-67 TS-1, spec `one_assistant_context.md` §4.2.9). It has NO caller yet. TS-2 adds `find_tools`.
+5a-2. tool_search.py -- the index of the pack tools and the lexical ranker (WS-67 TS-1, spec `one_assistant_context.md` §4.2.9). Its one caller is `tool_packs.FindTools` (TS-2a), which has no caller yet.
    - The index holds first-party text only, and each pack tool once. `rank` is pure: no I/O, no clock, no random source, and a tie breaks by tool name. `allow` comes from the caller, and the ranker never decides permission.
    - It imports `_plain` and `_word_re` from `tool_packs`. Do not copy them. Fence: `test_tool_search_index.py`.
 5b. decide_tools.py -- the `decide` core-floor tool (spec `customer_console.md` §6A.14). It sends no member and never logs `context`.
