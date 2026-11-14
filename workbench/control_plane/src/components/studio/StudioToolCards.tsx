@@ -40,6 +40,7 @@ import { APP_REQUESTS_KEY, decideRequest, readRequest, requestKey } from "@/app/
 import AppRequestCard from "@/components/AppRequestCard";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
+import { StudioConnectCard } from "@/components/studio/StudioConnectCard";
 import { StudioRecordsCard } from "@/components/studio/StudioRecordsCard";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import Button from "@/components/ui/Button";
@@ -47,6 +48,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { REQUEST_TITLE, type AppRequestDecision } from "@/lib/appRequest";
 import { invalidate } from "@/lib/dataCache";
 import { openAssistant, useAskOutcome } from "@/lib/shell/assistant";
+import { connectCalls } from "@/lib/studio/connectCard";
 import { recordsCalls } from "@/lib/studio/recordsCard";
 import {
   TELL_LABEL,
@@ -153,13 +155,15 @@ export function StudioRequestCard({ requestId, sessionId }: { requestId: string;
 /**
  * The Studio cards of one turn: one approval card for each request that a
  * record write tool asked for, then one records card for each read of the
- * records (STU-F5a). Null when the turn has neither, so it is inert for every
+ * records (STU-F5a), then one Connect card for each saved package (STU-I8d,
+ * `StudioConnectCard.tsx`). Null when the turn has none of them, so it is inert for every
  * other tool.
  */
 export default function StudioToolCards({ toolEvents, sessionId }: { toolEvents?: ToolEvent[]; sessionId?: string }) {
   const ids = askedRequestIds(toolEvents);
   const reads = recordsCalls(toolEvents);
-  if (ids.length === 0 && reads.length === 0) return null;
+  const connects = connectCalls(toolEvents);
+  if (ids.length === 0 && reads.length === 0 && connects.length === 0) return null;
   // Each card holds its own space, so a request with no card leaves none.
   return (
     <>
@@ -168,6 +172,9 @@ export default function StudioToolCards({ toolEvents, sessionId }: { toolEvents?
       ))}
       {reads.map((call) => (
         <StudioRecordsCard key={call.key} call={call} />
+      ))}
+      {connects.map((call) => (
+        <StudioConnectCard key={call.packageId} call={call} />
       ))}
     </>
   );

@@ -114,6 +114,11 @@ export const STUDIO_RECORD_WRITES: ReadonlySet<string> = new Set([
   "studio_record_create", "studio_record_update", "studio_record_delete",
 ]);
 
+/** The saves that can change the connections of a draft (STU-I8d). */
+const CONNECT_WRITES: ReadonlySet<string> = new Set(["studio_save", "studio_create_from_template"]);
+/** The cache prefix of `connectionsKey` (`lib/studio/connect.ts`). A test holds the two equal. */
+export const CONNECTIONS_KEY_PREFIX = "studio/connections/";
+
 /** The assistant profile tools write the settings page, which no live app shows. */
 const PROFILE_WRITES = /^profile_/;
 
@@ -159,6 +164,9 @@ export function announceAssistantWrite(toolName: string): LiveApp[] {
     // read the records again. The tool end names no package, so all go.
     invalidate(isLiveDoorKey);
   }
+  // STU-I8d: a save changes the connections that the draft names. Drop the reads of the connections of
+  // every package, so a Connect card in the chat and the IDE read them again.
+  if (CONNECT_WRITES.has(bareToolName(toolName))) invalidate(CONNECTIONS_KEY_PREFIX);
   try {
     window.dispatchEvent(new CustomEvent(ASSISTANT_WROTE_EVENT, { detail: { apps, tool: bareToolName(toolName) } }));
   } catch {
