@@ -93,13 +93,20 @@ Your part is the Metorite side. Read `~/lanes/merge-bot.log` in each loop.
 it over with the task `0`. Its note names the culprit's task. Never close the
 culprit's task: the revert takes its change out of `main`.
 
-- `DONE`: open the culprit's task again with `set_task_status`, to a status
-  that is not done. Comment the revert PR and the failed tests. The `REVERT`
-  line of `~/lanes/auto-revert.log` names both. Skip step f.
+**The pass opens the culprit's task again, not you** (CIV-31c). After each
+`REVERTED` line, `auto_revert.py` runs one `claude -p` call. That call uses
+the Metorite sign-in of the box. It moves the task to a status of the
+category `in_progress`. It comments the revert PR, the culprit and the failed
+tests. Then `~/lanes/auto-revert.log` has a `REOPENED` line.
+
+- `DONE`: change no task, and skip step f. The pass reads the `DONE` line,
+  then writes `REVERTED` and `REOPENED`.
 - A `REVERTED ... by=hand` line in `~/lanes/auto-revert.log`: a person merged
-  the revert PR. First look for a `DONE` line of that pull request in
-  `~/lanes/merge-bot.log`. When there is no `DONE` line, do the same as for
-  `DONE`. When there is one, do nothing more, because you acted on the `DONE`.
+  the revert PR. Change no task. The pass opens the culprit's task.
+- A `PERSON` line with `reopen=failed` or `reopen=none`: the pass could not
+  open the culprit's task. Open it again yourself with `set_task_status`, to a
+  status that is not done. Comment the revert PR and the failed tests. The
+  `REVERT` line of `~/lanes/auto-revert.log` names both.
 - `BACK`: change no task. The pass writes a `PERSON` line for it, and a
   person acts. When a fix lands on `main` first, the pass closes the revert PR
   and writes a `SKIP` line. Then `BACK <pull request> closed` needs nothing.

@@ -352,6 +352,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "AUTO_REVERT_STATE", "MERGE_LOG",
     # CIV-31b: the pass reads the merge bot queue for a hand-over that waits.
     "MERGE_QUEUE",
+    # CIV-31c: the pass reads the lock of the merge bot and its timer, and it
+    # starts one headless session that opens the culprit's task again.
+    "MERGE_BOT_STATE", "AUTO_REVERT_CLAUDE_CMD", "AUTO_REVERT_REOPEN_TIMEOUT_S",
+    "AUTO_REVERT_SYSTEMCTL_CMD",
     # CIV-34a: the conflict rules of the merge bot. It names the ruff command.
     "CONFLICT_RULES_RUFF",
     # Deploy, backup and watchdog scripts (variables they read).
