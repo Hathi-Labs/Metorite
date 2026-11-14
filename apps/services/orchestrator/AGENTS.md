@@ -163,6 +163,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - MCP rule: a load of a pack of the email assistant refuses when the live list holds an MCP tool. The catalog line says so. Precedence differs by layer. In layer (a) the email pack wins and `_inject_mcp_servers` attaches none. In layer (b) the MCP tool wins and the pack stays out.
    - A load by the model makes its pack sticky (task 1747). A pack of layer (a) becomes sticky when one of its tools runs (`_pack_call`). The catalog offers only a pack that fits the cap.
    - Task 1747: `_pack_left_block` puts `tool_packs.left_line` last in `_context_preamble_parts`, after the cache break. It names the sticky packs that left at the start of the turn. It reads the record of the packs from the run binding, so a delegated run gets no line. Fence: `test_pack_turn_keeps_used_packs.py`.
+   - HRD-1: `_log_request_tools_view` puts `acb_skills.unknown_tool.UnknownToolProvider` on the view of the orchestrator, after each seam of `_inject_agent_tools`. It finds the loader on that view. Do not attach it anywhere else. Fence: `test_unknown_tool_answer.py`.
    - Fence: `tests/unit/test_load_skill_tools.py`.
 
 29. **The orchestrator's per-turn context carries the briefing of the member's other chats** (WS-63 PZ-34, `project-docs/specs/personalization.md` §15.4). It ships dark behind `ASSISTANT_BRIEFING_ORGS`.

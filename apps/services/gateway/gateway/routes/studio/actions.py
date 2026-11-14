@@ -15,6 +15,11 @@ A read. No action runs here. Four sources feed it:
 * A published workflow is B. Its ``input_schema`` is null until a workflow
   declares a trigger input (``workflows.variables`` are start values).
 
+5. ``logic`` (STU-B4a): each first-party logic module of
+   ``gateway.studio.logic.MODULES``, as ``logic:<name>``, class B. A row shows
+   only for an org on ``STUDIO_LOGIC_ORGS``. The registry ships empty, so the
+   source gives no row until a module registers.
+
 Source 2 is empty until a tool registers with an integration. Today the
 registry holds only tools with ``integration=None``.
 
@@ -58,6 +63,7 @@ from typing import Annotated, Any
 
 from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common.app_manifests import door_ops, every_app
+from acb_common.db import current_tenant
 from acb_common.studio_fields import NAME_PATTERN
 from acb_common.studio_manifest import OBJECT_OP_CLASSES, OBJECT_OPS, parse_uses
 from acb_skills.skill_packs import action_tool
@@ -67,6 +73,7 @@ from gateway.routes.agent_apps import args_schema
 from gateway.routes.studio import flags
 from gateway.routes.workflows.engine.tool_args import parse_args_schema
 from gateway.routes.workflows.tools import list_tools
+from gateway.studio import logic as _logic
 from gateway.studio import packages_store
 from sqlalchemy import text
 
@@ -161,14 +168,31 @@ async def _workflow_rows() -> list[dict[str, Any]]:
     return rows
 
 
+def _logic_rows() -> list[dict[str, Any]]:
+    """The logic modules of the registry (B4a), for an org on ``STUDIO_LOGIC_ORGS``.
+    The org is the bound tenant. A dark org, and an empty registry, give no row."""
+    if not flags.logic_allowed(current_tenant()):
+        return []
+    return [{
+        "id": f"logic:{name}",
+        "title": module.title or name,
+        "source": "logic",
+        "class": _logic.LOGIC_CLASS,
+        "input_schema": module.input_model.model_json_schema(),
+        "output_schema": None,
+        "connection": None,
+        "app": None,
+    } for name, module in sorted(_logic.MODULES.items())]
+
+
 async def catalog_rows() -> list[dict[str, Any]]:
-    """Every row of the catalog: the door ops, the integration tools, and the
-    published workflows of the bound org. The one source of the catalog.
+    """Every row of the catalog: the door ops, the integration tools, the
+    published workflows of the bound org, and the logic modules (B4a). The one source of the catalog.
     ``routes/studio/skills.py`` checks a skill's actions against it.
 
     ⚠️ It opens its own ``_tenant_session()`` for the workflows. A caller runs
     it BEFORE it opens a session of its own, so no request holds two."""
-    return [*_manifest_rows(), *_integration_rows(), *await _workflow_rows()]
+    return [*_manifest_rows(), *_integration_rows(), *await _workflow_rows(), *_logic_rows()]
 
 
 #: A stored object name that A2 would refuse gives no row. Only a write past the

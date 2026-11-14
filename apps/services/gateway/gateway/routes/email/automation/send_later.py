@@ -42,6 +42,7 @@ from acb_auth import UserContext, get_current_user
 from acb_auth.roles import UserRole
 from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant, tenant_session
+from email_ingestion.providers.base import ProviderDidNotAnswer
 from fastapi import BackgroundTasks, Depends, HTTPException
 from gateway.routes.email.automation.drafting import (
     DRAFT_HIDDEN_TEXT_DETAIL,
@@ -279,6 +280,11 @@ async def _finish(org: str, schedule_id: str, *, error: str | None) -> None:
 
 
 def _why(exc: BaseException) -> str:
+    if isinstance(exc, ProviderDidNotAnswer):
+        # The send may have gone out. The row stays failed and is never sent
+        # again (HRD-20).
+        return (f"{exc.provider} did not answer, and the mail may have gone "
+                "out. Check Sent before you schedule it again.")
     if isinstance(exc, HTTPException):
         if exc.status_code == 422 and exc.detail == DRAFT_HIDDEN_TEXT_DETAIL:
             # §21 fix round 2.
