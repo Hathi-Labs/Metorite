@@ -78,3 +78,11 @@ def test_the_module_is_pure() -> None:
     body = _SRC.split('"""', 2)[2]
     for banned in ("import os", "requests", "httpx", "open(", "execute(", "secret", "token"):
         assert banned not in body, banned
+
+
+def test_a_bare_string_or_none_is_no_list() -> None:
+    card = result_card("mcp:x", apps="abc", templates=None)  # type: ignore[arg-type]
+    assert card is not None and card["works_now"]["apps"] == [] and card["build_offer"] is True
+    assert card["templates"] == []
+    both = result_card("mcp:x", apps=["a" * 100, "a" * 90])
+    assert both is not None and len(both["works_now"]["apps"]) == 1

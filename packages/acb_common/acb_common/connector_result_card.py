@@ -39,9 +39,12 @@ def _clean(names: Sequence[str], cap: int) -> list[str]:
     """Text names only, trimmed, each once, at most *cap*, each at most
     :data:`MAX_NAME` characters. Anything else is dropped, never echoed."""
     out: list[str] = []
+    if isinstance(names, str) or names is None:
+        return out
     for n in names:
-        if isinstance(n, str) and n.strip() and n.strip() not in out:
-            out.append(n.strip()[:MAX_NAME])
+        clean = n.strip()[:MAX_NAME] if isinstance(n, str) else ""
+        if clean and clean not in out:
+            out.append(clean)
         if len(out) == cap:
             break
     return out
