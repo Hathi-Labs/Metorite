@@ -4381,6 +4381,7 @@ async def _plan_pack_loader(
             held_untrusted=any(b.owner in UNTRUSTED_INPUT_AGENTS for b in builds))
     # STU-G1 and J1-1: the one check of the studio pack filter, read once for
     # the plan. A run whose packs hold no ``studio`` reads no member.
+    # WS-67 TS-1b: it relies on FOLLOWS (``studio-more`` follows ``studio``).
     studio_ok = "studio" in allow and await _studio_member_open()
 
     def _available(owner: str) -> bool:
