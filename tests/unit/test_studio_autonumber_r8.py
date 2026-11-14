@@ -235,24 +235,32 @@ def test_r8_two_writers_one_object_get_distinct_numbers(world) -> None:
 
 
 def test_r8_the_statement_alone_is_atomic_without_the_org_lock(world) -> None:
-    """The org lock already serializes each write. This test takes it away: two
-    sessions run the statement of the counter itself, 25 times each, and each
-    number comes once. So the number is safe on the key of the counter alone."""
-    async def writer(oid: str) -> list[int]:
-        out: list[int] = []
-        for _ in range(25):
-            async with tenant_session(world.a) as db:
-                out.append((await db.execute(text(store._NEXT_NUMBER_SQL), {
-                    "oid": oid, "key": "no", "period": ""})).scalar_one())
-        return out
+    """The org lock already serializes each write. This test takes it away. Session
+    one takes a number and holds its transaction open. Session two takes a number
+    at the same time, so it must wait for session one and then count on from it.
+    A statement that reads the counter and then writes it would give both
+    sessions the same number. The first round starts with no counter row, and
+    the next two start with one."""
+    async def take(oid: str, db: Any) -> int:
+        return int((await db.execute(text(store._NEXT_NUMBER_SQL), {
+            "oid": oid, "key": "no", "period": ""})).scalar_one())
 
-    async def go() -> list[int]:
+    async def second(oid: str) -> int:
+        async with tenant_session(world.a) as db:
+            return await take(oid, db)
+
+    async def go() -> list[tuple[int, int]]:
         obj = await _define(world.a, world.pkg_a, "invoice", _INVOICE)
-        first, second = await asyncio.gather(writer(obj.id), writer(obj.id))
-        return first + second
+        pairs: list[tuple[int, int]] = []
+        for _ in range(3):
+            async with tenant_session(world.a) as one:
+                first = await take(obj.id, one)
+                task = asyncio.create_task(second(obj.id))
+                await asyncio.sleep(0.5)  # session two is now at the row of session one
+            pairs.append((first, await task))
+        return pairs
 
-    got = _go(world, go)
-    assert sorted(got) == list(range(1, 51))
+    assert _go(world, go) == [(1, 2), (3, 4), (5, 6)]
 
 
 def test_r8_two_orgs_count_apart(world) -> None:
