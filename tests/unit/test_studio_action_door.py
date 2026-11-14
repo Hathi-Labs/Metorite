@@ -2670,3 +2670,164 @@ class TestTheDoorOpFences:
             n for n in ast.walk(ast.parse(src))
             if isinstance(n, ast.AsyncFunctionDef) and n.name == "run"))
         assert run is not None and run.index("asyncio.create_task(") < run.index("wait_for(")
+
+
+
+# ── WS-STU I1a: a connection that the caller does not have ──────────────────
+
+
+#: The manifest of the door, with one connection of the registry.
+NEEDS_TALLY: dict[str, Any] = {**MANIFEST, "connections": ["mcp:tally"]}
+
+
+@pytest.fixture
+def cw(world, monkeypatch):
+    """The world of the door, with the gate on for every org and the one read
+    of the connections patched. ``met`` is the set that the read answers, and
+    ``met_reads`` holds the viewer of each read."""
+    world.met = frozenset()
+    world.met_reads = []
+
+    async def _met(db: Any, *, viewer: str) -> frozenset[str]:
+        assert db.org == ORG, "the read runs in the session of the check"
+        world.met_reads.append(viewer)
+        return world.met
+
+    monkeypatch.setattr(invoke._resolve, "met_connections", _met)
+    monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", "*")
+    return world
+
+
+class TestTheConnections:
+    """WS-STU I1a, ``ai_studio.md`` §14 I1a. The R8 half is in
+    ``test_studio_action_door_r8.py`` (section "I1a").
+
+    R7. Mutations, run on 2026-11-14 on this class:
+
+    * C1. ``_check``: drop the call of ``_needs_connection``. Each refusal
+      test of this class goes red.
+    * C2. ``_needs_connection``: read the met set for a manifest with no
+      connection. ``test_an_app_with_no_connection_reads_no_connection`` goes
+      red.
+    * C3. ``_needs_connection``: drop the preview exception.
+      ``test_a_preview_of_an_object_action_stays_open`` goes red.
+    * C4. ``_needs_connection``: drop the check of ``connection_gate_on``.
+      Both cases of ``test_the_gate_off_changes_nothing_off`` go red.
+    """
+
+    @pytest.mark.parametrize("listed", ["", OTHER])
+    def test_the_gate_off_changes_nothing_off(self, cw, monkeypatch, listed):
+        """``STUDIO_CONNECTION_GATE_ORGS`` empty, or naming another org: the
+        door is as before I1a. Each action of an app with a missing connection
+        runs as it did, and nothing reads the registry."""
+        monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", listed)
+        pid = _package(cw, manifest=NEEDS_TALLY)
+        rid = _record(cw, _object(cw, pid))
+        r = _call(_client(cw), pid, "peek", {"id": rid})
+        assert r.status_code == 200, r.text
+        r = _call(_client(cw), pid, "add", {"data": {"site": "x"}})
+        assert (r.status_code, _code(r)) == (403, "approval_required")
+        r = _call(_client(cw), pid, "no_such_action", {})
+        assert (r.status_code, _code(r)) == (403, "not_declared")
+        assert cw.met_reads == []
+        assert invoke.NEEDS_CONNECTION not in {a["detail"].get("reason") for a in cw.audits}
+
+    def test_an_app_with_no_connection_reads_no_connection(self, cw):
+        pid, _, rid = _setup(cw)
+        assert _call(_client(cw), pid, "peek", {"id": rid}).status_code == 200
+        assert cw.met_reads == []
+
+    def test_each_action_of_an_app_with_a_missing_connection_is_409(self, cw):
+        pid = _package(cw, manifest=NEEDS_TALLY)
+        rid = _record(cw, _object(cw, pid))
+        actions_of = [a["id"] for a in MANIFEST["actions"]] + ["no_such_action"]
+        for action in actions_of:
+            r = _call(_client(cw), pid, action, {"id": rid, "data": {"site": "x"}})
+            assert r.status_code == invoke.CONNECTION_STATUS == 409, (action, r.text)
+            assert r.json()["detail"] == {"code": invoke.NEEDS_CONNECTION,
+                                          "message": invoke.CONNECTION_TEXT}, action
+        assert _record_reads(cw) == [] and cw.queries == [] and cw.aggregates == []
+        assert "catalog" not in cw.log
+        assert cw.met_reads == [ANA] * len(actions_of)
+        assert [a["detail"]["reason"] for a in cw.audits] == [invoke.NEEDS_CONNECTION] * len(
+            actions_of)
+        assert {a["detail"]["outcome"] for a in cw.audits} == {"refused"}
+        assert {a["detail"]["uses"] for a in cw.audits} == {None}
+
+    def test_a_connection_that_the_caller_has_runs_the_action(self, cw):
+        pid = _package(cw, manifest=NEEDS_TALLY)
+        rid = _record(cw, _object(cw, pid))
+        cw.met = frozenset({"mcp:tally", "zoho"})
+        r = _call(_client(cw), pid, "peek", {"id": rid})
+        assert r.status_code == 200, r.text
+        # The check runs twice, so the door reads the set twice.
+        assert cw.met_reads == [ANA, ANA]
+
+    def test_each_name_must_be_met(self, cw):
+        pid = _package(cw, manifest={**MANIFEST, "connections": ["mcp:tally", "zoho"]})
+        rid = _record(cw, _object(cw, pid))
+        cw.met = frozenset({"mcp:tally"})
+        r = _call(_client(cw), pid, "peek", {"id": rid})
+        assert (r.status_code, _code(r)) == (409, invoke.NEEDS_CONNECTION)
+
+    @pytest.mark.parametrize("names", ["mcp:tally", [3], None, {"mcp:tally": True}])
+    def test_a_connections_value_that_is_not_a_list_of_text_fails_closed(self, cw, names):
+        pid = _package(cw, manifest={**MANIFEST, "connections": names})
+        rid = _record(cw, _object(cw, pid))
+        cw.met = frozenset({"mcp:tally"})
+        r = _call(_client(cw), pid, "peek", {"id": rid})
+        assert (r.status_code, _code(r)) == (409, invoke.NEEDS_CONNECTION)
+        assert cw.met_reads == [], "a malformed value refuses with no read"
+
+    def test_a_preview_of_an_object_action_stays_open(self, cw):
+        """The IDE previews the object actions while the member connects. A
+        preview of another source stays refused."""
+        pid = _package(cw, manifest=NEEDS_TALLY)
+        rid = _record(cw, _object(cw, pid))
+        c = _client(cw)
+        r = c.post(f"/studio/apps/{pid}/actions/peek?preview=1", json={"id": rid})
+        assert r.status_code == 200, r.text
+        r = c.post(f"/studio/apps/{pid}/actions/flow?preview=1", json={})
+        assert (r.status_code, _code(r)) == (409, invoke.NEEDS_CONNECTION)
+        r = c.post(f"/studio/apps/{pid}/actions/peek", json={"id": rid})
+        assert (r.status_code, _code(r)) == (409, invoke.NEEDS_CONNECTION)
+
+    def test_the_code_is_not_a_403(self):
+        assert invoke.NEEDS_CONNECTION not in invoke.REFUSALS
+        assert invoke.CONNECTION_STATUS == 409
+        assert {"NEEDS_CONNECTION", "CONNECTION_STATUS", "CONNECTION_TEXT"} <= set(invoke.__all__)
+
+    def test_a_viewer_is_checked_on_the_installed_version_with_its_own_set(
+            self, cw, monkeypatch):
+        """J2a: the manifest of a viewer is the installed version. The set is
+        read for the viewer, never for the owner of the app."""
+        pid = _package(cw, owner=BEN, manifest=MANIFEST)
+        installed = {"manifest": NEEDS_TALLY}
+
+        async def _installed(db: Any, *, viewer: str, app_id: str) -> Any:
+            return _viewer.InstalledApp(id=app_id, version=2, manifest=installed["manifest"])
+
+        monkeypatch.setattr(invoke, "package_host_allowed", lambda org: True)
+        monkeypatch.setattr(invoke._viewer, "installed_app", _installed)
+        r = _call(_client(cw), pid, "find", {})
+        assert (r.status_code, _code(r)) == (409, invoke.NEEDS_CONNECTION)
+        assert cw.met_reads == [ANA]
+        assert cw.audits[-1]["detail"]["viewer"] is True
+        # A draft of the owner that names a connection does not bind a viewer.
+        cw.packages[pid]["manifest"] = NEEDS_TALLY
+        installed["manifest"] = MANIFEST
+        cw.met_reads.clear()
+        r = _call(_client(cw), pid, "find", {})
+        assert r.status_code != 409 or _code(r) != invoke.NEEDS_CONNECTION
+        assert cw.met_reads == []
+
+    def test_the_door_and_the_resolve_share_one_rule(self):
+        """``_needs_connection`` asks ``resolve.connections_met`` and
+        ``resolve.met_connections``, and keeps no copy of either."""
+        import ast
+        import inspect
+
+        src = inspect.getsource(invoke._needs_connection).replace("\r\n", "\n")
+        named = {n.attr for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Attribute)}
+        assert {"connection_names", "connections_met", "met_connections"} <= named
+        assert "integration_connections" not in inspect.getsource(invoke)

@@ -13,9 +13,11 @@ import { ValueElement } from "@/components/CardFieldValue";
 import { MarkdownBody } from "@/components/MarkdownMessage";
 import { displayValue, labelOf, safeHref } from "@/lib/studio/blocks";
 import type { FieldSpec } from "@/lib/studio/fieldCheck";
+import { fileLabel } from "@/lib/studio/recordPageModel";
 
 function Value({ field, value }: { field: FieldSpec; value: unknown }) {
-  const text = displayValue(field, value);
+  // A file holds an attachment id. The sheet says that a file is there, and never shows the id (STU-AF5).
+  const text = field.type === "file" ? fileLabel(value) : displayValue(field, value);
   if (text === "") return <span className="text-muted-foreground">—</span>;
   const items = Array.isArray(value) ? value : [value];
   switch (field.type) {
