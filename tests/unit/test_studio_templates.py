@@ -39,7 +39,9 @@ def test_each_template_names_only_declared_blocks_and_fields(tid: str) -> None:
     actions = {a["id"] for a in doc["actions"]}
     views = {v["id"] for v in doc["views"]}
     for v in doc["views"]:
-        if (v.get("source") or {}).get("action"):  # a stat or chart reads an action
+        if (v.get("source") or {}).get("action") and "object" not in (
+            v.get("source") or {}
+        ):  # a stat or chart reads an action
             assert v["source"]["action"] in actions, v["id"]
             continue
         obj = (v.get("source") or {}).get("object") or v.get("object")
