@@ -28,19 +28,30 @@ Run (a PRIVATE ladder database, one R8 suite at a time, because the
 Without the database every test here SKIPS, and the run reads green. A skip is
 not a pass.
 
-**R7: red first, then mutate.** Mutations to run before merge, and the test
-that must go red:
+**R7: red first, then mutate.** M1, M4, M5, M6 and M7 were RUN, each
+restored after the run. M2 and M3 were not rerun in the fix that added M6 and
+M7. The test that goes red is named for each:
 
-* M1. ``files_store._READ_SQL``: drop ``AND record_id = ...``.
-  ``test_r8_a_file_id_of_another_record_is_404`` goes red.
-* M2. ``files.get_record_file``: skip the ``reached.paused`` check.
-  ``test_r8_a_paused_package_is_404_for_a_viewer_and_423_for_the_owner`` goes red.
-* M3. ``files._read``: pass ``rec`` before ``project_record``.
-  ``test_r8_a_key_of_a_newer_version_is_404_for_a_pinned_viewer`` goes red.
-* M4. ``files._read``: drop the ``_holds_file`` test.
-  ``test_r8_a_file_id_of_another_record_is_404`` and the hidden-key case go red.
-* M5. The migration: ``NO FORCE`` on the table.
-  ``test_r8_the_table_forces_rls_and_org_b_sees_no_row`` goes red.
+* M1. ``files_store._READ_SQL``: drop ``AND record_id = ...``. R8:
+  ``test_r8_a_file_id_written_into_another_record_is_404``. Hermetic:
+  ``test_the_read_sql_binds_the_record_and_the_field_key_and_the_call_passes_them``.
+* M2. ``files.get_record_file``: skip the ``reached.paused`` check. R8:
+  ``test_r8_a_paused_package_is_404_for_a_viewer_and_423_for_the_owner``.
+* M3. ``files._read``: pass ``rec`` before ``project_record``. R8:
+  ``test_r8_a_key_of_a_newer_version_is_404_for_a_pinned_viewer``.
+* M4. ``files._read``: drop the ``_holds_file`` test. Hermetic:
+  ``test_a_file_id_that_the_record_does_not_hold_is_404_before_the_store``. No
+  R8 case goes red, because ``read_file`` binds the ids too, so the R8 answer
+  stays 404.
+* M5. The migration: ``NO FORCE`` on the table. No R8 case goes red, because
+  ``generated/04_policies.sql`` forces RLS again in the promoted template.
+  The hermetic source test
+  ``test_the_migration_is_tenant_scoped_and_expand_only`` fences it.
+* M6 (field key). ``files_store._READ_SQL``: drop ``AND field_key = ...``. R8:
+  ``test_r8_a_file_id_of_a_hidden_key_written_into_a_visible_field_is_404``.
+  Hermetic: the same test as M1.
+* M7 (I1a). ``files._read``: drop the ``_needs_connection`` call. R8:
+  ``test_r8_the_connection_gate_hides_the_file_and_gate_off_serves``.
 """
 
 from __future__ import annotations
@@ -513,3 +524,69 @@ def test_r8_a_viewer_past_the_reader_cap_gets_503_and_the_owner_is_not_counted(
     viewer, owner = _run(world, go)
     assert viewer[0] == 503 and viewer[1]["code"] == "store_busy"
     assert owner[0] == 200
+
+
+# ── The binds of the read, and the I1a gate ────────────────────────────────
+
+
+def _put_field(world: Any, obj_name: str, rid: str, key: str, fid: str) -> None:
+    """Write *fid* into the file field *key* as the owner. The ``file`` field
+    accepts any UUID today (D13b-2 is open)."""
+    async def go() -> None:
+        async with tenant_session(world.a) as db:
+            obj = await objects_store.get_object_by_name(db, obj_name, package_id=world.pid)
+            assert obj is not None
+            assert await objects_store.update_record(
+                db, OWEN, obj.id, rid, {key: {"id": fid}}, package_id=world.pid,
+                viewer=Viewer(OWEN)) is not None
+
+    _run(world, go)
+
+
+def test_r8_a_file_id_written_into_another_record_is_404(world) -> None:
+    """Record one holds the id of the file of record two in its visible field.
+    The bind on ``record_id`` must stop it."""
+    _put_field(world, "invoice", world.inv_rid, "pdf", world.inv2_fid)
+
+    async def go() -> list[tuple[int, Any]]:
+        return [await _get(world.a, OWEN, world.pid, "invoice", world.inv_rid, world.inv2_fid),
+                await _get(world.a, ANA, world.pid, "invoice", world.inv_rid, world.inv2_fid)]
+
+    assert _run(world, go) == [(404, NOT_FOUND)] * 2
+
+
+def test_r8_a_file_id_of_a_hidden_key_written_into_a_visible_field_is_404(
+        world, staff) -> None:
+    """The file of ``secret`` of the ticket is named in the visible field
+    ``att`` of the same ticket. The bind on ``field_key`` must stop it."""
+    _put_field(world, "ticket", world.secret_rid, "att", world.secret_fid)
+
+    async def go() -> list[tuple[int, Any]]:
+        return [await _get(world.a, ANA, world.pid, "ticket", world.secret_rid,
+                           world.secret_fid),
+                await _get(world.a, OWEN, world.pid, "ticket", world.secret_rid,
+                           world.secret_fid)]
+
+    assert _run(world, go) == [(404, NOT_FOUND)] * 2
+
+
+def test_r8_the_connection_gate_hides_the_file_and_gate_off_serves(
+        world, monkeypatch) -> None:
+    """The installed version names a connection that nobody has. Gate on: 404 for
+    the viewer and the owner. Gate off: 200."""
+    manifest = json.dumps({"connections": [f"mcp:tally-{TAG}"]})
+    _admin(world, "UPDATE apps SET manifest = manifest || CAST(:m AS jsonb) "
+                  "WHERE id = CAST(:p AS uuid)", m=manifest, p=world.pid)
+    _admin(world, "UPDATE app_versions SET manifest = manifest || CAST(:m AS jsonb) "
+                  "WHERE app_id = CAST(:p AS uuid)", m=manifest, p=world.pid)
+
+    async def both() -> list[tuple[int, Any]]:
+        return [await _get(world.a, ANA, world.pid, "invoice", world.inv_rid, world.inv_fid),
+                await _get(world.a, OWEN, world.pid, "invoice", world.inv_rid, world.inv_fid)]
+
+    monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", world.a)
+    assert _run(world, both) == [(404, NOT_FOUND)] * 2
+    monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", "")
+    viewer, owner = _run(world, both)
+    _ok(viewer, PDF, "application/pdf")
+    _ok(owner, PDF, "application/pdf")

@@ -15,11 +15,18 @@ It runs no SQL. ``studio/files_store.read_file`` reads the bytes.
 2. The owned package, through the shared resolver ``studio/reach.py``. The
    owner of a paused package gets 423, as at the door.
 3. The install, behind ``PACKAGE_HOST_ORGS``, when the member owns no such
-   package. A viewer takes a slot of ``invoke._reader_slot``, as a read of a
-   viewer at the door does (503 ``store_busy`` past the cap).
+   package. A viewer takes a slot of ``invoke._reader_slot`` (503
+   ``store_busy`` past the cap). ⚠️ The door takes the slot BEFORE it opens a
+   session. This route cannot: it knows that the member is a viewer only after
+   ``reach_package``, which reads. So the session and two reads run first, and
+   the slot bounds the rest (the record read and the bytes). The cap still
+   bounds the heavy work, but not the two reads.
 4. The object of the package. A viewer needs an installed version that
    declares the object AND declares an action with ``uses`` of
-   ``object:<name>.get``.
+   ``object:<name>.get``. The I1a gate (``invoke._needs_connection``, behind
+   ``STUDIO_CONNECTION_GATE_ORGS``) runs here with that action id, and a
+   refusal is 404. The type of a field of a viewer is the type of the
+   installed version, not of the draft.
 5. ``objects_store.get_record`` with the viewer, so the row rules of C8 bind.
 6. For a viewer, ``project_record``: the keys of the installed version only.
 7. The visible value of a ``file`` field of the object must hold
@@ -65,6 +72,7 @@ from gateway.routes.studio.invoke import (
     PAUSED_TEXT,
     READ_BUSY_MESSAGE,
     STORE_BUSY,
+    _needs_connection,
     _reader_slot,
 )
 from gateway.studio import files_store, objects_store
@@ -89,19 +97,24 @@ def _uuid(raw: str) -> str:
         raise _not_found() from None
 
 
-def _declares_get(manifest: dict[str, Any], object_name: str) -> bool:
-    """True when the manifest declares an action with ``uses`` of
-    ``object:<object_name>.get``. A viewer needs it, as the door needs it for
-    a ``get`` of the object."""
+def _get_action(manifest: dict[str, Any], object_name: str) -> str | None:
+    """The id of the first action with ``uses`` of ``object:<object_name>.get``,
+    or None. A viewer needs it, as the door needs it for a ``get`` of the
+    object. The id feeds the I1a gate."""
     actions = manifest.get("actions")
     if not isinstance(actions, list):
-        return False
+        return None
     for entry in actions:
         ref = parse_uses(entry.get("uses")) if isinstance(entry, dict) else None
         if ref is not None and ref.source == "object" and ref.object == object_name \
-                and ref.op == "get":
-            return True
-    return False
+                and ref.op == "get" and isinstance(entry.get("id"), str):
+            return str(entry["id"])
+    return None
+
+
+def _declares_get(manifest: dict[str, Any], object_name: str) -> bool:
+    """True when the manifest declares a ``get`` action of the object."""
+    return _get_action(manifest, object_name) is not None
 
 
 def _holds_file(value: Any, file_id: str) -> bool:
@@ -161,9 +174,13 @@ async def get_record_file(
 
 async def _read(db: Any, user: UserContext, package: Any, is_viewer: bool,
                 object_name: str, pid: str, rid: str, fid: str) -> files_store.RecordFile | None:
-    """Steps 4 to 8 of the order above. None means 404."""
-    if is_viewer and (object_name not in package.object_names
-                      or not _declares_get(package.manifest, object_name)):
+    """Steps 4 to 8 of the order above. None means 404. A busy store raises 503."""
+    action = _get_action(package.manifest, object_name)
+    if is_viewer and (object_name not in package.object_names or action is None):
+        return None
+    # I1a: the same helper as the door. A refusal hides the file (404).
+    if await _needs_connection(db, user.email, package.manifest, action or "",
+                               org=user.organization_id):
         return None
     obj = await objects_store.get_object_by_name(db, object_name, package_id=pid)
     if obj is None:
@@ -171,19 +188,25 @@ async def _read(db: Any, user: UserContext, package: Any, is_viewer: bool,
     try:
         rec = await objects_store.get_record(db, obj.id, rid, package_id=pid,
                                              viewer=Viewer(user.email))
+    except objects_store.StoreBusy:
+        raise HTTPException(
+            status_code=503, detail={"code": STORE_BUSY, "message": READ_BUSY_MESSAGE},
+            headers={"Retry-After": BUSY_RETRY_AFTER}) from None
     except objects_store.ObjectStoreError:
         return None
     if rec is None:
         return None
     if is_viewer:
         rec = package.project_record(obj.name, rec)
-    for field in obj.fields:
-        if field.type == "file" and field.key in rec.data \
-                and _holds_file(rec.data[field.key], fid):
+        types = package.field_types(obj.name)
+    else:
+        types = {f.key: f.type for f in obj.fields}
+    for key, kind in types.items():
+        if kind == "file" and key in rec.data and _holds_file(rec.data[key], fid):
             try:
                 return await files_store.read_file(
                     db, package_id=pid, object_id=obj.id, record_id=rid,
-                    field_key=field.key, file_id=fid)
+                    field_key=key, file_id=fid)
             except files_store.FileStoreError:
                 return None
     return None

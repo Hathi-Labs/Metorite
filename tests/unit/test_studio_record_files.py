@@ -131,7 +131,8 @@ def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
 
 
 def _owner(paused: bool = False) -> reach.Reach:
-    return reach.Reach(owned=SimpleNamespace(paused_at="now" if paused else None))  # type: ignore[arg-type]
+    return reach.Reach(owned=SimpleNamespace(
+        paused_at="now" if paused else None, manifest=_MANIFEST))  # type: ignore[arg-type]
 
 
 def _viewer(manifest: dict[str, Any] = _MANIFEST) -> reach.Reach:
@@ -400,3 +401,70 @@ def test_put_file_refuses_a_bad_file_before_a_statement() -> None:
                    {"field_key": "Bad"}, {"record_id": "x"}):
         with pytest.raises(files_store.FileStoreError):
             asyncio.run(files_store.put_file(_Db(), ANA, **{**base, **change}))
+
+
+# ── The binds of the read, the I1a gate, a busy store and the viewer type ──
+
+
+def test_the_read_sql_binds_the_record_and_the_field_key_and_the_call_passes_them() -> None:
+    sql = files_store._READ_SQL
+    assert "record_id = CAST(:rid AS uuid)" in sql and "field_key = :key" in sql
+    seen: dict[str, Any] = {}
+
+    class _Db:
+        async def execute(self, stmt: Any, params: dict[str, Any]) -> Any:
+            seen.update(params)
+            return SimpleNamespace(first=lambda: None)
+
+    got = asyncio.run(files_store.read_file(
+        _Db(), package_id=PID, object_id=OID, record_id=RID, field_key="pdf", file_id=FID))
+    assert got is None
+    assert seen["rid"] == RID and seen["key"] == "pdf" and seen["fid"] == FID
+
+
+def test_the_i1a_gate_refusal_is_404_and_the_route_calls_the_door_helper(
+        world, monkeypatch) -> None:
+    calls: list[Any] = []
+
+    async def _needs(db: Any, member: str, manifest: dict[str, Any], action: str,
+                     preview: bool = False, *, org: Any) -> bool:
+        calls.append((member, action, org))
+        return True
+
+    assert files._needs_connection.__module__ == "gateway.routes.studio.invoke"
+    monkeypatch.setattr(files, "_needs_connection", _needs)
+    world.reach = _viewer()
+    assert _call() == (404, "Not found")
+    assert calls == [(ANA, "show", ORG)]
+    assert "record" not in world.trace and "file" not in world.trace
+
+
+def test_the_i1a_gate_off_reads_no_connection_and_serves(world) -> None:
+    world.reach = _viewer({**_MANIFEST, "connections": ["mcp:none"]})
+    assert _call()[0] == 200
+
+
+def test_a_busy_store_is_503_with_retry_after_and_not_404(world, monkeypatch) -> None:
+    async def _busy(*a: Any, **k: Any) -> Any:
+        raise files.objects_store.StoreBusy("busy")
+
+    monkeypatch.setattr(files.objects_store, "get_record", _busy)
+    world.reach = _owner()
+    try:
+        asyncio.run(files.get_record_file(PID, "invoice", RID, FID, user=_user()))
+    except HTTPException as exc:
+        assert exc.status_code == 503 and exc.detail["code"] == "store_busy"
+        assert "Retry-After" in exc.headers
+    else:  # pragma: no cover
+        raise AssertionError("no 503")
+
+
+def test_a_viewer_takes_the_field_type_of_the_installed_version(world) -> None:
+    """The draft row calls ``pdf`` a file. The installed version calls it text."""
+    retyped = {**_MANIFEST, "objects": [{"name": "invoice", "fields": [
+        {"key": "title", "type": "text"}, {"key": "pdf", "type": "text"}]}]}
+    world.reach = _viewer(retyped)
+    assert _call() == (404, "Not found")
+    assert "file" not in world.trace
+    world.reach = _owner()
+    assert _call()[0] == 200
