@@ -42,6 +42,8 @@ from acb_common import studio_fields as sf
 from acb_common import studio_manifest
 from acb_common.studio_fields import FieldError, FieldSpec, RecordError
 
+from tests.unit import _r8_lists as r8_lists
+
 _ROOT = Path(__file__).resolve().parents[2]
 
 _UUID = str(uuid.uuid4())
@@ -528,31 +530,47 @@ def _line_of_field_types() -> int:
     raise AssertionError("FIELD_TYPES is missing")
 
 
-#: SQL that names one of the four tables.
+#: SQL that names one of the five tables: the four of C1 and the change
+#: history of C4a-1.
 _TABLE_SQL = re.compile(
-    r"\b(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+studio_(?:objects|object_fields|records|record_hot)\b",
+    r"\b(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+"
+    r"studio_(?:objects|object_fields|records|record_hot|record_changes)\b",
     re.IGNORECASE,
 )
 
 
 def test_one_writer_of_the_four_tables() -> None:
-    """Only `gateway/studio/objects_store.py` runs SQL against the four tables.
+    """Only `gateway/studio/objects_store.py` runs SQL against the five tables.
     The query of C2a lives there too, and `acb_common/studio_query.py` holds
-    its grammar with no SQL. So the list stays one module."""
+    its grammar with no SQL. So the list stays one module. C4a-1 adds
+    `studio_record_changes` as the fifth table. The name of the test stays,
+    because other files cite it."""
     hits = sorted({p.relative_to(_ROOT).as_posix() for p in _python_files()
                    if _TABLE_SQL.search(p.read_text(encoding="utf-8", errors="replace"))})
+    assert hits == ["apps/services/gateway/gateway/studio/objects_store.py"], hits
+
+
+#: SQL that names the gauge of the org caps (C10a).
+_GAUGE_SQL = re.compile(r"\b(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+studio_org_usage\b", re.IGNORECASE)
+
+
+def test_one_reader_of_the_org_gauge() -> None:
+    """C10a widens the one-writer fence to `studio_org_usage`. The triggers of
+    its migration are its only writer, and `objects_store.py` is the only
+    Python that runs SQL on it. A separate test keeps the list of the four
+    tables above as it is, so the C4a-1 widening merges in either order."""
+    hits = sorted({p.relative_to(_ROOT).as_posix() for p in _python_files()
+                   if _GAUGE_SQL.search(p.read_text(encoding="utf-8", errors="replace"))})
     assert hits == ["apps/services/gateway/gateway/studio/objects_store.py"], hits
 
 
 def test_the_r8_suite_is_named_in_the_ci_skip_guard() -> None:
     """A fence that never runs is no fence. The `--must-run` list names the
     pytest ARGUMENT, so a mention in a comment does not count."""
-    workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
-    assert block, "the --must-run argument list is missing"
+    must_run = r8_lists.must_run()
     for suite in ("test_studio_objects_r8", "test_studio_query_r8",
                   "test_studio_objects_batch_r8", "test_studio_state_machine_r8"):
-        assert re.search(rf"^[ \t]+tests/unit/{suite}\.py(?: \\)?$", block.group(1), re.M), suite
+        assert f"tests/unit/{suite}.py" in must_run, suite
 
 
 def test_the_store_imports_the_one_check() -> None:
@@ -615,7 +633,8 @@ def test_a_url_with_no_credential_still_passes() -> None:
 
 
 def test_a_relation_may_be_hot_and_holds_its_id_in_the_text_column() -> None:
-    assert "relation" in sf.HOT_TYPES and sf.HOT_TYPES[-1] == "relation"
+    # C8a adds `person` after `relation` (test_studio_row_rules.py).
+    assert sf.HOT_TYPES[-2:] == ("relation", "person")
     field = _field("relation", key="account", hot=True)
     row = sf.hot_value(field, {"id": "abc-1"})
     assert row == {"k": "account", "t": "abc-1", "n": None, "ts": None, "b": None}

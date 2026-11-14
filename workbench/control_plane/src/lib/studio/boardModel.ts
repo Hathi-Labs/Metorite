@@ -31,6 +31,8 @@ export interface BoardConfig {
   /** The action a drop runs, or null for a board that only reads. */
   update: string | null;
   maxCards: number;
+  /** The start of the record link of a card, or null for a card with no link (STU-AF5). */
+  openBase: string | null;
 }
 
 export type ParsedBoard = { ok: true; config: BoardConfig } | { ok: false; reason: string };
@@ -60,7 +62,8 @@ export function parseBoard(data: unknown): ParsedBoard {
   const update = typeof d.update === "string" && d.update.trim() ? d.update.trim() : null;
   return {
     ok: true,
-    config: { fields, group, titleField, cardFields: cardFields.slice(0, MAX_CARD_FIELDS), update, maxCards: max },
+    config: { fields, group, titleField, cardFields: cardFields.slice(0, MAX_CARD_FIELDS), update, maxCards: max,
+      openBase: typeof d.openBase === "string" && d.openBase ? d.openBase : null },
   };
 }
 
@@ -74,6 +77,7 @@ export function boardBlock(
     update?: string;
     maxCards?: number;
     title?: string;
+    openBase?: string;
   },
   source: { action: string; args?: Record<string, unknown> },
 ): { type: "template"; props: Record<string, unknown> } {

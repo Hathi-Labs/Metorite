@@ -67,6 +67,8 @@ from typing import Any
 
 import pytest
 
+from tests.unit import _r8_lists as r8_lists
+
 pytest.importorskip("sqlalchemy")
 
 from acb_auth import UserContext, UserRole, build_access, get_current_user
@@ -302,7 +304,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
     async def by_name(db: Any, name: str, *, package_id: str) -> Any:
         return _object(name) if package_id == PID and name in ("visit", "secret") else None
 
-    async def get_record(db: Any, oid: str, rid: str, *, package_id: str) -> Any:
+    async def get_record(db: Any, oid: str, rid: str, *, package_id: str, **_: Any) -> Any:
         w.reads.append(("get", oid, rid))
         return objects_store.Record(rid, oid, dict(ROW_DATA), OWEN, OWEN, NOW, NOW)
 
@@ -638,10 +640,6 @@ def test_the_chat_read_of_a_viewer_says_who_changes_the_app(
 # ── 7. The R8 twin runs in CI ──────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("workflow", ["pr-check.yml", "deploy.yml"])
-def test_the_r8_twin_is_in_the_must_run_list(workflow: str) -> None:
-    text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", text)
-    assert block, f"{workflow}: the --must-run argument list is missing"
-    assert re.search(r"^[ \t]+tests/unit/test_studio_package_viewer_r8\.py(?: \\)?$",
-                     block.group(1), re.M), workflow
+def test_the_r8_twin_is_in_the_must_run_list() -> None:
+    must_run = r8_lists.must_run()
+    assert "tests/unit/test_studio_package_viewer_r8.py" in must_run

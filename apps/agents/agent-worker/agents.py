@@ -76,6 +76,24 @@ def _llm_provider() -> dict[str, Any]:
     return {"type": "openai", "base_url": f"{base_url}/v1", "api_key": api_key}
 
 
+def _fixed_headers() -> dict[str, str]:
+    """The fixed headers of the worker's client.
+
+    AUTO-8b-2c (``proactive_agent.md`` §4.4): while
+    ``acb_common.run_attribution_scope`` is bound (a headless turn), the
+    client sends no fixed ``X-CC-Agent``. The request hook then stamps the
+    agent that the executor bound, ``auto.headless``, because a fixed header
+    always wins over the stamp. The executor builds the worker for each run,
+    on the frame of that run, so the scope of one run never reaches another.
+    """
+    from acb_common import run_attribution
+
+    headers = {"X-CC-Source": "chat"}
+    if run_attribution() is None:
+        headers["X-CC-Agent"] = AGENT_NAME
+    return headers
+
+
 def build_agent() -> Any:
     """Construct the worker as a NATIVE MAF agent for the job on this frame.
 
@@ -99,7 +117,7 @@ def build_agent() -> Any:
         async_client=attributed_openai(
             base_url=prov["base_url"],
             api_key=prov["api_key"],
-            default_headers={"X-CC-Agent": AGENT_NAME, "X-CC-Source": "chat"},
+            default_headers=_fixed_headers(),
         ),
         # 3 rounds, then MAF's one final call with the tools off: 4 calls.
         function_invocation_configuration={

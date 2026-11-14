@@ -19,6 +19,7 @@ import pytest
 from acb_common import studio_fields as sf
 from acb_common import studio_query as sq
 from acb_common import studio_rules as sr
+from acb_common.studio_access import Viewer
 from acb_common.studio_rules import ConstraintError, ConstraintViolation, RuleViolation
 from gateway.studio import objects_store as store
 
@@ -474,7 +475,9 @@ def test_every_record_write_path_runs_the_checks() -> None:
         want = ["_apply_write", "_derive_parent"] if statement == "_UPDATE_RECORD_SQL"             else ["_apply_write"]
         assert users == want, (statement, users)
     derive = _calls(funcs["_derive_parent"])
-    assert {"run_formulas", "validate_record", "record_json", "_hot_rows"} <= derive
+    # Fix round 3/4: the formulas go through `_formulas` (frozen targets) and the size
+    # check through `_record_text`.
+    assert {"_formulas", "validate_record", "_record_text", "_hot_rows"} <= derive
     assert {"_recompute_parents", "_find_rollups"} <= _calls(steps)
 
 
@@ -534,10 +537,13 @@ class _NoSQL:
 OID = "00000000-0000-0000-0000-00000000000a"
 PID = "00000000-0000-0000-0000-00000000000b"
 RID = "00000000-0000-0000-0000-00000000000c"
+#: C8a. The store takes a viewer. No object of this suite declares `access`,
+#: so each object is open and any member reads and writes it.
+_VIEWER = Viewer("ana@x.test")
 
 
 def _apply(db: Any, writes: Any, actor: str = "ana@x.test", pid: str = PID) -> Any:
-    return asyncio.run(store.apply_writes(db, actor, package_id=pid, writes=writes))
+    return asyncio.run(store.apply_writes(db, actor, package_id=pid, writes=writes, viewer=_VIEWER))
 
 
 def test_batch_cap_is_50() -> None:
@@ -733,8 +739,9 @@ def test_a_machine_parses_and_round_trips() -> None:
 
 def test_the_closed_list_of_kinds() -> None:
     kinds = ("range", "unique", "group_sum_min", "state_machine", "formula", "rollup",
-             "hierarchy")
+             "hierarchy", "timer")
     assert kinds == sr.RULE_KINDS
+    assert sr.TIMER in sr._PARSERS and sr.TIMER in sr._KIND_KEYS
     assert sr.ROLLUP in sr._PARSERS and sr.ROLLUP in sr._KIND_KEYS
     assert sr.STATE_MACHINE in sr._PARSERS and sr.STATE_MACHINE in sr._KIND_KEYS
     assert sr.FORMULA in sr._PARSERS and sr.FORMULA in sr._KIND_KEYS
@@ -1460,7 +1467,9 @@ def test_the_store_runs_the_formulas_in_the_write_and_checks_the_plan_once() -> 
     funcs = _functions()
     write = ast.unparse(funcs["_apply_write"])
     assert "refuse_computed_keys" in write and "run_formulas" in write
-    assert write.count("run_formulas") == 2 and write.count("refuse_computed_keys") == 2
+    # Fix round 3: a create runs `run_formulas`, a change runs `_formulas` (frozen targets).
+    assert write.count("run_formulas") == 1 and "_formulas(held" in write
+    assert write.count("refuse_computed_keys") == 2
     assert write.index("validate_record") < write.index("_CREATE_RECORD_SQL")
     assert "plan_formulas" in _calls(funcs["_lock_objects"])
     assert "_check_formulas_first" in _calls(funcs["set_constraints"])
@@ -1927,7 +1936,7 @@ def test_the_derived_write_is_a_store_write_that_checks_and_names_the_member() -
     takes a member, the delete too, so a batch always has one."""
     funcs = _functions()
     src = ast.unparse(funcs["_derive_parent"])
-    assert "run_formulas" in src and "validate_record" in src and "_hot_rows" in src
+    assert "_formulas(" in src and "validate_record" in src and "_hot_rows" in src
     assert "'actor': batch.who," in src and "updated_by" not in src
     assert "INSERT" not in src and "_CREATE_RECORD_SQL" not in src  # a derived write adds no row
     for name in ("create_record", "update_record", "delete_record"):
@@ -1978,3 +1987,138 @@ def test_each_table_of_the_rollup_sql_names_the_org() -> None:
         # every table that holds a row of a tenant is read through an alias
         assert len(aliases) == len(re.findall(r"\bstudio_\w+\s+\w+", sql)), sql
         assert sql.count(_OF_ORG) >= len(aliases), sql
+
+
+# ── E9a: the timer ──────────────────────────────────────────────────────────
+#
+# A timer refuses no write and writes nothing. The workflow scan reads it. The
+# scan cases are in `test_workflows_timer_scan.py` and `test_workflows_timer_r8.py`.
+
+_TIMER_SPECS: list[dict[str, Any]] = [
+    {"key": "due", "type": "datetime", "hot": True},
+    {"key": "state", "type": "select", "options": ["open", "waiting", "closed"], "hot": True},
+    {"key": "note", "type": "text", "hot": True},
+    {"key": "cold_due", "type": "datetime"},
+    {"key": "cold_state", "type": "select", "options": ["waiting"]},
+    {"key": "day", "type": "date", "hot": True},
+    {"key": "qty", "type": "number", "hot": True},
+    {"key": "secret", "type": "text", "hot": True},
+]
+TIMER_FIELDS = [sf.parse_field_spec(s) for s in _TIMER_SPECS]
+_TIMER = {"name": "sla", "kind": "timer", "field": "due",
+          "pause": {"field": "state", "in": ["waiting"]}}
+
+
+def _timer(**over: Any) -> sr.Rule:
+    return sr.parse_rule({**_TIMER, **over})
+
+
+def _bad_timer(spec: dict[str, Any]) -> ConstraintError:
+    with pytest.raises(ConstraintError) as info:
+        sr.parse_rule(spec)
+    return info.value
+
+
+def test_a_timer_parses_and_round_trips() -> None:
+    rule = _timer()
+    assert rule.kind == sr.TIMER and rule.field == "due"
+    assert rule.pause == sr.Atom("state", "in", ("waiting",))
+    assert rule.stored() == _TIMER
+    assert sr.stored_rules([rule.stored()]) == (rule,)
+    bare = sr.parse_rule({"name": "sla", "kind": "timer", "field": "due"})
+    assert bare.pause is None and bare.stored() == {"name": "sla", "kind": "timer", "field": "due"}
+    assert sr.stored_rules([bare.stored()]) == (bare,)
+
+
+@pytest.mark.parametrize("spec", [
+    {"name": "sla", "kind": "timer"},
+    {"name": "sla", "kind": "timer", "field": "Due"},
+    {**_TIMER, "pause": "waiting"},
+    {**_TIMER, "pause": None},
+    {**_TIMER, "pause": {"field": "state"}},
+    {**_TIMER, "pause": {"field": "state", "in": []}},
+    {**_TIMER, "pause": {"field": "state", "in": "waiting"}},
+    {**_TIMER, "pause": {"field": "state", "in": ["waiting", "waiting"]}},
+    {**_TIMER, "pause": {"field": "state", "in": [3]}},
+    {**_TIMER, "pause": {"field": "state", "in": [""]}},
+    {**_TIMER, "pause": {"field": "state", "in": ["x" * 81]}},
+    {**_TIMER, "pause": {"field": "state", "in": ["a"] * 21}},
+    {**_TIMER, "pause": {"field": "state", "in": ["waiting"], "extra": 1}},
+    {**_TIMER, "pause": {"field": "due", "in": ["waiting"]}},
+    {**_TIMER, "extra": 1},
+])
+def test_a_bad_timer_shape_is_refused(spec: dict[str, Any]) -> None:
+    exc = _bad_timer(spec)
+    assert exc.rule == "sla"
+    assert "x" * 81 not in exc.message
+
+
+def test_a_timer_fits_a_hot_datetime_and_a_hot_select_or_text_pause() -> None:
+    sr.check_rules_fit([_timer()], TIMER_FIELDS)
+    sr.check_rules_fit([_timer(pause={"field": "note", "in": ["on hold"]})], TIMER_FIELDS)
+    sr.check_rules_fit([sr.parse_rule({"name": "sla", "kind": "timer", "field": "due"})],
+                       TIMER_FIELDS)
+
+
+@pytest.mark.parametrize(("over", "words"), [
+    ({"field": "missing"}, "not a field"),
+    ({"field": "day"}, "one datetime field"),
+    ({"field": "cold_due"}, "must be hot"),
+    ({"pause": {"field": "missing", "in": ["a"]}}, "not a field"),
+    ({"pause": {"field": "qty", "in": ["1"]}}, "select or text"),
+    ({"pause": {"field": "cold_state", "in": ["waiting"]}}, "must be hot"),
+    ({"pause": {"field": "state", "in": ["waiting", "parked"]}}, "pause.in[1]"),
+])
+def test_a_timer_that_does_not_fit_its_fields_is_refused(over: dict[str, Any], words: str) -> None:
+    with pytest.raises(ConstraintError) as info:
+        sr.check_rules_fit([_timer(**over)], TIMER_FIELDS)
+    assert words in info.value.message
+    assert "parked" not in info.value.message  # a refusal names the place, not the value
+
+
+def test_a_timer_reads_no_key_and_keeps_its_two_fields_hot() -> None:
+    rule = _timer()
+    assert sr.rule_reads(rule) == frozenset()
+    assert sr.touched_keys(rule, {"due": "x"}, {"due": "y"}) == []
+    assert rule.hot_keys() == ("due", "state")
+    assert sr.parse_rule({"name": "sla", "kind": "timer", "field": "due"}).hot_keys() == ("due",)
+    assert rule.source_keys() == ()
+
+
+def test_a_timer_never_taints_a_write_of_a_viewer() -> None:
+    """C8a: a rule that reads a hidden key taints a write. A timer decides no
+    write, so it taints nothing and blocks no key, even when its two fields are
+    hidden from the viewer."""
+    from acb_common import studio_access as sa
+
+    rules = [_timer(), _timer(name="sla2", field="due", pause={"field": "secret", "in": ["x"]})]
+    scope = sa.Scope("ana@x.test", False, (), frozenset(), tuple(rules))
+    hidden = frozenset({"due", "state", "secret"})
+    assert sa.tainted_rules(scope, rules, hidden) == frozenset()
+    assert sa.blocked_keys(scope, rules, hidden) == frozenset()
+
+
+def test_a_stored_timer_that_the_checks_cannot_read_fails_closed() -> None:
+    """A stored timer goes through the one parser, as a machine does. A bad
+    shape is MALFORMED, so `check_kind_known` refuses each write, as for any
+    rule that the store cannot read."""
+    (bad,) = sr.stored_rules([{"name": "sla", "kind": "timer", "field": "due",
+                               "pause": {"field": "state"}}])
+    assert bad.kind == sr.MALFORMED
+    with pytest.raises(ConstraintViolation):
+        sr.check_kind_known(bad, "claim")
+
+
+def test_the_store_skips_a_timer_in_the_checks_of_a_write() -> None:
+    """E9a: the write path refuses nothing for a timer. `_check_records` skips
+    it before `check_kind_known` and `check_rule_is_hot`, so a cold field of a
+    timer (only raw SQL makes one) never refuses a write.
+    `test_workflows_timer_r8.py` holds the R8 half."""
+    tree = ast.parse(_STORE.read_text(encoding="utf-8"))
+    fn = next(n for n in tree.body
+              if isinstance(n, ast.FunctionDef) and n.name == "_check_records")
+    loop = next(n for n in ast.walk(fn)
+                if isinstance(n, ast.For) and ast.unparse(n.target) == "rule")
+    first = loop.body[0]
+    assert isinstance(first, ast.If) and "TIMER" in ast.unparse(first.test), ast.unparse(first)
+    assert isinstance(first.body[0], ast.Continue)

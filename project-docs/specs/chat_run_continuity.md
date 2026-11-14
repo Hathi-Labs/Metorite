@@ -16,7 +16,9 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 | The run cap — 5 live runs per member (D-3) | **BUILT** 2026-10-10, branch `ws51-run-cap-and-todos`, no flag |
 | §4.9 — a message sent during a run always steers it | **BUILT** 2026-10-12, branch `composer-always-steer`, no flag |
 | §4.9 — a steer is a user turn, and a Projects or CRM card closes on it (task 2494) | **BUILT** 2026-11-09, fix round 1 2026-11-11, branch `steer-redraws-card-mt-fdaefd16`, no flag |
+| §4.9 — a closed card says "Not done", and each steer gets an answer (task 3130) | **BUILT** 2026-11-13, fix round 1 2026-11-13, fix round 2 2026-11-14, branch `mt-e29742c6-steer-unsent-card`, no flag |
 | §4.10 — one run status in the open chat | **BUILT** 2026-10-19, branch `chat-run-status`, no flag |
+| §4.11 — the line of a slow tool (HRD-6 part 1, task 2985) | **BUILT** 2026-11-13, branch `mt-83488e2c-long-reads`, dark behind `CHAT_PROGRESS_NOTICE_ORGS` |
 | D-1 — a separate run worker | **DEFERRED** 2026-10-29 on evidence (§5). Not built |
 
 **This spec owns** how a member sees and resumes an assistant run that they
@@ -904,6 +906,110 @@ steer. So these rules hold:
   and the follow-up below answers it.
 - Fence: `tests/unit/test_steer_user_turn.py`.
 
+**A closed card says so, and each steer gets an answer (task 3130,
+2026-11-13).** In production, a member asked for an email reply, and the
+reply card opened. The member typed two more messages, and the first one
+closed the card. The answer met only the last message. It did not say that
+the reply was not sent. So these rules hold:
+
+- The server ends the answer with one line, not the model. The line comes
+  when a chat message closed a write card that nobody answered.
+- The line is "Not done: «<act>». The card closed when a new message came
+  in. Say 'do it' to get it back." The words are true in a shared room,
+  where another member can close the card.
+- Two closed acts read "«a» and «b»". Three or more read "«a», «b», and
+  «c»", and the line then says "cards" and "them".
+- The act comes from the card's own title (`ask_tools.card_act`). A title
+  can hold a name or an address that a stranger wrote. So the act is inert
+  text in one « » fence, at most 120 characters.
+- In the act, no markdown or link character stays, and no fence mark stays.
+  A line break is a space. Each run of slashes after a colon goes, so no
+  scheme links. "www." becomes "www " with a space, so GFM does not link
+  it.
+- An underscore inside a word stays, so `john_doe@acme.test` keeps its
+  name. GFM never reads it as emphasis there. An underscore at a word edge
+  goes. The workbench's remark-gfm 4.0.1 shows no link and no emphasis in
+  any line. Only an address shows as a mail link of its own text.
+- Each write card of each app waits in `ask_tools.request_confirmation`, so
+  one record covers email, Projects, CRM and Studio. `run_agent_stream`
+  opens the record for each run (`open_closed_cards_for_run`).
+- A card that the member approved or declined adds no line. A later card
+  takes the place of a closed card only when it holds every act key of the
+  closed card.
+
+**The act key** (`ask_tools.act_keys`, bound by `ask_tools.card_call` in
+the gate wrapper of `_tool_injection`):
+
+- The key is the tool, each id argument, and the people of `to`. Case and
+  spaces do not count, and free text (a body, a note) is never in it.
+- A call with no object id also adds its identity arguments: `title`,
+  `name`, `lead_name`, `subject`, `deal_name`, `contact_name`,
+  `company_name`, `account_name`, `project_name` and `app_name`. A Studio
+  `manifest` gives them one level down.
+- A call has no object id when its tool creates (the verbs create, add,
+  log, new, make and send), or when each id names a place. A place is
+  `project_id`, `account_id`, `parent_task_id` and the other
+  `CONTAINER_IDS`.
+- So lead Veena and lead Raj are two acts. Two calls of `log_activity` on
+  one record with two subjects are two acts. Two new mails to one person
+  with two subjects are two acts. `update_task` on task 12 keys on the
+  task only.
+- A batch tool shares the family of its single tool: `create_tasks` with
+  `create_task`, and `update_tasks` and `bulk_update` with `update_task`.
+  Each item of a batch is one key, with the batch's own ids.
+- A batch card takes the place of a closed single card only when one of
+  its items has the same key. A closed batch card goes only when a later
+  card holds every one of its items.
+- A card with no key takes the place of no card. A delegation tool opens a
+  scope with no key. A batch whose items do not read has no key. In
+  `approve_all` mode the wrapper does not run, so no card has a key, and
+  every line stays.
+
+**How each class errs.**
+
+- A new object that the redraft renames gets a new key. The old line stays
+  although the act was done under the new name. That side is the safe
+  side: a line that is too careful, never a silence.
+- A change to an object with an id keeps one key whatever it changes. A
+  second approved change to the same task takes away the line of the
+  first change, although that change did not run.
+- A batch card that the member approves with the matching row unticked
+  still takes the place of the closed card. The key binds when the card
+  opens, before the answer.
+
+**The run ends.**
+
+- The executor takes the line before it saves the native session.
+  `executor._close_native_session` puts it at the end of the session's last
+  answer (`native_session_store.add_closing_line`), and then the session is
+  saved. `executor._closed_card_events` sends it just before each
+  `RUN_FINISHED`, after the CRM note. The relay keeps it, so the stored
+  message holds it.
+- A parked run (`pending_ask.park`) sends the line before its own
+  `RUN_FINISHED`.
+- No line comes when the run ends by a Stop (`stream_relay.cancel_run`), by
+  a `RUN_ERROR`, or by the dead-run finish of `run_liveness`. The member
+  then sees the card close, and no answer follows it.
+- The outcome word is "closed by your message"
+  (`ask_tools.CLOSED_BY_YOUR_MESSAGE`). HRD-7 grows its one vocabulary of
+  card outcomes from this word.
+- A run that takes two or more steers asks for an answer to each. The
+  newest steer turn ends with `steer.steers_frame`, and a replay of two or
+  more steers ends with it too. One steer gets no frame.
+
+**"do it".**
+
+- After the card closes, "do it" can draw the same card again. A unit test
+  ends the first run through `_close_native_session`. The next turn then
+  reads the call, its arguments and the line from the session, and it draws
+  the same card on a new id. A scripted model stands in for the real one.
+- ⚠️ On the web chat after a steer, the next turn reads the text history
+  (`digest_drop`, task 2948). There the model must find the act again from
+  the line and the history. Only a live-model eval can prove that path, and
+  that eval needs the owner's OK for its cost.
+- No flag. The line only tells the truth, and the frame adds one sentence.
+- Fence: `tests/unit/test_steer_unsent_card.py`.
+
 **A steer after the last tool call.** Before 2026-10-12 such a steer was
 lost. The applier had discarded its durable copy, and the next run start
 cleared the buffer. Now three steps answer it:
@@ -1225,6 +1331,118 @@ asks for the list again at once, so the dot clears with "Done".
   `idle`, not `done`, because no tab saw it run. The reply shows from the
   saved row.
 
+### §4.11 — the line of a slow tool (HRD-6 part 1, BUILT 2026-11-13, dark)
+
+**The owner's rule (2026-11-13, task 2985).** "Large CRM queries or other
+queries might take even minutes. In that case inform the user that such a
+query is going to take a while to get all the data. Please wait." Before this
+slice, a slow tool ran with no word, or it failed at its cap.
+`chat_failure_modes.md` §4 row B6 holds the class.
+
+**The rule.**
+
+1. A tool call that runs past 6 s sends ONE line. A tool marked read-only
+   (`tool_annotations`) sends the owner's words: "This is a large read. It can
+   take a few minutes to get all the data. Please wait." Any other tool sends
+   "This is taking longer than usual. Please wait."
+2. A tool can send its own line first through
+   `acb_skills.progress_notice.emit_progress`. The timer then sends nothing for
+   that call. Each call gets one line at most.
+3. While the line of one call shows, the line of a parallel call waits.
+   When the showing line goes, the oldest call that waits and still runs gets
+   its line, once. A call that ends while it waits gets no line. So two lines
+   never show at once.
+4. A card is the sign of a wait for the member. A delegation tool sends no
+   line, because each tool of the delegated run has its own timer. A tool that
+   waits for the member sends no line. Some tools show a card in their own
+   body, for example a Projects, CRM or email write (`request_confirmation`,
+   `ask_questions`). Such a tool stops its timer at the card. Its line goes,
+   and the call gets no second line after the answer.
+
+**The event.** The line is one `CUSTOM` event on the run's own queue, the
+channel of `navigate`:
+`{"type": "CUSTOM", "name": "progress", "value": {"text": ..., "tool_call_id": ...}}`.
+The same event with an empty `text` takes the line of that call away. It goes
+when the call ends or shows a card. So the line of a delegated read goes when
+that read ends, not when the whole hand-off ends. No tool argument and no
+result text goes in either event.
+
+**The seam.** `acb_skills/progress_notice.py` holds the writer, the per-run
+function middleware, `member_wait`, `settle_channel` and the flag reader
+`progress_notice_on`. `orchestrator._tool_injection._apply_progress_notice`
+attaches the middleware to each native MAF agent of the run. It runs right
+before `_apply_answer_check`, which stays last, so the timer wraps each tool
+call and the number check's recorder sits inside it. A Copilot SDK agent gets
+no timer.
+
+**What the member sees.**
+
+- **The web chat.** The live loop of `useAgentChat` keeps the line on the
+  message (`progressNotice`). `ThinkingContainer` draws it under its header,
+  which names the running step, so the member sees it with the trail closed.
+  The clear event, the end of that step, answer text or the end of the run
+  takes it away (`lib/chatStream.ts`). The attach loop replays the run, and
+  then it follows the run live. It applies each line and each clear in order.
+  So after a reload, in a second tab or back in the chat, the line is true. A
+  step that still runs shows its line. A line that ended or went to a card is
+  gone. No loop keeps it in `customEvents`. `withCustomEvent`, the BFF save and the gateway fold
+  (`chat_fold.py`) never keep it, so a stored chat never holds it.
+- **The screen reader.** The `role="status"` region mounts with the trail and
+  stays empty until a line comes, so a reader announces the line.
+- **WhatsApp.** The line goes as the channel's early message
+  (`whatsapp_ui.WhatsAppRun.notify`), once in a reply. The channel's own 20 s
+  line (`REPLY_WORKING`) then stays quiet. Before the answer or the failure
+  text goes, `bot_run` awaits `settle_channel`. An early message on its way
+  lands first, and `settle_channel` cancels one that has not landed in 6 seconds.
+  So "Please wait" never follows the answer. A run with no WhatsApp profile has no early
+  message, and this slice builds none.
+
+**The flag.** `CHAT_PROGRESS_NOTICE_ORGS`, a comma list of org ids or `*`.
+Empty is the default. Then the seam attaches nothing, the hook of the card
+finds no call, `settle_channel` finds no early message, and each WhatsApp cap
+is as before. So each run sends exactly the bytes that it sent before. A
+SIGHUP reload applies a change (`docs/flag_reload.md`), and a production flip
+is gate `enforcement-flip`.
+
+**The caps on the path of a long tool call** (2026-11-13). None of the
+general caps is under 200 s. The WhatsApp run's cap holds the whole run. So
+a long-read org gets a longer cap, and its sweep gets a longer stale time. A
+long-read org is one that `CHAT_PROGRESS_NOTICE_ORGS` or `CRM_LONG_READ_ORGS`
+names (`bot_run.long_reads_on`). Every other org keeps 240 s and 300 s.
+`whatsapp_assistant_channel.md` §5.4 holds that rule.
+
+| Cap | Where | Value | On a 3-minute tool |
+|---|---|---|---|
+| Native idle watchdog, no tool open | `orchestrator/watchdog.py:45` | 120 s | Does not apply while a tool is open |
+| Native idle watchdog, a tool open | `orchestrator/watchdog.py:46` | 600 s | Holds |
+| Idle watchdog, a card waits | `orchestrator/watchdog.py:47` | 3600 s | Holds |
+| One tool call, Tier 1.5 and Tier 2 shim | `orchestrator/watchdog.py:49` | 300 s | Holds |
+| A delegated run | `acb_skills/agent_tools.py:65` | 900 s | Holds |
+| The relay subscriber read | `orchestrator/stream_relay.py:283` | 30 s, then it reads again | Holds |
+| The relay stream and the active flag | `orchestrator/stream_relay.py:86` | 3600 s, renewed on each event | Holds |
+| The BFF fetch of the run stream | `src/app/api/agent/chat/route.ts:908` | 310 s, then up to 6 reattaches (`:611`) | Holds |
+| Node `fetch` (undici) body gap | library default | 300 s with no byte | Holds |
+| Caddy `reverse_proxy` | `deploy/hostinger/caddy/Caddyfile:85` | No read or write timeout | Holds |
+| Process heartbeat | `orchestrator/run_liveness.py:91` | 30 s | Holds while the event loop turns. A tool that blocks the loop fails it |
+| WhatsApp run | `whatsapp_channel/bot_run.py` `run_timeout_for` | 420 s for a long-read org, 240 s for any other | Holds one 180 s read and its model calls in a long-read org |
+| WhatsApp sweep stale time | `whatsapp_channel/bot_run.py` `stale_for` | 480 s for a long-read org, 300 s for any other. Always longer than the run's cap | A run that still works is never taken |
+| The CRM tool's HTTP read | `acb_skills/crm_tools.py:320` | 30 s | Under 200 s. The CRM long mode (HRD-6 part 2) owns it |
+| The CRM total's statement | `gateway/routes/crm/aggregate.py:254` | 10 s | Under 200 s. HRD-6 part 2 owns it |
+
+**Fences (R7).**
+
+- `tests/unit/test_progress_notice.py` tests the flag, the seam order and the
+  per-run view. It tests one line and one clear for each slow call, the two
+  texts, the tool's own line, no stacked lines and the exempt tools. It tests
+  a card in the body of a tool, and the WhatsApp early message and its
+  settle. It tests the WhatsApp caps of each org, and the fold. A native stream outlives the
+  bare idle cap, and the line comes between the tool's start and its result.
+- `src/lib/progressNotice.test.ts`: the line shows. It goes at its clear
+  event, at the end of its step, at answer text and at the end of the run. It
+  draws under the header while the turn works, and not after it. The attach
+  loop ends with the true line: none after a clear, the line with no clear
+  yet. No loop, `withCustomEvent` or the BFF save keeps it.
+
 ---
 
 ## 5. Deferred — owner decisions
@@ -1311,6 +1529,7 @@ For §4.9, from `workbench/control_plane`, then from the repo root:
 npx vitest run src/lib/chatSteer.test.ts src/components/chatEditComposer.test.ts
 npx playwright test e2e/chat-steer.spec.ts --project=ci
 uv run pytest tests/unit/test_steer_routing.py tests/unit/test_steer_follow_up.py
+uv run pytest tests/unit/test_steer_user_turn.py tests/unit/test_steer_unsent_card.py
 ```
 
 For §4.10, from `workbench/control_plane`, then from the repo root:

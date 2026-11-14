@@ -33,6 +33,13 @@ test calls a model.
   blocks. The mutations M11 and M12 of ``test_headless_turn.py`` turn
   ``test_r8_a_lost_round_leaves_the_mark_and_the_next_turn_blocks`` and
   ``test_r8_a_normal_round_clears_the_mark`` red.
+* AUTO-8b-2d, a cut call (both databases): the REAL default meter reads the
+  REAL Console door. The time cap cuts the call, and its usage row lands in
+  the Console AFTER the cut. The round reads no door and charges the rest,
+  so Ana's goal blocks with ``cap_reached``. Mutation M13 of
+  ``test_headless_turn.py`` turns
+  ``test_r8_a_cut_call_whose_row_lands_late_charges_the_rest`` red. It needs
+  ``CUSTOMER_CONSOLE_DATABASE_URL`` too, and CI sets both.
 
 Run (a PRIVATE ladder database, one R8 suite at a time, because the
 ``promoted`` fixture drops ``<db>_h3rls``)::
@@ -48,7 +55,8 @@ is not a pass.
 from __future__ import annotations
 
 import asyncio
-import re
+import os
+import threading
 import time
 import uuid
 from collections import Counter
@@ -69,6 +77,7 @@ from gateway.jobs import headless_turn as ht
 from gateway.jobs import queue, unattended, worker
 from sqlalchemy import text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -337,10 +346,10 @@ def test_r8_a_meter_past_the_margin_blocks_the_goal_of_a_only(world, monkeypatch
             world.meter.sleep_after = 60.0
             skew[0] = 1000.0
 
-    async def meter(org: str, run_id: str) -> Any:
+    async def meter(org: str, member: str, run_id: str) -> Any:
         # The share of this read is already set. The record gets the time left.
         skew[0] = 0.0
-        return await world.meter(org, run_id)
+        return await world.meter(org, member, run_id)
 
     real = goal_store.record_round
 
@@ -420,8 +429,12 @@ def test_r8_a_job_for_a_member_who_left_makes_no_model_call(world, monkeypatch) 
 
 
 def test_r8_the_default_meter_makes_no_model_call(world, monkeypatch) -> None:
-    """With the flag on, a candidate and no cost reader: no call, the goal
-    untouched, the job failed with a named reason."""
+    """With the flag on, a candidate and the default meter on a box with no
+    Console wiring (AUTO-8b-2d): no call, the goal untouched, the job failed
+    with a named reason."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "customer_console_url", "")
+    monkeypatch.setattr(settings, "customer_console_deployment_key", "")
     ana = _goal(world, world.p.org_a, ANA)
     runner = FakeRunner(world.meter)
     _use(monkeypatch, ht.HeadlessTurn(runner=runner, candidates=world.checks))
@@ -430,9 +443,130 @@ def test_r8_the_default_meter_makes_no_model_call(world, monkeypatch) -> None:
     assert runner.calls == []
     _assert_untouched(world, ana)
     job = _job(world, job_id)
-    assert job["state"] == "failed" and job["last_error"] == ht.NO_READER
-    want = [("failed", "NoCostReader")] if world.ledger else []
+    assert job["state"] == "failed" and job["last_error"] == ht.COST_READ_FAILED
+    want = [("failed", "CostReadFailed")] if world.ledger else []
     assert [(r["state"], r["error_class"]) for r in _ledger(world, job_id)] == want
+
+
+# ── A cut call with the real meter and the real door (AUTO-8b-2d) ───────────
+
+_CC_URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
+_CC_BOX = "auto8b2d-r8-box"
+_CC_OP = "test-operator-token"
+#: The Console org of Ana and the key of the box, made once for the module,
+#: because Ana may own ONE org on the box (two orgs answer 409).
+_CC: dict[str, Any] = {}
+
+
+def _console(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any, dict[str, Any]]:
+    """The Console app, its engine, and Ana's org with a ``billing_read`` key."""
+    from customer_console.auth import BILLING_READ_CAPABILITY, RESOLVE_CAPABILITY
+    from customer_console.main import app as console_app
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+
+    from tests.unit._customer_console_ladder import (
+        apply_ladder,
+        ensure_deployment,
+        mint_deployment_key,
+    )
+
+    monkeypatch.setenv("CUSTOMER_CONSOLE_OPERATOR_TOKEN", _CC_OP)
+    engine = create_engine(_CC_URL, future=True)
+    with engine.begin() as c:
+        apply_ladder(c)
+        box = ensure_deployment(c, label=_CC_BOX)
+    if not _CC:
+        client = TestClient(console_app)
+        slug = f"auto8b2d-{TAG}"
+        r = client.post("/orgs/provision", headers={"Authorization": f"Bearer {_CC_OP}"},
+                        json={"slug": slug, "name": "N", "owner_email": ANA,
+                              "core_seats": 3, "deployment_label": _CC_BOX})
+        assert r.status_code == 200, r.text
+        with engine.begin() as c:
+            key = mint_deployment_key(c, deployment_id=box, capabilities=[
+                RESOLVE_CAPABILITY, BILLING_READ_CAPABILITY])
+        _CC.update(org=r.json()["organization_id"], key=key)
+    return console_app, engine, _CC
+
+
+@pytest.mark.skipif(not _CC_URL, reason=(
+    "CUSTOMER_CONSOLE_DATABASE_URL unset — R8 requires a REAL Postgres. A skip "
+    "here is not a pass; CI must set it."))
+def test_r8_a_cut_call_whose_row_lands_late_charges_the_rest(world, monkeypatch) -> None:
+    """The P1 of the AUTO-8b-2d review, end to end. The turn has the DEFAULT
+    meter, so each read goes through ``run_spend_on_console`` to the real
+    door on the real Console database. The time cap cuts the call. The row of
+    the call lands in ``usage_event`` AFTER the cut, as a sync Console route
+    that runs on in its thread pool writes it. The round reads no door and
+    charges the rest (10), so the goal blocks. A later read of the door sees
+    the 4 credits of the late row, which the charge covers."""
+    import httpx
+    from acb_auth import console_resolve
+    from customer_console import store as cc_store
+    from fastapi.testclient import TestClient
+
+    console_app, engine, cc = _console(monkeypatch)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "customer_console_url", "http://console.test")
+    monkeypatch.setattr(settings, "customer_console_deployment_key", cc["key"])
+    reads: list[int] = []
+
+    def _new_client(timeout: float | None = None) -> httpx.AsyncClient:
+        reads.append(1)
+        return httpx.AsyncClient(transport=httpx.ASGITransport(app=console_app))
+
+    monkeypatch.setattr(console_resolve, "_new_http_client", _new_client)
+    release = threading.Event()
+    late: list[threading.Thread] = []
+    calls: list[str] = []
+
+    async def runner(message: str, *, run_id: str, org: str, member: str,
+                     tools: tuple[str, ...]) -> dict[str, Any]:
+        calls.append(run_id)
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            def land() -> None:
+                release.wait(30)
+                with engine.begin() as c:
+                    assert cc_store.record_usage(
+                        c, org_id=cc["org"], request_id=f"req-{uuid.uuid4().hex}",
+                        billed_credits=Decimal("4"), user_email=ANA, agent="worker",
+                        run_id=run_id) is True
+
+            thread = threading.Thread(target=land, daemon=True)
+            thread.start()
+            late.append(thread)
+            raise
+        return {"answer": "never"}
+
+    ana = _goal(world, world.p.org_a, ANA, cost_cap_credits=10)
+    reports = Reports()
+    # A clock that stands still: the checks take no time of the cap, and the
+    # call gets the whole second before the cut.
+    _use(monkeypatch, ht.HeadlessTurn(runner=runner, report=reports, candidates=world.checks,
+                                      time_cap_s=1.0, clock=lambda: 0.0))
+    job_id = _enqueue(world, world.p.org_a, ana.id)
+    assert _tick(world, world.p.org_a) == Counter(done=1)
+    release.set()
+    for thread in late:
+        thread.join(30)
+    [run_id] = calls
+    assert len(reads) == 1, "the round read the door after the cut"
+    row = _row(world, ana.id)
+    assert (row["state"], row["block_code"], row["round_count"]) == ("blocked", "cap_reached", 1)
+    assert row["cost_used_credits"] == Decimal("10") and row["job_id"] is None
+    assert len(reports.seen) == 1
+    assert _job(world, job_id)["state"] == "done"
+    want = [("ok", None)] if world.ledger else []
+    assert [(r["state"], r["error_class"]) for r in _ledger(world, job_id)] == want
+    # The late row is in the door now, and the charge covers it.
+    door = TestClient(console_app).post(
+        "/registry/usage/run", headers={"Authorization": f"Bearer {cc['key']}"},
+        json={"actor_email": ANA, "run_id": run_id})
+    assert door.status_code == 200, door.text
+    assert door.json() == {"credits": "4.0000"}
 
 
 # ── The mark of a call (AUTO-8b-2a) ─────────────────────────────────────────
@@ -607,5 +741,4 @@ def test_r8_a_lost_round_leaves_the_mark_and_the_next_turn_blocks(
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """An R8 suite that CI does not list still skips in silence when the
     database gate is disarmed. Match the argument line, not a mention."""
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
-    assert re.search(r"^\s+tests/unit/test_headless_turn_r8\.py \\?$", workflow, re.M)
+    assert "tests/unit/test_headless_turn_r8.py" in r8_lists.must_run()

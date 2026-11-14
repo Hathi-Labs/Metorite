@@ -63,6 +63,15 @@ u. A change during the read is seen. A package that goes and an owner that
    changes get 404. A declaration that changes gets 403. Neither reads a
    record.
 
+**Acceptance (WS-STU I1a).** The section "I1a" at the end of this file.
+
+v. A draft that names a connection with no ``connected`` row gets 409
+   ``needs_connection`` for each action, and nothing reads or changes. Each
+   call writes one row with the code. An org row of the bound org opens each
+   action. A ``preview=1`` object action stays open.
+w. A row of org B, a member row of Ben, and a ``needs_reconnect`` row each
+   meet nothing for Ana in org A. Her own member row meets it.
+
 **The mutations (R7).** Commit before each, and restore with git after.
 Each result below was run on 2026-11-01, with both B2a suites.
 
@@ -217,6 +226,7 @@ pytest.importorskip("sqlalchemy")
 from acb_auth import UserContext, UserRole, build_access
 from acb_common import get_settings, studio_query
 from acb_common.db import bind_tenant, release_tenant, tenant_session
+from acb_common.studio_access import Viewer
 from acb_common.studio_query import QueryError
 from fastapi import HTTPException
 from gateway.routes.studio import invoke
@@ -235,6 +245,9 @@ pytestmark = _DB_GATE
 
 TAG = uuid.uuid4().hex[:8]
 ANA = f"ana.{TAG}@stub2a.test"
+#: C8a. The store takes a viewer. No object of this suite declares `access`,
+#: so each object is open and any member reads and writes it.
+_VIEWER = Viewer(ANA)
 BEN = f"ben.{TAG}@stub2a.test"
 NOT_FOUND = "Not found"
 
@@ -353,7 +366,7 @@ async def _object_with_record(org: str, pid: str) -> tuple[str, str]:
         obj = await objects_store.define_object(db, ANA, package_id=pid, name="visit",
                                                 fields=_FIELDS)
         assert obj is not None
-        rec = await objects_store.create_record(db, ANA, obj.id, _DATA, package_id=pid)
+        rec = await objects_store.create_record(db, ANA, obj.id, _DATA, package_id=pid, viewer=_VIEWER)
         assert rec is not None
     return obj.id, rec.id
 
@@ -658,7 +671,7 @@ async def _add_records(org: str, oid: str, pid: str, rows: list[tuple[str, str]]
     async with tenant_session(org) as db:
         for site, status in rows:
             rec = await objects_store.create_record(
-                db, ANA, oid, {"site": site, "status": status, "notes": "x"}, package_id=pid)
+                db, ANA, oid, {"site": site, "status": status, "notes": "x"}, package_id=pid, viewer=_VIEWER)
             assert rec is not None
             ids.append(rec.id)
     return ids
@@ -1238,7 +1251,7 @@ async def _with_rules(w: Any, formula: bool = False) -> None:
         await objects_store.set_field_hot(db, w.obj, "site", True)
         if formula:
             # A formula is declared before the first record (C7a).
-            assert await objects_store.delete_record(db, ANA, w.obj, w.rec, package_id=w.pkg)
+            assert await objects_store.delete_record(db, ANA, w.obj, w.rec, package_id=w.pkg, viewer=_VIEWER)
         rules = _RULES if formula else _RULES[:3]
         await objects_store.set_constraints(db, w.obj, rules, package_id=w.pkg)
 
@@ -2556,7 +2569,8 @@ async def _add_tallied(org: str, oid: str, pid: str,
             data: dict[str, Any] = {"site": "Plant", "status": status, "hours": hours}
             if minor is not None:
                 data["fee"] = {"minor": minor, "currency": currency}
-            rec = await objects_store.create_record(db, ANA, oid, data, package_id=pid)
+            rec = await objects_store.create_record(db, ANA, oid, data, package_id=pid,
+                                                  viewer=_VIEWER)
             assert rec is not None
             ids.append(rec.id)
     return ids
@@ -2737,3 +2751,121 @@ def test_r8_bd_the_store_refuses_and_the_session_stays_usable(
     assert ran == [1]
     assert [r[3] for r in _audits(world, world.pkg)] == [{
         **_AGG_OUTCOME, "outcome": "refused", "reason": code}]
+
+
+
+# ── I1a. A connection that the caller does not have (WS-STU I1a) ───────────
+#
+# R7. Mutations, run on 2026-11-14 on this section and its hermetic twin:
+# * I1-D1. ``invoke._check``: drop the call of ``_needs_connection``. Both
+#   refusal cases go red.
+# * I1-D2. ``connections/store._MET_SQL``: drop ``AND member_email = :member``.
+#   ``test_r8_only_the_callers_own_row_and_a_connected_row_meet_it`` goes red.
+# * I1-D3 (the review fix). ``invoke._needs_connection``: drop the check of
+#   ``connection_gate_on``. ``test_r8_the_gate_off_changes_nothing_off`` goes red.
+
+#: A provider of the registry that no other suite names.
+TALLY = f"mcp:tally-{TAG}"
+
+
+def _needs_tally(world: Any, pid: str) -> None:
+    """Add ``connections`` to the draft of *pid*, as the superuser."""
+    with world.p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE apps SET manifest = manifest || CAST(:m AS jsonb) "
+            "WHERE id = CAST(:p AS uuid)"), {"m": json.dumps({"connections": [TALLY]}),
+                                            "p": pid})
+
+
+def _connect(world: Any, org: str, *, member: str | None = None,
+             status: str = "connected") -> str:
+    with world.p.admin_engine.begin() as c:
+        return str(c.execute(text(
+            "INSERT INTO integration_connections (organization_id, provider, owning_app, "
+            "scope_kind, member_email, status) VALUES (CAST(:o AS uuid), :p, 'integrations', "
+            ":k, :m, :s) RETURNING id"),
+            {"o": org, "p": TALLY, "k": "member" if member else "org", "m": member,
+             "s": status}).scalar_one())
+
+
+@pytest.fixture
+def tally(world, monkeypatch):
+    """The draft of Ana's package names ``TALLY``, and the gate is on for org A."""
+    _needs_tally(world, world.pkg)
+    monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", world.a)
+    yield world
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM integration_connections WHERE provider = :p"),
+                  {"p": TALLY})
+
+
+def test_r8_a_missing_connection_refuses_each_action_until_an_org_row_connects(tally) -> None:
+    world = tally
+    before = _record_row(world, world.rec)
+    count = _record_count(world, world.obj)
+    body = {"id": world.rec, "data": {"site": "Changed"}}
+
+    async def every() -> list[tuple[int, Any]]:
+        return [await _call(world.a, ANA, world.pkg, a, body) for a in _EVERY_ACTION]
+
+    for (status, detail), action in zip(_run(world, every), _EVERY_ACTION, strict=True):
+        assert (status, detail) == (409, {"code": invoke.NEEDS_CONNECTION,
+                                          "message": invoke.CONNECTION_TEXT}), action
+    assert (_record_row(world, world.rec), _record_count(world, world.obj)) == (before, count)
+    rows = _audits(world, world.pkg)
+    assert [r[3]["reason"] for r in rows] == [invoke.NEEDS_CONNECTION] * len(_EVERY_ACTION)
+    assert {(r[0], r[1], r[3]["outcome"], r[3]["uses"]) for r in rows} == {
+        (world.a, ANA, "refused", None)}
+
+    # A preview of an object action stays open, so the IDE works.
+    status, got = _run(world, lambda: _call(world.a, ANA, world.pkg, "peek", request=_Request(
+        {"id": world.rec}, query={"preview": "1"})))
+    assert status == 200 and got["record"]["id"] == world.rec, got
+
+    _connect(world, world.a)
+    status, got = _run(world, lambda: _call(world.a, ANA, world.pkg, "peek", {"id": world.rec}))
+    assert status == 200 and got["record"]["data"] == _DATA, got
+    status, got = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", {}))
+    assert status == 200 and got["total"] == 1, got
+
+
+def test_r8_only_the_callers_own_row_and_a_connected_row_meet_it(tally) -> None:
+    world = tally
+
+    def peek() -> tuple[int, Any]:
+        return _run(world, lambda: _call(world.a, ANA, world.pkg, "peek", {"id": world.rec}))
+
+    _connect(world, world.b)                     # org B
+    _connect(world, world.b, member=ANA)         # Ana's address, in org B
+    _connect(world, world.a, member=BEN)         # another member of org A
+    rid = _connect(world, world.a, member=ANA, status="needs_reconnect")
+    status, detail = peek()
+    assert (status, detail["code"]) == (409, invoke.NEEDS_CONNECTION)
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE integration_connections SET status = 'connected' "
+                       "WHERE id = CAST(:i AS uuid)"), {"i": rid})
+    status, got = peek()
+    assert status == 200 and got["record"]["id"] == world.rec, got
+    # Ben's own package names no connection, so his row changes nothing there.
+    status, got = _run(world, lambda: _call(world.a, BEN, world.pkg_ben, "peek",
+                                            {"id": world.rec_ben}))
+    assert status == 200
+
+
+def test_r8_the_gate_off_changes_nothing_off(tally, monkeypatch) -> None:
+    """``STUDIO_CONNECTION_GATE_ORGS`` empty, or naming org B only: the door of
+    org A is as before I1a. No row exists, and each action answers as it did."""
+    world = tally
+    for listed in ("", world.b):
+        monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", listed)
+
+        async def go() -> list[tuple[int, Any]]:
+            return [await _call(world.a, ANA, world.pkg, a, {"id": world.rec})
+                    for a in ("peek", "add", "no_such_action")]
+
+        (peek_s, peek), (add_s, add), (none_s, none) = _run(world, go)
+        assert peek_s == 200 and peek["record"]["id"] == world.rec, (listed, peek)
+        assert (add_s, add["code"]) == (403, "approval_required"), listed
+        assert (none_s, none["code"]) == (403, "not_declared"), listed
+    reasons = [r[3].get("reason") for r in _audits(world, world.pkg)]
+    assert invoke.NEEDS_CONNECTION not in reasons

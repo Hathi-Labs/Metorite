@@ -68,6 +68,16 @@ def test_blocks_part_equals_the_block_list() -> None:
     assert not set(b["tokens"]) & set(b["reserved"])
 
 
+def test_runtime_part_serves_the_four_kinds_and_the_rules() -> None:
+    r = run("runtime")["runtime"]
+    assert list(r["kinds"]) == ["none", "browser", "sandbox", "packages"]
+    assert all(v.count(". ") == 0 and v.endswith(".") for v in r["kinds"].values())
+    assert any("means kind `none`" in x for x in r["rules"])
+    assert any("lowest kind" in x for x in r["rules"])
+    assert "pandas" in r["lock_packages"]
+    assert "hosts" not in r["kinds"]
+
+
 @pytest.mark.parametrize("part", st.DESCRIBE_PARTS)
 def test_every_result_is_under_the_cap(part: str) -> None:
     out = run(part)

@@ -43,8 +43,9 @@ worktree, the lane, the head SHA, the tier and a note, with tabs between them.
 A `#` header line names them. Nothing else writes this queue.
 
 The bot writes one result line to `~/lanes/merge-bot.log` for each hand-over:
-`DONE <pull request> <merge sha>` or `BACK <pull request> <reason>`. **Only the
-bot writes this log.** Do not append to it, and no lane appends to it. A
+`DONE <pull request> <merge sha>` or `BACK <pull request> <reason>`. Before
+that line, it can write `RESOLVED <pull request> <rules>` (CIV-34a). **Only
+the bot writes this log.** Do not append to it, and no lane appends to it. A
 manual merge does not go in it.
 
 The old `~/lanes/merge-queue.tsv` and `~/lanes/merge-queue.log` stay as
@@ -75,11 +76,26 @@ newer head. While the timer runs, do not merge a pull request by hand.
 Your part is the Metorite side. Read `~/lanes/merge-bot.log` in each loop.
 
 - A new `DONE <pull request> <sha>` line: do step f.
+- A new `RESOLVED <pull request> <rules>` line: the bot merged `main` into the
+  pull request branch and resolved a conflict by the named rules. Then it
+  pushed the merge commit (`ci_velocity.md` §8.9). The hand-over stays open, and the bot
+  merges it after the new pr-check. Comment the line on the task, so the lane
+  that owns it pulls its branch before its next commit. Do nothing else.
 - A new `BACK <pull request> HIGH tier: ...` line: do steps a to f for it
   yourself. Step b binds in full.
 - A new `BACK <pull request> <reason>` line: comment the reason on the task,
   and release the task. Do not fix it. The lane that owns it fixes it and
   hands it over again.
+
+**A revert PR of lane `auto-revert`** (CIV-31). The automatic revert hands
+it over with the task `0`. Its note names the culprit's task. Never close the
+culprit's task: the revert takes its change out of `main`.
+
+- `DONE`: open the culprit's task again with `set_task_status`, to a status
+  that is not done. Comment the revert PR and the failed tests. The `REVERT`
+  line of `~/lanes/auto-revert.log` names both. Skip step f.
+- `BACK`: change no task. The pass writes a `PERSON` line for it, and a
+  person acts.
 
 Keep a note of the last log line that you handled. Then you never repeat one.
 The steps a to e stay here as the rule of the bot. They are also the manual
@@ -128,9 +144,15 @@ f. **Close it.** Move the task to Done with `set_task_status`, using the
 g. **Watch `main`.** Every 3 merges, or every 30 minutes, read
    `gh run list --branch main --limit 10`. When a required job of a `main` run
    is red, find the merged pull request that caused it. Comment on that task.
-   Then open a small fix-forward pull request, or a revert made with
-   `git revert` on a new branch. A revert is a normal commit, so it needs no
-   force-push. Hand that pull request to yourself through the same steps.
+   - Read the mode first:
+     `systemctl --user cat metorite-auto-revert.service | grep AUTO_REVERT_MODE`.
+   - Mode `on`: make no revert yourself. Read `~/lanes/auto-revert.log`. The
+     pass opens the revert PR, or it writes a `PERSON` line. Act only on a
+     `PERSON` line. Then one culprit never gets two revert PRs.
+   - Mode `off` or `dry`, or no unit: open a small fix-forward pull request,
+     or a revert made with `git revert` on a new branch. A revert is a normal
+     commit, so it needs no force-push. Hand that pull request to yourself
+     through the same steps.
 
 ## The loop
 

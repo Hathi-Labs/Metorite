@@ -658,14 +658,17 @@ def test_no_crm_pack_tool_takes_an_organization_or_a_member_argument() -> None:
 STUDIO = "studio-builder"
 STUDIO_DIR = "apps/agents/agent-studio-builder"
 #: The eight read-only tools, the three skill tools (STU-F2d), the three
-#: package tools (STU-G1c save and publish, STU-A5c-2 delete), the two record
-#: reads (STU-D2b), then the three record writes (STU-B2c-2b).
+#: package tools (STU-G1c save and publish, STU-A5c-2 delete, STU-K1d ready apps), the two record
+#: reads (STU-D2b), the three record writes (STU-B2c-2b), the door read (STU-B2b-2c), then
+#: the one workflow read (STB-6a).
 STUDIO_TOOLS = ("studio_describe", "studio_draft", "studio_interview",
                 "studio_list_actions", "studio_outline", "studio_patch", "studio_plan",
                 "studio_validate", "studio_skill_list", "studio_skill_save",
                 "studio_skill_state", "studio_save", "studio_publish", "studio_delete_package",
+                "studio_template_list", "studio_create_from_template",
                 "studio_package_get", "studio_record_list", "studio_record_create",
-                "studio_record_update", "studio_record_delete", "studio_app_read")
+                "studio_record_update", "studio_record_delete", "studio_app_read",
+                "studio_workflow_read")
 #: The six record tools: the two reads, the three writes, then the door read (B2b-2c).
 RECORD_READS = ("studio_package_get", "studio_record_list")
 DOOR_READ = ("studio_app_read",)
@@ -683,7 +686,9 @@ def test_the_studio_family_equals_the_owners_own_tool_scope_and_fits_the_cap() -
     assert family["owner"] == STUDIO and sf.is_pack("studio") and family["core"] is False
     assert tuple(family["tools"]) == STUDIO_TOOLS
     assert set(family["tools"]) == _studio_scope()
-    assert len(family["tools"]) == 20 <= tp.MAX_PACK_TOOLS == 35
+    # STU-K1d added two ready-app tools (20 to 22), and STB-6a one workflow read (22 to 23).
+    # 23 is the room limit beside the email pack (test_studio_workflow_tools.py).
+    assert len(family["tools"]) == 23 <= tp.MAX_PACK_TOOLS == 35
 
 
 def test_the_studio_owner_is_in_no_registry_list() -> None:

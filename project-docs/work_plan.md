@@ -6216,6 +6216,67 @@ The owner asked in chat on 2026-11-12 to "push code as fast as we develop it". T
 
 Each point binds when its slice merges. Until then the old rule holds. Fence: each slice in `ci_velocity.md` §8.5 names its test in its task. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D218 entries merge. Re-check this number at merge.
 
+### D219 — Studio apps get the app frame: a left sidebar of pages and views, tabs, record pages and dialogs (2026-11-14)
+
+The owner asked in chat on 2026-11-14. A Studio app needs "a left-hand sidebar similar to the other standard apps of Metorite", tabs and the other standard parts, so that a company can build rich screens. Planning task 3146, epic 3147. Owner text: `ai_studio.md` §5.5.
+
+1. **One frame, from the parts that exist.** A Studio app opens with `AppTopBar`, a rail of `RailRow`s, `StudioPage`, `Tabs`, `Modal` and `ConfirmDialog`. It adds no second rail, tab bar, dialog or filter bar.
+2. **The rail belongs to the app.** The shell sidebar keeps one entry for the installed app (H1, PKG-8). The rail of pages and views sits inside the app, as the CRM rail does.
+3. **The manifest declares the frame.** `nav`, `record`, `header`, `sections` and the view parts join the A2 model. Each part has a default, so an app that was built before D219 gets the frame with no edit.
+4. **It looks like the CRM.** Each frame slice passes a visual review beside the CRM, at four widths, in light mode, at compact density and under a changed accent.
+5. **The order.** Rung 4 of the AI Studio ladder holds AF-1 to AF-6, AF-8 and AF-9 (demo task 3148). The old rungs 4 to 9 move up by one. AF-7 and AF-10 join rung 6, and AF-11 joins rung 8.
+6. **Ship dark.** AF-1 puts the frame behind `NEXT_PUBLIC_STUDIO_APP_FRAME`, default off. The flag goes on for the rung 4 demo.
+
+Fence: each slice in `ai_studio.md` §14 Group AF names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D219 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D218 at most.
+
+### D220 — AI Studio builds on connections: a connect in place, a stated account, a visible break, and an offer that follows the result (2026-11-14)
+
+The owner asked in chat on 2026-11-14 for Studio apps, workflows and skills that build on the company's integrations, a guided connect when an app needs one, and an offer to build after a connect. Planning task 3164. Owner text: `ai_studio.md` §8.1 and `integrations_console.md` §3.7.
+
+1. **One registry, and one connect flow for each provider.** D96 holds. Studio adds no connection store and no connect flow. It opens the flow of the owning app in place, through the `setup_href` of the registry row, with a path back (I8).
+2. **A connection need names whose account it uses: `org` or `member`.** Mail and calendar default to `member`. An `org` need is approved by an admin at install, and the install screen names the account (I9). The orchestrator chose this default, and the owner may overrule it.
+3. **A broken connection is visible where it hurts.** Each install that needs it goes to `needs_setup`, its triggers pause with a reason, and the owners get a Needs-you item (I10). A disconnect names what stops first (IN-10).
+4. **The offer after a connect follows the result.** The card says what works now first. It offers a build only for a provider whose data no built-in app shows, never as a modal, and never as an automatic build (IN-9).
+5. **Registry connections only, until IN-3.** The integration actions that read the process environment stay out of packages until IN-3 lands (task 3176, `work_plan.md` §6 gate (f)).
+6. **The order.** Rung 7 of the AI Studio ladder, demo task 3167. Mail merge (I3) moves to rung 9.
+
+Fence: each slice in `ai_studio.md` §14 Group I and `integrations_console.md` §7.2 names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D220 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D219 at most.
+
+### D221 — The focus coach: grounded help at the start and at the check-in, steps as subtasks, and help from people that the member can already see (2026-11-14)
+
+The owner asked in chat on 2026-11-14 for a Focus mode that breaks a task into steps, shows how to do it, motivates, uses the context of every app, and names whom to ask when the member is stuck. Planning task 3177. Owner text: `my_day_command_centre.md` §4a.
+
+1. **Two moments only.** The coach speaks when a session starts and at the check-in when it ends. During the session it shows the steps and the facts, so it does not break the focus.
+2. **Grounded, or silent.** Each sentence cites the task or a source from the knowledge graph (D128), opened again as the viewer. The coach gives no general how-to advice from the model alone.
+3. **Steps are subtasks** in the one task store, accepted once, with one Undo.
+4. **Help from people, inside what the member can see.** No workload, hours or absence reason, which stay admin-only. The member sends each ask. The coach never assigns (D-PC-13) and never tells a manager by itself. "Blocked" comes only from the member's own answer.
+5. **Motivation is facts:** why the work matters, and how far it got. "Facts only" is the default tone. The orchestrator chose this default, and the owner may overrule it.
+6. **The order.** Rung 4 of the My Day ladder, demo task 3178. The later rungs move up by one.
+
+Fence: each slice of `my_day_command_centre.md` §9 (CC-12 to CC-16) names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D221 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D220 at most (PR 2241, merged).
+
+### D222 — The chat loads a single tool by search, and the pack stays the unit of the guards and the state. It amends D117 item 2 (PROPOSED, 2026-11-14)
+
+**Status: PROPOSED.** It binds only after the owner confirms it. Until then D117 item 2 stands as written. Board: **WS-67**, task 3190 (TS-0). Owning spec: **`specs/one_assistant_context.md`** §4.2.9.
+
+The owner asked in chat on 2026-11-13, on task 3118. Can the chat hold many more tools, load each one when it needs it, and keep a small context? The `studio` pack is full at 23 tools, and new Studio tools have no room under the cap of 110 tools. In OA-8e run 1 the model loaded a pack that it lacked in 3 of 70 app turns.
+
+1. **D117 item 2 becomes "Tool packs, loaded per turn or per tool".** A pack still loads whole when a turn needs it. A single tool of a pack can also load by search.
+2. **The pack stays the unit of the guards, the rules and the state.** A found tool comes from the guarded build of its pack (`_pack_tools`). So it keeps the held set, the scope of the owner, the permission gate, the cards and D169. A partial load never counts as a whole pack for a hand-off or a reach. Its load adds no hand-off refusal, and a write by it does, through OA-8i.
+   - **The rules go with the tool.** D117 item 2 makes a pack of its tools and a rules block. So the answer of `find_tools` carries the rules block of each owning pack, once in a run. A tool of layer (a′) gets the block in the persona of its turn, on a path that only adds the block. The hand-off swap reads the layer (a) packs only. In a held chat that block ends with the hold note. It is the one text of `_rules_block`, and the token budget counts it.
+   - **The checks of a load.** `find_tools` runs the MCP rule (`_beside_mcp`) and the size check of a pack before each add, as `_admit_pack` does.
+3. **Our own search, on the seam of `load_skill_tools`.** `find_tools` is a sibling of `LoadSkillTools`, and it uses `context.add_tools`. It adds no second registry (D205 point 1). This decision parks the native tool search of the Claude API (TS-8). It rejects a door tool in the pattern of D136.2 for the chat.
+4. **A first pass with no model call.** Layer (a′) ranks the member's own words before the first request. `find_tools` is the fallback in the middle of a turn. D117 item 3 holds.
+5. **The cache and the cost hold the limits.** The cap of 110 tools stays, and `find_tools` and each found tool count against it. The proposal offers `find_tools` only when one place stays free after layer (a), the load tool and each promised load. So it pushes out no pack of layer (a), and it takes no place that a promised load needs. A budget of about 30 thousand schema tokens for each request joins it. Past the cap, unused found tools leave before a spare pack. A found tool that ran has its own record and stays (TS-4). Found tools come after the pack tools, in a fixed order (D117 item 4).
+6. **Studio gets room.** The `studio` family splits into a core of 10 tools and a follow pack, `studio-more` (TS-1b, task 3207). So a Studio turn has room, and the search has tools to find. TS-1b is live, not dark, and the owner answers its open decision before it merges. In TS-1b, `studio-more` takes a place of `MAX_PACKS`. A later slice, TS-1c, with its own spec audit, may change that.
+7. **Dark, then measured.** Each slice from TS-2 on ships dark. `TOOL_SEARCH_ORGS` is empty by default, and its flip is owner-only. The `search` arm of the OA-8e measure must be not worse than the `pack` arm before a switch.
+
+**Open for the owner.** `one_assistant_context.md` §4.2.9 lists thirteen points. They include the stickiness of a found tool, the threshold of the first pass and the budget. They also include the eval spend, the Studio split, the place of `find_tools` and Studio as the spike.
+
+**Revisit.** Only the owner confirms or reopens this. D117 names the owner as the one who reopens it.
+
+Fence: each slice of `one_assistant_context.md` §4.2.9 (TS-1 to TS-9, tasks 3195 to 3203, TS-1b, task 3207, and the optional TS-1c, task 3213) names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D222 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D221 at most, and no open PR or local worktree held D222 or higher.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 

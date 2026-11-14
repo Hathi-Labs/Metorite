@@ -42,6 +42,13 @@ functions pick the field of each word of the core entity, or give the 422
 that the projection table of §18.13.5 names. The SQL stays here, so
 ``aggregate.py`` still holds no jsonb operator.
 
+**Each module record is read ONCE** (task 3127). Postgres decompresses a
+TOASTed jsonb value again for each ``fields -> :key`` on the stored row, and
+an aggregate of a module reads up to 17 of them a row. So every expression
+over a module record reads the one detoasted copy of :data:`DETOAST_JOIN`
+(:func:`_reads`), and each builder gives that join as its FROM text. A core
+entity keeps its ``custom`` column, which is small, and its SQL of before.
+
 **One zone for each month** (CRM-Q25b). :func:`crm_zone` gives the CRM zone,
 the zone of the Zoho org, or UTC. A ``datetime`` field and the fixed month
 groups of ``aggregate.py`` take their month on that clock, through
@@ -50,6 +57,7 @@ groups of ``aggregate.py`` take their month on that clock, through
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
@@ -170,6 +178,9 @@ class FieldRef:
     label: str
     options: dict[str, str] = field(default_factory=dict)
     parts: tuple[FieldRef, ...] = ()
+    #: Task 3128: the module that a ``lookup`` field points at, from
+    #: ``crm_field_defs.options.lookup_module``. None for every other type.
+    lookup_module: str | None = None
 
 
 @dataclass(frozen=True)
@@ -304,6 +315,8 @@ class GroupSql:
     key: str
     label: str
     params: dict[str, Any]
+    #: Task 3127: the FROM text of a module group (:data:`DETOAST_JOIN`).
+    source: str = ""
 
 
 @dataclass(frozen=True)
@@ -317,10 +330,12 @@ class WhereSql:
 #: CRM-Q32-9a fix round: the detoasted jsonb of a module record. Each
 #: ``fields -> :key`` on the stored row reads the whole TOASTed value again,
 #: and a sum of 5 parts reads it 40 times a row (7.1 s over 30,000 rows of
-#: 2.5 KB, measured). The LATERAL reads it ONCE for each row that passed
-#: the WHERE clause, and ``OFFSET 0`` stops the planner from folding it back
-#: in. The parts of a sum then read the copy in memory. A plain field keeps
-#: its SQL text, so the statement of an org with no sum does not change.
+#: 2.5 KB, measured). The LATERAL reads it ONCE for each row of the module,
+#: and ``OFFSET 0`` stops the planner from folding it back in. Task 3127:
+#: every field expression of a module statement (a measure, a group key, a
+#: date bucket and each filter) reads this copy, through :func:`_reads`.
+#: Production, 2026-11-13: a six-month total over 31,590 invoices of 3 KB
+#: took 7.7 s as built and 3.7 s with one detoast.
 DETOAST_ALIAS = "agf_d"
 DETOAST_COLUMN = f"{DETOAST_ALIAS}.agf_fields"
 DETOAST_JOIN = (
@@ -331,9 +346,22 @@ DETOAST_JOIN = (
 
 def from_source(*sources: str) -> str:
     """The FROM text that a statement adds after its table: the one
-    :data:`DETOAST_JOIN` when any part of the statement reads a sum, else
-    empty. A statement never joins it twice."""
+    :data:`DETOAST_JOIN` when any part of the statement reads a field of a
+    module, else empty. A statement never joins it twice."""
     return DETOAST_JOIN if any(sources) else ""
+
+
+def _reads(column: str) -> str:
+    """The jsonb that an expression over *column* reads (task 3127). A module
+    record reads its one detoasted copy, :data:`DETOAST_COLUMN`. A core
+    record reads its ``custom`` column, as before."""
+    return DETOAST_COLUMN if column == MODULE_COLUMN else column
+
+
+def _source_of(column: str) -> str:
+    """The FROM text of an expression over *column*: :data:`DETOAST_JOIN`
+    for a module record, else empty."""
+    return DETOAST_JOIN if column == MODULE_COLUMN else ""
 
 
 def _options(raw: Any) -> dict[str, str]:
@@ -348,9 +376,11 @@ def _options(raw: Any) -> dict[str, str]:
 
 
 def _ref(defn: Any) -> FieldRef:
+    target = getattr(defn, "lookup_module", None)
     return FieldRef(
         key=str(defn.key), type=str(defn.type), label=str(defn.label or defn.key),
         options=_options(getattr(defn, "options", None)),
+        lookup_module=target if isinstance(target, str) and target else None,
     )
 
 
@@ -551,20 +581,19 @@ def _amount(column: str, ref: FieldRef, prefix: str) -> tuple[str, dict[str, Any
     part is set, so ``COUNT`` does not count the record. Else it is the sum
     of the parts that are set, each NULL part taken as 0.
 
-    Returns the SQL, the bound keys and the FROM text. A sum over the
-    module column reads :data:`DETOAST_COLUMN`, so its FROM text is
-    :data:`DETOAST_JOIN`. A plain field has no FROM text."""
-    summed = bool(ref.parts) and column == MODULE_COLUMN
-    numbers = _numbers(DETOAST_COLUMN if summed else column, ref, prefix)
+    Returns the SQL, the bound keys and the FROM text. A field of a module
+    reads :data:`DETOAST_COLUMN`, so its FROM text is :data:`DETOAST_JOIN`
+    (task 3127). A field of a core record has no FROM text."""
+    numbers = _numbers(_reads(column), ref, prefix)
+    source = _source_of(column)
     params: dict[str, Any] = {}
     for _sql, bound in numbers:
         params.update(bound)
     if len(numbers) == 1:
-        return numbers[0][0], params, ""
+        return numbers[0][0], params, source
     unset = " AND ".join(f"{n} IS NULL" for n, _b in numbers)
     total = " + ".join(f"COALESCE({n}, 0)" for n, _b in numbers)
-    return (f"(CASE WHEN {unset} THEN NULL ELSE {total} END)", params,
-            DETOAST_JOIN if summed else "")
+    return f"(CASE WHEN {unset} THEN NULL ELSE {total} END)", params, source
 
 
 def _date(column: str, p: str) -> str:
@@ -684,10 +713,12 @@ def _lookup_id(column: str, p: str) -> str:
     )
 
 
-def measure_sql(scope: FieldScope, ref: FieldRef, measure: str) -> MeasureSql:
+def measure_sql(scope: FieldScope, ref: FieldRef, measure: str, *,
+                prefix: str = _MEASURE_KEY) -> MeasureSql:
     """``measure`` of the field *ref*, with its sum and count of values. A
-    sum of fields (CRM-Q32-9) reads through :func:`_amount`."""
-    number, params, source = _amount(scope.column, ref, _MEASURE_KEY)
+    sum of fields (CRM-Q32-9) reads through :func:`_amount`. *prefix* names
+    the bound keys. Only :func:`split_sql` gives another one."""
+    number, params, source = _amount(scope.column, ref, prefix)
     return MeasureSql(
         value=FIELD_MEASURES[measure].format(n=number),
         sum=f"SUM({number})",
@@ -697,6 +728,39 @@ def measure_sql(scope: FieldScope, ref: FieldRef, measure: str) -> MeasureSql:
     )
 
 
+# ── A split: several fields in one statement (CRM-Q25e part 2) ─────────────
+
+#: The fewest and the most fields of one split total.
+SPLIT_MIN = 2
+SPLIT_MAX = 5
+#: The separator of the keys of a split in ``fields=``. A Zoho API name
+#: holds no comma.
+SPLIT_JOIN = ","
+
+
+def check_split(scope: FieldScope, names: str | None) -> list[FieldRef]:
+    """The fields of ``fields=a,b,c``, in order, or a 422. Each is a field
+    of a measure (:func:`check_measure`), and the keys are 2 to 5 distinct
+    ones. A key may be a sum of fields (CRM-Q33), as ``field`` takes."""
+    keys = [k.strip() for k in str(names or "").split(SPLIT_JOIN)]
+    if (any(not k for k in keys) or not SPLIT_MIN <= len(keys) <= SPLIT_MAX
+            or len(set(keys)) != len(keys)):
+        raise _refuse(
+            f"'fields' names {SPLIT_MIN} to {SPLIT_MAX} distinct number fields, with a "
+            "comma between them. For one field, give field=<key>.",
+        )
+    return [check_measure(scope, key) for key in keys]
+
+
+def split_sql(scope: FieldScope, refs: Sequence[FieldRef], measure: str) -> list[MeasureSql]:
+    """The measure of each field of a split AFTER the first one, which the
+    statement reads as its ``field`` (:func:`measure_sql`). Each field binds
+    its keys under its own prefix (``agf_m1``, ``agf_m2`` ...), so ONE
+    statement reads every field of each row once."""
+    return [measure_sql(scope, ref, measure, prefix=f"{_MEASURE_KEY}{i}")
+            for i, ref in enumerate(refs, start=1)]
+
+
 def group_sql(
     scope: FieldScope, ref: FieldRef, bucket: str | None, *, zone: str,
 ) -> GroupSql:
@@ -704,17 +768,16 @@ def group_sql(
 
     A ``date`` keeps the day that Zoho wrote. A ``datetime`` reads the whole
     value with its offset, and takes its bucket on the clock of *zone*, the
-    CRM zone (CRM-Q25b). So it agrees with ``created_month``.
+    CRM zone (CRM-Q25b). So it agrees with ``created_month``. A module
+    group reads the detoasted copy (task 3127).
     """
-    column, p = scope.column, _GROUP_KEY
+    column, p = _reads(scope.column), _GROUP_KEY
+    source = _source_of(scope.column)
     if ref.type in DATE_TYPES:
         unit, fmt = BUCKETS[bucket or ""]
-        when = (
-            zoned(_instant(column, p)) if ref.type == "datetime"
-            else f"CAST({_date(column, p)} AS timestamp)"
-        )
-        key = f"to_char(date_trunc('{unit}', {when}), '{fmt}')"
-        return GroupSql(key=key, label="NULL", params={p: ref.key, ZONE_PARAM: zone})
+        key = f"to_char(date_trunc('{unit}', {_when(column, ref, p)}), '{fmt}')"
+        return GroupSql(key=key, label="NULL", params={p: ref.key, ZONE_PARAM: zone},
+                        source=source)
     if ref.type == "lookup":
         return GroupSql(
             key=_lookup_id(column, p),
@@ -723,8 +786,55 @@ def group_sql(
                 f"THEN {column} -> :{p} ->> 'name' END)"
             ),
             params={p: ref.key},
+            source=source,
         )
-    return GroupSql(key=f"{column} ->> :{p}", label="NULL", params={p: ref.key})
+    return GroupSql(key=f"{column} ->> :{p}", label="NULL", params={p: ref.key},
+                    source=source)
+
+
+# ── The day of each record, for the check of one day (CRM-Q25e part 4) ─────
+
+#: The bound key of the day field of :func:`day_sql`.
+_DAY_KEY = "agf_dd"
+#: The key word of the catalogue date of a module (CRM-Q31-2).
+DATE_WORD = "@date"
+
+
+def day_field(scope: FieldScope | None, grouped: FieldRef | None,
+              pairs: Sequence[tuple[str, str]]) -> FieldRef | None:
+    """The date field whose days the check of one day reads (task 3129):
+    the date field of the group, else the field of the first date range
+    filter, else the catalogue date (``@date``). None for a core entity, and
+    when the answer names no date."""
+    if scope is None or scope.column != MODULE_COLUMN:
+        return None
+    if grouped is not None and grouped.type in DATE_TYPES and not grouped.parts:
+        return grouped
+    for name, _value in pairs:
+        for end in RANGE_ENDS:
+            ref = scope.fields.get(name[: -len(end)]) if name.endswith(end) else None
+            if ref is not None and ref.type in DATE_TYPES:
+                return ref
+    ref = scope.fields.get(DATE_WORD)
+    return ref if ref is not None and ref.type in DATE_TYPES else None
+
+
+def day_sql(scope: FieldScope, ref: FieldRef, *, zone: str) -> GroupSql:
+    """The calendar day of *ref* as a group key (task 3129): the day that
+    Zoho wrote for a ``date``, and the day in the CRM zone for a
+    ``datetime`` (:func:`_calendar_day`). It reads the detoasted copy."""
+    return GroupSql(key=_calendar_day(_reads(scope.column), ref, _DAY_KEY), label="NULL",
+                    params={_DAY_KEY: ref.key, ZONE_PARAM: zone},
+                    source=_source_of(scope.column))
+
+
+def _when(column: str, ref: FieldRef, p: str) -> str:
+    """The value of a date or a datetime field as a ``timestamp``. A
+    ``date`` keeps the day that Zoho wrote. A ``datetime`` takes its time on
+    the clock of the CRM zone (CRM-Q25b)."""
+    if ref.type == "datetime":
+        return zoned(_instant(column, p))
+    return f"CAST({_date(column, p)} AS timestamp)"
 
 
 def field_pairs(query_params: Any) -> list[tuple[str, str]]:
@@ -757,23 +867,31 @@ def _split(scope: FieldScope, name: str) -> tuple[FieldRef, str | None]:
 
 
 def _filter(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
-            value: str, also: Sequence[str] = ()) -> tuple[str, Any, dict[str, Any], str]:
-    """One filter clause, its bound value, its bound key and its FROM text.
+            value: str, also: Sequence[str] = (),
+            ext: tuple[str, str] | None = None) -> tuple[str, Any, dict[str, Any], str]:
+    """One filter clause, its bound value, its bound keys and its FROM text.
     *also* holds the stored values that a text filter counts too
-    (§18.16 part 6, :func:`text_matches`)."""
-    clause, bound = _filter_value(scope, ref, end, k, v, value, also)
+    (§18.16 part 6, :func:`text_matches`). *ext* is ``(bound name, Zoho
+    id)`` of a lookup filter whose value is a Metorite id (task 3128,
+    :func:`lookup_ids`)."""
+    x = ext[0] if ext is not None and ref.type == "lookup" and end is None else None
+    clause, bound = _filter_value(scope, ref, end, k, v, value, also, x)
     if ref.type in MEASURE_TYPES and end is None:
         number, keys, source = _amount(scope.column, ref, k)
         return f"{number} = {clause}", bound, keys, source
-    return clause, bound, {k: ref.key}, ""
+    keys = {k: ref.key}
+    if x is not None and ext is not None:
+        keys[x] = ext[1]
+    return clause, bound, keys, _source_of(scope.column)
 
 
 def _filter_value(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
-                  value: str, also: Sequence[str] = ()) -> tuple[str, Any]:
+                  value: str, also: Sequence[str] = (),
+                  x: str | None = None) -> tuple[str, Any]:
     """One filter clause and its bound value. A number gives only the right
     side of its clause: :func:`_filter` puts the number of :func:`_amount`
-    on the left."""
-    column = scope.column
+    on the left. A module filter reads the detoasted copy (task 3127)."""
+    column = _reads(scope.column)
     if end is not None:
         if ref.type not in DATE_TYPES:
             raise _refuse(
@@ -807,8 +925,11 @@ def _filter_value(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: 
             raise _refuse(f"'field.{ref.key}' must be true or false.")
         return f"{column} ->> :{k} = :{v}", word
     if ref.type == "lookup":
+        # Task 3128: a Metorite id of the target record also matches the
+        # Zoho id that the lookup stores, bound as :x.
+        by_id = f" OR {_lookup_id(column, k)} = :{x}" if x else ""
         return (
-            f"({_lookup_id(column, k)} = :{v} OR {column} -> :{k} ->> 'name' = :{v})",
+            f"({_lookup_id(column, k)} = :{v} OR {column} -> :{k} ->> 'name' = :{v}{by_id})",
             value,
         )
     # A picklist, a text and each other type match the text. A multiselect
@@ -856,15 +977,66 @@ async def text_matches(db: Any, org: str, scope: FieldScope, module: str,
     return out
 
 
+# ── A lookup filter by a Metorite id (task 3128) ────────────────────────────
+
+#: The shape of a Metorite record id. A Zoho id is digits, so it never has it.
+_UUID_TEXT = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+#: The Zoho id of ONE record of a mirrored module, by its Metorite id. The
+#: org, the module and the id are bound, and RLS holds the session too.
+_LOOKUP_ID_SQL = (
+    "SELECT ext_id FROM crm_module_records WHERE organization_id = CAST(:agf_org AS uuid) "
+    f"AND module = :{_MODULE} AND id = CAST(:agf_id AS uuid)"
+)
+
+
+def lookup_targets(scope: FieldScope, pairs: Sequence[tuple[str, str]],
+                   ) -> dict[int, tuple[str, str]]:
+    """``index → (lookup module, Metorite id)`` for each filter of *pairs* on
+    a ``lookup`` field whose value has the shape of a Metorite id. The
+    module comes from the field definition (``lookup_module``), never from
+    the caller. Pure, so the hermetic tests call it."""
+    out: dict[int, tuple[str, str]] = {}
+    for index, (name, value) in enumerate(pairs):
+        ref = scope.fields.get(name)
+        ident = str(value or "").strip()
+        if (ref is None or ref.type != "lookup" or not ref.lookup_module
+                or not _UUID_TEXT.match(ident)):
+            continue
+        out[index] = (ref.lookup_module, ident.lower())
+    return out
+
+
+async def lookup_ids(db: Any, org: str, scope: FieldScope,
+                     pairs: Sequence[tuple[str, str]]) -> dict[int, str]:
+    """The Zoho id of each lookup filter whose value is a Metorite id of a
+    record of the lookup's module (task 3128). The chat finds a record with
+    ``crm_list_module_records`` and sends its Metorite id, while the stored
+    lookup holds the Zoho id. One read by primary key for each such filter,
+    in the caller's tenant session. An id of another module or another org
+    finds nothing, and the filter then matches as before."""
+    out: dict[int, str] = {}
+    for index, (module, ident) in lookup_targets(scope, pairs).items():
+        ext = (await db.execute(text(_LOOKUP_ID_SQL), {
+            "agf_org": str(org), _MODULE: module, "agf_id": ident,
+        })).scalar()
+        if ext:
+            out[index] = str(ext)
+    return out
+
+
 def module_where(
     scope: FieldScope, module: str, pairs: list[tuple[str, str]], *, zone: str,
     matches: Mapping[int, Sequence[str]] | None = None,
+    ids: Mapping[int, str] | None = None,
 ) -> WhereSql:
     """The WHERE clause of one module: the module, and each field filter.
 
     Each name is checked against *scope* first, so an unknown name is a 422
     before any statement runs. A range on a datetime field reads *zone*,
-    the CRM zone (CRM-Q25b).
+    the CRM zone (CRM-Q25b). *ids* holds the Zoho id of each lookup filter
+    whose value is a Metorite id (task 3128, :func:`lookup_ids`).
     """
     clauses = [f"module = :{_MODULE}"]
     params: dict[str, Any] = {_MODULE: module, ZONE_PARAM: zone}
@@ -872,8 +1044,9 @@ def module_where(
     for index, (name, value) in enumerate(pairs):
         ref, end = _split(scope, name)
         k, v = f"agf_k{index}", f"agf_v{index}"
+        ext = (f"agf_x{index}", ids[index]) if ids and index in ids else None
         clause, bound, keys, source = _filter(scope, ref, end, k, v, value,
-                                              (matches or {}).get(index, ()))
+                                              (matches or {}).get(index, ()), ext)
         clauses.append(clause)
         params.update(keys)
         params[v] = bound
@@ -972,7 +1145,7 @@ def overlay_filters(label: str, overlay: Any, params: Any) -> None:
 
 def overlay_where(
     scope: FieldScope, overlay: Any, pairs: list[tuple[str, str]], *, zone: str,
-    owner: str | None, params: Any,
+    owner: str | None, params: Any, ids: Mapping[int, str] | None = None,
 ) -> WhereSql:
     """The WHERE clause of an overlaid core entity (§18.13.5): the module,
     each ``field.<key>`` filter, the owner (``owner_email``), ``q`` on the
@@ -992,7 +1165,7 @@ def overlay_where(
             pairs.append((f"{close.key}.from", close_from))
         if close_to:
             pairs.append((f"{close.key}.to", close_to))
-    where = module_where(scope, str(overlay.module), pairs, zone=zone)
+    where = module_where(scope, str(overlay.module), pairs, zone=zone, ids=ids)
     clauses = [where.sql]
     params = dict(where.params)
     if owner:
@@ -1023,12 +1196,12 @@ def overlay_weighted(
     column = scope.column
     a, a_keys, a_source = _amount(column, amount, "agf_wa")
     w, w_keys, w_source = _amount(column, probability, "agf_wp")
-    weight = (f"(CASE WHEN {column} ->> :agf_ws = ANY(CAST(:agf_open AS text[])) "
+    weight = (f"(CASE WHEN {_reads(column)} ->> :agf_ws = ANY(CAST(:agf_open AS text[])) "
               f"THEN {a} * {w} / 100.0 END)")
     return MeasureSql(
         value=f"COALESCE(SUM({weight}), 0)", sum=f"SUM({weight})", count=f"COUNT({weight})",
         params={**a_keys, **w_keys, "agf_ws": stage.key, "agf_open": list(open_values)},
-        source=from_source(a_source, w_source),
+        source=from_source(a_source, w_source, _source_of(column)),
     )
 
 
@@ -1039,13 +1212,15 @@ def overlay_weighted(
 #: bound, so no name reaches the SQL text.
 #: Fix round: each value is trimmed as ``mapping.text_value`` trims it, the
 #: rule of the executor, so " Won " counts as "Won" and never shows as a value
-#: with no entry. An object or a list is no value, as there.
-_TRIMMED = f"btrim({MODULE_COLUMN} ->> :{_GROUP_KEY}, E' \\t\\r\\n\\f\\x0b')"
+#: with no entry. An object or a list is no value, as there. Task 3127: the
+#: three reads of the field read the detoasted copy, so a row is read once.
+_TRIMMED = f"btrim({DETOAST_COLUMN} ->> :{_GROUP_KEY}, E' \\t\\r\\n\\f\\x0b')"
 _VALUE_COUNTS_SQL = (
     f"SELECT {_TRIMMED} AS v, count(*) AS n "
-    "FROM crm_module_records WHERE organization_id = CAST(:agf_org AS uuid) "
+    f"FROM crm_module_records{DETOAST_JOIN} "
+    "WHERE organization_id = CAST(:agf_org AS uuid) "
     f"AND module = :{_MODULE} AND ext_source = 'zoho' "
-    f"AND jsonb_typeof({MODULE_COLUMN} -> :{_GROUP_KEY}) IN ('string', 'number') "
+    f"AND jsonb_typeof({DETOAST_COLUMN} -> :{_GROUP_KEY}) IN ('string', 'number') "
     f"AND coalesce({_TRIMMED}, '') <> '' "
     "GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT :agf_limit"
 )
@@ -1228,6 +1403,7 @@ __all__ = [
     "BUCKETS",
     "CHOICES_MAX",
     "DATE_TYPES",
+    "DATE_WORD",
     "DEFAULT_ZONE",
     "DETOAST_COLUMN",
     "DETOAST_JOIN",
@@ -1237,6 +1413,9 @@ __all__ = [
     "MEASURE_TYPES",
     "MODULE_MEASURES",
     "OVERLAY_REFUSED",
+    "SPLIT_JOIN",
+    "SPLIT_MAX",
+    "SPLIT_MIN",
     "SUM_CHECK_ROWS",
     "VALUE_GROUP_TYPES",
     "ZONE_PARAM",
@@ -1248,8 +1427,11 @@ __all__ = [
     "WhereSql",
     "check_group",
     "check_measure",
+    "check_split",
     "core_scope",
     "crm_zone",
+    "day_field",
+    "day_sql",
     "day_start",
     "field_pairs",
     "from_source",
@@ -1257,6 +1439,8 @@ __all__ = [
     "gst_check",
     "gst_check_sql",
     "key_words",
+    "lookup_ids",
+    "lookup_targets",
     "measure_sql",
     "module_measure",
     "module_scope",
@@ -1269,6 +1453,7 @@ __all__ = [
     "overlay_stage",
     "overlay_weighted",
     "overlay_where",
+    "split_sql",
     "sum_check",
     "sum_check_sql",
     "text_matches",

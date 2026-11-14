@@ -26,6 +26,14 @@ subset, so the shards and this guard never treat an absent file as lost.
 and the ``affected_tests.py --r8`` list. It fails when a file skipped for an
 R8 reason and is not in the list, because the release gate never runs it.
 
+``check --lists-from`` (CIV-30) reads the three lists from one step of a
+workflow file, not from its own command line. deploy.yml's R8 gate gives it
+the release commit's copy of deploy.yml.
+
+``check --lists-from-fences`` (CIV-33c-2) reads the lists from the ``r8`` key of
+``tests/fences.json``. The workflows no longer carry them inline. A file that
+does not parse, a missing key or an empty list fails closed.
+
 ``repair`` (CIV-32, D218) narrows a repair round. On a ``synchronize`` push it
 finds the newest finished pr-check run of the same PR, reads its shard
 reports, and selects the files that failed there. It adds the files that the
@@ -34,7 +42,8 @@ gives the normal PR selection, unchanged. ``gate-meta`` writes the base and
 the head of the merge that a run tests, so the next run can find main's move.
 
 Stdlib only: the ``Unit tests`` job runs it without ``uv sync``.
-Fence: tests/unit/test_ci_unit_guard.py.
+Fence: tests/unit/test_ci_unit_guard.py, and tests/unit/test_green_pointer.py
+for ``--lists-from``.
 """
 
 from __future__ import annotations
@@ -43,9 +52,11 @@ import argparse
 import json
 import math
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+import textwrap
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -121,7 +132,7 @@ def check(
     not. A PR that deletes an R8 suite but keeps its line would otherwise pass
     here and turn the next full run red."""
     missing = [
-        f"a --must-run file is not in the tree: {p}. Delete its line in pr-check.yml too."
+        f"a --must-run file is not in the tree: {p}. Delete its line in tests/fences.json too."
         for p in must_run
         if tree_root is not None and not (tree_root / p).is_file()
     ]
@@ -166,6 +177,128 @@ def check(
             problems.append(f"no shard ran {path}")
     print(f"checked {len(cases)} tests from {len(ran)} files")
     return problems
+
+
+# ── The lists of the release commit (CIV-30) ──────────────────────────────
+# On a slot run, GitHub runs deploy.yml from the TIP of main, and the R8 gate
+# tests the release commit (`green/main`). The tip's lists can name a suite
+# that landed after the release commit, and the guard then fails on a file
+# that is not in the release tree. So deploy.yml's guard step gives
+# `--lists-from` the release commit's copy of deploy.yml, and the guard reads
+# the lists from the same step of that copy. Stdlib only, so no YAML parser:
+# the reader takes the `run: |` block of one named step, and fails closed on
+# any other shape.
+LIST_FLAGS = ("--disarmed", "--never-skip", "--must-run")
+_GUARD_CMD = re.compile(r"(?:^|\s)python3\s+scripts/ci_unit_guard\.py\s+check(?:\s|$)")
+
+
+class GuardListError(ValueError):
+    """The guard cannot read its lists. The guard then fails closed."""
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _step_run(workflow: str, step: str) -> str:
+    """The `run: |` text of the ONE step named ``step``, dedented."""
+    lines = workflow.splitlines()
+    heads = [
+        i
+        for i, ln in enumerate(lines)
+        if ln.lstrip().startswith("- name:")
+        and ln.split("- name:", 1)[1].strip().strip("\"'") == step
+    ]
+    if len(heads) != 1:
+        raise GuardListError(f"found {len(heads)} steps named {step!r}, and the guard needs one")
+    dash = _indent(lines[heads[0]])
+    run_at = None
+    for i in range(heads[0] + 1, len(lines)):
+        line = lines[i]
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if _indent(line) <= dash:
+            break
+        if _indent(line) == dash + 2 and line.strip() in ("run: |", "run: |-"):
+            run_at = i
+            break
+    if run_at is None:
+        raise GuardListError(f"the step {step!r} has no `run: |` block")
+    body: list[str] = []
+    for line in lines[run_at + 1 :]:
+        if line.strip() and _indent(line) <= dash + 2:
+            break
+        body.append(line)
+    return textwrap.dedent("\n".join(body))
+
+
+def guard_lists(workflow: str, step: str) -> dict[str, list[str]]:
+    """``--disarmed``, ``--never-skip`` and ``--must-run`` of the one
+    ``ci_unit_guard.py check`` command in the step ``step`` of ``workflow``.
+
+    Fails closed: no such step, no such command, an empty ``--never-skip``
+    or ``--must-run`` list, or a path that is not a test path."""
+    commands = [
+        ln for ln in _step_run(workflow, step).replace("\\\n", " ").splitlines() if _GUARD_CMD.search(ln)
+    ]
+    if len(commands) != 1:
+        raise GuardListError(
+            f"the step {step!r} holds {len(commands)} `ci_unit_guard.py check` commands, not one"
+        )
+    words = shlex.split(commands[0], comments=True)
+    out: dict[str, list[str]] = {flag: [] for flag in LIST_FLAGS}
+    flag = ""
+    for word in words[words.index("check") + 1 :]:
+        if word.startswith("--"):
+            flag = word
+        elif flag in out:
+            out[flag].append(word)
+    for flag in ("--never-skip", "--must-run"):
+        if not out[flag]:
+            raise GuardListError(f"the step {step!r} gives no {flag} list")
+        bad = [p for p in out[flag] if not _SAFE_PATH.match(p)]
+        if bad:
+            raise GuardListError(f"the {flag} list of {step!r} holds a value that is not a test path: {bad[0]}")
+    return out
+
+
+def fence_lists(text: str) -> dict[str, list[str]]:
+    """The three lists of the ``r8`` key of ``tests/fences.json`` (CIV-33c-2).
+
+    Returns the keys of ``LIST_FLAGS``. Fails closed: text that is not JSON,
+    no ``r8`` key, an empty ``never_skip`` or ``must_run`` list, or a path that
+    is not a test path."""
+    try:
+        r8 = json.loads(text)["r8"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise GuardListError(f"no readable `r8` key ({exc!r})") from exc
+    out: dict[str, list[str]] = {}
+    for flag in LIST_FLAGS:
+        values = r8.get(flag[2:].replace("-", "_")) if isinstance(r8, dict) else None
+        if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+            raise GuardListError(f"the `r8` key has no list for {flag}")
+        out[flag] = values
+    for flag in ("--never-skip", "--must-run"):
+        if not out[flag]:
+            raise GuardListError(f"the `r8` key gives an empty {flag} list")
+        bad = [p for p in out[flag] if not _SAFE_PATH.match(p)]
+        if bad:
+            raise GuardListError(f"the {flag} list of `r8` holds a value that is not a test path: {bad[0]}")
+    return out
+
+
+def list_drift(ours: dict[str, list[str]], theirs: dict[str, list[str]]) -> list[str]:
+    """One line for each list where the command line (``ours``, the tip)
+    and the release commit (``theirs``) name different files."""
+    lines: list[str] = []
+    for flag in ("--never-skip", "--must-run"):
+        tip_only = sorted(set(ours.get(flag, [])) - set(theirs.get(flag, [])))
+        release_only = sorted(set(theirs.get(flag, [])) - set(ours.get(flag, [])))
+        if tip_only:
+            lines.append(f"the tip's {flag} list names files that the release commit's does not: {' '.join(tip_only)}")
+        if release_only:
+            lines.append(f"the release commit's {flag} list names files that the tip's does not: {' '.join(release_only)}")
+    return lines
 
 
 # ── r8-covered (CIV-4c) ──────────────────────────────────────────────────
@@ -645,6 +778,21 @@ def file_seconds(path: Path | None = None) -> dict[str, float] | None:
         return None
 
 
+def missing_timing_warnings(paths: list[str], seconds: dict[str, float] | None) -> list[str]:
+    """CIV-33b: one ``::warning::`` line that names each selected file with no
+    entry in `.test_durations`, and their count. The shard cut then counts
+    DEFAULT_FILE_S for each. A gap is visible in the job log, and never fails."""
+    if not seconds:
+        return []
+    gap = sorted(p for p in paths if p not in seconds)
+    if not gap:
+        return []
+    return [
+        f"::warning::{len(gap)} selected test files have no entry in .test_durations, "
+        f"so the shard cut counts {DEFAULT_FILE_S:g} s for each: {' '.join(gap)}"
+    ]
+
+
 def shard_count(mode: str, paths: list[str], seconds: dict[str, float] | None = None) -> int:
     """The shards that ``mode`` (from ``select_shard``) needs: 0 for an empty
     selection, ALL_SHARDS for a full run. A selection takes one shard for each
@@ -729,6 +877,47 @@ def empty_report(out: Path) -> bool:
     return True
 
 
+def _resolve_lists(args: argparse.Namespace) -> tuple[list[str], list[str], tuple[str, ...] | list[str]] | None:
+    """The lists that ``check`` uses: the command line, a workflow step of the
+    release commit (CIV-30), or the ``r8`` key of tests/fences.json (CIV-33c-2).
+    None means the guard fails closed."""
+    must_run, never_skip, disarmed = args.must_run, args.never_skip, args.disarmed or DISARMED
+    if args.lists_from_fences is not None:
+        try:
+            lists = fence_lists(args.lists_from_fences.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            print(
+                f"::error title=R8 guard lists unknown::cannot read the guard lists of "
+                f"{args.lists_from_fences}: {exc}. The guard fails closed."
+            )
+            return None
+        print(
+            f"guard lists from {args.lists_from_fences}: "
+            f"{len(lists['--must-run'])} must-run, {len(lists['--never-skip'])} never-skip"
+        )
+        return lists["--must-run"], lists["--never-skip"], lists["--disarmed"] or DISARMED
+    if args.lists_from is not None:
+        # CIV-30: the lists of the release commit. Fail closed: a list that
+        # cannot be read never becomes an empty list or the tip's list.
+        try:
+            if not args.lists_step:
+                raise GuardListError("--lists-from needs --lists-step")
+            lists = guard_lists(args.lists_from.read_text(encoding="utf-8"), args.lists_step)
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            print(
+                f"::error title=R8 guard lists unknown::cannot read the guard lists of "
+                f"{args.lists_from}: {exc}. The guard fails closed."
+            )
+            return None
+        if must_run or never_skip:
+            for line in list_drift({"--never-skip": never_skip, "--must-run": must_run}, lists):
+                print(f"::notice title=R8 guard lists of the release commit::{line}. The release commit's lists apply.")
+        must_run, never_skip = lists["--must-run"], lists["--never-skip"]
+        disarmed = lists["--disarmed"] or DISARMED
+        print(f"guard lists from {args.lists_from}: {len(must_run)} must-run, {len(never_skip)} never-skip")
+    return must_run, never_skip, disarmed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -752,6 +941,20 @@ def main(argv: list[str] | None = None) -> int:
         "--disarmed",
         action="append",
         help="a skip reason that means an R8 gate is disarmed (repeatable)",
+    )
+    c.add_argument(
+        "--lists-from",
+        type=Path,
+        default=None,
+        help="a workflow file: take --disarmed, --never-skip and --must-run from its "
+        "step --lists-step. The lists on this command line are then only compared (CIV-30)",
+    )
+    c.add_argument("--lists-step", default="", help="the name of that step")
+    c.add_argument(
+        "--lists-from-fences",
+        type=Path,
+        default=None,
+        help="tests/fences.json: take the three lists from its `r8` key (CIV-33c-2)",
     )
     d = sub.add_parser("durations")
     d.add_argument("--junit", type=Path, required=True)
@@ -807,7 +1010,10 @@ def main(argv: list[str] | None = None) -> int:
         mode, paths = select_shard(args.full, args.files, args.ignored, args.changes_result)
         print(f"mode={mode}")
         print(f"paths={' '.join(paths)}")
-        print(f"splits={shard_count(mode, paths, file_seconds()) or ALL_SHARDS}")
+        secs = file_seconds()
+        for line in missing_timing_warnings(paths, secs):
+            print(line, file=sys.stderr, flush=True)
+        print(f"splits={shard_count(mode, paths, secs) or ALL_SHARDS}")
         return 0
     if args.cmd == "empty-report":
         print("wrote an empty report" if empty_report(args.out) else "report exists")
@@ -819,11 +1025,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {len(data)} timings to {args.out}")
         return 0
 
+    resolved = _resolve_lists(args)
+    if resolved is None:
+        return 1
+    must_run, never_skip, disarmed = resolved
     problems = check(
         args.junit,
-        args.must_run,
-        args.never_skip,
-        args.disarmed or DISARMED,
+        must_run,
+        never_skip,
+        disarmed,
         args.only_selected,
         args.tree_root,
     )

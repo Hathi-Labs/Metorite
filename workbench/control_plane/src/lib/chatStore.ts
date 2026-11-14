@@ -67,6 +67,10 @@ export interface ChatMessage {
   streaming?: boolean;
   toolEvents?: ToolEvent[];
   progressLines?: string[];
+  /** HRD-6: the line of a slow step ("This is a large read …"), with the id
+   *  of the step it belongs to. The live loop sets it, and the end of that
+   *  step, answer text or the run's end takes it away. Never saved. */
+  progressNotice?: { text: string; toolId?: string };
   isThinkingActive?: boolean;
   /** Sequential reasoning blocks — each displayed as a separate timeline entry. */
   reasoningBlocks?: string[];
@@ -116,6 +120,11 @@ export interface ChatMessage {
   /** The follow-up for this steer ran out of tries (`lib/chatSteer.ts`).
    *  The bubble says the words wait for the next reply. Never saved. */
   steerWaiting?: boolean;
+  /** WS-63 D-PZ-37: the member typed this message in the box, and the send
+   *  carried the typed mark (`lib/typedMark.ts`). Live only: the chat never
+   *  saves it, and a reload drops it. The skill offer reads it (STU-F6a,
+   *  `lib/studio/skillOffer.ts`), so a reloaded turn gets no offer. */
+  typed?: boolean;
 }
 
 // ── Session state ────────────────────────────────────────────────────────────

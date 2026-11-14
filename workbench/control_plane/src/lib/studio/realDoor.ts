@@ -36,6 +36,7 @@
  * Pure of React, so a test drives it in the node environment.
  */
 import { type ActionResult, type Row, type StudioDataDoor, type StudioSource, withMeta } from "./dataDoor";
+import type { PageDef, ViewDef } from "./manifest";
 import { ACTION_FAILED } from "./TypedActionButton";
 
 /** The one shape of a source that a read may name. */
@@ -364,6 +365,9 @@ export interface PackageDetail {
   access: PackageAccess;
   actions: DeclaredAction[];
   objects: ObjectRow[];
+  /** The views and the pages of the manifest (AF-1). Empty when the manifest has none. */
+  views: ViewDef[];
+  pages: PageDef[];
 }
 
 /**
@@ -380,12 +384,28 @@ export class StudioOff extends Error {
   constructor() { super(STUDIO_OFF); }
 }
 
+/**
+ * A package route answered with a status that is not 2xx and not 404. The message
+ * stays the plain sentence, and `status` lets a caller tell a refusal (401, 403)
+ * from a fault (STU-F5a: the records card draws no card on a 403).
+ */
+export class PackageReadError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "PackageReadError";
+  }
+}
+
 async function getJson(url: string, fetchImpl: typeof fetch = fetch): Promise<unknown> {
   const res = await fetchImpl(url);
   if (res.status === 404) throw new StudioOff();
-  if (!res.ok) throw new Error(ACTION_FAILED);
+  if (!res.ok) throw new PackageReadError(ACTION_FAILED, res.status);
   return res.json().catch(() => ({}));
 }
+
+// The key rule of the live doors lives in `./liveKey` (no import, so the shell
+// can reach it through `lib/assistantWrites.ts`). It stays exported from here.
+export { isLiveDoorKey } from "./liveKey";
 
 export async function listPackages(fetchImpl: typeof fetch = fetch): Promise<PackageSummary[]> {
   const body = await getJson("/api/studio/packages", fetchImpl);
@@ -445,5 +465,7 @@ export async function getPackage(id: string, fetchImpl: typeof fetch = fetch): P
   const manifest = isObject(pkg.manifest) ? pkg.manifest : {};
   const objects = isObject(body) && Array.isArray(body.objects) ? (body.objects.filter(isObject) as unknown as ObjectRow[]) : [];
   const actions = Array.isArray(manifest.actions) ? (manifest.actions.filter(isObject) as unknown as DeclaredAction[]) : [];
-  return { id, name: String(pkg.name ?? ""), access: packageAccess(pkg), actions, objects };
+  const views = Array.isArray(manifest.views) ? (manifest.views.filter(isObject) as unknown as ViewDef[]) : [];
+  const pages = Array.isArray(manifest.pages) ? (manifest.pages.filter(isObject) as unknown as PageDef[]) : [];
+  return { id, name: String(pkg.name ?? ""), access: packageAccess(pkg), actions, objects, views, pages };
 }

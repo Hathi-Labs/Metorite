@@ -29,6 +29,7 @@
 import { APP_REQUESTS_KEY } from "@/app/integrations/lib/appRequests";
 import { placementOf } from "@/lib/chatPlacement";
 import { invalidate } from "@/lib/dataCache";
+import { isLiveDoorKey } from "@/lib/studio/liveKey";
 import { bareToolName } from "@/lib/toolSteps";
 
 /** The window event name. */
@@ -95,7 +96,7 @@ const ARTIFACT_WRITES: ReadonlySet<string> = new Set([
  * package_get, record_list, skill_list, interview) change nothing stored.
  */
 const STUDIO_WRITES: ReadonlySet<string> = new Set([
-  "studio_save", "studio_publish", "studio_delete_package", "studio_skill_save",
+  "studio_save", "studio_publish", "studio_delete_package", "studio_create_from_template", "studio_skill_save",
   "studio_skill_state", "studio_record_create", "studio_record_update", "studio_record_delete",
 ]);
 
@@ -147,7 +148,13 @@ export function announceAssistantWrite(toolName: string): LiveApp[] {
   // A saved resend spends it, so drop the cached reads of the requests. Each
   // card in the chat then reads its request again and shows Done with no
   // control, and the list of Integrations drops the request.
-  if (STUDIO_RECORD_WRITES.has(bareToolName(toolName))) invalidate(APP_REQUESTS_KEY);
+  if (STUDIO_RECORD_WRITES.has(bareToolName(toolName))) {
+    invalidate(APP_REQUESTS_KEY);
+    // STU-F5a: the write changed the records of a package. Drop the reads of
+    // every live door, so a records card in the chat and an open app page
+    // read the records again. The tool end names no package, so all go.
+    invalidate(isLiveDoorKey);
+  }
   try {
     window.dispatchEvent(new CustomEvent(ASSISTANT_WROTE_EVENT, { detail: { apps, tool: bareToolName(toolName) } }));
   } catch {

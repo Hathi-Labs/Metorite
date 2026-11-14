@@ -160,6 +160,37 @@ def test_studio_door_ops_orgs_reloads_and_its_reader_follows(env, monkeypatch) -
     assert not door_ops_allowed("globex")
 
 
+def test_studio_num_f8_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU C2c, ai_studio.md §14 C2c. The reload list holds the key, and
+    the one reader of the float8 switch sees a change with no restart."""
+    from acb_common.studio_flags import num_f8_allowed
+
+    assert fr.reloadable("STUDIO_NUM_F8_ORGS")
+    monkeypatch.setenv("STUDIO_NUM_F8_ORGS", "")
+    get_settings.cache_clear()
+    assert not num_f8_allowed("acme")
+    env(**{**_START, "STUDIO_NUM_F8_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_NUM_F8_ORGS",)
+    assert num_f8_allowed("acme")
+    assert not num_f8_allowed("globex")
+
+
+def test_studio_connection_gate_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU I1a, ai_studio.md §14 I1a. The reload list holds the key, and the
+    one reader of the connection gate sees a change with no restart."""
+    from acb_common.studio_flags import connection_gate_on
+
+    assert fr.reloadable("STUDIO_CONNECTION_GATE_ORGS")
+    monkeypatch.setenv("STUDIO_CONNECTION_GATE_ORGS", "")
+    get_settings.cache_clear()
+    assert not connection_gate_on("acme")
+    assert not connection_gate_on(None)
+    env(**{**_START, "STUDIO_CONNECTION_GATE_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_CONNECTION_GATE_ORGS",)
+    assert connection_gate_on("ACME ")
+    assert not connection_gate_on("globex")
+
+
 def test_each_reloadable_field_is_named_by_its_env_key() -> None:
     """The reload maps ``CRM_ORGS`` to the field ``crm_orgs``. An alias would
     break that map, and ``str`` keeps every value valid."""
@@ -220,7 +251,7 @@ def test_a_key_the_file_gains_stays_out_of_the_settings(env) -> None:
 
 def test_settings_that_do_not_validate_change_nothing(env, monkeypatch) -> None:
     class _Refuses(Settings):
-        def __init__(self, **_kw):  # noqa: D107
+        def __init__(self, **_kw):
             raise ValueError("no")
 
     before = get_settings()
