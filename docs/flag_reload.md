@@ -100,10 +100,9 @@ that run the short stale time. A flip stays OWNER-GATE (`enforcement-flip`).
 (`chat_run_continuity.md` S2 item 8, HRD-22). For each listed org, a late
 Approve of a parked plain card approves the same card once in the next run.
 `*` lists every org, and the default is empty. Its one reader is
-`acb_skills.late_approve.late_approve_on`. The park, the late answer and the
-card gate each ask it, so a reload applies at the next of each. A reload that
-takes an org off the list makes each grant of that org unused. A flip stays
-OWNER-GATE (`enforcement-flip`).
+`acb_skills.late_approve.late_approve_on`, and the park, the late answer and
+the card gate each ask it. So a reload applies at once, and an org that leaves
+the list uses no grant. A flip stays OWNER-GATE (`enforcement-flip`).
 
 A reload does NOT apply any other key. The log names each one under
 `restart`. That includes:

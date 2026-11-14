@@ -194,6 +194,13 @@ def _cards(r, tid: str) -> list[dict[str, Any]]:
     return [e["value"] for e in _events(r, tid) if e.get("name") == "confirmation_requested"]
 
 
+def card_call_keys(fn: Any, **kwargs: Any) -> Any:
+    """The act keys that ``card_call`` binds for one call of *fn*."""
+    from acb_skills.ask_tools import act_keys
+
+    return act_keys(fn.__module__, fn.__name__, kwargs)
+
+
 def _envelope(question: str, answer: str = "APPROVE") -> str:
     from gateway.chat_recovery import compose_card_answer
 
@@ -395,7 +402,11 @@ def test_a_card_that_is_not_plain_records_no_offer(
 ):
     tid = f"t-hrd22-plain-{case}"
     if case == "rows":
-        out = _run(liveness, tid, update_tasks, changes="[]")
+        # A real item, so the call HAS an act key of a listed write
+        # (``update_task``). Only the rows keep it from an offer.
+        changes = json.dumps([{"task_id": "t-1", "title": "Ship it"}])
+        assert late_approve.keys_wire(card_call_keys(update_tasks, changes=changes))
+        out = _run(liveness, tid, update_tasks, changes=changes)
     elif case == "send":
         out = _run(liveness, tid, send_email, to="x@acme.test", subject="Hi")
     else:
