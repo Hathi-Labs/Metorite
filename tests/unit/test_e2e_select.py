@@ -28,8 +28,11 @@ QUARANTINED = sel.quarantined(CONFIG)
 LIVE = [s for s in SPECS if s not in QUARANTINED]
 
 
+_MEMO: dict = {}
+
+
 def run(*paths: str) -> tuple[str, list[str]]:
-    return sel.select([ROOT + p for p in paths], MAP, E2E, CONFIG)
+    return sel.select([ROOT + p for p in paths], MAP, E2E, CONFIG, _MEMO)
 
 
 def _all_rel_paths() -> list[str]:
@@ -143,15 +146,15 @@ def test_shard_plan_never_leaves_a_shard_without_a_spec():
 
 def test_main_prints_the_outputs(tmp_path, capsys):
     f = tmp_path / "files.txt"
-    f.write_text(ROOT + "src/app/crm/page.tsx\n", encoding="utf-8")
+    f.write_bytes((ROOT + "src/app/crm/page.tsx\n").encode("utf-8"))
     assert sel.main(["--files-from", str(f)]) == 0
     out = capsys.readouterr().out
     assert "e2e_mode=partial" in out and "e2e/crm-landing-once.spec.ts" in out and "e2e_total=" in out
-    f.write_text(ROOT + "package.json\n", encoding="utf-8")
+    f.write_bytes((ROOT + "package.json\n").encode("utf-8"))
     sel.main(["--files-from", str(f)])
     out = capsys.readouterr().out
     assert "e2e_files=\n" in out and "e2e_shards=[1,2,3]" in out and "e2e_total=3" in out
-    f.write_text("docs/x.md\n", encoding="utf-8")
+    f.write_bytes(b"docs/x.md\n")
     sel.main(["--files-from", str(f)])
     assert "e2e_shards=[]" in capsys.readouterr().out
 
@@ -167,3 +170,112 @@ def test_the_workflow_feeds_the_selection_to_the_browser_job():
     suite = next(s for s in e2e["steps"] if s.get("id") == "suite")
     assert "$SPECS" in suite["run"] and "/\"$TOTAL\"" in suite["run"]
     assert "e2e_files" in suite["env"]["SPECS"]
+
+
+# ── Fix round 1: the import graph ────────────────────────────────────────────
+
+REV = sel.src_graph(CP)
+SRC_FILES = sorted(
+    f.relative_to(CP).as_posix()
+    for f in (CP / "src").rglob("*")
+    if f.suffix in (".ts", ".tsx", ".js", ".jsx", ".mjs") and f.is_file()
+    and not any(f.name.endswith(x) for x in MAP["ignore_suffixes"])
+)
+
+
+def test_every_importer_rule_names_real_paths_and_specs():
+    rels = _all_rel_paths()
+    for rule in MAP["importer_rules"]:
+        assert rule["name"]
+        for x in rule["paths"]:
+            assert any(r.startswith(x) for r in rels), f"{rule['name'][:20]}: {x} names no file"
+        for g in rule.get("specs", []):
+            assert any(fnmatch.fnmatch(s, g) for s in SPECS), g
+        for a in rule.get("areas", []):
+            assert a in MAP["areas"]
+
+
+def test_the_graph_reads_the_alias_and_relative_imports():
+    # useAgentChat imports chatStore through the `@/` alias or a relative path.
+    assert "src/hooks/useAgentChat.ts" in REV["src/lib/chatStore.ts"]
+    assert "src/lib/shell/AssistantDock.tsx" in REV["src/lib/chatStore.ts"]
+
+
+def test_a_fixture_or_test_file_is_not_an_importer():
+    for importers_ in REV.values():
+        assert not any(".test." in i or ".fixture." in i for i in importers_)
+
+
+def test_every_src_file_selects_the_specs_of_each_transitive_importer():
+    wrong = []
+    for f in SRC_FILES:
+        mode, specs = run(f)
+        if mode == "all":
+            continue
+        got = set(specs)
+        for imp in sel.importer_closure(f, REV):
+            if imp.startswith("e2e/"):
+                name = imp[len("e2e/"):]
+                if name.endswith(".spec.ts") and "/" not in name and name not in QUARANTINED and name not in got:
+                    wrong.append((f, imp))
+                continue
+            if imp not in _MEMO:
+                _MEMO[imp] = sel.importer_specs(imp, MAP, SPECS)
+            want = _MEMO[imp]
+            if want is None:
+                # A shared importer that other files import adds nothing. An entry point selects all.
+                assert REV.get(imp), f"{f}: entry point {imp} is unnamed, so the run must be all"
+                continue
+            if not (want - QUARANTINED) <= got:
+                wrong.append((f, imp))
+    assert wrong == [], wrong[:5]
+
+
+def test_an_agent_question_card_reaches_the_home_specs():
+    mode, specs = run("src/components/AgentQuestionCard.tsx")
+    assert mode in ("partial", "all")
+    assert {"myday-peek.spec.ts", "my-day-feed.spec.ts"} <= set(specs)
+
+
+@pytest.mark.parametrize("path", ["src/components/TaskMeta.tsx", "src/components/TaskPanelHeader.tsx", "src/lib/taskPanel.ts"])
+def test_a_task_component_reaches_the_home_specs(path):
+    assert {"myday-peek.spec.ts", "my-day-feed.spec.ts"} <= set(run(path)[1])
+
+
+@pytest.mark.parametrize("path", ["src/components/CardPanel.tsx", "src/components/ElicitationCard.tsx", "src/components/GenUiText.tsx"])
+def test_a_chat_card_reaches_the_home_specs(path):
+    assert {"myday-peek.spec.ts", "my-day-feed.spec.ts"} <= set(run(path)[1])
+
+
+def test_a_chat_library_reaches_the_shell_specs():
+    specs = set(run("src/lib/chatStore.ts")[1])
+    assert {"rail-rows.spec.ts", "app-title-bar.spec.ts", "shell-bell.spec.ts"} <= specs
+
+
+def test_the_accounts_server_library_reaches_the_connect_specs():
+    assert "connect-authorize.spec.ts" in run("src/lib/accountsServer.ts")[1]
+
+
+def test_a_shared_file_reached_only_as_an_importer_does_not_select_every_spec():
+    # `lib/shell/MyDayPage.tsx` is shared. TodayCard is imported only by it, so it
+    # selects the home specs and the calendar specs, and not every spec.
+    assert REV["src/app/calendar/components/TodayCard.tsx"] == {"src/lib/shell/MyDayPage.tsx"}
+    mode, specs = run("src/app/calendar/components/TodayCard.tsx")
+    assert mode == "partial" and len(specs) < len(LIVE)
+    assert "myday-peek.spec.ts" in specs
+
+
+def test_main_fails_loud_on_a_path_that_git_quotes(tmp_path):
+    f = tmp_path / "files.txt"
+    f.write_bytes(('"' + ROOT + 'a-b.ts"').encode("utf-8"))
+    assert sel.main(["--files-from", str(f)]) == 2
+    f.write_bytes((ROOT + "a" + chr(13) + "b.ts").encode("utf-8"))
+    assert sel.main(["--files-from", str(f)]) == 2
+
+
+def test_an_unsafe_spec_file_name_fails_the_selector(tmp_path):
+    (tmp_path / "ok.spec.ts").write_text("", encoding="utf-8")
+    assert sel.list_specs(tmp_path) == ["ok.spec.ts"]
+    (tmp_path / "a b.spec.ts").write_text("", encoding="utf-8")
+    with pytest.raises(ValueError):
+        sel.list_specs(tmp_path)

@@ -26,7 +26,44 @@
     "src/lib/theme/",
     "src/lib/access"
   ],
-  "ignore_suffixes": [".test.ts", ".test.tsx", ".md"],
+  "importer_rules": [
+    {
+      "name": "home page files. A change under src/ that the home page imports selects the home specs.",
+      "paths": [
+        "src/lib/shell/MyDay", "src/lib/shell/useMyDay", "src/lib/shell/myDay", "src/lib/shell/briefCard",
+        "src/lib/shell/BriefCard", "src/lib/shell/buddyHello", "src/lib/shell/feed", "src/lib/shell/FeedCard",
+        "src/lib/shell/HomeCard", "src/lib/shell/Needs", "src/lib/shell/needs", "src/lib/shell/navNeeds",
+        "src/lib/shell/guide", "src/lib/shell/Guide", "src/lib/shell/QuestionsInCard", "src/lib/shell/AiWaitingCard",
+        "src/lib/shell/Reminder", "src/lib/shell/reminder", "src/lib/shell/RemindersBand", "src/lib/shell/pinSuggest",
+        "src/lib/shell/PinSuggest", "src/lib/shell/RunSignals", "src/lib/shell/anchors", "src/lib/shell/jobs.generated"
+      ],
+      "areas": ["home"],
+      "specs": ["shell-bell.spec.ts", "shell-jobs.spec.ts"]
+    },
+    {
+      "name": "rail files. A change that the shell rail imports selects the assistant specs and the shell specs.",
+      "paths": [
+        "src/lib/respondInput", "src/lib/shell/ChatBar", "src/lib/shell/AssistantDock", "src/lib/shell/AskSheet",
+        "src/lib/shell/assistant.", "src/lib/shell/ChatNudge", "src/lib/shell/chat", "src/lib/shell/interviewMessage",
+        "src/lib/shell/askBar", "src/lib/shell/phoneBar", "src/lib/shell/briefTurn"
+      ],
+      "areas": ["assistant"],
+      "specs": ["shell-*.spec.ts", "sidebar-*.spec.ts", "rail-rows.spec.ts", "app-title-bar.spec.ts"]
+    },
+    {
+      "name": "shell. A shared shell file that is only reached as an importer selects the shell specs, not every spec.",
+      "paths": ["src/lib/shell/", "src/components/AppShell", "src/components/AppTopBar", "src/components/Sidebar", "src/app/layout"],
+      "specs": ["shell-*.spec.ts", "sidebar-*.spec.ts", "rail-rows.spec.ts", "app-title-bar.spec.ts"]
+    }
+    ,
+    {
+      "name": "api routes. A route handler that no area names selects no spec, because the specs stub /api.",
+      "fallback": true,
+      "paths": ["src/app/api/"],
+      "specs": []
+    }
+  ],
+  "ignore_suffixes": [".test.ts", ".test.tsx", ".fixture.ts", ".md"],
   "always_run": ["shell-bar.spec.ts"],
   "areas": {
     "knowledge": {
