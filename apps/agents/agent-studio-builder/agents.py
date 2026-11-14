@@ -12,6 +12,8 @@ package tools (STU-G1c) save a draft and publish it. The workflow tool
 (STB-6a) lists or reads the workflows of the organization and writes nothing.
 The two workflow writes (STB-6b) publish, roll back, pause and turn on a
 workflow. They form the second pack of this owner, ``studio-workflows``.
+The view tool (AF-10b-3) manages the saved views of an app. It forms the
+third pack of this owner, ``studio-views``.
 
 It never runs as an agent. The name "studio-builder" is in no agent list: not
 the registry, the picker, a specialist tool or the registry block. Only the
@@ -33,6 +35,7 @@ from acb_skills.studio_tools import (
     STUDIO_RECORD_TOOLS,
     STUDIO_SKILL_TOOLS,
     STUDIO_TOOLS,
+    STUDIO_VIEW_TOOLS,
     STUDIO_WORKFLOW_TOOLS,
     STUDIO_WORKFLOW_WRITE_TOOLS,
 )
@@ -45,7 +48,7 @@ INSTRUCTIONS = (
 )
 
 _TOOLS = [*STUDIO_TOOLS, *STUDIO_SKILL_TOOLS, *STUDIO_PACKAGE_TOOLS, *STUDIO_RECORD_TOOLS,
-          *STUDIO_WORKFLOW_TOOLS, *STUDIO_WORKFLOW_WRITE_TOOLS]
+          *STUDIO_WORKFLOW_TOOLS, *STUDIO_WORKFLOW_WRITE_TOOLS, *STUDIO_VIEW_TOOLS]
 
 
 def _register_agent_tools() -> dict[str, Any]:

@@ -5628,7 +5628,7 @@ async def _view_write(
         if current.get("shared") is True and current.get("mine") is not True:
             return _refusal(VIEW_VIEWER_SENTENCE, status=403, code=VIEW_READ_ONLY)
     was = bool(current and current.get("shared") is True)
-    after = body["shared"] if "shared" in body else was
+    after = body.get("shared", was)
     name = body.get("name") if act == "save" else (current or {}).get("name")
     asked: dict[str, Any] = {}
     # The card decision: a share, an unshare, a shared view -> ALWAYS a card.
@@ -5664,6 +5664,40 @@ async def _view_write(
     if not reply.ok:
         return _view_fail(reply, **asked)
     return _view_done(act, reply, asked)
+
+
+def _view_body(
+    verb: str, name: Any, spec: Any, shared: Any, position: Any,
+) -> dict[str, Any] | str:
+    """The body of a save or an update, or the sentence for an argument that the
+    route would refuse. A delete sends none. It checks before any card."""
+    body: dict[str, Any] = {}
+    if verb == "delete":
+        return body
+    problem = _view_spec_problem(spec)
+    if problem:
+        return problem
+    if spec is not None:
+        body["spec"] = spec
+    if shared is not None:
+        if not isinstance(shared, bool):
+            return _VIEW_BAD_SHARED
+        body["shared"] = shared
+    if position is not None:
+        if type(position) is not int or not 0 <= position <= MAX_VIEW_POSITION:
+            return _VIEW_BAD_POSITION
+        body["position"] = position
+    raw_name = str(name or "").strip()
+    if verb == "save" and not raw_name:
+        return _VIEW_NEEDS_NAME
+    if raw_name:
+        clean = _view_name_arg(name)
+        if clean is None:
+            return _VIEW_NAME_BAD
+        body["name"] = clean
+    if verb == "update" and not body:
+        return _VIEW_NO_CHANGE
+    return body
 
 
 @annotate(read_only=False, idempotent=False, open_world=False)
@@ -5706,31 +5740,9 @@ async def studio_view_manage(
             vid = _skill_path(view_id) if str(view_id or "").strip() else ""
             if not vid:
                 return _refusal(_VIEW_NO_ID)
-        body: dict[str, Any] = {}
-        if verb != "delete":
-            problem = _view_spec_problem(spec)
-            if problem:
-                return _refusal(problem)
-            if spec is not None:
-                body["spec"] = spec
-            if shared is not None:
-                if not isinstance(shared, bool):
-                    return _refusal(_VIEW_BAD_SHARED)
-                body["shared"] = shared
-            if position is not None:
-                if type(position) is not int or not 0 <= position <= MAX_VIEW_POSITION:
-                    return _refusal(_VIEW_BAD_POSITION)
-                body["position"] = position
-            raw_name = str(name or "").strip()
-            if verb == "save" and not raw_name:
-                return _refusal(_VIEW_NEEDS_NAME)
-            if raw_name:
-                clean = _view_name_arg(name)
-                if clean is None:
-                    return _refusal(_VIEW_NAME_BAD)
-                body["name"] = clean
-            if verb == "update" and not body:
-                return _refusal(_VIEW_NO_CHANGE)
+        body = _view_body(verb, name, spec, shared, position)
+        if isinstance(body, str):
+            return _refusal(body)
         return await _view_write(verb, pid, vid, obj, body)
     except _Refused as exc:
         return _refusal(str(exc))

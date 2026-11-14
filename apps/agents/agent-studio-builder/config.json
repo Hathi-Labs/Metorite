@@ -50,6 +50,7 @@
     "studio_skill_state",
     "studio_template_list",
     "studio_validate",
+    "studio_view_manage",
     "studio_workflow_live",
     "studio_workflow_publish",
     "studio_workflow_read"
