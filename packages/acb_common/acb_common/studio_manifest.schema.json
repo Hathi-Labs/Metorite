@@ -848,7 +848,8 @@
             "processFlow",
             "checklist",
             "map",
-            "markdown"
+            "markdown",
+            "tree"
           ],
           "title": "Block",
           "type": "string"

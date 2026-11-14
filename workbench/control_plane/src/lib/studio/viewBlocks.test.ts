@@ -10,7 +10,8 @@ import { describe, expect, it } from "vitest";
 
 import type { ViewDef } from "./manifest";
 import { NOT_DECLARED_SENTENCE, READ_ONLY_SENTENCE, type DeclaredAction, type ObjectRow } from "./realDoor";
-import { MAX_FILTERS, VIEW_LIMIT, mapView, type ViewMapContext } from "./viewBlocks";
+import { MAX_FILTERS, TREE_RULE_SENTENCE, VIEW_LIMIT, mapView, type ViewMapContext } from "./viewBlocks";
+import { MAX_TREE_NODES } from "./treeModel";
 
 const visit = {
   name: "visit", label: "Visit", rules: [],
@@ -158,6 +159,76 @@ describe("mapView: kinds that are not built, and the door guard", () => {
   it("refuses a list when the manifest declares no list action", () => {
     const m = mapView(view({ id: "v", block: "table", object: "visit" }), ctx({ actions: [] }));
     expect(m).toEqual({ kind: "problem", reason: NOT_DECLARED_SENTENCE });
+  });
+});
+
+describe("mapView: tree (D18-2b)", () => {
+  const field = (key: string, type: string, extra: Record<string, unknown> = {}) =>
+    ({ key, type, label: key, required: false, many: false, options: null, to: null, hot: false, ...extra });
+  const part = {
+    name: "part", label: "Part",
+    fields: [field("code", "text"), field("name", "text"), field("parent", "relation", { to: "part" }), field("notes", "longText"),
+      field("qty", "number"), field("unit", "text")],
+    rules: [{ kind: "hierarchy", name: "tree", field: "parent" }],
+  } as unknown as ObjectRow;
+  const TREE_ACTIONS: DeclaredAction[] = [
+    { id: "tree_parts", uses: "object:part.tree" },
+    { id: "update_part", uses: "object:part.update" },
+  ];
+  const tctx = (over: Partial<ViewMapContext> = {}): ViewMapContext => ({
+    actions: TREE_ACTIONS, objects: [part], owner: true, ...over,
+  });
+  const tv = (over: Partial<ViewDef> = {}) => view({ id: "bom", block: "tree", object: "part", ...over });
+
+  it("maps to a tree on the tree read, with the cap of one read", () => {
+    const m = mapView(tv({ title: "Bill of materials" }), tctx());
+    expect(m).toEqual({
+      kind: "tree", title: "Bill of materials", object: "part", field: "parent", labelField: "code",
+      metaFields: [expect.objectContaining({ key: "name" }), expect.objectContaining({ key: "qty" })],
+      source: { action: "object:part.tree", args: { limit: MAX_TREE_NODES } },
+      canMove: true, update: "object:part.update",
+    });
+  });
+
+  it("is a plain problem sentence when the object has no hierarchy rule", () => {
+    const flat = { ...part, rules: [] } as unknown as ObjectRow;
+    expect(mapView(tv(), tctx({ objects: [flat] }))).toEqual({ kind: "problem", reason: TREE_RULE_SENTENCE });
+    expect(TREE_RULE_SENTENCE).toBe("This tree needs an object with a hierarchy rule.");
+  });
+
+  it("takes the label and the meta from the fields of the view, in its order", () => {
+    const m = mapView(tv({ fields: ["name", "code", "unit", "qty", "notes"] }), tctx());
+    expect(m).toMatchObject({ labelField: "name" });
+    const keys = (m as unknown as { metaFields: { key: string }[] }).metaFields.map((f) => f.key);
+    // Two meta fields at most. A long text and the parent field never show.
+    expect(keys).toEqual(["code", "unit"]);
+  });
+
+  it("falls back to the id when the view lists no text field", () => {
+    const m = mapView(tv({ fields: ["qty", "parent"] }), tctx());
+    expect(m).toMatchObject({ kind: "tree", labelField: null });
+  });
+
+  it("moves only when the app declares the update and the member may write", () => {
+    expect(mapView(tv(), tctx())).toMatchObject({ canMove: true, update: "object:part.update" });
+    expect(mapView(tv(), tctx({ actions: [TREE_ACTIONS[0]] }))).toMatchObject({ canMove: false, update: null });
+    // A viewer holds the reads only, and the tree read stays.
+    const viewer = mapView(tv(), tctx({ actions: [TREE_ACTIONS[0]], owner: false }));
+    expect(viewer).toMatchObject({ kind: "tree", canMove: false, update: null });
+    // An owner flag false hides the move even when the update is declared.
+    expect(mapView(tv(), tctx({ owner: false }))).toMatchObject({ canMove: false, update: null });
+  });
+
+  it("follows the table path for a viewer without the read", () => {
+    expect(mapView(tv(), tctx({ actions: [], owner: false }))).toEqual({ kind: "problem", reason: NOT_DECLARED_SENTENCE });
+    expect(mapView(tv(), tctx({ actions: [TREE_ACTIONS[1]] }))).toEqual({ kind: "problem", reason: NOT_DECLARED_SENTENCE });
+  });
+
+  it("ignores a filter of the view, and does not wait for the email", () => {
+    const filter = [{ field: "owner", op: "eq", value: "me" }];
+    const m = mapView(tv({ source: { args: { filter } } }), tctx({ email: null }));
+    expect(m).toMatchObject({ kind: "tree", source: { action: "object:part.tree", args: { limit: MAX_TREE_NODES } } });
+    expect(JSON.stringify(m)).not.toContain("filter");
   });
 });
 

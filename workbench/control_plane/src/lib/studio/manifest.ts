@@ -43,7 +43,8 @@ export type BlockName =
   | "processFlow"
   | "checklist"
   | "map"
-  | "markdown";
+  | "markdown"
+  | "tree";
 
 export type NavIcon =
   | "Home"

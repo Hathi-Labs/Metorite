@@ -31,11 +31,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { clearAll, invalidate, read as cacheRead } from "@/lib/dataCache";
 import { sourceKey } from "./dataDoor";
 import {
-  AGGREGATE_KEYS, aggregateBody, APPROVAL_SENTENCE, WAITING_SENTENCE, DoorReadError, STUDIO_OFF, createRealDoor, flattenRecords, getPackage, isReadSource,
+  AGGREGATE_KEYS, TREE_KEYS, TREE_LEVEL, TREE_PARENT, treeBody, flattenTree, aggregateBody, APPROVAL_SENTENCE, WAITING_SENTENCE, DoorReadError, STUDIO_OFF, createRealDoor, flattenRecords, getPackage, isReadSource,
   listOrgPackages, listPackages, mapAnswer, ownMessage, createDoorKeeper, verbMap,
   NOT_OPEN_SENTENCE, READ_ONLY_SENTENCE, packageAccess, readActions,
 } from "./realDoor";
-import { canRetryRead } from "./dataDoor";
+import { canRetryRead, rowsMeta } from "./dataDoor";
 import { readRefusal } from "./formModel";
 
 beforeEach(() => clearAll());
@@ -486,5 +486,87 @@ describe("J2a: a viewer reads and writes nothing", () => {
     expect(spy).not.toHaveBeenCalled();
     await door.read({ action: "object:visit.list" });
     expect(spy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the tree read (STU-D18-2b)", () => {
+  const TREE_ACTIONS = [
+    { id: "parts_tree", uses: "object:part.tree" },
+    { id: "change_part", uses: "object:part.update" },
+  ];
+  const ANSWER = {
+    nodes: [
+      { record: { id: "r1", data: { name: "Root", parent: null } }, level: 1, parent_id: null },
+      { record: { id: "c1", data: { name: "Child", parent: { id: "r1" } } }, level: 2, parent_id: "r1" },
+    ],
+    truncated: false,
+  };
+
+  it("an action of the tree is a read, and a viewer keeps it", () => {
+    expect(isReadSource("object:part.tree")).toBe(true);
+    expect(isReadSource("object:part.trees")).toBe(false);
+    expect(readActions(TREE_ACTIONS).map((a) => a.id)).toEqual(["parts_tree"]);
+    expect(verbMap(TREE_ACTIONS)["object:part.tree"]).toBe("parts_tree");
+  });
+
+  it("posts the declared id with the keys of the tree body only", async () => {
+    const { impl, calls } = fakeFetch(200, ANSWER);
+    const door = createRealDoor({ packageId: PKG, actions: TREE_ACTIONS, fetchImpl: impl });
+    await door.read({ action: "object:part.tree", args: { limit: 2000, id: "x", data: {}, filter: [], read: true } });
+    expect(calls[0]).toEqual({ url: `/api/studio/apps/${PKG}/actions/parts_tree`, body: { limit: 2000 } });
+    expect(treeBody({ root_id: "u", depth: 3, limit: 5, junk: 1 })).toEqual({ root_id: "u", depth: 3, limit: 5 });
+    expect(treeBody(undefined)).toEqual({});
+    expect([...TREE_KEYS]).toEqual(["root_id", "depth", "limit"]);
+  });
+
+  it("the keys equal TREE_INPUT_KEYS of the gateway door", () => {
+    const src = readFileSync(new URL("../../../../../apps/services/gateway/gateway/routes/studio/invoke.py", import.meta.url), "utf8");
+    const m = /TREE_INPUT_KEYS: frozenset\[str\] = frozenset\(\{([^}]*)\}\)/.exec(src);
+    expect(m).not.toBeNull();
+    const keys = [...m![1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1]).sort();
+    expect(keys).toEqual([...TREE_KEYS].sort());
+  });
+
+  it("maps the nodes to rows with the parent id and the level, and reads truncated", async () => {
+    const { impl } = fakeFetch(200, { ...ANSWER, truncated: true });
+    const door = createRealDoor({ packageId: PKG, actions: TREE_ACTIONS, fetchImpl: impl });
+    const rows = await door.read({ action: "object:part.tree", args: { limit: 2000 } });
+    expect(rows).toEqual([
+      { name: "Root", parent: null, id: "r1", [TREE_PARENT]: null, [TREE_LEVEL]: 1 },
+      { name: "Child", parent: { id: "r1" }, id: "c1", [TREE_PARENT]: "r1", [TREE_LEVEL]: 2 },
+    ]);
+    expect(rowsMeta(rows)).toEqual({ truncated: true });
+  });
+
+  it("an answer of a whole tree has no truncated meta", async () => {
+    const { impl } = fakeFetch(200, ANSWER);
+    const door = createRealDoor({ packageId: PKG, actions: TREE_ACTIONS, fetchImpl: impl });
+    expect(rowsMeta(await door.read({ action: "object:part.tree" }))).toBeNull();
+  });
+
+  it("the record id wins over a data key id, and a node with no id is left out", () => {
+    const rows = flattenTree({ nodes: [
+      { record: { id: "n1", data: { id: "other" } }, level: 1, parent_id: null },
+      { record: { data: {} }, level: 1, parent_id: null },
+      "junk",
+    ] });
+    expect(rows?.map((r) => r.id)).toEqual(["n1"]);
+  });
+
+  it("an answer that is no tree fails with a plain sentence", async () => {
+    const { impl } = fakeFetch(200, { records: [] });
+    const door = createRealDoor({ packageId: PKG, actions: TREE_ACTIONS, fetchImpl: impl });
+    await expect(door.read({ action: "object:part.tree" })).rejects.toThrow("That did not work. Try again.");
+    expect(flattenTree(null)).toBeNull();
+  });
+
+  it("a refused tree shows the sentence of the door, and an undeclared tree makes no call", async () => {
+    const refused = fakeFetch(422, { detail: { code: "query_op_not_allowed", message: "Object `part` holds no hierarchy, so it has no tree to read." } });
+    const door = createRealDoor({ packageId: PKG, actions: TREE_ACTIONS, fetchImpl: refused.impl });
+    await expect(door.read({ action: "object:part.tree" })).rejects.toThrow(/holds no hierarchy/);
+    const none = fakeFetch();
+    const bare = createRealDoor({ packageId: PKG, actions: [], fetchImpl: none.impl });
+    await expect(bare.read({ action: "object:part.tree" })).rejects.toThrow(/does not declare/);
+    expect(none.spy).not.toHaveBeenCalled();
   });
 });

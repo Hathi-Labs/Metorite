@@ -13,7 +13,8 @@
  * Two guards hold, and each one alone is not enough.
  *
  * 1. The client guard: `door.read` accepts only `object:<name>.list`,
- *    `object:<name>.get` and `object:<name>.aggregate` (STU-D4b), and refuses every
+ *    `object:<name>.get`, `object:<name>.aggregate` (STU-D4b) and `object:<name>.tree`
+ *    (STU-D18-2b), and refuses every
  *    other source with no network call. It
  *    holds for the manifest that the page read at open. The door maps a verb to the
  *    action id of that manifest. A later draft can re-point an id at a write, and the
@@ -40,12 +41,17 @@ import type { NavSection, PageDef, ViewDef } from "./manifest";
 import { ACTION_FAILED } from "./TypedActionButton";
 
 /** The one shape of a source that a read may name. */
-const READ_SOURCE = /^object:[a-z][a-z0-9_]{0,47}\.(?:list|get|aggregate)$/;
+const READ_SOURCE = /^object:[a-z][a-z0-9_]{0,47}\.(?:list|get|aggregate|tree)$/;
 /**
  * The keys of an aggregate body: the C2b input schema (`AGGREGATE_INPUT_KEYS` of
  * `gateway/routes/studio/invoke.py`). `realDoor.test.ts` holds the two equal.
  */
 export const AGGREGATE_KEYS = ["filter", "group_by", "measures"] as const;
+/**
+ * The keys of a tree body: `TREE_INPUT_KEYS` of `gateway/routes/studio/invoke.py` (D18-2a).
+ * `realDoor.test.ts` holds the two equal.
+ */
+export const TREE_KEYS = ["root_id", "depth", "limit"] as const;
 /** A write that a click may name. */
 const WRITE_ACTION = /^object:[a-z][a-z0-9_]{0,47}\.(?:create|update|delete)$/;
 /** A declared action id (A2). */
@@ -140,6 +146,37 @@ export function aggregateBody(args: Record<string, unknown> | undefined): Record
   const out: Record<string, unknown> = {};
   for (const k of AGGREGATE_KEYS) if (args && args[k] !== undefined) out[k] = args[k];
   return out;
+}
+
+/** The body of a tree read: the keys of `TREE_KEYS` of the args, and no other. */
+export function treeBody(args: Record<string, unknown> | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of TREE_KEYS) if (args && args[k] !== undefined) out[k] = args[k];
+  return out;
+}
+
+/** The key of a tree row that holds the id of its parent in the read, or null. */
+export const TREE_PARENT = "__parent";
+/** The key of a tree row that holds its level in the read. A root is level 1. */
+export const TREE_LEVEL = "__level";
+
+/**
+ * The rows of a tree answer, `{nodes:[{record:{id,data}, level, parent_id}], truncated}`.
+ * A row is `{...data, id, __parent, __level}`. `__parent` is the `parent_id` of the node, the
+ * parent that the viewer reads (the door cuts a hidden subtree), or null for a root.
+ * An answer with no `nodes` list gives `null`, so the caller can fail. A node with no
+ * string id is left out.
+ */
+export function flattenTree(answer: unknown): Row[] | null {
+  if (!isObject(answer) || !Array.isArray(answer.nodes)) return null;
+  const rows: Row[] = [];
+  for (const node of answer.nodes) {
+    if (!isObject(node) || !isObject(node.record) || typeof node.record.id !== "string") continue;
+    const data = isObject(node.record.data) ? node.record.data : {};
+    const parent = typeof node.parent_id === "string" && node.parent_id !== "" ? node.parent_id : null;
+    rows.push({ ...data, id: node.record.id, [TREE_PARENT]: parent, [TREE_LEVEL]: typeof node.level === "number" ? node.level : 1 });
+  }
+  return rows;
 }
 
 const text = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v : null);
@@ -267,8 +304,10 @@ export function createRealDoor(opts: RealDoorOptions): StudioDataDoor {
       // The marker is the second guard (see the file header). Only a get carries it.
       const isGet = source.action.endsWith(".get");
       const isAggregate = source.action.endsWith(".aggregate");
+      const isTree = source.action.endsWith(".tree");
+      // A tree body holds `root_id`, `depth` and `limit` only, as the aggregate body holds its keys.
       const out = await post(id, isGet ? { ...(source.args ?? {}), read: true }
-        : isAggregate ? aggregateBody(source.args) : (source.args ?? {}));
+        : isAggregate ? aggregateBody(source.args) : isTree ? treeBody(source.args) : (source.args ?? {}));
       if (out.status < 200 || out.status >= 300) {
         const failed = mapAnswer(out.status, out.body, out.wait);
         throw new DoorReadError(failed.message ?? ACTION_FAILED, out.status);
@@ -282,6 +321,12 @@ export function createRealDoor(opts: RealDoorOptions): StudioDataDoor {
       if (isAggregate) {
         if (!isObject(out.body) || !Array.isArray(out.body.measures)) throw new DoorReadError(ACTION_FAILED, 502);
         return [out.body];
+      }
+      // A tree answers its nodes, each with the id of its parent in the read.
+      if (isTree) {
+        const nodes = flattenTree(out.body);
+        if (!nodes) throw new DoorReadError(ACTION_FAILED, 502);
+        return withMeta(nodes, { truncated: isObject(out.body) && out.body.truncated === true });
       }
       const rows = flattenRecords(out.body);
       if (!rows) throw new DoorReadError(ACTION_FAILED, 502);

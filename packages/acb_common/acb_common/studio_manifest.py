@@ -71,7 +71,7 @@ STUDIO_VERSION = 1
 
 BLOCKS: tuple[str, ...] = (
     "table", "form", "detail", "board", "chart", "stat", "calendar",
-    "timeline", "mindMap", "processFlow", "checklist", "map", "markdown",
+    "timeline", "mindMap", "processFlow", "checklist", "map", "markdown", "tree",
 )  # fmt: skip
 
 #: The five record verbs of an object. ``studio_tools.complete_record_actions``
@@ -311,7 +311,7 @@ class ViewDef(_Strict):
     id: str = Field(pattern=rf"^{_DASHED}$")
     block: Literal[
         "table", "form", "detail", "board", "chart", "stat", "calendar",
-        "timeline", "mindMap", "processFlow", "checklist", "map", "markdown",
+        "timeline", "mindMap", "processFlow", "checklist", "map", "markdown", "tree",
     ]  # fmt: skip
     title: str | None = None
     source: Source | None = None

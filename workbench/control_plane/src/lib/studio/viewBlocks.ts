@@ -20,6 +20,7 @@ import {
   detailFields, fieldSpecs, formFields, noBoardReason, objectBoardBlock, tableFields,
 } from "./packagePreview";
 import { viewObjectName } from "./pageModel";
+import { hierarchyField, MAX_TREE_NODES } from "./treeModel";
 import { resolveMe } from "./meToken";
 import {
   NOT_DECLARED_SENTENCE, READ_ONLY_SENTENCE, verbMap, type DeclaredAction, type ObjectRow,
@@ -85,7 +86,32 @@ export interface ViewProblem {
   reason: string;
 }
 
-export type ViewModel = ViewNode | ViewForm | ViewDetail | ViewProblem | ViewLoading;
+/**
+ * The Tree block (D18-2b). It reads the `tree` door op of one object with a hierarchy rule, and
+ * draws the nodes as an expandable tree. A drag to a new parent calls the update action.
+ */
+export interface ViewTree {
+  kind: "tree";
+  title: string;
+  object: string;
+  /** The parent field of the first `hierarchy` rule of the object. */
+  field: string;
+  /** The text field that gives the label of a node, or null (the label is then the id). */
+  labelField: string | null;
+  /** Up to two more fields, drawn as muted words after the label. */
+  metaFields: FieldSpec[];
+  /** The tree read: `object:<name>.tree` with the cap of one read. */
+  source: { action: string; args: Record<string, unknown> };
+  /** True when the app declares the update and the member may write. A viewer sees no drag. */
+  canMove: boolean;
+  /** The update action of a move, or null when `canMove` is false. */
+  update: string | null;
+}
+
+export type ViewModel = ViewNode | ViewForm | ViewDetail | ViewProblem | ViewLoading | ViewTree;
+
+/** What a tree view says when its object has no hierarchy rule. */
+export const TREE_RULE_SENTENCE = "This tree needs an object with a hierarchy rule.";
 
 type ListFields = readonly { key: string; type: string }[];
 
@@ -141,7 +167,7 @@ export function mapView(view: ViewDef, ctx: ViewMapContext): ViewModel | null {
   // The layout switch moves the same rows between a table and a board.
   const block = lens?.layout ?? view.block;
   const label = view.title?.trim() || view.id;
-  const kinds = ["table", "board", "chart", "stat", "form", "detail"];
+  const kinds = ["table", "board", "chart", "stat", "form", "detail", "tree"];
   if (!kinds.includes(view.block)) return null;
 
   // The door guard: a source that names an undeclared action is refused, and no read is made.
@@ -166,6 +192,25 @@ export function mapView(view: ViewDef, ctx: ViewMapContext): ViewModel | null {
   const named = view.fields?.length ? view.fields.map((k) => specs.find((f) => f.key === k)).filter((f): f is FieldSpec => !!f) : specs;
   const shown = named.length ? named : specs;
   const verbs = verbMap(ctx.actions);
+  if (view.block === "tree") {
+    // The tree read takes no filter: the door op takes `root_id`, `depth` and `limit` only. So a
+    // `filter` of the view (and its `me` token) is ignored here, and the email is never awaited.
+    const rule = hierarchyField(object);
+    if (!rule) return problem(TREE_RULE_SENTENCE);
+    const action = `object:${name}.tree`;
+    if (verbs[action] === undefined) return problem(NOT_DECLARED_SENTENCE);
+    // The first text field of the view's order is the label. Up to two more fields are meta.
+    const labelSpec = shown.find((f) => f.type === "text" && !f.many && f.key !== rule.field);
+    const meta = shown
+      .filter((f) => f !== labelSpec && f.key !== rule.field && f.type !== "longText" && f.type !== "richText")
+      .slice(0, 2);
+    const update = `object:${name}.update`;
+    const canMove = ctx.owner && verbs[update] !== undefined;
+    return {
+      kind: "tree", title: view.title ?? object.label ?? object.name, object: name, field: rule.field, labelField: labelSpec?.key ?? null, metaFields: meta,
+      source: { action, args: { limit: MAX_TREE_NODES } }, canMove, update: canMove ? update : null,
+    };
+  }
   // The view's own filter and sort come first. The list bar adds its filter to it, and its sort wins.
   const listed = view.block === "table" || view.block === "board";
   if (listed && waitsForEmail(view, object.fields, ctx.email)) return { kind: "loading" };

@@ -26,6 +26,7 @@ import StudioFilterBar from "@/components/studio/StudioFilterBar";
 import StudioNewButton from "@/components/studio/StudioNewButton";
 import StudioForm from "@/components/studio/StudioForm";
 import StudioRecord from "@/components/studio/StudioRecord";
+import StudioTree from "@/components/studio/StudioTree";
 import StudioAppFrame from "@/components/studio/StudioAppFrame";
 import StudioPage, { PANEL } from "@/components/studio/StudioPage";
 import Button from "@/components/ui/Button";
@@ -187,6 +188,8 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
               submitLabel="Add record" savedMessage="Record added" />
           </div>
         );
+      case "tree":
+        return <div className={PANEL}><StudioTree model={model} door={door} /></div>;
       case "detail":
         return <DetailCell model={model} door={door} selected={state.selected} onPick={setSelected} />;
     }
