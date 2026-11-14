@@ -386,7 +386,8 @@ def _version_fields(world: Any, pid: str, version: int) -> list[str]:
 def _unplanned(planned: dict[str, Any]) -> dict[str, Any]:
     out = copy.deepcopy(planned)
     out["objects"][0]["fields"].append(
-        {"key": "secret", "type": "text", "label": "Never on a plan card"})
+        # STU-I1a: a field key that names a secret is refused, so this key does not.
+        {"key": "hidden_note", "type": "text", "label": "Never on a plan card"})
     return out
 
 
@@ -394,7 +395,8 @@ def _settled(world: Any, pid: str, published: dict[str, Any]) -> str:
     """Check one round: the planned draft is live, or no version is. Answer
     how the publish ended."""
     planned = [f["key"] for f in _FIELDS]
-    assert "secret" not in _tables(world, pid).get("visit", []), "the unplanned draft went live"
+    assert "hidden_note" not in _tables(world, pid).get("visit", []), (
+        "the unplanned draft went live")
     if published["ok"]:
         assert _version_fields(world, pid, published["version"]) == planned, published
         return "published"
