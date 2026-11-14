@@ -163,11 +163,17 @@ function dropViews(m: Obj, ids: ReadonlySet<string>): Obj {
       const next: Obj = { ...p };
       if ("cells" in p) next.cells = cells(p.cells);
       if (Array.isArray(p.tabs)) next.tabs = p.tabs.map((t) => (isObj(t) ? { ...t, cells: cells(t.cells) } : t));
+      // STU-AF7: a section that loses its last cell goes with its views (the check refuses it empty).
+      if (Array.isArray(p.sections)) {
+        next.sections = p.sections
+          .map((x) => (isObj(x) ? { ...x, cells: cells(x.cells) } : x))
+          .filter((x) => !isObj(x) || !Array.isArray(x.cells) || x.cells.length > 0);
+      }
       if (isObj(p.side) && ids.has(str(p.side.view))) delete next.side;
       return next;
     });
     // A page that loses its last cell has no layout, and the check refuses it. It goes with its views.
-    const held = (p: unknown) => isObj(p) && ((Array.isArray(p.tabs) && p.tabs.length > 0) || (Array.isArray(p.cells) && p.cells.length > 0));
+    const held = (p: unknown) => isObj(p) && ((Array.isArray(p.tabs) && p.tabs.length > 0) || (Array.isArray(p.cells) && p.cells.length > 0) || (Array.isArray(p.sections) && p.sections.length > 0));
     out.pages = (out.pages as unknown[]).filter((p, i) => held(p) || !held((m.pages as unknown[])[i]));
   }
   if (isObj(m.shell) && Array.isArray(m.shell.jobs)) {
@@ -233,6 +239,15 @@ export function removeObject(m: unknown, name: string): unknown {
       const { record: _r, ...trigger } = w.trigger;
       void _r;
       return { ...w, trigger };
+    });
+  }
+  // STU-AF7: a page header count that names the object goes, and the sentence stays (A2 refuses a count of nothing).
+  if (Array.isArray(out.pages)) {
+    out.pages = out.pages.map((p) => {
+      if (!isObj(p) || !isObj(p.header) || !isObj(p.header.count) || p.header.count.object !== name) return p;
+      const { count: _c, ...header } = p.header;
+      void _c;
+      return { ...p, header };
     });
   }
   if (isObj(m.shell)) {
@@ -431,6 +446,7 @@ export function viewUses(m: unknown, id: string): number {
     if (!isObj(p)) continue;
     count(p.cells);
     if (Array.isArray(p.tabs)) p.tabs.forEach((t) => isObj(t) && count(t.cells));
+    if (Array.isArray(p.sections)) p.sections.forEach((x) => isObj(x) && count(x.cells));
     if (isObj(p.side) && str(p.side.view) === id) n++;
   }
   return n;

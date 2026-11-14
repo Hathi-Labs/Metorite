@@ -11,7 +11,11 @@
 import type { PageDef, ViewDef } from "./manifest";
 
 /** The caps of A2. `pageModel.test.ts` holds them equal to the `maxItems` of the schema file. */
-export const PAGE_CAPS = { pages: 8, tabsPerPage: 8, cellsPerList: 12, maxCols: 4 } as const;
+export const PAGE_CAPS = {
+  pages: 8, tabsPerPage: 8, cellsPerList: 12, maxCols: 4,
+  // STU-AF7: the header and the sections of a page.
+  sectionsPerPage: 6, cellsPerSection: 6, headerText: 160, sectionTitle: 60, countLabel: 40,
+} as const;
 
 const DEFAULT_COLS = 2;
 const DASHED = /^[a-z][a-z0-9_-]{0,47}$/;
@@ -29,14 +33,31 @@ export interface TabModel {
   cells: CellModel[];
 }
 
+/** The header of a page (STU-AF7): one sentence and an optional count of the records of one object. */
+export interface HeaderModel {
+  text: string;
+  count: { object: string; label: string | null } | null;
+}
+
+/** A titled group of cells that folds (STU-AF7). The id keys the folded state of a viewer. */
+export interface SectionModel {
+  id: string;
+  title: string;
+  cells: CellModel[];
+}
+
 export interface PageModel {
   id: string;
   title: string | null;
+  /** `null` draws no `PageHeader`. */
+  header: HeaderModel | null;
   cols: number;
   /** Empty when the page has no tabs. */
   tabs: TabModel[];
-  /** The cells of a page with no tabs. Empty when the page has tabs. */
+  /** The cells of a page with no tabs and no sections. */
   cells: CellModel[];
+  /** The sections of a page that has them (STU-AF7). Then `tabs` and `cells` are empty. */
+  sections: SectionModel[];
   /** The view that opens when a record is selected, or `null`. */
   side: string | null;
 }
@@ -65,6 +86,42 @@ function obj(v: unknown): Record<string, unknown> | null {
 
 function dashed(v: unknown): v is string {
   return typeof v === "string" && DASHED.test(v);
+}
+
+/** Text for a person: not blank, no control character, and within the cap. */
+function plain(v: unknown, max: number): v is string {
+  // Count code points, as A2 does: a character outside the BMP is one, not two.
+  // eslint-disable-next-line no-control-regex
+  return typeof v === "string" && v.trim() !== "" && [...v].length <= max && !/[\u0000-\u001f\u007f-\u009f]/.test(v);
+}
+
+const OBJECT_NAME = /^[a-z][a-z0-9_]{0,47}$/;
+
+function readHeader(v: unknown): HeaderModel | null {
+  const h = obj(v);
+  if (!h || !plain(h.text, PAGE_CAPS.headerText)) return null;
+  const c = obj(h.count);
+  const count = c && typeof c.object === "string" && OBJECT_NAME.test(c.object)
+    ? { object: c.object, label: plain(c.label, PAGE_CAPS.countLabel) ? c.label : null }
+    : null;
+  return { text: h.text, count };
+}
+
+/** Read the sections. A bad one, a repeated id and any past the cap are dropped, and so is a section with no cell. */
+function readSections(v: unknown, cols: number, views: ReadonlySet<string> | null): SectionModel[] {
+  if (!Array.isArray(v)) return [];
+  const out: SectionModel[] = [];
+  const seen = new Set<string>();
+  for (const raw of v) {
+    const x = obj(raw);
+    if (!x || !dashed(x.id) || seen.has(x.id) || !plain(x.title, PAGE_CAPS.sectionTitle)) continue;
+    const cells = readCells(x.cells, cols, views).slice(0, PAGE_CAPS.cellsPerSection);
+    if (cells.length === 0) continue;
+    seen.add(x.id);
+    out.push({ id: x.id, title: x.title, cells });
+    if (out.length >= PAGE_CAPS.sectionsPerPage) break;
+  }
+  return out;
 }
 
 function readCols(v: unknown): number {
@@ -99,7 +156,9 @@ export function readPage(def: unknown, views: ReadonlySet<string> | null = null)
   if (!d || !dashed(d.id)) return null;
   const hasTabs = Array.isArray(d.tabs) && d.tabs.length > 0;
   const hasCells = Array.isArray(d.cells) && d.cells.length > 0;
-  if (hasTabs === hasCells) return null;
+  const hasSections = Array.isArray(d.sections) && d.sections.length > 0;
+  // A page holds tabs, cells or sections, and one only (A2 refuses the rest).
+  if (Number(hasTabs) + Number(hasCells) + Number(hasSections) !== 1) return null;
   const cols = readCols(d.cols);
   const tabs: TabModel[] = [];
   if (Array.isArray(d.tabs)) {
@@ -117,9 +176,11 @@ export function readPage(def: unknown, views: ReadonlySet<string> | null = null)
   return {
     id: d.id,
     title: typeof d.title === "string" ? d.title : null,
+    header: readHeader(d.header),
     cols,
     tabs,
-    cells: hasTabs ? [] : readCells(d.cells, cols, views),
+    cells: hasCells ? readCells(d.cells, cols, views) : [],
+    sections: hasSections ? readSections(d.sections, cols, views) : [],
     side: sideView,
   };
 }
@@ -129,8 +190,10 @@ export function defaultPage(views: readonly Pick<ViewDef, "id">[] = []): PageMod
   return {
     id: "default",
     title: null,
+    header: null,
     cols: 1,
     tabs: [],
+    sections: [],
     cells: views
       .filter((v) => dashed(v.id))
       .map((v) => ({ view: v.id, span: 1 })),
@@ -190,11 +253,11 @@ export function defaultPages(manifest: {
   const pages: PageModel[] = [];
   for (const [name, ids] of byObject) {
     const label = manifest.objects?.find((o) => o.name === name)?.label;
-    pages.push({ id: name, title: label || name, cols: 1, tabs: [], cells: cells(ids), side: null });
+    pages.push({ id: name, title: label || name, header: null, cols: 1, tabs: [], sections: [], cells: cells(ids), side: null });
   }
   if (board.length > 0) {
     // An object that is named "dashboard" keeps its own page, and the dashboard takes the next id.
-    pages.push({ id: byObject.has("dashboard") ? "dashboard-2" : "dashboard", title: "Dashboard", cols: 2, tabs: [], cells: cells(board), side: null });
+    pages.push({ id: byObject.has("dashboard") ? "dashboard-2" : "dashboard", title: "Dashboard", header: null, cols: 2, tabs: [], sections: [], cells: cells(board), side: null });
   }
   return pages.slice(0, PAGE_CAPS.pages);
 }
@@ -224,6 +287,8 @@ export function buildPage(
   const all = pages.length > 0 ? pages : defaultPages({ ...manifest, views });
   const page = all.find((p) => p.id === pageId) ?? all[0];
   const active = resolveTab(page, tab);
-  const cells = active === null ? page.cells : (page.tabs.find((t) => t.id === active)?.cells ?? []);
+  // A page of sections gives its cells in the order of its sections.
+  const own = page.sections.length > 0 ? page.sections.flatMap((x) => x.cells) : page.cells;
+  const cells = active === null ? own : (page.tabs.find((t) => t.id === active)?.cells ?? []);
   return { page, tab: active, cells, pages: all };
 }

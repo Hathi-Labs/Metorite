@@ -31,7 +31,7 @@ import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
 import SelectButton from "@/components/ui/SelectButton";
 import { StudioDataContext } from "@/lib/studio/dataContext";
-import { type Row, type StudioDataDoor, moreLine, sourceKey } from "@/lib/studio/dataDoor";
+import { type Row, type StudioDataDoor, moreLine, rowsTotal, sourceKey } from "@/lib/studio/dataDoor";
 import { buildHref } from "@/lib/studio/packageDraft";
 import {
   activeCount, barOf, barTarget, chipsOf, clearedBar, layoutsFor, searchKeyOf, toListArgs, withFilter,
@@ -96,6 +96,14 @@ function FilteredList({ source, door, active, onClear, children }: {
         action={{ label: "Clear filters", icon: "X", onClick: onClear }} />
     </div>
   );
+}
+
+/** The count of a page header (STU-AF7): the records of one object, as the door counts them. Nothing while it loads or fails. */
+function HeaderCount({ object, label, door }: { object: string; label: string; door: StudioDataDoor }) {
+  const source = useMemo(() => ({ action: `object:${object}.list`, args: { limit: 1 } }), [object]);
+  const rows = useCachedResource<Row[]>(sourceKey(door, source), () => door.read(source));
+  const total = rowsTotal(rows.data);
+  return total === null ? null : <span data-header-count>{`${total} ${label}`}</span>;
 }
 
 export default function AppFrame({ pkg, detail, door, controls, onDeleted }: AppFrameProps) {
@@ -218,7 +226,11 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted }: App
         rail={railed ? { sections: railFor(built.pages, detail.nav), activePage: built.page.id, onPick: setPage } : undefined}>
       <div className="h-full" onClickCapture={onLinkClick}>
       <StudioPage bare title={detail.name.trim() || "App"}
-        manifest={manifest} pageId={built.page.id} state={state} onTab={setTab}
+        manifest={manifest} pageId={built.page.id} state={state} onTab={setTab} foldScope={pkg}
+        renderCount={(c) => (
+          <HeaderCount object={c.object} door={door}
+            label={c.label || detail.objects.find((o) => o.name === c.object)?.label || c.object} />
+        )}
         onCloseSide={() => setSelected(null)} renderView={renderView} toolbar={toolbar}
         record={opened && recordObject ? {
           title: titled && titled.id === opened.id ? titled.text : recordObject.label || recordObject.name,

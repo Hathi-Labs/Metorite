@@ -21,11 +21,13 @@
 import { Fragment, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
 
 import { AppTopBar, type AppTopBarBack } from "@/components/AppTopBar";
+import PageHeader from "@/components/PageHeader";
+import StudioSection from "@/components/studio/StudioSection";
 import Tabs from "@/components/Tabs";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import type { ViewDef } from "@/lib/studio/manifest";
-import { buildPage, type PageManifest } from "@/lib/studio/pageModel";
+import { buildPage, type CellModel, type HeaderModel, type PageManifest } from "@/lib/studio/pageModel";
 import type { PageState } from "@/lib/studio/pageState";
 
 /**
@@ -96,6 +98,13 @@ export interface StudioPageProps {
    */
   record?: RecordShell | null;
   /**
+   * The app id. It keys the folded state of the sections of the viewer (STU-AF7). With none, a
+   * section folds for this visit only.
+   */
+  foldScope?: string | null;
+  /** The count of a page header (STU-AF7), such as "12 visits". `null` draws no count. */
+  renderCount?: (count: NonNullable<HeaderModel["count"]>) => ReactNode;
+  /**
    * Draw no app bar. The app frame (`StudioAppFrame`) owns the bar then, so the screen keeps
    * one `<h1>` and one bar. Default false: `/studio/page-preview` draws its own bar.
    */
@@ -136,7 +145,8 @@ function NotBuilt({ view, label }: { view: string; label: string }) {
 }
 
 export default function StudioPage({
-  title, subtitle, back, manifest, pageId, state, onTab, onCloseSide, renderView, toolbar, filterBar, record, bare = false,
+  title, subtitle, back, manifest, pageId, state, onTab, onCloseSide, renderView, toolbar, filterBar, record, foldScope, renderCount,
+  bare = false,
 }: StudioPageProps) {
   const built = buildPage(manifest, pageId, state.tab);
   const { page, cells } = built;
@@ -190,6 +200,24 @@ export default function StudioPage({
     </>
   ) : null;
 
+  // One grid of cells. A page, a tab and a section each draw their cells through it.
+  const grid = (list: CellModel[]) => (
+    <div className={`grid gap-3 sm:gap-4 ${GRID[page.cols] ?? GRID[1]}`} data-page-grid>
+      {list.map((c, i) => {
+        const node = renderView(c.view);
+        return (
+          <Fragment key={`${c.view}:${i}`}>
+            {node == null || node === false ? (
+              <div className={`min-w-0 ${SPAN[c.span] ?? ""}`}><NotBuilt view={c.view} label={titleOf(manifest.views, c.view)} /></div>
+            ) : (
+              <section aria-label={titleOf(manifest.views, c.view)} className={`min-w-0 ${SPAN[c.span] ?? ""}`}>{node}</section>
+            )}
+          </Fragment>
+        );
+      })}
+    </div>
+  );
+
   return (
     <div className="flex h-full flex-col">
       {bare ? null : <AppTopBar title={title} subtitle={subtitle ?? page.title ?? undefined} back={back} />}
@@ -200,26 +228,24 @@ export default function StudioPage({
       <div className="flex min-h-0 flex-1">
         <div ref={scroller} tabIndex={-1} data-page-scroller
           className="@container min-w-0 flex-1 overflow-y-auto px-4 py-3 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-6 sm:py-4">
+          {page.header && (
+            // The one sentence and the count of the page (STU-AF7), as text. No header, no `PageHeader`.
+            <PageHeader title={page.title || page.id} subtitle={page.header.text}
+              meta={page.header.count && renderCount ? renderCount(page.header.count) : undefined} />
+          )}
           {toolbar && <div className="mb-3 flex flex-wrap items-center gap-2 sm:mb-4">{toolbar}</div>}
           {filterBar && <div className="mb-3 sm:mb-4">{filterBar}</div>}
-          {cells.length === 0 ? (
-            <p className="text-sm text-muted-foreground">This page has no views.</p>
-          ) : (
-            <div className={`grid gap-3 sm:gap-4 ${GRID[page.cols] ?? GRID[1]}`} data-page-grid>
-              {cells.map((c, i) => {
-                const node = renderView(c.view);
-                return (
-                  <Fragment key={`${c.view}:${i}`}>
-                    {node == null || node === false ? (
-                      <div className={`min-w-0 ${SPAN[c.span] ?? ""}`}><NotBuilt view={c.view} label={titleOf(manifest.views, c.view)} /></div>
-                    ) : (
-                      <section aria-label={titleOf(manifest.views, c.view)} className={`min-w-0 ${SPAN[c.span] ?? ""}`}>{node}</section>
-                    )}
-                  </Fragment>
-                );
-              })}
+          {page.sections.length > 0 && built.tab === null ? (
+            <div className="flex flex-col gap-3 sm:gap-4" data-page-sections>
+              {page.sections.map((x) => (
+                <StudioSection key={`${page.id}:${x.id}`} scope={foldScope} pageId={page.id} id={x.id} title={x.title}>
+                  {grid(x.cells)}
+                </StudioSection>
+              ))}
             </div>
-          )}
+          ) : cells.length === 0 ? (
+            <p className="text-sm text-muted-foreground">This page has no views.</p>
+          ) : grid(cells)}
         </div>
         {panel && !narrow && (
           <aside aria-label="Record" data-record-page="panel"
