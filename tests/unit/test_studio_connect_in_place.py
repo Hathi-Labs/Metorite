@@ -23,9 +23,10 @@ The checks here:
 4. The read's shape. One row for each name of the draft, in order, with the
    six keys ``name``, ``label``, ``met``, ``checkable``, ``setup_href`` and
    ``can_connect``. ``met`` is the answer of ``met_connections`` for the
-   session member. A provider outside the registry (a mailbox, a number) is
-   not checkable and offers no Connect, and ``OUTSIDE_REGISTRY`` agrees with
-   the met read.
+   session member. A provider outside the registry (a mailbox, a number, a
+   key of the console) is not checkable and offers no Connect.
+   ``OUTSIDE_REGISTRY`` comes from the connector list, and it agrees with the
+   registry writers and with each ``_MET*`` statement.
 5. The order of the checks. ``STUDIO_ORGS`` off, a bad id and the gate off
    each answer 404 and open no session. With the gate off nothing reads the
    registry. Another member's package is 404, and the met set is not read.
@@ -277,28 +278,99 @@ def test_a_provider_outside_the_registry_is_not_checkable_and_offers_no_connect(
     """A mailbox and a WhatsApp number live outside the registry, so the read
     cannot meet them (I9). Their row says so, and a Connect would never turn
     the line connected, so there is none, for an admin too."""
-    world.names = ["mailbox", "whatsapp", "zoho"]
+    world.names = ["mailbox", "whatsapp", "apollo", "zoho"]
     rows = _client(_user(grants=grants)).get(PATH).json()["connections"]
     assert [(r["name"], r["met"], r["checkable"], r["can_connect"]) for r in rows] == [
         ("mailbox", False, False, False), ("whatsapp", False, False, False),
-        ("zoho", True, True, grants == ADMIN)]
+        ("apollo", False, False, False), ("zoho", True, True, grants == ADMIN)]
     assert rows[0]["label"] == "Email account"
 
 
-def test_the_set_outside_the_registry_agrees_with_the_met_read() -> None:
-    """``OUTSIDE_REGISTRY`` is the one set of providers that ``met_providers``
-    cannot meet. Each name is a provider of the connector list, and its table
-    is the table that the console reads for it. While ``_MET_SQL`` reads only
-    the registry, the set holds the mailbox and the number. When I9 makes the
-    read cover a table, its name must leave the set in the same change."""
+#: The three store functions that write a provider into the registry.
+_REGISTRY_WRITES = frozenset({"save_credential", "save_no_secret", "save_headers"})
+
+
+def _registry_writers() -> dict[str, set[str]]:
+    """Each module that writes a row of the registry, with the provider values
+    it writes, read from its own code. ``mcp:`` is a family: one row for each
+    server. :func:`_writer_files` fails when a new writer module appears."""
+    from gateway.connections import github as gh
+    from gateway.connections import mcp as mcp_registry
+    from gateway.routes.crm import connection as crm
+    from gateway.routes.knowledge import sources as drive
+    from gateway.routes.tasks import calendar_connections as cal_routes
+
+    return {
+        "apps/services/gateway/gateway/connections/github.py": {gh.PROVIDER},
+        "apps/services/gateway/gateway/connections/mcp.py": {mcp_registry.PREFIX},
+        "apps/services/gateway/gateway/routes/crm/connection.py": {crm.PROVIDER},
+        "apps/services/gateway/gateway/routes/knowledge/sources.py": {drive.GOOGLE_DRIVE},
+        "apps/services/gateway/gateway/routes/tasks/calendar_connections.py":
+            set(cal_routes.ROWS.values()),
+    }
+
+
+def _writer_files() -> set[str]:
+    """Each Python file of ``apps/`` and ``packages/`` that calls a registry
+    write of the store, by the syntax tree."""
+    found: set[str] = set()
+    for top in ("apps", "packages"):
+        for path in (ROOT / top).rglob("*.py"):
+            rel = path.relative_to(ROOT).as_posix()
+            if "/.venv/" in rel or rel.endswith("gateway/connections/store.py"):
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if not any(w in text for w in _REGISTRY_WRITES):
+                continue
+            for node in ast.walk(ast.parse(text)):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and node.func.attr in _REGISTRY_WRITES):
+                    found.add(rel)
+    return found
+
+
+def _met_sql_texts() -> list[str]:
+    """Every ``_MET*`` SQL text of the store, so a second met statement counts too."""
+    return [v for k, v in vars(conn_store).items() if k.startswith("_MET") and isinstance(v, str)]
+
+
+def test_each_listed_provider_has_a_registry_writer_or_an_outside_entry() -> None:
+    """Review round 2. ``met_providers`` meets a provider only when a module
+    writes its row into the registry. Each id of the connector list has such a
+    writer, or an entry of ``OUTSIDE_REGISTRY`` (then the IDE shows it blocked
+    and offers no Connect). An id with a writer is never outside. A new writer
+    module fails until this test names its providers."""
+    writers = _registry_writers()
+    assert _writer_files() == set(writers), "a module writes the registry that this test does not name"
+    written = set().union(*writers.values())
+    families = {p[:-1] for p in written if p.endswith(":")}
     outside = conn_store.OUTSIDE_REGISTRY
-    assert set(outside) <= {r["id"] for r in cl.connector_rows()}
-    assert "email_accounts" in ic._MAILBOX_SQL and "wa_accounts" in ic._WHATSAPP_SQL
-    for name, table in {"mailbox": "email_accounts", "whatsapp": "wa_accounts"}.items():
-        read = table in conn_store._MET_SQL
-        assert (name in outside) is (not read), (name, table)
-    for name, table in outside.items():
-        assert table not in conn_store._MET_SQL, name
+    ids = {r["id"] for r in cl.connector_rows()}
+    for pid in sorted(ids):
+        has_writer = pid in written or pid in families
+        assert has_writer or pid in outside, f"{pid}: no registry writer and no OUTSIDE_REGISTRY entry"
+        assert not (has_writer and pid in outside), f"{pid}: a registry writer AND an outside entry"
+    assert set(outside) <= ids
+
+
+def test_the_outside_set_is_computed_from_the_list_and_names_the_tables_the_console_reads() -> None:
+    """The set comes from the connector list (the keys of the console, and the
+    owning apps Email and WhatsApp), never from a second hand list. Each table is
+    a table that the console reads for that provider, and no ``_MET*`` statement
+    reads it. When I9 or IN-3 makes a met statement read one, this fails until
+    its rows leave the set."""
+    outside = conn_store.OUTSIDE_REGISTRY
+    keys = {r["id"] for r in cl.connector_rows() if r["signin"] == "key" and r["owning_app"] == "console"}
+    assert {p for p, t in outside.items() if t == "provider_keys"} == keys
+    assert len(keys) == 8, keys
+    assert {outside["mailbox"], outside["whatsapp"]} == {"email_accounts", "wa_accounts"}
+    console_reads = {"email_accounts": ic._MAILBOX_SQL, "wa_accounts": ic._WHATSAPP_SQL,
+                     "provider_keys": ic._KEY_NAMES_SQL}
+    met_texts = _met_sql_texts()
+    assert met_texts, "the store holds no _MET* statement"
+    for pid, table in outside.items():
+        assert table in console_reads[table], (pid, table)
+        assert not any(table in sql for sql in met_texts), (pid, table)
 
 
 def test_the_gate_off_answers_nothing_and_reads_no_registry(

@@ -78,26 +78,31 @@ describe("the lines of the draft", () => {
     expect([admin.kind, member.kind]).toEqual(["connect", "ask"]);
   });
 
-  it("a name the gateway cannot check says so, with no button and no count (review P1 #2)", () => {
-    const mailbox = row({ name: "mailbox", label: "Email account", checkable: false, setupHref: "/email", canConnect: false });
-    const [line] = connectLines([mailbox], PKG);
+  it("a name the gateway cannot check blocks the app: it says so, offers no button, and counts (round 2 P1 #2)", () => {
+    const apollo = row({ name: "apollo", label: "Apollo.io", checkable: false, setupHref: "/integrations", canConnect: false });
+    const [line] = connectLines([apollo], PKG);
     expect(line).toEqual({
-      kind: "unchecked",
-      row: mailbox,
-      text: "Metorite cannot check Email account yet. It will show here when it can.",
+      kind: "blocked",
+      row: apollo,
+      text:
+        "Apollo.io cannot be connected from Studio yet. This app will not run while the draft names it. " +
+        "Remove the name until Metorite can check it.",
     });
     expect("href" in line).toBe(false);
-    // Even with can_connect from an older gateway, an unchecked name offers no Connect.
-    expect(connectLines([{ ...mailbox, canConnect: true }], PKG)[0].kind).toBe("unchecked");
-    expect(unmetCount([mailbox, row()])).toBe(1);
-    expect(missingLine([mailbox])).toBeNull();
+    // Even with can_connect from an older gateway, a blocked name offers no Connect.
+    expect(connectLines([{ ...apollo, canConnect: true }], PKG)[0].kind).toBe("blocked");
+    const mailbox = row({ name: "mailbox", label: "Email account", checkable: false, canConnect: false });
+    expect(connectLines([mailbox], PKG)[0].text.startsWith("Email account cannot be connected from Studio yet.")).toBe(true);
+    // The door refuses each action while the draft names it, so the header counts it.
+    expect(unmetCount([apollo, row()])).toBe(2);
+    expect(missingLine([apollo])).toBe("1 connection needs attention");
   });
 
   it("counts the names that are not met for the header", () => {
     expect(unmetCount([row(), row({ met: true })])).toBe(1);
     expect(missingLine([row({ met: true })])).toBeNull();
-    expect(missingLine([row()])).toBe("1 connection missing");
-    expect(missingLine([row(), row({ name: "github" })])).toBe("2 connections missing");
+    expect(missingLine([row()])).toBe("1 connection needs attention");
+    expect(missingLine([row(), row({ name: "github" })])).toBe("2 connections need attention");
     expect(missingLine([])).toBeNull();
   });
 });
@@ -157,7 +162,7 @@ describe("a read that failed (review P1 #1)", () => {
   it("keeps the rows that the cache holds, beside the failure line", () => {
     const stale = connectPanel([row(), row({ name: "github", met: true })], "fetch failed", PKG);
     expect(stale.lines.map((l) => l.kind)).toEqual(["connect", "met"]);
-    expect(stale.missing).toBe("1 connection missing");
+    expect(stale.missing).toBe("1 connection needs attention");
     expect(stale.failure).toBe(CONNECTIONS_READ_FAILED);
     // Each name met, and the read failed: the header still says the check did not run.
     expect(connectPanel([row({ met: true })], "x", PKG).missing).toBe(CONNECTIONS_NOT_CHECKED);
@@ -171,7 +176,7 @@ describe("a read that failed (review P1 #1)", () => {
   it("the phone Problems tab counts each problem and each missing connection", () => {
     expect(phoneProblemsCount(0, undefined)).toBeUndefined();
     expect(phoneProblemsCount(0, [row({ met: true })])).toBeUndefined();
-    expect(phoneProblemsCount(0, [row(), row({ name: "mailbox", checkable: false })])).toBe(1);
+    expect(phoneProblemsCount(0, [row(), row({ name: "mailbox", checkable: false })])).toBe(2);
     expect(phoneProblemsCount(2, [row()])).toBe(3);
   });
 });

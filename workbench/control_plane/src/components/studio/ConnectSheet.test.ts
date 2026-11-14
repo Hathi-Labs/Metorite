@@ -74,7 +74,7 @@ describe("Studio copies no connect flow", () => {
     expect(page.match(passes)).toHaveLength(2);
     expect(page).toMatch(/phoneProblemsCount\(problems\.length, conns\.data\)/);
     const panel = read("app/studio/build/components/ProblemsPanel.tsx");
-    expect(panel).toContain("<ConnectLines lines={connections} failure={failure} onRetry={onRetry} />");
+    expect(panel).toContain("<ConnectLines lines={connections} failure={failure} onRetry={onRetry} retrying={retrying} />");
   });
 });
 
@@ -111,12 +111,28 @@ describe("the lines", () => {
     }));
     expect(out).toContain("Metorite could not check the connections of this app. Try again in a moment.");
     expect(out).toContain(">Retry<");
-    expect(out).toContain('aria-label="Check the connections again"');
+    // WCAG 2.5.3: the accessible name holds the visible word.
+    expect(out).toContain('aria-label="Retry the check of the connections"');
+    expect(out).not.toMatch(/disabled=""/);
   });
 
-  it("a name the gateway cannot check draws one sentence and no button (review P1 #2)", () => {
-    const out = html([row({ name: "mailbox", label: "Email account", checkable: false, canConnect: false })]);
-    expect(out).toContain("Metorite cannot check Email account yet. It will show here when it can.");
+  it("Retry shows its busy state while the next read runs (round 2 P2)", () => {
+    const out = renderToStaticMarkup(createElement(ConnectLines, {
+      lines: [], failure: "Metorite could not check the connections of this app. Try again in a moment.",
+      onRetry: () => undefined, retrying: true,
+    }));
+    expect(out).toMatch(/<button[^>]*disabled=""[^>]*aria-label="Retry the check of the connections"|<button[^>]*aria-label="Retry the check of the connections"[^>]*disabled=""/);
+    expect(out).toContain("animate-spin");
+    const page = read("app/studio/build/page.tsx");
+    expect(page).toContain("const retrying = conns.loading || conns.refreshing;");
+    expect(page.match(/onRetry=\{refreshConns\} retrying=\{retrying\}/g)).toHaveLength(2);
+    expect(read("app/studio/build/components/ProblemsPanel.tsx")).toContain("retrying={retrying}");
+  });
+
+  it("a name the gateway cannot check draws the blocked line and no button (round 2 P1 #2)", () => {
+    const out = html([row({ name: "apollo", label: "Apollo.io", checkable: false, canConnect: false })]);
+    expect(out).toContain("Apollo.io cannot be connected from Studio yet. This app will not run while the draft names it.");
+    expect(out).toContain("Remove the name until Metorite can check it.");
     expect(out).not.toContain("<button");
   });
 });

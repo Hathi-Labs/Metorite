@@ -3,8 +3,14 @@
  * Studio IDE draws for the connections of a draft. The guard of the return path is `returnPath.ts`.
  *
  * The gateway owns every fact. `GET /api/studio/packages/{id}/connections` answers one row for each
- * name of the STORED draft: the name, a label, `met`, the `setup_href` of the owning app and
+ * name of the STORED draft: `name`, `label`, `met`, `checkable`, the `setup_href` of the owning app and
  * `can_connect`. A 404 is the gate off, and the IDE then draws nothing.
+ *
+ * A name that the gateway cannot check (`checkable: false`: a mailbox, a WhatsApp number, a key of the
+ * console) never meets, so the action door refuses each action of the app while the draft names it. Its
+ * line says so, offers no Connect, and counts in the header with each unmet name. A read that failed
+ * keeps the rows of the last answer and their count, and adds one line with Retry. With no rows, the
+ * header reads "connections not checked".
  *
  * Studio copies no connect flow (§8.1 rule 1). Connect sends the browser to the server's
  * `setup_href`, with `return` set to the IDE of this app. The owning app runs its own flow. The
@@ -27,7 +33,8 @@ export interface ConnectionRow {
   met: boolean;
   /**
    * The gateway can check this name. False for a provider whose connection lives outside the registry
-   * (a mailbox, a WhatsApp number) until I9. Such a line offers no Connect, because it never turns met.
+   * (a mailbox and a WhatsApp number until I9, a key of the console until I8e). It never turns met, so
+   * the app does not run while the draft names it, and its line offers no Connect.
    */
   checkable: boolean;
   /** The connect flow of the owning app. Null when the server sent no path of this site. */
@@ -41,7 +48,7 @@ export type ConnectLine =
   | { kind: "met"; row: ConnectionRow; text: string }
   | { kind: "connect"; row: ConnectionRow; text: string; href: string | null }
   | { kind: "ask"; row: ConnectionRow; text: string }
-  | { kind: "unchecked"; row: ConnectionRow; text: string };
+  | { kind: "blocked"; row: ConnectionRow; text: string };
 
 /** The prefix of an MCP server in a draft (the I1a grammar). */
 export const MCP_PREFIX = "mcp:";
@@ -88,7 +95,13 @@ export function connectLines(rows: readonly ConnectionRow[], pkg: string): Conne
     const what = subject(row);
     if (row.met) return { kind: "met", row, text: `${capital(what)} is connected.` };
     if (!row.checkable) {
-      return { kind: "unchecked", row, text: `Metorite cannot check ${what} yet. It will show here when it can.` };
+      return {
+        kind: "blocked",
+        row,
+        text:
+          `${capital(what)} cannot be connected from Studio yet. This app will not run while the draft names it. ` +
+          "Remove the name until Metorite can check it.",
+      };
     }
     if (!row.canConnect) {
       return { kind: "ask", row, text: `An admin must connect ${what}. Ask one, then come back.` };
@@ -97,21 +110,25 @@ export function connectLines(rows: readonly ConnectionRow[], pkg: string): Conne
   });
 }
 
-/** The count of names that the gateway checked and found not met. A name it cannot check is not counted. */
+/**
+ * The count of names that stop the app now: each name that is not met. A blocked name counts too, because
+ * the action door refuses each action while the draft names it.
+ */
 export function unmetCount(rows: readonly ConnectionRow[]): number {
-  return rows.filter((r) => r.checkable && !r.met).length;
+  return rows.filter((r) => !r.met).length;
 }
 
-/** The words of the panel header for the names that are not met, or `null` when each one is met. */
+/** The words of the panel header for the names that stop the app, or `null` when each one is met. */
 export function missingLine(rows: readonly ConnectionRow[]): string | null {
   const n = unmetCount(rows);
-  return n === 0 ? null : `${n} connection${n === 1 ? "" : "s"} missing`;
+  if (n === 0) return null;
+  return n === 1 ? "1 connection needs attention" : `${n} connections need attention`;
 }
 
 /** What the Problems panel draws from the read. */
 export interface ConnectPanel {
   lines: ConnectLine[];
-  /** The header words: "1 connection missing", "connections not checked", or null. */
+  /** The header words: "1 connection needs attention", "connections not checked", or null. */
   missing: string | null;
   /** The line of a read that failed, with Retry. Null after a read that worked. */
   failure: string | null;

@@ -6,7 +6,7 @@
  * The panel says that the full check runs at a save and a publish.
  *
  * I8a: the lines of the connections of the stored draft come first, each with Connect when it is
- * not met (`ConnectLines`). The header adds "1 connection missing". The gateway decides each line. A
+ * not met (`ConnectLines`). The header adds "1 connection needs attention". The gateway decides each line. A
  * read that failed shows one line with Retry, and the header then says the connections were not checked.
  */
 import Button from "@/components/ui/Button";
@@ -29,10 +29,12 @@ export interface ProblemsPanelProps {
   failure?: string | null;
   /** I8a: read the connections again. */
   onRetry?: () => void;
+  /** I8a: a read of the connections runs now. */
+  retrying?: boolean;
 }
 
 export default function ProblemsPanel({
-  problems, open, onToggle, fill = false, connections = [], missing = null, failure = null, onRetry,
+  problems, open, onToggle, fill = false, connections = [], missing = null, failure = null, onRetry, retrying = false,
 }: ProblemsPanelProps) {
   return (
     <section aria-label="Problems" className={`flex min-h-0 flex-col border-t border-border bg-card ${fill ? "flex-1" : ""}`}>
@@ -47,7 +49,7 @@ export default function ProblemsPanel({
       </div>
       {open ? (
         <div className={`overflow-y-auto px-3 pb-2 ${fill ? "flex-1" : "max-h-40"}`}>
-          <ConnectLines lines={connections} failure={failure} onRetry={onRetry} />
+          <ConnectLines lines={connections} failure={failure} onRetry={onRetry} retrying={retrying} />
           {problems.length === 0 ? (
             <p className="text-xs text-muted-foreground">No problem found.</p>
           ) : (

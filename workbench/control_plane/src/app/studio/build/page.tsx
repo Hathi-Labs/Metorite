@@ -195,6 +195,7 @@ function Ide({ pkg }: { pkg: string }) {
   }, [storedHash, refreshConns]);
   // A failed read (a 5xx, the network) shows its own line with Retry, never an empty panel.
   const panel = useMemo(() => connectPanel(conns.data, conns.error, pkg), [conns.data, conns.error, pkg]);
+  const retrying = conns.loading || conns.refreshing;
   // No facts when the app is gone (404): Mira must never save to a deleted app.
   useAssistantFacts(
     draft && !watch.off ? ideFacts({ id: draft.id, name: draft.name }, draft.manifest, draft.manifestHash) : null,
@@ -303,7 +304,7 @@ function Ide({ pkg }: { pkg: string }) {
           {phoneTab === "explorer" ? <div className="min-h-0 flex-1 overflow-y-auto">{explorer}</div> : null}
           {phoneTab === "editor" ? editorPane : null}
           {phoneTab === "problems" ? <ProblemsPanel problems={problems} open={phoneProblemsOpen} onToggle={() => setPhoneProblemsOpen((o) => !o)} fill
-            connections={panel.lines} missing={panel.missing} failure={panel.failure} onRetry={refreshConns} /> : null}
+            connections={panel.lines} missing={panel.missing} failure={panel.failure} onRetry={refreshConns} retrying={retrying} /> : null}
         </div>
         {dialog}
       </Frame>
@@ -322,7 +323,7 @@ function Ide({ pkg }: { pkg: string }) {
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {editorPane}
           <ProblemsPanel problems={problems} open={problemsOpen} onToggle={() => setProblemsOpen((o) => !o)}
-            connections={panel.lines} missing={panel.missing} failure={panel.failure} onRetry={refreshConns} />
+            connections={panel.lines} missing={panel.missing} failure={panel.failure} onRetry={refreshConns} retrying={retrying} />
         </div>
       </div>
       {dialog}

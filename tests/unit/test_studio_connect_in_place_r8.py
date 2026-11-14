@@ -36,9 +36,10 @@ e. Ben, who does not own the package, gets 404. Zed of org B gets 404.
 f. With ``STUDIO_CONNECTION_GATE_ORGS`` off for org A, the read is 404.
 g. ``can_connect`` follows ``integrations:manage`` for an org connection.
 h. The read changes no row.
-i. A draft that names ``mailbox`` or ``whatsapp`` gets ``met`` False,
-   ``checkable`` False and ``can_connect`` False, for an admin too, because
-   the registry cannot meet them (``OUTSIDE_REGISTRY``, I9).
+i. A draft that names ``mailbox``, ``whatsapp`` or a key of the console
+   (``apollo``) gets ``met`` False, ``checkable`` False and ``can_connect``
+   False, for an admin too, because the registry cannot meet them
+   (``OUTSIDE_REGISTRY``: I9 and I8e).
 """
 
 from __future__ import annotations
@@ -307,9 +308,9 @@ def test_r8_h_the_read_changes_no_row(world) -> None:
 # ── i. A provider outside the registry ────────────────────────────────────
 
 
-def test_r8_i_a_mailbox_or_a_number_is_not_checkable_and_offers_no_connect(world) -> None:
+def test_r8_i_a_name_outside_the_registry_is_not_checkable_and_offers_no_connect(world) -> None:
     _row(world, TALLY, world.a)
-    pid = _run(world, lambda: _new(world.a, OWEN, ["mailbox", "whatsapp", TALLY]))
+    pid = _run(world, lambda: _new(world.a, OWEN, ["mailbox", "whatsapp", "apollo", TALLY]))
     for grants in (STUDIO, ADMIN):
         status, got = _run(world, lambda g=grants: _read(world.a, OWEN, pid, g))
         assert status == 200, got
@@ -317,5 +318,6 @@ def test_r8_i_a_mailbox_or_a_number_is_not_checkable_and_offers_no_connect(world
                 for r in got["connections"]] == [
             ("mailbox", False, False, False),
             ("whatsapp", False, False, False),
+            ("apollo", False, False, False),
             (TALLY, True, True, grants == ADMIN),
         ], grants

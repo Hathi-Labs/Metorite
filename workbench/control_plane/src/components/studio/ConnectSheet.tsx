@@ -8,8 +8,9 @@
  * reads "<provider> is connected." An unmet one has Connect. Connect opens a sheet over Studio that
  * says where Metorite goes, and its button opens the connect page of the owning app with the way
  * back to this app. A member who may not connect sees one sentence and no button. A name that the
- * gateway cannot check yet (a mailbox, a WhatsApp number, until I9) says so, with no button. A read that
- * failed shows one line with Retry, so it never looks like a draft with no connection.
+ * gateway cannot check (a mailbox, a WhatsApp number, a key of the console) blocks the app: its line says
+ * so and names the next step, with no button. A read that failed shows one line with Retry, so it never
+ * looks like a draft with no connection. Retry shows its busy state while the next read runs.
  *
  * The sheet is the AF-6 pattern (`StudioFormDialog.tsx`): the shared `Modal`, a sheet on a phone. The
  * button is a link to the server's `setup_href` (`lib/studio/connect.ts`), so the leave guard of the
@@ -27,7 +28,7 @@ const LINE_ICON: Record<ConnectLine["kind"], { name: string; className: string }
   met: { name: "CircleCheck", className: "text-success" },
   connect: { name: "Plug", className: "text-warning" },
   ask: { name: "Lock", className: "text-muted-foreground" },
-  unchecked: { name: "CircleHelp", className: "text-muted-foreground" },
+  blocked: { name: "Ban", className: "text-warning" },
 };
 
 export interface ConnectSheetProps {
@@ -72,10 +73,12 @@ export interface ConnectLinesProps {
   failure?: string | null;
   /** Read the connections again. */
   onRetry?: () => void;
+  /** A read runs now: Retry shows its busy state, so a second failure is visible. */
+  retrying?: boolean;
 }
 
 /** The lines of the connections, with the one sheet that a Connect opens. */
-export function ConnectLines({ lines, failure = null, onRetry }: ConnectLinesProps) {
+export function ConnectLines({ lines, failure = null, onRetry, retrying = false }: ConnectLinesProps) {
   const [open, setOpen] = useState<Extract<ConnectLine, { kind: "connect" }> | null>(null);
   if (lines.length === 0 && failure === null) return null;
   return (
@@ -87,8 +90,8 @@ export function ConnectLines({ lines, failure = null, onRetry }: ConnectLinesPro
             {/* Retry sits beside the words: the shell's outage notice can cover the far right during a restart. */}
             <span className="min-w-0 break-words text-foreground">{failure}</span>
             {onRetry ? (
-              <Button variant="secondary" size="sm" icon="RefreshCw" onClick={onRetry}
-                aria-label="Check the connections again">
+              <Button variant="secondary" size="sm" icon="RefreshCw" onClick={onRetry} loading={retrying}
+                aria-label="Retry the check of the connections">
                 Retry
               </Button>
             ) : null}
