@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from itertools import pairwise
 from types import SimpleNamespace
 from typing import Any
 
@@ -139,7 +140,7 @@ def test_the_catalog_offers_ask_mira_only(monkeypatch: pytest.MonkeyPatch) -> No
     agents = served["agents"]
     assert [a["name"] for a in agents] == [ASK_MIRA]
     assert agents[0]["label"] == "Ask Mira"
-    assert catalog_mod.OFFERED_AGENTS == frozenset({ASK_MIRA})
+    assert frozenset({ASK_MIRA}) == catalog_mod.OFFERED_AGENTS
 
 
 def test_the_ask_mira_words_are_plain(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -253,7 +254,7 @@ def _graph(*middle: dict[str, Any]) -> dict[str, Any]:
     ids = [n["id"] for n in nodes]
     edges = [
         {"id": f"e{i}", "source": a, "target": b}
-        for i, (a, b) in enumerate(zip(ids, ids[1:], strict=False))
+        for i, (a, b) in enumerate(pairwise(ids))
     ]
     return {"nodes": nodes, "edges": edges}
 
