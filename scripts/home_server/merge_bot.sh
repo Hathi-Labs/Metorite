@@ -13,10 +13,13 @@
 # The queue is ~/lanes/merge-bot-queue.tsv, and only lane_handover.sh writes it.
 # One line per hand-over, tabs between the fields, under a "#" header line:
 #   PR  task  worktree  lane  head_sha  tier  note
+# The bot does not read the worktree field. A hand-over by PR number
+# (lane_handover.sh --pr, CIV-28c) writes "-" there.
 # The bot NEVER reads ~/lanes/merge-queue.tsv. That file holds the history of
 # the lane-merge session, with HOLD, RED and NOTE lines that people wrote.
 # The bot writes one result line per hand-over to ~/lanes/merge-bot.log, and
-# nothing else writes that file.
+# nothing else writes that file. Each BACK line, except "BACK <pr> closed",
+# also goes to the PR as a comment (CIV-28c, tell_back below).
 #
 # Per pending hand-over (the nth hand-over of a PR gets the nth result):
 #   merged -> DONE <pr> <sha>     closed -> BACK <pr> closed
@@ -45,6 +48,8 @@
 #   test the tip of main now      -> skip, before the checks and the gate, and
 #                                    again before the merge. The next auto-revert
 #                                    pass tests it (CIV-31b). No state file -> BACK
+#   an auto-revert PR while AUTO_REVERT_MODE of metorite-auto-revert.service is
+#   not on                        -> skip, and one HOLD <pr> <reason> line (CIV-31c)
 #   gh pr merge says "Base branch was modified" -> retry twice, 20 s apart, then skip.
 #                                    An auto-revert PR gets no retry: it skips.
 #   else gh pr ready (if draft), gh pr merge --squash --match-head-commit <sha>,
@@ -61,6 +66,9 @@
 #   MERGE_BOT_LOCK [auto]  "mkdir" forces the mkdir lock (a test, or no flock)
 #   PREMERGE_CMD [timeout 900 bash scripts/premerge.sh]
 #   GH_CMD [gh]   MERGE_BOT_DRY_RUN=1: print actions, call no write command
+#   MERGE_BOT_BACK_COMMENT [1]  0 turns the PR comment of a BACK off
+#   MERGE_BOT_SECRET_SHAPES [$ROOT/packages/acb_common/acb_common/secret_shapes.py]
+#     the one credential list. The BACK comment drops each shape of it.
 #   MERGE_BASE_RETRY_WAIT [20]  seconds between the in-pass merge retries
 #   CONFLICT_RULES [1]  0 turns the CIV-34a conflict rules off: a conflict is a BACK
 #   CONFLICT_TEST_CMD [uv run --no-sync pytest -q -p no:cacheprovider]  gets the test
@@ -87,6 +95,8 @@ MERGE_RETRY_WAIT="${MERGE_BASE_RETRY_WAIT:-20}"
 CONFLICT_RULES="${CONFLICT_RULES:-1}"
 CONFLICT_TEST_CMD="${CONFLICT_TEST_CMD:-uv run --no-sync pytest -q -p no:cacheprovider}"
 CONFLICT_TEST_TIMEOUT="${CONFLICT_TEST_TIMEOUT:-900}"
+BACK_COMMENT="${MERGE_BOT_BACK_COMMENT:-1}"
+CUR_TASK=""; CUR_SHA=""; CUR_TIER=""  # the queue line in work, for the BACK comment
 # CIV-31b: the state of the auto-revert pass. open/<pr>.json holds the last tip
 # of main on which the pass tested the failed tests of that revert PR.
 AUTO_REVERT_STATE="${AUTO_REVERT_STATE:-$HOME/.cache/metorite-auto-revert}"
@@ -115,9 +125,14 @@ HIGH_PATHS_RE+='|packages/acb_graph/acb_graph/db\.py$'
 # The operator console: its DB, the store that writes members, identities, seats
 # and credits (store, main), the money path (payments), the keys that resolve a
 # tenant or a deployment, the provider credentials, the app seats, the operators.
-HIGH_PATHS_RE+='|apps/services/customer_console/customer_console/(db|seats|store|main|payments|keys|deployment_keys|provider_keys|apps|operators|operator_[^/]*)\.py$'
-# The agent edge: POST /oauth/token and the bearer check of /mcp.
-HIGH_PATHS_RE+='|apps/services/agent_edge/agent_edge/(token_endpoint|bearer)\.py$'
+# CIV-31c: lifecycle.py too. Its capabilities_of decides sign-in, AI use, seat
+# writes and provisioning for each state of an org.
+HIGH_PATHS_RE+='|apps/services/customer_console/customer_console/(db|seats|store|main|payments|keys|deployment_keys|provider_keys|apps|operators|operator_[^/]*|lifecycle)\.py$'
+# The agent edge: POST /oauth/token and the bearer check of /mcp. CIV-31c: mcp.py
+# (the read-only narrowing and the insufficient_scope check) and app.py (EdgeGate).
+HIGH_PATHS_RE+='|apps/services/agent_edge/agent_edge/(token_endpoint|bearer|mcp|app)\.py$'
+# CIV-31c: the identity door of the BFF. It sends the member's identity to the gateway.
+HIGH_PATHS_RE+='|workbench/control_plane/src/lib/gateway\.ts$'
 HIGH_PATHS_RE+='|packages/acb_memory/acb_memory/tenant_guard[^/]*$'
 # The members, roles and groups of an org, and the admin API of the UI.
 HIGH_PATHS_RE+='|apps/services/gateway/gateway/routes/admin/(_common|members|roles|groups)\.py$'
@@ -167,6 +182,44 @@ fi
 
 record() {  # record <line>: one result line in the log. A dry run only prints it.
   if [ "$DRY" = 1 ]; then say "DRY RUN would log: $*"; else printf '%s\n' "$*" >> "$LOG"; fi
+  case "$*" in "BACK "*) tell_back "$*" ;; esac
+}
+# tell_back <BACK line>: CIV-28c. The session that handed over reads the log line
+# (hand_over.sh --wait). The reason also goes to the PR as a comment, so a person
+# sees it on GitHub. The log line comes first, and a failed comment changes no
+# log line. A closed PR gets no comment. The reason is in a code block, so an
+# @name in a tool's output tags nobody. CUR_TASK, CUR_SHA and CUR_TIER come from
+# the queue line. Fix round 1: the comment drops each credential shape of the one
+# list, acb_common/secret_shapes.py. When that scrub fails, the comment holds no reason.
+SECRET_SHAPES_PY="${MERGE_BOT_SECRET_SHAPES:-$ROOT/packages/acb_common/acb_common/secret_shapes.py}"
+PY_REDACT='
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("secret_shapes", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+text = sys.stdin.buffer.read().decode("utf-8", "replace")
+for rx in (mod.REDACTION_BEARER, *mod.REDACTION_SHAPES, *(rx for _, rx in mod.SECRET_SHAPES)):
+    text = rx.sub("[redacted]", text)
+sys.stdout.buffer.write(text.encode("utf-8"))
+'
+tell_back() {
+  local rest="${1#BACK }" pr reason body fence='```' plain="'''" clean
+  pr="${rest%% *}"; reason="${rest#* }"
+  [ "$BACK_COMMENT" = 1 ] || return 0
+  [ "$reason" = closed ] && return 0
+  if [ "$DRY" = 1 ]; then say "DRY RUN would comment the BACK on PR $pr"; return 0; fi
+  if clean="$(printf '%s' "$reason" | python3 -c "$PY_REDACT" "$SECRET_SHAPES_PY" 2>/dev/null)"; then
+    reason="$clean"
+  else
+    reason="(no reason here: the credential scrub failed. Read the BACK line in ~/lanes/merge-bot.log on the box.)"
+  fi
+  reason=${reason//"$fence"/"$plain"}
+  body="$(printf '%s\n' \
+    "Merge bot: BACK. The bot did not merge this PR at \`${CUR_SHA:0:9}\` (task ${CUR_TASK:-unknown})." \
+    "" "${fence}text" "$reason" "$fence" "" \
+    "Fix the cause and push. Then hand it over again: \`bash scripts/hand_over.sh $pr ${CUR_TASK:-<task>} ${CUR_TIER:-<tier>} \"<note>\"\`." \
+    "When the reason names HIGH or a person, merge it with the full loop of \`next-ticket.md\` step 7.")"
+  gh_ pr comment "$pr" --body-file - <<< "$body" 9>&- >/dev/null 2>&1 || say "PR $pr: the BACK comment failed. The log line stands"
 }
 results() {  # results <pr>: how many DONE or BACK lines the log holds for it
   if [ -f "$LOG" ]; then grep -cE "^(DONE|BACK) $1( |$)" "$LOG"; else echo 0; fi
@@ -442,8 +495,14 @@ gate() {
   echo "main moved during premerge"; return 1
 }
 
-# ensure_workdir: the bot's own checkout. The first gate, or the first
-# revert_tested, makes it.
+# auto_revert_mode: AUTO_REVERT_MODE of the auto-revert unit, read as lane-merge.md
+# step g reads it. Empty when systemctl fails or the unit sets no mode.
+auto_revert_mode() {
+  systemctl --user show -p Environment --value metorite-auto-revert.service 9>&- 2>/dev/null \
+    | tr ' ' '\n' | sed -n 's/^AUTO_REVERT_MODE=//p' | tail -n 1 | tr -d '\r' | tr '[:upper:]' '[:lower:]'
+}
+
+# ensure_workdir: the bot's own checkout. The first gate makes it.
 ensure_workdir() {
   [ -e "$WORKDIR/.git" ] || git -C "$ROOT" worktree add -q --detach "$WORKDIR" >/dev/null 2>&1
 }
@@ -457,16 +516,30 @@ ensure_workdir() {
 # with a note: the PR waits in the queue, and the next auto-revert pass tests
 # the new tip. A state file that does not parse waits too: the auto-revert pass
 # writes a PERSON line for it.
+# CIV-31c: it reads the tip with ls-remote in the bot's own checkout ($ROOT), so
+# it needs no workdir. A held PR makes no workdir and runs no git fetch.
+# CIV-31c fix round 1: it holds the PR while the mode of the auto-revert unit is
+# not on, because only mode on opens the culprit's task again after the merge.
+# The bot writes one HOLD line for the PR, and one more after the mode was on.
 revert_tested() {
-  local file="$AUTO_REVERT_STATE/open/$1.json" tested tip
+  local file="$AUTO_REVERT_STATE/open/$1.json" tested tip mode mark="$STATE/held-mode-$1"
   [ -f "$file" ] || { echo "auto-revert PR with no state file $file: a person merges it"; return 1; }
   if ! tested="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["tip"])' "$file" 2>/dev/null | tr -d '\r')" \
     || [ -z "$tested" ]; then
     echo "auto-revert PR: the state file $file does not parse. The auto-revert pass tells a person"
     return 2
   fi
-  ensure_workdir || { echo "no workdir at $WORKDIR"; return 2; }
-  tip="$(git -C "$WORKDIR" ls-remote origin refs/heads/main 2>/dev/null | awk -F'\t' '$2 == "refs/heads/main" {print $1; exit}')"
+  mode="$(auto_revert_mode)"
+  if [ "$mode" != on ]; then
+    if [ ! -e "$mark" ]; then
+      record "HOLD $1 the auto-revert mode is '${mode:-unknown}', not on: nobody opens the culprit's task after a merge, so the bot holds the PR"
+      [ "$DRY" = 1 ] || : > "$mark"
+    fi
+    echo "auto-revert PR: the auto-revert mode is '${mode:-unknown}', not on. The bot holds it"
+    return 2
+  fi
+  rm -f "$mark"
+  tip="$(git -C "$ROOT" ls-remote origin refs/heads/main 9>&- 2>/dev/null | awk -F'\t' '$2 == "refs/heads/main" {print $1; exit}')"
   [ -n "$tip" ] || { echo "git ls-remote of main failed before the auto-revert check"; return 2; }
   if [ "$tested" != "$tip" ]; then
     echo "auto-revert PR: the pass has not tested main at ${tip:0:9} (last ${tested:0:9}). It waits for the next auto-revert pass"
@@ -605,6 +678,7 @@ while IFS= read -r line <&3; do
   if is_done "$pr"; then seen="$seen $pr"; continue; fi
   [ "${nth[$pr]}" -eq "$(( $(results "$pr") + 1 ))" ] || continue
   seen="$seen $pr"
+  CUR_TASK="$task"; CUR_SHA="$sha"; CUR_TIER="$tier"
   say "PR $pr at ${sha:0:9} (task $task, $lane, $tier)"
   handle "$pr" "$sha" "$tier"
 done 3< "$QUEUE"

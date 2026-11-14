@@ -40,6 +40,15 @@ FAKE_GH_SH = """#!/usr/bin/env bash
 exec python3 "$(dirname "$0")/gh.py" "$@"
 """
 
+# CIV-31c fix round 1: the fake `systemctl` of the merge bot. It prints the
+# Environment of metorite-auto-revert.service with the mode in
+# $FIX/auto_revert_mode. With no such file, it fails, as with no user bus.
+FAKE_SYSTEMCTL_SH = """#!/usr/bin/env bash
+echo "$*" >> "$FIX/systemctl_calls"
+[ -f "$FIX/auto_revert_mode" ] || exit 1
+echo "PATH=/usr/bin:/bin AUTO_REVERT_MODE=$(cat "$FIX/auto_revert_mode")"
+"""
+
 FAKE_GH_PY = r"""
 import json, os, shutil, subprocess, sys
 
@@ -127,6 +136,14 @@ elif verb == "pr merge":
     if os.environ.get("FAKE_MERGE_FAIL"):
         sys.stderr.write("unexpected EOF\n")
         sys.exit(1)
+elif verb == "pr comment":
+    # CIV-28c: the bot sends the comment body on stdin (--body-file -).
+    body = sys.stdin.read() if opt("--body-file") == "-" else (opt("--body") or "")
+    if os.environ.get("FAKE_COMMENT_FAIL"):
+        sys.stderr.write("error connecting to api.github.com\n")
+        sys.exit(1)
+    with open(os.path.join(fix, f"comments_{n}"), "a", encoding="utf-8", newline="\n") as f:
+        f.write(body + "\n=====\n")
 sys.exit(0)
 """
 
@@ -171,6 +188,10 @@ class Env:
         (bindir / "gh").write_text(FAKE_GH_SH, encoding="utf-8", newline="\n")
         (bindir / "gh").chmod(0o755)
         (bindir / "gh.py").write_text(FAKE_GH_PY, encoding="utf-8", newline="\n")
+        (bindir / "systemctl").write_text(FAKE_SYSTEMCTL_SH, encoding="utf-8", newline="\n")
+        (bindir / "systemctl").chmod(0o755)
+        # The auto-revert unit is on, so an auto-revert PR can merge (CIV-31c).
+        (self.fix / "auto_revert_mode").write_text("on\n", encoding="utf-8", newline="\n")
         wjson(self.fix / "required.json", {"strict": False, "contexts": REQUIRED, "checks": []})
         (self.fix / "calls").write_text("", encoding="utf-8")
         self.premerge("0")
@@ -233,13 +254,13 @@ class Env:
         self.view(n, headRefOid=sha)
         return sha
 
-    def queue(self, n, sha=None, tier="STANDARD", note="note", path=None):
+    def queue(self, n, sha=None, tier="STANDARD", note="note", path=None, wt="/x"):
         path = path or self.tmp / "queue.tsv"
         new = not path.exists()
         with path.open("a", encoding="utf-8", newline="\n") as f:
             if new:
                 f.write("# PR\ttask\tworktree\tlane\thead_sha\ttier\tnote\n")
-            f.write(f"{n}\t99\t/x\tlane-x\t{sha or self.heads[n]}\t{tier}\t{note}\n")
+            f.write(f"{n}\t99\t{wt}\tlane-x\t{sha or self.heads[n]}\t{tier}\t{note}\n")
 
     def view(self, n, **fields):
         p = self.fix / f"view_{n}.json"
@@ -305,7 +326,24 @@ class Env:
             newline="\n",
         )
 
-    def run(self, home=None, **extra):
+    def bot_src(self) -> Path:
+        """A checkout of the temp origin that holds a copy of merge_bot.sh.
+
+        CIV-31c: revert_tested reads the tip of main with `git -C "$ROOT"
+        ls-remote origin`. The bot's own checkout is $ROOT, so a test of it runs
+        this copy. The real checkout would ask GitHub.
+        """
+        src = self.tmp / "botsrc"
+        if not src.exists():
+            subprocess.run(
+                ["git", "clone", "-q", str(self.origin), str(src)], check=True, capture_output=True
+            )
+            copy = src / "scripts" / "home_server" / "merge_bot.sh"
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(SCRIPT, copy)
+        return src / "scripts" / "home_server" / "merge_bot.sh"
+
+    def run(self, home=None, script=None, **extra):
         env = {
             **os.environ,
             "PATH": f"{self.tmp / 'bin'}{os.pathsep}{os.environ['PATH']}",
@@ -315,14 +353,19 @@ class Env:
             "MERGE_BOT_STATE": str((self.tmp / "state").as_posix()),
             "MERGE_BOT_WORKDIR": str((self.tmp / "work").as_posix()),
             "PREMERGE_CMD": f"bash {(self.fix / 'premerge.sh').as_posix()}",
+            # CIV-28c: a BACK comment is one more gh call. A test that is not about
+            # the comment turns it off, so a pass of many PRs stays fast. None
+            # removes the variable, and the script default (on) applies.
+            "MERGE_BOT_BACK_COMMENT": "0",
             **extra,
         }
+        env = {k: v for k, v in env.items() if v is not None}
         if home is not None:
             env["HOME"] = home.as_posix()
             env.pop("MERGE_QUEUE")
             env.pop("MERGE_LOG")
         r = subprocess.run(
-            [BASH, str(SCRIPT)], env=env, capture_output=True, text=True, encoding="utf-8"
+            [BASH, str(script or SCRIPT)], env=env, capture_output=True, text=True, encoding="utf-8"
         )
         assert r.returncode == 0, r.stderr
         return r
@@ -335,6 +378,12 @@ class Env:
     @property
     def calls(self):
         return (self.fix / "calls").read_text(encoding="utf-8")
+
+    def comments(self, n):
+        """The PR comments that the bot posted on PR n, oldest first."""
+        p = self.fix / f"comments_{n}"
+        text = p.read_text(encoding="utf-8") if p.exists() else ""
+        return [c.strip("\n") for c in text.split("\n=====\n") if c.strip()]
 
     @property
     def merges(self):
@@ -446,7 +495,7 @@ def test_dry_run_calls_no_write_command_and_logs_nothing(env):
     env.pr(5)
     env.pr(6, checks={n: "pass" for n in REQUIRED} | {"Unit tests": "cancel"}, draft=True)
     r = env.run(MERGE_BOT_DRY_RUN="1")
-    for bad in ("pr merge", "pr ready", "run rerun"):
+    for bad in ("pr merge", "pr ready", "run rerun", "pr comment"):
         assert bad not in env.calls
     assert env.log == "" and "DRY RUN" in r.stderr
 
@@ -815,29 +864,51 @@ SCOPING_HIGH = [
     "apps/services/customer_console/customer_console/provider_keys.py",
     "apps/services/agent_edge/agent_edge/token_endpoint.py",
     "apps/services/agent_edge/agent_edge/bearer.py",
+    # CIV-31c (P2): four authorization files. lifecycle.py (capabilities_of),
+    # mcp.py (the read-only narrowing, insufficient_scope), app.py (EdgeGate),
+    # and gateway.ts, the identity door of the BFF.
+    "apps/services/customer_console/customer_console/lifecycle.py",
+    "apps/services/agent_edge/agent_edge/mcp.py",
+    "apps/services/agent_edge/agent_edge/app.py",
+    "workbench/control_plane/src/lib/gateway.ts",
 ]
 #: Near misses that stay STANDARD: an ordinary store, a UI helper, a signing file.
 SCOPING_LOW = [
     "apps/services/gateway/gateway/studio/views_store.py",
     "workbench/control_plane/src/lib/access.ts",
     "apps/services/gateway/gateway/routes/email/transport/signing.py",
+    "apps/services/agent_edge/agent_edge/tools.py",
 ]
 
 
-def test_civ31b_the_floor_covers_the_scoping_files(env):
+#: CIV-31c fix round 1: one run of all 42 paths took 692 s on the PC, over the
+#: 600 s limit of a test. Each chunk is its own test, with its own run.
+SCOPING_CHUNKS = 4
+SCOPING_ALL = [(p, True) for p in SCOPING_HIGH] + [(p, False) for p in SCOPING_LOW]
+
+
+@pytest.mark.parametrize("chunk", range(SCOPING_CHUNKS))
+def test_civ31b_the_floor_covers_the_scoping_files(env, chunk):
     """CIV-31b: the tenancy, RLS, grant, visibility, member, role, group, identity,
     money and sharing files are HIGH. An ordinary store, a UI access helper and a
     signing file are not."""
-    numbers = list(range(5, 5 + len(SCOPING_HIGH) + len(SCOPING_LOW)))
-    for n, path in zip(numbers, SCOPING_HIGH + SCOPING_LOW, strict=True):
+    part = SCOPING_ALL[chunk::SCOPING_CHUNKS]
+    numbers = list(range(5, 5 + len(part)))
+    for n, (path, _) in zip(numbers, part, strict=True):
         env.pr(n, path=path)
     env.run()
     lines = env.log.splitlines()
     assert len(lines) == len(numbers)
-    high, low = lines[: len(SCOPING_HIGH)], lines[len(SCOPING_HIGH) :]
-    for line, n in zip(high, numbers, strict=False):
-        assert line.startswith(f"BACK {n} tier floor HIGH, queued as "), line
-    assert low == [f"DONE {n} abc123" for n in numbers[len(SCOPING_HIGH) :]]
+    for line, n, (path, high) in zip(lines, numbers, part, strict=True):
+        if high:
+            assert line.startswith(f"BACK {n} tier floor HIGH, queued as "), (path, line)
+        else:
+            assert line == f"DONE {n} abc123", (path, line)
+
+
+def test_civ31c_the_scoping_chunks_cover_every_path():
+    covered = [p for k in range(SCOPING_CHUNKS) for p in SCOPING_ALL[k::SCOPING_CHUNKS]]
+    assert sorted(covered) == sorted(SCOPING_ALL)
 
 
 def test_civ31b_an_auto_revert_pr_merges_only_after_the_pass_tested_main(env):
@@ -855,7 +926,8 @@ def test_civ31b_an_auto_revert_pr_merges_only_after_the_pass_tested_main(env):
     wjson(state / "open" / "5.json", {"culprit": "a" * 40, "ids": ["t"], "tip": tip})
     wjson(state / "open" / "6.json", {"culprit": "b" * 40, "ids": ["t"], "tip": "0" * 40})
     (state / "open" / "9.json").write_text('{"culprit": "dd', encoding="utf-8")
-    r = env.run(AUTO_REVERT_STATE=state.as_posix())
+    bot = env.bot_src()
+    r = env.run(script=bot, AUTO_REVERT_STATE=state.as_posix())
     lines = env.log.splitlines()
     assert lines[0] == "DONE 5 abc123"
     assert lines[1].startswith("BACK 7 auto-revert PR with no state file")
@@ -865,12 +937,71 @@ def test_civ31b_an_auto_revert_pr_merges_only_after_the_pass_tested_main(env):
     assert env.premerge_runs == 1
     # The next auto-revert pass tests the tip, and then PR 6 merges.
     wjson(state / "open" / "6.json", {"culprit": "b" * 40, "ids": ["t"], "tip": tip})
-    env.run(AUTO_REVERT_STATE=state.as_posix())
+    env.run(script=bot, AUTO_REVERT_STATE=state.as_posix())
     assert env.log.splitlines()[2:] == ["DONE 6 abc123"]
     # A PR of a lane is not an auto-revert PR, so the state does not hold it.
     env.pr(8)
-    env.run(AUTO_REVERT_STATE=state.as_posix())
+    env.run(script=bot, AUTO_REVERT_STATE=state.as_posix())
     assert env.log.splitlines()[-1] == "DONE 8 abc123"
+
+
+def test_civ31c_revert_tested_reads_main_with_no_workdir(env):
+    """CIV-31c: revert_tested reads the tip with `git -C "$ROOT" ls-remote origin`.
+    A held auto-revert PR makes no workdir, runs no git fetch and no gate. The
+    tip is the tip of the origin of the bot's checkout, not of the workdir."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    body = text[text.index("revert_tested() {") : text.index("# A gh error that a later pass")]
+    assert 'git -C "$ROOT" ls-remote origin refs/heads/main' in body
+    assert "ensure_workdir" not in body and "$WORKDIR" not in body
+    state = env.tmp / "auto-revert"
+    (state / "open").mkdir(parents=True)
+    env.pr(5, path="revert_5.txt")
+    env.view(5, headRefName="auto-revert/" + "a" * 12)
+    wjson(state / "open" / "5.json", {"culprit": "a" * 40, "ids": ["t"], "tip": "0" * 40})
+    nowork = env.tmp / "no-workdir"
+    r = env.run(
+        script=env.bot_src(),
+        AUTO_REVERT_STATE=state.as_posix(),
+        MERGE_BOT_WORKDIR=nowork.as_posix(),
+    )
+    tip = git(env.seed, "rev-parse", "main")
+    assert f"has not tested main at {tip[:9]}" in r.stderr
+    assert not nowork.exists() and env.log == "" and env.premerge_runs == 0
+
+
+@pytest.mark.parametrize("mode", ["dry", "off", None], ids=["dry", "off", "no-unit"])
+def test_civ31c_the_bot_holds_an_auto_revert_pr_while_the_mode_is_not_on(env, mode):
+    """CIV-31c fix round 1 (P2-B): only mode on opens the culprit's task again after
+    the merge. So while AUTO_REVERT_MODE of the auto-revert unit is not on, or
+    systemctl cannot read it, the bot holds an auto-revert PR. It writes one HOLD
+    line, not one per pass, and it merges the PR once the mode is on. A PR of a
+    lane does not wait for the mode."""
+    state = env.tmp / "auto-revert"
+    (state / "open").mkdir(parents=True)
+    tip = git(env.seed, "rev-parse", "main")
+    env.pr(5, path="revert_5.txt")
+    env.view(5, headRefName="auto-revert/" + "a" * 12)
+    wjson(state / "open" / "5.json", {"culprit": "a" * 40, "ids": ["t"], "tip": tip})
+    env.pr(6)
+    if mode is None:
+        (env.fix / "auto_revert_mode").unlink()
+    else:
+        (env.fix / "auto_revert_mode").write_text(mode + "\n", encoding="utf-8")
+    bot = env.bot_src()
+    for _ in range(2):
+        r = env.run(script=bot, AUTO_REVERT_STATE=state.as_posix())
+    lines = env.log.splitlines()
+    want = mode or "unknown"
+    assert lines[0].startswith(f"HOLD 5 the auto-revert mode is '{want}', not on"), lines
+    assert lines[1:] == ["DONE 6 abc123"]
+    assert f"PR 5: auto-revert PR: the auto-revert mode is '{want}', not on" in r.stderr
+    assert env.merges == [f"pr merge 6 --squash --match-head-commit {env.heads[6]}"]
+    calls = (env.fix / "systemctl_calls").read_text(encoding="utf-8").splitlines()
+    assert calls[0] == "--user show -p Environment --value metorite-auto-revert.service"
+    # The mode is on again: the PR merges.
+    (env.fix / "auto_revert_mode").write_text("on\n", encoding="utf-8")
+    env.run(script=bot, AUTO_REVERT_STATE=state.as_posix())
+    assert env.log.splitlines()[2:] == ["DONE 5 abc123"]
 
 
 def test_civ31b_an_auto_revert_pr_gets_no_retry_when_main_moves(env):
@@ -884,10 +1015,11 @@ def test_civ31b_an_auto_revert_pr_gets_no_retry_when_main_moves(env):
     env.view(5, headRefName="auto-revert/" + "a" * 12)
     wjson(state / "open" / "5.json", {"culprit": "a" * 40, "ids": ["t"], "tip": tip})
     (env.fix / "base_modified").write_text("1", encoding="utf-8")
-    env.run(AUTO_REVERT_STATE=state.as_posix(), MERGE_BASE_RETRY_WAIT="0")
+    bot = env.bot_src()
+    env.run(script=bot, AUTO_REVERT_STATE=state.as_posix(), MERGE_BASE_RETRY_WAIT="0")
     assert env.merges == [f"pr merge 5 --squash --match-head-commit {sha}"]
     assert env.log == ""
-    env.run(AUTO_REVERT_STATE=state.as_posix(), MERGE_BASE_RETRY_WAIT="0")
+    env.run(script=bot, AUTO_REVERT_STATE=state.as_posix(), MERGE_BASE_RETRY_WAIT="0")
     assert len(env.merges) == 2 and env.log == "DONE 5 abc123\n"
 
 
@@ -1222,3 +1354,115 @@ def test_fix_p3_a_head_branch_that_moved_back_is_not_pushed_over(env):
     run_rules(env, during_tests=move)
     assert env.log.startswith("BACK 5 conflict: resolved by additions but the head branch moved")
     assert pr_branch(env, 5) == parent
+
+
+# ── CIV-28c: a BACK reaches the PR ──────────────────────────────────────────
+
+
+def test_civ28c_a_back_posts_one_pr_comment_with_the_reason(env):
+    sha = env.pr(5, checks={n: "pass" for n in REQUIRED} | {"Lint": "fail"})
+    env.run(MERGE_BOT_BACK_COMMENT=None)
+    # The log line is as before. The comment comes on top of it.
+    assert env.log == "BACK 5 red: Lint\n"
+    assert [c for c in env.calls.splitlines() if c.startswith("pr comment")] == [
+        "pr comment 5 --body-file -"
+    ]
+    (body,) = env.comments(5)
+    assert body.startswith(
+        f"Merge bot: BACK. The bot did not merge this PR at `{sha[:9]}` (task 99)."
+    )
+    assert "```text\nred: Lint\n```" in body
+    assert 'bash scripts/hand_over.sh 5 99 STANDARD "<note>"' in body
+    # A second pass with no new hand-over posts nothing more.
+    env.run(MERGE_BOT_BACK_COMMENT=None)
+    assert len(env.comments(5)) == 1
+
+
+def test_civ28c_every_kind_of_back_is_commented_but_closed_and_done_are_not(env):
+    env.pr(5, tier="HIGH")
+    env.pr(6, state="CLOSED")
+    env.pr(7)
+    env.pr(8)
+    env.push_pr(8)
+    env.run(MERGE_BOT_BACK_COMMENT=None)
+    assert env.log == (
+        "BACK 5 HIGH tier: lane-merge or a person merges it\n"
+        "BACK 6 closed\n"
+        "DONE 7 abc123\n"
+        "BACK 8 head moved after the hand-over: hand over again\n"
+    )
+    assert "HIGH tier" in env.comments(5)[0]
+    assert env.comments(6) == [] and env.comments(7) == []
+    assert "head moved after the hand-over" in env.comments(8)[0]
+
+
+def test_civ28c_a_failed_comment_keeps_the_log_line(env):
+    env.pr(5, checks={n: "pass" for n in REQUIRED} | {"Lint": "fail"})
+    r = env.run(FAKE_COMMENT_FAIL="1", MERGE_BOT_BACK_COMMENT=None)
+    assert env.log == "BACK 5 red: Lint\n"
+    assert "the BACK comment failed" in r.stderr
+
+
+def test_civ28c_the_comment_can_be_turned_off(env):
+    env.pr(5, checks={n: "pass" for n in REQUIRED} | {"Lint": "fail"})
+    env.run(MERGE_BOT_BACK_COMMENT="0")
+    assert env.log == "BACK 5 red: Lint\n" and "pr comment" not in env.calls
+
+
+def test_civ28c_a_code_fence_in_the_reason_cannot_end_the_block(env):
+    env.pr(5)
+    (env.fix / "premerge.sh").write_text(
+        "#!/usr/bin/env bash\necho 'see ```x``` and @someone' >&2\nexit 1\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    env.run(MERGE_BOT_BACK_COMMENT=None)
+    (body,) = env.comments(5)
+    assert body.count("```") == 2 and "'''x'''" in body and "@someone" in body
+
+
+def test_civ28c_a_hand_over_by_pr_number_merges(env):
+    # lane_handover.sh --pr writes "-" in the worktree field. The bot reads no path.
+    env.pr(5, queue=False)
+    env.queue(5, wt="-")
+    env.run(MERGE_BOT_BACK_COMMENT=None)
+    assert env.log == "DONE 5 abc123\n" and env.comments(5) == []
+
+
+def test_civ28c_a_dry_run_posts_no_comment(env):
+    env.pr(5, checks={n: "pass" for n in REQUIRED} | {"Lint": "fail"})
+    r = env.run(MERGE_BOT_DRY_RUN="1", MERGE_BOT_BACK_COMMENT=None)
+    assert env.log == "" and "pr comment" not in env.calls
+    assert "DRY RUN would comment the BACK on PR 5" in r.stderr
+
+
+# ── Fix round 1 (PR 2294 review): no credential in a BACK comment ───────────
+
+#: A key shape, built from parts so that the secret scan of the repo skips it.
+FAKE_KEY = "sk" + "-" + "q" * 24
+
+
+def _premerge_says(env, text):
+    (env.fix / "premerge.sh").write_text(
+        f"#!/usr/bin/env bash\necho '{text}' >&2\nexit 1\n", encoding="utf-8", newline="\n"
+    )
+
+
+def test_civ28c_fix1_the_comment_drops_a_credential_shape(env):
+    env.pr(5)
+    _premerge_says(env, f"fence failed: key {FAKE_KEY} in the log")
+    env.run(MERGE_BOT_BACK_COMMENT=None)
+    (body,) = env.comments(5)
+    assert FAKE_KEY not in body and "[redacted]" in body and "fence failed" in body
+    # The log line on the box keeps the full reason.
+    assert FAKE_KEY in env.log
+
+
+def test_civ28c_fix1_a_failed_scrub_posts_no_reason(env, tmp_path):
+    env.pr(5)
+    _premerge_says(env, f"fence failed: key {FAKE_KEY}")
+    env.run(MERGE_BOT_BACK_COMMENT=None, MERGE_BOT_SECRET_SHAPES=str(tmp_path / "missing.py"))
+    (body,) = env.comments(5)
+    assert FAKE_KEY not in body and "fence failed" not in body
+    assert "credential scrub failed" in body
+    assert env.log.startswith("BACK 5 premerge: ")

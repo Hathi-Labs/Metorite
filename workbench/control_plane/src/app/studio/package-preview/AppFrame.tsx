@@ -60,6 +60,8 @@ export interface AppFrameProps {
   controls: PreviewControls;
   /** Called after the owner deleted the app. */
   onDeleted: () => void;
+  /** A card above the app (the setup card of I8c). */
+  above?: React.ReactNode;
 }
 
 /** A detail view: the sheet of the picked record, or of the first one. */
@@ -101,7 +103,7 @@ function FilteredList({ source, door, active, onClear, children }: {
   );
 }
 
-export default function AppFrame({ pkg, detail, door, controls, onDeleted }: AppFrameProps) {
+export default function AppFrame({ pkg, detail, door, controls, onDeleted, above }: AppFrameProps) {
   const params = useSearchParams();
   const pageParam = params.get("page");
   const search = params.toString();
@@ -240,7 +242,9 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted }: App
       <StudioAppFrame title={detail.name.trim() || "App"} back={{ href: "/studio", label: "Back to Studio" }}
         actions={isMobile ? undefined : ownerBar}
         rail={railed ? { sections, activePage: built.page.id, onPick: setPage, counts } : undefined}>
-      <div className="h-full" onClickCapture={onLinkClick}>
+      <div className="flex h-full flex-col" onClickCapture={onLinkClick}>
+      {above ? <div className="shrink-0 px-3 pt-3 sm:px-4 sm:pt-4">{above}</div> : null}
+      <div className="min-h-0 flex-1">
       <StudioPage bare title={detail.name.trim() || "App"}
         manifest={manifest} pageId={built.page.id} state={state} onTab={setTab}
         onCloseSide={() => setSelected(null)} renderView={renderView} toolbar={toolbar}
@@ -268,6 +272,7 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted }: App
             onGroup={(g) => update((s) => withGroup(s, g))}
             onClear={() => update(clearedBar)} />
         ) : undefined} />
+      </div>
       </div>
       </StudioAppFrame>
     </StudioDataContext.Provider>

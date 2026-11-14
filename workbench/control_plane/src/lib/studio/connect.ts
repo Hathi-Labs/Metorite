@@ -76,10 +76,16 @@ const ENCODED_SLASH = /%(2f|5c)/i;
  * The link is read as the browser reads it, so `/.//host` becomes `//host`. That is why the OUTPUT goes
  * through `safeLocalPath` again, and an encoded slash is refused in the input.
  */
-export function connectHref(row: Pick<ConnectionRow, "setupHref">, pkg: string): string | null {
+export function connectHref(
+  row: Pick<ConnectionRow, "setupHref">,
+  pkg: string,
+  /** Where the member returns to. The IDE of the app by default. The guard `safeStudioReturn` judges it. */
+  returnTo: string = buildHref(pkg),
+): string | null {
   const href = safeLocalPath(row.setupHref);
   if (href === null || ENCODED_SLASH.test(href)) return null;
-  const back = safeStudioReturn(buildHref(pkg));
+  // An encoded slash in the way back is refused too: a proxy can decode it into a second slash.
+  const back = ENCODED_SLASH.test(returnTo) ? null : safeStudioReturn(returnTo);
   const url = new URL(href, BASE);
   if (url.origin !== BASE) return null;
   if (back !== null) url.searchParams.set(RETURN_PARAM, back);
@@ -94,7 +100,7 @@ export function subject(row: Pick<ConnectionRow, "name" | "label">): string {
 const capital = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
 
 /** The line of each row, in the order of the draft. */
-export function connectLines(rows: readonly ConnectionRow[], pkg: string): ConnectLine[] {
+export function connectLines(rows: readonly ConnectionRow[], pkg: string, returnTo?: string): ConnectLine[] {
   return rows.map((row): ConnectLine => {
     const what = subject(row);
     if (row.met) return { kind: "met", row, text: `${capital(what)} is connected.` };
@@ -110,7 +116,7 @@ export function connectLines(rows: readonly ConnectionRow[], pkg: string): Conne
     if (!row.canConnect) {
       return { kind: "ask", row, text: `An admin must connect ${what}. Ask one, then come back.` };
     }
-    return { kind: "connect", row, text: `This app needs ${what}.`, href: connectHref(row, pkg) };
+    return { kind: "connect", row, text: `This app needs ${what}.`, href: connectHref(row, pkg, returnTo) };
   });
 }
 
