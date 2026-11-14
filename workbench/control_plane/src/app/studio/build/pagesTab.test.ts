@@ -85,3 +85,57 @@ describe("PagesTab", () => {
     expect(page).not.toMatch(/router\.replace\([^)]*focusPage/);
   });
 });
+
+// ── AF-8b-3b: the cells editor ──────────────────────────────────────────────
+// Mutation 6: add `onChange(` or an `applyFrame` import to CellsEditor. "sends only through act" turns red.
+// Mutation 7: call a bare `removeCell(` in CellsEditor. "removes a cell through the count guard" turns red.
+// Mutation 8: drop `disabled={locked` from a CellsEditor control. "locks every control of the editor" turns red.
+// Mutation 9: add `onKeyDown` to CellsEditor. "names each icon button" turns red.
+const cells = read("components/CellsEditor.tsx");
+
+describe("CellsEditor", () => {
+  it("is drawn only from PagesTab", () => {
+    expect(tab.match(/<CellsEditor\b/g)).toHaveLength(1);
+    expect(page).not.toContain("CellsEditor");
+  });
+
+  it("sends only through act", () => {
+    expect(cells).not.toMatch(/onChange\(|applyFrame/);
+    expect(tab).not.toMatch(/onChange\(/);
+    expect(tab).toContain("act={act}");
+  });
+
+  it("removes a cell through the count guard, and a tab only after the confirm", () => {
+    expect(cells).toContain("removeCellGuarded(");
+    expect(cells).not.toMatch(/\bremoveCell\(/);
+    expect(cells).not.toMatch(/\bremoveTab\(/);
+    expect(tab.match(/\bremoveTab\(/g)).toHaveLength(1);
+    const confirm = tab.slice(tab.indexOf("onConfirm={"), tab.indexOf("onCancel={"));
+    expect(confirm).toContain("removeTab(");
+  });
+
+  it("locks every control of the editor", () => {
+    const controls = cells.match(/<(?:Button|SelectButton|CommitInput)\b[\s\S]*?(?:\/>|<\/Button>)/g) ?? [];
+    expect(controls.length).toBeGreaterThanOrEqual(12);
+    for (const c of controls) expect(c).toMatch(/disabled=\{locked/);
+  });
+
+  it("names each icon button, and has no key handler, network call or colour", () => {
+    const icons = cells.match(/<Button[^>]*size="icon-sm"[\s\S]*?\/>/g) ?? [];
+    expect(icons.length).toBeGreaterThanOrEqual(6);
+    for (const b of icons) expect(b).toContain("aria-label=");
+    expect(cells).not.toMatch(/onKeyDown|keydown|\bfetch\(|XMLHttpRequest/);
+    expect(cells).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+    expect(cells).not.toMatch(/\[\d+px\]|\bpx-\[|(?:bg|text|border)-\[/);
+  });
+
+  it("uses shared controls only", () => {
+    expect(cells).toContain("<CommitInput");
+    expect(cells).not.toMatch(/<(button|select|input|textarea|dialog)[\s>]/);
+    expect(cells).not.toMatch(/lucide-react|components\/ui\/Input/);
+  });
+
+  it("reads the caps from the model, not from a literal", () => {
+    expect(cells).not.toMatch(/\b(?:12|8)\b/);
+  });
+});
