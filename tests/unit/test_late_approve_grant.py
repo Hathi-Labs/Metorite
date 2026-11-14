@@ -695,6 +695,47 @@ def test_bulk_update_never_takes_a_grant_even_with_one_in_place(
     assert WRITES == []
 
 
+def test_only_a_parked_plain_confirmation_row_turns_its_offer_into_a_grant(late_on):
+    """The offer waits, and only the right row and the right answer take it.
+    Each refusal before the approve leaves the records of Alice in place."""
+    from acb_common.tenant_redis import key, organization_scope
+
+    rid, tid = "a" * 32, "t1"
+    deal = ("tests.unit.test_late_approve_grant", "update_deal_status", (("deal_id", "d1"),))
+    keys = late_approve.keys_wire(frozenset({deal}))
+    digest = late_approve.digest_of("card", keys)
+    with organization_scope(_ORG_A):
+        ask = key(late_approve.ASK_NAMESPACE, _ALICE, tid, rid).value
+        offer = key(late_approve.OFFER_NAMESPACE, _ALICE, tid, digest).value
+        grant = key(late_approve.GRANT_NAMESPACE, _ALICE, tid, digest).value
+    row = {"kind": "confirmation", "state": "parked", "thread_id": tid,
+           "request_id": rid, "payload": {}}
+
+    def seed() -> None:
+        late_on.data.update({ask: digest, offer: late_approve._encode(rid, "card", keys)})
+
+    async def go(answer: str = "APPROVE", member: str = _ALICE, **change: Any) -> bool:
+        return await late_approve.grant_from_offer(_ORG_A, member, {**row, **change}, answer)
+
+    seed()
+    for change in ({"state": "open"}, {"state": "answered"}, {"kind": "questions"},
+                   {"payload": {"rows": [{"id": "r1"}]}}, {"payload": {"reply": {"kind": "new"}}}):
+        assert not asyncio.run(go(**change)), change
+        assert sorted(late_on.data) == sorted([ask, offer]), change
+    assert not asyncio.run(go(member=_BOB))
+    assert sorted(late_on.data) == sorted([ask, offer]), "Bob reads no record of Alice"
+    assert asyncio.run(go(answer=" approve "))
+    assert list(late_on.data) == [grant]
+    # A second late answer finds no ask record, so it writes nothing.
+    late_on.data.clear()
+    assert not asyncio.run(go())
+    assert late_on.data == {}
+    # A REJECT drops the offer.
+    seed()
+    assert not asyncio.run(go(answer="REJECT"))
+    assert late_on.data == {}
+
+
 def test_only_a_first_party_write_that_stays_in_metorite_has_keys():
     assert late_approve.keys_wire(None) is None
     assert late_approve.keys_wire(frozenset()) is None
