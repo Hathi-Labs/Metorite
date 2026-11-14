@@ -416,6 +416,11 @@ def test_each_listed_provider_has_a_registry_writer_or_an_outside_entry() -> Non
         assert not (has_writer and pid in outside), f"{pid}: a registry writer AND an outside entry"
         assert connections.checkable(pid) is has_writer, pid
     assert set(outside) <= set(rows)
+    # A provider that a writer saves but the list does not hold would be met by the door and drawn
+    # as blocked by the route: keep every written provider on the list (or the `mcp:` family).
+    from gateway.connections import mcp as mcp_registry
+
+    assert written <= set(rows) | {mcp_registry.PREFIX}, sorted(written - set(rows))
 
 
 def test_the_outside_set_is_computed_from_the_list_and_names_the_tables_the_console_reads() -> None:

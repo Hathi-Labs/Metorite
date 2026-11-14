@@ -34,8 +34,9 @@ export interface ConnectionRow {
   met: boolean;
   /**
    * The gateway can check this name. False for a provider whose connection lives outside the registry
-   * (a mailbox and a WhatsApp number until I9, a key of the console until I8e). It never turns met, so
-   * the app does not run while the draft names it, and its line offers no Connect.
+   * (a mailbox and a WhatsApp number until I9, a key of the console until I8e), and for a name that no
+   * registry writer can write (the bare `mcp`, an id that is not on the connector list). It never turns
+   * met, so the app does not run while the draft names it, and its line offers no Connect.
    */
   checkable: boolean;
   /** The connect flow of the owning app. Null when the server sent no path of this site. */
