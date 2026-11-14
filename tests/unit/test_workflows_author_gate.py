@@ -90,6 +90,8 @@ from gateway.routes.workflows import (
 )
 from gateway.routes.workflows import router as workflows_router
 
+from tests.unit import _r8_lists as r8_lists
+
 _ROOT = Path(__file__).resolve().parents[2]
 _WORKFLOWS_DIR = _ROOT / "apps/services/gateway/gateway/routes/workflows"
 
@@ -577,8 +579,5 @@ def test_the_flag_has_one_reader() -> None:
 def test_the_r8_suite_is_named_in_the_ci_skip_guard() -> None:
     """A fence that never runs is no fence. The ``--must-run`` list names the
     pytest ARGUMENT, so a mention in a comment does not count."""
-    workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
-    assert block, "the --must-run argument list is missing"
-    assert re.search(r"^[ \t]+tests/unit/test_workflows_author_gate_r8\.py(?: \\)?$",
-                     block.group(1), re.M)
+    must_run = r8_lists.must_run()
+    assert "tests/unit/test_workflows_author_gate_r8.py" in must_run

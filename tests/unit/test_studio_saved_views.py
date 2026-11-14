@@ -515,9 +515,8 @@ def test_the_routes_read_neither_the_share_verb_nor_the_admin_right() -> None:
 
 
 def test_the_r8_suite_is_named_in_both_ci_skip_guards() -> None:
-    for name in ("pr-check.yml", "deploy.yml"):
-        flow = (_ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
-        block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", flow)
-        assert block, f"{name}: the --must-run argument list is missing"
-        assert re.search(r"^[ \t]+tests/unit/test_studio_saved_views_r8\.py(?: \\)?$",
-                         block.group(1), re.M), name
+    """A skip is not a pass. The R8 guard reads its must-run list from
+    tests/fences.json (CIV-33c-2), so the R8 half must be named there."""
+    from tests.unit import _r8_lists as r8_lists
+
+    assert "tests/unit/test_studio_saved_views_r8.py" in r8_lists.must_run()

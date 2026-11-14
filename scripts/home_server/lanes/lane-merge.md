@@ -43,8 +43,9 @@ worktree, the lane, the head SHA, the tier and a note, with tabs between them.
 A `#` header line names them. Nothing else writes this queue.
 
 The bot writes one result line to `~/lanes/merge-bot.log` for each hand-over:
-`DONE <pull request> <merge sha>` or `BACK <pull request> <reason>`. **Only the
-bot writes this log.** Do not append to it, and no lane appends to it. A
+`DONE <pull request> <merge sha>` or `BACK <pull request> <reason>`. Before
+that line, it can write `RESOLVED <pull request> <rules>` (CIV-34a). **Only
+the bot writes this log.** Do not append to it, and no lane appends to it. A
 manual merge does not go in it.
 
 The old `~/lanes/merge-queue.tsv` and `~/lanes/merge-queue.log` stay as
@@ -75,6 +76,11 @@ newer head. While the timer runs, do not merge a pull request by hand.
 Your part is the Metorite side. Read `~/lanes/merge-bot.log` in each loop.
 
 - A new `DONE <pull request> <sha>` line: do step f.
+- A new `RESOLVED <pull request> <rules>` line: the bot merged `main` into the
+  pull request branch and resolved a conflict by the named rules. Then it
+  pushed the merge commit (`ci_velocity.md` §8.9). The hand-over stays open, and the bot
+  merges it after the new pr-check. Comment the line on the task, so the lane
+  that owns it pulls its branch before its next commit. Do nothing else.
 - A new `BACK <pull request> HIGH tier: ...` line: do steps a to f for it
   yourself. Step b binds in full.
 - A new `BACK <pull request> <reason>` line: comment the reason on the task,

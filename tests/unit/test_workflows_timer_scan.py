@@ -610,7 +610,8 @@ def test_a_timer_read_with_a_bad_reference_fails_closed(pid: Any, obj: Any, rule
 
 
 def test_the_r8_suite_is_named_in_both_ci_skip_guards() -> None:
-    """A skip is not a pass. CI must run the R8 half."""
-    for name in ("pr-check.yml", "deploy.yml"):
-        workflow = (_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
-        assert "tests/unit/test_workflows_timer_r8.py \\" in workflow, name
+    """A skip is not a pass. The R8 guard reads its must-run list from
+    tests/fences.json (CIV-33c-2), so the R8 half must be named there."""
+    from tests.unit import _r8_lists as r8_lists
+
+    assert "tests/unit/test_workflows_timer_r8.py" in r8_lists.must_run()

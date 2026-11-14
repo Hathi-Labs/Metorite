@@ -26,6 +26,10 @@ passes, it moves `green/main`. Each release slot ships that commit. §8.7
 holds the design. A repair round after the verifier, on 2026-11-13, makes the
 R8 guard read the lists of the release commit.
 
+**CIV-30c is BUILT on 2026-11-14** (task 3121, branch `civ30c-mt-c746154d`).
+HIGH tier. A green batch also puts the commit status `green/main` on its
+commit, and a slot run picks at its slot, not before. §8.7 holds the change.
+
 **CIV-31 is BUILT on 2026-11-14** (task 3056, branch
 `civ31-auto-revert-mt-7191b0bd`). HIGH tier, and dark. The code default of
 `AUTO_REVERT_MODE` is `off`. The unit file sets `dry` for the one-week dry
@@ -201,11 +205,12 @@ scanners, so the heuristics are gone.
   Test both cases.
 - `scripts/ci_unit_guard.py` gets `--only-selected <file list>`. With it,
   `--must-run` checks only the listed R8 files that are in the selection.
-  The literal `--must-run` list stays in pr-check.yml, because 36 test files
-  assert their own name in that text (counted 2026-11-05). A new
+  Since CIV-33c-2 the lists are the `r8` key of `tests/fences.json`, and the
+  command takes them with `--lists-from-fences`. The test files that name
+  themselves read that key through `tests/unit/_r8_lists.py`. A new
   case in `tests/unit/test_ci_unit_guard.py` covers the filter.
   deploy.yml's R8 gate keeps the full list, with no `--only-selected`.
-  `test_deploy_pipeline.py` fails when the two lists differ.
+  `test_deploy_pipeline.py` fails when a workflow carries a list of its own.
 - The guard still finds a JUnit report for each shard. A skipped pytest step
   must not leave it with none.
 - The step that writes the measured timings runs only on a FULL run. A
@@ -332,9 +337,10 @@ nowhere before production.
   pr-check's split by duration, `--reruns 1`, no `-x`, and a JUnit report.
 - A list of fewer than 100 files stops the shard before pytest starts.
 - `r8-gate` fails when a shard failed. Then it runs
-  `ci_unit_guard.py check` over the 6 reports. It uses pr-check's full
-  `--must-run`, `--never-skip` and `--disarmed` lists, and no
-  `--only-selected`.
+  `ci_unit_guard.py check` over the 6 reports. It uses the full lists of the
+  release commit's `tests/fences.json` (`r8` key), and no `--only-selected`.
+  A release commit from before CIV-33c-2 has no such key. Then the guard
+  reads the lists in that commit's own deploy.yml.
 - `publish-release` needs `r8-gate` green. It accepts a skip only on a
   `skip_tests` dispatch, the same rule as for `test`. `release-window` reads
   the clock after `r8-gate`.
@@ -349,9 +355,10 @@ nowhere before production.
 - The `test` job, its group, its tip step and its timeout do not change. It
   keeps `-x`.
 
-**The 35 files that check for their own name** read pr-check.yml only, so a
-second list does not break them. `test_deploy_pipeline.py` fails when the
-two lists differ. Add a new R8 suite to both files.
+**The files that check for their own name** read the `r8` key of
+`tests/fences.json` through `tests/unit/_r8_lists.py` (CIV-33c-2). Both
+workflows read that one key, so no second list exists. Add a new R8 suite
+there. `test_ci_unit_guard.py` fails when a test reads a workflow for a listed path.
 
 **Fence:** `tests/unit/test_deploy_pipeline.py` covers the triggers, the
 needs chain, the `skip_tests` rule, the services, the variables, the assert
@@ -923,11 +930,11 @@ Each rung ends in a demo (D211). Each slice of a rung blocks its demo task.
 | CIV-36 | 3061 | 0 | LOW | The preview gates the flag |
 | CIV-37 | 3062 | 0 | LOW | Model routing by job |
 | CIV-38 | 3063 | 0 | LOW | The quality numbers and the rollback rule |
-| CIV-30 | 3055 | 1 | HIGH | The green pointer. A release ships green |
+| CIV-30 | 3055 | 1 | HIGH | The green pointer. A release ships green. CIV-30c BUILT 2026-11-14 (task 3121): the status `green/main` marks a batch when GitHub refuses the ref, and a slot run picks at its slot (§8.7) |
 | CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first. **BUILT 2026-11-14**, dark (code default `off`, unit `dry`). §8.8 holds the design |
 | CIV-32 | 3057 | 2 | STANDARD | **BUILT 2026-11-13.** A repair round tests what failed and what the fix reaches (`ci_unit_guard.py repair`) |
-| CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py`. CIV-33d BUILT 2026-11-13 (task 3074): the scan fences of six large files moved to `*_scan.py` files, and `test_scanner_budget.py` caps a scanner file at 30 s. The scanner set costs 1,748 s, down from 2,333 s. `test_affected_tests.py` (381 s) waits for PR 2205. CIV-33c-1 BUILT 2026-11-13 (task 3073): a hub selects its importers up to 20% of the test files, a flag-only diff of `settings.py` or `env_guard.py` selects the tests that name the flag, and `scripts/replay_gate.py` measures the FULL share. For a hub or a flag diff, an app entry, or a test helper that builds an app, selects its test importers. The closure over test imports starts from the import picks, not from the scanners or the SAFETY fences. CIV-33c-2 (the `.github/` rule) is open |
-| CIV-34 | 3059 | 2 | STANDARD | Conflict rules in the merge bot, tested on the merged tree |
+| CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py`. CIV-33d BUILT 2026-11-13 (task 3074): the scan fences of six large files moved to `*_scan.py` files, and `test_scanner_budget.py` caps a scanner file at 30 s. The scanner set costs 1,748 s, down from 2,333 s. `test_affected_tests.py` (381 s) waits for PR 2205. CIV-33c-1 BUILT 2026-11-13 (task 3073): a hub selects its importers up to 20% of the test files, a flag-only diff of `settings.py` or `env_guard.py` selects the tests that name the flag, and `scripts/replay_gate.py` measures the FULL share. For a hub or a flag diff, an app entry, or a test helper that builds an app, selects its test importers. The closure over test imports starts from the import picks, not from the scanners or the SAFETY fences. CIV-33c-2 BUILT 2026-11-14 (task 3073): the R8 must-run, never-skip and disarmed lists moved from the two workflows to the `r8` key of `tests/fences.json`. A workflow or a composite action stays FULL. Any other file under `.github/` is not FULL. An edit of `tests/fences.json` selects the files it adds to a list and the guard's own tests, and a file that does not parse is FULL. The replay of 300 main commits shows 96 FULL (32.0%), and 38 of the 43 commits whose only FULL reason was `.github/` edited a list only. With those edits in `tests/fences.json`, the projected share is 58 of 300 (19.3%). `packages/acb_common/` is the next cause (37 commits) CIV-33e BUILT 2026-11-14 (task 3075): `SHARD_TARGET_S` is 300 and `ALL_SHARDS` is 8, and `test_board_stats_r8.py` split into three files of 300 s or less. |
+| CIV-34 | 3059 | 2 | STANDARD | Conflict rules in the merge bot, tested on the merged tree. CIV-34a BUILT 2026-11-14 (§8.9): the rules, the checks on the merged tree, and the trailer. The fix round of the PR 2266 review (same day) removed `rerere`, `rebuild` and the markdown `union`, and added the ref checks and the `ls-remote` check. CIV-34b (a model proposal) is open |
 | CIV-35 | 3060 | 2 | LOW | A proposal: review depth by file class. It needs an owner decision |
 
 The demo tasks: rung 0 is task 3064, rung 1 is task 3065, and rung 2 is task
@@ -970,9 +977,11 @@ step 1c keep the old table.
   not move to a commit that is off main or that does not contain the current
   pointer. A folded, cancelled, failed or skipped `test` does not move it. It
   has `contents: write` on that one job, and it never pushes to `main`.
+  Since CIV-30c, it first puts the commit status `green/main` on that commit.
 - **Ship.** The job `release-commit` runs first in each run. On a slot run (a
   schedule run, or a dispatch with `nightly=true`), it reads the head of
-  `green/main`. Each job that builds, tests, gates or deploys the release
+  `green/main`. Since CIV-30c, it takes a newer commit with the status
+  `green/main` when one exists. Each job that builds, tests, gates or deploys the release
   checks out that one commit: `lint`, `test`, `r8-suite`, `r8-gate`,
   `publish-release`, `deploy`, `pull-delivery` and `chat-smoke`. The box
   applies it as `DEPLOY_REF`. A push and a plain dispatch use their own
@@ -1004,6 +1013,49 @@ step 1c keep the old table.
   dispatch. The step `once` still counts that run as the ship of its slot. So
   a later nightly run in the same window does not ship a newer `green/main`.
   The next slot ships it.
+
+**CIV-30c (2026-11-14, task 3121).** On 2026-11-13 the 13:30 slot shipped
+`151fb81a5`. It left out 11 commits, and the batch on `e9e89b8ce` had passed.
+The fence of this change is `tests/unit/test_green_slot.py`.
+
+- **Cause 1 was not a loss.** A push cancelled the run of the push before it.
+  Each of those runs never started its `test` job (no runner, no step, 10 runs
+  checked). That is the fold of CIV-4. The next batch tested the tip, which
+  held those commits. No change.
+- **Cause 2: GitHub refused the ref.** The mark of `e9e89b8ce` failed,
+  because GitHub refused the ref move (run 43422421248). The message names the
+  `workflows` permission, which the GITHUB_TOKEN does not have. Later moves
+  across the same workflow change passed, so GitHub's rule is not clear from
+  outside.
+- **Fix 2: a commit status.** `mark-green` first puts the commit status
+  `green/main` (state `success`) on the tested commit. A status is not a ref,
+  so GitHub does not apply that refusal to it. Then the job tries the ref as
+  before. A refusal for a workflow file is a warning, and the step passes. A
+  status that the API refuses 3 times fails the job, and the ref step still
+  runs. The job has `statuses: write`, and no other job has it. No new secret.
+- **The pick reads both records.** `release-commit` walks the first parents of
+  main, from the tip down to the ref. It stops after 100 commits or 120 seconds. It
+  takes the first commit with a `green/main` status of `success` from
+  `github-actions[bot]`. With none, it takes the ref. When the status read
+  fails, it takes the ref and warns. With no ref, a failed read holds the
+  release.
+- **Cause 3: the cron picked before the slot.** GitHub started the 05:30 cron
+  at 13:17 (run 43432451895). It picked at once, published first, and the
+  step `once` then held the box's run.
+- **Fix 3: a slot run picks at its slot.** The step "Wait for the slot" holds
+  a slot run that starts in the 30 min before a slot until 2 min after it.
+  The 2 min let the mark of a batch that ended just before the slot land.
+  `release-window` reads `picked_at` and holds a run that picked before the
+  slot of its window. That covers a cron that starts in the gap, and whose
+  tests end inside the window. A person's rerun does not wait and is not held.
+- **What stays.** Each release still runs the full unit suite and the R8 gate
+  on the commit that it ships. A status only chooses the commit. So D218
+  ("a release ships only a green commit") is as strong as before.
+- **A known limit: a slow mark.** A mark that lands more than 2 min after
+  the slot misses that slot. The next slot ships it.
+- **A known limit: a cron from the gap does not ship.** A cron that starts in the
+  gap before a window no longer ships in that window. When the box is down,
+  the slot then waits for the cron of the slot itself.
 
 ### 8.8 CIV-31 as built: the automatic revert (2026-11-14)
 
@@ -1078,3 +1130,65 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
   pr-check passes on it, with a median of 32 minutes (§8.2).
 - **Go `on`.** After the week of `dry`, read the log and the reports. CIV-38
   lands first (§8.5). Then set `AUTO_REVERT_MODE=on` in the unit and reload it.
+
+### 8.9 CIV-34a as built: conflict rules in the merge bot (2026-11-14)
+
+A conflict gave 28 of 52 BACKs (CIV-25), and a conflicted PR gets no GitHub CI.
+The bot now merges `main` into the PR branch and tries three rules per hunk.
+`scripts/merge_conflict_rules.py` holds the rules. `merge_bot.sh` holds the
+steps around them.
+
+| Rule | When it applies |
+|---|---|
+| `trivial` | One side equals the base, or both sides are equal. |
+| `table-rows` | A markdown table (`*.md` only) keyed by its first cell. Each side keeps its own rows. The rule refuses a row that changed on both sides, a changed header or separator row, and a row whose cell count is not the header's. |
+| `additions` | Both sides only added lines, in a Python test file or an import block. Ruff must sort the imports. |
+| `union` | `tests/fences.json` only. The helper merges it as JSON, and unites the list arrays with no repeat. |
+
+Three rules of the first build are gone, because no real conflict reaches them.
+`.gitattributes` gives `INDEX.md`, `HANDOFF.md` and `.env.example` the
+`merge=union` driver, so git never stops on them, and no `CHANGELOG` file
+exists. The tier floor (CIV-28b) sends a PR that touches `infra/postgres/`
+BACK first, so `rebuild` had no case. `rerere` is off on every bot merge.
+
+The helper refuses a file when one of these is true:
+
+- A hunk fits no rule.
+- A side holds a NUL byte or is not UTF-8.
+- The path has the `binary` or `-merge` attribute.
+- The result holds a conflict marker. The helper asks `git merge-file` for
+  31-character markers and reads only those, so an RST border is text.
+- The Python result does not compile.
+- The Python result has one function or class name more often in one scope
+  than ours or theirs has it. Python keeps the last def, so a test would
+  vanish.
+
+The PR then goes BACK with `conflict: no rule fits <files>`. A conflict in a
+HIGH path, in `.github/workflows/` or in `infra/postgres/` always goes BACK.
+
+The bot takes only a PR of this repo with base `main`. The head branch must
+not have a protected name: `main`, `master`, `release`, `release/*` or
+`green/*`. The bot checks this before any merge work.
+
+The checks run on the merged tree before the commit. The bot runs `py_compile`
+on the changed Python files and a YAML parse on the changed workflow files. It
+runs only the tests that the resolution reaches: the conflicted test files,
+plus `affected_tests.select` of the resolved files with no scanners. The full
+gate is not here, because pr-check runs it on the new head. When the
+`.test_durations` time of that set is over the cap (900 s), the PR goes BACK
+with no run.
+
+Ruff comes from `.venv/bin` of the bot checkout, or from `uv run --no-sync`.
+With neither, the file is not resolved.
+
+When all checks pass, the bot commits the merge. Each resolution adds one
+`Conflict-Rule: <rule> <file>` trailer. Right before the push, the bot reads
+the head branch with `git ls-remote`. When it moved, the PR goes BACK. The
+push never uses force. The bot then logs `RESOLVED <pr> <rules>`, and the
+state file pairs the queued SHA with the new head.
+
+The push starts a new pr-check. The merge goes through `--match-head-commit`
+on the new head. A conflicted PR never gets checks. So the bot looks for a
+conflict while a PR waits on checks. A lane that reads a `RESOLVED` line pulls
+its branch before its next commit. CIV-34b (a model-written proposal for a
+conflict that no rule fits) is open.

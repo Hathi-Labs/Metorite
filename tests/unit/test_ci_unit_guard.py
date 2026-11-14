@@ -112,8 +112,20 @@ def test_the_required_check_name_is_the_aggregator() -> None:
     assert jobs["unit-tests"]["if"] == "always()"
     run = "\n".join(s.get("run", "") for s in jobs["unit-tests"]["steps"])
     assert "scripts/ci_unit_guard.py check" in run
-    for reason in guard.DISARMED:
-        assert f'--disarmed "{reason}"' in run
+    # CIV-33c-2: the disarmed reasons are the `r8` key of tests/fences.json.
+    assert "--lists-from-fences tests/fences.json" in run
+    lists = guard.fence_lists((_ROOT / "tests/fences.json").read_text(encoding="utf-8"))
+    assert set(guard.DISARMED) <= set(lists["--disarmed"])
+
+
+def test_the_shard_constants_match_the_workflow_matrix() -> None:
+    """CIV-33e. ALL_SHARDS and SHARD_TARGET_S must not drift from the matrix
+    fallback in pr-check.yml. A full run starts one job for each shard."""
+    assert (guard.ALL_SHARDS, guard.SHARD_TARGET_S) == (8, 300)
+    matrix = _jobs()["test"]["strategy"]["matrix"]["shard"]
+    fallback = matrix.split("||", 1)[1].split("'")[1]
+    assert json.loads(fallback) == list(range(1, guard.ALL_SHARDS + 1))
+    assert guard.shard_list(guard.ALL_SHARDS) == fallback
 
 
 def test_every_shard_runs_and_writes_a_report() -> None:
@@ -121,7 +133,7 @@ def test_every_shard_runs_and_writes_a_report() -> None:
     run = "\n".join(s.get("run", "") for s in test["steps"])
     # CIV-17: the matrix and the split count both follow the selection.
     assert test["strategy"]["matrix"]["shard"] == (
-        "${{ fromJSON(needs.changes.outputs.shards || '[1,2,3,4,5,6]') }}"
+        "${{ fromJSON(needs.changes.outputs.shards || '[1,2,3,4,5,6,7,8]') }}"
     )
     assert "--splits ${{ steps.pick.outputs.splits }}" in run
     assert "--group ${{ matrix.shard }}" in run
@@ -323,8 +335,12 @@ def test_the_guard_step_passes_only_selected_on_a_selection_run() -> None:
     assert step["env"]["FULL"] == "${{ needs.changes.outputs.full }}"
     assert 'if [ "$FULL" = "false" ]' in step["run"]
     assert "--only-selected $FILES" in step["run"]
-    # The literal list stays in the YAML: 40+ suites assert their own name there.
-    assert "--must-run" in step["run"] and "tests/unit/test_auto_park.py" in step["run"]
+    # CIV-33c-2: the lists are the `r8` key of tests/fences.json, not literals here.
+    assert "--lists-from-fences tests/fences.json" in step["run"]
+    assert "--must-run" not in step["run"] and "--never-skip" not in step["run"]
+    assert "tests/unit/test_auto_park.py" in guard.fence_lists(
+        (_ROOT / "tests/fences.json").read_text(encoding="utf-8")
+    )["--must-run"]
 
 
 def test_a_must_run_path_missing_from_the_tree_always_fails(tmp_path: Path) -> None:
@@ -338,6 +354,194 @@ def test_a_must_run_path_missing_from_the_tree_always_fails(tmp_path: Path) -> N
         problems = guard.check(junit, must, [], only_selected=only, tree_root=tree)
         assert any("not in the tree: tests/unit/test_deleted.py" in p for p in problems), only
         assert not any("test_alive.py" in p and "tree" in p for p in problems), only
+
+
+# ── CIV-33c-2: the lists are the `r8` key of tests/fences.json ─────────────
+
+
+def _r8_report(tmp_path: Path, ran: list[str], skipped: list[str] | None = None) -> Path:
+    """A report with one passing test for each file in `ran`, and one skipped
+    test for each file in `skipped`."""
+    cases = "".join(
+        f'<testcase classname="{f[:-3].replace("/", ".")}" name="test_ok" file="{f}" time="0.1"/>'
+        for f in ran
+    ) + "".join(
+        f'<testcase classname="{f[:-3].replace("/", ".")}" name="test_s" file="{f}" time="0.1">'
+        '<skipped type="pytest.skip" message="a plain skip"/></testcase>'
+        for f in skipped or []
+    )
+    out = tmp_path / "junit"
+    out.mkdir(exist_ok=True)
+    (out / "shard-1.xml").write_text(
+        '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest">'
+        f"{cases}</testsuite></testsuites>",
+        encoding="utf-8",
+    )
+    return out
+
+
+def _fences_file(tmp_path: Path, r8: object) -> Path:
+    path = tmp_path / "fences.json"
+    path.write_text(json.dumps({"r8": r8}) if r8 is not None else "{}", encoding="utf-8")
+    return path
+
+
+def _guard_cli(*args: object) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(_ROOT / "scripts/ci_unit_guard.py"), "check", *map(str, args)],
+        capture_output=True,
+        text=True,
+    )
+
+
+_A, _B, _C = "tests/unit/test_a.py", "tests/unit/test_b.py", "tests/unit/test_c.py"
+_OK = {"disarmed": ["NEVER_MATCHES unset"], "never_skip": [_A], "must_run": [_A, _B]}
+
+
+def test_lists_from_fences_applies_the_must_run_and_never_skip_lists(tmp_path: Path) -> None:
+    fences = _fences_file(tmp_path, _OK)
+    tree = ["--tree-root", tmp_path]
+    for f in (_A, _B):
+        (tmp_path / f).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / f).write_text("", encoding="utf-8")
+    good = _guard_cli("--junit", _r8_report(tmp_path, [_A, _B]), "--lists-from-fences", fences, *tree)
+    assert good.returncode == 0, good.stdout
+    assert "2 must-run, 1 never-skip" in good.stdout
+    lost = _guard_cli("--junit", _r8_report(tmp_path, [_A]), "--lists-from-fences", fences, *tree)
+    assert lost.returncode == 1 and f"no shard ran {_B}" in lost.stdout
+    skip = _guard_cli(
+        "--junit", _r8_report(tmp_path, [_B], skipped=[_A]), "--lists-from-fences", fences, *tree
+    )
+    assert skip.returncode == 1 and "skipped" in skip.stdout
+
+
+def test_lists_from_fences_still_takes_a_selection(tmp_path: Path) -> None:
+    fences = _fences_file(tmp_path, _OK)
+    for f in (_A, _B):
+        (tmp_path / f).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / f).write_text("", encoding="utf-8")
+    done = _guard_cli(
+        "--junit", _r8_report(tmp_path, [_A]), "--lists-from-fences", fences,
+        "--tree-root", tmp_path, "--only-selected", _A,
+    )
+    assert done.returncode == 0, done.stdout
+
+
+@pytest.mark.parametrize(
+    "r8",
+    [
+        None,
+        "text",
+        {**_OK, "must_run": []},
+        {**_OK, "never_skip": []},
+        {"never_skip": [_A], "must_run": [_A]},
+        {**_OK, "must_run": "tests/unit/test_a.py"},
+        {**_OK, "must_run": [_A, "tests/unit/$(evil).py"]},
+    ],
+)
+def test_lists_from_fences_fails_closed(tmp_path: Path, r8: object) -> None:
+    """A missing key, an empty list or a bad path never becomes an empty list."""
+    junit = _r8_report(tmp_path, [_A, _B])
+    done = _guard_cli("--junit", junit, "--lists-from-fences", _fences_file(tmp_path, r8))
+    assert done.returncode == 1
+    assert "R8 guard lists unknown" in done.stdout
+    assert "checked " not in done.stdout
+
+
+def test_lists_from_fences_fails_closed_on_a_file_that_is_not_json_or_not_there(tmp_path: Path) -> None:
+    junit = _r8_report(tmp_path, [_A])
+    bad = tmp_path / "bad.json"
+    bad.write_text("{ not json", encoding="utf-8")
+    for path in (bad, tmp_path / "missing.json"):
+        done = _guard_cli("--junit", junit, "--lists-from-fences", path)
+        assert done.returncode == 1 and "R8 guard lists unknown" in done.stdout
+
+
+def test_the_real_fences_hold_a_readable_r8_key() -> None:
+    lists = guard.fence_lists((_ROOT / "tests/fences.json").read_text(encoding="utf-8"))
+    assert len(lists["--must-run"]) > 100
+    assert lists["--disarmed"]
+    assert len(set(lists["--must-run"])) == len(lists["--must-run"]), "a file is listed twice"
+    # The guard's own check needs every path in the tree.
+    missing = [p for p in lists["--must-run"] + lists["--never-skip"] if not (_ROOT / p).is_file()]
+    assert not missing, missing
+
+
+# ── CIV-33c-2: no test reads a workflow for an R8-listed path ──────────────
+
+# These files hold the guard itself. They name listed paths in fixtures.
+_READS_WORKFLOWS_OK = {
+    "test_ci_unit_guard.py",
+    "test_green_pointer.py",
+    "test_deploy_pipeline.py",
+    "test_affected_tests.py",
+    "test_fence_lists.py",
+}
+_WORKFLOW_WORDS = ("workflows", "pr-check.yml", "deploy.yml")
+
+
+def _function_nodes(tree):
+    import ast
+
+    return [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)]
+
+
+def workflow_readers_of_listed_paths(files: list[Path], listed: set[str]) -> list[str]:
+    """`file::function` for each function that reads a workflow file and names
+    a listed path in a string. The lists left the workflow text in CIV-33c-2, so
+    such a check looks for a line that is gone. It reads `tests/unit/_r8_lists.py`."""
+    import ast
+
+    found: list[str] = []
+    for path in files:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if "tests/unit/" not in text or not any(w in text for w in _WORKFLOW_WORDS):
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        for fn in _function_nodes(tree):
+            reads = any(
+                isinstance(c, ast.Call)
+                and isinstance(c.func, ast.Attribute)
+                and c.func.attr in ("read_text", "read_bytes", "open")
+                and any(w in (ast.get_source_segment(text, c) or "") for w in _WORKFLOW_WORDS)
+                for c in ast.walk(fn)
+            )
+            if not reads:
+                continue
+            for c in ast.walk(fn):
+                if isinstance(c, ast.Constant) and isinstance(c.value, str):
+                    plain = c.value.replace(chr(92) * 2 + ".", ".").replace(chr(92) + ".", ".")
+                    if any(p in plain for p in listed):
+                        found.append(f"{path.name}::{fn.name}")
+                        break
+    return found
+
+
+def test_no_test_reads_a_workflow_for_a_path_of_the_r8_lists(tmp_path: Path) -> None:
+    lists = guard.fence_lists((_ROOT / "tests/fences.json").read_text(encoding="utf-8"))
+    listed = set(lists["--must-run"]) | set(lists["--never-skip"])
+    files = [p for p in sorted((_ROOT / "tests/unit").glob("test_*.py")) if p.name not in _READS_WORKFLOWS_OK]
+    bad = workflow_readers_of_listed_paths(files, listed)
+    assert not bad, f"these read a workflow for an R8 path, and use tests/unit/_r8_lists.py instead: {bad}"
+    # The scan itself finds the old shape.
+    old = tmp_path / "test_old_shape.py"
+    old.write_text(
+        "import re\n"
+        "def test_x():\n"
+        "    wf = (ROOT / '.github' / 'workflows' / 'pr-check.yml').read_text()\n"
+        "    assert re.search('tests/unit/test_auto_park.py', wf)\n",
+        encoding="utf-8",
+    )
+    assert workflow_readers_of_listed_paths([old], listed) == ["test_old_shape.py::test_x"]
+    ok = tmp_path / "test_new_shape.py"
+    ok.write_text(
+        "def test_x():\n    assert 'tests/unit/test_auto_park.py' in r8_lists.must_run()  # pr-check.yml\n",
+        encoding="utf-8",
+    )
+    assert workflow_readers_of_listed_paths([ok], listed) == []
 
 
 def test_a_failed_changes_job_means_a_full_run() -> None:
@@ -578,17 +782,17 @@ def test_gate_output_names_the_shards(tmp_path: Path) -> None:
     # Every selected file is a process fence a shard would drop: also none.
     ignored = f"--ignore={a} --ignore={b}"
     assert _gate(tmp_path, {"full": False, "files": [a, b]}, ignored)["shards"] == "[]"
-    # A full result runs all six.
-    assert _gate(tmp_path, {"full": True, "files": []})["shards"] == "[1,2,3,4,5,6]"
+    # A full result runs all eight.
+    assert _gate(tmp_path, {"full": True, "files": []})["shards"] == "[1,2,3,4,5,6,7,8]"
 
 
 def test_gate_output_never_reads_a_failure_as_an_empty_selection(tmp_path: Path) -> None:
     """The #1077 trap. A broken or missing result is a FULL run, never `[]`."""
     for bad in ("not json", "{}", '{"full": false}', '{"full": false, "files": ["../evil.py"]}'):
         out = _gate(tmp_path, bad)
-        assert out["full"] == "true" and out["shards"] == "[1,2,3,4,5,6]", bad
+        assert out["full"] == "true" and out["shards"] == "[1,2,3,4,5,6,7,8]", bad
     missing = guard.gate_output(tmp_path / "absent.json")
-    assert "full=true" in missing and "shards=[1,2,3,4,5,6]" in missing
+    assert "full=true" in missing and "shards=[1,2,3,4,5,6,7,8]" in missing
 
 
 def test_the_pick_step_and_the_changes_job_agree_on_the_count(monkeypatch) -> None:
@@ -636,11 +840,11 @@ def test_shard_count_by_seconds() -> None:
     sec = {"tests/unit/test_a.py": 300.0, "tests/unit/test_b.py": 301.0, "tests/unit/test_big.py": 5000.0}
     a, b, big = sec
     assert guard.shard_count("selection", [a], sec) == 1
-    assert guard.shard_count("selection", [a, b], sec) == 2  # 601 s: one shard holds 600 s
+    assert guard.shard_count("selection", [a, b], sec) == 3  # 601 s: one shard holds 300 s
     assert guard.shard_count("selection", [big], sec) == guard.ALL_SHARDS  # capped
     # a file with no timing counts DEFAULT_FILE_S (a new test)
     new = [f"tests/unit/test_new_{i}.py" for i in range(61)]
-    assert guard.shard_count("selection", new, sec) == 2  # 610 s
+    assert guard.shard_count("selection", new, sec) == 3  # 610 s
     assert guard.shard_count("empty", [], sec) == 0
     assert guard.shard_count("full", [], sec) == guard.ALL_SHARDS
 
@@ -672,13 +876,13 @@ def test_gate_output_uses_the_timings_and_agrees_with_the_pick_step(tmp_path: Pa
     gate.write_text(json.dumps({"full": False, "files": ["tests/unit/test_a.py", "tests/unit/test_b.py"]}),
                     encoding="utf-8")
     out = dict(x.split("=", 1) for x in guard.gate_output(gate))
-    assert out["shards"] == "[1,2]"  # 800 s
+    assert out["shards"] == "[1,2,3]"  # 800 s
     mode, paths = guard.select_shard("false", out["files"], "", "success")
-    assert guard.shard_count(mode, paths, guard.file_seconds()) == 2
-    # a docs-only PR still starts no shard, and a failed result still starts all six
+    assert guard.shard_count(mode, paths, guard.file_seconds()) == 3
+    # a docs-only PR still starts no shard, and a failed result still starts all eight
     gate.write_text(json.dumps({"full": False, "files": []}), encoding="utf-8")
     assert dict(x.split("=", 1) for x in guard.gate_output(gate))["shards"] == "[]"
-    assert dict(x.split("=", 1) for x in guard.gate_output(tmp_path / "absent.json"))["shards"] == "[1,2,3,4,5,6]"
+    assert dict(x.split("=", 1) for x in guard.gate_output(tmp_path / "absent.json"))["shards"] == "[1,2,3,4,5,6,7,8]"
 
 
 def test_missing_timing_entries_are_named_in_a_warning() -> None:

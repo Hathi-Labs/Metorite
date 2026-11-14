@@ -527,7 +527,9 @@ def test_the_handler_reads_the_switch_first() -> None:
 # ── 7. The R8 twin runs in CI ──────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("workflow", ["pr-check.yml", "deploy.yml"])
-def test_the_r8_twin_is_in_the_must_run_lists(workflow: str) -> None:
-    text = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
-    assert re.search(r"^[ \t]+tests/unit/test_studio_connect_in_place_r8\.py(?: \\)?$", text, re.M)
+def test_the_r8_twin_is_in_the_must_run_list() -> None:
+    """A skip is not a pass. Both workflows read the R8 guard lists from
+    tests/fences.json (CIV-33c-2), so the R8 twin is named there."""
+    from tests.unit import _r8_lists as r8_lists
+
+    assert "tests/unit/test_studio_connect_in_place_r8.py" in r8_lists.must_run()

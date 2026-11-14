@@ -564,6 +564,7 @@ pytest.importorskip("sqlalchemy")
 
 from sqlalchemy import create_engine, text  # noqa: E402
 
+from tests.unit import _r8_lists as r8_lists  # noqa: E402
 from tests.unit._tenant_ladder import apply_ladder  # noqa: E402
 
 _SNAPSHOT = os.environ.get("_ACB_TENANT_LADDER_URL_AT_LAUNCH")
@@ -961,23 +962,16 @@ def test_this_suite_is_named_in_the_ci_skip_guard():
     the statement beneath them raised on every call. A fence that never
     executes is not a fence.
     """
-    workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(
-        encoding="utf-8"
-    )
     # ⚠️ Match the pytest ARGUMENT, not a mention. The comment block above
     # that step names this file too, so a substring search stayed green with
     # the invocation line deleted — measured while mutation-proving this fence,
     # and it is the same "green because something else matched" shape the
     # skip guard itself exists to catch.
-    invoked = re.search(
-        r"^\s*tests/unit/test_credential_tenant_threading\.py\s*\\\s*$",
-        workflow,
-        re.MULTILINE,
-    )
+    invoked = "tests/unit/test_credential_tenant_threading.py" in r8_lists.must_run()
     assert invoked, (
         "this suite is no longer an argument of pr-check.yml's R8 platform "
         "step, so its two-org half would skip unnoticed"
     )
-    assert "TENANT_LADDER_DATABASE_URL unset" in workflow, (
-        "the skip-guard grep line this suite's gate reuses has been removed"
+    assert "TENANT_LADDER_DATABASE_URL unset" in r8_lists.disarmed(), (
+        "the disarmed reason this suite's gate reuses has been removed from tests/fences.json"
     )
