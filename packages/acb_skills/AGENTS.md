@@ -130,6 +130,14 @@ not write a second copy of that seam. A bare test file name is under
 5g-1. held_card.py -- the rules of a held send card. `held_card_send_enabled` is the ONE reader of `EMAIL_HELD_CARD_SEND`, and it fails closed. The client mirrors the marks in `sendCard.ts`. Fence: `test_held_send_classes.py`.
 5h. tool_annotations.py -- `annotate()` has NO default for `open_world`. Every tool of every in-repo agent states it. `risk_summary_block(own=)` reads the agent's own tool list, never the process-wide registry.
 5i. tool_guard.py -- the ONE per-run middleware pair (`WithholdTools`, `RefuseTools`). Do not write a third copy of the pair.
+5i-2. unknown_tool.py -- the ONE answer to a call of a tool that the turn did not load (HRD-1, `chat_failure_modes.md` §4.2 B1).
+   - MAF runs no middleware for an unknown name. So `UnknownToolAnswer`, a `ChatMiddleware`, rewrites the raw "not found" tool result before the next request.
+   - `_set_text` writes `result` and `items`. The OpenAI client sends `items`, so a rewrite of `result` alone never reaches the model.
+   - The answer names only tools that the member may use: the tools of the request and the packs that the loader offers.
+   - Each answer says what happened ("Not run …") and what is true now. It never tells the model to call the tool again. The rewrite stays in the stored history, so a later turn reads it. After a load, the answer keeps the rules of the pack and drops the loader's first line.
+   - `CHAT_TOOL_AUTOLOAD` (default off, allowed by D217) also loads the offered pack. The load calls `LoadSkillTools.process` with a `FunctionInvocationContext` over the live list. Do not write a second load path.
+   - It loads only for a call of this run, never for a raw text of the history. It loads only when the request holds the same tool list as the request before. A copy from an outer middleware (`WithholdTools`) gets the text only.
+   - Fence: `test_unknown_tool_answer.py`.
 5j. ask_tools.py -- `request_confirmation` is the one HITL card gate, and it fails closed.
    - A tool reads `confirmation_channel_open()` after a denial, or before a card to choose a narrower act. It never approves a write.
    - One reader reads it before a card to ask a card in place of a refusal: `profile_tools._card_channel` (PZ-32). Only the approve of that card writes.
