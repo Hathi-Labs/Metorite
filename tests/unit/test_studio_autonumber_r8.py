@@ -234,6 +234,27 @@ def test_r8_two_writers_one_object_get_distinct_numbers(world) -> None:
     assert first == sorted(first) and second == sorted(second)
 
 
+def test_r8_the_statement_alone_is_atomic_without_the_org_lock(world) -> None:
+    """The org lock already serializes each write. This test takes it away: two
+    sessions run the statement of the counter itself, 25 times each, and each
+    number comes once. So the number is safe on the key of the counter alone."""
+    async def writer(oid: str) -> list[int]:
+        out: list[int] = []
+        for _ in range(25):
+            async with tenant_session(world.a) as db:
+                out.append((await db.execute(text(store._NEXT_NUMBER_SQL), {
+                    "oid": oid, "key": "no", "period": ""})).scalar_one())
+        return out
+
+    async def go() -> list[int]:
+        obj = await _define(world.a, world.pkg_a, "invoice", _INVOICE)
+        first, second = await asyncio.gather(writer(obj.id), writer(obj.id))
+        return first + second
+
+    got = _go(world, go)
+    assert sorted(got) == list(range(1, 51))
+
+
 def test_r8_two_orgs_count_apart(world) -> None:
     async def go() -> tuple[list[str], list[str]]:
         a = await _define(world.a, world.pkg_a, "invoice", _INVOICE)
@@ -285,18 +306,23 @@ def test_r8_org_b_reads_no_counter_of_org_a(world) -> None:
 
 
 def test_r8_a_refused_batch_rolls_the_counter_back(world) -> None:
-    async def go() -> tuple[Any, list[Any], str]:
+    """The caller catches the refusal and goes on in the SAME transaction, as a
+    door does. Only the SAVEPOINT of the batch can give the number back."""
+    async def go() -> tuple[Any, str, list[Any]]:
         obj = await _define(world.a, world.pkg_a, "invoice", _INVOICE)
-        with pytest.raises(BatchError) as exc:
-            await _batch(world.a, obj, [
-                Write("create", obj.id, data={"title": "ok"}),
-                Write("create", obj.id, data={"title": 5})])  # a bad value: the SAVEPOINT rolls back
-        return exc.value.index, _admin_rows(world, _COUNTERS, o=obj.id), (await _create(world.a, obj))["no"]
+        async with tenant_session(world.a) as db:
+            with pytest.raises(BatchError) as exc:
+                await store.apply_writes(db, ANA, package_id=obj.package_id, viewer=_VIEWER, writes=[
+                    Write("create", obj.id, data={"title": "ok"}),
+                    Write("create", obj.id, data={"title": 5})])  # a bad value
+            made = await store.apply_writes(db, ANA, package_id=obj.package_id, viewer=_VIEWER,
+                                            writes=[Write("create", obj.id, data={"title": "t"})])
+        return exc.value.index, made[0].data["no"], _admin_rows(world, _COUNTERS, o=obj.id)
 
-    index, counters, next_no = _go(world, go)
+    index, number, counters = _go(world, go)
     assert index == 1
-    assert counters == []  # the first create took 1, and the refusal gave it back
-    assert next_no == "FV-0001"
+    assert number == "FV-0001"  # the refused batch took 1 and gave it back
+    assert counters == [("no", "", 1)]
 
 
 def test_r8_an_outer_rollback_leaves_no_gap(world) -> None:

@@ -192,9 +192,19 @@ def test_the_next_number_is_one_atomic_statement() -> None:
     assert sql.rstrip().endswith("RETURNING last_value")
     assert "SELECT" not in sql.upper()
     src = _STORE.read_text(encoding="utf-8")
-    # No other statement of the store names the table.
-    assert [n for n in dir(store) if n.endswith("_SQL")
-            and "studio_object_counters" in getattr(store, n)] == ["_NEXT_NUMBER_SQL"]
+    # No other text of the store names the table: not a constant, not an inline statement.
+    tree = ast.parse(src)
+    own = next(n for n in tree.body if isinstance(n, ast.Assign)
+               and any(getattr(t, "id", "") == "_NEXT_NUMBER_SQL" for t in n.targets))
+    inside = {id(c) for c in ast.walk(own)}
+    others = [c.lineno for c in ast.walk(tree) if isinstance(c, ast.Constant)
+              and isinstance(c.value, str) and "studio_object_counters" in c.value
+              and id(c) not in inside]
+    assert others == [], others
+    fill = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.AsyncFunctionDef) and n.name == "_fill_autonumbers")
+    assert [n.id for n in ast.walk(fill) if isinstance(n, ast.Name) and n.id.endswith("_SQL")] == [
+        "_NEXT_NUMBER_SQL"]
     assert "nextval" not in src and "CREATE SEQUENCE" not in src
 
 
