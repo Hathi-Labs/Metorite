@@ -137,6 +137,11 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/studio/approvals"),
     ("POST", "/studio/packages/{package_id}/versions/{version}/approval/approve"),
     ("POST", "/studio/packages/{package_id}/versions/{version}/approval/reject"),
+    # AF-10a, the saved views of an app.
+    ("GET", "/studio/packages/{package_id}/views"),
+    ("POST", "/studio/packages/{package_id}/views"),
+    ("PATCH", "/studio/packages/{package_id}/views/{view_id}"),
+    ("DELETE", "/studio/packages/{package_id}/views/{view_id}"),
     # B2a to B2c, the action door.
     ("POST", "/studio/apps/{app_id}/actions/{action}"),
 )
@@ -147,6 +152,7 @@ _PARAMS = {
     "app_id": str(uuid.uuid4()),
     "version": "1",
     "action": "peek",
+    "view_id": str(uuid.uuid4()),
 }
 
 STUDIO = ["feature:studio"]
@@ -192,9 +198,9 @@ def no_store(monkeypatch: pytest.MonkeyPatch) -> list[str]:
             raise RuntimeError(f"{name} ran")
         return _fn
 
-    from gateway.routes.studio import invoke, packages, skills
+    from gateway.routes.studio import invoke, packages, skills, views
 
-    for module in (actions, invoke, packages, skills):
+    for module in (actions, invoke, packages, skills, views):
         if hasattr(module, "_tenant_session"):
             monkeypatch.setattr(module, "_tenant_session", _trip(f"{module.__name__}.session"))
     monkeypatch.setattr(actions, "catalog_rows", _trip("catalog_rows"))

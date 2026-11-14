@@ -63,6 +63,10 @@ _PERSON_VIS = re.compile(r"\b(visibility|scope_kind) (=|<>) 'private'")
 #: is told from its SYNCED half (`account_id`). Read from the statement like
 #: everything else here, so a clause that drops the filter changes the answer.
 _PERSON_NULL = re.compile(r"(\w+) IS (NOT )?NULL")
+#: ``shared`` / ``NOT shared`` first in a clause: how a private saved view of
+#: Studio is told from a shared one (WS-STU AF-10a, ``studio_saved_views``).
+#: A row with no ``shared`` key is private.
+_PERSON_SHARED = re.compile(r"\bWHERE (NOT )?shared AND ")
 #: ``[NOT] EXISTS (SELECT 1 FROM <t> AS <a> WHERE <tests>)``: does a row of
 #: ``<t>`` pass each test against this row? ``members._OTHERS_SEE_THE_APP``
 #: (WS-PKG PKG-4 and PKG-5b, ``package_host/sharing.py``) asks it of
@@ -352,6 +356,10 @@ class _FakeDB:
             found = [
                 r for r in found if (r.get(vis_col, "private") == "private") is wants_private
             ]
+        flag = _PERSON_SHARED.search(s)
+        if flag:
+            wants_shared = not flag.group(1)
+            found = [r for r in found if bool(r.get("shared", False)) is wants_shared]
         for nul in _PERSON_NULL.finditer(s):
             col, negated = nul.group(1), bool(nul.group(2))
             found = [r for r in found if (r.get(col) is not None) is negated]

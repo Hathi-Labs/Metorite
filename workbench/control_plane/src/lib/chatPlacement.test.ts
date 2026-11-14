@@ -111,6 +111,10 @@ describe("one map classifies every tool a card file draws", () => {
       "components/email/EmailToolCards.tsx",
       "components/crm/CrmEvidence.tsx",
       "components/ThinkingContainer.tsx",
+      // STU-F6a: the skill offer maps a call through the `tool` of a catalog
+      // row, never through a pattern on its name.
+      "components/studio/SkillOfferCard.tsx",
+      "lib/studio/skillOffer.ts",
     ];
     for (const f of files) {
       const src = readFileSync(join(ROOT, "workbench/control_plane/src", f), "utf8");
