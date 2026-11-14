@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ViewDef } from "./manifest";
 import { NOT_DECLARED_SENTENCE, READ_ONLY_SENTENCE, type DeclaredAction, type ObjectRow } from "./realDoor";
-import { VIEW_LIMIT, mapView, type ViewMapContext } from "./viewBlocks";
+import { MAX_FILTERS, VIEW_LIMIT, mapView, type ViewMapContext } from "./viewBlocks";
 
 const visit = {
   name: "visit", label: "Visit", rules: [],
@@ -165,9 +165,10 @@ describe("the ready apps map with no problem view", () => {
   const dir = resolve(__dirname, "../../../../../packages/acb_common/acb_common/studio_templates");
   const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
 
-  it("finds the six ready apps", () => {
+  it("finds the eight ready apps", () => {
     expect(files.sort()).toEqual([
-      "expense_claims.json", "field_visits.json", "hiring.json", "purchase_requests.json", "spares.json", "support_desk.json",
+      "expense_claims.json", "field_visits.json", "hiring.json", "purchase_requests.json",
+      "shipment_tracker.json", "site_survey.json", "spares.json", "support_desk.json",
     ]);
   });
 
@@ -193,5 +194,56 @@ describe("the ready apps map with no problem view", () => {
     const v = (m.views as ViewDef[]).find((x) => x.id === "check_in") as ViewDef;
     const objects = (m.objects ?? []).map((o: Record<string, unknown>) => ({ rules: [], ...o }));
     expect(mapView(v, { actions: m.actions, objects, owner: true })).toBeNull();
+  });
+});
+
+describe("mapView: the me token and the own filter of a view (STU-AF3b)", () => {
+  const person = { ...visit, fields: [...visit.fields, { key: "owner", type: "person", label: "Owner", required: false, many: false, options: null, to: null, hot: true }] } as unknown as ObjectRow;
+  const mine = view({ id: "v", block: "table", object: "visit", source: { action: "list_visits", args: {
+    kind: "x", filter: [{ field: "owner", op: "eq", value: "me" }], sort: { field: "status", dir: "desc" } } } });
+  const list = (m: ReturnType<typeof mapView>) => (m?.kind === "node" ? m.node.props.source : null);
+
+  it("the table source carries the email of the member, as the count of the rail does", () => {
+    expect(list(mapView(mine, ctx({ objects: [person], email: "Ann@X.io" })))).toEqual({
+      action: "object:visit.list",
+      args: { limit: VIEW_LIMIT, filter: [{ field: "owner", op: "eq", value: "ann@x.io" }], sort: { field: "status", dir: "desc" } },
+    });
+  });
+  it("the board source carries it too", () => {
+    const board = { ...mine, block: "board" as const };
+    const src = list(mapView(board, ctx({ objects: [person], email: "ann@x.io" }))) as { args: { filter: unknown[] } };
+    expect(src.args.filter).toEqual([{ field: "owner", op: "eq", value: "ann@x.io" }]);
+  });
+  it("a token on a field that is not a person stays as written", () => {
+    const text = view({ id: "v", block: "table", object: "visit", source: { action: "list_visits", args: { filter: [{ field: "title", op: "eq", value: "me" }] } } });
+    const src = list(mapView(text, ctx({ email: "ann@x.io" }))) as { args: { filter: unknown[] } };
+    expect(src.args.filter).toEqual([{ field: "title", op: "eq", value: "me" }]);
+  });
+  it("the list bar adds to the filter of the view, and its sort wins", () => {
+    const lens = { view: "v", args: { filter: [{ field: "status", op: "eq", value: "open" }], sort: { field: "title", dir: "asc" as const } } };
+    const src = list(mapView(mine, ctx({ objects: [person], email: "a@b.c", lens }))) as { args: { filter: unknown[]; sort: unknown } };
+    expect(src.args.filter).toHaveLength(2);
+    expect(src.args.sort).toEqual({ field: "title", dir: "asc" });
+  });
+  it("a view with no source args reads as before", () => {
+    expect(list(mapView(view({ id: "v", block: "table", object: "visit" }), ctx()))).toEqual({ action: "object:visit.list", args: { limit: VIEW_LIMIT } });
+  });
+  it("the cap is the door limit of 8", () => {
+    expect(MAX_FILTERS).toBe(8);
+  });
+  it("the join holds 8 conditions at most, and the view's own come first", () => {
+    const c = (n: string, i: number) => ({ field: "status", op: "eq", value: `${n}${i}` });
+    const own5 = view({ id: "v", block: "table", object: "visit", source: { action: "list_visits", args: {
+      filter: [0, 1, 2, 3, 4].map((i) => c("v", i)) } } });
+    const lens = { view: "v", args: { filter: [0, 1, 2, 3, 4].map((i) => c("b", i)) } };
+    const src = list(mapView(own5, ctx({ lens }))) as { args: { filter: { value: string }[] } };
+    expect(src.args.filter).toHaveLength(8);
+    expect(src.args.filter.slice(0, 5).map((f) => f.value)).toEqual(["v0", "v1", "v2", "v3", "v4"]);
+  });
+  it("a me view does not read until the email is known", () => {
+    const m = mapView(mine, ctx({ objects: [person], email: null }));
+    expect(m).toEqual({ kind: "loading" });
+    expect(list(m)).toBeNull();
+    expect(list(mapView(mine, ctx({ objects: [person], email: "Ann@X.io" })))).not.toBeNull();
   });
 });
