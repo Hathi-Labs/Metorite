@@ -74,13 +74,18 @@ export interface ViewDetail {
   source: { action: string; args: Record<string, unknown> };
 }
 
+/** The page waits for the session email, so it does not read yet. It shows a loading state, not an error. */
+export interface ViewLoading {
+  kind: "loading";
+}
+
 export interface ViewProblem {
   kind: "problem";
   /** One plain sentence for the member. */
   reason: string;
 }
 
-export type ViewModel = ViewNode | ViewForm | ViewDetail | ViewProblem;
+export type ViewModel = ViewNode | ViewForm | ViewDetail | ViewProblem | ViewLoading;
 
 type ListFields = readonly { key: string; type: string }[];
 
@@ -108,6 +113,22 @@ export function ownListArgs(
   }
   return out;
 }
+
+/**
+ * True when the view filter holds `me` on a person field and the email is not known yet. The door
+ * refuses a literal `me`, so the page does not read until the email arrives.
+ */
+export function waitsForEmail(
+  view: Pick<ViewDef, "source">, fields: ListFields | undefined, email: string | null | undefined,
+): boolean {
+  const filter = view.source?.args?.filter;
+  if (!Array.isArray(filter) || filter.length === 0) return false;
+  const isPerson = (k: string) => fields?.find((f) => f.key === k)?.type === "person";
+  return resolveMe({ action: "", args: { filter } }, email, isPerson) === null;
+}
+
+/** The most conditions that the door takes in one filter (`MAX_FILTERS` of `studio_query.py`). */
+export const MAX_FILTERS = 8;
 
 const problem = (reason: string): ViewProblem => ({ kind: "problem", reason });
 const WRITE_CREATE = /^object:[a-z][a-z0-9_]{0,47}\.create$/;
@@ -146,8 +167,12 @@ export function mapView(view: ViewDef, ctx: ViewMapContext): ViewModel | null {
   const shown = named.length ? named : specs;
   const verbs = verbMap(ctx.actions);
   // The view's own filter and sort come first. The list bar adds its filter to it, and its sort wins.
-  const own = view.block === "table" || view.block === "board" ? ownListArgs(view, object.fields, ctx.email) : {};
-  const filter = [...(own.filter ?? []), ...(lens?.args?.filter ?? [])];
+  const listed = view.block === "table" || view.block === "board";
+  if (listed && waitsForEmail(view, object.fields, ctx.email)) return { kind: "loading" };
+  const own = listed ? ownListArgs(view, object.fields, ctx.email) : {};
+  // The join holds at most MAX_FILTERS conditions. The view's own conditions come first and win,
+  // because they are the intent of the app author. The bar conditions that do not fit are dropped.
+  const filter = [...(own.filter ?? []), ...(lens?.args?.filter ?? [])].slice(0, MAX_FILTERS);
   const sort = lens?.args?.sort ?? own.sort;
   const list = {
     action: `object:${name}.list`,

@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ViewDef } from "./manifest";
 import { NOT_DECLARED_SENTENCE, READ_ONLY_SENTENCE, type DeclaredAction, type ObjectRow } from "./realDoor";
-import { VIEW_LIMIT, mapView, type ViewMapContext } from "./viewBlocks";
+import { MAX_FILTERS, VIEW_LIMIT, mapView, type ViewMapContext } from "./viewBlocks";
 
 const visit = {
   name: "visit", label: "Visit", rules: [],
@@ -226,5 +226,23 @@ describe("mapView: the me token and the own filter of a view (STU-AF3b)", () => 
   });
   it("a view with no source args reads as before", () => {
     expect(list(mapView(view({ id: "v", block: "table", object: "visit" }), ctx()))).toEqual({ action: "object:visit.list", args: { limit: VIEW_LIMIT } });
+  });
+  it("the cap is the door limit of 8", () => {
+    expect(MAX_FILTERS).toBe(8);
+  });
+  it("the join holds 8 conditions at most, and the view's own come first", () => {
+    const c = (n: string, i: number) => ({ field: "status", op: "eq", value: `${n}${i}` });
+    const own5 = view({ id: "v", block: "table", object: "visit", source: { action: "list_visits", args: {
+      filter: [0, 1, 2, 3, 4].map((i) => c("v", i)) } } });
+    const lens = { view: "v", args: { filter: [0, 1, 2, 3, 4].map((i) => c("b", i)) } };
+    const src = list(mapView(own5, ctx({ lens }))) as { args: { filter: { value: string }[] } };
+    expect(src.args.filter).toHaveLength(8);
+    expect(src.args.filter.slice(0, 5).map((f) => f.value)).toEqual(["v0", "v1", "v2", "v3", "v4"]);
+  });
+  it("a me view does not read until the email is known", () => {
+    const m = mapView(mine, ctx({ objects: [person], email: null }));
+    expect(m).toEqual({ kind: "loading" });
+    expect(list(m)).toBeNull();
+    expect(list(mapView(mine, ctx({ objects: [person], email: "Ann@X.io" })))).not.toBeNull();
   });
 });

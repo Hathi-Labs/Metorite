@@ -174,6 +174,8 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted }: App
             onClear={() => update(clearedBar)}>{node}</FilteredList>
         );
       }
+      case "loading":
+        return <p role="status" className={`${PANEL} text-sm text-muted-foreground`}>Loading…</p>;
       case "problem":
         return <p role="status" className={`${PANEL} text-sm text-muted-foreground`}>{model.reason}</p>;
       case "form":
