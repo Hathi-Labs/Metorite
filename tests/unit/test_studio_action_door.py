@@ -1281,9 +1281,10 @@ class TestTheTables:
     def test_the_object_verb_table_holds_the_six_verbs_of_the_grammar(self):
         """The class table and the A2 ``uses`` grammar list the same verbs, in
         the same order. A verb in one and not the other fails here. The
-        aggregate (D4b) is the sixth, after the five record verbs."""
+        aggregate (D4b) is the sixth, after the five record verbs, and the
+        history (C4a-2) the seventh. The name of the test stays."""
         assert tuple(OBJECT_OP_CLASSES) == OBJECT_OPS
-        assert (*RECORD_OPS, "aggregate") == OBJECT_OPS
+        assert (*RECORD_OPS, "aggregate", "history") == OBJECT_OPS
         assert len(RECORD_OPS) == 5
         for verb in OBJECT_OPS:
             ref = parse_uses(f"object:visit.{verb}")
@@ -1295,7 +1296,8 @@ class TestTheTables:
     def test_each_object_class_is_a_d136_class_and_none_is_x(self):
         assert set(OBJECT_OP_CLASSES.values()) <= set(CLASSES) - {"X"}
         assert OBJECT_OP_CLASSES == {"list": "A", "get": "A", "create": "B",
-                                     "update": "B", "delete": "C", "aggregate": "A"}
+                                     "update": "B", "delete": "C", "aggregate": "A",
+                                     "history": "A"}
 
     def test_parse_uses_names_the_source_of_each_form(self):
         assert parse_uses(f"workflow:{WORKFLOW}").source == "workflow"
@@ -1309,7 +1311,8 @@ class TestTheTables:
         ``STUDIO_DOOR_OPS_ORGS`` holds the org."""
         assert invoke.DOOR_OP == ("manifest", None)
         assert set(invoke.OPEN_EXECUTORS) == {("object", "get"), ("object", "list"),
-                                              ("object", "aggregate"), invoke.DOOR_OP}
+                                              ("object", "aggregate"), ("object", "history"),
+                                              invoke.DOOR_OP}
         # Each open object read has one executor, and no other verb has one.
         assert set(invoke._READS) == {str(op) for src, op in invoke.OPEN_EXECUTORS
                                       if (src, op) != invoke.DOOR_OP}
@@ -1359,6 +1362,7 @@ class TestTheTables:
                     "object_missing": invoke.NO_OBJECT, "bad_input": invoke.BAD_RECORD_ID,
                     "bad_list": invoke.BAD_LIST_INPUT, "body_too_large": invoke.BODY_OVER_CAP,
                     "bad_aggregate": invoke.BAD_AGGREGATE_INPUT,
+                    "bad_history": invoke.BAD_HISTORY_INPUT,
                     "request_refused": invoke.ASK_AGAIN,
                     "approval_ask": invoke.APPROVAL_ASK,
                     "read_busy": invoke.READ_BUSY_MESSAGE,

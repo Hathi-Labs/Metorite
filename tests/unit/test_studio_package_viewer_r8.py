@@ -572,6 +572,69 @@ def test_r8_a_field_of_a_newer_version_never_reaches_a_pinned_viewer(world) -> N
     assert status == 200 and mine["records"][0]["data"]["cost"] == 42
 
 
+_TRAIL = [{"id": "trail", "uses": "object:visit.history"}]
+
+
+def test_r8_a_viewer_reads_the_history_of_the_installed_keys_with_no_writer(world) -> None:
+    """C4a-2 fix round 1. The group installs v1 with ``visit{site}`` and the
+    history action. v2 adds ``cost``. Owen writes a record, a change of
+    ``cost`` only and a change of ``site``, two of them through a workflow
+    run. Ana reads the history through the door: the change of ``cost`` is not
+    in the page, no key ``cost`` shows, and no actor and no ``via`` shows. The
+    owner reads each row with each key and the writer."""
+    mid = _mid()
+
+    async def go() -> dict[str, Any]:
+        status, got = await _call("create_package", world.a, OWEN,
+                                  payload=_manifest(mid, extra=_TRAIL))
+        assert status == 200, got
+        pid = str(got["package"]["id"])
+        assert (await _call("publish", world.a, OWEN, pid, payload={}))[0] == 200
+        status, got = await _call("install_package", world.a, OWEN, pid,
+                                  payload={"scope": OPS}, grants=PUBLISHER)
+        assert status == 201, got
+        v2 = _manifest(mid, extra=_TRAIL)
+        v2["objects"][0]["fields"].append(_COST)
+        assert (await _call("save_draft", world.a, OWEN, pid, payload=v2))[0] == 200
+        assert (await _call("publish", world.a, OWEN, pid, payload={}))[0] == 200
+        async with tenant_session(world.a) as db:
+            obj = await objects_store.get_object_by_name(db, "visit", package_id=pid)
+            assert obj is not None
+            rec = await objects_store.create_record(
+                db, OWEN, obj.id, {"site": "Plant 4, Hosur", "cost": 42}, package_id=pid,
+                viewer=Viewer(OWEN))
+            assert rec is not None
+            for data in ({"cost": 43}, {"site": "Plant 9, Hosur"}):
+                await objects_store.apply_writes(
+                    db, OWEN, package_id=pid, viewer=Viewer(OWEN), via=("workflow_run", "run-j2a"),
+                    writes=[objects_store.Write("update", obj.id, rec.id, data)])
+        return {"ana": await _door(world.a, ANA, pid, "trail", {"id": rec.id}),
+                "ana_one": await _door(world.a, ANA, pid, "trail", {"id": rec.id, "limit": 1}),
+                "owen": await _door(world.a, OWEN, pid, "trail", {"id": rec.id})}
+
+    got = _run(world, go)
+    status, ana = got["ana"]
+    assert status == 200, ana
+    assert [h["op"] for h in ana["history"]] == ["create", "update"]
+    assert [h["changes"] for h in ana["history"]] == [
+        {"site": {"old": None, "new": "Plant 4, Hosur"}},
+        {"site": {"old": "Plant 4, Hosur", "new": "Plant 9, Hosur"}}]
+    for row in ana["history"]:
+        assert (row["actor"], row["via_kind"], row["via_id"]) == (None, None, None)
+    seen = json.dumps(got["ana"], default=str)
+    assert "cost" not in seen and OWEN not in seen and "run-j2a" not in seen
+    # A page of one: the next page starts after the visible create, never at the
+    # change of ``cost``.
+    status, one = got["ana_one"]
+    assert status == 200 and one["next"] == ana["history"][0]["id"], one
+    status, owen = got["owen"]
+    assert status == 200, owen
+    assert [h["op"] for h in owen["history"]] == ["create", "update", "update"]
+    assert owen["history"][1]["changes"] == {"cost": {"old": 42, "new": 43}}
+    assert (owen["history"][1]["actor"], owen["history"][1]["via_kind"]) == (
+        OWEN, "workflow_run")
+
+
 # ── g. The cap of the reads of a viewer ────────────────────────────────────
 
 

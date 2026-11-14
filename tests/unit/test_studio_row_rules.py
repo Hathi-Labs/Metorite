@@ -51,8 +51,11 @@ from gateway.studio import objects_store as store
 _ROOT = Path(__file__).resolve().parents[2]
 _STORE = _ROOT / "apps/services/gateway/gateway/studio/objects_store.py"
 _DRAFT_EDIT = _ROOT / "workbench/control_plane/src/lib/studio/draftEdit.ts"
+#: The record functions that take a viewer. C4a-2 adds the reader of the change
+#: history, ``list_record_changes``. The name ``_SIX`` stays, because the
+#: tests below cite it.
 _SIX = ("get_record", "query_records", "apply_writes", "create_record", "update_record",
-        "delete_record")
+        "delete_record", "list_record_changes")
 
 ME = "ana@x.test"
 SLIP_FIELDS = [
