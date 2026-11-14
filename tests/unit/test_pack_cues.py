@@ -62,6 +62,8 @@ WHEN = {
     "studio": (
         "Load for AI Studio: build an app (manifest, actions), manage skills, read workflows, "
         "or read and change the records of a package."),
+    # STU-J2b-3a: the approval follow pack of `studio`. It loads by its own words.
+    "studio-approvals": "Load to ask for, list, approve or reject the approval of an AI Studio app version for the organization.",
 }
 
 
