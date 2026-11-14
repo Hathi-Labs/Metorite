@@ -248,6 +248,27 @@ REQUEST_ACCESS: list[dict[str, Any]] = [
 ]
 
 
+#: C2d-a. A ledger for the aggregate. `scout` reads the own rows (`by = $me`),
+#: `auditor2` reads all and `cost` is hidden from it. `note` is not hot, so a
+#: filter on it takes the cold path of the statement (the parts `g` and `m`).
+LEDGER_FIELDS: list[dict[str, Any]] = [
+    {"key": "by", "type": "person", "hot": True},
+    {"key": "team", "type": "text", "hot": True},
+    {"key": "qty", "type": "number", "hot": True},
+    {"key": "cost", "type": "number", "hot": True},
+    {"key": "note", "type": "text"},
+]
+LEDGER_ACCESS: list[dict[str, Any]] = [
+    {"role": "scout", "read": {"where": "by = $me"}},
+    {"role": "auditor2", "read": "all", "hide": ["cost"]},
+]
+AS_SCOUT = Viewer(E1, frozenset({"scout"}))
+AS_AUDITOR2 = Viewer(f"au.{TAG}@stuc8a.test", frozenset({"auditor2"}))
+#: (by, team, qty, cost, note). E1 holds two rows, E2 holds two.
+LEDGER_ROWS = [(E1, "A", 5, 100, "x"), (E1, "A", 7, 200, "y"),
+               (E2, "B", 11, 300, "x"), (E2, "A", 13, 400, "x")]
+
+
 async def _define(db: Any, pkg: str, name: str, fields: Any, rules: Any = None,
                   access: Any = None) -> Any:
     made = await store.define_object(db, OWNER, package_id=pkg, name=name, fields=fields)
@@ -523,11 +544,14 @@ async def _build_round_two(db: Any, pkg: str) -> dict[str, Any]:
     assert await store.set_constraints(db, order.id, ORDER_RULES, package_id=pkg)
     assert await store.set_access(db, order.id, ORDER_ACCESS, package_id=pkg)
     request = await _define(db, pkg, "request", REQUEST_FIELDS, REQUEST_RULES, REQUEST_ACCESS)
+    ledger = await _define(db, pkg, "ledger", LEDGER_FIELDS, access=LEDGER_ACCESS)
 
     async def put(*writes: Write) -> list[Any]:
         return await store.apply_writes(db, OWNER, package_id=pkg, viewer=AS_OWNER,
                                         writes=list(writes))
 
+    await put(*(Write("create", ledger.id, data={"by": b, "team": t, "qty": q, "cost": c,
+                                                 "note": n}) for b, t, q, c, n in LEDGER_ROWS))
     ceo = (await put(Write("create", staff.id, data={"employee": CEO, "salary": 999_000})))[0]
     c1 = (await put(Write("create", crew.id, data={"name": "Crew 1"})))[0]
     await put(Write("create", paycheck.id, data={"crew": {"id": c1.id}, "gross": 1000, "tax": 200}))
@@ -539,7 +563,7 @@ async def _build_round_two(db: Any, pkg: str) -> dict[str, Any]:
     l0 = (await put(Write("create", line.id, data={"order": {"id": o1.id}, "amount": 10})))[0]
     return {"pkg2": pkg, "staff": staff, "crew": crew, "paycheck": paycheck,
             "movement": movement, "order": order, "line": line, "request": request,
-            "ceo": ceo.id, "c1": c1.id, "mv1": mv1.id, "mv2": mv2.id, "mv3": mv3.id,
+            "ledger": ledger, "ceo": ceo.id, "c1": c1.id, "mv1": mv1.id, "mv2": mv2.id, "mv3": mv3.id,
             "o1": o1.id, "l0": l0.id}
 
 _PACKAGE_INSERT = (
@@ -1528,3 +1552,108 @@ def test_r8_the_access_check_of_a_change_comes_before_each_formula(world) -> Non
     assert len(said) == 1, said
     assert said.pop() == ("AccessDenied: Your roles cannot set `a` of `calc`, because a "
                           "rule over data that you cannot read uses it.")
+
+
+# ── C2d-a. The aggregate of a viewer ────────────────────────────────────────
+#
+# ``aggregate_records`` takes a REQUIRED ``viewer`` and reads what
+# ``query_records`` reads for it. The pure half is
+# ``test_an_aggregate_with_a_row_rule_holds_it_in_each_part``.
+#
+# **The mutations of C2d-a (R7).** Apply each one in ``objects_store.py``, run
+# this file, and the named test goes red. Each result was run on 2026-11-14.
+#
+# * G1. ``build_aggregate``: leave out ``params["me"]``. The row rule has no
+#   bind, so each ``test_r8_ledger_*`` read of a scout goes red.
+# * G2. ``build_aggregate``: build the cold candidates ``m`` with no row rule.
+#   ``test_r8_ledger_a_cold_filter_stays_inside_the_row_rule`` goes red.
+# * G3. ``_refuse_hidden_aggregate``: leave out the group key.
+#   ``test_r8_ledger_a_hidden_key_is_refused_in_the_group_the_measure_and_the_filter`` goes red.
+# * G4. The same, for the key of a measure. The same test goes red.
+# * G5. ``aggregate_records``: leave out the return on ``not view.scope.reads``.
+#   ``test_r8_ledger_a_viewer_with_no_read_gets_a_total_of_0`` goes red.
+
+
+def _agg(w: Any, viewer: Viewer, org: str | None = None, pkg: str | None = None,
+         oid: str | None = None, **query: Any) -> store.AggregateResult | None:
+    async def go() -> store.AggregateResult | None:
+        async with tenant_session(org or w.a) as db:
+            return await store.aggregate_records(
+                db, package_id=pkg or w.pkg2, object_id=oid or w.ledger.id, viewer=viewer, **query)
+    return _run(w.p, go)
+
+
+_QTY = [{"op": "count"}, {"op": "sum", "field": "qty"}, {"op": "average", "field": "qty"}]
+
+
+def _groups(result: store.AggregateResult) -> dict[Any, tuple[int, tuple[Any, ...]]]:
+    return {g.key: (g.count, g.values) for g in result.groups}
+
+
+def test_r8_ledger_a_row_bound_viewer_counts_only_the_own_rows(world) -> None:
+    got = _agg(world, AS_SCOUT, measures=_QTY, group_by={"field": "team"})
+    assert got is not None
+    assert got.total.count == 2
+    assert [int(v) for v in got.total.values[:2]] == [2, 12]
+    assert got.total.values[2] == 6
+    assert _groups(got) == {"A": (2, (2, 12, 6))}
+    everything = _agg(world, AS_OWNER, measures=_QTY, group_by={"field": "team"})
+    assert everything is not None and everything.total.count == 4
+    assert int(everything.total.values[1]) == 36
+    assert _groups(everything)["B"][0] == 1
+    # A filter on another person's key leaves nothing.
+    other = _agg(world, AS_SCOUT, filter=[{"field": "by", "op": "eq", "value": E2}])
+    assert other is not None and other.total.count == 0
+
+
+def test_r8_ledger_a_cold_filter_stays_inside_the_row_rule(world) -> None:
+    """`note` is not hot, so the filter takes the guard `g` and the candidates `m`."""
+    cold = [{"field": "note", "op": "contains", "value": "x"}]
+    got = _agg(world, AS_SCOUT, filter=cold, measures=_QTY, group_by={"field": "team"})
+    assert got is not None and got.total.count == 1
+    assert int(got.total.values[1]) == 5 and _groups(got) == {"A": (1, (1, 5, 5))}
+    owner = _agg(world, AS_OWNER, filter=cold, measures=_QTY)
+    assert owner is not None and owner.total.count == 3 and int(owner.total.values[1]) == 29
+
+
+def test_r8_ledger_the_owner_and_an_open_reader_read_all(world) -> None:
+    for viewer in (AS_OWNER, AS_AUDITOR2):
+        got = _agg(world, viewer, measures=_QTY)
+        assert got is not None and got.total.count == 4
+        assert int(got.total.values[1]) == 36
+
+
+def test_r8_ledger_a_hidden_key_is_refused_in_the_group_the_measure_and_the_filter(world) -> None:
+    cases = [
+        {"group_by": {"field": "cost"}},
+        {"measures": [{"op": "sum", "field": "cost"}]},
+        {"measures": [{"op": "average", "field": "cost"}]},
+        {"filter": [{"field": "cost", "op": "gt", "value": 150}]},
+    ]
+    for query in cases:
+        with pytest.raises(QueryError) as caught:
+            _agg(world, AS_AUDITOR2, **query)
+        assert caught.value.code == "query_op_not_allowed", query
+        assert "cost" in str(caught.value)
+    # The owner, and a key that is not hidden, read as before.
+    owner = _agg(world, AS_OWNER, measures=[{"op": "sum", "field": "cost"}])
+    assert owner is not None and int(owner.total.values[0]) == 1000
+    fine = _agg(world, AS_AUDITOR2, measures=[{"op": "sum", "field": "qty"}],
+                group_by={"field": "team"})
+    assert fine is not None and fine.total.count == 4
+
+
+def test_r8_ledger_a_viewer_with_no_read_gets_a_total_of_0(world) -> None:
+    got = _agg(world, AS_STRANGER, measures=_QTY, group_by={"field": "team"})
+    assert got is not None
+    assert got.groups == () and got.other is None and got.total.count == 0
+    assert [int(v) for v in got.total.values[:2]] == [0, 0] and got.total.values[2] is None
+    assert [m.op for m in got.measures] == ["count", "sum", "average"]
+    with pytest.raises(QueryError):
+        _agg(world, AS_STRANGER, measures=[{"op": "sum", "field": "note"}])
+
+
+def test_r8_ledger_another_org_reads_nothing_and_a_viewer_is_required(world) -> None:
+    assert _agg(world, AS_OWNER, org=world.b) is None
+    with pytest.raises(store.ObjectStoreError):
+        _agg(world, None)  # type: ignore[arg-type]

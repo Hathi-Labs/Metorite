@@ -287,11 +287,12 @@ def world(monkeypatch):
         return objects_store.RecordPage(tuple(rows[start:start + size]), len(rows), None,
                                         start, size, "")
 
-    async def _aggregate(db: Any, *, package_id: str, object_id: str, filter: Any = None,
-                         group_by: Any = None, measures: Any = None) -> Any:
+    async def _aggregate(db: Any, *, package_id: str, object_id: str, viewer: Any,
+                         filter: Any = None, group_by: Any = None, measures: Any = None) -> Any:
         """The store's aggregate on the fake session (D4b), under the real
         shape check. It filters on the bound org, as RLS does, and answers a
         count and a sum of money of the records of the object."""
+        w.viewers.append(viewer)
         w.aggregates.append({"package_id": package_id, "object_id": object_id,
                              "filter": filter, "group_by": group_by, "measures": measures})
         studio_query.check_aggregate_shape(filter, group_by, measures)
@@ -2598,20 +2599,46 @@ class TestTheDoorOp:
         assert (r.status_code, _code(r)) == (403, "read_only")
         assert len(opw.calls) == 1
 
-    def test_a_viewer_of_an_install_aggregates_nothing(self):
-        """C8a with D4b and J2a: the aggregate reader knows neither the
-        installed fields nor the row rules, so a viewer gets a refusal and no
-        read."""
-        out = invoke._Outcome("visit_stats")
+    def test_a_viewer_of_an_install_reaches_the_store_with_its_viewer(self, monkeypatch):
+        """C2d-a with D4b and J2a: a viewer aggregates. The one grammar runs on
+        the installed fields first, and the store gets the viewer of the call.
+        A field of a newer version is refused before the store."""
+        from datetime import UTC, datetime
+        now = datetime(2026, 1, 1, tzinfo=UTC)
+        obj = objects_store.StudioObject(
+            "o1", "p1", "visit", None, "ben@x.test", now, now,
+            (FieldSpec(key="site", type="text", hot=True),
+             FieldSpec(key="newer", type="number", hot=True)))
+        seen: list[Any] = []
+
+        async def _by_name(*_a: Any, **_k: Any) -> Any:
+            return obj
+
+        async def _store(db: Any, **kw: Any) -> Any:
+            seen.append(kw)
+            return None
+
+        monkeypatch.setattr(objects_store, "get_object_by_name", _by_name)
+        monkeypatch.setattr(objects_store, "aggregate_records", _store)
+        manifest = {**DOOR_MANIFEST, "objects": [
+            {"name": "visit", "fields": [{"key": "site", "type": "text", "hot": True}]}]}
+        app = _viewer.InstalledApp(id="p1", version=3, manifest=manifest)
+        me = Viewer("ana@x.test")
         ref = parse_uses("object:visit.aggregate")
-
-        async def _boom(*_a: Any, **_k: Any) -> Any:
-            raise AssertionError("a viewer must not reach the store")
-
-        app = _viewer.InstalledApp(id="p1", version=3, manifest=DOOR_MANIFEST)
+        out = invoke._Outcome("visit_stats")
+        body = b'{"group_by": {"field": "site"}}'
+        asyncio.run(invoke._run_object_aggregate(SimpleNamespace(), app, ref, body, out, me))
+        assert out.refusal is None and out.query_error is None
+        assert len(seen) == 1 and seen[0]["viewer"] is me
+        newer = invoke._Outcome("visit_stats")
         asyncio.run(invoke._run_object_aggregate(
-            SimpleNamespace(execute=_boom), app, ref, b"{}", out, Viewer("ana@x.test")))
-        assert out.refusal == invoke.SOURCE_NOT_OPEN and out.aggregate is None
+            SimpleNamespace(), app, ref,
+            b'{"measures": [{"op": "sum", "field": "newer"}]}', newer, me))
+        assert newer.query_error is not None and len(seen) == 1
+        gone = invoke._Outcome("visit_stats")
+        other = _viewer.InstalledApp(id="p1", version=3, manifest={**manifest, "objects": []})
+        asyncio.run(invoke._run_object_aggregate(SimpleNamespace(), other, ref, b"{}", gone, me))
+        assert gone.object_missing and len(seen) == 1
 
     def test_the_answer_holds_at_most_50_rows_and_256_kib(self, opw):
         pid = _package(opw, manifest=DOOR_MANIFEST)
