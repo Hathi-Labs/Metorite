@@ -1,7 +1,8 @@
 # Chat failure modes: what goes wrong in the chat, and what we build against it
 
-**Status: ACCEPTED, 2026-11-12 (D217). HRD-6 part 1 (the line of a slow tool) is BUILT
-dark, 2026-11-13 (PR 2238). Nothing else is built.** Owner ask of 2026-11-12,
+**Status: ACCEPTED, 2026-11-12 (D217). BUILT: HRD-6 part 1 (the line of a slow
+tool), dark, 2026-11-13 (PR 2238), and HRD-18a (names as people say them),
+2026-11-14. Nothing else is built.** Owner ask of 2026-11-12,
 in chat. Epic task 2978 (project AI Chat Interface). It is part of WS-CHAT.
 
 HRD-0 is task 2979. The owner accepted D-HRD-1 to D-HRD-6 of §8 as D217.
@@ -120,7 +121,7 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 
 | Id | The class | State today | The rule | Slice |
 |---|---|---|---|---|
-| F1 | A name spelled as people say it ("Swagata" for Sougata) | `resolve_person` matches exactly or as a substring. `find_contact` has a trigram fallback | One matcher folds spelling and transliteration variants, and asks to confirm | HRD-18 |
+| F1 | A name spelled as people say it ("Swagata" for Sougata) | HRD-18a: `acb_common.name_match` is the one matcher. `resolve_person`, `find_contact` and `search_crm` use it, mark a near name and ask to confirm it. The company search and the mail sender match wait for HRD-18b | One matcher folds spelling and transliteration variants, and asks to confirm | HRD-18 |
 | F2 | Relative and past dates | Live: the Now line, the member's zone, past dates refused | No change. Each new date argument uses `acb_common.today` | §7 |
 | F3 | Mixed language and voice transcripts | VOX puts a transcript in the box, and the member sends it | No change. The member checks it before Send | none |
 
@@ -173,7 +174,7 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 | **HRD-15** | 2994 | The member's own words are obeyed | `evals/member_words/` | STANDARD |
 | **HRD-16** | 2995 | A card answer acts once | `tests/unit/test_card_answer_once.py` | HIGH |
 | **HRD-17** | 2996 | Offline, loading and two devices | `src/lib/chatOutbox.test.ts` | STANDARD |
-| **HRD-18** | 2997 | Names as people say them | `tests/unit/test_name_variants.py` | STANDARD |
+| **HRD-18** | 2997 | Names as people say them. HRD-18a, BUILT 2026-11-14: the one matcher, the CRM search word by word with its near pass (`crm_platform.md` §19.5), `resolve_person` and `find_contact`. HRD-18b: the company search and the mail sender match | `tests/unit/test_name_variants.py`, `tests/unit/test_crm_near_search_r8.py` (R8) | STANDARD |
 | **HRD-19** | 2998 | Start clean | `tests/unit/test_continue_carries.py` | STANDARD |
 
 An eval with a live model costs money. Each eval above USD 0.50 waits for the

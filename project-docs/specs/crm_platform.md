@@ -8744,6 +8744,33 @@ touched" sits before the converted badge. Two findings stay open. The search
 box makes the Closing range wrap at 1440, and a `blue` stage follows the accent
 until CRM-U3.
 
+**HRD-18a: names as people say them (✅ built 2026-11-14, task 2997).** The
+spec is `chat_failure_modes.md` F1. Production showed the gap on 2026-11-14. A
+member asked for the order of "Sharath", and the deal named its contact
+«Sharat Satyanarayana». `search_crm("Sharath")` did not find that deal.
+
+- `core.search_where` splits `?q=` into words. Each word must match one search
+  column or one related name. The words join by AND, and the columns by OR.
+  The phone digits of the whole query stay one more alternative.
+- A deal also matches the names of its contacts and of its source lead. The
+  source lead converted into the deal, or the deal names it in `lead_id`.
+  `Entity.search_sql` is now `Entity.related_search`.
+- `?near=true` adds a near pass to a list read. The pass runs only when the
+  exact read finds no row, on page 1, for 1 to 3 words. It reads 20 rows at
+  most, nearest first.
+- In that pass, a word of 4 letters or more also matches by `pg_trgm`
+  `strict_word_similarity`. The floor is 0.5, from `acb_common.name_match`.
+  The strict form stops at the bounds of a word. The plain `word_similarity`
+  scores "Sharath" 1.0 in «Bharath Shah».
+- Each row of the near pass carries `near: true`. Only `search_crm` asks for
+  the pass, and its answer opens with "No record holds «…». Near spellings:".
+- The list screen, the export, the aggregate and the board stay exact, and
+  they get the word rule too. The command bar and the company search stay
+  exact (HRD-18b).
+
+Fences: `tests/unit/test_crm_near_search_r8.py` (R8) and
+`tests/unit/test_name_variants.py`.
+
 ### 19.6 CRM-X2: The CRM joins the shell (✅ built 2026-10-12)
 
 **Scope.**
