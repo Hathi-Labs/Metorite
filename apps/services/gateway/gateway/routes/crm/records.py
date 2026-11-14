@@ -55,6 +55,7 @@ from gateway.routes.crm.core import (
     assert_writable,
     attach_ext_urls,
     clean_payload,
+    clip_query,
     compute_lead_name,
     count_where,
     current_tenant,
@@ -71,6 +72,7 @@ from gateway.routes.crm.core import (
     pipeline_takes_unset,
     record_zoho_tombstone,
     related_filters,
+    related_hits,
     require_deal_pipeline,
     require_row,
     resolve_owner,
@@ -132,6 +134,23 @@ def _string_pairs(node: Any) -> Iterable[tuple[str, str]]:
             yield from _string_pairs(item)
 
 
+#: The words of ``?near=`` and the mode of ``core.list_contract`` each names.
+_NEAR_WORDS = {
+    "": "", "false": "", "0": "", "no": "", "off": "",
+    "true": "fallback", "1": "fallback", "yes": "fallback", "on": "fallback",
+    "also": "also",
+}
+
+
+def near_mode(value: str | None) -> str:
+    """The near mode of ``?near=`` (HRD-18a): ``""``, ``fallback`` or ``also``.
+    Any other word is a 422, never a silent default."""
+    word = str(value or "").strip().lower()
+    if word not in _NEAR_WORDS:
+        raise HTTPException(status_code=422, detail="'near' is true, false or also.")
+    return _NEAR_WORDS[word]
+
+
 class ListParams:
     """The list contract's query parameters — declared once, bound four times.
 
@@ -162,12 +181,18 @@ class ListParams:
         updated_to: str | None = None,
         close_from: str | None = None,
         close_to: str | None = None,
+        near: str | None = None,
         request: Request = None,  # type: ignore[assignment]
     ) -> None:
         # CRM-Q25c: each name and value, before any of them reaches SQL.
         if request is not None:
             refuse_nul(request.query_params.multi_items())
         self.q = q
+        #: HRD-18a: ``near=true`` answers the near spellings when ``q`` finds
+        #: no row, each row with ``near: true``. ``near=also`` adds them after
+        #: the exact rows too. The chat's ``search_crm`` asks for ``also``.
+        #: The list screen, the export and the aggregate ask for none.
+        self.near = near_mode(near)
         self.sort = sort
         self.direction = direction
         self.page = page
@@ -211,7 +236,7 @@ async def _list(
     entity: Entity, params: ListParams, user: Any = None,
 ) -> ListResponse:
     async with _tenant_session() as db:
-        query = await list_query(db, entity, params, user)
+        query = await list_query(db, entity, params, user, near=params.near)
         found = await run_list(db, entity, query)
         # CRM-C4a: the live name of each lookup value, one query for each
         # target entity.
@@ -220,7 +245,7 @@ async def _list(
 
 
 async def list_query(
-    db: Any, entity: Entity, params: Any, user: Any = None,
+    db: Any, entity: Entity, params: Any, user: Any = None, *, near: str = "",
 ) -> ListQuery:
     """The ONE builder of a list's WHERE clause and its bound values.
 
@@ -228,6 +253,9 @@ async def list_query(
     routes, ``export.py`` and ``aggregate.py`` (WS-53 CRM-C7) all call it, so
     an export and an aggregate cover exactly the rows that the list with the
     same filters shows. Do not copy a filter into a caller.
+
+    ``near`` adds the near pass of HRD-18a (``core.list_contract``). Only
+    :func:`_list` passes it, so an export and an aggregate stay exact.
     """
     extra: tuple[str, ...] = ()
     if entity.hides_converted and not params.include_converted:
@@ -253,6 +281,8 @@ async def list_query(
             custom=params.custom,
         ),
     )
+    # HRD-18a: the related names, read once for the count and the page.
+    related = await related_hits(db, entity, params.q)
     return list_contract(
         entity,
         q=params.q, sort=params.sort, direction=params.direction,
@@ -264,6 +294,8 @@ async def list_query(
         ),
         extra_where=(*extra, *more_where),
         extra_params={**extra_params, **more_params},
+        near=near,
+        related=related,
     )
 
 
@@ -647,9 +679,13 @@ async def search_records(
     ``Query(...)``, so a direct call that leaves out an argument passes the
     ``Query`` object itself. It also reads no next activity and no count
     (``rows_only``), because the bar has 1.5 seconds for every app.
+
+    A query over ``core.MAX_Q_CHARS`` characters is cut at a word bound
+    (``core.clip_query``), so the company search, which takes 300, still
+    asks the CRM. A list route answers 422 for the same query.
     """
     refuse_nul([("q", q or "")])
-    words = (q or "").strip()
+    words = clip_query(q)
     if not words:
         return []
     found: list[tuple[str, dict[str, Any]]] = []
@@ -660,6 +696,7 @@ async def search_records(
                 q=words, sort="last_activity_at", direction="desc",
                 page=1, page_size=limit,
                 extra_where=(OPEN_LEAD_SQL,) if entity.hides_converted else (),
+                related=await related_hits(db, entity, words),
             )
             answer = await run_list(db, entity, query, rows_only=True)
             found += [(kind, row) for row in answer.rows]
