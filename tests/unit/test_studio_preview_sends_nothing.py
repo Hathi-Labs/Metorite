@@ -238,11 +238,38 @@ def test_the_integration_source_of_the_real_catalog_is_empty():
     assert actions._integration_rows() == []
 
 
-def test_the_mcp_source_of_the_real_catalog_is_empty():
-    """B1b-1 wires the MCP rows to an empty tools map, so the real catalog
-    serves no ``mcp`` row. B1b-2 adds the read, and the class A and B rows in
-    ``EXTRA_CATALOG`` below already hold the preview answer of each."""
-    assert actions._mcp_rows() == []
+async def test_the_mcp_source_of_the_real_catalog_reads_only_the_cache(no_outbound, monkeypatch):
+    """B1b-2 reads the MCP rows from the cache of ``connections/mcp_tools``.
+    The catalog read never calls a server, so a preview that reads the
+    catalog sends nothing. The class A and B rows in ``EXTRA_CATALOG`` below
+    hold the preview answer of each cached row. The one read of a server is
+    ``POST /studio/mcp/{server}/refresh``, a member action outside the door."""
+    from acb_common.tenant_redis import TenantRedis
+    from gateway.connections import mcp_tools
+
+    from tests.unit.test_studio_mcp_tools import RawRedis
+
+    raw = RawRedis()
+    monkeypatch.setattr(mcp_tools, "_redis", lambda: TenantRedis(raw))
+    monkeypatch.setattr(actions, "current_tenant", lambda: "org-a")
+    assert await actions._mcp_rows() == ([], True)
+    # A warm cache still reads no server: the rows come from the cache.
+    index = f"cc:org-a:{mcp_tools.NAMESPACE}:index"
+    raw.data[index] = {"github": "1"}
+    raw.data[f"cc:org-a:{mcp_tools.NAMESPACE}:tools:github"] = (
+        '{"v": 1, "tools": [{"name": "get_issue", "description": "", '
+        '"annotations": {"readOnlyHint": true}}]}')
+
+    async def _meta(_org):
+        from types import SimpleNamespace
+        return [SimpleNamespace(name="github", enabled=True, always_confirm=False)]
+
+    from gateway.connections import mcp
+    monkeypatch.setattr(mcp, "enabled_meta", _meta)
+    rows, stale = await actions._mcp_rows()
+    assert [(r["id"], r["class"]) for r in rows] == [("mcp:github.get_issue", "A")]
+    assert stale is False
+    assert no_outbound == []
 
 
 # ── The door, in a preview ─────────────────────────────────────────────────
