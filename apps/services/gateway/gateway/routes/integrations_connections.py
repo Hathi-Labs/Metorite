@@ -74,14 +74,67 @@ router = APIRouter(
     dependencies=[require_feature_router("integrations")],
 )
 
-#: Where each owning app connects its own accounts (D96.1).
+#: Where each owning app connects its own accounts (D96.1). WS-STU I8a adds
+#: Calendar (its settings sheet, CE-10c) and Knowledge (the Sources view,
+#: KC-1b), so a calendar row and a Drive row link to their own app.
 _SETUP_HREF = {
     "crm": "/crm",
     "email": "/email",
     "whatsapp": "/whatsapp",
+    "calendar": "/calendar?settings=1",
+    "knowledge": "/knowledge/sources",
     "integrations": "/integrations",
 }
 _KNOWN_APPS = frozenset(_SETUP_HREF)
+#: The name of the console in the connector list (IN-11). The registry and
+#: :data:`_SETUP_HREF` name the same app ``integrations``.
+_CONSOLE = "console"
+
+
+def _app_of(owning_app: str | None) -> str:
+    """The key of :data:`_SETUP_HREF` for *owning_app*. ``console`` and an
+    app that the map does not hold are the console, ``integrations``."""
+    app = "integrations" if owning_app == _CONSOLE else owning_app
+    return app if app in _KNOWN_APPS else "integrations"
+
+
+def setup_href_for(provider: str) -> str:
+    """Where a member connects *provider* (WS-STU I8a): the connect flow of
+    its owning app, never a copy of it (D96.1, ``ai_studio.md`` §8.1 rule 1).
+
+    The provider-level map. A connection that is missing has no registry
+    row, so its link cannot come from a row. ``mcp:<server>`` opens the Add
+    form of the console with the name filled in. A provider id reads its
+    owning app from the connector list (IN-11), and an id that the list does
+    not hold opens the console. Studio's read calls it, and copies no path."""
+    from acb_common.connector_list import connector
+    from gateway.connections import mcp as mcp_registry
+
+    if provider.startswith(mcp_registry.PREFIX):
+        name = provider[len(mcp_registry.PREFIX):]
+        if mcp_registry.NAME_RE.fullmatch(name):
+            return f"{_SETUP_HREF['integrations']}?add=mcp&name={name}"
+        return _SETUP_HREF["integrations"]
+    row = connector(provider)
+    return _SETUP_HREF[_app_of(row["owning_app"] if row else None)]
+
+
+def may_connect(user: UserContext, provider: str) -> bool:
+    """True when *user* may start the connect of *provider* (WS-STU I8a).
+
+    The floor of §3.5: an org connection needs ``integrations:manage``, and a
+    member connects their own member connection in the owning app. The scope
+    comes from the connector list (IN-11). An MCP server and an id that the
+    list does not hold are org connections, so they need the right. The
+    owning app checks its own rule again, so this answer only picks the words
+    that Studio shows."""
+    from acb_common.connector_list import connector
+    from gateway.connections import mcp as mcp_registry
+
+    if _can_manage(user):
+        return True
+    row = None if provider.startswith(mcp_registry.PREFIX) else connector(provider)
+    return bool(row and row.get("scope") == "member")
 
 #: The code of an error that the console may show. No provider text.
 _ERR_AUTH = "auth_failed"
@@ -155,7 +208,7 @@ def _host_only(url: str | None) -> str:
 
 def _registry_row(conn: store.Connection, user: UserContext) -> Row:
     """A row of the registry table. The Zoho CRM row is the first."""
-    app = conn.owning_app if conn.owning_app in _KNOWN_APPS else "integrations"
+    app = _app_of(conn.owning_app)
     detail: dict[str, str] = {}
     location = conn.provider_meta.get("location") if conn.provider_meta else None
     if location:
