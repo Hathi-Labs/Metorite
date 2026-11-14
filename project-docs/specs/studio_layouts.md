@@ -2,14 +2,14 @@
 
 **Status: DRAFT for owner review (2026-11-14, task 3312). Not yet ACTIVE.** Board: WS-STU, Metorite task 3312, slices 3313 to 3322. Parent spec: `ai_studio.md` (§5.5 is the app frame, D219). Research note: the lane file `studio_layouts.md` of 2026-11-14. This spec holds the result, and the note is not a source of record.
 
-**Bottom line.** Studio ships 14 layout presets. A preset is one enum value plus named slots. The author and Mira pick a preset, and the app draws it. A page with no preset keeps today's grid, so stored manifests stay valid. Build six first: table workspace, record 360, board, form wizard, work queue with approval, and dashboard.
+**Bottom line.** Studio ships 12 page presets and 2 patterns (record 360 and form wizard). A page preset is one enum value plus named regions. The author and Mira pick a preset, and the app draws it. A page with no preset keeps today's grid, so stored manifests stay valid. Build six first: table workspace, record 360, board, form wizard, work queue with approval, and dashboard. Record 360 and form wizard build as the record page and a Form mode (§6).
 
 ## 1. What exists on main (checked against origin/main, 2026-11-14)
 
 | Part | State | Where |
 |---|---|---|
 | Page model (`pages`, `tabs`, `cells`, `side`, `cols`) | Built | D11a, `lib/studio/pageModel.ts`, `studio_manifest.py` |
-| Page renderer | Built | D11b, `components/studio/StudioPage.tsx` |
+| Page renderer | Built, preview only | D11b, `components/studio/StudioPage.tsx` |
 | App page on live data | Built dark | AF-1 |
 | `nav` and the rail | Built dark | AF-2a, AF-2b, `StudioAppFrame.tsx` |
 | Filter bar and layout switch | Built dark | AF-4 (`StudioFilterBar.tsx`, `lib/filterModel.ts`) |
@@ -26,27 +26,27 @@
 | `header` and `sections` | **Not built** | AF-7 |
 | Checklist, Map, Documents, Gallery, Activity feed, Queue board | **Not built** | D9, D10, D13, D19, D22, D30 |
 
-Each frame slice sits behind `NEXT_PUBLIC_STUDIO_APP_FRAME`. The page keys `layout` and `slots` do not exist yet.
+Each frame slice sits behind `NEXT_PUBLIC_STUDIO_APP_FRAME`. The page keys `layout` and `regions` do not exist yet.
 
 ## 2. Rules that bind this spec
 
 1. **D12.** A manifest sets no colour and no pixel size. A layout is a preset of regions and blocks. It is never free styling.
 2. **One look.** Tokens only. Status colour comes from `statusAccent.ts`. Light and dark, three densities, member accent. A layout adds no palette and no hand-built control.
-3. **§5.5 caps.** 8 pages, 4 rail sections, 12 rows in a section, 8 tabs on a page, 6 tabs on a record, 4 related lists, 8 rail counts.
+3. **§5.5 caps.** 8 pages, 4 rail sections, 12 rows in a section, 8 tabs on a page, 12 cells on a page, 6 tabs on a record, 4 related lists, 8 rail counts.
 4. **D205.** A vertical is a preset over core blocks. A layout preset follows the same rule.
 5. **R6.** A page with no `layout` validates and draws as before. The new keys are optional.
 6. **R7.** Each rule below names its fence. A rule with no fence is advisory.
 
 ## 3. Shared rules for every layout
 
-These apply to all 14 presets. The catalog does not repeat them.
+These apply to all 14 layouts. The catalog does not repeat them.
 
 | Topic | Rule |
 |---|---|
 | States | Loading is a skeleton in the shape of the block. Empty says what the page is and gives one next action. Error says what failed, says whether data is safe, and has Retry. No-permission says what the member lacks and who to ask. A filtered-empty differs from a true-empty. No page is ever blank. |
 | Header | One title, one sentence, one count, one primary action at top right. |
 | Keyboard | Tab order follows reading order. Each pointer act has a key act. Esc closes a panel or dialog and returns focus to the opener. |
-| URL | Page, tab, record, filter and layout live in the URL (§5.5 rule 4). |
+| URL | Page, tab, record, filter and layout live in the URL (§5.5 rule 4). The page preset uses the key `preset`, because `layout` is the AF-4 switch. |
 | Phone (390 px) | One column. Touch targets of 44 px. No act that needs hover. No horizontal page scroll. A wide table scrolls inside its own strip with the first column pinned. |
 | Accessibility | Status never shows by colour alone. A live region announces a save and a failure. Drag has a menu or key alternative. |
 
@@ -54,7 +54,7 @@ Fence: LY-1 builds one component for the four states. A test refuses a local cop
 
 ## 4. The catalog
 
-Each entry gives the purpose, example apps, the slots, what is missing today, the layout by width, and a quality bar. The bar numbers are this spec's own proposals. They are not quotes from a source.
+Each entry gives the purpose, example apps, the regions, what is missing today, the layout by width, and a quality bar. The bar numbers are this spec's own proposals. They are not quotes from a source.
 
 ### L1. List and detail
 - **Purpose:** pick one item and read it beside the list. **Apps:** support desk, contacts, shipment tracker.
@@ -167,30 +167,57 @@ Second wave: L5, L1, L10, L12, L11, L13, L14. Each waits for its missing block. 
 
 ## 6. The manifest model (LY-0)
 
-A page gains two optional keys, `layout` and `slots`.
+A page gains two optional keys, `layout` and `regions`. The word `slots` is not used, because the top-level manifest key `slots` belongs to `package_host.md` (PKG-14 to PKG-16). The page keys `header` (AF-7) and `side` (D11a) already exist. A layout adds no second `header` and no second `side`.
 
 ```
 page: { id, title,
-  layout: "table_workspace" | "list_detail" | "board" | "dashboard" | "calendar"
-        | "record_360" | "work_queue" | "approval_queue" | "form_wizard"
-        | "gallery" | "timeline" | "map_list" | "checklist" | "document_settings",
-  slots: { header?, list?, main?, detail?, side?, kpis?, charts?, footer? } }
+  layout: "list_detail" | "table_workspace" | "board" | "dashboard" | "calendar"
+        | "work_queue" | "approval_queue" | "gallery" | "timeline"
+        | "map_list" | "checklist" | "document_settings",
+  regions: { list?, main?, detail?, kpis?, charts?, worklist?, outline?, body? } }
 ```
 
-1. Each slot holds a view id, as a `cell` does today. The preset decides region, size and phone order.
-2. A page with no `layout` keeps the D11a grid. `layout` and `cells` or `tabs` on one page are mutually exclusive, and the validator says which to remove.
-3. The validator checks that each slot fits the preset. A `board` needs a Board view in `main`. A slot name outside the preset is refused.
-4. The D12 scan applies to `slots`. No colour and no size.
-5. The AF-4 layout switch on one view (table, board, calendar over the same rows) is a different thing from the page `layout`.
-6. **Deploy order.** The server that knows the keys must be live before a client or the IDE writes them, because an older server refuses an unknown key (as AF-2a).
+**Two patterns are not page layouts.** Record 360 (L6) is the quality bar of the AF-5 record page and the `record` key (task 3254). A page in `pages` has no record context. Form wizard (L9) is a step mode of the Form block that the AF-6 dialog opens. LY-3 and LY-5 build them there. So the enum holds 12 values.
 
-**Fences (R7).** `tests/unit/test_studio_manifest.py` (valid, each bad slot, an old manifest, a colour key). `test_studio_manifest_ts_parity.py` and the golden schema `tests/unit/golden/studio_manifest.schema.json`. `pageModel.test.ts` holds the TS caps equal to the schema.
+**Rules.**
+1. A region holds view ids. The table below gives the block type and the cap of each region. A bar (filter, bulk, decision, progress, save) is a frame part or a block mode, not a region.
+2. A page with `layout` has no `tabs`, no `cells` and no `side`. A page with no `layout` is the D11a page, unchanged (R6). The validator names the key to remove.
+3. A region name outside the preset is refused. A required region that is missing is refused. A view of the wrong block type is refused.
+4. The D12 scan walks the whole document, so it covers `regions` with no new code.
+5. The AF-4 layout switch (`layouts` of a view, `layout` in the URL) is a different thing from the page `layout`. The page layout takes the URL key `preset`. Fence: `pageState.test.ts`.
+6. **Deploy order.** The server that knows the keys goes live before a client or the IDE writes them, as for AF-2a.
+7. Regions count against the 12 cells of a page (`MAX_CELLS_PER_PAGE`).
+
+| Preset | Required regions (block type, cap) | Optional regions |
+|---|---|---|
+| `table_workspace` | `main` (Table, 1) | none. The side panel is the record page of AF-5 |
+| `list_detail` | `list` (Table, 1), `detail` (Detail, 1) | none |
+| `board` | `main` (Board, 1) | none |
+| `dashboard` | `kpis` (Stat, 6) | `charts` (Chart, 4), `worklist` (Table, 1) |
+| `calendar` | `main` (Calendar, 1) | `list` (Table, 1, the "Unscheduled" list) |
+| `work_queue` | `list` (Table, 1), `detail` (Detail, 1) | none |
+| `approval_queue` | `list` (Table, 1), `detail` (Detail, 1) | none |
+| `gallery` | `main` (Gallery, 1) | none |
+| `timeline` | `main` (Timeline, 1) | none |
+| `map_list` | `list` (Table, 1), `main` (Map, 1) | none |
+| `checklist` | `main` (Checklist, 1) | none |
+| `document_settings` | `body` (Document or Form, 4) | `outline` (derived from the body ids, no view) |
+
+A preset whose block is not built (calendar, gallery, timeline, map, checklist, document) stays out of the validator enum until its block lands. So LY-0 ships the first six values only: `table_workspace`, `list_detail`, `board`, `dashboard`, `work_queue` and `approval_queue`. Each later value joins in the slice of its block.
+
+**What LY-0 changes (the validators that refuse a layout page today).**
+- `_check_pages` in `studio_manifest.py` says "A page needs tabs or cells". It accepts a page with `layout` and `regions` instead.
+- `readPage` in `pageModel.ts` returns null when `hasTabs === hasCells`, so the client drops the page with no message. It reads a layout page.
+- `dropViews` in `draftEdit.ts` strips views from cells and `side` only. It strips them from `regions` too, so a deleted view leaves no dangling region.
+- `frameEdit.ts` and `pageLayout.ts` (AF-11a) work on cells. They refuse an edit on a layout page, with a plain sentence, until a later slice teaches them regions.
+
+**Fences (R7).** `tests/unit/test_studio_manifest.py` (valid, each bad region, a missing region, a wrong block type, an old manifest, a colour key, a layout page with cells). `test_studio_manifest_ts_parity.py` and the golden schema `tests/unit/golden/studio_manifest.schema.json`. `pageModel.test.ts` (a layout page reads, caps equal the schema). The `draftEdit` and `frameEdit` tests (a deleted view, a refused edit).
 
 **Tier.** LY-0 changes the manifest validator, so it is HIGH. It needs an independent verifier and an Opus diff review.
 
 ## 7. How Mira picks a layout
 
-`studio_describe` gets a `layouts` part with the preset ids, the slots of each, and this table.
+`studio_describe` gets the presets, the regions of each and this table in its existing `frame` part (AF-8a). It adds no second part.
 
 | Words in the description | Layout |
 |---|---|
@@ -217,12 +244,12 @@ Each layout slice has four parts: the preset component built on `StudioPage` and
 
 | Id | Task | Slice | Done when |
 |---|---|---|---|
-| LY-0 | 3313 | Preset model: `layout`, `slots`, validator, TS twin, golden | An old manifest validates. A bad slot fails to publish. HIGH, dark. |
+| LY-0 | 3313 | Preset model: `layout`, `regions`, validator, TS twin, golden, the four validator changes of §6 | An old manifest validates. A bad region fails to publish. First six values only. HIGH, dark. |
 | LY-1 | 3314 | Shared states component | Every preset uses it. A test refuses a local copy. |
 | LY-2 | 3315 | Table workspace | Meets the L2 bar, with bulk bar. |
-| LY-3 | 3316 | Record 360 | Meets the L6 bar. Needs `record` (task 3254). |
+| LY-3 | 3316 | Record 360, as the AF-5 record page | Meets the L6 bar. Needs `record` (task 3254). |
 | LY-4 | 3317 | Board | Shared filters with L2, phone stage switcher. |
-| LY-5 | 3318 | Form wizard | Steps, progress, review step, draft keep. |
+| LY-5 | 3318 | Form wizard, as a step mode of Form | Steps, progress, review step, draft keep. |
 | LY-6 | 3319 | Work queue and approval | Next item, decision bar, success empty state. |
 | LY-7 | 3320 | Dashboard | Tile states, caps, tile-to-list link. |
 | LY-8 | 3321 | Mira and IDE | `studio_describe` knows the presets. The Pages tab has a picker. Eval passes. |
@@ -231,7 +258,7 @@ Each layout slice has four parts: the preset component built on `StudioPage` and
 ## 9. Open questions for the owner
 
 1. **Does the preset replace the grid for a page, or only fill it?** Recommended: replace (rule 6.2), so a page has one source of layout.
-2. **Is the `layout` enum closed?** Recommended: closed, 14 values, extended by a spec change. A free string would let an app invent a layout.
+2. **Is the `layout` enum closed?** Recommended: closed, 12 values, extended by a spec change. A free string would let an app invent a layout.
 3. **Which block gaps does the owner want first?** Recommended: D9 (Checklist) and D22 (Activity feed), because L13 and L6 need them.
 
 Nobody builds against an answer until the owner gives it on task 3312.
