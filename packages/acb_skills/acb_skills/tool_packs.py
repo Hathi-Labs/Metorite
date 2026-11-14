@@ -3991,7 +3991,7 @@ def search_packs(
     ``studio-more`` is a candidate when layer (a) loaded only ``studio``, and
     the core is one when it loaded only ``studio-more``. ``studio-workflows``
     follows nothing, so it is a candidate only where ``TOOL_PACKS`` names it
-    (owner-only, ``work_plan.md`` §6 D4)."""
+    or is ``*`` (owner-only, ``work_plan.md`` §6 D4)."""
     keep = frozenset(str(owner) for owner in owners)
     return tuple(
         slug for slug in loadable(allow, loaded)

@@ -1532,7 +1532,7 @@ OA-7h is the gate before the flag turns on for any organization.
 
 #### 4.2.9 Tool search: load a tool, not a whole pack (TS-0, DECIDED)
 
-**Status.** DECIDED, 2026-11-14, task 3190. The owner wrote that D222 is adopted as written: load by tool, amending D117 item 2. PR 2268 merged TS-1 (`20059a075`), and it has no caller. TS-2a (task 3222) is in build. PR 2318 merged its PR 2 (`find_tools`, no caller) as `9bcbfd452`, and PR 2333 reverted it, because its tests assumed the unsplit `studio` pack after TS-1b. The reland of PR 2 makes the candidates every pack of `PACK_ONLY_OWNERS` that `packs_on` allows and layer (a) did not load, follow packs included. PR 3, the wiring, comes next. The owner accepted decisions 2, 6, 7 and 9 on 2026-11-14 (04:24 UTC). The owner approved decision 11 and chose "Always, in the base set" for decision 13 (10:18 UTC). The decisions list marks each point. A rule that D222 does not state stays a proposal, and the slice audit settles it.
+**Status.** DECIDED, 2026-11-14, task 3190. The owner wrote that D222 is adopted as written: load by tool, amending D117 item 2. PR 2268 merged TS-1 (`20059a075`), and it has no caller. TS-2a (task 3222) is in build. PR 2318 merged its PR 2 (`find_tools`, no caller) as `9bcbfd452`. PR 2333 reverted it, because its tests assumed the unsplit `studio` pack after TS-1b. The reland of PR 2 makes the candidates every pack of `PACK_ONLY_OWNERS` that `packs_on` allows and layer (a) did not load, follow packs included. PR 3, the wiring, comes next. The owner accepted decisions 2, 6, 7 and 9 on 2026-11-14 (04:24 UTC). The owner approved decision 11 and chose "Always, in the base set" for decision 13 (10:18 UTC). The decisions list marks each point. A rule that D222 does not state stays a proposal, and the slice audit settles it.
 
 **Dark and live.** TS-1 adds code with no caller. TS-1b is LIVE, not dark: it changes the Studio packs of every org that holds them. Each slice from TS-2 on ships dark behind `TOOL_SEARCH_ORGS`, and the flip is owner-only.
 
@@ -1635,12 +1635,12 @@ Two guards need new code.
 - They pass the tests of the loader plan: `_available` of `_plan_pack_loader` (`_tool_injection.py:4345`, `:4387`), the owner filters and the held drop (`:3441-3442`). For Studio the owner filter is `_drop_pack_unless_studio` (`:3558-3567`).
 - The rank skips each name in the live tool list, and each pack of `run.holds()`. The setup build made other objects than the live ones.
 - Without that rule, an add of such a name raises `ValueError`, and no tool of the batch loads. When the add works, the rules block comes twice.
-- `LoadSkillTools` stays safe, because it passes the live names as `holds` to a fresh build (`tool_packs.py:3524`).
+- `LoadSkillTools` stays safe, because it passes the live names as `holds` to a fresh build (`tool_packs.py:3691`).
 - One way meets all the tests at once: one `_pack_tools` build of each candidate pack at setup, beside the builds of layer (a). TS-2a measures what that build costs.
 - A setup build fixes `held` at the start of the turn. So the answer of `find_tools` builds its tools again at call time, as `LoadSkillTools` does. The setup build serves the rank only.
 - In TS-2a the candidates are the packs of the owners in `PACK_ONLY_OWNERS` that `packs_on` allows and layer (a) did not load. Follow packs are candidates too. CRM and Projects candidates wait for TS-6.
 - Today these are the two Studio packs. `studio-more` is a candidate when layer (a) loaded only the core, and the core is one when layer (a) loaded only `studio-more`. When layer (a) loaded both, no pack is a candidate.
-- `studio-workflows` has the same owner, but it follows nothing. So it is a candidate only where the `TOOL_PACKS` of the box names it, an owner-only line (`work_plan.md` §6 D4). `search_packs` (`tool_packs.py:3976`) keys on the owner and on `packs_on`, so this needs no code of its own.
+- `studio-workflows` has the same owner, but it follows nothing. So it is a candidate only where the `TOOL_PACKS` of the box names it or is `*`, an owner-only line (`work_plan.md` §6 D4). `search_packs` (`tool_packs.py:3976`) keys on the owner and on `packs_on`, so this needs no code of its own.
 - The description of `find_tools` names a pack only when the pack has a candidate. So a member without `feature:studio` never sees the Studio line or the name of a Studio tool.
 - The index holds first-party text from the code only, and no tenant data. So one index serves the process (R5).
 
@@ -1835,7 +1835,7 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
 **TS-2a. The narrowed spike: `find_tools` for the packs of `PACK_ONLY_OWNERS` (task 3222).** HIGH. AGENT-SAFE to build dark. The flip of `TOOL_SEARCH_ORGS` is OWNER-GATE. Rung 1, partial. It follows TS-1 (merged). The Opus spec audit of TS-2 on 2026-11-14 found TS-2 as written NO-GO, and it gave GO to this narrowed slice after the docs PR.
 - **Scope.**
   - The candidates are the packs of the owners in `PACK_ONLY_OWNERS` (`tool_packs.py:2804`) that `packs_on` allows and layer (a) did not load. Follow packs are candidates too.
-  - Today these are `studio` (10 tools) and its follow pack `studio-more` (13 tools), after TS-1b. `studio-workflows` is a candidate only where the `TOOL_PACKS` of the box names it. Production's list does not name it.
+  - Today these are `studio` (10 tools) and its follow pack `studio-more` (13 tools), after TS-1b. `studio-workflows` is a candidate only where the `TOOL_PACKS` of the box names it or is `*`. Production's list does neither.
   - There is no surface rule, and sticky state is OFF.
   - There are no CRM or Projects candidates. A found CRM or Projects tool meets OA-8i (`pack_write_refusal`, `tool_packs.py`), the specialist reach and the hand-off swap. TS-6 (HIGH) owns those.
 - **What it proves.**
@@ -1854,7 +1854,15 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
   - Make ONE `FindTools` for each run, with `record=applied.record`. Never put it on a shared agent object.
   - Call `setup_candidates` inside the bound frame of the run, with a context that holds `PACK_RUN_KEY`, as `_build_early` does (`tool_packs.py:3782`). Else `_pack_tools` gives an empty build, and the tool ships with an empty catalog.
   - Pass `measure=_maf_mcp.schema_tokens`, `owners=PACK_ONLY_OWNERS`, `loaded=choice.slugs`, and `available=` the `_available` test of `_plan_pack_loader`.
-  - Pass `allow` from `packs_on` after the S2 toggles. `search_packs` keys on the owner `studio-builder` and on `allow`. So `studio-more` is a candidate wherever `studio` is on, and the dark `studio-workflows` only where `TOOL_PACKS` names it. The reland of PR 2 on 2026-11-14 fixed this rule, with a test for each case.
+  - Pass the `allow` of `_apply_tool_packs` (`_tool_injection.py:4072`). It widens the admin toggles with `with_followers`. Never pass a fresh `packs_on`.
+  - `search_packs` keys on the owner `studio-builder` and on `allow`. So `studio-more` is a candidate wherever `studio` is on. The dark `studio-workflows` is one only where `TOOL_PACKS` names it or is `*`.
+  - The orchestrator decided on 2026-11-14 that follow packs are candidates. It is not an owner grant. The owner sees it at the PR 3 preview and at the flip ask. The reland of PR 2 has a test for each case.
+  - Pass `available=` the `_available` test of `_plan_pack_loader` (`_tool_injection.py:4387`).
+  - Measure the setup cost. A turn can now make two or three `_pack_tools` builds at setup, one for each candidate pack.
+  - The demo turn is a turn where layer (a) loaded the core alone, so `studio-more` holds tools to find.
+  - Decide the text of the 422 line of `studio-more` when the loader offers nothing and the flag is on. With the flag off, the run stays byte-identical.
+  - The §6 D4 line says this: when `TOOL_PACKS` names `studio-workflows` or is `*`, its two workflow writes become findable, also past `MAX_PACKS`.
+  - Never call `note_used` for the pack of a found tool before TS-4.
   - Add 1 to `base` only when the flag is on. A count test pins +1 with the flag on and 0 with it off. A second test proves the run byte-identical with the flag off.
   - Add a fence: no platform tool, pack tool or MCP tool has the name `find_tools`.
   - Add the `TOOL_SEARCH_ORGS` reader in `acb_common/settings.py` and the §6 D4 line.
