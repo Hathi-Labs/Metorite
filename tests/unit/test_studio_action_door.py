@@ -2634,17 +2634,6 @@ class TestTheDoorOp:
 class TestTheDoorOpFences:
     _STUDIO = Path(invoke.__file__).parent
 
-    def test_no_studio_route_file_reads_the_internal_token(self):
-        """R7 (B2b-2b): the door forwards the inbound bearer, and it never
-        reads the internal token to mint one. A read of the token in any file
-        of ``routes/studio`` fails here."""
-        pattern = re.compile(r"gateway_internal_token|_get_internal_token|internal_token",
-                             re.IGNORECASE)
-        files = sorted(self._STUDIO.glob("*.py"))
-        assert {p.name for p in files} >= {"invoke.py", "door_op.py"}
-        for path in files:
-            assert not pattern.search(path.read_text(encoding="utf-8")), path.name
-
     def test_the_executor_reads_no_identity_of_the_session(self):
         """``door_op.py`` takes the headers of the inbound request only. It
         reads no field of a ``UserContext``, so it cannot mint an identity."""

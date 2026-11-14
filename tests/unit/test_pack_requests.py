@@ -294,6 +294,11 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                              "read the studio workflow that chases invoices",
                              # STU-E4b: the run id mode, the steps of a run.
                              "list the steps of the playbook run in my studio app"),
+    # -- studio-workflows: the workflow writes (STB-6b) --
+    "studio_workflow_publish": ("publish the workflow that chases invoices",
+                                "roll back the workflow to version 2"),
+    "studio_workflow_live": ("pause the workflow that chases invoices",
+                             "turn on the workflow again"),
     # -- projects-reminders --
     "list_reminders": ("what reminders do I have?",),
     "promote_reminder": ("turn the reminder into a task",),
