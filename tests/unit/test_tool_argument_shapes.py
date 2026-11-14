@@ -300,3 +300,25 @@ def test_shape_of_reads_only_a_declared_object_or_list() -> None:
     assert ptg.shape_of(typing.Annotated[list[int], "a list"]) == "array"
     for plain in (str, str | None, bytes, int, bool, float, Any, list[str] | dict[str, Any]):
         assert ptg.shape_of(plain) is None, plain
+
+
+@pytest.mark.parametrize(("tool_name_", "param", "shape", "string"), [
+    # Production 2026-11-13 and 11-14: MAF said "Input should be a valid dictionary / list".
+    ("studio_save", "manifest", "object", '{"name": "App", "objects": []}'),
+    ("studio_patch", "ops", "array", '[{"op": "add", "path": "/x", "value": 1}]'),
+])
+def test_the_studio_calls_of_production_read_a_json_string(
+    monkeypatch, tool_name_, param, shape, string,
+) -> None:
+    """``studio_save`` got ``manifest`` and ``studio_patch`` got ``ops`` as a
+    JSON string. Mutation: drop the Studio pack from the shape install → the
+    check says "Input should be a valid ..." → red."""
+    tools = dict(_wrap_all(monkeypatch, True))
+    assert tool_name_ in tools, f"{tool_name_} is no pack tool"
+    tool = tools[tool_name_]
+    assert _shaped(tool)[param] == shape
+    got = tool._prepare_arguments(_args_for(tool, **{param: string}))
+    assert got[param] == json.loads(string)
+    ptg.take_bad(tool_name_)
+    tool._prepare_arguments(_args_for(tool, **{param: '{"a": '}))  # must not raise
+    assert ptg.take_bad(tool_name_) == ((param, shape),)

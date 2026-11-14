@@ -155,3 +155,22 @@ def test_a_failed_call_text_is_a_failure_for_the_card() -> None:
     assert is_refusal(ptg.failure_text(RuntimeError("x"), read_only=True))
     assert is_refusal(ptg.failure_text(RuntimeError("x"), read_only=False))
     assert not is_refusal("The tool failed to start")
+
+
+async def test_a_draft_reply_that_meets_a_provider_5xx_answers_text() -> None:
+    """Production 2026-11-13: ``draft_reply`` answered "Error: Function
+    failed." after a Microsoft Graph 502. Whatever the provider raises, the
+    guard turns it into text. Mutation: let the guard re-raise → red."""
+    class BadGateway(RuntimeError):
+        pass
+
+    async def tool(email_id: str = "") -> str:
+        raise BadGateway("502 Bad Gateway from graph.microsoft.com")
+
+    tool.__name__ = "draft_reply"
+    tool.__tool_risk__ = dict(_WRITE)  # type: ignore[attr-defined]
+    with _run():
+        build = await _build("email", _stub(tool))
+        text = await build.tools[0](email_id="m-1")
+    assert text.startswith("The tool failed (BadGateway).") and "Next:" in text
+    assert "Function failed" not in text and "graph.microsoft.com" not in text
