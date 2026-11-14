@@ -98,17 +98,30 @@ HIGH_PATHS_RE+='|deploy/|\.github/workflows/deploy\.yml$'
 HIGH_PATHS_RE+='|scripts/(apply_[a-z_]*migrations\.sh|gen_tenant_migration\.py)$'
 # Identity, roles and permissions: the whole auth package.
 HIGH_PATHS_RE+='|packages/acb_auth/'
-# The tenancy and RLS seams: the DB seam, the Redis key wrapper, the memory tenant guard.
-HIGH_PATHS_RE+='|packages/acb_common/acb_common/(db|tenant_redis)\.py$'
+# The tenancy and RLS seams: the DB seams, the Redis key wrapper, the memory
+# tenant guard, and the provisioning of an org.
+HIGH_PATHS_RE+='|packages/acb_common/acb_common/(db|tenant_redis|provisioning)\.py$'
+HIGH_PATHS_RE+='|packages/acb_graph/acb_graph/db\.py$'
+HIGH_PATHS_RE+='|apps/services/customer_console/customer_console/db\.py$'
 HIGH_PATHS_RE+='|packages/acb_memory/acb_memory/tenant_guard[^/]*$'
+# The row rules of AI Studio: the stores that apply them on each write.
+HIGH_PATHS_RE+='|apps/services/gateway/gateway/studio/(batch_store|objects_store)\.py$'
+# The readers of a Knowledge document: who a provider reader proves.
+HIGH_PATHS_RE+='|apps/services/gateway/gateway/kb_access/'
 # App routes and settings pages for auth, billing and credits, matched by folder.
 HIGH_PATHS_RE+='|workbench/[^/]+/src/app/.*/(auth|billing|credits)/'
 HIGH_PATHS_RE+=')'
-# Any file named for auth, billing, credits, RLS or entitlements, in any folder.
-HIGH_PATHS_RE+='|(^|/)(auth|billing|credits|rls|entitle)[^/]*\.(py|ts|tsx|sql)$'
+# Any file named for auth, billing, credits, RLS, entitlements, permissions or
+# grants, in any folder.
+HIGH_PATHS_RE+='|(^|/)(auth|billing|credits|rls|entitle|permission|grant)[^/]*\.(py|ts|tsx|sql)$'
+# Any code file with a tenancy or visibility part in its name.
+HIGH_PATHS_RE+='|(^|/)([^/]*_)?(tenancy|visibility)[^/]*\.(py|ts|tsx|sql)$'
+# Any server file with an access part in its name: studio_access, mailbox_access,
+# access_requests. A UI file such as access.ts is out: the server decides access.
+HIGH_PATHS_RE+='|(^|/)([^/]*_)?access(_[^/]*)?\.(py|sql)$'
 # Any file named tenant* (the tenancy seams: tenant_redis, tenant_guard,
-# tenant_file_store, tenantDoor), or with an rls part in its name.
-HIGH_PATHS_RE+='|(^|/)(tenant|[^/]*_rls)[^/]*$'
+# tenant_file_store, tenantDoor), or with an rls or row_rules part in its name.
+HIGH_PATHS_RE+='|(^|/)(tenant|[^/]*_(rls|row_rules))[^/]*$'
 STALE_LOCK_MIN=180  # The service stops a pass at 2 hours, so a 3-hour lock is dead.
 
 say() { echo "merge_bot: $*" >&2; }

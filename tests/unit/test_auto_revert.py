@@ -121,6 +121,11 @@ elif verb == "pr comment":
         body = f.read()
     with open(path("comment_%s.txt" % args[2]), "w", encoding="utf-8") as f:
         f.write(body)
+elif verb == "pr close":
+    data = load("pr_%s.json" % args[2]) or {}
+    data["state"] = "CLOSED"
+    with open(path("pr_%s.json" % args[2]), "w", encoding="utf-8") as f:
+        json.dump(data, f)
 elif verb == "pr list":
     # pr_list.json holds the open PRs that a search finds.
     keep = opt("--json")
@@ -138,24 +143,28 @@ else:
 # The probe. It logs the commit it runs on. PROBE_OVERRIDE maps a sha to an
 # exit code, or to a list of exit codes for the 1st, 2nd... run, so a test
 # can make one tree flaky. A file BROKEN fails it, and a file FIXED passes it.
-# PROBE_HOOK lands one commit on main while the pass runs, on the first probe
-# of a revert tree: "fix" adds FIXED, "move" adds an unrelated file.
+# PROBE_HOOK lands commits on main while the pass runs. It is a comma list:
+# the nth probe of a revert tree lands the nth entry. "fix" adds FIXED, and
+# "move" adds an unrelated file.
 PROBE_PY = r"""
 import json, os, subprocess, sys
 
 sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
 with open(os.environ["PROBE_LOG"], "a", encoding="utf-8") as f:
     f.write(sha + " " + " ".join(sys.argv[1:]) + "\n")
-hook = os.environ.get("PROBE_HOOK", "")
-mark = os.path.join(os.environ["FIX"], "hook.done")
+hooks = [h for h in os.environ.get("PROBE_HOOK", "").split(",") if h]
+mark = os.path.join(os.environ["FIX"], "hook.count")
+done = int(open(mark).read()) if os.path.exists(mark) else 0
 msg = subprocess.run(["git", "log", "-1", "--format=%B"], capture_output=True, text=True).stdout
-if hook and "Auto-Revert:" in msg and not os.path.exists(mark):
-    open(mark, "w").close()
+if "Auto-Revert:" in msg and done < len(hooks):
+    with open(mark, "w") as f:
+        f.write(str(done + 1))
+    hook, n = hooks[done], 108 + done
     seed = os.environ["SEED"]
-    name = "FIXED" if hook == "fix" else "note_108.txt"
+    name = "FIXED" if hook == "fix" else "note_%d.txt" % n
     with open(os.path.join(seed, name), "w", encoding="utf-8") as f:
-        f.write("108\n")
-    for args in (["add", "-A"], ["commit", "-q", "-m", hook + " lands (#108)"], ["push", "-q", "origin", "main"]):
+        f.write("%d\n" % n)
+    for args in (["add", "-A"], ["commit", "-q", "-m", "%s lands (#%d)" % (hook, n)], ["push", "-q", "origin", "main"]):
         subprocess.run(["git", "-C", seed, *args], check=True, capture_output=True)
 over = {}
 if os.path.exists(os.environ["PROBE_OVERRIDE"]):
@@ -728,6 +737,164 @@ def test_main_that_moves_during_the_pass_is_read_again(box: Box, hook: str) -> N
     box.assert_clean(main=new_tip)
 
 
+@pytest.mark.parametrize("hooks", ["move,fix", "move,move", "move,move,move"])
+def test_main_is_read_until_it_holds_still(box: Box, hooks: str) -> None:
+    """P2 (CIV-31b): main moves again during the probes of the new tip. The pass
+    reads main until it holds still, at most MAIN_READS times."""
+    mod = load_module()
+    box.result()
+    got = box.run("on", PROBE_HOOK=hooks)
+    assert got.returncode == 0, got.stderr
+    new_tip = box.remote_heads()["refs/heads/main"]
+    branch = f"refs/heads/auto-revert/{box.sha[104][:12]}"
+    report = box.report()
+    assert "Read 2 of main: it moved" in report
+    if hooks == "move,fix":
+        # The fix landed during the probes of the first new tip.
+        assert any(" SKIP " in ln and "pass on the new tip" in ln for ln in box.lines())
+        assert branch not in box.remote_heads() and box.gh_writes() == []
+    elif hooks == "move,move":
+        # Main holds still on the third read, so the revert goes on that tip.
+        assert "Read 3 of main: it did not move" in report
+        git(box.repo, "fetch", "-q", "origin", branch)
+        assert git(box.repo, "rev-parse", f"{box.remote_heads()[branch]}^") == new_tip
+    else:
+        assert mod.MAIN_READS == 3
+        assert f"Main moved on each of {mod.MAIN_READS} reads" in person(box)
+        assert branch not in box.remote_heads() and box.gh_writes() == []
+        # 10 probes, then 4 for each of two new tips: 3 runs and the proof.
+        assert len(box.probes()) == 18
+    box.assert_clean(main=new_tip)
+
+
+def _open_revert_pr(box: Box) -> None:
+    """A pass in mode on opens revert PR 900 of the culprit 104."""
+    box.result()
+    assert box.run("on").returncode == 0
+    assert any(" REVERT " in ln and "revert_pr=900" in ln for ln in box.lines())
+    (box.fix / "poll.txt").unlink()
+
+
+def _land(box: Box, n: int, files: dict[str, str]) -> str:
+    box.commit(n, f"lands (#{n})", files)
+    git(box.seed, "push", "-q", "origin", "main")
+    return box.sha[n]
+
+
+@pytest.mark.parametrize("close_fails", [False, True])
+def test_a_fix_on_main_closes_the_open_revert_pr(box: Box, close_fails: bool) -> None:
+    """P2 (CIV-31b): a fix lands while the revert PR waits for pr-check. The next
+    pass runs the failed tests on the new tip, and they pass. It closes the PR
+    and writes SKIP. A failed close is a PERSON line."""
+    _open_revert_pr(box)
+    probes = len(box.probes())
+    fixed = _land(box, 108, {"FIXED": "yes\n"})
+    got = box.run("on", **({"FAKE_GH_FAIL": "pr close"} if close_fails else {}))
+    assert got.returncode == 0, got.stderr
+    assert box.probes()[probes:] == [fixed] * 3
+    last = box.lines()[-1]
+    assert "revert_pr=900" in last and fixed[:12] in last
+    closes = [c for c in box.gh_calls() if c[:2] == ["pr", "close"]]
+    assert len(closes) == 1 and closes[0][2] == "900"
+    if close_fails:
+        assert " PERSON " in last and "gh pr close failed" in last
+    else:
+        assert " SKIP " in last and "closed the revert PR" in last
+        state = json.loads((box.fix / "pr_900.json").read_text(encoding="utf-8"))
+        assert state["state"] == "CLOSED"
+        # The merge bot sees the closed PR. That BACK needs no PERSON line.
+        box.merge_log.write_text("BACK 900 closed\n", encoding="utf-8")
+    # A second pass tests no tip twice and writes nothing new.
+    lines = len(box.lines())
+    assert box.run("on").returncode == 0
+    assert len(box.probes()) == probes + 3 and len(box.lines()) == lines
+    if not close_fails:
+        # A new red run of the same culprit goes to a person, not to a SKIP.
+        box.result()
+        assert box.run("on").returncode == 0
+        assert "closed its revert PR 900" in box.lines()[-1] and " PERSON " in box.lines()[-1]
+
+
+def test_a_new_tip_that_is_still_red_keeps_the_revert_pr(box: Box) -> None:
+    """P2 (CIV-31b): an unrelated commit lands. The failed tests still fail, so the
+    revert PR stays open, and no line is written. Each tip is tested once."""
+    _open_revert_pr(box)
+    lines, probes = len(box.lines()), len(box.probes())
+    moved = _land(box, 108, {"note_108.txt": "108\n"})
+    assert box.run("on").returncode == 0
+    assert box.probes()[probes:] == [moved]
+    assert len(box.lines()) == lines
+    assert not [c for c in box.gh_calls() if c[:2] == ["pr", "close"]]
+    assert box.run("on").returncode == 0
+    assert len(box.probes()) == probes + 1
+
+
+def test_a_flaky_new_tip_goes_to_a_person_and_keeps_the_revert_pr(box: Box) -> None:
+    """P2 (CIV-31b): the failed tests pass once, then fail, on the new tip."""
+    _open_revert_pr(box)
+    moved = _land(box, 108, {"note_108.txt": "108\n"})
+    (box.fix / "override.json").write_text(json.dumps({moved: [0, 1]}), encoding="utf-8")
+    assert box.run("on").returncode == 0
+    last = box.lines()[-1]
+    assert " PERSON " in last and "pass, fail" in last and "stays open" in last
+    assert not [c for c in box.gh_calls() if c[:2] == ["pr", "close"]]
+
+
+def test_a_stop_of_the_unit_writes_the_person_line_before_the_cleanup(
+    box: Box, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P3 (CIV-31b): SIGTERM writes the PERSON line before the probe worktree goes.
+    The removal can be slow on the HDD, and SIGKILL follows SIGTERM after 90 s."""
+    mod = load_module()
+    cfg = mod.Config(
+        mode="dry",
+        repo=box.repo,
+        log=box.log,
+        reports=box.tmp / "reports",
+        state=box.tmp / "state",
+        merge_log=box.merge_log,
+        poll_cmd=[],
+        handover_cmd=[],
+        gh=[],
+        test_cmd="",
+        timeout_s=1,
+    )
+    at_cleanup: list[list[str]] = []
+    real_git = mod.git
+
+    def spy(repo, *args, **kwargs):
+        if args[:2] == ("worktree", "remove"):
+            at_cleanup.append(box.lines())
+        return real_git(repo, *args, **kwargs)
+
+    def stopped(*_args, **_kwargs):
+        with mod.worktree(box.repo, box.tip):
+            mod.on_sigterm(15, None)
+
+    monkeypatch.setattr(mod, "git", spy)
+    monkeypatch.setattr(mod, "decide", stopped)
+    with pytest.raises(SystemExit):
+        mod.handle(cfg, mod.Ledger(cfg.log), {"run_id": 30, "exit_code": 0, "result": ""})
+    assert len(at_cleanup) == 1
+    assert len(at_cleanup[0]) == 1 and " PERSON " in at_cleanup[0][0]
+    assert "SIGTERM" in at_cleanup[0][0]
+    # One line, not a second one from handle().
+    assert len(box.lines()) == 1
+    assert "NO REVERT" in box.report()
+    assert mod.EarlyEnd.now is None
+    assert len(git(box.repo, "worktree", "list").splitlines()) == 1
+
+
+def test_the_lock_outlives_the_limit_of_the_unit() -> None:
+    """P3 (CIV-31b): FLAKE_RUNS=3 makes 10 to 18 probes in a pass, after a bisect
+    of up to 12. The unit stops a pass at 14 hours. A lock is stale only after it."""
+    mod = load_module()
+    service = (UNITS / "metorite-auto-revert.service").read_text(encoding="utf-8")
+    limit = re.search(r"^TimeoutStartSec=(\d+)h$", service, re.MULTILINE)
+    assert limit is not None and int(limit.group(1)) == 14
+    assert mod.STALE_LOCK_S == 15 * 3600 > int(limit.group(1)) * 3600
+
+
 @pytest.mark.parametrize("mode", ["dry", "on"])
 @pytest.mark.parametrize(
     ("files", "title"),
@@ -756,9 +923,38 @@ def test_the_high_paths_equal_the_merge_bot_list() -> None:
     """P1-c: the mirror of HIGH_PATHS_RE in scripts/home_server/merge_bot.sh (CIV-28b)."""
     text = (ROOT / "scripts" / "home_server" / "merge_bot.sh").read_text(encoding="utf-8")
     parts = re.findall(r"^HIGH_PATHS_RE\+?='([^']*)'\s*$", text, re.MULTILINE)
-    if not parts:
-        pytest.skip("merge_bot.sh has no HIGH_PATHS_RE until CIV-28b (PR 2253) merges")
+    assert parts, "merge_bot.sh has no HIGH_PATHS_RE lines"
     assert "".join(parts) == load_module().HIGH_PATHS_RE
+
+
+#: CIV-31b: the tenancy, RLS, grant and visibility files of the HIGH list.
+SCOPING_HIGH = [
+    "apps/services/gateway/gateway/studio/batch_store.py",
+    "apps/services/gateway/gateway/studio/objects_store.py",
+    "apps/services/gateway/gateway/kb_access/resolve.py",
+    "apps/services/customer_console/customer_console/db.py",
+    "packages/acb_common/acb_common/provisioning.py",
+    "packages/acb_common/acb_common/studio_access.py",
+    "packages/acb_graph/acb_graph/db.py",
+    "packages/acb_skills/acb_skills/permission_policy.py",
+    "apps/x/permissions.py",
+    "apps/x/visibility.py",
+    "apps/x/tenancy.py",
+    "apps/x/grants.py",
+    "apps/x/routes/crm/access.py",
+    "apps/x/mailbox_access.py",
+    "apps/x/access_requests.py",
+    "tests/unit/test_projects_tenancy.py",
+    "tests/unit/test_studio_row_rules.py",
+]
+#: Near misses that stay out: an ordinary store, a UI helper, a spec.
+SCOPING_LOW = [
+    "apps/services/gateway/gateway/studio/views_store.py",
+    "apps/x/accessibility.py",
+    "workbench/control_plane/src/lib/access.ts",
+    "workbench/control_plane/src/components/AccessGate.tsx",
+    "project-docs/specs/tenancy_and_visibility.md",
+]
 
 
 def test_the_high_paths_match_as_grep_matches(tmp_path: Path) -> None:
@@ -782,6 +978,8 @@ def test_the_high_paths_match_as_grep_matches(tmp_path: Path) -> None:
         "apps/x/my_rls.sql",
         "apps/x/calc.py",
         "scripts/home_server/auto_revert.py",
+        *SCOPING_HIGH,
+        *SCOPING_LOW,
     ]
     listing = tmp_path / "paths.txt"
     listing.write_text("\n".join(paths) + "\n", encoding="utf-8", newline="\n")
@@ -795,6 +993,10 @@ def test_the_high_paths_match_as_grep_matches(tmp_path: Path) -> None:
     by_python = {p for p in paths if mod.high_paths([p])}
     assert by_python == by_grep
     assert "apps/x/calc.py" not in by_python and "infra/postgres/440_x.sql" in by_python
+    # CIV-31b: the scoping files are HIGH. An ordinary store, a UI access
+    # helper and a spec are not.
+    assert set(SCOPING_HIGH) <= by_python
+    assert not set(SCOPING_LOW) & by_python
 
 
 def test_a_red_run_after_the_revert_landed_goes_to_a_person(box: Box) -> None:
@@ -858,6 +1060,10 @@ def test_lane_merge_defers_to_the_auto_revert() -> None:
     assert "lane `auto-revert`" in lowered
     assert "never close" in lowered and "open the culprit's task again" in lowered
     assert "auto_revert_mode" in lowered and "auto-revert.log" in lowered
+    # CIV-31b: `systemctl cat | grep` shows a drop-in as a second line. `show`
+    # gives the one merged value.
+    assert "systemctl --user cat" not in text
+    assert "systemctl --user show -p Environment --value metorite-auto-revert.service" in text
 
 
 def test_a_stop_signal_still_writes_a_person_line_and_a_report(

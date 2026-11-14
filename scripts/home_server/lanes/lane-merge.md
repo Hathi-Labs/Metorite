@@ -95,7 +95,8 @@ culprit's task: the revert takes its change out of `main`.
   that is not done. Comment the revert PR and the failed tests. The `REVERT`
   line of `~/lanes/auto-revert.log` names both. Skip step f.
 - `BACK`: change no task. The pass writes a `PERSON` line for it, and a
-  person acts.
+  person acts. When a fix lands on `main` first, the pass closes the revert PR
+  and writes a `SKIP` line. Then `BACK <pull request> closed` needs nothing.
 
 Keep a note of the last log line that you handled. Then you never repeat one.
 The steps a to e stay here as the rule of the bot. They are also the manual
@@ -145,7 +146,9 @@ g. **Watch `main`.** Every 3 merges, or every 30 minutes, read
    `gh run list --branch main --limit 10`. When a required job of a `main` run
    is red, find the merged pull request that caused it. Comment on that task.
    - Read the mode first:
-     `systemctl --user cat metorite-auto-revert.service | grep AUTO_REVERT_MODE`.
+     `systemctl --user show -p Environment --value metorite-auto-revert.service | tr ' ' '\n' | grep '^AUTO_REVERT_MODE='`.
+     systemd merges each drop-in into one value, so this gives one line. No
+     line means the mode is `off`, or the unit is not installed.
    - Mode `on`: make no revert yourself. Read `~/lanes/auto-revert.log`. The
      pass opens the revert PR, or it writes a `PERSON` line. Act only on a
      `PERSON` line. Then one culprit never gets two revert PRs.

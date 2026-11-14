@@ -776,6 +776,29 @@ def test_civ28b_the_floor_covers_the_auth_package_billing_routes_and_the_migrati
     assert env.merges == [] and env.premerge_runs == 0
 
 
+def test_civ31b_the_floor_covers_the_scoping_files(env):
+    """CIV-31b: the tenancy, RLS, grant and visibility files are HIGH. An ordinary
+    store and a UI access helper are not."""
+    high = [
+        "apps/services/gateway/gateway/studio/batch_store.py",
+        "packages/acb_skills/acb_skills/permission_policy.py",
+        "apps/services/gateway/gateway/routes/apps/grants.py",
+        "apps/services/gateway/gateway/kb_access/resolve.py",
+        "packages/acb_common/acb_common/studio_access.py",
+        "apps/x/visibility.py",
+    ]
+    for n, path in enumerate(high, start=5):
+        env.pr(n, path=path)
+    env.pr(11, path="apps/services/gateway/gateway/studio/views_store.py")
+    env.pr(12, path="workbench/control_plane/src/lib/access.ts")
+    env.run()
+    lines = env.log.splitlines()
+    assert len(lines) == 8
+    for line, n in zip(lines[:6], range(5, 11), strict=True):
+        assert line.startswith(f"BACK {n} tier floor HIGH, queued as ")
+    assert lines[6:] == ["DONE 11 abc123", "DONE 12 abc123"]
+
+
 def test_civ28b_a_rename_out_of_a_high_path_is_seen(env):
     env.commit("infra/postgres/998_old.sql", "select 1;\n", "a migration")
     git(env.seed, "push", "-q", "origin", "main")

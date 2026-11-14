@@ -36,10 +36,14 @@ Fail closed. Each doubt stops the revert and writes a PERSON line:
     other answer stops the revert. That is a flake, or a fix landed.
   - The revert does not apply cleanly, or the failed tests fail on it.
   - A step of `on` fails, or the merge bot sends the revert PR back.
-  - The pass ends early (SIGTERM, a crash). It writes its line, then ends.
-When main moves during the probes, the pass reads it again. When the failed
-tests pass on the new tip, a fix landed, and the pass makes no revert. Else
-it makes the revert on the new tip.
+  - Main moves on each of the MAIN_READS reads after the probes.
+  - The pass ends early (SIGTERM, a crash). It writes its line first. A stop
+    of the unit writes it before the cleanup of the probe worktrees.
+When main moves during the probes, the pass reads it again, until it holds
+still. When the failed tests pass on a new tip, a fix landed, and the pass
+makes no revert. Else it makes the revert again on the new tip.
+While a revert PR is open, each pass runs the failed tests on each new tip of
+main. When they pass, a fix landed: the pass closes the PR and writes SKIP.
 scripts/premerge.sh refuses a PR that lands a reverted patch again unchanged.
 
 It never pushes to main, never force-pushes, never merges, and never
@@ -50,7 +54,8 @@ the merge. The log line and the report name the task and the failed tests.
 Files (defaults in brackets):
   AUTO_REVERT_LOG [~/lanes/auto-revert.log]    one line per decision
   AUTO_REVERT_REPORTS [~/lanes/auto-revert]    one report per red run
-  AUTO_REVERT_STATE [~/.cache/metorite-auto-revert]   the lock
+  AUTO_REVERT_STATE [~/.cache/metorite-auto-revert]   the lock, and one file
+      in open/ per open revert PR: its culprit, failed tests and last tip
   MERGE_LOG [~/lanes/merge-bot.log]            read only: DONE and BACK lines
 Commands, for a test or another setup:
   AUTO_REVERT_REPO_DIR [this checkout]   a clone with the remote `origin`
@@ -88,8 +93,9 @@ ROOT = Path(__file__).resolve().parents[2]
 MODES = ("off", "dry", "on")
 #: The rate brake (D218): the most reverts in one hour.
 MAX_REVERTS_PER_HOUR = 3
-#: A lock older than this is from a dead pass. The unit stops a pass at 8 hours.
-STALE_LOCK_S = 9 * 3600
+#: A lock older than this is from a dead pass. The unit stops a pass at 14 hours
+#: (TimeoutStartSec in systemd/metorite-auto-revert.service).
+STALE_LOCK_S = 15 * 3600
 #: The same probe as the default of scripts/bisect_main.sh.
 DEFAULT_TEST_CMD = 'uv run python -m pytest -x -q -p no:cacheprovider -- "$@"'
 BRANCH_PREFIX = "auto-revert/"
@@ -101,8 +107,11 @@ HANDOVER_LANE = "auto-revert"
 HANDOVER_TASK = "0"
 #: Each check of the flake re-run runs this many times, with one answer.
 FLAKE_RUNS = 3
+#: The reads of main after the probes (P2). A read that finds main still ends
+#: them. When the last read finds a new tip again, a person acts.
+MAIN_READS = 3
 #: The HIGH paths of the merge bot: HIGH_PATHS_RE in merge_bot.sh (CIV-28b,
-#: PR 2253). This is a mirror, an extended regex. The fence
+#: CIV-31b). This is a mirror, an extended regex. The fence
 #: test_the_high_paths_equal_the_merge_bot_list keeps the two equal.
 HIGH_PATHS_RE = "".join(
     [
@@ -111,12 +120,18 @@ HIGH_PATHS_RE = "".join(
         r"|deploy/|\.github/workflows/deploy\.yml$",
         r"|scripts/(apply_[a-z_]*migrations\.sh|gen_tenant_migration\.py)$",
         "|packages/acb_auth/",
-        r"|packages/acb_common/acb_common/(db|tenant_redis)\.py$",
+        r"|packages/acb_common/acb_common/(db|tenant_redis|provisioning)\.py$",
+        r"|packages/acb_graph/acb_graph/db\.py$",
+        r"|apps/services/customer_console/customer_console/db\.py$",
         "|packages/acb_memory/acb_memory/tenant_guard[^/]*$",
+        r"|apps/services/gateway/gateway/studio/(batch_store|objects_store)\.py$",
+        "|apps/services/gateway/gateway/kb_access/",
         "|workbench/[^/]+/src/app/.*/(auth|billing|credits)/",
         ")",
-        r"|(^|/)(auth|billing|credits|rls|entitle)[^/]*\.(py|ts|tsx|sql)$",
-        "|(^|/)(tenant|[^/]*_rls)[^/]*$",
+        r"|(^|/)(auth|billing|credits|rls|entitle|permission|grant)[^/]*\.(py|ts|tsx|sql)$",
+        r"|(^|/)([^/]*_)?(tenancy|visibility)[^/]*\.(py|ts|tsx|sql)$",
+        r"|(^|/)([^/]*_)?access(_[^/]*)?\.(py|sql)$",
+        "|(^|/)(tenant|[^/]*_(rls|row_rules))[^/]*$",
     ]
 )
 HIGH_WORD_RE = re.compile(r"\bHIGH\b")
@@ -501,14 +516,15 @@ def make_revert(cfg: Config, tip: str, culprit: str, message: str) -> str:
 
 
 def follow_up(cfg: Config, ledger: Ledger) -> None:
-    """Read the merge bot's results for each revert PR until it merges.
+    """Watch each revert PR until it merges, or until the pass closes it.
 
     Each BACK gets one PERSON line, with back=<n> for the nth BACK. A person can
-    hand the PR over again, so a PERSON line does not end the watch. Only a
-    DONE ends it, with one REVERTED line.
+    hand the PR over again, so a PERSON line does not end the watch. A DONE
+    ends it, with one REVERTED line. A SKIP line of the PR ends it too: the
+    pass closed the PR, because a fix landed (recheck_main).
     """
     opened: dict[str, str] = {}
-    merged: set[str] = set()
+    ended: set[str] = set()
     told: set[tuple[str, str]] = set()
     for e in ledger.entries():
         pr = e.fields.get("revert_pr")
@@ -516,22 +532,28 @@ def follow_up(cfg: Config, ledger: Ledger) -> None:
             continue
         if e.verb == REVERT:
             opened[pr] = e.fields.get("culprit", "")
-        elif e.verb == REVERTED:
-            merged.add(pr)
+        elif e.verb in (REVERTED, SKIP):
+            ended.add(pr)
         elif e.verb == PERSON and "back" in e.fields:
             told.add((pr, e.fields["back"]))
-    pending = [pr for pr in opened if pr not in merged]
-    if not pending or not cfg.merge_log.exists():
+    pending = [pr for pr in opened if pr not in ended]
+    if not pending:
         return
+    merge_lines = (
+        cfg.merge_log.read_text(encoding="utf-8", errors="replace").splitlines()
+        if cfg.merge_log.exists()
+        else []
+    )
     backs: dict[str, int] = {}
-    for raw in cfg.merge_log.read_text(encoding="utf-8", errors="replace").splitlines():
+    for raw in merge_lines:
         m = re.match(r"^(DONE|BACK) (\d+)(?: (.*))?$", raw.strip())
-        if not m or m.group(2) not in pending or m.group(2) in merged:
+        if not m or m.group(2) not in pending or m.group(2) in ended:
             continue
         pr, rest = m.group(2), m.group(3) or ""
         if m.group(1) == "DONE":
             ledger.write(REVERTED, f"revert_pr={pr} culprit={opened[pr]} merge={rest or 'unknown'}")
-            merged.add(pr)
+            ended.add(pr)
+            open_state(cfg, pr).unlink(missing_ok=True)
             continue
         backs[pr] = backs.get(pr, 0) + 1
         if (pr, str(backs[pr])) in told:
@@ -541,6 +563,75 @@ def follow_up(cfg: Config, ledger: Ledger) -> None:
             f"mode=on revert_pr={pr} back={backs[pr]} culprit={opened[pr]} The merge bot sent the "
             f"revert PR back: {rest}. A person merges it, or closes it and fixes main.",
         )
+    for pr in pending:
+        if pr not in ended:
+            recheck_main(cfg, ledger, pr)
+
+
+def open_state(cfg: Config, pr: str) -> Path:
+    """The file of an open revert PR: its culprit, failed tests and last tip."""
+    return cfg.state / "open" / f"{pr}.json"
+
+
+def write_open(cfg: Config, pr: str, data: dict[str, Any]) -> None:
+    """Keep what recheck_main needs. A failed write only stops the recheck of this PR."""
+    path = open_state(cfg, pr)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data), encoding="utf-8", newline="\n")
+    except OSError as exc:
+        say(f"cannot keep the state of revert PR {pr}: {exc}.")
+
+
+def recheck_main(cfg: Config, ledger: Ledger, pr: str) -> None:
+    """A fix can land while the revert PR waits for pr-check (P2). Test each new tip.
+
+    The failed tests run on each new tip of main, FLAKE_RUNS times. When each
+    run passes, a fix landed: the pass closes the PR and writes SKIP. A fail on
+    the first run keeps the PR. Any other answer is a PERSON line, and the PR
+    stays open. Each tip is tested once.
+    """
+    try:
+        data = json.loads(open_state(cfg, pr).read_text(encoding="utf-8"))
+        culprit, run_id, ids, last = data["culprit"], data["run"], data["ids"], data["tip"]
+    except (OSError, ValueError, KeyError, TypeError):
+        say(f"revert PR {pr}: no state file, so no recheck of main.")
+        return
+    try:
+        tip = fetch_main(cfg, culprit)
+    except Stop as stop:
+        say(f"revert PR {pr}: {stop.reason} The next pass tries again.")
+        return
+    if tip == last:
+        return
+    answers = []
+    for _ in range(FLAKE_RUNS):
+        answers.append(probe(cfg, tip, ids))
+        if answers[-1] != "pass":
+            break
+    head = f"mode=on run={run_id} culprit={culprit} revert_pr={pr}"
+    if answers == ["pass"] * FLAKE_RUNS:
+        why = f"The failed tests pass {FLAKE_RUNS} times on the new tip {tip[:12]} of main."
+        note = f"{why} A later commit fixed main, so the auto-revert closes this PR (CIV-31)."
+        shut = run([*cfg.gh, "pr", "close", pr, "--comment", note], cwd=cfg.repo)
+        if shut.returncode == 0:
+            ledger.write(SKIP, f"{head} {why} A fix landed, so the pass closed the revert PR.")
+            open_state(cfg, pr).unlink(missing_ok=True)
+            return
+        ledger.write(
+            PERSON,
+            f"{head} {why} gh pr close failed: {one_line(shut.stderr)}. "
+            "A person closes the revert PR.",
+        )
+    elif answers[0] != "fail":
+        ledger.write(
+            PERSON,
+            f"{head} The failed tests give {', '.join(answers)} on the new tip {tip[:12]} of main. "
+            "A flake, or a fix in part. The revert PR stays open, and a person decides.",
+        )
+    # Each tip is tested once. The next pass tests only a newer tip.
+    data["tip"] = tip
+    write_open(cfg, pr, data)
 
 
 @dataclass
@@ -568,12 +659,53 @@ class Case:
         return "".join(fmt.format(i) for i in self.ids)
 
 
+class EarlyEnd:
+    """The PERSON line and the report of a pass that ends early. Written once.
+
+    The poller already took the run, so the pass must leave a line. A stop of
+    the unit writes it in the SIGTERM handler (on_sigterm), BEFORE the finally
+    blocks remove the probe worktrees. That removal can be slow on the HDD of
+    the box, and systemd sends SIGKILL 90 s after SIGTERM (P3).
+    """
+
+    #: The pass that runs now. handle() sets it, and on_sigterm reads it.
+    now: EarlyEnd | None = None
+
+    def __init__(self, cfg: Config, ledger: Ledger, rep: Report) -> None:
+        self.cfg = cfg
+        self.ledger = ledger
+        self.rep = rep
+        self.written = False
+
+    def write(self, cause: str) -> None:
+        if self.written:
+            return
+        self.written = True
+        # A pushed branch or an open PR can exist: a person checks for them.
+        why = f"The pass ended early: {cause}. A person checks for a branch auto-revert/<sha>."
+        self.ledger.write(PERSON, f"mode={self.cfg.mode} run={self.rep.run_id} No revert. {why}")
+        self.rep.write(self.cfg.reports, f"NO REVERT. {why}")
+
+
+def on_sigterm(_signum: int, _frame: object) -> None:
+    """systemd stops a pass with SIGTERM. Write the PERSON line first, then end.
+
+    sys.exit raises SystemExit, so the finally blocks remove the worktrees after it.
+    """
+    if EarlyEnd.now is not None:
+        EarlyEnd.now.write("SystemExit(143), a SIGTERM from the stop of the unit")
+    sys.exit(143)
+
+
 def handle(cfg: Config, ledger: Ledger, result: dict[str, Any]) -> int:
     """Act on one BISECT_RESULT. Each doubt is a PERSON line and a report."""
     rep = Report(cfg.mode, result)
+    ending = EarlyEnd(cfg, ledger, rep)
+    EarlyEnd.now = ending
     try:
         decision = decide(cfg, ledger, result, rep)
     except Stop as stop:
+        EarlyEnd.now = None
         extra = "".join(f" {k}={v}" for k, v in stop.fields.items())
         # After the PR opens, the revert exists, and a person finishes it.
         head = "The revert stopped." if "revert_pr" in stop.fields else "No revert."
@@ -582,14 +714,13 @@ def handle(cfg: Config, ledger: Ledger, result: dict[str, Any]) -> int:
         return 0
     except BaseException as exc:
         # Fail closed. A crash, a SIGTERM (SystemExit) or a stop of the unit ends
-        # the pass. The poller already took the run, so write the line now.
-        # A pushed branch or an open PR can exist: a person checks for them.
-        why = f"The pass ended early: {exc!r}. A person checks for a branch auto-revert/<sha>."
-        ledger.write(PERSON, f"mode={cfg.mode} run={rep.run_id} No revert. {why}")
-        rep.write(cfg.reports, f"NO REVERT. {why}")
+        # the pass. on_sigterm wrote the line already, so this writes no second one.
+        ending.write(repr(exc))
         if isinstance(exc, Exception):
             return 1
         raise
+    finally:
+        EarlyEnd.now = None
     rep.write(cfg.reports, decision)
     return 0
 
@@ -615,15 +746,20 @@ def read_case(result: dict[str, Any], rep: Report) -> Case:
     return case
 
 
-def check_culprit(cfg: Config, case: Case, rep: Report) -> None:
-    """The culprit is one squash commit on main, and it is not a revert."""
-    c = case.culprit
+def fetch_main(cfg: Config, culprit: str) -> str:
+    """Fetch main, and return its tip. A failed fetch is a Stop."""
     fetch = git(
         cfg.repo, "fetch", "-q", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"
     )
     if fetch.returncode != 0:
-        raise Stop(f"git fetch of main failed: {one_line(fetch.stderr)}.", culprit=c)
-    case.tip = git_out(cfg.repo, "rev-parse", "refs/remotes/origin/main")
+        raise Stop(f"git fetch of main failed: {one_line(fetch.stderr)}.", culprit=culprit)
+    return git_out(cfg.repo, "rev-parse", "refs/remotes/origin/main")
+
+
+def check_culprit(cfg: Config, case: Case, rep: Report) -> None:
+    """The culprit is one squash commit on main, and it is not a revert."""
+    c = case.culprit
+    case.tip = fetch_main(cfg, c)
     rep.fact(f"Tip of main: {case.tip}.")
     if git(cfg.repo, "cat-file", "-e", f"{c}^{{commit}}").returncode != 0:
         raise Stop(f"This clone does not have the culprit {c[:12]}.", culprit=c)
@@ -659,6 +795,14 @@ def check_brakes(cfg: Config, ledger: Ledger, case: Case) -> str:
         )
     verb = REVERT if cfg.mode == "on" else WOULD_REVERT
     earlier = ledger.find(verb, "culprit", c)
+    revert_pr = earlier.fields.get("revert_pr", "") if earlier else ""
+    if revert_pr and ledger.find(SKIP, "revert_pr", revert_pr):
+        # follow_up closed the revert PR when a fix landed. Main is red again.
+        raise Stop(
+            f"The pass closed its revert PR {revert_pr} of {c[:12]}, because a fix "
+            "landed. Now a run is red again. A person reads the fix.",
+            culprit=c,
+        )
     if earlier is not None:
         note = (
             f"revert_pr={earlier.fields['revert_pr']}"
@@ -789,49 +933,63 @@ def build_and_prove(cfg: Config, case: Case, rep: Report) -> None:
 
 
 def read_main_again(cfg: Config, ledger: Ledger, case: Case, rep: Report) -> str:
-    """Main can move during the probes (P1-b). Read it again before the revert goes out.
+    """Main can move during the probes (P1-b, P2). Read it again until it holds still.
 
-    When the failed tests pass on the new tip, a fix landed: no revert. Else the
-    revert is made again on the new tip. Return a decision to skip, or "".
+    When the failed tests pass on a new tip, a fix landed: no revert. Else the
+    revert is made again on the new tip, and main is read again. The new probes
+    take time too, so main can move again. The pass reads main at most
+    MAIN_READS times. When the last read finds a new tip again, a person acts.
+    Return a decision to skip, or "".
     """
-    fetch = git(
-        cfg.repo, "fetch", "-q", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"
+    for read in range(1, MAIN_READS + 1):
+        tip = fetch_main(cfg, case.culprit)
+        if tip == case.tip:
+            rep.fact(f"Read {read} of main: it did not move during the probes ({tip}).")
+            return ""
+        rep.fact(f"Read {read} of main: it moved during the probes, from {case.tip} to {tip}.")
+        if read == MAIN_READS:
+            break
+        case.first_tip = case.first_tip or case.tip
+        case.tip = tip
+        if fixed_on_new_tip(cfg, case, rep):
+            return skip(
+                ledger,
+                cfg,
+                case,
+                f"The failed tests pass on the new tip {tip[:12]} (first tip {case.first_tip[:12]}). "
+                "A later commit fixed main. No revert.",
+            )
+        build_and_prove(cfg, case, rep)
+    raise Stop(
+        f"Main moved on each of {MAIN_READS} reads after the probes (last tip {tip[:12]}). "
+        "The pass cannot prove the revert on a tip that holds still.",
+        culprit=case.culprit,
     )
-    if fetch.returncode != 0:
-        raise Stop(f"git fetch of main failed: {one_line(fetch.stderr)}.", culprit=case.culprit)
-    tip = git_out(cfg.repo, "rev-parse", "refs/remotes/origin/main")
-    if tip == case.tip:
-        rep.fact(f"Main did not move during the probes: {tip}.")
-        return ""
-    rep.fact(f"Main moved during the probes: from {case.tip} to {tip}.")
-    case.first_tip, case.tip = case.tip, tip
-    got = probe(cfg, tip, case.ids)
-    rep.fact(f"Run 1 on the new tip of main {tip[:12]}: {got} (want fail).")
-    if got == "pass":
-        return skip(
-            ledger,
-            cfg,
-            case,
-            f"The failed tests pass on the new tip {tip[:12]} (first tip {case.first_tip[:12]}). "
-            "A later commit fixed main. No revert.",
-        )
-    if got != "fail":
-        raise Stop(
-            f"The failed tests {got} on the new tip {tip[:12]}. The pass cannot judge it.",
-            culprit=case.culprit,
-        )
-    # Two more runs on the new tip, with the same answer. Then the revert again.
-    for n in range(2, FLAKE_RUNS + 1):
+
+
+def fixed_on_new_tip(cfg: Config, case: Case, rep: Report) -> bool:
+    """Run the failed tests on case.tip. True: they pass, so a fix landed.
+
+    A first pass is enough to stop the revert. Else they must fail FLAKE_RUNS
+    times. One other answer stops the revert.
+    """
+    tip = case.tip
+    for n in range(1, FLAKE_RUNS + 1):
         got = probe(cfg, tip, case.ids)
         rep.fact(f"Run {n} of {FLAKE_RUNS} on the new tip of main {tip[:12]}: {got} (want fail).")
+        if n == 1 and got == "pass":
+            return True
         if got != "fail":
+            why = (
+                "The pass cannot judge it."
+                if got.startswith("unknown")
+                else "A flake, or a later commit fixed it."
+            )
             raise Stop(
-                f"The failed tests {got} on the new tip {tip[:12]} (run {n} of {FLAKE_RUNS}). "
-                "A flake, or a later commit fixed it.",
+                f"The failed tests {got} on the new tip {tip[:12]} (run {n} of {FLAKE_RUNS}). {why}",
                 culprit=case.culprit,
             )
-    build_and_prove(cfg, case, rep)
-    return ""
+    return False
 
 
 def revert_message(case: Case) -> str:
@@ -933,6 +1091,8 @@ def open_revert(cfg: Config, ledger: Ledger, rep: Report, case: Case) -> str:
         f"tests={len(case.ids)} Task: {case.task_ref}.",
     )
     rep.fact(f"Opened revert PR {revert_pr}.")
+    # recheck_main tests each later tip of main while the PR is open (P2).
+    write_open(cfg, revert_pr, {"culprit": c, "run": case.run_id, "ids": case.ids, "tip": case.tip})
 
     view = run([*cfg.gh, "pr", "view", revert_pr, "--json", "headRefOid,state"], cwd=cfg.repo)
     try:
@@ -1045,8 +1205,9 @@ def run_pass() -> int:
 
 
 def main(argv: list[str]) -> int:
-    # systemd stops a pass with SIGTERM. The finally blocks remove the worktrees.
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    # systemd stops a pass with SIGTERM. on_sigterm writes the PERSON line, and
+    # then the finally blocks remove the worktrees.
+    signal.signal(signal.SIGTERM, on_sigterm)
     if argv[:1] == ["run"]:
         return run_pass()
     print("usage: auto_revert.py run", file=sys.stderr)
