@@ -17,6 +17,10 @@ names a tool only when the member may use it: a tool in the request now, or
 a tool of a pack that ``load_skill_tools`` offers to this run (the planner
 filtered that list by the member's permissions and the held run, H-236).
 
+Each answer says what happened ("Not run …") and what is true now. None
+tells the model to call the tool again. The rewrite changes the result in
+place, so the text stays in the stored history, and a later turn reads it.
+
 The text is always on, because it only replaces a raw error. The load is
 ``CHAT_TOOL_AUTOLOAD`` (default off). D-HRD-1 (D217) allows it, and it ships
 dark. With it on, the middleware loads the offered pack through
@@ -54,35 +58,42 @@ _RAW = re.compile(r'^\s*(?:Error:\s*)?(?:Requested function|Function) "([^"]{1,2
 _SAFE = re.compile(r"[^A-Za-z0-9_.:-]")
 _CUTOFF = 0.75
 
+# Each text says what happened and what is true now. None tells the model to
+# call the tool again: ``_set_text`` changes the result in place, so the text
+# stays in the history of the chat, and a later turn reads it. An order to
+# retry there could repeat a write that the member moved past.
 SUGGEST_LOAD = (
-    'The tool "{name}" is not loaded in this turn. It is in the pack "{slug}". '
-    'Call load_skill_tools with pack "{slug}", then call "{name}" again.'
+    "Not run: {name} is in the «{slug}» pack, which this chat had not loaded. "
+    "To run it, load that pack with load_skill_tools first."
 )
 SUGGEST_LOAD_NEAR = (
-    'No tool named "{name}" exists. The closest is "{near}", in the pack "{slug}". '
-    'Call load_skill_tools with pack "{slug}", then call "{near}".'
+    "Not run: no tool is named {name}. The closest tool is {near}, in the "
+    "«{slug}» pack, which this chat had not loaded. To use it, load that pack "
+    "with load_skill_tools first."
 )
 LOADED_NOW = (
-    'The tool "{name}" was not loaded. This turn loaded its pack "{slug}" now. '
-    'Call "{tool}" again.'
+    "Not run on this call. The «{slug}» pack is loaded now, so {tool} is in your tools."
 )
 LOADED_NOW_NEAR = (
-    'No tool named "{name}" exists. The closest is "{tool}". This turn loaded '
-    'its pack "{slug}" now. Call "{tool}".'
+    "Not run: no tool is named {name}. The closest tool is {tool}. The «{slug}» "
+    "pack is loaded now, so {tool} is in your tools."
 )
-LOAD_FAILED = (
-    'The tool "{name}" is in the pack "{slug}". This turn tried to load that '
-    "pack, and the load answered:"
-)
-LIVE_NOW = 'The tool "{name}" is loaded now. Call "{name}" again.'
-SUGGEST_LIVE = 'No tool named "{name}" exists. The closest tool that you hold is "{near}".'
+LOAD_FAILED = "Not run: {name} is in the «{slug}» pack. The load of that pack answered:"
+LIVE_NOW = "Not run on this call. {name} is in your tools now."
+SUGGEST_LIVE = "Not run: no tool is named {name}. The closest tool is {near}."
 NEEDS_PACK = (
-    'The tool "{name}" is not available in this turn. Its work needs the {slug} tools. '
-    "Tell the member which part did not run, and that the next message can do it."
+    "Not run: {name} is not available in this chat. Its work needs the {slug} "
+    "tools. Tell the member which part did not run, and that the next message "
+    "can do it."
 )
 NOT_HERE = (
-    'No tool named "{name}" exists in this chat. Use only the tools that you hold, '
-    "or tell the member which part you cannot do."
+    "Not run: no tool is named {name} in this chat. Use only the tools that you "
+    "hold, or tell the member which part you cannot do."
+)
+#: Every answer text, for the fence.
+TEXTS = (
+    SUGGEST_LOAD, SUGGEST_LOAD_NEAR, LOADED_NOW, LOADED_NOW_NEAR, LOAD_FAILED,
+    LIVE_NOW, SUGGEST_LIVE, NEEDS_PACK, NOT_HERE,
 )
 
 
@@ -291,7 +302,9 @@ class UnknownToolAnswer(ChatMiddleware):
 
         Gives ``(loaded, tried, answer)``. *loaded* is the slug when the run
         holds the pack after the call. *tried* is the slug when the loader
-        refused, and *answer* is the loader's own text. The call goes through
+        refused. *answer* is the loader's own text: the refusal, or after a
+        load the rules of the pack without the loader's first line, which
+        tells the model to call the tools. The call goes through
         ``LoadSkillTools.process``, the one entry of a load, with a
         ``FunctionInvocationContext`` over the run's live list. So the run
         check, the caps, the MCP rule, the build and the sticky write are the
@@ -313,8 +326,20 @@ class UnknownToolAnswer(ChatMiddleware):
         record = getattr(loader, "record", None)
         holds = record.holds() if hasattr(record, "holds") else ()
         if slug in holds:
-            return slug, "", answer
+            return slug, "", _without_load_line(answer)
         return "", slug, answer
+
+
+def _without_load_line(answer: str) -> str:
+    """*answer* of a load without its first paragraph, "Loaded the … tools
+    (… tools). Call them from your next step." The first line of the HRD-1
+    text says that the pack is loaded, and it orders no call."""
+    from acb_skills import tool_packs as tp
+
+    head = tp.LOADED.split("{label}", 1)[0]
+    if answer.startswith(head) and "\n\n" in answer:
+        return answer.split("\n\n", 1)[1]
+    return answer
 
 
 class UnknownToolProvider(ContextProvider):

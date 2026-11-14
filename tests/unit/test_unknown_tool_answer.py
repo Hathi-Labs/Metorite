@@ -11,6 +11,12 @@ Fence (R7) of ``acb_skills.unknown_tool``. Mutations, each red:
 * read the flag as always on                -> the flag tests
 * load into a copy of the tool list          -> test_a_copy_of_the_tool_list_never_takes_a_load
 * load for a raw text of the history         -> test_a_raw_text_of_the_history_gets_the_text_and_no_load
+* tell the model to call the tool again      -> test_no_answer_text_orders_a_retry, and
+  each test that checks a text with ``_assert_no_retry``
+
+Each answer says what happened and what is true now, never "call it again".
+The rewrite stays in the stored history, and a later turn reads it. An order
+to retry there could repeat a write that the member moved past.
 
 The loop tests read each request as the OpenAI client sends it
 (``_prepare_messages_for_openai``), because that client sends a tool result's
@@ -28,6 +34,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import json
+import re
 import types
 from collections.abc import AsyncIterable, Iterator
 from typing import Any
@@ -68,7 +75,33 @@ def _owner_of(name: str) -> set[str]:
     return {s for s in PACK_SLUGS if name in tp.pack(s).tools}
 
 
+_RETRY = re.compile(r"\bagain\b|\bthen call\b|\bnow call\b|\bcall (?:it|them)\b", re.I)
+#: The tool that a text names as the closest one.
+_NEAR = re.compile(r"The closest tool is ([A-Za-z0-9_.:-]+)")
+
+
+def _assert_no_retry(text: str, *names: str) -> None:
+    """The HRD-1 line of *text* orders no call of a tool in *names*, and holds
+    no "again". The line is the first paragraph: a load adds the rules of the
+    pack after it, and those rules are the pack's own text."""
+    head = text.split("\n\n", 1)[0]
+    assert head.startswith("Not run"), head
+    assert not _RETRY.search(head), head
+    for name in names:
+        assert not re.search(rf"\bcall\s+[\"«]?{re.escape(name)}\b", head, re.I), head
+
+
 # ── 1. Each tool of each pack resolves ──────────────────────────────────────
+
+
+def test_no_answer_text_orders_a_retry() -> None:
+    """Every text of the module. Mutation: put back 'then call "{name}"
+    again' in ``SUGGEST_LOAD``, or 'Call "{tool}" again' in ``LOADED_NOW`` → red."""
+    assert len(ut.TEXTS) == 9
+    for template in ut.TEXTS:
+        text = template.format(name="create_task", near="create_tasks", tool="create_task",
+                               slug="projects")
+        _assert_no_retry(text, "create_task", "create_tasks")
 
 
 @pytest.mark.parametrize("slug", PACK_SLUGS)
@@ -77,10 +110,11 @@ def test_each_tool_of_each_pack_resolves(slug: str) -> None:
     for name in tp.pack(slug).tools:
         text = ut.answer_for(name, live=[], offered=[slug])
         assert "load_skill_tools" in text, (slug, name, text)
-        assert f'"{name}"' in text
-        named = {s for s in PACK_SLUGS if f'pack "{s}"' in text}
+        assert f"Not run: {name} is in" in text
+        named = {s for s in PACK_SLUGS if f"«{s}»" in text}
         assert named and named <= _owner_of(name), (slug, name, text)
         assert "not found" not in text.lower()
+        _assert_no_retry(text, name)
 
 
 # ── 2. The production cases, and a misspelt name ────────────────────────────
@@ -99,6 +133,7 @@ def test_the_production_names_resolve_to_the_pack_that_holds_them() -> None:
     for name, slug in cases.items():
         text = ut.answer_for(name, live=["search_company"], offered=OFFERED)
         assert text == ut.SUGGEST_LOAD.format(name=name, slug=slug), (name, text)
+        _assert_no_retry(text, name)
 
 
 def test_move_project_names_projects_bulk_while_projects_is_held() -> None:
@@ -106,18 +141,23 @@ def test_move_project_names_projects_bulk_while_projects_is_held() -> None:
     live = list(tp.pack("projects").tools)
     text = ut.answer_for("move_project", live=live, offered=["projects-bulk"],
                          held=["projects"])
-    assert 'pack "projects-bulk"' in text and "load_skill_tools" in text
+    assert "«projects-bulk»" in text and "load_skill_tools" in text
     assert "not found" not in text.lower()
+    _assert_no_retry(text, "move_project")
 
 
 def test_a_misspelt_name_gets_the_right_suggestion() -> None:
     """Mutation: cutoff 1.0 (no close match) → generic text → red."""
     live = ["search_emails", "read_email"]
-    assert '"search_emails"' in ut.answer_for("search_email", live=live, offered=[])
+    text = ut.answer_for("search_email", live=live, offered=[])
+    assert text == "Not run: no tool is named search_email. The closest tool is search_emails."
+    _assert_no_retry(text, "search_email", "search_emails")
     text = ut.answer_for("create_taks", live=[], offered=["projects", "email"])
-    assert '"create_task"' in text and 'pack "projects"' in text
+    assert _NEAR.findall(text) == ["create_task"] and "«projects»" in text
+    _assert_no_retry(text, "create_taks", "create_task")
     text = ut.answer_for("update_statuses", live=[], offered=list(PACK_SLUGS))
-    assert '"update_status"' in text and 'pack "projects-structure"' in text
+    assert _NEAR.findall(text) == ["update_status"] and "«projects-structure»" in text
+    _assert_no_retry(text, "update_statuses", "update_status")
 
 
 def test_a_name_with_no_close_match_names_nothing() -> None:
@@ -127,12 +167,13 @@ def test_a_name_with_no_close_match_names_nothing() -> None:
     assert text == ut.NOT_HERE.format(name="load_skill_tools")
 
 
-def test_a_tool_that_is_live_now_says_call_it_again() -> None:
+def test_a_tool_that_is_live_now_says_it_is_in_the_tools() -> None:
     """The model called a pack tool beside ``load_skill_tools`` in one step.
     MAF looked for the tool before the load. Mutation: drop the live branch
-    → "the closest tool that you hold is create_task" → red."""
+    → "the closest tool is create_task" → red."""
     text = ut.answer_for("create_task", live=["create_task"], offered=["projects"])
-    assert text == ut.LIVE_NOW.format(name="create_task")
+    assert text == "Not run on this call. create_task is in your tools now."
+    _assert_no_retry(text, "create_task")
 
 
 def test_a_refused_load_gives_the_loaders_own_next_step() -> None:
@@ -141,6 +182,7 @@ def test_a_refused_load_gives_the_loaders_own_next_step() -> None:
                          tried="projects", load_answer=refusal)
     assert text.startswith(ut.LOAD_FAILED.format(name="create_task", slug="projects"))
     assert text.endswith(refusal)
+    _assert_no_retry(text, "create_task")
 
 
 # ── 3. Never a tool that the member may not use ─────────────────────────────
@@ -157,9 +199,11 @@ def test_it_never_names_a_tool_the_member_may_not_use() -> None:
             if name in tp.pack("projects").tools:
                 continue
             text = ut.answer_for(name, live=[], offered=["projects"])
-            assert f'"{slug}"' not in text and f'pack "{slug}"' not in text
-            named = [t for t in tp.pack(slug).tools if t != name and f'"{t}"' in text]
-            assert not named or all(t in tp.pack("projects").tools for t in named), text
+            assert f"«{slug}»" not in text, text
+            named = _NEAR.findall(text)
+            assert all(t in tp.pack("projects").tools for t in named), text
+            assert {s for s in PACK_SLUGS if f"«{s}»" in text} <= {"projects"}, text
+            _assert_no_retry(text, name, *named)
 
 
 def test_the_answer_holds_only_names() -> None:
@@ -342,6 +386,15 @@ def _flag(monkeypatch, on: bool) -> None:
     monkeypatch.setattr(ut, "autoload_enabled", lambda: on)
 
 
+def _assert_wire_answers_order_no_retry(client: _Scripted, *names: str) -> None:
+    """Each HRD-1 answer on the wire orders no retry. A tool's own result
+    (``own``, ``made``, a loader answer) is not an HRD-1 answer."""
+    answers = [t for t in _all_tool_texts(client) if t.startswith("Not run")]
+    assert answers, "an HRD-1 answer reached the wire"
+    for text in answers:
+        _assert_no_retry(text, *names)
+
+
 @pytest.mark.parametrize("stream", [False, True], ids=["batch", "stream"])
 async def test_no_raw_not_found_reaches_the_model(stream: bool, monkeypatch) -> None:
     """2026-11-12: the model called create_task with the Projects pack offered
@@ -356,6 +409,7 @@ async def test_no_raw_not_found_reaches_the_model(stream: bool, monkeypatch) -> 
         assert "not found" not in text.lower(), text
     assert seen[0] == ut.SUGGEST_LOAD.format(name="create_task", slug="projects")
     assert loader.record.holds() == (), "the flag is off: nothing loads"
+    _assert_wire_answers_order_no_retry(client, "create_task")
 
 
 async def test_the_flag_is_off_by_default(monkeypatch) -> None:
@@ -372,7 +426,8 @@ async def test_with_the_flag_on_create_task_loads_projects_and_the_call_runs(
 ) -> None:
     """The pack loads through the real loader, the answer says so with the
     rules of the pack, and the next call RUNS the tool. Mutation: read the
-    flag as off → no load, the tool never runs → red."""
+    flag as off → no load, the tool never runs → red. Mutation: keep the
+    loader's first line ("Call them from your next step") → red."""
     _flag(monkeypatch, True)
     ran: list[str] = []
     loader = _loader(made={"projects": [_pack_tool("create_task", ran)]})
@@ -381,13 +436,15 @@ async def test_with_the_flag_on_create_task_loads_projects_and_the_call_runs(
          ("text", "done")], loader, stream=stream)
     assert loader.record.holds() == ("projects",)
     second = _tool_texts(client.wire[1])
-    assert second[0].startswith(ut.LOADED_NOW.format(
-        name="create_task", slug="projects", tool="create_task"))
-    assert "Loaded the Projects tools (1 tools)." in second[0], "the loader's own answer"
-    assert 'Call load_skill_tools with pack "projects"' not in second[0]
+    head, _, rules = second[0].partition("\n\n")
+    assert head == "Not run on this call. The «projects» pack is loaded now, so create_task is in your tools."
+    assert rules.startswith("PROJECTS TOOLS."), "the rules of the pack follow"
+    assert "Call them from your next step" not in second[0]
+    assert "load that pack with load_skill_tools" not in second[0]
     assert "create_task" in client.tools[1], "the request after the load holds the tool"
     assert ran == ["create_task:t"], "the tool that the load added ran on the next call"
     assert not any("not found" in t.lower() for t in _all_tool_texts(client))
+    _assert_wire_answers_order_no_retry(client, "create_task")
 
 
 async def test_with_the_flag_on_move_project_loads_projects_bulk(monkeypatch) -> None:
@@ -401,9 +458,11 @@ async def test_with_the_flag_on_move_project_loads_projects_bulk(monkeypatch) ->
          ("text", "done")], loader)
     assert "projects-bulk" in loader.record.holds()
     second = _tool_texts(client.wire[1])[0]
-    assert second.startswith(ut.LOADED_NOW.format(
-        name="move_project", slug="projects-bulk", tool="move_project"))
+    assert second.startswith(
+        "Not run on this call. The «projects-bulk» pack is loaded now, so move_project is "
+        "in your tools.\n\nPROJECTS BULK TOOLS.")
     assert ran == ["move_project:p"]
+    _assert_wire_answers_order_no_retry(client, "move_project")
 
 
 async def test_a_copy_of_the_tool_list_never_takes_a_load(monkeypatch) -> None:
@@ -424,6 +483,7 @@ async def test_a_copy_of_the_tool_list_never_takes_a_load(monkeypatch) -> None:
     assert "_held_write" not in client.tools[0], "the outer middleware sent a copy"
     assert ran == ["create_task:t"]
     assert not any("not found" in t.lower() for t in _all_tool_texts(client))
+    _assert_wire_answers_order_no_retry(client, "create_task")
 
 
 @pytest.mark.parametrize("copy_messages", [False, True], ids=["same", "copied"])
@@ -449,6 +509,7 @@ async def test_a_raw_text_of_the_history_gets_the_text_and_no_load(
     assert _tool_texts(client.wire[0]) == [want]
     assert _tool_texts(client.wire[1]) == [want, "own"]
     assert loader.record.holds() == ()
+    _assert_wire_answers_order_no_retry(client, "create_task")
 
 
 async def test_a_refused_load_answers_with_the_loaders_refusal(monkeypatch) -> None:
@@ -459,6 +520,7 @@ async def test_a_refused_load_answers_with_the_loaders_refusal(monkeypatch) -> N
     assert text.startswith(ut.LOAD_FAILED.format(name="create_task", slug="projects"))
     assert tp.LOAD_UNAVAILABLE.format(label="Projects") in text
     assert loader.record.holds() == ()
+    _assert_wire_answers_order_no_retry(client, "create_task")
 
 
 async def test_with_the_flag_on_a_pack_the_loader_does_not_offer_does_not_load(
@@ -470,6 +532,7 @@ async def test_with_the_flag_on_a_pack_the_loader_does_not_offer_does_not_load(
     assert loader.record.holds() == ()
     text = _tool_texts(client.wire[1])[0]
     assert "projects" not in text and "not found" not in text.lower()
+    _assert_wire_answers_order_no_retry(client, "create_task")
 
 
 def test_the_executor_puts_the_answer_on_the_orchestrator_view_last() -> None:
@@ -490,3 +553,4 @@ async def test_with_no_loader_the_text_still_replaces_the_raw_error() -> None:
     client = await _run([("call", "create_task", {}), ("text", "done")], None)
     text = _tool_texts(client.wire[1])[0]
     assert "not found" not in text.lower() and "create_task" in text
+    _assert_wire_answers_order_no_retry(client, "create_task")

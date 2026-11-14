@@ -134,6 +134,7 @@ not write a second copy of that seam. A bare test file name is under
    - MAF runs no middleware for an unknown name. So `UnknownToolAnswer`, a `ChatMiddleware`, rewrites the raw "not found" tool result before the next request.
    - `_set_text` writes `result` and `items`. The OpenAI client sends `items`, so a rewrite of `result` alone never reaches the model.
    - The answer names only tools that the member may use: the tools of the request and the packs that the loader offers.
+   - Each answer says what happened ("Not run …") and what is true now. It never tells the model to call the tool again. The rewrite stays in the stored history, so a later turn reads it. After a load, the answer keeps the rules of the pack and drops the loader's first line.
    - `CHAT_TOOL_AUTOLOAD` (default off, allowed by D217) also loads the offered pack. The load calls `LoadSkillTools.process` with a `FunctionInvocationContext` over the live list. Do not write a second load path.
    - It loads only for a call of this run, never for a raw text of the history. It loads only when the request holds the same tool list as the request before. A copy from an outer middleware (`WithholdTools`) gets the text only.
    - Fence: `test_unknown_tool_answer.py`.
