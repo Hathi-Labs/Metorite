@@ -138,4 +138,12 @@ describe("CellsEditor", () => {
   it("reads the caps from the model, not from a literal", () => {
     expect(cells).not.toMatch(/\b(?:12|8)\b/);
   });
+
+  it("moves a cell only through moveCellArgs, with no index arithmetic (AF-8b-3b fix)", () => {
+    expect(cells.match(/\bmoveCell\(/g)).toHaveLength(1);
+    expect(cells).toContain("moveCellArgs(l.tabId, index, delta)");
+    expect(cells).toContain("moveCell(t, pid, a.from, a.to)");
+    expect(cells).not.toMatch(/moveCell\([^)]*index\s*[+-]/);
+    expect(cells).not.toMatch(/where\([^)]*index\s*[+-]\s*\d/);
+  });
 });

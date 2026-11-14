@@ -7,7 +7,7 @@
  */
 import { colsFloor } from "./frameEdit";
 import { MAX_NAV_ROWS, MAX_NAV_SECTIONS, type StudioManifest } from "./manifest";
-import { cellCapRoom } from "./pageLayout";
+import { cellCapRoom, type Loc } from "./pageLayout";
 import { defaultPages, PAGE_CAPS, readPage, type PageModel } from "./pageModel";
 import { removeCellWhy, removeTabWhy } from "./tabEdit";
 import { DEFAULT_RAIL_ICON, railFor, type RailSectionModel } from "./railModel";
@@ -149,7 +149,20 @@ export function colsOptions(floor: number): { value: string; label: string; disa
 export const CELL_CAP_NOTE = `A list holds at most ${PAGE_CAPS.cellsPerList} cells.`;
 export const TAB_CAP_NOTE = `A page holds at most ${PAGE_CAPS.tabsPerPage} tabs.`;
 export const BROKEN_NOTE = "This page has tabs and cells together. Fix it in the code.";
-export const USE_TABS_HINT = "All current cells go into the first tab.";
+export const USE_TABS_HINT = "All current cells go into the first tab. A blank title gets a default name.";
+export const TAB_NAME_HINT = "A blank title gets a default name.";
+
+/** The title of a new tab: what the member typed, or "Tab N" when it is blank. `count` is the tabs now on the page. */
+export function tabTitleOrDefault(typed: string, count: number): string {
+  const t = typeof typed === "string" ? typed.trim() : "";
+  const n = Number.isInteger(count) && count >= 0 ? count : 0;
+  return t || `Tab ${n + 1}`;
+}
+
+/** The two places of one cell move, one step up (-1) or down (+1) inside its list. The editor calls `moveCell` with these only. */
+export function moveCellArgs(tabId: string | null, index: number, delta: -1 | 1): { from: Loc; to: Loc } {
+  return { from: { tabId, index }, to: { tabId, index: index + delta } };
+}
 
 export interface LayoutCell {
   index: number;
@@ -213,16 +226,21 @@ export function layoutView(
     }
     const typed = m as unknown as StudioManifest;
     const cellsOf = (raw: unknown[], tabId: string | null): LayoutCell[] => {
-      const cells = raw.filter(isObj);
-      return cells.map((c, index) => ({
-        index,
-        view: str(c.view),
-        viewLabel: labels.get(str(c.view)) || str(c.view),
-        span: typeof c.span === "number" ? c.span : null,
-        removeWhy: removeCellWhy(m, pageId, { tabId, index }),
-        canUp: index > 0,
-        canDown: index < cells.length - 1,
-      }));
+      // The index is the place in the RAW list, as `pageLayout` reads it. A junk entry is skipped in the output only.
+      const out: LayoutCell[] = [];
+      raw.forEach((c, index) => {
+        if (!isObj(c)) return;
+        out.push({
+          index,
+          view: str(c.view),
+          viewLabel: labels.get(str(c.view)) || str(c.view),
+          span: typeof c.span === "number" ? c.span : null,
+          removeWhy: removeCellWhy(m, pageId, { tabId, index }),
+          canUp: index > 0,
+          canDown: index < raw.length - 1,
+        });
+      });
+      return out;
     };
     if (!hasTabs) {
       return {

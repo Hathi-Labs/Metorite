@@ -12,7 +12,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import { addCell, moveCell, moveCellToTab, setCellSpan } from "@/lib/studio/pageLayout";
-import { BROKEN_NOTE, CELL_CAP_NOTE, TAB_CAP_NOTE, USE_TABS_HINT, applyFrame, layoutView, viewChoices } from "@/lib/studio/pagesTabModel";
+import { BROKEN_NOTE, CELL_CAP_NOTE, TAB_CAP_NOTE, TAB_NAME_HINT, USE_TABS_HINT, applyFrame, layoutView, viewChoices } from "@/lib/studio/pagesTabModel";
 import { COUNT_WHY, LAST_CELL_WHY, addTab, layoutAct, removeCellGuarded, removeTab } from "@/lib/studio/tabEdit";
 import CellsEditor from "./CellsEditor";
 
@@ -131,6 +131,14 @@ describe("CellsEditor markup", () => {
     const open = draw(flat);
     expect(open).not.toContain(CELL_CAP_NOTE);
     expect(/<button[^>]*\sdisabled=""[^>]*>(?:(?!<\/button>)[\s\S])*Add cell/.test(open)).toBe(false);
+  });
+  it("keeps Use tabs and Add a tab on for a blank title (AF-8b-3b fix)", () => {
+    for (const [m, label] of [[flat, "Use tabs"], [tabbed, "Add a tab"]] as const) {
+      const html = draw(m);
+      expect(/<button[^>]*\sdisabled=""[^>]*>(?:(?!<\/button>)[\s\S])*?(?:Use tabs|Add a tab)/.test(html), label).toBe(false);
+      expect(html).toContain(TAB_NAME_HINT);
+    }
+    expect(draw(flat, { locked: true })).toMatch(/<button[^>]*\sdisabled=""[^>]*>(?:(?!<\/button>)[\s\S])*?Use tabs/);
   });
   it("disables Add a tab at the tab cap", () => {
     const tabs = Array.from({ length: 8 }, (_, i) => ({ id: `t${i}`, title: `T${i}`, cells: [{ view: "orders" }] }));
