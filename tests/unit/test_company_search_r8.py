@@ -275,3 +275,35 @@ async def test_after_drops_the_older_task(
                             {"q": HERON, "apps": "tasks", "after": since})
     _clean(answer, caplog)
     assert _task_ids(answer) == [two_ages["new"]]
+
+
+# ── WS-61 KR-ZERO: each word alone, on the real searches (knowledge_base.md §20.4) ──
+
+async def test_a_zero_answer_asks_each_word_alone_inside_the_tenant(
+    two_orgs, two_ages, app_engine, roomy, caplog, monkeypatch,  # noqa: F811
+) -> None:
+    """No record of org A holds both words, so the first pass finds nothing.
+
+    Each word alone finds its own records, and RLS still binds the second
+    pass: org B's task holds the first word too, and it never shows.
+    """
+    from acb_common import get_settings
+    from gateway.retrieval import company
+
+    _assert_non_priv(app_engine)
+    p, a = two_orgs["ns"], two_orgs["a"]
+    # A cold scratch database is slower than the second pass's budget.
+    monkeypatch.setattr(company, "BROADEN_BUDGET_S", 60.0)
+    monkeypatch.setattr(company, "ANSWER_CAP_S", 120.0)
+    monkeypatch.setattr(get_settings(), "context_recency", True, raising=False)
+    with caplog.at_level(logging.INFO, logger="gateway.retrieval.company"):
+        answer = await _ask(p, _member(A_MEMBER, p.org_a), {"q": f"{WORD} {HERON}"})
+    _clean(answer, caplog)
+    assert answer["broadened"] == [
+        {"word": WORD, "hits": 2, "skipped": []},
+        {"word": HERON, "hits": 2, "skipped": []},
+    ]
+    assert _ids(answer, "tasks") == {a["task"], two_ages["old"], two_ages["new"]}
+    assert _ids(answer, "people") == {a["person"]}
+    assert "Beta" not in str(answer) and two_orgs["b"]["task"] not in str(answer)
+    assert answer["meaning"] == "off"
