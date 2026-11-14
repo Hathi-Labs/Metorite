@@ -263,6 +263,14 @@ describe("a legacy envelope row", () => {
       { kind: "confirmation", question: "Ship it?", decision: "approve" });
     expect(parseCardAnswerEnvelope(env("Which one?", "Apollo"))).toEqual(
       { kind: "ask_user", question: "Which one?", answer: "Apollo" });
+    // HRD-22: a late approve with a grant adds one paragraph after APPROVE.
+    const late = "APPROVE\n\nI approved this card after the chat had stopped waiting for my answer. "
+      + "If this call already ran in this chat, do not run it again. Otherwise make the same "
+      + "call once, with the same values. My approval covers that one call only.";
+    expect(parseCardAnswerEnvelope(env("Ship it?", late))).toEqual(
+      { kind: "confirmation", question: "Ship it?", decision: "approve" });
+    // Words on the same line are not the paragraph: they stay an answer.
+    expect(parseCardAnswerEnvelope(env("Ship it?", "APPROVE later"))?.kind).toBe("ask_user");
     expect(parseCardAnswerEnvelope(ENVELOPE_WITH_ROWS)).toEqual({
       kind: "confirmation", question: QUESTION, decision: "approve",
       rows: TASKS.slice(0, 7), rowsTotal: 9,

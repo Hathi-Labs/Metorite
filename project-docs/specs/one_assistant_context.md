@@ -1616,7 +1616,7 @@ It does not settle each case where layer (a′), the persona, the loader plan an
 
 Two guards need new code.
 - **The hold note.** The answer must carry it, as the section above says.
-- **The checks of a load.** A pack of an owner that reads stranger text never joins a run with an MCP tool (`_beside_mcp`, `tool_packs.py:3375`). Its one caller is `_admit_pack` (`:3519`), beside the size check of a pack (`:3516`).
+- **The checks of a load.** A pack of an owner that reads stranger text never joins a run with an MCP tool (`_beside_mcp`, `tool_packs.py:3450`). Its one caller is `_admit_pack` (`:3608`), beside the size check of a pack (`:3605`).
 - Nothing in `_pack_tools` or in the tool body runs these checks. So `find_tools` runs both before each add. TS-2 adds the call.
 - The MCP rule matters from TS-6 on, because `UNTRUSTED_INPUT_AGENTS` holds only `email-assistant` (`egress.py:222`).
 
@@ -1656,7 +1656,7 @@ Two guards need new code.
 - The load tool counts in the base before `choose` (`base += 1`, near `_tool_injection.py:4090` on origin/main at `ed2274b1c`, in `_apply_tool_packs`). TS-2a adds `find_tools` the same way. It needs no new count check.
 - **The trade.** At the cap of 110 tools, the base count can push out the last pack. `choose` drops the last pack that replaces a specialist (`tool_packs.py:2259-2263`). The owner accepted that trade.
 - `planned_tools` (`_tool_injection.py:4143-4144`) only feeds a log line (`:4168`) and enforces nothing. The log count follows the new base.
-- **Where it sits.** Layer (c) counts the pool and `context.tools` only (`tool_packs.py:3609-3610`). So `find_tools` must join the run before `load_early` runs. One way: `LoadSkillToolsProvider` adds it in `before_run`, before `load_early` (`:3705-3709`). TS-2a builds it so. Its description is a pure function of the candidates, in the order of `PACKS`, so the cache prefix stays stable.
+- **Where it sits.** Layer (c) counts the pool and `context.tools` only (`tool_packs.py:3698-3699`). So `find_tools` must join the run before `load_early` runs. A SEPARATE provider, `FindToolsProvider`, adds it in its own `before_run`, because decision 13 offers `find_tools` on every turn, also when the loader offers nothing. PR 3 lists it BEFORE `LoadSkillToolsProvider` in one `agent_with_providers` list. A test proves that layer (c) counts `find_tools`, and that a request never reaches 111 tools. Its description is a pure function of the candidates, in the order of `PACKS`, so the cache prefix stays stable.
 - At the start of a turn, a pack comes before a found tool. Layer (a) chooses first. Sticky found tools and layer (a′) take only the room that is left.
 - A sticky found tool that does not fit stays in the state, and the line of the turn names it.
 - In the middle of a turn, unused found tools leave first, oldest first. A found tool that ran or started stays, by the record of TS-4.
@@ -1845,15 +1845,26 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
   1. **PR 1, docs.** This spec change.
   2. **PR 2, HIGH, no caller.** `acb_skills/tool_packs.py`: the tool, the `FunctionMiddleware`, the answer, and ONE lock that `find_tools` shares with `LoadSkillTools`. Fence: `tests/unit/test_find_tools_guards.py`.
   3. **PR 3, HIGH.** The wiring in `orchestrator/_tool_injection.py`, the flag `TOOL_SEARCH_ORGS` in `acb_common/settings.py` and a §6 D4 line in `work_plan.md`. Fences: `tests/unit/test_find_tools_maf_loop.py` and `tests/unit/test_tool_search_off.py`.
+- **What PR 2 holds.** `acb_skills/tool_packs.py` holds `find_tools` (`find_tool`), the middleware `FindTools`, `FindToolsProvider`, `search_packs`, `find_candidates`, `setup_candidates` and the one lock `PackRun.lock`. No code calls them. Fence: `tests/unit/test_find_tools_guards.py`.
+- **PR 3 must.**
+  - List `FindToolsProvider` BEFORE `LoadSkillToolsProvider`, in one `agent_with_providers` list.
+  - Make ONE `FindTools` for each run, with `record=applied.record`. Never put it on a shared agent object.
+  - Call `setup_candidates` inside the bound frame of the run, with a context that holds `PACK_RUN_KEY`, as `_build_early` does (`tool_packs.py:3704`). Else `_pack_tools` gives an empty build, and the tool ships with an empty catalog.
+  - Pass `measure=_maf_mcp.schema_tokens`, `owners=PACK_ONLY_OWNERS`, `loaded=choice.slugs`, and `available=` the `_available` test of `_plan_pack_loader`.
+  - Limit the candidates to the `studio` pack. `search_packs` keys on the owner `studio-builder`, and TS-1b adds `studio-more` and the dark `studio-workflows` under that owner. The limit stays until the owner decides that those packs join.
+  - Add 1 to `base` only when the flag is on. A count test pins +1 with the flag on and 0 with it off. A second test proves the run byte-identical with the flag off.
+  - Add a fence: no platform tool, pack tool or MCP tool has the name `find_tools`.
+  - Add the `TOOL_SEARCH_ORGS` reader in `acb_common/settings.py` and the §6 D4 line.
+  - Run `test_no_egress_tool_audit.py`. A held run keeps `find_tools` by its read-only `__tool_risk__`.
 - **Acceptance.**
   - In one run, a scripted model calls `find_tools`. The next request holds the found `studio` schemas.
-  - **The race.** In one batch, `find_tools` can add a tool while `LoadSkillTools` awaits its build (`tool_packs.py:3525`, `:3534`). Then the `add_tools` of the load raises, because MAF tests the identity of a tool (`agent_framework/_tools.py:1358-1361`), and the load answers `LOAD_UNAVAILABLE`. So `find_tools` and `LoadSkillTools` share ONE lock. A test runs two adds in one batch.
+  - **The race.** In one batch, `find_tools` can add a tool while `LoadSkillTools` awaits its build (`tool_packs.py:3613`, `:3623`). Then the `add_tools` of the load raises, because MAF tests the identity of a tool (`agent_framework/_tools.py:1358-1361`), and the load answers `LOAD_UNAVAILABLE`. So `find_tools` and `LoadSkillTools` share ONE lock. A test runs two adds in one batch.
   - **The hold state.** A setup build fixes `held` at the start of the turn. A mark in the middle of the turn would leave the answer with no hold note. So `find_tools` builds the answer tools at call time, as `LoadSkillTools` does. A test proves the hold note after a mid-turn mark.
   - The answer holds the rules block of each owning pack, once in the run.
-  - **The join.** `find_tools` joins the run in `before_run`, before `load_early` (`tool_packs.py:3702-3709`). Its description is a pure function of the candidates, in the order of `PACKS`, so the cache prefix stays stable.
+  - **The join.** `FindToolsProvider` adds `find_tools` in its own `before_run`. It comes before `LoadSkillToolsProvider` in the list, so its tool is in `context.tools` when `load_early` runs (`tool_packs.py:3791-3798`). Its description is a pure function of the candidates, in the order of `PACKS`, so the cache prefix stays stable.
   - **The count.** `find_tools` joins the base set, as `_apply_tool_packs` adds the pack loader (`base += 1`). With the flag on, the base count rises by 1 on every turn. With the flag off, it does not change. TS-2a adds no new count check. A request never passes 110 tools, because `choose` drops a pack.
   - The rank skips each live name and each pack of `run.holds()`. A dropped tool never takes a place of the top 5.
-  - `find_tools` runs both checks of `_admit_pack` before each add: the size of the pack and `_beside_mcp` (`tool_packs.py:3375`).
+  - `find_tools` runs both checks of `_admit_pack` before each add: the size of the pack and `_beside_mcp` (`tool_packs.py:3450`).
   - A found tool equals its `_pack_tools` build. A dropped or held tool never shows.
   - With the flag off, the run is byte-identical.
 - **Mutations the fences must kill.**
