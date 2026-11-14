@@ -162,12 +162,17 @@ class ListParams:
         updated_to: str | None = None,
         close_from: str | None = None,
         close_to: str | None = None,
+        near: bool = False,
         request: Request = None,  # type: ignore[assignment]
     ) -> None:
         # CRM-Q25c: each name and value, before any of them reaches SQL.
         if request is not None:
             refuse_nul(request.query_params.multi_items())
         self.q = q
+        #: HRD-18a: when ``q`` finds no row, answer the near spellings, each
+        #: row with ``near: true``. The chat's ``search_crm`` asks for it. The
+        #: list screen, the export and the aggregate do not, so they agree.
+        self.near = near
         self.sort = sort
         self.direction = direction
         self.page = page
@@ -211,7 +216,7 @@ async def _list(
     entity: Entity, params: ListParams, user: Any = None,
 ) -> ListResponse:
     async with _tenant_session() as db:
-        query = await list_query(db, entity, params, user)
+        query = await list_query(db, entity, params, user, near=params.near)
         found = await run_list(db, entity, query)
         # CRM-C4a: the live name of each lookup value, one query for each
         # target entity.
@@ -220,7 +225,7 @@ async def _list(
 
 
 async def list_query(
-    db: Any, entity: Entity, params: Any, user: Any = None,
+    db: Any, entity: Entity, params: Any, user: Any = None, *, near: bool = False,
 ) -> ListQuery:
     """The ONE builder of a list's WHERE clause and its bound values.
 
@@ -228,6 +233,9 @@ async def list_query(
     routes, ``export.py`` and ``aggregate.py`` (WS-53 CRM-C7) all call it, so
     an export and an aggregate cover exactly the rows that the list with the
     same filters shows. Do not copy a filter into a caller.
+
+    ``near`` adds the near pass of HRD-18a (``core.list_contract``). Only
+    :func:`_list` passes it, so an export and an aggregate stay exact.
     """
     extra: tuple[str, ...] = ()
     if entity.hides_converted and not params.include_converted:
@@ -264,6 +272,7 @@ async def list_query(
         ),
         extra_where=(*extra, *more_where),
         extra_params={**extra_params, **more_params},
+        near=near,
     )
 
 

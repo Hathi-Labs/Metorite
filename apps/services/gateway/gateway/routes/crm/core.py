@@ -44,7 +44,7 @@ from typing import Any, NamedTuple
 from uuid import UUID
 
 from acb_auth import require_feature_router
-from acb_common import get_logger
+from acb_common import get_logger, name_match
 
 # The shared seam (BO-10 / D-CRM-4 → MT-1c/H2). `_tenant_session` IS
 # `acb_common.db.tenant_session`, aliased per-package for the same reason
@@ -469,6 +469,24 @@ OPEN_LEAD_SQL = (
 
 
 @dataclass(frozen=True)
+class RelatedSearch:
+    """A ``?q=`` match on the names of a related table (CRM-X1, HRD-18a).
+
+    Each text is a constant of THIS module, never caller text. FORCE RLS keeps
+    each inner read in the tenant of the session.
+    """
+
+    #: The rows of the entity's table whose related row matches one word.
+    #: ``{match}`` takes the match of that word on each of :attr:`columns`.
+    ids_sql: str
+    #: The related columns that one word matches, by the alias of ``ids_sql``.
+    columns: tuple[str, ...]
+    #: The related names of ONE row as one text, correlated on the entity's
+    #: table. Only the near pass reads it, to order its rows.
+    names_sql: str
+
+
+@dataclass(frozen=True)
 class Entity:
     """One CRM record type, and everything generic code needs to know about it."""
 
@@ -488,10 +506,10 @@ class Entity:
     default_sort: str
     #: Columns ``?q=`` matches with ILIKE.
     search: tuple[str, ...] = ()
-    #: More ``?q=`` predicates, each a SQL constant of THIS module that reads
-    #: the bound ``:q`` (WS-53 CRM-X1). :func:`list_contract` adds each one to
-    #: the OR group of :attr:`search`. Never caller text.
-    search_sql: tuple[str, ...] = ()
+    #: The names of related tables that ``?q=`` matches too (WS-53 CRM-X1,
+    #: HRD-18a). :func:`search_where` adds each one to the OR group of each
+    #: word, beside :attr:`search`.
+    related_search: tuple[RelatedSearch, ...] = ()
     #: Phone columns that ``?q=`` also matches on their digits alone, so
     #: "98450 12345" finds "+91-98450-12345" (CRM-X1 review round 1). Each
     #: name is a constant of this module, never caller text.
@@ -612,10 +630,39 @@ DEALS = Entity(
     },
     default_sort="last_activity_at",
     search=("name", "next_step"),
-    # A deal also matches the name of its company (CRM-X1). FORCE RLS keeps
-    # the inner read in the tenant of the session.
-    search_sql=(
-        "company_id IN (SELECT c.id FROM crm_companies c WHERE c.name ILIKE :q)",
+    # A deal also matches the name of its company (CRM-X1), the names of its
+    # contacts and the name of its source lead (HRD-18a). A lead is the
+    # source when it converted into the deal, or when the deal names it.
+    # FORCE RLS keeps each inner read in the tenant of the session.
+    related_search=(
+        RelatedSearch(
+            ids_sql="company_id IN (SELECT c.id FROM crm_companies c WHERE {match})",
+            columns=("c.name",),
+            names_sql="(SELECT c.name FROM crm_companies c WHERE c.id = crm_deals.company_id)",
+        ),
+        RelatedSearch(
+            ids_sql=(
+                "id IN (SELECT dc.deal_id FROM crm_deal_contacts dc WHERE dc.contact_id "
+                "IN (SELECT c.id FROM crm_contacts c WHERE {match}))"
+            ),
+            columns=("c.first_name", "c.last_name"),
+            names_sql=(
+                "(SELECT string_agg(concat_ws(' ', c.first_name, c.last_name), ' ') "
+                "FROM crm_deal_contacts dc, crm_contacts c "
+                "WHERE c.id = dc.contact_id AND dc.deal_id = crm_deals.id)"
+            ),
+        ),
+        RelatedSearch(
+            ids_sql=(
+                "(id IN (SELECT l.converted_deal_id FROM crm_leads l WHERE {match}) "
+                "OR lead_id IN (SELECT l.id FROM crm_leads l WHERE {match}))"
+            ),
+            columns=("l.lead_name",),
+            names_sql=(
+                "(SELECT string_agg(l.lead_name, ' ') FROM crm_leads l "
+                "WHERE l.converted_deal_id = crm_deals.id OR l.id = crm_deals.lead_id)"
+            ),
+        ),
     ),
     status_table="crm_deal_statuses",
     cascades=(
@@ -971,16 +1018,31 @@ DIRECTIONS: dict[str, str] = {"asc": "ASC", "desc": "DESC"}
 #: Fewer would match nearly every number.
 MIN_PHONE_DIGITS = 4
 
+#: A ``?q=`` of more words than this is one phrase, as before HRD-18a. It
+#: bounds the size of the SQL.
+MAX_SEARCH_WORDS = 8
+
+#: The most rows of one near pass (HRD-18a). The pass answers page 1 only.
+NEAR_LIMIT = 20
+
 
 @dataclass(frozen=True)
 class ListQuery:
-    """A validated list request, rendered as SQL fragments + bound parameters."""
+    """A validated list request, rendered as SQL fragments + bound parameters.
+
+    ``rank`` is empty, except on a near pass (HRD-18a). There it is the SQL of
+    each row's nearness, and :func:`run_list` orders by it first. ``near`` is
+    that pass, when the caller asked for one and the query allows one.
+    :func:`run_list` runs it only when this query finds no row.
+    """
 
     where: str
     order_by: str
     limit: int
     offset: int
     params: dict[str, Any]
+    rank: str = ""
+    near: ListQuery | None = None
 
 
 def checked_uuid(value: str, what: str) -> str:
@@ -993,28 +1055,116 @@ def checked_uuid(value: str, what: str) -> str:
         ) from None
 
 
-def search_where(entity: Entity, q: str | None) -> tuple[str | None, dict[str, Any]]:
-    """The ONE search predicate of ``?q=`` and its bound values (CRM-X1).
+def search_words(q: str | None) -> list[str]:
+    """The words of ``?q=`` (HRD-18a). Each word must match.
 
-    The list contract and the board read (``GET /crm/pipeline``) both call it,
-    so a search finds the same deals on both. ``(None, {})`` when there is
-    nothing to search for.
+    A word holds a letter or a digit, so a lone dash is no word. A query with
+    no such word, or with more than :data:`MAX_SEARCH_WORDS` words, is one
+    phrase, as before HRD-18a.
     """
-    if not (q and (entity.search or entity.search_sql)):
-        return None, {}
-    params: dict[str, Any] = {"q": f"%{q.strip()}%"}
-    terms = [*(f"{col} ILIKE :q" for col in entity.search), *entity.search_sql]
-    digits = "".join(ch for ch in q if ch.isascii() and ch.isdigit())
+    phrase = (q or "").strip()
+    if not phrase:
+        return []
+    found = [w for w in phrase.split() if any(ch.isalnum() for ch in w)]
+    if not found or len(found) > MAX_SEARCH_WORDS:
+        return [phrase]
+    return found
+
+
+def _ilike(column: str, key: str) -> str:
+    return f"{column} ILIKE :{key}"
+
+
+def _near(column: str, key: str) -> str:
+    # The strict form keeps each extent inside word bounds. The plain
+    # `word_similarity` lets an extent span two words, so "Sharath" scores
+    # 1.0 in "Bharath Shah". The floor is a bound value of
+    # `acb_common.name_match`, never a copy.
+    return f"strict_word_similarity(:{key}, {column}) >= :near_min"
+
+
+def _word_arms(entity: Entity, key: str, test: Any) -> list[str]:
+    """The arms of one word: each column of the entity, and each related
+    name. *key* is the bound value of the word, and *test* writes one arm."""
+    arms = [test(col, key) for col in entity.search]
+    for related in entity.related_search:
+        match = " OR ".join(test(col, key) for col in related.columns)
+        arms.append(related.ids_sql.format(match=match))
+    return arms
+
+
+def _search_parts(
+    entity: Entity, q: str | None, *, near: bool,
+) -> tuple[str | None, dict[str, Any], list[str]]:
+    """The predicate of ``?q=``, its bound values and its near keys.
+
+    Each word is one OR group over the columns and the related names, and the
+    groups are joined by AND. With *near*, a word of
+    ``name_match.NEAR_MIN_LETTERS`` letters or more also matches by
+    ``strict_word_similarity``, and its bound key goes into the third value. The
+    phone digits of the whole query stay one alternative to all the words.
+    """
+    found = search_words(q)
+    if not found or not (entity.search or entity.related_search):
+        return None, {}, []
+    params: dict[str, Any] = {}
+    near_keys: list[str] = []
+    groups: list[str] = []
+    for i, word in enumerate(found):
+        key = f"q{i}"
+        params[key] = f"%{word}%"
+        arms = _word_arms(entity, key, _ilike)
+        if near and name_match.near_eligible(word):
+            near_keys.append(f"w{i}")
+            params[f"w{i}"] = word
+            arms += _word_arms(entity, f"w{i}", _near)
+        groups.append(f"({' OR '.join(arms)})")
+    if near_keys:
+        params["near_min"] = name_match.NEAR_WORD_SIMILARITY
+    clause = " AND ".join(groups)
+    digits = "".join(ch for ch in (q or "") if ch.isascii() and ch.isdigit())
     if entity.phone_search and len(digits) >= MIN_PHONE_DIGITS:
         # The digits are their own bound parameter. The column names are
         # constants of the entity. No index serves this, and none is
         # needed at the size of one tenant's CRM.
         params["q_digits"] = f"%{digits}%"
-        terms += [
+        phones = " OR ".join(
             f"regexp_replace({col}, '\\D', '', 'g') LIKE :q_digits"
             for col in entity.phone_search
-        ]
-    return f"({' OR '.join(terms)})", params
+        )
+        clause = f"({clause}) OR {phones}"
+    return f"({clause})", params, near_keys
+
+
+def search_where(
+    entity: Entity, q: str | None, *, near: bool = False,
+) -> tuple[str | None, dict[str, Any]]:
+    """The ONE search predicate of ``?q=`` and its bound values (CRM-X1, HRD-18a).
+
+    The list contract and the board read (``GET /crm/pipeline``) both call it,
+    so a search finds the same deals on both. ``(None, {})`` when there is
+    nothing to search for.
+
+    Each word must match one search column or one related name: AND across
+    the words, OR across the columns. A deal also matches the names of its
+    company, its contacts and its source lead. ``near=True`` is the near pass
+    of :func:`list_contract`. Only that pass sets it.
+    """
+    clause, params, _keys = _search_parts(entity, q, near=near)
+    return clause, params
+
+
+def _near_rank(entity: Entity, keys: list[str]) -> str:
+    """The SQL of a row's nearness on a near pass: for each near word, its
+    best ``strict_word_similarity`` over the columns and the related names,
+    summed. Each text is a constant of this module, and each word a bound key."""
+    texts = [*entity.search, *(related.names_sql for related in entity.related_search)]
+    return " + ".join(
+        "COALESCE(GREATEST("
+        + ", ".join(f"strict_word_similarity(:{key}, {t})" for t in texts)
+        + "), 0)"
+        for key in keys
+    )
 
 
 def list_contract(
@@ -1032,12 +1182,19 @@ def list_contract(
     pipeline_takes_unset: bool = False,
     extra_where: tuple[str, ...] = (),
     extra_params: dict[str, Any] | None = None,
+    near: bool = False,
 ) -> ListQuery:
     """Validate one list request and render it. The same contract for all four.
 
     Raises 422 for an unknown sort key or direction. That is deliberately not a
     silent fall back to the default: a client sorting by a column it thinks
     exists and quietly getting `created_at` is a bug that survives review.
+
+    ``near=True`` adds the near pass of HRD-18a as ``ListQuery.near``, for
+    page 1 of a query that ``name_match.near_query`` allows. The pass keeps
+    every other filter. It reads at most :data:`NEAR_LIMIT` rows, nearest
+    first. Only :func:`run_list` runs it, so an export and an aggregate stay
+    exact.
     """
     column = entity.sorts.get(sort or entity.default_sort)
     if column is None:
@@ -1058,6 +1215,7 @@ def list_contract(
     clauses: list[str] = list(extra_where)
     params: dict[str, Any] = dict(extra_params or {})
 
+    search_at = len(clauses)
     search_clause, search_params = search_where(entity, q)
     if search_clause:
         clauses.append(search_clause)
@@ -1099,14 +1257,31 @@ def list_contract(
 
     page = max(1, page)
     page_size = max(1, min(page_size, MAX_PAGE_SIZE))
+    # `column` is a value from the entity's own allowlist and `order` is one
+    # of two literals — neither is caller text.
+    order_by = f"{column} {order} NULLS LAST, id {order}"
+    near_pass: ListQuery | None = None
+    if near and search_clause and page == 1 and name_match.near_query(search_words(q)):
+        near_clause, near_params, keys = _search_parts(entity, q, near=True)
+        if near_clause and keys:
+            near_clauses = list(clauses)
+            near_clauses[search_at] = near_clause
+            near_pass = ListQuery(
+                where=" WHERE " + " AND ".join(near_clauses),
+                # `near_rank` is the output column that `run_list` selects.
+                order_by=f"near_rank DESC, {order_by}",
+                limit=min(page_size, NEAR_LIMIT),
+                offset=0,
+                params={**params, **near_params},
+                rank=_near_rank(entity, keys),
+            )
     return ListQuery(
         where=(" WHERE " + " AND ".join(clauses)) if clauses else "",
-        # `column` is a value from the entity's own allowlist and `order` is one
-        # of two literals — neither is caller text.
-        order_by=f"{column} {order} NULLS LAST, id {order}",
+        order_by=order_by,
         limit=page_size,
         offset=(page - 1) * page_size,
         params=params,
+        near=near_pass,
     )
 
 
@@ -1419,13 +1594,35 @@ async def run_list(
     the page and nothing else: no count, no provider link and no next
     activity, because the command bar has 1.5 seconds for every app. Then
     ``total`` is the count of the rows on the page.
+
+    **The near pass (HRD-18a).** When the query finds no row and carries
+    ``query.near``, the near pass answers instead. Each of its rows carries
+    ``near: true``, and ``total`` counts the near rows. A caller that shows
+    the rows must say that they are near spellings, not matches.
     """
+    found = await _read_list(db, entity, query, rows_only=rows_only)
+    if query.near is None or found.total:
+        return found
+    near = await _read_list(db, entity, query.near, rows_only=rows_only)
+    for row in near.rows:
+        row["near"] = True
+    return near
+
+
+async def _read_list(
+    db: Any, entity: Entity, query: ListQuery, *, rows_only: bool,
+) -> ListResponse:
+    """One read of :func:`run_list`. A near pass with no row stops at the count."""
     if not rows_only:
         total = (await db.execute(
             text(f"SELECT count(*) FROM {entity.table}{query.where}"), query.params,
         )).scalar() or 0
+        if query.rank and not total:
+            return ListResponse(rows=[], total=0)
+    # `rank` is SQL of this module (`_near_rank`), never caller text.
+    pick = f", {query.rank} AS near_rank" if query.rank else ""
     inner = (
-        f"SELECT * FROM {entity.table}{query.where} "
+        f"SELECT *{pick} FROM {entity.table}{query.where} "
         f"ORDER BY {query.order_by} LIMIT :limit OFFSET :offset"
     )
     rows = (await db.execute(

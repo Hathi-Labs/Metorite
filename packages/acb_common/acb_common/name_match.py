@@ -14,9 +14,9 @@ lookup (``find_contact``) agree on what is near.
   compares their sound keys (:func:`sound`), at :data:`SOUND_WEIGHT`.
   :data:`NEAR_SCORE` is the floor of a near name.
 * In SQL, the CRM search cannot fold a column without an index or a
-  migration. So it uses ``pg_trgm`` ``word_similarity`` on the raw text, and
-  binds :data:`NEAR_WORD_SIMILARITY` as a parameter. The route reads the
-  floor here, and never keeps a copy.
+  migration. So it uses ``pg_trgm`` ``strict_word_similarity`` on the raw
+  text, and binds :data:`NEAR_WORD_SIMILARITY` as a parameter. The route
+  reads the floor here, and never keeps a copy.
 
 **A near match is never a match.** Each caller marks it near, and the model
 asks the member to confirm it. The fixed pairs of the fence pin both floors.
@@ -48,11 +48,13 @@ VARIANTS: tuple[tuple[str, str], ...] = (
 #: fence score 0.9 or more, and no pair of the fence's other names reaches it.
 NEAR_SCORE = 0.6
 
-#: The floor of ``pg_trgm`` ``word_similarity(word, column)`` for a near row
-#: of a CRM search. It reads the raw text, with no fold. Measured on the
-#: fixed pairs: Sharath in «Sharat Satyanarayana» 0.75, nuropeak in
-#: «Neuropeak - Snowflake 3D printer» 0.67, neuropeek in «Neuropeak» 0.70,
-#: Magnatech in «Magnetech Ltd» 0.54. A higher floor loses Magnatech.
+#: The floor of ``pg_trgm`` ``strict_word_similarity(word, column)`` for a
+#: near row of a CRM search. It reads the raw text, with no fold. Measured on
+#: pg_trgm 1.6 for the fixed pairs: Sharath in «Sharat Satyanarayana» 0.67,
+#: nuropeak in «Neuropeak - Snowflake 3D printer» 0.58, neuropeek in
+#: «Neuropeak» 0.54, Magnatech in «Magnetech Ltd» 0.54. A higher floor loses
+#: Magnatech. The strict form keeps each extent inside word bounds: the plain
+#: ``word_similarity`` gives "Sharath" 1.0 in «Bharath Shah».
 NEAR_WORD_SIMILARITY = 0.5
 
 #: A word needs this many letters before it may match nearly. A shorter
