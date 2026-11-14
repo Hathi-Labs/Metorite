@@ -753,7 +753,7 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 ))
             thread = record.thread_id
             main_calls, sub_calls = ck.work_calls_of(
-                record.events, ck.work_tool_names() | ck.studio_tool_names())
+                record.events, ck.work_tool_names() | pack.studio_tool_names())
             # OA-8i: a hand-off that the product refused ran no work. It is
             # counted on its own, and only the hand-offs that ran are checked.
             refused_handoffs = ck.refused_handoffs_of(record.events)
