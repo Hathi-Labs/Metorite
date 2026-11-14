@@ -56,7 +56,7 @@ describe("no local copy of a state in a layout preset", () => {
     if (!existsSync(dir)) return;
     for (const f of readdirSync(dir).filter((n) => /\.tsx$/.test(n) && !/\.test\./.test(n))) {
       const src = readFileSync(join(dir, f), "utf-8");
-      expect(src, f).not.toMatch(/animate-pulse|SkeletonRows|from "@\/components\/EmptyState"|>\s*Retry\s*</);
+      expect(src, f).not.toMatch(/animate-pulse|<Skeleton|SkeletonRows|SkeletonBoard|ui\/Skeleton|EmptyState|Retry/);
     }
   });
 });
