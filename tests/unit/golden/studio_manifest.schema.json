@@ -261,6 +261,60 @@
       "title": "FieldDef",
       "type": "object"
     },
+    "HeaderCount": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "anyOf": [
+            {
+              "maxLength": 40,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "object": {
+          "pattern": "^[a-z][a-z0-9_]{0,47}$",
+          "title": "Object",
+          "type": "string"
+        }
+      },
+      "required": [
+        "object"
+      ],
+      "title": "HeaderCount",
+      "type": "object"
+    },
+    "HeaderDef": {
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HeaderCount"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "text": {
+          "maxLength": 160,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "HeaderDef",
+      "type": "object"
+    },
     "NavRow": {
       "additionalProperties": false,
       "properties": {
@@ -448,10 +502,29 @@
           "title": "Cols",
           "type": "integer"
         },
+        "header": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HeaderDef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "id": {
           "pattern": "^[a-z][a-z0-9_-]{0,47}$",
           "title": "Id",
           "type": "string"
+        },
+        "sections": {
+          "items": {
+            "$ref": "#/$defs/SectionDef"
+          },
+          "maxItems": 6,
+          "title": "Sections",
+          "type": "array"
         },
         "side": {
           "anyOf": [
@@ -516,6 +589,37 @@
         }
       },
       "title": "RuntimeDef",
+      "type": "object"
+    },
+    "SectionDef": {
+      "additionalProperties": false,
+      "properties": {
+        "cells": {
+          "items": {
+            "$ref": "#/$defs/CellDef"
+          },
+          "maxItems": 6,
+          "minItems": 1,
+          "title": "Cells",
+          "type": "array"
+        },
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,47}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 60,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "cells"
+      ],
+      "title": "SectionDef",
       "type": "object"
     },
     "Shell": {

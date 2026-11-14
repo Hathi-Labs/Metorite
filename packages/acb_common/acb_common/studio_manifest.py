@@ -25,9 +25,10 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -333,6 +334,22 @@ MAX_PAGES = 8
 MAX_TABS_PER_PAGE = 8
 MAX_CELLS_PER_PAGE = 12
 MAX_COLS = 4
+#: STU-AF7. `sections` group the cells of a page. The cells of all sections together
+#: still obey `MAX_CELLS_PER_PAGE`, which `_check_pages` holds.
+MAX_SECTIONS_PER_PAGE = 6
+MAX_CELLS_PER_SECTION = 6
+MAX_HEADER_TEXT = 160
+MAX_SECTION_TITLE = 60
+MAX_COUNT_LABEL = 40
+
+
+def _plain_text(v: str) -> str:
+    """Text for a person: not blank, and no control character (the NUL, the tab, the escape)."""
+    if not v.strip():
+        raise ValueError("Write some text. A blank value is not allowed.")
+    if any(ord(c) < 32 or 127 <= ord(c) < 160 for c in v):
+        raise ValueError("Write plain text with no control character.")
+    return v
 
 
 class CellDef(_Strict):
@@ -352,12 +369,38 @@ class TabDef(_Strict):
     cells: list[CellDef] = Field(max_length=MAX_CELLS_PER_PAGE)
 
 
+class HeaderCount(_Strict):
+    #: An object of `objects`. The page counts its records through the door, so the
+    #: app must declare `object:<name>.list` for the count to show.
+    object: str = Field(pattern=rf"^{_NAME}$")
+    #: What the count names, such as "visits". The label of the object when it is missing.
+    label: Annotated[str, AfterValidator(_plain_text)] | None = Field(
+        default=None, max_length=MAX_COUNT_LABEL)
+
+
+class HeaderDef(_Strict):
+    #: One sentence, as text. The renderer never reads it as markup.
+    text: Annotated[str, AfterValidator(_plain_text)] = Field(max_length=MAX_HEADER_TEXT)
+    count: HeaderCount | None = None
+
+
+class SectionDef(_Strict):
+    #: The key of the folded state that a viewer keeps, so it stays the same on a rename.
+    id: str = Field(pattern=rf"^{_DASHED}$")
+    title: Annotated[str, AfterValidator(_plain_text)] = Field(max_length=MAX_SECTION_TITLE)
+    cells: list[CellDef] = Field(min_length=1, max_length=MAX_CELLS_PER_SECTION)
+
+
 class PageDef(_Strict):
     id: str = Field(pattern=rf"^{_DASHED}$")
     title: str | None = None
+    #: STU-AF7. One sentence and a count, drawn by `PageHeader`. None draws no header.
+    header: HeaderDef | None = None
     cols: int = Field(default=2, ge=1, le=MAX_COLS)
     tabs: list[TabDef] = Field(default_factory=list, max_length=MAX_TABS_PER_PAGE)
     cells: list[CellDef] = Field(default_factory=list, max_length=MAX_CELLS_PER_PAGE)
+    #: STU-AF7. Groups of cells that fold. A page holds tabs, cells or sections, and one only.
+    sections: list[SectionDef] = Field(default_factory=list, max_length=MAX_SECTIONS_PER_PAGE)
     side: SideDef | None = None
 
 #: The caps of the rail (STU-AF2a, D219). `lib/studio/manifest.ts` holds the same numbers, and
@@ -866,7 +909,7 @@ def _check_view_source(
 
 
 def _check_pages(m: Manifest, view_ids: set[str], out: list[ManifestError]) -> None:
-    """A page lays out declared views. A page has tabs or cells, never both."""
+    """A page lays out declared views. A page has tabs, cells or sections, and one only."""
     _dupes([p.id for p in m.pages], "$.pages", "page id", out)
 
     def cell_errors(cells: list[CellDef], base: str, cols: int) -> None:
@@ -876,16 +919,25 @@ def _check_pages(m: Manifest, view_ids: set[str], out: list[ManifestError]) -> N
             if c.span is not None and c.span > cols:
                 out.append(_err(f"{base}[{ci}].span", f"A cell spans at most {cols} columns."))
 
+    objects = {o.name for o in m.objects}
     for pi, pg in enumerate(m.pages):
         p = f"$.pages[{pi}]"
-        if pg.tabs and pg.cells:
-            out.append(_err(p, "A page has tabs or cells, not both. Remove one."))
-        elif not pg.tabs and not pg.cells:
-            out.append(_err(p, "A page needs tabs or cells. Add one."))
+        kinds = sum(bool(x) for x in (pg.tabs, pg.cells, pg.sections))
+        if kinds > 1:
+            out.append(_err(p, "A page has tabs, cells or sections, only one of them. Remove the others."))
+        elif kinds == 0:
+            out.append(_err(p, "A page needs tabs, cells or sections. Add one."))
         _dupes([t.id for t in pg.tabs], f"{p}.tabs", "tab id", out)
         for ti, t in enumerate(pg.tabs):
             cell_errors(t.cells, f"{p}.tabs[{ti}].cells", pg.cols)
         cell_errors(pg.cells, f"{p}.cells", pg.cols)
+        _dupes([s.id for s in pg.sections], f"{p}.sections", "section id", out)
+        for si, sec in enumerate(pg.sections):
+            cell_errors(sec.cells, f"{p}.sections[{si}].cells", pg.cols)
+        if sum(len(s.cells) for s in pg.sections) > MAX_CELLS_PER_PAGE:
+            out.append(_err(f"{p}.sections", f"A page holds at most {MAX_CELLS_PER_PAGE} cells in all sections."))
+        if pg.header and pg.header.count and pg.header.count.object not in objects:
+            _undeclared(f"{p}.header.count.object", "Object", pg.header.count.object, "`objects`", out)
         if pg.side and pg.side.view not in view_ids:
             _undeclared(f"{p}.side.view", "View", pg.side.view, "`views`", out)
 
