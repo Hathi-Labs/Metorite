@@ -413,7 +413,7 @@ class TestTheAnswerWithTheFlag:
         world.fail["whatsapp"] = TimeoutError()
         answer = run(member(*ALL))
         assert answer["searched"] == ["tasks", "email", "people", "crm", "artifacts",
-                                      "knowledge", "studio"]
+                                      "knowledge"]
         assert answer["skipped"] == ["whatsapp"]
 
 
