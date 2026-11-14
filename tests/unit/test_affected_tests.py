@@ -969,8 +969,42 @@ def test_gate_a_test_that_loads_an_acb_common_module_three_imports_up_is_picked(
     out = sel.gate([_AC + "rules.py"], root)
     assert out["full"] is False, out["reasons"]
     assert "tests/unit/test_c.py" in out["files"]
-    # An import inside a def runs only when the function runs.
-    assert "tests/unit/test_lazy_user.py" not in out["files"]
+    # Fix round 2: an import inside a def counts. The test can run the function.
+    assert "tests/unit/test_lazy_user.py" in out["files"]
+
+
+def test_gate_an_evals_module_between_the_change_and_a_test_is_followed(
+    tmp_path: Path,
+) -> None:
+    # `test_routing_eval.py` imports `evals.routing.harness`, which builds the
+    # orchestrator agent inside a function (the verifier, fix round 2).
+    root = _chain_repo(tmp_path)
+    _write(root, "evals/routing/__init__.py")
+    _write(root, "evals/routing/harness.py", "def build():\n    from pkg import c\n")
+    _write(root, "tests/unit/test_route_eval.py", "from evals.routing.harness import build\n")
+    out = sel.gate([_AC + "rules.py"], root)
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_route_eval.py" in out["files"]
+
+
+def test_gate_a_test_that_loads_an_agent_file_by_its_path_is_picked(tmp_path: Path) -> None:
+    # 79 test files load `apps/agents/<agent>/agents.py` with
+    # `spec_from_file_location`, and no import names the file.
+    root = _chain_repo(tmp_path)
+    _write(root, "apps/agents/agent-x/agents.py", "from pkg import b\n")
+    loader = (
+        "import importlib.util\n"
+        '_AGENT = ROOT / "apps" / "agents" / "agent-x" / "agents.py"\n'
+        'spec = importlib.util.spec_from_file_location("ax", _AGENT)\n'
+    )
+    _write(root, "tests/unit/test_agent_x.py", loader)
+    out = sel.gate([_AC + "rules.py"], root)
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_agent_x.py" in out["files"]
+    # The same path with no loader call reads the text. It loads nothing.
+    text_only = loader.splitlines()[1] + "\n"
+    found = sel.path_load_tests({"apps/agents/agent-x/agents.py"}, {"x": loader, "text": text_only})
+    assert found == {"x"}
 
 
 def test_gate_an_acb_common_module_that_too_many_tests_load_is_full(
@@ -979,13 +1013,13 @@ def test_gate_an_acb_common_module_that_too_many_tests_load_is_full(
     root = _chain_repo(tmp_path)
     for n in range(3):
         _write(root, f"tests/unit/test_c{n}.py", "import pkg.c\n")
-    # 1 test imports `rules`. 6 load it: test_rules, test_rules_user, test_c and
-    # the three above.
+    # 1 test imports `rules`. 7 load it: test_rules, test_rules_user, test_c,
+    # test_lazy_user (through a def) and the three above.
     monkeypatch.setattr(sel, "HUB_LIMIT", 3)
     monkeypatch.setattr(sel, "HUB_CEILING_SHARE", 0.01)
     out = sel.gate([_AC + "rules.py"], root)
     assert out["full"] is True
-    assert "acb_common.rules: 6 test files load it, more than 3 (1% of the test files)" in out["reasons"]
+    assert "acb_common.rules: 7 test files load it, more than 3 (1% of the test files)" in out["reasons"]
     assert not any("test files import it" in r for r in out["reasons"]), out["reasons"]
 
 
@@ -1027,6 +1061,10 @@ def test_a_sys_modules_lookup_in_a_conftest_is_no_import(tmp_path: Path) -> None
         ("tool_refusals.py", "tests/unit/test_projects_grant_tools.py"),
         # A raise in each function of `card_body` failed 55 tests in 6 files.
         ("card_body.py", "tests/unit/test_projects_cycle_tools.py"),
+        # Fix round 2: no `"*" in listed` in `guide_allowed` failed 11 tests of
+        # this file. It reaches `guide_flags` through an evals harness and an
+        # import inside a function of `orchestrator/agents.py`.
+        ("guide_flags.py", "tests/unit/test_routing_eval.py"),
     ],
 )
 def test_the_real_verifier_misses_are_picked_or_full(module: str, test: str) -> None:

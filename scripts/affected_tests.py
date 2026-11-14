@@ -430,10 +430,15 @@ def _source_files(root: Path) -> list[Path]:
     module (``_agent_board_r8`` imports ``test_agent_runs_r8``) and 14 suites
     import the helper. Without that edge, a change to the first selected none
     of the 13.
+
+    CIV-33c-3 fix round 2: evals/ is a source too. 27 test files import an
+    evals module, and 39 evals modules import product code, so an evals module
+    can sit between a changed module and a test (`test_routing_eval.py`
+    imports `evals.routing.harness`, which builds the orchestrator agent).
     """
     files = [
         p
-        for top in ("apps", "packages")
+        for top in ("apps", "packages", "evals")
         for p in (root / top).rglob("*.py")
         if "node_modules" not in p.parts and ".venv" not in p.parts
     ]
@@ -545,8 +550,9 @@ FLAG_FILES = (
 # - A module that a conftest.py runs before each test (`conftest_reasons`).
 # - A file that the diff deletes or renames (`deleted_reasons`).
 # - A data file selects the Python files that read it (`data_readers`).
-# - Fix round 1: each test that loads the module, at any depth, and the tests
-#   of an app that loads it at startup (`load_rules`). Over the hub ceiling, FULL.
+# - Fix rounds 1 and 2: each test that imports the module, at any depth and
+#   inside a function too, or loads such a file by its path (`load_rules`).
+#   Over the hub ceiling, FULL.
 ACB_COMMON = "packages/acb_common/"
 # A seam that a test reaches through other code, so its own test importers
 # undercount what a change can break. Fence: test_affected_tests.py checks that
@@ -1083,44 +1089,59 @@ def _tokens(body: str) -> frozenset[str]:
 
 
 class LoadGraph:
-    """The imports that run when each source module loads (CIV-33c-3 fix round 1).
+    """The imports of each source module, inside functions too (CIV-33c-3 fix
+    rounds 1 and 2).
+
+    Fix round 2 counts an import inside a function. A function that runs during
+    a test imports its module then. `test_routing_eval.py` builds the
+    orchestrator agent, and `orchestrator/agents.py` imports `guide_tools`
+    inside functions. So a change to `guide_flags` broke 11 of its tests, and
+    the load-time walk of fix round 1 did not reach them (the verifier,
+    2026-11-14). An import is what `imports` reads, a quoted dotted name too.
+
+    The walk also reads ``scripts/``. 19 test files load a script by its path
+    (`path_load_tests`), and some scripts import acb_common or the gateway
+    (``gen_shell_manifests.py``, ``backfill_studio_num_f8.py``).
 
     A file is parsed only when it holds the last name of a module that the walk
     needs, and only once."""
 
     def __init__(self, sources: dict[str, str], root: Path) -> None:
-        self.sources = sources
+        scripts = sorted(p for p in (root / "scripts").rglob("*.py") if "node_modules" not in p.parts)
+        self.sources = {**_texts(scripts, root), **sources}
         self.names: dict[str, tuple[str | None, set[str]]] = {}
-        for path in sources:
+        for path in self.sources:
             every = module_names(path, root)
             if every:
                 self.names[path] = (module_name(path, root), every)
         self.loads: dict[str, frozenset[str]] = {}
 
-    def reach(self, mods: set[str]) -> set[str]:
-        """``mods``, and each source module that loads one of them when it
-        loads, at any depth."""
+    def reach_paths(self, mods: set[str]) -> tuple[set[str], set[str]]:
+        """(``mods`` and each module that imports one of them, at any depth,
+        the files of those modules)."""
         reach = set(mods)
+        paths = {p for p, (_, every) in self.names.items() if every & reach}
         done: set[str] = set()
         while True:
             leaves = {m.rsplit(".", 1)[-1] for m in reach} - done
             if not leaves:
-                return reach
+                return reach, paths
             done |= leaves
             for path, body in self.sources.items():
                 if path in self.names and path not in self.loads and leaves & _tokens(body):
                     first = self.names[path][0]
-                    self.loads[path] = _load_imports_cached(
-                        body, first, path.endswith("__init__.py")
-                    )
+                    self.loads[path] = _imports_cached(body, first, path.endswith("__init__.py"))
             grew = True
             while grew:
                 grew = False
                 for path, loads in self.loads.items():
-                    every = self.names[path][1]
-                    if not every <= reach and loads & reach:
-                        reach |= every
+                    if path not in paths and loads & reach:
+                        paths.add(path)
+                        reach |= self.names[path][1]
                         grew = True
+
+    def reach(self, mods: set[str]) -> set[str]:
+        return self.reach_paths(mods)[0]
 
     @staticmethod
     def tests_of(reach: set[str], tests: dict[str, str]) -> set[str]:
@@ -1129,23 +1150,51 @@ class LoadGraph:
         return {t for t, body in tests.items() if leaves & _tokens(body) and imports(body) & reach}
 
 
+# A test that loads a source file by its path, with no import (fix round 2).
+_PATH_LOAD = re.compile(r"spec_from_file_location|SourceFileLoader|\brun_path\(|\bload_source\(")
+_QUOTED_PY = re.compile(r"""["'](?:[^"'\n]*/)?([\w.-]+\.py)["']""")
+
+
+def path_load_tests(paths: set[str], tests: dict[str, str]) -> set[str]:
+    """The test files that load a file of ``paths`` by its path (fix round 2).
+
+    ``spec_from_file_location`` loads ``apps/agents/<agent>/agents.py`` in 79
+    test files, and no import names the file. Such a test is a loader when it
+    names the path, or quotes the file name with a folder of the path, as
+    `_composed_path_readers` reads it. A path that a helper builds, or that a
+    glob finds, is not read here. A glob makes the test a scanner, and a
+    scanner runs for each Python change."""
+    by_name: dict[str, list[str]] = {}
+    for p in paths:
+        by_name.setdefault(p.rsplit("/", 1)[-1], []).append(p)
+    out: set[str] = set()
+    for t, body in tests.items():
+        if not _PATH_LOAD.search(body):
+            continue
+        for name in set(_QUOTED_PY.findall(body)) & by_name.keys():
+            if any(p in body or _composed_path_readers(p, {t: body}) for p in by_name[name]):
+                out.add(t)
+                break
+    return out
+
+
 def load_rules(
     mods: set[str], sources: dict[str, str], tests: dict[str, str], root: Path,
     graph: LoadGraph | None = None,
 ) -> tuple[list[str], set[str]]:
     """(FULL reasons, test files) for the changed acb_common modules (CIV-33c-3
-    fix round 1).
+    fix rounds 1 and 2).
 
     The one-level expansion of `select` missed a test that loads a module
     three or four imports up. A change to `tool_refusals.REFUSED` broke 7
     tests of `test_projects_grant_tools.py`, through `skill_projects` (the
     verifier, 2026-11-14). So each module of ``mods`` selects every test that
-    loads it: through the imports that run at load, at any depth. When more
-    test files load it than the hub ceiling, it goes FULL.
+    imports it, at any depth, inside a function too (`LoadGraph`). A test
+    that loads a file of that reach by its path joins too (`path_load_tests`).
+    When more test files load the module than the hub ceiling, it goes FULL.
 
-    An app (a module with a FastAPI app) that loads the module at startup
-    adds the tests that import the app. Startup is each import of the app
-    file, inside a function too (the lifespan), and what those load.
+    An app (a module with a FastAPI app) that imports the module, in its
+    lifespan too, is in the reach, so the tests that import the app join.
 
     The rule covers acb_common only."""
     common = sorted(m for m in mods if m == "acb_common" or m.startswith("acb_common."))
@@ -1153,23 +1202,17 @@ def load_rules(
         return [], set()
     graph = graph or LoadGraph(sources, root)
     ceiling = max(HUB_LIMIT, int(len(tests) * HUB_CEILING_SHARE))
-    entries = {
-        path: imports(body, graph.names[path][0], path.endswith("__init__.py"))
-        for path, body in sources.items()
-        if path in graph.names and _APP_ENTRY.search(body)
-    }
     reasons: list[str] = []
     picked: set[str] = set()
     for m in common:
-        reach = graph.reach({m})
-        loaders = graph.tests_of(reach, tests)
+        reach, paths = graph.reach_paths({m})
+        loaders = graph.tests_of(reach, tests) | path_load_tests(paths, tests)
         if len(loaders) > ceiling:
             reasons.append(
                 f"{m}: {len(loaders)} test files load it, more than {ceiling} "
                 f"({HUB_CEILING_SHARE:.0%} of the test files)"
             )
-        apps = {n for path, names in entries.items() if names & reach for n in graph.names[path][1]}
-        picked |= loaders | graph.tests_of(apps, tests)
+        picked |= loaders
     return reasons, picked
 
 
