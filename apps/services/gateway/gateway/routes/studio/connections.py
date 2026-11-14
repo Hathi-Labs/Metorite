@@ -107,6 +107,7 @@ NOT_IN_DRAFT = "not_in_draft"
 NOT_CHECKABLE = "not_checkable"
 ALREADY_MET = "already_met"
 CAN_CONNECT = "can_connect"
+TOO_MANY_ASKS = "too_many_asks"
 
 BAD_ASK_TEXT = 'Send {"name": "<connection>"} with one name of the draft.'
 ASK_TOO_LARGE_TEXT = "The ask is too large. Send one name only."
@@ -114,6 +115,8 @@ NOT_IN_DRAFT_TEXT = "The draft of this app does not name this connection."
 NOT_CHECKABLE_TEXT = "Metorite cannot check this connection, so an admin cannot connect it from Studio."
 ALREADY_MET_TEXT = "This connection works now. You do not need to ask."
 CAN_CONNECT_TEXT = "You can connect it yourself."
+TOO_MANY_ASKS_TEXT = (
+    "You have 10 open asks. Wait for an admin to answer one, or withdraw one, then ask again.")
 
 
 class _AskBody(BaseModel):
@@ -287,7 +290,10 @@ async def ask_admin(
     async with _tenant_session() as db:
         _check_name(name, await _owned_names(db, user, pid))
         _check_member(name, await _met(db, user), user)
-        new = await attention.ask(db, str(user.organization_id), user.email, name, pid)
+        try:
+            new = await attention.ask(db, str(user.organization_id), user.email, name, pid)
+        except attention.TooManyAsks:
+            raise _refused(429, TOO_MANY_ASKS, TOO_MANY_ASKS_TEXT) from None
         if new:
             # The row commits with the ask, or neither does. It holds the name only.
             await record_app_audit_in(db, app_id=pid, user_email=user.email, kind="action",

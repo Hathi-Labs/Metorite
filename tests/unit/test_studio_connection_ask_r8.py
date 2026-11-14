@@ -488,6 +488,70 @@ def test_r8_h_a_package_delete_takes_its_asks_and_the_key_holds_the_org(world) -
     assert _asks(world) == [(world.a, LEDGER, OWEN, keep)]
 
 
+# ── m. The cap of live asks, and the move of a live ask ───────────────────
+
+
+def _many(n: int) -> list[str]:
+    return [f"mcp:cap{i}-{TAG}" for i in range(n)]
+
+
+def test_r8_m_the_eleventh_new_ask_is_refused_and_writes_no_row(world) -> None:
+    names = _many(13)
+    pid = _run(world, lambda: _new(world.a, OWEN, names))
+    for name in names[:10]:
+        assert _run(world, lambda n=name: _ask(world.a, OWEN, pid, n)) == (
+            200, {"asked": True, "new": True})
+    status, got = _run(world, lambda: _ask(world.a, OWEN, pid, names[10]))
+    assert (status, got["code"]) == (429, "too_many_asks")
+    assert len(_asks(world)) == 10 and names[10] not in [a[1] for a in _asks(world)]
+    # A repeat of an ask that exists is still 200 and not new.
+    assert _run(world, lambda: _ask(world.a, OWEN, pid, names[0])) == (
+        200, {"asked": True, "new": False})
+    # A member of org B has an own count.
+    pid_b = _run(world, lambda: _new(world.b, ZED, names))
+    assert _run(world, lambda: _ask(world.b, ZED, pid_b, names[10])) == (
+        200, {"asked": True, "new": True})
+    # A withdraw frees a slot. An expired ask frees one too.
+    assert _run(world, lambda: _withdraw(world.a, OWEN, pid, names[1]))[0] == 200
+    assert _run(world, lambda: _ask(world.a, OWEN, pid, names[10]))[0] == 200
+    _age(world, names[2], 31)
+    assert _run(world, lambda: _ask(world.a, OWEN, pid, names[11]))[0] == 200
+    assert _run(world, lambda: _ask(world.a, OWEN, pid, names[12]))[0] == 429
+
+
+def test_r8_m_two_presses_at_once_never_pass_the_cap(world) -> None:
+    names = _many(12)
+    pid = _run(world, lambda: _new(world.a, OWEN, names))
+
+    async def storm() -> list[Any]:
+        return list(await asyncio.gather(
+            *[_store_ask(world.a, OWEN, n, pid) for n in names],
+            return_exceptions=True))
+    got = _run(world, storm)
+    assert sum(1 for g in got if g is True) == 10
+    assert sum(1 for g in got if isinstance(g, attention.TooManyAsks)) == 2
+    assert len(_asks(world)) == 10
+
+
+def test_r8_n_a_second_draft_takes_the_ask_and_keeps_its_time(world) -> None:
+    x = _run(world, lambda: _new(world.a, OWEN, [TALLY]))
+    y = _run(world, lambda: _new(world.a, OWEN, [TALLY]))
+    assert _run(world, lambda: _ask(world.a, OWEN, x, TALLY)) == (
+        200, {"asked": True, "new": True})
+    first = _asked_at(world, world.a, TALLY, OWEN)
+    assert _run(world, lambda: _ask(world.a, OWEN, y, TALLY)) == (
+        200, {"asked": True, "new": False})
+    assert _asks(world) == [(world.a, TALLY, OWEN, y)]
+    assert _asked_at(world, world.a, TALLY, OWEN) == first
+    with world.p.admin_engine.begin() as c:
+        for table, col in (("studio_objects", "package_id"), ("app_versions", "app_id")):
+            c.execute(text(f"DELETE FROM {table} WHERE {col} = CAST(:i AS uuid)"), {"i": x})
+        c.execute(text("DELETE FROM apps WHERE id = CAST(:i AS uuid)"), {"i": x})
+    assert _asks(world) == [(world.a, TALLY, OWEN, y)]
+    status, got = _run(world, lambda: _read(world.a, OWEN, y))
+    assert (status, [r["asked"] for r in got["connections"]]) == (200, [True])
+
+
 # ── i. The purge ──────────────────────────────────────────────────────────
 
 

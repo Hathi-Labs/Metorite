@@ -48,8 +48,10 @@ from gateway.db import tenant_session
 __all__ = [
     "ASK_DAYS",
     "KIND_ASK",
+    "MAX_LIVE_ASKS",
     "OPEN_ASKS_LIMIT",
     "OpenAsk",
+    "TooManyAsks",
     "ask",
     "asked_by",
     "clear_on_connect",
@@ -69,6 +71,9 @@ KIND_ASK = "ask"
 ASK_DAYS = 30
 #: The most rows that one read of the open asks of an org returns.
 OPEN_ASKS_LIMIT = 200
+#: The most live asks that one member holds in one org. The 11th new ask is
+#: refused, so a member cannot fill the list of the admins.
+MAX_LIVE_ASKS = 10
 
 _LIVE = f"asked_at > now() - interval '{ASK_DAYS} days'"
 _EXPIRED = f"asked_at <= now() - interval '{ASK_DAYS} days'"
@@ -76,9 +81,33 @@ _EXPIRED = f"asked_at <= now() - interval '{ASK_DAYS} days'"
 #: statement matches no row.
 _BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
 
-#: One ask. A fresh duplicate changes nothing and returns no row. An expired
-#: row takes the new time and package, and returns its id. The conflict target
-#: names the partial unique index by its columns and its predicate.
+#: The lock of the asks of one member in the bound org, until the transaction
+#: ends. It orders two presses of one member, so the count of the cap is exact.
+#: It names the bound org, as ``packages_store._CREATE_LOCK_SQL`` does.
+_ASK_LOCK = (
+    f"SELECT {_BOUND_ORG} IS NOT NULL, pg_advisory_xact_lock(hashtextextended("
+    f"'integration_ask:' || CAST({_BOUND_ORG} AS text) || ':' || :member, 0))"
+)
+
+#: The live asks of the member, and whether one of them is for the provider.
+_COUNT_SQL = (
+    "SELECT count(*) AS n, COALESCE(bool_or(provider = :provider), false) AS has "
+    "FROM integration_attention "
+    f"WHERE organization_id = CAST(:org AS uuid) AND kind = '{KIND_ASK}' "
+    f"AND member_email = :member AND {_LIVE}"
+)
+
+#: A second ask of a live row moves the row to the newest draft and keeps
+#: ``asked_at``. So the delete of the first draft does not take the ask.
+_TOUCH_SQL = (
+    "UPDATE integration_attention SET package_id = CAST(:pid AS uuid) "
+    f"WHERE organization_id = CAST(:org AS uuid) AND kind = '{KIND_ASK}' "
+    f"AND provider = :provider AND member_email = :member AND {_LIVE}"
+)
+
+#: One ask. An expired row takes the new time and package, and returns its id.
+#: The conflict target names the partial unique index by its columns and its
+#: predicate.
 _ASK_SQL = (
     "INSERT INTO integration_attention "
     "(organization_id, kind, provider, member_email, package_id) "
@@ -130,6 +159,10 @@ class OpenAsk:
     asked_at: datetime
 
 
+class TooManyAsks(Exception):
+    """The member holds :data:`MAX_LIVE_ASKS` live asks, and the ask is new."""
+
+
 def _org(org: str) -> str:
     return str(uuid.UUID(str(org)))
 
@@ -145,12 +178,23 @@ async def ask(db: Any, org: str, member: str, provider: str, package_id: str) ->
     """Record the ask of *member* for *provider*, from the draft *package_id*.
 
     True when the ask is new: no live row existed, so the admins see a new
-    item. False when a live ask of the member exists: that row and its time
-    stay as they are. An expired row takes the new time and package."""
-    row = (await db.execute(text(_ASK_SQL), {
-        "org": _org(org), "provider": provider, "member": _member(member),
-        "pid": str(uuid.UUID(str(package_id))),
-    })).first()
+    item. False when a live ask of the member exists: that row keeps its time
+    and moves to the newest draft. An expired row takes the new time and
+    package. A new ask past :data:`MAX_LIVE_ASKS` live asks of the member
+    raises :class:`TooManyAsks` and writes no row. A lock on the org and the
+    member makes the count exact for two presses at once."""
+    args = {"org": _org(org), "provider": provider, "member": _member(member),
+            "pid": str(uuid.UUID(str(package_id)))}
+    bound = (await db.execute(text(_ASK_LOCK), {"member": args["member"]})).first()
+    if bound is None or not bound[0]:
+        raise ValueError("an ask needs a session bound to a tenant")
+    seen = (await db.execute(text(_COUNT_SQL), args)).first()
+    if seen is not None and seen.has:
+        await db.execute(text(_TOUCH_SQL), args)
+        return False
+    if seen is not None and seen.n >= MAX_LIVE_ASKS:
+        raise TooManyAsks(provider)
+    row = (await db.execute(text(_ASK_SQL), args)).first()
     return row is not None
 
 

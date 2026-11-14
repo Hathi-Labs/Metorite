@@ -131,6 +131,8 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
     async def ask(db: Any, org: str, member: str, provider: str, package_id: str) -> bool:
         w.calls.append(("ask", org, member, provider, package_id))
         new = (member, provider) not in w.live
+        if new and sum(1 for m, _p in w.live if m == member) >= attention.MAX_LIVE_ASKS:
+            raise attention.TooManyAsks(provider)
         w.live.add((member, provider))
         return new
 
@@ -193,6 +195,26 @@ def test_a_good_ask_is_new_once_and_writes_one_audit_row(world: _World) -> None:
     r = _post(_user(), {"name": "mcp:tally"})
     assert (r.status_code, r.json()) == (200, {"asked": True, "new": False})
     assert len(world.audits) == 1 and world.bumps == [ORG]
+
+
+def test_the_eleventh_new_ask_is_429_and_a_repeat_or_a_withdraw_keeps_the_count(
+        world: _World) -> None:
+    world.names = [f"mcp:t{i}" for i in range(12)]
+    for i in range(10):
+        r = _post(_user(), {"name": f"mcp:t{i}"})
+        assert (r.status_code, r.json()) == (200, {"asked": True, "new": True})
+    audits = len(world.audits)
+    r = _post(_user(), {"name": "mcp:t10"})
+    assert r.status_code == 429
+    assert r.json()["detail"]["code"] == "too_many_asks"
+    assert len(world.audits) == audits and world.bumps == [ORG] * 10
+    # A repeat press of an ask that exists is still 200 and not new.
+    r = _post(_user(), {"name": "mcp:t3"})
+    assert (r.status_code, r.json()) == (200, {"asked": True, "new": False})
+    # A withdraw frees one slot.
+    assert _client(_user()).delete(f"{PATH}?name=mcp:t0").status_code == 200
+    r = _post(_user(), {"name": "mcp:t10"})
+    assert (r.status_code, r.json()) == (200, {"asked": True, "new": True})
 
 
 @pytest.mark.parametrize("setting", ["studio_orgs", "studio_connection_gate_orgs"])
@@ -545,7 +567,9 @@ def test_the_route_module_runs_no_sql() -> None:
 
 def test_each_statement_of_the_store_names_the_org() -> None:
     sql = [v for k, v in vars(attention).items() if k.endswith("_SQL") and isinstance(v, str)]
-    assert len(sql) == 6
+    # The lock of the asks is ``_ASK_LOCK``. It names the bound org and no kind.
+    assert len(sql) == 8
+    assert "app.tenant_id" in attention._ASK_LOCK and "pg_advisory_xact_lock" in attention._ASK_LOCK
     for statement in sql:
         assert "organization_id = " in statement or "(organization_id, " in statement, statement
         assert f"kind = '{attention.KIND_ASK}'" in statement, statement
