@@ -430,7 +430,10 @@ def test_found_tool_does_not_pass_on_an_error_answer() -> None:
     # the plain form of MAF, with no "Error:" and no "Requested" (a run with no STUDIO_ORGS)
     plain = 'Function "studio_skill_list" not found.'
     assert ck._found_tool(_obs(PACK, [(ck.LOAD_TOOL, {}, "x"), _studio(plain)]), None) is False
-    assert ck.refused(plain) and ck.refused(NOT_FOUND) and not ck.refused(OK_ANSWER)
+    quoted = "'Function \"studio_skill_list\" not found.'"  # the result text carries the quotes
+    assert ck._found_tool(_obs(PACK, [(ck.LOAD_TOOL, {}, "x"), _studio(quoted)]), None) is False
+    assert ck.refused(plain) and ck.refused(quoted) and ck.refused(NOT_FOUND)
+    assert not ck.refused(OK_ANSWER)
 
 
 def test_found_tool_takes_a_tool_list_and_gives_none_on_delegation() -> None:

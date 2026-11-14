@@ -724,7 +724,7 @@ _NOTHING_HAPPENED = re.compile(
 #: The answer of MAF to a call of a tool that is not in the request. The ``Error:
 #: Requested function ...`` form is in :data:`_NOTHING_HAPPENED`. This is the plain form
 #: that a run with the ``studio`` pack missing gave (TS-5a, a run with no ``STUDIO_ORGS``).
-_UNKNOWN_FUNCTION = re.compile(r'^Function "[^"]+" not found\.?$')
+_UNKNOWN_FUNCTION = re.compile(r"""^['"]?Function "[^"]+" not found\.?['"]?$""")
 
 
 def refused(result: str) -> bool:
