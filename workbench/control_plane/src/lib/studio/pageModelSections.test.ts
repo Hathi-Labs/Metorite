@@ -74,3 +74,22 @@ describe("header and sections", () => {
     expect(defs.HeaderCount.properties.label.anyOf[0].maxLength).toBe(PAGE_CAPS.countLabel);
   });
 });
+
+describe("length counts code points, as A2 does", () => {
+  const emoji = "\u{1F600}";
+  const page = (extra: object) => readPage({ id: "p", cells: [cell], ...extra });
+  it("a title of 59 letters and an emoji is 60 code points and stays", () => {
+    const at = (t: string) => readPage({ id: "p", sections: [{ id: "s", title: t, cells: [cell] }] })?.sections.length;
+    expect(at("x".repeat(59) + emoji)).toBe(1);
+    expect(at("x".repeat(60) + emoji)).toBe(0);
+  });
+  it("a header text at 160 and 161 code points", () => {
+    expect(page({ header: { text: "x".repeat(159) + emoji } })?.header).not.toBeNull();
+    expect(page({ header: { text: "x".repeat(160) + emoji } })?.header).toBeNull();
+  });
+  it("a count label at 40 and 41 code points", () => {
+    const label = (l: string) => page({ header: { text: "Hi.", count: { object: "visit", label: l } } })?.header?.count?.label;
+    expect(label("x".repeat(39) + emoji)).toBeTruthy();
+    expect(label("x".repeat(40) + emoji)).toBeNull();
+  });
+});

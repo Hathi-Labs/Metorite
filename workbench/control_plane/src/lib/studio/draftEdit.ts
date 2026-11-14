@@ -241,6 +241,15 @@ export function removeObject(m: unknown, name: string): unknown {
       return { ...w, trigger };
     });
   }
+  // STU-AF7: a page header count that names the object goes, and the sentence stays (A2 refuses a count of nothing).
+  if (Array.isArray(out.pages)) {
+    out.pages = out.pages.map((p) => {
+      if (!isObj(p) || !isObj(p.header) || !isObj(p.header.count) || p.header.count.object !== name) return p;
+      const { count: _c, ...header } = p.header;
+      void _c;
+      return { ...p, header };
+    });
+  }
   if (isObj(m.shell)) {
     const shell: Obj = { ...(out.shell as Obj) };
     if (Array.isArray(shell.needs)) shell.needs = shell.needs.filter((n) => !(isObj(n) && n.object === name));

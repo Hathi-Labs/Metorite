@@ -232,7 +232,7 @@ export default function StudioPage({
           {page.sections.length > 0 && built.tab === null ? (
             <div className="flex flex-col gap-3 sm:gap-4" data-page-sections>
               {page.sections.map((x) => (
-                <StudioSection key={x.id} scope={foldScope} pageId={page.id} id={x.id} title={x.title}>
+                <StudioSection key={`${page.id}:${x.id}`} scope={foldScope} pageId={page.id} id={x.id} title={x.title}>
                   {grid(x.cells)}
                 </StudioSection>
               ))}

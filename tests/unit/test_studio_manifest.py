@@ -1513,3 +1513,14 @@ def test_schema_carries_the_af7_caps():
     assert defs["SectionDef"]["properties"]["title"]["maxLength"] == 60
     assert defs["HeaderDef"]["properties"]["text"]["maxLength"] == 160
     assert defs["HeaderCount"]["properties"]["label"]["anyOf"][0]["maxLength"] == 40
+
+
+def test_caps_count_code_points_not_utf16_units():
+    emoji = "\U0001F600"
+    ok = _with_pages(_sections_page(_sec(title="x" * 59 + emoji)))
+    assert validate_manifest(ok) == []
+    assert _at(_with_pages(_sections_page(_sec(title="x" * 60 + emoji))), "$.pages[0].sections[0].title")
+    assert validate_manifest(_with_pages(_page(header={"text": "x" * 159 + emoji}))) == []
+    assert _at(_with_pages(_page(header={"text": "x" * 160 + emoji})), "$.pages[0].header.text")
+    label = {"object": "visit", "label": "x" * 39 + emoji}
+    assert validate_manifest(_with_pages(_page(header={"text": "Hi.", "count": label}))) == []

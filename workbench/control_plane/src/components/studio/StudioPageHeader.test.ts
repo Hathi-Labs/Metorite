@@ -2,6 +2,7 @@
  * STU-AF7 fence: the header and the sections of a Studio page, drawn from props with
  * `renderToStaticMarkup` (the env has no DOM).
  */
+import { readFileSync } from "node:fs";
 import { createElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -104,5 +105,30 @@ describe("the sections", () => {
     const html = draw({ id: "p", cells: [{ view: "a-table" }] });
     expect(html).not.toContain("data-page-sections");
     expect(html).not.toContain("aria-expanded");
+  });
+});
+
+describe("the fold state of a section follows its page", () => {
+  const two: PageDef[] = [
+    { id: "week", sections: [{ id: "open", title: "Open", cells: [{ view: "a-table" }] }] },
+    { id: "month", sections: [{ id: "open", title: "Open", cells: [{ view: "a-table" }] }] },
+  ];
+  const store = (data: Record<string, string>) => ({ getItem: (k: string) => data[k] ?? null, setItem: () => {}, removeItem: () => {} });
+  const at = (pageId: string) => renderToStaticMarkup(createElement(StudioPage, {
+    title: "T", manifest: { views: VIEWS, pages: two }, pageId, state: EMPTY_PAGE_STATE, onTab: () => {},
+    onCloseSide: () => {}, foldScope: "app", renderView: (id: string) => createElement("i", null, id),
+  }));
+  it("each page reads its own stored fold", () => {
+    vi.stubGlobal("window", {
+      localStorage: store({ "studio.fold.v1:app:week:open": "1" }),
+      matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    });
+    expect(at("week")).toContain('aria-expanded="false"');
+    expect(at("month")).toContain('aria-expanded="true"');
+    vi.unstubAllGlobals();
+  });
+  it("keys the section by page and id, so a page switch remounts it", () => {
+    const src = readFileSync(new URL("./StudioPage.tsx", import.meta.url), "utf-8");
+    expect(src).toContain("key={`${page.id}:${x.id}`}");
   });
 });
