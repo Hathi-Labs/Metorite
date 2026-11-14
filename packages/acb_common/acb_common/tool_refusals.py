@@ -55,6 +55,8 @@ _log = get_logger("acb_common.tool_refusals")
 
 __all__ = [
     "DETAIL_MAX",
+    "FAILED",
+    "PROVIDER_DID_NOT_ANSWER",
     "REFUSED",
     "WRAPPED_ATTR",
     "GatewayRefusal",
@@ -71,12 +73,20 @@ __all__ = [
 #: The first word of every refusal the model reads. The instructions name it.
 REFUSED = "Refused:"
 
+#: The first words of the text that stands for a pack tool that raised
+#: (``acb_skills.pack_tool_guard``, HRD-3). :func:`is_refusal` counts it too,
+#: so a chat card does not draw a failed write as done.
+FAILED = "The tool failed ("
+
 #: Marks a callable that :func:`refusals_as_text` made. Each fence reads it.
 WRAPPED_ATTR = "__refusals_as_text__"
 
 #: The longest gateway detail the model may read, unless a family asks for
 #: more. A 422 that lists ten fields still fits, and a long body is cut.
 DETAIL_MAX = 300
+
+#: The ``code`` of a 503 for a mail write that the provider did not answer.
+PROVIDER_DID_NOT_ANSWER = "provider_did_not_answer"
 
 
 class GatewayRefusal(RuntimeError):
@@ -92,7 +102,8 @@ class GatewayRefusal(RuntimeError):
     ``fixable`` is ``False`` for a refusal that no argument can fix. The
     model then reads a neutral "Next:" line, not "fix the argument".
     ``route`` is the template of the refused call (``/crm/deals/{id}``) for
-    the log line, never the concrete path."""
+    the log line, never the concrete path. ``code`` is the machine code of
+    the route's body, or "" (HRD-20: ``provider_did_not_answer``)."""
 
     def __init__(
         self,
@@ -103,8 +114,10 @@ class GatewayRefusal(RuntimeError):
         fields: tuple[str, ...] = (),
         fixable: bool = True,
         route: str = "",
+        code: str = "",
     ) -> None:
         super().__init__(message)
+        self.code = code
         self.status = status
         self.detail = detail
         self.fields = fields
@@ -341,7 +354,13 @@ def refusal_text(exc: GatewayRefusal, voice: RefusalVoice) -> str:
         nxt = _CLIENT_NEXT if getattr(exc, "fixable", True) else _FINAL_NEXT
         return f"{REFUSED} {_one_line(str(exc))}\nNext: {nxt}"
     table = _by_status(voice)
-    if status in table:
+    if status == 503 and getattr(exc, "code", "") == PROVIDER_DID_NOT_ANSWER:
+        # The mail provider, not Metorite, did not answer (HRD-20). The write
+        # may have landed, so the model must not claim a send or a save.
+        what = f"The mail provider did not answer ({status})."
+        nxt = ("The mail provider did not answer. Tell the member, and check "
+               "Sent or Drafts before you try again.")
+    elif status in table:
         what, nxt = table[status]
     elif status >= 500:
         what = f"The {voice.app} had an error ({status})."
@@ -375,10 +394,10 @@ def is_refusal(value: Any) -> bool:
     items that each carry ``text``.
     """
     if isinstance(value, str):
-        return value.lstrip().startswith(REFUSED)
+        return value.lstrip().startswith((REFUSED, FAILED))
     if isinstance(value, (list, tuple)) and value:
         first = getattr(value[0], "text", value[0])
-        return isinstance(first, str) and first.lstrip().startswith(REFUSED)
+        return isinstance(first, str) and first.lstrip().startswith((REFUSED, FAILED))
     return False
 
 

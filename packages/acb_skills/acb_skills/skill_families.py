@@ -859,14 +859,14 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # save and publish over the A5 routes; A5c-2: delete over the A5c-1 routes, after one card).
     # STB-6a (E13a) adds ONE workflow read over the Workflows routes, as the member. No write.
     # With it the pack holds 23 tools and is at its room limit: a Studio turn that also loads
-    # the email pack sends 110 tools (MAX_REQUEST_TOOLS). STB-6b needs a follow pack or room.
+    # the email pack sends 110 tools (MAX_REQUEST_TOOLS). STB-6b put its writes in studio-workflows.
     # A run loads a pack only where tool packs are on, and the pack builds nothing for an org that
     # STUDIO_ORGS does not hold.
     "studio": {
         "label": "AI Studio builder",
         "summary": (
             "Build an AI Studio app: draft a manifest from a brief, patch it, "
-            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save, publish and delete the app, start from a ready app, save, publish, pause and list your skills, read the records of a package, and list and read the organisation's workflows."
+            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save, publish and delete the app, start from a ready app, save, publish, pause and list your skills, read the records of a package, and list and read the organisation's workflows and the steps of a run."
         ),
         "description": (
             "A tool pack: the builder tools of AI Studio, for the main "
@@ -877,7 +877,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "publish, pause and list the skills of a member. Two read tools list the "
             "packages of a member and read the records of an object. Three write tools add, "
             "change and delete a record, and each asks the member first. One read tool lists the "
-            "workflows of the organization or reads one. The tools keep no "
+            "workflows of the organization, reads one, or lists the human steps of one run. The tools keep no "
             "draft: the chat holds the manifest. A run loads a pack only where tool packs are on, "
             "so until then this switch has no effect."
         ),
@@ -905,6 +905,35 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "studio_record_delete",
             "studio_app_read",
             "studio_workflow_read",
+        ),
+        "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # STB-6b (ai_studio.md E13b): the two workflow writes, publish (or roll back)
+    # and live (enable or disable), as the member. The studio pack is full, so
+    # they form a small pack of the same owner, after it. It is NOT in
+    # tool_packs.FOLLOWS: it ships dark, and it is on only where the tool-pack flag
+    # names it (an owner-only line). Fence: test_studio_workflow_write_tools.py.
+    "studio-workflows": {
+        "label": "AI Studio workflow publish",
+        "summary": (
+            "Make a workflow live: publish its draft, roll it back to a version, "
+            "pause it or turn it on again."
+        ),
+        "description": (
+            "A tool pack: the tools that make a workflow live, for the main "
+            "assistant to load when a turn asks to publish, roll back, pause or "
+            "turn on a workflow. Each tool needs the right to publish workflows. "
+            "A publish, a roll back and a turn on show one card with the version, "
+            "the triggers that are on and whether the organization runs workflows "
+            "with no person present. A run loads a pack only where tool packs are "
+            "on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "studio_workflow_publish",
+            "studio_workflow_live",
         ),
         "owner": "studio-builder",
         "core": False,

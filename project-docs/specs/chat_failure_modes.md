@@ -1,8 +1,11 @@
 # Chat failure modes: what goes wrong in the chat, and what we build against it
 
 **Status: ACCEPTED, 2026-11-12 (D217). BUILT: HRD-6 part 1 (the line of a slow
-tool), dark, 2026-11-13 (PR 2238), and HRD-18a (names as people say them),
-2026-11-14. Nothing else is built.** Owner ask of 2026-11-12,
+tool), dark, 2026-11-13 (PR 2238). HRD-1 (an unknown tool name), 2026-11-14:
+the answer is live, and the auto-load is dark behind `CHAT_TOOL_AUTOLOAD`.
+HRD-18a (names as people say them), 2026-11-14. Nothing else is built.**
+
+Owner ask of 2026-11-12,
 in chat. Epic task 2978 (project AI Chat Interface). It is part of WS-CHAT.
 
 HRD-0 is task 2979. The owner accepted D-HRD-1 to D-HRD-6 of §8 as D217.
@@ -157,7 +160,7 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 | Slice | Task | What | Fence (R7) | Tier |
 |---|---|---|---|---|
 | **HRD-0** | 2979 | This spec, the INDEX row and the WS-CHAT row | STE lint | LOW |
-| **HRD-1** | 2980 | An unknown tool name gets a way through | `tests/unit/test_unknown_tool_answer.py` | STANDARD |
+| **HRD-1** | 2980 | An unknown tool name gets a way through. **BUILT 2026-11-14:** the answer is live. D217 allows the auto-load, and it ships dark behind `CHAT_TOOL_AUTOLOAD` (default off) | `tests/unit/test_unknown_tool_answer.py` | STANDARD |
 | **HRD-2** | 2981 | Print the hidden ids. Accept a task number and a `kind:` prefix | `tests/unit/test_tool_id_provenance.py` | STANDARD |
 | **HRD-3** | 2982 | One wrapper on each pack tool: text for each failure, and each argument in its declared shape | `tests/unit/test_every_pack_tool_answers_text.py`, `tests/unit/test_tool_argument_shapes.py` | STANDARD |
 | **HRD-4** | 2983 | Search that finds | `tests/unit/test_search_fallback.py` | STANDARD |

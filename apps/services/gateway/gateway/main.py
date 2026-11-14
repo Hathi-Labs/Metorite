@@ -1204,6 +1204,27 @@ async def _db_unavailable(request: Request, exc: Exception):
     return PlainTextResponse("Internal Server Error", status_code=500)
 
 
+# ── A mail provider that did not answer a write is a 503, not a 500 ──────────
+# HRD-20 (task 3224). Graph answered 502 to a reply and a draft, and the
+# route answered 500 with a traceback. The provider raises one typed error, and
+# this handler answers 503 with its words. The words never say "nothing was
+# sent", because a 502 can hide a write that landed. The error holds no URL.
+# Fence: tests/unit/test_outlook_gateway_faults.py.
+from email_ingestion.providers.base import ProviderDidNotAnswer  # noqa: E402
+
+
+@app.exception_handler(ProviderDidNotAnswer)
+async def _provider_did_not_answer(request: Request, exc: ProviderDidNotAnswer):
+    _log.warning(
+        "email.provider_did_not_answer",
+        extra={"mail_path": request.url.path, "mail_kind": exc.kind},
+    )
+    return JSONResponse(
+        status_code=503, headers={"Retry-After": "60"},
+        content={"detail": exc.detail, "code": "provider_did_not_answer"},
+    )
+
+
 # ── Tenant scope (MT-1c / H2) ── every HTTP request runs inside its own tenant
 # scope: opened empty here, filled in by `_with_resolved_access` when the auth
 # dependency resolves the caller's organization, released after the response.
