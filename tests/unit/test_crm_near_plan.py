@@ -87,3 +87,16 @@ def test_the_deal_predicate_holds_no_sub_select_and_no_caller_text() -> None:
 def test_a_word_with_no_hit_keeps_its_own_columns() -> None:
     clause, _params = core.search_where(core.DEALS, "Sharath", related=_hits("Sharath"))
     assert clause == "((name ILIKE :q0 OR next_step ILIKE :q0))"
+
+
+def test_a_search_that_is_no_route_cuts_a_long_query_at_a_word_bound() -> None:
+    """The company search takes 300 characters, so ``search_records`` cuts
+    the query and does not raise the 422 of a list route."""
+    words = " ".join(f"word{i:03d}" for i in range(40))
+    clipped = core.clip_query(words)
+    assert len(clipped) <= core.MAX_Q_CHARS and words.startswith(clipped)
+    assert not clipped.endswith(" ") and words[len(clipped)] == " "
+    assert core.search_words(clipped)
+    assert core.clip_query("  short   query ") == "short query"
+    assert core.clip_query("z" * 250) == "z" * core.MAX_Q_CHARS
+    assert core.clip_query(None) == ""

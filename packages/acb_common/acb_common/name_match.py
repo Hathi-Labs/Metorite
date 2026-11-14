@@ -17,7 +17,11 @@ index or a migration. So it reads candidates with ``pg_trgm``
 ``strict_word_similarity`` at the low floor :data:`NEAR_CANDIDATE_SIMILARITY`,
 at most :data:`NEAR_CANDIDATES` rows of each table. Then :func:`name_score`
 scores each candidate, and only a name at :data:`NEAR_SCORE` or more is near.
-So the CRM search and the two lookups give one answer.
+So the CRM search never calls near a name that the two lookups call far.
+The reverse is not true yet: a candidate must first share raw trigrams. So a
+pair whose raw letters differ a lot (Laxmi and Lakshmi, Puja and Pooja) is
+near in the two lookups and not yet in the CRM search. HRD-18b (task 3226)
+closes that gap.
 
 **A near match is never a match.** Each caller marks it near, and the model
 asks the member to confirm it. So a few pairs of different names may stay

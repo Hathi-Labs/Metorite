@@ -1113,6 +1113,22 @@ def search_words(q: str | None) -> list[str]:
     return found
 
 
+def clip_query(q: str | None) -> str:
+    """*q* cut to :data:`MAX_Q_CHARS` characters at the last word bound.
+
+    For a search that is no route: the command bar and the company search
+    take a longer query (``retrieval/company.MAX_CHARS`` is 300), and a 422
+    there would leave the CRM out. A list route keeps its 422 for a long
+    ``?q=``. One word longer than the cap is cut at the cap.
+    """
+    phrase = " ".join((q or "").split())
+    if len(phrase) <= MAX_Q_CHARS:
+        return phrase
+    head = phrase[:MAX_Q_CHARS + 1]
+    cut = head.rfind(" ")
+    return (head[:cut] if cut > 0 else head[:MAX_Q_CHARS]).strip()
+
+
 def near_words(q: str | None) -> list[tuple[int, str]]:
     """The words of ``?q=`` that may match nearly, each with its index in
     :func:`search_words`. None when the query has more than
@@ -1748,8 +1764,9 @@ async def _near_read(
     1. SQL finds candidates: the entity's own rows under the list's other
        clauses, and each related table (:func:`_near_candidates`).
     2. ``acb_common.name_match`` judges each one. Only a name at
-       ``NEAR_SCORE`` or more is near, so the CRM search and the colleague
-       lookups give one answer.
+       ``NEAR_SCORE`` or more is near, so the CRM search never calls near a
+       name that the colleague lookups call far. A pair whose raw letters
+       differ a lot (Laxmi and Lakshmi) is not a candidate yet (HRD-18b).
     3. One read takes the rows that each word matches exactly or nearly, with
        every clause of the list, by ``= ANY`` of the near values. No
        sub-select runs for each row.

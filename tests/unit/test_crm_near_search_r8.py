@@ -8,10 +8,11 @@ the non-privileged role of the phase-4 rehearsal (no superuser, no BYPASSRLS):
 3. ``?near=true``: when the exact pass gives no row, a word of 4 letters or
    more also matches nearly over the same columns. ``pg_trgm``
    ``strict_word_similarity`` only finds candidates, and
-   ``acb_common.name_match`` judges each one (repair round 2), so SQL and the
-   colleague lookups agree. The rows of that pass carry ``near: true``. A
-   query with an exact hit, a query of more than 3 words, and a list without
-   ``near`` stay exact. ``?near=also`` (repair round 1) adds the near rows
+   ``acb_common.name_match`` judges each one (repair round 2), so the CRM
+   never calls near a name that the colleague lookups call far. HRD-18b finds
+   the folded pairs that share few raw trigrams. The rows of that pass carry
+   ``near: true``. A query with an exact hit, a query of more than 3 words,
+   and a list without ``near`` stay exact. ``?near=also`` (repair round 1) adds the near rows
    that are not exact after the exact rows, at most 5, and ``search_crm``
    shows them in a near section after its matches.
 4. A deal matches the names of its contacts and of its source lead.

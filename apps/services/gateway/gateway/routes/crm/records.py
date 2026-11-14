@@ -55,6 +55,7 @@ from gateway.routes.crm.core import (
     assert_writable,
     attach_ext_urls,
     clean_payload,
+    clip_query,
     compute_lead_name,
     count_where,
     current_tenant,
@@ -678,9 +679,13 @@ async def search_records(
     ``Query(...)``, so a direct call that leaves out an argument passes the
     ``Query`` object itself. It also reads no next activity and no count
     (``rows_only``), because the bar has 1.5 seconds for every app.
+
+    A query over ``core.MAX_Q_CHARS`` characters is cut at a word bound
+    (``core.clip_query``), so the company search, which takes 300, still
+    asks the CRM. A list route answers 422 for the same query.
     """
     refuse_nul([("q", q or "")])
-    words = (q or "").strip()
+    words = clip_query(q)
     if not words:
         return []
     found: list[tuple[str, dict[str, Any]]] = []

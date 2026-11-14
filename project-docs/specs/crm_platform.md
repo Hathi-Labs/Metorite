@@ -8767,8 +8767,16 @@ member asked for the order of "Sharath", and the deal named its contact
   finds candidates: `pg_trgm` `strict_word_similarity` at 0.3, 200 rows of
   each table at most. Then `acb_common.name_match` judges each name, and a
   near name scores 0.6 or more.
-- So SQL and the colleague lookups agree. «Bharath Shah» is not near
-  "Sharath", and «Sougata Maji» is near "Swagata".
+- So the CRM search never calls near a name that the people lookups call
+  far. «Bharath Shah» is not near "Sharath", and «Sougata Maji» is near
+  "Swagata".
+- The reverse is not true yet. The CRM pass finds candidates by raw trigrams
+  first. So a pair whose raw letters differ a lot (Laxmi and Lakshmi) is near
+  in the people lookups and not yet in the CRM search. HRD-18b (task 3226)
+  closes that gap, and the cap of 200 candidates in the `also` mode too.
+- The command bar and the company search take a query of 300 characters.
+  `search_records` cuts it at a word bound to 200 (`core.clip_query`), so
+  the CRM is still searched. The 422 of the list routes stays.
 - Each row of the near pass carries `near: true`. When no row matches,
   the answer of `search_crm` opens with "No record holds «…». Near spellings:".
 - `?near=also` does the same, and it also reads near rows when the exact read
