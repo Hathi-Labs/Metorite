@@ -1,0 +1,40 @@
+{
+  "codes": {
+    "bad_output": "The output does not match the output schema, so change the code to return the declared shape.",
+    "build_failed": "The server build failed, so the live version stays and you can fix the code and build again.",
+    "code_off": "You have no code right, so ask an admin to turn code on for your group.",
+    "code_paused": "An admin stopped code for your organization, so ask an admin to turn it on again.",
+    "compile_failed": "The screen did not compile, so open the console and fix the file and line it names.",
+    "contract_unsupported": "The server does not serve the contract version that the folder pins, so pin a served version.",
+    "door_refused": "The door refused the call, so read its reason and change the call to fit.",
+    "limit_exceeded": "The version or the call went past a limit, so make the source smaller or the call lighter.",
+    "not_approved": "A publisher has not approved this version yet, so ask a publisher to approve it.",
+    "runtime_busy": "Try again in a few seconds.",
+    "timeout": "The call ran too long, so make it do less work and run it again."
+  },
+  "limits": {
+    "browser": {
+      "compile_seconds": 10,
+      "door_calls_per_second": 20,
+      "input_bytes": 1048576,
+      "output_bytes": 4194304,
+      "source_bytes": 262144,
+      "source_files": 100
+    },
+    "server": {
+      "build_seconds": 180,
+      "call_seconds": 30,
+      "idle_stop_seconds": 600,
+      "input_bytes": 1048576,
+      "memory_bytes": 268435456,
+      "output_bytes": 4194304,
+      "packages_direct": 20,
+      "packages_total": 150,
+      "queue_calls": 16,
+      "source_bytes": 262144,
+      "source_files": 100,
+      "warm_runtimes_per_org": 1,
+      "writes_per_call": 5000
+    }
+  }
+}
