@@ -140,7 +140,7 @@ export const MAX_NAV_SECTIONS = 4;
 export const MAX_NAV_ROWS = 12;
 
 /** The tab ids of a record page. `recordPageModel.ts` draws them. */
-export type RecordTabName = "details" | "related" | "files";
+export type RecordTabName = "details" | "lines" | "related" | "files";
 
 /** The cap of the tabs of a record page (STU-AF5b). `recordCaps.test.ts` holds it equal to the schema. */
 export const MAX_RECORD_TABS = 6;

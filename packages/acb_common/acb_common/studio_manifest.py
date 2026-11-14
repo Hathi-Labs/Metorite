@@ -283,7 +283,7 @@ MAX_RECORD_TABS = 6
 class RecordDef(_Strict):
     #: The tab ids, in order. `_check_record` refuses a duplicate. Without `record`, rule 3 of
     #: §5.5 gives the default tabs.
-    tabs: list[Literal["details", "related", "files"]] = Field(
+    tabs: list[Literal["details", "lines", "related", "files"]] = Field(
         min_length=1, max_length=MAX_RECORD_TABS
     )
 

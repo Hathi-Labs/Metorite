@@ -509,6 +509,7 @@
           "items": {
             "enum": [
               "details",
+              "lines",
               "related",
               "files"
             ],
