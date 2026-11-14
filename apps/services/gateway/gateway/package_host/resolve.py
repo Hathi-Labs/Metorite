@@ -140,6 +140,9 @@ class InstallRow:
     #: WS-STU I9a. The ``review_status`` of the installed version
     #: (``app_versions``), or None for a draft. An org need reads it.
     review_status: str | None = None
+    #: WS-STU I9a. The owner of the app. The door runs the DRAFT for the owner,
+    #: so an `org` need never counts an install for them (:func:`owns`).
+    owner_email: str | None = None
 
 
 @dataclass(frozen=True)
@@ -240,6 +243,14 @@ def org_install_approved(scope_kind: str | None, review_status: str | None) -> b
     runs. A private install, a group install, a draft and a preview give
     False, so an ``org`` need fails closed there until I9b."""
     return scope_kind == "org" and review_status == "approved"
+
+
+def owns(install: InstallRow, viewer: str | None) -> bool:
+    """True when *viewer* owns the app of *install* (WS-STU I9a). The action
+    door runs the owner's draft, which is no install, so the sidebar must treat
+    an `org` need of the owner as the door does: never approved."""
+    return bool(viewer and install.owner_email
+                and install.owner_email == viewer.strip().lower())
 
 
 def first_unmet_connection(manifest: Any, met: Met, org_approved: bool = False,
@@ -345,6 +356,7 @@ def resolve(
     claims: Iterable[ClaimRow],
     can_use: CanUse,
     met: Met | None = None,
+    viewer: str | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """The entries of each point for one viewer, in order (§5.2 steps 1 to 4).
 
@@ -358,7 +370,8 @@ def resolve(
     packages = system_package_ids(system, can_use) | {
         mid for i in kept if (mid := manifest_id(i.manifest)) is not None}
     setup = {i.id: not needs_met(i.manifest, can_use, packages, met,
-                                 org_install_approved(i.scope_kind, i.review_status))
+                                 org_install_approved(i.scope_kind, i.review_status)
+                                 and not owns(i, viewer))
              for i in kept}
 
     out: dict[str, list[dict[str, Any]]] = {}
@@ -488,7 +501,7 @@ INSTALLS_SQL = (
     " package_install.scope_kind, package_install.scope_subject,"
     " package_install.created_at,"
     " CASE WHEN package_install.version IS NULL THEN a.manifest ELSE v.manifest END,"
-    " package_install.version, v.review_status"
+    " package_install.version, v.review_status, lower(a.owner_email)"
     " FROM package_install"
     " JOIN apps AS a ON a.organization_id = package_install.organization_id"
     " AND a.id = package_install.app_id"
@@ -534,7 +547,8 @@ async def read_installs(db: Any, viewer: str, groups: Sequence[str]) -> list[Ins
     return [InstallRow(id=str(r[0]), app_id=str(r[1]), scope_kind=str(r[2]),
                        scope_subject=str(r[3]), created_at=r[4], manifest=r[5],
                        version=None if r[6] is None else int(r[6]),
-                       review_status=None if r[7] is None else str(r[7]))
+                       review_status=None if r[7] is None else str(r[7]),
+                       owner_email=None if r[8] is None else str(r[8]))
             for r in rows]
 
 
@@ -635,4 +649,4 @@ async def resolve_for(db: Any, *, viewer: str, can_use: CanUse) -> dict[str, Any
         met = Met()
         if any(connection_names(i.manifest) for i in kept):
             met = await met_connections(db, viewer=viewer)
-    return manifest_body(resolve(system_contributions(), kept, claims, can_use, met))
+    return manifest_body(resolve(system_contributions(), kept, claims, can_use, met, viewer))

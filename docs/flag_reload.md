@@ -63,6 +63,10 @@ means the connections change nothing. Its one reader is
 applies a change. A flip stays OWNER-GATE (`enforcement-flip`), after the
 pre-check of the I1a row.
 
+Since I9a, an `org` need also fails closed with a connected row in four cases. A plain name is an `org` need, so it fails in an org with no approved org install. It fails in a private install and in a group install. It fails in an org install of a version with `review_status` `auto`, which migration 114 sets by default. It fails for the owner of the app, who runs the draft.
+
+Before a flip, count three things with read-only SQL. Count the active org installs whose version is not `approved`. Count the private and group installs whose version names a `connections` list. Count the connected rows of each provider, as org rows and as member rows.
+
 `STUDIO_NUM_F8_ORGS` adds the float8 test to a number filter of the Studio
 object query (`ai_studio.md` §14 C2c). For each listed org, the query tests
 `studio_record_hot.v_num_f8` beside the exact `v_num` test, so the app role

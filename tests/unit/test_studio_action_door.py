@@ -2864,7 +2864,7 @@ class TestTheConnections:
 
     def test_the_gate_off_answers_the_same_with_or_without_connections(self, monkeypatch, cw):
         """I9a: with the org off the list, `connections` (any form, any `as`)
-        change nothing, so the answers are byte-identical to an app with none."""
+        change nothing, so the status and the record data equal those of an app with none."""
         monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", "")
         plain = _package(cw, manifest=MANIFEST)
         named = _package(cw, manifest={**MANIFEST, "connections": [

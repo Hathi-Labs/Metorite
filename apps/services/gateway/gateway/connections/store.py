@@ -564,10 +564,13 @@ async def met_providers(
     lives in ``email_accounts``, so ``mailbox`` is never met here.
     ``package_host/resolve.met_connections`` is the one caller.
     """
-    params = {"org": str(uuid.UUID(str(org))), "member": (member or "").strip().lower()}
+    who = (member or "").strip().lower()
+    params = {"org": str(uuid.UUID(str(org))), "member": who}
     rows = (await db.execute(text(_MET_SQL), params)).all()
+    # An empty member never matches a member row: the CHECK allows
+    # ``member_email = ''``, so the SQL alone would let it match.
     return (frozenset(str(r[0]) for r in rows if r[1] == SCOPE_ORG),
-            frozenset(str(r[0]) for r in rows if r[1] == SCOPE_MEMBER))
+            frozenset(str(r[0]) for r in rows if r[1] == SCOPE_MEMBER and who))
 
 
 async def get_by_id(db: Any, org: str, connection_id: str) -> Connection | None:

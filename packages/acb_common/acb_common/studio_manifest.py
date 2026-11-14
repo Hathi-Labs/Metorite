@@ -1120,11 +1120,14 @@ def connection_as(name: str, declared: Any = None) -> str:
 
 def connection_item(raw: Any) -> tuple[str, str] | None:
     """STU-I9a. ``(name, as)`` of one item of ``connections``, as written in a
-    stored manifest (a text, or an object), or None when it has no name. Pure."""
+    stored manifest (a text, or an object), or None when it has no name or its `as` is invalid. Pure."""
     if isinstance(raw, str):
         return raw, connection_as(raw)
     if isinstance(raw, Mapping) and isinstance(raw.get("name"), str):
-        return raw["name"], connection_as(raw["name"], raw.get("as"))
+        declared = raw.get("as")
+        if declared is not None and declared not in CONNECTION_AS:
+            return None  # a stored `as` that the schema refuses fails closed
+        return raw["name"], connection_as(raw["name"], declared)
     return None
 
 

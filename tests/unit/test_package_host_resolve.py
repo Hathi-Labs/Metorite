@@ -77,12 +77,12 @@ ORG = "11111111-2222-3333-4444-555555555555"
 
 def _inst(iid: str, app: str, kind: str = "org", *, age: int = 0,
           manifest: Any = None, subject: str | None = None,
-          review: str | None = None) -> InstallRow:
+          review: str | None = None, owner: str | None = None) -> InstallRow:
     subject = subject or {"org": "org", "group": "group:ops"}.get(kind, "ana@pkg.test")
     return InstallRow(id=iid, app_id=app, scope_kind=kind, scope_subject=subject,
                       created_at=T0 + timedelta(minutes=age),
                       manifest={"id": app} if manifest is None else manifest,
-                      review_status=review)
+                      review_status=review, owner_email=owner)
 
 
 def _claim(iid: str, key: str, /, point: str = "jobs", position: int = 0,
@@ -745,3 +745,53 @@ def test_the_sidebar_reads_the_review_status_of_the_install() -> None:
 
 def test_the_installs_sql_reads_the_review_status_of_the_version() -> None:
     assert "v.review_status" in resolve.INSTALLS_SQL
+
+
+def test_the_sidebar_gives_the_owner_the_answer_of_the_door() -> None:
+    """I9a round 2. The door runs the DRAFT for the owner, so an `org` need is
+    never met for them. The sidebar must say `needs_setup` for the owner too,
+    and `ready` for another member of the same approved org install. A
+    `member` need is the same for both."""
+    org_need = {"id": "m", "connections": ["zoho"]}
+    member_need = {"id": "m", "connections": [{"name": "zoho", "as": "member"}]}
+    met = resolve.Met(org=frozenset({"zoho"}), member=frozenset({"zoho"}))
+
+    def setup(manifest: Any, viewer: str | None) -> bool:
+        row = _inst("i", "a", "org", manifest=manifest, review="approved", owner="ana@pkg.test")
+        out = resolve.resolve({}, [row], [_claim("i", "k")], _all, met, viewer)
+        return out["jobs"][0]["needs_setup"]
+
+    assert setup(org_need, "Ana@Pkg.Test") is True      # the owner, any case
+    assert setup(org_need, "ben@pkg.test") is False      # another member
+    assert setup(org_need, None) is False
+    assert setup(member_need, "ana@pkg.test") is False   # a member need is unchanged
+    assert setup(member_need, "ben@pkg.test") is False
+
+
+def test_the_installs_sql_reads_the_owner_of_the_app() -> None:
+    assert "lower(a.owner_email)" in resolve.INSTALLS_SQL
+
+
+@pytest.mark.parametrize("declared", ["Member", "ORG", "all", "", 1, ["org"]])
+def test_a_stored_invalid_as_fails_closed(declared: Any) -> None:
+    from acb_common.studio_manifest import connection_item
+
+    manifest = {"id": "m", "connections": [{"name": "zoho", "as": declared}]}
+    everything = resolve.Met(org=frozenset({"zoho"}), member=frozenset({"zoho"}))
+    assert connection_item({"name": "zoho", "as": declared}) is None
+    assert resolve.connection_names(manifest) is None
+    assert resolve.first_unmet_connection(manifest, everything, True) == (None, None)
+
+
+def test_an_empty_member_matches_no_member_row() -> None:
+    from gateway.connections import store as connections
+
+    class Db:
+        async def execute(self, stmt: Any, params: Any = None) -> Any:
+            return _Answer([("zoho", "member"), ("github", "org")])
+
+    for who in ("", "   ", None):
+        got = asyncio.run(connections.met_providers(Db(), ORG, who))  # type: ignore[arg-type]
+        assert got == (frozenset({"github"}), frozenset())
+    got = asyncio.run(connections.met_providers(Db(), ORG, "Ana@Pkg.Test"))
+    assert got == (frozenset({"github"}), frozenset({"zoho"}))

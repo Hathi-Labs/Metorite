@@ -55,7 +55,7 @@ pytest.importorskip("sqlalchemy")
 
 from acb_auth import UserContext, UserRole, build_access
 from acb_common import get_settings
-from acb_common.db import bind_tenant, release_tenant
+from acb_common.db import bind_tenant, release_tenant, tenant_session
 from fastapi import HTTPException
 from gateway.routes.studio import invoke
 from sqlalchemy import text
@@ -289,6 +289,54 @@ def test_r8_the_owners_draft_and_a_member_row_never_meet_an_org_need(world) -> N
     got = _run(world, go)
     assert got == [(409, {**_DENIED, "provider": TALLY, "as": "org"})] * 2
     assert world.ran == []
+
+
+async def _sidebar(org: str, who: str) -> bool:
+    """`needs_setup` of the one install that *who* sees, from the real SQL and
+    the real read of the connections, through the one resolve."""
+    from gateway.package_host import resolve
+
+    token = bind_tenant(org)
+    try:
+        async with tenant_session(org) as db:
+            kept = await resolve.visible_installs(db, viewer=who)
+            met = await resolve.met_connections(db, viewer=who)
+        claims = [resolve.ClaimRow(install_id=i.id, point="jobs", key="k", payload={})
+                  for i in kept]
+        out = resolve.resolve({}, kept, claims, lambda _f: True, met, who)
+        (entry,) = out["jobs"]
+        return bool(entry["needs_setup"])
+    finally:
+        release_tenant(token)
+
+
+def test_r8_the_owner_of_an_installed_app_gets_one_answer_in_door_and_sidebar(world) -> None:
+    """P2-1. The door runs the owner's DRAFT, so an `org` need is 409 for the
+    owner even with an approved org install and an org row. The sidebar says
+    `needs_setup` for the owner too. Another member: 200 and ready."""
+    async def go() -> dict[str, Any]:
+        pid = await _installed(world.a, OWEN, [TALLY])
+        _connect(world, world.a)
+        return {"owner_door": await _door(world.a, OWEN, pid),
+                "owner_side": await _sidebar(world.a, OWEN),
+                "mel_door": await _door(world.a, MEL, pid),
+                "mel_side": await _sidebar(world.a, MEL)}
+
+    got = _run(world, go)
+    assert got["owner_door"] == (409, {**_DENIED, "provider": TALLY, "as": "org"})
+    assert got["owner_side"] is True
+    assert got["mel_door"][0] == 200 and got["mel_side"] is False
+    assert world.ran == [1]
+
+
+def test_r8_a_member_need_is_the_same_for_the_owner_in_door_and_sidebar(world) -> None:
+    async def go() -> tuple[tuple[int, Any], bool]:
+        pid = await _installed(world.a, OWEN, [{"name": TALLY, "as": "member"}])
+        _connect(world, world.a, member=OWEN)
+        return await _door(world.a, OWEN, pid), await _sidebar(world.a, OWEN)
+
+    door, side = _run(world, go)
+    assert door[0] == 200 and side is False
 
 
 def test_r8_the_approval_of_org_a_does_not_apply_to_org_b(world) -> None:
