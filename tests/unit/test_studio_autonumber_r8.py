@@ -61,7 +61,6 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
-from acb_common import studio_fields as sf
 from acb_common.db import tenant_session
 from acb_common.studio_access import Viewer
 from acb_common.studio_fields import FieldError
