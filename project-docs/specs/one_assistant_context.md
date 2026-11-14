@@ -1834,7 +1834,7 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
 
 **TS-2a. The narrowed spike: `find_tools` for the `studio` pack alone (task 3222).** HIGH. AGENT-SAFE to build dark. The flip of `TOOL_SEARCH_ORGS` is OWNER-GATE. Rung 1, partial. It follows TS-1 (merged). The Opus spec audit of TS-2 on 2026-11-14 found TS-2 as written NO-GO, and it gave GO to this narrowed slice after the docs PR.
 - **Scope.**
-  - The candidates are the packs of `PACK_ONLY_OWNERS` (`tool_packs.py:2804`) that layer (a) did not load. Today that is the `studio` pack, 23 tools, not split.
+  - The candidates are the packs of `PACK_ONLY_OWNERS` (in `tool_packs.py`) that layer (a) did not load. Today that is the `studio` pack, 23 tools, not split.
   - There is no surface rule, and sticky state is OFF.
   - There are no CRM or Projects candidates. A found CRM or Projects tool meets OA-8i (`pack_write_refusal`, `tool_packs.py`), the specialist reach and the hand-off swap. TS-6 (HIGH) owns those.
 - **What it proves.**
@@ -1872,7 +1872,7 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
 - **No R8 case.** The slice adds no SQL, no Redis key and no migration.
 
 **TS-2. The spike: `find_tools` for the Studio packs (task 3196).**
-- **Why Studio.** `studio-builder` is a pack-only owner (`PACK_ONLY_OWNERS`, `tool_packs.py:2804`). It has no specialist tool, so no hand-off record and no reach move. With search on, a Studio turn loads the core only, so the follow pack holds tools to find (item 5 of the split).
+- **Why Studio.** `studio-builder` is a pack-only owner (`PACK_ONLY_OWNERS` in `tool_packs.py`). It has no specialist tool, so no hand-off record and no reach move. With search on, a Studio turn loads the core only, so the follow pack holds tools to find (item 5 of the split).
 - **Files.**
   - `acb_skills/tool_packs.py`: the tool, its middleware, the answer with the rules blocks, and the flag reader
   - `orchestrator/_tool_injection.py`: the provider beside `_offer_pack_loader` (`:4412`), the candidates and the count of `find_tools`. The surface rule that reads `TOOL_SEARCH_ORGS` is in this slice (TS-2). TS-1b owns the Studio split and no flag.

@@ -764,18 +764,23 @@ def test_the_harness_file_is_not_edited_for_this_slice() -> None:
     )
 
 
-def test_the_spec_anchor_of_pack_only_owners_is_the_real_line() -> None:
-    lines = (
-        (ROOT / "packages" / "acb_skills" / "acb_skills" / "tool_packs.py")
-        .read_text(encoding="utf-8")
-        .splitlines()
+def test_the_spec_names_pack_only_owners_with_no_line_number() -> None:
+    """The spec names the constant and no line of ``tool_packs.py``.
+
+    A line number goes stale each time a pack PR adds a line above it, and the
+    fence then turns main red for every lane. The symbol must exist, and the
+    spec must not pin a line for it.
+    Mutation: put ``tool_packs.py:<n>`` after ``PACK_ONLY_OWNERS`` in the spec.
+    """
+    src = (ROOT / "packages" / "acb_skills" / "acb_skills" / "tool_packs.py").read_text(
+        encoding="utf-8"
     )
-    real = next(i for i, line in enumerate(lines, 1) if line.startswith("PACK_ONLY_OWNERS"))
+    assert re.search(r"^PACK_ONLY_OWNERS\b", src, re.M)
     spec = (ROOT / "project-docs" / "specs" / "one_assistant_context.md").read_text(
         encoding="utf-8"
     )
-    cited = {int(n) for n in re.findall(r"PACK_ONLY_OWNERS`\)? ?\(?`?tool_packs\.py:(\d+)", spec)}
-    assert cited == {real}, (cited, real)
+    assert "PACK_ONLY_OWNERS" in spec
+    assert not re.findall(r"PACK_ONLY_OWNERS`[^\n]{0,12}tool_packs\.py:\d+", spec)
 
 
 def test_the_spec_splits_ts5_and_names_the_report_and_the_proposal() -> None:
