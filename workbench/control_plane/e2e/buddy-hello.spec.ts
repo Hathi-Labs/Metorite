@@ -327,6 +327,15 @@ test.describe("on the real paths", () => {
     await expect.poll(() => server.helloCalls.length, { timeout: 20_000 }).toBeGreaterThanOrEqual(1);
     await a.waitForTimeout(2_000);
     expect(server.helloCalls.filter((c) => c.status === 200)).toHaveLength(1);
+    // A tab opens its panel BEFORE it asks, and the loser's 204 closes it
+    // again. A background tab runs late, so wait until each tab has settled:
+    // the hello is drawn, or the panel is shut.
+    for (const tab of [a, b]) {
+      await tab.bringToFront();
+      await expect
+        .poll(async () => (await helloCard(tab).count()) === 1 || !(await panel(tab).isVisible()), { timeout: 20_000 })
+        .toBe(true);
+    }
     expect(Object.values(server.rows).flat()).toHaveLength(1);
     // A background tab paints late: look at each in turn.
     let shown = 0;
