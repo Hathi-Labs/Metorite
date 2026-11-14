@@ -58,6 +58,14 @@ FULL_SUITE = {"pyproject.toml", "uv.lock", "tests/conftest.py", "tests/unit/conf
 # A module that more test files than this import (gateway.main, for one) is a
 # hub. Expanding through it would pick most of the suite for any route change.
 HUB_LIMIT = 40
+# CIV-33c-1. A hub selects its importers. Only a module that this share of the
+# test files import goes FULL, because the selection then costs about as much as
+# the suite and the one-level expansion misses more. Measured 2026-11-13 on 1751
+# test files: `gateway.routes.projects` has 291 importers (17%), `gateway.main` 67
+# and `agent_edge.tools` 54. `acb_common.db` has 399 (23%) and stays FULL by its
+# prefix, and its gateway re-export is named in GATE_FULL_NAMES. A 20% share (350 files) keeps every hub that a feature slice changes
+# selected, and keeps the DB seam FULL.
+HUB_CEILING_SHARE = 0.20
 FRONTEND_APPS = ("workbench/control_plane/", "workbench/operator_console/")
 # CLAUDE.md section 6: these suites hang on a local run (WS-9, WS-21). CI runs
 # them. A picked list and a full run both drop every entry (CIV-15).
@@ -174,7 +182,7 @@ def imports(body: str, module: str | None = None, is_package: bool = False) -> s
     return set(_imports_cached(body, module, is_package))
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _imports_cached(body: str, module: str | None, is_package: bool) -> frozenset[str]:
     names: set[str] = set(_DOTTED_STRING.findall(body))
     try:
@@ -340,7 +348,7 @@ _SCAN_GLOB_CALL = re.compile(r"\.r?glob\(|\bi?glob\(")
 _DATA_GLOB = re.compile(r"\.(?:sql|json|md|ts|tsx|js|mjs|cjs|css|ya?ml|toml|txt|sh|html|csv|lock|conf|ini)$")
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _is_scanner(body: str) -> bool:
     """True when the test may list Python files. Fails to True.
 
@@ -431,8 +439,13 @@ def _source_files(root: Path) -> list[Path]:
     return files
 
 
-def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str], list[str]]:
-    """Return (test files, reasons for a full run, frontend files)."""
+def select(
+    changed: list[str], root: Path = ROOT, scanners: bool = True
+) -> tuple[list[str], list[str], list[str]]:
+    """Return (test files, reasons for a full run, frontend files).
+
+    ``scanners=False`` leaves out the tests that only a scan idiom picks. The
+    gate adds them itself, and does not close over their imports."""
     tests = _texts(sorted((root / TESTS).glob("test_*.py")), root)
     sources = _texts(_source_files(root), root)
     full = sorted(c for c in changed if c in FULL_SUITE)
@@ -442,7 +455,7 @@ def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str],
     changed_mods = {m for c in changed for m in module_names(c, root)}
     src_users, test_users = _import_index(changed_mods, sources, tests, root)
 
-    if any(c.endswith(".py") for c in changed):
+    if scanners and any(c.endswith(".py") for c in changed):
         picked |= scanning_tests(tests)
 
     for path in changed:
@@ -490,8 +503,37 @@ GATE_FULL_NAMES = {
     "scripts/fences.py",
     "scripts/ci_unit_guard.py",
     "scripts/ci_local.sh",
+    # A re-export of the DB seam (acb_common.db). 620 test files reach it.
+    "apps/services/gateway/gateway/db.py",
 }
-GATE_FULL_PREFIXES = (".github/", "scripts/ci_pc/", "packages/acb_common/")
+# CIV-33c-2. A workflow (or a composite action) can change how every test runs,
+# so it stays FULL. Any other file under .github/ (ISSUE_TEMPLATE, CODEOWNERS,
+# dependabot.yml) runs no test, so it is no longer FULL. `.github/prompts` and
+# `.github/skills` feed the root agents.py, and no test imports it today.
+GATE_FULL_PREFIXES = (
+    ".github/workflows/",
+    ".github/actions/",
+    "scripts/ci_pc/",
+    "packages/acb_common/",
+)
+# CIV-33c-2. The R8 guard lists (`r8` key) and the fence tiers live here. A diff
+# that edits this file selects the test files it ADDS to a list, plus the
+# guard's own tests, and does not go FULL (see `fence_change`).
+FENCES_JSON = "tests/fences.json"
+FENCE_GUARD_TESTS = (
+    "tests/unit/test_ci_unit_guard.py",
+    "tests/unit/test_fence_lists.py",
+    "tests/unit/test_deploy_pipeline.py",
+    "tests/unit/test_green_pointer.py",
+)
+# CIV-33c-1. A diff that only ADDS flags to these two files selects the tests
+# that name each flag, and does not go FULL (see `_flag_additions`).
+FLAG_FILES = (
+    "packages/acb_common/acb_common/settings.py",
+    "packages/acb_common/acb_common/env_guard.py",
+)
+# env_guard.py: `    "NAME",` or `    "A", "B",`. A settings.py field is read with `ast`.
+_GUARD_FLAG = re.compile(r'^    ((?:"[A-Z][A-Z0-9_]*",\s*)+)$')
 GATE_DB_MARK = "_DB_GATE"
 # An R8 suite is a test file that builds a real database from a ladder, or
 # names a database URL variable. 109 of 339 ladder suites carry no _DB_GATE.
@@ -564,6 +606,258 @@ def gate_changed_files(base: str, root: Path = ROOT) -> list[str]:
     return sorted(n.strip().replace("\\", "/") for n in out.stdout.splitlines() if n.strip())
 
 
+def _git_text(args: list[str], root: Path) -> str:
+    out = subprocess.run(
+        ["git", *args], cwd=root, capture_output=True, text=True, check=True,
+        encoding="utf-8", errors="replace",
+    )
+    return out.stdout
+
+
+def gate_diff(base: str, root: Path = ROOT, head: str = "HEAD") -> str:
+    """The zero-context diff of the two flag files, for `_flag_additions`."""
+    return _git_text(
+        ["diff", "-U0", "--no-renames", f"{base}...{head}", "--", *FLAG_FILES], root
+    )
+
+
+def _show_or_empty(ref: str, path: str, root: Path) -> str:
+    """The text of `path` at `ref`, or "" when it is not there. An empty
+    text does not parse, so `fence_change` then goes FULL."""
+    try:
+        return _git_text(["show", f"{ref}:{path}"], root)
+    except subprocess.CalledProcessError:
+        return ""
+
+
+def gate_flag_texts(base: str, root: Path = ROOT, head: str = "HEAD") -> dict[str, tuple[str, str]]:
+    """Map each flag file, and tests/fences.json, to (text at the merge base,
+    text at head)."""
+    mb = _git_text(["merge-base", base, head], root).strip()
+    out = {
+        f: (_git_text(["show", f"{mb}:{f}"], root), _git_text(["show", f"{head}:{f}"], root))
+        for f in FLAG_FILES
+    }
+    out[FENCES_JSON] = (_show_or_empty(mb, FENCES_JSON, root), _show_or_empty(head, FENCES_JSON, root))
+    return out
+
+
+def _fence_entries(text: str) -> set[tuple[str, str]]:
+    """Each string of each list in tests/fences.json, as (key path, string).
+
+    The `_comment` keys are skipped. Any other shape (a scalar, a list of
+    non-strings, a top level that is no object) raises ValueError, and the
+    caller goes FULL."""
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("the top level is no object")
+    out: set[tuple[str, str]] = set()
+
+    def walk(node: object, path: str) -> None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k != "_comment":
+                    walk(v, f"{path}/{k}")
+        elif isinstance(node, list) and all(isinstance(s, str) for s in node):
+            out.update((path, s) for s in node)
+        else:
+            raise ValueError(f"{path} is neither an object nor a list of strings")
+
+    walk(data, "")
+    return out
+
+
+def fence_change(changed: list[str], texts: dict | None) -> tuple[list[str], set[str]]:
+    """(FULL reasons, test files to select) for an edit of tests/fences.json.
+
+    A parsed edit selects each Python path that it adds to or removes from a list, and the
+    guard's own tests (FENCE_GUARD_TESTS). Fail closed: a file that does not
+    parse, a shape that this rule cannot read, or no base text gives a reason."""
+    if FENCES_JSON not in changed:
+        return [], set()
+    try:
+        base, head = (texts or {})[FENCES_JSON]
+        before, after = _fence_entries(base), _fence_entries(head)
+    except (KeyError, TypeError, ValueError) as exc:
+        return [f"{FENCES_JSON}: cannot read the change ({exc!r})"], set()
+    # A removal selects the file too. It is still on disk, and the release R8
+    # gate would fail on a suite that left a list but still runs there. A file
+    # that is gone drops out later, and the guard's tests stay.
+    moved = {s for _, s in after ^ before if s.endswith(".py")}
+    return [], moved | set(FENCE_GUARD_TESTS)
+
+
+_LITERAL_OPS = (ast.Add, ast.Sub, ast.Mult, ast.USub, ast.UAdd)
+# An annotation of a plain field: `str`, `int | None`, `Literal["a", "b"]`. No call.
+_TYPE_NODES = (
+    ast.Name, ast.Attribute, ast.Subscript, ast.Constant, ast.Tuple, ast.List,
+    ast.BinOp, ast.BitOr, ast.Load,
+)
+
+
+def _literal(node: ast.expr | None) -> bool:
+    """True for a constant, a signed number, constant arithmetic (``2 * 1024``),
+    or a list, tuple, set or dict of these. Such a value runs no code."""
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.UnaryOp):
+        return isinstance(node.op, _LITERAL_OPS) and _literal(node.operand)
+    if isinstance(node, ast.BinOp):
+        return isinstance(node.op, _LITERAL_OPS) and _literal(node.left) and _literal(node.right)
+    if isinstance(node, ast.List | ast.Tuple | ast.Set):
+        return all(_literal(e) for e in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(_literal(k) for k in node.keys) and all(_literal(v) for v in node.values)
+    return False
+
+
+def _plain_field(st: ast.AnnAssign) -> bool:
+    """True when a new field runs no code (CIV-33c-1 review round 2, P3).
+
+    The default is a literal, or ``Field(...)`` with literal arguments only.
+    ``Settings()`` fails for a field with no default when its variable is
+    unset. The annotation is a plain type, with no call in it."""
+    v = st.value
+    if v is None or not all(isinstance(n, _TYPE_NODES) for n in ast.walk(st.annotation)):
+        return False
+    if isinstance(v, ast.Call):
+        return (
+            isinstance(v.func, ast.Name)
+            and v.func.id == "Field"
+            and all(_literal(a) for a in v.args)
+            and all(k.arg is not None and _literal(k.value) for k in v.keywords)
+        )
+    return _literal(v)
+
+
+def _settings_fields(text: str) -> dict[str, tuple[int, int, bool]]:
+    """Field name -> (first line, last line, plain) of each annotated assignment
+    that sits directly in the body of ``class Settings``. See `_plain_field`."""
+    out: dict[str, tuple[int, int, bool]] = {}
+    for node in ast.parse(text).body:
+        if isinstance(node, ast.ClassDef) and node.name == "Settings":
+            for st in node.body:
+                if isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name):
+                    out[st.target.id] = (st.lineno, st.end_lineno or st.lineno, _plain_field(st))
+    return out
+
+
+def _guard_names(text: str) -> dict[int, list[str]]:
+    """Line -> the string literals that sit in a PLATFORM_ENV_* literal on that line."""
+    out: dict[int, list[str]] = {}
+    for node in ast.parse(text).body:
+        if isinstance(node, ast.AnnAssign | ast.Assign):
+            targets = [node.target] if isinstance(node, ast.AnnAssign) else node.targets
+            if not any(isinstance(t, ast.Name) and t.id.startswith("PLATFORM_ENV_") for t in targets):
+                continue
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                    out.setdefault(sub.lineno, []).append(sub.value)
+    return out
+
+
+def _added_lines(diff: str) -> dict[str, list[tuple[int, str]]] | None:
+    """File -> (new line number, text) of each added line. None for any other change."""
+    out: dict[str, list[tuple[int, str]]] = {}
+    current, new_no = "", 0
+    for line in diff.splitlines():
+        if line.startswith("diff --git"):
+            current = line.rsplit(" b/", 1)[-1]
+            out.setdefault(current, [])
+        elif line.startswith(("new file", "deleted file", "rename", "old mode", "new mode")):
+            return None
+        elif line.startswith("@@"):
+            m = re.match(r"@@ -\S+ \+(\d+)", line)
+            if not m:
+                return None
+            new_no = int(m.group(1))
+        elif line.startswith(("index ", "--- ", "+++ ")):
+            continue
+        elif line.startswith("+"):
+            out[current].append((new_no, line[1:].rstrip()))
+            new_no += 1
+        elif line.strip():  # a removed line, or text that is not a diff
+            return None
+    return out
+
+
+def _check_settings(added: list[tuple[int, str]], base: str, head: str) -> list[str] | None:
+    old, new = _settings_fields(base), _settings_fields(head)
+    needles: list[str] = []
+    for no, body in added:
+        if not body.strip() or body.lstrip().startswith("#"):
+            continue
+        owner = [n for n, (lo, hi, _) in new.items() if lo <= no <= hi]
+        # A new field only: not a field of the base file, not model_config, and
+        # with a default that runs no code.
+        if not owner or owner[0] in old or owner[0] == "model_config" or not new[owner[0]][2]:
+            return None
+        needles.append(owner[0])
+    return sorted(set(needles))
+
+
+def _check_guard(added: list[tuple[int, str]], base: str, head: str) -> list[str] | None:
+    old = {n for names in _guard_names(base).values() for n in names}
+    new = _guard_names(head)
+    needles: list[str] = []
+    for no, body in added:
+        if not body.strip() or body.lstrip().startswith("#"):
+            continue
+        names = new.get(no, [])
+        if not names or not _GUARD_FLAG.match(body) or any(n in old for n in names):
+            return None
+        needles += names
+    return needles
+
+
+def _flag_additions(
+    changed: list[str], diff: str | None, texts: dict[str, tuple[str, str]] | None = None
+) -> list[str] | None:
+    """The needles of a flag-only diff, or None when the diff is anything else.
+
+    A flag-only diff changes no file under packages/acb_common/ but the two of
+    FLAG_FILES. In settings.py each added line is a blank line, a comment, or part
+    of a NEW field of ``class Settings`` (not ``model_config``, not a field of the
+    base file). In env_guard.py each added line is a new string literal in a
+    PLATFORM_ENV_* constant. A removed line, a new or deleted file, a line that
+    this rule cannot classify, or a missing text gives None. The caller then goes
+    FULL as before.
+    """
+    touched = [c for c in changed if c in FLAG_FILES]
+    if not diff or not touched or not texts:
+        return None
+    if any(c.startswith("packages/acb_common/") and c not in FLAG_FILES for c in changed):
+        return None
+    added = _added_lines(diff)
+    if added is None or set(touched) - set(added) or set(added) - set(touched):
+        return None
+    needles: list[str] = []
+    for path, lines in added.items():
+        if path not in texts:
+            return None
+        base, head = texts[path]
+        found = (_check_settings if path.endswith("settings.py") else _check_guard)(
+            lines, base, head
+        )
+        if found is None:
+            return None
+        needles += found
+    return needles
+
+
+def _flag_tests(needles: list[str], tests: dict[str, str]) -> set[str]:
+    """Tests that name an added flag, plus the settings and env_guard tests."""
+    picked: set[str] = set()
+    for t, body in tests.items():
+        stem = t.rsplit("/", 1)[-1]
+        named = any(n in body or n.lower() in body or n.upper() in body for n in needles)
+        # `model_fields`: a test that walks every Settings field.
+        by_name = "settings" in stem or "env_guard" in stem
+        if by_name or "env_guard" in body or "model_fields" in body or named:
+            picked.add(t)
+    return picked
+
+
 def _full_reason(path: str) -> str | None:
     name = path.rsplit("/", 1)[-1]
     if name == "conftest.py":
@@ -584,26 +878,178 @@ def _safety_fences(root: Path) -> list[str]:
     return [p for p in data["python"]["safety"] if (root / p).is_file()]
 
 
-def _gate(changed: list[str], root: Path) -> dict:
-    reasons = [r for r in (_full_reason(c) for c in changed) if r]
-    tests = _texts(sorted((root / TESTS).glob("test_*.py")), root)
-    picked: set[str] = set(_safety_fences(root))
+_APP_ENTRY = re.compile(r"^\s*\w+ = FastAPI\(", re.MULTILINE)
 
-    py = [c for c in changed if c.endswith(".py") and not c.startswith(FRONTEND_APPS)]
-    other = [c for c in changed if c not in py]
-    # A Python file in a Next app skips `select`, but a scanner still reads it.
+
+def _forward_closure(entry: str, modmap: dict[str, tuple[str, bool]]) -> set[str]:
+    """Every source module that `entry` imports, directly or not."""
+    seen = {entry}
+    todo = [entry]
+    while todo:
+        m = todo.pop()
+        body, is_pkg = modmap[m]
+        for n in imports(body, m, is_pkg):
+            parts = n.split(".")
+            for i in range(1, len(parts) + 1):
+                d = ".".join(parts[:i])
+                if d in modmap and d not in seen:
+                    seen.add(d)
+                    todo.append(d)
+    return seen
+
+
+def app_entry_tests(
+    mods: set[str], sources: dict[str, str], tests: dict[str, str], root: Path
+) -> set[str]:
+    """Tests that import an app entry module (one with a FastAPI app) that reaches a
+    changed module. They drive the real app, so a change below it can break them,
+    however many levels it sits down. `select` expands one level only.
+
+    Review round 2. A test helper that builds an app (``_crm_app.crm_app()``) is an
+    entry too. A test can import an entry by its leaf (``from gateway import main``),
+    so the match reads the imports of the test, not its text."""
+    modmap: dict[str, tuple[str, bool]] = {}
+    entries: dict[str, set[str]] = {}  # entry -> each name a test can import it by
+    for path, body in sources.items():
+        name = module_name(path, root)
+        if not name:
+            continue
+        modmap[name] = (body, path.endswith("__init__.py"))
+        if _APP_ENTRY.search(body):
+            entries[name] = {name, *module_names(path, root)}
+    hit = {n for e, names in entries.items() if mods & _forward_closure(e, modmap) for n in names}
+    leaves = {n.rsplit(".", 1)[-1] for n in hit}
+    # Every import of `a.b.leaf` spells "leaf", so the text test drops no importer.
+    return {
+        t for t, body in tests.items() if any(lf in body for lf in leaves) and imports(body) & hit
+    }
+
+
+# `from test_x import y` or `import _helper`, after a test puts tests/unit on sys.path.
+_BARE_IMPORT = re.compile(r"^\s*(?:from|import)\s+(?:test_|_\w)", re.MULTILINE)
+
+
+def close_over_test_imports(
+    picked: set[str], tests: dict[str, str], helpers: dict[str, str] | None = None
+) -> set[str]:
+    """Add each test file that imports a picked test file, until nothing new joins.
+
+    A test module that holds fixtures is imported by other tests, and those by more.
+    Review round 2. A test helper (``tests/unit/_x.py``) can sit between two tests,
+    so the walk passes through it, and only test files come out. A test can put
+    tests/unit on sys.path and import another by its bare stem (``from test_x
+    import y``), so the stem is a name too."""
+    helpers = helpers or {}
+    files = {**helpers, **tests}
+    by_name: dict[str, str] = {}
+    for f in files:
+        by_name[".".join(Path(f).with_suffix("").parts)] = f
+        by_name[Path(f).stem] = f
+    users: dict[str, set[str]] = {}
+    for f, body in files.items():
+        if "tests.unit" not in body and not _BARE_IMPORT.search(body):
+            continue
+        for n in imports(body):
+            u = by_name.get(n)
+            if u and u != f:
+                users.setdefault(u, set()).add(f)
+    out = set(picked)
+    todo = list(picked)
+    while todo:
+        for u in users.get(todo.pop(), ()):
+            if u not in out:
+                out.add(u)
+                todo.append(u)
+    return out - set(helpers)
+
+
+def static_reasons(changed: list[str], needles: list[str] | None) -> list[str]:
+    """The FULL reasons that need no import index. A flag-only diff has no reason
+    for the two FLAG_FILES."""
+    return [
+        r
+        for c in changed
+        if needles is None or c not in FLAG_FILES
+        if (r := _full_reason(c))
+    ]
+
+
+def hub_reasons(mods: set[str], test_users: dict[str, set[str]], n_tests: int) -> list[str]:
+    """A module that more than HUB_CEILING_SHARE of the test files import goes FULL.
+
+    The ceiling is never below HUB_LIMIT. Below that line a module is no hub,
+    as on main. Without the floor, a small tree (a test fixture repo) has a
+    ceiling of 0, and every changed module goes FULL. The CIV-32 repair test
+    found it (PR 2205). On the real tree the ceiling is 350."""
+    ceiling = max(HUB_LIMIT, int(n_tests * HUB_CEILING_SHARE))
+    return [
+        f"{m}: {len(test_users.get(m, set()))} test files import it, more than {ceiling} "
+        f"({HUB_CEILING_SHARE:.0%} of the test files)"
+        for m in sorted(mods)
+        if len(test_users.get(m, set())) > ceiling
+    ]
+
+
+def _gate(
+    changed: list[str], root: Path, diff: str | None = None, texts: dict | None = None
+) -> dict:
+    needles = _flag_additions(changed, diff, texts)
+    reasons = static_reasons(changed, needles)
+    fence_reasons, fence_tests = fence_change(changed, texts)
+    reasons += fence_reasons
+    tests = _texts(sorted((root / TESTS).glob("test_*.py")), root)
+    # The floor: each SAFETY fence, and each scanner for a Python change. A
+    # Python file in a Next app skips `select`, but a scanner still reads it.
+    # Review round 2, P1: the floor is not a seed of the closure over test
+    # imports. With the floor as a seed, that closure picked 784 of 1751 files
+    # for a change that two tests import.
+    floor = set(_safety_fences(root))
     if any(c.endswith(".py") for c in changed):
-        picked |= scanning_tests(tests)
-    if py:
-        picked |= set(select(py, root)[0])
-        # A hub: a changed module that more than HUB_LIMIT test files import.
+        floor |= scanning_tests(tests)
+    picked: set[str] = set(fence_tests)
+    if needles is not None:
+        # The two files stay out of `select`: their 150 importers are not
+        # affected by a new flag. The tests that name a flag are.
+        picked |= _flag_tests(needles, tests)
+
+    py = [
+        c
+        for c in changed
+        if c.endswith(".py")
+        and not c.startswith(FRONTEND_APPS)
+        and not (needles is not None and c in FLAG_FILES)
+    ]
+    sources = None
+    if needles:
+        # The code that reads an added flag joins the changed set, so that
+        # `select` covers it, even when it reads the flag with `getattr`.
         sources = _texts(_source_files(root), root)
+        lows = [n.lower() for n in needles]
+        py += sorted(
+            f
+            for f, body in sources.items()
+            if f.endswith(".py")
+            and f not in FLAG_FILES
+            and not f.startswith(("tests/", *FRONTEND_APPS))
+            and f not in py
+            and any(n in body.lower() for n in lows)
+        )
+    # tests/fences.json is read by `fence_change`. The generic text match below
+    # would select every suite that names the file (the R8 self-checks).
+    other = [c for c in changed if c not in py and c != FENCES_JSON]
+    if py:
+        picked |= set(select(py, root, scanners=False)[0])
+        # A hub (more than HUB_LIMIT importers) selects its importers, and
+        # `select` has done so. It goes FULL only above HUB_CEILING_SHARE.
+        sources = sources or _texts(_source_files(root), root)
         mods = {m for c in py for m in module_names(c, root)}
         _, test_users = _import_index(mods, sources, tests, root)
-        for m in sorted(mods):
-            n = len(test_users.get(m, set()))
-            if n > HUB_LIMIT:
-                reasons.append(f"{m}: {n} test files import it, more than {HUB_LIMIT}")
+        reasons += hub_reasons(mods, test_users, len(tests))
+        # The app-entry rule replaces a FULL run of main's rules: a hub, or a
+        # flag diff. Elsewhere main's rules select already, and the rule added
+        # about 1,000 s to each such diff (24 main commits, 2026-11-13).
+        if needles is not None or any(len(test_users.get(m, ())) > HUB_LIMIT for m in mods):
+            picked |= app_entry_tests(mods, sources, tests, root)
     # A file that is not Python: tests that name its path. No import tracing.
     for path in other:
         picked |= {t for t, body in tests.items() if path in body}
@@ -620,14 +1066,21 @@ def _gate(changed: list[str], root: Path) -> dict:
             if t.rsplit("/", 1)[-1].startswith("test_customer_console_")
             or any(m in body for m in CONSOLE_R8_MARKS)
         }
+    helpers = _texts(sorted((root / TESTS).glob("_*.py")), root)
+    picked = close_over_test_imports(picked, tests, helpers) | floor
     files = sorted(p for p in picked if (root / p).is_file())
     return {"full": bool(reasons), "files": files, "reasons": reasons}
 
 
-def gate(changed: list[str], root: Path = ROOT) -> dict:
-    """The PR tier's selection. Any error inside the selector gives full."""
+def gate(
+    changed: list[str], root: Path = ROOT, diff: str | None = None, texts: dict | None = None
+) -> dict:
+    """The PR tier's selection. Any error inside the selector gives full.
+
+    ``diff`` is the zero-context diff of FLAG_FILES, and ``texts`` holds the base and
+    head text of each. Without both, there is no flag rule."""
     try:
-        return _gate(changed, root)
+        return _gate(changed, root, diff, texts)
     except Exception as exc:  # fail open on purpose
         return {"full": True, "files": [], "reasons": [f"selector error: {exc!r}"]}
 
@@ -676,7 +1129,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.gate:
         try:
             changed = [f.replace("\\", "/") for f in args.files] or gate_changed_files(args.base)
-            out = gate(changed)
+            diff = texts = None
+            if not args.files:
+                diff, texts = gate_diff(args.base), gate_flag_texts(args.base)
+            out = gate(changed, diff=diff, texts=texts)
         except Exception as exc:  # fail open on purpose
             out = {"full": True, "files": [], "reasons": [f"selector error: {exc!r}"]}
         print(json.dumps(out))

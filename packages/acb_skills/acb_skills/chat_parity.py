@@ -386,6 +386,12 @@ COVERED: dict[str, str | tuple[str, str]] = {
     # The read of one workflow drops the webhook token, and shows the steps as a count by type.
     "GET /api/workflows": "studio_workflow_read",
     "GET /api/workflows/{}": "studio_workflow_read",
+    # STB-6b (ai_studio.md E13b): the four live routes of publish.py, as the member,
+    # after the right check and ONE card. Pause and resume are disable and enable.
+    "POST /api/workflows/{}/publish": "studio_workflow_publish",
+    "POST /api/workflows/{}/versions/{}/rollback": "studio_workflow_publish",
+    "POST /api/workflows/{}/disable": "studio_workflow_live",
+    "POST /api/workflows/{}/enable": "studio_workflow_live",
 }
 
 #: A covered action that more than one chat tool sends -> the other tools.
@@ -422,6 +428,11 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "stream",
         "The app page reads the end date of the private install of the owner, to draw the end-date bar "
         "(PKG-10e-2). No member click sends it. The chat keeps or restores an app with the Keep and Restore rows.",
+    ),
+    "GET /api/studio/packages/{}/connections": (
+        "stream",
+        "The IDE reads whether each connection of the draft is met, to draw the Connect lines (I8a). It reads "
+        "again after each save and on focus. No member click sends it. In chat, Mira will show the same card (I8d, planned).",
     ),
     # ── Calendar ──
     "POST /api/calendar/connections/{}/connect": (
@@ -869,13 +880,9 @@ DEBT: dict[str, str] = {
     "POST /api/workflows/modules/generate": "P-6",
     "POST /api/workflows/modules/test": "P-6",
     "POST /api/workflows/{}/copilot": "P-6",
-    "POST /api/workflows/{}/disable": "P-6",
     "POST /api/workflows/{}/duplicate": "P-6",
-    "POST /api/workflows/{}/enable": "P-6",
-    "POST /api/workflows/{}/publish": "P-6",
     "POST /api/workflows/{}/run": "P-6",
     "POST /api/workflows/{}/validate": "P-6",
-    "POST /api/workflows/{}/versions/{}/rollback": "P-6",
     "PUT /api/workflows/modules/{}": "P-6",
     "PUT /api/workflows/{}": "P-6",
     # ── Custom Apps ──
@@ -1088,7 +1095,7 @@ DEBT_CEILING: dict[str, int] = {
     "people": 19,
     "knowledge": 19,  # 17 planned rows + POST and PATCH /knowledge/spaces (KB-2q, owner 2026-11-05); P-5 pays them.
     "memory": 5,
-    "workflows": 22,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22).
+    "workflows": 18,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18).
     "apps": 28,
     "agents": 20,
     "chat": 25,

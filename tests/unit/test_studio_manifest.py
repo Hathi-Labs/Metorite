@@ -34,7 +34,7 @@ EXAMPLE: dict = {
     "name": "Field visits",
     "purpose": "Plan, run and close customer site visits.",
     "team": "service",
-    "connections": ["whatsapp"],
+    "connections": ["mcp:tally"],
     "objects": [
         {
             "name": "visit",
@@ -50,7 +50,7 @@ EXAMPLE: dict = {
     ],
     "actions": [
         {"id": "close_visit", "uses": "object:visit.update", "set": {"status": "done"}},
-        {"id": "tell_customer", "uses": "integration:whatsapp.send_template"},
+        {"id": "log_visit", "uses": "crm.log_activity"},
     ],
     "views": [
         {
@@ -89,7 +89,7 @@ EXAMPLE: dict = {
     },
 }
 
-CATALOG = {"integration:whatsapp.send_template": "B"}
+CATALOG = {"crm.log_activity": "B"}
 
 
 def doc(**patch) -> dict:
@@ -265,10 +265,10 @@ def test_class_x_action():
     e = one(
         EXAMPLE,
         "$.actions[1].uses",
-        catalog={"integration:whatsapp.send_template": "X"},
+        catalog={"crm.log_activity": "X"},
         contains="class X",
     )
-    assert "integration:whatsapp.send_template" in e.message
+    assert "crm.log_activity" in e.message
 
 
 def test_object_action_is_never_looked_up():
@@ -1264,3 +1264,204 @@ def test_a_manifest_without_runtime_hashes_as_before() -> None:
         b'{"id":"pin","name":"Pin","purpose":"Hold the hash.","studio":1}'
     ).hexdigest()
     assert validate_manifest(doc) == []
+
+
+# -- STU-I1a: the connections of a package, and no key in a form --------------
+#
+# R7. Mutations, run on 2026-11-14 on this file:
+# * N1. `_semantic_errors`: drop the call of `_check_connections`. The bad
+#   name, the duplicate and the cap tests go red.
+# * N2. `CONNECTION_NAME_RE`: accept any text after `mcp:`. The `mcp:x`,
+#   `mcp:` and `mcp:Tally` cases go red.
+# * N3. `_check_objects`: drop the `is_secret_field_key` check. The secret
+#   field key tests go red.
+# * N4. `_check_objects`: call the wide `is_secret_key` in its place (the rule
+#   before the review). `token_number`, `secretary`, `credential_expiry`,
+#   `token` and `tokens_used` go red.
+
+
+def _with_connections(names: object) -> dict:
+    return {**EXAMPLE, "connections": names}
+
+
+def test_the_example_names_a_registry_connection():
+    """§8.1 rule 10: until IN-3, a package names only registry connections."""
+    assert EXAMPLE["connections"] == ["mcp:tally"]
+    assert not any(a["uses"].startswith("integration:") for a in EXAMPLE["actions"])
+
+
+@pytest.mark.parametrize("names", [
+    [], ["mcp:tally"], ["zoho"], ["google_drive", "outlook_calendar"], ["mcp:my-erp-2", "github"],
+    ["mcp:" + "a" * 50], ["a" * 48],
+])
+def test_a_connection_of_the_grammar_passes(names):
+    assert validate_manifest(_with_connections(names)) == []
+
+
+@pytest.mark.parametrize("name", [
+    "Zoho", "zoho crm", "", "1zoho", "a" * 49, "whats-app", "mcp:x", "mcp:", "mcp:Tally",
+    "mcp:-tally", "mcp:tally-", "mcp:" + "a" * 51, "mcp:tally:x", "MCP:tally", " zoho",
+])
+def test_a_bad_connection_name_is_refused_with_its_path(name):
+    e = one(_with_connections(["zoho", name]), "$.connections[1]", contains="mcp:<server>")
+    assert "provider id" in e.message
+
+
+def test_a_duplicate_connection_is_refused_with_its_path():
+    e = one(_with_connections(["zoho", "mcp:tally", "zoho"]), "$.connections[2]",
+            contains="twice")
+    assert "zoho" in e.message
+    assert [x.path for x in validate_manifest(_with_connections(["zoho", "mcp:tally", "zoho"]))
+            ] == ["$.connections[2]"]
+
+
+def test_a_package_names_at_most_32_connections():
+    from acb_common.studio_manifest import MAX_CONNECTIONS
+
+    assert MAX_CONNECTIONS == 32
+    assert validate_manifest(_with_connections([f"p{i}" for i in range(32)])) == []
+    errs = validate_manifest(_with_connections([f"p{i}" for i in range(33)]))
+    assert [e.path for e in errs] == ["$.connections"]
+    assert "at most 32" in errs[0].message and words(errs[0].message) <= 25
+
+
+@pytest.mark.parametrize("names", ["zoho", [3], [None], {"zoho": True}])
+def test_a_connections_value_that_is_not_a_list_of_text_is_refused(names):
+    errs = validate_manifest(_with_connections(names))
+    assert errs and all(e.path.startswith("$.connections") for e in errs), errs
+
+
+def _with_field(key: str) -> dict:
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["fields"].append({"key": key, "type": "text"})
+    return d
+
+
+@pytest.mark.parametrize("key", [
+    "api_key", "apikey", "client_secret", "access_token", "refresh_token", "private_key",
+    "password", "db_passwd", "zoho_api_key", "secret_key", "auth_token", "bearer_token",
+    "api_secret", "app_secret", "webhook_secret", "signing_secret", "consumer_secret",
+    "access_key", "api_token", "aws_secret_access_key",
+])
+def test_a_field_key_that_names_a_secret_is_refused_with_its_path(key):
+    from acb_common.studio_manifest import SECRET_FIELD
+
+    d = _with_field(key)
+    e = one(d, "$.objects[0].fields[6].key", contains="connections")
+    assert e.message.startswith(SECRET_FIELD)
+    assert [x.path for x in validate_manifest(d)] == ["$.objects[0].fields[6].key"]
+
+
+@pytest.mark.parametrize("key", ["apiKey", "x-api-key"])
+def test_a_secret_key_that_breaks_the_field_grammar_is_refused_with_its_path(key):
+    """A field key is snake case, so the grammar refuses these at the same path."""
+    assert [x.path for x in validate_manifest(_with_field(key))] == [
+        "$.objects[0].fields[6].key"]
+
+
+@pytest.mark.parametrize("key", [
+    "site_code", "notes", "visit_count", "key_account", "token_number", "secretary",
+    "credential_expiry", "token", "tokens_used",
+])
+def test_a_field_key_that_names_no_secret_passes(key):
+    """P2-1 of the I1a review: a clinic queue token, a housing society secretary
+    and the expiry of a credential are member data. Only a whole secret name
+    counts (``secret_shapes.is_secret_field_key``)."""
+    assert validate_manifest(_with_field(key)) == []
+
+
+def test_the_field_rule_is_narrower_than_the_key_rule_of_the_scan():
+    """``is_secret_key`` keeps its wide rule for its other callers (the scan of
+    a value under a secret-named key)."""
+    from acb_common.secret_shapes import is_secret_field_key, is_secret_key
+
+    for key in ("token_number", "secretary", "credential_expiry"):
+        assert is_secret_key(key) and not is_secret_field_key(key), key
+    for key in ("api_key", "apiKey", "x-api-key", "X-Api-Key", "client_secret", "APIKey",
+                "old_password_hint"):
+        assert is_secret_field_key(key), key
+
+# --- nav, the rail of the app (STU-AF2a) ---
+
+
+def _nav_doc(*sections: dict, pages: int = 1) -> dict:
+    ps = [_page(id=f"p{i}") for i in range(pages)]
+    return doc(pages=ps, nav=list(sections))
+
+
+def _sec(title: str = "Work", *rows: dict) -> dict:
+    return {"title": title, "rows": list(rows) or [{"page": "p0"}]}
+
+
+def test_nav_is_optional_and_defaults_to_empty():
+    assert "nav" not in EXAMPLE
+    assert validate_manifest(EXAMPLE) == []
+    assert Manifest.model_validate(EXAMPLE).nav == []
+    again = Manifest.model_validate(Manifest.model_validate(EXAMPLE).model_dump(mode="json"))
+    assert again.nav == []
+
+
+def test_valid_nav_with_an_icon_and_a_label():
+    d = _nav_doc(_sec("Work", {"page": "p0", "icon": "Home", "label": "Start"}, {"page": "p1"}), pages=2)
+    assert validate_manifest(d) == []
+    assert Manifest.model_validate(d).nav[0].rows[0].icon == "Home"
+
+
+def test_nav_section_cap_is_four():
+    ok = [_sec(f"S{i}") for i in range(4)]
+    assert validate_manifest(_nav_doc(*ok)) == []
+    one(_nav_doc(*ok, _sec("S4")), "$.nav", contains="at most 4")
+
+
+def test_nav_row_cap_is_twelve():
+    rows = [{"page": "p0"}] * 13
+    assert validate_manifest(_nav_doc(_sec("S", *rows[:12]))) == []
+    one(_nav_doc(_sec("S", *rows)), "$.nav[0].rows", contains="at most 12")
+
+
+def test_nav_row_names_a_declared_page():
+    one(_nav_doc(_sec("S", {"page": "nope"})), "$.nav[0].rows[0].page", contains="not declared")
+
+
+def test_nav_without_pages_is_refused():
+    d = doc(nav=[_sec("S")])
+    one(d, "$.nav[0].rows[0].page", contains="`pages`")
+
+
+def test_duplicate_section_titles_are_refused():
+    one(_nav_doc(_sec("Same"), _sec("Same")), "$.nav[1]", contains="used twice")
+
+
+def test_nav_icon_outside_the_list_is_refused():
+    d = _nav_doc(_sec("S", {"page": "p0", "icon": "Skull"}))
+    one(d, "$.nav[0].rows[0].icon", contains="icon list")
+
+
+def test_nav_icons_equal_the_literal_of_a_row():
+    from typing import get_args
+
+    from acb_common.studio_manifest import NAV_ICONS, NavRow
+
+    literal = [a for a in get_args(NavRow.model_fields["icon"].annotation) if a is not type(None)]
+    assert tuple(get_args(literal[0])) == NAV_ICONS
+    assert len(set(NAV_ICONS)) == len(NAV_ICONS)
+
+
+def test_nav_row_refuses_a_colour_key():
+    d = _nav_doc(_sec("S", {"page": "p0", "color": "red"}))
+    one(d, "$.nav[0].rows[0].color", contains="style")
+    d = _nav_doc(_sec("S", {"page": "p0", "label": "#ff0000"}))
+    one(d, "$.nav[0].rows[0].label", contains="colour")
+
+
+def test_nav_row_refuses_an_unknown_key_and_a_blank_title():
+    assert _at(_nav_doc(_sec("S", {"page": "p0", "badge": 3})), "$.nav[0].rows[0].badge")
+    assert _at(_nav_doc(_sec(" ")), "$.nav[0].title")
+
+
+def test_every_first_party_template_still_validates():
+    root = Path(__file__).resolve().parents[2] / "packages/acb_common/acb_common/studio_templates"
+    files = sorted(root.glob("*.json"))
+    assert files
+    for f in files:
+        assert validate_manifest(json.loads(f.read_text(encoding="utf-8"))) == [], f.name

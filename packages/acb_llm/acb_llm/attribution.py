@@ -44,6 +44,7 @@ __all__ = [
     "attributed_copilot_provider",
     "attributed_openai",
     "attribution_headers",
+    "in_run_ceiling",
     "run_ceiling_scope",
     "run_ceiling_text",
 ]
@@ -108,6 +109,13 @@ def run_ceiling_scope(credits: Decimal) -> Iterator[str]:
             _RUN_CEILING.reset(token)
         except ValueError:  # a token from another context
             _RUN_CEILING.set(held)
+
+
+def in_run_ceiling() -> bool:
+    """True inside :func:`run_ceiling_scope`: a round of the headless turn,
+    the one caller. A chat call is never inside it. A tool reads this to
+    keep within the time cap of the round (CRM-Q25e: no long CRM read)."""
+    return _RUN_CEILING.get() is not None
 
 
 def _proof_for(member: str) -> str | None:

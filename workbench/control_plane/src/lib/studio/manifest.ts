@@ -45,6 +45,100 @@ export type BlockName =
   | "map"
   | "markdown";
 
+export type NavIcon =
+  | "Home"
+  | "LayoutDashboard"
+  | "LayoutGrid"
+  | "List"
+  | "ListChecks"
+  | "Table"
+  | "Kanban"
+  | "Calendar"
+  | "CalendarDays"
+  | "Clock"
+  | "Users"
+  | "User"
+  | "Briefcase"
+  | "Handshake"
+  | "Inbox"
+  | "Mail"
+  | "Phone"
+  | "MessageCircle"
+  | "FileText"
+  | "Files"
+  | "FolderOpen"
+  | "Tag"
+  | "Star"
+  | "Flag"
+  | "Bell"
+  | "Bookmark"
+  | "Wallet"
+  | "Receipt"
+  | "Package"
+  | "Truck"
+  | "MapPin"
+  | "Wrench"
+  | "Settings"
+  | "ClipboardList"
+  | "CheckSquare"
+  | "Target"
+  | "Trophy"
+  | "Lightbulb"
+  | "BookOpen"
+  | "Layers"
+  | "Activity"
+  | "Sparkles";
+
+/** The icon list of a rail row. `NAV_ICONS` of `studio_manifest.py` is the twin, and a parity test holds them equal. */
+export const NAV_ICONS: readonly NavIcon[] = [
+  "Home",
+  "LayoutDashboard",
+  "LayoutGrid",
+  "List",
+  "ListChecks",
+  "Table",
+  "Kanban",
+  "Calendar",
+  "CalendarDays",
+  "Clock",
+  "Users",
+  "User",
+  "Briefcase",
+  "Handshake",
+  "Inbox",
+  "Mail",
+  "Phone",
+  "MessageCircle",
+  "FileText",
+  "Files",
+  "FolderOpen",
+  "Tag",
+  "Star",
+  "Flag",
+  "Bell",
+  "Bookmark",
+  "Wallet",
+  "Receipt",
+  "Package",
+  "Truck",
+  "MapPin",
+  "Wrench",
+  "Settings",
+  "ClipboardList",
+  "CheckSquare",
+  "Target",
+  "Trophy",
+  "Lightbulb",
+  "BookOpen",
+  "Layers",
+  "Activity",
+  "Sparkles",
+];
+
+/** The caps of the rail (STU-AF2a). `navCaps.test.ts` holds them equal to the schema. */
+export const MAX_NAV_SECTIONS = 4;
+export const MAX_NAV_ROWS = 12;
+
 export interface FieldDef {
   key: string;
   type: FieldType;
@@ -137,6 +231,17 @@ export interface PageDef {
   side?: SideDef | null;
 }
 
+export interface NavRow {
+  page: string;
+  icon?: NavIcon | null;
+  label?: string | null;
+}
+
+export interface NavSection {
+  title: string;
+  rows: NavRow[];
+}
+
 export interface Trigger {
   record?: string | null;
   when?: Record<string, unknown> | null;
@@ -211,6 +316,9 @@ export interface StudioManifest {
   name?: string | null;
   purpose?: string | null;
   team?: string | null;
+  // STU-I1a. Each name is `mcp:<server>` or a provider id, once, at most 32.
+  // The server holds the check (`_check_connections`), and a missing one
+  // makes the install `needs_setup`.
   connections?: string[];
   // C8a. The roles of the app. An install maps each one to members (C8b).
   roles?: string[];
@@ -218,6 +326,7 @@ export interface StudioManifest {
   actions?: ActionDef[];
   views?: ViewDef[];
   pages?: PageDef[];
+  nav?: NavSection[];
   workflows?: WorkflowDef[];
   skill?: Skill | null;
   shell?: Shell | null;

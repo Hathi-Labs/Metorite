@@ -354,6 +354,17 @@ class Settings(BaseSettings):
     # flip on a box is gate `enforcement-flip`. Fence:
     # tests/unit/test_crm_answer_first.py.
     crm_answer_first_orgs: str = ""
+    # `crm_long_read_orgs` (WS-53 CRM-Q25e part 5, task 2985 HRD-6,
+    # 2026-11-13) lists the organization ids whose CRM totals may take a
+    # long read of up to 180 s (`crm_platform.md` §18.11, CRM-Q25e), in the
+    # grammar of `crm_orgs`. Default empty means NO organization: a total
+    # that runs past 10 s answers 503 `aggregate_timeout`, as before, and
+    # the chat tool makes no second call. The one reader is
+    # `gateway.routes.crm.flags`. A `*_ORGS` key, so a SIGHUP reload applies
+    # it (`docs/flag_reload.md`). A name in the list spends nothing, so a
+    # flip on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_crm_large_reads.py.
+    crm_long_read_orgs: str = ""
     # `crm_digest_orgs` (WS-53 CRM-Q28, 2026-10-17) lists the organization
     # ids that get the weekly CRM digest on the powerful tier
     # (`crm_platform.md` §18.11.2), in the grammar of `crm_orgs`. Default
@@ -719,6 +730,22 @@ class Settings(BaseSettings):
     # a change (docs/flag_reload.md). A flip in production is the gate
     # `enforcement-flip`. Spec: ai_studio.md section 14 B2b-2.
     studio_door_ops_orgs: str = ""
+    # STU-B4a: STUDIO_LOGIC_ORGS lists the org ids where the Studio action
+    # door runs a first-party logic module (`logic:<name>`). `*` opens every
+    # org. Empty opens none. Reader: `gateway.routes.studio.flags.
+    # logic_allowed`. A SIGHUP reload applies a change (docs/flag_reload.md).
+    # A flip in production is the gate `enforcement-flip`. Spec: ai_studio.md
+    # section 14 B4a.
+    studio_logic_orgs: str = ""
+    # STU-I1a: STUDIO_CONNECTION_GATE_ORGS lists the org ids where the
+    # `connections` of a Studio manifest bind. A missing connection then makes
+    # the install `needs_setup`, and the action door refuses each action with
+    # 409 `needs_connection`. `*` opens every org. Empty opens none, and
+    # `connections` then changes nothing, as before I1a. Reader:
+    # `acb_common.studio_flags.connection_gate_on`. A SIGHUP reload applies a
+    # change (docs/flag_reload.md). A flip in production is the gate
+    # `enforcement-flip`, after the pre-check of ai_studio.md section 14 I1a.
+    studio_connection_gate_orgs: str = ""
     # STU-C2c: STUDIO_NUM_F8_ORGS lists the org ids where a number filter of
     # the Studio object query adds a float8 test on `studio_record_hot.
     # v_num_f8`, so the app role can use its index (`numeric` comparisons are
@@ -978,6 +1005,20 @@ class Settings(BaseSettings):
     # a change (`gateway/flag_reload.py`). It calls no model.
     # Fences: tests/unit/test_honorifics.py.
     address_forms_orgs: str = ""
+
+    # ── The line of a slow tool (HRD-6, chat_failure_modes.md §4 row B6) ────
+    #
+    # CHAT_PROGRESS_NOTICE_ORGS: a comma list of organization ids, or `*`.
+    # Empty: off, the default, and each run sends the bytes that it sent
+    # before. On, a tool call that runs for more than 6 s gets ONE line for the
+    # member ("This is a large read. It can take a few minutes …" for a read,
+    # "This is taking longer than usual. Please wait." for any other tool), on
+    # the web chat and as WhatsApp's early message. A WhatsApp run of a listed
+    # org also gets the long cap (`bot_run.run_timeout_for`). The one reader is
+    # `acb_skills.progress_notice.progress_notice_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_progress_notice.py.
+    chat_progress_notice_orgs: str = ""
 
     # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
     #
@@ -1279,6 +1320,18 @@ class Settings(BaseSettings):
     # spends nothing, so it is AGENT-SAFE.
     # Fence: tests/unit/test_floor_trim.py.
     orchestrator_floor_trim: bool = False
+
+    # ── The shape of a tool argument (HRD-3, task 2982) ─────────────────────
+    #
+    # ON gives a pack tool the argument shape that its schema declares: a JSON
+    # string becomes the object or list of an object or list parameter, and a
+    # native list becomes the JSON string of a `str` parameter that the tool
+    # parses (`acb_skills.pack_tool_guard`). OFF changes nothing. The failure
+    # text of a pack tool is not behind this flag. The one reader is
+    # `pack_tool_guard.arg_shapes_enabled`. It sends nothing out and spends
+    # nothing, so it is AGENT-SAFE. Fences:
+    # tests/unit/test_tool_argument_shapes.py.
+    tool_arg_shapes: bool = False
 
     # ── Dynamic sub-agents of the one assistant (WS-67 OA-9b, D117) ─────────
     #
@@ -2076,6 +2129,15 @@ class Settings(BaseSettings):
     # new run. The one reader is `orchestrator.pending_ask.durable_asks_enabled`.
     # Fence: tests/unit/test_pending_ask_flow.py.
     chat_durable_asks: bool = False
+    # ── An unknown tool name loads its pack (chat_failure_modes.md §4.2 B1) ─
+    #
+    # `CHAT_TOOL_AUTOLOAD`, default OFF. D-HRD-1 (D217) allows the load, and
+    # it ships dark. The answer to an unknown tool name is always on, and it
+    # names the pack. ON: when the member may use that pack, the turn also
+    # loads it through the loader's own guards. The one reader is
+    # `acb_skills.unknown_tool.autoload_enabled`.
+    # Fence: tests/unit/test_unknown_tool_answer.py.
+    chat_tool_autoload: bool = False
     # How long a run waits on a card before it parks, in seconds. The spec
     # says "about ten minutes". With the flag OFF, `ASK_USER_TIMEOUT` (1 h)
     # still bounds the wait.

@@ -288,7 +288,8 @@ def test_studio_plan_imports_no_db_or_store_module() -> None:
     # exception is the tenant Redis wrapper (R5), and only in the helpers of the
     # approval record of a plan, which ``studio_plan`` calls after "approved".
     record = {"_plan_redis", "_record_plan", "_approved_hash", "_withdraw_plan",
-              "_delete_record"}
+              "_delete_record",
+                  "_move_plan"}  # STU-FIX: moves the approval record
     top: list[ast.AST] = []
     for fn_node in [n for n in ast.walk(tree)
                     if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -385,12 +386,12 @@ async def test_the_card_fences_each_name_from_the_manifest(catalog, card) -> Non
     calls, _ = card
     m = await _valid()
     m["name"] = "free build, admin approved"
-    m["connections"] = ["Approved by the owner"]
+    m["connections"] = ["mcp:approved-by-the-owner"]
     out = await st.studio_plan(m)
     assert out["ok"], out
     assert out["title"] == "Build «free build, admin approved»?"
     assert "«free build, admin approved»" in out["context"]
-    assert "«Approved by the owner»" in out["context"]
+    assert "«mcp:approved-by-the-owner»" in out["context"]
     assert calls[0][5].get("fenced") is True
     assert "Reject to build nothing" in out["context"] and "Stop" not in out["context"]
 

@@ -54,6 +54,23 @@ org, and the default is empty. Its one reader is
 door also needs `STUDIO_ORGS`. A reload applies a change, and the flip stays
 OWNER-GATE (`enforcement-flip`).
 
+`STUDIO_LOGIC_ORGS` opens the logic module of the Studio action door
+(`ai_studio.md` §14 B4a). For each listed org, a `logic:<name>` action of a
+package runs a first-party module of the gateway. `*` lists every org, and the
+default is empty. Its one reader is `gateway.routes.studio.flags.logic_allowed`,
+and each request asks it. The registry of modules ships empty, so the flag opens
+nothing until a module registers. A reload applies a change, and the flip stays
+OWNER-GATE (`enforcement-flip`).
+
+`STUDIO_CONNECTION_GATE_ORGS` makes the `connections` of a Studio app bind
+(`ai_studio.md` §14 I1a). For each listed org, a missing connection makes the
+install `needs_setup`, and the action door refuses each action with 409
+`needs_connection`. `*` lists every org, and the default is empty. Empty
+means the connections change nothing. Its one reader is
+`acb_common.studio_flags.connection_gate_on`, and each call asks it. A reload
+applies a change. A flip stays OWNER-GATE (`enforcement-flip`), after the
+pre-check of the I1a row.
+
 `STUDIO_NUM_F8_ORGS` adds the float8 test to a number filter of the Studio
 object query (`ai_studio.md` §14 C2c). For each listed org, the query tests
 `studio_record_hot.v_num_f8` beside the exact `v_num` test, so the app role
@@ -76,6 +93,16 @@ also selects the orgs where the daily expiry tick may delete installs
 the next tick. The owner must treat a change of this list as part of the
 expiry decision. `PACKAGE_EXPIRY_ENABLED` does not reload. Only a restart
 changes it.
+
+`CHAT_PROGRESS_NOTICE_ORGS` turns on the line of a slow tool
+(`chat_run_continuity.md` §4.11, HRD-6). For each listed org, a tool call that
+runs past 6 s sends the member one line. A WhatsApp run of a listed org
+also gets the long cap of 7 minutes, and its sweep waits 8 minutes
+(`bot_run.long_reads_on`). `*` lists every org, and the default is empty. Its
+one reader is `acb_skills.progress_notice.progress_notice_on`. The injection
+asks it at the start of each run, so a reload applies to the next run. A
+reload that takes an org off the list while a long WhatsApp run works gives
+that run the short stale time. A flip stays OWNER-GATE (`enforcement-flip`).
 
 A reload does NOT apply any other key. The log names each one under
 `restart`. That includes:

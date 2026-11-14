@@ -346,6 +346,14 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # token is a read-only box token. A tenant must never save these.
     "METORITE_WATCHER_TOKEN", "METORITE_WATCHER_STATE", "METORITE_REPO",
     "METORITE_MCP_URL", "WATCHER_CLAUDE_CMD",
+    # CIV-31: the auto-revert pass of the home box (scripts/home_server). It
+    # reads its mode, its files and the merge bot log. A tenant must never save these.
+    "AUTO_REVERT_LOG", "AUTO_REVERT_MODE", "AUTO_REVERT_REPORTS",
+    "AUTO_REVERT_STATE", "MERGE_LOG",
+    # CIV-31b: the pass reads the merge bot queue for a hand-over that waits.
+    "MERGE_QUEUE",
+    # CIV-34a: the conflict rules of the merge bot. It names the ruff command.
+    "CONFLICT_RULES_RUFF",
     # Deploy, backup and watchdog scripts (variables they read).
     "APP_DIR", "ENV_FILE", "ACTIONS", "CURRENT", "DEST", "DRY_RUN", "EUID",
     "FAILED", "FORENSICS", "OURS_FAILED", "ROUTES", "SCRATCH", "STAMP",

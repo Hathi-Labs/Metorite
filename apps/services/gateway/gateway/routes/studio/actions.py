@@ -15,6 +15,11 @@ A read. No action runs here. Four sources feed it:
 * A published workflow is B. Its ``input_schema`` is null until a workflow
   declares a trigger input (``workflows.variables`` are start values).
 
+5. ``logic`` (STU-B4a): each first-party logic module of
+   ``gateway.studio.logic.MODULES``, as ``logic:<name>``, class B. A row shows
+   only for an org on ``STUDIO_LOGIC_ORGS``. The registry ships empty, so the
+   source gives no row until a module registers.
+
 Source 2 is empty until a tool registers with an integration. Today the
 registry holds only tools with ``integration=None``.
 
@@ -29,6 +34,12 @@ No row is class X. ``output_schema`` is null for every row until a later
 slice defines it. ``connection`` names the integration, or is null. The
 integration probe (``build_integrations``) is never called, so the catalog
 reports no availability.
+
+**The chat tool of each row (STU-F6a, ``ai_studio.md`` §14 F6a).** ``tool``
+is ``acb_skills.skill_packs.action_tool`` of the row id, or null. That is the
+ONE map from an action to a chat tool, and no route keeps a second one. The
+skill offer of the chat maps each call of a turn to a row through it.
+Fence: ``tests/unit/test_studio_catalog.py``.
 
 **The gate of every Studio route (STU-J1, ``ai_studio.md`` §9).** The router
 below carries ``require_feature_router("studio")``. Each module of this
@@ -52,14 +63,17 @@ from typing import Annotated, Any
 
 from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common.app_manifests import door_ops, every_app
+from acb_common.db import current_tenant
 from acb_common.studio_fields import NAME_PATTERN
 from acb_common.studio_manifest import OBJECT_OP_CLASSES, OBJECT_OPS, parse_uses
+from acb_skills.skill_packs import action_tool
 from fastapi import APIRouter, Depends, HTTPException, Query
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.agent_apps import args_schema
 from gateway.routes.studio import flags
 from gateway.routes.workflows.engine.tool_args import parse_args_schema
 from gateway.routes.workflows.tools import list_tools
+from gateway.studio import logic as _logic
 from gateway.studio import packages_store
 from sqlalchemy import text
 
@@ -91,8 +105,9 @@ def _manifest_rows() -> list[dict[str, Any]]:
         if app.door != "ops":
             continue
         for name, op in door_ops(app).items():
+            action_id = f"{app.id}.{name}"
             rows.append({
-                "id": f"{app.id}.{name}",
+                "id": action_id,
                 "title": op.route.title,
                 "source": "manifest",
                 "class": op.route.cls,
@@ -100,6 +115,7 @@ def _manifest_rows() -> list[dict[str, Any]]:
                 "output_schema": None,
                 "connection": None,
                 "app": app.id,
+                "tool": action_tool(action_id),
             })
     return rows
 
@@ -110,8 +126,9 @@ def _integration_rows() -> list[dict[str, Any]]:
         if not spec.integration:
             continue
         args = parse_args_schema(spec.args_schema)
+        action_id = f"integration:{spec.action}"
         rows.append({
-            "id": f"integration:{spec.action}",
+            "id": action_id,
             "title": spec.label,
             "source": "integration",
             "class": tool_class(spec.read_only, spec.destructive, spec.open_world),
@@ -125,6 +142,7 @@ def _integration_rows() -> list[dict[str, Any]]:
             "output_schema": None,
             "connection": spec.integration,
             "app": None,
+            "tool": action_tool(action_id),
         })
     return rows
 
@@ -135,8 +153,9 @@ async def _workflow_rows() -> list[dict[str, Any]]:
         found = (await db.execute(_WORKFLOWS_SQL)).fetchall()
     rows: list[dict[str, Any]] = []
     for row in found:
+        action_id = f"workflow:{row.id}"
         rows.append({
-            "id": f"workflow:{row.id}",
+            "id": action_id,
             "title": row.name,
             "source": "workflow",
             "class": "B",
@@ -144,18 +163,36 @@ async def _workflow_rows() -> list[dict[str, Any]]:
             "output_schema": None,
             "connection": None,
             "app": None,
+            "tool": action_tool(action_id),
         })
     return rows
 
 
+def _logic_rows() -> list[dict[str, Any]]:
+    """The logic modules of the registry (B4a), for an org on ``STUDIO_LOGIC_ORGS``.
+    The org is the bound tenant. A dark org, and an empty registry, give no row."""
+    if not flags.logic_allowed(current_tenant()):
+        return []
+    return [{
+        "id": f"logic:{name}",
+        "title": module.title or name,
+        "source": "logic",
+        "class": _logic.LOGIC_CLASS,
+        "input_schema": module.input_model.model_json_schema(),
+        "output_schema": None,
+        "connection": None,
+        "app": None,
+    } for name, module in sorted(_logic.MODULES.items())]
+
+
 async def catalog_rows() -> list[dict[str, Any]]:
-    """Every row of the catalog: the door ops, the integration tools, and the
-    published workflows of the bound org. The one source of the catalog.
+    """Every row of the catalog: the door ops, the integration tools, the
+    published workflows of the bound org, and the logic modules (B4a). The one source of the catalog.
     ``routes/studio/skills.py`` checks a skill's actions against it.
 
     ⚠️ It opens its own ``_tenant_session()`` for the workflows. A caller runs
     it BEFORE it opens a session of its own, so no request holds two."""
-    return [*_manifest_rows(), *_integration_rows(), *await _workflow_rows()]
+    return [*_manifest_rows(), *_integration_rows(), *await _workflow_rows(), *_logic_rows()]
 
 
 #: A stored object name that A2 would refuse gives no row. Only a write past the
@@ -174,6 +211,7 @@ def _object_row(package_id: str, name: str, op: str) -> dict[str, Any]:
         "output_schema": None,
         "connection": None,
         "app": package_id,
+        "tool": action_tool(uses),
     }
 
 
@@ -199,6 +237,8 @@ def _named_row(package_id: str, found: tuple[str, str, str | None],
         "output_schema": None,
         "connection": None,
         "app": package_id,
+        # A named action's id is local to its package, so it maps no chat tool.
+        "tool": action_tool(action_id),
     }
 
 

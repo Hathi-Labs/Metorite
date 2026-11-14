@@ -51,6 +51,11 @@ o. C8a: each read takes the viewer of the member (``invoke._row_viewer``).
    owner, reads each one. With the roles of one map, Mia reads her own slip
    with ``bank_account`` hidden and cannot filter on it, and Ned (``hr``)
    reads both. Ned's grant and Owen's scope never reach Mia's run.
+p. WS-STU I1a: the pinned version names a connection. The run of Mia is
+   refused with ``needs_connection`` while only Owen holds a row, or while
+   her own row is ``needs_reconnect``. Her own ``connected`` row runs it.
+   With ``STUDIO_CONNECTION_GATE_ORGS`` off for org A, the run reads as
+   before I1a.
 
 **J2b-1 (path A).** An org install needs an approved live version, so
 ``_install`` asks and approves it first, with Amy as the approver
@@ -740,6 +745,62 @@ def test_r8_the_run_applies_the_row_rules_and_the_hides_of_its_member(world, rul
     assert _sites(lost) == []
     rows = _audits(world, ruled.pid, invoke.run_as_actor(ruled.pid))
     assert "IN-1111" not in json.dumps(rows) and "IN-2222" not in json.dumps(rows)
+
+
+
+# ── p. A connection that the member of the run lacks (WS-STU I1a) ──────────
+#
+# R7. Mutation R1, run on 2026-11-14: ``invoke._run_as_session``: drop the
+# call of ``_needs_connection``. This case goes red, and so does section 3b
+# of the hermetic twin. R2 (the review fix): ``invoke._needs_connection``:
+# drop the check of ``connection_gate_on``. Run ``run-p0`` goes red.
+
+#: A provider of the registry that no other suite names.
+TALLY = f"mcp:tally-{TAG}"
+
+
+def _connect(world: Any, member: str, status: str = "connected") -> str:
+    with world.p.admin_engine.begin() as c:
+        return str(c.execute(text(
+            "INSERT INTO integration_connections (organization_id, provider, owning_app, "
+            "scope_kind, member_email, status) VALUES (CAST(:o AS uuid), :p, 'integrations', "
+            "'member', :m, :s) RETURNING id"),
+            {"o": world.a, "p": TALLY, "m": member.lower(), "s": status}).scalar_one())
+
+
+@pytest.fixture
+def tally(world):
+    yield world
+    _admin(world, "DELETE FROM integration_connections WHERE provider = :p", p=TALLY)
+
+
+def test_r8_a_connection_that_the_member_lacks_refuses_the_run(tally, monkeypatch) -> None:
+    world = tally
+    _admin(world, "UPDATE app_versions SET manifest = manifest || CAST(:m AS jsonb) "
+                  "WHERE app_id = CAST(:p AS uuid) AND version = 1",
+           m=json.dumps({"connections": [TALLY]}), p=world.pid)
+
+    def find(run_id: str) -> dict[str, Any]:
+        return _run(world, lambda: _read(world.a, world.ops, "find", {}, run_id=run_id))
+
+    named = _run(world, lambda: _set(world, OPS, MIA))
+    assert named[0] == 200, named
+    # The gate off for org A: the run is as before I1a (mutation R2 drops it).
+    monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", world.b)
+    assert find("run-p0")["outcome"] == "ran"
+    monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", world.a)
+    assert find("run-p1")["code"] == invoke.NEEDS_CONNECTION
+    _connect(world, OWEN)                         # the owner holds it, Mia does not
+    assert find("run-p2")["code"] == invoke.NEEDS_CONNECTION
+    rid = _connect(world, MIA, status="needs_reconnect")
+    assert find("run-p3")["code"] == invoke.NEEDS_CONNECTION
+    _admin(world, "UPDATE integration_connections SET status = 'connected' "
+                  "WHERE id = CAST(:i AS uuid)", i=rid)
+    ran = find("run-p4")
+    assert (ran["ok"], ran["outcome"]) == (True, "ran"), ran
+    rows = [r for r in _runs(world) if r["run_id"].startswith("run-p")]
+    assert [r.get("reason") for r in rows] == [None] + [invoke.NEEDS_CONNECTION] * 3 + [None]
+    assert {r["run_as"] for r in rows} == {MIA_LOW}
 
 
 # ── n. Migration 439 ───────────────────────────────────────────────────────
