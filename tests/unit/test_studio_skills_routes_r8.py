@@ -553,3 +553,209 @@ def test_r8_a_publish_of_a_stored_hidden_character_is_422(world) -> None:
     moved = _run(world, move)
     assert moved[0] == 200 and moved[1]["skill"]["state"] == "published"
     assert _row(world, sid) == (world.org_a, ANA, "published", "private", 2, 2)
+
+
+# ── i. History and one-step undo (STU-F7a) ─────────────────────────────────
+#
+# **The mutations (R7).**
+#
+# * F1. In ``skills.undo_skill_version``, drop ``for_update=True`` from the
+#   first read. ``test_r8_two_undos_at_once_give_one_201_and_one_409`` goes red.
+# * F2. In ``skills.undo_skill_version``, drop the ``_precheck`` call. The
+#   store check still refuses a hidden character, so this suite stays green.
+#   ``test_an_undo_to_a_refused_version_is_422_and_writes_nothing`` of the
+#   hermetic suite goes red (a body with an action that the catalog refuses).
+# * F3. In ``skills_store._LIST_VERSIONS_SQL``, drop the owner filter. The
+#   route reads the skill first, so a 404 holds, but the SQL fence of the
+#   hermetic suite (``_mine`` in the fake) is the only one: advisory.
+# * F4. In ``skills.undo_skill_version``, pass the body of the newest version
+#   and not of ``N - 1``. ``test_r8_undo_writes_a_new_version_and_changes_no_old_row``
+#   goes red.
+
+
+def _versions(world: Any, sid: str) -> list[tuple[Any, ...]]:
+    with world.admin_engine.connect() as c:
+        return [tuple(r) for r in c.execute(text(
+            "SELECT version, body::text, content_hash, created_by "
+            "FROM studio_skill_versions WHERE skill_id = CAST(:id AS uuid) "
+            "ORDER BY version"), {"id": sid}).all()]
+
+
+async def _two(a: str) -> str:
+    sid = (await _create(a, body=_body([A1])))["skill"]["id"]
+    status, got = await _call(a, ANA, skills.add_skill_version, sid,
+                              payload={"body": _body([A2])})
+    assert status == 200, got
+    return sid
+
+
+def test_r8_undo_writes_a_new_version_and_changes_no_old_row(world) -> None:
+    a = world.org_a
+
+    async def make() -> str:
+        return await _two(a)
+
+    sid = _run(world, make)
+    before = _versions(world, sid)
+
+    async def go() -> list[Any]:
+        undo = await _call(a, ANA, skills.undo_skill_version, sid,
+                           payload={"expected_version": 2})
+        hist = await _call(a, ANA, skills.list_skill_versions, sid)
+        return [undo, hist]
+
+    undo, hist = _run(world, go)
+    assert undo[0] == 200 and undo[1]["skill"]["current_version"] == 3
+    after = _versions(world, sid)
+    assert after[:2] == before and len(after) == 3
+    assert after[2][1:3] == before[0][1:3] and after[2][3] == ANA
+    assert [v["version"] for v in hist[1]["versions"]] == [3, 2, 1]
+    assert all(v["created_by"] == ANA and "body" not in v for v in hist[1]["versions"])
+    assert _row(world, sid) == (world.org_a, ANA, "draft", "private", 3, 3)
+
+
+def test_r8_a_stale_expected_version_writes_nothing(world) -> None:
+    a = world.org_a
+
+    async def go() -> tuple[str, tuple[int, Any]]:
+        sid = await _two(a)
+        return sid, await _call(a, ANA, skills.undo_skill_version, sid,
+                                payload={"expected_version": 1})
+
+    sid, got = _run(world, go)
+    assert got == (409, skills.CHANGED)
+    assert len(_versions(world, sid)) == 2
+
+
+def test_r8_two_undos_at_once_give_one_201_and_one_409(world, monkeypatch) -> None:
+    """Both undos send ``expected_version`` 2. The first holds the row until
+    the second has read it, or for one second. With the row lock, the second
+    read waits for the commit, reads version 3 and gets 409. Without the lock,
+    both pass and write versions 3 and 4."""
+    a = world.org_a
+    real_get, real_add = store.get_skill, store.add_version
+
+    async def go() -> tuple[str, list[tuple[int, Any]]]:
+        sid = await _two(a)
+        first_holds = asyncio.Event()
+        second_starts = asyncio.Event()
+        second_ends = asyncio.Event()
+
+        def _is(name: str) -> bool:
+            task = asyncio.current_task()
+            return task is not None and task.get_name() == name
+
+        async def get_skill(db: Any, member: str, skill_id: str, **kw: Any) -> Any:
+            if _is("second"):
+                second_starts.set()
+            found = await real_get(db, member, skill_id, **kw)
+            if _is("second"):
+                second_ends.set()
+            return found
+
+        async def add_version(db: Any, member: str, skill_id: str, body: Any) -> Any:
+            stored = await real_add(db, member, skill_id, body)
+            if _is("first"):
+                first_holds.set()
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(second_starts.wait(), timeout=10)
+                    await asyncio.wait_for(second_ends.wait(), timeout=1)
+            return stored
+
+        monkeypatch.setattr(store, "get_skill", get_skill)
+        monkeypatch.setattr(store, "add_version", add_version)
+
+        async def second() -> tuple[int, Any]:
+            await first_holds.wait()
+            return await _call(a, ANA, skills.undo_skill_version, sid,
+                               payload={"expected_version": 2})
+
+        got = await asyncio.gather(
+            asyncio.create_task(_call(a, ANA, skills.undo_skill_version, sid,
+                                      payload={"expected_version": 2}), name="first"),
+            asyncio.create_task(second(), name="second"))
+        return sid, list(got)
+
+    sid, got = _run(world, go)
+    assert got[0][0] == 200 and got[1] == (409, skills.CHANGED)
+    assert [v[0] for v in _versions(world, sid)] == [1, 2, 3]
+
+
+def test_r8_an_undo_of_a_published_skill_leaves_it_a_draft(world) -> None:
+    a = world.org_a
+
+    async def go() -> tuple[str, list[tuple[int, Any]]]:
+        sid = await _two(a)
+        pub = await _call(a, ANA, skills.set_skill_state, sid, payload={"state": "published"})
+        undo = await _call(a, ANA, skills.undo_skill_version, sid,
+                           payload={"expected_version": 2})
+        return sid, [pub, undo]
+
+    sid, (pub, undo) = _run(world, go)
+    assert pub[0] == 200 and undo[0] == 200 and undo[1]["skill"]["state"] == "draft"
+    assert _row(world, sid) == (world.org_a, ANA, "draft", "private", 3, 3)
+
+
+def test_r8_org_b_and_member_2_get_404_on_history_and_undo(world) -> None:
+    a, b = world.org_a, world.org_b
+
+    async def go() -> tuple[str, list[tuple[int, Any]]]:
+        sid = await _two(a)
+        out = []
+        for org, email in ((a, BEN), (b, ANA), (b, BEN)):
+            out.append(await _call(org, email, skills.list_skill_versions, sid))
+            out.append(await _call(org, email, skills.undo_skill_version, sid,
+                                   payload={"expected_version": 2}))
+        return sid, out
+
+    sid, out = _run(world, go)
+    assert out == [(404, "Not found")] * 6
+    assert len(_versions(world, sid)) == 2
+
+
+def test_r8_an_org_outside_the_flag_gets_404(world, monkeypatch) -> None:
+    a = world.org_a
+
+    async def make() -> str:
+        return await _two(a)
+
+    sid = _run(world, make)
+    monkeypatch.setattr(get_settings(), "studio_orgs", world.org_b)
+
+    async def go() -> list[tuple[int, Any]]:
+        return [await _call(a, ANA, skills.list_skill_versions, sid),
+                await _call(a, ANA, skills.undo_skill_version, sid,
+                            payload={"expected_version": 2})]
+
+    assert _run(world, go) == [(404, "Not found")] * 2
+    assert len(_versions(world, sid)) == 2
+
+
+def test_r8_an_undo_to_a_refused_version_is_422_and_writes_nothing(world) -> None:
+    """A store before F1b could keep a hidden character. The table owner
+    plants it in version 1, with the trigger off for that one statement.
+    Then the undo of version 2 is 422."""
+    a = world.org_a
+
+    async def make() -> str:
+        return await _two(a)
+
+    sid = _run(world, make)
+    bad = {**_body([A1]), "instructions": "Read" + _ZWSP + " the list."}
+    with world.admin_engine.begin() as c:
+        c.execute(text("ALTER TABLE studio_skill_versions DISABLE TRIGGER USER"))
+        try:
+            c.execute(text("UPDATE studio_skill_versions SET body = CAST(:b AS jsonb) "
+                           "WHERE skill_id = CAST(:id AS uuid) AND version = 1"),
+                      {"b": json.dumps(bad, ensure_ascii=False), "id": sid})
+        finally:
+            c.execute(text("ALTER TABLE studio_skill_versions ENABLE TRIGGER USER"))
+
+    async def go() -> tuple[int, Any]:
+        return await _call(a, ANA, skills.undo_skill_version, sid,
+                           payload={"expected_version": 2})
+
+    status, detail = _run(world, go)
+    assert status == 422 and TAG not in str(detail)
+    assert len(_versions(world, sid)) == 2
+    assert _row(world, sid)[4] == 2

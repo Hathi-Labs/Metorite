@@ -118,12 +118,22 @@ describe("every NEXT_PUBLIC flag reaches the browser", () => {
       "NEXT_PUBLIC_BRIEF_CARD",
       // WS-PKG PKG-18a: My Day draws the Today band above the feed.
       "NEXT_PUBLIC_TODAY_BAND",
+      // WS-PKG PKG-19a-2: the shell counts pane opens, and My Day draws the pin card.
+      "NEXT_PUBLIC_PIN_SUGGEST",
+      // WS-CAL CE-5a: the Calendar draws Google and Outlook events.
+      "NEXT_PUBLIC_CALENDAR_EVENTS",
+      // PK-1 (D213): a task row on My Day opens the task in My Day's panel.
+      "NEXT_PUBLIC_MY_DAY_PEEK",
       // WS-62 CF-1: the chat-first surface, first the peek strip on a phone.
       "NEXT_PUBLIC_CHAT_FIRST",
       // WS-64 OP-1: the compact chrome of Projects (tool row, sheets, chips).
       "NEXT_PUBLIC_PROJECTS_COMPACT_CHROME",
       // WS-64 OP-2: My work in the Projects sidebar, and Today as the landing.
       "NEXT_PUBLIC_PROJECTS_MY_WORK",
+      // WS-STU F6a: the chat offers to save a finished turn as a skill.
+      "NEXT_PUBLIC_SKILL_OFFER",
+      // STU-AF1: a Studio app page draws its manifest pages through StudioPage.
+      "NEXT_PUBLIC_STUDIO_APP_FRAME",
       // WS-66 PN-1 has NO build-time flag: the Notifications section asks the
       // gateway (`WEB_PUSH_ENABLED`, through `/api/push/public-key`).
     ];

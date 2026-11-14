@@ -35,6 +35,8 @@ from typing import Any
 
 import pytest
 
+from tests.unit import _r8_lists as r8_lists
+
 pytest.importorskip("sqlalchemy")
 
 from acb_common import studio_fields
@@ -320,12 +322,35 @@ def test_get_values_decodes_each_row() -> None:
             if "FROM package_field_value AS v" in str(stmt):
                 self.calls.append((str(stmt), params))
                 return _Result(rows=[(INSTALL, "app-1", "k", "money",
-                                      '{"minor": 5, "currency": "INR"}')])
+                                      '{"minor": 5, "currency": "INR"}', '{"type": "money"}')])
             return await super().execute(stmt, params)
 
     got = _run(fv.get_values(_Db(), record_kind="task", record_id=RECORD))
     assert got == [fv.FieldValue(install_id=INSTALL, app_id="app-1", field_key="k",
                                  field_type="money", value={"minor": 5, "currency": "INR"})]
+
+
+def test_get_values_drops_a_value_that_the_declaration_now_refuses() -> None:
+    """STU-C14: a quantity in a unit that the declaration no longer lists, and a
+    rating above a new max, are stale. The stored type is the same."""
+    rows = [
+        (INSTALL, "app-1", "load", "quantity", '{"value": "5", "unit": "kg"}',
+         '{"type": "quantity", "units": ["t"]}'),
+        (INSTALL, "app-1", "load2", "quantity", '{"value": "5", "unit": "kg"}',
+         '{"type": "quantity", "units": ["kg", "t"]}'),
+        (INSTALL, "app-1", "score", "rating", "8", '{"type": "rating", "min": 1, "max": 5}'),
+        (INSTALL, "app-1", "score2", "rating", "8", '{"type": "rating", "min": 1, "max": 10}'),
+    ]
+
+    class _Db(_FakeDb):
+        async def execute(self, stmt: Any, params: Any = None) -> _Result:
+            if "FROM package_field_value AS v" in str(stmt):
+                self.calls.append((str(stmt), params))
+                return _Result(rows=rows)
+            return await super().execute(stmt, params)
+
+    got = _run(fv.get_values(_Db(), record_kind="task", record_id=RECORD))
+    assert [g.field_key for g in got] == ["load2", "score2"]
 
 
 # ── f. The one writer ──────────────────────────────────────────────────────
@@ -378,7 +403,13 @@ def test_host_record_kinds_agree_with_the_check_and_the_spec() -> None:
 def test_the_key_and_the_type_checks_agree_with_studio_fields() -> None:
     code = _code(_MIGRATION.read_text(encoding="utf-8"))
     assert f"field_key ~ '^{studio_fields.NAME_PATTERN}$'" in code
-    check = code.split("CONSTRAINT package_field_value_field_type CHECK (field_type IN (", 1)[1]
+    # C14 widened this CHECK (migration 422): read the LATEST file that defines it.
+    latest = max(
+        (p for p in _MIGRATION.parent.glob("*.sql")
+         if "CONSTRAINT package_field_value_field_type CHECK" in p.read_text(encoding="utf-8")),
+        key=lambda p: int(p.name.split("_", 1)[0]))
+    check = _code(latest.read_text(encoding="utf-8")).split(
+        "CONSTRAINT package_field_value_field_type CHECK (field_type IN (", 1)[1]
     types = re.findall(r"'([A-Za-z]+)'", check.split("))", 1)[0])
     assert tuple(types) == studio_fields.FIELD_TYPES
 
@@ -407,15 +438,7 @@ def test_the_migration_is_expand_only_and_tenant_scoped() -> None:
 
 
 def _must_run(workflow: str) -> list[str]:
-    lines = (_ROOT / ".github" / "workflows" / workflow).read_text(
-        encoding="utf-8").splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip() == "--must-run \\")
-    listed: list[str] = []
-    for line in lines[start + 1:]:
-        listed.append(line.strip().removesuffix("\\").strip())
-        if not line.rstrip().endswith("\\"):
-            break
-    return listed
+    return r8_lists.must_run()
 
 
 @pytest.mark.parametrize("workflow", ["pr-check.yml", "deploy.yml"])

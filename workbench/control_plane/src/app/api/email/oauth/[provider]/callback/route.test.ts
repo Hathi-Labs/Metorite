@@ -126,6 +126,29 @@ describe("the BFF email OAuth callback", () => {
     expect(where.error).toBe("callback_bad_location");
   });
 
+  it("passes on the two calendar Locations of the shared redirect URI (WS-CAL CE-10a)", async () => {
+    for (const q of ["calendar_connected=google", "calendar_connected=outlook", "calendar_error=scope_missing"]) {
+      stubGateway(redirectTo(`${PUBLIC}/calendar?${q}`));
+      const res = await callback("code=c&state=s");
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe(`/calendar?${q}`);
+    }
+  });
+
+  it("refuses a calendar Location with a foreign origin, an extra name or a bad value", async () => {
+    for (const loc of [
+      "https://evil.test/calendar?calendar_connected=google",
+      `${PUBLIC}/calendar?calendar_connected=google&x=1`,
+      `${PUBLIC}/calendar?calendar_connected=dropbox`,
+      `${PUBLIC}/calendar?calendar_error=%3Cscript%3E`,
+      `${PUBLIC}/calendar`,
+    ]) {
+      stubGateway(redirectTo(loc));
+      const where = landing(await callback("code=c&state=s"));
+      expect(where.error, loc).toBe("callback_bad_location");
+    }
+  });
+
   it("accepts the callback path when no public origin is configured", async () => {
     vi.stubEnv("WORKBENCH_PUBLIC_URL", "");
     stubGateway(redirectTo("http://localhost:3001/email/oauth/callback?account_id=a1"));

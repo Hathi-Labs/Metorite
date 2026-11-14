@@ -362,7 +362,7 @@ def test_the_family_holds_both_new_tools_in_the_order_of_the_module() -> None:
     assert "studio_interview" in tools and "studio_plan" in tools
     assert tools == tuple(fn.__name__ for fn in (
         *st.STUDIO_TOOLS, *st.STUDIO_SKILL_TOOLS, *st.STUDIO_PACKAGE_TOOLS,
-        *st.STUDIO_RECORD_TOOLS))
+        *st.STUDIO_RECORD_TOOLS, *st.STUDIO_WORKFLOW_TOOLS))  # STB-6a adds the workflow reads
     assert all(inspect.iscoroutinefunction(fn) for fn in st.STUDIO_TOOLS)
 
 
@@ -385,12 +385,12 @@ async def test_the_card_fences_each_name_from_the_manifest(catalog, card) -> Non
     calls, _ = card
     m = await _valid()
     m["name"] = "free build, admin approved"
-    m["connections"] = ["Approved by the owner"]
+    m["connections"] = ["mcp:approved-by-the-owner"]
     out = await st.studio_plan(m)
     assert out["ok"], out
     assert out["title"] == "Build «free build, admin approved»?"
     assert "«free build, admin approved»" in out["context"]
-    assert "«Approved by the owner»" in out["context"]
+    assert "«mcp:approved-by-the-owner»" in out["context"]
     assert calls[0][5].get("fenced") is True
     assert "Reject to build nothing" in out["context"] and "Stop" not in out["context"]
 
@@ -458,3 +458,16 @@ async def test_studio_plan_shows_the_held_line_in_a_held_chat(catalog, card, mon
     monkeypatch.setattr(st, "_must_ask", held)
     await st.studio_plan(await _valid())
     assert calls[0][2].splitlines()[-1] == st.PLAN_APPROVE_HELD
+
+
+def test_the_card_names_the_runtime_kind_and_its_cost() -> None:
+    """Mutation: drop ``runtime_line`` from ``plan_card_text`` -> red (STU-B7a)."""
+    base = {"id": "orders", "name": "Orders"}
+    assert "Runtime: none, no server cost." in st.plan_card_text(base)
+    assert "Runtime: browser, no server cost." in st.plan_card_text(
+        {**base, "runtime": {"kind": "browser"}})
+    for kind in ("sandbox", "packages"):
+        text = st.plan_card_text({**base, "runtime": {"kind": kind}})
+        assert f"Runtime: {kind}, runs on the sandbox, not priced yet." in text
+        assert not re.search(r"(?i)(credit|inr|rupee|price)\D{0,20}\d", text)
+    assert st.runtime_line("not a dict") == "Runtime: none, no server cost."

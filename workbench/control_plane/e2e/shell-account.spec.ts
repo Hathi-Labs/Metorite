@@ -204,44 +204,6 @@ test.describe("the bar holds no account", () => {
   });
 });
 
-// CIV-8e: NEEDS OWNER WORD. These 18 cases measure the right group of the top
-// bar, and that bar is gone (GL-12, 30e72d332). They stay red and unchanged
-// until the owner says whether to retire them or to measure the Ask bar.
-test.describe("the right group never crowds the command bar", () => {
-  for (const width of [1024, 1280, 1440]) {
-    for (const dock of [true, false]) {
-      for (const scale of ["1", "0.875", "1.125"]) {
-        test(`${width}px, bell ${dock ? "on" : "off"}, scale ${scale}`, async ({ page }) => {
-          await page.setViewportSize({ width, height: 800 });
-          await flags(page, { extra: dock ? { "cc-shell-dock": "1" } : {} });
-          await stub(page);
-          await page.goto("/settings/appearance");
-          await expect(trigger(page)).toBeVisible();
-          await expect(aside(page).locator("nav a").first()).toBeVisible();
-          await setScale(page, scale);
-          const group = bar(page).locator(":scope > div").last();
-          // The bell (with the dock on) and the activity control. No account.
-          await expect(group.locator(":scope > *")).toHaveCount(dock ? 2 : 1);
-          const first = await box(group.locator(":scope > *").first());
-          const cmd = await box(bar(page).getByRole("button", { name: /^Search or ask anything/ }));
-          expect(first.x, `the first control at ${first.x} vs the command bar's end at ${cmd.x + cmd.width}`).toBeGreaterThan(cmd.x + cmd.width);
-          // Each control clear of the next, and the last inside the window.
-          const xs = await group.locator(":scope > *").evaluateAll((els) =>
-            els.map((e) => {
-              const r = e.getBoundingClientRect();
-              return [r.left, r.right];
-            }),
-          );
-          for (let i = 1; i < xs.length; i++) expect(xs[i][0]).toBeGreaterThanOrEqual(xs[i - 1][1] - 0.5);
-          expect(xs[xs.length - 1][1]).toBeLessThanOrEqual(width);
-          // The scale held for the whole measure.
-          expect(await rootPx(page)).toBe(ROOT_PX[scale]);
-        });
-      }
-    }
-  }
-});
-
 test.describe("the sidebar foot is the account row", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -378,6 +340,7 @@ test.describe("the foot's one menu", () => {
       "My Profile",
       "My access",
       "Appearance",
+      "Agents",
       expect.stringMatching(/^(Light|Dark) mode$/),
       "Change my layout",
       "Sign out",

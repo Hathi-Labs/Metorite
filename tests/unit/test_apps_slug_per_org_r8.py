@@ -66,8 +66,10 @@ from acb_auth import UserContext, UserRole
 from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant
 from gateway.routes.apps import lifecycle
+from gateway.routes.apps._common import _tenant_session, load_app
 from sqlalchemy import text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import _exec_file, tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -77,7 +79,15 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 _ROOT = Path(__file__).resolve().parents[2]
 _MIGRATIONS = sorted(
     p for p in (_ROOT / "infra" / "postgres").glob("*.sql")
-    if "CREATE UNIQUE INDEX IF NOT EXISTS apps_org_slug_key"
+    if "ADD COLUMN IF NOT EXISTS organization_id UUID"
+    in p.read_text(encoding="utf-8")
+    and "CREATE UNIQUE INDEX IF NOT EXISTS apps_org_slug_key"
+    in p.read_text(encoding="utf-8")
+    and "ALTER TABLE apps" in p.read_text(encoding="utf-8"))
+#: The contract file (A3b-2). It is found by content too (R1).
+_CONTRACT = sorted(
+    p for p in (_ROOT / "infra" / "postgres").glob("*.sql")
+    if "ALTER TABLE apps DROP CONSTRAINT IF EXISTS apps_slug_key"
     in p.read_text(encoding="utf-8"))
 
 TAG = uuid.uuid4().hex[:8]
@@ -186,18 +196,67 @@ def _folders_of(world: Any, org: str) -> set[str]:
 
 
 @_DB_GATE
-def test_r8_both_slug_keys_exist_and_the_file_replays(world) -> None:
+def test_r8_only_the_org_slug_key_remains_and_the_files_replay(world) -> None:
     with world.p.admin_engine.connect() as c:
         defs = dict(c.execute(text(
             "SELECT indexname, indexdef FROM pg_indexes "
             "WHERE tablename = 'apps' "
             "AND indexname IN ('apps_slug_key', 'apps_org_slug_key')")).all())
-    assert set(defs) == {"apps_slug_key", "apps_org_slug_key"}, defs
+    assert set(defs) == {"apps_org_slug_key"}, defs
     assert "UNIQUE INDEX" in defs["apps_org_slug_key"]
     assert defs["apps_org_slug_key"].endswith("(organization_id, slug)")
     with world.p.admin_engine.begin() as c:
-        _exec_file(c, str(_MIGRATIONS[0]))
-        _exec_file(c, str(_MIGRATIONS[0]))
+        for f in (_MIGRATIONS[0], _CONTRACT[0]):
+            _exec_file(c, str(f))
+            _exec_file(c, str(f))
+
+
+def test_the_contract_is_one_file_and_drops_only_the_global_key() -> None:
+    assert len(_CONTRACT) == 1, [p.name for p in _CONTRACT]
+    assert _CONTRACT[0].name > _MIGRATIONS[0].name, "contract before expand"
+    sql = _CONTRACT[0].read_text(encoding="utf-8")
+    code = "\n".join(
+        line for line in sql.splitlines() if not line.lstrip().startswith("--"))
+    assert "SET LOCAL lock_timeout = '5s';" in code
+    # The org key is made again BEFORE the global key goes.
+    assert code.index("apps_org_slug_key\n    ON apps (organization_id, slug)") \
+        < code.index("DROP CONSTRAINT IF EXISTS apps_slug_key")
+    drops = re.findall(r"\bDROP\s+\w+(?:\s+IF\s+EXISTS)?\s+(\w+)", code, re.I)
+    assert set(drops) <= {"apps_slug_key", "CONSTRAINT"}, drops
+    assert not re.search(r"\bDROP\s+(TABLE|COLUMN)\b", code, re.I)
+    assert "CONCURRENTLY" not in code.upper()
+    assert "%" not in code, "psycopg reads a per-cent sign as a placeholder"
+
+
+def test_the_taken_slug_read_names_the_org_not_only_rls() -> None:
+    """The create reads the slugs that are taken. On a database whose ``apps``
+    has no RLS policy (the H3 promotion is not enacted), a read with no org
+    filter holds every org's slugs, and org B would still get ``foo-2``."""
+    body = (_ROOT / "apps/services/gateway/gateway/routes/apps/lifecycle.py"
+            ).read_text(encoding="utf-8")
+    reads = re.findall(r'text\("SELECT slug FROM apps[^)]*\)', body)
+    assert reads, "the taken-slug read moved: update this fence"
+    for r in reads:
+        assert "organization_id" in r and "_BOUND_ORG" in r, r
+
+
+def test_no_reader_finds_an_app_by_slug_without_the_org() -> None:
+    """Since A3b-2 two orgs may hold one slug. A statement that reads or
+    writes ``apps`` by ``slug`` must name ``organization_id`` too."""
+    by_slug = re.compile(
+        r"(FROM|UPDATE|JOIN)\s+apps\b(?:(?!text\(|\bdb\.execute)[^;]){0,300}?"
+        r"\bslug\s*(?:=\s*(?::|ANY\s*\()|IN\s*\()", re.I | re.S)
+    offenders = []
+    for path in sorted((_ROOT / "apps").rglob("*.py")):
+        if "node_modules" in path.parts or "tests" in path.parts:
+            continue
+        body = path.read_text(encoding="utf-8")
+        for m in by_slug.finditer(body):
+            window = body[m.start(): m.end() + 200]
+            if "organization_id" not in window and "_BOUND_ORG" not in window:
+                offenders.append(f"{path.relative_to(_ROOT).as_posix()}:"
+                                 f"{body.count(chr(10), 0, m.start()) + 1}")
+    assert offenders == [], f"an app is read by slug with no org: {offenders}"
 
 
 # ── b. The folder is the id ─────────────────────────────────────────────────
@@ -218,35 +277,52 @@ def test_r8_a_new_app_has_its_folder_at_its_id(world) -> None:
     assert not (world.root / out.slug).exists(), "a folder at the slug path appeared"
 
 
-# ── c. A cross-org clash has the shape of a same-org clash ──────────────────
-
-
-def _shape(detail: Any) -> dict[str, str]:
-    return {k: type(v).__name__ for k, v in detail.model_dump().items()}
+# ── c. Another org's slug does not block (the contract) ────────────────────
 
 
 @_DB_GATE
-def test_r8_a_cross_org_clash_looks_like_a_same_org_clash(world) -> None:
+def test_r8_org_b_takes_the_slug_that_org_a_holds(world) -> None:
     a, b = world.p.org_a, world.p.org_b
-    # The same org: org B takes one name twice.
-    own_first = _create(world, b, f"Same {TAG}", BEN)
-    own_second = _create(world, b, f"Same {TAG}", BEN)
-    # Another org: org A holds the name, then org B takes it.
     theirs = _create(world, a, f"Cross {TAG}", ANA)
     cross = _create(world, b, f"Cross {TAG}", BEN)
+    own_first = _create(world, b, f"Same {TAG}", BEN)
+    own_second = _create(world, b, f"Same {TAG}", BEN)
 
-    for out in (own_first, own_second, theirs, cross):
+    for out in (theirs, cross, own_first, own_second):
         assert isinstance(out, lifecycle.AppDetail), out
-    assert own_second.slug == f"{own_first.slug}-2"
-    assert cross.slug == f"{theirs.slug}-2"
-    assert _shape(cross) == _shape(own_second)
-    assert cross.owner_email == BEN and cross.role == own_second.role
+    assert cross.slug == theirs.slug, "org B was pushed off a slug it may use"
+    assert own_second.slug == f"{own_first.slug}-2", "a clash in the own org"
+    assert cross.owner_email == BEN
     text_of_answer = json.dumps(cross.model_dump())
     their_id, their_path = _row(world, theirs.slug, a)
     for secret in (ANA, a, their_id, their_path):
         assert secret not in text_of_answer, f"the answer names org A: {secret}"
     cross_id, cross_path = _row(world, cross.slug, b)
-    assert cross.workspace_path == cross_path == str(world.root / cross_id)
+    assert cross_path == str(world.root / cross_id) != their_path
+    assert not (_folders_of(world, b) & _folders_of(world, a))
+
+
+@_DB_GATE
+def test_r8_each_org_reads_only_its_own_app_by_slug(world) -> None:
+    a, b = world.p.org_a, world.p.org_b
+    theirs = _create(world, a, f"Read {TAG}", ANA)
+    mine = _create(world, b, f"Read {TAG}", BEN)
+    assert theirs.slug == mine.slug
+    a_id, _ = _row(world, theirs.slug, a)
+    b_id, _ = _row(world, mine.slug, b)
+    assert a_id != b_id
+
+    async def read(org: str) -> Any:
+        async with tenant_engine_scope(_dsn(world.p.app_url)):
+            tok = bind_tenant(org)
+            try:
+                async with _tenant_session() as db:
+                    return await load_app(db, theirs.slug)
+            finally:
+                release_tenant(tok)
+
+    assert str((asyncio.run(read(a))).id) == a_id
+    assert str((asyncio.run(read(b))).id) == b_id
 
 
 # ── d. Org B never gets a folder of org A ───────────────────────────────────
@@ -282,5 +358,4 @@ def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """An R8 suite that CI does not list still skips in silence when the
     database gate is disarmed. Match the argument line, not a mention."""
     for name in ("pr-check.yml", "deploy.yml"):
-        workflow = (_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
-        assert re.search(r"^\s+tests/unit/test_apps_slug_per_org_r8\.py \\?$", workflow, re.M), name
+        assert "tests/unit/test_apps_slug_per_org_r8.py" in r8_lists.must_run(), name

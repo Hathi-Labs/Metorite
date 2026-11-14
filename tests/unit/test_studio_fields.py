@@ -42,6 +42,8 @@ from acb_common import studio_fields as sf
 from acb_common import studio_manifest
 from acb_common.studio_fields import FieldError, FieldSpec, RecordError
 
+from tests.unit import _r8_lists as r8_lists
+
 _ROOT = Path(__file__).resolve().parents[2]
 
 _UUID = str(uuid.uuid4())
@@ -51,6 +53,8 @@ _EXTRA: dict[str, dict[str, Any]] = {
     "select": {"options": ["planned", "on site", "done"]},
     "multiSelect": {"options": ["red", "green", "blue"]},
     "relation": {"to": "crm.account"},
+    "quantity": {"units": ["kg", "m"]},
+    "barcode": {"format": "ean13"},
 }
 
 #: One good value of each type, and the value the store keeps.
@@ -71,6 +75,12 @@ _GOOD: dict[str, tuple[Any, Any]] = {
     "email": ("Ana@Fracktal.TEST", "ana@fracktal.test"),
     "phone": ("+919876543210", "+919876543210"),
     "geo": ({"lat": 12.97, "lng": 77.59}, {"lat": 12.97, "lng": 77.59}),
+    "richText": ("# Notes\n\nA **bold** step.", "# Notes\n\nA **bold** step."),
+    "rating": (4, 4),
+    "duration": (5400, 5400),
+    "quantity": ({"value": "12.5", "unit": "kg"}, {"value": "12.5", "unit": "kg"}),
+    "percent": (2550, 2550),
+    "barcode": ("4006381333931", "4006381333931"),
 }
 
 #: Bad values of each type, by a name for the test id.
@@ -139,6 +149,39 @@ _BAD: list[tuple[str, str, Any]] = [
     ("geo", "missing", {"lat": 1.5}),
     ("geo", "exponent", {"lat": 1e-05, "lng": 0}),
     ("geo", "list", [12.97, 77.59]),
+    ("richText", "number", 5),
+    ("richText", "tag", "<b>bold</b>"),
+    ("richText", "script", "Hello <script>alert(1)</script>"),
+    ("richText", "comment", "x <!-- hidden --> y"),
+    ("richText", "too-long", "x" * (sf.MAX_RICH_TEXT_CHARS + 1)),
+    ("richText", "nul", "a\x00b"),
+    ("rating", "zero", 0),
+    ("rating", "over", 6),
+    ("rating", "float", 3.5),
+    ("rating", "bool", True),
+    ("rating", "text", "3"),
+    ("duration", "negative", -1),
+    ("duration", "float", 1.5),
+    ("duration", "bool", True),
+    ("duration", "over", sf.MAX_DURATION_SECONDS),
+    ("duration", "text", "1h"),
+    ("quantity", "float-value", {"value": 12.5, "unit": "kg"}),
+    ("quantity", "exponent", {"value": "1e3", "unit": "kg"}),
+    ("quantity", "seven-decimals", {"value": "1.1234567", "unit": "kg"}),
+    ("quantity", "empty-value", {"value": "", "unit": "kg"}),
+    ("quantity", "other-unit", {"value": "1", "unit": "lb"}),
+    ("quantity", "no-unit", {"value": "1"}),
+    ("quantity", "extra-key", {"value": "1", "unit": "kg", "scale": 2}),
+    ("quantity", "text", "5 kg"),
+    ("percent", "float", 12.5),
+    ("percent", "bool", True),
+    ("percent", "over", sf.MAX_PERCENT_BP),
+    ("percent", "text", "5%"),
+    ("barcode", "bad-check-digit", "4006381333932"),
+    ("barcode", "short", "400638133393"),
+    ("barcode", "long", "40063813339311"),
+    ("barcode", "letter", "400638133393a"),
+    ("barcode", "number", 4006381333931),
 ]
 
 
@@ -153,8 +196,8 @@ def _words(message: str) -> int:
 # ── a. Each type takes a good value and refuses a bad one ────────────────────
 
 
-def test_the_sixteen_types_are_the_spec_list() -> None:
-    assert len(sf.FIELD_TYPES) == 16
+def test_the_types_are_the_spec_list() -> None:
+    assert len(sf.FIELD_TYPES) == 22
     assert set(_GOOD) == set(sf.FIELD_TYPES)
     assert {kind for kind, _, _ in _BAD} == set(sf.FIELD_TYPES)
     assert set(sf.HOT_TYPES) <= set(sf.FIELD_TYPES)
@@ -180,6 +223,76 @@ def test_each_type_refuses_a_bad_value(kind: str, value: Any) -> None:
     assert _words(err.message) <= 25, err.message
     if isinstance(value, str) and len(value) > 3:
         assert value not in err.message
+
+
+# ── C14. The six more types ────────────────────────────────────────────────
+
+
+def test_a_rating_keeps_its_own_bounds() -> None:
+    plain = _field("rating")
+    assert [sf.check_value(plain, v) for v in (1, 5)] == [1, 5]
+    ten = _field("rating", min=0, max=10)
+    assert [sf.check_value(ten, v) for v in (0, 10)] == [0, 10]
+    for bad in (-1, 11):
+        with pytest.raises(FieldError):
+            sf.check_value(ten, bad)
+
+
+@pytest.mark.parametrize(("spec", "word"), [
+    ({"type": "rating", "min": 5, "max": 5}, "max"),
+    ({"type": "rating", "min": -1}, "min"),
+    ({"type": "rating", "max": 101}, "max"),
+    ({"type": "rating", "min": True}, "min"),
+    ({"type": "quantity"}, "units"),
+    ({"type": "quantity", "units": []}, "units"),
+    ({"type": "quantity", "units": ["kg", "kg"]}, "units[1]"),
+    ({"type": "quantity", "units": [" kg"]}, "units[0]"),
+    ({"type": "quantity", "units": ["x" * (sf.MAX_UNIT_CHARS + 1)]}, "units[0]"),
+    ({"type": "quantity", "units": [f"u{i}" for i in range(sf.MAX_UNITS + 1)]}, "units"),
+    ({"type": "barcode"}, "format"),
+    ({"type": "barcode", "format": "upc"}, "format"),
+    ({"type": "text", "min": 1}, "min"),
+    ({"type": "text", "units": ["kg"]}, "units"),
+    ({"type": "number", "format": "qr"}, "format"),
+])
+def test_the_spec_rules_of_the_new_types(spec: dict[str, Any], word: str) -> None:
+    problems = sf.validate_field_spec({"key": "f_key", **spec})
+    assert [p.path for p in problems] == [word]
+
+
+@pytest.mark.parametrize("kind", ["richText", "rating", "duration", "quantity", "percent", "barcode"])
+def test_a_new_type_cannot_be_hot(kind: str) -> None:
+    assert kind not in sf.HOT_TYPES
+    problems = sf.validate_field_spec({"key": "f_key", "type": kind, **_EXTRA.get(kind, {}), "hot": True})
+    assert [p.path for p in problems] == ["hot"]
+
+
+def test_the_extras_survive_the_stored_spec() -> None:
+    for kind, extra in (("rating", {"min": 0, "max": 10}), ("quantity", {"units": ["kg", "m"]}),
+                        ("barcode", {"format": "code128"})):
+        field = sf.parse_field_spec({"key": "f_key", "type": kind, **extra})
+        back = sf.stored_field("f_key", kind, field.stored_spec(), False)
+        assert back == field
+
+
+def test_the_barcode_formats() -> None:
+    code128 = _field("barcode", format="code128")
+    assert sf.check_value(code128, "AB-12 x") == "AB-12 x"
+    for bad in ("", "a" * (sf.MAX_CODE_CHARS + 1), "café", "a\tb"):
+        with pytest.raises(FieldError):
+            sf.check_value(code128, bad)
+    qr = _field("barcode", format="qr")
+    assert sf.check_value(qr, "https://example.com/a?b=1") == "https://example.com/a?b=1"
+    for bad in ("", "a" * (sf.MAX_QR_CHARS + 1), "a\nb"):
+        with pytest.raises(FieldError):
+            sf.check_value(qr, bad)
+    assert sf.ean13_valid("4006381333931") and not sf.ean13_valid("4006381333930")
+
+
+def test_a_rich_text_with_a_lone_angle_bracket_is_markdown() -> None:
+    rich = _field("richText")
+    for good in ("a < b", "1 <2", "x > y", "<3 hearts", "<https://example.com>"[1:]):
+        assert sf.check_value(rich, good) == good
 
 
 def test_numbers_at_the_edge() -> None:
@@ -417,31 +530,47 @@ def _line_of_field_types() -> int:
     raise AssertionError("FIELD_TYPES is missing")
 
 
-#: SQL that names one of the four tables.
+#: SQL that names one of the five tables: the four of C1 and the change
+#: history of C4a-1.
 _TABLE_SQL = re.compile(
-    r"\b(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+studio_(?:objects|object_fields|records|record_hot)\b",
+    r"\b(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+"
+    r"studio_(?:objects|object_fields|records|record_hot|record_changes)\b",
     re.IGNORECASE,
 )
 
 
 def test_one_writer_of_the_four_tables() -> None:
-    """Only `gateway/studio/objects_store.py` runs SQL against the four tables.
+    """Only `gateway/studio/objects_store.py` runs SQL against the five tables.
     The query of C2a lives there too, and `acb_common/studio_query.py` holds
-    its grammar with no SQL. So the list stays one module."""
+    its grammar with no SQL. So the list stays one module. C4a-1 adds
+    `studio_record_changes` as the fifth table. The name of the test stays,
+    because other files cite it."""
     hits = sorted({p.relative_to(_ROOT).as_posix() for p in _python_files()
                    if _TABLE_SQL.search(p.read_text(encoding="utf-8", errors="replace"))})
+    assert hits == ["apps/services/gateway/gateway/studio/objects_store.py"], hits
+
+
+#: SQL that names the gauge of the org caps (C10a).
+_GAUGE_SQL = re.compile(r"\b(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+studio_org_usage\b", re.IGNORECASE)
+
+
+def test_one_reader_of_the_org_gauge() -> None:
+    """C10a widens the one-writer fence to `studio_org_usage`. The triggers of
+    its migration are its only writer, and `objects_store.py` is the only
+    Python that runs SQL on it. A separate test keeps the list of the four
+    tables above as it is, so the C4a-1 widening merges in either order."""
+    hits = sorted({p.relative_to(_ROOT).as_posix() for p in _python_files()
+                   if _GAUGE_SQL.search(p.read_text(encoding="utf-8", errors="replace"))})
     assert hits == ["apps/services/gateway/gateway/studio/objects_store.py"], hits
 
 
 def test_the_r8_suite_is_named_in_the_ci_skip_guard() -> None:
     """A fence that never runs is no fence. The `--must-run` list names the
     pytest ARGUMENT, so a mention in a comment does not count."""
-    workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
-    assert block, "the --must-run argument list is missing"
+    must_run = r8_lists.must_run()
     for suite in ("test_studio_objects_r8", "test_studio_query_r8",
                   "test_studio_objects_batch_r8", "test_studio_state_machine_r8"):
-        assert re.search(rf"^[ \t]+tests/unit/{suite}\.py(?: \\)?$", block.group(1), re.M), suite
+        assert f"tests/unit/{suite}.py" in must_run, suite
 
 
 def test_the_store_imports_the_one_check() -> None:
@@ -504,7 +633,8 @@ def test_a_url_with_no_credential_still_passes() -> None:
 
 
 def test_a_relation_may_be_hot_and_holds_its_id_in_the_text_column() -> None:
-    assert "relation" in sf.HOT_TYPES and sf.HOT_TYPES[-1] == "relation"
+    # C8a adds `person` after `relation` (test_studio_row_rules.py).
+    assert sf.HOT_TYPES[-2:] == ("relation", "person")
     field = _field("relation", key="account", hot=True)
     row = sf.hot_value(field, {"id": "abc-1"})
     assert row == {"k": "account", "t": "abc-1", "n": None, "ts": None, "b": None}
@@ -521,3 +651,24 @@ def test_a_record_id_in_any_spelling_has_one_hot_form() -> None:
     assert sf.relation_key(plain.upper()) == plain
     assert sf.relation_key(plain.replace("-", "")) == plain
     assert sf.relation_key("order-7") == "order-7"
+
+
+def test_a_tag_like_text_and_a_value_over_the_maximum_get_their_own_message() -> None:
+    """STU-C14 fix round 2: the twin messages are in `fieldCheck.ts`."""
+    with pytest.raises(FieldError) as tag:
+        sf.check_value(_field("richText"), "load<limit")
+    assert "reads as a tag" in tag.value.message and "<b>" not in tag.value.message
+    with pytest.raises(FieldError) as long:
+        sf.check_value(_field("duration"), sf.MAX_DURATION_SECONDS)
+    assert str((sf.MAX_DURATION_SECONDS - 1) // 3600) in long.value.message
+    with pytest.raises(FieldError) as big:
+        sf.check_value(_field("percent"), sf.MAX_PERCENT_BP)
+    assert str(sf.MAX_PERCENT_BP - 1) in big.value.message
+    with pytest.raises(FieldError) as neg:
+        sf.check_value(_field("duration"), -1)
+    assert "whole seconds" in neg.value.message
+
+
+def test_the_spec_parts_and_the_value_shapes_come_from_the_constants() -> None:
+    assert str(sf.MAX_RICH_TEXT_CHARS) in sf.VALUE_SHAPES["richText"]
+    assert set(sf.SPEC_PARTS) == {"rating", "quantity", "barcode"}

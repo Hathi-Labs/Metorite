@@ -29,6 +29,7 @@
 import { APP_REQUESTS_KEY } from "@/app/integrations/lib/appRequests";
 import { placementOf } from "@/lib/chatPlacement";
 import { invalidate } from "@/lib/dataCache";
+import { isLiveDoorKey } from "@/lib/studio/liveKey";
 import { bareToolName } from "@/lib/toolSteps";
 
 /** The window event name. */
@@ -89,13 +90,14 @@ const ARTIFACT_WRITES: ReadonlySet<string> = new Set([
  * save and publish packages and skills, which the Studio library lists. The
  * three record writes (STU-B2c-2b) add, change and delete a record of an app
  * when a resend runs the approved change, so an open app re-reads. A first
- * call only asks, and its re-read finds nothing new. The read tools (draft,
- * validate, patch, outline, plan, describe, list_actions, package_get,
- * record_list, skill_list, interview) change nothing stored.
+ * call only asks, and its re-read finds nothing new. The delete of a package
+ * (STU-A5c-2) takes an app out of the library, so the library re-reads. The
+ * read tools (draft, validate, patch, outline, plan, describe, list_actions,
+ * package_get, record_list, skill_list, interview) change nothing stored.
  */
 const STUDIO_WRITES: ReadonlySet<string> = new Set([
-  "studio_save", "studio_publish", "studio_skill_save", "studio_skill_state",
-  "studio_record_create", "studio_record_update", "studio_record_delete",
+  "studio_save", "studio_publish", "studio_delete_package", "studio_create_from_template", "studio_skill_save",
+  "studio_skill_state", "studio_record_create", "studio_record_update", "studio_record_delete",
 ]);
 
 /**
@@ -146,7 +148,13 @@ export function announceAssistantWrite(toolName: string): LiveApp[] {
   // A saved resend spends it, so drop the cached reads of the requests. Each
   // card in the chat then reads its request again and shows Done with no
   // control, and the list of Integrations drops the request.
-  if (STUDIO_RECORD_WRITES.has(bareToolName(toolName))) invalidate(APP_REQUESTS_KEY);
+  if (STUDIO_RECORD_WRITES.has(bareToolName(toolName))) {
+    invalidate(APP_REQUESTS_KEY);
+    // STU-F5a: the write changed the records of a package. Drop the reads of
+    // every live door, so a records card in the chat and an open app page
+    // read the records again. The tool end names no package, so all go.
+    invalidate(isLiveDoorKey);
+  }
   try {
     window.dispatchEvent(new CustomEvent(ASSISTANT_WROTE_EVENT, { detail: { apps, tool: bareToolName(toolName) } }));
   } catch {

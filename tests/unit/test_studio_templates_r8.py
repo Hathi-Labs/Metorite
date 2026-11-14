@@ -57,11 +57,13 @@ from acb_auth import UserContext, UserRole, build_access
 from acb_common import get_settings
 from acb_common import studio_templates as reg
 from acb_common.db import bind_tenant, release_tenant, tenant_session
+from acb_common.studio_access import Viewer
 from fastapi import HTTPException
 from gateway.routes.studio import packages
 from gateway.studio import objects_store
 from sqlalchemy import text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -188,6 +190,18 @@ def test_r8_one_call_makes_a_private_published_package_and_install(world) -> Non
     assert inst[2] == "private" and inst[4] == ANA
 
 
+def test_r8_a_second_template_installs_with_its_own_object(world) -> None:
+    """STU-K1c smoke: the support desk installs the same way, with its own object."""
+    status, got = _run(world, lambda: _call("create_from_template", world.a, ANA,
+                                            {"template": "support-desk"}))
+    assert status == 200, got
+    pid = got["package"]["id"]
+    assert [o["name"] for o in got["objects"]] == ["ticket"]
+    assert _objects(world, pid) == ["ticket"]
+    (inst,) = _installs(world, pid)
+    assert inst[1] == 1 and inst[2] == "private" and inst[4] == ANA
+
+
 def test_r8_the_objects_are_synced_so_a_record_can_be_made(world) -> None:
     status, got = _run(world, lambda: _call("create_from_template", world.a, ANA,
                                             {"template": TEMPLATE}))
@@ -199,7 +213,8 @@ def test_r8_the_objects_are_synced_so_a_record_can_be_made(world) -> None:
             obj = await objects_store.get_object_by_name(db, "visit", package_id=pid)
             assert obj is not None
             return await objects_store.create_record(
-                db, ANA, obj.id, {"status": "planned", "customer": {"id": "acme-1"}}, package_id=pid)
+                db, ANA, obj.id, {"status": "planned", "customer": {"id": "acme-1"}}, package_id=pid,
+                viewer=Viewer(ANA))
 
     rec = _run(world, make)
     assert rec is not None
@@ -418,10 +433,4 @@ def test_r8_the_switch_off_is_404_and_writes_nothing(world, monkeypatch) -> None
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """An R8 suite that CI does not list still skips in silence when the
     database gate is disarmed. Match the argument line, not a mention."""
-    import re
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[2]
-    for name in ("pr-check.yml", "deploy.yml"):
-        workflow = (root / ".github" / "workflows" / name).read_text(encoding="utf-8")
-        assert re.search(r"^\s+tests/unit/test_studio_templates_r8\.py \\?$", workflow, re.M), name
+    assert "tests/unit/test_studio_templates_r8.py" in r8_lists.must_run()

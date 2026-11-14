@@ -5484,15 +5484,43 @@ def _run_member(event_payload: Any, session_user: str | None = None) -> tuple[st
     return claimed, False
 
 
+def _run_attribution() -> tuple[str, str] | None:
+    """The ``(app, agent)`` of ``acb_common.run_attribution_scope``, or None.
+
+    AUTO-8b-2c (``proactive_agent.md`` §4.4). Only server code binds the
+    scope (``gateway/jobs/headless_turn.py``), never a request. Never raises.
+    """
+    try:
+        from acb_common import run_attribution
+
+        return run_attribution()
+    except Exception:
+        return None
+
+
+def _run_agent_label(agent_name: str) -> str:
+    """The agent name that a run binds for attribution. Never raises.
+
+    The agent of the attribution scope when one is bound, else
+    ``agent_name``. Only the run context gets it, so the usage stamp and
+    each log line of the run carry it. Each other step of the run keeps
+    ``agent_name``.
+    """
+    scoped = _run_attribution()
+    return scoped[1] if scoped is not None else agent_name
+
+
 def _bind_run_app(config: Any) -> None:
     """Add the app this agent belongs to. Never raises.
 
     The app comes from ``config.json``, which is loaded after the run has
     already bound its other fields. So it is a second, additive bind, the same
-    shape as :func:`_bind_run_instance`.
+    shape as :func:`_bind_run_instance`. AUTO-8b-2c: the app of the
+    attribution scope wins over the config (:func:`_run_attribution`).
     """
     try:
-        app = str((config or {}).get("app") or "").strip()
+        scoped = _run_attribution()
+        app = scoped[0] if scoped is not None else str((config or {}).get("app") or "").strip()
         if app:
             from acb_common import bind_run_context
             bind_run_context(app=app)
@@ -5825,7 +5853,7 @@ async def _run_agent_inner(
         from acb_common import bind_run_context
         _batch_user, _batch_verified = _run_member(event_payload, session_user)
         bind_run_context(
-            run_id=run_id, thread_id=thread_id, agent=agent_name,
+            run_id=run_id, thread_id=thread_id, agent=_run_agent_label(agent_name),
             user=_batch_user or None,
             source=(
                 str(event_payload.get("source") or "").strip() or None
@@ -6629,6 +6657,37 @@ def _crm_note_events() -> list[dict[str, Any]]:
         return []
 
 
+def _take_card_line() -> str:
+    """The "Not done" line of this run, once (task 3130), or "".
+
+    A chat message closed a write card that nobody answered. The server adds
+    the line, not the model. Each finished run takes it BEFORE it saves the
+    native session, so the stored session holds it too
+    (:func:`_finish_native_session`). Never raises."""
+    try:
+        from acb_skills.ask_tools import take_closed_card_line
+    except ImportError:
+        return ""
+    try:
+        return take_closed_card_line()
+    except Exception:  # a run never fails on its last line
+        return ""
+
+
+def _closed_card_events(line: str, run_id: str = "") -> list[dict[str, Any]]:
+    """The events of the "Not done" *line* (:func:`_take_card_line`). They go
+    just before RUN_FINISHED, through ``_sse``, so the relay keeps them and
+    the stored message holds the line. Empty for no line. Never raises."""
+    if not line:
+        return []
+    try:
+        from acb_skills.ask_tools import CLOSED_BY_YOUR_MESSAGE, closed_card_text_events
+    except ImportError:
+        return []
+    _log.info("executor.card_outcome_line", run_id=run_id, outcome=CLOSED_BY_YOUR_MESSAGE)
+    return closed_card_text_events(line)
+
+
 def _sse(payload: dict[str, Any]) -> str:
     """Return a single SSE frame as a string.
 
@@ -6780,7 +6839,7 @@ async def run_agent_stream(
             _corr_source = str(event_payload.get("source") or "").strip() or "chat"
         bind_run_context(
             run_id=run_id, thread_id=thread_id,
-            agent=agent_name, user=_corr_user or None, source=_corr_source,
+            agent=_run_agent_label(agent_name), user=_corr_user or None, source=_corr_source,
             member_verified=_corr_verified,
         )
     except Exception:
@@ -6889,6 +6948,10 @@ async def run_agent_stream(
     # context still counts. Released in the same finally.
     from acb_skills.crm_tools import open_asks_for_run, release_asks
     _asks_token = open_asks_for_run()
+    # Task 3130: the write cards that a chat message of the member closed.
+    # Released in the same finally.
+    from acb_skills.ask_tools import open_closed_cards_for_run, release_closed_cards
+    _closed_cards_token = open_closed_cards_for_run()
     # H-201 (§21.16): this run's artifact context lives in this token's scope.
     from acb_skills.write_artifact import (
         artifact_context,
@@ -8081,6 +8144,9 @@ async def run_agent_stream(
                         # WS-43t2: only a run that finished saves its
                         # session, and before RUN_FINISHED, so a quick next
                         # turn finds it. The save never fails the run.
+                        # Task 3130: the session holds the "Not done" line.
+                        _card_line = _take_card_line()
+                        _close_native_session(_session_turn, _card_line)
                         await _finish_native_session(_session_turn)
                         # WS-53 CRM-Q33: the note of a CRM total that the
                         # answer left out goes in before the end.
@@ -8092,6 +8158,9 @@ async def run_agent_stream(
                             yield _sse(_push_ev)
                         for _note_ev in _crm_note_events():
                             yield _sse(_note_ev)
+                        # Task 3130: the "Not done" line comes last.
+                        for _card_ev in _closed_card_events(_card_line, run_id):
+                            yield _sse(_card_ev)
                         # A loop trip already emitted its terminal RUN_ERROR
                         # inline — don't follow it with a RUN_FINISHED that
                         # would make the client render the run as successful.
@@ -8817,6 +8886,9 @@ async def run_agent_stream(
                     yield _sse(_push_ev)
                 for _note_ev in _crm_note_events():
                     yield _sse(_note_ev)
+                # Task 3130: the "Not done" line comes last.
+                for _card_ev in _closed_card_events(_take_card_line(), run_id):
+                    yield _sse(_card_ev)
                 yield _sse({"type": "RUN_FINISHED", "runId": run_id, "threadId": thread_id})
 
                 await _detect_agent_commits(
@@ -9235,6 +9307,9 @@ async def run_agent_stream(
             except Exception as exc:
                 raise exc
             # WS-43t2: the Tier 2 run finished, so its session is saved.
+            # Task 3130: the session holds the "Not done" line.
+            _card_line = _take_card_line()
+            _close_native_session(_session_turn, _card_line)
             await _finish_native_session(_session_turn)
 
             # Strip integration setup tokens (same as batch path)
@@ -9283,6 +9358,9 @@ async def run_agent_stream(
                 yield _sse(_push_ev)
             for _note_ev in _crm_note_events():
                 yield _sse(_note_ev)
+            # Task 3130: the "Not done" line comes last.
+            for _card_ev in _closed_card_events(_card_line, run_id):
+                yield _sse(_card_ev)
             # RUN_FINISHED must be emitted INSIDE the try block — the finally
             # below resets the relay contextvar and marks the thread inactive,
             # so a later yield would never reach Redis (reconnecting clients
@@ -9352,6 +9430,7 @@ async def run_agent_stream(
             _stream_relay_thread_id.reset(_relay_token)
             release_cards_switch(_cards_token)
             release_asks(_asks_token)
+            release_closed_cards(_closed_cards_token)
             _active_run_model.reset(_model_token)
             _release_profile_writes(_writes_token)
             _release_solo_room(_solo_token)
@@ -10402,6 +10481,22 @@ def _verified_run_member() -> str:
     return member.lower() if verified else ""
 
 
+def _close_native_session(turn: Any, line: str) -> None:
+    """End the session's last answer with the "Not done" *line* (task 3130).
+
+    Each finished run calls it just before :func:`_finish_native_session`,
+    so the saved session holds the line, as the stored message does. No
+    line, or no usable session, changes nothing. Never raises."""
+    if not line or turn is None or not getattr(turn, "usable", False):
+        return
+    try:
+        from orchestrator import native_session_store
+
+        native_session_store.add_closing_line(turn, line)
+    except Exception as exc:
+        _log.warning("native_session.closing_line_failed", error=str(exc)[:200])
+
+
 async def _finish_native_session(turn: Any) -> None:
     """Save the session of a native run that finished. Never raises."""
     if turn is None or not getattr(turn, "usable", False):
@@ -10909,10 +11004,12 @@ def _is_answer_event(event: Any) -> bool:
         return isinstance(todos, list) and bool(todos)
     if kind == "CUSTOM":
         from acb_common.assistant_profile import PROFILE_USED_EVENT
+        from acb_skills.progress_notice import EVENT as PROGRESS_EVENT
 
+        # HRD-6: the line of a slow tool is live only, and the fold drops it.
         return not (
             _is_route_event(event) or _is_hold_beat(event)
-            or event.get("name") in ("frontend_tool", PROFILE_USED_EVENT)
+            or event.get("name") in ("frontend_tool", PROFILE_USED_EVENT, PROGRESS_EVENT)
         )
     return False
 

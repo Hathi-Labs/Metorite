@@ -38,7 +38,7 @@ const tagOf = (html: string, id: string): string =>
   html.match(new RegExp("<[^>]*id=\"" + id + "\"[^>]*>"))?.[0] ?? "";
 
 describe("the sample fields", () => {
-  it("hold each of the 16 types", () => {
+  it("hold each of the 22 types", () => {
     expect(new Set(SAMPLE_FIELDS.map((f) => f.type))).toEqual(new Set(FIELD_TYPE_LIST));
   });
   it("the sample rows pass the check, so the Detail shows real values", () => {
@@ -419,7 +419,19 @@ describe("the Table and the Detail read a value the same way", () => {
     renderToStaticMarkup(createElement(StudioDetail, { fields: [f], record: row }));
   const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-  for (const f of SAMPLE_FIELDS) {
+  // A rich text is plain words in the Table and rendered markdown in the Detail.
+  // STU-AF5: a file is its id in the Table (older behaviour) and "File attached" in the Detail.
+  it("file: the Table keeps the id, the Detail says a file is attached", () => {
+    const f = SAMPLE_FIELDS.find((x) => x.type === "file")!;
+    const row = { id: "r1", [f.key]: SAMPLE_ROWS[0][f.key] };
+    const id = displayValue(f, row[f.key]);
+    expect(drawTable(f, row)).toContain(esc(id));
+    const detail = drawDetail(f, row);
+    expect(detail).toContain("File attached");
+    expect(detail).not.toContain(esc(id));
+  });
+
+  for (const f of SAMPLE_FIELDS.filter((x) => x.type !== "richText" && x.type !== "file")) {
     it(f.type + ": one text in both blocks", () => {
       const row = { id: "r1", [f.key]: SAMPLE_ROWS[0][f.key] };
       const want = esc(displayValue(f, row[f.key]));
@@ -435,6 +447,23 @@ describe("the Table and the Detail read a value the same way", () => {
       }
     });
   }
+
+  it("richText: plain words in the Table, markdown elements in the Detail", () => {
+    const f = SAMPLE_FIELDS.find((x) => x.type === "richText") as FieldSpec;
+    const row = { id: "r1", [f.key]: SAMPLE_ROWS[0][f.key] };
+    const table = drawTable(f, row);
+    const detail = drawDetail(f, row);
+    expect(table).toContain("Findings The base plate is level.");
+    expect(table).not.toContain("**");
+    expect(detail).toMatch(/<strong[^>]*>base plate<\/strong>/);
+    expect(detail).toMatch(/<li[^>]*>Anchor bolts: set<\/li>/);
+  });
+
+  it("richText: a tag in the text is not drawn as an element", () => {
+    const f: FieldSpec = { key: "r", type: "richText" };
+    const html = drawDetail(f, { id: "r1", r: "Hi <script>alert(1)</script> there" });
+    expect(html).not.toContain("<script");
+  });
 
   it("words a date as a day, and no raw ISO text shows in either block", () => {
     const f: FieldSpec = { key: "d", type: "date" };

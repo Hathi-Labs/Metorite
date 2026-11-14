@@ -64,6 +64,11 @@ const CHAT_CARDS: Record<string, { seam: true } | { exempt: string }> = {
   // STU-B2c-2c: the approval card of a Studio record change. It draws
   // AppRequestCard, and its own RollupHeader when the read fails.
   "components/studio/StudioToolCards.tsx": { seam: true },
+  // STU-F5a: the live records card of a Studio read. The table template draws
+  // its head, and the card draws RollupHeader while it has no rows.
+  "components/studio/StudioRecordsCard.tsx": { seam: true },
+  // STU-F6a: the skill offer of a finished turn. It draws RollupHeader.
+  "components/studio/SkillOfferCard.tsx": { seam: true },
   "components/ChatErrorCard.tsx": { seam: true },
   "components/ToolCardShell.tsx": { seam: true },
   "components/GenerativeUINode.tsx": { seam: true },

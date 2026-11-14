@@ -67,8 +67,12 @@ import { fmtClock } from "@/app/tasks/lib/utils";
 import { applyData, applyError, initialState } from "@/lib/useCachedResource";
 
 import {
+  AGENT_QUESTIONS_HREF,
+  AGENT_QUESTIONS_KIND,
+  AGENT_QUESTIONS_SIGNAL,
   CARRY_MS,
   FEED_CACHE,
+  FEED_KIND_LABELS,
   FEED_SHOWN,
   PENDING,
   type ActOverlay,
@@ -91,6 +95,7 @@ import {
   feedHiddenRows,
   feedKey,
   fetchFeed,
+  isAgentQuestionsCard,
   loadFeedPrefs,
   noteOk,
   needsRowFor,
@@ -1643,5 +1648,62 @@ describe("a feed row on a phone (task 1898)", () => {
   it("puts the filter chips on one line that scrolls below sm", () => {
     const src = code(read_("./FeedCard.tsx"));
     expect(src).toMatch(/data-feed-filter=""\s+className="[^"]*overflow-x-auto[^"]*sm:flex-wrap/);
+  });
+});
+
+// ── The agent questions card (WS-55 EA-18c, external_agent_access.md §12.8) ──
+
+describe("the agent_questions card kind", () => {
+  const WIRE = {
+    signal_id: AGENT_QUESTIONS_SIGNAL,
+    app: "projects",
+    kind: AGENT_QUESTIONS_KIND,
+    folded: [],
+    group: "needs_you",
+    score: 43,
+    title: "3 agent questions wait for you",
+    why: "Metorite \u203a AI Studio: Which branch? Options: main, dev. 2 more questions wait.",
+    at: "2026-11-11T08:00:00+00:00",
+    href: AGENT_QUESTIONS_HREF,
+    acts: [{ id: "answer", label: "Answer", class: "A", way: "open", href: AGENT_QUESTIONS_HREF }],
+  };
+
+  it("reads as a card of the Projects app in the group Needs you", () => {
+    const [card] = readFeedAnswer({ cards: [WIRE] }).cards;
+    expect(card.kind).toBe("agent_questions");
+    expect(isAgentQuestionsCard(card)).toBe(true);
+    expect(card.app).toBe("projects");
+    expect(card.group).toBe("needs_you");
+    expect(card.why).toContain("Metorite \u203a AI Studio: Which branch?");
+  });
+
+  it("opens the list in Projects with the one Answer act, a link of the app", () => {
+    const [card] = readFeedAnswer({ cards: [WIRE] }).cards;
+    expect(card.acts).toHaveLength(1);
+    expect(card.acts[0]).toMatchObject({ id: "answer", way: "open", href: "/projects?app=questions" });
+    expect(card.href).toBe("/projects?app=questions");
+  });
+
+  it("names its state and its source line", () => {
+    expect(FEED_KIND_LABELS.agent_questions).toBe("Waiting for your answer");
+    expect(sourceLine({ app: "projects", kind: "agent_questions" })).toBe(
+      "Projects \u00b7 Waiting for your answer",
+    );
+  });
+
+  it("is not the chat's card: a different kind from agent_asks", () => {
+    expect(isAgentQuestionsCard({ kind: "agent_asks" })).toBe(false);
+    expect(FEED_KIND_LABELS.agent_asks).toBe(FEED_KIND_LABELS.agent_questions);
+    expect(AGENT_QUESTIONS_KIND).not.toBe("agent_asks");
+  });
+
+  it("draws in the column with the title, the why line and the Answer act", () => {
+    const [card] = readFeedAnswer({ cards: [WIRE] }).cards;
+    const html = renderToStaticMarkup(
+      createElement(FeedCard, { card, nowMs: null, onAct: () => {}, layout: "row" }),
+    );
+    expect(html).toContain("3 agent questions wait for you");
+    expect(html).toContain("Which branch?");
+    expect(html).toContain("Answer");
   });
 });

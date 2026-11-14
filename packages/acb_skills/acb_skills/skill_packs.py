@@ -10,9 +10,10 @@ the rows through ``gateway.studio.skills_store`` and calls :func:`build`.
 
 * ``tools``: the chat tools that its actions name. :func:`action_tool` is
   the ONE map from a catalog action to a chat tool. An action with no chat
-  tool yet (an integration tool, an object action, a named package action)
-  makes the skill fail to load, so Mira never reads a rule for a tool that
-  she does not hold. F10 adds those tools.
+  tool yet (an integration tool, an object ``get``, a door op without a tool
+  name) makes the skill fail to load, so Mira never reads a rule for a tool
+  that she does not hold. An object list, create, update or delete maps to
+  its record tool since F10a.
 * ``rules``: the text that goes after the persona, after the rules of the
   code packs. :func:`rules_text` is the ONE text.
 * ``token_cost``: an estimate of the tokens of ``rules`` (4 characters a
@@ -44,10 +45,12 @@ from acb_skills.hidden_text import strip_hidden
 __all__ = [
     "MAX_RULES_TOKENS",
     "MIN_NAME_CHARS",
+    "OBJECT_VERB_TOOLS",
     "SKILL_PREFIX",
     "SkillPack",
     "action_tool",
     "build",
+    "button_tools",
     "estimate_tokens",
     "is_skill_slug",
     "matches",
@@ -102,6 +105,15 @@ def estimate_tokens(text: str) -> int:
     return (len(str(text)) + 3) // 4
 
 
+#: F10a. The record tool of each plain object verb. ``get`` has no tool.
+OBJECT_VERB_TOOLS: Mapping[str, str] = {
+    "list": "studio_record_list",
+    "create": "studio_record_create",
+    "update": "studio_record_update",
+    "delete": "studio_record_delete",
+}
+
+
 def action_tool(action_id: object) -> str | None:
     """The chat tool of the catalog action *action_id*, or None.
 
@@ -110,13 +122,21 @@ def action_tool(action_id: object) -> str | None:
     * ``workflow:<id>`` gives ``run_workflow``, which takes the id.
     * ``<app>.<op>``, a door op of a manifest app, gives the chat tool of its
       row (``Route.tool``), when the row names one.
-    * Each other action has no chat tool in F3.
+    * ``object:<name>.<verb>``, a record action, gives the record tool of the
+      verb (``OBJECT_VERB_TOOLS``). ``get`` has no tool, so it gives None.
+    * Each other action has no chat tool.
     """
     if not isinstance(action_id, str):
         return None
     action = action_id.strip()
     if action.startswith("workflow:") and len(action) > len("workflow:"):
         return "run_workflow"
+    if action.startswith("object:"):
+        # The ONE grammar of a uses string is ``studio_manifest.parse_uses``.
+        from acb_common.studio_manifest import parse_uses
+
+        ref = parse_uses(action)
+        return OBJECT_VERB_TOOLS.get(ref.op or "") if ref is not None else None
     if ":" in action or action.count(".") != 1:
         return None
     app_id, op = action.split(".", 1)
@@ -127,6 +147,50 @@ def action_tool(action_id: object) -> str | None:
     found = door_op(app_id, op)
     tool = getattr(getattr(found, "route", None), "tool", "") if found is not None else ""
     return str(tool) if tool else None
+
+
+def button_tools(manifest: Mapping[str, Any]) -> tuple[
+        tuple[tuple[str, str, str], ...], tuple[tuple[str, str, str], ...]]:
+    """F10a. Split the buttons of the views of *manifest* by chat tool.
+
+    A button is an id in ``views[].actions`` or the ``views[].submit`` of a view.
+    Pure: no I/O. Returns ``(served, unserved)``. A served item is
+    ``(view_id, action_id, tool)``. An unserved item is
+    ``(view_id, action_id, reason)``. The reason is one of ``undeclared``,
+    ``set`` (a set-action does not run in chat), ``door_op``, ``integration``
+    or ``no_tool``. A plain object verb or a workflow is served.
+    """
+    declared: dict[str, Mapping[str, Any]] = {}
+    for act in manifest.get("actions") or []:
+        if isinstance(act, Mapping) and isinstance(act.get("id"), str):
+            declared[act["id"]] = act
+    served: list[tuple[str, str, str]] = []
+    unserved: list[tuple[str, str, str]] = []
+    for view in manifest.get("views") or []:
+        if not isinstance(view, Mapping):
+            continue
+        view_id = str(view.get("id", ""))
+        names = [n for n in (view.get("actions") or []) if isinstance(n, str)]
+        submit = view.get("submit")
+        if isinstance(submit, str) and submit not in names:
+            names.append(submit)
+        for name in names:
+            act = declared.get(name)
+            if act is None:
+                unserved.append((view_id, name, "undeclared"))
+                continue
+            uses = str(act.get("uses") or "").strip()
+            if act.get("set"):
+                unserved.append((view_id, name, "set"))
+            elif uses.startswith("integration:"):
+                unserved.append((view_id, name, "integration"))
+            elif not (uses.startswith("object:") or uses.startswith("workflow:")):
+                unserved.append((view_id, name, "door_op"))
+            elif (tool := action_tool(uses)) is None:
+                unserved.append((view_id, name, "no_tool"))
+            else:
+                served.append((view_id, name, tool))
+    return tuple(served), tuple(unserved)
 
 
 def _phrase(raw: str) -> str:

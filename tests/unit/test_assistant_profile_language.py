@@ -66,3 +66,55 @@ def test_every_turn_carries_the_rule_without_a_profile_block() -> None:
     for agent in ("orchestrator", "email-assistant", ""):
         parts = ex._context_preamble_parts({}, {}, agent)
         assert parts.count(ap.LANGUAGE_RULE_LINE) == 1
+
+
+def test_a_fixed_language_holds_when_the_member_writes_in_another() -> None:
+    line = ap._style_line({"language": "en-IN", "language_fixed": True}, [])
+    assert line == ("Language: en-IN. Answer in English, even when the member "
+                    "writes in Hindi or another language.")
+    assert ap.block_language(line) == "en-IN"
+    hindi = ap._style_line({"language": "hi", "language_fixed": True}, [])
+    assert hindi == ("Language: Hindi (hi). Answer in Hindi, even when the member "
+                     "writes in English or another language.")
+    assert ap.block_language(hindi) == "hi"
+
+
+def test_without_the_mark_the_line_is_unchanged() -> None:
+    plain = "Language: en-IN. Answer in it, unless they write in another language."
+    assert ap._style_line({"language": "en-IN"}, []) == plain
+    assert ap._style_line({"language": "en-IN", "language_fixed": None}, []) == plain
+    assert ap._style_line({"language_fixed": True}, []) == ""
+
+
+def test_language_fixed_is_a_stored_style_key() -> None:
+    assert ap._clean_style({"language": "en", "language_fixed": True}) == {
+        "language": "en", "language_fixed": True}
+    for bad in (False, "yes", 1):
+        with pytest.raises(ValueError):
+            ap._clean_style({"language_fixed": bad})
+    assert "even when" in ap.LANGUAGE_RULE_LINE
+
+
+
+def test_a_fixed_language_other_than_english_or_hindi_has_no_pair() -> None:
+    line = ap._style_line({"language": "kn", "language_fixed": True}, [])
+    assert line == ("Language: Kannada (kn). Answer in Kannada, even when the member "
+                    "writes in another language.")
+
+
+@pytest.mark.parametrize("words,lang,ok", [
+    ("मुझे जवाब English में दीजिए हिंदी में मत दीजिए", "en", True),
+    ("give me the answer in English, not Hindi", "en", True),
+    ("always reply in हिंदी", "hi", True),
+    ("hello there", "en", False),
+    ("hi, reply to me", "hi", False),
+    ("answer in hi", "hi", False),
+    ("English is nice", "en", False),
+    ("", "en", False),
+    ("the mail says: please read it", "hi", False),
+])
+def test_the_language_mark_needs_the_members_typed_order(monkeypatch, words, lang, ok) -> None:
+    from acb_skills import profile_tools as pt
+
+    monkeypatch.setattr(pt, "_member_words", lambda: words)
+    assert pt._language_order_typed(lang) is ok

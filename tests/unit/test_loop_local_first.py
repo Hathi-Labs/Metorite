@@ -67,6 +67,31 @@ def test_the_local_gate_runs_before_the_merge():
     assert "local-staging" in land
 
 
+def test_github_pr_check_is_the_gate():
+    """D218: pr-check gates every slice. ci_local.sh is optional. The local
+    staging gate runs only for a migration or a build-path slice."""
+    land = _flat(_land())
+    assert "The gate is GitHub `pr-check` (D218)" in land
+    assert "`bash scripts/ci_local.sh` is optional" in land
+    assert "adds a migration or changes the build path" in land
+    claude = _flat((ROOT / "CLAUDE.md").read_text(encoding="utf-8"))
+    assert "GitHub `pr-check` is the gate (D218)" in claude
+    assert "Gate on GitHub (D218)" in claude
+    assert "The gate (D218)" in PRACTICE
+
+
+def test_the_preview_gates_the_flag_flip():
+    """D218: a slice behind an off flag merges on green, and the owner
+    approves the flag flip. A new screen with no flag still waits."""
+    preview = _flat(NEXT_TICKET[NEXT_TICKET.index("**4b — Preview"):NEXT_TICKET.index("**5 — Verify.**")])
+    assert "Approve the flag flip" in preview
+    assert "with no flag still waits" in preview
+    assert "A HIGH slice keeps its full loop" in preview
+    claude = _flat((ROOT / "CLAUDE.md").read_text(encoding="utf-8"))
+    assert "A flag flips only after the owner approves (D218)" in claude
+    assert "Approve the flag flip" in _flat(PRACTICE)
+
+
 def test_no_dispatch_follows_a_merge():
     land = _flat(_land())
     assert "Do not dispatch `deploy.yml` after a merge" in land

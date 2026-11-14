@@ -6,13 +6,34 @@
  * no view to a node and reads no page of the manifest (PKG-8 owns that).
  */
 import type { FieldSpec } from "./fieldCheck";
-import { FIELD_TYPE_LIST } from "./blocks";
+import { FIELD_TYPE_LIST, extrasOf } from "./blocks";
 import { boardBlock, MAX_CARD_FIELDS } from "./boardModel";
 import type { FieldType } from "./manifest";
-import type { ObjectRow } from "./realDoor";
+import { readActions, type DeclaredAction, type ObjectRow, type PackageAccess } from "./realDoor";
 
 /** The most columns that the Table draws. The Form and the Detail show every field. */
 export const MAX_TABLE_COLUMNS = 8;
+
+/**
+ * What the page offers to who reads it (J2a). The owner gets every control, as
+ * before. A viewer reads an app that another member owns, through an install, and
+ * gets only the reads: no cell edit, no drag, no form, no record delete, no IDE and
+ * no app delete. The door of a viewer holds the read actions only.
+ */
+export interface PreviewControls {
+  /** The owner's controls: the Form, Edit in form, Delete record, the IDE and Delete app. */
+  owner: boolean;
+  /** The actions that the door of the page holds. */
+  actions: DeclaredAction[];
+}
+
+export function previewControls(access: PackageAccess, actions: readonly DeclaredAction[] | undefined): PreviewControls {
+  if (access === "owner") return { owner: true, actions: [...(actions ?? [])] };
+  return { owner: false, actions: readActions(actions) };
+}
+
+/** The empty state of a viewer when the installed version has no object. */
+export const VIEWER_NO_OBJECT = "This app has no object to show yet. Its owner adds one in Studio.";
 
 /** The fields of an object row of the gateway, as the blocks read them. */
 export function fieldSpecs(object: Pick<ObjectRow, "fields">): FieldSpec[] {
@@ -27,6 +48,7 @@ export function fieldSpecs(object: Pick<ObjectRow, "fields">): FieldSpec[] {
       many: f.many === true,
       options: Array.isArray(f.options) ? f.options : undefined,
       to: f.to ?? undefined,
+      ...extrasOf(f as unknown as Record<string, unknown>),
       ...(typeof f.lines === "string" ? { lines: f.lines } : {}),
     });
   }
@@ -73,10 +95,15 @@ export function detailFields(fields: readonly FieldSpec[]): FieldSpec[] {
  * that carries options and that no `formula` or `rollup` rule fills. The store refuses a
  * write to a computed key, so a drop on such a field would always fail.
  */
-export function boardGroupKey(fields: readonly FieldSpec[], computed: ReadonlySet<string>): string | null {
-  const f = fields.find((x) => x.type === "select" && x.many !== true && !computed.has(x.key)
-    && (x.options?.length ?? 0) > 0);
-  return f?.key ?? null;
+export function boardGroupKeys(fields: readonly FieldSpec[], computed: ReadonlySet<string>): string[] {
+  return fields.filter((x) => x.type === "select" && x.many !== true && !computed.has(x.key)
+    && (x.options?.length ?? 0) > 0).map((x) => x.key);
+}
+
+/** The lane field: `prefer` when it can make lanes (STU-AF4, the group of the list bar), else the first one. */
+export function boardGroupKey(fields: readonly FieldSpec[], computed: ReadonlySet<string>, prefer?: string | null): string | null {
+  const keys = boardGroupKeys(fields, computed);
+  return (prefer && keys.includes(prefer) ? prefer : keys[0]) ?? null;
 }
 
 /** Why an object has no Board: one short sentence. */
@@ -97,8 +124,12 @@ export function objectBoardBlock(
   source: { action: string; args?: Record<string, unknown> },
   /** Does the manifest declare `object:<name>.update`? Without it the cards do not drag. */
   canUpdate = true,
+  /** The lane field that the member picked in the list bar (AF-4). */
+  groupKey: string | null = null,
+  /** The start of the record link of a card (STU-AF5). */
+  openBase?: string,
 ): ReturnType<typeof boardBlock> | null {
-  const groupBy = boardGroupKey(fields, computed);
+  const groupBy = boardGroupKey(fields, computed, groupKey);
   if (!groupBy) return null;
   const titleKey = titleKeyOf(fields.filter((f) => f.key !== groupBy));
   const cardFields = fields
@@ -107,6 +138,7 @@ export function objectBoardBlock(
   return boardBlock({
     fields, groupBy, ...(titleKey ? { titleField: titleKey } : {}), cardFields,
     ...(canUpdate ? { update: `object:${object.name}.update` } : {}), title: object.label ?? object.name,
+    ...(openBase ? { openBase } : {}),
   }, source);
 }
 

@@ -1070,6 +1070,25 @@ def _whatsapp_tool_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) 
     return tool_call(fn, args, kwargs)
 
 
+def _card_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    """``acb_skills.ask_tools.card_call`` for one tool call (task 3130).
+
+    It binds the act key of each card that the call draws: the tool, and the
+    arguments that name its targets. A later card takes the place of a card
+    that a chat message closed only when both have the same key. A
+    delegation tool opens a scope with no key, so a card of the child run
+    never takes the key of the call that started it. With no key, a card
+    takes the place of no card, so the "Not done" line stays.
+    """
+    import contextlib
+
+    try:
+        from acb_skills.ask_tools import card_call
+    except Exception:
+        return contextlib.nullcontext()
+    return card_call(fn, args, kwargs, keyless=is_delegation_tool(fn))
+
+
 def _permission_gate(
     tool_name: str, call_kwargs: dict[str, Any] | None, *, surface: str,
     facts: dict[str, Any] | None = None,
@@ -1201,8 +1220,9 @@ def _gate_injected_tool(fn: Any) -> Any:
                 if held is not None:
                     return held
             # WS-47 WAC-4: name the call for the WhatsApp card gate. A no-op
-            # outside a WhatsApp run with writes on.
-            with _whatsapp_tool_call(fn, args, kwargs):
+            # outside a WhatsApp run with writes on. Task 3130: the act key
+            # of each card that this call draws.
+            with _whatsapp_tool_call(fn, args, kwargs), _card_call(fn, args, kwargs):
                 return await fn(*args, **kwargs)
         return _register_platform_wrapper(fn, _agated)
 
@@ -2973,10 +2993,40 @@ def _inject_agent_tools(
         _apply_chat_hold(agents, agent_name)
     # Task 2494: a member's steer reaches each native agent as a user turn.
     _apply_steer_turns(agents)
+    # HRD-6: a slow tool call gets one line for the member. Its middleware
+    # wraps each tool call, and the number check's recorder sits inside it.
+    _apply_progress_notice(agents)
     # CRM-Q29: a native MAF agent that holds a CRM tool gets the number
     # check, as a per-run view, after the H-236 step.
     _apply_answer_check(agents, agent_name)
     return _run_tool_names
+
+
+def _apply_progress_notice(agents: list[Any]) -> None:
+    """The line of a slow tool call on ONE run (HRD-6, task 2985).
+
+    It replaces each native MAF ``Agent`` in *agents* with a per-run view that
+    carries ``acb_skills.progress_notice.ProgressNoticeProvider``, as
+    :func:`_apply_answer_check` does. With ``CHAT_PROGRESS_NOTICE_ORGS`` off for
+    the run's org it changes nothing, so the run is as before. The org is the
+    run binding's (:func:`_run_org`), never request input. A Copilot SDK agent
+    and a plain object stay as they are. Fence:
+    ``tests/unit/test_progress_notice.py``.
+    """
+    from acb_skills.progress_notice import ProgressNoticeProvider, progress_notice_on
+
+    if not progress_notice_on(_run_org()):
+        return
+    try:
+        from agent_framework import Agent
+    except ImportError as exc:  # pragma: no cover — ships with the platform
+        _log.warning("executor.progress_notice_unavailable", error=str(exc)[:200])
+        return
+    from orchestrator._native_run_context import agent_with_providers
+
+    for i, agent in enumerate(agents):
+        if isinstance(agent, Agent):
+            agents[i] = agent_with_providers(agent, [ProgressNoticeProvider()])
 
 
 def _apply_steer_turns(agents: list[Any]) -> None:

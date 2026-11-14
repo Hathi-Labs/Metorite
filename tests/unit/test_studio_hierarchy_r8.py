@@ -48,12 +48,14 @@ pytest.importorskip("sqlalchemy")
 
 from acb_common import studio_rules as sr
 from acb_common.db import get_engine, tenant_session
+from acb_common.studio_access import Viewer
 from acb_common.studio_fields import FieldError
 from acb_common.studio_rules import ConstraintError, TreeViolation
 from gateway.studio import objects_store as store
 from gateway.studio.objects_store import BatchError, Write
 from sqlalchemy import event, text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -65,6 +67,9 @@ pytestmark = _DB_GATE
 
 TAG = uuid.uuid4().hex[:8]
 ANA = f"ana.{TAG}@stuc18.test"
+#: C8a. The store takes a viewer. No object of this suite declares `access`,
+#: so each object is open and any member reads and writes it.
+_VIEWER = Viewer(ANA)
 
 _SITE: list[dict[str, Any]] = [
     {"key": "name", "type": "text"},
@@ -123,7 +128,8 @@ async def _site(org: str, pkg: str, rules: list[dict[str, Any]] | None = None) -
 
 async def _put(org: str, obj: store.StudioObject, *writes: Write) -> list[Any]:
     async with tenant_session(org) as db:
-        return await store.apply_writes(db, ANA, package_id=obj.package_id, writes=list(writes))
+        return await store.apply_writes(db, ANA, package_id=obj.package_id, writes=list(writes),
+                                        viewer=_VIEWER)
 
 
 async def _refused(org: str, obj: store.StudioObject, *writes: Write) -> BatchError:
@@ -307,7 +313,7 @@ def test_r8_an_edit_that_keeps_the_parent_runs_no_walk(world) -> None:
 
             event.listen(eng, "before_cursor_execute", _on)
             try:
-                await store.apply_writes(db, ANA, package_id=obj.package_id, writes=[
+                await store.apply_writes(db, ANA, package_id=obj.package_id, viewer=_VIEWER, writes=[
                     Write("update", obj.id, ids[1], {"name": "renamed"})])
             finally:
                 event.remove(eng, "before_cursor_execute", _on)
@@ -444,9 +450,4 @@ def test_r8_a_read_of_an_object_with_no_hierarchy_is_refused(world) -> None:
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """An R8 suite that CI does not list still skips in silence when the
     database gate is disarmed. Match the argument line, not a mention."""
-    import re
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[2]
-    workflow = (root / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
-    assert re.search(r"^\s+tests/unit/test_studio_hierarchy_r8\.py \\?$", workflow, re.M)
+    assert "tests/unit/test_studio_hierarchy_r8.py" in r8_lists.must_run()

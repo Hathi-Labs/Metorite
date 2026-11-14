@@ -22,7 +22,14 @@ _DIR = Path(__file__).resolve().parent
 
 #: The ids of the templates, in the order of the gallery. A file with no id
 #: here is not served. ``test_studio_templates`` holds the files equal to it.
-TEMPLATE_IDS: tuple[str, ...] = ("field-visits",)
+TEMPLATE_IDS: tuple[str, ...] = (
+    "field-visits",
+    "support-desk",
+    "purchase-requests",
+    "expense-claims",
+    "hiring",
+    "spares",
+)
 
 
 class TemplateInfo(dict[str, Any]):

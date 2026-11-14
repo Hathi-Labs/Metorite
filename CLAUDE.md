@@ -220,7 +220,7 @@ delivery makes a silent failed deploy more likely, not less.
 > **audit** the spec is dispatchable → **implement** one narrowed slice with
 > the local stack up (`scripts/dev_up.sh`) → **preview** it to the owner and
 > wait for **approval** → **verify** independently and **review** by risk tier,
-> beside the **local staging gate** (`scripts/stage_local.sh`). Then **merge
+> beside the **gate**: GitHub `pr-check`, then `premerge.sh` (D218). Then **merge
 > it**. Production takes it at the next release slot (05:30, 13:30 or 21:30 UTC).
 
 **Merging is not skipping the loop.** Verify always runs, and the verifier is
@@ -229,25 +229,31 @@ audit when its Metorite task states the acceptance criteria (owner request,
 2026-10-30). Review depth follows the risk tier in `next-ticket.md` step 1b. A
 LOW slice skips the reviewer. What you drop is the wait.
 
-**⚠️ PREVIEW, APPROVE, GATE, MERGE** *(D145, owner directive, 2026-10-31)*.
-The owner retired staging (D144), and this PC does its job now.
+**⚠️ PREVIEW, APPROVE, GATE, MERGE** *(D145, owner directive, 2026-10-31.
+D218, 2026-11-12)*. The owner retired staging (D144), and this PC does its job now.
 
 1. **Show the owner the change first.** Send the local URL, what changed, where
    to click and the captures. Then ask on the task: Approve or Change it.
-2. **Run the full gates after the approval.** `scripts/stage_local.sh` tests the
-   merge with today's `main`. It runs the full suite and the production build.
-   It rehearses the migrations on production's reduced copy, and runs smoke.
-   A pass posts `local-staging` on the head commit, and `premerge.sh` needs it.
+   **D218:** a slice behind a flag that is off does not wait here. It merges on
+   green, and the owner preview gates the flag flip instead (step 4).
+2. **Gate on GitHub (D218).** `pr-check` must pass. Then `premerge.sh` tests
+   the merge with today's `main`. `scripts/ci_local.sh` is optional: run it when
+   GitHub is down, or for an early signal. When LD-9 lands, `scripts/stage_local.sh`
+   runs for a slice that adds a migration or changes the build path. It runs
+   the production build and rehearses the migrations on production's reduced copy.
 3. **Production moves three times a day, at 05:30, 13:30 and 21:30 UTC (D194).**
    Do not dispatch `deploy.yml` after a merge. Dispatch only for a hotfix the
    owner asks for, or when production is down.
    The home box starts each release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
+4. **A flag flips only after the owner approves (D218).** Post the captures on
+   the task, and ask "Approve the flag flip" or "Change it". A new page, screen,
+   navigation entry or flow with no flag still waits for step 1 before the merge.
 
 A slice with nothing to see skips step 1. **D200 (2026-11-08):** a small, low-risk
 change on an existing screen skips the wait in step 1. It merges after the
-captures and the full gates, and the owner reviews it afterwards. Until LD-8 to LD-10 land, the gate is
-`scripts/ci_local.sh` and then `premerge.sh`. `engineering_practice.md` §1.3
-owns the loop, and `next-ticket.md` steps 4b and 7 hold the commands.
+captures and the gate, and the owner reviews it afterwards.
+`engineering_practice.md` §1.3 owns the loop, and `next-ticket.md` steps 4b
+and 7 hold the commands. `ci_velocity.md` §8 owns D218.
 
 **⚠️ WORK UNDER A METORITE TASK** *(owner directive, 2026-10-28, D135)*.
 The owner watches the board, so work that is not on it is invisible. Every
@@ -292,20 +298,28 @@ Rules that make it work:
   `orchestration_playbook.md` §6d.
 - **The verifier is never the implementer**, and re-derives facts from the code
   instead of trusting the write-up.
-- **Sonnet does the work. Opus takes the hard cases.** Owner directive,
-  2026-10-19. This binds every dispatch: the Agent tool, `/next-ticket` and a
-  Workflow stage. `settings.json` sets `CLAUDE_CODE_SUBAGENT_MODEL=sonnet`, and
-  the agent files in `.claude/agents/` say their own model. Pass
-  `model: "opus"` only for one of these:
-  - Adversarial review. `diff-reviewer` is Opus by its file.
-  - A HIGH-tier slice: tenancy, RLS, auth, identity, a migration, money,
-    credits, secrets, a member or role write, or the deploy path.
-  - A second try after Sonnet failed on the same finding.
-  - A hard problem: three or more services, or a concurrency, cache or
-    ordering bug.
+- **Route each dispatch to the model that fits the job.** Owner decision D218,
+  2026-11-12. It replaces "Sonnet does the work" (2026-10-19). It binds every
+  dispatch: the Agent tool, `/next-ticket` and a Workflow stage. `settings.json`
+  sets `CLAUDE_CODE_SUBAGENT_MODEL=sonnet`, and the agent files in
+  `.claude/agents/` say their own default. Pass `model` to choose another:
+  - **Haiku:** a lookup with no judgement, sorting a red CI run, finding callers.
+  - **Sonnet:** a LOW slice, a mechanical repair, the verifier of a LOW or
+    STANDARD slice, and a STANDARD builder inside one app.
+  - **Opus:** a STANDARD slice that edits a shared seam or list. A HIGH-tier
+    slice: tenancy, RLS, auth, identity, a migration, money, credits, secrets,
+    a member or role write, or the deploy path. Adversarial review
+    (`diff-reviewer` is Opus by its file). The audit of a first slice. A second
+    try after Sonnet failed on the same finding. A merge conflict that needs
+    judgement. A hard problem: three or more services, or a concurrency, cache
+    or ordering bug.
+  - **Fable:** once a feature, for the plan, a hard root cause, and the
+    security and scaling review after a release.
 
-  Use `haiku` for a lookup with no judgement. `/next-ticket` step 1c holds the
-  table per role. Fence: `tests/unit/test_agent_model_routing.py`.
+  Set the effort on each dispatch. Opus 5.5 defaults to `medium`. Each dispatch
+  posts its model and effort in a thought line. `/next-ticket` step 1c holds the
+  table per role, and `ci_velocity.md` §8.6 owns it. Fence:
+  `tests/unit/test_agent_model_routing.py`.
 - **Build first. Harden when the feature works.** Owner directive,
   2026-10-19. In build, only the product tests and the SAFETY fences block.
   The PROCESS fences and STE lint warn, and the loop is implement then
@@ -400,7 +414,10 @@ Rules that make it work:
   commands, the keeper, the merge queue, the accounts and the traps. **To size
   lanes, sub-agents, runners and CI to the machines you have, or to add a
   machine such as a cloud VPS, read `docs/dev_capacity.md`.**
-- **Run the whole pr-check suite before you push:** `bash scripts/ci_local.sh`.
+- **GitHub `pr-check` is the gate (D218).** Push when the verifier passes, not
+  after each commit, so `pr-check` runs once for each round.
+  `bash scripts/ci_local.sh` runs the whole pr-check suite locally. It is
+  optional: run it when GitHub is down, or for an early signal.
   **The home server runs it**, as user `ci`. This PC's `metorite-ci` WSL2
   distro takes the run only when the home server is busy or does not answer.
   `--home` or `--pc` picks one lane. It tests the COMMIT, so commit first.
@@ -408,8 +425,7 @@ Rules that make it work:
   ⚠️ **When WSL or Docker hangs on this PC** (`HCS_E_CONNECTION_TIMEOUT`, Docker
   answers 500), run `bash scripts/ci_pc/doctor.sh`. `--fix` repairs it in a
   known order, and it restarts SHARED things. Use it only when the report says
-  they are broken. Do not fall back to GitHub-only CI in silence. Say the
-  doctor's result.
+  they are broken. Say the doctor's result.
 - **Do not run all of `tests/unit/` locally.** It takes about 50 minutes.
   Run `uv run python scripts/affected_tests.py --run`. It picks the tests your
   diff can affect, and it prints the `vitest related` command for frontend

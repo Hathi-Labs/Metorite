@@ -188,12 +188,9 @@ _BASELINE: dict[str, _Entry] = {
         "The meeting bot streams call audio to AssemblyAI. S5 step 4. Not in "
         "§2.10, found 2026-10-06",
     ),
-    # ── Chat that skips the Router (§2.10 rows 5 to 7).
-    "apps/services/gateway/gateway/routes/integrations.py": _Entry(
-        {"litellm verb acompletion": 1, "sdk litellm": 1},
-        "POST /integrations/discover calls litellm for an API schema. A later "
-        "slice moves it to acb_llm.routed",
-    ),
+    # ── Chat that skips the Router (§2.10 rows 5 to 7). Row 5,
+    # ``integrations.py`` (POST /integrations/discover), moved to
+    # ``acb_llm.client.complete`` in task 3007 (2449 A6), 2026-11-12.
     "packages/acb_llm/acb_llm/context.py": _Entry(
         {"litellm verb acompletion": 2, "sdk litellm": 5},
         "acompletion_with_fallback calls litellm when ROUTER_SERVING_ENABLED "

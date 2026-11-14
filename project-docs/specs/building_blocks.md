@@ -68,6 +68,7 @@ Each block has one seam and one owner spec. A second implementation of a block i
 | **Payments** | Money from a company's customer to the company | STU-O10 (P 1515), D174.3 | Booking (P 2682), CRM invoices (P 2738), Studio apps | The org's own account. Metorite holds no money |
 | **The public door** | A page or form that a guest uses with no sign-in | STU-O1 (P 1506), D174.1. Signed record links STU-O4 (P 1509) | Booking (P 2679), CRM forms (P 1438), Studio surfaces (P 1507) | No app builds its own public seam |
 | **Change record** | Who changed what, through what, and how to undo it | CRM change history (V `routes/crm/change_log.py`, D164.5). `crm_conversational.md` §4 | CRM, Knowledge provenance (P 2720), bots (P 2695), imports | One shape for every app. Each app may keep its own table |
+| **Number checks** | Whether a figure of an answer matches its source, and whether it makes sense | The one number check (V `acb_common/number_check.py`, CRM-Q29). The plausibility checks (P 3134 `acb_common/number_sense.py`, `number_sense.md`). The answer check that holds each answer (V `acb_skills/answer_check.py`) | Chat, CRM digests, every totals tool, outside apps through MCP (P 3141) | One check of each kind. A tool gives evidence, and the harness makes sure the answer says it |
 | **Setup items** | What "set up well" means for each app | `setup_status` and the manifest `setup` field (P 1341, D196). `personalization.md` §18 | Every live app, wizards, the setup coach | One registry and one budget (D-PZ-13) |
 | **The manifest** | What an app declares to the core | One envelope, one schema, one validator (V `acb_common/studio_manifest.py`). `package_host.md` §3 (D147) | Every app | A new need is a contribution point, never a new manifest |
 
@@ -336,6 +337,8 @@ Each epic writes its owning spec in its first slice. Until then this table and t
 | WS-MIR CRM mirror and connectors (2790) | MIR-n | `crm_connectors.md` (MIR-0, task 2791) | Import and mapping, connections |
 | WS-MKT app marketplace (2818) | MKT-n | `app_marketplace.md` (MKT-0, task 2820) | The manifest, actions and the door, records and objects |
 | WS-OPS operations apps (2819) | OPM-n | `operations_apps.md` (OPM-0, task 2824) | Records and objects, products and prices, the task store, workflows, files |
+| WS-CON company content (3039) | CON-n | `company_context.md` §16 (CON-0, task 3040) | Files, knowledge and retrieval, the organization identity |
+| WS-OTW one-time workflows (3010) | OTW-n | `workflows_app.md` §14 (OTW-0, task 3011) | Workflows, signals and delivery, the action door |
 | WS-SND sound cues (2862) | SND-n | `DESIGN_SYSTEM.md` §4c and `proactive_reach.md` §8.4 (SND-0, task 2864) | Signals and delivery, the one look |
 | SCALE (2566) | SC-n | `agent_coordination.md` and `dev_capacity.md` | none (process) |
 

@@ -84,7 +84,6 @@ transient SQLSTATE of the agent path answers 409.
 from __future__ import annotations
 
 import json
-import re
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -101,6 +100,7 @@ from agent_edge import tools
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit import test_mcp_edge_comments as cm
 from tests.unit import test_mcp_edge_task_writes as tw
 from tests.unit import test_mcp_edge_writes as w
@@ -372,10 +372,7 @@ class TestTheToolRecords:
     def test_this_suite_is_named_in_the_ci_skip_guard(self) -> None:
         """An R8 suite that CI does not list still skips in silence when the
         database gate is disarmed. Match the argument line, not a mention."""
-        for workflow in ("pr-check.yml", "deploy.yml"):
-            body = (_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
-            assert re.search(r"^\s+tests/unit/test_mcp_edge_comment_edit_r8\.py \\?$",
-                             body, re.M), workflow
+        assert "tests/unit/test_mcp_edge_comment_edit_r8.py" in r8_lists.must_run()
 
 
 class TestTheEdgeWithAFakeGateway:
