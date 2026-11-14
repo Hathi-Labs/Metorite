@@ -25,27 +25,36 @@ of the batch and under the org lock. A refused or rolled back write rolls the
 counter back, so no gap comes from a refusal. A deleted record leaves a hole,
 and no number is used twice. An update never renumbers.
 
-**The mutations (R7).** Each ran on 2026-11-14 against the committed code, and
-each named test went red (the others of the file stayed green unless named).
+**The mutations (R7).** Each ran on 2026-11-14 in its own copy of the tree, on a
+private database. The clean tree passes all 59 tests of this file and of the
+hermetic file, with 0 skips. Each line names the tests that went red.
 
-* M1. ``_NEXT_NUMBER_SQL`` becomes a SELECT of ``max(last_value)`` then an
-  UPSERT that writes ``:read + 1``. ``test_r8_two_writers_one_object_get_distinct_numbers``
-  stays green, because the org lock serializes the writers. The fence is the
-  SQL text: ``test_the_next_number_is_one_atomic_statement`` of the hermetic
-  file ``test_studio_autonumber.py`` goes red.
-* M2. ``_batch_day`` reads SQL ``now()`` for the period.
-  ``test_r8_the_day_resets_in_the_zone_of_the_org`` goes red.
-* M3. ``_refuse_autonumber_keys`` is not called on an update.
-  ``test_r8_an_update_that_names_the_key_is_refused`` goes red.
-* M4. ``_fill_autonumbers`` runs on a second SAVEPOINT that releases at once
-  (the allocation leaves the SAVEPOINT of the batch).
-  ``test_r8_a_refused_batch_rolls_the_counter_back`` goes red.
-* M5. The migration 444: drop the FORCE line. The source test
-  ``test_the_migration_forces_rls_and_keys_by_the_pair`` (hermetic file) goes red. The
-  promoted scratch database applies ``generated/04_policies.sql``, which forces
-  RLS again, so ``test_r8_the_counter_table_has_enable_and_force_rls`` stays green.
-  That is the D13b limit, and the source test of the hermetic file
-  ``test_studio_autonumber.py`` is the fence of the migration file.
+* M1. ``_NEXT_NUMBER_SQL`` reads the counter in a sub-select, then writes
+  ``EXCLUDED.last_value``. Two failed:
+  ``test_r8_the_statement_alone_is_atomic_without_the_org_lock`` (here) and
+  ``test_the_next_number_is_one_atomic_statement`` (the hermetic file).
+  ``test_r8_two_writers_one_object_get_distinct_numbers`` stays green, because
+  the org lock serializes the writers of the door. That is why the test of the
+  bare statement exists.
+* M2. ``_batch_day`` reads SQL ``now()`` for the period. Four failed:
+  ``test_r8_the_day_resets_in_the_zone_of_the_org``,
+  ``test_r8_two_writers_at_midnight_never_collide``,
+  ``test_r8_a_batch_of_thirty_creates_numbers_them_in_order`` and the hermetic
+  ``test_the_period_comes_from_the_injectable_clock_never_from_sql``.
+* M3. ``_refuse_autonumber_keys`` is not called on an update. Three failed:
+  ``test_r8_an_update_never_renumbers_and_one_that_names_the_key_is_refused``,
+  ``test_r8_an_update_that_names_the_key_is_refused`` and the hermetic
+  ``test_the_allocation_runs_before_the_value_check_and_each_write_refuses_the_key``.
+* M4. ``_apply_batch`` runs ``_run_steps`` with no SAVEPOINT, so the allocation
+  leaves the SAVEPOINT of the batch. One failed:
+  ``test_r8_a_refused_batch_rolls_the_counter_back``.
+  ``test_r8_an_outer_rollback_leaves_no_gap`` stays green, because the caller
+  rolls back the whole transaction, with or without a SAVEPOINT.
+* M5. The migration 444 drops its FORCE line. One failed: the hermetic
+  ``test_the_migration_forces_rls_and_keys_by_the_pair``. The promoted scratch
+  database applies ``generated/04_policies.sql``, which forces RLS again, so
+  ``test_r8_the_counter_table_has_enable_and_force_rls`` stays green. That is
+  the D13b limit, and the hermetic source test is the fence of the migration file.
 """
 
 from __future__ import annotations
