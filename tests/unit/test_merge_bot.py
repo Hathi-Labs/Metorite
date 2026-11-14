@@ -21,6 +21,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "home_server" / "merge_bot.sh"
+#: CIV-31d (H1): the one reader of the auto-revert mode.
+MODE_READER = ROOT / "scripts" / "home_server" / "auto_revert_mode.sh"
 PREMERGE = ROOT / "scripts" / "premerge.sh"
 BASH = shutil.which("bash")
 pytestmark = pytest.mark.skipif(BASH is None, reason="needs bash")
@@ -38,6 +40,15 @@ VERIFY = "Task: x\n\nVERIFY: PASS (verifier run 12)\nVisual review: no UI change
 
 FAKE_GH_SH = """#!/usr/bin/env bash
 exec python3 "$(dirname "$0")/gh.py" "$@"
+"""
+
+# CIV-31c fix round 1: the fake `systemctl` of the merge bot. It prints the
+# Environment of metorite-auto-revert.service with the mode in
+# $FIX/auto_revert_mode. With no such file, it fails, as with no user bus.
+FAKE_SYSTEMCTL_SH = """#!/usr/bin/env bash
+echo "$*" >> "$FIX/systemctl_calls"
+[ -f "$FIX/auto_revert_mode" ] || exit 1
+echo "PATH=/usr/bin:/bin AUTO_REVERT_MODE=$(cat "$FIX/auto_revert_mode")"
 """
 
 FAKE_GH_PY = r"""
@@ -179,6 +190,10 @@ class Env:
         (bindir / "gh").write_text(FAKE_GH_SH, encoding="utf-8", newline="\n")
         (bindir / "gh").chmod(0o755)
         (bindir / "gh.py").write_text(FAKE_GH_PY, encoding="utf-8", newline="\n")
+        (bindir / "systemctl").write_text(FAKE_SYSTEMCTL_SH, encoding="utf-8", newline="\n")
+        (bindir / "systemctl").chmod(0o755)
+        # The auto-revert unit is on, so an auto-revert PR can merge (CIV-31c).
+        (self.fix / "auto_revert_mode").write_text("on\n", encoding="utf-8", newline="\n")
         wjson(self.fix / "required.json", {"strict": False, "contexts": REQUIRED, "checks": []})
         (self.fix / "calls").write_text("", encoding="utf-8")
         self.premerge("0")
@@ -313,7 +328,27 @@ class Env:
             newline="\n",
         )
 
-    def run(self, home=None, **extra):
+    def bot_src(self) -> Path:
+        """A checkout of the temp origin that holds a copy of merge_bot.sh.
+
+        CIV-31c: revert_tested reads the tip of main with `git -C "$ROOT"
+        ls-remote origin`. The bot's own checkout is $ROOT, so a test of it runs
+        this copy. The real checkout would ask GitHub.
+        CIV-31d: the copy holds the one reader of the mode too, as the bot's
+        real checkout does.
+        """
+        src = self.tmp / "botsrc"
+        if not src.exists():
+            subprocess.run(
+                ["git", "clone", "-q", str(self.origin), str(src)], check=True, capture_output=True
+            )
+            copy = src / "scripts" / "home_server" / "merge_bot.sh"
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(SCRIPT, copy)
+            shutil.copy(MODE_READER, copy.parent / MODE_READER.name)
+        return src / "scripts" / "home_server" / "merge_bot.sh"
+
+    def run(self, home=None, script=None, **extra):
         env = {
             **os.environ,
             "PATH": f"{self.tmp / 'bin'}{os.pathsep}{os.environ['PATH']}",
@@ -335,7 +370,7 @@ class Env:
             env.pop("MERGE_QUEUE")
             env.pop("MERGE_LOG")
         r = subprocess.run(
-            [BASH, str(SCRIPT)], env=env, capture_output=True, text=True, encoding="utf-8"
+            [BASH, str(script or SCRIPT)], env=env, capture_output=True, text=True, encoding="utf-8"
         )
         assert r.returncode == 0, r.stderr
         return r
@@ -834,29 +869,51 @@ SCOPING_HIGH = [
     "apps/services/customer_console/customer_console/provider_keys.py",
     "apps/services/agent_edge/agent_edge/token_endpoint.py",
     "apps/services/agent_edge/agent_edge/bearer.py",
+    # CIV-31c (P2): four authorization files. lifecycle.py (capabilities_of),
+    # mcp.py (the read-only narrowing, insufficient_scope), app.py (EdgeGate),
+    # and gateway.ts, the identity door of the BFF.
+    "apps/services/customer_console/customer_console/lifecycle.py",
+    "apps/services/agent_edge/agent_edge/mcp.py",
+    "apps/services/agent_edge/agent_edge/app.py",
+    "workbench/control_plane/src/lib/gateway.ts",
 ]
 #: Near misses that stay STANDARD: an ordinary store, a UI helper, a signing file.
 SCOPING_LOW = [
     "apps/services/gateway/gateway/studio/views_store.py",
     "workbench/control_plane/src/lib/access.ts",
     "apps/services/gateway/gateway/routes/email/transport/signing.py",
+    "apps/services/agent_edge/agent_edge/tools.py",
 ]
 
 
-def test_civ31b_the_floor_covers_the_scoping_files(env):
+#: CIV-31c fix round 1: one run of all 42 paths took 692 s on the PC, over the
+#: 600 s limit of a test. Each chunk is its own test, with its own run.
+SCOPING_CHUNKS = 4
+SCOPING_ALL = [(p, True) for p in SCOPING_HIGH] + [(p, False) for p in SCOPING_LOW]
+
+
+@pytest.mark.parametrize("chunk", range(SCOPING_CHUNKS))
+def test_civ31b_the_floor_covers_the_scoping_files(env, chunk):
     """CIV-31b: the tenancy, RLS, grant, visibility, member, role, group, identity,
     money and sharing files are HIGH. An ordinary store, a UI access helper and a
     signing file are not."""
-    numbers = list(range(5, 5 + len(SCOPING_HIGH) + len(SCOPING_LOW)))
-    for n, path in zip(numbers, SCOPING_HIGH + SCOPING_LOW, strict=True):
+    part = SCOPING_ALL[chunk::SCOPING_CHUNKS]
+    numbers = list(range(5, 5 + len(part)))
+    for n, (path, _) in zip(numbers, part, strict=True):
         env.pr(n, path=path)
     env.run()
     lines = env.log.splitlines()
     assert len(lines) == len(numbers)
-    high, low = lines[: len(SCOPING_HIGH)], lines[len(SCOPING_HIGH) :]
-    for line, n in zip(high, numbers, strict=False):
-        assert line.startswith(f"BACK {n} tier floor HIGH, queued as "), line
-    assert low == [f"DONE {n} abc123" for n in numbers[len(SCOPING_HIGH) :]]
+    for line, n, (path, high) in zip(lines, numbers, part, strict=True):
+        if high:
+            assert line.startswith(f"BACK {n} tier floor HIGH, queued as "), (path, line)
+        else:
+            assert line == f"DONE {n} abc123", (path, line)
+
+
+def test_civ31c_the_scoping_chunks_cover_every_path():
+    covered = [p for k in range(SCOPING_CHUNKS) for p in SCOPING_ALL[k::SCOPING_CHUNKS]]
+    assert sorted(covered) == sorted(SCOPING_ALL)
 
 
 def test_civ31b_an_auto_revert_pr_merges_only_after_the_pass_tested_main(env):
@@ -874,7 +931,8 @@ def test_civ31b_an_auto_revert_pr_merges_only_after_the_pass_tested_main(env):
     wjson(state / "open" / "5.json", {"culprit": "a" * 40, "ids": ["t"], "tip": tip})
     wjson(state / "open" / "6.json", {"culprit": "b" * 40, "ids": ["t"], "tip": "0" * 40})
     (state / "open" / "9.json").write_text('{"culprit": "dd', encoding="utf-8")
-    r = env.run(AUTO_REVERT_STATE=state.as_posix())
+    bot = env.bot_src()
+    r = env.run(script=bot, AUTO_REVERT_STATE=state.as_posix())
     lines = env.log.splitlines()
     assert lines[0] == "DONE 5 abc123"
     assert lines[1].startswith("BACK 7 auto-revert PR with no state file")
@@ -884,12 +942,92 @@ def test_civ31b_an_auto_revert_pr_merges_only_after_the_pass_tested_main(env):
     assert env.premerge_runs == 1
     # The next auto-revert pass tests the tip, and then PR 6 merges.
     wjson(state / "open" / "6.json", {"culprit": "b" * 40, "ids": ["t"], "tip": tip})
-    env.run(AUTO_REVERT_STATE=state.as_posix())
+    env.run(script=bot, AUTO_REVERT_STATE=state.as_posix())
     assert env.log.splitlines()[2:] == ["DONE 6 abc123"]
     # A PR of a lane is not an auto-revert PR, so the state does not hold it.
     env.pr(8)
-    env.run(AUTO_REVERT_STATE=state.as_posix())
+    env.run(script=bot, AUTO_REVERT_STATE=state.as_posix())
     assert env.log.splitlines()[-1] == "DONE 8 abc123"
+
+
+def test_civ31c_revert_tested_reads_main_with_no_workdir(env):
+    """CIV-31c: revert_tested reads the tip with `git -C "$ROOT" ls-remote origin`.
+    A held auto-revert PR makes no workdir, runs no git fetch and no gate. The
+    tip is the tip of the origin of the bot's checkout, not of the workdir."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    body = text[text.index("revert_tested() {") : text.index("# A gh error that a later pass")]
+    assert 'git -C "$ROOT" ls-remote origin refs/heads/main' in body
+    assert "ensure_workdir" not in body and "$WORKDIR" not in body
+    state = env.tmp / "auto-revert"
+    (state / "open").mkdir(parents=True)
+    env.pr(5, path="revert_5.txt")
+    env.view(5, headRefName="auto-revert/" + "a" * 12)
+    wjson(state / "open" / "5.json", {"culprit": "a" * 40, "ids": ["t"], "tip": "0" * 40})
+    nowork = env.tmp / "no-workdir"
+    r = env.run(
+        script=env.bot_src(),
+        AUTO_REVERT_STATE=state.as_posix(),
+        MERGE_BOT_WORKDIR=nowork.as_posix(),
+    )
+    tip = git(env.seed, "rev-parse", "main")
+    assert f"has not tested main at {tip[:9]}" in r.stderr
+    assert not nowork.exists() and env.log == "" and env.premerge_runs == 0
+
+
+@pytest.mark.parametrize("mode", ["dry", "off", None], ids=["dry", "off", "no-unit"])
+def test_civ31c_the_bot_holds_an_auto_revert_pr_while_the_mode_is_not_on(env, mode):
+    """CIV-31c fix round 1 (P2-B): only mode on opens the culprit's task again after
+    the merge. So while AUTO_REVERT_MODE of the auto-revert unit is not on, or
+    systemctl cannot read it, the bot holds an auto-revert PR. It writes one HOLD
+    line, not one per pass, and it merges the PR once the mode is on. A PR of a
+    lane does not wait for the mode."""
+    state = env.tmp / "auto-revert"
+    (state / "open").mkdir(parents=True)
+    tip = git(env.seed, "rev-parse", "main")
+    env.pr(5, path="revert_5.txt")
+    env.view(5, headRefName="auto-revert/" + "a" * 12)
+    wjson(state / "open" / "5.json", {"culprit": "a" * 40, "ids": ["t"], "tip": tip})
+    env.pr(6)
+    if mode is None:
+        (env.fix / "auto_revert_mode").unlink()
+    else:
+        (env.fix / "auto_revert_mode").write_text(mode + "\n", encoding="utf-8")
+    bot = env.bot_src()
+    for _ in range(2):
+        r = env.run(script=bot, AUTO_REVERT_STATE=state.as_posix())
+    lines = env.log.splitlines()
+    want = mode or "unknown"
+    assert lines[0].startswith(f"HOLD 5 the auto-revert mode is '{want}', not on"), lines
+    assert lines[1:] == ["DONE 6 abc123"]
+    assert f"PR 5: auto-revert PR: the auto-revert mode is '{want}', not on" in r.stderr
+    assert env.merges == [f"pr merge 6 --squash --match-head-commit {env.heads[6]}"]
+    calls = (env.fix / "systemctl_calls").read_text(encoding="utf-8").splitlines()
+    assert calls[0] == "--user show -p Environment --value metorite-auto-revert.service"
+    # The mode is on again: the PR merges.
+    (env.fix / "auto_revert_mode").write_text("on\n", encoding="utf-8")
+    env.run(script=bot, AUTO_REVERT_STATE=state.as_posix())
+    assert env.log.splitlines()[2:] == ["DONE 5 abc123"]
+
+
+def test_civ31d_the_bot_reads_the_mode_with_the_one_reader(env):
+    """CIV-31d (H1): the bot, the auto-revert pass and lane-merge step g run the
+    one reader auto_revert_mode.sh. The bot has no systemctl call of its own, so
+    it cannot read the mode another way than the pass. An AUTO_REVERT_MODE in
+    the bot's env counts for nothing: the unit says dry, so the bot holds."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    code = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+    assert not any("systemctl" in ln for ln in code)
+    assert 'bash "$ROOT/scripts/home_server/auto_revert_mode.sh" 9>&-' in text
+    state = env.tmp / "auto-revert"
+    (state / "open").mkdir(parents=True)
+    tip = git(env.seed, "rev-parse", "main")
+    env.pr(5, path="revert_5.txt")
+    env.view(5, headRefName="auto-revert/" + "a" * 12)
+    wjson(state / "open" / "5.json", {"culprit": "a" * 40, "ids": ["t"], "tip": tip})
+    (env.fix / "auto_revert_mode").write_text("dry\n", encoding="utf-8")
+    env.run(script=env.bot_src(), AUTO_REVERT_STATE=state.as_posix(), AUTO_REVERT_MODE="on")
+    assert env.log.startswith("HOLD 5 the auto-revert mode is 'dry', not on")
+    assert env.merges == []
 
 
 def test_civ31b_an_auto_revert_pr_gets_no_retry_when_main_moves(env):
@@ -903,10 +1041,11 @@ def test_civ31b_an_auto_revert_pr_gets_no_retry_when_main_moves(env):
     env.view(5, headRefName="auto-revert/" + "a" * 12)
     wjson(state / "open" / "5.json", {"culprit": "a" * 40, "ids": ["t"], "tip": tip})
     (env.fix / "base_modified").write_text("1", encoding="utf-8")
-    env.run(AUTO_REVERT_STATE=state.as_posix(), MERGE_BASE_RETRY_WAIT="0")
+    bot = env.bot_src()
+    env.run(script=bot, AUTO_REVERT_STATE=state.as_posix(), MERGE_BASE_RETRY_WAIT="0")
     assert env.merges == [f"pr merge 5 --squash --match-head-commit {sha}"]
     assert env.log == ""
-    env.run(AUTO_REVERT_STATE=state.as_posix(), MERGE_BASE_RETRY_WAIT="0")
+    env.run(script=bot, AUTO_REVERT_STATE=state.as_posix(), MERGE_BASE_RETRY_WAIT="0")
     assert len(env.merges) == 2 and env.log == "DONE 5 abc123\n"
 
 
