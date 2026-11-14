@@ -5305,7 +5305,7 @@ STUDIO_WORKFLOW_WRITE_TOOLS = (studio_workflow_publish, studio_workflow_live)
 # the routes over HTTP and runs no SQL, and it takes no member and no org. The
 # ``studio`` packs sit at the cap (``MAX_REQUEST_TOOLS``), so the tool is the one
 # tool of the dark pack ``studio-views``. That pack is NOT in ``tool_packs.FOLLOWS``.
-# The line of ``TOOL_PACKS`` that turns it on is owner-only.
+# The line of the tool-pack flag that turns it on is owner-only.
 #
 # * ``list`` needs the object. It gives one page, in ONE ``UntrustedFrame`` block.
 #   ``dropped`` counts the parts of a view that the member may not read.
