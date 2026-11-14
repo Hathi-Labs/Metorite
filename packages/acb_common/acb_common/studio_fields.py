@@ -635,7 +635,7 @@ def _relation(f: FieldSpec, v: Any) -> dict[str, str]:
 
 
 def _file(f: FieldSpec, v: Any) -> dict[str, str]:
-    # The id of an `attachments` row. The door checks that the viewer may open it.
+    # Only the id shape is checked. No Studio code reads `attachments` yet (D13b).
     try:
         if isinstance(v, Mapping) and set(v) == {"id"} and isinstance(v["id"], str):
             return {"id": str(uuid.UUID(v["id"]))}

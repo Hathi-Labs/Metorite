@@ -963,8 +963,279 @@ def _report(w: _Writer, layout: dict[str, Any]) -> None:
         y += 8
 
 
+# ── The record: a fixed layout for one business record (STU-D13a) ────────────
+#
+# A title, an optional logo, label/value pairs and a lines table. There is no
+# template language. EVERY label and value is written as literal text with a
+# text writer, so no markup, no `**x**` and no `{{x}}` is read. The logo is
+# PNG or JPEG bytes checked by magic number, and nothing is ever fetched.
+# The logo sits on page 1 only. The table header repeats on each page.
+# This code logs nothing.
+
+#: The most label/value pairs, table columns and table rows of one record.
+MAX_RECORD_FIELDS = 60
+MAX_RECORD_COLUMNS = 12
+MAX_RECORD_ROWS = 500
+#: A cell or a value is cut at this many characters. A label is cut at 200.
+MAX_RECORD_CELL_CHARS = 2000
+MAX_RECORD_LABEL_CHARS = 200
+#: The logo: bytes and pixels per side.
+MAX_RECORD_LOGO_BYTES = 128 * 1024
+MAX_RECORD_LOGO_SIDE = 2048
+_RECORD_KEYS = frozenset({"format", "title", "fields", "columns", "rows", "logo"})
+_RECORD_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+
+
+def record_source(record: dict[str, Any]) -> str:
+    """The JSON source of a record, for ``render_pdf("document", ...)``.
+
+    *record* is ``{title, fields: [{label, value}], columns: [str],
+    rows: [[str]], logo: bytes | None}``. The logo bytes travel as base64.
+    This function only builds the JSON. :func:`document_to_pdf` checks it.
+    """
+    out = {k: v for k, v in record.items() if k != "logo"}
+    out["format"] = "record"
+    logo = record.get("logo")
+    if isinstance(logo, (bytes, bytearray)):
+        out["logo"] = base64.b64encode(bytes(logo)).decode("ascii")
+    elif logo is not None:
+        raise PdfRenderError("The logo must be image bytes or empty.")
+    return json.dumps(out, ensure_ascii=False)
+
+
+def _record_text(value: Any, what: str, limit: int) -> str:
+    """One label or value as literal text: hidden characters stripped, cut."""
+    from acb_skills.hidden_text import strip_hidden
+
+    if not isinstance(value, str):
+        raise PdfRenderError(f"{what} must be text.")
+    text = strip_hidden(value).replace("\r\n", "\n").replace("\r", "\n")
+    text = _RECORD_CONTROL.sub("", text.replace("\t", " "))
+    return text[:limit]
+
+
+def _record_logo(raw: Any) -> bytes | None:
+    """The logo bytes when they are a PNG or a JPEG that decodes, else a refusal."""
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise PdfRenderError("The logo must be base64 text or empty.")
+    if len(raw) > MAX_RECORD_LOGO_BYTES * 4 // 3 + 8:
+        raise PdfRenderError("The logo is larger than 128 KiB.", status=413)
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except ValueError as exc:
+        raise PdfRenderError("The logo is not valid base64.") from exc
+    if len(data) > MAX_RECORD_LOGO_BYTES:
+        raise PdfRenderError("The logo is larger than 128 KiB.", status=413)
+    from acb_common.image_probe import UnsupportedImage, probe_image
+
+    try:
+        info = probe_image(data)
+    except UnsupportedImage as exc:
+        raise PdfRenderError("The logo must be a PNG or a JPEG image.") from exc
+    if info.mime not in ("image/png", "image/jpeg") or (
+            info.mime == "image/jpeg" and not data.startswith(b"\xff\xd8\xff")):
+        raise PdfRenderError("The logo must be a PNG or a JPEG image.")
+    if not (0 < info.width <= MAX_RECORD_LOGO_SIDE and 0 < info.height <= MAX_RECORD_LOGO_SIDE):
+        raise PdfRenderError(
+            f"The logo is larger than {MAX_RECORD_LOGO_SIDE} pixels on a side.")
+    # MuPDF reads a cut file in silence, so the end of the file is checked.
+    if not data.rstrip(b"\x00").endswith(
+            b"IEND\xaeB`\x82" if info.mime == "image/png" else b"\xff\xd9"):
+        raise PdfRenderError("The logo image is damaged.")
+    import pymupdf
+
+    try:
+        pix = pymupdf.Pixmap(data)
+        ok = pix.width > 0 and pix.height > 0
+    except Exception as exc:
+        raise PdfRenderError("The logo image is damaged.") from exc
+    if not ok:
+        raise PdfRenderError("The logo image is damaged.")
+    return data
+
+
+def _record_clean(layout: dict[str, Any]) -> dict[str, Any]:
+    """Check the shape and the caps of a record, and return clean text."""
+    unknown = sorted(str(k) for k in layout if k not in _RECORD_KEYS)
+    if unknown:
+        raise PdfRenderError("The record has a key that is not allowed: " + ", ".join(unknown) + ".")
+    fields, columns, rows = layout.get("fields", []), layout.get("columns", []), layout.get("rows", [])
+    if not isinstance(fields, list) or not isinstance(columns, list) or not isinstance(rows, list):
+        raise PdfRenderError("The fields, the columns and the rows must be lists.")
+    if len(fields) > MAX_RECORD_FIELDS:
+        raise PdfRenderError(f"A record has at most {MAX_RECORD_FIELDS} fields.", status=413)
+    if len(columns) > MAX_RECORD_COLUMNS:
+        raise PdfRenderError(f"A table has at most {MAX_RECORD_COLUMNS} columns.", status=413)
+    if len(rows) > MAX_RECORD_ROWS:
+        raise PdfRenderError(f"A table has at most {MAX_RECORD_ROWS} rows.", status=413)
+    if rows and not columns:
+        raise PdfRenderError("A table with rows needs columns.")
+    pairs = []
+    for item in fields:
+        if not isinstance(item, dict) or set(item) != {"label", "value"}:
+            raise PdfRenderError("Each field must be an object with a label and a value.")
+        pairs.append((_record_text(item["label"], "A label", MAX_RECORD_LABEL_CHARS),
+                      _record_text(item["value"], "A value", MAX_RECORD_CELL_CHARS)))
+    heads = [_record_text(c, "A column", MAX_RECORD_LABEL_CHARS) for c in columns]
+    body = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) != len(heads):
+            raise PdfRenderError("Each row must be a list with one cell for each column.")
+        body.append([_record_text(c, "A cell", MAX_RECORD_CELL_CHARS) for c in row])
+    return {"title": _record_text(layout.get("title"), "The title", MAX_RECORD_LABEL_CHARS),
+            "fields": pairs, "columns": heads, "rows": body,
+            "logo": _record_logo(layout.get("logo"))}
+
+
+class _RecordCanvas:
+    """A4 pages, a cursor and literal text. The text writer reads no markup."""
+
+    SIZE, LEAD, MARGIN = 9.0, 12.0, 54.0
+
+    def __init__(self, w: _Writer) -> None:
+        self.w, self.m = w, w.pymupdf
+        paper = self.m.paper_rect("a4")
+        self.width, self.height = paper.width, paper.height
+        self.bottom = self.height - self.MARGIN
+        regular, bold = (_GEIST / _GEIST_FACES[0][0], _GEIST / _GEIST_FACES[1][0])
+        if regular.is_file() and bold.is_file():
+            self.fonts = {False: self.m.Font(fontfile=str(regular)),
+                          True: self.m.Font(fontfile=str(bold))}
+        else:
+            self.fonts = {False: self.m.Font("helv"), True: self.m.Font("hebo")}
+        self.writers: dict[tuple[bool, str], Any] = {}
+        self.page: Any = None
+        self.y = 0.0
+        self.new_page()
+
+    def flush(self) -> None:
+        for (_bold, colour), tw in self.writers.items():
+            tw.write_text(self.page, color=_rgb(colour))
+        self.writers = {}
+
+    def new_page(self) -> None:
+        if self.page is not None:
+            self.flush()
+        if self.w.doc.page_count >= MAX_DOCUMENT_PAGES:
+            raise PdfRenderError(f"The record runs past {MAX_DOCUMENT_PAGES} pages.", status=413)
+        self.page = self.w.doc.new_page(width=self.width, height=self.height)
+        self.y = self.MARGIN
+
+    def text(self, x: float, y: float, text: str, colour: str, *, bold: bool = False,
+             size: float | None = None) -> None:
+        tw = self.writers.setdefault((bold, colour), self.m.TextWriter(self.page.rect))
+        tw.append((x, y), text, font=self.fonts[bold], fontsize=size or self.SIZE)
+
+    def wrap(self, text: str, width: float, *, bold: bool = False,
+             size: float | None = None) -> list[str]:
+        """The lines of *text* in *width* points. A long word breaks by letter."""
+        font, size = self.fonts[bold], size or self.SIZE
+        lines: list[str] = []
+        for para in text.split("\n"):
+            line = ""
+            for word in para.split(" "):
+                trial = f"{line} {word}" if line else word
+                if font.text_length(trial, fontsize=size) <= width:
+                    line = trial
+                    continue
+                if line:
+                    lines.append(line)
+                    line = ""
+                while font.text_length(word, fontsize=size) > width and len(word) > 1:
+                    cut = 1
+                    while cut < len(word) and font.text_length(word[:cut + 1], fontsize=size) <= width:
+                        cut += 1
+                    lines.append(word[:cut])
+                    word = word[cut:]
+                line = word
+            lines.append(line)
+        return lines
+
+
+def _record_fields(cv: _RecordCanvas, c: dict[str, str], pairs: list[tuple[str, str]]) -> None:
+    m, inner = cv.MARGIN, cv.width - 2 * cv.MARGIN
+    label_w = inner * 0.3
+    for label, value in pairs:
+        left = cv.wrap(label, label_w - 8)
+        right = cv.wrap(value, inner - label_w)
+        for i in range(max(len(left), len(right))):
+            if cv.y + cv.LEAD > cv.bottom:
+                cv.new_page()
+            cv.y += cv.LEAD
+            if i < len(left):
+                cv.text(m, cv.y, left[i], c["muted"])
+            if i < len(right):
+                cv.text(m + label_w, cv.y, right[i], c["fg"])
+        cv.y += 3
+
+
+def _record_table(cv: _RecordCanvas, c: dict[str, str], columns: list[str],
+                  rows: list[list[str]]) -> None:
+    m, width = cv.MARGIN, cv.width
+    col_w = (width - 2 * m) / len(columns)
+    heads = [cv.wrap(h, col_w - 6, bold=True) for h in columns]
+
+    def header() -> None:
+        if cv.y + cv.LEAD * max(len(h) for h in heads) + 8 > cv.bottom:
+            cv.new_page()
+        for i in range(max(len(h) for h in heads)):
+            cv.y += cv.LEAD
+            for k, h in enumerate(heads):
+                if i < len(h):
+                    cv.text(m + k * col_w, cv.y, h[i], c["fg"], bold=True)
+        cv.y += 4
+        cv.page.draw_line((m, cv.y), (width - m, cv.y), color=_rgb(c["border"]), width=0.8)
+        cv.y += 2
+
+    cv.y += 12
+    header()
+    for row in rows:
+        cells = [cv.wrap(cell, col_w - 6) for cell in row]
+        for i in range(max(len(x) for x in cells)):
+            if cv.y + cv.LEAD > cv.bottom:
+                cv.new_page()
+                header()
+            cv.y += cv.LEAD
+            for k, cell in enumerate(cells):
+                if i < len(cell):
+                    cv.text(m + k * col_w, cv.y, cell[i], c["fg"])
+        cv.y += 3
+        cv.page.draw_line((m, cv.y), (width - m, cv.y), color=_rgb(c["stripe"]), width=0.4)
+        cv.y += 2
+
+
+def _record_to_pdf(layout: dict[str, Any]) -> bytes:
+    rec = _record_clean(layout)
+    w = _Writer()
+    try:
+        cv = _RecordCanvas(w)
+        c, m = w.c, cv.MARGIN
+        if rec["logo"]:
+            pix = w.pymupdf.Pixmap(rec["logo"])
+            scale = min(160.0 / pix.width, 48.0 / pix.height)
+            box = w.pymupdf.Rect(m, cv.y, m + pix.width * scale, cv.y + pix.height * scale)
+            cv.page.insert_image(box, stream=rec["logo"], keep_proportion=True)
+            cv.y = box.y1 + 14
+        for line in cv.wrap(rec["title"], cv.width - 2 * m, bold=True, size=20)[:6]:
+            cv.y += 24
+            cv.text(m, cv.y, line, c["fg"], bold=True, size=20)
+        cv.y += 14
+        _record_fields(cv, c, rec["fields"])
+        if rec["columns"]:
+            _record_table(cv, c, rec["columns"], rec["rows"])
+        cv.flush()
+        return w.finish()
+    except PdfRenderError:
+        raise
+    except Exception as exc:
+        raise PdfRenderError("The record could not be laid out as a PDF.") from exc
+
+
 def document_to_pdf(source: str) -> bytes:
-    """A checked document layout as a PDF: a 16:9 deck or an A4 report.
+    """A checked document layout as a PDF: a 16:9 deck, an A4 report or an A4
+    record (:func:`record_source`).
 
     Pure, like :func:`html_to_pdf`: no network, and no file but the font
     folder. ⚠️ **It runs in the worker only.** A caller uses
@@ -975,6 +1246,8 @@ def document_to_pdf(source: str) -> bytes:
         layout = json.loads(source)
     except ValueError as exc:
         raise PdfRenderError("The document layout is not JSON.", status=422) from exc
+    if isinstance(layout, dict) and layout.get("format") == "record":
+        return _record_to_pdf(layout)
     if not isinstance(layout, dict) or layout.get("format") not in ("deck", "report") \
             or not isinstance(layout.get(
                 "slides" if layout.get("format") == "deck" else "sections"), list):
@@ -1282,6 +1555,7 @@ __all__ = [
     "markdown_to_html",
     "markdown_to_pdf",
     "pdf_filename",
+    "record_source",
     "render_pdf",
     "sanitize_html",
     "source_to_pdf",
