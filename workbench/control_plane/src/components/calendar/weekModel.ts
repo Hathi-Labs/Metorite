@@ -185,7 +185,9 @@ export function buildWeek(
       }
       const s = Math.max(raw.s, winStart);
       const t = Math.min(raw.e, winEnd);
-      // The lane span is as long as the least block, as in `TimeGrid`.
+      // The lane span is as long as the least block, so two short blocks
+      // that would overlap on screen get two lanes. `TimeGrid` pads only its
+      // reminder pins this way, and its lanes use the raw spans (debt D5-W4).
       const laneEnd = Math.max(t, s + (MIN_BLOCK_PX / hourPx) * 60);
       segs.push({
         id: e.id,
@@ -198,10 +200,16 @@ export function buildWeek(
       });
     }
     for (const { block: b, lane, lanes } of layoutSpans(segs)) {
-      const topPx = Math.max(0, ((b.s - winStart) / 60) * hourPx);
+      let topPx = Math.max(0, ((b.s - winStart) / 60) * hourPx);
       const natural = Math.max(MIN_BLOCK_PX, ((b.e - b.s) / 60) * hourPx - 2);
       // A block never leaves the grid, so a late block can end shorter.
-      const heightPx = Math.max(0, Math.min(natural, winPx - topPx));
+      let heightPx = Math.max(0, Math.min(natural, winPx - topPx));
+      // A block stays easy to see and to click. When the clamp makes it
+      // shorter than the least block, the block moves up to fit instead.
+      if (heightPx < MIN_BLOCK_PX) {
+        heightPx = Math.min(MIN_BLOCK_PX, winPx);
+        topPx = Math.max(0, winPx - heightPx);
+      }
       timed[dayIndex].blocks.push({
         id: b.id,
         topPx,

@@ -65,6 +65,18 @@ describe("golden pixel values (the formula of TimeGrid)", () => {
     const [b] = blocksOf(week([ev("a", L(10, 9), L(10, 9, 10))]), 1);
     expect(b.heightPx).toBe(20);
   });
+  it("keeps a block at the end of the window at the least height, and moves it up to fit", () => {
+    // 21:50 in a 7 to 22 window: the clamp alone would leave 7.67 px.
+    const [b] = blocksOf(week([ev("a", L(10, 21, 50), L(10, 21, 55))]), 1);
+    expect(b.heightPx).toBe(20);
+    expect(b.topPx + b.heightPx).toBe(15 * 46);
+  });
+  it("keeps the top of a block that starts late but has room above the least height", () => {
+    // 21:00 for 90 minutes: the window cuts it at 22:00, so 44 px, which is above 20 px.
+    const [b] = blocksOf(week([ev("a", L(10, 21), L(10, 22, 30))]), 1);
+    expect(b.topPx).toBe(14 * 46);
+    expect(b.heightPx).toBe(44);
+  });
   it("scales by the hour height of the caller", () => {
     const m = buildWeek([ev("a", L(10, 9), L(10, 10))], { anchor: ANCHOR, mode: "week", window: W, hourPx: 60 });
     const [b] = blocksOf(m, 1);
