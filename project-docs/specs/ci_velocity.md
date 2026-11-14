@@ -37,6 +37,17 @@ run (D218). It is not live until the orchestrator installs the unit. §8.8
 holds the design. A review round on 2026-11-14 added the HIGH stop, the second
 read of `main`, 3 runs per tree and the task `0` of the hand-over.
 
+**CIV-31c is BUILT on 2026-11-14** (task 3228, branch `civ31c-mt-99515257`).
+HIGH tier. It is the last code before `AUTO_REVERT_MODE=on`. The pass opens
+the culprit's task again, and a pure revert PR verifies itself. §8.8 holds it.
+Fix round 1 (same day): a guard hook and a check of the tool calls hold the
+reopen to one task, and the merge bot holds a revert PR while the mode is not on.
+
+**CIV-31d is BUILT on 2026-11-15** (task 3307, branch `civ31d-mt-b4984c11`).
+HIGH tier. It is the last code before `AUTO_REVERT_MODE=on`. The guard fails
+closed and checks the status, the mode has one reader, and one supervised
+reopen comes before `on`. §8.8 holds it.
+
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
 **Owning spec** for how much CI runs, and where. `engineering_practice.md` §7a
@@ -147,7 +158,9 @@ under `infra/postgres/` adds only `test_migration_prefixes.py`. The CLI has
   - `pyproject.toml`, `uv.lock`, `.test_durations`.
   - `.github/`, `scripts/affected_tests.py`, `scripts/fences.py`,
     `scripts/ci_unit_guard.py`, `scripts/ci_local.sh`, `scripts/ci_pc/`.
-  - `packages/acb_common/` (the DB seam and the shared settings).
+  - `packages/acb_common/` (the DB seam and the shared settings). CIV-33c-3
+    (2026-11-14) replaced this prefix with narrower rules. The comment above
+    `ACB_COMMON` in `scripts/affected_tests.py` names them.
   - a changed module that more than 40 test files import directly.
 - A change under `infra/postgres/` selects every R8 file, plus
   `test_migration_prefixes.py`. CIV-4b widened the R8 rule to
@@ -931,9 +944,9 @@ Each rung ends in a demo (D211). Each slice of a rung blocks its demo task.
 | CIV-37 | 3062 | 0 | LOW | Model routing by job |
 | CIV-38 | 3063 | 0 | LOW | The quality numbers and the rollback rule |
 | CIV-30 | 3055 | 1 | HIGH | The green pointer. A release ships green. CIV-30c BUILT 2026-11-14 (task 3121): the status `green/main` marks a batch when GitHub refuses the ref, and a slot run picks at its slot (§8.7) |
-| CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first. **BUILT 2026-11-14**, dark (code default `off`, unit `dry`). §8.8 holds the design. CIV-31b BUILT 2026-11-14 (task 3212): the pass reads `main` until it holds still, closes an open revert PR when a fix lands, ends the watch of a PR that a person merged or closed, and stops at 14 hours. The merge bot merges a revert PR only after the pass tested the tip of `main`. The HIGH list covers the tenancy, RLS, grant, visibility, member, role, identity, money and sharing files. It must merge before `on` |
+| CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first. **BUILT 2026-11-14**, dark (code default `off`, unit `dry`). §8.8 holds the design. CIV-31b BUILT 2026-11-14 (task 3212): the pass reads `main` until it holds still, closes an open revert PR when a fix lands, ends the watch of a PR that a person merged or closed, and stops at 14 hours. The merge bot merges a revert PR only after the pass tested the tip of `main`. The HIGH list covers the tenancy, RLS, grant, visibility, member, role, identity, money and sharing files. It must merge before `on`. CIV-31c BUILT 2026-11-14 (task 3228): four authorization files join the HIGH list. A merged revert waits for `DONE` only while the merge bot runs. The pass opens the culprit's task again with one `claude -p` call. A pure revert has `VERIFY: PASS`. The revert author is `Metorite auto-revert`. Fix round 1: a guard hook and the parsed tool calls hold the reopen to one task, the pass pins the MCP entry, the merge bot holds a revert PR while the mode is not `on`, and only the lock shows a live merge bot. CIV-31d BUILT 2026-11-15 (task 3307): the reopen has no allow list, so only the guard's allow output approves a call, and a slow or broken guard approves nothing. The guard lets `set_task_status` set only an `in_progress` status of the task's project. `auto_revert_mode.sh` is the one reader of the mode for the pass, the merge bot and lane-merge. `reopen-check` runs one supervised reopen before `on`. It must merge before `on` |
 | CIV-32 | 3057 | 2 | STANDARD | **BUILT 2026-11-13.** A repair round tests what failed and what the fix reaches (`ci_unit_guard.py repair`) |
-| CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py`. CIV-33d BUILT 2026-11-13 (task 3074): the scan fences of six large files moved to `*_scan.py` files, and `test_scanner_budget.py` caps a scanner file at 30 s. The scanner set costs 1,748 s, down from 2,333 s. `test_affected_tests.py` (381 s) waits for PR 2205. CIV-33c-1 BUILT 2026-11-13 (task 3073): a hub selects its importers up to 20% of the test files, a flag-only diff of `settings.py` or `env_guard.py` selects the tests that name the flag, and `scripts/replay_gate.py` measures the FULL share. For a hub or a flag diff, an app entry, or a test helper that builds an app, selects its test importers. The closure over test imports starts from the import picks, not from the scanners or the SAFETY fences. CIV-33c-2 BUILT 2026-11-14 (task 3073): the R8 must-run, never-skip and disarmed lists moved from the two workflows to the `r8` key of `tests/fences.json`. A workflow or a composite action stays FULL. Any other file under `.github/` is not FULL. An edit of `tests/fences.json` selects the files it adds to a list and the guard's own tests, and a file that does not parse is FULL. The replay of 300 main commits shows 96 FULL (32.0%), and 38 of the 43 commits whose only FULL reason was `.github/` edited a list only. With those edits in `tests/fences.json`, the projected share is 58 of 300 (19.3%). `packages/acb_common/` is the next cause (37 commits) CIV-33e BUILT 2026-11-14 (task 3075): `SHARD_TARGET_S` is 300 and `ALL_SHARDS` is 8, and `test_board_stats_r8.py` split into three files of 300 s or less. |
+| CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py`. CIV-33d BUILT 2026-11-13 (task 3074): the scan fences of six large files moved to `*_scan.py` files, and `test_scanner_budget.py` caps a scanner file at 30 s. The scanner set costs 1,748 s, down from 2,333 s. `test_affected_tests.py` (381 s) waits for PR 2205. CIV-33c-1 BUILT 2026-11-13 (task 3073): a hub selects its importers up to 20% of the test files, a flag-only diff of `settings.py` or `env_guard.py` selects the tests that name the flag, and `scripts/replay_gate.py` measures the FULL share. For a hub or a flag diff, an app entry, or a test helper that builds an app, selects its test importers. The closure over test imports starts from the import picks, not from the scanners or the SAFETY fences. CIV-33c-2 BUILT 2026-11-14 (task 3073): the R8 must-run, never-skip and disarmed lists moved from the two workflows to the `r8` key of `tests/fences.json`. A workflow or a composite action stays FULL. Any other file under `.github/` is not FULL. An edit of `tests/fences.json` selects the files it adds to a list and the guard's own tests, and a file that does not parse is FULL. The replay of 300 main commits shows 96 FULL (32.0%), and 38 of the 43 commits whose only FULL reason was `.github/` edited a list only. With those edits in `tests/fences.json`, the projected share is 58 of 300 (19.3%). `packages/acb_common/` is the next cause (37 commits). CIV-33c-3 BUILT 2026-11-14 (task 3073): an acb_common change selects each test that imports it at any depth, and the projected FULL share is 19.3%. The target of 15% is not met. CIV-33e BUILT 2026-11-14 (task 3075): `SHARD_TARGET_S` is 300 and `ALL_SHARDS` is 8, and `test_board_stats_r8.py` split into three files of 300 s or less. |
 | CIV-34 | 3059 | 2 | STANDARD | Conflict rules in the merge bot, tested on the merged tree. CIV-34a BUILT 2026-11-14 (§8.9): the rules, the checks on the merged tree, and the trailer. The fix round of the PR 2266 review (same day) removed `rerere`, `rebuild` and the markdown `union`, and added the ref checks and the `ls-remote` check. CIV-34b (a model proposal) is open |
 | CIV-35 | 3060 | 2 | LOW | A proposal: review depth by file class. It needs an owner decision |
 
@@ -1069,11 +1082,18 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
   every check and the local revert. It writes one line in
   `~/lanes/auto-revert.log` and one report in `~/lanes/auto-revert/`. It
   writes nothing to GitHub and nothing to `main`. The unit file sets `dry`.
+- **One source and one reader of the mode** (CIV-31d). The source is the line
+  `Environment=AUTO_REVERT_MODE=` of `metorite-auto-revert.service`, as
+  `systemctl --user show` merges the unit file and each drop-in. The reader is
+  `scripts/home_server/auto_revert_mode.sh`. The pass, the merge bot and step g
+  of `lane-merge.md` run it. The pass does not read the mode from its own env,
+  so the pass and the bot cannot see two modes. `docs/home_box.md` §3.8 gives
+  the steps to set it. Fence: `test_civ31d_one_reader_of_the_mode`.
 - **The pass.** It runs the CIV-5 poller. When the poller names the first bad
   commit of a red push batch, the pass checks that commit. It runs the failed
   tests 3 times each on the tip of `main`, on the culprit and on its parent.
   Each run must give the same answer. It makes the revert on the tip in a temp
-  worktree. The failed tests must pass on that revert tree.
+  worktree. The failed tests must pass on that revert tree 3 times (CIV-31c).
 - **Main moves.** The probes can take hours, and `main` can move. Before the
   revert goes out, the pass reads `main` again. When the failed tests pass on
   the new tip, a fix landed, and the pass makes no revert (`SKIP`). Else it
@@ -1088,6 +1108,13 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
   changes, and the next pass reads it again. A PR can merge while the merge
   bot queue still waits on its hand-over. Then the bot writes `DONE` on its
   next pass, and the pass writes no `by=hand` line.
+- **The pass waits for `DONE` only while the merge bot runs** (CIV-31c). Only
+  the lock of the merge bot counts. Each pass opens the lock file
+  `~/.cache/metorite-merge-bot/lock`, so its mtime is the start of the last
+  pass. The unit stops a pass at 2 hours, so the window is 2 hours and 15
+  minutes. A mkdir lock (`lock.d`) that is less than 3 hours old counts too.
+  A timer is a schedule and not a pass, and a log line is no sign. With no
+  sign, the pass writes `REVERTED ... by=hand` and does not wait (fix round 1).
 - **A fix lands while the revert PR waits.** pr-check takes about 32 minutes
   on the revert PR. While the PR is open, each pass runs the failed tests on
   each new tip of `main`, 3 times. When each run passes, a fix landed. The pass
@@ -1103,25 +1130,118 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
 - **The merge bot waits for the test of the tip.** The merge bot merges a PR
   with the head branch `auto-revert/...` only when its file in `open/` holds
   the tip of `main` now. It reads the tip with `git ls-remote` before the
-  checks and the gate, so a held PR costs no trial merge and no premerge. It
-  reads the tip again right before the merge, because `main` can move during
-  premerge. Another tip waits in the queue for the next auto-revert pass, and
-  so does a file that does not parse. A PR with no file goes `BACK`.
+  checks and the gate, so a held PR costs no trial merge and no premerge.
+  CIV-31c: it runs `ls-remote` in its own checkout (`$ROOT`), so a held PR
+  needs no workdir. It reads the tip again right before the merge, because
+  `main` can move during premerge. Another tip waits in the queue for the
+  next auto-revert pass, and so does a file that does not parse. A PR with no
+  file goes `BACK`.
+- **The merge bot holds a revert PR while the mode is not `on`** (CIV-31c fix
+  round 1). Only mode `on` opens the culprit's task again after the merge. So
+  the bot reads `AUTO_REVERT_MODE` with the one reader of the mode,
+  `auto_revert_mode.sh` (CIV-31d).
+  When the mode is not `on`, or systemctl gives no mode, the bot holds each
+  `auto-revert/...` PR. It writes one `HOLD <pr> <reason>` line in
+  `~/lanes/merge-bot.log`, and no second one until the mode was `on` again.
 - **The merge bot holds a revert PR on a doubt.** A failed close or a doubt
   keeps the old tip in the file, so the merge bot holds the PR. GitHub can
   answer "Base branch was modified" to the merge call. Then the bot does not
   try the merge again in the same pass, because the new tip is not tested.
 - **The limit.** A probe stops at 30 minutes. A bisect holds at most 12 probes,
-  and the pass adds 10 to 18. The unit stops a pass at 14 hours
+  and the pass adds 12 to 24. The unit stops a pass at 14 hours
   (`TimeoutStartSec=14h`), and a lock is stale after 15 hours.
 - **`on`.** The pass pushes the branch `auto-revert/<sha>`. It opens a PR with
   the title `Revert "<subject>"` and the trailer `Auto-Revert: <sha>` in the
-  commit and the body. The body has a `VERIFY: PASS` line, because the revert
-  tree passed the failed tests. `lane_handover.sh` hands the PR to the merge
-  bot as STANDARD, with the task `0`. The note names the culprit's task. So
-  `lane-merge` opens the culprit's task again after the merge, and never closes
-  it (`scripts/home_server/lanes/lane-merge.md`). Then the pass comments on
-  the culprit's PR with the failed tests and the task.
+  commit and the body. `lane_handover.sh` hands the PR to the merge bot as
+  STANDARD, with the task `0`. The note names the culprit's task, so no lane
+  closes it (`scripts/home_server/lanes/lane-merge.md`). Then the pass
+  comments on the culprit's PR with the failed tests and the task.
+- **The revert PR verifies itself** (CIV-31c, owner decision 2026-11-14). The
+  body has a `VERIFY: PASS` line only for a pure `git revert`. The patch of
+  the revert must be the reverse of the culprit's patch, with no context lines
+  (`git diff -U0 | git patch-id --stable`, as `premerge.sh` reads it). And the
+  failed tests must pass in 3 of 3 runs on the revert tree. The line gives
+  those numbers. pr-check still gates the PR. Another revert, such as one with
+  an edit on top, gets no `VERIFY: PASS` line. The pass does not hand it over,
+  and it writes a `PERSON` line. A HIGH or migration culprit still stops first.
+- **The author of a revert** (CIV-31c, owner decision). The revert commit has
+  the author and committer name `Metorite auto-revert`. The email is the
+  `user.email` of the checkout that the pass runs in (`AUTO_REVERT_REPO_DIR`,
+  by default `~/Metorite`). The commit sets both with `git -c`, and it changes
+  no git config. A `GIT_AUTHOR_NAME` in the env does not win.
+- **The pass opens the culprit's task again** (CIV-31c, owner decision
+  2026-11-14, answer `ab354a4d`). After each `REVERTED` line, mode `on` runs
+  one `claude -p` call with the Metorite sign-in that the box already has. It
+  adds no secret and no token. The call has a limit of 180 seconds and a cap of
+  USD 0.50. The guard approves only `get_task`, `get_project`,
+  `set_task_status` and `add_comment` of the Metorite server, and refuses each
+  other tool (CIV-31d). `--tools ""` removes
+  each built-in tool. `--strict-mcp-config` loads only the `metorite` entry of
+  `.mcp.json`. The call runs in an empty folder with
+  `--setting-sources project`, so it reads no settings file. The prompt names
+  the task id and gives the comment: the revert PR, the culprit sha and the
+  failed tests. The session moves the task to a status of the category
+  `in_progress`, and adds the comment.
+- **Mechanism holds the call to the one task** (CIV-31c fix round 1). An
+  allow list names tools, not inputs, and each of the four tools takes any id.
+  A task text or a test id could ask the session for another task. So:
+  - **A guard.** `--settings` adds a PreToolUse hook on each call and a
+    PostToolUse hook on `get_task` and `get_project`. The pass writes the
+    guard script and its config beside the empty folder. The guard refuses a
+    call on another task. It refuses `get_project` for any project but the one
+    that `get_task` gave for the task. It refuses a comment with another text
+    or another key, and any other tool. An error refuses the call too.
+  - **The guard checks the status** (CIV-31d, P3). After `get_project`, the
+    guard keeps the ids of the statuses of the category `in_progress`. It
+    refuses `set_task_status` before `get_project`, and with any other status.
+  - **The guard fails closed** (CIV-31d, G1). The command has no
+    `--allowedTools`. `--permission-mode dontAsk` refuses each call that
+    nothing approves. The guard approves an allowed call with one output on
+    stdout:
+    `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}`.
+    A guard that is slow, killed or broken prints no such output, so Claude
+    Code refuses the call. Before CIV-31d, an allow list approved the four
+    tools first, and only a guard exit 2 refused a call. Before the session,
+    the pass runs the guard twice. It wants a refusal with no allow output for
+    another task, and the allow output for the task. Another answer means no
+    session.
+  - **The tool calls decide.** The call uses `--output-format stream-json`.
+    The pass writes `REOPENED` only when exactly the allowed calls on that one
+    task succeeded. The status must have the category `in_progress`. A call on
+    another task is a `PERSON` line, also when the guard refused it. The last
+    line of the answer counts for nothing.
+  - **No free text in the prompt.** A test id reaches the prompt only when it
+    has the characters `[A-Za-z0-9_./:[]-]`, at most 200 of them. The comment
+    lists at most 20 ids, and the prompt calls the comment data to post word
+    for word. So no id holds an instruction or an `@` mention.
+  - **A pinned MCP entry.** The `metorite` entry of `.mcp.json` must be type
+    `http`, with an `https` URL on `mcp.metorite.com` and no other key. Any
+    other entry writes a `PERSON` line, and the pass runs nothing.
+  - The guard ran under Claude Code 2.1.325, the version on the box, with
+    these flags. It passed `get_task` of the task and refused another task and
+    another project. The check called only read tools.
+  - **The live check of CIV-31d** (2026-11-15). The real `claude` 2.1.325 ran
+    the production command with Haiku against a fake stdio MCP server, never
+    against Metorite. The guard passed the four calls of a reopen, and the
+    audit passed. It refused five calls of a forced prompt: two calls on
+    another task, `delete_task`, a `done` status on the task, and another
+    project. A hook that slept past its 20 s limit let no call reach the
+    server. A hook that exited 1 let no call reach it either. The four runs
+    cost USD 0.011.
+- **The task id.** It comes only from a task URL in the culprit's PR body or
+  in its commit message. A task number or a branch name is not enough. Two task
+  ids in one text are a doubt. A PR body and a commit message that name two
+  tasks are a doubt too (fix round 1). With no single id, the pass writes a
+  `PERSON` line with `reopen=none`. When the call fails, runs past its limit, or meets a broken
+  sign-in, the pass writes one `PERSON` line with `reopen=failed`. The revert
+  stands in each case, and
+  `lane-merge` opens the task by hand. `dry` prints the command in its report
+  and runs nothing.
+- **A drop from `on`** (CIV-31c). Only `on` watches a revert PR. When the mode
+  drops to `dry`, to `off` or to an unknown value while a revert PR is open,
+  the pass writes one `PERSON` line with `watch=off` for it. It writes no
+  second line for that PR. Mode `off` takes no lock and runs no poller for
+  this check (fix round 1). The merge bot holds the PR until the mode is `on`.
 - **The brakes.** The log counts the reverts, and a fourth in one hour stops.
   A culprit that is a revert is never reverted. A second red run of the same
   culprit opens no second PR. An open PR that names `This reverts commit
@@ -1155,7 +1275,11 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
     credits (`store.py`, `main.py`), the money path (`payments.py`), the keys
     (`keys.py`, `deployment_keys.py`, `provider_keys.py`), `apps.py` and
     `operators.py`. It added `token_endpoint.py` and `bearer.py` of the agent
-    edge too.
+    edge too. CIV-31c added four authorization files. `lifecycle.py` of the
+    operator console holds `capabilities_of`. `mcp.py` of the agent edge holds
+    the read-only narrowing and the `insufficient_scope` check. `app.py` holds
+    `EdgeGate`. `workbench/control_plane/src/lib/gateway.ts` is the identity
+    door of the BFF. The list now matches 683 tracked files (679 before).
   - `main` moves on each of 3 reads after the probes.
   - The revert PR of the culprit merged or closed, and a later run is red
     again. A run of a tree from before that merge or that fix is an old run,
@@ -1176,9 +1300,9 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
     90 seconds after SIGTERM.
 - **Never.** The pass never pushes to `main` and never force-pushes. It never
   merges and never dispatches a workflow. The merge bot merges the revert PR.
-- **A known limit: no task reopen by the pass.** The box has no Metorite write
-  credential. So `lane-merge` opens the culprit's task again after the merge of
-  the revert PR. The log line, the report and the queue note name the task.
+- **A known limit: a stop during the reopen.** A stop of the unit during the
+  `claude -p` call leaves the `REVERTED` line with no `REOPENED` or `PERSON`
+  line after it. A person reads the log and opens the task.
 - **A known limit: the bad commit.** The poller takes the head sha of the red
   run as the bad commit. The batch tests the tip of `main`, which can be
   newer. Then the bisect can exit 3, and the pass writes a `PERSON` line.
@@ -1190,8 +1314,19 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
   runs no recheck, so the revert PR waits in the queue until that pass ends.
   On a busy `main`, each new tip needs a new test, so a revert PR can wait for
   several passes.
+- **Before `on`: one supervised reopen** (CIV-31d). A person runs
+  `python3 scripts/home_server/auto_revert.py reopen-check <task id>` once on
+  the box, as `dev`, on a scratch task. It runs the reopen of mode `on` with
+  the real sign-in, whatever the mode of the unit is. It never writes the log
+  of the pass. It keeps a folder with its line (`check.log`), the stream
+  (`stream.jsonl`) and the guard log (`calls.jsonl`). The person checks the
+  status of the task, the one comment, and the four approved calls on that
+  task. Exit 0 means `REOPENED`. The owner's long-lived Claude token
+  (`claude setup-token`) is a precondition, because the box sign-in can
+  expire. `docs/home_box.md` §3.8 holds the exact steps.
 - **Go `on`.** After the week of `dry`, read the log and the reports. CIV-38
-  lands first (§8.5). Then set `AUTO_REVERT_MODE=on` in the unit and reload it.
+  lands first (§8.5), and the supervised reopen passes. Then set the mode to
+  `on` with the steps of `docs/home_box.md` §3.8.
 
 ### 8.9 CIV-34a as built: conflict rules in the merge bot (2026-11-14)
 

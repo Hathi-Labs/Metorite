@@ -132,3 +132,12 @@ def test_nav_interfaces_match_the_schema():
     for name in ("NavRow", "NavSection"):
         assert _interface_keys(name) == set(schema["$defs"][name]["properties"]), name
     assert _interface_types("NavRow")["icon"] == "NavIcon | null"
+
+
+def test_nav_count_cap_equals_the_ts_twin():
+    from acb_common.studio_manifest import MAX_NAV_COUNTS
+
+    m = re.search(r"export const MAX_NAV_COUNTS\s*=\s*(\d+);", _ts())
+    assert m and int(m.group(1)) == MAX_NAV_COUNTS
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    assert schema["$defs"]["NavRow"]["properties"]["count"]["anyOf"][0] == {"type": "boolean"}

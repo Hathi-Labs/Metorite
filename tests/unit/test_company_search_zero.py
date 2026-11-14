@@ -44,7 +44,12 @@ from gateway.retrieval import company, sources, turn_vector
 from gateway.retrieval.sources import Hit
 
 from tests.unit.test_company_search_recency import recency  # noqa: F401
-from tests.unit.test_company_search_sources import ALL, ORG, apps, member  # noqa: F401
+from tests.unit.test_company_search_sources import ALL, FEATURES, ORG, apps, member  # noqa: F401
+
+#: The sources that the test member holds, in the order of the route. A source
+#: added to ``REGISTRY`` later (the Studio source of STU-C5a) is not asked
+#: for this member, so a test counts these and not every key of the registry.
+HELD = [key for key in sources.REGISTRY if key in FEATURES]
 
 KINDS = {"tasks": "task", "email": "email", "people": "person", "crm": "deal",
          "artifacts": "artifact", "whatsapp": "whatsapp", "knowledge": "page"}
@@ -110,7 +115,7 @@ class World:
             if key in self.fail:
                 raise RuntimeError("the app is down")
             hits = []
-            for row in self.corpus[key]:
+            for row in self.corpus.get(key, []):
                 ident, text = row[0], row[1]
                 kind = row[2] if len(row) > 2 else KINDS[key]
                 stamp = row[3] if len(row) > 3 else None
@@ -265,7 +270,7 @@ class TestEachWordAlone:
         assert took < 1.5, took
         for entry in answer["broadened"]:
             assert entry["hits"] == 0
-            assert entry["skipped"] == [k for k in sources.REGISTRY]
+            assert entry["skipped"] == HELD
 
     def test_no_time_left_asks_no_second_pass(self, world, recency, monkeypatch):  # noqa: F811
         recency(True)
@@ -621,4 +626,4 @@ class TestFlagOffKeepsKr1:
         answer = run("Aroh Attero")
         assert answer == {"query": "Aroh Attero", "hits": [], "skipped": []}
         assert {w for _k, w, _o in world.calls} == {"Aroh Attero"}
-        assert len(world.calls) == len(sources.REGISTRY)
+        assert len(world.calls) == len(HELD)

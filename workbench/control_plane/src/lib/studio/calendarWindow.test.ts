@@ -8,9 +8,10 @@ import { startOfMonthGrid } from "@/app/calendar/components/shared";
 import { buildWeek, windowOfDays } from "@/components/calendar/weekModel";
 import type { GridEvent } from "@/components/calendar/types";
 import {
-  CAP_SENTENCE, DEFAULT_MODE, MAX_FILTERS, capSentence, eventsOnDay, joinFilters, periodRange, periodSource,
+  CAP_SENTENCE, DEFAULT_MODE, capSentence, eventsOnDay, joinFilters, periodRange, periodSource,
   periodTitle, stepPeriod, switchMode, visibleDays, windowConditions,
 } from "./calendarWindow";
+import { MAX_FILTERS } from "./viewBlocks";
 
 const L = (d: number, h = 0, mo = 10) => new Date(2026, mo, d, h);
 const ANCHOR = L(12, 15); // Thursday 2026-11-12
@@ -66,6 +67,14 @@ describe("the window filter", () => {
     expect(out).toHaveLength(MAX_FILTERS);
     expect(out.slice(-2).map((c) => (c as { op: string }).op)).toEqual(["gte", "lt"]);
     expect((out[MAX_FILTERS - 3] as { field: string }).field).toBe("f5");
+  });
+
+  it("keeps both window conditions whole with 8 own conditions, and keeps 6 own", () => {
+    const own = Array.from({ length: 8 }, (_, i) => ({ field: `f${i}`, op: "eq", value: i }));
+    const out = joinFilters(own, windowConditions("d", "date", "week", ANCHOR)) as { field: string; op: string }[];
+    expect(out).toHaveLength(MAX_FILTERS);
+    expect(out.slice(0, 6).map((c) => c.field)).toEqual(["f0", "f1", "f2", "f3", "f4", "f5"]);
+    expect(out.slice(6).map((c) => c.op)).toEqual(["gte", "lt"]);
   });
 
   it("makes the source of a period and keeps the limit and the action", () => {

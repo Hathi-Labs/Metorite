@@ -72,8 +72,12 @@ async def test_baseline_every_source_answers_its_ten_questions(seeded, app_engin
     assert summary.failing == ()
     assert summary.recall == 1.0, f"missed: {summary.missed}"
     assert summary.by_source == {s: (10, 10) for s in SOURCES}
-    # Only the two sources without questions are empty. Whatsapp and artifacts hold no data.
-    assert set(summary.empty) == {"artifacts", "whatsapp"}
+    # Only the sources without questions are empty: the registry's sources
+    # that hold no seed data (whatsapp and artifacts today). The set comes
+    # from the registry, so a source that joins or leaves it (STU-C5a and its
+    # revert, 2026-11-14) does not turn this test red.
+    assert set(summary.empty) == set(run.registry_names()) - set(SOURCES)
+    assert {"artifacts", "whatsapp"} <= set(summary.empty)
     assert score.verdict(summary) == score.EXIT_PASS
 
 

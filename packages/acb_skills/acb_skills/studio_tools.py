@@ -4444,8 +4444,8 @@ async def studio_app_read(
 # ONE read tool over the routes of the Workflows app, as the member of the
 # run: :func:`studio_workflow_read` with no id reads ``GET /workflows`` (one
 # page of the list), and with an id reads ``GET /workflows/{id}``. It is one
-# tool and not two because the studio pack is at its room limit (see
-# :data:`STUDIO_WORKFLOW_TOOLS`). The gates of the route bind
+# tool and not two because the studio pack was at its room limit when it
+# shipped (see :data:`STUDIO_WORKFLOW_TOOLS`). The gates of the route bind
 # (``feature:workflows``, and the tenant under RLS), and the tool sends no org
 # and no member. A refusal of the route comes back with its own text. The tool
 # writes nothing, and no write joins the ``workflows`` family: the F13 tools of
@@ -4719,7 +4719,7 @@ async def _workflow_get(wid: str) -> dict[str, Any]:
 # :func:`studio_workflow_read` with a ``run_id`` lists the human steps of one
 # workflow run, as the member, through ``GET /workflows/runs/{run_id}/steps``.
 # It is a mode of the one workflow read and not a tool of its own, because the
-# studio pack is at its room limit (see :data:`STUDIO_WORKFLOW_TOOLS`). The
+# studio pack was at its room limit (see :data:`STUDIO_WORKFLOW_TOOLS`). The
 # route gives a task id only to the person of the step. A title, a node id and
 # a person are text that other members wrote, so the whole list comes in ONE
 # untrusted frame, as the records of ``studio_record_list`` do.
@@ -4830,10 +4830,11 @@ async def studio_workflow_read(
 
 
 #: The one workflow read (STB-6a), after the record tools. ⚠️ With it, the
-#: studio pack holds 23 tools and is at its room limit: a Studio turn that
-#: also loads the email pack sends 56 + 1 (the load tool) + 31 + 23 - 1 (the
-#: email specialist) = 110 tools, which is ``MAX_REQUEST_TOOLS``. One more
-#: tool makes the cap drop the studio pack. So the two writes of STB-6b
+#: Studio tools are 23, at their room limit: a Studio turn that also loads the
+#: email pack sends 56 + 1 (the load tool) + 31 + 23 - 1 (the email
+#: specialist) = 110 tools, which is ``MAX_REQUEST_TOOLS``. WS-67 TS-1b split
+#: the 23 into the ``studio`` core (10) and ``studio-more`` (13), and this tool
+#: is in ``studio-more``. One more Studio tool makes the cap drop ``studio-more``. So the two writes of STB-6b
 #: (publish and live) sit in their own small pack, ``studio-workflows``
 #: (:data:`STUDIO_WORKFLOW_WRITE_TOOLS`), which ships dark. Fence:
 #: ``test_studio_workflow_tools.py::test_a_studio_turn_that_loads_the_email_pack_keeps_the_studio_pack``.
@@ -4847,7 +4848,7 @@ STUDIO_WORKFLOW_TOOLS = (studio_workflow_read,)
 # Two write tools over the four routes of ``routes/workflows/publish.py``, as
 # the member of the run: :func:`studio_workflow_publish` (publish, or roll back
 # to a version) and :func:`studio_workflow_live` (enable, or disable). The
-# ``studio`` pack is at its room limit, so they form their own small pack,
+# ``studio`` pack was at its room limit (before TS-1b), so they form their own small pack,
 # ``studio-workflows`` (``tool_packs.PACKS``), of the same owner. That pack is
 # NOT in ``tool_packs.FOLLOWS``: it is on only where the tool-pack flag names it,
 # and only the owner adds that line. The four routes need ``workflows:publish``.

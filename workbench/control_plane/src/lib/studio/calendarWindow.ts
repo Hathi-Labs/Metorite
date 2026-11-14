@@ -12,14 +12,12 @@ import { addMonths, startOfMonthGrid } from "@/app/calendar/components/shared";
 import { addDays } from "@/app/tasks/lib/scheduling";
 import { buildWeek, shiftAnchor, windowOfDays, type WeekDay } from "@/components/calendar/weekModel";
 import type { GridEvent } from "@/components/calendar/types";
+import { MAX_FILTERS } from "./viewBlocks";
 
 export type CalendarMode = "month" | "week" | "day";
 
 /** The mode that a calendar opens in. A week shows the hours of a visit and stays readable. */
 export const DEFAULT_MODE: CalendarMode = "week";
-
-/** The most conditions of one `list` filter. `studio_query.MAX_FILTERS` holds the same number. */
-export const MAX_FILTERS = 8;
 
 /** The days of the month grid: six weeks. */
 export const MONTH_CELLS = 42;
@@ -69,8 +67,9 @@ export function windowConditions(
 }
 
 /**
- * The filter of the read: the view's own conditions first, then the window. The window always
- * stays whole, so the own conditions give way when the cap would cut it.
+ * The filter of the read: the view's own conditions first, then the window. The own conditions
+ * are already resolved (`ownListArgs`). The window always stays whole, so only the own conditions
+ * are cut, to `MAX_FILTERS - 2`.
  */
 export function joinFilters(own: readonly unknown[], window: readonly WindowCondition[]): unknown[] {
   return [...own.slice(0, Math.max(0, MAX_FILTERS - window.length)), ...window];
