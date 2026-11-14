@@ -41,6 +41,8 @@ from acb_common import studio_query as sq
 from acb_common.studio_manifest import validate_manifest
 from acb_common.studio_rules import parse_rules
 
+from tests.unit import _r8_lists as r8_lists
+
 pytest.importorskip("sqlalchemy")
 
 from gateway.routes.studio import invoke
@@ -723,9 +725,7 @@ def test_the_migration_is_expand_only_and_adds_the_column_and_the_hot_type() -> 
 
 
 def test_this_suite_and_the_r8_suite_are_on_the_must_run_lists() -> None:
-    for workflow in ("pr-check.yml", "deploy.yml"):
-        text = (_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
-        assert re.search(r"^[ \t]+tests/unit/test_studio_row_rules_r8\.py(?: \\)?$", text, re.M), workflow
+    assert "tests/unit/test_studio_row_rules_r8.py" in r8_lists.must_run()
 
 
 # ── Fix round 4 ─────────────────────────────────────────────────────────────

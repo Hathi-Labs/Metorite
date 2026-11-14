@@ -73,6 +73,7 @@ pytest.importorskip("sqlalchemy")
 
 from sqlalchemy import text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit import test_activity_feed_tenant as _feed
 from tests.unit import test_cost_rollup_tenant as _cost
 
@@ -469,6 +470,4 @@ def test_the_agent_alias_blob_reads_only_the_bound_org(world):
 
 class TestThisSuiteIsArmed:
     def test_this_suite_is_named_in_the_ci_skip_guard(self):
-        workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(
-            encoding="utf-8")
-        assert "tests/unit/test_observability_two_org_r8.py" in workflow
+        assert "tests/unit/test_observability_two_org_r8.py" in r8_lists.must_run()

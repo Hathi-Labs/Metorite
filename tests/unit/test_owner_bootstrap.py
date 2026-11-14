@@ -73,6 +73,7 @@ from acb_auth.access import _BOOTSTRAP_ORG_SLUG
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import apply_ladder
 
 #: The launch snapshot (``tests/conftest.py``), not the live variable:
@@ -362,9 +363,5 @@ def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     Structural, so it runs with no database — the property being pinned is
     that CI *notices* when this suite stops executing.
     """
-    from pathlib import Path
 
-    workflow = (
-        Path(__file__).resolve().parents[2] / ".github/workflows/pr-check.yml"
-    ).read_text(encoding="utf-8")
-    assert "tests/unit/test_owner_bootstrap.py" in workflow
+    assert "tests/unit/test_owner_bootstrap.py" in r8_lists.must_run()

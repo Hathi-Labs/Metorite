@@ -30,6 +30,10 @@ R8 reason and is not in the list, because the release gate never runs it.
 workflow file, not from its own command line. deploy.yml's R8 gate gives it
 the release commit's copy of deploy.yml.
 
+``check --lists-from-fences`` (CIV-33c-2) reads the lists from the ``r8`` key of
+``tests/fences.json``. The workflows no longer carry them inline. A file that
+does not parse, a missing key or an empty list fails closed.
+
 ``repair`` (CIV-32, D218) narrows a repair round. On a ``synchronize`` push it
 finds the newest finished pr-check run of the same PR, reads its shard
 reports, and selects the files that failed there. It adds the files that the
@@ -128,7 +132,7 @@ def check(
     not. A PR that deletes an R8 suite but keeps its line would otherwise pass
     here and turn the next full run red."""
     missing = [
-        f"a --must-run file is not in the tree: {p}. Delete its line in pr-check.yml too."
+        f"a --must-run file is not in the tree: {p}. Delete its line in tests/fences.json too."
         for p in must_run
         if tree_root is not None and not (tree_root / p).is_file()
     ]
@@ -255,6 +259,31 @@ def guard_lists(workflow: str, step: str) -> dict[str, list[str]]:
         bad = [p for p in out[flag] if not _SAFE_PATH.match(p)]
         if bad:
             raise GuardListError(f"the {flag} list of {step!r} holds a value that is not a test path: {bad[0]}")
+    return out
+
+
+def fence_lists(text: str) -> dict[str, list[str]]:
+    """The three lists of the ``r8`` key of ``tests/fences.json`` (CIV-33c-2).
+
+    Returns the keys of ``LIST_FLAGS``. Fails closed: text that is not JSON,
+    no ``r8`` key, an empty ``never_skip`` or ``must_run`` list, or a path that
+    is not a test path."""
+    try:
+        r8 = json.loads(text)["r8"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise GuardListError(f"no readable `r8` key ({exc!r})") from exc
+    out: dict[str, list[str]] = {}
+    for flag in LIST_FLAGS:
+        values = r8.get(flag[2:].replace("-", "_")) if isinstance(r8, dict) else None
+        if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+            raise GuardListError(f"the `r8` key has no list for {flag}")
+        out[flag] = values
+    for flag in ("--never-skip", "--must-run"):
+        if not out[flag]:
+            raise GuardListError(f"the `r8` key gives an empty {flag} list")
+        bad = [p for p in out[flag] if not _SAFE_PATH.match(p)]
+        if bad:
+            raise GuardListError(f"the {flag} list of `r8` holds a value that is not a test path: {bad[0]}")
     return out
 
 
@@ -848,6 +877,47 @@ def empty_report(out: Path) -> bool:
     return True
 
 
+def _resolve_lists(args: argparse.Namespace) -> tuple[list[str], list[str], tuple[str, ...] | list[str]] | None:
+    """The lists that ``check`` uses: the command line, a workflow step of the
+    release commit (CIV-30), or the ``r8`` key of tests/fences.json (CIV-33c-2).
+    None means the guard fails closed."""
+    must_run, never_skip, disarmed = args.must_run, args.never_skip, args.disarmed or DISARMED
+    if args.lists_from_fences is not None:
+        try:
+            lists = fence_lists(args.lists_from_fences.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            print(
+                f"::error title=R8 guard lists unknown::cannot read the guard lists of "
+                f"{args.lists_from_fences}: {exc}. The guard fails closed."
+            )
+            return None
+        print(
+            f"guard lists from {args.lists_from_fences}: "
+            f"{len(lists['--must-run'])} must-run, {len(lists['--never-skip'])} never-skip"
+        )
+        return lists["--must-run"], lists["--never-skip"], lists["--disarmed"] or DISARMED
+    if args.lists_from is not None:
+        # CIV-30: the lists of the release commit. Fail closed: a list that
+        # cannot be read never becomes an empty list or the tip's list.
+        try:
+            if not args.lists_step:
+                raise GuardListError("--lists-from needs --lists-step")
+            lists = guard_lists(args.lists_from.read_text(encoding="utf-8"), args.lists_step)
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            print(
+                f"::error title=R8 guard lists unknown::cannot read the guard lists of "
+                f"{args.lists_from}: {exc}. The guard fails closed."
+            )
+            return None
+        if must_run or never_skip:
+            for line in list_drift({"--never-skip": never_skip, "--must-run": must_run}, lists):
+                print(f"::notice title=R8 guard lists of the release commit::{line}. The release commit's lists apply.")
+        must_run, never_skip = lists["--must-run"], lists["--never-skip"]
+        disarmed = lists["--disarmed"] or DISARMED
+        print(f"guard lists from {args.lists_from}: {len(must_run)} must-run, {len(never_skip)} never-skip")
+    return must_run, never_skip, disarmed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -880,6 +950,12 @@ def main(argv: list[str] | None = None) -> int:
         "step --lists-step. The lists on this command line are then only compared (CIV-30)",
     )
     c.add_argument("--lists-step", default="", help="the name of that step")
+    c.add_argument(
+        "--lists-from-fences",
+        type=Path,
+        default=None,
+        help="tests/fences.json: take the three lists from its `r8` key (CIV-33c-2)",
+    )
     d = sub.add_parser("durations")
     d.add_argument("--junit", type=Path, required=True)
     d.add_argument("--out", type=Path, required=True)
@@ -949,25 +1025,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {len(data)} timings to {args.out}")
         return 0
 
-    must_run, never_skip, disarmed = args.must_run, args.never_skip, args.disarmed or DISARMED
-    if args.lists_from is not None:
-        # CIV-30: the lists of the release commit. Fail closed: a list that
-        # cannot be read never becomes an empty list or the tip's list.
-        try:
-            if not args.lists_step:
-                raise GuardListError("--lists-from needs --lists-step")
-            lists = guard_lists(args.lists_from.read_text(encoding="utf-8"), args.lists_step)
-        except (OSError, UnicodeDecodeError, ValueError) as exc:
-            print(
-                f"::error title=R8 guard lists unknown::cannot read the guard lists of "
-                f"{args.lists_from}: {exc}. The guard fails closed."
-            )
-            return 1
-        for line in list_drift({"--never-skip": never_skip, "--must-run": must_run}, lists):
-            print(f"::notice title=R8 guard lists of the release commit::{line}. The release commit's lists apply.")
-        must_run, never_skip = lists["--must-run"], lists["--never-skip"]
-        disarmed = lists["--disarmed"] or DISARMED
-        print(f"guard lists from {args.lists_from}: {len(must_run)} must-run, {len(never_skip)} never-skip")
+    resolved = _resolve_lists(args)
+    if resolved is None:
+        return 1
+    must_run, never_skip, disarmed = resolved
     problems = check(
         args.junit,
         must_run,

@@ -41,7 +41,7 @@ from pydantic_core import PydanticCustomError
 from acb_common.app_manifests.base import APP_ID_PATTERN, CLASSES, OP_PATTERN, UUID_PATTERN
 from acb_common.app_manifests.shell_manifest import _CONTRIBUTES_KEYS as _P0_POINTS
 from acb_common.app_manifests.shell_manifest import SHELL_DIR
-from acb_common.secret_shapes import SECRET_SHAPES, is_secret_key
+from acb_common.secret_shapes import SECRET_SHAPES, is_secret_field_key, is_secret_key
 from acb_common.studio_access import AccessError, check_access_fit, parse_access, parse_roles
 from acb_common.studio_fields import (
     FIELD_TYPES,
@@ -167,6 +167,24 @@ _USES_RE = re.compile(
     rf"|integration:(?P<integ>{_NAME}(?:\.{_NAME})?)"
     rf"|workflow:(?P<wf>{UUID_PATTERN})"
     rf"|(?P<app>{APP_ID_PATTERN})\.(?P<appop>{OP_PATTERN}))"
+)
+
+#: STU-I1a. The most connections that one package names.
+MAX_CONNECTIONS = 32
+#: STU-I1a. The name of one MCP server of the registry. It equals ``NAME_RE``
+#: of ``gateway/connections/mcp.py``. This package cannot import the gateway,
+#: so ``test_package_host_resolve.py`` holds the two equal.
+MCP_SERVER_NAME = r"[a-z0-9][a-z0-9-]{0,48}[a-z0-9]"
+#: STU-I1a. The grammar of one name of ``connections``: an MCP server of the
+#: registry (``mcp:<server>``), or a provider id such as ``zoho``. I1 checks
+#: the grammar only. IN-11 adds the check that the connector list holds it.
+CONNECTION_NAME_RE = re.compile(rf"mcp:{MCP_SERVER_NAME}|{_NAME}")
+#: STU-I1a. The refusal of a field whose key names a secret
+#: (``secret_shapes.is_secret_field_key``: a whole secret name, so
+#: ``token_number`` passes). A test reads this text, so keep it stable.
+SECRET_FIELD = (
+    "A field must not hold a secret. Name the provider in `connections`, "
+    "and the registry keeps its key."
 )
 
 _COLOR_KEYS = frozenset({"color", "colour", "font", "fontsize", "font_size", "font-size"})
@@ -428,6 +446,8 @@ class Manifest(_Strict):
     name: str | None = None
     purpose: str | None = None
     team: str | None = None
+    #: STU-I1a. The registry connections that the app needs. `_check_connections`
+    #: holds the grammar, and an unmet name makes the install `needs_setup`.
     connections: list[str] = Field(default_factory=list)
     #: C8a. The roles of the app. An install maps each one to members (C8b).
     #: `studio_access.parse_roles` is the one check.
@@ -840,6 +860,11 @@ def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[Manifest
             for problem in validate_field_spec(f.model_dump(), objects=objects):
                 tail = "" if problem.got is None else _got(problem.got)
                 out.append(_err(f"{base}[{fi}].{problem.path}", problem.message + tail))
+            if is_secret_field_key(f.key):
+                # STU-I1a: a key goes to the registry through a connection,
+                # never into a form of the app. The narrow rule, because a
+                # field such as `token_number` holds member data.
+                out.append(_err(f"{base}[{fi}].key", SECRET_FIELD + _got(f.key)))
         _check_rules(o, f"$.objects[{oi}].rules", out, m.objects)
     _check_lines(m, out)
     _check_access(m, out)
@@ -1043,11 +1068,27 @@ def _check_links(
                 _undeclared(f"$.shell.search[{i}]", "Object", name, "this manifest", out)
 
 
+def _check_connections(m: Manifest, out: list[ManifestError]) -> None:
+    """STU-I1a. Each name of ``connections`` is ``mcp:<server>`` or a provider
+    id (:data:`CONNECTION_NAME_RE`), once each, and at most
+    :data:`MAX_CONNECTIONS` of them. The grammar only: IN-11 adds the check
+    that the connector list holds the provider."""
+    if len(m.connections) > MAX_CONNECTIONS:
+        out.append(_err("$.connections", f"A package names at most {MAX_CONNECTIONS} "
+                                         "connections. Remove the extra ones."))
+    for i, name in enumerate(m.connections):
+        if not CONNECTION_NAME_RE.fullmatch(name):
+            out.append(_err(f"$.connections[{i}]", "A connection is mcp:<server> or a "
+                                                    "provider id, such as zoho." + _got(name)))
+    _dupes(m.connections, "$.connections", "connection", out)
+
+
 def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[ManifestError]:
     out: list[ManifestError] = []
     objects = {o.name: {f.key for f in o.fields} for o in m.objects}
     action_ids = {a.id for a in m.actions}
 
+    _check_connections(m, out)
     _dupes([o.name for o in m.objects], "$.objects", "object", out)
     _dupes([a.id for a in m.actions], "$.actions", "action id", out)
     _dupes([v.id for v in m.views], "$.views", "view id", out)

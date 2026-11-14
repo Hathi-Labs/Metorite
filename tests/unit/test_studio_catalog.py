@@ -10,7 +10,11 @@ This file proves:
 - the class mapping, row by row, and no row of class X;
 - the read takes no org from the request;
 - B1c: the rows of the caller's own packages (``package_rows``), their class,
-  the ``?app=`` filter, and one statement however many packages exist.
+  the ``?app=`` filter, and one statement however many packages exist;
+- F6a: the ``tool`` of each row is ``skill_packs.action_tool`` of its id.
+  Mutation (2026-11-14): give a manifest row ``op.route.tool or None`` with
+  ``also`` added, or drop ``tool`` from one row builder, and
+  ``TestTheChatTool`` turns red.
 """
 from __future__ import annotations
 
@@ -146,7 +150,7 @@ class TestTheRows:
         db.rows = [_wf("One")]
         for row in _client().get(URL).json()["actions"]:
             assert set(row) == {"id", "title", "source", "class", "input_schema",
-                                "output_schema", "connection", "app"}
+                                "output_schema", "connection", "app", "tool"}
             assert row["source"] in {"manifest", "integration", "workflow"}
             assert row["class"] in {"A", "B", "C"}
             assert row["output_schema"] is None
@@ -268,6 +272,62 @@ def test_the_flag_reader_is_per_call(monkeypatch):
     assert flags.studio_allowed(ORG) is True
 
 
+# --- F6a: the chat tool of each row -------------------------------------------
+
+
+class TestTheChatTool:
+    """``tool`` comes from ``skill_packs.action_tool``, the one map (STU-F6a)."""
+
+    def test_each_tool_equals_action_tool_of_the_id(self, monkeypatch, db):
+        from acb_skills.skill_packs import action_tool
+
+        _open(monkeypatch, "*")
+        monkeypatch.setattr(actions, "list_tools", lambda: [_tool("zoho.x", read_only=True)])
+        db.rows = [_wf("One")]
+        db.packages = [_pkg(PKG_A, ["items"], [("peek", "object:items.get", "Peek")])]
+        body = _client().get(URL).json()["actions"]
+        assert {r["source"] for r in body} == {"manifest", "integration", "workflow", "package"}
+        for row in body:
+            assert row["tool"] == action_tool(row["id"]), row["id"]
+
+    def test_the_three_knowledge_steps_of_the_demo_map_to_their_chat_tools(self, monkeypatch, db):
+        _open(monkeypatch, "*")
+        rows = {r["id"]: r["tool"] for r in _client().get(URL).json()["actions"]}
+        assert rows["knowledge.list_spaces"] == "list_spaces"
+        assert rows["knowledge.get_page"] == "read_page"
+        assert rows["knowledge.propose"] == "propose_page"
+
+    def test_a_workflow_maps_to_run_workflow_and_an_integration_to_none(self, monkeypatch, db):
+        _open(monkeypatch, "*")
+        monkeypatch.setattr(actions, "list_tools", lambda: [_tool("zoho.x")])
+        one = _wf("One")
+        db.rows = [one]
+        rows = {r["id"]: r["tool"] for r in _client().get(URL).json()["actions"]}
+        assert rows[f"workflow:{one.id}"] == "run_workflow"
+        assert rows["integration:zoho.x"] is None
+
+    def test_a_door_op_with_no_chat_tool_gives_none(self, monkeypatch, db):
+        _open(monkeypatch, "*")
+        rows = {r["id"]: r for r in _client().get(URL).json()["actions"]
+                if r["source"] == "manifest"}
+        for app in every_app():
+            if app.door != "ops":
+                continue
+            for name, op in door_ops(app).items():
+                assert rows[f"{app.id}.{name}"]["tool"] == (op.route.tool or None)
+
+    def test_the_route_keeps_no_second_map(self):
+        # The one map is ``action_tool``. A second map in the route would
+        # drift from the skill loader. Mutation: write ``op.route.tool`` or a
+        # literal ``"run_workflow"`` in actions.py, and this turns red.
+        import inspect
+
+        src = inspect.getsource(actions)
+        assert "route.tool" not in src
+        assert '"run_workflow"' not in src
+        assert src.count("action_tool(") == 5
+
+
 # --- B1c: the rows of the caller's own packages ------------------------------
 
 PKG_A = str(uuid.uuid4())
@@ -307,7 +367,7 @@ class TestThePackageRows:
         db.packages = [_pkg(PKG_A, ["items"], [("peek", "object:items.get", "Peek")])]
         for r in _rows(db, monkeypatch):
             assert set(r) - {"uses"} == {"id", "title", "source", "class", "input_schema",
-                                         "output_schema", "connection", "app"}
+                                         "output_schema", "connection", "app", "tool"}
 
     def test_a_named_action_is_one_row_with_uses_and_the_class_of_its_target(
             self, monkeypatch, db):

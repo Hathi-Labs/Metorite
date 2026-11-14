@@ -115,6 +115,11 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
       comments the failing test on the task and releases it. Find it with
       `my_work` or `search_tasks`, fix it, push, and hand it over again. Read
       `~/lanes/merge-bot.log` for `BACK` lines after each hand-over.
+    - A `RESOLVED <pull request> <rules>` line means that the merge bot merged
+      `main` into your branch, resolved a conflict, and pushed the merge
+      commit (CIV-34a). Do not hand it over again. Before your next commit on
+      that branch, run `git pull --ff-only` in its worktree. A push without it
+      is refused, because your branch is behind the bot's commit.
 15. **Save GitHub runs.** A red run costs a full set of jobs.
     - Before each push, run the tests that your diff can affect on this box:
       `timeout 2400 uv run python scripts/affected_tests.py --run`. For

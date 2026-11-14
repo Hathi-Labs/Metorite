@@ -489,14 +489,8 @@ def test_a_save_with_no_triggers_reads_no_trigger(sessions: _Sessions) -> None:
 
 
 def test_the_r8_suite_is_named_in_the_ci_skip_guard() -> None:
-    """A fence that never runs is no fence. The ``--must-run`` list names the
-    pytest ARGUMENT, so a mention in a comment does not count."""
-    import re
-    from pathlib import Path
+    """A fence that never runs is no fence. The R8 guard reads its must-run list
+    from tests/fences.json (CIV-33c-2), so the suite must be named there."""
+    from tests.unit import _r8_lists as r8_lists
 
-    root = Path(__file__).resolve().parents[2]
-    workflow = (root / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
-    assert block, "the --must-run argument list is missing"
-    assert re.search(r"^[ \t]+tests/unit/test_workflows_trigger_state_r8\.py(?: \\)?$",
-                     block.group(1), re.M)
+    assert "tests/unit/test_workflows_trigger_state_r8.py" in r8_lists.must_run()

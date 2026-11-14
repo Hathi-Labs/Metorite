@@ -34,6 +34,8 @@ from typing import Any
 
 import pytest
 
+from tests.unit import _r8_lists as r8_lists
+
 pytest.importorskip("sqlalchemy")
 
 from sqlalchemy import text
@@ -216,9 +218,7 @@ def test_the_undo_of_a_pipeline_takes_the_create_lock_first() -> None:
 
 
 def test_this_suite_is_named_in_both_must_run_lists() -> None:
-    for name in ("pr-check.yml", "deploy.yml"):
-        workflow = (_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
-        assert re.search(r"^\s+tests/unit/test_crm_lead_pipelines\.py \\?$", workflow, re.M), name
+    assert "tests/unit/test_crm_lead_pipelines.py" in r8_lists.must_run()
 
 
 def test_the_body_takes_a_kind_and_feeds_and_no_tenant() -> None:

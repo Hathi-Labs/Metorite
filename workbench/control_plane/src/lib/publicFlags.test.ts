@@ -130,6 +130,8 @@ describe("every NEXT_PUBLIC flag reaches the browser", () => {
       "NEXT_PUBLIC_PROJECTS_COMPACT_CHROME",
       // WS-64 OP-2: My work in the Projects sidebar, and Today as the landing.
       "NEXT_PUBLIC_PROJECTS_MY_WORK",
+      // WS-STU F6a: the chat offers to save a finished turn as a skill.
+      "NEXT_PUBLIC_SKILL_OFFER",
       // STU-AF1: a Studio app page draws its manifest pages through StudioPage.
       "NEXT_PUBLIC_STUDIO_APP_FRAME",
       // WS-66 PN-1 has NO build-time flag: the Notifications section asks the
