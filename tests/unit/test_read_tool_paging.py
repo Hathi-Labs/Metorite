@@ -290,6 +290,9 @@ ALLOWED: dict[str, str] = {
     "packages/acb_skills/acb_skills/studio_tools.py::_delete_rows::tables[:MAX_DELETE_CARD_TABLES]":
         "No row is lost: the delete card names ten tables, counts the other tables in 'and N more "
         "tables', and the totals row counts every table. The delete takes every table (STU-A5c-2).",
+    "packages/acb_skills/acb_skills/studio_tools.py::_frame_lines::names[:MAX_OUTLINE_PAGES_SHOWN]":
+        "No page is lost: the Pages line of the outline names four pages, says 'and N more', and "
+        "gives the total in the same line. The manifest keeps every page (STU-AF-8a).",
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
@@ -316,8 +319,9 @@ ALLOWED: dict[str, str] = {
 #: nothing, so the next call names the rest (86). CAL-4 added one: the error text
 #: of a failed day-flow step, cut to 120 characters (87). STU-A5c-2 added one: the
 #: delete card names ten tables and counts the rest, and the delete takes every
-#: table (88).
-ALLOWED_CEILING = 87
+#: table (88). STU-AF-8a added one: the outline's Pages line names four pages and
+#: says 'and N more' (89).
+ALLOWED_CEILING = 88
 
 
 def _stringy(node: ast.AST) -> bool:
