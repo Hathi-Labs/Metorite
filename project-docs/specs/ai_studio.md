@@ -465,6 +465,8 @@ The owner asked for this on 2026-11-14 (task 3146). A Studio app opens in the sa
 
 **The caps.** 8 pages (D11a), 4 rail sections, 12 rows in a section, 8 tabs on a page, 6 tabs on a record, 4 related lists on a record, and 8 counts on a rail. `pageModel.ts` and the `maxItems` of the schema hold the same numbers.
 
+**Standard page layouts.** `studio_layouts.md` (draft, task 3312) owns the layout presets of a page, the manifest keys `layout` and `regions`, and the shared states. This section keeps the frame.
+
 **Where the blocks are.** The frame holds the blocks of §5.1. The rich blocks (calendar, timeline, gallery, tree, editable grid, diagram, 3D and the rest) stay rows D5 to D31. The frame adds none.
 
 ---
