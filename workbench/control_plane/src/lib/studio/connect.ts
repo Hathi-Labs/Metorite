@@ -7,8 +7,9 @@
  * `can_connect`. A 404 is the gate off, and the IDE then draws nothing.
  *
  * A name that the gateway cannot check (`checkable: false`: a mailbox, a WhatsApp number, a key of the
- * console) never meets, so the action door refuses each action of the app while the draft names it. Its
- * line says so, offers no Connect, and counts in the header with each unmet name. A read that failed
+ * console, the bare id `mcp`, an id off the connector list) never meets, so the action door refuses each
+ * action of the app while the draft names it. Its line says so, offers no Connect, and counts in the
+ * header with each unmet name. A read that failed
  * keeps the rows of the last answer and their count, and adds one line with Retry. With no rows, the
  * header reads "connections not checked".
  *
@@ -52,6 +53,8 @@ export type ConnectLine =
 
 /** The prefix of an MCP server in a draft (the I1a grammar). */
 export const MCP_PREFIX = "mcp:";
+/** The bare id of the family row "Another system". No server row has it, so it never meets. */
+export const BARE_MCP = "mcp";
 
 /** The words of the read that failed. They say what happened and the next step. */
 export const CONNECTIONS_READ_FAILED =
@@ -95,12 +98,12 @@ export function connectLines(rows: readonly ConnectionRow[], pkg: string): Conne
     const what = subject(row);
     if (row.met) return { kind: "met", row, text: `${capital(what)} is connected.` };
     if (!row.checkable) {
+      // The bare id `mcp` names the family. A server is `mcp:<server>`, so that is the next step.
+      const next = row.name === BARE_MCP ? "Name the server, as mcp:<server>." : "Remove the name until Metorite can check it.";
       return {
         kind: "blocked",
         row,
-        text:
-          `${capital(what)} cannot be connected from Studio yet. This app will not run while the draft names it. ` +
-          "Remove the name until Metorite can check it.",
+        text: `${capital(what)} cannot be connected from Studio yet. This app will not run while the draft names it. ${next}`,
       };
     }
     if (!row.canConnect) {

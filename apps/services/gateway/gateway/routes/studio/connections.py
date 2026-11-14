@@ -22,10 +22,16 @@ with Connect on an unmet one.
 * ``setup_href`` and ``can_connect`` come from
   ``routes/integrations_connections.setup_href_for`` and ``may_connect``. So
   Studio keeps no copy of a connect flow and reads no right of its own.
-* ``checkable`` is False for a provider whose connection lives outside the
-  registry (``connections/store.OUTSIDE_REGISTRY``: a mailbox, a WhatsApp
-  number). The read cannot meet it, so its ``met`` stays False and
-  ``can_connect`` is False: a Connect would never turn the line connected.
+* ``checkable`` is True only for a name that the registry can hold: a real
+  ``mcp:<server>``, or a connector-list row that a registry writer writes
+  (:func:`checkable`). It is False for a provider whose connection lives
+  outside the registry (``connections/store.OUTSIDE_REGISTRY``: a mailbox, a
+  WhatsApp number, a key of the console), for the bare id ``mcp`` (the list
+  row of "Another system", which no writer writes), and for an id that the
+  list does not hold. The read cannot meet such a name, so its ``met`` stays
+  False and ``can_connect`` is False for each caller: a Connect would never
+  turn the line connected, and the action door refuses each action while the
+  draft names it.
 
 **The order of the checks.** The switch ``STUDIO_ORGS`` (404, no session),
 the id (404), then ``STUDIO_CONNECTION_GATE_ORGS`` (404, no session). So with
@@ -52,6 +58,7 @@ from acb_auth import UserContext, get_current_user
 from acb_common.connector_list import connector
 from acb_common.studio_flags import connection_gate_on
 from fastapi import Depends, HTTPException
+from gateway.connections import mcp as mcp_registry
 from gateway.connections import store as connections_store
 from gateway.db import tenant_session as _tenant_session
 from gateway.package_host import resolve as host_resolve
@@ -87,9 +94,23 @@ def _label(name: str) -> str:
     return str(row["label"]) if row else name
 
 
+#: The sign-in of the list row of "Another system": the id ``mcp`` names the
+#: family, and each server is a row of its own (``mcp:<server>``).
+_FAMILY_SIGNIN = "mcp_address"
+
+
 def checkable(name: str) -> bool:
-    """False for a provider that the registry cannot meet (I9 adds it)."""
-    return name not in connections_store.OUTSIDE_REGISTRY
+    """True only for a name that the registry can hold, so that a connect can
+    turn it met: a real ``mcp:<server>``, or a connector-list row that is no
+    family row and not :data:`~gateway.connections.store.OUTSIDE_REGISTRY`.
+    The bare id ``mcp`` and an id off the list are False: no writer writes
+    them. ``test_studio_connect_in_place.py`` holds this rule equal to the
+    registry writers for each id of the list."""
+    if name.startswith(MCP_PREFIX):
+        return bool(mcp_registry.NAME_RE.fullmatch(name[len(MCP_PREFIX):]))
+    row = connector(name)
+    return (row is not None and row.get("signin") != _FAMILY_SIGNIN
+            and name not in connections_store.OUTSIDE_REGISTRY)
 
 
 def connection_rows(names: tuple[str, ...], met: frozenset[str],

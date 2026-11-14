@@ -264,11 +264,39 @@ def test_an_admin_may_connect_each_row(world: _World) -> None:
     assert [x["can_connect"] for x in rows] == [True, True, True]
 
 
-def test_an_unknown_provider_id_reads_its_own_id(world: _World) -> None:
+@pytest.mark.parametrize("grants", [MEMBER, ADMIN])
+def test_an_unknown_provider_id_reads_its_own_id_and_is_blocked(world: _World, grants: list[str]) -> None:
+    """Round 3. No registry writer writes an id off the list, so the read never
+    meets it: it is not checkable and offers no Connect, for an admin too."""
     world.names = ["acme"]
-    rows = _client(_user()).get(PATH).json()["connections"]
-    assert rows == [{"name": "acme", "label": "acme", "met": False, "checkable": True,
+    rows = _client(_user(grants=grants)).get(PATH).json()["connections"]
+    assert rows == [{"name": "acme", "label": "acme", "met": False, "checkable": False,
                      "setup_href": "/integrations", "can_connect": False}]
+
+
+@pytest.mark.parametrize("grants", [MEMBER, ADMIN])
+def test_a_bare_mcp_and_an_id_off_the_list_are_blocked(world: _World, grants: list[str]) -> None:
+    """Round 3 P1. The grammar takes the bare id ``mcp`` and any id such as
+    ``slack``. No writer writes either (a server is ``mcp:<server>``), so both
+    are blocked: ``checkable`` and ``can_connect`` are False for each caller.
+    A real ``mcp:<server>`` stays checkable."""
+    world.names = ["mcp", "slack", "mcp:tally"]
+    rows = _client(_user(grants=grants)).get(PATH).json()["connections"]
+    assert [(r["name"], r["label"], r["met"], r["checkable"], r["can_connect"]) for r in rows] == [
+        ("mcp", "Another system", False, False, False),
+        ("slack", "slack", False, False, False),
+        ("mcp:tally", "tally", False, True, grants == ADMIN),
+    ]
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("mcp:tally", True), ("mcp:my-erp-2", True), ("zoho", True), ("github", True),
+    ("google_calendar", True), ("outlook_calendar", True), ("google_drive", True),
+    ("mcp", False), ("slack", False), ("mailbox", False), ("whatsapp", False), ("apollo", False),
+    ("smtp", False), ("mcp:", False), ("mcp:Bad_Name", False),
+])
+def test_checkable_is_true_only_for_a_name_the_registry_can_hold(name: str, expected: bool) -> None:
+    assert connections.checkable(name) is expected
 
 
 @pytest.mark.parametrize("grants", [MEMBER, ADMIN])
@@ -310,23 +338,55 @@ def _registry_writers() -> dict[str, set[str]]:
     }
 
 
-def _writer_files() -> set[str]:
-    """Each Python file of ``apps/`` and ``packages/`` that calls a registry
-    write of the store, by the syntax tree."""
+def _calls_a_registry_write(text: str) -> bool:
+    """True when *text* calls a registry write of the store: ``store.save_headers(...)``,
+    a bare ``save_headers(...)`` after ``from ... import save_headers``, or a
+    name that such an import aliases (``import save_headers as put``)."""
+    tree = ast.parse(text)
+    names = set(_REGISTRY_WRITES)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            names |= {a.asname for a in node.names if a.name in _REGISTRY_WRITES and a.asname}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Attribute) and node.func.attr in _REGISTRY_WRITES:
+            return True
+        if isinstance(node.func, ast.Name) and node.func.id in names:
+            return True
+    return False
+
+
+def _writer_files(roots: tuple[Path, ...] | None = None, base: Path = ROOT) -> set[str]:
+    """Each Python file under *roots* (``apps/`` and ``packages/``) that calls a
+    registry write of the store, by the syntax tree."""
     found: set[str] = set()
-    for top in ("apps", "packages"):
-        for path in (ROOT / top).rglob("*.py"):
-            rel = path.relative_to(ROOT).as_posix()
+    for top in roots or (ROOT / "apps", ROOT / "packages"):
+        for path in top.rglob("*.py"):
+            rel = path.relative_to(base).as_posix()
             if "/.venv/" in rel or rel.endswith("gateway/connections/store.py"):
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
-            if not any(w in text for w in _REGISTRY_WRITES):
-                continue
-            for node in ast.walk(ast.parse(text)):
-                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                        and node.func.attr in _REGISTRY_WRITES):
-                    found.add(rel)
+            if any(w in text for w in _REGISTRY_WRITES) and _calls_a_registry_write(text):
+                found.add(rel)
     return found
+
+
+@pytest.mark.parametrize("source", [
+    "from gateway.connections import store\n\nasync def f(db):\n"
+    "    await store.save_headers(db, 'o', 'slack', 'x', {}, provider_meta={}, connected_by='a')\n",
+    "from gateway.connections.store import save_headers\n\nasync def f(db):\n"
+    "    await save_headers(db, 'o', 'slack', 'x', {}, provider_meta={}, connected_by='a')\n",
+    "from gateway.connections.store import save_credential as put\n\nasync def f(db, c):\n"
+    "    await put(db, 'o', 'slack', 'x', c, connected_by='a')\n",
+])
+def test_the_writer_scan_sees_each_form_of_a_registry_write(tmp_path: Path, source: str) -> None:
+    """Round 3 P2, the mutation proof: a scratch module in a temp dir, fed to
+    the scanner, is found in each form. Nothing is written to the repo."""
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "rogue.py").write_text(source, encoding="utf-8")
+    (tmp_path / "pkg" / "quiet.py").write_text("def save_headers_note():\n    return 1\n", encoding="utf-8")
+    assert _writer_files((tmp_path / "pkg",), base=tmp_path) == {"pkg/rogue.py"}
 
 
 def _met_sql_texts() -> list[str]:
@@ -335,22 +395,27 @@ def _met_sql_texts() -> list[str]:
 
 
 def test_each_listed_provider_has_a_registry_writer_or_an_outside_entry() -> None:
-    """Review round 2. ``met_providers`` meets a provider only when a module
-    writes its row into the registry. Each id of the connector list has such a
-    writer, or an entry of ``OUTSIDE_REGISTRY`` (then the IDE shows it blocked
-    and offers no Connect). An id with a writer is never outside. A new writer
-    module fails until this test names its providers."""
+    """Review rounds 2 and 3. ``met_providers`` meets a provider only when a
+    module writes its row into the registry. Each id of the connector list has
+    such a writer, or an entry of ``OUTSIDE_REGISTRY``, or it is the family row
+    ``mcp`` (signin ``mcp_address``): the writer of ``mcp:`` writes
+    ``mcp:<server>``, never the bare id. An id with a writer is never outside.
+    ``connections.checkable`` is True exactly for the ids with a writer. A new
+    writer module fails until this test names its providers."""
     writers = _registry_writers()
     assert _writer_files() == set(writers), "a module writes the registry that this test does not name"
     written = set().union(*writers.values())
-    families = {p[:-1] for p in written if p.endswith(":")}
     outside = conn_store.OUTSIDE_REGISTRY
-    ids = {r["id"] for r in cl.connector_rows()}
-    for pid in sorted(ids):
-        has_writer = pid in written or pid in families
-        assert has_writer or pid in outside, f"{pid}: no registry writer and no OUTSIDE_REGISTRY entry"
+    rows = {r["id"]: r for r in cl.connector_rows()}
+    family = {pid for pid, r in rows.items() if r["signin"] == "mcp_address"}
+    assert family == {"mcp"}
+    for pid in sorted(rows):
+        has_writer = pid in written
+        assert has_writer or pid in outside or pid in family, (
+            f"{pid}: no registry writer, no OUTSIDE_REGISTRY entry and no family rule")
         assert not (has_writer and pid in outside), f"{pid}: a registry writer AND an outside entry"
-    assert set(outside) <= ids
+        assert connections.checkable(pid) is has_writer, pid
+    assert set(outside) <= set(rows)
 
 
 def test_the_outside_set_is_computed_from_the_list_and_names_the_tables_the_console_reads() -> None:

@@ -391,10 +391,11 @@ def _outside_registry() -> dict[str, str]:
 #: The providers that :func:`met_providers` never meets, each with its table
 #: (WS-STU I8a). Studio shows such a name as blocked and offers no Connect,
 #: because the action door refuses each action of the app while it names one.
-#: ⚠️ When I9 or IN-3 makes a ``_MET_*`` statement read one of these tables,
-#: drop its rows here in the same change. ``test_studio_connect_in_place.py``
-#: fails while the two disagree, and when a listed provider has neither a
-#: registry writer nor an entry here.
+#: ⚠️ The set is computed. When I9 or IN-3 makes a ``_MET*`` statement read
+#: one of these tables, change the rule in :func:`_outside_registry` in the
+#: same change. ``test_studio_connect_in_place.py`` fails while the two
+#: disagree, and when a listed provider has neither a registry writer nor an
+#: entry here.
 OUTSIDE_REGISTRY: dict[str, str] = _outside_registry()
 
 

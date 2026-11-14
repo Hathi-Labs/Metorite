@@ -40,6 +40,9 @@ i. A draft that names ``mailbox``, ``whatsapp`` or a key of the console
    (``apollo``) gets ``met`` False, ``checkable`` False and ``can_connect``
    False, for an admin too, because the registry cannot meet them
    (``OUTSIDE_REGISTRY``: I9 and I8e).
+j. A draft that names the bare id ``mcp`` or an id off the list (``slack``)
+   gets the same, because no writer writes them. A real ``mcp:<server>``
+   stays checkable.
 """
 
 from __future__ import annotations
@@ -319,5 +322,22 @@ def test_r8_i_a_name_outside_the_registry_is_not_checkable_and_offers_no_connect
             ("mailbox", False, False, False),
             ("whatsapp", False, False, False),
             ("apollo", False, False, False),
+            (TALLY, True, True, grants == ADMIN),
+        ], grants
+
+
+# ── j. The bare id mcp, and an id off the list ─────────────────────────────
+
+
+def test_r8_j_a_bare_mcp_and_an_id_off_the_list_are_blocked(world) -> None:
+    _row(world, TALLY, world.a)
+    pid = _run(world, lambda: _new(world.a, OWEN, ["mcp", "slack", TALLY]))
+    for grants in (STUDIO, ADMIN):
+        status, got = _run(world, lambda g=grants: _read(world.a, OWEN, pid, g))
+        assert status == 200, got
+        assert [(r["name"], r["met"], r["checkable"], r["can_connect"])
+                for r in got["connections"]] == [
+            ("mcp", False, False, False),
+            ("slack", False, False, False),
             (TALLY, True, True, grants == ADMIN),
         ], grants

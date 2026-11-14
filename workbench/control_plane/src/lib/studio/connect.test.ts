@@ -93,6 +93,20 @@ describe("the lines of the draft", () => {
     expect(connectLines([{ ...apollo, canConnect: true }], PKG)[0].kind).toBe("blocked");
     const mailbox = row({ name: "mailbox", label: "Email account", checkable: false, canConnect: false });
     expect(connectLines([mailbox], PKG)[0].text.startsWith("Email account cannot be connected from Studio yet.")).toBe(true);
+    // Round 3: the bare id `mcp` and an id off the list are blocked too, with the next step that fits.
+    const bare = row({ name: "mcp", label: "Another system", checkable: false, canConnect: false });
+    expect(connectLines([bare], PKG)[0]).toMatchObject({
+      kind: "blocked",
+      text:
+        "Another system cannot be connected from Studio yet. This app will not run while the draft names it. " +
+        "Name the server, as mcp:<server>.",
+    });
+    const slack = row({ name: "slack", label: "slack", checkable: false, canConnect: false });
+    expect(connectLines([slack], PKG)[0].text).toBe(
+      "Slack cannot be connected from Studio yet. This app will not run while the draft names it. " +
+        "Remove the name until Metorite can check it.",
+    );
+    expect(missingLine([bare, slack])).toBe("2 connections need attention");
     // The door refuses each action while the draft names it, so the header counts it.
     expect(unmetCount([apollo, row()])).toBe(2);
     expect(missingLine([apollo])).toBe("1 connection needs attention");
