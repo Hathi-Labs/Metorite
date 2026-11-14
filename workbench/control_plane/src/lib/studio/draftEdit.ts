@@ -166,7 +166,6 @@ export function dropNavRows(m: Obj, gone: ReadonlySet<string>): Obj {
   };
 }
 
-/** The references to a set of views that live outside `views`: page cells, the side view, shell jobs, skill cards. */
 /** A page with a preset holds while each required region has a view. `null` for a page with no preset. */
 function layoutHeld(p: Obj): boolean | null {
   const layout = str(p.layout) as LayoutName;
@@ -176,6 +175,7 @@ function layoutHeld(p: Obj): boolean | null {
   return Object.entries(rules).every(([name, r]) => !r.required || (Array.isArray(regions[name]) && regions[name].length > 0));
 }
 
+/** The references to a set of views that live outside `views`: page cells, the side view, shell jobs, skill cards. */
 function dropViews(m: Obj, ids: ReadonlySet<string>): Obj {
   if (ids.size === 0) return m;
   const cells = (cs: unknown) => (Array.isArray(cs) ? cs.filter((c) => !(isObj(c) && ids.has(str(c.view)))) : cs);

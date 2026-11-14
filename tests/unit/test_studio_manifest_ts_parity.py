@@ -143,16 +143,29 @@ def test_nav_count_cap_equals_the_ts_twin():
     assert schema["$defs"]["NavRow"]["properties"]["count"]["anyOf"][0] == {"type": "boolean"}
 
 
+def _ts_presets(ts: str) -> dict[str, dict[str, tuple[str, int, bool]]]:
+    """Read `PRESET_REGIONS` of the twin, one preset at a time, with `LIST_DETAIL` resolved."""
+    region = re.compile(r'(\w+): \{ block: "(\w+)", cap: (\d+), required: (true|false) \}')
+
+    def regions(text: str) -> dict[str, tuple[str, int, bool]]:
+        return {m[1]: (m[2], int(m[3]), m[4] == "true") for m in region.finditer(text)}
+
+    shared = ts[ts.index("const LIST_DETAIL") : ts.index("export const PRESET_REGIONS")]
+    out: dict[str, dict[str, tuple[str, int, bool]]] = {}
+    body = ts[ts.index("export const PRESET_REGIONS") : ts.index("export const REGION_NAMES")]
+    body = body.split("= {", 1)[1]
+    for name in re.findall(r"^  (\w+): ", body, re.M):
+        start = body.index(f"\n  {name}: ") + 1
+        nxt = re.search(r"\n  \w+: ", body[start + 3 :])
+        chunk = body[start : start + 3 + nxt.start()] if nxt else body[start:]
+        out[name] = regions(shared) if "LIST_DETAIL" in chunk else regions(chunk)
+    return out
+
+
 def test_the_page_presets_equal_the_typescript_twin():
     from acb_common.studio_manifest import LAYOUTS, PRESET_REGIONS
 
     ts = TS.read_text(encoding="utf-8")
-    assert re.search(r"export const LAYOUTS = \[(.*?)\] as const", ts, re.S)
-    names = re.findall(r'"([a-z_]+)"', re.search(r"export const LAYOUTS = \[(.*?)\] as const", ts, re.S).group(1))
-    assert names == list(LAYOUTS)
-    body = ts[ts.index("export const PRESET_REGIONS") : ts.index("export const REGION_NAMES")]
-    for layout, regions in PRESET_REGIONS.items():
-        assert layout in body
-        for region, (block, cap, required) in regions.items():
-            line = f'{region}: {{ block: "{block}", cap: {cap}, required: {"true" if required else "false"} }}'
-            assert line in ts, line
+    m = re.search(r"export const LAYOUTS = \[(.*?)\] as const", ts, re.S)
+    assert m and re.findall(r'"([a-z_]+)"', m.group(1)) == list(LAYOUTS)
+    assert _ts_presets(ts) == PRESET_REGIONS
