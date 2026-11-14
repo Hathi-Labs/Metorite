@@ -54,6 +54,15 @@ rules. :data:`RULE_KINDS` is the closed list of kinds.
   :func:`touched_keys` answers none for it. :func:`tree_moves` names the new
   parent of one written record, and :func:`check_tree` judges the walk of the
   store.
+* ``timer`` (E9a): ``{field, pause?: {field, in: [values]}}``. A record of the
+  object is due at the value of the hot datetime field *field*. The workflow
+  scan (``routes/workflows/scheduler.scan_due_timers``) starts a run when a
+  record passes that time. While the hot select or text field ``pause.field``
+  holds a value of ``pause.in``, the record does not breach. A timer refuses no
+  write, and the store writes nothing for it: it reads no key
+  (:func:`rule_reads`, :func:`touched_keys`), and ``objects_store`` skips it in
+  the checks of a write. It only keeps its two fields hot
+  (:meth:`Rule.hot_keys`).
 
 **A key.** A ``unique`` field and a group field have a type of
 :data:`KEY_TYPES`. A checkbox has two states and a money value has a currency,
@@ -129,6 +138,8 @@ MAX_ROLLUP_PARENTS = 100
 MAX_ROLLUP_STATEMENTS = 100
 #: The levels of one tree of a ``hierarchy`` (C18). A root is level 1.
 MAX_TREE_DEPTH = 20
+#: The values of the ``pause`` of one ``timer`` (E9a).
+MAX_PAUSE_VALUES = 20
 
 #: The closed ops of a guard atom. All but ``not_empty`` are ops of C2a.
 GUARD_OPS: tuple[str, ...] = (
@@ -145,10 +156,14 @@ STATE_MACHINE = "state_machine"
 FORMULA = "formula"
 ROLLUP = "rollup"
 HIERARCHY = "hierarchy"
+TIMER = "timer"
 
 #: The closed list of kinds.
 RULE_KINDS: tuple[str, ...] = (
-    RANGE, UNIQUE, GROUP_SUM_MIN, STATE_MACHINE, FORMULA, ROLLUP, HIERARCHY)
+    RANGE, UNIQUE, GROUP_SUM_MIN, STATE_MACHINE, FORMULA, ROLLUP, HIERARCHY, TIMER)
+#: The field types of the ``pause`` of a ``timer`` (E9a). The due field is a
+#: ``datetime``.
+TIMER_PAUSE_TYPES: tuple[str, ...] = ("select", "text")
 #: The codes of a write that a hierarchy refuses (C18).
 TREE_CYCLE = "tree_cycle"
 TREE_TOO_DEEP = "tree_too_deep"
@@ -186,6 +201,7 @@ _KIND_KEYS: Mapping[str, frozenset[str]] = {
     FORMULA: frozenset({"target", "expr", "scale", "rounding", "currency"}),
     ROLLUP: frozenset({"target", "source", "via", "agg", "field", "where", "currency"}),
     HIERARCHY: frozenset({"field"}),
+    TIMER: frozenset({"field", "pause"}),
 }
 assert tuple(_KIND_KEYS) == RULE_KINDS, "each kind has its keys"
 
@@ -326,14 +342,18 @@ class Rule:
     via: str | None = None
     agg: str | None = None
     where: tuple[Atom, ...] = ()
+    #: The ``pause`` of a ``timer`` (E9a): an ``in`` atom on a select or text
+    #: field. None for a timer with no pause and for each other kind.
+    pause: Atom | None = None
 
     def stored(self) -> dict[str, Any]:
         """The JSON of this rule, as the store keeps it."""
         out: dict[str, Any] = {"name": self.name, "kind": self.kind}
         if self.message is not None:
             out["message"] = self.message
-        if self.kind in (RANGE, HIERARCHY):
+        if self.kind in (RANGE, HIERARCHY, TIMER):
             out["field"] = self.field
+        out.update(self._stored_pause())
         if self.kind == UNIQUE:
             out["fields"] = list(self.keys)
         if self.kind == GROUP_SUM_MIN:
@@ -363,12 +383,22 @@ class Rule:
             out["max"] = self.max
         return out
 
+    def _stored_pause(self) -> dict[str, Any]:
+        """The ``pause`` of a timer as the store keeps it, or nothing (E9a)."""
+        if self.kind != TIMER or self.pause is None:
+            return {}
+        return {"pause": {"field": self.pause.field, "in": list(self.pause.value)}}
+
     def hot_keys(self) -> tuple[str, ...]:
         """The fields of the object of this rule that must stay hot while the
         rule stands. A roll-up reads fields of its source, so it names none here:
-        :meth:`source_keys` names them."""
+        :meth:`source_keys` names them. A timer (E9a) names its due field and
+        its pause field, because the scan reads their hot rows."""
         if self.kind in (RANGE, STATE_MACHINE, FORMULA, ROLLUP):
             return ()
+        if self.kind == TIMER:
+            pause = (self.pause.field,) if self.pause is not None else ()
+            return (str(self.field), *pause)
         return (*self.keys, self.field) if self.field is not None else self.keys
 
     def source_keys(self) -> tuple[str, ...]:
@@ -665,9 +695,45 @@ def _parse_hierarchy(rule: str, spec: Mapping[str, Any], message: str | None) ->
     return Rule(rule, HIERARCHY, message, field=_key(rule, "field", spec.get("field")))
 
 
+def _pause_value(rule: str, index: int, value: Any) -> str:
+    if (not isinstance(value, str) or not value.strip() or len(value) > MAX_OPTION_CHARS
+            or not storable_text(value)):
+        raise ConstraintError(
+            rule, f"Rule `{rule}`: `pause.in[{index}]` is text of 1 to {MAX_OPTION_CHARS} characters.")
+    return value
+
+
+def _parse_pause(rule: str, spec: Any) -> Atom:
+    """The ``pause`` of a timer (E9a): ``{field, in: [values]}``, as an ``in`` atom."""
+    if not isinstance(spec, Mapping):
+        raise ConstraintError(rule, f"Rule `{rule}`: `pause` is an object with `field` and `in`.")
+    extra = sorted(str(k) for k in spec if k not in ("field", "in"))
+    if extra:
+        safe = extra[0] if _NAME_RE.fullmatch(extra[0]) else "?"
+        raise ConstraintError(rule, f"Rule `{rule}`: `{safe}` is not a key of a pause.")
+    field = _key(rule, "pause.field", spec.get("field"))
+    raw = spec.get("in")
+    if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_PAUSE_VALUES:
+        raise ConstraintError(
+            rule, f"Rule `{rule}`: `pause.in` is a list of 1 to {MAX_PAUSE_VALUES} values.")
+    values = tuple(_pause_value(rule, i, v) for i, v in enumerate(raw))
+    if len(set(values)) != len(values):
+        raise ConstraintError(rule, f"Rule `{rule}`: `pause.in` names a value twice.")
+    return Atom(field, "in", values)
+
+
+def _parse_timer(rule: str, spec: Mapping[str, Any], message: str | None) -> Rule:
+    """A timer (E9a). The due field, and an optional pause on another field."""
+    field = _key(rule, "field", spec.get("field"))
+    pause = _parse_pause(rule, spec["pause"]) if "pause" in spec else None
+    if pause is not None and pause.field == field:
+        raise ConstraintError(rule, f"Rule `{rule}`: `pause.field` must be another field.")
+    return Rule(rule, TIMER, message, field=field, pause=pause)
+
+
 _PARSERS = {RANGE: _parse_range, UNIQUE: _parse_unique, GROUP_SUM_MIN: _parse_group,
             STATE_MACHINE: _parse_machine, FORMULA: _parse_formula, ROLLUP: _parse_rollup,
-            HIERARCHY: _parse_hierarchy}
+            HIERARCHY: _parse_hierarchy, TIMER: _parse_timer}
 assert tuple(_PARSERS) == RULE_KINDS, "each kind has one parser"
 
 
@@ -819,6 +885,30 @@ def _fit_hierarchy(rule: Rule, by_key: Mapping[str, FieldSpec], object_name: str
     _hot(rule, field)
 
 
+def _fit_timer(rule: Rule, by_key: Mapping[str, FieldSpec]) -> None:
+    """The fields of a timer (E9a): one hot datetime field, and for a pause one
+    hot select or text field. Each value of a select pause is an option."""
+    field = by_key.get(str(rule.field))
+    if field is None:
+        raise _refuse(rule, f"`{rule.field}` is not a field of this object.")
+    if field.type != "datetime" or field.many:
+        raise _refuse(rule, f"field `{field.key}` must be one datetime field.")
+    _hot(rule, field)
+    if rule.pause is None:
+        return
+    pause = by_key.get(rule.pause.field)
+    if pause is None:
+        raise _refuse(rule, f"`{rule.pause.field}` is not a field of this object.")
+    if pause.type not in TIMER_PAUSE_TYPES or pause.many:
+        raise _refuse(rule, f"pause field `{pause.key}` must be one select or text field.")
+    _hot(rule, pause)
+    if pause.type == "select":
+        options = set(pause.options or ())
+        for i, value in enumerate(rule.pause.value):
+            if value not in options:
+                raise _refuse(rule, f"`pause.in[{i}]` is not an option of field `{pause.key}`.")
+
+
 def check_rules_fit(rules: Sequence[Rule], fields: Sequence[FieldSpec], *,
                     object_name: str | None = None,
                     sources: Mapping[str, RollupSource] | None = None) -> None:
@@ -846,6 +936,9 @@ def check_rules_fit(rules: Sequence[Rule], fields: Sequence[FieldSpec], *,
             continue
         if rule.kind == HIERARCHY:
             _fit_hierarchy(rule, by_key, object_name)
+            continue
+        if rule.kind == TIMER:
+            _fit_timer(rule, by_key)
             continue
         if rule.kind in (FORMULA, ROLLUP):
             continue
@@ -889,7 +982,7 @@ def _stored_rule(item: Any) -> Rule:
     name = item.get("name") if isinstance(item, Mapping) else None
     if not isinstance(name, str) or not name:
         return Rule("?", MALFORMED)
-    if item.get("kind") in (STATE_MACHINE, FORMULA, ROLLUP, HIERARCHY):
+    if item.get("kind") in (STATE_MACHINE, FORMULA, ROLLUP, HIERARCHY, TIMER):
         # The one parser reads it. A role atom or a bad shape fails closed.
         try:
             return parse_rule(item)
@@ -996,7 +1089,7 @@ def touched_keys(rule: Rule, before: Mapping[str, Any] | None,
     key only: a delete or an old key cannot add a clash, so a check there
     would only stop the repair of old duplicates. C6 and C7a reuse this hook.
     """
-    if rule.kind in (RANGE, STATE_MACHINE, FORMULA, ROLLUP, HIERARCHY):
+    if rule.kind in (RANGE, STATE_MACHINE, FORMULA, ROLLUP, HIERARCHY, TIMER):
         return []
     states: Collection[Mapping[str, Any] | None] = (
         (after,) if rule.kind == UNIQUE else (before, after))
@@ -1344,11 +1437,13 @@ def rule_reads(rule: Rule) -> frozenset[str]:
     or a guard that reads a personal or restricted field makes its target the
     same level. A target is written, so a formula does not read it. A rule of
     an unknown kind reads nothing. A roll-up reads fields of another object, so
-    it reads nothing here (:meth:`Rule.source_keys` names them)."""
+    it reads nothing here (:meth:`Rule.source_keys` names them). A timer (E9a)
+    decides no write, so it reads nothing here, and it never taints a write of
+    a viewer (``studio_access.tainted_rules``)."""
     if rule.kind == FORMULA:
         return studio_expr.expr_reads(rule.expr) if rule.expr is not None else frozenset()
-    if rule.kind == ROLLUP:
-        return frozenset()  # it reads fields of its source, never of its own record
+    if rule.kind in (ROLLUP, TIMER):
+        return frozenset()  # a roll-up reads its source, and a timer decides no write
     reads = set(rule.keys)
     if rule.field is not None:
         reads.add(rule.field)

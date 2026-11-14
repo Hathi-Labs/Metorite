@@ -1493,7 +1493,7 @@ async def is_active_member(email: str | None, org_id: str | None) -> bool:
 
 
 async def resolve_access_in_org(
-    email: str | None, org_id: str | None,
+    email: str | None, org_id: str | None, *, strict: bool = False,
 ) -> EffectiveAccess:
     """The access of *email* in *org_id*, or no access. Never cached.
 
@@ -1511,6 +1511,11 @@ async def resolve_access_in_org(
     or org, no row, a missing table and a read error give
     ``EffectiveAccess(is_active=False)``. A pool or connect timeout raises
     :class:`IdentityUnavailable`.
+
+    With *strict* (STU-E9a), a read error raises :class:`IdentityUnavailable`
+    too, so the caller can tell a fault from a true no. Only the Studio timer
+    scan passes it. It disarms a timer on a true no, and keeps the arm on a
+    fault. The default stays as above.
     """
     refused = EffectiveAccess(is_active=False)
     if not email or not org_id:
@@ -1529,6 +1534,8 @@ async def resolve_access_in_org(
     except Exception as exc:
         _raise_if_pool_timeout(exc, "access_in_org")
         _log.warning("auth.access_in_org_failed", error=str(exc)[:200])
+        if strict:
+            raise IdentityUnavailable("access_in_org") from exc
         return refused
     if row is None:
         return refused
