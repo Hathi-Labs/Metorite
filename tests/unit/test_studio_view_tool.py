@@ -267,7 +267,7 @@ def test_the_parity_reader_sees_all_four_verbs() -> None:
     cannot follow -> red."""
     from tests.unit import _chat_parity_reader as r
 
-    tail = "/api/studio/packages/{}/views"
+    tail = "/studio/packages/{}/views"
     assert r.reaches("studio_view_manage", "GET", tail)
     assert r.reaches("studio_view_manage", "POST", tail)
     assert r.reaches("studio_view_manage", "PATCH", tail + "/{}")
@@ -462,7 +462,7 @@ async def test_the_card_names_the_hidden_characters_and_a_held_chat_refuses_them
     assert out["ok"] is True and "Hidden characters" in card.shown[0]["context"]
     mark.held = True
     card.shown.clear()
-    out = await _call(op="save", name=sneaky, shared=True)
+    out = await _call(op="save", name="Plan" + chr(0xE0041), shared=True)
     assert out["ok"] is False and card.shown == []
     assert "hidden characters" in out["errors"][0]["message"]
 
