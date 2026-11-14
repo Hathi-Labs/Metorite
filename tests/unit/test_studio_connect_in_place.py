@@ -21,8 +21,8 @@ The checks here:
    name. A member may connect a member connection of the list only: an org
    connection, an MCP server and an unknown id need the right (§3.5).
 4. The read's shape. One row for each name of the draft, in order, with the
-   six keys ``name``, ``label``, ``met``, ``checkable``, ``setup_href`` and
-   ``can_connect``. ``met`` is the answer of ``met_connections`` for the
+   seven keys ``name``, ``label``, ``met``, ``checkable``, ``setup_href``,
+   ``can_connect`` and ``asked`` (I8b-1a). ``met`` is the answer of ``met_connections`` for the
    session member. A provider outside the registry (a mailbox, a number, a
    key of the console) is not checkable and offers no Connect.
    ``OUTSIDE_REGISTRY`` comes from the connector list, and it agrees with the
@@ -45,7 +45,6 @@ M3: move the gate check below the session. Check 5 goes red. M4: drop
 from __future__ import annotations
 
 import ast
-import re
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -75,7 +74,7 @@ PATH = f"/studio/packages/{PID}/connections"
 NOT_FOUND = {"detail": "Not found"}
 MEMBER = ["feature:studio"]
 ADMIN = ["feature:studio", "integrations:manage"]
-ROW_KEYS = {"name", "label", "met", "checkable", "setup_href", "can_connect"}
+ROW_KEYS = {"name", "label", "met", "checkable", "setup_href", "can_connect", "asked"}
 SRC = ROOT / "apps/services/gateway/gateway/routes/studio/connections.py"
 
 
@@ -197,6 +196,9 @@ class _World:
         self.owner = OWEN
         self.names: Any = ["zoho", "mcp:tally", "google_calendar"]
         self.met: frozenset[str] = frozenset({"zoho"})
+        #: I8b-1a: the reads of the asks, and the names that the caller asked for.
+        self.asked_reads: list[tuple[str, list[str]]] = []
+        self.asked: frozenset[str] = frozenset()
 
 
 def _package(manifest: dict[str, Any]) -> store.Package:
@@ -228,9 +230,14 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
         w.met_reads.append(viewer)
         return w.met
 
+    async def asked_by(db: Any, org: str, member: str, providers: Any) -> frozenset[str]:
+        w.asked_reads.append((member, list(providers)))
+        return w.asked & frozenset(providers)
+
     monkeypatch.setattr(connections, "_tenant_session", session)
     monkeypatch.setattr(connections.store, "get_package", get_package)
     monkeypatch.setattr(connections.host_resolve, "met_connections", met_connections)
+    monkeypatch.setattr(connections.attention, "asked_by", asked_by)
     monkeypatch.setattr(get_settings(), "studio_orgs", "*")
     monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", "*")
     return w
@@ -250,13 +257,17 @@ def test_the_read_answers_one_row_for_each_name_in_order(world: _World) -> None:
     assert [x["name"] for x in rows] == ["zoho", "mcp:tally", "google_calendar"]
     assert all(set(x) == ROW_KEYS for x in rows)
     assert rows[0] == {"name": "zoho", "label": "Zoho CRM", "met": True, "checkable": True,
-                       "setup_href": "/crm", "can_connect": False}
+                       "setup_href": "/crm", "can_connect": False, "asked": False}
     assert rows[1] == {"name": "mcp:tally", "label": "tally", "met": False, "checkable": True,
-                       "setup_href": "/integrations?add=mcp&name=tally", "can_connect": False}
+                       "setup_href": "/integrations?add=mcp&name=tally", "can_connect": False,
+                       "asked": False}
     assert rows[2] == {"name": "google_calendar", "label": "Google Calendar", "met": False,
-                       "checkable": True, "setup_href": "/calendar?settings=1", "can_connect": True}
+                       "checkable": True, "setup_href": "/calendar?settings=1", "can_connect": True,
+                       "asked": False}
     assert world.sessions == 1
     assert world.met_reads == [OWEN]
+    # I8b-1a: one read of the asks, for the names that are not met only.
+    assert world.asked_reads == [(OWEN, ["mcp:tally", "google_calendar"])]
 
 
 def test_an_admin_may_connect_each_row(world: _World) -> None:
@@ -271,7 +282,7 @@ def test_an_unknown_provider_id_reads_its_own_id_and_is_blocked(world: _World, g
     world.names = ["acme"]
     rows = _client(_user(grants=grants)).get(PATH).json()["connections"]
     assert rows == [{"name": "acme", "label": "acme", "met": False, "checkable": False,
-                     "setup_href": "/integrations", "can_connect": False}]
+                     "setup_href": "/integrations", "can_connect": False, "asked": False}]
 
 
 @pytest.mark.parametrize("grants", [MEMBER, ADMIN])
