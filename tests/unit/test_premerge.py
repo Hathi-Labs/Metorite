@@ -78,6 +78,8 @@ def _advance_main(repo: Path, path: str, text: str = "x\n") -> None:
 
 
 def _run(repo: Path, *args: str, **env: str) -> subprocess.CompletedProcess[str]:
+    # The throwaway repo has no scripts/affected_tests.py: stub the test run unless a case sets it.
+    env = {"PREMERGE_AFFECTED_CMD": "true", "PREMERGE_RERUN_CMD": "true", **env}
     return subprocess.run([_BASH, SCRIPT.as_posix(), *args], cwd=repo, capture_output=True,
                           text=True, encoding="utf-8", env={**_ENV, **env}, timeout=120)
 
@@ -94,32 +96,49 @@ _FAILS = 'echo "FAILED tests/t.py::test_a - boom"; exit 1'
 def test_a_test_that_fails_only_when_merged_blocks(repo):
     """Green alone, red together: the case the overlap step exists for."""
     _both_sides_change_shared(repo)
-    res = _run(repo, "--with-tests", PREMERGE_AFFECTED_CMD=_FAILS, PREMERGE_RERUN_CMD="true")
+    res = _run(repo, PREMERGE_AFFECTED_CMD=_FAILS, PREMERGE_RERUN_CMD="true")
     assert res.returncode == 1
     assert "tests/t.py::test_a" in res.stderr and "pass on the branch alone" in res.stderr
     assert not (repo / ".git" / "MERGE_HEAD").exists()
 
 
-def test_the_default_runs_no_affected_tests(repo):
-    """CIV-12 (D176): without --with-tests the script runs the collision fences
-    only. A files-overlap case that would fail the affected run still passes."""
+def test_no_tests_flag_runs_no_affected_tests(repo):
+    """--no-tests (or PREMERGE_MERGE_TEST=0) keeps the collision fences only."""
     _both_sides_change_shared(repo)
     marker = repo.parent / "affected-ran"
-    res = _run(repo, PREMERGE_AFFECTED_CMD=f"touch {marker.as_posix()}; {_FAILS}",
-               PREMERGE_RERUN_CMD="true")
-    assert res.returncode == 0, res.stderr
-    assert "PASS" in res.stdout
-    assert not marker.exists(), "the affected tests ran without --with-tests"
-    assert "--with-tests" in res.stdout
+    cmd = f"touch {marker.as_posix()}; {_FAILS}"
+    for res in (_run(repo, "--no-tests", PREMERGE_AFFECTED_CMD=cmd, PREMERGE_RERUN_CMD="true"),
+                _run(repo, PREMERGE_MERGE_TEST="0", PREMERGE_AFFECTED_CMD=cmd, PREMERGE_RERUN_CMD="true")):
+        assert res.returncode == 0, res.stderr
+        assert "PASS" in res.stdout
+        assert not marker.exists(), "the affected tests ran with the merge test off"
 
 
-def test_with_tests_runs_the_affected_tests(repo):
+def test_the_default_runs_the_affected_tests_and_prints_minutes(repo):
+    """CIV-32 (task 3277): the merge test is on by default."""
     _both_sides_change_shared(repo)
     marker = repo.parent / "affected-ran"
-    res = _run(repo, "--with-tests", PREMERGE_AFFECTED_CMD=f"touch {marker.as_posix()}",
-               PREMERGE_RERUN_CMD="true")
+    res = _run(repo, PREMERGE_AFFECTED_CMD=f"touch {marker.as_posix()}", PREMERGE_RERUN_CMD="true")
     assert res.returncode == 0, res.stderr
     assert marker.exists()
+    assert "minute(s)" in res.stdout
+
+
+def test_files_no_side_shares_still_run_the_tests(repo):
+    """The 2026-11-13/14 cases: the two PRs touched different files. The union
+    list holds the branch's file AND main's file."""
+    _commit(repo, "a_feat.py")
+    _advance_main(repo, "b_main.py")
+    res = _run(repo, PREMERGE_AFFECTED_CMD="true", PREMERGE_RERUN_CMD="true")
+    assert res.returncode == 0, res.stderr
+    assert "2 files in the union" in res.stdout
+
+
+def test_a_timeout_is_unproven_and_not_a_red(repo):
+    _both_sides_change_shared(repo)
+    res = _run(repo, PREMERGE_TEST_TIMEOUT="1", PREMERGE_AFFECTED_CMD="sleep 30", PREMERGE_RERUN_CMD="true")
+    assert res.returncode == 0, res.stderr
+    assert "UNPROVEN" in res.stdout
 
 
 def test_an_unknown_flag_is_refused(repo):
