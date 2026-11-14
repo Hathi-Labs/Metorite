@@ -127,6 +127,14 @@ elif verb == "pr merge":
     if os.environ.get("FAKE_MERGE_FAIL"):
         sys.stderr.write("unexpected EOF\n")
         sys.exit(1)
+elif verb == "pr comment":
+    # CIV-28c: the bot sends the comment body on stdin (--body-file -).
+    body = sys.stdin.read() if opt("--body-file") == "-" else (opt("--body") or "")
+    if os.environ.get("FAKE_COMMENT_FAIL"):
+        sys.stderr.write("error connecting to api.github.com\n")
+        sys.exit(1)
+    with open(os.path.join(fix, f"comments_{n}"), "a", encoding="utf-8", newline="\n") as f:
+        f.write(body + "\n=====\n")
 sys.exit(0)
 """
 
@@ -233,13 +241,13 @@ class Env:
         self.view(n, headRefOid=sha)
         return sha
 
-    def queue(self, n, sha=None, tier="STANDARD", note="note", path=None):
+    def queue(self, n, sha=None, tier="STANDARD", note="note", path=None, wt="/x"):
         path = path or self.tmp / "queue.tsv"
         new = not path.exists()
         with path.open("a", encoding="utf-8", newline="\n") as f:
             if new:
                 f.write("# PR\ttask\tworktree\tlane\thead_sha\ttier\tnote\n")
-            f.write(f"{n}\t99\t/x\tlane-x\t{sha or self.heads[n]}\t{tier}\t{note}\n")
+            f.write(f"{n}\t99\t{wt}\tlane-x\t{sha or self.heads[n]}\t{tier}\t{note}\n")
 
     def view(self, n, **fields):
         p = self.fix / f"view_{n}.json"
@@ -315,8 +323,13 @@ class Env:
             "MERGE_BOT_STATE": str((self.tmp / "state").as_posix()),
             "MERGE_BOT_WORKDIR": str((self.tmp / "work").as_posix()),
             "PREMERGE_CMD": f"bash {(self.fix / 'premerge.sh').as_posix()}",
+            # CIV-28c: a BACK comment is one more gh call. A test that is not about
+            # the comment turns it off, so a pass of many PRs stays fast. None
+            # removes the variable, and the script default (on) applies.
+            "MERGE_BOT_BACK_COMMENT": "0",
             **extra,
         }
+        env = {k: v for k, v in env.items() if v is not None}
         if home is not None:
             env["HOME"] = home.as_posix()
             env.pop("MERGE_QUEUE")
@@ -335,6 +348,12 @@ class Env:
     @property
     def calls(self):
         return (self.fix / "calls").read_text(encoding="utf-8")
+
+    def comments(self, n):
+        """The PR comments that the bot posted on PR n, oldest first."""
+        p = self.fix / f"comments_{n}"
+        text = p.read_text(encoding="utf-8") if p.exists() else ""
+        return [c.strip("\n") for c in text.split("\n=====\n") if c.strip()]
 
     @property
     def merges(self):
@@ -446,7 +465,7 @@ def test_dry_run_calls_no_write_command_and_logs_nothing(env):
     env.pr(5)
     env.pr(6, checks={n: "pass" for n in REQUIRED} | {"Unit tests": "cancel"}, draft=True)
     r = env.run(MERGE_BOT_DRY_RUN="1")
-    for bad in ("pr merge", "pr ready", "run rerun"):
+    for bad in ("pr merge", "pr ready", "run rerun", "pr comment"):
         assert bad not in env.calls
     assert env.log == "" and "DRY RUN" in r.stderr
 
@@ -1222,3 +1241,115 @@ def test_fix_p3_a_head_branch_that_moved_back_is_not_pushed_over(env):
     run_rules(env, during_tests=move)
     assert env.log.startswith("BACK 5 conflict: resolved by additions but the head branch moved")
     assert pr_branch(env, 5) == parent
+
+
+# ── CIV-28c: a BACK reaches the PR ──────────────────────────────────────────
+
+
+def test_civ28c_a_back_posts_one_pr_comment_with_the_reason(env):
+    sha = env.pr(5, checks={n: "pass" for n in REQUIRED} | {"Lint": "fail"})
+    env.run(MERGE_BOT_BACK_COMMENT=None)
+    # The log line is as before. The comment comes on top of it.
+    assert env.log == "BACK 5 red: Lint\n"
+    assert [c for c in env.calls.splitlines() if c.startswith("pr comment")] == [
+        "pr comment 5 --body-file -"
+    ]
+    (body,) = env.comments(5)
+    assert body.startswith(
+        f"Merge bot: BACK. The bot did not merge this PR at `{sha[:9]}` (task 99)."
+    )
+    assert "```text\nred: Lint\n```" in body
+    assert 'bash scripts/hand_over.sh 5 99 STANDARD "<note>"' in body
+    # A second pass with no new hand-over posts nothing more.
+    env.run(MERGE_BOT_BACK_COMMENT=None)
+    assert len(env.comments(5)) == 1
+
+
+def test_civ28c_every_kind_of_back_is_commented_but_closed_and_done_are_not(env):
+    env.pr(5, tier="HIGH")
+    env.pr(6, state="CLOSED")
+    env.pr(7)
+    env.pr(8)
+    env.push_pr(8)
+    env.run(MERGE_BOT_BACK_COMMENT=None)
+    assert env.log == (
+        "BACK 5 HIGH tier: lane-merge or a person merges it\n"
+        "BACK 6 closed\n"
+        "DONE 7 abc123\n"
+        "BACK 8 head moved after the hand-over: hand over again\n"
+    )
+    assert "HIGH tier" in env.comments(5)[0]
+    assert env.comments(6) == [] and env.comments(7) == []
+    assert "head moved after the hand-over" in env.comments(8)[0]
+
+
+def test_civ28c_a_failed_comment_keeps_the_log_line(env):
+    env.pr(5, checks={n: "pass" for n in REQUIRED} | {"Lint": "fail"})
+    r = env.run(FAKE_COMMENT_FAIL="1", MERGE_BOT_BACK_COMMENT=None)
+    assert env.log == "BACK 5 red: Lint\n"
+    assert "the BACK comment failed" in r.stderr
+
+
+def test_civ28c_the_comment_can_be_turned_off(env):
+    env.pr(5, checks={n: "pass" for n in REQUIRED} | {"Lint": "fail"})
+    env.run(MERGE_BOT_BACK_COMMENT="0")
+    assert env.log == "BACK 5 red: Lint\n" and "pr comment" not in env.calls
+
+
+def test_civ28c_a_code_fence_in_the_reason_cannot_end_the_block(env):
+    env.pr(5)
+    (env.fix / "premerge.sh").write_text(
+        "#!/usr/bin/env bash\necho 'see ```x``` and @someone' >&2\nexit 1\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    env.run(MERGE_BOT_BACK_COMMENT=None)
+    (body,) = env.comments(5)
+    assert body.count("```") == 2 and "'''x'''" in body and "@someone" in body
+
+
+def test_civ28c_a_hand_over_by_pr_number_merges(env):
+    # lane_handover.sh --pr writes "-" in the worktree field. The bot reads no path.
+    env.pr(5, queue=False)
+    env.queue(5, wt="-")
+    env.run(MERGE_BOT_BACK_COMMENT=None)
+    assert env.log == "DONE 5 abc123\n" and env.comments(5) == []
+
+
+def test_civ28c_a_dry_run_posts_no_comment(env):
+    env.pr(5, checks={n: "pass" for n in REQUIRED} | {"Lint": "fail"})
+    r = env.run(MERGE_BOT_DRY_RUN="1", MERGE_BOT_BACK_COMMENT=None)
+    assert env.log == "" and "pr comment" not in env.calls
+    assert "DRY RUN would comment the BACK on PR 5" in r.stderr
+
+
+# ── Fix round 1 (PR 2294 review): no credential in a BACK comment ───────────
+
+#: A key shape, built from parts so that the secret scan of the repo skips it.
+FAKE_KEY = "sk" + "-" + "q" * 24
+
+
+def _premerge_says(env, text):
+    (env.fix / "premerge.sh").write_text(
+        f"#!/usr/bin/env bash\necho '{text}' >&2\nexit 1\n", encoding="utf-8", newline="\n"
+    )
+
+
+def test_civ28c_fix1_the_comment_drops_a_credential_shape(env):
+    env.pr(5)
+    _premerge_says(env, f"fence failed: key {FAKE_KEY} in the log")
+    env.run(MERGE_BOT_BACK_COMMENT=None)
+    (body,) = env.comments(5)
+    assert FAKE_KEY not in body and "[redacted]" in body and "fence failed" in body
+    # The log line on the box keeps the full reason.
+    assert FAKE_KEY in env.log
+
+
+def test_civ28c_fix1_a_failed_scrub_posts_no_reason(env, tmp_path):
+    env.pr(5)
+    _premerge_says(env, f"fence failed: key {FAKE_KEY}")
+    env.run(MERGE_BOT_BACK_COMMENT=None, MERGE_BOT_SECRET_SHAPES=str(tmp_path / "missing.py"))
+    (body,) = env.comments(5)
+    assert FAKE_KEY not in body and "fence failed" not in body
+    assert "credential scrub failed" in body
+    assert env.log.startswith("BACK 5 premerge: ")
