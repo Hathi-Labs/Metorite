@@ -10,7 +10,10 @@
 #   systemctl --user enable --now metorite-auto-revert.timer
 # AUTO_REVERT_MODE: off does nothing. dry writes a log line and a report only.
 # on opens a revert PR and hands it to the merge bot. The code default is off.
-# D218: one week of dry first. Then the owner sets on here, and runs daemon-reload.
+# D218: one week of dry first. CIV-31d: the Environment= line below, or the same
+# line in a drop-in, is the ONE source of the mode. The pass, the merge bot and
+# lane-merge read it with scripts/home_server/auto_revert_mode.sh, never from the
+# env of a process. docs/home_box.md section 3.8 gives the steps to set it.
 # Logs: journalctl --user -u metorite-auto-revert.service
 # Decisions: ~/lanes/auto-revert.log. One report per red run: ~/lanes/auto-revert/.
 [Unit]
