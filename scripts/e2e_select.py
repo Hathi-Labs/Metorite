@@ -13,6 +13,11 @@ Rules, in this order, for each changed path under workbench/control_plane:
 A path outside workbench/control_plane selects nothing. The `always_run` specs
 join every partial selection. Specs that the `ci` project ignores are dropped.
 
+An unmapped spec (no area, importer rule or `always_run` entry names it) joins
+every partial selection too. A new spec can merge before its map entry, so the
+map can lag main for a while. Then the spec runs on every UI PR, and no fence
+on main goes red (2026-11-14: `studio-app-rail.spec.ts` turned main red).
+
 Import graph (fix round 1). A changed `src/` file also selects the specs of every
 file that imports it, directly or through other files. The graph reads relative
 imports and the `@/` alias, with `.ts`, `.tsx` and `index` files. It skips test
@@ -266,7 +271,18 @@ def select(
     if not chosen:
         return "none", []
     chosen |= set(spec_map["always_run"]) & set(specs)
+    chosen |= unmapped_specs(spec_map, specs) - quarantined(config_text)
     return "partial", sorted(chosen)
+
+
+def unmapped_specs(spec_map: dict, specs: list[str]) -> set[str]:
+    """The specs that no area, importer rule or `always_run` entry names."""
+    globs = list(spec_map["always_run"])
+    for area in spec_map["areas"].values():
+        globs += area["specs"]
+    for rule in spec_map.get("importer_rules", []):
+        globs += rule.get("specs", [])
+    return {s for s in specs if not any(fnmatch.fnmatch(s, g) for g in globs)}
 
 
 def shard_plan(count: int) -> tuple[int, list[int]]:

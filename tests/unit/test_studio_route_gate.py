@@ -137,6 +137,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/studio/approvals"),
     ("POST", "/studio/packages/{package_id}/versions/{version}/approval/approve"),
     ("POST", "/studio/packages/{package_id}/versions/{version}/approval/reject"),
+    # I8a, the connections of a draft (Connect in place).
+    ("GET", "/studio/packages/{package_id}/connections"),
     # AF-10a, the saved views of an app.
     ("GET", "/studio/packages/{package_id}/views"),
     ("POST", "/studio/packages/{package_id}/views"),
@@ -198,9 +200,9 @@ def no_store(monkeypatch: pytest.MonkeyPatch) -> list[str]:
             raise RuntimeError(f"{name} ran")
         return _fn
 
-    from gateway.routes.studio import invoke, packages, skills, views
+    from gateway.routes.studio import connections, invoke, packages, skills, views
 
-    for module in (actions, invoke, packages, skills, views):
+    for module in (actions, connections, invoke, packages, skills, views):
         if hasattr(module, "_tenant_session"):
             monkeypatch.setattr(module, "_tenant_session", _trip(f"{module.__name__}.session"))
     monkeypatch.setattr(actions, "catalog_rows", _trip("catalog_rows"))

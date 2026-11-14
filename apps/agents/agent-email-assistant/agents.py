@@ -335,8 +335,11 @@ class GatewayError(GatewayRefusal):
         fields: tuple[str, ...] = (),
         route: str = "",
         reason: str = "",
+        code: str = "",
     ) -> None:
-        super().__init__(message, status=status, detail=detail, fields=fields, route=route)
+        super().__init__(
+            message, status=status, detail=detail, fields=fields, route=route,
+            code=code)
         self.reason = reason
 
 
@@ -363,9 +366,11 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
         return
     detail = ""
     reason = ""
+    code = ""
     try:
         body = resp.json()
         if isinstance(body, dict):
+            code = str(body.get("code") or "")[:64]
             detail = str(body.get("detail") or body.get("error") or "")
             raw = body.get("detail")
             if isinstance(raw, dict):
@@ -383,6 +388,7 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
         fields=fields,
         route=route_template(path),
         reason=reason,
+        code=code,
     )
 
 

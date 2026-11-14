@@ -218,6 +218,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-LAD | **The gratification ladder**: the default way to plan, in the playbook, the Projects planning AI, `get_plan` and `my_work` (D211) | 🟢 active · M1 | `specs/orchestration_playbook.md` §6d | Metorite: epic 2887 (Projects/Tasks App), LAD-1 = task 2888 (MCP), LAD-2 to LAD-4 = tasks 2889 to 2891 · replan task 2885 |
 | WS-CON | **Company content**: Metorite files, reads and reuses what a member drops in the chat, in decks and reports in the company's own style (D216) | 🟢 active · M2 | `specs/company_context.md` §16 | Metorite: epic 3039 (Knowledge), CON-0 to CON-5 = tasks 3040 to 3045, AM-7 = task 206, demos 3046 to 3048 · flag `COMPANY_CONTENT_ORGS`, default empty |
 | WS-OTW | **One-time workflows**: ask someone, wait for the one answer, run once to propose the record updates, then retire (D214) | 🟢 active · M2 | `specs/workflows_app.md` §14 | Metorite: epic 3010 (AI Studio), OTW-0 to OTW-10 = tasks 3011 to 3021, demos 3022 to 3024 · flag `ONE_TIME_WORKFLOWS_ORGS`, default empty |
+| WS-FIND | **Find anything**: one search engine with near names, related records, past chats and an honest zero, as the chat's find tools (owner ask, 2026-11-14) | 🟢 active · M1 | `specs/find_engine.md` · `specs/knowledge_base.md` §20 | Metorite: epic 3232 (AI Chat Interface), FIND-0 = task 3233, rung 1 demo = task 3234 · in flight: KR-ZERO (2974), HRD-18a (2997) · next FIND-1, HRD-4 (2983), FIND-2, then HRD-18b (3226) and FIND-3 · D-FIND-1 to D-FIND-8 wait for the owner |
 | WS-SND | **Sound cues**: a few tasteful sounds for an email sent or arrived, the agent needs me, new in My Day, and a reminder (D210) | 🟢 active · M2 | `workbench/control_plane/DESIGN_SYSTEM.md` §4c and `specs/proactive_reach.md` §8.4, planned (SND-0, task 2864) | Metorite: epic 2862 (My Day), SND-P to SND-7 = tasks 2863 to 2872 · flag `NEXT_PUBLIC_SOUND_CUES`, default OFF |
 
 ### 2.2 Earlier rows (WS-0 to WS-67)
@@ -278,7 +279,7 @@ These are the rows of the board before D118. Each row keeps its ID, so a spec th
 | WS-48 | Data narrowing pipeline | 🟢 open | `specs/data_narrowing_pipeline.md` | now in WS-CHAT |
 | WS-49 | Box hardening | 🟢 open | `specs/box_hardening.md` | now in WS-TO |
 | WS-50 | Operator Console: money and the UI rebuild | 🟢 open | `specs/operator_console_money.md` | now in WS-CM |
-| WS-51 | Chat run continuity | 🟢 open | `specs/chat_run_continuity.md` | now in WS-CHAT |
+| WS-51 | Chat run continuity | 🟢 open | `specs/chat_run_continuity.md` | now in WS-CHAT · §4.12 RESUME (task 3255): a chat picks up exactly where it left off, SPEC 2026-11-14, RESUME-0a to RESUME-8 on rungs 0 to 3 |
 | WS-52 | How Metorite writes: one voice | 🟢 open | `specs/agent_writing_voice.md` | now in WS-CHAT |
 | WS-53 | CRM: two modes and the Zoho mirror | 🟢 open | `specs/crm_platform.md` | now in WS-CRM |
 | WS-54 | Integrations: one registry and a console | 🟢 open | `specs/integrations_console.md` | now in WS-BRIEF (connectors, epic 481) |

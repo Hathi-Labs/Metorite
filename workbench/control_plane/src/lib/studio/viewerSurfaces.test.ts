@@ -79,9 +79,10 @@ function packagePaths(): Map<string, string[]> {
 /**
  * The owner routes: a viewer gets 404 on each, so they draw nothing for a viewer. `lifetime`, `keep`
  * and `restore` (PKG-10e) belong to the owner of the private install. A viewer gets `install: null`
- * or 404, so the end-date bar draws nothing for a viewer.
+ * or 404, so the end-date bar draws nothing for a viewer. `connections` (WS-STU I8a) reads the
+ * connections of the owner's draft. A viewer gets 404, so the IDE draws no Connect line for a viewer.
  */
-const OWNER_ROUTES = /^\/(draft\?|versions|versions\/\$\{[^}]+\}|delete-preview|lifetime|keep|restore)/;
+const OWNER_ROUTES = /^\/(draft\?|versions|versions\/\$\{[^}]+\}|delete-preview|lifetime|keep|restore|connections)/;
 
 describe("each workbench caller of a package path", () => {
   it("each reader of the route reads packageAccess", () => {

@@ -16,6 +16,11 @@
  * moves the hash that her next save uses. When her run ends, the page reads the draft again and
  * the Explorer, the Preview and the Problems follow. A poll never replaces an unsaved edit.
  *
+ * I8a: the Problems panel opens with one line for each connection that the stored draft names. A
+ * missing one has Connect, which opens a sheet and then the connect page of the owning app, with the
+ * way back to this page (`ConnectSheet.tsx`). The page reads the lines again after each save, and on
+ * the return, so a met connection reads "connected".
+ *
  * G5: a change bar above the tabs says what the newest change in the draft did, in plain words, with
  * a one-step Undo through the same save. Publish is in the top bar: its dialog lists what changes in
  * the LIVE app, then sends the stored draft with its hash. The bar is in the IDE and not in the dock,
@@ -37,10 +42,12 @@ import Button from "@/components/ui/Button";
 import Tabs from "@/components/Tabs";
 import { useOptionalSidebarFold } from "@/components/SidebarFold";
 import { autoFoldEnabled } from "@/lib/sidebarFold";
+import { useCachedResource } from "@/lib/useCachedResource";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { DOCK_MIN_VIEWPORT, assistantState, dockFoldsNav, currentAssistantFacts, openAssistant, useAssistantFacts } from "@/lib/shell/assistant";
 import { sendHeldBrief } from "@/lib/studio/buildHandoff";
 import { buildOutline, type OutlineTab } from "@/lib/studio/buildOutline";
+import { connectPanel, connectionsKey, getConnections, phoneProblemsCount, type ConnectionRow } from "@/lib/studio/connect";
 import type { Reveal } from "@/lib/studio/codeReveal";
 import type { Problem } from "@/lib/studio/draftProblems";
 import { checkDraft } from "@/lib/studio/draftProblems";
@@ -175,6 +182,20 @@ function Ide({ pkg }: { pkg: string }) {
     if (server.length > 0) { setProblemsOpen(true); setPhoneProblemsOpen(true); }
   }
   const liveRows = useMemo(() => (draft?.objects ?? []) as unknown as LiveObject[], [draft]);
+  // I8a: the connections of the STORED draft. A 404 (the gate off) gives no line. A new stored hash
+  // (a save, Mira's save, an undo) reads them again, and a focus does too, so the return reads "met".
+  const conns = useCachedResource<ConnectionRow[]>(connectionsKey(pkg), () => getConnections(pkg), { revalidateOnFocus: true });
+  const storedHash = draft?.manifestHash ?? null;
+  const seenHash = useRef(storedHash);
+  const refreshConns = conns.refresh;
+  useEffect(() => {
+    if (seenHash.current === storedHash) return;
+    seenHash.current = storedHash;
+    refreshConns();
+  }, [storedHash, refreshConns]);
+  // A failed read (a 5xx, the network) shows its own line with Retry, never an empty panel.
+  const panel = useMemo(() => connectPanel(conns.data, conns.error, pkg), [conns.data, conns.error, pkg]);
+  const retrying = conns.loading || conns.refreshing;
   // No facts when the app is gone (404): Mira must never save to a deleted app.
   useAssistantFacts(
     draft && !watch.off ? ideFacts({ id: draft.id, name: draft.name }, draft.manifest, draft.manifestHash) : null,
@@ -273,13 +294,17 @@ function Ide({ pkg }: { pkg: string }) {
   );
 
   if (isMobile) {
+    // The Problems tab counts each problem and each missing connection, so a phone shows them before a tap.
+    const count = phoneProblemsCount(problems.length, conns.data);
+    const phoneTabs = PHONE_TABS.map((t) => (t.id === "problems" && count !== undefined ? { ...t, count } : t));
     return (
       <Frame title={draft.name} actions={actions}>
-        <Tabs tabs={PHONE_TABS} activeTab={phoneTab} onTabChange={setPhoneTab} variant="segmented" chrome="inline" className="p-2" />
+        <Tabs tabs={phoneTabs} activeTab={phoneTab} onTabChange={setPhoneTab} variant="segmented" chrome="inline" className="p-2" />
         <div className="flex min-h-0 flex-1 flex-col">
           {phoneTab === "explorer" ? <div className="min-h-0 flex-1 overflow-y-auto">{explorer}</div> : null}
           {phoneTab === "editor" ? editorPane : null}
-          {phoneTab === "problems" ? <ProblemsPanel problems={problems} open={phoneProblemsOpen} onToggle={() => setPhoneProblemsOpen((o) => !o)} fill /> : null}
+          {phoneTab === "problems" ? <ProblemsPanel problems={problems} open={phoneProblemsOpen} onToggle={() => setPhoneProblemsOpen((o) => !o)} fill
+            connections={panel.lines} missing={panel.missing} failure={panel.failure} onRetry={refreshConns} retrying={retrying} /> : null}
         </div>
         {dialog}
       </Frame>
@@ -297,7 +322,8 @@ function Ide({ pkg }: { pkg: string }) {
         ) : null}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {editorPane}
-          <ProblemsPanel problems={problems} open={problemsOpen} onToggle={() => setProblemsOpen((o) => !o)} />
+          <ProblemsPanel problems={problems} open={problemsOpen} onToggle={() => setProblemsOpen((o) => !o)}
+            connections={panel.lines} missing={panel.missing} failure={panel.failure} onRetry={refreshConns} retrying={retrying} />
         </div>
       </div>
       {dialog}

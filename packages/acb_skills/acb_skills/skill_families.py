@@ -854,10 +854,11 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     },
     # STU-G1 (ai_studio.md section 6.2): the AI Studio builder tools, for the
     # one assistant to hold in a Studio turn. The owner is `studio-builder`,
-    # which is NOT a second assistant. Eight stateless builder tools (G1b added the describe tool,
-    # G2 the interview and the plan card), three skill tools (F2d) and three package tools (G1c:
-    # save and publish over the A5 routes; A5c-2: delete over the A5c-1 routes, after one card).
-    # STB-6a (E13a) adds ONE workflow read over the Workflows routes, as the member. No write.
+    # which is NOT a second assistant. The history of the tools, now in two packs: eight
+    # stateless builder tools (G1b added the describe tool, G2 the interview and the plan
+    # card), three skill tools (F2d) and three package tools (G1c: save and publish over the
+    # A5 routes; A5c-2: delete over the A5c-1 routes, after one card). STB-6a (E13a) added ONE
+    # workflow read over the Workflows routes, as the member. No write.
     # WS-67 TS-1b (one_assistant_context.md section 4.2.9, "The Studio split"): the 23 tools
     # are two packs. ``studio`` keeps a core of 10 tools, the build of an app. ``studio-more``
     # holds the other 13, and it follows ``studio`` (tool_packs.FOLLOWS). A Studio turn takes
@@ -906,7 +907,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "summary": (
             "Save, publish, pause and list your AI Studio skills, delete an app, start from a "
             "ready app, read and change the records of a package, read from another app, and "
-            "list and read the organisation's workflows."
+            "list and read the organisation's workflows and the steps of a run."
         ),
         "description": (
             "A tool pack: the other tools of AI Studio, for the main assistant "
@@ -917,8 +918,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "object. Three write tools add, change and delete a record, and each "
             "asks the member first. One read tool reads from another app through "
             "an action of a package. One read tool lists the workflows of the "
-            "organization or reads one. A run loads a pack only where tool packs "
-            "are on, so until then this switch has no effect."
+            "organization, reads one, or lists the human steps of one run. A run "
+            "loads a pack only where tool packs are on, so until then this switch "
+            "has no effect."
         ),
         "tools": (
             "studio_skill_list",

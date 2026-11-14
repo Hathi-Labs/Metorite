@@ -17,8 +17,11 @@ const subscribe = (onChange: () => void) => {
   q.addEventListener("change", onChange);
   return () => q.removeEventListener("change", onChange);
 };
-/** True below `sm`: the dialog is a sheet there. The server and the first render say false. */
-function useBelowSm(): boolean {
+/**
+ * True below `sm`: the dialog is a sheet there. The server and the first render say false. The
+ * Connect sheet of I8a (`ConnectSheet.tsx`) uses the same rule.
+ */
+export function useBelowSm(): boolean {
   return useSyncExternalStore(subscribe, () => window.matchMedia(PHONE).matches, () => false);
 }
 

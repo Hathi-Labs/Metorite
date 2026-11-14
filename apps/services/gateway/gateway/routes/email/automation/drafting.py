@@ -21,6 +21,7 @@ from email_ingestion.llm_cap import automation_job, llm_slot
 from email_ingestion.persist import TRUNCATION_MARKER
 from email_ingestion.providers.base import (
     ProviderAttachmentFailed,
+    ProviderDidNotAnswer,
     ProviderMailTooLarge,
 )
 from email_ingestion.providers.gmail import GmailDraftNotFound, GmailProvider
@@ -2631,6 +2632,10 @@ async def draft_reply_smart(
                         saved_to = list(reply_to or [email["from"]])
                         saved_cc = list(reply_cc or [])
                 # The wrapper's exit commit lands the mirrored local draft.
+            except ProviderDidNotAnswer:
+                # HRD-20: the model reads the provider's words, not a draft
+                # that claims no save. The draft may have landed.
+                raise
             except Exception as exc:  # noqa: BLE001
                 _log.warning("email.draft_reply_create_failed", error=str(exc)[:160])
 
