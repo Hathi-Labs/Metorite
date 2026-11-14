@@ -1,0 +1,1522 @@
+[
+ {
+  "seed": 11,
+  "op": 50,
+  "manifest": {
+   "studio": 1,
+   "id": "frame-app",
+   "views": [
+    {
+     "id": "board"
+    },
+    {
+     "id": "week"
+    },
+    {
+     "id": "check_in"
+    }
+   ],
+   "pages": [
+    {
+     "id": "home",
+     "cols": 3,
+     "cells": [
+      {
+       "view": "board",
+       "span": 2
+      },
+      {
+       "view": "week"
+      }
+     ],
+     "title": "Reports"
+    },
+    {
+     "id": "work",
+     "cols": 2,
+     "tabs": [
+      {
+       "id": "a",
+       "title": "A",
+       "cells": [
+        {
+         "view": "check_in",
+         "span": 2
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "id": "pages",
+     "title": "Pages",
+     "cells": [
+      {
+       "view": "board"
+      }
+     ]
+    },
+    {
+     "id": "pages-2",
+     "title": "Pages",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ]
+    },
+    {
+     "id": "extra",
+     "title": "Extra",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "more",
+     "title": "More",
+     "cells": [
+      {
+       "view": "board"
+      }
+     ]
+    },
+    {
+     "id": "sales",
+     "title": "Sales",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ]
+    },
+    {
+     "id": "sales-2",
+     "title": "Sales",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    }
+   ],
+   "nav": [
+    {
+     "title": "Ops",
+     "rows": [
+      {
+       "page": "pages"
+      }
+     ]
+    },
+    {
+     "title": "Main",
+     "rows": [
+      {
+       "page": "home",
+       "label": "Start"
+      },
+      {
+       "page": "work",
+       "icon": "Table"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "seed": 11,
+  "op": 100,
+  "manifest": {
+   "studio": 1,
+   "id": "frame-app",
+   "views": [
+    {
+     "id": "board"
+    },
+    {
+     "id": "week"
+    },
+    {
+     "id": "check_in"
+    }
+   ],
+   "pages": [
+    {
+     "id": "home",
+     "cols": 3,
+     "cells": [
+      {
+       "view": "board",
+       "span": 2
+      },
+      {
+       "view": "week"
+      }
+     ],
+     "title": "Reports"
+    },
+    {
+     "id": "work",
+     "cols": 2,
+     "tabs": [
+      {
+       "id": "a",
+       "title": "A",
+       "cells": [
+        {
+         "view": "check_in",
+         "span": 2
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "id": "pages-2",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ]
+    },
+    {
+     "id": "extra",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "title": "Ops"
+    },
+    {
+     "id": "more",
+     "title": "More",
+     "cells": [
+      {
+       "view": "board"
+      }
+     ]
+    },
+    {
+     "id": "sales",
+     "title": "Sales",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ]
+    },
+    {
+     "id": "sales-2",
+     "title": "Sales",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "cols": 3
+    },
+    {
+     "id": "reports",
+     "title": "Reports",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    }
+   ],
+   "nav": [
+    {
+     "title": "Ops",
+     "rows": []
+    },
+    {
+     "title": "Main",
+     "rows": [
+      {
+       "page": "home",
+       "label": "Start"
+      },
+      {
+       "page": "work",
+       "icon": "Table"
+      },
+      {
+       "page": "extra"
+      },
+      {
+       "page": "sales"
+      }
+     ]
+    },
+    {
+     "title": "Extra",
+     "rows": []
+    },
+    {
+     "title": "Reports",
+     "rows": []
+    }
+   ]
+  }
+ },
+ {
+  "seed": 11,
+  "op": 150,
+  "manifest": {
+   "studio": 1,
+   "id": "frame-app",
+   "views": [
+    {
+     "id": "board"
+    },
+    {
+     "id": "week"
+    },
+    {
+     "id": "check_in"
+    }
+   ],
+   "pages": [
+    {
+     "id": "work",
+     "cols": 2,
+     "tabs": [
+      {
+       "id": "a",
+       "title": "A",
+       "cells": [
+        {
+         "view": "check_in",
+         "span": 2
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "id": "pages-2",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ]
+    },
+    {
+     "id": "extra",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "title": "Ops"
+    },
+    {
+     "id": "reports",
+     "title": "Reports",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "reports-2",
+     "title": "Reports",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "pages",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "title": "Ops"
+    },
+    {
+     "id": "main",
+     "title": "Main",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    }
+   ],
+   "nav": [
+    {
+     "title": "Pages",
+     "rows": [
+      {
+       "page": "reports"
+      }
+     ]
+    },
+    {
+     "title": "Main",
+     "rows": [
+      {
+       "page": "work",
+       "icon": "Table"
+      },
+      {
+       "page": "extra"
+      },
+      {
+       "page": "pages"
+      }
+     ]
+    },
+    {
+     "title": "Extra",
+     "rows": [
+      {
+       "page": "work"
+      }
+     ]
+    },
+    {
+     "title": "Reports",
+     "rows": [
+      {
+       "page": "reports-2"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "seed": 11,
+  "op": 200,
+  "manifest": {
+   "studio": 1,
+   "id": "frame-app",
+   "views": [
+    {
+     "id": "board"
+    },
+    {
+     "id": "week"
+    },
+    {
+     "id": "check_in"
+    }
+   ],
+   "pages": [
+    {
+     "id": "work",
+     "cols": 3,
+     "tabs": [
+      {
+       "id": "a",
+       "title": "A",
+       "cells": [
+        {
+         "view": "check_in",
+         "span": 2
+        }
+       ]
+      }
+     ],
+     "title": "Ops"
+    },
+    {
+     "id": "extra",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "title": "Ops"
+    },
+    {
+     "id": "reports-2",
+     "title": "Reports",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "reports",
+     "title": "Reports",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "cols": 2
+    },
+    {
+     "id": "ops",
+     "title": "Ops",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "main",
+     "title": "Main",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "extra-2",
+     "title": "Extra",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "more",
+     "title": "More",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    }
+   ],
+   "nav": [
+    {
+     "title": "Pages",
+     "rows": [
+      {
+       "page": "reports"
+      }
+     ]
+    },
+    {
+     "title": "Main",
+     "rows": [
+      {
+       "page": "work",
+       "icon": "Table"
+      },
+      {
+       "page": "extra",
+       "icon": "Table"
+      },
+      {
+       "page": "reports"
+      },
+      {
+       "page": "extra"
+      },
+      {
+       "page": "reports-2"
+      }
+     ]
+    },
+    {
+     "title": "Extra",
+     "rows": [
+      {
+       "page": "work"
+      }
+     ]
+    },
+    {
+     "title": "More",
+     "rows": [
+      {
+       "page": "reports-2"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "seed": 23,
+  "op": 50,
+  "manifest": {
+   "studio": 1,
+   "id": "frame-app",
+   "views": [
+    {
+     "id": "board"
+    },
+    {
+     "id": "week"
+    },
+    {
+     "id": "check_in"
+    }
+   ],
+   "pages": [
+    {
+     "id": "reports",
+     "title": "Reports",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ]
+    },
+    {
+     "id": "ops",
+     "title": "Ops",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ]
+    },
+    {
+     "id": "week",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "extra",
+     "title": "Extra",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "week-2",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "ops-2",
+     "title": "Ops",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "main",
+     "title": "Main",
+     "cells": [
+      {
+       "view": "board"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "seed": 23,
+  "op": 100,
+  "manifest": {
+   "studio": 1,
+   "id": "frame-app",
+   "views": [
+    {
+     "id": "board"
+    },
+    {
+     "id": "week"
+    },
+    {
+     "id": "check_in"
+    }
+   ],
+   "pages": [
+    {
+     "id": "reports",
+     "title": "Reports",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ],
+     "cols": 3
+    },
+    {
+     "id": "ops",
+     "title": "Ops",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ],
+     "cols": 1
+    },
+    {
+     "id": "extra",
+     "title": "Extra",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "main",
+     "title": "Main",
+     "cells": [
+      {
+       "view": "board"
+      }
+     ],
+     "cols": 2
+    },
+    {
+     "id": "week-2",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "reports-2",
+     "title": "Reports",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ]
+    },
+    {
+     "id": "extra-2",
+     "title": "Extra",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "more",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "title": "Sales"
+    }
+   ],
+   "nav": [
+    {
+     "title": "Main",
+     "rows": [
+      {
+       "page": "reports"
+      },
+      {
+       "page": "ops"
+      },
+      {
+       "page": "extra"
+      },
+      {
+       "page": "main"
+      },
+      {
+       "page": "week-2"
+      },
+      {
+       "page": "reports-2"
+      },
+      {
+       "page": "extra-2"
+      },
+      {
+       "page": "more"
+      }
+     ]
+    },
+    {
+     "title": "Extra",
+     "rows": []
+    },
+    {
+     "title": "More",
+     "rows": []
+    }
+   ]
+  }
+ },
+ {
+  "seed": 23,
+  "op": 150,
+  "manifest": {
+   "studio": 1,
+   "id": "frame-app",
+   "views": [
+    {
+     "id": "board"
+    },
+    {
+     "id": "week"
+    },
+    {
+     "id": "check_in"
+    }
+   ],
+   "pages": [
+    {
+     "id": "reports",
+     "title": "Reports",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ],
+     "cols": 3
+    },
+    {
+     "id": "ops",
+     "title": "Ops",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ],
+     "cols": 1
+    },
+    {
+     "id": "reports-2",
+     "title": "Reports",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ]
+    },
+    {
+     "id": "main",
+     "title": "Main",
+     "cells": [
+      {
+       "view": "board"
+      }
+     ],
+     "cols": 2
+    },
+    {
+     "id": "extra-2",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "cols": 1,
+     "title": "Pages"
+    },
+    {
+     "id": "more",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "title": "Sales"
+    },
+    {
+     "id": "ops-2",
+     "title": "Ops",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ]
+    },
+    {
+     "id": "ops-3",
+     "title": "Ops",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ]
+    }
+   ],
+   "nav": [
+    {
+     "title": "Main",
+     "rows": [
+      {
+       "page": "reports"
+      },
+      {
+       "page": "ops"
+      },
+      {
+       "page": "main"
+      },
+      {
+       "page": "reports-2"
+      },
+      {
+       "page": "extra-2"
+      },
+      {
+       "page": "more"
+      }
+     ]
+    },
+    {
+     "title": "Extra",
+     "rows": []
+    },
+    {
+     "title": "Reports",
+     "rows": []
+    },
+    {
+     "title": "Sales",
+     "rows": []
+    }
+   ]
+  }
+ },
+ {
+  "seed": 23,
+  "op": 200,
+  "manifest": {
+   "studio": 1,
+   "id": "frame-app",
+   "views": [
+    {
+     "id": "board"
+    },
+    {
+     "id": "week"
+    },
+    {
+     "id": "check_in"
+    }
+   ],
+   "pages": [
+    {
+     "id": "reports",
+     "title": "Reports",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ],
+     "cols": 3
+    },
+    {
+     "id": "reports-2",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ],
+     "title": "Sales"
+    },
+    {
+     "id": "main",
+     "title": "Main",
+     "cells": [
+      {
+       "view": "board"
+      }
+     ],
+     "cols": 4
+    },
+    {
+     "id": "ops",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ],
+     "cols": 1,
+     "title": "Extra"
+    },
+    {
+     "id": "extra-2",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "cols": 1,
+     "title": "Pages"
+    },
+    {
+     "id": "more",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "title": "Sales"
+    },
+    {
+     "id": "ops-2",
+     "title": "Ops",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ]
+    },
+    {
+     "id": "ops-3",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ],
+     "title": "Extra"
+    }
+   ],
+   "nav": [
+    {
+     "title": "Main",
+     "rows": [
+      {
+       "page": "reports"
+      },
+      {
+       "page": "ops"
+      },
+      {
+       "page": "main"
+      },
+      {
+       "page": "extra-2"
+      },
+      {
+       "page": "more"
+      },
+      {
+       "page": "ops-3"
+      }
+     ]
+    },
+    {
+     "title": "Extra",
+     "rows": [
+      {
+       "page": "ops"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "seed": 47,
+  "op": 50,
+  "manifest": {
+   "studio": 1,
+   "id": "frame-app",
+   "views": [
+    {
+     "id": "board"
+    },
+    {
+     "id": "week"
+    },
+    {
+     "id": "check_in"
+    }
+   ],
+   "pages": [
+    {
+     "id": "sales",
+     "title": "Sales",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "solo",
+     "title": "Solo",
+     "cols": 1,
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ]
+    },
+    {
+     "id": "home",
+     "title": "Home",
+     "cols": 3,
+     "cells": [
+      {
+       "view": "board",
+       "span": 2
+      },
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "main",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "title": "More"
+    },
+    {
+     "id": "ops",
+     "title": "Ops",
+     "cells": [
+      {
+       "view": "board"
+      }
+     ]
+    },
+    {
+     "id": "more",
+     "title": "More",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "pages",
+     "title": "Pages",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "extra",
+     "title": "Extra",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    }
+   ],
+   "nav": [
+    {
+     "title": "Pages",
+     "rows": [
+      {
+       "page": "sales"
+      },
+      {
+       "page": "solo"
+      },
+      {
+       "page": "home"
+      },
+      {
+       "page": "main"
+      },
+      {
+       "page": "ops"
+      },
+      {
+       "page": "more"
+      },
+      {
+       "page": "pages",
+       "label": "Label"
+      },
+      {
+       "page": "extra"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "seed": 47,
+  "op": 100,
+  "manifest": {
+   "studio": 1,
+   "id": "frame-app",
+   "views": [
+    {
+     "id": "board"
+    },
+    {
+     "id": "week"
+    },
+    {
+     "id": "check_in"
+    }
+   ],
+   "pages": [
+    {
+     "id": "solo",
+     "cols": 1,
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ],
+     "title": "Pages"
+    },
+    {
+     "id": "home",
+     "title": "Home",
+     "cols": 3,
+     "cells": [
+      {
+       "view": "board",
+       "span": 2
+      },
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "sales",
+     "title": "Sales",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "main",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "title": "More"
+    },
+    {
+     "id": "more",
+     "title": "More",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "extra",
+     "title": "Extra",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "main-2",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "title": "More"
+    },
+    {
+     "id": "ops",
+     "title": "Ops",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    }
+   ],
+   "nav": [
+    {
+     "title": "Reports",
+     "rows": []
+    },
+    {
+     "title": "Extra",
+     "rows": []
+    },
+    {
+     "title": "Ops",
+     "rows": []
+    }
+   ]
+  }
+ },
+ {
+  "seed": 47,
+  "op": 150,
+  "manifest": {
+   "studio": 1,
+   "id": "frame-app",
+   "views": [
+    {
+     "id": "board"
+    },
+    {
+     "id": "week"
+    },
+    {
+     "id": "check_in"
+    }
+   ],
+   "pages": [
+    {
+     "id": "solo",
+     "cols": 1,
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ]
+    },
+    {
+     "id": "main",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "title": "More"
+    },
+    {
+     "id": "more",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "cols": 4,
+     "title": "Ops"
+    },
+    {
+     "id": "extra",
+     "title": "Extra",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "main-2",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "title": "Extra"
+    },
+    {
+     "id": "sales-2",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "title": "Reports"
+    },
+    {
+     "id": "sales",
+     "title": "Sales",
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ]
+    },
+    {
+     "id": "pages",
+     "title": "Pages",
+     "cells": [
+      {
+       "view": "board"
+      }
+     ]
+    }
+   ],
+   "nav": [
+    {
+     "title": "Reports",
+     "rows": [
+      {
+       "page": "main-2"
+      },
+      {
+       "page": "more"
+      }
+     ]
+    },
+    {
+     "title": "Extra",
+     "rows": []
+    },
+    {
+     "title": "Ops",
+     "rows": [
+      {
+       "page": "extra"
+      }
+     ]
+    },
+    {
+     "title": "Pages",
+     "rows": [
+      {
+       "page": "main-2"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "seed": 47,
+  "op": 200,
+  "manifest": {
+   "studio": 1,
+   "id": "frame-app",
+   "views": [
+    {
+     "id": "board"
+    },
+    {
+     "id": "week"
+    },
+    {
+     "id": "check_in"
+    }
+   ],
+   "pages": [
+    {
+     "id": "solo",
+     "cols": 1,
+     "cells": [
+      {
+       "view": "check_in"
+      }
+     ],
+     "title": "More"
+    },
+    {
+     "id": "main",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "title": "More"
+    },
+    {
+     "id": "more",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "cols": 4,
+     "title": "Ops"
+    },
+    {
+     "id": "extra",
+     "title": "Extra",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "main-2",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "title": "Extra"
+    },
+    {
+     "id": "sales-2",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ],
+     "title": "Extra"
+    },
+    {
+     "id": "extra-2",
+     "title": "Extra",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    },
+    {
+     "id": "pages",
+     "title": "Pages",
+     "cells": [
+      {
+       "view": "week"
+      }
+     ]
+    }
+   ],
+   "nav": [
+    {
+     "title": "Reports",
+     "rows": [
+      {
+       "page": "main-2"
+      },
+      {
+       "page": "more"
+      },
+      {
+       "page": "extra"
+      },
+      {
+       "page": "main-2"
+      }
+     ]
+    },
+    {
+     "title": "More",
+     "rows": [
+      {
+       "page": "main-2"
+      }
+     ]
+    }
+   ]
+  }
+ }
+]
