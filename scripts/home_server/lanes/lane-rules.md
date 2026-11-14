@@ -28,8 +28,10 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
      stops the session on a permission prompt that nobody can answer.
    - Run each command as `cd <worktree path> && ...` in Bash. Give subagents
      the absolute path.
-   - Sonnet does the work. Use Opus only for a HIGH-tier slice or an
-     adversarial review.
+   - Route each dispatch by job (D218). Haiku does lookups. Sonnet does LOW
+     slices and verifies LOW and STANDARD. Opus does HIGH, shared-seam and
+     review work. Fable plans a feature once. Set the effort. `next-ticket.md`
+     step 1c holds the table.
 4. **Never wait on the owner, and never wait in silence.** When a slice needs
    a decision, a D145 preview or a flag flip, you MUST call `ask_on_task`. A
    thought or a comment that says "waits on the owner" does NOT reach the
@@ -42,9 +44,9 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
      worktree. Start it again only when the owner asks for a live look.
 5. **Put the small slices of one feature into one pull request** where you
    can. Never skip the verifier or a required gate.
-6. **Local CI:** `bash scripts/ci_local.sh`. When another run holds the lane,
-   do not wait more than 20 minutes. Push the branch, and use GitHub's
-   pr-check on the SAME SHA as the full-suite evidence.
+6. **The gate is GitHub `pr-check` (D218).** Push when your verifier passes.
+   `bash scripts/ci_local.sh` is optional: run it when GitHub is down, or for
+   an early signal. When another run holds the lane, do not wait for it.
 7. **A test that is red on `main` is not yours.** Before you blame your
    change, read the newest `main` run with `gh run list --branch main`. Do not
    edit a spec that another task repairs.
@@ -96,10 +98,12 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
     - Hand a pull request over when the verifier passed, the review of its
       risk tier passed, and the owner approved its preview (if it needed one).
       Only GitHub checks or `premerge.sh` may remain.
-    - To hand it over, append ONE line to `~/lanes/merge-queue.tsv`, with tabs
-      between the fields: pull request, task, worktree path, your lane name,
-      and a short note.
-      `printf '%s\t%s\t%s\t%s\t%s\n' 1234 567 /home/dev/wt-x lane-x "note" >> ~/lanes/merge-queue.tsv`
+    - To hand it over, run
+      `bash scripts/home_server/lane_handover.sh <PR> <task> <worktree> <lane> <tier> "note"`.
+      The tier is `LOW`, `STANDARD` or `HIGH`. The PR body needs a line that
+      starts with `VERIFY: PASS`. The script appends the line to
+      `~/lanes/merge-bot-queue.tsv`, and the merge bot reads it. Never append
+      to a queue or a log by hand.
     - Comment on the task: "Handed to lane-merge: <pull request URL>. Verify:
       <result>. Review: <result>. Only GitHub checks remain." Then call
       `release_task`. Lane-merge claims the task, merges it, and moves it to
@@ -110,7 +114,12 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
     - When a required check of your pull request goes red, lane-merge
       comments the failing test on the task and releases it. Find it with
       `my_work` or `search_tasks`, fix it, push, and hand it over again. Read
-      `~/lanes/merge-queue.log` for `BACK` lines after each hand-over.
+      `~/lanes/merge-bot.log` for `BACK` lines after each hand-over.
+    - A `RESOLVED <pull request> <rules>` line means that the merge bot merged
+      `main` into your branch, resolved a conflict, and pushed the merge
+      commit (CIV-34a). Do not hand it over again. Before your next commit on
+      that branch, run `git pull --ff-only` in its worktree. A push without it
+      is refused, because your branch is behind the bot's commit.
 15. **Save GitHub runs.** A red run costs a full set of jobs.
     - Before each push, run the tests that your diff can affect on this box:
       `timeout 2400 uv run python scripts/affected_tests.py --run`. For

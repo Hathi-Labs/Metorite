@@ -14,8 +14,14 @@
  * The Board (D3b) groups the records by the first select field of the object. A drop runs one
  * `object:<name>.update` on the same door.
  *
- * It builds no view-to-node mapper and reads no page of the manifest: PKG-8
- * owns that. It is no pane, so `nav.ts` does not list it, and the access gate of
+ * A viewer (WS-STU J2a) reads an app that another member owns, through an install. The
+ * package answer says `access: viewer`. The page then reads only: the door holds the list
+ * and the get, the Table and the Board do not edit, and the page draws no Form, no Edit, no
+ * record delete, no IDE link and no app delete. One line says that the owner changes the app.
+ *
+ * It builds no view-to-node mapper and reads no page of the app. With
+ * `NEXT_PUBLIC_STUDIO_APP_FRAME=1` it hands the package to `AppFrame.tsx` (STU-AF1), which
+ * draws the pages of the app through `StudioPage`. It is no pane, so `nav.ts` does not list it, and the access gate of
  * `/studio` covers it (`page.test.ts` holds both). An org outside `STUDIO_ORGS`
  * gets 404 from the gateway, and the page shows an empty state with no error.
  */
@@ -23,6 +29,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useMemo, useState } from "react";
 
 import { AppTopBar } from "@/components/AppTopBar";
+import AppFrame from "./AppFrame";
 import GenerativeUINode from "@/components/GenerativeUINode";
 import { EmptyState } from "@/components/EmptyState";
 import DeleteRecordButton from "@/components/studio/DeleteRecordButton";
@@ -30,6 +37,7 @@ import RecordsStatus from "@/components/studio/RecordsStatus";
 import StudioDetail from "@/components/studio/StudioDetail";
 import StudioForm from "@/components/studio/StudioForm";
 import DeletePackageButton from "@/components/studio/DeletePackageButton";
+import PackageLifetimeBar from "@/components/studio/PackageLifetimeBar";
 import Button from "@/components/ui/Button";
 import SelectButton from "@/components/ui/SelectButton";
 import { tableBlock } from "@/lib/studio/blocks";
@@ -38,13 +46,18 @@ import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, moreLine, sourceKey } from "@/lib/studio/dataDoor";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import {
-  detailFields, fieldSpecs, formFields, missingObjectNote, noBoardReason, objectBoardBlock, pickObject, previewHref, recordTitle, tableFields,
+  VIEWER_NO_OBJECT, detailFields, fieldSpecs, formFields, missingObjectNote, noBoardReason, objectBoardBlock, pickObject,
+  previewControls, previewHref, recordTitle, tableFields,
 } from "@/lib/studio/packagePreview";
 import { buildHref } from "@/lib/studio/packageDraft";
-import { STUDIO_OFF, createDoorKeeper, getPackage, listPackages, verbMap } from "@/lib/studio/realDoor";
+import {
+  READ_ONLY_SENTENCE, STUDIO_OFF, createDoorKeeper, getPackage, listPackages, verbMap,
+} from "@/lib/studio/realDoor";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 const PAGE_LIMIT = 100;
+/** STU-AF1: the app frame draws the manifest pages. Off, the page draws the object preview below. */
+const APP_FRAME = process.env.NEXT_PUBLIC_STUDIO_APP_FRAME === "1";
 const PANEL = "rounded-xl border border-border bg-card p-3 sm:p-4";
 
 /** The app page. The title is the name of the package, and a page with no package yet is "App". */
@@ -76,13 +89,17 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
   // One door while the actions stay the same: a focus read of the package gives a new object,
   // and a new door would reset the edit store and the delete flow.
   const [keeper] = useState(() => createDoorKeeper());
-  const door = detail.data ? keeper(pkg, detail.data.actions) : null;
+  // J2a: a viewer reads an app that another member owns. Its door holds the reads only, and the
+  // page draws no edit, no delete and no IDE for it.
+  const controls = useMemo(() => previewControls(detail.data?.access ?? "owner", detail.data?.actions),
+    [detail.data?.access, detail.data?.actions]);
+  const door = detail.data ? keeper(pkg, controls.actions) : null;
   const object = detail.data ? pickObject(detail.data.objects, objectName) : undefined;
   const fields = useMemo(() => (object ? fieldSpecs(object) : []), [object]);
   const computed = useMemo(() => computedKeys(object?.rules), [object?.rules]);
   // One page holds at most 100 records, the most that the store gives. The Table and the Board read it.
   const list = useMemo(() => ({ action: `object:${object?.name ?? "none"}.list`, args: { limit: PAGE_LIMIT } }), [object?.name]);
-  const canUpdate = !!object && verbMap(detail.data?.actions)[`object:${object.name}.update`] !== undefined;
+  const canUpdate = !!object && verbMap(controls.actions)[`object:${object.name}.update`] !== undefined;
   const node = useMemo(
     () => tableBlock(tableFields(fields), list, object?.label ?? object?.name,
       { editable: canUpdate, computed: [...computed] }),
@@ -90,9 +107,10 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
   );
   const board = useMemo(() => objectBoardBlock(object ?? { name: "none" }, fields, computed, list, canUpdate),
     [object, fields, computed, list, canUpdate]);
-  const canList = !!object && verbMap(detail.data?.actions)[`object:${object.name}.list`] !== undefined;
+  const canList = !!object && verbMap(controls.actions)[`object:${object.name}.list`] !== undefined;
   const rows = useCachedResource<Row[]>(
-    door && object && canList ? sourceKey(door, list) : null,
+    // The app frame reads through its own lens (STU-AF4), so this unfiltered read would be a second one.
+    door && object && canList && !APP_FRAME ? sourceKey(door, list) : null,
     () => (door as NonNullable<typeof door>).read(list),
   );
   const [picked, setPicked] = useState("");
@@ -100,7 +118,13 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
   const [deleted, setDeleted] = useState(false);
   const onDeleted = () => { setDeleted(true); router.push("/studio"); };
   const [editing, setEditing] = useState(false);
-  const ideLink = <Button variant="secondary" size="sm" icon="Code" href={buildHref(pkg)}>Open in Studio IDE</Button>;
+  // The owner's actions of the top bar. A viewer gets none (J2a).
+  const ownerBar = controls.owner ? (
+    <>
+      <Button variant="secondary" size="sm" icon="Code" href={buildHref(pkg)}>Open in Studio IDE</Button>
+      <DeletePackageButton id={pkg} onDeleted={onDeleted} />
+    </>
+  ) : undefined;
 
   if (deleted) return <Shell><EmptyState icon="PackageOpen" message="This app was deleted." /></Shell>;
   // A 404 over cached data is a package that is gone: never draw the old rows (BETA-1).
@@ -113,10 +137,14 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
   if (!detail.data || !door) {
     return <Shell><RecordsStatus loading error={null} onRetry={detail.refresh} /></Shell>;
   }
+  if (APP_FRAME) {
+    return <AppFrame pkg={pkg} detail={detail.data} door={door} controls={controls} onDeleted={onDeleted} />;
+  }
   if (!object) {
     return (
-      <Shell title={detail.data.name} actions={<>{ideLink}<DeletePackageButton id={pkg} onDeleted={onDeleted} /></>}>
-        <EmptyState icon="PackageOpen" message="This app has no object yet. Ask Mira to add one, then publish it." />
+      <Shell title={detail.data.name} actions={ownerBar}>
+        <EmptyState icon="PackageOpen" message={controls.owner
+          ? "This app has no object yet. Ask Mira to add one, then publish it." : VIEWER_NO_OBJECT} />
       </Shell>
     );
   }
@@ -126,16 +154,17 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
   const note = missingObjectNote(detail.data.objects, objectName);
   const objectPicks = detail.data.objects.map((o) => ({ value: o.name, label: o.label ?? o.name }));
   const title = detail.data.name;
-  const deleteApp = <>{ideLink}<DeletePackageButton id={pkg} onDeleted={onDeleted} /></>;
 
   return (
-    <Shell title={title} actions={deleteApp} note={
+    <Shell title={title} actions={ownerBar} note={
       <>
         <SelectButton label="Object" value={object.name} widthClass="w-48" options={objectPicks}
           onChange={(v) => router.replace(previewHref(pkg, v))} />
         {note ? <span role="status" className="text-xs text-muted-foreground">{note}</span> : null}
+        {controls.owner ? null : <span role="status" className="text-xs text-muted-foreground">{READ_ONLY_SENTENCE}</span>}
       </>
     }>
+      <PackageLifetimeBar pkg={pkg} />
       {!canList ? (
         <p role="status" className={`${PANEL} text-sm text-muted-foreground`}>{noListLine(object.label ?? object.name)}</p>
       ) : (
@@ -147,9 +176,11 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
           </div>
           <GenerativeUINode spec={node} />
           {moreLine(rows.data) ? <p role="status" className="mt-2 text-xs text-muted-foreground">{moreLine(rows.data)}</p> : null}
-          <p className="mt-3 text-xs text-muted-foreground">
-            Click a cell to edit it. A text cell saves on Enter. Escape cancels. A refused edit puts the old value back.
-          </p>
+          {controls.owner ? (
+            <p className="mt-3 text-xs text-muted-foreground">
+              Click a cell to edit it. A text cell saves on Enter. Escape cancels. A refused edit puts the old value back.
+            </p>
+          ) : null}
         </section>
 
         <section aria-label="Board" className={PANEL}>
@@ -159,10 +190,12 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
               {rows.error && rows.data === undefined ? (
                 <p className="text-xs text-muted-foreground">The Table above says why the records did not load.</p>
               ) : <GenerativeUINode spec={board} />}
-              <p className="mt-3 text-xs text-muted-foreground">
-                Drag a card to another lane, or press Space on a card, then the arrow keys, then Space.
-                A drop saves at once. A refused move puts the card back.
-              </p>
+              {controls.owner ? (
+                <p className="mt-3 text-xs text-muted-foreground">
+                  Drag a card to another lane, or press Space on a card, then the arrow keys, then Space.
+                  A drop saves at once. A refused move puts the card back.
+                </p>
+              ) : null}
             </>
           ) : (
             <p className="text-xs text-muted-foreground">
@@ -171,11 +204,13 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
           )}
         </section>
 
-        <div className="grid grid-cols-1 gap-3 sm:gap-4 xl:grid-cols-2">
-          <section aria-label="Form" className={PANEL}>
-            <StudioForm fields={formFields(fields, computed)} door={door} action={`object:${object.name}.create`}
-              title={`New ${object.label ?? object.name}`} submitLabel="Add record" savedMessage="Record added" />
-          </section>
+        <div className={controls.owner ? "grid grid-cols-1 gap-3 sm:gap-4 xl:grid-cols-2" : "grid grid-cols-1 gap-3 sm:gap-4"}>
+          {controls.owner ? (
+            <section aria-label="Form" className={PANEL}>
+              <StudioForm fields={formFields(fields, computed)} door={door} action={`object:${object.name}.create`}
+                title={`New ${object.label ?? object.name}`} submitLabel="Add record" savedMessage="Record added" />
+            </section>
+          ) : null}
 
           <section aria-label="Detail" className={PANEL}>
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -186,7 +221,7 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
             </div>
             {record ? (
               <div className="space-y-3">
-                {editing ? (
+                {editing && controls.owner ? (
                   <StudioForm key={String(record.id)} fields={formFields(fields, computed)} door={door}
                     action={`object:${object.name}.update`} initial={record} extraArgs={{ id: record.id }}
                     title="Edit record" submitLabel="Save changes" savedMessage="Changes saved"
@@ -194,14 +229,16 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
                 ) : (
                   <StudioDetail fields={detailFields(fields)} record={record} />
                 )}
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button type="button" variant="secondary" size="sm" icon={editing ? "X" : "Pencil"}
-                    onClick={() => setEditing((e) => !e)}>
-                    {editing ? "Stop editing" : "Edit in form"}
-                  </Button>
-                  <DeleteRecordButton door={door} object={object.name} id={String(record.id)}
-                    title={recordTitle(fields, record)} onDeleted={() => { setPicked(""); setEditing(false); }} />
-                </div>
+                {controls.owner ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button type="button" variant="secondary" size="sm" icon={editing ? "X" : "Pencil"}
+                      onClick={() => setEditing((e) => !e)}>
+                      {editing ? "Stop editing" : "Edit in form"}
+                    </Button>
+                    <DeleteRecordButton door={door} object={object.name} id={String(record.id)}
+                      title={recordTitle(fields, record)} onDeleted={() => { setPicked(""); setEditing(false); }} />
+                  </div>
+                ) : null}
               </div>
             ) : (
               <EmptyState icon="Inbox" message="No record to show yet" />

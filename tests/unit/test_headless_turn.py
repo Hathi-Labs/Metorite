@@ -1,4 +1,5 @@
-"""WS-AUTO AUTO-8a and AUTO-8b-1: the headless turn, hermetic (no database).
+"""WS-AUTO AUTO-8a, AUTO-8b-1 and AUTO-8b-2a: the headless turn, hermetic
+(no database).
 
 Spec: ``project-docs/specs/proactive_agent.md`` §4.3, §4.4, §7 and §11. Code:
 ``apps/services/gateway/gateway/jobs/headless_turn.py``. The R8 half is
@@ -18,6 +19,12 @@ real compare-and-set, so a round reaches ``cap_reached`` as on the database.
   ``test_the_flag_off_reads_nothing_and_calls_nothing``.
 * the round cap: ``test_the_round_cap_stops_the_turn``.
 * the time cap: ``test_the_time_cap_stops_the_turn``.
+* AUTO-8b-2d, a cut or failed call charges the rest and reads no meter:
+  ``test_the_time_cap_stops_the_turn`` (changed: a cut round no longer
+  records the cost that the meter reads, because the Console can write the
+  row of the cut call AFTER that read),
+  ``test_a_cut_call_whose_row_lands_late_charges_the_rest`` and
+  ``test_a_failed_round_charges_the_rest_and_gives_up``.
 * read-only tools: ``test_only_read_only_tools_are_offered``,
   ``test_the_default_runner_holds_the_worker_to_a_read_only_job``.
 * the default meter fails closed: ``test_the_default_meter_fails_closed``.
@@ -31,6 +38,27 @@ real compare-and-set, so a round reaches ``cap_reached`` as on the database.
   ``test_a_goal_raised_over_the_bound_between_rounds_gets_no_next_round``.
 * AUTO-8b-1, no member from the payload, ``.pop(`` too:
   ``test_the_module_takes_no_member_from_the_payload``.
+* AUTO-8b-2a, the mark (the P1 of the AUTO-8b-1 review):
+  ``test_a_mark_is_written_before_each_call_and_the_record_clears_it``,
+  ``test_a_goal_that_holds_a_mark_blocks_at_once_with_no_call`` (the mark of
+  another job, and the mark of the same job id as the claim),
+  ``test_a_lost_round_leaves_the_mark_and_the_next_turn_blocks``,
+  ``test_a_failed_mark_write_makes_no_call``,
+  ``test_a_stale_mark_write_makes_no_call``,
+  ``test_no_time_after_the_mark_clears_it_and_makes_no_call``,
+  ``test_a_mark_seen_before_a_later_round_blocks_the_goal``.
+* AUTO-8b-2a, the six P2 notes, one test each:
+  (1) ``test_the_settle_shares_follow_the_deadline`` and
+  ``test_a_round_that_ends_early_gives_the_settle_the_time_left``,
+  (2) ``test_a_meter_that_fails_after_a_call_gives_a_reason_of_its_own``,
+  (3) ``test_an_unknown_cost_charges_the_rest_of_the_fresh_goal``,
+  (4) ``test_a_meter_that_hangs_after_the_call_charges_the_rest_inside_the_margin``
+  asserts an order, not a time,
+  (5) ``test_a_driver_that_turns_a_cancel_into_an_error_charges_the_rest``,
+  (6) ``test_a_report_that_hangs_is_cut_and_the_job_ends``.
+* AUTO-8b-2c, the attribution scope of each round:
+  ``test_each_round_runs_inside_the_attribution_scope_and_leaves_none``,
+  ``test_the_default_runner_names_the_turn_on_the_wire``.
 
 **The mutations** (each was run on the branch, then restored):
 
@@ -44,8 +72,9 @@ real compare-and-set, so a round reaches ``cap_reached`` as on the database.
   ``test_the_kill_switch_stops_the_next_round`` goes red.
 * M5. ``headless_tools``: keep each name. ``test_only_read_only_tools_are_offered``
   goes red.
-* M6. ``no_cost_reader``: answer 0. ``test_the_default_meter_fails_closed``
-  goes red.
+* M6. ``console_meter``: answer 0 when the door fails.
+  ``test_the_default_meter_fails_closed`` goes red, and so do the cases of
+  ``test_headless_turn_meter.py`` (AUTO-8b-2d).
 * M7 (AUTO-8b-1). ``_cost``: charge 0 when the meter runs out of time.
   ``test_a_meter_that_hangs_after_the_call_charges_the_rest_inside_the_margin``
   and the R8 case go red.
@@ -57,6 +86,25 @@ real compare-and-set, so a round reaches ``cap_reached`` as on the database.
   ``test_the_module_takes_no_member_from_the_payload`` goes red.
 * M10 (AUTO-8b-1). Start the clock in ``_rounds`` again.
   ``test_the_clock_of_the_turn_starts_before_recover`` goes red.
+* M11 (AUTO-8b-2a). ``_ready``: drop the mark write (``marked = goal`` in
+  place of ``await self._mark(...)``).
+  ``test_a_lost_round_leaves_the_mark_and_the_next_turn_blocks`` goes red,
+  and so does the R8 case of the same name.
+* M12 (AUTO-8b-2a). ``goal_store.record_round``: drop the clear (send
+  ``"clear": False``). The fake store here does not run that SQL, so the R8
+  cases go red: ``test_r8_a_normal_round_clears_the_mark`` of
+  ``test_headless_turn_r8.py`` and ``test_r8_a_round_can_clear_the_mark_in_
+  the_same_write`` of ``test_goal_record_r8.py``.
+* M13 (AUTO-8b-2c). ``_run_once``: drop ``run_attribution_scope``.
+  ``test_each_round_runs_inside_the_attribution_scope_and_leaves_none`` and
+  ``test_the_default_runner_names_the_turn_on_the_wire`` go red.
+
+* M13 (AUTO-8b-2d). ``_rounds``: read the meter after a cut call again
+  (``cost = await self._cost(...)`` for every round).
+  ``test_a_cut_call_whose_row_lands_late_charges_the_rest`` goes red, and so
+  do ``test_the_time_cap_stops_the_turn``, the cut case of
+  ``test_headless_turn_meter.py`` and the R8 case
+  ``test_r8_a_cut_call_whose_row_lands_late_charges_the_rest``.
 
 Run::
 
@@ -70,6 +118,7 @@ import asyncio
 import contextlib
 import dataclasses
 import re
+import threading
 import time
 import uuid
 from datetime import UTC, datetime
@@ -109,6 +158,10 @@ class FakeGoals:
         self.rows: dict[str, goal_store.Goal] = {}
         self.writes = 0
         self.reads = 0
+        #: The changes of each ``update_goal`` call, in order (the marks).
+        self.updates: list[dict[str, Any]] = []
+        #: The ``clear_job_id`` of each recorded round, in order.
+        self.cleared: list[bool] = []
 
     def add(self, *, member: str = ANA, kind: str = ht.GOAL_KIND, round_cap: int = 40,
             cost_cap: str = "10", state: str = "active", used: str = "0") -> goal_store.Goal:
@@ -135,6 +188,12 @@ class FakeGoals:
             g, state=after["state"], block_code=after["block"], round_cap=after["round_cap"],
             cost_cap_credits=after["cost_cap"], version=g.version + 1)
 
+    def lost(self, gid: str, job_id: str) -> None:
+        """A call of an earlier run whose round has no record: its mark
+        stays on the goal, and the version moved with the mark write."""
+        g = self.rows[gid]
+        self.rows[gid] = dataclasses.replace(g, job_id=job_id, version=g.version + 1)
+
     async def goal_member(self, db: Any, goal_id: str) -> str | None:
         self.reads += 1
         g = self.rows.get(goal_id)
@@ -145,8 +204,28 @@ class FakeGoals:
         g = self.rows.get(goal_id)
         return g if g is not None and g.member_email == member.strip().lower() else None
 
+    async def update_goal(self, db: Any, member: str, goal_id: str, expected: int,
+                          **changes: Any) -> goal_store.Goal | None:
+        """The real rule of ``update_goal`` (``_check_changes`` and
+        ``_after``), with the real compare-and-set."""
+        checked = goal_store._check_changes(changes)
+        g = await self.get_goal(db, member, goal_id)
+        if g is None:
+            return None
+        if g.version != expected:
+            raise goal_store.StaleGoal(g.version)
+        if g.state in goal_store.FINAL_STATES:
+            raise goal_store.GoalStateError("final")
+        after = goal_store._after(g, checked)
+        new = dataclasses.replace(
+            g, state=after["state"], block_code=after["block"], round_cap=after["round_cap"],
+            cost_cap_credits=after["cost_cap"], job_id=after["job"], version=g.version + 1)
+        self.rows[goal_id] = new
+        self.updates.append(dict(changes))
+        return new
+
     async def record_round(self, db: Any, member: str, goal_id: str, expected: int,
-                           cost: Any) -> goal_store.Goal | None:
+                           cost: Any, *, clear_job_id: bool = False) -> goal_store.Goal | None:
         g = await self.get_goal(db, member, goal_id)
         if g is None:
             return None
@@ -159,9 +238,11 @@ class FakeGoals:
         block = goal_store.cap_block(rounds, g.round_cap, used, g.cost_cap_credits)
         new = dataclasses.replace(
             g, round_count=rounds, cost_used_credits=used, version=g.version + 1,
-            state="active" if block is None else "blocked", block_code=block)
+            state="active" if block is None else "blocked", block_code=block,
+            job_id=None if clear_job_id else g.job_id)
         self.rows[goal_id] = new
         self.writes += 1
+        self.cleared.append(clear_job_id)
         return new
 
 
@@ -230,9 +311,12 @@ class FakeMeter:
         self.sleep_before = 0.0
         self.sleep_after = 0.0
         self.cancelled = False
+        #: The member of each read, in order (AUTO-8b-2d).
+        self.members: list[str] = []
 
-    async def __call__(self, org: str, run_id: str) -> Decimal:
+    async def __call__(self, org: str, member: str, run_id: str) -> Decimal:
         self.reads += 1
+        self.members.append(member)
         after = run_id in self.spent
         if self.fail_after and after:
             raise ConnectionError("the Console did not answer")
@@ -246,12 +330,61 @@ class FakeMeter:
         return self.spent.get(run_id, Decimal(0))
 
 
+class LateRunner:
+    """A call that outlives the cut of the time cap (AUTO-8b-2d). The
+    Console route is a sync route in a thread pool, so a cancel does not stop
+    it: it writes the usage row of the call AFTER the cancel. Here a thread
+    writes ``cost`` on the meter of the run when the test sets ``release``.
+    So a read just after the cut sees the old value, and a later read sees
+    the cost."""
+
+    def __init__(self, meter: FakeMeter, *, cost: str = "4") -> None:
+        self.meter = meter
+        self.cost = Decimal(cost)
+        self.calls: list[str] = []
+        self.release = threading.Event()
+        self.late: list[threading.Thread] = []
+
+    async def __call__(self, message: str, *, run_id: str, org: str, member: str,
+                       tools: tuple[str, ...]) -> dict[str, Any]:
+        self.calls.append(run_id)
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            def land() -> None:
+                self.release.wait(30)
+                self.meter.spent[run_id] = self.meter.spent.get(run_id, Decimal(0)) + self.cost
+
+            thread = threading.Thread(target=land, daemon=True)
+            thread.start()
+            self.late.append(thread)
+            raise
+        return {"answer": "never"}
+
+    def land(self) -> None:
+        """Let the late rows land, and wait for them."""
+        self.release.set()
+        for thread in self.late:
+            thread.join(30)
+
+
 class Reports:
-    def __init__(self) -> None:
+    """The report of a goal at its cap. It sleeps ``sleep`` seconds after
+    it saw the goal, and ``cancelled`` is True when the sleep was cut."""
+
+    def __init__(self, sleep: float = 0.0) -> None:
         self.seen: list[goal_store.Goal] = []
+        self.sleep = sleep
+        self.cancelled = False
 
     async def __call__(self, org: str, member: str, goal: goal_store.Goal) -> None:
         self.seen.append(goal)
+        if self.sleep:
+            try:
+                await asyncio.sleep(self.sleep)
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
 
 
 @contextlib.asynccontextmanager
@@ -269,6 +402,7 @@ def make_world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     monkeypatch.setattr(goal_store, "goal_member", goals.goal_member)
     monkeypatch.setattr(goal_store, "get_goal", goals.get_goal)
     monkeypatch.setattr(goal_store, "record_round", goals.record_round)
+    monkeypatch.setattr(goal_store, "update_goal", goals.update_goal)
     monkeypatch.setattr(queue, "hold", jobs.hold)
     monkeypatch.setattr(queue, "complete", jobs.complete)
     monkeypatch.setattr(queue, "give_up", jobs.give_up)
@@ -380,17 +514,18 @@ def test_the_kind_registers_only_with_the_job_queue_on(monkeypatch) -> None:
     assert (entry.handler, entry.mode, entry.idempotent) == (ht.run_turn, "detached", False)
 
 
-def test_the_default_turn_has_no_reader_no_candidate_and_reads_only() -> None:
+def test_the_default_turn_has_the_console_meter_no_candidate_and_reads_only() -> None:
     """With the flag on and nothing else, no turn makes a model call: no
-    candidate check exists, and the default meter raises."""
+    candidate check exists. The default meter is the Console reader of
+    AUTO-8b-2d, and with no proven member it raises before any hop."""
     default = ht._DEFAULT
-    assert default._meter is ht.no_cost_reader
+    assert default._meter is ht.console_meter
     assert default._runner is ht.run_worker
     assert default._go_on is ht.one_round
     assert default._candidates is None and ht._CANDIDATES == {}
     assert default._tools == ht.DEFAULT_TOOLS
-    with pytest.raises(ht.NoCostReader):
-        asyncio.run(ht.no_cost_reader(ORG, "run-1"))
+    with pytest.raises(ht.CostReadFailed):
+        asyncio.run(ht.console_meter(ORG, ANA, "run-1"))
 
 
 # ── No candidate, no call ───────────────────────────────────────────────────
@@ -454,10 +589,11 @@ def test_a_turn_stops_at_the_cap_and_reports_once(world) -> None:
     claim = _run(_turn(world, runner, report=reports, go_on=_always), _payload(goal))
     after = world.goals.rows[goal.id]
     assert len(runner.calls) == 1
-    assert (after.state, after.block_code, after.version) == ("blocked", "cap_reached", 2)
-    assert (after.round_count, after.cost_used_credits) == (1, Decimal("2"))
+    # Version 2 is the mark, and version 3 the round that clears it.
+    assert (after.state, after.block_code, after.version) == ("blocked", "cap_reached", 3)
+    assert (after.round_count, after.cost_used_credits, after.job_id) == (1, Decimal("2"), None)
     assert world.goals.writes == 1
-    assert [g.version for g in reports.seen] == [2]
+    assert [g.version for g in reports.seen] == [3]
     assert world.jobs.done == [claim.id] and world.jobs.given_up == []
 
 
@@ -472,7 +608,7 @@ def test_a_second_delivery_reports_nothing(world) -> None:
     _run(turn, _payload(goal))
     assert len(runner.calls) == 1 and world.goals.writes == 1
     assert len(reports.seen) == 1
-    assert world.goals.rows[goal.id].version == 2
+    assert world.goals.rows[goal.id].version == 3
 
 
 def test_the_round_cap_of_the_goal_binds_too(world) -> None:
@@ -534,14 +670,25 @@ def test_a_meter_that_fails_after_the_call_charges_the_rest_of_the_budget(world)
         "error"]
 
 
-def test_a_failed_round_records_its_cost_and_gives_up(world) -> None:
+def test_a_failed_round_charges_the_rest_and_gives_up(world) -> None:
+    """AUTO-8b-2d: a call that raised can still write its usage row after a
+    read. So the round reads no meter and charges the rest of the budget,
+    the goal blocks with ``cap_reached``, the report runs once, and the job
+    still gives up with ``TurnFailed``. (Before AUTO-8b-2d the round
+    recorded the meter's 1 credit and the goal stayed active.)"""
     goal = world.goals.add()
     runner = FakeRunner(world.meter, cost="1", raises=RuntimeError("the model failed"))
-    claim = _run(_turn(world, runner, go_on=_always), _payload(goal))
+    reports = Reports()
+    with structlog.testing.capture_logs() as caps:
+        claim = _run(_turn(world, runner, report=reports, go_on=_always), _payload(goal))
     after = world.goals.rows[goal.id]
-    assert len(runner.calls) == 1
-    assert (after.round_count, after.cost_used_credits, after.state) == (1, Decimal("1"), "active")
+    assert len(runner.calls) == 1 and world.meter.reads == 1  # the read before only
+    assert (after.round_count, after.cost_used_credits) == (1, Decimal("10"))
+    assert (after.state, after.block_code, after.job_id) == ("blocked", "cap_reached", None)
+    assert len(reports.seen) == 1
     assert world.jobs.given_up == [(claim.id, ht.TURN_FAILED)]
+    lines = [(c["log_level"], c["error"]) for c in caps if c["event"] == "headless_turn.round_cut"]
+    assert lines == [("warning", "RuntimeError")]
 
 
 def test_a_stale_goal_records_the_round_once_more_and_stops(world) -> None:
@@ -554,7 +701,8 @@ def test_a_stale_goal_records_the_round_once_more_and_stops(world) -> None:
     claim = _run(_turn(world, runner, go_on=_always), _payload(goal))
     after = world.goals.rows[goal.id]
     assert len(runner.calls) == 1
-    assert (after.round_count, after.version) == (1, 3)
+    # 2 the mark, 3 the other write, 4 the round on the new version.
+    assert (after.round_count, after.version, after.job_id) == (1, 4, None)
     assert world.jobs.done == [claim.id]
 
 
@@ -602,17 +750,50 @@ def test_the_round_cap_stops_the_turn(world) -> None:
 
 
 def test_the_time_cap_stops_the_turn(world) -> None:
-    """The time cap cancels the call at the limit. The round still records
-    its cost, and no second round starts."""
+    """The time cap cancels the call at the limit, and no second round
+    starts.
+
+    ⚠️ Changed by AUTO-8b-2d. The round used to record the meter's 1 credit
+    and end ``time_cap``. But the fake runner here writes its cost BEFORE it
+    sleeps, so it could not show the real race: the Console writes the row of
+    a cut call AFTER the cut. So a cut round now reads no meter and charges
+    the rest of the budget. The goal blocks with ``cap_reached``, and the
+    turn ends ``cap_reached``."""
     goal = world.goals.add()
     runner = FakeRunner(world.meter, cost="1", sleep=30.0)
     with structlog.testing.capture_logs() as caps:
         claim = _run(_turn(world, runner, go_on=_always, time_cap_s=0.2), _payload(goal))
     assert len(runner.calls) == 1 and runner.cancelled is True
-    assert world.goals.rows[goal.id].cost_used_credits == Decimal("1")
+    after = world.goals.rows[goal.id]
+    assert (after.cost_used_credits, after.block_code) == (Decimal("10"), "cap_reached")
+    assert world.meter.reads == 1  # the read before the call, and none after the cut
     ended = [c for c in caps if c["event"] == "headless_turn.ended"]
-    assert [c["outcome"] for c in ended] == ["time_cap"]
+    assert [c["outcome"] for c in ended] == ["cap_reached"]
+    lines = [(c["log_level"], c["error"]) for c in caps if c["event"] == "headless_turn.round_cut"]
+    assert lines == [("warning", "TimeCap")]
     assert world.jobs.done == [claim.id]
+
+
+def test_a_cut_call_whose_row_lands_late_charges_the_rest(world) -> None:
+    """AUTO-8b-2d, the P1 of its review. The time cap cuts the call, and the
+    usage row of the call lands AFTER the cut. A read at the cut would see 0
+    and record 0, so the next turn would get room that the goal does not
+    have. The round reads no meter and charges the rest of the budget (10
+    minus 3). Then the late row lands, and a later read sees its 4 credits,
+    which the charge of 7 covers."""
+    goal = world.goals.add(cost_cap="10", used="3")
+    runner, reports = LateRunner(world.meter, cost="4"), Reports()
+    claim = _run(_turn(world, runner, report=reports, go_on=_always,
+                       time_cap_s=0.3, clock=lambda: 0.0), _payload(goal))
+    after = world.goals.rows[goal.id]
+    [run_id] = runner.calls
+    assert (after.block_code, after.cost_used_credits, after.job_id) == (
+        "cap_reached", Decimal("10"), None)
+    assert world.meter.reads == 1 and len(reports.seen) == 1
+    assert world.jobs.done == [claim.id]
+    runner.land()
+    late = asyncio.run(world.meter(ORG, ANA, run_id))
+    assert late == Decimal("4") <= after.cost_used_credits - goal.cost_used_credits
 
 
 def test_one_round_is_the_default(world) -> None:
@@ -635,6 +816,8 @@ def test_the_caps_are_bounded() -> None:
     # ledger and the settle of the job keep the last part.
     assert ht.SETTLE_PARTS >= 3
     assert 2 * ht._settle_limit() < ht.SETTLE_MARGIN_S
+    # AUTO-8b-2a P2 (6): the report keeps to half of the last part.
+    assert 0 < ht._report_limit() < ht.SETTLE_MARGIN_S - 2 * ht._settle_limit()
     assert unattended.STALL_AFTER.total_seconds() > ht.MAX_TIME_CAP_S
     assert Decimal(0) < ht.MAX_GOAL_CREDITS < Decimal(500)
     for bad in (0, ht.MAX_ROUNDS + 1, True, 2.0):
@@ -650,33 +833,46 @@ def test_the_caps_are_bounded() -> None:
 
 def test_a_meter_that_hangs_after_the_call_charges_the_rest_inside_the_margin(
         world, monkeypatch) -> None:
-    """AUTO-8b-1 (a), acceptance 1: the meter after the call sleeps past
-    ``SETTLE_MARGIN_S``. The settle cuts it, ``record_round`` runs inside the
-    margin, and the charge is the cap minus the credits used. So the goal
-    blocks with ``cap_reached`` and the report runs once."""
+    """AUTO-8b-1 (a), acceptance 1: the meter after the call sleeps past its
+    share of ``SETTLE_MARGIN_S``. The settle cuts it, ``record_round`` runs,
+    and the charge is the cap minus the credits used. So the goal blocks
+    with ``cap_reached`` and the report runs once.
+
+    AUTO-8b-2a P2 (4): the test asserts an ORDER (the call, the cut of the
+    meter, the record), never a wall-clock time. The call ends at the
+    deadline of the turn's clock, so the meter gets one part (P2 (1))."""
     monkeypatch.setattr(ht, "SETTLE_MARGIN_S", 0.6)
     goal = world.goals.add(cost_cap="10", used="3")
     world.meter.sleep_after = 30.0
     runner, reports = FakeRunner(world.meter, cost="1"), Reports()
-    marks: dict[str, float] = {}
+    now = [0.0]
+    events: list[str] = []
     charged: list[Decimal] = []
-    runner.side = lambda _n: marks.setdefault("called", time.monotonic())
+
+    def at_the_deadline(_n: int) -> None:
+        events.append("called")
+        now[0] = ht.DEFAULT_TIME_CAP_S
+
+    runner.side = at_the_deadline
     real = goal_store.record_round
 
-    async def timed(db: Any, member: str, goal_id: str, expected: int, cost: Any) -> Any:
-        marks["recorded"] = time.monotonic()
+    async def ordered(db: Any, member: str, goal_id: str, expected: int, cost: Any,
+                      **kw: Any) -> Any:
+        events.append("meter_cut" if world.meter.cancelled else "meter_answered")
+        events.append("recorded")
         charged.append(Decimal(cost))
-        return await real(db, member, goal_id, expected, cost)
+        return await real(db, member, goal_id, expected, cost, **kw)
 
-    monkeypatch.setattr(goal_store, "record_round", timed)
+    monkeypatch.setattr(goal_store, "record_round", ordered)
     with structlog.testing.capture_logs() as caps:
-        claim = _run(_turn(world, runner, report=reports, go_on=_always), _payload(goal))
+        claim = _run(_turn(world, runner, report=reports, go_on=_always,
+                           clock=lambda: now[0]), _payload(goal))
     after = world.goals.rows[goal.id]
     assert len(runner.calls) == 1 and world.meter.cancelled is True
+    assert events == ["called", "meter_cut", "recorded"]
     assert charged == [goal.cost_cap_credits - goal.cost_used_credits] == [Decimal("7")]
-    assert marks["recorded"] - marks["called"] < ht.SETTLE_MARGIN_S
     assert (after.block_code, after.cost_used_credits, after.version) == (
-        "cap_reached", Decimal("10"), 2)
+        "cap_reached", Decimal("10"), 3)
     assert len(reports.seen) == 1
     assert world.jobs.done == [claim.id] and world.jobs.given_up == []
     lines = [(c["log_level"], c["error"]) for c in caps if c["event"] == "headless_turn.cost_unknown"]
@@ -703,7 +899,7 @@ def test_a_timeout_of_the_meter_itself_is_not_the_settle_timeout(world) -> None:
     goal = world.goals.add()
     runner = FakeRunner(world.meter)
 
-    async def own_timeout(org: str, run_id: str) -> Any:
+    async def own_timeout(org: str, member: str, run_id: str) -> Any:
         raise TimeoutError("the meter's own HTTP timeout")
 
     claim = _run(_turn(world, runner, meter=own_timeout), _payload(goal))
@@ -727,15 +923,20 @@ def test_a_record_that_hangs_gives_up_inside_the_margin(world, monkeypatch) -> N
 
     monkeypatch.setattr(goal_store, "record_round", hangs)
     runner = FakeRunner(world.meter)
+    # The call ends at the deadline, so the record gets one part (P2 (1)).
+    now = [0.0]
+    runner.side = lambda _n: now.__setitem__(0, ht.DEFAULT_TIME_CAP_S)
     started = time.monotonic()
     with structlog.testing.capture_logs() as caps:
-        claim = _run(_turn(world, runner, go_on=_always), _payload(goal))
+        claim = _run(_turn(world, runner, go_on=_always, clock=lambda: now[0]), _payload(goal))
     assert time.monotonic() - started < 10
     assert len(runner.calls) == 1 and cut == [True]
     assert world.jobs.given_up == [(claim.id, ht.TURN_FAILED)]
     lines = [(c["log_level"], c["error"]) for c in caps
              if c["event"] == "headless_turn.round_unrecorded"]
     assert lines == [("error", "RecordTimeout")]
+    # AUTO-8b-2a: the round has no record, so the mark stays on the goal.
+    assert world.goals.rows[goal.id].job_id == claim.id
 
 
 @pytest.mark.parametrize("step", ["before", "cost", "record"])
@@ -754,11 +955,11 @@ def test_the_settle_never_swallows_a_cancel(world, monkeypatch, step) -> None:
 
     def call() -> Any:
         if step == "before":
-            return turn._before(ORG, run_id)
+            return turn._before(ORG, ANA, run_id)
         if step == "cost":
             world.meter.spent[run_id] = Decimal("1")
-            return turn._cost(ORG, run_id, Decimal(0), goal)
-        return turn._record(ORG, ANA, goal, Decimal("1"))
+            return turn._cost(ORG, ANA, run_id, Decimal(0), goal, 0.0)
+        return turn._record(ORG, ANA, goal, Decimal("1"), 0.0)
 
     async def main() -> None:
         task = asyncio.get_running_loop().create_task(call())
@@ -794,6 +995,366 @@ def test_the_clock_of_the_turn_starts_before_recover(world, monkeypatch) -> None
     assert world.jobs.done == [claim.id]
 
 
+# ── The mark of a call (AUTO-8b-2a, the P1) ─────────────────────────────────
+
+
+def _run_cancelled(turn: ht.HeadlessTurn, payload: dict[str, Any], claim: queue.Claim,
+                   runner: FakeRunner) -> None:
+    """Run *turn*, and cancel it from outside while the runner is in its
+    call, as ``worker.stop_job_worker`` cancels a tick."""
+    async def main() -> None:
+        called = asyncio.Event()
+        runner.side = lambda _n: called.set()
+        task = asyncio.get_running_loop().create_task(turn.run(ORG, payload, claim))
+        await asyncio.wait_for(called.wait(), timeout=30)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The rounds run in the task of the stall guard. Let its cancel land.
+        for _ in range(3000):
+            if runner.cancelled:
+                return
+            await asyncio.sleep(0.01)
+
+    asyncio.run(main())
+
+
+def test_a_mark_is_written_before_each_call_and_the_record_clears_it(world) -> None:
+    """Before each call, the goal holds the claim id in ``job_id``. The
+    record of the round clears it in the same write."""
+    goal = world.goals.add(cost_cap="50")
+    runner = FakeRunner(world.meter, cost="1")
+    seen: list[str | None] = []
+    runner.side = lambda _n: seen.append(world.goals.rows[goal.id].job_id)
+    claim = _claim(_payload(goal))
+    _run(_turn(world, runner, go_on=_always, rounds=2), _payload(goal), claim=claim)
+    after = world.goals.rows[goal.id]
+    assert seen == [claim.id, claim.id]
+    assert world.goals.updates == [{"job_id": claim.id}, {"job_id": claim.id}]
+    assert world.goals.cleared == [True, True]
+    assert (after.job_id, after.round_count, after.version) == (None, 2, 5)
+    assert world.jobs.done == [claim.id] and world.jobs.given_up == []
+
+
+@pytest.mark.parametrize("whose", ["another_job", "the_same_job_id_as_the_claim"])
+def test_a_goal_that_holds_a_mark_blocks_at_once_with_no_call(world, whose) -> None:
+    """Step 4: the goal holds a mark, so a call of an earlier run has no
+    record. The turn charges the rest of the budget in one write that clears
+    the mark. No meter read, no candidate check and no call.
+
+    A mark with the same job id as the claim is the mark of an earlier try
+    of this job (a lost lease reuses ``Claim.id``). So it is a lost round
+    too: the turn never compares a mark with its own claim id."""
+    goal = world.goals.add(cost_cap="10", used="2")
+    claim = _claim(_payload(goal))
+    world.goals.lost(goal.id, claim.id if whose != "another_job" else str(uuid.uuid4()))
+    runner, reports = FakeRunner(world.meter), Reports()
+    asked: list[str] = []
+
+    async def check(org: str, member: str, payload: dict[str, Any]) -> bool:
+        asked.append(member)
+        return True
+
+    turn = _turn(world, runner, report=reports, candidates={CHECK: check}, go_on=_always)
+    with structlog.testing.capture_logs() as caps:
+        _run(turn, _payload(goal), claim=claim)
+    after = world.goals.rows[goal.id]
+    assert runner.calls == [] and world.meter.reads == 0 and asked == []
+    assert (after.state, after.block_code, after.job_id) == ("blocked", "cap_reached", None)
+    assert (after.round_count, after.cost_used_credits, after.version) == (1, Decimal("10"), 3)
+    assert world.goals.cleared == [True] and world.goals.updates == []
+    assert [g.version for g in reports.seen] == [3]
+    assert world.jobs.done == [claim.id] and world.jobs.given_up == []
+    assert [c["log_level"] for c in caps if c["event"] == "headless_turn.lost_round"] == ["error"]
+    # A second delivery reads a blocked goal: no call, no write, no report.
+    _run(turn, _payload(goal))
+    assert runner.calls == [] and world.goals.writes == 1 and len(reports.seen) == 1
+
+
+@pytest.mark.parametrize("how", ["cancel_during_the_call", "record_timeout"])
+def test_a_lost_round_leaves_the_mark_and_the_next_turn_blocks(world, monkeypatch, how) -> None:
+    """The P1 example: round 1 spends 8 of 10 credits, and its cost does not
+    reach the goal row. A stop of the worker cancels the call, or the record
+    does not end in time. The mark stays, so the next turn gets no room: it
+    charges the rest (10) and makes no call. Mutation M11 turns it red."""
+    goal = world.goals.add(cost_cap="10")
+    runner = FakeRunner(world.meter, cost="8")
+    first = _claim(_payload(goal))
+    if how == "cancel_during_the_call":
+        runner.sleep = 30.0
+        _run_cancelled(_turn(world, runner, go_on=_always), _payload(goal), first, runner)
+        assert runner.cancelled is True and world.jobs.done == []
+    else:
+        monkeypatch.setattr(ht, "SETTLE_MARGIN_S", 0.3)
+        real = goal_store.record_round
+
+        async def hangs(*_a: Any, **_kw: Any) -> Any:
+            await asyncio.sleep(30)
+
+        monkeypatch.setattr(goal_store, "record_round", hangs)
+        now = [0.0]
+        runner.side = lambda _n: now.__setitem__(0, ht.DEFAULT_TIME_CAP_S)
+        _run(_turn(world, runner, go_on=_always, clock=lambda: now[0]), _payload(goal),
+             claim=first)
+        assert world.jobs.given_up == [(first.id, ht.TURN_FAILED)]
+        monkeypatch.setattr(goal_store, "record_round", real)
+    lost = world.goals.rows[goal.id]
+    assert len(runner.calls) == 1
+    assert (lost.job_id, lost.round_count, lost.state) == (first.id, 0, "active")
+    assert lost.cost_used_credits == Decimal("0")
+    # The next turn of the goal: a new job.
+    following, reports = FakeRunner(world.meter, cost="1"), Reports()
+    second = _run(_turn(world, following, report=reports, go_on=_always), _payload(goal))
+    after = world.goals.rows[goal.id]
+    assert following.calls == []
+    assert (after.state, after.block_code, after.job_id) == ("blocked", "cap_reached", None)
+    assert after.cost_used_credits == Decimal("10") and len(reports.seen) == 1
+    assert second.id in world.jobs.done
+
+
+@pytest.mark.parametrize("how", ["raises", "hangs", "not_written"])
+def test_a_failed_mark_write_makes_no_call(world, monkeypatch, how) -> None:
+    """A FAILED mark write makes NO call. The turn gives up with
+    ``MarkFailed`` and logs it at error: fail closed."""
+    monkeypatch.setattr(ht, "SETTLE_MARGIN_S", 0.3)
+    goal = world.goals.add()
+    runner = FakeRunner(world.meter)
+
+    async def broken(db: Any, member: str, goal_id: str, expected: int,
+                     **changes: Any) -> Any:
+        if how == "raises":
+            raise ConnectionError("the database did not answer")
+        if how == "hangs":
+            await asyncio.sleep(30)
+        return world.goals.rows[goal_id]  # an answer, and no write
+
+    monkeypatch.setattr(goal_store, "update_goal", broken)
+    with structlog.testing.capture_logs() as caps:
+        claim = _run(_turn(world, runner, go_on=_always), _payload(goal))
+    assert runner.calls == [] and world.goals.writes == 0
+    assert world.goals.rows[goal.id] == goal
+    assert world.jobs.given_up == [(claim.id, ht.MARK_FAILED)]
+    want = {"raises": "ConnectionError", "hangs": "MarkTimeout",
+            "not_written": "MarkNotWritten"}[how]
+    lines = [(c["log_level"], c["error"]) for c in caps if c["event"] == "headless_turn.mark_failed"]
+    assert lines == [("error", want)]
+
+
+def test_a_stale_mark_write_makes_no_call(world, monkeypatch) -> None:
+    """Another write comes between the read of the goal and the mark. The
+    compare-and-set refuses the mark, so no call runs and no mark stays."""
+    goal = world.goals.add()
+    runner = FakeRunner(world.meter)
+    real = goal_store.update_goal
+
+    async def other_first(db: Any, member: str, goal_id: str, expected: int,
+                          **changes: Any) -> Any:
+        world.goals.bump(goal_id)
+        return await real(db, member, goal_id, expected, **changes)
+
+    monkeypatch.setattr(goal_store, "update_goal", other_first)
+    with structlog.testing.capture_logs() as caps:
+        claim = _run(_turn(world, runner, go_on=_always), _payload(goal))
+    after = world.goals.rows[goal.id]
+    assert runner.calls == [] and world.goals.writes == 0
+    assert (after.job_id, after.version) == (None, 2)
+    assert [c["outcome"] for c in caps if c["event"] == "headless_turn.ended"] == ["stale"]
+    assert world.jobs.done == [claim.id]
+
+
+def test_no_time_after_the_mark_clears_it_and_makes_no_call(world, monkeypatch) -> None:
+    """The time cap runs out during the mark write. No call runs, and the
+    turn clears the mark, so the next turn charges no call that never ran."""
+    goal = world.goals.add()
+    runner = FakeRunner(world.meter)
+    now = [0.0]
+    real = goal_store.update_goal
+
+    async def slow_mark(db: Any, member: str, goal_id: str, expected: int,
+                        **changes: Any) -> Any:
+        if changes.get("job_id") is not None:
+            now[0] = ht.DEFAULT_TIME_CAP_S + 1
+        return await real(db, member, goal_id, expected, **changes)
+
+    monkeypatch.setattr(goal_store, "update_goal", slow_mark)
+    with structlog.testing.capture_logs() as caps:
+        claim = _run(_turn(world, runner, go_on=_always, clock=lambda: now[0]), _payload(goal))
+    after = world.goals.rows[goal.id]
+    assert runner.calls == [] and world.goals.writes == 0
+    assert world.goals.updates == [{"job_id": claim.id}, {"job_id": None}]
+    assert (after.job_id, after.round_count, after.version) == (None, 0, 3)
+    assert [c["outcome"] for c in caps if c["event"] == "headless_turn.ended"] == ["time_cap"]
+    assert world.jobs.done == [claim.id]
+
+
+def test_a_mark_seen_before_a_later_round_blocks_the_goal(world) -> None:
+    """Step b: after round 1, the mark of another run lands on the goal (a
+    second live turn of one goal, against the producer rule). Round 2 reads
+    it, charges the rest and makes no call. A turn never reads its own live
+    mark, because each of its records clears its own."""
+    goal = world.goals.add(cost_cap="10")
+    runner, reports = FakeRunner(world.meter, cost="1"), Reports()
+    other = str(uuid.uuid4())
+
+    def go_on(_result: Any) -> bool:
+        world.goals.lost(goal.id, other)
+        return True
+
+    with structlog.testing.capture_logs() as caps:
+        claim = _run(_turn(world, runner, report=reports, go_on=go_on), _payload(goal))
+    after = world.goals.rows[goal.id]
+    assert len(runner.calls) == 1
+    assert (after.block_code, after.cost_used_credits, after.job_id, after.round_count) == (
+        "cap_reached", Decimal("10"), None, 2)
+    assert len(reports.seen) == 1
+    assert [c["outcome"] for c in caps if c["event"] == "headless_turn.ended"] == ["lost_round"]
+    assert world.jobs.done == [claim.id]
+
+
+# ── The six P2 notes of the AUTO-8b-1 review (AUTO-8b-2a) ───────────────────
+
+
+def test_the_settle_shares_follow_the_deadline(monkeypatch) -> None:
+    """P2 (1): the meter after a call gets max(part, deadline + part -
+    clock()), and the record gets max(part, deadline + 2 * part - clock())."""
+    monkeypatch.setattr(ht, "SETTLE_MARGIN_S", 60.0)
+    now = [0.0]
+    turn = ht.HeadlessTurn(clock=lambda: now[0])
+    assert ht._settle_limit() == 20.0
+    for at, meter, record in ((50.0, 70.0, 90.0), (100.0, 20.0, 40.0),
+                              (110.0, 20.0, 30.0), (150.0, 20.0, 20.0)):
+        now[0] = at
+        assert (turn._share(100.0, 1), turn._share(100.0, 2)) == (meter, record), at
+
+
+def test_a_round_that_ends_early_gives_the_settle_the_time_left(world, monkeypatch) -> None:
+    """P2 (1), the behaviour: the call ends long before the deadline. A meter
+    and a record that each take longer than one part still answer, so the
+    round charges its real cost, not the rest of the budget. With fixed
+    shares of one part, both would be cut."""
+    monkeypatch.setattr(ht, "SETTLE_MARGIN_S", 0.15)
+    goal = world.goals.add(cost_cap="10")
+    world.meter.sleep_after = 0.3
+    runner = FakeRunner(world.meter, cost="1")
+    real = goal_store.record_round
+
+    async def slow(*a: Any, **kw: Any) -> Any:
+        await asyncio.sleep(0.3)
+        return await real(*a, **kw)
+
+    monkeypatch.setattr(goal_store, "record_round", slow)
+    with structlog.testing.capture_logs() as caps:
+        claim = _run(_turn(world, runner), _payload(goal))
+    after = world.goals.rows[goal.id]
+    assert world.meter.cancelled is False
+    assert (after.cost_used_credits, after.state, after.job_id) == (Decimal("1"), "active", None)
+    assert [c for c in caps if c["event"] in (
+        "headless_turn.cost_unknown", "headless_turn.round_unrecorded")] == []
+    assert world.jobs.done == [claim.id]
+
+
+@pytest.mark.parametrize("how", ["raises", "hangs"])
+def test_a_meter_that_fails_after_a_call_gives_a_reason_of_its_own(
+        world, monkeypatch, how) -> None:
+    """P2 (2): round 1 made a call. The meter before round 2 fails, so no
+    second call runs. The reason is ``MeterFailed``, not ``NoCostReader``,
+    because a reader did answer in round 1."""
+    monkeypatch.setattr(ht, "SETTLE_MARGIN_S", 0.3)
+    goal = world.goals.add(cost_cap="10")
+    reads = [0]
+
+    async def meter(org: str, member: str, run_id: str) -> Any:
+        reads[0] += 1
+        if reads[0] == 3:  # the read before round 2
+            if how == "raises":
+                raise ht.NoCostReader("the reader went away")
+            await asyncio.sleep(30)
+        return world.meter.spent.get(run_id, Decimal(0))
+
+    runner = FakeRunner(world.meter, cost="1")
+    with structlog.testing.capture_logs() as caps:
+        claim = _run(_turn(world, runner, meter=meter, go_on=_always), _payload(goal))
+    after = world.goals.rows[goal.id]
+    assert len(runner.calls) == 1
+    assert (after.round_count, after.cost_used_credits, after.job_id) == (1, Decimal("1"), None)
+    assert world.jobs.given_up == [(claim.id, ht.METER_FAILED)]
+    assert [c["log_level"] for c in caps if c["event"] == "headless_turn.meter_failed"] == [
+        "error"]
+    assert [c for c in caps if c["event"] == "headless_turn.no_cost_reader"] == []
+
+
+def test_an_unknown_cost_charges_the_rest_of_the_fresh_goal(world) -> None:
+    """P2 (3): during the call another write raises the credit cap from 10
+    to 20, and the meter after the call fails. The record meets
+    ``StaleGoal`` and records on the new version. The charge is the rest of
+    THAT version (20), so the goal blocks. The rest of the old version (10)
+    would leave it active with 10 credits of room."""
+    goal = world.goals.add(cost_cap="10")
+    world.meter.fail_after = True
+    runner, reports = FakeRunner(world.meter, cost="1"), Reports()
+    runner.side = lambda _n: world.goals.raise_cap(goal.id, Decimal("20"))
+    claim = _run(_turn(world, runner, report=reports, go_on=_always), _payload(goal))
+    after = world.goals.rows[goal.id]
+    assert len(runner.calls) == 1
+    assert (after.state, after.block_code, after.cost_cap_credits) == (
+        "blocked", "cap_reached", Decimal("20"))
+    assert (after.cost_used_credits, after.job_id) == (Decimal("20"), None)
+    assert len(reports.seen) == 1 and world.jobs.done == [claim.id]
+
+
+def test_a_driver_that_turns_a_cancel_into_an_error_charges_the_rest(world) -> None:
+    """P2 (5): a driver can turn an outer cancel into an error of its own.
+    ``_cost`` then catches it, and the cost is unknown, so the record charges
+    the rest of the budget: fail closed for money. The module text says so,
+    and no longer says that the settle never catches a cancel."""
+    goal = world.goals.add(cost_cap="10", used="4")
+    run_id = str(uuid.uuid4())
+    entered = asyncio.Event()
+
+    async def converts(org: str, member: str, run: str) -> Any:
+        entered.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            raise ConnectionError("the driver turned the cancel into an error") from None
+        return Decimal(0)
+
+    turn = _turn(world, FakeRunner(world.meter), meter=converts)
+
+    async def main() -> Any:
+        task = asyncio.get_running_loop().create_task(
+            turn._cost(ORG, ANA, run_id, Decimal(0), goal, 0.0))
+        await asyncio.wait_for(entered.wait(), timeout=30)
+        task.cancel()
+        return await task
+
+    with structlog.testing.capture_logs() as caps:
+        cost = asyncio.run(main())
+    assert cost is None
+    lines = [(c["log_level"], c["error"]) for c in caps if c["event"] == "headless_turn.cost_unknown"]
+    assert lines == [("error", "ConnectionError")]
+    assert ht._charge(goal, cost) == Decimal("6")
+    text = _MODULE.read_text(encoding="utf-8")
+    assert "never catches a cancel" not in text
+    assert "can turn an outer cancel into an error" in text
+
+
+def test_a_report_that_hangs_is_cut_and_the_job_ends(world, monkeypatch) -> None:
+    """P2 (6): the report runs after the commit of the round, so it moves no
+    money. It has a time limit of its own, half of the last part. A report
+    that hangs is cut and logged, and the job still ends ``done``."""
+    monkeypatch.setattr(ht, "SETTLE_MARGIN_S", 0.3)
+    goal = world.goals.add(cost_cap="1")
+    runner, reports = FakeRunner(world.meter, cost="2"), Reports(sleep=30.0)
+    with structlog.testing.capture_logs() as caps:
+        claim = _run(_turn(world, runner, report=reports, go_on=_always), _payload(goal))
+    assert len(reports.seen) == 1 and reports.cancelled is True
+    assert world.goals.rows[goal.id].block_code == "cap_reached"
+    lines = [(c["log_level"], c["error"]) for c in caps if c["event"] == "headless_turn.report_failed"]
+    assert lines == [("warning", "ReportTimeout")]
+    assert world.jobs.done == [claim.id] and world.jobs.given_up == []
+
+
 # ── The member, the goal and the payload ────────────────────────────────────
 
 
@@ -813,6 +1374,62 @@ def test_the_runner_acts_as_the_member_of_the_goal(world) -> None:
     _run(_turn(world, runner), _payload(goal))
     assert [(c["member"], c["org"]) for c in runner.calls] == [(ANA, ORG)]
     assert runner.calls[0]["message"] == goal.objective
+
+
+@pytest.mark.parametrize("raises", [False, True], ids=["ends", "raises"])
+def test_each_round_runs_inside_the_attribution_scope_and_leaves_none(world, raises) -> None:
+    """AUTO-8b-2c: the runner reads ``("auto", "auto.headless")``, the
+    paying member is bound verified, and the frame that ran the turn holds
+    no scope after it, also when a round raises. Mutation: drop
+    ``run_attribution_scope`` from ``_run_once`` -> red."""
+    from acb_common import get_run_context, run_attribution
+
+    goal = world.goals.add()
+    runner = FakeRunner(world.meter, raises=RuntimeError("boom") if raises else None)
+    seen: list[tuple[Any, ...]] = []
+
+    def side(_n: int) -> None:
+        ctx = get_run_context()
+        seen.append((run_attribution(), ctx.get("user"), ctx.get("member_verified")))
+
+    runner.side = side
+    turn = _turn(world, runner, rounds=2, go_on=_always)
+    claim = _claim(_payload(goal))
+
+    async def main() -> Any:
+        await turn.run(ORG, _payload(goal), claim)
+        return run_attribution()
+
+    assert asyncio.run(main()) is None
+    assert run_attribution() is None
+    assert seen == [((ht.APP, ht.AGENT), ANA, "1")] * len(runner.calls)
+    assert len(runner.calls) == (1 if raises else 2)
+    assert world.jobs.given_up == ([(claim.id, ht.TURN_FAILED)] if raises else [])
+
+
+def test_the_default_runner_names_the_turn_on_the_wire(world, monkeypatch, tmp_path) -> None:
+    """AUTO-8b-2c, end to end: the default runner, the REAL ``run_agent``
+    and the REAL worker. Only the wire under the worker's client is a fake,
+    so these are the headers that the gateway's ``/v1`` gets, and the Router
+    writes the usage row from them."""
+    from tests.unit._subagent_harness import HeaderWire, route_worker_runs
+
+    wire = HeaderWire()
+    route_worker_runs(monkeypatch, tmp_path, wire)
+    asked: list[str] = []
+
+    async def meter(org: str, member: str, run_id: str) -> Decimal:
+        asked.append(run_id)
+        return Decimal(0)
+
+    goal = world.goals.add()
+    _run(_turn(world, meter=meter, tools=("remember",)), _payload(goal))
+    assert wire.headers, "the round made no model request"
+    assert len(set(asked)) == 1 and len(asked) == 2  # one round, read before and after
+    for h in wire.headers:
+        assert (h.get("x-cc-agent"), h.get("x-cc-module"), h.get("x-cc-member"),
+                h.get("x-cc-run")) == (ht.AGENT, ht.APP, ANA, asked[0])
+    assert world.goals.writes == 1 and world.jobs.given_up == []
 
 
 @pytest.mark.parametrize("case", ["missing", "other_kind", "blocked"])
@@ -846,7 +1463,9 @@ _NEVER = ("save_memory", "save_episode", "write_artifact", "make_report", "crm_p
           "crm_answer_question", "ask_questions", "request_confirmation", "share_artifact",
           "emit_generative_ui", "call_agent", "call_agents_parallel", "decide",
           "web_search", "fetch_page", "github_search", "run_script", "code_task",
-          "no_such_tool")
+          "no_such_tool",
+          # AUTO-8b-2d: a billed embed call with no run id (UNMETERED_TOOLS).
+          "crm_search_notes")
 
 
 def test_only_read_only_tools_are_offered() -> None:
@@ -903,9 +1522,12 @@ def test_the_default_runner_holds_the_worker_to_a_read_only_job(monkeypatch) -> 
 # ── The meter fails closed ──────────────────────────────────────────────────
 
 
-def test_the_default_meter_fails_closed(world) -> None:
-    """With the flag on, a candidate and no cost reader, the turn makes NO
-    model call. It gives up with a named reason and logs it at error."""
+def test_the_default_meter_fails_closed(world, monkeypatch) -> None:
+    """With the flag on, a candidate and a box with no Console wiring, the
+    default meter cannot read. The turn makes NO model call, gives up with
+    a named reason and logs it at error (AUTO-8b-2d)."""
+    monkeypatch.setattr(world.settings, "customer_console_url", "")
+    monkeypatch.setattr(world.settings, "customer_console_deployment_key", "")
     goal = world.goals.add()
     runner = FakeRunner(world.meter)
     turn = ht.HeadlessTurn(runner=runner, candidates=world.checks, go_on=_always)
@@ -913,16 +1535,17 @@ def test_the_default_meter_fails_closed(world) -> None:
         claim = _run(turn, _payload(goal))
     assert runner.calls == [] and world.goals.writes == 0
     assert world.goals.rows[goal.id] == goal
-    assert world.jobs.given_up == [(claim.id, ht.NO_READER)]
-    lines = [c["log_level"] for c in caps if c["event"] == "headless_turn.no_cost_reader"]
-    assert lines == ["error"]
+    assert world.jobs.given_up == [(claim.id, ht.COST_READ_FAILED)]
+    lines = [(c["log_level"], c["error"], c["status_class"]) for c in caps
+             if c["event"] == "headless_turn.cost_read_failed"]
+    assert lines == [("error", "Unwired", "none")]
 
 
 def test_a_meter_that_answers_no_number_fails_closed(world) -> None:
     goal = world.goals.add()
     runner = FakeRunner(world.meter)
 
-    async def odd(org: str, run_id: str) -> Any:
+    async def odd(org: str, member: str, run_id: str) -> Any:
         return "zero"
 
     claim = _run(_turn(world, runner, meter=odd), _payload(goal))
@@ -991,3 +1614,43 @@ def test_the_module_takes_no_member_from_the_payload() -> None:
         assert not _PAYLOAD_MEMBER.search(fine), fine
     src = _MODULE.read_text(encoding="utf-8")
     assert not _PAYLOAD_MEMBER.search(src)
+
+
+# ── AUTO-8b-2b: the ceiling of each round ───────────────────────────────────
+
+
+class CeilingRunner(FakeRunner):
+    """A runner that records the ``X-CC-Run-Ceiling`` that a model call of the
+    round would send. It reads the stamp as ``attributed_openai`` reads it."""
+
+    def __init__(self, meter: FakeMeter, **kw: Any) -> None:
+        super().__init__(meter, **kw)
+        self.ceilings: list[str | None] = []
+
+    async def __call__(self, message: str, **kw: Any) -> dict[str, Any]:
+        from acb_llm.attribution import RUN_CEILING, attribution_headers
+
+        self.ceilings.append(attribution_headers().get(RUN_CEILING))
+        return await super().__call__(message, **kw)
+
+
+def test_each_round_sends_the_rest_of_the_budget_as_the_ceiling(world) -> None:
+    """AUTO-8b-2b: h = cap - used at the start of each round, with 4 places.
+
+    Mutation: drop ``run_ceiling_scope`` from ``_rounds``. This test goes
+    red (each ceiling reads None)."""
+    from acb_llm.attribution import RUN_CEILING, attribution_headers
+
+    goal = world.goals.add(cost_cap="10", used="2.5")
+    runner = CeilingRunner(world.meter, cost="1.25")
+    _run(_turn(world, runner, go_on=_always, rounds=3), _payload(goal))
+    assert runner.ceilings == ["7.5000", "6.2500", "5.0000"]
+    # The scope ends with the round: the frame of the turn sends nothing.
+    assert RUN_CEILING not in attribution_headers()
+
+
+def test_round_ceiling_is_the_rest_and_never_below_zero(world) -> None:
+    goal = world.goals.add(cost_cap="10", used="9.99995")
+    assert ht.round_ceiling(goal) == Decimal("0.00005")
+    over = dataclasses.replace(goal, cost_used_credits=Decimal("12"))
+    assert ht.round_ceiling(over) == Decimal(0)

@@ -9,7 +9,8 @@ router of ``actions.py``, as ``skills.py`` and ``invoke.py`` do, so
 =======================================  ======================================
 ``POST /packages``                       create a package from a manifest (201)
 ``GET /packages``                        the packages of the caller, no manifest
-``GET /packages/{id}``                   one package, its manifest and objects
+``GET /packages/{id}``                   one package, its manifest and objects;
+                                         a viewer reads the installed version
 ``PUT /packages/{id}/draft``             replace the draft manifest
 ``POST /packages/{id}/versions``         publish the draft, project its objects
 ``GET /packages/{id}/versions``          a page of 100 versions, no manifest
@@ -17,6 +18,17 @@ router of ``actions.py``, as ``skills.py`` and ``invoke.py`` do, so
 ``GET /packages/{id}/delete-preview``    what a delete removes, and its token
 ``DELETE /packages/{id}``                delete the package (200 or 202)
 ``POST /packages/{id}/install``          an org or group install (201 or 200)
+``DELETE /packages/{id}/install``        remove an org or group install (200)
+``PUT /packages/{id}/install/run-as``    name the member of a run with no
+                                         viewer, or clear it (200)
+``POST /packages/{id}/keep``             keep the private install (200)
+``POST /packages/{id}/restore``          restore the private install (200)
+``GET /packages/{id}/lifetime``          the lifetime of the private install
+``POST /packages/{id}/versions/{n}/``    the owner asks for the approval for
+``approval``                             the org (202)
+``GET /approvals?state=pending``         what waits for an approval (holders)
+``POST .../approval/approve``            a holder approves one version (200)
+``POST .../approval/reject``             a holder rejects one version (200)
 =======================================  ======================================
 
 **The switch.** The first line of each handler reads ``STUDIO_ORGS``. An org
@@ -29,7 +41,37 @@ the raw request and reads no byte before that line. Fence:
 org, a member or a package from the body. A key such as ``owner_email`` or
 ``organization_id`` in a body changes nothing. A bad id, a package of another
 member, a package of another org and an App Workshop app all answer 404
-``Not found``. An answer names no owner.
+``Not found``. An answer names no owner. The exceptions are the read of
+J2a and the list of an approver of J2b-1, below.
+
+**The approval for the org (WS-STU J2b-1, path A, owner 2026-11-13).** Four
+routes call the one writer of ``app_versions.review_status``
+(``store.request_org_approval``, ``approve_version`` and ``reject_version``)
+and its one read (``store.list_pending_versions``). Each reads
+``STUDIO_ORGS``, then ``PACKAGE_HOST_ORGS`` (404, no session). The owner asks
+with ``POST /packages/{id}/versions/{n}/approval``: 202 ``pending``, and a
+second ask writes nothing. A holder of ``studio:publish`` reads ``GET
+/approvals?state=pending``: each pending version of the bound org, with its
+FULL manifest. Each other caller gets 403. A holder approves or rejects one
+version with ``POST .../approval/approve`` or ``.../reject``. The handler
+passes ``user.has_permission(SHARE_RIGHT)`` to the store, and the store
+refuses the rest (403). The publisher and the owner cannot approve (403,
+PKG-Q10). A version that nobody asked for (``auto``), another org and an id
+that names nothing get 404, so a holder learns nothing of a private package.
+Another state is 409 ``review_conflict``. The store writes the audit row in
+the same transaction. No chat twin yet (J2b-3).
+
+**The read of a member who is not the owner (WS-STU J2a).** ``GET
+/packages/{id}`` reads the owner first, and that answer does not change.
+When the owner read misses and ``PACKAGE_HOST_ORGS`` holds the org, the
+route reads the app through ``package_host/viewer.py``: the install that
+the sidebar shows to the member. The answer holds the INSTALLED version
+(``access: viewer``, ``version``, its manifest and its hash), never the
+draft. The objects are the rows that the installed version names, with only
+the fields and the rules of that version (``viewer.InstalledApp.project``,
+because a later publish adds fields to the rows). A draft,
+a paused, an archived and an expired install give 404, and so does each
+read while the switch is off. Each other route stays the owner's.
 
 **The order of the checks.** The switch, then the id. A body route on a
 package then reads the raw body, then reads the package as the member, then
@@ -94,7 +136,105 @@ row (kind ``action``, op ``package.install``) in the same transaction. The
 answer is 201 for a new install and 200 for a move. A store refusal is its
 ``detail_for`` of the member. A later publish does not move an org or group
 install, so the holder approves a new version with a new call. Only the
-owner reaches the route until J2.
+owner reaches the route.
+
+**The org branch since J2b-1 (path A).** An org install needs the live
+version ``approved`` by another holder of ``studio:publish``. A paused
+package is 423 ``package_paused``, the code of the door of J3a, even with
+an approval. A live version in another state makes the route ask for the
+approval (``store.request_org_approval``) and install nothing: 202
+``{install: null, review_status: pending}``. A rejected live version is 409
+``review_conflict``. The group branch does not change.
+
+**The org and group uninstall (WS-PKG PKG-8e, ``package_host.md`` §5.3).**
+``DELETE /packages/{id}/install`` with the same body. The order is that of
+the install, up to the right: the two switches, the id, the raw body, the
+owner read (404), the scope (422), then ``studio:publish`` (403
+``forbidden``). The route does not ask ``group_exists``, so an install of a
+deleted group can go. One session then finds the install at the scope under
+the org lock (``studio_app.remove_scope_install``), and ``remove_install``
+deletes it. The FK cascades delete its claims and its extension values in
+the same transaction, with one ``app_audit`` row (op ``package.uninstall``).
+No install at the scope is 404 ``install_not_found``. The answer is 200
+``{install, removed: true}``. The route takes no ``apps`` row lock, because
+no statement of it checks a foreign key to ``apps``.
+
+**The member of a run with no viewer (WS-STU B6a, ``ai_studio.md`` B6a).**
+``PUT /packages/{id}/install/run-as`` with the body ``{"scope": "org" or
+"group:<slug>", "run_as": <address> or null}``. The install at the scope
+then names that member, and ``invoke.run_as_read`` reads as that member.
+``null`` clears the value, and a body with no ``run_as`` is 422. The order
+is that of the uninstall: the two switches (each 404 with no session), the
+id, the raw body, the owner read (404), the scope (422), the shape of the
+address (422 ``bad_run_as``), then ``studio:publish`` (403 ``forbidden``).
+The right that installs the app names its member (D180.3).
+
+* The member must hold ``feature:studio`` and be an active member of the
+  bound org (``invoke.may_run_as``), and must see the install now
+  (``resolve.install_seen_by``). Each miss is the same 422
+  ``run_as_refused`` with one text, so the answer says nothing about another
+  org. A clear asks none of them.
+* One session finds the install at the scope under the org lock
+  (``host_store.install_at_scope``, 404 ``install_not_found`` when none),
+  checks the sight of the member, writes the value with
+  ``host_store.set_run_as``, and writes one ``app_audit`` row (op
+  ``package.run_as``, with the old value) in the same transaction. The
+  route takes no ``apps`` row lock, because the UPDATE changes no key that a
+  foreign key reads.
+* The org and the caller come from the session. A key such as
+  ``organization_id`` in the body changes nothing. No chat tool and no MCP
+  pair reaches the route.
+
+**Keep and Restore (WS-PKG PKG-10d, ``package_host.md`` §6.2).**
+``POST /packages/{id}/keep`` clears the end date of the private install of
+the owner (``host_store.keep_install``). ``POST /packages/{id}/restore``
+makes the archived private install of the owner active again, until 30 days
+after ``archived_at``, with ``ends_at`` 30 days after now (PKG-Q7,
+``host_store.restore_install``). The order: the two switches (each 404 with
+no session), the id, then one session. In it, ``lock_for_install`` holds the
+``apps`` row of a package of the member (404 for each other caller), then
+``host_store.private_install_id`` finds the install of the member, then the
+store call takes the org lock and the row lock.
+
+* Only the owner acts, and only on the private install. The handler takes
+  no body and no scope. So an org or a group install is never the target:
+  such an install has no end date, and the uninstall of PKG-8e removes it.
+  An owner with no private install gets 409 ``private_only``.
+* The org and the member come from the session, and the time of a restore
+  is the server clock (R5). No date, org or member comes from the request.
+* A keep of an install with no end date changes nothing and answers 200
+  with ``changed`` False. A store refusal is its ``detail_for`` of the
+  member: 409 ``state_refused`` (a keep of an archived install, a restore of
+  an install that is not archived), 409 ``restore_closed`` (the 30 days
+  ended), 404 ``app_not_installable`` and 404 ``install_not_found``.
+
+**The lifetime read (WS-PKG PKG-10e-1, ``package_host.md`` §6.2).**
+``GET /packages/{id}/lifetime`` gives the state, ``ends_at``,
+``archived_at`` and ``restore_until`` of the private install of the owner,
+and ``now`` from the server clock. The order and the owner rule are the ones
+of Keep and Restore (``_owned_private_install``). An owner with no private
+install gets 200 ``{"install": null}``, not 409. The store read
+(``host_store.read_lifetime``) takes no lock and writes no audit row.
+
+**The share with people (WS-STU J2b-2, ``ai_studio.md`` §14 J2b-2).**
+``POST /packages/{id}/share`` with ``{"people": [address, ...]}`` shares the
+private install of the owner with named members of the org, through
+``promotion.share_with_people``. The order: the two switches (each 404 with
+no session), the id, then ``studio:publish`` (D180.3: 403 ``forbidden``
+with no session), then the raw body (at most
+:data:`MAX_SHARE_BODY_BYTES`). Then one session. In it,
+``_owned_private_install`` holds the ``apps`` row ``FOR KEY SHARE`` first
+(404 for each caller but the owner), and then finds the private install of
+the owner (409 ``private_only`` when there is none). The store then takes
+the org lock and the row lock of the install, and writes ``app_grants``.
+One ``app_audit`` row (kind ``action``, op ``package.share``) commits with
+the share. The answer is 200 ``{people: [...]}``. The sharer is the session
+member, and no body key names the sharer, the org or the install (R5). A
+store refusal is its ``detail_for`` of the member: 422 for a bad list, 409
+for an install that is not private, active and kept, 403 ``not_owner`` and
+404 ``install_not_found``. ``shared_by_another_owner`` is 409, because the
+list is good and the state of the org refuses it. No route removes one
+person: the store has no per-person writer.
 
 **The answers.** 422 holds ``{message, errors: [{path, message}]}`` with at
 most :data:`MAX_PROBLEMS` errors. 409 holds ``{code, message, ...}``:
@@ -107,7 +247,9 @@ transaction (kind ``publish``). A create, and a sync that changed rows, write
 a row through ``record_app_audit_bound`` (kind ``action``) after the session
 closes. ⚠️ Never ``record_app_audit``: its unbound session writes no row under
 FORCE RLS (task 1317). A draft save and a 404 write no row. The rows hold the
-op, a hash, a size and names, and no manifest text.
+op, a hash, a size and names, and no manifest text. A keep that changes the
+row and each restore write a row through ``record_app_audit_in`` (ops
+``package.keep`` and ``package.restore``, PKG-10d). It commits with the write.
 
 **The expected hash (STU-G1c review round 1).** A draft save takes the query
 ``?based_on=<hash>``, and a publish takes ``based_on`` in its body. The value
@@ -138,9 +280,23 @@ installs that reach another member, and the token ``confirm``. Then the
 owner sends ``DELETE /packages/{id}`` with the body ``{"confirm": token}``
 (at most :data:`MAX_DELETE_BODY_BYTES`). A missing or malformed token is
 422. A token that is not the token of now is 409 ``counts_changed`` with the
-new preview, and nothing is deleted. Only the owner reaches either route:
-another member, another org and an App Workshop app get 404. No route here
-has an admin path, and no body key changes the member.
+new preview, and nothing is deleted. The owner reaches either route, and so
+does the admin path below. Another member, another org and an App Workshop
+app get 404, and no body key changes the member.
+
+**The admin path (A5c-2).** A package whose owner left the org blocks the
+org cap of objects, and only a delete frees the room. So a holder of
+``admin:members:manage`` (:data:`ADMIN_RIGHT`, the seam of
+``routes/admin/members.py``) may preview and delete the package of an owner
+with no active ``app_user`` row in the bound org. ``_delete_mode`` decides
+the path in one session, before the body parse: the owner read first, then
+the right, then ``store.admin_may_delete``. The route sets ``as_admin``
+itself. No body key and no query sets it. A plain member gets 404, and an
+admin gets 403 ``owner_active`` for the package of an active owner. Each
+step checks the owner again under the row lock, and a later step that finds
+an active owner ends the call with 403 and the records that it removed. The
+store writes each audit row with the admin as ``user_email`` and ``by:
+"admin"``.
 
 Each step runs in its own ``tenant_session``: the ``apps`` row ``FOR
 UPDATE``, the org lock, then a chunk of records (``store.delete_package``).
@@ -183,20 +339,23 @@ from acb_common import get_logger
 from acb_common import studio_templates as templates
 from acb_common.studio_manifest import manifest_hash
 from acb_skills.studio_tools import complete_record_actions
-from fastapi import Depends, HTTPException, Request, Response
+from fastapi import Depends, HTTPException, Query, Request, Response
 from gateway.db import tenant_session as _tenant_session
+from gateway.package_host import promotion, studio_app, viewer
+from gateway.package_host import resolve as host_resolve
 from gateway.package_host import store as host_store
-from gateway.package_host import studio_app
 from gateway.package_host.flags import package_host_allowed
 from gateway.routes.apps._common import record_app_audit_bound, record_app_audit_in
-from gateway.routes.studio import actions, flags
+from gateway.routes.studio import actions, flags, invoke
 from gateway.routes.studio.actions import NOT_FOUND, router
+from gateway.routes.studio.invoke import PACKAGE_PAUSED, PAUSED_STATUS, PAUSED_TEXT
 from gateway.studio import objects_store
+from gateway.studio import packages_admin_list as admin_list
 from gateway.studio import packages_store as store
 
-__all__ = ["COUNTS_CHANGED", "DELETE_BUDGET_SECONDS", "DRAFT_CHANGED", "MAX_BODY_BYTES",
-           "MAX_DELETE_BODY_BYTES", "MAX_PACKAGES_PER_MEMBER", "MAX_PROBLEMS", "VERSIONS_PAGE",
-           "router"]
+__all__ = ["ADMIN_RIGHT", "COUNTS_CHANGED", "DELETE_BUDGET_SECONDS", "DRAFT_CHANGED",
+           "MAX_BODY_BYTES", "MAX_DELETE_BODY_BYTES", "MAX_PACKAGES_PER_MEMBER", "MAX_PROBLEMS",
+           "OWNER_ACTIVE", "VERSIONS_PAGE", "router"]
 
 _log = get_logger("gateway.studio.packages")
 
@@ -225,10 +384,16 @@ DELETE_BUDGET_SECONDS = 8.0
 #: The most bytes of the body of an install (4 KiB). It holds the scope only.
 MAX_INSTALL_BODY_BYTES = 4 * 1024
 #: The right of an org or a group install: the share verb (D180.3,
-#: ``package_host.md`` §6.1). It is the one read of the verb in
+#: ``package_host.md`` §6.1). The install, the uninstall, and the list,
+#: the approve and the reject of J2b-1 read it, and no other handler of
 #: ``routes/studio``. Fence:
 #: ``test_studio_route_gate.py::test_the_share_verb_is_read_by_the_install_only``.
 SHARE_RIGHT = "studio:publish"
+#: The right of the admin path of a delete (A5c-2): the right that manages the
+#: members of the org (``routes/admin/members.py``). Only ``_delete_mode``
+#: reads it, and no other code of ``routes/studio`` names the right. Fence:
+#: ``test_studio_route_gate.py::test_the_admin_right_is_read_by_the_delete_mode_only``.
+ADMIN_RIGHT = "admin:members:manage"
 _DIGITS = re.compile(r"[0-9]{1,10}", re.ASCII)
 _HASH = re.compile(r"[0-9a-f]{64}", re.ASCII)
 
@@ -250,6 +415,8 @@ NOT_PUBLISHED = "not_published"
 VERSION_CHANGED = "version_changed"
 FORBIDDEN = "forbidden"
 UNKNOWN_GROUP = "unknown_group"
+#: The 403 of the admin path for the package of an active owner (A5c-2).
+OWNER_ACTIVE = "owner_active"
 UNKNOWN_TEMPLATE = ("The template is not in the registry. Send an id that GET /studio/templates "
                     "lists.")
 
@@ -266,6 +433,8 @@ BAD_CONFIRM = ("confirm is the token of the delete preview: 64 hexadecimal digit
                "preview, then send its token.")
 NO_SHARE_RIGHT = ("Only a holder of studio:publish installs an app for the organization or "
                   "for a group. Ask the owner of your organization for that right.")
+NO_REMOVE_RIGHT = ("Only a holder of studio:publish removes an app from the organization or "
+                   "from a group. Ask the owner of your organization for that right.")
 NO_SUCH_GROUP = ("Your organization has no group with this name, so nothing was installed. "
                  "Check the name of the group, then install again.")
 BAD_VERSION = ("version is the live version that you approve: a whole number from 1. Send it, "
@@ -274,6 +443,33 @@ LIVE_MOVED = ("The live version of this app changed after your read, so nothing 
               "installed. Read the live version, then install it again.")
 NOT_LIVE = ("This app has no published version, so nothing can be installed. Publish it "
             "first, then install it again.")
+#: B6a: the one refusal of each member that cannot be the member of a run
+#: with no viewer. One code and one text, so the answer says nothing about
+#: another org.
+RUN_AS_REFUSED = "run_as_refused"
+NO_RUN_AS_MEMBER = ("The member must be an active member of your organization who holds "
+                    "feature:studio and sees this install now. Name another member, or send "
+                    "null to clear it.")
+NO_RUN_AS_KEY = "Send run_as: the address of a member, or null to clear it."
+NO_RUN_AS_RIGHT = ("Only a holder of studio:publish names the member that an app runs as. "
+                   "Ask the owner of your organization for that right.")
+NO_INSTALL_FOR_RUN_AS = ("This app has no install at this scope, so nothing changed. Check "
+                         "the scope, then try again.")
+#: The refusal of a Keep or a Restore when the owner has no private install
+#: of the app (PKG-10d). It names the rule.
+PRIVATE_ONLY = "private_only"
+NO_PRIVATE_INSTALL = ("Keep and Restore act only on your own private install, and this app has "
+                      "none. An org or a group install has no end date, so it needs no Keep.")
+#: The 409 of a review move that the state of the version does not allow
+#: (J2b-1). The answer names the state that the store read.
+REVIEW_CONFLICT = "review_conflict"
+#: The one state that ``GET /approvals`` reads (J2b-1).
+PENDING = "pending"
+BAD_STATE = "state is pending, the one state that this list reads. Send it, or leave it out."
+BAD_PATH_VERSION = ("The version is a whole number from 1. Send a version that the versions "
+                    "list names.")
+NO_REVIEW_RIGHT = ("Only a holder of studio:publish reads the apps that wait for an approval. "
+                   "Ask the owner of your organization for that right.")
 
 
 def _not_found() -> HTTPException:
@@ -454,7 +650,10 @@ def _object_out(obj: objects_store.StudioObject) -> dict[str, Any]:
         "fields": [{
             "key": f.key, "type": f.type, "label": f.label, "required": f.required,
             "many": f.many, "options": None if f.options is None else list(f.options),
-            "to": f.to, "hot": f.hot, "lines": f.lines} for f in obj.fields],
+            "to": f.to, "hot": f.hot, "lines": f.lines,
+            "min": f.min, "max": f.max,
+            "units": None if f.units is None else list(f.units),
+            "format": f.format} for f in obj.fields],
         "rules": [r.stored() for r in obj.constraints],
         "created_at": obj.created_at, "updated_at": obj.updated_at,
     }
@@ -474,6 +673,8 @@ def _sync_out(result: objects_store.SyncResult) -> dict[str, Any]:
         "fields_added": [list(pair) for pair in result.fields_added],
         "hot_changed": [list(row) for row in result.hot_changed],
         "rules_set": list(result.rules_set),
+        # C8a: the objects whose grants changed.
+        "access_set": list(result.access_set),
     }
 
 
@@ -507,6 +708,8 @@ def _sync_audit(version: int, result: objects_store.SyncResult) -> dict[str, Any
         "fields": [f"{o}.{k}" for o, k in result.fields_added][:MAX_AUDIT_NAMES],
         "hot_changed": len(result.hot_changed),
         "rules": list(result.rules_set)[:MAX_AUDIT_NAMES],
+        # C8a: a change of who reads what is a change that the audit names.
+        "access": list(result.access_set)[:MAX_AUDIT_NAMES],
     }
 
 
@@ -615,14 +818,35 @@ async def create_from_template(
 
 
 @router.get("/packages")
-async def list_packages(user: UserContext = Depends(get_current_user)) -> dict[str, Any]:
+async def list_packages(
+    scope: str | None = Query(default=None, pattern="^org$"),
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
     """The packages of the caller in the bound org, newest change first. The
-    answer holds no manifest."""
+    answer holds no manifest. With ``scope=org`` a holder of the admin right
+    gets every package of the org with its owner, runs and last error, and
+    ``admin`` is true (J4). Any other caller gets the same list as without the
+    scope, and ``admin`` is false."""
     if not flags.studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     async with _tenant_session() as db:
+        if scope == "org" and admin_list.holds_admin_right(user):
+            rows, more = await admin_list.list_org_packages(db)
+            return {"packages": [admin_list.row_out(r, user.email) for r in rows],
+                    "admin": True, "truncated": more}
         found = await store.list_summaries(db, user.email)
-    return {"packages": [_summary_out(f) for f in found]}
+    out: dict[str, Any] = {"packages": [_summary_out(f) for f in found]}
+    if scope == "org":
+        out["admin"] = False
+    return out
+
+
+def _viewer_out(app: viewer.InstalledApp) -> dict[str, Any]:
+    """The app as a member who does not own it reads it (J2a): the installed
+    version and its manifest. It names no owner, no slug and no draft."""
+    return {"id": app.id, "name": app.name, "description": app.description,
+            "access": viewer.VIEWER, "version": app.version, "manifest": app.manifest,
+            "manifest_hash": manifest_hash(app.manifest)}
 
 
 @router.get("/packages/{package_id}")
@@ -630,14 +854,27 @@ async def get_package(
     package_id: str,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """One package of the caller, with its draft manifest and its object rows."""
+    """One package of the caller, with its draft manifest and its object rows.
+
+    J2a: a member who does not own the package reads the installed version
+    that the member sees (``package_host/viewer.py``), while
+    ``PACKAGE_HOST_ORGS`` holds the org. Else the answer is 404."""
     if not flags.studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     pid = _package_id(package_id)
     async with _tenant_session() as db:
         package = await store.get_package(db, user.email, pid)
         if package is None:
-            raise _not_found()
+            app: viewer.InstalledApp | None = None
+            if package_host_allowed(user.organization_id):
+                app = await viewer.installed_app(db, viewer=user.email, app_id=pid)
+            if app is None:
+                raise _not_found()
+            names = app.object_names
+            # The installed version only: its objects, and their fields and rules (fix round 1).
+            shown = [app.project(o) for o in await objects_store.list_objects(db, pid)
+                     if o.name in names]
+            return {"package": _viewer_out(app), "objects": [_object_out(o) for o in shown]}
         objects = await objects_store.list_objects(db, pid)
     return {"package": _package_out(package), "objects": [_object_out(o) for o in objects]}
 
@@ -823,9 +1060,41 @@ def _preview_out(found: store.DeletePreview) -> dict[str, Any]:
     }
 
 
-def _busy(exc: Exception) -> HTTPException:
-    return HTTPException(status_code=503, detail={"code": STORE_BUSY, "message": str(exc)},
-                         headers={"Retry-After": RETRY_AFTER})
+def _busy(exc: Exception, records_removed: int = 0) -> HTTPException:
+    """The 503 of a delete call. ``records_removed`` names the records that the
+    earlier steps of the call removed, so a caller that sums the calls of one
+    delete keeps a true total (A5c-2 fix round 1)."""
+    return HTTPException(status_code=503, detail={
+        "code": STORE_BUSY, "message": str(exc), "records_removed": records_removed},
+        headers={"Retry-After": RETRY_AFTER})
+
+
+def _owner_active(records_removed: int = 0) -> HTTPException:
+    """The 403 of the admin path for the package of an active owner (A5c-2)."""
+    return HTTPException(status_code=403, detail={
+        "code": OWNER_ACTIVE, "message": store.OWNER_ACTIVE_TEXT,
+        "records_removed": records_removed})
+
+
+async def _delete_mode(db: Any, user: UserContext, pid: str) -> bool:
+    """The path of a delete or its preview (A5c-2): False for the owner, True
+    for the admin path. The route decides it, and no body key or query does.
+
+    The owner read comes first, so an admin deletes their own package as its
+    owner. Then a caller without :data:`ADMIN_RIGHT` gets 404, with no other
+    read. Then ``store.admin_may_delete``: 404 when the bound org holds no
+    package with the id, and 403 ``owner_active`` when its owner is an
+    active member."""
+    if await store.get_package(db, user.email, pid) is not None:
+        return False
+    if not user.has_permission(ADMIN_RIGHT):
+        raise _not_found()
+    try:
+        if await store.admin_may_delete(db, pid):
+            return True
+    except store.OwnerActive:
+        raise _owner_active() from None
+    raise _not_found()
 
 
 @router.get("/packages/{package_id}/delete-preview")
@@ -834,13 +1103,18 @@ async def delete_preview(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """What a delete of a package of the caller removes, and the token
-    ``confirm`` that the DELETE must send. A read: it changes nothing."""
+    ``confirm`` that the DELETE must send. A read: it changes nothing. An
+    admin previews the package of an owner who left (A5c-2)."""
     if not flags.studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     pid = _package_id(package_id)
     async with _tenant_session() as db:
-        with _store_errors():
-            found = await store.delete_preview(db, user.email, pid)
+        as_admin = await _delete_mode(db, user, pid)
+        try:
+            with _store_errors():
+                found = await store.delete_preview(db, user.email, pid, as_admin=as_admin)
+        except store.OwnerActive:
+            raise _owner_active() from None
         if found is None:
             raise _not_found()
     return _preview_out(found)
@@ -857,12 +1131,14 @@ async def delete_package(
 
     Each step is its own transaction, and no lock stays between two steps.
     The first step checks the token under the locks. 200 when the package is
-    gone, 202 with what is left and a new token past the budget."""
+    gone, 202 with what is left and a new token past the budget. An admin
+    deletes the package of an owner who left (A5c-2)."""
     if not flags.studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     pid = _package_id(package_id)
     raw = await _raw_body(request, MAX_DELETE_BODY_BYTES)
-    await _require_owned(user.email, pid)
+    async with _tenant_session() as db:
+        as_admin = await _delete_mode(db, user, pid)
     token = _confirm(_parse_json(raw, empty_ok=True))
     end_at = objects_store._clock() + DELETE_BUDGET_SECONDS
     removed = 0
@@ -872,12 +1148,15 @@ async def delete_package(
             async with _tenant_session() as db:
                 step = await store.delete_package(
                     db, user.email, pid, confirm=token if names is None else None,
-                    names=names, removed=removed, end_at=end_at)
+                    names=names, removed=removed, end_at=end_at, as_admin=as_admin)
         except store.CountsChanged as exc:
             # Only the first step raises it, so the call removed nothing.
             raise HTTPException(status_code=409, detail={
                 "code": COUNTS_CHANGED, "message": str(exc), "records_removed": 0,
                 "preview": _preview_out(exc.preview)}) from None
+        except store.OwnerActive:
+            # Only the first step raises it, so the call removed nothing.
+            raise _owner_active() from None
         except objects_store.StoreBusy as exc:
             if names is None:
                 # The first step: the call removed nothing yet.
@@ -886,36 +1165,43 @@ async def delete_package(
             # ended its transaction. The earlier steps of the call hold, so a
             # new session writes their partial audit row.
             async with _tenant_session() as db:
-                await store.record_partial(db, user.email, pid, removed, "busy")
+                await store.record_partial(db, user.email, pid, removed, "busy",
+                                           as_admin=as_admin)
             _log.info("studio.packages.delete_partial", package_id=pid, records=removed,
-                      changed=False, busy=True)
-            raise _busy(exc) from None
+                      changed=False, busy=True, as_admin=as_admin)
+            raise _busy(exc, removed) from None
         if step is None:
             raise _not_found()
         removed += step.removed
         if step.deleted:
-            _log.info("studio.packages.deleted", package_id=pid, records=removed)
+            _log.info("studio.packages.deleted", package_id=pid, records=removed,
+                      as_admin=as_admin)
             return {"deleted": True, "package_id": pid, "records_removed": removed}
         names = step.names
-        if step.left is None and not step.busy and not step.gone:
+        if step.left is None and not step.busy and not step.gone and not step.owner_active:
             continue
         # The call ends with records left, or another call deleted the
         # package. The last step wrote the partial audit row.
         _log.info("studio.packages.delete_partial", package_id=pid, records=removed,
-                  changed=step.changed, busy=step.busy)
+                  changed=step.changed, busy=step.busy, as_admin=as_admin)
         if step.gone:
             raise _not_found()
+        if step.owner_active:
+            # A later step of the admin path: the owner is active again.
+            raise _owner_active(removed)
         if step.left is None:
-            raise _busy(objects_store.StoreBusy(objects_store._BUSY_MESSAGE))
+            raise _busy(objects_store.StoreBusy(objects_store._BUSY_MESSAGE), removed)
         if step.changed:
             raise HTTPException(status_code=409, detail={
                 "code": COUNTS_CHANGED,
                 "message": store.COUNTS_CHANGED_LATER_TEXT.format(removed=removed),
                 "records_removed": removed, "preview": _preview_out(step.left)})
         response.status_code = 202
+        # C4a-1: ``history_left`` says that change history is left, also when
+        # ``remaining`` is 0. The client sends the token again to go on.
         return {"deleted": False, "package_id": pid, "remaining": step.left.records,
                 "remaining_capped": step.left.capped, "records_removed": removed,
-                "confirm": step.left.confirm}
+                "confirm": step.left.confirm, "history_left": step.history_left}
 
 
 # ── The org and group install (WS-PKG PKG-8b) ──────────────────────────────
@@ -938,6 +1224,27 @@ def _refused(user: UserContext, exc: host_store.InstallError) -> HTTPException:
     return HTTPException(status_code=exc.status, detail=exc.detail_for(user.email or ""))
 
 
+@contextlib.contextmanager
+def _review_errors() -> Iterator[None]:
+    """The refusals of the review moves of J2b-1 as HTTP answers.
+
+    ``ApprovalRefused`` is 403 ``forbidden``. ``ApprovalConflict`` on a
+    version that nobody asked for (``auto``) is 404 ``Not found``, because a
+    409 there tells a holder that a private package exists (review P3). Each
+    other ``ApprovalConflict`` is 409 :data:`REVIEW_CONFLICT`, with the state
+    that the store read."""
+    try:
+        yield
+    except store.ApprovalRefused as exc:
+        raise _forbidden(str(exc)) from None
+    except store.ApprovalConflict as exc:
+        if exc.current == "auto":
+            raise _not_found() from None
+        raise HTTPException(status_code=409, detail={
+            "code": REVIEW_CONFLICT, "message": str(exc),
+            "review_status": exc.current}) from None
+
+
 def _approved(raw: object) -> int | None:
     """The version that the caller approves, or None when the body names
     none. Any other value than a whole number from 1 is 422. It says nothing
@@ -947,6 +1254,30 @@ def _approved(raw: object) -> int | None:
     if isinstance(raw, int) and not isinstance(raw, bool) and 1 <= raw <= store.MAX_VERSION:
         return raw
     raise _unprocessable(BAD_VERSION, [{"path": "$.version", "message": BAD_VERSION}])
+
+
+async def _org_gate(db: Any, user: UserContext, pid: str, target: store.InstallTarget,
+                    version: store.PackageVersion) -> dict[str, Any] | None:
+    """The gate of an org install (J2b-1, path A), in the session of the
+    install and after the row lock. None when the install may go on.
+
+    A paused package is 423 ``package_paused``, the code of the door of J3a,
+    even with an approval. A live version that is not ``approved`` makes the
+    call ask for the approval (``store.request_org_approval``), and the
+    answer is the 202 body: no install. A rejected live version is 409
+    ``review_conflict``."""
+    if target.paused:
+        raise HTTPException(status_code=PAUSED_STATUS, detail={
+            "code": PACKAGE_PAUSED, "message": PAUSED_TEXT})
+    if version.review_status == "approved":
+        return None
+    with _review_errors():
+        asked = await store.request_org_approval(db, user.email, pid, version.version)
+    if asked is None:
+        raise _not_found()
+    _log.info("studio.packages.install_asked", package_id=pid, version=asked.version)
+    return {"install": None, "created": False, "review_status": asked.review_status,
+            "version": asked.version}
 
 
 @router.post("/packages/{package_id}/install", status_code=201)
@@ -962,7 +1293,11 @@ async def install_package(
     The body is ``{"scope": "org"}`` or ``{"scope": "group:<slug>"}``, with an
     optional ``version``. Each scope needs ``studio:publish`` (D180.3), and a
     group must exist in the org. 201 for a new install, 200 when the call
-    moved the install at that scope to the live version."""
+    moved the install at that scope to the live version.
+
+    J2b-1 (path A): an org install needs the live version ``approved``. With
+    any other state the call asks for the approval and installs nothing: 202
+    ``review_status: pending``. A paused package is 423 ``package_paused``."""
     if not flags.studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     if not package_host_allowed(user.organization_id):
@@ -999,6 +1334,11 @@ async def install_package(
             version = await store.get_version(db, user.email, pid, target.live_version)
             if version is None or version.manifest is None:
                 raise _not_found()
+        if kind == "org":
+            asked = await _org_gate(db, user, pid, target, version)
+            if asked is not None:
+                response.status_code = 202
+                return asked
         try:
             kept, made = await studio_app.keep_scope_install(
                 db, app_id=pid, version=version.version, scope_kind=kind,
@@ -1015,3 +1355,452 @@ async def install_package(
     _log.info("studio.packages.installed", package_id=pid, scope_kind=kind,
               version=kept.version, created=made)
     return {"install": _install_out(kept), "created": made}
+
+
+# ── The org and group uninstall (WS-PKG PKG-8e) ────────────────────────────
+
+
+@router.delete("/packages/{package_id}/install")
+async def uninstall_package(
+    package_id: str,
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Remove the org install or one group install of a package of the
+    caller (``package_host.md`` §5.3, §5.5 and §6.1, PKG-8e).
+
+    The body is ``{"scope": "org"}`` or ``{"scope": "group:<slug>"}``. Each
+    scope needs ``studio:publish`` (D180.3), the right of the install. The
+    group need not exist any more, so an install of a deleted group can go.
+    The install row, its claims and its extension values go in one
+    transaction, with one audit row. 200 with the install that went."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not package_host_allowed(user.organization_id):
+        raise _not_found()
+    pid = _package_id(package_id)
+    raw = await _raw_body(request, MAX_INSTALL_BODY_BYTES)
+    await _require_owned(user.email, pid)
+    body = _parse_json(raw)
+    try:
+        kind, subject = studio_app.install_scope(body.get("scope"))
+    except host_store.InstallError as exc:
+        raise _refused(user, exc) from None
+    # D180.3: the right of the install is the right of the uninstall. Fail closed.
+    if not user.has_permission(SHARE_RIGHT):
+        raise _forbidden(NO_REMOVE_RIGHT)
+    async with _tenant_session() as db:
+        # No apps row lock: the DELETE, its cascades and the audit INSERT
+        # check no foreign key to apps, so the call never waits for a publish.
+        try:
+            gone = await studio_app.remove_scope_install(
+                db, app_id=pid, scope_kind=kind, scope_subject=subject)
+        except host_store.InstallError as exc:
+            raise _refused(user, exc) from None
+        # The audit row commits with the removal, or neither does.
+        await record_app_audit_in(
+            db, app_id=pid, user_email=user.email, kind="action", app_version=gone.version,
+            detail={"op": "package.uninstall", "scope_kind": kind, "scope": subject,
+                    "version": gone.version})
+    _log.info("studio.packages.uninstalled", package_id=pid, scope_kind=kind,
+              version=gone.version)
+    return {"install": _install_out(gone), "removed": True}
+
+
+# ── The member of a run with no viewer (WS-STU B6a) ─────────────────────────
+
+
+def _run_as_refused() -> HTTPException:
+    """The one refusal of a member that cannot run the install (B6a)."""
+    return HTTPException(status_code=422, detail={
+        "code": RUN_AS_REFUSED, "message": NO_RUN_AS_MEMBER})
+
+
+@router.put("/packages/{package_id}/install/run-as")
+async def set_install_run_as(
+    package_id: str,
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Name the member that a run with no viewer of the org or group install
+    of a package of the caller runs as, or clear it (``ai_studio.md`` B6a).
+
+    The body is ``{"scope": "org" or "group:<slug>", "run_as": <address> or
+    null}``. The caller needs ``studio:publish`` (D180.3). The member must
+    hold ``feature:studio``, be an active member of the org and see the
+    install now. 200 with the install and the new value."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not package_host_allowed(user.organization_id):
+        raise _not_found()
+    pid = _package_id(package_id)
+    raw = await _raw_body(request, MAX_INSTALL_BODY_BYTES)
+    await _require_owned(user.email, pid)
+    body = _parse_json(raw)
+    try:
+        kind, subject = studio_app.install_scope(body.get("scope"))
+    except host_store.InstallError as exc:
+        raise _refused(user, exc) from None
+    if "run_as" not in body:
+        raise _unprocessable(NO_RUN_AS_KEY, [{"path": "$.run_as", "message": NO_RUN_AS_KEY}])
+    try:
+        member = None if body["run_as"] is None else host_store.run_as_member(body["run_as"])
+    except host_store.InstallError as exc:
+        raise _refused(user, exc) from None
+    # D180.3: the right that installs the app names its member. Fail closed.
+    if not user.has_permission(SHARE_RIGHT):
+        raise _forbidden(NO_RUN_AS_RIGHT)
+    # Each read of the access opens its own session, so it runs before ours.
+    if member is not None and not await invoke.may_run_as(
+            member, str(user.organization_id or "")):
+        raise _run_as_refused()
+    async with _tenant_session() as db:
+        try:
+            found = await host_store.install_at_scope(
+                db, app_id=pid, scope_kind=kind, scope_subject=subject)
+            if found is None:
+                raise host_store.InstallNotFound("install_not_found", NO_INSTALL_FOR_RUN_AS)
+            if member is not None and await host_resolve.install_seen_by(
+                    db, viewer=member, install_id=found.id) is None:
+                raise _run_as_refused()
+            was = await host_store.set_run_as(
+                db, install_id=found.id, run_as=member, set_by=user.email or "")
+        except host_store.InstallError as exc:
+            raise _refused(user, exc) from None
+        # The audit row commits with the change, or neither does.
+        await record_app_audit_in(
+            db, app_id=pid, user_email=user.email, kind="action", app_version=found.version,
+            detail={"op": "package.run_as", "scope_kind": kind, "scope": subject,
+                    "install_id": found.id, "run_as": member, "was": was})
+    _log.info("studio.packages.run_as", package_id=pid, scope_kind=kind,
+              cleared=member is None)
+    return {"install": _install_out(found), "run_as": member}
+
+
+# ── The share with people (WS-STU J2b-2) ───────────────────────────────────
+
+#: The most bytes of the body of a share. It holds at most
+#: ``promotion.MAX_PEOPLE`` addresses of ``host_store.MAX_SUBJECT_BYTES``.
+MAX_SHARE_BODY_BYTES = 20 * 1024
+#: The 409 of a share whose person another member shares the app with. The
+#: store raises it as a ``ShareRefused`` (422), but the list is good: the
+#: state of the org refuses it, so the route answers 409.
+SHARE_TAKEN = "shared_by_another_owner"
+NO_SHARE_PEOPLE_RIGHT = ("Only a holder of studio:publish shares an app with other people. "
+                         "Ask the owner of your organization for that right.")
+NO_PRIVATE_SHARE = ("A share with people starts from your own private install, and this app "
+                    "has none. Publish the app first.")
+
+
+def _share_refused(user: UserContext, exc: host_store.InstallError) -> HTTPException:
+    """A refusal of the share store, as :func:`_refused` answers it, with one
+    change: ``shared_by_another_owner`` is 409 and not 422."""
+    status = 409 if exc.code == SHARE_TAKEN else exc.status
+    return HTTPException(status_code=status, detail=exc.detail_for(user.email or ""))
+
+
+@router.post("/packages/{package_id}/share")
+async def share_package(
+    package_id: str,
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Share the private install of a package of the caller with named
+    members of the org (``ai_studio.md`` §14 J2b-2, ``package_host.md`` §6.2).
+
+    The body is ``{"people": [address, ...]}``. The share needs
+    ``studio:publish`` (D180.3). The install stays private, and each person
+    reads the installed version as a viewer (J2a). 200 with the addresses."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not package_host_allowed(user.organization_id):
+        raise _not_found()
+    pid = _package_id(package_id)
+    # D180.3: the share verb gates each share to others. Fail closed, before a session.
+    if not user.has_permission(SHARE_RIGHT):
+        raise _forbidden(NO_SHARE_PEOPLE_RIGHT)
+    raw = await _raw_body(request, MAX_SHARE_BODY_BYTES)
+    async with _tenant_session() as db:
+        # The apps row FOR KEY SHARE first, then the org lock of the share:
+        # the lock order of a publish (``package_host.md`` §5.5).
+        install_id = await _owned_private_install(db, user, pid)
+        body = _parse_json(raw)
+        if install_id is None:
+            raise HTTPException(status_code=409, detail={
+                "code": PRIVATE_ONLY, "message": NO_PRIVATE_SHARE})
+        try:
+            people = await promotion.share_with_people(
+                db, install_id=install_id, emails=body.get("people"), sharer=user.email or "")
+        except host_store.InstallError as exc:
+            raise _share_refused(user, exc) from None
+        # The audit row commits with the share, or neither does. It holds
+        # the addresses and their count, and no manifest or record value.
+        await record_app_audit_in(
+            db, app_id=pid, user_email=user.email, kind="action",
+            detail={"op": "package.share", "install_id": install_id,
+                    "count": len(people), "people": list(people)})
+    _log.info("studio.packages.shared", package_id=pid, count=len(people))
+    return {"people": list(people)}
+
+
+# ── Keep and Restore of the private install (WS-PKG PKG-10d) ───────────────
+
+
+async def _owned_private_install(db: Any, user: UserContext, pid: str) -> str | None:
+    """The ONE owner rule of the private install (PKG-10d, PKG-10e-1). It
+    answers the id of the private install of the session member for the
+    package *pid*, in the session *db*, or None when the owner has none.
+
+    ``lock_for_install`` first holds the ``apps`` row ``FOR KEY SHARE``: the
+    lock order of §5.5, before the org lock of the install store. It answers
+    None for a package of another member or org, an App Workshop app and an
+    archived package, so each of them is 404 ``Not found``. Keep and Restore
+    call it through :func:`_own_private_install`. The lifetime read calls it
+    direct."""
+    with _store_errors():
+        target = await store.lock_for_install(db, user.email, pid)
+    if target is None:
+        raise _not_found()
+    return await host_store.private_install_id(db, app_id=pid, member=user.email or "")
+
+
+async def _own_private_install(db: Any, user: UserContext, pid: str) -> str:
+    """The id of the private install of the session member for the package
+    *pid*, through :func:`_owned_private_install`. An owner with no private
+    install gets 409 :data:`PRIVATE_ONLY`, because Keep and Restore have no
+    row to change."""
+    found = await _owned_private_install(db, user, pid)
+    if found is None:
+        raise HTTPException(status_code=409, detail={
+            "code": PRIVATE_ONLY, "message": NO_PRIVATE_INSTALL})
+    return found
+
+
+@router.post("/packages/{package_id}/keep")
+async def keep_package(
+    package_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Keep the private install of a package of the caller: its end date
+    becomes NULL (``package_host.md`` §6.2 step 2, PKG-10d).
+
+    The handler takes no body. A keep of an install with no end date changes
+    nothing and answers 200 with ``changed`` False."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not package_host_allowed(user.organization_id):
+        raise _not_found()
+    pid = _package_id(package_id)
+    async with _tenant_session() as db:
+        install_id = await _own_private_install(db, user, pid)
+        try:
+            changed = await host_store.keep_install(db, install_id=install_id)
+        except host_store.InstallError as exc:
+            raise _refused(user, exc) from None
+        if changed:
+            # The audit row commits with the keep, or neither does.
+            await record_app_audit_in(
+                db, app_id=pid, user_email=user.email, kind="action",
+                detail={"op": "package.keep", "install_id": install_id})
+    _log.info("studio.packages.kept", package_id=pid, changed=changed)
+    return {"install": {"id": install_id, "app_id": pid, "ends_at": None}, "changed": changed}
+
+
+@router.post("/packages/{package_id}/restore")
+async def restore_package(
+    package_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Restore the archived private install of a package of the caller
+    (``package_host.md`` §6.2, PKG-10d).
+
+    The restore must come before ``archived_at`` plus 30 days. The install
+    keeps its id, version, scope and claims, and ``ends_at`` becomes 30 days
+    after now (PKG-Q7). The time is the server clock, never request input
+    (R5). The handler takes no body."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not package_host_allowed(user.organization_id):
+        raise _not_found()
+    pid = _package_id(package_id)
+    async with _tenant_session() as db:
+        install_id = await _own_private_install(db, user, pid)
+        try:
+            ends_at = await host_store.restore_install(
+                db, install_id=install_id, now=datetime.now(UTC))
+        except host_store.InstallError as exc:
+            raise _refused(user, exc) from None
+        # The audit row commits with the restore, or neither does.
+        await record_app_audit_in(
+            db, app_id=pid, user_email=user.email, kind="action",
+            detail={"op": "package.restore", "install_id": install_id})
+    _log.info("studio.packages.restored", package_id=pid)
+    return {"install": {"id": install_id, "app_id": pid, "state": "active",
+                        "ends_at": ends_at}}
+
+
+def _iso(at: datetime | None) -> str | None:
+    return None if at is None else at.isoformat()
+
+
+@router.get("/packages/{package_id}/lifetime")
+async def package_lifetime(
+    package_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The lifetime of the private install of a package of the caller
+    (``package_host.md`` §6.2, PKG-10e-1). The end-date bar of PKG-10e-2
+    reads it.
+
+    The owner rule is the one of Keep and Restore. An owner with no private
+    install gets 200 ``{"install": null}``, so the page shows no bar.
+    ``restore_until`` is ``archived_at`` plus 30 days for an archived install.
+    ``now`` is the server clock, so the page counts days with no browser
+    clock. The handler takes no body and no query (R5). It is a read, so it
+    writes no audit row."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not package_host_allowed(user.organization_id):
+        raise _not_found()
+    pid = _package_id(package_id)
+    async with _tenant_session() as db:
+        install_id = await _owned_private_install(db, user, pid)
+        life = (None if install_id is None
+                else await host_store.read_lifetime(db, install_id=install_id))
+    if life is None:
+        return {"install": None}
+    restore_until = (life.archived_at + host_store.RESTORE_DAYS
+                     if life.state == "archived" and life.archived_at is not None else None)
+    return {"install": {"state": life.state, "ends_at": _iso(life.ends_at),
+                        "archived_at": _iso(life.archived_at),
+                        "restore_until": _iso(restore_until),
+                        "now": datetime.now(UTC).isoformat()}}
+
+
+# ── The approval for the org (WS-STU J2b-1) ────────────────────────────────
+
+
+def _path_version(raw: str) -> int:
+    """The version of the path: a whole number from 1. Each other value is
+    422, before any read. It says nothing about the package."""
+    if _DIGITS.fullmatch(raw) and 1 <= int(raw) <= store.MAX_VERSION:
+        return int(raw)
+    raise _unprocessable(BAD_PATH_VERSION, [{"path": "version", "message": BAD_PATH_VERSION}])
+
+
+def _review_out(found: store.PackageVersion) -> dict[str, Any]:
+    return {"package_id": found.package_id, "version": found.version,
+            "review_status": found.review_status}
+
+
+def _pending_out(found: store.PendingVersion) -> dict[str, Any]:
+    """One row of the approver's list, with the FULL manifest (J2b-1)."""
+    return {"package_id": found.package_id, "name": found.name,
+            "owner_email": found.owner_email, "version": found.version,
+            "published_by": found.published_by, "published_at": found.published_at,
+            "requested_by": found.requested_by, "requested_at": found.requested_at,
+            "manifest": found.manifest, "manifest_hash": manifest_hash(found.manifest)}
+
+
+@router.post("/packages/{package_id}/versions/{version}/approval", status_code=202)
+async def request_approval(
+    package_id: str,
+    version: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The owner asks for the approval of one version for the org (J2b-1).
+
+    ``auto`` moves to ``pending``, with one audit row in the store. A second
+    ask of a ``pending`` version writes nothing and answers the same 202. An
+    ``approved`` or a ``rejected`` version is 409 ``review_conflict``. Another
+    member, another org and a version that does not exist get 404. The
+    handler takes no body."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not package_host_allowed(user.organization_id):
+        raise _not_found()
+    pid = _package_id(package_id)
+    v = _path_version(version)
+    async with _tenant_session() as db:
+        with _store_errors(), _review_errors():
+            found = await store.request_org_approval(db, user.email, pid, v)
+        if found is None:
+            raise _not_found()
+    _log.info("studio.packages.approval_asked", package_id=pid, version=v)
+    return _review_out(found)
+
+
+@router.get("/approvals")
+async def list_approvals(
+    user: UserContext = Depends(get_current_user),
+    state: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """The versions of the bound org that wait for the approval for the org
+    (J2b-1), oldest first, each with its full manifest. Only a holder of
+    ``studio:publish`` reads it, and each other caller gets 403. ``truncated``
+    is True when more rows wait past the page. A read: no audit row."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not package_host_allowed(user.organization_id):
+        raise _not_found()
+    if state is not None and state != PENDING:
+        raise _unprocessable(BAD_STATE, [{"path": "state", "message": BAD_STATE}])
+    # D180.3: the holder of the share verb reads what waits for it. Fail closed.
+    can = user.has_permission(SHARE_RIGHT)
+    if not can:
+        raise _forbidden(NO_REVIEW_RIGHT)
+    async with _tenant_session() as db:
+        with _store_errors(), _review_errors():
+            rows, more = await store.list_pending_versions(db, can_publish=can)
+    return {"state": PENDING, "approvals": [_pending_out(r) for r in rows], "truncated": more}
+
+
+async def _decide(user: UserContext, package_id: str, version: str, move: str,
+                  can: bool) -> dict[str, Any]:
+    """One approve or reject of J2b-1. *can* is the check of the share verb
+    that the handler made. The store refuses each other value first."""
+    pid = _package_id(package_id)
+    v = _path_version(version)
+    decide = store.approve_version if move == "approve" else store.reject_version
+    async with _tenant_session() as db:
+        with _store_errors(), _review_errors():
+            found = await decide(db, user.email, pid, v, can_publish=can)
+        if found is None:
+            raise _not_found()
+    _log.info("studio.packages.reviewed", package_id=pid, version=v, move=move)
+    return _review_out(found)
+
+
+@router.post("/packages/{package_id}/versions/{version}/approval/approve")
+async def approve_approval(
+    package_id: str,
+    version: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """A holder of ``studio:publish`` approves one ``pending`` version for the
+    org (J2b-1). The publisher and the owner get 403 (PKG-Q10). A version
+    that nobody asked for, another org and an id that names nothing get 404.
+    A version that is not ``pending`` is 409 ``review_conflict``."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not package_host_allowed(user.organization_id):
+        raise _not_found()
+    return await _decide(user, package_id, version, "approve",
+                         user.has_permission(SHARE_RIGHT))
+
+
+@router.post("/packages/{package_id}/versions/{version}/approval/reject")
+async def reject_approval(
+    package_id: str,
+    version: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """A holder of ``studio:publish`` rejects one ``pending`` version for the
+    org (J2b-1). The publisher and the owner may reject too. The answers are
+    those of the approve."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not package_host_allowed(user.organization_id):
+        raise _not_found()
+    return await _decide(user, package_id, version, "reject",
+                         user.has_permission(SHARE_RIGHT))

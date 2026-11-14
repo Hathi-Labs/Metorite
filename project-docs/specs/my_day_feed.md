@@ -66,6 +66,10 @@ production. So the answer is the same as before, byte for byte.
 `MY_DAY_PROVIDERS` gates the sources `people` and `chat`, and the list is
 empty in production. So the answer is the same as before, byte for byte.
 
+**PK-1 is BUILT, 2026-11-09** (the task panel on My Day, §11.5, D213, task
+2469, no migration). It is dark behind `NEXT_PUBLIC_MY_DAY_PEEK`, default
+OFF. PK-2 (email) and PK-3 (reminders) are not built.
+
 The rest of this file is not built. The open AGENT-SAFE tickets are MD-4,
 MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
 Each ships dark.
@@ -383,6 +387,7 @@ sets the group. A ticket that adds a kind adds its row in the same PR.
 | `deal_close_passed` | Needs you |
 | `colleague_out` | For your information |
 | `agent_asks` | Needs you |
+| `agent_questions` | Needs you |
 | `digest_ready` | For your information (WS-53 CRM-Q28) |
 | `crm_open_questions` | Needs you while a money question is open, else For your information (WS-53 CRM-Q32, specified 2026-10-17) |
 
@@ -563,6 +568,7 @@ nothing (`navigation_shell.md` §4.5, "No second arithmetic").
 | `colleague_out` | A person I have a block with today is absent | Template | Open the day | None | MD-3, **only for a member who passes `can_read_hr_fields`** (`routes/tasks/core.py:75`). The provider calls the People app's own gated read. A plain member gets no row, and a negative test proves it. BUILT in MD-3f, source `people` (§5.9 item 14) |
 | `agent_done` | A chat run that I started finished while I was away | Template from the run | Open chat | None | MD-3. It reads WS-51's run state |
 | `agent_asks` | A run waits for my answer (`chat_pending_ask`) | Template | Open chat | None | MD-3. Feed only, until a §7.2 amendment. BUILT in MD-3f, source `chat` (§5.9 item 14) |
+| `agent_questions` | An agent question waits on me: I created the task, I am an assignee, or my agent asked (`GET /projects/agent-questions?scope=mine`) | Template: the project path, the oldest question, its options and how many more wait | Answer (opens the list in Projects) | None | WS-55 EA-18c. One card, source `agent_questions`, dark behind `AGENT_QUESTIONS_ORGS`. BUILT 2026-11-11, not merged (task 1808). Dark behind `AGENT_QUESTIONS_ORGS` and `MY_DAY_PROVIDERS`. A member with no open question sees no card |
 | `whatsapp_waiting` | A WhatsApp thread waits for me | Template | Open thread | None | MD-9 |
 
 ### 5.7 The cards about the day itself
@@ -742,6 +748,7 @@ needs kind still starts above it.
 | `notification` | 48 |
 | `needs_reply` | 44 |
 | `agent_asks` | 43 |
+| `agent_questions` | 43 (WS-55 EA-18c, ties with `decision`) |
 | `promise_due` | 42 |
 | `crm_followup_due` | 41 |
 | `block_overlap` | 40 |
@@ -779,6 +786,7 @@ These rows join the table of §4.3 and `feed_rank.group`.
 | `deal_close_passed` | Needs you |
 | `colleague_out` | For your information |
 | `agent_asks` | Needs you |
+| `agent_questions` | Needs you |
 | `digest_ready` | For your information (WS-53 CRM-Q28) |
 | `crm_open_questions` | Needs you while a money question is open, else For your information (WS-53 CRM-Q32, specified 2026-10-17) |
 
@@ -803,6 +811,7 @@ note is a change of the task. The fence covers every kind of `BASE`
 | `deal_quiet` | `waiting_since`, set to `status_changed_at` |
 | `deal_close_passed` | `due_at`, the close date at 00:00 in the zone of the member |
 | `agent_asks` | `waiting_since`, the newest `asked_at` on the thread |
+| `agent_questions` | `waiting_since`, the NEWEST `asked_at` of the whole "mine" list, so a new question brings a dismissed card back |
 | `colleague_out` | None. The id is the day, so a dismiss holds for that day |
 | `digest_ready` | None. The id is the week, so a dismiss holds for that week (WS-53 CRM-Q28) |
 | `crm_open_questions` | None. The id is the UTC date of `new_at`, so a dismiss holds for that day (WS-53 CRM-Q32) |
@@ -838,6 +847,7 @@ Two names are not allowed:
 | `deal_close_passed` | Close date passed |
 | `colleague_out` | Colleague away |
 | `agent_asks` | Waiting for your answer |
+| `agent_questions` | Waiting for your answer |
 
 #### 7. The budget, and the rule for the flip
 
@@ -993,6 +1003,7 @@ slice gives these facts and no others:
 | `deal_close_passed` | `due_at` |
 | `colleague_out` | `out`, a list of names, and `task`, a title |
 | `agent_asks` | `waiting_since` |
+| `agent_questions` | `waiting_since` |
 
 ⚠️ **No task kind of MD-3c carries a state fact, also not `due_at`.** A
 notification card has no `due_at`. A task kind that carried one would change
@@ -2150,6 +2161,83 @@ test above runs in code after the answer.
 - Each line of §11.2 turns a fixture act into `open`.
 - An act never calls a route that its owning app does not own.
 - A `decide` answer never turns an `open` act into another way.
+
+### 11.5 The panel — a task opens on My Day (PK-1, D213)
+
+**Decided by the owner, 2026-11-09 (D213).** The owner wrote that a task
+card "opens up the projects app itself". Then the owner must go "back to My
+Day to look at the rest of my day". So the context of a row now opens on My
+Day. This amends D101 point 2 for each link to a task. The act test of §11.2
+does not change.
+
+**Built: PK-1, 2026-11-09** (task 2469), dark behind
+`NEXT_PUBLIC_MY_DAY_PEEK`, default OFF. PK-2 (email, task 2470) and PK-3
+(reminders, task 2471) add their kinds later.
+
+**What opens in place.** A plain click on a link to a task opens the panel,
+and the path stays `/`. A task link is `/projects?task=<id>`,
+`/tasks?task=<id>` or `/tasks?item=<id>`, with no other key.
+
+- This holds for a row's title and for an act that is a link, for example
+  "Move to tomorrow" (`needs.py`, `task_href`). An act with its own button,
+  such as Done or a snooze, still runs in place.
+- It holds in each card of My Day: the feed, the Do first band, Needs you,
+  Next actions and the brief. A link with any other key still opens its app.
+- A `#123` pill in the panel's title, description or comments opens that
+  task in the panel too.
+- The rows of "AI waiting on you" are chat threads (`chatLink()`). They open
+  the assistant on My Day already, so they are not rows of the panel. An
+  agent's question about a task comes as a task row, and that row opens the
+  panel.
+
+**What the panel is.**
+
+- It draws the shared task card of Projects (`TaskPanel` and `TaskBody`),
+  and never a second task view. `useTaskById` is the one loader of a card
+  that starts from an id, and My Tasks reads through it too.
+- Its frame is the record card (`CardPanel`, D181, `one_record_card.md`
+  §3.1). The card docks at the right of My Day while the page keeps 36 rem
+  beside it. A narrower page gets the same card over the page. On a phone it
+  fills the screen above the phone bar. The member's stored stop and the
+  expand toggle are the ones of Projects.
+- While the card docks beside the page, My Day draws its cards in one
+  column. Over the page, the page keeps its grid.
+- A tap on a phone bar tab closes it. The Ask tab keeps it, because the
+  assistant opens above a task card (D172.4).
+- ✕, Escape and the browser's Back close it. The URL holds it as
+  `?peek=task:<id>`, so a reload opens it again. On open the keyboard goes
+  into the card. On close it goes back to the row.
+- The open row wears the selected tint of the house, and its link carries
+  `aria-current`.
+- After a close, My Day reads its rows again when the panel changed the
+  task. So the row shows the new status or the new comment. The reads drop
+  their cache keys, so a read that was in flight cannot answer.
+
+**What still opens the app.** D101 point 3 stays: the member can always open
+the app. The panel's header has "Open in Projects". Ctrl-click, Cmd-click and
+a middle click on a row open Projects in a new tab.
+
+**Known limits.**
+
+- A tap on a phone bar tab closes the card in place, with no step back. So
+  the history keeps the entries of the card, and Back can open it again.
+- A reload of an address with `?peek=` at a wide window draws three grid
+  columns first. When the card docks, the grid changes to one column.
+- Escape works from the card and from the page. With the focus on the shell
+  around the page, Escape is the shell's (`cardEscape`).
+- The feed cache of the gateway (`MY_DAY_CACHE`) moves on each `pm.*`
+  event. A re-read that arrives before that event can show the old row
+  until the next read.
+
+**The seam.** `lib/shell/myDayPeek.ts` holds the rules, as a registry of
+kinds. A later kind adds one row there and one branch in
+`MyDayPeekPanel.tsx`. `useMyDayPeek.tsx` binds the rules to the page.
+
+**Fences.** `src/lib/shell/myDayPeek.test.ts` holds the link rule, the click
+rule, the URL, the flag and the seams. `src/components/CardPanel.test.ts`
+holds the page minimum. `src/app/projects/lib/useTaskById.test.ts` holds the
+loader. `e2e/myday-peek.spec.ts` holds the open, the close, the pill, the
+stop at 1024 and the phone sheet in a browser.
 
 ---
 

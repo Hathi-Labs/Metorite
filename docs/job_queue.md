@@ -576,18 +576,35 @@ goal, with no person present. `proactive_agent.md` §4.4 holds the design.
 - **The time limit.** A turn has 120 seconds, and 180 seconds at most. The
   clock starts in `run()`, before `unattended.recover`. That bound and a
   settle margin of 60 seconds stay at or below `HANDLER_TIMEOUT`. The meter
-  and the record of a round each get a third of the margin.
+  and the record of a round each get a share of the margin, and the share
+  grows with the time left before the deadline (`_share`).
   `test_the_caps_are_bounded` fences the order.
-- **No cost reader, no call.** The default meter raises before the first
-  call. The job then gives up with `NoCostReader`, and
-  `headless_turn.no_cost_reader` logs at error.
+- **The mark of a call (AUTO-8b-2a).** Before each call, the turn writes a
+  mark on the goal (`goal_records.job_id`). The record of the round clears
+  the mark in the same write. A mark that stays means a lost round: the next
+  turn of that goal charges the rest of the budget, blocks with `cap_reached`
+  and makes no call. A mark that cannot be written makes no call, and the job
+  gives up with `MarkFailed`.
+- **The meter (AUTO-8b-2d).** The default meter reads the spend of the run
+  of a round at the Console door `POST /registry/usage/run`. A door error
+  before the first call makes no call: the job gives up with
+  `CostReadFailed`, and `headless_turn.cost_read_failed` logs at error. A
+  meter that does not answer in time gives up with `NoCostReader`. A door
+  error after a call charges the rest of the budget. A round that the time
+  cap cut, or whose call raised, reads no meter and charges the rest too,
+  because the Console can write the row of that call after a read.
 
 | Event | Level | When |
 |---|---|---|
 | `headless_turn.skipped` | info | The job made no model call: the switch is off, the goal takes no round, the member left, or no candidate exists. The line names the reason |
 | `headless_turn.ended` | info | A turn ended, with its outcome and its count of rounds |
 | `headless_turn.cap_reached` | info | A round moved the goal to its cap. One line for each goal |
-| `headless_turn.no_cost_reader` | error | No meter can read the cost of a run, so the turn made no model call |
+| `headless_turn.no_cost_reader` | error | The meter did not answer in time, or answered no number, before the first call. So the turn made no model call |
+| `headless_turn.cost_read_failed` | error | The Console spend door failed before the first call: no proven member, no wiring, no answer, a refusal or a bad answer. The line names the code and `status_class` (`4xx`, `5xx` or `none`), never the body. The turn made no model call, and the job gives up with `CostReadFailed` |
+| `headless_turn.round_cut` | warning | The time cap cut the call of a round (`TimeCap`), or the call raised. The round read no meter and counts as the rest of the budget |
 | `headless_turn.cost_unknown` | error | The meter failed or timed out (`MeterTimeout`) after a call, so the round counts as the rest of the budget |
 | `headless_turn.round_unrecorded` | warning | The turn did not record a round, because the goal changed twice or is not active now |
-| `headless_turn.round_unrecorded` | error | The record of a round timed out (`RecordTimeout`). The cost of that round does not reach the goal, and the job gives up with `TurnFailed` |
+| `headless_turn.round_unrecorded` | error | The record of a round timed out (`RecordTimeout`). The cost of that round does not reach the goal, and the job gives up with `TurnFailed`. The mark stays on the goal, so the next turn blocks |
+| `headless_turn.lost_round` | error | A goal holds a mark from a turn that died. The turn charges the rest of the budget and blocks the goal. The job can give up with `LostRound` |
+| `headless_turn.mark_failed` | error | The mark could not be written, so the turn made no model call. The job gives up with `MarkFailed` |
+| `headless_turn.meter_failed` | error | The meter failed after an earlier call in the same turn. The job gives up with `MeterFailed` |

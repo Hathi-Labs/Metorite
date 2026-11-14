@@ -14,17 +14,61 @@ this module too. The disposal of §5.3 (PKG-9) holds the moves of ``state``
 and the delete of an install: :func:`remove_install`, :func:`pause_install`
 and :func:`resume_install`. :func:`set_version` (PKG-8a) holds the UPDATE of
 ``version`` and the DELETE of the claims of one install. The lifetime of
-§6.2 (PKG-10a) holds the other UPDATE statements: :func:`keep_install`,
-:func:`restore_install` and :func:`expire_due`. The hermetic suite scans
-``apps/`` and ``packages/`` for a write outside this module. The member
-purge deletes rows, and that stays legal.
+§6.2 (PKG-10a) holds the other UPDATE statements of the lifetime:
+:func:`keep_install`, :func:`restore_install` and :func:`expire_due`. The
+promotion of §6.2 (PKG-11a) holds the UPDATE of the scope:
+:func:`promote_to_group`. :func:`set_run_as` (WS-STU B6a) holds the UPDATE of the three ``run_as``
+columns. The hermetic suite scans ``apps/`` and
+``packages/`` for a write outside this module. The member purge deletes rows,
+and that stays legal.
+
+**The promotion.** :func:`promote_to_group` takes the org lock, then reads
+the install with the row lock (:func:`locked_install`). It moves only a
+private install that is active, not a draft, and kept (``ends_at`` null).
+The owner and each person who holds a share must be active members of the
+group (PKG-Q9). A grantee who is not active does not count. The claims of
+§4 are checked again for the group scope. One UPDATE changes the scope and
+keeps the id, the version, ``installed_by``, ``created_at`` and the claim
+rows. ``promotion.share_with_people`` takes the same locks, so a share cannot
+race the group check.
+
+**The promotion deletes the share rows.** In the same transaction, the
+promotion deletes each row of ``app_grants`` that ``sharing.SHARE_ROW``
+counts for the install (:data:`_UNSHARE_SQL`). Without it, a new private
+install of the app by the owner shows to each old grantee, because the share
+key is the app and the person. The DELETE never touches a consent row or a
+row of another sharer, because test 3 of ``SHARE_ROW`` refuses both. The
+DELETE is in this module, and not in ``promotion.py``, on purpose. A thin
+wrapper in ``promotion.py`` would leave this function able to promote with
+no DELETE. Here one function holds the org lock, the checks and both writes.
+``promotion.py`` keeps the only INSERT of ``app_grants`` for a Studio
+package. ``routes/apps/grants.py`` also inserts, for App Workshop apps
+(fence: ``tests/unit/test_package_promotion.py``).
+
+**A removal deletes the share rows too.** :func:`remove_install` runs the
+same DELETE (:data:`_UNSHARE_SQL`) for a private install, under the same org
+lock and in the same transaction, before the DELETE of the install. So no
+exit of a private install leaves a share row behind. One SQL constant serves
+both functions.
+
+**The member of a run with no viewer (WS-STU B6a, ``ai_studio.md`` B6a).**
+:func:`set_run_as` writes ``run_as``, ``run_as_set_by`` and
+``run_as_set_at`` of one install under the org lock, and answers the old
+``run_as``. :func:`read_run_as` reads them with no lock. NULL means no run
+with no viewer. :func:`run_as_member` is the one shape check of the address:
+a lower-case address, with no ``system:`` or ``group:`` prefix, as the CHECK
+``package_install_run_as_member`` holds. The store does not check that the
+member may run the app. The route ``PUT /studio/packages/{id}/install/run-as``
+and ``routes/studio/invoke.run_as_read`` own that check.
 
 **The disposal.** Each of the three takes the org lock of :func:`install`
 and its two guards, and finds the install in the bound org only. An id of
 another org is :class:`InstallNotFound`, as a missing id is. A pause keeps
 the claims and their keys. A move from ``archived`` is
 :class:`StateRefused`. The routes of PKG-8, PKG-12 and J3 decide who may
-call each one.
+call each one. The first caller of :func:`remove_install` is the uninstall
+route of PKG-8e. It finds the install with :func:`install_at_scope`, which
+takes the org lock first.
 
 **The lifetime (§6.2, PKG-10a).** The four lifetime functions take the same
 org lock and the same guards. :func:`keep_install` clears ``ends_at``.
@@ -32,7 +76,10 @@ org lock and the same guards. :func:`keep_install` clears ``ends_at``.
 days after ``archived_at``. :func:`expire_due` archives each due install,
 then deletes each install that was archived 30 days before. A paused
 install never expires (PKG-Q8). :func:`notice_times` gives the times of the
-two bell notes and sends nothing. No route, loop or flag calls them yet.
+two bell notes and sends nothing. The Keep and Restore routes of PKG-10d
+(``routes/studio/packages.py``) call the first two on the private install
+of the owner, which :func:`private_install_id` finds. The loop of PKG-10b
+calls :func:`expire_due`.
 
 **Tenancy (R5).** :func:`install` takes a session that the caller opened with
 ``tenant_session(org)``. It opens no session and commits nothing. No function
@@ -159,6 +206,7 @@ from acb_common.db import TenantUnbound
 from acb_common.studio_manifest import CONTRIBUTION_POINTS
 from sqlalchemy import text
 
+from gateway.package_host.sharing import SHARE_ROW
 from gateway.routes.projects.core import _MY_GROUPS_SQL, org_groups
 from gateway.studio.packages_store import first_bad_value
 
@@ -289,6 +337,66 @@ _STATE_SQL = (
 _SET_STATE_SQL = (
     "UPDATE package_install SET state = :to, updated_at = now() "
     f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid) AND state = :was"
+)
+
+#: One install of the bound org, with the row lock (PKG-11a). The promotion,
+#: ``promotion.share_with_people`` and the removal read it after the org lock.
+_INSTALL_FOR_UPDATE_SQL = (
+    "SELECT CAST(app_id AS text), version, scope_kind, scope_subject, installed_by, "
+    "ends_at, state FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid) FOR UPDATE"
+)
+
+#: The claims of one install of the bound org, in a fixed order.
+_CLAIMS_OF_SQL = (
+    "SELECT point, key, payload, position FROM package_contribution "
+    f"WHERE organization_id = {_BOUND_ORG} AND install_id = CAST(:install AS uuid) "
+    "ORDER BY point, key"
+)
+
+#: A row when the active member ``:by`` is in the group ``:subject``.
+_MEMBER_IN_GROUP_SQL = f"SELECT 1 WHERE :subject IN ({_groups_of(':by')})"
+
+#: The first share of the private install ``:install`` (the three tests of
+#: ``sharing.SHARE_ROW``) whose grantee is an ACTIVE member of the org and
+#: not a member of the group ``:subject``. The rule of PKG-Q9: nobody loses
+#: the app in silence. A grantee who is suspended or removed does not block,
+#: because the promotion deletes the share row (:data:`_UNSHARE_SQL`) and 11a
+#: has no route to remove a share.
+#: The grantees go through a CTE, because the group query names its own
+#: ``g`` (``org_group``), which would hide the ``g`` of ``SHARE_ROW``.
+_GRANTEE_OUTSIDE_SQL = (
+    "WITH shared AS (SELECT lower(g.subject) AS who"
+    " FROM package_install JOIN app_grants AS g"
+    f" ON g.organization_id = {_BOUND_ORG} AND {SHARE_ROW}"
+    " JOIN app_user AS u"
+    f" ON u.organization_id = {_BOUND_ORG} AND lower(u.email) = lower(g.subject)"
+    " AND u.status = 'active'"
+    f" WHERE package_install.organization_id = {_BOUND_ORG}"
+    " AND package_install.id = CAST(:install AS uuid))"
+    f" SELECT 1 FROM shared WHERE :subject NOT IN ({_groups_of('shared.who')}) LIMIT 1"
+)
+
+#: The promotion of one private install of the bound org to a group. It
+#: keeps the id, the version, ``installed_by``, ``created_at`` and the
+#: claims. The guards repeat what the read under the locks found.
+_PROMOTE_SQL = (
+    "UPDATE package_install SET scope_kind = 'group', scope_subject = :subject, "
+    "updated_at = now() "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid) "
+    "AND scope_kind = 'private' AND state = 'active' AND version IS NOT NULL "
+    "AND ends_at IS NULL"
+)
+
+#: The share rows of one install of the bound org: exactly the rows that the
+#: three tests of ``sharing.SHARE_ROW`` count. A consent row and a row of
+#: another sharer fail test 3, so they stay. The promotion and the removal of
+#: a private install run it.
+_UNSHARE_SQL = (
+    "DELETE FROM app_grants AS g USING package_install "
+    f"WHERE g.organization_id = {_BOUND_ORG} "
+    f"AND package_install.organization_id = {_BOUND_ORG} "
+    f"AND package_install.id = CAST(:install AS uuid) AND {SHARE_ROW}"
 )
 
 # ── The lifetime SQL (§6.2, PKG-10a) ────────────────────────────────────────
@@ -422,6 +530,27 @@ class StateRefused(InstallError):
     """
 
     status = 409
+
+
+class PromotionRefused(InstallError):
+    """A promotion or a share that §6.2 does not allow (409, PKG-11a).
+
+    The codes: ``not_private``, ``not_active``, ``draft``, ``not_kept``,
+    ``owner_not_in_group`` and ``grantee_outside_group``. No message names
+    the address of a grantee.
+    """
+
+    status = 409
+
+
+class NotTheOwner(InstallError):
+    """The actor is not the owner of the install (403). Nothing is written.
+
+    The promotion and ``promotion.share_with_people`` raise it with the code
+    ``not_owner``.
+    """
+
+    status = 403
 
 
 @dataclass(frozen=True)
@@ -830,12 +959,84 @@ async def remove_install(db: Any, *, install_id: str) -> bool:
     nothing. The store does not check that the member may remove the install.
     The routes own that check.
     Answers True.
+
+    **The share rows go too (PKG-11a).** The removal takes the org lock and
+    reads the install with the row lock (:func:`locked_install`). For a
+    private install, it then deletes the share rows of the install
+    (:data:`_UNSHARE_SQL`), before the DELETE of the install, because the
+    DELETE of the share rows joins the install row. Without it, a new private
+    install of the app by the owner shows to each old grantee, and the old
+    rows block the share of another owner. A consent row and a row of another
+    sharer stay. An org or a group install has no share rows, so the removal
+    deletes no row of ``app_grants`` for it. The PKG-10 expiry job calls this
+    function, so an expired install loses its share rows in the same way.
+
+    The member purge (``routes/admin/members.py``) does not call this
+    function. It deletes the rows of ``app_grants`` whose subject is the
+    member, and a private install of the member only when
+    ``sharing.OTHERS_SEE_THE_INSTALL`` is false. So this DELETE does not
+    change a count of the purge.
+
+    ⚠️ The store keeps no copy of what goes. A caller that must keep the
+    claims or the extension values (a snapshot, MKT-7) reads them in the
+    same transaction BEFORE this call. This function does not call
+    ``field_values.delete_values``. That function deletes the values of one
+    host record, and the cascade deletes the values of one install.
     """
     install = _install_id(install_id)
-    await _lock_org(db, "a removal")
+    row = await locked_install(db, install, "a removal")
+    if row[2] == "private":
+        await db.execute(text(_UNSHARE_SQL), {"install": install})
     if (await db.execute(text(_DELETE_INSTALL_SQL), {"install": install})).first() is None:
         raise InstallNotFound("install_not_found", "No install has this id.")
     return True
+
+
+#: The install of one app at one scope in the bound org (PKG-8e). The caller
+#: holds the org lock, so the row stays until the removal that follows.
+_INSTALL_ROW_AT_SCOPE_SQL = (
+    "SELECT CAST(id AS text), version, installed_by, ends_at FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = CAST(:app AS uuid) "
+    "AND scope_kind = :kind AND scope_subject = :subject"
+)
+
+
+async def install_at_scope(
+    db: Any, *, app_id: str, scope_kind: str, scope_subject: str,
+) -> Install | None:
+    """The install of *app_id* at one scope of the bound org, or None.
+
+    *db* is a session that the caller opened with ``tenant_session(org)``.
+    The read takes the org lock of :func:`install` first. So the install
+    that it finds stays until the caller's transaction ends, and a
+    :func:`remove_install` in the same transaction deletes that row. The
+    lock is reentrant in one transaction. The answer holds no claims. The
+    uninstall route of PKG-8e calls this, and the route decides who may
+    call it. A bad scope raises :class:`ScopeRefused` before the first
+    statement.
+    """
+    app = _app_id(app_id)
+    if not _plain(scope_subject, limit=MAX_SUBJECT_BYTES):
+        raise ScopeRefused("bad_scope", "The scope must be org, group:<slug> or an address.")
+    try:
+        subject = normalize_grant_subject(str(scope_subject))
+    except ValueError as exc:
+        raise ScopeRefused(
+            "bad_scope", "The scope must be org, group:<slug> or an address.") from exc
+    kind = _kind_of(subject)
+    if scope_kind != kind:
+        raise ScopeRefused(
+            "scope_kind_mismatch",
+            f"The scope {subject!r} is a {kind} scope. Ask for the {kind} kind.")
+    await _lock_org(db, "a removal")
+    row = (await db.execute(text(_INSTALL_ROW_AT_SCOPE_SQL), {
+        "app": app, "kind": kind, "subject": subject})).first()
+    if row is None:
+        return None
+    return Install(
+        id=str(row[0]), app_id=app, version=None if row[1] is None else int(row[1]),
+        scope_kind=kind, scope_subject=subject, installed_by=str(row[2]), ends_at=row[3],
+        contributions=())
 
 
 async def _move_state(db: Any, install: str, was: str, to: str, act: str) -> bool:
@@ -876,6 +1077,115 @@ async def resume_install(db: Any, *, install_id: str) -> bool:
     and writes nothing. Answers True when the state changed.
     """
     return await _move_state(db, _install_id(install_id), "paused", "active", "a resume")
+
+
+# ── The promotion (§6.2, PKG-11a) ───────────────────────────────────────────
+
+
+def _group(group: object) -> str:
+    """The NORMALISED ``group:<slug>`` subject, or :class:`ScopeRefused`."""
+    refused = ScopeRefused("not_a_group", "A promotion needs a group:<slug> scope.")
+    if not _plain(group, limit=MAX_SUBJECT_BYTES):
+        raise refused
+    try:
+        subject = normalize_grant_subject(str(group))
+    except ValueError as exc:
+        raise refused from exc
+    if _kind_of(subject) != "group":
+        raise refused
+    return subject
+
+
+async def locked_install(db: Any, install: str, act: str) -> tuple[Any, ...]:
+    """Take the org lock, then read the install *install* with the row lock.
+
+    The promotion, ``promotion.share_with_people`` and :func:`remove_install`
+    call it, so a share, a promotion and a removal of one org run one at a
+    time. An id that no
+    install of the bound org has raises :class:`InstallNotFound`. Answers
+    the row of :data:`_INSTALL_FOR_UPDATE_SQL`.
+    """
+    await _lock_org(db, act)
+    row = (await db.execute(text(_INSTALL_FOR_UPDATE_SQL), {"install": install})).first()
+    if row is None:
+        raise InstallNotFound("install_not_found", "No install has this id.")
+    return tuple(row)
+
+
+def refuse_unless_kept_private(row: Sequence[Any], *, allow_draft: bool) -> None:
+    """Refuse an install that is not private, not active or not kept.
+
+    *row* is a row of :data:`_INSTALL_FOR_UPDATE_SQL`. A draft is refused
+    too, unless *allow_draft*. Each refusal is a :class:`PromotionRefused`
+    with its own code (PKG-Q12: keep comes first).
+    """
+    _app, version, kind, _subject, _by, ends_at, state = row
+    if kind != "private":
+        raise PromotionRefused("not_private", "Only a private install can move or be shared.")
+    if state != "active":
+        raise PromotionRefused("not_active", f"An install that is {state} cannot move or be shared.")
+    if version is None and not allow_draft:
+        raise PromotionRefused("draft", "A draft runs for its owner only, so it cannot move.")
+    if ends_at is not None:
+        raise PromotionRefused("not_kept", "Keep the install first. It still has an end date.")
+
+
+async def promote_to_group(db: Any, *, install_id: str, group: str, actor: str) -> Install:
+    """Move the private install *install_id* of the bound org to *group*.
+
+    *db* is a session that the caller opened with ``tenant_session(org)``.
+    *actor* is the address of the session member, from the authenticated
+    ``UserContext`` (contract R11). The install keeps its id, its version,
+    ``installed_by``, ``created_at`` and each claim row. Only the scope and
+    ``updated_at`` change (§6.2). In the same transaction, the promotion
+    deletes the share rows of the install (:data:`_UNSHARE_SQL`). Each
+    refusal writes nothing:
+
+    * an id of no install of the bound org: :class:`InstallNotFound`;
+    * an actor who is not the owner of the install: :class:`NotTheOwner`;
+    * an install that is not private, not active, a draft, or not kept:
+      :class:`PromotionRefused`;
+    * an owner who is not an active member of the group, or a share with an
+      active member of the org who is not one: :class:`PromotionRefused`
+      (PKG-Q9);
+    * an install of the app at the group already: :class:`AlreadyInstalled`;
+    * a claim that overlaps a claim of another app at the group scope (§4):
+      :class:`ClaimTaken`.
+
+    The store does not check rights. The route of PKG-11b or J2 checks
+    ``studio:publish``. The store never writes ``apps``.
+    """
+    install = _install_id(install_id)
+    subject = _group(group)
+    who = _member(actor)
+    row = await locked_install(db, install, "a promotion")
+    if str(row[4]) != who:
+        raise NotTheOwner("not_owner", "Only the owner of the install can promote it.")
+    refuse_unless_kept_private(row, allow_draft=False)
+    app, version, by, ends_at = str(row[0]), row[1], str(row[4]), row[5]
+    if (await db.execute(text(_MEMBER_IN_GROUP_SQL), {
+            "subject": subject, "by": by})).first() is None:
+        raise PromotionRefused(
+            "owner_not_in_group", "The owner must be an active member of the group.")
+    if (await db.execute(text(_GRANTEE_OUTSIDE_SQL), {
+            "subject": subject, "install": install})).first() is not None:
+        raise PromotionRefused(
+            "grantee_outside_group",
+            "A person who holds a share is not a member of the group.")
+    if (await db.execute(text(_SCOPE_TAKEN_SQL), {
+            "app": app, "kind": "group", "subject": subject})).first() is not None:
+        raise AlreadyInstalled("already_installed", "The app has an install at this scope.")
+    claims = tuple(
+        Contribution(point=str(r[0]), key=str(r[1]), payload=dict(r[2] or {}),
+                     position=int(r[3]))
+        for r in (await db.execute(text(_CLAIMS_OF_SQL), {"install": install})).all())
+    _check_system(claims)
+    await _check_held(db, "group", subject, app, claims)
+    await db.execute(text(_PROMOTE_SQL), {"install": install, "subject": subject})
+    await db.execute(text(_UNSHARE_SQL), {"install": install})
+    return Install(
+        id=install, app_id=app, version=version, scope_kind="group", scope_subject=subject,
+        installed_by=by, ends_at=ends_at, contributions=claims)
 
 
 # ── The lifetime (§6.2, PKG-10a) ────────────────────────────────────────────
@@ -984,6 +1294,160 @@ async def expire_due(db: Any, *, now: datetime, limit: int = EXPIRE_LIMIT) -> di
             continue
         deleted += 1
     return {"archived": archived, "deleted": deleted}
+
+
+#: The private install of one member for one app in the bound org (PKG-10d).
+#: It takes no lock: :func:`keep_install` and :func:`restore_install` lock the
+#: row by its id and read it again.
+_PRIVATE_INSTALL_SQL = (
+    "SELECT CAST(id AS text) FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = CAST(:app AS uuid) "
+    "AND scope_kind = 'private' AND scope_subject = :subject"
+)
+
+
+async def private_install_id(db: Any, *, app_id: str, member: str) -> str | None:
+    """The id of the private install of *member* for the app *app_id* in the
+    bound org, or None (PKG-10d).
+
+    *member* is the session member. The store folds it as :func:`install`
+    does, so the read finds the row that a publish wrote. A private install
+    belongs to its subject, so the answer is always an install of *member*.
+    The Keep and Restore routes call this, then :func:`keep_install` or
+    :func:`restore_install` with the id. It writes nothing.
+    """
+    owner = _member(member)
+    app = _app_id(app_id)
+    row = (await db.execute(text(_PRIVATE_INSTALL_SQL), {
+        "app": app, "subject": owner})).first()
+    return None if row is None else str(row[0])
+
+
+#: The lifetime of one install of the bound org, for a read (PKG-10e-1). It
+#: takes no row lock and no org lock, because it writes nothing.
+_LIFETIME_READ_SQL = (
+    "SELECT state, ends_at, archived_at FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid)"
+)
+
+
+@dataclass(frozen=True)
+class Lifetime:
+    """The state, the end date and the archive time of one install."""
+
+    state: str
+    ends_at: datetime | None
+    archived_at: datetime | None
+
+
+async def read_lifetime(db: Any, *, install_id: str) -> Lifetime | None:
+    """The lifetime of the install *install_id* of the bound org, or None
+    when the bound org has no install with this id (PKG-10e-1).
+
+    The lifetime route calls this with the id that :func:`private_install_id`
+    gave, in the same session. It is a plain read: no lock and no write.
+    """
+    install = _install_id(install_id)
+    row = (await db.execute(text(_LIFETIME_READ_SQL), {"install": install})).first()
+    if row is None:
+        return None
+    return Lifetime(state=str(row[0]), ends_at=row[1], archived_at=row[2])
+
+
+# ── The member of a run with no viewer (WS-STU B6a) ─────────────────────────
+
+#: The old ``run_as`` of one install of the bound org, with the row lock.
+_RUN_AS_LOCK_SQL = (
+    "SELECT run_as FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid) FOR UPDATE"
+)
+
+#: The new ``run_as`` of one install of the bound org, with its stamp. A clear
+#: (``:run_as`` NULL) stamps too, so the row names who cleared it.
+_SET_RUN_AS_SQL = (
+    "UPDATE package_install SET run_as = :run_as, run_as_set_by = :by, "
+    "run_as_set_at = now(), updated_at = now() "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid)"
+)
+
+#: The member of a run with no viewer of one install of the bound org. A plain
+#: read: no lock and no write.
+_READ_RUN_AS_SQL = (
+    "SELECT CAST(app_id AS text), run_as, state FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid)"
+)
+
+
+@dataclass(frozen=True)
+class RunAs:
+    """The member that a run of one install runs as, or None (B6a).
+
+    ``state`` is the state of the install. The run does not trust it: it
+    reads the install again through the resolve, which shows an active
+    install only."""
+
+    install_id: str
+    app_id: str
+    run_as: str | None
+    state: str
+
+
+def run_as_member(value: object) -> str:
+    """The address *value* as ``run_as`` holds it, or :class:`ScopeRefused`.
+
+    The one shape check of the column (B6a). It folds the address to lower
+    case, and it refuses ``org``, a ``group:`` subject, a ``system:`` actor
+    and each value that is not an address. So no value reaches the CHECK
+    ``package_install_run_as_member``. It does not check that the address
+    names a member: the route and the run own that check."""
+    refused = ScopeRefused(
+        "bad_run_as", "run_as must be the address of a member, or null to clear it.")
+    if not _plain(value, limit=MAX_SUBJECT_BYTES):
+        raise refused
+    try:
+        member = normalize_grant_subject(str(value))
+    except ValueError as exc:
+        raise refused from exc
+    if "@" not in member or member.startswith(("group:", "system:")):
+        raise refused
+    return member
+
+
+async def set_run_as(db: Any, *, install_id: str, run_as: str | None, set_by: str) -> str | None:
+    """Set the member of a run with no viewer of the install *install_id*.
+
+    *db* is a session that the caller opened with ``tenant_session(org)``.
+    *run_as* None clears the value. *set_by* is the session member. The
+    function checks both addresses before the first statement, then takes the
+    org lock and the row lock, then writes the value and its stamp. An id
+    that no install of the bound org has raises :class:`InstallNotFound` and
+    writes nothing. Answers the old ``run_as``.
+
+    The store does not check that the member may run the app, or that the
+    caller may name the member. The route owns both checks."""
+    install = _install_id(install_id)
+    member = None if run_as is None else run_as_member(run_as)
+    by = _member(set_by)
+    await _lock_org(db, "a run_as change")
+    row = (await db.execute(text(_RUN_AS_LOCK_SQL), {"install": install})).first()
+    if row is None:
+        raise InstallNotFound("install_not_found", "No install has this id.")
+    await db.execute(text(_SET_RUN_AS_SQL), {"install": install, "run_as": member, "by": by})
+    return None if row[0] is None else str(row[0])
+
+
+async def read_run_as(db: Any, *, install_id: str) -> RunAs | None:
+    """The member of a run with no viewer of the install *install_id* of the
+    bound org, or None when the bound org has no install with this id (B6a).
+
+    A plain read: no lock and no write. An install of another org gives
+    None, as a missing id does. A bad id raises :class:`InstallError`."""
+    install = _install_id(install_id)
+    row = (await db.execute(text(_READ_RUN_AS_SQL), {"install": install})).first()
+    if row is None:
+        return None
+    return RunAs(install_id=install, app_id=str(row[0]),
+                 run_as=None if row[1] is None else str(row[1]), state=str(row[2]))
 
 
 def notice_times(ends_at: datetime | None,

@@ -14,7 +14,7 @@ import type { FieldSpec } from "./fieldCheck";
 import { validateRecord } from "./fieldCheck";
 import type { ActionResult, Row, StudioDataDoor } from "./dataDoor";
 
-/** One object with a field of each of the 16 types. */
+/** One object with a field of each of the 22 types. */
 export const SAMPLE_FIELDS: FieldSpec[] = [
   { key: "title", type: "text", label: "Title", required: true },
   { key: "notes", type: "longText", label: "Notes" },
@@ -32,6 +32,12 @@ export const SAMPLE_FIELDS: FieldSpec[] = [
   { key: "contact", type: "email", label: "Contact" },
   { key: "phone", type: "phone", label: "Phone" },
   { key: "location", type: "geo", label: "Location" },
+  { key: "report", type: "richText", label: "Site report" },
+  { key: "score", type: "rating", label: "Customer score" },
+  { key: "duration", type: "duration", label: "Time on site" },
+  { key: "weight", type: "quantity", label: "Load", units: ["kg", "t"] },
+  { key: "discount", type: "percent", label: "Discount" },
+  { key: "serial", type: "barcode", label: "Serial", format: "ean13" },
 ];
 
 /** The columns the Table shows. The Form and the Detail show all of the fields. */
@@ -45,6 +51,9 @@ export const SAMPLE_ROWS: Row[] = [
     owner: "asha@example.com", customer: { id: "cust-104" },
     photo: { id: "123e4567-e89b-12d3-a456-426614174000" }, site: "https://example.com/sites/pune",
     contact: "ops@example.com", phone: "+919876543210", location: { lat: 18.5204, lng: 73.8567 },
+    report: "## Findings\n\nThe **base plate** is level.\n\n- Anchor bolts: set\n- Power: on site",
+    score: 4, duration: 5400, weight: { value: "1250.5", unit: "kg" }, discount: 1250,
+    serial: "4006381333931",
   },
   {
     id: "v2", title: "Calibrate the line", qty: 3, amount: { minor: 480050, currency: "INR" },
@@ -56,6 +65,40 @@ export const SAMPLE_ROWS: Row[] = [
     owner: "asha@example.com", tags: [],
   },
 ];
+
+type Measure = { op: "count" | "sum" | "average"; field?: string };
+
+/**
+ * The aggregate of the sample rows, in the wire shape of C2b (`objects_store.AggregateResult`).
+ * The preview calls no live door, so this plays the server for `object:visit.aggregate`: a group
+ * by one field (a date by day or by month), and a count, a sum or an average of each group.
+ */
+export function sampleAggregate(rows: readonly Row[], args: Record<string, unknown> | undefined): Row {
+  const g = args?.group_by as { field?: string; bucket?: string } | undefined;
+  const ms = (Array.isArray(args?.measures) && args.measures.length ? args.measures : [{ op: "count" }]) as Measure[];
+  const keyOf = (r: Row): unknown => {
+    const v = g?.field ? r[g.field] : null;
+    if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}/.test(v) && g?.bucket === "month") return v.slice(0, 7);
+    return v === undefined || v === "" ? null : v;
+  };
+  const cell = (rs: readonly Row[], m: Measure): number | null => {
+    if (m.op === "count" || !m.field) return rs.length;
+    const xs = rs.map((r) => r[m.field as string]).map((v) => (v && typeof v === "object" ? (v as { minor?: number }).minor : v))
+      .filter((v): v is number => typeof v === "number");
+    if (m.op === "sum") return xs.reduce((a, b) => a + b, 0);
+    return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+  };
+  const make = (key: unknown, rs: readonly Row[]) => ({ key, count: rs.length, values: ms.map((m) => cell(rs, m)) });
+  const by = new Map<unknown, Row[]>();
+  if (g?.field) for (const r of rows) by.set(keyOf(r), [...(by.get(keyOf(r)) ?? []), r]);
+  const money = ms.map((m) => (m.field ? rows.map((r) => r[m.field as string]).find((v) => v && typeof v === "object") : undefined));
+  return {
+    measures: ms.map((m) => (m.field ? { op: m.op, field: m.field } : { op: m.op })),
+    currencies: money.map((v) => ((v as { currency?: string } | undefined)?.currency ?? null)),
+    groups: [...by.entries()].sort((a, b) => String(a[0]).localeCompare(String(b[0]))).map(([k, rs]) => make(k, rs)),
+    other: null, folded: 0, total: make(null, rows),
+  };
+}
 
 const TAKEN = "Duplicate";
 const OVER_LIMIT = "Over limit";
@@ -72,8 +115,9 @@ export function makeSampleDoor(
   let next = store.length + 1;
   return {
     scope: "sample:draft",
-    async read() {
+    async read(source) {
       await wait();
+      if (source?.action.endsWith(".aggregate")) return [sampleAggregate(store, source.args)];
       return store.map((r) => ({ ...r }));
     },
     async run(action, args): Promise<ActionResult> {

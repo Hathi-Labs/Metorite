@@ -1,9 +1,10 @@
 # Chat failure modes: what goes wrong in the chat, and what we build against it
 
-**Status: PROPOSED, 2026-11-12. Nothing is built.** Owner ask of 2026-11-12,
+**Status: ACCEPTED, 2026-11-12 (D217). HRD-6 part 1 (the line of a slow tool) is BUILT
+dark, 2026-11-13 (PR 2238). Nothing else is built.** Owner ask of 2026-11-12,
 in chat. Epic task 2978 (project AI Chat Interface). It is part of WS-CHAT.
 
-HRD-0 is task 2979. The decisions D-HRD-1 to D-HRD-6 of §8 wait on the owner.
+HRD-0 is task 2979. The owner accepted D-HRD-1 to D-HRD-6 of §8 as D217.
 
 It owns the catalogue of chat failure classes, the contract of §7 for every
 chat tool, and the slices HRD-1 to HRD-19. Each fix lands in the seam that
@@ -88,13 +89,13 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 | B3 | An id or an argument that the model cannot give | No read tool prints Projects comment, activity or attachment ids, or the CRM activity id. `uuid_of` refuses a task number and a `kind:` prefix. No layer coerces a JSON string | Each id that a tool needs is printed or resolved. One layer gives each argument the shape that its schema declares | HRD-2, HRD-3 |
 | B4 | A failure with no text that the model can act on | `refusals_as_text` covers Projects, CRM and email only. Other exceptions give "Error: Function failed." | Each pack tool answers a failure as text with a next step | HRD-3 |
 | B5 | A loop with new arguments each time | `LoopDetector` stops 5 identical calls only | After 3 empty or refused answers from one tool in a turn, the chat says what it tried and asks | HRD-5 |
-| B6 | A slow backend | `crm_aggregate` returns a 503 with "Narrow the filter" | Retry once on a narrower range and name it, or offer two narrower choices | HRD-6 |
+| B6 | A slow backend | `crm_aggregate` returns a 503 with "Narrow the filter". A slow tool runs with no word to the member | Owner, 2026-11-13: a large read can take minutes. The member hears so at once, and waits. A tool call that runs past 6 s sends ONE line. A read sends: "This is a large read. It can take a few minutes to get all the data. Please wait." Any other tool sends: "This is taking longer than usual. Please wait." A card is the sign of a wait for the member, so a call that shows one sends no line. The CRM total gets a long mode, and the read finishes | HRD-6 |
 
 ### 4.3 Cards that do not tell the truth (C)
 
 | Id | The class | State today | The rule | Slice |
 |---|---|---|---|---|
-| C1 | The model misreports a card's outcome | Projects gives one text for a reject, a timeout and a cancel. Email has its own texts | One outcome vocabulary: approved, declined, closed by your message, timed out, parked, changed since | HRD-7 |
+| C1 | The model misreports a card's outcome | Projects gives one text for a reject, a timeout and a cancel. Email has its own texts. Task 3130: when a chat message closes a write card, the server ends the answer with a "Not done" line (`chat_run_continuity.md` §4.9) | One outcome vocabulary: approved, declined, closed by your message, timed out, parked, changed since. HRD-7 starts from `ask_tools.CLOSED_BY_YOUR_MESSAGE` | HRD-7 |
 | C2 | A redraft changes the act or the recipients | Email §18.11 links a redraft by To overlap only | A card carries its act. A changed act or changed recipients show on the new card | HRD-8 |
 | C3 | The object changed after the card was drawn | Only the email reply card and the epic contract check it | A card holds its object's version, and the write checks it | HRD-10 |
 | C4 | Two cards wait, and the member types | One card waits at a time (PAC §29.6). A steer closes the open card | No change. §29.6 stays the rule. HRD-16 covers cards parked after a restart | HRD-16 |
@@ -160,7 +161,7 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 | **HRD-3** | 2982 | One wrapper on each pack tool: text for each failure, and each argument in its declared shape | `tests/unit/test_every_pack_tool_answers_text.py`, `tests/unit/test_tool_argument_shapes.py` | STANDARD |
 | **HRD-4** | 2983 | Search that finds | `tests/unit/test_search_fallback.py` | STANDARD |
 | **HRD-5** | 2984 | A per-turn budget for each tool | `tests/unit/test_tool_turn_budget.py` | STANDARD |
-| **HRD-6** | 2985 | A slow CRM total | `tests/unit/test_crm_aggregate_timeout.py` | STANDARD |
+| **HRD-6** | 2985 | A slow read tells the member to wait (owner, 2026-11-13). Part 1, BUILT dark behind `CHAT_PROGRESS_NOTICE_ORGS`: one line for each tool call past 6 s, on the web chat and as WhatsApp's early message (`chat_run_continuity.md` §4.11). Part 2: the long mode of the CRM total | `tests/unit/test_progress_notice.py` (part 1), `tests/unit/test_crm_aggregate_timeout.py` (part 2) | STANDARD |
 | **HRD-7** | 2986 | One vocabulary of card outcomes | `tests/unit/test_card_outcome_vocabulary.py` | STANDARD |
 | **HRD-8** | 2987 | A redraft keeps the act | `tests/unit/test_redraft_keeps_act.py` | STANDARD |
 | **HRD-9** | 2988 | Blast radius for tags, fields and types | `tests/unit/test_shared_vocab_guard.py` | STANDARD |
@@ -197,9 +198,11 @@ fences of rules 1 to 3. Until those land, the rules are advisory (R7).
    does not.
 7. **A date argument reads the member's day** from `acb_common.today`.
 
-## 8. Decisions for the owner
+## 8. Decisions
 
-| # | Question | Default |
+The owner accepted each default on 2026-11-11 21:28 UTC on epic 2978, and confirmed it in chat on 2026-11-12. They are recorded as **D217**.
+
+| # | Question | Decision |
 |---|---|---|
 | **D-HRD-1** | When the model calls a tool of a pack that is not loaded, may the turn load that pack? | Yes, when the member may use that pack. The answer says so |
 | **D-HRD-2** | When no task has all the words, may a search show tasks with most of them? | Yes, with the line "No task has all the words. These have most of them" |

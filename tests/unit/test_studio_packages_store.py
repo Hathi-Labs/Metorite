@@ -45,6 +45,8 @@ from typing import Any
 
 import pytest
 
+from tests.unit import _r8_lists as r8_lists
+
 pytest.importorskip("sqlalchemy")
 
 from acb_common import studio_manifest
@@ -126,7 +128,7 @@ def _row(params: dict[str, Any]) -> tuple[Any, ...]:
     now = datetime.now(UTC)
     return (params.get("id", str(uuid.uuid4())), params.get("slug", "quotes-00000000"),
             params["name"], params["desc"], params["m"], "private", "draft",
-            params["manifest"], None, now, now)
+            params["manifest"], None, now, now, None, None)
 
 
 class _EchoDb(_FakeDb):
@@ -368,8 +370,7 @@ def test_the_r8_twin_is_named_in_the_ci_skip_guard() -> None:
     """The `--must-run` list of pr-check.yml is kept by hand. Without the
     entry, the R8 twin skips in CI with no database and the job stays green.
     This suite has no database gate, so it always reads the list."""
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
-    assert "tests/unit/test_studio_packages_r8.py" in workflow
+    assert "tests/unit/test_studio_packages_r8.py" in r8_lists.must_run()
 
 
 def test_an_empty_workspace_path_is_never_the_working_directory() -> None:
@@ -438,7 +439,7 @@ def test_app_workspace_for_refuses_an_empty_workspace_path(
 def _current_row(manifest: dict[str, Any]) -> tuple[Any, ...]:
     now = datetime.now(UTC)
     return (str(uuid.uuid4()), "quotes-00000000", manifest["name"], manifest["purpose"],
-            "ana@x.test", "private", "draft", json.dumps(manifest), None, now, now)
+            "ana@x.test", "private", "draft", json.dumps(manifest), None, now, now, None, None)
 
 
 def test_update_manifest_refuses_a_new_manifest_id() -> None:
@@ -554,7 +555,7 @@ _CAT_MANIFEST_ACTION = {"id": "make_lead", "uses": "crm.create_lead", "set": {}}
 def _pkg_row(manifest: dict[str, Any], live: int | None = None) -> tuple[Any, ...]:
     now = datetime.now(UTC)
     return (str(uuid.uuid4()), "quotes-00000000", manifest["name"], manifest["purpose"],
-            "ana@x.test", "private", "draft", json.dumps(manifest), live, now, now)
+            "ana@x.test", "private", "draft", json.dumps(manifest), live, now, now, None, None)
 
 
 def _ver_row(manifest: dict[str, Any], n: int = 1) -> tuple[Any, ...]:
@@ -691,7 +692,12 @@ def test_the_version_insert_and_the_audit_name_no_org_and_publish_locks_the_row(
 def test_a_version_row_is_never_updated_or_deleted_and_no_review_is_proposed() -> None:
     """A4 appends to `app_versions`. The review step of the App Workshop
     (`app.publish_review`) never runs for a package, and `record_app_audit`
-    (it opens its own session) is not used. The store imports no route."""
+    (it opens its own session) is not used. The store imports no route.
+
+    One exception, which the owner decided on 2026-11-07 (task 2174, J2):
+    `_REVIEW_MOVE_SQL` is the ONE UPDATE of `app_versions`. It sets
+    `review_status` and no other column, and it names the bound org and the
+    expected state. A second UPDATE, or a wider SET, fails here."""
     source = (_ROOT / "apps" / "services" / "gateway" / "gateway" / "studio"
               / "packages_store.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -704,7 +710,20 @@ def test_a_version_row_is_never_updated_or_deleted_and_no_review_is_proposed() -
     names = {n.id for n in code if isinstance(n, ast.Name)} | {
         n.attr for n in code if isinstance(n, ast.Attribute)}
     joined = "\n".join(literals)
-    assert not re.search(r"UPDATE\s+app_versions|DELETE\s+FROM\s+app_versions", joined, re.I)
+    assert not re.search(r"DELETE\s+FROM\s+app_versions", joined, re.I)
+    updates = [s for s in literals if re.search(r"UPDATE\s+app_versions", s, re.I)]
+    assert len(updates) == 1 and store._REVIEW_MOVE_SQL.startswith(updates[0]), updates
+    move = store._REVIEW_MOVE_SQL
+    assert len(re.findall(r"\bUPDATE\b", move, re.I)) == 1
+    [set_clause] = re.findall(r"\bSET\s+(.*?)\s+WHERE\b", move, re.I | re.S)
+    assert set_clause == "review_status = :to", set_clause
+    assert f"WHERE organization_id = {store._BOUND_ORG} AND " in move
+    assert "AND review_status = :expected" in move and "version = :v" in move
+    users = sorted(fn.name for fn in ast.walk(tree)
+                   if isinstance(fn, ast.AsyncFunctionDef | ast.FunctionDef)
+                   and any(isinstance(n, ast.Name) and n.id == "_REVIEW_MOVE_SQL"
+                           for n in ast.walk(fn)))
+    assert users == ["_move_review"]
     assert "publish_review" not in joined and "propose" not in names
     assert "record_app_audit" not in names
     modules = {n.module or "" for n in code if isinstance(n, ast.ImportFrom)}
@@ -712,8 +731,7 @@ def test_a_version_row_is_never_updated_or_deleted_and_no_review_is_proposed() -
 
 
 def test_the_a4_r8_suite_is_named_in_the_ci_skip_guard() -> None:
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
-    assert "tests/unit/test_studio_packages_versions_r8.py" in workflow
+    assert "tests/unit/test_studio_packages_versions_r8.py" in r8_lists.must_run()
 
 
 def test_publish_and_rollback_run_check_manifest_on_the_stored_manifest(

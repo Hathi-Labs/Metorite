@@ -30,6 +30,12 @@ slice defines it. ``connection`` names the integration, or is null. The
 integration probe (``build_integrations``) is never called, so the catalog
 reports no availability.
 
+**The chat tool of each row (STU-F6a, ``ai_studio.md`` §14 F6a).** ``tool``
+is ``acb_skills.skill_packs.action_tool`` of the row id, or null. That is the
+ONE map from an action to a chat tool, and no route keeps a second one. The
+skill offer of the chat maps each call of a turn to a row through it.
+Fence: ``tests/unit/test_studio_catalog.py``.
+
 **The gate of every Studio route (STU-J1, ``ai_studio.md`` §9).** The router
 below carries ``require_feature_router("studio")``. Each module of this
 package registers its routes on this one router, so a new route has the gate
@@ -37,9 +43,10 @@ by construction. A caller without ``feature:studio`` gets 403 before a
 handler runs, so the 403 comes before the 404 of ``STUDIO_ORGS``. A member,
 a manager and an admin hold the feature through ``feature:*``, and the owner
 through ``*``. A guest and a member with a deny override do not. No route
-adds a second feature gate. One handler reads the share verb of J2: the org
-and group install of WS-PKG PKG-8b (``packages.install_package``), in its
-body and not as a gate. Fence: ``tests/unit/test_studio_route_gate.py``
+adds a second feature gate. Two handlers read the share verb of J2: the
+org and group install of WS-PKG PKG-8b (``packages.install_package``) and
+its uninstall of PKG-8e (``packages.uninstall_package``), in their bodies and
+not as a gate. Fence: ``tests/unit/test_studio_route_gate.py``
 (``EXPECTED_ROUTES``) and ``tests/unit/test_studio_route_gate_r8.py``.
 """
 
@@ -53,6 +60,7 @@ from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common.app_manifests import door_ops, every_app
 from acb_common.studio_fields import NAME_PATTERN
 from acb_common.studio_manifest import OBJECT_OP_CLASSES, OBJECT_OPS, parse_uses
+from acb_skills.skill_packs import action_tool
 from fastapi import APIRouter, Depends, HTTPException, Query
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.agent_apps import args_schema
@@ -90,8 +98,9 @@ def _manifest_rows() -> list[dict[str, Any]]:
         if app.door != "ops":
             continue
         for name, op in door_ops(app).items():
+            action_id = f"{app.id}.{name}"
             rows.append({
-                "id": f"{app.id}.{name}",
+                "id": action_id,
                 "title": op.route.title,
                 "source": "manifest",
                 "class": op.route.cls,
@@ -99,6 +108,7 @@ def _manifest_rows() -> list[dict[str, Any]]:
                 "output_schema": None,
                 "connection": None,
                 "app": app.id,
+                "tool": action_tool(action_id),
             })
     return rows
 
@@ -109,8 +119,9 @@ def _integration_rows() -> list[dict[str, Any]]:
         if not spec.integration:
             continue
         args = parse_args_schema(spec.args_schema)
+        action_id = f"integration:{spec.action}"
         rows.append({
-            "id": f"integration:{spec.action}",
+            "id": action_id,
             "title": spec.label,
             "source": "integration",
             "class": tool_class(spec.read_only, spec.destructive, spec.open_world),
@@ -124,6 +135,7 @@ def _integration_rows() -> list[dict[str, Any]]:
             "output_schema": None,
             "connection": spec.integration,
             "app": None,
+            "tool": action_tool(action_id),
         })
     return rows
 
@@ -134,8 +146,9 @@ async def _workflow_rows() -> list[dict[str, Any]]:
         found = (await db.execute(_WORKFLOWS_SQL)).fetchall()
     rows: list[dict[str, Any]] = []
     for row in found:
+        action_id = f"workflow:{row.id}"
         rows.append({
-            "id": f"workflow:{row.id}",
+            "id": action_id,
             "title": row.name,
             "source": "workflow",
             "class": "B",
@@ -143,6 +156,7 @@ async def _workflow_rows() -> list[dict[str, Any]]:
             "output_schema": None,
             "connection": None,
             "app": None,
+            "tool": action_tool(action_id),
         })
     return rows
 
@@ -173,6 +187,7 @@ def _object_row(package_id: str, name: str, op: str) -> dict[str, Any]:
         "output_schema": None,
         "connection": None,
         "app": package_id,
+        "tool": action_tool(uses),
     }
 
 
@@ -198,6 +213,8 @@ def _named_row(package_id: str, found: tuple[str, str, str | None],
         "output_schema": None,
         "connection": None,
         "app": package_id,
+        # A named action's id is local to its package, so it maps no chat tool.
+        "tool": action_tool(action_id),
     }
 
 

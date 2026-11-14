@@ -7,6 +7,7 @@ Each refusal has one test. It asserts a JSON path and one sentence of at most
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 import time
@@ -33,7 +34,7 @@ EXAMPLE: dict = {
     "name": "Field visits",
     "purpose": "Plan, run and close customer site visits.",
     "team": "service",
-    "connections": ["whatsapp"],
+    "connections": ["mcp:tally"],
     "objects": [
         {
             "name": "visit",
@@ -49,7 +50,7 @@ EXAMPLE: dict = {
     ],
     "actions": [
         {"id": "close_visit", "uses": "object:visit.update", "set": {"status": "done"}},
-        {"id": "tell_customer", "uses": "integration:whatsapp.send_template"},
+        {"id": "log_visit", "uses": "crm.log_activity"},
     ],
     "views": [
         {
@@ -88,7 +89,7 @@ EXAMPLE: dict = {
     },
 }
 
-CATALOG = {"integration:whatsapp.send_template": "B"}
+CATALOG = {"crm.log_activity": "B"}
 
 
 def doc(**patch) -> dict:
@@ -264,10 +265,10 @@ def test_class_x_action():
     e = one(
         EXAMPLE,
         "$.actions[1].uses",
-        catalog={"integration:whatsapp.send_template": "X"},
+        catalog={"crm.log_activity": "X"},
         contains="class X",
     )
-    assert "integration:whatsapp.send_template" in e.message
+    assert "crm.log_activity" in e.message
 
 
 def test_object_action_is_never_looked_up():
@@ -1196,3 +1197,186 @@ def test_a_tab_title_is_not_empty_or_blank(title):
     tab = {"id": "plan", "title": title, "cells": [{"view": "board"}]}
     d = _with_pages({"id": "main", "tabs": [tab]})
     assert _at(d, "$.pages[0].tabs[0].title"), validate_manifest(d)
+
+
+def test_a_package_cannot_extend_itself():
+    """PKG-15a. The host of a sub-app is another package (package_host.md §8.2)."""
+    ok = copy.deepcopy(EXAMPLE)
+    ok["extends"] = "crm"
+    assert validate_manifest(ok) == []
+    bad = copy.deepcopy(EXAMPLE)
+    bad["extends"] = bad["id"]
+    errors = validate_manifest(bad)
+    assert [e.path for e in errors] == ["$.extends"]
+    assert "cannot extend itself" in errors[0].message
+
+
+# -- STU-B7a: the runtime key ------------------------------------------------
+
+
+def _with_runtime(rt: object) -> dict:
+    return {**EXAMPLE, "runtime": rt}
+
+
+def test_no_runtime_key_means_kind_none_and_validates() -> None:
+    from acb_common.studio_manifest import runtime_kind
+
+    assert "runtime" not in EXAMPLE
+    assert validate_manifest(EXAMPLE) == []
+    assert runtime_kind(EXAMPLE) == "none"
+    assert runtime_kind(Manifest.model_validate(EXAMPLE)) == "none"
+    assert runtime_kind({**EXAMPLE, "runtime": {}}) == "none"
+
+
+@pytest.mark.parametrize("kind", ["none", "browser", "sandbox", "packages"])
+def test_each_runtime_kind_is_accepted(kind: str) -> None:
+    from acb_common.studio_manifest import runtime_kind
+
+    doc = _with_runtime({"kind": kind})
+    assert validate_manifest(doc) == []
+    assert runtime_kind(doc) == kind
+
+
+def test_a_bad_runtime_kind_is_refused_with_a_path() -> None:
+    errs = validate_manifest(_with_runtime({"kind": "gpu"}))
+    assert [e.path for e in errs] == ["$.runtime.kind"]
+
+
+def test_runtime_has_no_hosts_key() -> None:
+    errs = validate_manifest(_with_runtime({"kind": "sandbox", "hosts": ["a.example"]}))
+    assert [e.path for e in errs] == ["$.runtime.hosts"]
+
+
+def test_runtime_packages_are_pinned_and_bounded() -> None:
+    assert validate_manifest(_with_runtime({"kind": "packages", "packages": {"rich": "13.7.1"}})) == []
+    bad = validate_manifest(_with_runtime({"kind": "packages", "packages": {"rich": ">=13"}}))
+    assert [e.path for e in bad] == ["$.runtime.packages"]
+    many = {f"p{i}": "1.0" for i in range(21)}
+    assert validate_manifest(_with_runtime({"kind": "packages", "packages": many}))
+
+
+def test_a_manifest_without_runtime_hashes_as_before() -> None:
+    """Pin: the hash of a stored manifest without the key. A new optional key must not move it."""
+    from acb_common.studio_manifest import manifest_hash
+
+    doc = {"studio": 1, "id": "pin", "name": "Pin", "purpose": "Hold the hash."}
+    assert manifest_hash(doc) == hashlib.sha256(
+        b'{"id":"pin","name":"Pin","purpose":"Hold the hash.","studio":1}'
+    ).hexdigest()
+    assert validate_manifest(doc) == []
+
+
+# -- STU-I1a: the connections of a package, and no key in a form --------------
+#
+# R7. Mutations, run on 2026-11-14 on this file:
+# * N1. `_semantic_errors`: drop the call of `_check_connections`. The bad
+#   name, the duplicate and the cap tests go red.
+# * N2. `CONNECTION_NAME_RE`: accept any text after `mcp:`. The `mcp:x`,
+#   `mcp:` and `mcp:Tally` cases go red.
+# * N3. `_check_objects`: drop the `is_secret_field_key` check. The secret
+#   field key tests go red.
+# * N4. `_check_objects`: call the wide `is_secret_key` in its place (the rule
+#   before the review). `token_number`, `secretary`, `credential_expiry`,
+#   `token` and `tokens_used` go red.
+
+
+def _with_connections(names: object) -> dict:
+    return {**EXAMPLE, "connections": names}
+
+
+def test_the_example_names_a_registry_connection():
+    """§8.1 rule 10: until IN-3, a package names only registry connections."""
+    assert EXAMPLE["connections"] == ["mcp:tally"]
+    assert not any(a["uses"].startswith("integration:") for a in EXAMPLE["actions"])
+
+
+@pytest.mark.parametrize("names", [
+    [], ["mcp:tally"], ["zoho"], ["google_drive", "outlook_calendar"], ["mcp:my-erp-2", "github"],
+    ["mcp:" + "a" * 50], ["a" * 48],
+])
+def test_a_connection_of_the_grammar_passes(names):
+    assert validate_manifest(_with_connections(names)) == []
+
+
+@pytest.mark.parametrize("name", [
+    "Zoho", "zoho crm", "", "1zoho", "a" * 49, "whats-app", "mcp:x", "mcp:", "mcp:Tally",
+    "mcp:-tally", "mcp:tally-", "mcp:" + "a" * 51, "mcp:tally:x", "MCP:tally", " zoho",
+])
+def test_a_bad_connection_name_is_refused_with_its_path(name):
+    e = one(_with_connections(["zoho", name]), "$.connections[1]", contains="mcp:<server>")
+    assert "provider id" in e.message
+
+
+def test_a_duplicate_connection_is_refused_with_its_path():
+    e = one(_with_connections(["zoho", "mcp:tally", "zoho"]), "$.connections[2]",
+            contains="twice")
+    assert "zoho" in e.message
+    assert [x.path for x in validate_manifest(_with_connections(["zoho", "mcp:tally", "zoho"]))
+            ] == ["$.connections[2]"]
+
+
+def test_a_package_names_at_most_32_connections():
+    from acb_common.studio_manifest import MAX_CONNECTIONS
+
+    assert MAX_CONNECTIONS == 32
+    assert validate_manifest(_with_connections([f"p{i}" for i in range(32)])) == []
+    errs = validate_manifest(_with_connections([f"p{i}" for i in range(33)]))
+    assert [e.path for e in errs] == ["$.connections"]
+    assert "at most 32" in errs[0].message and words(errs[0].message) <= 25
+
+
+@pytest.mark.parametrize("names", ["zoho", [3], [None], {"zoho": True}])
+def test_a_connections_value_that_is_not_a_list_of_text_is_refused(names):
+    errs = validate_manifest(_with_connections(names))
+    assert errs and all(e.path.startswith("$.connections") for e in errs), errs
+
+
+def _with_field(key: str) -> dict:
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["fields"].append({"key": key, "type": "text"})
+    return d
+
+
+@pytest.mark.parametrize("key", [
+    "api_key", "apikey", "client_secret", "access_token", "refresh_token", "private_key",
+    "password", "db_passwd", "zoho_api_key", "secret_key", "auth_token", "bearer_token",
+    "api_secret", "app_secret", "webhook_secret", "signing_secret", "consumer_secret",
+    "access_key", "api_token", "aws_secret_access_key",
+])
+def test_a_field_key_that_names_a_secret_is_refused_with_its_path(key):
+    from acb_common.studio_manifest import SECRET_FIELD
+
+    d = _with_field(key)
+    e = one(d, "$.objects[0].fields[6].key", contains="connections")
+    assert e.message.startswith(SECRET_FIELD)
+    assert [x.path for x in validate_manifest(d)] == ["$.objects[0].fields[6].key"]
+
+
+@pytest.mark.parametrize("key", ["apiKey", "x-api-key"])
+def test_a_secret_key_that_breaks_the_field_grammar_is_refused_with_its_path(key):
+    """A field key is snake case, so the grammar refuses these at the same path."""
+    assert [x.path for x in validate_manifest(_with_field(key))] == [
+        "$.objects[0].fields[6].key"]
+
+
+@pytest.mark.parametrize("key", [
+    "site_code", "notes", "visit_count", "key_account", "token_number", "secretary",
+    "credential_expiry", "token", "tokens_used",
+])
+def test_a_field_key_that_names_no_secret_passes(key):
+    """P2-1 of the I1a review: a clinic queue token, a housing society secretary
+    and the expiry of a credential are member data. Only a whole secret name
+    counts (``secret_shapes.is_secret_field_key``)."""
+    assert validate_manifest(_with_field(key)) == []
+
+
+def test_the_field_rule_is_narrower_than_the_key_rule_of_the_scan():
+    """``is_secret_key`` keeps its wide rule for its other callers (the scan of
+    a value under a secret-named key)."""
+    from acb_common.secret_shapes import is_secret_field_key, is_secret_key
+
+    for key in ("token_number", "secretary", "credential_expiry"):
+        assert is_secret_key(key) and not is_secret_field_key(key), key
+    for key in ("api_key", "apiKey", "x-api-key", "X-Api-Key", "client_secret", "APIKey",
+                "old_password_hint"):
+        assert is_secret_field_key(key), key

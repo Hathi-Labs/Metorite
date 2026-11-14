@@ -12,7 +12,9 @@ c. A feature that the viewer lacks hides the entry. No feature is open, and
    a feature that is not text fails closed. System entries pass the same
    check.
 d. ``needs_setup`` follows the needs. A malformed need fails closed. A
-   package need is met by a system package or by a visible install only.
+   package need is met by a system package that the viewer can use, or by a
+   visible install only. A system package counts when one of its entries
+   passes the feature check. A sub-app of a gated host shows its setup card.
 e. The order in a point: the system entries in file order, then the claims
    by position and key. A payload cannot replace a fixed field.
 f. The version is 16 hex digits, stable, and changes with the content.
@@ -28,6 +30,25 @@ h. The SQL reads the one share rule and the one group read, and keeps no
   ``test_a_malformed_need_fails_closed`` goes red.
 * M3. ``resolve.resolve``: put the payload after the fixed fields.
   ``test_a_payload_cannot_replace_a_fixed_field`` goes red.
+* M4. ``resolve.system_package_ids``: drop the ``feature_ok`` check.
+  ``test_a_gated_system_host_is_missing_when_the_viewer_cannot_use_it`` goes
+  red.
+
+i. WS-STU I1a. Each name of ``connections`` is one more need, met only by the
+   set of the viewer. A value that is not a list of text fails closed.
+   ``resolve_for`` reads the set ONCE, and only when a kept install names a
+   connection, so an install with none costs no statement. The MCP name rule
+   of the manifest equals the rule of the registry. With
+   ``STUDIO_CONNECTION_GATE_ORGS`` off for the org, ``connections`` makes no
+   need, and nothing reads the registry.
+
+* M5 (I1a). ``resolve.needs_met``: drop the ``connections_met`` check.
+  ``test_needs_setup_follows_the_connections`` goes red.
+* M6 (I1a). ``resolve.resolve_for``: read the set for each call.
+  ``test_an_install_with_no_connection_costs_no_statement`` goes red.
+* M7 (I1a). ``resolve.resolve_for``: drop the check of
+  ``connection_gate_on``. Both cases of ``test_the_gate_off_changes_nothing_off``
+  go red.
 """
 
 from __future__ import annotations
@@ -197,6 +218,140 @@ def test_a_need_of_an_app_the_viewer_cannot_see_is_unmet() -> None:
     assert out["jobs"][0]["needs_setup"] is True
 
 
+# ── d2. The host of a sub-app (PKG-15a) ───────────────────────────────────
+
+_CRM = {"nav": (SystemContribution("nav", "/crm", "crm", None),)}
+
+
+def _sub(extends: Any, iid: str = "s", app: str = "sub") -> InstallRow:
+    return _inst(iid, app, manifest={"id": app, "extends": extends})
+
+
+def _sub_out(installs: list[InstallRow], system: Any = None) -> dict[str, Any]:
+    out = resolve.resolve(_CRM if system is None else system, installs,
+                          [_claim(i.id, f"k-{i.id}") for i in installs], _all)
+    return {e["install_id"]: e for e in out["jobs"]}
+
+
+def test_a_host_that_is_a_system_package_is_met() -> None:
+    entry = _sub_out([_sub("crm")])["s"]
+    assert entry["needs_setup"] is False
+    assert entry["extends"] == "crm"
+
+
+def test_a_host_that_is_an_active_install_of_the_viewer_is_met() -> None:
+    host = _inst("h", "hostapp", "private")
+    assert _sub_out([_sub("hostapp"), host], {})["s"]["needs_setup"] is False
+
+
+def test_a_host_that_is_absent_is_missing() -> None:
+    entry = _sub_out([_sub("nohost")])["s"]
+    assert entry["needs_setup"] is True
+    assert entry["extends"] == "nohost"
+
+
+# A paused or archived host, and a host that only another org holds, are
+# facts of the SQL of step 2. The R8 twins prove them on a database:
+# ``test_r8_a_host_in_the_own_org_is_met_until_it_is_paused`` and
+# ``test_r8_a_host_that_only_another_org_holds_is_missing``.
+
+_GATED_CRM = {"jobs": (SystemContribution("jobs", "crm.lead", "crm", "crm"),),
+              "nav": (SystemContribution("nav", "/crm", "crm", "crm"),)}
+
+
+def _gated(extends: Any, can_use: Any, system: Any = None) -> dict[str, Any]:
+    out = resolve.resolve(_GATED_CRM if system is None else system,
+                          [_sub(extends)], [_claim("s", "k-s")], can_use)
+    return {e["install_id"]: e for e in out["jobs"]}
+
+
+def test_a_gated_system_host_is_met_when_the_viewer_can_use_it() -> None:
+    entry = _gated("crm", {"crm"}.__contains__)["s"]
+    assert entry["needs_setup"] is False
+    assert entry["extends"] == "crm"
+
+
+def test_a_gated_system_host_is_missing_when_the_viewer_cannot_use_it() -> None:
+    """The gate hides each CRM entry, so CRM is not present for this viewer.
+    The sub-app shows its setup card, and still names its host."""
+    out = _gated("crm", _none)
+    assert set(out) == {"s"}
+    assert out["s"]["needs_setup"] is True
+    assert out["s"]["extends"] == "crm"
+
+
+def test_one_usable_entry_makes_a_system_host_present() -> None:
+    system = {"nav": (SystemContribution("nav", "/crm", "crm", "crm"),
+                      SystemContribution("nav", "/crm/open", "crm", None))}
+    assert _gated("crm", _none, system)["s"]["needs_setup"] is False
+
+
+def test_a_system_host_with_no_feature_is_met_for_each_viewer() -> None:
+    system = {"nav": (SystemContribution("nav", "/home", "home", None),)}
+    assert _gated("home", _none, system)["s"]["needs_setup"] is False
+
+
+def test_a_bad_feature_on_a_system_entry_fails_closed() -> None:
+    system = {"nav": (SystemContribution("nav", "/crm", "crm", ""),)}  # type: ignore[arg-type]
+    assert _gated("crm", _all, system)["s"]["needs_setup"] is True
+
+
+@pytest.mark.parametrize(("can_use", "setup"), [({"crm"}.__contains__, False), (_none, True)])
+def test_a_package_need_of_a_gated_system_package_follows_the_gate(can_use, setup) -> None:
+    man = {"id": "mine", "needs": [{"package": "crm"}]}
+    out = resolve.resolve(_GATED_CRM, [_inst("o", "a", manifest=man)], [_claim("o", "k")],
+                          can_use)
+    assert _keys(out) == ([("crm.lead", None)] if setup is False else []) + [("k", "o")]
+    assert out["jobs"][-1]["needs_setup"] is setup
+
+
+@pytest.mark.parametrize("extends", [3, "", "Bad Id", "UPPER", "a" * 60, ["crm"], {"id": "crm"}, True])
+def test_a_malformed_extends_fails_closed(extends: Any) -> None:
+    entry = _sub_out([_sub(extends)])["s"]
+    assert entry["needs_setup"] is True
+    assert "extends" not in entry
+
+
+def test_a_null_extends_is_no_host() -> None:
+    entry = _sub_out([_sub(None)])["s"]
+    assert entry["needs_setup"] is False
+    assert "extends" not in entry
+
+
+def test_a_sub_app_is_never_its_own_host() -> None:
+    entry = _sub_out([_sub("sub")], {})["s"]
+    assert entry["needs_setup"] is True
+
+
+def test_the_host_adds_one_need_to_the_other_needs() -> None:
+    man = {"id": "sub", "extends": "crm", "needs": [{"feature": "hr"}]}
+    out = resolve.resolve(_CRM, [_inst("s", "sub", manifest=man)], [_claim("s", "k")],
+                          {"crm"}.__contains__)
+    assert out["jobs"][0]["needs_setup"] is True
+
+
+def test_only_an_install_with_extends_carries_the_extends_key() -> None:
+    plain = _inst("p", "plain")
+    sub = _sub("crm")
+    out = _sub_out([plain, sub])
+    assert out["p"] == {"key": "k-p", "source": "org", "install_id": "p", "needs_setup": False}
+    assert out["s"]["extends"] == "crm"
+
+
+def test_a_payload_cannot_set_the_extends_key() -> None:
+    out = resolve.resolve({}, [_inst("p", "plain")], [_claim("p", "k", extends="crm")], _all)
+    assert "extends" not in out["jobs"][0]
+
+
+def test_the_version_changes_only_for_an_install_with_extends() -> None:
+    plain = [_inst("p", "plain")]
+    before = resolve.version_of(resolve.resolve({}, plain, [_claim("p", "k")], _all))
+    again = resolve.version_of(resolve.resolve({}, plain, [_claim("p", "k")], _all))
+    assert before == again
+    sub = [_inst("p", "plain", manifest={"id": "plain", "extends": "crm"})]
+    assert before != resolve.version_of(resolve.resolve({}, sub, [_claim("p", "k")], _all))
+
+
 # ── e. The order ───────────────────────────────────────────────────────────
 
 
@@ -313,3 +468,186 @@ def test_the_route_module_runs_no_sql() -> None:
     names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
     assert "text" not in names
     assert not re.search(r"\bSELECT\b", inspect.getsource(manifest))
+
+
+
+# ── i. The connections (WS-STU I1a) ────────────────────────────────────────
+
+
+@pytest.mark.parametrize(("manifest", "names"), [
+    ({"id": "m"}, ()),
+    ({"id": "m", "connections": []}, ()),
+    ({"id": "m", "connections": ["mcp:tally", "zoho"]}, ("mcp:tally", "zoho")),
+    ({"id": "m", "connections": "zoho"}, None),
+    ({"id": "m", "connections": ["zoho", 3]}, None),
+    ({"id": "m", "connections": None}, None),
+    ({"id": "m", "connections": {"zoho": True}}, None),
+    ("not an object", ()),
+])
+def test_connection_names(manifest: Any, names: Any) -> None:
+    assert resolve.connection_names(manifest) == names
+
+
+@pytest.mark.parametrize(("connections", "met", "setup"), [
+    ([], frozenset(), False),
+    (["mcp:tally"], frozenset(), True),
+    (["mcp:tally"], frozenset({"mcp:tally"}), False),
+    (["mcp:tally", "zoho"], frozenset({"mcp:tally"}), True),
+    (["mcp:tally", "zoho"], frozenset({"zoho", "mcp:tally", "github"}), False),
+    ("mcp:tally", frozenset({"mcp:tally"}), True),
+    ([None], frozenset({"mcp:tally"}), True),
+])
+def test_needs_setup_follows_the_connections(connections: Any, met: frozenset[str],
+                                             setup: bool) -> None:
+    installs = [_inst("o", "a", manifest={"id": "m", "connections": connections})]
+    out = resolve.resolve({}, installs, [_claim("o", "k")], _all, met)
+    assert out["jobs"][0]["needs_setup"] is setup
+
+
+def test_a_connection_need_never_lives_in_needs() -> None:
+    """``connections`` is the one place of a connection need. ``needs`` keeps
+    its two kinds, so ``{"connection": ...}`` there still fails closed."""
+    assert frozenset({"feature", "package"}) == resolve.NEED_KINDS
+    manifest = {"id": "m", "needs": [{"connection": "zoho"}]}
+    assert resolve.needs_met(manifest, _all, set(), frozenset({"zoho"})) is False
+
+
+def test_the_connections_add_to_the_other_needs() -> None:
+    manifest = {"id": "m", "needs": [{"feature": "hr"}], "connections": ["zoho"]}
+    assert resolve.needs_met(manifest, _all, set(), {"zoho"}) is True
+    assert resolve.needs_met(manifest, _none, set(), {"zoho"}) is False
+    assert resolve.needs_met(manifest, _all, set(), set()) is False
+
+
+class _Answer:
+    def __init__(self, value: Any) -> None:
+        self._value = value
+
+    def scalar(self) -> Any:
+        return self._value
+
+    def all(self) -> Any:
+        return self._value
+
+
+class _CountingDb:
+    """A session that answers the two statements of the one read, and counts
+    each statement. The installs and the claims are patched."""
+
+    def __init__(self, bound: str | None = ORG, providers: tuple[str, ...] = ()) -> None:
+        self.bound = bound
+        self.providers = providers
+        self.statements: list[tuple[str, dict[str, Any]]] = []
+
+    async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> Any:
+        from gateway.connections import store as connections
+
+        sql = str(stmt)
+        self.statements.append((sql, dict(params or {})))
+        if sql == resolve.BOUND_ORG_SQL:
+            return _Answer(self.bound)
+        assert sql == connections._MET_SQL, sql[:80]
+        return _Answer([(p,) for p in self.providers])
+
+
+def _resolve_for(monkeypatch, db: _CountingDb, installs: list[InstallRow],
+                 gate: str = "*") -> dict[str, Any]:
+    """``resolve_for`` with the org bound as the auth layer binds it, and the
+    gate ``STUDIO_CONNECTION_GATE_ORGS`` set to *gate*."""
+    from acb_common.db import bind_tenant, release_tenant
+
+    async def _visible(_db: Any, *, viewer: str) -> list[InstallRow]:
+        return resolve.widest_per_app(installs)
+
+    async def _claims(_db: Any, ids: Any) -> list[ClaimRow]:
+        return [_claim(i, f"k-{i}") for i in ids]
+
+    async def go() -> dict[str, Any]:
+        token = bind_tenant(ORG)
+        try:
+            return await resolve.resolve_for(db, viewer="Ana@Pkg.Test", can_use=_all)
+        finally:
+            release_tenant(token)
+
+    monkeypatch.setattr(resolve, "visible_installs", _visible)
+    monkeypatch.setattr(resolve, "read_claims", _claims)
+    monkeypatch.setattr(resolve, "system_contributions", lambda: {})
+    monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", gate)
+    return asyncio.run(go())
+
+
+@pytest.mark.parametrize("gate", ["", "99999999-2222-3333-4444-555555555555"])
+def test_the_gate_off_changes_nothing_off(monkeypatch, gate: str) -> None:
+    """``STUDIO_CONNECTION_GATE_ORGS`` empty, or naming another org: the
+    resolve is as before I1a. ``connections`` makes no need, and nothing
+    reads the registry (mutation M7 drops the gate)."""
+    db = _CountingDb(providers=())
+    body = _resolve_for(monkeypatch, db, [
+        _inst("o", "a", manifest={"id": "a", "connections": ["mcp:tally"]}),
+        _inst("p", "b", manifest={"id": "b", "connections": "not a list"})], gate=gate)
+    assert db.statements == []
+    assert {e["needs_setup"] for e in body["contributions"]["jobs"]} == {False}
+
+
+def test_with_no_set_the_connections_make_no_need() -> None:
+    """The pure part: ``met`` None is the gate off, and it is the default."""
+    manifest = {"id": "m", "connections": ["mcp:tally"]}
+    assert resolve.needs_met(manifest, _all, set()) is True
+    assert resolve.needs_met(manifest, _all, set(), None) is True
+    assert resolve.needs_met(manifest, _all, set(), frozenset()) is False
+    out = resolve.resolve({}, [_inst("o", "a", manifest=manifest)], [_claim("o", "k")], _all)
+    assert out["jobs"][0]["needs_setup"] is False
+
+
+def test_an_install_with_no_connection_costs_no_statement(monkeypatch) -> None:
+    """``/auth/me`` calls ``resolve_for`` (``routes/admin/me.py``). An app
+    with no connection must add no statement to it."""
+    db = _CountingDb()
+    body = _resolve_for(monkeypatch, db, [
+        _inst("o", "a", manifest={"id": "a"}),
+        _inst("p", "b", manifest={"id": "b", "connections": []})])
+    assert db.statements == []
+    assert {e["needs_setup"] for e in body["contributions"]["jobs"]} == {False}
+
+
+def test_the_set_is_read_once_for_the_viewer_in_the_bound_org(monkeypatch) -> None:
+    from gateway.connections import store as connections
+
+    db = _CountingDb(providers=("mcp:tally",))
+    body = _resolve_for(monkeypatch, db, [
+        _inst("o", "a", manifest={"id": "a", "connections": ["mcp:tally"]}),
+        _inst("p", "b", manifest={"id": "b", "connections": ["zoho"]}),
+        _inst("q", "c", manifest={"id": "c"})])
+    assert [s for s, _ in db.statements] == [resolve.BOUND_ORG_SQL, connections._MET_SQL]
+    assert db.statements[1][1] == {"org": ORG, "member": "ana@pkg.test"}
+    setup = {e["install_id"]: e["needs_setup"] for e in body["contributions"]["jobs"]}
+    assert setup == {"o": False, "p": True, "q": False}
+
+
+def test_a_session_with_no_bound_org_meets_no_connection(monkeypatch) -> None:
+    db = _CountingDb(bound=None, providers=("mcp:tally",))
+    body = _resolve_for(monkeypatch, db, [
+        _inst("o", "a", manifest={"id": "a", "connections": ["mcp:tally"]})])
+    assert [s for s, _ in db.statements] == [resolve.BOUND_ORG_SQL]
+    assert body["contributions"]["jobs"][0]["needs_setup"] is True
+
+
+def test_the_mcp_name_rule_of_the_manifest_is_the_registry_rule() -> None:
+    from acb_common.studio_manifest import CONNECTION_NAME_RE, MCP_SERVER_NAME
+    from gateway.connections import mcp
+
+    assert mcp.NAME_RE.pattern == f"^{MCP_SERVER_NAME}$"
+    assert mcp.PREFIX == "mcp:"
+    assert CONNECTION_NAME_RE.fullmatch(mcp.provider_for("tally-erp"))
+
+
+def test_the_met_read_names_no_blob_and_no_other_member() -> None:
+    """The one read of the registry. It reads the provider column only, and a
+    member row counts only for the member of the read (the R8 twin proves it)."""
+    from gateway.connections import store as connections
+
+    sql = connections._MET_SQL
+    assert sql.startswith("SELECT DISTINCT provider FROM integration_connections")
+    assert "credentials" not in sql
+    assert "status = 'connected'" in sql
+    assert "member_email = :member" in sql and "organization_id = CAST(:org AS uuid)" in sql

@@ -94,6 +94,7 @@ pytest.importorskip("sqlalchemy")
 from acb_auth import UserContext, UserRole, build_access
 from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant, tenant_session
+from acb_common.studio_access import Viewer
 from acb_common.studio_manifest import manifest_hash
 from fastapi import HTTPException
 from gateway.routes.studio import actions, invoke, packages
@@ -111,6 +112,9 @@ pytestmark = _DB_GATE
 
 TAG = uuid.uuid4().hex[:8]
 ANA = f"ana.{TAG}@stua5.test"
+#: C8a. The store takes a viewer. No object of this suite declares `access`,
+#: so each object is open and any member reads and writes it.
+_VIEWER = Viewer(ANA)
 BEN = f"ben.{TAG}@stua5.test"
 NOT_FOUND = "Not found"
 
@@ -321,7 +325,7 @@ async def _record(org: str, pid: str, name: str = "visit", **data: Any) -> str:
         obj = await objects_store.get_object_by_name(db, name, package_id=pid)
         assert obj is not None
         rec = await objects_store.create_record(
-            db, ANA, obj.id, data or {"site": "Plant 4"}, package_id=pid)
+            db, ANA, obj.id, data or {"site": "Plant 4"}, package_id=pid, viewer=_VIEWER)
         assert rec is not None
     return rec.id
 
@@ -539,7 +543,7 @@ def test_r8_a_publish_with_no_change_makes_and_moves_no_row(world) -> None:
     pid, (status, got) = _run(world, go)
     assert status == 200 and got["version"]["version"] == 2
     assert got["sync"] == {"objects_created": [], "fields_added": [], "hot_changed": [],
-                           "rules_set": []}
+                           "rules_set": [], "access_set": []}
     assert _versions(world, pid) == [1, 2]
     assert len(_objects(world, pid)) == 1
 
@@ -726,6 +730,51 @@ def test_r8_a_refusal_names_each_problem_with_its_object_and_field(world) -> Non
     assert ("field_removed", "visit", "qty") in seen
 
 
+# ── STU-C14. The parts of the new field types are part of a field ──────────
+
+_C14_FIELDS: list[dict[str, Any]] = [
+    {"key": "title", "type": "text"},
+    {"key": "load", "type": "quantity", "units": ["kg", "t"]},
+    {"key": "score", "type": "rating", "min": 1, "max": 5},
+    {"key": "serial", "type": "barcode", "format": "ean13"},
+]
+
+
+def test_r8_a_change_of_units_or_max_is_refused_as_field_changed(world) -> None:
+    """A published quantity cannot change its `units`, and a rating cannot change its
+    `max`, because a stored value may no longer fit. `objects_store._FIELD_ATTRS` holds them.
+
+    Mutation: drop `min`, `max`, `units` and `format` from `_FIELD_ATTRS`. This test turns red.
+    """
+    mid = _mid()
+    pid = _run(world, lambda: _live(world.a, ANA, _manifest(mid, [_visit(_C14_FIELDS)])))
+    bad = _manifest(mid, [_visit([
+        _C14_FIELDS[0],
+        {"key": "load", "type": "quantity", "units": ["kg"]},
+        {"key": "score", "type": "rating", "min": 1, "max": 10},
+        {"key": "serial", "type": "barcode", "format": "code128"},
+    ])])
+    before = _snapshot(world, pid)
+    assert _run(world, lambda: _save(world.a, ANA, pid, bad))[0] == 200
+    status, got = _run(world, lambda: _publish(world.a, ANA, pid))
+    assert status == 409, got
+    said = {p["field"]: p["message"] for p in got["problems"] if p["kind"] == "field_changed"}
+    assert "(units)" in said["load"]
+    assert "(max)" in said["score"]
+    assert "(format)" in said["serial"]
+    assert _snapshot(world, pid) == before
+
+
+def test_r8_a_resync_of_the_same_c14_fields_writes_nothing(world) -> None:
+    pid = _run(world, lambda: _live(world.a, ANA, _manifest(_mid(), [_visit(_C14_FIELDS)])))
+    before = _snapshot(world, pid)
+    status, got = _run(world, lambda: _publish(world.a, ANA, pid))
+    assert status == 200, got
+    after = _snapshot(world, pid)
+    assert after["objects"] == before["objects"]
+    assert after["fields"] == before["fields"]
+
+
 # ── e. The rules ───────────────────────────────────────────────────────────
 
 
@@ -746,6 +795,39 @@ def test_r8_a_publish_that_adds_a_state_machine_stores_it(world) -> None:
     # The sync wrote an audit row that names the rules.
     syncs = [a for a in _audits(world, pid) if a[2].get("op") == "package.objects_sync"]
     assert syncs[-1][2]["rules"] == ["visit"]
+
+
+def _access(world: Any, pid: str) -> Any:
+    with world.p.admin_engine.connect() as c:
+        raw = c.execute(text("SELECT access FROM studio_objects WHERE package_id = CAST(:p AS uuid) "
+                             "AND name = 'visit'"), {"p": pid}).scalar_one()
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
+def test_r8_c8a_a_draft_writes_no_grant_and_the_publish_writes_and_audits_them(world) -> None:
+    """C8a: a row rule binds the published manifest, never the draft. A draft
+    save writes no grant. The publish writes them, its answer names the object,
+    and its audit row names it too."""
+    fields = [*_FIELDS, {"key": "engineer", "type": "person", "hot": True}]
+    access = [{"role": "lead", "read": "all", "write": "all"},
+              {"role": "engineer", "read": {"where": "engineer = $me"}, "hide": ["price"]}]
+
+    async def go() -> tuple[str, int, Any, int, Any]:
+        mid = _mid()
+        pid = await _live(world.a, ANA, _manifest(mid, [_visit(fields)]))
+        draft = {**_manifest(mid, [{**_visit(fields), "access": access}]),
+                 "roles": ["lead", "engineer"]}
+        saved, _ = await _save(world.a, ANA, pid, draft)
+        before = _access(world, pid)
+        status, got = await _publish(world.a, ANA, pid)
+        return pid, saved, before, status, got
+
+    pid, saved, before, status, got = _run(world, go)
+    assert saved == 200 and before is None
+    assert status == 200 and got["sync"]["access_set"] == ["visit"], got
+    assert _access(world, pid) == access
+    syncs = [a for a in _audits(world, pid) if a[2].get("op") == "package.objects_sync"]
+    assert syncs[-1][2]["access"] == ["visit"]
 
 
 def test_r8_a_new_object_with_rules_stores_them_with_its_fields(world) -> None:
@@ -1599,7 +1681,7 @@ def test_r8_a_publish_that_adds_a_roll_up_stores_it_and_it_computes(world) -> No
         async with tenant_session(world.a) as db:
             obj = await objects_store.get_object_by_name(db, "order", package_id=pid)
             assert obj is not None
-            rec = await objects_store.get_record(db, obj.id, order, package_id=pid)
+            rec = await objects_store.get_record(db, obj.id, order, package_id=pid, viewer=_VIEWER)
         return pid, got, rec
 
     pid, (status, got), rec = _run(world, go)

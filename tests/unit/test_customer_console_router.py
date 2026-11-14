@@ -1600,6 +1600,208 @@ class TestThePerRunCircuitBreaker:
             client, key, headers={"X-CC-Run": "run-hot"}).status_code == 200
 
 
+# ── AUTO-8b-2b: `X-CC-Run-Ceiling` can only LOWER the breaker ───────────────
+
+
+#: The malformed values of the spec row, each a 400 and never the default.
+_BAD_CEILINGS = ("abc", "-1", "NaN", "Infinity", "1e3", "5.00001", "")
+
+
+def _second_org(client, db) -> tuple[str, dict, str]:
+    """Org B on the same box: its slug, its key headers and its id."""
+    slug = f"router-b-{uuid.uuid4().hex[:8]}"
+    client.post("/orgs/provision", headers=OP, json={
+        "slug": slug, "name": "B", "owner_email": f"o@{slug}.com",
+        "deployment_label": DEFAULT_DEPLOYMENT_LABEL})
+    token = client.post("/keys", headers=OP, json={"org_slug": slug}).json()["token"]
+    with db.begin() as c:
+        org = str(c.execute(text("SELECT id FROM organization WHERE slug = :s"),
+                            {"s": slug}).scalar_one())
+    return slug, {"Authorization": f"Bearer {token}"}, org
+
+
+def _deployment_key(db) -> str:
+    """A real `serve` deployment key on the shared box (H-152)."""
+    from tests.unit.test_router_deployment_arm import _mint_deployment_key
+
+    return _mint_deployment_key(db, capabilities=["serve"])
+
+
+class TestTheTurnCeilingHeader:
+    """``proactive_agent.md`` §4.4, the §9 row AUTO-8b-2b (task 3081). R8.
+
+    Org A's run R stands at 7 credits. The header can only LOWER the fixed
+    500. A value that does not parse is a 400 and never the default. The
+    sum keys on the org of the CREDENTIAL, so org B with the same run id sees
+    none of A's spend.
+
+    Decision (documented in ``auth._run_ceiling_of``): a ceiling with no
+    ``X-CC-Run`` is a 400 too, because it has no run to bind.
+
+    Mutations (R7), each run by hand on 2026-11-13:
+
+    * ``credits.run_ceiling_for`` returns the header in place of the min:
+      ``test_a_header_of_900_passes_and_the_ceiling_stays_500`` goes red.
+    * ``auth._run_ceiling_of`` falls back to ``None`` (500) on a bad value:
+      ``test_a_malformed_header_is_400_and_never_the_default`` goes red.
+    """
+
+    RUN = "run-turn"
+
+    def _at_seven(self, client, slug, org_id):
+        _grant(client, slug, "10000")          # the BALANCE is not the issue
+        _charge(client, org_id, "7", run_id=self.RUN)
+
+    def test_a_header_of_5_on_a_run_at_7_is_403_naming_5(
+            self, client, org_key, org_id, calls, gate_on):
+        slug, key = org_key
+        self._at_seven(client, slug, org_id)
+        before = len(calls)
+
+        r = _complete(client, key, headers={
+            "X-CC-Run": self.RUN, "X-CC-Run-Ceiling": "5"})
+
+        assert r.status_code == 403, r.text
+        detail = r.json()["detail"]
+        assert detail["reason"] == "run_ceiling_exceeded"
+        assert detail["run_id"] == self.RUN
+        assert detail["ceiling_credits"] == "5"
+        assert Decimal(detail["spent_credits"]) == Decimal("7")
+        # A pre-flight: the provider never ran.
+        assert len(calls) == before
+
+    def test_the_403_writes_its_one_refusal_row(
+            self, client, org_key, org_id, db, gate_on):
+        slug, key = org_key
+        self._at_seven(client, slug, org_id)
+
+        _complete(client, key, headers={
+            "X-CC-Run": self.RUN, "X-CC-Run-Ceiling": "5"})
+
+        row = _refusal_row(db, org_id)
+        assert row is not None
+        assert row["refusal_reason"] == "run_ceiling_exceeded"
+        assert row["run_id"] == self.RUN
+
+    def test_a_header_of_900_passes_and_the_ceiling_stays_500(
+            self, client, org_key, org_id, gate_on):
+        slug, key = org_key
+        self._at_seven(client, slug, org_id)
+
+        assert _complete(client, key, headers={
+            "X-CC-Run": self.RUN, "X-CC-Run-Ceiling": "900"}).status_code == 200
+
+        # At 500 the breaker trips, and the header of 900 does not move it.
+        _charge(client, org_id, "493", run_id=self.RUN)
+        r = _complete(client, key, headers={
+            "X-CC-Run": self.RUN, "X-CC-Run-Ceiling": "900"})
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"]["ceiling_credits"] == "500"
+
+    def test_no_header_behaves_as_before(
+            self, client, org_key, org_id, gate_on):
+        slug, key = org_key
+        self._at_seven(client, slug, org_id)
+
+        assert _complete(
+            client, key, headers={"X-CC-Run": self.RUN}).status_code == 200
+
+    def test_org_B_with_the_same_run_id_sees_none_of_A_s_spend(
+            self, client, org_key, org_id, db, gate_on):
+        slug, key = org_key
+        self._at_seven(client, slug, org_id)
+        b_slug, b_key, b_org = _second_org(client, db)
+        _grant(client, b_slug, "10000")
+
+        # A is refused at 5.
+        assert _complete(client, key, headers={
+            "X-CC-Run": self.RUN, "X-CC-Run-Ceiling": "5"}).status_code == 403
+        # B, same run id, no header: not affected.
+        assert _complete(
+            client, b_key, headers={"X-CC-Run": self.RUN}).status_code == 200
+        # B, same run id, a ceiling of 5: B's run R stands at 0, so B passes.
+        # A sum that read A's 7 credits would refuse it.
+        assert _complete(client, b_key, headers={
+            "X-CC-Run": self.RUN, "X-CC-Run-Ceiling": "5"}).status_code == 200
+        assert _refusal_row(db, b_org) is None
+
+    @pytest.mark.parametrize("raw", _BAD_CEILINGS)
+    def test_a_malformed_header_is_400_and_never_the_default(
+            self, client, org_key, org_id, db, calls, gate_on, raw):
+        slug, key = org_key
+        self._at_seven(client, slug, org_id)
+        before = len(calls)
+
+        r = _complete(client, key, headers={
+            "X-CC-Run": self.RUN, "X-CC-Run-Ceiling": raw})
+
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["reason"] == "run_ceiling_invalid"
+        assert len(calls) == before
+        # The auth arm refused, so the meter holds no row for it.
+        assert _refusal_row(db, org_id) is None
+
+    def test_a_ceiling_with_no_run_is_400(
+            self, client, org_key, org_id, calls, gate_on):
+        slug, key = org_key
+        self._at_seven(client, slug, org_id)
+        before = len(calls)
+
+        r = _complete(client, key, headers={"X-CC-Run-Ceiling": "5"})
+
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["reason"] == "run_ceiling_invalid"
+        assert "X-CC-Run" in r.json()["detail"]["message"]
+        assert len(calls) == before
+
+    def test_the_ceiling_is_inert_with_the_gate_off(
+            self, client, org_key, org_id):
+        slug, key = org_key
+        self._at_seven(client, slug, org_id)
+
+        assert _complete(client, key, headers={
+            "X-CC-Run": self.RUN, "X-CC-Run-Ceiling": "5"}).status_code == 200
+
+    def test_a_malformed_header_is_400_with_the_gate_off_too(
+            self, client, org_key):
+        _, key = org_key
+        r = _complete(client, key, headers={
+            "X-CC-Run": self.RUN, "X-CC-Run-Ceiling": "abc"})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["reason"] == "run_ceiling_invalid"
+
+    def test_a_body_cannot_carry_the_ceiling_or_an_org(self, client, org_key):
+        # The ceiling travels as a header only, and the body names no org.
+        # `CompletionRequest` forbids an extra field.
+        _, key = org_key
+        for extra in ({"run_ceiling": "5"}, {"org_slug": "other"},
+                      {"organization_id": str(uuid.uuid4())}):
+            r = _complete(client, key, headers={"X-CC-Run": self.RUN}, **extra)
+            assert r.status_code == 422, (extra, r.text)
+
+    def test_the_deployment_arm_lowers_the_ceiling_too(
+            self, client, org_key, org_id, db, gate_on):
+        slug, _ = org_key
+        self._at_seven(client, slug, org_id)
+        token = _deployment_key(db)
+        base = {"Authorization": f"Bearer {token}", "X-CC-Member": f"o@{slug}.com",
+                "X-CC-Member-Proven": "1", "X-CC-Run": self.RUN}
+
+        r = client.post("/v1/chat/completions", headers={
+            **base, "X-CC-Run-Ceiling": "5"}, json={
+                "model": "tier-balanced",
+                "messages": [{"role": "user", "content": "hi"}]})
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"]["ceiling_credits"] == "5"
+
+        r = client.post("/v1/chat/completions", headers={
+            **base, "X-CC-Run-Ceiling": "abc"}, json={
+                "model": "tier-balanced",
+                "messages": [{"role": "user", "content": "hi"}]})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["reason"] == "run_ceiling_invalid"
+
+
 # ── A5 slice 5: the meter records the WALL (§8.1, migration 020) ────────────
 
 

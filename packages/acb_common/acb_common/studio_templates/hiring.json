@@ -1,0 +1,187 @@
+{
+  "studio": 1,
+  "id": "hiring",
+  "name": "Hiring",
+  "purpose": "Track candidates for each opening from first contact to offer.",
+  "team": "people",
+  "objects": [
+    {
+      "name": "candidate",
+      "fields": [
+        {
+          "key": "name",
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "email",
+          "type": "email"
+        },
+        {
+          "key": "phone",
+          "type": "phone"
+        },
+        {
+          "key": "opening",
+          "type": "text"
+        },
+        {
+          "key": "source",
+          "type": "select",
+          "options": [
+            "referral",
+            "job board",
+            "website",
+            "other"
+          ]
+        },
+        {
+          "key": "owner",
+          "type": "person"
+        },
+        {
+          "key": "stage",
+          "type": "select",
+          "options": [
+            "applied",
+            "screen",
+            "interview",
+            "offer",
+            "hired",
+            "rejected"
+          ]
+        },
+        {
+          "key": "score",
+          "type": "number"
+        },
+        {
+          "key": "resume",
+          "type": "file",
+          "many": true
+        },
+        {
+          "key": "notes",
+          "type": "longText"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "find",
+      "uses": "object:candidate.list"
+    },
+    {
+      "id": "candidate_get",
+      "uses": "object:candidate.get"
+    },
+    {
+      "id": "candidate_create",
+      "uses": "object:candidate.create"
+    },
+    {
+      "id": "candidate_update",
+      "uses": "object:candidate.update"
+    },
+    {
+      "id": "candidate_delete",
+      "uses": "object:candidate.delete"
+    }
+  ],
+  "views": [
+    {
+      "id": "board",
+      "block": "board",
+      "source": {
+        "object": "candidate"
+      },
+      "group_by": "stage",
+      "card": {
+        "title": "name",
+        "meta": [
+          "opening",
+          "owner"
+        ]
+      }
+    },
+    {
+      "id": "list",
+      "block": "table",
+      "source": {
+        "object": "candidate"
+      },
+      "columns": [
+        "name",
+        "opening",
+        "owner",
+        "score",
+        "stage"
+      ]
+    },
+    {
+      "id": "candidate_page",
+      "block": "detail",
+      "object": "candidate",
+      "fields": [
+        "name",
+        "email",
+        "phone",
+        "opening",
+        "source",
+        "owner",
+        "stage",
+        "score",
+        "resume",
+        "notes"
+      ]
+    },
+    {
+      "id": "new",
+      "block": "form",
+      "object": "candidate",
+      "fields": [
+        "name",
+        "email",
+        "phone",
+        "opening",
+        "source",
+        "owner",
+        "resume",
+        "notes"
+      ],
+      "submit": "candidate_create"
+    }
+  ],
+  "skill": {
+    "description": "Use for hiring: add a candidate, find one, see the pipeline.",
+    "instructions": "Ask for the name and the opening first. Show the board card. Move a candidate only on the member's request.",
+    "actions": [
+      "object:candidate.create"
+    ],
+    "cards": [
+      "board",
+      "new"
+    ]
+  },
+  "shell": {
+    "jobs": [
+      {
+        "verb": "Add a candidate",
+        "view": "new"
+      }
+    ],
+    "needs": [
+      {
+        "object": "candidate",
+        "where": {
+          "owner": "$me",
+          "stage": "interview"
+        }
+      }
+    ],
+    "search": [
+      "candidate"
+    ]
+  }
+}

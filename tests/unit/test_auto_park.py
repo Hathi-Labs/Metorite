@@ -99,6 +99,8 @@ from gateway.routes.workflows.engine.handlers import NodeExecutionError
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
+from tests.unit import _r8_lists as r8_lists
+
 _ROOT = Path(__file__).resolve().parents[2]
 _WORKFLOWS = _ROOT / "apps" / "services" / "gateway" / "gateway" / "routes" / "workflows"
 _PARK = _WORKFLOWS / "park.py"
@@ -470,8 +472,9 @@ def test_f3_an_approved_word_in_the_snapshot_or_the_payload_resumes_nothing(monk
 def test_f3_a_yes_of_the_decider_resumes_as_the_decider_in_the_rows_org(monkeypatch) -> None:
     seen = _decided_scan(monkeypatch, _decision(
         answered_by="owner@a.test", answer_key="yes", answered_at="now"), {})
+    # STU-B2c-2d: the decided scan alone carries the decision into the run.
     assert seen.resumes == [("r-1", {"resumed_by": "owner@a.test", "organization_id": ORG,
-                                     "pause_id": "p-1"})]
+                                     "pause_id": "p-1", "decided": True})]
 
 
 def test_f3_a_marked_turn_resumes_nothing(monkeypatch) -> None:
@@ -757,8 +760,11 @@ def _announce_offenders(root: Path) -> set[str]:
 
 def test_only_the_parked_gate_sends_no_created_event() -> None:
     """``announce=False`` takes a task out of every automation, so only the
-    parked gate may pass it. A ``**`` expansion counts as a pass too."""
+    parked gate may pass it, and the human step of STU-E4 (the same loop
+    reason: its task could start the workflow that made it). A ``**``
+    expansion counts as a pass too."""
     assert _announce_offenders(_ROOT) == {
+        "apps/services/gateway/gateway/routes/workflows/human_step.py",
         "apps/services/gateway/gateway/routes/workflows/park.py",
     }
 
@@ -1485,5 +1491,4 @@ class TestParkAndAskOnARealDatabase:
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """An R8 suite that CI does not list still skips in silence when the
     database gate is disarmed. Match the argument line, not a mention."""
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
-    assert re.search(r"^\s+tests/unit/test_auto_park\.py \\?$", workflow, re.M)
+    assert "tests/unit/test_auto_park.py" in r8_lists.must_run()

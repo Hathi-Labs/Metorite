@@ -202,12 +202,80 @@ merges it. The other lanes keep building. Its role is in
 
 | File on the box | What it holds |
 |---|---|
-| `~/lanes/merge-queue.tsv` | One line for each hand-over: pull request, task, worktree, lane, note. Tabs between the fields. |
-| `~/lanes/merge-queue.log` | One line for each result: `DONE <pull request> <sha>` or `BACK <pull request> <reason>`. |
+| `~/lanes/merge-bot-queue.tsv` | One line for each hand-over: pull request, task, worktree, lane, head SHA, tier, note. Tabs between the fields, under a `#` header line. Only `lane_handover.sh` writes it. |
+| `~/lanes/merge-bot.log` | One line for each result: `DONE <pull request> <sha>`, `RESOLVED <pull request> <rules>` or `BACK <pull request> <reason>`. Only the merge bot writes it. |
+| `~/lanes/merge-queue.tsv`, `~/lanes/merge-queue.log` | History of the lane-merge session, with HOLD, RED and NOTE lines that people wrote. Nothing reads them now. |
 
 A lane hands over a pull request only after three steps. The verifier passed,
 the review of its risk tier passed, and the owner approved its preview when
 it needed one.
+
+**The merge bot** (D218, task 3053). `scripts/home_server/merge_bot.sh` merges
+the queued pull requests with no model and no Metorite credential. One pass
+reads the queue, and handles each hand-over that has no result line yet. It
+never merges a `HIGH` tier slice, and it needs a PR body line that starts with
+`VERIFY: PASS`. It logs a BACK when the PR head moved after the hand-over. It
+waits for the seven required checks of `main` (a missing or pending one means
+not ready, and only the newest row of a check counts), and reruns a cancelled
+job once.
+
+It then runs the trial merge with
+`origin/main` and `scripts/premerge.sh` on the pinned SHA, and runs
+`gh pr merge --squash --match-head-commit <sha>`. A
+branch behind `main` still merges when the trial merge is clean. It never
+pushes, except the merge commit of a resolved conflict. It never passes `--admin` or `--auto`. `MERGE_BOT_DRY_RUN=1` prints
+the actions and calls no write command.
+
+The bot takes only a PR of this repo with base `main`. A fork, another base,
+or a head branch with a protected name (`main`, `master`, `release`,
+`release/*`, `green/*`) goes BACK before any merge work.
+
+**Conflicts** (CIV-34a, `ci_velocity.md` §8.9). When the trial merge
+conflicts, the bot merges `main` into the PR branch. It tries the rules of
+`scripts/merge_conflict_rules.py` on each conflicted file. It checks and tests
+the merged tree, and commits the merge only when all pass. It reads the head
+branch again, and pushes the merge commit only when the branch did not move.
+It never uses force, and `rerere` stays off.
+
+The log then gets `RESOLVED <pull request> <rules>`, and the next pass waits
+for the new pr-check. The lane pulls its branch after a `RESOLVED` line.
+
+The log gets `BACK <pull request> conflict: ...` in these cases:
+
+- A file fits no rule, or the conflict is in a HIGH, workflow or schema path.
+- A check or a test fails on the merged tree.
+- The tests need more time than the cap.
+- The head branch moved during the resolution.
+
+The bot runs ruff from `~/lanes/merge-bot-wt/.venv/bin`, or through
+`uv run --no-sync`. The unit PATH has no ruff.
+
+The units are
+`scripts/home_server/systemd/metorite-merge-bot.service` and `.timer`, every
+2 minutes, user `dev`. The owner installs them (see the header of the service
+file). `lane-merge` reads the log and closes or returns each task. A hand-over
+needs no box run since D218, because GitHub pr-check is the gate.
+
+**The automatic revert** (CIV-31, task 3056). `scripts/home_server/auto_revert.py`
+reads a red push batch of `main`, names the culprit, and reverts it through a
+revert PR. The merge bot merges that PR. It ships dark: the unit sets
+`AUTO_REVERT_MODE=dry` for one week first. `ci_velocity.md` §8.8 holds the
+design.
+
+| File on the box | What it holds |
+|---|---|
+| `~/lanes/auto-revert.log` | One line for each decision: `WOULD-REVERT` (dry), `REVERT`, `REVERTED`, `SKIP` or `PERSON`. Only the auto-revert pass writes it. |
+| `~/lanes/auto-revert/run-<id>.md` | One report for each red batch run: the checks, the decision, and the PR, comment and task text. |
+
+Read each new `PERSON` line. It names the doubt, the culprit and its task.
+The revert PR goes to the merge bot with the task `0`, so no task closes when
+it merges. Then `lane-merge` opens the culprit's task again
+(`lanes/lane-merge.md`). The box has no Metorite write credential, so the pass
+cannot open it.
+
+The units are
+`scripts/home_server/systemd/metorite-auto-revert.service` and `.timer`, every
+5 minutes, user `dev`. They take the place of `metorite-bisect-poll`.
 
 ### 3.9 End of a delegation
 
@@ -292,7 +360,8 @@ second lane. The script's header and `engineering_practice.md` §7a own the
 details. On 2026-11-06 a full suite peaked at about 10.7 GB of memory and
 took about 41 minutes (task 1907). So run one full suite at a time on the box.
 
-Before each push, run the tests that the diff can affect:
+GitHub `pr-check` is the gate (D218), so `ci_local` is optional. Before each
+push, run the tests that the diff can affect:
 `timeout 2400 uv run python scripts/affected_tests.py --run`.
 
 ### 6.2 Merge and release

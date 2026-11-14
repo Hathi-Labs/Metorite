@@ -141,6 +141,34 @@ export interface FeedCard {
   state_fp?: string;
 }
 
+/**
+ * The card of the agent questions that wait on the member (WS-55 EA-18c,
+ * `external_agent_access.md` §12.8). ONE card, keyed `questions:mine`. The
+ * gateway writes its why line (project path, the oldest question, its options,
+ * and how many more wait) and its one `answer` act, a link to the list in
+ * Projects (`?app=questions`). The answer runs the list's own write (D100,
+ * D101), so this file draws no answer and keeps no copy of the rules. `AiWaitingCard`
+ * is the chat's card, and it is not this one.
+ */
+export const AGENT_QUESTIONS_KIND = "agent_questions";
+export const AGENT_QUESTIONS_SIGNAL = "questions:mine";
+export const AGENT_QUESTIONS_HREF = "/projects?app=questions";
+
+/**
+ * EA-18e (task 2964, D100, D101). The one act that opens inside its card on
+ * My Day: the `answer` act of the agent-questions card. The gateway still sends
+ * it as a link (`open`, to `AGENT_QUESTIONS_HREF`), so an old client and the
+ * door stay as they were. The column draws it as an `expand` act: the list of
+ * questions opens under the card, and the answer runs the Questions list's own
+ * write. Pure, so a test fences it.
+ */
+export const isExpandAct = (card: Pick<FeedCard, "kind">, act: Pick<FeedAct, "id" | "way">): boolean =>
+  card.kind === AGENT_QUESTIONS_KIND && act.id === "answer" && act.way === "open";
+
+/** True for the card of the agent questions. */
+export const isAgentQuestionsCard = (card: Pick<FeedCard, "kind">): boolean =>
+  card.kind === AGENT_QUESTIONS_KIND;
+
 /** Who closed a Handled entry: the `by` table of the MD-2c ticket (§16). */
 export type HandledByKind = "you" | "person" | "agent" | "system" | "rules";
 
@@ -1039,6 +1067,8 @@ export const FEED_KIND_LABELS: Readonly<Record<string, string>> = {
   agent_asks: "Waiting for your answer",
   // WS-ALN ALN-2b: a question that waits on me by name.
   decision: "Waiting for your decision",
+  // WS-55 EA-18c: the agent questions that wait on me (the "For me" list).
+  agent_questions: "Waiting for your answer",
   // WS-53 CRM-Q28 item 14: the weekly CRM digest is ready in Reports.
   digest_ready: "Weekly digest",
   // WS-53 CRM-Q32-4: new questions about the CRM data, for a CRM admin.

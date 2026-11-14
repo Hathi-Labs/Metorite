@@ -101,7 +101,11 @@ def test_every_ts_interface_is_a_schema_def():
 def test_typed_union_fields_name_their_union_in_ts():
     """A field that the schema types as an enum is a union in TS, never `string`."""
     schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
-    unions = {"FieldDef.type": "FieldType", "ViewDef.block": "BlockName"}
+    unions = {
+        "FieldDef.type": "FieldType",
+        "ViewDef.block": "BlockName",
+        "RuntimeDef.kind": "RuntimeKind",
+    }
     found = 0
     for name, defn in schema["$defs"].items():
         for key, prop in defn["properties"].items():

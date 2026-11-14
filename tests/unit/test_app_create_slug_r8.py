@@ -2,8 +2,8 @@
 
 Code: ``gateway/routes/apps/lifecycle.py``, ``create_app`` and ``fork_app``.
 
-The slug of an app is unique over all orgs (``apps_slug_key``) until WS-STU
-A3b-2. Before task 2429, the folder of each app was ``apps_root()/<slug>``,
+The slug of an app was unique over all orgs (``apps_slug_key``) until WS-STU
+A3b-2 dropped that key. Before task 2429, the folder of each app was ``apps_root()/<slug>``,
 and all folders were siblings. FORCE RLS shows a member only the rows of
 their own org. A member of org B who chose the name of an app of org A wrote
 ``app.json`` and ``index.html`` into the folder of org A. Only then did the
@@ -78,7 +78,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -95,6 +94,7 @@ from fastapi import HTTPException
 from gateway.routes.apps import lifecycle
 from sqlalchemy import text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -176,13 +176,15 @@ def _all_rows(world: Any) -> set[tuple[str, str]]:
             "SELECT slug, organization_id::text FROM apps"))}
 
 
-def _folder(world: Any, slug: str) -> Path:
+def _folder(world: Any, slug: str, org: str | None = None) -> Path:
     """The stored folder of the app *slug* of this suite, as the superuser.
     Since A3b-1 it is ``apps_root()/<app id>``."""
     with world.p.admin_engine.connect() as c:
         app_id, path = c.execute(text(
             "SELECT id::text, workspace_path FROM apps "
-            "WHERE slug = :s AND owner_email LIKE :t"), {"s": slug, "t": _LIKE}).one()
+            "WHERE slug = :s AND owner_email LIKE :t "
+            "AND (CAST(:o AS uuid) IS NULL OR organization_id = CAST(:o AS uuid))"),
+            {"s": slug, "t": _LIKE, "o": org}).one()
     assert path == str(world.root / app_id), (
         f"the folder of {slug} is not apps_root()/<app id>: {path}")
     return Path(path)
@@ -191,7 +193,7 @@ def _folder(world: Any, slug: str) -> Path:
 def _keep_org_a_folder(world: Any, slug: str, on_disk: bool) -> Path:
     """Write the secret of org A into its folder. Off disk, move the folder
     away, as after a disk loss. The store then rebuilds it on the next read."""
-    folder = _folder(world, slug)
+    folder = _folder(world, slug, world.p.org_a)
     (folder / "index.html").write_text(SECRET, encoding="utf-8")
     if not on_disk:
         folder.rename(world.tmp / f"moved-{slug}")
@@ -225,9 +227,9 @@ def test_r8_create_never_writes_the_folder_of_another_org(world, on_disk: bool) 
 
     _assert_org_a_folder_kept(world, folder, on_disk, first.slug)
     assert isinstance(second, lifecycle.AppDetail), second
-    # Until A3b-2 drops apps_slug_key, org B still takes the next slug.
-    assert second.slug != first.slug
-    mine = _folder(world, second.slug)
+    # A3b-2 dropped apps_slug_key: org B may hold the slug that org A holds.
+    assert second.slug == first.slug
+    mine = _folder(world, second.slug, b)
     assert mine != folder
     assert json.loads((mine / "app.json").read_text(encoding="utf-8"))["slug"] == second.slug
     assert _rows(world) == [
@@ -254,12 +256,13 @@ def test_r8_fork_never_writes_the_folder_of_another_org(world, on_disk: bool) ->
 
     _assert_org_a_folder_kept(world, folder, on_disk, taken.slug)
     assert isinstance(fork, lifecycle.AppDetail), fork
-    assert fork.slug not in (taken.slug, source.slug)
-    mine = _folder(world, fork.slug)
-    assert mine not in (folder, _folder(world, source.slug))
+    # Org A holds the slug, and it does not block org B (A3b-2).
+    assert fork.slug == taken.slug and fork.slug != source.slug
+    mine = _folder(world, fork.slug, b)
+    assert mine not in (folder, _folder(world, source.slug, b))
     assert json.loads((mine / "app.json").read_text(encoding="utf-8"))["slug"] == fork.slug
-    assert [(s, o) for s, o, _ in _rows(world)] == [
-        (source.slug, b), (taken.slug, a), (fork.slug, b)]
+    assert sorted((s, o) for s, o, _ in _rows(world)) == sorted([
+        (source.slug, b), (taken.slug, a), (fork.slug, b)])
 
 
 # ── c. A folder with no row ───────────────────────────────────────────────
@@ -385,10 +388,11 @@ def test_r8_a_late_folder_is_never_written_or_removed(
 # ── f. A common name never runs out ───────────────────────────────────────
 
 
-def _hold_in_org_b(world: Any, extra: tuple[str, ...] = ()) -> list[str]:
-    """Rows of org B, as the superuser, at ``busy-<tag>``, ``busy-<tag>-2`` …
+def _hold_in_org_a(world: Any, extra: tuple[str, ...] = ()) -> list[str]:
+    """Rows of org A, as the superuser, at ``busy-<tag>``, ``busy-<tag>-2`` …
     ``busy-<tag>-10``, and at ``busy-<tag>-<x>`` for each *x* in *extra*.
-    Until A3b-2, each one blocks the same slug for org A."""
+    Each one blocks the same slug for org A. The create does not see them,
+    because the tests below hide the read (see ``_blind``). That is a race."""
     names = [f"busy-{TAG}"] + [f"busy-{TAG}-{i}" for i in range(2, 11)]
     names += [f"busy-{TAG}-{x}" for x in extra]
     with world.p.admin_engine.begin() as c:
@@ -396,7 +400,7 @@ def _hold_in_org_b(world: Any, extra: tuple[str, ...] = ()) -> list[str]:
             c.execute(text(
                 "INSERT INTO apps (slug, name, owner_email, workspace_path, organization_id) "
                 "VALUES (:s, :s, :m, '', CAST(:o AS uuid))"),
-                {"s": n, "m": BEN, "o": world.p.org_b})
+                {"s": n, "m": ANA, "o": world.p.org_a})
     return names
 
 
@@ -407,14 +411,14 @@ def test_r8_after_ten_slugs_the_create_takes_a_random_suffix(
     Both go red here. The slugs that block are of org B, which org A cannot
     see, so each costs one try."""
     a = world.p.org_a
-    _hold_in_org_b(world, ("aaaaaaaa",))
+    busy_names = _hold_in_org_a(world, ("aaaaaaaa",))
     hexes = iter(["aaaaaaaa", "bbbbbbbb", "cccccccc"])
     monkeypatch.setattr(lifecycle, "_random_hex", lambda: next(hexes))
     tried: list[str] = []
     real_candidates = lifecycle._slug_candidates
 
     def spy(name: str, taken: set[str]) -> Any:
-        for slug in real_candidates(name, taken):
+        for slug in real_candidates(name, set()):  # a race: nothing is seen
             tried.append(slug)
             yield slug
 
@@ -426,15 +430,19 @@ def test_r8_after_ten_slugs_the_create_takes_a_random_suffix(
     assert tried == [*sequential, f"busy-{TAG}-aaaaaaaa", f"busy-{TAG}-bbbbbbbb"], tried
     assert isinstance(out, lifecycle.AppDetail), out
     assert out.slug == f"busy-{TAG}-bbbbbbbb"
-    assert [(s, o) for s, o, _ in _rows(world) if o == a] == [(out.slug, a)]
+    assert out.slug not in busy_names
+    assert [(s, o) for s, o, _ in _rows(world) if o == a and s == out.slug] == [(out.slug, a)]
 
 
 def test_r8_an_unfree_name_answers_409_with_a_next_step(
         world, monkeypatch: pytest.MonkeyPatch) -> None:
     a = world.p.org_a
-    _hold_in_org_b(world, ("aaaaaaaa", "bbbbbbbb", "cccccccc"))
+    held = _hold_in_org_a(world, ("aaaaaaaa", "bbbbbbbb", "cccccccc"))
     hexes = iter(["aaaaaaaa", "bbbbbbbb", "cccccccc"])
     monkeypatch.setattr(lifecycle, "_random_hex", lambda: next(hexes))
+    real_candidates = lifecycle._slug_candidates
+    monkeypatch.setattr(  # a race: the create sees none of the held rows
+        lifecycle, "_slug_candidates", lambda name, taken: real_candidates(name, set()))
     names_before = sorted(p.name for p in world.root.iterdir()) if world.root.exists() else []
 
     out = _create(world, a, f"Busy {TAG}", ANA)
@@ -443,7 +451,7 @@ def test_r8_an_unfree_name_answers_409_with_a_next_step(
     assert out.detail == (
         "Could not pick a free short name for this app. "
         "Try a slightly different name.")
-    assert [o for _, o, _ in _rows(world) if o == a] == []
+    assert [sl for sl, o, _ in _rows(world) if o == a and sl not in held] == []
     assert sorted(p.name for p in world.root.iterdir()) == names_before, (
         "the 409 left a folder")
 
@@ -482,5 +490,4 @@ def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """An R8 suite that CI does not list still skips in silence when the
     database gate is disarmed. Match the argument line, not a mention."""
     for name in ("pr-check.yml", "deploy.yml"):
-        workflow = (_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
-        assert re.search(r"^\s+tests/unit/test_app_create_slug_r8\.py \\?$", workflow, re.M), name
+        assert "tests/unit/test_app_create_slug_r8.py" in r8_lists.must_run(), name
