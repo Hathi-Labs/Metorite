@@ -212,12 +212,34 @@ it needed one.
 
 **A hand-over from any machine** (CIV-28c, task 3229). A session on the PC has
 no worktree on the box. It runs `bash scripts/hand_over.sh <PR> <task> <tier> "<note>"`.
-The wrapper runs `lane_handover.sh --pr` over `ssh metorite-home`, in the
-bot's checkout `~/lanes/merge-bot-src`. On the box as `dev`, it runs there
-with no ssh. The `--pr` mode makes a temp worktree of that checkout at the PR
-head. It runs the checks there and then removes the worktree. A refusal
-exits 1, and exit 3 means that the box cannot take it. A box lane can still
-give its own worktree to `lane_handover.sh`.
+Over `ssh metorite-home`, the wrapper goes to the bot's checkout
+`~/lanes/merge-bot-src` and fetches `main`. Then it runs
+`origin/main:scripts/home_server/lane_handover.sh --pr` from a temp file. So
+an old copy in the bot's checkout never runs. On the box as `dev`, it runs
+there with no ssh. A box lane can still give its own worktree to
+`lane_handover.sh`.
+
+The `--pr` mode checks out nothing. It reads the PR head and `origin/main` as
+git objects, and the trial merge reads the attributes of the PR head
+(`git --attr-source`, git 2.42 or newer). It first refuses what the bot would
+send back:
+
+- The bot timer `metorite-merge-bot.timer` is not active (exit 3).
+- The tier is HIGH, or the diff touches a path of `HIGH_PATHS_RE`.
+- The head is in a fork, the base is not `main`, or the head branch matches
+  `PROTECTED_HEAD_RE`.
+
+It reads both lists from the bot's own `merge_bot.sh`, so each list stays in
+one place. A refusal exits 1. Exit 3 means that the box cannot take it, or
+that the result is unknown.
+
+**The wait** (fix round 1 of PR 2294). Nothing on the box can write to
+Metorite, so the session stays the actor. It runs
+`bash scripts/hand_over.sh --wait <PR>`. Once a minute, the wait reads the
+queue and the log, with no lock. The bot gives the nth hand-over of a pull
+request the nth `DONE` or `BACK` line, so the wait skips a line of an older
+hand-over. It prints the line. Exit 0 is `DONE`, exit 1 is `BACK`, and exit 3
+means no line in `HAND_OVER_WAIT` minutes (120).
 
 **The merge bot** (D218, task 3053). `scripts/home_server/merge_bot.sh` merges
 the queued pull requests with no model and no Metorite credential. One pass
@@ -237,7 +259,9 @@ the actions and calls no write command.
 
 Each BACK line, except `BACK <pull request> closed`, also goes on the pull
 request as a comment (CIV-28c). The comment holds the reason and the
-hand-over command. A failed comment changes no log line.
+hand-over command. The comment drops each credential shape of
+`acb_common/secret_shapes.py`. When that scrub fails, the comment holds no
+reason. A failed comment changes no log line.
 `MERGE_BOT_BACK_COMMENT=0` turns the comment off.
 
 The bot takes only a PR of this repo with base `main`. A fork, another base,

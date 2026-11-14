@@ -5,10 +5,18 @@
 #   bash scripts/home_server/lane_handover.sh --pr <PR> <task> <lane> <tier> <note>
 #
 # The --pr mode (CIV-28c) needs no lane worktree, so a session on any machine
-# can hand over. scripts/hand_over.sh runs it on the box over ssh. It makes a
-# temp worktree of this script's own checkout (on the box, the bot's checkout
-# ~/lanes/merge-bot-src) at the PR head, runs checks 2 to 4 there, and removes
-# it. Check 1 holds by construction. The queue line gets "-" as the worktree.
+# can hand over. scripts/hand_over.sh runs origin/main's copy of this script
+# in the bot's checkout on the box (~/lanes/merge-bot-src), over ssh.
+# The --pr mode checks out nothing. It reads git objects only: the PR head that
+# gh names, and origin/main. The trial merge reads the attributes (the union
+# driver) of the PR head, as a lane worktree at that head does.
+# Before the checks, the --pr mode refuses what the bot would send back, while
+# the session still runs (fix round 1 of PR 2294):
+#   - the bot timer is not active (exit 3);
+#   - the tier is HIGH, or the diff touches a HIGH path (HIGH_PATHS_RE);
+#   - the head is in a fork, the base is not main, or the head branch has a
+#     protected name (PROTECTED_HEAD_RE).
+# Both lists are read from the bot's own merge_bot.sh, so each stays in one place.
 #
 # <tier> is LOW, STANDARD or HIGH: the risk tier of the slice. The bot never
 # merges HIGH (D218 keeps the full loop for it), and it logs a BACK for it.
@@ -20,7 +28,7 @@
 # The bot does not read the worktree field. A "-" there means a hand-over by
 # PR number: lane-merge makes its own worktree for it.
 # The old ~/lanes/merge-queue.tsv stays as history. Nothing reads it now.
-#   1. the worktree is clean, and its HEAD is the head of the PR;
+#   1. the worktree is clean, and its HEAD is the head of the PR (worktree mode);
 #   2. a line of the PR body starts with "VERIFY: PASS" (the verifier passed).
 #      The PR body has a "Visual review:" line when the diff touches
 #      workbench/control_plane/src (DESIGN_SYSTEM.md section 11);
@@ -31,7 +39,9 @@
 #   and scripts/home_server/merge_bot.sh waits for it.)
 # A failed check prints its reason and exits 1. Nothing is appended.
 # Settings for a test: HANDOVER_BASE (default origin/main), HANDOVER_QUEUE,
-# HANDOVER_REPO (the --pr mode's repo, default this script's checkout).
+# HANDOVER_REPO (the --pr mode's repo, default this script's checkout),
+# HANDOVER_BOT (default $HANDOVER_REPO/scripts/home_server/merge_bot.sh),
+# HANDOVER_TIMER_CHECK (default: systemctl --user is-active of the bot timer).
 # Fence: tests/unit/test_lane_handover.py.
 set -uo pipefail
 
@@ -52,21 +62,45 @@ fi
 BASE="${HANDOVER_BASE:-origin/main}"
 QUEUE="${HANDOVER_QUEUE:-$HOME/lanes/merge-bot-queue.tsv}"
 fail() { echo "HANDOVER REFUSED: $*" >&2; exit 1; }
+stop() { echo "HANDOVER STOPPED: $*" >&2; exit 3; }  # the bot cannot take it now
 for v in "$PR" "$TASK"; do
   case "$v" in ''|*[!0-9]*) fail "the PR and the task are numbers: got '$PR' and '$TASK'";; esac
 done
 case "$TIER" in LOW|STANDARD|HIGH) ;; *) fail "the tier is LOW, STANDARD or HIGH: got '$TIER'";; esac
 case "$LANE$NOTE" in *$'\t'*|*$'\n'*) fail "the lane or the note holds a tab or a newline. The queue is one TSV line.";; esac
 
+REV=HEAD        # the commit that the checks read
+ATTR=()         # git options for the trial merge
+FETCH_OPTS=()
 if [ "$MODE" = pr ]; then
-  # CIV-28c: the checks run in a temp worktree that this script owns, never in a
-  # lane's worktree. The trap removes it on every exit, a refusal too.
+  # 0. The bot runs. A hand-over to a stopped bot waits for nobody.
+  TIMER_CHECK="${HANDOVER_TIMER_CHECK:-systemctl --user is-active --quiet metorite-merge-bot.timer}"
+  bash -c "$TIMER_CHECK" >/dev/null 2>&1 \
+    || stop "the merge bot timer (metorite-merge-bot.timer) is not active on this box. Merge the PR yourself with the full loop."
   REPO="${HANDOVER_REPO:-$(dirname "${BASH_SOURCE[0]}")/../..}"
-  cd "$REPO" 2>/dev/null || fail "cannot enter the repo $REPO"
+  cd "$REPO" 2>/dev/null || stop "cannot enter the repo $REPO"
   REPO="$(pwd -P)"
-  head_pr="$(gh pr view "$PR" --json headRefOid -q .headRefOid)" || fail "gh cannot read PR $PR"
-  head_pr="$(tr -d '\r' <<< "$head_pr")"
+  # The bot's own lists, so the early refusals match what the bot does.
+  BOT="${HANDOVER_BOT:-$REPO/scripts/home_server/merge_bot.sh}"
+  high_re="$(sed -n "s/^HIGH_PATHS_RE+\{0,1\}='\([^']*\)'[[:space:]]*\$/\1/p" "$BOT" 2>/dev/null | tr -d '\r\n')"
+  protected_re="$(sed -n "s/^PROTECTED_HEAD_RE='\([^']*\)'[[:space:]]*\$/\1/p" "$BOT" 2>/dev/null | head -n 1 | tr -d '\r')"
+  [ -n "$high_re" ] && [ -n "$protected_re" ] \
+    || stop "cannot read HIGH_PATHS_RE and PROTECTED_HEAD_RE from $BOT"
+  [ "$TIER" != HIGH ] \
+    || fail "the merge bot never merges a HIGH slice. Merge it yourself with the full loop (next-ticket.md step 7)."
+  view="$(gh pr view "$PR" --json headRefOid,isCrossRepository,baseRefName,headRefName \
+    -q '[.headRefOid, (.isCrossRepository|tostring), .baseRefName, .headRefName] | @tsv')" \
+    || fail "gh cannot read PR $PR"
+  view="$(tr -d '\r' <<< "$view")"
+  head_pr="$(cut -f1 <<< "$view")"; cross="$(cut -f2 <<< "$view")"
+  base_ref="$(cut -f3 <<< "$view")"; head_ref="$(cut -f4 <<< "$view")"
   [[ "$head_pr" =~ ^[0-9a-f]{40}$ ]] || fail "gh gave no head SHA for PR $PR (got '$head_pr')"
+  [ "$cross" = false ] \
+    || fail "the head branch of PR $PR is in a fork (cross-repo: ${cross:-unknown}). The bot takes only a branch of this repo."
+  [ "$base_ref" = main ] || fail "the base of PR $PR is '$base_ref', not main. The bot merges only into main."
+  if [ -z "$head_ref" ] || grep -qE "$protected_re" <<< "$head_ref"; then
+    fail "the head branch '$head_ref' of PR $PR is protected or empty. The bot pushes only to a PR branch."
+  fi
   # --no-write-fetch-head: the fetch changes no file of the repo's own checkout.
   if ! git cat-file -e "$head_pr^{commit}" 2>/dev/null; then
     git fetch -q --no-write-fetch-head origin "refs/pull/$PR/head" 2>/dev/null \
@@ -74,18 +108,10 @@ if [ "$MODE" = pr ]; then
     git cat-file -e "$head_pr^{commit}" 2>/dev/null \
       || fail "the head ${head_pr:0:9} of PR $PR is not on origin. Push first."
   fi
-  TMPWT="$(mktemp -d "${TMPDIR:-/tmp}/handover-pr$PR.XXXXXX")" || fail "cannot make a temp folder"
-  cleanup() {
-    cd / 2>/dev/null  # Windows cannot remove a folder that is the current folder
-    git -C "$REPO" worktree remove --force "$TMPWT" >/dev/null 2>&1
-    rm -rf "$TMPWT"
-  }
-  trap cleanup EXIT
-  # No hooks: a post-checkout hook of the repo has no part in a check.
-  git -c core.hooksPath=/dev/null worktree add -q --detach "$TMPWT" "$head_pr" >/dev/null 2>&1 \
-    || fail "cannot make a temp worktree of $REPO at ${head_pr:0:9}"
-  cd "$TMPWT" || fail "cannot enter the temp worktree $TMPWT"
-  WT="-"
+  # git 2.42 added --attr-source. Without it, the union driver of the PR head is lost.
+  git --attr-source="$head_pr" version >/dev/null 2>&1 \
+    || stop "$(git --version) has no --attr-source. The hand-over needs git 2.42 or newer."
+  REV="$head_pr"; ATTR=(--attr-source="$head_pr"); FETCH_OPTS=(--no-write-fetch-head); WT="-"
 else
   [ -d "$WT" ] || fail "no worktree at $WT"
   cd "$WT" || fail "cannot enter $WT"
@@ -97,9 +123,19 @@ else
   [ "$head_pr" = "$(git rev-parse HEAD)" ] || fail "PR $PR head is ${head_pr:0:9}, and this worktree is at $(git rev-parse --short=9 HEAD). Push first."
 fi
 
-git fetch -q origin "${BASE#origin/}" 2>/dev/null || echo "warning: git fetch failed, so $BASE may be stale" >&2
-base="$(git merge-base HEAD "$BASE")" || fail "no merge base with $BASE"
-files="$(git diff --name-only "$base" HEAD)"
+git fetch -q "${FETCH_OPTS[@]}" origin "${BASE#origin/}" 2>/dev/null || echo "warning: git fetch failed, so $BASE may be stale" >&2
+base="$(git merge-base "$REV" "$BASE")" || fail "no merge base with $BASE"
+files="$(git diff --name-only "$base" "$REV")"
+
+if [ "$MODE" = pr ]; then
+  # The tier floor of the bot (CIV-28b), on the same diff: main to the pinned SHA.
+  # --no-renames lists both sides of a rename. A failed diff fails closed.
+  changed="$(git diff --no-renames --name-only "$BASE...$REV" 2>/dev/null)" \
+    || fail "the tier floor is unknown: git diff failed"
+  hits="$(grep -E "$high_re" <<< "$changed" | head -n 3 | tr '\n' ' ')"
+  [ -z "$hits" ] \
+    || fail "the diff touches a HIGH path: ${hits}- the bot sends it back (tier floor). Merge it yourself with the full loop (next-ticket.md step 7)."
+fi
 
 # 2. The VERIFY: PASS line, and the Visual review line.
 body="$(gh pr view "$PR" --json body -q .body)" || fail "gh cannot read the body of PR $PR"
@@ -111,7 +147,7 @@ if grep -q '^workbench/control_plane/src/' <<< "$files"; then
 fi
 
 # 3. A trial merge of main, in memory. The worktree stays as it is.
-if ! out="$(git merge-tree --write-tree --name-only "$BASE" HEAD 2>&1)"; then
+if ! out="$(git "${ATTR[@]}" merge-tree --write-tree --name-only "$BASE" "$REV" 2>&1)"; then
   conflicts="$(sed -n '2,$p' <<< "$out" | sed '/^$/,$d' | tr '\n' ' ')"
   fail "merging $BASE conflicts in: ${conflicts:-see git merge-tree}. Merge it, resolve, push."
 fi
@@ -147,7 +183,7 @@ while IFS= read -r f; do
   n="$(num "$f")"; [ -n "$n" ] || continue
   [ "$n" -gt "$main_max" ] || fail "migration $(basename "$f") is not above main's highest number ($main_max). Take $((main_max + 1)) (R1)."
   mine="$mine $n"
-done < <(git diff --name-only --diff-filter=AR "$base" HEAD -- infra/postgres/ | grep -E '/[0-9]+_[^/]*\.sql$' || true)
+done < <(git diff --name-only --diff-filter=AR "$base" "$REV" -- infra/postgres/ | grep -E '/[0-9]+_[^/]*\.sql$' || true)
 if [ -n "$mine" ]; then
   others="$(gh pr list --state open --limit 200 --json number,files \
     -q ".[] | select(.number != $PR) | .number as \$p | .files[].path | select(test(\"^infra/postgres/[0-9]+_.*[.]sql\$\")) | \"\(\$p) \(.)\"")" \

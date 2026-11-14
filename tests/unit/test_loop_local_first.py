@@ -100,19 +100,30 @@ def test_no_dispatch_follows_a_merge():
 
 
 def test_a_low_or_standard_slice_hands_over_and_a_high_slice_merges_itself():
-    """CIV-28c: a LOW or STANDARD session hands its PR to the merge bot and ends.
-    It does not wait for pr-check. The bot never merges HIGH, so a HIGH slice
-    keeps the premerge-and-merge command. The wrapper that the step names exists."""
+    """CIV-28c fix round 1: a LOW or STANDARD session hands its PR to the merge bot,
+    then waits for the bot's line and acts on it. Nothing else on the box can write
+    to Metorite. The bot never merges HIGH, so a HIGH slice keeps the
+    premerge-and-merge command. The wrapper that the step names exists."""
     land = _flat(_land())
     hand = land[
         land.index("**LOW or STANDARD: hand it over.**") : land.index("**HIGH: merge it yourself**")
     ]
     assert "bash scripts/hand_over.sh <PR> <task> <tier>" in hand
-    assert "Do not wait for `pr-check`" in hand
-    assert "`finish_agent_run`" in hand and "end the session" in hand
+    assert "`waiting: {on: ci, until_minutes: 120}`" in hand
+    assert "bash scripts/hand_over.sh --wait <PR>" in hand
+    done = hand[hand.index("**DONE (exit 0).**") : hand.index("**BACK (exit 1).**")]
+    assert "move the task to done" in done and "Watch the batch of `main`" in done
+    assert "Remove the worktree" in done and "`finish_agent_run`" in done
+    back = hand[hand.index("**BACK (exit 1).**") : hand.index("**No line (exit 3).**")]
+    assert "Keep the worktree" in back and "merge it yourself, as for HIGH" in back
+    assert "merge it yourself, as for HIGH" in hand[hand.index("**No line (exit 3).**") :]
+    # The session never ends at the hand-over.
+    assert "end the session" not in hand
     high = land[land.index("**HIGH: merge it yourself**") :]
     assert "bash scripts/premerge.sh > <log> 2>&1 && gh pr merge <n> --squash" in high
     assert "**A stacked slice**" in high
+    # The batch watch binds after a bot merge until the automatic revert is on.
+    assert "until `AUTO_REVERT_MODE=on`" in land
     assert (ROOT / "scripts" / "hand_over.sh").is_file()
 
 

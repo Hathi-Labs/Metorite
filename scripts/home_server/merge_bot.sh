@@ -65,6 +65,8 @@
 #   PREMERGE_CMD [timeout 900 bash scripts/premerge.sh]
 #   GH_CMD [gh]   MERGE_BOT_DRY_RUN=1: print actions, call no write command
 #   MERGE_BOT_BACK_COMMENT [1]  0 turns the PR comment of a BACK off
+#   MERGE_BOT_SECRET_SHAPES [$ROOT/packages/acb_common/acb_common/secret_shapes.py]
+#     the one credential list. The BACK comment drops each shape of it.
 #   MERGE_BASE_RETRY_WAIT [20]  seconds between the in-pass merge retries
 #   CONFLICT_RULES [1]  0 turns the CIV-34a conflict rules off: a conflict is a BACK
 #   CONFLICT_TEST_CMD [uv run --no-sync pytest -q -p no:cacheprovider]  gets the test
@@ -175,17 +177,35 @@ record() {  # record <line>: one result line in the log. A dry run only prints i
   if [ "$DRY" = 1 ]; then say "DRY RUN would log: $*"; else printf '%s\n' "$*" >> "$LOG"; fi
   case "$*" in "BACK "*) tell_back "$*" ;; esac
 }
-# tell_back <BACK line>: CIV-28c. A session that hands over by PR number has
-# ended, and no lane-merge may run. So each BACK reason also goes to the PR as a
-# comment. The log line comes first, and a failed comment changes no log line.
-# A closed PR gets no comment. The reason is in a code block, so an @name in a
-# tool's output tags nobody. CUR_TASK, CUR_SHA and CUR_TIER come from the queue line.
+# tell_back <BACK line>: CIV-28c. The session that handed over reads the log line
+# (hand_over.sh --wait). The reason also goes to the PR as a comment, so a person
+# sees it on GitHub. The log line comes first, and a failed comment changes no
+# log line. A closed PR gets no comment. The reason is in a code block, so an
+# @name in a tool's output tags nobody. CUR_TASK, CUR_SHA and CUR_TIER come from
+# the queue line. Fix round 1: the comment drops each credential shape of the one
+# list, acb_common/secret_shapes.py. When that scrub fails, the comment holds no reason.
+SECRET_SHAPES_PY="${MERGE_BOT_SECRET_SHAPES:-$ROOT/packages/acb_common/acb_common/secret_shapes.py}"
+PY_REDACT='
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("secret_shapes", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+text = sys.stdin.buffer.read().decode("utf-8", "replace")
+for rx in (mod.REDACTION_BEARER, *mod.REDACTION_SHAPES, *(rx for _, rx in mod.SECRET_SHAPES)):
+    text = rx.sub("[redacted]", text)
+sys.stdout.buffer.write(text.encode("utf-8"))
+'
 tell_back() {
-  local rest="${1#BACK }" pr reason body fence='```' plain="'''"
+  local rest="${1#BACK }" pr reason body fence='```' plain="'''" clean
   pr="${rest%% *}"; reason="${rest#* }"
   [ "$BACK_COMMENT" = 1 ] || return 0
   [ "$reason" = closed ] && return 0
   if [ "$DRY" = 1 ]; then say "DRY RUN would comment the BACK on PR $pr"; return 0; fi
+  if clean="$(printf '%s' "$reason" | python3 -c "$PY_REDACT" "$SECRET_SHAPES_PY" 2>/dev/null)"; then
+    reason="$clean"
+  else
+    reason="(no reason here: the credential scrub failed. Read the BACK line in ~/lanes/merge-bot.log on the box.)"
+  fi
   reason=${reason//"$fence"/"$plain"}
   body="$(printf '%s\n' \
     "Merge bot: BACK. The bot did not merge this PR at \`${CUR_SHA:0:9}\` (task ${CUR_TASK:-unknown})." \

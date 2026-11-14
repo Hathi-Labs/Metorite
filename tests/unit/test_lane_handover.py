@@ -14,10 +14,12 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "home_server" / "lane_handover.sh"
+BOT = ROOT / "scripts" / "home_server" / "merge_bot.sh"
 BASH = shutil.which("bash")
 
 FAKE_GH = """#!/usr/bin/env bash
 case "$*" in
+  *isCrossRepository*) printf '%s\\t%s\\t%s\\t%s\\n' "$FAKE_HEAD" "${FAKE_CROSS:-false}" "${FAKE_BASE:-main}" "${FAKE_HEADREF:-feat}" ;;
   *headRefOid*) printf '%s\\n' "$FAKE_HEAD" ;;
   *"pr list"*) printf '%s' "$FAKE_OTHERS" ;;
   *body*) printf '%s\\n' "$FAKE_BODY" ;;
@@ -350,7 +352,7 @@ def _publish(wt):
     return git(wt, "rev-parse", "HEAD")
 
 
-def _run_pr(tmp, src, head, body=BODY, others="", tier="STANDARD", args=None):
+def _run_pr(tmp, src, head, body=BODY, others="", tier="STANDARD", args=None, **extra):
     env = {
         **os.environ,
         "PATH": f"{tmp / 'bin'}{os.pathsep}{os.environ['PATH']}",
@@ -360,6 +362,10 @@ def _run_pr(tmp, src, head, body=BODY, others="", tier="STANDARD", args=None):
         "FAKE_HEAD": head,
         "FAKE_BODY": body,
         "FAKE_OTHERS": others,
+        # The bot timer runs, and the lists come from the real merge_bot.sh.
+        "HANDOVER_TIMER_CHECK": "true",
+        "HANDOVER_BOT": str(BOT),
+        **extra,
     }
     argv = args or ["--pr", "77", "2207", "session@pc", tier, "note one"]
     return subprocess.run(
@@ -368,7 +374,7 @@ def _run_pr(tmp, src, head, body=BODY, others="", tier="STANDARD", args=None):
 
 
 def _no_temp_left(tmp, src):
-    """The temp worktree is gone: no folder, and no entry in the repo."""
+    """Fix round 1: the --pr mode checks out nothing. No folder, and no new worktree."""
     assert list((tmp / "t").glob("handover-pr*")) == []
     entries = git(src, "worktree", "list", "--porcelain").count("worktree ")
     assert entries == 1, git(src, "worktree", "list")
@@ -389,7 +395,7 @@ def test_civ28c_a_hand_over_by_pr_number_needs_no_lane_worktree(pr_repo):
     assert git(src, "status", "--porcelain") == ""
 
 
-def test_civ28c_a_conflict_is_refused_and_the_temp_worktree_is_removed(pr_repo):
+def test_civ28c_a_conflict_is_refused_and_nothing_is_checked_out(pr_repo):
     tmp, wt, src = pr_repo
     _commit(wt, "notes.md", "mine\n")
     head = _publish(wt)
@@ -402,18 +408,26 @@ def test_civ28c_a_conflict_is_refused_and_the_temp_worktree_is_removed(pr_repo):
     _no_temp_left(tmp, src)
 
 
-def test_civ28c_the_migration_check_runs_by_pr_number(pr_repo):
+def test_civ28c_the_migration_check_runs_by_pr_number(pr_repo, tmp_path):
+    # The real HIGH list holds infra/postgres/, so the tier floor refuses a migration
+    # first (test_civ28c_fix1_a_high_path_is_refused_by_the_bots_own_floor). A bot
+    # file with a list that leaves migrations out shows that R1 still runs on objects.
     tmp, wt, src = pr_repo
+    bot = tmp_path / "merge_bot.sh"
+    bot.write_text(
+        "HIGH_PATHS_RE='^deploy/'\nPROTECTED_HEAD_RE='^(main|green/.*)$'\n", encoding="utf-8"
+    )
     _commit(wt, "infra/postgres/005_low.sql", "select 1;\n")
-    r = _run_pr(tmp, src, _publish(wt))
+    r = _run_pr(tmp, src, _publish(wt), HANDOVER_BOT=str(bot))
     assert r.returncode == 1 and "not above main's highest number (10)" in r.stderr
     git(wt, "rm", "-q", "infra/postgres/005_low.sql")
     _commit(wt, "infra/postgres/011_mine.sql", "select 1;\n")
     head = _publish(wt)
-    r = _run_pr(tmp, src, head, others="55 infra/postgres/011_theirs.sql\n")
+    r = _run_pr(tmp, src, head, others="55 infra/postgres/011_theirs.sql\n", HANDOVER_BOT=str(bot))
     assert r.returncode == 1 and "also taken by PR 55" in r.stderr
     assert _queue(tmp) == ""
-    assert _run_pr(tmp, src, head, others="55 infra/postgres/012_theirs.sql\n").returncode == 0
+    r = _run_pr(tmp, src, head, others="55 infra/postgres/012_theirs.sql\n", HANDOVER_BOT=str(bot))
+    assert r.returncode == 0, r.stderr
     _no_temp_left(tmp, src)
 
 
@@ -441,8 +455,9 @@ def test_civ28c_a_head_that_is_not_on_origin_is_refused(pr_repo):
 
 
 def test_civ28c_the_union_driver_of_the_pr_head_applies(pr_repo):
-    # The temp worktree holds the files of the PR head, .gitattributes too. So the
-    # trial merge uses the union driver of INDEX.md, as in a lane worktree.
+    # The bot's checkout has no .gitattributes. The trial merge reads the attributes
+    # of the PR head (git --attr-source), so the union driver of INDEX.md applies,
+    # as in a lane worktree at that head.
     tmp, wt, src = pr_repo
     git(wt, "checkout", "-q", "main")
     _commit(wt, "project-docs/INDEX.md", "## ACTIVE\n| a.md | one |\n")
@@ -466,3 +481,70 @@ def test_civ28c_the_pr_mode_takes_five_arguments(pr_repo):
     r = _run_pr(tmp, src, "0" * 40, args=["--pr", "77", "2207", "session@pc", "medium", "n"])
     assert r.returncode == 1 and "LOW, STANDARD or HIGH" in r.stderr
     assert _queue(tmp) == ""
+
+
+# ── Fix round 1 (PR 2294 review): refuse early, while the session still runs ──
+
+
+def test_civ28c_fix1_a_high_tier_is_refused_before_any_check(pr_repo):
+    tmp, wt, src = pr_repo
+    _commit(wt, "a.txt", "x\n")
+    r = _run_pr(tmp, src, _publish(wt), tier="HIGH")
+    assert r.returncode == 1 and "never merges a HIGH slice" in r.stderr
+    assert _queue(tmp) == ""
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["packages/acb_auth/acb_auth/roles.py", "infra/postgres/011_x.sql", "deploy/run.sh"],
+)
+def test_civ28c_fix1_a_high_path_is_refused_by_the_bots_own_floor(pr_repo, path):
+    tmp, wt, src = pr_repo
+    _commit(wt, path, "x\n")
+    r = _run_pr(tmp, src, _publish(wt), tier="LOW")
+    assert r.returncode == 1 and "touches a HIGH path" in r.stderr and path in r.stderr
+    assert _queue(tmp) == ""
+
+
+@pytest.mark.parametrize(
+    ("fields", "reason"),
+    [
+        ({"FAKE_CROSS": "true"}, "is in a fork"),
+        ({"FAKE_BASE": "release"}, "not main"),
+        ({"FAKE_HEADREF": "green/main"}, "protected or empty"),
+        ({"FAKE_HEADREF": "main"}, "protected or empty"),
+    ],
+)
+def test_civ28c_fix1_a_fork_another_base_or_a_protected_head_is_refused(pr_repo, fields, reason):
+    tmp, wt, src = pr_repo
+    _commit(wt, "a.txt", "x\n")
+    r = _run_pr(tmp, src, _publish(wt), **fields)
+    assert r.returncode == 1 and reason in r.stderr, r.stderr
+    assert _queue(tmp) == ""
+
+
+def test_civ28c_fix1_a_stopped_bot_timer_exits_3(pr_repo):
+    tmp, wt, src = pr_repo
+    _commit(wt, "a.txt", "x\n")
+    r = _run_pr(tmp, src, _publish(wt), HANDOVER_TIMER_CHECK="false")
+    assert r.returncode == 3 and "timer" in r.stderr and "not active" in r.stderr
+    assert _queue(tmp) == ""
+
+
+def test_civ28c_fix1_a_bot_file_with_no_lists_exits_3(pr_repo, tmp_path):
+    tmp, wt, src = pr_repo
+    _commit(wt, "a.txt", "x\n")
+    empty = tmp_path / "merge_bot.sh"
+    empty.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    r = _run_pr(tmp, src, _publish(wt), HANDOVER_BOT=str(empty))
+    assert r.returncode == 3 and "HIGH_PATHS_RE" in r.stderr
+    assert _queue(tmp) == ""
+
+
+def test_civ28c_fix1_the_worktree_mode_keeps_its_old_checks(repo):
+    # The early refusals are for the --pr mode. A lane, and the automatic revert,
+    # still hand over a STANDARD revert with their own worktree, and no timer check runs.
+    tmp, wt = repo
+    _commit(wt, "a.txt", "x\n")
+    r = _run(tmp, wt)
+    assert r.returncode == 0, r.stderr

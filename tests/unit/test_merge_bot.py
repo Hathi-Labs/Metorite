@@ -1321,3 +1321,35 @@ def test_civ28c_a_dry_run_posts_no_comment(env):
     r = env.run(MERGE_BOT_DRY_RUN="1", MERGE_BOT_BACK_COMMENT=None)
     assert env.log == "" and "pr comment" not in env.calls
     assert "DRY RUN would comment the BACK on PR 5" in r.stderr
+
+
+# ── Fix round 1 (PR 2294 review): no credential in a BACK comment ───────────
+
+#: A key shape, built from parts so that the secret scan of the repo skips it.
+FAKE_KEY = "sk" + "-" + "q" * 24
+
+
+def _premerge_says(env, text):
+    (env.fix / "premerge.sh").write_text(
+        f"#!/usr/bin/env bash\necho '{text}' >&2\nexit 1\n", encoding="utf-8", newline="\n"
+    )
+
+
+def test_civ28c_fix1_the_comment_drops_a_credential_shape(env):
+    env.pr(5)
+    _premerge_says(env, f"fence failed: key {FAKE_KEY} in the log")
+    env.run(MERGE_BOT_BACK_COMMENT=None)
+    (body,) = env.comments(5)
+    assert FAKE_KEY not in body and "[redacted]" in body and "fence failed" in body
+    # The log line on the box keeps the full reason.
+    assert FAKE_KEY in env.log
+
+
+def test_civ28c_fix1_a_failed_scrub_posts_no_reason(env, tmp_path):
+    env.pr(5)
+    _premerge_says(env, f"fence failed: key {FAKE_KEY}")
+    env.run(MERGE_BOT_BACK_COMMENT=None, MERGE_BOT_SECRET_SHAPES=str(tmp_path / "missing.py"))
+    (body,) = env.comments(5)
+    assert FAKE_KEY not in body and "fence failed" not in body
+    assert "credential scrub failed" in body
+    assert env.log.startswith("BACK 5 premerge: ")
