@@ -36,6 +36,7 @@
         {
           "key": "status",
           "type": "select",
+          "hot": true,
           "options": [
             "draft",
             "submitted",
@@ -76,7 +77,8 @@
     {
       "id": "request_delete",
       "uses": "object:request.delete"
-    }
+    },
+    {"id": "request_aggregate", "uses": "object:request.aggregate"}
   ],
   "views": [
     {
@@ -109,6 +111,10 @@
         "status"
       ]
     },
+    {"id": "mine", "block": "table", "title": "My requests", "source": {"object": "request", "args": {"filter": [{"field": "requester", "op": "eq", "value": "me"}]}}, "columns": ["item", "requester", "vendor", "amount", "needed_by", "status"]},
+    {"id": "open", "block": "table", "title": "Open requests", "source": {"object": "request", "args": {"filter": [{"field": "status", "op": "in", "value": ["draft", "submitted", "approved"]}]}}, "columns": ["item", "requester", "vendor", "amount", "needed_by", "status"]},
+    {"id": "open_total", "block": "stat", "title": "Open requests", "source": {"object": "request", "action": "request_aggregate", "args": {"filter": [{"field": "status", "op": "in", "value": ["draft", "submitted", "approved"]}], "measures": [{"op": "count"}], "good": "down"}}},
+    {"id": "by_status", "block": "chart", "title": "By status", "source": {"object": "request", "action": "request_aggregate", "args": {"kind": "donut", "group_by": {"field": "status"}, "measures": [{"op": "count"}]}}},
     {
       "id": "request_page",
       "block": "detail",
@@ -173,12 +179,18 @@
     ]
   },
   "pages": [
+    {"id": "dashboard", "title": "Dashboard", "cols": 2, "cells": [{"view": "open_total"}, {"view": "by_status"}]},
     {"id": "all", "title": "All requests", "cols": 1, "cells": [{"view": "list"}], "side": {"view": "new"}},
+    {"id": "mine", "title": "My requests", "cols": 1, "cells": [{"view": "mine"}], "side": {"view": "new"}},
+    {"id": "open", "title": "Open requests", "cols": 1, "cells": [{"view": "open"}], "side": {"view": "new"}},
     {"id": "board", "title": "Board", "cols": 1, "cells": [{"view": "board"}], "side": {"view": "new"}}
   ],
   "nav": [
     {"title": "Requests", "rows": [
+      {"page": "dashboard", "icon": "LayoutDashboard", "label": "Dashboard"},
       {"page": "all", "icon": "List", "label": "All requests"},
+      {"page": "mine", "icon": "User", "label": "My requests", "count": true},
+      {"page": "open", "icon": "Inbox", "label": "Open requests", "count": true},
       {"page": "board", "icon": "Kanban", "label": "Board"}
     ]}
   ]

@@ -50,6 +50,7 @@
         {
           "key": "status",
           "type": "select",
+          "hot": true,
           "options": [
             "new",
             "open",
@@ -89,7 +90,8 @@
     {
       "id": "ticket_delete",
       "uses": "object:ticket.delete"
-    }
+    },
+    {"id": "ticket_aggregate", "uses": "object:ticket.aggregate"}
   ],
   "views": [
     {
@@ -122,6 +124,10 @@
         "status"
       ]
     },
+    {"id": "mine", "block": "table", "title": "My tickets", "source": {"object": "ticket", "args": {"filter": [{"field": "assignee", "op": "eq", "value": "me"}]}}, "columns": ["subject", "customer", "priority", "assignee", "due", "status"]},
+    {"id": "open", "block": "table", "title": "Open tickets", "source": {"object": "ticket", "args": {"filter": [{"field": "status", "op": "ne", "value": "solved"}]}}, "columns": ["subject", "customer", "priority", "assignee", "due", "status"]},
+    {"id": "open_total", "block": "stat", "title": "Open tickets", "source": {"object": "ticket", "action": "ticket_aggregate", "args": {"filter": [{"field": "status", "op": "ne", "value": "solved"}], "measures": [{"op": "count"}], "good": "down"}}},
+    {"id": "by_status", "block": "chart", "title": "By status", "source": {"object": "ticket", "action": "ticket_aggregate", "args": {"kind": "donut", "group_by": {"field": "status"}, "measures": [{"op": "count"}]}}},
     {
       "id": "ticket_page",
       "block": "detail",
@@ -188,12 +194,18 @@
     ]
   },
   "pages": [
+    {"id": "dashboard", "title": "Dashboard", "cols": 2, "cells": [{"view": "open_total"}, {"view": "by_status"}]},
     {"id": "all", "title": "All tickets", "cols": 1, "cells": [{"view": "list"}], "side": {"view": "new"}},
+    {"id": "mine", "title": "My tickets", "cols": 1, "cells": [{"view": "mine"}], "side": {"view": "new"}},
+    {"id": "open", "title": "Open tickets", "cols": 1, "cells": [{"view": "open"}], "side": {"view": "new"}},
     {"id": "board", "title": "Board", "cols": 1, "cells": [{"view": "board"}], "side": {"view": "new"}}
   ],
   "nav": [
     {"title": "Tickets", "rows": [
+      {"page": "dashboard", "icon": "LayoutDashboard", "label": "Dashboard"},
       {"page": "all", "icon": "List", "label": "All tickets"},
+      {"page": "mine", "icon": "User", "label": "My tickets", "count": true},
+      {"page": "open", "icon": "Inbox", "label": "Open tickets", "count": true},
       {"page": "board", "icon": "Kanban", "label": "Board"}
     ]}
   ]

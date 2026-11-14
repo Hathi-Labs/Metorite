@@ -11,7 +11,7 @@
         {"key": "customer", "type": "relation", "to": "crm.account", "required": true},
         {"key": "engineer", "type": "person"},
         {"key": "when", "type": "datetime"},
-        {"key": "status", "type": "select", "options": ["planned", "on site", "done"]},
+        {"key": "status", "type": "select", "hot": true, "options": ["planned", "on site", "done"]},
         {"key": "site", "type": "geo"},
         {"key": "photos", "type": "file", "many": true}
       ]
@@ -23,6 +23,7 @@
     {"id": "visit_create", "uses": "object:visit.create"},
     {"id": "visit_update", "uses": "object:visit.update"},
     {"id": "visit_delete", "uses": "object:visit.delete"},
+    {"id": "visit_aggregate", "uses": "object:visit.aggregate"},
     {"id": "close_visit", "uses": "object:visit.update", "set": {"status": "done"}}
   ],
   "views": [
@@ -39,6 +40,10 @@
       "source": {"object": "visit"},
       "columns": ["customer", "engineer", "when", "status"]
     },
+    {"id": "mine", "block": "table", "title": "My visits", "source": {"object": "visit", "args": {"filter": [{"field": "engineer", "op": "eq", "value": "me"}]}}, "columns": ["customer", "engineer", "when", "status"]},
+    {"id": "open", "block": "table", "title": "Open visits", "source": {"object": "visit", "args": {"filter": [{"field": "status", "op": "ne", "value": "done"}]}}, "columns": ["customer", "engineer", "when", "status"]},
+    {"id": "open_total", "block": "stat", "title": "Open visits", "source": {"object": "visit", "action": "visit_aggregate", "args": {"filter": [{"field": "status", "op": "ne", "value": "done"}], "measures": [{"op": "count"}], "good": "down"}}},
+    {"id": "by_status", "block": "chart", "title": "By status", "source": {"object": "visit", "action": "visit_aggregate", "args": {"kind": "donut", "group_by": {"field": "status"}, "measures": [{"op": "count"}]}}},
     {
       "id": "visit_page",
       "block": "detail",
@@ -65,12 +70,18 @@
     "search": ["visit"]
   },
   "pages": [
+    {"id": "dashboard", "title": "Dashboard", "cols": 2, "cells": [{"view": "open_total"}, {"view": "by_status"}]},
     {"id": "all", "title": "All visits", "cols": 1, "cells": [{"view": "list"}], "side": {"view": "check_in"}},
+    {"id": "mine", "title": "My visits", "cols": 1, "cells": [{"view": "mine"}], "side": {"view": "check_in"}},
+    {"id": "open", "title": "Open visits", "cols": 1, "cells": [{"view": "open"}], "side": {"view": "check_in"}},
     {"id": "board", "title": "Board", "cols": 1, "cells": [{"view": "board"}], "side": {"view": "check_in"}}
   ],
   "nav": [
     {"title": "Visits", "rows": [
+      {"page": "dashboard", "icon": "LayoutDashboard", "label": "Dashboard"},
       {"page": "all", "icon": "List", "label": "All visits"},
+      {"page": "mine", "icon": "User", "label": "My visits", "count": true},
+      {"page": "open", "icon": "Inbox", "label": "Open visits", "count": true},
       {"page": "board", "icon": "Kanban", "label": "Board"}
     ]}
   ]
