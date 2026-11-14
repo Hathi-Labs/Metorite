@@ -50,7 +50,7 @@ describe("StudioAppFrame", () => {
   it("keeps the owner verbs out of the phone bar", () => {
     const app = read("../../app/studio/package-preview/AppFrame.tsx");
     expect(app).toContain("useViewMode");
-    expect(app).toContain("const actions = isMobile ? undefined : ownerBar;");
+    expect(app).toContain("actions={isMobile ? undefined : ownerBar}");
     expect(app).toContain("{isMobile ? ownerBar : null}");
   });
 });
