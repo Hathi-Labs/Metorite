@@ -143,8 +143,9 @@ back() {
 }
 trap 'back; rm -rf "$logs"; true' EXIT
 # The union is read BEFORE the merge, from the two sides (CIV-32).
-union="$(sort -u <(git diff --name-only "$base" HEAD) <(git diff --name-only "$base" "$BASE"))"
-printf '%s\n' "$union" > "$logs/union.txt"
+git diff --name-only "$base" HEAD > "$logs/pr.txt"
+git diff --name-only "$base" "$BASE" > "$logs/main.txt"
+sort -u "$logs/pr.txt" "$logs/main.txt" > "$logs/union.txt"
 git checkout -q --detach
 if ! git merge --no-ff --no-edit -q "$BASE" > "$logs/merge.log" 2>&1; then
   conflicts="$(git diff --name-only --diff-filter=U | tr '\n' ' ')"
@@ -173,9 +174,17 @@ fi
 # in CI (LD-3b, 2026-10-30). So a failure is re-run on the branch before it
 # can block. Both commands can be replaced, for tests and for other stacks.
 TEST_TIMEOUT="${PREMERGE_TEST_TIMEOUT:-600}"
-# The files are passed by name, so affected_tests.py selects for the union and
-# not for the diff against $BASE alone (which, on the merge commit, is the PR only).
-AFFECTED_CMD="${PREMERGE_AFFECTED_CMD:-env -u VIRTUAL_ENV uv run python scripts/affected_tests.py --run \$(cat $logs/union.txt) -pno:cacheprovider --continue-on-collection-errors -rfE}"
+# premerge_select.py picks the tests that BOTH sides can affect, plus each test
+# file that either side changed. The whole union took 974 test files and ran
+# past 10 minutes on a 62-file union (measured 2026-11-14). The list is read
+# from the merge tree, so a branch without the script falls back to a note.
+sel() { env -u VIRTUAL_ENV uv run python scripts/premerge_select.py --pr "$logs/pr.txt" --main "$logs/main.txt" > "$logs/sel.txt"; }
+if [ -z "${PREMERGE_AFFECTED_CMD:-}" ]; then
+  if [ "$merge_test" = 1 ] && [ -f scripts/premerge_select.py ]; then sel || fail "premerge_select.py failed on the merge result."; fi
+  AFFECTED_CMD="if [ \"\$(head -1 $logs/sel.txt)\" = FULL ] || [ ! -s $logs/sel.txt ]; then echo 'nothing to run, or both sides are FULL'; else env -u VIRTUAL_ENV uv run pytest -q -p no:cacheprovider --continue-on-collection-errors -rfE \$(cat $logs/sel.txt); fi"
+else
+  AFFECTED_CMD="$PREMERGE_AFFECTED_CMD"
+fi
 RERUN_CMD="${PREMERGE_RERUN_CMD:-env -u VIRTUAL_ENV uv run pytest -q -p no:cacheprovider --continue-on-collection-errors -rfE}"
 # Ids at the function level: a parameter such as [Earlier reply] holds a space,
 # and a cut id selects nothing on the re-run. The re-run takes whole functions.
@@ -187,9 +196,9 @@ fi
 if [ "$merge_test" = 0 ]; then
   say "the affected tests did not run (PREMERGE_MERGE_TEST=0 or --no-tests). pr-check and main run them."
 else
-  say "running the affected tests on the merge result: $(wc -l < "$logs/union.txt" | tr -d ' ') files in the union, timeout ${TEST_TIMEOUT}s"
+  say "running the tests both sides can affect on the merge result: $(wc -l < "$logs/union.txt" | tr -d ' ') files in the union, $(wc -l < "$logs/sel.txt" 2>/dev/null | tr -d ' ') tests selected, timeout ${TEST_TIMEOUT}s"
   rc=0
-  timeout "$TEST_TIMEOUT" bash -c "$AFFECTED_CMD" > "$logs/affected.log" 2>&1 || rc=$?
+  touch "$logs/sel.txt"; timeout "$TEST_TIMEOUT" bash -c "$AFFECTED_CMD" > "$logs/affected.log" 2>&1 || rc=$?
   if [ "$rc" = 124 ]; then
     say "UNPROVEN. The affected tests passed no verdict in ${TEST_TIMEOUT}s. The merge is not shown to be red, and not shown to be green. Raise PREMERGE_TEST_TIMEOUT, or read pr-check."
   elif [ "$rc" != 0 ]; then
