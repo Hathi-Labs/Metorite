@@ -92,6 +92,19 @@ describe("a chain of 2,000 levels", () => {
   });
 });
 
+describe("a chain of 30,000 levels (the walks are iterative)", () => {
+  // A recursive walk overflows the stack long before 30,000 frames.
+  it("builds, lists and checks a move without recursion", () => {
+    const nodes = chain(30000);
+    const all = new Set(nodes.map((x) => x.id));
+    const rows = treeRows(nodes, all);
+    expect(rows).toHaveLength(30000);
+    expect(rows[29999].depth).toBe(29999);
+    expect(canMove(nodes, "n0", "n29999")).toEqual({ ok: false, reason: "descendant" });
+    expect(applyMove(nodes, "n29999", null)).not.toBe(nodes);
+  });
+});
+
 describe("buildTree", () => {
   const label = (r: Record<string, unknown>) => String(r.name ?? "");
   it("reads a string id, an {id} object, null and an empty string", () => {
