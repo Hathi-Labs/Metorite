@@ -353,7 +353,9 @@
       "tests/unit/test_app_delete_workspace_r8.py",
       "tests/unit/test_team_scope_isolation_r8.py",
       "tests/unit/test_staging_export.py",
-      "tests/unit/test_workflows_trigger_state_r8.py"
+      "tests/unit/test_workflows_trigger_state_r8.py",
+      "tests/unit/test_workflows_timer_r8.py",
+      "tests/unit/test_studio_saved_views_r8.py"
     ]
   }
 }
