@@ -3687,6 +3687,9 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
        the chat at a time (OA-7c condition 4).
     7. It makes pack *slug* sticky (``tool_packs.note_used``, OA-7c). A run
        that bound no ``tool_packs.PACKS_KEY`` writes nothing.
+    8. HRD-3: ``acb_skills.pack_tool_guard.guard`` is the outermost layer. It
+       answers any exception of steps 1 to 7 as text with a next step, and
+       it reads a JSON string argument as the shape of its parameter.
 
     ``functools.wraps`` keeps the name, the docstring, ``__tool_risk__`` and
     ``__wrapped__``, so the signature and the card-bound pin read the owner's
@@ -3707,6 +3710,11 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
 
         clone = copy.copy(fn)
         clone.func = _pack_call(inner, owner, held, run_key, slug)
+        # HRD-3: the arguments of the copy are read before MAF checks them.
+        from acb_skills import pack_tool_guard
+
+        if pack_tool_guard.arg_shapes_enabled():
+            pack_tool_guard.install_tool_shapes(clone)
         return clone
     from acb_skills.egress import _register_platform_wrapper
     from acb_skills.tool_packs import (
@@ -3754,7 +3762,16 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
     _pack_tool.__cc_gated__ = True  # type: ignore[attr-defined]
     setattr(_pack_tool, PACK_OWNER_ATTR, owner)
     setattr(_pack_tool, PACK_SLUG_ATTR, slug)
-    return _register_platform_wrapper(gated, _pack_tool)
+    # HRD-3 (chat_failure_modes.md B3, B4): the ONE guard of a pack tool, on the
+    # outside. An exception becomes text with a next step, and a JSON string
+    # becomes the shape of its parameter (behind TOOL_ARG_SHAPES). The inner
+    # wrapper stays at ``__wrapped__``, and so does the owner's function.
+    from acb_skills import pack_tool_guard
+
+    trusted = _register_platform_wrapper(gated, _pack_tool)
+    guarded = pack_tool_guard.guard(
+        trusted, name=name, shapes=pack_tool_guard.arg_shapes_enabled())
+    return _register_platform_wrapper(trusted, guarded)
 
 
 def _held_in_turn(owner: str, name: str) -> str:
