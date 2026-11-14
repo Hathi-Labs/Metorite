@@ -66,3 +66,32 @@ def test_a_dark_studio_source_changes_no_answer_with_hits(world, recency, flag):
 def test_flag_off_the_zero_answer_is_the_kr1_answer_for_a_member_with_studio(world, recency):  # noqa: F811
     recency(False)
     assert _ask("Aroh Attero", *ALL, "studio") == {"query": "Aroh Attero", "hits": [], "skipped": []}
+
+
+@pytest.mark.parametrize("flag", [False, True])
+def test_a_dark_studio_source_is_never_named_skipped_when_the_time_runs_out(
+        world, recency, monkeypatch, flag):  # noqa: F811
+    """KR-ZERO review of C5a. Studio is last in the registry, so it is the first
+    key that ``_ask_each`` skips when the budget is spent. A source that was
+    never open must not read "ran out of time" for one member and not for the
+    other."""
+    recency(flag)
+    monkeypatch.setattr(company, "TOTAL_BUDGET_S", 0.3)
+    world.slow = {"Aroh": 0.6}
+    plain = _ask("Aroh", *ALL)
+    with_studio = _ask("Aroh", *ALL, "studio")
+    assert plain["skipped"], "the budget ran out: the world has skipped sources"
+    assert "studio" not in with_studio["skipped"]
+    assert with_studio["skipped"] == plain["skipped"]
+
+
+@pytest.mark.parametrize("flag", [False, True])
+def test_naming_studio_in_apps_changes_nothing_while_it_is_dark(world, recency, flag):  # noqa: F811
+    """``apps=studio`` is accepted (no 422) and answers like ``apps=None``."""
+    recency(flag)
+    asked = asyncio.run(company.company_search(
+        q="Aroh", apps="studio", k=5, user=member(*ALL, "studio")))
+    base = asyncio.run(company.company_search(
+        q="Aroh", apps=None, k=5, user=member(*ALL, "studio")))
+    assert asked["hits"] == base["hits"]
+    assert asked["skipped"] == base["skipped"]
