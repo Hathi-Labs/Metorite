@@ -128,12 +128,34 @@ export interface TabDef {
   cells: CellDef[];
 }
 
+// STU-AF7: the count of a page header. It counts the records of one object.
+export interface HeaderCount {
+  object: string;
+  // What the count names. The label of the object when it is missing.
+  label?: string | null;
+}
+
+// STU-AF7: one sentence, as text, and an optional count. Drawn by `PageHeader`.
+export interface HeaderDef {
+  text: string;
+  count?: HeaderCount | null;
+}
+
+// STU-AF7: a titled group of cells that folds. The id keys the folded state of a viewer.
+export interface SectionDef {
+  id: string;
+  title: string;
+  cells: CellDef[];
+}
+
 export interface PageDef {
   id: string;
   title?: string | null;
+  header?: HeaderDef | null;
   cols?: number;
   tabs?: TabDef[];
   cells?: CellDef[];
+  sections?: SectionDef[];
   side?: SideDef | null;
 }
 

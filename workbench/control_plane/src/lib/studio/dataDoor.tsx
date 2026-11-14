@@ -49,6 +49,14 @@ export function moreLine(rows: readonly unknown[] | null | undefined): string | 
   return null;
 }
 
+/** The count of all matching records of a list answer, or `null` when the store did not give one (STU-AF7). */
+export function rowsTotal(rows: readonly unknown[] | null | undefined): number | null {
+  const meta = (rows as unknown as Record<symbol, RowsMeta | undefined> | null | undefined)?.[META];
+  if (typeof meta?.total === "number") return meta.total;
+  // An answer with no paging facts holds every record, so its length is the count.
+  return rows && !meta ? rows.length : null;
+}
+
 /** What a page reads: a named action and its arguments. */
 export interface StudioSource {
   action: string;

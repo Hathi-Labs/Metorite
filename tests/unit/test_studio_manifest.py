@@ -1039,11 +1039,11 @@ def test_page_cols_default_to_two():
 
 def test_page_with_tabs_and_cells_is_refused():
     tabs = [{"id": "plan", "title": "Plan", "cells": [{"view": "board"}]}]
-    one(_with_pages(_page(tabs=tabs)), "$.pages[0]", contains="tabs or cells")
+    one(_with_pages(_page(tabs=tabs)), "$.pages[0]", contains="only one")
 
 
 def test_page_with_neither_tabs_nor_cells_is_refused():
-    one(_with_pages({"id": "main"}), "$.pages[0]", contains="needs tabs or cells")
+    one(_with_pages({"id": "main"}), "$.pages[0]", contains="needs tabs, cells or sections")
     one(_with_pages({"id": "main", "cells": [], "tabs": []}), "$.pages[0]", contains="needs")
 
 
@@ -1380,3 +1380,136 @@ def test_the_field_rule_is_narrower_than_the_key_rule_of_the_scan():
     for key in ("api_key", "apiKey", "x-api-key", "X-Api-Key", "client_secret", "APIKey",
                 "old_password_hint"):
         assert is_secret_field_key(key), key
+
+
+# -- STU-AF7: the header and the sections of a page ---------------------------------------
+
+
+def _sec(sid: str = "open", title: str = "Open", n: int = 1, view: str = "board") -> dict:
+    return {"id": sid, "title": title, "cells": [{"view": view}] * n}
+
+
+def _sections_page(*secs: dict, **patch) -> dict:
+    return {"id": "main", "sections": list(secs), **patch}
+
+
+def test_a_page_with_sections_and_a_header_is_valid():
+    head = {"text": "The visits of this week.", "count": {"object": "visit", "label": "visits"}}
+    d = _with_pages(_sections_page(_sec(), _sec("done", "Done"), header=head, cols=3))
+    assert validate_manifest(d) == []
+    page = Manifest.model_validate(d).pages[0]
+    assert page.header.count.object == "visit"
+    assert [s.id for s in page.sections] == ["open", "done"]
+
+
+def test_header_and_sections_are_optional_and_old_pages_are_unchanged():
+    page = Manifest.model_validate(_with_pages(_page())).pages[0]
+    assert page.header is None
+    assert page.sections == []
+    assert validate_manifest(_with_pages(_page())) == []
+    # A header alone is valid on a page that has cells.
+    assert validate_manifest(_with_pages(_page(header={"text": "Hello."}))) == []
+
+
+def test_the_manifest_text_and_hash_do_not_change_without_the_new_keys():
+    from acb_common.studio_manifest import manifest_hash
+
+    d = _with_pages(_page())
+    assert "header" not in json.dumps(d) and "sections" not in json.dumps(d)
+    assert manifest_hash(d) == manifest_hash(copy.deepcopy(d))
+
+
+def test_a_page_holds_one_of_tabs_cells_or_sections():
+    one(_with_pages(_sections_page(_sec(), cells=[{"view": "board"}])), "$.pages[0]", contains="only one")
+    tabs = [{"id": "plan", "title": "Plan", "cells": [{"view": "board"}]}]
+    one(_with_pages(_sections_page(_sec(), tabs=tabs)), "$.pages[0]", contains="only one")
+    one(_with_pages({"id": "main", "sections": []}), "$.pages[0]", contains="needs tabs, cells or sections")
+
+
+def test_section_cap_is_six():
+    secs = [_sec(f"s{i}", "S") for i in range(7)]
+    assert validate_manifest(_with_pages(_sections_page(*secs[:6]))) == []
+    one(_with_pages(_sections_page(*secs)), "$.pages[0].sections", contains="at most 6")
+
+
+def test_cell_cap_is_six_for_a_section_and_twelve_for_all_sections():
+    assert validate_manifest(_with_pages(_sections_page(_sec(n=6)))) == []
+    one(_with_pages(_sections_page(_sec(n=7))), "$.pages[0].sections[0].cells", contains="at most 6")
+    two = _sections_page(_sec("a", "A", 6), _sec("b", "B", 6))
+    assert validate_manifest(_with_pages(two)) == []
+    three = _sections_page(_sec("a", "A", 6), _sec("b", "B", 6), _sec("c", "C", 1))
+    one(_with_pages(three), "$.pages[0].sections", contains="at most 12 cells")
+
+
+def test_a_section_needs_a_cell_and_a_known_view_and_a_fitting_span():
+    assert _at(_with_pages(_sections_page(_sec(n=0))), "$.pages[0].sections[0].cells")
+    one(_with_pages(_sections_page(_sec(view="ghost"))), "$.pages[0].sections[0].cells[0].view", contains="ghost")
+    wide = {"id": "a", "title": "A", "cells": [{"view": "board", "span": 3}]}
+    one(_with_pages(_sections_page(wide, cols=2)), "$.pages[0].sections[0].cells[0].span", contains="at most 2")
+
+
+def test_section_ids_are_dashed_and_unique():
+    one(_with_pages(_sections_page(_sec("a"), _sec("a", "B"))), "$.pages[0].sections[1]", contains="used twice")
+    assert _at(_with_pages(_sections_page(_sec("Bad Id"))), "$.pages[0].sections[0].id")
+
+
+@pytest.mark.parametrize("n,ok", [(60, True), (61, False)])
+def test_section_title_cap_is_sixty(n, ok):
+    d = _with_pages(_sections_page(_sec(title="x" * n)))
+    assert (validate_manifest(d) == []) is ok
+    if not ok:
+        assert _at(d, "$.pages[0].sections[0].title")
+
+
+@pytest.mark.parametrize("n,ok", [(160, True), (161, False)])
+def test_header_text_cap_is_one_hundred_sixty(n, ok):
+    d = _with_pages(_page(header={"text": "x" * n}))
+    assert (validate_manifest(d) == []) is ok
+    if not ok:
+        assert _at(d, "$.pages[0].header.text")
+
+
+@pytest.mark.parametrize("n,ok", [(40, True), (41, False)])
+def test_count_label_cap_is_forty(n, ok):
+    d = _with_pages(_page(header={"text": "Hi.", "count": {"object": "visit", "label": "x" * n}}))
+    assert (validate_manifest(d) == []) is ok
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "a\x00b", "a\nb", "a\tb", "a\x1bb", "a\x85b"])
+def test_header_text_and_titles_refuse_blank_and_control_characters(bad):
+    assert _at(_with_pages(_page(header={"text": bad})), "$.pages[0].header.text")
+    assert _at(_with_pages(_sections_page(_sec(title=bad))), "$.pages[0].sections[0].title")
+
+
+def test_a_header_count_names_a_declared_object():
+    d = _with_pages(_page(header={"text": "Hi.", "count": {"object": "ghost"}}))
+    one(d, "$.pages[0].header.count.object", contains="ghost")
+
+
+def test_header_sections_and_count_refuse_an_unknown_key():
+    assert _at(_with_pages(_page(header={"text": "Hi.", "color": "x"})), "$.pages[0].header.color")
+    assert _at(_with_pages(_page(header={"text": "Hi.", "count": {"object": "visit", "x": 1}})),
+               "$.pages[0].header.count.x")
+    assert _at(_with_pages(_sections_page({**_sec(), "open": False})), "$.pages[0].sections[0].open")
+    assert _at(_with_pages(_page(header={"text": "Hi.", "style": "big"})), "$.pages[0].header.style")
+
+
+def test_every_af7_error_is_one_short_sentence():
+    structure = _sections_page(_sec("a", "x" * 70, 7), header={"text": "x" * 170})
+    meaning = _sections_page(
+        _sec("a", "A", 6), _sec("a", "B", 7 - 1, view="ghost"),
+        header={"text": "Hi.", "count": {"object": "ghost"}}, cells=[{"view": "board"}],
+    )
+    errs = validate_manifest(_with_pages(structure)) + validate_manifest(_with_pages(meaning))
+    assert len(errs) >= 6
+    for e in errs:
+        assert words(e.message) <= 25, e.message
+
+
+def test_schema_carries_the_af7_caps():
+    defs = Manifest.model_json_schema()["$defs"]
+    assert defs["PageDef"]["properties"]["sections"]["maxItems"] == 6
+    assert defs["SectionDef"]["properties"]["cells"]["maxItems"] == 6
+    assert defs["SectionDef"]["properties"]["title"]["maxLength"] == 60
+    assert defs["HeaderDef"]["properties"]["text"]["maxLength"] == 160
+    assert defs["HeaderCount"]["properties"]["label"]["anyOf"][0]["maxLength"] == 40
