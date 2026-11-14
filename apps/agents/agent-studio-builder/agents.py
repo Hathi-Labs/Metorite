@@ -27,6 +27,7 @@ from typing import Any
 
 from acb_common import get_settings
 from acb_skills.studio_tools import (
+    STUDIO_APPROVAL_TOOLS,
     STUDIO_PACKAGE_TOOLS,
     STUDIO_RECORD_TOOLS,
     STUDIO_SKILL_TOOLS,
@@ -42,7 +43,7 @@ INSTRUCTIONS = (
 )
 
 _TOOLS = [*STUDIO_TOOLS, *STUDIO_SKILL_TOOLS, *STUDIO_PACKAGE_TOOLS, *STUDIO_RECORD_TOOLS,
-          *STUDIO_WORKFLOW_TOOLS]
+          *STUDIO_WORKFLOW_TOOLS, *STUDIO_APPROVAL_TOOLS]
 
 
 def _register_agent_tools() -> dict[str, Any]:

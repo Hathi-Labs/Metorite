@@ -104,7 +104,7 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
         "email", "email-setup", "crm-records",
         "projects", "projects-plan", "projects-structure", "projects-bulk",
         "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
-        "projects-cycles", "studio",
+        "projects-cycles", "studio", "studio-approvals",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -275,7 +275,7 @@ PRODUCTION_TOOL_PACKS = (
     "projects-bulk,projects-reminders")
 #: The packs of ``tool_packs.FOLLOWS``: each is on wherever its parent is on.
 FOLLOWERS = frozenset({"projects-reports", "projects-authority", "projects-cycles",
-                       "calendar-day"})
+                       "calendar-day", "studio-approvals"})
 
 
 def test_a_following_pack_is_on_wherever_its_parent_is_on(_flag) -> None:
@@ -289,10 +289,14 @@ def test_a_following_pack_is_on_wherever_its_parent_is_on(_flag) -> None:
     off and the owner is not reached -> red."""
     _flag(PRODUCTION_TOOL_PACKS, ORG_A)
     on = tp.packs_on(ORG_A)
-    assert on == frozenset(PRODUCTION_TOOL_PACKS.split(",")) | FOLLOWERS
+    named = frozenset(PRODUCTION_TOOL_PACKS.split(","))
+    # STU-J2b-3a: production's list does not name studio, so its follow pack stays off.
+    held = frozenset(f for f, parent in tp.FOLLOWS.items() if parent in named)
+    assert held == FOLLOWERS - {"studio-approvals"}
+    assert on == named | held
     plan = tp.plan_loader(on, (), current=57, removable={PROJECTS: 1})
     assert PROJECTS in plan.via_loader
-    assert set(plan.offered) >= FOLLOWERS
+    assert set(plan.offered) >= held
 
 
 def test_a_following_pack_is_off_without_its_parent(_flag) -> None:
@@ -320,7 +324,8 @@ def test_each_following_pack_has_a_parent_of_its_own_owner() -> None:
     assert tp.FOLLOWS == {"projects-reports": "projects-plan",
                           "projects-authority": "projects",
                           "projects-cycles": "projects",  # WS-39 SP-5a
-                          "calendar-day": "projects"}
+                          "calendar-day": "projects",
+                          "studio-approvals": "studio"}  # STU-J2b-3a
     assert set(tp.FOLLOWS) == FOLLOWERS
     for follower, parent in tp.FOLLOWS.items():
         assert tp.pack(follower) is not None and tp.pack(parent) is not None
@@ -685,7 +690,8 @@ def test_the_studio_family_equals_the_owners_own_tool_scope_and_fits_the_cap() -
     family = sf.SKILL_FAMILIES["studio"]
     assert family["owner"] == STUDIO and sf.is_pack("studio") and family["core"] is False
     assert tuple(family["tools"]) == STUDIO_TOOLS
-    assert set(family["tools"]) == _studio_scope()
+    # STU-J2b-3a: the owner's scope is the studio family and its follow pack.
+    assert set(family["tools"]) | set(APPROVAL_TOOLS) == _studio_scope()
     # STU-K1d added two ready-app tools (20 to 22), and STB-6a one workflow read (22 to 23).
     # 23 is the room limit beside the email pack (test_studio_workflow_tools.py).
     assert len(family["tools"]) == 23 <= tp.MAX_PACK_TOOLS == 35
@@ -755,8 +761,57 @@ def test_the_studio_rules_name_only_tools_of_the_pack() -> None:
         "no_card", "based_on", "request_id"}
     assert named and named <= set(STUDIO_TOOLS), named - set(STUDIO_TOOLS)
     assert found.owner == STUDIO and found.delegation_refusal
-    assert tp.owner_packs(STUDIO) == ("studio",)
+    assert tp.owner_packs(STUDIO) == ("studio", "studio-approvals")
     assert STUDIO in tp.NO_PERSONA_BULLETS
+
+
+# -- 8a. The studio-approvals pack (STU-J2b-3a), the follow pack of studio ----
+
+#: The four approval tools, in the order of the module.
+APPROVAL_TOOLS = ("studio_request_approval", "studio_list_approvals", "studio_approve",
+                  "studio_reject")
+
+
+def test_the_approval_tools_are_a_follow_pack_of_studio() -> None:
+    """The studio family is at its room limit (STB-6a), so the approval tools
+    are their own pack. It follows studio, has the same owner, and has no
+    surface: a Studio turn does not load it. Mutation: put one approval tool
+    in the studio family -> the room fence of test_studio_workflow_tools.py
+    and this test go red."""
+    from acb_skills import studio_tools as st
+
+    family = sf.SKILL_FAMILIES["studio-approvals"]
+    assert tuple(family["tools"]) == APPROVAL_TOOLS
+    assert tuple(fn.__name__ for fn in st.STUDIO_APPROVAL_TOOLS) == APPROVAL_TOOLS
+    assert family["owner"] == STUDIO and sf.is_pack("studio-approvals")
+    assert not set(APPROVAL_TOOLS) & set(sf.SKILL_FAMILIES["studio"]["tools"])
+    assert tp.FOLLOWS["studio-approvals"] == "studio"
+    found = tp.PACKS["studio-approvals"]
+    assert found.surface == "" and found.delegation_refusal
+    assert list(tp.PACKS)[-1] == "studio-approvals"
+
+
+def test_the_approval_rules_name_only_tools_of_the_pack() -> None:
+    """Mutation: name a tool of the studio pack in these rules -> red."""
+    found = tp.PACKS["studio-approvals"]
+    # "manifest_cut" is a key of a row of studio_list_approvals. It is no tool.
+    named = set(re.findall(r"[a-z]+(?:_[a-z]+)+", found.rules)) - {"manifest_cut"}
+    assert named == set(APPROVAL_TOOLS), named ^ set(APPROVAL_TOOLS)
+    rules = " ".join(found.rules.split())
+    for line in ("Call studio_approve only when the member asks, in this chat, to approve that "
+                 "version.", "It always shows one card, in every chat.",
+                 "Call studio_reject only when the member asks, in this chat, to reject that "
+                 "version."):
+        assert line in rules, line
+
+
+@pytest.mark.parametrize("words", [
+    "build me a studio app for site visits", "check my emails", "approve the leave request",
+    "summarise my emails and read my studio workflow", "publish my studio app",
+])
+def test_a_plain_turn_does_not_match_the_approval_words(words: str) -> None:
+    """The words name an approval for the organization only."""
+    assert tp.matched_layer("studio-approvals", words) is None, words
 
 
 def test_no_studio_tool_is_in_another_pack_or_an_injected_family() -> None:
@@ -998,8 +1053,9 @@ async def test_the_loader_offers_the_studio_pack_only_to_a_member_who_holds_stud
     monkeypatch.setattr(ti, "_studio_open", lambda: True)
     _member_holds(monkeypatch, features)
     plan = await ti._plan_pack_loader(
-        object(), frozenset({"studio"}), [], builds=[], current=40, pool=[], persona="",
-        bullets={}, agent_name="orchestrator", no_egress=False, is_authorized=None)
+        object(), tp.with_followers({"studio"}), [], builds=[], current=40, pool=[],
+        persona="", bullets={}, agent_name="orchestrator", no_egress=False,
+        is_authorized=None)
     assert ("studio" in plan.offered) is offered, who
     assert (STUDIO in plan.via_loader) is offered, who
 
@@ -1104,8 +1160,12 @@ def test_a_hand_off_to_the_studio_owner_is_refused_in_every_run() -> None:
     other = {tp.PACKS_KEY: _studio_record("email")}
     assert tp.delegation_refusal(STUDIO, other, starts=True) == tp.PACK_ONLY_REFUSED
     assert STUDIO not in other[tp.PACKS_KEY].handed, "a refused hand-off never starts"
-    # A run that holds the pack answers the pack's own text, which is true there.
-    held = {tp.PACKS_KEY: _studio_record("studio")}
+    # A run that holds only one of the owner's packs keeps the plain refusal
+    # (STU-J2b-3a: studio-approvals is the second pack of the owner).
+    some = {tp.PACKS_KEY: _studio_record("studio")}
+    assert tp.delegation_refusal(STUDIO, some) == tp.PACK_ONLY_REFUSED
+    # A run that holds each pack answers the pack's own text, which is true there.
+    held = {tp.PACKS_KEY: _studio_record("studio", "studio-approvals")}
     assert tp.delegation_refusal(STUDIO, held) == tp.PACKS["studio"].delegation_refusal
     # Any other agent keeps its old answer.
     assert tp.delegation_refusal("projects-assistant", {}) is None
@@ -1201,7 +1261,8 @@ async def test_the_loader_offers_the_studio_pack_only_where_studio_orgs_holds_th
     monkeypatch.setattr(ti, "_studio_open", lambda: open_)
     _member_holds(monkeypatch, HOLDER)
     plan = await ti._plan_pack_loader(
-        object(), frozenset({"studio"}), [], builds=[], current=40, pool=[], persona="",
-        bullets={}, agent_name="orchestrator", no_egress=False, is_authorized=None)
+        object(), tp.with_followers({"studio"}), [], builds=[], current=40, pool=[],
+        persona="", bullets={}, agent_name="orchestrator", no_egress=False,
+        is_authorized=None)
     assert ("studio" in plan.offered) is open_
     assert (STUDIO in plan.via_loader) is open_

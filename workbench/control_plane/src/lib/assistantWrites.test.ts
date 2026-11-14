@@ -171,12 +171,14 @@ describe("the Studio pack (D179)", () => {
       // STU-K1d: a chat create from a template adds an app to the library, so the library re-reads.
       "studio_create_from_template",
       // STU-B2c-2b: a resend after the approval writes a record, so an open app re-reads.
-      "studio_record_create", "studio_record_update", "studio_record_delete"]) {
+      "studio_record_create", "studio_record_update", "studio_record_delete",
+      // STU-J2b-3a: the ask, the approve and the reject move the review state of a version.
+      "studio_request_approval", "studio_approve", "studio_reject"]) {
       expect(appsForWrite(w), w).toEqual(["studio"]);
     }
     for (const rd of ["studio_draft", "studio_validate", "studio_patch", "studio_outline", "studio_plan",
       "studio_describe", "studio_list_actions", "studio_package_get", "studio_record_list",
-      "studio_skill_list", "studio_interview"]) {
+      "studio_skill_list", "studio_interview", "studio_list_approvals"]) {
       expect(appsForWrite(rd), rd).toEqual([]);
     }
   });

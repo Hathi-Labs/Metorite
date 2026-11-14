@@ -1,7 +1,7 @@
 {
   "name": "Studio Builder",
   "app": "studio",
-  "description": "The owner of the studio tool pack. It holds the builder tools of AI Studio: draft an app manifest from a brief, patch it, validate it, outline it, list the actions an app may use, and save, publish and delete the app. It also holds the skill tools: save, publish, pause and list the skills of a member. Two read tools list the packages of a member and read the records of an object. Three write tools add, change and delete a record, and each asks the member first. One read tool lists the workflows of the organization or reads one. The main assistant loads these tools in a Studio turn. This agent is not a second assistant, and a hand-off to it is refused.",
+  "description": "The owner of the studio tool pack. It holds the builder tools of AI Studio: draft an app manifest from a brief, patch it, validate it, outline it, list the actions an app may use, and save, publish and delete the app. It also holds the skill tools: save, publish, pause and list the skills of a member. Two read tools list the packages of a member and read the records of an object. Three write tools add, change and delete a record, and each asks the member first. One read tool lists the workflows of the organization or reads one. Four approval tools ask for, list, approve and reject the approval of an app version for the organization. The main assistant loads these tools in a Studio turn. This agent is not a second assistant, and a hand-off to it is refused.",
   "version": "0.1.0",
   "author": "Metorite",
   "tags": [
@@ -29,12 +29,14 @@
   ],
   "own_tool_scope": [
     "studio_app_read",
+    "studio_approve",
     "studio_create_from_template",
     "studio_delete_package",
     "studio_describe",
     "studio_draft",
     "studio_interview",
     "studio_list_actions",
+    "studio_list_approvals",
     "studio_outline",
     "studio_package_get",
     "studio_patch",
@@ -44,6 +46,8 @@
     "studio_record_delete",
     "studio_record_list",
     "studio_record_update",
+    "studio_reject",
+    "studio_request_approval",
     "studio_save",
     "studio_skill_list",
     "studio_skill_save",

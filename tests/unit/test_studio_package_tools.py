@@ -1169,7 +1169,8 @@ def test_no_package_tool_takes_an_identity_or_confirm_argument() -> None:
     # A5c-2: the delete takes the package id only. The route decides the admin path.
     assert list(inspect.signature(st.studio_delete_package).parameters) == ["package_id"]
     banned |= {"as_admin", "admin", "token", "records"}
-    for fn in (*st.STUDIO_PACKAGE_TOOLS, st.studio_list_actions):
+    # STU-J2b-3a: the four approval tools take a package id and a version, or nothing.
+    for fn in (*st.STUDIO_PACKAGE_TOOLS, st.studio_list_actions, *st.STUDIO_APPROVAL_TOOLS):
         params = set(inspect.signature(fn).parameters)
         assert not params & banned, (fn.__name__, params)
         assert inspect.iscoroutinefunction(fn)
