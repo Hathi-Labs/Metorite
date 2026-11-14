@@ -109,9 +109,10 @@ def test_button_tools_splits_served_and_unserved() -> None:
             {"id": "door", "uses": "knowledge.get_page"},
             {"id": "sms", "uses": "integration:send_sms"},
             {"id": "one", "uses": "object:item.get"},
+            {"id": "calc", "uses": "logic:mrp"},
         ],
         [
-            {"id": "v1", "actions": ["add", "done", "door", "sms", "ghost", "one"]},
+            {"id": "v1", "actions": ["add", "done", "door", "sms", "ghost", "one", "calc"]},
             {"id": "v2", "submit": "add"},
         ],
     )
@@ -121,7 +122,7 @@ def test_button_tools_splits_served_and_unserved() -> None:
     assert unserved == (
         ("v1", "done", "set"), ("v1", "door", "door_op"),
         ("v1", "sms", "integration"), ("v1", "ghost", "undeclared"),
-        ("v1", "one", "no_tool"),
+        ("v1", "one", "no_tool"), ("v1", "calc", "logic"),
     )
 
 

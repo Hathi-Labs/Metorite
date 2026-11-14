@@ -866,7 +866,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "AI Studio builder",
         "summary": (
             "Build an AI Studio app: draft a manifest from a brief, patch it, "
-            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save, publish and delete the app, start from a ready app, save, publish, pause and list your skills, read the records of a package, and list and read the organisation's workflows."
+            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save, publish and delete the app, start from a ready app, save, publish, pause and list your skills, read the records of a package, and list and read the organisation's workflows and the steps of a run."
         ),
         "description": (
             "A tool pack: the builder tools of AI Studio, for the main "
@@ -877,7 +877,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "publish, pause and list the skills of a member. Two read tools list the "
             "packages of a member and read the records of an object. Three write tools add, "
             "change and delete a record, and each asks the member first. One read tool lists the "
-            "workflows of the organization or reads one. The tools keep no "
+            "workflows of the organization, reads one, or lists the human steps of one run. The tools keep no "
             "draft: the chat holds the manifest. A run loads a pack only where tool packs are on, "
             "so until then this switch has no effect."
         ),
