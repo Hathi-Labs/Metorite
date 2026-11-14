@@ -6,6 +6,7 @@ real tree's 1,000 test files.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -471,8 +472,13 @@ def test_gate_a_flag_diff_keeps_the_github_reason(tmp_path: Path) -> None:
     assert any(".github/" in r for r in out["reasons"])
 
 
-def test_gate_with_no_diff_keeps_the_acb_common_prefix_full(tmp_path: Path) -> None:
-    assert sel.gate([_SETTINGS], _flag_repo(tmp_path))["full"] is True
+def test_gate_with_no_diff_keeps_the_flag_files_full(tmp_path: Path) -> None:
+    # CIV-33c-3. The acb_common prefix is gone. The two files stay FULL by name.
+    root = _flag_repo(tmp_path)
+    for path in (_SETTINGS, _GUARD):
+        out = sel.gate([path], root)
+        assert out["full"] is True, path
+        assert any("the shared settings" in r for r in out["reasons"]), out["reasons"]
 
 
 def test_gate_diff_reads_the_flag_files_between_two_commits(tmp_path: Path) -> None:
@@ -692,6 +698,378 @@ def test_gate_postgres_change_selects_every_db_gate_file(tmp_path: Path) -> None
     assert out["full"] is False
     assert "tests/unit/test_db.py" in out["files"]
     assert "tests/unit/test_migration_prefixes.py" in out["files"]
+
+
+# ── CIV-33c-3: acb_common goes through the import graph ─────────────────────
+_AC = "packages/acb_common/acb_common/"
+_CONFTEST = (
+    "import pytest\n\n\n@pytest.fixture(autouse=True)\ndef _bind():\n"
+    "    from acb_common import get_logger\n    from tests.unit._mark import install\n"
+    "    install()\n    yield\n"
+)
+
+
+def _acb_repo(tmp_path: Path) -> Path:
+    """A small acb_common. `tests/conftest.py` loads the package in a fixture,
+    and the package loads `_log` and `deep`. `_log` imports `lazy` inside a
+    def only. The helper `_mark` imports `marked` inside a function, and the
+    fixture calls it. `rules` is reached by imports only."""
+    root = _gate_repo(tmp_path)
+    _write(root, "packages/acb_common/pyproject.toml", "[project]\nname = 'acb-common'\n")
+    _write(root, _AC + "__init__.py", "from acb_common._log import get_logger\n")
+    _write(root, _AC + "_log.py", "import acb_common.deep\n\n\ndef get_logger():\n"
+           "    from acb_common import lazy\n    return lazy\n")
+    _write(root, _AC + "deep.py", "D = 1\n")
+    _write(root, _AC + "lazy.py", "L = 1\n")
+    _write(root, _AC + "marked.py", "M = 1\n")
+    _write(root, _AC + "rules.py", "R = 1\n")
+    _write(root, _AC + "connector_list.py", 'PATH = here.with_name("connector_list.json")\n')
+    _write(root, _AC + "connector_list.json", "[]\n")
+    _write(root, _AC + "app_manifests/__init__.py", "")
+    _write(root, _AC + "app_manifests/shell_manifest.py", 'DIR = Path(__file__).parent / "shell"\n')
+    _write(root, _AC + "app_manifests/shell/projects.json", "{}\n")
+    _write(root, _AC + "templates/__init__.py", "DIR = Path(__file__).parent\n")
+    _write(root, _AC + "templates/hiring.json", "{}\n")
+    _write(root, "packages/pkg/pkg/rules_user.py", "from acb_common import rules\n")
+    _write(root, "tests/__init__.py")
+    _write(root, "tests/unit/__init__.py")
+    _write(root, "tests/conftest.py", _CONFTEST)
+    _write(root, "tests/unit/_mark.py", "def install():\n    from acb_common import marked\n")
+    _write(root, "tests/unit/test_rules.py", "from acb_common.rules import R\n")
+    _write(root, "tests/unit/test_rules_user.py", "import pkg.rules_user\n")
+    _write(root, "tests/unit/test_connectors.py", "from acb_common import connector_list\n")
+    _write(root, "tests/unit/test_shell.py", "from acb_common.app_manifests import shell_manifest\n")
+    _write(root, "tests/unit/test_templates.py", "import acb_common.templates\n")
+    _write(root, "tests/unit/test_lazy.py", "from acb_common.lazy import L\n")
+    return root
+
+
+def test_gate_a_non_hub_acb_common_change_selects_its_importers(tmp_path: Path) -> None:
+    out = sel.gate([_AC + "rules.py"], _acb_repo(tmp_path))
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_rules.py" in out["files"]  # imports the module
+    assert "tests/unit/test_rules_user.py" in out["files"]  # one level up
+    assert "tests/unit/test_other.py" in out["files"]  # the SAFETY fence stays
+    assert "tests/unit/test_connectors.py" not in out["files"]
+
+
+def test_gate_an_acb_common_hub_above_the_ceiling_is_full(tmp_path: Path, monkeypatch) -> None:
+    # `acb_common.db` has 414 test importers on the real tree, over the ceiling of 360.
+    root = _acb_repo(tmp_path)
+    _write(root, "tests/unit/test_rules_2.py", "import acb_common.rules\n")
+    monkeypatch.setattr(sel, "HUB_LIMIT", 1)
+    monkeypatch.setattr(sel, "HUB_CEILING_SHARE", 0.1)
+    out = sel.gate([_AC + "rules.py"], root)
+    assert out["full"] is True
+    assert any(r.startswith("acb_common.rules: 2 test files import it") for r in out["reasons"])
+
+
+@pytest.mark.parametrize(
+    ("name", "full"),
+    [
+        ("__init__.py", True),  # the conftest fixture imports the package
+        ("_log.py", True),  # the package loads it
+        ("deep.py", True),  # `_log` loads it at the top
+        ("marked.py", True),  # a helper that the fixture calls imports it
+        ("lazy.py", False),  # only a def of `_log` imports it
+    ],
+)
+def test_gate_an_acb_common_module_that_a_conftest_loads_is_full(
+    tmp_path: Path, name: str, full: bool
+) -> None:
+    out = sel.gate([_AC + name], _acb_repo(tmp_path))
+    loads = [r for r in out["reasons"] if "a conftest.py loads it" in r]
+    assert bool(loads) is full, out["reasons"]
+    if not full:
+        assert out["full"] is False
+        assert "tests/unit/test_lazy.py" in out["files"]
+
+
+@pytest.mark.parametrize(
+    ("toml", "text"),
+    [
+        ("pyproject.toml", '[tool.pytest.ini_options]\naddopts = "-ra -p acb_common.plug"\n'),
+        (
+            "packages/acb_common/pyproject.toml",
+            "[project]\nname = 'acb-common'\n\n[project.entry-points.pytest11]\n"
+            'plug = "acb_common.plug"\n',
+        ),
+    ],
+)
+def test_gate_an_acb_common_pytest_plugin_is_full(tmp_path: Path, toml: str, text: str) -> None:
+    # pytest loads a plugin for each test, and no test imports it.
+    root = _acb_repo(tmp_path)
+    _write(root, toml, text)
+    _write(root, _AC + "plug.py", "P = 1\n")
+    out = sel.gate([_AC + "plug.py"], root)
+    assert "acb_common.plug: a conftest.py loads it for each test" in out["reasons"]
+
+
+def test_gate_a_helper_of_a_helper_that_a_conftest_calls_is_followed(tmp_path: Path) -> None:
+    root = _acb_repo(tmp_path)
+    _write(root, "tests/unit/_mark.py", "def install():\n    from tests.unit import _inner\n")
+    _write(root, "tests/unit/_inner.py", "def go():\n    from acb_common import rules\n")
+    out = sel.gate([_AC + "rules.py"], root)
+    assert "acb_common.rules: a conftest.py loads it for each test" in out["reasons"]
+
+
+def test_the_conftest_rule_covers_acb_common_only(tmp_path: Path) -> None:
+    # Other modules keep the rules of main. A conftest that loads `pkg.leaf`
+    # does not make a change to it FULL.
+    root = _acb_repo(tmp_path)
+    _write(root, "tests/conftest.py", _CONFTEST + "\n\nimport pkg.leaf\n")
+    out = sel.gate(["packages/pkg/pkg/leaf.py"], root)
+    assert not any("a conftest.py loads it" in r for r in out["reasons"]), out["reasons"]
+
+
+@pytest.mark.parametrize("path", sorted(sel.ACB_COMMON_SEAMS))
+def test_gate_each_acb_common_seam_is_full_by_name(tmp_path: Path, path: str) -> None:
+    root = _acb_repo(tmp_path)
+    _write(root, path, "S = 1\n")  # on disk, so the deleted-file rule does not decide
+    out = sel.gate([path], root)
+    assert out["full"] is True
+    assert f"{path}: an acb_common seam (the DB, tenancy, RLS or the Redis prefix)" in out["reasons"]
+
+
+def test_gate_the_acb_common_pyproject_is_full(tmp_path: Path) -> None:
+    out = sel.gate(["packages/acb_common/pyproject.toml"], _acb_repo(tmp_path))
+    assert out["full"] is True
+
+
+@pytest.mark.parametrize("name", ["rules.py", "gone.py", "connector_list.json"])
+def test_gate_a_deleted_acb_common_file_is_full(tmp_path: Path, name: str) -> None:
+    # The importers of a deleted module may be gone from the head tree, and
+    # so may its tests. A rename lists the old path, so it is FULL too.
+    root = _acb_repo(tmp_path)
+    (root / _AC / name).unlink(missing_ok=True)
+    out = sel.gate([_AC + name], root)
+    assert out["full"] is True
+    assert f"{_AC}{name}: the diff deletes or renames a file of acb_common" in out["reasons"]
+
+
+def test_a_deleted_file_outside_acb_common_keeps_the_rules_of_main(tmp_path: Path) -> None:
+    out = sel.gate(["packages/pkg/pkg/gone.py"], _acb_repo(tmp_path))
+    assert out["full"] is False, out["reasons"]
+
+
+@pytest.mark.parametrize(
+    ("data", "test"),
+    [
+        ("connector_list.json", "tests/unit/test_connectors.py"),  # the reader names the file
+        ("app_manifests/shell/projects.json", "tests/unit/test_shell.py"),  # it quotes the folder
+        ("templates/hiring.json", "tests/unit/test_templates.py"),  # the folder reads its files
+    ],
+)
+def test_gate_an_acb_common_data_file_selects_the_tests_of_its_reader(
+    tmp_path: Path, data: str, test: str
+) -> None:
+    out = sel.gate([_AC + data], _acb_repo(tmp_path))
+    assert out["full"] is False, out["reasons"]
+    assert test in out["files"]
+    assert "tests/unit/test_rules.py" not in out["files"]
+
+
+def test_gate_an_acb_common_data_file_that_a_seam_reads_is_full(tmp_path: Path) -> None:
+    root = _acb_repo(tmp_path)
+    _write(root, _AC + "tenant_redis.py", 'SCRIPT = HERE / "prefix_check.lua"\n')
+    _write(root, _AC + "prefix_check.lua", "return 1\n")
+    out = sel.gate([_AC + "prefix_check.lua"], root)
+    assert out["full"] is True
+    assert any("tenant_redis.py: an acb_common seam" in r for r in out["reasons"])
+
+
+def test_gate_a_data_file_that_no_source_reads_selects_the_tests_that_name_it(tmp_path: Path) -> None:
+    root = _acb_repo(tmp_path)
+    _write(root, _AC + "field_cases.json", "[]\n")
+    _write(root, "tests/unit/test_cases.py", f'CASES = ROOT / "{_AC}field_cases.json"\n')
+    out = sel.gate([_AC + "field_cases.json"], root)
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_cases.py" in out["files"]
+
+
+_CONNECTION_SITE = re.compile(
+    r"set_config\(|SET LOCAL app\.tenant_id|current_setting\('app\.tenant_id'"
+    r"|create_async_engine\(|create_engine\(|create_pool\(|psycopg\.connect\("
+    r"|asyncpg\.connect\(|AsyncConnection\.connect\(|get_session_factory\(|get_db\("
+    r"|tenant_session\(|bind_tenant\(|\.from_url\(|\bRedis\(|StrictRedis\("
+    r"|ConnectionPool\(|from_pool\("
+)
+_AC_REAL = "packages/acb_common/acb_common/"
+# A file that the pattern finds, and that is no seam. Each one says why.
+_SITE_NOT_A_SEAM = {
+    # It names `tenant_session(` in a docstring only. It opens no connection,
+    # and the session of the caller binds the tenant.
+    _AC_REAL + "assistant_profile.py": "docstring only",
+    # It reads the binding in its SQL (`current_setting`) and binds none. Its R8
+    # suite imports it, and the import rules select that suite.
+    _AC_REAL + "goal_store.py": "reads the binding, binds none",
+}
+# A seam that holds no site of the pattern. Each one says why it is a seam.
+_SEAM_WITHOUT_SITE = {
+    _AC_REAL + "__init__.py": "every import of an acb_common module runs it",
+    _AC_REAL + "dsn.py": "the libpq DSN parser of each psycopg connection site",
+    _AC_REAL + "object_store.py": "the tenant check of each file key",
+}
+
+
+def test_the_real_acb_common_connection_sites_are_seams() -> None:
+    # R5: a module that opens a DB or Redis connection, opens a session of the
+    # DB seam, or binds or reads the tenant is a seam, or it is named above with
+    # a reason. Each seam holds such a site, or it is named above.
+    pkg = _ROOT / "packages/acb_common/acb_common"
+    sites = {
+        p.relative_to(_ROOT).as_posix()
+        for p in pkg.rglob("*.py")
+        if _CONNECTION_SITE.search(p.read_text(encoding="utf-8"))
+    }
+    seams = sel.ACB_COMMON_SEAMS
+    assert sites - seams == set(_SITE_NOT_A_SEAM), sorted(sites - seams)
+    assert seams - sites == set(_SEAM_WITHOUT_SITE), sorted(seams - sites)
+    assert {_AC_REAL + "db.py", _AC_REAL + "tenant_redis.py", _AC_REAL + "org_settings.py"} <= sites
+    gone = [p for p in sorted(seams) if not (_ROOT / p).is_file()]
+    assert not gone, f"ACB_COMMON_SEAMS names files that do not exist: {gone}"
+
+
+def test_the_real_conftest_loads_the_acb_common_package() -> None:
+    sources = sel._texts(sel._source_files(_ROOT), _ROOT)
+    reach = sel.conftest_reach(sources, _ROOT)
+    # tests/conftest.py imports the package in `_isolate_the_run_binding`, and
+    # the package loads these at the top.
+    assert {"acb_common", "acb_common._log", "acb_common.settings", "acb_common.activity"} <= reach
+    # `_egress_mark_store`, which a fixture calls, imports the Redis wrapper.
+    assert "acb_common.tenant_redis" in reach
+    # A Studio module is reached by imports only, so its importers decide. The
+    # name is built, because a quoted dotted name counts as an import: this
+    # 380 s file would then join each selection for a change to the module.
+    assert "acb_common." + "studio_rules" not in reach
+
+
+# ── CIV-33c-3 fix round 1: each test that loads the module, at any depth ────
+def _chain_repo(tmp_path: Path) -> Path:
+    """`acb_common.rules` <- `pkg.a` <- `pkg.b` <- `pkg.c`, each at the top of
+    its file. `test_c` imports `pkg.c` only, three imports up, as
+    `test_projects_grant_tools.py` imports `skill_projects`. `pkg.lazy_user`
+    imports `pkg.c` inside a def only."""
+    root = _acb_repo(tmp_path)
+    _write(root, "packages/pkg/pkg/a.py", "from acb_common import rules\n")
+    _write(root, "packages/pkg/pkg/b.py", "import pkg.a\n")
+    _write(root, "packages/pkg/pkg/c.py", "from pkg import b\n")
+    _write(root, "packages/pkg/pkg/lazy_user.py", "def go():\n    import pkg.c\n")
+    _write(root, "tests/unit/test_c.py", "from pkg.c import thing\n")
+    _write(root, "tests/unit/test_lazy_user.py", "import pkg.lazy_user\n")
+    return root
+
+
+def test_gate_a_test_that_loads_an_acb_common_module_three_imports_up_is_picked(
+    tmp_path: Path,
+) -> None:
+    root = _chain_repo(tmp_path)
+    # The one-level rule of main stops at `pkg.a`.
+    assert "tests/unit/test_c.py" not in sel.select([_AC + "rules.py"], root, scanners=False)[0]
+    out = sel.gate([_AC + "rules.py"], root)
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_c.py" in out["files"]
+    # Fix round 2: an import inside a def counts. The test can run the function.
+    assert "tests/unit/test_lazy_user.py" in out["files"]
+
+
+def test_gate_an_evals_module_between_the_change_and_a_test_is_followed(
+    tmp_path: Path,
+) -> None:
+    # `test_routing_eval.py` imports `evals.routing.harness`, which builds the
+    # orchestrator agent inside a function (the verifier, fix round 2).
+    root = _chain_repo(tmp_path)
+    _write(root, "evals/routing/__init__.py")
+    _write(root, "evals/routing/harness.py", "def build():\n    from pkg import c\n")
+    _write(root, "tests/unit/test_route_eval.py", "from evals.routing.harness import build\n")
+    out = sel.gate([_AC + "rules.py"], root)
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_route_eval.py" in out["files"]
+
+
+def test_gate_a_test_that_loads_an_agent_file_by_its_path_is_picked(tmp_path: Path) -> None:
+    # 79 test files load `apps/agents/<agent>/agents.py` with
+    # `spec_from_file_location`, and no import names the file.
+    root = _chain_repo(tmp_path)
+    _write(root, "apps/agents/agent-x/agents.py", "from pkg import b\n")
+    loader = (
+        "import importlib.util\n"
+        '_AGENT = ROOT / "apps" / "agents" / "agent-x" / "agents.py"\n'
+        'spec = importlib.util.spec_from_file_location("ax", _AGENT)\n'
+    )
+    _write(root, "tests/unit/test_agent_x.py", loader)
+    out = sel.gate([_AC + "rules.py"], root)
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_agent_x.py" in out["files"]
+    # The same path with no loader call reads the text. It loads nothing.
+    text_only = loader.splitlines()[1] + "\n"
+    found = sel.path_load_tests({"apps/agents/agent-x/agents.py"}, {"x": loader, "text": text_only})
+    assert found == {"x"}
+
+
+def test_gate_an_acb_common_module_that_too_many_tests_load_is_full(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = _chain_repo(tmp_path)
+    for n in range(3):
+        _write(root, f"tests/unit/test_c{n}.py", "import pkg.c\n")
+    # 1 test imports `rules`. 7 load it: test_rules, test_rules_user, test_c,
+    # test_lazy_user (through a def) and the three above.
+    monkeypatch.setattr(sel, "HUB_LIMIT", 3)
+    monkeypatch.setattr(sel, "HUB_CEILING_SHARE", 0.01)
+    out = sel.gate([_AC + "rules.py"], root)
+    assert out["full"] is True
+    assert "acb_common.rules: 7 test files load it, more than 3 (1% of the test files)" in out["reasons"]
+    assert not any("test files import it" in r for r in out["reasons"]), out["reasons"]
+
+
+def test_gate_the_tests_of_an_app_that_loads_the_module_at_startup_are_picked(
+    tmp_path: Path,
+) -> None:
+    # The app file imports `pkg.boot` in its lifespan only, and `pkg.boot` loads
+    # the module. A break there shows only when a test starts the app.
+    root = _chain_repo(tmp_path)
+    app = (
+        "from fastapi import FastAPI\n\n\nasync def lifespan(app):\n"
+        "    from pkg import boot\n    yield\n\n\napp = FastAPI(lifespan=lifespan)\n"
+    )
+    _write(root, "packages/pkg/pkg/server.py", app)
+    _write(root, "packages/pkg/pkg/boot.py", "from acb_common import rules\n")
+    _write(root, "tests/unit/test_server.py", "from pkg.server import app\n")
+    out = sel.gate([_AC + "rules.py"], root)
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_server.py" in out["files"]
+
+
+def test_a_sys_modules_lookup_in_a_conftest_is_no_import(tmp_path: Path) -> None:
+    # `sys.modules.get(name)` reads a module that a test loaded. It loads nothing.
+    root = _acb_repo(tmp_path)
+    look = '\n\ndef _clear():\n    import sys\n    m = sys.modules.get("acb_common.rules")\n'
+    _write(root, "tests/conftest.py", _CONFTEST + look)
+    out = sel.gate([_AC + "rules.py"], root)
+    assert not any("a conftest.py loads it" in r for r in out["reasons"]), out["reasons"]
+    _write(root, "tests/conftest.py", _CONFTEST + look + 'pytest_plugins = ["acb_common.rules"]\n')
+    out = sel.gate([_AC + "rules.py"], root)
+    assert any("a conftest.py loads it" in r for r in out["reasons"]), out["reasons"]
+
+
+@pytest.mark.parametrize(
+    ("module", "test"),
+    [
+        # The verifier, 2026-11-14: `REFUSED = "Declined:"` failed 7 tests of this
+        # file on main, through `skill_projects`, and the gate did not pick it.
+        ("tool_refusals.py", "tests/unit/test_projects_grant_tools.py"),
+        # A raise in each function of `card_body` failed 55 tests in 6 files.
+        ("card_body.py", "tests/unit/test_projects_cycle_tools.py"),
+        # Fix round 2: no `"*" in listed` in `guide_allowed` failed 11 tests of
+        # this file. It reaches `guide_flags` through an evals harness and an
+        # import inside a function of `orchestrator/agents.py`.
+        ("guide_flags.py", "tests/unit/test_routing_eval.py"),
+    ],
+)
+def test_the_real_verifier_misses_are_picked_or_full(module: str, test: str) -> None:
+    out = sel.gate([_AC + module], _ROOT)
+    assert out["full"] is True or test in out["files"], out["reasons"]
 
 
 # ── --r8: the one rule for an R8 file (CIV-4b) ──────────────────────────────
