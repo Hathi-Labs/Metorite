@@ -187,7 +187,9 @@ def _allowed(workflows: bool) -> frozenset[str]:
     ``packs_on`` adds them. So an entry of FOLLOWS changes this list."""
     every = frozenset(sf.pack_slugs())
     if workflows:
-        return every
+        # STU-AF10b-3: the golden rows stay as they were, so the box of the matrix
+        # leaves the dark ``studio-views`` out. A test below holds that it loads nowhere.
+        return every - {"studio-views"}
     named = every - frozenset(tp.FOLLOWS) - {"studio-workflows", "studio-views"}
     return tp.with_followers(named) & every
 
