@@ -35,6 +35,11 @@ export function withMeta(rows: Row[], meta: RowsMeta): Row[] {
   return rows;
 }
 
+/** The paging facts of an answer, or null when it has none. The count of the rail reads them. */
+export function rowsMeta(rows: readonly unknown[] | null | undefined): RowsMeta | null {
+  return (rows as unknown as Record<symbol, RowsMeta | undefined> | null | undefined)?.[META] ?? null;
+}
+
 /** The one line that says some records are not loaded, or null when the rows are all of them. */
 export function moreLine(rows: readonly unknown[] | null | undefined): string | null {
   const meta = (rows as unknown as Record<symbol, RowsMeta | undefined> | null | undefined)?.[META];
