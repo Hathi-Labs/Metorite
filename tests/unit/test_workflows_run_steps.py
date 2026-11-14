@@ -908,10 +908,13 @@ def test_f7_the_tool_is_a_read_of_the_studio_pack_and_takes_no_identity() -> Non
     from acb_skills.skill_families import SKILL_FAMILIES
 
     assert st.studio_workflow_read.__tool_risk__["read_only"] is True
-    # The studio pack is at its room limit, so the steps read is a mode of the
-    # one workflow read of STB-6a, and adds no tool.
-    assert "studio_workflow_read" in SKILL_FAMILIES["studio"]["tools"]
-    assert len(SKILL_FAMILIES["studio"]["tools"]) == 23
+    # The steps read is a mode of the one workflow read of STB-6a, and adds no
+    # tool. WS-67 TS-1b: the read is a tool of studio-more (13 tools), beside the
+    # core of 10.
+    assert "studio_workflow_read" in SKILL_FAMILIES["studio-more"]["tools"]
+    assert "studio_workflow_read" not in SKILL_FAMILIES["studio"]["tools"]
+    assert len(SKILL_FAMILIES["studio-more"]["tools"]) == 13
+    assert len(SKILL_FAMILIES["studio"]["tools"]) == 10
     assert tuple(st.STUDIO_WORKFLOW_TOOLS) == (st.studio_workflow_read,)
     assert not hasattr(st, "workflow_run_steps") and not hasattr(st, "STUDIO_RUN_TOOLS")
     params = set(inspect.signature(st.studio_workflow_read).parameters)
