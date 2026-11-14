@@ -26,6 +26,10 @@ passes, it moves `green/main`. Each release slot ships that commit. §8.7
 holds the design. A repair round after the verifier, on 2026-11-13, makes the
 R8 guard read the lists of the release commit.
 
+**CIV-30c is BUILT on 2026-11-14** (task 3121, branch `civ30c-mt-c746154d`).
+HIGH tier. A green batch also puts the commit status `green/main` on its
+commit, and a slot run picks at its slot, not before. §8.7 holds the change.
+
 **CIV-31 is BUILT on 2026-11-14** (task 3056, branch
 `civ31-auto-revert-mt-7191b0bd`). HIGH tier, and dark. The code default of
 `AUTO_REVERT_MODE` is `off`. The unit file sets `dry` for the one-week dry
@@ -926,7 +930,7 @@ Each rung ends in a demo (D211). Each slice of a rung blocks its demo task.
 | CIV-36 | 3061 | 0 | LOW | The preview gates the flag |
 | CIV-37 | 3062 | 0 | LOW | Model routing by job |
 | CIV-38 | 3063 | 0 | LOW | The quality numbers and the rollback rule |
-| CIV-30 | 3055 | 1 | HIGH | The green pointer. A release ships green |
+| CIV-30 | 3055 | 1 | HIGH | The green pointer. A release ships green. CIV-30c BUILT 2026-11-14 (task 3121): the status `green/main` marks a batch when GitHub refuses the ref, and a slot run picks at its slot (§8.7) |
 | CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first. **BUILT 2026-11-14**, dark (code default `off`, unit `dry`). §8.8 holds the design |
 | CIV-32 | 3057 | 2 | STANDARD | **BUILT 2026-11-13.** A repair round tests what failed and what the fix reaches (`ci_unit_guard.py repair`) |
 | CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py`. CIV-33d BUILT 2026-11-13 (task 3074): the scan fences of six large files moved to `*_scan.py` files, and `test_scanner_budget.py` caps a scanner file at 30 s. The scanner set costs 1,748 s, down from 2,333 s. `test_affected_tests.py` (381 s) waits for PR 2205. CIV-33c-1 BUILT 2026-11-13 (task 3073): a hub selects its importers up to 20% of the test files, a flag-only diff of `settings.py` or `env_guard.py` selects the tests that name the flag, and `scripts/replay_gate.py` measures the FULL share. For a hub or a flag diff, an app entry, or a test helper that builds an app, selects its test importers. The closure over test imports starts from the import picks, not from the scanners or the SAFETY fences. CIV-33c-2 BUILT 2026-11-14 (task 3073): the R8 must-run, never-skip and disarmed lists moved from the two workflows to the `r8` key of `tests/fences.json`. A workflow or a composite action stays FULL. Any other file under `.github/` is not FULL. An edit of `tests/fences.json` selects the files it adds to a list and the guard's own tests, and a file that does not parse is FULL. The replay of 300 main commits shows 96 FULL (32.0%), and 38 of the 43 commits whose only FULL reason was `.github/` edited a list only. With those edits in `tests/fences.json`, the projected share is 58 of 300 (19.3%). `packages/acb_common/` is the next cause (37 commits) CIV-33e BUILT 2026-11-14 (task 3075): `SHARD_TARGET_S` is 300 and `ALL_SHARDS` is 8, and `test_board_stats_r8.py` split into three files of 300 s or less. |
@@ -973,9 +977,11 @@ step 1c keep the old table.
   not move to a commit that is off main or that does not contain the current
   pointer. A folded, cancelled, failed or skipped `test` does not move it. It
   has `contents: write` on that one job, and it never pushes to `main`.
+  Since CIV-30c, it first puts the commit status `green/main` on that commit.
 - **Ship.** The job `release-commit` runs first in each run. On a slot run (a
   schedule run, or a dispatch with `nightly=true`), it reads the head of
-  `green/main`. Each job that builds, tests, gates or deploys the release
+  `green/main`. Since CIV-30c, it takes a newer commit with the status
+  `green/main` when one exists. Each job that builds, tests, gates or deploys the release
   checks out that one commit: `lint`, `test`, `r8-suite`, `r8-gate`,
   `publish-release`, `deploy`, `pull-delivery` and `chat-smoke`. The box
   applies it as `DEPLOY_REF`. A push and a plain dispatch use their own
@@ -1007,6 +1013,49 @@ step 1c keep the old table.
   dispatch. The step `once` still counts that run as the ship of its slot. So
   a later nightly run in the same window does not ship a newer `green/main`.
   The next slot ships it.
+
+**CIV-30c (2026-11-14, task 3121).** On 2026-11-13 the 13:30 slot shipped
+`151fb81a5`. It left out 11 commits, and the batch on `e9e89b8ce` had passed.
+The fence of this change is `tests/unit/test_green_slot.py`.
+
+- **Cause 1 was not a loss.** A push cancelled the run of the push before it.
+  Each of those runs never started its `test` job (no runner, no step, 10 runs
+  checked). That is the fold of CIV-4. The next batch tested the tip, which
+  held those commits. No change.
+- **Cause 2: GitHub refused the ref.** The mark of `e9e89b8ce` failed,
+  because GitHub refused the ref move (run 43422421248). The message names the
+  `workflows` permission, which the GITHUB_TOKEN does not have. Later moves
+  across the same workflow change passed, so GitHub's rule is not clear from
+  outside.
+- **Fix 2: a commit status.** `mark-green` first puts the commit status
+  `green/main` (state `success`) on the tested commit. A status is not a ref,
+  so GitHub does not apply that refusal to it. Then the job tries the ref as
+  before. A refusal for a workflow file is a warning, and the step passes. A
+  status that the API refuses 3 times fails the job, and the ref step still
+  runs. The job has `statuses: write`, and no other job has it. No new secret.
+- **The pick reads both records.** `release-commit` walks the first parents of
+  main, from the tip down to the ref. It stops after 100 commits or 120 seconds. It
+  takes the first commit with a `green/main` status of `success` from
+  `github-actions[bot]`. With none, it takes the ref. When the status read
+  fails, it takes the ref and warns. With no ref, a failed read holds the
+  release.
+- **Cause 3: the cron picked before the slot.** GitHub started the 05:30 cron
+  at 13:17 (run 43432451895). It picked at once, published first, and the
+  step `once` then held the box's run.
+- **Fix 3: a slot run picks at its slot.** The step "Wait for the slot" holds
+  a slot run that starts in the 30 min before a slot until 2 min after it.
+  The 2 min let the mark of a batch that ended just before the slot land.
+  `release-window` reads `picked_at` and holds a run that picked before the
+  slot of its window. That covers a cron that starts in the gap, and whose
+  tests end inside the window. A person's rerun does not wait and is not held.
+- **What stays.** Each release still runs the full unit suite and the R8 gate
+  on the commit that it ships. A status only chooses the commit. So D218
+  ("a release ships only a green commit") is as strong as before.
+- **A known limit: a slow mark.** A mark that lands more than 2 min after
+  the slot misses that slot. The next slot ships it.
+- **A known limit: a cron from the gap does not ship.** A cron that starts in the
+  gap before a window no longer ships in that window. When the box is down,
+  the slot then waits for the cron of the slot itself.
 
 ### 8.8 CIV-31 as built: the automatic revert (2026-11-14)
 
