@@ -51,6 +51,16 @@ def load_selector(path: Path):
         return reads[key]
 
     mod._texts = cached
+    if hasattr(mod, "conftest_reach"):  # CIV-33c-3. The tree is fixed, so walk once.
+        walk = mod.conftest_reach
+        memo: dict[str, set[str]] = {}
+
+        def reach_once(sources, root):
+            if str(root) not in memo:
+                memo[str(root)] = walk(sources, root)
+            return memo[str(root)]
+
+        mod.conftest_reach = reach_once
     return mod
 
 
@@ -60,6 +70,15 @@ def reason_key(reason: str) -> str:
         return "hub"
     if reason.startswith("selector error"):
         return "selector error"
+    # CIV-33c-3. The rules that replace the acb_common prefix.
+    for text, key in (
+        ("a conftest.py loads it", "acb_common: a conftest.py loads it"),
+        ("an acb_common seam", "acb_common: a seam by name"),
+        ("the shared settings", "acb_common: settings.py or env_guard.py"),
+        ("deletes or renames a file of acb_common", "acb_common: a deleted file"),
+    ):
+        if text in reason:
+            return key
     path = reason.split(":", 1)[0]
     if path.startswith(".github/"):
         return ".github/"
@@ -92,11 +111,34 @@ def _hub_index(selector) -> tuple[dict[str, set[str]], int]:
     return test_users, len(tests)
 
 
+def _acb_common_rules(
+    selector, commit: str, changed: list[str], py: list[str], needles
+) -> tuple[list[str], list[str]]:
+    """(the Python files, the FULL reasons) of the CIV-33c-3 rules, in the order
+    of `_gate`. A deleted file is one that is not in the tree of the commit,
+    because the current tree lacks each file that a later commit removed."""
+    common = [f for f in changed if f.startswith(selector.ACB_COMMON)]
+    if not common:
+        return py, []
+    tree = set(_git("ls-tree", "-r", "--name-only", commit, "--", selector.ACB_COMMON).splitlines())
+    reasons = selector.deleted_reasons(changed, tree.__contains__)
+    sources = selector._texts(selector._source_files(ROOT), ROOT)
+    data = selector.data_files(changed)
+    if data:
+        readers = sorted(selector.data_readers(data, sources) - set(py))
+        reasons += selector.static_reasons(readers, needles)
+        py = py + readers
+    own = {m for f in py for m in selector.module_names(f, ROOT)}
+    reasons += selector.conftest_reasons(own, sources, ROOT)
+    return py, reasons
+
+
 def replay(selector, commits: list[str]) -> list[tuple[str, dict]]:
     """The FULL decision of `gate` for each commit, without the file selection.
 
     The static rules and the hub rule are the ones that decide FULL. The replay
-    calls the selector's own `static_reasons` and `hub_reasons`. A selector that
+    calls the selector's own `static_reasons` and `hub_reasons`, and since
+    CIV-33c-3 its acb_common rules (`_acb_common_rules`). A selector that
     lacks them (main's copy, before CIV-33c-1) is replayed on its own
     `_full_reason` and its HUB_LIMIT."""
     new = hasattr(selector, "hub_reasons")
@@ -119,6 +161,9 @@ def replay(selector, commits: list[str]) -> list[tuple[str, dict]]:
             # A flag-only diff leaves the two flag files out of `select`.
             if needles is not None:
                 py = [f for f in py if f not in selector.FLAG_FILES]
+            if hasattr(selector, "conftest_reasons"):  # CIV-33c-3
+                py, more = _acb_common_rules(selector, c, changed, py, needles)
+                reasons += more
         else:
             reasons = [r for r in (selector._full_reason(f) for f in changed) if r]
         mods = {m for f in py for m in selector.module_names(f, ROOT)}
