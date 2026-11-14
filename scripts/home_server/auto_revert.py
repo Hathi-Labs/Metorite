@@ -63,6 +63,7 @@ Files (defaults in brackets):
   AUTO_REVERT_REPORTS [~/lanes/auto-revert]    one report per red run
   AUTO_REVERT_STATE [~/.cache/metorite-auto-revert]   the lock, and one file
       in open/ per open revert PR (open_state). merge_bot.sh reads it too.
+  MERGE_QUEUE [~/lanes/merge-bot-queue.tsv]    read only: a waiting hand-over
   MERGE_LOG [~/lanes/merge-bot.log]            read only: DONE and BACK lines
 Commands, for a test or another setup:
   AUTO_REVERT_REPO_DIR [this checkout]   a clone with the remote `origin`
@@ -129,7 +130,8 @@ HIGH_PATHS_RE = "".join(
         "|packages/acb_auth/",
         r"|packages/acb_common/acb_common/(db|tenant_redis|provisioning|org_settings)\.py$",
         r"|packages/acb_graph/acb_graph/db\.py$",
-        r"|apps/services/customer_console/customer_console/(db|seats|operator_[^/]*)\.py$",
+        r"|apps/services/customer_console/customer_console/(db|seats|store|main|payments|keys|deployment_keys|provider_keys|apps|operators|operator_[^/]*)\.py$",
+        r"|apps/services/agent_edge/agent_edge/(token_endpoint|bearer)\.py$",
         "|packages/acb_memory/acb_memory/tenant_guard[^/]*$",
         r"|apps/services/gateway/gateway/routes/admin/(_common|members|roles|groups)\.py$",
         "|workbench/[^/]+/src/app/api/admin/",
@@ -220,6 +222,8 @@ class Config:
     gh: list[str]
     test_cmd: str
     timeout_s: int
+    #: The queue of the merge bot, read only (handover_waits). None: no queue.
+    merge_queue: Path | None = None
 
     @classmethod
     def from_env(cls, mode: str) -> Config:
@@ -232,6 +236,7 @@ class Config:
             reports=Path(env("AUTO_REVERT_REPORTS") or home / "lanes" / "auto-revert"),
             state=Path(env("AUTO_REVERT_STATE") or home / ".cache" / "metorite-auto-revert"),
             merge_log=Path(env("MERGE_LOG") or home / "lanes" / "merge-bot.log"),
+            merge_queue=Path(env("MERGE_QUEUE") or home / "lanes" / "merge-bot-queue.tsv"),
             poll_cmd=_cmd(
                 "AUTO_REVERT_POLL_CMD", [bash(), str(ROOT / "scripts/home_server/bisect_poll.sh")]
             ),
@@ -553,6 +558,8 @@ def follow_up(cfg: Config, ledger: Ledger) -> None:
             ended.add(pr)
         elif e.verb == PERSON and "back" in e.fields:
             told.add((pr, e.fields["back"]))
+        elif e.verb == PERSON and e.fields.get("state") == UNREADABLE:
+            told.add((pr, UNREADABLE))
     pending = [pr for pr in opened if pr not in ended]
     if not pending:
         return
@@ -583,7 +590,11 @@ def follow_up(cfg: Config, ledger: Ledger) -> None:
         )
     for pr in pending:
         if pr not in ended:
-            watch(cfg, ledger, pr, opened[pr])
+            watch(cfg, ledger, pr, opened[pr], (pr, UNREADABLE) in told, merge_lines)
+
+
+#: The state= field of the PERSON line for a state file that does not parse.
+UNREADABLE = "unreadable"
 
 
 def open_state(cfg: Config, pr: str) -> Path:
@@ -598,12 +609,19 @@ def open_state(cfg: Config, pr: str) -> Path:
 
 
 def write_open(cfg: Config, pr: str, data: dict[str, Any]) -> None:
-    """Keep what recheck_main needs. A failed write only stops the recheck of this PR."""
+    """Keep what recheck_main needs. A failed write only stops the recheck of this PR.
+
+    The write goes to a temp file in the same folder, and os.replace puts it in
+    place in one step. So a reader (merge_bot.sh too) never sees half a file.
+    """
     path = open_state(cfg, pr)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data), encoding="utf-8", newline="\n")
+        tmp.write_text(json.dumps(data), encoding="utf-8", newline="\n")
+        os.replace(tmp, path)
     except OSError as exc:
+        tmp.unlink(missing_ok=True)
         say(f"cannot keep the state of revert PR {pr}: {exc}.")
 
 
@@ -613,6 +631,33 @@ def read_open(cfg: Config, pr: str) -> dict[str, Any] | None:
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def state_ok(data: dict[str, Any] | None) -> bool:
+    """The state file holds what recheck_main needs."""
+    if data is None:
+        return False
+    return (
+        all(isinstance(data.get(k), str) and data[k] for k in ("culprit", "tip"))
+        and "run" in data
+        and isinstance(data.get("ids"), list)
+        and bool(data["ids"])
+    )
+
+
+def handover_waits(cfg: Config, pr: str, merge_lines: list[str]) -> bool:
+    """True when the merge bot queue holds a hand-over of `pr` with no result yet.
+
+    The merge bot gives the nth hand-over of a PR the nth DONE or BACK line. A
+    waiting hand-over of a merged PR gets its DONE line on the next bot pass.
+    """
+    queue = cfg.merge_queue
+    if queue is None or not queue.exists():
+        return False
+    rows = queue.read_text(encoding="utf-8", errors="replace").splitlines()
+    handed = sum(1 for row in rows if row.split("\t", 1)[0] == pr)
+    results = sum(1 for raw in merge_lines if re.match(rf"^(DONE|BACK) {pr}( |$)", raw.strip()))
+    return handed > results
 
 
 def pr_state(cfg: Config, pr: str) -> tuple[str, str] | None:
@@ -628,13 +673,23 @@ def pr_state(cfg: Config, pr: str) -> tuple[str, str] | None:
     return str(data["state"]), str(merge.get("oid") or "") if isinstance(merge, dict) else ""
 
 
-def watch(cfg: Config, ledger: Ledger, pr: str, culprit: str) -> None:
+def watch(
+    cfg: Config,
+    ledger: Ledger,
+    pr: str,
+    culprit: str,
+    told_state: bool,
+    merge_lines: list[str],
+) -> None:
     """One look at a revert PR that the log still holds open (P1).
 
     GitHub answers first, because a person can merge or close the PR by hand.
-    MERGED: a REVERTED line, so lane-merge opens the culprit's task again.
+    MERGED: a REVERTED line with by=hand, so lane-merge opens the culprit's task
+    again. When the merge bot queue still waits on a hand-over of the PR, the
+    bot writes DONE on its next pass, so the pass writes nothing (P3).
     CLOSED: a SKIP line that says who closed it. Both end the watch. A failed
     read changes nothing, and the next pass reads it again. OPEN: recheck_main.
+    A state file that does not parse gets one PERSON line (P3).
     """
     seen = pr_state(cfg, pr)
     if seen is None:
@@ -643,6 +698,9 @@ def watch(cfg: Config, ledger: Ledger, pr: str, culprit: str) -> None:
     state, merge = seen
     data = read_open(cfg, pr)
     if state == "MERGED":
+        if handover_waits(cfg, pr, merge_lines):
+            say(f"revert PR {pr} is merged. The merge bot writes its DONE line.")
+            return
         ledger.write(
             REVERTED,
             f"revert_pr={pr} culprit={culprit} merge={merge or 'unknown'} by=hand "
@@ -666,10 +724,17 @@ def watch(cfg: Config, ledger: Ledger, pr: str, culprit: str) -> None:
     if state != "OPEN":
         say(f"revert PR {pr}: the state is {state}. The next pass reads it again.")
         return
-    if data is None:
+    if data is not None and state_ok(data):
+        recheck_main(cfg, ledger, pr, data)
+    elif not open_state(cfg, pr).exists():
         say(f"revert PR {pr}: no state file, so no recheck of main.")
-        return
-    recheck_main(cfg, ledger, pr, data)
+    elif not told_state:
+        ledger.write(
+            PERSON,
+            f"mode=on culprit={culprit} revert_pr={pr} state={UNREADABLE} The state file "
+            f"{open_state(cfg, pr)} does not parse. The pass runs no recheck, and the merge "
+            "bot holds the PR. A person merges it or closes it.",
+        )
 
 
 def recheck_main(cfg: Config, ledger: Ledger, pr: str, data: dict[str, Any]) -> None:

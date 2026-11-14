@@ -42,9 +42,11 @@
 #                                    infra/postgres/ is always a BACK.
 #   premerge.sh exits 1           -> BACK <pr> premerge: <tail>
 #   an auto-revert PR (head auto-revert/...) when the auto-revert pass did not
-#   test the tip of main now      -> skip. The next auto-revert pass tests it
-#                                    (CIV-31b). No state file of the PR -> BACK
-#   gh pr merge says "Base branch was modified" -> retry twice, 20 s apart, then skip
+#   test the tip of main now      -> skip, before the checks and the gate, and
+#                                    again before the merge. The next auto-revert
+#                                    pass tests it (CIV-31b). No state file -> BACK
+#   gh pr merge says "Base branch was modified" -> retry twice, 20 s apart, then skip.
+#                                    An auto-revert PR gets no retry: it skips.
 #   else gh pr ready (if draft), gh pr merge --squash --match-head-commit <sha>,
 #   then DONE <pr> <sha>.
 # A transient error is a skip, never a BACK: a failed git fetch, a gh network
@@ -110,8 +112,12 @@ HIGH_PATHS_RE+='|packages/acb_auth/'
 # tenant guard, the provisioning of an org, and org_settings (it binds a tenant).
 HIGH_PATHS_RE+='|packages/acb_common/acb_common/(db|tenant_redis|provisioning|org_settings)\.py$'
 HIGH_PATHS_RE+='|packages/acb_graph/acb_graph/db\.py$'
-# The operator console: its DB, the operators and their roles, and the seats.
-HIGH_PATHS_RE+='|apps/services/customer_console/customer_console/(db|seats|operator_[^/]*)\.py$'
+# The operator console: its DB, the store that writes members, identities, seats
+# and credits (store, main), the money path (payments), the keys that resolve a
+# tenant or a deployment, the provider credentials, the app seats, the operators.
+HIGH_PATHS_RE+='|apps/services/customer_console/customer_console/(db|seats|store|main|payments|keys|deployment_keys|provider_keys|apps|operators|operator_[^/]*)\.py$'
+# The agent edge: POST /oauth/token and the bearer check of /mcp.
+HIGH_PATHS_RE+='|apps/services/agent_edge/agent_edge/(token_endpoint|bearer)\.py$'
 HIGH_PATHS_RE+='|packages/acb_memory/acb_memory/tenant_guard[^/]*$'
 # The members, roles and groups of an org, and the admin API of the UI.
 HIGH_PATHS_RE+='|apps/services/gateway/gateway/routes/admin/(_common|members|roles|groups)\.py$'
@@ -384,9 +390,7 @@ yaml.safe_load(open(sys.argv[1], encoding="utf-8"))' "$f" >/dev/null 2>&1 || bad
 # it is clean. A PR with a conflict gets no GitHub checks, so the bot looks early.
 gate() {
   local mode="${4:-}" rules rc changed pr="$1" sha="$2" tier="$3" branch="merge-bot/pr-$1" out files try main_before main_after tail_ top own
-  if [ ! -e "$WORKDIR/.git" ]; then
-    git -C "$ROOT" worktree add -q --detach "$WORKDIR" >/dev/null 2>&1 || { echo "no workdir at $WORKDIR"; return 2; }
-  fi
+  ensure_workdir || { echo "no workdir at $WORKDIR"; return 2; }
   cd "$WORKDIR" || { echo "cannot enter $WORKDIR"; return 2; }
   # The reset and the clean below are for the bot's own checkout only.
   top="$(git rev-parse --show-toplevel 2>/dev/null)"
@@ -438,20 +442,33 @@ gate() {
   echo "main moved during premerge"; return 1
 }
 
+# ensure_workdir: the bot's own checkout. The first gate, or the first
+# revert_tested, makes it.
+ensure_workdir() {
+  [ -e "$WORKDIR/.git" ] || git -C "$ROOT" worktree add -q --detach "$WORKDIR" >/dev/null 2>&1
+}
+
 # revert_tested <pr>: CIV-31b. A revert PR of the auto-revert pass (head branch
 # auto-revert/...) merges only when the pass tested the failed tests on the tip
 # of main now. A newer tip can hold a fix, and then the pass closes the PR.
+# handle calls it before the gate (a held PR costs no trial merge and no
+# premerge) and again right before the merge (main can move during premerge).
 # Returns 0 to merge. Returns 1 with a BACK reason (no state file). Returns 2
 # with a note: the PR waits in the queue, and the next auto-revert pass tests
-# the new tip.
+# the new tip. A state file that does not parse waits too: the auto-revert pass
+# writes a PERSON line for it.
 revert_tested() {
   local file="$AUTO_REVERT_STATE/open/$1.json" tested tip
   [ -f "$file" ] || { echo "auto-revert PR with no state file $file: a person merges it"; return 1; }
-  tested="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("tip") or "")' "$file" 2>/dev/null | tr -d '\r')"
-  git -C "$WORKDIR" fetch -q origin "+refs/heads/main:refs/remotes/origin/main" 2>/dev/null \
-    || { echo "git fetch of main failed before the auto-revert check"; return 2; }
-  tip="$(git -C "$WORKDIR" rev-parse refs/remotes/origin/main 2>/dev/null)"
-  if [ -z "$tested" ] || [ "$tested" != "$tip" ]; then
+  if ! tested="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["tip"])' "$file" 2>/dev/null | tr -d '\r')" \
+    || [ -z "$tested" ]; then
+    echo "auto-revert PR: the state file $file does not parse. The auto-revert pass tells a person"
+    return 2
+  fi
+  ensure_workdir || { echo "no workdir at $WORKDIR"; return 2; }
+  tip="$(git -C "$WORKDIR" ls-remote origin refs/heads/main 2>/dev/null | awk -F'\t' '$2 == "refs/heads/main" {print $1; exit}')"
+  [ -n "$tip" ] || { echo "git ls-remote of main failed before the auto-revert check"; return 2; }
+  if [ "$tested" != "$tip" ]; then
     echo "auto-revert PR: the pass has not tested main at ${tip:0:9} (last ${tested:0:9}). It waits for the next auto-revert pass"
     return 2
   fi
@@ -493,6 +510,15 @@ handle() {
   fi
   if [ "$(field 4 "$v")" != "$sha" ]; then record "BACK $pr head moved after the hand-over: hand over again"; return; fi
   if [ "$(field 5 "$v")" != 1 ]; then record "BACK $pr no VERIFY: PASS line in the PR body"; return; fi
+  # CIV-31b: a held auto-revert PR stops here, before the checks and the gate.
+  if [[ "$HEADREF" == auto-revert/* ]]; then
+    reason="$(revert_tested "$pr")"; rc=$?
+    case "$rc" in
+      0) ;;
+      2) say "PR $pr: $(one_line <<< "$reason"), next pass"; return ;;
+      *) record "BACK $pr $(one_line <<< "$reason")"; return ;;
+    esac
+  fi
   load_required || { say "PR $pr: cannot read the required checks, next pass"; return; }
   st="$(check_status "$pr")"
   case "$st" in
@@ -528,6 +554,7 @@ handle() {
     *) record "BACK $pr $(one_line <<< "$reason")"; return ;;
   esac
   if [[ "$HEADREF" == auto-revert/* ]]; then
+    # Main can move during premerge. Read it again right before the merge.
     reason="$(revert_tested "$pr")"; rc=$?
     case "$rc" in
       0) ;;
@@ -544,6 +571,9 @@ handle() {
   for try in 1 2 3; do
     out="$(gh_ pr merge "$pr" --squash --match-head-commit "$sha" 2>&1)" && break
     grep -qi 'base branch was modified' <<< "$out" || break
+    # CIV-31b: main moved, and the auto-revert pass has not tested the new tip.
+    # No retry: the PR waits, and the next pass runs revert_tested again.
+    [[ "$HEADREF" == auto-revert/* ]] && break
     [ "$try" -lt 3 ] && sleep "$MERGE_RETRY_WAIT"
   done
   # A gh error can hide a merge that landed, so read the state again.

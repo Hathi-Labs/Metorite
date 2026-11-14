@@ -95,7 +95,9 @@ culprit's task: the revert takes its change out of `main`.
   that is not done. Comment the revert PR and the failed tests. The `REVERT`
   line of `~/lanes/auto-revert.log` names both. Skip step f.
 - A `REVERTED ... by=hand` line in `~/lanes/auto-revert.log`: a person merged
-  the revert PR, and the bot wrote no `DONE`. Do the same as for `DONE`.
+  the revert PR. First look for a `DONE` line of that pull request in
+  `~/lanes/merge-bot.log`. When there is no `DONE` line, do the same as for
+  `DONE`. When there is one, do nothing more, because you acted on the `DONE`.
 - `BACK`: change no task. The pass writes a `PERSON` line for it, and a
   person acts. When a fix lands on `main` first, the pass closes the revert PR
   and writes a `SKIP` line. Then `BACK <pull request> closed` needs nothing.

@@ -1085,7 +1085,9 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
   a person can merge or close it by hand. A merged PR gets a `REVERTED` line
   with the merge sha and `by=hand`. A closed PR gets a `SKIP` line that says
   who closed it. Both end the watch. When `gh` cannot read the PR, nothing
-  changes, and the next pass reads it again.
+  changes, and the next pass reads it again. A PR can merge while the merge
+  bot queue still waits on its hand-over. Then the bot writes `DONE` on its
+  next pass, and the pass writes no `by=hand` line.
 - **A fix lands while the revert PR waits.** pr-check takes about 32 minutes
   on the revert PR. While the PR is open, each pass runs the failed tests on
   each new tip of `main`, 3 times. When each run passes, a fix landed. The pass
@@ -1095,12 +1097,20 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
   line. Such an answer comes from a flake, a fix in part, a deleted test, or a
   probe that cannot start. Then the watch belongs to a person, and the pass runs no
   more probes for that PR. A file in `~/.cache/metorite-auto-revert/open/`
-  keeps the failed tests and the last tip with a sure answer.
+  keeps the failed tests and the last tip with a sure answer. The pass writes
+  it to a temp file and moves it in place with `os.replace`, so no reader sees
+  half a file. A file that does not parse gets one `PERSON` line.
 - **The merge bot waits for the test of the tip.** The merge bot merges a PR
   with the head branch `auto-revert/...` only when its file in `open/` holds
-  the tip of `main` now. Another tip waits in the queue for the next
-  auto-revert pass. A PR with no file goes `BACK`. A failed close or a doubt
-  keeps the old tip in the file, so the merge bot holds the PR.
+  the tip of `main` now. It reads the tip with `git ls-remote` before the
+  checks and the gate, so a held PR costs no trial merge and no premerge. It
+  reads the tip again right before the merge, because `main` can move during
+  premerge. Another tip waits in the queue for the next auto-revert pass, and
+  so does a file that does not parse. A PR with no file goes `BACK`.
+- **The merge bot holds a revert PR on a doubt.** A failed close or a doubt
+  keeps the old tip in the file, so the merge bot holds the PR. GitHub can
+  answer "Base branch was modified" to the merge call. Then the bot does not
+  try the merge again in the same pass, because the new tip is not tested.
 - **The limit.** A probe stops at 30 minutes. A bisect holds at most 12 probes,
   and the pass adds 10 to 18. The unit stops a pass at 14 hours
   (`TimeoutStartSec=14h`), and a lock is stale after 15 hours.
@@ -1140,7 +1150,12 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
     round added the members, roles and groups of `routes/admin/`, the admin API
     of the UI, the operator console files and the seats. A server file with a
     `signin`, `signup`, `oauth`, `seats`, `share`, `sharing`, `shared_token` or
-    `report_scope` part in its name is HIGH too.
+    `report_scope` part in its name is HIGH too. The second fix round added
+    the operator console files that write members, identities, seats and
+    credits (`store.py`, `main.py`), the money path (`payments.py`), the keys
+    (`keys.py`, `deployment_keys.py`, `provider_keys.py`), `apps.py` and
+    `operators.py`. It added `token_endpoint.py` and `bearer.py` of the agent
+    edge too.
   - `main` moves on each of 3 reads after the probes.
   - The revert PR of the culprit merged or closed, and a later run is red
     again. A run of a tree from before that merge or that fix is an old run,

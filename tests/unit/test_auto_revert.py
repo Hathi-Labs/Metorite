@@ -358,6 +358,7 @@ class Box:
             "BISECT_TEST_CMD": '"$PY" -B "$PROBE" "$@"',
             "GH_CMD": f"{shlex.quote(PY)} {shlex.quote((self.tmp / 'bin' / 'gh.py').as_posix())}",
             "HANDOVER_QUEUE": str(self.queue),
+            "MERGE_QUEUE": str(self.queue),
             "TMPDIR": str(self.temp),
             "TMP": str(self.temp),
             "TEMP": str(self.temp),
@@ -934,6 +935,66 @@ def test_a_failed_read_of_the_revert_pr_changes_nothing(box: Box) -> None:
     assert box.probes()[probes:] == [moved]
 
 
+def test_a_merge_while_the_hand_over_waits_leaves_the_line_to_done(box: Box) -> None:
+    """P3 (CIV-31b fix round 2): the PR merged while the merge bot queue still waits
+    on its hand-over. The bot writes DONE on its next pass. So the pass writes no
+    REVERTED by=hand, and the log gets one REVERTED line, from the DONE."""
+    _open_revert_pr(box)
+    assert box.queue.read_text(encoding="utf-8").splitlines()[1].startswith("900\t")
+    merge = _land(box, 108, {"note_108.txt": "108\n"})
+    view = json.loads((box.fix / "pr_900.json").read_text(encoding="utf-8"))
+    view.update(state="MERGED", mergeCommit={"oid": merge})
+    (box.fix / "pr_900.json").write_text(json.dumps(view), encoding="utf-8")
+    lines = len(box.lines())
+    assert box.run("on").returncode == 0
+    assert len(box.lines()) == lines and _state(box).exists()
+    box.merge_log.write_text(f"DONE 900 {merge}\n", encoding="utf-8")
+    assert box.run("on").returncode == 0
+    reverted = [ln for ln in box.lines() if " REVERTED " in ln]
+    assert len(reverted) == 1 and f"merge={merge}" in reverted[0]
+    assert "by=hand" not in reverted[0] and not _state(box).exists()
+
+
+def test_a_state_file_that_does_not_parse_writes_one_person_line(box: Box) -> None:
+    """P3 (CIV-31b fix round 2): a truncated open/900.json. The pass runs no
+    recheck, and the merge bot holds the PR. So the pass writes one PERSON line,
+    once and not on each pass."""
+    _open_revert_pr(box)
+    _state(box).write_text('{"culprit": "ab', encoding="utf-8")
+    lines, probes = len(box.lines()), len(box.probes())
+    _land(box, 108, {"note_108.txt": "108\n"})
+    assert box.run("on").returncode == 0
+    assert box.run("on").returncode == 0
+    new = box.lines()[lines:]
+    assert len(new) == 1, new
+    assert " PERSON " in new[0] and "state=unreadable" in new[0] and "does not parse" in new[0]
+    assert len(box.probes()) == probes
+
+
+def test_the_state_file_is_written_in_one_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P3 (CIV-31b fix round 2): write_open writes a temp file in the same folder,
+    and os.replace puts it in place. A reader never sees half a file."""
+    mod = load_module()
+    cfg = _cfg(mod, tmp_path)
+    moves: list[tuple[Path, Path]] = []
+    real = mod.os.replace
+
+    def spy(src, dst):
+        moves.append((Path(src), Path(dst)))
+        return real(src, dst)
+
+    monkeypatch.setattr(mod.os, "replace", spy)
+    data = {"culprit": "a" * 40, "run": "1", "ids": ["t"], "tip": "b" * 40}
+    mod.write_open(cfg, "900", data)
+    target = mod.open_state(cfg, "900")
+    assert len(moves) == 1 and moves[0][1] == target
+    assert moves[0][0].parent == target.parent and moves[0][0] != target
+    assert json.loads(target.read_text(encoding="utf-8")) == data
+    assert sorted(p.name for p in target.parent.iterdir()) == ["900.json"]
+
+
 def test_a_probe_that_cannot_start_writes_one_line_and_the_pass_goes_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1098,6 +1159,18 @@ SCOPING_HIGH = [
     "apps/services/gateway/gateway/connections/shared_token.py",
     "apps/services/gateway/gateway/package_host/sharing.py",
     "apps/services/gateway/gateway/routes/projects/report_scope.py",
+    # Fix round 2: the customer-console member, money, identity and key files,
+    # and the OAuth token endpoint and bearer check of the agent edge.
+    "apps/services/customer_console/customer_console/store.py",
+    "apps/services/customer_console/customer_console/payments.py",
+    "apps/services/customer_console/customer_console/keys.py",
+    "apps/services/customer_console/customer_console/apps.py",
+    "apps/services/customer_console/customer_console/main.py",
+    "apps/services/customer_console/customer_console/operators.py",
+    "apps/services/customer_console/customer_console/deployment_keys.py",
+    "apps/services/customer_console/customer_console/provider_keys.py",
+    "apps/services/agent_edge/agent_edge/token_endpoint.py",
+    "apps/services/agent_edge/agent_edge/bearer.py",
 ]
 #: Near misses that stay out: an ordinary store, a UI helper, a spec.
 SCOPING_LOW = [
@@ -1227,6 +1300,10 @@ def test_lane_merge_defers_to_the_auto_revert() -> None:
     # gives the one merged value.
     assert "systemctl --user cat" not in text
     assert "systemctl --user show -p Environment --value metorite-auto-revert.service" in text
+    # CIV-31b fix round 2: a by=hand line counts only when the merge bot log has no
+    # DONE line for that pull request. Else the task opens twice.
+    assert "`reverted ... by=hand`" in lowered
+    assert "when there is no `done` line, do the same as for `done`" in lowered
 
 
 def test_a_stop_signal_still_writes_a_person_line_and_a_report(
