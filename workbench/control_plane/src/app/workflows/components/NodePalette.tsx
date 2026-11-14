@@ -232,10 +232,12 @@ export default function NodePalette({
               r.kind === "node"
                 ? (r.category || "logic")
                 : r.kind === "integration" ? "tool" : r.kind;
+            // The member's word for the one agent kind (WFC-2).
+            const kindWord = r.kind === "agent" ? "AI step" : r.kind;
             return item(
               `s:${r.kind}:${r.key}`, drop,
               r.label,
-              `${r.kind} · ${r.description || "—"}`,
+              `${kindWord} · ${r.description || "—"}`,
               category,
               r.kind === "integration",
             );
