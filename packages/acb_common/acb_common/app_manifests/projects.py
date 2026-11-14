@@ -512,6 +512,7 @@ PROJECTS_DOOR = App(
         Route("DELETE", "/projects/tasks/{task_id}/recurrence", "set_recurrence", "B",
               off_door=LATER),
         Route("GET", "/projects/tasks/{task_id}/relations", "task_detail", "A", off_door=TYPED),
+        Route("GET", "/projects/affects-notes", "my_work", "A", off_door=TYPED),
         # ── refs.py ──
         Route("GET", "/projects/tasks/{task_id}/refs", "task_detail", "A", off_door=TYPED),
         Route("POST", "/projects/tasks/{task_id}/refs", "add_task_ref", "B", off_door=TYPED),

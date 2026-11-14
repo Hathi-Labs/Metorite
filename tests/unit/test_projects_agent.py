@@ -745,6 +745,11 @@ async def test_every_route_mapped_to_a_built_tool_is_reached_by_it(monkeypatch) 
     # RX-1: a held card reads this row, not a read tool. The fence that reaches
     # it is ``tests/unit/test_held_card_promises.py``.
     expected.discard(("GET", "/projects/nodes/{project_id}/audience"))
+    # SW-25: the MCP edge ``my_work`` reads this row for the affects notes of the
+    # tasks that the signed session holds. The chat ``my_work`` is a person's
+    # tool and has no such session. The fence that reaches it is
+    # ``tests/unit/test_affects_notes_r8.py``.
+    expected.discard(("GET", "/projects/affects-notes"))
     unreached = sorted(expected - reached)
     assert not unreached, (
         "manifest rows whose built tool never calls them — repoint, exclude, "
