@@ -79,14 +79,14 @@ BLOCKS: tuple[str, ...] = (
 RECORD_OPS: tuple[str, ...] = ("list", "get", "create", "update", "delete")
 
 #: Each verb of an ``object:<name>.<op>`` action: the record verbs, and the
-#: aggregate of C2b (STU-D4b). No action is added for the aggregate by itself,
-#: so a package declares it.
-OBJECT_OPS: tuple[str, ...] = (*RECORD_OPS, "aggregate")
+#: aggregate of C2b (STU-D4b), and the tree read of C18 (STU-D18-2a). No action
+#: is added for the aggregate or the tree by itself, so a package declares it.
+OBJECT_OPS: tuple[str, ...] = (*RECORD_OPS, "aggregate", "tree")
 
 #: The class of each object verb (STU-B2a, ``ai_studio.md`` §3.2). It is the
 #: one source of the class of an ``object:<name>.<op>`` action. The B1 catalog
 #: (``catalog_rows``) gives the class of each other source. A read is A, and an
-#: aggregate is a read. A create or an update is B, because the app can undo
+#: aggregate and a tree are reads. A create or an update is B, because the app can undo
 #: it. A delete is C. ``test_studio_action_door.py`` holds these keys equal to
 #: :data:`OBJECT_OPS`.
 OBJECT_OP_CLASSES: dict[str, str] = {
@@ -96,6 +96,7 @@ OBJECT_OP_CLASSES: dict[str, str] = {
     "update": "B",
     "delete": "C",
     "aggregate": "A",
+    "tree": "A",
 }
 
 #: The head of the refusal of a view source that writes (STU-B2c-1, fix round 1).
@@ -366,6 +367,8 @@ class PageDef(_Strict):
 #: (`contributes.nav`) adds a row to the shell sidebar. This `nav` lays out the rail of one app.
 MAX_NAV_SECTIONS = 4
 MAX_NAV_ROWS = 12
+#: A rail shows at most this many counts (STU-AF3a). `navCaps.test.ts` holds the TS twin equal.
+MAX_NAV_COUNTS = 8
 
 #: The icons of a rail row (STU-AF2a). Each name is a Lucide name that `lib/icons.tsx` draws.
 #: The names come from the icons of the built-in app rails (`lib/nav.ts`, the CRM rail, the
@@ -396,6 +399,9 @@ class NavRow(_Strict):
         "Trophy", "Lightbulb", "BookOpen", "Layers", "Activity", "Sparkles",
     ] | None = None  # fmt: skip
     label: str | None = Field(default=None, min_length=1, pattern=r"\S")
+    #: `true` asks the client to show a count of the rows of the page. `_check_nav` needs a
+    #: table or board view on the page. The filter and the sort stay on that view, never here.
+    count: bool | None = None
 
 
 class NavSection(_Strict):
@@ -890,15 +896,40 @@ def _check_pages(m: Manifest, view_ids: set[str], out: list[ManifestError]) -> N
             _undeclared(f"{p}.side.view", "View", pg.side.view, "`views`", out)
 
 
+#: The views that read the rows of an object. Only these can give a count.
+_COUNT_BLOCKS = frozenset({"table", "board"})
+
+
 def _check_nav(m: Manifest, out: list[ManifestError]) -> None:
     """A rail row names a declared page. A `nav` needs `pages`, because the default
     pages of an app with none are drawn in the client, and no row can name them."""
     page_ids = {p.id for p in m.pages}
     _dupes([sec.title for sec in m.nav], "$.nav", "section title", out)
+    blocks = {v.id: v.block for v in m.views}
+    pages = {p.id: p for p in m.pages}
+
+    def countable(page_id: str) -> bool:
+        pg = pages[page_id]
+        cells = [*pg.cells, *(c for t in pg.tabs for c in t.cells)]
+        ids = [c.view for c in cells] + ([pg.side.view] if pg.side else [])
+        return any(blocks.get(i) in _COUNT_BLOCKS for i in ids)
+
+    counted = 0
     for si, sec in enumerate(m.nav):
         for ri, row in enumerate(sec.rows):
             if row.page not in page_ids:
                 _undeclared(f"$.nav[{si}].rows[{ri}].page", "Page", row.page, "`pages`", out)
+            if row.count:
+                counted += 1
+                if row.page in page_ids and not countable(row.page):
+                    out.append(
+                        _err(
+                            f"$.nav[{si}].rows[{ri}].count",
+                            f"Page `{_short(row.page)}` has no table or board view to count.",
+                        )
+                    )
+    if counted > MAX_NAV_COUNTS:
+        out.append(_err("$.nav", f"A rail shows at most {MAX_NAV_COUNTS} counts."))
 
 
 def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[ManifestError]) -> None:
