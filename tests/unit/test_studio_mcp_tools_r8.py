@@ -32,11 +32,18 @@ c. A server of one name in both orgs: a refresh of org B gives org A no row.
 d. A refresh of org A never moves the old row of org B into org A.
 e. The cache key of org A cannot be read for org B.
 
-**The mutations (R7).** Each ran on 2026-11-14, then was restored with git.
+**The mutations (R7).** Each ran on 2026-11-14, then was restored.
 
 * M1. ``connections/mcp.py::_LEGACY_SQL``: drop ``WHERE organization_id =
-  CAST(:org AS uuid)``. Each test that refreshes goes red.
-* M2. ``mcp_tools._scope``: bind one shared org (``"shared"``).
+  CAST(:org AS uuid)``. 3 tests go red:
+  ``test_r8_a_refresh_reads_only_a_server_of_the_own_org``,
+  ``test_r8_each_org_gets_only_its_own_rows`` and
+  ``test_r8_a_refresh_of_org_a_never_moves_an_old_row_of_org_b``.
+* M2. ``mcp_tools._scope``: bind one shared org (``"shared"``). 3 tests go
+  red: ``test_r8_each_org_gets_only_its_own_rows``,
+  ``test_r8_a_server_of_one_name_in_both_orgs_never_crosses`` and
+  ``test_r8_the_cache_key_of_org_a_cannot_be_read_for_org_b``.
+* M3. ``mcp_tools.catalog_tools``: on an empty index, refresh each server.
   ``test_r8_a_server_of_one_name_in_both_orgs_never_crosses`` goes red.
 
 Run (one R8 suite at a time on the shared scratch database)::

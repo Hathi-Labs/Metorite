@@ -30,21 +30,26 @@ This file proves:
 - no answer holds a url, a header or an exception text;
 - the real SDK path sends the stored headers through the pinned client only.
 
-**The mutations (R7).** Each ran on 2026-11-14, then was restored with git.
+**The mutations (R7).** Each ran on 2026-11-14, then was restored.
 
 * M1 (a). ``mcp_tools._scope``: bind one shared org (``"shared"``) in place
-  of *org*. ``test_the_cache_of_one_org_never_serves_another`` goes red.
-* M2 (b). ``mcp_tools.catalog_tools``: on an empty index, call
-  ``list_tools`` for each server of ``enabled_meta``. ``test_a_get_never_calls_a_server``
-  (both cases) and ``test_a_cold_cache_gives_no_row_and_stale`` go red.
+  of *org*. 8 tests go red, among them
+  ``test_the_cache_of_one_org_never_serves_another`` and
+  ``test_the_slot_of_one_org_does_not_hold_another``. The R8 file goes red
+  too (see there).
+* M2 (b). ``mcp_tools.catalog_tools``: on an empty index, refresh each
+  server of ``enabled_meta``. 3 tests go red:
+  ``test_a_get_never_calls_a_server[False]``,
+  ``test_a_cold_cache_gives_no_row_and_stale`` and
+  ``test_the_cache_lives_300_seconds``.
 * M3 (c). ``mcp_tools._description``: return *raw* cut, with no
-  ``strip_hidden``. Both cases of
-  ``test_a_hostile_description_never_reaches_the_cache_or_a_row`` go red,
-  and the surrogate case answers 500.
-* M4 (d). ``mcp_actions.unique_tools``: keep the first item of a name.
-  ``test_a_duplicate_name_takes_the_stricter_class[read_first]`` and
-  ``test_studio_mcp_catalog.py::test_the_stricter_tool_of_a_name_wins`` go
-  red.
+  ``strip_hidden``. 3 tests go red: both cases of
+  ``test_a_hostile_description_never_reaches_the_cache_or_a_row`` and
+  ``test_a_cut_never_leaves_a_hidden_joiner``.
+* M4 (d). ``mcp_actions.unique_tools``: keep the first item of a name. 3
+  tests go red: ``test_a_duplicate_name_takes_the_stricter_class[read_first]``,
+  ``test_duplicates_count_once_toward_the_cap`` and
+  ``test_studio_mcp_catalog.py::test_the_stricter_tool_of_a_name_wins[False]``.
 """
 
 from __future__ import annotations
