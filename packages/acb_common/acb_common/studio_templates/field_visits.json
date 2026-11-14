@@ -63,5 +63,15 @@
     "jobs": [{"verb": "Check in to a visit", "view": "check_in"}],
     "needs": [{"object": "visit", "where": {"engineer": "$me", "status": "planned"}}],
     "search": ["visit"]
-  }
+  },
+  "pages": [
+    {"id": "all", "title": "All visits", "cols": 1, "cells": [{"view": "list"}], "side": {"view": "check_in"}},
+    {"id": "board", "title": "Board", "cols": 1, "cells": [{"view": "board"}], "side": {"view": "check_in"}}
+  ],
+  "nav": [
+    {"title": "Visits", "rows": [
+      {"page": "all", "icon": "List", "label": "All visits"},
+      {"page": "board", "icon": "Kanban", "label": "Board"}
+    ]}
+  ]
 }

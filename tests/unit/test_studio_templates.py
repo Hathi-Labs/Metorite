@@ -126,3 +126,29 @@ def test_the_template_route_list_is_the_registry() -> None:
     for t in listed:
         assert set(t) == {"id", "name", "purpose"}
     json.dumps(listed)  # the answer is plain JSON
+
+
+# --- STU-AF9: three templates declare a rail (D219) ----------------------------
+# Fence (R7): the three templates keep a `nav` that names their pages. `validate_manifest`
+# already refuses a row that names a missing page. This test holds that the rail exists
+# and that each row opens a page that shows a view of the template.
+FRAMED = ("field-visits", "support-desk", "purchase-requests")
+
+
+@pytest.mark.parametrize("tid", FRAMED)
+def test_a_framed_template_declares_a_rail_over_its_pages(tid: str) -> None:
+    doc = _doc(tid)
+    pages = {p["id"]: p for p in doc["pages"]}
+    views = {v["id"] for v in doc["views"]}
+    rows = [r for s in doc["nav"] for r in s["rows"]]
+    assert [r["page"] for r in rows] == ["all", "board"]
+    for row in rows:
+        shown = [c["view"] for c in pages[row["page"]]["cells"]]
+        assert shown and set(shown) <= views
+    assert validate_manifest(doc) == []
+
+
+def test_the_unframed_templates_stay_unframed() -> None:
+    # A template with no `nav` gets the default rail from the client (§5.5 rule 3).
+    for tid in set(IDS) - set(FRAMED):
+        assert "nav" not in _doc(tid)
