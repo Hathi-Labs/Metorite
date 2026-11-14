@@ -288,7 +288,8 @@ def test_bad_uses_grammar():
 
 
 @pytest.mark.parametrize(
-    "uses", ["crm.create_account", "workflow:123e4567-e89b-12d3-a456-426614174000"]
+    "uses", ["crm.create_account", "workflow:123e4567-e89b-12d3-a456-426614174000",
+             "mcp:github.get_issue"]
 )
 def test_other_uses_forms_are_valid(uses):
     d = copy.deepcopy(EXAMPLE)
