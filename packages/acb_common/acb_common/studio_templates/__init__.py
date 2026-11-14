@@ -29,6 +29,8 @@ TEMPLATE_IDS: tuple[str, ...] = (
     "expense-claims",
     "hiring",
     "spares",
+    "shipment-tracker",
+    "site-survey",
 )
 
 
