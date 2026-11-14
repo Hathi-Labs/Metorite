@@ -2884,7 +2884,8 @@ def _empty_page(start: int, size: int) -> RecordPage:
 
 async def query_records(db: Any, *, package_id: str, object_id: str, viewer: Viewer,
                         filter: Any = None, sort: Any = None, limit: Any = None,
-                        offset: Any = None) -> RecordPage | None:
+                        offset: Any = None,
+                        budget_s: float | None = None) -> RecordPage | None:
     """One page of the records of the object *object_id* of the package
     *package_id*, with a filter and a sort (C2a). Answers None when the bound
     org holds no such object in that package.
@@ -2903,9 +2904,17 @@ async def query_records(db: Any, *, package_id: str, object_id: str, viewer: Vie
     C8a: the row rule of *viewer* joins that one statement, so the page and
     its total hold only the records that the viewer reads. A filter or a sort
     on a hidden key is refused, and each hidden key leaves each record.
+
+    C5a: *budget_s* is a lower deadline in seconds, for a caller with its own
+    clock (company search). It never raises the deadline above the one of
+    :data:`~acb_common.studio_query.TIMEOUT_MS`. A budget of 0 or less refuses
+    with ``query_timeout`` before any statement.
     """
     who = _check_viewer(viewer)
-    deadline = _clock() + studio_query.TIMEOUT_MS / 1000
+    span = studio_query.TIMEOUT_MS / 1000
+    if budget_s is not None:
+        span = min(span, max(0.0, float(budget_s)))
+    deadline = _clock() + span
     oid = _uuid(object_id, "object_id")
     pid = _uuid(package_id, "package_id")
     start, size = studio_query.page_bounds(offset, limit)
