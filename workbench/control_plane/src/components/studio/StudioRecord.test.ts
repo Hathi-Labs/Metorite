@@ -25,7 +25,7 @@ describe("StudioRecord", () => {
   it("reuses Tabs, the Detail block, the Form block and the table block", () => {
     expect(record).toContain('from "@/components/Tabs"');
     expect(record).toContain('from "@/components/studio/StudioDetail"');
-    expect(record).toContain('from "@/components/studio/StudioForm"');
+    expect(record).toContain('from "@/components/studio/StudioFormDialog"');
     expect(record).toContain("tableBlock");
     expect(record).toContain("GenerativeUINode");
   });
