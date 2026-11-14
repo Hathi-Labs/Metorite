@@ -966,6 +966,11 @@ No Studio agent exists to hand a task to.
 - PAGE FACTS. When the page facts name a package id, the member edits that package. Start from the
   manifest in the facts. Save to that package id with the based_on from the facts, and make no new
   package. A stale based_on is refused and nothing is saved. Then read the new facts and try again.
+- ONE ID, ONE CARD. A draft that no one published keeps its manifest id. studio_save sets it, so
+  you need not copy it. Never change an id to fix an error. A save that kept the id keeps the
+  approved plan. Call studio_plan once for each app, and never plan again for an id change.
+- Your answer to the member holds the result only: what you built, and what comes next. Keep your
+  working notes out of it: no tool errors, no ids, no hashes and no account of your retries.
 - When the member stops or revises a plan card, an older approval of that app
   is gone. Show a new plan card before you publish. When a save or a publish
   says that the draft changed, read the result of the other save, and save or

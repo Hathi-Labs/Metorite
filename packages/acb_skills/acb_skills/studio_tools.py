@@ -457,18 +457,82 @@ def outline_text(manifest: Any, fence: bool = False) -> str:
 # ── The draft (pure) ────────────────────────────────────────────────────────
 
 
+#: Words that end the name of an app in a brief: "an event tracker for a stall" is
+#: the app "event tracker". The id of a new app comes from the name part only.
+_NAME_END = frozenset((
+    "for", "to", "at", "of", "that", "which", "with", "in", "on", "where", "so", "and",
+    "because", "from", "about"))
+#: Words that start a brief and name no app: "build me an app that tracks ..."
+_NAME_LEAD = frozenset((
+    "please", "i", "we", "want", "need", "would", "like", "to", "build", "make", "create",
+    "me", "us", "a", "an", "the", "new", "app", "called", "named", "for", "that", "which"))
+
+
 def _slug(brief: str) -> str:
-    words = re.sub(r"[^a-z0-9]+", "-", brief.lower()).strip("-")
-    words = re.sub(r"^[^a-z]+", "", words)[:40].strip("-")
-    return words or "my-app"
+    """The id of a new app: its first words, up to a word that ends the name."""
+    text = " ".join(brief.split())
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    while words and words[0] in _NAME_LEAD:
+        words.pop(0)
+    named: list[str] = []
+    for w in words:
+        if w in _NAME_END:
+            break
+        named.append(w)
+    chosen = "-".join(w for i, w in enumerate(named) if i < 4) or re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return str(re.sub(r"^[^a-z]+", "", chosen))[:40].strip("-")  # "" when the brief has no Latin word
 
 
-def _skeleton(brief: str) -> dict[str, Any]:
+#: The id rule of a manifest (``studio_manifest``), as a pattern text. No studio
+#: module calls ``compile``, so the checks use ``re.fullmatch``.
+_MANIFEST_ID = r"[a-z][a-z0-9_-]{0,47}"
+#: The most numbered tries (``-2`` to ``-9``) before a random tail.
+_ID_TRIES = 9
+
+
+def _tail() -> str:
+    """Four random lower-case hex digits for the end of an id."""
+    return str(uuid.uuid4().hex)[:4]
+
+
+def _free_id(slug: str, taken: set[str]) -> str:
+    """An id from *slug* that no id of *taken* holds, valid by the id rule.
+
+    The slug itself, then ``slug-2`` to ``slug-9``, then ``slug-<4 random
+    characters>``. With no slug (a brief with no Latin word), ``app-<4 random
+    characters>``."""
+    base = str(slug)[:40].strip("-")
+    if base and base not in taken and re.fullmatch(_MANIFEST_ID, base):
+        return base
+    for n in (range(2, _ID_TRIES + 1) if base else ()):
+        if f"{base}-{n}" not in taken:
+            return f"{base}-{n}"
+    base = base or "app"
+    while True:
+        mine = f"{base}-{_tail()}"
+        if mine not in taken:
+            return mine
+
+
+async def _taken_ids() -> set[str]:
+    """The manifest ids that the member holds, from ``GET /studio/packages``.
+    A fault or a shape that the tool cannot read gives none: the save still
+    refuses a taken id with 409 ``package_exists``."""
+    try:
+        reply = await _send("GET", PACKAGES_PATH, None, miss=_PKG_UNREAD)
+    except Exception:
+        return set()
+    rows = reply.data.get("packages") if reply.ok and isinstance(reply.data, dict) else None
+    return {p["manifest_id"] for p in (rows if isinstance(rows, list) else [])
+            if isinstance(p, dict) and isinstance(p.get("manifest_id"), str)}
+
+
+def _skeleton(brief: str, mid: str) -> dict[str, Any]:
     text = " ".join(brief.split())
     title = " ".join(text.split()[:5])[:MAX_NAME_CHARS].strip(" .,;:") or "My app"
     return {
         "studio": STUDIO_VERSION,
-        "id": _slug(text),
+        "id": mid,
         "name": title[:1].upper() + title[1:],
         "purpose": text[:MAX_PURPOSE_CHARS] or "To be written.",
         "connections": [],
@@ -592,10 +656,15 @@ def added_actions_line(added: list[dict[str, str]], skipped: list[str] | None = 
 
 @annotate(read_only=True, idempotent=True, open_world=False)
 async def studio_draft(brief: str) -> dict[str, Any]:
-    """Make a minimal valid app manifest from a short brief. Fill it with studio_patch."""
+    """Make a minimal valid app manifest from a short brief. Fill it with studio_patch.
+
+    The id comes from the name in the brief. When the member holds a package with
+    that id, it takes the next free id.
+    """
     if not isinstance(brief, str) or not brief.strip():
         return _result(False, _sentence("Give a short brief of the app."), [])
-    manifest, _added = with_record_actions(_skeleton(brief))
+    mid = _free_id(_slug(brief), await _taken_ids())
+    manifest, _added = with_record_actions(_skeleton(brief, mid))
     errors = validate_manifest(manifest)
     if errors:
         return _result(False, _errors(errors), [])
@@ -655,8 +724,14 @@ def _diff(ops: list[Any]) -> list[str]:
 
 
 @annotate(read_only=True, idempotent=True, open_world=False)
-async def studio_patch(manifest: dict[str, Any], ops: list[dict[str, Any]]) -> dict[str, Any]:
-    """Apply JSON Patch ops (add, replace, remove) to a manifest, then check it."""
+async def studio_patch(
+    manifest: dict[str, Any], ops: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Apply JSON Patch ops (add, replace, remove) to a manifest, then check it.
+
+    With no ops, it only checks the manifest.
+    """
+    ops = [] if ops is None else ops
     doc, bad = _as_doc(manifest)
     if bad is not None:
         return bad
@@ -2647,7 +2722,8 @@ async def studio_save(
     With no package_id, it makes a new package. With a package_id, it replaces
     the stored draft, and it needs based_on: the value that the last save of
     that package gave. The result gives the package_id, the outline and the new
-    based_on, and never the manifest text. It adds the record actions that an
+    based_on, and never the manifest text. A draft that no one published keeps
+    its own manifest id, and the save sets it. It adds the record actions that an
     object lacks, as studio_plan does, and names them. In a chat that read outside mail,
     it shows one card first and waits (decision: approved, revised, stopped or
     no_card).
@@ -2725,6 +2801,22 @@ async def _held_create(doc: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _keep_draft_id(
+    current: _Reply, stored: dict[str, Any], doc: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any] | None]:
+    """The manifest to save, the manifest as it came when its id changed, and a
+    refusal. STU-FIX: a draft that no one published keeps the id that it was
+    made with (the "New app" button makes one). A chat that builds into it saves
+    under that id, so one app has one id and one plan card. A published package
+    keeps the refusal: its id is fixed for good."""
+    if doc.get("id") == stored.get("id"):
+        return doc, None, None
+    live = _package_of(current).get("live_version")
+    if live or not isinstance(stored.get("id"), str) or not stored["id"]:
+        return doc, None, _route_422([{"path": "$.id", "message": _ID_FIXED}], _ID_FIXED)
+    return {**doc, "id": stored["id"]}, doc, None
+
+
 async def _save_draft(pid: str, doc: dict[str, Any], based_on: str) -> dict[str, Any]:
     """``PUT /studio/packages/{id}/draft``, after the read of the stored draft.
 
@@ -2743,12 +2835,13 @@ async def _save_draft(pid: str, doc: dict[str, Any], based_on: str) -> dict[str,
         return _refusal(_PKG_BIG.format(limit=MAX_MANIFEST_CHARS), package_id=pid,
                         truncated=True)
     digest = manifest_hash(stored)
+    doc, original, refused = _keep_draft_id(current, stored, doc)
+    if refused is not None:
+        return refused
     if manifest_hash(doc) == digest:
-        return _saved_package(current, _PKG_SAME)
+        return await _after_id_adopted(_saved_package(current, _PKG_SAME), original, doc)
     if based_on != digest:
         return _refusal(_PKG_STALE, package_id=pid)
-    if doc.get("id") != stored.get("id"):
-        return _route_422([{"path": "$.id", "message": _ID_FIXED}], _ID_FIXED)
     if await _must_ask():
         problem = _structure_problem(doc)
         if problem:
@@ -2773,7 +2866,65 @@ async def _save_draft(pid: str, doc: dict[str, Any], based_on: str) -> dict[str,
         return _refusal(_PKG_RACED_SAVE, status=409, code=_DRAFT_CHANGED, package_id=pid)
     if not reply.ok:
         return _package_fail(reply)
-    return _saved_package(reply)
+    return await _after_id_adopted(_saved_package(reply), original, doc)
+
+
+async def _move_plan(original: dict[str, Any], doc: dict[str, Any]) -> bool:
+    """Move the approval of *original* to *doc*. The new record keeps the ``at``
+    of the old one and its REMAINING life, so a move never makes an approval
+    last longer than the member gave. An old record that is gone, expired or
+    withdrawn moves nothing. True when the new record is written. A fault is
+    False."""
+    org, member = _run_org(), _member_part()
+    old_app, new_app = _app_part(original), _app_part(doc)
+    if not (org and member and old_app and new_app):
+        return False
+    try:
+        from acb_common.tenant_redis import key, organization_scope
+
+        with organization_scope(org):
+            client, old = _plan_redis(), key(PLAN_NAMESPACE, member, old_app)
+            raw, stamp = await client.mget([old, key(PLAN_NAMESPACE, member, WITHDRAWN_PART)])
+            left = await client.ttl(old)
+            found = _approval(raw)
+            if found is None or found[0] != manifest_hash(original):
+                return False
+            _digest, at = found
+            if any(t is not None and t >= at for t in (_stamp(stamp), _failed_withdraw(org, member))):
+                return False
+            if isinstance(left, bool) or not isinstance(left, int | float) or left <= 0:
+                return False
+            value = json.dumps({"hash": manifest_hash(doc), "at": at})
+            await client.setex(key(PLAN_NAMESPACE, member, new_app),
+                               min(int(left), PLAN_TTL_SECONDS), value)
+            await client.delete(old)
+    except Exception as exc:
+        _log_fault("studio.plan.move_failed", exc)
+        return False
+    return True
+
+
+async def _after_id_adopted(
+    saved: dict[str, Any], original: dict[str, Any] | None, doc: dict[str, Any],
+) -> dict[str, Any]:
+    """The result of a save that took the id of the stored draft. When the
+    member approved the plan of *original*, the approval moves to *doc*: the two
+    differ in the id only, and the member approved this app. Without it, a
+    publish would need a second plan card for the same app. A save that kept
+    the id of the manifest (*original* is None) comes back as it is."""
+    if original is None or not saved.get("ok"):
+        return saved
+    try:
+        moved = await _move_plan(original, doc)
+    except _Refused:
+        moved = False
+    keep = ("The draft keeps its package id, so this save set the manifest id to "
+            f"{_title_name(doc.get('id', '?'))}. ")
+    keep += ("The plan that the member approved still holds, so publish now."
+             if moved else "Show the plan card again with studio_plan before you publish.")
+    saved["manifest_id"] = _tag(doc.get("id"), 80)
+    saved["note"] = f"{keep} {saved.get('note', '')}".strip()
+    return saved
 
 
 def _problem_name(value: Any) -> str:
