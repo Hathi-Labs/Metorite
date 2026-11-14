@@ -33,6 +33,22 @@ export interface ViewMapContext {
   objects: readonly Pick<ObjectRow, "name" | "label" | "fields" | "rules">[];
   /** The owner may write. A viewer reads only (J2a). */
   owner: boolean;
+  /** The list bar's choices for one view. Absent when the bar is off. */
+  lens?: ViewLens | null;
+  /** The start of the record link for rows of an object (STU-AF5), or null. Absent when the frame has no record page. */
+  recordBase?: ((object: string) => string | null) | null;
+}
+
+/**
+ * What the list bar (STU-AF4) does to one view: it reads with a filter and a sort, it draws as
+ * a table or a board, and a board takes the lanes of `group`. The args are the `list` input of
+ * the door (`studio_query.list_input_schema`). Only the view named by `view` changes.
+ */
+export interface ViewLens {
+  view: string;
+  layout?: "table" | "board" | null;
+  args?: { filter?: unknown[]; sort?: { field: string; dir: "asc" | "desc" } };
+  group?: string | null;
 }
 
 export interface ViewNode {
@@ -70,6 +86,9 @@ const WRITE_CREATE = /^object:[a-z][a-z0-9_]{0,47}\.create$/;
  * The block of one view, or `null` when its kind is not built. Never throws.
  */
 export function mapView(view: ViewDef, ctx: ViewMapContext): ViewModel | null {
+  const lens = ctx.lens && ctx.lens.view === view.id && (view.block === "table" || view.block === "board") ? ctx.lens : null;
+  // The layout switch moves the same rows between a table and a board.
+  const block = lens?.layout ?? view.block;
   const label = view.title?.trim() || view.id;
   const kinds = ["table", "board", "chart", "stat", "form", "detail"];
   if (!kinds.includes(view.block)) return null;
@@ -96,23 +115,23 @@ export function mapView(view: ViewDef, ctx: ViewMapContext): ViewModel | null {
   const named = view.fields?.length ? view.fields.map((k) => specs.find((f) => f.key === k)).filter((f): f is FieldSpec => !!f) : specs;
   const shown = named.length ? named : specs;
   const verbs = verbMap(ctx.actions);
-  const list = { action: `object:${name}.list`, args: { limit: VIEW_LIMIT } };
+  const list = { action: `object:${name}.list`, args: { limit: VIEW_LIMIT, ...(lens?.args ?? {}) } };
   if (verbs[list.action] === undefined && view.block !== "form") {
     return problem(NOT_DECLARED_SENTENCE);
   }
 
-  switch (view.block) {
+  switch (block) {
     case "table": {
       const canUpdate = ctx.owner && verbs[`object:${name}.update`] !== undefined;
       return {
         kind: "node",
         node: tableBlock(tableFields(shown), list, view.title ?? object.label ?? object.name,
-          { editable: canUpdate, computed: [...computed] }),
+          { editable: canUpdate, computed: [...computed], openBase: ctx.recordBase?.(name) ?? undefined }),
       };
     }
     case "board": {
       const canUpdate = ctx.owner && verbs[`object:${name}.update`] !== undefined;
-      const node = objectBoardBlock(object, specs, computed, list, canUpdate);
+      const node = objectBoardBlock(object, specs, computed, list, canUpdate, lens?.group ?? null, ctx.recordBase?.(name) ?? undefined);
       return node ? { kind: "node", node } : problem(noBoardReason(specs));
     }
     case "detail":

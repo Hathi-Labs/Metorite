@@ -59,6 +59,8 @@ from gateway.routes.workflows.engine.handlers import NodeExecutionError, NodeSer
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
+from tests.unit import _r8_lists as r8_lists
+
 _ROOT = Path(__file__).resolve().parents[2]
 _GATEWAY = _ROOT / "apps" / "services" / "gateway" / "gateway"
 _WAIT = 60
@@ -386,9 +388,7 @@ def test_this_suite_is_named_in_both_ci_skip_guards() -> None:
     """An R8 suite that CI does not list still skips in silence when the
     database gate is disarmed. Match the argument line, not a mention."""
     for name in ("pr-check.yml", "deploy.yml"):
-        workflow = _code(_ROOT / ".github" / "workflows" / name)
-        assert re.search(r"^\s+tests/unit/test_studio_workflow_write_r8\.py \\?$",
-                         workflow, re.M), name
+        assert "tests/unit/test_studio_workflow_write_r8.py" in r8_lists.must_run(), name
 
 
 # ══ R8 ══════════════════════════════════════════════════════════════════════

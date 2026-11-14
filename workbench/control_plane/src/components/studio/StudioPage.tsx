@@ -87,6 +87,25 @@ export interface StudioPageProps {
   renderView: (viewId: string) => ReactNode;
   /** Controls above the grid, such as a filter. */
   toolbar?: ReactNode;
+  /** The list bar (STU-AF4) in its own row under the toolbar, over the table or board. */
+  filterBar?: ReactNode;
+  /**
+   * The record that is open (STU-AF5). In the panel it takes the place of the side view, in the same
+   * column (and in the same sheet below `lg`). As the full page it takes the place of the grid, under
+   * the one app bar. The body is the record page (`StudioRecord`), and this file knows no field.
+   */
+  record?: RecordShell | null;
+}
+
+export interface RecordShell {
+  title: string;
+  body: ReactNode;
+  full: boolean;
+  onClose: () => void;
+  /** Move the panel to the full page, or the full page back to the panel. */
+  onFull: (full: boolean) => void;
+  /** The label of the way back from the full page, such as the page title. */
+  backLabel: string;
 }
 
 /** The member sees the title of a view, and the id only when the view has no title. */
@@ -112,15 +131,15 @@ function NotBuilt({ view, label }: { view: string; label: string }) {
 }
 
 export default function StudioPage({
-  title, subtitle, back, manifest, pageId, state, onTab, onCloseSide, renderView, toolbar,
+  title, subtitle, back, manifest, pageId, state, onTab, onCloseSide, renderView, toolbar, filterBar, record,
 }: StudioPageProps) {
   const built = buildPage(manifest, pageId, state.tab);
   const { page, cells } = built;
   const narrow = useBelowLg();
-  const sideView = page.side && state.selected ? page.side : null;
+  const sideView = page.side && state.selected && !record ? page.side : null;
   const side = sideView ? renderView(sideView) : null;
   const scroller = useRef<HTMLDivElement>(null);
-  const sideOpen = sideView !== null;
+  const sideOpen = sideView !== null || (record !== null && record !== undefined && !record.full);
 
   // "Close details" unmounts the column and drops focus to <body>. Give it back to the control
   // that opened the column, or to the scroller when that control is gone.
@@ -130,6 +149,41 @@ export default function StudioPage({
     const opener = active instanceof HTMLElement && active !== document.body ? active : null;
     return () => restoreFocus(opener, scroller.current);
   }, [sideOpen]);
+
+  if (record?.full) {
+    // The full page of a record: one column at every width, under the one app bar.
+    return (
+      <div className="flex h-full flex-col" data-record-page="full">
+        <AppTopBar title={title} subtitle={subtitle ?? page.title ?? undefined} back={back} />
+        <div ref={scroller} tabIndex={-1} data-page-scroller
+          className="min-w-0 flex-1 overflow-y-auto px-4 py-3 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-6 sm:py-4">
+          <div className="mx-auto flex max-w-3xl flex-col gap-3">
+            <div>
+              <Button variant="ghost" size="sm" icon="ArrowLeft" onClick={record.onClose}>{`Back to ${record.backLabel}`}</Button>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="min-w-0 truncate text-base font-semibold text-foreground">{record.title}</h2>
+              <Button variant="ghost" size="icon-sm" icon="Minimize2" aria-label="Show in the side panel" onClick={() => record.onFull(false)} />
+            </div>
+            <div className={PANEL}>{record.body}</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const panel = record && !record.full ? (
+    <>
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <h2 className="min-w-0 truncate text-sm font-semibold text-foreground">{record.title}</h2>
+        <div className="flex shrink-0 items-center gap-1">
+          <Button variant="ghost" size="icon-sm" icon="Maximize2" aria-label="Open full page" onClick={() => record.onFull(true)} />
+          <Button variant="ghost" size="icon-sm" icon="X" aria-label="Close record" onClick={record.onClose} />
+        </div>
+      </div>
+      {record.body}
+    </>
+  ) : null;
 
   return (
     <div className="flex h-full flex-col">
@@ -142,6 +196,7 @@ export default function StudioPage({
         <div ref={scroller} tabIndex={-1} data-page-scroller
           className="@container min-w-0 flex-1 overflow-y-auto px-4 py-3 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-6 sm:py-4">
           {toolbar && <div className="mb-3 flex flex-wrap items-center gap-2 sm:mb-4">{toolbar}</div>}
+          {filterBar && <div className="mb-3 sm:mb-4">{filterBar}</div>}
           {cells.length === 0 ? (
             <p className="text-sm text-muted-foreground">This page has no views.</p>
           ) : (
@@ -161,6 +216,12 @@ export default function StudioPage({
             </div>
           )}
         </div>
+        {panel && !narrow && (
+          <aside aria-label="Record" data-record-page="panel"
+            className="hidden w-[420px] shrink-0 overflow-y-auto border-l border-border p-3 lg:block lg:p-4">
+            {panel}
+          </aside>
+        )}
         {sideView && !narrow && (
           <aside aria-label="Details" className="hidden w-[380px] shrink-0 overflow-y-auto border-l border-border p-3 lg:block lg:p-4">
             <div className="mb-3 flex items-center justify-between gap-2">
@@ -171,6 +232,17 @@ export default function StudioPage({
           </aside>
         )}
       </div>
+      {record && !record.full && narrow && (
+        // The sheet has its own title and its own close, so only the full-page button is added.
+        <Modal open onClose={record.onClose} title={record.title} placement="sheet" size="lg">
+          <div data-record-page="panel" className="overflow-y-auto p-3">
+            <div className="mb-2 flex justify-end">
+              <Button variant="ghost" size="sm" icon="Maximize2" onClick={() => record.onFull(true)}>Open full page</Button>
+            </div>
+            {record.body}
+          </div>
+        </Modal>
+      )}
       {sideView && narrow && (
         <Modal open onClose={onCloseSide} title="Details" placement="sheet" size="lg">
           <div className="overflow-y-auto p-3">{side ?? <NotBuilt view={sideView} label={titleOf(manifest.views, sideView)} />}</div>

@@ -79,6 +79,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError, ProgrammingError
 from sqlalchemy.pool import NullPool
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import INIT_SCHEMA, apply_ladder, ladder, tenant_engine_scope
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -2221,9 +2222,7 @@ class TestThisSuiteIsArmed:
     green — the exact failure that step exists to catch."""
 
     def test_this_suite_is_named_in_the_ci_skip_guard(self):
-        workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(
-            encoding="utf-8")
-        assert "tests/unit/test_h3_rls_promotion_rehearsal.py" in workflow
+        assert "tests/unit/test_h3_rls_promotion_rehearsal.py" in r8_lists.must_run()
 
     def test_the_owning_spec_names_this_suite(self):
         spec = (_ROOT / "project-docs/specs/saas_multitenancy_handover.md").read_text(

@@ -38,6 +38,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from gateway.routes.admin import me
 
+from tests.unit import _r8_lists as r8_lists
+
 ORG = "11111111-2222-3333-4444-555555555555"
 SAMPLES = Path(__file__).resolve().parents[1] / "fixtures" / "accent_samples.json"
 
@@ -332,15 +334,7 @@ class TestAccentRule:
 
 
 def _must_run(workflow: str) -> list[str]:
-    lines = (Path(__file__).resolve().parents[2] / ".github" / "workflows" / workflow
-             ).read_text(encoding="utf-8").splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip() == "--must-run \\")
-    listed: list[str] = []
-    for line in lines[start + 1:]:
-        listed.append(line.strip().removesuffix("\\").strip())
-        if not line.rstrip().endswith("\\"):
-            break
-    return listed
+    return r8_lists.must_run()
 
 
 @pytest.mark.parametrize("workflow", ["pr-check.yml", "deploy.yml"])

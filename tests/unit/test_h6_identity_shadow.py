@@ -68,6 +68,7 @@ from acb_auth.access import (
 from gateway.routes.admin._common import _PROVISION_MEMBER_SQL
 from sqlalchemy import create_engine, text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import apply_ladder, tenant_engine_scope
 
 _SNAPSHOT = os.environ.get("_ACB_TENANT_LADDER_URL_AT_LAUNCH")
@@ -325,9 +326,7 @@ class TestTheDualWriteShape:
     def test_this_suite_is_named_in_the_ci_skip_guard(self):
         """The hand-list discovers NOTHING (pr-check.yml's own warning): an R8
         suite absent from it skips silently and leaves the job green."""
-        workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(
-            encoding="utf-8")
-        assert "tests/unit/test_h6_identity_shadow.py" in workflow
+        assert "tests/unit/test_h6_identity_shadow.py" in r8_lists.must_run()
 
     def test_the_owning_spec_names_this_suite(self):
         spec = (_ROOT / "project-docs/specs/saas_multitenancy_handover.md").read_text(
