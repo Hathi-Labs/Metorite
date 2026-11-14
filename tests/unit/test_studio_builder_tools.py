@@ -16,6 +16,7 @@ import ast
 import copy
 import inspect
 import json
+import re
 from pathlib import Path
 from typing import ClassVar
 
@@ -649,10 +650,15 @@ async def test_patch_takes_a_manifest_alone_and_ops_default_to_nothing(catalog) 
     ("Build me an app: lead tracker that logs calls", "lead-tracker"),
     ("Track customer orders", "track-customer-orders"),
     ("for", "for"),
-    ("123 !!!", "my-app"),
-])
+    ])
 async def test_draft_id_comes_from_the_name_part_of_the_brief(brief, mid) -> None:
     out = await st.studio_draft(brief)
     assert out["ok"], out
     assert out["manifest"]["id"] == mid
     assert not out["manifest"]["id"].startswith("new-app-")
+
+
+async def test_a_brief_with_no_latin_word_gives_app_and_a_tail() -> None:
+    for brief in ("ನನಗೆ ಅಪ್ಲಿಕೇಶನ್ ಬೇಕು", "मुझे एक ऐप चाहिए", "123 !!!"):
+        mid = (await st.studio_draft(brief))["manifest"]["id"]
+        assert re.fullmatch(r"app-[0-9a-f]{4}", mid), mid

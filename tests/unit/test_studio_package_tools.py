@@ -333,7 +333,7 @@ class Redis:
 
     def __init__(self) -> None:
         self.data: dict[str, str] = {}
-        self.ttl: dict[str, int] = {}
+        self.ttls: dict[str, int] = {}
         self.fault: set[str] = set()
 
     def _check(self, op: str) -> None:
@@ -343,8 +343,13 @@ class Redis:
     async def setex(self, k: Any, seconds: int, value: str) -> bool:
         self._check("set")
         self.data[k.value] = value
-        self.ttl[k.value] = seconds
+        self.ttls[k.value] = seconds
         return True
+
+    async def ttl(self, k: Any) -> int:
+        """The seconds left of a key, as Redis gives them: -2 when it is gone."""
+        self._check("get")
+        return self.ttls.get(k.value, -2)
 
     async def get(self, k: Any) -> Any:
         self._check("get")
@@ -470,7 +475,7 @@ async def test_only_approved_writes_the_record(gw, card, redis, answer, open_, d
     assert out["decision"] == decision
     if decision == "approved":
         # Verifier P3 1: the value of the TTL, not the constant that sets it.
-        assert len(redis.data) == 1 and list(redis.ttl.values()) == [7200]
+        assert len(redis.data) == 1 and list(redis.ttls.values()) == [7200]
         assert "note" not in out
     else:
         assert redis.records() == {}
@@ -892,6 +897,68 @@ async def test_one_plan_card_covers_a_build_into_a_draft_with_another_id(gw, car
     pub = await st.studio_publish(saved["package_id"])
     assert pub["ok"] and pub["version"] == 1, pub
     assert len(card.shown) == 1, "one approval card for one app"
+
+
+def _record_of(redis, mid: str) -> tuple[str, dict[str, Any]]:
+    k = next(k for k in redis.records() if k.endswith(st._app_part({"id": mid})))
+    return k, json.loads(redis.data[k])
+
+
+async def test_a_moved_approval_keeps_the_old_time_and_a_life_no_longer(gw, redis) -> None:
+    """STU-FIX round 2: a move never makes an approval last longer."""
+    saved = await _save(_visit("new-app-nufdl"))
+    planned = _visit("event-inquiry-tracker", name="Event tracker")
+    await _plan(planned)
+    old_key, old = _record_of(redis, "event-inquiry-tracker")
+    redis.ttls[old_key] = 600  # 10 minutes are left of the 2 hours
+    out = await st.studio_save(planned, saved["package_id"], saved["based_on"])
+    assert out["ok"] and "publish now" in out["note"], out
+    new_key, new = _record_of(redis, "new-app-nufdl")
+    assert new["at"] == old["at"], "the move keeps the time of the approval"
+    assert redis.ttls[new_key] == 600 <= st.PLAN_TTL_SECONDS
+    assert old_key not in redis.data
+
+
+async def test_a_withdraw_before_the_move_leaves_no_approval(gw, redis, card) -> None:
+    saved = await _save(_visit("new-app-nufdl"))
+    planned = _visit("event-inquiry-tracker", name="Event tracker")
+    await _plan(planned)
+    assert await st._withdraw_plan(planned)  # the member stopped a later card
+    out = await st.studio_save(planned, saved["package_id"], saved["based_on"])
+    assert out["ok"] and "studio_plan" in out["note"] and "publish now" not in out["note"]
+    assert redis.records() == {}
+    assert (await st.studio_publish(saved["package_id"]))["ok"] is False
+
+
+async def test_an_expired_approval_is_not_moved(gw, redis) -> None:
+    saved = await _save(_visit("new-app-nufdl"))
+    planned = _visit("event-inquiry-tracker", name="Event tracker")
+    await _plan(planned)
+    old_key, _ = _record_of(redis, "event-inquiry-tracker")
+    redis.ttls[old_key] = -2
+    out = await st.studio_save(planned, saved["package_id"], saved["based_on"])
+    assert out["ok"] and "studio_plan" in out["note"] and "publish now" not in out["note"]
+
+
+async def test_a_new_app_id_skips_an_id_that_the_member_holds(gw) -> None:
+    await _save(_visit("event-inquiry-tracker"))
+    await _save(_visit("event-inquiry-tracker-2"))
+    out = await st.studio_draft("Event inquiry tracker for a stall")
+    assert out["manifest"]["id"] == "event-inquiry-tracker-3"
+
+
+async def test_a_new_app_id_ends_in_a_random_tail_when_the_tries_run_out(gw) -> None:
+    await _save(_visit("lead-tracker"))
+    for n in range(2, st._ID_TRIES + 1):
+        await _save(_visit(f"lead-tracker-{n}"))
+    mid = (await st.studio_draft("Lead tracker"))["manifest"]["id"]
+    assert re.fullmatch(r"lead-tracker-[0-9a-f]{4}", mid), mid
+
+
+async def test_a_kannada_brief_gives_app_and_a_random_tail(gw) -> None:
+    out = await st.studio_draft("ನನಗೆ ಒಂದು ಅಪ್ಲಿಕೇಶನ್ ಬೇಕು")
+    assert out["ok"], out
+    assert re.fullmatch(r"app-[0-9a-f]{4}", out["manifest"]["id"]), out["manifest"]["id"]
 
 
 async def test_a_save_that_adopts_an_id_keeps_no_approval_the_member_never_gave(gw, card, redis) -> None:
