@@ -460,7 +460,8 @@ def test_r8_g_the_route_refuses_each_name_that_no_admin_can_answer(world) -> Non
     assert _run(world, lambda: _ask(world.a, BEN, pid, TALLY)) == (404, "Not found")
     assert _run(world, lambda: _ask(world.b, ZED, pid, TALLY)) == (404, "Not found")
     assert _asks(world) == []
-    assert code(TALLY)[0] == 200
+    assert _run(world, lambda: _ask(world.a, OWEN, pid, TALLY)) == (
+        200, {"asked": True, "new": True})
 
 
 # ── h. The package key ────────────────────────────────────────────────────
@@ -588,6 +589,7 @@ def test_r8_k_with_a_flag_off_the_routes_and_the_hook_send_no_statement_on_the_t
             await conn_store.save_no_secret(db, world.a, TALLY, APP, provider_meta={},
                                             connected_by=BEN)
     _run(world, connect)
+    # A copy before the checks, because the checks read the table too.
     on_table = [s for s in statements if TABLE in s]
     if setting == "studio_connection_gate_orgs":
         assert on_table == []
@@ -595,4 +597,4 @@ def test_r8_k_with_a_flag_off_the_routes_and_the_hook_send_no_statement_on_the_t
     else:
         # STUDIO_ORGS off closes the routes. The hook reads the gate alone.
         assert [s.split()[0] for s in on_table] == ["DELETE"]
-    assert not [s for s in statements if TABLE in s and not s.startswith("DELETE")]
+        assert _asks(world) == []
