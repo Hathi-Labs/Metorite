@@ -2992,6 +2992,19 @@ _BUCKET_KEY: Mapping[str, str] = {
     "month": "date_trunc('month', gk.v_ts AT TIME ZONE 'UTC')",
 }
 
+#: C2d-b. The same keys for the second axis, with the alias `g2k` and the bind
+#: `:g2k`, so the two hot rows of one candidate never meet.
+_SECOND = re.compile(r"\b(gk|gr)\b")
+
+
+def _second_axis(sql: str) -> str:
+    return _SECOND.sub(lambda m: "g2k" if m.group(1) == "gk" else "g2r", sql)
+
+
+_GROUP_ROW_2 = _second_axis(_GROUP_ROW)
+_GROUP_KEY_2: Mapping[str, str] = {t: _second_axis(k) for t, k in _GROUP_KEY.items()}
+_BUCKET_KEY_2: Mapping[str, str] = {b: _second_axis(k) for b, k in _BUCKET_KEY.items()}
+
 #: The key of an aggregate with no group: one group for every record.
 _NO_GROUP_KEY = "CAST(NULL AS text)"
 assert set(_GROUP_KEY) | {"date", "datetime"} == studio_query.GROUP_TYPES, \
@@ -3039,6 +3052,35 @@ class AggregateResult:
     folded: int
     #: The measures over every record that the filter keeps.
     total: AggregateGroup
+    #: C2d-b. With two group keys, one cell for each pair that holds a record,
+    #: in the order of the first key and then the second. Empty with fewer.
+    cells: tuple[AggregateCell, ...] = ()
+
+
+@dataclass(frozen=True)
+class AggregateCell:
+    """One cell of a matrix (C2d-b): the records with one pair of keys."""
+
+    #: The key of the first axis, as :attr:`AggregateGroup.key`.
+    key: Any
+    #: The key of the second axis.
+    key2: Any
+    #: The records of the cell.
+    count: int
+    #: One value for each measure, as :attr:`AggregateGroup.values`.
+    values: tuple[Any, ...]
+
+
+def _q_agg_key2(agg: studio_query.Aggregate, params: dict[str, Any]) -> tuple[str, str]:
+    """C2d-b. The key of the second group of each candidate, and the join of
+    its hot row. The statement of the cells reads it."""
+    assert agg.group2 is not None
+    params["g2k"] = agg.group2.field.key
+    if agg.group2.bucket is not None:
+        key = _BUCKET_KEY_2[agg.group2.bucket]
+    else:
+        key = _GROUP_KEY_2[agg.group2.field.type]
+    return key, f" {_GROUP_ROW_2}"
 
 
 def _q_agg_key(agg: studio_query.Aggregate, params: dict[str, Any]) -> tuple[str, str]:
@@ -3069,6 +3111,25 @@ def _q_agg_currency(j: int) -> str:
             f"WHERE mc{j}.{_OF_ORG} AND mc{j}.{_OF_OBJECT} AND mc{j}.id = c.id), '') END)")
 
 
+def _q_agg_cands(agg: studio_query.Aggregate, params: dict[str, Any]) -> tuple[str, str, str]:
+    """The ``WITH`` head, the guard and the candidates of an aggregate. Each
+    statement of one aggregate reads the same records."""
+    conditions = agg.conditions
+    guard = "CAST(NULL AS bigint)"
+    if agg.query().cold():
+        params["small"] = studio_query.SMALL_OBJECT
+        count_hot = _q_count(conditions, params, _GUARD_CAP, only_hot=True)
+        found = _q_filtered(conditions, params, "c.id AS id", gate=_GUARD_GATE, ordered=False)
+        with_sql = f"WITH g AS ({count_hot}), m AS MATERIALIZED ({found}), "
+        guard = "(SELECT g.n FROM g)"
+        cands = "m c"
+    else:
+        ids = _q_filtered(conditions, params, "c.id AS id", ordered=False)
+        with_sql = "WITH "
+        cands = f"({ids}) c"
+    return with_sql, guard, cands
+
+
 def build_aggregate(agg: studio_query.Aggregate, *, object_id: str, package_id: str,
                     access: tuple[Sequence[str], str] | None = None
                     ) -> tuple[str, dict[str, Any]]:
@@ -3092,19 +3153,7 @@ def build_aggregate(agg: studio_query.Aggregate, *, object_id: str, package_id: 
                               "hk": list(agg.hot_keys()), "groups": studio_query.MAX_GROUPS}
     if access is not None:
         params["akeys"], params["me"] = list(access[0]), access[1]
-    conditions = agg.conditions
-    guard = "CAST(NULL AS bigint)"
-    if agg.query().cold():
-        params["small"] = studio_query.SMALL_OBJECT
-        count_hot = _q_count(conditions, params, _GUARD_CAP, only_hot=True)
-        found = _q_filtered(conditions, params, "c.id AS id", gate=_GUARD_GATE, ordered=False)
-        with_sql = f"WITH g AS ({count_hot}), m AS MATERIALIZED ({found}), "
-        guard = "(SELECT g.n FROM g)"
-        cands = "m c"
-    else:
-        ids = _q_filtered(conditions, params, "c.id AS id", ordered=False)
-        with_sql = "WITH "
-        cands = f"({ids}) c"
+    with_sql, guard, cands = _q_agg_cands(agg, params)
     key, joins = _q_agg_key(agg, params)
     cols = sums = totals = keep = rest = ""
     for j, field in enumerate(agg.measure_fields()):
@@ -3132,6 +3181,44 @@ def build_aggregate(agg: studio_query.Aggregate, *, object_id: str, package_id: 
     return (f"{head}, r AS ({ranks}), p AS (({kept}) UNION ALL ({folded})) "
             f"SELECT v.n, {guard}, w.*, p.* FROM v CROSS JOIN w LEFT JOIN p ON true "
             "ORDER BY p.part, p.rk"), params
+
+
+def build_aggregate_cells(agg: studio_query.Aggregate, *, object_id: str, package_id: str,
+                          access: tuple[Sequence[str], str] | None = None
+                          ) -> tuple[str, dict[str, Any]]:
+    """C2d-b. The one statement of the cells of the matrix of *agg*, which
+    holds two group keys. Pure.
+
+    The first row holds ``v.n`` and the guard, as :func:`build_aggregate`
+    does. Then it holds the count of the distinct values of each axis (a
+    record with no value is one value), and one row for each cell: the two
+    keys, the records, and the sum and the count of each field of the
+    measures. A cell row exists only when each axis holds at most
+    ``:axis`` values. The count reads the records under the row rule *access*,
+    so the cap never shows how many values hidden rows hold.
+    """
+    assert agg.group is not None and agg.group2 is not None
+    params: dict[str, Any] = {"oid": object_id, "pid": package_id, "hk": list(agg.hot_keys()),
+                              "axis": studio_query.MAX_AXIS_VALUES}
+    if access is not None:
+        params["akeys"], params["me"] = list(access[0]), access[1]
+    with_sql, guard, cands = _q_agg_cands(agg, params)
+    key, joins = _q_agg_key(agg, params)
+    key2, more = _q_agg_key2(agg, params)
+    joins += more
+    cols = sums = ""
+    for j, field in enumerate(agg.measure_fields()):
+        params[f"mk{j}"] = field.key
+        joins += f" {_q_agg_value(j)}"
+        cols += f", mv{j}.v_num AS n{j}"
+        sums += f", sum(x.n{j}) AS s{j}, count(x.n{j}) AS c{j}"
+    head = (f"{with_sql}v AS ({_STILL_HOT_SQL}), "
+            f"x AS (SELECT {key} AS k, {key2} AS k2{cols} FROM {cands}{joins}), "
+            "d AS (SELECT (SELECT count(*) FROM (SELECT x.k FROM x GROUP BY x.k) s1) AS d1, "
+            "(SELECT count(*) FROM (SELECT x.k2 FROM x GROUP BY x.k2) s2) AS d2), "
+            f"a AS (SELECT x.k, x.k2, count(*) AS n{sums} FROM x GROUP BY x.k, x.k2)")
+    return (f"{head} SELECT v.n, {guard}, d.d1, d.d2, a.* FROM v CROSS JOIN d "
+            "LEFT JOIN a ON d.d1 <= :axis AND d.d2 <= :axis"), params
 
 
 def _plain_number(value: Decimal) -> Decimal:
@@ -3200,7 +3287,37 @@ def _measure_values(agg: studio_query.Aggregate, count: int,
     return tuple(out)
 
 
-def _aggregate_result(agg: studio_query.Aggregate, rows: Sequence[Any]) -> AggregateResult:
+_AXIS_MESSAGE = ("An axis of a matrix takes at most {cap} values, and this read holds more. "
+                 "Filter first, or bucket the date.")
+
+
+def _cell_rows(agg: studio_query.Aggregate, rows: Sequence[Any]) -> tuple[AggregateCell, ...]:
+    """C2d-b. The cells of the rows of :func:`build_aggregate_cells`, in the
+    order of the first key and then the second. A count past
+    :data:`~acb_common.studio_query.MAX_AXIS_VALUES` on an axis raises
+    :class:`QueryError` ``query_too_big``."""
+    assert agg.group is not None and agg.group2 is not None
+    first = rows[0]
+    if int(first[2]) > studio_query.MAX_AXIS_VALUES or int(first[3]) > studio_query.MAX_AXIS_VALUES:
+        raise QueryError(studio_query.TOO_BIG,
+                         _AXIS_MESSAGE.format(cap=studio_query.MAX_AXIS_VALUES))
+    fields = agg.measure_fields()
+    cells: list[AggregateCell] = []
+    for row in rows:
+        if row[6] is None:
+            continue  # no record, so no cell
+        count = int(row[6])
+        sums = {f.key: (row[7 + 2 * i], int(row[8 + 2 * i] or 0)) for i, f in enumerate(fields)}
+        cells.append(AggregateCell(_group_key(agg.group, row[4]), _group_key(agg.group2, row[5]),
+                                   count, _measure_values(agg, count, sums)))
+    by_first, by_second = _group_order(agg.group), _group_order(agg.group2)
+    cells.sort(key=lambda c: (by_first(AggregateGroup(c.key, 0, ())),
+                              by_second(AggregateGroup(c.key2, 0, ()))))
+    return tuple(cells)
+
+
+def _aggregate_result(agg: studio_query.Aggregate, rows: Sequence[Any],
+                      cell_rows: Sequence[Any] = ()) -> AggregateResult:
     """The result of the rows of :func:`build_aggregate`. A money sum of two
     currencies raises :class:`QueryError` here, before any value leaves."""
     fields = agg.measure_fields()
@@ -3236,39 +3353,52 @@ def _aggregate_result(agg: studio_query.Aggregate, rows: Sequence[Any]) -> Aggre
         else:
             other = AggregateGroup(None, count, values)
     kept.sort(key=_group_order(agg.group))
+    cells = _cell_rows(agg, cell_rows) if agg.group2 is not None else ()
     return AggregateResult(agg.measures, currencies, tuple(kept), other,
-                           max(0, n_groups - studio_query.MAX_GROUPS), total)
+                           max(0, n_groups - studio_query.MAX_GROUPS), total, cells)
 
 
 async def _read_aggregate(timed: _Timed, oid: str, pid: str, filter: Any, group_by: Any,
                           measures: Any, access: tuple[Sequence[str], str] | None = None
-                          ) -> tuple[studio_query.Aggregate, list[Any]]:
+                          ) -> tuple[studio_query.Aggregate, list[Any], list[Any]]:
     """The fields, then the aggregate statement. A field that turned cold
     after the store read the fields has lost its hot rows, so the store reads
-    the fields and runs the aggregate once more, as :func:`_read_page` does."""
+    the fields and runs the aggregate once more, as :func:`_read_page` does.
+    With two group keys (C2d-b), a second statement reads the cells. It holds
+    the same row rule, and it checks ``v.n`` too. The third item is its rows,
+    and it is empty with fewer than two keys."""
     for _ in range(2):
         agg = studio_query.parse_aggregate(await _fields(timed, oid), filter, group_by, measures)
         sql, params = build_aggregate(agg, object_id=oid, package_id=pid, access=access)
         rows = (await timed.execute(text(sql), params)).all()
         if int(rows[0][0]) == len(agg.hot_keys()):
             _check_hot_or_small(rows, agg.query())
-            return agg, rows
+            if agg.group2 is None:
+                return agg, rows, []
+            sql, params = build_aggregate_cells(agg, object_id=oid, package_id=pid, access=access)
+            cells = (await timed.execute(text(sql), params)).all()
+            if int(cells[0][0]) == len(agg.hot_keys()):
+                return agg, rows, cells
     raise QueryError(studio_query.TIMEOUT, _CHANGED_MESSAGE)
 
 
 def _refuse_hidden_aggregate(view: _View, items: Sequence[Mapping[str, Any]],
-                             group_by: Any, measures: Sequence[Mapping[str, Any]]) -> None:
+                             groups: Sequence[Mapping[str, Any]],
+                             measures: Sequence[Mapping[str, Any]]) -> None:
     """C2d-a. A filter, a group or a measure on a key that is hidden from the
-    viewer would show the value, so it is refused before any read."""
+    viewer would show the value, so it is refused before any read. C2d-b:
+    *groups* holds each group key, so a hidden key on the second axis is
+    refused too."""
     _refuse_hidden_query(view, items, None)
     hidden = view.maybe_hidden()
     if not hidden:
         return
-    key = group_by.get("field") if isinstance(group_by, Mapping) else None
-    if isinstance(key, str) and key in hidden:
-        raise QueryError(studio_query.OP_NOT_ALLOWED,
-                         f"Field `{key}` is hidden from you, so a query cannot group "
-                         "by it.", key)
+    for group in groups:
+        key = group.get("field")
+        if isinstance(key, str) and key in hidden:
+            raise QueryError(studio_query.OP_NOT_ALLOWED,
+                             f"Field `{key}` is hidden from you, so a query cannot group "
+                             "by it.", key)
     for measure in measures:
         key = measure.get("field")
         if isinstance(key, str) and key in hidden:
@@ -3302,6 +3432,11 @@ async def aggregate_records(db: Any, *, package_id: str, object_id: str, viewer:
     H-333). The :data:`~acb_common.studio_query.MAX_GROUPS` groups with the
     most records stay, and the rest fold into :attr:`AggregateResult.other`.
 
+    C2d-b: *group_by* may be a list of two groups, the row axis and the column
+    axis. The result then also holds :attr:`AggregateResult.cells`. An axis
+    with more than :data:`~acb_common.studio_query.MAX_AXIS_VALUES` values
+    that the viewer reads is refused with ``query_too_big``, and nothing folds.
+
     C2d-a: *viewer* is REQUIRED, and the call reads what :func:`query_records`
     reads for it. The row rule joins each part of the one statement. A filter,
     a group or a measure on a hidden key is refused. A viewer whose roles read
@@ -3311,20 +3446,21 @@ async def aggregate_records(db: Any, *, package_id: str, object_id: str, viewer:
     deadline = _clock() + studio_query.TIMEOUT_MS / 1000
     oid = _uuid(object_id, "object_id")
     pid = _uuid(package_id, "package_id")
-    items, group, shaped = studio_query.check_aggregate_shape(filter, group_by, measures)
+    items, groups, shaped = studio_query.check_aggregate_shape(filter, group_by, measures)
     await _warm_f8(db, deadline)
     async with _time_limit(db, deadline) as timed:
         view = await _view(timed, oid, pid, who)
         if view is None:
             return None
-        _refuse_hidden_aggregate(view, items, group, shaped)
+        _refuse_hidden_aggregate(view, items, groups, shaped)
         if not view.scope.reads:
             fields = await _fields(timed, oid)
             return _empty_aggregate(
                 studio_query.parse_aggregate(fields, filter, group_by, measures))
         access = (view.scope.where_keys, who.email) if view.scope.row_bound else None
-        agg, rows = await _read_aggregate(timed, oid, pid, filter, group_by, measures, access)
-    return _aggregate_result(agg, rows)
+        agg, rows, cell_rows = await _read_aggregate(
+            timed, oid, pid, filter, group_by, measures, access)
+    return _aggregate_result(agg, rows, cell_rows)
 
 
 # --- the batch (C1b) --------------------------------------------------------

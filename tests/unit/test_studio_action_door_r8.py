@@ -3014,3 +3014,49 @@ def test_r8_c2d_a_member_with_no_install_and_org_b_get_404(world, monkeypatch) -
                 await _call(world.b, ANA, world.pkg_ben, "tally", {})]
 
     assert _run(world, go) == [(404, NOT_FOUND)] * 2
+
+
+# ── c2d-b. The cells of a viewer of an install (STU-C2d-b, J2a) ─────────────
+#
+# ``group_by`` is a list of two groups, and the answer holds ``cells``. A viewer
+# of an install reads them as the owner does. A member with no install and org B
+# get 404. A column axis with more than 20 values is 422 ``query_too_big``.
+# The store half is ``test_studio_aggregate_cells_r8.py``.
+
+_TWO_KEYS = {"group_by": [{"field": "status"}, {"field": "hours"}], "measures": [{"op": "count"}]}
+
+
+def test_r8_c2d_b_a_viewer_of_an_install_gets_the_cells(world, monkeypatch) -> None:
+    _installed_by_ben(world, monkeypatch)
+
+    async def go() -> list[tuple[int, Any]]:
+        await _add_tallied(world.a, world.obj_ben, world.pkg_ben, [
+            ("done", 100, "INR", 4), ("done", 7, "INR", 3), ("planned", 5, "INR", 1)])
+        return [await _call(world.a, ANA, world.pkg_ben, "tally", _TWO_KEYS),
+                await _call(world.a, BEN, world.pkg_ben, "tally", _TWO_KEYS),
+                await _call(world.a, ANA, world.pkg_ben, "tally",
+                            {"group_by": [{"field": "status"}], "measures": [{"op": "count"}]})]
+
+    (vs, viewer_got), (os_, owner_got), (ones, one) = _run(world, go)
+    assert (vs, os_, ones) == (200, 200, 200), (viewer_got, owner_got)
+    assert [(c["key"], c["key2"], c["count"]) for c in viewer_got["cells"]] == [
+        ("planned", "1", 1), ("planned", None, 1), ("done", "3", 1), ("done", "4", 1)]
+    assert viewer_got == owner_got
+    assert "cells" not in one, "one key has no cells"
+
+
+def test_r8_c2d_b_an_axis_past_20_values_is_422_and_org_b_gets_404(world, monkeypatch) -> None:
+    _installed_by_ben(world, monkeypatch)
+
+    async def go() -> list[tuple[int, Any]]:
+        await _add_tallied(world.a, world.obj_ben, world.pkg_ben,
+                           [("done", 1, "INR", h) for h in range(21)])
+        return [await _call(world.a, ANA, world.pkg_ben, "tally", _TWO_KEYS),
+                await _call(world.a, ANA, world.pkg_ben, "tally",
+                            {"group_by": [{"field": "status"}, {"field": "status"}]}),
+                await _call(world.b, ANA, world.pkg_ben, "tally", _TWO_KEYS)]
+
+    (s1, big), (s2, same), walled = _run(world, go)
+    assert (s1, big["code"]) == (422, "query_too_big")
+    assert (s2, same["code"]) == (422, "query_value_invalid")
+    assert walled == (404, NOT_FOUND)
