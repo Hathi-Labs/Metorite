@@ -288,7 +288,8 @@ def test_studio_plan_imports_no_db_or_store_module() -> None:
     # exception is the tenant Redis wrapper (R5), and only in the helpers of the
     # approval record of a plan, which ``studio_plan`` calls after "approved".
     record = {"_plan_redis", "_record_plan", "_approved_hash", "_withdraw_plan",
-              "_delete_record"}
+              "_delete_record",
+                  "_move_plan"}  # STU-FIX: moves the approval record
     top: list[ast.AST] = []
     for fn_node in [n for n in ast.walk(tree)
                     if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))

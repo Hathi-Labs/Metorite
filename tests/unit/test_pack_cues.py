@@ -64,6 +64,9 @@ WHEN = {
         "or read and change the records of a package."),
     # STU-J2b-3a: the approval follow pack of `studio`. It loads by its own words.
     "studio-approvals": "Load to ask for, list, approve or reject the approval of an AI Studio app version for the organization.",
+    # STB-6b: the small pack of the workflow writes, of the studio owner.
+    "studio-workflows": (
+        "Load to publish a workflow, roll it back to a version, pause it or turn it on again."),
 }
 
 

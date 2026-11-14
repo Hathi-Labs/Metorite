@@ -26,6 +26,10 @@ passes, it moves `green/main`. Each release slot ships that commit. §8.7
 holds the design. A repair round after the verifier, on 2026-11-13, makes the
 R8 guard read the lists of the release commit.
 
+**CIV-30c is BUILT on 2026-11-14** (task 3121, branch `civ30c-mt-c746154d`).
+HIGH tier. A green batch also puts the commit status `green/main` on its
+commit, and a slot run picks at its slot, not before. §8.7 holds the change.
+
 **CIV-31 is BUILT on 2026-11-14** (task 3056, branch
 `civ31-auto-revert-mt-7191b0bd`). HIGH tier, and dark. The code default of
 `AUTO_REVERT_MODE` is `off`. The unit file sets `dry` for the one-week dry
@@ -922,14 +926,14 @@ Each rung ends in a demo (D211). Each slice of a rung blocks its demo task.
 | CIV-26 | 3051 | – | LOW | This section and D218 |
 | CIV-27 | 3052 | 0 | LOW | `ci_local.sh` is optional. A lane pushes once per round |
 | CIV-28 | 3053 | 0 | STANDARD | The merge bot. CIV-28b (task 3070): a tier floor from the diff, a retry on "Base branch was modified", and BACK after a second cancel |
-| CIV-29 | 3054 | 0 | STANDARD | Browser suite: inherited failures, the specs of the changed area, the full suite after merge. CIV-29a BUILT. CIV-29b BUILT 2026-11-14 (tasks 3054 and 3145): the diff of `changes` is `HEAD^1..HEAD` on the merge ref. So a later change on main no longer starts the suite. The unit gate (`--gate --base`) reads the same range. The Visual review step reads the same range (CIV-39). The map from a path to its specs is the next step. |
+| CIV-29 | 3054 | 0 | STANDARD | Browser suite: inherited failures, the specs of the changed area, the full suite after merge. CIV-29a BUILT. CIV-29b BUILT 2026-11-14 (tasks 3054 and 3145): the diff of `changes` is `HEAD^1..HEAD` on the merge ref. So a later change on main no longer starts the suite. The unit gate (`--gate --base`) reads the same range. The Visual review step reads the same range (CIV-39). CIV-29d BUILT 2026-11-14 (task 3054): `scripts/e2e_spec_map.json` maps a changed path to its browser specs, and `scripts/e2e_select.py` picks them for the 3 shards. A shared or unknown path runs every spec, and a diff with no web code runs none. `tests/unit/test_e2e_select.py` fences it. |
 | CIV-36 | 3061 | 0 | LOW | The preview gates the flag |
 | CIV-37 | 3062 | 0 | LOW | Model routing by job |
 | CIV-38 | 3063 | 0 | LOW | The quality numbers and the rollback rule |
-| CIV-30 | 3055 | 1 | HIGH | The green pointer. A release ships green |
-| CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first. **BUILT 2026-11-14**, dark (code default `off`, unit `dry`). §8.8 holds the design |
+| CIV-30 | 3055 | 1 | HIGH | The green pointer. A release ships green. CIV-30c BUILT 2026-11-14 (task 3121): the status `green/main` marks a batch when GitHub refuses the ref, and a slot run picks at its slot (§8.7) |
+| CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first. **BUILT 2026-11-14**, dark (code default `off`, unit `dry`). §8.8 holds the design. CIV-31b BUILT 2026-11-14 (task 3212): the pass reads `main` until it holds still, closes an open revert PR when a fix lands, ends the watch of a PR that a person merged or closed, and stops at 14 hours. The merge bot merges a revert PR only after the pass tested the tip of `main`. The HIGH list covers the tenancy, RLS, grant, visibility, member, role, identity, money and sharing files. It must merge before `on` |
 | CIV-32 | 3057 | 2 | STANDARD | **BUILT 2026-11-13.** A repair round tests what failed and what the fix reaches (`ci_unit_guard.py repair`) |
-| CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py`. CIV-33d BUILT 2026-11-13 (task 3074): the scan fences of six large files moved to `*_scan.py` files, and `test_scanner_budget.py` caps a scanner file at 30 s. The scanner set costs 1,748 s, down from 2,333 s. `test_affected_tests.py` (381 s) waits for PR 2205. CIV-33c-1 BUILT 2026-11-13 (task 3073): a hub selects its importers up to 20% of the test files, a flag-only diff of `settings.py` or `env_guard.py` selects the tests that name the flag, and `scripts/replay_gate.py` measures the FULL share. For a hub or a flag diff, an app entry, or a test helper that builds an app, selects its test importers. The closure over test imports starts from the import picks, not from the scanners or the SAFETY fences. CIV-33c-2 BUILT 2026-11-14 (task 3073): the R8 must-run, never-skip and disarmed lists moved from the two workflows to the `r8` key of `tests/fences.json`. A workflow or a composite action stays FULL. Any other file under `.github/` is not FULL. An edit of `tests/fences.json` selects the files it adds to a list and the guard's own tests, and a file that does not parse is FULL. The replay of 300 main commits shows 96 FULL (32.0%), and 38 of the 43 commits whose only FULL reason was `.github/` edited a list only. With those edits in `tests/fences.json`, the projected share is 58 of 300 (19.3%). `packages/acb_common/` is the next cause (37 commits) |
+| CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py`. CIV-33d BUILT 2026-11-13 (task 3074): the scan fences of six large files moved to `*_scan.py` files, and `test_scanner_budget.py` caps a scanner file at 30 s. The scanner set costs 1,748 s, down from 2,333 s. `test_affected_tests.py` (381 s) waits for PR 2205. CIV-33c-1 BUILT 2026-11-13 (task 3073): a hub selects its importers up to 20% of the test files, a flag-only diff of `settings.py` or `env_guard.py` selects the tests that name the flag, and `scripts/replay_gate.py` measures the FULL share. For a hub or a flag diff, an app entry, or a test helper that builds an app, selects its test importers. The closure over test imports starts from the import picks, not from the scanners or the SAFETY fences. CIV-33c-2 BUILT 2026-11-14 (task 3073): the R8 must-run, never-skip and disarmed lists moved from the two workflows to the `r8` key of `tests/fences.json`. A workflow or a composite action stays FULL. Any other file under `.github/` is not FULL. An edit of `tests/fences.json` selects the files it adds to a list and the guard's own tests, and a file that does not parse is FULL. The replay of 300 main commits shows 96 FULL (32.0%), and 38 of the 43 commits whose only FULL reason was `.github/` edited a list only. With those edits in `tests/fences.json`, the projected share is 58 of 300 (19.3%). `packages/acb_common/` is the next cause (37 commits) CIV-33e BUILT 2026-11-14 (task 3075): `SHARD_TARGET_S` is 300 and `ALL_SHARDS` is 8, and `test_board_stats_r8.py` split into three files of 300 s or less. |
 | CIV-34 | 3059 | 2 | STANDARD | Conflict rules in the merge bot, tested on the merged tree. CIV-34a BUILT 2026-11-14 (§8.9): the rules, the checks on the merged tree, and the trailer. The fix round of the PR 2266 review (same day) removed `rerere`, `rebuild` and the markdown `union`, and added the ref checks and the `ls-remote` check. CIV-34b (a model proposal) is open |
 | CIV-35 | 3060 | 2 | LOW | A proposal: review depth by file class. It needs an owner decision |
 
@@ -973,9 +977,11 @@ step 1c keep the old table.
   not move to a commit that is off main or that does not contain the current
   pointer. A folded, cancelled, failed or skipped `test` does not move it. It
   has `contents: write` on that one job, and it never pushes to `main`.
+  Since CIV-30c, it first puts the commit status `green/main` on that commit.
 - **Ship.** The job `release-commit` runs first in each run. On a slot run (a
   schedule run, or a dispatch with `nightly=true`), it reads the head of
-  `green/main`. Each job that builds, tests, gates or deploys the release
+  `green/main`. Since CIV-30c, it takes a newer commit with the status
+  `green/main` when one exists. Each job that builds, tests, gates or deploys the release
   checks out that one commit: `lint`, `test`, `r8-suite`, `r8-gate`,
   `publish-release`, `deploy`, `pull-delivery` and `chat-smoke`. The box
   applies it as `DEPLOY_REF`. A push and a plain dispatch use their own
@@ -1008,6 +1014,49 @@ step 1c keep the old table.
   a later nightly run in the same window does not ship a newer `green/main`.
   The next slot ships it.
 
+**CIV-30c (2026-11-14, task 3121).** On 2026-11-13 the 13:30 slot shipped
+`151fb81a5`. It left out 11 commits, and the batch on `e9e89b8ce` had passed.
+The fence of this change is `tests/unit/test_green_slot.py`.
+
+- **Cause 1 was not a loss.** A push cancelled the run of the push before it.
+  Each of those runs never started its `test` job (no runner, no step, 10 runs
+  checked). That is the fold of CIV-4. The next batch tested the tip, which
+  held those commits. No change.
+- **Cause 2: GitHub refused the ref.** The mark of `e9e89b8ce` failed,
+  because GitHub refused the ref move (run 43422421248). The message names the
+  `workflows` permission, which the GITHUB_TOKEN does not have. Later moves
+  across the same workflow change passed, so GitHub's rule is not clear from
+  outside.
+- **Fix 2: a commit status.** `mark-green` first puts the commit status
+  `green/main` (state `success`) on the tested commit. A status is not a ref,
+  so GitHub does not apply that refusal to it. Then the job tries the ref as
+  before. A refusal for a workflow file is a warning, and the step passes. A
+  status that the API refuses 3 times fails the job, and the ref step still
+  runs. The job has `statuses: write`, and no other job has it. No new secret.
+- **The pick reads both records.** `release-commit` walks the first parents of
+  main, from the tip down to the ref. It stops after 100 commits or 120 seconds. It
+  takes the first commit with a `green/main` status of `success` from
+  `github-actions[bot]`. With none, it takes the ref. When the status read
+  fails, it takes the ref and warns. With no ref, a failed read holds the
+  release.
+- **Cause 3: the cron picked before the slot.** GitHub started the 05:30 cron
+  at 13:17 (run 43432451895). It picked at once, published first, and the
+  step `once` then held the box's run.
+- **Fix 3: a slot run picks at its slot.** The step "Wait for the slot" holds
+  a slot run that starts in the 30 min before a slot until 2 min after it.
+  The 2 min let the mark of a batch that ended just before the slot land.
+  `release-window` reads `picked_at` and holds a run that picked before the
+  slot of its window. That covers a cron that starts in the gap, and whose
+  tests end inside the window. A person's rerun does not wait and is not held.
+- **What stays.** Each release still runs the full unit suite and the R8 gate
+  on the commit that it ships. A status only chooses the commit. So D218
+  ("a release ships only a green commit") is as strong as before.
+- **A known limit: a slow mark.** A mark that lands more than 2 min after
+  the slot misses that slot. The next slot ships it.
+- **A known limit: a cron from the gap does not ship.** A cron that starts in the
+  gap before a window no longer ships in that window. When the box is down,
+  the slot then waits for the cron of the slot itself.
+
 ### 8.8 CIV-31 as built: the automatic revert (2026-11-14)
 
 `scripts/home_server/auto_revert.py` holds it. The fence is
@@ -1028,7 +1077,43 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
 - **Main moves.** The probes can take hours, and `main` can move. Before the
   revert goes out, the pass reads `main` again. When the failed tests pass on
   the new tip, a fix landed, and the pass makes no revert (`SKIP`). Else it
-  makes the revert again on the new tip. The report names both tips.
+  runs them 3 times on the new tip and makes the revert again there. Those
+  probes take time too, so the pass reads `main` again, until it holds still.
+  It reads `main` at most 3 times (`MAIN_READS`). When the third read finds a
+  new tip again, the pass writes a `PERSON` line. The report names each tip.
+- **The watch of a revert PR.** Each pass first reads the PR on GitHub, because
+  a person can merge or close it by hand. A merged PR gets a `REVERTED` line
+  with the merge sha and `by=hand`. A closed PR gets a `SKIP` line that says
+  who closed it. Both end the watch. When `gh` cannot read the PR, nothing
+  changes, and the next pass reads it again. A PR can merge while the merge
+  bot queue still waits on its hand-over. Then the bot writes `DONE` on its
+  next pass, and the pass writes no `by=hand` line.
+- **A fix lands while the revert PR waits.** pr-check takes about 32 minutes
+  on the revert PR. While the PR is open, each pass runs the failed tests on
+  each new tip of `main`, 3 times. When each run passes, a fix landed. The pass
+  closes the PR with `gh pr close` and writes `SKIP` with `fixed_at=<tip>`. A
+  failed close writes one `PERSON` line, and each later pass tries it again. A
+  fail on the first run keeps the PR. Any other answer writes one `PERSON`
+  line. Such an answer comes from a flake, a fix in part, a deleted test, or a
+  probe that cannot start. Then the watch belongs to a person, and the pass runs no
+  more probes for that PR. A file in `~/.cache/metorite-auto-revert/open/`
+  keeps the failed tests and the last tip with a sure answer. The pass writes
+  it to a temp file and moves it in place with `os.replace`, so no reader sees
+  half a file. A file that does not parse gets one `PERSON` line.
+- **The merge bot waits for the test of the tip.** The merge bot merges a PR
+  with the head branch `auto-revert/...` only when its file in `open/` holds
+  the tip of `main` now. It reads the tip with `git ls-remote` before the
+  checks and the gate, so a held PR costs no trial merge and no premerge. It
+  reads the tip again right before the merge, because `main` can move during
+  premerge. Another tip waits in the queue for the next auto-revert pass, and
+  so does a file that does not parse. A PR with no file goes `BACK`.
+- **The merge bot holds a revert PR on a doubt.** A failed close or a doubt
+  keeps the old tip in the file, so the merge bot holds the PR. GitHub can
+  answer "Base branch was modified" to the merge call. Then the bot does not
+  try the merge again in the same pass, because the new tip is not tested.
+- **The limit.** A probe stops at 30 minutes. A bisect holds at most 12 probes,
+  and the pass adds 10 to 18. The unit stops a pass at 14 hours
+  (`TimeoutStartSec=14h`), and a lock is stale after 15 hours.
 - **`on`.** The pass pushes the branch `auto-revert/<sha>`. It opens a PR with
   the title `Revert "<subject>"` and the trailer `Auto-Revert: <sha>` in the
   commit and the body. The body has a `VERIFY: PASS` line, because the revert
@@ -1057,6 +1142,27 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
     of CIV-28b, mirrored in `auto_revert.py`), such as `infra/postgres/`. Or
     its subject or PR title says HIGH. A revert deletes a migration file, but
     each database that applied it keeps the schema (R6). This stops `dry` too.
+    CIV-31b added the tenancy, RLS, grant and visibility files to the list:
+    the DB seams, `provisioning.py`, `org_settings.py`, the Studio row-rule
+    stores (`batch_store.py`, `objects_store.py`), `kb_access/`, and a file
+    named for a permission, a grant, tenancy, visibility or row rules. A server
+    file (`.py`, `.sql`) with an `access` part in its name is HIGH too. Its fix
+    round added the members, roles and groups of `routes/admin/`, the admin API
+    of the UI, the operator console files and the seats. A server file with a
+    `signin`, `signup`, `oauth`, `seats`, `share`, `sharing`, `shared_token` or
+    `report_scope` part in its name is HIGH too. The second fix round added
+    the operator console files that write members, identities, seats and
+    credits (`store.py`, `main.py`), the money path (`payments.py`), the keys
+    (`keys.py`, `deployment_keys.py`, `provider_keys.py`), `apps.py` and
+    `operators.py`. It added `token_endpoint.py` and `bearer.py` of the agent
+    edge too.
+  - `main` moves on each of 3 reads after the probes.
+  - The revert PR of the culprit merged or closed, and a later run is red
+    again. A run of a tree from before that merge or that fix is an old run,
+    and the pass writes `SKIP`. `deploy.yml` does not cancel a batch, so an old
+    batch can end red after the fix. The same rule holds when `main` holds the
+    revert. The tree of a run is its head sha (the known limit of the bad
+    commit below).
   - `gh` cannot search the open PRs.
   - A re-run gives another answer, or a probe cannot judge.
   - The revert does not apply cleanly, or the failed tests fail on it.
@@ -1064,21 +1170,26 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
   - The merge bot sends the revert PR back (`BACK`). The next pass reads it,
     and a later `DONE` still gives a `REVERTED` line.
   - The pass ends early: a crash, or a stop of the unit. The poller already
-    took the run, so the pass writes its line and its report first.
+    took the run, so the pass writes its line and its report first. The
+    SIGTERM handler writes them before the pass removes its probe worktrees.
+    That removal can be slow on the HDD of the box, and systemd sends SIGKILL
+    90 seconds after SIGTERM.
 - **Never.** The pass never pushes to `main` and never force-pushes. It never
   merges and never dispatches a workflow. The merge bot merges the revert PR.
 - **A known limit: no task reopen by the pass.** The box has no Metorite write
   credential. So `lane-merge` opens the culprit's task again after the merge of
   the revert PR. The log line, the report and the queue note name the task.
-- **A known limit: the HIGH mirror.** Until CIV-28b (PR 2253) merges,
-  `merge_bot.sh` has no `HIGH_PATHS_RE`, and the fence
-  `test_the_high_paths_equal_the_merge_bot_list` skips. After the merge, it
-  holds the two lists equal.
 - **A known limit: the bad commit.** The poller takes the head sha of the red
   run as the bad commit. The batch tests the tip of `main`, which can be
   newer. Then the bisect can exit 3, and the pass writes a `PERSON` line.
 - **A known limit: the speed.** The merge bot merges a revert PR only after
   pr-check passes on it, with a median of 32 minutes (§8.2).
+- **A known limit: the check of the tip.** The merge bot reads the tip of
+  `main` right before its merge call. A fix that lands in the seconds between
+  the read and the merge is not seen. A pass that holds the lock for hours
+  runs no recheck, so the revert PR waits in the queue until that pass ends.
+  On a busy `main`, each new tip needs a new test, so a revert PR can wait for
+  several passes.
 - **Go `on`.** After the week of `dry`, read the log and the reports. CIV-38
   lands first (§8.5). Then set `AUTO_REVERT_MODE=on` in the unit and reload it.
 

@@ -46,6 +46,7 @@ import NodeInspector from "@/app/workflows/components/NodeInspector";
 import NodePalette, { type PaletteDrop } from "@/app/workflows/components/NodePalette";
 import RunConsole from "@/app/workflows/components/RunConsole";
 import TriggerPanel from "@/app/workflows/components/TriggerPanel";
+import { cleanTriggers } from "@/app/workflows/lib/eventTriggers";
 import WorkflowEdge from "@/app/workflows/components/WorkflowEdge";
 import WorkflowNode, { type CCNodeData } from "@/app/workflows/components/WorkflowNode";
 import {
@@ -288,6 +289,9 @@ function EditorInner({ id }: { id: string }) {
   const [running, setRunning] = useState(false);
   const [consoleCollapsed, setConsoleCollapsed] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  // The message of a refused save, shown in full inside the Trigger panel. The
+  // top bar truncates `notice`, and a 403 for a Studio trigger needs its words.
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [leftTab, setLeftTab] = useState<"palette" | "copilot">("palette");
   const [undoGraph, setUndoGraph] = useState<WorkflowGraph | null>(null);
   /** Edge armed by its "+": the next block picked is spliced into it. */
@@ -371,17 +375,19 @@ function EditorInner({ id }: { id: string }) {
   const save = useCallback(async (): Promise<boolean> => {
     setSaving(true);
     setNotice(null);
+    setSaveError(null);
     try {
       const wf = await updateWorkflow(id, {
         name: name.trim() || "Untitled workflow",
         graph: toGraph(),
-        triggers,
+        triggers: cleanTriggers(triggers),
       });
       setDetail(wf);
       setDirty(false);
       return true;
     } catch (e) {
       setNotice(String(e instanceof Error ? e.message : e));
+      setSaveError(String(e instanceof Error ? e.message : e));
       return false;
     } finally {
       setSaving(false);
@@ -1168,7 +1174,9 @@ function EditorInner({ id }: { id: string }) {
           hookUrl={detail.hook_url}
           hookPath={detail.hook_path}
           published={published}
+          error={saveError}
           onChange={(next) => {
+            setSaveError(null);
             setTriggers(next);
             setDirty(true);
           }}

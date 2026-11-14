@@ -352,12 +352,26 @@ _BASH = _bash()
 def test_the_window_reads_the_clock(deploy: dict, tmp_path: pathlib.Path,
                                     clock: str, attempt: str, is_open: bool) -> None:
     step = deploy["jobs"]["release-window"]["steps"][0]
-    assert 'hm="$(date -u +%H%M)"' in step["run"], "it reads the real clock"
+    # CIV-30c: one read gives the minute of the day and the Unix time.
+    assert '''read -r hm epoch <<< "$(date -u '+%H%M %s')"''' in step["run"], "it reads the real clock"
     out, summary = tmp_path / "out", tmp_path / "summary"
     # A shell function shadows `date`, so the step's own text runs unchanged.
-    script = f"date() {{ echo {clock}; }}\n" + step["run"]
+    # The Unix time is the same minute on 2026-11-05. The run picked at the
+    # slot itself, as the box's run does, so this test reads the window
+    # alone. test_green_slot.py fences the pick time (CIV-30c).
+    import datetime as _dt
+    at = _dt.datetime(2026, 11, 5, int(clock[:2]), int(clock[2:]), tzinfo=_dt.UTC)
+    epoch = int(at.timestamp())
+    picked = epoch
+    for h, m in _SLOTS:
+        for day in (-1, 0):
+            slot = at.replace(hour=h, minute=m) + _dt.timedelta(days=day)
+            if _dt.timedelta(minutes=-30) <= at - slot < _dt.timedelta(hours=4, minutes=30):
+                picked = int(slot.timestamp())
+    script = f"date() {{ echo {clock} {epoch}; }}\n" + step["run"]
     # GITHUB_RUN_ATTEMPT is pinned: a rerun of CI itself sets it to 2.
-    env = {**os.environ, **step["env"], "GITHUB_RUN_ATTEMPT": attempt,
+    env = {**os.environ, **{k: v for k, v in step["env"].items() if "${{" not in v},
+           "PICKED_AT": str(picked), "GITHUB_RUN_ATTEMPT": attempt,
            "GITHUB_OUTPUT": str(out), "GITHUB_STEP_SUMMARY": str(summary)}
     done = subprocess.run([_BASH, "-c", script], env=env, capture_output=True,
                           text=True, timeout=30)

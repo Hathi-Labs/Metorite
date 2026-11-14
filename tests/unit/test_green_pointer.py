@@ -173,8 +173,12 @@ def _run(script: str, tmp_path: Path, *, env: dict[str, str], green: list[str]) 
         "GITHUB_STEP_SUMMARY": str(summary), **env,
     }
     # The flags GitHub gives a `run:` step: bash --noprofile --norc -eo pipefail.
+    # From a file, as GitHub runs it: Windows cuts a `-c` argument near 8 KiB,
+    # and the pick step is longer than that since CIV-30c.
+    step = tmp_path / "step.sh"
+    step.write_text(_FAKE_GIT + script, encoding="utf-8", newline="\n")
     done = subprocess.run(
-        [_BASH, "--noprofile", "--norc", "-eo", "pipefail", "-c", _FAKE_GIT + script],
+        [_BASH, "--noprofile", "--norc", "-eo", "pipefail", step.as_posix()],
         env=full, capture_output=True, text=True, timeout=120, cwd=tmp_path,
     )
     calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
@@ -194,7 +198,8 @@ def test_the_mark_job_exists_with_the_least_permission(parsed: dict) -> None:
     jobs = parsed["jobs"]
     job = jobs[MARK]
     assert "test" in _needs(job) and "lint" in _needs(job)
-    assert job.get("permissions") == {"contents": "write"}, "contents: write, and nothing else"
+    # CIV-30c: `statuses: write` for the status `green/main`, and nothing else.
+    assert job.get("permissions") == {"contents": "write", "statuses": "write"}
     assert "concurrency" not in job, "a superseded mark must not cancel a newer one"
     writers = sorted(n for n, j in jobs.items() if (j.get("permissions") or {}).get("contents") == "write")
     assert writers == ["mark-green", "publish-release", "publish-staging"], writers
@@ -213,7 +218,8 @@ def test_the_mark_moves_the_commit_that_test_tested(parsed: dict) -> None:
 def test_the_mark_pushes_green_main_only_and_never_by_force(parsed: dict) -> None:
     run = _step(parsed, MARK, MARK_STEP)["run"]
     pushes = [ln.strip() for ln in run.splitlines() if re.search(r"\bgit\s+push\b", ln)]
-    assert pushes == ['if git push origin "${TESTED}:refs/heads/green/main"; then'], pushes
+    # CIV-30c: stderr goes to a file, so the step can read a refusal.
+    assert pushes == ['if git push origin "${TESTED}:refs/heads/green/main" 2> "$tmp/push.err"; then'], pushes
     assert "--force" not in run and " -f " not in run and '"+' not in run
     assert "refs/heads/main\"" not in run.replace("+refs/heads/main:", ""), "never push main"
 
@@ -331,8 +337,10 @@ def test_the_resolver_runs_on_every_event_and_nothing_cancels_it(parsed: dict) -
     job = parsed["jobs"][RESOLVER]
     assert "if" not in job, "lint and test need it on every event"
     assert "needs" not in job and "concurrency" not in job
-    assert job.get("permissions") == {"contents": "read"}
-    assert job["outputs"] == {"sha": "${{ steps.pick.outputs.sha }}"}
+    # CIV-30c: it reads the status `green/main`. Read only.
+    assert job.get("permissions") == {"contents": "read", "statuses": "read"}
+    assert job["outputs"] == {"sha": "${{ steps.pick.outputs.sha }}",
+                              "picked_at": "${{ steps.pick.outputs.picked_at }}"}
     assert _step(parsed, RESOLVER, PICK_STEP).get("id") == "pick"
 
 
@@ -430,8 +438,20 @@ def test_the_deploy_path_names_the_release_commit(parsed: dict) -> None:
 
 def _pick(parsed: dict, tmp_path: Path, *, green: list[str], slot: str = "true", event: str = "schedule",
           anc: str = "", left: int = 0) -> tuple[int, str, str, str, list[str]]:
-    return _run(_step(parsed, RESOLVER, PICK_STEP)["run"], tmp_path, green=green,
-                env={"SLOT": slot, "GITHUB_EVENT_NAME": event, "ANC": anc, "LEFT_COUNT": str(left)})
+    step = _step(parsed, RESOLVER, PICK_STEP)
+    # The step's own plain env (CIV-30c: WALK, WALK_SECONDS, CONTEXT). An
+    # expression such as the token stays out. The fake `git` lists no
+    # commit for the walk, so this file never reaches `gh`.
+    plain = {k: str(v) for k, v in step["env"].items() if "${{" not in str(v)}
+    return _run(step["run"], tmp_path, green=green,
+                env={**plain, "SLOT": slot, "GITHUB_EVENT_NAME": event, "ANC": anc, "LEFT_COUNT": str(left)})
+
+
+def _sha(output: str) -> str:
+    """The `sha=` line of GITHUB_OUTPUT. A slot run also writes `picked_at=`."""
+    found = [ln for ln in output.splitlines() if ln.startswith("sha=")]
+    assert len(found) == 1, output
+    return found[0]
 
 
 @needs_bash
@@ -451,7 +471,8 @@ def test_a_run_that_is_not_a_slot_uses_its_own_commit(parsed: dict, tmp_path: Pa
 def test_a_slot_ships_green_main_and_lists_what_it_leaves_out(parsed: dict, tmp_path: Path) -> None:
     code, out, output, text, calls = _pick(parsed, tmp_path, green=[_TESTED], anc=f"{_TESTED}:{_MAIN}", left=3)
     assert code == 0, out
-    assert output.strip() == f"sha={_TESTED}"
+    assert _sha(output) == f"sha={_TESTED}"
+    assert re.search(r"^picked_at=\d+$", output, re.M), "a slot run gives its pick time (CIV-30c)"
     assert f"`{_TESTED[:12]}`, the head of `green/main`" in text
     assert "It leaves out 3 commit(s) on main after it" in text
     assert "merge number 3 (#3)" in text
@@ -462,7 +483,7 @@ def test_a_slot_ships_green_main_and_lists_what_it_leaves_out(parsed: dict, tmp_
 def test_a_slot_with_a_green_tip_leaves_out_nothing(parsed: dict, tmp_path: Path) -> None:
     code, out, output, text, _ = _pick(parsed, tmp_path, green=[_MAIN])
     assert code == 0, out
-    assert output.strip() == f"sha={_MAIN}"
+    assert _sha(output) == f"sha={_MAIN}"
     assert "It leaves out no commit" in text
 
 
@@ -471,7 +492,7 @@ def test_with_no_green_main_a_slot_falls_back_to_its_own_commit(parsed: dict, tm
     """The FALLBACK: the behaviour before CIV-30, and it says so."""
     code, out, output, text, _ = _pick(parsed, tmp_path, green=["ABSENT"])
     assert code == 0, out
-    assert output.strip() == f"sha={_GHSHA}"
+    assert _sha(output) == f"sha={_GHSHA}"
     assert "::warning title=No green/main yet::" in out
     assert "FALLBACK" in text and _GHSHA[:12] in text
 

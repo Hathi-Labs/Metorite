@@ -271,8 +271,6 @@ ALLOWED: dict[str, str] = {
         "Text, not rows: the cut shortens one string.",
     "packages/acb_skills/acb_skills/studio_tools.py::_skeleton::title[:1]":
         "Text: the first letter of a name, upper-cased. Not rows.",
-    "packages/acb_skills/acb_skills/studio_tools.py::_slug::re.sub('^[^a-z]+', '', words)[:40]":
-        "Text, not rows: the cut shortens one string.",
     "packages/acb_skills/acb_skills/studio_tools.py::_shown_diff::diff[:MAX_DIFF_LINES]":
         "The cut list ends with one line that counts the rest ('... N more'). Each patch call returns the diff again.",
     "packages/acb_skills/acb_skills/studio_tools.py::_shown_errors::errors[:MAX_ERRORS]":
@@ -319,7 +317,7 @@ ALLOWED: dict[str, str] = {
 #: of a failed day-flow step, cut to 120 characters (87). STU-A5c-2 added one: the
 #: delete card names ten tables and counts the rest, and the delete takes every
 #: table (88).
-ALLOWED_CEILING = 88
+ALLOWED_CEILING = 87
 
 
 def _stringy(node: ast.AST) -> bool:

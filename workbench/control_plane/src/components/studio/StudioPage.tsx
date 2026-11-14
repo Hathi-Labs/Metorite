@@ -95,6 +95,11 @@ export interface StudioPageProps {
    * the one app bar. The body is the record page (`StudioRecord`), and this file knows no field.
    */
   record?: RecordShell | null;
+  /**
+   * Draw no app bar. The app frame (`StudioAppFrame`) owns the bar then, so the screen keeps
+   * one `<h1>` and one bar. Default false: `/studio/page-preview` draws its own bar.
+   */
+  bare?: boolean;
 }
 
 export interface RecordShell {
@@ -131,7 +136,7 @@ function NotBuilt({ view, label }: { view: string; label: string }) {
 }
 
 export default function StudioPage({
-  title, subtitle, back, manifest, pageId, state, onTab, onCloseSide, renderView, toolbar, filterBar, record,
+  title, subtitle, back, manifest, pageId, state, onTab, onCloseSide, renderView, toolbar, filterBar, record, bare = false,
 }: StudioPageProps) {
   const built = buildPage(manifest, pageId, state.tab);
   const { page, cells } = built;
@@ -154,7 +159,7 @@ export default function StudioPage({
     // The full page of a record: one column at every width, under the one app bar.
     return (
       <div className="flex h-full flex-col" data-record-page="full">
-        <AppTopBar title={title} subtitle={subtitle ?? page.title ?? undefined} back={back} />
+        {bare ? null : <AppTopBar title={title} subtitle={subtitle ?? page.title ?? undefined} back={back} />}
         <div ref={scroller} tabIndex={-1} data-page-scroller
           className="min-w-0 flex-1 overflow-y-auto px-4 py-3 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-6 sm:py-4">
           <div className="mx-auto flex max-w-3xl flex-col gap-3">
@@ -187,7 +192,7 @@ export default function StudioPage({
 
   return (
     <div className="flex h-full flex-col">
-      <AppTopBar title={title} subtitle={subtitle ?? page.title ?? undefined} back={back} />
+      {bare ? null : <AppTopBar title={title} subtitle={subtitle ?? page.title ?? undefined} back={back} />}
       {page.tabs.length > 0 && built.tab !== null && (
         <Tabs variant="underline" activeTab={built.tab} onTabChange={onTab}
           tabs={page.tabs.map((t) => ({ id: t.id, label: t.title }))} />

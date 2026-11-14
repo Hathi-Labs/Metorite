@@ -776,6 +776,121 @@ def test_civ28b_the_floor_covers_the_auth_package_billing_routes_and_the_migrati
     assert env.merges == [] and env.premerge_runs == 0
 
 
+#: CIV-31b: the scoping files that the tier floor must call HIGH. The fix round
+#: of PR 2276 added the member, role, group, identity, money and sharing files.
+SCOPING_HIGH = [
+    "apps/services/gateway/gateway/studio/batch_store.py",
+    "packages/acb_skills/acb_skills/permission_policy.py",
+    "apps/services/gateway/gateway/routes/apps/grants.py",
+    "apps/services/gateway/gateway/kb_access/resolve.py",
+    "packages/acb_common/acb_common/studio_access.py",
+    "apps/x/visibility.py",
+    "apps/services/gateway/gateway/routes/admin/_common.py",
+    "apps/services/gateway/gateway/routes/admin/members.py",
+    "apps/services/gateway/gateway/routes/admin/roles.py",
+    "apps/services/gateway/gateway/routes/admin/groups.py",
+    "apps/services/customer_console/customer_console/operator_roles.py",
+    "apps/services/customer_console/customer_console/operator_sessions.py",
+    "apps/services/customer_console/customer_console/operator_signin.py",
+    "apps/services/gateway/gateway/routes/signin.py",
+    "apps/services/gateway/gateway/routes/signup.py",
+    "apps/services/gateway/gateway/routes/oauth.py",
+    "apps/services/gateway/gateway/routes/seats.py",
+    "apps/services/customer_console/customer_console/seats.py",
+    "packages/acb_common/acb_common/org_settings.py",
+    "workbench/control_plane/src/app/api/admin/members/invite/route.ts",
+    "apps/services/gateway/gateway/routes/notes/share.py",
+    "apps/services/gateway/gateway/connections/shared_token.py",
+    "apps/services/gateway/gateway/package_host/sharing.py",
+    "apps/services/gateway/gateway/routes/projects/report_scope.py",
+    # Fix round 2: the customer-console member, money, identity and key files,
+    # and the OAuth token endpoint and bearer check of the agent edge.
+    "apps/services/customer_console/customer_console/store.py",
+    "apps/services/customer_console/customer_console/payments.py",
+    "apps/services/customer_console/customer_console/keys.py",
+    "apps/services/customer_console/customer_console/apps.py",
+    "apps/services/customer_console/customer_console/main.py",
+    "apps/services/customer_console/customer_console/operators.py",
+    "apps/services/customer_console/customer_console/deployment_keys.py",
+    "apps/services/customer_console/customer_console/provider_keys.py",
+    "apps/services/agent_edge/agent_edge/token_endpoint.py",
+    "apps/services/agent_edge/agent_edge/bearer.py",
+]
+#: Near misses that stay STANDARD: an ordinary store, a UI helper, a signing file.
+SCOPING_LOW = [
+    "apps/services/gateway/gateway/studio/views_store.py",
+    "workbench/control_plane/src/lib/access.ts",
+    "apps/services/gateway/gateway/routes/email/transport/signing.py",
+]
+
+
+def test_civ31b_the_floor_covers_the_scoping_files(env):
+    """CIV-31b: the tenancy, RLS, grant, visibility, member, role, group, identity,
+    money and sharing files are HIGH. An ordinary store, a UI access helper and a
+    signing file are not."""
+    numbers = list(range(5, 5 + len(SCOPING_HIGH) + len(SCOPING_LOW)))
+    for n, path in zip(numbers, SCOPING_HIGH + SCOPING_LOW, strict=True):
+        env.pr(n, path=path)
+    env.run()
+    lines = env.log.splitlines()
+    assert len(lines) == len(numbers)
+    high, low = lines[: len(SCOPING_HIGH)], lines[len(SCOPING_HIGH) :]
+    for line, n in zip(high, numbers, strict=False):
+        assert line.startswith(f"BACK {n} tier floor HIGH, queued as "), line
+    assert low == [f"DONE {n} abc123" for n in numbers[len(SCOPING_HIGH) :]]
+
+
+def test_civ31b_an_auto_revert_pr_merges_only_after_the_pass_tested_main(env):
+    """CIV-31b (P2): a fix can land while a revert PR waits. The bot merges an
+    auto-revert PR only when open/<pr>.json holds the tip of main now. Another
+    tip waits for the next auto-revert pass, and so does a state file that does
+    not parse. No state file goes BACK. A held PR stops before the gate, so it
+    runs no trial merge and no premerge (fix round 2, point 5)."""
+    state = env.tmp / "auto-revert"
+    (state / "open").mkdir(parents=True)
+    tip = git(env.seed, "rev-parse", "main")
+    for n, short in ((5, "a"), (6, "b"), (7, "c"), (9, "d")):
+        env.pr(n, path=f"revert_{n}.txt")
+        env.view(n, headRefName=f"auto-revert/{short * 12}")
+    wjson(state / "open" / "5.json", {"culprit": "a" * 40, "ids": ["t"], "tip": tip})
+    wjson(state / "open" / "6.json", {"culprit": "b" * 40, "ids": ["t"], "tip": "0" * 40})
+    (state / "open" / "9.json").write_text('{"culprit": "dd', encoding="utf-8")
+    r = env.run(AUTO_REVERT_STATE=state.as_posix())
+    lines = env.log.splitlines()
+    assert lines[0] == "DONE 5 abc123"
+    assert lines[1].startswith("BACK 7 auto-revert PR with no state file")
+    assert len(lines) == 2 and len(env.merges) == 1
+    assert "PR 9: auto-revert PR: the state file" in r.stderr and "does not parse" in r.stderr
+    # Only PR 5 reached the gate: PR 6, 7 and 9 stopped before it.
+    assert env.premerge_runs == 1
+    # The next auto-revert pass tests the tip, and then PR 6 merges.
+    wjson(state / "open" / "6.json", {"culprit": "b" * 40, "ids": ["t"], "tip": tip})
+    env.run(AUTO_REVERT_STATE=state.as_posix())
+    assert env.log.splitlines()[2:] == ["DONE 6 abc123"]
+    # A PR of a lane is not an auto-revert PR, so the state does not hold it.
+    env.pr(8)
+    env.run(AUTO_REVERT_STATE=state.as_posix())
+    assert env.log.splitlines()[-1] == "DONE 8 abc123"
+
+
+def test_civ31b_an_auto_revert_pr_gets_no_retry_when_main_moves(env):
+    """CIV-31b (P2): "Base branch was modified" means that main moved, and the
+    auto-revert pass has not tested the new tip. The bot does not try again in
+    the same pass. The PR waits, and the next pass checks the tip again."""
+    state = env.tmp / "auto-revert"
+    (state / "open").mkdir(parents=True)
+    tip = git(env.seed, "rev-parse", "main")
+    sha = env.pr(5)
+    env.view(5, headRefName="auto-revert/" + "a" * 12)
+    wjson(state / "open" / "5.json", {"culprit": "a" * 40, "ids": ["t"], "tip": tip})
+    (env.fix / "base_modified").write_text("1", encoding="utf-8")
+    env.run(AUTO_REVERT_STATE=state.as_posix(), MERGE_BASE_RETRY_WAIT="0")
+    assert env.merges == [f"pr merge 5 --squash --match-head-commit {sha}"]
+    assert env.log == ""
+    env.run(AUTO_REVERT_STATE=state.as_posix(), MERGE_BASE_RETRY_WAIT="0")
+    assert len(env.merges) == 2 and env.log == "DONE 5 abc123\n"
+
+
 def test_civ28b_a_rename_out_of_a_high_path_is_seen(env):
     env.commit("infra/postgres/998_old.sql", "select 1;\n", "a migration")
     git(env.seed, "push", "-q", "origin", "main")

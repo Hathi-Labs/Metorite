@@ -36,7 +36,7 @@
  * Pure of React, so a test drives it in the node environment.
  */
 import { type ActionResult, type Row, type StudioDataDoor, type StudioSource, withMeta } from "./dataDoor";
-import type { PageDef, ViewDef } from "./manifest";
+import type { NavSection, PageDef, ViewDef } from "./manifest";
 import { ACTION_FAILED } from "./TypedActionButton";
 
 /** The one shape of a source that a read may name. */
@@ -368,6 +368,8 @@ export interface PackageDetail {
   /** The views and the pages of the manifest (AF-1). Empty when the manifest has none. */
   views: ViewDef[];
   pages: PageDef[];
+  /** The rail of the manifest (AF-2a). Empty when the manifest has none. */
+  nav: NavSection[];
 }
 
 /**
@@ -467,5 +469,6 @@ export async function getPackage(id: string, fetchImpl: typeof fetch = fetch): P
   const actions = Array.isArray(manifest.actions) ? (manifest.actions.filter(isObject) as unknown as DeclaredAction[]) : [];
   const views = Array.isArray(manifest.views) ? (manifest.views.filter(isObject) as unknown as ViewDef[]) : [];
   const pages = Array.isArray(manifest.pages) ? (manifest.pages.filter(isObject) as unknown as PageDef[]) : [];
-  return { id, name: String(pkg.name ?? ""), access: packageAccess(pkg), actions, objects, views, pages };
+  const nav = Array.isArray(manifest.nav) ? (manifest.nav.filter(isObject) as unknown as NavSection[]) : [];
+  return { id, name: String(pkg.name ?? ""), access: packageAccess(pkg), actions, objects, views, pages, nav };
 }

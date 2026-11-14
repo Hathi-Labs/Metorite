@@ -297,6 +297,11 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "studio_list_approvals": ("list the pending approvals of studio apps",),
     "studio_approve": ("approve version 2 of the studio app for the org",),
     "studio_reject": ("reject version 2 of the studio app",),
+    # -- studio-workflows: the workflow writes (STB-6b) --
+    "studio_workflow_publish": ("publish the workflow that chases invoices",
+                                "roll back the workflow to version 2"),
+    "studio_workflow_live": ("pause the workflow that chases invoices",
+                             "turn on the workflow again"),
     # -- projects-reminders --
     "list_reminders": ("what reminders do I have?",),
     "promote_reminder": ("turn the reminder into a task",),

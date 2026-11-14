@@ -118,12 +118,22 @@ def test_the_required_check_name_is_the_aggregator() -> None:
     assert set(guard.DISARMED) <= set(lists["--disarmed"])
 
 
+def test_the_shard_constants_match_the_workflow_matrix() -> None:
+    """CIV-33e. ALL_SHARDS and SHARD_TARGET_S must not drift from the matrix
+    fallback in pr-check.yml. A full run starts one job for each shard."""
+    assert (guard.ALL_SHARDS, guard.SHARD_TARGET_S) == (8, 300)
+    matrix = _jobs()["test"]["strategy"]["matrix"]["shard"]
+    fallback = matrix.split("||", 1)[1].split("'")[1]
+    assert json.loads(fallback) == list(range(1, guard.ALL_SHARDS + 1))
+    assert guard.shard_list(guard.ALL_SHARDS) == fallback
+
+
 def test_every_shard_runs_and_writes_a_report() -> None:
     test = _jobs()["test"]
     run = "\n".join(s.get("run", "") for s in test["steps"])
     # CIV-17: the matrix and the split count both follow the selection.
     assert test["strategy"]["matrix"]["shard"] == (
-        "${{ fromJSON(needs.changes.outputs.shards || '[1,2,3,4,5,6]') }}"
+        "${{ fromJSON(needs.changes.outputs.shards || '[1,2,3,4,5,6,7,8]') }}"
     )
     assert "--splits ${{ steps.pick.outputs.splits }}" in run
     assert "--group ${{ matrix.shard }}" in run
@@ -772,17 +782,17 @@ def test_gate_output_names_the_shards(tmp_path: Path) -> None:
     # Every selected file is a process fence a shard would drop: also none.
     ignored = f"--ignore={a} --ignore={b}"
     assert _gate(tmp_path, {"full": False, "files": [a, b]}, ignored)["shards"] == "[]"
-    # A full result runs all six.
-    assert _gate(tmp_path, {"full": True, "files": []})["shards"] == "[1,2,3,4,5,6]"
+    # A full result runs all eight.
+    assert _gate(tmp_path, {"full": True, "files": []})["shards"] == "[1,2,3,4,5,6,7,8]"
 
 
 def test_gate_output_never_reads_a_failure_as_an_empty_selection(tmp_path: Path) -> None:
     """The #1077 trap. A broken or missing result is a FULL run, never `[]`."""
     for bad in ("not json", "{}", '{"full": false}', '{"full": false, "files": ["../evil.py"]}'):
         out = _gate(tmp_path, bad)
-        assert out["full"] == "true" and out["shards"] == "[1,2,3,4,5,6]", bad
+        assert out["full"] == "true" and out["shards"] == "[1,2,3,4,5,6,7,8]", bad
     missing = guard.gate_output(tmp_path / "absent.json")
-    assert "full=true" in missing and "shards=[1,2,3,4,5,6]" in missing
+    assert "full=true" in missing and "shards=[1,2,3,4,5,6,7,8]" in missing
 
 
 def test_the_pick_step_and_the_changes_job_agree_on_the_count(monkeypatch) -> None:
@@ -830,11 +840,11 @@ def test_shard_count_by_seconds() -> None:
     sec = {"tests/unit/test_a.py": 300.0, "tests/unit/test_b.py": 301.0, "tests/unit/test_big.py": 5000.0}
     a, b, big = sec
     assert guard.shard_count("selection", [a], sec) == 1
-    assert guard.shard_count("selection", [a, b], sec) == 2  # 601 s: one shard holds 600 s
+    assert guard.shard_count("selection", [a, b], sec) == 3  # 601 s: one shard holds 300 s
     assert guard.shard_count("selection", [big], sec) == guard.ALL_SHARDS  # capped
     # a file with no timing counts DEFAULT_FILE_S (a new test)
     new = [f"tests/unit/test_new_{i}.py" for i in range(61)]
-    assert guard.shard_count("selection", new, sec) == 2  # 610 s
+    assert guard.shard_count("selection", new, sec) == 3  # 610 s
     assert guard.shard_count("empty", [], sec) == 0
     assert guard.shard_count("full", [], sec) == guard.ALL_SHARDS
 
@@ -866,13 +876,13 @@ def test_gate_output_uses_the_timings_and_agrees_with_the_pick_step(tmp_path: Pa
     gate.write_text(json.dumps({"full": False, "files": ["tests/unit/test_a.py", "tests/unit/test_b.py"]}),
                     encoding="utf-8")
     out = dict(x.split("=", 1) for x in guard.gate_output(gate))
-    assert out["shards"] == "[1,2]"  # 800 s
+    assert out["shards"] == "[1,2,3]"  # 800 s
     mode, paths = guard.select_shard("false", out["files"], "", "success")
-    assert guard.shard_count(mode, paths, guard.file_seconds()) == 2
-    # a docs-only PR still starts no shard, and a failed result still starts all six
+    assert guard.shard_count(mode, paths, guard.file_seconds()) == 3
+    # a docs-only PR still starts no shard, and a failed result still starts all eight
     gate.write_text(json.dumps({"full": False, "files": []}), encoding="utf-8")
     assert dict(x.split("=", 1) for x in guard.gate_output(gate))["shards"] == "[]"
-    assert dict(x.split("=", 1) for x in guard.gate_output(tmp_path / "absent.json"))["shards"] == "[1,2,3,4,5,6]"
+    assert dict(x.split("=", 1) for x in guard.gate_output(tmp_path / "absent.json"))["shards"] == "[1,2,3,4,5,6,7,8]"
 
 
 def test_missing_timing_entries_are_named_in_a_warning() -> None:

@@ -1198,8 +1198,12 @@ async def test_a_crm_pack_run_with_no_user_refuses() -> None:
         assert not _get_memory_user_id(), "non-vacuity: this run binds no user"
         build = await _build("crm-records", _crm_module())
         search = _named(build, "search_crm")
+        # HRD-3: the guard of the pack tool is the outer layer. It answers the
+        # refusal as text. The layer under it (``__wrapped__``) still raises.
         with pytest.raises(RuntimeError, match="No acting user"):
-            await search("Acme")
+            await search.__wrapped__("Acme")
+        text = await search("Acme")
+        assert text.startswith("The tool failed (RuntimeError)."), text
 
 
 # ── OA-9c: packs in a spawn child (§6.7, the child case of §5) ───────────────
