@@ -17,7 +17,7 @@ import httpx
 import pytest
 from email_ingestion.providers import outlook as outlook_mod
 from email_ingestion.providers.base import ProviderDidNotAnswer
-from email_ingestion.providers.outlook import GRAPH_API_BASE, _GraphClient
+from email_ingestion.providers.outlook import GRAPH_API_BASE, _guard_client
 
 
 @pytest.fixture(autouse=True)
@@ -41,8 +41,8 @@ def _client(statuses: list[int], calls: list[httpx.Request],
         return httpx.Response(
             status, json={"value": []}, headers=headers or {}, request=request)
 
-    return _GraphClient(base_url=GRAPH_API_BASE,
-                        transport=httpx.MockTransport(handler))
+    return _guard_client(httpx.AsyncClient(
+        base_url=GRAPH_API_BASE, transport=httpx.MockTransport(handler)))
 
 
 def _run(coro):

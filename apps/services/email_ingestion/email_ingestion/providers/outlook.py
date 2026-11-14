@@ -258,8 +258,8 @@ def _write_kind(request: httpx.Request) -> str | None:
     return None
 
 
-class _GraphClient(httpx.AsyncClient):
-    """The Graph client, with the two rules of HRD-20 (task 3224).
+def _guard_client(client: httpx.AsyncClient) -> httpx.AsyncClient:
+    """Give *client* the two rules of HRD-20 (task 3224), and return it.
 
     * A GET that gets 502, 503 or 504 is tried again, twice at most. The wait
       is ``Retry-After`` up to :data:`_READ_RETRY_MAX_WAIT_SECS`, else a short
@@ -268,14 +268,16 @@ class _GraphClient(httpx.AsyncClient):
       read timeout, raises :class:`ProviderDidNotAnswer`, because the write
       may have landed.
 
+    It wraps ``client.send`` on the instance, and not a subclass, so a test
+    that replaces ``httpx.AsyncClient`` still reaches the guard.
     Fence: ``tests/unit/test_outlook_gateway_faults.py``."""
+    inner = client.send
 
-    async def send(self, request: httpx.Request, **kwargs: Any) -> httpx.Response:
-        kind = _write_kind(request)
+    async def send(request: httpx.Request, **kwargs: Any) -> httpx.Response:
         if request.method == "GET":
             waits = list(_READ_FAULT_WAITS)
             while True:
-                resp = await super().send(request, **kwargs)
+                resp = await inner(request, **kwargs)
                 if resp.status_code not in _GATEWAY_FAULTS or not waits:
                     return resp
                 wait = waits.pop(0)
@@ -287,16 +289,20 @@ class _GraphClient(httpx.AsyncClient):
                     wait = min(max(wait, 0.0), _READ_RETRY_MAX_WAIT_SECS)
                 await resp.aclose()
                 await asyncio.sleep(wait)
+        kind = _write_kind(request)
         if kind is None:
-            return await super().send(request, **kwargs)
+            return await inner(request, **kwargs)
         try:
-            resp = await super().send(request, **kwargs)
+            resp = await inner(request, **kwargs)
         except httpx.ReadTimeout:
             raise ProviderDidNotAnswer("Outlook", kind) from None
         if resp.status_code in _GATEWAY_FAULTS:
             await resp.aclose()
             raise ProviderDidNotAnswer("Outlook", kind)
         return resp
+
+    client.send = send  # type: ignore[method-assign]
+    return client
 
 
 class OutlookMailTooLarge(ProviderMailTooLarge):
@@ -860,12 +866,12 @@ class OutlookProvider(BaseEmailProvider):
         # token on each request, and refreshes once on a 401 (EM-T4c).
         if self._http is None:
             await self.authenticate()
-            self._http = _GraphClient(
+            self._http = _guard_client(httpx.AsyncClient(
                 base_url=GRAPH_API_BASE,
                 headers={"Content-Type": "application/json"},
                 auth=RefreshingBearer(self),
                 timeout=30.0,
-            )
+            ))
         return self._http
 
     async def _graph_send(

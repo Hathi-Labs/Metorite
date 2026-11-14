@@ -913,7 +913,9 @@ async def test_a_failed_delta_leaves_the_sweep_unchanged(
     stored = parse_delta_cursor(seeded.new_history_id)
     graph.add("inbox", "new-1", _now() + timedelta(minutes=1))
     off = await _poll(seeded.new_history_id, shadow=False)
-    graph.fail["inbox"] = [answer]
+    # A 503 is a read that the client tries again twice (HRD-20), so it
+    # must fail three times to stay a failure.
+    graph.fail["inbox"] = [answer] * (3 if status == "503" else 1)
     shadow = await _poll(seeded.new_history_id)
     assert _sweep_fields(shadow) == _sweep_fields(off)
     report = _report(shadow)
