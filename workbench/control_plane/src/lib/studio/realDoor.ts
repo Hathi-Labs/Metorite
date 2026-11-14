@@ -53,6 +53,8 @@ const ACTION_ID = /^[a-z][a-z0-9_]{0,47}$/;
 const PACKAGE_ID = /^[0-9a-fA-F-]{36}$/;
 
 export const NOT_DECLARED_SENTENCE = "This package does not declare that action, so it cannot run here.";
+export const NEEDS_CONNECTION_SENTENCE =
+  "This app needs a connection first. Connect it on the card at the top of the app, then try again.";
 export const NOT_OPEN_SENTENCE = "This action is not open on this page.";
 export const APPROVAL_SENTENCE =
   "Direct edits are not on for your workspace yet, so this change was not saved.";
@@ -211,6 +213,7 @@ export function mapAnswer(status: number, body: unknown, retryAfter?: string | n
     return { ok: false, message: d.code === "not_declared" ? NOT_DECLARED_SENTENCE : NOT_OPEN_SENTENCE };
   }
   if (status === 401) return { ok: false, message: SIGN_IN_SENTENCE };
+  if (status === 409 && d.code === "needs_connection") return { ok: false, message: NEEDS_CONNECTION_SENTENCE };
   if (status === 404) return { ok: false, message: d.code === "object_missing" ? UNPUBLISHED_SENTENCE : GONE_SENTENCE };
   return { ok: false, message: ACTION_FAILED };
 }
