@@ -6271,11 +6271,19 @@ The owner asked in chat on 2026-11-13, on task 3118. Can the chat hold many more
 6. **Studio gets room.** The `studio` family splits into a core of 10 tools and a follow pack, `studio-more` (TS-1b, task 3207). So a Studio turn has room, and the search has tools to find. TS-1b is live, not dark, and the owner answers its open decision before it merges. In TS-1b, `studio-more` takes a place of `MAX_PACKS`. A later slice, TS-1c, with its own spec audit, may change that.
 7. **Dark, then measured.** Each slice from TS-2 on ships dark. `TOOL_SEARCH_ORGS` is empty by default, and its flip is owner-only. The `search` arm of the OA-8e measure must be not worse than the `pack` arm before a switch.
 
+**Accepted by the owner, 2026-11-14, task 3190.** The owner accepted four of the open points. D222 as a whole stays PROPOSED until the owner confirms its wording.
+- **Decision 2, sticky tools.** A found tool is sticky for the chat, and it drops after a few unused turns.
+- **Decision 6, the index.** First-party tools only until TS-9.
+- **Decision 7, the budget.** About 30 thousand schema tokens for each request.
+- **Decision 9, the eval spend.** A pilot, then a full run: about USD 0.37 and about USD 4.2 by the harness count, with `--budget-usd 6`. The real bill may be 2.75 times that.
+
+Decision 11 (the Studio split, due before TS-1b merges) and decision 13 (the place of `find_tools`) stay open. The audit of TS-2 on 2026-11-14 found it NO-GO as written. TS-2a (task 3222), a narrowed spike for the `studio` pack alone, is the next dispatchable slice.
+
 **Open for the owner.** `one_assistant_context.md` §4.2.9 lists thirteen points. They include the stickiness of a found tool, the threshold of the first pass and the budget. They also include the eval spend, the Studio split, the place of `find_tools` and Studio as the spike.
 
 **Revisit.** Only the owner confirms or reopens this. D117 names the owner as the one who reopens it.
 
-Fence: each slice of `one_assistant_context.md` §4.2.9 (TS-1 to TS-9, tasks 3195 to 3203, TS-1b, task 3207, and the optional TS-1c, task 3213) names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D222 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D221 at most, and no open PR or local worktree held D222 or higher.
+Fence: each slice of `one_assistant_context.md` §4.2.9 (TS-1 to TS-9, tasks 3195 to 3203, TS-2a, task 3222, TS-1b, task 3207, and the optional TS-1c, task 3213) names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D222 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D221 at most, and no open PR or local worktree held D222 or higher.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
