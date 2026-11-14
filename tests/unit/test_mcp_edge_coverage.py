@@ -229,6 +229,9 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         # WS-MCP SW-23: `report_check` (agent_coordination.md SW-23). A pass
         # closes the task only under the rule of a status move.
         ("POST", "/projects/tasks/{task_id}/check-result"),
+        # WS-MCP SW-32: `set_run_plan` (agent_coordination.md SW-32). It
+        # replaces the plan of the agent's own run.
+        ("PUT", "/projects/agent-runs/{run_id}/plan"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 

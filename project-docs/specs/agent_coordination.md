@@ -2,7 +2,7 @@
 
 > **Dated 2026-11-11, price (D204.9).** Seat tiers are final. The flat ₹500 seat ends when PLN-0 merges. Until then the code sells the flat seat. Read each line that says the flat seat as the seat of D152 after PLN-0. Lines: 474 and 724.
 
-**Status: ACTIVE (SW-0, 2026-10-30). SW-68a (the plan order of `my_work`) is built, 2026-11-08. The rest of SW-68 is open. The replan of 2026-11-09 (task 2518) sets the queue order, the lane scope and pull start (SW-100, new). It parks SW-17, SW-20, SW-22, SW-69, SW-74, SW-75, SW-89, SW-90 and SW-92. SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b (change an answer) is built and dark, 2026-11-11. SW-43c (the chat tools and the agent text) is built, 2026-11-11, and the flag can go on. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
+**Status: ACTIVE (SW-0, 2026-10-30). SW-68a (the plan order of `my_work`) is built, 2026-11-08. The rest of SW-68 is open. The replan of 2026-11-09 (task 2518) sets the queue order, the lane scope and pull start (SW-100, new). It parks SW-17, SW-20, SW-22, SW-69, SW-74, SW-75, SW-89, SW-90 and SW-92. SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b (change an answer) is built and dark, 2026-11-11. SW-43c (the chat tools and the agent text) is built, 2026-11-11, and the flag can go on. SW-32 (a plan on each run) is built, dark behind the runs flag, 2026-11-11, branch `mt-f4ce39a1-run-plan`, task 1049. It is not merged yet. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
 
 **SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
 
@@ -102,7 +102,7 @@ The next slices fix liveness first, because the board shows most agent work as i
 | **Lease** | The execution slot of a task: its one open run. It holds while the run's newest activity is newer than two hours | the index `pm_agent_runs_one_open_per_task` (migration 289), `filters.lease_held_sql` | Yes (EA-14a) |
 | **Delegate** | The one agent that a task is handed to, beside its assignees | `pm_tasks`, new columns | No. SW-29a |
 | **Guidance** | The org's written rules for agents, at the org, a space or a project | a new tenant table | No. SW-31 |
-| **Plan** | A checklist on a run that the agent keeps current | `pm_agent_runs.plan`, a new column | No. SW-32 |
+| **Plan** | A checklist on a run that the agent keeps current | `pm_agent_runs.plan` (migration 423) | Built, 2026-11-11 (SW-32), not merged |
 | **Wait record** | A named owner and action for a task that waits on a person or a system | `pm_tasks`, new columns | No. SW-9 |
 | **Strand** | The fingerprint of a run with no live path, and later its recovery record | `pm_agent_run_strands` (migration 305) | Built, dark (SW-10a) |
 | **Handoff note** | Four short texts when an agent stops: done, left, evidence, next | a `response` activity with `content.handoff` | No. SW-24 |
@@ -1037,6 +1037,15 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Done when.** An agent sets and updates a plan over the MCP, and the card shows the progress. Tests cover the replace, the caps and a step text that is untrusted.
 - **Fence.** `test_agent_runs_r8.py`, the edge coverage fence, and a vitest for the card line.
 - **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE.
+- **Status.** BUILT, 2026-11-11, task 1049, branch `mt-f4ce39a1-run-plan`. It is not merged yet.
+- **As built (SW-32).**
+  - **The column.** Migration `423_agent_run_plan.sql` adds `pm_agent_runs.plan JSONB NULL` and the CHECK `pm_agent_runs_plan_shape` (an array of at most 30). No default, no backfill. The ledger number was free on 2026-11-12 (main held 418, open pull requests held 419 to 422). `premerge.sh` checks it again.
+  - **The route.** `PUT /projects/agent-runs/{run_id}/plan` with `{steps}` (`agent_runs.set_run_plan`). The pair is in `MCP_WRITE_ROUTES`. Only an agent calls it, and `_write_activity` refuses a run of another member (403) and a run that ended (409). Over 30 steps, a step over 200 characters, an empty step and an unknown status are 422. An empty list clears the plan. The route sits behind the runs flag (`agent_runs_enabled`), and the slice adds no flag of its own.
+  - **The activity.** Each call writes one `action` activity, `set_run_plan`, with the counts `steps`, `completed` and `in_progress` as strings. The step text stays out of every activity and every comment. The cap of 20 ephemeral rows trims the old plan lines, as it trims any thought.
+  - **The tool.** `set_run_plan(run_id, steps)` in `agent_edge/tools.py`. The run that each run tool returns now holds `plan`, with each step text as untrusted text.
+  - **The card.** `GET` task rows carry `agent_plan: {done, total, step}` (`filters.plan_summary_of`). `done` counts `completed` and `canceled`, so a plan that dropped a step can still read "7 of 7". `step` is the first `inProgress` step, cut to 80 characters. The live line of a working card reads "Claude Code · <step> · 3 of 7" (`agentCardLook`). The run panel draws the list (`AgentRunPlan.tsx`).
+  - **The coding harness (CA-2).** CA-2 is not built. It writes the same plan through the same route when it lands.
+  - **Fences.** `test_agent_runs_r8.py::TestTheRunPlan` (R8), `test_mcp_edge_run_plan.py`, the write pairs in `test_mcp_edge_coverage.py`, and the vitests `agentCardLook.test.ts` and `AgentRunPlan.test.ts`.
 
 #### SW-33 · Structured questions
 

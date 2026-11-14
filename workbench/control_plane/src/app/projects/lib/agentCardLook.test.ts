@@ -153,3 +153,45 @@ describe("the board applies the look", () => {
     expect(src).toMatch(/data-agent-line/);
   });
 });
+
+describe("a plan on the live line (SW-32)", () => {
+  it("shows the step in progress and the count", () => {
+    expect(
+      agentCardLook("working", {
+        clientVia: via,
+        note: "old thought",
+        plan: { done: 3, total: 7, step: "Write the tests" },
+      }),
+    ).toEqual({ edge: "live", line: "Claude Code · Write the tests · 3 of 7" });
+  });
+
+  it("falls back to the note when no step is in progress, and keeps the count", () => {
+    expect(
+      agentCardLook("working", {
+        clientVia: via,
+        note: "thinking",
+        plan: { done: 0, total: 2, step: null },
+      }).line,
+    ).toBe("Claude Code · thinking · 0 of 2");
+    expect(
+      agentCardLook("answered", { clientVia: via, plan: { done: 2, total: 2, step: null } }).line,
+    ).toBe("Claude Code · 2 of 2");
+  });
+
+  it("a plan of no step or no plan changes nothing", () => {
+    for (const plan of [null, undefined, { done: 0, total: 0, step: null }]) {
+      expect(agentCardLook("working", { clientVia: via, note: "n", plan }).line).toBe(
+        "Claude Code · n",
+      );
+    }
+  });
+
+  it("only a live run shows the plan: a waiting run keeps its wait", () => {
+    expect(
+      agentCardLook("waiting", {
+        waiting: { on: "ci", until: null },
+        plan: { done: 1, total: 3, step: "x" },
+      }).line,
+    ).toBe("Waiting on CI");
+  });
+});
