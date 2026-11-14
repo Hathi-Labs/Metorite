@@ -2128,6 +2128,19 @@ class Settings(BaseSettings):
     chat_ask_park_seconds: int = 600
     # How long a parked question stays answerable, in hours.
     chat_ask_ttl_hours: int = 168
+    # ── A late approve acts once (HRD-22, chat_run_continuity.md S2 item 8) ──
+    #
+    # CHAT_LATE_APPROVE_ORGS: a comma list of organization ids, or `*`. Empty
+    # is off, the default, and then each card and each message is as before.
+    # On, a late Approve of a parked plain confirmation card is the member's
+    # own consent: the new run's gate approves the SAME card once, in the same
+    # thread, for the same member, within 30 minutes, with no new card. It
+    # needs CHAT_DURABLE_ASKS. The one reader is
+    # `acb_skills.late_approve.late_approve_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). A production flip is gate
+    # `enforcement-flip`. Fences: tests/unit/test_late_approve_grant.py and
+    # tests/unit/test_late_approve_grant_r8.py.
+    chat_late_approve_orgs: str = ""
 
     # ── The run cap (WS-51 D-3, owner decision 2026-10-10) ──────────────────
     #

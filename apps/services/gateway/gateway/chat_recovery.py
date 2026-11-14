@@ -548,6 +548,27 @@ def card_resend(
     )
 
 
+#: HRD-22 (``chat_run_continuity.md`` S2 item 8): the paragraph that a late
+#: approve with a grant adds after the envelope. It is the member's own words,
+#: outside the quoted block, so the model makes the same call again and does
+#: not plan again. The card gate approves that call once
+#: (``acb_skills.late_approve``). The envelope still ends ``My answer:
+#: APPROVE`` and then this paragraph, so the display check
+#: (:func:`card_answer_agrees`) reads it as an approve.
+LATE_APPROVE_NOTE = (
+    "I approved this card after the chat had stopped waiting for my answer. "
+    "Make the same call again, with the same values. Do not plan the work "
+    "again. My approval covers that one call only."
+)
+
+
+def with_late_approve_note(resend: CardResend) -> CardResend:
+    """*resend* with :data:`LATE_APPROVE_NOTE` after its envelope. The
+    gateway calls it only after it wrote a grant, so with no grant the
+    message is as before, byte for byte. The display does not change."""
+    return CardResend(f"{resend.message}\n\n{LATE_APPROVE_NOTE}", resend.display)
+
+
 def was_interrupted(events: list[dict[str, Any]]) -> bool:
     """True when a run's stream carries the restart marker."""
     from orchestrator.run_liveness import INTERRUPTED_EVENT

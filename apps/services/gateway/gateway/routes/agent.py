@@ -3561,6 +3561,10 @@ async def _late_answer_from_row(
     The row moves to ``answered`` in one statement, so two late answers to
     one card resend once. The loser gets ``(None, True)``, the old 409.
     Fence: ``tests/unit/test_pending_ask_flow.py``.
+
+    HRD-22: only after the move, a late APPROVE of a parked plain card writes
+    a grant of one use (``acb_skills.late_approve.grant_from_offer``), and the
+    resend says so. Fence: ``tests/unit/test_late_approve_grant.py``.
     """
     import asyncio  # noqa: PLC0415
 
@@ -3606,6 +3610,18 @@ async def _late_answer_from_row(
     from gateway.routes.crm.questions import record_late_answer
 
     await record_late_answer(org, me, str(row.get("kind") or ""), row.get("payload"), req.answer)
+    # HRD-22 (chat_run_continuity.md S2 item 8): a late APPROVE of a parked
+    # plain card is the member's own consent. It opens the gate of the SAME
+    # card once, in this thread, for this member. The org and the member are
+    # the session's, and the thread and the request id are the row's (R5,
+    # R11). With CHAT_LATE_APPROVE_ORGS off it writes nothing, and the
+    # message is as before. It never raises.
+    from acb_skills.late_approve import grant_from_offer
+
+    if await grant_from_offer(org, me, row, req.answer):
+        from gateway.chat_recovery import with_late_approve_note
+
+        resend = with_late_approve_note(resend)
     # The question no longer waits, so its My Day card leaves at once (WS-58
     # MD-3f fix round 1, §5.9 item 14). `bump_member_safe` waits 0.5 seconds
     # at most and never raises, so the answer stands.

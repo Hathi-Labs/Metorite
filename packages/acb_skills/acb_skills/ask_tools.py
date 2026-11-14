@@ -1545,6 +1545,38 @@ _CARD_CALL: _contextvars.ContextVar[ActKeys | None] = _contextvars.ContextVar(
     "acb_card_call", default=None,
 )
 
+#: HRD-22: the plain card that waits on this frame. It holds the request id,
+#: the clipped title, detail and context, and the act keys. ``_block_on`` sets
+#: it around its wait, so ``orchestrator.pending_ask.park``, which runs in that
+#: wait, reads the card it parks (:func:`waiting_card`). ⚠️ The default is
+#: None, never a mutable object.
+_WAITING_CARD: _contextvars.ContextVar[tuple[str, str, str, str, ActKeys] | None] = (
+    _contextvars.ContextVar("acb_waiting_card", default=None))
+
+
+def waiting_card(request_id: str) -> tuple[str, str, str, ActKeys] | None:
+    """``(title, detail, context, act keys)`` of the plain card *request_id*
+    that waits on this frame, or None (HRD-22, ``acb_skills.late_approve``).
+
+    Only a plain confirmation card with act keys is held: no rows, no reply
+    form and no held send id. A card of another id gives None."""
+    held = _WAITING_CARD.get()
+    if held is None or held[0] != request_id:
+        return None
+    return held[1], held[2], held[3], held[4]
+
+
+async def _late_approved(title: str, detail: str, context: str) -> bool:
+    """True when the member of this run approved this very card late, in this
+    thread, and the grant is unused (HRD-22). It reads the grant once. Off, a
+    miss and each fault give False, and the card shows as before."""
+    try:
+        from acb_skills.late_approve import take_grant
+
+        return await take_grant(title, detail, context, _CARD_CALL.get())
+    except Exception:  # fail closed: the card shows
+        return False
+
 
 def _is_id_arg(name: str) -> bool:
     return name == "id" or name.endswith(("_id", "_ids"))
@@ -2132,6 +2164,15 @@ async def request_confirmation(
         if _with_answer:
             return None
         return frozenset() if _rows is not None else False
+    # HRD-22 (chat_run_continuity.md S2 item 8): a plain card only. No rows,
+    # no reply form and no held send id ever take a late approve.
+    _plain = _rows is None and _reply is None and not _with_answer and request_id is None
+    if _plain and await _late_approved(_title, _detail, _context):
+        # The member approved this very card late, in this thread. The grant
+        # is gone, so this is its one use. It shows no card, and it takes the
+        # place of a closed card with the same act (task 3130).
+        _card_opened(_CARD_CALL.get())
+        return True
     # HRD-6: the card is the sign of the wait. The tool call that shows it
     # gets no "Please wait" line, and a line that shows goes.
     _member_waits()
@@ -2236,6 +2277,9 @@ async def request_confirmation(
             # about (item 5, owner 2026-10-24).
             _watch = _asyncio.ensure_future(
                 _close_on_new_steer(_fut, *_baseline, _rid, _title))
+        # HRD-22: the park reads this card in this wait, to record its offer.
+        _waiting = _WAITING_CARD.set(
+            (_rid, _title, _detail, _context, _act) if _plain and _act else None)
         try:
             from orchestrator.executor import wait_user_future  # noqa: PLC0415
             _result = await wait_user_future(_fut, 3600)
@@ -2246,6 +2290,10 @@ async def request_confirmation(
         except TimeoutError:
             _answer = "TIMEOUT"
         finally:
+            try:
+                _WAITING_CARD.reset(_waiting)
+            except ValueError:
+                _WAITING_CARD.set(None)
             if _watch is not None:
                 _watch.cancel()
             _pending.pop(_rid, None)

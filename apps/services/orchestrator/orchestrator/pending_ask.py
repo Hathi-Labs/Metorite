@@ -41,6 +41,11 @@ My Day version of the member it asks (``_bump_my_day``), so the feed card
 ``agent_asks`` changes at once. The bump does nothing with ``MY_DAY_CACHE``
 off. It never raises and it is bounded in time, so it never breaks an ask.
 
+**A late approve** (HRD-22, ``chat_run_continuity.md`` S2 item 8). Before a
+plain confirmation card parks, :func:`park` records what the card binds
+(``acb_skills.late_approve.record_offer``). The gateway turns it into a grant
+of one use only on a late APPROVE. Dark behind ``CHAT_LATE_APPROVE_ORGS``.
+
 Fences (R7): ``tests/unit/test_pending_ask_store.py`` (R8: the SQL and the
 row level security, as the NOBYPASSRLS app role) and
 ``tests/unit/test_pending_ask_flow.py`` (the flow).
@@ -550,6 +555,14 @@ async def park(request_id: str, thread_id: str, fut: Any = None) -> bool:
     run = stream_relay.get_detached_task(thread_id)
     if run is None or run.done():
         return False
+    # HRD-22 (chat_run_continuity.md S2 item 8): record what a plain card
+    # binds BEFORE the row parks, so a late approve always finds it. It reads
+    # the card of this wait (``ask_tools.waiting_card``). With
+    # CHAT_LATE_APPROVE_ORGS off it writes nothing, and it never raises.
+    with contextlib.suppress(Exception):
+        from acb_skills.late_approve import record_offer
+
+        await record_offer(org, thread_id, request_id, _ttl_hours() * 3600)
     try:
         row = await asyncio.to_thread(
             move_ask, org, request_id, to="parked", from_states=("open",),
