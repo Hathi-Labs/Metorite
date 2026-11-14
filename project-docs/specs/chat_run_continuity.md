@@ -13,6 +13,7 @@ release keeps the work.
 |---|---|
 | S1 — one activity feed and the nav badges | **BUILT** 2026-10-10, branch `chat-activity-badges` |
 | S2 — a durable "needs input" | **BUILT** 2026-10-10, branch `ws51-s2-needs-input`, dark behind `CHAT_DURABLE_ASKS` |
+| S2 item 8 — a late approve acts once (HRD-22, task 3231) | **BUILT** 2026-11-14, branch `mt-1740009c-late-approve`, dark behind `CHAT_LATE_APPROVE_ORGS`. The production flip is OWNER-GATE (`enforcement-flip`) |
 | S3 — the top-right activity control | **BUILT** 2026-10-10, branch `ws51-s3-activity`, no flag |
 | S4 — the server saves the prompt at run start | **BUILT** 2026-10-10, branch `ws51-s4-prompt-save` |
 | S5 — unread replies, the toast, the tab title and the phone pill | **BUILT** 2026-10-10, branch `ws51-s5-attention`, no flag |
@@ -266,6 +267,84 @@ default. OFF writes no row, parks no run, and reports every run as
 7. **The badge.** `runBadge` in `lib/runActivity.ts` is the one rule. A run
    that waits on the member turns the badge amber (`warning`), over the
    green count. Its spoken name is "1 assistant needs your answer".
+8. **A late approve acts once (HRD-22, task 3231, BUILT 2026-11-14, dark).**
+   The build is AGENT-SAFE. The flag flip on production is OWNER-GATE
+   (`enforcement-flip`). `chat_failure_modes.md` row C6 is the class, and
+   D-HRD-7 (PROPOSED) is the rule. The module is `acb_skills/late_approve.py`.
+   Review round 1 (2026-11-14) changed the keys and added the rule that an
+   act runs once.
+   - **The flag.** `CHAT_LATE_APPROVE_ORGS` is a comma list of org ids, or
+     `*`. Empty is off, and that is the default. Off, nothing is read or
+     written, and each card and each message is as before, byte for byte.
+     The one reader is `late_approve.late_approve_on`. A SIGHUP reload
+     applies a change (`docs/flag_reload.md`). It needs `CHAT_DURABLE_ASKS`,
+     because only a durable row parks.
+   - **The rule.** A late tap on Approve is the member's own consent. It
+     approves one act: the same card, in the same thread, for the same
+     member, within 30 minutes. The new run calls the tool again, and the
+     gate says yes once, with no new card.
+   - **⚠️ Two limits for the owner (D-HRD-7).** The 30 minutes start at the
+     tap, not at the card. A parked card stays answerable for 7 days
+     (`CHAT_ASK_TTL_HOURS`), so a card that parked 6 days ago can still act,
+     if its text and its act keys are still equal. The build keeps both
+     limits as they are, because they are the owner's decision (D-HRD-7,
+     and D-RES-1 of §4.12).
+   - **The act.** The act of a card is its text and its act keys. The text is
+     `whatsapp_acts.card_text` of the clipped title, detail and context, with
+     the facts that the tool bound (`whatsapp_acts.card_facts`, WAC-4). The
+     act keys come from `ask_tools.act_keys`. A digest of the act names each
+     record. So twin cards of one act share one record, and a card of another
+     act never reads, uses or removes it.
+   - **The cards that take a grant.** Only a plain confirmation card of
+     `request_confirmation`: no rows, no reply form, and no held send id. The
+     card is not cut: no field lost text to the clip, and the body holds no
+     cut mark (`card_body.is_cut`). The real tool of the call (`card_call`
+     binds it) passes the three tests of `egress.is_card_write_tool`. Its name
+     is on `HELD_CARD_WRITE_TOOLS`, its annotation says `card_write`, and its
+     parameters are the pinned set. So `bulk_update`, a send, an email card,
+     an egress card, a card of ticked rows and a WhatsApp run never take one.
+   - **Step 1, the offer (the run).** After the row moves to `parked`, and
+     while the card's Future still waits, `pending_ask.park` records the act.
+     It writes `key("chat-late-ask", member, thread, request id)` = the
+     digest, and `key("chat-late-offer", member, thread, digest)` = the act.
+     Both live until the row expires, and no longer. The member is the
+     verified member of the run, and the row must have asked that member.
+   - **Step 2, the grant (the gateway).** `_late_answer_from_row` calls
+     `grant_from_offer` only after `move_ask` moved the row to `answered`. It
+     takes the digest of the row once. Only the answer `APPROVE` of a parked
+     `confirmation` row then takes the offer and writes
+     `key("chat-late-approve", member, thread, digest)` for 30 minutes. The
+     org and the member come from the session. The thread and the request id
+     come from the row.
+   - **Step 3, the use (the card gate).** Before a plain card goes out,
+     `request_confirmation` takes the grant of its own digest once (GETDEL).
+     It says yes only when the text and the act keys are equal too. The org,
+     the member and the thread come from the run, never from input. A miss, a
+     mismatch and a Redis fault each show the normal card.
+   - **An act runs once.** Each approve of a plain card marks the act SPENT
+     on its offer key, and removes its grant. That covers a live approve and
+     a used grant. The mark lasts 30 minutes, and longer than the park
+     window. So, while the mark lives, a stale twin card in the same thread
+     writes nothing on a late tap, and a twin that parks later records no
+     offer. ⚠️ Three gaps stay open, and task 3294 (HRD-22b) closes them
+     before `CHAT_LATE_APPROVE_ORGS` flips. The mark covers one thread only.
+     The mark is best effort, so a Redis stall leaves the stale offer valid.
+     After the mark expires, a new twin's offer can serve a stale tap.
+   - **The new message.** When the gateway writes a grant, the late answer
+     gets one more paragraph after `My answer: APPROVE`. It says that the
+     member approved after the chat stopped waiting. It tells the model not
+     to run the call again if it already ran, and else to make it once with
+     the same values. The chat still draws the turn as an approve
+     (`cardAnswer.ts`). With no grant, the message is as before.
+   - **The offer goes with its row.** A "Not now", a `REJECT` and an answer
+     during the park write nothing and drop the offer. A twin of the same act
+     then shows its card: the safe side. A chat delete and an edit close rows
+     in SQL and do not call Redis. A closed row never parks again, so its own
+     offer is inert. After an edit, a later twin in the same thread can still
+     reach that offer by its digest, and its tap is the member's consent to
+     the same act. The offers expire with the row.
+   - **No migration.** Each record lives in tenant Redis, through
+     `acb_common.tenant_redis`. `chat_pending_ask` does not change (R6).
 
 **Where the build differs from the text above.**
 
@@ -290,6 +369,8 @@ default. OFF writes no row, parks no run, and reports every run as
 |---|---|
 | `tests/unit/test_pending_ask_store.py` | R8 as the NOBYPASSRLS role: the migration's own policy block, FORCE, two tenants, an unbound session, a write stamped with another org, one move, expiry, the late answer, and the list |
 | `tests/unit/test_pending_ask_flow.py` | One row per waiting card, a run end that closes a card no wait settled, park and end, the open card, the late answer, the race, another org, needs_input after a restart, and the pending-asks route |
+| `tests/unit/test_late_approve_grant.py` | Item 8, hermetic: the offer at the park, the grant after the move, one use, each card that takes no grant, a changed card, a decline, the flag off, a Redis fault, the new message, and the place of the grant write |
+| `tests/unit/test_late_approve_grant_r8.py` | Item 8, on a real Postgres as the NOBYPASSRLS role and a private real Redis (`HELD_R8_REDIS_URL`): the production sequence (one write, no second card), a changed card, a decline, another thread, another member, another org, and a second use |
 | `tests/unit/test_tenant_coverage.py` | The table is scoped and never exempt |
 | `src/lib/runActivity.test.ts`, `src/components/navBadge.test.ts` | Amber wins over green, on the sidebar and on the phone |
 | `src/lib/liveRuns.test.ts` | The poller carries `state` |
@@ -336,8 +417,11 @@ the move, the actor filter removed twice, and no neutralising pass.
 
 - A blocking generative UI is not drawn again from the server. The saved
   reply keeps its event, and its answer takes the same late path.
-- A parked confirmation asks again in the new run. The new run calls the
-  tool again, so the member approves twice. Nothing approves by itself.
+- With `CHAT_LATE_APPROVE_ORGS` off, a parked confirmation asks again in
+  the new run, and the member approves twice. With it on (item 8), a late
+  tap is the member's own consent. It approves the same card once, in the
+  same thread, within 30 minutes. Any other card asks again, and nothing
+  approves without a tap of the member.
 - On a Windows checkout, three source-reading vitest files fail on CRLF.
   They fail on `origin/main` too, and none of them is an S2 file.
 
@@ -1973,7 +2057,8 @@ the stop, and RESUME-6 lets a cut run go on by itself.
 | `workbench/control_plane/src/hooks/useAgentChat.ts` | The reattach loop |
 | `workbench/control_plane/src/lib/nav.ts` | `NavPane.agent` |
 | `apps/services/gateway/gateway/routes/chat.py` | `GET /chat/active-sessions` (S2 adds `state`) |
-| `apps/services/gateway/gateway/routes/agent.py` | `POST /agent/respond-input` (S2) |
+| `apps/services/gateway/gateway/routes/agent.py` | `POST /agent/respond-input` (S2), and the grant write of a late approve (S2 item 8) |
+| `packages/acb_skills/acb_skills/late_approve.py` | A late approve acts once: the flag, the offer, the grant and its one use (S2 item 8) |
 | `apps/services/orchestrator/orchestrator/executor.py` | `_pending_user_input` (S2) |
 | `apps/services/orchestrator/orchestrator/stream_relay.py` | `run_detached`, `list_live_runs`, `drop_run_slot` |
 | `apps/services/orchestrator/orchestrator/run_cap.py` | The run cap: the count, the lock and the reservation (D-3) |
@@ -2017,6 +2102,18 @@ npx playwright test e2e/chat-run-status.spec.ts --project=ci
 uv run pytest tests/unit/test_pending_ask_flow.py
 ```
 
+For S2 item 8 (HRD-22), from the repo root. The R8 file needs a private
+database and a private Redis. It runs FLUSHDB, so never point it at a shared
+Redis. A skip is not a pass.
+
+```bash
+uv run pytest tests/unit/test_late_approve_grant.py tests/unit/test_pending_ask_flow.py \
+  tests/unit/test_steer_unsent_card.py tests/unit/test_crm_questions_chat.py
+docker run -d --rm --name late-approve-r8-redis -p 127.0.0.1:16398:6379 redis:7-alpine
+HELD_R8_REDIS_URL=redis://127.0.0.1:16398/0 \
+  uv run pytest tests/unit/test_late_approve_grant_r8.py tests/unit/test_pending_ask_store.py -rs
+```
+
 ## 8. Waiting cards reach My Day (D171, 2026-11-03)
 
 **Status:** 📋 SPEC. The parts exist, and they are dark. Metorite: task 1523.
@@ -2027,7 +2124,7 @@ uv run pytest tests/unit/test_pending_ask_flow.py
 - `chat_pending_ask` (migration 237, `orchestrator/pending_ask.py`) keeps a waiting card. The flag is `CHAT_DURABLE_ASKS`, off. With it on, the run parks after 600 s, and the row stays answerable for 168 h.
 - The My Day feed has an `agent_asks` card (`feed.py:957-1015`). Two gates hide it: `CHAT_DURABLE_ASKS`, and `MY_DAY_PROVIDERS`, which is empty in production. Its title says only "{agent} asked you a question".
 - The "AI waiting on you" group of My Day (`lib/shell/AiWaitingCard.tsx`) reads chats in the state `needs_input`. That state exists only with the flag on.
-- A late answer goes to `POST /agent/respond-input`. It starts a new run, and for an approval that run asks again on a new card.
+- A late answer goes to `POST /agent/respond-input`, and it starts a new run. For an approval, that run asks again on a new card. With `CHAT_LATE_APPROVE_ORGS` on (S2 item 8, HRD-22), the late tap is the member's own consent instead. It approves the same card once, in the same thread, within 30 minutes.
 
 **The slices.**
 
