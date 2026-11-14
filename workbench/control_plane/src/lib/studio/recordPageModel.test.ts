@@ -11,7 +11,7 @@ import { verbMap } from "./realDoor";
 import { mergePageQuery } from "./usePageState";
 import {
   RELATED_LIMIT, closeRecord, fileFields, linkedDoor, openRecord, openedRecord, parseRecordLink, pickRecordTab,
-  recordLinkBase, recordTabs, fileLabel, newButtonState, relatedArgs, relatedLists, withFullPage, withRecordTab, type RecordObject,
+  recordLinkBase, linesFields, recordTabs, fileLabel, newButtonState, relatedArgs, relatedLists, withFullPage, withRecordTab, type RecordObject,
 } from "./recordPageModel";
 
 const visit: RecordObject = {
@@ -213,3 +213,47 @@ describe("the New button of a related table", () => {
     expect(newButtonState(noCreate.owner, verbMap(noCreate.actions)["object:part.create"] !== undefined)).toBe("off");
   });
 });
+
+describe("the Lines tab (STU-D17a)", () => {
+  const formulation: RecordObject = {
+    name: "formulation", label: "Formulation",
+    fields: [{ key: "name", type: "text" }, { key: "total", type: "number" },
+      { key: "ingredients", type: "relation", to: "ingredient", lines: "formulation", label: "Ingredients" }],
+  };
+  const ingredient: RecordObject = {
+    name: "ingredient", label: "Ingredient",
+    fields: [{ key: "name", type: "text" }, { key: "pct", type: "number" },
+      { key: "formulation", type: "relation", to: "formulation", label: "Formulation" }],
+  };
+  const batch: RecordObject = {
+    name: "batch", label: "Batch",
+    fields: [{ key: "code", type: "text" }, { key: "formulation", type: "relation", to: "formulation" }],
+  };
+
+  it("gives a parent with a lines field a Lines tab after Details", () => {
+    expect(recordTabs(formulation, [formulation, ingredient]).map((t) => t.id)).toEqual(["details", "lines"]);
+    expect(recordTabs(formulation, [formulation, ingredient])[1].title).toBe("Lines");
+  });
+
+  it("names one sheet for each lines field", () => {
+    expect(linesFields("formulation", [formulation, ingredient])).toEqual([
+      { key: "ingredients", label: "Ingredients", child: "ingredient", back: "formulation" }]);
+    expect(linesFields("ingredient", [formulation, ingredient])).toEqual([]);
+    expect(linesFields("formulation", [formulation])).toEqual([]);
+  });
+
+  it("drops the back-link of a lines child from Related, and keeps another link", () => {
+    const lists = relatedLists("formulation", [formulation, ingredient, batch]);
+    expect(lists.map((l) => `${l.object}.${l.field}`)).toEqual(["batch.formulation"]);
+    expect(recordTabs(formulation, [formulation, ingredient]).map((t) => t.id)).not.toContain("related");
+    expect(recordTabs(formulation, [formulation, ingredient, batch]).map((t) => t.id)).toEqual(["details", "lines", "related"]);
+  });
+
+  it("drops a declared Lines tab when the object has no lines field", () => {
+    const note2: RecordObject = { ...visit, record: { tabs: ["lines", "details"] } };
+    expect(recordTabs(note2, [note2]).map((t) => t.id)).toEqual(["details"]);
+    const f2: RecordObject = { ...formulation, record: { tabs: ["lines"] } };
+    expect(recordTabs(f2, [f2, ingredient]).map((t) => t.id)).toEqual(["lines"]);
+  });
+});
+

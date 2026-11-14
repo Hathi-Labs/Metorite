@@ -348,6 +348,19 @@ describe("fix round 1: the body marker, the generic 500, the rule words, the kep
     expect(ownMessage("A plain sentence.")).toBe("A plain sentence.");
     expect(ownMessage(null)).toBeNull();
   });
+  it("a roll-up refusal of the parent keeps its Line 1 place in the message (STU-D17a, recorded 422)", () => {
+    // The shape of `test_r8_a_rollup_range_that_breaks_refuses_the_whole_save`: the batch names Line 1.
+    const res = mapAnswer(422, { detail: {
+      code: "rule_refused", rule: "total_ok",
+      message: "Line 1 of `ingredients`: Rule `total_ok` of object `formulation`: The lines must sum to 100 %.",
+      fieldErrors: [{ field: "ingredients", message: "Line 1 of `ingredients`: Rule `total_ok` of object `formulation`: The lines must sum to 100 %." }],
+    } });
+    expect(res.ok).toBe(false);
+    // `ownMessage` starts at ^Rule, so it cannot strip the place. The sheet does it (`sheetModel.parentRuleMessage`).
+    expect(res.message).toBe("Line 1 of `ingredients`: Rule `total_ok` of object `formulation`: The lines must sum to 100 %.");
+    expect(readRefusal(res.data).rule).toBe("total_ok");
+    expect(ownMessage("Rule `a` of object `b`: Plain.")).toBe("Plain.");
+  });
   it("keeps one door while the actions stay the same, and makes a new one when they change", () => {
     let made = 0;
     const keep = createDoorKeeper(() => { made += 1; return { scope: `d${made}`, read: async () => [], run: async () => ({ ok: true }) }; });
