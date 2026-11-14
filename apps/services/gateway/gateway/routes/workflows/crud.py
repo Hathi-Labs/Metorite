@@ -22,6 +22,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.workflows import unattended
 from gateway.routes.workflows.core import (
     AUTHOR_GATE,
     HOOK_PATH,
@@ -235,6 +236,12 @@ async def get_workflow(
         # directly, not the control-plane proxy (see core.hook_url).
         "hook_url": hook_url(row.hook_token),
         "hook_path": HOOK_PATH.format(token=row.hook_token or ""),
+        # STB-6b (ai_studio.md E13b): whether a schedule, a webhook or an event
+        # of this org can start a run with no person present. It is the answer
+        # of the one reader for the org of the ROW, as `runs.run_workflow`
+        # takes it, and never the list. The chat card of a publish names it.
+        "runs_unattended": unattended.org_allowed(
+            str(getattr(row, "organization_id", "") or "") or None),
         "triggers": triggers,
         "versions": [
             {

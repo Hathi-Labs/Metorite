@@ -78,6 +78,13 @@ jobs:
       operator: ${{ steps.diff.outputs.operator }}
       database: ${{ steps.diff.outputs.database }}
       caddy: ${{ steps.diff.outputs.caddy }}
+      # CIV-29d (D218). The browser specs that this diff can affect. `e2e_files`
+      # is empty for every spec. `e2e_shards` is a JSON list: `[]` runs no
+      # browser job. Empty text here means `changes` failed, and the e2e job
+      # then runs the full suite in 3 shards. Map: scripts/e2e_spec_map.json.
+      e2e_files: ${{ steps.diff.outputs.e2e_files }}
+      e2e_shards: ${{ steps.diff.outputs.e2e_shards }}
+      e2e_total: ${{ steps.diff.outputs.e2e_total }}
       # CIV-3. The unit tests that this diff can affect (affected_tests.py
       # --gate). `full` is `false` ONLY when the selector ran and found no
       # reason for a full run. The list is one line of space-separated paths
@@ -163,6 +170,7 @@ jobs:
           if files="$(git diff --name-only $range 2>/dev/null)" && [ -n "$files" ]; then :; else
             echo "cannot read the diff, so every area runs"
             for a in frontend operator database caddy; do echo "$a=true" >> "$GITHUB_OUTPUT"; done
+            printf 'e2e_files=\ne2e_shards=[1,2,3]\ne2e_total=3\n' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "$files"
@@ -177,6 +185,15 @@ jobs:
             echo "database=$(hit '^(infra/|scripts/|deploy/)')"
             echo "caddy=$(hit '^deploy/hostinger/caddy/')"
           } | tee -a "$GITHUB_OUTPUT"
+          # CIV-29d (D218). Which browser specs cover this diff. A selector error
+          # keeps the full suite.
+          echo "$files" > changed-files.txt
+          if sel="$(python3 scripts/e2e_select.py --files-from changed-files.txt)"; then
+            echo "$sel" | grep '^e2e_' | tee -a "$GITHUB_OUTPUT"
+          else
+            echo "the spec selector failed, so every spec runs"
+            printf 'e2e_files=\ne2e_shards=[1,2,3]\ne2e_total=3\n' >> "$GITHUB_OUTPUT"
+          fi
 
   lint:
     name: "Lint"
@@ -1056,7 +1073,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        # CIV-29d: a partial selection uses fewer shards, and `[]` skips the job.
+        shard: ${{ fromJSON(needs.changes.outputs.e2e_shards || '[1,2,3]') }}
     # ── A push copy of this job must never come back ─────────────────────────
     #
     # This workflow has no `push` trigger (see the note at the top). The `if:`
@@ -1072,7 +1090,7 @@ jobs:
     # 2026-10-19: and only when the PR touches the control plane. A skipped
     # e2e frees three runners for the other PRs.
     needs: changes
-    if: "!cancelled() && github.event_name != 'push' && (needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true')"
+    if: "!cancelled() && github.event_name != 'push' && (needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true') && needs.changes.outputs.e2e_shards != '[]'"
     # A hung dev server must cost minutes, not the runner's six-hour default.
     #
     # 🔴 THE CAP WAS THE FAULT, NOT THE CODE. It was 20 minutes, set when the
@@ -1131,8 +1149,11 @@ jobs:
         # run's exit code to the next step, which fails the job on a NEW failure.
         env:
           PLAYWRIGHT_JSON_OUTPUT_NAME: e2e-result.json
+          # CIV-29d: empty means every spec. The word split of the list is on purpose.
+          SPECS: ${{ needs.changes.outputs.e2e_files }}
+          TOTAL: ${{ needs.changes.outputs.e2e_total || 3 }}
         run: |
-          npx playwright test --project=ci --reporter=list,json --shard=${{ matrix.shard }}/3 &
+          npx playwright test --project=ci --reporter=list,json --shard=${{ matrix.shard }}/"$TOTAL" $SPECS &
           pw=$!
           bash ../../scripts/e2e_watchdog.sh http://127.0.0.1:3101/chat "$pw" &
           code=0

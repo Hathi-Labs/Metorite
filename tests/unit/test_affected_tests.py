@@ -1462,7 +1462,7 @@ def test_the_real_missed_scanners_follow_a_python_change() -> None:
 def test_the_real_tree_scanners_follow_a_python_change_and_not_a_doc() -> None:
     scanners = (
         "test_customer_child_env_no_github_token.py",
-        "test_crm_kill_switch.py",
+        "test_crm_kill_switch_scan.py",
         "test_email_owner_predicate_seam.py",
         "test_signin_requests.py",
         "test_artifact_registry.py",
