@@ -7,7 +7,7 @@
  * object) and Files (the `file` fields). The Activity tab joins when D22 is built.
  *
  * **The tabs.** An object may declare `record: { tabs: [...] }`. The tab ids it names, in its
- * order, win. The manifest schema has no `record` key yet, so no app declares one today. Without
+ * order, win. The manifest schema has the `record` key (STU-AF5b). Without
  * it, §5.5 rule 3 gives the default: Details always, Related when a relation points here, Files
  * when the object has a file field.
  *
@@ -50,7 +50,7 @@ export interface RecordObject {
   name: string;
   label?: string | null;
   fields?: readonly RecordField[];
-  /** The tabs of the record page. The manifest schema has no such key yet (see the file header). */
+  /** The tabs of the record page. The manifest schema holds it as `RecordDef` (STU-AF5b). The model reads it loosely, so a stored value that is wrong gives the defaults. */
   record?: { tabs?: readonly unknown[] } | null;
 }
 

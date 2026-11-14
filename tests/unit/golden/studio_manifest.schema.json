@@ -415,6 +415,17 @@
           "title": "Name",
           "type": "string"
         },
+        "record": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordDef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "rules": {
           "items": {
             "additionalProperties": true,
@@ -489,6 +500,30 @@
         "id"
       ],
       "title": "PageDef",
+      "type": "object"
+    },
+    "RecordDef": {
+      "additionalProperties": false,
+      "properties": {
+        "tabs": {
+          "items": {
+            "enum": [
+              "details",
+              "related",
+              "files"
+            ],
+            "type": "string"
+          },
+          "maxItems": 6,
+          "minItems": 1,
+          "title": "Tabs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "tabs"
+      ],
+      "title": "RecordDef",
       "type": "object"
     },
     "RuntimeDef": {

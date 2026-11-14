@@ -132,3 +132,15 @@ def test_nav_interfaces_match_the_schema():
     for name in ("NavRow", "NavSection"):
         assert _interface_keys(name) == set(schema["$defs"][name]["properties"]), name
     assert _interface_types("NavRow")["icon"] == "NavIcon | null"
+
+
+def test_record_interface_and_cap_match_the_schema():
+    from acb_common.studio_manifest import MAX_RECORD_TABS
+
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    assert _interface_keys("RecordDef") == set(schema["$defs"]["RecordDef"]["properties"])
+    assert _interface_types("ObjectDef")["record"] == "RecordDef | null"
+    assert _union("RecordTabName") == schema["$defs"]["RecordDef"]["properties"]["tabs"]["items"]["enum"]
+    assert schema["$defs"]["RecordDef"]["properties"]["tabs"]["maxItems"] == MAX_RECORD_TABS
+    m = re.search(r"export const MAX_RECORD_TABS = (\d+);", _ts())
+    assert m and int(m.group(1)) == MAX_RECORD_TABS

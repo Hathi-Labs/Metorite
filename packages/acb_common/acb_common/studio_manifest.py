@@ -275,6 +275,19 @@ class FieldDef(_Strict):
     lines: str | None = None
 
 
+#: The cap of the tabs of a record page (STU-AF5b, §5.5). `lib/studio/manifest.ts` holds the same
+#: number as `MAX_RECORD_TABS`, and `recordCaps.test.ts` checks it against the schema file.
+MAX_RECORD_TABS = 6
+
+
+class RecordDef(_Strict):
+    #: The tab ids, in order. `_check_record` refuses a duplicate. Without `record`, rule 3 of
+    #: §5.5 gives the default tabs.
+    tabs: list[Literal["details", "related", "files"]] = Field(
+        min_length=1, max_length=MAX_RECORD_TABS
+    )
+
+
 class ObjectDef(_Strict):
     name: str = Field(pattern=rf"^{_NAME}$")
     #: The CHECK `studio_objects_label` of C1 holds the same cap.
@@ -286,6 +299,8 @@ class ObjectDef(_Strict):
     #: C8a. The grant of each role on this object. None means an open object. The
     #: one parser is `studio_access.parse_access`, and `_check_access` calls it.
     access: list[dict[str, Any]] | None = None
+    #: The tabs of the record page of this object (STU-AF5b). None means the defaults.
+    record: RecordDef | None = None
 
 
 class ActionDef(_Strict):
@@ -926,6 +941,8 @@ def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[Manifest
                 # never into a form of the app. The narrow rule, because a
                 # field such as `token_number` holds member data.
                 out.append(_err(f"{base}[{fi}].key", SECRET_FIELD + _got(f.key)))
+        if o.record is not None:
+            _dupes(list(o.record.tabs), f"$.objects[{oi}].record.tabs", "record tab", out)
         _check_rules(o, f"$.objects[{oi}].rules", out, m.objects)
     _check_lines(m, out)
     _check_access(m, out)
