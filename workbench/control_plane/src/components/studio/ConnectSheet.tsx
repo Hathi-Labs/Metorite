@@ -84,7 +84,8 @@ export function ConnectLines({ lines, failure = null, onRetry }: ConnectLinesPro
         {failure !== null ? (
           <li className="flex min-h-7 items-center gap-2 text-xs">
             <Icon name="CircleAlert" size={14} className="shrink-0 text-warning" />
-            <span className="min-w-0 flex-1 break-words text-foreground">{failure}</span>
+            {/* Retry sits beside the words: the shell's outage notice can cover the far right during a restart. */}
+            <span className="min-w-0 break-words text-foreground">{failure}</span>
             {onRetry ? (
               <Button variant="secondary" size="sm" icon="RefreshCw" onClick={onRetry}
                 aria-label="Check the connections again">
