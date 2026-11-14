@@ -2677,7 +2677,10 @@ class TestTheDoorOpFences:
 
 
 #: The manifest of the door, with one connection of the registry.
-NEEDS_TALLY: dict[str, Any] = {**MANIFEST, "connections": ["mcp:tally"]}
+NEEDS_TALLY: dict[str, Any] = {
+    **MANIFEST, "connections": [{"name": "mcp:tally", "as": "member"}]}
+#: I9a: the same connection as an ORG need (the default of an MCP server).
+NEEDS_TALLY_ORG: dict[str, Any] = {**MANIFEST, "connections": ["mcp:tally"]}
 
 
 @pytest.fixture
@@ -2685,10 +2688,10 @@ def cw(world, monkeypatch):
     """The world of the door, with the gate on for every org and the one read
     of the connections patched. ``met`` is the set that the read answers, and
     ``met_reads`` holds the viewer of each read."""
-    world.met = frozenset()
+    world.met = invoke._resolve.Met()
     world.met_reads = []
 
-    async def _met(db: Any, *, viewer: str) -> frozenset[str]:
+    async def _met(db: Any, *, viewer: str) -> invoke._resolve.Met:
         assert db.org == ORG, "the read runs in the session of the check"
         world.met_reads.append(viewer)
         return world.met
@@ -2744,8 +2747,10 @@ class TestTheConnections:
         for action in actions_of:
             r = _call(_client(cw), pid, action, {"id": rid, "data": {"site": "x"}})
             assert r.status_code == invoke.CONNECTION_STATUS == 409, (action, r.text)
+            # I9a: the detail adds the provider and the account kind, as data.
             assert r.json()["detail"] == {"code": invoke.NEEDS_CONNECTION,
-                                          "message": invoke.CONNECTION_TEXT}, action
+                                          "message": invoke.CONNECTION_TEXT,
+                                          "provider": "mcp:tally", "as": "member"}, action
         assert _record_reads(cw) == [] and cw.queries == [] and cw.aggregates == []
         assert "catalog" not in cw.log
         assert cw.met_reads == [ANA] * len(actions_of)
@@ -2757,16 +2762,17 @@ class TestTheConnections:
     def test_a_connection_that_the_caller_has_runs_the_action(self, cw):
         pid = _package(cw, manifest=NEEDS_TALLY)
         rid = _record(cw, _object(cw, pid))
-        cw.met = frozenset({"mcp:tally", "zoho"})
+        cw.met = invoke._resolve.Met(member=frozenset({"mcp:tally", "zoho"}))
         r = _call(_client(cw), pid, "peek", {"id": rid})
         assert r.status_code == 200, r.text
         # The check runs twice, so the door reads the set twice.
         assert cw.met_reads == [ANA, ANA]
 
     def test_each_name_must_be_met(self, cw):
-        pid = _package(cw, manifest={**MANIFEST, "connections": ["mcp:tally", "zoho"]})
+        pid = _package(cw, manifest={**MANIFEST, "connections": [
+            {"name": "mcp:tally", "as": "member"}, {"name": "zoho", "as": "member"}]})
         rid = _record(cw, _object(cw, pid))
-        cw.met = frozenset({"mcp:tally"})
+        cw.met = invoke._resolve.Met(member=frozenset({"mcp:tally"}))
         r = _call(_client(cw), pid, "peek", {"id": rid})
         assert (r.status_code, _code(r)) == (409, invoke.NEEDS_CONNECTION)
 
@@ -2774,9 +2780,10 @@ class TestTheConnections:
     def test_a_connections_value_that_is_not_a_list_of_text_fails_closed(self, cw, names):
         pid = _package(cw, manifest={**MANIFEST, "connections": names})
         rid = _record(cw, _object(cw, pid))
-        cw.met = frozenset({"mcp:tally"})
+        cw.met = invoke._resolve.Met(member=frozenset({"mcp:tally"}))
         r = _call(_client(cw), pid, "peek", {"id": rid})
         assert (r.status_code, _code(r)) == (409, invoke.NEEDS_CONNECTION)
+        assert "provider" not in r.json()["detail"]
         assert cw.met_reads == [], "a malformed value refuses with no read"
 
     def test_a_preview_of_an_object_action_stays_open(self, cw):
@@ -2821,13 +2828,62 @@ class TestTheConnections:
         assert r.status_code != 409 or _code(r) != invoke.NEEDS_CONNECTION
         assert cw.met_reads == []
 
+    def test_a_viewer_org_need_needs_an_approved_org_install(self, cw, monkeypatch):
+        """I9a: the installed version meets an `org` need only when the install
+        is an org install and the version is `approved`."""
+        pid = _package(cw, owner=BEN, manifest=MANIFEST)
+        cw.met = invoke._resolve.Met(org=frozenset({"mcp:tally"}))
+        state: dict[str, Any] = {}
+
+        async def _installed(db: Any, *, viewer: str, app_id: str) -> Any:
+            return _viewer.InstalledApp(id=app_id, version=2, manifest=NEEDS_TALLY_ORG,
+                                        **state)
+
+        monkeypatch.setattr(invoke, "package_host_allowed", lambda org: True)
+        monkeypatch.setattr(invoke._viewer, "installed_app", _installed)
+        for state in ({}, {"scope_kind": "org"}, {"scope_kind": "org", "review_status": "pending"},
+                      {"scope_kind": "group", "review_status": "approved"},
+                      {"scope_kind": "private", "review_status": "approved"}):
+            r = _call(_client(cw), pid, "find", {})
+            assert (r.status_code, _code(r)) == (409, invoke.NEEDS_CONNECTION), state
+            assert r.json()["detail"]["provider"] == "mcp:tally", state
+            assert r.json()["detail"]["as"] == "org", state
+        state = {"scope_kind": "org", "review_status": "approved"}
+        r = _call(_client(cw), pid, "find", {})
+        assert r.status_code != 409, r.text
+
+    def test_the_owners_draft_never_meets_an_org_need(self, cw):
+        """I9a, the known limit until I9b: the draft of the owner is no install."""
+        pid = _package(cw, manifest=NEEDS_TALLY_ORG)
+        rid = _record(cw, _object(cw, pid))
+        cw.met = invoke._resolve.Met(org=frozenset({"mcp:tally"}),
+                                     member=frozenset({"mcp:tally"}))
+        r = _call(_client(cw), pid, "peek", {"id": rid})
+        assert (r.status_code, _code(r)) == (409, invoke.NEEDS_CONNECTION)
+        assert r.json()["detail"]["as"] == "org"
+
+    def test_the_gate_off_answers_the_same_with_or_without_connections(self, monkeypatch, cw):
+        """I9a: with the org off the list, `connections` (any form, any `as`)
+        change nothing, so the answers are byte-identical to an app with none."""
+        monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", "")
+        plain = _package(cw, manifest=MANIFEST)
+        named = _package(cw, manifest={**MANIFEST, "connections": [
+            {"name": "mcp:tally", "as": "member"}, "zoho", {"name": "github", "as": "org"}]})
+        rid = _record(cw, _object(cw, plain))
+        rid2 = _record(cw, _object(cw, named))
+        a = _call(_client(cw), plain, "peek", {"id": rid})
+        b = _call(_client(cw), named, "peek", {"id": rid2})
+        assert (a.status_code, b.status_code) == (200, 200)
+        assert a.json()["record"]["data"] == b.json()["record"]["data"]
+        assert cw.met_reads == []
+
     def test_the_door_and_the_resolve_share_one_rule(self):
-        """``_needs_connection`` asks ``resolve.connections_met`` and
+        """``_needs_connection`` asks ``resolve.first_unmet_connection`` and
         ``resolve.met_connections``, and keeps no copy of either."""
         import ast
         import inspect
 
         src = inspect.getsource(invoke._needs_connection).replace("\r\n", "\n")
         named = {n.attr for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Attribute)}
-        assert {"connection_names", "connections_met", "met_connections"} <= named
+        assert {"connection_names", "first_unmet_connection", "met_connections"} <= named
         assert "integration_connections" not in inspect.getsource(invoke)

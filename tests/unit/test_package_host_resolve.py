@@ -76,11 +76,13 @@ ORG = "11111111-2222-3333-4444-555555555555"
 
 
 def _inst(iid: str, app: str, kind: str = "org", *, age: int = 0,
-          manifest: Any = None, subject: str | None = None) -> InstallRow:
+          manifest: Any = None, subject: str | None = None,
+          review: str | None = None) -> InstallRow:
     subject = subject or {"org": "org", "group": "group:ops"}.get(kind, "ana@pkg.test")
     return InstallRow(id=iid, app_id=app, scope_kind=kind, scope_subject=subject,
                       created_at=T0 + timedelta(minutes=age),
-                      manifest={"id": app} if manifest is None else manifest)
+                      manifest={"id": app} if manifest is None else manifest,
+                      review_status=review)
 
 
 def _claim(iid: str, key: str, /, point: str = "jobs", position: int = 0,
@@ -499,8 +501,10 @@ def test_connection_names(manifest: Any, names: Any) -> None:
 ])
 def test_needs_setup_follows_the_connections(connections: Any, met: frozenset[str],
                                              setup: bool) -> None:
-    installs = [_inst("o", "a", manifest={"id": "m", "connections": connections})]
-    out = resolve.resolve({}, installs, [_claim("o", "k")], _all, met)
+    # I9a: a plain name is an `org` need, so the install is an approved org install.
+    installs = [_inst("o", "a", review="approved",
+                      manifest={"id": "m", "connections": connections})]
+    out = resolve.resolve({}, installs, [_claim("o", "k")], _all, resolve.Met(org=met))
     assert out["jobs"][0]["needs_setup"] is setup
 
 
@@ -509,14 +513,15 @@ def test_a_connection_need_never_lives_in_needs() -> None:
     its two kinds, so ``{"connection": ...}`` there still fails closed."""
     assert frozenset({"feature", "package"}) == resolve.NEED_KINDS
     manifest = {"id": "m", "needs": [{"connection": "zoho"}]}
-    assert resolve.needs_met(manifest, _all, set(), frozenset({"zoho"})) is False
+    assert resolve.needs_met(manifest, _all, set(), resolve.Met(org=frozenset({"zoho"}))) is False
 
 
 def test_the_connections_add_to_the_other_needs() -> None:
     manifest = {"id": "m", "needs": [{"feature": "hr"}], "connections": ["zoho"]}
-    assert resolve.needs_met(manifest, _all, set(), {"zoho"}) is True
-    assert resolve.needs_met(manifest, _none, set(), {"zoho"}) is False
-    assert resolve.needs_met(manifest, _all, set(), set()) is False
+    met = resolve.Met(org=frozenset({"zoho"}))
+    assert resolve.needs_met(manifest, _all, set(), met, True) is True
+    assert resolve.needs_met(manifest, _none, set(), met, True) is False
+    assert resolve.needs_met(manifest, _all, set(), resolve.Met(), True) is False
 
 
 class _Answer:
@@ -547,7 +552,7 @@ class _CountingDb:
         if sql == resolve.BOUND_ORG_SQL:
             return _Answer(self.bound)
         assert sql == connections._MET_SQL, sql[:80]
-        return _Answer([(p,) for p in self.providers])
+        return _Answer([p if isinstance(p, tuple) else (p, "org") for p in self.providers])
 
 
 def _resolve_for(monkeypatch, db: _CountingDb, installs: list[InstallRow],
@@ -594,7 +599,7 @@ def test_with_no_set_the_connections_make_no_need() -> None:
     manifest = {"id": "m", "connections": ["mcp:tally"]}
     assert resolve.needs_met(manifest, _all, set()) is True
     assert resolve.needs_met(manifest, _all, set(), None) is True
-    assert resolve.needs_met(manifest, _all, set(), frozenset()) is False
+    assert resolve.needs_met(manifest, _all, set(), resolve.Met()) is False
     out = resolve.resolve({}, [_inst("o", "a", manifest=manifest)], [_claim("o", "k")], _all)
     assert out["jobs"][0]["needs_setup"] is False
 
@@ -615,8 +620,9 @@ def test_the_set_is_read_once_for_the_viewer_in_the_bound_org(monkeypatch) -> No
 
     db = _CountingDb(providers=("mcp:tally",))
     body = _resolve_for(monkeypatch, db, [
-        _inst("o", "a", manifest={"id": "a", "connections": ["mcp:tally"]}),
-        _inst("p", "b", manifest={"id": "b", "connections": ["zoho"]}),
+        _inst("o", "a", review="approved",
+              manifest={"id": "a", "connections": ["mcp:tally"]}),
+        _inst("p", "b", review="approved", manifest={"id": "b", "connections": ["zoho"]}),
         _inst("q", "c", manifest={"id": "c"})])
     assert [s for s, _ in db.statements] == [resolve.BOUND_ORG_SQL, connections._MET_SQL]
     assert db.statements[1][1] == {"org": ORG, "member": "ana@pkg.test"}
@@ -647,7 +653,95 @@ def test_the_met_read_names_no_blob_and_no_other_member() -> None:
     from gateway.connections import store as connections
 
     sql = connections._MET_SQL
-    assert sql.startswith("SELECT DISTINCT provider FROM integration_connections")
+    assert sql.startswith("SELECT DISTINCT provider, scope_kind FROM integration_connections")
     assert "credentials" not in sql
     assert "status = 'connected'" in sql
     assert "member_email = :member" in sql and "organization_id = CAST(:org AS uuid)" in sql
+
+
+# ── ii. Whose account a connection need uses (WS-STU I9a) ─────────────────
+#
+# R7 mutations, run on 2026-11-14:
+# * T1. `first_unmet_connection`: test `name in met.org` for a `member` need.
+#   The truth table goes red at each "org row" case of a member need.
+# * T2. `first_unmet_connection`: drop `org_approved`. The org cases with a
+#   pending version, a private install, a group install and a draft go red.
+# * T3. `org_install_approved`: drop the `scope_kind` test. The private and
+#   the group cases of an approved version go red.
+
+_INSTALLS = {            # name: (scope_kind, review_status)
+    "org approved": ("org", "approved"),
+    "org pending": ("org", "pending"),
+    "org auto": ("org", "auto"),
+    "private": ("private", "approved"),
+    "group": ("group", "approved"),
+    "draft": ("private", None),
+}
+_ROWS = {                # what the read of the viewer found
+    "own row": resolve.Met(member=frozenset({"zoho"})),
+    "org row": resolve.Met(org=frozenset({"zoho"})),
+    "both rows": resolve.Met(org=frozenset({"zoho"}), member=frozenset({"zoho"})),
+    # The row of ANOTHER member never reaches the pure rule: `met_providers`
+    # drops it in SQL (the R8 twin proves it). So it reads as no row here.
+    "another member's row": resolve.Met(),
+    "no row": resolve.Met(),
+}
+
+
+def _truth(whose: str, row: str, install: str) -> bool:
+    kind, review = _INSTALLS[install]
+    need = {"id": "m", "connections": [{"name": "zoho", "as": whose}]}
+    return resolve.connections_met(need, _ROWS[row], resolve.org_install_approved(kind, review))
+
+
+@pytest.mark.parametrize("install", list(_INSTALLS))
+@pytest.mark.parametrize("row", list(_ROWS))
+@pytest.mark.parametrize("whose", ["member", "org"])
+def test_the_truth_table_of_a_connection_need(whose: str, row: str, install: str) -> None:
+    if whose == "member":
+        # A member need is met by the viewer's own row, and by no other row,
+        # whatever the install is.
+        want = row in ("own row", "both rows")
+    else:
+        # An org need is met by an org row AND an approved ORG install.
+        want = row in ("org row", "both rows") and install == "org approved"
+    assert _truth(whose, row, install) is want
+
+
+def test_the_first_unmet_need_is_named_with_its_account() -> None:
+    manifest = {"id": "m", "connections": [
+        "zoho", {"name": "google_drive"}, {"name": "github", "as": "member"}]}
+    met = resolve.Met(org=frozenset({"zoho"}), member=frozenset({"google_drive"}))
+    assert resolve.first_unmet_connection(manifest, met, True) == ("github", "member")
+    met = resolve.Met(org=frozenset({"zoho"}), member=frozenset({"google_drive", "github"}))
+    assert resolve.first_unmet_connection(manifest, met, True) is None
+    assert resolve.first_unmet_connection(manifest, met, False) == ("zoho", "org")
+    # A mail connector defaults to the member's account, never an org row.
+    drive = {"id": "m", "connections": ["google_drive"]}
+    assert resolve.first_unmet_connection(
+        drive, resolve.Met(org=frozenset({"google_drive"})), True) == ("google_drive", "member")
+
+
+@pytest.mark.parametrize("connections", ["zoho", [3], [{"as": "org"}], {"zoho": 1}, None])
+def test_a_connections_value_of_a_wrong_shape_fails_closed_with_no_name(connections: Any) -> None:
+    manifest = {"id": "m", "connections": connections}
+    everything = resolve.Met(org=frozenset({"zoho"}), member=frozenset({"zoho"}))
+    assert resolve.first_unmet_connection(manifest, everything, True) == (None, None)
+    assert resolve.connections_met(manifest, everything, True) is False
+
+
+def test_the_sidebar_reads_the_review_status_of_the_install() -> None:
+    """`needs_setup` of the resolve follows the same rule as the door."""
+    manifest = {"id": "m", "connections": ["zoho"]}
+    met = resolve.Met(org=frozenset({"zoho"}))
+    setups = {}
+    for name, (kind, review) in _INSTALLS.items():
+        row = _inst("i", "a", kind, manifest=manifest, review=review)
+        out = resolve.resolve({}, [row], [_claim("i", "k")], _all, met)
+        setups[name] = out["jobs"][0]["needs_setup"]
+    assert setups == {"org approved": False, "org pending": True, "org auto": True,
+                      "private": True, "group": True, "draft": True}
+
+
+def test_the_installs_sql_reads_the_review_status_of_the_version() -> None:
+    assert "v.review_status" in resolve.INSTALLS_SQL

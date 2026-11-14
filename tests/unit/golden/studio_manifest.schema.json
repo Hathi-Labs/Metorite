@@ -100,6 +100,52 @@
       "title": "CellDef",
       "type": "object"
     },
+    "ConnectionNeed": {
+      "additionalProperties": false,
+      "description": "STU-I9a. One connection that the app needs, with the account it uses.\n\n``as_`` (written ``as`` in the manifest) is ``org`` or ``member``. With\nnone, :func:`connection_as` gives the default of the connector list.\n``scopes`` are the scopes that the app asks for. They are a declaration\nonly: no credential is read from them.",
+      "properties": {
+        "as": {
+          "anyOf": [
+            {
+              "enum": [
+                "org",
+                "member"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "As"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "scopes": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scopes"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ConnectionNeed",
+      "type": "object"
+    },
     "FieldDef": {
       "additionalProperties": false,
       "properties": {
@@ -926,7 +972,14 @@
     },
     "connections": {
       "items": {
-        "type": "string"
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "$ref": "#/$defs/ConnectionNeed"
+          }
+        ]
       },
       "title": "Connections",
       "type": "array"

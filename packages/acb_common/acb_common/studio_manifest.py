@@ -41,6 +41,7 @@ from pydantic_core import PydanticCustomError
 from acb_common.app_manifests.base import APP_ID_PATTERN, CLASSES, OP_PATTERN, UUID_PATTERN
 from acb_common.app_manifests.shell_manifest import _CONTRIBUTES_KEYS as _P0_POINTS
 from acb_common.app_manifests.shell_manifest import SHELL_DIR
+from acb_common.connector_list import connector as _connector
 from acb_common.secret_shapes import SECRET_SHAPES, is_secret_field_key, is_secret_key
 from acb_common.studio_access import AccessError, check_access_fit, parse_access, parse_roles
 from acb_common.studio_fields import (
@@ -177,6 +178,11 @@ MCP_SERVER_NAME = r"[a-z0-9][a-z0-9-]{0,48}[a-z0-9]"
 #: registry (``mcp:<server>``), or a provider id such as ``zoho``. I1 checks
 #: the grammar only. IN-11 adds the check that the connector list holds it.
 CONNECTION_NAME_RE = re.compile(rf"mcp:{MCP_SERVER_NAME}|{_NAME}")
+#: STU-I9a. The two whose-account values of a connection need.
+CONNECTION_AS = ("org", "member")
+#: STU-I9a. The most scopes, and the longest scope, of one connection need.
+MAX_CONNECTION_SCOPES = 16
+MAX_CONNECTION_SCOPE_CHARS = 200
 #: STU-I1a. The refusal of a field whose key names a secret
 #: (``secret_shapes.is_secret_field_key``: a whole secret name, so
 #: ``token_number`` passes). A test reads this text, so keep it stable.
@@ -244,6 +250,20 @@ def parse_uses(uses: object) -> UsesRef | None:
 
 class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class ConnectionNeed(_Strict):
+    """STU-I9a. One connection that the app needs, with the account it uses.
+
+    ``as_`` (written ``as`` in the manifest) is ``org`` or ``member``. With
+    none, :func:`connection_as` gives the default of the connector list.
+    ``scopes`` are the scopes that the app asks for. They are a declaration
+    only: no credential is read from them."""
+
+    name: str
+    as_: Literal["org", "member"] | None = Field(default=None, alias="as")
+    scopes: list[str] | None = None
+    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=False)
 
 
 class FieldDef(_Strict):
@@ -446,7 +466,9 @@ class Manifest(_Strict):
     team: str | None = None
     #: STU-I1a. The registry connections that the app needs. `_check_connections`
     #: holds the grammar, and an unmet name makes the install `needs_setup`.
-    connections: list[str] = Field(default_factory=list)
+    #: STU-I9a: an item is a name, or ``{name, as, scopes}``. A plain name is
+    #: as before, and :func:`connection_as` gives its default account.
+    connections: list[str | ConnectionNeed] = Field(default_factory=list)
     #: C8a. The roles of the app. An install maps each one to members (C8b).
     #: `studio_access.parse_roles` is the one check.
     roles: list[str] = Field(default_factory=list)
@@ -627,10 +649,28 @@ def _scan(
             )
 
 
+def _connection_union_error(loc: list[Any], typ: str, out: list[ManifestError]) -> bool:
+    """STU-I9a. True when the error is the noise of the ``connections`` union:
+    the text branch (dropped), or a whole item of the wrong type (one sentence)."""
+    if loc[:1] != ["connections"]:
+        return False
+    if len(loc) == 3 and loc[2] == "str":
+        return True
+    if len(loc) == 2 and typ == "model_type":
+        out.append(_err(_path(loc), "A connection is a name, or an object with `name`, "
+                                    "`as` and `scopes`."))
+        return True
+    return False
+
+
 def _structure_errors(exc: ValidationError, skip: set[str]) -> list[ManifestError]:
     out: list[ManifestError] = []
     for e in exc.errors():
-        loc = list(e["loc"])
+        # STU-I9a: an item of `connections` is a union. The tag of a branch is
+        # not part of the path, and the text branch adds no second error.
+        loc = [x for x in e["loc"] if x != "ConnectionNeed"]
+        if _connection_union_error(loc, e["type"], out):
+            continue
         path = _path(loc)
         last = loc[-1] if loc else ""
         typ = e["type"]
@@ -1066,19 +1106,61 @@ def _check_links(
                 _undeclared(f"$.shell.search[{i}]", "Object", name, "this manifest", out)
 
 
+def connection_as(name: str, declared: Any = None) -> str:
+    """STU-I9a. The account that a connection need uses: ``org`` or ``member``.
+
+    A declared ``org`` or ``member`` wins. Else a known connector gives the
+    ``scope`` of its row in the connector list (IN-11, the one seam), and an
+    unknown name is ``org``. Pure."""
+    if declared in CONNECTION_AS:
+        return str(declared)
+    row = _connector(name) if isinstance(name, str) else None
+    return "member" if row is not None and row.get("scope") == "member" else "org"
+
+
+def connection_item(raw: Any) -> tuple[str, str] | None:
+    """STU-I9a. ``(name, as)`` of one item of ``connections``, as written in a
+    stored manifest (a text, or an object), or None when it has no name. Pure."""
+    if isinstance(raw, str):
+        return raw, connection_as(raw)
+    if isinstance(raw, Mapping) and isinstance(raw.get("name"), str):
+        return raw["name"], connection_as(raw["name"], raw.get("as"))
+    return None
+
+
+def _check_connection_scopes(path: str, scopes: list[str], out: list[ManifestError]) -> None:
+    if len(scopes) > MAX_CONNECTION_SCOPES:
+        out.append(_err(path, f"A connection names at most {MAX_CONNECTION_SCOPES} scopes. "
+                              "Remove the extra ones."))
+        return
+    for j, scope in enumerate(scopes):
+        if not scope or len(scope) > MAX_CONNECTION_SCOPE_CHARS or scope != "".join(scope.split()):
+            out.append(_err(f"{path}[{j}]", "A scope is text with no space, and at most "
+                                            f"{MAX_CONNECTION_SCOPE_CHARS} characters." + _got(scope)))
+    _dupes(scopes, path, "scope", out)
+
+
 def _check_connections(m: Manifest, out: list[ManifestError]) -> None:
     """STU-I1a. Each name of ``connections`` is ``mcp:<server>`` or a provider
     id (:data:`CONNECTION_NAME_RE`), once each, and at most
     :data:`MAX_CONNECTIONS` of them. The grammar only: IN-11 adds the check
-    that the connector list holds the provider."""
+    that the connector list holds the provider.
+
+    STU-I9a: an item can be ``{name, as, scopes}``. ``as`` is checked by the
+    schema. ``scopes`` are at most :data:`MAX_CONNECTION_SCOPES` words with no
+    space, once each."""
     if len(m.connections) > MAX_CONNECTIONS:
         out.append(_err("$.connections", f"A package names at most {MAX_CONNECTIONS} "
                                          "connections. Remove the extra ones."))
-    for i, name in enumerate(m.connections):
+    names = [c if isinstance(c, str) else c.name for c in m.connections]
+    for i, name in enumerate(names):
         if not CONNECTION_NAME_RE.fullmatch(name):
             out.append(_err(f"$.connections[{i}]", "A connection is mcp:<server> or a "
                                                     "provider id, such as zoho." + _got(name)))
-    _dupes(m.connections, "$.connections", "connection", out)
+        item = m.connections[i]
+        if not isinstance(item, str) and item.scopes is not None:
+            _check_connection_scopes(f"$.connections[{i}].scopes", item.scopes, out)
+    _dupes(names, "$.connections", "connection", out)
 
 
 def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[ManifestError]:

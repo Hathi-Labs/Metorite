@@ -778,7 +778,7 @@ def test_r8_a_connection_that_the_member_lacks_refuses_the_run(tally, monkeypatc
     world = tally
     _admin(world, "UPDATE app_versions SET manifest = manifest || CAST(:m AS jsonb) "
                   "WHERE app_id = CAST(:p AS uuid) AND version = 1",
-           m=json.dumps({"connections": [TALLY]}), p=world.pid)
+           m=json.dumps({"connections": [{"name": TALLY, "as": "member"}]}), p=world.pid)
 
     def find(run_id: str) -> dict[str, Any]:
         return _run(world, lambda: _read(world.a, world.ops, "find", {}, run_id=run_id))

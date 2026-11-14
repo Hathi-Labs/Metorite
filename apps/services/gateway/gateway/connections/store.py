@@ -353,11 +353,12 @@ _DELETE_SQL = (
     f"DELETE FROM integration_connections WHERE {_KEY_WHERE} RETURNING id"
 )
 
-#: The providers that one member may use now (WS-STU I1a): each ``connected``
-#: org row, and each ``connected`` member row of that member. The row of
-#: another member never counts. It reads the provider only, never the blob.
+#: The providers that one member may use now (WS-STU I1a, split by I9a): each
+#: ``connected`` org row, and each ``connected`` member row of that member.
+#: The row of another member never counts. It reads the provider and the kind
+#: of the row only, never the blob.
 _MET_SQL = (
-    "SELECT DISTINCT provider FROM integration_connections "
+    "SELECT DISTINCT provider, scope_kind FROM integration_connections "
     f"WHERE organization_id = CAST(:org AS uuid) AND status = '{STATUS_CONNECTED}' "
     f"AND (scope_kind = '{SCOPE_ORG}' OR (scope_kind = '{SCOPE_MEMBER}' "
     "AND member_email = :member))"
@@ -544,22 +545,29 @@ async def list_all(db: Any, org: str) -> list[Connection]:
     return [_connection(r) for r in rows]
 
 
-async def met_providers(db: Any, org: str, member: str) -> frozenset[str]:
-    """The providers that *member* may use now in *org* (WS-STU I1a).
+async def met_providers(
+    db: Any, org: str, member: str,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """The providers that *member* may use now in *org*, as
+    ``(org_met, member_met)`` (WS-STU I1a, split by I9a).
 
-    A provider counts with a ``connected`` row: an org row, or a member row
-    of *member* itself. The member row of another member never counts, and
-    ``needs_reconnect``, ``needs_reset`` and ``disconnected`` never count.
-    It reads the ``provider`` column only, never the blob.
+    ``org_met`` holds each provider with a ``connected`` org row. ``member_met``
+    holds each provider with a ``connected`` member row of *member* itself. The
+    member row of another member never counts, and ``needs_reconnect``,
+    ``needs_reset`` and ``disconnected`` never count. The two sets stay apart,
+    because a need that asks for the member's own account is never met by an org
+    row, and an org need is never met by a member row. It reads the ``provider``
+    and ``scope_kind`` columns only, never the blob.
 
     The registry holds ``mcp:<server>``, ``zoho``, ``github``,
     ``google_calendar``, ``outlook_calendar`` and ``google_drive``. A mailbox
-    lives in ``email_accounts``, so ``mailbox`` is never met here (I9 adds
-    it). ``package_host/resolve.met_connections`` is the one caller.
+    lives in ``email_accounts``, so ``mailbox`` is never met here.
+    ``package_host/resolve.met_connections`` is the one caller.
     """
     params = {"org": str(uuid.UUID(str(org))), "member": (member or "").strip().lower()}
     rows = (await db.execute(text(_MET_SQL), params)).all()
-    return frozenset(str(r[0]) for r in rows)
+    return (frozenset(str(r[0]) for r in rows if r[1] == SCOPE_ORG),
+            frozenset(str(r[0]) for r in rows if r[1] == SCOPE_MEMBER))
 
 
 async def get_by_id(db: Any, org: str, connection_id: str) -> Connection | None:

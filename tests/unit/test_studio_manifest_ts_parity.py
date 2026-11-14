@@ -115,3 +115,15 @@ def test_typed_union_fields_name_their_union_in_ts():
     assert found == len(unions)
     top = _interface_types("StudioManifest")
     assert top["studio"] == "StudioVersion"
+
+
+def test_connection_need():
+    """STU-I9a. The TS `ConnectionNeed` has the keys and the `as` values of the schema."""
+    from acb_common.studio_manifest import CONNECTION_AS
+
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    need = schema["$defs"]["ConnectionNeed"]
+    assert _interface_keys("ConnectionNeed") == set(need["properties"])
+    assert need["properties"]["as"]["anyOf"][0]["enum"] == list(CONNECTION_AS)
+    assert 'as?: "org" | "member" | null;' in _ts()
+    assert "connections?: Array<string | ConnectionNeed>;" in _ts()

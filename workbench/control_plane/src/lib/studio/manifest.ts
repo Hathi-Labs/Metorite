@@ -203,6 +203,14 @@ export interface RuntimeDef {
   packages?: Record<string, string>;
 }
 
+// STU-I9a. One connection that the app needs. `as` is `org` or `member`. With
+// none, the connector list gives the default. `scopes` are a declaration only.
+export interface ConnectionNeed {
+  name: string;
+  as?: "org" | "member" | null;
+  scopes?: string[] | null;
+}
+
 export interface StudioManifest {
   studio: StudioVersion;
   kind?: ManifestKind;
@@ -213,8 +221,9 @@ export interface StudioManifest {
   team?: string | null;
   // STU-I1a. Each name is `mcp:<server>` or a provider id, once, at most 32.
   // The server holds the check (`_check_connections`), and a missing one
-  // makes the install `needs_setup`.
-  connections?: string[];
+  // makes the install `needs_setup`. STU-I9a: an item is a name, or an object
+  // that adds the account (`as`) and the scopes.
+  connections?: Array<string | ConnectionNeed>;
   // C8a. The roles of the app. An install maps each one to members (C8b).
   roles?: string[];
   objects?: ObjectDef[];

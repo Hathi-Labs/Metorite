@@ -565,11 +565,15 @@ def conns(world, monkeypatch):
            {"p": f"%{TAG}%"})
 
 
-def _connections(world: Any, app: str, names: Any) -> None:
+def _connections(world: Any, app: str, names: Any, *, approved: bool = True) -> None:
+    """Set the connections of an app. I9a: a plain name is an `org` need, and an
+    org install meets it only with an `approved` version, so the version is
+    approved here unless a case says otherwise."""
     man = json.dumps({"studio": 1, "id": _mid(app), "name": "P", "purpose": "T",
                       "connections": names})
-    _admin(world, "UPDATE app_versions SET manifest = CAST(:m AS jsonb) "
-                  "WHERE app_id = CAST(:a AS uuid)", {"m": man, "a": world.apps[app]})
+    _admin(world, "UPDATE app_versions SET manifest = CAST(:m AS jsonb), "
+                  "review_status = :r WHERE app_id = CAST(:a AS uuid)",
+           {"m": man, "a": world.apps[app], "r": "approved" if approved else "auto"})
     _admin(world, "UPDATE apps SET manifest = CAST(:m AS jsonb) WHERE id = CAST(:a AS uuid)",
            {"m": man, "a": world.apps[app]})
 
@@ -615,7 +619,7 @@ def test_r8_a_row_that_is_not_connected_meets_nothing(conns) -> None:
 
 def test_r8_a_member_row_meets_the_need_of_that_member_only(conns) -> None:
     world = conns
-    _connections(world, "a1", [TALLY])
+    _connections(world, "a1", [{"name": TALLY, "as": "member"}])
     _install(world, "a1", "org", [_claim(_k("c3"))])
     _row(world, member=BEN)
     _row(world, member=DAN)                 # mixed case in app_user, lower in the row
@@ -721,16 +725,19 @@ def test_r8_the_store_reads_the_providers_of_the_member(conns) -> None:
     _row(world, f"drive{TAG}", status="needs_reconnect")
     _row(world, f"bonly{TAG}", org="b")
 
-    async def go(org: str, who: str, bound: str | None = None) -> frozenset[str]:
+    async def go(org: str, who: str, bound: str | None = None) -> tuple[Any, Any]:
         async with (tenant_engine_scope(_dsn(world.p.app_url)),
                     tenant_session(bound or org) as db):
-            got = await connections.met_providers(db, org, who)
-        return frozenset(x for x in got if TAG in x)
+            org_met, member_met = await connections.met_providers(db, org, who)
+        return (frozenset(x for x in org_met if TAG in x),
+                frozenset(x for x in member_met if TAG in x))
 
     a, b = world.p.org_a, world.p.org_b
-    assert asyncio.run(go(a, BEN.upper())) == {TALLY, f"zoho{TAG}"}
-    assert asyncio.run(go(a, CAT)) == {TALLY, f"github{TAG}"}
-    assert asyncio.run(go(a, EVE)) == {TALLY}
-    assert asyncio.run(go(b, ZED)) == {f"bonly{TAG}"}
+    # I9a: the two sets stay apart. The first holds the org rows, the second
+    # the member's own rows.
+    assert asyncio.run(go(a, BEN.upper())) == ({TALLY}, {f"zoho{TAG}"})
+    assert asyncio.run(go(a, CAT)) == ({TALLY}, {f"github{TAG}"})
+    assert asyncio.run(go(a, EVE)) == ({TALLY}, frozenset())
+    assert asyncio.run(go(b, ZED)) == ({f"bonly{TAG}"}, frozenset())
     # An org that the session does not bind: FORCE RLS gives nothing.
-    assert asyncio.run(go(b, ZED, bound=a)) == frozenset()
+    assert asyncio.run(go(b, ZED, bound=a)) == (frozenset(), frozenset())
