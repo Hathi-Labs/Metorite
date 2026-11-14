@@ -71,6 +71,7 @@ from gateway.routes.crm.core import (
     pipeline_takes_unset,
     record_zoho_tombstone,
     related_filters,
+    related_hits,
     require_deal_pipeline,
     require_row,
     resolve_owner,
@@ -279,6 +280,8 @@ async def list_query(
             custom=params.custom,
         ),
     )
+    # HRD-18a: the related names, read once for the count and the page.
+    related = await related_hits(db, entity, params.q)
     return list_contract(
         entity,
         q=params.q, sort=params.sort, direction=params.direction,
@@ -291,6 +294,7 @@ async def list_query(
         extra_where=(*extra, *more_where),
         extra_params={**extra_params, **more_params},
         near=near,
+        related=related,
     )
 
 
@@ -687,6 +691,7 @@ async def search_records(
                 q=words, sort="last_activity_at", direction="desc",
                 page=1, page_size=limit,
                 extra_where=(OPEN_LEAD_SQL,) if entity.hides_converted else (),
+                related=await related_hits(db, entity, words),
             )
             answer = await run_list(db, entity, query, rows_only=True)
             found += [(kind, row) for row in answer.rows]

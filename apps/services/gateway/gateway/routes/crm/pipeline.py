@@ -67,6 +67,7 @@ from gateway.routes.crm.core import (
     project_joined,
     read_statuses,
     record_activity,
+    related_hits,
     require_deal_pipeline,
     require_row,
     resolve_owner,
@@ -578,7 +579,10 @@ async def get_pipeline(
         if source:
             where += " AND source = :source"
             params["source"] = source
-        search_clause, search_params = search_where(DEALS, q)
+        # HRD-18a: the related names, read once for every lane.
+        search_clause, search_params = search_where(
+            DEALS, q, related=await related_hits(db, DEALS, q),
+        )
         if search_clause:
             where += f" AND {search_clause}"
             params.update(search_params)

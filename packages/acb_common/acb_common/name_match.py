@@ -6,20 +6,24 @@ misses each of these. This module holds the one rule of a near spelling, so
 the CRM search, the colleague lookup (``resolve_person``) and the contact
 lookup (``find_contact``) agree on what is near.
 
-**Two measures, one module.**
+**One judge.** :func:`name_score` folds each word (:func:`fold`) and compares
+the trigram sets of the two words, built the way ``pg_trgm`` builds them.
+When both words have :data:`SOUND_MIN_LETTERS` letters or more, it also
+compares their sound keys (:func:`sound`), at :data:`SOUND_WEIGHT`.
+:data:`NEAR_SCORE` is the floor of a near name.
 
-* In Python, :func:`name_score` folds each word (:func:`fold`) and compares
-  the trigram sets of the two words, built the way ``pg_trgm`` builds them.
-  When both words have :data:`SOUND_MIN_LETTERS` letters or more, it also
-  compares their sound keys (:func:`sound`), at :data:`SOUND_WEIGHT`.
-  :data:`NEAR_SCORE` is the floor of a near name.
-* In SQL, the CRM search cannot fold a column without an index or a
-  migration. So it uses ``pg_trgm`` ``strict_word_similarity`` on the raw
-  text, and binds :data:`NEAR_WORD_SIMILARITY` as a parameter. The route
-  reads the floor here, and never keeps a copy.
+**SQL only finds candidates.** The CRM search cannot fold a column without an
+index or a migration. So it reads candidates with ``pg_trgm``
+``strict_word_similarity`` at the low floor :data:`NEAR_CANDIDATE_SIMILARITY`,
+at most :data:`NEAR_CANDIDATES` rows of each table. Then :func:`name_score`
+scores each candidate, and only a name at :data:`NEAR_SCORE` or more is near.
+So the CRM search and the two lookups give one answer.
 
 **A near match is never a match.** Each caller marks it near, and the model
-asks the member to confirm it. The fixed pairs of the fence pin both floors.
+asks the member to confirm it. So a few pairs of different names may stay
+near: Kamal and Kamala, Lalit and Lalita, Pavan and Pavani, Hema and Hima,
+Dinesh and Dhanesh, Venkat and Venkatesh. The member answers the question,
+and nothing acts on a near name alone. Kiran and Karan stay apart.
 
 It imports the standard library only, so the gateway and the skills can
 import it. It opens no connection. Fence: ``tests/unit/test_name_variants.py``.
@@ -29,13 +33,24 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from functools import lru_cache
 from typing import Any
 
 #: The spelling variants that one sound has, in the order :func:`fold` applies
-#: them. Each pair maps the left text to the right text, inside a word.
+#: them. Each pair maps the left text to the right text, inside a word. The
+#: first three run before the rest: "x" becomes "ksh" before "sh" becomes
+#: "s", and "ow" becomes "ou" before "w" becomes "v".
 VARIANTS: tuple[tuple[str, str], ...] = (
+    ("x", "ksh"),
+    ("iya", "ya"),
+    ("ow", "ou"),
     ("th", "t"),
     ("sh", "s"),
+    ("bh", "b"),
+    ("dh", "d"),
+    ("gh", "g"),
+    ("kh", "k"),
+    ("ph", "f"),
     ("w", "v"),
     ("aa", "a"),
     ("ee", "i"),
@@ -49,17 +64,22 @@ VARIANTS: tuple[tuple[str, str], ...] = (
 NEAR_SCORE = 0.6
 
 #: The floor of ``pg_trgm`` ``strict_word_similarity(word, column)`` for a
-#: near row of a CRM search. It reads the raw text, with no fold. Measured on
-#: pg_trgm 1.6 for the fixed pairs: Sharath in «Sharat Satyanarayana» 0.67,
-#: nuropeak in «Neuropeak - Snowflake 3D printer» 0.58, neuropeek in
-#: «Neuropeak» 0.54, Magnatech in «Magnetech Ltd» 0.54. A higher floor loses
-#: Magnatech. The strict form keeps each extent inside word bounds: the plain
-#: ``word_similarity`` gives "Sharath" 1.0 in «Bharath Shah».
-NEAR_WORD_SIMILARITY = 0.5
+#: CANDIDATE of the CRM near pass. :func:`name_score` then judges each
+#: candidate. It is low on purpose: "Swagata" in «Sougata Maji» is 0.33 in
+#: SQL, and 0.9 here.
+NEAR_CANDIDATE_SIMILARITY = 0.3
+
+#: The most candidates that the CRM near pass reads from one table, nearest
+#: first by ``strict_word_similarity``.
+NEAR_CANDIDATES = 200
 
 #: A word needs this many letters before it may match nearly. A shorter
 #: word has too few trigrams, so nearly every name would be near it.
 NEAR_MIN_LETTERS = 4
+
+#: A longer word gets no near pass. No name is that long, and the cost of a
+#: trigram measure grows with the length of the word.
+NEAR_MAX_CHARS = 40
 
 #: A query of more words than this gets no near pass. It bounds the cost of
 #: the SQL, and a long query is a phrase, not a name.
@@ -80,20 +100,27 @@ _GLIDE = re.compile(r"(?<=[b-df-hj-np-tv-z])[vy](?=[aeiou])")
 _VOWELS = re.compile(r"[aeiou]+")
 
 
+@lru_cache(maxsize=8192)
+def _words(text: str) -> tuple[str, ...]:
+    out = unicodedata.normalize("NFKD", text)
+    out = "".join(ch for ch in out if not unicodedata.combining(ch)).casefold()
+    return tuple(w for w in _SPLIT.split(out) if w)
+
+
 def words(text: Any) -> list[str]:
     """*text* as its words: NFKD, no combining mark, casefold, letters and
     digits only. "Neuropeak - Snowflake" gives ``["neuropeak", "snowflake"]``."""
-    out = unicodedata.normalize("NFKD", str(text or ""))
-    out = "".join(ch for ch in out if not unicodedata.combining(ch)).casefold()
-    return [w for w in _SPLIT.split(out) if w]
+    return list(_words(str(text or "")))
 
 
+@lru_cache(maxsize=8192)
 def fold(word: str) -> str:
     """One word with its spelling variants folded (:data:`VARIANTS`), each
     double letter made single, and a final ``h`` dropped.
 
-    "Sharath" and "Sharat" both give ``sarat``. The input is one word of
-    :func:`words`, so it is lower case already.
+    "Sharath" and "Sharat" both give ``sarat``. "Laxmi" and "Lakshmi" both
+    give ``laksmi``. The input is one word of :func:`words`, so it is lower
+    case already.
     """
     out = word
     for left, right in VARIANTS:
@@ -111,6 +138,7 @@ def sound(folded: str) -> str:
     return _VOWELS.sub("a", _GLIDE.sub("", folded))
 
 
+@lru_cache(maxsize=8192)
 def trigrams(word: str) -> frozenset[str]:
     """The trigrams of one word, as ``pg_trgm`` makes them: two spaces before
     the word and one after."""
@@ -124,6 +152,7 @@ def _jaccard(left: frozenset[str], right: frozenset[str]) -> float:
     return len(left & right) / len(left | right)
 
 
+@lru_cache(maxsize=65536)
 def word_score(asked: str, other: str) -> float:
     """How near two words of :func:`words` are, from 0 to 1.
 
@@ -154,8 +183,8 @@ def name_score(asked: Any, name: Any) -> float:
     «Sougata Maji» scores 0.9. "Sharath Kumar" against «Sharat
     Satyanarayana» scores 0.5, because nothing there is near "Kumar".
     """
-    asked_words = words(asked)
-    name_words = words(name)
+    asked_words = _words(str(asked or ""))
+    name_words = _words(str(name or ""))
     if not asked_words or not name_words:
         return 0.0
     best = [max(word_score(a, n) for n in name_words) for a in asked_words]
@@ -169,8 +198,10 @@ def is_near(asked: Any, name: Any) -> bool:
 
 def near_eligible(word: str) -> bool:
     """True when one word of a query may match nearly: it has
-    :data:`NEAR_MIN_LETTERS` letters or more. "3D" and "2024" never do."""
-    return sum(ch.isalpha() for ch in word) >= NEAR_MIN_LETTERS
+    :data:`NEAR_MIN_LETTERS` letters or more, and :data:`NEAR_MAX_CHARS`
+    characters at most. "3D", "2024" and a pasted hash never do."""
+    return (len(word) <= NEAR_MAX_CHARS
+            and sum(ch.isalpha() for ch in word) >= NEAR_MIN_LETTERS)
 
 
 def near_query(query_words: list[str]) -> bool:

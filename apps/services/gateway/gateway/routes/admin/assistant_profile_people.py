@@ -56,6 +56,7 @@ Fences: ``tests/unit/test_resolve_person.py`` and
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import unicodedata
 from typing import Any
@@ -308,7 +309,8 @@ async def resolve_person_for_assistant(
                 found, tier = _directory_matches(people, members, wanted, address)
                 if not found and not address:
                     # HRD-18a: the same rows, scored by the one matcher.
-                    found, tier = _near_tier(people, members, raw)
+                    # Up to 4,000 names: scored off the event loop.
+                    found, tier = await asyncio.to_thread(_near_tier, people, members, raw)
                     near = bool(found)
                 source = tier if found else None
     except HTTPException:

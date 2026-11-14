@@ -6,19 +6,21 @@ the non-privileged role of the phase-4 rehearsal (no superuser, no BYPASSRLS):
 2. ``?q=`` of two or more words: each word must match one search column or
    one related name. AND across the words, OR across the columns.
 3. ``?near=true``: when the exact pass gives no row, a word of 4 letters or
-   more also matches by ``pg_trgm`` ``strict_word_similarity`` over the same
-   columns. The rows of that pass carry ``near: true``. A query with an
-   exact hit, a query of more than 3 words, and a list without ``near``
-   stay exact. ``?near=also`` (the repair round) adds the near rows that are
-   not exact after the exact rows, at most 5, and ``search_crm`` shows them
-   in a near section after its matches.
+   more also matches nearly over the same columns. ``pg_trgm``
+   ``strict_word_similarity`` only finds candidates, and
+   ``acb_common.name_match`` judges each one (repair round 2), so SQL and the
+   colleague lookups agree. The rows of that pass carry ``near: true``. A
+   query with an exact hit, a query of more than 3 words, and a list without
+   ``near`` stay exact. ``?near=also`` (repair round 1) adds the near rows
+   that are not exact after the exact rows, at most 5, and ``search_crm``
+   shows them in a near section after its matches.
 4. A deal matches the names of its contacts and of its source lead.
 
 The production case (2026-11-14): "Sharath 3D printer" finds the deal
 «Neuropeak - Snowflake 3D printer», whose contact is «Sharat Satyanarayana».
 On a table of 5,000 leads, "Sharath" finds «Sharat Satyanarayana» first, and
-the near pass holds a small share of the table. The test prints the time of
-the near read.
+every row of the near pass is near by the matcher. The test prints the time
+of the near read. A ``?q=`` over 200 characters is a 422 on every reader.
 
 A hermetic fake agrees with any SQL it is handed, so none of these could be
 proved without the database.
@@ -33,6 +35,8 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
+from acb_common import name_match
+from gateway.routes.crm import core
 from sqlalchemy import text
 
 from tests.unit.test_crm_find_and_page_r8 import (  # noqa: F401
@@ -299,6 +303,41 @@ async def test_search_crm_shows_the_exact_hits_then_sharat(
     assert out.startswith("Matches for 'Dragon' (1):") and tool.NEAR_ALSO not in out
 
 
+# ── Repair round 2: SQL finds, the matcher judges, and a long query is a 422 ──
+
+async def test_sql_finds_candidates_and_the_matcher_judges(ns, app_engine) -> None:  # noqa: F811
+    """SQL alone offered «Bharath Shah» for "Sharath" (0.615) and missed
+    «Sougata Maji» for "Swagata" (0.333). Now the matcher judges each one."""
+    a = ns.org_a
+    await _native(ns, a)
+    await _make(ns, a, "/crm/contacts", {"first_name": "Bharath", "last_name": "Shah"})
+    sougata = await _make(ns, a, "/crm/contacts", {"first_name": "Sougata", "last_name": "Maji"})
+    assert await _rows(ns, a, "/crm/contacts?q=Sharath&near=true") == []
+    found = await _list(ns, a, "/crm/contacts?q=Swagata&near=true")
+    assert [(r["id"], r["near"]) for r in found["rows"]] == [(sougata, True)]
+    assert found["total"] == 1
+
+
+async def test_a_long_query_is_a_422_on_every_reader(ns, app_engine) -> None:  # noqa: F811
+    a = ns.org_a
+    await _native(ns, a)
+    await _make(ns, a, "/crm/deals", {"name": "Spare parts"})
+    long_q = "x" * (core.MAX_Q_CHARS + 1)
+    for path in (
+        f"/crm/deals?q={long_q}", f"/crm/deals?q={long_q}&near=also",
+        f"/crm/contacts?q={long_q}&near=true", f"/crm/pipeline?q={long_q}",
+        f"/crm/export/deals.csv?q={long_q}", f"/crm/aggregate?entity=deals&q={long_q}",
+    ):
+        res = await _call(ns, _admin(a), "GET", path)
+        assert res.status_code == 422, (path[:40], res.status_code, res.text[:200])
+    # At the cap it still answers, and a word over 40 characters gets no
+    # near pass, so the read stays cheap.
+    edge = "y" * core.MAX_Q_CHARS
+    started = time.perf_counter()
+    assert await _rows(ns, a, f"/crm/deals?q={edge}&near=also") == []
+    assert time.perf_counter() - started < 5.0
+
+
 # ── The floor on a table of 5,000 leads ────────────────────────────────────
 
 #: The first lead status of the organization ``:o``.
@@ -337,6 +376,7 @@ async def test_sharath_finds_sharat_first_and_floods_no_table(ns, app_engine) ->
         for i in range(5000)
     ]
     assert not any("sharath" in n.lower() for n in names)
+    names_seed = names
     with ns.admin_engine.begin() as c:
         c.execute(text(
             "INSERT INTO crm_leads (organization_id, lead_name, first_name, last_name, "
@@ -359,16 +399,18 @@ async def test_sharath_finds_sharat_first_and_floods_no_table(ns, app_engine) ->
     found = await _list(ns, a, "/crm/leads?q=Sharath&near=true&page_size=10")
     elapsed = time.perf_counter() - started
     rows = found["rows"]
-    assert rows[0]["lead_name"] == "Sharat Satyanarayana", [r["lead_name"] for r in rows]
+    names = [r["lead_name"] for r in rows]
+    # "Sharat" and "Sarath" fold alike. The raw spelling breaks the tie.
+    assert names[0] == "Sharat Satyanarayana", names
     assert len(rows) <= 10 and all(r["near"] is True for r in rows)
-    # The share of the table that is near "Sharath" at the floor: the
-    # Bharaths, the Saraths and the Sharmas. Each is a near spelling by its
-    # trigrams, and the order puts the nearest first.
-    share = found["total"] / 5001
+    # SQL only found candidates: no Bharath and no Sharma passes the matcher.
+    assert all(name_match.is_near("Sharath", n) for n in names), names
+    assert found["total"] <= core.NEAR_LIMIT
+    near_in_seed = sum(name_match.is_near("Sharath", n) for n in names_seed)
     print(
-        f"\nHRD-18a near pass: {found['total']} of 5001 leads near 'Sharath' "
-        f"({share:.1%}), first «{rows[0]['lead_name']}», "
-        f"read in {elapsed * 1000:.0f} ms through the router"
+        f"\nHRD-18a near pass: {near_in_seed + 1} of 5001 leads near 'Sharath' "
+        f"({(near_in_seed + 1) / 5001:.1%}), first «{names[0]}», answer "
+        f"{len(rows)} of total {found['total']}, read in {elapsed * 1000:.0f} ms "
+        "through the router"
     )
-    assert share < 0.05, found["total"]
     assert elapsed < 5.0, elapsed

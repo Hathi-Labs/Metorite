@@ -18,6 +18,7 @@ only to the owner of the mailbox the message was addressed to.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any
 
@@ -643,19 +644,28 @@ async def _fuzzy_org_contacts(db: Any, params: dict[str, Any],
     except Exception as exc:
         _log.warning("email.contact_fuzzy_failed", error=str(exc)[:160])
         return []
+    # Up to FUZZY_SCAN names, scored off the event loop, so a keystroke of
+    # the typeahead never blocks another request (HRD-18a repair round 2).
+    ranked = await asyncio.to_thread(_closest, rows, params["needle"], have)
+    return [ContactSuggestion(email=r.email, name=r.name or "", source="org",
+                              match="closest")
+            for _score, r in ranked[:FUZZY_LIMIT]]
+
+
+def _closest(rows: list[Any], needle: str, have: set[str]) -> list[tuple[float, Any]]:
+    """The fallback rows that the old trigram floor or the one name matcher
+    keeps, nearest first. Pure, so it runs in a thread."""
     ranked: list[tuple[float, Any]] = []
     for r in rows:
         if r.email in have:
             continue
-        near = max(name_match.name_score(params["needle"], r.name or ""),
-                   name_match.name_score(params["needle"], r.email.split("@", 1)[0]))
+        near = max(name_match.name_score(needle, r.name or ""),
+                   name_match.name_score(needle, r.email.split("@", 1)[0]))
         sim = float(r.sim or 0)
         if sim >= FUZZY_THRESHOLD or near >= name_match.NEAR_SCORE:
             ranked.append((max(sim, near), r))
     ranked.sort(key=lambda pair: (-pair[0], pair[1].email))
-    return [ContactSuggestion(email=r.email, name=r.name or "", source="org",
-                              match="closest")
-            for _score, r in ranked[:FUZZY_LIMIT]]
+    return ranked
 
 
 #: A domain filter: letters, digits, dots and hyphens only, so the value can
