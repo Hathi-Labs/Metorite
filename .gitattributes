@@ -28,3 +28,9 @@ project-docs/INDEX.md merge=union
 # (no H-id and no env key repeats, and every union path is on its allow-list).
 project-docs/HANDOFF.md merge=union
 .env.example merge=union
+
+# CIV-33 (task 3284): two PRs that each append a paragraph or a test to these
+# pure append files merge with no conflict. git's built-in union driver keeps
+# both sides. Fence: tests/unit/test_merge_hotspots.py. Design: docs/merge_hotspots.md.
+docs/flag_reload.md merge=union
+tests/unit/test_flag_reload.py merge=union
