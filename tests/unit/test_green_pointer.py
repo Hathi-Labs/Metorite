@@ -21,17 +21,20 @@ What this file fences, in ``.github/workflows/deploy.yml``:
    the release.
 4. A red tip holds no release. The summary lists the commits that the
    release leaves out.
-5. The R8 guard reads its lists from the release commit's own copy of
-   ``deploy.yml``, not from the tip's copy that GitHub runs. A suite that
-   lands after ``green/main`` does not hold the slot. A release commit whose
-   own list names a missing suite still fails. A list that the guard cannot
-   read fails closed.
+5. The R8 guard reads its lists from the release commit's own
+   ``tests/fences.json`` (CIV-33c-2), not from the tip's copy that GitHub
+   runs. A suite that lands after ``green/main`` does not hold the slot. A
+   release commit whose own list names a missing suite still fails. A list
+   that the guard cannot read fails closed. A release commit from before the
+   move has no ``r8`` key. Then the guard reads the lists in that commit's
+   own ``deploy.yml`` (the bootstrap).
 
 The steps run for real in bash. A shell function stands in for ``git``, so
 the step's own text runs unchanged, as in ``test_deploy_pipeline.py``.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -42,7 +45,7 @@ from pathlib import Path
 import pytest
 
 from tests.unit.test_daily_release import _eval
-from tests.unit.test_deploy_pipeline import _gh_eval, _guard_args
+from tests.unit.test_deploy_pipeline import _gh_eval
 
 yaml = pytest.importorskip("yaml")
 
@@ -544,23 +547,32 @@ def test_a_read_with_no_exact_green_main_line_holds_the_release(
 # ── 6. The R8 guard reads the lists of the release commit ────────────────────
 #
 # GitHub runs the workflow file of the tip of main on a schedule or a
-# dispatch. So the lists on the guard's own command line are the tip's. The
-# R8 reports and the tree are the release commit's. A suite that lands after
-# green/main is in the tip's list and not in the release tree. The guard
-# step reads the lists from the release commit's copy of deploy.yml.
+# dispatch. The R8 reports and the tree are the release commit's. A suite
+# that lands after green/main is in the tip's list and not in the release
+# tree. The guard step reads the lists from the release commit's own
+# tests/fences.json (`r8` key). Before CIV-33c-2 the lists sat in deploy.yml,
+# so a release commit with no `r8` key is read the old way.
 
 GUARD_JOB = "r8-gate"
 GUARD_STEP = "The R8 suites ran, and no fence skipped"
+_FENCES = WORKFLOW.parents[2] / "tests" / "fences.json"
+_BS = chr(92)
 #: A suite in the tip's list. The release commit lacks it: it landed later.
 _LATE = "tests/unit/test_team_scope_isolation_r8.py"
 #: A suite in the release commit's own list, and not in its tree.
 _GONE = "tests/unit/test_gone_after_green_r8.py"
 
-# A fake `git` that serves the release commit's deploy.yml for one exact
-# `git show`, and fails every other call. `python3` is this interpreter.
+# A fake `git` that serves the release commit's tests/fences.json and its
+# deploy.yml for the two exact `git show` calls, and fails every other call.
+# `python3` is this interpreter.
 _FAKE_SHOW = r"""
 git() {
   printf '%s\n' "git $*" >> "$GIT_LOG"
+  if [ "$1" = show ] && [ "$#" = 2 ] && [ "$2" = "${RELEASE_SHA}:tests/fences.json" ] \
+     && [ -f "$RELEASE_FENCES" ]; then
+    cat "$RELEASE_FENCES"
+    return 0
+  fi
   if [ "$1" = show ] && [ "$#" = 2 ] && [ "$2" = "${RELEASE_SHA}:.github/workflows/deploy.yml" ] \
      && [ -f "$RELEASE_WORKFLOW" ]; then
     cat "$RELEASE_WORKFLOW"
@@ -574,43 +586,43 @@ python3() { "$PYTHON" "$@"; }
 
 
 @pytest.fixture(scope="module")
-def raw() -> str:
-    return WORKFLOW.read_text(encoding="utf-8")
+def fences() -> dict:
+    return json.loads(_FENCES.read_text(encoding="utf-8"))
 
 
-def _lists(workflow: str) -> dict[str, list[str]]:
-    """The guard's flags in a copy of deploy.yml, read the way the fence of
-    test_deploy_pipeline.py reads them."""
-    return _guard_args(_step(yaml.safe_load(workflow), GUARD_JOB, GUARD_STEP)["run"])
+def _named(fences: dict) -> list[str]:
+    r8 = fences["r8"]
+    return sorted(set(r8["must_run"]) | set(r8["never_skip"]))
 
 
-def _named(workflow: str) -> list[str]:
-    flags = _lists(workflow)
-    return sorted(set(flags["--must-run"]) | set(flags["--never-skip"]))
+def _edit(fences: dict, **changes: object) -> str:
+    """tests/fences.json as another commit holds it, with `r8` changed.
+    A value of None drops the key."""
+    r8 = {**fences["r8"], **changes}
+    r8 = {k: v for k, v in r8.items() if v is not None}
+    return json.dumps({**fences, "r8": r8})
 
 
-def _must_run_edit(raw: str, *, drop: str = "", add: str = "", empty: bool = False) -> str:
-    """deploy.yml as another commit holds it: the guard's must-run list
-    without `drop`, with `add` first, or with no file at all."""
-    lines = raw.splitlines(keepends=True)
-    heads = [i for i, ln in enumerate(lines) if ln.strip() == "--must-run \\"]
-    assert len(heads) == 1, "one --must-run list in deploy.yml"
-    head = heads[0]
-    if drop:
-        hits = [i for i in range(head + 1, len(lines)) if lines[i].strip() == f"{drop} \\"]
-        assert len(hits) == 1, drop
-        del lines[hits[0]]
-    if add:
-        first = lines[head + 1]
-        lines.insert(head + 1, first[: len(first) - len(first.lstrip())] + f"{add} \\\n")
-    if empty:
-        end = head + 1
-        while lines[end].strip().startswith("tests/unit/"):
-            end += 1
-            if not lines[end - 1].rstrip().endswith("\\"):
-                break
-        lines[head : end] = [lines[head].replace("--must-run \\", "--must-run")]
-    return "".join(lines)
+def _old_deploy(fences: dict, *, empty_must_run: bool = False) -> str:
+    """deploy.yml as a release commit from before CIV-33c-2 holds it: the
+    guard's three lists inline on the command."""
+    r8 = fences["r8"]
+    must = [] if empty_must_run else r8["must_run"]
+    words = [f'--disarmed "{d}"' for d in r8["disarmed"]]
+    words += ["--never-skip", *r8["never_skip"], "--must-run", *must]
+    body = f" {_BS}\n".join(
+        ("  " if w.startswith("--") else "    ") + w for w in words
+    )
+    return (
+        "jobs:\n"
+        f"  {GUARD_JOB}:\n"
+        "    steps:\n"
+        f"      - name: {GUARD_STEP}\n"
+        "        run: |\n"
+        f"          python3 scripts/ci_unit_guard.py check --junit junit {_BS}\n"
+        + "\n".join("          " + ln for ln in body.splitlines())
+        + "\n"
+    )
 
 
 def _release_tree(tmp_path: Path, files: list[str], *, ran: list[str] | None = None) -> None:
@@ -632,19 +644,23 @@ def _release_tree(tmp_path: Path, files: list[str], *, ran: list[str] | None = N
         f"{cases}</testsuite></testsuites>", encoding="utf-8")
 
 
-def _run_guard(parsed: dict, tmp_path: Path, *, release: str | None, tree: list[str],
-               ran: list[str] | None = None, sha: str = _TESTED) -> tuple[int, str, list[str]]:
+def _run_guard(parsed: dict, tmp_path: Path, *, release_fences: str | None, tree: list[str],
+               release_workflow: str | None = None, ran: list[str] | None = None,
+               sha: str = _TESTED) -> tuple[int, str, list[str]]:
     """Run the tip's guard step in bash, in the checkout of the release."""
     run = _step(parsed, GUARD_JOB, GUARD_STEP)["run"]
     assert "${{" not in run
-    served = tmp_path / "served" / "deploy.yml"
-    served.parent.mkdir()
-    if release is not None:
-        served.write_text(release, encoding="utf-8", newline="\n")
+    served = tmp_path / "served"
+    served.mkdir()
+    if release_fences is not None:
+        (served / "fences.json").write_text(release_fences, encoding="utf-8", newline="\n")
+    if release_workflow is not None:
+        (served / "deploy.yml").write_text(release_workflow, encoding="utf-8", newline="\n")
     _release_tree(tmp_path, tree, ran=ran)
     (tmp_path / "runner_temp").mkdir()
     log = tmp_path / "git.log"
-    env = {**os.environ, "RELEASE_SHA": sha, "RELEASE_WORKFLOW": served.as_posix(),
+    env = {**os.environ, "RELEASE_SHA": sha, "RELEASE_FENCES": (served / "fences.json").as_posix(),
+           "RELEASE_WORKFLOW": (served / "deploy.yml").as_posix(),
            "GIT_LOG": log.as_posix(), "PYTHON": Path(sys.executable).as_posix(),
            "RUNNER_TEMP": (tmp_path / "runner_temp").as_posix()}
     done = subprocess.run(
@@ -655,49 +671,52 @@ def _run_guard(parsed: dict, tmp_path: Path, *, release: str | None, tree: list[
     return done.returncode, done.stdout + done.stderr, calls
 
 
-def test_the_guard_step_reads_the_release_commits_own_copy(parsed: dict) -> None:
+def test_the_guard_step_reads_the_release_commits_own_fences(parsed: dict) -> None:
     step = _step(parsed, GUARD_JOB, GUARD_STEP)
     assert step["env"]["RELEASE_SHA"] == RESOLVED
     run = step["run"]
+    assert 'git show "${RELEASE_SHA}:tests/fences.json" > "$RUNNER_TEMP/release_fences.json"' in run
+    assert '--lists-from-fences "$RUNNER_TEMP/release_fences.json"' in run
+    # The bootstrap: a release commit from before the move has no `r8` key.
     assert 'git show "${RELEASE_SHA}:.github/workflows/deploy.yml" > "$RUNNER_TEMP/release_deploy.yml"' in run
-    flags = _guard_args(run)
-    assert flags["--lists-from"] == ["$RUNNER_TEMP/release_deploy.yml"]
-    assert flags["--lists-step"] == [GUARD_STEP], "the release commit's copy of THIS step"
-    # The flags of a release: no selection (CIV-3 belongs to pr-check).
-    assert "--only-selected" not in flags and "--tree-root" not in flags
+    assert '--lists-from "$RUNNER_TEMP/release_deploy.yml"' in run
+    assert f'--lists-step "{GUARD_STEP}"' in run
+    # The tip's workflow carries no list of its own, and no selection (CIV-3).
+    assert "--must-run" not in run and "--never-skip" not in run and "--disarmed" not in run
+    assert "--only-selected" not in run and "--tree-root" not in run
 
 
-def test_with_the_tip_as_the_release_the_lists_are_todays(raw: str) -> None:
-    """RELEASE_SHA equals the tip: the guard reads the lists it reads today."""
-    got = guard.guard_lists(raw, GUARD_STEP)
-    today = _lists(raw)
-    for flag in ("--disarmed", "--never-skip", "--must-run"):
-        assert got[flag] == today[flag], flag
+def test_with_the_tip_as_the_release_the_lists_are_todays(fences: dict) -> None:
+    """RELEASE_SHA equals the tip: the guard reads the lists of today's file."""
+    got = guard.fence_lists(_FENCES.read_text(encoding="utf-8"))
+    assert got["--must-run"] == fences["r8"]["must_run"]
+    assert got["--never-skip"] == fences["r8"]["never_skip"]
+    assert got["--disarmed"] == fences["r8"]["disarmed"]
     assert len(got["--must-run"]) > 50
 
 
 @needs_bash
 def test_a_suite_that_landed_after_green_does_not_hold_the_slot(
-        parsed: dict, raw: str, tmp_path: Path) -> None:
-    """P1. The tip's list names `_LATE`. The release commit has neither the
+        parsed: dict, fences: dict, tmp_path: Path) -> None:
+    """The tip's list names `_LATE`. The release commit has neither the
     file nor its line. The release commit's own lists apply."""
-    release = _must_run_edit(raw, drop=_LATE)
-    assert _LATE in _named(raw) and _LATE not in _named(release)
-    code, out, calls = _run_guard(parsed, tmp_path, release=release, tree=_named(release))
+    release = _edit(fences, must_run=[p for p in fences["r8"]["must_run"] if p != _LATE])
+    assert _LATE in _named(fences) and _LATE not in _named(json.loads(release))
+    code, out, calls = _run_guard(
+        parsed, tmp_path, release_fences=release, tree=_named(json.loads(release)))
     assert code == 0, out
-    assert calls == [f"git show {_TESTED}:.github/workflows/deploy.yml"]
-    assert _LATE in out, "the run says which tip file the release commit does not name"
+    assert calls == [f"git show {_TESTED}:tests/fences.json"]
 
 
 @needs_bash
 def test_a_release_commit_whose_own_list_names_a_missing_suite_fails(
-        parsed: dict, raw: str, tmp_path: Path) -> None:
+        parsed: dict, fences: dict, tmp_path: Path) -> None:
     """The release commit lists `_GONE`, and its tree lacks it. Its own gate
     is red, so the slot holds. The tip's list does not name it."""
-    release = _must_run_edit(raw, add=_GONE)
-    assert _GONE not in _named(raw)
-    tree = [p for p in _named(release) if p != _GONE]
-    code, out, _ = _run_guard(parsed, tmp_path, release=release, tree=tree)
+    release = _edit(fences, must_run=[_GONE, *fences["r8"]["must_run"]])
+    assert _GONE not in _named(fences)
+    tree = [p for p in _named(json.loads(release)) if p != _GONE]
+    code, out, _ = _run_guard(parsed, tmp_path, release_fences=release, tree=tree)
     assert code == 1, out
     assert f"a --must-run file is not in the tree: {_GONE}" in out
 
@@ -705,10 +724,11 @@ def test_a_release_commit_whose_own_list_names_a_missing_suite_fails(
 @needs_bash
 @pytest.mark.parametrize("missed", [False, True])
 def test_with_the_tip_as_the_release_the_guard_is_todays_guard(
-        parsed: dict, raw: str, tmp_path: Path, missed: bool) -> None:
-    files = _named(raw)
+        parsed: dict, fences: dict, tmp_path: Path, missed: bool) -> None:
+    files = _named(fences)
     ran = [p for p in files if p != _LATE] if missed else None
-    code, out, _ = _run_guard(parsed, tmp_path, release=raw, tree=files, ran=ran)
+    code, out, _ = _run_guard(
+        parsed, tmp_path, release_fences=_FENCES.read_text(encoding="utf-8"), tree=files, ran=ran)
     if missed:
         assert code == 1 and f"no shard ran {_LATE}" in out, out
     else:
@@ -716,36 +736,88 @@ def test_with_the_tip_as_the_release_the_guard_is_todays_guard(
 
 
 @needs_bash
-@pytest.mark.parametrize("case", ["no-step", "empty-must-run", "show-fails", "bad-sha"])
+@pytest.mark.parametrize(
+    "case", ["show-fails", "not-json", "empty-must-run", "no-never-skip-list", "not-a-path", "bad-sha"])
 def test_the_guard_fails_closed_when_it_cannot_read_the_release_lists(
-        parsed: dict, raw: str, tmp_path: Path, case: str) -> None:
-    """Never an empty list, and never the tip's list in its place."""
-    release: str | None = raw
+        parsed: dict, fences: dict, tmp_path: Path, case: str) -> None:
+    """Never an empty list, never the tip's list in its place, and never the
+    old reader for a file that holds an `r8` key or that does not parse."""
+    served: str | None = _FENCES.read_text(encoding="utf-8")
     sha = _TESTED
-    if case == "no-step":
-        release = raw.replace(f"- name: {GUARD_STEP}", "- name: The R8 guard, renamed")
+    if case == "show-fails":
+        served = None
+    elif case == "not-json":
+        served = "{ not json"
     elif case == "empty-must-run":
-        release = _must_run_edit(raw, empty=True)
-        assert _lists(release)["--must-run"] == []
-    elif case == "show-fails":
-        release = None
+        served = _edit(fences, must_run=[])
+    elif case == "no-never-skip-list":
+        served = _edit(fences, never_skip=None)
+    elif case == "not-a-path":
+        served = _edit(fences, must_run=["tests/unit/$(evil).py"])
     else:
         sha = ""
-    # The tree and the report hold every file of the tip: only the read fails.
-    code, out, calls = _run_guard(parsed, tmp_path, release=release, tree=_named(raw), sha=sha)
+    # The old deploy.yml is served too: no case may reach it.
+    code, out, calls = _run_guard(
+        parsed, tmp_path, release_fences=served, release_workflow=_old_deploy(fences),
+        tree=_named(fences), sha=sha)
     assert code == 1, out
     assert "checked " not in out, "the guard never runs on lists that it could not read"
     if case == "bad-sha":
         assert calls == [], "no read of a commit with no name"
+    else:
+        assert not any("deploy.yml" in c for c in calls), "no fallback on a fault"
 
 
-def test_the_list_reader_fails_closed(raw: str) -> None:
+@needs_bash
+def test_a_release_commit_from_before_the_move_is_read_the_old_way(
+        parsed: dict, fences: dict, tmp_path: Path) -> None:
+    """The bootstrap: no `r8` key, so the lists come from its own deploy.yml."""
+    old = {k: v for k, v in fences.items() if k != "r8"}
+    code, out, calls = _run_guard(
+        parsed, tmp_path, release_fences=json.dumps(old), release_workflow=_old_deploy(fences),
+        tree=_named(fences))
+    assert code == 0, out
+    assert calls == [f"git show {_TESTED}:tests/fences.json", f"git show {_TESTED}:.github/workflows/deploy.yml"]
+
+
+@needs_bash
+@pytest.mark.parametrize("case", ["show-fails", "empty-must-run"])
+def test_the_bootstrap_fails_closed_too(
+        parsed: dict, fences: dict, tmp_path: Path, case: str) -> None:
+    old = json.dumps({k: v for k, v in fences.items() if k != "r8"})
+    workflow = None if case == "show-fails" else _old_deploy(fences, empty_must_run=True)
+    code, out, _ = _run_guard(
+        parsed, tmp_path, release_fences=old, release_workflow=workflow, tree=_named(fences))
+    assert code == 1, out
+    assert "checked " not in out
+
+
+def test_the_fence_reader_fails_closed(fences: dict) -> None:
+    for text, why in [
+        ("", "no readable"),
+        ("[]", "no readable"),
+        (json.dumps({k: v for k, v in fences.items() if k != "r8"}), "no readable"),
+        (_edit(fences, must_run=[]), "empty --must-run"),
+        (_edit(fences, never_skip=[]), "empty --never-skip"),
+        (_edit(fences, disarmed=None), "no list for --disarmed"),
+        (_edit(fences, must_run="tests/unit/a.py"), "no list for --must-run"),
+        (_edit(fences, must_run=["tests/unit/$(evil).py"]), "not a test path"),
+    ]:
+        with pytest.raises(guard.GuardListError, match=re.escape(why)):
+            guard.fence_lists(text)
+
+
+def test_the_old_list_reader_still_fails_closed(fences: dict) -> None:
+    """The bootstrap reads an old deploy.yml with `guard_lists`."""
+    old = _old_deploy(fences)
+    got = guard.guard_lists(old, GUARD_STEP)
+    assert got["--must-run"] == fences["r8"]["must_run"]
+    assert got["--never-skip"] == fences["r8"]["never_skip"]
     for text, why in [
         ("", "steps named"),
-        (raw.replace(f"- name: {GUARD_STEP}", "- name: Other"), "steps named"),
-        (_must_run_edit(raw, empty=True), "--must-run"),
-        (raw.replace("--never-skip \\", "--never-skip-x \\"), "--never-skip"),
-        (_must_run_edit(raw, add="tests/unit/$(evil).py"), "not a test path"),
+        (old.replace(f"- name: {GUARD_STEP}", "- name: Other"), "steps named"),
+        (_old_deploy(fences, empty_must_run=True), "--must-run"),
+        (old.replace("--never-skip", "--never-skip-x"), "--never-skip"),
     ]:
         with pytest.raises(guard.GuardListError, match=re.escape(why)):
             guard.guard_lists(text, GUARD_STEP)

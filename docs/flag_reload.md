@@ -62,6 +62,15 @@ Its one reader is `gateway.routes.studio.flags.search_allowed`, and each search
 asks it. The source also needs `STUDIO_ORGS`. A reload applies a change, and
 the flip stays OWNER-GATE (`enforcement-flip`).
 
+`STUDIO_CONNECTION_GATE_ORGS` makes the `connections` of a Studio app bind
+(`ai_studio.md` §14 I1a). For each listed org, a missing connection makes the
+install `needs_setup`, and the action door refuses each action with 409
+`needs_connection`. `*` lists every org, and the default is empty. Empty
+means the connections change nothing. Its one reader is
+`acb_common.studio_flags.connection_gate_on`, and each call asks it. A reload
+applies a change. A flip stays OWNER-GATE (`enforcement-flip`), after the
+pre-check of the I1a row.
+
 `STUDIO_NUM_F8_ORGS` adds the float8 test to a number filter of the Studio
 object query (`ai_studio.md` §14 C2c). For each listed org, the query tests
 `studio_record_hot.v_num_f8` beside the exact `v_num` test, so the app role

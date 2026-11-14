@@ -22,6 +22,8 @@ from acb_common.studio_rules import MAX_WRITES_PER_BATCH
 from gateway.studio import batch_store as bs
 from gateway.studio.objects_store import Write
 
+from tests.unit import _r8_lists as r8_lists
+
 _ROOT = Path(__file__).resolve().parents[2]
 _SRC = (_ROOT / "apps/services/gateway/gateway/studio/batch_store.py").read_text(encoding="utf-8")
 _MIGRATION = next(
@@ -232,5 +234,4 @@ def test_the_migration_is_expand_only_tenant_scoped_and_idempotent() -> None:
 
 def test_the_r8_suite_is_named_in_both_ci_guards() -> None:
     for name in ("pr-check.yml", "deploy.yml"):
-        flow = (_ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
-        assert re.search(r"^[ \t]+tests/unit/test_studio_batch_r8\.py(?: \\)?\s*$", flow, re.M), name
+        assert "tests/unit/test_studio_batch_r8.py" in r8_lists.must_run(), name

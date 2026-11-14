@@ -180,6 +180,13 @@ cycle, a parent that is no record of this object, and a tree of more than
 a tree or the whole forest, to that depth, in one recursive statement.
 ``tests/unit/test_studio_hierarchy_r8.py`` runs both on a real Postgres.
 
+**The timer (E9a).** A rule of kind ``timer`` refuses no write, and a write
+writes nothing for it: :func:`_check_records` skips it. Its due field and its
+pause field stay hot (``Rule.hot_keys``). :func:`timer_of` and
+:func:`due_timer_records` are the two reads of the workflow scan
+(``routes/workflows/scheduler.scan_due_timers``), its one caller.
+``tests/unit/test_workflows_timer_r8.py`` runs them on a real Postgres.
+
 **The sync of a manifest (A5).** :func:`sync_objects` brings the rows of one
 package to the ``objects`` of a published manifest, and the publish route is
 its one caller. It adds an object (:func:`define_object`, whose one caller it
@@ -352,6 +359,7 @@ from acb_common.studio_rules import (
     ROLLUP,
     ROLLUP_OF_ROLLUP,
     STATE_MACHINE,
+    TIMER,
     UNIQUE,
     ConstraintError,
     ConstraintViolation,
@@ -2112,6 +2120,26 @@ async def _view(db: Any, oid: str, pid: str, viewer: Viewer) -> _View | None:
     rules = stored_rules(_json(row[0]))
     scope = scope_for(stored_access(_json(row[1])), viewer, owner=owner, rules=rules)
     return _View(scope, rules, await _tainted(db, pid, rules, viewer, owner))
+
+
+async def query_hidden_keys(db: Any, *, package_id: str, object_id: str,
+                            viewer: Viewer) -> frozenset[str] | None:
+    """C8a, for a saved view (AF-10a). The keys of the object *object_id*
+    that *viewer* may not name in a filter, a sort or a column: the keys that
+    a filter of the store refuses (``_View.maybe_hidden``). A viewer whose
+    roles read no record of the object gets each key of the object. Answers
+    None when the package holds no such object. The owner gets an empty set.
+
+    It reads no record. Its caller is ``routes/studio/views.py``, which drops
+    each part of a saved view that names one of these keys."""
+    who = _check_viewer(viewer)
+    oid, pid = _uuid(object_id, "object_id"), _uuid(package_id, "package_id")
+    view = await _view(db, oid, pid, who)
+    if view is None:
+        return None
+    if not view.scope.reads:
+        return frozenset(f.key for f in await _fields(db, oid))
+    return view.maybe_hidden()
 
 
 def _scoped(sql: str, scoped_sql: str, scope: Scope, binds: dict[str, Any]) -> str:
@@ -4023,6 +4051,10 @@ def _check_records(batch: _Batch) -> dict[tuple[str, Rule, tuple[Any, ...]], int
         batch.index = mark.index
         held = batch.objects[mark.object_id]
         for rule in held.rules:
+            if rule.kind == TIMER:
+                # E9a. A timer refuses no write. The workflow scan reads its
+                # hot rows, and `set_field_hot` keeps its fields hot.
+                continue
             check_kind_known(rule, held.name)
             check_rule_is_hot(rule, held.name, held.fields)
             if rule.name in held.taint and mark.before is not None:
@@ -4752,3 +4784,136 @@ async def fill_num_f8_batch(db: Any, after: tuple[str, str], n: int) -> list[tup
 async def count_num_f8_left(db: Any) -> int:
     """The rows of the bound tenant that have a ``v_num`` and no float8 copy."""
     return int((await db.execute(text(_NUM_F8_LEFT))).scalar_one())
+
+
+# ── The timers (E9a) ───────────────────────────────────────────────────────
+#
+# The workflow scan (`routes/workflows/scheduler.scan_due_timers`) is the one
+# caller. It reads, and it never writes a record, a hot row or a rule. The SQL
+# of the hot table stays in this module (`test_one_writer_of_the_four_tables`).
+
+#: The most records that one read of :func:`due_timer_records` answers.
+MAX_TIMER_READ = 100
+#: A breach whose due time is older than this many days starts no run. It
+#: bounds the walk of each read: the records that fired, and the paused ones,
+#: are the oldest, so a LIMIT alone does not stop the walk over them.
+TIMER_LOOKBACK_DAYS = 7
+#: The deadline of one read of :func:`due_timer_records`, in milliseconds. It
+#: becomes the LOCAL ``statement_timeout`` (``_time_limit``), as in C2.
+TIMER_READ_TIMEOUT_MS = 2_000
+_TIMER_TIMEOUT_MESSAGE = "The breaches of this timer took too long to read."
+
+#: The breaches of one timer, oldest due first. A record breaches when its due
+#: value is after the arm time *armed*, inside the lookback window and at or
+#: before the DB clock, while its pause field holds no pause value. A breach whose run exists for the workflow
+#: (the delivery key of migration 420) is left out, so a fired record never
+#: holds the head of the list. The due time is the hot ``v_ts``, in UTC, with
+#: microseconds. Each table names the bound org.
+_TIMER_DUE_SQL = (
+    "SELECT h.record_id::text, d.due_at FROM studio_record_hot h "
+    "CROSS JOIN LATERAL (SELECT to_char(h.v_ts AT TIME ZONE 'UTC', "
+    "'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS due_at) d "
+    f"WHERE h.{_OF_ORG} AND h.object_id = CAST(:oid AS uuid) "
+    "AND h.field_key = :field AND h.v_ts > CAST(:armed AS timestamptz) "
+    "AND h.v_ts > now() - make_interval(days => CAST(:lookback AS integer)) "
+    "AND h.v_ts <= now() "
+    "AND (CAST(:pfield AS text) IS NULL OR NOT EXISTS ("
+    "SELECT 1 FROM studio_record_hot p "
+    f"WHERE p.{_OF_ORG} AND p.record_id = h.record_id "
+    "AND p.field_key = CAST(:pfield AS text) "
+    "AND p.v_text = ANY(CAST(:pvalues AS text[])))) "
+    "AND NOT EXISTS (SELECT 1 FROM workflow_runs r "
+    f"WHERE r.{_OF_ORG} AND r.workflow_id = CAST(:wid AS uuid) "
+    "AND r.delivery_key = CAST(:prefix AS text) || h.record_id::text || ':' || d.due_at) "
+    "ORDER BY h.v_ts, h.record_id LIMIT :n"
+)
+
+
+@dataclass(frozen=True)
+class Timer:
+    """One timer of an object (E9a): the object, its package and the rule."""
+
+    object_id: str
+    package_id: str
+    object_name: str
+    rule: Rule
+
+
+@dataclass(frozen=True)
+class TimerDue:
+    """One breach: the record, and its due time as ``YYYY-MM-DDTHH:MM:SS.ffffffZ``."""
+
+    record_id: str
+    due_at: str
+
+
+async def timer_of(db: Any, *, package_id: Any, object_name: Any,
+                   rule_name: Any) -> Timer | None:
+    """The timer *rule_name* of the object *object_name* of the package
+    *package_id*, in the bound org, or None.
+
+    It reads the stored rules, which the sync of a publish writes, so a timer
+    binds the published manifest. It fails closed: a package id that is not a
+    UUID, an object or a rule that is not there, a rule of another kind, and a
+    timer whose fields no longer fit (not hot, another type) answer None."""
+    if not isinstance(object_name, str) or not isinstance(rule_name, str):
+        return None
+    try:
+        pid = _uuid(package_id, "package_id")
+    except ObjectStoreError:
+        return None
+    row = (await db.execute(text(_OBJECT_BY_NAME_SQL), {"pid": pid, "name": object_name})).first()
+    if row is None:
+        return None
+    obj = _object(row, await _fields(db, str(row[0])))
+    rule = next((r for r in obj.constraints if r.name == rule_name and r.kind == TIMER), None)
+    if rule is None:
+        return None
+    try:
+        check_rules_fit([rule], obj.fields, object_name=obj.name)
+    except ConstraintError:
+        return None
+    return Timer(object_id=obj.id, package_id=pid, object_name=obj.name, rule=rule)
+
+
+async def due_timer_records(db: Any, timer: Timer, *, armed_at: datetime, workflow_id: str,
+                            key_prefix: str, limit: int) -> list[TimerDue]:
+    """The breaches of *timer* that no run of *workflow_id* holds, oldest due
+    first, at most *limit* (1 to :data:`MAX_TIMER_READ`).
+
+    *armed_at* is the arm time of the trigger: a record due at or before it
+    never breaches. The DB clock decides "due", never the app clock. The run of
+    a breach holds the delivery key ``<key_prefix><record id>:<due_at>``, so a
+    record that fired is left out until its due value changes. The read holds
+    no lock and writes nothing.
+
+    ⚠️ The walk is bounded twice. A record due more than
+    :data:`TIMER_LOOKBACK_DAYS` days ago never breaches, so the fired and the
+    paused records of the past do not grow the walk without end. The read runs
+    under :func:`_time_limit` with :data:`TIMER_READ_TIMEOUT_MS`, the LOCAL
+    ``statement_timeout`` of C2. A timeout raises ``QueryError``
+    (``query_timeout``), and the caller's transaction stays usable."""
+    if type(limit) is not int or not 1 <= limit <= MAX_TIMER_READ:
+        raise ObjectStoreError(f"limit is 1 to {MAX_TIMER_READ}")
+    pause = timer.rule.pause
+    binds = {
+        "oid": _uuid(timer.object_id, "object_id"), "field": str(timer.rule.field),
+        "armed": armed_at, "lookback": TIMER_LOOKBACK_DAYS,
+        "pfield": None if pause is None else pause.field,
+        "pvalues": [] if pause is None else list(pause.value),
+        "wid": _uuid(workflow_id, "workflow_id"), "prefix": key_prefix, "n": limit,
+    }
+    deadline = _clock() + TIMER_READ_TIMEOUT_MS / 1000
+    async with _time_limit(db, deadline, _TIMER_TIMEOUT_MESSAGE) as timed:
+        rows = (await timed.execute(text(_TIMER_DUE_SQL), binds)).all()
+    return [TimerDue(record_id=str(r[0]), due_at=str(r[1])) for r in rows]
+
+
+def timer_print(rule: Rule) -> dict[str, Any]:
+    """What makes a breach a new one (E9a): the due field of the timer, and
+    nothing else. The workflow scan keeps it beside the arm time, and a new
+    print arms the trigger again, so a changed field never starts runs for the
+    records that were already overdue. The pause is not in it on purpose. A
+    new pause value only stops breaches, and an arm at that time would drop
+    the breach of a record that was overdue in a pause and then leaves it."""
+    return {"field": str(rule.field)}
