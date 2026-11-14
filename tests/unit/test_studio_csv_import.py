@@ -156,7 +156,9 @@ def test_source_opens_no_connection_and_never_writes() -> None:
         assert banned not in _SRC.split('"""', 2)[2], banned
 
 
-@pytest.mark.parametrize("cell", ["1,5", "1 000", "12,34", "1,23,456", ",5"])
+@pytest.mark.parametrize(
+    "cell", ["1,5", "1 000", "12,34", "1,23,456", ",5", "0,125", "-0,500", "000,250"]
+)
 def test_a_comma_that_is_no_thousands_group_is_refused(cell: str) -> None:
     """A European file writes 1,5 for 1.5. A read as 15 is a ten-fold error."""
     p = _plan(f'Bolt,,"{cell}",,,,,,\n')
@@ -210,3 +212,34 @@ def test_the_row_cap_stops_before_the_whole_grid_is_built() -> None:
 def test_a_quoted_header_with_a_semicolon_keeps_the_comma() -> None:
     t = ci.parse_csv('"Notes; a; b",Name\nx,y\n')
     assert t.headers == ("Notes; a; b", "Name")
+
+
+def test_a_number_with_trailing_zeros_and_an_amount_over_the_cap() -> None:
+    assert _plan("Bolt,1.500000000000000000,,,,,,,\n").preview[0]["qty"] == 1.5
+    over = _plan("Bolt,,12000000000000000,,,,,,\n")
+    assert over.errors[0].field == "price" and "15 digits" in over.errors[0].message
+    near = _plan("Bolt,,999999999999999,,,,,,\n")  # 15 digits: the minor value passes 10^15
+    assert near.errors[0].field == "price" and "10^15" in near.errors[0].message
+
+
+def test_the_minor_digits_table_equals_intl() -> None:
+    """The grid and the form read ``minorDigits()`` (Intl). This table must agree."""
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    js = (
+        'const o={};for(const c of Intl.supportedValuesOf("currency")){'
+        'const d=new Intl.NumberFormat("en-IN",{style:"currency",currency:c})'
+        ".resolvedOptions().maximumFractionDigits;if(d!==2)o[c]=d}"
+        "console.log(JSON.stringify(o))"
+    )
+    got = json.loads(
+        subprocess.run(
+            [node, "-e", js], capture_output=True, text=True, check=True, timeout=60
+        ).stdout
+    )
+    assert got == ci.MINOR_DIGITS

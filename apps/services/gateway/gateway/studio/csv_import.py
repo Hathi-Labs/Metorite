@@ -227,36 +227,53 @@ def _check_mapping(
 # --- one cell -----------------------------------------------------------------
 
 
-#: The currencies that do not have 2 minor digits (ISO 4217). A money value is
-#: whole minor units, and the grid shows ``minor / 10 ** digits`` (fieldCheck.ts).
+#: The minor digits of the currencies that do not have 2. It is the table of
+#: ``minorDigits()`` in ``fieldCheck.ts`` (Intl, CLDR): the grid and the form read
+#: that one, so an import must store the same minor units. ISO 4217 differs for
+#: HUF, IDR, COP, IQD and a few more, so do NOT use ISO here. Fence:
+#: ``test_the_minor_digits_table_equals_intl`` (runs where node is installed).
 MINOR_DIGITS: dict[str, int] = {
     **dict.fromkeys(
         (
+            "AFN",
+            "ALL",
             "BIF",
             "CLP",
+            "COP",
             "DJF",
             "GNF",
+            "HUF",
+            "IDR",
+            "IQD",
+            "IRR",
             "ISK",
             "JPY",
             "KMF",
+            "KPW",
             "KRW",
+            "LAK",
+            "LBP",
+            "MGA",
+            "MMK",
+            "PKR",
             "PYG",
             "RWF",
+            "SLL",
+            "SOS",
+            "SYP",
             "UGX",
-            "UYI",
             "VND",
             "VUV",
             "XAF",
             "XOF",
             "XPF",
+            "YER",
         ),
         0,
     ),
-    **dict.fromkeys(("BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"), 3),
-    "CLF": 4,
-    "UYW": 4,
+    **dict.fromkeys(("BHD", "JOD", "KWD", "LYD", "OMR", "TND"), 3),
 }
-_THOUSANDS_RE = re.compile(r"-?[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?", re.ASCII)
+_THOUSANDS_RE = re.compile(r"-?[1-9][0-9]{0,2}(?:,[0-9]{3})+(?:\.[0-9]+)?", re.ASCII)
 #: A float keeps 15 significant digits exactly. A number field refuses more.
 _MAX_DIGITS = 15
 
@@ -271,6 +288,8 @@ def _decimal(f: FieldSpec, cell: str) -> Decimal:
             raise FieldError(f.key, f"Field `{f.key}` takes a number as 1234.5 or 1,234.5.")
         text = text.replace(",", "")
     if not _NUMBER_RE.fullmatch(text):
+        if re.fullmatch(r"-?[0-9]{16,}(?:\.[0-9]+)?", text, re.ASCII):
+            raise FieldError(f.key, f"Field `{f.key}` takes at most 15 digits before the point.")
         raise FieldError(f.key, f"Field `{f.key}` takes a number as 1234.5, with no exponent.")
     try:
         return Decimal(text)
@@ -278,11 +297,24 @@ def _decimal(f: FieldSpec, cell: str) -> Decimal:
         raise FieldError(f.key, f"Field `{f.key}` takes a number as 1234.5.") from None
 
 
+def _money(f: FieldSpec, cell: str, currency: str | None) -> dict[str, Any]:
+    """Whole minor units of *currency*, as the grid reads them (:data:`MINOR_DIGITS`)."""
+    if currency is None:
+        raise FieldError(f.key, f"Field `{f.key}` needs a currency for the import.")
+    digits = MINOR_DIGITS.get(currency, 2)
+    minor = _decimal(f, cell) * 10**digits
+    if abs(minor) >= studio_fields.MAX_ABS_NUMBER:
+        raise FieldError(f.key, f"Field `{f.key}` takes an amount below 10^15 minor units.")
+    if minor != minor.to_integral_value():
+        raise FieldError(f.key, f"Field `{f.key}` takes at most {digits} decimals in {currency}.")
+    return {"minor": int(minor), "currency": currency}
+
+
 def _scalar(f: FieldSpec, cell: str, currency: str | None) -> Any:
     t = f.type
     if t == "number":
         d = _decimal(f, cell)
-        if len(d.as_tuple().digits) > _MAX_DIGITS:
+        if len(d.normalize().as_tuple().digits) > _MAX_DIGITS:
             raise FieldError(f.key, f"Field `{f.key}` takes at most {_MAX_DIGITS} digits.")
         if d == d.to_integral_value():
             return int(d)
@@ -290,15 +322,7 @@ def _scalar(f: FieldSpec, cell: str, currency: str | None) -> Any:
             raise FieldError(f.key, f"Field `{f.key}` takes a number that is not this small.")
         return float(d)
     if t == "money":
-        if currency is None:
-            raise FieldError(f.key, f"Field `{f.key}` needs a currency for the import.")
-        digits = MINOR_DIGITS.get(currency, 2)
-        minor = _decimal(f, cell) * 10**digits
-        if minor != minor.to_integral_value():
-            raise FieldError(
-                f.key, f"Field `{f.key}` takes at most {digits} decimals in {currency}."
-            )
-        return {"minor": int(minor), "currency": currency}
+        return _money(f, cell, currency)
     if t == "percent":
         d = _decimal(f, cell.removesuffix("%").strip()) * 100
         if d != d.to_integral_value():
