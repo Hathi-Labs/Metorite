@@ -64,6 +64,26 @@ CORPUS: dict[str, list[tuple[str, str]]] = {
 }
 
 
+#: The Fracktal evidence (production, 2026-11-14). A member asked about
+#: "Sharath's" 3D printer order. ``search_company`` answered zero for
+#: "Sharath 3D printer" (with Email skipped) and for "Neuropeak Sharath",
+#: but the CRM held the deal «Neuropeak - Snowflake 3D printer». Each word
+#: lives in a different record. A CRM row is (id, text, kind, stamp).
+FRACKTAL: dict[str, list[tuple[str, ...]]] = {
+    "tasks": [],
+    # The mail spells the name "Sharat", so "Sharath" does not match it.
+    "email": [("m-7", "Snowflake order from Sharat Satyanarayana")],
+    "people": [],
+    "crm": [("d-1", "Neuropeak - Snowflake 3D printer", "deal", "2026-11-11"),
+            ("d-2", "Twin Dragon 300 - 3D Printer Hardware", "deal", "2026-10-20"),
+            ("l-1", "Sharath .", "lead", "2024-03-02"),
+            ("c-1", "Sharath BMS Purchase Dept", "contact", "2025-07-23")],
+    "artifacts": [],
+    "whatsapp": [],
+    "knowledge": [],
+}
+
+
 def _matches(key: str, q: str, text: str) -> bool:
     if key == "people":
         return q.lower() in text.lower()
@@ -71,9 +91,14 @@ def _matches(key: str, q: str, text: str) -> bool:
 
 
 class World:
-    """Seven fake readers over :data:`CORPUS`. Each records what it got."""
+    """Seven fake readers over a corpus, :data:`CORPUS` by default.
 
-    def __init__(self) -> None:
+    A row is ``(id, text)``, or ``(id, text, kind, stamp)``. Each reader
+    records what it got.
+    """
+
+    def __init__(self, corpus: dict[str, list[tuple[str, ...]]] | None = None) -> None:
+        self.corpus = CORPUS if corpus is None else corpus
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
         self.fail: set[str] = set()
         self.slow: dict[str, float] = {}
@@ -84,24 +109,36 @@ class World:
             await asyncio.sleep(self.slow.get(q, 0.0))
             if key in self.fail:
                 raise RuntimeError("the app is down")
-            return [
-                Hit(app=key, kind=KINDS[key], id=ident, title=text, hint=key,
-                    href=f"/{key}/{ident}")
-                for ident, text in CORPUS[key] if _matches(key, q, text)
-            ][:k]
+            hits = []
+            for row in self.corpus[key]:
+                ident, text = row[0], row[1]
+                kind = row[2] if len(row) > 2 else KINDS[key]
+                stamp = row[3] if len(row) > 3 else None
+                if _matches(key, q, text):
+                    hits.append(Hit(app=key, kind=kind, id=ident, title=text, hint=key,
+                                    href=f"/{key}/{ident}", stamp=stamp))
+            return hits[:k]
         return read
 
     def asked(self, q: str) -> list[str]:
         return [key for key, words, _o in self.calls if words == q]
 
 
-@pytest.fixture()
-def world(monkeypatch) -> World:
-    w = World()
+def _install(monkeypatch, w: World) -> World:
     for key, source in list(sources.REGISTRY.items()):
         monkeypatch.setitem(sources.REGISTRY, key,
                             dataclasses.replace(source, read=w.reader(key), gate=None))
     return w
+
+
+@pytest.fixture()
+def world(monkeypatch) -> World:
+    return _install(monkeypatch, World())
+
+
+@pytest.fixture()
+def fracktal(monkeypatch) -> World:
+    return _install(monkeypatch, World(FRACKTAL))
 
 
 def run(q: str, user: Any = None, k: int = 5) -> dict[str, Any]:
@@ -245,6 +282,50 @@ class TestEachWordAlone:
         (_event, fields), = [line for line in log.lines if line[0] == "search.company.broaden"]
         assert fields["words"] == 2 and fields["hits"] == 6 and isinstance(fields["ms"], int)
         assert "Aroh" not in repr(log.lines)
+
+
+# ── Criterion 1, from the Fracktal evidence of 2026-11-14 ───────────────────
+
+class TestTheFracktalEvidence:
+    """Each word of the query lives in a different CRM record."""
+
+    def test_three_words_find_the_deal_and_the_contacts(self, fracktal, recency):  # noqa: F811
+        recency(True)
+        # As on production: Email did not answer the first pass.
+        fracktal.fail.add("email")
+        answer = run("Sharath 3D printer")
+        assert answer["skipped"] == ["email"]
+        assert answer["broadened"] == [
+            {"word": "Sharath", "hits": 2, "skipped": []},
+            {"word": "3D", "hits": 2, "skipped": []},
+            {"word": "printer", "hits": 2, "skipped": []},
+        ]
+        ids = [h["id"] for h in answer["hits"]]
+        # d-1 and d-2 match "3D" and "printer". Each shows once.
+        assert sorted(ids) == ["c-1", "d-1", "d-2", "l-1"]
+        # Email did not answer the first pass, so the second pass skips it.
+        assert "email" not in fracktal.asked("Sharath")
+
+    def test_two_words_in_two_records_give_both_records(self, fracktal, recency):  # noqa: F811
+        recency(True)
+        answer = run("Neuropeak Sharath")
+        assert answer["broadened"] == [
+            {"word": "Neuropeak", "hits": 1, "skipped": []},
+            {"word": "Sharath", "hits": 2, "skipped": []},
+        ]
+        hits = answer["hits"]
+        assert [(h["kind"], h["id"]) for h in hits] == [
+            ("deal", "d-1"), ("lead", "l-1"), ("contact", "c-1")]
+        # The lead is two years old. The age lowers it, and it stays in the list.
+        assert hits[1]["stamp"] == "2024-03-02"
+
+    def test_the_tool_answer_opens_with_each_word_and_its_count(self, fracktal, recency):  # noqa: F811
+        recency(True)
+        lines = cst.format_answer(run("Neuropeak Sharath"), dated=True).splitlines()
+        assert lines[1] == ("No record holds all of the words. Each word alone: "
+                            "Neuropeak (1), Sharath (2).")
+        assert lines[2].startswith("- «Neuropeak - Snowflake 3D printer»")
+        assert cst.NOTHING not in lines
 
 
 # ── Criterion 2: an operator stops it ───────────────────────────────────────

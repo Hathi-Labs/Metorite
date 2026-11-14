@@ -9,7 +9,8 @@ Verified against the code on 2026-10-25.
 migration, behind `CONTEXT_RECENCY`, Metorite task 2974). A zero answer of
 `GET /search/company` asks again with each word alone. The answer says what
 became of the meaning half, and the tool says that zero is not proof
-(§20.4, §20.7).
+(§20.4, §20.7). Merged with `main` and checked again on 2026-11-14, with
+the Fracktal queries in the fence.
 
 **KB-9b slice 2 is BUILT, 2026-10-26** (branch `kb-9b2-sync-card`, no
 migration, dark behind `MY_DAY_PROVIDERS` and `KNOWLEDGE_SOURCES`, Metorite
@@ -1716,8 +1717,10 @@ page.
 - **Output.** `{query, hits: [hit], skipped: [key]}`. No chat model runs.
 - **A zero is not proof (KR-ZERO, task 2974).** Each app matches every word
   of the query in one record. So "Aroh Attero" found nothing on production,
-  over a mailbox with about 10 Aroh threads. With `CONTEXT_RECENCY` on, the
-  route does three more things:
+  over a mailbox with about 10 Aroh threads. On 2026-11-14, "Sharath 3D
+  printer" and "Neuropeak Sharath" also found nothing. Each word was in a
+  different CRM record, such as the deal «Neuropeak - Snowflake 3D printer».
+  With `CONTEXT_RECENCY` on, the route does three more things:
   1. It starts the query embed at its start, as one task, when a source with
      meaning is asked. The task runs while the keyword sources run. Each
      source that needs the vector waits for that task inside its own time.
@@ -1737,6 +1740,10 @@ page.
   equally. The whole answer stops at 6 s (`ANSWER_CAP_S`), so the worst case
   is 1.5 times the 4 s of the first pass. With the flag off, the answer of
   KR-1 does not change.
+
+  The first pass still asks the apps one at a time, in one budget. So a
+  slow app can run out of time, as Email did for "Sharath 3D printer". The
+  second pass does not ask that app again. HRD-4 (task 2983) owns that gap.
 
 ### 20.5 `search_company` — the assistant's tool
 
