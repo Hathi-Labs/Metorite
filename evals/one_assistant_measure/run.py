@@ -42,6 +42,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 from acb_skills import tier_policy
 
 from evals.one_assistant_measure import checks as ck
@@ -69,15 +70,40 @@ ARMS = ("delegation", "pack")
 #: (OA-9b). It sets ``SPAWN_SUBAGENTS_ORGS`` for the eval org, in the eval
 #: process only. The fan-out chats run on it and on ``pack``.
 SPAWN_ARM = ck.SPAWN_ARM
-ALL_ARMS = (*ARMS, SPAWN_ARM)
+#: TS-5a. The fourth arm: the packs with ``TOOL_SEARCH_ORGS`` on, where the model
+#: finds a tool with ``find_tools``. It is listed, and it runs only when the
+#: settings hold ``tool_search_orgs`` (:func:`search_built`). The Studio chats and
+#: the plans of TS-5b run on it.
+SEARCH_ARM = ck.SEARCH_ARM
+ALL_ARMS = (*ARMS, SPAWN_ARM, SEARCH_ARM)
 PACK_ARMS = ck.PACK_ARMS
+#: The packs that the Studio chats turn on, BY NAME. ``tool_packs.owner_packs`` of
+#: the Studio owner would add the DARK pack ``studio-workflows`` (the owner turns it
+#: on with a ``TOOL_PACKS`` line, ``tool_packs.py`` near ``FOLLOWS``). It stays off.
+STUDIO_PACKS = ("studio",)
+
+
+def search_built() -> bool:
+    """True when the settings hold ``tool_search_orgs``: the flag of TS-2. Until
+    then the ``search`` arm prints SKIP and runs nothing. It reads the settings
+    with ``getattr``, so it needs no import from the branch that adds the field."""
+    from acb_common import get_settings
+
+    return getattr(get_settings(), "tool_search_orgs", None) is not None
 
 
 def arms_for(sc: Scenario, asked: tuple[str, ...]) -> tuple[str, ...]:
     """The arms that run *sc*: a fan-out chat runs on ``pack`` and ``packs+spawn``
-    (delegation holds no spawn tool), any other chat on ``delegation`` and ``pack``."""
-    want = (ARMS[1], SPAWN_ARM) if sc.set == "fanout" else ARMS
-    return tuple(a for a in want if a in asked)
+    (delegation holds no spawn tool), a Studio chat on ``pack`` and ``search``
+    (``studio-builder`` takes no hand-off), any other chat on ``delegation`` and
+    ``pack``. The ``search`` arm drops out while :func:`search_built` is False."""
+    if sc.set == "fanout":
+        want = (ARMS[1], SPAWN_ARM)
+    elif sc.set == "studio":
+        want = (ARMS[1], SEARCH_ARM)
+    else:
+        want = ARMS
+    return tuple(a for a in want if a in asked and (a != SEARCH_ARM or search_built()))
 EA = pack.EA
 CRM = pack.CRM
 PROJECTS = pack.PROJECTS
@@ -116,6 +142,28 @@ def pack_flag(owners: tuple[str, ...] = (pack.EA,)) -> dict[str, Any]:
 def owners_of(sc: Scenario) -> tuple[str, ...]:
     """The owners whose packs the ``pack`` arm turns on for *sc*."""
     return (EA,) if sc.set == "email" else pack.OWNERS
+
+
+def flag_for(sc: Scenario, arm: str) -> dict[str, Any]:
+    """The settings that *arm* adds for *sc*, set in the eval process only.
+
+    The pack arms get the packs of the owners (:func:`pack_flag`). A Studio chat
+    adds ``studio`` BY NAME to ``tool_packs`` (:data:`STUDIO_PACKS`) and the org to
+    ``studio_orgs``, so the pack builds and the loader offers it. The ``search`` arm
+    adds ``tool_search_orgs``. The spawn arm adds ``spawn_subagents_orgs``."""
+    if arm not in PACK_ARMS:
+        return {}
+    flag = pack_flag(owners_of(sc))
+    if sc.set == "studio":
+        flag["tool_packs"] = ",".join([flag["tool_packs"], *STUDIO_PACKS])
+        flag["studio_orgs"] = ds.ORG
+    if arm == SPAWN_ARM:
+        # In the eval process only. The tool leaves the request of any
+        # other org (``test_spawn_subagents.py``).
+        flag["spawn_subagents_orgs"] = ds.ORG
+    if arm == SEARCH_ARM:
+        flag["tool_search_orgs"] = ds.ORG
+    return flag
 
 
 EVAL_ENV = Path.home() / ".metorite" / "secrets" / "eval.env"
@@ -202,6 +250,7 @@ def call_row(c: ModelCall) -> dict[str, Any]:
 
     return {
         "agent": c.agent, "model": c.model, "served": c.served, "stream": c.stream,
+        "schema_tokens": int(getattr(c, "schema_tokens", 0) or 0),
         "requested": c.requested or c.model, "mapped": mapped,
         "messages": c.messages, "tools": c.tools, "request_chars": c.request_chars,
         "status": c.status, "ttfb_s": since(c.first_byte), "ttft_s": since(c.first_token),
@@ -228,11 +277,17 @@ def pack_tool_names() -> frozenset[str]:
 
 
 def owner_of_tool(name: str) -> str:
-    """The owner of tool *name*: the CRM or the Projects assistant, else email."""
+    """The owner of tool *name*: the CRM, Projects or Studio owner, else email.
+
+    The Studio owner has no ``config.json``, so its tools come from
+    ``SKILL_FAMILIES`` (:func:`pack.studio_tool_names`). Before TS-5a a Studio tool
+    fell through to email."""
     if name in pack.owner_tool_names(CRM):
         return CRM
     if name in pack.owner_tool_names(PROJECTS):
         return PROJECTS
+    if name in pack.studio_tool_names():
+        return pack.STUDIO
     return EA
 
 
@@ -261,6 +316,8 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C
     """
     from acb_skills import tool_packs
 
+    if arm == SEARCH_ARM:
+        raise NotImplementedError("the scripted plans that call find_tools are TS-5b")
     in_pack = pack_tool_names()
     orch: list[Any] = []
     subs: dict[str, list[Any]] = {}
@@ -462,6 +519,43 @@ def router_env() -> tuple[str, str] | None:
     return (base.rstrip("/"), key) if base and key else None
 
 
+def tap_schemas(mp: Any) -> None:
+    """Put the tools of each request on its :class:`ModelCall` (TS-5a).
+
+    ``harness.ModelCall`` keeps only the NUMBER of tools. The checks of the search
+    arm need their names, the description of ``find_tools`` and the schema tokens.
+    This wraps ``_WireTap.handle_async_request`` from here and edits no harness
+    file: it reads the body that the tap reads, and sets three attributes on the
+    call that the tap added (``tool_names``, ``find_description``, ``schema_tokens``).
+    It changes nothing on the wire."""
+    real = harness_mod._WireTap.handle_async_request
+
+    async def handle(tap: Any, request: httpx.Request) -> httpx.Response:
+        before = len(tap._sink)
+        try:
+            raw = request.content or b""
+        except httpx.RequestNotRead:
+            raw = b""
+        try:
+            body = json.loads(raw or b"{}")
+        except ValueError:
+            body = {}
+        tools = [t for t in ((body if isinstance(body, dict) else {}).get("tools") or [])
+                 if isinstance(t, dict)]
+        response = await real(tap, request)
+        mine = next((c for c in tap._sink[before:]
+                     if c.agent == tap._agent and not hasattr(c, "schema_tokens")), None)
+        if mine is not None:
+            funcs = [t.get("function") or {} for t in tools]
+            mine.tool_names = [str(f.get("name") or "") for f in funcs]
+            mine.find_description = next(
+                (str(f.get("description") or "") for f in funcs if f.get("name") == ck.FIND_TOOL), "")
+            mine.schema_tokens = ck.schema_tokens_of(tools)
+        return response
+
+    mp.setattr(harness_mod._WireTap, "handle_async_request", handle)
+
+
 def _use_router(harness: RoutingHarness, router: tuple[str, str]) -> None:
     from acb_common import get_settings
 
@@ -581,6 +675,20 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
             harness._mp.setattr(harness_mod, "MODEL_REWRITE", dict(tier_map or {}))
         harness.mailboxes = mb.BOXES
         no_local_database(harness._mp)
+        tap_schemas(harness._mp)
+        if sc.without_features:
+            # TS-5a. The harness grants every feature of a pane. This chat's member
+            # lacks some, so the run reads the narrower set (``in_app_path`` reads
+            # ``member_features`` at call time). No harness file changes.
+            from orchestrator import in_app_path
+
+            kept = frozenset(p.feature for p in in_app_path.PANES
+                             if p.feature) - frozenset(sc.without_features)
+
+            async def member_features() -> frozenset[str]:
+                return kept
+
+            harness._mp.setattr(in_app_path, "member_features", member_features)
         # The worker of ``spawn_subagents`` is an internal agent: the harness
         # registry lists the public agents only, so the stand-in loader gets it here.
         from gateway.routes.agent import _INTERNAL_AGENTS
@@ -610,11 +718,7 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
 
         harness._mp.setattr(crm_tools, "crm_mode", crm_mode)
         settings = get_settings()
-        flag = pack_flag(owners_of(sc)) if arm in PACK_ARMS else {}
-        if arm == SPAWN_ARM:
-            # In the eval process only. The tool leaves the request of any
-            # other org (``test_spawn_subagents.py``).
-            flag["spawn_subagents_orgs"] = ds.ORG
+        flag = flag_for(sc, arm)
         web = fanout.WebFixtures()
         web.install(harness._mp)
         for name, value in {**PRODUCTION, **flag}.items():
@@ -633,6 +737,7 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
         member = Member()
         history = [dict(h) for h in sc.history]
         thread: str | None = None
+        marked = False  # the chat read outside mail: its packs are held (TS-5a)
         for index, turn in enumerate(sc.turns):
             if index and should_stop is not None and should_stop():
                 break
@@ -647,11 +752,13 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                     history=history or None, typed=turn.words,
                 ))
             thread = record.thread_id
-            main_calls, sub_calls = ck.work_calls_of(record.events, ck.work_tool_names())
+            main_calls, sub_calls = ck.work_calls_of(
+                record.events, ck.work_tool_names() | ck.studio_tool_names())
             # OA-8i: a hand-off that the product refused ran no work. It is
             # counted on its own, and only the hand-offs that ran are checked.
             refused_handoffs = ck.refused_handoffs_of(record.events)
             used_calls = harness.model_calls[marks[2]:]
+            orch_calls = [c for c in used_calls if c.agent == ORCHESTRATOR]
             obs = ck.Observation(
                 arm=arm, answer=record.answer, email_calls=ck.email_calls_of(record.events),
                 tasks=ck.tasks_of(record.tool_calls),
@@ -672,6 +779,13 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 needs=next((str(c.arg) for c in turn.checks if c.kind == "right_pack"), ""),
                 reachable=reachable_of(tap.events[marks[3]:]),
                 write_cards=ck.write_cards_of(record.events),
+                trace=ck.trace_of(record.events),
+                tool_names=frozenset(n for c in orch_calls for n in getattr(c, "tool_names", ())),
+                find_description=next((d for c in orch_calls
+                                       if (d := getattr(c, "find_description", ""))), ""),
+                schema_tokens=max((int(getattr(c, "schema_tokens", 0) or 0) for c in orch_calls),
+                                  default=0),
+                held=marked,
             )
             result = ck.check_turn(turn, obs)
             calls = [call_row(c) for c in harness.model_calls[marks[2]:]]
@@ -713,7 +827,15 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                                  default=0),
                 "pack_events": events,
                 "mark_writes": sum(1 for kind, _ in store.calls[marks[6]:] if kind == "setex"),
+                # TS-5a. The numbers of the search arm: the find_tools calls of the turn,
+                # the tools that ran after a find or a load, and the schema tokens.
+                "searches": sum(1 for name, _, _ in obs.trace if name == ck.FIND_TOOL),
+                "found_tools": sorted({name for name, _, result in obs.trace
+                                       if name not in (ck.FIND_TOOL, ck.LOAD_TOOL)
+                                       and not ck.refused(result)}),
+                "schema_tokens": obs.schema_tokens, "held": obs.held,
             }
+            marked = marked or row["mark_writes"] > 0
             rows.append(row)
             if on_turn is not None:
                 on_turn(row)
@@ -979,8 +1101,21 @@ def extra_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
             kinds[agent] += n
         for agent, n in (r.get("handoffs_refused") or {}).items():
             refused[agent] += n
+    searched = [r for r in app if r.get("searches")]
+    tokens = [r["schema_tokens"] for r in rs if r.get("schema_tokens")]
     return {
         "app_turns": len(app),
+        # TS-5a. The numbers of the search arm. A false search is a find on a turn that
+        # needs no tool (it has a ``not_searched`` check). It is counted on its own, and
+        # it is NOT in the share of stop result 12.
+        "app_turns_searched": len(searched),
+        "search_turn_share_pct": _pct(len(searched), len(app)),
+        "searches_per_turn": _mean([float(r.get("searches", 0)) for r in rs]),
+        "found_tools_per_turn": _mean([float(len(r.get("found_tools") or [])) for r in rs]),
+        "false_searches": sum(r.get("searches", 0) for r in rs
+                              if r["checks"].get("not_searched") is not None),
+        "schema_tokens_max": max(tokens, default=None),
+        "schema_tokens_mean": _mean([float(n) for n in tokens]),
         "layer_b_turns": len(layer_b),
         "layer_b_share_pct": _pct(len(layer_b), len(app)),
         "pack_turns": len(packed),
@@ -1041,11 +1176,16 @@ def set_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+#: Stop result 12 (TS-5a): the most percent of app turns that may call ``find_tools``.
+SEARCH_STOP_PCT = 15
+
+
 def stop_results(summary: dict[str, Any]) -> list[tuple[int, str, str]]:
-    """The ten stop results of §4.3.3 that one results file can show, as
+    """The twelve stop results of §4.3.3 that one results file can show, as
     ``(number, state, why)``. State: ``STOP``, ``ok`` or ``n/a``. Results 3, 4 and
     9 need the ``general`` set, a run with no packs, and the spawn arm. Result 10
-    needs the spawn arm. They show ``n/a`` until those exist."""
+    needs the spawn arm, and result 12 needs the ``search`` arm. They show ``n/a``
+    until those exist."""
     out: list[tuple[int, str, str]] = []
     guards = sorted({g for v in summary.values() for g in v.get("guard_failures", [])})
     out.append((1, "STOP" if guards else "ok", ", ".join(guards) or "no guard check failed"))
@@ -1087,6 +1227,21 @@ def stop_results(summary: dict[str, Any]) -> list[tuple[int, str, str]]:
         out.append((11, "STOP" if fault else ("REVIEW" if total else "ok"),
                     f"{total} hand-off turns on a packed app, {fault} by model choice: {by}. "
                     f"Refused hand-offs, not counted: {tried}"))
+    search = summary.get(SEARCH_ARM)
+    if search is None:
+        out.append((12, "n/a", "needs the search arm"))
+    else:
+        # Stop result 12, the twin of result 5: ``find_tools`` on more than 15 percent
+        # of the app turns of the search arm. Counts, not a rounded percent: 15 of 100
+        # is ok, and 16 of 100 is a STOP.
+        calls, total = search.get("app_turns_searched") or 0, search.get("app_turns") or 0
+        if not total:
+            out.append((12, "n/a", "no app turn on the search arm"))
+        else:
+            out.append((12, "STOP" if calls * 100 > SEARCH_STOP_PCT * total else "ok",
+                        f"find_tools on {calls} of {total} app turns ({_pct(calls, total)}%), "
+                        f"the limit is {SEARCH_STOP_PCT}%. False searches, counted on their own: "
+                        f"{search.get('false_searches', 0)}"))
     spawn = summary.get(SPAWN_ARM)
     base = summary.get("pack")
     slow = (spawn or {}).get("research_total_median"), (base or {}).get("research_total_median")
@@ -1186,7 +1341,13 @@ def report(data: dict[str, Any]) -> str:
                 ("Cache share, other turns", "cache_share_other_turns"),
                 ("Hand-offs to an owner", "specialist_handoffs"),
                 ("Hand-offs that the product refused", "handoffs_refused"),
-                ("Hand-off turns on a packed app, by owner and reason", "app_handoff_turns")):
+                ("Hand-off turns on a packed app, by owner and reason", "app_handoff_turns"),
+                ("Searches (find_tools) per turn", "searches_per_turn"),
+                ("Tools that ran after a find or a load, per turn", "found_tools_per_turn"),
+                ("App turns that searched", "app_turns_searched"),
+                ("False searches (a find on a turn that needs no tool)", "false_searches"),
+                ("Schema tokens in a request, most", "schema_tokens_max"),
+                ("Schema tokens in a request, mean", "schema_tokens_mean")):
             lines.append(f"| {label} | " + " | ".join(str(s[a].get(key)) for a in arms) + " |")
         lines += ["", "| Stop result of §4.3.3 | State | Why |", "|---|---|---|"]
         lines += [f"| {n} | {state} | {why} |" for n, state, why in stop_results(s)]
@@ -1522,7 +1683,17 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
         print(f"NO-GO: {exc}")
         return EXIT_NO_GO
     asked = [a.strip() for a in args.arms.split(",") if a.strip()]
+    unknown = [a for a in asked if a not in ALL_ARMS]
+    if unknown:
+        # Before TS-5a an unknown value dropped silently, and the run measured less
+        # than the person asked for.
+        print(f"NO-GO: --arms {', '.join(unknown)}: no such arm. Use {', '.join(ALL_ARMS)}.")
+        return EXIT_NO_GO
     arms = tuple(a for a in asked if a in ALL_ARMS)
+    if SEARCH_ARM in arms and (args.scripted or args.live) and not search_built():
+        print(f"SKIP: arm {SEARCH_ARM}: the settings hold no tool_search_orgs yet (TS-2). "
+              "The arm runs when the flag exists, and the plans of TS-5b are in.")
+        arms = tuple(a for a in arms if a != SEARCH_ARM)
     wanted = {s.strip() for s in args.scenarios.split(",") if s.strip()}
     chosen = tuple(sc for sc in all_scenarios() if not wanted or sc.id in wanted)
     for sc in chosen:
