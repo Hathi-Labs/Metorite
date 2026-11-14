@@ -20,6 +20,15 @@ from __future__ import annotations
 from evals.one_assistant_measure.scenarios import PRIYA, Check, Plan, Scenario, Turn, _link
 from evals.one_assistant_measure.scenarios_work import page_for
 
+
+def pack_of(tool: str) -> str:
+    """The pack that OWNS *tool*, read from ``tool_packs`` (never hard-coded). After
+    TS-1b the core ``studio`` holds 10 tools and ``studio-more`` the other 13."""
+    from acb_skills import tool_packs
+
+    return next(slug for slug, found in tool_packs.PACKS.items() if tool in found.tools)
+
+
 SKILLS_ASK = "Which of my saved skills are still drafts?"
 APP_ASK = "Make me a small app to log visitor badges."
 PLAIN_ASK = "Give me a one-line thank-you note for the team."
@@ -46,7 +55,7 @@ STUDIO_SCENARIOS: tuple[Scenario, ...] = (
                 SKILLS_ASK,
                 (
                     Check("ran_tool", ("studio_skill_list",), "read_the_skills"),
-                    Check("right_pack", "studio"),
+                    Check("right_pack", pack_of("studio_skill_list")),
                     Check("answer_all", _DRAFTS, "names_the_drafts"),
                     Check("answer_none", (_LIVE,), "leaves_out_the_live_skill"),
                     Check("found_tool"),
@@ -65,7 +74,7 @@ STUDIO_SCENARIOS: tuple[Scenario, ...] = (
                 APP_ASK,
                 (
                     Check("ran_tool", ("studio_draft",), "drafted_the_app"),
-                    Check("right_pack", "studio"),
+                    Check("right_pack", pack_of("studio_draft")),
                     Check("answer_all", (r"badge",), "names_the_app"),
                     Check("found_tool"),
                     Check("search_round"),
@@ -113,7 +122,7 @@ STUDIO_SCENARIOS: tuple[Scenario, ...] = (
                 # "studio_skill_list" not found.' With the feature ON the tool runs, and
                 # no_studio_ran and no_studio_names fail.
                 Plan(
-                    (("studio_skill_list", {}),),
+                    (("studio_draft", {"brief": "Skills"}), ("studio_skill_list", {})),
                     "I cannot read saved skills in this chat.",
                 ),
             ),
@@ -143,7 +152,7 @@ STUDIO_SCENARIOS: tuple[Scenario, ...] = (
                 SKILLS_ASK,
                 (
                     Check("ran_tool", ("studio_skill_list",), "read_the_skills"),
-                    Check("right_pack", "studio"),
+                    Check("right_pack", pack_of("studio_skill_list")),
                     Check("answer_all", _DRAFTS, "names_the_drafts"),
                     Check("held_note"),
                     Check("found_tool"),

@@ -35,7 +35,7 @@ from evals.one_assistant_measure import checks as ck
 from evals.one_assistant_measure import pack, run
 from evals.one_assistant_measure import workgateway as wg
 from evals.one_assistant_measure.scenarios import all_scenarios, scenario
-from evals.one_assistant_measure.scenarios_studio import STUDIO_SCENARIOS
+from evals.one_assistant_measure.scenarios_studio import STUDIO_SCENARIOS, pack_of
 from evals.one_assistant_measure.scenarios_work import WORK_SCENARIOS
 from evals.routing import dataset as ds
 
@@ -159,7 +159,7 @@ def test_the_studio_tools_ran_in_the_orchestrators_own_run(scripted) -> None:
     assert ran[("stu_skills", 1)] == ["studio_skill_list"]
     assert ran[("stu_new_app", 1)] == ["studio_draft"]
     assert ran[("stu_plain", 1)] == []
-    assert ran[("stu_no_feature", 1)] == ["studio_skill_list"]  # tried, and refused
+    assert ran[("stu_no_feature", 1)] == ["studio_draft", "studio_skill_list"]  # tried, and refused
     assert ran[("stu_held", 2)] == ["studio_skill_list"]
     assert all(r["checks"]["ran"] for r in rows)
 
@@ -168,10 +168,11 @@ def test_the_pack_arm_loads_studio_by_the_model(scripted) -> None:
     """Layer (a) did not load it: the model called ``load_skill_tools`` (layer b)."""
     rows, _ = scripted
     loaded = {(r["scenario"], r["turn"]): r["loaded_by_model"] for r in rows}
-    assert "studio" in loaded[("stu_skills", 1)]
-    assert "studio" in loaded[("stu_new_app", 1)]
+    # The pack that OWNS the tool, read from tool_packs (TS-1b split the Studio pack).
+    assert loaded[("stu_skills", 1)] == [pack_of("studio_skill_list")] == ["studio-more"]
+    assert loaded[("stu_new_app", 1)] == [pack_of("studio_draft")] == ["studio"]
     assert loaded[("stu_plain", 1)] == []
-    assert "studio" in loaded[("stu_held", 2)]
+    assert loaded[("stu_held", 2)] == ["studio-more"]
 
 
 def test_the_rows_hold_the_numbers_of_the_search_arm(scripted) -> None:
@@ -202,7 +203,9 @@ def test_a_member_without_the_feature_sees_no_studio_name(scripted) -> None:
     assert row["checks"]["lists_no_skill"] is True
     assert row["checks"]["no_studio_ran"] is True
     # the model TRIED: the load and the call are in the run, and the product refused both
-    assert row["work_tools"] == ["studio_skill_list"] and "studio" in row["loaded_by_model"]
+    # BOTH packs of the split are tried and refused, with the real refusal text
+    assert row["work_tools"] == ["studio_draft", "studio_skill_list"]
+    assert row["loaded_by_model"] == ["studio", "studio-more"]
 
 
 def test_the_search_only_checks_are_none_on_the_pack_arm(scripted) -> None:
@@ -280,8 +283,10 @@ def test_a_studio_tool_belongs_to_the_studio_builder() -> None:
 def test_the_studio_names_come_from_the_skill_families() -> None:
     from acb_skills.skill_families import SKILL_FAMILIES
 
-    assert pack.studio_tool_names() == frozenset(SKILL_FAMILIES["studio"]["tools"]) | frozenset(
-        SKILL_FAMILIES["studio-workflows"]["tools"]
+    assert pack.studio_tool_names() == (
+        frozenset(SKILL_FAMILIES["studio"]["tools"])
+        | frozenset(SKILL_FAMILIES["studio-more"]["tools"])
+        | frozenset(SKILL_FAMILIES["studio-workflows"]["tools"])
     )
     assert pack.STUDIO not in pack.OWNERS  # no specialist, no config.json
 
@@ -311,7 +316,9 @@ def test_both_pack_arms_get_studio_by_name_and_the_org(
     assert "studio" in slugs
     assert flag.get("tool_search_orgs") == (ds.ORG if arm == SEARCH else None)
     _settings(monkeypatch, flag)
-    assert "studio" in tool_packs.packs_on(ds.ORG)
+    on = tool_packs.packs_on(ds.ORG)
+    # a follower comes on with its parent (FOLLOWS), as in production's TOOL_PACKS
+    assert {"studio", "studio-more"} <= on and "studio-workflows" not in on
 
 
 @pytest.mark.parametrize("arm", [PACK, SEARCH])
@@ -490,7 +497,10 @@ def test_not_searched_fails_on_a_find_or_a_load() -> None:
 
 def test_no_studio_ran_passes_on_a_refused_try_and_fails_on_a_run() -> None:
     """Mutation: drop the ``refused`` test, or make it always True → red."""
-    tried = [(ck.LOAD_TOOL, {"pack": "studio"}, "Not loaded."), _studio('Function "studio_skill_list" not found.')]
+    tried = [
+        (ck.LOAD_TOOL, {"pack": "studio"}, "Not loaded."),
+        _studio('Function "studio_skill_list" not found.'),
+    ]
     assert ck._no_studio_ran(_obs(PACK, tried), None) is True
     assert ck._no_studio_ran(_obs(PACK, [*tried[:1], _studio()]), None) is False
     assert ck._no_studio_ran(_obs(PACK, []), None) is True
