@@ -10,11 +10,14 @@
  * Table cell does. The sheet is generic. A caller adds its own actions beside it.
  */
 import { ValueElement } from "@/components/CardFieldValue";
+import { MarkdownBody } from "@/components/MarkdownMessage";
 import { displayValue, labelOf, safeHref } from "@/lib/studio/blocks";
 import type { FieldSpec } from "@/lib/studio/fieldCheck";
+import { fileLabel } from "@/lib/studio/recordPageModel";
 
 function Value({ field, value }: { field: FieldSpec; value: unknown }) {
-  const text = displayValue(field, value);
+  // A file holds an attachment id. The sheet says that a file is there, and never shows the id (STU-AF5).
+  const text = field.type === "file" ? fileLabel(value) : displayValue(field, value);
   if (text === "") return <span className="text-muted-foreground">—</span>;
   const items = Array.isArray(value) ? value : [value];
   switch (field.type) {
@@ -47,6 +50,16 @@ function Value({ field, value }: { field: FieldSpec; value: unknown }) {
       return <span className="break-all">{text}</span>;
     case "longText":
       return <span className="whitespace-pre-wrap break-words">{text}</span>;
+    case "richText":
+      // The one markdown seam. It makes no element of raw HTML, and the check refuses a tag.
+      // A heading in the text stays at the size of the sheet, so it never outranks its label.
+      return (
+        <div className="flex min-w-0 flex-col gap-1 break-words [&_h1:not(:first-child)]:!mt-2 [&_h1:first-child]:!mt-0 [&_h1]:!text-xs [&_h2:not(:first-child)]:!mt-2 [&_h2:first-child]:!mt-0 [&_h2]:!text-xs [&_h3:not(:first-child)]:!mt-2 [&_h3:first-child]:!mt-0 [&_h3]:!text-xs [&_h4:not(:first-child)]:!mt-2 [&_h4:first-child]:!mt-0 [&_h4]:!text-xs [&_h5:not(:first-child)]:!mt-2 [&_h5:first-child]:!mt-0 [&_h5]:!text-xs [&_h6:not(:first-child)]:!mt-2 [&_h6:first-child]:!mt-0 [&_h6]:!text-xs">
+          {items.map((v, i) => <MarkdownBody key={i} content={String(v)} />)}
+        </div>
+      );
+    case "barcode":
+      return <span className="break-all font-mono">{text}</span>;
     default:
       return <span className="break-words">{text}</span>;
   }

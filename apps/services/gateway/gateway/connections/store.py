@@ -353,6 +353,16 @@ _DELETE_SQL = (
     f"DELETE FROM integration_connections WHERE {_KEY_WHERE} RETURNING id"
 )
 
+#: The providers that one member may use now (WS-STU I1a): each ``connected``
+#: org row, and each ``connected`` member row of that member. The row of
+#: another member never counts. It reads the provider only, never the blob.
+_MET_SQL = (
+    "SELECT DISTINCT provider FROM integration_connections "
+    f"WHERE organization_id = CAST(:org AS uuid) AND status = '{STATUS_CONNECTED}' "
+    f"AND (scope_kind = '{SCOPE_ORG}' OR (scope_kind = '{SCOPE_MEMBER}' "
+    "AND member_email = :member))"
+)
+
 
 @dataclass(frozen=True)
 class Connection:
@@ -532,6 +542,24 @@ async def list_all(db: Any, org: str) -> list[Connection]:
     org = str(uuid.UUID(str(org)))
     rows = (await db.execute(text(_LIST_SQL), {"org": org})).fetchall()
     return [_connection(r) for r in rows]
+
+
+async def met_providers(db: Any, org: str, member: str) -> frozenset[str]:
+    """The providers that *member* may use now in *org* (WS-STU I1a).
+
+    A provider counts with a ``connected`` row: an org row, or a member row
+    of *member* itself. The member row of another member never counts, and
+    ``needs_reconnect``, ``needs_reset`` and ``disconnected`` never count.
+    It reads the ``provider`` column only, never the blob.
+
+    The registry holds ``mcp:<server>``, ``zoho``, ``github``,
+    ``google_calendar``, ``outlook_calendar`` and ``google_drive``. A mailbox
+    lives in ``email_accounts``, so ``mailbox`` is never met here (I9 adds
+    it). ``package_host/resolve.met_connections`` is the one caller.
+    """
+    params = {"org": str(uuid.UUID(str(org))), "member": (member or "").strip().lower()}
+    rows = (await db.execute(text(_MET_SQL), params)).all()
+    return frozenset(str(r[0]) for r in rows)
 
 
 async def get_by_id(db: Any, org: str, connection_id: str) -> Connection | None:
@@ -732,6 +760,25 @@ async def merge_provider_meta(
     await db.execute(text(_MERGE_META_SQL), {
         "id": str(connection_id), "org": str(org), "extra": json.dumps(kept),
     })
+
+
+_REMOVE_META_SQL = (
+    "UPDATE integration_connections SET provider_meta = provider_meta "
+    "- CAST(:keys AS text[]), updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid)"
+)
+
+
+async def remove_meta_keys(
+    db: Any, org: str, connection_id: str, keys: Sequence[str],
+) -> None:
+    """Remove keys from ``provider_meta`` of one row, under any status.
+
+    The calendar disconnect drops its cursor and its calendar id here
+    (WS-CAL CE-10). The keys are plain metadata names, never a secret.
+    """
+    await db.execute(text(_REMOVE_META_SQL), {
+        "id": str(connection_id), "org": str(org), "keys": list(keys)})
 
 
 async def merge_meta_by_key(

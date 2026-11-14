@@ -1,6 +1,6 @@
 # Codex pack
 
-kit_version: 1
+kit_version: 2
 
 This pack connects OpenAI Codex to Metorite. It holds no second copy of the rules.
 

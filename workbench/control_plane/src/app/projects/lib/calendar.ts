@@ -27,28 +27,11 @@
 
 import type { TaskRow } from "./api";
 
-const DAY_MS = 86_400_000;
+// The four day-key helpers moved to the timeline block (STU-D6). They are
+// re-exported, so each import from this file still works.
+import { DAY_MS, dayKey, fromDayKey, mondayOffset, shiftDay } from "@/components/timeline/days";
 
-/** `YYYY-MM-DD` for a Date, read in LOCAL time. */
-export function dayKey(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-
-/** A `YYYY-MM-DD` key back to a local-midnight Date. */
-export function fromDayKey(key: string): Date {
-  const [y, m, d] = key.split("-").map(Number);
-  return new Date(y, (m ?? 1) - 1, d ?? 1);
-}
-
-/** `n` days after a key, as a key. Month and year roll over. */
-export function shiftDay(key: string, days: number): string {
-  const date = fromDayKey(key);
-  date.setDate(date.getDate() + days);
-  return dayKey(date);
-}
+export { dayKey, fromDayKey, mondayOffset, shiftDay };
 
 /** Which shape of grid a viewer asked for. */
 export type CalendarLayout = "month" | "week";
@@ -68,20 +51,6 @@ export interface CalendarGrid {
   days: string[];
   /** Rows of seven. */
   weeks: string[][];
-}
-
-/**
- * How many days a week has already run when `date` arrives — Monday is 0.
- *
- * **Monday, not Sunday.** The workspace this is for runs a Monday week, and a
- * grid whose weekend is split across two rows makes "what is left this week" a
- * question you have to count rather than see. `getDay()` is 0=Sunday, so the
- * `+ 6` rotation is what makes Monday the start — and it is written ONCE,
- * because a month grid and a week grid that rotate differently draw the same
- * seven days in two different orders.
- */
-export function mondayOffset(date: Date): number {
-  return (date.getDay() + 6) % 7;
 }
 
 /** `count` consecutive day keys from `startKey`, and the same run in rows of

@@ -83,6 +83,7 @@ from gateway.routes.admin import members as members_mod
 from gateway.routes.admin._common import set_roles
 from sqlalchemy import create_engine, text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import apply_ladder, tenant_engine_scope
 
 # Reuse the H3 rehearsal's phase-4-promoted catalog + NON-PRIV acb_app role
@@ -307,9 +308,7 @@ class TestTheDualWriteSites:
     def test_this_suite_is_named_in_the_ci_skip_guard(self):
         """An R8 suite absent from pr-check.yml's hand-list skips silently and
         leaves the job green (that file's own warning)."""
-        workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(
-            encoding="utf-8")
-        assert "tests/unit/test_h6_rbac_rekey.py" in workflow
+        assert "tests/unit/test_h6_rbac_rekey.py" in r8_lists.must_run()
 
     def test_the_owning_spec_names_this_suite(self):
         spec = (_ROOT / "project-docs/specs/saas_multitenancy_handover.md").read_text(

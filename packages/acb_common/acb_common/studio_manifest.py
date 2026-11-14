@@ -41,7 +41,8 @@ from pydantic_core import PydanticCustomError
 from acb_common.app_manifests.base import APP_ID_PATTERN, CLASSES, OP_PATTERN, UUID_PATTERN
 from acb_common.app_manifests.shell_manifest import _CONTRIBUTES_KEYS as _P0_POINTS
 from acb_common.app_manifests.shell_manifest import SHELL_DIR
-from acb_common.secret_shapes import SECRET_SHAPES, is_secret_key
+from acb_common.secret_shapes import SECRET_SHAPES, is_secret_field_key, is_secret_key
+from acb_common.studio_access import AccessError, check_access_fit, parse_access, parse_roles
 from acb_common.studio_fields import (
     FIELD_TYPES,
     MAX_FIELDS_PER_OBJECT,
@@ -73,19 +74,28 @@ BLOCKS: tuple[str, ...] = (
     "timeline", "mindMap", "processFlow", "checklist", "map", "markdown",
 )  # fmt: skip
 
-OBJECT_OPS: tuple[str, ...] = ("list", "get", "create", "update", "delete")
+#: The five record verbs of an object. ``studio_tools.complete_record_actions``
+#: adds an action for each of them, and ``manifestDiff.ts`` folds them.
+RECORD_OPS: tuple[str, ...] = ("list", "get", "create", "update", "delete")
+
+#: Each verb of an ``object:<name>.<op>`` action: the record verbs, and the
+#: aggregate of C2b (STU-D4b). No action is added for the aggregate by itself,
+#: so a package declares it.
+OBJECT_OPS: tuple[str, ...] = (*RECORD_OPS, "aggregate")
 
 #: The class of each object verb (STU-B2a, ``ai_studio.md`` §3.2). It is the
 #: one source of the class of an ``object:<name>.<op>`` action. The B1 catalog
-#: (``catalog_rows``) gives the class of each other source. A read is A. A
-#: create or an update is B, because the app can undo it. A delete is C.
-#: ``test_studio_action_door.py`` holds these keys equal to :data:`OBJECT_OPS`.
+#: (``catalog_rows``) gives the class of each other source. A read is A, and an
+#: aggregate is a read. A create or an update is B, because the app can undo
+#: it. A delete is C. ``test_studio_action_door.py`` holds these keys equal to
+#: :data:`OBJECT_OPS`.
 OBJECT_OP_CLASSES: dict[str, str] = {
     "list": "A",
     "get": "A",
     "create": "B",
     "update": "B",
     "delete": "C",
+    "aggregate": "A",
 }
 
 #: The head of the refusal of a view source that writes (STU-B2c-1, fix round 1).
@@ -157,6 +167,24 @@ _USES_RE = re.compile(
     rf"|(?P<app>{APP_ID_PATTERN})\.(?P<appop>{OP_PATTERN}))"
 )
 
+#: STU-I1a. The most connections that one package names.
+MAX_CONNECTIONS = 32
+#: STU-I1a. The name of one MCP server of the registry. It equals ``NAME_RE``
+#: of ``gateway/connections/mcp.py``. This package cannot import the gateway,
+#: so ``test_package_host_resolve.py`` holds the two equal.
+MCP_SERVER_NAME = r"[a-z0-9][a-z0-9-]{0,48}[a-z0-9]"
+#: STU-I1a. The grammar of one name of ``connections``: an MCP server of the
+#: registry (``mcp:<server>``), or a provider id such as ``zoho``. I1 checks
+#: the grammar only. IN-11 adds the check that the connector list holds it.
+CONNECTION_NAME_RE = re.compile(rf"mcp:{MCP_SERVER_NAME}|{_NAME}")
+#: STU-I1a. The refusal of a field whose key names a secret
+#: (``secret_shapes.is_secret_field_key``: a whole secret name, so
+#: ``token_number`` passes). A test reads this text, so keep it stable.
+SECRET_FIELD = (
+    "A field must not hold a secret. Name the provider in `connections`, "
+    "and the registry keeps its key."
+)
+
 _COLOR_KEYS = frozenset({"color", "colour", "font", "fontsize", "font_size", "font-size"})
 _STYLE_KEYS = frozenset({
     "style", "styles", "theme", "background", "bg", "fill", "stroke", "border", "accent", "tint",
@@ -184,12 +212,15 @@ class UsesRef:
 
     ``source`` is ``object``, ``manifest`` (an ``<app>.<op>`` door op),
     ``integration`` or ``workflow``, the source names of the B1 catalog.
-    ``object`` and ``op`` are set for an ``object:`` value only.
+    ``object`` and ``op`` are set for an ``object:`` value. ``app`` and
+    ``op`` are set for a door op (STU-B2b-2b): ``op`` then holds the door op
+    name of that app. An integration and a workflow set none of them.
     """
 
     source: Literal["object", "manifest", "integration", "workflow"]
     object: str | None = None
     op: str | None = None
+    app: str | None = None
 
 
 def parse_uses(uses: object) -> UsesRef | None:
@@ -205,7 +236,7 @@ def parse_uses(uses: object) -> UsesRef | None:
         return UsesRef(source="integration")
     if m.group("wf"):
         return UsesRef(source="workflow")
-    return UsesRef(source="manifest")
+    return UsesRef(source="manifest", app=m.group("app"), op=m.group("appop"))
 
 
 # --- the schema ------------------------------------------------------------
@@ -227,6 +258,12 @@ class FieldDef(_Strict):
     to: str | None = None
     #: The field gets a row in the index side table of C1 (`studio_record_hot`).
     hot: bool = False
+    #: C14. The bounds of a `rating`, the units of a `quantity` and the format of a
+    #: `barcode`. `studio_fields._check_extras` holds the rules of each.
+    min: int | None = None
+    max: int | None = None
+    units: list[str] | None = None
+    format: str | None = None
     #: C13. A lines relation: the field of the object `to` that names this one.
     #: `studio_fields.lines_problem` holds the rule of the object it names.
     lines: str | None = None
@@ -240,6 +277,9 @@ class ObjectDef(_Strict):
     #: The constraints and state machines of the object (C6). The one parser is
     #: `studio_rules.parse_rules`, and `_check_objects` calls it.
     rules: list[dict[str, Any]] = Field(default_factory=list)
+    #: C8a. The grant of each role on this object. None means an open object. The
+    #: one parser is `studio_access.parse_access`, and `_check_access` calls it.
+    access: list[dict[str, Any]] | None = None
 
 
 class ActionDef(_Strict):
@@ -358,6 +398,35 @@ class Shell(_Strict):
     search: list[str] = Field(default_factory=list)
 
 
+MAX_RUNTIME_PACKAGES = 20
+_PKG_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_PKG_VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z.+!_-]{0,31}$")
+
+
+class RuntimeDef(_Strict):
+    """Where member code runs (STU-B7a, ai_studio.md 19.3). Four kinds. It has no
+    `hosts` key on purpose, so `_Strict` refuses one."""
+
+    kind: Literal["none", "browser", "sandbox", "packages"] = "none"
+    #: Package name to exact version. Only kind `packages` reads it.
+    packages: dict[str, str] = Field(default_factory=dict, max_length=MAX_RUNTIME_PACKAGES)
+
+    @field_validator("packages")
+    @classmethod
+    def _packages_are_pinned(cls, v: dict[str, str]) -> dict[str, str]:
+        for name, version in v.items():
+            if not _PKG_NAME_RE.fullmatch(name) or not _PKG_VERSION_RE.fullmatch(version):
+                raise ValueError("a package is a name and an exact version")
+        return v
+
+
+def runtime_kind(manifest: Any) -> str:
+    """The runtime kind of a manifest (model or dict). No key means `none`."""
+    rt = manifest.get("runtime") if isinstance(manifest, dict) else getattr(manifest, "runtime", None)
+    kind = rt.get("kind") if isinstance(rt, dict) else getattr(rt, "kind", None)
+    return kind if isinstance(kind, str) and kind else "none"
+
+
 class Manifest(_Strict):
     studio: Literal[1]
 
@@ -375,7 +444,12 @@ class Manifest(_Strict):
     name: str | None = None
     purpose: str | None = None
     team: str | None = None
+    #: STU-I1a. The registry connections that the app needs. `_check_connections`
+    #: holds the grammar, and an unmet name makes the install `needs_setup`.
     connections: list[str] = Field(default_factory=list)
+    #: C8a. The roles of the app. An install maps each one to members (C8b).
+    #: `studio_access.parse_roles` is the one check.
+    roles: list[str] = Field(default_factory=list)
     objects: list[ObjectDef] = Field(default_factory=list)
     actions: list[ActionDef] = Field(default_factory=list)
     views: list[ViewDef] = Field(default_factory=list)
@@ -393,6 +467,8 @@ class Manifest(_Strict):
     slots: list[dict[str, Any]] = Field(default_factory=list)
     needs: list[dict[str, Any]] = Field(default_factory=list)
     overrides: list[dict[str, Any]] = Field(default_factory=list)
+    #: STU-B7a. Where member code runs. No key means kind `none`. B4 and B5 move it onto `logic[]`.
+    runtime: RuntimeDef | None = None
 
     @field_validator("contributes")
     @classmethod
@@ -782,8 +858,64 @@ def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[Manifest
             for problem in validate_field_spec(f.model_dump(), objects=objects):
                 tail = "" if problem.got is None else _got(problem.got)
                 out.append(_err(f"{base}[{fi}].{problem.path}", problem.message + tail))
+            if is_secret_field_key(f.key):
+                # STU-I1a: a key goes to the registry through a connection,
+                # never into a form of the app. The narrow rule, because a
+                # field such as `token_number` holds member data.
+                out.append(_err(f"{base}[{fi}].key", SECRET_FIELD + _got(f.key)))
         _check_rules(o, f"$.objects[{oi}].rules", out, m.objects)
     _check_lines(m, out)
+    _check_access(m, out)
+
+
+def _check_access(m: Manifest, out: list[ManifestError]) -> None:
+    """C8a. The roles and the grants run through the one parser of the object
+    store (`studio_access`). A grant names a declared role, a `where` names a
+    hot person field, and `hide` names fields of the object."""
+    try:
+        roles = parse_roles(m.roles)
+    except AccessError as exc:
+        out.append(_err(f"$.roles{exc.path}", exc.message))
+        return
+    # Fix round 4 (rule 19): the field of each line object that links a line to
+    # its record. A grant of the line object cannot hide it.
+    vias: dict[str, set[str]] = {}
+    for o in m.objects:
+        for f in o.fields:
+            if isinstance(f.lines, str) and isinstance(f.to, str):
+                vias.setdefault(f.to, set()).add(f.lines)
+    for oi, o in enumerate(m.objects):
+        if o.access is None:
+            continue
+        path = f"$.objects[{oi}].access"
+        try:
+            grants = parse_access(o.access, roles)
+            specs = _parsed_fields(o)
+            if specs is not None:
+                check_access_fit(grants, specs, vias.get(o.name, set()))
+        except AccessError as exc:
+            out.append(_err(f"{path}{exc.path}", exc.message))
+    _check_open_lines(m, out)
+
+
+def _check_open_lines(m: Manifest, out: list[ManifestError]) -> None:
+    """C8a fix round 1. The lines of a table with `access` hold its data too, so
+    an object that is the lines of such a table needs its own `access`. Else
+    each member would read the lines of a record that the row rule hides."""
+    index = {o.name: i for i, o in enumerate(m.objects)}
+    flagged: set[str] = set()
+    for o in m.objects:
+        if o.access is None:
+            continue
+        for f in o.fields:
+            child = f.to if f.lines is not None and isinstance(f.to, str) else None
+            if child is None or child not in index or child in flagged:
+                continue
+            if m.objects[index[child]].access is None:
+                flagged.add(child)
+                out.append(_err(f"$.objects[{index[child]}]",
+                                f"Object `{child}` is the lines of `{o.name}`, which has `access`. "
+                                "Give it `access` too."))
 
 
 def _parsed_fields(o: ObjectDef) -> list[FieldSpec] | None:
@@ -934,11 +1066,27 @@ def _check_links(
                 _undeclared(f"$.shell.search[{i}]", "Object", name, "this manifest", out)
 
 
+def _check_connections(m: Manifest, out: list[ManifestError]) -> None:
+    """STU-I1a. Each name of ``connections`` is ``mcp:<server>`` or a provider
+    id (:data:`CONNECTION_NAME_RE`), once each, and at most
+    :data:`MAX_CONNECTIONS` of them. The grammar only: IN-11 adds the check
+    that the connector list holds the provider."""
+    if len(m.connections) > MAX_CONNECTIONS:
+        out.append(_err("$.connections", f"A package names at most {MAX_CONNECTIONS} "
+                                         "connections. Remove the extra ones."))
+    for i, name in enumerate(m.connections):
+        if not CONNECTION_NAME_RE.fullmatch(name):
+            out.append(_err(f"$.connections[{i}]", "A connection is mcp:<server> or a "
+                                                    "provider id, such as zoho." + _got(name)))
+    _dupes(m.connections, "$.connections", "connection", out)
+
+
 def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[ManifestError]:
     out: list[ManifestError] = []
     objects = {o.name: {f.key for f in o.fields} for o in m.objects}
     action_ids = {a.id for a in m.actions}
 
+    _check_connections(m, out)
     _dupes([o.name for o in m.objects], "$.objects", "object", out)
     _dupes([a.id for a in m.actions], "$.actions", "action id", out)
     _dupes([v.id for v in m.views], "$.views", "view id", out)
@@ -958,6 +1106,9 @@ def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[Man
         _check_view_source(vi, v, uses_by_id, catalog, out)
     _check_pages(m, {v.id for v in m.views}, out)
     _check_links(m, objects, catalog, out)
+    if m.extends is not None and m.extends == m.id:
+        out.append(_err("$.extends", "A package cannot extend itself. Name the host package."
+                        + _got(m.extends)))
     return out
 
 

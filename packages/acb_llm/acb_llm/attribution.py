@@ -32,11 +32,22 @@ took it from the signed-in session. A cap may key on a proven member alone
 """
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Iterator
+from contextvars import ContextVar
+from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
 import httpx
 
-__all__ = ["attributed_copilot_provider", "attributed_openai", "attribution_headers"]
+__all__ = [
+    "attributed_copilot_provider",
+    "attributed_openai",
+    "attribution_headers",
+    "in_run_ceiling",
+    "run_ceiling_scope",
+    "run_ceiling_text",
+]
 
 #: The headers the gateway's ``/v1`` reads. Named once, so the gateway and this
 #: module cannot spell one of them two ways. ``X-CC-Source`` was the second
@@ -45,6 +56,66 @@ MEMBER = "X-CC-Member"
 MODULE = "X-CC-Module"
 RUN = "X-CC-Run"
 AGENT = "X-CC-Agent"
+#: The ceiling of one run, in credits (AUTO-8b-2b). It can only LOWER the
+#: Router's fixed tripwire. The Console parses it and takes the min.
+RUN_CEILING = "X-CC-Run-Ceiling"
+
+#: The places of a ceiling on the wire. The Console refuses a fifth place.
+_CEILING_PLACES = Decimal("0.0001")
+
+#: The ceiling text that :func:`run_ceiling_scope` bound on this task, or None.
+#: ⚠️ A ContextVar, not a run-context key. So it never reaches a log line, no
+#: request can set it, and a task or ``asyncio.to_thread`` inherits it.
+_RUN_CEILING: ContextVar[str | None] = ContextVar("acb_run_ceiling", default=None)
+
+
+def run_ceiling_text(credits: Decimal) -> str:
+    """*credits* as the wire text of ``X-CC-Run-Ceiling``: 4 places, never more.
+
+    ⚠️ It rounds DOWN, because a lower ceiling is the safe side. A value
+    below 0 gives ``"0.0000"``, so the Router refuses each call of the run.
+    A value that is not a finite ``Decimal`` raises ``ValueError``.
+    """
+    if isinstance(credits, bool) or not isinstance(credits, Decimal | int):
+        raise ValueError("a run ceiling is a Decimal of credits")
+    amount = Decimal(credits)
+    if not amount.is_finite():
+        raise ValueError("a run ceiling must be finite")
+    amount = max(amount, Decimal(0))
+    return str(amount.quantize(_CEILING_PLACES, rounding=ROUND_DOWN))
+
+
+@contextlib.contextmanager
+def run_ceiling_scope(credits: Decimal) -> Iterator[str]:
+    """Send ``X-CC-Run-Ceiling: <credits>`` on each model call in this block.
+
+    The headless turn (AUTO-8b-2b) is the one caller. It binds the credits
+    that its goal has left, at the start of each round. A chat call binds
+    nothing, so it sends no header.
+
+    🔴 The header can only LOWER the Router's ceiling of the run, never raise
+    it. The Console holds that rule (``customer_console.credits.run_ceiling_for``).
+    This module only formats the value, and the gateway only forwards it.
+
+    Scoped: the value before the block comes back on exit.
+    """
+    text = run_ceiling_text(credits)
+    held = _RUN_CEILING.get()
+    token = _RUN_CEILING.set(text)
+    try:
+        yield text
+    finally:
+        try:
+            _RUN_CEILING.reset(token)
+        except ValueError:  # a token from another context
+            _RUN_CEILING.set(held)
+
+
+def in_run_ceiling() -> bool:
+    """True inside :func:`run_ceiling_scope`: a round of the headless turn,
+    the one caller. A chat call is never inside it. A tool reads this to
+    keep within the time cap of the round (CRM-Q25e: no long CRM read)."""
+    return _RUN_CEILING.get() is not None
 
 
 def _proof_for(member: str) -> str | None:
@@ -111,6 +182,12 @@ def attribution_headers(ctx: dict[str, str] | None = None) -> dict[str, str]:
     agent = attributed_agent(ctx, app) or ""
     if agent:
         out[AGENT] = agent
+    # AUTO-8b-2b. Only :func:`run_ceiling_scope` sets it. It does not wait for
+    # a run id: a ceiling with no run reaches the Console, which answers 400.
+    # Dropping it here would serve the call with no ceiling at all.
+    ceiling = _RUN_CEILING.get()
+    if ceiling is not None:
+        out[RUN_CEILING] = ceiling
     return out
 
 

@@ -78,6 +78,8 @@ from gateway.routes.studio import actions, packages
 from gateway.studio import objects_store
 from gateway.studio import packages_store as store
 
+from tests.unit import _r8_lists as r8_lists
+
 ORG = str(uuid.uuid4())
 OTHER = str(uuid.uuid4())
 ANA = "ana@example.test"
@@ -477,6 +479,30 @@ def test_a_get_returns_the_manifest_and_the_object_rows(world):
     assert [o["name"] for o in got["objects"]] == ["visit"]
     assert [f["key"] for f in got["objects"][0]["fields"]] == ["site", "status"]
     assert got["objects"][0]["rules"] == []
+
+
+def test_a_get_returns_the_parts_of_the_new_field_types(world):
+    """STU-C14 P0: `_object_out` dropped `min`, `max`, `units` and `format`, so an installed
+    app drew an empty unit picker and refused a rating above 5.
+
+    Mutation: drop the four keys from `_object_out`. This test turns red.
+    """
+    fields = [
+        {"key": "load", "type": "quantity", "units": ["kg", "t"]},
+        {"key": "score", "type": "rating", "min": 0, "max": 10},
+        {"key": "serial", "type": "barcode", "format": "ean13"},
+        {"key": "site", "type": "text"},
+    ]
+    manifest = _manifest()
+    manifest["objects"] = [{"name": "visit", "fields": fields}]
+    c = _client(world)
+    pid = _create(c, manifest)
+    assert c.post(f"/studio/packages/{pid}/versions", json={}).status_code == 201
+    out = {f["key"]: f for f in c.get(f"/studio/packages/{pid}").json()["objects"][0]["fields"]}
+    assert out["load"]["units"] == ["kg", "t"]
+    assert (out["score"]["min"], out["score"]["max"]) == (0, 10)
+    assert out["serial"]["format"] == "ean13"
+    assert out["site"]["units"] is None and out["site"]["format"] is None
 
 
 def test_a_get_gives_the_hash_of_the_draft_that_a_save_needs(world):
@@ -897,14 +923,22 @@ def _handlers(tree: ast.Module) -> list[ast.AsyncFunctionDef]:
     return out
 
 
-def test_there_are_twelve_handlers():
+def test_there_are_twenty_two_handlers():
     """A5 holds six, A5c-1 adds the delete preview and the delete, WS-PKG PKG-8b
     adds the org and group install, and G5 adds one version read. STU-K1a adds the
-    template list and the one-step create from a template."""
+    template list and the one-step create from a template. WS-PKG PKG-10d adds Keep
+    and Restore. WS-PKG PKG-10e-1 adds the lifetime read. WS-PKG PKG-8e adds the org
+    and group uninstall. WS-STU J2b-1 adds the ask, the list, the approve and the
+    reject of the approval for the org. WS-STU J2b-2 adds the share with people.
+    WS-STU B6a adds the member of a run with no viewer."""
     names = sorted(h.name for h in _handlers(_tree()))
-    assert names == ["create_from_template", "create_package", "delete_package", "delete_preview",
-                     "get_package", "get_version", "install_package", "list_app_templates",
-                     "list_packages", "list_versions", "publish", "save_draft"]
+    assert names == ["approve_approval", "create_from_template", "create_package",
+                     "delete_package", "delete_preview", "get_package", "get_version",
+                     "install_package", "keep_package", "list_app_templates",
+                     "list_approvals", "list_packages", "list_versions",
+                     "package_lifetime", "publish", "reject_approval", "request_approval",
+                     "restore_package", "save_draft", "set_install_run_as",
+                     "share_package", "uninstall_package"]
 
 
 def test_each_handler_checks_the_switch_first():
@@ -1052,11 +1086,8 @@ def test_sync_objects_has_one_route_caller():
 def test_the_r8_suite_is_named_in_the_ci_skip_guard():
     """A fence that never runs is no fence. The ``--must-run`` list names the
     pytest ARGUMENT, so a mention in a comment does not count."""
-    workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
-    assert block, "the --must-run argument list is missing"
-    assert re.search(r"^[ \t]+tests/unit/test_studio_package_routes_r8\.py(?: \\)?$",
-                     block.group(1), re.M)
+    must_run = r8_lists.must_run()
+    assert "tests/unit/test_studio_package_routes_r8.py" in must_run
 
 
 # ── The expected hash of a draft (G1c review round 1, P1) ─────────────────

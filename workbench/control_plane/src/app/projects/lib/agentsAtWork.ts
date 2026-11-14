@@ -191,3 +191,84 @@ export function lastRunLine(run: AgentLastRun | null, nowMs = Date.now()): strin
 export function runsWord(runs: number): string {
   return `${runs} ${runs === 1 ? "run" : "runs"}`;
 }
+
+// ── AGA-9: the drill-down of one agent (`GET /projects/agents/{key}/runs`) ──
+
+export interface AgentRunError {
+  at: string | null;
+  what: string;
+  next_step: string;
+}
+
+export interface AgentRunLine {
+  id: string;
+  /** The run state in the words of the task runs. */
+  state: string;
+  started_at: string | null;
+  ended_at: string | null;
+  /** Null while the run is open. */
+  run_seconds: number | null;
+  task: { id: string; title: string } | null;
+  error: AgentRunError | null;
+}
+
+export interface AgentRuns {
+  key: string;
+  runs: AgentRunLine[];
+  count: number;
+  truncated: boolean;
+}
+
+/** What the drill-down shows for one agent. */
+export type AgentRunsRead =
+  | { kind: "loading" }
+  | { kind: "unavailable" }
+  | { kind: "error" }
+  | { kind: "ready"; runs: AgentRuns };
+
+export const RUNS_TITLE = "Recent runs";
+export const RUNS_EMPTY_COPY = "This agent has no run that you may see.";
+export const RUNS_ERROR_COPY = "The runs did not load. Close this list, then open it again.";
+export const RUNS_UNAVAILABLE_COPY = "You may not see the runs of this agent.";
+export const RUNS_TRUNCATED_COPY = "The list shows the last 40 runs only.";
+
+/** One run, or null when it is not a run row. The trace is never a field here. */
+export function parseRunLine(value: unknown): AgentRunLine | null {
+  const raw = record(value);
+  if (!raw) return null;
+  const id = text(raw.id);
+  const state = text(raw.state);
+  if (!id || !state) return null;
+  const task = record(raw.task);
+  const err = lastError(raw.error);
+  const seconds =
+    typeof raw.run_seconds === "number" && Number.isFinite(raw.run_seconds) ? raw.run_seconds : null;
+  return {
+    id,
+    state,
+    started_at: text(raw.started_at) || null,
+    ended_at: text(raw.ended_at) || null,
+    run_seconds: seconds,
+    task: task && text(task.id) ? { id: text(task.id), title: text(task.title) || "Untitled task" } : null,
+    error: err,
+  };
+}
+
+/** The answer of the drill-down, or null when the body is not one. */
+export function parseAgentRuns(raw: unknown): AgentRuns | null {
+  const body = record(raw);
+  if (!body || !Array.isArray(body.runs)) return null;
+  const runs = body.runs.map(parseRunLine).filter((r): r is AgentRunLine => r !== null);
+  return { key: text(body.key), runs, count: runs.length, truncated: body.truncated === true };
+}
+
+/** "45 s", "3 min 20 s", "2 h 5 min", or "Running" while the run is open. */
+export function runTimeWord(seconds: number | null): string {
+  if (seconds === null) return "Running";
+  const s = Math.round(seconds);
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return s % 60 ? `${m} min ${s % 60} s` : `${m} min`;
+  const h = Math.floor(m / 60);
+  return m % 60 ? `${h} h ${m % 60} min` : `${h} h`;
+}

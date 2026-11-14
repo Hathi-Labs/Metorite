@@ -18,12 +18,18 @@ import { featureForPath } from "@/lib/access";
 import { PANES } from "@/lib/nav";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import {
-  fieldSpecs, formFields, missingObjectNote, pickObject, previewHref, recordTitle, tableFields,
+  VIEWER_NO_OBJECT, fieldSpecs, formFields, missingObjectNote, pickObject, previewControls, previewHref, recordTitle,
+  tableFields,
 } from "@/lib/studio/packagePreview";
 
 const page = readFileSync(new URL("./page.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 describe("/studio/package-preview", () => {
+  it("draws the end-date bar of the package (PKG-10e-2)", () => {
+    expect(page).toContain('import PackageLifetimeBar from "@/components/studio/PackageLifetimeBar"');
+    expect(page).toContain("<PackageLifetimeBar pkg={pkg} />");
+  });
+
   it("is gated by the feature of /studio", () => {
     const studio = featureForPath("/studio");
     expect(studio).toBeTruthy();
@@ -36,6 +42,33 @@ describe("/studio/package-preview", () => {
 
   it("builds no view-to-node mapper and reads no page of the manifest", () => {
     expect(page).not.toMatch(/pageModel|buildPage|renderView|manifest\.(views|pages)/);
+  });
+
+  // STU-AF1: the fence above stays whole for page.tsx. The page model sits in AppFrame.tsx only,
+  // and page.tsx reaches it under one build-time flag that is off by default.
+  it("hands the app to AppFrame only under NEXT_PUBLIC_STUDIO_APP_FRAME, off by default", () => {
+    expect(page).toContain('import AppFrame from "./AppFrame"');
+    expect(page).toContain('process.env.NEXT_PUBLIC_STUDIO_APP_FRAME === "1"');
+    expect(page).toMatch(/if \(APP_FRAME\) \{\s*return <AppFrame /);
+    // The flag-off path is the object preview: its sections are still in the page.
+    for (const section of ['aria-label="Table"', 'aria-label="Board"', 'aria-label="Form"', 'aria-label="Detail"']) {
+      expect(page).toContain(section);
+    }
+  });
+
+  it("keeps the page model in AppFrame.tsx, which draws no shell part and no rail", () => {
+    const frame = readFileSync(new URL("./AppFrame.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    expect(frame).toContain("buildPage");
+    expect(frame).toContain("<StudioPage");
+    expect(frame).toContain("mapView(");
+    expect(frame).not.toMatch(/NotificationBell|<AgentChat|keydown|CommandPalette|RailRow|<Modal/);
+  });
+
+  it("AppFrame hides the write controls from a viewer (J2a)", () => {
+    const frame = readFileSync(new URL("./AppFrame.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    expect(frame).toContain("controls.owner ? (");
+    expect(frame).toContain("READ_ONLY_SENTENCE");
+    expect(frame).toContain("owner: controls.owner");
   });
 
   it("mounts no shell part of its own", () => {
@@ -121,5 +154,55 @@ describe("fix round 1: the Forms, the door and the object pick", () => {
     expect(missingObjectNote(objects, "site")).toBeNull();
     expect(missingObjectNote(objects, null)).toBeNull();
     expect(page).toContain("missingObjectNote(");
+  });
+});
+
+/**
+ * J2a: a viewer reads an app that another member owns, through an install.
+ * Mutation 1: build the door from `detail.data.actions`. "the door of the page holds
+ * the actions of previewControls" turns red. Mutation 2: drop one `controls.owner`
+ * guard. "each owner control sits behind controls.owner" turns red.
+ */
+describe("J2a: a viewer gets the reads only", () => {
+  const ACTIONS = [
+    { id: "find", uses: "object:visit.list" }, { id: "peek", uses: "object:visit.get" },
+    { id: "add", uses: "object:visit.create" }, { id: "change", uses: "object:visit.update" },
+    { id: "remove", uses: "object:visit.delete" },
+  ];
+  it("the owner keeps every action, and a viewer keeps the list and the get", () => {
+    expect(previewControls("owner", ACTIONS)).toEqual({ owner: true, actions: ACTIONS });
+    const viewer = previewControls("viewer", ACTIONS);
+    expect(viewer.owner).toBe(false);
+    expect(viewer.actions.map((a) => a.id)).toEqual(["find", "peek"]);
+    expect(previewControls("viewer", undefined).actions).toEqual([]);
+  });
+  it("the door of the page holds the actions of previewControls", () => {
+    expect(page).toContain("keeper(pkg, controls.actions)");
+    expect(page).not.toContain("keeper(pkg, detail.data.actions)");
+    expect(page).toContain("verbMap(controls.actions)[`object:${object.name}.update`]");
+    expect(page).not.toContain("verbMap(detail.data?.actions)");
+  });
+  it("each owner control sits behind controls.owner", () => {
+    // The nearest guard before each control is an open `controls.owner ? (`, with no close between.
+    const guarded = (marker: string) => {
+      const at = page.indexOf(marker);
+      expect(at, marker).toBeGreaterThan(0);
+      const before = page.slice(0, at);
+      const open = before.lastIndexOf("controls.owner ? (");
+      expect(open, marker).toBeGreaterThan(0);
+      expect(before.slice(open), marker).not.toMatch(/\) : /);
+    };
+    for (const marker of ['icon="Code"', "<DeletePackageButton", '<section aria-label="Form"', '"Edit in form"',
+      "<DeleteRecordButton", "Click a cell to edit it.", "Drag a card to another lane"]) {
+      guarded(marker);
+    }
+    expect(page.match(/<DeletePackageButton/g)).toHaveLength(1);
+    expect(page.match(/Open in Studio IDE/g)).toHaveLength(1);
+  });
+  it("a viewer reads one plain line, and an empty app names the owner", () => {
+    expect(page).toContain("{controls.owner ? null : <span role=\"status\"");
+    expect(page).toContain("{READ_ONLY_SENTENCE}");
+    expect(page).toContain("VIEWER_NO_OBJECT");
+    expect(VIEWER_NO_OBJECT).toMatch(/owner/);
   });
 });

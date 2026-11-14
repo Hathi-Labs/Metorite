@@ -1,0 +1,26 @@
+# CIV-31: one pass of the automatic revert of a red batch of main. A user unit of `dev`.
+# The orchestrator installs it after the merge. The agent that built it did not.
+# It REPLACES metorite-bisect-poll: it runs the same poller, then acts on the culprit.
+# Do not run both. They share the poller state, so the first one takes each red run.
+# Install:
+#   systemctl --user disable --now metorite-bisect-poll.timer 2>/dev/null || true
+#   mkdir -p ~/.config/systemd/user ~/lanes/auto-revert
+#   cp scripts/home_server/systemd/metorite-auto-revert.* ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now metorite-auto-revert.timer
+# AUTO_REVERT_MODE: off does nothing. dry writes a log line and a report only.
+# on opens a revert PR and hands it to the merge bot. The code default is off.
+# D218: one week of dry first. Then the owner sets on here, and runs daemon-reload.
+# Logs: journalctl --user -u metorite-auto-revert.service
+# Decisions: ~/lanes/auto-revert.log. One report per red run: ~/lanes/auto-revert/.
+[Unit]
+Description=Metorite auto-revert: undo the PR that broke main (CIV-31)
+
+[Service]
+Type=oneshot
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:%h/.local/bin
+Environment=AUTO_REVERT_MODE=dry
+WorkingDirectory=%h/Metorite
+ExecStart=/usr/bin/python3 %h/Metorite/scripts/home_server/auto_revert.py run
+# A bisect holds at most 12 probes of 30 minutes. The pass adds 4 more probes.
+TimeoutStartSec=8h

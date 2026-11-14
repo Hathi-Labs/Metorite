@@ -109,12 +109,15 @@ OPS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "checkbox": frozenset({"eq", "ne", "is_empty"}),
     # A relation holds an id (C7b). It joins a child to its parent, and it has no order.
     "relation": frozenset({"eq", "ne", "in", "is_empty"}),
+    # C8a. A person holds the lower-case address of a member, as the relation
+    # set: it has no order. A value runs through `studio_fields._person`.
+    "person": frozenset({"eq", "ne", "in", "is_empty"}),
 }
 
 #: The types that a sort takes. A sort needs a hot field, and ``v_bool`` has
 #: no index, so a checkbox field takes no sort. An id has no useful order, so a
-#: relation field takes none either.
-SORT_TYPES: frozenset[str] = frozenset(OPS_BY_TYPE) - {"checkbox", "relation"}
+#: relation field takes none either, and a person field (C8a) takes none.
+SORT_TYPES: frozenset[str] = frozenset(OPS_BY_TYPE) - {"checkbox", "relation", "person"}
 
 # --- the errors -------------------------------------------------------------
 
@@ -240,6 +243,9 @@ def check_shape(filter: Any, sort: Any = None) -> list[Mapping[str, Any]]:
             raise QueryError(
                 VALUE_INVALID, "Each condition is an object with field, op and value, and no other key.")
         key = _named(item["field"])
+        if not isinstance(item["field"], str):
+            # C8a fix round 1 (P2): a field name is text, before any read.
+            raise QueryError(FIELD_UNKNOWN, f"Field `{key}` is not a field of this object.", key)
         if item["op"] not in OPS:
             raise QueryError(OP_NOT_ALLOWED, f"Field `{key}`: the op is unknown. Use {_OP_LIST}.", key)
         if item["op"] == "in":
@@ -257,6 +263,9 @@ def _check_sort_shape(sort: Any) -> None:
         return
     if not isinstance(sort, Mapping) or "field" not in sort or not set(sort) <= _SORT_KEYS:
         raise QueryError(VALUE_INVALID, 'A sort is an object: {"field": <key>, "dir": "asc" or "desc"}.')
+    if not isinstance(sort["field"], str):
+        # C8a fix round 1 (P2): a field name is text, before any read.
+        raise QueryError(FIELD_UNKNOWN, "Field `?` is not a field of this object.", "?")
     if sort.get("dir", "asc") not in ("asc", "desc"):
         raise QueryError(VALUE_INVALID, 'The sort `dir` is "asc" or "desc".', _named(sort["field"]))
 
@@ -423,8 +432,10 @@ MEASURE_OPS: tuple[str, ...] = ("count", "sum", "average")
 #: bucket takes ``day``.
 BUCKETS: tuple[str, ...] = ("day", "month")
 #: The types that a group takes: each type of the op table except money. A
-#: money value has a currency, so it is not a key.
-GROUP_TYPES: frozenset[str] = frozenset(OPS_BY_TYPE) - {"money"}
+#: money value has a currency, so it is not a key. A person (C8a) is not a key
+#: either: the aggregate takes no viewer yet, and a count for each member would
+#: show the records of a row rule.
+GROUP_TYPES: frozenset[str] = frozenset(OPS_BY_TYPE) - {"money", "person"}
 #: The types of the field of each measure that reads one.
 MEASURE_TYPES: Mapping[str, frozenset[str]] = {
     "sum": frozenset({"number", "money"}),
@@ -672,5 +683,5 @@ _AGGREGATE_INPUT_SCHEMA: dict[str, Any] = {
 
 def aggregate_input_schema() -> dict[str, Any]:
     """The JSON Schema of the input of an aggregate (C2b): filter, group_by
-    and measures. No door reads it yet. A new copy on each call."""
+    and measures. The action door reads it for object:<name>.aggregate (D4b). A new copy on each call."""
     return copy.deepcopy(_AGGREGATE_INPUT_SCHEMA)

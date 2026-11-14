@@ -1,0 +1,165 @@
+{
+  "_note": "IN-11. The one curated list of providers that a member can connect. No secret, ever. Readers: connector_list.py and src/lib/connectors.generated.ts (scripts/gen_connectors.py).",
+  "rows": [
+    {
+      "id": "mailbox",
+      "label": "Email account",
+      "signin": "one_click",
+      "owning_app": "email",
+      "unlocks": "Read and send email from your own mailbox.",
+      "built_in_app_shows_data": true,
+      "key_hint": "",
+      "scope": "member"
+    },
+    {
+      "id": "whatsapp",
+      "label": "WhatsApp Business",
+      "signin": "key",
+      "owning_app": "whatsapp",
+      "unlocks": "Read and send WhatsApp messages from a business number.",
+      "built_in_app_shows_data": true,
+      "key_hint": "Find the access token in Meta Business Manager, under WhatsApp accounts.",
+      "scope": "member"
+    },
+    {
+      "id": "zoho",
+      "label": "Zoho CRM",
+      "signin": "admin_consent",
+      "owning_app": "crm",
+      "unlocks": "Sync deals, contacts and accounts with Zoho CRM.",
+      "built_in_app_shows_data": true,
+      "key_hint": "",
+      "scope": "org"
+    },
+    {
+      "id": "github",
+      "label": "GitHub",
+      "signin": "admin_consent",
+      "owning_app": "integrations",
+      "unlocks": "Read repositories, issues and pull requests.",
+      "built_in_app_shows_data": false,
+      "key_hint": "",
+      "scope": "org"
+    },
+    {
+      "id": "google_calendar",
+      "label": "Google Calendar",
+      "signin": "one_click",
+      "owning_app": "calendar",
+      "unlocks": "Show your Google events in Calendar and send tasks to it.",
+      "built_in_app_shows_data": true,
+      "key_hint": "",
+      "scope": "member"
+    },
+    {
+      "id": "outlook_calendar",
+      "label": "Outlook Calendar",
+      "signin": "one_click",
+      "owning_app": "calendar",
+      "unlocks": "Show your Outlook events in Calendar and send tasks to it.",
+      "built_in_app_shows_data": true,
+      "key_hint": "",
+      "scope": "member"
+    },
+    {
+      "id": "google_drive",
+      "label": "Google Drive",
+      "signin": "one_click",
+      "owning_app": "knowledge",
+      "unlocks": "Read your Drive files into Knowledge.",
+      "built_in_app_shows_data": true,
+      "key_hint": "",
+      "scope": "member"
+    },
+    {
+      "id": "apollo",
+      "label": "Apollo.io",
+      "signin": "key",
+      "owning_app": "console",
+      "unlocks": "Look up contacts and companies for prospecting.",
+      "built_in_app_shows_data": false,
+      "key_hint": "Open Apollo, then Settings, then Integrations, then API Keys.",
+      "scope": "org"
+    },
+    {
+      "id": "google_maps",
+      "label": "Google Maps",
+      "signin": "key",
+      "owning_app": "console",
+      "unlocks": "Look up places and addresses.",
+      "built_in_app_shows_data": false,
+      "key_hint": "Open Google Cloud Console, then APIs and Services, then Credentials.",
+      "scope": "org"
+    },
+    {
+      "id": "instantly",
+      "label": "Instantly.ai",
+      "signin": "key",
+      "owning_app": "console",
+      "unlocks": "Send and track cold email campaigns.",
+      "built_in_app_shows_data": false,
+      "key_hint": "Open Instantly, then Settings, then Integrations.",
+      "scope": "org"
+    },
+    {
+      "id": "serpapi",
+      "label": "SerpAPI",
+      "signin": "key",
+      "owning_app": "console",
+      "unlocks": "Run web searches and read the results.",
+      "built_in_app_shows_data": false,
+      "key_hint": "Open the SerpAPI dashboard and copy the API key.",
+      "scope": "org"
+    },
+    {
+      "id": "apify",
+      "label": "Apify",
+      "signin": "key",
+      "owning_app": "console",
+      "unlocks": "Run web scraping jobs.",
+      "built_in_app_shows_data": false,
+      "key_hint": "Open Apify, then Account, then Integrations, and copy the personal API token.",
+      "scope": "org"
+    },
+    {
+      "id": "anymailfinder",
+      "label": "AnyMailFinder",
+      "signin": "key",
+      "owning_app": "console",
+      "unlocks": "Find business email addresses.",
+      "built_in_app_shows_data": false,
+      "key_hint": "Open your AnyMailFinder account page and copy the API key.",
+      "scope": "org"
+    },
+    {
+      "id": "google_sheets",
+      "label": "Google Sheets",
+      "signin": "key",
+      "owning_app": "console",
+      "unlocks": "Read and write Google Sheets for export and reports.",
+      "built_in_app_shows_data": false,
+      "key_hint": "Make a service account in Google Cloud Console, then share each Sheet with it.",
+      "scope": "org"
+    },
+    {
+      "id": "smtp",
+      "label": "SMTP relay",
+      "signin": "key",
+      "owning_app": "console",
+      "unlocks": "Send email through your own mail relay.",
+      "built_in_app_shows_data": false,
+      "key_hint": "Ask your mail host for the server name, port, user name and password.",
+      "scope": "org"
+    },
+    {
+      "id": "mcp",
+      "label": "Another system",
+      "signin": "mcp_address",
+      "owning_app": "console",
+      "unlocks": "Connect a system that has an MCP server. Use an OpenAPI door when it has no MCP server.",
+      "built_in_app_shows_data": false,
+      "key_hint": "Ask the system owner for the MCP address. A key may come with it.",
+      "scope": "org"
+    }
+  ]
+}

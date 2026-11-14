@@ -354,6 +354,17 @@ class Settings(BaseSettings):
     # flip on a box is gate `enforcement-flip`. Fence:
     # tests/unit/test_crm_answer_first.py.
     crm_answer_first_orgs: str = ""
+    # `crm_long_read_orgs` (WS-53 CRM-Q25e part 5, task 2985 HRD-6,
+    # 2026-11-13) lists the organization ids whose CRM totals may take a
+    # long read of up to 180 s (`crm_platform.md` §18.11, CRM-Q25e), in the
+    # grammar of `crm_orgs`. Default empty means NO organization: a total
+    # that runs past 10 s answers 503 `aggregate_timeout`, as before, and
+    # the chat tool makes no second call. The one reader is
+    # `gateway.routes.crm.flags`. A `*_ORGS` key, so a SIGHUP reload applies
+    # it (`docs/flag_reload.md`). A name in the list spends nothing, so a
+    # flip on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_crm_large_reads.py.
+    crm_long_read_orgs: str = ""
     # `crm_digest_orgs` (WS-53 CRM-Q28, 2026-10-17) lists the organization
     # ids that get the weekly CRM digest on the powerful tier
     # (`crm_platform.md` §18.11.2), in the grammar of `crm_orgs`. Default
@@ -487,6 +498,21 @@ class Settings(BaseSettings):
     # project-docs/specs/calendar_events_reminders.md §9. A flip on a box is
     # gate `enforcement-flip`. Fence: tests/unit/test_calendar_entries_r8.py.
     calendar_events: bool = False
+
+    # ── Calendar sync with Google and Outlook (WS-CAL CE-10, CE-11, 2026-11-12)
+    #
+    # `calendar_sync_read` and `calendar_sync_write` are org lists, or `*`.
+    # Empty is the default and means OFF: the sync loop starts no task, each
+    # `/tasks/calendar/connections` route answers 404, and no request leaves
+    # for Google or Microsoft. `calendar_sync_members` narrows both to listed
+    # member addresses, for the test phase while the OAuth apps are in Testing.
+    # The one reader is gateway/calendar_sync/flags.py. Spec
+    # project-docs/specs/calendar_events_reminders.md §8 and §9. A flip on a
+    # box is gate `enforcement-flip`, and the owner says "turn it on".
+    # Fence: tests/unit/test_calendar_sync_read.py.
+    calendar_sync_read: str = ""
+    calendar_sync_write: str = ""
+    calendar_sync_members: str = ""
 
     # ── The shared job queue (WS-BRIEF BR-1a, 2026-10-28) ───────────────────
     #
@@ -697,6 +723,41 @@ class Settings(BaseSettings):
     # none. Reader: `gateway.routes.studio.flags.studio_allowed`. Spec:
     # ai_studio.md section 3.2.
     studio_orgs: str = ""
+    # STU-B2b-2b: STUDIO_DOOR_OPS_ORGS lists the org ids where the Studio
+    # action door runs a class A door op (`<app>.<op>`) of another app, as the
+    # caller. `*` opens every org. Empty opens none. Reader:
+    # `gateway.routes.studio.flags.door_ops_allowed`. A SIGHUP reload applies
+    # a change (docs/flag_reload.md). A flip in production is the gate
+    # `enforcement-flip`. Spec: ai_studio.md section 14 B2b-2.
+    studio_door_ops_orgs: str = ""
+    # STU-I1a: STUDIO_CONNECTION_GATE_ORGS lists the org ids where the
+    # `connections` of a Studio manifest bind. A missing connection then makes
+    # the install `needs_setup`, and the action door refuses each action with
+    # 409 `needs_connection`. `*` opens every org. Empty opens none, and
+    # `connections` then changes nothing, as before I1a. Reader:
+    # `acb_common.studio_flags.connection_gate_on`. A SIGHUP reload applies a
+    # change (docs/flag_reload.md). A flip in production is the gate
+    # `enforcement-flip`, after the pre-check of ai_studio.md section 14 I1a.
+    studio_connection_gate_orgs: str = ""
+    # STU-C2c: STUDIO_NUM_F8_ORGS lists the org ids where a number filter of
+    # the Studio object query adds a float8 test on `studio_record_hot.
+    # v_num_f8`, so the app role can use its index (`numeric` comparisons are
+    # not LEAKPROOF). `*` opens every org. Empty opens none, and the SQL is
+    # then the same as before. The query honours it for an org only after the
+    # backfill (`scripts/backfill_studio_num_f8.py`) ends, so the records are
+    # right at every step.
+    # Reader: `acb_common.studio_flags.num_f8_allowed`. A SIGHUP reload
+    # applies a change (docs/flag_reload.md). Spec: ai_studio.md section 14 C2c.
+    studio_num_f8_orgs: str = ""
+    # STU-J10: STUDIO_RESIDENCY_ORGS lists the org ids whose health data
+    # stays in India. `*` opens every org. Empty opens none (no change for
+    # any org). It only adds refusals: a listed org's health app may use a
+    # store or a vendor only when `acb_common.studio_residency` records the
+    # region as India. NO CALLER READS IT YET: the guard `require_path` is not
+    # wired into any send path, so flipping it changes nothing today.
+    # Reader: `acb_common.studio_residency.residency_on`.
+    # The flip is the owner's (`enforcement-flip`). Spec: ai_studio.md J10.
+    studio_residency_orgs: str = ""
     # WS-OB GD-5a: GUIDE_ORGS lists the org ids whose members see the entries
     # of the guide's tour (the welcome button and the account menu row). `*`
     # opens every org. Empty opens none. Reader: `acb_common.guide_flags.
@@ -937,6 +998,20 @@ class Settings(BaseSettings):
     # a change (`gateway/flag_reload.py`). It calls no model.
     # Fences: tests/unit/test_honorifics.py.
     address_forms_orgs: str = ""
+
+    # ── The line of a slow tool (HRD-6, chat_failure_modes.md §4 row B6) ────
+    #
+    # CHAT_PROGRESS_NOTICE_ORGS: a comma list of organization ids, or `*`.
+    # Empty: off, the default, and each run sends the bytes that it sent
+    # before. On, a tool call that runs for more than 6 s gets ONE line for the
+    # member ("This is a large read. It can take a few minutes …" for a read,
+    # "This is taking longer than usual. Please wait." for any other tool), on
+    # the web chat and as WhatsApp's early message. A WhatsApp run of a listed
+    # org also gets the long cap (`bot_run.run_timeout_for`). The one reader is
+    # `acb_skills.progress_notice.progress_notice_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_progress_notice.py.
+    chat_progress_notice_orgs: str = ""
 
     # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
     #

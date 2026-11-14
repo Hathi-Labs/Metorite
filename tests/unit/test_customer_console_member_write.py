@@ -45,6 +45,7 @@ from customer_console.main import app
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._customer_console_ladder import (
     apply_ladder,
     ensure_deployment,
@@ -708,11 +709,8 @@ def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     CP-3 disarmed-gate failure. This is the closest a hand-list gets to
     defending itself — the precedent is CP-9 clause 11's.
     """
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(
-        encoding="utf-8"
-    )
-    assert "tests/unit/test_customer_console_member_write.py" in workflow, (
-        "this suite is not in pr-check.yml's R8 skip-guard list — without the "
+    assert "tests/unit/test_customer_console_member_write.py" in r8_lists.must_run(), (
+        "this suite is not in the `r8` key of tests/fences.json — without the "
         "entry it can skip in CI while the job reports green"
     )
 
@@ -776,7 +774,6 @@ class TestTheGatewayClientSpeaksThisDoorsWire:
         import asyncio
 
         import httpx
-
         from acb_auth import console_resolve as cr
 
         org = _new_org(client)
@@ -1426,10 +1423,9 @@ class TestRemovalsOfOneOrgAreSerialised:
                     second.execute(text("SET LOCAL lock_timeout = '200ms'"))
                     # A different org takes its own lock at once.
                     store.lock_org_owners(second, org_id=other["id"])
-                with pytest.raises(Exception) as exc:
-                    with second.begin():
-                        second.execute(text("SET LOCAL lock_timeout = '200ms'"))
-                        store.lock_org_owners(second, org_id=org["id"])
+                with pytest.raises(Exception) as exc, second.begin():
+                    second.execute(text("SET LOCAL lock_timeout = '200ms'"))
+                    store.lock_org_owners(second, org_id=org["id"])
                 assert "lock timeout" in str(exc.value).lower()
         finally:
             tx.rollback()

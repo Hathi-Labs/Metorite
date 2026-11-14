@@ -6,7 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 192
+-- Tables in this phase: 197
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -163,6 +163,13 @@ ALTER TABLE calendar_entry_attendees ENABLE ROW LEVEL SECURITY;
 ALTER TABLE calendar_entry_attendees FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS calendar_entry_attendees_tenant_isolation ON calendar_entry_attendees;
 CREATE POLICY calendar_entry_attendees_tenant_isolation ON calendar_entry_attendees
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE calendar_task_links ENABLE ROW LEVEL SECURITY;
+ALTER TABLE calendar_task_links FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS calendar_task_links_tenant_isolation ON calendar_task_links;
+CREATE POLICY calendar_task_links_tenant_isolation ON calendar_task_links
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
@@ -1524,6 +1531,27 @@ CREATE POLICY studio_objects_tenant_isolation ON studio_objects
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE studio_batch_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studio_batch_items FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS studio_batch_items_tenant_isolation ON studio_batch_items;
+CREATE POLICY studio_batch_items_tenant_isolation ON studio_batch_items
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE studio_batches ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studio_batches FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS studio_batches_tenant_isolation ON studio_batches;
+CREATE POLICY studio_batches_tenant_isolation ON studio_batches
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE studio_saved_views ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studio_saved_views FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS studio_saved_views_tenant_isolation ON studio_saved_views;
+CREATE POLICY studio_saved_views_tenant_isolation ON studio_saved_views
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE studio_object_fields ENABLE ROW LEVEL SECURITY;
 ALTER TABLE studio_object_fields FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS studio_object_fields_tenant_isolation ON studio_object_fields;
@@ -1538,10 +1566,24 @@ CREATE POLICY studio_records_tenant_isolation ON studio_records
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE studio_record_changes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studio_record_changes FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS studio_record_changes_tenant_isolation ON studio_record_changes;
+CREATE POLICY studio_record_changes_tenant_isolation ON studio_record_changes
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE studio_record_hot ENABLE ROW LEVEL SECURITY;
 ALTER TABLE studio_record_hot FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS studio_record_hot_tenant_isolation ON studio_record_hot;
 CREATE POLICY studio_record_hot_tenant_isolation ON studio_record_hot
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE studio_org_usage ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studio_org_usage FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS studio_org_usage_tenant_isolation ON studio_org_usage;
+CREATE POLICY studio_org_usage_tenant_isolation ON studio_org_usage
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 

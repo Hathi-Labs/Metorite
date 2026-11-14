@@ -33,9 +33,12 @@ from typing import Any
 
 import pytest
 
+from tests.unit import _r8_lists as r8_lists
+
 pytest.importorskip("sqlalchemy")
 
 from acb_common import studio_fields as sf
+from acb_common.studio_access import Viewer
 from acb_common.studio_fields import FieldError
 from acb_common.studio_manifest import validate_manifest
 from acb_common.studio_rules import MAX_LINES_PER_SAVE, MAX_WRITES_PER_BATCH
@@ -253,6 +256,9 @@ class _NoSQL:
 
 OID = "00000000-0000-0000-0000-00000000000a"
 PID = "00000000-0000-0000-0000-00000000000b"
+#: C8a. The store takes a viewer. No object of this suite declares `access`,
+#: so each object is open and any member reads and writes it.
+_VIEWER = Viewer("ana@x.test")
 
 
 @pytest.mark.parametrize("writes,index", [
@@ -268,7 +274,7 @@ def test_a_bad_link_is_refused_before_any_statement(writes, index) -> None:
 
     db = _NoSQL()
     with pytest.raises(BatchError) as refused:
-        asyncio.run(store.apply_writes(db, "ana@x.test", package_id=PID, writes=writes))
+        asyncio.run(store.apply_writes(db, "ana@x.test", package_id=PID, writes=writes, viewer=_VIEWER))
     assert refused.value.index == index and db.statements == 0
 
 
@@ -365,9 +371,5 @@ def test_a_published_lines_value_cannot_change() -> None:
 
 
 def test_the_r8_suite_is_named_in_both_ci_skip_guards() -> None:
-    for name in ("pr-check.yml", "deploy.yml"):
-        workflow = (_ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
-        block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
-        assert block, name
-        assert re.search(r"^[ \t]+tests/unit/test_studio_lines_r8\.py(?: \\)?$",
-                         block.group(1), re.M), name
+    must_run = r8_lists.must_run()
+    assert "tests/unit/test_studio_lines_r8.py" in must_run
