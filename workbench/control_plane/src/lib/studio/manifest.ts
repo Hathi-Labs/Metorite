@@ -138,6 +138,8 @@ export const NAV_ICONS: readonly NavIcon[] = [
 /** The caps of the rail (STU-AF2a). `navCaps.test.ts` holds them equal to the schema. */
 export const MAX_NAV_SECTIONS = 4;
 export const MAX_NAV_ROWS = 12;
+/** A rail shows at most this many counts (STU-AF3a). `test_studio_manifest_ts_parity.py` holds it equal to the Python twin. */
+export const MAX_NAV_COUNTS = 8;
 
 export interface FieldDef {
   key: string;
@@ -235,6 +237,7 @@ export interface NavRow {
   page: string;
   icon?: NavIcon | null;
   label?: string | null;
+  count?: boolean | null;
 }
 
 export interface NavSection {
