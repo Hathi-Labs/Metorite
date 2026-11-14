@@ -176,7 +176,7 @@ def test_the_acts_that_break_the_tab_rules_are_refused() -> None:
 
 def test_a_count_row_needs_a_table_or_board_page_and_the_cap_holds() -> None:
     doc = _framed()
-    doc["views"].append({"id": "note", "title": "Note", "block": "text", "text": "x"})
+    doc["views"].append({"id": "note", "title": "Note", "block": "markdown", "text": "x"})
     doc["pages"].append({"id": "notes", "cells": [{"view": "note"}]})
     bad = run(st.studio_patch(doc, [{"op": "add", "path": "/nav/1/rows/-", "value": {"page": "notes", "count": True}}]))
     assert bad["ok"] is False and "no table or board view" in bad["errors"][0]["message"]
