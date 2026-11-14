@@ -94,6 +94,13 @@ from acb_common.door_values import KEY_RE, compact_json, door_value
 from acb_common.paging import bounds, paged
 from acb_common.studio_manifest import (
     BLOCKS,
+    MAX_CELLS_PER_PAGE,
+    MAX_COLS,
+    MAX_NAV_ROWS,
+    MAX_NAV_SECTIONS,
+    MAX_PAGES,
+    MAX_TABS_PER_PAGE,
+    NAV_ICONS,
     OBJECT_OPS,
     RECORD_OPS,
     RESERVED_BLOCKS,
@@ -415,12 +422,36 @@ def _line(label: str, names: list[str]) -> str:
     return head + ", ".join(shown) + (f", and {rest} more" if rest else "")
 
 
+#: The most page names that the Pages line of the outline shows (AF-8a).
+MAX_OUTLINE_PAGES_SHOWN = 4
+
+
+def _frame_lines(manifest: dict[str, Any], fence: bool) -> list[str]:
+    """The Pages line and the Nav line of the outline. A part that is absent or
+    empty gives no line, so a manifest with no frame keeps its old text."""
+    lines: list[str] = []
+    pages = manifest.get("pages")
+    if isinstance(pages, list) and pages:
+        names = _names(pages, "id", fence)
+        shown = names[:MAX_OUTLINE_PAGES_SHOWN]
+        rest = len(pages) - len(shown)
+        lines.append(f"Pages ({len(pages)}): " + (", ".join(shown) or "none")
+                     + (f", and {rest} more" if rest > 0 and shown else ""))
+    nav = manifest.get("nav")
+    if isinstance(nav, list) and nav:
+        rows = sum(len(x["rows"]) for x in nav
+                   if isinstance(x, dict) and isinstance(x.get("rows"), list))
+        lines.append(f"Nav: {len(nav)} sections, {rows} rows")
+    return lines
+
+
 def outline_text(manifest: Any, fence: bool = False) -> str:
     """A deterministic text of the counts and the names in *manifest*.
 
     Pure: the same manifest gives the same text. It reads any value and never
     raises, so it also outlines a manifest that is not valid. It has seven
-    lines, each of at most :data:`MAX_OUTLINE_LINE_CHARS` characters, also for
+    lines, and a Pages line and a Nav line when the manifest holds `pages` or
+    `nav` (AF-8a). A manifest with neither gets the same seven lines as before. Each line is of at most :data:`MAX_OUTLINE_LINE_CHARS` characters, also for
     a manifest far over the cap. With *fence*, each name from the manifest shows
     inside « » (the plan card does this, because a name is free text).
     """
@@ -448,6 +479,7 @@ def outline_text(manifest: Any, fence: bool = False) -> str:
         _line("Objects", objs),
         _line("Actions", _names(manifest.get("actions"), "id", fence)),
         _line("Views", _names(manifest.get("views"), "id", fence)),
+        *_frame_lines(manifest, fence),
         _line("Workflows", _names(manifest.get("workflows"), "id", fence)),
         skill_line,
         _line("Connections", conn_names),
@@ -747,7 +779,7 @@ async def studio_patch(
 
 @annotate(read_only=True, idempotent=True, open_world=False)
 async def studio_outline(manifest: dict[str, Any]) -> dict[str, Any]:
-    """List the counts and names in a manifest: objects, views, workflows, skill, connections."""
+    """List the counts and names in a manifest: objects, views, pages, nav, workflows, skill, connections."""
     doc, bad = _as_doc(manifest)
     if bad is not None:
         return bad
@@ -1074,7 +1106,7 @@ async def studio_list_actions(
 
 
 #: The parts that :func:`studio_describe` serves, in the order it names them.
-DESCRIBE_PARTS = ("manifest", "fields", "blocks", "runtime")
+DESCRIBE_PARTS = ("manifest", "fields", "blocks", "runtime", "frame")
 
 
 def _describe_fields() -> dict[str, Any]:
@@ -1165,9 +1197,63 @@ def _describe_runtime() -> dict[str, Any]:
     }
 
 
+#: One valid `pages` and `nav` for the `frame` part. It lays out two views, so the test
+#: builds a manifest with the views `all-tasks` and `by-status` around it (AF-8a).
+FRAME_EXAMPLE: dict[str, Any] = {
+    "pages": [
+        {"id": "home", "title": "Home", "cols": 2,
+         "cells": [{"view": "all-tasks", "span": 2}, {"view": "by-status"}]},
+        {"id": "tasks", "title": "Tasks",
+         "tabs": [{"id": "open", "title": "Open", "cells": [{"view": "all-tasks"}]},
+                  {"id": "stats", "title": "Stats", "cells": [{"view": "by-status"}]}]},
+        {"id": "help", "title": "Help", "cells": [{"view": "all-tasks"}]},
+    ],
+    "nav": [
+        {"title": "Work", "rows": [{"page": "home", "icon": "Home"},
+                                   {"page": "tasks", "icon": "ListChecks", "label": "My tasks"}]},
+        {"title": "More", "rows": [{"page": "help", "icon": "BookOpen"}]},
+    ],
+}
+
+
+def _describe_frame() -> dict[str, Any]:
+    """The rules of the app frame that a schema cannot say (AF-8a, ``ai_studio.md`` 5.5).
+
+    The caps come from the model constants. Only the defaults that the client draws
+    are named, and each one is marked as a default."""
+    return {
+        "caps": {
+            "pages": MAX_PAGES,
+            "tabs_per_page": MAX_TABS_PER_PAGE,
+            "cells_per_page": MAX_CELLS_PER_PAGE,
+            "columns": MAX_COLS,
+            "nav_sections": MAX_NAV_SECTIONS,
+            "nav_rows_per_section": MAX_NAV_ROWS,
+        },
+        "rules": [
+            "A page has tabs or cells, not both.",
+            "A cell names a view id that the manifest declares.",
+            "A span is at most the columns of the page.",
+            "A nav needs pages, so write `pages` before `nav`.",
+            "Each rail row names a page id that the manifest declares.",
+            "Two nav sections do not share a title.",
+            "A rename of a page id needs a second op that fixes each nav row that named it.",
+            "Use no colour and no pixel size. Use only the icon names of the list.",
+        ],
+        "defaults": {
+            "note": "A default is what the app draws when the key is absent. "
+                    "Write `pages` or `nav` only to change it.",
+            "pages": "One page for each object, and a dashboard page when a chart or a stat view exists.",
+            "nav": "One rail row for each page.",
+        },
+        "icons": list(NAV_ICONS),
+        "example": FRAME_EXAMPLE,
+    }
+
+
 @annotate(read_only=True, idempotent=True, open_world=False)
 async def studio_describe(part: str = "manifest") -> dict[str, Any]:
-    """Read the live manifest schema (manifest), the field types (fields) the block tokens (blocks) or the runtime kinds (runtime)."""
+    """Read the live manifest schema (manifest), the field types (fields), the block tokens (blocks), the runtime kinds (runtime) or the page and rail rules and caps (frame)."""
     if part == "manifest":
         body: dict[str, Any] = {"schema": Manifest.model_json_schema()}
     elif part == "fields":
@@ -1176,6 +1262,8 @@ async def studio_describe(part: str = "manifest") -> dict[str, Any]:
         body = {"blocks": _describe_blocks()}
     elif part == "runtime":
         body = {"runtime": _describe_runtime()}
+    elif part == "frame":
+        body = {"frame": _describe_frame()}
     else:
         return _result(False, _sentence(
             "The part is not known. Use one of: " + ", ".join(DESCRIBE_PARTS) + "."), [])

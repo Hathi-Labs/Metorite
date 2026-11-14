@@ -913,7 +913,8 @@ No Studio agent exists to hand a task to.
   Use only add, replace and remove ops, with RFC 6901 paths. Use "-" at the end
   of a path to append to a list.
 - Before you draft or patch, call studio_describe for the manifest, fields and
-  blocks. Use only the field types and block tokens that it gives.
+  blocks. Use only the field types and block tokens that it gives. To add
+  pages or a left rail, call it with part "frame" first.
 - Each result has ok, errors and diff. A manifest comes back only when it is
   valid. When ok is false, read each error, fix one thing and call again. Your
   last valid manifest is unchanged.
