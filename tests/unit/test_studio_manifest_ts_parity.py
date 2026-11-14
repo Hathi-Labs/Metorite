@@ -127,3 +127,20 @@ def test_connection_need():
     assert need["properties"]["as"]["anyOf"][0]["enum"] == list(CONNECTION_AS)
     assert 'as?: "org" | "member" | null;' in _ts()
     assert "connections?: Array<string | ConnectionNeed>;" in _ts()
+
+
+def test_nav_icons_equal_the_ts_twin():
+    from acb_common.studio_manifest import NAV_ICONS
+
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    assert _union("NavIcon") == list(NAV_ICONS)
+    assert list(schema["$defs"]["NavRow"]["properties"]["icon"]["anyOf"][0]["enum"]) == list(NAV_ICONS)
+    arr = re.search(r"export const NAV_ICONS[^=]*= \[(.*?)\];", _ts(), re.S)
+    assert arr and re.findall(r'"(\w+)"', arr.group(1)) == list(NAV_ICONS)
+
+
+def test_nav_interfaces_match_the_schema():
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    for name in ("NavRow", "NavSection"):
+        assert _interface_keys(name) == set(schema["$defs"][name]["properties"]), name
+    assert _interface_types("NavRow")["icon"] == "NavIcon | null"

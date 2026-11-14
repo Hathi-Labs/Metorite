@@ -17,6 +17,25 @@ from typing import Any
 
 HERE = Path(__file__).resolve().parent
 FIXTURE = HERE / "fixtures" / "synthetic.json"
+#: The misses set (WS-FIND FIND-1): 20 synthetic cases that today's search misses.
+MISSES = HERE / "fixtures" / "misses.json"
+
+#: The kinds of a miss, each with the rung of ``find_engine.md`` §3.1 that finds it
+#: first. A case may name a higher rung than its kind's floor, never a lower one.
+MISS_KINDS = {
+    "near_name": 3,
+    "words_spread": 1,
+    "related_only": 4,
+    "converted_lead": 1,
+    "past_the_cut": 1,
+    "past_chat": 6,
+    "outside": 7,
+}
+#: Misses in the set.
+MISS_COUNT = 20
+#: Sources with no seed: no table holds a past chat or an outside app yet, so such a
+#: case misses by construction until HRD-21 (``chat``) or FIND-10 (``outside``).
+UNSEEDED_SOURCES = ("chat", "outside")
 
 #: The sources that carry questions, in the order of the report.
 SOURCES = ("email", "crm", "tasks", "knowledge", "people")
@@ -35,6 +54,10 @@ class Question:
     source: str
     text: str
     gold: tuple[str, ...]
+    #: Misses set only: the kind of the miss, the rung that finds it, and the slice.
+    kind: str = ""
+    rung: int = 0
+    slice: str = ""
 
 
 @dataclass(frozen=True)
@@ -114,3 +137,59 @@ def load_real(path: Path) -> list[Question]:
     if not out:
         raise ValueError("the real set holds no question")
     return out
+
+
+# ── the misses set (WS-FIND FIND-1) ─────────────────────────────────────────
+
+
+def load_misses(path: Path = MISSES) -> Fixture:
+    """Read the misses set, and refuse a set that is not whole."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    records = tuple(Record(r["key"], r["source"], r["fields"]) for r in raw["records"])
+    fixture = Fixture(records, tuple(raw["questions"]))
+    problems = check_misses(fixture)
+    if problems:
+        raise ValueError("the misses set is not whole: " + "; ".join(problems))
+    return fixture
+
+
+def check_misses(fixture: Fixture) -> list[str]:
+    """The faults of a misses set: the count, the kind, the rung and the gold."""
+    problems: list[str] = []
+    keys = [r.key for r in fixture.records]
+    if len(set(keys)) != len(keys):
+        problems.append("a record key repeats")
+    by_key = {r.key: r for r in fixture.records}
+    ids = [q["id"] for q in fixture.questions]
+    if len(set(ids)) != len(ids):
+        problems.append("a question id repeats")
+    if len(fixture.questions) != MISS_COUNT:
+        problems.append(f"{len(fixture.questions)} misses, not {MISS_COUNT}")
+    for q in fixture.questions:
+        kind, rung = q.get("kind"), q.get("rung")
+        if kind not in MISS_KINDS:
+            problems.append(f"{q['id']} has the unknown kind {kind}")
+        elif not isinstance(rung, int) or not MISS_KINDS[kind] <= rung <= 7:
+            problems.append(f"{q['id']} names the rung {rung}, under the floor of {kind}")
+        if not q.get("slice"):
+            problems.append(f"{q['id']} names no slice")
+        if not q["gold"]:
+            problems.append(f"{q['id']} has no gold")
+        for key in q["gold"]:
+            rec = by_key.get(key)
+            if rec is None:
+                problems.append(f"{q['id']} names the unknown record {key}")
+            elif rec.source != q["source"]:
+                problems.append(f"{q['id']} names a record of another source")
+        if (q["source"] in UNSEEDED_SOURCES) != (kind in ("past_chat", "outside")):
+            problems.append(f"{q['id']}: only past_chat and outside use an unseeded source")
+    return problems
+
+
+def resolve_misses(fixture: Fixture, org: str) -> list[Question]:
+    """The misses, with the gold ids of *org* and the kind, rung and slice of each."""
+    return [
+        Question(q["id"], q["source"], q["text"], tuple(gold_id(org, k) for k in q["gold"]),
+                 kind=q["kind"], rung=q["rung"], slice=q["slice"])
+        for q in fixture.questions
+    ]
