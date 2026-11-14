@@ -150,9 +150,11 @@ SAMPLES = {
     "integration": "integration:zoho.push",
     "workflow": f"workflow:{WORKFLOW}",
     "manifest": "knowledge.list_pages",
+    # B4a. A first-party module that runs in the gateway process. It calls no server.
+    "logic": "logic:demo_module",
 }
 
-SOURCES = ("object", "manifest", "integration", "workflow")
+SOURCES = ("object", "manifest", "integration", "workflow", "logic")
 CLASSES = ("A", "B", "C", "X", None)
 
 
@@ -161,7 +163,7 @@ def test_a_new_source_needs_a_preview_decision():
     file covers it. B1b adds ``mcp``: it must add its row to ``SAMPLES``."""
     assert set(get_args(get_type_hints(UsesRef)["source"])) == set(SOURCES)
     assert set(SAMPLES) == set(SOURCES)
-    assert set(_USES_RE.groupindex) == {"obj", "op", "integ", "wf", "app", "appop"}
+    assert set(_USES_RE.groupindex) == {"obj", "op", "integ", "wf", "logic", "app", "appop"}
     for source, uses in SAMPLES.items():
         ref = parse_uses(uses)
         assert ref is not None and ref.source == source
@@ -177,7 +179,23 @@ EXPECTED = {
     ("workflow", "A"): "source_not_open", ("workflow", "B"): None,
     ("workflow", "C"): None, ("workflow", "X"): "class_x",
     ("object", "X"): "class_x",
+    # B4a. A dark org (`logic=False`, the default of `refusal_for`) gets source_not_open for each
+    # class but X. The next test holds the answer of an org that has the logic switch.
+    ("logic", "A"): "source_not_open", ("logic", "B"): "source_not_open",
+    ("logic", "C"): "source_not_open", ("logic", "X"): "class_x",
 }
+
+
+def test_a_logic_module_in_a_preview_runs_in_process_and_sends_nothing(no_outbound):
+    """B4a. A logic module (class B, STUDIO_LOGIC_ORGS) runs in the gateway process and
+    applies its writes in the rollback SAVEPOINT of the preview. It reads through the
+    store and calls no server, so a preview of it is allowed and sends nothing. A viewer
+    stays read only. A dark org stays refused."""
+    ref = parse_uses(SAMPLES["logic"])
+    assert invoke.refusal_for(ref, "B", preview=True, logic=True) is None
+    assert invoke.refusal_for(ref, "B", preview=True, logic=False) == "source_not_open"
+    assert invoke.refusal_for(ref, "B", preview=True, logic=True, viewer=True) == "read_only"
+    assert no_outbound == []
 
 
 @pytest.mark.parametrize("source", SOURCES)
