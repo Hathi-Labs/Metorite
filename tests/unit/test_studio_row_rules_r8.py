@@ -1653,6 +1653,18 @@ def test_r8_ledger_a_viewer_with_no_read_gets_a_total_of_0(world) -> None:
         _agg(world, AS_STRANGER, measures=[{"op": "sum", "field": "note"}])
 
 
+def test_r8_ledger_a_viewer_with_no_read_runs_no_statement_of_the_aggregate(
+        world, monkeypatch) -> None:
+    """The scope answers before the read. The row rule alone would also give 0,
+    so this test pins the early return (mutation G5)."""
+    async def _no_read(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("a viewer with no read must not reach the aggregate statement")
+
+    monkeypatch.setattr(store, "_read_aggregate", _no_read)
+    got = _agg(world, AS_STRANGER, measures=_QTY)
+    assert got is not None and got.total.count == 0
+
+
 def test_r8_ledger_another_org_reads_nothing_and_a_viewer_is_required(world) -> None:
     assert _agg(world, AS_OWNER, org=world.b) is None
     with pytest.raises(store.ObjectStoreError):

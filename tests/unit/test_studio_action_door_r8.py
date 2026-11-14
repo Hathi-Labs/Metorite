@@ -2939,6 +2939,11 @@ def _installed_by_ben(world: Any, monkeypatch, fields: list[dict[str, Any]] | No
         from gateway.package_host import viewer as host_viewer
         if viewer != ANA or app_id != world.pkg_ben:
             return None
+        # The install shows only to a session that RLS lets read the package.
+        seen = await db.execute(text("SELECT 1 FROM apps WHERE id = CAST(:i AS uuid)"),
+                                {"i": app_id})
+        if seen.first() is None:
+            return None
         return host_viewer.InstalledApp(id=app_id, version=1, manifest=manifest)
 
     monkeypatch.setattr(invoke, "package_host_allowed", lambda org: True)
