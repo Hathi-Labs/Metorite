@@ -4594,6 +4594,7 @@ even though we wanto to do majority of the work in a main agent
    agent.
 2. **Tool packs, loaded per turn.** Each app's tools and a short rules block
    form a pack, in the WS-23 registry. A pack loads when a turn needs it.
+   *(Amended by D222, 2026-11-14: a single tool of a pack can also load by search.)*
 3. **The loader is fast first.** It chooses packs with no model call where
    it can: from the app surface, the packs that the chat already loaded, and
    the working set. A tool lets the model load a missed pack during the
@@ -6255,9 +6256,9 @@ The owner asked in chat on 2026-11-14 for a Focus mode that breaks a task into s
 
 Fence: each slice of `my_day_command_centre.md` §9 (CC-12 to CC-16) names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D221 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D220 at most (PR 2241, merged).
 
-### D222 — The chat loads a single tool by search, and the pack stays the unit of the guards and the state. It amends D117 item 2 (PROPOSED, 2026-11-14)
+### D222 — The chat loads a single tool by search, and the pack stays the unit of the guards and the state. It amends D117 item 2 (DECIDED, 2026-11-14)
 
-**Status: PROPOSED.** It binds only after the owner confirms it. Until then D117 item 2 stands as written. Board: **WS-67**, task 3190 (TS-0). Owning spec: **`specs/one_assistant_context.md`** §4.2.9.
+**Status: DECIDED, 2026-11-14, task 3190.** The owner adopted D222 as written, and it amends D117 item 2. Board: **WS-67**, task 3190 (TS-0). Owning spec: **`specs/one_assistant_context.md`** §4.2.9.
 
 The owner asked in chat on 2026-11-13, on task 3118. Can the chat hold many more tools, load each one when it needs it, and keep a small context? The `studio` pack is full at 23 tools, and new Studio tools have no room under the cap of 110 tools. In OA-8e run 1 the model loaded a pack that it lacked in 3 of 70 app turns.
 
@@ -6267,23 +6268,26 @@ The owner asked in chat on 2026-11-13, on task 3118. Can the chat hold many more
    - **The checks of a load.** `find_tools` runs the MCP rule (`_beside_mcp`) and the size check of a pack before each add, as `_admit_pack` does.
 3. **Our own search, on the seam of `load_skill_tools`.** `find_tools` is a sibling of `LoadSkillTools`, and it uses `context.add_tools`. It adds no second registry (D205 point 1). This decision parks the native tool search of the Claude API (TS-8). It rejects a door tool in the pattern of D136.2 for the chat.
 4. **A first pass with no model call.** Layer (a′) ranks the member's own words before the first request. `find_tools` is the fallback in the middle of a turn. D117 item 3 holds.
-5. **The cache and the cost hold the limits.** The cap of 110 tools stays, and `find_tools` and each found tool count against it. The proposal offers `find_tools` only when one place stays free after layer (a), the load tool and each promised load. So it pushes out no pack of layer (a), and it takes no place that a promised load needs. A budget of about 30 thousand schema tokens for each request joins it. Past the cap, unused found tools leave before a spare pack. A found tool that ran has its own record and stays (TS-4). Found tools come after the pack tools, in a fixed order (D117 item 4).
-6. **Studio gets room.** The `studio` family splits into a core of 10 tools and a follow pack, `studio-more` (TS-1b, task 3207). So a Studio turn has room, and the search has tools to find. TS-1b is live, not dark, and the owner answers its open decision before it merges. In TS-1b, `studio-more` takes a place of `MAX_PACKS`. A later slice, TS-1c, with its own spec audit, may change that.
+5. **The cache and the cost hold the limits.** The cap of 110 tools stays, and `find_tools` and each found tool count against it. The owner chose "Always, in the base set" (decision 13). So the run offers `find_tools` on every turn where the flag is on for the org, as it offers the pack loader. It counts against the base tools. At the cap of 110 tools, that count can push out the last pack, and the owner accepted that trade. A budget of about 30 thousand schema tokens for each request joins it. Past the cap, unused found tools leave before a spare pack. A found tool that ran has its own record and stays (TS-4). Found tools come after the pack tools, in a fixed order (D117 item 4).
+6. **Studio gets room.** The `studio` family splits into a core of 10 tools and a follow pack, `studio-more` (TS-1b, task 3207). So a Studio turn has room, and the search has tools to find. TS-1b is live, not dark, and the owner answers its open decision before it merges. The owner approved decision 11 on 2026-11-14. In TS-1b, `studio-more` takes a place of `MAX_PACKS`. TS-1c (task 3213) follows to remove that side effect, after its own spec audit.
 7. **Dark, then measured.** Each slice from TS-2 on ships dark. `TOOL_SEARCH_ORGS` is empty by default, and its flip is owner-only. The `search` arm of the OA-8e measure must be not worse than the `pack` arm before a switch.
 
-**Accepted by the owner, 2026-11-14, task 3190.** The owner accepted four of the open points. D222 as a whole stays PROPOSED until the owner confirms its wording.
+**Decided by the owner, 2026-11-14, task 3190 (recorded at 10:18 UTC).** The owner wrote that D222 is adopted as written, and it loads by tool and amends D117 item 2. Earlier on 2026-11-14 (04:24 UTC) the owner accepted four points.
 - **Decision 2, sticky tools.** A found tool is sticky for the chat, and it drops after a few unused turns.
 - **Decision 6, the index.** First-party tools only until TS-9.
 - **Decision 7, the budget.** About 30 thousand schema tokens for each request.
 - **Decision 9, the eval spend.** A pilot, then a full run: about USD 0.37 and about USD 4.2 by the harness count, with `--budget-usd 6`. The real bill may be 2.75 times that.
 
-Decision 11 (the Studio split, due before TS-1b merges) and decision 13 (the place of `find_tools`) stay open. The audit of TS-2 on 2026-11-14 found it NO-GO as written. TS-2a (task 3222), a narrowed spike for the `studio` pack alone, is the next dispatchable slice.
+- **Decision 11, the Studio split. APPROVED.** `studio` keeps a core of 10 tools. A new follow pack, `studio-more`, takes the other 13. It is LIVE where Studio is on. TS-1c follows to remove the side effect: `studio-more` can lose its place of `MAX_PACKS` in a turn that also needs two other packs.
+- **Decision 13, the place of `find_tools`. "Always, in the base set".** The run offers `find_tools` on every turn where the flag is on for the org. It counts against the base tools, as the pack loader does. This replaces the earlier recommendation to offer it only when a place stays free. At the cap of 110 tools, the base count can push out the last pack. The owner accepted that trade.
 
-**Open for the owner.** `one_assistant_context.md` §4.2.9 lists thirteen points. They include the stickiness of a found tool, the threshold of the first pass and the budget. They also include the eval spend, the Studio split, the place of `find_tools` and Studio as the spike.
+The audit of TS-2 on 2026-11-14 found it NO-GO as written. TS-2a (task 3222) is a narrowed spike for the `studio` pack alone. It adds `find_tools` to the base the way `_apply_tool_packs` adds the pack loader, and it needs no new count check. TS-1b (task 3207) is approved and is dispatchable after its own spec audit.
+
+**Still open.** `one_assistant_context.md` §4.2.9 lists thirteen points. Points 3, 5, 8, 10 and 12 stay open, because D222 does not settle them. The spec names the slice audit that settles each one.
 
 **Revisit.** Only the owner confirms or reopens this. D117 names the owner as the one who reopens it.
 
-Fence: each slice of `one_assistant_context.md` §4.2.9 (TS-1 to TS-9, tasks 3195 to 3203, TS-2a, task 3222, TS-1b, task 3207, and the optional TS-1c, task 3213) names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D222 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D221 at most, and no open PR or local worktree held D222 or higher.
+Fence: each slice of `one_assistant_context.md` §4.2.9 (TS-1 to TS-9, tasks 3195 to 3203, TS-2a, task 3222, TS-1b, task 3207, and the optional TS-1c, task 3213) names its test. Until a slice lands, its rule is advisory (R7). A count test (TS-2a) asserts that the base count rises by 1 with the flag on, and does not change with the flag off. `tests/unit/test_decision_ids.py` fails when two D222 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D221 at most, and no open PR or local worktree held D222 or higher.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
