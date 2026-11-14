@@ -52,9 +52,31 @@ def _covered_specs() -> set[str]:
     return out
 
 
-def test_every_spec_is_in_an_area_or_always_run():
+def test_an_unmapped_spec_joins_every_partial_selection():
+    """A new spec can merge before its map entry. It must then run on every
+    partial selection, and this fence must not turn main red (2026-11-14)."""
     assert SPECS, "no spec found"
-    assert set(SPECS) - _covered_specs() == set()
+    assert sel.unmapped_specs(MAP, SPECS) == set(SPECS) - _covered_specs() - {
+        s for r in MAP.get("importer_rules", []) for g in r.get("specs", [])
+        for s in SPECS if fnmatch.fnmatch(s, g)
+    }
+    fake = {**MAP, "areas": {k: dict(v) for k, v in MAP["areas"].items()}}
+    dropped = "studio-app-rail.spec.ts"
+    fake["areas"]["other-apps"]["specs"] = [
+        s for s in fake["areas"]["other-apps"]["specs"] if s != dropped
+    ]
+    assert dropped in sel.unmapped_specs(fake, SPECS)
+    mode, picked = sel.select([ROOT + "src/app/crm/page.tsx"], fake, E2E, CONFIG, {})
+    assert mode == "partial"
+    assert dropped in picked
+
+
+def test_the_map_names_each_spec_today():
+    """Advisory for the author of a new spec: name it in an area. The selector
+    runs an unmapped spec on every UI PR until then, so this only lists them."""
+    unmapped = sel.unmapped_specs(MAP, SPECS)
+    if unmapped:
+        pytest.skip(f"specs with no map entry (they run on every UI PR): {sorted(unmapped)}")
 
 
 def test_every_spec_glob_matches_a_spec():

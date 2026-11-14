@@ -3,7 +3,9 @@
 **Status: PROPOSED, 2026-11-14. Verified against the code on 2026-11-14
 (`origin/main` at `ed2274b1c`).** Epic WS-FIND, task 3232. FIND-0 is task
 3233. This spec builds nothing. It maps five slices that are in flight or
-planned (§9.2). The owner decides D-FIND-1 to D-FIND-8 (§10). The defaults
+planned (§9.2). **FIND-1 is built (branch `mt-45237431-find-misses-eval`, task
+3238):** the misses set is in `evals/search_company/fixtures/misses.json`, and
+`--fixture` prints its score. The owner decides D-FIND-1 to D-FIND-8 (§10). The defaults
 hold until the owner answers.
 
 **The seam owner.** `knowledge_base.md` §20 (D105) owns the retrieval seam:
@@ -519,7 +521,7 @@ past chat, and HRD-21 is HIGH with an owner preview.
 | Slice | Task | Rung | What | Done when | Fence (R7) | Tier · gate | Depends on |
 |---|---|---|---|---|---|---|---|
 | **FIND-0** | 3233 | 1 | This spec, its INDEX row, the §2.1 row and the pointer in `knowledge_base.md` §20.10 | The lint passes, and INDEX lists the spec | `test_index_completeness.py`, `test_doc_names_resolve.py`, ste-lint | LOW · AGENT-SAFE | none |
-| **FIND-1** | 3238 | 1 | A misses set for the KG-1 eval: 20 synthetic misses in `evals/search_company/fixtures/misses.json`. Each names its kind (near name, words spread over records, related only, converted lead, past chat, outside) and the rung it needs. The real misses of production stay off the repo, in `~/.metorite/evals/kg1/` | `--fixture` prints the misses score, found in the top 5 of one call. The baseline is a comment on epic 3232. Each later slice writes its numbers before and after, and a drop does not merge. The end of rung 2 scores 18 of 20 or more | `test_search_company_eval.py`, extended | LOW · AGENT-SAFE | none |
+| **FIND-1** (built) | 3238 | 1 | A misses set for the KG-1 eval: 20 synthetic misses in `evals/search_company/fixtures/misses.json`. Each names its kind (near name, words spread over records, related only, converted lead, past chat, outside) and the rung it needs. The real misses of production stay off the repo, in `~/.metorite/evals/kg1/` | `--fixture` prints the misses score, found in the top 5 of one call. The baseline is a comment on epic 3232. Each later slice writes its numbers before and after, and a drop does not merge. The end of rung 2 scores 18 of 20 or more | `test_search_company_eval.py`, extended | LOW · AGENT-SAFE | none |
 | **KR-ZERO** | 2974 | 1 | Rung 2 (each word alone), the embed of rung 5 at 0 s, and `meaning` and `broadened` in the answer | As its task. Built on `mt-bdf0d8ea-kr-zero`, not merged | `test_company_search_zero.py`, `test_company_search_r8.py` | STANDARD · AGENT-SAFE | none |
 | **HRD-18a** | 2997 | 1 | The one matcher `acb_common/name_match.py`. CRM search word by word, a deal that matches its contacts and source lead, and `?near=true`. `resolve_person` and `find_contact` use the matcher | As its task. Built on `mt-53eeea95-near-names`, not merged | `test_name_variants.py`, `test_crm_near_search_r8.py` | STANDARD · AGENT-SAFE | none |
 | **HRD-4** | 2983 | 1 | Rung 1 at once: each source of pass 1 in parallel, at most `FIND_SESSIONS` (4) at a time. `find_tasks` ranks by most of the words on a miss | "Sharath 3D printer" names no skipped source on the fixture. A slow source does not hold a fast one. A fifth source waits for a slot | `test_search_fallback.py` | STANDARD · AGENT-SAFE | KR-ZERO |
