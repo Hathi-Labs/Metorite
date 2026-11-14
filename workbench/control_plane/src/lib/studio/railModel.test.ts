@@ -1,8 +1,8 @@
 /** STU-AF2b fence: the pure model of the app rail. */
 import { describe, expect, it } from "vitest";
 
-import { MAX_NAV_ROWS, MAX_NAV_SECTIONS } from "@/lib/studio/manifest";
-import { DEFAULT_RAIL_ICON, hasRail, railFor } from "@/lib/studio/railModel";
+import { MAX_NAV_COUNTS, MAX_NAV_ROWS, MAX_NAV_SECTIONS } from "@/lib/studio/manifest";
+import { DEFAULT_RAIL_ICON, hasRail, objectReadable, railFor, visibleRail } from "@/lib/studio/railModel";
 
 const PAGES = [
   { id: "home", title: "Home" },
@@ -70,5 +70,64 @@ describe("hasRail", () => {
     expect(hasRail([])).toBe(false);
     expect(hasRail([{ id: "a" }])).toBe(false);
     expect(hasRail([{ id: "a" }, { id: "b" }])).toBe(true);
+  });
+});
+
+describe("the count of a row (STU-AF3b)", () => {
+  const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ id: "p" + i, title: "P" + i }));
+  it("carries count on a row, and no key on a row without it", () => {
+    const out = railFor(PAGES, [{ title: "W", rows: [{ page: "home", count: true }, { page: "jobs", count: false }, { page: "people" }] }]);
+    expect(out[0].rows.map((r) => r.count)).toEqual([true, undefined, undefined]);
+    expect("count" in out[0].rows[1]).toBe(false);
+  });
+  it("keeps the count on the first 8 rows of the rail only", () => {
+    const pages = rows(12);
+    const nav = [{ title: "A", rows: pages.slice(0, 6).map((p) => ({ page: p.id, count: true })) },
+      { title: "B", rows: pages.slice(6).map((p) => ({ page: p.id, count: true })) }];
+    const flat = railFor(pages, nav).flatMap((s) => s.rows);
+    expect(flat.filter((r) => r.count)).toHaveLength(MAX_NAV_COUNTS);
+    expect(flat.slice(0, 8).every((r) => r.count)).toBe(true);
+  });
+});
+
+describe("visibleRail: who reads a page (C8, rule 5)", () => {
+  const WHERE = [{ role: "hr", read: { where: "owner = $me" } }];
+  const ALL = [{ role: "hr", read: "all", write: "all" }];
+  const OBJECTS = new Map<string, readonly Record<string, unknown>[] | null>([
+    ["notes", null], ["empty", []], ["pay", WHERE], ["shared", ALL],
+  ]);
+  const objectOf = (page: string) => ({ n: "notes", e: "empty", p: "pay", s: "shared", g: "ghost" } as Record<string, string>)[page] ?? null;
+  const rail = railFor(
+    [{ id: "n" }, { id: "e" }, { id: "p" }, { id: "s" }, { id: "g" }, { id: "d" }],
+    [{ title: "Work", rows: [{ page: "n" }, { page: "e" }, { page: "s" }] },
+      { title: "Private", rows: [{ page: "p" }, { page: "g" }] }, { title: "Misc", rows: [{ page: "d" }] }]);
+  const pages = (out: ReturnType<typeof visibleRail>) => out.flatMap((s) => s.rows.map((r) => r.page));
+
+  it("an owner reads every installed object", () => {
+    expect(pages(visibleRail(rail, { owner: true, objects: OBJECTS, objectOf }))).toEqual(["n", "e", "s", "p", "d"]);
+  });
+  it("a viewer loses an object with access and no read all", () => {
+    expect(pages(visibleRail(rail, { owner: false, objects: OBJECTS, objectOf }))).toEqual(["n", "e", "s", "d"]);
+  });
+  it("an object with no access, and one that grants read all, stay for a viewer", () => {
+    expect(objectReadable(null, false)).toBe(true);
+    expect(objectReadable(undefined, false)).toBe(true);
+    expect(objectReadable([], false)).toBe(true);
+    expect(objectReadable(ALL, false)).toBe(true);
+    expect(objectReadable(WHERE, false)).toBe(false);
+    expect(objectReadable(WHERE, true)).toBe(true);
+  });
+  it("an object that is not installed drops out, and a page with no object stays", () => {
+    const out = visibleRail(rail, { owner: true, objects: OBJECTS, objectOf });
+    expect(pages(out)).not.toContain("g");
+    expect(pages(out)).toContain("d");
+  });
+  it("a section left empty is dropped", () => {
+    const out = visibleRail(rail, { owner: false, objects: OBJECTS, objectOf });
+    expect(out.map((s) => s.title)).toEqual(["Work", "Misc"]);
+  });
+  it("keeps the count flag of a row that stays", () => {
+    const counted = railFor([{ id: "n" }], [{ title: "W", rows: [{ page: "n", count: true }] }]);
+    expect(visibleRail(counted, { owner: false, objects: OBJECTS, objectOf })[0].rows[0].count).toBe(true);
   });
 });

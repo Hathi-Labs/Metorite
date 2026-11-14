@@ -49,7 +49,8 @@
 #                                    again before the merge. The next auto-revert
 #                                    pass tests it (CIV-31b). No state file -> BACK
 #   an auto-revert PR while AUTO_REVERT_MODE of metorite-auto-revert.service is
-#   not on                        -> skip, and one HOLD <pr> <reason> line (CIV-31c)
+#   not on                        -> skip, and one HOLD <pr> <reason> line (CIV-31c).
+#                                    auto_revert_mode.sh reads the mode (CIV-31d)
 #   gh pr merge says "Base branch was modified" -> retry twice, 20 s apart, then skip.
 #                                    An auto-revert PR gets no retry: it skips.
 #   else gh pr ready (if draft), gh pr merge --squash --match-head-commit <sha>,
@@ -495,11 +496,12 @@ gate() {
   echo "main moved during premerge"; return 1
 }
 
-# auto_revert_mode: AUTO_REVERT_MODE of the auto-revert unit, read as lane-merge.md
-# step g reads it. Empty when systemctl fails or the unit sets no mode.
+# auto_revert_mode: AUTO_REVERT_MODE of the auto-revert unit. CIV-31d (H1): the
+# bot, the auto-revert pass and lane-merge.md step g all run the ONE reader
+# auto_revert_mode.sh, so they cannot see two modes. Empty when systemctl fails
+# or the unit sets no mode.
 auto_revert_mode() {
-  systemctl --user show -p Environment --value metorite-auto-revert.service 9>&- 2>/dev/null \
-    | tr ' ' '\n' | sed -n 's/^AUTO_REVERT_MODE=//p' | tail -n 1 | tr -d '\r' | tr '[:upper:]' '[:lower:]'
+  bash "$ROOT/scripts/home_server/auto_revert_mode.sh" 9>&- 2>/dev/null
 }
 
 # ensure_workdir: the bot's own checkout. The first gate makes it.
