@@ -1459,6 +1459,61 @@ def test_nav_row_refuses_an_unknown_key_and_a_blank_title():
     assert _at(_nav_doc(_sec(" ")), "$.nav[0].title")
 
 
+# --- nav counts (STU-AF3a) ---
+
+
+def _count_doc(rows_by_section: list[list[dict]], pages: list[dict]) -> dict:
+    return doc(pages=pages, nav=[_sec(f"S{i}", *rows) for i, rows in enumerate(rows_by_section)])
+
+
+def test_count_on_a_page_with_a_board_or_table_view_is_ok():
+    d = _count_doc([[{"page": "main", "count": True}]], [_page()])
+    assert validate_manifest(d) == []
+    assert Manifest.model_validate(d).nav[0].rows[0].count is True
+    # A view in a tab or in the side cell counts too.
+    tabbed = {"id": "t", "tabs": [{"id": "a", "title": "A", "cells": [{"view": "board"}]}]}
+    side = {"id": "s", "cells": [{"view": "week"}], "side": {"view": "board"}}
+    d = _count_doc([[{"page": "t", "count": True}, {"page": "s", "count": True}]], [tabbed, side])
+    assert validate_manifest(d) == []
+
+
+def test_count_on_a_page_without_a_table_or_board_view_is_refused():
+    only_week = {"id": "w", "cells": [{"view": "week"}, {"view": "check_in"}]}
+    d = _count_doc([[{"page": "w", "count": True}]], [only_week])
+    one(d, "$.nav[0].rows[0].count", contains="Page `w` has no table or board view")
+
+
+def test_count_false_or_missing_is_never_checked():
+    only_week = {"id": "w", "cells": [{"view": "week"}]}
+    d = _count_doc([[{"page": "w", "count": False}, {"page": "w"}, {"page": "w", "count": None}]], [only_week])
+    assert validate_manifest(d) == []
+
+
+def test_eight_counts_are_ok_and_nine_are_refused():
+    from acb_common.studio_manifest import MAX_NAV_COUNTS
+
+    assert MAX_NAV_COUNTS == 8
+    c = {"page": "main", "count": True}
+    assert validate_manifest(_count_doc([[c] * 4, [c] * 4], [_page()])) == []
+    one(_count_doc([[c] * 5, [c] * 4], [_page()]), "$.nav", contains="at most 8 counts")
+
+
+def test_a_count_cap_error_does_not_hide_other_nav_errors():
+    c = {"page": "main", "count": True}
+    d = _count_doc([[c] * 5, [c] * 3, [{"page": "nope"}]], [_page()])
+    assert _at(d, "$.nav[2].rows[0].page")
+    assert not _at(d, "$.nav")
+
+
+def test_a_manifest_with_no_count_still_validates():
+    assert validate_manifest(_nav_doc(_sec("S", {"page": "p0", "icon": "Home"}))) == []
+
+
+def test_a_row_still_refuses_a_view_filter_or_sort_key():
+    for key in ("view", "filter", "sort"):
+        assert _at(_nav_doc(_sec("S", {"page": "p0", key: "x"})), f"$.nav[0].rows[0].{key}")
+
+
 def test_every_first_party_template_still_validates():
     root = Path(__file__).resolve().parents[2] / "packages/acb_common/acb_common/studio_templates"
     files = sorted(root.glob("*.json"))

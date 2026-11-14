@@ -264,6 +264,18 @@
     "NavRow": {
       "additionalProperties": false,
       "properties": {
+        "count": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Count"
+        },
         "icon": {
           "anyOf": [
             {

@@ -300,6 +300,9 @@ describe("the package routes", () => {
     expect((await getPackage(PKG, full.impl)).nav).toEqual(nav);
     const bare = fakeFetch(200, { package: { id: PKG, name: "Visits", manifest: { actions: ACTIONS } }, objects: [] });
     expect((await getPackage(PKG, bare.impl)).nav).toEqual([]);
+    const counted = [{ title: "Work", rows: [{ page: "main", count: true }] }];
+    const withCount = fakeFetch(200, { package: { id: PKG, name: "Visits", manifest: { actions: ACTIONS, nav: counted } }, objects: [] });
+    expect((await getPackage(PKG, withCount.impl)).nav).toEqual(counted);
   });
   it("a package id that is no uuid makes no call", async () => {
     const { impl, spy } = fakeFetch();
