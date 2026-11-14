@@ -162,10 +162,10 @@ f. **Close it.** Move the task to Done with `set_task_status`, using the
 g. **Watch `main`.** Every 3 merges, or every 30 minutes, read
    `gh run list --branch main --limit 10`. When a required job of a `main` run
    is red, find the merged pull request that caused it. Comment on that task.
-   - Read the mode first:
-     `systemctl --user show -p Environment --value metorite-auto-revert.service | tr ' ' '\n' | grep '^AUTO_REVERT_MODE='`.
-     systemd merges each drop-in into one value, so this gives one line. No
-     line means the mode is `off`, or the unit is not installed.
+   - Read the mode first: `bash scripts/home_server/auto_revert_mode.sh`.
+     It is the one reader of the mode, and the pass and the merge bot run it
+     too. It prints `on`, `dry` or `off`. An empty line or another word means
+     `off`, or the unit is not installed.
    - Mode `on`: make no revert yourself. Read `~/lanes/auto-revert.log`. The
      pass opens the revert PR, or it writes a `PERSON` line. Act only on a
      `PERSON` line. Then one culprit never gets two revert PRs.
