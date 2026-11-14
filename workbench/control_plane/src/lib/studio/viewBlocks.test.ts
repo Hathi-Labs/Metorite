@@ -268,9 +268,10 @@ describe("the ready apps map with no problem view", () => {
   const dir = resolve(__dirname, "../../../../../packages/acb_common/acb_common/studio_templates");
   const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
 
-  it("finds the six ready apps", () => {
+  it("finds the eight ready apps", () => {
     expect(files.sort()).toEqual([
-      "expense_claims.json", "field_visits.json", "hiring.json", "purchase_requests.json", "spares.json", "support_desk.json",
+      "expense_claims.json", "field_visits.json", "hiring.json", "purchase_requests.json",
+      "shipment_tracker.json", "site_survey.json", "spares.json", "support_desk.json",
     ]);
   });
 
