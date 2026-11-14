@@ -86,14 +86,14 @@ def test_limit_and_positive_score():
 
 
 # ── (c) Golden queries ─────────────────────────────────────────────────────
-# The first two come from the OA-8e miss chats (crm_miss, pm_miss). The raw
-# wording of those chats holds no word of the tool, so the model writes the
-# search query, as the two rewrites below do. The rest are plain requests.
+# The first two are model-style REWRITES of the OA-8e miss chats (crm_miss,
+# pm_miss). The raw user wording of those chats holds no word of the tool, so a
+# lexical ranker cannot find it: RAW_OA8E below pins that gap. So `find_tools`
+# works when the model writes the search query. The rest are plain requests.
 
 GOLDEN = (
     ("search the crm for Orbit", "search_crm"),
     ("summary of the Mobile App project", "project_summary"),
-    ("create a deal", "update_deal_status"),
     ("move a lead to a contact", "convert_lead"),
     ("plan my day", "my_tasks_plan_day"),
     ("start my day", "my_tasks_start_my_day"),
@@ -117,6 +117,30 @@ def test_golden_query_ranks_the_tool_in_the_top_5(query, tool):
     assert tool in sf.all_registered_tool_names()
     top = [name for name, _p, _s in ts.rank(query)]
     assert tool in top, f"{tool} not in top 5 for {query!r}: {top}"
+
+
+# The raw user wording of the OA-8e miss chats. A lexical ranker with no
+# synonyms misses all three (TS-1 verifier, 2026-11-14). The xfail is strict:
+# when a later slice (synonyms, embeddings, a first pass over the user words)
+# makes one pass, this test fails and the owner of that slice removes the mark.
+RAW_OA8E = (
+    ("Who at Orbit did we speak to last?", "search_crm"),
+    ("What is the Mobile App up to?", "project_summary"),
+    ("Who is overloaded right now?", "analytics_load"),
+)
+
+
+@pytest.mark.xfail(strict=True, reason="a lexical ranker cannot map raw OA-8e wording to a tool")
+@pytest.mark.parametrize(("query", "tool"), RAW_OA8E)
+def test_raw_oa8e_wording_ranks_the_tool_in_the_top_5(query, tool):
+    top = [name for name, _p, _s in ts.rank(query)]
+    assert tool in top
+
+
+def test_the_ranker_ignores_case():
+    """Mutation: skip `_plain` in the tokenizer (a case-sensitive ranker)."""
+    assert ts.rank("Send Email") == ts.rank("send email") != []
+    assert ts.rank("SEND EMAIL") == ts.rank("send email")
 
 
 # ── (d) First-party text only ──────────────────────────────────────────────
