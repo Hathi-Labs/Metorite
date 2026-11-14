@@ -6282,7 +6282,9 @@ The owner asked in chat on 2026-11-13, on task 3118. Can the chat hold many more
 - **Decision 11, the Studio split. APPROVED.** `studio` keeps a core of 10 tools. A new follow pack, `studio-more`, takes the other 13. It is LIVE where Studio is on. TS-1c follows to remove the side effect: `studio-more` can lose its place of `MAX_PACKS` in a turn that also needs two other packs.
 - **Decision 13, the place of `find_tools`. "Always, in the base set".** The run offers `find_tools` on every turn where the flag is on for the org. It counts against the base tools, as the pack loader does. This replaces the earlier recommendation to offer it only when a place stays free. At the cap of 110 tools, the base count can push out the last pack. The owner accepted that trade.
 
-The audit of TS-2 on 2026-11-14 found it NO-GO as written. TS-2a (task 3222) is a narrowed spike for the `studio` pack alone. It adds `find_tools` to the base the way `_apply_tool_packs` adds the pack loader, and it needs no new count check. TS-1b (task 3207) is approved and is dispatchable after its own spec audit.
+The audit of TS-2 on 2026-11-14 found it NO-GO as written. TS-2a (task 3222) is a narrowed spike for the packs of `PACK_ONLY_OWNERS`, the Studio packs today. It adds `find_tools` to the base the way `_apply_tool_packs` adds the pack loader, and it needs no new count check. TS-1b (task 3207) is approved and is dispatchable after its own spec audit.
+
+- **2026-11-14, status note.** The TS-2a candidates are every pack of `PACK_ONLY_OWNERS` that `packs_on` allows and layer (a) did not load, follow packs included. The orchestrator decided this after TS-1b split the `studio` pack. It is not an owner decision. The owner confirms it at the PR 3 preview.
 
 **Still open.** `one_assistant_context.md` §4.2.9 lists thirteen points. Points 3, 5, 8, 10 and 12 stay open, because D222 does not settle them. The spec names the slice audit that settles each one.
 

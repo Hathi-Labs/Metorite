@@ -12,7 +12,9 @@ R8 half is ``test_studio_row_rules_r8.py``.
 * Each call of the six store functions in ``apps/`` and ``packages/`` passes
   ``viewer`` (``test_each_call_of_the_six_passes_a_viewer``), and the six take
   it as a required keyword. The test lists each reader path.
-* ``aggregate_records`` takes no viewer, so no code may call it yet.
+* ``aggregate_records`` takes no viewer, so only the owner's door calls it.
+* ``read_tree`` takes a REQUIRED ``viewer`` since D18-2a, so it is one of the
+  readers of the first fence, and a call with no viewer fails it.
 * The door builds the viewer from the session's member only.
 * The second copy of ``HOT_TYPES`` in ``draftEdit.ts`` equals the Python list.
 
@@ -24,6 +26,12 @@ R8 half is ``test_studio_row_rules_r8.py``.
   ``test_a_grant_that_reads_all_and_shows_a_key_lifts_the_refusal`` goes red.
 * R3. ``invoke._do_object_write``: drop ``viewer=viewer`` of ``apply_writes``.
   ``test_each_call_of_the_six_passes_a_viewer`` goes red.
+* R4 (D18-2a, run on 2026-11-14). ``objects_store.read_tree``: remove the
+  ``viewer`` parameter, or give it the default None.
+  ``test_the_six_take_viewer_as_a_required_keyword`` goes red for each.
+* R5 (D18-2a, run on 2026-11-14). ``invoke._run_object_tree``: drop
+  ``viewer=viewer`` of ``read_tree``. ``test_each_call_of_the_six_passes_a_viewer``
+  goes red.
 """
 
 from __future__ import annotations
@@ -51,8 +59,10 @@ from gateway.studio import objects_store as store
 _ROOT = Path(__file__).resolve().parents[2]
 _STORE = _ROOT / "apps/services/gateway/gateway/studio/objects_store.py"
 _DRAFT_EDIT = _ROOT / "workbench/control_plane/src/lib/studio/draftEdit.ts"
+#: The store calls that take a REQUIRED ``viewer``: the six of C8a, and
+#: ``read_tree`` since its door (D18-2a). The name stays ``_SIX`` for the fences.
 _SIX = ("get_record", "query_records", "apply_writes", "create_record", "update_record",
-        "delete_record")
+        "delete_record", "read_tree")
 
 ME = "ana@x.test"
 SLIP_FIELDS = [
@@ -619,10 +629,11 @@ def test_the_six_take_viewer_as_a_required_keyword() -> None:
         assert param.default is inspect.Parameter.empty, name
 
 
-@pytest.mark.parametrize("name", ["aggregate_records", "read_tree"])
+@pytest.mark.parametrize("name", ["aggregate_records"])
 def test_no_code_calls_a_reader_that_takes_no_viewer(name: str) -> None:
-    """``aggregate_records`` (C2b) and ``read_tree`` (C18) read every record of
-    the object. The first door of each adds a viewer first, and then joins the six."""
+    """``aggregate_records`` (C2b) reads every record of the object. Its first
+    viewer door adds a viewer first, and then joins the six. ``read_tree`` (C18)
+    joined them with its door (D18-2a)."""
     assert "viewer" not in inspect.signature(getattr(store, name)).parameters
     found = []
     for path in _source_files():
@@ -665,7 +676,7 @@ def test_the_second_list_of_hot_types_in_draft_edit_equals_the_first() -> None:
 @pytest.mark.parametrize("name", [
     "_GET_RECORD_SCOPED_SQL", "_LOCK_RECORD_SCOPED_SQL", "_LINE_PARENTS_SCOPED_SQL",
     "_SHARE_OBJECT_SQL", "_VIEW_SQL", "_SOURCE_ACCESS_SQL", "_OBJECT_ACCESS_SQL",
-    "_SET_ACCESS_SQL",
+    "_SET_ACCESS_SQL", "_TREE_ALL_SCOPED_SQL", "_TREE_ROOT_SCOPED_SQL",
 ])
 def test_each_statement_of_the_row_rules_names_the_org_and_the_package(name: str) -> None:
     sql = getattr(store, name)
