@@ -55,13 +55,13 @@ describe("WeekGrid: the blocks", () => {
   it("places a timed block at the top and the height of the model", () => {
     const html = draw();
     // 9:00 is 2 hours into the window at 46 px, and 1.5 hours is 69 px less 2.
-    expect(html).toMatch(/title="alpha"[^>]*style="top:92px;height:67px;/);
+    expect(html).toMatch(/data-block="alpha"[^>]*style="top:92px;height:67px;/);
   });
 
   it("gives two overlapping blocks a lane each, as percentages", () => {
     const html = draw();
-    expect(html).toMatch(/title="alpha"[^>]*left:calc\(0% \+ 1px\);width:calc\(50% - 2px\)/);
-    expect(html).toMatch(/title="beta"[^>]*left:calc\(50% \+ 1px\);width:calc\(50% - 2px\)/);
+    expect(html).toMatch(/data-block="alpha"[^>]*left:calc\(0% \+ 1px\);width:calc\(50% - 2px\)/);
+    expect(html).toMatch(/data-block="beta"[^>]*left:calc\(50% \+ 1px\);width:calc\(50% - 2px\)/);
   });
 
   it("draws the all-day bars across their columns", () => {
@@ -111,11 +111,34 @@ describe("WeekGrid: the now line", () => {
   });
 });
 
+describe("WeekGrid: chips", () => {
+  const many = [ev("a", L(11, 9), L(11, 10)), ev("b", L(11, 9), L(11, 10)), ev("c", L(11, 9), L(11, 10))];
+  it("hides an hour line behind an opaque wrapper of the card token", () => {
+    expect(draw()).toMatch(/data-block="alpha" class="absolute rounded bg-card"/);
+  });
+  it("keeps the time line in a wide lane and drops it in a narrow lane", () => {
+    expect(draw({ mode: "day", anchor: L(11), events: [EVENTS[0]] })).toContain("9:00 am – 10:30 am");
+    const narrow = draw({ mode: "week", events: many });
+    expect(narrow).not.toContain("9:00 am – 10:00 am</span>");
+    expect(narrow).toContain('title="a, 9:00 am – 10:00 am"');
+    expect(draw({ mode: "day", anchor: L(11), events: many.slice(0, 2) })).toContain("9:00 am – 10:00 am</span>");
+    expect(draw({ mode: "day", anchor: L(11), events: many })).not.toContain("10:00 am</span>");
+  });
+  it("shows one line and no time for a block under 30 px", () => {
+    const html = draw({ mode: "day", anchor: L(11), events: [ev("quick", L(11, 9), L(11, 9, 5))] });
+    expect(html).toContain('title="quick, 9:00 am – 9:05 am"');
+    expect(html).not.toContain("9:05 am</span>");
+  });
+  it("gives the body room above the first hour label", () => {
+    expect(draw()).toContain('class="pt-2"');
+  });
+});
+
 describe("WeekGrid: the empty state", () => {
   it("says that nothing is scheduled when no event is given", () => {
-    expect(draw({ events: [] })).toContain(EMPTY_SENTENCE);
     expect(EMPTY_SENTENCE).toBe("Nothing is scheduled in this period.");
-    expect(draw()).not.toContain(EMPTY_SENTENCE);
+    // The block draws the sentence above the scroll box. The grid does not draw it.
+    expect(draw({ events: [] })).not.toContain(EMPTY_SENTENCE);
   });
 });
 

@@ -1,19 +1,26 @@
 "use client";
 
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, type ReactNode, type RefObject } from "react";
 
 import { DOW, HOUR_PX, hourLabel } from "@/app/calendar/components/shared";
 import { fmtClock } from "@/app/tasks/lib/utils";
 import { TONE } from "./MonthGrid";
 import type { GridEvent } from "./types";
 import {
-  buildWeek, nowDayIndex, nowTop, windowHeight, type AllDayBar, type TimedBlock, type WeekMode,
+  buildWeek, initialScrollTop, nowDayIndex, nowTop, windowHeight, type AllDayBar, type TimedBlock, type WeekMode,
 } from "./weekModel";
 
 /** The sentence for a period with no event. */
 export const EMPTY_SENTENCE = "Nothing is scheduled in this period.";
 
 const chipLook = (e: GridEvent) => (e.tone === "custom" ? (e.look ?? "") : TONE[e.tone]);
+/** A lane count at which a chip is too narrow for a time line. A week column is narrow already. */
+export const compactLanes = (mode: WeekMode) => (mode === "week" ? 2 : 3);
+/** A block shorter than this (in px) has room for one line only. */
+export const ONE_LINE_PX = 30;
+/** The room above the first hour line, so the first hour label is not clipped. About half a label. */
+const BODY_PAD = "pt-2";
+
 const range = (e: GridEvent) => (e.allDay ? "" : `${fmtClock(e.start)} – ${fmtClock(e.end)}`);
 
 /**
@@ -22,7 +29,7 @@ const range = (e: GridEvent) => (e.allDay ? "" : `${fmtClock(e.start)} – ${fmt
  * a capture is the same every time. The Calendar app keeps its own `TimeGrid`.
  */
 export function WeekGrid({
-  events, mode, anchor, now, hourPx = HOUR_PX, weekdayLabels = DOW, hrefOf, renderEvent, onOpenEvent,
+  events, mode, anchor, now, hourPx = HOUR_PX, weekdayLabels = DOW, hrefOf, renderEvent, onOpenEvent, scrollRef,
 }: {
   events: GridEvent[];
   mode: WeekMode;
@@ -37,6 +44,8 @@ export function WeekGrid({
   renderEvent?: (event: GridEvent) => ReactNode;
   /** Runs when a member clicks the link of a chip. A chip with no link does nothing. */
   onOpenEvent?: (event: GridEvent) => void;
+  /** The scroll box that holds the grid. The grid scrolls it to the first useful hour. */
+  scrollRef?: RefObject<HTMLElement | null>;
 }) {
   const model = useMemo(() => buildWeek(events, { anchor, mode, hourPx }), [events, anchor, mode, hourPx]);
   const byId = useMemo(() => new Map(events.map((e) => [e.id, e])), [events]);
@@ -47,33 +56,52 @@ export function WeekGrid({
   const todayIndex = nowDayIndex(days, now);
   const nowPx = nowTop(now, window, hourPx, days);
   const hasAllDay = model.allDay.length > 0;
+  const scrollTop = useMemo(
+    () => initialScrollTop(model.timed.flatMap((t) => t.blocks), nowPx, hourPx, window.startHour),
+    [model.timed, nowPx, hourPx, window.startHour]);
+  const scrollKey = `${mode}:${days[0]?.key ?? ""}`;
+  // Open at one hour before the first block. This runs when the range or the mode changes.
+  useEffect(() => {
+    const box = scrollRef?.current;
+    if (box && typeof box.scrollTo === "function") box.scrollTo({ top: scrollTop });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollKey]);
   const colStyle = { minWidth: week ? 96 : undefined } as const;
 
-  const chip = (e: GridEvent, cls: string, style?: React.CSSProperties) => {
+  const chip = (
+    e: GridEvent, cls: string, style?: React.CSSProperties, opts: { compact?: boolean; oneLine?: boolean } = {},
+  ) => {
     const href = hrefOf?.(e) ?? null;
+    const hideTime = opts.compact || opts.oneLine;
     const body = renderEvent ? renderEvent(e) : (
       <>
         <span className="block truncate font-medium">{e.title}</span>
-        {range(e) ? <span className="block truncate text-[10px] text-muted-foreground">{range(e)}</span> : null}
+        {range(e) && !hideTime ? <span className="block truncate text-[10px] text-muted-foreground">{range(e)}</span> : null}
       </>
     );
+    // A chip with no time line keeps the time on the title attribute.
+    const hint = hideTime && range(e) ? `${e.title}, ${range(e)}` : e.title;
     const all = `${cls} ${chipLook(e)} block overflow-hidden rounded px-1 text-left text-[11px] leading-tight`;
     if (href) {
       return (
-        <a key={e.id} href={href} title={e.title} className={all} style={style}
+        <a key={e.id} href={href} title={hint} className={all} style={style}
           onClick={onOpenEvent ? () => onOpenEvent(e) : undefined}>{body}</a>
       );
     }
-    return <div key={e.id} title={e.title} className={all} style={style}>{body}</div>;
+    return <div key={e.id} title={hint} className={all} style={style}>{body}</div>;
   };
 
   const timed = (b: TimedBlock) => {
     const e = byId.get(b.id);
     if (!e) return null;
     const left = (b.lane / b.lanes) * 100;
-    return chip(e, "absolute", {
-      top: b.topPx, height: b.heightPx, left: `calc(${left}% + 1px)`, width: `calc(${100 / b.lanes}% - 2px)`,
-    });
+    // The tint is translucent. The wrapper is opaque, so an hour line does not show through a title.
+    return (
+      <div key={e.id} data-block={e.id} className="absolute rounded bg-card"
+        style={{ top: b.topPx, height: b.heightPx, left: `calc(${left}% + 1px)`, width: `calc(${100 / b.lanes}% - 2px)` }}>
+        {chip(e, "h-full", undefined, { compact: b.lanes >= compactLanes(mode), oneLine: b.heightPx < ONE_LINE_PX })}
+      </div>
+    );
   };
 
   const bar = (b: AllDayBar) => {
@@ -115,6 +143,7 @@ export function WeekGrid({
         ) : null}
       </div>
 
+      <div className={BODY_PAD}>
       <div className="relative z-0 flex">
         <div className="relative w-14 shrink-0">
           {hours.map((h) => (
@@ -139,9 +168,7 @@ export function WeekGrid({
           </div>
         ))}
       </div>
-      {events.length === 0 ? (
-        <p role="status" className="px-3 py-2 text-xs text-muted-foreground">{EMPTY_SENTENCE}</p>
-      ) : null}
+      </div>
     </div>
   );
 }

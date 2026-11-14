@@ -10,7 +10,7 @@
  * through its link, so the frame shows it in the panel. A calendar with no get action has plain
  * chips with no link.
  */
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import { MonthGrid } from "@/components/calendar/MonthGrid";
 import { rowsToEvents, type ObjectRow } from "@/components/calendar/objectEvents";
@@ -43,6 +43,7 @@ export interface StudioCalendarProps {
 }
 
 export default function StudioCalendar({ model, door, onOpenRecord, now: nowProp }: StudioCalendarProps) {
+  const scrollRef = useRef<HTMLDivElement>(null);
   const [now] = useState(() => nowProp ?? new Date());
   const [mode, setMode] = useState<CalendarMode>(DEFAULT_MODE);
   const [anchor, setAnchor] = useState<Date>(now);
@@ -81,18 +82,18 @@ export default function StudioCalendar({ model, door, onOpenRecord, now: nowProp
       {!ready && !failed ? <p role="status" className="text-xs text-muted-foreground">Loading…</p> : null}
       {ready ? (
         <>
-          <div className={mode === "month" ? "min-h-[28rem]" : "max-h-[70vh] overflow-auto"}>
+          {events.length === 0 ? (
+            <p role="status" data-empty className="mb-2 text-xs text-muted-foreground">{EMPTY_SENTENCE}</p>
+          ) : null}
+          <div ref={scrollRef} data-scroll-box={mode} className={mode === "month" ? "" : "max-h-[70vh] overflow-auto"}>
             {mode === "month" ? (
               <MonthGrid anchor={anchor} eventsForDay={(day) => eventsOnDay(events, day)}
                 onPickDay={(d) => { setAnchor(d); setMode("day"); }}
                 onOpenEvent={(e) => { if (base && onOpenRecord) onOpenRecord(e.id); }} />
             ) : (
-              <WeekGrid events={events} mode={mode} anchor={anchor} now={now} hrefOf={hrefOf} />
+              <WeekGrid events={events} mode={mode} anchor={anchor} now={now} hrefOf={hrefOf} scrollRef={scrollRef} />
             )}
           </div>
-          {mode === "month" && events.length === 0 ? (
-            <p role="status" className="px-1 pt-2 text-xs text-muted-foreground">{EMPTY_SENTENCE}</p>
-          ) : null}
           {cap ? <p role="status" className="mt-2 text-xs text-muted-foreground">{cap}</p> : null}
         </>
       ) : null}

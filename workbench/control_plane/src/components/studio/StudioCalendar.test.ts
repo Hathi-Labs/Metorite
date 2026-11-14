@@ -79,7 +79,15 @@ describe("StudioCalendar: the states", () => {
 
   it("says that nothing is scheduled for a period with no record", () => {
     seed([]);
-    expect(draw()).toContain("Nothing is scheduled in this period.");
+    const html = draw();
+    expect(html).toContain("Nothing is scheduled in this period.");
+    // The sentence sits above the scroll box, so an empty week does not look like a blank grid.
+    expect(html.indexOf("Nothing is scheduled")).toBeLessThan(html.indexOf("data-scroll-box"));
+  });
+
+  it("lets the month card fit its rows, with no minimum height", () => {
+    const src = readFileSync(new URL("./StudioCalendar.tsx", import.meta.url), "utf-8");
+    expect(src).not.toContain("min-h-[28rem]");
   });
 
   it("says the first 100 are shown when the read hit the cap", () => {
