@@ -17,6 +17,8 @@ import { FormView } from "@/components/studio/StudioForm";
 import { FLAG_WORDS, displayValue, fieldGrid } from "./blocks";
 import type { FieldSpec } from "./fieldCheck";
 import { INLINE_TYPES, isInlineEditable } from "./inlineEdit";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const GLU: FieldSpec = {
   key: "glucose", type: "quantity", label: "Glucose", units: ["mmol/L", "mg/dL", "mEq"],
@@ -73,11 +75,32 @@ describe("the Form shows the live flag under the input", () => {
     expect(form({ value: "", unit: "mmol/L" })).not.toContain("Flag:");
     expect(form({ value: "11.", unit: "mmol/L" })).not.toContain("Flag:");
   });
+  it("keeps one live region for the flag, empty when no flag shows", () => {
+    const empty = form({ value: "5", unit: "mmol/L" });
+    expect(empty).toContain('role="status"');
+    expect(empty).toContain('aria-live="polite"');
+    expect(form({ value: "11", unit: "mmol/L" })).toContain('aria-live="polite"');
+  });
 });
 
 describe("a Table cell never edits a quantity", () => {
   it("a quantity is not an inline type", () => {
     expect(INLINE_TYPES.has("quantity")).toBe(false);
     expect(isInlineEditable(GLU, new Set())).toBe(false);
+  });
+});
+
+describe("the flag arithmetic is exact", () => {
+  it("quantityFlag uses no float: no Number(), parseFloat or Math. in its body", () => {
+    const src = readFileSync(resolve(__dirname, "fieldCheck.ts"), "utf-8");
+    const start = src.indexOf("export function quantityFlag(");
+    const end = src.indexOf("\nfunction percent(", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const body = src.slice(start, end);
+    expect(body).not.toMatch(/\bNumber\(|parseFloat|\bMath\./);
+    // The helper that reads a decimal is exact too.
+    const helper = src.slice(src.indexOf("Decimal text as a BigInt scaled"), start);
+    expect(helper).not.toMatch(/\bNumber\(|parseFloat|\bMath\./);
   });
 });

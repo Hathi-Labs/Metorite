@@ -184,3 +184,17 @@ def test_the_module_uses_no_float() -> None:
     assert "float(" not in body
     code = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
     assert not re.search(r"\bfloat\(", "\n".join(code)), "studio_fields.py must not call float("
+
+
+def test_an_unchanged_manifest_is_no_change_for_the_sync() -> None:
+    """The sync compares each attribute of ``_FIELD_ATTRS`` of the stored field with
+    that of the manifest. A field with ranges and conversions must compare equal
+    after the store round trip, or a second sync would refuse it as ``field_changed``."""
+    from gateway.studio.objects_store import _FIELD_ATTRS
+
+    f = field(units=["mmol/L", "mg/dL"], normal={"low": "3.9", "high": "5.6"},
+              critical={"low": "2.8", "high": "10"},
+              conversions=[{"from": "mg/dL", "to": "mmol/L", "factor": "0.0555"}])
+    again = sf.stored_field("glu", "quantity", f.stored_spec(), False)
+    assert [a for a in _FIELD_ATTRS if getattr(f, a) != getattr(again, a)] == []
+    assert f.normal and f.critical and f.conversions, "the keys are in the compare"

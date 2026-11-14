@@ -212,10 +212,13 @@ function QuantityFlagLine({ field, draft }: { field: FieldSpec; draft: Draft }) 
   if (field.type !== "quantity" || field.many) return null;
   const q = quantityReading(field, draft);
   const hue = q ? FLAG_HUE[q.flag] : undefined;
-  if (!q || !q.word || !hue) return null;
+  const shown = q && q.word && hue ? { q, hue } : null;
+  // The live region always exists, and only its text changes: a region that appears with
+  // its text is announced unreliably. It is empty (and hidden) when no flag shows.
   return (
-    <p role="status" data-flag={q.flag} className={`text-xs ${accentForHue(hue).text}`}>
-      Flag: {q.word}
+    <p role="status" aria-live="polite" data-flag={shown?.q.flag}
+      className={`text-xs empty:hidden ${shown ? accentForHue(shown.hue).text : ""}`}>
+      {shown ? `Flag: ${shown.q.word}` : null}
     </p>
   );
 }
