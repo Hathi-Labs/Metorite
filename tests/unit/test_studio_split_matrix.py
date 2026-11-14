@@ -15,7 +15,7 @@ and for each value of ``HELD_CARD_WRITES_ORGS`` (off and on):
 
 The golden file ``tests/unit/golden/studio_split_matrix.json`` has two
 columns. ``main`` was made on main BEFORE the split (commit 803d8b26c), and
-it does not change. The review round added two cases. Their ``main`` rows came
+it does not change. The review rounds added cases. Their ``main`` rows came
 from the ``acb_skills`` of 3de2813f0, the base of the branch, and that code
 gave each older ``main`` row again, byte for byte. ``split`` is the matrix
 after the split. The test holds
@@ -110,7 +110,59 @@ CASES: dict[str, dict[str, Any]] = {
             tp.Sticky(slug="studio-more", first=(5, 1), used=9),
         ),
     },
+    # Review round 2, the over-fire fence: the follow pack was used later than
+    # the core, so there is no tie, and the core leaves by the order of
+    # ``_leave_order`` (the least recently used first).
+    "studio_with_a_sticky_pair_the_follower_used_later": {
+        "words": "log a call on the Acme deal and rebuild my day",
+        "sticky": (
+            tp.Sticky(slug="studio", first=(5, 0), used=8),
+            tp.Sticky(slug="studio-more", first=(5, 1), used=9),
+        ),
+    },
+    # Review round 2, example (a): two Projects packs of FOLLOWS tie, with no
+    # surface. projects-reports has its own words, so it is no twin, and the
+    # order of main holds: projects-plan leaves.
+    "projects_plan_and_reports_sticky_with_email": {
+        "surface": "",
+        "words": "check my emails",
+        "sticky": (
+            tp.Sticky(slug="projects-plan", first=(9, 0), used=9),
+            tp.Sticky(slug="projects-reports", first=(9, 1), used=9),
+        ),
+    },
+    # The same pair, and the words name the follow pack (projects-reports)
+    # while the parent is only sticky.
+    "projects_plan_and_reports_sticky_the_follower_named": {
+        "surface": "",
+        "words": "send the status report and check my emails",
+        "sticky": (
+            tp.Sticky(slug="projects-plan", first=(9, 0), used=9),
+            tp.Sticky(slug="projects-reports", first=(9, 1), used=9),
+        ),
+    },
+    # Review round 2, example (b): on the Calendar surface, the core Projects
+    # pack and calendar-day tie. calendar-day has no surface, so it is no twin,
+    # and the order of main holds: the core leaves.
+    "calendar_projects_and_calendar_day_sticky_with_email": {
+        "surface": "calendar",
+        "words": "rebuild my day and check my emails",
+        "sticky": (
+            tp.Sticky(slug="projects", first=(9, 0), used=9),
+            tp.Sticky(slug="calendar-day", first=(9, 1), used=9),
+        ),
+    },
 }
+
+#: The cases on another surface than Studio. They pin the order of main for
+#: the packs of FOLLOWS that are no twin of their parent.
+OTHER_SURFACE_CASES = frozenset(
+    {
+        "projects_plan_and_reports_sticky_with_email",
+        "projects_plan_and_reports_sticky_the_follower_named",
+        "calendar_projects_and_calendar_day_sticky_with_email",
+    }
+)
 
 #: The cases whose words name the dark workflow pack. Only these may load it.
 WORKFLOW_WORD_CASES = frozenset(
@@ -150,7 +202,7 @@ def _row(case: dict[str, Any]) -> dict[str, Any]:
         tuple(case.get("sticky", ())),
         str(case["words"]),
         True,
-        surface="studio",
+        surface=str(case.get("surface", "studio")),
         skills=tuple(case.get("skills", ())),
     )
     choice = tp.choose(turn, allowed=allow, base_tools=BASE, specialists=SPECIALISTS)
@@ -252,6 +304,12 @@ NAMED_CHANGES: dict[str, frozenset[str]] = {
     # (``_follower_first``), so the core stays: 108 becomes 95. On main the chat
     # had no studio-more, so nothing left.
     **_both("studio_with_a_sticky_pair_and_two_word_packs", "tools", "names", "evicted"),
+    # Review round 2: the same pair, but studio-more was used later. No tie, so
+    # the core leaves as the least recently used: 108 becomes 98. The rule of
+    # the twin applies to a tie only.
+    **_both("studio_with_a_sticky_pair_the_follower_used_later", "tools", "names", "evicted"),
+    # The three cases on another surface (OTHER_SURFACE_CASES) are not here:
+    # the split must give the result of main for them.
     # A named published skill loses its place.
     **_both("studio_with_projects_reminders_and_a_named_skill", "skills"),
     **_both("studio_with_two_named_skills", "skills"),
@@ -293,10 +351,15 @@ def test_the_split_changes_only_the_named_cases() -> None:
 def test_the_core_stays_and_comes_first() -> None:
     """Each turn that held ``studio`` on main holds the core after the split,
     and the core comes before studio-more. Two places of MAX_PACKS go to the
-    two Studio packs where both fit."""
+    two Studio packs where both fit. One case is out: there studio-more was
+    used later than the core, so the core leaves by the order of use."""
     golden = _golden()
     for key, before in golden["main"].items():
         after = golden["split"][key]["packs"]
+        assert len(after) <= tp.MAX_PACKS, key
+        if key.startswith("studio_with_a_sticky_pair_the_follower_used_later|"):
+            assert after[0] == "studio-more" and "studio" not in after, key
+            continue
         if "studio" in before["packs"]:
             assert "studio" in after, key
         if "studio-more" in after:
@@ -337,6 +400,38 @@ def test_a_sticky_pair_keeps_the_core_and_moves_studio_more_out() -> None:
         assert row == matrix()[f"studio_with_a_sticky_pair_and_two_word_packs|held={held}"]
         assert row["packs"] == ["studio", "crm-records", "calendar-day"], held
         assert row["evicted"] == ["studio-more"] and row["tools"] == 95, held
+
+
+def test_the_twin_rule_does_not_fire_without_a_tie() -> None:
+    """Review round 2, the over-fire fence. studio-more was used in turn 9 and
+    the core in turn 8, so the key does not tie. The core leaves, as the least
+    recently used, and studio-more stays. Mutation: drop the tie condition of
+    ``_follower_first`` -> studio-more leaves -> red."""
+    for held in HELD:
+        key = f"studio_with_a_sticky_pair_the_follower_used_later|held={held}"
+        row = matrix()[key]
+        assert row == _golden()["split"][key]
+        assert row["packs"] == ["studio-more", "crm-records", "calendar-day"], held
+        assert row["evicted"] == ["studio"] and row["tools"] == 98, held
+
+
+def test_the_other_follow_packs_keep_the_order_of_main() -> None:
+    """Review round 2, the examples (a) and (b). projects-reports and
+    calendar-day follow a parent, but they have their own words or no surface,
+    so they are no twin. The cap gives the result of main, which the golden
+    holds from the code of 3de2813f0: the parent leaves. Mutation: drop the
+    same-surface-and-words condition (``_twin_follower``) -> the follow pack
+    leaves first -> red."""
+    assert [s for s in tp.FOLLOWS if tp._twin_follower(s)] == ["studio-more"]
+    golden = _golden()
+    got = matrix()
+    for key in golden["main"]:
+        if key.split("|", 1)[0] not in OTHER_SURFACE_CASES:
+            continue
+        before = golden["main"][key]
+        assert got[key]["packs"] == before["packs"], key
+        assert got[key]["evicted"] == before["evicted"], key
+        assert got[key]["tools"] == before["tools"], key
 
 
 def test_studio_workflows_stays_out_of_follows_and_out_of_the_matrix() -> None:

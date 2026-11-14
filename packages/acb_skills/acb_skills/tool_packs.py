@@ -2143,20 +2143,33 @@ def _follower_first(
     victim: Sticky, olds: Sequence[Sticky],
     key: Callable[[Sticky], tuple[bool, int, tuple[int, int]]],
 ) -> Sticky:
-    """The sticky pack that the cap moves out: *victim*, or a follow pack of it.
+    """The sticky pack that the cap moves out: *victim*, or a twin follow pack of it.
 
-    WS-67 TS-1b. When *victim* is the parent of a sticky pack of
-    :data:`FOLLOWS`, and the two tie on the key but for the first load, the
-    follow pack leaves and the parent stays. Without this, the first load
-    decides the tie, and the parent (loaded first) leaves before its follow
-    pack: a chat with sticky ``studio`` and ``studio-more`` lost the core.
-    Each other order stays as :func:`_leave_order` gives it. Fence:
+    WS-67 TS-1b. A twin follow pack is a pack of :data:`FOLLOWS` with the same
+    surface and the same words as its parent (:func:`_twin_follower`). Today
+    only ``studio-more`` is one. When *victim* is the parent of a sticky twin,
+    and the two tie on the key but for the first load, the twin leaves and the
+    parent stays. Without this, the first load decides the tie, and the parent
+    (loaded first) leaves before its twin: a chat with sticky ``studio`` and
+    ``studio-more`` lost the core. The other packs of FOLLOWS have their own
+    words or no surface, so their order stays as :func:`_leave_order` gives
+    it. So does the order of each pair that does not tie. Fence:
     ``tests/unit/test_studio_split_matrix.py``."""
     head = key(victim)[:-1]
     for entry in olds:
-        if FOLLOWS.get(entry.slug) == victim.slug and key(entry)[:-1] == head:
+        if (FOLLOWS.get(entry.slug) == victim.slug and _twin_follower(entry.slug)
+                and key(entry)[:-1] == head):
             return entry
     return victim
+
+
+def _twin_follower(slug: str) -> bool:
+    """True when pack *slug* follows a parent (:data:`FOLLOWS`) and has the same
+    surface, not empty, and the same words as that parent. Such a pack comes
+    into a turn with its parent, so only the order of the two can differ."""
+    found, parent = pack(slug), pack(FOLLOWS.get(slug, ""))
+    return (found is not None and parent is not None and bool(found.surface_slugs)
+            and found.surface_slugs == parent.surface_slugs and found.words == parent.words)
 
 
 def _step_aside(
@@ -2288,7 +2301,10 @@ def choose(
        it, the least recently used sticky pack leaves first, so a new need of
        the member never loses to an old sticky pack (RX-1). A sticky pack that
        the member named in this turn is a need of this turn, so it leaves
-       after each other sticky pack. With no sticky
+       after each other sticky pack. WS-67 TS-1b: when the parent of a sticky
+       twin follow pack (``studio-more``, :func:`_twin_follower`) would leave,
+       and the two tie but for the first load, the twin leaves and the parent
+       stays (:func:`_follower_first`). With no sticky
        pack left, a new pack leaves. Among two or more new packs, the last
        one that replaces its owner's specialist (:attr:`Pack.delegation_refusal`)
        leaves first, because the specialist then stays and covers its tools.
