@@ -109,7 +109,8 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
     [object, fields, computed, list, canUpdate]);
   const canList = !!object && verbMap(controls.actions)[`object:${object.name}.list`] !== undefined;
   const rows = useCachedResource<Row[]>(
-    door && object && canList ? sourceKey(door, list) : null,
+    // The app frame reads through its own lens (STU-AF4), so this unfiltered read would be a second one.
+    door && object && canList && !APP_FRAME ? sourceKey(door, list) : null,
     () => (door as NonNullable<typeof door>).read(list),
   );
   const [picked, setPicked] = useState("");
