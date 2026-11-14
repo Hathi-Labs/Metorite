@@ -61,6 +61,7 @@ import {
   updateWorkflow,
   validateWorkflow,
 } from "@/app/workflows/lib/api";
+import { agentLabel } from "@/app/workflows/lib/types";
 import type {
   Catalog,
   GraphIssue,
@@ -173,7 +174,9 @@ function describeNode(
         message ||
         clip(known?.description) ||
         (agent ? "Runs this agent with no instruction yet." : "No agent selected yet."),
-      detail: agent,
+      // The member's name of an offered step (WFC-2), and the stored name of
+      // a retired one, so the card shows which assistant an old step runs.
+      detail: known ? agentLabel(known) : agent,
       badges: model ? [model] : [],
     };
   }

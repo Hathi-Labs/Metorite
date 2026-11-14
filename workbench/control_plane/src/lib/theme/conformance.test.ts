@@ -893,7 +893,7 @@ describe("selects and file pickers go through the primitives", () => {
     "app/calendar/components/PlanDayPanel.tsx": 1,
     "app/whatsapp/calls/page.tsx": 1,
     "app/whatsapp/settings/categories/page.tsx": 1,
-    "app/workflows/components/NodeInspector.tsx": 6,
+    "app/workflows/components/NodeInspector.tsx": 5, // WFC-2 took the agent select
     "components/genUITemplates.tsx": 1,
     "components/room/ShareSheet.tsx": 1,
     // Added 2026-09-20, when SELECT_TAG widened to catch `<Select>`. These

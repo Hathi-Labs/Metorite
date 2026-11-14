@@ -59,12 +59,15 @@ def test_search_works_without_db_and_ranks_by_keyword(monkeypatch) -> None:
                 description="write task",
             ),
             CatalogEntry(
-                kind="agent", key="triage", label="triage", description="classify inbound email"
+                kind="agent",
+                key="orchestrator",
+                label="Ask Mira",
+                description="classify inbound email",
             ),
         ],
     )
     out = asyncio.run(search_mod.search_catalog("classify email"))
-    assert out["results"] and out["results"][0]["key"] == "triage"
+    assert out["results"] and out["results"][0]["key"] == "orchestrator"
 
 
 def test_search_kind_filter(monkeypatch) -> None:
@@ -77,7 +80,7 @@ def test_search_kind_filter(monkeypatch) -> None:
         "collect_catalog_entries",
         lambda: [
             CatalogEntry(kind="tool", key="a.task", label="task tool", description=""),
-            CatalogEntry(kind="agent", key="task-manager", label="task-manager", description=""),
+            CatalogEntry(kind="agent", key="orchestrator", label="Ask Mira", description="sort a task"),
         ],
     )
     out = asyncio.run(search_mod.search_catalog("task", kinds={"agent"}))
@@ -175,10 +178,13 @@ def fake_db(monkeypatch):
         await session.commit()
 
     monkeypatch.setattr(copilot_mod, "_tenant_session", _tenant_session)
-    # Deterministic agent registry for validation.
+    # Deterministic agent registry for validation: Ask Mira and one retired
+    # specialist (WFC-2). `test_workflows_catalog_offer.py` pins the real one.
     import gateway.routes.workflows.catalog as catalog_mod
 
-    monkeypatch.setattr(catalog_mod, "known_agent_names", lambda: {"triage"})
+    monkeypatch.setattr(
+        catalog_mod, "known_agent_names", lambda: {"orchestrator", "crm-assistant"}
+    )
     return store
 
 

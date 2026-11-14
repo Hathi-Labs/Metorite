@@ -7,9 +7,10 @@
  */
 
 import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
 import { useCallback, useMemo, useState } from "react";
 import { FALLBACK_ICON, NODE_ICON, NODE_KIND_LABEL } from "../lib/nodeVisuals";
-import { NODE_CATEGORY_STYLE, categoryForType } from "../lib/types";
+import { NODE_CATEGORY_STYLE, agentLabel, categoryForType } from "../lib/types";
 import type {
   Catalog,
   GraphIssue,
@@ -228,6 +229,112 @@ function WaitDuration({
   );
 }
 
+/** The words of a node that names an agent that the catalog no longer offers. */
+export function retiredAgentNote(offer: string): string {
+  return `This step uses an assistant that Metorite retired. Replace it with ${offer}.`;
+}
+
+/** A value that the inspector shows and does not let the member change. */
+function ReadOnly({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+        {label}
+      </span>
+      <div className="mt-1 text-xs text-foreground whitespace-pre-wrap break-words">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The fields of the AI step (WFC-2, D223 proposed).
+ *
+ * The catalog offers one agent, Ask Mira, so the step has nothing to choose:
+ * it shows its name and what it does. A node that names an agent that the
+ * catalog does not offer comes from a graph of before. It still runs, so the
+ * inspector shows it read only, with a note that says what to do.
+ *
+ * No model field: the platform picks the model (D90). A `model` that an old
+ * graph stores stays in the config, and the run still reads it.
+ */
+function AgentFields({
+  agent,
+  message,
+  catalog,
+  onAgent,
+  onMessage,
+}: {
+  agent: string;
+  message: string;
+  catalog: Catalog | null;
+  onAgent: (name: string) => void;
+  onMessage: (text: string) => void;
+}) {
+  const offered = catalog?.agents ?? [];
+  const picked = offered.find((a) => a.name === agent) ?? null;
+  const offer = offered[0] ?? null;
+  // Before the catalog loads, no node can read as retired.
+  const retired = agent !== "" && catalog !== null && picked === null;
+
+  if (retired) {
+    return (
+      <>
+        <ReadOnly label="AI step">
+          <span className="font-mono">{agent}</span>
+        </ReadOnly>
+        <p
+          role="note"
+          className="rounded-lg border border-warning/30 bg-warning/10 px-2.5 py-2 text-[11px] text-foreground"
+        >
+          {retiredAgentNote(offer ? agentLabel(offer) : "Ask Mira")}
+        </p>
+        <ReadOnly label="Message">
+          {message || <span className="text-muted-foreground">No message.</span>}
+        </ReadOnly>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div>
+        <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+          AI step
+        </span>
+        <div className="mt-1">
+          {picked ? (
+            <>
+              <div className="text-xs font-medium text-foreground">{agentLabel(picked)}</div>
+              <p className="mt-0.5 text-[10px] text-muted-foreground">{picked.description}</p>
+            </>
+          ) : offer ? (
+            <Button size="sm" variant="secondary" onClick={() => onAgent(offer.name)}>
+              Use {agentLabel(offer)}
+            </Button>
+          ) : (
+            <p className="text-[10px] text-muted-foreground">
+              {catalog === null
+                ? agent || "Loading the AI step…"
+                : "The AI step did not load. Reload the page to try again."}
+            </p>
+          )}
+        </div>
+      </div>
+      <Field label="Message">
+        <textarea
+          value={message}
+          onChange={(e) => onMessage(e.target.value)}
+          rows={5}
+          placeholder="Sort this email as urgent or not: {{trigger.body}}"
+          className={inputCls}
+        />
+      </Field>
+    </>
+  );
+}
+
 export default function NodeInspector({
   node,
   catalog,
@@ -364,39 +471,13 @@ export default function NodeInspector({
         )}
 
         {type === "agent" && (
-          <>
-            <Field label="Agent">
-              <select
-                value={String(cfg.agent ?? "")}
-                onChange={(e) => set("agent", e.target.value)}
-                className={inputCls}
-              >
-                <option value="">Select an agent…</option>
-                {(catalog?.agents ?? []).map((a) => (
-                  <option key={a.name} value={a.name}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Message">
-              <textarea
-                value={String(cfg.message ?? "")}
-                onChange={(e) => set("message", e.target.value)}
-                rows={5}
-                placeholder="Classify this email: {{trigger.body}}"
-                className={inputCls}
-              />
-            </Field>
-            <Field label="Model tier (optional)">
-              <input
-                value={String(cfg.model ?? "")}
-                onChange={(e) => set("model", e.target.value)}
-                placeholder="tier-balanced"
-                className={inputCls}
-              />
-            </Field>
-          </>
+          <AgentFields
+            agent={String(cfg.agent ?? "")}
+            message={String(cfg.message ?? "")}
+            catalog={catalog}
+            onAgent={(name) => set("agent", name)}
+            onMessage={(text) => set("message", text)}
+          />
         )}
 
         {type === "tool" && (

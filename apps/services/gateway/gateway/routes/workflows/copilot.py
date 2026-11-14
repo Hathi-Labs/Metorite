@@ -18,6 +18,12 @@ the router gate too, and that gate is the gate of the module write in
 ``_save_module``: the module routes keep ``feature:workflows`` until STU-Q15
 has a decision. So J1-3 opens no module write to a person who lacks
 ``feature:workflows``.
+
+**One AI step (WFC-2, D223 proposed).** The prompt names one agent, Ask Mira
+(``orchestrator``), and no specialist or dynamic agent. A NEW agent node that
+names another agent gets ``retired_agent``. A node that the stored graph
+already holds keeps its agent, so an old graph still loads and a turn on it
+does not fail. Fence: ``tests/unit/test_workflows_catalog_offer.py``.
 """
 
 from __future__ import annotations
@@ -37,7 +43,7 @@ from gateway.routes.workflows.core import (
     parse_jsonb,
     router,
 )
-from gateway.routes.workflows.engine.graph import validate_graph
+from gateway.routes.workflows.engine.graph import GraphIssue, validate_graph
 from gateway.routes.workflows.engine.modules import validate_module_code
 from gateway.routes.workflows.modules import _extract_json
 from gateway.routes.workflows.search import search_catalog
@@ -49,11 +55,15 @@ COPILOT_FALLBACK_TIER = "tier-fast"
 COPILOT_MAX_TOKENS = 6000
 SHORTLIST_LIMIT = 12
 
+#: The words for a NEW agent node that names an agent the palette does not
+#: offer (WFC-2). The maker sees them, and the repair round sends them back.
+RETIRED_AGENT_MESSAGE = "Use Ask Mira: Metorite retired this assistant."
+
 COPILOT_SYSTEM_PROMPT = """\
 You are the Workflow Copilot for Metorite's visual workflow editor. The
 maker chats; you edit their automation graph. You receive the current graph,
-a shortlist of relevant capabilities (found by semantic search over the org's
-agents, integration actions, and code modules), and the full name lists.
+a shortlist of relevant capabilities (found by search over the AI step,
+integration actions, and code modules), and the full lists.
 
 Respond with ONLY a JSON object (no prose outside it, no markdown fence):
 {
@@ -73,7 +83,8 @@ Graph rules (a validator enforces them — violations bounce back to you):
 - Exactly one trigger node; no cycles; a node has at most ONE incoming edge.
 - Edges: {"id", "source", "target"}; edges out of a condition MUST carry
   "sourceHandle": "true" or "false".
-- config by type — agent: {"agent": <registered name>, "message": "..."};
+- config by type — agent: {"agent": "orchestrator", "message": "..."} (the one
+  AI step, which the maker sees as "Ask Mira");
   tool: {"action": <registered action>, "args": {...}};
   module: {"module_id": <existing id>} or {"module_name": <name>} for a module
   you define in new_modules; condition: {"left","op","right"} with ops
@@ -85,7 +96,11 @@ Graph rules (a validator enforces them — violations bounce back to you):
   output: {"value": ...}.
 - Reference upstream data with {{trigger.field}}, {{vars.name}}, {{node_id.field}}.
   An agent node's output is {{<id>.result}}; a condition's is {{<id>.branch}}.
-- Only use agent names and tool actions from the provided lists — never invent.
+- A new agent node always sets "agent": "orchestrator" (Ask Mira). No other
+  agent is offered. An agent node of the current graph that names another
+  agent stays exactly as it is (same id, same agent) unless the maker asks
+  to remove or replace it.
+- Only use tool actions from the provided list — never invent.
 - Any tool action marked "write": true MUST have an approval node somewhere
   upstream of it (the validator rejects the graph otherwise).
 - Never put credentials or secrets in any config.
@@ -236,12 +251,20 @@ def _module_problems(new_modules: list[dict[str, Any]]) -> list[str]:
 
 
 async def _capability_context(message: str, db: Any) -> dict[str, Any]:
-    """The copilot's working set: search shortlist + full name lists."""
+    """The copilot's working set: search shortlist + full name lists.
+
+    The agents are the OFFER only (WFC-2): Ask Mira. No specialist name and
+    no dynamic agent reaches the prompt. A dynamic agent's name and text are
+    member-written, so they were a way to put words in the prompt.
+    """
     shortlist = (await search_catalog(message, limit=SHORTLIST_LIMIT))["results"]
-    from gateway.routes.workflows.catalog import _agent_entries, known_agent_names
+    from gateway.routes.workflows.catalog import _agent_entries
     from gateway.routes.workflows.tools import list_tools
 
-    agents = {a["name"]: a.get("description", "") for a in _agent_entries()}
+    agents = {
+        a["name"]: f"{a.get('label') or a['name']}: {a.get('description', '')}"
+        for a in _agent_entries()
+    }
     tools = {
         s.action: {"description": s.description, "args": s.args_schema, "write": s.destructive}
         for s in list_tools()
@@ -256,8 +279,8 @@ async def _capability_context(message: str, db: Any) -> dict[str, Any]:
     ).fetchall()
     return {
         "shortlist": shortlist,
-        "agent_names": sorted(known_agent_names() | set(agents)),
-        "agents_brief": {k: v[:120] for k, v in list(agents.items())[:25]},
+        "agent_names": sorted(agents),
+        "agents_brief": {k: v[:240] for k, v in agents.items()},
         "tools": tools,
         "modules": [
             {
@@ -292,9 +315,9 @@ async def workflow_copilot(
                 + json.dumps(graph, default=str)
                 + "\n\nCAPABILITIES (semantic shortlist for this request):\n"
                 + json.dumps(context["shortlist"], default=str)
-                + "\n\nAll agent names: "
+                + "\n\nThe AI step (the only agent a new node may name): "
                 + ", ".join(context["agent_names"])
-                + "\nAgent summaries: "
+                + "\nWhat it does: "
                 + json.dumps(context["agents_brief"], default=str)
                 + "\nAll tool actions: "
                 + json.dumps(context["tools"], default=str)
@@ -316,6 +339,7 @@ async def workflow_copilot(
         workflow_id,
         body.message,
         _uid(user),
+        current_graph=graph,
     )
 
     # One named-issue repair round when the emitted graph doesn't validate.
@@ -345,6 +369,7 @@ async def workflow_copilot(
             workflow_id,
             body.message,
             _uid(user),
+            current_graph=graph,
         )
         created = {**created, **created_2}
 
@@ -358,17 +383,64 @@ async def workflow_copilot(
     }
 
 
+def _agent_refs(graph: Any) -> set[tuple[str, str]]:
+    """The ``(node id, agent name)`` of each agent node of an edit-model graph."""
+    refs: set[tuple[str, str]] = set()
+    nodes = graph.get("nodes") if isinstance(graph, dict) else None
+    for node in nodes if isinstance(nodes, list) else []:
+        if not isinstance(node, dict) or node.get("type") != "agent":
+            continue
+        data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        config = data.get("config") if isinstance(data.get("config"), dict) else {}
+        name = str(config.get("agent") or "").strip()
+        if name:
+            refs.add((str(node.get("id") or ""), name))
+    return refs
+
+
+def retired_agent_issues(
+    graph: dict[str, Any],
+    current_graph: dict[str, Any] | None,
+    known_agents: set[str] | None,
+) -> list[GraphIssue]:
+    """A NEW agent node must name the offered agent, Ask Mira (WFC-2).
+
+    The member cannot pick a specialist from the palette, so the Copilot may
+    not add one. An agent node that the graph under edit already holds, with
+    the same id and the same agent, stays as it is. So a Copilot turn on an
+    old graph never fails on a step that the member did not touch, and the
+    validation of a stored graph does not change (R6 expand). A name that no
+    registry holds is the validator's ``unknown_agent``, so it gets no second
+    issue here.
+    """
+    from gateway.routes.workflows.catalog import OFFERED_AGENTS
+
+    kept = _agent_refs(current_graph)
+    issues: list[GraphIssue] = []
+    for node_id, name in sorted(_agent_refs(graph)):
+        if name in OFFERED_AGENTS or (node_id, name) in kept:
+            continue
+        if known_agents and name not in known_agents:
+            continue
+        issues.append(GraphIssue("retired_agent", RETIRED_AGENT_MESSAGE, node_id))
+    return issues
+
+
 async def _apply_round(
     result: dict[str, Any],
     workflow_id: str,
     prompt: str,
     user_email: str,
+    *,
+    current_graph: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Validate + persist one copilot response round.
 
     Adds ``_problems`` (repairable — sent back to the model) and ``_issues``
     (residual validator findings, shown to the maker) onto *result*; returns
-    the name→id map of modules created this round.
+    the name→id map of modules created this round. ``current_graph`` is the
+    stored graph under edit: an agent node it already holds may keep a
+    retired agent, and a new one may not (``retired_agent_issues``).
     """
     problems: list[str] = []
     created: dict[str, str] = {}
@@ -412,13 +484,15 @@ async def _apply_round(
                 tool_arg_schemas,
             )
 
+            known_agents = known_agent_names() or None
             issues = validate_graph(
                 graph,
                 known_modules=set(name_to_id.values()),
-                known_agents=known_agent_names() or None,
+                known_agents=known_agents,
                 destructive_actions=destructive_action_names(),
                 tool_schemas=tool_arg_schemas(),
             )
+            issues += retired_agent_issues(graph, current_graph, known_agents)
             problems.extend(
                 f"{i.code}: {i.message}" + (f" (node {i.node_id})" if i.node_id else "")
                 for i in issues

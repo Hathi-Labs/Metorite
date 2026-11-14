@@ -49,12 +49,17 @@ def collect_catalog_entries() -> list[CatalogEntry]:
     from gateway.routes.workflows.catalog import (
         NODE_TYPE_META,
         _agent_entries,
-        _integration_entries,
+        _offered_integrations,
     )
     from gateway.routes.workflows.tools import list_tools
 
     entries: list[CatalogEntry] = []
     for meta in NODE_TYPE_META:
+        if meta["type"] == "agent":
+            # The `agent` entry below IS this step (Ask Mira, WFC-2), and it is
+            # the one that the palette can drop. A second row of the same
+            # name would show a step that cannot be dropped.
+            continue
         entries.append(
             CatalogEntry(
                 kind="node",
@@ -64,6 +69,9 @@ def collect_catalog_entries() -> list[CatalogEntry]:
                 category=str(meta["category"]),
             )
         )
+    # Only the offered agent (Ask Mira): `_agent_entries` holds no specialist
+    # and no dynamic agent. The key is the runtime name, and the label is the
+    # member's name for the step.
     for agent in _agent_entries():
         if not agent.get("name"):
             continue
@@ -72,7 +80,7 @@ def collect_catalog_entries() -> list[CatalogEntry]:
             CatalogEntry(
                 kind="agent",
                 key=str(agent["name"]),
-                label=str(agent["name"]),
+                label=str(agent.get("label") or agent["name"]),
                 description=f"{agent.get('description') or ''} {tags}".strip(),
                 category="agent",
             )
@@ -87,7 +95,7 @@ def collect_catalog_entries() -> list[CatalogEntry]:
                 category=spec.integration or "platform",
             )
         )
-    for integration in _integration_entries():
+    for integration in _offered_integrations():
         entries.append(
             CatalogEntry(
                 kind="integration",

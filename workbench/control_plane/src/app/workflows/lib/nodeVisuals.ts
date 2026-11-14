@@ -27,7 +27,8 @@ export const NODE_ICON: Record<NodeType, IconComponent> = {
 /** The card's eyebrow — what kind of block this is, not what it is called. */
 export const NODE_KIND_LABEL: Record<NodeType, string> = {
   trigger: "Trigger",
-  agent: "Agent",
+  // One AI step (WFC-2): the card names the kind, and its label names the step.
+  agent: "AI step",
   tool: "Tool",
   module: "Module",
   condition: "Condition",

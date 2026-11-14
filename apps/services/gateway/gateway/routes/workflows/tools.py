@@ -8,8 +8,9 @@ Action Broker**, so disposition/approval semantics are the broker's policy,
 not the engine's (fail closed: no handler → refused).
 
 The catalog is served from here + the integrations registry, so the palette
-can only ever offer what the platform actually has (spec D7): integrations
-without a registered action appear in the catalog as available-but-actionless.
+can only ever offer what the platform actually has (spec D7). An integration
+without a registered action is hidden from the palette and the search (owner
+Q7, WFC-2), and ``catalog._integration_entries`` still lists it.
 """
 
 from __future__ import annotations
