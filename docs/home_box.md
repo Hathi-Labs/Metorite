@@ -346,14 +346,15 @@ design.
 
 | File on the box | What it holds |
 |---|---|
-| `~/lanes/auto-revert.log` | One line for each decision: `WOULD-REVERT` (dry), `REVERT`, `REVERTED`, `SKIP` or `PERSON`. Only the auto-revert pass writes it. |
+| `~/lanes/auto-revert.log` | One line for each decision: `WOULD-REVERT` (dry), `REVERT`, `REVERTED`, `REOPENED`, `SKIP` or `PERSON`. Only the auto-revert pass writes it. |
 | `~/lanes/auto-revert/run-<id>.md` | One report for each red batch run: the checks, the decision, and the PR, comment and task text. |
 
 Read each new `PERSON` line. It names the doubt, the culprit and its task.
 The revert PR goes to the merge bot with the task `0`, so no task closes when
-it merges. Then `lane-merge` opens the culprit's task again
-(`lanes/lane-merge.md`). The box has no Metorite write credential, so the pass
-cannot open it.
+it merges. Then the pass opens the culprit's task again (CIV-31c). It runs one
+`claude -p` call with the Metorite sign-in of the box, and writes `REOPENED`.
+When that call fails, the pass writes a `PERSON` line with `reopen=failed`.
+Then `lane-merge` opens the task by hand (`lanes/lane-merge.md`).
 
 The units are
 `scripts/home_server/systemd/metorite-auto-revert.service` and `.timer`, every
