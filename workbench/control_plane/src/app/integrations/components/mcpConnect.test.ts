@@ -11,15 +11,21 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import {
+  APP_LABEL,
+  EMPTY_MCP_FORM,
   actsAsLine,
+  addMcpAsk,
   connectDialogCopy,
   consentReturn,
   mcpConnect,
   panelPlan,
+  prefilledMcpForm,
   startErrorMessage,
+  withoutAddMcp,
   type Connection,
 } from "../lib/connections";
 import { row } from "../lib/testRows";
+import { McpFormFields } from "./AddMcpModal";
 import ConnectionList from "./ConnectionList";
 import { SheetBody } from "./ConnectionSheet";
 
@@ -270,3 +276,80 @@ describe("the client call", () => {
     expect(body).toContain('startsWith("https://")');
   });
 });
+
+// ── WS-STU I8a: Connect in place, the console half ───────────────────────
+//
+// Studio sends the browser to `/integrations?add=mcp&name=<server>&return=<path>`. The Add form
+// opens with the name, and after the add the browser returns only to a path of this site under
+// `/studio/` (`safeStudioReturn`). R7: M1, read `return` with no guard in `addMcpAsk`. "returns only
+// under /studio/" goes red. M2, drop `initialName` from the form state. "fills the name in" goes red.
+
+const ask = (over: Record<string, string> = {}) =>
+  addMcpAsk(new URLSearchParams({ add: "mcp", name: "tally", return: "/studio/build?pkg=p1", ...over }));
+
+describe("Connect in place (I8a)", () => {
+  it("reads the name and the way back of Studio's ask", () => {
+    expect(ask()).toEqual({ name: "tally", returnTo: "/studio/build?pkg=p1" });
+    expect(ask({ name: "my-erp-2" })?.name).toBe("my-erp-2");
+  });
+
+  it("is no ask without add=mcp", () => {
+    expect(addMcpAsk(new URLSearchParams("name=tally&return=/studio/build"))).toBeNull();
+    expect(addMcpAsk(new URLSearchParams("add=key&name=tally"))).toBeNull();
+    expect(addMcpAsk(new URLSearchParams(""))).toBeNull();
+  });
+
+  it("drops a name off the gateway's rule", () => {
+    for (const bad of ["Tally", "bad_name", "a", "-x", "x-", "a/b", "<b>x</b>", "x".repeat(51)]) {
+      expect(ask({ name: bad })?.name, bad).toBe("");
+    }
+  });
+
+  it("returns only under /studio/, on this site", () => {
+    for (const bad of [
+      "/admin", "/integrations", "/studio", "//evil.example/studio/build", "/\\evil.example/studio/build",
+      "https://evil.example/studio/build", "javascript:alert(1)", "/studio/../settings",
+      "/studio/%2e%2e/admin", "",
+    ]) {
+      expect(ask({ return: bad })?.returnTo, bad).toBeNull();
+    }
+    expect(addMcpAsk(new URLSearchParams("add=mcp&name=tally"))?.returnTo).toBeNull();
+  });
+
+  it("fills the name in and leaves every other field empty", () => {
+    const form = prefilledMcpForm("tally");
+    expect(form).toEqual({ ...EMPTY_MCP_FORM, name: "tally" });
+    expect(form.headerValue).toBe("");
+    expect(prefilledMcpForm("Bad Name")).toEqual(EMPTY_MCP_FORM);
+    const html = renderToStaticMarkup(createElement(McpFormFields, { form, onChange: noop }));
+    expect(html).toContain('value="tally"');
+  });
+
+  it("the address drops the ask and keeps the view", () => {
+    const params = new URLSearchParams({ view: "connections", add: "mcp", name: "tally", return: "/studio/build" });
+    expect(withoutAddMcp("/integrations", params)).toBe("/integrations?view=connections");
+    expect(withoutAddMcp("/integrations", new URLSearchParams("add=mcp"))).toBe("/integrations");
+  });
+
+  it("the page opens the form with the name and returns through the one guard", () => {
+    const page = readFileSync(join(__dirname, "../page.tsx"), { encoding: "utf-8" });
+    const modal = readFileSync(join(__dirname, "AddMcpModal.tsx"), { encoding: "utf-8" });
+    expect(page).toContain("addMcpAsk(searchParams)");
+    expect(page).toContain("initialName={prefill?.name}");
+    // The one exit to Studio, after the guard.
+    expect(page).toMatch(/const back = safeStudioReturn\(prefill\?\.returnTo\);[\s\S]{0,80}if \(back\) \{\s+window\.location\.assign\(back\);/);
+    expect(page.match(/window\.location\.assign\(/g)).toHaveLength(2);
+    expect(modal).toContain('useState<McpForm>(() => prefilledMcpForm(initialName ?? ""))');
+    // Only a member who may add a server gets the form.
+    expect(page).toMatch(/const askKey = ask && mcpOpen \?/);
+  });
+
+  it("a calendar row and a Drive row name their own app", () => {
+    expect(APP_LABEL.calendar).toBe("Calendar");
+    expect(APP_LABEL.knowledge).toBe("Knowledge");
+    const cal = row({ id: "google_calendar:1", provider: "google_calendar", owning_app: "calendar",
+      scope: "member", setup_href: "/calendar?settings=1" });
+    expect(panelPlan(cal, true)).toMatchObject({ openLabel: "Open in Calendar", href: "/calendar?settings=1" });
+  });
+});
+

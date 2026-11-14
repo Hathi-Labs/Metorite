@@ -335,6 +335,7 @@
       "tests/unit/test_crm_lead_pipelines.py",
       "tests/unit/test_auto_park.py",
       "tests/unit/test_workflows_human_step_r8.py",
+      "tests/unit/test_workflows_run_steps_r8.py",
       "tests/unit/test_studio_workflow_write_r8.py",
       "tests/unit/test_studio_batch_r8.py",
       "tests/unit/test_headless_turn_r8.py",
@@ -355,7 +356,8 @@
       "tests/unit/test_staging_export.py",
       "tests/unit/test_workflows_trigger_state_r8.py",
       "tests/unit/test_workflows_timer_r8.py",
-      "tests/unit/test_studio_saved_views_r8.py"
+      "tests/unit/test_studio_saved_views_r8.py",
+      "tests/unit/test_studio_connect_in_place_r8.py"
     ]
   }
 }
