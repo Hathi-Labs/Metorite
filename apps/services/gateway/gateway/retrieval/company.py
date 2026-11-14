@@ -369,6 +369,19 @@ def by_fusion(order: list[str], found: dict[str, list[Hit]], now: datetime) -> l
     return [h for _s, _p, _r, h in scored]
 
 
+def _never_open(user: UserContext, key: str) -> bool:
+    """True when *key* was never open for *user*, so "ran out of time" would be
+    false for it (WS-STU C5a, KR-ZERO review of 2026-11-14).
+
+    Only the ``studio`` source today: while ``STUDIO_SEARCH_ORGS`` holds no org
+    it is dark, and a member who holds ``feature:studio`` must get the answer of
+    a member who does not, with the flag off and on. crm, artifacts and
+    knowledge keep their KR-1 behaviour here until their owners decide the same
+    for them (a closed switch of theirs is named "skipped" when the time is
+    out). Fence: ``test_company_search_studio_off.py``."""
+    return key == "studio" and not REGISTRY[key].reaches(user)
+
+
 async def _ask_each(
     user: UserContext, words: str, order: list[str], per_app: int, *,
     hybrid: bool, options: dict[str, Any], since: datetime | None,
@@ -387,6 +400,8 @@ async def _ask_each(
     for key in order:
         left = deadline - loop.time()
         if left <= 0.05:
+            if _never_open(user, key):
+                continue
             skipped.append(key)
             continue
         try:
