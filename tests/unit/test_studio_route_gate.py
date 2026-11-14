@@ -127,6 +127,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("PUT", "/studio/packages/{package_id}/install/run-as"),
     # WS-STU J2b-2, the share with people.
     ("POST", "/studio/packages/{package_id}/share"),
+    # WS-STU J2b-5, the per-person unshare.
+    ("DELETE", "/studio/packages/{package_id}/share/{email}"),
     # WS-PKG PKG-10d, Keep and Restore of the private install.
     ("POST", "/studio/packages/{package_id}/keep"),
     ("POST", "/studio/packages/{package_id}/restore"),
@@ -154,6 +156,7 @@ _PARAMS = {
     "app_id": str(uuid.uuid4()),
     "version": "1",
     "action": "peek",
+    "email": "ben@example.test",
     "view_id": str(uuid.uuid4()),
 }
 
