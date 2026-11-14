@@ -460,7 +460,7 @@ The owner asked for this on 2026-11-14 (task 3146). A Studio app opens in the sa
 5. **The rail shows only what the viewer can open.** A row stays hidden when its page reads no object that the viewer can read (C8). The door still checks each read (B2), so the rail is display only. Fence: the rail model test (AF-3).
 6. **A count costs one bounded read.** A rail row may show a count. The count comes from the aggregate query (C2b), with its cost guard. `RailRow` draws the count in muted text. A count of items that wait for the member takes the attention tone of `RailRow`. Fence: the validator caps the counts (AF-3).
 7. **A custom screen sits inside the frame.** A code screen (L1) fills a cell of a page. It never draws its own rail or app bar. Fence: the L1 tests.
-8. **Mira writes the frame.** `studio_describe` and the G1 skeleton know `nav`, `pages`, `record` and the view parts. The IDE edits them in a Pages branch of the Explorer (AF-8).
+8. **Mira writes the frame.** `studio_describe` knows `nav`, `pages` and the view parts. The G1 skeleton leaves `nav` and `pages` absent, so the defaults apply. `record` is not yet a manifest key. The IDE edits them in a Pages branch of the Explorer (AF-8).
 9. **It looks like the CRM.** The visual review of each frame slice puts the app beside the CRM. The rail width, the toggle, the app bar and the drawer match at 1440, 1024, 768 and 390 px. The review uses light mode, compact density and a changed accent.
 
 **The caps.** 8 pages (D11a), 4 rail sections, 12 rows in a section, 8 tabs on a page, 6 tabs on a record, 4 related lists on a record, and 8 counts on a rail. `pageModel.ts` and the `maxItems` of the schema hold the same numbers.

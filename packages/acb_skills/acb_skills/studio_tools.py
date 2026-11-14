@@ -1243,8 +1243,8 @@ def _describe_frame() -> dict[str, Any]:
         "defaults": {
             "note": "A default is what the app draws when the key is absent. "
                     "Write `pages` or `nav` only to change it.",
-            "pages": "One page for each object, and a dashboard page when a chart or a stat view exists.",
-            "nav": "One rail row for each page.",
+            "pages": "One page for each object that has a view, and a dashboard page when a chart or a stat view exists.",
+            "nav": "One rail row for each page. The app frame draws the rail.",
         },
         "icons": list(NAV_ICONS),
         "example": FRAME_EXAMPLE,
