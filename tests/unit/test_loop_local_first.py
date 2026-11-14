@@ -99,6 +99,23 @@ def test_no_dispatch_follows_a_merge():
     assert "reaches production at the next release slot" in land
 
 
+def test_a_low_or_standard_slice_hands_over_and_a_high_slice_merges_itself():
+    """CIV-28c: a LOW or STANDARD session hands its PR to the merge bot and ends.
+    It does not wait for pr-check. The bot never merges HIGH, so a HIGH slice
+    keeps the premerge-and-merge command. The wrapper that the step names exists."""
+    land = _flat(_land())
+    hand = land[
+        land.index("**LOW or STANDARD: hand it over.**") : land.index("**HIGH: merge it yourself**")
+    ]
+    assert "bash scripts/hand_over.sh <PR> <task> <tier>" in hand
+    assert "Do not wait for `pr-check`" in hand
+    assert "`finish_agent_run`" in hand and "end the session" in hand
+    high = land[land.index("**HIGH: merge it yourself**") :]
+    assert "bash scripts/premerge.sh > <log> 2>&1 && gh pr merge <n> --squash" in high
+    assert "**A stacked slice**" in high
+    assert (ROOT / "scripts" / "hand_over.sh").is_file()
+
+
 def test_the_spec_names_what_the_pc_cannot_test():
     section = PRACTICE[PRACTICE.index("#### 1.3.2"):PRACTICE.index("## 2. Release")]
     for item in ("OAuth", "model calls", "deploy/*.sh", "smoke"):
