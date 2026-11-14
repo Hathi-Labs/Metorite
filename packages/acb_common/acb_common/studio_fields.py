@@ -358,6 +358,20 @@ def _int(v: Any) -> bool:
     return type(v) is int
 
 
+def _check_autonumber(spec: Mapping[str, Any], out: list[SpecProblem]) -> None:
+    """C15a: the ``prefix``, ``pad`` and ``reset`` of an autonumber. Each is optional."""
+    prefix, pad, reset = spec.get("prefix"), spec.get("pad"), spec.get("reset")
+    if prefix is not None and (
+            not isinstance(prefix, str) or _AUTONUMBER_PREFIX_RE.fullmatch(prefix) is None):
+        out.append(SpecProblem(
+            "prefix", f"`prefix` is 0 to {MAX_AUTONUMBER_PREFIX} characters: letters, "
+            "digits and _ . / -."))
+    if pad is not None and not (_int(pad) and 1 <= pad <= MAX_AUTONUMBER_PAD):
+        out.append(SpecProblem("pad", f"`pad` is a whole number from 1 to {MAX_AUTONUMBER_PAD}."))
+    if reset is not None and reset not in AUTONUMBER_RESETS:
+        out.append(SpecProblem("reset", f"`reset` is {' or '.join(AUTONUMBER_RESETS)}."))
+
+
 def _check_extras(kind: str, spec: Mapping[str, Any], out: list[SpecProblem]) -> None:
     """C14: ``min`` and ``max`` of a rating, ``units`` of a quantity and ``format``
     of a barcode. Each belongs to one type. A quantity and a barcode need theirs."""
@@ -393,16 +407,7 @@ def _check_extras(kind: str, spec: Mapping[str, Any], out: list[SpecProblem]) ->
                 else:
                     seen.add(u)
     elif kind == "autonumber":
-        prefix, pad, reset = spec.get("prefix"), spec.get("pad"), spec.get("reset")
-        if prefix is not None and (
-                not isinstance(prefix, str) or _AUTONUMBER_PREFIX_RE.fullmatch(prefix) is None):
-            out.append(SpecProblem(
-                "prefix", f"`prefix` is 0 to {MAX_AUTONUMBER_PREFIX} characters: letters, "
-                "digits and _ . / -."))
-        if pad is not None and not (_int(pad) and 1 <= pad <= MAX_AUTONUMBER_PAD):
-            out.append(SpecProblem("pad", f"`pad` is a whole number from 1 to {MAX_AUTONUMBER_PAD}."))
-        if reset is not None and reset not in AUTONUMBER_RESETS:
-            out.append(SpecProblem("reset", f"`reset` is {' or '.join(AUTONUMBER_RESETS)}."))
+        _check_autonumber(spec, out)
     elif kind == "barcode" and spec.get("format") not in BARCODE_FORMATS:
         out.append(SpecProblem(
             "format", f"A barcode field needs a `format`: {', '.join(BARCODE_FORMATS)}."))

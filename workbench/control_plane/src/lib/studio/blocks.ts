@@ -18,7 +18,7 @@ export type Draft = string | boolean | string[] | { [part: string]: string };
 export const FIELD_TYPE_LIST: readonly FieldType[] = [
   "text", "longText", "number", "money", "date", "datetime", "checkbox", "select",
   "multiSelect", "person", "relation", "file", "url", "email", "phone", "geo",
-  "richText", "rating", "duration", "quantity", "percent", "barcode",
+  "richText", "rating", "duration", "quantity", "percent", "barcode", "autonumber",
 ];
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
@@ -53,8 +53,11 @@ export function parseFields(raw: unknown): FieldSpec[] {
 }
 
 /** The C14 parts of a field: the bounds of a rating, the units of a quantity, the format of a barcode. */
-export function extrasOf(r: Record<string, unknown>): Pick<FieldSpec, "min" | "max" | "units" | "format"> {
+export function extrasOf(r: Record<string, unknown>): Pick<FieldSpec, "min" | "max" | "units" | "format" | "prefix" | "pad" | "reset"> {
   return {
+    prefix: typeof r.prefix === "string" ? r.prefix : undefined,
+    pad: typeof r.pad === "number" ? r.pad : undefined,
+    reset: typeof r.reset === "string" ? r.reset : undefined,
     min: typeof r.min === "number" ? r.min : undefined,
     max: typeof r.max === "number" ? r.max : undefined,
     units: Array.isArray(r.units) ? r.units.filter((u): u is string => typeof u === "string") : undefined,
@@ -375,6 +378,8 @@ export function draftToValue(f: FieldSpec, d: Draft): unknown {
       return typeof d === "string" && d.trim() !== "" ? parsePercent(d) : undefined;
     case "barcode":
       return typeof d === "string" && d.trim() !== "" ? d.trim() : undefined;
+    case "autonumber":
+      return undefined; // the store fills it: no form sends it
     default:
       return typeof d === "string" ? scalarValue(f, d) : undefined;
   }

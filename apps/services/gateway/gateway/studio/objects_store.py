@@ -298,6 +298,7 @@ from dataclasses import field as dc_field
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from acb_common import studio_query
 from acb_common.paging import page_line
@@ -4006,12 +4007,21 @@ async def _batch_day(db: Any, batch: _Batch) -> str:
     each batch, and the caller holds the org lock, so two writers of one org
     never read two days for one batch."""
     if batch.day is None:
-        from gateway.routes.shell.state import zone_of
-        from gateway.work_schedule import load_policy
+        from gateway.work_schedule import load_policy  # lazy, as brief/planner does
 
-        zone = zone_of((await load_policy(db)).get("default_timezone"))
-        batch.day = _wall_now().astimezone(zone).date().isoformat()
+        batch.day = _wall_now().astimezone(_org_zone(
+            (await load_policy(db)).get("default_timezone"))).date().isoformat()
     return batch.day
+
+
+def _org_zone(name: Any) -> ZoneInfo:
+    """The zone of a stored name, UTC when it has none, a bad name or a name that
+    no zone has. The shell reads a zone name the same way (``zone_of``), but a
+    store never imports a route, so the three lines are here."""
+    try:
+        return ZoneInfo(str(name or "UTC"))
+    except (ValueError, OSError, ZoneInfoNotFoundError):
+        return ZoneInfo("UTC")
 
 
 def _refuse_autonumber_keys(held: _Held, data: Any) -> None:

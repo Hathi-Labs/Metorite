@@ -71,6 +71,7 @@ export const TYPE_LABELS: Record<string, string> = {
   file: "File", url: "Web link", email: "Email", phone: "Phone", geo: "Place",
   richText: "Rich text", rating: "Rating", duration: "Time spent", quantity: "Quantity with unit", percent: "Percent",
   barcode: "Barcode",
+  autonumber: "Auto number",
 };
 
 /** The blocks that the Views tab adds. */
