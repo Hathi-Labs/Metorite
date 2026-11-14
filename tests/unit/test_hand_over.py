@@ -4,7 +4,9 @@ A session on the PC has no worktree on the box. So the wrapper runs
 `lane_handover.sh --pr` in the bot's own checkout on the box, over ssh. A fake
 `ssh` runs the remote command here, with HOME set to a fake box home. The box
 home holds `lanes/merge-bot-src`, a clone with the real lane_handover.sh in it.
-A fake `gh` serves the PR. Spec: `project-docs/specs/ci_velocity.md` §8.5.
+A fake `gh` serves the PR. Spec: the CIV-28 row of the CI velocity spec, §8.5.
+(The spec path is not written here: a test that names a doc is picked when
+that doc changes, and test_affected_tests.py keeps a docs-only change lean.)
 """
 
 import os

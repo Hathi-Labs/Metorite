@@ -323,8 +323,13 @@ class Env:
             "MERGE_BOT_STATE": str((self.tmp / "state").as_posix()),
             "MERGE_BOT_WORKDIR": str((self.tmp / "work").as_posix()),
             "PREMERGE_CMD": f"bash {(self.fix / 'premerge.sh').as_posix()}",
+            # CIV-28c: a BACK comment is one more gh call. A test that is not about
+            # the comment turns it off, so a pass of many PRs stays fast. None
+            # removes the variable, and the script default (on) applies.
+            "MERGE_BOT_BACK_COMMENT": "0",
             **extra,
         }
+        env = {k: v for k, v in env.items() if v is not None}
         if home is not None:
             env["HOME"] = home.as_posix()
             env.pop("MERGE_QUEUE")
@@ -1243,7 +1248,7 @@ def test_fix_p3_a_head_branch_that_moved_back_is_not_pushed_over(env):
 
 def test_civ28c_a_back_posts_one_pr_comment_with_the_reason(env):
     sha = env.pr(5, checks={n: "pass" for n in REQUIRED} | {"Lint": "fail"})
-    env.run()
+    env.run(MERGE_BOT_BACK_COMMENT=None)
     # The log line is as before. The comment comes on top of it.
     assert env.log == "BACK 5 red: Lint\n"
     assert [c for c in env.calls.splitlines() if c.startswith("pr comment")] == [
@@ -1256,7 +1261,7 @@ def test_civ28c_a_back_posts_one_pr_comment_with_the_reason(env):
     assert "```text\nred: Lint\n```" in body
     assert 'bash scripts/hand_over.sh 5 99 STANDARD "<note>"' in body
     # A second pass with no new hand-over posts nothing more.
-    env.run()
+    env.run(MERGE_BOT_BACK_COMMENT=None)
     assert len(env.comments(5)) == 1
 
 
@@ -1266,7 +1271,7 @@ def test_civ28c_every_kind_of_back_is_commented_but_closed_and_done_are_not(env)
     env.pr(7)
     env.pr(8)
     env.push_pr(8)
-    env.run()
+    env.run(MERGE_BOT_BACK_COMMENT=None)
     assert env.log == (
         "BACK 5 HIGH tier: lane-merge or a person merges it\n"
         "BACK 6 closed\n"
@@ -1280,7 +1285,7 @@ def test_civ28c_every_kind_of_back_is_commented_but_closed_and_done_are_not(env)
 
 def test_civ28c_a_failed_comment_keeps_the_log_line(env):
     env.pr(5, checks={n: "pass" for n in REQUIRED} | {"Lint": "fail"})
-    r = env.run(FAKE_COMMENT_FAIL="1")
+    r = env.run(FAKE_COMMENT_FAIL="1", MERGE_BOT_BACK_COMMENT=None)
     assert env.log == "BACK 5 red: Lint\n"
     assert "the BACK comment failed" in r.stderr
 
@@ -1298,7 +1303,7 @@ def test_civ28c_a_code_fence_in_the_reason_cannot_end_the_block(env):
         encoding="utf-8",
         newline="\n",
     )
-    env.run()
+    env.run(MERGE_BOT_BACK_COMMENT=None)
     (body,) = env.comments(5)
     assert body.count("```") == 2 and "'''x'''" in body and "@someone" in body
 
@@ -1307,5 +1312,12 @@ def test_civ28c_a_hand_over_by_pr_number_merges(env):
     # lane_handover.sh --pr writes "-" in the worktree field. The bot reads no path.
     env.pr(5, queue=False)
     env.queue(5, wt="-")
-    env.run()
+    env.run(MERGE_BOT_BACK_COMMENT=None)
     assert env.log == "DONE 5 abc123\n" and env.comments(5) == []
+
+
+def test_civ28c_a_dry_run_posts_no_comment(env):
+    env.pr(5, checks={n: "pass" for n in REQUIRED} | {"Lint": "fail"})
+    r = env.run(MERGE_BOT_DRY_RUN="1", MERGE_BOT_BACK_COMMENT=None)
+    assert env.log == "" and "pr comment" not in env.calls
+    assert "DRY RUN would comment the BACK on PR 5" in r.stderr
