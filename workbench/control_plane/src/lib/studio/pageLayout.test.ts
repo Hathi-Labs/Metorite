@@ -275,6 +275,23 @@ describe("bad requests", () => {
     expect(removeCell(m, "zz", home)).toBe(m);
     expect(removeCell(m, "home", { tabId: null, index: 9 })).toBe(m);
   });
+  it("returns the input for every edit on a page that has both tabs and cells", () => {
+    // The server refuses such a page. An edit must not make it look valid.
+    const m = base();
+    m.pages = [{ id: "mixed", cols: 3, cells: [cell("board"), cell("week")], tabs: [{ id: "a", title: "A", cells: [cell("check_in")] }, { id: "b", title: "B", cells: [] }] }] as unknown as StudioManifest["pages"];
+    deepFreeze(m);
+    const top: Loc = { tabId: null, index: 0 };
+    const inA: Loc = { tabId: "a", index: 0 };
+    expect(moveCell(m, "mixed", top, { tabId: null, index: 1 })).toBe(m);
+    expect(moveCell(m, "mixed", inA, { tabId: "b", index: 0 })).toBe(m);
+    expect(moveCellToTab(m, "mixed", inA, "b")).toBe(m);
+    expect(setCellSpan(m, "mixed", inA, 2)).toBe(m);
+    expect(setCellSpan(m, "mixed", top, 2)).toBe(m);
+    expect(addCell(m, "mixed", inA, "week")).toBe(m);
+    expect(addCell(m, "mixed", top, "week")).toBe(m);
+    expect(removeCell(m, "mixed", inA)).toBe(m);
+    expect(removeCell(m, "mixed", top)).toBe(m);
+  });
   it("does not throw on a manifest with no pages", () => {
     const m = deepFreeze({ studio: 1, id: "x" } as unknown as StudioManifest);
     expect(moveCell(m, "home", home, home)).toBe(m);
