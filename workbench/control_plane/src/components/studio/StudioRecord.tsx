@@ -21,11 +21,11 @@ import StudioForm from "@/components/studio/StudioForm";
 import Button from "@/components/ui/Button";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, type StudioDataDoor, moreLine, sourceKey } from "@/lib/studio/dataDoor";
-import { displayValue, labelOf, tableBlock } from "@/lib/studio/blocks";
+import { labelOf, tableBlock } from "@/lib/studio/blocks";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import { detailFields, fieldSpecs, formFields, recordTitle, tableFields } from "@/lib/studio/packagePreview";
 import {
-  type RelatedList, fileFields, linkedDoor, pickRecordTab, recordTabs, relatedArgs, relatedLists,
+  type RelatedList, fileFields, fileLabel, linkedDoor, newButtonState, pickRecordTab, recordTabs, relatedArgs, relatedLists,
 } from "@/lib/studio/recordPageModel";
 import { type DeclaredAction, type ObjectRow, verbMap } from "@/lib/studio/realDoor";
 import { useCachedResource } from "@/lib/useCachedResource";
@@ -99,7 +99,7 @@ function RelatedTable({ list, recordId, door, actions, owner, recordBase, child 
     <section aria-label={list.title} className="space-y-2" data-related={list.object}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-semibold text-foreground">{list.title}</h3>
-        {owner ? (
+        {newButtonState(owner, canCreate) !== "hidden" ? (
           <Button variant="secondary" size="sm" icon="Plus" aria-expanded={adding}
             disabled={!canCreate}
             onClick={() => setAdding((v) => !v)}>
@@ -107,7 +107,7 @@ function RelatedTable({ list, recordId, door, actions, owner, recordBase, child 
           </Button>
         ) : null}
       </div>
-      {owner && !canCreate ? (
+      {newButtonState(owner, canCreate) === "off" ? (
         <p role="status" className={NOTE}>This app does not declare a create action for {list.objectLabel}, so New is off.</p>
       ) : null}
       {adding && canCreate ? (
@@ -138,16 +138,11 @@ function Files({ object, recordId, door, actions }: Pick<StudioRecordProps, "obj
     <ul className="space-y-2" aria-label="Files">
       {files.map((f) => {
         const raw = record[f.key];
-        const items = (Array.isArray(raw) ? raw : raw == null ? [] : [raw])
-          .map((v) => displayValue({ ...f, many: false }, v)).filter((t) => t !== "");
+        const label = fileLabel(raw);
         return (
           <li key={f.key} data-field={f.key} className="rounded-lg border border-border bg-card px-3 py-2">
             <p className="text-xs font-medium text-muted-foreground">{labelOf(f)}</p>
-            {items.length ? (
-              <ul className="mt-1 space-y-0.5">
-                {items.map((t, i) => <li key={i} className="break-all font-mono text-xs text-foreground">{t}</li>)}
-              </ul>
-            ) : <p className={`mt-1 ${NOTE}`}>No file yet</p>}
+            {label ? <p className="mt-1 text-xs text-foreground">{label}</p> : <p className={`mt-1 ${NOTE}`}>No file yet</p>}
           </li>
         );
       })}

@@ -6,10 +6,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { StudioDataDoor } from "./dataDoor";
 import { boundPageState, decodePageState, encodePageState, EMPTY_PAGE_STATE, type PageState } from "./pageState";
+import { previewControls } from "./packagePreview";
+import { verbMap } from "./realDoor";
 import { mergePageQuery } from "./usePageState";
 import {
   RELATED_LIMIT, closeRecord, fileFields, linkedDoor, openRecord, openedRecord, parseRecordLink, pickRecordTab,
-  recordLinkBase, recordTabs, relatedArgs, relatedLists, withFullPage, withRecordTab, type RecordObject,
+  recordLinkBase, recordTabs, fileLabel, newButtonState, relatedArgs, relatedLists, withFullPage, withRecordTab, type RecordObject,
 } from "./recordPageModel";
 
 const visit: RecordObject = {
@@ -181,5 +183,33 @@ describe("linkedDoor", () => {
     expect(run).toHaveBeenLastCalledWith("object:part.create", { data: { visit: { id: "rec-1" } } });
     await linked.run("object:part.create");
     expect(run).toHaveBeenLastCalledWith("object:part.create", { data: { visit: { id: "rec-1" } } });
+  });
+});
+
+describe("fileLabel", () => {
+  it("says a count and never an id", () => {
+    expect(fileLabel({ id: "bbbbbbbb-0000-4000-8000-000000000001" })).toBe("File attached");
+    expect(fileLabel([{ id: "a" }])).toBe("File attached");
+    expect(fileLabel([{ id: "a" }, { id: "b" }])).toBe("2 files");
+    for (const empty of [null, undefined, [], {}, "x", [{}]]) expect(fileLabel(empty)).toBe("");
+    expect(fileLabel([{ id: "secret-id" }, { id: "b" }])).not.toContain("secret");
+  });
+});
+
+describe("the New button of a related table", () => {
+  const actions = [
+    { id: "pl", uses: "object:part.list" }, { id: "pg", uses: "object:part.get" }, { id: "pc", uses: "object:part.create" },
+  ];
+  it("is hidden for a viewer: the owner value that AppFrame passes comes from previewControls", () => {
+    const viewer = previewControls("viewer", actions);
+    expect(viewer.owner).toBe(false);
+    expect(verbMap(viewer.actions)["object:part.create"]).toBeUndefined();
+    expect(newButtonState(viewer.owner, verbMap(viewer.actions)["object:part.create"] !== undefined)).toBe("hidden");
+  });
+  it("is on for an owner with a create, and off with a reason for an owner with none", () => {
+    const owner = previewControls("owner", actions);
+    expect(newButtonState(owner.owner, verbMap(owner.actions)["object:part.create"] !== undefined)).toBe("on");
+    const noCreate = previewControls("owner", actions.slice(0, 2));
+    expect(newButtonState(noCreate.owner, verbMap(noCreate.actions)["object:part.create"] !== undefined)).toBe("off");
   });
 });

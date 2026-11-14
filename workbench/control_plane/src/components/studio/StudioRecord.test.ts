@@ -45,7 +45,7 @@ describe("StudioRecord", () => {
   });
 
   it("gives a viewer no New button, and a disabled New and its reason when the create is not declared", () => {
-    expect(record).toMatch(/owner \? \(\s*<Button/);
+    expect(record).toContain('newButtonState(owner, canCreate) !== "hidden"');
     expect(record).toContain("does not declare a create action");
   });
 
@@ -54,6 +54,12 @@ describe("StudioRecord", () => {
     expect(frame).toContain("onClickCapture");
     expect(page).toContain("max-w-3xl");
     expect(page).toContain('data-record-page="full"');
+  });
+
+  it("shows a file as a count, never as an id, in Files and in Details", () => {
+    expect(record).toContain("fileLabel(raw)");
+    expect(record).not.toMatch(/font-mono|break-all/);
+    expect(read("./StudioDetail.tsx")).toContain('field.type === "file" ? fileLabel(value)');
   });
 
   it("adds no flag: it hangs on the frame flag only", () => {

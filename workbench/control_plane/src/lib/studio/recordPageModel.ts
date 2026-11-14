@@ -197,3 +197,21 @@ export function linkedDoor(door: StudioDataDoor, field: string, recordId: string
     },
   };
 }
+
+// --- file values and the New button -----------------------------------------
+
+/**
+ * The words for a file value. The value is `{ id }` of an attachment, or a list of them. No Studio
+ * route turns an id into a name or a download yet, so the member reads a count and never an id.
+ * Empty when there is no file.
+ */
+export function fileLabel(value: unknown): string {
+  const items = Array.isArray(value) ? value : value === null || value === undefined ? [] : [value];
+  const n = items.filter((v) => typeof v === "object" && v !== null && typeof (v as { id?: unknown }).id === "string").length;
+  return n === 0 ? "" : n === 1 ? "File attached" : `${n} files`;
+}
+
+/** What "New" on a related table does: `hidden` for a viewer, `off` with no declared create, else `on`. */
+export function newButtonState(owner: boolean, createDeclared: boolean): "hidden" | "off" | "on" {
+  return !owner ? "hidden" : createDeclared ? "on" : "off";
+}
