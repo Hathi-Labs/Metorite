@@ -382,6 +382,26 @@ def test_the_records_carry_the_tenant_the_member_the_thread_and_the_act(
     assert late_on.ttl[grant] == late_approve.GRANT_TTL_S == 30 * 60
 
 
+def test_the_park_binds_the_records_to_the_life_of_the_row(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """A row that expires in 15 minutes gets records of 15 minutes or less."""
+    from datetime import UTC, datetime, timedelta
+
+    real = ask_db.move_ask
+
+    def _soon(org, rid, **kw):
+        row = real(org, rid, **kw)
+        if row is not None:
+            row["expires_at"] = (datetime.now(UTC) + timedelta(seconds=900)).isoformat()
+        return row
+
+    monkeypatch.setattr(pending_ask, "move_ask", _soon)
+    tid = "t-hrd22-row-life"
+    assert _run(liveness, tid, deal_id="d-neuro", stage="Won").get("parked")
+    assert late_on.ttl and all(0 < t <= 900 for t in late_on.ttl.values()), late_on.ttl
+
+
 def test_a_record_lives_no_longer_than_its_row():
     from datetime import UTC, datetime, timedelta
 
@@ -483,6 +503,25 @@ def test_a_twin_that_parks_after_a_live_approve_records_no_offer(
     c2 = _cards(liveness, tid)[-1]["request_id"]
     assert _offers(late_on) == []
     assert _approve_late(monkeypatch, tid, c2).status_code == 409
+    assert _grants(late_on) == []
+    assert _run(liveness, tid, **call).get("parked")
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")]
+
+
+def test_a_twin_that_parks_after_a_used_grant_records_no_offer(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """A used grant marks the act SPENT too. A twin card that parks after the
+    use records no offer, so its late tap writes nothing."""
+    tid = "t-hrd22-twin-after-use"
+    call = {"deal_id": "d-neuro", "stage": "Payment Complete"}
+    _park_and_approve(liveness, monkeypatch, tid, **call)
+    assert "parked" not in _run(liveness, tid, **call)
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")]
+    assert _run(liveness, tid, **call).get("parked")
+    twin = _cards(liveness, tid)[-1]["request_id"]
+    assert _offers(late_on) == []
+    assert _approve_late(monkeypatch, tid, twin).status_code == 409
     assert _grants(late_on) == []
     assert _run(liveness, tid, **call).get("parked")
     assert WRITES == [("deal", "d-neuro", "Payment Complete")]
