@@ -171,5 +171,15 @@
     "search": [
       "request"
     ]
-  }
+  },
+  "pages": [
+    {"id": "all", "title": "All requests", "cols": 1, "cells": [{"view": "list"}], "side": {"view": "new"}},
+    {"id": "board", "title": "Board", "cols": 1, "cells": [{"view": "board"}], "side": {"view": "new"}}
+  ],
+  "nav": [
+    {"title": "Requests", "rows": [
+      {"page": "all", "icon": "List", "label": "All requests"},
+      {"page": "board", "icon": "Kanban", "label": "Board"}
+    ]}
+  ]
 }
