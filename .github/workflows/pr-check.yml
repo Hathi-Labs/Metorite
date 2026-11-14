@@ -803,6 +803,7 @@ jobs:
               tests/unit/test_workflows_trigger_state_r8.py \
               tests/unit/test_studio_batch_r8.py \
               tests/unit/test_studio_saved_views_r8.py \
+              tests/unit/test_studio_connect_in_place_r8.py \
               tests/unit/test_headless_turn_r8.py \
               tests/unit/test_projects_status_set_read_r8.py \
               tests/unit/test_email_signature_images_r8.py \

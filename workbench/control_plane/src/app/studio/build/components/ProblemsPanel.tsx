@@ -4,9 +4,14 @@
  * The Problems panel of the Studio IDE (`ai_studio.md` §6.3, G3a). The header holds the count,
  * as "0 errors · 1 warning". The rows come from `checkDraft`, which runs in the browser.
  * The panel says that the full check runs at a save and a publish.
+ *
+ * I8a: the lines of the connections of the stored draft come first, each with Connect when it is
+ * not met (`ConnectLines`). The header adds "1 connection missing". The gateway decides each line.
  */
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
+import { ConnectLines } from "@/components/studio/ConnectSheet";
+import type { ConnectLine } from "@/lib/studio/connect";
 import { PANEL_NOTE, problemsLine, type Problem } from "@/lib/studio/draftProblems";
 
 export interface ProblemsPanelProps {
@@ -15,9 +20,15 @@ export interface ProblemsPanelProps {
   onToggle: () => void;
   /** Fill the parent, for the phone tab. The desktop panel caps its height. */
   fill?: boolean;
+  /** I8a: one line for each connection of the stored draft. */
+  connections?: readonly ConnectLine[];
+  /** I8a: "1 connection missing", or null when each one is met. */
+  missing?: string | null;
 }
 
-export default function ProblemsPanel({ problems, open, onToggle, fill = false }: ProblemsPanelProps) {
+export default function ProblemsPanel({
+  problems, open, onToggle, fill = false, connections = [], missing = null,
+}: ProblemsPanelProps) {
   return (
     <section aria-label="Problems" className={`flex min-h-0 flex-col border-t border-border bg-card ${fill ? "flex-1" : ""}`}>
       <div className="flex items-center gap-2 px-3 py-1">
@@ -25,10 +36,13 @@ export default function ProblemsPanel({ problems, open, onToggle, fill = false }
           aria-expanded={open} onClick={onToggle}>
           Problems
         </Button>
-        <span role="status" className="text-xs text-muted-foreground">{problemsLine(problems)}</span>
+        <span role="status" className="text-xs text-muted-foreground">
+          {problemsLine(problems)}{missing ? ` · ${missing}` : ""}
+        </span>
       </div>
       {open ? (
         <div className={`overflow-y-auto px-3 pb-2 ${fill ? "flex-1" : "max-h-40"}`}>
+          <ConnectLines lines={connections} />
           {problems.length === 0 ? (
             <p className="text-xs text-muted-foreground">No problem found.</p>
           ) : (

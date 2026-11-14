@@ -423,6 +423,11 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "The app page reads the end date of the private install of the owner, to draw the end-date bar "
         "(PKG-10e-2). No member click sends it. The chat keeps or restores an app with the Keep and Restore rows.",
     ),
+    "GET /api/studio/packages/{}/connections": (
+        "stream",
+        "The IDE reads whether each connection of the draft is met, to draw the Connect lines (I8a). It reads "
+        "again after each save and on focus. No member click sends it. In chat, Mira shows the same card (I8d).",
+    ),
     # ── Calendar ──
     "POST /api/calendar/connections/{}/connect": (
         "oauth",
