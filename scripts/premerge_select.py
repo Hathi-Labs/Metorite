@@ -3,17 +3,21 @@
 
 premerge.sh calls this on the trial merge. It reads two file lists: the files
 the PR changed (``--pr``) and the files main changed since the merge base
-(``--main``). It prints one test file a line:
+(``--main``). It prints one test file a line, in run order, and ``--first-out`` names a file
+that gets the length of tier 1:
 
-  * the tests that BOTH sides can affect (the intersection of the two
-    ``affected_tests.select`` sets). Each side passed alone, so only a test that
-    both sides reach can go red from the merge; and
-  * each test file that either side added or changed. A new fence on one side
-    meets the new code of the other even when the import graph links nothing.
+  1. a test file that one side changed and that the other side's source changes
+     reach through an import (the shape of both collisions of 2026-11-13/14);
+  2. every other test file that either side added or changed. A new fence on
+     one side meets the new code of the other even when no import links them;
+  3. the tests that BOTH sides can affect (the intersection of the two
+     ``affected_tests.select`` sets). Each side passed alone, so only a test
+     that both sides reach can go red from the merge.
 
-When one side is FULL (a file such as pyproject.toml changed), the other side's
-set stands alone. When both sides are FULL it prints ``FULL`` on the first line, then only the test files that a side
-changed. The full suite is the job of pr-check and main, not of this script.
+Each tier runs its small files first. When one side is FULL (a file such as
+pyproject.toml changed), the other side's set stands alone. When both sides are
+FULL it prints ``FULL`` on the first line, then the changed test files. The
+full suite is the job of pr-check and main, not of this script.
 
 Fence: tests/unit/test_premerge_select.py.
 """
@@ -31,26 +35,49 @@ def _read(path: str) -> list[str]:
     return [ln.strip().replace("\\", "/") for ln in Path(path).read_text(encoding="utf-8").splitlines() if ln.strip()]
 
 
-def pick(pr: list[str], main: list[str], root: Path = at.ROOT) -> list[str] | None:
-    """The test files to run, or None when both sides are FULL.
-
-    The test files that either side changed come FIRST, then the rest, each part
-    sorted. The caller can run the first part alone, and report a red at once."""
-    pr_sel, pr_full, _ = at.select(pr)
-    main_sel, main_full, _ = at.select(main)
-    changed = {
-        f for f in (*pr, *main)
+def _tests(files: list[str], root: Path) -> set[str]:
+    return {
+        f for f in files
         if f.startswith("tests/") and f.endswith(".py") and Path(f).name.startswith("test_") and (root / f).is_file()
     }
+
+
+def _by_size(files: set[str], root: Path) -> list[str]:
+    """Small files first: more tests a minute, so a red shows sooner."""
+    return sorted(files, key=lambda f: ((root / f).stat().st_size, f))
+
+
+def pick_tiers(pr: list[str], main: list[str], root: Path = at.ROOT) -> tuple[list[str], int] | None:
+    """(the test files in run order, the length of the first tier), or None when both sides are FULL.
+
+    Tier 1: a test file that one side changed AND that the other side's SOURCE
+    changes reach through an import. This is the shape of both collisions of
+    2026-11-13 and 2026-11-14. Tier 2: every other test file that a side changed.
+    Tier 3: the tests both sides reach. Each tier runs small files first."""
+    pr_sel, pr_full, _ = at.select(pr)
+    main_sel, main_full, _ = at.select(main)
+    changed = _tests(pr, root) | _tests(main, root)
     if pr_full and main_full:
-        return None if not changed else ["FULL", *sorted(changed)]
+        return (["FULL", *_by_size(changed, root)], 0) if changed else None
     if pr_full:
         both = set(main_sel)
     elif main_full:
         both = set(pr_sel)
     else:
         both = set(pr_sel) & set(main_sel)
-    return sorted(changed) + sorted(both - changed)
+    # Scanner tests are left out here: any .py change picks all of them.
+    pr_src = set(at.select([f for f in pr if f not in _tests(pr, root)], scanners=False)[0])
+    main_src = set(at.select([f for f in main if f not in _tests(main, root)], scanners=False)[0])
+    tier1 = ((_tests(main, root) & pr_src) | (_tests(pr, root) & main_src))
+    tier2 = changed - tier1
+    tier3 = both - changed
+    return _by_size(tier1, root) + _by_size(tier2, root) + _by_size(tier3, root), len(tier1)
+
+
+def pick(pr: list[str], main: list[str], root: Path = at.ROOT) -> list[str] | None:
+    """The test files to run in order, or None when both sides are FULL."""
+    got = pick_tiers(pr, main, root)
+    return None if got is None else got[0]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -59,16 +86,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--main", required=True, help="file with main's changed files since the merge base")
     ap.add_argument("--first-out", help="write the count of the leading changed-test part to this file")
     args = ap.parse_args(argv)
-    out = pick(_read(args.pr), _read(args.main))
-    if out is None:
-        out = ["FULL"]
-    if args.first_out and out[0] == "FULL":
-        Path(args.first_out).write_text("0\n", encoding="utf-8")
-        print("\n".join(out))
-        return 0
+    got = pick_tiers(_read(args.pr), _read(args.main))
+    out, first = got if got else (["FULL"], 0)
     if args.first_out:
-        changed = {f for f in (*_read(args.pr), *_read(args.main)) if f in set(out) and f.startswith("tests/")}
-        Path(args.first_out).write_text(f"{sum(1 for f in out if f in changed)}\n", encoding="utf-8")
+        Path(args.first_out).write_text(f"{first}\n", encoding="utf-8")
     print("\n".join(out))
     return 0
 
