@@ -126,12 +126,25 @@ export type RunEvent = {
   ts?: number;
 };
 
+/**
+ * An agent that the catalog OFFERS. Since WFC-2 (D223 proposed) the gateway
+ * offers one: Ask Mira. A graph from before may still name another agent, and
+ * the gateway still runs it, but the palette never offers it again.
+ */
 export type CatalogAgent = {
+  /** The runtime name that a node stores in `config.agent` ("orchestrator"). */
   name: string;
+  /** The member's name of the step ("Ask Mira"). Show this, never `name`. */
+  label?: string;
   description: string;
   tags: string[];
   integrations: string[];
 };
+
+/** The member's name of an offered agent. */
+export function agentLabel(agent: CatalogAgent): string {
+  return agent.label || agent.name;
+}
 
 /** One declared argument of a tool action, parsed server-side. */
 export type ToolArg = {

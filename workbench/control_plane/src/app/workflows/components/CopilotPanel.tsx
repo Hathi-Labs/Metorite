@@ -110,11 +110,11 @@ export default function CopilotPanel({
               Build by describing it
             </p>
             <p>
-              “When a lead webhook fires, classify it with triage, clean the
+              “When a lead webhook fires, ask Mira to sort it, clean the
               contact rows, and create a follow-up task.”
             </p>
             <p>
-              The copilot searches your agents, tools and modules — and if a
+              The copilot uses Ask Mira, your tools and your modules — and if a
               step needs a module that doesn&apos;t exist, it writes, validates
               and saves one for you.
             </p>

@@ -2,8 +2,12 @@
 
 /**
  * The node palette (RFC §5.2) — drag a node type onto the canvas, or click to
- * append. Everything here comes from the served catalog (spec D7): agents,
- * integration actions, ready modules — never a hard-coded capability.
+ * append. Everything here comes from the served catalog (spec D7): the AI
+ * step, integration actions, ready modules — never a hard-coded capability.
+ *
+ * The AI step is ONE entry since WFC-2 (D223 proposed): Ask Mira. The gateway
+ * offers no specialist, and a dropped node takes the member's label of the
+ * step, never its runtime name.
  *
  * With many agents/tools the tree alone doesn't scale, so the palette leads
  * with search (`/workflows/catalog/search` — keyword-ranked for now, the same
@@ -16,8 +20,8 @@ import AppIcon, { themedIcon } from "@/components/Icon";
 import { useEffect, useRef, useState } from "react";
 import { searchCatalog } from "../lib/api";
 import { FALLBACK_ICON, NODE_ICON } from "../lib/nodeVisuals";
-import { NODE_CATEGORY_STYLE } from "../lib/types";
-import type { Catalog, NodeType, SearchResult } from "../lib/types";
+import { NODE_CATEGORY_STYLE, agentLabel } from "../lib/types";
+import type { Catalog, CatalogAgent, NodeType, SearchResult } from "../lib/types";
 
 export type PaletteDrop = {
   nodeType: NodeType;
@@ -27,10 +31,19 @@ export type PaletteDrop = {
 
 type SectionIcon = React.ComponentType<{ className?: string }>;
 
+/** The drop of an offered agent: the member's label, the runtime name. */
+export function dropForAgent(agent: CatalogAgent): PaletteDrop {
+  return {
+    nodeType: "agent",
+    label: agentLabel(agent),
+    config: { agent: agent.name, message: "" },
+  };
+}
+
 /** Map one search result onto a draggable drop, joined against the catalog. */
-function dropForResult(r: SearchResult, catalog: Catalog | null): PaletteDrop | null {
+export function dropForResult(r: SearchResult, catalog: Catalog | null): PaletteDrop | null {
   if (r.kind === "agent")
-    return { nodeType: "agent", label: r.key, config: { agent: r.key, message: "" } };
+    return { nodeType: "agent", label: r.label || r.key, config: { agent: r.key, message: "" } };
   if (r.kind === "tool")
     return { nodeType: "tool", label: r.label, config: { action: r.key, args: {} } };
   if (r.kind === "module") {
@@ -192,7 +205,7 @@ export default function NodePalette({
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search agents, tools, modules…"
+          placeholder="Search steps"
           className="w-full rounded-lg border border-input bg-background pl-8 pr-7 py-1.5 text-[11px] text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
         />
         {query && (
@@ -219,10 +232,12 @@ export default function NodePalette({
               r.kind === "node"
                 ? (r.category || "logic")
                 : r.kind === "integration" ? "tool" : r.kind;
+            // The member's word for the one agent kind (WFC-2).
+            const kindWord = r.kind === "agent" ? "AI step" : r.kind;
             return item(
               `s:${r.kind}:${r.key}`, drop,
               r.label,
-              `${r.kind} · ${r.description || "—"}`,
+              `${kindWord} · ${r.description || "—"}`,
               category,
               r.kind === "integration",
             );
@@ -241,13 +256,9 @@ export default function NodePalette({
           </div>
 
           {section(
-            "agent", "Agents", themedIcon("Bot"), (catalog?.agents ?? []).length,
+            "agent", "AI step", themedIcon("Bot"), (catalog?.agents ?? []).length,
             (catalog?.agents ?? []).map((a) =>
-              item(
-                `agent:${a.name}`,
-                { nodeType: "agent", label: a.name, config: { agent: a.name, message: "" } },
-                a.name, a.description, "agent",
-              ),
+              item(`agent:${a.name}`, dropForAgent(a), agentLabel(a), a.description, "agent"),
             ),
           )}
 

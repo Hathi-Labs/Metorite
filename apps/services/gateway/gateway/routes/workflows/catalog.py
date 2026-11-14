@@ -1,9 +1,16 @@
 """The node palette catalog — served, never hard-coded (spec F3, D7).
 
-Agents come from the live agent registry (the same one ``/agent/run``
-resolves against), integrations from ``acb_skills``'s registry with a live
-availability probe, tools from the workflow tool registry, modules from the
-org module library. The palette can only offer what the platform has.
+Integrations come from ``acb_skills``'s registry with a live availability
+probe, tools from the workflow tool registry, modules from the org module
+library. The palette can only offer what the platform has.
+
+**One AI step (WFC-2, D223 proposed, ``ai_studio.md`` §14).** The palette, the
+search and the Copilot offer ONE agent step, "Ask Mira": the ``orchestrator``
+agent of the live registry, under a member label. No specialist and no dynamic
+agent is offered. The OFFER shrinks and the VALIDATION does not:
+``known_agent_names()`` still holds every registry name and every dynamic
+name, so an old graph that names a specialist still validates, publishes and
+runs (R6 expand). Fence: ``tests/unit/test_workflows_catalog_offer.py``.
 """
 
 from __future__ import annotations
@@ -16,6 +23,19 @@ from gateway.routes.workflows.core import _log, _tenant_session, iso, router
 from gateway.routes.workflows.tools import list_tools
 from sqlalchemy import text
 
+#: The one agent that a workflow offers (WFC-2). The runtime name stays
+#: ``orchestrator``, so a node runs the same agent as before. The member sees
+#: the label only.
+ASK_MIRA_AGENT = "orchestrator"
+ASK_MIRA_LABEL = "Ask Mira"
+#: Member words. No product name of another vendor, and no model or tier name.
+ASK_MIRA_DESCRIPTION = (
+    "Give Mira, the Metorite assistant, a message about the data of this run. "
+    "Mira can sort, sum up, decide or draft text. The answer goes to the next step."
+)
+#: The agent names that a member or the Copilot may put in a NEW node.
+OFFERED_AGENTS = frozenset({ASK_MIRA_AGENT})
+
 #: Static metadata for the non-capability node types (Logic / Output).
 NODE_TYPE_META = [
     {
@@ -27,8 +47,8 @@ NODE_TYPE_META = [
     {
         "type": "agent",
         "category": "agent",
-        "label": "Agent",
-        "description": "Run a registered Metorite agent with a message.",
+        "label": ASK_MIRA_LABEL,
+        "description": ASK_MIRA_DESCRIPTION,
     },
     {
         "type": "tool",
@@ -166,38 +186,42 @@ def known_agent_names() -> set[str]:
 
 
 def _agent_entries() -> list[dict[str, Any]]:
-    entries: list[dict[str, Any]] = []
+    """The agents that a workflow OFFERS: Ask Mira only (WFC-2).
+
+    The entry needs the live registry, so the palette never offers an agent
+    that the runtime cannot resolve. A specialist of ``_AGENT_REGISTRY`` and
+    each dynamic agent stay out of the offer. Their names stay in
+    ``known_agent_names()``, so an old graph keeps working. The text of a
+    dynamic agent is member-written, so it never reaches the palette, the
+    search or the Copilot prompt.
+    """
     try:
         from gateway.routes.agent import _AGENT_REGISTRY
 
-        for agent in _AGENT_REGISTRY:
-            entries.append(
-                {
-                    "name": agent.get("name"),
-                    "description": agent.get("description", ""),
-                    "tags": agent.get("tags", []),
-                    "integrations": agent.get("integrations", []),
-                }
-            )
+        registered = {str(a.get("name")) for a in _AGENT_REGISTRY if a.get("name")}
     except Exception as exc:
         _log.warning("workflows.catalog_agents_failed", error=str(exc)[:120])
-    try:
-        from gateway.routes.agent import _load_dynamic_agents
+        return []
+    return [
+        {
+            "name": name,
+            "label": ASK_MIRA_LABEL,
+            "description": ASK_MIRA_DESCRIPTION,
+            "tags": [],
+            "integrations": [],
+        }
+        for name in sorted(OFFERED_AGENTS & registered)
+    ]
 
-        seen = {e["name"] for e in entries}
-        for agent in _load_dynamic_agents():
-            if agent.get("name") and agent["name"] not in seen:
-                entries.append(
-                    {
-                        "name": agent.get("name"),
-                        "description": agent.get("description", ""),
-                        "tags": agent.get("tags", []),
-                        "integrations": agent.get("integrations", []),
-                    }
-                )
-    except Exception:
-        pass
-    return entries
+
+def _offered_integrations() -> list[dict[str, Any]]:
+    """The integration rows that the palette and the search show (owner Q7).
+
+    A row with no registered action has nothing to put on the canvas, so the
+    offer hides it. The data seam stays whole: ``_integration_entries`` keeps
+    every registered service, and a row comes back when an action names it.
+    """
+    return [row for row in _integration_entries() if row["actions"]]
 
 
 def _integration_entries() -> list[dict[str, Any]]:
@@ -266,7 +290,7 @@ async def get_catalog(
         "condition_ops": CONDITION_OPS,
         "event_topics": PM_EVENT_TOPICS,
         "agents": _agent_entries(),
-        "integrations": _integration_entries(),
+        "integrations": _offered_integrations(),
         "tools": [_tool_entry(s) for s in list_tools()],
         "modules": [
             {
