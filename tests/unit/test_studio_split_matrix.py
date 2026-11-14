@@ -15,7 +15,10 @@ and for each value of ``HELD_CARD_WRITES_ORGS`` (off and on):
 
 The golden file ``tests/unit/golden/studio_split_matrix.json`` has two
 columns. ``main`` was made on main BEFORE the split (commit 803d8b26c), and
-it does not change. ``split`` is the matrix after the split. The test holds
+it does not change. The review round added two cases. Their ``main`` rows came
+from the ``acb_skills`` of 3de2813f0, the base of the branch, and that code
+gave each older ``main`` row again, byte for byte. ``split`` is the matrix
+after the split. The test holds
 the code to ``split``, and it holds the difference of the two columns to the
 changes that the audit named (:data:`NAMED_CHANGES`).
 
@@ -94,7 +97,28 @@ CASES: dict[str, dict[str, Any]] = {
         "words": "publish the workflow",
         "workflows": True,
     },
+    # Review P3: the same words where the owner did not turn studio-workflows on.
+    # The allow list comes from FOLLOWS, so an entry for studio-workflows there
+    # would load it here.
+    "studio_with_workflow_words_and_studio_workflows_off": {"words": "publish the workflow"},
+    # Review P2-a: both Studio packs are sticky, and they tie but for the first
+    # load. Two word packs make four packs, so one sticky pack must leave.
+    "studio_with_a_sticky_pair_and_two_word_packs": {
+        "words": "log a call on the Acme deal and rebuild my day",
+        "sticky": (
+            tp.Sticky(slug="studio", first=(5, 0), used=9),
+            tp.Sticky(slug="studio-more", first=(5, 1), used=9),
+        ),
+    },
 }
+
+#: The cases whose words name the dark workflow pack. Only these may load it.
+WORKFLOW_WORD_CASES = frozenset(
+    {
+        "studio_with_workflow_words_and_studio_workflows_on",
+        "studio_with_workflow_words_and_studio_workflows_off",
+    }
+)
 
 #: The values of ``HELD_CARD_WRITES_ORGS``: off, and on for each org.
 HELD = {"off": "", "on": "*"}
@@ -105,10 +129,15 @@ def _size(slug: str) -> int:
 
 
 def _allowed(workflows: bool) -> frozenset[str]:
-    """The packs of a box whose ``TOOL_PACKS`` names each pack but the dark
-    ``studio-workflows`` (an owner-only line). The followers come in."""
+    """The packs of a box whose ``TOOL_PACKS`` names each pack that follows no
+    other, less the dark ``studio-workflows`` (an owner-only line). The
+    followers come in through :func:`tool_packs.with_followers`, as
+    ``packs_on`` adds them. So an entry of FOLLOWS changes this list."""
     every = frozenset(sf.pack_slugs())
-    return every if workflows else every - {"studio-workflows"}
+    if workflows:
+        return every
+    named = every - frozenset(tp.FOLLOWS) - {"studio-workflows"}
+    return tp.with_followers(named) & every
 
 
 def _row(case: dict[str, Any]) -> dict[str, Any]:
@@ -211,9 +240,18 @@ NAMED_CHANGES: dict[str, frozenset[str]] = {
     # reach of the Projects owner, unless HELD_CARD_WRITES_ORGS makes the word
     # pack spare.
     "studio_with_projects_reminders|held=off": frozenset({"offered", "via_loader"}),
-    # The older sticky pack leaves, not studio-more.
+    # The older sticky pack (crm-records) leaves, not studio-more: 98 becomes 86.
     "studio_with_two_sticky_packs|held=off": frozenset({"tools", "names", "evicted"}),
+    # With the switch on, the loader also stops the offer of the email pack. On
+    # main the spare packs freed 19 tools: 98 - 19 + 31 = 110, so email fit. After
+    # the split only projects-cycles is spare: 86 - 6 + 31 = 111, over the cap.
+    # The email specialist stays in the run, so a hand-off to it still works.
+    # crm-records, which left, is on offer in its place.
     "studio_with_two_sticky_packs|held=on": frozenset({"tools", "names", "evicted", "offered"}),
+    # Review P2-a: both Studio packs are sticky and tie. The follow pack leaves
+    # (``_follower_first``), so the core stays: 108 becomes 95. On main the chat
+    # had no studio-more, so nothing left.
+    **_both("studio_with_a_sticky_pair_and_two_word_packs", "tools", "names", "evicted"),
     # A named published skill loses its place.
     **_both("studio_with_projects_reminders_and_a_named_skill", "skills"),
     **_both("studio_with_two_named_skills", "skills"),
@@ -275,6 +313,7 @@ def test_the_core_stays_and_comes_first() -> None:
         ("studio_with_email_and_crm_records", 99, 109),
         ("studio_with_projects_reminders", 99, 99),
         ("studio_with_two_sticky_packs", 98, 86),
+        ("studio_with_a_sticky_pair_and_two_word_packs", 108, 95),
     ],
 )
 def test_the_tool_counts_of_the_audit(case: str, before: int, after: int) -> None:
@@ -285,6 +324,32 @@ def test_the_tool_counts_of_the_audit(case: str, before: int, after: int) -> Non
         key = f"{case}|held={held}"
         assert golden["main"][key]["tools"] == before, key
         assert golden["split"][key]["tools"] == after, key
+
+
+def test_a_sticky_pair_keeps_the_core_and_moves_studio_more_out() -> None:
+    """Review P2-a. Both Studio packs are sticky, with the same use and the
+    same answer to "named now". Only the first load differs, and the core was
+    loaded first. The cap must move studio-more out, not the core. Before the
+    fix the core left: 98 tools with studio-more, crm-records and calendar-day.
+    Mutation: drop ``_follower_first`` from the cap of ``choose`` -> red."""
+    for held in HELD:
+        row = _golden()["split"][f"studio_with_a_sticky_pair_and_two_word_packs|held={held}"]
+        assert row == matrix()[f"studio_with_a_sticky_pair_and_two_word_packs|held={held}"]
+        assert row["packs"] == ["studio", "crm-records", "calendar-day"], held
+        assert row["evicted"] == ["studio-more"] and row["tools"] == 95, held
+
+
+def test_studio_workflows_stays_out_of_follows_and_out_of_the_matrix() -> None:
+    """Review P3. The dark workflow pack is in no entry of FOLLOWS, and no
+    Studio turn of the matrix loads it unless its words name a workflow write
+    and the owner turned the pack on. The allow list of the matrix comes from
+    FOLLOWS. Mutation: add ``"studio-workflows": "studio"`` to FOLLOWS -> red."""
+    assert "studio-workflows" not in tp.FOLLOWS
+    assert "studio-workflows" not in _allowed(False)
+    for key, row in matrix().items():
+        case = key.split("|", 1)[0]
+        if "studio-workflows" in row["packs"]:
+            assert case in WORKFLOW_WORD_CASES and CASES[case].get("workflows"), key
 
 
 # -- The sticky state of a chat from before the split (item 7) ---------------

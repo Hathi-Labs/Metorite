@@ -149,6 +149,8 @@ class Pack:
     #: OA-7d. The app slug whose CORE pack this is, or "". A turn from that
     #: app loads the pack with no word of the member (layer (a), input 2).
     #: Only the core pack of an app names it. The setup pack names none.
+    #: WS-67 TS-1b: one exception, ``studio-more``, the follow pack of the Studio
+    #: core. It names ``studio`` too, so a Studio turn takes both packs.
     #: OA-8b: a tuple names more than one app, for the Projects core pack that
     #: serves Projects, Tasks and Calendar over one task store.
     surface: str | tuple[str, ...] = ""
@@ -1287,9 +1289,10 @@ PACKS: dict[str, Pack] = {
         handoff_swap=(_PROJECTS_NO_AGENT_LINE, _PROJECTS_ROUTE_LINE),
         loader_route=_PROJECTS_LOAD_LINE,
     ),
-    # STU-G1: last in the order, so the cap drops it first (as for the CRM pack). The words are
-    # whole words. A bare "app" or "build an app" is out: the surface loads it in Studio.
-    # WS-67 TS-1b: the core of 10 tools. ``studio-more`` holds the other 13.
+    # STU-G1: after the CRM and Projects packs, so the cap drops the Studio packs before
+    # them. WS-67 TS-1b: the core of 10 tools. ``studio-more`` (13 tools) and the dark
+    # ``studio-workflows`` come after it, so the cap drops them before the core. The words
+    # are whole words. A bare "app" or "build an app" is out: the surface loads it in Studio.
     "studio": Pack(
         slug="studio",
         when="Load for AI Studio: build an app from a brief (manifest, actions), check it, show the plan card, save and publish it.",
@@ -1300,9 +1303,10 @@ PACKS: dict[str, Pack] = {
     ),
     # WS-67 TS-1b (one_assistant_context.md section 4.2.9): the other 13 Studio
     # tools, after the core. The same surface and the same words, so a Studio turn
-    # takes both packs, the core first. The cap drops this pack before the core
-    # (``choose`` drops the last pack that came only by the surface). It follows
-    # ``studio`` (FOLLOWS), and it takes a place of MAX_PACKS.
+    # takes both packs, the core first. The cap drops this pack before the core:
+    # ``choose`` drops the last pack that came only by the surface, and of two
+    # sticky packs that tie, the follow pack leaves first (``_follower_first``).
+    # It follows ``studio`` (FOLLOWS), and it takes a place of MAX_PACKS.
     "studio-more": Pack(
         slug="studio-more",
         when="Load for AI Studio: manage skills, ready apps, delete an app, read workflows, or read and change the records of a package.",
@@ -2135,6 +2139,26 @@ def _leave_order(
     return key
 
 
+def _follower_first(
+    victim: Sticky, olds: Sequence[Sticky],
+    key: Callable[[Sticky], tuple[bool, int, tuple[int, int]]],
+) -> Sticky:
+    """The sticky pack that the cap moves out: *victim*, or a follow pack of it.
+
+    WS-67 TS-1b. When *victim* is the parent of a sticky pack of
+    :data:`FOLLOWS`, and the two tie on the key but for the first load, the
+    follow pack leaves and the parent stays. Without this, the first load
+    decides the tie, and the parent (loaded first) leaves before its follow
+    pack: a chat with sticky ``studio`` and ``studio-more`` lost the core.
+    Each other order stays as :func:`_leave_order` gives it. Fence:
+    ``tests/unit/test_studio_split_matrix.py``."""
+    head = key(victim)[:-1]
+    for entry in olds:
+        if FOLLOWS.get(entry.slug) == victim.slug and key(entry)[:-1] == head:
+            return entry
+    return victim
+
+
 def _step_aside(
     order: Sequence[str], layers: Mapping[str, str], sticky: Mapping[str, Sticky], *,
     allow: frozenset[str], total: Callable[[Sequence[str]], int],
@@ -2354,7 +2378,8 @@ def choose(
     while order and _over():
         olds = [sticky[slug] for slug in order if slug in sticky]
         if olds:
-            victim = min(olds, key=_sticky_key).slug
+            # TS-1b: a follow pack that ties with its parent leaves first.
+            victim = _follower_first(min(olds, key=_sticky_key), olds, _sticky_key).slug
             evicted.append(victim)
         else:
             # Task 1573: the open app is only a hint. A pack that came in by
