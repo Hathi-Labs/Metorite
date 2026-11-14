@@ -151,8 +151,16 @@ def test_the_model_reads_the_words():
     words = ProviderDidNotAnswer("Outlook", "send").detail
     detail, fields = safe_detail(503, {"detail": words, "code": "x"})
     text = refusal_text(
-        GatewayRefusal("x", status=503, detail=detail, fields=fields),
+        GatewayRefusal("x", status=503, detail=detail, fields=fields,
+                       code="provider_did_not_answer"),
         RefusalVoice(app="email app", log_event="email.tool_refused",
                      not_found_next="n"))
     assert text.startswith("Refused:")
     assert "Outlook did not answer. It may not have sent the mail." in text
+    assert "fault on our side" not in text
+    assert "check Sent or Drafts before you try again" in text
+    # Every other 503 keeps its text.
+    plain = refusal_text(
+        GatewayRefusal("x", status=503, detail="busy"),
+        RefusalVoice(app="email app", log_event="e", not_found_next="n"))
+    assert "This is a fault on our side." in plain

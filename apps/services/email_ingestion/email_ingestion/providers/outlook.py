@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import json
 import logging
 import re
@@ -41,6 +40,7 @@ from .base import (
     RefreshingBearer,
     SyncResult,
     canonical_folder,
+    guard_client,
     find_unsubscribe_link_in_html,
     normalize_content_id,
     received_key,
@@ -237,12 +237,6 @@ def _retry_after(exc: BaseException) -> float:
     return min(max(delay, 0.0), _MAX_RETRY_AFTER_SECS)
 
 
-#: A gateway fault of Graph. A read that gets one is tried again. A write that
-#: gets one is not, because the write may have landed (HRD-20).
-_GATEWAY_FAULTS = frozenset({502, 503, 504})
-#: The tries again of a read, and the waits before them.
-_READ_FAULT_WAITS = (0.5, 1.5)
-
 
 def _write_kind(request: httpx.Request) -> str | None:
     """``"send"`` or ``"draft"`` for a POST that writes mail, else None.
@@ -260,48 +254,8 @@ def _write_kind(request: httpx.Request) -> str | None:
 
 
 def _guard_client(client: httpx.AsyncClient) -> httpx.AsyncClient:
-    """Give *client* the two rules of HRD-20 (task 3224), and return it.
-
-    * A GET that gets 502, 503 or 504 is tried again, twice at most. The wait
-      is ``Retry-After`` up to :data:`_READ_RETRY_MAX_WAIT_SECS`, else a short
-      back-off.
-    * A POST that writes mail is never tried again. A 502, 503 or 504, or a
-      read timeout, raises :class:`ProviderDidNotAnswer`, because the write
-      may have landed.
-
-    It wraps ``client.send`` on the instance, and not a subclass, so a test
-    that replaces ``httpx.AsyncClient`` still reaches the guard.
-    Fence: ``tests/unit/test_outlook_gateway_faults.py``."""
-    inner = client.send
-
-    async def send(request: httpx.Request, **kwargs: Any) -> httpx.Response:
-        if request.method == "GET":
-            waits = list(_READ_FAULT_WAITS)
-            while True:
-                resp = await inner(request, **kwargs)
-                if resp.status_code not in _GATEWAY_FAULTS or not waits:
-                    return resp
-                wait = waits.pop(0)
-                if "Retry-After" in resp.headers:
-                    with contextlib.suppress(ValueError):
-                        wait = float(resp.headers["Retry-After"])
-                    wait = min(max(wait, 0.0), _READ_RETRY_MAX_WAIT_SECS)
-                await resp.aclose()
-                await asyncio.sleep(wait)
-        kind = _write_kind(request)
-        if kind is None:
-            return await inner(request, **kwargs)
-        try:
-            resp = await inner(request, **kwargs)
-        except httpx.ReadTimeout:
-            raise ProviderDidNotAnswer("Outlook", kind) from None
-        if resp.status_code in _GATEWAY_FAULTS:
-            await resp.aclose()
-            raise ProviderDidNotAnswer("Outlook", kind)
-        return resp
-
-    client.send = send  # type: ignore[method-assign]
-    return client
+    """The Graph client with the rules of HRD-20 (``base.guard_client``)."""
+    return guard_client(client, "Outlook", _write_kind)
 
 
 class OutlookMailTooLarge(ProviderMailTooLarge):
