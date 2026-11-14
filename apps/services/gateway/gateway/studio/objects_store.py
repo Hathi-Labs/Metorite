@@ -295,7 +295,7 @@ from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequen
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from dataclasses import field as dc_field
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -333,6 +333,10 @@ from acb_common.studio_fields import (
     FieldError,
     FieldSpec,
     RecordError,
+    autonumber_fields,
+    autonumber_pad,
+    autonumber_reset,
+    autonumber_text,
     check_can_be_hot,
     entry_bytes,
     hot_value,
@@ -665,6 +669,13 @@ _SET_HOT_SQL = (
     "AND key = :key"
 )
 
+#: C15a. The new spec of an autonumber field, for a change of its prefix or pad.
+_SET_SPEC_SQL = (
+    "UPDATE studio_object_fields SET spec = CAST(:spec AS jsonb) "
+    f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
+    "AND key = :key AND type = 'autonumber'"
+)
+
 _UNHOT_SQL = (
     "DELETE FROM studio_record_hot "
     f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
@@ -708,6 +719,20 @@ _CREATE_RECORD_SQL = (
     "RETURNING 1) "
     "SELECT r.id::text, r.object_id::text, r.data, r.created_by, r.updated_by, "
     "r.created_at, r.updated_at FROM r"
+)
+
+#: C15a. The next number of one autonumber field, in ONE atomic statement: an
+#: insert that starts at 1, and on a second call an increment of the stored
+#: value, under the row lock of the conflict. It never reads then writes. The
+#: statement runs in the SAVEPOINT of the batch, so a refused batch rolls the
+#: counter back, and a refusal leaves no gap. The org comes from the DEFAULT of
+#: the table, the bound tenant, and the policy binds the row.
+_NEXT_NUMBER_SQL = (
+    "INSERT INTO studio_object_counters (object_id, field_key, period, last_value) "
+    "VALUES (CAST(:oid AS uuid), :key, :period, 1) "
+    "ON CONFLICT (organization_id, object_id, field_key, period) "
+    "DO UPDATE SET last_value = studio_object_counters.last_value + 1, updated_at = now() "
+    "RETURNING last_value"
 )
 
 _GET_RECORD_SQL = (
@@ -1456,11 +1481,13 @@ class SyncResult:
     rules_set: tuple[str, ...] = ()
     #: C8a. The objects whose grants changed.
     access_set: tuple[str, ...] = ()
+    #: C15a. The autonumber fields whose prefix or pad changed, as (object, key).
+    fields_respecced: tuple[tuple[str, str], ...] = ()
 
     @property
     def changed(self) -> bool:
         return bool(self.objects_created or self.fields_added or self.hot_changed or self.rules_set
-                    or self.access_set)
+                    or self.access_set or self.fields_respecced)
 
 
 @dataclass
@@ -1476,6 +1503,9 @@ class _Item:
     row: StudioObject | None = None
     add: list[Mapping[str, Any]] = dc_field(default_factory=list)
     heat: list[tuple[str, bool]] = dc_field(default_factory=list)
+    #: C15a. The autonumber fields whose prefix or pad changed: the new spec. It
+    #: binds new numbers only, and no record is rewritten.
+    respec: list[FieldSpec] = dc_field(default_factory=list)
     set_rules: bool = False
     #: C8a. The grants of the manifest, or None for an open object.
     access: tuple[Grant, ...] | None = None
@@ -1555,13 +1585,21 @@ async def _plan_fields(db: Any, item: _Item, row: StudioObject,
             item.add.append(raw)
             continue
         changed = [a for a in _FIELD_ATTRS if getattr(cur, a) != getattr(spec, a)]
+        autonumber = cur.type == spec.type == "autonumber"
+        if autonumber and autonumber_reset(cur) != autonumber_reset(spec):
+            # C15a. A new reset rule would start a counter of the old one at 1 again.
+            changed.append("reset")
         if changed:
             problems.append(SyncProblem(
                 FIELD_CHANGED, item.name, field=spec.key,
                 message=f"Field `{spec.key}` of `{item.name}` changed ({', '.join(changed)}). "
                 "A published field cannot change yet."))
-        elif cur.hot != spec.hot:
-            item.heat.append((spec.key, spec.hot))
+        else:
+            if cur.hot != spec.hot:
+                item.heat.append((spec.key, spec.hot))
+            if autonumber and ((cur.prefix or "", autonumber_pad(cur))
+                               != (spec.prefix or "", autonumber_pad(spec))):
+                item.respec.append(spec)
     wanted = {f.key for f in item.fields}
     for key in old:
         if key not in wanted:
@@ -1613,6 +1651,7 @@ class _Done:
     heated: list[tuple[str, str, bool]] = dc_field(default_factory=list)
     ruled: list[str] = dc_field(default_factory=list)
     accessed: list[str] = dc_field(default_factory=list)
+    respecced: list[tuple[str, str]] = dc_field(default_factory=list)
 
 
 async def _sync_new_objects(db: Any, who: str, pid: str, items: Sequence[_Item],
@@ -1636,6 +1675,18 @@ async def _sync_new_fields(db: Any, items: Sequence[_Item], done: _Done) -> None
             if await add_field(db, done.ids[it.name], raw) is None:
                 raise ObjectStoreError("The object is gone.")
             done.added.append((it.name, str(raw["key"])))
+
+
+async def _sync_respec(db: Any, items: Sequence[_Item], done: _Done) -> None:
+    """C15a. A new prefix or pad of an autonumber field binds new numbers only.
+    The records keep the numbers that they hold."""
+    for it in items:
+        for spec in it.respec:
+            done.where, done.field = it.name, spec.key
+            await db.execute(text(_SET_SPEC_SQL), {
+                "oid": done.ids[it.name], "key": spec.key,
+                "spec": json.dumps(spec.stored_spec(), ensure_ascii=False)})
+            done.respecced.append((it.name, spec.key))
 
 
 async def _flip(db: Any, it: _Item, done: _Done, key: str, hot: bool) -> None:
@@ -1751,6 +1802,7 @@ async def _apply_sync(db: Any, who: str, pid: str, items: Sequence[_Item]) -> Sy
             await _sync_heat(db, items, done, hot=False)
             await _sync_new_objects(db, who, pid, items, done)
             await _sync_new_fields(db, items, done)
+            await _sync_respec(db, items, done)
             await _sync_heat(db, items, done, hot=True)
             await _sync_rules_full(db, pid, items, done, first)
             await _sync_access_full(db, pid, items, done)
@@ -1771,7 +1823,7 @@ async def _apply_sync(db: Any, who: str, pid: str, items: Sequence[_Item]) -> Sy
             STORE_REFUSED, done.where, field=done.field, message=str(exc))]) from None
     return SyncResult(
         tuple(done.created), tuple(done.added), tuple(done.heated), tuple(done.ruled),
-        tuple(done.accessed))
+        tuple(done.accessed), tuple(done.respecced))
 
 
 async def sync_objects(db: Any, actor: str, *, package_id: str,
@@ -3395,6 +3447,9 @@ class _Batch:
         #: The last write that gave each line a new parent (C13), for the place
         #: of a refusal.
         self.moved: dict[tuple[str, str], int] = {}
+        #: C15a. The day of the batch in the zone of the org, as YYYY-MM-DD. It
+        #: is read once, under the org lock, by :func:`_batch_day`.
+        self.day: str | None = None
 
 
 @dataclass(frozen=True)
@@ -3938,6 +3993,56 @@ def _formulas(held: _Held, checked: Mapping[str, Any],
     return run_formulas(plan, held.name, {**checked, **kept})
 
 
+def _wall_now() -> datetime:
+    """C15a. The wall clock of the store, in UTC. A test patches this name. The
+    period of a counter never comes from SQL ``now()``, which is the start of the
+    transaction, so a batch that waits for the org lock would count the old day."""
+    return datetime.now(UTC)
+
+
+async def _batch_day(db: Any, batch: _Batch) -> str:
+    """C15a. The day of the batch, as YYYY-MM-DD, in ``default_timezone`` of the
+    work-schedule policy of the org (UTC when it has none). It is read once for
+    each batch, and the caller holds the org lock, so two writers of one org
+    never read two days for one batch."""
+    if batch.day is None:
+        from gateway.routes.shell.state import zone_of
+        from gateway.work_schedule import load_policy
+
+        zone = zone_of((await load_policy(db)).get("default_timezone"))
+        batch.day = _wall_now().astimezone(zone).date().isoformat()
+    return batch.day
+
+
+def _refuse_autonumber_keys(held: _Held, data: Any) -> None:
+    """C15a. A caller never writes an autonumber field: the store fills it. A body
+    that names the key is refused, on a create and on an update, whatever the
+    value. The refusal names the field and shows no value."""
+    if not isinstance(data, Mapping):
+        return
+    for f in autonumber_fields(held.fields):
+        if f.key in data:
+            raise FieldError(
+                f.key, f"Field `{f.key}` is filled by the store, one number for each new "
+                "record. Write no value for it.")
+
+
+async def _fill_autonumbers(db: Any, batch: _Batch, oid: str, held: _Held, data: Any) -> Any:
+    """C15a. The record *data* of a create with the next number of each autonumber
+    field, in the order of the fields. It runs after the lock of the org, inside
+    the SAVEPOINT of the batch, and before ``validate_record``."""
+    fields = autonumber_fields(held.fields)
+    if not fields or not isinstance(data, Mapping):
+        return data
+    out = dict(data)
+    for f in fields:
+        period = await _batch_day(db, batch) if autonumber_reset(f) == "day" else ""
+        number = (await db.execute(text(_NEXT_NUMBER_SQL), {
+            "oid": oid, "key": f.key, "period": period})).scalar_one()
+        out[f.key] = autonumber_text(f, int(number))
+    return out
+
+
 async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     """Step 4, for one write. Only this function runs the three write statements."""
     oid = step.object_id
@@ -3946,12 +4051,15 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     linked = _link(batch, step)
     if step.op == "create":
         _refuse_hidden_write(held, step.data, create=True)
+        _refuse_autonumber_keys(held, step.data)
         if linked is not None and isinstance(step.data, Mapping):
             # C13: the line takes its parent from the batch, never from its data.
             step = replace(step, data={**step.data, linked[0].via: {"id": linked[1]}})
         data = with_initial(held.rules, step.data)
         refuse_computed_keys(held.plan, held.name, data)
         data = with_rollup_zero(held.plan, data)
+        # C15a: the number comes in this SAVEPOINT, so a refusal below rolls it back.
+        data = await _fill_autonumbers(db, batch, oid, held, data)
         checked = validate_record(plain, data)
         # Fix round 3 (rule 2): the access rules come before each formula.
         _check_write(held, None, checked, _sent(held, step.data))
@@ -3987,6 +4095,7 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
         # Fix round 4 (rule 19): the test of the link comes after the row rule.
         _check_line_of(held, linked[0], linked[1], mark.after)
     _refuse_hidden_write(held, changes)
+    _refuse_autonumber_keys(held, changes)
     refuse_computed_keys(held.plan, held.name, changes)
     merged = without_targets(held.plan, {**(mark.after or {}), **changes})
     checked = validate_record(plain, merged)

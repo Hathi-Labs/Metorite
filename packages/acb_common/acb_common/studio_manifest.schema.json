@@ -193,10 +193,46 @@
           "default": null,
           "title": "Options"
         },
+        "pad": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pad"
+        },
+        "prefix": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prefix"
+        },
         "required": {
           "default": false,
           "title": "Required",
           "type": "boolean"
+        },
+        "reset": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reset"
         },
         "to": {
           "anyOf": [
@@ -233,7 +269,8 @@
             "duration",
             "quantity",
             "percent",
-            "barcode"
+            "barcode",
+            "autonumber"
           ],
           "title": "Type",
           "type": "string"
