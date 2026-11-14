@@ -64,6 +64,12 @@ describe("/studio/package-preview", () => {
     expect(frame).not.toMatch(/NotificationBell|<AgentChat|keydown|CommandPalette|RailRow|<Modal/);
   });
 
+  // STU-AF2b: the layout shell draws the rail and takes no page model.
+  it("keeps StudioAppFrame free of the page model", () => {
+    const shell = readFileSync(new URL("../../../components/studio/StudioAppFrame.tsx", import.meta.url), "utf8");
+    expect(shell).not.toMatch(/pageModel|buildPage|viewBlocks/);
+  });
+
   it("AppFrame hides the write controls from a viewer (J2a)", () => {
     const frame = readFileSync(new URL("./AppFrame.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
     expect(frame).toContain("controls.owner ? (");

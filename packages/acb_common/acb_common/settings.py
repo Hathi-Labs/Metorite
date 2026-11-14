@@ -1314,6 +1314,18 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_floor_trim.py.
     orchestrator_floor_trim: bool = False
 
+    # ── The shape of a tool argument (HRD-3, task 2982) ─────────────────────
+    #
+    # ON gives a pack tool the argument shape that its schema declares: a JSON
+    # string becomes the object or list of an object or list parameter, and a
+    # native list becomes the JSON string of a `str` parameter that the tool
+    # parses (`acb_skills.pack_tool_guard`). OFF changes nothing. The failure
+    # text of a pack tool is not behind this flag. The one reader is
+    # `pack_tool_guard.arg_shapes_enabled`. It sends nothing out and spends
+    # nothing, so it is AGENT-SAFE. Fences:
+    # tests/unit/test_tool_argument_shapes.py.
+    tool_arg_shapes: bool = False
+
     # ── Dynamic sub-agents of the one assistant (WS-67 OA-9b, D117) ─────────
     #
     # `spawn_subagents_orgs` lists the organization ids whose main assistant
@@ -2110,6 +2122,15 @@ class Settings(BaseSettings):
     # new run. The one reader is `orchestrator.pending_ask.durable_asks_enabled`.
     # Fence: tests/unit/test_pending_ask_flow.py.
     chat_durable_asks: bool = False
+    # ── An unknown tool name loads its pack (chat_failure_modes.md §4.2 B1) ─
+    #
+    # `CHAT_TOOL_AUTOLOAD`, default OFF. D-HRD-1 (D217) allows the load, and
+    # it ships dark. The answer to an unknown tool name is always on, and it
+    # names the pack. ON: when the member may use that pack, the turn also
+    # loads it through the loader's own guards. The one reader is
+    # `acb_skills.unknown_tool.autoload_enabled`.
+    # Fence: tests/unit/test_unknown_tool_answer.py.
+    chat_tool_autoload: bool = False
     # How long a run waits on a card before it parks, in seconds. The spec
     # says "about ten minutes". With the flag OFF, `ASK_USER_TIMEOUT` (1 h)
     # still bounds the wait.

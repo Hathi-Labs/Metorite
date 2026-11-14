@@ -1,0 +1,161 @@
+{
+  "_note": "CIV-29d (D218). Maps a path under workbench/control_plane to the browser specs that cover it. Read by scripts/e2e_select.py. Fence: tests/unit/test_e2e_select.py. A path that no rule names runs every spec. A path prefix with no trailing slash matches a file name prefix.",
+  "root": "workbench/control_plane/",
+  "all": [
+    "package.json",
+    "package-lock.json",
+    "playwright.config.",
+    "next.config.",
+    "tsconfig.json",
+    "postcss.config.",
+    "public/",
+    "src/proxy.",
+    "src/auth.",
+    "src/app/layout",
+    "src/app/globals.css",
+    "src/app/error.",
+    "src/app/global-error.",
+    "src/app/api/auth/",
+    "src/app/api/shell/",
+    "src/app/api/me/",
+    "src/components/ui/",
+    "src/components/AppShell",
+    "src/components/AppTopBar",
+    "src/components/Sidebar",
+    "src/lib/shell/",
+    "src/lib/theme/",
+    "src/lib/access"
+  ],
+  "importer_rules": [
+    {
+      "name": "home page files. A change under src/ that the home page imports selects the home specs.",
+      "paths": [
+        "src/lib/shell/MyDay", "src/lib/shell/useMyDay", "src/lib/shell/myDay", "src/lib/shell/briefCard",
+        "src/lib/shell/BriefCard", "src/lib/shell/buddyHello", "src/lib/shell/feed", "src/lib/shell/FeedCard",
+        "src/lib/shell/HomeCard", "src/lib/shell/Needs", "src/lib/shell/needs", "src/lib/shell/navNeeds",
+        "src/lib/shell/guide", "src/lib/shell/Guide", "src/lib/shell/QuestionsInCard", "src/lib/shell/AiWaitingCard",
+        "src/lib/shell/Reminder", "src/lib/shell/reminder", "src/lib/shell/RemindersBand", "src/lib/shell/pinSuggest",
+        "src/lib/shell/PinSuggest", "src/lib/shell/RunSignals", "src/lib/shell/anchors", "src/lib/shell/jobs.generated"
+      ],
+      "areas": ["home"],
+      "specs": ["shell-bell.spec.ts", "shell-jobs.spec.ts"]
+    },
+    {
+      "name": "rail files. A change that the shell rail imports selects the assistant specs and the shell specs.",
+      "paths": [
+        "src/lib/respondInput", "src/lib/shell/ChatBar", "src/lib/shell/AssistantDock", "src/lib/shell/AskSheet",
+        "src/lib/shell/assistant.", "src/lib/shell/ChatNudge", "src/lib/shell/chat", "src/lib/shell/interviewMessage",
+        "src/lib/shell/askBar", "src/lib/shell/phoneBar", "src/lib/shell/briefTurn"
+      ],
+      "areas": ["assistant"],
+      "specs": ["shell-*.spec.ts", "sidebar-*.spec.ts", "rail-rows.spec.ts", "app-title-bar.spec.ts"]
+    },
+    {
+      "name": "shell. A shared shell file that is only reached as an importer selects the shell specs, not every spec.",
+      "paths": ["src/lib/shell/", "src/components/AppShell", "src/components/AppTopBar", "src/components/Sidebar", "src/app/layout"],
+      "specs": ["shell-*.spec.ts", "sidebar-*.spec.ts", "rail-rows.spec.ts", "app-title-bar.spec.ts"]
+    }
+    ,
+    {
+      "name": "api routes. A route handler that no area names selects no spec, because the specs stub /api.",
+      "fallback": true,
+      "paths": ["src/app/api/"],
+      "specs": []
+    }
+  ],
+  "ignore_suffixes": [".test.ts", ".test.tsx", ".fixture.ts", ".md"],
+  "always_run": ["shell-bar.spec.ts"],
+  "areas": {
+    "knowledge": {
+      "paths": ["src/app/knowledge/", "src/app/api/knowledge/"],
+      "specs": ["knowledge-*.spec.ts"]
+    },
+    "email": {
+      "paths": ["src/app/email/", "src/app/api/email/", "src/components/email/", "src/lib/mailbox", "src/components/MailboxMark"],
+      "specs": ["email*.spec.ts", "one-assistant-email.spec.ts"]
+    },
+    "projects-tasks": {
+      "paths": [
+        "src/app/projects/", "src/app/tasks/", "src/app/api/projects/", "src/app/api/tasks/",
+        "src/components/projects/", "src/components/tasks/", "src/components/board/",
+        "src/components/timeline/", "src/components/Task", "src/components/ProjectLinkPill",
+        "src/lib/task", "src/lib/projects", "src/lib/project", "src/lib/boards", "src/lib/boardDrop",
+        "src/lib/savedViews/"
+      ],
+      "specs": [
+        "projects-*.spec.ts", "project-*.spec.ts", "agent-runs.spec.ts", "agent-questions*.spec.ts",
+        "chat-run-status.spec.ts", "rail-rows.spec.ts", "status-accent.spec.ts", "modal.spec.ts", "toast.spec.ts"
+      ]
+    },
+    "crm": {
+      "paths": ["src/app/crm/", "src/app/api/crm/", "src/components/crm/"],
+      "specs": ["crm-*.spec.ts"]
+    },
+    "settings": {
+      "paths": [
+        "src/app/settings/", "src/app/api/settings/", "src/app/api/org/", "src/app/api/accounts/",
+        "src/components/SettingsHeader", "src/components/AccountSwitcher", "src/components/AccountStateBanner",
+        "src/components/OrgBrandLockup", "src/components/OrgLinkGate", "src/components/SidebarFold",
+        "src/lib/account", "src/lib/orgBranding", "src/lib/orgLink", "src/lib/sidebarFold", "src/lib/railFold"
+      ],
+      "specs": [
+        "account-switcher.spec.ts", "appearance-per-account.spec.ts", "org-*.spec.ts", "command-bar-apps.spec.ts",
+        "app-title-bar.spec.ts", "shell-*.spec.ts", "sidebar-*.spec.ts"
+      ]
+    },
+    "integrations": {
+      "paths": ["src/app/integrations/", "src/app/api/integrations/", "src/app/connect/", "src/components/IntegrationSetup", "src/lib/connectors"],
+      "specs": ["integrations-agents.spec.ts", "agent-change-access.spec.ts", "connect-authorize.spec.ts"]
+    },
+    "assistant": {
+      "paths": [
+        "src/app/chat/", "src/app/api/chat/", "src/app/api/agent/", "src/app/api/agent-access/", "src/app/api/agent-guidance/",
+        "src/components/AgentChat", "src/components/AgentAvatar", "src/components/AgentStatusBar", "src/components/AssistantToggle",
+        "src/components/Chat", "src/components/Card", "src/components/GenerativeUI", "src/components/GenUi", "src/components/GenUIFallback",
+        "src/components/genUITemplates", "src/components/Confirmation", "src/components/Elicitation", "src/components/PlanCardBody",
+        "src/components/AppRequestCard", "src/components/AskPin", "src/components/MarkdownMessage", "src/components/MessageBubble",
+        "src/components/Thinking", "src/hooks/useAgentChat", "src/lib/markdown",
+        "src/lib/chat", "src/lib/card", "src/lib/genUi", "src/lib/ask", "src/lib/assistant", "src/lib/confirmation",
+        "src/lib/agent", "src/lib/appRequest", "src/lib/railSessions"
+      ],
+      "specs": [
+        "chat*.spec.ts", "approval-stack.spec.ts", "askbar-clearance.spec.ts", "assistant-motion.spec.ts",
+        "genui-option-picker.spec.ts", "interview-offer-start.spec.ts", "plan-card.spec.ts",
+        "glass-rail-menu.spec.ts", "phone-bar-always.spec.ts", "email-chat-*.spec.ts",
+        "email-held-send.spec.ts", "email-redraft.spec.ts", "one-assistant-email.spec.ts",
+        "agent-questions*.spec.ts", "agent-runs.spec.ts"
+      ]
+    },
+    "home": {
+      "paths": ["src/app/page.tsx", "src/app/api/brief/", "src/components/BreathingCharacter", "src/components/WelcomeDialog"],
+      "specs": [
+        "my-day-feed.spec.ts", "myday-peek.spec.ts", "brief-card.spec.ts", "buddy-hello.spec.ts",
+        "chat-starter-pills.spec.ts", "guide-*.spec.ts", "sidebar-row-counts.spec.ts"
+      ]
+    },
+    "artifacts": {
+      "paths": [
+        "src/app/artifacts/", "src/app/apps/", "src/app/api/artifacts/", "src/app/api/apps/",
+        "src/components/Artifact", "src/lib/artifact", "src/lib/compile"
+      ],
+      "specs": ["react-artifact.spec.ts", "untrusted-html.spec.ts", "custom-app-bridge.spec.ts", "sandbox-theming.spec.ts", "theming.spec.ts"]
+    },
+    "other-apps": {
+      "paths": [
+        "src/app/people/", "src/app/whatsapp/", "src/app/notes/", "src/app/memory/", "src/app/workflows/",
+        "src/app/studio/", "src/app/agents/", "src/app/approvals/", "src/app/observability/", "src/app/inbox/",
+        "src/app/dashboard/", "src/app/centers/", "src/app/access/", "src/app/build/", "src/app/calendar/",
+        "src/app/signin/", "src/app/signup/", "src/app/oauth/",
+        "src/app/api/people/", "src/app/api/whatsapp/", "src/app/api/notes/", "src/app/api/memory/",
+        "src/app/api/workflows/", "src/app/api/studio/", "src/app/api/observability/", "src/app/api/calendar/",
+        "src/app/api/billing/", "src/app/api/admin/",
+        "src/components/studio/", "src/components/room/", "src/components/profile/", "src/components/calendar/",
+        "src/lib/studio/", "src/lib/deploy/", "src/lib/charts/"
+      ],
+      "specs": [
+        "shell-presets.spec.ts", "rail-rows.spec.ts", "untrusted-html.spec.ts",
+        "agent-questions-doors.spec.ts", "app-title-bar.spec.ts"
+      ]
+    }
+  }
+}
