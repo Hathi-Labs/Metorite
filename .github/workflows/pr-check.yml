@@ -82,12 +82,12 @@ jobs:
       # --gate). `full` is `false` ONLY when the selector ran and found no
       # reason for a full run. The list is one line of space-separated paths
       # in a job output, not an artifact. A typical list is 2-20 KB and the
-      # limit is 1 MB. The 6 shards and the guard need no download step, and
+      # limit is 1 MB. The 8 shards and the guard need no download step, and
       # `ci_unit_guard.py gate-output` turns a list over 200 KB into `full`.
       full: ${{ steps.gate.outputs.full }}
       files: ${{ steps.gate.outputs.files }}
       # CIV-17. The unit shards this selection needs, a JSON list: `[]` for
-      # an empty selection, `[1]` for a small one, `[1,2,3,4,5,6]` for a full
+      # an empty selection, `[1]` for a small one, `[1,2,3,4,5,6,7,8]` for a full
       # run. The `test` matrix reads it. Empty here means `changes` failed.
       shards: ${{ steps.gate.outputs.shards }}
     # CIV-32. `actions: read` lets the gate step find the last run of this PR
@@ -362,7 +362,7 @@ jobs:
     # CIV-17. No shard job starts for an empty selection (`shards` is `[]`), and
     # GitHub fails a matrix with no values, so the `if:`
     # skips the job before the matrix is read. A failed `changes` job leaves
-    # `shards` empty text, and the matrix then falls back to all six shards.
+    # `shards` empty text, and the matrix then falls back to all eight shards.
     if: ${{ !cancelled() && needs.changes.outputs.shards != '[]' }}
     # `fail-fast: false`: one run reports the failures of EVERY shard.
     # Fail-fast cancelled the other five and hid their failures until the
@@ -370,7 +370,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.changes.outputs.shards || '[1,2,3,4,5,6]') }}
+        shard: ${{ fromJSON(needs.changes.outputs.shards || '[1,2,3,4,5,6,7,8]') }}
     # WS-31 CP-3. The Customer Console's suites are R8-gated: they skip themselves
     # unless CUSTOMER_CONSOLE_DATABASE_URL points at a real Postgres, because
     # hermetic fakes agree with whatever SQL they are handed. Independent
