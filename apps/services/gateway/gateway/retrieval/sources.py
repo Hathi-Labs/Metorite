@@ -212,6 +212,13 @@ def _knowledge_open(user: UserContext) -> bool:
     return bool(flags.knowledge_org_allowed(user.organization_id))
 
 
+def _studio_open(user: UserContext) -> bool:
+    from gateway.routes.studio import flags
+
+    org = user.organization_id
+    return bool(flags.studio_allowed(org) and flags.search_allowed(org))
+
+
 # ── Small helpers, one rule each ────────────────────────────────────────────
 
 def _title(value: Any) -> str:
@@ -597,6 +604,34 @@ async def _knowledge(
     return out[:k]
 
 
+# ── studio ──────────────────────────────────────────────────────────────────
+
+async def _studio(user: UserContext, q: str, k: int) -> list[Hit]:
+    """The records of Studio apps (WS-STU C5a, ``ai_studio.md`` §14 C5).
+
+    The source applies the two switches, ``STUDIO_ORGS`` and
+    ``STUDIO_SEARCH_ORGS``, and then calls ``gateway.studio.search``. That
+    module reads only the objects that a manifest names in ``shell.search``,
+    through the one record reader, as the member. A hit has ``kind`` of
+    ``studio`` and an ``id`` of ``<package id>/<object>/<record id>``. So a
+    follow-up read goes through the action door of that package.
+    """
+    from gateway.studio import search
+
+    if not _studio_open(user):
+        return []
+    out = []
+    for f in await search.search_records(user, q, k):
+        out.append(Hit(
+            app="studio", kind="studio", id=f"{f.package_id}/{f.object_name}/{f.record_id}",
+            title=_title(f.title),
+            hint=f"{f.package_name} · {f.object_name}" if f.package_name else f.object_name,
+            href=f"/apps/{quote(f.package_id, safe='')}",
+            snippet=_clip(f.snippet), when=_when(f.updated_at), stamp=_when(f.updated_at),
+        ))
+    return out
+
+
 #: Every source, in the order the command bar and the route ask them.
 REGISTRY: dict[str, Source] = {
     s.key: s
@@ -609,5 +644,6 @@ REGISTRY: dict[str, Source] = {
         Source("whatsapp", "whatsapp", "WhatsApp", _whatsapp, dated=True),
         Source("knowledge", "knowledge", "Knowledge", _knowledge, meaning=True,
                reviewed=True, gate=_knowledge_open),
+        Source("studio", "studio", "Studio apps", _studio, gate=_studio_open),
     )
 }

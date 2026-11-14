@@ -297,8 +297,9 @@ def format_answer(body: Any, *, dated: bool = False) -> str:
 async def search_company(query: str, apps: str | None = None) -> str:
     """Find the company's records that match the words, in every app the member holds.
 
-    It searches tasks, email, people, the CRM, artifacts, WhatsApp and
-    Knowledge at once, and returns short passages. Each record has a full_id
+    It searches tasks, email, people, the CRM, artifacts, WhatsApp,
+    Knowledge and Studio apps at once, and returns short passages. Each
+    record has a full_id
     (for example deal:<id>) to cite and an in-app link. Open a whole record
     only when the passage is not enough.
 
@@ -307,7 +308,7 @@ async def search_company(query: str, apps: str | None = None) -> str:
             a number or a subject.
         apps: Optional. A comma list of the apps to ask first, for example
             "crm,email". The keys are tasks, email, people, crm, artifacts,
-            whatsapp and knowledge.
+            whatsapp, knowledge and studio.
     """
     words = " ".join(str(query or "").split())
     if not 2 <= len(words) <= 300:
@@ -323,8 +324,9 @@ async def _search_company_dated(
 ) -> str:
     """Find the company's records that match the words, in every app the member holds.
 
-    It searches tasks, email, people, the CRM, artifacts, WhatsApp and
-    Knowledge at once, and returns short passages. Each record has a full_id
+    It searches tasks, email, people, the CRM, artifacts, WhatsApp,
+    Knowledge and Studio apps at once, and returns short passages. Each
+    record has a full_id
     (for example deal:<id>) to cite, an in-app link, and the date it last
     changed. Inside each app, newer records come first. Open a whole record
     only when the passage is not enough.
@@ -334,7 +336,7 @@ async def _search_company_dated(
             a number or a subject.
         apps: Optional. A comma list of the apps to ask first, for example
             "crm,email". The keys are tasks, email, people, crm, artifacts,
-            whatsapp and knowledge.
+            whatsapp, knowledge and studio.
         after: Optional. A date as YYYY-MM-DD. Only records that changed on
             or after it come back, for example the first day of this month.
         verified_only: Optional. Only Knowledge pages that have an owner and a review date in the future. Other apps are unchanged.

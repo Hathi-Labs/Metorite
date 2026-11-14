@@ -54,6 +54,14 @@ org, and the default is empty. Its one reader is
 door also needs `STUDIO_ORGS`. A reload applies a change, and the flip stays
 OWNER-GATE (`enforcement-flip`).
 
+`STUDIO_SEARCH_ORGS` opens the `studio` source of company search
+(`ai_studio.md` §14 C5a). For each listed org, `search_company` reads the
+objects that a package names in `shell.search`, for the packages that the
+member owns or has installed. `*` lists every org, and the default is empty.
+Its one reader is `gateway.routes.studio.flags.search_allowed`, and each search
+asks it. The source also needs `STUDIO_ORGS`. A reload applies a change, and
+the flip stays OWNER-GATE (`enforcement-flip`).
+
 `STUDIO_LOGIC_ORGS` opens the logic module of the Studio action door
 (`ai_studio.md` §14 B4a). For each listed org, a `logic:<name>` action of a
 package runs a first-party module of the gateway. `*` lists every org, and the
