@@ -306,6 +306,8 @@ def test_shape_of_reads_only_a_declared_object_or_list() -> None:
     # Production 2026-11-13 and 11-14: MAF said "Input should be a valid dictionary / list".
     ("studio_save", "manifest", "object", '{"name": "App", "objects": []}'),
     ("studio_patch", "ops", "array", '[{"op": "add", "path": "/x", "value": 1}]'),
+    # STU-AF10b-3: the spec of a saved view. A model sends the object as a JSON string.
+    ("studio_view_manage", "spec", "object", '{"layout": "table", "columns": ["a"]}'),
 ])
 def test_the_studio_calls_of_production_read_a_json_string(
     monkeypatch, tool_name_, param, shape, string,
