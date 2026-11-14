@@ -40,6 +40,15 @@ FAKE_GH_SH = """#!/usr/bin/env bash
 exec python3 "$(dirname "$0")/gh.py" "$@"
 """
 
+# CIV-31c fix round 1: the fake `systemctl` of the merge bot. It prints the
+# Environment of metorite-auto-revert.service with the mode in
+# $FIX/auto_revert_mode. With no such file, it fails, as with no user bus.
+FAKE_SYSTEMCTL_SH = """#!/usr/bin/env bash
+echo "$*" >> "$FIX/systemctl_calls"
+[ -f "$FIX/auto_revert_mode" ] || exit 1
+echo "PATH=/usr/bin:/bin AUTO_REVERT_MODE=$(cat "$FIX/auto_revert_mode")"
+"""
+
 FAKE_GH_PY = r"""
 import json, os, shutil, subprocess, sys
 
@@ -179,6 +188,10 @@ class Env:
         (bindir / "gh").write_text(FAKE_GH_SH, encoding="utf-8", newline="\n")
         (bindir / "gh").chmod(0o755)
         (bindir / "gh.py").write_text(FAKE_GH_PY, encoding="utf-8", newline="\n")
+        (bindir / "systemctl").write_text(FAKE_SYSTEMCTL_SH, encoding="utf-8", newline="\n")
+        (bindir / "systemctl").chmod(0o755)
+        # The auto-revert unit is on, so an auto-revert PR can merge (CIV-31c).
+        (self.fix / "auto_revert_mode").write_text("on\n", encoding="utf-8", newline="\n")
         wjson(self.fix / "required.json", {"strict": False, "contexts": REQUIRED, "checks": []})
         (self.fix / "calls").write_text("", encoding="utf-8")
         self.premerge("0")
@@ -868,20 +881,34 @@ SCOPING_LOW = [
 ]
 
 
-def test_civ31b_the_floor_covers_the_scoping_files(env):
+#: CIV-31c fix round 1: one run of all 42 paths took 692 s on the PC, over the
+#: 600 s limit of a test. Each chunk is its own test, with its own run.
+SCOPING_CHUNKS = 4
+SCOPING_ALL = [(p, True) for p in SCOPING_HIGH] + [(p, False) for p in SCOPING_LOW]
+
+
+@pytest.mark.parametrize("chunk", range(SCOPING_CHUNKS))
+def test_civ31b_the_floor_covers_the_scoping_files(env, chunk):
     """CIV-31b: the tenancy, RLS, grant, visibility, member, role, group, identity,
     money and sharing files are HIGH. An ordinary store, a UI access helper and a
     signing file are not."""
-    numbers = list(range(5, 5 + len(SCOPING_HIGH) + len(SCOPING_LOW)))
-    for n, path in zip(numbers, SCOPING_HIGH + SCOPING_LOW, strict=True):
+    part = SCOPING_ALL[chunk::SCOPING_CHUNKS]
+    numbers = list(range(5, 5 + len(part)))
+    for n, (path, _) in zip(numbers, part, strict=True):
         env.pr(n, path=path)
     env.run()
     lines = env.log.splitlines()
     assert len(lines) == len(numbers)
-    high, low = lines[: len(SCOPING_HIGH)], lines[len(SCOPING_HIGH) :]
-    for line, n in zip(high, numbers, strict=False):
-        assert line.startswith(f"BACK {n} tier floor HIGH, queued as "), line
-    assert low == [f"DONE {n} abc123" for n in numbers[len(SCOPING_HIGH) :]]
+    for line, n, (path, high) in zip(lines, numbers, part, strict=True):
+        if high:
+            assert line.startswith(f"BACK {n} tier floor HIGH, queued as "), (path, line)
+        else:
+            assert line == f"DONE {n} abc123", (path, line)
+
+
+def test_civ31c_the_scoping_chunks_cover_every_path():
+    covered = [p for k in range(SCOPING_CHUNKS) for p in SCOPING_ALL[k::SCOPING_CHUNKS]]
+    assert sorted(covered) == sorted(SCOPING_ALL)
 
 
 def test_civ31b_an_auto_revert_pr_merges_only_after_the_pass_tested_main(env):
@@ -940,6 +967,41 @@ def test_civ31c_revert_tested_reads_main_with_no_workdir(env):
     tip = git(env.seed, "rev-parse", "main")
     assert f"has not tested main at {tip[:9]}" in r.stderr
     assert not nowork.exists() and env.log == "" and env.premerge_runs == 0
+
+
+@pytest.mark.parametrize("mode", ["dry", "off", None], ids=["dry", "off", "no-unit"])
+def test_civ31c_the_bot_holds_an_auto_revert_pr_while_the_mode_is_not_on(env, mode):
+    """CIV-31c fix round 1 (P2-B): only mode on opens the culprit's task again after
+    the merge. So while AUTO_REVERT_MODE of the auto-revert unit is not on, or
+    systemctl cannot read it, the bot holds an auto-revert PR. It writes one HOLD
+    line, not one per pass, and it merges the PR once the mode is on. A PR of a
+    lane does not wait for the mode."""
+    state = env.tmp / "auto-revert"
+    (state / "open").mkdir(parents=True)
+    tip = git(env.seed, "rev-parse", "main")
+    env.pr(5, path="revert_5.txt")
+    env.view(5, headRefName="auto-revert/" + "a" * 12)
+    wjson(state / "open" / "5.json", {"culprit": "a" * 40, "ids": ["t"], "tip": tip})
+    env.pr(6)
+    if mode is None:
+        (env.fix / "auto_revert_mode").unlink()
+    else:
+        (env.fix / "auto_revert_mode").write_text(mode + "\n", encoding="utf-8")
+    bot = env.bot_src()
+    for _ in range(2):
+        r = env.run(script=bot, AUTO_REVERT_STATE=state.as_posix())
+    lines = env.log.splitlines()
+    want = mode or "unknown"
+    assert lines[0].startswith(f"HOLD 5 the auto-revert mode is '{want}', not on"), lines
+    assert lines[1:] == ["DONE 6 abc123"]
+    assert f"PR 5: auto-revert PR: the auto-revert mode is '{want}', not on" in r.stderr
+    assert env.merges == [f"pr merge 6 --squash --match-head-commit {env.heads[6]}"]
+    calls = (env.fix / "systemctl_calls").read_text(encoding="utf-8").splitlines()
+    assert calls[0] == "--user show -p Environment --value metorite-auto-revert.service"
+    # The mode is on again: the PR merges.
+    (env.fix / "auto_revert_mode").write_text("on\n", encoding="utf-8")
+    env.run(script=bot, AUTO_REVERT_STATE=state.as_posix())
+    assert env.log.splitlines()[2:] == ["DONE 5 abc123"]
 
 
 def test_civ31b_an_auto_revert_pr_gets_no_retry_when_main_moves(env):

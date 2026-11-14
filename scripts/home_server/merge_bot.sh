@@ -48,6 +48,8 @@
 #   test the tip of main now      -> skip, before the checks and the gate, and
 #                                    again before the merge. The next auto-revert
 #                                    pass tests it (CIV-31b). No state file -> BACK
+#   an auto-revert PR while AUTO_REVERT_MODE of metorite-auto-revert.service is
+#   not on                        -> skip, and one HOLD <pr> <reason> line (CIV-31c)
 #   gh pr merge says "Base branch was modified" -> retry twice, 20 s apart, then skip.
 #                                    An auto-revert PR gets no retry: it skips.
 #   else gh pr ready (if draft), gh pr merge --squash --match-head-commit <sha>,
@@ -493,6 +495,13 @@ gate() {
   echo "main moved during premerge"; return 1
 }
 
+# auto_revert_mode: AUTO_REVERT_MODE of the auto-revert unit, read as lane-merge.md
+# step g reads it. Empty when systemctl fails or the unit sets no mode.
+auto_revert_mode() {
+  systemctl --user show -p Environment --value metorite-auto-revert.service 9>&- 2>/dev/null \
+    | tr ' ' '\n' | sed -n 's/^AUTO_REVERT_MODE=//p' | tail -n 1 | tr -d '\r' | tr '[:upper:]' '[:lower:]'
+}
+
 # ensure_workdir: the bot's own checkout. The first gate makes it.
 ensure_workdir() {
   [ -e "$WORKDIR/.git" ] || git -C "$ROOT" worktree add -q --detach "$WORKDIR" >/dev/null 2>&1
@@ -509,14 +518,27 @@ ensure_workdir() {
 # writes a PERSON line for it.
 # CIV-31c: it reads the tip with ls-remote in the bot's own checkout ($ROOT), so
 # it needs no workdir. A held PR makes no workdir and runs no git fetch.
+# CIV-31c fix round 1: it holds the PR while the mode of the auto-revert unit is
+# not on, because only mode on opens the culprit's task again after the merge.
+# The bot writes one HOLD line for the PR, and one more after the mode was on.
 revert_tested() {
-  local file="$AUTO_REVERT_STATE/open/$1.json" tested tip
+  local file="$AUTO_REVERT_STATE/open/$1.json" tested tip mode mark="$STATE/held-mode-$1"
   [ -f "$file" ] || { echo "auto-revert PR with no state file $file: a person merges it"; return 1; }
   if ! tested="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["tip"])' "$file" 2>/dev/null | tr -d '\r')" \
     || [ -z "$tested" ]; then
     echo "auto-revert PR: the state file $file does not parse. The auto-revert pass tells a person"
     return 2
   fi
+  mode="$(auto_revert_mode)"
+  if [ "$mode" != on ]; then
+    if [ ! -e "$mark" ]; then
+      record "HOLD $1 the auto-revert mode is '${mode:-unknown}', not on: nobody opens the culprit's task after a merge, so the bot holds the PR"
+      [ "$DRY" = 1 ] || : > "$mark"
+    fi
+    echo "auto-revert PR: the auto-revert mode is '${mode:-unknown}', not on. The bot holds it"
+    return 2
+  fi
+  rm -f "$mark"
   tip="$(git -C "$ROOT" ls-remote origin refs/heads/main 9>&- 2>/dev/null | awk -F'\t' '$2 == "refs/heads/main" {print $1; exit}')"
   [ -n "$tip" ] || { echo "git ls-remote of main failed before the auto-revert check"; return 2; }
   if [ "$tested" != "$tip" ]; then

@@ -110,6 +110,10 @@ tests. Then `~/lanes/auto-revert.log` has a `REOPENED` line.
 - `BACK`: change no task. The pass writes a `PERSON` line for it, and a
   person acts. When a fix lands on `main` first, the pass closes the revert PR
   and writes a `SKIP` line. Then `BACK <pull request> closed` needs nothing.
+- `HOLD <pull request> <reason>` in `~/lanes/merge-bot.log`: the auto-revert
+  mode is not `on`. Only mode `on` opens the culprit's task after a merge, so
+  the bot holds the PR. Change no task. Do not merge the PR by hand. Tell a
+  person, who sets the mode to `on` or closes the PR.
 
 Keep a note of the last log line that you handled. Then you never repeat one.
 The steps a to e stay here as the rule of the bot. They are also the manual
