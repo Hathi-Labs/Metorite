@@ -81,6 +81,16 @@ Your part is the Metorite side. Read `~/lanes/merge-bot.log` in each loop.
   and release the task. Do not fix it. The lane that owns it fixes it and
   hands it over again.
 
+**A revert PR of lane `auto-revert`** (CIV-31). The automatic revert hands
+it over with the task `0`. Its note names the culprit's task. Never close the
+culprit's task: the revert takes its change out of `main`.
+
+- `DONE`: open the culprit's task again with `set_task_status`, to a status
+  that is not done. Comment the revert PR and the failed tests. The `REVERT`
+  line of `~/lanes/auto-revert.log` names both. Skip step f.
+- `BACK`: change no task. The pass writes a `PERSON` line for it, and a
+  person acts.
+
 Keep a note of the last log line that you handled. Then you never repeat one.
 The steps a to e stay here as the rule of the bot. They are also the manual
 fallback when the timer is off.
@@ -128,9 +138,15 @@ f. **Close it.** Move the task to Done with `set_task_status`, using the
 g. **Watch `main`.** Every 3 merges, or every 30 minutes, read
    `gh run list --branch main --limit 10`. When a required job of a `main` run
    is red, find the merged pull request that caused it. Comment on that task.
-   Then open a small fix-forward pull request, or a revert made with
-   `git revert` on a new branch. A revert is a normal commit, so it needs no
-   force-push. Hand that pull request to yourself through the same steps.
+   - Read the mode first:
+     `systemctl --user cat metorite-auto-revert.service | grep AUTO_REVERT_MODE`.
+   - Mode `on`: make no revert yourself. Read `~/lanes/auto-revert.log`. The
+     pass opens the revert PR, or it writes a `PERSON` line. Act only on a
+     `PERSON` line. Then one culprit never gets two revert PRs.
+   - Mode `off` or `dry`, or no unit: open a small fix-forward pull request,
+     or a revert made with `git revert` on a new branch. A revert is a normal
+     commit, so it needs no force-push. Hand that pull request to yourself
+     through the same steps.
 
 ## The loop
 

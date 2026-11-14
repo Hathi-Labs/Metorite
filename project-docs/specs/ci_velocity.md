@@ -26,6 +26,13 @@ passes, it moves `green/main`. Each release slot ships that commit. §8.7
 holds the design. A repair round after the verifier, on 2026-11-13, makes the
 R8 guard read the lists of the release commit.
 
+**CIV-31 is BUILT on 2026-11-14** (task 3056, branch
+`civ31-auto-revert-mt-7191b0bd`). HIGH tier, and dark. The code default of
+`AUTO_REVERT_MODE` is `off`. The unit file sets `dry` for the one-week dry
+run (D218). It is not live until the orchestrator installs the unit. §8.8
+holds the design. A review round on 2026-11-14 added the HIGH stop, the second
+read of `main`, 3 runs per tree and the task `0` of the hand-over.
+
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
 **Owning spec** for how much CI runs, and where. `engineering_practice.md` §7a
@@ -440,13 +447,14 @@ Set `BISECT_TEST_CMD` to reuse a prepared lane or venv. `BISECT_TIMEOUT_S` and
 
 **Left for the owner.**
 - Install the timer (steps in the service file).
-- A lane session reads the `BISECT_RESULT` line in the journal and posts it on
-  a Metorite task. The script has no Metorite credentials.
-- Known gap: the push batch job writes no JUnit file. Only the R8 shards
-  upload one (`r8-junit-shard-N`). The poller reads an artifact named
-  `unit-junit` (`BISECT_ARTIFACT`). A later slice must add
-  `--junitxml` and an upload step to `test` in `deploy.yml`. Until then the
-  poller records a red run with "no failed test id".
+- The script has no Metorite credentials. Since CIV-31 (§8.8), the automatic
+  revert pass runs the poller and reads its `BISECT_RESULT` line. It writes
+  each decision in `~/lanes/auto-revert.log`, and a lane session reads that log.
+- The JUnit report is there (CIV-5b). The `test` job of `deploy.yml` runs
+  pytest with `--junitxml=junit/test.xml`. It uploads the file as
+  `unit-junit` on every run, a red run too. The poller reads that artifact
+  (`BISECT_ARTIFACT`). It records a run with no failed test as "no failed
+  test id". CIV-31 (§8.8) runs this poller and acts on its result.
 
 ### CIV-6 · Local tier: the affected tests by default, several runs at once on the box
 
@@ -910,13 +918,13 @@ Each rung ends in a demo (D211). Each slice of a rung blocks its demo task.
 |---|---|---|---|---|
 | CIV-26 | 3051 | – | LOW | This section and D218 |
 | CIV-27 | 3052 | 0 | LOW | `ci_local.sh` is optional. A lane pushes once per round |
-| CIV-28 | 3053 | 0 | STANDARD | The merge bot |
+| CIV-28 | 3053 | 0 | STANDARD | The merge bot. CIV-28b (task 3070): a tier floor from the diff, a retry on "Base branch was modified", and BACK after a second cancel |
 | CIV-29 | 3054 | 0 | STANDARD | Browser suite: inherited failures, the specs of the changed area, the full suite after merge. CIV-29a BUILT. CIV-29b BUILT 2026-11-14 (tasks 3054 and 3145): the diff of `changes` is `HEAD^1..HEAD` on the merge ref. So a later change on main no longer starts the suite. The unit gate (`--gate --base`) reads the same range. The Visual review step reads the same range (CIV-39). The map from a path to its specs is the next step. |
 | CIV-36 | 3061 | 0 | LOW | The preview gates the flag |
 | CIV-37 | 3062 | 0 | LOW | Model routing by job |
 | CIV-38 | 3063 | 0 | LOW | The quality numbers and the rollback rule |
 | CIV-30 | 3055 | 1 | HIGH | The green pointer. A release ships green |
-| CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first |
+| CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first. **BUILT 2026-11-14**, dark (code default `off`, unit `dry`). §8.8 holds the design |
 | CIV-32 | 3057 | 2 | STANDARD | **BUILT 2026-11-13.** A repair round tests what failed and what the fix reaches (`ci_unit_guard.py repair`) |
 | CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py`. CIV-33d BUILT 2026-11-13 (task 3074): the scan fences of six large files moved to `*_scan.py` files, and `test_scanner_budget.py` caps a scanner file at 30 s. The scanner set costs 1,748 s, down from 2,333 s. `test_affected_tests.py` (381 s) waits for PR 2205. CIV-33c-1 BUILT 2026-11-13 (task 3073): a hub selects its importers up to 20% of the test files, a flag-only diff of `settings.py` or `env_guard.py` selects the tests that name the flag, and `scripts/replay_gate.py` measures the FULL share. For a hub or a flag diff, an app entry, or a test helper that builds an app, selects its test importers. The closure over test imports starts from the import picks, not from the scanners or the SAFETY fences. CIV-33c-2 (the `.github/` rule) is open |
 | CIV-34 | 3059 | 2 | STANDARD | Conflict rules in the merge bot, tested on the merged tree |
@@ -996,3 +1004,77 @@ step 1c keep the old table.
   dispatch. The step `once` still counts that run as the ship of its slot. So
   a later nightly run in the same window does not ship a newer `green/main`.
   The next slot ships it.
+
+### 8.8 CIV-31 as built: the automatic revert (2026-11-14)
+
+`scripts/home_server/auto_revert.py` holds it. The fence is
+`tests/unit/test_auto_revert.py`. A user timer of `dev` on the home box runs
+one pass every 5 minutes (`scripts/home_server/systemd/metorite-auto-revert.*`).
+That unit takes the place of `metorite-bisect-poll`, so install only one.
+
+- **The flag.** `AUTO_REVERT_MODE` is `off`, `dry` or `on`. When it is
+  unset, empty or unknown, the pass acts as `off` and does nothing. `dry` does
+  every check and the local revert. It writes one line in
+  `~/lanes/auto-revert.log` and one report in `~/lanes/auto-revert/`. It
+  writes nothing to GitHub and nothing to `main`. The unit file sets `dry`.
+- **The pass.** It runs the CIV-5 poller. When the poller names the first bad
+  commit of a red push batch, the pass checks that commit. It runs the failed
+  tests 3 times each on the tip of `main`, on the culprit and on its parent.
+  Each run must give the same answer. It makes the revert on the tip in a temp
+  worktree. The failed tests must pass on that revert tree.
+- **Main moves.** The probes can take hours, and `main` can move. Before the
+  revert goes out, the pass reads `main` again. When the failed tests pass on
+  the new tip, a fix landed, and the pass makes no revert (`SKIP`). Else it
+  makes the revert again on the new tip. The report names both tips.
+- **`on`.** The pass pushes the branch `auto-revert/<sha>`. It opens a PR with
+  the title `Revert "<subject>"` and the trailer `Auto-Revert: <sha>` in the
+  commit and the body. The body has a `VERIFY: PASS` line, because the revert
+  tree passed the failed tests. `lane_handover.sh` hands the PR to the merge
+  bot as STANDARD, with the task `0`. The note names the culprit's task. So
+  `lane-merge` opens the culprit's task again after the merge, and never closes
+  it (`scripts/home_server/lanes/lane-merge.md`). Then the pass comments on
+  the culprit's PR with the failed tests and the task.
+- **The brakes.** The log counts the reverts, and a fourth in one hour stops.
+  A culprit that is a revert is never reverted. A second red run of the same
+  culprit opens no second PR. An open PR that names `This reverts commit
+  <sha>` stops it too, and in mode `on` lane-merge makes no revert of its own.
+- **The re-land check.** `scripts/premerge.sh` compares the patch of a branch
+  with each commit that an `Auto-Revert:` trailer on `main` names. It refuses
+  an equal patch, and a revert of the revert has that patch too. The patch has
+  no context lines (`git diff -U0`), so an edit near the reverted lines on
+  `main` does not hide it. Any change to the changed lines lets it through.
+- **Its scope.** Only a merge through `premerge.sh` runs the check. The merge
+  bot runs it, and so does step d of `lane-merge`. A merge in the GitHub UI,
+  or with `gh pr merge` alone, skips it. No pr-check job runs it.
+- **Fail closed.** Each doubt stops the revert, and the pass writes a `PERSON`
+  line for a person. These are the doubts:
+  - The poller names no single commit, or no failed test.
+  - The culprit is a merge commit, is not on `main`, or `main` holds its revert.
+  - The culprit touches a path of the merge bot's HIGH list (`HIGH_PATHS_RE`
+    of CIV-28b, mirrored in `auto_revert.py`), such as `infra/postgres/`. Or
+    its subject or PR title says HIGH. A revert deletes a migration file, but
+    each database that applied it keeps the schema (R6). This stops `dry` too.
+  - `gh` cannot search the open PRs.
+  - A re-run gives another answer, or a probe cannot judge.
+  - The revert does not apply cleanly, or the failed tests fail on it.
+  - A step of `on` fails.
+  - The merge bot sends the revert PR back (`BACK`). The next pass reads it,
+    and a later `DONE` still gives a `REVERTED` line.
+  - The pass ends early: a crash, or a stop of the unit. The poller already
+    took the run, so the pass writes its line and its report first.
+- **Never.** The pass never pushes to `main` and never force-pushes. It never
+  merges and never dispatches a workflow. The merge bot merges the revert PR.
+- **A known limit: no task reopen by the pass.** The box has no Metorite write
+  credential. So `lane-merge` opens the culprit's task again after the merge of
+  the revert PR. The log line, the report and the queue note name the task.
+- **A known limit: the HIGH mirror.** Until CIV-28b (PR 2253) merges,
+  `merge_bot.sh` has no `HIGH_PATHS_RE`, and the fence
+  `test_the_high_paths_equal_the_merge_bot_list` skips. After the merge, it
+  holds the two lists equal.
+- **A known limit: the bad commit.** The poller takes the head sha of the red
+  run as the bad commit. The batch tests the tip of `main`, which can be
+  newer. Then the bisect can exit 3, and the pass writes a `PERSON` line.
+- **A known limit: the speed.** The merge bot merges a revert PR only after
+  pr-check passes on it, with a median of 32 minutes (§8.2).
+- **Go `on`.** After the week of `dry`, read the log and the reports. CIV-38
+  lands first (§8.5). Then set `AUTO_REVERT_MODE=on` in the unit and reload it.
