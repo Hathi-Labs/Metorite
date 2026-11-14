@@ -758,9 +758,9 @@ def _repair(
 # the shards. A file with no timing counts DEFAULT_FILE_S. Without the timing
 # file, the old tiers by file count apply, so `changes` and the shards still
 # agree on the count.
-ALL_SHARDS = 6
+ALL_SHARDS = 8
 SHARD_TIERS = ((40, 1), (120, 3))
-SHARD_TARGET_S = 600
+SHARD_TARGET_S = 300
 DEFAULT_FILE_S = 10.0
 DURATIONS_PATH = Path(".test_durations")
 

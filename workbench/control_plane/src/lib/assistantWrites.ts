@@ -92,12 +92,16 @@ const ARTIFACT_WRITES: ReadonlySet<string> = new Set([
  * when a resend runs the approved change, so an open app re-reads. A first
  * call only asks, and its re-read finds nothing new. The delete of a package
  * (STU-A5c-2) takes an app out of the library, so the library re-reads. The
- * read tools (draft, validate, patch, outline, plan, describe, list_actions,
- * package_get, record_list, skill_list, interview) change nothing stored.
+ * two workflow writes (STB-6b, the `studio-workflows` pack) publish, roll back,
+ * pause and turn on a workflow of the Studio library, so the library re-reads.
+ * The read tools (draft, validate, patch, outline, plan, describe, list_actions,
+ * package_get, record_list, skill_list, interview, workflow_read) change nothing
+ * stored.
  */
 const STUDIO_WRITES: ReadonlySet<string> = new Set([
   "studio_save", "studio_publish", "studio_delete_package", "studio_create_from_template", "studio_skill_save",
   "studio_skill_state", "studio_record_create", "studio_record_update", "studio_record_delete",
+  "studio_workflow_publish", "studio_workflow_live",
 ]);
 
 /**

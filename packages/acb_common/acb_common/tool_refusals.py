@@ -55,6 +55,7 @@ _log = get_logger("acb_common.tool_refusals")
 
 __all__ = [
     "DETAIL_MAX",
+    "FAILED",
     "REFUSED",
     "WRAPPED_ATTR",
     "GatewayRefusal",
@@ -70,6 +71,11 @@ __all__ = [
 
 #: The first word of every refusal the model reads. The instructions name it.
 REFUSED = "Refused:"
+
+#: The first words of the text that stands for a pack tool that raised
+#: (``acb_skills.pack_tool_guard``, HRD-3). :func:`is_refusal` counts it too,
+#: so a chat card does not draw a failed write as done.
+FAILED = "The tool failed ("
 
 #: Marks a callable that :func:`refusals_as_text` made. Each fence reads it.
 WRAPPED_ATTR = "__refusals_as_text__"
@@ -375,10 +381,10 @@ def is_refusal(value: Any) -> bool:
     items that each carry ``text``.
     """
     if isinstance(value, str):
-        return value.lstrip().startswith(REFUSED)
+        return value.lstrip().startswith((REFUSED, FAILED))
     if isinstance(value, (list, tuple)) and value:
         first = getattr(value[0], "text", value[0])
-        return isinstance(first, str) and first.lstrip().startswith(REFUSED)
+        return isinstance(first, str) and first.lstrip().startswith((REFUSED, FAILED))
     return False
 
 
