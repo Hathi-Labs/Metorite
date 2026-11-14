@@ -468,7 +468,13 @@ async def search_crm(
         exact = [r for r in rows if r.get("near") is not True]
         near = [r for r in rows if r.get("near") is True]
         found = int((data or {}).get("total") or len(rows))
-        near_lines += [_near_line(slug, r) for r in near[:NEAR_SHOWN]]
+        for shown, r in enumerate(near):
+            if shown == NEAR_SHOWN:
+                # The model reads how many it did not see, so no row is lost silently.
+                near_lines.append(f"• {len(near) - NEAR_SHOWN} more near "
+                                  f"{ENTITY_LABELS[slug].lower()}s. Narrow the words to see them.")
+                break
+            near_lines.append(_near_line(slug, r))
         if near and not exact:
             header = f"{ENTITY_LABELS[slug]}s{NEAR_SECTION} ({found}"
             header += f", showing {len(near)})" if found > len(near) else ")"
