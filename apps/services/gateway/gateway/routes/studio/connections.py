@@ -8,9 +8,9 @@ do, so ``main.py`` mounts no second router and the gate
 ``require_feature_router("studio")`` holds (J1).
 
 **The answer.** One row for each name of the draft's ``connections``, in the
-order of the draft: ``name``, ``label``, ``met``, ``setup_href`` and
-``can_connect``. The IDE draws one line for each name, with Connect on an
-unmet one.
+order of the draft: ``name``, ``label``, ``met``, ``checkable``,
+``setup_href`` and ``can_connect``. The IDE draws one line for each name,
+with Connect on an unmet one.
 
 * ``met`` comes from ``package_host/resolve.met_connections``, the one read of
   a connection need (I1a). It reads the bound org of the session, and the org
@@ -22,6 +22,10 @@ unmet one.
 * ``setup_href`` and ``can_connect`` come from
   ``routes/integrations_connections.setup_href_for`` and ``may_connect``. So
   Studio keeps no copy of a connect flow and reads no right of its own.
+* ``checkable`` is False for a provider whose connection lives outside the
+  registry (``connections/store.OUTSIDE_REGISTRY``: a mailbox, a WhatsApp
+  number). The read cannot meet it, so its ``met`` stays False and
+  ``can_connect`` is False: a Connect would never turn the line connected.
 
 **The order of the checks.** The switch ``STUDIO_ORGS`` (404, no session),
 the id (404), then ``STUDIO_CONNECTION_GATE_ORGS`` (404, no session). So with
@@ -48,6 +52,7 @@ from acb_auth import UserContext, get_current_user
 from acb_common.connector_list import connector
 from acb_common.studio_flags import connection_gate_on
 from fastapi import Depends, HTTPException
+from gateway.connections import store as connections_store
 from gateway.db import tenant_session as _tenant_session
 from gateway.package_host import resolve as host_resolve
 from gateway.routes import integrations_connections as console
@@ -55,7 +60,7 @@ from gateway.routes.studio import flags
 from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import packages_store as store
 
-__all__ = ["MCP_PREFIX", "connection_rows", "router"]
+__all__ = ["MCP_PREFIX", "checkable", "connection_rows", "router"]
 
 #: The prefix of an MCP server in ``connections`` (I1a grammar).
 MCP_PREFIX = "mcp:"
@@ -82,6 +87,11 @@ def _label(name: str) -> str:
     return str(row["label"]) if row else name
 
 
+def checkable(name: str) -> bool:
+    """False for a provider that the registry cannot meet (I9 adds it)."""
+    return name not in connections_store.OUTSIDE_REGISTRY
+
+
 def connection_rows(names: tuple[str, ...], met: frozenset[str],
                     user: UserContext) -> list[dict[str, Any]]:
     """One row for each name, in order. Pure: it reads no database."""
@@ -89,8 +99,9 @@ def connection_rows(names: tuple[str, ...], met: frozenset[str],
         "name": name,
         "label": _label(name),
         "met": name in met,
+        "checkable": checkable(name),
         "setup_href": console.setup_href_for(name),
-        "can_connect": console.may_connect(user, name),
+        "can_connect": checkable(name) and console.may_connect(user, name),
     } for name in names]
 
 

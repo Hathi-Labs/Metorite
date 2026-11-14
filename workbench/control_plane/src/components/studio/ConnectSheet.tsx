@@ -7,7 +7,9 @@
  * Interaction: the owner of an app sees one line for each connection that the draft names. A met one
  * reads "<provider> is connected." An unmet one has Connect. Connect opens a sheet over Studio that
  * says where Metorite goes, and its button opens the connect page of the owning app with the way
- * back to this app. A member who may not connect sees one sentence and no button.
+ * back to this app. A member who may not connect sees one sentence and no button. A name that the
+ * gateway cannot check yet (a mailbox, a WhatsApp number, until I9) says so, with no button. A read that
+ * failed shows one line with Retry, so it never looks like a draft with no connection.
  *
  * The sheet is the AF-6 pattern (`StudioFormDialog.tsx`): the shared `Modal`, a sheet on a phone. The
  * button is a link to the server's `setup_href` (`lib/studio/connect.ts`), so the leave guard of the
@@ -25,6 +27,7 @@ const LINE_ICON: Record<ConnectLine["kind"], { name: string; className: string }
   met: { name: "CircleCheck", className: "text-success" },
   connect: { name: "Plug", className: "text-warning" },
   ask: { name: "Lock", className: "text-muted-foreground" },
+  unchecked: { name: "CircleHelp", className: "text-muted-foreground" },
 };
 
 export interface ConnectSheetProps {
@@ -63,13 +66,33 @@ export default function ConnectSheet({ line, onClose }: ConnectSheetProps) {
   );
 }
 
+export interface ConnectLinesProps {
+  lines: readonly ConnectLine[];
+  /** The words of a read that failed (`CONNECTIONS_READ_FAILED`), or null. */
+  failure?: string | null;
+  /** Read the connections again. */
+  onRetry?: () => void;
+}
+
 /** The lines of the connections, with the one sheet that a Connect opens. */
-export function ConnectLines({ lines }: { lines: readonly ConnectLine[] }) {
+export function ConnectLines({ lines, failure = null, onRetry }: ConnectLinesProps) {
   const [open, setOpen] = useState<Extract<ConnectLine, { kind: "connect" }> | null>(null);
-  if (lines.length === 0) return null;
+  if (lines.length === 0 && failure === null) return null;
   return (
     <>
       <ul aria-label="Connections" className="mb-2 space-y-1">
+        {failure !== null ? (
+          <li className="flex min-h-7 items-center gap-2 text-xs">
+            <Icon name="CircleAlert" size={14} className="shrink-0 text-warning" />
+            <span className="min-w-0 flex-1 break-words text-foreground">{failure}</span>
+            {onRetry ? (
+              <Button variant="secondary" size="sm" icon="RefreshCw" onClick={onRetry}
+                aria-label="Check the connections again">
+                Retry
+              </Button>
+            ) : null}
+          </li>
+        ) : null}
         {lines.map((line) => {
           const icon = LINE_ICON[line.kind];
           return (

@@ -21,9 +21,11 @@ The checks here:
    name. A member may connect a member connection of the list only: an org
    connection, an MCP server and an unknown id need the right (§3.5).
 4. The read's shape. One row for each name of the draft, in order, with the
-   five keys ``name``, ``label``, ``met``, ``setup_href`` and
+   six keys ``name``, ``label``, ``met``, ``checkable``, ``setup_href`` and
    ``can_connect``. ``met`` is the answer of ``met_connections`` for the
-   session member.
+   session member. A provider outside the registry (a mailbox, a number) is
+   not checkable and offers no Connect, and ``OUTSIDE_REGISTRY`` agrees with
+   the met read.
 5. The order of the checks. ``STUDIO_ORGS`` off, a bad id and the gate off
    each answer 404 and open no session. With the gate off nothing reads the
    registry. Another member's package is 404, and the met set is not read.
@@ -35,7 +37,8 @@ The checks here:
 
 **R7.** M1: drop ``calendar`` from ``_SETUP_HREF``. Checks 1 and 2 go red.
 M2: return ``True`` from ``may_connect`` for every caller. Check 3 goes red.
-M3: move the gate check below the session. Check 5 goes red.
+M3: move the gate check below the session. Check 5 goes red. M4: drop
+``checkable(name) and`` from ``can_connect``. Check 4 goes red.
 """
 
 from __future__ import annotations
@@ -71,7 +74,7 @@ PATH = f"/studio/packages/{PID}/connections"
 NOT_FOUND = {"detail": "Not found"}
 MEMBER = ["feature:studio"]
 ADMIN = ["feature:studio", "integrations:manage"]
-ROW_KEYS = {"name", "label", "met", "setup_href", "can_connect"}
+ROW_KEYS = {"name", "label", "met", "checkable", "setup_href", "can_connect"}
 SRC = ROOT / "apps/services/gateway/gateway/routes/studio/connections.py"
 
 
@@ -245,12 +248,12 @@ def test_the_read_answers_one_row_for_each_name_in_order(world: _World) -> None:
     rows = r.json()["connections"]
     assert [x["name"] for x in rows] == ["zoho", "mcp:tally", "google_calendar"]
     assert all(set(x) == ROW_KEYS for x in rows)
-    assert rows[0] == {"name": "zoho", "label": "Zoho CRM", "met": True,
+    assert rows[0] == {"name": "zoho", "label": "Zoho CRM", "met": True, "checkable": True,
                        "setup_href": "/crm", "can_connect": False}
-    assert rows[1] == {"name": "mcp:tally", "label": "tally", "met": False,
+    assert rows[1] == {"name": "mcp:tally", "label": "tally", "met": False, "checkable": True,
                        "setup_href": "/integrations?add=mcp&name=tally", "can_connect": False}
     assert rows[2] == {"name": "google_calendar", "label": "Google Calendar", "met": False,
-                       "setup_href": "/calendar?settings=1", "can_connect": True}
+                       "checkable": True, "setup_href": "/calendar?settings=1", "can_connect": True}
     assert world.sessions == 1
     assert world.met_reads == [OWEN]
 
@@ -263,8 +266,39 @@ def test_an_admin_may_connect_each_row(world: _World) -> None:
 def test_an_unknown_provider_id_reads_its_own_id(world: _World) -> None:
     world.names = ["acme"]
     rows = _client(_user()).get(PATH).json()["connections"]
-    assert rows == [{"name": "acme", "label": "acme", "met": False,
+    assert rows == [{"name": "acme", "label": "acme", "met": False, "checkable": True,
                      "setup_href": "/integrations", "can_connect": False}]
+
+
+@pytest.mark.parametrize("grants", [MEMBER, ADMIN])
+def test_a_provider_outside_the_registry_is_not_checkable_and_offers_no_connect(
+    world: _World, grants: list[str],
+) -> None:
+    """A mailbox and a WhatsApp number live outside the registry, so the read
+    cannot meet them (I9). Their row says so, and a Connect would never turn
+    the line connected, so there is none, for an admin too."""
+    world.names = ["mailbox", "whatsapp", "zoho"]
+    rows = _client(_user(grants=grants)).get(PATH).json()["connections"]
+    assert [(r["name"], r["met"], r["checkable"], r["can_connect"]) for r in rows] == [
+        ("mailbox", False, False, False), ("whatsapp", False, False, False),
+        ("zoho", True, True, grants == ADMIN)]
+    assert rows[0]["label"] == "Email account"
+
+
+def test_the_set_outside_the_registry_agrees_with_the_met_read() -> None:
+    """``OUTSIDE_REGISTRY`` is the one set of providers that ``met_providers``
+    cannot meet. Each name is a provider of the connector list, and its table
+    is the table that the console reads for it. While ``_MET_SQL`` reads only
+    the registry, the set holds the mailbox and the number. When I9 makes the
+    read cover a table, its name must leave the set in the same change."""
+    outside = conn_store.OUTSIDE_REGISTRY
+    assert set(outside) <= {r["id"] for r in cl.connector_rows()}
+    assert "email_accounts" in ic._MAILBOX_SQL and "wa_accounts" in ic._WHATSAPP_SQL
+    for name, table in {"mailbox": "email_accounts", "whatsapp": "wa_accounts"}.items():
+        read = table in conn_store._MET_SQL
+        assert (name in outside) is (not read), (name, table)
+    for name, table in outside.items():
+        assert table not in conn_store._MET_SQL, name
 
 
 def test_the_gate_off_answers_nothing_and_reads_no_registry(

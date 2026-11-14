@@ -6,7 +6,8 @@
  * The panel says that the full check runs at a save and a publish.
  *
  * I8a: the lines of the connections of the stored draft come first, each with Connect when it is
- * not met (`ConnectLines`). The header adds "1 connection missing". The gateway decides each line.
+ * not met (`ConnectLines`). The header adds "1 connection missing". The gateway decides each line. A
+ * read that failed shows one line with Retry, and the header then says the connections were not checked.
  */
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
@@ -22,12 +23,16 @@ export interface ProblemsPanelProps {
   fill?: boolean;
   /** I8a: one line for each connection of the stored draft. */
   connections?: readonly ConnectLine[];
-  /** I8a: "1 connection missing", or null when each one is met. */
+  /** I8a: "1 connection missing", "connections not checked", or null when each one is met. */
   missing?: string | null;
+  /** I8a: the line of a read of the connections that failed, or null. */
+  failure?: string | null;
+  /** I8a: read the connections again. */
+  onRetry?: () => void;
 }
 
 export default function ProblemsPanel({
-  problems, open, onToggle, fill = false, connections = [], missing = null,
+  problems, open, onToggle, fill = false, connections = [], missing = null, failure = null, onRetry,
 }: ProblemsPanelProps) {
   return (
     <section aria-label="Problems" className={`flex min-h-0 flex-col border-t border-border bg-card ${fill ? "flex-1" : ""}`}>
@@ -42,7 +47,7 @@ export default function ProblemsPanel({
       </div>
       {open ? (
         <div className={`overflow-y-auto px-3 pb-2 ${fill ? "flex-1" : "max-h-40"}`}>
-          <ConnectLines lines={connections} />
+          <ConnectLines lines={connections} failure={failure} onRetry={onRetry} />
           {problems.length === 0 ? (
             <p className="text-xs text-muted-foreground">No problem found.</p>
           ) : (

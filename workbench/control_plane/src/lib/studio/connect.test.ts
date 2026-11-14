@@ -8,12 +8,15 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  CONNECTIONS_NOT_CHECKED,
   CONNECTIONS_READ_FAILED,
   connectHref,
   connectLines,
+  connectPanel,
   getConnections,
   missingLine,
   parseConnections,
+  phoneProblemsCount,
   safeStudioReturn,
   sheetCopy,
   unmetCount,
@@ -27,6 +30,7 @@ const row = (over: Partial<ConnectionRow> = {}): ConnectionRow => ({
   name: "zoho",
   label: "Zoho CRM",
   met: false,
+  checkable: true,
   setupHref: "/crm",
   canConnect: true,
   ...over,
@@ -74,6 +78,21 @@ describe("the lines of the draft", () => {
     expect([admin.kind, member.kind]).toEqual(["connect", "ask"]);
   });
 
+  it("a name the gateway cannot check says so, with no button and no count (review P1 #2)", () => {
+    const mailbox = row({ name: "mailbox", label: "Email account", checkable: false, setupHref: "/email", canConnect: false });
+    const [line] = connectLines([mailbox], PKG);
+    expect(line).toEqual({
+      kind: "unchecked",
+      row: mailbox,
+      text: "Metorite cannot check Email account yet. It will show here when it can.",
+    });
+    expect("href" in line).toBe(false);
+    // Even with can_connect from an older gateway, an unchecked name offers no Connect.
+    expect(connectLines([{ ...mailbox, canConnect: true }], PKG)[0].kind).toBe("unchecked");
+    expect(unmetCount([mailbox, row()])).toBe(1);
+    expect(missingLine([mailbox])).toBeNull();
+  });
+
   it("counts the names that are not met for the header", () => {
     expect(unmetCount([row(), row({ met: true })])).toBe(1);
     expect(missingLine([row({ met: true })])).toBeNull();
@@ -95,8 +114,10 @@ describe("the link is the server's setup_href", () => {
 
   it("gives no link for a value that is not a path of this site", () => {
     for (const bad of [null, "", "crm", "//evil.example/crm", "/\\evil.example", "https://evil.example/crm",
-      "javascript:alert(1)", "/\t/evil.example"]) {
-      expect(connectHref({ setupHref: bad }, PKG)).toBeNull();
+      "javascript:alert(1)", "/\t/evil.example",
+      // Review P2: the parse turns these into `//host`, or a proxy can decode the slash.
+      "/.//evil.example", "/.//x", "/%2f/x", "/%2F%2Fevil.example", "/%5c/x", "/crm/..//evil.example"]) {
+      expect(connectHref({ setupHref: bad }, PKG), String(bad)).toBeNull();
     }
   });
 
@@ -123,6 +144,35 @@ describe("the guard of return", () => {
     ]) {
       expect(safeStudioReturn(bad), String(bad)).toBeNull();
     }
+  });
+});
+
+describe("a read that failed (review P1 #1)", () => {
+  it("names the cause and the next step, and the header never claims nothing is missing", () => {
+    const failed = connectPanel(undefined, "HTTP 503", PKG);
+    expect(failed).toEqual({ lines: [], missing: CONNECTIONS_NOT_CHECKED, failure: CONNECTIONS_READ_FAILED });
+    expect(CONNECTIONS_READ_FAILED).toBe("Metorite could not check the connections of this app. Try again in a moment.");
+  });
+
+  it("keeps the rows that the cache holds, beside the failure line", () => {
+    const stale = connectPanel([row(), row({ name: "github", met: true })], "fetch failed", PKG);
+    expect(stale.lines.map((l) => l.kind)).toEqual(["connect", "met"]);
+    expect(stale.missing).toBe("1 connection missing");
+    expect(stale.failure).toBe(CONNECTIONS_READ_FAILED);
+    // Each name met, and the read failed: the header still says the check did not run.
+    expect(connectPanel([row({ met: true })], "x", PKG).missing).toBe(CONNECTIONS_NOT_CHECKED);
+  });
+
+  it("a read that worked shows no failure", () => {
+    expect(connectPanel([row({ met: true })], null, PKG)).toMatchObject({ missing: null, failure: null });
+    expect(connectPanel(undefined, null, PKG)).toEqual({ lines: [], missing: null, failure: null });
+  });
+
+  it("the phone Problems tab counts each problem and each missing connection", () => {
+    expect(phoneProblemsCount(0, undefined)).toBeUndefined();
+    expect(phoneProblemsCount(0, [row({ met: true })])).toBeUndefined();
+    expect(phoneProblemsCount(0, [row(), row({ name: "mailbox", checkable: false })])).toBe(1);
+    expect(phoneProblemsCount(2, [row()])).toBe(3);
   });
 });
 
@@ -156,9 +206,10 @@ describe("the read", () => {
       ],
     });
     expect(rows).toEqual([
-      { name: "zoho", label: "Zoho CRM", met: true, setupHref: "/crm", canConnect: false },
-      { name: "mcp:tally", label: "mcp:tally", met: false, setupHref: null, canConnect: false },
+      { name: "zoho", label: "Zoho CRM", met: true, checkable: true, setupHref: "/crm", canConnect: false },
+      { name: "mcp:tally", label: "mcp:tally", met: false, checkable: true, setupHref: null, canConnect: false },
     ]);
+    expect(parseConnections({ connections: [{ name: "mailbox", checkable: false }] })[0].checkable).toBe(false);
     expect(parseConnections(null)).toEqual([]);
     expect(parseConnections({ connections: "x" })).toEqual([]);
   });

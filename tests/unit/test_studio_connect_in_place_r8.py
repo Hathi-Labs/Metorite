@@ -36,6 +36,9 @@ e. Ben, who does not own the package, gets 404. Zed of org B gets 404.
 f. With ``STUDIO_CONNECTION_GATE_ORGS`` off for org A, the read is 404.
 g. ``can_connect`` follows ``integrations:manage`` for an org connection.
 h. The read changes no row.
+i. A draft that names ``mailbox`` or ``whatsapp`` gets ``met`` False,
+   ``checkable`` False and ``can_connect`` False, for an admin too, because
+   the registry cannot meet them (``OUTSIDE_REGISTRY``, I9).
 """
 
 from __future__ import annotations
@@ -81,7 +84,7 @@ ADMIN = ("feature:studio", "integrations:manage")
 TALLY = f"mcp:tally-{TAG}"
 LEDGER = f"ledger_{TAG}"
 DIARY = f"diary_{TAG}"
-ROW_KEYS = {"name", "label", "met", "setup_href", "can_connect"}
+ROW_KEYS = {"name", "label", "met", "checkable", "setup_href", "can_connect"}
 
 
 def _manifest(names: list[str]) -> dict[str, Any]:
@@ -299,3 +302,20 @@ def test_r8_h_the_read_changes_no_row(world) -> None:
     for _ in range(2):
         assert _run(world, lambda: _read(world.a, OWEN, pid))[0] == 200
     assert _snapshot(world) == before
+
+
+# ── i. A provider outside the registry ────────────────────────────────────
+
+
+def test_r8_i_a_mailbox_or_a_number_is_not_checkable_and_offers_no_connect(world) -> None:
+    _row(world, TALLY, world.a)
+    pid = _run(world, lambda: _new(world.a, OWEN, ["mailbox", "whatsapp", TALLY]))
+    for grants in (STUDIO, ADMIN):
+        status, got = _run(world, lambda g=grants: _read(world.a, OWEN, pid, g))
+        assert status == 200, got
+        assert [(r["name"], r["met"], r["checkable"], r["can_connect"])
+                for r in got["connections"]] == [
+            ("mailbox", False, False, False),
+            ("whatsapp", False, False, False),
+            (TALLY, True, True, grants == ADMIN),
+        ], grants

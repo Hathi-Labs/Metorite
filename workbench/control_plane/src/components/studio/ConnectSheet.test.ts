@@ -30,7 +30,7 @@ const STUDIO_FILES = [
 
 const PKG = "0f8e2a4c-1b3d-4e5f-8a9b-0c1d2e3f4a5b";
 const row = (over: Partial<ConnectionRow> = {}): ConnectionRow => ({
-  name: "zoho", label: "Zoho CRM", met: false, setupHref: "/crm", canConnect: true, ...over,
+  name: "zoho", label: "Zoho CRM", met: false, checkable: true, setupHref: "/crm", canConnect: true, ...over,
 });
 
 describe("Studio copies no connect flow", () => {
@@ -65,11 +65,16 @@ describe("Studio copies no connect flow", () => {
     expect(sheet).not.toMatch(/fixed inset-0|lucide-react|#[0-9a-fA-F]{3,6}\b/);
   });
 
-  it("the IDE reads the one route and passes the lines to the Problems panel", () => {
+  it("the IDE reads the one route and passes the lines, the failure and Retry to the Problems panel", () => {
     const page = read("app/studio/build/page.tsx");
     expect(page).toMatch(/getConnections\(pkg\)/);
-    expect(page).toMatch(/connections=\{lines\} missing=\{missing\}/g);
-    expect(page.match(/connections=\{lines\} missing=\{missing\}/g)).toHaveLength(2);
+    // Review P1 #1: the error of the read reaches the panel, on the desktop and on the phone.
+    expect(page).toContain("connectPanel(conns.data, conns.error, pkg)");
+    const passes = /connections=\{panel\.lines\} missing=\{panel\.missing\} failure=\{panel\.failure\} onRetry=\{refreshConns\}/g;
+    expect(page.match(passes)).toHaveLength(2);
+    expect(page).toMatch(/phoneProblemsCount\(problems\.length, conns\.data\)/);
+    const panel = read("app/studio/build/components/ProblemsPanel.tsx");
+    expect(panel).toContain("<ConnectLines lines={connections} failure={failure} onRetry={onRetry} />");
   });
 });
 
@@ -98,5 +103,20 @@ describe("the lines", () => {
 
   it("no connection draws nothing", () => {
     expect(html([])).toBe("");
+  });
+
+  it("a read that failed draws its line with Retry, never nothing (review P1 #1)", () => {
+    const out = renderToStaticMarkup(createElement(ConnectLines, {
+      lines: [], failure: "Metorite could not check the connections of this app. Try again in a moment.", onRetry: () => undefined,
+    }));
+    expect(out).toContain("Metorite could not check the connections of this app. Try again in a moment.");
+    expect(out).toContain(">Retry<");
+    expect(out).toContain('aria-label="Check the connections again"');
+  });
+
+  it("a name the gateway cannot check draws one sentence and no button (review P1 #2)", () => {
+    const out = html([row({ name: "mailbox", label: "Email account", checkable: false, canConnect: false })]);
+    expect(out).toContain("Metorite cannot check Email account yet. It will show here when it can.");
+    expect(out).not.toContain("<button");
   });
 });

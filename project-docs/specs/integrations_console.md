@@ -300,7 +300,8 @@ nobody connected has no row, so its link cannot come from a row.
 provider-level map. It reads the owning app of the provider in the connector
 list (§3.7 rule 3), then `_SETUP_HREF`. `mcp:<server>` opens the Add form of
 the console with the name. The map holds Calendar and Knowledge too, so the
-row of a calendar or a Drive connection links to its own app.
+row of a calendar or a Drive connection links to its own app. This change is
+live with no flag.
 
 ### 3.3 The credential rule
 

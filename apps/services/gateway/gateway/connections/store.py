@@ -363,6 +363,15 @@ _MET_SQL = (
     "AND member_email = :member))"
 )
 
+#: The providers of the connector list (IN-11) whose connection lives OUTSIDE
+#: this registry, each with the table that holds it (WS-STU I8a). A mailbox
+#: is a row of ``email_accounts`` and a WhatsApp number a row of
+#: ``wa_accounts``, so :func:`met_providers` never meets them. Studio shows
+#: such a name as "cannot check yet" and offers no Connect. ⚠️ When I9 makes
+#: ``_MET_SQL`` read one of these tables, remove its name here in the same
+#: change. ``test_studio_connect_in_place.py`` fails while the two disagree.
+OUTSIDE_REGISTRY: dict[str, str] = {"mailbox": "email_accounts", "whatsapp": "wa_accounts"}
+
 
 @dataclass(frozen=True)
 class Connection:
@@ -555,7 +564,8 @@ async def met_providers(db: Any, org: str, member: str) -> frozenset[str]:
     The registry holds ``mcp:<server>``, ``zoho``, ``github``,
     ``google_calendar``, ``outlook_calendar`` and ``google_drive``. A mailbox
     lives in ``email_accounts``, so ``mailbox`` is never met here (I9 adds
-    it). ``package_host/resolve.met_connections`` is the one caller.
+    it). :data:`OUTSIDE_REGISTRY` names each such provider.
+    ``package_host/resolve.met_connections`` is the one caller.
     """
     params = {"org": str(uuid.UUID(str(org))), "member": (member or "").strip().lower()}
     rows = (await db.execute(text(_MET_SQL), params)).all()

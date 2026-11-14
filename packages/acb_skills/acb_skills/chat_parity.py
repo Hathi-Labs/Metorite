@@ -426,7 +426,7 @@ EXEMPT: dict[str, tuple[str, str]] = {
     "GET /api/studio/packages/{}/connections": (
         "stream",
         "The IDE reads whether each connection of the draft is met, to draw the Connect lines (I8a). It reads "
-        "again after each save and on focus. No member click sends it. In chat, Mira shows the same card (I8d).",
+        "again after each save and on focus. No member click sends it. In chat, Mira will show the same card (I8d, planned).",
     ),
     # ── Calendar ──
     "POST /api/calendar/connections/{}/connect": (

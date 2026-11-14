@@ -30,5 +30,6 @@ export function safeStudioReturn(raw: unknown): string | null {
     return null;
   }
   if (url.origin !== BASE || !url.pathname.startsWith(STUDIO_PREFIX)) return null;
-  return `${url.pathname}${url.search}${url.hash}`;
+  // The output goes through the same check, so a path that the parse made can never leave the site.
+  return safeLocalPath(`${url.pathname}${url.search}${url.hash}`);
 }
