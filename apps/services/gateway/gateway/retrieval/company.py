@@ -56,6 +56,25 @@ settings, so a change of the env file needs a restart. With it on:
 With it off, the route does not read ``after`` at all, not even its
 length, and the answer is the one of KR-1, byte for byte.
 
+**A zero is not proof, behind the same flag** (WS-61 KR-ZERO, task 2974).
+Each app matches every word of the query, so "Aroh Attero" finds nothing
+when no record holds both words. With the flag on:
+
+* the route starts the query embed at its start, as one task
+  (:func:`turn_vector.start`), when a source with meaning is asked. Its
+  wait overlaps the keyword sources. Each source that needs the vector
+  awaits that task inside its own time, and makes no call of its own;
+* the answer says in ``meaning`` what became of that embed: ``ran``,
+  ``timed_out``, ``failed`` or ``off``. The log line is
+  ``search.company.embed ms=… outcome=…``;
+* when every app that answered found nothing, and the query holds 2 to 5
+  bare words, the route asks again with each word alone (:func:`alone_words`),
+  inside :data:`BROADEN_BUDGET_S`. Only the apps that answered are asked,
+  and with no vector half. ``broadened`` names each word and its hits, and
+  ``hits`` holds the merged hits with no repeated id. A query with an
+  operator (a quote, ``or`` or a leading ``-``) is not broadened. A stop
+  word and a one-letter word are not searched alone.
+
 **A gap, behind ``KNOWLEDGE_GAPS``** (WS-61 KB-9a, ``knowledge_base.md``
 §8.4 door 3). When Knowledge answered with zero hits, the route hands the
 words to ``routes/knowledge/gaps.schedule_gap``. That function checks the
@@ -74,12 +93,16 @@ from datetime import UTC, datetime
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common import get_logger
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from gateway.retrieval import turn_vector
-from gateway.retrieval.sources import REGISTRY, Hit, holds
+from gateway.retrieval.sources import REGISTRY, Hit, email_meaning_on, holds
 
 logger = logging.getLogger(__name__)
+#: The house logger, so the KR-ZERO lines reach the journal. They hold no word
+#: of the query.
+_events = get_logger("gateway.retrieval.company")
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -93,6 +116,75 @@ MAX_CHARS = 300
 #: Hits for each app.
 DEFAULT_K = 5
 MAX_K = 10
+
+#: Seconds the one query embed of a turn may take (KR-ZERO). The task starts
+#: with the route, so the door gets most of the first pass, while each source
+#: still waits at most its own limit. It ends before TOTAL_BUDGET_S.
+EMBED_BUDGET_S = 3.0
+#: Seconds for the second pass of a zero answer, each word alone (KR-ZERO).
+#: The words share it equally, and each source keeps SOURCE_TIMEOUT_S.
+BROADEN_BUDGET_S = 2.5
+#: Seconds for the whole answer, both passes together (KR-ZERO). The second
+#: pass stops here, so the worst case is 1.5 times TOTAL_BUDGET_S, not 2 times.
+ANSWER_CAP_S = 6.0
+#: The least time worth a second pass. Under it, the zero answer goes at once.
+BROADEN_FLOOR_S = 0.2
+#: A zero answer asks again only when the query holds this many bare words.
+BROADEN_MIN_WORDS = 2
+BROADEN_MAX_WORDS = 5
+#: The English stop words of Postgres (``english.stop``). The full-text half
+#: of each app drops them, so a stop word alone finds nothing useful.
+_STOP_TEXT = (
+    "i me my myself we our ours ourselves you your yours yourself yourselves he "
+    "him his himself she her hers herself it its itself they them their theirs "
+    "themselves what which who whom this that these those am is are was were be "
+    "been being have has had having do does did doing a an the and but if or "
+    "because as until while of at by for with about against between into "
+    "through during before after above below to from up down in out on off over "
+    "under again further then once here there when where why how all any both "
+    "each few more most other some such no nor not only own same so than too "
+    "very s t can will just don should now"
+)
+STOP_WORDS: frozenset[str] = frozenset(_STOP_TEXT.split(" "))
+#: The quote marks that make a phrase. A query with one is not broadened.
+_QUOTE_MARKS = ('"', "“", "”")
+#: The marks taken off the two ends of a word before it is searched alone.
+_EDGE_MARKS = ".,;:!?()[]{}"
+
+
+def bare_words(words: str) -> list[str] | None:
+    """The words of *words*, or ``None`` when it holds a search operator.
+
+    The operators of ``websearch_to_tsquery``: a quote mark, the word ``or``
+    and a word that starts with ``-``. Pure (KR-ZERO).
+    """
+    if any(mark in words for mark in _QUOTE_MARKS):
+        return None
+    tokens = words.split()
+    if any(t.lower() == "or" or t.startswith("-") for t in tokens):
+        return None
+    return tokens
+
+
+def alone_words(words: str) -> list[str]:
+    """The words to search alone after a zero answer, in order (KR-ZERO).
+
+    Empty unless *words* holds 2 to 5 bare words. A stop word, a word of one
+    letter and a repeated word are left out. Pure.
+    """
+    tokens = bare_words(words)
+    if tokens is None or not BROADEN_MIN_WORDS <= len(tokens) <= BROADEN_MAX_WORDS:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        word = token.strip(_EDGE_MARKS)
+        low = word.lower()
+        if len(word) < 2 or low in STOP_WORDS or low in seen:
+            continue
+        seen.add(low)
+        out.append(word)
+    return out
 
 #: The constant of the rank term of :func:`score` (§4.1).
 RANK_K = 60
@@ -277,6 +369,139 @@ def by_fusion(order: list[str], found: dict[str, list[Hit]], now: datetime) -> l
     return [h for _s, _p, _r, h in scored]
 
 
+async def _ask_each(
+    user: UserContext, words: str, order: list[str], per_app: int, *,
+    hybrid: bool, options: dict[str, Any], since: datetime | None,
+    deadline: float, timed: bool,
+) -> tuple[dict[str, list[Hit]], list[str], int | None]:
+    """Ask each source of *order* once, one at a time, before *deadline*.
+
+    It returns the hits of each app that answered, the apps it skipped, and
+    the hits Knowledge answered before ``after`` filtered them (KB-9a).
+    *timed* gives each source its true time left as ``budget_s`` (KG-3b).
+    """
+    found: dict[str, list[Hit]] = {}
+    skipped: list[str] = []
+    knowledge_hits: int | None = None
+    loop = asyncio.get_running_loop()
+    for key in order:
+        left = deadline - loop.time()
+        if left <= 0.05:
+            skipped.append(key)
+            continue
+        try:
+            # With `after`, an app that cannot filter by date is asked for a
+            # pool, and the filter runs before the cut to `per_app`.
+            source = REGISTRY[key]
+            ask = pool(per_app) if since is not None and not source.dated else per_app
+            allowed = min(SOURCE_TIMEOUT_S, left)
+            if timed:
+                # KG-3b: the vector half of a source gets the true time left.
+                options["budget_s"] = allowed
+            hits = await asyncio.wait_for(
+                source.find(user, words, ask, hybrid=hybrid, **options),
+                allowed,
+            )
+        except HTTPException:
+            # The app's own refusal: a query too short for it, an access rule.
+            skipped.append(key)
+            continue
+        except TimeoutError:
+            logger.info("search.company source timed out", extra={"source": key})
+            skipped.append(key)
+            continue
+        except Exception as exc:
+            # The error's TYPE only. A database error's text can carry the
+            # query's parameters, which hold the member's words and address.
+            logger.warning(
+                "search.company source failed",
+                extra={"source": key, "error": type(exc).__name__},
+            )
+            skipped.append(key)
+            continue
+        if key == "knowledge":
+            knowledge_hits = len(hits)
+        if since is not None:
+            hits = [h for h in hits if _kept(h, since)]
+        found[key] = list(hits)[:per_app]
+    return found, skipped, knowledge_hits
+
+
+def _meaning_wanted(user: UserContext, order: list[str], hybrid: bool) -> bool:
+    """True when a source of *order* will ask for the query's vector (KR-ZERO).
+
+    Knowledge asks when ``KNOWLEDGE_EMBED`` names the org (*hybrid*). Email
+    asks when ``EMAIL_SEMANTIC_SEARCH_ENABLED`` is on. The member holds each
+    app of *order* already.
+    """
+    return bool(hybrid and "knowledge" in order) or ("email" in order and email_meaning_on())
+
+
+def _start_embed(user: UserContext, words: str) -> None:
+    """Start the one embed of this turn, with :data:`EMBED_BUDGET_S` (KR-ZERO).
+
+    The org comes from the session. The door module is read at call time, as
+    each source reads its app.
+    """
+    from gateway.kb_index import query as kb_query
+
+    org = user.organization_id
+    turn_vector.start(
+        org, words,
+        lambda: kb_query.turn_embed(org, words, timeout=EMBED_BUDGET_S),
+        budget_s=EMBED_BUDGET_S,
+    )
+
+
+def _merge(order: list[str], passes: list[dict[str, list[Hit]]],
+           per_app: int) -> dict[str, list[Hit]]:
+    """The hits of each app over every word, with no repeated id (KR-ZERO).
+
+    Each app takes the first hit of each word, then the second, and keeps
+    at most *per_app*. Pure.
+    """
+    merged: dict[str, list[Hit]] = {}
+    for key in order:
+        lists = [found.get(key) or [] for found in passes]
+        out: list[Hit] = []
+        seen: set[str] = set()
+        for rank in range(max((len(hits) for hits in lists), default=0)):
+            for hits in lists:
+                if rank < len(hits) and hits[rank].id not in seen:
+                    seen.add(hits[rank].id)
+                    out.append(hits[rank])
+        merged[key] = out[:per_app]
+    return merged
+
+
+async def _broaden(
+    user: UserContext, alone: list[str], asked: list[str], per_app: int, *,
+    options: dict[str, Any], since: datetime | None, until: float,
+) -> tuple[list[dict[str, Any]], dict[str, list[Hit]]]:
+    """Ask the apps of *asked* again with each word alone, before *until*.
+
+    Each word takes an equal share of the time left, and an unused share
+    goes to the next word. No vector half runs. It returns what each word
+    found (``broadened``) and the merged hits of each app (KR-ZERO).
+    """
+    loop = asyncio.get_running_loop()
+    lexical = {k: v for k, v in options.items() if k not in ("vectors", "budget_s")}
+    report: list[dict[str, Any]] = []
+    passes: list[dict[str, list[Hit]]] = []
+    for i, word in enumerate(alone):
+        share = max(0.0, until - loop.time()) / (len(alone) - i)
+        found, skipped, _knowledge = await _ask_each(
+            user, word, asked, per_app, hybrid=False, options=dict(lexical),
+            since=since, deadline=loop.time() + share, timed=False,
+        )
+        passes.append(found)
+        report.append({
+            "word": word, "hits": sum(len(hits) for hits in found.values()),
+            "skipped": skipped,
+        })
+    return report, _merge(asked, passes, per_app)
+
+
 @router.get("/company")
 async def company_search(
     q: str = Query(..., min_length=MIN_CHARS, max_length=MAX_CHARS),
@@ -317,53 +542,28 @@ async def company_search(
     if only_verified:
         options["verified_only"] = True
 
-    found: dict[str, list[Hit]] = {}
-    skipped: list[str] = []
-    # KB-9a: the hits Knowledge answered, before `after` filters them. None
-    # when the route did not ask Knowledge, or Knowledge failed.
-    knowledge_hits: int | None = None
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + TOTAL_BUDGET_S
-    for key in order:
-        left = deadline - loop.time()
-        if left <= 0.05:
-            skipped.append(key)
-            continue
-        try:
-            # With `after`, an app that cannot filter by date is asked for a
-            # pool, and the filter runs before the cut to `per_app`.
-            source = REGISTRY[key]
-            ask = pool(per_app) if since is not None and not source.dated else per_app
-            allowed = min(SOURCE_TIMEOUT_S, left)
-            if recency:
-                # KG-3b: the vector half of a source gets the true time left.
-                options["budget_s"] = allowed
-            hits = await asyncio.wait_for(
-                source.find(user, words, ask, hybrid=hybrid, **options),
-                allowed,
-            )
-        except HTTPException:
-            # The app's own refusal: a query too short for it, an access rule.
-            skipped.append(key)
-            continue
-        except TimeoutError:
-            logger.info("search.company source timed out", extra={"source": key})
-            skipped.append(key)
-            continue
-        except Exception as exc:
-            # The error's TYPE only. A database error's text can carry the
-            # query's parameters, which hold the member's words and address.
-            logger.warning(
-                "search.company source failed",
-                extra={"source": key, "error": type(exc).__name__},
-            )
-            skipped.append(key)
-            continue
-        if key == "knowledge":
-            knowledge_hits = len(hits)
-        if since is not None:
-            hits = [h for h in hits if _kept(h, since)]
-        found[key] = list(hits)[:per_app]
+    began = loop.time()
+    deadline = began + TOTAL_BUDGET_S
+    meaning = turn_vector.MEANING_OFF
+    if recency and _meaning_wanted(user, order, hybrid):
+        # KR-ZERO: the embed runs while the keyword sources run.
+        _start_embed(user, words)
+    try:
+        # KB-9a: `knowledge_hits` is the hits Knowledge answered, before
+        # `after` filters them. None when the route did not ask Knowledge,
+        # or Knowledge failed.
+        found, skipped, knowledge_hits = await _ask_each(
+            user, words, order, per_app, hybrid=hybrid, options=options,
+            since=since, deadline=deadline, timed=recency,
+        )
+    finally:
+        if recency:
+            meaning = turn_vector.outcome()
+            if meaning != turn_vector.MEANING_OFF:
+                _events.info("search.company.embed", ms=turn_vector.embed_ms(),
+                             outcome=meaning)
+            turn_vector.end_turn()
 
     # A filtered search that finds nothing says nothing about a gap (KB-AI-4).
     _note_gap(background, user, words, None if only_verified else knowledge_hits)
@@ -374,10 +574,28 @@ async def company_search(
             "hits": [h.as_dict() for h in _interleave(order, found)],
             "skipped": skipped,
         }
+    # KR-ZERO: every app that answered found nothing. Ask again, each word alone.
+    broadened: list[dict[str, Any]] | None = None
+    alone = alone_words(words) if found and not any(found.values()) else []
+    until = min(loop.time() + BROADEN_BUDGET_S, began + ANSWER_CAP_S)
+    if alone and until - loop.time() >= BROADEN_FLOOR_S:
+        started = loop.time()
+        broadened, found = await _broaden(
+            user, alone, list(found), per_app, options=options, since=since, until=until,
+        )
+        _events.info(
+            "search.company.broaden", words=len(alone),
+            hits=sum(len(hits) for hits in found.values()),
+            ms=round((loop.time() - started) * 1000),
+        )
     now = datetime.now(UTC)
-    return {
+    answer: dict[str, Any] = {
         "query": words,
         "hits": [h.as_dict(stamp=True) for h in by_fusion(order, found, now)],
         "searched": [key for key in order if key in found and REGISTRY[key].reaches(user)],
         "skipped": skipped,
+        "meaning": meaning,
     }
+    if broadened is not None:
+        answer["broadened"] = broadened
+    return answer
