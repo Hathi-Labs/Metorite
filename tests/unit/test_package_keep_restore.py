@@ -50,6 +50,8 @@ from typing import Any
 
 import pytest
 
+from tests.unit import _r8_lists as r8_lists
+
 pytest.importorskip("sqlalchemy")
 
 from acb_auth import UserContext, UserRole, build_access, get_current_user
@@ -434,10 +436,6 @@ def test_no_chat_tool_and_no_mcp_pair_reaches_the_route(route: str) -> None:
 # ── 8. The R8 twin runs in CI ──────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("workflow", ["pr-check.yml", "deploy.yml"])
-def test_the_r8_twin_is_in_the_must_run_list(workflow: str) -> None:
-    text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", text)
-    assert block, f"{workflow}: the --must-run argument list is missing"
-    assert re.search(r"^[ \t]+tests/unit/test_package_keep_restore_r8\.py(?: \\)?$",
-                     block.group(1), re.M), workflow
+def test_the_r8_twin_is_in_the_must_run_list() -> None:
+    must_run = r8_lists.must_run()
+    assert "tests/unit/test_package_keep_restore_r8.py" in must_run

@@ -506,7 +506,26 @@ GATE_FULL_NAMES = {
     # A re-export of the DB seam (acb_common.db). 620 test files reach it.
     "apps/services/gateway/gateway/db.py",
 }
-GATE_FULL_PREFIXES = (".github/", "scripts/ci_pc/", "packages/acb_common/")
+# CIV-33c-2. A workflow (or a composite action) can change how every test runs,
+# so it stays FULL. Any other file under .github/ (ISSUE_TEMPLATE, CODEOWNERS,
+# dependabot.yml) runs no test, so it is no longer FULL. `.github/prompts` and
+# `.github/skills` feed the root agents.py, and no test imports it today.
+GATE_FULL_PREFIXES = (
+    ".github/workflows/",
+    ".github/actions/",
+    "scripts/ci_pc/",
+    "packages/acb_common/",
+)
+# CIV-33c-2. The R8 guard lists (`r8` key) and the fence tiers live here. A diff
+# that edits this file selects the test files it ADDS to a list, plus the
+# guard's own tests, and does not go FULL (see `fence_change`).
+FENCES_JSON = "tests/fences.json"
+FENCE_GUARD_TESTS = (
+    "tests/unit/test_ci_unit_guard.py",
+    "tests/unit/test_fence_lists.py",
+    "tests/unit/test_deploy_pipeline.py",
+    "tests/unit/test_green_pointer.py",
+)
 # CIV-33c-1. A diff that only ADDS flags to these two files selects the tests
 # that name each flag, and does not go FULL (see `_flag_additions`).
 FLAG_FILES = (
@@ -602,13 +621,70 @@ def gate_diff(base: str, root: Path = ROOT, head: str = "HEAD") -> str:
     )
 
 
+def _show_or_empty(ref: str, path: str, root: Path) -> str:
+    """The text of `path` at `ref`, or "" when it is not there. An empty
+    text does not parse, so `fence_change` then goes FULL."""
+    try:
+        return _git_text(["show", f"{ref}:{path}"], root)
+    except subprocess.CalledProcessError:
+        return ""
+
+
 def gate_flag_texts(base: str, root: Path = ROOT, head: str = "HEAD") -> dict[str, tuple[str, str]]:
-    """Map each flag file to (text at the merge base, text at head)."""
+    """Map each flag file, and tests/fences.json, to (text at the merge base,
+    text at head)."""
     mb = _git_text(["merge-base", base, head], root).strip()
-    return {
+    out = {
         f: (_git_text(["show", f"{mb}:{f}"], root), _git_text(["show", f"{head}:{f}"], root))
         for f in FLAG_FILES
     }
+    out[FENCES_JSON] = (_show_or_empty(mb, FENCES_JSON, root), _show_or_empty(head, FENCES_JSON, root))
+    return out
+
+
+def _fence_entries(text: str) -> set[tuple[str, str]]:
+    """Each string of each list in tests/fences.json, as (key path, string).
+
+    The `_comment` keys are skipped. Any other shape (a scalar, a list of
+    non-strings, a top level that is no object) raises ValueError, and the
+    caller goes FULL."""
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("the top level is no object")
+    out: set[tuple[str, str]] = set()
+
+    def walk(node: object, path: str) -> None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k != "_comment":
+                    walk(v, f"{path}/{k}")
+        elif isinstance(node, list) and all(isinstance(s, str) for s in node):
+            out.update((path, s) for s in node)
+        else:
+            raise ValueError(f"{path} is neither an object nor a list of strings")
+
+    walk(data, "")
+    return out
+
+
+def fence_change(changed: list[str], texts: dict | None) -> tuple[list[str], set[str]]:
+    """(FULL reasons, test files to select) for an edit of tests/fences.json.
+
+    A parsed edit selects each Python path that it adds to or removes from a list, and the
+    guard's own tests (FENCE_GUARD_TESTS). Fail closed: a file that does not
+    parse, a shape that this rule cannot read, or no base text gives a reason."""
+    if FENCES_JSON not in changed:
+        return [], set()
+    try:
+        base, head = (texts or {})[FENCES_JSON]
+        before, after = _fence_entries(base), _fence_entries(head)
+    except (KeyError, TypeError, ValueError) as exc:
+        return [f"{FENCES_JSON}: cannot read the change ({exc!r})"], set()
+    # A removal selects the file too. It is still on disk, and the release R8
+    # gate would fail on a suite that left a list but still runs there. A file
+    # that is gone drops out later, and the guard's tests stay.
+    moved = {s for _, s in after ^ before if s.endswith(".py")}
+    return [], moved | set(FENCE_GUARD_TESTS)
 
 
 _LITERAL_OPS = (ast.Add, ast.Sub, ast.Mult, ast.USub, ast.UAdd)
@@ -919,6 +995,8 @@ def _gate(
 ) -> dict:
     needles = _flag_additions(changed, diff, texts)
     reasons = static_reasons(changed, needles)
+    fence_reasons, fence_tests = fence_change(changed, texts)
+    reasons += fence_reasons
     tests = _texts(sorted((root / TESTS).glob("test_*.py")), root)
     # The floor: each SAFETY fence, and each scanner for a Python change. A
     # Python file in a Next app skips `select`, but a scanner still reads it.
@@ -928,7 +1006,7 @@ def _gate(
     floor = set(_safety_fences(root))
     if any(c.endswith(".py") for c in changed):
         floor |= scanning_tests(tests)
-    picked: set[str] = set()
+    picked: set[str] = set(fence_tests)
     if needles is not None:
         # The two files stay out of `select`: their 150 importers are not
         # affected by a new flag. The tests that name a flag are.
@@ -956,7 +1034,9 @@ def _gate(
             and f not in py
             and any(n in body.lower() for n in lows)
         )
-    other = [c for c in changed if c not in py]
+    # tests/fences.json is read by `fence_change`. The generic text match below
+    # would select every suite that names the file (the R8 self-checks).
+    other = [c for c in changed if c not in py and c != FENCES_JSON]
     if py:
         picked |= set(select(py, root, scanners=False)[0])
         # A hub (more than HUB_LIMIT importers) selects its importers, and

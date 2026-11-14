@@ -401,12 +401,19 @@ export function splitAgentLabel(step: ToolStep): { lead: string; agent: string }
   return { lead: step.label.slice(0, -step.agent.length).trimEnd(), agent: step.agent };
 }
 
+/** True when a tool result is a server refusal: its text starts with
+ *  "Refused:" (`acb_common.tool_refusals.REFUSED`). The trail and the skill
+ *  offer (`lib/studio/skillOffer.ts`) read this one rule. */
+export function refusedText(result: string | undefined): boolean {
+  return /^\s*Refused:/.test(result ?? "");
+}
+
 function statusOf(event: Pick<ToolEvent, "status" | "result">): StepStatus {
   if (event.status === "error") return "failed";
   // A server refusal ("Refused: ...", `acb_common.tool_refusals`) is no done
   // act, even if it reached us as "done": a refused CRM write, which has no
   // card of its own, must not read "Created lead" (review of #1126).
-  if (event.status === "done" && /^\s*Refused:/.test(event.result ?? "")) return "failed";
+  if (event.status === "done" && refusedText(event.result)) return "failed";
   return event.status === "running" ? "running" : "done";
 }
 

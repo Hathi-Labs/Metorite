@@ -83,6 +83,9 @@ not write a second copy of that seam. A bare test file name is under
    - `build` strips each hidden character first (5m-1). It refuses a `{{` or `}}`, more than `MAX_PACK_TOOLS` tools and rules over `MAX_RULES_TOKENS`.
    - `tool_packs.choose` puts the skills after the code packs, in the order of the skill id, in the places that `MAX_PACKS` leaves. `persona_for` puts their rules after the rules of the code packs. A skill pack is never sticky.
    - For each skill that loads, the run writes one `executor.skill_loaded` line, with no skill text. Fences: `test_skill_packs.py`, `test_skill_packs_r8.py` (R8).
+5a-2. tool_search.py -- the index of the pack tools and the lexical ranker (WS-67 TS-1, spec `one_assistant_context.md` §4.2.9). It has NO caller yet. TS-2 adds `find_tools`.
+   - The index holds first-party text only, and each pack tool once. `rank` is pure: no I/O, no clock, no random source, and a tie breaks by tool name. `allow` comes from the caller, and the ranker never decides permission.
+   - It imports `_plain` and `_word_re` from `tool_packs`. Do not copy them. Fence: `test_tool_search_index.py`.
 5b. decide_tools.py -- the `decide` core-floor tool (spec `customer_console.md` §6A.14). It sends no member and never logs `context`.
    - `decide_tool_enabled()` is its ONE switch. `decide_tool_for(agent_name)` is the one place that picks `system_one_decide` or the Jev `decide`.
    - Fences: `test_decide_tool.py`, `test_system_one_tool.py`.

@@ -48,6 +48,7 @@ pytest.importorskip("sqlalchemy")
 from acb_auth.permissions import CAPABILITIES
 from sqlalchemy import create_engine, text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import apply_ladder, ladder
 
 #: The launch snapshot (``tests/conftest.py``), not the live variable. Falls
@@ -218,9 +219,7 @@ class TestTheVocabulary:
         green — the exact failure that step exists to catch, which is why the
         suite asserts its own membership rather than trusting a reviewer.
         """
-        workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(
-            encoding="utf-8")
-        assert "tests/unit/test_billing_purchase_capability.py" in workflow
+        assert "tests/unit/test_billing_purchase_capability.py" in r8_lists.must_run()
 
     def test_the_owning_spec_names_this_suite(self):
         """§5's command block, in the same change that creates the file."""

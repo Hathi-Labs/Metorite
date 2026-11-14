@@ -150,7 +150,7 @@ describe("the app page", () => {
 
   it("shows the no-list line when the object has no list action, and reads no rows", () => {
     expect(page).toContain("noListLine(");
-    expect(page).toMatch(/door && object && canList \? sourceKey/);
+    expect(page).toMatch(/door && object && canList( && !APP_FRAME)? \? sourceKey/);
   });
 
   it("holds the Delete app action in the bar", () => {
