@@ -39,6 +39,9 @@ def test_each_template_names_only_declared_blocks_and_fields(tid: str) -> None:
     actions = {a["id"] for a in doc["actions"]}
     views = {v["id"] for v in doc["views"]}
     for v in doc["views"]:
+        if (v.get("source") or {}).get("action"):  # a stat or chart reads an action
+            assert v["source"]["action"] in actions, v["id"]
+            continue
         obj = (v.get("source") or {}).get("object") or v.get("object")
         assert obj in objects, v["id"]
         used = [*v.get("fields", []), *v.get("columns", [])]
@@ -77,6 +80,8 @@ EXPECTED_BLOCKS: dict[str, set[str]] = {
     "expense-claims": {"board", "form", "table", "detail"},
     "hiring": {"board", "form", "table", "detail"},
     "spares": {"board", "form", "table", "detail"},
+    "shipment-tracker": {"board", "form", "table", "detail", "stat"},
+    "site-survey": {"board", "form", "table", "detail", "stat"},
 }
 
 
