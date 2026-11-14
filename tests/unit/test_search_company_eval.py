@@ -318,7 +318,8 @@ def test_live_needs_the_token_and_a_member(tmp_path, monkeypatch, capsys) -> Non
 
 def test_check_mode_and_the_parser(capsys) -> None:
     assert run.main(["--check"]) == 0
-    assert "50 questions" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "50 questions" in out and "misses set whole: 20 cases" in out
     with pytest.raises(SystemExit):
         run.main([])  # a mode is required
 
@@ -353,3 +354,96 @@ def test_verdict_p95_must_be_under_three_seconds() -> None:
 def test_the_report_names_the_limits() -> None:
     text = score.render(_timed(0.1), mode="fixture", flags={}, floor=score.FLOOR)
     assert "p50 < 1.5s" in text and "p95 < 3.0s" in text and text.endswith("PASS")
+
+
+# ── WS-FIND FIND-1: the misses set ──────────────────────────────────────────
+
+
+def test_the_misses_set_is_whole() -> None:
+    fx = qs.load_misses()
+    assert len(fx.questions) == qs.MISS_COUNT == 20
+    assert qs.check_misses(fx) == []
+    # Each kind of the spec is there, and the set is not one kind.
+    assert {q["kind"] for q in fx.questions} == set(qs.MISS_KINDS)
+
+
+def test_each_miss_names_its_kind_its_rung_and_its_slice() -> None:
+    for q in qs.load_misses().questions:
+        assert q["rung"] >= qs.MISS_KINDS[q["kind"]], q["id"]
+        assert q["slice"], q["id"]
+    by_kind = {q["kind"]: q["rung"] for q in qs.load_misses().questions
+               if q["kind"] in ("past_chat", "outside")}
+    assert by_kind == {"past_chat": 6, "outside": 7}
+
+
+def test_the_end_of_rung_two_can_score_eighteen() -> None:
+    """Only the two outside cases need a rung above 6, so 18 of 20 is in reach by rung 2."""
+    needs = [q["rung"] for q in qs.load_misses().questions]
+    assert sum(1 for r in needs if r <= 6) == 18
+
+
+def test_check_misses_names_each_fault() -> None:
+    fx = qs.load_misses()
+    low = qs.Fixture(fx.records, tuple(
+        {**q, "rung": 1} if q["id"] == "m11" else q for q in fx.questions))
+    assert any("under the floor" in p for p in qs.check_misses(low))
+    odd = qs.Fixture(fx.records, tuple(
+        {**q, "kind": "guess"} if q["id"] == "m01" else q for q in fx.questions))
+    assert any("unknown kind" in p for p in qs.check_misses(odd))
+    short = qs.Fixture(fx.records, fx.questions[:-1])
+    assert any("not 20" in p for p in qs.check_misses(short))
+    bare = qs.Fixture(fx.records, tuple(
+        {**q, "slice": ""} if q["id"] == "m02" else q for q in fx.questions))
+    assert any("names no slice" in p for p in qs.check_misses(bare))
+
+
+def test_the_misses_seed_every_record_a_case_asks_for() -> None:
+    from evals.search_company import seed
+
+    fx = qs.load_misses()
+    org = "00000000-0000-0000-0000-00000000bbbb"
+    rows = [r for _sql, batch in seed.statements(org, fx) for r in batch]
+    seeded = {r.get("i") or r.get("t") for r in rows}
+    for q in qs.resolve_misses(fx, org):
+        if q.source in qs.UNSEEDED_SOURCES:
+            assert not set(q.gold) & seeded, q.id  # no table holds it yet
+        else:
+            assert set(q.gold) <= seeded, q.id
+    # A deal of the misses names its contact, and a converted lead names its deal.
+    sqls = [sql for sql, _ in seed.statements(org, fx)]
+    assert any(sql.startswith("INSERT INTO crm_deal_contacts") for sql in sqls)
+    assert any(sql.startswith("UPDATE crm_leads SET converted_deal_id") for sql in sqls)
+
+
+def test_the_synthetic_seed_is_the_same_with_the_misses_code() -> None:
+    """The 50-question set adds no relation, so it adds no link statement."""
+    from evals.search_company import seed
+
+    sqls = [sql for sql, _ in seed.statements("00000000-0000-0000-0000-00000000aaaa",
+                                              qs.load_fixture())]
+    assert not any("crm_deal_contacts" in s or s.startswith("UPDATE crm_leads") for s in sqls)
+
+
+def _meta() -> dict[str, tuple[str, int]]:
+    return {q["id"]: (q["kind"], q["rung"]) for q in qs.load_misses().questions}
+
+
+def test_the_misses_score_is_found_in_the_top_five_of_one_call() -> None:
+    meta = _meta()
+    outs = [_o(i, "crm", 1 if i in ("m01", "m02") else None,
+               place=5 if i == "m01" else 6 if i == "m02" else None)
+            for i in meta]
+    summary = score.summarize_misses(outs, meta)
+    assert (summary.n, summary.found) == (20, 1)  # the place counts, not the rank
+    assert summary.found_ids == ("m01",) and "m02" in summary.missed_ids
+    assert summary.by_kind["near_name"] == (1, 6)
+    assert summary.by_rung[1][1] == 6 and sum(b for _, b in summary.by_rung.values()) == 20
+
+
+def test_the_misses_report_holds_ids_and_counts_only() -> None:
+    meta = _meta()
+    text = score.render_misses(score.summarize_misses([_o("m01", "crm", 1, place=1)], {
+        "m01": meta["m01"]}))
+    assert "misses: 1/1 found in the top 5 of one call" in text
+    assert "found ids: m01" in text and "near_name 1/1" in text
+    assert "Corrigan" not in text and "Vaishnavi" not in text

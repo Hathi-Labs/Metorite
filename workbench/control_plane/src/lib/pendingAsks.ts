@@ -53,18 +53,12 @@ function asAsk(raw: unknown): PendingAsk | null {
   };
 }
 
-/** The thread's questions that still wait. `[]` on any failure. */
-export async function fetchPendingAsks(
-  threadId: string,
-  fetchFn: typeof fetch = fetch,
-): Promise<PendingAsk[]> {
-  return (await fetchPendingAsksOrNull(threadId, fetchFn)) ?? [];
-}
-
 /**
- * The same list, or null when the server did not answer. A caller that
- * settles a card the list leaves out must tell "no card waits" from "no
- * answer" (review of #1171): only a real list settles anything.
+ * The thread's questions that still wait, or null when the server did not
+ * answer. `[]` means "no card waits" and null means "unknown": a 4xx, a 5xx,
+ * a timeout, a thrown fetch and a body that is no list are all null. Only a
+ * real list settles a card (RESUME-0a). There is no read that folds a
+ * failure into `[]`, so no caller can make that error.
  */
 export async function fetchPendingAsksOrNull(
   threadId: string,
