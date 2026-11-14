@@ -439,7 +439,8 @@ def test_the_i1a_gate_refusal_is_404_and_the_route_calls_the_door_helper(
     assert "record" not in world.trace and "file" not in world.trace
 
 
-def test_the_i1a_gate_off_reads_no_connection_and_serves(world) -> None:
+def test_the_i1a_gate_off_serves_a_viewer_whose_manifest_names_a_connection(world) -> None:
+    """With the gate off, the connections of the manifest change nothing."""
     world.reach = _viewer({**_MANIFEST, "connections": ["mcp:none"]})
     assert _call()[0] == 200
 

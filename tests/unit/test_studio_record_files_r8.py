@@ -28,17 +28,23 @@ Run (a PRIVATE ladder database, one R8 suite at a time, because the
 Without the database every test here SKIPS, and the run reads green. A skip is
 not a pass.
 
-**R7: red first, then mutate.** M1, M4, M5, M6 and M7 were RUN, each
-restored after the run. M2 and M3 were not rerun in the fix that added M6 and
-M7. The test that goes red is named for each:
+**R7: red first, then mutate.** M1 to M7 were RUN by an independent verifier,
+each restored after the run (2026-11-14). The test that goes red is named for each,
+and M3 is the one that stays green:
 
 * M1. ``files_store._READ_SQL``: drop ``AND record_id = ...``. R8:
   ``test_r8_a_file_id_written_into_another_record_is_404``. Hermetic:
   ``test_the_read_sql_binds_the_record_and_the_field_key_and_the_call_passes_them``.
 * M2. ``files.get_record_file``: skip the ``reached.paused`` check. R8:
   ``test_r8_a_paused_package_is_404_for_a_viewer_and_423_for_the_owner``.
-* M3. ``files._read``: pass ``rec`` before ``project_record``. R8:
-  ``test_r8_a_key_of_a_newer_version_is_404_for_a_pinned_viewer``.
+* M3. ``files._read``: pass ``rec`` before ``project_record``. NO case goes red
+  (advisory, not a fence). Since a viewer takes its field types from the
+  installed version (``InstalledApp.field_types``), a key of a newer version is
+  not a file field for that viewer, so ``package.field_types()`` already gives
+  404 for the case of
+  ``test_r8_a_key_of_a_newer_version_is_404_for_a_pinned_viewer``. The
+  ``project_record`` line is defence in depth. Remove it only with a test that
+  also removes the type map.
 * M4. ``files._read``: drop the ``_holds_file`` test. Hermetic:
   ``test_a_file_id_that_the_record_does_not_hold_is_404_before_the_store``. No
   R8 case goes red, because ``read_file`` binds the ids too, so the R8 answer
