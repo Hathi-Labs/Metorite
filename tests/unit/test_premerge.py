@@ -64,6 +64,7 @@ def repo(tmp_path: Path) -> Path:
     _git(work, "checkout", "-q", "-b", "main")
     _commit(work, "infra/postgres/315_base.sql")
     _commit(work, "shared.md", "a\nb\nc\nd\ne\n")
+    _commit(work, "tests/t.py")
     _git(work, "push", "-q", "origin", "main")
     _git(work, "checkout", "-q", "-b", "feat")
     return work
@@ -139,6 +140,40 @@ def test_a_timeout_is_unproven_and_not_a_red(repo):
     res = _run(repo, PREMERGE_TEST_TIMEOUT="1", PREMERGE_AFFECTED_CMD="sleep 30", PREMERGE_RERUN_CMD="true")
     assert res.returncode == 0, res.stderr
     assert "UNPROVEN" in res.stdout
+
+
+def test_a_test_that_is_red_on_main_alone_does_not_block(repo):
+    """Main is red (2026-11-14, four times). The PR did not cause it. The re-run
+    on main alone (a detached head) fails too, so the merge is not blamed."""
+    _both_sides_change_shared(repo)
+    rerun = "f() { git symbolic-ref -q HEAD >/dev/null || { echo 'FAILED tests/t.py::test_a - boom'; return 1; }; }; f"
+    res = _run(repo, PREMERGE_AFFECTED_CMD=_FAILS, PREMERGE_RERUN_CMD=rerun)
+    assert res.returncode == 0, res.stderr
+    assert "did not cause them" in res.stdout
+
+
+def test_a_test_file_that_only_main_has_is_not_blamed_on_the_pr(repo):
+    """A test that is new on main cannot pass on the branch alone: no file."""
+    _both_sides_change_shared(repo)
+    cmd = 'echo "FAILED tests/new_on_main.py::test_x - boom"; exit 1'
+    res = _run(repo, PREMERGE_AFFECTED_CMD=cmd, PREMERGE_RERUN_CMD="true")
+    assert res.returncode == 0, res.stderr
+    assert "did not cause them" in res.stdout
+
+
+def test_a_rename_keeps_the_old_path_in_the_lists(repo):
+    _git(repo, "checkout", "-q", "main")
+    _commit(repo, "mod_old.py", "x = 1\nprint(1)\nprint(2)\nprint(3)\n")
+    _git(repo, "push", "-q", "origin", "main")
+    _git(repo, "checkout", "-q", "feat")
+    _git(repo, "merge", "-q", "--ff-only", "main")
+    _git(repo, "mv", "mod_old.py", "mod_new.py")
+    _git(repo, "commit", "-q", "-m", "rename")
+    _advance_main(repo, "other.py")
+    res = _run(repo, PREMERGE_AFFECTED_CMD="true")
+    assert res.returncode == 0, res.stderr
+    body = SCRIPT.read_text(encoding="utf-8")
+    assert body.count("--no-renames --name-only") >= 2
 
 
 def test_an_unknown_flag_is_refused(repo):

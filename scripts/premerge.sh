@@ -25,7 +25,7 @@
 #      The two sides need not share a file: PR A makes an argument required,
 #      PR B calls the function without it, and no file overlaps.
 #      A test that fails here and passes on the branch alone blocks. The run
-#      sits under PREMERGE_TEST_TIMEOUT seconds (default 600; merge_bot allows 900 in all). A timeout is
+#      sits under PREMERGE_TEST_TIMEOUT seconds (default 420; merge_bot allows 900 in all). A timeout is
 #      not a red: the script says UNPROVEN and still exits 0. It prints the
 #      minutes it took;
 #   5. aborts the merge, so the worktree is as it was.
@@ -143,8 +143,8 @@ back() {
 }
 trap 'back; rm -rf "$logs"; true' EXIT
 # The union is read BEFORE the merge, from the two sides (CIV-32).
-git diff --name-only "$base" HEAD > "$logs/pr.txt"
-git diff --name-only "$base" "$BASE" > "$logs/main.txt"
+git diff --no-renames --name-only "$base" HEAD > "$logs/pr.txt"
+git diff --no-renames --name-only "$base" "$BASE" > "$logs/main.txt"
 sort -u "$logs/pr.txt" "$logs/main.txt" > "$logs/union.txt"
 git checkout -q --detach
 if ! git merge --no-ff --no-edit -q "$BASE" > "$logs/merge.log" 2>&1; then
@@ -173,25 +173,34 @@ fi
 # is this machine or an older red: six tests fail on the Windows PC and pass
 # in CI (LD-3b, 2026-10-30). So a failure is re-run on the branch before it
 # can block. Both commands can be replaced, for tests and for other stacks.
-TEST_TIMEOUT="${PREMERGE_TEST_TIMEOUT:-600}"
+# Budget: the callers allow 900 s in all (merge_bot.sh, lane-merge.md). About 100 s
+# go to the fences and the picker. The run gets 420 s, and each of the two
+# re-runs (branch alone, main alone) gets 120 s.
+TEST_TIMEOUT="${PREMERGE_TEST_TIMEOUT:-420}"
+RERUN_TIMEOUT="${PREMERGE_RERUN_TIMEOUT:-120}"
+both_full=0
 # premerge_select.py picks the tests that BOTH sides can affect, plus each test
-# file that either side changed. The whole union took 974 test files and ran
-# past 10 minutes on a 62-file union (measured 2026-11-14). The list is read
-# from the merge tree, so a branch without the script falls back to a note.
+# file that either side changed, those first. The whole union took 974 test files
+# and ran past 10 minutes on a 62-file union (measured 2026-11-14).
 sel() { env -u VIRTUAL_ENV uv run python scripts/premerge_select.py --pr "$logs/pr.txt" --main "$logs/main.txt" --first-out "$logs/first.txt" > "$logs/sel.txt"; }
+no_picker=0
 if [ -z "${PREMERGE_AFFECTED_CMD:-}" ]; then
   if [ "$merge_test" = 1 ]; then
     if [ -f scripts/premerge_select.py ]; then
       sel || fail "premerge_select.py failed on the merge result."
+      if [ "$(head -1 "$logs/sel.txt")" = FULL ]; then
+        # Both sides are FULL: pr-check and main own the full suite. Run only the changed tests.
+        both_full=1; sed -i 1d "$logs/sel.txt"
+        grep -c . "$logs/sel.txt" > "$logs/first.txt" || echo 0 > "$logs/first.txt"
+      fi
     else
-      say "UNPROVEN. scripts/premerge_select.py is not in the merge result, so no test was picked. Merge $BASE once the script has landed on it."
-      merge_test=0
+      no_picker=1; merge_test=0
     fi
   fi
-  # Phase 1: the test files that either side changed. A red there ends the run
-  # at once. Phase 2: the rest, under what is left of the timeout.
+  # Phase 1: the test files that either side changed. Phase 2: the rest. Both
+  # phases always run, so a red of phase 1 that is only this machine hides nothing.
   PYT="env -u VIRTUAL_ENV uv run pytest -q -p no:cacheprovider --continue-on-collection-errors -rfE"
-  AFFECTED_CMD="if [ \"\$(head -1 $logs/sel.txt)\" = FULL ] || [ ! -s $logs/sel.txt ]; then echo 'nothing to run, or both sides are FULL'; else n=\$(cat $logs/first.txt 2>/dev/null || echo 0); if [ \"\$n\" -gt 0 ]; then $PYT \$(head -\$n $logs/sel.txt) || exit 1; echo PHASE1-GREEN; fi; if [ \$(wc -l < $logs/sel.txt) -gt \"\$n\" ]; then $PYT \$(tail -n +\$((n+1)) $logs/sel.txt); fi; fi"
+  AFFECTED_CMD="rc=0; n=\$(cat $logs/first.txt 2>/dev/null || echo 0); total=\$(wc -l < $logs/sel.txt); if [ \"\$n\" -gt 0 ]; then $PYT \$(head -\$n $logs/sel.txt) || rc=1; fi; if [ \"\$total\" -gt \"\$n\" ]; then $PYT \$(tail -n +\$((n+1)) $logs/sel.txt) || rc=1; fi; exit \$rc"
 else
   AFFECTED_CMD="$PREMERGE_AFFECTED_CMD"
 fi
@@ -199,36 +208,48 @@ RERUN_CMD="${PREMERGE_RERUN_CMD:-env -u VIRTUAL_ENV uv run pytest -q -p no:cache
 # Ids at the function level: a parameter such as [Earlier reply] holds a space,
 # and a cut id selects nothing on the re-run. The re-run takes whole functions.
 failed_ids() { { grep -E '^(FAILED|ERROR) ' "$1" || true; } | awk '{print $2}' | sed 's/\[.*//' | sort -u; }
+# rerun_fail <log>: the ids that fail in THIS checkout. An id whose file is not
+# here cannot pass here, so it counts as failing (it is new on the other side).
+rerun_fail() {
+  local log="$1" id
+  timeout "$RERUN_TIMEOUT" bash -c "$RERUN_CMD \"\$@\"" _ $merged_fail > "$log" 2>&1 || true
+  { failed_ids "$log"; for id in $merged_fail; do [ -f "${id%%::*}" ] || echo "$id"; done; } | sort -u
+}
 
 if [ -n "$overlap" ]; then
   say "both sides changed: $(printf '%s' "$overlap" | tr '\n' ' ')"
 fi
-if [ "$merge_test" = 0 ]; then
+if [ "$no_picker" = 1 ]; then
+  say "UNPROVEN. scripts/premerge_select.py is not in the merge result, so no test was picked. Merge $BASE once the script has landed on it."
+elif [ "$merge_test" = 0 ]; then
   say "the affected tests did not run (PREMERGE_MERGE_TEST=0 or --no-tests). pr-check and main run them."
 else
-  say "running the tests both sides can affect on the merge result: $(wc -l < "$logs/union.txt" | tr -d ' ') files in the union, $(wc -l < "$logs/sel.txt" 2>/dev/null | tr -d ' ' || true) tests selected, timeout ${TEST_TIMEOUT}s"
+  say "running the tests both sides can affect on the merge result: $(wc -l < "$logs/union.txt" | tr -d ' ') files in the union, $( (wc -l < "$logs/sel.txt" 2>/dev/null || echo 0) | tr -d ' ') tests selected, timeout ${TEST_TIMEOUT}s"
+  [ "$both_full" = 1 ] && say "UNPROVEN in part. Both sides changed a file that makes every test affected. Only the test files that a side changed ran."
   rc=0
   touch "$logs/sel.txt"; timeout "$TEST_TIMEOUT" bash -c "$AFFECTED_CMD" > "$logs/affected.log" 2>&1 || rc=$?
-  if [ "$rc" = 124 ]; then
+  merged_fail="$(failed_ids "$logs/affected.log")"
+  if [ "$rc" = 124 ] && [ -z "$merged_fail" ]; then
     say "UNPROVEN. The affected tests passed no verdict in ${TEST_TIMEOUT}s. The merge is not shown to be red, and not shown to be green. Raise PREMERGE_TEST_TIMEOUT, or read pr-check."
   elif [ "$rc" != 0 ]; then
-    merged_fail="$(failed_ids "$logs/affected.log")"
     if [ -z "$merged_fail" ]; then
       tail -20 "$logs/affected.log" >&2
       fail "the affected tests did not run cleanly on the merge result, and no test is named (log above)."
     fi
-    # Back to the branch alone, then the same tests again.
+    # A red on the merge result is the merge's fault only when the test passes on
+    # the branch alone AND on main alone. Red on main is not this PR's doing.
     back
-    # shellcheck disable=SC2086
-    timeout "$TEST_TIMEOUT" bash -c "$RERUN_CMD \"\$@\"" _ $merged_fail > "$logs/rerun.log" 2>&1 || true
-    alone_fail="$(failed_ids "$logs/rerun.log")"
-    caused="$(comm -23 <(printf '%s\n' "$merged_fail") <(printf '%s\n' "$alone_fail"))"
+    alone_fail="$(rerun_fail "$logs/rerun.log")"
+    git checkout -q --detach "$BASE"
+    main_fail="$(rerun_fail "$logs/rerun_main.log")"
+    back
+    caused="$(comm -23 <(printf '%s\n' "$merged_fail") <(printf '%s\n%s\n' "$alone_fail" "$main_fail" | sort -u))"
     if [ -n "$caused" ]; then
       printf '  %s\n' $caused >&2
       say "the merge test took $(( (SECONDS - started + 59) / 60 )) minute(s)"
-      fail "these tests pass on the branch alone and fail once $BASE is merged in. Merge $BASE into the branch, fix, push, and wait for pr-check."
+      fail "these tests pass on the branch alone and on $BASE alone, and fail once the two are merged. Merge $BASE into the branch, fix, push, and wait for pr-check."
     fi
-    say "these tests fail on the branch alone too, so the merge did not cause them (this machine, or already red):"
+    say "these tests fail on the branch alone or on $BASE alone, so the merge did not cause them (this machine, or already red):"
     printf '  %s\n' $merged_fail
   fi
   if grep -q '^workbench/' "$logs/union.txt"; then

@@ -12,8 +12,8 @@ the PR changed (``--pr``) and the files main changed since the merge base
     meets the new code of the other even when the import graph links nothing.
 
 When one side is FULL (a file such as pyproject.toml changed), the other side's
-set stands alone. When both sides are FULL it prints ``FULL`` and nothing else:
-the full suite is the job of pr-check and main, not of this script.
+set stands alone. When both sides are FULL it prints ``FULL`` on the first line, then only the test files that a side
+changed. The full suite is the job of pr-check and main, not of this script.
 
 Fence: tests/unit/test_premerge_select.py.
 """
@@ -38,18 +38,18 @@ def pick(pr: list[str], main: list[str], root: Path = at.ROOT) -> list[str] | No
     sorted. The caller can run the first part alone, and report a red at once."""
     pr_sel, pr_full, _ = at.select(pr)
     main_sel, main_full, _ = at.select(main)
+    changed = {
+        f for f in (*pr, *main)
+        if f.startswith("tests/") and f.endswith(".py") and Path(f).name.startswith("test_") and (root / f).is_file()
+    }
     if pr_full and main_full:
-        return None
+        return None if not changed else ["FULL", *sorted(changed)]
     if pr_full:
         both = set(main_sel)
     elif main_full:
         both = set(pr_sel)
     else:
         both = set(pr_sel) & set(main_sel)
-    changed = {
-        f for f in (*pr, *main)
-        if f.startswith("tests/") and f.endswith(".py") and Path(f).name.startswith("test_") and (root / f).is_file()
-    }
     return sorted(changed) + sorted(both - changed)
 
 
@@ -61,7 +61,10 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     out = pick(_read(args.pr), _read(args.main))
     if out is None:
-        print("FULL")
+        out = ["FULL"]
+    if args.first_out and out[0] == "FULL":
+        Path(args.first_out).write_text("0\n", encoding="utf-8")
+        print("\n".join(out))
         return 0
     if args.first_out:
         changed = {f for f in (*_read(args.pr), *_read(args.main)) if f in set(out) and f.startswith("tests/")}

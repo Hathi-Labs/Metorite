@@ -19,23 +19,19 @@ textual collision in a file that every PR edits at the same place:
 
 A fix must make a second PR safe, and must not hide a real conflict. A real
 conflict is two PRs that change the same row or the same flag. A merge
-driver that keeps both sides turns that case into a silent duplicate. So a
-driver fits only a file where each entry stands alone.
+driver that keeps both sides turns that case into a silent duplicate, or
+revives a block that a revert deleted. So we do not use one.
 
-## Slice 1 (built): union merge for the two pure append files
+## Slice 1 (tried, rejected): union merge for the two append files
 
-`docs/flag_reload.md` and `tests/unit/test_flag_reload.py` take
-`merge=union` in `.gitattributes`. Each entry in them stands alone: a
-paragraph or a test function. Git keeps both sides.
-
-The driver runs wherever git merges on a lane: `premerge.sh`, and the merge
-of main into a branch. GitHub's own merge does not read this attribute, and
-`premerge.sh` already runs first, so the PR lands the tree it tested.
-
-The fence is `tests/unit/test_merge_hotspots.py`. It checks the attribute,
-proves that two appends merge clean in a throwaway repo, and refuses a
-duplicate test name in `test_flag_reload.py`. The duplicate check catches the
-one failure of a union: both sides edit the same line.
+`merge=union` on `docs/flag_reload.md` and `tests/unit/test_flag_reload.py`
+merges two appends with no conflict. The review found one failure that no
+test sees. Main reverts a flag and so deletes its paragraph and its test. A PR
+adds its own entry at the same anchor. The union keeps the PR's lines and the
+deleted block, so the reverted flag comes back, with a passing test and a
+paragraph that documents a flag that no longer exists. Four of the last five
+PRs to that file added at that same anchor. So no union driver goes on a file
+whose entries a revert can delete. We built none.
 
 ## Slice 2 (proposed): one file for each §14 row
 
@@ -50,8 +46,7 @@ row id. This slice needs a scan of those readers, so it gets its own task.
 
 A flag block goes into a per-area list that is sorted by name, one entry for
 each line. Two sorted insertions land in different hunks unless the names are
-neighbours. A union driver is wrong here, because a duplicated field is a
-Python error. `tests/fences.json` stays a sorted JSON list. Its commas make a
+neighbours. A union driver is wrong here, for the same reason as in slice 1. `tests/fences.json` stays a sorted JSON list. Its commas make a
 union driver unsafe, so its fix is the sort order that its fence already
 holds.
 
