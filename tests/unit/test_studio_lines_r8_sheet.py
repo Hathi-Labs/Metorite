@@ -1,12 +1,12 @@
 """D17a R8: the sheet sends an update whose parent data holds ONLY the lines key."""
 from __future__ import annotations
 
-from tests.unit import test_studio_lines_r8 as base
+from tests.unit.test_h3_rls_promotion_rehearsal import _DB_GATE  # noqa: F401
 from tests.unit.test_studio_lines_r8 import (  # noqa: F401
     _counts, _direct, _order_with, _record, _records, _run, app_engine, promoted, world,
 )
 
-pytestmark = base.pytestmark
+pytestmark = _DB_GATE
 
 
 def test_r8_sheet_update_with_only_the_lines_key_saves_and_rolls_up(world) -> None:
