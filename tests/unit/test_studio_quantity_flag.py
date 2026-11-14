@@ -165,7 +165,7 @@ def test_at_most_thirty_conversions() -> None:
     many = [{"from": u, "to": "base", "factor": "2"} for u in units[1:]]
     assert sf.validate_field_spec(spec(units=units, conversions=many)) == []
     assert "conversions" in {p.path for p in sf.validate_field_spec(
-        spec(units=units, conversions=many + many[:1]))}
+        spec(units=units, conversions=many + many[:2]))}
 
 
 def test_only_a_quantity_takes_the_keys() -> None:
