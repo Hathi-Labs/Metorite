@@ -180,7 +180,14 @@ TEST_TIMEOUT="${PREMERGE_TEST_TIMEOUT:-600}"
 # from the merge tree, so a branch without the script falls back to a note.
 sel() { env -u VIRTUAL_ENV uv run python scripts/premerge_select.py --pr "$logs/pr.txt" --main "$logs/main.txt" > "$logs/sel.txt"; }
 if [ -z "${PREMERGE_AFFECTED_CMD:-}" ]; then
-  if [ "$merge_test" = 1 ] && [ -f scripts/premerge_select.py ]; then sel || fail "premerge_select.py failed on the merge result."; fi
+  if [ "$merge_test" = 1 ]; then
+    if [ -f scripts/premerge_select.py ]; then
+      sel || fail "premerge_select.py failed on the merge result."
+    else
+      say "UNPROVEN. scripts/premerge_select.py is not in the merge result, so no test was picked. Merge $BASE once the script has landed on it."
+      merge_test=0
+    fi
+  fi
   AFFECTED_CMD="if [ \"\$(head -1 $logs/sel.txt)\" = FULL ] || [ ! -s $logs/sel.txt ]; then echo 'nothing to run, or both sides are FULL'; else env -u VIRTUAL_ENV uv run pytest -q -p no:cacheprovider --continue-on-collection-errors -rfE \$(cat $logs/sel.txt); fi"
 else
   AFFECTED_CMD="$PREMERGE_AFFECTED_CMD"
@@ -196,7 +203,7 @@ fi
 if [ "$merge_test" = 0 ]; then
   say "the affected tests did not run (PREMERGE_MERGE_TEST=0 or --no-tests). pr-check and main run them."
 else
-  say "running the tests both sides can affect on the merge result: $(wc -l < "$logs/union.txt" | tr -d ' ') files in the union, $(wc -l < "$logs/sel.txt" 2>/dev/null | tr -d ' ') tests selected, timeout ${TEST_TIMEOUT}s"
+  say "running the tests both sides can affect on the merge result: $(wc -l < "$logs/union.txt" | tr -d ' ') files in the union, $(wc -l < "$logs/sel.txt" 2>/dev/null | tr -d ' ' || true) tests selected, timeout ${TEST_TIMEOUT}s"
   rc=0
   touch "$logs/sel.txt"; timeout "$TEST_TIMEOUT" bash -c "$AFFECTED_CMD" > "$logs/affected.log" 2>&1 || rc=$?
   if [ "$rc" = 124 ]; then
