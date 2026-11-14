@@ -1138,6 +1138,15 @@ def _value_arms(found: dict[str, tuple[str, ...]], key: str,
     return arms
 
 
+def _exact_arms(entity: Entity, i: int, related: RelatedHits | None,
+                params: dict[str, Any]) -> list[str]:
+    """The exact arms of word *i*: each search column, and its related hits."""
+    arms = [f"{col} ILIKE :q{i}" for col in entity.search]
+    if related is not None and i < len(related.words):
+        arms += _value_arms(related.words[i], f"r{i}", params)
+    return arms
+
+
 def search_where(
     entity: Entity, q: str | None, *,
     related: RelatedHits | None = None, near: RelatedHits | None = None,
@@ -1167,9 +1176,7 @@ def search_where(
     groups: list[str] = []
     for i, word in enumerate(found):
         params[f"q{i}"] = f"%{word}%"
-        arms = [f"{col} ILIKE :q{i}" for col in entity.search]
-        if related is not None and i < len(related.words):
-            arms += _value_arms(related.words[i], f"r{i}", params)
+        arms = _exact_arms(entity, i, related, params)
         if near is not None and i < len(near.words):
             arms += _value_arms(near.words[i], f"n{i}", params)
         groups.append(f"({' OR '.join(arms) or 'false'})")
@@ -1712,9 +1719,10 @@ async def _near_candidates(
     rows at most. Each candidate is its links, its names and its SQL score.
     Every text is a constant of this module, and each word a bound value.
     """
-    scores = ", ".join(
-        f"strict_word_similarity(:w{i}, {col})" for i, _w in words for col in columns
-    )
+    # One call for each word over all the names of the row, not one for each
+    # column: the measure stops at word bounds, so the result is the same.
+    names = f"concat_ws(' ', {', '.join(columns)})" if len(columns) > 1 else columns[0]
+    scores = ", ".join(f"strict_word_similarity(:w{i}, {names})" for i, _w in words)
     picked = [f"{expr} AS link_{j}" for j, (expr, _col) in enumerate(links)]
     picked += [f"{col} AS name_{k}" for k, col in enumerate(columns)]
     where = f" WHERE {' AND '.join(filters)}" if filters else ""
@@ -1745,7 +1753,9 @@ async def _near_read(
     3. One read takes the rows that each word matches exactly or nearly, with
        every clause of the list, by ``= ANY`` of the near values. No
        sub-select runs for each row.
-    4. Python orders them by their nearness. A tie goes to the raw spelling
+    4. Python orders them by their nearness. A word that the row holds
+       exactly counts in full, because the candidates of a common word stop
+       at ``NEAR_CANDIDATES``. A tie goes to the raw spelling
        that SQL scored nearer ("Sharat" before "Sarath" for "Sharath", which
        fold alike), then to the list's order.
 
@@ -1793,8 +1803,14 @@ async def _near_read(
         # COALESCE, because a NULL column can make the exact group NULL, and
         # NOT NULL is NULL, which would drop a near row.
         clauses.append(f"NOT COALESCE({plan.exact}, false)")
+    # Whether each near word matches the row exactly, for the order below.
+    flags = [
+        f"COALESCE(({' OR '.join(_exact_arms(entity, i, plan.related, near_params))}),"
+        f" false) AS near_exact_{i}"
+        for i, _w in words
+    ]
     inner = (
-        f"SELECT * FROM {entity.table} WHERE {' AND '.join(clauses)} "
+        f"SELECT *, {', '.join(flags)} FROM {entity.table} WHERE {' AND '.join(clauses)} "
         f"ORDER BY {plan.order_by} LIMIT :near_scan"
     )
     rows = (await db.execute(
@@ -1805,11 +1821,14 @@ async def _near_read(
     def nearness(row: Any) -> tuple[float, float]:
         score = sql_score = 0.0
         for i, _w in words:
-            best = max(
-                (vals.get(str(getattr(row, col, None)), (0.0, 0.0))
-                 for col, vals in scored[i].items()),
-                default=(0.0, 0.0),
-            )
+            if getattr(row, f"near_exact_{i}", False):
+                best = (1.0, 1.0)
+            else:
+                best = max(
+                    (vals.get(str(getattr(row, col, None)), (0.0, 0.0))
+                     for col, vals in scored[i].items()),
+                    default=(0.0, 0.0),
+                )
             score += best[0]
             sql_score += best[1]
         return score, sql_score
