@@ -346,18 +346,79 @@ design.
 
 | File on the box | What it holds |
 |---|---|
-| `~/lanes/auto-revert.log` | One line for each decision: `WOULD-REVERT` (dry), `REVERT`, `REVERTED`, `SKIP` or `PERSON`. Only the auto-revert pass writes it. |
+| `~/lanes/auto-revert.log` | One line for each decision: `WOULD-REVERT` (dry), `REVERT`, `REVERTED`, `REOPENED`, `SKIP` or `PERSON`. Only the auto-revert pass writes it. |
 | `~/lanes/auto-revert/run-<id>.md` | One report for each red batch run: the checks, the decision, and the PR, comment and task text. |
 
 Read each new `PERSON` line. It names the doubt, the culprit and its task.
 The revert PR goes to the merge bot with the task `0`, so no task closes when
-it merges. Then `lane-merge` opens the culprit's task again
-(`lanes/lane-merge.md`). The box has no Metorite write credential, so the pass
-cannot open it.
+it merges. Then the pass opens the culprit's task again (CIV-31c). It runs one
+`claude -p` call with the Metorite sign-in of the box, and writes `REOPENED`.
+When that call fails, the pass writes a `PERSON` line with `reopen=failed`.
+Then `lane-merge` opens the task by hand (`lanes/lane-merge.md`).
 
 The units are
 `scripts/home_server/systemd/metorite-auto-revert.service` and `.timer`, every
 5 minutes, user `dev`. They take the place of `metorite-bisect-poll`.
+
+**The mode** (CIV-31d). The mode has one source: the line
+`Environment=AUTO_REVERT_MODE=<mode>` of `metorite-auto-revert.service`, in
+the unit file or in a drop-in. On the box, it is in the drop-in
+`~/.config/systemd/user/metorite-auto-revert.service.d/override.conf`. The mode
+has one reader, `scripts/home_server/auto_revert_mode.sh`. The pass, the merge
+bot and `lane-merge` run it, and none of them reads the mode from its own env.
+So the pass and the bot always see the same mode.
+
+To set the mode, do these steps on the box as `dev`. Write `on`, `dry` or
+`off` in place of `on` in the `sed` line.
+
+```bash
+cd ~/.config/systemd/user
+sed -i 's/^Environment=AUTO_REVERT_MODE=.*/Environment=AUTO_REVERT_MODE=on/' \
+  metorite-auto-revert.service metorite-auto-revert.service.d/*.conf
+systemctl --user daemon-reload
+bash ~/lanes/auto-revert-src/scripts/home_server/auto_revert_mode.sh   # prints: on
+```
+
+The `sed` line sets each mode line, so no drop-in keeps an old value. The
+next pass of each unit reads the new mode, and no unit needs a restart. A pass
+that runs now keeps the mode that it read at its start. An empty line, or a
+word that is not `on`, `dry` or `off`, means `off`.
+
+**Before `on`: one supervised reopen** (CIV-31d). Do this check once, before
+the first `on`. It runs the reopen of mode `on` with the real sign-in of the
+box, on a task that nobody needs. These must be true first:
+
+1. The owner makes a long-lived Claude token with `claude setup-token`. The
+   owner gives it to `claude` of the user `dev`, for the shell and for the
+   unit. The token never goes in the repo or in a log. The Claude sign-in of
+   the box can expire, and then each reopen fails with a `PERSON` line.
+2. `claude mcp list` in `~/lanes/auto-revert-src` shows `metorite` as
+   connected (§5.2).
+3. A scratch task exists in Metorite, in a project with a status of the
+   category `in_progress`. Put the task in a status of another category, so
+   that the move shows.
+
+Then run the check on the box as `dev`:
+
+```bash
+cd ~/lanes/auto-revert-src
+python3 scripts/home_server/auto_revert.py reopen-check <the scratch task id>
+```
+
+The command prints a folder. Check each of these:
+
+- The exit is 0, and the last line of the command says `REOPENED`.
+- In Metorite, the scratch task has a status of the category `in_progress`.
+- The task has one new comment that starts with
+  `Auto-revert (CIV-31): the revert PR 0`.
+- `calls.jsonl` in the folder has an `allow` line for each of the four calls,
+  and no `deny` line.
+- `stream.jsonl` in the folder has four tool calls, each on the scratch task.
+- `check.log` holds the line of the check. `~/lanes/auto-revert.log` has no
+  new line.
+
+When one check fails, do not set `on`. Read the reason in `check.log`, repair
+the cause, and run the check again. Then delete the folder.
 
 ### 3.9 End of a delegation
 
