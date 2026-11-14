@@ -17,11 +17,13 @@ import GenerativeUINode from "@/components/GenerativeUINode";
 import Tabs from "@/components/Tabs";
 import RecordsStatus from "@/components/studio/RecordsStatus";
 import StudioDetail from "@/components/studio/StudioDetail";
-import StudioForm from "@/components/studio/StudioForm";
+import DeleteRecordButton from "@/components/studio/DeleteRecordButton";
+import StudioFormDialog from "@/components/studio/StudioFormDialog";
 import Button from "@/components/ui/Button";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, type StudioDataDoor, moreLine, sourceKey } from "@/lib/studio/dataDoor";
 import { labelOf, tableBlock } from "@/lib/studio/blocks";
+import { editTitle, recordButtons } from "@/lib/studio/dialogModel";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import { detailFields, fieldSpecs, formFields, recordTitle, tableFields } from "@/lib/studio/packagePreview";
 import {
@@ -45,6 +47,8 @@ export interface StudioRecordProps {
   recordBase: (object: string) => string | null;
   /** The title of the record, once it is read. */
   onTitle?: (title: string) => void;
+  /** The record is gone (Delete, STU-AF6). The shell closes the record. */
+  onDeleted?: () => void;
 }
 
 const NOTE = "text-xs text-muted-foreground";
@@ -57,13 +61,38 @@ function useRecordRead(object: ObjectRow, recordId: string, door: StudioDataDoor
   return { declared, read, record: read.data?.[0] };
 }
 
-function Details({ object, recordId, door, actions }: Pick<StudioRecordProps, "object" | "recordId" | "door" | "actions">) {
+function Details({ object, recordId, door, actions, owner, onDeleted }: Pick<StudioRecordProps, "object" | "recordId" | "door" | "actions" | "owner" | "onDeleted">) {
   const fields = useMemo(() => detailFields(fieldSpecs(object)), [object]);
+  const [editing, setEditing] = useState(false);
+  const buttons = recordButtons(object.name, actions, owner);
+  const form = useMemo(() => formFields(fieldSpecs(object), computedKeys(object.rules)), [object]);
   const { declared, read, record } = useRecordRead(object, recordId, door, actions);
   if (!declared) {
     return <p role="status" className={NOTE}>This app does not declare a read of one {object.label ?? object.name}, so it cannot open one.</p>;
   }
-  if (record) return <StudioDetail fields={fields} record={record} />;
+  if (record) {
+    return (
+      <div className="space-y-3">
+        {buttons.edit || buttons.remove ? (
+          <div className="flex flex-wrap items-center gap-2" data-record-actions>
+            {buttons.edit ? (
+              <Button variant="secondary" size="sm" icon="Pencil" onClick={() => setEditing(true)}>Edit</Button>
+            ) : null}
+            {buttons.remove ? (
+              <DeleteRecordButton door={door} object={object.name} id={recordId}
+                title={recordTitle(fields, record)} onDeleted={onDeleted} />
+            ) : null}
+          </div>
+        ) : null}
+        <StudioDetail fields={fields} record={record} />
+        {buttons.edit ? (
+          <StudioFormDialog open={editing} onClose={() => setEditing(false)} title={editTitle(object)}
+            fields={form} door={door} action={`object:${object.name}.update`} initial={record}
+            extraArgs={{ id: recordId }} submitLabel="Save changes" savedMessage="Changes saved" />
+        ) : null}
+      </div>
+    );
+  }
   if (read.error) {
     // A record that is gone, or that the viewer may not read, says so in plain words.
     return /gone|not found/i.test(read.error)
@@ -100,9 +129,9 @@ function RelatedTable({ list, recordId, door, actions, owner, recordBase, child 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-semibold text-foreground">{list.title}</h3>
         {newButtonState(owner, canCreate) !== "hidden" ? (
-          <Button variant="secondary" size="sm" icon="Plus" aria-expanded={adding}
+          <Button variant="secondary" size="sm" icon="Plus" aria-haspopup="dialog"
             disabled={!canCreate}
-            onClick={() => setAdding((v) => !v)}>
+            onClick={() => setAdding(true)}>
             New
           </Button>
         ) : null}
@@ -110,11 +139,10 @@ function RelatedTable({ list, recordId, door, actions, owner, recordBase, child 
       {newButtonState(owner, canCreate) === "off" ? (
         <p role="status" className={NOTE}>This app does not declare a create action for {list.objectLabel}, so New is off.</p>
       ) : null}
-      {adding && canCreate ? (
-        <div className="rounded-xl border border-border bg-card p-3">
-          <StudioForm fields={form} door={formDoor} action={createAction} title={`New ${list.objectLabel}`}
-            submitLabel="Add record" savedMessage="Record added" onSaved={() => setAdding(false)} />
-        </div>
+      {canCreate ? (
+        // The same dialog as "New" on a page, with the link filled by `linkedDoor` (STU-AF6).
+        <StudioFormDialog open={adding} onClose={() => setAdding(false)} title={`New ${list.objectLabel}`}
+          fields={form} door={formDoor} action={createAction} submitLabel="Add record" savedMessage="Record added" />
       ) : null}
       {canList ? <GenerativeUINode spec={node} /> : (
         <p role="status" className={NOTE}>This app does not declare a list of {list.objectLabel}, so it cannot show them.</p>
@@ -150,7 +178,7 @@ function Files({ object, recordId, door, actions }: Pick<StudioRecordProps, "obj
   );
 }
 
-export default function StudioRecord({ object, objects, recordId, door, actions, owner, tab, onTab, recordBase, onTitle }: StudioRecordProps) {
+export default function StudioRecord({ object, objects, recordId, door, actions, owner, tab, onTab, recordBase, onTitle, onDeleted }: StudioRecordProps) {
   const tabs = useMemo(() => recordTabs(object, objects), [object, objects]);
   const active = pickRecordTab(tabs, tab);
   const lists = useMemo(() => relatedLists(object.name, objects), [object.name, objects]);
@@ -164,7 +192,7 @@ export default function StudioRecord({ object, objects, recordId, door, actions,
         {tabs.length > 1 ? (
           <Tabs variant="underline" activeTab={active} onTabChange={onTab} tabs={tabs.map((t) => ({ id: t.id, label: t.title }))} />
         ) : null}
-        {active === "details" ? <Details object={object} recordId={recordId} door={door} actions={actions} /> : null}
+        {active === "details" ? <Details object={object} recordId={recordId} door={door} actions={actions} owner={owner} onDeleted={onDeleted} /> : null}
         {active === "related" ? (
           lists.length ? (
             <div className="space-y-5">
