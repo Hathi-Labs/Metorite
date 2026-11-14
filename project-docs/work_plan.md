@@ -279,7 +279,7 @@ These are the rows of the board before D118. Each row keeps its ID, so a spec th
 | WS-48 | Data narrowing pipeline | 🟢 open | `specs/data_narrowing_pipeline.md` | now in WS-CHAT |
 | WS-49 | Box hardening | 🟢 open | `specs/box_hardening.md` | now in WS-TO |
 | WS-50 | Operator Console: money and the UI rebuild | 🟢 open | `specs/operator_console_money.md` | now in WS-CM |
-| WS-51 | Chat run continuity | 🟢 open | `specs/chat_run_continuity.md` | now in WS-CHAT |
+| WS-51 | Chat run continuity | 🟢 open | `specs/chat_run_continuity.md` | now in WS-CHAT · §4.12 RESUME (task 3255): a chat picks up exactly where it left off, SPEC 2026-11-14, RESUME-0a to RESUME-8 on rungs 0 to 3 |
 | WS-52 | How Metorite writes: one voice | 🟢 open | `specs/agent_writing_voice.md` | now in WS-CHAT |
 | WS-53 | CRM: two modes and the Zoho mirror | 🟢 open | `specs/crm_platform.md` | now in WS-CRM |
 | WS-54 | Integrations: one registry and a console | 🟢 open | `specs/integrations_console.md` | now in WS-BRIEF (connectors, epic 481) |
