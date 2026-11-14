@@ -2112,10 +2112,11 @@ class Settings(BaseSettings):
     chat_durable_asks: bool = False
     # ── An unknown tool name loads its pack (chat_failure_modes.md §4.2 B1) ─
     #
-    # `CHAT_TOOL_AUTOLOAD`, default OFF (owner decision D-HRD-1 waits). The
-    # answer to an unknown tool name is always on, and it names the pack. ON:
-    # when the member may use that pack, the turn also loads it through the
-    # loader's own guards. The one reader is `acb_skills.unknown_tool.autoload_enabled`.
+    # `CHAT_TOOL_AUTOLOAD`, default OFF. D-HRD-1 (D217) allows the load, and
+    # it ships dark. The answer to an unknown tool name is always on, and it
+    # names the pack. ON: when the member may use that pack, the turn also
+    # loads it through the loader's own guards. The one reader is
+    # `acb_skills.unknown_tool.autoload_enabled`.
     # Fence: tests/unit/test_unknown_tool_answer.py.
     chat_tool_autoload: bool = False
     # How long a run waits on a card before it parks, in seconds. The spec
