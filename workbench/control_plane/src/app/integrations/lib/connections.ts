@@ -13,10 +13,12 @@
 
 import type { Access } from "@/lib/access";
 import { hasCapability } from "@/lib/access";
+import { safeStudioReturn } from "@/lib/studio/returnPath";
 import { relativeTime } from "@/lib/taskCard";
 
 export type ConnectionKind = "oauth" | "mailbox" | "whatsapp" | "mcp" | "api_key";
-export type OwningApp = "crm" | "email" | "whatsapp" | "integrations";
+/** WS-STU I8a: a calendar row and a Drive row name their own app (`_SETUP_HREF` of the gateway). */
+export type OwningApp = "crm" | "email" | "whatsapp" | "calendar" | "knowledge" | "integrations";
 export type ConnectionStatus =
   | "connected"
   | "needs_reconnect"
@@ -54,6 +56,8 @@ export const APP_LABEL: Record<OwningApp, string> = {
   crm: "CRM",
   email: "Email",
   whatsapp: "WhatsApp",
+  calendar: "Calendar",
+  knowledge: "Knowledge",
   integrations: "Integrations",
 };
 
@@ -107,7 +111,7 @@ export function lastSyncLabel(iso: string | null, nowMs = Date.now()): string {
 export type AppFilter = "all" | OwningApp;
 export type StatusFilter = "all" | ConnectionStatus;
 
-export const APP_ORDER: OwningApp[] = ["crm", "email", "whatsapp", "integrations"];
+export const APP_ORDER: OwningApp[] = ["crm", "email", "whatsapp", "calendar", "knowledge", "integrations"];
 export const STATUS_ORDER: ConnectionStatus[] = [
   "connected",
   "configured",
@@ -651,6 +655,43 @@ export function tickFormSwitch(f: McpForm, which: McpSwitch, next: boolean): Mcp
 
 export function mcpFormReady(f: McpForm): boolean {
   return Boolean(f.name.trim() && f.url.trim());
+}
+
+// ── Connect in place (WS-STU I8a) ─────────────────────────────────────────
+
+/** What `?add=mcp&name=<server>&return=<path>` asks of the console. */
+export interface AddMcpAsk {
+  /** The server name to fill in. Empty when the address gave no name of the gateway's rule. */
+  name: string;
+  /** Where the browser goes after the add: a path of this site under `/studio/`, or null to stay. */
+  returnTo: string | null;
+}
+
+/** The keys of the ask. The page removes them once it opens the form. */
+export const ADD_MCP_KEYS = ["add", "name", "return"] as const;
+
+/**
+ * The ask of Studio's Connect in place (`ai_studio.md` §14 I8a), or null for any other address. Studio
+ * sends the browser here with the server name of the draft and the way back. The return goes through
+ * `safeStudioReturn`, so a path that leaves Studio, or this site, is dropped and the page stays.
+ */
+export function addMcpAsk(search: URLSearchParams): AddMcpAsk | null {
+  if (search.get("add") !== "mcp") return null;
+  const name = (search.get("name") ?? "").trim();
+  return { name: MCP_NAME.test(name) ? name : "", returnTo: safeStudioReturn(search.get("return")) };
+}
+
+/** The Add form with the name of the ask filled in. Every other field is the empty form's. */
+export function prefilledMcpForm(name: string): McpForm {
+  return { ...EMPTY_MCP_FORM, name: MCP_NAME.test(name) ? name : "" };
+}
+
+/** The address of the page once the ask is read: the same view, with no key of the ask. */
+export function withoutAddMcp(pathname: string, search: URLSearchParams): string {
+  const rest = new URLSearchParams(search);
+  for (const k of ADD_MCP_KEYS) rest.delete(k);
+  const qs = rest.toString();
+  return qs ? `${pathname}?${qs}` : pathname;
 }
 
 /** The body of `POST /api/integrations/mcp`. */

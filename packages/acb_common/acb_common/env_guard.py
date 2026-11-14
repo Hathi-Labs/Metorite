@@ -350,6 +350,8 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # reads its mode, its files and the merge bot log. A tenant must never save these.
     "AUTO_REVERT_LOG", "AUTO_REVERT_MODE", "AUTO_REVERT_REPORTS",
     "AUTO_REVERT_STATE", "MERGE_LOG",
+    # CIV-31b: the pass reads the merge bot queue for a hand-over that waits.
+    "MERGE_QUEUE",
     # CIV-34a: the conflict rules of the merge bot. It names the ruff command.
     "CONFLICT_RULES_RUFF",
     # Deploy, backup and watchdog scripts (variables they read).

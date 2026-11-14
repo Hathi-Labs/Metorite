@@ -1819,6 +1819,16 @@ apps' own R8 suites. With the flag on, the persona's citation rule also
 moves from `[entity:uuid]` to the `full_id` line. The legacy citation
 names tables that hold no rows.
 
+### 20.10 The find engine (WS-FIND, 2026-11-14)
+
+`find_engine.md` extends this section, and this section stays the owner of the
+seam. It keeps the source, the hit, the route and the fences of §20.9. The
+find engine owns the ladder of `GET /search/company`: eight rungs in three
+passes, inside 6 seconds. It also owns `matched_by` on each hit, the honest
+zero, the source contract `contributes.search` and the chat's find tools.
+Each rung calls the app's own search function, as §20.2 and §20.3 set. So
+the engine adds no second read path.
+
 ---
 
 ## 21. The editor and the surface — what we take from Docmost (2026-10-18)

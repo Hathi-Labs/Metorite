@@ -1326,6 +1326,28 @@ def test_r8_pages_stay_in_the_manifest_and_make_no_row(world) -> None:
     assert _app(world, pid)[5]["pages"][0]["id"] == "home"
 
 
+def test_r8_a_manifest_with_nav_publishes_and_keeps_the_nav(world) -> None:
+    """``nav`` is manifest only (STU-AF2a). A publish through the route keeps it,
+    and the sync makes no row for it."""
+    mid = _mid()
+    manifest = _manifest(mid)
+    manifest["views"] = [{"id": "intro", "block": "markdown", "text": "Welcome."}]
+    manifest["pages"] = [{"id": "home", "title": "Home", "cells": [{"view": "intro"}]}]
+    manifest["nav"] = [{"title": "Work", "rows": [{"page": "home", "icon": "Home", "label": "Start"}]}]
+
+    async def go() -> tuple[str, tuple[int, Any]]:
+        pid = await _new(world.a, ANA, manifest)
+        return pid, await _publish(world.a, ANA, pid)
+
+    pid, (status, got) = _run(world, go)
+    assert status == 200, got
+    assert [o[0] for o in _objects(world, pid)] == ["visit"]
+    assert _app(world, pid)[5]["nav"][0]["rows"][0]["page"] == "home"
+
+    bad = dict(manifest, nav=[{"title": "Work", "rows": [{"page": "gone"}]}])
+    assert _run(world, lambda: _save(world.a, ANA, pid, bad))[0] == 422
+
+
 # ── j. The caps ────────────────────────────────────────────────────────────
 
 

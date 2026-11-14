@@ -737,6 +737,13 @@ class Settings(BaseSettings):
     # change (docs/flag_reload.md). A flip in production is the gate
     # `enforcement-flip`. Spec: ai_studio.md section 14 E12a.
     core_events_orgs: str = ""
+    # STU-B4a: STUDIO_LOGIC_ORGS lists the org ids where the Studio action
+    # door runs a first-party logic module (`logic:<name>`). `*` opens every
+    # org. Empty opens none. Reader: `gateway.routes.studio.flags.
+    # logic_allowed`. A SIGHUP reload applies a change (docs/flag_reload.md).
+    # A flip in production is the gate `enforcement-flip`. Spec: ai_studio.md
+    # section 14 B4a.
+    studio_logic_orgs: str = ""
     # STU-I1a: STUDIO_CONNECTION_GATE_ORGS lists the org ids where the
     # `connections` of a Studio manifest bind. A missing connection then makes
     # the install `needs_setup`, and the action door refuses each action with
@@ -1320,6 +1327,18 @@ class Settings(BaseSettings):
     # spends nothing, so it is AGENT-SAFE.
     # Fence: tests/unit/test_floor_trim.py.
     orchestrator_floor_trim: bool = False
+
+    # ── The shape of a tool argument (HRD-3, task 2982) ─────────────────────
+    #
+    # ON gives a pack tool the argument shape that its schema declares: a JSON
+    # string becomes the object or list of an object or list parameter, and a
+    # native list becomes the JSON string of a `str` parameter that the tool
+    # parses (`acb_skills.pack_tool_guard`). OFF changes nothing. The failure
+    # text of a pack tool is not behind this flag. The one reader is
+    # `pack_tool_guard.arg_shapes_enabled`. It sends nothing out and spends
+    # nothing, so it is AGENT-SAFE. Fences:
+    # tests/unit/test_tool_argument_shapes.py.
+    tool_arg_shapes: bool = False
 
     # ── Dynamic sub-agents of the one assistant (WS-67 OA-9b, D117) ─────────
     #
@@ -2117,6 +2136,15 @@ class Settings(BaseSettings):
     # new run. The one reader is `orchestrator.pending_ask.durable_asks_enabled`.
     # Fence: tests/unit/test_pending_ask_flow.py.
     chat_durable_asks: bool = False
+    # ── An unknown tool name loads its pack (chat_failure_modes.md §4.2 B1) ─
+    #
+    # `CHAT_TOOL_AUTOLOAD`, default OFF. D-HRD-1 (D217) allows the load, and
+    # it ships dark. The answer to an unknown tool name is always on, and it
+    # names the pack. ON: when the member may use that pack, the turn also
+    # loads it through the loader's own guards. The one reader is
+    # `acb_skills.unknown_tool.autoload_enabled`.
+    # Fence: tests/unit/test_unknown_tool_answer.py.
+    chat_tool_autoload: bool = False
     # How long a run waits on a card before it parks, in seconds. The spec
     # says "about ten minutes". With the flag OFF, `ASK_USER_TIMEOUT` (1 h)
     # still bounds the wait.
