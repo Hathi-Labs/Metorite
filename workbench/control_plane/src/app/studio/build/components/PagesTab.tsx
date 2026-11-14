@@ -92,19 +92,22 @@ export default function PagesTab({ manifest, onChange, locked, focusPage = null 
         {pages.pages.map((p, i) => (
           <li key={p.id} id={`pages-tab-${p.id}`} aria-current={focusPage === p.id ? "true" : undefined}
             className={`${cardClass} ${focusPage === p.id ? "border-primary" : ""}`}>
-            <div className="flex flex-wrap items-center gap-2">
-              <CommitInput className="w-48" label={`Title of the ${p.id} page`} value={p.title} placeholder={p.id}
-                disabled={locked} onCommit={(t) => act((m) => renamePage(m, p.id, t))} />
-              <span className="text-xs text-muted-foreground">{p.id}</span>
-              <span className="flex-1" />
-              <SelectButton label={`Columns of the ${p.id} page`} value={String(p.cols)} widthClass="w-20" disabled={locked}
-                options={colsOptions(p.floor)} onChange={(v) => act((m) => setPageCols(m, p.id, Number(v)))} />
-              <Button size="icon-sm" variant="ghost" icon="ChevronUp" aria-label={`Move the ${p.id} page up`}
-                disabled={locked || i === 0} onClick={() => act((m) => movePage(m, p.id, -1))} />
-              <Button size="icon-sm" variant="ghost" icon="ChevronDown" aria-label={`Move the ${p.id} page down`}
-                disabled={locked || i === pages.pages.length - 1} onClick={() => act((m) => movePage(m, p.id, 1))} />
-              <Button size="icon-sm" variant="ghost" icon="Trash2" aria-label={`Delete the ${p.id} page`} disabled={locked}
-                onClick={() => setAsk({ kind: "page", id: p.id })} />
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <CommitInput className="min-w-0 flex-1" label={`Title of the ${p.id} page`} value={p.title} placeholder={p.id}
+                  disabled={locked} onCommit={(t) => act((m) => renamePage(m, p.id, t))} />
+                <span className="shrink-0 text-xs text-muted-foreground">{p.id}</span>
+              </div>
+              <div className="flex flex-nowrap items-center gap-2">
+                <SelectButton label={`Columns of the ${p.id} page`} value={String(p.cols)} widthClass="w-20" disabled={locked}
+                  options={colsOptions(p.floor)} onChange={(v) => act((m) => setPageCols(m, p.id, Number(v)))} />
+                <Button size="icon-sm" variant="ghost" icon="ChevronUp" aria-label={`Move the ${p.id} page up`}
+                  disabled={locked || i === 0} onClick={() => act((m) => movePage(m, p.id, -1))} />
+                <Button size="icon-sm" variant="ghost" icon="ChevronDown" aria-label={`Move the ${p.id} page down`}
+                  disabled={locked || i === pages.pages.length - 1} onClick={() => act((m) => movePage(m, p.id, 1))} />
+                <Button size="icon-sm" variant="ghost" icon="Trash2" aria-label={`Delete the ${p.id} page`} disabled={locked}
+                  onClick={() => setAsk({ kind: "page", id: p.id })} />
+              </div>
             </div>
             {p.parts.length ? <p className="break-words text-xs text-muted-foreground">{p.parts.join(" · ")}</p> : null}
           </li>
@@ -166,13 +169,13 @@ export default function PagesTab({ manifest, onChange, locked, focusPage = null 
               {s.rows.length === 0 ? <p className="text-xs text-muted-foreground">No row yet. Add a page below.</p> : null}
               <ul className="flex flex-col gap-1">
                 {s.rows.map((r, ri) => (
-                  <li key={`${r.page}-${ri}`} className="flex flex-wrap items-center gap-2">
-                    <span className="min-w-0 text-xs text-muted-foreground">{r.pageName}</span>
-                    <CommitInput className="w-40" label={`Label of row ${ri + 1} in ${s.title}`} value={r.label} placeholder={r.pageName}
+                  <li key={`${r.page}-${ri}`} className="flex flex-wrap items-center gap-2 sm:flex-nowrap">
+                    <span className="w-24 shrink-0 truncate text-xs text-muted-foreground" title={r.pageName}>{r.pageName}</span>
+                    <CommitInput className="w-40 shrink-0" label={`Label of row ${ri + 1} in ${s.title}`} value={r.label} placeholder={r.pageName}
                       disabled={locked} onCommit={(t) => act((m) => setRowLabel(m, si, ri, t || null))} />
                     <SelectButton label={`Icon of row ${ri + 1} in ${s.title}`} value={r.icon} widthClass="w-36" disabled={locked}
                       options={NAV_ICONS.map((n) => ({ value: n, label: n }))} onChange={(v) => act((m) => setRowIcon(m, si, ri, v))} />
-                    <span className="flex-1" />
+                    <span className="hidden min-w-0 flex-1 sm:block" />
                     <Button size="icon-sm" variant="ghost" icon="ChevronUp" aria-label={`Move row ${ri + 1} in ${s.title} up`}
                       disabled={locked || ri === 0} onClick={() => act((m) => moveRow(m, si, ri, -1))} />
                     <Button size="icon-sm" variant="ghost" icon="ChevronDown" aria-label={`Move row ${ri + 1} in ${s.title} down`}
