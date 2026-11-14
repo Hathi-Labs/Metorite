@@ -9,7 +9,9 @@ the non-privileged role of the phase-4 rehearsal (no superuser, no BYPASSRLS):
    more also matches by ``pg_trgm`` ``strict_word_similarity`` over the same
    columns. The rows of that pass carry ``near: true``. A query with an
    exact hit, a query of more than 3 words, and a list without ``near``
-   stay exact.
+   stay exact. ``?near=also`` (the repair round) adds the near rows that are
+   not exact after the exact rows, at most 5, and ``search_crm`` shows them
+   in a near section after its matches.
 4. A deal matches the names of its contacts and of its source lead.
 
 The production case (2026-11-14): "Sharath 3D printer" finds the deal
@@ -204,6 +206,97 @@ async def test_a_near_word_finds_the_record_that_holds_no_exact_word(
     # Another organization never sees a near row of A.
     assert await _rows(ns, b, "/crm/deals?q=Sharath%203D%20printer&near=true") == []
     assert await _rows(ns, b, "/crm/deals?q=nuropeak&near=true") == []
+
+
+# ── The repair round: near rows ALSO when the exact pass has rows ──────────
+
+async def _production_names(p: Any, org: str) -> dict[str, str]:
+    """The whole 2026-11-14 case: the two exact Sharaths, and «Sharat
+    Satyanarayana» as a contact of the deal and as the lead that converted
+    into it, hidden from the lead list as in production."""
+    case = await _production_case(p, org)
+    case["old_lead"] = await _make(p, org, "/crm/leads", {
+        "lead_name": "Sharath .", "email": "sharath@gmail.test"})
+    lead = await _make(p, org, "/crm/leads", {
+        "lead_name": "Sharat Satyanarayana", "organization_name": "Neuropeak"})
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_leads SET converted_deal_id = CAST(:d AS uuid), converted_at = now() "
+            "WHERE id = CAST(:l AS uuid)"), {"d": case["deal"], "l": lead})
+    return case
+
+
+async def test_also_adds_the_near_rows_after_the_exact_rows(ns, app_engine) -> None:  # noqa: F811
+    a, b = ns.org_a, ns.org_b
+    await _native(ns, a)
+    await _native(ns, b)
+    case = await _production_names(ns, a)
+
+    # Without the mode, and with `near=true`, the rows and the counts stay.
+    for path in ("/crm/contacts?q=Sharath", "/crm/contacts?q=Sharath&near=true"):
+        found = await _list(ns, a, path)
+        assert [r["first_name"] for r in found["rows"]] == ["Sharath"], path
+        assert found["total"] == 1 and "near" not in found["rows"][0]
+    found = await _list(ns, a, "/crm/deals?q=Sharath")
+    assert [r["id"] for r in found["rows"]] == [case["twin"]] and found["total"] == 1
+
+    # `also`: the exact rows first, then the near rows that are not exact.
+    found = await _list(ns, a, "/crm/contacts?q=Sharath&near=also")
+    assert [(r["first_name"], r.get("near")) for r in found["rows"]] == [
+        ("Sharath", None), ("Sharat", True)]
+    assert found["total"] == 1
+    found = await _list(ns, a, "/crm/deals?q=Sharath&near=also")
+    assert [(r["id"], r.get("near")) for r in found["rows"]] == [
+        (case["twin"], None), (case["deal"], True)]
+    # The converted lead stays out of the lead list, near or not.
+    found = await _list(ns, a, "/crm/leads?q=Sharath&near=also")
+    assert [r["lead_name"] for r in found["rows"]] == ["Sharath ."]
+    # A name with no near neighbour gets no near row.
+    found = await _list(ns, a, "/crm/deals?q=Dragon&near=also")
+    assert [(r["name"], r.get("near")) for r in found["rows"]] == [("Twin Dragon 300", None)]
+    # With no exact row, `also` answers the near pass, as `true` does.
+    found = await _list(ns, a, "/crm/deals?q=nuropeak&near=also")
+    assert [(r["id"], r["near"]) for r in found["rows"]] == [(case["deal"], True)]
+    # An unknown mode is a 422, and organization B sees no row of A.
+    res = await _call(ns, _admin(a), "GET", "/crm/contacts?q=Sharath&near=maybe")
+    assert res.status_code == 422, res.text
+    assert await _rows(ns, b, "/crm/contacts?q=Sharath&near=also") == []
+
+
+async def test_search_crm_shows_the_exact_hits_then_sharat(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """The chat tool end to end, over the real router: «Sharath .» and
+    «Sharath BMS Purchase Dept» first, and «Sharat Satyanarayana» in the
+    near section with its id."""
+    from urllib.parse import urlencode
+
+    from tests.unit._crm_agent_fakes import load_agent_module
+
+    a = ns.org_a
+    await _native(ns, a)
+    case = await _production_names(ns, a)
+    tool = load_agent_module("crm_assistant_agent_hrd18a")
+
+    async def _get(path: str, params: dict | None = None) -> Any:
+        res = await _call(ns, _admin(a), "GET", f"{path}?{urlencode(params or {})}")
+        assert res.status_code == 200, res.text
+        return res.json()
+
+    monkeypatch.setattr(tool, "_get", _get)
+    out = await tool.search_crm("Sharath")
+    head, near = out.split(tool.NEAR_ALSO)
+    assert head.startswith("Matches for 'Sharath' (3):"), out
+    assert "Sharath . · sharath@gmail.test" in head and f"id={case['old_lead']}" in head
+    assert "Sharath BMS Purchase Dept" in head and "Twin Dragon 300" in head
+    assert "Sharat" not in head.replace("Sharath", "")
+    assert f"«Sharat Satyanarayana» (contact) (id={case['sharat']})" in near
+    assert ("«Neuropeak - Snowflake 3D printer» (deal · Bitnib Technologies) "
+            f"(id={case['deal']})") in near
+    assert near.rstrip().endswith(tool.NEAR_NOTE)
+    # A name with no near neighbour: no near section.
+    out = await tool.search_crm("Dragon")
+    assert out.startswith("Matches for 'Dragon' (1):") and tool.NEAR_ALSO not in out
 
 
 # ── The floor on a table of 5,000 leads ────────────────────────────────────

@@ -478,10 +478,12 @@ async def test_search_renders_rows_with_the_ids_a_follow_up_needs(
 _NEAR_DEAL = {"id": _ID, "name": "Neuropeak - Snowflake 3D printer", "near": True}
 
 
-async def test_search_asks_for_the_near_pass(monkeypatch) -> None:
+async def test_search_asks_for_the_near_rows_also(monkeypatch) -> None:
+    """HRD-18a repair round: the tool asks for the near rows ALSO when the
+    exact pass has rows, so a wrong exact hit cannot hide the record."""
     calls = _fake_gateway(monkeypatch, _responder)
     await _M.search_crm("Sharath", entity="deals")
-    assert calls[0]["params"]["near"] == "true"
+    assert calls[0]["params"]["near"] == "also"
 
 
 async def test_a_near_answer_opens_with_no_record_and_near_spellings(monkeypatch) -> None:
@@ -511,9 +513,52 @@ async def test_exact_matches_lead_and_a_near_section_is_marked(monkeypatch) -> N
 
     _fake_gateway(monkeypatch, respond)
     out = await _M.search_crm("Sharath")
-    assert out.startswith("Matches for 'Sharath' (2):")
-    assert "Contacts (1):" in out and "Deals, near spellings only (1):" in out
+    # The count is the exact matches only. The near deal goes to the near
+    # section after them, with its type and its id.
+    assert out.startswith("Matches for 'Sharath' (1):")
+    assert "Contacts (1):" in out and "Deals" not in out
+    head, near = out.split(_M.NEAR_ALSO)
+    assert "Neuropeak" not in head
+    assert f"• «Neuropeak - Snowflake 3D printer» (deal) (id={_ID})" in near
     assert out.endswith(_M.NEAR_NOTE)
+
+
+async def test_the_exact_hits_come_first_and_the_near_name_follows(monkeypatch) -> None:
+    """Production, 2026-11-14: "Sharath" found «Sharath .» and «Sharath BMS
+    Purchase Dept», and the member meant «Sharat Satyanarayana»."""
+    sharat = {"id": "c-sharat", "first_name": "Sharat", "last_name": "Satyanarayana",
+              "email": "sharat@neuropeak.test", "near": True}
+
+    def respond(call: dict) -> Any:
+        if call["path"] == "/crm/leads":
+            return {"rows": [{"id": "l-sharath", "lead_name": "Sharath ."}], "total": 1}
+        if call["path"] == "/crm/contacts":
+            return {"rows": [
+                {"id": "c-bms", "first_name": "Sharath", "last_name": "BMS Purchase Dept"},
+                sharat], "total": 1}
+        return _EMPTY_LIST
+
+    _fake_gateway(monkeypatch, respond)
+    out = await _M.search_crm("Sharath")
+    head, near = out.split(_M.NEAR_ALSO)
+    assert head.startswith("Matches for 'Sharath' (2):")
+    assert "Sharath . (id=l-sharath)" in head
+    assert "Sharath BMS Purchase Dept (id=c-bms)" in head
+    assert "Sharat Satyanarayana" not in head
+    assert near.splitlines()[1] == (
+        "• «Sharat Satyanarayana» (contact · sharat@neuropeak.test) (id=c-sharat)")
+    assert near.rstrip().endswith(_M.NEAR_NOTE)
+    assert "before you answer" in _M.NEAR_NOTE
+
+
+async def test_a_name_with_no_near_neighbour_has_no_near_section(monkeypatch) -> None:
+    _fake_gateway(monkeypatch, lambda c: (
+        {"rows": [{"id": _ID, "name": "Twin Dragon 300"}], "total": 1}
+        if c["path"] == "/crm/deals" else _EMPTY_LIST))
+    out = await _M.search_crm("Dragon")
+    assert out.startswith("Matches for 'Dragon' (1):")
+    assert _M.NEAR_ALSO not in out and _M.NEAR_NOTE not in out
+    assert "near spellings" not in out.lower()
 
 
 async def test_the_near_answer_drops_the_guillemets_of_the_query(monkeypatch) -> None:

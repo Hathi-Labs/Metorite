@@ -37,7 +37,7 @@ import json
 import re
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, NamedTuple
@@ -1025,6 +1025,15 @@ MAX_SEARCH_WORDS = 8
 #: The most rows of one near pass (HRD-18a). The pass answers page 1 only.
 NEAR_LIMIT = 20
 
+#: The most near rows that the ``also`` mode adds after the exact rows
+#: (HRD-18a repair round). The chat must see «Sharat» beside «Sharath .».
+NEAR_ALSO_LIMIT = 5
+
+#: The near modes of a list read. ``fallback`` answers the near pass when the
+#: exact read finds no row. ``also`` does that too, and when the exact read
+#: has rows, it adds the near rows that are not exact.
+NEAR_MODES = ("fallback", "also")
+
 
 @dataclass(frozen=True)
 class ListQuery:
@@ -1033,7 +1042,9 @@ class ListQuery:
     ``rank`` is empty, except on a near pass (HRD-18a). There it is the SQL of
     each row's nearness, and :func:`run_list` orders by it first. ``near`` is
     that pass, when the caller asked for one and the query allows one.
-    :func:`run_list` runs it only when this query finds no row.
+    :func:`run_list` runs it only when this query finds no row. ``also`` is
+    the near pass without the exact rows (the ``also`` mode). :func:`run_list`
+    runs it only when this query finds rows.
     """
 
     where: str
@@ -1043,6 +1054,7 @@ class ListQuery:
     params: dict[str, Any]
     rank: str = ""
     near: ListQuery | None = None
+    also: ListQuery | None = None
 
 
 def checked_uuid(value: str, what: str) -> str:
@@ -1182,7 +1194,7 @@ def list_contract(
     pipeline_takes_unset: bool = False,
     extra_where: tuple[str, ...] = (),
     extra_params: dict[str, Any] | None = None,
-    near: bool = False,
+    near: bool | str = False,
 ) -> ListQuery:
     """Validate one list request and render it. The same contract for all four.
 
@@ -1190,11 +1202,13 @@ def list_contract(
     silent fall back to the default: a client sorting by a column it thinks
     exists and quietly getting `created_at` is a bug that survives review.
 
-    ``near=True`` adds the near pass of HRD-18a as ``ListQuery.near``, for
-    page 1 of a query that ``name_match.near_query`` allows. The pass keeps
-    every other filter. It reads at most :data:`NEAR_LIMIT` rows, nearest
-    first. Only :func:`run_list` runs it, so an export and an aggregate stay
-    exact.
+    ``near=True`` (or ``"fallback"``) adds the near pass of HRD-18a as
+    ``ListQuery.near``, for page 1 of a query that ``name_match.near_query``
+    allows. The pass keeps every other filter. It reads at most
+    :data:`NEAR_LIMIT` rows, nearest first. ``near="also"`` adds
+    ``ListQuery.also`` too: the same pass with the exact rows left out, at
+    most :data:`NEAR_ALSO_LIMIT` rows. Only :func:`run_list` runs either, so
+    an export and an aggregate stay exact.
     """
     column = entity.sorts.get(sort or entity.default_sort)
     if column is None:
@@ -1260,8 +1274,12 @@ def list_contract(
     # `column` is a value from the entity's own allowlist and `order` is one
     # of two literals — neither is caller text.
     order_by = f"{column} {order} NULLS LAST, id {order}"
+    mode = "fallback" if near is True else (near or "")
+    if mode and mode not in NEAR_MODES:
+        raise ValueError(f"unknown near mode {mode!r}")
     near_pass: ListQuery | None = None
-    if near and search_clause and page == 1 and name_match.near_query(search_words(q)):
+    also_pass: ListQuery | None = None
+    if mode and search_clause and page == 1 and name_match.near_query(search_words(q)):
         near_clause, near_params, keys = _search_parts(entity, q, near=True)
         if near_clause and keys:
             near_clauses = list(clauses)
@@ -1275,6 +1293,15 @@ def list_contract(
                 params={**params, **near_params},
                 rank=_near_rank(entity, keys),
             )
+            if mode == "also":
+                # The near rows that no exact arm holds. COALESCE, because a
+                # NULL column can make the exact OR group NULL, and NOT NULL
+                # is NULL, which would drop a near row.
+                also_pass = replace(
+                    near_pass,
+                    where=f"{near_pass.where} AND NOT COALESCE({search_clause}, false)",
+                    limit=NEAR_ALSO_LIMIT,
+                )
     return ListQuery(
         where=(" WHERE " + " AND ".join(clauses)) if clauses else "",
         order_by=order_by,
@@ -1282,6 +1309,7 @@ def list_contract(
         offset=(page - 1) * page_size,
         params=params,
         near=near_pass,
+        also=also_pass,
     )
 
 
@@ -1597,11 +1625,22 @@ async def run_list(
 
     **The near pass (HRD-18a).** When the query finds no row and carries
     ``query.near``, the near pass answers instead. Each of its rows carries
-    ``near: true``, and ``total`` counts the near rows. A caller that shows
-    the rows must say that they are near spellings, not matches.
+    ``near: true``, and ``total`` counts the near rows. When the query finds
+    rows and carries ``query.also``, the near rows that are not exact follow
+    the exact rows, each with ``near: true``. ``total`` then counts the exact
+    rows only. A caller that shows the rows must say that the near rows are
+    near spellings, not matches.
     """
     found = await _read_list(db, entity, query, rows_only=rows_only)
-    if query.near is None or found.total:
+    if found.total:
+        if query.also is None:
+            return found
+        # One more read of the page only: no count and no attachments.
+        extra = await _read_list(db, entity, query.also, rows_only=True)
+        for row in extra.rows:
+            row["near"] = True
+        return ListResponse(rows=[*found.rows, *extra.rows], total=found.total)
+    if query.near is None:
         return found
     near = await _read_list(db, entity, query.near, rows_only=rows_only)
     for row in near.rows:

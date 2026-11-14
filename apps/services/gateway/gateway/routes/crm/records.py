@@ -132,6 +132,23 @@ def _string_pairs(node: Any) -> Iterable[tuple[str, str]]:
             yield from _string_pairs(item)
 
 
+#: The words of ``?near=`` and the mode of ``core.list_contract`` each names.
+_NEAR_WORDS = {
+    "": "", "false": "", "0": "", "no": "", "off": "",
+    "true": "fallback", "1": "fallback", "yes": "fallback", "on": "fallback",
+    "also": "also",
+}
+
+
+def near_mode(value: str | None) -> str:
+    """The near mode of ``?near=`` (HRD-18a): ``""``, ``fallback`` or ``also``.
+    Any other word is a 422, never a silent default."""
+    word = str(value or "").strip().lower()
+    if word not in _NEAR_WORDS:
+        raise HTTPException(status_code=422, detail="'near' is true, false or also.")
+    return _NEAR_WORDS[word]
+
+
 class ListParams:
     """The list contract's query parameters — declared once, bound four times.
 
@@ -162,17 +179,18 @@ class ListParams:
         updated_to: str | None = None,
         close_from: str | None = None,
         close_to: str | None = None,
-        near: bool = False,
+        near: str | None = None,
         request: Request = None,  # type: ignore[assignment]
     ) -> None:
         # CRM-Q25c: each name and value, before any of them reaches SQL.
         if request is not None:
             refuse_nul(request.query_params.multi_items())
         self.q = q
-        #: HRD-18a: when ``q`` finds no row, answer the near spellings, each
-        #: row with ``near: true``. The chat's ``search_crm`` asks for it. The
-        #: list screen, the export and the aggregate do not, so they agree.
-        self.near = near
+        #: HRD-18a: ``near=true`` answers the near spellings when ``q`` finds
+        #: no row, each row with ``near: true``. ``near=also`` adds them after
+        #: the exact rows too. The chat's ``search_crm`` asks for ``also``.
+        #: The list screen, the export and the aggregate ask for none.
+        self.near = near_mode(near)
         self.sort = sort
         self.direction = direction
         self.page = page
@@ -225,7 +243,7 @@ async def _list(
 
 
 async def list_query(
-    db: Any, entity: Entity, params: Any, user: Any = None, *, near: bool = False,
+    db: Any, entity: Entity, params: Any, user: Any = None, *, near: str = "",
 ) -> ListQuery:
     """The ONE builder of a list's WHERE clause and its bound values.
 

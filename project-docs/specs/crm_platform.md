@@ -8762,8 +8762,18 @@ member asked for the order of "Sharath", and the deal named its contact
   `strict_word_similarity`. The floor is 0.5, from `acb_common.name_match`.
   The strict form stops at the bounds of a word. The plain `word_similarity`
   scores "Sharath" 1.0 in «Bharath Shah».
-- Each row of the near pass carries `near: true`. Only `search_crm` asks for
-  the pass, and its answer opens with "No record holds «…». Near spellings:".
+- Each row of the near pass carries `near: true`. When no row matches,
+  the answer of `search_crm` opens with "No record holds «…». Near spellings:".
+- `?near=also` does the same, and it also reads near rows when the exact read
+  finds rows. It adds 5 near rows at most that no exact arm holds. `total`
+  counts the exact rows only. Only `search_crm` asks for `also`.
+- A wrong exact hit must not hide the record that the member means. The
+  production case had two exact Sharaths and no «Sharat». So `search_crm`
+  lists the exact rows, then the section "Near spellings (may be the person
+  you mean):" with each id. A last line tells the model to ask the member
+  when the exact rows do not fit.
+- Cost: each `search_crm` call of a name runs one more read for each record
+  type. On 5,000 leads, one near read takes about 47 ms.
 - The list screen, the export, the aggregate and the board stay exact, and
   they get the word rule too. The command bar and the company search stay
   exact (HRD-18b).
