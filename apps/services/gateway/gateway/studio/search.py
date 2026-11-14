@@ -46,7 +46,12 @@ the route cancels the source and the source answers nothing. The ``Source``
 contract passes the time left (``budget_s``) only to a source that declares
 vectors, so this module keeps its own clock.
 
-**A slow or failed read never cancels a statement from outside.** Each
+**A slow or failed read of one search does not cancel a statement from
+outside.** (One exception: in the second pass of a zero answer, KR-ZERO gives
+each word a share of about 1.2 s and ``Source`` passes no ``budget_s`` to a
+source that has no vectors, so ``wait_for`` can cancel a slow read from
+outside. ``_stop_if_cancelled`` handles that cancel, and the hits of the
+other apps stay.) Each
 statement passes the time that is left to ``query_records`` (``budget_s``),
 and the store sets the ``statement_timeout`` of that statement. A timeout
 ends in a SAVEPOINT, so the session stays usable and its commit succeeds.
