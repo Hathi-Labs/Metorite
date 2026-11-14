@@ -1571,7 +1571,8 @@ def test_r8_the_access_check_of_a_change_comes_before_each_formula(world) -> Non
 #   ``test_r8_ledger_a_hidden_key_is_refused_in_the_group_the_measure_and_the_filter`` goes red.
 # * G4. The same, for the key of a measure. The same test goes red.
 # * G5. ``aggregate_records``: leave out the return on ``not view.scope.reads``.
-#   ``test_r8_ledger_a_viewer_with_no_read_gets_a_total_of_0`` goes red.
+#   ``test_r8_ledger_a_viewer_with_no_read_runs_no_statement_of_the_aggregate`` goes red.
+#   The total test stays green, because the empty access list also matches no row.
 
 
 def _agg(w: Any, viewer: Viewer, org: str | None = None, pkg: str | None = None,
