@@ -166,6 +166,12 @@ def db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
     )
     # ── her one private goal record (WS-WEB WEB-10) ──
     fake.seed_rows("goal_records", {"member_email": PRIYA})
+    # ── her saved views of a Studio app (WS-STU AF-10a): two private views and
+    #    one shared view. Only the private ones go. ──
+    fake.seed_rows("studio_saved_views",
+                   {"owner_email": PRIYA, "shared": False},
+                   {"owner_email": PRIYA, "shared": False},
+                   {"owner_email": PRIYA, "shared": True})
     return fake
 
 
@@ -520,6 +526,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "brief_runs": 0,
         # WS-STU F1: her one private skill. The versions go by cascade.
         "studio_skills": 1,
+        # WS-STU AF-10a: her two private saved views.
+        "studio_private_views": 2,
         # WS-PKG PKG-4: her one private install that nobody else sees. The
         # claims go by cascade.
         "private_app_installs": 1,
@@ -553,6 +561,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "shared_app_installs": 2,
         # WS-PKG PKG-4: her private install of the app she shared with Ravi.
         "shared_private_app_installs": 1,
+        # WS-STU AF-10a: her one shared saved view stays with her address (D63).
+        "studio_shared_views": 1,
     }
 
 
@@ -612,11 +622,14 @@ def test_no_audit_table_appears_on_the_delete_side_at_all() -> None:
     # And no table is on both sides except the two that are legitimately
     # split, by a column the schema forces on us, each asserted below.
     # `chat_session` splits on `visibility`, and `package_install` (WS-PKG
-    # PKG-4) on `scope_kind` and on a grant to another person. (The retired
-    # task store was split too, until migration 217 dropped it.)
-    assert not (deleted_tables & kept_tables) - {"chat_session", "package_install"}, (
-        "a table is both deleted and kept; only chat_session (by visibility) "
-        "and package_install (by scope_kind and grants) are legitimately split"
+    # PKG-4) on `scope_kind` and on a grant to another person, and
+    # `studio_saved_views` (WS-STU AF-10a) on `shared`. (The retired task
+    # store was split too, until migration 217 dropped it.)
+    split = {"chat_session", "package_install", "studio_saved_views"}
+    assert not (deleted_tables & kept_tables) - split, (
+        "a table is both deleted and kept; only chat_session (by visibility), "
+        "package_install (by scope_kind and grants) and studio_saved_views "
+        "(by shared) are legitimately split"
     )
 
 
@@ -842,6 +855,28 @@ def test_the_skills_of_this_org_go_and_their_versions_by_cascade() -> None:
     assert keys.index("studio_skills") < keys.index("member_record")
     assert "studio_skill_versions" in cascade_closure("studio_skills")
     assert "studio_skill_versions" not in {r.table for r in _PURGE_DELETES}
+
+
+def test_the_private_saved_views_go_and_the_shared_ones_stay() -> None:
+    """WS-STU AF-10a: only the owner reads a private saved view, so a purge
+    deletes it. A shared view is read by each member of the app, so it stays
+    with the address (D63). The two clauses split the member's views of this
+    org on ``shared`` alone, so no view is on both sides or on none.
+
+    ⚠️ Mutation-checked: dropping ``NOT`` from the delete clause fails here
+    and in the count dict above, and ``test_studio_saved_views_r8.py`` fails
+    on the real database.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    [gone] = [r for r in _PURGE_DELETES if r.table == "studio_saved_views"]
+    [kept] = [r for r in _PURGE_KEEPS if r.table == "studio_saved_views"]
+    tail = f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}"
+    assert (gone.key, gone.where) == ("studio_private_views", f"NOT shared AND {tail}")
+    assert (kept.key, kept.where) == ("studio_shared_views", f"shared AND {tail}")
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("studio_private_views") < keys.index("member_record")
 
 
 _STUDIO_OBJECT_TABLES = frozenset({

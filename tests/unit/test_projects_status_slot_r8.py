@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import re
 import time
 import uuid
 from pathlib import Path
@@ -59,6 +58,7 @@ pytest.importorskip("gateway.routes.projects", reason="gateway not installed")
 from fastapi import HTTPException, Request
 from sqlalchemy import text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -75,10 +75,7 @@ def test_this_suite_is_named_in_both_ci_skip_guards() -> None:
     """An R8 suite that CI does not list still skips in silence when the
     database gate is disarmed. Match the argument line, not a mention."""
     for name in ("pr-check.yml", "deploy.yml"):
-        workflow = (_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
-        assert re.search(
-            r"^\s+tests/unit/test_projects_status_slot_r8\.py \\?$", workflow, re.M,
-        ), name
+        assert "tests/unit/test_projects_status_slot_r8.py" in r8_lists.must_run(), name
 
 
 def test_a_slot_is_one_based_inside_the_stage() -> None:

@@ -48,6 +48,7 @@ pytest.importorskip("sqlalchemy")
 
 from sqlalchemy import text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -267,8 +268,7 @@ def test_the_chat_parity_row_names_the_read() -> None:
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """An R8 suite that CI does not list still skips in silence when the
     database gate is disarmed. Match the argument line, not a mention."""
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
-    assert re.search(r"^\s+tests/unit/test_crm_change_history\.py \\?$", workflow, re.M)
+    assert "tests/unit/test_crm_change_history.py" in r8_lists.must_run()
 
 # ── The database tests ──────────────────────────────────────────────────────
 
