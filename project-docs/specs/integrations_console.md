@@ -303,6 +303,10 @@ the console with the name. The map holds Calendar and Knowledge too, so the
 row of a calendar or a Drive connection links to its own app. This change is
 live with no flag.
 
+**An ask clears on a connect (`ai_studio.md` §8.2, I8b-1a).** When a store
+writer leaves an org row `connected`, it deletes the open asks of members for
+that provider.
+
 ### 3.3 The credential rule
 
 1. **A customer credential lives in one encrypted row.** It is Fernet through
@@ -740,7 +744,7 @@ The owner asked on 2026-11-14 (task 3164) that AI Studio builds on connections. 
 | `team` | `admin` |
 | `blurb` | "Every tool your company has connected" |
 | `jobs` | `integrations.add_mcp`, `integrations.review` (a link to the list), and `connect-agent` of WS-55. The first two need `feature:integrations` |
-| `needs` | `integrations`. A connection in `needs_reconnect` or `error`, for admins |
+| `needs` | `integrations`. A connection in `needs_reconnect` or `error`, for admins. After I8b-1b, the ask of a member for a connection, for admins (`ai_studio.md` §8.2) |
 | `agent` | none |
 
 ---
