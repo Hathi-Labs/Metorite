@@ -197,8 +197,8 @@ class _World:
         self.met_reads: list[str] = []
         self.owner = OWEN
         self.names: Any = ["zoho", "mcp:tally", "google_calendar"]
-        self.met: frozenset[str] = frozenset({"zoho"})
-        self.met_org: frozenset[str] = frozenset()
+        self.met_org: frozenset[str] = frozenset({"zoho"})
+        self.met_member: frozenset[str] = frozenset()
 
 
 def _package(manifest: dict[str, Any]) -> store.Package:
@@ -229,7 +229,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
     async def met_connections(db: Any, *, viewer: str) -> Met:
         w.met_reads.append(viewer)
         # I9a: the real answer is a Met pair. A set here hid a merge bug once.
-        return Met(org=frozenset(w.met_org), member=frozenset(w.met))
+        return Met(org=frozenset(w.met_org), member=frozenset(w.met_member))
 
     monkeypatch.setattr(connections, "_tenant_session", session)
     monkeypatch.setattr(connections.store, "get_package", get_package)
@@ -262,12 +262,25 @@ def test_the_read_answers_one_row_for_each_name_in_order(world: _World) -> None:
     assert world.met_reads == [OWEN]
 
 
-def test_a_row_is_met_by_an_org_row_or_the_members_own_row(world: _World) -> None:
-    """I9a: ``met_connections`` keeps the two sets apart. The step reads both."""
-    world.met = frozenset({"zoho"})
-    world.met_org = frozenset({"mcp:tally"})
+def test_a_row_is_met_by_the_set_of_its_own_need(world: _World) -> None:
+    """I9a: a ``member`` need is met only by a row of the caller, an ``org`` need
+    only by an org row. The step reads the SAME set as the door, per need."""
+    world.names = [{"name": "zoho", "as": "org"}, {"name": "google_drive", "as": "member"},
+                   {"name": "mcp:tally", "as": "org"}, {"name": "google_calendar", "as": "member"}]
+    world.met_org = frozenset({"zoho", "google_calendar"})   # a member need, an org row only
+    world.met_member = frozenset({"google_drive", "mcp:tally"})  # an org need, a member row only
     rows = _client(_user()).get(PATH).json()["connections"]
-    assert [x["met"] for x in rows] == [True, True, False]
+    assert [(x["name"], x["met"]) for x in rows] == [
+        ("zoho", True), ("google_drive", True), ("mcp:tally", False), ("google_calendar", False)]
+
+
+def test_a_plain_name_takes_its_as_from_the_connector_list(world: _World) -> None:
+    """``zoho`` is an org need and ``google_calendar`` a member need, as the door reads them."""
+    world.met_org = frozenset()
+    world.met_member = frozenset({"zoho", "google_calendar"})
+    rows = _client(_user()).get(PATH).json()["connections"]
+    assert {x["name"]: x["met"] for x in rows} == {
+        "zoho": False, "mcp:tally": False, "google_calendar": True}
 
 
 def test_an_admin_may_connect_each_row(world: _World) -> None:
