@@ -8785,7 +8785,7 @@ member asked for the order of "Sharath", and the deal named its contact
   290 ms, against 2.7 to 8.7 s before repair round 2. The plans stay under
   the JIT cost.
 - An exact deal read now reads three more tables, once each. On that seed it
-  took 40 to 86 ms, against 20 to 28 ms on `origin/main`. The lead and the
+  took 40 to 90 ms, against 20 to 28 ms on `origin/main`. The lead and the
   contact reads stay within 20% of `origin/main`.
 - The list screen, the export, the aggregate and the board stay exact, and
   they get the word rule too. The command bar and the company search get no
