@@ -33,6 +33,19 @@ paragraph that documents a flag that no longer exists. Four of the last five
 PRs to that file added at that same anchor. So no union driver goes on a file
 whose entries a revert can delete. We built none.
 
+## Slice 1b (built): sorted lists
+
+- `tests/fences.json`: `r8.must_run` and `r8.never_skip` are sorted, with no
+  repeat and one entry a line. Every R8 PR appended to the tail of `must_run`,
+  so all of them collided. Fence: `tests/unit/test_fence_lists.py`
+  (`test_the_lists_are_sorted_unique_and_one_entry_a_line`). Nothing reads
+  the order of the list: `test_green_pointer.py` compares a list with itself.
+- `docs/flag_reload.md`: the flag paragraphs are sorted by flag name. Fence:
+  `tests/unit/test_flag_doc_sorted.py`.
+- Still open: `tests/unit/test_flag_reload.py` (one test for each flag, appended)
+  and the flag fields of `settings.py`. A sort fence there needs a rule for the
+  grouped comments, so each gets its own slice.
+
 ## Slice 2 (proposed): one file for each §14 row
 
 Move each §14 row body to `project-docs/specs/ai_studio_rows/<id>.md`. Keep

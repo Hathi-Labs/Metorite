@@ -14,21 +14,42 @@ are the per-org rollout lists, such as `CRM_ORGS`, `TOOL_PACKS_ORGS`,
 `AGENT_QUESTIONS_ORGS` and `DECIDE_FEATURE_MODES`. Each reader of them reads
 the value again on each call.
 
-`AGENT_QUESTIONS_ORGS` changes who may answer an agent's question
-(`external_agent_access.md` §12.8). A reload changes how the flip applies, and
-it does not change who may flip it. The flip stays OWNER-GATE
-(`enforcement-flip`).
-
-`WAITING_ORGS` opens `GET /shell/waiting` and `GET /shell/waiting/count`
-(`waiting_on_me.md` §7.3). Its one reader is
-`gateway.routes.shell.waiting.waiting_allowed`. A reload applies a change. The
-flip stays OWNER-GATE (`enforcement-flip`).
-
 `AGENTS_VIEW_ORGS` opens the member view of agents in Projects
 (`agents_view.md` §6, AGA-6). Off, `GET /projects/agents/overview` answers
 404. Its one reader is
 `gateway.routes.projects.agent_summary.agents_view_allowed`. A reload applies
 a change. The flip stays OWNER-GATE (`enforcement-flip`).
+
+`AGENT_QUESTIONS_ORGS` changes who may answer an agent's question
+(`external_agent_access.md` §12.8). A reload changes how the flip applies, and
+it does not change who may flip it. The flip stays OWNER-GATE
+(`enforcement-flip`).
+
+`AGENT_WRITE_CAP` and `AGENT_WRITE_WINDOW_S` set the write cap of each agent
+connection (`external_agent_access.md` §9.2, MCP-G20). The defaults are 120
+writes in 600 s. They are not `*_ORGS` or `*_MODES` keys, so a reload does
+NOT apply them. The gateway counts the writes, and the agent edge names the
+numbers in each write tool. Set both units to the same value. Then restart
+`acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
+(`enforcement-flip`).
+
+`CHAT_LATE_APPROVE_ORGS` turns on the late-approve grant
+(`chat_run_continuity.md` S2 item 8, HRD-22). For each listed org, a late
+Approve of a parked plain card approves the same card once in the next run.
+`*` lists every org, and the default is empty. Its one reader is
+`acb_skills.late_approve.late_approve_on`, and the park, the late answer and
+the card gate each ask it. So a reload applies at once, and an org that leaves
+the list uses no grant. A flip stays OWNER-GATE (`enforcement-flip`).
+
+`CHAT_PROGRESS_NOTICE_ORGS` turns on the line of a slow tool
+(`chat_run_continuity.md` §4.11, HRD-6). For each listed org, a tool call that
+runs past 6 s sends the member one line. A WhatsApp run of a listed org
+also gets the long cap of 7 minutes, and its sweep waits 8 minutes
+(`bot_run.long_reads_on`). `*` lists every org, and the default is empty. Its
+one reader is `acb_skills.progress_notice.progress_notice_on`. The injection
+asks it at the start of each run, so a reload applies to the next run. A
+reload that takes an org off the list while a long WhatsApp run works gives
+that run the short stale time. A flip stays OWNER-GATE (`enforcement-flip`).
 
 `GITHUB_APP_ORGS` turns the Metorite GitHub App on for each named org
 (`agent_coordination.md` SW-53). `GITHUB_APP_ENABLED` stays the master, and a
@@ -39,12 +60,21 @@ connect routes, the poll and `github.installation_of` ask it, so the lazy
 readers follow the list too. A reload applies a change, and the flip stays
 OWNER-GATE (`enforcement-flip`).
 
-`WORKFLOW_STUDIO_GATE_ORGS` turns on the authoring gate of `/workflows`
-(`ai_studio.md` §14 J1-3). For each listed org, a workflow write needs
-`feature:studio` on top of `feature:workflows`. `*` lists every org. Its one
-reader is `gateway.routes.workflows.core.author_gate_on`, and each request
-asks it. A reload applies a change, and the flip stays OWNER-GATE
-(`enforcement-flip`).
+`PACKAGE_HOST_ORGS` opens `GET /shell/manifest` (`package_host.md` §10). It
+also selects the orgs where the daily expiry tick may delete installs
+(PKG-10b). A reload that widens it to `*` widens the delete to every org at
+the next tick. The owner must treat a change of this list as part of the
+expiry decision. `PACKAGE_EXPIRY_ENABLED` does not reload. Only a restart
+changes it.
+
+`STUDIO_CONNECTION_GATE_ORGS` makes the `connections` of a Studio app bind
+(`ai_studio.md` §14 I1a). For each listed org, a missing connection makes the
+install `needs_setup`, and the action door refuses each action with 409
+`needs_connection`. `*` lists every org, and the default is empty. Empty
+means the connections change nothing. Its one reader is
+`acb_common.studio_flags.connection_gate_on`, and each call asks it. A reload
+applies a change. A flip stays OWNER-GATE (`enforcement-flip`), after the
+pre-check of the I1a row.
 
 `STUDIO_DOOR_OPS_ORGS` opens the door op of the Studio action door
 (`ai_studio.md` §14 B2b-2). For each listed org, a class A `<app>.<op>`
@@ -62,15 +92,6 @@ and each request asks it. The registry of modules ships empty, so the flag opens
 nothing until a module registers. A reload applies a change, and the flip stays
 OWNER-GATE (`enforcement-flip`).
 
-`STUDIO_CONNECTION_GATE_ORGS` makes the `connections` of a Studio app bind
-(`ai_studio.md` §14 I1a). For each listed org, a missing connection makes the
-install `needs_setup`, and the action door refuses each action with 409
-`needs_connection`. `*` lists every org, and the default is empty. Empty
-means the connections change nothing. Its one reader is
-`acb_common.studio_flags.connection_gate_on`, and each call asks it. A reload
-applies a change. A flip stays OWNER-GATE (`enforcement-flip`), after the
-pre-check of the I1a row.
-
 `STUDIO_NUM_F8_ORGS` adds the float8 test to a number filter of the Studio
 object query (`ai_studio.md` §14 C2c). For each listed org, the query tests
 `studio_record_hot.v_num_f8` beside the exact `v_num` test, so the app role
@@ -79,38 +100,17 @@ reader is `acb_common.studio_flags.num_f8_allowed`, and each query asks
 it. The query honours it for an org only after the backfill of migration 433 ends (`_warm_f8`), so the records are right at every step. Runbook: after a restore or any trigger work (`DISABLE TRIGGER`, `session_replication_role = replica`, `pg_restore --disable-triggers`), restart the gateway before you trust the flag, because a ready answer is cached for up to 600 seconds.
 A reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
 
-`AGENT_WRITE_CAP` and `AGENT_WRITE_WINDOW_S` set the write cap of each agent
-connection (`external_agent_access.md` §9.2, MCP-G20). The defaults are 120
-writes in 600 s. They are not `*_ORGS` or `*_MODES` keys, so a reload does
-NOT apply them. The gateway counts the writes, and the agent edge names the
-numbers in each write tool. Set both units to the same value. Then restart
-`acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
+`WAITING_ORGS` opens `GET /shell/waiting` and `GET /shell/waiting/count`
+(`waiting_on_me.md` §7.3). Its one reader is
+`gateway.routes.shell.waiting.waiting_allowed`. A reload applies a change. The
+flip stays OWNER-GATE (`enforcement-flip`).
+
+`WORKFLOW_STUDIO_GATE_ORGS` turns on the authoring gate of `/workflows`
+(`ai_studio.md` §14 J1-3). For each listed org, a workflow write needs
+`feature:studio` on top of `feature:workflows`. `*` lists every org. Its one
+reader is `gateway.routes.workflows.core.author_gate_on`, and each request
+asks it. A reload applies a change, and the flip stays OWNER-GATE
 (`enforcement-flip`).
-
-`PACKAGE_HOST_ORGS` opens `GET /shell/manifest` (`package_host.md` §10). It
-also selects the orgs where the daily expiry tick may delete installs
-(PKG-10b). A reload that widens it to `*` widens the delete to every org at
-the next tick. The owner must treat a change of this list as part of the
-expiry decision. `PACKAGE_EXPIRY_ENABLED` does not reload. Only a restart
-changes it.
-
-`CHAT_PROGRESS_NOTICE_ORGS` turns on the line of a slow tool
-(`chat_run_continuity.md` §4.11, HRD-6). For each listed org, a tool call that
-runs past 6 s sends the member one line. A WhatsApp run of a listed org
-also gets the long cap of 7 minutes, and its sweep waits 8 minutes
-(`bot_run.long_reads_on`). `*` lists every org, and the default is empty. Its
-one reader is `acb_skills.progress_notice.progress_notice_on`. The injection
-asks it at the start of each run, so a reload applies to the next run. A
-reload that takes an org off the list while a long WhatsApp run works gives
-that run the short stale time. A flip stays OWNER-GATE (`enforcement-flip`).
-
-`CHAT_LATE_APPROVE_ORGS` turns on the late-approve grant
-(`chat_run_continuity.md` S2 item 8, HRD-22). For each listed org, a late
-Approve of a parked plain card approves the same card once in the next run.
-`*` lists every org, and the default is empty. Its one reader is
-`acb_skills.late_approve.late_approve_on`, and the park, the late answer and
-the card gate each ask it. So a reload applies at once, and an org that leaves
-the list uses no grant. A flip stays OWNER-GATE (`enforcement-flip`).
 
 A reload does NOT apply any other key. The log names each one under
 `restart`. That includes:

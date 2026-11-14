@@ -344,3 +344,17 @@ def test_the_gate_step_diffs_against_the_first_parent_on_a_merge_ref():
     assert 'git rev-parse -q --verify HEAD^2' in run and 'gate_base="HEAD^1"' in run
     assert '--gate --base "$gate_base"' in run
     assert '--gate --base "$BASE"' not in run
+
+
+def test_the_lists_are_sorted_unique_and_one_entry_a_line():
+    """CIV-33 (task 3284): a PR that adds one name lands it at its sorted place,
+    not at the tail. Two PRs then edit different lines, and merge with no
+    conflict unless their names are neighbours. docs/merge_hotspots.md."""
+    data = json.loads((_ROOT / "tests/fences.json").read_text(encoding="utf-8"))
+    lists = {f"{lang}.{tier}": data[lang][tier] for lang in ("python", "ts") for tier in ("safety", "process")}
+    lists["r8.must_run"] = data["r8"]["must_run"]
+    lists["r8.never_skip"] = data["r8"]["never_skip"]
+    for name, items in lists.items():
+        assert items == sorted(set(items)), f"{name} must be sorted with no repeat"
+    text = (_ROOT / "tests/fences.json").read_text(encoding="utf-8")
+    assert not [ln for ln in text.splitlines() if ln.count('"tests/') > 1], "one entry on a line"
