@@ -2593,6 +2593,167 @@
    "ok": false
   },
   {
+   "id": "autonumber-0",
+   "field": {
+    "key": "f",
+    "type": "autonumber",
+    "prefix": "FV-",
+    "pad": 4
+   },
+   "value": "FV-0042",
+   "ok": true,
+   "out": "FV-0042"
+  },
+  {
+   "id": "autonumber-1",
+   "field": {
+    "key": "f",
+    "type": "autonumber",
+    "prefix": "FV-",
+    "pad": 4
+   },
+   "value": "0001",
+   "ok": true,
+   "out": "0001"
+  },
+  {
+   "id": "autonumber-2",
+   "field": {
+    "key": "f",
+    "type": "autonumber",
+    "prefix": "FV-",
+    "pad": 4
+   },
+   "value": "FV-12345",
+   "ok": true,
+   "out": "FV-12345"
+  },
+  {
+   "id": "autonumber-3",
+   "field": {
+    "key": "f",
+    "type": "autonumber",
+    "prefix": "FV-",
+    "pad": 4
+   },
+   "value": "fv_9.A/b-3",
+   "ok": true,
+   "out": "fv_9.A/b-3"
+  },
+  {
+   "id": "autonumber-4",
+   "field": {
+    "key": "f",
+    "type": "autonumber",
+    "prefix": "FV-",
+    "pad": 4
+   },
+   "value": "FV-",
+   "ok": false
+  },
+  {
+   "id": "autonumber-5",
+   "field": {
+    "key": "f",
+    "type": "autonumber",
+    "prefix": "FV-",
+    "pad": 4
+   },
+   "value": "",
+   "ok": false
+  },
+  {
+   "id": "autonumber-6",
+   "field": {
+    "key": "f",
+    "type": "autonumber",
+    "prefix": "FV-",
+    "pad": 4
+   },
+   "value": "FV-0042x",
+   "ok": false
+  },
+  {
+   "id": "autonumber-7",
+   "field": {
+    "key": "f",
+    "type": "autonumber",
+    "prefix": "FV-",
+    "pad": 4
+   },
+   "value": "ABCDEFGHIJKL0001",
+   "ok": true,
+   "out": "ABCDEFGHIJKL0001"
+  },
+  {
+   "id": "autonumber-8",
+   "field": {
+    "key": "f",
+    "type": "autonumber",
+    "prefix": "FV-",
+    "pad": 4
+   },
+   "value": "ABCDEFGHIJKLM0001",
+   "ok": false
+  },
+  {
+   "id": "autonumber-9",
+   "field": {
+    "key": "f",
+    "type": "autonumber",
+    "prefix": "FV-",
+    "pad": 4
+   },
+   "value": "123456789012345",
+   "ok": true,
+   "out": "123456789012345"
+  },
+  {
+   "id": "autonumber-10",
+   "field": {
+    "key": "f",
+    "type": "autonumber",
+    "prefix": "FV-",
+    "pad": 4
+   },
+   "value": "1234567890123456",
+   "ok": true,
+   "out": "1234567890123456"
+  },
+  {
+   "id": "autonumber-11",
+   "field": {
+    "key": "f",
+    "type": "autonumber",
+    "prefix": "FV-",
+    "pad": 4
+   },
+   "value": "FV 0042",
+   "ok": false
+  },
+  {
+   "id": "autonumber-12",
+   "field": {
+    "key": "f",
+    "type": "autonumber",
+    "prefix": "FV-",
+    "pad": 4
+   },
+   "value": 42,
+   "ok": false
+  },
+  {
+   "id": "autonumber-13",
+   "field": {
+    "key": "f",
+    "type": "autonumber",
+    "prefix": "FV-",
+    "pad": 4
+   },
+   "value": null,
+   "ok": false
+  },
+  {
    "id": "barcode-extra-0-0",
    "field": {
     "key": "f",

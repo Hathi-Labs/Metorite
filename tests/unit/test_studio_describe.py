@@ -196,11 +196,14 @@ def test_fields_part_gives_one_value_shape_for_each_new_type() -> None:
     Mutation: drop the `percent` line of `VALUE_SHAPES`. This test turns red.
     """
     f = run("fields")["fields"]
-    new = ["richText", "rating", "duration", "quantity", "percent", "barcode"]
+    new = ["richText", "rating", "duration", "quantity", "percent", "barcode", "autonumber"]
     assert list(f["value_shapes"]) == new
     assert "15% is 1500" in f["value_shapes"]["percent"]
     assert "unit" in f["value_shapes"]["quantity"]
-    assert f["spec_parts"] == {"rating": ["min", "max"], "quantity": ["units"], "barcode": ["format"]}
+    assert "FV-0042" in f["value_shapes"]["autonumber"]
+    assert f["spec_parts"] == {
+        "rating": ["min", "max"], "quantity": ["units"], "barcode": ["format"],
+        "autonumber": ["prefix", "pad", "reset"]}
 
 
 def test_a_package_read_keeps_the_parts_of_the_new_field_types() -> None:

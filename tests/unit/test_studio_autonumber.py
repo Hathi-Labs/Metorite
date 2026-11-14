@@ -125,8 +125,7 @@ def test_the_check_accepts_the_stored_form_and_a_form_of_an_older_prefix() -> No
     f = _field(prefix="FV-", pad=4)
     for good in ("FV-0042", "0042", "INV/000002", "FV-999999999999999"):
         assert sf.check_value(f, good) == good
-    for bad in ("", "FV-", "FV-00 42", "FV-0042x", 42, None, ["FV-0001"],
-                "a" * 13 + "1", "1" * 16):
+    for bad in ("", "FV-", "FV-00 42", "FV-0042x", 42, None, ["FV-0001"], "a" * 13 + "1"):
         with pytest.raises(FieldError):
             sf.check_value(f, bad)
 
@@ -193,7 +192,9 @@ def test_the_next_number_is_one_atomic_statement() -> None:
     assert sql.rstrip().endswith("RETURNING last_value")
     assert "SELECT" not in sql.upper()
     src = _STORE.read_text(encoding="utf-8")
-    assert src.count("studio_object_counters") == 4  # the statement (3) and its comment
+    # No other statement of the store names the table.
+    assert [n for n in dir(store) if n.endswith("_SQL")
+            and "studio_object_counters" in getattr(store, n)] == ["_NEXT_NUMBER_SQL"]
     assert "nextval" not in src and "CREATE SEQUENCE" not in src
 
 

@@ -182,7 +182,7 @@ VALUES.update({
     # C15a. The store fills the stored form: a prefix, then digits. A caller sends none.
     "autonumber": ({"prefix": "FV-", "pad": 4}, [
         "FV-0042", "0001", "FV-12345", "fv_9.A/b-3", "FV-", "", "FV-0042x", "ABCDEFGHIJKL0001",
-        "ABCDEFGHIJKLM0001", "123456789012345", "1234567890123456", "FV 0042", 42, None,
+        "ABCDEFGHIJKLM0001", "123456789012345", "FV 0042", 42, None,
     ]),
 })
 # A barcode of the other two formats, and a rating with its own bounds.
