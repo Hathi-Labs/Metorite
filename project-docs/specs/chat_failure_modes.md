@@ -3,9 +3,11 @@
 **Status: ACCEPTED, 2026-11-12 (D217). HRD-6 part 1 (the line of a slow tool) is BUILT
 dark, 2026-11-13 (PR 2238). HRD-1 (an unknown tool name) is BUILT, 2026-11-14:
 the answer is live, and the auto-load is dark behind `CHAT_TOOL_AUTOLOAD`.
-HRD-22 (a late approve acts once, task 3231) is BUILT dark behind
-`CHAT_LATE_APPROVE_ORGS`, 2026-11-14.** Owner ask of 2026-11-12,
-in chat. Epic task 2978 (project AI Chat Interface). It is part of WS-CHAT.
+HRD-22 (a late approve acts once, task 3231) is BUILT dark, 2026-11-14. Its
+flag is `CHAT_LATE_APPROVE_ORGS`.**
+
+Owner ask of 2026-11-12, in chat. Epic task 2978 (project AI Chat Interface).
+It is part of WS-CHAT.
 
 HRD-0 is task 2979. The owner accepted D-HRD-1 to D-HRD-6 of §8 as D217.
 D-HRD-7 of §8 is PROPOSED, and the owner has not decided it.
@@ -223,7 +225,12 @@ the owner. It takes no D number in `work_plan.md` §3.
 
 | # | Question | Proposed default |
 |---|---|---|
-| **D-HRD-7** | Is a late tap on Approve the member's own consent? | Yes, for one use: the same card, in the same thread, by the same member, within 30 minutes. Any other card asks again |
+| **D-HRD-7** | Is a late tap on Approve the member's own consent? | Yes, for one use: the same card, in the same thread, by the same member, within 30 minutes. Any other card asks again. An act that already ran never runs again on a late tap |
+
+Two limits wait for the owner, and the build keeps them as they are
+(`chat_run_continuity.md` S2 item 8). The 30 minutes start at the tap, not at
+the card. A parked card stays answerable for 7 days, so a card that parked 6
+days ago can still act when its text and its act keys are still equal.
 
 ## 9. What this spec does not own
 

@@ -271,6 +271,8 @@ default. OFF writes no row, parks no run, and reports every run as
    The build is AGENT-SAFE. The flag flip on production is OWNER-GATE
    (`enforcement-flip`). `chat_failure_modes.md` row C6 is the class, and
    D-HRD-7 (PROPOSED) is the rule. The module is `acb_skills/late_approve.py`.
+   Review round 1 (2026-11-14) changed the keys and added the rule that an
+   act runs once.
    - **The flag.** `CHAT_LATE_APPROVE_ORGS` is a comma list of org ids, or
      `*`. Empty is off, and that is the default. Off, nothing is read or
      written, and each card and each message is as before, byte for byte.
@@ -278,46 +280,64 @@ default. OFF writes no row, parks no run, and reports every run as
      applies a change (`docs/flag_reload.md`). It needs `CHAT_DURABLE_ASKS`,
      because only a durable row parks.
    - **The rule.** A late tap on Approve is the member's own consent. It
-     approves one card: the same card, in the same thread, for the same
+     approves one act: the same card, in the same thread, for the same
      member, within 30 minutes. The new run calls the tool again, and the
      gate says yes once, with no new card.
+   - **⚠️ Two limits for the owner (D-HRD-7).** The 30 minutes start at the
+     tap, not at the card. A parked card stays answerable for 7 days
+     (`CHAT_ASK_TTL_HOURS`), so a card that parked 6 days ago can still act,
+     if its text and its act keys are still equal. The build keeps both
+     limits as they are, because they are the owner's decision (D-HRD-7,
+     and D-RES-1 of §4.12).
+   - **The act.** The act of a card is its text and its act keys. The text is
+     `whatsapp_acts.card_text` of the clipped title, detail and context, with
+     the facts that the tool bound (`whatsapp_acts.card_facts`, WAC-4). The
+     act keys come from `ask_tools.act_keys`. A digest of the act names each
+     record. So twin cards of one act share one record, and a card of another
+     act never reads, uses or removes it.
    - **The cards that take a grant.** Only a plain confirmation card of
-     `request_confirmation`: no rows, no reply form, and no held send id. Each
-     act key of the card must name a write of `egress.HELD_CARD_WRITE_TOOLS`,
-     a first-party write that stays in Metorite. A card with rows, a card of
-     ticked rows, a reply form, an email card, an egress card and a WhatsApp
-     run never take a grant.
-   - **Step 1, the offer (the run).** `pending_ask.park` records what a plain
-     card binds, before the row moves to `parked`. The record holds the card
-     text (`whatsapp_acts.card_text` of the clipped title, detail and
-     context) and the act keys (`ask_tools.act_keys`). The key is
-     `key("chat-late-offer", member, thread, request id)`. It lives as long
-     as the row (`CHAT_ASK_TTL_HOURS`). The member is the verified member of
-     the run.
-   - **Step 2, the grant (the gateway).** `_late_answer_from_row` writes the
-     grant only after `move_ask` moved the row to `answered`. It writes one
-     only for the answer `APPROVE` of a parked `confirmation` row. It takes
-     the offer once (GETDEL), and writes `key("chat-late-approve", member,
-     thread)` for 30 minutes. The org and the member come from the session.
-     The thread and the request id come from the row.
-   - **Step 3, the use (the card gate).** Before a card goes out,
-     `request_confirmation` takes the grant once (GETDEL). It says yes only
-     when the org, the member, the thread, the card text and the act keys are
-     all equal. The org, the member and the thread come from the run, never
-     from input. A miss, a mismatch and a Redis fault each show the normal
-     card. A grant that a card does not match is gone too.
+     `request_confirmation`: no rows, no reply form, and no held send id. The
+     card is not cut: no field lost text to the clip, and the body holds no
+     cut mark (`card_body.is_cut`). The real tool of the call (`card_call`
+     binds it) passes the three tests of `egress.is_card_write_tool`. Its name
+     is on `HELD_CARD_WRITE_TOOLS`, its annotation says `card_write`, and its
+     parameters are the pinned set. So `bulk_update`, a send, an email card,
+     an egress card, a card of ticked rows and a WhatsApp run never take one.
+   - **Step 1, the offer (the run).** After the row moves to `parked`, and
+     while the card's Future still waits, `pending_ask.park` records the act.
+     It writes `key("chat-late-ask", member, thread, request id)` = the
+     digest, and `key("chat-late-offer", member, thread, digest)` = the act.
+     Both live until the row expires, and no longer. The member is the
+     verified member of the run, and the row must have asked that member.
+   - **Step 2, the grant (the gateway).** `_late_answer_from_row` calls
+     `grant_from_offer` only after `move_ask` moved the row to `answered`. It
+     takes the digest of the row once. Only the answer `APPROVE` of a parked
+     `confirmation` row then takes the offer and writes
+     `key("chat-late-approve", member, thread, digest)` for 30 minutes. The
+     org and the member come from the session. The thread and the request id
+     come from the row.
+   - **Step 3, the use (the card gate).** Before a plain card goes out,
+     `request_confirmation` takes the grant of its own digest once (GETDEL).
+     It says yes only when the text and the act keys are equal too. The org,
+     the member and the thread come from the run, never from input. A miss, a
+     mismatch and a Redis fault each show the normal card.
+   - **An act runs once.** Each approve of a plain card marks the act SPENT
+     on its offer key, and removes its grant. That covers a live approve and
+     a used grant. The mark lasts 30 minutes, and longer than the park
+     window. So a stale twin card that parked earlier writes nothing on a late
+     tap, and a twin that parks later records no offer.
    - **The new message.** When the gateway writes a grant, the late answer
-     gets one more paragraph after `My answer: APPROVE`. It tells the model
-     that the member approved after the chat stopped waiting. It tells the
-     model to make the same call again with the same values, and not to plan
-     again. With no grant, the message is as before.
-   - **A decline.** A "Not now" and a `REJECT` write nothing and open nothing,
-     as before.
-   - **The key, against the audit.** The audit asked for the request id in
-     the grant key. The new card has a new request id, so the gate cannot name
-     the old one, and a SCAN in the card path is slow. So the offer key holds
-     the request id, and the grant record holds it as a value.
-   - **No migration.** Both records live in tenant Redis, through
+     gets one more paragraph after `My answer: APPROVE`. It says that the
+     member approved after the chat stopped waiting. It tells the model not
+     to run the call again if it already ran, and else to make it once with
+     the same values. The chat still draws the turn as an approve
+     (`cardAnswer.ts`). With no grant, the message is as before.
+   - **The offer goes with its row.** A "Not now", a `REJECT` and an answer
+     during the park write nothing and drop the offer. A twin of the same act
+     then shows its card: the safe side. A chat delete and an edit close rows
+     in SQL and do not call Redis. Their offers then have no waiting row that
+     leads to them, and they expire with the row.
+   - **No migration.** Each record lives in tenant Redis, through
      `acb_common.tenant_redis`. `chat_pending_ask` does not change (R6).
 
 **Where the build differs from the text above.**
