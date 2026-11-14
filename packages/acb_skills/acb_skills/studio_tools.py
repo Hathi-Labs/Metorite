@@ -1238,7 +1238,7 @@ FRAME_STEPS: list[dict[str, Any]] = [
              {"op": "add", "path": "/pages/0/tabs",
               "value": [{"id": "main", "title": "Main", "cells": [_C0, _C1]}]}]},
     {"act": "Return to a flat page (here page 1).",
-     "how": "Remove its `tabs`. Add `cells` with the cells of the tabs copied into it.",
+     "how": "Remove its `tabs`. Add `cells` with the cells of the tabs copied into it. The flat list holds at most 12 cells, so keep at most 12 in all.",
      "ops": [{"op": "remove", "path": "/pages/1/tabs"},
              {"op": "add", "path": "/pages/1/cells", "value": [{"view": "all-tasks"}, _C1]}]},
     {"act": "Move a tab to a new index.",
