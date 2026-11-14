@@ -69,6 +69,9 @@ WHEN = {
     # STB-6b: the small pack of the workflow writes, of the studio owner.
     "studio-workflows": (
         "Load to publish a workflow, roll it back to a version, pause it or turn it on again."),
+    # STU-AF10b-3: the one-tool pack of the saved views, of the studio owner.
+    "studio-views": (
+        "Load to list, save, rename, share or delete the saved views of a Studio app."),
 }
 
 

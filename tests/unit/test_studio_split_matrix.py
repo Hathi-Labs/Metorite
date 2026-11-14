@@ -182,13 +182,13 @@ def _size(slug: str) -> int:
 
 def _allowed(workflows: bool) -> frozenset[str]:
     """The packs of a box whose ``TOOL_PACKS`` names each pack that follows no
-    other, less the dark ``studio-workflows`` (an owner-only line). The
+    other, less the dark ``studio-workflows`` and ``studio-views`` (owner-only lines). The
     followers come in through :func:`tool_packs.with_followers`, as
     ``packs_on`` adds them. So an entry of FOLLOWS changes this list."""
     every = frozenset(sf.pack_slugs())
     if workflows:
         return every
-    named = every - frozenset(tp.FOLLOWS) - {"studio-workflows"}
+    named = every - frozenset(tp.FOLLOWS) - {"studio-workflows", "studio-views"}
     return tp.with_followers(named) & every
 
 
@@ -441,6 +441,11 @@ def test_studio_workflows_stays_out_of_follows_and_out_of_the_matrix() -> None:
     FOLLOWS. Mutation: add ``"studio-workflows": "studio"`` to FOLLOWS -> red."""
     assert "studio-workflows" not in tp.FOLLOWS
     assert "studio-workflows" not in _allowed(False)
+    # STU-AF10b-3: the pack of the saved views is dark too, and no case here names it.
+    # Mutation: add ``"studio-views": "studio"`` to FOLLOWS -> red.
+    assert "studio-views" not in tp.FOLLOWS
+    assert "studio-views" not in _allowed(False)
+    assert all("studio-views" not in row["packs"] for row in matrix().values())
     for key, row in matrix().items():
         case = key.split("|", 1)[0]
         if "studio-workflows" in row["packs"]:

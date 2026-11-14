@@ -1115,7 +1115,7 @@ _STUDIO_WORKFLOWS_WORDS = (
 
 #: The rules of the ``studio-views`` pack (STU-AF10b-3, ``ai_studio.md`` §14
 #: AF-10b). The one tool that it names is the tool of this pack.
-_STUDIO_VIEWS_RULES = """STUDIO VIEW TOOL. You hold the tool that manages the saved views of a Studio app. Use it yourself.
+_STUDIO_VIEWS_RULES = """STUDIO VIEW TOOL. You hold studio_view_manage, the tool that manages the saved views of a Studio app. Use it yourself.
 - A view is a saved filter, sort, layout and column list of one object. Each
   call sends the op, the package id and the object name. Read the package
   first for the ids and the object names. Never guess an id.
