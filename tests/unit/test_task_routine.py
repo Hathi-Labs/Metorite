@@ -83,6 +83,18 @@ def test_the_loop_sets_done_only_after_the_merge_then_finishes_the_run():
     assert land.index("After the merge") < land.index("`finish_agent_run`")
 
 
+def test_a_hand_over_waits_for_the_bots_line_and_shows_the_wait():
+    """CIV-28c fix round 1: no box actor writes to Metorite, so the session waits for
+    the bot's DONE or BACK line. The run shows the wait, and DONE is the merge."""
+    board = _task_board()
+    land = board[board.index("7 Land"):board.index("A test run in the background")]
+    assert "`waiting: {on: ci}`" in land and "The bot's `DONE` line is the merge" in land
+    assert "keep the task in review, then `finish_agent_run`" not in land
+    routine = _claude_routine()
+    assert "the session waits for the bot's line" in routine
+    assert "its `DONE` line is the merge" in routine
+
+
 def test_the_loop_reads_the_answer_before_it_reports_awaiting_owner():
     board = _task_board()
     assert "Do not report `AWAITING-OWNER` before that read" in board
