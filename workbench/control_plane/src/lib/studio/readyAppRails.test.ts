@@ -11,6 +11,7 @@ const DIR = resolve(process.cwd(), "../../packages/acb_common/acb_common/studio_
 const FILES = { "field_visits": "engineer", "support_desk": "assignee", "purchase_requests": "requester" } as const;
 
 type Doc = {
+  id: string;
   objects: { name: string; fields: { key: string; type: string }[] }[];
   actions: { id: string; uses: string }[];
   views: ViewDef[];
@@ -33,7 +34,13 @@ describe.each(Object.entries(FILES))("%s rail counts", (file, person) => {
     expect(mine).toEqual({ action: `object:${obj.name}.list`,
       args: { limit: 1, filter: [{ field: person, op: "eq", value: "me" }] } });
     const open = countSourceFor(model("open"), doc.views, doc.objects, doc.actions);
-    expect(open?.args?.filter).toHaveLength(1);
+    // The Open filter hides each closed stage and nothing else (purchase requests: rejected and ordered are closed).
+    const OPEN_FILTER: Record<string, unknown> = {
+      "field-visits": [{ field: "status", op: "ne", value: "done" }],
+      "support-desk": [{ field: "status", op: "ne", value: "solved" }],
+      "purchase-requests": [{ field: "status", op: "in", value: ["draft", "submitted", "approved"] }],
+    };
+    expect(open?.args?.filter).toEqual(OPEN_FILTER[doc.id]);
     expect(countSourceFor(model("dashboard"), doc.views, doc.objects, doc.actions)).toBeNull();
   });
 
