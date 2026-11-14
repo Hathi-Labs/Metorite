@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ViewDef } from "./manifest";
 import { NOT_DECLARED_SENTENCE, READ_ONLY_SENTENCE, type DeclaredAction, type ObjectRow } from "./realDoor";
-import { VIEW_LIMIT, mapView, type ViewMapContext } from "./viewBlocks";
+import { CALENDAR_START_SENTENCE, VIEW_LIMIT, mapView, type ViewMapContext } from "./viewBlocks";
 
 const visit = {
   name: "visit", label: "Visit", rules: [],
@@ -18,6 +18,17 @@ const visit = {
     { key: "title", type: "text", label: "Title", required: true, many: false, options: null, to: null, hot: false },
     { key: "status", type: "select", label: "Status", required: false, many: false, options: ["open", "done"], to: null, hot: false },
     { key: "notes", type: "longText", label: "Notes", required: false, many: false, options: null, to: null, hot: false },
+  ],
+} as unknown as ObjectRow;
+
+/** The visit object with the date fields that a calendar needs. */
+const dated = {
+  ...visit,
+  fields: [
+    ...(visit.fields as unknown as object[]),
+    { key: "visit_at", type: "datetime", label: "Visit at", required: false, many: false, options: null, to: null, hot: true },
+    { key: "visit_end", type: "datetime", label: "Visit end", required: false, many: false, options: null, to: null, hot: false },
+    { key: "visit_day", type: "date", label: "Visit day", required: false, many: false, options: null, to: null, hot: true },
   ],
 } as unknown as ObjectRow;
 
@@ -136,9 +147,65 @@ describe("mapView: form and detail", () => {
   });
 });
 
+describe("mapView: calendar", () => {
+  const cctx = (over: Partial<ViewMapContext> = {}) => ctx({ objects: [dated], ...over });
+  const cal = (v: Partial<ViewDef> = {}) =>
+    view({ id: "c", block: "calendar", object: "visit", start: "visit_at", ...v });
+
+  it("maps to the calendar model with the start, the end, the list and the link base", () => {
+    const m = mapView(cal({ end: "visit_end", title: "Field visits" }), cctx({ recordBase: (o) => `?ro=${o}&rec=` }));
+    expect(m).toEqual({
+      kind: "calendar", object: "visit", start: "visit_at", startType: "datetime", end: "visit_end", titleField: "title",
+      source: { action: "object:visit.list", args: { limit: VIEW_LIMIT } }, openBase: "?ro=visit&rec=", title: "Field visits",
+    });
+  });
+
+  it("takes a date field as the start, and gives no link when the frame has no record page", () => {
+    const m = mapView(cal({ start: "visit_day" }), cctx());
+    expect(m).toMatchObject({ kind: "calendar", start: "visit_day", startType: "date", end: null, openBase: null });
+  });
+
+  it("keeps the own filter of the view in the source, before the window", () => {
+    const filter = [{ field: "status", op: "eq", value: "open" }];
+    const m = mapView(cal({ source: { action: "list_visits", args: { filter } } }), cctx());
+    expect(m).toMatchObject({ source: { args: { limit: VIEW_LIMIT, filter } } });
+  });
+
+  it("gives a plain sentence when the view has no start field", () => {
+    expect(mapView(cal({ start: null }), cctx())).toEqual({ kind: "problem", reason: CALENDAR_START_SENTENCE });
+    expect(mapView(cal({ start: "no_such" }), cctx())).toEqual({ kind: "problem", reason: CALENDAR_START_SENTENCE });
+    expect(CALENDAR_START_SENTENCE).toBe("This calendar needs a start field that is a date or datetime.");
+  });
+
+  it("gives that sentence when the start is a text field", () => {
+    expect(mapView(cal({ start: "title" }), cctx())).toEqual({ kind: "problem", reason: CALENDAR_START_SENTENCE });
+  });
+
+  it("ignores an end that is not a date or datetime", () => {
+    expect(mapView(cal({ end: "title" }), cctx())).toMatchObject({ kind: "calendar", end: null });
+  });
+
+  it("refuses a source that names an undeclared action", () => {
+    const m = mapView(cal({ source: { action: "no-such-action" } }), cctx());
+    expect(m).toEqual({ kind: "problem", reason: NOT_DECLARED_SENTENCE });
+  });
+
+  it("reads for a viewer, and a viewer without a list gets the not-declared sentence", () => {
+    expect(mapView(cal(), cctx({ actions: READS, owner: false }))).toMatchObject({ kind: "calendar" });
+    expect(mapView(cal(), cctx({ actions: [] }))).toEqual({ kind: "problem", reason: NOT_DECLARED_SENTENCE });
+  });
+
+  it("names the record by card.title, else the first text field, else the id", () => {
+    expect(mapView(cal({ card: { title: "status" } }), cctx())).toMatchObject({ titleField: "status" });
+    expect(mapView(cal({ card: { title: "no_such" } }), cctx())).toMatchObject({ titleField: "title" });
+    const noText = { ...dated, fields: (dated.fields as unknown as { type: string }[]).filter((f) => f.type !== "text") } as unknown as ObjectRow;
+    expect(mapView(cal(), ctx({ objects: [noText] }))).toMatchObject({ titleField: "id" });
+  });
+});
+
 describe("mapView: kinds that are not built, and the door guard", () => {
   it("gives null for a kind that is not built, so StudioPage shows the not-built card", () => {
-    for (const block of ["calendar", "timeline", "mindMap", "processFlow", "checklist", "map", "markdown"] as const) {
+    for (const block of ["timeline", "mindMap", "processFlow", "checklist", "map", "markdown"] as const) {
       expect(mapView(view({ id: "x", block, object: "visit" }), ctx())).toBeNull();
     }
   });

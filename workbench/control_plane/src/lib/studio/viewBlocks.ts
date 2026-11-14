@@ -4,7 +4,7 @@
  *
  * It composes the builders that exist. A table uses `tableBlock`, a board uses
  * `objectBoardBlock`, and a chart or a stat uses `chartViewBlock` and `statViewBlock` of D4c.
- * A form and a detail are components, so the mapper gives the fields and the action, and the
+ * A form, a detail and a calendar are components, so the mapper gives the fields and the action, and the
  * app frame draws them. A view of another kind gives `null`, and `StudioPage` then shows the
  * "not built yet" card (D11b). The mapper adds no block and no node type.
  *
@@ -71,15 +71,34 @@ export interface ViewDetail {
   source: { action: string; args: Record<string, unknown> };
 }
 
+export interface ViewCalendar {
+  kind: "calendar";
+  object: string;
+  /** The date or datetime field that places a record. */
+  start: string;
+  startType: "date" | "datetime";
+  /** The field that ends a record, or null. */
+  end: string | null;
+  /** The field that names a record: `card.title`, else the first text field, else `id`. */
+  titleField: string;
+  /** The `list` of the object. The block adds the date window to its `filter`. */
+  source: { action: string; args: Record<string, unknown> };
+  /** The start of the record link, or null when the app declares no get. */
+  openBase: string | null;
+  title: string;
+}
+
 export interface ViewProblem {
   kind: "problem";
   /** One plain sentence for the member. */
   reason: string;
 }
 
-export type ViewModel = ViewNode | ViewForm | ViewDetail | ViewProblem;
+export type ViewModel = ViewNode | ViewForm | ViewDetail | ViewCalendar | ViewProblem;
 
 const problem = (reason: string): ViewProblem => ({ kind: "problem", reason });
+/** The sentence for a calendar with no usable start field. */
+export const CALENDAR_START_SENTENCE = "This calendar needs a start field that is a date or datetime.";
 const WRITE_CREATE = /^object:[a-z][a-z0-9_]{0,47}\.create$/;
 
 /**
@@ -90,7 +109,7 @@ export function mapView(view: ViewDef, ctx: ViewMapContext): ViewModel | null {
   // The layout switch moves the same rows between a table and a board.
   const block = lens?.layout ?? view.block;
   const label = view.title?.trim() || view.id;
-  const kinds = ["table", "board", "chart", "stat", "form", "detail"];
+  const kinds = ["table", "board", "chart", "stat", "form", "detail", "calendar"];
   if (!kinds.includes(view.block)) return null;
 
   // The door guard: a source that names an undeclared action is refused, and no read is made.
@@ -136,6 +155,24 @@ export function mapView(view: ViewDef, ctx: ViewMapContext): ViewModel | null {
     }
     case "detail":
       return { kind: "detail", fields: detailFields(shown), source: list };
+    case "calendar": {
+      const startField = specs.find((f) => f.key === view.start);
+      if (!startField || (startField.type !== "date" && startField.type !== "datetime") || startField.many) {
+        return problem(CALENDAR_START_SENTENCE);
+      }
+      const endField = specs.find((f) => f.key === view.end);
+      const end = endField && (endField.type === "date" || endField.type === "datetime") && !endField.many ? endField.key : null;
+      // The title: `card.title` when it names a field, else the first text field, else the id.
+      const named = specs.find((f) => f.key === view.card?.title);
+      const titleField = named?.key ?? specs.find((f) => f.type === "text" && !f.many)?.key ?? "id";
+      // The own filter of the view comes first. The block adds the window after it.
+      const own = Array.isArray(view.source?.args?.filter) ? view.source.args.filter : [];
+      return {
+        kind: "calendar", object: name, start: startField.key, startType: startField.type, end, titleField,
+        source: { action: list.action, args: { limit: VIEW_LIMIT, ...(own.length ? { filter: own } : {}) } },
+        openBase: ctx.recordBase?.(name) ?? null, title: view.title ?? object.label ?? object.name,
+      };
+    }
     case "form": {
       if (!ctx.owner) return problem(READ_ONLY_SENTENCE);
       const submit = view.submit ? ctx.actions.find((a) => a.id === view.submit)?.uses : `object:${name}.create`;
