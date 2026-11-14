@@ -17,8 +17,10 @@ most :data:`MAX_BYTES` bytes of text and :data:`MAX_COLUMNS` columns. A plan
 with more than :data:`APPROVAL_ROWS` valid rows has ``needs_approval``: the
 door asks for ONE approval of the whole list, bound to its digest.
 
+**Rows.** A row number counts the rows with a cell, from 1, after the header. A blank line has no number.
+
 **Cells.** An empty cell is no value. A date is ``YYYY-MM-DD`` and a date and
-time is RFC 3339 with an offset. A checkbox takes true, false, yes, no, 1 or
+time is RFC 3339 with an offset. A checkbox takes true, false, yes, no, y, n, 1 or
 0. A money amount is decimal text in the currency that the caller names. A
 percent is ``12.5`` or ``12.5%``, stored in basis points. A many field and a
 multi-select take values split on ``;``. A person, a relation, a file, a geo
@@ -42,7 +44,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from acb_common import studio_fields
-from acb_common.studio_fields import FieldError, FieldSpec, RecordError
+from acb_common.studio_fields import NAME_PATTERN, FieldError, FieldSpec, RecordError
 
 from gateway.studio.batch_store import MAX_BATCH_ITEMS, BatchItem, list_digest
 from gateway.studio.objects_store import Write
@@ -64,6 +66,7 @@ UNMAPPABLE: frozenset[str] = frozenset({"person", "relation", "file", "geo", "qu
 
 _TRUE = frozenset({"true", "yes", "y", "1"})
 _FALSE = frozenset({"false", "no", "n", "0"})
+_KEY_RE = re.compile(NAME_PATTERN, re.ASCII)
 _NUMBER_RE = re.compile(r"-?[0-9]{1,15}(?:\.[0-9]+)?", re.ASCII)
 
 
@@ -130,9 +133,13 @@ def parse_csv(text: str) -> Table:
     if not text.strip():
         raise CsvImportError("The CSV is empty.")
     delimiter = _delimiter(text)
+    grid: list[list[str]] = []
     try:
-        grid = [r for r in csv.reader(io.StringIO(text, newline=""), delimiter=delimiter,
-                                      strict=True) if any(c.strip() for c in r)]
+        for r in csv.reader(io.StringIO(text, newline=""), delimiter=delimiter, strict=True):
+            if any(c.strip() for c in r):
+                grid.append(r)
+                if len(grid) > MAX_ROWS + 1:  # stop at the cap: no 1M-row grid
+                    raise CsvImportError(f"The CSV has more than {MAX_ROWS} rows. Split it.")
     except csv.Error:
         raise CsvImportError("The CSV is not well formed. Check the quotes.") from None
     if not grid:
@@ -151,10 +158,20 @@ def parse_csv(text: str) -> Table:
 
 
 def _delimiter(text: str) -> str:
-    first = text.lstrip("\r\n").split("\n", 1)[0]
-    counts = {d: first.count(d) for d in (",", ";", "\t")}
-    best = max(counts, key=lambda d: counts[d])
-    return best if counts[best] else ","
+    """The separator that gives the first record the most columns, read with
+    the quotes. A quoted header that holds a ``;`` does not count."""
+    best, width = ",", 0
+    for d in (",", ";", "\t"):
+        try:
+            first = next(
+                csv.reader(io.StringIO(text.lstrip("\r\n"), newline=""), delimiter=d, strict=True),
+                [],
+            )
+        except csv.Error:
+            continue
+        if len(first) > width:
+            best, width = d, len(first)
+    return best
 
 
 # --- the map ------------------------------------------------------------------
@@ -181,17 +198,21 @@ def suggest_mapping(headers: Sequence[str], fields: Sequence[FieldSpec]) -> dict
     return out
 
 
-def _check_mapping(headers: Sequence[str], fields: Sequence[FieldSpec],
-                   mapping: Mapping[str, str]) -> dict[str, FieldSpec]:
+def _check_mapping(
+    headers: Sequence[str], fields: Sequence[FieldSpec], mapping: Mapping[str, str]
+) -> dict[str, FieldSpec]:
     by_key = {f.key: f for f in fields}
     used: dict[str, FieldSpec] = {}
     seen: set[str] = set()
     for header, key in mapping.items():
+        if not isinstance(header, str) or not isinstance(key, str):
+            raise CsvImportError("The map is column header to field key, both text.")
         if header not in headers:
             raise CsvImportError("The map names a column that the CSV does not have.")
         spec = by_key.get(key)
         if spec is None:
-            raise CsvImportError(f"The map names `{key}`, which is not a field of this object.")
+            shown = key if _KEY_RE.fullmatch(key) else "that key"
+            raise CsvImportError(f"The map names `{shown}`, which is not a field of this object.")
         if spec.lines is not None or spec.type in UNMAPPABLE:
             raise CsvImportError(f"Field `{key}` takes no value from a CSV cell.")
         if key in seen:
@@ -206,8 +227,49 @@ def _check_mapping(headers: Sequence[str], fields: Sequence[FieldSpec],
 # --- one cell -----------------------------------------------------------------
 
 
+#: The currencies that do not have 2 minor digits (ISO 4217). A money value is
+#: whole minor units, and the grid shows ``minor / 10 ** digits`` (fieldCheck.ts).
+MINOR_DIGITS: dict[str, int] = {
+    **dict.fromkeys(
+        (
+            "BIF",
+            "CLP",
+            "DJF",
+            "GNF",
+            "ISK",
+            "JPY",
+            "KMF",
+            "KRW",
+            "PYG",
+            "RWF",
+            "UGX",
+            "UYI",
+            "VND",
+            "VUV",
+            "XAF",
+            "XOF",
+            "XPF",
+        ),
+        0,
+    ),
+    **dict.fromkeys(("BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"), 3),
+    "CLF": 4,
+    "UYW": 4,
+}
+_THOUSANDS_RE = re.compile(r"-?[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?", re.ASCII)
+#: A float keeps 15 significant digits exactly. A number field refuses more.
+_MAX_DIGITS = 15
+
+
 def _decimal(f: FieldSpec, cell: str) -> Decimal:
-    text = cell.replace(",", "").replace(" ", "")
+    """The decimal of *cell*. A comma is a thousands group only: ``1,234.5``.
+    ``1,5`` is refused, because a European file means 1.5 and a read as 15
+    would be a silent ten-fold error. A space inside is refused too."""
+    text = cell
+    if "," in text:
+        if not _THOUSANDS_RE.fullmatch(text):
+            raise FieldError(f.key, f"Field `{f.key}` takes a number as 1234.5 or 1,234.5.")
+        text = text.replace(",", "")
     if not _NUMBER_RE.fullmatch(text):
         raise FieldError(f.key, f"Field `{f.key}` takes a number as 1234.5, with no exponent.")
     try:
@@ -220,13 +282,22 @@ def _scalar(f: FieldSpec, cell: str, currency: str | None) -> Any:
     t = f.type
     if t == "number":
         d = _decimal(f, cell)
-        return int(d) if d == d.to_integral_value() else float(d)
+        if len(d.as_tuple().digits) > _MAX_DIGITS:
+            raise FieldError(f.key, f"Field `{f.key}` takes at most {_MAX_DIGITS} digits.")
+        if d == d.to_integral_value():
+            return int(d)
+        if "e" in repr(float(d)):
+            raise FieldError(f.key, f"Field `{f.key}` takes a number that is not this small.")
+        return float(d)
     if t == "money":
         if currency is None:
             raise FieldError(f.key, f"Field `{f.key}` needs a currency for the import.")
-        minor = _decimal(f, cell) * 100
+        digits = MINOR_DIGITS.get(currency, 2)
+        minor = _decimal(f, cell) * 10**digits
         if minor != minor.to_integral_value():
-            raise FieldError(f.key, f"Field `{f.key}` takes at most two decimals.")
+            raise FieldError(
+                f.key, f"Field `{f.key}` takes at most {digits} decimals in {currency}."
+            )
         return {"minor": int(minor), "currency": currency}
     if t == "percent":
         d = _decimal(f, cell.removesuffix("%").strip()) * 100
@@ -266,8 +337,14 @@ def coerce_cell(f: FieldSpec, cell: str, *, currency: str | None = None) -> Any:
 # --- the plan -----------------------------------------------------------------
 
 
-def plan_import(table: Table, fields: Sequence[FieldSpec], mapping: Mapping[str, str], *,
-                object_id: str, currency: str | None = None) -> Plan:
+def plan_import(
+    table: Table,
+    fields: Sequence[FieldSpec],
+    mapping: Mapping[str, str],
+    *,
+    object_id: str,
+    currency: str | None = None,
+) -> Plan:
     """Plan the import of *table* into the object *object_id*.
 
     *mapping* maps a header to a field key. A valid row becomes one create
@@ -280,10 +357,20 @@ def plan_import(table: Table, fields: Sequence[FieldSpec], mapping: Mapping[str,
     index = {h: i for i, h in enumerate(table.headers)}
     skipped = tuple(h for h in table.headers if h not in cols)
     mapped_keys = {f.key for f in cols.values()}
+    stuck = [f.key for f in fields if f.required and f.lines is None and f.type in UNMAPPABLE]
+    if stuck:
+        raise CsvImportError(
+            "This object cannot take a CSV import: "
+            + ", ".join(f"`{k}`" for k in stuck)
+            + " is required and takes no CSV cell. Add the records in the app, or make the field optional."
+        )
     missing = [f.key for f in fields if f.required and f.lines is None and f.key not in mapped_keys]
     if missing:
         raise CsvImportError(
-            "Map a column to each required field. Missing: " + ", ".join(f"`{k}`" for k in missing) + ".")
+            "Map a column to each required field. Missing: "
+            + ", ".join(f"`{k}`" for k in missing)
+            + "."
+        )
     items: list[BatchItem] = []
     preview: list[dict[str, Any]] = []
     errors: list[RowError] = []
@@ -291,6 +378,8 @@ def plan_import(table: Table, fields: Sequence[FieldSpec], mapping: Mapping[str,
     for n, row in enumerate(table.rows, start=1):
         data: dict[str, Any] = {}
         bad: list[RowError] = []
+        if len(row) > len(table.headers):
+            bad.append(RowError(n, None, "The row has more cells than the header has columns."))
         for header, spec in cols.items():
             i = index[header]
             cell = row[i] if i < len(row) else ""
@@ -313,9 +402,17 @@ def plan_import(table: Table, fields: Sequence[FieldSpec], mapping: Mapping[str,
             n_errors += len(bad)
             errors.extend(bad[: max(0, MAX_ERRORS - len(errors))])
             continue
-        items.append(BatchItem(key=f"row-{n}", writes=(Write(op="create", object_id=object_id, data=data),)))
+        items.append(
+            BatchItem(key=f"row-{n}", writes=(Write(op="create", object_id=object_id, data=data),))
+        )
         if len(preview) < PREVIEW_ROWS:
             preview.append(data)
-    return Plan(total_rows=len(table.rows), items=tuple(items), preview=tuple(preview),
-                errors=tuple(errors), errors_truncated=n_errors > len(errors),
-                needs_approval=len(items) > APPROVAL_ROWS, skipped_columns=skipped)
+    return Plan(
+        total_rows=len(table.rows),
+        items=tuple(items),
+        preview=tuple(preview),
+        errors=tuple(errors),
+        errors_truncated=n_errors > len(errors),
+        needs_approval=len(items) > APPROVAL_ROWS,
+        skipped_columns=skipped,
+    )
