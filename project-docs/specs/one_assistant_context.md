@@ -1932,7 +1932,8 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
   - The `Scenario` field `without_features` takes `studio` out of `member_features` for one chat.
   - Five Studio chats (`scenarios_studio.py`): `stu_skills`, `stu_new_app`, `stu_plain`, `stu_no_feature` and `stu_held`. Each has fewer than 12 words. No word of any pack matches them (`tool_packs.matched_layer`), so layer (a) never loads `studio` for them.
   - Six pure checks: `found_tool`, `search_round`, `not_searched`, `no_studio_names`, `held_note` and `schema_tokens`.
-  - Stop result 12, and the search numbers in the report: searches per turn, tools that ran after a find, false searches on their own, and schema tokens per request.
+  - Stop result 12 and the search numbers join the report.
+  - The numbers are the searches per turn, the tools that ran after a find, the false searches on their own, and the schema tokens per request.
   - `search` is listed in `--arms`. It prints SKIP until the settings hold `tool_search_orgs`. An unknown `--arms` value exits with status 2.
 - **One chat list for each arm.**
 
@@ -1951,6 +1952,7 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
 - **Order.** After PR 2318 and TS-2a PR 3, because the arm needs the flag `tool_search_orgs` and the tool `find_tools`.
 - **Files.** `evals/one_assistant_measure/run.py` (`scripted_models` raises `NotImplementedError` for `search` today) and `scenarios_studio.py`.
 - **Acceptance.** A scripted plan on the `search` arm calls `find_tools` once, then the Studio tool. `--scripted --arms pack,search` passes on both arms, with `found_tool`, `search_round`, `not_searched` and `schema_tokens` giving True. The layer of each found tool joins the report here, because it needs the product log of TS-2a.
+- **Held chat.** The check `held_note` may be impossible to satisfy if the Studio pack is not held in the product. TS-5b must check that the pack is held in a held chat before it relies on the check. On the `pack` arm the held answer of the `studio` load has no hold note, and the note is in the persona.
 - **Fence.** `tests/unit/test_one_assistant_measure_search.py`.
 
 **TS-6. Search over every pack (task 3200).**

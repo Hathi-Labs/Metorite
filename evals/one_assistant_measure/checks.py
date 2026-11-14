@@ -1146,6 +1146,16 @@ def _not_searched(obs: Observation, _arg: Any) -> bool | None:
     return not any(name == _loader_name(obs.arm) for name, _, _ in obs.trace)
 
 
+def _no_studio_ran(obs: Observation, _arg: Any) -> bool | None:
+    """A member without ``feature:studio``: no Studio tool RAN, though the model tried.
+    A call that the run refused (the tool is not in the request) is no run. None on the
+    delegation arm."""
+    if obs.arm not in PACK_ARMS:
+        return None
+    names = studio_tool_names()
+    return not any(n in names and not refused(r) for n, _, r in obs.trace)
+
+
 def _studio_texts(obs: Observation) -> list[str]:
     """Every text that a member's model reads: the answer, the ``find_tools``
     description, and the answer of each find or load."""
@@ -1243,6 +1253,7 @@ KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {
     "search_round": _search_round,
     "not_searched": _not_searched,
     "no_studio_names": _no_studio_names,
+    "no_studio_ran": _no_studio_ran,
     "held_note": _held_note,
     "schema_tokens": _schema_tokens,
 }

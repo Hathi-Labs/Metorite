@@ -159,7 +159,7 @@ def test_the_studio_tools_ran_in_the_orchestrators_own_run(scripted) -> None:
     assert ran[("stu_skills", 1)] == ["studio_skill_list"]
     assert ran[("stu_new_app", 1)] == ["studio_draft"]
     assert ran[("stu_plain", 1)] == []
-    assert ran[("stu_no_feature", 1)] == []
+    assert ran[("stu_no_feature", 1)] == ["studio_skill_list"]  # tried, and refused
     assert ran[("stu_held", 2)] == ["studio_skill_list"]
     assert all(r["checks"]["ran"] for r in rows)
 
@@ -200,7 +200,9 @@ def test_a_member_without_the_feature_sees_no_studio_name(scripted) -> None:
     row = next(r for r in rows if r["scenario"] == "stu_no_feature")
     assert row["checks"]["no_studio_names"] is True
     assert row["checks"]["lists_no_skill"] is True
-    assert row["checks"]["not_searched"] is True
+    assert row["checks"]["no_studio_ran"] is True
+    # the model TRIED: the load and the call are in the run, and the product refused both
+    assert row["work_tools"] == ["studio_skill_list"] and "studio" in row["loaded_by_model"]
 
 
 def test_the_search_only_checks_are_none_on_the_pack_arm(scripted) -> None:
@@ -481,6 +483,18 @@ def test_not_searched_fails_on_a_find_or_a_load() -> None:
     assert ck._not_searched(_obs(trace=[(ck.LOAD_TOOL, {}, "x")]), None) is True
     assert ck._not_searched(_obs(PACK, [_find()]), None) is True
     assert ck._not_searched(_obs("delegation", [_find()]), None) is None
+
+
+# ── no_studio_ran ──
+
+
+def test_no_studio_ran_passes_on_a_refused_try_and_fails_on_a_run() -> None:
+    """Mutation: drop the ``refused`` test, or make it always True → red."""
+    tried = [(ck.LOAD_TOOL, {"pack": "studio"}, "Not loaded."), _studio('Function "studio_skill_list" not found.')]
+    assert ck._no_studio_ran(_obs(PACK, tried), None) is True
+    assert ck._no_studio_ran(_obs(PACK, [*tried[:1], _studio()]), None) is False
+    assert ck._no_studio_ran(_obs(PACK, []), None) is True
+    assert ck._no_studio_ran(_obs("delegation", [_studio()]), None) is None
 
 
 # ── no_studio_names ──────────────────────────────────────────────────────────

@@ -104,10 +104,18 @@ STUDIO_SCENARIOS: tuple[Scenario, ...] = (
                 (
                     Check("no_studio_names"),
                     Check("answer_none", (*_DRAFTS, _LIVE), "lists_no_skill"),
-                    Check("not_searched"),
+                    Check("no_studio_ran"),
                     Check("no_unasked_write", 0),
                 ),
-                Plan((), "I cannot read saved skills in this chat."),
+                # The plan TRIES: it loads the pack and calls the tool, as a model
+                # that holds no hint of the gate would. The product answers 'Not loaded.
+                # "studio" is not a pack that you can load in this chat.' and 'Function
+                # "studio_skill_list" not found.' With the feature ON the tool runs, and
+                # no_studio_ran and no_studio_names fail.
+                Plan(
+                    (("studio_skill_list", {}),),
+                    "I cannot read saved skills in this chat.",
+                ),
             ),
         ),
         without_features=("studio",),
