@@ -201,9 +201,11 @@ def test_the_tool_takes_no_org_and_no_member_argument() -> None:
     assert tuple(fn.__name__ for fn in st.STUDIO_WORKFLOW_TOOLS) == ("studio_workflow_read",)
     fn = st.studio_workflow_read
     params = inspect.signature(fn).parameters
-    assert set(params) == {"workflow_id", "offset", "limit"}
+    # STU-E4b: ``run_id`` reads the steps of a run, in the same tool (the room limit).
+    assert set(params) == {"workflow_id", "offset", "limit", "run_id"}
     assert not set(params) & IDENTITY
     assert params["workflow_id"].default == "" and params["offset"].default == 0
+    assert params["run_id"].default == ""
     assert params["limit"].default == st.MAX_WORKFLOW_ROWS == 30
     assert inspect.iscoroutinefunction(fn)
     hints = fn.__tool_risk__
@@ -557,7 +559,8 @@ def test_the_parity_rows_name_the_two_tools() -> None:
     assert cp.COVERED["GET /api/workflows"] == "studio_workflow_read"
     assert cp.COVERED["GET /api/workflows/{}"] == "studio_workflow_read"
     assert "GET /api/workflows" not in cp.DEBT and "GET /api/workflows/{}" not in cp.DEBT
-    assert cp.DEBT_CEILING["workflows"] == 22
+    # STB-6b paid the four live routes (22 to 18): test_studio_workflow_write_tools.py.
+    assert cp.DEBT_CEILING["workflows"] == 18
 
 
 # -- 10. A blank id lists, and a cut says so -----------------------------------
