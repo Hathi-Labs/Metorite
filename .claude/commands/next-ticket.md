@@ -33,7 +33,7 @@ Sub-agents have no Metorite tools, so you post for them.
 | Before a wait of more than 2 minutes | While your own sub-agents work, post a thought at least once a minute. The run stays working, so set no wait. Only for CI, a deploy, a review or a person, or an external agent, post a `post_agent_activity` thought with `waiting: {on, until_minutes, note}`. `on` is `ci`, `review`, `deploy`, `member` or `agent`. `until_minutes` is 1 to 120. The run then shows waiting, not idle, until the time ends or your next line. A wait on a person for longer than 120 minutes is a question (`ask_on_task`) |
 | 3 Branch | Push the branch at its first commit. `add_task_reference` with the branch URL |
 | 4b Preview | `post_agent_activity` as a `response`, then `ask_on_task`. Read the answer with `get_agent_run` and `after` set to the question's seq. Do not report `AWAITING-OWNER` before that read. If the owner answers in chat and not on the task, record the answer with `record_outside_decision` before you go on |
-| 7 Land | The task URL goes in the PR body. `add_task_reference` with the PR URL. `set_task_status` to review if the project has a review status. After the merge, `set_task_status` to done, then `finish_agent_run` with what shipped and what is left |
+| 7 Land | The task URL goes in the PR body. `add_task_reference` with the PR URL. `set_task_status` to review if the project has a review status. After the merge, `set_task_status` to done, then `finish_agent_run` with what shipped and what is left. After a hand-over (LOW or STANDARD), comment the hand-over, keep the task in review, then `finish_agent_run`. Lane-merge moves it to done after the bot's `DONE` line |
 | A test run in the background | Cap it. Run `affected_tests.py --run`, which drops the known hangers and sets a 600 s timeout for each test. A wait of more than 45 minutes with no new output is a stall. Stop the wait, report it with `post_agent_activity` as an `error`, and find the hung test (CIV-15) |
 | Stop early | `release_task`, after a comment that says what is done, what is left and the next step |
 | A new spec slice | `create_task` for each new slice row, in Backlog, under the epic. Write the number in the row |
@@ -216,16 +216,35 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
   migrations on production's reduced copy. A pass posts `local-staging` on the
   head commit, and a new commit needs a new pass. Name the steps that ran in
   the PR body.
-- **Merge it and watch it** (root `CLAUDE.md` §3a and §4). Wait for `pr-check`
-  to go green. Then run `bash scripts/premerge.sh` in the worktree, in the
-  same command as the merge:
-  `bash scripts/premerge.sh > <log> 2>&1 && gh pr merge <n> --squash`. It tests
-  the merge with today's main. It runs the collision fences only: migration
-  numbers, H-ids and D-numbers. It names the files both sides changed. Add
-  `--with-tests` to run the affected tests too, on this PC (D176). From LD-10 it also refuses a migration or
-  build-path slice whose head commit has no `local-staging` pass. Exit 1 means merge `origin/main` into the branch, fix,
-  push, and run the gate and `pr-check` again. Then find the batch that holds
-  your merge, as the steps below say.
+- **Hand it over, or merge it yourself (CIV-28c).** The tier (1b) picks the
+  path. `ci_velocity.md` §8.5 owns the design.
+  - **LOW or STANDARD: hand it over.** The PR is ready when the verifier
+    passed and a line of the PR body starts with `VERIFY: PASS`. The owner
+    also approved the preview, if 4b needed it. Then run
+    `bash scripts/hand_over.sh <PR> <task> <tier> "<note>"`. It runs the
+    hand-over on the home box over `ssh metorite-home`, and it needs no
+    worktree there. The box checks the PR head, the body lines, a trial merge
+    with `main` and the migration numbers (R1).
+  - A refusal prints its reason and exits 1. Fix the cause, push, and run it
+    again. Exit 3 means that the box cannot take it. Say so on the task, and
+    merge it yourself, as for HIGH.
+  - When it prints `handed over`, comment on the task: "Handed to the merge
+    bot: <PR URL> at <sha>. Verify: <result>." Keep the task in review, call
+    `finish_agent_run`, and end the session. Do not wait for `pr-check`. The
+    merge bot waits for it, runs `premerge.sh`, and merges. It posts the
+    reason of each BACK on the PR as a comment.
+  - **HIGH: merge it yourself** (root `CLAUDE.md` §3a and §4). The bot never
+    merges a HIGH slice. Wait for `pr-check` to go green. Then run
+    `bash scripts/premerge.sh` in the worktree, in the same command as the merge:
+    `bash scripts/premerge.sh > <log> 2>&1 && gh pr merge <n> --squash`. It tests
+    the merge with today's main. It runs the collision fences only: migration
+    numbers, H-ids and D-numbers. It names the files both sides changed. Add
+    `--with-tests` to run the affected tests too, on this PC (D176). From LD-10 it also refuses a migration or
+    build-path slice whose head commit has no `local-staging` pass. Exit 1 means merge `origin/main` into the branch, fix,
+    push, and run the gate and `pr-check` again. Then find the batch that holds
+    your merge, as the steps below say.
+  - **A stacked slice** that needs its merge before the next slice can go on
+    may merge itself, as for HIGH. The PR body says why.
 - **Production moves three times a day, at 05:30, 13:30 and 21:30 UTC (D194).**
   Do not dispatch `deploy.yml` after a merge. Dispatch only for a hotfix
   that the owner asks for in this session,
@@ -234,17 +253,20 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
   `git log <prod applied_sha>..origin/main`, and you confirm the pre-migration
   backup for a migration.
   The home box starts each release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
-- Report "merged at `<sha>`, reaches production at the next release slot". After
+- After a merge of your own, report "merged at `<sha>`, reaches production at the next release slot". After
   the release, confirm `/version` `applied_sha`. Do not call it live before you
-  see that SHA.
+  see that SHA. After a hand-over, report "handed over at `<sha>`". The bot
+  merges it, and a later release slot ships it.
 - `RELEASE_HOLD` stops the slot releases only. Set it to `1` to hold the
   release of each slot until you clear it. `specs/staging_and_daily_release.md` owns the design.
-- Watch the job `Unit tests (a signal on a push, a gate on a release)` in that
+- After a merge of your own, watch the job `Unit tests (a signal on a push, a gate on a release)` in that
   same `deploy` run to its end. On a push it does not gate, so two PRs that
   pass alone and fail together can land on `main`. A red `main` does not hold
   the release (D218). Each slot ships `green/main`, the newest commit that
   passed the full suite (CIV-30). If the job is red, fix forward or revert at once, and
-  say so in the report. (No merge queue. Owner decision, 2026-10-16.)
+  say so in the report. (No merge queue. Owner decision, 2026-10-16.) After a
+  hand-over, the session does not watch the job. The auto-revert pass reads
+  each red batch of `main` (CIV-31).
   - If that job shows as cancelled and never started, another run took your
     merge into its batch. That run can be older or newer than yours. Find the
     push run whose `test` job started after your merge, and check that its
@@ -294,7 +316,7 @@ PREVIEW:  APPROVED | AWAITING-OWNER | skipped (nothing to see) — <the URL>
 VERIFY:   PASS | FAIL — <the decisive evidence>
 TIER:     HIGH | STANDARD | LOW — <one line why>
 REVIEW:   APPROVE | n findings | skipped (LOW)
-GATE:     pr-check PASS + premerge PASS | local-staging PASS (migration or build path) | FAIL at <step>
+GATE:     pr-check PASS + premerge PASS | handed over at <sha> (the bot gates) | local-staging PASS (migration or build path) | FAIL at <step>
 PR:       <url, or why none>
 BOARD:    <the task's status and run state (finished | awaiting | released), and the WS row>
 OWNER NEEDS TO: <gated actions, or "nothing">

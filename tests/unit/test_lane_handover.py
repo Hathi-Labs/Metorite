@@ -325,3 +325,144 @@ def test_the_default_queue_is_the_bots_new_queue(repo):
     assert r.returncode == 0, r.stderr
     assert (home / "lanes" / "merge-bot-queue.tsv").exists()
     assert not (home / "lanes" / "merge-queue.tsv").exists()
+
+
+# ── CIV-28c: a hand-over by PR number, with no lane worktree ────────────────
+
+
+@pytest.fixture
+def pr_repo(repo):
+    """The bot's own checkout `src`, apart from the session's worktree `wt`.
+
+    The PR head is published as refs/pull/77/head. The script never gets `wt`.
+    """
+    tmp, wt = repo
+    src = tmp / "src"
+    subprocess.run(
+        ["git", "clone", "-q", str(tmp / "origin.git"), str(src)], check=True, capture_output=True
+    )
+    (tmp / "t").mkdir()
+    return tmp, wt, src
+
+
+def _publish(wt):
+    git(wt, "push", "-q", "-f", "origin", "HEAD:refs/pull/77/head")
+    return git(wt, "rev-parse", "HEAD")
+
+
+def _run_pr(tmp, src, head, body=BODY, others="", tier="STANDARD", args=None):
+    env = {
+        **os.environ,
+        "PATH": f"{tmp / 'bin'}{os.pathsep}{os.environ['PATH']}",
+        "HANDOVER_QUEUE": str(tmp / "queue.tsv"),
+        "HANDOVER_REPO": str(src),
+        "TMPDIR": (tmp / "t").as_posix(),
+        "FAKE_HEAD": head,
+        "FAKE_BODY": body,
+        "FAKE_OTHERS": others,
+    }
+    argv = args or ["--pr", "77", "2207", "session@pc", tier, "note one"]
+    return subprocess.run(
+        [BASH, str(SCRIPT), *argv], cwd=tmp, env=env, capture_output=True, text=True
+    )
+
+
+def _no_temp_left(tmp, src):
+    """The temp worktree is gone: no folder, and no entry in the repo."""
+    assert list((tmp / "t").glob("handover-pr*")) == []
+    entries = git(src, "worktree", "list", "--porcelain").count("worktree ")
+    assert entries == 1, git(src, "worktree", "list")
+
+
+def test_civ28c_a_hand_over_by_pr_number_needs_no_lane_worktree(pr_repo):
+    tmp, wt, src = pr_repo
+    _commit(wt, "a.txt", "x\n")
+    head = _publish(wt)
+    src_head = git(src, "rev-parse", "HEAD")
+    r = _run_pr(tmp, src, head)
+    assert r.returncode == 0, r.stderr
+    assert _queue(tmp) == f"77\t2207\t-\tsession@pc\t{head}\tSTANDARD\tnote one\n"
+    assert "handed over: PR 77" in r.stdout
+    _no_temp_left(tmp, src)
+    # The bot's checkout keeps its HEAD and a clean tree.
+    assert git(src, "rev-parse", "HEAD") == src_head
+    assert git(src, "status", "--porcelain") == ""
+
+
+def test_civ28c_a_conflict_is_refused_and_the_temp_worktree_is_removed(pr_repo):
+    tmp, wt, src = pr_repo
+    _commit(wt, "notes.md", "mine\n")
+    head = _publish(wt)
+    git(wt, "checkout", "-q", "main")
+    _commit(wt, "notes.md", "theirs\n")
+    git(wt, "push", "-q", "origin", "main")
+    r = _run_pr(tmp, src, head)
+    assert r.returncode == 1 and "conflicts in" in r.stderr and "notes.md" in r.stderr
+    assert _queue(tmp) == ""
+    _no_temp_left(tmp, src)
+
+
+def test_civ28c_the_migration_check_runs_by_pr_number(pr_repo):
+    tmp, wt, src = pr_repo
+    _commit(wt, "infra/postgres/005_low.sql", "select 1;\n")
+    r = _run_pr(tmp, src, _publish(wt))
+    assert r.returncode == 1 and "not above main's highest number (10)" in r.stderr
+    git(wt, "rm", "-q", "infra/postgres/005_low.sql")
+    _commit(wt, "infra/postgres/011_mine.sql", "select 1;\n")
+    head = _publish(wt)
+    r = _run_pr(tmp, src, head, others="55 infra/postgres/011_theirs.sql\n")
+    assert r.returncode == 1 and "also taken by PR 55" in r.stderr
+    assert _queue(tmp) == ""
+    assert _run_pr(tmp, src, head, others="55 infra/postgres/012_theirs.sql\n").returncode == 0
+    _no_temp_left(tmp, src)
+
+
+def test_civ28c_verify_pass_and_visual_review_still_bind(pr_repo):
+    tmp, wt, src = pr_repo
+    _commit(wt, "workbench/control_plane/src/x.ts", "export {}\n")
+    head = _publish(wt)
+    r = _run_pr(tmp, src, head, body="Visual review: no UI change")
+    assert r.returncode == 1 and "VERIFY: PASS" in r.stderr
+    r = _run_pr(tmp, src, head, body="VERIFY: PASS\nno line here")
+    assert r.returncode == 1 and "Visual review:" in r.stderr
+    assert _queue(tmp) == ""
+    _no_temp_left(tmp, src)
+
+
+def test_civ28c_a_head_that_is_not_on_origin_is_refused(pr_repo):
+    tmp, wt, src = pr_repo
+    _commit(wt, "a.txt", "x\n")  # committed, never pushed
+    r = _run_pr(tmp, src, git(wt, "rev-parse", "HEAD"))
+    assert r.returncode == 1 and "is not on origin. Push first." in r.stderr
+    r = _run_pr(tmp, src, "")
+    assert r.returncode == 1 and "no head SHA" in r.stderr
+    assert _queue(tmp) == ""
+    _no_temp_left(tmp, src)
+
+
+def test_civ28c_the_union_driver_of_the_pr_head_applies(pr_repo):
+    # The temp worktree holds the files of the PR head, .gitattributes too. So the
+    # trial merge uses the union driver of INDEX.md, as in a lane worktree.
+    tmp, wt, src = pr_repo
+    git(wt, "checkout", "-q", "main")
+    _commit(wt, "project-docs/INDEX.md", "## ACTIVE\n| a.md | one |\n")
+    _commit(wt, ".gitattributes", "project-docs/INDEX.md merge=union\n")
+    git(wt, "push", "-q", "origin", "main")
+    git(wt, "checkout", "-q", "-b", "two", "main")
+    _commit(wt, "project-docs/INDEX.md", "## ACTIVE\n| a.md | mine |\n")
+    head = _publish(wt)
+    git(wt, "checkout", "-q", "main")
+    _commit(wt, "project-docs/INDEX.md", "## ACTIVE\n| a.md | theirs |\n")
+    git(wt, "push", "-q", "origin", "main")
+    r = _run_pr(tmp, src, head)
+    assert r.returncode == 1 and "lists a spec twice: a.md" in r.stderr, r.stderr
+    _no_temp_left(tmp, src)
+
+
+def test_civ28c_the_pr_mode_takes_five_arguments(pr_repo):
+    tmp, _wt, src = pr_repo
+    r = _run_pr(tmp, src, "0" * 40, args=["--pr", "77", "2207", "session@pc", "LOW"])
+    assert r.returncode == 2 and "--pr <PR> <task> <lane>" in r.stderr
+    r = _run_pr(tmp, src, "0" * 40, args=["--pr", "77", "2207", "session@pc", "medium", "n"])
+    assert r.returncode == 1 and "LOW, STANDARD or HIGH" in r.stderr
+    assert _queue(tmp) == ""

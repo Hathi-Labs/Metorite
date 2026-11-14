@@ -274,7 +274,9 @@ session that changes the repo or a box follows these steps:
 5. **Move the status** with `set_task_status`. Move the task to review when the pull request opens.
    A project with no review status keeps the task in progress. Move it to done
    after the merge, with the evidence in a comment. Then call
-   `finish_agent_run` with what shipped and what is left.
+   `finish_agent_run` with what shipped and what is left. After a hand-over
+   to the merge bot, keep the task in review and call `finish_agent_run`
+   (`next-ticket.md` step 7, CIV-28c).
 6. **Hand off when you stop.** Call `release_task`, with a note of what is
    done, what is left and the next step.
 7. **Give each spec slice a task.** A spec that adds slice rows gets a task

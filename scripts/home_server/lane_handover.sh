@@ -2,6 +2,13 @@
 # CIV-20 slice 1: the one way a lane hands a PR to the merge bot (CIV-28).
 #
 #   bash scripts/home_server/lane_handover.sh <PR> <task> <worktree> <lane> <tier> <note>
+#   bash scripts/home_server/lane_handover.sh --pr <PR> <task> <lane> <tier> <note>
+#
+# The --pr mode (CIV-28c) needs no lane worktree, so a session on any machine
+# can hand over. scripts/hand_over.sh runs it on the box over ssh. It makes a
+# temp worktree of this script's own checkout (on the box, the bot's checkout
+# ~/lanes/merge-bot-src) at the PR head, runs checks 2 to 4 there, and removes
+# it. Check 1 holds by construction. The queue line gets "-" as the worktree.
 #
 # <tier> is LOW, STANDARD or HIGH: the risk tier of the slice. The bot never
 # merges HIGH (D218 keeps the full loop for it), and it logs a BACK for it.
@@ -10,6 +17,8 @@
 # passes. The fields, with tabs between them, under one "#" header line:
 #   PR  task  worktree  lane  head_sha  tier  note
 # The head SHA pins the merge: the bot merges that commit and no other.
+# The bot does not read the worktree field. A "-" there means a hand-over by
+# PR number: lane-merge makes its own worktree for it.
 # The old ~/lanes/merge-queue.tsv stays as history. Nothing reads it now.
 #   1. the worktree is clean, and its HEAD is the head of the PR;
 #   2. a line of the PR body starts with "VERIFY: PASS" (the verifier passed).
@@ -21,12 +30,25 @@
 #   (There is no box-run check since D218, 2026-11-12: GitHub pr-check is the gate,
 #   and scripts/home_server/merge_bot.sh waits for it.)
 # A failed check prints its reason and exits 1. Nothing is appended.
-# Settings for a test: HANDOVER_BASE (default origin/main), HANDOVER_QUEUE.
+# Settings for a test: HANDOVER_BASE (default origin/main), HANDOVER_QUEUE,
+# HANDOVER_REPO (the --pr mode's repo, default this script's checkout).
 # Fence: tests/unit/test_lane_handover.py.
 set -uo pipefail
 
-[ $# -ge 6 ] || { echo "usage: lane_handover.sh <PR> <task> <worktree> <lane> <LOW|STANDARD|HIGH> <note>" >&2; exit 2; }
-PR="$1"; TASK="$2"; WT="$3"; LANE="$4"; TIER="$5"; shift 5; NOTE="$*"
+usage() {
+  echo "usage: lane_handover.sh <PR> <task> <worktree> <lane> <LOW|STANDARD|HIGH> <note>" >&2
+  echo "   or: lane_handover.sh --pr <PR> <task> <lane> <LOW|STANDARD|HIGH> <note>" >&2
+  exit 2
+}
+MODE=worktree
+if [ "${1:-}" = --pr ]; then
+  MODE=pr; shift
+  [ $# -ge 5 ] || usage
+  PR="$1"; TASK="$2"; WT=""; LANE="$3"; TIER="$4"; shift 4; NOTE="$*"
+else
+  [ $# -ge 6 ] || usage
+  PR="$1"; TASK="$2"; WT="$3"; LANE="$4"; TIER="$5"; shift 5; NOTE="$*"
+fi
 BASE="${HANDOVER_BASE:-origin/main}"
 QUEUE="${HANDOVER_QUEUE:-$HOME/lanes/merge-bot-queue.tsv}"
 fail() { echo "HANDOVER REFUSED: $*" >&2; exit 1; }
@@ -35,14 +57,45 @@ for v in "$PR" "$TASK"; do
 done
 case "$TIER" in LOW|STANDARD|HIGH) ;; *) fail "the tier is LOW, STANDARD or HIGH: got '$TIER'";; esac
 case "$LANE$NOTE" in *$'\t'*|*$'\n'*) fail "the lane or the note holds a tab or a newline. The queue is one TSV line.";; esac
-[ -d "$WT" ] || fail "no worktree at $WT"
-cd "$WT" || fail "cannot enter $WT"
-WT="$(pwd -P)"  # lane-merge runs from another directory, so the queue needs an absolute path
 
-# 1. Clean tree, and the PR head is this HEAD.
-[ -z "$(git status --porcelain)" ] || fail "the worktree has uncommitted changes. Commit and push them first."
-head_pr="$(gh pr view "$PR" --json headRefOid -q .headRefOid)" || fail "gh cannot read PR $PR"
-[ "$head_pr" = "$(git rev-parse HEAD)" ] || fail "PR $PR head is ${head_pr:0:9}, and this worktree is at $(git rev-parse --short=9 HEAD). Push first."
+if [ "$MODE" = pr ]; then
+  # CIV-28c: the checks run in a temp worktree that this script owns, never in a
+  # lane's worktree. The trap removes it on every exit, a refusal too.
+  REPO="${HANDOVER_REPO:-$(dirname "${BASH_SOURCE[0]}")/../..}"
+  cd "$REPO" 2>/dev/null || fail "cannot enter the repo $REPO"
+  REPO="$(pwd -P)"
+  head_pr="$(gh pr view "$PR" --json headRefOid -q .headRefOid)" || fail "gh cannot read PR $PR"
+  head_pr="$(tr -d '\r' <<< "$head_pr")"
+  [[ "$head_pr" =~ ^[0-9a-f]{40}$ ]] || fail "gh gave no head SHA for PR $PR (got '$head_pr')"
+  # --no-write-fetch-head: the fetch changes no file of the repo's own checkout.
+  if ! git cat-file -e "$head_pr^{commit}" 2>/dev/null; then
+    git fetch -q --no-write-fetch-head origin "refs/pull/$PR/head" 2>/dev/null \
+      || git fetch -q --no-write-fetch-head origin "$head_pr" 2>/dev/null
+    git cat-file -e "$head_pr^{commit}" 2>/dev/null \
+      || fail "the head ${head_pr:0:9} of PR $PR is not on origin. Push first."
+  fi
+  TMPWT="$(mktemp -d "${TMPDIR:-/tmp}/handover-pr$PR.XXXXXX")" || fail "cannot make a temp folder"
+  cleanup() {
+    cd / 2>/dev/null  # Windows cannot remove a folder that is the current folder
+    git -C "$REPO" worktree remove --force "$TMPWT" >/dev/null 2>&1
+    rm -rf "$TMPWT"
+  }
+  trap cleanup EXIT
+  # No hooks: a post-checkout hook of the repo has no part in a check.
+  git -c core.hooksPath=/dev/null worktree add -q --detach "$TMPWT" "$head_pr" >/dev/null 2>&1 \
+    || fail "cannot make a temp worktree of $REPO at ${head_pr:0:9}"
+  cd "$TMPWT" || fail "cannot enter the temp worktree $TMPWT"
+  WT="-"
+else
+  [ -d "$WT" ] || fail "no worktree at $WT"
+  cd "$WT" || fail "cannot enter $WT"
+  WT="$(pwd -P)"  # lane-merge runs from another directory, so the queue needs an absolute path
+
+  # 1. Clean tree, and the PR head is this HEAD.
+  [ -z "$(git status --porcelain)" ] || fail "the worktree has uncommitted changes. Commit and push them first."
+  head_pr="$(gh pr view "$PR" --json headRefOid -q .headRefOid)" || fail "gh cannot read PR $PR"
+  [ "$head_pr" = "$(git rev-parse HEAD)" ] || fail "PR $PR head is ${head_pr:0:9}, and this worktree is at $(git rev-parse --short=9 HEAD). Push first."
+fi
 
 git fetch -q origin "${BASE#origin/}" 2>/dev/null || echo "warning: git fetch failed, so $BASE may be stale" >&2
 base="$(git merge-base HEAD "$BASE")" || fail "no merge base with $BASE"

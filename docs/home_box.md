@@ -202,13 +202,22 @@ merges it. The other lanes keep building. Its role is in
 
 | File on the box | What it holds |
 |---|---|
-| `~/lanes/merge-bot-queue.tsv` | One line for each hand-over: pull request, task, worktree, lane, head SHA, tier, note. Tabs between the fields, under a `#` header line. Only `lane_handover.sh` writes it. |
-| `~/lanes/merge-bot.log` | One line for each result: `DONE <pull request> <sha>`, `RESOLVED <pull request> <rules>` or `BACK <pull request> <reason>`. Only the merge bot writes it. |
+| `~/lanes/merge-bot-queue.tsv` | One line for each hand-over: pull request, task, worktree, lane, head SHA, tier, note. Tabs between the fields, under a `#` header line. Only `lane_handover.sh` writes it. A hand-over by PR number writes `-` as the worktree. |
+| `~/lanes/merge-bot.log` | One line for each result: `DONE <pull request> <sha>`, `RESOLVED <pull request> <rules>` or `BACK <pull request> <reason>`. Only the merge bot writes it. The bot also posts each BACK reason on the pull request as a comment. |
 | `~/lanes/merge-queue.tsv`, `~/lanes/merge-queue.log` | History of the lane-merge session, with HOLD, RED and NOTE lines that people wrote. Nothing reads them now. |
 
 A lane hands over a pull request only after three steps. The verifier passed,
 the review of its risk tier passed, and the owner approved its preview when
 it needed one.
+
+**A hand-over from any machine** (CIV-28c, task 3229). A session on the PC has
+no worktree on the box. It runs `bash scripts/hand_over.sh <PR> <task> <tier> "<note>"`.
+The wrapper runs `lane_handover.sh --pr` over `ssh metorite-home`, in the
+bot's checkout `~/lanes/merge-bot-src`. On the box as `dev`, it runs there
+with no ssh. The `--pr` mode makes a temp worktree of that checkout at the PR
+head. It runs the checks there and then removes the worktree. A refusal
+exits 1, and exit 3 means that the box cannot take it. A box lane can still
+give its own worktree to `lane_handover.sh`.
 
 **The merge bot** (D218, task 3053). `scripts/home_server/merge_bot.sh` merges
 the queued pull requests with no model and no Metorite credential. One pass
@@ -225,6 +234,11 @@ It then runs the trial merge with
 branch behind `main` still merges when the trial merge is clean. It never
 pushes, except the merge commit of a resolved conflict. It never passes `--admin` or `--auto`. `MERGE_BOT_DRY_RUN=1` prints
 the actions and calls no write command.
+
+Each BACK line, except `BACK <pull request> closed`, also goes on the pull
+request as a comment (CIV-28c). The comment holds the reason and the
+hand-over command. A failed comment changes no log line.
+`MERGE_BOT_BACK_COMMENT=0` turns the comment off.
 
 The bot takes only a PR of this repo with base `main`. A fork, another base,
 or a head branch with a protected name (`main`, `master`, `release`,

@@ -13,10 +13,13 @@
 # The queue is ~/lanes/merge-bot-queue.tsv, and only lane_handover.sh writes it.
 # One line per hand-over, tabs between the fields, under a "#" header line:
 #   PR  task  worktree  lane  head_sha  tier  note
+# The bot does not read the worktree field. A hand-over by PR number
+# (lane_handover.sh --pr, CIV-28c) writes "-" there.
 # The bot NEVER reads ~/lanes/merge-queue.tsv. That file holds the history of
 # the lane-merge session, with HOLD, RED and NOTE lines that people wrote.
 # The bot writes one result line per hand-over to ~/lanes/merge-bot.log, and
-# nothing else writes that file.
+# nothing else writes that file. Each BACK line, except "BACK <pr> closed",
+# also goes to the PR as a comment (CIV-28c, tell_back below).
 #
 # Per pending hand-over (the nth hand-over of a PR gets the nth result):
 #   merged -> DONE <pr> <sha>     closed -> BACK <pr> closed
@@ -61,6 +64,7 @@
 #   MERGE_BOT_LOCK [auto]  "mkdir" forces the mkdir lock (a test, or no flock)
 #   PREMERGE_CMD [timeout 900 bash scripts/premerge.sh]
 #   GH_CMD [gh]   MERGE_BOT_DRY_RUN=1: print actions, call no write command
+#   MERGE_BOT_BACK_COMMENT [1]  0 turns the PR comment of a BACK off
 #   MERGE_BASE_RETRY_WAIT [20]  seconds between the in-pass merge retries
 #   CONFLICT_RULES [1]  0 turns the CIV-34a conflict rules off: a conflict is a BACK
 #   CONFLICT_TEST_CMD [uv run --no-sync pytest -q -p no:cacheprovider]  gets the test
@@ -87,6 +91,8 @@ MERGE_RETRY_WAIT="${MERGE_BASE_RETRY_WAIT:-20}"
 CONFLICT_RULES="${CONFLICT_RULES:-1}"
 CONFLICT_TEST_CMD="${CONFLICT_TEST_CMD:-uv run --no-sync pytest -q -p no:cacheprovider}"
 CONFLICT_TEST_TIMEOUT="${CONFLICT_TEST_TIMEOUT:-900}"
+BACK_COMMENT="${MERGE_BOT_BACK_COMMENT:-1}"
+CUR_TASK=""; CUR_SHA=""; CUR_TIER=""  # the queue line in work, for the BACK comment
 # CIV-31b: the state of the auto-revert pass. open/<pr>.json holds the last tip
 # of main on which the pass tested the failed tests of that revert PR.
 AUTO_REVERT_STATE="${AUTO_REVERT_STATE:-$HOME/.cache/metorite-auto-revert}"
@@ -167,6 +173,26 @@ fi
 
 record() {  # record <line>: one result line in the log. A dry run only prints it.
   if [ "$DRY" = 1 ]; then say "DRY RUN would log: $*"; else printf '%s\n' "$*" >> "$LOG"; fi
+  case "$*" in "BACK "*) tell_back "$*" ;; esac
+}
+# tell_back <BACK line>: CIV-28c. A session that hands over by PR number has
+# ended, and no lane-merge may run. So each BACK reason also goes to the PR as a
+# comment. The log line comes first, and a failed comment changes no log line.
+# A closed PR gets no comment. The reason is in a code block, so an @name in a
+# tool's output tags nobody. CUR_TASK, CUR_SHA and CUR_TIER come from the queue line.
+tell_back() {
+  local rest="${1#BACK }" pr reason body fence='```' plain="'''"
+  pr="${rest%% *}"; reason="${rest#* }"
+  [ "$BACK_COMMENT" = 1 ] || return 0
+  [ "$reason" = closed ] && return 0
+  if [ "$DRY" = 1 ]; then say "DRY RUN would comment the BACK on PR $pr"; return 0; fi
+  reason=${reason//"$fence"/"$plain"}
+  body="$(printf '%s\n' \
+    "Merge bot: BACK. The bot did not merge this PR at \`${CUR_SHA:0:9}\` (task ${CUR_TASK:-unknown})." \
+    "" "${fence}text" "$reason" "$fence" "" \
+    "Fix the cause and push. Then hand it over again: \`bash scripts/hand_over.sh $pr ${CUR_TASK:-<task>} ${CUR_TIER:-<tier>} \"<note>\"\`." \
+    "When the reason names HIGH or a person, merge it with the full loop of \`next-ticket.md\` step 7.")"
+  gh_ pr comment "$pr" --body-file - <<< "$body" 9>&- >/dev/null 2>&1 || say "PR $pr: the BACK comment failed. The log line stands"
 }
 results() {  # results <pr>: how many DONE or BACK lines the log holds for it
   if [ -f "$LOG" ]; then grep -cE "^(DONE|BACK) $1( |$)" "$LOG"; else echo 0; fi
@@ -605,6 +631,7 @@ while IFS= read -r line <&3; do
   if is_done "$pr"; then seen="$seen $pr"; continue; fi
   [ "${nth[$pr]}" -eq "$(( $(results "$pr") + 1 ))" ] || continue
   seen="$seen $pr"
+  CUR_TASK="$task"; CUR_SHA="$sha"; CUR_TIER="$tier"
   say "PR $pr at ${sha:0:9} (task $task, $lane, $tier)"
   handle "$pr" "$sha" "$tier"
 done 3< "$QUEUE"

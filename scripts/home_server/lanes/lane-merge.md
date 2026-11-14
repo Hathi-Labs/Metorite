@@ -40,7 +40,9 @@ A lane hands a pull request over with
 The tier is `LOW`, `STANDARD` or `HIGH`. The script appends one line to
 `~/lanes/merge-bot-queue.tsv`. The fields are the pull request, the task, the
 worktree, the lane, the head SHA, the tier and a note, with tabs between them.
-A `#` header line names them. Nothing else writes this queue.
+A `#` header line names them. Nothing else writes this queue. A session on
+the PC hands over with `bash scripts/hand_over.sh` (CIV-28c). Its line has
+`-` as the worktree, so step d makes a worktree for it.
 
 The bot writes one result line to `~/lanes/merge-bot.log` for each hand-over:
 `DONE <pull request> <merge sha>` or `BACK <pull request> <reason>`. Before
