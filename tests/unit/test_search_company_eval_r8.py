@@ -72,8 +72,9 @@ async def test_baseline_every_source_answers_its_ten_questions(seeded, app_engin
     assert summary.failing == ()
     assert summary.recall == 1.0, f"missed: {summary.missed}"
     assert summary.by_source == {s: (10, 10) for s in SOURCES}
-    # Only the two sources without questions are empty. Whatsapp and artifacts hold no data.
-    assert set(summary.empty) == {"artifacts", "whatsapp"}
+    # Only the sources without questions are empty. Whatsapp, artifacts and the
+    # Studio source (STU-C5a) hold no seed data.
+    assert set(summary.empty) == {"artifacts", "whatsapp", "studio"}
     assert score.verdict(summary) == score.EXIT_PASS
 
 

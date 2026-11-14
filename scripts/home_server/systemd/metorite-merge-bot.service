@@ -1,10 +1,15 @@
 # CIV-28: one pass of the merge bot. A user unit of `dev`.
 # The owner installs it. The agent that built it did not.
+# The bot runs from its own checkout, ~/lanes/merge-bot-src: a detached worktree
+# of ~/Metorite. The release timer uses ~/Metorite, so the bot never shares it.
+# hand_over.sh reads the bot's HIGH list from the same checkout (CIV-28c).
 # Install:
+#   git -C ~/Metorite worktree add --detach ~/lanes/merge-bot-src origin/main
 #   mkdir -p ~/.config/systemd/user
 #   cp scripts/home_server/systemd/metorite-merge-bot.* ~/.config/systemd/user/
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now metorite-merge-bot.timer
+# Move the checkout forward after a merge that changes the bot: docs/home_box.md section 3.8.
 # Logs: journalctl --user -u metorite-merge-bot.service
 # The queue is ~/lanes/merge-bot-queue.tsv. The result lines are in ~/lanes/merge-bot.log.
 [Unit]
@@ -13,7 +18,7 @@ Description=Metorite merge bot: merge the green PRs of the queue (CIV-28)
 [Service]
 Type=oneshot
 Environment=PATH=/usr/local/bin:/usr/bin:/bin:%h/.local/bin
-WorkingDirectory=%h/Metorite
-ExecStart=%h/Metorite/scripts/home_server/merge_bot.sh
+WorkingDirectory=%h/lanes/merge-bot-src
+ExecStart=%h/lanes/merge-bot-src/scripts/home_server/merge_bot.sh
 # A pass runs premerge.sh up to 3 times per PR, at 15 minutes each.
 TimeoutStartSec=2h

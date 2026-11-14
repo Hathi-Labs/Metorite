@@ -150,9 +150,10 @@ SAMPLES = {
     "integration": "integration:zoho.push",
     "workflow": f"workflow:{WORKFLOW}",
     "manifest": "knowledge.list_pages",
+    "logic": "logic:totals",
 }
 
-SOURCES = ("object", "manifest", "integration", "workflow")
+SOURCES = ("object", "manifest", "integration", "workflow", "logic")
 CLASSES = ("A", "B", "C", "X", None)
 
 
@@ -161,7 +162,7 @@ def test_a_new_source_needs_a_preview_decision():
     file covers it. B1b adds ``mcp``: it must add its row to ``SAMPLES``."""
     assert set(get_args(get_type_hints(UsesRef)["source"])) == set(SOURCES)
     assert set(SAMPLES) == set(SOURCES)
-    assert set(_USES_RE.groupindex) == {"obj", "op", "integ", "wf", "app", "appop"}
+    assert set(_USES_RE.groupindex) == {"obj", "op", "integ", "wf", "app", "appop", "logic"}
     for source, uses in SAMPLES.items():
         ref = parse_uses(uses)
         assert ref is not None and ref.source == source
@@ -177,6 +178,11 @@ EXPECTED = {
     ("workflow", "A"): "source_not_open", ("workflow", "B"): None,
     ("workflow", "C"): None, ("workflow", "X"): "class_x",
     ("object", "X"): "class_x",
+    # B4a: a logic module is a first-party module with no session and no
+    # network. The class is B. With the flag off (the default here) the door
+    # answers source_not_open, and class X and an id outside the catalog stay refused.
+    ("logic", "A"): "source_not_open", ("logic", "B"): "source_not_open",
+    ("logic", "C"): "source_not_open", ("logic", "X"): "class_x",
 }
 
 
@@ -314,3 +320,33 @@ class TestThePreviewDoorSendsNothing:
         pid, _ = _pid(pw)
         _post(_client(pw), pid, "sync", {})
         assert pw.hits == []
+
+
+def test_a_logic_module_runs_in_a_preview_and_sends_nothing(no_outbound):
+    """B4a. With ``STUDIO_LOGIC_ORGS`` open, a preview runs a logic module: its
+    writes roll back with the batch and no record event fires. The module has
+    no session and no network, so a preview needs no store of its own. The
+    ``refusal_for`` answer is None for a direct call and for a preview, and a
+    delegated call needs approval. A viewer stays read-only."""
+    ref = parse_uses(SAMPLES["logic"])
+    assert invoke.refusal_for(ref, "B", preview=True, logic=True) is None
+    assert invoke.refusal_for(ref, "B", direct=True, logic=True) is None
+    assert invoke.refusal_for(ref, "B", delegated=True, logic=True) == "approval_required"
+    assert invoke.refusal_for(ref, "B", preview=True, logic=True, viewer=True) == "read_only"
+    assert invoke.refusal_for(ref, "B", preview=True, logic=False) == "source_not_open"
+    assert no_outbound == []
+
+
+def test_the_logic_package_reaches_no_network():
+    """The reason a logic preview needs no store: ``gateway/studio/logic`` imports
+    no HTTP client, no socket and no outbound seam. A new import of one fails
+    here, and the PR that adds it gives the preview decision."""
+    import re
+    from pathlib import Path
+
+    root = Path(invoke.__file__).resolve().parents[2] / "studio" / "logic"
+    banned = re.compile(r"^\s*(?:import|from)\s+(?:httpx|socket|requests|aiohttp|urllib|"
+                        r"gateway\.outbound_guard|acb_common\.outbound_guard)"
+                        r"|^\s*from\s+gateway\s+import\s+.*outbound_guard", re.M)
+    for path in sorted(root.glob("*.py")):
+        assert not banned.search(path.read_text(encoding="utf-8")), path.name
