@@ -32,7 +32,10 @@ def _read(path: str) -> list[str]:
 
 
 def pick(pr: list[str], main: list[str], root: Path = at.ROOT) -> list[str] | None:
-    """The sorted test files to run, or None when both sides are FULL."""
+    """The test files to run, or None when both sides are FULL.
+
+    The test files that either side changed come FIRST, then the rest, each part
+    sorted. The caller can run the first part alone, and report a red at once."""
     pr_sel, pr_full, _ = at.select(pr)
     main_sel, main_full, _ = at.select(main)
     if pr_full and main_full:
@@ -47,18 +50,22 @@ def pick(pr: list[str], main: list[str], root: Path = at.ROOT) -> list[str] | No
         f for f in (*pr, *main)
         if f.startswith("tests/") and f.endswith(".py") and Path(f).name.startswith("test_") and (root / f).is_file()
     }
-    return sorted(both | changed)
+    return sorted(changed) + sorted(both - changed)
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--pr", required=True, help="file with the PR's changed files, one a line")
     ap.add_argument("--main", required=True, help="file with main's changed files since the merge base")
+    ap.add_argument("--first-out", help="write the count of the leading changed-test part to this file")
     args = ap.parse_args(argv)
     out = pick(_read(args.pr), _read(args.main))
     if out is None:
         print("FULL")
         return 0
+    if args.first_out:
+        changed = {f for f in (*_read(args.pr), *_read(args.main)) if f in set(out) and f.startswith("tests/")}
+        Path(args.first_out).write_text(f"{sum(1 for f in out if f in changed)}\n", encoding="utf-8")
     print("\n".join(out))
     return 0
 

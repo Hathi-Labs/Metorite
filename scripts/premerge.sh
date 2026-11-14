@@ -178,7 +178,7 @@ TEST_TIMEOUT="${PREMERGE_TEST_TIMEOUT:-600}"
 # file that either side changed. The whole union took 974 test files and ran
 # past 10 minutes on a 62-file union (measured 2026-11-14). The list is read
 # from the merge tree, so a branch without the script falls back to a note.
-sel() { env -u VIRTUAL_ENV uv run python scripts/premerge_select.py --pr "$logs/pr.txt" --main "$logs/main.txt" > "$logs/sel.txt"; }
+sel() { env -u VIRTUAL_ENV uv run python scripts/premerge_select.py --pr "$logs/pr.txt" --main "$logs/main.txt" --first-out "$logs/first.txt" > "$logs/sel.txt"; }
 if [ -z "${PREMERGE_AFFECTED_CMD:-}" ]; then
   if [ "$merge_test" = 1 ]; then
     if [ -f scripts/premerge_select.py ]; then
@@ -188,7 +188,10 @@ if [ -z "${PREMERGE_AFFECTED_CMD:-}" ]; then
       merge_test=0
     fi
   fi
-  AFFECTED_CMD="if [ \"\$(head -1 $logs/sel.txt)\" = FULL ] || [ ! -s $logs/sel.txt ]; then echo 'nothing to run, or both sides are FULL'; else env -u VIRTUAL_ENV uv run pytest -q -p no:cacheprovider --continue-on-collection-errors -rfE \$(cat $logs/sel.txt); fi"
+  # Phase 1: the test files that either side changed. A red there ends the run
+  # at once. Phase 2: the rest, under what is left of the timeout.
+  PYT="env -u VIRTUAL_ENV uv run pytest -q -p no:cacheprovider --continue-on-collection-errors -rfE"
+  AFFECTED_CMD="if [ \"\$(head -1 $logs/sel.txt)\" = FULL ] || [ ! -s $logs/sel.txt ]; then echo 'nothing to run, or both sides are FULL'; else n=\$(cat $logs/first.txt 2>/dev/null || echo 0); if [ \"\$n\" -gt 0 ]; then $PYT \$(head -\$n $logs/sel.txt) || exit 1; echo PHASE1-GREEN; fi; if [ \$(wc -l < $logs/sel.txt) -gt \"\$n\" ]; then $PYT \$(tail -n +\$((n+1)) $logs/sel.txt); fi; fi"
 else
   AFFECTED_CMD="$PREMERGE_AFFECTED_CMD"
 fi

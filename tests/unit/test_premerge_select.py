@@ -31,6 +31,12 @@ def test_a_changed_test_file_on_either_side_is_kept(monkeypatch):
     assert got == ["tests/unit/test_premerge.py", "tests/unit/test_premerge_select.py"]
 
 
+def test_changed_tests_come_first(monkeypatch):
+    monkeypatch.setattr(ps.at, "select", lambda changed, **k: (["tests/unit/test_a.py", "tests/unit/test_z.py"], [], []))
+    got = ps.pick(["x.py", "tests/unit/test_premerge_select.py"], ["x.py", "tests/unit/test_premerge.py"])
+    assert got[:2] == ["tests/unit/test_premerge.py", "tests/unit/test_premerge_select.py"]
+
+
 def test_only_tests_both_sides_reach_are_kept(monkeypatch):
     sets = {"a.py": ["t1", "t2"], "b.py": ["t2", "t3"]}
     monkeypatch.setattr(ps.at, "select", lambda changed, **k: (sets[changed[0]], [], []))
