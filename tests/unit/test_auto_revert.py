@@ -20,8 +20,10 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -301,12 +303,15 @@ class Box:
     def pr_view(self, n: int, **fields: str) -> None:
         (self.fix / f"pr_{n}.json").write_text(json.dumps(fields), encoding="utf-8")
 
-    def result(self, culprit: int = 104, exit_code: int = 0, ids=None, line=None) -> None:
+    def result(
+        self, culprit: int = 104, exit_code: int = 0, ids=None, line=None, bad: str | None = None
+    ) -> None:
+        """The poller's result. bad: the head sha of the red run (the first tip)."""
         sha = self.sha[culprit]
         data = {
             "run_id": 30,
             "good_sha": self.sha[101],
-            "bad_sha": self.tip,
+            "bad_sha": bad or self.tip,
             "exit_code": exit_code,
             "result": line if line is not None else f"FIRST_BAD {sha} subject PR={culprit}",
             "test_ids": [TEST_ID] if ids is None else ids,
@@ -781,63 +786,191 @@ def _land(box: Box, n: int, files: dict[str, str]) -> str:
     return box.sha[n]
 
 
+def _state(box: Box) -> Path:
+    """open/900.json: the state that recheck_main keeps, and merge_bot.sh reads."""
+    return box.tmp / "state" / "open" / "900.json"
+
+
+def _closes(box: Box) -> list[list[str]]:
+    return [c for c in box.gh_calls() if c[:2] == ["pr", "close"]]
+
+
 @pytest.mark.parametrize("close_fails", [False, True])
 def test_a_fix_on_main_closes_the_open_revert_pr(box: Box, close_fails: bool) -> None:
     """P2 (CIV-31b): a fix lands while the revert PR waits for pr-check. The next
     pass runs the failed tests on the new tip, and they pass. It closes the PR
-    and writes SKIP. A failed close is a PERSON line."""
+    and writes SKIP with fixed_at. A failed close writes one PERSON line, and
+    the next passes try the close again with no new probe."""
     _open_revert_pr(box)
     probes = len(box.probes())
     fixed = _land(box, 108, {"FIXED": "yes\n"})
     got = box.run("on", **({"FAKE_GH_FAIL": "pr close"} if close_fails else {}))
     assert got.returncode == 0, got.stderr
     assert box.probes()[probes:] == [fixed] * 3
-    last = box.lines()[-1]
-    assert "revert_pr=900" in last and fixed[:12] in last
-    closes = [c for c in box.gh_calls() if c[:2] == ["pr", "close"]]
-    assert len(closes) == 1 and closes[0][2] == "900"
     if close_fails:
-        assert " PERSON " in last and "gh pr close failed" in last
-    else:
-        assert " SKIP " in last and "closed the revert PR" in last
-        state = json.loads((box.fix / "pr_900.json").read_text(encoding="utf-8"))
-        assert state["state"] == "CLOSED"
-        # The merge bot sees the closed PR. That BACK needs no PERSON line.
-        box.merge_log.write_text("BACK 900 closed\n", encoding="utf-8")
-    # A second pass tests no tip twice and writes nothing new.
+        last = box.lines()[-1]
+        assert " PERSON " in last and "gh pr close failed" in last and "revert_pr=900" in last
+        # The tip stays old, so the merge bot holds the PR (merge_bot.sh revert_tested).
+        assert json.loads(_state(box).read_text(encoding="utf-8"))["tip"] == box.tip
+        lines = len(box.lines())
+        assert box.run("on", FAKE_GH_FAIL="pr close").returncode == 0
+        assert len(box.lines()) == lines  # one PERSON line, not one per pass
+        assert box.run("on").returncode == 0
+    last = box.lines()[-1]
+    assert " SKIP " in last and f"fixed_at={fixed}" in last and "closed the revert PR" in last
+    assert len(_closes(box)) == (3 if close_fails else 1) and _closes(box)[0][2] == "900"
+    assert len(box.probes()) == probes + 3
+    assert json.loads((box.fix / "pr_900.json").read_text(encoding="utf-8"))["state"] == "CLOSED"
+    assert not _state(box).exists()
+    # The merge bot sees the closed PR. That BACK needs no PERSON line.
+    box.merge_log.write_text("BACK 900 closed\n", encoding="utf-8")
     lines = len(box.lines())
     assert box.run("on").returncode == 0
     assert len(box.probes()) == probes + 3 and len(box.lines()) == lines
-    if not close_fails:
-        # A new red run of the same culprit goes to a person, not to a SKIP.
-        box.result()
-        assert box.run("on").returncode == 0
-        assert "closed its revert PR 900" in box.lines()[-1] and " PERSON " in box.lines()[-1]
+    # P2: an old batch run, of a tree from before the fix, ends red: SKIP.
+    box.result()
+    assert box.run("on").returncode == 0
+    assert " SKIP " in box.lines()[-1] and "An old run" in box.lines()[-1]
+    # A red run of the fixed tree goes to a person, not to a SKIP.
+    box.result(bad=fixed)
+    assert box.run("on").returncode == 0
+    assert "closed its revert PR 900" in box.lines()[-1] and " PERSON " in box.lines()[-1]
 
 
 def test_a_new_tip_that_is_still_red_keeps_the_revert_pr(box: Box) -> None:
     """P2 (CIV-31b): an unrelated commit lands. The failed tests still fail, so the
-    revert PR stays open, and no line is written. Each tip is tested once."""
+    revert PR stays open, and no line is written. Each tip is tested once. The
+    state file now holds the new tip, so the merge bot can merge the PR."""
     _open_revert_pr(box)
     lines, probes = len(box.lines()), len(box.probes())
     moved = _land(box, 108, {"note_108.txt": "108\n"})
     assert box.run("on").returncode == 0
     assert box.probes()[probes:] == [moved]
-    assert len(box.lines()) == lines
-    assert not [c for c in box.gh_calls() if c[:2] == ["pr", "close"]]
+    assert len(box.lines()) == lines and not _closes(box)
+    assert json.loads(_state(box).read_text(encoding="utf-8"))["tip"] == moved
     assert box.run("on").returncode == 0
     assert len(box.probes()) == probes + 1
 
 
-def test_a_flaky_new_tip_goes_to_a_person_and_keeps_the_revert_pr(box: Box) -> None:
-    """P2 (CIV-31b): the failed tests pass once, then fail, on the new tip."""
+@pytest.mark.parametrize(
+    ("codes", "answers"),
+    [([0, 1], "pass, fail"), (4, "unknown (exit 4)")],
+    ids=["flaky", "deleted-test"],
+)
+def test_a_doubt_on_a_new_tip_goes_to_a_person_once(box: Box, codes, answers: str) -> None:
+    """P2 (CIV-31b): the failed tests pass once and then fail (a flake), or a later
+    commit deleted the failed test (pytest exits 4). One PERSON line, and then
+    the watch belongs to a person: no more probes and no more lines, while main
+    moves on. The tip stays old, so the merge bot holds the PR."""
     _open_revert_pr(box)
     moved = _land(box, 108, {"note_108.txt": "108\n"})
-    (box.fix / "override.json").write_text(json.dumps({moved: [0, 1]}), encoding="utf-8")
+    (box.fix / "override.json").write_text(json.dumps({moved: codes}), encoding="utf-8")
     assert box.run("on").returncode == 0
     last = box.lines()[-1]
-    assert " PERSON " in last and "pass, fail" in last and "stays open" in last
-    assert not [c for c in box.gh_calls() if c[:2] == ["pr", "close"]]
+    assert " PERSON " in last and answers in last and "stays open" in last
+    state = json.loads(_state(box).read_text(encoding="utf-8"))
+    assert state["person"] == moved and state["tip"] == box.tip
+    lines, probes = len(box.lines()), len(box.probes())
+    for n in (109, 110):
+        _land(box, n, {f"note_{n}.txt": f"{n}\n"})
+        assert box.run("on").returncode == 0
+    assert len(box.lines()) == lines and len(box.probes()) == probes
+    assert not _closes(box)
+
+
+def test_a_hand_merged_revert_pr_ends_the_watch(box: Box) -> None:
+    """P1 (CIV-31b): the merge bot sent the revert PR back, and a person merged it
+    by hand, so no DONE line comes. The pass reads the PR on GitHub, writes
+    REVERTED with the merge sha, and watches it no more."""
+    _open_revert_pr(box)
+    box.merge_log.write_text("BACK 900 red: Unit tests\n", encoding="utf-8")
+    assert box.run("on").returncode == 0
+    assert " PERSON " in box.lines()[-1] and "back=1" in box.lines()[-1]
+    probes = len(box.probes())
+    merge = _land(box, 108, {"note_108.txt": "108\n"})  # the merge of the revert PR
+    view = json.loads((box.fix / "pr_900.json").read_text(encoding="utf-8"))
+    view.update(state="MERGED", mergeCommit={"oid": merge})
+    (box.fix / "pr_900.json").write_text(json.dumps(view), encoding="utf-8")
+    assert box.run("on").returncode == 0
+    last = box.lines()[-1]
+    assert " REVERTED " in last and "revert_pr=900" in last and f"merge={merge}" in last
+    assert "by=hand" in last and not _state(box).exists()
+    lines = len(box.lines())
+    for n in (109, 110):
+        _land(box, n, {f"note_{n}.txt": f"{n}\n"})
+        assert box.run("on").returncode == 0
+    assert len(box.lines()) == lines and len(box.probes()) == probes and not _closes(box)
+
+
+def test_a_revert_pr_that_a_person_closed_ends_the_watch(box: Box) -> None:
+    """P1 (CIV-31b): a person closed the revert PR. The line says so (it is not "the
+    pass closed it"), and the BACK of the merge bot gets no PERSON line. A later
+    red run of the culprit goes to a person."""
+    _open_revert_pr(box)
+    view = json.loads((box.fix / "pr_900.json").read_text(encoding="utf-8"))
+    (box.fix / "pr_900.json").write_text(json.dumps({**view, "state": "CLOSED"}), encoding="utf-8")
+    box.merge_log.write_text("BACK 900 closed\n", encoding="utf-8")
+    probes = len(box.probes())
+    moved = _land(box, 108, {"note_108.txt": "108\n"})
+    assert box.run("on").returncode == 0
+    last = box.lines()[-1]
+    assert " SKIP " in last and "closed_by=person" in last and "A person closed" in last
+    assert "fixed_at=" not in last and not [ln for ln in box.lines() if "back=1" in ln]
+    assert len(box.probes()) == probes and not _state(box).exists()
+    box.result(bad=moved)
+    assert box.run("on").returncode == 0
+    assert " PERSON " in box.lines()[-1] and "A person closed the revert PR 900" in box.lines()[-1]
+
+
+def test_a_failed_read_of_the_revert_pr_changes_nothing(box: Box) -> None:
+    """P1 (CIV-31b): gh cannot read the revert PR. The pass runs no probe and writes
+    no line for it, and the next pass reads it again."""
+    _open_revert_pr(box)
+    lines, probes = len(box.lines()), len(box.probes())
+    moved = _land(box, 108, {"note_108.txt": "108\n"})
+    assert box.run("on", FAKE_GH_FAIL="pr view 900").returncode == 0
+    assert len(box.lines()) == lines and len(box.probes()) == probes
+    assert box.run("on").returncode == 0
+    assert box.probes()[probes:] == [moved]
+
+
+def test_a_probe_that_cannot_start_writes_one_line_and_the_pass_goes_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P3 (CIV-31b): git cannot make the probe worktree during the recheck. The pass
+    writes one PERSON line, and poll() still runs, on this pass and the next."""
+    mod = load_module()
+    log = tmp_path / "auto-revert.log"
+    env = {
+        "AUTO_REVERT_MODE": "on",
+        "AUTO_REVERT_LOG": log,
+        "AUTO_REVERT_STATE": tmp_path / "state",
+        "AUTO_REVERT_REPORTS": tmp_path / "reports",
+        "AUTO_REVERT_REPO_DIR": tmp_path,
+        "MERGE_LOG": tmp_path / "merge-bot.log",
+    }
+    for name, value in env.items():
+        monkeypatch.setenv(name, str(value))
+    log.write_text(
+        f"2026-11-14T00:00:00Z REVERT run=29 culprit={'a' * 40} revert_pr=900\n", encoding="utf-8"
+    )
+    cfg = mod.Config.from_env("on")
+    mod.write_open(cfg, "900", {"culprit": "a" * 40, "run": "29", "ids": ["t"], "tip": "0" * 40})
+    polled: list[int] = []
+
+    def no_worktree(_cfg, sha, _ids):
+        raise mod.Stop(f"git cannot make a worktree of {sha[:12]}: no space left.")
+
+    monkeypatch.setattr(mod, "pr_state", lambda _cfg, _pr: ("OPEN", ""))
+    monkeypatch.setattr(mod, "fetch_main", lambda _cfg, _culprit: "b" * 40)
+    monkeypatch.setattr(mod, "probe", no_worktree)
+    monkeypatch.setattr(mod, "poll", lambda _cfg: polled.append(1))
+    assert mod.run_pass() == 0
+    assert mod.run_pass() == 0
+    assert polled == [1, 1]
+    found = [ln for ln in log.read_text(encoding="utf-8").splitlines() if " PERSON " in ln]
+    assert len(found) == 1 and "git cannot make a worktree" in found[0]
+    assert json.loads(mod.open_state(cfg, "900").read_text(encoding="utf-8"))["person"] == "b" * 40
 
 
 def test_a_stop_of_the_unit_writes_the_person_line_before_the_cleanup(
@@ -946,6 +1079,25 @@ SCOPING_HIGH = [
     "apps/x/access_requests.py",
     "tests/unit/test_projects_tenancy.py",
     "tests/unit/test_studio_row_rules.py",
+    # The fix round of PR 2276: members, roles, groups, identity, money, sharing.
+    "apps/services/gateway/gateway/routes/admin/_common.py",
+    "apps/services/gateway/gateway/routes/admin/members.py",
+    "apps/services/gateway/gateway/routes/admin/roles.py",
+    "apps/services/gateway/gateway/routes/admin/groups.py",
+    "apps/services/customer_console/customer_console/operator_roles.py",
+    "apps/services/customer_console/customer_console/operator_sessions.py",
+    "apps/services/customer_console/customer_console/operator_signin.py",
+    "apps/services/gateway/gateway/routes/signin.py",
+    "apps/services/gateway/gateway/routes/signup.py",
+    "apps/services/gateway/gateway/routes/oauth.py",
+    "apps/services/gateway/gateway/routes/seats.py",
+    "apps/services/customer_console/customer_console/seats.py",
+    "packages/acb_common/acb_common/org_settings.py",
+    "workbench/control_plane/src/app/api/admin/members/invite/route.ts",
+    "apps/services/gateway/gateway/routes/notes/share.py",
+    "apps/services/gateway/gateway/connections/shared_token.py",
+    "apps/services/gateway/gateway/package_host/sharing.py",
+    "apps/services/gateway/gateway/routes/projects/report_scope.py",
 ]
 #: Near misses that stay out: an ordinary store, a UI helper, a spec.
 SCOPING_LOW = [
@@ -954,6 +1106,8 @@ SCOPING_LOW = [
     "workbench/control_plane/src/lib/access.ts",
     "workbench/control_plane/src/components/AccessGate.tsx",
     "project-docs/specs/tenancy_and_visibility.md",
+    "apps/services/gateway/gateway/routes/email/transport/signing.py",
+    "workbench/control_plane/src/app/people/lib/seats.ts",
 ]
 
 
@@ -999,9 +1153,12 @@ def test_the_high_paths_match_as_grep_matches(tmp_path: Path) -> None:
     assert not set(SCOPING_LOW) & by_python
 
 
-def test_a_red_run_after_the_revert_landed_goes_to_a_person(box: Box) -> None:
+@pytest.mark.parametrize("old", [False, True], ids=["new-tree", "old-run"])
+def test_a_red_run_after_the_revert_landed_goes_to_a_person(box: Box, old: bool) -> None:
     """P2-a: main holds the revert of the culprit and is still red. That is a PERSON
-    line, not a SKIP, even when the log has the revert."""
+    line, not a SKIP, even when the log has the revert. P2 (CIV-31b): deploy.yml
+    does not cancel a batch, so a run of a tree from before the revert can end
+    red later. That old run is a SKIP."""
     box.commit(
         108,
         f'Revert "change number 104 (task 2985) (#104)" (#108)\n\n'
@@ -1014,11 +1171,17 @@ def test_a_red_run_after_the_revert_landed_goes_to_a_person(box: Box) -> None:
         f"2026-11-14T00:00:01Z REVERTED revert_pr=900 culprit={box.sha[104]} merge=abc\n",
         encoding="utf-8",
     )
-    box.result()
+    # The first tip is from before the revert 108. The tip 108 holds it.
+    box.result(bad=None if old else box.sha[108])
     got = box.run("on")
     assert got.returncode == 0, got.stderr
-    assert "already holds the revert" in person(box)
-    assert not any(" SKIP " in ln for ln in box.lines())
+    if old:
+        last = box.lines()[-1]
+        assert " SKIP " in last and "An old run" in last and box.sha[108][:12] in last
+        assert not any(" PERSON " in ln for ln in box.lines())
+    else:
+        assert "already holds the revert" in person(box)
+        assert not any(" SKIP " in ln for ln in box.lines())
     assert box.probes() == [] and box.gh_writes() == []
 
 
@@ -1095,6 +1258,153 @@ def test_a_stop_signal_still_writes_a_person_line_and_a_report(
     line = cfg.log.read_text(encoding="utf-8")
     assert " PERSON " in line and "SystemExit" in line
     assert (tmp_path / "reports" / "run-31.md").exists()
+
+
+def _cfg(mod, tmp_path: Path):
+    return mod.Config(
+        mode="dry",
+        repo=tmp_path,
+        log=tmp_path / "a.log",
+        reports=tmp_path / "reports",
+        state=tmp_path / "state",
+        merge_log=tmp_path / "m.log",
+        poll_cmd=[],
+        handover_cmd=[],
+        gh=[],
+        test_cmd="",
+        timeout_s=1,
+    )
+
+
+def test_the_sigterm_handler_prints_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P3 (CIV-31b): a print to stderr inside a signal handler can raise "RuntimeError:
+    reentrant call". The handler writes its line and its report with no print."""
+    mod = load_module()
+    cfg = _cfg(mod, tmp_path)
+
+    def no_print(_msg: str) -> None:
+        raise RuntimeError("reentrant call")
+
+    def stopped(*_args, **_kwargs):
+        monkeypatch.setattr(mod, "say", no_print)
+        mod.on_sigterm(signal.SIGTERM, None)
+
+    monkeypatch.setattr(mod, "decide", stopped)
+    with pytest.raises(SystemExit):
+        mod.handle(cfg, mod.Ledger(cfg.log), {"run_id": 32, "exit_code": 0, "result": ""})
+    lines = cfg.log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1 and " PERSON " in lines[0] and "SIGTERM" in lines[0]
+    assert (tmp_path / "reports" / "run-32.md").exists()
+
+
+def test_a_sigterm_after_the_stop_line_writes_no_second_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P3 (CIV-31b): a Stop wrote its PERSON line, and SIGTERM comes during its
+    report. The handler finds the line on disk and writes no second one."""
+    mod = load_module()
+    cfg = _cfg(mod, tmp_path)
+    real = mod.Report.write
+    fired: list[int] = []
+
+    def write_then_term(self, folder, decision, quiet=False):
+        if not fired:
+            fired.append(1)
+            mod.on_sigterm(signal.SIGTERM, None)
+        return real(self, folder, decision, quiet)
+
+    def doubt(*_args, **_kwargs):
+        raise mod.Stop("A doubt for a person.")
+
+    monkeypatch.setattr(mod, "decide", doubt)
+    monkeypatch.setattr(mod.Report, "write", write_then_term)
+    with pytest.raises(SystemExit):
+        mod.handle(cfg, mod.Ledger(cfg.log), {"run_id": 33, "exit_code": 0, "result": ""})
+    lines = cfg.log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1 and "A doubt for a person." in lines[0]
+    assert mod.EarlyEnd.now is None
+
+
+def test_the_early_end_flag_follows_the_line_on_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P3 (CIV-31b): a write that fails leaves the flag False. So a later call (the
+    SIGTERM handler) still writes the line."""
+    mod = load_module()
+    cfg = _cfg(mod, tmp_path)
+    ending = mod.EarlyEnd(cfg, mod.Ledger(cfg.log), mod.Report("dry", {"run_id": 34}))
+    real = mod.Ledger.write
+
+    def full_disk(self, verb, text, quiet=False):
+        monkeypatch.setattr(mod.Ledger, "write", real)
+        raise OSError("no space left on the device")
+
+    monkeypatch.setattr(mod.Ledger, "write", full_disk)
+    with pytest.raises(OSError):
+        ending.write("first")
+    assert ending.written is False
+    ending.write("second", quiet=True)
+    assert ending.written is True
+    lines = cfg.log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1 and "second" in lines[0]
+
+
+#: The child of the real SIGTERM test. It waits in a probe inside a worktree
+#: block, as a pass does, and it saves the log as the cleanup starts.
+SIGTERM_CHILD = r"""
+import contextlib, importlib.util, signal, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("auto_revert", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["auto_revert"] = m
+spec.loader.exec_module(m)
+out = Path(sys.argv[2])
+cfg = m.Config(mode="dry", repo=out, log=out / "a.log", reports=out / "rep", state=out / "st",
+               merge_log=out / "m.log", poll_cmd=[], handover_cmd=[], gh=[], test_cmd="",
+               timeout_s=1)
+
+
+@contextlib.contextmanager
+def fake_worktree():
+    try:
+        yield
+    finally:
+        seen = cfg.log.read_text(encoding="utf-8") if cfg.log.exists() else ""
+        (out / "at_cleanup.txt").write_text(seen, encoding="utf-8")
+
+
+def decide(*_args, **_kwargs):
+    with fake_worktree():
+        (out / "ready").write_text("1", encoding="utf-8")
+        m.run([sys.executable, "-c", "import time; time.sleep(60)"])
+    return "never"
+
+
+m.decide = decide
+signal.signal(signal.SIGTERM, m.on_sigterm)
+m.handle(cfg, m.Ledger(cfg.log), {"run_id": 77, "exit_code": 0, "result": ""})
+"""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX signals: Windows ends the process")
+def test_a_real_sigterm_writes_the_line_before_the_cleanup(tmp_path: Path) -> None:
+    """P3 (CIV-31b): a real SIGTERM reaches a pass that waits in a probe. The PERSON
+    line is on disk when the cleanup starts, the report exists, and the exit is 143."""
+    child = subprocess.Popen([sys.executable, "-c", SIGTERM_CHILD, str(SCRIPT), str(tmp_path)])
+    deadline = time.monotonic() + 60
+    while not (tmp_path / "ready").exists():
+        assert time.monotonic() < deadline and child.poll() is None, "the child never got ready"
+        time.sleep(0.1)
+    time.sleep(0.5)
+    child.send_signal(signal.SIGTERM)
+    assert child.wait(timeout=30) == 143
+    lines = (tmp_path / "a.log").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1 and " PERSON " in lines[0] and "SIGTERM" in lines[0]
+    assert " PERSON " in (tmp_path / "at_cleanup.txt").read_text(encoding="utf-8")
+    assert (tmp_path / "rep" / "run-77.md").exists()
 
 
 # ── A reverted patch does not land again unchanged (premerge.sh) ──────────

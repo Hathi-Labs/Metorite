@@ -41,6 +41,9 @@
 #                                    A conflict in a HIGH path, a workflow file, or
 #                                    infra/postgres/ is always a BACK.
 #   premerge.sh exits 1           -> BACK <pr> premerge: <tail>
+#   an auto-revert PR (head auto-revert/...) when the auto-revert pass did not
+#   test the tip of main now      -> skip. The next auto-revert pass tests it
+#                                    (CIV-31b). No state file of the PR -> BACK
 #   gh pr merge says "Base branch was modified" -> retry twice, 20 s apart, then skip
 #   else gh pr ready (if draft), gh pr merge --squash --match-head-commit <sha>,
 #   then DONE <pr> <sha>.
@@ -63,6 +66,8 @@
 #     gate is not here: pr-check runs it on the new head.
 #   CONFLICT_TEST_TIMEOUT [900]  seconds for those tests. A selection whose
 #     .test_durations time is over it goes BACK with no run.
+#   AUTO_REVERT_STATE [~/.cache/metorite-auto-revert]  read only: open/<pr>.json,
+#     the last tip of main that the auto-revert pass tested for a revert PR.
 # It reads gh JSON with python3, not with gh --jq.
 # Fence: tests/unit/test_merge_bot.py.
 set -uo pipefail
@@ -80,6 +85,9 @@ MERGE_RETRY_WAIT="${MERGE_BASE_RETRY_WAIT:-20}"
 CONFLICT_RULES="${CONFLICT_RULES:-1}"
 CONFLICT_TEST_CMD="${CONFLICT_TEST_CMD:-uv run --no-sync pytest -q -p no:cacheprovider}"
 CONFLICT_TEST_TIMEOUT="${CONFLICT_TEST_TIMEOUT:-900}"
+# CIV-31b: the state of the auto-revert pass. open/<pr>.json holds the last tip
+# of main on which the pass tested the failed tests of that revert PR.
+AUTO_REVERT_STATE="${AUTO_REVERT_STATE:-$HOME/.cache/metorite-auto-revert}"
 HEADREF=""  # the PR head branch name, set by handle
 QUEUED=""   # the head SHA of the hand-over, set by handle
 # The bot pushes a resolved merge to the PR head branch. A head branch with one
@@ -99,11 +107,15 @@ HIGH_PATHS_RE+='|scripts/(apply_[a-z_]*migrations\.sh|gen_tenant_migration\.py)$
 # Identity, roles and permissions: the whole auth package.
 HIGH_PATHS_RE+='|packages/acb_auth/'
 # The tenancy and RLS seams: the DB seams, the Redis key wrapper, the memory
-# tenant guard, and the provisioning of an org.
-HIGH_PATHS_RE+='|packages/acb_common/acb_common/(db|tenant_redis|provisioning)\.py$'
+# tenant guard, the provisioning of an org, and org_settings (it binds a tenant).
+HIGH_PATHS_RE+='|packages/acb_common/acb_common/(db|tenant_redis|provisioning|org_settings)\.py$'
 HIGH_PATHS_RE+='|packages/acb_graph/acb_graph/db\.py$'
-HIGH_PATHS_RE+='|apps/services/customer_console/customer_console/db\.py$'
+# The operator console: its DB, the operators and their roles, and the seats.
+HIGH_PATHS_RE+='|apps/services/customer_console/customer_console/(db|seats|operator_[^/]*)\.py$'
 HIGH_PATHS_RE+='|packages/acb_memory/acb_memory/tenant_guard[^/]*$'
+# The members, roles and groups of an org, and the admin API of the UI.
+HIGH_PATHS_RE+='|apps/services/gateway/gateway/routes/admin/(_common|members|roles|groups)\.py$'
+HIGH_PATHS_RE+='|workbench/[^/]+/src/app/api/admin/'
 # The row rules of AI Studio: the stores that apply them on each write.
 HIGH_PATHS_RE+='|apps/services/gateway/gateway/studio/(batch_store|objects_store)\.py$'
 # The readers of a Knowledge document: who a provider reader proves.
@@ -119,6 +131,9 @@ HIGH_PATHS_RE+='|(^|/)([^/]*_)?(tenancy|visibility)[^/]*\.(py|ts|tsx|sql)$'
 # Any server file with an access part in its name: studio_access, mailbox_access,
 # access_requests. A UI file such as access.ts is out: the server decides access.
 HIGH_PATHS_RE+='|(^|/)([^/]*_)?access(_[^/]*)?\.(py|sql)$'
+# Any server file for sign-in, sign-up, OAuth or seats, or for the sharing of a
+# note, a token, an install or a report. The "(_...)?" tail keeps signing.py out.
+HIGH_PATHS_RE+='|(^|/)([^/]*_)?(signin|signup|oauth|seats|share|sharing|shared_token|report_scope)(_[^/]*)?\.(py|sql)$'
 # Any file named tenant* (the tenancy seams: tenant_redis, tenant_guard,
 # tenant_file_store, tenantDoor), or with an rls or row_rules part in its name.
 HIGH_PATHS_RE+='|(^|/)(tenant|[^/]*_(rls|row_rules))[^/]*$'
@@ -423,6 +438,26 @@ gate() {
   echo "main moved during premerge"; return 1
 }
 
+# revert_tested <pr>: CIV-31b. A revert PR of the auto-revert pass (head branch
+# auto-revert/...) merges only when the pass tested the failed tests on the tip
+# of main now. A newer tip can hold a fix, and then the pass closes the PR.
+# Returns 0 to merge. Returns 1 with a BACK reason (no state file). Returns 2
+# with a note: the PR waits in the queue, and the next auto-revert pass tests
+# the new tip.
+revert_tested() {
+  local file="$AUTO_REVERT_STATE/open/$1.json" tested tip
+  [ -f "$file" ] || { echo "auto-revert PR with no state file $file: a person merges it"; return 1; }
+  tested="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("tip") or "")' "$file" 2>/dev/null | tr -d '\r')"
+  git -C "$WORKDIR" fetch -q origin "+refs/heads/main:refs/remotes/origin/main" 2>/dev/null \
+    || { echo "git fetch of main failed before the auto-revert check"; return 2; }
+  tip="$(git -C "$WORKDIR" rev-parse refs/remotes/origin/main 2>/dev/null)"
+  if [ -z "$tested" ] || [ "$tested" != "$tip" ]; then
+    echo "auto-revert PR: the pass has not tested main at ${tip:0:9} (last ${tested:0:9}). It waits for the next auto-revert pass"
+    return 2
+  fi
+  return 0
+}
+
 # A gh error that a later pass can get past. "unexpected EOF" is here too: when
 # the re-read shows the PR still open, the merge did not land, so try again.
 transient() { grep -qiE 'error connecting|timed? ?out|unexpected EOF|connection (reset|refused)|HTTP 5[0-9][0-9]|TLS handshake|could not resolve' <<< "$1"; }
@@ -492,6 +527,14 @@ handle() {
     2) say "PR $pr: $(one_line <<< "$reason"), next pass"; return ;;
     *) record "BACK $pr $(one_line <<< "$reason")"; return ;;
   esac
+  if [[ "$HEADREF" == auto-revert/* ]]; then
+    reason="$(revert_tested "$pr")"; rc=$?
+    case "$rc" in
+      0) ;;
+      2) say "PR $pr: $(one_line <<< "$reason"), next pass"; return ;;
+      *) record "BACK $pr $(one_line <<< "$reason")"; return ;;
+    esac
+  fi
   if [ "$DRY" = 1 ]; then
     say "DRY RUN would: gh pr ready $pr (if draft), gh pr merge $pr --squash --match-head-commit $sha"; return
   fi

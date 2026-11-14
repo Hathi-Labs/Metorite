@@ -27,7 +27,9 @@ when the log or an open PR already has a revert of it, and at the rate brake.
 Fail closed. Each doubt stops the revert and writes a PERSON line:
   - The poller names no single commit, or no failed test id.
   - The culprit is not on main, is a merge commit, or is a revert.
-  - Main already holds a revert of the culprit, and the run is red.
+  - Main already holds a revert of the culprit, and the run is red. The same
+    for a revert PR that merged or closed. A run of a tree from before that
+    revert or fix is an old run (deploy.yml does not cancel a batch): SKIP.
   - The culprit touches a HIGH path or a migration, or its title says HIGH.
     A revert cannot undo a migration (R6). This stops `dry` too.
   - 3 reverts happened in the last hour (the rate brake).
@@ -42,8 +44,13 @@ Fail closed. Each doubt stops the revert and writes a PERSON line:
 When main moves during the probes, the pass reads it again, until it holds
 still. When the failed tests pass on a new tip, a fix landed, and the pass
 makes no revert. Else it makes the revert again on the new tip.
-While a revert PR is open, each pass runs the failed tests on each new tip of
+While the log holds a revert PR open, each pass reads the PR on GitHub first.
+A person can merge it (REVERTED) or close it (SKIP) by hand. That ends the
+watch. While it is open, the pass runs the failed tests on each new tip of
 main. When they pass, a fix landed: the pass closes the PR and writes SKIP.
+A failed close runs again on the next pass. A doubt writes one PERSON line,
+and then the watch belongs to a person. The merge bot merges a revert PR only
+when open/<pr>.json holds the tip of main now (merge_bot.sh revert_tested).
 scripts/premerge.sh refuses a PR that lands a reverted patch again unchanged.
 
 It never pushes to main, never force-pushes, never merges, and never
@@ -55,7 +62,7 @@ Files (defaults in brackets):
   AUTO_REVERT_LOG [~/lanes/auto-revert.log]    one line per decision
   AUTO_REVERT_REPORTS [~/lanes/auto-revert]    one report per red run
   AUTO_REVERT_STATE [~/.cache/metorite-auto-revert]   the lock, and one file
-      in open/ per open revert PR: its culprit, failed tests and last tip
+      in open/ per open revert PR (open_state). merge_bot.sh reads it too.
   MERGE_LOG [~/lanes/merge-bot.log]            read only: DONE and BACK lines
 Commands, for a test or another setup:
   AUTO_REVERT_REPO_DIR [this checkout]   a clone with the remote `origin`
@@ -120,10 +127,12 @@ HIGH_PATHS_RE = "".join(
         r"|deploy/|\.github/workflows/deploy\.yml$",
         r"|scripts/(apply_[a-z_]*migrations\.sh|gen_tenant_migration\.py)$",
         "|packages/acb_auth/",
-        r"|packages/acb_common/acb_common/(db|tenant_redis|provisioning)\.py$",
+        r"|packages/acb_common/acb_common/(db|tenant_redis|provisioning|org_settings)\.py$",
         r"|packages/acb_graph/acb_graph/db\.py$",
-        r"|apps/services/customer_console/customer_console/db\.py$",
+        r"|apps/services/customer_console/customer_console/(db|seats|operator_[^/]*)\.py$",
         "|packages/acb_memory/acb_memory/tenant_guard[^/]*$",
+        r"|apps/services/gateway/gateway/routes/admin/(_common|members|roles|groups)\.py$",
+        "|workbench/[^/]+/src/app/api/admin/",
         r"|apps/services/gateway/gateway/studio/(batch_store|objects_store)\.py$",
         "|apps/services/gateway/gateway/kb_access/",
         "|workbench/[^/]+/src/app/.*/(auth|billing|credits)/",
@@ -131,6 +140,7 @@ HIGH_PATHS_RE = "".join(
         r"|(^|/)(auth|billing|credits|rls|entitle|permission|grant)[^/]*\.(py|ts|tsx|sql)$",
         r"|(^|/)([^/]*_)?(tenancy|visibility)[^/]*\.(py|ts|tsx|sql)$",
         r"|(^|/)([^/]*_)?access(_[^/]*)?\.(py|sql)$",
+        r"|(^|/)([^/]*_)?(signin|signup|oauth|seats|share|sharing|shared_token|report_scope)(_[^/]*)?\.(py|sql)$",
         "|(^|/)(tenant|[^/]*_(rls|row_rules))[^/]*$",
     ]
 )
@@ -328,9 +338,15 @@ class Ledger:
     def __init__(self, path: Path) -> None:
         self.path = path
 
-    def write(self, verb: str, text: str) -> None:
+    def write(self, verb: str, text: str, quiet: bool = False) -> None:
+        """Append one line. quiet: no echo to stderr (the SIGTERM handler).
+
+        A print to stderr inside a signal handler can meet a print of the main
+        code, and then Python raises "RuntimeError: reentrant call".
+        """
         line = f"{stamp(now_utc())} {verb} {one_line(text, 600)}"
-        say(line)
+        if not quiet:
+            say(line)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8", newline="\n") as fh:
             fh.write(line + "\n")
@@ -398,12 +414,13 @@ class Report:
     def block(self, title: str, text: str) -> None:
         self.lines += ["", f"## {title}", "", text.rstrip(), ""]
 
-    def write(self, folder: Path, decision: str) -> Path:
+    def write(self, folder: Path, decision: str, quiet: bool = False) -> Path:
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"run-{self.run_id}.md"
         body = "\n".join([*self.lines, "", "## Decision", "", decision, ""])
         path.write_text(body, encoding="utf-8", newline="\n")
-        say(f"report: {path}")
+        if not quiet:
+            say(f"report: {path}")
         return path
 
 
@@ -516,12 +533,12 @@ def make_revert(cfg: Config, tip: str, culprit: str, message: str) -> str:
 
 
 def follow_up(cfg: Config, ledger: Ledger) -> None:
-    """Watch each revert PR until it merges, or until the pass closes it.
+    """Watch each revert PR until it merges or closes.
 
     Each BACK gets one PERSON line, with back=<n> for the nth BACK. A person can
     hand the PR over again, so a PERSON line does not end the watch. A DONE
-    ends it, with one REVERTED line. A SKIP line of the PR ends it too: the
-    pass closed the PR, because a fix landed (recheck_main).
+    ends it, with one REVERTED line. watch() ends it too, when GitHub says that
+    the PR is merged or closed: a REVERTED line, or a SKIP line with revert_pr.
     """
     opened: dict[str, str] = {}
     ended: set[str] = set()
@@ -556,7 +573,8 @@ def follow_up(cfg: Config, ledger: Ledger) -> None:
             open_state(cfg, pr).unlink(missing_ok=True)
             continue
         backs[pr] = backs.get(pr, 0) + 1
-        if (pr, str(backs[pr])) in told:
+        # "BACK <pr> closed": watch() reads the PR and writes the true line.
+        if (pr, str(backs[pr])) in told or rest.strip() == "closed":
             continue
         ledger.write(
             PERSON,
@@ -565,11 +583,17 @@ def follow_up(cfg: Config, ledger: Ledger) -> None:
         )
     for pr in pending:
         if pr not in ended:
-            recheck_main(cfg, ledger, pr)
+            watch(cfg, ledger, pr, opened[pr])
 
 
 def open_state(cfg: Config, pr: str) -> Path:
-    """The file of an open revert PR: its culprit, failed tests and last tip."""
+    """The file of an open revert PR. merge_bot.sh reads its "tip" too.
+
+    Keys: culprit, run, ids (the failed tests), tip (the last tip of main with a
+    sure answer, at first the base of the revert), and three marks that a pass
+    can add: close_at (a fix tip whose close must run again), close_told (the
+    PERSON line of a failed close is written), person (a doubt went to a person).
+    """
     return cfg.state / "open" / f"{pr}.json"
 
 
@@ -583,19 +607,92 @@ def write_open(cfg: Config, pr: str, data: dict[str, Any]) -> None:
         say(f"cannot keep the state of revert PR {pr}: {exc}.")
 
 
-def recheck_main(cfg: Config, ledger: Ledger, pr: str) -> None:
+def read_open(cfg: Config, pr: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(open_state(cfg, pr).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def pr_state(cfg: Config, pr: str) -> tuple[str, str] | None:
+    """(state, merge sha) of a PR on GitHub, or None when gh cannot read it."""
+    res = run([*cfg.gh, "pr", "view", pr, "--json", "state,mergeCommit"], cwd=cfg.repo)
+    try:
+        data = json.loads(res.stdout) if res.returncode == 0 else None
+    except ValueError:
+        data = None
+    if not isinstance(data, dict) or not data.get("state"):
+        return None
+    merge = data.get("mergeCommit")
+    return str(data["state"]), str(merge.get("oid") or "") if isinstance(merge, dict) else ""
+
+
+def watch(cfg: Config, ledger: Ledger, pr: str, culprit: str) -> None:
+    """One look at a revert PR that the log still holds open (P1).
+
+    GitHub answers first, because a person can merge or close the PR by hand.
+    MERGED: a REVERTED line, so lane-merge opens the culprit's task again.
+    CLOSED: a SKIP line that says who closed it. Both end the watch. A failed
+    read changes nothing, and the next pass reads it again. OPEN: recheck_main.
+    """
+    seen = pr_state(cfg, pr)
+    if seen is None:
+        say(f"revert PR {pr}: gh cannot read it. The next pass tries again.")
+        return
+    state, merge = seen
+    data = read_open(cfg, pr)
+    if state == "MERGED":
+        ledger.write(
+            REVERTED,
+            f"revert_pr={pr} culprit={culprit} merge={merge or 'unknown'} by=hand "
+            "A person merged the revert PR. The merge bot has no DONE line for it.",
+        )
+        open_state(cfg, pr).unlink(missing_ok=True)
+        return
+    if state == "CLOSED":
+        closing = str((data or {}).get("close_at") or "")
+        if closing:
+            # The close of an earlier pass landed, though gh reported a failure.
+            text = (
+                f"fixed_at={closing} The failed tests passed on {closing[:12]}, "
+                "and the pass closed the revert PR."
+            )
+        else:
+            text = "closed_by=person A person closed the revert PR. The pass watches it no more."
+        ledger.write(SKIP, f"mode=on culprit={culprit} revert_pr={pr} {text}")
+        open_state(cfg, pr).unlink(missing_ok=True)
+        return
+    if state != "OPEN":
+        say(f"revert PR {pr}: the state is {state}. The next pass reads it again.")
+        return
+    if data is None:
+        say(f"revert PR {pr}: no state file, so no recheck of main.")
+        return
+    recheck_main(cfg, ledger, pr, data)
+
+
+def recheck_main(cfg: Config, ledger: Ledger, pr: str, data: dict[str, Any]) -> None:
     """A fix can land while the revert PR waits for pr-check (P2). Test each new tip.
 
     The failed tests run on each new tip of main, FLAKE_RUNS times. When each
-    run passes, a fix landed: the pass closes the PR and writes SKIP. A fail on
-    the first run keeps the PR. Any other answer is a PERSON line, and the PR
-    stays open. Each tip is tested once.
+    run passes, a fix landed: the pass closes the PR and writes SKIP. A failed
+    close runs again on each pass. A fail on the first run keeps the PR, and
+    "tip" moves to the new tip, so the merge bot can merge the PR. Any other
+    answer (a flake, a test that a later commit deleted, a probe that cannot
+    start) writes one PERSON line. Then the watch belongs to a person: no more
+    probes and no more lines. "tip" stays, so the merge bot holds the PR.
     """
     try:
-        data = json.loads(open_state(cfg, pr).read_text(encoding="utf-8"))
         culprit, run_id, ids, last = data["culprit"], data["run"], data["ids"], data["tip"]
-    except (OSError, ValueError, KeyError, TypeError):
-        say(f"revert PR {pr}: no state file, so no recheck of main.")
+    except (KeyError, TypeError):
+        say(f"revert PR {pr}: the state file does not parse, so no recheck of main.")
+        return
+    head = f"mode=on run={run_id} culprit={culprit} revert_pr={pr}"
+    if data.get("person"):
+        return
+    if data.get("close_at"):
+        close_after_fix(cfg, ledger, pr, data, head)
         return
     try:
         tip = fetch_main(cfg, culprit)
@@ -604,34 +701,60 @@ def recheck_main(cfg: Config, ledger: Ledger, pr: str) -> None:
         return
     if tip == last:
         return
-    answers = []
-    for _ in range(FLAKE_RUNS):
-        answers.append(probe(cfg, tip, ids))
-        if answers[-1] != "pass":
-            break
-    head = f"mode=on run={run_id} culprit={culprit} revert_pr={pr}"
+    answers: list[str] = []
+    try:
+        for _ in range(FLAKE_RUNS):
+            answers.append(probe(cfg, tip, ids))
+            if answers[-1] != "pass":
+                break
+    except Stop as stop:
+        # P3: git cannot make the probe worktree. poll() still runs after this.
+        answers.append(f"unknown ({stop.reason})")
     if answers == ["pass"] * FLAKE_RUNS:
-        why = f"The failed tests pass {FLAKE_RUNS} times on the new tip {tip[:12]} of main."
-        note = f"{why} A later commit fixed main, so the auto-revert closes this PR (CIV-31)."
-        shut = run([*cfg.gh, "pr", "close", pr, "--comment", note], cwd=cfg.repo)
-        if shut.returncode == 0:
-            ledger.write(SKIP, f"{head} {why} A fix landed, so the pass closed the revert PR.")
-            open_state(cfg, pr).unlink(missing_ok=True)
-            return
-        ledger.write(
-            PERSON,
-            f"{head} {why} gh pr close failed: {one_line(shut.stderr)}. "
-            "A person closes the revert PR.",
-        )
-    elif answers[0] != "fail":
-        ledger.write(
-            PERSON,
-            f"{head} The failed tests give {', '.join(answers)} on the new tip {tip[:12]} of main. "
-            "A flake, or a fix in part. The revert PR stays open, and a person decides.",
-        )
-    # Each tip is tested once. The next pass tests only a newer tip.
-    data["tip"] = tip
+        data["close_at"] = tip
+        write_open(cfg, pr, data)
+        close_after_fix(cfg, ledger, pr, data, head)
+        return
+    if answers == ["fail"]:
+        # A sure answer: main is still red. The merge bot can merge the PR.
+        data["tip"] = tip
+        write_open(cfg, pr, data)
+        return
+    ledger.write(
+        PERSON,
+        f"{head} The failed tests give {', '.join(answers)} on the new tip {tip[:12]} of main. "
+        "A flake, a fix in part, or a test that a later commit deleted. The revert PR "
+        "stays open, and the merge bot holds it. A person merges it or closes it.",
+    )
+    data["person"] = tip
     write_open(cfg, pr, data)
+
+
+def close_after_fix(cfg: Config, ledger: Ledger, pr: str, data: dict[str, Any], head: str) -> None:
+    """Close the revert PR, because the failed tests pass on data["close_at"] (P2).
+
+    A failed close writes one PERSON line and stays in the state file, so the
+    next pass tries again. Until then, "tip" is old, and the merge bot holds the PR.
+    """
+    fix = str(data["close_at"])
+    why = f"The failed tests pass {FLAKE_RUNS} times on the tip {fix[:12]} of main."
+    note = f"{why} A later commit fixed main, so the auto-revert closes this PR (CIV-31)."
+    shut = run([*cfg.gh, "pr", "close", pr, "--comment", note], cwd=cfg.repo)
+    if shut.returncode == 0:
+        ledger.write(
+            SKIP, f"{head} fixed_at={fix} {why} A fix landed, so the pass closed the revert PR."
+        )
+        open_state(cfg, pr).unlink(missing_ok=True)
+        return
+    say(f"revert PR {pr}: gh pr close failed: {one_line(shut.stderr)}. The next pass tries again.")
+    if not data.get("close_told"):
+        ledger.write(
+            PERSON,
+            f"{head} {why} gh pr close failed: {one_line(shut.stderr)}. Each pass tries "
+            "again, and the merge bot holds the PR. A person can close it.",
+        )
+        data["close_told"] = True
+        write_open(cfg, pr, data)
 
 
 @dataclass
@@ -650,6 +773,8 @@ class Case:
     task_num: str = "0"
     task_ref: str = "none found"
     revert_sha: str = ""
+    #: The head sha of the red run (bad_sha of the poller): the tree it tested.
+    bad: str = ""
 
     @property
     def branch(self) -> str:
@@ -677,23 +802,28 @@ class EarlyEnd:
         self.rep = rep
         self.written = False
 
-    def write(self, cause: str) -> None:
+    def write(self, cause: str, quiet: bool = False) -> None:
         if self.written:
             return
-        self.written = True
         # A pushed branch or an open PR can exist: a person checks for them.
         why = f"The pass ended early: {cause}. A person checks for a branch auto-revert/<sha>."
-        self.ledger.write(PERSON, f"mode={self.cfg.mode} run={self.rep.run_id} No revert. {why}")
-        self.rep.write(self.cfg.reports, f"NO REVERT. {why}")
+        self.ledger.write(
+            PERSON, f"mode={self.cfg.mode} run={self.rep.run_id} No revert. {why}", quiet=quiet
+        )
+        # Only a line on disk counts. A SIGTERM during the write finds written False,
+        # and the handler writes the line.
+        self.written = True
+        self.rep.write(self.cfg.reports, f"NO REVERT. {why}", quiet=quiet)
 
 
 def on_sigterm(_signum: int, _frame: object) -> None:
     """systemd stops a pass with SIGTERM. Write the PERSON line first, then end.
 
     sys.exit raises SystemExit, so the finally blocks remove the worktrees after it.
+    The handler prints nothing to stderr (Ledger.write).
     """
     if EarlyEnd.now is not None:
-        EarlyEnd.now.write("SystemExit(143), a SIGTERM from the stop of the unit")
+        EarlyEnd.now.write("SystemExit(143), a SIGTERM from the stop of the unit", quiet=True)
     sys.exit(143)
 
 
@@ -705,11 +835,12 @@ def handle(cfg: Config, ledger: Ledger, result: dict[str, Any]) -> int:
     try:
         decision = decide(cfg, ledger, result, rep)
     except Stop as stop:
-        EarlyEnd.now = None
         extra = "".join(f" {k}={v}" for k, v in stop.fields.items())
         # After the PR opens, the revert exists, and a person finishes it.
         head = "The revert stopped." if "revert_pr" in stop.fields else "No revert."
         ledger.write(PERSON, f"mode={cfg.mode} run={rep.run_id}{extra} {head} {stop.reason}")
+        # The line is on disk. A SIGTERM before this point writes the early-end line.
+        ending.written = True
         rep.write(cfg.reports, f"{head.upper()} A person reads this. {stop.reason}")
         return 0
     except BaseException as exc:
@@ -742,6 +873,7 @@ def read_case(result: dict[str, Any], rep: Report) -> Case:
         raise Stop(f"The bisect result names no full commit sha: {line}.")
     pr = re.search(r"PR=(\d+)\s*$", line)
     case = Case(run_id=rep.run_id, culprit=culprit, pr=pr.group(1) if pr else "", ids=ids)
+    case.bad = str(result.get("bad_sha") or "")
     rep.fact(f"Culprit: {culprit} (PR {case.pr or 'none'}).")
     return case
 
@@ -788,6 +920,8 @@ def check_brakes(cfg: Config, ledger: Ledger, case: Case) -> str:
         cfg.repo, "log", case.tip, "-F", f"--grep=Auto-Revert: {c}", "--format=%H", "-n", "1"
     )
     if on_main:
+        if tested_before(cfg, case, on_main):
+            return skip(ledger, cfg, case, old_run(case, on_main, "the revert"))
         raise Stop(
             f"Main already holds the revert {on_main[:12]} of {c[:12]}, and the run is red. "
             "The red has another cause.",
@@ -796,11 +930,16 @@ def check_brakes(cfg: Config, ledger: Ledger, case: Case) -> str:
     verb = REVERT if cfg.mode == "on" else WOULD_REVERT
     earlier = ledger.find(verb, "culprit", c)
     revert_pr = earlier.fields.get("revert_pr", "") if earlier else ""
-    if revert_pr and ledger.find(SKIP, "revert_pr", revert_pr):
-        # follow_up closed the revert PR when a fix landed. Main is red again.
+    end = revert_end(ledger, revert_pr)
+    if end is not None:
+        # The revert PR merged or closed. A run of a later tree that is red needs a person.
+        since = end.fields.get("fixed_at") or end.fields.get("merge", "")
+        if tested_before(cfg, case, since):
+            return skip(
+                ledger, cfg, case, old_run(case, since, "the end of revert PR " + revert_pr)
+            )
         raise Stop(
-            f"The pass closed its revert PR {revert_pr} of {c[:12]}, because a fix "
-            "landed. Now a run is red again. A person reads the fix.",
+            f"{ended_text(end, revert_pr, c)} Now a run is red again. A person reads it.",
             culprit=c,
         )
     if earlier is not None:
@@ -820,6 +959,47 @@ def check_brakes(cfg: Config, ledger: Ledger, case: Case) -> str:
             culprit=c,
         )
     return ""
+
+
+def tested_before(cfg: Config, case: Case, sha: str) -> bool:
+    """True when the red run tested a tree from before `sha`: an old run (P2).
+
+    deploy.yml does not cancel a run in progress, so a batch that started
+    before a fix or a revert can end red after it. The head sha of the run
+    stands for the tree that it tested (the known limit of the bad commit). A
+    doubt (no sha, or a git error) is False, so the brake stays a PERSON line.
+    """
+    if not (SHA_RE.match(case.bad) and SHA_RE.match(sha)):
+        return False
+    return git(cfg.repo, "merge-base", "--is-ancestor", sha, case.bad).returncode == 1
+
+
+def old_run(case: Case, sha: str, what: str) -> str:
+    return (
+        f"The run tested {case.bad[:12]}, from before {what} at {sha[:12]}. "
+        "An old run of main, so no new revert."
+    )
+
+
+def revert_end(ledger: Ledger, revert_pr: str) -> Entry | None:
+    """The line that ended the watch of a revert PR: REVERTED, or a SKIP with revert_pr."""
+    if not revert_pr:
+        return None
+    return ledger.find(REVERTED, "revert_pr", revert_pr) or ledger.find(
+        SKIP, "revert_pr", revert_pr
+    )
+
+
+def ended_text(end: Entry, revert_pr: str, culprit: str) -> str:
+    if end.verb == REVERTED:
+        merge = end.fields.get("merge", "unknown")
+        return f"The revert PR {revert_pr} of {culprit[:12]} merged ({merge[:12]})."
+    if end.fields.get("fixed_at"):
+        return (
+            f"The pass closed its revert PR {revert_pr} of {culprit[:12]}, because a fix "
+            f"landed at {end.fields['fixed_at'][:12]}."
+        )
+    return f"A person closed the revert PR {revert_pr} of {culprit[:12]}."
 
 
 def skip(ledger: Ledger, cfg: Config, case: Case, why: str) -> str:

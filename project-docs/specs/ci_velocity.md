@@ -927,7 +927,7 @@ Each rung ends in a demo (D211). Each slice of a rung blocks its demo task.
 | CIV-37 | 3062 | 0 | LOW | Model routing by job |
 | CIV-38 | 3063 | 0 | LOW | The quality numbers and the rollback rule |
 | CIV-30 | 3055 | 1 | HIGH | The green pointer. A release ships green |
-| CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first. **BUILT 2026-11-14**, dark (code default `off`, unit `dry`). §8.8 holds the design. CIV-31b BUILT 2026-11-14 (task 3212): the pass reads `main` until it holds still, closes an open revert PR when a fix lands, and stops at 14 hours. The HIGH list covers the tenancy, RLS, grant and visibility files. It must merge before `on` |
+| CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first. **BUILT 2026-11-14**, dark (code default `off`, unit `dry`). §8.8 holds the design. CIV-31b BUILT 2026-11-14 (task 3212): the pass reads `main` until it holds still, closes an open revert PR when a fix lands, ends the watch of a PR that a person merged or closed, and stops at 14 hours. The merge bot merges a revert PR only after the pass tested the tip of `main`. The HIGH list covers the tenancy, RLS, grant, visibility, member, role, identity, money and sharing files. It must merge before `on` |
 | CIV-32 | 3057 | 2 | STANDARD | **BUILT 2026-11-13.** A repair round tests what failed and what the fix reaches (`ci_unit_guard.py repair`) |
 | CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py`. CIV-33d BUILT 2026-11-13 (task 3074): the scan fences of six large files moved to `*_scan.py` files, and `test_scanner_budget.py` caps a scanner file at 30 s. The scanner set costs 1,748 s, down from 2,333 s. `test_affected_tests.py` (381 s) waits for PR 2205. CIV-33c-1 BUILT 2026-11-13 (task 3073): a hub selects its importers up to 20% of the test files, a flag-only diff of `settings.py` or `env_guard.py` selects the tests that name the flag, and `scripts/replay_gate.py` measures the FULL share. For a hub or a flag diff, an app entry, or a test helper that builds an app, selects its test importers. The closure over test imports starts from the import picks, not from the scanners or the SAFETY fences. CIV-33c-2 BUILT 2026-11-14 (task 3073): the R8 must-run, never-skip and disarmed lists moved from the two workflows to the `r8` key of `tests/fences.json`. A workflow or a composite action stays FULL. Any other file under `.github/` is not FULL. An edit of `tests/fences.json` selects the files it adds to a list and the guard's own tests, and a file that does not parse is FULL. The replay of 300 main commits shows 96 FULL (32.0%), and 38 of the 43 commits whose only FULL reason was `.github/` edited a list only. With those edits in `tests/fences.json`, the projected share is 58 of 300 (19.3%). `packages/acb_common/` is the next cause (37 commits) |
 | CIV-34 | 3059 | 2 | STANDARD | Conflict rules in the merge bot, tested on the merged tree. CIV-34a BUILT 2026-11-14 (§8.9): the rules, the checks on the merged tree, and the trailer. The fix round of the PR 2266 review (same day) removed `rerere`, `rebuild` and the markdown `union`, and added the ref checks and the `ls-remote` check. CIV-34b (a model proposal) is open |
@@ -1032,13 +1032,26 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
   probes take time too, so the pass reads `main` again, until it holds still.
   It reads `main` at most 3 times (`MAIN_READS`). When the third read finds a
   new tip again, the pass writes a `PERSON` line. The report names each tip.
+- **The watch of a revert PR.** Each pass first reads the PR on GitHub, because
+  a person can merge or close it by hand. A merged PR gets a `REVERTED` line
+  with the merge sha and `by=hand`. A closed PR gets a `SKIP` line that says
+  who closed it. Both end the watch. When `gh` cannot read the PR, nothing
+  changes, and the next pass reads it again.
 - **A fix lands while the revert PR waits.** pr-check takes about 32 minutes
   on the revert PR. While the PR is open, each pass runs the failed tests on
   each new tip of `main`, 3 times. When each run passes, a fix landed. The pass
-  closes the PR with `gh pr close` and writes `SKIP`. A fail on the first run
-  keeps the PR. Any other answer is a `PERSON` line, and the PR stays open. A
-  file in `~/.cache/metorite-auto-revert/open/` keeps the failed tests and the
-  last tip of each open revert PR.
+  closes the PR with `gh pr close` and writes `SKIP` with `fixed_at=<tip>`. A
+  failed close writes one `PERSON` line, and each later pass tries it again. A
+  fail on the first run keeps the PR. Any other answer writes one `PERSON`
+  line. Such an answer comes from a flake, a fix in part, a deleted test, or a
+  probe that cannot start. Then the watch belongs to a person, and the pass runs no
+  more probes for that PR. A file in `~/.cache/metorite-auto-revert/open/`
+  keeps the failed tests and the last tip with a sure answer.
+- **The merge bot waits for the test of the tip.** The merge bot merges a PR
+  with the head branch `auto-revert/...` only when its file in `open/` holds
+  the tip of `main` now. Another tip waits in the queue for the next
+  auto-revert pass. A PR with no file goes `BACK`. A failed close or a doubt
+  keeps the old tip in the file, so the merge bot holds the PR.
 - **The limit.** A probe stops at 30 minutes. A bisect holds at most 12 probes,
   and the pass adds 10 to 18. The unit stops a pass at 14 hours
   (`TimeoutStartSec=14h`), and a lock is stale after 15 hours.
@@ -1071,13 +1084,21 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
     its subject or PR title says HIGH. A revert deletes a migration file, but
     each database that applied it keeps the schema (R6). This stops `dry` too.
     CIV-31b added the tenancy, RLS, grant and visibility files to the list:
-    the DB seams, `provisioning.py`, the Studio row-rule stores
-    (`batch_store.py`, `objects_store.py`), `kb_access/`, and a file named for
-    a permission, a grant, tenancy, visibility or row rules. A server file
-    (`.py`, `.sql`) with an `access` part in its name is HIGH too.
+    the DB seams, `provisioning.py`, `org_settings.py`, the Studio row-rule
+    stores (`batch_store.py`, `objects_store.py`), `kb_access/`, and a file
+    named for a permission, a grant, tenancy, visibility or row rules. A server
+    file (`.py`, `.sql`) with an `access` part in its name is HIGH too. Its fix
+    round added the members, roles and groups of `routes/admin/`, the admin API
+    of the UI, the operator console files and the seats. A server file with a
+    `signin`, `signup`, `oauth`, `seats`, `share`, `sharing`, `shared_token` or
+    `report_scope` part in its name is HIGH too.
   - `main` moves on each of 3 reads after the probes.
-  - The pass closed its revert PR of the culprit because a fix landed, and a
-    later run is red again.
+  - The revert PR of the culprit merged or closed, and a later run is red
+    again. A run of a tree from before that merge or that fix is an old run,
+    and the pass writes `SKIP`. `deploy.yml` does not cancel a batch, so an old
+    batch can end red after the fix. The same rule holds when `main` holds the
+    revert. The tree of a run is its head sha (the known limit of the bad
+    commit below).
   - `gh` cannot search the open PRs.
   - A re-run gives another answer, or a probe cannot judge.
   - The revert does not apply cleanly, or the failed tests fail on it.
@@ -1099,6 +1120,12 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
   newer. Then the bisect can exit 3, and the pass writes a `PERSON` line.
 - **A known limit: the speed.** The merge bot merges a revert PR only after
   pr-check passes on it, with a median of 32 minutes (§8.2).
+- **A known limit: the check of the tip.** The merge bot reads the tip of
+  `main` right before its merge call. A fix that lands in the seconds between
+  the read and the merge is not seen. A pass that holds the lock for hours
+  runs no recheck, so the revert PR waits in the queue until that pass ends.
+  On a busy `main`, each new tip needs a new test, so a revert PR can wait for
+  several passes.
 - **Go `on`.** After the week of `dry`, read the log and the reports. CIV-38
   lands first (§8.5). Then set `AUTO_REVERT_MODE=on` in the unit and reload it.
 
