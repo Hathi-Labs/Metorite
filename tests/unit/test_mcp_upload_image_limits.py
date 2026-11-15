@@ -37,7 +37,10 @@ the mutation that turns it red.
 
 Fix round 2 adds the classes ``TestAnOrgOffTheFlagKeepsTheOldCap`` (item A),
 ``TestARefusedQuestionLeavesNoOpenRun`` (item B) and
-``TestTheFlagReaderSaysWhoReadsIt`` (item C).
+``TestTheFlagReaderSaysWhoReadsIt`` (item C). Fix round 3 adds the tests
+``test_b6`` (a cap answer keeps the run), ``test_b7`` (a question that never
+left the edge) and ``test_b8`` and ``test_b9`` (the key of an ended run) to
+``TestARefusedQuestionLeavesNoOpenRun``.
 """
 from __future__ import annotations
 
@@ -117,6 +120,8 @@ class _Upload:
         # Fix round 2, item B: the start of `ask_on_task` found an open run
         # (False), and the answer of the release.
         self.start_created = True
+        # Fix round 3, item 3: the status of the run that the start gives.
+        self.start_status = "in_progress"
         self.release_answer: tuple[int, Any] = (
             200, {"run": {**_run_row(), "status": "released"}, "released": True})
 
@@ -148,8 +153,9 @@ class _Upload:
             status, payload = 200, {"rows": self.rows, "total": len(self.rows)}
         elif scope["method"] == "POST" and scope["path"] == START_PATH:
             # The start of the run of `ask_on_task` (fix round 1, item 8).
-            status, payload = ((201, {"run": _run_row(), "created": True}) if self.start_created
-                               else (200, {"run": _run_row(), "created": False}))
+            started = {**_run_row(), "status": self.start_status}
+            status, payload = ((201, {"run": started, "created": True}) if self.start_created
+                               else (200, {"run": started, "created": False}))
         elif scope["method"] == "POST" and scope["path"] == RELEASE_PATH:
             status, payload = self.release_answer
         elif scope["method"] == "POST" and scope["path"] == f"/projects/agent-runs/{RUN}/activities":
@@ -734,6 +740,28 @@ class TestARefusedQuestionLeavesNoOpenRun:
         assert not [r for r in gw.requests if r.path.endswith("/activities")]
         (release,) = gw.releases()
         assert json.loads(release.body) == {}
+
+    @pytest.mark.parametrize("ended", ["released", "completed", "stopped", "failed",
+                                       "abandoned"])
+    async def test_b8_the_key_of_an_ended_run_asks_for_a_new_key(self, gw, ended):
+        """Fix round 3, item 3. A retry with the key of a run that has ended,
+        such as the run that a refused question released. The start replays
+        that run, and the gateway refuses the question with 409. The text then
+        says to send a new key. Mutation: drop the ``TEXT_KEY_RUN_ENDED`` step
+        of ``tools._ask_on_task``, and the call answers TEXT_RUN_CONFLICT."""
+        gw.start_created, gw.start_status = False, ended
+        result = await self._ask(gw, (409, {"detail": f"This agent run is {ended}."}))
+        assert _text(result) == tools.TEXT_KEY_RUN_ENDED
+        assert "new key" in tools.TEXT_KEY_RUN_ENDED
+        assert gw.releases() == []
+
+    async def test_b9_a_409_on_an_open_run_keeps_its_text(self, gw):
+        """Only an ended run gets the key text. Mutation: drop the status check
+        of that step, and an open run of this session gets it too."""
+        gw.start_created = False
+        result = await self._ask(gw, (409, {"detail": "SECRET"}))
+        assert _text(result) == tools.TEXT_RUN_CONFLICT
+        assert gw.releases() == []
 
 
 class TestTheBodyCapOfMcp:

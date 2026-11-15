@@ -341,6 +341,10 @@ TEXT_QUESTION_WAITS = (
     " with its run_id and wait_seconds 20.")
 #: A 409 of the start: the key started a run on another task.
 TEXT_KEY_USED = "This idempotency_key started another run. Send a new key."
+#: CIV-14b fix round 3. A 409 of the question of ``ask_on_task`` when the
+#: start replayed the run of the key, and that run has ended. An example is
+#: the run that a refused question released.
+TEXT_KEY_RUN_ENDED = "This idempotency_key started a run that has ended. Send a new key."
 #: A 409 of ``request_task_archive`` (EA-6g): a question of the run waits,
 #: the run is stopping, or the key wrote another activity.
 TEXT_ARCHIVE_CONFLICT = (
@@ -2890,6 +2894,9 @@ RUN_STATUSES: tuple[str, ...] = (
 #: A run is open in these statuses (EA12-6).
 OPEN_RUN_STATUSES: frozenset[str] = frozenset(
     {"created", "in_progress", "awaiting", "stopping"})
+#: CIV-14b fix round 3. A run has ended in these statuses. ``stale`` is an
+#: open run that is quiet, so it is in neither set.
+ENDED_RUN_STATUSES: frozenset[str] = frozenset(RUN_STATUSES) - OPEN_RUN_STATUSES - {"stale"}
 #: The types an agent writes. ``prompt`` is a person's (§12.1).
 AGENT_ACTIVITY_TYPES: tuple[str, ...] = (
     "thought", "action", "response", "elicitation", "error")
@@ -9540,6 +9547,13 @@ async def _ask_on_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
             # The release route of `release_task`. A failed release still
             # gives the refusal of the question.
             await _after_write(lambda: _release_task(ctx, {"run_id": run_id}), {})
+        elif (not created and error.text == TEXT_RUN_CONFLICT
+              and run.get("status") in ENDED_RUN_STATUSES):
+            # Fix round 3: the start replayed the run of this key, and that
+            # run has ended. The question goes out first, because the gateway
+            # gives back a question that the key wrote before. Only its 409
+            # comes here, and the text says to send a new key.
+            raise ToolError(TEXT_KEY_RUN_ENDED) from None
         raise
 
 
@@ -11301,6 +11315,7 @@ __all__ = [
     "DOOR_SCHEMA_MAX_BYTES",
     "EPIC_CHECK_COUNT_DETAIL",
     "EPIC_CHECK_KEYS",
+    "ENDED_RUN_STATUSES",
     "EPIC_CONTRACTS_OFF_DETAIL",
     "EPIC_CONTRACT_BODY_KEYS",
     "EPIC_CONTRACT_KEYS",
@@ -11493,6 +11508,7 @@ __all__ = [
     "TEXT_IMAGE_TOO_LARGE",
     "TEXT_IMAGE_TYPE",
     "TEXT_KEY_REUSED",
+    "TEXT_KEY_RUN_ENDED",
     "TEXT_KEY_RUNNING",
     "TEXT_KEY_UNKNOWN",
     "TEXT_KEY_USED",

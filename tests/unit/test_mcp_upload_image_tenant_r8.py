@@ -40,6 +40,9 @@ hold the edge rules with a fake gateway. The gate is
 * Fix round 2, item B. Drop the release of ``tools._ask_on_task``, and
   ``test_r9_a_question_that_the_gateway_refuses_leaves_no_open_run`` turns
   red: the run that the call started stays ``in_progress``.
+* Fix round 3, item 3. Drop the ``TEXT_KEY_RUN_ENDED`` step of
+  ``tools._ask_on_task``, and the same test turns red: a retry with the key
+  of the released run reads ``TEXT_RUN_CONFLICT``.
 """
 from __future__ import annotations
 
@@ -260,11 +263,12 @@ async def _upload(world, task: str, data: bytes, *, name: str = "capture.png",
         "content_base64": base64.b64encode(data).decode("ascii")})
 
 
-async def _ask(world, task: str, ids: list[str], *, who: str = "write") -> dict[str, Any]:
+async def _ask(world, task: str, ids: list[str], *, who: str = "write",
+               key: str | None = None) -> dict[str, Any]:
     return await tw._mcp(world, who, "ask_on_task", {
         "task_id": world.t[task], "question": "Approve this layout?",
         "options": [{"id": "yes", "label": "Approve"}, {"id": "no", "label": "Change it"}],
-        "attachment_ids": ids, "idempotency_key": _key()})
+        "attachment_ids": ids, "idempotency_key": key or _key()})
 
 
 def _files_of(world, task: str) -> list[Any]:
@@ -448,8 +452,18 @@ class TestAnImageOnAQuestion:
 
         monkeypatch.setattr(tools, "_question_images", then_change)
         assert _runs_of(live, task) == 0
-        result = await _ask(live, task, [aid])
+        key = _key()
+        result = await _ask(live, task, [aid], key=key)
         assert result["content"][0]["text"] == text_
+        assert _run_statuses(live, task) == ["released"]
+        assert _questions_of(live, task) == []
+        # Fix round 3, item 3: a retry with the same key replays the released
+        # run. The answer says to send a new key, and no run opens. Mutation:
+        # drop the TEXT_KEY_RUN_ENDED step, and this reads TEXT_RUN_CONFLICT.
+        retry = await tw._mcp(live, "write", "ask_on_task", {
+            "task_id": live.t[task], "question": "Approve this layout?",
+            "idempotency_key": key})
+        assert retry["content"][0]["text"] == tools.TEXT_KEY_RUN_ENDED
         assert _run_statuses(live, task) == ["released"]
         assert _questions_of(live, task) == []
 
