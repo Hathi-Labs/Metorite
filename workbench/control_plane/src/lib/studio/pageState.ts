@@ -32,6 +32,8 @@ export interface PageState {
   ro?: string;
   rtab?: string;
   full?: boolean;
+  /** The period of a dashboard (STU-LY-7b): `7d`, `30d` or `90d`. Absent means all time. */
+  period?: "7d" | "30d" | "90d";
 }
 
 export const EMPTY_PAGE_STATE: PageState = { selected: null, filters: {}, tab: null };
@@ -74,6 +76,7 @@ export function encodePageState(state: PageState): string {
   if (state.q) p.set("q", state.q);
   if (state.sort) p.set("sort", state.sort);
   if (state.layout) p.set("layout", state.layout);
+  if (state.period) p.set("period", state.period);
   if (state.group) p.set("group", state.group);
   if (state.rec && state.ro) {
     p.set("rec", state.rec);
@@ -109,6 +112,7 @@ export function boundPageState(state: PageState, page?: PageTabs): PageState {
     if (q && q.length <= PAGE_STATE_LIMITS.filterValue) out.q = q;
     if (typeof state.sort === "string" && SORT_VALUE.test(state.sort)) out.sort = state.sort;
     if (state.layout === "table" || state.layout === "board") out.layout = state.layout;
+    if (state.period === "7d" || state.period === "30d" || state.period === "90d") out.period = state.period;
     if (typeof state.group === "string" && FILTER_NAME.test(state.group)) out.group = state.group;
     // The record page: an id and an object together, or no record at all.
     if (typeof state.rec === "string" && RECORD_ID.test(state.rec) && typeof state.ro === "string" && FILTER_NAME.test(state.ro)) {
@@ -162,6 +166,7 @@ export function decodePageState(
     return boundPageState({ selected: p.get("sel") || null, filters, tab: p.get("tab") || null, page: p.get("page") || undefined,
       q: p.get("q") || undefined, sort: p.get("sort") || undefined,
       layout: (p.get("layout") || undefined) as PageState["layout"], group: p.get("group") || undefined,
+      period: (p.get("period") || undefined) as PageState["period"],
       rec: p.get("rec") || undefined, ro: p.get("ro") || undefined, rtab: p.get("rtab") || undefined, full: p.get("full") === "1" }, page);
   } catch {
     return emptyState();

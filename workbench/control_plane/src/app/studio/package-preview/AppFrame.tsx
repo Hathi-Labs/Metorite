@@ -48,8 +48,9 @@ import { computedKeys } from "@/lib/studio/inlineEdit";
 import { buildPage, viewObjectName } from "@/lib/studio/pageModel";
 import { pluralOf } from "@/lib/studio/blockState";
 import { retryableRead } from "@/lib/studio/readError";
+import { PERIODS, periodFieldOf, periodFilter, periodNode, tileTarget, withPeriod, type PeriodField } from "@/lib/studio/periodModel";
 import { type PreviewControls, boardGroupKeys, fieldSpecs, recordTitle } from "@/lib/studio/packagePreview";
-import { countSourceFor, pageObject, sourceWithMe } from "@/lib/studio/railCounts";
+import { countSourceFor, pageObject, pageViewIds, sourceWithMe } from "@/lib/studio/railCounts";
 import { hasRail, railFor, visibleRail } from "@/lib/studio/railModel";
 import { useRailCounts } from "@/lib/studio/useRailCounts";
 import { READ_ONLY_SENTENCE, type PackageDetail } from "@/lib/studio/realDoor";
@@ -205,15 +206,35 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
     go((s) => openRecord(s, link.object, link.id));
   };
 
+  const fieldsOf = (name: string | null): readonly PeriodField[] =>
+    (detail.objects.find((o) => o.name === name)?.fields ?? []) as unknown as readonly PeriodField[];
+  // The period control (STU-LY-7b): only on a dashboard that has a tile or a worklist with a hot date field.
+  const periodShown = built.page.layout === "dashboard" && cells.some((c) => {
+    const v = detail.views.find((x) => x.id === c.view);
+    return v ? periodFieldOf(fieldsOf(viewObjectName(v, controls.actions))) !== null : false;
+  });
+  const layoutHeader = periodShown ? (
+    <div className="flex justify-end" data-dashboard-period>
+      <SelectButton label="Period of the dashboard" value={state.period ?? "all"} widthClass="w-44"
+        options={PERIODS.map((p) => ({ value: p.id, label: p.label }))}
+        onChange={(v) => update((s) => withPeriod(s, v))} />
+    </div>
+  ) : undefined;
+
   const renderView = (id: string) => {
     const view = detail.views.find((v) => v.id === id);
     const model = view ? mapView(view, ctx) : null;
     if (!model) return null;
     switch (model.kind) {
       case "node": {
-        const node = <GenerativeUINode spec={model.node} />;
-        const src = model.node.props.source as { action: string; args?: Record<string, unknown> } | undefined;
         const preset = built.page.layout;
+        // The period of a dashboard (STU-LY-7b) adds one date filter to the source of each tile and of the worklist.
+        const objName = view ? viewObjectName(view, controls.actions) : null;
+        const spec = preset === "dashboard"
+          ? periodNode(model.node, periodFilter(periodFieldOf(fieldsOf(objName)), state.period, new Date()))
+          : model.node;
+        const node = <GenerativeUINode spec={spec} />;
+        const src = spec.props.source as { action: string; args?: Record<string, unknown> } | undefined;
         if ((preset === "table_workspace" || preset === "board") && src && id === built.page.regions.main?.[0]) {
           const object = detail.objects.find((o) => o.name === viewObjectName(view!, controls.actions));
           return (
@@ -224,9 +245,16 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
         }
         // A tile of a dashboard (STU-LY-7): its own loading, error and empty state, so one tile never blanks the page.
         if (preset === "dashboard" && src && (view?.block === "stat" || view?.block === "chart")) {
+          // The tile opens the page that lists its object, when the app has one (STU-LY-7b).
+          const to = tileTarget(built.pages.map((p) => ({ id: p.id, viewIds: pageViewIds(p) })), detail.views,
+            (vid) => { const v = detail.views.find((x) => x.id === vid); return v ? viewObjectName(v, controls.actions) : null; },
+            built.page.id, objName);
           return (
-            <LayoutList source={src} door={door} active={0} tile shape="tile"
-              noun={(view.title || view.id).toLowerCase()} onClear={() => update(clearedBar)}>{node}</LayoutList>
+            <div className="flex flex-col gap-1" data-dashboard-tile={view.id}>
+              <LayoutList source={src} door={door} active={0} tile shape="tile"
+                noun={(view.title || view.id).toLowerCase()} onClear={() => update(clearedBar)}>{node}</LayoutList>
+              {to ? <Button variant="ghost" size="sm" icon="ArrowRight" onClick={() => setPage(to)}>Open the list</Button> : null}
+            </div>
           );
         }
         if (!bar || id !== bar.lens.view || !src) return node;
@@ -310,6 +338,7 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
       <StudioPage bare title={detail.name.trim() || "App"}
         manifest={manifest} pageId={built.page.id} state={state} onTab={setTab}
         onCloseSide={() => setSelected(null)} renderView={renderView} toolbar={toolbarShown ? toolbar : undefined}
+        layoutHeader={layoutHeader}
         record={opened && recordObject ? {
           title: titled && titled.id === opened.id ? titled.text : recordObject.label || recordObject.name,
           full: recordFull(parts, opened.full),

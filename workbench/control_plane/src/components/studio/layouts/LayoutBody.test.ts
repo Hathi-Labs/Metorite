@@ -75,6 +75,14 @@ describe("the dashboard", () => {
     expect(html).toMatch(/data-dashboard-charts[^>]*grid-cols-1[^>]*lg:grid-cols-2/);
     expect(html.indexOf("data-dashboard-charts")).toBeLessThan(html.indexOf("data-dashboard-worklist"));
   });
+  it("draws the header control above the stats, when the frame gives one", () => {
+    const html = renderToStaticMarkup(createElement(LayoutBody, {
+      layout: "dashboard", regions: { kpis: ["k1"] }, renderView: (id) => createElement("div", { "data-view": id }, id),
+      titleOf: (id) => id, header: createElement("div", { "data-dashboard-period": "" }, "Period"),
+    }));
+    expect(html.indexOf("data-dashboard-period")).toBeLessThan(html.indexOf("data-dashboard-kpis"));
+    expect(draw("dashboard", { kpis: ["k1"] })).not.toContain("data-dashboard-period");
+  });
   it("leaves out the chart and worklist rows when the page names none", () => {
     const only = draw("dashboard", { kpis: ["k1"] });
     expect(only).not.toContain("data-dashboard-charts");
@@ -92,6 +100,12 @@ describe("the frame", () => {
     expect(frame).toContain('shape={preset === "board" ? "board" : "rows"}');
     expect(frame).toContain("<LayoutList");
     expect(frame).toMatch(/function LayoutList[\s\S]*<StudioBlockState/);
+  });
+  it("draws the period control and cuts each tile source by it, and links a tile to its list", () => {
+    expect(frame).toContain("data-dashboard-period");
+    expect(frame).toContain("periodNode(model.node, periodFilter(");
+    expect(frame).toContain("tileTarget(");
+    expect(frame).toContain("Open the list");
   });
   it("passes retryable to the shared state and draws no list bar over a dashboard", () => {
     expect(frame).toContain("retryable={retryableRead(rows.error)}");

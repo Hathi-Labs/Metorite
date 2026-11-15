@@ -26,16 +26,18 @@ export interface LayoutBodyProps {
   renderView: (id: string) => ReactNode;
   /** The title of a view, for the label of its region. */
   titleOf: (id: string) => string;
+  /** A control row above the body, such as the period of a dashboard (STU-LY-7b). */
+  header?: ReactNode;
 }
 
 /** The presets that this file draws. A later slice adds one. */
 export const DRAWN_LAYOUTS: readonly LayoutName[] = ["table_workspace", "board", "dashboard"];
 
-export default function LayoutBody({ layout, regions, renderView, titleOf }: LayoutBodyProps) {
+export default function LayoutBody({ layout, regions, renderView, titleOf, header }: LayoutBodyProps) {
   if (!DRAWN_LAYOUTS.includes(layout)) {
     return <p data-layout-pending={layout} className="text-sm text-muted-foreground">This layout is not drawn yet.</p>;
   }
-  if (layout === "dashboard") return <Dashboard regions={regions} renderView={renderView} titleOf={titleOf} />;
+  if (layout === "dashboard") return <Dashboard regions={regions} renderView={renderView} titleOf={titleOf} header={header} />;
   const main = regions.main?.[0];
   const node = main ? renderView(main) : null;
   return (
@@ -60,7 +62,7 @@ export default function LayoutBody({ layout, regions, renderView, titleOf }: Lay
  * labelled region, and the caller of `renderView` gives each one its own loading and error state, so one
  * failed tile never blanks the page.
  */
-function Dashboard({ regions, renderView, titleOf }: Pick<LayoutBodyProps, "regions" | "renderView" | "titleOf">) {
+function Dashboard({ regions, renderView, titleOf, header }: Pick<LayoutBodyProps, "regions" | "renderView" | "titleOf" | "header">) {
   const tile = (id: string) => {
     const node = renderView(id);
     return node ? <section key={id} aria-label={titleOf(id)} className="min-w-0">{node}</section> : null;
@@ -73,6 +75,7 @@ function Dashboard({ regions, renderView, titleOf }: Pick<LayoutBodyProps, "regi
   }
   return (
     <div data-layout="dashboard" className="flex min-w-0 flex-col gap-3 sm:gap-4">
+      {header ?? null}
       <div data-dashboard-kpis className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">{kpis}</div>
       {charts.length > 0 ? <div data-dashboard-charts className="grid grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-2">{charts}</div> : null}
       {work.length > 0 ? <div data-dashboard-worklist>{work}</div> : null}

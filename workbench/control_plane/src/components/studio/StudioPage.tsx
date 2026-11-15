@@ -88,6 +88,8 @@ export interface StudioPageProps {
   renderView: (viewId: string) => ReactNode;
   /** Controls above the grid, such as a filter. */
   toolbar?: ReactNode;
+  /** A control row for the body of a page with a preset, such as the period of a dashboard (STU-LY-7b). */
+  layoutHeader?: ReactNode;
   /** The list bar (STU-AF4) in its own row under the toolbar, over the table or board. */
   filterBar?: ReactNode;
   /**
@@ -140,7 +142,7 @@ function NotBuilt({ view, label }: { view: string; label: string }) {
 }
 
 export default function StudioPage({
-  title, subtitle, back, manifest, pageId, state, onTab, onCloseSide, renderView, toolbar, filterBar, record, bare = false,
+  title, subtitle, back, manifest, pageId, state, onTab, onCloseSide, renderView, toolbar, layoutHeader, filterBar, record, bare = false,
 }: StudioPageProps) {
   const built = buildPage(manifest, pageId, state.tab);
   const { page, cells } = built;
@@ -212,7 +214,7 @@ export default function StudioPage({
           {filterBar && <div className="mb-3 sm:mb-4">{filterBar}</div>}
           {page.layout ? (
             <LayoutBody layout={page.layout} regions={page.regions} renderView={renderView}
-              titleOf={(id) => titleOf(manifest.views, id)} />
+              titleOf={(id) => titleOf(manifest.views, id)} header={layoutHeader} />
           ) : cells.length === 0 ? (
             <p className="text-sm text-muted-foreground">This page has no views.</p>
           ) : (
