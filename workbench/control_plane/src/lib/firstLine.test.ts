@@ -14,6 +14,9 @@
 //     sits beside a newer step.
 //   * `text-before-tool-shows`: text a model writes before a tool call shows at once and stays in
 //     the answer, so a lead-in is not held for the end.
+//   * `first-line-not-stale`: once answer text has started, the trail header never says that Mira
+//     still reads the message. A run that this tab joins again (attach) never has the first line.
+//   * `first-line-only-on-send`: only the placeholder that Send puts in the thread carries the flag.
 //
 // Mutation 1: put "Starting" back in `runView`. `first-line-says-what` turns red.
 // Mutation 2: put "Thinking…" back as the header fallback. `first-line-in-2s` turns red.
@@ -21,6 +24,9 @@
 
 import { describe, expect, it } from "vitest";
 import { createElement } from "react";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { applyStreamEvent, type StreamFold } from "@/lib/chatStream";
 import type { ChatMessage } from "@/lib/chatStore";
@@ -43,7 +49,7 @@ const SLOW_TURN: Step[] = [
 
 function placeholder(): ChatMessage {
   // The message that Send puts in the thread at once: `useAgentChat.ts` builds this shape.
-  return { id: "a1", role: "assistant", content: "", timestamp: 0, streaming: true, isThinkingActive: true, toolEvents: [], progressLines: [] };
+  return { id: "a1", role: "assistant", content: "", timestamp: 0, streaming: true, isThinkingActive: true, firstLine: true, toolEvents: [], progressLines: [] };
 }
 
 /** What the member sees at `t` ms after Send: the run row label and the header of the trail. */
@@ -59,6 +65,9 @@ function seen(script: Step[], t: number): { row: string | null; header: string }
   const html = renderToStaticMarkup(
     createElement(ThinkingContainer, {
       toolEvents: m.toolEvents ?? [], progressLines: m.progressLines ?? [], reasoningBlocks: m.reasoningBlocks, isActive: true,
+      firstLine: m.firstLine,
+      // The same test as `MarkdownMessage`: answer text in the content scratch or in a segment.
+      answerStarted: !!m.content.trim() || (m.segments ?? []).some((s) => s.text.trim().length > 0),
     }),
   );
   // The header title is the first text of the button that heads the trail.
@@ -130,5 +139,47 @@ describe("the first line of a turn (CS-1)", () => {
     m = applyStreamEvent(m, { type: "tool_end", id: "t1", name: "find_priority", result: "{}" }, fold);
     m = applyStreamEvent(m, { type: "delta", content: "Two emails need an answer.", messageId: "s2" }, fold);
     expect(body(m)).toBe("Checking your inbox. Two emails need an answer.");
+  });
+
+  it("first-line-not-stale: answer text before any tool takes the line away, in the header and the row", () => {
+    const script: Step[] = [{ at: 4000, event: { type: "delta", content: "Checking your inbox. ", messageId: "s1" } }];
+    const before = seen(script, 3900);
+    expect(before.header).toContain(FIRST_STEP);
+    const after = seen(script, 4000);
+    expect(after.header).not.toContain(FIRST_STEP);
+    // The header shows the live snippet of the text that came, or the step words if there is none.
+    expect(after.header).toMatch(/Checking your inbox|Writing the reply/);
+    expect(after.row).toBe(WRITING_STEP);
+  });
+
+  it("first-line-not-stale: with answer text and no snippet to show, the header says the step words, never the first line", () => {
+    // No live snippet, no tool, no reasoning: only the fallback decides. This is the case that the
+    // reducer test above does not reach, because there the live snippet of the text wins the header.
+    const html = renderToStaticMarkup(
+      createElement(ThinkingContainer, { toolEvents: [], progressLines: [], isActive: true, firstLine: true, answerStarted: true }),
+    );
+    expect(html).not.toContain(FIRST_STEP);
+    expect(html).toContain(WRITING_STEP);
+  });
+
+  it("first-line-not-stale: a run that this tab joins again has no first line, so the header is the old word", () => {
+    const joined: ChatMessage = { ...placeholder(), firstLine: undefined };
+    const html = renderToStaticMarkup(
+      createElement(ThinkingContainer, { toolEvents: [], progressLines: [], isActive: true, firstLine: joined.firstLine, answerStarted: false }),
+    );
+    expect(html).not.toContain(FIRST_STEP);
+    expect(html).toContain("Thinking…");
+  });
+
+  it("first-line-only-on-send: the flag is set once, on the placeholder of Send, and never saved", () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const read = (rel: string) => readFileSync(path.join(here, rel), "utf8").replace(/\r\n/g, "\n");
+    const hook = read("../hooks/useAgentChat.ts");
+    expect(hook.match(/firstLine: true/g)).toHaveLength(1);
+    // The save maps each field by name, so a field that it does not name is not saved.
+    const chat = read("../components/AgentChat.tsx");
+    expect(chat).not.toContain("firstLine");
+    const sessions = read("./sessions.ts");
+    expect(sessions).not.toContain("firstLine");
   });
 });

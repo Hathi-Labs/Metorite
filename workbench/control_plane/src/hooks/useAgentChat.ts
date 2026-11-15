@@ -496,7 +496,7 @@ export function useAgentChat({
       const assistantId = adopt?.assistantId ?? nanoid();
       const assistantMsg: ChatMessage = {
         id: assistantId, role: "assistant", content: "", timestamp: turnTs + 1,
-        streaming: true, toolEvents: [], progressLines: [], isThinkingActive: true,
+        streaming: true, toolEvents: [], progressLines: [], isThinkingActive: true, firstLine: true,
         // Who this turn is from: the agent it was sent to (S9 fix round 3).
         ...agentAuthor(agentNameRef.current),
       };
