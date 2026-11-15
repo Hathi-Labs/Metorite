@@ -22,6 +22,10 @@ export const NODE_ICON: Record<NodeType, IconComponent> = {
   approval: themedIcon("UserCheck"),
   wait: themedIcon("Timer"),
   output: themedIcon("LogOut"),
+  human_step: themedIcon("ClipboardCheck"),
+  studio_write: themedIcon("SquarePen"),
+  pm_task: themedIcon("ListTodo"),
+  pm_lifecycle: themedIcon("Archive"),
 };
 
 /** The card's eyebrow — what kind of block this is, not what it is called. */
@@ -35,6 +39,10 @@ export const NODE_KIND_LABEL: Record<NodeType, string> = {
   approval: "Human approval",
   wait: "Wait",
   output: "Output",
+  human_step: "Human step",
+  studio_write: "Write a record",
+  pm_task: "Update task",
+  pm_lifecycle: "Task clean-up",
 };
 
 export const CATEGORY_LABEL: Record<string, string> = {

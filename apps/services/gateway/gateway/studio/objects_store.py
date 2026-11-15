@@ -179,6 +179,9 @@ cycle, a parent that is no record of this object, and a tree of more than
 :data:`~acb_common.studio_rules.MAX_TREE_DEPTH` levels. :func:`read_tree` reads
 a tree or the whole forest, to that depth, in one recursive statement.
 ``tests/unit/test_studio_hierarchy_r8.py`` runs both on a real Postgres.
+D18-2a: :func:`read_tree` takes a REQUIRED ``viewer``, and the row rule of
+the viewer binds each step of the walk. So the subtree below a record that the
+viewer cannot read is cut. ``tests/unit/test_studio_tree_door_r8.py`` holds it.
 
 **The timer (E9a).** A rule of kind ``timer`` refuses no write, and a write
 writes nothing for it: :func:`_check_records` skips it. Its due field and its
@@ -262,8 +265,9 @@ above 0. A running balance table is a later slice.
 object (``acb_common/studio_access.py`` holds the grammar), and the sync of a
 publish writes it, so a rule binds the published manifest and never the
 draft. Each of :func:`get_record`, :func:`query_records`,
-:func:`apply_writes`, :func:`create_record`, :func:`update_record` and
-:func:`delete_record` takes a REQUIRED keyword ``viewer``. The store reads the
+:func:`apply_writes`, :func:`create_record`, :func:`update_record`,
+:func:`delete_record` and :func:`read_tree` (D18-2a) takes a REQUIRED keyword
+``viewer``. The store reads the
 owner of the package from its ``apps`` row: the owner passes every rule, and
 so does each viewer of an object with no ``access``. Else the scope of the
 viewer's roles binds. A row rule joins the one statement as one ``EXISTS`` on
@@ -275,9 +279,9 @@ formula target that reads a hidden key is hidden too, and so is a roll-up
 target over a source that the viewer cannot read whole. The text of a rule
 that reads a hidden key, or of a key rule over records that the viewer cannot
 read, names no field (:func:`_masked`). The parent of a line must be a record
-that the viewer can read. ``test_studio_row_rules.py`` fails each call of the
-six that passes no viewer. ⚠️ :func:`aggregate_records` and :func:`read_tree` (C18)
-take no viewer yet, and no route calls them. A door of either must add one first.
+that the viewer can read. ``test_studio_row_rules.py`` fails each call of
+these seven that passes no viewer. ⚠️ :func:`aggregate_records` takes no viewer
+yet. Its one caller is the door, for the owner only (D4b).
 
 ⚠️ The store does not authenticate. It only scopes. The actor of a write is
 an argument that the caller takes from the session, never from request input
@@ -817,6 +821,11 @@ class AccessDenied(ObjectStoreError):
     object and never a record."""
 
     code = "access_denied"
+
+
+class NoTree(ObjectStoreError):
+    """D18-2a. The object holds no hierarchy rule, or its parent field is not
+    hot, so it has no tree to read. The door answers 422 for it."""
 
 
 class BatchError(Exception):
@@ -1422,7 +1431,8 @@ ACCESS_REFUSED = "access_refused"
 
 #: The parts of a field that a sync cannot change. ``hot`` is not one of them.
 _FIELD_ATTRS = (
-    "type", "many", "options", "to", "required", "label", "lines", "min", "max", "units", "format")
+    "type", "many", "options", "to", "required", "label", "lines", "min", "max", "units", "format",
+    "normal", "critical", "conversions")
 
 
 @dataclass(frozen=True)
@@ -2884,7 +2894,8 @@ def _empty_page(start: int, size: int) -> RecordPage:
 
 async def query_records(db: Any, *, package_id: str, object_id: str, viewer: Viewer,
                         filter: Any = None, sort: Any = None, limit: Any = None,
-                        offset: Any = None) -> RecordPage | None:
+                        offset: Any = None,
+                        budget_s: float | None = None) -> RecordPage | None:
     """One page of the records of the object *object_id* of the package
     *package_id*, with a filter and a sort (C2a). Answers None when the bound
     org holds no such object in that package.
@@ -2903,9 +2914,17 @@ async def query_records(db: Any, *, package_id: str, object_id: str, viewer: Vie
     C8a: the row rule of *viewer* joins that one statement, so the page and
     its total hold only the records that the viewer reads. A filter or a sort
     on a hidden key is refused, and each hidden key leaves each record.
+
+    C5a: *budget_s* is a lower deadline in seconds, for a caller with its own
+    clock (company search). It never raises the deadline above the one of
+    :data:`~acb_common.studio_query.TIMEOUT_MS`. A budget of 0 or less refuses
+    with ``query_timeout`` before any statement.
     """
     who = _check_viewer(viewer)
-    deadline = _clock() + studio_query.TIMEOUT_MS / 1000
+    span = studio_query.TIMEOUT_MS / 1000
+    if budget_s is not None:
+        span = min(span, max(0.0, float(budget_s)))
+    deadline = _clock() + span
     oid = _uuid(object_id, "object_id")
     pid = _uuid(package_id, "package_id")
     start, size = studio_query.page_bounds(offset, limit)
@@ -4607,20 +4626,28 @@ _TREE_ONE_ROOT = (
 )
 
 
-def _tree_read_sql(roots: str) -> str:
+def _tree_read_sql(roots: str, scoped: bool = False) -> str:
     """The one statement of a tree read, from the SQL of its *roots* (one of
     the two constants above). Each node comes once, with its level and the id
     of its parent in the read. The order is by level, then by parent, then by
     the time of the create. The statement reads one node past the limit, so
-    the store knows that the read is cut."""
+    the store knows that the read is cut.
+
+    D18-2a: a *scoped* statement holds the row rule of the viewer
+    (:func:`_q_access`) on each root and on each step down. So the walk stops
+    at a record that the viewer cannot read, and the subtree below it is cut.
+    The limit, the levels and the parent ids count only the records that the
+    viewer reads."""
+    root_rule = " AND " + _q_access("r.id") if scoped else ""
+    step_rule = " AND " + _q_access("h.record_id") if scoped else ""
     return (
-        "WITH RECURSIVE roots AS (" + roots + " AND " + _IN_PACKAGE + "), "
+        "WITH RECURSIVE roots AS (" + roots + " AND " + _IN_PACKAGE + root_rule + "), "
         "tree(id, parent, depth, path) AS ("
         "SELECT roots.id, CAST(NULL AS uuid), 1, ARRAY[roots.id] FROM roots "
         "UNION ALL "
         "SELECT h.record_id, t.id, t.depth + 1, t.path || h.record_id FROM tree t "
         + _TREE_CHILDREN +
-        "WHERE t.depth < CAST(:depth AS int) AND NOT h.record_id = ANY(t.path)) "
+        "WHERE t.depth < CAST(:depth AS int) AND NOT h.record_id = ANY(t.path)" + step_rule + ") "
         "SELECT t.depth, t.parent::text, " + _QUERY_COLUMNS + " FROM tree t "
         "JOIN studio_records r ON r." + _OF_ORG + " AND r." + _OF_OBJECT + " AND r.id = t.id "
         "ORDER BY t.depth, t.parent NULLS FIRST, r.created_at, r.id "
@@ -4630,6 +4657,9 @@ def _tree_read_sql(roots: str) -> str:
 
 _TREE_ALL_SQL = _tree_read_sql(_TREE_ALL_ROOTS)
 _TREE_ROOT_SQL = _tree_read_sql(_TREE_ONE_ROOT)
+#: D18-2a. The two statements with the row rule of the viewer.
+_TREE_ALL_SCOPED_SQL = _tree_read_sql(_TREE_ALL_ROOTS, scoped=True)
+_TREE_ROOT_SCOPED_SQL = _tree_read_sql(_TREE_ONE_ROOT, scoped=True)
 
 
 @dataclass(frozen=True)
@@ -4695,8 +4725,9 @@ def _tree_bound(value: Any, what: str, most: int) -> int:
     return value
 
 
-async def read_tree(db: Any, *, package_id: str, object_id: str, root_id: str | None = None,
-                    depth: Any = MAX_TREE_DEPTH, limit: Any = MAX_TREE_NODES) -> TreePage | None:
+async def read_tree(db: Any, *, package_id: str, object_id: str, viewer: Viewer,
+                    root_id: str | None = None, depth: Any = MAX_TREE_DEPTH,
+                    limit: Any = MAX_TREE_NODES) -> TreePage | None:
     """The tree of the object *object_id* of the package *package_id* (C18), in
     ONE statement. Answers None when the bound org holds no such object in that
     package.
@@ -4707,9 +4738,19 @@ async def read_tree(db: Any, *, package_id: str, object_id: str, root_id: str | 
     :data:`~acb_common.studio_rules.MAX_TREE_DEPTH`, and *limit* is the most
     nodes, from 1 to :data:`MAX_TREE_NODES`. A root id that names no record of
     the object gives no nodes. An object with no hierarchy, or with a parent
-    field that is not hot, raises :class:`ObjectStoreError`. The whole call has
+    field that is not hot, raises :class:`NoTree`. The whole call has
     the deadline of :data:`~acb_common.studio_query.TIMEOUT_MS`.
+
+    D18-2a: *viewer* is REQUIRED, as for :func:`query_records`. The row rule
+    of the viewer binds each root and each step down, so a record that the
+    viewer cannot read is not in the read, and its subtree is cut. A root id
+    that the viewer cannot read gives no nodes, as a root id that names
+    nothing does. Each hidden key leaves each record. A parent field that a
+    grant can hide from the viewer refuses the read with
+    :class:`~acb_common.studio_query.QueryError`, because each parent id would
+    show its value.
     """
+    who = _check_viewer(viewer)
     deadline = _clock() + studio_query.TIMEOUT_MS / 1000
     oid = _uuid(object_id, "object_id")
     pid = _uuid(package_id, "package_id")
@@ -4720,19 +4761,29 @@ async def read_tree(db: Any, *, package_id: str, object_id: str, root_id: str | 
         found = (await timed.execute(text(_TREE_OBJECT_SQL), {"oid": oid, "pid": pid})).first()
         if found is None:
             return None
+        view = await _view(timed, oid, pid, who)
+        if view is None:
+            return None
         rule = _tree_rule(stored_rules(_json(found[1])))
         if rule is None:
-            raise ObjectStoreError(f"Object `{found[0]}` holds no hierarchy rule.")
+            raise NoTree(f"Object `{found[0]}` holds no hierarchy rule.")
+        key = str(rule.field)
         hot = {f.key for f in await _fields(timed, oid) if f.hot}
-        if str(rule.field) not in hot:
-            raise ObjectStoreError(f"Field `{rule.field}` is not hot, so the tree cannot be read.")
-        binds: dict[str, Any] = {"oid": oid, "pid": pid, "fk": str(rule.field),
-                                 "depth": levels, "limit": size}
+        if key not in hot:
+            raise NoTree(f"Field `{key}` is not hot, so the tree cannot be read.")
+        if key in view.maybe_hidden():
+            raise QueryError(studio_query.OP_NOT_ALLOWED,
+                             f"Field `{key}` is hidden from you, so the tree cannot be read.", key)
+        if not view.scope.reads:
+            return TreePage(nodes=(), truncated=False)
+        binds: dict[str, Any] = {"oid": oid, "pid": pid, "fk": key, "depth": levels,
+                                 "limit": size}
         if root is not None:
             binds["root"] = root
-        rows = (await timed.execute(
-            text(_TREE_ALL_SQL if root is None else _TREE_ROOT_SQL), binds)).all()
-    nodes = tuple(TreeNode(record=_record(row[2:]), level=int(row[0]),
+        plain = _TREE_ALL_SQL if root is None else _TREE_ROOT_SQL
+        scoped = _TREE_ALL_SCOPED_SQL if root is None else _TREE_ROOT_SCOPED_SQL
+        rows = (await timed.execute(text(_scoped(plain, scoped, view.scope, binds)), binds)).all()
+    nodes = tuple(TreeNode(record=view.shown(_record(row[2:])), level=int(row[0]),
                            parent_id=None if row[1] is None else str(row[1]))
                   for row in rows[:size])
     return TreePage(nodes=nodes, truncated=len(rows) > size)

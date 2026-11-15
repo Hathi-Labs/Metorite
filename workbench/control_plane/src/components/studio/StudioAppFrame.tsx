@@ -27,6 +27,8 @@ export interface StudioAppRail {
   /** The id of the page on screen. */
   activePage: string;
   onPick: (page: string) => void;
+  /** The ready text of a count, by page id (STU-AF3b). A page with no entry shows no count. */
+  counts?: ReadonlyMap<string, string>;
 }
 
 export interface StudioAppFrameProps {
@@ -36,6 +38,14 @@ export interface StudioAppFrameProps {
   actions?: ReactNode;
   /** Absent: the frame draws no rail and no toggle. */
   rail?: StudioAppRail;
+  /** The scope line beside the name, such as the member of the floor view (STU-D23a). */
+  subtitle?: ReactNode;
+  /**
+   * The floor view (STU-D23a, `lib/studio/floorView.ts`). The root takes `data-floor`, so each
+   * control inside it takes its touch size (the `pointer-coarse` variant of `globals.css`).
+   * Off, the root has no attribute and no class changes.
+   */
+  floor?: boolean;
   children: ReactNode;
 }
 
@@ -54,6 +64,7 @@ function RailRows({ rail, onChoose }: { rail: StudioAppRail; onChoose: (page: st
               label={row.label}
               icon={<Icon name={row.icon} size={15} />}
               selected={row.page === rail.activePage}
+              meta={rail.counts?.get(row.page)}
               onSelect={() => onChoose(row.page)}
               buttonProps={row.page === rail.activePage ? { "aria-current": "page" } : undefined}
             />
@@ -64,7 +75,7 @@ function RailRows({ rail, onChoose }: { rail: StudioAppRail; onChoose: (page: st
   );
 }
 
-export default function StudioAppFrame({ title, back, actions, rail, children }: StudioAppFrameProps) {
+export default function StudioAppFrame({ title, back, actions, rail, subtitle, floor = false, children }: StudioAppFrameProps) {
   const { isMobile } = useViewMode();
   const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
   const fold = useRailFold();
@@ -92,9 +103,10 @@ export default function StudioAppFrame({ title, back, actions, rail, children }:
   ) : title;
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden bg-background">
+    <div data-floor={floor ? "" : undefined} className="flex h-full w-full flex-col overflow-hidden bg-background">
       <AppTopBar
         title={barTitle}
+        subtitle={subtitle}
         back={back}
         actions={actions}
         rail={rail ? { open: fold.open, onToggle: fold.toggle, noun: "the pages" } : undefined}

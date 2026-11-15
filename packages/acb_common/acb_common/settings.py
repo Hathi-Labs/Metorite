@@ -730,6 +730,20 @@ class Settings(BaseSettings):
     # a change (docs/flag_reload.md). A flip in production is the gate
     # `enforcement-flip`. Spec: ai_studio.md section 14 B2b-2.
     studio_door_ops_orgs: str = ""
+    # STU-E12a: CORE_EVENTS_ORGS lists the org ids where a core app emits its
+    # events on the one event bus (`people.person.updated` first). `*` opens
+    # every org. Empty opens none. Reader:
+    # `gateway.core_events.core_events_allowed`. A SIGHUP reload applies a
+    # change (docs/flag_reload.md). A flip in production is the gate
+    # `enforcement-flip`. Spec: ai_studio.md section 14 E12a.
+    core_events_orgs: str = ""
+    # STU-C5a: STUDIO_SEARCH_ORGS lists the org ids where company search reads
+    # the objects that an app names in `shell.search`, for the packages that the
+    # member owns or has installed. `*` opens every org. Empty opens none, and
+    # the source then runs no query. Reader:
+    # `gateway.routes.studio.flags.search_allowed`. A SIGHUP reload applies a
+    # change (docs/flag_reload.md). Spec: ai_studio.md section 14 C5.
+    studio_search_orgs: str = ""
     # STU-B4a: STUDIO_LOGIC_ORGS lists the org ids where the Studio action
     # door runs a first-party logic module (`logic:<name>`). `*` opens every
     # org. Empty opens none. Reader: `gateway.routes.studio.flags.
@@ -2144,6 +2158,19 @@ class Settings(BaseSettings):
     chat_ask_park_seconds: int = 600
     # How long a parked question stays answerable, in hours.
     chat_ask_ttl_hours: int = 168
+    # ── A late approve acts once (HRD-22, chat_run_continuity.md S2 item 8) ──
+    #
+    # CHAT_LATE_APPROVE_ORGS: a comma list of organization ids, or `*`. Empty
+    # is off, the default, and then each card and each message is as before.
+    # On, a late Approve of a parked plain confirmation card is the member's
+    # own consent: the new run's gate approves the SAME card once, in the same
+    # thread, for the same member, within 30 minutes, with no new card. It
+    # needs CHAT_DURABLE_ASKS. The one reader is
+    # `acb_skills.late_approve.late_approve_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). A production flip is gate
+    # `enforcement-flip`. Fences: tests/unit/test_late_approve_grant.py and
+    # tests/unit/test_late_approve_grant_r8.py.
+    chat_late_approve_orgs: str = ""
 
     # ── The run cap (WS-51 D-3, owner decision 2026-10-10) ──────────────────
     #

@@ -361,9 +361,16 @@ def test_the_family_holds_both_new_tools_in_the_order_of_the_module() -> None:
     """Mutation: drop ``studio_plan`` from the family -> red."""
     tools = tuple(sf.SKILL_FAMILIES["studio"]["tools"])
     assert "studio_interview" in tools and "studio_plan" in tools
-    assert tools == tuple(fn.__name__ for fn in (
-        *st.STUDIO_TOOLS, *st.STUDIO_SKILL_TOOLS, *st.STUDIO_PACKAGE_TOOLS,
-        *st.STUDIO_RECORD_TOOLS, *st.STUDIO_WORKFLOW_TOOLS))  # STB-6a adds the workflow reads
+    # WS-67 TS-1b: the core holds the builder tools, then save and publish.
+    # studio-more holds the skill tools, the other package tools, the record
+    # tools and the workflow read (STB-6a).
+    save_publish = (st.studio_save, st.studio_publish)
+    assert tools == tuple(fn.__name__ for fn in (*st.STUDIO_TOOLS, *save_publish))
+    more = tuple(sf.SKILL_FAMILIES["studio-more"]["tools"])
+    assert more == tuple(fn.__name__ for fn in (
+        *st.STUDIO_SKILL_TOOLS,
+        *(fn for fn in st.STUDIO_PACKAGE_TOOLS if fn not in save_publish),
+        *st.STUDIO_RECORD_TOOLS, *st.STUDIO_WORKFLOW_TOOLS))
     assert all(inspect.iscoroutinefunction(fn) for fn in st.STUDIO_TOOLS)
 
 
