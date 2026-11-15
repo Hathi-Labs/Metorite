@@ -17,8 +17,10 @@ import { useState } from "react";
 
 import Button from "@/components/ui/Button";
 import SelectButton from "@/components/ui/SelectButton";
+import { FREE_GRID, GRID_BACK_WHY, presetOptions, setPageLayout, setRegionViews } from "@/lib/studio/layoutEdit";
+import type { LayoutName } from "@/lib/studio/manifest";
 import {
-  BROKEN_NOTE, CELL_CAP_NOTE, TAB_CAP_NOTE, TAB_NAME_HINT, USE_TABS_HINT, moveCellArgs, tabTitleOrDefault,
+  BROKEN_NOTE, CELL_CAP_NOTE, PRESET_NOTE, TAB_CAP_NOTE, TAB_NAME_HINT, USE_TABS_HINT, moveCellArgs, tabTitleOrDefault,
   type LayoutList, type LayoutView,
 } from "@/lib/studio/pagesTabModel";
 import { addCell, moveCell, moveCellToTab, setCellSpan, type Loc } from "@/lib/studio/pageLayout";
@@ -57,6 +59,57 @@ export default function CellsEditor({ page, views, act, locked, onRemoveTab, ope
   if (!open) return toggleRow;
   if (page.broken) {
     return <div className="flex flex-col gap-2">{toggleRow}<p className={noteClass}>{BROKEN_NOTE}</p></div>;
+  }
+
+  // The preset picker (STU-LY-8b): a page is a free grid, or one of the presets of the closed list.
+  const presetPicker = (
+    <div className={rowClass}>
+      <SelectButton label={`Layout preset of the ${pid} page`} value={page.preset?.layout ?? FREE_GRID} widthClass="w-48"
+        disabled={locked} options={presetOptions()}
+        onChange={(v) => act((m) => setPageLayout(m, pid, v === FREE_GRID ? null : (v as LayoutName)))} />
+    </div>
+  );
+  if (page.preset) {
+    const p = page.preset;
+    const empty = p.regions.every((r) => r.views.length === 0);
+    return (
+      <div className="flex flex-col gap-2" data-preset={p.layout}>
+        {toggle}
+        {presetPicker}
+        <p className={noteClass}>{PRESET_NOTE}</p>
+        {p.regions.map((r) => {
+          const pickKey = `region:${r.name}`;
+          const choice = r.choices.some((c) => c.id === pick[pickKey]) ? pick[pickKey] : r.choices[0]?.id ?? "";
+          const names = r.views.map((v) => v.id);
+          return (
+            <div key={r.name} data-region={r.name} className="flex flex-col gap-1 rounded-lg border border-border px-2 py-2">
+              <span className="text-xs font-medium text-foreground">
+                {`${r.name} region: ${r.required ? "needs" : "may hold"} ${r.cap === 1 ? "one" : `up to ${r.cap}`} ${r.block} view${r.cap === 1 ? "" : "s"}`}
+              </span>
+              <ul className="flex flex-col gap-1">
+                {r.views.map((v) => (
+                  <li key={v.id} className={cellRowClass}>
+                    <span className={cellLabelClass} title={v.id}>{v.label}</span>
+                    <Button size="icon-sm" variant="ghost" icon="X" aria-label={`Remove ${v.label} from the ${r.name} region`}
+                      disabled={locked || (r.required && r.views.length === 1)}
+                      onClick={() => act((m) => setRegionViews(m, pid, r.name, names.filter((n) => n !== v.id)))} />
+                  </li>
+                ))}
+              </ul>
+              {r.need ? <p className={noteClass} role="status">{r.need}</p> : null}
+              <div className={rowClass}>
+                <SelectButton label={`View to add to the ${r.name} region`} value={choice} widthClass="w-44" prompt={`No ${r.block} view`}
+                  disabled={locked || !r.room || r.choices.length === 0} options={r.choices.map((c) => ({ value: c.id, label: c.label }))}
+                  onChange={(v) => setPick((q) => ({ ...q, [pickKey]: v }))} />
+                <Button size="sm" icon="Plus" disabled={locked || !r.room || !choice}
+                  onClick={() => act((m) => setRegionViews(m, pid, r.name, [...names, choice]))}>Add view</Button>
+              </div>
+            </div>
+          );
+        })}
+        {empty ? <p className={noteClass}>{GRID_BACK_WHY}</p> : null}
+      </div>
+    );
   }
 
   const spanOptions = Array.from({ length: page.cols }, (_, i) => ({ value: String(i + 1), label: String(i + 1) }));
@@ -118,6 +171,7 @@ export default function CellsEditor({ page, views, act, locked, onRemoveTab, ope
   return (
     <div className="flex flex-col gap-2">
       {toggle}
+      {presetPicker}
       {page.flat ? (
         <>
           {page.lists.map((l) => <div key="flat">{listBlock(l)}</div>)}

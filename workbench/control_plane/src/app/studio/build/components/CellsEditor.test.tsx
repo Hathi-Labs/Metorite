@@ -211,3 +211,26 @@ describe("the acts of the editor", () => {
     expect(run(counted, (x) => removeCellGuarded(x, "home", { tabId: null, index: 1 }))).not.toBeNull();
   });
 });
+
+describe("the preset editor (STU-LY-8b)", () => {
+  const presetPage = base([{ id: "home", layout: "list_detail", regions: { list: ["orders"] } }]);
+  it("draws the picker, the note and a row for each region, not the broken note", () => {
+    const html = draw(presetPage);
+    expect(html).not.toContain(BROKEN_NOTE);
+    expect(html).toContain('data-preset="list_detail"');
+    expect(html).toContain("This page uses a preset layout.");
+    expect(html).toContain('aria-label="Layout preset of the home page"');
+    expect(html).toContain('data-region="list"');
+    expect(html).toContain('data-region="detail"');
+    expect(html).toContain("Add a detail view. The detail region needs one.");
+  });
+  it("offers the free grid and the presets on a grid page too", () => {
+    expect(draw(flat)).toContain('aria-label="Layout preset of the home page"');
+  });
+  it("disables Remove for the only view of a required region, and all controls when locked", () => {
+    const html = draw(presetPage);
+    expect(tagOf(html, "Remove Order list from the list region")).toContain("disabled");
+    const locked = draw(presetPage, { locked: true });
+    expect(tagOf(locked, "Layout preset of the home page")).toContain("disabled");
+  });
+});
