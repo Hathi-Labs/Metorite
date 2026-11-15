@@ -4,11 +4,12 @@ Spec: ``project-docs/specs/ai_studio.md`` §14 rows I11-0, G4 and B1b. Code:
 ``gateway/routes/studio/invoke.py`` (``refusal_for``, the preview branch of
 ``invoke_action``) and ``gateway/outbound_guard.py``.
 
-Today no code can call a provider from a preview: the ``uses`` grammar has no
-``mcp:`` source, the gateway has no connection client, and the door has no
-executor for a connection source. B1b opens the first such source. This file
-fences the fail-closed behaviour BEFORE that, so B1b cannot open a source into
-a preview by accident (R7).
+Today no code can call a provider from a preview. B1b-1 adds the ``mcp:``
+source to the ``uses`` grammar, but the gateway has no connection client and
+the door has no executor for it. So the door answers ``source_not_open`` for
+each class of an ``mcp:`` action, in a preview too, and never simulates one.
+This file fences that fail-closed behaviour, so no later slice opens a source
+into a preview by accident (R7).
 
 **The tripwire.** The fixture ``no_outbound`` makes each public outbound entry
 point of ``outbound_guard`` raise, and every ``httpx`` client send, and every
@@ -151,18 +152,20 @@ SAMPLES = {
     "workflow": f"workflow:{WORKFLOW}",
     "manifest": "knowledge.list_pages",
     "logic": "logic:totals",
+    "mcp": "mcp:github.get_issue",
 }
 
-SOURCES = ("object", "manifest", "integration", "workflow", "logic")
+SOURCES = ("object", "manifest", "integration", "workflow", "logic", "mcp")
 CLASSES = ("A", "B", "C", "X", None)
 
 
 def test_a_new_source_needs_a_preview_decision():
     """A source added to ``_USES_RE`` or to ``UsesRef`` fails here until this
-    file covers it. B1b adds ``mcp``: it must add its row to ``SAMPLES``."""
+    file covers it. B1b-1 added ``mcp`` with its row in ``SAMPLES``."""
     assert set(get_args(get_type_hints(UsesRef)["source"])) == set(SOURCES)
     assert set(SAMPLES) == set(SOURCES)
-    assert set(_USES_RE.groupindex) == {"obj", "op", "integ", "wf", "app", "appop", "logic"}
+    assert set(_USES_RE.groupindex) == {"obj", "op", "integ", "wf", "app", "appop", "logic",
+                                        "mcp_server", "mcp_tool"}
     for source, uses in SAMPLES.items():
         ref = parse_uses(uses)
         assert ref is not None and ref.source == source
@@ -183,6 +186,10 @@ EXPECTED = {
     # answers source_not_open, and class X and an id outside the catalog stay refused.
     ("logic", "A"): "source_not_open", ("logic", "B"): "source_not_open",
     ("logic", "C"): "source_not_open", ("logic", "X"): "class_x",
+    # B1b-1: no executor of an MCP tool exists, so each class but X is
+    # source_not_open, and no preview of it is simulated. I11a opens class A.
+    ("mcp", "A"): "source_not_open", ("mcp", "B"): "source_not_open",
+    ("mcp", "C"): "source_not_open", ("mcp", "X"): "class_x",
 }
 
 
@@ -231,6 +238,13 @@ def test_the_integration_source_of_the_real_catalog_is_empty():
     assert actions._integration_rows() == []
 
 
+def test_the_mcp_source_of_the_real_catalog_is_empty():
+    """B1b-1 wires the MCP rows to an empty tools map, so the real catalog
+    serves no ``mcp`` row. B1b-2 adds the read, and the class A and B rows in
+    ``EXTRA_CATALOG`` below already hold the preview answer of each."""
+    assert actions._mcp_rows() == []
+
+
 # ── The door, in a preview ─────────────────────────────────────────────────
 
 EXTRA_ACTIONS = [
@@ -238,11 +252,19 @@ EXTRA_ACTIONS = [
     {"id": "flow_a", "uses": f"workflow:{WF_A}"},
     {"id": "noclass", "uses": "integration:zoho.noclass"},
     {"id": "ghost", "uses": "integration:zoho.ghost"},
+    {"id": "issue_a", "uses": "mcp:github.get_issue"},
+    {"id": "issue_b", "uses": "mcp:github.create_issue"},
+    {"id": "issue_c", "uses": "mcp:github.delete_repo"},
+    {"id": "issue_ghost", "uses": "mcp:github.not_listed"},
 ]
 EXTRA_CATALOG = [
     {"id": "integration:zoho.pull", "class": "A", "source": "integration"},
     {"id": f"workflow:{WF_A}", "class": "A", "source": "workflow"},
     {"id": "integration:zoho.noclass", "source": "integration"},
+    {"id": "mcp:github.get_issue", "class": "A", "source": "mcp"},
+    {"id": "mcp:github.create_issue", "class": "B", "source": "mcp"},
+    # No MCP row is class C. The door still refuses one that a catalog gives.
+    {"id": "mcp:github.delete_repo", "class": "C", "source": "mcp"},
 ]
 
 
@@ -308,7 +330,11 @@ class TestThePreviewDoorSendsNothing:
         ("noclass", "source_not_open"),   # a row with no class
         ("forbidden", "class_x"),
         ("gone_flow", "not_in_catalog"),  # an id outside the catalog
-        ("ghost", "not_in_catalog")])
+        ("ghost", "not_in_catalog"),
+        ("issue_a", "source_not_open"),       # B1b-1: class A MCP tool, no executor
+        ("issue_b", "source_not_open"),       # class B MCP tool: never simulated
+        ("issue_c", "source_not_open"),
+        ("issue_ghost", "not_in_catalog")])
     def test_each_other_answer_is_a_refusal_and_sends_nothing(self, pw, action, code):
         pid, _ = _pid(pw)
         r = _post(_client(pw), pid, action, {})

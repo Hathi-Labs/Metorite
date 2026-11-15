@@ -280,8 +280,8 @@ target over a source that the viewer cannot read whole. The text of a rule
 that reads a hidden key, or of a key rule over records that the viewer cannot
 read, names no field (:func:`_masked`). The parent of a line must be a record
 that the viewer can read. ``test_studio_row_rules.py`` fails each call of
-these seven that passes no viewer. ⚠️ :func:`aggregate_records` takes no viewer
-yet. Its one caller is the door, for the owner only (D4b).
+these eight that passes no viewer. C2d-a: :func:`aggregate_records` takes a REQUIRED
+``viewer`` too, and it reads what :func:`query_records` reads.
 
 ⚠️ The store does not authenticate. It only scopes. The actor of a write is
 an argument that the caller takes from the session, never from request input
@@ -3086,8 +3086,9 @@ def _q_agg_currency(j: int) -> str:
             f"WHERE mc{j}.{_OF_ORG} AND mc{j}.{_OF_OBJECT} AND mc{j}.id = c.id), '') END)")
 
 
-def build_aggregate(agg: studio_query.Aggregate, *, object_id: str,
-                    package_id: str) -> tuple[str, dict[str, Any]]:
+def build_aggregate(agg: studio_query.Aggregate, *, object_id: str, package_id: str,
+                    access: tuple[Sequence[str], str] | None = None
+                    ) -> tuple[str, dict[str, Any]]:
     """The one statement of the aggregate *agg*: its SQL and its binds. Pure.
 
     The first row holds the count of the fields that are still hot (``v.n``),
@@ -3098,9 +3099,16 @@ def build_aggregate(agg: studio_query.Aggregate, *, object_id: str,
     row then holds the columns of ``p``: the part (0 for a kept group, 1 for
     ``other``), the rank, the key, the records, and the sum and the count of
     each field. With no group in the result, the row holds NULL there.
+
+    C2d-a: *access* is the row rule of the viewer, ``(person keys, address)``,
+    as in :func:`build_query`. Each part then holds it (:func:`_q_access`), so
+    the groups and the total count only the records that the viewer reads.
+    With no *access*, the statement is the one of the owner.
     """
     params: dict[str, Any] = {"oid": object_id, "pid": package_id,
                               "hk": list(agg.hot_keys()), "groups": studio_query.MAX_GROUPS}
+    if access is not None:
+        params["akeys"], params["me"] = list(access[0]), access[1]
     conditions = agg.conditions
     guard = "CAST(NULL AS bigint)"
     if agg.query().cold():
@@ -3250,13 +3258,14 @@ def _aggregate_result(agg: studio_query.Aggregate, rows: Sequence[Any]) -> Aggre
 
 
 async def _read_aggregate(timed: _Timed, oid: str, pid: str, filter: Any, group_by: Any,
-                          measures: Any) -> tuple[studio_query.Aggregate, list[Any]]:
+                          measures: Any, access: tuple[Sequence[str], str] | None = None
+                          ) -> tuple[studio_query.Aggregate, list[Any]]:
     """The fields, then the aggregate statement. A field that turned cold
     after the store read the fields has lost its hot rows, so the store reads
     the fields and runs the aggregate once more, as :func:`_read_page` does."""
     for _ in range(2):
         agg = studio_query.parse_aggregate(await _fields(timed, oid), filter, group_by, measures)
-        sql, params = build_aggregate(agg, object_id=oid, package_id=pid)
+        sql, params = build_aggregate(agg, object_id=oid, package_id=pid, access=access)
         rows = (await timed.execute(text(sql), params)).all()
         if int(rows[0][0]) == len(agg.hot_keys()):
             _check_hot_or_small(rows, agg.query())
@@ -3264,8 +3273,37 @@ async def _read_aggregate(timed: _Timed, oid: str, pid: str, filter: Any, group_
     raise QueryError(studio_query.TIMEOUT, _CHANGED_MESSAGE)
 
 
-async def aggregate_records(db: Any, *, package_id: str, object_id: str, filter: Any = None,
-                            group_by: Any = None,
+def _refuse_hidden_aggregate(view: _View, items: Sequence[Mapping[str, Any]],
+                             group_by: Any, measures: Sequence[Mapping[str, Any]]) -> None:
+    """C2d-a. A filter, a group or a measure on a key that is hidden from the
+    viewer would show the value, so it is refused before any read."""
+    _refuse_hidden_query(view, items, None)
+    hidden = view.maybe_hidden()
+    if not hidden:
+        return
+    key = group_by.get("field") if isinstance(group_by, Mapping) else None
+    if isinstance(key, str) and key in hidden:
+        raise QueryError(studio_query.OP_NOT_ALLOWED,
+                         f"Field `{key}` is hidden from you, so a query cannot group "
+                         "by it.", key)
+    for measure in measures:
+        key = measure.get("field")
+        if isinstance(key, str) and key in hidden:
+            raise QueryError(studio_query.OP_NOT_ALLOWED,
+                             f"Field `{key}` is hidden from you, so a query cannot "
+                             "total it.", key)
+
+
+def _empty_aggregate(agg: studio_query.Aggregate) -> AggregateResult:
+    """C2d-a. The result for a viewer whose roles read no record: no group, a
+    total of 0, and the measures that the caller asked for, each at zero."""
+    zero = {f.key: (0, 0) for f in agg.measure_fields()}
+    total = AggregateGroup(None, 0, _measure_values(agg, 0, zero))
+    return AggregateResult(agg.measures, (None,) * len(agg.measures), (), None, 0, total)
+
+
+async def aggregate_records(db: Any, *, package_id: str, object_id: str, viewer: Viewer,
+                            filter: Any = None, group_by: Any = None,
                             measures: Any = None) -> AggregateResult | None:
     """Group the records of the object *object_id* of the package
     *package_id*, and take a count, a sum or an average of each group (C2b).
@@ -3280,17 +3318,29 @@ async def aggregate_records(db: Any, *, package_id: str, object_id: str, filter:
     each record that it adds holds one currency, as the CRM does (HANDOFF
     H-333). The :data:`~acb_common.studio_query.MAX_GROUPS` groups with the
     most records stay, and the rest fold into :attr:`AggregateResult.other`.
+
+    C2d-a: *viewer* is REQUIRED, and the call reads what :func:`query_records`
+    reads for it. The row rule joins each part of the one statement. A filter,
+    a group or a measure on a hidden key is refused. A viewer whose roles read
+    no record gets a total of 0 and no group.
     """
+    who = _check_viewer(viewer)
     deadline = _clock() + studio_query.TIMEOUT_MS / 1000
     oid = _uuid(object_id, "object_id")
     pid = _uuid(package_id, "package_id")
-    studio_query.check_aggregate_shape(filter, group_by, measures)
+    items, group, shaped = studio_query.check_aggregate_shape(filter, group_by, measures)
     await _warm_f8(db, deadline)
     async with _time_limit(db, deadline) as timed:
-        found = await timed.execute(text(_QUERY_OBJECT_SQL), {"oid": oid, "pid": pid})
-        if found.first() is None:
+        view = await _view(timed, oid, pid, who)
+        if view is None:
             return None
-        agg, rows = await _read_aggregate(timed, oid, pid, filter, group_by, measures)
+        _refuse_hidden_aggregate(view, items, group, shaped)
+        if not view.scope.reads:
+            fields = await _fields(timed, oid)
+            return _empty_aggregate(
+                studio_query.parse_aggregate(fields, filter, group_by, measures))
+        access = (view.scope.where_keys, who.email) if view.scope.row_bound else None
+        agg, rows = await _read_aggregate(timed, oid, pid, filter, group_by, measures, access)
     return _aggregate_result(agg, rows)
 
 
@@ -4553,22 +4603,42 @@ async def _one_write(db: Any, who: str, package_id: str, write: Write,
 #: 2,000 nodes in one read.
 MAX_TREE_NODES = 2_000
 
+#: The object test of a lookup in ``studio_record_hot`` BY RECORD ID (the parent step, the
+#: roots). The primary key is ``(organization_id, record_id, field_key)``. With a plain
+#: ``object_id = ...`` test the planner can also take an index that leads with
+#: ``(organization_id, object_id, field_key)`` and filter ``record_id`` row by row, and under
+#: stale statistics it does: 2,000 lookups of 2,000 rows (task 3308, measured). Written as
+#: ``IS NOT DISTINCT FROM`` the test is no index qual, so the primary key is the one path
+#: with a full equality prefix. Do NOT use it for the lookup by parent text: that lookup needs
+#: the object in the index prefix, or it scans the whole org.
+_HOT_OF_OBJECT = "h.object_id IS NOT DISTINCT FROM CAST(:oid AS uuid)"
+#: The same for the lookup of a PARENT RECORD by id in ``studio_records``. CI plan of run
+#: 43682459066 (task 3308): with ``p.object_id = ...`` the planner took
+#: ``studio_records_object_id_key`` (organization, object) as the index condition and filtered
+#: ``id`` row by row: 1,999 lookups of 675 rows, 3.7 s. The primary key is the path with a full
+#: equality on ``id``.
+_REC_OF_OBJECT = "p.object_id IS NOT DISTINCT FROM CAST(:oid AS uuid)"
+
 #: The parent of a record, by the primary key of the hot row. A parent id that
 #: is no UUID, or that names no record of this object, ends the walk.
 _TREE_PARENT = (
-    "JOIN studio_record_hot h ON h.organization_id = " + _BOUND_ORG + " "
-    "AND h.object_id = CAST(:oid AS uuid) AND h.record_id = u.id "
-    "AND h.field_key = CAST(:fk AS text) "
-    "JOIN studio_records p ON p.organization_id = " + _BOUND_ORG + " "
-    "AND p.object_id = CAST(:oid AS uuid) "
+    "JOIN LATERAL (SELECT h.v_text FROM studio_record_hot h "
+    "WHERE h.organization_id = " + _BOUND_ORG + " "
+    "AND " + _HOT_OF_OBJECT + " AND h.record_id = u.id "
+    "AND h.field_key = CAST(:fk AS text) OFFSET 0) h ON true "
+    "JOIN LATERAL (SELECT p.id FROM studio_records p "
+    "WHERE p.organization_id = " + _BOUND_ORG + " "
+    "AND " + _REC_OF_OBJECT + " "
     "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
+    "OFFSET 0) p ON true "
 )
 
 #: The children of a record, by the text index of the hot rows.
 _TREE_CHILDREN = (
-    "JOIN studio_record_hot h ON h.organization_id = " + _BOUND_ORG + " "
+    "JOIN LATERAL (SELECT h.record_id FROM studio_record_hot h "
+    "WHERE h.organization_id = " + _BOUND_ORG + " "
     "AND h.object_id = CAST(:oid AS uuid) AND h.field_key = CAST(:fk AS text) "
-    "AND h.v_text = CAST(t.id AS text) "
+    "AND h.v_text = CAST(t.id AS text) OFFSET 0) h ON true "
 )
 
 #: The walk of each record of `:rids` (C18): its level (the walk up, which stops
@@ -4611,18 +4681,35 @@ _TREE_OBJECT_SQL = (
 _TREE_ALL_ROOTS = (
     "SELECT r.id FROM studio_records r "
     f"WHERE r.{_OF_ORG} AND r.{_OF_OBJECT} AND NOT EXISTS ("
-    "SELECT 1 FROM studio_record_hot h "
-    "JOIN studio_records p ON p.organization_id = " + _BOUND_ORG + " "
-    "AND p.object_id = CAST(:oid AS uuid) "
+    "SELECT 1 FROM (SELECT h.v_text FROM studio_record_hot h "
+    f"WHERE h.{_OF_ORG} AND " + _HOT_OF_OBJECT + " AND h.record_id = r.id "
+    "AND h.field_key = CAST(:fk AS text) OFFSET 0) h "
+    "JOIN LATERAL (SELECT 1 FROM studio_records p "
+    "WHERE p.organization_id = " + _BOUND_ORG + " "
+    "AND " + _REC_OF_OBJECT + " "
     "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
-    f"WHERE h.{_OF_ORG} AND h.{_OF_OBJECT} AND h.record_id = r.id "
-    "AND h.field_key = CAST(:fk AS text))"
+    "OFFSET 0) p ON true)"
 )
 
 #: The root of a read of one tree: the record `:root` of the object.
 _TREE_ONE_ROOT = (
     "SELECT r.id FROM studio_records r "
     f"WHERE r.{_OF_ORG} AND r.{_OF_OBJECT} AND r.id = CAST(:root AS uuid)"
+)
+
+
+#: The child edges of the field, read once: one range scan on the full prefix
+#: ``(organization_id, object_id, field_key)`` of the object. The walk of a READ then joins this
+#: set by the text of the parent id, so the plan does not choose an index for each step, and the
+#: cost is one scan of the field plus the join (task 3308). The write check keeps a lookup for
+#: each step, because a write must not scan the whole field. RESIDUAL (follow-up of 3308): with
+#: stale statistics a write that moves a node with a LARGE subtree (about 2,000 nodes) can still
+#: take the wrong index for those lookups (about 0.9 s on the box, past the batch deadline on a
+#: slow runner). Writes of leaves and small subtrees are not affected.
+_TREE_KIDS = (
+    "kids AS MATERIALIZED (SELECT h.record_id, h.v_text FROM studio_record_hot h "
+    "WHERE h.organization_id = " + _BOUND_ORG + " AND h.object_id = CAST(:oid AS uuid) "
+    "AND h.field_key = CAST(:fk AS text) AND h.v_text IS NOT NULL)"
 )
 
 
@@ -4641,15 +4728,15 @@ def _tree_read_sql(roots: str, scoped: bool = False) -> str:
     root_rule = " AND " + _q_access("r.id") if scoped else ""
     step_rule = " AND " + _q_access("h.record_id") if scoped else ""
     return (
-        "WITH RECURSIVE roots AS (" + roots + " AND " + _IN_PACKAGE + root_rule + "), "
-        "tree(id, parent, depth, path) AS ("
-        "SELECT roots.id, CAST(NULL AS uuid), 1, ARRAY[roots.id] FROM roots "
+        "WITH RECURSIVE " + _TREE_KIDS + ", roots AS (" + roots + " AND " + _IN_PACKAGE + root_rule + "), "
+        "tree(id, parent, depth, path, key) AS ("
+        "SELECT roots.id, CAST(NULL AS uuid), 1, ARRAY[roots.id], CAST(roots.id AS text) FROM roots "
         "UNION ALL "
-        "SELECT h.record_id, t.id, t.depth + 1, t.path || h.record_id FROM tree t "
-        + _TREE_CHILDREN +
+        "SELECT h.record_id, t.id, t.depth + 1, t.path || h.record_id, CAST(h.record_id AS text) "
+        "FROM tree t JOIN kids h ON h.v_text = t.key "
         "WHERE t.depth < CAST(:depth AS int) AND NOT h.record_id = ANY(t.path)" + step_rule + ") "
         "SELECT t.depth, t.parent::text, " + _QUERY_COLUMNS + " FROM tree t "
-        "JOIN studio_records r ON r." + _OF_ORG + " AND r." + _OF_OBJECT + " AND r.id = t.id "
+        + _q_lookup("t.id") + " "
         "ORDER BY t.depth, t.parent NULLS FIRST, r.created_at, r.id "
         "LIMIT CAST(:limit AS int) + 1"
     )

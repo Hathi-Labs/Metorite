@@ -24,10 +24,19 @@
  * the run's member answers it, through the archive approval route. The rules
  * of that card are at the end of this file.
  *
+ * **Images on a question (CIV-14b, `external_agent_access.md` §12.9).** An
+ * agent puts up to 4 images of the task on a question or a line. The server
+ * keeps each one in `content.attachments`, and `activityImages` turns them
+ * into rows that `AgentImageStrip` draws from the cookie serve route.
+ *
  * Fence: `agentRuns.test.ts`.
  */
 
 import type { ElicitationAnswers, ElicitationQuestion } from "@/lib/elicitationAnswer";
+
+import type { AttachmentRow } from "./api";
+import { attachmentImageUrl } from "./inlineUploads";
+import { previewKind } from "./preview";
 
 
 /* ── The wire types ──────────────────────────────────────────────────────── */
@@ -131,6 +140,8 @@ export interface AgentActivity {
       evidence?: string | null;
       next?: string | null;
     } | null;
+    /** CIV-14b. The images of the task that the agent put on this activity. */
+    attachments?: AgentImage[] | null;
   };
   /**
    * The server's own facts. EA-6g: an archive request carries `request`.
@@ -149,6 +160,19 @@ export interface AgentActivity {
   /** The elicitation that a prompt answers. The server sets it. */
   in_reply_to?: string | null;
   created_at?: string | null;
+}
+
+/**
+ * CIV-14b. One image of an activity, as the server stores it: a file of the
+ * run's task that is a PNG, JPEG, GIF or WebP image. It holds no address.
+ */
+export interface AgentImage {
+  attachment_id: string;
+  name: string;
+  mime: string;
+  size: number;
+  /** The cookie serve route, which the gateway adds at each read. */
+  url?: string | null;
 }
 
 export interface AgentRun {
@@ -671,16 +695,82 @@ export function lastSeq(activities: readonly AgentActivity[]): number | undefine
 
 /** The newest `thought` or `action`, as one line. */
 export function newestEphemeral(activities: readonly AgentActivity[]): string | null {
+  const a = newestEphemeralActivity(activities);
+  if (!a) return null;
+  if (a.type === "action" && a.content.action?.trim()) return `Running ${a.content.action.trim()}`;
+  return a.content.body?.trim() || null;
+}
+
+/**
+ * The activity of the run panel's line: the newest thought with text, or the
+ * newest action with a name or text. `newestEphemeral` reads its words, and
+ * CIV-14b draws its images beside them.
+ */
+export function newestEphemeralActivity(
+  activities: readonly AgentActivity[],
+): AgentActivity | null {
   for (let i = activities.length - 1; i >= 0; i -= 1) {
     const a = activities[i];
-    if (a.type === "thought" && a.content.body?.trim()) return a.content.body.trim();
-    if (a.type === "action") {
-      const name = a.content.action?.trim();
-      if (name) return `Running ${name}`;
-      if (a.content.body?.trim()) return a.content.body.trim();
-    }
+    if (a.type === "thought" && a.content.body?.trim()) return a;
+    if (a.type === "action" && (a.content.action?.trim() || a.content.body?.trim())) return a;
   }
   return null;
+}
+
+/* ── Images on a question (CIV-14b, §12.9) ───────────────────────────────── */
+
+/** The most images that one activity carries (`agent_oauth.ACTIVITY_IMAGES_MAX`). */
+export const AGENT_IMAGES_MAX = 4;
+
+const ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The served path of a file: a path of this origin (one `/`, never `//`) that
+ * ends in `/attachments/<id>/<name>`, with no query, fragment or backslash.
+ */
+const SERVED_PATH = /^\/(?!\/)[^?#\\]*\/attachments\/([0-9a-f-]{36})\/[^/?#\\]*$/i;
+
+/**
+ * The URL of one image: the cookie serve route that the gateway gives
+ * (`attachments.served_url`, `GET /projects/attachments/{id}/{name}` through
+ * the BFF proxy), so the member's session decides who reads it. It must be a
+ * path of this origin that names the same id, or the image does not draw.
+ * `attachmentImageUrl` then writes a name segment that needs no escape. Every
+ * `/api/projects/` path of the Projects UI sits in the client
+ * (`test_projects_ui_actions.py`), so the answer is the one source.
+ */
+export function agentImageUrl(image: AgentImage): string | null {
+  const served = typeof image.url === "string" ? SERVED_PATH.exec(image.url) : null;
+  if (!served || served[1].toLowerCase() !== image.attachment_id.toLowerCase()) return null;
+  return attachmentImageUrl(image.url as string, image.name.trim() || "image");
+}
+
+/**
+ * The images of an activity, as rows of the one attachment viewer. Each row
+ * needs an id in the shape of an id and a type that the app shows as an
+ * image. SVG never is one (`preview.ts`). At most `AGENT_IMAGES_MAX`, in the
+ * order the agent sent them. The card never reads the bytes path of the MCP.
+ */
+export function activityImages(
+  activity: Pick<AgentActivity, "content"> | null | undefined,
+): AttachmentRow[] {
+  const raw = activity?.content?.attachments;
+  if (!Array.isArray(raw)) return [];
+  const out: AttachmentRow[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const id = typeof item.attachment_id === "string" ? item.attachment_id : "";
+    const mime = typeof item.mime === "string" ? item.mime : "";
+    if (!ID_SHAPE.test(id) || previewKind(mime) !== "image") continue;
+    if (out.some((row) => row.attachment_id === id)) continue;
+    const name = typeof item.name === "string" ? item.name : "";
+    const size = typeof item.size === "number" && Number.isFinite(item.size) ? item.size : 0;
+    const url = agentImageUrl({ attachment_id: id, name, mime, size, url: item.url });
+    if (!url) continue;
+    out.push({ attachment_id: id, kind: "image", name: name || "image", mime, size, url });
+    if (out.length === AGENT_IMAGES_MAX) break;
+  }
+  return out;
 }
 
 /** The newest elicitation of the run, from the activities or the run row. */

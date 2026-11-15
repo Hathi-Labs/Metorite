@@ -241,6 +241,13 @@ batch back and fires no record event. A real batch fires the C3 event of each
 applied write, once, after the commit, through ``emit_record_event``. The
 refusals are in ``gateway/studio/logic/apply.py``, and each comes before a write.
 
+**An MCP tool (B1b-1, ``ai_studio.md`` §3.2 source 3).** An ``mcp:<server>.<tool>``
+action takes its class from the catalog, as each other source does. One that
+the catalog does not list gets 403 ``not_in_catalog``. One that it lists gets
+403 ``source_not_open`` for each class but X, in a preview too, because no
+executor of the source exists (:func:`refusal_for`). So no preview of it is
+simulated, and the door calls no server. I11a opens a class A read later.
+
 **The write of a workflow node (B2c-2d).** :func:`run_workflow_write` is the
 one internal path, and the HTTP route does not reach it. A workflow node of
 type ``studio_write`` calls it after the AUTO-7b parked decision of the
@@ -814,11 +821,16 @@ def refusal_for(ref: UsesRef, cls: str | None, direct: bool = False,
     Class X and an id outside the catalog stay refused. A class A door op
     runs only with *door_ops*, the switch of B2b-2b. A logic module (B4a) runs
     only with *logic*, the switch of ``STUDIO_LOGIC_ORGS``. It is class B, and
-    it needs a *direct* call or a *preview*. It is never delegated."""
+    it needs a *direct* call or a *preview*. It is never delegated.
+    An MCP tool (B1b-1) gets :data:`SOURCE_NOT_OPEN` for each class but X,
+    in a preview too, because no executor of the source exists. A preview
+    of it is never simulated, so it sends nothing. I11a opens class A."""
     if cls is None:
         return NOT_IN_CATALOG
     if cls == "X":
         return CLASS_X
+    if ref.source == "mcp":
+        return SOURCE_NOT_OPEN
     if ref.source == "logic":
         if not logic:
             return SOURCE_NOT_OPEN
@@ -1030,22 +1042,25 @@ async def _run_object_aggregate(db: Any, package: _App, ref: UsesRef,
     checked first, so a refused body reads nothing. Then the path of the list:
     the object by its name in the package, then the one reader of C2b.
 
-    Only the owner aggregates. A viewer of an install (J2a) reads no sum: the
-    reader of C2b knows neither the installed fields nor the row rules (C8a),
-    so a sum could count a value that the viewer cannot read."""
-    if isinstance(package, _viewer.InstalledApp):
-        out.refusal = SOURCE_NOT_OPEN
-        return
+    C2d-a: a viewer of an install (J2a) aggregates too. The object must be in
+    the installed version, and the one grammar runs on the installed fields
+    first, so a field of a newer version is refused as unknown. The store then
+    reads what ``query_records`` reads for *viewer*: the row rules bind (C8a),
+    and a hidden key is refused. The answer holds field keys only."""
     try:
         body = _aggregate_input(raw)
         obj = await objects_store.get_object_by_name(
             db, str(ref.object), package_id=package.id)
-        if obj is None:
+        if obj is None or not _installed_object(package, obj.name):
             out.object_missing = True
             return
+        if isinstance(package, _viewer.InstalledApp):
+            studio_query.parse_aggregate(package.project(obj).fields, body.get("filter"),
+                                         body.get("group_by"), body.get("measures"))
         result = await objects_store.aggregate_records(
-            db, package_id=package.id, object_id=obj.id, filter=body.get("filter"),
-            group_by=body.get("group_by"), measures=body.get("measures"))
+            db, package_id=package.id, object_id=obj.id, viewer=viewer,
+            filter=body.get("filter"), group_by=body.get("group_by"),
+            measures=body.get("measures"))
     except studio_query.QueryError as exc:
         out.query_error = exc
         return

@@ -9,7 +9,11 @@
  * - another member sees Approve and Decline of a request;
  * - the answered state loses "Answered by <name>";
  * - `allow_multiple` draws one choice and not check boxes;
- * - the run panel keeps its own copy of the card (source test).
+ * - the run panel keeps its own copy of the card (source test);
+ * - CIV-14b: a question with images draws no picture, a picture comes from
+ *   another path than the cookie serve route, or a click opens nothing;
+ * - CIV-14b fix round 1: a picture that fails to load draws no "Removed"
+ *   tile, or that tile is an active button.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -19,8 +23,25 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
-import type { AgentActivity } from "../lib/agentRuns";
+import { questionActivity, questionsPage } from "../lib/agentQuestions";
+import {
+  AGENT_IMAGES_MAX,
+  type AgentActivity,
+  activityImages,
+  agentImageUrl,
+  newestEphemeral,
+  newestEphemeralActivity,
+} from "../lib/agentRuns";
+import type { AttachmentRow } from "../lib/api";
+import { previewKind } from "../lib/preview";
+import {
+  AgentImageStripView,
+  type AgentImageStripViewProps,
+  REMOVED_TEXT,
+  REMOVED_TIP,
+} from "./AgentImageStrip";
 import { AgentQuestionCard, type AgentQuestionCardProps } from "./AgentQuestionCard";
+import { AttachmentViewer } from "./AttachmentViewer";
 
 const ELICITATION: AgentActivity = {
   id: "e1",
@@ -257,5 +278,233 @@ describe("one component, no copy", () => {
   it("the list sends a typed request to archive-approval and not to the generic route", () => {
     expect(list).toContain("agentRunsApi.archiveApproval");
     expect(list).toContain("agentRunsApi.post");
+  });
+});
+
+describe("images on a question (CIV-14b, external_agent_access.md §12.9)", () => {
+  const A = "00000000-0000-4000-8000-000000009801";
+  const B = "00000000-0000-4000-8000-000000009802";
+  // The gateway adds `url` at each read: the cookie serve route.
+  const served = (id: string, name: string) => `/api/projects/attachments/${id}/${name}`;
+  const WITH_IMAGES: AgentActivity = {
+    ...ELICITATION,
+    content: {
+      body: "Which layout?",
+      attachments: [
+        { attachment_id: A, name: "layout one.png", mime: "image/png", size: 4096,
+          url: served(A, "layout one.png") },
+        { attachment_id: B, name: "after.webp", mime: "image/webp", size: 2048,
+          url: served(B, "after.webp") },
+      ],
+    },
+  };
+  const dir = fileURLToPath(new URL(".", import.meta.url));
+  const strip = readFileSync(`${dir}AgentImageStrip.tsx`, "utf8");
+  const card = readFileSync(`${dir}AgentQuestionCard.tsx`, "utf8");
+  const panel = readFileSync(`${dir}AgentRunPanel.tsx`, "utf8");
+
+  it("draws an img for each id, from the cookie serve route", () => {
+    const html = draw({ elicitation: WITH_IMAGES });
+    const sources = [...html.matchAll(/<img[^>]*\ssrc="([^"]+)"/g)].map((m) => m[1]);
+    // The served path, with a name segment that needs no escape.
+    expect(sources).toEqual([
+      `/api/projects/attachments/${A}/layout_one.png`,
+      `/api/projects/attachments/${B}/after.webp`,
+    ]);
+    expect(html).toContain('data-agent-images="2"');
+    // The question card still draws, below the pictures.
+    expect(html).toContain('data-elicitation-card="open"');
+    expect(html.indexOf("data-agent-images")).toBeLessThan(html.indexOf("data-elicitation-card"));
+  });
+
+  it("each picture is a button named for its full-size view", () => {
+    const html = draw({ elicitation: WITH_IMAGES });
+    expect(html).toContain('aria-label="Open image 1 of 2 at full size: layout one.png"');
+    expect(html).toContain('aria-label="Open image 2 of 2 at full size: after.webp"');
+    expect(html).toContain('aria-label="Images from Claude Code"');
+    // G8: the picture keeps its space while it loads.
+    expect(html).toMatch(/<img[^>]*class="[^"]*\bh-16 w-16\b/);
+  });
+
+  // Fix round 1, item 6. The runner has no DOM, and `Modal` draws nothing on
+  // the server. `AgentImageStripView` holds no hook, so these tests read its
+  // element tree, press a button there, and draw it again with the state
+  // that the press set. `AgentImageStrip` only holds that state.
+  type Node = { type: unknown; props: Record<string, unknown> };
+  function nodes(tree: unknown): Node[] {
+    const out: Node[] = [];
+    const walk = (node: unknown): void => {
+      if (Array.isArray(node)) {
+        node.forEach(walk);
+        return;
+      }
+      if (!node || typeof node !== "object" || !("props" in node)) return;
+      out.push(node as Node);
+      walk((node as Node).props.children);
+    };
+    walk(tree);
+    return out;
+  }
+  const rows = activityImages(WITH_IMAGES);
+  const view = (over: Partial<AgentImageStripViewProps> = {}) =>
+    nodes(
+      AgentImageStripView({
+        images: rows,
+        agentLabel: "Claude Code",
+        opened: null,
+        broken: new Set<string>(),
+        onOpen: noop,
+        onBroken: noop,
+        onClose: noop,
+        ...over,
+      }),
+    );
+  const by = (tree: Node[], key: string, id: string) => tree.find((n) => n.props[key] === id);
+  const viewerOf = (tree: Node[]) => tree.find((n) => n.type === AttachmentViewer);
+
+  it("a click on a picture opens that image at full size in the one attachment viewer", () => {
+    // Mutation: make the button's onClick do nothing, or pass the viewer
+    // no file, and this test fails.
+    let opened: AttachmentRow | null = null;
+    const onOpen = vi.fn((file: AttachmentRow) => {
+      opened = file;
+    });
+    const before = view({ onOpen });
+    expect(viewerOf(before)?.props.file).toBeNull();
+    (by(before, "data-agent-image-open", B)?.props.onClick as () => void)();
+    expect(onOpen).toHaveBeenCalledWith(rows[1]);
+    const onClose = vi.fn();
+    const after = view({ opened, onClose });
+    const shown = viewerOf(after);
+    expect(shown?.props.file).toBe(rows[1]);
+    (shown?.props.onClose as () => void)();
+    expect(onClose).toHaveBeenCalledTimes(1);
+    // The viewer draws that image at full size, from its served path.
+    const full = nodes(AttachmentViewer({ file: rows[1], onClose: noop }));
+    const img = full.find((n) => n.type === "img");
+    expect(img?.props.src).toBe(`/api/projects/attachments/${B}/after.webp`);
+    expect(String(img?.props.className)).toContain("max-h-[60vh] w-auto max-w-full");
+    for (const row of rows) expect(previewKind(row.mime)).toBe("image");
+    // The strip keeps the state that the view asks for.
+    expect(strip).toContain("onOpen={setOpened}");
+    expect(strip).toContain("onClose={() => setOpened(null)}");
+  });
+
+  it("a picture that fails to load draws a Removed tile, and that button does nothing", () => {
+    // Mutation: drop the onError of the picture, or draw the tile as an
+    // active button, and this test fails.
+    const onBroken = vi.fn();
+    (by(view({ onBroken }), "data-agent-image", A)?.props.onError as () => void)();
+    expect(onBroken).toHaveBeenCalledWith(A);
+    const onOpen = vi.fn();
+    const broken = new Set([A]);
+    const after = view({ broken, onOpen });
+    const tile = by(after, "data-agent-image-removed", A);
+    expect(tile?.type).toBe("button");
+    expect(tile?.props.disabled).toBe(true);
+    expect(tile?.props.onClick).toBeUndefined();
+    expect(by(after, "data-agent-image", A)).toBeUndefined();
+    expect(by(after, "data-agent-image-open", A)).toBeUndefined();
+    // The other image still opens.
+    (by(after, "data-agent-image-open", B)?.props.onClick as () => void)();
+    expect(onOpen).toHaveBeenCalledWith(rows[1]);
+    // A viewer that showed the removed image closes.
+    expect(viewerOf(view({ broken, opened: rows[0] }))?.props.file).toBeNull();
+    // The drawn tile: the word, its label, the tokens and the same 64 px.
+    const html = renderToStaticMarkup(
+      createElement(AgentImageStripView, {
+        images: rows, agentLabel: "Claude Code", opened: null, broken,
+        onOpen: noop, onBroken: noop, onClose: noop,
+      }),
+    );
+    expect(html).toContain(`>${REMOVED_TEXT}<`);
+    expect(html).toContain('aria-label="Image 1 of 2 was removed from the task: layout one.png"');
+    expect(html).toContain(`title="${REMOVED_TIP}"`);
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*data-agent-image-removed=/);
+    expect(html).toMatch(/class="[^"]*\bh-16 w-16\b[^"]*\bborder-border bg-muted text-muted-foreground\b/);
+    expect([...html.matchAll(/<img/g)]).toHaveLength(1);
+    // The strip keeps the ids that failed, and the set only grows.
+    expect(strip).toMatch(/onBroken=\{\(id\) => setBroken\(/);
+  });
+
+  it("the read-only question draws the pictures too, and the answered line draws none", () => {
+    const readonly = draw({ elicitation: WITH_IMAGES, canAnswer: false });
+    expect(readonly).toContain('data-agent-question="readonly"');
+    expect([...readonly.matchAll(/<img/g)]).toHaveLength(2);
+    const answered = draw({
+      elicitation: WITH_IMAGES,
+      open: false,
+      answer: { id: "p9", seq: 9, type: "prompt", content: { selected: ["pg"] }, in_reply_to: "e1" },
+    });
+    expect(answered).not.toContain("<img");
+  });
+
+  it("a question with no images draws the card alone", () => {
+    expect(draw()).not.toContain("data-agent-images");
+    expect(draw()).not.toContain("<img");
+  });
+
+  it("never draws an SVG, an id of another shape, a repeat or a fifth image", () => {
+    const ids = [1, 2, 3, 4, 5].map((n) => `00000000-0000-4000-8000-00000000990${n}`);
+    const rows = activityImages({
+      content: {
+        attachments: [
+          { attachment_id: "x", name: "bad.png", mime: "image/png", size: 1, url: served("x", "bad.png") },
+          { attachment_id: ids[0], name: "logo.svg", mime: "image/svg+xml", size: 1,
+            url: served(ids[0], "logo.svg") },
+          ...ids.map((id) => ({ attachment_id: id, name: `${id}.png`, mime: "image/png", size: 1,
+                                url: served(id, `${id}.png`) })),
+          { attachment_id: ids[1], name: "again.png", mime: "image/png", size: 1,
+            url: served(ids[1], "again.png") },
+        ],
+      },
+    });
+    expect(rows.map((r) => r.attachment_id)).toEqual(ids.slice(0, AGENT_IMAGES_MAX));
+    expect(AGENT_IMAGES_MAX).toBe(4);
+    expect(activityImages({ content: { attachments: null } })).toEqual([]);
+    expect(activityImages(null)).toEqual([]);
+  });
+
+  it("draws only the served path of this origin for the same id, and never the MCP bytes path", () => {
+    const row = { attachment_id: A, name: "a b/../c.png", mime: "image/png", size: 1 };
+    expect(agentImageUrl({ ...row, url: served(A, "x") })).toBe(
+      `/api/projects/attachments/${A}/a_b_.._c.png`,
+    );
+    expect(agentImageUrl({ ...row, name: "  ", url: served(A, "x") })).toBe(
+      `/api/projects/attachments/${A}/image`,
+    );
+    // No url, another id, another origin, a query or a fragment: no image.
+    for (const url of [undefined, served(B, "x"), `//evil.example${served(A, "x")}`,
+                       `https://evil.example${served(A, "x")}`, `${served(A, "x")}?a=1`,
+                       `${served(A, "x")}#f`, "javascript:alert(1)"]) {
+      expect(agentImageUrl({ ...row, url })).toBeNull();
+    }
+    expect(activityImages({ content: { attachments: [row] } })).toEqual([]);
+    for (const source of [strip, card]) {
+      expect(source).not.toContain("get_attachment");
+      expect(source).not.toMatch(/base64|data:image/);
+    }
+  });
+
+  it("the Questions list row carries the images to the same card", () => {
+    const page = questionsPage({
+      rows: [{
+        run_id: "r1", activity_id: "e1", task_id: "t1", task_number: 7, task_title: "Layout",
+        agent_name: "Claude Code", client_via: "mcp:claude.ai", asked_at: null,
+        run_started_at: null, project_path: [], can_answer: true, why: "created",
+        question: { kind: "question", body: "Which layout?", options: [], allow_multiple: false,
+                    attachments: WITH_IMAGES.content.attachments },
+      }],
+    });
+    expect(activityImages(questionActivity(page.rows[0])).map((r) => r.attachment_id)).toEqual([A, B]);
+  });
+
+  it("the run panel line draws the images of the newest thought", () => {
+    const thought: AgentActivity = { ...WITH_IMAGES, id: "t1", seq: 4, type: "thought" };
+    const older: AgentActivity = { id: "t0", seq: 3, type: "thought", content: { body: "Earlier" } };
+    expect(newestEphemeralActivity([older, thought])?.id).toBe("t1");
+    expect(newestEphemeral([older, thought])).toBe("Which layout?");
+    expect(panel).toContain("activityImages(newestEphemeralActivity(activities))");
+    expect(panel).toContain("<AgentImageStrip images={lineImages} agentLabel={client} />");
   });
 });

@@ -46,6 +46,21 @@ reader is `gateway.routes.workflows.core.author_gate_on`, and each request
 asks it. A reload applies a change, and the flip stays OWNER-GATE
 (`enforcement-flip`).
 
+`MCP_IMAGE_UPLOAD_ORGS` lets an outside agent upload an image to a task and
+put images on a question (`external_agent_access.md` §12.9, CIV-14b). Off, the
+upload of a signed agent answers 404 and `attachment_ids` answers 422, and the
+MCP edge maps both to one fixed text (`tools.TEXT_IMAGES_OFF`). A person's upload
+in the app does not read it. Its one reader is
+`acb_auth.agent_oauth.image_upload_allowed`. The gateway asks it at each call,
+so a reload applies a change there. The agent edge asks it too (CIV-14b fix
+round 1). It hides `upload_task_image` for an org off the flag, and
+`ask_on_task` checks it before a run starts. Since fix round 2, a body over
+1 MiB of an org off the flag gets the 413 of the old cap, with no slot and no
+read. The edge reads its flags at
+start. So set the same value in the env file of both units, reload
+`acb-gateway`, and restart `acb-agent-edge`. The flip stays OWNER-GATE
+(`enforcement-flip`).
+
 `STUDIO_DOOR_OPS_ORGS` opens the door op of the Studio action door
 (`ai_studio.md` §14 B2b-2). For each listed org, a class A `<app>.<op>`
 action of a package runs that op of the app, as the caller. `*` lists every
