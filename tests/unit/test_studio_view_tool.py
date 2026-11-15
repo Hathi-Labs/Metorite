@@ -387,7 +387,7 @@ async def test_a_share_shows_one_card_in_a_clear_chat_and_only_approved_writes(
     assert shown["title"] == "Share the view «Quarter plan»?"
     assert shown["fenced"] is True and shown["non_interactive_default"] == "deny"
     assert "«Quarter plan»" in shown["context"]
-    assert SECRET_VALUE not in shown["context"] and SECRET_VALUE not in shown["detail"]
+    assert shown["context"].count(f"«{SECRET_VALUE}»") == 1  # the current spec, read first
     card.answer = True
     out = await _call(op="update", view_id=vid, shared=True)
     assert out["ok"] is True and out["decision"] == "approved" and out["shared"] is True
@@ -568,3 +568,117 @@ async def test_a_404_names_both_causes(gw: Gateway) -> None:
     st_reply = st._Reply(404, {"detail": "Not found"})
     out = st._view_fail(st_reply)
     assert out["errors"][0]["message"] == st._VIEW_NOT_FOUND and out["status"] == 404
+
+
+# -- 5. the filter values of a SHARED write show on the card ----------------------
+
+QUOTED = f"«{SECRET_VALUE}»"
+FILTER = {"filter": [{"field": "status", "op": "eq", "value": SECRET_VALUE}]}
+
+
+async def test_a_private_write_shows_counts_and_never_the_filter_value(
+    gw: Gateway, card: Card, mark: Mark,
+) -> None:
+    """(a) Mutation: show values for a private write -> red."""
+    mark.held = True
+    vid = gw.add(name="Mine")
+    await _call(op="save", name="Mine too", spec=FILTER)
+    await _call(op="update", view_id=vid, spec=FILTER)
+    assert len(card.shown) == 2
+    for shown in card.shown:
+        assert SECRET_VALUE not in shown["context"] + shown["detail"] + shown["title"]
+        assert "1 filter conditions" in shown["context"]
+
+
+async def test_each_shared_write_shows_the_value_once_in_guillemets(
+    gw: Gateway, card: Card,
+) -> None:
+    """(b) Mutation: pass ``shared_touch`` False to ``_view_card_rows`` -> red."""
+    card.answer = False
+    private = gw.add(name="Mine")
+    shared = gw.add(name="Team", shared=True)
+    calls = [
+        lambda: _call(op="save", name="New", shared=True, spec=FILTER),         # share, spec in body
+        lambda: _call(op="update", view_id=private, shared=True),               # share, no spec
+        lambda: _call(op="update", view_id=shared, shared=False),               # unshare
+        lambda: _call(op="update", view_id=shared, spec=FILTER),                # change, spec in body
+        lambda: _call(op="update", view_id=shared, position=2),                 # change, no spec
+        lambda: _call(op="delete", view_id=shared),                             # delete
+    ]
+    for make in calls:
+        card.shown.clear()
+        await make()
+        (shown,) = card.shown
+        assert shown["context"].count(QUOTED) == 1, shown["context"]
+        assert "«status» eq" in shown["context"]
+        assert "roles let them read" in shown["context"]
+    assert gw.writes() == []
+
+
+async def test_a_shared_card_shows_the_new_spec_and_not_the_old_one(
+    gw: Gateway, card: Card,
+) -> None:
+    card.answer = False
+    shared = gw.add(name="Team", shared=True)
+    new = {"filter": [{"field": "owner", "op": "eq", "value": "from-the-body"}],
+           "sort": {"field": "status", "dir": "desc"}, "layout": "board", "columns": ["status"]}
+    await _call(op="update", view_id=shared, spec=new)
+    context = card.shown[0]["context"]
+    assert "«from-the-body»" in context and SECRET_VALUE not in context
+    assert "Sort: «status» desc" in context and "Layout: board" in context
+    assert "Columns: «status»" in context
+
+
+@pytest.mark.parametrize("bad", [chr(0xE0041), chr(0xFE0F), chr(0x202E)])
+async def test_a_hidden_character_in_a_value_is_refused_before_the_card_in_a_held_chat(
+    gw: Gateway, card: Card, mark: Mark, bad: str,
+) -> None:
+    """(c) Mutation: drop ``_view_spec_texts`` from the smuggle call -> red."""
+    spec = {"filter": [{"field": "status", "op": "eq", "value": "a" + bad + "b"}]}
+    shared = gw.add(name="Team", shared=True)
+    mark.held = True
+    for call in (lambda: _call(op="update", view_id=shared, spec=spec),
+                 lambda: _call(op="save", name="N", shared=True, spec=spec)):
+        out = await call()
+        assert out["ok"] is False and card.shown == [] and gw.writes() == []
+        assert "hidden characters" in out["errors"][0]["message"]
+    # the CURRENT spec of a view that shares has one too
+    gw.views[shared]["spec"] = spec
+    gw.views[shared]["shared"] = False
+    out = await _call(op="update", view_id=shared, shared=True)
+    assert out["ok"] is False and card.shown == []
+
+
+async def test_a_clear_chat_counts_the_hidden_characters_of_a_value(
+    gw: Gateway, card: Card,
+) -> None:
+    card.answer = False
+    spec = {"filter": [{"field": "status", "op": "eq", "value": "a" + chr(0xE0041) + "b"}]}
+    await _call(op="save", name="N", shared=True, spec=spec)
+    context = card.shown[0]["context"]
+    assert "«ab»" in context and "1 in the filter value" in context
+
+
+@pytest.mark.parametrize("held", [True, False])
+async def test_a_long_value_gives_no_card_in_any_chat(
+    gw: Gateway, card: Card, mark: Mark, held: bool,
+) -> None:
+    """(d) A short row is never cut by ``card_body``, so a value over the cap is
+    refused whole, in a held chat and a clear one. Mutation: drop the cap -> red."""
+    mark.held = held
+    spec = {"filter": [{"field": "status", "op": "eq",
+                        "value": "x" * (st.MAX_VIEW_CARD_VALUE + 1)}]}
+    out = await _call(op="save", name="N", shared=True, spec=spec)
+    assert out["ok"] is False and card.shown == [] and gw.writes() == []
+    assert "too long to show" in out["errors"][0]["message"]
+
+
+async def test_a_list_leaves_the_hidden_characters_out_of_the_values(
+    gw: Gateway, card: Card,
+) -> None:
+    """(e) Mutation: ``_view_row`` keeps ``spec`` raw -> red."""
+    gw.add(name="V", spec={"filter": [{"field": "status", "op": "eq",
+                                       "value": "a" + chr(0xE0041) + chr(0xFE0F) + "b"}]})
+    out = await _call(op="list")
+    (row,) = json.loads(_block(out["views"]))
+    assert row["spec"]["filter"][0]["value"] == "ab"
