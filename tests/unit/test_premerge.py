@@ -348,6 +348,34 @@ def test_a_type_error_that_main_has_alone_does_not_block(repo):
     assert "did not cause them" in res.stdout
 
 
+def test_a_baseline_that_gives_no_verdict_does_not_block(repo):
+    """Review of PR 2394, F1: a baseline run on main that times out or crashes cannot
+    clear or blame the merge. It is UNPROVEN, not a block."""
+    _frontend_pair(repo)
+    cmd = ('if [ -f src/a.ts ] && [ -f src/b.ts ]; then echo "src/a.ts(1,1): error TS2322: boom"; exit 1; fi; '
+           'if [ -f src/b.ts ]; then exit 134; fi')
+    res = _run(repo, PREMERGE_TSC_CMD=cmd)
+    assert res.returncode == 0, res.stderr
+    assert "UNPROVEN. The type check of" in res.stdout
+
+
+def test_a_lockfile_change_runs_npm_ci_even_with_node_modules(repo):
+    _commit(repo, "workbench/control_plane/package-lock.json", "{}\n")
+    _advance_main(repo, "workbench/control_plane/src/b.ts", "export const b = 2\n")
+    (repo / "workbench/control_plane/node_modules").mkdir(parents=True, exist_ok=True)
+    res = _run(repo, PREMERGE_TSC_CMD="true", PREMERGE_NPM_TIMEOUT="5")
+    assert "a lockfile changed: running npm ci" in res.stdout
+
+
+def test_a_front_end_config_file_triggers_the_type_check(repo):
+    (repo / "workbench/control_plane/node_modules").mkdir(parents=True, exist_ok=True)
+    _commit(repo, "workbench/control_plane/vitest.config.ts", "export default {}\n")
+    _advance_main(repo, "scripts/y.py")
+    marker = repo.parent / "tsc-ran"
+    _run(repo, PREMERGE_TSC_CMD=f"touch {marker.as_posix()}")
+    assert marker.exists()
+
+
 def test_tsc_off_switch(repo):
     _frontend_pair(repo)
     marker = repo.parent / "tsc-ran"
