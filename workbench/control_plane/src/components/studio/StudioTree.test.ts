@@ -190,7 +190,7 @@ describe("the layout rules", () => {
   });
   it("gives the label the room, and keeps the swapped control narrow", () => {
     expect(html(small)).toMatch(/<span class="min-w-0 flex-1 truncate text-sm text-foreground">Part a<\/span>/);
-    expect(src).toContain('const MOVE_WIDTH = "w-28"');
+    expect(src).toContain('const MOVE_WIDTH = "w-full sm:w-28"');
     expect(src).toContain("widthClass={MOVE_WIDTH}");
   });
   it("gives a leaf the width of the chevron button, so the grips line up", () => {
@@ -209,7 +209,10 @@ describe("the layout rules", () => {
   });
   it("lets the swapped control take its own full-width line below sm, and the label keep the first line", () => {
     expect(src).toContain('const MOVING_ROW = "flex-wrap sm:flex-nowrap"');
-    expect(src).toContain('const MOVING_SLOT = "shrink-0 basis-full sm:basis-auto"');
+    expect(src).toContain('const MOVING_SLOT = "shrink-0 basis-full w-full sm:w-auto sm:basis-auto"');
+    // The panel hangs from the trigger's right edge, so the trigger spans the line on a phone.
+    expect(src).toMatch(/const MOVE_WIDTH = "w-full sm:w-28"/);
+    expect(src).toContain("WHY full width on a phone");
     expect(src).toMatch(/moving === row\.id \? MOVING_ROW : ""/);
     expect(src).toMatch(/className=\{moving === row\.id \? MOVING_SLOT : "shrink-0"\}/);
     expect(html(small)).toMatch(/<span class="min-w-0 flex-1 truncate text-sm text-foreground">Part a<\/span>/);

@@ -44,12 +44,17 @@ const IDLE: TreeMoveState = { placed: {}, pending: new Set<string>(), alert: nul
 const ROW_STEP_REM = 1.25;
 /** The deepest indent that the Move list draws. A deeper node keeps this indent, so the list stays narrow. */
 const OPTION_DEPTH_CAP = 5;
-/** The width of the swapped Move control. It is small, so the row label keeps its room. */
-const MOVE_WIDTH = "w-28";
+/**
+ * The width of the swapped Move control. Below `sm` it spans the whole line, and from `sm` up it is
+ * small, so the row label keeps its room. WHY full width on a phone: the list panel is anchored to the
+ * trigger's RIGHT edge (`align="end"`) and it is wider than the trigger. A narrow trigger at the left of
+ * its line would hang the panel off the left edge of the screen, so the trigger must reach the row's right edge.
+ */
+const MOVE_WIDTH = "w-full sm:w-28";
 /** The row of the open Move control wraps below `sm`, so the label keeps the whole first line. */
 const MOVING_ROW = "flex-wrap sm:flex-nowrap";
 /** The open Move control takes its own full-width line below `sm`, and shares the line from `sm` up. */
-const MOVING_SLOT = "shrink-0 basis-full sm:basis-auto";
+const MOVING_SLOT = "shrink-0 basis-full w-full sm:w-auto sm:basis-auto";
 /** The line above the tree keeps this height whether it speaks or not, so the tree never jumps. */
 const NOTICE_SLOT = "min-h-6";
 /** The spacer of a leaf row. It has the size of the chevron button (`icon-xs`), so the grips line up. */
