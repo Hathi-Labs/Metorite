@@ -91,7 +91,9 @@ Since I9a, an `org` need also fails closed with a connected row in four cases. A
 
 An `org` need fails in an org with no approved org install. It fails in a private install and in a group install. It fails in an org install of a version with `review_status` `auto`, which migration 114 sets by default. It fails for the owner of the app, who runs the draft.
 
-Before a flip, count three things with read-only SQL. Count the active org installs whose version is not `approved`. Count the private and group installs whose version names a `connections` list. Count the connected rows of each provider, as org rows and as member rows.
+Since I9b-1, a need that names `scopes` also fails closed when the connected row holds fewer scopes, or none. The GitHub App row writes empty scopes, and Zoho records the requested set. An unapproved `org` need always reads "an admin must approve this app", whatever the rows say.
+
+Before a flip, count five things with read-only SQL. Count the active org installs whose version is not `approved`. Count the private and group installs whose version names a `connections` list. Count the connected rows of each provider, as org rows and as member rows. Count the connected rows of each provider whose `scopes` is empty. Count the versions whose `connections` name `scopes`, with the scope names of each.
 
 `STUDIO_NUM_F8_ORGS` adds the float8 test to a number filter of the Studio
 object query (`ai_studio.md` §14 C2c). For each listed org, the query tests
