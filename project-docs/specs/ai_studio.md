@@ -917,8 +917,9 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **B1** | 🔨 BUILT, dark (2026-10-31) | STD | AGENT-SAFE | [row](ai_studio_rows/B1.md) |
 | **B1c** | 🔨 BUILT, dark (2026-11-02) | STD | AGENT-SAFE | [row](ai_studio_rows/B1c.md) |
 | **B1b-1** | 🔨 BUILT (2026-11-14, task 3278) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-1.md) |
-| **B1b-2** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-2.md) |
-| **B1b-3** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-3.md) |
+| **B1b-2** | 🔨 BUILT (2026-11-14, task 3279) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-2.md) |
+| **B1b-3** | 🔨 BUILT (2026-11-15, task 3280) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-3.md) |
+| **B1b-4** | 🔨 BUILT (2026-11-15, task 3374) | STD | UI D145 | [row](ai_studio_rows/B1b-4.md) |
 | **B2a** | 🔨 BUILT, dark (2026-11-01) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B2a.md) |
 | **B2b-1** | 🔨 BUILT, dark (2026-11-02) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B2b-1.md) |
 | **B2b-2** | 🔨 BUILT, dark (2026-11-11) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B2b-2.md) |
@@ -1217,7 +1218,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **I9** | 🔨 I9a BUILT, dark (2026-11-14, task 3169) | HIGH | AGENT-SAFE | [row](ai_studio_rows/I9.md) |
 | **I10** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I10.md) |
 | **I11-0** | 🔨 BUILT, test only (2026-11-14, task 3235) | STD | AGENT-SAFE | [row](ai_studio_rows/I11-0.md) |
-| **I11a** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I11a.md) |
+| **I11a** | 🔨 BUILT (2026-11-15, task 3236) | HIGH | AGENT-SAFE | [row](ai_studio_rows/I11a.md) |
 | **I11b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I11b.md) |
 
 ### Group J — Governance

@@ -113,6 +113,16 @@ org, and the default is empty. Its one reader is
 door also needs `STUDIO_ORGS`. A reload applies a change, and the flip stays
 OWNER-GATE (`enforcement-flip`).
 
+`STUDIO_LIVE_PREVIEW_ORGS` lets a preview of the Studio action door read a
+class A MCP action live (`ai_studio.md` §14 I11a). For each listed org, a
+`preview=1` call of an `mcp:<server>.<tool>` action calls that tool of the
+org's server once, and the cut answer stays in the cache for 60 s. `*` lists
+every org, and the default is empty. Empty means each MCP action of a preview
+stays `source_not_open`. Its one reader is
+`acb_common.studio_flags.live_preview_on`, and each call asks it. The door
+also needs `STUDIO_ORGS`. A reload applies a change, and the flip stays
+OWNER-GATE (`enforcement-flip`).
+
 `STUDIO_LOGIC_ORGS` opens the logic module of the Studio action door
 (`ai_studio.md` §14 B4a). For each listed org, a `logic:<name>` action of a
 package runs a first-party module of the gateway. `*` lists every org, and the

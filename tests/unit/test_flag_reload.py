@@ -234,6 +234,22 @@ def test_studio_connection_gate_orgs_reloads_and_its_reader_follows(env, monkeyp
     assert not connection_gate_on("globex")
 
 
+def test_studio_live_preview_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU I11a, ai_studio.md §14 I11a. The reload list holds the key, and the
+    one reader of the live preview sees a change with no restart."""
+    from acb_common.studio_flags import live_preview_on
+
+    assert fr.reloadable("STUDIO_LIVE_PREVIEW_ORGS")
+    monkeypatch.setenv("STUDIO_LIVE_PREVIEW_ORGS", "")
+    get_settings.cache_clear()
+    assert not live_preview_on("acme")
+    assert not live_preview_on(None)
+    env(**{**_START, "STUDIO_LIVE_PREVIEW_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_LIVE_PREVIEW_ORGS",)
+    assert live_preview_on("ACME ")
+    assert not live_preview_on("globex")
+
+
 def test_each_reloadable_field_is_named_by_its_env_key() -> None:
     """The reload maps ``CRM_ORGS`` to the field ``crm_orgs``. An alias would
     break that map, and ``str`` keeps every value valid."""

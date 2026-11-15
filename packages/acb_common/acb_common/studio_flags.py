@@ -14,6 +14,10 @@ bind: the resolve of the package host and the action door both ask
 :func:`connection_gate_on`. Default OFF, and off means that ``connections``
 changes nothing. It lives here because ``gateway/package_host`` imports no
 routes layer.
+
+``STUDIO_LIVE_PREVIEW_ORGS`` (I11a) lets a preview of the action door read a
+class A ``mcp:`` action live: :func:`live_preview_on`. Default OFF, and off
+means that each ``mcp:`` action of a preview stays ``source_not_open``.
 """
 
 from __future__ import annotations
@@ -48,6 +52,17 @@ def connection_gate_on(organization_id: str | None) -> bool:
     if not organization_id:
         return False
     listed = _parse_orgs(str(getattr(get_settings(), "studio_connection_gate_orgs", "") or ""))
+    return "*" in listed or str(organization_id).strip().lower() in listed
+
+
+def live_preview_on(organization_id: str | None) -> bool:
+    """True when ``STUDIO_LIVE_PREVIEW_ORGS`` holds the org, or holds ``*``
+    (WS-STU I11a). Default OFF: no org, and an org off the list, read no
+    ``mcp:`` action live. The one reader of the setting. The org comes from
+    the session, never from request input (R5)."""
+    if not organization_id:
+        return False
+    listed = _parse_orgs(str(getattr(get_settings(), "studio_live_preview_orgs", "") or ""))
     return "*" in listed or str(organization_id).strip().lower() in listed
 
 
